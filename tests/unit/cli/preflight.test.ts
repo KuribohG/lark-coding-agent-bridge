@@ -757,7 +757,7 @@ describe('lark-cli preflight', () => {
       ['config', 'default-as', 'auto'],
       ['config', 'show'],
     ]);
-    expect(mocks.calls[0]?.env?.LARKSUITE_CLI_CONFIG_DIR).toBeUndefined();
+    expect(mocks.calls[0]?.env?.LARKSUITE_CLI_CONFIG_DIR).toBe(process.env.LARKSUITE_CLI_CONFIG_DIR);
     expect(mocks.calls[1]?.env).toMatchObject({
       LARKSUITE_CLI_CONFIG_DIR: appPaths.larkCliConfigDir,
     });

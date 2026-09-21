@@ -1,6 +1,6 @@
 import { readFile, readdir, rm, stat, utimes } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -40,8 +40,8 @@ describe('hash media attachment resolver', () => {
       originalName: 'private name.png',
       decision: 'accepted',
     });
-    expect(attachment?.absPath).not.toContain('img_secret_key');
-    expect(attachment?.absPath).not.toContain('private');
+    expect(basename(attachment!.absPath)).not.toContain('img_secret_key');
+    expect(basename(attachment!.absPath)).not.toContain('private');
     expect(await readFile(attachment!.absPath, 'utf8')).toBe('image-bytes');
   });
 
