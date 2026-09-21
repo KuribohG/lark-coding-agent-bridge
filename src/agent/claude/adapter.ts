@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { log } from '../../core/logger';
-import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
+import { mergeProcessEnv, type SpawnedProcessByStdio } from '../../platform/spawn';
 import { buildBridgeSystemPrompt } from '../bridge-system-prompt';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
@@ -19,6 +19,7 @@ import {
   type AgentRunOptions,
 } from '../types';
 import { translateEvent } from './stream-json';
+import { spawnWithDeadline } from '../deadline';
 
 export interface ClaudeAdapterOptions {
   binary?: string;
@@ -86,11 +87,11 @@ export class ClaudeAdapter implements AgentAdapter {
     if (opts.model) args.push('--model', validateModelId(opts.model));
     if (opts.reasoningEffort) args.push('--effort', parseEffort(opts.reasoningEffort, 'claude')!);
 
-    const child = spawnProcess(this.binary, args, {
+    const child = spawnWithDeadline(this.binary, args, {
       cwd: opts.cwd,
       env: mergeProcessEnv(process.env, buildLarkChannelEnv(this.larkChannel)),
       stdio: ['pipe', 'pipe', 'pipe'],
-    }) as ClaudeChild;
+    }, opts.deadlineAt) as ClaudeChild;
 
     log.info('agent', 'spawn', {
       pid: child.pid ?? null,
@@ -143,7 +144,7 @@ export class ClaudeAdapter implements AgentAdapter {
     // old 500ms was nowhere near enough for them to flush state before the
     // SIGKILL cascade. Callers (channel.ts, /doctor) override per-run with
     // a value derived from preferences.
-    const stopGraceMs = opts.stopGraceMs ?? 5000;
+    const stopGraceMs = opts.deadlineAt ? Math.max(1000, opts.stopGraceMs ?? 1000) : opts.stopGraceMs ?? 5000;
 
     return {
       runId: opts.runId,

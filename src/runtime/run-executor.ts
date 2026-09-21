@@ -16,6 +16,8 @@ export interface RunExecutorDeps {
 }
 
 export interface SubmitRunInput {
+  deadlineAt?: number;
+  signal?: AbortSignal;
   scopeId: string;
   policy: RunPolicyAllow;
   sessionId?: string;
@@ -33,7 +35,10 @@ export interface SubmitRunInput {
   };
 }
 
+export type RunResult = 'completed' | 'stopped' | 'expired' | 'quota' | 'failed';
+
 export interface RunExecution {
+  result: Promise<RunResult>;
   runId: string;
   scopeId: string;
   run: AgentRun;
@@ -63,6 +68,13 @@ export class RunExecutor {
 
   async submit(input: SubmitRunInput): Promise<RunExecution> {
     const submittedAt = this.now();
+    const checkDeadline = () => {
+      if (input.deadlineAt !== undefined && (!Number.isSafeInteger(input.deadlineAt) || input.deadlineAt <= this.now())) {
+        throw new RunRejected('deadline-expired', '任务停止时间已过。');
+      }
+      if (input.signal?.aborted) throw new RunRejected('run-cancelled', '任务已取消。');
+    };
+    checkDeadline();
     if (input.policy.expiresAt <= this.now()) {
       throw new RunRejected('policy-expired', 'run policy expired before spawn');
     }
@@ -77,14 +89,37 @@ export class RunExecutor {
       throw new RunRejected('run-already-active', 'another run is already active for this scope');
     }
 
-    const release = input.nowait ? this.pool.tryAcquire() : await this.pool.acquire();
+    const controller = new AbortController();
+    const forwardAbort = () => controller.abort(new RunRejected('run-cancelled', '任务已取消。'));
+    input.signal?.addEventListener('abort', forwardAbort, { once: true });
+    if (input.signal?.aborted) forwardAbort();
+    const deadlineTimer = input.deadlineAt === undefined ? undefined : setTimeout(() => {
+      controller.abort(new RunRejected('deadline-expired', '已到任务停止时间。'));
+    }, Math.max(0, input.deadlineAt - this.now()));
+    const dispose = () => {
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      input.signal?.removeEventListener('abort', forwardAbort);
+    };
+    let release: (() => void) | undefined;
+    try {
+      release = input.nowait ? this.pool.tryAcquire() : await this.pool.acquire(controller.signal);
+      checkDeadline();
+      controller.signal.throwIfAborted();
+    } catch (err) {
+      release?.();
+      releaseScope();
+      dispose();
+      throw err;
+    }
     if (!release) {
       releaseScope();
+      dispose();
       throw new RunRejected('pool-full', 'process pool is full');
     }
     if (this.activeRuns.newRunsPaused()) {
       release();
       releaseScope();
+      dispose();
       throw new RunRejected(
         'reconnect-in-progress',
         this.activeRuns.newRunsPauseReason() ?? 'new runs are temporarily paused',
@@ -95,6 +130,7 @@ export class RunExecutor {
     const startedAt = this.now();
     const queueWaitMs = startedAt - submittedAt;
     const runOptions = {
+      deadlineAt: input.deadlineAt,
       runId,
       prompt: input.policy.prompt,
       cwd: input.policy.cwdRealpath,
@@ -110,15 +146,20 @@ export class RunExecutor {
     let run: AgentRun;
     try {
       await this.agent.prepareRun?.(runOptions);
+      checkDeadline();
+      controller.signal.throwIfAborted();
     } catch (err) {
       release();
       releaseScope();
+      dispose();
+      if (err instanceof RunRejected) throw err;
       if (err instanceof SpawnFailed) throw err;
       throw new SpawnFailed('agent prepare failed', err, 'agent-prepare-failed');
     }
     if (this.activeRuns.newRunsPaused()) {
       release();
       releaseScope();
+      dispose();
       throw new RunRejected(
         'reconnect-in-progress',
         this.activeRuns.newRunsPauseReason() ?? 'new runs are temporarily paused',
@@ -129,6 +170,7 @@ export class RunExecutor {
     } catch (err) {
       release();
       releaseScope();
+      dispose();
       throw new SpawnFailed('agent spawn failed', err);
     }
     const dimensions = {
@@ -154,53 +196,77 @@ export class RunExecutor {
     } catch (err) {
       releaseScope();
       release();
+      dispose();
       await run.stop().catch(() => {});
       throw new RunRejected(
         'run-already-active',
         err instanceof Error ? err.message : 'another run is already active for this scope',
       );
     }
+    const stopOnAbort = () => {
+      handle.interrupted = true;
+      handle.stopReason = input.deadlineAt !== undefined && input.deadlineAt <= this.now() ? 'deadline' : 'cancelled';
+      void run.stop().catch((err) => log.warn('run', 'bounded-stop-failed', { runId, err: String(err) }));
+    };
+    controller.signal.addEventListener('abort', stopOnAbort, { once: true });
+    if (controller.signal.aborted) stopOnAbort();
+    let terminal: 'completed' | 'quota' | 'failed' = 'failed';
+    let settleResult!: (state: RunResult) => void;
+    const result = new Promise<RunResult>((resolve) => { settleResult = resolve; });
     let cleaned = false;
     const cleanup = async (waitForExit: boolean): Promise<void> => {
       if (cleaned) return;
       cleaned = true;
-      this.activeRuns.unregister(input.scopeId, run);
-      release();
-      if (waitForExit) {
-        const exited = await run.waitForExit(this.postDoneExitGraceMs);
-        if (!exited) {
-          log.warn('run', 'post-done-exit-timeout', {
-            ...dimensions,
-            graceMs: this.postDoneExitGraceMs,
-          });
-          await run.stop().catch((err) => {
-            log.warn('run', 'post-done-stop-failed', {
-              ...dimensions,
-              err: err instanceof Error ? err.message : String(err),
-            });
-          });
+      dispose();
+      controller.signal.removeEventListener('abort', stopOnAbort);
+      try {
+        if (waitForExit && !await run.waitForExit(this.postDoneExitGraceMs)) {
+          log.warn('run', 'post-done-exit-timeout', { ...dimensions, graceMs: this.postDoneExitGraceMs });
+          await run.stop();
         }
+      } catch (err) {
+        terminal = 'failed';
+        log.warn('run', 'post-done-cleanup-failed', { ...dimensions, err: String(err) });
+        await run.stop().catch(() => {});
+      } finally {
+        this.activeRuns.unregister(input.scopeId, run);
+        release();
+        settleResult(handle.stopReason === 'deadline' ? 'expired' : handle.interrupted ? 'stopped' : terminal);
       }
     };
     const fanout = new EventFanout(observeRunEvents(run.events, {
       dimensions,
       startedAt,
       now: this.now,
+      onTerminal: (event) => {
+        terminal = event.type === 'done' && event.terminationReason === 'normal' ? 'completed' : 'failed';
+        if (input.deadlineAt !== undefined && event.type === 'error' && /\[bridge-quota\]|insufficient_quota|quota_exceeded|credit balance (?:is )?too low|daily (?:quota|budget) (?:is )?(?:exhausted|exceeded)/i.test(event.message)) terminal = 'quota';
+        // The independent watchdog can fire before this event loop's timer.
+        if (input.deadlineAt !== undefined && input.deadlineAt <= this.now() && terminal !== 'completed') {
+          handle.interrupted = true;
+          handle.stopReason = 'deadline';
+        }
+      },
     }), async () => {
       await cleanup(!handle.interrupted);
     });
 
     return {
+      result,
       runId,
       scopeId: input.scopeId,
       run,
       handle,
       subscribe: () => fanout.subscribe(),
       stop: async () => {
+        if (cleaned) { await result; return; }
         handle.interrupted = true;
-        await run.stop();
-        await run.waitForExit(this.postDoneExitGraceMs);
-        await cleanup(false);
+        try {
+          await run.stop();
+          await run.waitForExit(this.postDoneExitGraceMs);
+        } finally {
+          await cleanup(false);
+        }
       },
     };
   }
@@ -212,12 +278,14 @@ function observeRunEvents(
     dimensions: Record<string, unknown>;
     startedAt: number;
     now: () => number;
+    onTerminal(event: AgentEvent): void;
   },
 ): AsyncIterable<AgentEvent> {
   return {
     async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
       for await (const event of events) {
         if (event.type === 'done') {
+          opts.onTerminal(event);
           log.info('run', 'completed', {
             ...opts.dimensions,
             result: event.terminationReason,
@@ -227,6 +295,7 @@ function observeRunEvents(
           return;
         }
         if (event.type === 'error') {
+          opts.onTerminal(event);
           log.warn('run', 'failed', {
             ...opts.dimensions,
             result: event.terminationReason,

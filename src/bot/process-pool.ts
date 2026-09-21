@@ -24,7 +24,8 @@ export class ProcessPool {
     this.cap = cap;
   }
 
-  async acquire(): Promise<() => void> {
+  async acquire(signal?: AbortSignal): Promise<() => void> {
+    signal?.throwIfAborted();
     if (this.active < this.cap()) {
       this.active++;
       log.info('pool', 'acquired', { active: this.active, cap: this.cap() });
@@ -33,7 +34,17 @@ export class ProcessPool {
     }
     log.info('pool', 'wait', { active: this.active, cap: this.cap(), waiting: this.waiters.length + 1 });
     reportMetric('pool_waiting', this.waiters.length + 1);
-    await new Promise<void>((resolve) => this.waiters.push(resolve));
+    await new Promise<void>((resolve, reject) => {
+      const ready = () => { signal?.removeEventListener('abort', cancel); resolve(); };
+      const cancel = () => {
+        const index = this.waiters.indexOf(ready);
+        if (index >= 0) this.waiters.splice(index, 1);
+        signal?.removeEventListener('abort', cancel);
+        reject(signal?.reason);
+      };
+      this.waiters.push(ready);
+      signal?.addEventListener('abort', cancel, { once: true });
+    });
     this.active++;
     log.info('pool', 'acquired', { active: this.active, cap: this.cap() });
     reportMetric('pool_active', this.active);

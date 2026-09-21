@@ -1,4 +1,6 @@
 import { handleModelCommand, modelStatus } from './model';
+import { handleRun } from './run';
+import type { TimedRun } from '../runtime/timed-runs';
 import { parseEffort, resolveModelSettings } from '../agent/model-settings';
 import { modelEnvironment } from '../runtime/model-settings';
 import { randomUUID } from 'node:crypto';
@@ -90,6 +92,9 @@ import type { MeetingSession } from '../meeting/session';
 import { hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
 
 export interface Controls {
+  launchTimedRun?(job: TimedRun, message: NormalizedMessage): Promise<void>;
+  cancelTimedRun?(scope: string, id?: string): void;
+  activeTimedRun?(scope: string): string | undefined;
   profile: string;
   profileConfig: ProfileConfig;
   botOwnerId?: string;
@@ -179,6 +184,7 @@ const handlers: Record<string, Handler> = {
   '/help': handleHelp,
   '/account': handleAccount,
   '/config': handleConfig,
+  '/run': handleRun,
   '/model': (args, ctx) => handleModelCommand('model', args, ctx),
   '/effort': (args, ctx) => handleModelCommand('reasoningEffort', args, ctx),
   '/stop': handleStop,
@@ -336,6 +342,7 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
     return handleNewChat(rawName, ctx);
   }
 
+  ctx.controls.cancelTimedRun?.(ctx.scope);
   const wasRunning = ctx.activeRuns.interrupt(ctx.scope);
   if (ctx.sessionCatalog && ctx.sessionCatalogIdentity) {
     ctx.sessionCatalog.archiveActive({
@@ -402,6 +409,7 @@ async function handleCd(args: string, ctx: CommandContext): Promise<void> {
     await reply(ctx, workspace.userVisible);
     return;
   }
+  ctx.controls.cancelTimedRun?.(ctx.scope);
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, workspace.cwdRealpath);
   ctx.sessions.clear(ctx.scope);
@@ -467,6 +475,7 @@ async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
     await reply(ctx, workspace.userVisible);
     return;
   }
+  ctx.controls.cancelTimedRun?.(ctx.scope);
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, workspace.cwdRealpath);
   ctx.sessions.clear(ctx.scope);
@@ -619,6 +628,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     const entry = ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity);
     const resolved = consumeResumeCandidate(sessionId, ctx.sessionCatalogIdentity);
     if (resolved) {
+      ctx.controls.cancelTimedRun?.(ctx.scope);
       ctx.activeRuns.interrupt(ctx.scope);
       if (ctx.sessionCatalogIdentity.agentId === 'codex') {
         ctx.sessionCatalog.upsertActive({
@@ -650,6 +660,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
       await reply(ctx, '当前上下文不可恢复这个会话，请重新选择当前工作区和权限策略下的会话。');
       return;
     }
+    ctx.controls.cancelTimedRun?.(ctx.scope);
     ctx.activeRuns.interrupt(ctx.scope);
     if (ctx.sessionCatalogIdentity.agentId === 'claude') {
       ctx.sessions.set(ctx.scope, sessionId, ctx.sessionCatalogIdentity.cwdRealpath);
@@ -668,6 +679,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     await reply(ctx, '请先使用 /cd <path> 选择工作目录，再查看或恢复会话。');
     return;
   }
+  ctx.controls.cancelTimedRun?.(ctx.scope);
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.sessions.set(ctx.scope, sessionId, cwd);
   await reply(ctx, RESUME_APPLIED_REPLY);
@@ -859,6 +871,7 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
   const scope = targetScope || ctx.scope;
+  ctx.controls.cancelTimedRun?.(scope);
   const ok = ctx.activeRuns.interrupt(scope);
   log.info('command', 'stop', {
     scope,

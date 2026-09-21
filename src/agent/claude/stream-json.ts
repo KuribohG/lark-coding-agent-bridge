@@ -25,6 +25,9 @@ interface ClaudeRawEvent {
     cache_read_input_tokens?: number;
   };
   total_cost_usd?: number;
+  is_error?: boolean;
+  result?: string;
+  errors?: string[];
 }
 
 export function* translateEvent(raw: unknown): Generator<AgentEvent> {
@@ -71,6 +74,10 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
   }
 
   if (evt.type === 'result') {
+    if (evt.is_error || evt.subtype?.startsWith('error')) {
+      yield { type: 'error', message: evt.errors?.join('\n') || evt.result || evt.subtype || 'Claude task failed', terminationReason: 'failed' };
+      return;
+    }
     if (evt.usage) {
       yield {
         type: 'usage',

@@ -54,6 +54,10 @@ export class PendingQueue {
     return entry.messages;
   }
 
+  hasWork(scope: string): boolean {
+    return this.blocked.has(scope) || this.map.has(scope);
+  }
+
   cancelAll(): void {
     for (const entry of this.map.values()) {
       if (entry.timer) clearTimeout(entry.timer);

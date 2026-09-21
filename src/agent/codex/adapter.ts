@@ -3,7 +3,7 @@ import type { Readable, Writable } from 'node:stream';
 import { join } from 'node:path';
 import type { SandboxMode } from '../../config/profile-schema';
 import { log } from '../../core/logger';
-import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
+import { mergeProcessEnv, type SpawnedProcessByStdio } from '../../platform/spawn';
 import { SpawnFailed } from '../../runtime/errors';
 import { prefixBridgeSystemPrompt } from '../bridge-system-prompt';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
@@ -16,6 +16,7 @@ import type {
   AgentRunOptions,
 } from '../types';
 import { buildCodexArgs } from './argv';
+import { spawnWithDeadline } from '../deadline';
 import { CodexJsonlTranslator, type CodexFinishReason } from './jsonl';
 
 export interface CodexAdapterOptions {
@@ -109,11 +110,11 @@ export class CodexAdapter implements AgentAdapter {
     } else if (!this.inheritCodexHome) {
       envOverrides.CODEX_HOME = join(this.profileStateDir, 'codex-home');
     }
-    const child = spawnProcess(this.binary, args, {
+    const child = spawnWithDeadline(this.binary, args, {
       cwd: opts.cwd,
       env: mergeProcessEnv(process.env, envOverrides),
       stdio: ['pipe', 'pipe', 'pipe'],
-    }) as CodexChild;
+    }, opts.deadlineAt) as CodexChild;
 
     log.info('agent', 'spawn', {
       pid: child.pid ?? null,
@@ -157,7 +158,7 @@ export class CodexAdapter implements AgentAdapter {
     });
     child.stdin.end(prefixBridgeSystemPrompt(opts.prompt, this.botIdentity), 'utf8');
 
-    const stopGraceMs = opts.stopGraceMs ?? this.defaultStopGraceMs;
+    const stopGraceMs = opts.deadlineAt ? Math.max(1000, opts.stopGraceMs ?? 1000) : opts.stopGraceMs ?? this.defaultStopGraceMs;
 
     return {
       runId: opts.runId,

@@ -1,4 +1,8 @@
 import { modelRunArguments } from '../agent/model-settings';
+import { deadlineInstructions } from '../runtime/run-deadline';
+import { timedRuns, type TimedRun } from '../runtime/timed-runs';
+import { timedRunCard } from '../card/timed-run-card';
+import { sendManagedCard } from '../card/managed';
 import { resolveRunModelSettings } from '../runtime/model-settings';
 import type {
   LarkChannel,
@@ -331,6 +335,54 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     });
   });
 
+  const timedStore = await timedRuns(controls);
+  const timedControllers = new Map<string, { id: string; controller: AbortController }>();
+  controls.activeTimedRun = (scope) => timedControllers.get(scope)?.id;
+  controls.cancelTimedRun = (scope, id) => {
+    const active = timedControllers.get(scope);
+    if (active && (!id || active.id === id)) active.controller.abort();
+  };
+  controls.launchTimedRun = async (job, message) => {
+    if (timedControllers.has(job.scope) || activeRuns.get(job.scope) || pending.hasWork(job.scope)) {
+      throw new Error('当前话题/聊天仍有任务或待处理消息，请完成或 /stop 后再启动限时任务。');
+    }
+    const controller = new AbortController();
+    timedControllers.set(job.scope, { id: job.id, controller });
+    pending.block(job.scope);
+    try {
+      await timedStore.transition(job.id, ['draft'], 'queued');
+    } catch (err) {
+      timedControllers.delete(job.scope);
+      pending.unblock(job.scope);
+      throw err;
+    }
+    const sendOpts = { replyTo: message.messageId, ...(message.threadId ? { replyInThread: true } : {}) };
+    void withTrace({ chatId: message.chatId }, async () => {
+      try {
+        const mode = message.threadId ? 'topic' : await chatModeCache.resolve(channel, message.chatId);
+        await sendManagedCard(channel, message.chatId, timedRunCard(timedStore.get(job.id)!), sendOpts);
+        await runAgentBatch({
+          channel, executor, sessions, sessionCatalog, workspaces, media,
+          batch: [{ ...message, content: job.task, resources: [], rawContentType: 'text' }],
+          controls, cotClient, callbackAuth, activePolicyFingerprints, lastRunModelByScope,
+          scope: job.scope, mode, timedJob: job, signal: controller.signal,
+        });
+      } catch (err) {
+        log.fail('timed-run', err, { jobId: job.id });
+      } finally {
+        // A failure before executor submission must also close the one-shot job.
+        try {
+          await timedStore.finish(job.id, controller.signal.aborted ? 'stopped' : Date.now() >= job.stopAt ? 'expired' : 'failed');
+        } finally {
+          timedControllers.delete(job.scope);
+          pending.unblock(job.scope);
+        }
+        await sendManagedCard(channel, message.chatId, timedRunCard(timedStore.get(job.id)!), sendOpts)
+          .catch((err) => log.warn('timed-run', 'status-send-failed', { err: String(err) }));
+      }
+    }).catch((err) => log.fail('timed-run', err, { jobId: job.id }));
+  };
+
   // Counter for stdout reconnect escalation; reset on `reconnected`.
   let consecutiveReconnects = 0;
 
@@ -512,6 +564,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     channel,
     disconnect: async () => {
       activeRuns.pauseNewRuns('bridge-disconnect');
+      controls.launchTimedRun = undefined;
+      for (const { controller } of timedControllers.values()) controller.abort();
       ownerRefresh.stop();
       knownChatsRefresh.stop();
       keepalive.stop();
@@ -781,16 +835,24 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   });
   if (handled) {
     const name = emsg.content.trim().split(/\s+/)[0];
-    const dropped = ['/model', '/effort', '/status', '/config'].includes(name ?? '') ? [] : pending.cancel(scope);
+    const dropped = ['/model', '/effort', '/status', '/config', '/run'].includes(name ?? '') ? [] : pending.cancel(scope);
     log.info('intake', 'command', { scope, droppedPending: dropped.length });
     return;
   }
 
+  if (controls.activeTimedRun?.(scope)) {
+    await channel.send(emsg.chatId, { markdown: '当前话题/聊天正在执行限时任务。这条消息未排队执行，避免到期后自动续跑；修改任务请先 /stop，再重新提交。' }, {
+      replyTo: emsg.messageId, ...(chatMode === 'topic' ? { replyInThread: true } : {}),
+    });
+    return;
+  }
   const size = pending.push(scope, emsg);
   log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });
 }
 
 interface RunBatchDeps {
+  timedJob?: TimedRun;
+  signal?: AbortSignal;
   channel: LarkChannel;
   executor: RunExecutor;
   sessions: SessionStore;
@@ -905,7 +967,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // is reused below to log requested-vs-actual against the init event.
   const agentKind = controls.profileConfig.agentKind;
   const runModelSettings = await resolveRunModelSettings(controls, scope);
-  const modelPref = modelRunArguments(runModelSettings).model;
+  const runArguments = deps.timedJob?.modelSettings ?? modelRunArguments(runModelSettings);
+  const modelPref = runArguments.model;
   const modelSelection = normalizeModelSelection(agentKind, modelPref);
   const requestedModel = resolveModelArg(agentKind, modelPref);
   const prevModel = lastRunModelByScope.get(scope);
@@ -916,7 +979,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
           '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
       ]
-    : undefined;
+    : [];
+  if (deps.timedJob) extraInstructions.push(deadlineInstructions(deps.timedJob.stopAt, deps.timedJob.windDownAt));
 
   const prompt = buildPrompt(
     batch,
@@ -964,7 +1028,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       ? codexCapability(controls.profileConfig)
       : claudeCapability(controls.profileConfig);
   const flow = await startRunFlow({
-    modelSettings: modelRunArguments(runModelSettings),
+    modelSettings: runArguments,
+    deadlineAt: deps.timedJob?.stopAt,
+    signal: deps.signal,
     scopeId: scope,
     scope: scopeContext,
     prompt,
@@ -993,10 +1059,26 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       code: flow.rejectReason.code,
     });
     await channel.send(chatId, { markdown: flow.rejectReason.userVisible }, sendOpts);
+    if (deps.timedJob) await (await timedRuns(controls)).finish(deps.timedJob.id,
+      flow.rejectReason.code === 'deadline-expired' ? 'expired' : flow.rejectReason.code === 'run-cancelled' ? 'stopped' : 'failed');
     return;
   }
 
   const { execution, cwdRealpath: cwd } = flow;
+  let timedResult: Promise<void> | undefined;
+  if (deps.timedJob) {
+    const store = await timedRuns(controls);
+    const job = deps.timedJob;
+    timedResult = execution.result.then((state) => store.finish(job.id, state))
+      .catch((err) => log.fail('timed-run', err, { jobId: job.id }));
+    try {
+      await store.transition(job.id, ['queued'], 'running');
+    } catch {
+      await execution.stop();
+      await timedResult;
+      return;
+    }
+  }
   activePolicyFingerprints.set(scope, flow.policy.policyFingerprint);
   const handle = execution.handle;
   const eventStream = execution.subscribe();
@@ -1292,6 +1374,12 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   } finally {
     activePolicyFingerprints.delete(scope);
     scheduleWorkingReactionCleanup(channel, lastMsg.messageId, reactionPromise);
+    if (deps.timedJob) {
+      // End the supervised process even when card delivery failed before the
+      // renderer drained the stream. Never let a rendering error detach work.
+      await execution.stop();
+      await timedResult;
+    }
   }
 }
 

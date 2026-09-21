@@ -4,6 +4,7 @@ export interface RunHandle {
   run: AgentRun;
   interrupted: boolean;
   modelSettings?: import('../agent/model-settings').ModelSettings;
+  stopReason?: 'deadline' | 'cancelled';
 }
 
 export class ActiveRuns {

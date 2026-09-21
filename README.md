@@ -148,6 +148,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/config` | Adjust bot default model/effort, presentation preferences, access settings, and lark-cli identity policy |
 | `/model [model-id\|default]` | View or change the current topic/chat model; accepts custom IDs |
 | `/effort [level\|default]` | View or change the current topic/chat reasoning effort |
+| `/run [status\|stop]` | Create a one-shot task with an absolute deadline, or inspect/cancel it |
 | `/invite user @name` | Allow a user to use the bot in DMs |
 | `/invite admin @name` | Add an access-control admin |
 | `/invite group` | Allow the current group to use the bot |
@@ -190,6 +191,22 @@ Changes apply when the next task is submitted. Running or already-submitted task
 Known models validate reasoning levels against the local catalog, rejecting explicitly submitted unsupported combinations. If a model switch makes an inherited bridge effort incompatible, a catalog-provided model default is used for that run and noted in the settings summary. Unknown models are validated by the CLI/provider. Inherited CLI defaults are passed through by omitting the corresponding flags; global and project CLI config files are never rewritten.
 
 Bot defaults live in `config.json` under `profiles.<profile>.preferences`. Chat overrides live separately from transcripts in `profiles/<profile>/scope-preferences.json`.
+
+## One-shot tasks with a deadline
+
+Send `/run` to open a form for the task, deadline, timezone, safety margin, and temporary model/effort. Model IDs can be typed manually. Submitting the form creates a preview; **nothing starts until the creator confirms the concrete date and stop time**. The equivalent command is:
+
+```text
+/run --until 01:00 --tz Asia/Shanghai --margin 5 --effort ultra -- Review the project and save findings
+```
+
+`01:00` means the next occurrence in the selected IANA timezone. You can also enter `2h`, `90m`, or an explicit date such as `2026-09-22T01:00+08:00`, up to seven days ahead. The margin is in minutes (default 5). For a 01:00 deadline and five-minute margin, the prompt asks the agent to wind down at 00:50 and the independent process guard terminates work at 00:55. Wind-down is agent guidance, not a guaranteed final summary; existing files and conversation history remain available. The normal idle watchdog still applies independently.
+
+The task uses the current topic/chat context. Its model/effort snapshot applies only to this task and does not change `/model`, `/effort`, or bot defaults. Other topics/chats are unaffected. Supply a concrete goal or task list: completion ends the task early; this is not a loop to spend all available credit.
+
+The fixed stop time covers time waiting for a process slot and the supervised CLI process tree. Expired tasks cannot start. Explicit recognized exhausted-credit errors stop work; ordinary rate limits are not treated as exhausted credit. Stop with `/run stop`, `/stop`, or the task card; `/run status` shows the latest/active task. Only the creator may start a task; the creator or an administrator may use its stop button. Normal `/stop` permissions are unchanged. A busy topic must be stopped or finish first. While a timed task is active, new ordinary messages and agent card callbacks in that topic are declined with a notice, not queued for an unbounded follow-up.
+
+Tasks are persisted in `profiles/<profile>/timed-runs.json`. A started task cannot be started twice; stopped, expired, failed, or restart-interrupted tasks never resume automatically. Create a new task to continue. This first version has no recurring scheduler or provider balance integration. Linux process-tree cleanup is covered by process tests; macOS/Windows implementations have not been validated live. Client-side termination cannot guarantee how a provider bills an already accepted request across a quota reset; a strict billing guarantee requires a provider-side limit.
 
 ## Reply Display and COT
 

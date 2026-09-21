@@ -22,6 +22,8 @@ import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 
 export interface StartRunFlowInput {
+  deadlineAt?: number;
+  signal?: AbortSignal;
   scopeId: string;
   modelSettings?: import('../agent/model-settings').ModelSettings;
   scope: ScopeContext;
@@ -141,6 +143,8 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
   let execution: RunExecution;
   try {
     execution = await input.executor.submit({
+      deadlineAt: input.deadlineAt,
+      signal: input.signal,
       scopeId: input.scopeId,
       policy,
       sessionId,
@@ -166,7 +170,9 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
         rejectReason: {
           code: err.code,
           userVisible:
-            err.code === 'reconnect-in-progress'
+            err.code === 'deadline-expired' ? '已到限时任务停止时间，未启动任务。'
+              : err.code === 'run-cancelled' ? '限时任务已取消，未启动任务。'
+              : err.code === 'reconnect-in-progress'
               ? '当前 bot 正在重连，稍后会继续处理新消息。'
               : err.code === 'run-already-active'
                 ? '当前会话已有运行在执行，请稍后再试或先停止当前运行。'

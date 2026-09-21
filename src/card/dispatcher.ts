@@ -83,10 +83,10 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   }
 
   const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
-  if (cmd === 'model.submit' && payload.settings_scope !== scope) {
+  if ((cmd === 'model.submit' || cmd.startsWith('run.')) && payload.settings_scope !== scope) {
     // Never widen a topic preference to the whole chat after a failed lookup
     // or a forwarded card. The payload only verifies the API-derived scope.
-    await deps.channel.send(chatId, { markdown: '设置未保存：无法确认卡片所在话题。请在目标话题/聊天重新发送 /model。' }, {
+    await deps.channel.send(chatId, { markdown: `操作未执行：无法确认卡片所在话题。请在目标话题/聊天重新发送 ${cmd.startsWith('run.') ? '/run' : '/model'}。设置未保存。` }, {
       replyTo: deps.evt.messageId,
       ...(mode === 'topic' ? { replyInThread: true } : {}),
     });
@@ -143,6 +143,12 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   // as a follow-up message, with full context of what it sent.
   if (BRIDGE_CALLBACK_MARKER in payload) {
     if (!verifyBridgeToken(deps, payload, scope, 'agent_callback')) return;
+    if (deps.controls.activeTimedRun?.(scope)) {
+      await deps.channel.send(chatId, { markdown: '限时任务不自动排队回调续跑；请等待任务结束后手动继续。' }, {
+        replyTo: deps.evt.messageId, ...(mode === 'topic' ? { replyInThread: true } : {}),
+      });
+      return;
+    }
     forwardToAgent(deps, payload, formValue, scope, threadId, mode);
     return;
   }

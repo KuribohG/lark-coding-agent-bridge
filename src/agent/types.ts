@@ -29,6 +29,8 @@ export type AgentEvent =
 export const CLAUDE_DEFAULT_PERMISSION_MODE: ClaudePermissionMode = 'bypassPermissions';
 
 export interface AgentRunOptions {
+  /** Absolute hard deadline, enforced by the adapter's independent watchdog. */
+  deadlineAt?: number;
   runId: string;
   prompt: string;
   cwd?: string;
