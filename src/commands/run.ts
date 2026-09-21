@@ -13,7 +13,9 @@ export async function handleRun(args: string, ctx: CommandContext): Promise<void
   const reply = (markdown: string) => ctx.channel.send(ctx.msg.chatId, { markdown }, opts);
   try {
     const store = await timedRuns(ctx.controls);
-    const [action, id] = args.trim().split(/\s+/);
+    const words = args.trim().split(/\s+/);
+    const [action, id] = words;
+    const defaultsCommand = action === 'defaults' ? words.join(' ') : '';
     if (['status', 'start', 'stop'].includes(action!)) {
       const activeId = action === 'start' ? undefined : ctx.controls.activeTimedRun?.(ctx.scope);
       const job = id ? store.get(id) : activeId ? store.get(activeId) : store.latest(ctx.scope);
@@ -36,7 +38,7 @@ export async function handleRun(args: string, ctx: CommandContext): Promise<void
       await ctx.controls.launchTimedRun(job, ctx.msg);
       return;
     }
-    const defaults = args.trim() === 'defaults reset' ? builtinRunDefaults() : await readRunDefaults(ctx.controls);
+    const defaults = defaultsCommand === 'defaults reset' ? builtinRunDefaults() : await readRunDefaults(ctx.controls);
     const agentKind = ctx.controls.profileConfig.agentKind;
     if (!args.trim() || args.trim() === 'defaults') {
       await sendManagedCard(ctx.channel, ctx.msg.chatId, timedRunForm(ctx.scope,
@@ -48,17 +50,19 @@ export async function handleRun(args: string, ctx: CommandContext): Promise<void
       throw new Error('修改此 bot 的限时任务默认值仅 owner/管理员可用。');
     }
     let form: Record<string, unknown>;
-    if ((action === 'submit' || args.trim() === 'defaults save') && ctx.fromCardAction) form = ctx.formValue ?? {};
+    if ((action === 'submit' || defaultsCommand === 'defaults save') && ctx.fromCardAction) form = ctx.formValue ?? {};
     else if (savingDefaults) {
-      if (args.trim() === 'defaults reset') {
+      if (defaultsCommand === 'defaults reset') {
         await saveRunDefaults(ctx.controls, builtinRunDefaults());
         await reply('已恢复此 bot 的 /run 内置默认值（2h、提前 5 分钟、模型/强度沿用对话）。');
         return;
       }
       form = parseFlags(args.trim().slice('defaults'.length).trim());
+    } else if (!args.trimStart().startsWith('--')) {
+      form = { task: args };
     } else {
       const separator = /(?:^|\s)--(?:\s|$)/.exec(args);
-      if (!separator) throw new Error('用法：/run -- 任务内容；可在 -- 前加 --until、--tz、--margin、--model、--effort。');
+      if (!separator) throw new Error('普通任务直接用 /run 任务内容；带运行参数时用 /run --effort high -- 任务内容。');
       form = { ...parseFlags(args.slice(0, separator.index).trim()), task: args.slice(separator.index + separator[0].length) };
     }
     const input = parseRunSettings(form, defaults, agentKind);
@@ -66,7 +70,7 @@ export async function handleRun(args: string, ctx: CommandContext): Promise<void
       const checked = resolveModelSettings({}, input, await modelEnvironment(ctx.controls));
       if (input.reasoningEffort && checked.reasoningEffort !== input.reasoningEffort) throw new Error(checked.notice);
       await saveRunDefaults(ctx.controls, input);
-      await reply(`已保存此 bot 的 /run 默认值：\n截止：${input.until}（${input.timeZone}），提前 ${input.marginMinutes} 分钟停止。\n模型：${input.model ?? '沿用当前对话'}；思考强度：${input.reasoningEffort ?? '沿用当前对话'}。\n以后发送 \`/run -- 具体任务\` 即可生成预览。已创建的任务保持原设置。`);
+      await reply(`已保存此 bot 的 /run 默认值：\n截止：${input.until}（${input.timeZone}），提前 ${input.marginMinutes} 分钟停止。\n模型：${input.model ?? '沿用当前对话'}；思考强度：${input.reasoningEffort ?? '沿用当前对话'}。\n以后发送 \`/run 具体任务\` 即可生成预览。已创建的任务保持原设置。`);
       return;
     }
     const task = String(form.task ?? '').trim();

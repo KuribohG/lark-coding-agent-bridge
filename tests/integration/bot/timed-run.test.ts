@@ -26,6 +26,41 @@ afterEach(async () => {
 });
 
 describe('one-shot tasks through Lark commands and cards', () => {
+  it('accepts plain task text and keeps later separators and flags inside the task', async () => {
+    const h = await harness();
+    await h.message('/run defaults --until 2h --tz UTC --effort ultra');
+    const task = '检查项目 -- 保存结果\n  文档中包含 --effort low，不要当成运行参数';
+    await h.message(`/run ${task}`);
+    const job = (await timedRuns(h.controls)).latest(h.scope)!;
+    expect(job).toMatchObject({ state: 'draft', task,
+      modelSettings: { model: 'custom/day', reasoningEffort: 'ultra' } });
+    expect(h.agent.options).toHaveLength(0);
+    expect(await readRunDefaults(h.controls)).toMatchObject({ reasoningEffort: 'ultra' });
+  });
+
+  it('preserves management commands and explicit options while allowing reserved task text with --', async () => {
+    const h = await harness();
+    const store = await timedRuns(h.controls);
+    await h.message('/run 检查项目');
+    const first = store.latest(h.scope)!;
+    await h.message('/run status');
+    expect(store.latest(h.scope)?.id).toBe(first.id);
+    expect(JSON.stringify(h.channel.sent.at(-1))).toContain('检查项目');
+    await h.message('/run --effrot high -- 不能把拼错的参数当任务');
+    expect(store.latest(h.scope)?.id).toBe(first.id);
+    expect(JSON.stringify(h.channel.sent.at(-1))).toContain('无法识别');
+    await h.message('/run --effort high 缺少分隔符');
+    expect(store.latest(h.scope)?.id).toBe(first.id);
+    expect(JSON.stringify(h.channel.sent.at(-1))).toContain('带运行参数');
+    await h.message('/run --effort ultra -- 显式参数任务');
+    expect(store.latest(h.scope)).toMatchObject({ task: '显式参数任务', modelSettings: { reasoningEffort: 'ultra' } });
+    await h.message('/run -- status report --effort low');
+    expect(store.latest(h.scope)).toMatchObject({ task: 'status report --effort low', modelSettings: { reasoningEffort: 'high' } });
+    await h.message('/run defaults   reset');
+    expect(await readRunDefaults(h.controls)).toMatchObject({ until: '2h', reasoningEffort: undefined });
+    expect(h.agent.options).toHaveLength(0);
+  });
+
   it('persists reusable bot defaults and recomputes a fresh deadline for shorthand tasks each day', async () => {
     const h = await harness();
     const now = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-21T23:00+08:00'));

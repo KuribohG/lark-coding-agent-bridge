@@ -15,7 +15,7 @@ export function timedRunForm(scope: string, agentKind: AgentKind, environment: M
     header: { title: { tag: 'plain_text', content: editDefaults ? '⏱ 此 bot 的限时任务默认值' : '⏱ 一次性限时任务' }, template: 'blue' },
     body: { elements: [
       { tag: 'markdown', content: editDefaults
-        ? '仅 owner/管理员可保存。作用于此 bot 下新建的 /run 任务，不修改普通聊天的模型/强度。\n每次运行重新计算截止日期，已创建的任务不变；发送 `/run -- 具体任务` 即可使用。'
+        ? '仅 owner/管理员可保存。作用于此 bot 下新建的 /run 任务，不修改普通聊天的模型/强度。\n每次运行重新计算截止日期，已创建的任务不变；发送 `/run 具体任务` 即可使用。'
         : '使用当前话题/聊天的上下文。模型和强度只覆盖这次任务；提交后先核对具体停止时间，再点击启动。\n已填入此 bot 的 /run 默认值，修改仅影响本次；用 `/run defaults` 修改默认值。\n到期、出错或额度耗尽后不自动续跑。服务端已接收请求的计费以服务商规则为准。' },
       { tag: 'form', name: 'timed_run', elements: [
         ...(!editDefaults ? [{ tag: 'markdown', content: '**任务目标 / 任务列表**' },

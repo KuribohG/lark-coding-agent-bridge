@@ -204,8 +204,10 @@ bot 默认值存于 `config.json` 的 `profiles.<profile>.preferences`；聊天�
 
 ```text
 /run defaults --until 01:00 --tz Asia/Shanghai --margin 5 --effort ultra
-/run -- 审查项目并保存发现的问题
+/run 审查项目并保存发现的问题
 ```
+
+普通 `/run 任务内容` 直接使用默认值，正文中的 `--`、`--effort` 等内容原样保留；原来的 `/run -- 任务内容` 仍然支持。显式填写运行参数时继续用 `--` 分隔，例如 `/run --effort high -- 审查项目`。如果正文恰好以 `--` 或保留子命令 `status`、`start`、`stop`、`defaults` 开头，用 `/run -- 正文` 表示它是任务内容。单独 `/run` 仍打开表单，管理子命令含义保持不变。
 
 `/run defaults` 打开默认值表单，`/run defaults reset` 恢复内置的两小时时限、五分钟余量、本机时区及沿用对话的模型/强度。默认值属于当前 bot profile，单独存于 `profiles/<profile>/run-defaults.json`，不影响普通聊天设置或其他 bot。任务表单会自动填入默认值；命令显式参数只覆盖本次任务，`--model default`、`--effort default` 表示本次沿用对话设置。默认截止时间只保存钟点或时长，不保存固定日期；每次生成新预览重新计算绝对截止时间，已有预览和运行中的任务不变。若下一次钟点已落入安全余量内，本次拒绝启动，不会顺延一天。简写仍需确认，也不会每天自动执行。
 

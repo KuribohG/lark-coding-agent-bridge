@@ -229,7 +229,8 @@ export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
   if (!trimmed.startsWith('/')) return false;
   const parts = trimmed.split(/\s+/);
   const cmd = parts[0] ?? '';
-  const args = parts.slice(1).join(' ');
+  // /run carries free-form task text, including paragraphs and indentation.
+  const args = cmd === '/run' ? trimmed.slice(cmd.length).trimStart() : parts.slice(1).join(' ');
   const h = handlers[cmd];
   if (!h) return false;
   if (

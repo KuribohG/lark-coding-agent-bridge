@@ -204,8 +204,10 @@ Save reusable defaults once (owner/admin only), then supply just the task:
 
 ```text
 /run defaults --until 01:00 --tz Asia/Shanghai --margin 5 --effort ultra
-/run -- Review the project and save findings
+/run Review the project and save findings
 ```
+
+Plain `/run <task>` uses the saved defaults; everything in the task body, including later `--` or `--effort` text, stays literal. `/run -- <task>` remains supported. When supplying leading run options, separate them from the task with `--`, for example `/run --effort high -- Review the project`. If the task itself starts with `--` or a reserved subcommand (`status`, `start`, `stop`, `defaults`), use `/run -- <task>` to treat it as task text. `/run` alone opens the form, and management subcommands keep their existing meaning.
 
 `/run defaults` opens the defaults form; `/run defaults reset` restores the built-in two-hour window, five-minute margin, local timezone, and inherited conversation model/effort. Defaults belong to this bot profile and are stored separately in `profiles/<profile>/run-defaults.json`; ordinary chat settings and other profiles are unaffected. The task form is pre-filled from these defaults. Explicit flags override only the new task; `--model default` / `--effort default` inherit the conversation values for that task. Default deadlines accept recurring clock inputs or durations, never fixed dates. Each new preview computes a fresh absolute deadline, while existing previews/runs keep their original values. If the next clock occurrence is already inside its safety margin, the task is rejected rather than moved to the following day. The shorthand still requires confirmation and never schedules daily execution.
 
