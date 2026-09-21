@@ -2,6 +2,8 @@ import { modelRunArguments } from '../agent/model-settings';
 import { deadlineInstructions } from '../runtime/run-deadline';
 import { timedRuns, type TimedRun } from '../runtime/timed-runs';
 import { timedRunCard } from '../card/timed-run-card';
+import { BtwManager } from './btw';
+import { BtwStore } from '../session/btw-store';
 import { sendManagedCard } from '../card/managed';
 import { resolveRunModelSettings } from '../runtime/model-settings';
 import type {
@@ -277,6 +279,11 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
 
   const channel = createLarkChannel(opts);
   const media = new MediaCache(channel, deps.appPaths?.mediaDir);
+  const btwStore = new BtwStore(deps.appPaths?.mediaDir
+    ? join(dirname(deps.appPaths.mediaDir), 'btw.json') : undefined);
+  await btwStore.load();
+  const btw = new BtwManager(btwStore);
+  controls.btw = btw;
 
   // Pending → run handoff: while a run is active on a chat, block its pending
   // queue so messages keep accumulating without flushing. When the run ends,
@@ -564,6 +571,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     channel,
     disconnect: async () => {
       activeRuns.pauseNewRuns('bridge-disconnect');
+      controls.btw = undefined;
+      const btwClosed = btw.close();
       controls.launchTimedRun = undefined;
       for (const { controller } of timedControllers.values()) controller.abort();
       ownerRefresh.stop();
@@ -582,6 +591,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
         sessionCatalog?.flush(),
         callbackNonceStore?.flush(),
         workspaces.flush(),
+        btwClosed,
       ]);
       if (stopAllResult.status === 'rejected') {
         log.fail('disconnect', stopAllResult.reason, { step: 'stopAll' });
@@ -835,7 +845,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   });
   if (handled) {
     const name = emsg.content.trim().split(/\s+/)[0];
-    const dropped = ['/model', '/effort', '/status', '/config', '/run'].includes(name ?? '') ? [] : pending.cancel(scope);
+    const dropped = ['/model', '/effort', '/status', '/config', '/run', '/btw'].includes(name ?? '') ? [] : pending.cancel(scope);
     log.info('intake', 'command', { scope, droppedPending: dropped.length });
     return;
   }
@@ -949,6 +959,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       maxMessages: 40,
       excludeIds: exclude,
     });
+    topicContext = topicContext.filter(message => !controls.btw?.excludes(scope, message));
     if (topicContext.length > 0) {
       log.info('topic', 'context-fetched', {
         scope,

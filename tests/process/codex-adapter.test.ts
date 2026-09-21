@@ -86,6 +86,21 @@ describe('CodexAdapter process contract', () => {
     expect(record.env.APP_SECRET).toBe('inherited-secret');
   });
 
+  it('forks side questions without resuming the parent', async () => {
+    const fake = await createFakeCodex({ lines: [{ type: 'turn.completed' }] });
+    cleanup.push(fake.dir);
+    const run = new CodexAdapter({ binary: fake.path, profileStateDir: fake.dir }).run({
+      runId: 'side', prompt: 'side question', cwd: await realpath(fake.dir), threadId: 'parent', forkSession: true,
+    });
+    await collect(run.events);
+    const record = await readRecord(fake.recordPath);
+    expect(record.argv).toContain('fork');
+    expect(record.argv).not.toContain('resume');
+    expect(record.argv).toContain('--ephemeral');
+    expect(record.argv).toContain('features.goals=false');
+    expect(record.stdin).toContain('side question');
+  });
+
   it('injects the active bridge profile env while preserving Codex env overrides', async () => {
     process.env.CODEX_HOME = '/outer/codex-home';
     const fake = await createFakeCodex({

@@ -25,6 +25,10 @@ export interface StartRunFlowInput {
   deadlineAt?: number;
   signal?: AbortSignal;
   scopeId: string;
+  fork?: {
+    executionScopeId: string;
+    prompt(parentId: string, policy: RunPolicyAllow): string;
+  };
   modelSettings?: import('../agent/model-settings').ModelSettings;
   scope: ScopeContext;
   prompt: string;
@@ -47,6 +51,7 @@ export interface StartRunFlowInput {
 }
 
 export type RunFlowRejectCode =
+  | 'parent-session-missing'
   | WorkingDirectoryRejectReason
   | RunPolicyReject['rejectReason']['code']
   | RunRejectedCode;
@@ -135,9 +140,18 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     resumeFrom = input.sessions.resumeFor(input.scopeId, workspace.cwdRealpath);
     sessionId = resumeFrom;
     const stale = input.sessions.getRaw(input.scopeId);
-    if (!resumeFrom && stale?.cwd && stale.cwd !== workspace.cwdRealpath) {
+    if (!input.fork && !resumeFrom && stale?.cwd && stale.cwd !== workspace.cwdRealpath) {
       input.sessions.clear(input.scopeId);
     }
+  }
+
+  if (input.fork) {
+    if (input.fork.executionScopeId === input.scopeId) throw new Error('fork must use a separate execution scope');
+    if (!resumeFrom) return {
+      ok: false,
+      rejectReason: { code: 'parent-session-missing', userVisible: '当前还没有可用的主会话，请先在这里发送一条普通消息，再使用 /btw。' },
+    };
+    policy.prompt = input.fork.prompt(resumeFrom, policy);
   }
 
   let execution: RunExecution;
@@ -145,8 +159,9 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     execution = await input.executor.submit({
       deadlineAt: input.deadlineAt,
       signal: input.signal,
-      scopeId: input.scopeId,
+      scopeId: input.fork?.executionScopeId ?? input.scopeId,
       policy,
+      forkSession: Boolean(input.fork),
       sessionId,
       threadId,
       ...(input.modelSettings ?? {

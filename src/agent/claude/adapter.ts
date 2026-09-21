@@ -59,6 +59,7 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   run(opts: AgentRunOptions): AgentRun {
+    if (opts.forkSession && !opts.sessionId) throw new Error('fork requires a parent session');
     if (!opts.cwd) {
       throw new Error('cwd is required for ClaudeAdapter.run');
     }
@@ -84,6 +85,7 @@ export class ClaudeAdapter implements AgentAdapter {
       systemPromptFile.path,
     ];
     if (opts.sessionId) args.push('--resume', opts.sessionId);
+    if (opts.forkSession) args.push('--fork-session');
     if (opts.model) args.push('--model', validateModelId(opts.model));
     if (opts.reasoningEffort) args.push('--effort', parseEffort(opts.reasoningEffort, 'claude')!);
 
@@ -148,7 +150,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
     return {
       runId: opts.runId,
-      events: createEventStream(child, stderrChunks, () => runtimeError),
+      events: createEventStream(child, stderrChunks, () => runtimeError, opts.forkSession),
       async stop() {
         if (child.exitCode !== null || child.signalCode !== null) return;
         log.info('agent', 'stop-sigterm', { pid: child.pid ?? null, graceMs: stopGraceMs });
@@ -195,6 +197,7 @@ async function* createEventStream(
   child: ClaudeChild,
   stderrChunks: Buffer[],
   getError: () => Error | null,
+  finalAnswer?: boolean,
 ): AsyncGenerator<AgentEvent> {
   // If fork itself failed synchronously, child.pid is undefined. The 'error'
   // event (ENOENT etc.) fires in the next tick, so also check getError().
@@ -227,6 +230,12 @@ async function* createEventStream(
         parsed = JSON.parse(trimmed);
       } catch {
         continue;
+      }
+      if (finalAnswer && parsed && typeof parsed === 'object') {
+        const result = parsed as { type?: string; result?: unknown; is_error?: boolean };
+        if (result.type === 'result' && !result.is_error && typeof result.result === 'string') {
+          yield { type: 'final_text', content: result.result };
+        }
       }
       yield* translateEvent(parsed);
     }

@@ -22,6 +22,7 @@ export interface SubmitRunInput {
   policy: RunPolicyAllow;
   sessionId?: string;
   threadId?: string;
+  forkSession?: boolean;
   model?: string;
   reasoningEffort?: import('../agent/model-settings').ReasoningEffort;
   images?: readonly string[];
@@ -136,6 +137,7 @@ export class RunExecutor {
       cwd: input.policy.cwdRealpath,
       sessionId: input.sessionId,
       threadId: input.threadId,
+      forkSession: input.forkSession,
       model: input.model,
       reasoningEffort: input.reasoningEffort,
       images: input.images,

@@ -270,6 +270,31 @@ describe('topic message quote handling', () => {
     expect(topicBlock).not.toContain('om_at_in_topic');
   });
 
+  it('keeps btw out of automatic topic imports and preserves queued ordinary input', async () => {
+    const threadMessages: Array<Record<string, unknown>> = [];
+    const h = await createHarness({ threadMessages });
+    await startTestBridge(h);
+    const msg = (messageId: string, content: string) => message({
+      messageId, content, rootId: 'root', parentId: 'root', threadId: 'topic',
+    });
+    // Ordinary input is still in its debounce window when /btw arrives.
+    await h.channel.handlers.message?.(msg('ordinary', 'ordinary task'));
+    await h.channel.handlers.message?.(msg('side-question', '/btw side secret'));
+    expect(h.channel.sent).toHaveLength(1); // no parent yet: explanatory side reply
+    threadMessages.push(
+      { message_id: 'side-question', msg_type: 'text', body: { content: JSON.stringify({ text: '/btw side secret' }) }, sender: { id: 'ou_user', sender_type: 'user' } },
+      { message_id: 'om_sent_1', msg_type: 'text', body: { content: JSON.stringify({ text: 'private side answer' }) }, sender: { id: 'bot', sender_type: 'app' } },
+      { message_id: 'root', msg_type: 'text', body: { content: JSON.stringify({ text: 'main topic context' }) }, sender: { id: 'ou_user', sender_type: 'user' } },
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+    const prompt = h.agent.runOptions[0]?.prompt;
+    expect(prompt).toContain('ordinary task');
+    expect(prompt).toContain('main topic context');
+    expect(prompt).not.toContain('side secret');
+    expect(prompt).not.toContain('private side answer');
+    expect(h.agent.runOptions[0]?.forkSession).toBe(false);
+  });
+
   it('does not fetch topic context when the topic session already exists', async () => {
     // A prior session for this topic scope means the history is already in the
     // resumed conversation — no need to re-fetch and re-inject it every turn.

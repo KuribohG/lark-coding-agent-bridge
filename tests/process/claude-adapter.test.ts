@@ -127,6 +127,22 @@ describe('ClaudeAdapter process contract', () => {
     expect(record.argv[5]).toBe('bypassPermissions');
   });
 
+  it('forks a parent for a side answer and exposes the final result', async () => {
+    const fake = await createFakeClaude({ lines: [
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'intermediate' }] } },
+      { type: 'result', result: 'final answer', session_id: 'child' },
+    ] });
+    cleanup.push(fake.dir);
+    const adapter = new ClaudeAdapter({ binary: fake.path });
+    const run = adapter.run({ runId: 'side', prompt: 'side question', cwd: fake.dir, sessionId: 'parent', forkSession: true });
+    expect(await collect(run.events)).toContainEqual({ type: 'final_text', content: 'final answer' });
+    const record = await readRecord(fake.recordPath);
+    expect(record.argv).toContain('--fork-session');
+    expect(record.argv[record.argv.indexOf('--resume') + 1]).toBe('parent');
+    expect(record.stdin).toBe('side question');
+    expect(() => adapter.run({ runId: 'invalid', prompt: 'no parent', cwd: fake.dir, forkSession: true })).toThrow('parent');
+  });
+
   it('includes stderr when the process exits non-zero', async () => {
     const fake = await createFakeClaude({
       lines: [{ type: 'assistant', message: { content: [{ type: 'text', text: 'before failure' }] } }],

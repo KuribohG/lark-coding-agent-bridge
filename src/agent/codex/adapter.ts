@@ -98,6 +98,7 @@ export class CodexAdapter implements AgentAdapter {
       cwd: opts.cwd,
       sandbox: opts.sandbox ?? this.sandbox,
       threadId: opts.threadId,
+      forkSession: opts.forkSession,
       images: opts.images,
       ignoreUserConfig: this.ignoreUserConfig,
       ignoreRules: this.ignoreRules,

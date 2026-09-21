@@ -6,6 +6,7 @@ export interface BuildCodexArgsInput {
   cwd: string;
   sandbox: SandboxMode;
   threadId?: string;
+  forkSession?: boolean;
   images?: readonly string[];
   ignoreUserConfig?: boolean;
   ignoreRules?: boolean;
@@ -15,6 +16,7 @@ export interface BuildCodexArgsInput {
 }
 
 export function buildCodexArgs(input: BuildCodexArgsInput): string[] {
+  if (input.forkSession && !input.threadId) throw new Error('fork requires a parent thread');
   if (
     input.sandbox !== 'read-only' &&
     input.sandbox !== 'workspace-write' &&
@@ -32,6 +34,7 @@ export function buildCodexArgs(input: BuildCodexArgsInput): string[] {
     'approval_policy="never"',
     '-c',
     'shell_environment_policy.inherit="all"',
+    ...(input.forkSession ? ['-c', 'features.goals=false'] : []),
     ...(input.ignoreUserConfig === true ? ['--ignore-user-config'] : []),
     ...(input.ignoreRules === false ? [] : ['--ignore-rules']),
     '--skip-git-repo-check',
@@ -45,8 +48,9 @@ export function buildCodexArgs(input: BuildCodexArgsInput): string[] {
     return [
       'exec',
       ...globalFlags,
-      'resume',
+      input.forkSession ? 'fork' : 'resume',
       '--json',
+      ...(input.forkSession ? ['--ephemeral'] : []),
       ...imageFlags,
       input.threadId,
       '-',

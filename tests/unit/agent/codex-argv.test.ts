@@ -2,6 +2,16 @@ import { describe, expect, it } from 'vitest';
 import { buildCodexArgs } from '../../../src/agent/codex/argv.js';
 
 describe('Codex argv contract', () => {
+  it('forks side questions ephemerally with inherited goals disabled', () => {
+    const args = buildCodexArgs({ cwd: '/repo', sandbox: 'read-only', threadId: 'parent', forkSession: true });
+    expect(args).toContain('fork');
+    expect(args).not.toContain('resume');
+    expect(args).toContain('--ephemeral');
+    expect(args).toContain('features.goals=false');
+    expect(args.slice(-2)).toEqual(['parent', '-']);
+    expect(() => buildCodexArgs({ cwd: '/repo', sandbox: 'read-only', forkSession: true })).toThrow('parent');
+  });
+
   it('passes custom model and effort to both new and resumed threads', () => {
     for (const threadId of [undefined, 'existing-thread']) {
       const args = buildCodexArgs({ cwd: '/repo', sandbox: 'read-only', threadId,

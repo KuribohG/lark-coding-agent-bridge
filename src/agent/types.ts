@@ -36,6 +36,8 @@ export interface AgentRunOptions {
   cwd?: string;
   sessionId?: string;
   threadId?: string;
+  /** Run a side question from a snapshot; never append to the parent session. */
+  forkSession?: boolean;
   model?: string;
   reasoningEffort?: import('./model-settings').ReasoningEffort;
   images?: readonly string[];

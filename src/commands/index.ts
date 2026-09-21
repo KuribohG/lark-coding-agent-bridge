@@ -1,5 +1,6 @@
 import { handleModelCommand, modelStatus } from './model';
 import { handleRun } from './run';
+import type { BtwManager } from '../bot/btw';
 import type { TimedRun } from '../runtime/timed-runs';
 import { parseEffort, resolveModelSettings } from '../agent/model-settings';
 import { modelEnvironment } from '../runtime/model-settings';
@@ -92,6 +93,7 @@ import type { MeetingSession } from '../meeting/session';
 import { hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
 
 export interface Controls {
+  btw?: BtwManager;
   launchTimedRun?(job: TimedRun, message: NormalizedMessage): Promise<void>;
   cancelTimedRun?(scope: string, id?: string): void;
   activeTimedRun?(scope: string): string | undefined;
@@ -185,6 +187,10 @@ const handlers: Record<string, Handler> = {
   '/account': handleAccount,
   '/config': handleConfig,
   '/run': handleRun,
+  '/btw': async (args, ctx) => {
+    if (ctx.controls.btw) await ctx.controls.btw.enqueue(args, ctx);
+    else await reply(ctx, '当前入口暂不支持 /btw。');
+  },
   '/model': (args, ctx) => handleModelCommand('model', args, ctx),
   '/effort': (args, ctx) => handleModelCommand('reasoningEffort', args, ctx),
   '/stop': handleStop,
@@ -245,7 +251,7 @@ export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
     return true;
   }
   try {
-    await h(args, ctx);
+    await h(cmd === '/btw' ? trimmed.slice(cmd.length).trimStart() : args, ctx);
   } catch (err) {
     log.fail('command', err, { cmd });
     reportMetric('command_fail', 1, { step: 'dispatch' });
@@ -351,6 +357,7 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
       now: Date.now(),
     });
   }
+  ctx.controls.btw?.reset(ctx.scope);
   ctx.sessions.clear(ctx.scope);
   await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
 }
@@ -413,6 +420,7 @@ async function handleCd(args: string, ctx: CommandContext): Promise<void> {
   ctx.controls.cancelTimedRun?.(ctx.scope);
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, workspace.cwdRealpath);
+  ctx.controls.btw?.reset(ctx.scope);
   ctx.sessions.clear(ctx.scope);
   await reply(ctx, `✓ 已切换 cwd 到 \`${workspace.cwdRealpath}\`\n（session 已重置）`);
 }
@@ -479,6 +487,7 @@ async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
   ctx.controls.cancelTimedRun?.(ctx.scope);
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, workspace.cwdRealpath);
+  ctx.controls.btw?.reset(ctx.scope);
   ctx.sessions.clear(ctx.scope);
   await reply(ctx, `✓ 已切换到 \`${name}\` (${workspace.cwdRealpath})\n（session 已重置）`);
 }
@@ -629,6 +638,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     const entry = ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity);
     const resolved = consumeResumeCandidate(sessionId, ctx.sessionCatalogIdentity);
     if (resolved) {
+      ctx.controls.btw?.reset(ctx.scope);
       ctx.controls.cancelTimedRun?.(ctx.scope);
       ctx.activeRuns.interrupt(ctx.scope);
       if (ctx.sessionCatalogIdentity.agentId === 'codex') {
@@ -661,6 +671,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
       await reply(ctx, '当前上下文不可恢复这个会话，请重新选择当前工作区和权限策略下的会话。');
       return;
     }
+    ctx.controls.btw?.reset(ctx.scope);
     ctx.controls.cancelTimedRun?.(ctx.scope);
     ctx.activeRuns.interrupt(ctx.scope);
     if (ctx.sessionCatalogIdentity.agentId === 'claude') {
@@ -680,6 +691,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     await reply(ctx, '请先使用 /cd <path> 选择工作目录，再查看或恢复会话。');
     return;
   }
+  ctx.controls.btw?.reset(ctx.scope);
   ctx.controls.cancelTimedRun?.(ctx.scope);
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.sessions.set(ctx.scope, sessionId, cwd);
@@ -872,6 +884,7 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
   const scope = targetScope || ctx.scope;
+  ctx.controls.btw?.cancel(scope);
   ctx.controls.cancelTimedRun?.(scope);
   const ok = ctx.activeRuns.interrupt(scope);
   log.info('command', 'stop', {
