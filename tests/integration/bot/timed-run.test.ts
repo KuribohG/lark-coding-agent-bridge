@@ -1,5 +1,5 @@
 import type { CardActionEvent, NormalizedMessage } from '@larksuite/channel';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentAdapter, AgentEvent, AgentRunOptions } from '../../../src/agent/types';
@@ -9,6 +9,7 @@ import { runtimeProfileConfig } from '../../../src/config/profile-store';
 import { SessionStore } from '../../../src/session/store';
 import { WorkspaceStore } from '../../../src/workspace/store';
 import { timedRuns } from '../../../src/runtime/timed-runs';
+import { readRunDefaults, runDefaultsPath } from '../../../src/runtime/run-defaults';
 import { createFakeChannel } from '../../helpers/fake-channel';
 import { createTmpProfile } from '../../helpers/tmp-profile';
 
@@ -20,10 +21,80 @@ import { startChannel } from '../../../src/bot/channel';
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
   for (const fn of cleanup.splice(0).reverse()) await fn();
 });
 
 describe('one-shot tasks through Lark commands and cards', () => {
+  it('persists reusable bot defaults and recomputes a fresh deadline for shorthand tasks each day', async () => {
+    const h = await harness();
+    const now = vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-21T23:00+08:00'));
+    await h.message('/run defaults --until 01:00 --tz Asia/Shanghai --margin 5 --effort ultra');
+    const persisted = JSON.parse(await readFile(runDefaultsPath(h.controls), 'utf8'));
+    expect(persisted).toEqual({ until: '01:00', timeZone: 'Asia/Shanghai', marginMinutes: 5, reasoningEffort: 'ultra' });
+    expect(await readRunDefaults({ ...h.controls })).toMatchObject(persisted);
+    await h.message('/run -- First task -- keep this text');
+    const store = await timedRuns(h.controls);
+    const first = store.latest(h.scope)!;
+    expect(first).toMatchObject({ task: 'First task -- keep this text', state: 'draft',
+      stopAt: Date.parse('2026-09-22T00:55+08:00'), modelSettings: { model: 'custom/day', reasoningEffort: 'ultra' } });
+    now.mockReturnValue(Date.parse('2026-09-22T23:00+08:00'));
+    await h.message('/run -- Second task');
+    expect(store.latest(h.scope)?.stopAt).toBe(Date.parse('2026-09-23T00:55+08:00'));
+    expect(store.get(first.id)?.stopAt).toBe(first.stopAt);
+    expect(h.agent.options).toHaveLength(0);
+    expect(h.controls.profileConfig.preferences.reasoningEffort).toBe('high');
+    expect(await readRunDefaults({ ...h.controls, profile: 'another-bot' })).toMatchObject({ until: '2h', marginMinutes: 5 });
+  });
+
+  it('lets explicit task flags override defaults and default inherit conversation settings without rewriting the preset', async () => {
+    const h = await harness();
+    await h.message('/run defaults --until 2h --tz UTC --margin 5 --model custom/night --effort ultra');
+    await h.message('/run --until 90m --margin 10 --model default --effort default -- One task');
+    const job = (await timedRuns(h.controls)).latest(h.scope)!;
+    expect(job).toMatchObject({ modelSettings: { model: 'custom/day', reasoningEffort: 'high' } });
+    expect(job.deadlineAt - job.stopAt).toBe(10 * 60_000);
+    expect(await readRunDefaults(h.controls)).toMatchObject({ until: '2h', marginMinutes: 5, model: 'custom/night', reasoningEffort: 'ultra' });
+  });
+
+  it('edits defaults through a scoped admin card without creating a job and pre-fills the task form', async () => {
+    const h = await harness();
+    await h.message('/run defaults');
+    expect(JSON.stringify(h.channel.sent.at(-1))).toContain('run.defaults.save');
+    const click = (owner: string, scope = h.scope) => h.handlers.cardAction!({
+      chatId: 'oc_chat', messageId: 'card', operator: { openId: owner },
+      action: { value: { cmd: 'run.defaults.save', settings_scope: scope } },
+      raw: { action: { form_value: { until: '01:00', time_zone: 'Asia/Shanghai', margin: '5', model_pick: '__manual__', model: 'custom/saved', effort: 'ultra' } } },
+    } as unknown as CardActionEvent);
+    await click('reader');
+    expect(JSON.stringify(h.channel.sent.at(-1))).toContain('管理员');
+    expect((await readRunDefaults(h.controls)).until).toBe('2h');
+    await click('owner', 'wrong-topic');
+    expect(JSON.stringify(h.channel.sent.at(-1))).toContain('无法确认');
+    await click('owner');
+    expect(await readRunDefaults(h.controls)).toMatchObject({ until: '01:00', model: 'custom/saved', reasoningEffort: 'ultra' });
+    expect((await timedRuns(h.controls)).latest(h.scope)).toBeUndefined();
+    await h.message('/run');
+    const form = JSON.stringify(h.channel.sent.at(-1));
+    expect(form).toContain('custom/saved');
+    expect(form).toContain('"initial_option":"ultra"');
+    expect(form).toContain('"default_value":"01:00"');
+    await h.message('/run defaults reset');
+    expect(await readRunDefaults(h.controls)).toMatchObject({ until: '2h', model: undefined, reasoningEffort: undefined });
+  });
+
+  it('rejects fixed-date defaults and too-late tasks without silently moving to the next quota window', async () => {
+    const h = await harness();
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-22T00:57+08:00'));
+    await h.message('/run defaults --until 2026-09-23T01:00+08:00');
+    expect(JSON.stringify(h.channel.sent.at(-1))).toContain('不能保存固定日期');
+    await h.message('/run defaults --until 01:00 --tz Asia/Shanghai --margin 5 --effort ultra');
+    await h.message('/run -- Too late');
+    expect(JSON.stringify(h.channel.sent.at(-1))).toContain('不足 10 秒');
+    expect((await timedRuns(h.controls)).latest(h.scope)).toBeUndefined();
+    expect(h.agent.options).toHaveLength(0);
+  });
+
   it('previews absolute times, starts once, and restores ordinary model preferences for the next message', async () => {
     const h = await harness();
     await h.message('/run --until 2h --tz Asia/Shanghai --margin 5 --model custom/night --effort ultra -- Review the code');

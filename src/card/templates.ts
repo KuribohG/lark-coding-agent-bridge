@@ -195,7 +195,7 @@ export function helpCard(agentName = 'Agent'): object {
         '- `/config` — 调整此 bot 的默认模型、思考强度、展示偏好和 lark-cli 身份策略',
         '- `/model [模型名|default]` — 当前话题/聊天的模型，支持手填',
         '- `/effort [强度|default]` — 当前话题/聊天的思考强度；可加 `--scope profile` 改 bot 默认',
-        '- `/run` — 一次性限时任务表单，临时模型/强度；`/run status` 查看状态，`/run stop` 取消',
+        '- `/run` — 限时任务表单；`/run -- 任务` 用默认值，`/run defaults` 设置默认值，`/run status` 查看，`/run stop` 取消',
         '- `/status` — 当前状态',
         '- `/stop` — 结束当前正在跑的任务（也可点卡片底部 ⏹ 终止 按钮）',
         '- `/stop comment:<scopeHash>` — 管理员停止云文档评论任务',

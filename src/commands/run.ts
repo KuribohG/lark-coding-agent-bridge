@@ -1,12 +1,12 @@
 import type { CommandContext } from './index';
 import { modelEnvironment, resolveRunModelSettings } from '../runtime/model-settings';
-import { modelRunArguments, parseEffort, type ModelSettings } from '../agent/model-settings';
-import { validateModelId } from '../agent/models';
+import { modelRunArguments, resolveModelSettings, type ModelSettings } from '../agent/model-settings';
 import { timedRuns } from '../runtime/timed-runs';
 import { parseRunDeadline } from '../runtime/run-deadline';
 import { timedRunCard, timedRunForm } from '../card/timed-run-card';
 import { sendManagedCard } from '../card/managed';
 import { canRunAdminCommand } from '../policy/access';
+import { builtinRunDefaults, parseRunSettings, readRunDefaults, saveRunDefaults } from '../runtime/run-defaults';
 
 export async function handleRun(args: string, ctx: CommandContext): Promise<void> {
   const opts = { replyTo: ctx.msg.messageId, ...(ctx.chatMode === 'topic' ? { replyInThread: true } : {}) };
@@ -14,12 +14,6 @@ export async function handleRun(args: string, ctx: CommandContext): Promise<void
   try {
     const store = await timedRuns(ctx.controls);
     const [action, id] = args.trim().split(/\s+/);
-    if (!args.trim()) {
-      await sendManagedCard(ctx.channel, ctx.msg.chatId, timedRunForm(ctx.scope,
-        ctx.controls.profileConfig.agentKind, await modelEnvironment(ctx.controls),
-        store.latest(ctx.scope)?.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone), opts);
-      return;
-    }
     if (['status', 'start', 'stop'].includes(action!)) {
       const activeId = action === 'start' ? undefined : ctx.controls.activeTimedRun?.(ctx.scope);
       const job = id ? store.get(id) : activeId ? store.get(activeId) : store.latest(ctx.scope);
@@ -42,34 +36,49 @@ export async function handleRun(args: string, ctx: CommandContext): Promise<void
       await ctx.controls.launchTimedRun(job, ctx.msg);
       return;
     }
+    const defaults = args.trim() === 'defaults reset' ? builtinRunDefaults() : await readRunDefaults(ctx.controls);
+    const agentKind = ctx.controls.profileConfig.agentKind;
+    if (!args.trim() || args.trim() === 'defaults') {
+      await sendManagedCard(ctx.channel, ctx.msg.chatId, timedRunForm(ctx.scope,
+        agentKind, await modelEnvironment(ctx.controls), defaults, args.trim() === 'defaults'), opts);
+      return;
+    }
+    const savingDefaults = action === 'defaults';
+    if (savingDefaults && !canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok) {
+      throw new Error('修改此 bot 的限时任务默认值仅 owner/管理员可用。');
+    }
     let form: Record<string, unknown>;
-    if (action === 'submit' && ctx.fromCardAction) form = ctx.formValue ?? {};
-    else {
-      const split = args.indexOf(' -- ');
-      if (split < 0) throw new Error('用法：/run 打开表单，或 /run --until 01:00 --tz Asia/Shanghai --effort ultra -- 任务内容');
-      form = { task: args.slice(split + 4) };
-      const flags = args.slice(0, split).trim().split(/\s+/);
-      const names: Record<string, string> = { '--until': 'until', '--tz': 'time_zone', '--margin': 'margin', '--model': 'model', '--effort': 'effort' };
-      for (let i = 0; i < flags.length; i += 2) {
-        const name = names[flags[i]!];
-        if (!name || !flags[i + 1]) throw new Error('无法识别限时任务参数。');
-        form[name] = flags[i + 1];
+    if ((action === 'submit' || args.trim() === 'defaults save') && ctx.fromCardAction) form = ctx.formValue ?? {};
+    else if (savingDefaults) {
+      if (args.trim() === 'defaults reset') {
+        await saveRunDefaults(ctx.controls, builtinRunDefaults());
+        await reply('已恢复此 bot 的 /run 内置默认值（2h、提前 5 分钟、模型/强度沿用对话）。');
+        return;
       }
+      form = parseFlags(args.trim().slice('defaults'.length).trim());
+    } else {
+      const separator = /(?:^|\s)--(?:\s|$)/.exec(args);
+      if (!separator) throw new Error('用法：/run -- 任务内容；可在 -- 前加 --until、--tz、--margin、--model、--effort。');
+      form = { ...parseFlags(args.slice(0, separator.index).trim()), task: args.slice(separator.index + separator[0].length) };
+    }
+    const input = parseRunSettings(form, defaults, agentKind);
+    if (savingDefaults) {
+      const checked = resolveModelSettings({}, input, await modelEnvironment(ctx.controls));
+      if (input.reasoningEffort && checked.reasoningEffort !== input.reasoningEffort) throw new Error(checked.notice);
+      await saveRunDefaults(ctx.controls, input);
+      await reply(`已保存此 bot 的 /run 默认值：\n截止：${input.until}（${input.timeZone}），提前 ${input.marginMinutes} 分钟停止。\n模型：${input.model ?? '沿用当前对话'}；思考强度：${input.reasoningEffort ?? '沿用当前对话'}。\n以后发送 \`/run -- 具体任务\` 即可生成预览。已创建的任务保持原设置。`);
+      return;
     }
     const task = String(form.task ?? '').trim();
     if (!task || task.length > 10_000) throw new Error('请填写 1～10000 字符的任务目标。');
-    const timeZone = String(form.time_zone ?? Intl.DateTimeFormat().resolvedOptions().timeZone).trim();
+    const { timeZone, marginMinutes: margin } = input;
     const now = Date.now();
-    const deadlineAt = parseRunDeadline(String(form.until ?? '').trim(), timeZone, now);
-    const margin = Number(form.margin ?? 5);
-    if (!Number.isFinite(margin) || margin < 0 || margin > 120) throw new Error('安全余量应为 0～120 分钟。');
+    const deadlineAt = parseRunDeadline(input.until, timeZone, now);
     const stopAt = Math.floor(deadlineAt - margin * 60_000);
     if (stopAt - now < 10_000) throw new Error('扣除安全余量后不足 10 秒，请调整停止时间。');
     const patch: ModelSettings = {};
-    const model = String(form.model_pick && form.model_pick !== '__manual__' ? form.model_pick : form.model ?? '').trim();
-    if (form.model_pick === '__manual__' && !model) throw new Error('请填写本次使用的模型名。');
-    if (model && model !== 'default') patch.model = validateModelId(model);
-    const effort = parseEffort(form.effort, ctx.controls.profileConfig.agentKind);
+    if (input.model) patch.model = input.model;
+    const effort = input.reasoningEffort;
     if (effort) patch.reasoningEffort = effort;
     const settings = await resolveRunModelSettings(ctx.controls, ctx.scope, patch);
     if (effort && settings.reasoningEffort !== effort) throw new Error(settings.notice);
@@ -81,4 +90,17 @@ export async function handleRun(args: string, ctx: CommandContext): Promise<void
   } catch (err) {
     await reply(`限时任务：${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+function parseFlags(value: string): Record<string, unknown> {
+  if (!value) return {};
+  const flags = value.split(/\s+/);
+  const names: Record<string, string> = { '--until': 'until', '--tz': 'time_zone', '--margin': 'margin', '--model': 'model', '--effort': 'effort' };
+  const form: Record<string, unknown> = {};
+  for (let i = 0; i < flags.length; i += 2) {
+    const name = names[flags[i]!];
+    if (!name || !flags[i + 1] || flags[i + 1]!.startsWith('--')) throw new Error('无法识别限时任务参数。');
+    form[name] = flags[i + 1];
+  }
+  return form;
 }

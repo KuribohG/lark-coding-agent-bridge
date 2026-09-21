@@ -148,7 +148,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/config` | 调整 bot 默认模型、思考强度、展示偏好、访问控制和 lark-cli 身份策略 |
 | `/model [模型名\|default]` | 查看或修改当前话题/聊天的模型，支持手填 |
 | `/effort [强度\|default]` | 查看或修改当前话题/聊天的思考强度 |
-| `/run [status\|stop]` | 创建一次性限时任务，或查看/取消任务 |
+| `/run [defaults\|status\|stop]` | 创建一次性限时任务、设置默认值，或查看/取消任务 |
 | `/invite user @某人` | 允许用户私聊使用 bot |
 | `/invite admin @某人` | 添加访问控制管理员 |
 | `/invite group` | 允许当前群使用 bot |
@@ -199,6 +199,15 @@ bot 默认值存于 `config.json` 的 `profiles.<profile>.preferences`；聊天�
 ```text
 /run --until 01:00 --tz Asia/Shanghai --margin 5 --effort ultra -- 审查项目并保存发现的问题
 ```
+
+可先保存一套默认值（仅 owner/管理员），以后只写任务：
+
+```text
+/run defaults --until 01:00 --tz Asia/Shanghai --margin 5 --effort ultra
+/run -- 审查项目并保存发现的问题
+```
+
+`/run defaults` 打开默认值表单，`/run defaults reset` 恢复内置的两小时时限、五分钟余量、本机时区及沿用对话的模型/强度。默认值属于当前 bot profile，单独存于 `profiles/<profile>/run-defaults.json`，不影响普通聊天设置或其他 bot。任务表单会自动填入默认值；命令显式参数只覆盖本次任务，`--model default`、`--effort default` 表示本次沿用对话设置。默认截止时间只保存钟点或时长，不保存固定日期；每次生成新预览重新计算绝对截止时间，已有预览和运行中的任务不变。若下一次钟点已落入安全余量内，本次拒绝启动，不会顺延一天。简写仍需确认，也不会每天自动执行。
 
 `01:00` 表示指定 IANA 时区的下一次凌晨一点；也支持 `2h`、`90m` 或带时区的完整日期，如 `2026-09-22T01:00+08:00`，最长未来七天。安全余量单位为分钟，默认 5。例如截止 01:00、余量 5 分钟时，提示词要求 agent 在 00:50 开始收尾，独立守护进程在 00:55 强制终止。提前收尾依赖 agent 执行，不保证强停前一定产生总结；已有文件和对话记录保留。原有 idle watchdog 仍独立生效。
 

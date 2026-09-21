@@ -148,7 +148,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/config` | Adjust bot default model/effort, presentation preferences, access settings, and lark-cli identity policy |
 | `/model [model-id\|default]` | View or change the current topic/chat model; accepts custom IDs |
 | `/effort [level\|default]` | View or change the current topic/chat reasoning effort |
-| `/run [status\|stop]` | Create a one-shot task with an absolute deadline, or inspect/cancel it |
+| `/run [defaults\|status\|stop]` | Create a one-shot task, configure its defaults, or inspect/cancel it |
 | `/invite user @name` | Allow a user to use the bot in DMs |
 | `/invite admin @name` | Add an access-control admin |
 | `/invite group` | Allow the current group to use the bot |
@@ -199,6 +199,15 @@ Send `/run` to open a form for the task, deadline, timezone, safety margin, and 
 ```text
 /run --until 01:00 --tz Asia/Shanghai --margin 5 --effort ultra -- Review the project and save findings
 ```
+
+Save reusable defaults once (owner/admin only), then supply just the task:
+
+```text
+/run defaults --until 01:00 --tz Asia/Shanghai --margin 5 --effort ultra
+/run -- Review the project and save findings
+```
+
+`/run defaults` opens the defaults form; `/run defaults reset` restores the built-in two-hour window, five-minute margin, local timezone, and inherited conversation model/effort. Defaults belong to this bot profile and are stored separately in `profiles/<profile>/run-defaults.json`; ordinary chat settings and other profiles are unaffected. The task form is pre-filled from these defaults. Explicit flags override only the new task; `--model default` / `--effort default` inherit the conversation values for that task. Default deadlines accept recurring clock inputs or durations, never fixed dates. Each new preview computes a fresh absolute deadline, while existing previews/runs keep their original values. If the next clock occurrence is already inside its safety margin, the task is rejected rather than moved to the following day. The shorthand still requires confirmation and never schedules daily execution.
 
 `01:00` means the next occurrence in the selected IANA timezone. You can also enter `2h`, `90m`, or an explicit date such as `2026-09-22T01:00+08:00`, up to seven days ahead. The margin is in minutes (default 5). For a 01:00 deadline and five-minute margin, the prompt asks the agent to wind down at 00:50 and the independent process guard terminates work at 00:55. Wind-down is agent guidance, not a guaranteed final summary; existing files and conversation history remain available. The normal idle watchdog still applies independently.
 
