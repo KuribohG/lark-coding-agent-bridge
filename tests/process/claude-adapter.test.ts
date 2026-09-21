@@ -114,7 +114,8 @@ describe('ClaudeAdapter process contract', () => {
       prompt: 'continue',
       cwd: fake.dir,
       sessionId: 'sess-old',
-      model: 'sonnet',
+      model: 'private/sonnet',
+      reasoningEffort: 'high',
     });
 
     expect(await collect(run.events)).toEqual([
@@ -122,7 +123,7 @@ describe('ClaudeAdapter process contract', () => {
     ]);
     const record = await readRecord(fake.recordPath);
 
-    expect(record.argv.slice(-4)).toEqual(['--resume', 'sess-old', '--model', 'sonnet']);
+    expect(record.argv.slice(-6)).toEqual(['--resume', 'sess-old', '--model', 'private/sonnet', '--effort', 'high']);
     expect(record.argv[5]).toBe('bypassPermissions');
   });
 

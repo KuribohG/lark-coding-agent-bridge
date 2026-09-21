@@ -1,4 +1,5 @@
-import { modelLabel, supportedModels } from '../agent/models';
+import { availableEfforts } from '../agent/model-settings';
+import { modelLabel, supportedModels, type ModelOption } from '../agent/models';
 import type { KnownChat } from '../bot/lark-info';
 import type { AgentKind, LarkCliIdentityPreset, ProfileMode } from '../config/profile-schema';
 import type { CotMessagesMode, MessageReplyMode } from '../config/schema';
@@ -8,8 +9,10 @@ export interface ConfigFormOpts {
   agentKind: AgentKind;
   /** Deployment mode: 'personal' (default) or 'team'. */
   mode: ProfileMode;
-  /** Current model selection (a value from {@link supportedModels}). */
+  /** Current model ID, including a custom provider identifier. */
   model: string;
+  reasoningEffort?: string;
+  models?: ModelOption[];
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
   cotMessages: CotMessagesMode;
@@ -153,20 +156,19 @@ export function configFormCard(opts: ConfigFormOpts): object {
               ],
             },
             { tag: 'hr' },
-            {
-              tag: 'markdown',
-              content:
-                '**模型**\n' +
-                '_底层 agent 运行使用的模型_\n' +
-                '_「跟随默认」= 不指定,由 CLI/账号决定_',
-            },
-            {
-              tag: 'select_static',
-              name: 'model',
-              initial_option: opts.model,
-              options: supportedModels(opts.agentKind).map((m) => ({
-                text: { tag: 'plain_text', content: m.label },
-                value: m.value,
+            { tag: 'markdown', content: '**此 bot 的默认模型**\n可手填模型名；default 跟随 CLI 默认。已有聊天覆盖保持不变。' },
+            { tag: 'input', name: 'model', default_value: opts.model,
+              placeholder: { tag: 'plain_text', content: 'provider/model 或 default' } },
+            { tag: 'select_static', name: 'model_pick', initial_option: '__manual__', options: [
+              { text: { tag: 'plain_text', content: '使用上方输入的模型名' }, value: '__manual__' },
+              ...(opts.models ?? supportedModels(opts.agentKind)).slice(0, 80).map((m) => ({
+                text: { tag: 'plain_text', content: m.label }, value: m.value,
+              })),
+            ] },
+            { tag: 'markdown', content: '**此 bot 的默认思考强度**（按所选模型校验）' },
+            { tag: 'select_static', name: 'reasoning_effort', initial_option: opts.reasoningEffort ?? 'default', options:
+              ['default', ...availableEfforts(opts.agentKind)].map((value) => ({
+                text: { tag: 'plain_text', content: value === 'default' ? '跟随 CLI 默认' : value }, value,
               })),
             },
             { tag: 'hr' },
@@ -300,7 +302,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
                     {
                       tag: 'button',
                       name: 'submit_btn',
-                      text: { tag: 'plain_text', content: '提交' },
+                      text: { tag: 'plain_text', content: '保存为此 bot 默认值' },
                       type: 'primary',
                       form_action_type: 'submit',
                       behaviors: [{ type: 'callback', value: { cmd: 'config.submit' } }],
@@ -348,6 +350,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
           content:
             '✅ **偏好已保存**\n\n' +
             `**运行模式**:\`${opts.mode === 'team' ? '团队版' : '个人版'}\`\n` +
+            `**默认思考强度**:\`${opts.reasoningEffort ?? '跟随 CLI 默认'}\`\n` +
             `**模型**:\`${modelLabel(opts.agentKind, opts.model)}\`\n` +
             `**消息回复方式**:${replyLabel}\n` +
             `**工具调用显示**:\`${opts.showToolCalls ? 'show' : 'hide'}\`\n` +

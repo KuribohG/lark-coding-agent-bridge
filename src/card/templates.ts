@@ -63,6 +63,7 @@ export function workspacesCard(current: string | undefined, named: Record<string
 
 export interface StatusInfo {
   profileName: string;
+  modelStatus?: string;
   cwd?: string;
   sessionId?: string;
   emptySessionText?: string;
@@ -104,6 +105,7 @@ export function statusCard(info: StatusInfo): object {
     `📁 **cwd**: ${cwdLine}`,
     `🔗 **session**: ${sessionLine}`,
     `🤖 **agent**: ${escapeMd(info.agentName)}`,
+    ...(info.modelStatus ? [info.modelStatus] : []),
     `🛡 **${escapeMd(info.runtimeAccess.label)}**: ${escapeMd(info.runtimeAccess.value)}`,
     ...(info.larkCliStatus ? [`🔐 **lark-cli**: ${info.larkCliStatus}`] : []),
     `🏃 **active run**: ${info.activeRun ? 'yes' : 'no'}`,
@@ -190,7 +192,9 @@ export function helpCard(agentName = 'Agent'): object {
         '- `/cd <path>` — 切换工作目录（会重置 session）',
         '- `/ws list|save <name>|use <name>|remove <name>` — 工作目录',
         '- `/account` — 查看当前应用；`/account change` 换 appId/secret 并重连',
-        '- `/config` — 调整偏好、访问控制和 lark-cli 身份策略',
+        '- `/config` — 调整此 bot 的默认模型、思考强度、展示偏好和 lark-cli 身份策略',
+        '- `/model [模型名|default]` — 当前话题/聊天的模型，支持手填',
+        '- `/effort [强度|default]` — 当前话题/聊天的思考强度；可加 `--scope profile` 改 bot 默认',
         '- `/status` — 当前状态',
         '- `/stop` — 结束当前正在跑的任务（也可点卡片底部 ⏹ 终止 按钮）',
         '- `/stop comment:<scopeHash>` — 管理员停止云文档评论任务',

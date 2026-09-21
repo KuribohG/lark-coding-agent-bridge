@@ -145,7 +145,9 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/ws remove <name>` | 删除命名工作空间 |
 | `/resume` | 恢复同 agent、工作目录、权限模式兼容的历史会话 |
 | `/status` | 查看 profile、agent、工作目录、会话、lark-cli 身份和运行状态 |
-| `/config` | 调整展示偏好、访问控制和 lark-cli 身份策略 |
+| `/config` | 调整 bot 默认模型、思考强度、展示偏好、访问控制和 lark-cli 身份策略 |
+| `/model [模型名\|default]` | 查看或修改当前话题/聊天的模型，支持手填 |
+| `/effort [强度\|default]` | 查看或修改当前话题/聊天的思考强度 |
 | `/invite user @某人` | 允许用户私聊使用 bot |
 | `/invite admin @某人` | 添加访问控制管理员 |
 | `/invite group` | 允许当前群使用 bot |
@@ -160,6 +162,34 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/help` | 帮助卡片 |
 
 私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。
+
+## 模型与思考强度
+
+```text
+/model provider/custom-model
+/effort high
+/model default
+/effort default
+```
+
+不带参数的 `/model` 或 `/effort` 打开设置卡片，显示设置来源和作用范围。模型名可以直接输入，也可从建议列表选择；列表不是白名单。Codex 优先读取当前 profile 对应 CLI 的本地模型目录。自定义 provider 的模型无需在 bridge 代码中注册；模型是否可用仍由该 provider 决定。
+
+两个字段分别按 **当前话题/聊天覆盖 → bot profile 默认 → CLI 默认** 继承。话题内设置只影响这个话题，普通群和私聊各自按聊天保存；同一话题/群中的用户共用设置。`default` 清除相应字段的覆盖。`/new`、`/cd` 和 bridge 重启保留模型偏好。
+
+owner/admin 可以在 `/config` 或网页控制台填写默认模型和思考强度，也可发送：
+
+```text
+/model provider/custom-model --scope profile
+/effort high --scope profile
+```
+
+bot 默认值影响该 profile 下未单独覆盖对应字段的对话，也用于会议和文档评论任务。其他 profile 和独立终端会话不受影响。网页控制台修改离线 profile 时，下次启动该 profile 才生效。
+
+设置从下一次提交新任务开始生效，正在执行或已提交等待执行的任务保留原参数；等待合并的消息会保留，并在提交时使用新设置。切换不会清空上下文或更换原生会话 ID，无需重启 bridge。`/status` 可同时查看当前任务和下一轮设置。跨模型恢复仍受底层 CLI/provider 的兼容性限制。
+
+已知模型会根据本地目录校验思考档位，显式提交不支持的组合会被拒绝。切换模型后，若继承的 bridge 思考设置不兼容且目录提供了模型默认值，则本次使用模型默认，并在设置摘要中说明。未知模型交由 CLI/provider 校验。当字段跟随 CLI 默认时，不传对应参数，也不改写 CLI 的全局或项目配置。
+
+bot 默认值存于 `config.json` 的 `profiles.<profile>.preferences`；聊天覆盖单独存于 `profiles/<profile>/scope-preferences.json`，不和对话历史混用。
 
 ## 回复展示与 COT
 

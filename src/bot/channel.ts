@@ -1,3 +1,5 @@
+import { modelRunArguments } from '../agent/model-settings';
+import { resolveRunModelSettings } from '../runtime/model-settings';
 import type {
   LarkChannel,
   LarkChannelOptions,
@@ -778,7 +780,8 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     controls,
   });
   if (handled) {
-    const dropped = pending.cancel(scope);
+    const name = emsg.content.trim().split(/\s+/)[0];
+    const dropped = ['/model', '/effort', '/status', '/config'].includes(name ?? '') ? [] : pending.cancel(scope);
     log.info('intake', 'command', { scope, droppedPending: dropped.length });
     return;
   }
@@ -901,7 +904,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // changed. `requestedModel` (the `--model` value, or undefined for default)
   // is reused below to log requested-vs-actual against the init event.
   const agentKind = controls.profileConfig.agentKind;
-  const modelPref = controls.profileConfig.preferences.model;
+  const runModelSettings = await resolveRunModelSettings(controls, scope);
+  const modelPref = modelRunArguments(runModelSettings).model;
   const modelSelection = normalizeModelSelection(agentKind, modelPref);
   const requestedModel = resolveModelArg(agentKind, modelPref);
   const prevModel = lastRunModelByScope.get(scope);
@@ -960,6 +964,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       ? codexCapability(controls.profileConfig)
       : claudeCapability(controls.profileConfig);
   const flow = await startRunFlow({
+    modelSettings: modelRunArguments(runModelSettings),
     scopeId: scope,
     scope: scopeContext,
     prompt,

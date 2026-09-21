@@ -72,6 +72,22 @@ afterEach(async () => {
 });
 
 describe('topic message quote handling', () => {
+  it('keeps pending messages when changing model and effort, using the new settings for the next task', async () => {
+    const h = await createHarness();
+    h.controls.configPath = join(h.tmp.root, 'config.json');
+    await startTestBridge(h);
+    const send = (messageId: string, content: string) => h.channel.handlers.message?.(message({
+      messageId, content, rootId: 'om_topic_root', parentId: 'om_topic_root', threadId: 'omt_topic',
+    }));
+    await send('pending-question', 'Keep this pending question.');
+    await send('change-model', '/model private/custom-model');
+    await send('change-effort', '/effort high');
+    await waitFor(() => h.agent.runOptions.length === 1, 3000);
+    expect(h.agent.runOptions[0]).toMatchObject({ model: 'private/custom-model', reasoningEffort: 'high' });
+    expect(h.agent.runOptions[0]?.prompt).toContain('Keep this pending question.');
+    expect(h.agent.runOptions[0]?.prompt).not.toContain('/effort high');
+  });
+
   it('does not quote the topic root when a user directly mentions the bot inside the topic', async () => {
     const h = await createHarness();
 

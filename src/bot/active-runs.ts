@@ -3,6 +3,7 @@ import type { AgentRun } from '../agent/types';
 export interface RunHandle {
   run: AgentRun;
   interrupted: boolean;
+  modelSettings?: import('../agent/model-settings').ModelSettings;
 }
 
 export class ActiveRuns {

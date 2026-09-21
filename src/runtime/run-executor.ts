@@ -21,6 +21,7 @@ export interface SubmitRunInput {
   sessionId?: string;
   threadId?: string;
   model?: string;
+  reasoningEffort?: import('../agent/model-settings').ReasoningEffort;
   images?: readonly string[];
   stopGraceMs?: number;
   nowait?: boolean;
@@ -100,6 +101,7 @@ export class RunExecutor {
       sessionId: input.sessionId,
       threadId: input.threadId,
       model: input.model,
+      reasoningEffort: input.reasoningEffort,
       images: input.images,
       sandbox: input.policy.sandbox,
       permissionMode: input.policy.permissionMode,
@@ -148,6 +150,7 @@ export class RunExecutor {
     let handle: RunHandle;
     try {
       handle = this.activeRuns.register(input.scopeId, run);
+      handle.modelSettings = { model: input.model, reasoningEffort: input.reasoningEffort };
     } catch (err) {
       releaseScope();
       release();

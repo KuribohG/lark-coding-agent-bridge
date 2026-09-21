@@ -1,3 +1,5 @@
+import { modelRunArguments } from '../agent/model-settings';
+import { resolveRunModelSettings } from '../runtime/model-settings';
 import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -257,6 +259,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
       });
 
       const execution = await deps.executor.submit({
+        ...modelRunArguments(await resolveRunModelSettings(controls, agentSessionScopeId)),
         scopeId: runScopeId,
         policy,
         sessionId,

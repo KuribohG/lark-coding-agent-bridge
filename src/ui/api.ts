@@ -1,3 +1,5 @@
+import { parseEffort, resolveModelSettings, availableEfforts } from '../agent/model-settings';
+import { modelEnvironment } from '../runtime/model-settings';
 import type { LarkChannel } from '@larksuite/channel';
 import { fetchKnownChats } from '../bot/lark-info';
 import {
@@ -41,7 +43,7 @@ import {
   type ProfileAccess,
   type ProfileMode,
 } from '../config/profile-schema';
-import { DEFAULT_MODEL, normalizeModelSelection, supportedModels } from '../agent/models';
+import { DEFAULT_MODEL, normalizeModelSelection, validateModelId } from '../agent/models';
 import { log } from '../core/logger';
 import { HttpError } from './http';
 import type { UiRuntime } from './types';
@@ -55,6 +57,8 @@ export interface ConfigView {
   agentKind: string;
   mode: ProfileMode;
   model: string;
+  reasoningEffort: string;
+  reasoningEfforts: string[];
   models: { value: string; label: string }[];
   messageReply: MessageReplyMode;
   showToolCalls: boolean;
@@ -76,7 +80,8 @@ export interface ConfigView {
   live: boolean;
 }
 
-export function buildConfigView(state: MutableProfileState, live = false): ConfigView {
+export async function buildConfigView(state: MutableProfileState, live = false): Promise<ConfigView> {
+  const environment = await modelEnvironment(state);
   const agentKind = state.profileConfig.agentKind;
   const ms = getRunIdleTimeoutMs(state.cfg);
   return {
@@ -84,7 +89,9 @@ export function buildConfigView(state: MutableProfileState, live = false): Confi
     agentKind,
     mode: state.profileConfig.mode,
     model: normalizeModelSelection(agentKind, state.cfg.preferences?.model),
-    models: supportedModels(agentKind),
+    models: environment.models,
+    reasoningEffort: state.cfg.preferences?.reasoningEffort ?? 'default',
+    reasoningEfforts: availableEfforts(agentKind),
     messageReply: getMessageReplyMode(state.cfg),
     showToolCalls: getShowToolCalls(state.cfg),
     cotMessages: getCotMessages(state.cfg),
@@ -212,11 +219,18 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
       ? fv.larkCliIdentity
       : state.profileConfig.larkCli.identityPreset;
 
-  const rawModel = typeof fv.model === 'string' ? fv.model : '';
-  const modelValid = rawModel !== '' && supportedModels(agentKind).some((m) => m.value === rawModel);
-  const modelSelection = modelValid
-    ? rawModel
-    : normalizeModelSelection(agentKind, state.cfg.preferences?.model);
+  let modelSelection: string;
+  let reasoningEffort: import('../agent/model-settings').ReasoningEffort | undefined;
+  try {
+    if (fv.model !== undefined && typeof fv.model !== 'string') throw new Error('模型名必须是字符串。');
+    modelSelection = fv.model === undefined
+      ? normalizeModelSelection(agentKind, state.cfg.preferences?.model)
+      : fv.model === '' ? DEFAULT_MODEL : validateModelId(fv.model as string);
+    reasoningEffort = fv.reasoningEffort === undefined
+      ? state.cfg.preferences?.reasoningEffort : parseEffort(fv.reasoningEffort, agentKind);
+  } catch (err) {
+    throw new ApiError(400, err instanceof Error ? err.message : String(err));
+  }
   const model = modelSelection === DEFAULT_MODEL ? undefined : modelSelection;
 
   const messageReply: MessageReplyMode =
@@ -266,6 +280,7 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
     nextPreferences: {
       ...(state.cfg.preferences ?? {}),
       model,
+      reasoningEffort,
       messageReply,
       messageReplyMigrated: true,
       showToolCalls,
@@ -276,6 +291,17 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
   };
 }
 
+async function validateModelPreferences(state: MutableProfileState, preferences: AppPreferences): Promise<void> {
+  try {
+    const resolved = resolveModelSettings(preferences, {}, await modelEnvironment(state));
+    if (preferences.reasoningEffort && preferences.reasoningEffort !== resolved.reasoningEffort) {
+      throw new Error(resolved.notice ?? '模型与思考强度不匹配。');
+    }
+  } catch (err) {
+    throw new ApiError(400, err instanceof Error ? err.message : String(err));
+  }
+}
+
 /**
  * Apply a settings change to the profile whose process hosts the UI — live,
  * in-memory, no restart. Runs the lark-cli identity policy (with rollback) like
@@ -283,6 +309,7 @@ function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfi
  */
 export async function applyConfig(rt: UiRuntime, body: unknown): Promise<ConfigView> {
   const p = parseConfigBody(rt, body);
+  await validateModelPreferences(rt, p.nextPreferences);
   let identityApplied = false;
   try {
     if (p.identityChanged) {
@@ -323,6 +350,7 @@ export async function applyConfigToDisk(
   body: unknown,
 ): Promise<ConfigView> {
   const p = parseConfigBody(state, body);
+  await validateModelPreferences(state, p.nextPreferences);
   try {
     await savePreferencesConfig(
       state,

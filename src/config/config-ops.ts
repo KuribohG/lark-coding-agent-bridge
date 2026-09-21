@@ -29,6 +29,23 @@ export interface MutableProfileState {
   profileConfig: ProfileConfig;
 }
 
+/** Patch model defaults without changing identity/access or losing concurrent fields. */
+export async function saveModelPreferences(
+  state: MutableProfileState,
+  patch: import('../agent/model-settings').ModelSettings,
+): Promise<void> {
+  await withConfigFileLock(state.configPath, async () => {
+    const root = await loadRootConfig(state.configPath);
+    if (!root) throw new Error('请先将配置迁移到 profile 格式。');
+    const profile = root.profiles[state.profile];
+    if (!profile) throw new Error(`profile not found: ${state.profile}`);
+    root.profiles[state.profile] = { ...profile, preferences: { ...profile.preferences, ...patch } };
+    await saveRootConfig(root, state.configPath);
+    state.profileConfig = root.profiles[state.profile]!;
+    state.cfg = runtimeProfileConfig(root, state.profile);
+  });
+}
+
 /** App paths for a profile, derived from its config path. */
 export function profileAppPaths(state: Pick<MutableProfileState, 'configPath' | 'profile'>) {
   return resolveAppPaths({

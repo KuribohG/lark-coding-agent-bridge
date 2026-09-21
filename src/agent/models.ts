@@ -16,6 +16,8 @@ export interface ModelOption {
   value: string;
   /** Human-facing label shown in the `/config` picker. */
   label: string;
+  reasoningEfforts?: string[];
+  defaultReasoningEffort?: string;
 }
 
 /**
@@ -53,26 +55,26 @@ export function isDefaultModel(value: string | undefined): boolean {
   return !value || value === DEFAULT_MODEL;
 }
 
-/**
- * Coerce a stored model preference into a value guaranteed to be one of the
- * current agent's picker options — Feishu's `select_static` requires
- * `initial_option` to match an option value exactly. Unknown / cross-agent
- * values (e.g. a Claude alias left over after switching a profile to Codex)
- * fall back to {@link DEFAULT_MODEL}.
- */
+/** Preserve provider-specific identifiers, including models absent from suggestions. */
 export function normalizeModelSelection(
-  agentKind: AgentKind,
+  _agentKind: AgentKind,
   value: string | undefined,
 ): string {
   if (isDefaultModel(value)) return DEFAULT_MODEL;
-  return supportedModels(agentKind).some((m) => m.value === value)
-    ? (value as string)
-    : DEFAULT_MODEL;
+  return validateModelId(value!);
+}
+
+export function validateModelId(value: string): string {
+  const model = value.trim();
+  if (!model || model.length > 256 || !/^[a-zA-Z0-9][a-zA-Z0-9._:/@+\[\]-]*$/.test(model)) {
+    throw new Error('模型名须为 1-256 个字母、数字或 . _ : / @ + [ ] -，不能包含空格。');
+  }
+  return model;
 }
 
 /**
  * Resolve the concrete model string to hand the agent, or `undefined` to omit
- * the `--model` flag. Cross-agent / unknown values are treated as "default".
+ * the `--model` flag. The catalog is a set of suggestions, not an allowlist.
  */
 export function resolveModelArg(
   agentKind: AgentKind,

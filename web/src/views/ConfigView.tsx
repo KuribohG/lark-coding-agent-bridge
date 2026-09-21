@@ -79,6 +79,7 @@ export function ConfigView({ profile }: { profile: string }) {
         mode: cfg.mode,
         meeting: cfg.meeting,
         model: cfg.model,
+        reasoningEffort: cfg.reasoningEffort,
         messageReply: cfg.messageReply,
         showToolCalls: cfg.showToolCalls,
         cotMessages: cfg.cotMessages,
@@ -142,9 +143,13 @@ export function ConfigView({ profile }: { profile: string }) {
       <Card>
         <CardHeader><CardTitle>回复与运行</CardTitle></CardHeader>
         <CardContent className="space-y-4">
-          <Field label="模型">
-            <SelectRow value={cfg.model} onChange={(v) => set("model", v)}
-              options={cfg.models.map((m) => [m.value, m.label])} />
+          <Field label="此 bot 的默认模型" hint="可以手填模型名；default 跟随 CLI 默认。已有聊天覆盖保持不变。">
+            <Input list="bridge-models" value={cfg.model} onChange={(e) => set("model", e.target.value)} />
+            <datalist id="bridge-models">{cfg.models.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}</datalist>
+          </Field>
+          <Field label="此 bot 的默认思考强度" hint="按所选模型校验；下一轮新任务生效。">
+            <SelectRow value={cfg.reasoningEffort} onChange={(v) => set("reasoningEffort", v)}
+              options={[["default", "跟随 CLI 默认"], ...cfg.reasoningEfforts.map((v): [string, string] => [v, v])]} />
           </Field>
           <Field label="消息回复方式">
             <SelectRow value={cfg.messageReply} onChange={(v) => set("messageReply", v as ConfigData["messageReply"])}

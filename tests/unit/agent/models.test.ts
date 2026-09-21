@@ -26,10 +26,9 @@ describe('agent model catalog', () => {
     expect(isDefaultModel('claude-opus-4-8')).toBe(false);
   });
 
-  it('coerces unknown / cross-agent selections back to the default option', () => {
+  it('preserves custom provider model names without guessing their agent', () => {
     expect(normalizeModelSelection('claude', 'claude-opus-4-8')).toBe('claude-opus-4-8');
-    // A Codex model left over after switching a profile to Claude is invalid.
-    expect(normalizeModelSelection('claude', 'gpt-5-codex')).toBe(DEFAULT_MODEL);
+    expect(normalizeModelSelection('claude', 'provider/custom-model')).toBe('provider/custom-model');
     expect(normalizeModelSelection('claude', undefined)).toBe(DEFAULT_MODEL);
   });
 
@@ -37,8 +36,7 @@ describe('agent model catalog', () => {
     expect(resolveModelArg('claude', 'claude-sonnet-5')).toBe('claude-sonnet-5');
     expect(resolveModelArg('claude', DEFAULT_MODEL)).toBeUndefined();
     expect(resolveModelArg('claude', undefined)).toBeUndefined();
-    // Cross-agent value → no flag rather than a broken model.
-    expect(resolveModelArg('codex', 'claude-opus-4-8')).toBeUndefined();
+    expect(resolveModelArg('codex', 'custom/claude-opus')).toBe('custom/claude-opus');
   });
 
   it('labels a stored value using the picker option text', () => {

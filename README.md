@@ -145,7 +145,9 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/ws remove <name>` | Delete a named workspace |
 | `/resume` | Resume compatible history for the same agent, working directory, and permission mode |
 | `/status` | Show profile, agent, working directory, session, lark-cli identity, and run state |
-| `/config` | Adjust presentation preferences, access settings, and lark-cli identity policy |
+| `/config` | Adjust bot default model/effort, presentation preferences, access settings, and lark-cli identity policy |
+| `/model [model-id\|default]` | View or change the current topic/chat model; accepts custom IDs |
+| `/effort [level\|default]` | View or change the current topic/chat reasoning effort |
 | `/invite user @name` | Allow a user to use the bot in DMs |
 | `/invite admin @name` | Add an access-control admin |
 | `/invite group` | Allow the current group to use the bot |
@@ -160,6 +162,34 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/help` | Help card |
 
 DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned.
+
+## Model and Reasoning Effort
+
+```text
+/model provider/custom-model
+/effort high
+/model default
+/effort default
+```
+
+Without arguments, `/model` and `/effort` open a form showing the settings' source and scope. Type a model ID directly or choose a suggestion; the list is not an allowlist. Codex uses the profile's local CLI model catalog when available. Custom provider IDs need no bridge code changes; availability is determined by the provider.
+
+Each field inherits independently: **topic/chat override → bot profile default → CLI default**. Topic settings affect only that topic; ordinary groups and DMs each use their chat scope. Users in the same topic/group share its settings. `default` removes the corresponding override. Preferences survive `/new`, `/cd`, and bridge restarts.
+
+Owner/admin users can edit bot defaults in `/config` or the web console, or send:
+
+```text
+/model provider/custom-model --scope profile
+/effort high --scope profile
+```
+
+Profile defaults affect conversations without an override for that field, plus meeting and document-comment tasks. Other profiles and independent terminal sessions are unaffected. Editing an offline profile in the web console takes effect when that profile next starts.
+
+Changes apply when the next task is submitted. Running or already-submitted tasks retain their parameters; messages waiting to be batched remain queued and use the settings at submission. Switching preserves context and the native session ID and requires no bridge restart. `/status` shows both active and next-task settings. Cross-model resume remains subject to CLI/provider compatibility.
+
+Known models validate reasoning levels against the local catalog, rejecting explicitly submitted unsupported combinations. If a model switch makes an inherited bridge effort incompatible, a catalog-provided model default is used for that run and noted in the settings summary. Unknown models are validated by the CLI/provider. Inherited CLI defaults are passed through by omitting the corresponding flags; global and project CLI config files are never rewritten.
+
+Bot defaults live in `config.json` under `profiles.<profile>.preferences`. Chat overrides live separately from transcripts in `profiles/<profile>/scope-preferences.json`.
 
 ## Reply Display and COT
 

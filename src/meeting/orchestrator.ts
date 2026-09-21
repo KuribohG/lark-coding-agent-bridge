@@ -1,3 +1,5 @@
+import { modelRunArguments } from '../agent/model-settings';
+import { resolveRunModelSettings } from '../runtime/model-settings';
 import type { LarkChannel } from '@larksuite/channel';
 import type { AgentEvent } from '../agent/types';
 import { claudeCapability, codexCapability } from '../agent/capability';
@@ -300,6 +302,7 @@ async function runMeetingAgent(
       ? codexCapability(controls.profileConfig)
       : claudeCapability(controls.profileConfig);
   const result = await startRunFlow({
+    modelSettings: modelRunArguments(await resolveRunModelSettings(controls, scopeId)),
     scopeId,
     scope: {
       source: 'meeting',

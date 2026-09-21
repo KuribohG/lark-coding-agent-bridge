@@ -108,12 +108,14 @@ export interface AppPreferences {
    */
   showToolCalls?: boolean;
   /**
-   * Model the underlying agent runs with, forwarded as `--model`. The catalog
-   * of valid values is agent-kind specific — see `agent/models.ts`. `undefined`
+   * Model the underlying agent runs with, forwarded as `--model`. Custom
+   * provider identifiers are accepted. `undefined`
    * or the `'default'` sentinel means "don't pass `--model`" so the agent
    * CLI / account default applies. Default: unset.
    */
   model?: string;
+  /** Default effort for this bot, overridden by chat preferences. */
+  reasoningEffort?: import('../agent/model-settings').ReasoningEffort;
   /**
    * Whether to send a separate Lark COT process message before the final
    * answer. `brief` mirrors the lightweight tool/progress visibility from

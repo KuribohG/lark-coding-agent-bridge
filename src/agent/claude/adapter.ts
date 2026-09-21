@@ -1,3 +1,5 @@
+import { parseEffort } from '../model-settings';
+import { validateModelId } from '../models';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -81,7 +83,8 @@ export class ClaudeAdapter implements AgentAdapter {
       systemPromptFile.path,
     ];
     if (opts.sessionId) args.push('--resume', opts.sessionId);
-    if (opts.model) args.push('--model', opts.model);
+    if (opts.model) args.push('--model', validateModelId(opts.model));
+    if (opts.reasoningEffort) args.push('--effort', parseEffort(opts.reasoningEffort, 'claude')!);
 
     const child = spawnProcess(this.binary, args, {
       cwd: opts.cwd,
@@ -95,6 +98,7 @@ export class ClaudeAdapter implements AgentAdapter {
       hasSession: Boolean(opts.sessionId),
       promptChars: opts.prompt.length,
       model: opts.model,
+      reasoningEffort: opts.reasoningEffort,
     });
 
     // Listeners MUST be attached synchronously here, before we return.

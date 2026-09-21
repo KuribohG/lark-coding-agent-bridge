@@ -164,6 +164,8 @@ describe('CodexAdapter process contract', () => {
       prompt: 'continue',
       cwd,
       threadId: 'thread-old',
+      model: 'custom/provider-model',
+      reasoningEffort: 'max',
       images: [image],
     });
 
@@ -176,6 +178,8 @@ describe('CodexAdapter process contract', () => {
         cwd,
         sandbox: 'workspace-write',
         threadId: 'thread-old',
+        model: 'custom/provider-model',
+        reasoningEffort: 'max',
         images: [image],
       }),
     );

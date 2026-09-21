@@ -158,6 +158,22 @@ describe('ui server (supervisor-backed)', () => {
     expect(disk.profiles.claude.mode).toBe('personal');
   });
 
+  it('accepts custom model defaults, rejects invalid effort before saving, and resets both fields', async () => {
+    const view = await json(await post('/api/config', handle.token, {
+      model: 'private/web-model', reasoningEffort: 'high',
+    }));
+    expect(view).toMatchObject({ model: 'private/web-model', reasoningEffort: 'high', live: true });
+    expect(online.get('claude').profileConfig.preferences).toMatchObject({ model: 'private/web-model', reasoningEffort: 'high' });
+    const before = await readFile(configPath, 'utf8');
+    const invalid = await post('/api/config', handle.token, { model: 'private/rejected', reasoningEffort: 'invalid' });
+    expect(invalid.status).toBe(400);
+    expect(await readFile(configPath, 'utf8')).toBe(before);
+    const reset = await json(await post('/api/config', handle.token, { model: 'default', reasoningEffort: 'default' }));
+    expect(reset).toMatchObject({ model: 'default', reasoningEffort: 'default' });
+    expect(online.get('claude').profileConfig.preferences.model).toBeUndefined();
+    expect(online.get('claude').profileConfig.preferences.reasoningEffort).toBeUndefined();
+  });
+
   it('adds and removes access entries', async () => {
     const added = await json(await post('/api/access', handle.token, { action: 'add', kind: 'user', id: 'ou_alice' }));
     expect(added.allowedUsers).toContain('ou_alice');

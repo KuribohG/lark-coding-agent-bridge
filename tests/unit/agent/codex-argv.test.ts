@@ -2,6 +2,19 @@ import { describe, expect, it } from 'vitest';
 import { buildCodexArgs } from '../../../src/agent/codex/argv.js';
 
 describe('Codex argv contract', () => {
+  it('passes custom model and effort to both new and resumed threads', () => {
+    for (const threadId of [undefined, 'existing-thread']) {
+      const args = buildCodexArgs({ cwd: '/repo', sandbox: 'read-only', threadId,
+        model: 'private/model-v9', reasoningEffort: 'max' });
+      expect(args[args.indexOf('--model') + 1]).toBe('private/model-v9');
+      expect(args).toContain('model_reasoning_effort="max"');
+      if (threadId) {
+        expect(args).toContain(threadId);
+        expect(args.indexOf('model_reasoning_effort="max"')).toBeLessThan(args.indexOf('resume'));
+      }
+    }
+  });
+
   it('builds the fresh exec argv without putting the prompt in argv', () => {
     expect(buildCodexArgs({ cwd: '/repo', sandbox: 'read-only' })).toEqual([
       'exec',

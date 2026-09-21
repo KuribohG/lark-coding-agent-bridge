@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({ startRunFlow: vi.fn() }));
+const mocks = vi.hoisted(() => ({ startRunFlow: vi.fn(), resolveRunModelSettings: vi.fn() }));
 
 vi.mock('../../../src/bot/run-flow', () => ({ startRunFlow: mocks.startRunFlow }));
+vi.mock('../../../src/runtime/model-settings', () => ({ resolveRunModelSettings: mocks.resolveRunModelSettings }));
 
 const { summarizeEndedMeeting, resolveSummaryTarget } = await import(
   '../../../src/meeting/orchestrator'
@@ -95,6 +96,9 @@ function cfg(over: Partial<MeetingConfig> = {}): MeetingConfig {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.startRunFlow.mockResolvedValue(fakeRun('讨论了发布计划；结论：周五上线。'));
+  mocks.resolveRunModelSettings.mockResolvedValue({
+    model: 'private/meeting-model', reasoningEffort: 'high', modelSource: 'profile', effortSource: 'profile',
+  });
 });
 
 describe('summarizeEndedMeeting', () => {
@@ -110,6 +114,9 @@ describe('summarizeEndedMeeting', () => {
     await summarizeEndedMeeting(d.args);
 
     expect(mocks.startRunFlow).toHaveBeenCalledTimes(1);
+    expect(mocks.startRunFlow).toHaveBeenCalledWith(expect.objectContaining({
+      modelSettings: { model: 'private/meeting-model', reasoningEffort: 'high' },
+    }));
     expect(d.sent).toHaveLength(1);
     expect(d.sent[0]?.to).toBe('oc_team');
     expect(String((d.sent[0]?.input as { markdown: string }).markdown)).toContain('会议纪要 · 周会');

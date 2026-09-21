@@ -23,6 +23,7 @@ import type { WorkspaceStore } from '../workspace/store';
 
 export interface StartRunFlowInput {
   scopeId: string;
+  modelSettings?: import('../agent/model-settings').ModelSettings;
   scope: ScopeContext;
   prompt: string;
   attachments: AgentAttachment[];
@@ -144,10 +145,10 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       policy,
       sessionId,
       threadId,
-      model: resolveModelArg(
-        input.profileConfig.agentKind,
-        input.profileConfig.preferences.model,
-      ),
+      ...(input.modelSettings ?? {
+        model: resolveModelArg(input.profileConfig.agentKind, input.profileConfig.preferences.model),
+        reasoningEffort: input.profileConfig.preferences.reasoningEffort,
+      }),
       images:
         input.capability.agentId === 'codex'
           ? policy.attachments

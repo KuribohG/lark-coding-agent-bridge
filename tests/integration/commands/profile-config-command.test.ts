@@ -90,27 +90,31 @@ describe('profile-aware account and config commands', () => {
     expect((root as unknown as { accounts?: unknown }).accounts).toBeUndefined();
   });
 
-  it('persists the picked model and clears it when "default" is chosen', async () => {
+  it('persists a hand-written model and effort, and clears both when default is chosen', async () => {
     vi.useFakeTimers();
     const h = await createHarness();
 
     await h.command('/config submit', {
-      model: 'claude-opus-4-8',
+      model: 'private/custom-model',
+      model_pick: '__manual__',
+      reasoning_effort: 'high',
       message_reply: 'text',
     });
     const withModel = await waitForRoot(h.rootDir, (candidate) =>
-      candidate.profiles.claude?.preferences.model === 'claude-opus-4-8',
+      candidate.profiles.claude?.preferences.model === 'private/custom-model',
     );
-    expect(withModel.profiles.claude?.preferences.model).toBe('claude-opus-4-8');
+    expect(withModel.profiles.claude?.preferences).toMatchObject({ model: 'private/custom-model', reasoningEffort: 'high' });
 
     await h.command('/config submit', {
       model: 'default',
+      reasoning_effort: 'default',
       message_reply: 'text',
     });
     const cleared = await waitForRoot(h.rootDir, (candidate) =>
       candidate.profiles.claude?.preferences.model === undefined,
     );
     expect(cleared.profiles.claude?.preferences.model).toBeUndefined();
+    expect(cleared.profiles.claude?.preferences.reasoningEffort).toBeUndefined();
   });
 
   it('keeps the current message reply mode when the config submit payload omits it', async () => {

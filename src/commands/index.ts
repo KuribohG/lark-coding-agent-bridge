@@ -1,10 +1,13 @@
+import { handleModelCommand, modelStatus } from './model';
+import { parseEffort, resolveModelSettings } from '../agent/model-settings';
+import { modelEnvironment } from '../runtime/model-settings';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute } from 'node:path';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { claudeCapability, codexCapability } from '../agent/capability';
-import { DEFAULT_MODEL, normalizeModelSelection, supportedModels } from '../agent/models';
+import { DEFAULT_MODEL, normalizeModelSelection, validateModelId } from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import {
@@ -176,6 +179,8 @@ const handlers: Record<string, Handler> = {
   '/help': handleHelp,
   '/account': handleAccount,
   '/config': handleConfig,
+  '/model': (args, ctx) => handleModelCommand('model', args, ctx),
+  '/effort': (args, ctx) => handleModelCommand('reasoningEffort', args, ctx),
   '/stop': handleStop,
   '/timeout': handleTimeout,
   '/ps': handlePs,
@@ -819,6 +824,7 @@ async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
       : undefined;
   const card = statusCard({
     profileName: ctx.controls.profile,
+    modelStatus: await modelStatus(ctx),
     cwd,
     sessionId: isCodex ? catalogEntry?.threadId : sess?.sessionId,
     emptySessionText: isCodex ? '(未建立)' : undefined,
@@ -1737,7 +1743,10 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
   // alive so we don't advertise a stale address.
   const sidecar = await readUiSidecar(commandProfilePaths(ctx).hostUiFile).catch(() => undefined);
   const consoleUrl = sidecar && isAlive(sidecar.pid) ? sidecar.url : undefined;
+  const environment = await modelEnvironment(ctx.controls);
   const card = configFormCard({
+    models: environment.models,
+    reasoningEffort: ctx.controls.cfg.preferences?.reasoningEffort,
     agentKind: ctx.controls.profileConfig.agentKind,
     mode: ctx.controls.profileConfig.mode,
     model: normalizeModelSelection(
@@ -1798,15 +1807,26 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       : getMessageReplyMode(ctx.controls.cfg);
   const rawTools = String(fv.show_tool_calls ?? '').trim();
   const showToolCalls = rawTools !== 'hide';
-  // Parse the model picker. Unexpected / empty values keep the current
-  // selection. Store `undefined` for the "default" sentinel to keep config
-  // tidy (resolveModelArg treats both the same way).
   const agentKind = ctx.controls.profileConfig.agentKind;
-  const rawModel = String(fv.model ?? '').trim();
-  const modelValid = rawModel !== '' && supportedModels(agentKind).some((m) => m.value === rawModel);
-  const modelSelection = modelValid
-    ? rawModel
-    : normalizeModelSelection(agentKind, ctx.controls.cfg.preferences?.model);
+  let modelSelection: string;
+  let reasoningEffort: import('../agent/model-settings').ReasoningEffort | undefined;
+  try {
+    const picked = fv.model_pick;
+    const rawModel = picked && picked !== '__manual__' ? String(picked) : fv.model;
+    modelSelection = rawModel === undefined
+      ? normalizeModelSelection(agentKind, ctx.controls.cfg.preferences?.model)
+      : String(rawModel).trim() === '' ? DEFAULT_MODEL : validateModelId(String(rawModel));
+    reasoningEffort = fv.reasoning_effort === undefined
+      ? ctx.controls.cfg.preferences?.reasoningEffort : parseEffort(fv.reasoning_effort, agentKind);
+    const environment = await modelEnvironment(ctx.controls);
+    const resolved = resolveModelSettings({
+      model: modelSelection === DEFAULT_MODEL ? undefined : modelSelection, reasoningEffort,
+    }, {}, environment);
+    if (reasoningEffort && resolved.reasoningEffort !== reasoningEffort) throw new Error(resolved.notice);
+  } catch (err) {
+    await reply(ctx, `设置未保存：${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
   const model = modelSelection === DEFAULT_MODEL ? undefined : modelSelection;
   const rawCotMessages = String(fv.cot_messages ?? '').trim();
   const cotMessages =
@@ -1887,6 +1907,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     const nextPreferences: AppPreferences = {
       ...(ctx.controls.cfg.preferences ?? {}),
       model,
+      reasoningEffort,
       messageReply,
       // Mark the messageReply value as living in the new (post-0.1.27)
       // semantic — `text` now means real plain text, not the lightweight
@@ -1957,6 +1978,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         agentKind,
         mode,
         model: modelSelection,
+        reasoningEffort,
         messageReply,
         showToolCalls,
         cotMessages,

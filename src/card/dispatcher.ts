@@ -83,6 +83,15 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   }
 
   const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
+  if (cmd === 'model.submit' && payload.settings_scope !== scope) {
+    // Never widen a topic preference to the whole chat after a failed lookup
+    // or a forwarded card. The payload only verifies the API-derived scope.
+    await deps.channel.send(chatId, { markdown: '设置未保存：无法确认卡片所在话题。请在目标话题/聊天重新发送 /model。' }, {
+      replyTo: deps.evt.messageId,
+      ...(mode === 'topic' ? { replyInThread: true } : {}),
+    });
+    return;
+  }
   if (cmd) {
     if (isSignedBridgeCallback(payload) && !verifyBridgeToken(deps, payload, scope, cmd)) {
       return;
@@ -146,10 +155,11 @@ async function resolveScope(
 ): Promise<{ scope: string; threadId: string | undefined; mode: 'p2p' | 'group' | 'topic' }> {
   const chatId = deps.evt.chatId;
   const mode = await deps.chatModeCache.resolve(deps.channel, chatId);
-  if (mode !== 'topic') {
+  if (mode === 'p2p') {
     return { scope: chatId, threadId: undefined, mode };
   }
-  // Topic group — need the carrier message's thread_id to compose scope.
+  // Converted topic groups may still report 'group'; the carrier message's
+  // thread_id is authoritative, just as it is for incoming text commands.
   // One API call per click; could cache by messageId if it ever becomes hot.
   const threadId = await lookupMessageThreadId(deps.channel, deps.evt.messageId);
   if (!threadId) {
@@ -157,7 +167,8 @@ async function resolveScope(
     // scope than fail the click silently.
     return { scope: chatId, threadId: undefined, mode };
   }
-  return { scope: `${chatId}:${threadId}`, threadId, mode };
+  if (mode !== 'topic') deps.chatModeCache.invalidate(chatId);
+  return { scope: `${chatId}:${threadId}`, threadId, mode: 'topic' };
 }
 
 function forwardToAgent(

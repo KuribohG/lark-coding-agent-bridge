@@ -40,6 +40,8 @@ export interface ConfigView {
   agentKind: AgentKind;
   mode: ProfileMode;
   model: string;
+  reasoningEffort: string;
+  reasoningEfforts: string[];
   models: ModelOption[];
   messageReply: MessageReply;
   showToolCalls: boolean;
