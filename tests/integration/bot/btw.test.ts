@@ -1,4 +1,4 @@
-import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
+import { LarkChannelError, type LarkChannel, type NormalizedMessage } from '@larksuite/channel';
 import { join } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -87,6 +87,109 @@ describe('/btw', () => {
     expect(main.stop).not.toHaveBeenCalled();
   });
 
+  it('replies in the original topic when the question was withdrawn and remembers the answer', async () => {
+    const h = await harness('codex', [answer('recovered answer'), answer('followup answer')]);
+    const send = h.ctx.channel.send.bind(h.ctx.channel);
+    const spy = vi.spyOn(h.ctx.channel, 'send').mockImplementation((chat, content, options) => {
+      if (options?.replyTo === 'q1') return Promise.reject(withdrawnMessage());
+      return send(chat, content, options);
+    });
+    await h.manager.enqueue('withdrawn question', h.ctx);
+    expect(h.sent).toEqual([{
+      content: { markdown: '**旁问 /btw**\n\nrecovered answer' },
+      options: { replyTo: 'root', replyInThread: true },
+    }]);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(h.ctx.channel.rawClient.im.v1.message.reply).toHaveBeenCalledWith({
+      path: { message_id: 'root' },
+      data: {
+        msg_type: 'post', reply_in_thread: true,
+        content: JSON.stringify({ zh_cn: { title: '', content: [[{ tag: 'md', text: '**旁问 /btw**\n\nrecovered answer' }]] } }),
+      },
+    });
+    await h.manager.enqueue('followup', h.next('q2'));
+    expect(h.agent.runOptions[1]?.prompt).toContain('recovered answer');
+    expect(h.catalog.activeFor(h.ctx.sessionCatalogIdentity!)?.threadId).toBe('parent');
+  });
+
+  it.each(['p2p', 'group'] as const)('delivers to the same %s chat after a withdrawn non-thread question', async chatType => {
+    const h = await harness('claude', [answer('recovered answer')]);
+    const ctx = { ...h.ctx, chatMode: chatType, msg: { ...h.ctx.msg, chatType, threadId: undefined, rootId: undefined } };
+    const send = h.ctx.channel.send.bind(h.ctx.channel);
+    vi.spyOn(h.ctx.channel, 'send').mockImplementation((chat, content, options) => {
+      if (options?.replyTo) return Promise.reject(withdrawnMessage());
+      return send(chat, content, options);
+    });
+    await h.manager.enqueue('withdrawn question', ctx);
+    expect(h.sent).toEqual([{
+      content: { markdown: '**旁问 /btw**\n\nrecovered answer' }, options: {},
+    }]);
+  });
+
+  it.each([undefined, 'q1'])('never sends a withdrawn topic question outside the topic without a usable root (%s)', async rootId => {
+    const h = await harness('claude', [answer('topic answer')]);
+    const spy = vi.spyOn(h.ctx.channel, 'send').mockRejectedValue(withdrawnMessage());
+    await h.manager.enqueue('question', { ...h.ctx, msg: { ...h.ctx.msg, rootId } });
+    expect(spy).toHaveBeenCalled();
+    for (const [chat, , options] of spy.mock.calls) {
+      expect(chat).toBe('chat');
+      expect(options).toEqual({ replyTo: 'q1', replyInThread: true });
+    }
+  });
+
+  it('does not change reply target for unrelated send failures', async () => {
+    const h = await harness('claude', [answer('answer')]);
+    const spy = vi.spyOn(h.ctx.channel, 'send').mockRejectedValue(new LarkChannelError('send_timeout', 'timeout'));
+    await h.manager.enqueue('question', h.ctx);
+    for (const [, , options] of spy.mock.calls) expect(options?.replyTo).toBe('q1');
+  });
+
+  it('keeps a failed root fallback inside the topic even when the API resolves with an error code', async () => {
+    const h = await harness('claude', [answer('topic answer')]);
+    const spy = vi.spyOn(h.ctx.channel, 'send').mockRejectedValue(withdrawnMessage());
+    vi.mocked(h.ctx.channel.rawClient.im.v1.message.reply).mockResolvedValue({ code: 230011, msg: 'The message was withdrawn.' });
+    await h.manager.enqueue('question', h.ctx);
+    expect(h.sent).toHaveLength(0);
+    expect(h.ctx.channel.rawClient.im.v1.message.reply).toHaveBeenCalled();
+    for (const [, , options] of spy.mock.calls) expect(options).toEqual({ replyTo: 'q1', replyInThread: true });
+    expect(h.ctx.channel.rawClient.im.v1.message.create).not.toHaveBeenCalled();
+  });
+
+  it('acknowledges queued questions immediately and cleans up after cancellation', async () => {
+    const h = await harness('claude', []);
+    const release = h.pool.tryAcquire()!;
+    const first = h.manager.enqueue('waiting', h.ctx);
+    const second = h.manager.enqueue('queued', h.next('q2'));
+    await vi.waitFor(() => expect(h.ctx.channel.addReaction).toHaveBeenCalledTimes(2));
+    expect(h.ctx.channel.addReaction).toHaveBeenCalledWith('q1', 'Typing');
+    expect(h.ctx.channel.addReaction).toHaveBeenCalledWith('q2', 'Typing');
+    h.manager.cancel(h.ctx.scope);
+    await Promise.all([first, second]);
+    release();
+    await vi.waitFor(() => expect(h.ctx.channel.removeReaction).toHaveBeenCalledTimes(2));
+    expect(h.agent.runOptions).toHaveLength(0);
+    expect(h.sent).toHaveLength(0);
+  });
+
+  it('does not wait for a slow reaction before answering and removes it when it arrives', async () => {
+    const h = await harness('claude', [answer('answer')]);
+    let resolve!: (id: string) => void;
+    vi.mocked(h.ctx.channel.addReaction).mockReturnValue(new Promise(r => { resolve = r; }));
+    await h.manager.enqueue('question', h.ctx);
+    expect(h.sent).toHaveLength(1);
+    resolve('late-reaction');
+    await vi.waitFor(() => expect(h.ctx.channel.removeReaction).toHaveBeenCalledWith('q1', 'late-reaction'));
+  });
+
+  it('still answers when reaction APIs fail', async () => {
+    const h = await harness('claude', [answer('first'), answer('second')]);
+    vi.mocked(h.ctx.channel.addReaction).mockRejectedValueOnce(new Error('reaction unavailable'));
+    vi.mocked(h.ctx.channel.removeReaction).mockRejectedValue(new Error('reaction cleanup unavailable'));
+    await h.manager.enqueue('question', h.ctx);
+    await h.manager.enqueue('followup', h.next('q2'));
+    expect(h.sent).toHaveLength(2);
+  });
+
   it('cancels side questions waiting for capacity, including queued followups', async () => {
     const h = await harness('claude', [answer('must not run')]);
     const release = h.pool.tryAcquire()!;
@@ -155,7 +258,18 @@ async function harness(kind: 'claude' | 'codex', events: AgentEvent[][]) {
   const sent: Array<{ content: unknown; options: unknown }> = [];
   const channel = { botIdentity: { openId: 'bot' }, send: async (_chat: string, content: unknown, options: unknown) => {
     sent.push({ content, options }); return { messageId: `reply-${sent.length}` };
-  } } as unknown as LarkChannel;
+  }, addReaction: vi.fn(async (id: string) => `reaction-${id}`), removeReaction: vi.fn(async () => {}),
+  rawClient: { im: { v1: { message: {
+    reply: vi.fn(async (request: { path: { message_id: string }; data: { content: string; reply_in_thread?: boolean } }) => {
+      sent.push({
+        content: { markdown: JSON.parse(request.data.content).zh_cn.content[0][0].text },
+        options: { replyTo: request.path.message_id, replyInThread: request.data.reply_in_thread },
+      });
+      return { code: 0, data: { message_id: `reply-${sent.length}` } };
+    }),
+    create: vi.fn(),
+  } } } },
+  } as unknown as LarkChannel;
   const agent = new FakeAgentAdapter({ id: kind, events });
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
   const catalog = new SessionCatalog(join(tmp.profile, 'catalog.json'));
@@ -168,7 +282,7 @@ async function harness(kind: 'claude' | 'codex', events: AgentEvent[][]) {
   controls.btw = manager;
   const ctx: CommandContext = { channel, scope: 'chat:topic', chatMode: 'topic', agent, sessions,
     sessionCatalog: catalog, workspaces, activeRuns, runExecutor: executor, controls,
-    msg: { chatId: 'chat', chatType: 'group', senderId: 'user', threadId: 'topic', messageId: 'q1', content: '', resources: [], mentions: [] } as unknown as NormalizedMessage,
+    msg: { chatId: 'chat', chatType: 'group', senderId: 'user', threadId: 'topic', rootId: 'root', messageId: 'q1', content: '', resources: [], mentions: [] } as unknown as NormalizedMessage,
   };
   ctx.sessionCatalogIdentity = await commandSessionCatalogIdentity({ ...ctx, mode: 'topic', access: { ok: true, reason: 'allowed-user' } });
   const seed = (id: string) => {
@@ -181,4 +295,10 @@ async function harness(kind: 'claude' | 'codex', events: AgentEvent[][]) {
   return { ctx, agent, sent, manager, path, catalog, pool, seed,
     next: (id: string) => ({ ...ctx, msg: { ...ctx.msg, messageId: id } }),
   };
+}
+
+function withdrawnMessage(): LarkChannelError {
+  return new LarkChannelError('format_error', 'The message was withdrawn.', {
+    cause: { response: { status: 400, data: { code: 230011, msg: 'The message was withdrawn.' } } },
+  });
 }

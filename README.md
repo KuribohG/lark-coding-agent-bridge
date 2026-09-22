@@ -169,6 +169,8 @@ DMs do not require an @ mention. Groups and topic groups require `@bot` by defau
 
 `/btw <question>` returns one reply labeled “旁问 /btw” in the current topic (or current chat for regular groups and DMs). Only `/btw` is registered, with no aliases. Claude and Codex share this behavior; a main session must already exist in this scope.
 
+A “Typing” reaction acknowledges the question while it is queued or running, and is removed when it finishes or is cancelled. If the question is withdrawn before the answer is sent, the bridge retries against the original topic root when available, or sends to the same chat for non-thread questions.
+
 Each question forks the main session's currently saved context and includes earlier successful side Q&A. Side questions have a separate per-scope queue, are never batched, and do not change the main session binding. The main task continues; side work can run concurrently when a process slot is available. The side agent is instructed to answer from existing context without continuing the main task.
 
 History is private to the bot profile and topic/chat, shared by users in that scope, and survives bridge restarts. Replay is limited to the latest 20 exchanges and about 60000 characters; oversized individual history entries are truncated. `/new`, workspace switches, and successful `/resume` clear side history for the scope. `/stop` cancels both the main task and active/queued side questions. Automatic topic-history imports exclude side Q&A; explicitly quoting a side reply can still bring it into the main conversation.

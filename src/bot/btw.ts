@@ -9,6 +9,7 @@ import { resolveRunModelSettings } from '../runtime/model-settings';
 import { BtwStore } from '../session/btw-store';
 import { startRunFlow } from './run-flow';
 import type { QuotedContext } from './quote';
+import { addWorkingReaction, removeReaction } from './reaction';
 
 const LABEL = '旁问 /btw';
 
@@ -28,6 +29,7 @@ export class BtwManager {
     if (this.closing || this.store.hasMessage(ctx.scope, ctx.msg.messageId)) return;
     const controller = new AbortController();
     this.jobs.set(controller, ctx.scope);
+    const reaction = addWorkingReaction(ctx.channel, ctx.msg.messageId);
     const persisted = this.store.markMessage(ctx.scope, ctx.msg.messageId);
     const previous = this.tails.get(ctx.scope) ?? Promise.resolve();
     const job = Promise.all([previous, persisted]).then(async () => {
@@ -38,7 +40,11 @@ export class BtwManager {
     }).catch(async err => {
       log.fail('btw', err);
       if (!controller.signal.aborted) await this.reply(ctx, '旁问未能完成，请稍后重试。').catch(() => {});
-    }).finally(() => { this.jobs.delete(controller); });
+    }).finally(() => {
+      this.jobs.delete(controller);
+      // A slow reaction API must not hold up answers, cancellation, or the next question.
+      void reaction.then(id => { if (id) return removeReaction(ctx.channel, ctx.msg.messageId, id); });
+    });
     this.tails.set(ctx.scope, job);
     await job;
     if (this.tails.get(ctx.scope) === job) this.tails.delete(ctx.scope);
@@ -62,10 +68,33 @@ export class BtwManager {
 
   private async reply(ctx: CommandContext, answer: string): Promise<void> {
     if (this.closing) return;
-    const sent = await ctx.channel.send(ctx.msg.chatId, { markdown: `**${LABEL}**\n\n${answer}` }, {
+    const content = { markdown: `**${LABEL}**\n\n${answer}` };
+    const options = {
       replyTo: ctx.msg.messageId,
       ...(ctx.msg.threadId ? { replyInThread: true } : {}),
-    });
+    };
+    let sent;
+    try {
+      sent = await ctx.channel.send(ctx.msg.chatId, content, options);
+    } catch (err) {
+      if (!isWithdrawnMessage(err) || this.closing) throw err;
+      if (ctx.msg.threadId || ctx.chatMode === 'topic') {
+        if (!ctx.msg.rootId || ctx.msg.rootId === ctx.msg.messageId) throw err;
+        // Use reply directly: channel.send can fall back to creating a message outside the topic.
+        const response = await ctx.channel.rawClient.im.v1.message.reply({
+          path: { message_id: ctx.msg.rootId },
+          data: {
+            msg_type: 'post', reply_in_thread: true,
+            content: JSON.stringify({ zh_cn: { title: '', content: [[{ tag: 'md', text: content.markdown }]] } }),
+          },
+        });
+        if (response.code || !response.data?.message_id) throw new Error(response.msg || 'missing topic reply message ID');
+        sent = { messageId: response.data.message_id };
+      } else {
+        sent = await ctx.channel.send(ctx.msg.chatId, content, {});
+      }
+      log.info('btw', 'reply-target-fallback', { scope: ctx.scope, messageId: ctx.msg.messageId });
+    }
     if (sent.messageId) await this.store.markMessage(ctx.scope, sent.messageId);
   }
 
@@ -120,4 +149,14 @@ export class BtwManager {
     await this.reply(ctx, answer);
     if (!signal.aborted) await this.store.append(ctx.scope, generation, { question, answer });
   }
+}
+
+function isWithdrawnMessage(err: unknown): boolean {
+  // The SDK wraps Feishu 230011 as format_error and preserves the API error in cause.
+  for (let depth = 0; depth < 5 && err && typeof err === 'object'; depth++) {
+    const raw = err as { code?: unknown; data?: { code?: unknown }; response?: { data?: { code?: unknown } }; cause?: unknown };
+    if ((raw.response?.data?.code ?? raw.data?.code ?? raw.code) === 230011) return true;
+    err = raw.cause;
+  }
+  return false;
 }
