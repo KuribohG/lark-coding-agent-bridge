@@ -18,7 +18,7 @@ import {
   type AgentRun,
   type AgentRunOptions,
 } from '../types';
-import { translateEvent } from './stream-json';
+import { isTaskNotificationResult, translateEvent } from './stream-json';
 import { spawnWithDeadline } from '../deadline';
 
 export interface ClaudeAdapterOptions {
@@ -237,7 +237,7 @@ async function* createEventStream(
       }
       if (finalAnswer && parsed && typeof parsed === 'object') {
         const result = parsed as { type?: string; result?: unknown; is_error?: boolean };
-        if (result.type === 'result' && !result.is_error && typeof result.result === 'string') {
+        if (result.type === 'result' && !result.is_error && typeof result.result === 'string' && !isTaskNotificationResult(parsed)) {
           yield { type: 'final_text', content: result.result };
         }
       }

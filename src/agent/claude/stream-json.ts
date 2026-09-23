@@ -28,6 +28,15 @@ interface ClaudeRawEvent {
   is_error?: boolean;
   result?: string;
   errors?: string[];
+  origin?: { kind?: string };
+}
+
+// A resumed session whose earlier background tasks were orphaned emits a
+// synthetic empty result for each notification before the prompt's own turn.
+export function isTaskNotificationResult(raw: unknown): boolean {
+  if (!raw || typeof raw !== 'object') return false;
+  const evt = raw as ClaudeRawEvent;
+  return evt.type === 'result' && evt.origin?.kind === 'task-notification';
 }
 
 export function* translateEvent(raw: unknown): Generator<AgentEvent> {
@@ -74,6 +83,7 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
   }
 
   if (evt.type === 'result') {
+    if (isTaskNotificationResult(evt)) return;
     if (evt.is_error || evt.subtype?.startsWith('error')) {
       yield { type: 'error', message: evt.errors?.join('\n') || evt.result || evt.subtype || 'Claude task failed', terminationReason: 'failed' };
       return;

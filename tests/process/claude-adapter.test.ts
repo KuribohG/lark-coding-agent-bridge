@@ -166,6 +166,23 @@ describe('ClaudeAdapter process contract', () => {
     expect(() => adapter.run({ runId: 'invalid', prompt: 'no parent', cwd: fake.dir, forkSession: true })).toThrow('parent');
   });
 
+  it('skips orphaned task-notification results before the prompt turn', async () => {
+    const fake = await createFakeClaude({ lines: [
+      { type: 'system', subtype: 'task_notification', task_id: 'bg-1', status: 'stopped', session_id: 'child' },
+      { type: 'system', subtype: 'init', session_id: 'child' },
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 0, result: '', origin: { kind: 'task-notification' }, session_id: 'child' },
+      { type: 'system', subtype: 'init', session_id: 'child' },
+      { type: 'assistant', message: { content: [{ type: 'text', text: 'answer' }] } },
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 1, result: 'answer', session_id: 'child' },
+    ] });
+    cleanup.push(fake.dir);
+    const run = new ClaudeAdapter({ binary: fake.path }).run({ runId: 'side', prompt: 'q', cwd: fake.dir, sessionId: 'parent', forkSession: true });
+    const events = await collect(run.events);
+    expect(events.filter((event) => event.type === 'final_text')).toEqual([{ type: 'final_text', content: 'answer' }]);
+    expect(events.filter((event) => event.type === 'done')).toHaveLength(1);
+    expect(events.findIndex((event) => event.type === 'done')).toBeGreaterThan(events.findIndex((event) => event.type === 'text'));
+  });
+
   it('includes stderr when the process exits non-zero', async () => {
     const fake = await createFakeClaude({
       lines: [{ type: 'assistant', message: { content: [{ type: 'text', text: 'before failure' }] } }],
