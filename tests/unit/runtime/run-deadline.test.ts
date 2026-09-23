@@ -153,6 +153,15 @@ describe('absolute task deadlines', () => {
     expect(await run.result).toBe('quota');
     expect(agent.runs).toHaveLength(1);
   });
+
+  it('classifies a gateway budget_exceeded error as quota', async () => {
+    const agent = new FakeAgentAdapter({ events: [{ type: 'error', terminationReason: 'failed',
+      message: 'API Error: 400 {"error":{"message":"Budget has been exceeded! Current cost: 5","type":"budget_exceeded"}}' }] });
+    const executor = new RunExecutor({ agent, pool: new ProcessPool(() => 1), activeRuns: new ActiveRuns() });
+    const run = await executor.submit({ scopeId: 's', policy: policy(), deadlineAt: Date.now() + 60_000 });
+    for await (const _ of run.subscribe()) { /* drain */ }
+    expect(await run.result).toBe('quota');
+  });
 });
 
 function policy(): RunPolicyAllow {

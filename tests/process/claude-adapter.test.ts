@@ -127,6 +127,29 @@ describe('ClaudeAdapter process contract', () => {
     expect(record.argv[5]).toBe('bypassPermissions');
   });
 
+  it('maps timed-run ultra to the ultracode settings file and blocks scheduling tools before the deadline', async () => {
+    const fake = await createFakeClaude({ lines: [{ type: 'result', session_id: 'sess-ultra' }] });
+    cleanup.push(fake.dir);
+
+    const run = new ClaudeAdapter({ binary: fake.path }).run({
+      runId: 'run-ultra',
+      prompt: 'deep task',
+      cwd: fake.dir,
+      reasoningEffort: 'ultra',
+      deadlineAt: Date.now() + 60_000,
+    });
+    try {
+      expect(await collect(run.events)).toContainEqual({ type: 'done', sessionId: 'sess-ultra', terminationReason: 'normal' });
+    } finally { await run.stop(); }
+    const record = await readRecord(fake.recordPath);
+
+    expect(record.argv).not.toContain('--effort');
+    expect(record.argv).not.toContain('ultra');
+    expect(JSON.parse(record.settings!)).toEqual({ ultracode: true, workflowSizeGuideline: 'large' });
+    expect(record.argv[record.argv.indexOf('--disallowedTools') + 1]).toBe('CronCreate,CronDelete,CronList,ScheduleWakeup');
+    expect(record.stdin).toBe('deep task');
+  });
+
   it('forks a parent for a side answer and exposes the final result', async () => {
     const fake = await createFakeClaude({ lines: [
       { type: 'assistant', message: { content: [{ type: 'text', text: 'intermediate' }] } },
@@ -252,6 +275,8 @@ async function createFakeClaude(options: {
       'const argv = process.argv.slice(2);',
       'const spIdx = argv.indexOf("--append-system-prompt-file");',
       'const systemPrompt = spIdx !== -1 ? readFileSync(argv[spIdx + 1], "utf8") : null;',
+      'const settingsIdx = argv.indexOf("--settings");',
+      'const settings = settingsIdx !== -1 ? readFileSync(argv[settingsIdx + 1], "utf8") : null;',
       'let stdin = "";',
       'process.stdin.on("data", (c) => { stdin += c; });',
       'process.stdin.on("end", () => {',
@@ -259,6 +284,7 @@ async function createFakeClaude(options: {
       '    argv,',
       '    stdin,',
       '    systemPrompt,',
+      '    settings,',
       '    cwd: process.cwd(),',
       '    env: {',
       '      LARK_CHANNEL: process.env.LARK_CHANNEL,',
@@ -284,6 +310,7 @@ async function readRecord(path: string): Promise<{
   argv: string[];
   stdin: string;
   systemPrompt: string | null;
+  settings: string | null;
   cwd: string;
   env: {
     LARK_CHANNEL?: string;
@@ -297,6 +324,7 @@ async function readRecord(path: string): Promise<{
     argv: string[];
     stdin: string;
     systemPrompt: string | null;
+    settings: string | null;
     cwd: string;
     env: {
       LARK_CHANNEL?: string;

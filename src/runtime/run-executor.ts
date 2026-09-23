@@ -242,7 +242,7 @@ export class RunExecutor {
       now: this.now,
       onTerminal: (event) => {
         terminal = event.type === 'done' && event.terminationReason === 'normal' ? 'completed' : 'failed';
-        if (input.deadlineAt !== undefined && event.type === 'error' && /\[bridge-quota\]|insufficient_quota|quota_exceeded|credit balance (?:is )?too low|daily (?:quota|budget) (?:is )?(?:exhausted|exceeded)/i.test(event.message)) terminal = 'quota';
+        if (input.deadlineAt !== undefined && event.type === 'error' && /\[bridge-quota\]|insufficient_quota|quota_exceeded|budget_exceeded|budget has been exceeded|credit balance (?:is )?too low|daily (?:quota|budget) (?:is )?(?:exhausted|exceeded)/i.test(event.message)) terminal = 'quota';
         // The independent watchdog can fire before this event loop's timer.
         if (input.deadlineAt !== undefined && input.deadlineAt <= this.now() && terminal !== 'completed') {
           handle.interrupted = true;

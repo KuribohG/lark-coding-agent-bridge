@@ -50,6 +50,14 @@ describe.skipIf(process.platform !== 'linux')('independent deadline process guar
     } finally { await tmp.cleanup(); }
   }, 8000);
 
+  it('treats a gateway budget_exceeded Claude result as exhausted quota', async () => {
+    const line = JSON.stringify({ type: 'result', subtype: 'success', is_error: true,
+      result: 'API Error: 400 {"error":{"message":"Budget has been exceeded! Current cost: 5, Max budget: 4","type":"budget_exceeded","code":"400"}}' });
+    const result = await runGuard(Date.now() + 4000, `console.log(${JSON.stringify(line)}); setInterval(()=>{},1000)`);
+    expect(result.code).toBe(125);
+    expect(result.err).toContain('[bridge-quota]');
+  }, 8000);
+
   it('rejects an expired task before the command can do any work', async () => {
     const result = await runGuard(Date.now() - 1, "console.log('started')");
     expect(result.code).toBe(124);

@@ -8,6 +8,10 @@ import { supportedModels, validateModelId, type ModelOption } from './models';
 
 export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+const CODEX_EFFORTS: string[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
+const CLAUDE_EFFORTS: string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+/** Strongest tier. Claude maps it to ultracode (xhigh + standing workflow orchestration), offered only to deadline-bounded runs. */
+export const ULTRA_EFFORT = 'ultra';
 export interface ModelSettings {
   model?: string;
   reasoningEffort?: ReasoningEffort;
@@ -22,18 +26,20 @@ export interface ResolvedModelSettings extends ModelSettings {
   notice?: string;
 }
 
-export function parseEffort(value: unknown, agentKind: AgentKind): ReasoningEffort | undefined {
+export function parseEffort(value: unknown, agentKind: AgentKind, opts: { timedRun?: boolean } = {}): ReasoningEffort | undefined {
   if (value === undefined || value === '' || value === 'default') return undefined;
-  if (typeof value !== 'string' || !REASONING_EFFORTS.includes(value as ReasoningEffort) ||
-      (agentKind === 'claude' && !['low', 'medium', 'high', 'xhigh', 'max'].includes(value))) {
+  if (typeof value !== 'string' || !(opts.timedRun ? timedRunEfforts(agentKind) : availableEfforts(agentKind)).includes(value)) {
     throw new Error(`不支持的思考强度：${String(value)}。`);
   }
   return value as ReasoningEffort;
 }
 
 export function availableEfforts(agentKind: AgentKind, model?: ModelOption): string[] {
-  return model?.reasoningEfforts ?? (agentKind === 'claude'
-    ? ['low', 'medium', 'high', 'xhigh', 'max'] : [...REASONING_EFFORTS]);
+  return model?.reasoningEfforts ?? [...(agentKind === 'claude' ? CLAUDE_EFFORTS : CODEX_EFFORTS)];
+}
+
+export function timedRunEfforts(agentKind: AgentKind): string[] {
+  return agentKind === 'claude' ? [...CLAUDE_EFFORTS, ULTRA_EFFORT] : availableEfforts(agentKind);
 }
 
 /** Validate the combined settings; unknown provider models remain usable. */

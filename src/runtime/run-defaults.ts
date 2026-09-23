@@ -33,7 +33,7 @@ export function parseRunSettings(form: Record<string, unknown>, defaults: RunDef
   return {
     until, timeZone, marginMinutes,
     model: model && model !== 'default' ? validateModelId(model) : undefined,
-    reasoningEffort: parseEffort(form.effort ?? defaults.reasoningEffort, agentKind),
+    reasoningEffort: parseEffort(form.effort ?? defaults.reasoningEffort, agentKind, { timedRun: true }),
   };
 }
 

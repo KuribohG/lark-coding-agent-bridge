@@ -22,6 +22,7 @@ import { startChannel } from '../../../src/bot/channel';
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const fn of cleanup.splice(0).reverse()) await fn();
 });
 
@@ -172,6 +173,28 @@ describe('one-shot tasks through Lark commands and cards', () => {
     expect(h.agent.options).toHaveLength(0);
   });
 
+  it('keeps the same /run usages on Claude, with ultra offered only to timed runs', async () => {
+    const h = await harness('claude');
+    await h.message('/run defaults --until 2h --tz Asia/Shanghai --margin 5 --effort ultra');
+    expect(await readRunDefaults(h.controls)).toMatchObject({ until: '2h', reasoningEffort: 'ultra' });
+    await h.message('/run 审查项目并保存发现的问题');
+    const store = await timedRuns(h.controls);
+    expect(store.latest(h.scope)).toMatchObject({ task: '审查项目并保存发现的问题', modelSettings: { reasoningEffort: 'ultra' } });
+    await h.message('/run --until 90m --tz UTC --effort ultra -- 显式参数任务');
+    const job = store.latest(h.scope)!;
+    expect(job).toMatchObject({ task: '显式参数任务', modelSettings: { reasoningEffort: 'ultra' } });
+    await h.message('/run');
+    expect(JSON.stringify(h.channel.sent.at(-1))).toContain('Claude ultracode');
+    await h.click('run.start', job.id);
+    await vi.waitFor(() => expect(h.agent.options).toHaveLength(1));
+    expect(h.agent.options[0]).toMatchObject({ deadlineAt: job.stopAt, reasoningEffort: 'ultra' });
+    h.agent.finish(0);
+    await vi.waitFor(() => expect(store.get(job.id)?.state).toBe('completed'));
+    await vi.waitFor(() => expect(h.controls.activeTimedRun?.(h.scope)).toBeUndefined());
+    await h.message('/effort ultra');
+    expect(h.controls.profileConfig.preferences).toMatchObject({ reasoningEffort: 'high' });
+  });
+
   it('starts a card-submitted manual model and supports /stop without changing preferences', async () => {
     const h = await harness();
     await h.message('/run');
@@ -216,12 +239,16 @@ class GateAgent implements AgentAdapter {
   }
 }
 
-async function harness() {
+async function harness(agentKind: 'claude' | 'codex' = 'codex') {
   const tmp = await createTmpProfile('timed-channel-');
   const codexHome = join(tmp.root, 'codex-home');
   await mkdir(codexHome);
   await writeFile(join(codexHome, 'config.toml'), '');
-  const profile = createDefaultProfileConfig({ agentKind: 'codex',
+  // Keep the operator's real Claude settings out of the model environment.
+  vi.stubEnv('CLAUDE_CONFIG_DIR', join(tmp.root, 'claude-home'));
+  vi.stubEnv('ANTHROPIC_MODEL', undefined);
+  vi.stubEnv('CLAUDE_CODE_EFFORT_LEVEL', undefined);
+  const profile = createDefaultProfileConfig({ agentKind,
     accounts: { app: { id: 'test', secret: 'test-secret', tenant: 'feishu' } },
     access: { allowedChats: ['oc_chat'], allowedUsers: ['owner', 'reader'], admins: ['owner'] },
     codex: { binaryPath: 'codex', codexHome },

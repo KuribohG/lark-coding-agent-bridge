@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { modelRunArguments, readModelEnvironment, resolveModelSettings } from '../../../src/agent/model-settings';
+import { availableEfforts, modelRunArguments, parseEffort, readModelEnvironment, resolveModelSettings, timedRunEfforts } from '../../../src/agent/model-settings';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createTmpProfile } from '../../helpers/tmp-profile';
 
@@ -28,6 +28,16 @@ describe('model settings resolution', () => {
     const resolved = resolveModelSettings({ reasoningEffort: 'medium' }, { model: 'provider/model' }, environment);
     expect(resolved).toMatchObject({ reasoningEffort: 'high', effortSource: 'model', modelSource: 'scope' });
     expect(resolved.notice).toContain('不支持 medium');
+  });
+
+  it('offers Claude ultra only to timed runs and keeps Codex ultra everywhere', () => {
+    expect(timedRunEfforts('claude')).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+    expect(availableEfforts('claude')).not.toContain('ultra');
+    expect(parseEffort('ultra', 'claude', { timedRun: true })).toBe('ultra');
+    expect(() => parseEffort('ultra', 'claude')).toThrow('不支持');
+    expect(parseEffort('ultra', 'codex')).toBe('ultra');
+    expect(parseEffort('ultra', 'codex', { timedRun: true })).toBe('ultra');
+    expect(() => parseEffort('ultracode', 'claude', { timedRun: true })).toThrow('不支持');
   });
 
   it('reads a profile-local Codex catalog and tolerates a corrupt optional cache', async () => {

@@ -73,7 +73,8 @@ process.stdin.pipe(child.stdin);
 child.stdin.on('error', () => {});
 child.stdout.pipe(process.stdout);
 child.stderr.pipe(process.stderr);
-const quotaError = /\binsufficient_quota\b|\bquota_exceeded\b|credit balance (?:is )?too low|daily (?:quota|budget) (?:is )?(?:exhausted|exceeded)/i;
+// budget_exceeded: LiteLLM-style gateway spend cap (HTTP 400), used by proxied Claude and Codex.
+const quotaError = /\binsufficient_quota\b|\bquota_exceeded\b|\bbudget_exceeded\b|budget has been exceeded|credit balance (?:is )?too low|daily (?:quota|budget) (?:is )?(?:exhausted|exceeded)/i;
 let stderrTail = '';
 child.stderr.on('data', (chunk) => {
   stderrTail = (stderrTail + chunk.toString()).slice(-8192);

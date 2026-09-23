@@ -1,4 +1,4 @@
-import { parseEffort } from '../model-settings';
+import { ULTRA_EFFORT, parseEffort } from '../model-settings';
 import { validateModelId } from '../models';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -72,7 +72,8 @@ export class ClaudeAdapter implements AgentAdapter {
     // stream-json response. Pass the prompt via stdin and the appended system
     // prompt via a temp file (the same approach the Codex adapter uses) so no
     // special characters ever reach the shell.
-    const systemPromptFile = writeSystemPromptFile(buildBridgeSystemPrompt(this.botIdentity));
+    const runFiles = writeRunFiles(buildBridgeSystemPrompt(this.botIdentity),
+      opts.reasoningEffort === ULTRA_EFFORT ? ULTRACODE_SETTINGS : undefined);
 
     const args = [
       '-p',
@@ -82,12 +83,15 @@ export class ClaudeAdapter implements AgentAdapter {
       '--permission-mode',
       opts.permissionMode ?? CLAUDE_DEFAULT_PERMISSION_MODE,
       '--append-system-prompt-file',
-      systemPromptFile.path,
+      runFiles.systemPromptPath,
     ];
     if (opts.sessionId) args.push('--resume', opts.sessionId);
     if (opts.forkSession) args.push('--fork-session');
     if (opts.model) args.push('--model', validateModelId(opts.model));
-    if (opts.reasoningEffort) args.push('--effort', parseEffort(opts.reasoningEffort, 'claude')!);
+    // ultra maps to the ultracode session setting, which also pins effort to xhigh; it has no --effort value.
+    if (runFiles.settingsPath) args.push('--settings', runFiles.settingsPath);
+    else if (opts.reasoningEffort) args.push('--effort', parseEffort(opts.reasoningEffort, 'claude')!);
+    if (opts.deadlineAt !== undefined) args.push('--disallowedTools', DEADLINE_DISALLOWED_TOOLS.join(','));
 
     const child = spawnWithDeadline(this.binary, args, {
       cwd: opts.cwd,
@@ -130,11 +134,11 @@ export class ClaudeAdapter implements AgentAdapter {
 
     child.on('error', (err) => {
       runtimeError = err;
-      systemPromptFile.cleanup();
+      runFiles.cleanup();
     });
     child.on('exit', (code, signal) => {
       log.info('agent', 'exit', { pid: child.pid ?? null, code, signal });
-      systemPromptFile.cleanup();
+      runFiles.cleanup();
     });
     child.stdin.on('error', (err) => {
       log.warn('agent', 'stdin-error', { message: err.message });
@@ -284,17 +288,28 @@ async function* createEventStream(
   }
 }
 
+const ULTRACODE_SETTINGS = { ultracode: true, workflowSizeGuideline: 'large' };
+// Session scheduling tools could fire after the watchdog's deadline.
+const DEADLINE_DISALLOWED_TOOLS = ['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup'];
+
 /**
- * Persist the appended system prompt to a throwaway temp file so it can be
- * passed via `--append-system-prompt-file` instead of argv. Returns the path
- * plus an idempotent, best-effort cleanup that removes the temp directory.
+ * Persist the appended system prompt (and optional flag settings) to throwaway
+ * temp files so neither goes through argv. Returns the paths plus an
+ * idempotent, best-effort cleanup that removes the temp directory.
  */
-function writeSystemPromptFile(content: string): { path: string; cleanup: () => void } {
+function writeRunFiles(systemPrompt: string, settings?: object): {
+  systemPromptPath: string;
+  settingsPath?: string;
+  cleanup: () => void;
+} {
   const dir = mkdtempSync(join(tmpdir(), 'lark-claude-'));
-  const path = join(dir, 'append-system-prompt.md');
-  writeFileSync(path, content, 'utf8');
+  const systemPromptPath = join(dir, 'append-system-prompt.md');
+  writeFileSync(systemPromptPath, systemPrompt, 'utf8');
+  const settingsPath = settings ? join(dir, 'settings.json') : undefined;
+  if (settingsPath) writeFileSync(settingsPath, JSON.stringify(settings), 'utf8');
   return {
-    path,
+    systemPromptPath,
+    ...(settingsPath ? { settingsPath } : {}),
     cleanup: () => {
       try {
         rmSync(dir, { recursive: true, force: true });
