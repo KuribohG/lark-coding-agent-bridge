@@ -37,7 +37,7 @@ export function modelFormCard(input: {
         },
         { tag: 'button', name: 'save', type: 'primary', form_action_type: 'submit',
           text: { tag: 'plain_text', content: `保存到${input.scopeLabel}` },
-          behaviors: [{ type: 'callback', value: { cmd: 'model.submit', settings_scope: input.scope, agent_kind: input.agentKind } }],
+          behaviors: [{ type: 'callback', value: { cmd: 'model.submit', settings_scope: input.scope } }],
         },
       ] },
     ] },

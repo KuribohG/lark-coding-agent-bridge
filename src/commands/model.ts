@@ -19,8 +19,8 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
   const reply = (markdown: string) => ctx.channel.send(ctx.msg.chatId, { markdown }, replyOptions(ctx));
   let saved = false;
   try {
-    const agentKind = ctx.controls.profileConfig.agentKind;
     const [store, environment] = await Promise.all([scopePreferences(ctx.controls), modelEnvironment(ctx.controls)]);
+    const agentKind = ctx.controls.profileConfig.agentKind;
     const overrides = store.get(agentKind, ctx.scope);
     if (!args.trim()) {
       const resolved = resolveModelSettings(ctx.controls.profileConfig.preferences, overrides, environment);
@@ -53,8 +53,7 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
       target === 'profile' ? {} : { ...overrides, ...patch }, environment,
     );
     if (patch.reasoningEffort && next.reasoningEffort !== patch.reasoningEffort) throw new Error(next.notice);
-    if (ctx.controls.profileConfig.agentKind !== agentKind) throw new Error('执行引擎已改变，请重新设置模型。');
-    if (target === 'profile') await saveModelPreferences(ctx.controls, patch, agentKind);
+    if (target === 'profile') await saveModelPreferences(ctx.controls, patch);
     else await store.update(agentKind, ctx.scope, patch);
     saved = true;
     await reply(`已保存到${target === 'profile' ? '此 bot 默认值（已有聊天覆盖保留）' : modelScopeLabel(ctx)}。\n${modelSettingsSummary(next)}\n下一轮新任务生效，当前任务继续原设置。`);

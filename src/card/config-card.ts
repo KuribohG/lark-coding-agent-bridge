@@ -135,10 +135,6 @@ export function configFormCard(opts: ConfigFormOpts): object {
             ]
           : []),
         { tag: 'hr' },
-        { tag: 'markdown', content: '**全局执行引擎：' + (opts.agentKind === 'codex' ? 'Codex' : 'Claude Code') +
-          '**\n切换对这个 bot 的所有聊天生效；两种引擎分别保存会话和模型设置。' },
-        { tag: 'button', text: { tag: 'plain_text', content: '切换执行引擎' },
-          behaviors: [{ type: 'callback', value: { cmd: 'agent' } }] },
         {
           tag: 'form',
           name: 'config_form',
@@ -309,7 +305,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
                       text: { tag: 'plain_text', content: '保存为此 bot 默认值' },
                       type: 'primary',
                       form_action_type: 'submit',
-                      behaviors: [{ type: 'callback', value: { cmd: 'config.submit.' + opts.agentKind } }],
+                      behaviors: [{ type: 'callback', value: { cmd: 'config.submit' } }],
                     },
                   ],
                 },

@@ -1,5 +1,4 @@
 import { handleModelCommand, modelStatus } from './model';
-import { handleAgent } from './agent';
 import { handleRun } from './run';
 import type { BtwManager } from '../bot/btw';
 import type { TimedRun } from '../runtime/timed-runs';
@@ -94,8 +93,6 @@ import type { MeetingSession } from '../meeting/session';
 import { hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
 
 export interface Controls {
-  switchAgent?(next: import('../config/profile-schema').AgentKind, expected: import('../config/profile-schema').AgentKind): Promise<void>;
-  agentSwitching?: boolean;
   btw?: BtwManager;
   launchTimedRun?(job: TimedRun, message: NormalizedMessage): Promise<void>;
   cancelTimedRun?(scope: string, id?: string): void;
@@ -189,7 +186,6 @@ const handlers: Record<string, Handler> = {
   '/help': handleHelp,
   '/account': handleAccount,
   '/config': handleConfig,
-  '/agent': handleAgent,
   '/run': handleRun,
   '/btw': async (args, ctx) => {
     if (ctx.controls.btw) await ctx.controls.btw.enqueue(args, ctx);
@@ -215,7 +211,6 @@ const handlers: Record<string, Handler> = {
  * owner is always allowed, while empty admin list means no listed admins.
  */
 const ADMIN_COMMANDS = new Set([
-  '/agent',
   '/account',
   '/config',
   '/ps',
@@ -244,10 +239,6 @@ export async function tryHandleCommand(ctx: CommandContext): Promise<boolean> {
   const args = cmd === '/run' ? trimmed.slice(cmd.length).trimStart() : parts.slice(1).join(' ');
   const h = handlers[cmd];
   if (!h) return false;
-  if (ctx.controls.agentSwitching) {
-    await reply(ctx, '执行引擎正在切换，请稍后重试。');
-    return true;
-  }
   if (
     isAdminCommand(cmd) &&
     !canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok
@@ -276,10 +267,6 @@ export async function runCommandHandler(
 ): Promise<boolean> {
   const h = handlers[`/${name}`];
   if (!h) return false;
-  if (ctx.controls.agentSwitching) {
-    await reply(ctx, '执行引擎正在切换，请稍后重试。');
-    return true;
-  }
   if (
     isAdminCommand(name) &&
     !canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok
@@ -371,7 +358,7 @@ async function handleNew(args: string, ctx: CommandContext): Promise<void> {
     });
   }
   ctx.controls.btw?.reset(ctx.scope);
-  if (ctx.controls.profileConfig.agentKind === 'claude') ctx.sessions.clear(ctx.scope);
+  ctx.sessions.clear(ctx.scope);
   await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
 }
 
@@ -1758,10 +1745,6 @@ async function handleConfig(args: string, ctx: CommandContext): Promise<void> {
     case '':
       return showConfigForm(ctx);
     case 'submit':
-      if (args.trim().split(/\s+/)[1] && args.trim().split(/\s+/)[1] !== ctx.controls.profileConfig.agentKind) {
-        await reply(ctx, '执行引擎已改变，请重新打开 /config。');
-        return;
-      }
       return submitConfig(ctx);
     case 'cancel':
       return cancelConfig(ctx);
@@ -1977,7 +1960,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         larkCliPolicyApplied = true;
         failureStep = 'config.save';
       }
-      await savePreferencesConfig(ctx, nextPreferences, requireMentionInGroup, larkCliIdentity, mode, agentKind);
+      await savePreferencesConfig(ctx, nextPreferences, requireMentionInGroup, larkCliIdentity, mode);
     } catch (err) {
       let rollbackFailed = false;
       if (larkCliIdentityChanged) {
@@ -2139,7 +2122,6 @@ async function savePreferencesConfig(
   requireMentionInGroup: boolean,
   larkCliIdentity: ProfileConfig['larkCli']['identityPreset'],
   mode: ProfileMode,
-  expectedAgent: ProfileConfig['agentKind'],
 ): Promise<void> {
   return configOps.savePreferencesConfig(
     ctx.controls,
@@ -2147,8 +2129,6 @@ async function savePreferencesConfig(
     requireMentionInGroup,
     larkCliIdentity,
     mode,
-    undefined,
-    expectedAgent,
   );
 }
 

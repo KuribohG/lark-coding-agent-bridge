@@ -83,12 +83,6 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   }
 
   const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
-  if (cmd && payload.agent_kind && payload.agent_kind !== deps.controls.profileConfig.agentKind) {
-    await deps.channel.send(chatId, { markdown: '执行引擎已改变，请重新打开设置卡片。' }, {
-      replyTo: deps.evt.messageId, ...(mode === 'topic' ? { replyInThread: true } : {}),
-    });
-    return;
-  }
   if ((cmd === 'model.submit' || cmd.startsWith('run.')) && payload.settings_scope !== scope) {
     // Never widen a topic preference to the whole chat after a failed lookup
     // or a forwarded card. The payload only verifies the API-derived scope.

@@ -8,7 +8,6 @@ import { writeFileAtomic } from '../platform/atomic-write';
 
 export type TimedRunState = 'draft' | 'queued' | 'running' | 'completed' | 'stopped' | 'expired' | 'failed' | 'quota' | 'interrupted';
 export interface TimedRun {
-  agentKind?: import('../config/profile-schema').AgentKind;
   id: string;
   scope: string;
   owner: string;

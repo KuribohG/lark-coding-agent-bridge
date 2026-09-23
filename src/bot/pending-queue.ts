@@ -58,10 +58,6 @@ export class PendingQueue {
     return this.blocked.has(scope) || this.map.has(scope);
   }
 
-  hasAnyWork(): boolean {
-    return this.blocked.size > 0 || this.map.size > 0;
-  }
-
   cancelAll(): void {
     for (const entry of this.map.values()) {
       if (entry.timer) clearTimeout(entry.timer);

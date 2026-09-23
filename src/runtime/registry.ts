@@ -19,7 +19,6 @@ import type { AgentKind } from '../config/profile-schema';
 import type { TenantBrand } from '../config/schema';
 import { writeFileAtomic } from '../platform/atomic-write';
 import { checkRuntimeLock } from './locks';
-import type { AcquiredRuntimeLock } from './locks';
 
 /**
  * Tracks running `lark-channel-bridge start` processes so we can:
@@ -167,7 +166,7 @@ export async function unregister(id: string, registryFile: string = paths.proces
  */
 export async function updateEntry(
   id: string,
-  patch: Partial<Pick<ProcessEntry, 'appId' | 'tenant' | 'configPath' | 'botName' | 'agentKind'>>,
+  patch: Partial<Pick<ProcessEntry, 'appId' | 'tenant' | 'configPath' | 'botName'>>,
   registryFile: string = paths.processesFile,
 ): Promise<void> {
   await withRegistryFileLock(registryFile, async () => {
@@ -180,22 +179,6 @@ export async function updateEntry(
     });
     if (!changed && !pruned) return;
     await writeAtomic(next, registryFile);
-  });
-}
-
-/** Keep registry writers from pruning the entry while owned-lock labels change. */
-export async function updateAgentEntry(id: string, agentKind: AgentKind, locks: AcquiredRuntimeLock[], registryFile: string): Promise<void> {
-  await withRegistryFileLock(registryFile, async () => {
-    const { entries } = await readForWriteState(registryFile);
-    const current = entries.find(entry => entry.id === id && entry.pid === process.pid);
-    if (!current) throw new Error('当前 bridge 运行记录已改变，请重启后再切换。');
-    try {
-      for (const lock of locks) await lock.setAgentKind?.(agentKind);
-      await writeAtomic(entries.map(entry => entry.id === id ? { ...entry, agentKind } : entry), registryFile);
-    } catch (err) {
-      for (const lock of locks) await lock.setAgentKind?.(current.agentKind);
-      throw err;
-    }
   });
 }
 
