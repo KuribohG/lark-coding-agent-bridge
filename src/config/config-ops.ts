@@ -33,12 +33,14 @@ export interface MutableProfileState {
 export async function saveModelPreferences(
   state: MutableProfileState,
   patch: import('../agent/model-settings').ModelSettings,
+  expectedAgent = state.profileConfig.agentKind,
 ): Promise<void> {
   await withConfigFileLock(state.configPath, async () => {
     const root = await loadRootConfig(state.configPath);
     if (!root) throw new Error('请先将配置迁移到 profile 格式。');
     const profile = root.profiles[state.profile];
     if (!profile) throw new Error(`profile not found: ${state.profile}`);
+    if (profile.agentKind !== expectedAgent) throw new Error('执行引擎已改变，请重新设置模型。');
     root.profiles[state.profile] = { ...profile, preferences: { ...profile.preferences, ...patch } };
     await saveRootConfig(root, state.configPath);
     state.profileConfig = root.profiles[state.profile]!;
@@ -184,6 +186,7 @@ export async function savePreferencesConfig(
   mode: ProfileMode,
   /** In-meeting agent settings; omitted by callers that don't edit them. */
   meeting?: ProfileConfig['meeting'],
+  expectedAgent = state.profileConfig.agentKind,
 ): Promise<void> {
   const larkCli = {
     identityPreset: larkCliIdentity,
@@ -207,6 +210,7 @@ export async function savePreferencesConfig(
     const profile = root.profiles[state.profile];
     if (!profile) throw new Error(`profile not found: ${state.profile}`);
     const { requireMentionInGroup: _requireMention, access: _access, ...profilePreferences } = preferences;
+    if (profile.agentKind !== expectedAgent) throw new Error('执行引擎已改变，请重新打开 /config。');
     root.profiles[state.profile] = {
       ...profile,
       mode,

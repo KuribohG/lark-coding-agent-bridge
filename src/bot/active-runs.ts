@@ -50,6 +50,10 @@ export class ActiveRuns {
     return this.pauseDepth > 0;
   }
 
+  hasWork(): boolean {
+    return this.handles.size > 0 || this.reservations.size > 0;
+  }
+
   newRunsPauseReason(): string | undefined {
     return this.pauseReason;
   }

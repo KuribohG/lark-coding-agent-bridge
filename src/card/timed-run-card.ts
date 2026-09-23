@@ -44,7 +44,7 @@ export function timedRunForm(scope: string, agentKind: AgentKind, environment: M
         },
         { tag: 'button', name: 'preview', type: 'primary', form_action_type: 'submit',
           text: { tag: 'plain_text', content: editDefaults ? '保存为此 bot 的 /run 默认值' : '核对任务与停止时间' },
-          behaviors: [{ type: 'callback', value: { cmd: editDefaults ? 'run.defaults.save' : 'run.submit', settings_scope: scope } }],
+          behaviors: [{ type: 'callback', value: { cmd: editDefaults ? 'run.defaults.save' : 'run.submit', settings_scope: scope, agent_kind: agentKind } }],
         },
       ] },
     ] },

@@ -5,6 +5,8 @@ import type { AppPaths } from '../config/app-paths';
 import { isComplete, type AppConfig } from '../config/schema';
 import type { AgentKind, ProfileConfig } from '../config/profile-schema';
 import type { AgentAdapter } from '../agent/types';
+import { SwitchableAgent } from '../agent/switchable';
+import { selectAgent } from './agent-selection';
 import { log } from '../core/logger';
 import { refreshOwnerControls } from '../policy/owner';
 import { SessionStore } from '../session/store';
@@ -28,6 +30,7 @@ import {
   unregister,
   unregisterSync,
   updateEntry,
+  updateAgentEntry,
   type ProcessEntry,
 } from './registry';
 
@@ -66,6 +69,7 @@ class ManagedProfile {
   entry!: ProcessEntry;
   startedAt = '';
   private restarting = false;
+  private agent: SwitchableAgent;
 
   constructor(
     readonly profile: string,
@@ -73,13 +77,13 @@ class ManagedProfile {
     private configPath: string,
     private cfg: AppConfig,
     private profileConfig: ProfileConfig,
-    private agent: AgentAdapter,
+    agent: AgentAdapter,
     private sessions: SessionStore,
     private sessionCatalog: SessionCatalog,
     private workspaces: WorkspaceStore,
     private startChannelFn: StartChannelFn,
     private onExitCommand: (profile: string) => void,
-  ) {}
+  ) { this.agent = new SwitchableAgent(agent); }
 
   get appId(): string {
     return this.cfg.accounts.app.id;
@@ -191,6 +195,37 @@ class ManagedProfile {
       async restart() {
         await self.restart();
       },
+      async switchAgent(next, expected) {
+        if (self.restarting) throw new Error('正在重连或切换，请稍后重试。');
+        self.restarting = true;
+        try {
+          await selectAgent(currentControls, next, expected, {
+            pause: () => {
+              if (!self.bridge.pauseForAgentSwitch) throw new Error('当前运行环境不支持安全切换。');
+              return self.bridge.pauseForAgentSwitch();
+            },
+            prepare: async profile => {
+              const agent = createRuntimeAgent(profile, { ...currentPaths, configPath: self.configPath });
+              const result = await checkRuntimeAgentAvailability(agent);
+              if (!result.ok) throw result.error;
+              if (self.bridge.channel.botIdentity) agent.setBotIdentity?.(self.bridge.channel.botIdentity);
+              return agent;
+            },
+            metadata: async agentKind => {
+              await updateAgentEntry(self.entry.id, agentKind, self.locks, self.appPaths.userRegistryFile);
+              self.entry.agentKind = agentKind;
+            },
+            activate: agent => {
+              self.agent.replace(agent);
+              self.cfg = currentControls.cfg;
+              self.profileConfig = currentControls.profileConfig;
+              self.bridge.agentChanged?.();
+            },
+          });
+        } finally {
+          self.restarting = false;
+        }
+      },
     };
     return currentControls;
   }
@@ -209,10 +244,10 @@ class ManagedProfile {
       const next = nextRuntime.cfg;
       if (!isComplete(next)) throw new Error('config incomplete after change');
       assertReconnectAgentKindUnchanged(this.profileConfig.agentKind, nextRuntime.profileConfig.agentKind);
-      const nextAgent = createRuntimeAgent(nextRuntime.profileConfig, {
+      const nextAgent = new SwitchableAgent(createRuntimeAgent(nextRuntime.profileConfig, {
         ...nextRuntime.appPaths,
         configPath: nextRuntime.configPath,
-      });
+      }));
       const availability = await checkRuntimeAgentAvailability(nextAgent);
       if (!availability.ok) throw availability.error;
 

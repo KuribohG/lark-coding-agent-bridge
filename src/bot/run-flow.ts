@@ -157,6 +157,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
   let execution: RunExecution;
   try {
     execution = await input.executor.submit({
+      agentId: input.capability.agentId,
       deadlineAt: input.deadlineAt,
       signal: input.signal,
       scopeId: input.fork?.executionScopeId ?? input.scopeId,
@@ -186,6 +187,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
           code: err.code,
           userVisible:
             err.code === 'deadline-expired' ? '已到限时任务停止时间，未启动任务。'
+              : err.code === 'agent-changed' ? '执行引擎已改变，请重新发送任务。'
               : err.code === 'run-cancelled' ? '限时任务已取消，未启动任务。'
               : err.code === 'reconnect-in-progress'
               ? '当前 bot 正在重连，稍后会继续处理新消息。'

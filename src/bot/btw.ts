@@ -20,6 +20,8 @@ export class BtwManager {
   private closing = false;
   constructor(private readonly store: BtwStore) {}
 
+  hasWork(): boolean { return this.jobs.size > 0; }
+
   excludes(scope: string, msg: QuotedContext): boolean {
     return this.store.hasMessage(scope, msg.messageId) || /^\/btw(?:\s|$)/.test(msg.content.trim()) ||
       (msg.senderType === 'bot' && msg.content.replace(/^\*\*/, '').startsWith(LABEL));

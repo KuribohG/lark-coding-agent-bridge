@@ -194,6 +194,7 @@ export function helpCard(agentName = 'Agent'): object {
         '- `/ws list|save <name>|use <name>|remove <name>` — 工作目录',
         '- `/account` — 查看当前应用；`/account change` 换 appId/secret 并重连',
         '- `/config` — 调整此 bot 的默认模型、思考强度、展示偏好和 lark-cli 身份策略',
+        '- `/agent` — 全局切换 Claude Code / Codex（管理员；所有聊天生效并保存）',
         '- `/model [模型名|default]` — 当前话题/聊天的模型，支持手填',
         '- `/effort [强度|default]` — 当前话题/聊天的思考强度；可加 `--scope profile` 改 bot 默认',
         '- `/run` — 限时任务表单；`/run 任务` 用默认值，`/run defaults` 设置默认值，`/run status` 查看，`/run stop` 取消',

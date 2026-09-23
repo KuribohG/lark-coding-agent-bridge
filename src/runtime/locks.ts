@@ -1,6 +1,7 @@
 import { chmod, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import * as lockfile from 'proper-lockfile';
+import { writeFileAtomic } from '../platform/atomic-write';
 import type { AppPaths } from '../config/app-paths';
 import type { AgentKind } from '../config/profile-schema';
 
@@ -10,6 +11,7 @@ export interface AcquiredRuntimeLock {
   kind: RuntimeLockKind;
   target: string;
   release(): Promise<void>;
+  setAgentKind?(kind: AgentKind): Promise<void>;
 }
 
 export interface RuntimeLockMeta {
@@ -164,6 +166,11 @@ async function acquireRuntimeLock(
   return {
     kind: meta.kind,
     target: meta.target,
+    async setAgentKind(agentKind) {
+      const next = { ...fullMeta, agentKind };
+      await writeFileAtomic(metaFile, JSON.stringify(next, null, 2) + '\n', { mode: 0o600 });
+      fullMeta.agentKind = agentKind;
+    },
     async release() {
       await unlink(metaFile).catch(() => {});
       await release();

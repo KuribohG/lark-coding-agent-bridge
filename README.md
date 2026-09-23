@@ -147,6 +147,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/resume` | Resume compatible history for the same agent, working directory, and permission mode |
 | `/status` | Show profile, agent, working directory, session, lark-cli identity, and run state |
 | `/config` | Adjust bot default model/effort, presentation preferences, access settings, and lark-cli identity policy |
+| `/agent [codex\|claude]` | Switch this bot globally between engines (owner/admin); persists across restarts |
 | `/model [model-id\|default]` | View or change the current topic/chat model; accepts custom IDs |
 | `/effort [level\|default]` | View or change the current topic/chat reasoning effort |
 | `/run [defaults\|status\|stop]` | Create a one-shot task, configure its defaults, or inspect/cancel it |
@@ -220,7 +221,7 @@ Save reusable defaults once (owner/admin only), then supply just the task:
 
 Plain `/run <task>` uses the saved defaults; everything in the task body, including later `--` or `--effort` text, stays literal. `/run -- <task>` remains supported. When supplying leading run options, separate them from the task with `--`, for example `/run --effort high -- Review the project`. If the task itself starts with `--` or a reserved subcommand (`status`, `start`, `stop`, `defaults`), use `/run -- <task>` to treat it as task text. `/run` alone opens the form, and management subcommands keep their existing meaning.
 
-`/run defaults` opens the defaults form; `/run defaults reset` restores the built-in two-hour window, five-minute margin, local timezone, and inherited conversation model/effort. Defaults belong to this bot profile and are stored separately in `profiles/<profile>/run-defaults.json`; ordinary chat settings and other profiles are unaffected. The task form is pre-filled from these defaults. Explicit flags override only the new task; `--model default` / `--effort default` inherit the conversation values for that task. Default deadlines accept recurring clock inputs or durations, never fixed dates. Each new preview computes a fresh absolute deadline, while existing previews/runs keep their original values. If the next clock occurrence is already inside its safety margin, the task is rejected rather than moved to the following day. The shorthand still requires confirmation and never schedules daily execution.
+`/run defaults` opens the defaults form; `/run defaults reset` restores the built-in two-hour window, five-minute margin, local timezone, and inherited conversation model/effort. Defaults belong to this bot profile and are stored separately in `profiles/<profile>/run-defaults.<agent>.json`; ordinary chat settings and other profiles are unaffected. The task form is pre-filled from these defaults. Explicit flags override only the new task; `--model default` / `--effort default` inherit the conversation values for that task. Default deadlines accept recurring clock inputs or durations, never fixed dates. Each new preview computes a fresh absolute deadline, while existing previews/runs keep their original values. If the next clock occurrence is already inside its safety margin, the task is rejected rather than moved to the following day. The shorthand still requires confirmation and never schedules daily execution.
 
 `01:00` means the next occurrence in the selected IANA timezone. You can also enter `2h`, `90m`, or an explicit date such as `2026-09-22T01:00+08:00`, up to seven days ahead. The margin is in minutes (default 5). For a 01:00 deadline and five-minute margin, the prompt asks the agent to wind down at 00:50 and the independent process guard terminates work at 00:55. Wind-down is agent guidance, not a guaranteed final summary; existing files and conversation history remain available. The normal idle watchdog still applies independently.
 
@@ -318,6 +319,13 @@ To let other people or groups in, add them to one of three lists:
 | **Admins** | who can change settings, and use the bot in any group | `/invite admin @them` | `/remove admin @them` |
 
 > `/invite` and `/remove` can only be run by **you (the creator) and admins**. The `@` in the command points at the *target person* (not the bot) — the bot resolves the mention to their identity, so you never deal with raw IDs.
+
+### Switch the global execution engine
+
+Owner/admin users can send `/agent` for a picker, or `/agent codex` and `/agent claude` directly. `/config` also links to the picker. The selection is saved as the current bot profile's `agentKind`, applies to subsequent tasks in all its DMs, groups, and topics, and survives restarts. Switching keeps the Feishu connection open and does not change other bot profiles.
+
+Each engine keeps its own resumable sessions, model/effort defaults, and timed-task defaults. An engine selected for the first time follows its CLI defaults; both CLIs need to be installed and authenticated beforehand. Running or queued work, side questions, and meetings block a switch. Failed preflight or persistence keeps the original engine. Reopen model/config forms after switching; a timed-task preview can only start with the engine that created it. Existing sessions remain subject to the usual workspace and permission matching rules.
+
 
 ### Two identities that bypass everything
 

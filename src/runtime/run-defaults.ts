@@ -6,6 +6,7 @@ import { resolveAppPaths } from '../config/app-paths';
 import type { MutableProfileState } from '../config/config-ops';
 import type { AgentKind } from '../config/profile-schema';
 import { writeFileAtomic } from '../platform/atomic-write';
+import { withConfigFileLock } from '../config/profile-store';
 import { parseRunDeadline } from './run-deadline';
 
 /** Reusable input rules; absolute timestamps belong only to individual jobs. */
@@ -37,14 +38,31 @@ export function parseRunSettings(form: Record<string, unknown>, defaults: RunDef
   };
 }
 
-export function runDefaultsPath(state: Pick<MutableProfileState, 'configPath' | 'profile'>): string {
+export function runDefaultsPath(state: Pick<MutableProfileState, 'configPath' | 'profile' | 'profileConfig'>): string {
   const paths = resolveAppPaths({ rootDir: dirname(state.configPath), profile: state.profile });
-  return join(paths.profileDir, 'run-defaults.json');
+  return join(paths.profileDir, 'run-defaults.' + state.profileConfig.agentKind + '.json');
+}
+
+async function readDefaultsText(state: MutableProfileState): Promise<string> {
+  try { return await readFile(runDefaultsPath(state), 'utf8'); }
+  catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT' || state.profileConfig.agentModels) throw err;
+    return readFile(join(resolveAppPaths({ rootDir: dirname(state.configPath), profile: state.profile }).profileDir, 'run-defaults.json'), 'utf8');
+  }
+}
+
+export async function preserveLegacyRunDefaults(state: MutableProfileState): Promise<void> {
+  try {
+    const raw = await readDefaultsText(state);
+    await writeFileAtomic(runDefaultsPath(state), raw, { mode: 0o600 });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
 }
 
 export async function readRunDefaults(state: MutableProfileState): Promise<RunDefaults> {
   try {
-    const raw = JSON.parse(await readFile(runDefaultsPath(state), 'utf8'));
+    const raw = JSON.parse(await readDefaultsText(state));
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('限时任务默认值格式无效。');
     const settings = parseRunSettings({
       until: raw.until, time_zone: raw.timeZone, margin: raw.marginMinutes,
@@ -58,9 +76,12 @@ export async function readRunDefaults(state: MutableProfileState): Promise<RunDe
   }
 }
 
-export async function saveRunDefaults(state: MutableProfileState, settings: RunDefaults): Promise<void> {
+export async function saveRunDefaults(state: MutableProfileState, settings: RunDefaults, expectedAgent = state.profileConfig.agentKind): Promise<void> {
   validateReusable(settings);
-  await writeFileAtomic(runDefaultsPath(state), JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
+  await withConfigFileLock(state.configPath, async () => {
+    if (state.profileConfig.agentKind !== expectedAgent) throw new Error('执行引擎已改变，请重新打开 /run defaults。');
+    await writeFileAtomic(runDefaultsPath(state), JSON.stringify(settings, null, 2) + '\n', { mode: 0o600 });
+  });
 }
 
 function validateReusable(settings: RunDefaults): void {

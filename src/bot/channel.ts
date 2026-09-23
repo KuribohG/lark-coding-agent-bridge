@@ -76,6 +76,7 @@ import { lookupMessageThreadId } from './thread-id';
 import { addWorkingReaction, removeReaction } from './reaction';
 import { fetchKnownChats } from './lark-info';
 import type { AppPaths } from '../config/app-paths';
+import { pauseAgentSwitch } from '../runtime/agent-selection';
 import {
   consumeCotEvents,
   CotClient,
@@ -177,6 +178,8 @@ function stringifyArgs(args: unknown[]): string {
 export interface BridgeChannel {
   channel: LarkChannel;
   disconnect(): Promise<void>;
+  pauseForAgentSwitch?(): () => void;
+  agentChanged?(): void;
 }
 
 export interface StartChannelDeps {
@@ -350,6 +353,10 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     if (active && (!id || active.id === id)) active.controller.abort();
   };
   controls.launchTimedRun = async (job, message) => {
+    if (controls.agentSwitching) throw new Error('执行引擎正在切换，请稍后重试。');
+    if (job.agentKind ? job.agentKind !== controls.profileConfig.agentKind : controls.profileConfig.agentModels) {
+      throw new Error('此任务是在另一执行引擎下创建的，请切回原引擎或重新创建 /run 任务。');
+    }
     if (timedControllers.has(job.scope) || activeRuns.get(job.scope) || pending.hasWork(job.scope)) {
       throw new Error('当前话题/聊天仍有任务或待处理消息，请完成或 /stop 后再启动限时任务。');
     }
@@ -392,6 +399,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
 
   // Counter for stdout reconnect escalation; reset on `reconnected`.
   let consecutiveReconnects = 0;
+  let backgroundWork = 0;
 
   channel.on({
     message: async (msg) => {
@@ -437,19 +445,25 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       }).catch((err) => log.fail('cardAction', err));
     },
     comment: async (evt) => {
-      await withTrace({ chatId: 'comment' }, async () => {
-        await handleCommentMention({
-          channel,
-          evt,
-          agent,
-          sessions,
-          sessionCatalog,
-          workspaces,
-          activeRuns,
-          executor,
-          controls,
+      if (controls.agentSwitching) return;
+      backgroundWork++;
+      try {
+        await withTrace({ chatId: 'comment' }, async () => {
+          await handleCommentMention({
+            channel,
+            evt,
+            agent,
+            sessions,
+            sessionCatalog,
+            workspaces,
+            activeRuns,
+            executor,
+            controls,
+          }).catch((err) => log.fail('comment', err));
         }).catch((err) => log.fail('comment', err));
-      }).catch((err) => log.fail('comment', err));
+      } finally {
+        backgroundWork--;
+      }
     },
     reconnecting: () => {
       consecutiveReconnects++;
@@ -499,17 +513,24 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       botOpenId: () => channel.botIdentity?.openId,
       channel,
       // Meeting over: optionally summarize to IM (config-gated inside).
-      onEnded: (session) =>
-        void summarizeEndedMeeting({
-          session,
-          channel,
-          controls,
-          executor,
-          activeRuns,
-          sessions,
-          ...(sessionCatalog ? { sessionCatalog } : {}),
-          workspaces,
-        }).catch((err) => log.warn('meeting', 'summary-failed', { err: String(err) })),
+      onEnded: async (session) => {
+        if (controls.agentSwitching) return;
+        backgroundWork++;
+        try {
+          await summarizeEndedMeeting({
+            session,
+            channel,
+            controls,
+            executor,
+            activeRuns,
+            sessions,
+            ...(sessionCatalog ? { sessionCatalog } : {}),
+            workspaces,
+          }).catch((err) => log.warn('meeting', 'summary-failed', { err: String(err) }));
+        } finally {
+          backgroundWork--;
+        }
+      },
       onSession: (session) =>
         attachMeetingAgent({
           session,
@@ -569,6 +590,12 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
 
   return {
     channel,
+    pauseForAgentSwitch: () => {
+      return pauseAgentSwitch(controls, activeRuns, () => Boolean(
+        pending.hasAnyWork() || btw.hasWork() || timedControllers.size || backgroundWork || meetingManager?.list().length,
+      ));
+    },
+    agentChanged: () => { lastRunModelByScope.clear(); activePolicyFingerprints.clear(); },
     disconnect: async () => {
       activeRuns.pauseNewRuns('bridge-disconnect');
       controls.btw = undefined;
@@ -845,13 +872,19 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   });
   if (handled) {
     const name = emsg.content.trim().split(/\s+/)[0];
-    const dropped = ['/model', '/effort', '/status', '/config', '/run', '/btw'].includes(name ?? '') ? [] : pending.cancel(scope);
+    const dropped = ['/model', '/effort', '/status', '/config', '/agent', '/run', '/btw'].includes(name ?? '') ? [] : pending.cancel(scope);
     log.info('intake', 'command', { scope, droppedPending: dropped.length });
     return;
   }
 
   if (controls.activeTimedRun?.(scope)) {
     await channel.send(emsg.chatId, { markdown: '当前话题/聊天正在执行限时任务。这条消息未排队执行，避免到期后自动续跑；修改任务请先 /stop，再重新提交。' }, {
+      replyTo: emsg.messageId, ...(chatMode === 'topic' ? { replyInThread: true } : {}),
+    });
+    return;
+  }
+  if (controls.agentSwitching) {
+    await channel.send(emsg.chatId, { markdown: '执行引擎正在切换，请稍后重新发送。' }, {
       replyTo: emsg.messageId, ...(chatMode === 'topic' ? { replyInThread: true } : {}),
     });
     return;

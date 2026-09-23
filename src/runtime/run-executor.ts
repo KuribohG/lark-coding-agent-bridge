@@ -16,6 +16,7 @@ export interface RunExecutorDeps {
 }
 
 export interface SubmitRunInput {
+  agentId?: string;
   deadlineAt?: number;
   signal?: AbortSignal;
   scopeId: string;
@@ -131,6 +132,7 @@ export class RunExecutor {
     const startedAt = this.now();
     const queueWaitMs = startedAt - submittedAt;
     const runOptions = {
+      agentId: input.agentId,
       deadlineAt: input.deadlineAt,
       runId,
       prompt: input.policy.prompt,

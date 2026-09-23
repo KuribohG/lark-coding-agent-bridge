@@ -145,6 +145,8 @@ export interface LarkCliConfig {
 export interface ProfileConfig {
   schemaVersion: 2;
   agentKind: AgentKind;
+  /** Inactive engines' model defaults; active defaults remain in preferences. */
+  agentModels?: Partial<Record<AgentKind, import('../agent/model-settings').ModelSettings>>;
   /** Deployment mode switch. Default 'personal'. See {@link ProfileMode}. */
   mode: ProfileMode;
   accounts: {
@@ -223,6 +225,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   const raw = input as {
     schemaVersion?: unknown;
     agentKind?: unknown;
+    agentModels?: ProfileConfig['agentModels'];
     mode?: unknown;
     accounts?: unknown;
     secrets?: SecretsConfig;
@@ -274,6 +277,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   return {
     schemaVersion: 2,
     agentKind: raw.agentKind,
+    ...(raw.agentModels ? { agentModels: normalizeAgentModels(raw.agentModels) } : {}),
     mode: raw.mode === 'team' ? 'team' : 'personal',
     accounts,
     ...(raw.secrets ? { secrets: raw.secrets } : {}),
@@ -296,6 +300,17 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     meeting,
     larkCli,
   };
+}
+
+function normalizeAgentModels(input: NonNullable<ProfileConfig['agentModels']>): NonNullable<ProfileConfig['agentModels']> {
+  const result: NonNullable<ProfileConfig['agentModels']> = {};
+  for (const kind of ['claude', 'codex'] as const) {
+    const value = input[kind];
+    if (value && typeof value === 'object') {
+      result[kind] = { model: value.model, reasoningEffort: value.reasoningEffort };
+    }
+  }
+  return result;
 }
 
 function normalizeAccounts(input: unknown): ProfileConfig['accounts'] {
