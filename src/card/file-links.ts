@@ -4,7 +4,7 @@ export interface FileLinkRenderOptions {
   fileLinks?: readonly FileLinkMapping[];
 }
 
-// Other formats (including code, Markdown and notebooks) open in the file browser.
+// Other formats open in the file browser unless a Markdown preview is configured.
 const DIRECT_FILE = /\.(?:html?|txt|log|png|jpe?g|gif|webp|svg|pdf|csv|json|zip|gz|tgz|tar)$/i;
 const BARE_END = /[\s`<>\[\]"'，。；！？、：]/;
 
@@ -50,6 +50,11 @@ function fileUrl(path: string, rules: readonly FileLinkMapping[]): string | unde
   const relative = clean.slice(rule.localRoot.length).replace(/^\//, '');
   const base = DIRECT_FILE.test(relative) ? rule.fileBaseUrl : rule.browseBaseUrl;
   try {
+    if (/\.(?:md|markdown)$/i.test(relative) && rule.markdownPreviewUrl) {
+      const preview = new URL(rule.markdownPreviewUrl);
+      preview.searchParams.set('path', clean);
+      return preview.href;
+    }
     const encoded = relative.split('/').map(p => encodeURIComponent(p).replace(/[!'()*]/g,
       c => '%' + c.charCodeAt(0).toString(16).toUpperCase())).join('/');
     return base + encoded;

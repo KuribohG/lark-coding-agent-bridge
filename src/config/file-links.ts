@@ -2,6 +2,8 @@ export interface FileLinkMapping {
   localRoot: string;
   fileBaseUrl: string;
   browseBaseUrl: string;
+  /** Optional lightweight viewer; receives the absolute filesystem path as ?path=. */
+  markdownPreviewUrl?: string;
 }
 
 /** Explicit POSIX directory mappings; URLs must not carry login credentials. */
@@ -23,15 +25,20 @@ export function normalizeFileLinks(input: unknown): FileLinkMapping[] | undefine
       localRoot,
       fileBaseUrl: baseUrl(rule?.fileBaseUrl),
       browseBaseUrl: baseUrl(rule?.browseBaseUrl),
+      ...(rule?.markdownPreviewUrl === undefined ? {} : { markdownPreviewUrl: httpsUrl(rule.markdownPreviewUrl).href }),
     };
   });
 }
 
 function baseUrl(value: unknown): string {
+  return httpsUrl(value).href.replace(/\/+$/, '') + '/';
+}
+
+function httpsUrl(value: unknown): URL {
   if (typeof value !== 'string') throw new Error('fileLinks base URLs must be HTTPS URLs');
   const url = new URL(value);
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {
     throw new Error('fileLinks base URLs must use HTTPS without credentials, query or fragment');
   }
-  return url.href.replace(/\/+$/, '') + '/';
+  return url;
 }

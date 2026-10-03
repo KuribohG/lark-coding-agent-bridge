@@ -436,7 +436,8 @@ export default createAdapter;
   "fileLinks": [{
     "localRoot": "/srv/reports",
     "fileBaseUrl": "https://jupyter.example/user/alice/files/reports/",
-    "browseBaseUrl": "https://jupyter.example/user/alice/lab/tree/reports/"
+    "browseBaseUrl": "https://jupyter.example/user/alice/lab/tree/reports/",
+    "markdownPreviewUrl": "https://jupyter.example/user/alice/custom/reader/index.html"
   }]
 }
 ```
@@ -444,6 +445,11 @@ export default createAdapter;
 网页服务需要事先能访问该目录，例如在 Jupyter 文件根目录下建立 `reports`
 符号链接。bridge 仅转换链接，不上传文件或授予访问权限；URL 不应包含登录 token。
 直接编辑配置文件后重启 bridge 生效。
+
+可选的 `markdownPreviewUrl` 用于轻量阅读页。配置后，`.md` 和 `.markdown` 文件
+改为打开该入口，bridge 把绝对文件路径编码后放入 `path` 查询参数。阅读页自行负责
+文件鉴权和 Markdown 渲染；未配置时仍走 `browseBaseUrl`。此 URL 必须是 HTTPS，
+不含账号、查询参数或片段，查询参数由 bridge 添加。
 
 Claude/Codex 共用转换逻辑，覆盖文本、流式 Markdown、完整卡片、最终回复、发送回退和
 `/btw`。Markdown 文件链接保留标题；正文路径和仅含路径的行内代码转为链接。

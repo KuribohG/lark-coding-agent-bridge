@@ -13,6 +13,17 @@ const raw = '/exports/report.html';
 const linked = '[report](https://example.com/files/report.html)';
 
 describe('file links', () => {
+  it('routes Markdown to an optional preview and preserves other destinations', () => {
+    const mapping = [{...rules[0]!, markdownPreviewUrl:'https://example.com/custom/reader/index.html'}];
+    const url = 'https://example.com/custom/reader/index.html?path=%2Fexports%2Fmy+report.md';
+    expect(rewriteFileLinks('[report](</exports/my report.md>)', mapping)).toBe(`[report](${url})`);
+    expect(rewriteFileLinks('`/exports/my report.md`', mapping)).toBe(`[/exports/my report.md](${url})`);
+    expect(rewriteFileLinks('[report](/exports/README.MARKDOWN)', mapping)).toContain('?path=%2Fexports%2FREADME.MARKDOWN');
+    expect(rewriteFileLinks('[code](/exports/code.py)', mapping)).toBe('[code](https://example.com/lab/tree/code.py)');
+    expect(rewriteFileLinks('[image](/exports/image.png)', mapping)).toBe('[image](https://example.com/files/image.png)');
+    expect(rewriteFileLinks('[report](/exports/report.md)', rules)).toBe('[report](https://example.com/lab/tree/report.md)');
+    expect(rewriteFileLinks(rewriteFileLinks('[x](/exports/a.md)', mapping), mapping)).toBe(rewriteFileLinks('[x](/exports/a.md)', mapping));
+  });
   it.each([
     ['[report](/exports/report.html)', linked],
     ['[report](</exports/my report.html>)', '[report](https://example.com/files/my%20report.html)'],
@@ -94,6 +105,12 @@ describe('file links', () => {
 });
 
 describe('file link configuration', () => {
+  it('retains an optional Markdown preview endpoint across serialization', () => {
+    const mapping = [{...rules[0]!, markdownPreviewUrl:'https://example.com/reader.html'}];
+    const profile = createDefaultProfileConfig({agentKind:'claude', accounts:{app:{id:'test',secret:'test',tenant:'feishu'}}, preferences:{fileLinks:mapping}});
+    const serialized = JSON.parse(formatRootConfig(createRootConfig('test',profile)));
+    expect(normalizeProfileConfig(serialized.profiles.test).preferences.fileLinks).toEqual(mapping);
+  });
   it('normalizes and retains mappings across profile serialization', () => {
     const profile = createDefaultProfileConfig({ agentKind: 'claude', accounts: { app: { id: 'test', secret: 'test', tenant: 'feishu' } },
       preferences: { fileLinks: [{ localRoot: '/exports/', fileBaseUrl: 'https://example.com/files', browseBaseUrl: 'https://example.com/lab/tree' }] } });
@@ -105,5 +122,7 @@ describe('file link configuration', () => {
     [{...rules[0],localRoot:'/exports/../other'}], [...rules,...rules],
     [{...rules[0],fileBaseUrl:'http://example.com/'}], [{...rules[0],fileBaseUrl:'https://user:pass@example.com/'}],
     [{...rules[0],browseBaseUrl:'https://example.com/?token=secret'}], [{...rules[0],browseBaseUrl:'https://example.com/#frag'}],
+    [{...rules[0],markdownPreviewUrl:'javascript:alert(1)'}], [{...rules[0],markdownPreviewUrl:'https://user:secret@example.com/view'}],
+    [{...rules[0],markdownPreviewUrl:'https://example.com/?token=secret'}], [{...rules[0],markdownPreviewUrl:'https://example.com/#path'}],
   ])('rejects invalid configuration %#', value => expect(() => normalizeFileLinks(value)).toThrow());
 });

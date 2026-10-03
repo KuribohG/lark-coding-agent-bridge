@@ -437,7 +437,8 @@ local directory and two HTTPS base URLs:
   "fileLinks": [{
     "localRoot": "/srv/reports",
     "fileBaseUrl": "https://jupyter.example/user/alice/files/reports/",
-    "browseBaseUrl": "https://jupyter.example/user/alice/lab/tree/reports/"
+    "browseBaseUrl": "https://jupyter.example/user/alice/lab/tree/reports/",
+    "markdownPreviewUrl": "https://jupyter.example/user/alice/custom/reader/index.html"
   }]
 }
 ```
@@ -446,6 +447,13 @@ The destination service must already serve that directory (for Jupyter, for
 example, create a `reports` symlink under its file root). The bridge only rewrites
 links; it does not upload files or grant browser access. Keep login tokens out of
 these URLs. Restart the bridge after editing the configuration file.
+
+`markdownPreviewUrl` is optional. When set, `.md` and `.markdown` files open that
+endpoint with the absolute filesystem path in the URL-encoded `path` query
+parameter, instead of opening the file browser. The endpoint must implement its
+own authenticated file loading and Markdown rendering. Without it, Markdown keeps
+using `browseBaseUrl`. The preview URL must be HTTPS without credentials, query,
+or fragment; the bridge adds the query parameter.
 
 Claude and Codex share the same conversion for text, streamed Markdown, full
 cards, final replies, fallbacks and `/btw`. Existing Markdown link labels are kept;
