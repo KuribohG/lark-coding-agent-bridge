@@ -1,3 +1,4 @@
+import { rewriteFileLinks } from '../card/file-links';
 import type { CommandContext } from '../commands';
 import { claudeCapability, codexCapability } from '../agent/capability';
 import { modelRunArguments } from '../agent/model-settings';
@@ -68,7 +69,7 @@ export class BtwManager {
 
   private async reply(ctx: CommandContext, answer: string): Promise<void> {
     if (this.closing) return;
-    const content = { markdown: `**${LABEL}**\n\n${answer}` };
+    const content = { markdown: `**${LABEL}**\n\n${rewriteFileLinks(answer, ctx.controls.cfg.preferences?.fileLinks)}` };
     const options = {
       replyTo: ctx.msg.messageId,
       ...(ctx.msg.threadId ? { replyInThread: true } : {}),

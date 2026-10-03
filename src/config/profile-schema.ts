@@ -1,3 +1,4 @@
+import { normalizeFileLinks } from './file-links';
 import type {
   AppCredentials,
   AppPreferences,
@@ -323,15 +324,18 @@ function normalizePreferences(
     access: _access,
     requireMentionInGroup: _mention,
     messageReply,
+    fileLinks,
     ...rest
   } = preferences ?? {};
+  const normalized = normalizeFileLinks(fileLinks);
+  const result = { ...rest, ...(normalized !== undefined ? { fileLinks: normalized } : {}) };
   if (messageReply !== undefined && isMessageReply(messageReply)) {
     return {
-      ...rest,
+      ...result,
       messageReply,
     };
   }
-  return rest;
+  return result;
 }
 
 function isMessageReply(value: unknown): value is MessageReplyMode {

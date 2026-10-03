@@ -425,3 +425,33 @@ export default createAdapter;
 [MIT](./LICENSE)
 
 <img src="./assets/feedback-group-qr.png" alt="飞书反馈群二维码" width="360">
+
+### 本地文件的浏览器链接
+
+在 bridge 配置的 `profiles.<name>.preferences.fileLinks` 中配置本地 POSIX
+目录与网页入口，即可把 IM 回复中的文件路径自动转成可点击链接：
+
+```json
+{
+  "fileLinks": [{
+    "localRoot": "/srv/reports",
+    "fileBaseUrl": "https://jupyter.example/user/alice/files/reports/",
+    "browseBaseUrl": "https://jupyter.example/user/alice/lab/tree/reports/"
+  }]
+}
+```
+
+网页服务需要事先能访问该目录，例如在 Jupyter 文件根目录下建立 `reports`
+符号链接。bridge 仅转换链接，不上传文件或授予访问权限；URL 不应包含登录 token。
+直接编辑配置文件后重启 bridge 生效。
+
+Claude/Codex 共用转换逻辑，覆盖文本、流式 Markdown、完整卡片、最终回复、发送回退和
+`/btw`。Markdown 文件链接保留标题；正文路径和仅含路径的行内代码转为链接。
+图片、HTML、文本/日志、PDF、CSV/JSON 及常见压缩包走 `fileBaseUrl`，其他文件和目录
+走 `browseBaseUrl`。路径逐段编码，`:42` 等行号后缀不作为文件名（暂不自动跳行）。
+未映射路径、已有网页链接、围栏/缩进代码块、工具记录保持原样。带空格的路径请用行内
+代码或 Markdown 的尖括号目标表示；引用式链接保持原样。流式裸路径会等到边界或回复
+结束后再转换。
+
+配置按 profile 生效，未配置时关闭。外部 `lark-cli` 直接发消息、COT 记录、会议回复和
+云文档评论走独立链路，不在此次转换范围内。无需配置 agent skill 或 memory。

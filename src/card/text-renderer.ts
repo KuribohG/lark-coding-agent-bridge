@@ -1,3 +1,4 @@
+import { rewriteFileLinks, type FileLinkRenderOptions } from './file-links';
 import { maskEmails } from './mask-email';
 import type { Block, RunState, ToolEntry } from './run-state';
 import { toolHeaderText } from './tool-render';
@@ -12,11 +13,11 @@ import { toolHeaderText } from './tool-render';
  *   - No reasoning / thinking output (no place to fold it; would be noise)
  *   - Footer is appended inline at the bottom while running
  */
-export function renderText(state: RunState): string {
+export function renderText(state: RunState, options: FileLinkRenderOptions = {}): string {
   const parts: string[] = [];
 
   for (const block of state.blocks) {
-    const piece = renderBlock(block);
+    const piece = renderBlock(block, options, state.terminal === 'running');
     if (piece) parts.push(piece);
   }
 
@@ -37,9 +38,9 @@ export function renderText(state: RunState): string {
   return maskEmails(parts.join('\n\n'));
 }
 
-function renderBlock(block: Block): string {
+function renderBlock(block: Block, options: FileLinkRenderOptions, running: boolean): string {
   if (block.kind === 'text') {
-    return block.content.trim();
+    return rewriteFileLinks(block.content, options.fileLinks, running && block.streaming).trim();
   }
   return toolLine(block.tool);
 }

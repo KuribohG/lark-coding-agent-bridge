@@ -27,6 +27,17 @@ const answer = (value: string): AgentEvent[] => [
 ];
 
 describe('/btw', () => {
+  it.each(['claude', 'codex'] as const)('maps %s side replies without rewriting saved history', async kind => {
+    const raw = '[report](/exports/report.html)';
+    const h = await harness(kind, [answer(raw), answer('followup')]);
+    h.ctx.controls.cfg.preferences!.fileLinks = [{ localRoot: '/exports', fileBaseUrl: 'https://example.com/files/', browseBaseUrl: 'https://example.com/tree/' }];
+    await h.manager.enqueue('file', h.ctx);
+    expect(JSON.stringify(h.sent[0])).toContain('https://example.com/files/report.html');
+    await h.manager.enqueue('followup', h.next('q2'));
+    expect(h.agent.runOptions[1]?.prompt).toContain(raw);
+    expect(h.agent.runOptions[1]?.prompt).not.toContain('https://example.com/files/report.html');
+  });
+
   it.each(['claude', 'codex'] as const)('serializes side Q&A without changing the %s parent', async kind => {
     const h = await harness(kind, [answer('first answer'), answer('second answer')]);
     const first = h.manager.enqueue('first question', h.ctx);

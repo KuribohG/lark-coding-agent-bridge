@@ -1,3 +1,4 @@
+import { rewriteFileLinks, type FileLinkRenderOptions } from './file-links';
 import { deepMaskEmails } from './mask-email';
 import type { Block, FooterStatus, RunState, ToolEntry } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
@@ -11,11 +12,12 @@ interface ToolGroup {
 }
 interface TextGroup {
   kind: 'text';
+  streaming: boolean;
   content: string;
 }
 type Group = ToolGroup | TextGroup;
 
-export interface RunCardRenderOptions {
+export interface RunCardRenderOptions extends FileLinkRenderOptions {
   signCallback?: (action: string) => string;
 }
 
@@ -29,7 +31,8 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   for (const group of groupBlocks(state.blocks)) {
     if (group.kind === 'text') {
       if (group.content.trim()) {
-        elements.push(markdown(group.content));
+        elements.push(markdown(rewriteFileLinks(group.content, options.fileLinks,
+          state.terminal === 'running' && group.streaming)));
       }
     } else {
       elements.push(...renderToolGroup(group.tools, state.terminal !== 'running'));
@@ -74,7 +77,7 @@ function* groupBlocks(blocks: Block[]): Generator<Group> {
         yield { kind: 'tools', tools: toolBuf };
         toolBuf = [];
       }
-      yield { kind: 'text', content: b.content };
+      yield { kind: 'text', content: b.content, streaming: b.streaming };
     }
   }
   if (toolBuf.length > 0) yield { kind: 'tools', tools: toolBuf };

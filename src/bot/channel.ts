@@ -1,3 +1,4 @@
+import type { FileLinkRenderOptions } from '../card/file-links';
 import { modelRunArguments } from '../agent/model-settings';
 import { deadlineInstructions } from '../runtime/run-deadline';
 import { timedRuns, type TimedRun } from '../runtime/timed-runs';
@@ -1149,20 +1150,23 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     if (getShowToolCalls(controls.cfg)) return state;
     return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
   };
-  const cardRenderOptions = callbackAuth
-    ? {
-        signCallback: (action: string) =>
-          callbackAuth.sign({
-            runId: execution.runId,
-            scope,
-            chatId,
-            operatorOpenId: firstMsg.senderId,
-            action,
-            policyFingerprint: flow.policy.policyFingerprint,
-            ttlMs: 24 * 60 * 60 * 1000,
-          }),
-      }
-    : {};
+  const cardRenderOptions = {
+    get fileLinks() { return controls.cfg.preferences?.fileLinks; },
+    ...(callbackAuth
+      ? {
+          signCallback: (action: string) =>
+            callbackAuth.sign({
+              runId: execution.runId,
+              scope,
+              chatId,
+              operatorOpenId: firstMsg.senderId,
+              action,
+              policyFingerprint: flow.policy.policyFingerprint,
+              ttlMs: 24 * 60 * 60 * 1000,
+            }),
+        }
+      : {}),
+  };
 
   // For non-card modes Claude's output doesn't surface visually until either
   // a first streamed token (markdown mode) or the whole run ends (text mode).
@@ -1268,7 +1272,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           producerStarted: () => producerStarted,
           fallback: async (state) => {
             if (controls.profileConfig.agentKind === 'codex') return;
-            if (renderText(filterForPrefs(state)).trim() === '') return;
+            if (renderText(filterForPrefs(state), cardRenderOptions).trim() === '') return;
             await channel.send(
               chatId,
               { card: renderCard(filterForPrefs(state), cardRenderOptions) },
@@ -1304,7 +1308,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
               producerStarted = true;
               if (progress.abandoned()) return;
               markdownCtrl = ctrl;
-              await ctrl.setContent(renderText(filterForPrefs(latestState)));
+              await ctrl.setContent(renderText(filterForPrefs(latestState), cardRenderOptions));
               await renderDone;
             },
           },
@@ -1321,7 +1325,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           latestState = state;
           if (shouldOpenProgressStream(filterForPrefs(state))) progress.ensureOpen();
           if (markdownCtrl) {
-            await markdownCtrl.setContent(renderText(filterForPrefs(state)));
+            await markdownCtrl.setContent(renderText(filterForPrefs(state), cardRenderOptions));
           }
         },
       );
@@ -1333,7 +1337,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           producerStarted: () => producerStarted,
           fallback: async (state) => {
             if (controls.profileConfig.agentKind === 'codex') return;
-            const body = renderText(filterForPrefs(state));
+            const body = renderText(filterForPrefs(state), cardRenderOptions);
             if (body.trim()) {
               await channel.send(chatId, { markdown: body }, sendOpts);
             }
@@ -1552,9 +1556,9 @@ async function sendFinalReply(input: {
   state: RunState;
   replyMode: ReturnType<typeof getMessageReplyMode>;
   sendOpts: { replyTo: string; replyInThread?: boolean };
-  cardRenderOptions: { signCallback?: (action: string) => string };
+  cardRenderOptions: FileLinkRenderOptions & { signCallback?: (action: string) => string };
 }): Promise<void> {
-  const body = renderText(input.state);
+  const body = renderText(input.state, input.cardRenderOptions);
 
   // Nothing deliverable to send (agent produced no text on a clean finish;
   // error/interrupt/timeout keep `body` non-empty via their notices). Skip

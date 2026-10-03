@@ -425,3 +425,39 @@ A missing module, a bad factory, or a throwing adapter all degrade to noop — t
 [MIT](./LICENSE)
 
 <img src="./assets/feedback-group-qr.png" alt="Feedback group QR code" width="360">
+
+### Browser links for local files
+
+Set `profiles.<name>.preferences.fileLinks` in the bridge configuration to turn
+local POSIX paths in IM replies into browser links. Each mapping has an explicit
+local directory and two HTTPS base URLs:
+
+```json
+{
+  "fileLinks": [{
+    "localRoot": "/srv/reports",
+    "fileBaseUrl": "https://jupyter.example/user/alice/files/reports/",
+    "browseBaseUrl": "https://jupyter.example/user/alice/lab/tree/reports/"
+  }]
+}
+```
+
+The destination service must already serve that directory (for Jupyter, for
+example, create a `reports` symlink under its file root). The bridge only rewrites
+links; it does not upload files or grant browser access. Keep login tokens out of
+these URLs. Restart the bridge after editing the configuration file.
+
+Claude and Codex share the same conversion for text, streamed Markdown, full
+cards, final replies, fallbacks and `/btw`. Existing Markdown link labels are kept;
+bare paths and path-only inline code become links. Images, HTML, text/logs, PDF,
+CSV/JSON and common archives use `fileBaseUrl`; other files and directories use
+`browseBaseUrl`. Each path segment is URL-encoded. Line suffixes such as `:42` are
+removed from the destination (no automatic line jump). Unmapped paths, existing
+web links, fenced/indented code and tool records remain unchanged. Bare filenames
+containing spaces should use inline code or an angle-bracket Markdown destination.
+Reference-style links are preserved. A streaming bare path is linked after its
+boundary or end of reply arrives.
+
+Configuration is per profile and disabled when omitted. External `lark-cli`
+sends, COT records, meeting replies and document comments have separate output
+paths and are not rewritten by this feature. No agent skill or memory is needed.

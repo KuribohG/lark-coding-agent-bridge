@@ -82,6 +82,41 @@ afterEach(async () => {
 });
 
 describe('markdown stream startup failures', () => {
+  const fileLinks = [{ localRoot: '/exports', fileBaseUrl: 'https://example.com/files/', browseBaseUrl: 'https://example.com/tree/' }];
+  it.each(['claude', 'codex'] as const)('maps %s replies in every mode, including stream failure fallback', async agentKind => {
+    for (const messageReply of ['text', 'markdown', 'card'] as const) {
+      for (const failStream of [false, true]) {
+        const visible: string[] = [];
+        const content = '[report](/exports/report.html)';
+        const h = await createHarness({ agentKind, messageReply,
+          events: agentKind === 'codex' ? [
+            { type: 'text', delta: content },
+            { type: 'final_text', content },
+            { type: 'done', terminationReason: 'normal' },
+          ] : [{ type: 'text', delta: content }, { type: 'done', terminationReason: 'normal' }],
+          stream: async (_chatId, input) => {
+            if (failStream) throw new Error('test stream failure');
+            const callbacks = input as {
+              markdown?: (ctrl: { setContent(value: string): Promise<void> }) => Promise<void>;
+              card?: { producer: (ctrl: { update(value: unknown): Promise<void> }) => Promise<void> };
+            };
+            await callbacks.markdown?.({ setContent: async value => { visible.push(value); } });
+            await callbacks.card?.producer({ update: async value => { visible.push(JSON.stringify(value)); } });
+          },
+        });
+        h.profileConfig.preferences.fileLinks = fileLinks;
+        await startTestBridge(h);
+        await h.channel.handlers.message?.(message('om_links', 'run'));
+        await waitFor(() => [...visible, ...h.channel.sent.map(v => JSON.stringify(v.content))]
+          .some(v => v.includes('https://example.com/files/report.html')));
+        if (agentKind === 'codex' || messageReply === 'text' || failStream) {
+          await waitFor(() => h.channel.sent.length > 0);
+          expect(JSON.stringify(h.channel.sent.at(-1)?.content)).toContain('https://example.com/files/report.html');
+        }
+      }
+    }
+  }, 30000);
+
   it('does not leave the IM queue blocked when the agent exits before stream producer starts', async () => {
     const h = await createHarness();
     await startTestBridge(h);
@@ -464,7 +499,7 @@ async function createHarness(options: {
     codex: {
       binaryPath: '/usr/local/bin/codex',
     },
-    ...(options.messageReply ? { preferences: { messageReply: options.messageReply } } : {}),
+    ...(options.messageReply ? { preferences: { messageReply: options.messageReply, messageReplyMigrated: true } } : {}),
   });
   const profileConfig = {
     ...baseProfileConfig,

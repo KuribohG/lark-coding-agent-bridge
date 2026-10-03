@@ -90,6 +90,8 @@ export interface AppAccess {
 }
 
 export interface AppPreferences {
+  /** Optional browser links for explicitly mapped local directories. */
+  fileLinks?: import('./file-links').FileLinkMapping[];
   /** Reply rendering mode for IM (group/p2p) messages. Default 'card'. */
   messageReply?: MessageReplyMode;
   /**
