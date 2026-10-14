@@ -24,6 +24,7 @@ export interface InboxJob {
   attempt?: number;
   retryAt?: number;
   incidentId?: string;
+  manualSignature?: string;
 }
 
 export interface InboxState {

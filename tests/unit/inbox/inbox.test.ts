@@ -56,6 +56,13 @@ describe('durable inbox', () => {
     const { service } = await setup({ context }); const job = await service.manual('oc_source');
     expect(job.messages).toHaveLength(1); expect(context).toHaveBeenCalledTimes(2);
   });
+  it('deduplicates a large selection even after worker context expansion', async () => {
+    const messages = Array.from({ length: 150 }, (_, i) => message({ id: `om_${i}`, time: 1_000_000 + i }));
+    const { service, store } = await setup({ context: vi.fn(async () => messages) });
+    const first = await service.manual('oc_source');
+    store.data.jobs[0]!.state = 'running'; store.data.jobs[0]!.messages.unshift(message({ id: 'om_older', time: 900_000 }));
+    const again = await service.manual('oc_source'); expect(again.id).toBe(first.id); expect(service.list()).toHaveLength(1);
+  });
   it('rejects decisions from other group members', async () => {
     const { service } = await setup(); await service.tick();
     await expect(service.decide(service.list()[0]!.id, 'process', 'ou_other')).rejects.toThrow('forbidden');

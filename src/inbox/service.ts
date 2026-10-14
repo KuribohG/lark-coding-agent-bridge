@@ -73,15 +73,17 @@ export class InboxService {
       if (!messages.length && !this.stopped) messages = await this.io.context(chatId, this.now() - 86400_000, this.now());
       this.assertEnabled();
       if (!messages.length) throw new Error('最近一天没有可读取的消息');
+      messages = boundMessages(messages, this.config.maxContextChars);
       const ids = messages.map(m => m.id).sort().join(',');
       const submitted = this.store.data.jobs.find(j => j.source.chatId === chatId && ['running', 'ready', 'done', 'queued'].includes(j.state) &&
-        j.messages.map(m => m.id).sort().join(',') === ids && this.now() - j.createdAt < 30 * 60_000);
+        j.manualSignature === ids && this.now() - j.updatedAt < 30 * 60_000);
       if (submitted) return structuredClone(submitted);
       const existing = this.store.data.jobs.find(j => j.source.chatId === chatId && ['waiting', 'notifying', 'queued'].includes(j.state));
       const job = existing ?? this.create(messages, false, source);
       job.messages = boundMessages(messages, this.config.maxContextChars);
       job.source.threadId = undefined;
       job.destination = { ...this.config.destination };
+      job.manualSignature = ids;
       job.automatic = false; job.state = 'queued'; job.updatedAt = this.now();
       await this.store.save();
       return structuredClone(job);
