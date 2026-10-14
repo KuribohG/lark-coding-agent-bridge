@@ -57,7 +57,7 @@ export class InboxGui {
     const encoded = JSON.stringify(body);
     if (Buffer.byteLength(encoded) > 95000) throw new Error('工作台同步内容过大');
     const response = await this.request(`${base}/openapi/inbox/${path}`, { method: 'POST', redirect: 'error',
-      headers: { 'Content-Type': 'application/json', 'X-Api-Key': this.key }, body: encoded,
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.key}` }, body: encoded,
       signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(20000)]) });
     if (!response.ok) throw new Error(`工作台同步失败（HTTP ${response.status}）`);
     const text = await response.text();

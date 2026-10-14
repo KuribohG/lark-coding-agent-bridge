@@ -45,7 +45,7 @@ describe('hosted inbox connection', () => {
     const s = await setup(); await s.worker.start(); await idle(s.request);
     const [url, options] = s.request.mock.calls[0]!;
     expect(url).toBe('https://gui.example/openapi/inbox/sync');
-    expect(options?.redirect).toBe('error'); expect(options?.headers).toMatchObject({ 'X-Api-Key': 'test-key' });
+    expect(options?.redirect).toBe('error'); expect(options?.headers).toMatchObject({ Authorization: 'Bearer test-key' });
     await s.worker.close(); const count = s.request.mock.calls.length; await s.worker.tick();
     expect(s.request).toHaveBeenCalledTimes(count);
   });
