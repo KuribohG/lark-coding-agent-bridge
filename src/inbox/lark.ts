@@ -134,19 +134,21 @@ export class InboxLark {
   async deliver(job: InboxJob, phase: 'pending' | 'progress' | 'result'): Promise<void> {
     const d = job.destination;
     if (job.ownerOpenId !== this.config.ownerOpenId || JSON.stringify(d) !== JSON.stringify(this.config.destination)) throw new Error('结果目标已变更，请重新处理待办');
+    if (phase === 'progress' && this.config.gui.publicUrl) return;
     const escape = (s: string) => s.replace(/[\r\n]/g, ' ').replace(/[<>`*_\[\]]/g, '');
     const first = job.messages[0]!; const last = job.messages.at(-1)!;
     const header = `来源${job.source.type === 'p2p' ? '私聊' : '群聊'}：${escape(job.source.name)}\n来源会话 ID：${job.source.chatId}\n消息范围：${iso(first.time)} ～ ${iso(last.time)}\n待办：${job.id}\n`;
-    const entry = this.config.h5.publicUrl ? `\n处理 / 我来处理 / 忽略：${this.config.h5.publicUrl}#job=${job.id}` : '';
+    const page = this.config.gui.publicUrl || this.config.h5.publicUrl;
+    const entry = page ? `\n打开会话助理：${page}#job=${job.id}` : '';
     const text = header + '\n' + (phase === 'pending' ? `发现待处理消息。${job.alert || !this.config.autoAnalyze ? '本项只提醒，点击后分析。' : `${this.config.waitMinutes} 分钟未选择后自动分析。`}${entry}`
       : phase === 'progress' ? '正在整理上下文并准备建议回复。' : job.error ? `分析未完成：${job.error}${entry}` : `${job.result}\n\n用量：输入 ${job.inputTokens ?? 0} / 输出 ${job.outputTokens ?? 0} tokens`);
     const link = first.link && /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(first.link) ? `\n原消息：${first.link}` : '';
     const key = createHash('sha256').update(`${job.id}:${job.attempt ?? 0}:${phase}`).digest('hex').slice(0, 48);
-    if (phase === 'pending' && this.reminderCard) {
+    if (phase === 'pending' && this.reminderCard && !this.config.gui.publicUrl) {
       await this.replyTopic({ card: this.reminderCard(job, text + link) }, key);
       return;
     }
-    if (phase === 'pending' && !this.config.h5.publicUrl) throw new Error('待办操作入口尚未就绪');
+    if (phase === 'pending' && !page) throw new Error('待办操作入口尚未就绪');
     await this.replyTopic({ text: text + link }, key);
   }
   async replyTopic(body: { text?: string; card?: object }, key?: string): Promise<void> {

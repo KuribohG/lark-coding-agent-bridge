@@ -15,6 +15,7 @@ import { startInboxH5 } from './h5-server';
 import { InboxCards, type InboxCardContext } from './cards';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
+import { InboxGui } from './gui';
 
 export class InboxManager {
   private service?: InboxService;
@@ -22,6 +23,7 @@ export class InboxManager {
   private lark?: InboxLark;
   private nonces?: CallbackNonceStore;
   private h5?: { close(): Promise<void> };
+  private gui?: InboxGui;
   private unlock?: () => Promise<void>;
   private fingerprint = '';
   private chain: Promise<unknown> = Promise.resolve();
@@ -29,13 +31,16 @@ export class InboxManager {
   constructor(private configPath: string, private controls: (profile: string) => Controls | undefined, private rootDir?: string) {}
   async view() {
     const root = await loadRootConfig(this.configPath);
-    return { config: normalizeInbox(root?.inbox), running: Boolean(this.service), error: this.error || this.service?.lastError,
+    return { config: normalizeInbox(root?.inbox), running: Boolean(this.service), error: this.error || this.service?.lastError || this.gui?.lastError,
       jobs: this.service?.list().map(({ messages: _, result: __, ...j }) => j) || [] };
   }
   async command(args: string, ctx: InboxCardContext): Promise<string | undefined> {
     const cards = this.cards; const lark = this.lark;
     if (!cards || !lark) return '会话助理当前未运行，请检查 Bridge 全局设置中的开关和运行状态。';
     if (!cards.accepts(ctx)) return '请由助理所属用户在配置的结果群话题中发送 /inbox。';
+    if (this.service?.config.gui.publicUrl && (!args || ['open', 'private', 'groups', 'pending'].includes(args))) {
+      return `会话助理工作台：${this.service.config.gui.publicUrl}\n在页面中查看待办、选择会话和查看分析结果。`;
+    }
     try { await cards.handle(args, ctx); }
     catch (error) {
       return error instanceof Error ? error.message : '助理操作失败，请重新发送 /inbox';
@@ -86,6 +91,10 @@ export class InboxManager {
       this.cards = cards;
       lark.reminderCard = (job, content) => cards.reminder(job, content);
       await this.service.start();
+      if (config.gui.publicUrl) {
+        this.gui = new InboxGui(this.service, lark, controls.cfg.accounts.app.id, join(folder, 'gui-receipts.json'));
+        await this.gui.start();
+      }
       if (config.h5.publicUrl) {
         const auth = new InboxH5Auth(controls.cfg.accounts.app.id, secret, config.ownerOpenId, config.h5.publicUrl, controls.cfg.accounts.app.tenant);
         this.h5 = await startInboxH5(this.service, auth);
@@ -99,6 +108,8 @@ export class InboxManager {
     // Disable work before closing the listener, so active HTTP requests cannot queue new jobs.
     const service = this.service; this.service = undefined;
     this.cards = undefined;
+    const gui = this.gui; this.gui = undefined;
+    await gui?.close();
     await service?.close();
     this.lark?.close(); this.lark = undefined;
     await this.nonces?.flush(); this.nonces = undefined;

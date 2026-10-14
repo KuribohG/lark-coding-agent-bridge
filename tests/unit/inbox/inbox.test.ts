@@ -56,6 +56,19 @@ describe('durable inbox', () => {
     const { service } = await setup({ context }); const job = await service.manual('oc_source');
     expect(job.messages).toHaveLength(1); expect(context).toHaveBeenCalledTimes(2);
   });
+  it('replays GUI submissions without re-reading or creating a second job even after new messages arrive', async () => {
+    const { service, io, store, advance } = await setup();
+    const first = await service.manual('oc_source', 'request-one');
+    await service.manual('oc_source', 'request-two');
+    advance(31 * 60_000); store.data.jobs[0]!.state = 'done';
+    vi.mocked(io.context).mockResolvedValue([message({ id: 'new' })]); vi.mocked(io.context).mockClear();
+    expect((await service.manual('oc_source', 'request-one')).id).toBe(first.id);
+    expect((await service.manual('oc_source', 'request-two')).id).toBe(first.id);
+    expect(io.context).not.toHaveBeenCalled();
+    await expect(service.manual('oc_different', 'request-one')).rejects.toThrow('already used');
+    const recovered = new InboxStore(store.path); await recovered.load();
+    expect(recovered.data.jobs[0]!.manualRequestIds).toEqual(['request-one', 'request-two']);
+  });
   it('deduplicates a large selection even after worker context expansion', async () => {
     const messages = Array.from({ length: 150 }, (_, i) => message({ id: `om_${i}`, time: 1_000_000 + i }));
     const { service, store } = await setup({ context: vi.fn(async () => messages) });

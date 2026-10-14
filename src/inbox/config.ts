@@ -12,6 +12,7 @@ export interface InboxConfig {
   maxContextChars: number;
   dailyAutoLimit: number;
   h5: { publicUrl: string; port: number };
+  gui: { publicUrl: string; apiKeyFile: string };
 }
 
 export const INBOX_DEFAULTS: InboxConfig = {
@@ -21,6 +22,7 @@ export const INBOX_DEFAULTS: InboxConfig = {
   waitMinutes: 30, pollSeconds: 60, contextMinutes: 15,
   maxContextChars: 24_000, dailyAutoLimit: 20,
   h5: { publicUrl: '', port: 19182 },
+  gui: { publicUrl: '', apiKeyFile: '' },
 };
 
 export function normalizeInbox(input: unknown): InboxConfig {
@@ -36,6 +38,7 @@ export function normalizeInbox(input: unknown): InboxConfig {
     contextMinutes: num(r.contextMinutes, 5, 1440, 15), maxContextChars: num(r.maxContextChars, 2000, 100_000, 24_000),
     dailyAutoLimit: num(r.dailyAutoLimit, 0, 1000, 20),
     h5: { publicUrl: str(r.h5?.publicUrl), port: num(r.h5?.port, 1024, 65535, 19182) },
+    gui: { publicUrl: str(r.gui?.publicUrl), apiKeyFile: str(r.gui?.apiKeyFile) },
   };
 }
 
@@ -49,6 +52,12 @@ export function validateInbox(c: InboxConfig): void {
     const url = new URL(c.h5.publicUrl);
     if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || !url.pathname.endsWith('/')) {
       throw new Error('助理页面地址必须是 HTTPS，以 / 结尾，且不含查询参数');
+    }
+  }
+  if (c.gui.publicUrl) {
+    const url = new URL(c.gui.publicUrl);
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || !c.gui.apiKeyFile.startsWith('/')) {
+      throw new Error('工作台需要 HTTPS 地址和本地凭证文件的绝对路径');
     }
   }
 }

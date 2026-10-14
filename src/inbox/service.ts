@@ -63,10 +63,15 @@ export class InboxService {
     const jobs = structuredClone(this.store.data.jobs).reverse();
     return [...jobs.filter(j => !terminal.has(j.state)), ...jobs.filter(j => terminal.has(j.state))].slice(0, limit);
   }
-  async manual(chatId: string): Promise<InboxJob> {
+  async manual(chatId: string, requestId?: string): Promise<InboxJob> {
     if (!/^oc_\w+$/.test(chatId)) throw new Error('invalid chat ID');
     return this.serial(async () => {
       this.assertEnabled();
+      const replay = requestId && this.store.data.jobs.find(j => j.manualRequestId === requestId || j.manualRequestIds?.includes(requestId));
+      if (replay) {
+        if (replay.source.chatId !== chatId) throw new Error('request ID already used');
+        return structuredClone(replay);
+      }
       await this.io.checkOwner(this.config.ownerOpenId);
       const source = await this.io.source(chatId);
       let messages = await this.io.context(chatId, this.now() - this.config.contextMinutes * 60_000, this.now());
@@ -77,13 +82,20 @@ export class InboxService {
       const ids = messages.map(m => m.id).sort().join(',');
       const submitted = this.store.data.jobs.find(j => j.source.chatId === chatId && ['running', 'ready', 'done', 'queued'].includes(j.state) &&
         j.manualSignature === ids && this.now() - j.updatedAt < 30 * 60_000);
-      if (submitted) return structuredClone(submitted);
+      if (submitted) {
+        if (requestId) {
+          submitted.manualRequestIds = [...(submitted.manualRequestIds || []), requestId].slice(-100);
+          await this.store.save();
+        }
+        return structuredClone(submitted);
+      }
       const existing = this.store.data.jobs.find(j => j.source.chatId === chatId && ['waiting', 'notifying', 'queued'].includes(j.state));
       const job = existing ?? this.create(messages, false, source);
       job.messages = boundMessages(messages, this.config.maxContextChars);
       job.source.threadId = undefined;
       job.destination = { ...this.config.destination };
       job.manualSignature = ids;
+      if (requestId) job.manualRequestIds = [...(job.manualRequestIds || []), requestId].slice(-100);
       job.automatic = false; job.state = 'queued'; job.updatedAt = this.now();
       await this.store.save();
       return structuredClone(job);
