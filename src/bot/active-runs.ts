@@ -10,6 +10,9 @@ export interface RunHandle {
 export class ActiveRuns {
   private readonly handles = new Map<string, RunHandle>();
   private readonly reservations = new Set<string>();
+  private readonly generations = new Map<string, number>();
+
+  generation(scope: string): number { return this.generations.get(scope) ?? 0; }
   private pauseDepth = 0;
   private pauseReason: string | undefined;
 
@@ -77,6 +80,7 @@ export class ActiveRuns {
    * generator exits on its own as the subprocess dies.
    */
   interrupt(chatId: string): boolean {
+    this.generations.set(chatId, this.generation(chatId) + 1);
     const h = this.handles.get(chatId);
     if (!h) return false;
     this.reservations.delete(chatId);
@@ -89,6 +93,9 @@ export class ActiveRuns {
   }
 
   async stopAll(): Promise<void> {
+    for (const scope of new Set([...this.handles.keys(), ...this.reservations])) {
+      this.generations.set(scope, this.generation(scope) + 1);
+    }
     const all = [...this.handles.values()];
     this.handles.clear();
     this.reservations.clear();

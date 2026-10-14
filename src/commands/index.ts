@@ -93,6 +93,7 @@ import type { MeetingSession } from '../meeting/session';
 import { hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
 
 export interface Controls {
+  cancelPendingInput?(scope: string): number;
   btw?: BtwManager;
   launchTimedRun?(job: TimedRun, message: NormalizedMessage): Promise<void>;
   cancelTimedRun?(scope: string, id?: string): void;
@@ -884,6 +885,7 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
     return;
   }
   const scope = targetScope || ctx.scope;
+  const dropped = ctx.controls.cancelPendingInput?.(scope) ?? 0;
   ctx.controls.btw?.cancel(scope);
   ctx.controls.cancelTimedRun?.(scope);
   const ok = ctx.activeRuns.interrupt(scope);
@@ -900,8 +902,9 @@ async function handleStop(args: string, ctx: CommandContext): Promise<void> {
         : `未找到正在运行的任务：\`${scope}\`。`,
     );
   }
-  // No reply for the current IM scope: if there was a run, its in-flight
-  // render loop will mark the card as interrupted and re-render.
+  if (!targetScope) {
+    await reply(ctx, `${ok ? '已请求停止当前任务。' : '当前没有正在执行的任务。'}${dropped ? `已取消 ${dropped} 条排队消息。` : ''}`);
+  }
 }
 
 async function handleTimeout(args: string, ctx: CommandContext): Promise<void> {

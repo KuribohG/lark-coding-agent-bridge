@@ -57,6 +57,8 @@ export interface AgentRun {
   readonly runId: string;
   readonly events: AsyncIterable<AgentEvent>;
   stop(): Promise<void>;
+  /** Append to the active turn. A transport failure must not be retried blindly. */
+  steer?(prompt: string, messageId: string): Promise<'accepted' | 'inactive'>;
   /**
    * Wait up to `timeoutMs` for the agent process to exit on its own.
    * Resolves true if it exited within the window, false if the timer

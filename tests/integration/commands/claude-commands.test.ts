@@ -254,14 +254,14 @@ describe('Claude slash command visible behavior', () => {
     expect(lastMarkdown(h.channel)).toContain('用法:`/timeout <1-120>`');
   });
 
-  it('handles /stop without sending a new reply', async () => {
+  it('acknowledges /stop while stopping the active run', async () => {
     const h = await createHarness();
     const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
     h.activeRuns.register('chat-1', activeRun);
 
     await expect(h.run('/stop')).resolves.toBe(true);
 
-    expect(h.channel.sent).toEqual([]);
+    expect(lastMarkdown(h.channel)).toContain('已请求停止当前任务');
     expect(activeRun.stopped).toBe(true);
   });
 

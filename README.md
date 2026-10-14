@@ -12,10 +12,18 @@ For a product walkthrough, see the [Feishu document](https://larkcommunity.feish
 - **Streaming card**: text replies and tool calls update on one Lark card in real time.
 - **COT process messages**: optionally send a process message with agent progress text and tool calls, then send the final answer separately.
 - **Session continuity**: each chat, topic, or document comment thread keeps its own session.
-- **Queueing and batching**: messages sent in quick succession are handled together; messages sent during a run are queued for the next turn, while commands like `/new`, `/cd`, `/ws use`, and `/stop` can interrupt the current task.
+- **Queueing and batching**: messages sent in quick succession are handled together; with the Codex app-server transport, plain text sent during a run is appended to the active turn and acknowledged; other input is queued for the next turn, while commands like `/new`, `/cd`, `/ws use`, and `/stop` can interrupt the current task.
 - **Multiple workspaces**: use `/cd` to switch the current project, and `/ws` to save and reuse common project directories.
 - **Images and files**: send them to the bot directly, and the bridge downloads them locally for the agent.
 - **Interactive cards**: `/help`, `/ws list`, and `/status` return cards with clickable buttons.
+
+## In-flight Codex input
+
+Native bidirectional input is verified with Codex 0.162.1. Set `codex.transport` to `"app-server"`, `ignoreUserConfig` to `false`, and `ignoreRules` to `false` in the target profile, then restart the bridge. The default transport remains `exec`. App-server loads normal user configuration and execpolicy `.rules`; it does not support exec-only ignore flags.
+
+Send additional text normally: `turn/steer` appends it to the same process, thread, and turn. The acknowledgement means Codex accepted the input, not that the model has acted on it. Quoted context is included; attachments and card callbacks still use the queue. Input explicitly rejected because the turn ended falls back to the next turn. Ambiguous delivery failures are reported without automatic replay.
+
+`/stop` cancels queued messages and input preparation before interrupting the active run, and sends a receipt. It does not undo completed actions. Existing topic isolation, access checks, and mention requirements still apply. Text can steer timed runs without changing their deadline; other timed-run input remains rejected rather than queued.
 
 ## Prerequisites
 
@@ -228,7 +236,7 @@ Plain `/run <task>` uses the saved defaults; everything in the task body, includ
 
 The task uses the current topic/chat context. Its model/effort snapshot applies only to this task and does not change `/model`, `/effort`, or bot defaults. Other topics/chats are unaffected. Supply a concrete goal or task list: completion ends the task early; this is not a loop to spend all available credit.
 
-The fixed stop time covers time waiting for a process slot and the supervised CLI process tree. Expired tasks cannot start. Explicit recognized exhausted-credit errors (including LiteLLM-style gateway `budget_exceeded`) stop work; ordinary rate limits are not treated as exhausted credit. Stop with `/run stop`, `/stop`, or the task card; `/run status` shows the latest/active task. Only the creator may start a task; the creator or an administrator may use its stop button. Normal `/stop` permissions are unchanged. A busy topic must be stopped or finish first. While a timed task is active, new ordinary messages and agent card callbacks in that topic are declined with a notice, not queued for an unbounded follow-up.
+The fixed stop time covers time waiting for a process slot and the supervised CLI process tree. Expired tasks cannot start. Explicit recognized exhausted-credit errors (including LiteLLM-style gateway `budget_exceeded`) stop work; ordinary rate limits are not treated as exhausted credit. Stop with `/run stop`, `/stop`, or the task card; `/run status` shows the latest/active task. Only the creator may start a task; the creator or an administrator may use its stop button. Normal `/stop` permissions are unchanged. A busy topic must be stopped or finish first. While a timed task is active, Codex app-server can accept text into its existing turn without extending the deadline; other input and agent card callbacks are declined with a notice, not queued for an unbounded follow-up.
 
 Tasks are persisted in `profiles/<profile>/timed-runs.json`. A started task cannot be started twice; stopped, expired, failed, or restart-interrupted tasks never resume automatically. Create a new task to continue. This first version has no recurring scheduler or provider balance integration. Linux process-tree cleanup is covered by process tests; macOS/Windows implementations have not been validated live. Client-side termination cannot guarantee how a provider bills an already accepted request across a quota reset; a strict billing guarantee requires a provider-side limit.
 

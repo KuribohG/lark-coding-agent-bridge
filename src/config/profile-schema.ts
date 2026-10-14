@@ -41,6 +41,7 @@ export interface SandboxConfig {
 
 export interface CodexConfig {
   binaryPath: string;
+  transport?: 'exec' | 'app-server';
   realpath?: string;
   version?: string;
   sha256?: string;
@@ -382,6 +383,7 @@ function normalizeWorkspaces(input: {
 function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
   const codex: CodexConfig = {
     binaryPath: input.binaryPath,
+    ...(input.transport === 'app-server' ? { transport: 'app-server' as const } : {}),
     ...(typeof input.realpath === 'string' ? { realpath: input.realpath } : {}),
     ...(typeof input.version === 'string' ? { version: input.version } : {}),
     ...(typeof input.sha256 === 'string' ? { sha256: input.sha256 } : {}),

@@ -18,9 +18,11 @@ import type {
 import { buildCodexArgs } from './argv';
 import { spawnWithDeadline } from '../deadline';
 import { CodexJsonlTranslator, type CodexFinishReason } from './jsonl';
+import { startAppServerRun } from './app-server';
 
 export interface CodexAdapterOptions {
   binary: string;
+  transport?: 'exec' | 'app-server';
   profileStateDir: string;
   codexHome?: string;
   inheritCodexHome?: boolean;
@@ -47,8 +49,13 @@ export class CodexAdapter implements AgentAdapter {
   private readonly defaultStopGraceMs: number;
   private readonly larkChannel: LarkChannelEnvContext | undefined;
   private botIdentity: AgentBotIdentity | undefined;
+  private readonly transport: 'exec' | 'app-server';
 
   constructor(opts: CodexAdapterOptions) {
+    this.transport = opts.transport ?? 'exec';
+    if (this.transport === 'app-server' && (opts.ignoreUserConfig || opts.ignoreRules !== false)) {
+      throw new Error('app-server requires ignoreUserConfig=false and ignoreRules=false; exec-only ignore flags are not supported');
+    }
     this.binary = opts.binary;
     this.profileStateDir = opts.profileStateDir;
     this.codexHome = opts.codexHome;
@@ -110,6 +117,15 @@ export class CodexAdapter implements AgentAdapter {
       envOverrides.CODEX_HOME = this.codexHome;
     } else if (!this.inheritCodexHome) {
       envOverrides.CODEX_HOME = join(this.profileStateDir, 'codex-home');
+    }
+    if (this.transport === 'app-server') {
+      return startAppServerRun({
+        binary: this.binary, opts,
+        env: mergeProcessEnv(process.env, envOverrides),
+        sandbox: opts.sandbox ?? this.sandbox,
+        prompt: prefixBridgeSystemPrompt(opts.prompt, this.botIdentity),
+        stopGraceMs: opts.stopGraceMs ?? this.defaultStopGraceMs,
+      });
     }
     const child = spawnWithDeadline(this.binary, args, {
       cwd: opts.cwd,

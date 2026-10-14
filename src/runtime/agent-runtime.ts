@@ -40,6 +40,7 @@ export function createRuntimeAgent(
     }
     return new CodexAdapter({
       binary: codex.binaryPath,
+      transport: codex.transport,
       profileStateDir: appPaths.profileDir,
       ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
       inheritCodexHome: codex.inheritCodexHome === true,

@@ -71,6 +71,7 @@ import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
 import { PendingQueue } from './pending-queue';
+import { FollowupRouter } from './followup';
 import { ProcessPool } from './process-pool';
 import { fetchQuotedContext, fetchTopicContext, type QuotedContext } from './quote';
 import { lookupMessageThreadId } from './thread-id';
@@ -193,6 +194,8 @@ export interface StartChannelDeps {
 export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
   const { cfg, agent, sessions, sessionCatalog, workspaces, controls } = deps;
   const activeRuns = new ActiveRuns();
+  const followups = new FollowupRouter();
+  const batchControllers = new Map<string, AbortController>();
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
   const chatModeCache = new ChatModeCache();
@@ -295,6 +298,8 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     const firstMsg = batch[0];
     if (!firstMsg) return;
     pending.block(scope);
+    const controller = new AbortController();
+    batchControllers.set(scope, controller);
     void withTrace({ chatId: firstMsg.chatId }, async () => {
       log.info('flush', 'start', {
         scope,
@@ -319,6 +324,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
           });
         }
         await runAgentBatch({
+          signal: controller.signal,
           channel,
           executor,
           sessions,
@@ -337,11 +343,17 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
       } catch (err) {
         log.fail('flush', err);
       } finally {
+        if (batchControllers.get(scope) === controller) batchControllers.delete(scope);
         pending.unblock(scope);
         log.info('flush', 'end');
       }
     });
   });
+
+  controls.cancelPendingInput = (scope) => {
+    batchControllers.get(scope)?.abort();
+    return pending.cancel(scope).length;
+  };
 
   const timedStore = await timedRuns(controls);
   const timedControllers = new Map<string, { id: string; controller: AbortController }>();
@@ -398,6 +410,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
     message: async (msg) => {
       await withTrace({ chatId: msg.chatId, msgId: msg.messageId }, () =>
         intakeMessage({
+          followups,
           channel,
           agent,
           sessions,
@@ -679,6 +692,7 @@ async function sendForwardFetchFailedHint(
 }
 
 interface IntakeDeps {
+  followups: FollowupRouter;
   channel: LarkChannel;
   agent: AgentAdapter;
   sessions: SessionStore;
@@ -846,18 +860,44 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   });
   if (handled) {
     const name = emsg.content.trim().split(/\s+/)[0];
-    const dropped = ['/model', '/effort', '/status', '/config', '/run', '/btw'].includes(name ?? '') ? [] : pending.cancel(scope);
+    const dropped = ['/model', '/effort', '/status', '/config', '/run', '/btw', '/stop'].includes(name ?? '') ? [] : pending.cancel(scope);
     log.info('intake', 'command', { scope, droppedPending: dropped.length });
     return;
   }
 
-  if (controls.activeTimedRun?.(scope)) {
+  const wasBusy = pending.hasWork(scope) || Boolean(activeRuns.get(scope));
+  const wasTimed = Boolean(controls.activeTimedRun?.(scope));
+  if (emsg.resources.length === 0 && activeRuns.get(scope)?.run.steer) {
+    const result = await deps.followups.deliver({
+      scope, messageId: emsg.messageId, activeRuns,
+      prepare: async () => {
+        const target = replyQuoteTargetForMessage(emsg, chatMode);
+        const quote = target ? await fetchQuotedContext(channel, target) : undefined;
+        return buildPrompt([emsg], [], quote ? [quote] : [], [], channel.botIdentity,
+          ['这是用户在当前任务执行期间发来的补充消息。请结合原任务处理；消息未明确取消原目标时继续保留原目标。']);
+      },
+    });
+    if (result !== 'queued') {
+      const markdown = result === 'accepted' ? '已送入当前任务，等待模型处理。'
+        : result === 'cancelled' ? '当前任务已收到停止请求，这条补充不会另起任务执行。'
+        : '未收到当前任务的接收确认，暂时无法确定这条补充是否送达。为避免重复执行，没有自动重发。';
+      await channel.send(emsg.chatId, { markdown }, { replyTo: emsg.messageId,
+        ...(chatMode === 'topic' ? { replyInThread: true } : {}) });
+      return;
+    }
+  }
+  if (wasTimed || controls.activeTimedRun?.(scope)) {
     await channel.send(emsg.chatId, { markdown: '当前话题/聊天正在执行限时任务。这条消息未排队执行，避免到期后自动续跑；修改任务请先 /stop，再重新提交。' }, {
       replyTo: emsg.messageId, ...(chatMode === 'topic' ? { replyInThread: true } : {}),
     });
     return;
   }
   const size = pending.push(scope, emsg);
+  if (wasBusy) {
+    await channel.send(emsg.chatId, { markdown: '已排队，将在当前任务结束后处理；/stop 会同时取消排队消息。' }, {
+      replyTo: emsg.messageId, ...(chatMode === 'topic' ? { replyInThread: true } : {}),
+    });
+  }
   log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });
 }
 
