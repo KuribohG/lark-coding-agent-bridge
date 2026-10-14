@@ -175,6 +175,33 @@ describe('Lark boundary', () => {
     job.destination.replyTo = 'om_evil'; await expect(cli.deliver(job, 'result')).rejects.toThrow('目标已变更');
   });
   it('bounds content while keeping latest messages', () => { const bounded = boundMessages([message({ text: 'a'.repeat(3000) }), message({ id: 'latest', time: 2_000_000, text: 'latest' })], 1000); expect(bounded.at(-1)?.id).toBe('latest'); expect(bounded.map(m => m.text).join('').length).toBeLessThanOrEqual(1000); });
+  it('publishes results and reminders as new roots in the configured topic group', async () => {
+    const { service } = await setup(); await service.tick(); const job = service.list()[0]!;
+    const c = config(); c.deliveryMode = 'new_topic'; c.gui.publicUrl = 'https://gui.example';
+    job.result = '建议回复 <at user_id="ou_other">someone</at>';
+    const exec = vi.fn(async (_args: string[]) => ({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data: { chat_mode: 'topic' } }) }));
+    const cli = new InboxLark({ profile: 'codex' }, c, exec);
+    await cli.deliver(job, 'pending'); await cli.deliver(job, 'result'); await cli.deliver(job, 'result');
+    const sends = exec.mock.calls.map(([args]) => args).filter(args => args.includes('+messages-send'));
+    expect(sends).toHaveLength(3);
+    for (const args of sends) {
+      expect(args).toContain('bot'); expect(args[args.indexOf('--chat-id') + 1]).toBe('oc_target');
+      expect(args).not.toContain('--message-id'); expect(args).not.toContain('--reply-in-thread');
+      expect(args[args.indexOf('--text') + 1]).toContain('来源会话 ID：oc_source');
+      expect(args[args.indexOf('--text') + 1]).not.toContain('<at');
+    }
+    expect(sends[1]).toEqual(sends[2]);
+    expect(sends[0]![sends[0]!.indexOf('--idempotency-key') + 1]).not.toBe(sends[1]![sends[1]!.indexOf('--idempotency-key') + 1]);
+    job.destination.chatId = 'oc_other'; await expect(cli.deliver(job, 'result')).rejects.toThrow('目标已变更');
+    expect(exec).toHaveBeenCalledTimes(6);
+  });
+  it('does not fall back to a thread or source chat when the result group is not a topic group', async () => {
+    const { service } = await setup(); await service.tick();
+    const c = config(); c.deliveryMode = 'new_topic';
+    const exec = vi.fn(async (_args: string[]) => ({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data: { chat_mode: 'group' } }) }));
+    await expect(new InboxLark({ profile: 'codex' }, c, exec).deliver(service.list()[0]!, 'result')).rejects.toThrow('不是话题群');
+    expect(exec).toHaveBeenCalledTimes(1);
+  });
   it('rejects invalid enabled configuration', () => { expect(() => validateInbox(normalizeInbox({ enabled: true }))).toThrow(); });
 });
 

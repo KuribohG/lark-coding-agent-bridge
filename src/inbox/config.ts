@@ -3,6 +3,7 @@ export interface InboxConfig {
   executorProfile: string;
   ownerOpenId: string;
   destination: { chatId: string; threadId: string; replyTo: string };
+  deliveryMode: 'thread' | 'new_topic';
   watchPrivate: boolean;
   watchMentions: boolean;
   autoAnalyze: boolean;
@@ -18,6 +19,7 @@ export interface InboxConfig {
 export const INBOX_DEFAULTS: InboxConfig = {
   enabled: false, executorProfile: '', ownerOpenId: '',
   destination: { chatId: '', threadId: '', replyTo: '' },
+  deliveryMode: 'thread',
   watchPrivate: true, watchMentions: true, autoAnalyze: true,
   waitMinutes: 30, pollSeconds: 60, contextMinutes: 15,
   maxContextChars: 24_000, dailyAutoLimit: 20,
@@ -33,6 +35,7 @@ export function normalizeInbox(input: unknown): InboxConfig {
   return {
     enabled: r.enabled === true, executorProfile: str(r.executorProfile), ownerOpenId: str(r.ownerOpenId),
     destination: { chatId: str(r.destination?.chatId), threadId: str(r.destination?.threadId), replyTo: str(r.destination?.replyTo) },
+    deliveryMode: r.deliveryMode === 'new_topic' ? 'new_topic' : 'thread',
     watchPrivate: r.watchPrivate !== false, watchMentions: r.watchMentions !== false, autoAnalyze: r.autoAnalyze !== false,
     waitMinutes: num(r.waitMinutes, 1, 1440, 30), pollSeconds: num(r.pollSeconds, 30, 3600, 60),
     contextMinutes: num(r.contextMinutes, 5, 1440, 15), maxContextChars: num(r.maxContextChars, 2000, 100_000, 24_000),

@@ -67,7 +67,9 @@ export class InboxGui {
   async tick(): Promise<void> {
     if (this.stopped) return;
     const config = this.service.config;
-    if (!this.resultUrl) {
+    if (config.deliveryMode === 'new_topic') {
+      this.resultUrl = `https://applink.feishu.cn/client/chat/open?openChatId=${config.destination.chatId}`;
+    } else if (!this.resultUrl) {
       const anchor = await this.lark.call(['im', '+messages-mget', '--as', 'bot', '--message-ids', config.destination.replyTo, '--no-reactions']);
       const messages = Array.isArray(anchor.messages) ? anchor.messages : [];
       const message = messages.map(obj).find(m => m.message_id === config.destination.replyTo &&

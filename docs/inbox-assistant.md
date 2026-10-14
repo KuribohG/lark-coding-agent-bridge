@@ -21,6 +21,7 @@ Bridge 管理页面的 profile 列表下面新增「会话助理 · 全局设置
   "executorProfile": "codex",
   "ownerOpenId": "ou_OWNER",
   "destination": { "chatId": "oc_RESULT_GROUP", "threadId": "omt_RESULT_TOPIC", "replyTo": "om_REPLY_ANCHOR" },
+  "deliveryMode": "thread",
   "watchPrivate": true,
   "watchMentions": true,
   "autoAnalyze": true,
@@ -35,6 +36,8 @@ Bridge 管理页面的 profile 列表下面新增「会话助理 · 全局设置
 ```
 
 设置 `watchPrivate=false`、`watchMentions=false` 可只使用手动选择入口。总开关关闭会取消正在执行的任务、停止读取与新的自动启动；待办仍保留。管理页保存即时生效，直接编辑文件需要重启对应 Bridge 进程。
+
+`deliveryMode="new_topic"` 时，每份提醒和分析结果由机器人在结果群新建话题，不回复到原入口线程。发送前确认目标为话题群，保留来源名称、会话 ID 和幂等去重；工作台的「群内结果」打开结果群。`thread` 保留回复到指定话题的行为，默认兼容已有配置。入口菜单仍在发起操作的话题中显示。
 
 ## 可选：飞书妙搭托管工作台
 

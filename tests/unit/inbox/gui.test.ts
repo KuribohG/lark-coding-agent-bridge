@@ -41,6 +41,13 @@ describe('hosted inbox connection', () => {
     const s = await setup(); await chmod(s.key, 0o644);
     await expect(s.worker.start()).rejects.toThrow('仅本人'); expect(s.request).not.toHaveBeenCalled();
   });
+  it('links to the result group instead of the original thread for new-topic delivery', async () => {
+    const s = await setup(); s.service.config.deliveryMode = 'new_topic';
+    await s.worker.start(); await idle(s.request);
+    const data = JSON.parse(String(s.request.mock.calls[0]?.[1]?.body));
+    expect(data.snapshot.resultUrl).toBe('https://applink.feishu.cn/client/chat/open?openChatId=oc_result');
+    expect(s.lark.call).not.toHaveBeenCalled();
+  });
   it('authenticates outbound calls and forbids redirects', async () => {
     const s = await setup(); await s.worker.start(); await idle(s.request);
     const [url, options] = s.request.mock.calls[0]!;

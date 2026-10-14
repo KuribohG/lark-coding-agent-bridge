@@ -143,13 +143,23 @@ export class InboxLark {
     const text = header + '\n' + (phase === 'pending' ? `发现待处理消息。${job.alert || !this.config.autoAnalyze ? '本项只提醒，点击后分析。' : `${this.config.waitMinutes} 分钟未选择后自动分析。`}${entry}`
       : phase === 'progress' ? '正在整理上下文并准备建议回复。' : job.error ? `分析未完成：${job.error}${entry}` : `${job.result}\n\n用量：输入 ${job.inputTokens ?? 0} / 输出 ${job.outputTokens ?? 0} tokens`);
     const link = first.link && /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(first.link) ? `\n原消息：${first.link}` : '';
-    const key = createHash('sha256').update(`${job.id}:${job.attempt ?? 0}:${phase}`).digest('hex').slice(0, 48);
+    const key = createHash('sha256').update(`${job.id}:${job.attempt ?? 0}:${phase}${this.config.deliveryMode === 'new_topic' ? `:new_topic:${d.chatId}` : ''}`).digest('hex').slice(0, 48);
+    const publish = (body: { text?: string; card?: object }) => this.config.deliveryMode === 'new_topic'
+      ? this.sendNewTopic(body, key) : this.replyTopic(body, key);
     if (phase === 'pending' && this.reminderCard && !this.config.gui.publicUrl) {
-      await this.replyTopic({ card: this.reminderCard(job, text + link) }, key);
+      await publish({ card: this.reminderCard(job, text + link) });
       return;
     }
     if (phase === 'pending' && !page) throw new Error('待办操作入口尚未就绪');
-    await this.replyTopic({ text: text + link }, key);
+    await publish({ text: text + link });
+  }
+  private async sendNewTopic(body: { text?: string; card?: object }, key: string): Promise<void> {
+    const chatId = this.config.destination.chatId;
+    const chat = await this.call(['im', 'chats', 'get', '--as', 'bot', '--chat-id', chatId]);
+    if (chat.chat_mode !== 'topic') throw new Error('结果群不是话题群，停止新建话题');
+    await this.call(['im', '+messages-send', '--as', 'bot', '--chat-id', chatId,
+      ...(body.card ? ['--msg-type', 'interactive', '--content', JSON.stringify(body.card)] : ['--text', (body.text ?? '').replace(/<\/?at\b[^>]*>/gi, '')]),
+      '--idempotency-key', key]);
   }
   async replyTopic(body: { text?: string; card?: object }, key?: string): Promise<void> {
     await this.replyAt(this.config.destination, body, key);
