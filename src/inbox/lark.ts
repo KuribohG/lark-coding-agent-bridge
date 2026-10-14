@@ -54,16 +54,18 @@ export class InboxLark {
       const child = spawnProcess('lark-cli', args, { env: mergeProcessEnv(process.env, env), stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = ''; let stderr = ''; let bytes = 0; let timedOut = false;
       const kill = () => { child.kill('SIGKILL'); };
-      this.abort.signal.addEventListener('abort', kill, { once: true });
+      const signal = this.abort.signal;
+      signal.addEventListener('abort', kill, { once: true });
       const timer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);
       const append = (data: Buffer, error: boolean) => { bytes += data.length; if (bytes > 8_000_000) { kill(); return; } if (error) stderr += data.toString(); else stdout += data.toString(); };
       child.stdout?.on('data', (data: Buffer) => append(data, false)); child.stderr?.on('data', (data: Buffer) => append(data, true));
-      const cleanup = () => { clearTimeout(timer); this.abort.signal.removeEventListener('abort', kill); };
+      const cleanup = () => { clearTimeout(timer); signal.removeEventListener('abort', kill); };
       child.once('error', () => { cleanup(); reject(new Error('无法启动当前 profile 的 lark-cli')); });
       child.once('close', code => { cleanup(); resolve({ code, stdout, stderr, timedOut }); });
     }));
   }
   close(): void { this.abort.abort(); }
+  cancelPending(): void { this.abort.abort(); this.abort = new AbortController(); }
   async call(args: string[]): Promise<Obj> {
     this.abort.signal.throwIfAborted();
     const r = await this.exec([...args, '--json'], { ...larkCliEnv(this.ctx), TZ: 'Asia/Shanghai' }, 60_000);

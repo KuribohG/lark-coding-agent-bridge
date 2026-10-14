@@ -1,4 +1,4 @@
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -7,10 +7,12 @@ import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, loadRootConfig, runtimeProfileConfig, saveRootConfig } from '../../../src/config/profile-store';
 import { normalizeInbox } from '../../../src/inbox/config';
 import { InboxManager } from '../../../src/inbox/manager';
+import { InboxGui } from '../../../src/inbox/gui';
 import { startInboxH5 } from '../../../src/inbox/h5-server';
 
 vi.mock('../../../src/inbox/analyzer', () => ({ loadAnalysisProvider: vi.fn(async () => ({ model: 'test' })), analyzeInbox: vi.fn() }));
-vi.mock('../../../src/inbox/lark', () => ({ InboxLark: class { checkOwner = vi.fn(async () => {}); close = vi.fn(); } }));
+vi.mock('../../../src/inbox/lark', () => ({ InboxLark: class { checkOwner = vi.fn(async () => {}); close = vi.fn(); cancelPending = vi.fn(); } }));
+vi.mock('../../../src/inbox/gui', () => ({ InboxGui: vi.fn(function (...args: unknown[]) { return { start: vi.fn(async () => {}), close: vi.fn(async () => {}), setMode: args[5] }; }) }));
 vi.mock('../../../src/inbox/h5-server', () => ({ startInboxH5: vi.fn(async () => ({ close: async () => {} })) }));
 const managers: InboxManager[] = [];
 afterEach(async () => { for (const manager of managers.splice(0)) await manager.close(); });
@@ -55,4 +57,23 @@ it('returns visible feedback for a command when the service is not running', asy
   const { create } = await setup();
   const feedback = await create().command('', { profile: 'codex', operator: 'ou_owner', chatId: 'oc_group', threadId: 'omt_new', messageId: 'om_new' });
   expect(feedback).toContain('未运行');
+});
+
+it('keeps the GUI connected while off, persists mode, and can re-enable after restart', async () => {
+  const { create, path, root } = await setup();
+  const key = join(path, '..', 'key'); await writeFile(key, 'fixture', { mode: 0o600 });
+  root.inbox!.gui = { publicUrl: 'https://gui.example', apiKeyFile: key };
+  root.inbox!.enabled = false; await saveRootConfig(root, path);
+  const manager = create(); await manager.reconcile();
+  const gui = vi.mocked(InboxGui).mock.results.at(-1)!.value as { setMode(mode: string): Promise<void>; close: ReturnType<typeof vi.fn> };
+  expect((await manager.view()).running).toBe(false);
+  await gui.setMode('manual'); expect((await manager.view()).running).toBe(true);
+  expect((await loadRootConfig(path))!.inbox).toMatchObject({ enabled: true, autoAnalyze: false });
+  await gui.setMode('off'); await manager.reconcile(); expect(gui.close).not.toHaveBeenCalled();
+  await manager.close();
+  const restarted = create(); await restarted.reconcile();
+  const second = vi.mocked(InboxGui).mock.results.at(-1)!.value as typeof gui;
+  expect(second).not.toBe(gui); expect((await restarted.view()).running).toBe(false);
+  await second.setMode('auto'); expect((await restarted.view()).running).toBe(true);
+  expect((await loadRootConfig(path))!.inbox).toMatchObject({ enabled: true, autoAnalyze: true });
 });

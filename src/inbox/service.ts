@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { InboxConfig } from './config';
+import { inboxMode, type InboxConfig, type InboxMode } from './config';
 import { InboxStore } from './store';
 import type { InboxIO, InboxJob, InboxMessage } from './types';
 
@@ -34,6 +34,7 @@ export class InboxService {
   private controller?: AbortController;
   private running?: Promise<void>;
   private stopped = false;
+  private modeChanges = 0;
   private lastPoll = 0;
   lastError?: string;
   constructor(readonly store: InboxStore, readonly config: InboxConfig, private io: InboxIO, private now = Date.now) {}
@@ -41,13 +42,13 @@ export class InboxService {
     const p = this.chain.then(fn); this.chain = p.catch(() => {}); return p;
   }
   async start(): Promise<void> {
-    await this.io.checkOwner(this.config.ownerOpenId);
+    if (this.config.enabled) await this.io.checkOwner(this.config.ownerOpenId);
     await this.store.load();
     const key = `${this.config.executorProfile}:${this.config.ownerOpenId}`;
     if (this.store.data.ownerKey && this.store.data.ownerKey !== key) throw new Error('待办归属已改变，请为新账号使用独立状态目录');
     this.store.data.ownerKey = key;
     for (const kind of ['p2p', 'mention']) this.store.data.cursors[kind] ??= this.now();
-    await this.store.save();
+    await this.setMode(inboxMode(this.config));
     this.timer = setInterval(() => void this.tick().catch(() => {}), 5000);
     this.timer.unref();
   }
@@ -62,6 +63,36 @@ export class InboxService {
   list(limit = 100): InboxJob[] {
     const jobs = structuredClone(this.store.data.jobs).reverse();
     return [...jobs.filter(j => !terminal.has(j.state)), ...jobs.filter(j => terminal.has(j.state))].slice(0, limit);
+  }
+  async setMode(mode: InboxMode, persist?: () => Promise<void>): Promise<void> {
+    if (!['off', 'manual', 'auto'].includes(mode)) throw new Error('无效运行模式');
+    // Gate new work immediately, even while a collection holds the serial lock.
+    this.modeChanges++;
+    if (mode === 'off' || (mode === 'manual' && this.store.data.jobs.some(j => j.state === 'running' && j.automatic))) {
+      this.controller?.abort();
+    }
+    if (mode === 'off') this.io.cancelPending?.();
+    try {
+      await this.serial(async () => {
+        if (this.stopped) throw new Error('助理连接已关闭');
+        await persist?.();
+        const previous = inboxMode(this.config);
+        this.config.enabled = mode !== 'off'; this.config.autoAnalyze = mode === 'auto';
+        for (const job of this.store.data.jobs) {
+          if (['queued', 'running'].includes(job.state) && (mode === 'off' || (mode === 'manual' && job.automatic))) {
+            job.state = 'waiting'; job.automatic = false; job.dueAt = undefined;
+            job.error = '已暂停，请手动处理'; job.updatedAt = this.now();
+          } else if (mode === 'auto' && previous !== 'auto' && job.state === 'waiting' && job.automatic) {
+            job.dueAt = this.now() + this.config.waitMinutes * 60_000;
+          }
+        }
+        if (previous === 'off' && mode !== 'off') {
+          for (const kind of Object.keys(this.store.data.cursors)) this.store.data.cursors[kind] = this.now();
+          this.lastPoll = 0;
+        }
+        await this.store.save();
+      });
+    } finally { this.modeChanges--; }
   }
   async manual(chatId: string, requestId?: string): Promise<InboxJob> {
     if (!/^oc_\w+$/.test(chatId)) throw new Error('invalid chat ID');
@@ -83,6 +114,7 @@ export class InboxService {
       const submitted = this.store.data.jobs.find(j => j.source.chatId === chatId && ['running', 'ready', 'done', 'queued'].includes(j.state) &&
         j.manualSignature === ids && this.now() - j.updatedAt < 30 * 60_000);
       if (submitted) {
+        if (submitted.state === 'queued') submitted.automatic = false;
         if (requestId) {
           submitted.manualRequestIds = [...(submitted.manualRequestIds || []), requestId].slice(-100);
           await this.store.save();
@@ -110,7 +142,8 @@ export class InboxService {
       if (!['process', 'claim', 'ignore'].includes(action)) throw new Error('invalid action');
       if (['done', 'ignored', 'claimed'].includes(job.state)) return;
       if (action === 'process') {
-        if (['running', 'ready', 'queued'].includes(job.state)) return;
+        if (['running', 'ready'].includes(job.state)) return;
+        if (job.state === 'queued') { job.automatic = false; await this.store.save(); return; }
         job.state = 'queued'; job.automatic = false;
         job.error = undefined; job.result = undefined; job.deliveredAt = undefined;
         job.destination = { ...this.config.destination };
@@ -123,18 +156,19 @@ export class InboxService {
   }
   async tick(): Promise<void> {
     await this.serial(async () => {
-      if (this.stopped || !this.config.enabled) return;
+      if (this.blocked()) return;
       try {
         const now = this.now();
         if (now - this.lastPoll >= this.config.pollSeconds * 1000) {
           this.lastPoll = now;
           await this.io.checkOwner(this.config.ownerOpenId);
           for (const kind of ['p2p', 'mention'] as const) {
+            if (this.blocked()) return;
             if (kind === 'p2p' ? !this.config.watchPrivate : !this.config.watchMentions) continue;
             const start = this.store.data.cursors[kind] ?? now;
             // Search indexing can lag. IDs, rather than timestamps, deduplicate overlap.
             const messages = await this.io.collect(kind, start - 300_000, now);
-            if (this.stopped) return;
+            if (this.blocked()) return;
             for (const m of messages.sort(compareMessages)) this.ingest(m, start - 300_000);
             this.store.data.cursors[kind] = now;
             await this.store.save();
@@ -147,13 +181,13 @@ export class InboxService {
             const since = this.store.data.cursors[key] ?? job.messages[0]!.time;
             if (now - since < 60_000) continue;
             const context = await this.io.context(chatId, since - 60_000, now);
-            if (this.stopped) return;
+            if (this.blocked()) return;
             for (const m of context.sort(compareMessages)) this.ingest(m, since - 60_000);
             this.store.data.cursors[key] = now;
           }
         }
         for (const job of this.store.data.jobs) {
-          if (this.stopped) return;
+          if (this.blocked()) return;
           if ((job.retryAt ?? 0) > now) continue;
           if (job.state === 'notifying' && (now - job.updatedAt >= 60_000 || now - job.createdAt >= 120_000)) {
             job.retryAt = now + 60_000; await this.store.save();
@@ -165,13 +199,13 @@ export class InboxService {
             if (job.state === 'ready' && job.automatic && await this.ownerReplied(job)) {
               job.state = 'claimed'; job.updatedAt = now; await this.store.save(); continue;
             }
-            if (this.stopped) return;
+            if (this.blocked()) return;
             job.retryAt = now + 60_000; await this.store.save();
             await this.io.deliver(job, 'result');
             if (job.state === 'ready') job.state = 'done';
             job.deliveredAt = this.now(); job.retryAt = undefined; await this.store.save();
           }
-          if (job.state === 'waiting' && this.config.autoAnalyze && !job.alert && job.dueAt! <= now) {
+          if (job.state === 'waiting' && job.automatic && this.config.autoAnalyze && !job.alert && job.dueAt! <= now) {
             const day = new Date(now).toISOString().slice(0, 10);
             if ((this.store.data.autoUsage[day] ?? 0) < this.config.dailyAutoLimit) { job.state = 'queued'; job.automatic = true; }
           }
@@ -182,21 +216,22 @@ export class InboxService {
         await this.store.save();
         this.lastError = undefined;
       } catch (e) { this.lastError = e instanceof Error ? e.message : 'inbox poll failed'; }
-      if (!this.running && !this.stopped) {
-        const next = this.store.data.jobs.find(j => j.state === 'queued');
+      if (!this.running && !this.blocked()) {
+        const next = this.store.data.jobs.find(j => j.state === 'queued' && (!j.automatic || this.config.autoAnalyze));
         if (next) {
           const day = new Date(this.now()).toISOString().slice(0, 10);
           if (next.automatic && (this.store.data.autoUsage[day] ?? 0) >= this.config.dailyAutoLimit) { next.state = 'waiting'; return; }
           if (next.automatic) this.store.data.autoUsage[day] = (this.store.data.autoUsage[day] ?? 0) + 1;
           next.state = 'running'; next.attempt = (next.attempt ?? 0) + 1; await this.store.save();
-          if (this.stopped) { next.state = 'queued'; await this.store.save(); return; }
+          if (this.blocked()) { next.state = 'queued'; await this.store.save(); return; }
           this.controller = new AbortController();
           this.running = this.run(next, this.controller.signal).catch(() => { this.lastError = '待办状态保存失败，停止自动任务'; this.stopped = true; }).finally(() => { this.running = undefined; this.controller = undefined; });
         }
       }
     });
   }
-  private assertEnabled(): void { if (this.stopped || !this.config.enabled) throw new Error('助理已关闭'); }
+  private blocked(): boolean { return this.stopped || !this.config.enabled || this.modeChanges > 0; }
+  private assertEnabled(): void { if (this.blocked()) throw new Error('助理已关闭或正在切换模式'); }
   private create(messages: InboxMessage[], automatic: boolean, source?: { name: string; type: 'p2p' | 'group' }): InboxJob {
     if (this.store.data.jobs.filter(j => !terminal.has(j.state)).length >= 500) throw new Error('待办已达 500 项，暂停采集，请先处理或忽略已有待办');
     const m = messages[0]!;
@@ -249,6 +284,8 @@ export class InboxService {
       if (signal.aborted) throw new Error('分析已取消');
       job.messages = boundMessages([...new Map([...job.messages, ...relevant].map(m => [m.id, m])).values()], this.config.maxContextChars);
       await this.io.deliver(job, 'progress');
+      signal.throwIfAborted();
+      if (!this.config.enabled) throw new Error('助理已关闭');
       const result = await this.io.analyze(structuredClone(job), signal);
       await this.serial(async () => {
         job.inputTokens = result.inputTokens; job.outputTokens = result.outputTokens;

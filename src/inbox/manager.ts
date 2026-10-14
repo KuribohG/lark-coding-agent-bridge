@@ -5,7 +5,7 @@ import type { Controls } from '../commands';
 import { resolveAppPaths } from '../config/app-paths';
 import { loadRootConfig, saveRootConfig, withConfigFileLock } from '../config/profile-store';
 import { resolveAppSecret } from '../config/secret-resolver';
-import { normalizeInbox, validateInbox } from './config';
+import { inboxMode, normalizeInbox, validateInbox, type InboxConfig, type InboxMode } from './config';
 import { loadAnalysisProvider, analyzeInbox } from './analyzer';
 import { InboxLark } from './lark';
 import { InboxService } from './service';
@@ -16,6 +16,8 @@ import { InboxCards, type InboxCardContext } from './cards';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { InboxGui } from './gui';
+
+const connectionConfig = ({ enabled: _, autoAnalyze: __, ...config }: InboxConfig) => config;
 
 export class InboxManager {
   private service?: InboxService;
@@ -31,7 +33,7 @@ export class InboxManager {
   constructor(private configPath: string, private controls: (profile: string) => Controls | undefined, private rootDir?: string) {}
   async view() {
     const root = await loadRootConfig(this.configPath);
-    return { config: normalizeInbox(root?.inbox), running: Boolean(this.service), error: this.error || this.service?.lastError || this.gui?.lastError,
+    return { config: normalizeInbox(root?.inbox), running: Boolean(this.service?.config.enabled), error: this.error || this.service?.lastError || this.gui?.lastError,
       jobs: this.service?.list().map(({ messages: _, result: __, ...j }) => j) || [] };
   }
   async command(args: string, ctx: InboxCardContext): Promise<string | undefined> {
@@ -60,15 +62,33 @@ export class InboxManager {
   reconcile(): Promise<void> {
     const p = this.chain.then(() => this.reload()); this.chain = p.catch(() => {}); return p;
   }
+  private async changeMode(service: InboxService, mode: InboxMode): Promise<void> {
+    // Do not reconcile here: this callback is awaited by the GUI poll itself.
+    await withConfigFileLock(this.configPath, async () => {
+      const root = await loadRootConfig(this.configPath);
+      const config = normalizeInbox(root?.inbox);
+      if (!root || this.service !== service || JSON.stringify(connectionConfig(config)) !== JSON.stringify(connectionConfig(service.config))) {
+        throw new Error('助理配置正在更新，请稍后重试');
+      }
+      config.enabled = mode !== 'off'; config.autoAnalyze = mode === 'auto'; validateInbox(config);
+      await service.setMode(mode, async () => { root.inbox = config; await saveRootConfig(root, this.configPath); });
+    });
+  }
   private async reload(): Promise<void> {
     const root = await loadRootConfig(this.configPath); const config = normalizeInbox(root?.inbox);
     const controls = this.controls(config.executorProfile);
-    const fingerprint = JSON.stringify([config, controls?.cfg.accounts.app, controls?.profileConfig.mode, controls?.profileConfig.codex, controls?.profileConfig.preferences.model]);
-    if (this.service && controls && fingerprint === this.fingerprint) return;
+    const fingerprint = JSON.stringify([connectionConfig(config), controls?.cfg.accounts.app, controls?.profileConfig.mode, controls?.profileConfig.codex, controls?.profileConfig.preferences.model]);
+    if (this.service && controls && fingerprint === this.fingerprint) {
+      await withConfigFileLock(this.configPath, async () => {
+        const latest = normalizeInbox((await loadRootConfig(this.configPath))?.inbox);
+        if (this.service && inboxMode(latest) !== inboxMode(this.service.config)) await this.service.setMode(inboxMode(latest));
+      });
+      return;
+    }
     await this.stop();
-    if (!config.enabled) { this.error = undefined; return; }
+    if (!config.enabled && !config.gui.publicUrl) { this.error = undefined; return; }
     try {
-      validateInbox(config);
+      validateInbox({ ...config, enabled: true });
       if (!controls) throw new Error('执行 profile 尚未上线');
       if (controls.profileConfig.mode === 'team') throw new Error('团队模式不允许使用个人收件助理');
       const paths = resolveAppPaths({ rootDir: this.rootDir, profile: config.executorProfile });
@@ -76,13 +96,15 @@ export class InboxManager {
       await mkdir(folder, { recursive: true, mode: 0o700 });
       const lease = join(folder, 'service'); await writeFile(lease, '', { flag: 'a', mode: 0o600 });
       this.unlock = await lockfile.lock(lease, { stale: 60_000, update: 10_000, retries: 0, onCompromised: () => { void this.close(); } });
-      const provider = await loadAnalysisProvider(controls.profileConfig);
+      let provider: ReturnType<typeof loadAnalysisProvider> | undefined;
       const lark = new InboxLark({ profile: config.executorProfile, rootDir: this.rootDir }, config);
       this.lark = lark;
       this.service = new InboxService(new InboxStore(join(folder, 'state.json')), config, {
         cancel: () => lark.close(),
+        cancelPending: () => lark.cancelPending(),
         checkOwner: id => lark.checkOwner(id), collect: (...args) => lark.collect(...args), context: (...args) => lark.context(...args),
-        source: id => lark.source(id), deliver: (...args) => lark.deliver(...args), analyze: (job, signal) => analyzeInbox(job, provider, signal),
+        source: id => lark.source(id), deliver: (...args) => lark.deliver(...args),
+        analyze: async (job, signal) => analyzeInbox(job, await (provider ??= loadAnalysisProvider(controls.profileConfig)), signal),
       });
       const secret = await resolveAppSecret(controls.cfg, paths);
       this.nonces = new CallbackNonceStore(join(folder, 'card-nonces.json'));
@@ -92,7 +114,9 @@ export class InboxManager {
       lark.reminderCard = (job, content) => cards.reminder(job, content);
       await this.service.start();
       if (config.gui.publicUrl) {
-        this.gui = new InboxGui(this.service, lark, controls.cfg.accounts.app.id, join(folder, 'gui-receipts.json'));
+        const service = this.service;
+        this.gui = new InboxGui(service, lark, controls.cfg.accounts.app.id, join(folder, 'gui-receipts.json'), fetch,
+          mode => this.changeMode(service, mode));
         await this.gui.start();
       }
       if (config.h5.publicUrl) {

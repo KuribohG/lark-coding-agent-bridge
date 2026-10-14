@@ -4,12 +4,13 @@ import type { InboxService } from './service';
 import type { InboxLark } from './lark';
 import type { InboxJob } from './types';
 import { obj } from './values';
+import { inboxMode, type InboxMode } from './config';
 
 interface Command { id: string; action: string; target: string; expiresAt: number }
 interface Receipt { id: string; ok: boolean; result: string; time: number }
 interface Ledger { ownerKey: string; receipts: Record<string, Receipt> }
 const uuid = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i;
-const actions = new Set(['browse', 'manual', 'detail', 'process', 'claim', 'ignore']);
+const actions = new Set(['browse', 'manual', 'detail', 'process', 'claim', 'ignore', 'mode']);
 export const guiSummary = (job: InboxJob) => ({ id: job.id, name: job.source.name.slice(0, 80),
   chatId: job.source.chatId, type: job.source.type, state: job.state,
   preview: job.messages.at(-1)?.text.slice(0, 80) || '', messageCount: job.messages.length,
@@ -26,7 +27,8 @@ export class InboxGui {
   private abort = new AbortController();
   lastError?: string;
   constructor(private service: InboxService, private lark: InboxLark, private appId: string,
-    private ledgerPath: string, private request: typeof fetch = fetch) {
+    private ledgerPath: string, private request: typeof fetch = fetch,
+    private changeMode?: (mode: InboxMode) => Promise<void>) {
     this.ledger = { ownerKey: `${service.config.executorProfile}:${service.config.ownerOpenId}`, receipts: {} };
   }
   async start(): Promise<void> {
@@ -78,15 +80,7 @@ export class InboxGui {
       this.resultUrl = typeof link === 'string' && /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(link) ? link :
         `https://applink.feishu.cn/client/chat/open?openChatId=${config.destination.chatId}`;
     }
-    const all = this.service.list(500).filter(j => j.ownerOpenId === config.ownerOpenId);
-    const jobs = all.slice(0, 100).map(guiSummary);
-    while (Buffer.byteLength(JSON.stringify(jobs)) > 70000) jobs.pop();
-    const data = await this.call('sync', { bridgeKey: this.ledger.ownerKey,
-      ownerOpenId: config.ownerOpenId, feishuClientId: this.appId,
-      snapshot: { jobs, total: all.length, enabled: config.enabled, autoAnalyze: config.autoAnalyze,
-        waitMinutes: config.waitMinutes, dailyAutoLimit: config.dailyAutoLimit,
-        resultUrl: this.resultUrl,
-        error: this.service.lastError?.slice(0, 1000) } });
+    const data = await this.sync();
     if (!Array.isArray(data.commands)) throw new Error('工作台同步响应无效');
     for (const value of data.commands.slice(0, 10)) {
       if (this.stopped) return;
@@ -106,11 +100,32 @@ export class InboxGui {
         for (const [id, entry] of Object.entries(this.ledger.receipts)) if (Date.now() - entry.time > 86400000) delete this.ledger.receipts[id];
         await writeFileAtomic(this.ledgerPath, JSON.stringify(this.ledger), { mode: 0o600 });
       }
+      if (command.action === 'mode' && receipt.ok) await this.sync();
       await this.call('receipt', { bridgeKey: this.ledger.ownerKey, id: receipt.id, ok: receipt.ok, result: receipt.result });
+      if (command.action === 'mode') return;
     }
+  }
+  private async sync(): Promise<Record<string, unknown>> {
+    const config = this.service.config;
+    const all = this.service.list(500).filter(j => j.ownerOpenId === config.ownerOpenId);
+    const jobs = all.slice(0, 100).map(guiSummary);
+    while (Buffer.byteLength(JSON.stringify(jobs)) > 70000) jobs.pop();
+    return this.call('sync', { bridgeKey: this.ledger.ownerKey,
+      ownerOpenId: config.ownerOpenId, feishuClientId: this.appId,
+      snapshot: { jobs, total: all.length, enabled: config.enabled, autoAnalyze: config.autoAnalyze,
+        modeControl: Boolean(this.changeMode),
+        waitMinutes: config.waitMinutes, dailyAutoLimit: config.dailyAutoLimit,
+        resultUrl: this.resultUrl,
+        error: this.service.lastError?.slice(0, 1000) } });
   }
   private async execute(command: Command): Promise<unknown> {
     if (this.stopped) throw new Error('助理已关闭');
+    if (command.action === 'mode') {
+      if (!this.changeMode || !['off', 'manual', 'auto'].includes(command.target)) throw new Error('无效运行模式');
+      await this.changeMode(command.target as InboxMode);
+      return { mode: inboxMode(this.service.config) };
+    }
+    if (!this.service.config.enabled && command.action !== 'detail') throw new Error('助理已关闭，请先选择仅手动或自动模式');
     if (command.action === 'browse') {
       const target = obj(JSON.parse(command.target));
       if ((target.type !== 'p2p' && target.type !== 'group') || typeof target.page !== 'string') throw new Error('无效会话分页');

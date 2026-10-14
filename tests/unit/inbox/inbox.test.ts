@@ -107,6 +107,56 @@ describe('durable inbox', () => {
     const closing = service.close(); finish([message()]); await tick; await closing;
     expect(service.list()).toHaveLength(0); expect(io.analyze).not.toHaveBeenCalled();
   });
+  it('turns off collection and queued work while preserving results and allowing re-enable', async () => {
+    const { service, io, store } = await setup();
+    const job = await service.manual('oc_source');
+    await service.setMode('off');
+    vi.mocked(io.collect).mockClear(); await service.tick();
+    expect(io.collect).not.toHaveBeenCalled(); expect(io.analyze).not.toHaveBeenCalled();
+    expect(service.list()[0]?.state).toBe('waiting');
+    await expect(service.manual('oc_source')).rejects.toThrow('关闭');
+    await service.setMode('auto'); await service.tick();
+    expect(io.analyze).not.toHaveBeenCalled(); // suspended jobs require an explicit click
+    await service.decide(job.id, 'process', 'ou_owner'); await service.tick(); await settle(service);
+    expect(io.analyze).toHaveBeenCalledTimes(1);
+    expect(store.data.jobs[0]?.result).toBe('建议回复');
+  });
+  it('manual mode blocks overdue and already queued automatic work, but accepts explicit processing', async () => {
+    const { service, io, store, advance } = await setup(); await service.tick();
+    store.data.jobs[0]!.state = 'queued';
+    await service.setMode('manual'); advance(3600_000); await service.tick();
+    expect(io.analyze).not.toHaveBeenCalled(); expect(io.collect).toHaveBeenCalled();
+    await service.decide(store.data.jobs[0]!.id, 'process', 'ou_owner'); await service.tick(); await settle(service);
+    expect(io.analyze).toHaveBeenCalledTimes(1);
+  });
+  it('never dispatches legacy queued automatic work after a restart in manual mode', async () => {
+    const { service, io, store } = await setup(); await service.tick();
+    store.data.jobs[0]!.state = 'queued'; service.config.autoAnalyze = false;
+    await service.tick(); expect(io.analyze).not.toHaveBeenCalled();
+  });
+  it('off gates a collection already in flight, before it can queue or analyze messages', async () => {
+    let finish!: (messages: InboxMessage[]) => void;
+    const { service, io } = await setup({ collect: vi.fn(() => new Promise<InboxMessage[]>(r => { finish = r; })) });
+    const tick = service.tick(); await vi.waitFor(() => expect(finish).toBeDefined());
+    const off = service.setMode('off'); finish([message()]); await tick; await off;
+    expect(service.list()).toHaveLength(0); expect(io.analyze).not.toHaveBeenCalled();
+  });
+  it.each(['off', 'manual'] as const)('aborts automatic analysis in %s mode and discards late output', async mode => {
+    let finish!: (r: { text: string; inputTokens: number; outputTokens: number }) => void;
+    const { service, io, store } = await setup({ analyze: vi.fn(() => new Promise<{ text: string; inputTokens: number; outputTokens: number }>(r => { finish = r; })) });
+    await service.tick(); store.data.jobs[0]!.state = 'queued'; await service.tick();
+    await vi.waitFor(() => expect(finish).toBeDefined());
+    const signal = vi.mocked(io.analyze).mock.calls[0]![1]; await service.setMode(mode);
+    expect(signal.aborted).toBe(true);
+    finish({ text: 'obsolete', inputTokens: 1, outputTokens: 1 }); await settle(service); await service.tick();
+    expect(service.list()[0]?.state).toBe('waiting'); expect(service.list()[0]?.result).toBeUndefined();
+    expect(vi.mocked(io.deliver).mock.calls.some(c => c[1] === 'result')).toBe(false);
+  });
+  it('reports persistence failure without claiming a mode change succeeded', async () => {
+    const { service } = await setup();
+    await expect(service.setMode('manual', async () => { throw new Error('disk failure'); })).rejects.toThrow('disk failure');
+    expect(service.config.autoAnalyze).toBe(true);
+  });
   it('preserves global inbox settings through root serialization', async () => {
     const path = join(await mkdtemp(join(tmpdir(), 'inbox-config-')), 'config.json');
     const profile = createDefaultProfileConfig({ agentKind: 'codex', accounts: { app: { id: 'cli_app', secret: 'fixture', tenant: 'feishu' } }, codex: { binaryPath: 'codex' } });

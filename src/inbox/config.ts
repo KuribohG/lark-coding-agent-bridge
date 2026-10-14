@@ -1,3 +1,7 @@
+export type InboxMode = 'off' | 'manual' | 'auto';
+export const inboxMode = (config: Pick<InboxConfig, 'enabled' | 'autoAnalyze'>): InboxMode =>
+  !config.enabled ? 'off' : config.autoAnalyze ? 'auto' : 'manual';
+
 export interface InboxConfig {
   enabled: boolean;
   executorProfile: string;

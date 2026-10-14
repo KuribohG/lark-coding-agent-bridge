@@ -27,10 +27,11 @@ async function setup() {
     return Response.json(String(url).endsWith('/sync') ? { commands } : { ok: true });
   });
   const ledger = join(dir, 'receipts.json');
+  const changeMode = vi.fn(async (mode: string) => { config.enabled = mode !== 'off'; config.autoAnalyze = mode === 'auto'; });
   const make = () => { const worker = new InboxGui(service as unknown as InboxService, lark as unknown as InboxLark,
-    'cli_test', ledger, request); workers.push(worker); return worker; };
+    'cli_test', ledger, request, changeMode); workers.push(worker); return worker; };
   const worker = make();
-  return { key, ledger, service, lark, request, worker, make,
+  return { key, ledger, changeMode, service, lark, request, worker, make,
     commands: (value: object[]) => { commands = value; }, failReceipt: () => { failReceipt = true; } };
 }
 const command = (action: string, target: string) => ({ id, action, target, expiresAt: Date.now() + 60000 });
@@ -70,6 +71,29 @@ describe('hosted inbox connection', () => {
     await s.worker.start(); await vi.waitFor(() => expect(s.request).toHaveBeenCalledTimes(2));
     const body = JSON.parse(String(s.request.mock.calls[1]?.[1]?.body));
     expect(body.ok).toBe(false); expect(s.service.manual).not.toHaveBeenCalled(); expect(s.service.decide).not.toHaveBeenCalled();
+  });
+  it('switches modes while off, syncs confirmation before acknowledgement, and does not replay a mode change', async () => {
+    const s = await setup(); s.service.config.enabled = false; s.commands([command('mode', 'manual')]);
+    await s.worker.start(); await vi.waitFor(() => expect(s.request).toHaveBeenCalledTimes(3));
+    expect(s.changeMode).toHaveBeenCalledWith('manual');
+    const synced = JSON.parse(String(s.request.mock.calls[1]?.[1]?.body));
+    expect(synced.snapshot).toMatchObject({ enabled: true, autoAnalyze: false, modeControl: true });
+    const receipt = JSON.parse(String(s.request.mock.calls[2]?.[1]?.body));
+    expect(receipt.ok).toBe(true); expect(JSON.parse(receipt.result).mode).toBe('manual');
+    await s.worker.tick(); expect(s.changeMode).toHaveBeenCalledTimes(1);
+  });
+  it.each(['browse', 'manual', 'process'])('blocks %s while off at the command boundary', async action => {
+    const s = await setup(); s.service.config.enabled = false; s.commands([command(action, 'oc_source')]);
+    await s.worker.start(); await vi.waitFor(() => expect(s.request).toHaveBeenCalledTimes(2));
+    expect(JSON.parse(String(s.request.mock.calls[1]?.[1]?.body)).ok).toBe(false);
+    expect(s.lark.recent).not.toHaveBeenCalled(); expect(s.service.manual).not.toHaveBeenCalled();
+    expect(s.service.decide).not.toHaveBeenCalled();
+  });
+  it('rejects invalid mode values without writing configuration', async () => {
+    const s = await setup(); s.commands([command('mode', 'enable-anything')]);
+    await s.worker.start(); await vi.waitFor(() => expect(s.request).toHaveBeenCalledTimes(2));
+    expect(s.changeMode).not.toHaveBeenCalled();
+    expect(JSON.parse(String(s.request.mock.calls[1]?.[1]?.body)).ok).toBe(false);
   });
   it('checks user identity before browsing and isolates jobs by owner', async () => {
     const s = await setup(); s.commands([command('browse', JSON.stringify({ type: 'p2p', page: '' }))]);

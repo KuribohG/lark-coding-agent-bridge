@@ -40,6 +40,7 @@ export interface InboxState {
 
 export interface InboxIO {
   cancel?(): void;
+  cancelPending?(): void;
   checkOwner(owner: string): Promise<void>;
   collect(kind: 'p2p' | 'mention', start: number, end: number): Promise<InboxMessage[]>;
   context(chatId: string, start: number, end: number): Promise<InboxMessage[]>;
