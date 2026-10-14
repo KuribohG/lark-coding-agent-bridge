@@ -10,6 +10,7 @@ import {
   type RootConfig,
 } from './profile-schema';
 import type { AppConfig } from './schema';
+import { normalizeInbox } from '../inbox/config';
 
 export async function loadRootConfig(path: string): Promise<RootConfig | undefined> {
   try {
@@ -31,6 +32,7 @@ function normalizeRootConfig(root: RootConfig): RootConfig {
     schemaVersion: 2,
     activeProfile: root.activeProfile,
     preferences: {},
+    ...(root.inbox ? { inbox: normalizeInbox(root.inbox) } : {}),
     ...(root.secrets ? { secrets: root.secrets } : {}),
     ...(migrations ? { migrations } : {}),
     profiles,
@@ -78,6 +80,7 @@ function serializeRootConfig(root: RootConfig): StoredRootConfig {
     schemaVersion: 2,
     activeProfile: root.activeProfile,
     preferences: {},
+    ...(root.inbox ? { inbox: normalizeInbox(root.inbox) } : {}),
     ...(root.secrets ? { secrets: root.secrets } : {}),
     ...(migrations ? { migrations } : {}),
     profiles,

@@ -30,6 +30,7 @@
     "bin",
     "README.md",
     "README.zh.md",
+    "docs/inbox-assistant.md",
     "LICENSE"
   ],
   "scripts": {

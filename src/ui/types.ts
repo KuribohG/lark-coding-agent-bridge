@@ -19,6 +19,7 @@ export interface UiRuntime extends MutableProfileState {
 
 /** The subset of the supervisor the console needs (structurally satisfied). */
 export interface UiSupervisor {
+  inbox?: import('../inbox/manager').InboxManager;
   isOnline(profile: string): boolean;
   controlsFor(profile: string): Controls | undefined;
   channelFor(profile: string): LarkChannel | undefined;

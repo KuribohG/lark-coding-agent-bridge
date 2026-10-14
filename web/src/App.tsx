@@ -6,6 +6,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { ProfilesView } from "@/views/ProfilesView";
 import { ProfileDetail } from "@/views/ProfileDetail";
 import { OnboardWizard } from "@/views/OnboardWizard";
+import { InboxView } from "@/views/InboxView";
 
 export function App() {
   const [onboard, setOnboard] = useState<OnboardState | null>(null);
@@ -52,6 +53,7 @@ export function App() {
       ) : (
         <>
           <ProfilesView onOpen={setSelected} />
+          <InboxView />
           {status && (
             <p className="mt-6 text-xs text-muted-foreground">
               单主进程托管所有 profile · v{status.version} · {status.online} 个在线 · 改在线 profile 的配置即时生效

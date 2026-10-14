@@ -99,7 +99,7 @@ const defaultExec: LarkCliExec = (args, env, timeoutMs) =>
     });
   });
 
-function larkCliEnv(ctx: UserImContext): NodeJS.ProcessEnv {
+export function larkCliEnv(ctx: UserImContext): NodeJS.ProcessEnv {
   const appPaths = resolveAppPaths({ rootDir: ctx.rootDir, profile: ctx.profile });
   return buildLarkChannelEnv({
     profile: appPaths.profile,

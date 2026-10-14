@@ -187,6 +187,7 @@ export interface RootConfig {
   schemaVersion: 2;
   activeProfile: string;
   preferences: Record<string, never>;
+  inbox?: import('../inbox/config').InboxConfig;
   secrets?: SecretsConfig;
   migrations?: {
     permissionDefaultsV1?: string[];

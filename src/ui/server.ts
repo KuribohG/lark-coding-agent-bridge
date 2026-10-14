@@ -131,6 +131,13 @@ async function route(
   const p = method === 'POST';
   const sup = deps.supervisor;
 
+  if (path === '/api/inbox' && (g || p)) {
+    if (!sup.inbox) throw new HttpError(503, '会话助理尚不可用');
+    try { sendJson(res, 200, p ? await sup.inbox.configure(await readJsonBody(req)) : await sup.inbox.view()); }
+    catch (e) { throw new HttpError(400, e instanceof Error ? e.message : '配置失败'); }
+    return;
+  }
+
   if (path === '/api/status' && g) {
     sendJson(res, 200, {
       hosted: true,
