@@ -32,12 +32,13 @@ export class InboxManager {
     return { config: normalizeInbox(root?.inbox), running: Boolean(this.service), error: this.error || this.service?.lastError,
       jobs: this.service?.list().map(({ messages: _, result: __, ...j }) => j) || [] };
   }
-  async command(args: string, ctx: InboxCardContext): Promise<void> {
+  async command(args: string, ctx: InboxCardContext): Promise<string | undefined> {
     const cards = this.cards; const lark = this.lark;
-    if (!cards || !lark || !cards.accepts(ctx)) return;
+    if (!cards || !lark) return '会话助理当前未运行，请检查 Bridge 全局设置中的开关和运行状态。';
+    if (!cards.accepts(ctx)) return '请由助理所属用户在配置的结果群话题中发送 /inbox。';
     try { await cards.handle(args, ctx); }
     catch (error) {
-      await lark.replyTopic({ text: error instanceof Error ? error.message : '助理操作失败，请重新发送 /inbox' }).catch(() => {});
+      return error instanceof Error ? error.message : '助理操作失败，请重新发送 /inbox';
     }
   }
   async configure(input: unknown) {

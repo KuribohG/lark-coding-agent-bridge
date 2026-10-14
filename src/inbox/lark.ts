@@ -150,10 +150,16 @@ export class InboxLark {
     await this.replyTopic({ text: text + link }, key);
   }
   async replyTopic(body: { text?: string; card?: object }, key?: string): Promise<void> {
-    const d = this.config.destination;
+    await this.replyAt(this.config.destination, body, key);
+  }
+  async replyMenu(card: object, messageId: string, threadId: string): Promise<void> {
+    if (!/^om_\w+$/.test(messageId) || !/^omt_\w+$/.test(threadId)) throw new Error('无法确认入口所在话题，请在群话题中重新发送 /inbox');
+    await this.replyAt({ chatId: this.config.destination.chatId, replyTo: messageId, threadId }, { card });
+  }
+  private async replyAt(d: InboxConfig['destination'], body: { text?: string; card?: object }, key?: string): Promise<void> {
     const anchor = await this.call(['im', '+messages-mget', '--as', 'bot', '--message-ids', d.replyTo, '--no-reactions']);
     const messages = parseMessages(anchor.messages);
-    if (!messages.some(m => m.id === d.replyTo && m.chatId === d.chatId && m.threadId === d.threadId)) throw new Error('无法验证结果话题，停止投递');
+    if (!messages.some(m => m.id === d.replyTo && m.chatId === d.chatId && m.threadId === d.threadId)) throw new Error('无法验证回复话题，停止投递');
     // Model results use plain text; native cards render source names as plain_text too.
     await this.call(['im', '+messages-reply', '--as', 'bot', '--message-id', d.replyTo, '--reply-in-thread',
       ...(body.card ? ['--msg-type', 'interactive', '--content', JSON.stringify(body.card)] : ['--text', (body.text ?? '').replace(/<\/?at\b[^>]*>/gi, '')]),

@@ -50,3 +50,9 @@ it('starts without HTTPS and does not open an HTTP listener', async () => {
   expect((await manager.view()).running).toBe(true);
   expect(startInboxH5).not.toHaveBeenCalled();
 });
+
+it('returns visible feedback for a command when the service is not running', async () => {
+  const { create } = await setup();
+  const feedback = await create().command('', { profile: 'codex', operator: 'ou_owner', chatId: 'oc_group', threadId: 'omt_new', messageId: 'om_new' });
+  expect(feedback).toContain('未运行');
+});

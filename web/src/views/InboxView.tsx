@@ -12,7 +12,7 @@ export function InboxView() {
   if (!config) return error ? <p className="text-destructive">{error}</p> : null;
   const change = (patch: Partial<InboxConfig>) => setConfig({ ...config, ...patch });
   return <Card className="mt-6"><CardHeader><CardTitle>会话助理 · 全局设置</CardTitle></CardHeader><CardContent className="space-y-4">
-    <p className="text-sm text-muted-foreground">自动整理私聊和直接 @ 你的消息，在指定群话题准备分析与回复草稿。最终由你发送。启用后在结果话题 @ 机器人发送 /inbox，即可用卡片选择会话和处理待办。</p>
+    <p className="text-sm text-muted-foreground">自动整理私聊和直接 @ 你的消息，在指定群话题准备分析与回复草稿。最终由你发送。启用后在结果群任意话题发送 /inbox，即可用卡片选择会话和处理待办；是否需要 @ 机器人取决于该群的消息接收设置。</p>
     <label className="flex gap-2"><input type="checkbox" checked={config.enabled} onChange={e => change({ enabled: e.target.checked })} />开启会话助理</label>
     <div className="grid gap-3 sm:grid-cols-2">
       {([['executorProfile', '执行 profile'], ['ownerOpenId', '本人 Open ID']] as const).map(([key, label]) => <label key={key}>{label}<Input value={config[key]} onChange={e => change({ [key]: e.target.value })} /></label>)}

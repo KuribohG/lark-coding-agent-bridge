@@ -860,7 +860,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   });
   if (handled) {
     const name = emsg.content.trim().split(/\s+/)[0];
-    const dropped = ['/model', '/effort', '/status', '/config', '/run', '/btw', '/stop'].includes(name ?? '') ? [] : pending.cancel(scope);
+    const dropped = ['/model', '/effort', '/status', '/config', '/run', '/btw', '/stop', '/inbox'].includes(name ?? '') ? [] : pending.cancel(scope);
     log.info('intake', 'command', { scope, droppedPending: dropped.length });
     return;
   }

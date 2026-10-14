@@ -184,7 +184,10 @@ const handlers: Record<string, Handler> = {
     const manager = ctx.controls.inbox;
     if (!manager) { await reply(ctx, '当前 Bridge 尚未启用会话助理。'); return; }
     // CLI reads and history retrieval can exceed the card callback deadline.
-    const work = () => manager.command(args, { profile: ctx.controls.profile, operator: ctx.msg.senderId, chatId: ctx.msg.chatId, threadId: ctx.msg.threadId });
+    const work = async () => {
+      const feedback = await manager.command(args, { profile: ctx.controls.profile, operator: ctx.msg.senderId, chatId: ctx.msg.chatId, threadId: ctx.msg.threadId, messageId: ctx.msg.messageId });
+      if (feedback) await reply(ctx, feedback);
+    };
     if (ctx.fromCardAction) void work().catch(() => {});
     else await work();
   },

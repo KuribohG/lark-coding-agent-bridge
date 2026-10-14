@@ -28,7 +28,7 @@ describe('signed card callback dispatch', () => {
     h.controls.inbox = { command } as unknown as NonNullable<Controls['inbox']>;
     await h.dispatch({ cmd: 'inbox.action', arg: 'choose encoded signed-action' });
     expect(command).toHaveBeenCalledWith('action choose encoded signed-action', {
-      profile: 'claude', operator: 'ou_operator', chatId: 'oc_group', threadId: 'omt_topic',
+      profile: 'claude', operator: 'ou_operator', chatId: 'oc_group', threadId: 'omt_topic', messageId: 'om_card',
     });
     expect(h.pending.cancel('oc_group:omt_topic')).toHaveLength(0);
   });

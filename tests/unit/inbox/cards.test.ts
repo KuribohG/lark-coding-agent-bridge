@@ -23,7 +23,7 @@ async function setup() {
   const path = join(await mkdtemp(join(tmpdir(), 'inbox-cards-')), 'nonces.json');
   let now = 1000;
   const service = { config: config(), manual: vi.fn(async () => job), decide: vi.fn(async () => {}), list: vi.fn(() => [job]) };
-  const lark = { replyTopic: vi.fn(async (_body: { card?: object; text?: string }) => {}), recent: vi.fn(async (_type: string, _page?: string) => ({ chats: [{ id: 'oc_source', name: '<at id=all>name</at>' }], next: 'next1' })) };
+  const lark = { replyTopic: vi.fn(async (_body: { card?: object; text?: string }) => {}), replyMenu: vi.fn(async (_card: object, _messageId: string, _threadId: string) => {}), recent: vi.fn(async (_type: string, _page?: string) => ({ chats: [{ id: 'oc_source', name: '<at id=all>name</at>' }], next: 'next1' })) };
   const create = async () => {
     const store = new CallbackNonceStore(path); await store.load();
     return new InboxCards(service as unknown as InboxService, lark as unknown as InboxLark,
@@ -43,9 +43,35 @@ it('browses private and group chats without submitting analysis, retaining names
   expect(JSON.stringify(rows)).not.toContain('__bridge_cb');
 });
 
-it.each([{ operator: 'ou_other' }, { chatId: 'oc_other' }, { threadId: 'omt_other' }, { threadId: undefined }, { profile: 'claude' }])('rejects another owner, forwarded location or profile: %j', async override => {
+it.each([{ operator: 'ou_other' }, { chatId: 'oc_other' }, { threadId: undefined }, { profile: 'claude' }])('rejects another owner, forwarded group or profile: %j', async override => {
   const h = await setup(); await h.cards.handle('private', { ...context, ...override });
   expect(h.lark.replyTopic).not.toHaveBeenCalled(); expect(h.lark.recent).not.toHaveBeenCalled();
+});
+
+it('opens and browses in a new topic of the configured group, while submitting results to the fixed topic', async () => {
+  const h = await setup(); const from = { ...context, threadId: 'omt_new', messageId: 'om_new' };
+  await h.cards.handle('', from);
+  expect(h.lark.replyMenu).toHaveBeenLastCalledWith(expect.objectContaining({ schema: '2.0' }), 'om_new', 'omt_new');
+  await h.cards.handle('groups', from);
+  const menu = h.lark.replyMenu.mock.calls.at(-1)![0];
+  const cmd = command(elements({ card: menu }).find(e => e.text?.content === '分析此会话')!);
+  await h.cards.handle(cmd, from);
+  expect(h.service.manual).toHaveBeenCalledWith('oc_source');
+  expect(h.lark.replyTopic).toHaveBeenCalledWith({ text: expect.stringContaining('原会话') });
+  expect(h.service.config.destination).toEqual(config().destination);
+});
+
+it('validates menu carriers in the configured group before replying to their new topic', async () => {
+  let chatId = 'oc_other';
+  const exec = vi.fn(async (_args: string[]) => ({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data: {
+    messages: [{ message_id: 'om_new', chat_id: chatId, thread_id: 'omt_new', create_time: '2026-10-14 20:00' }] } }) }));
+  const lark = new InboxLark({ profile: 'codex' }, config(), exec);
+  await expect(lark.replyMenu({}, 'om_new', 'omt_new')).rejects.toThrow('无法验证');
+  expect(exec).toHaveBeenCalledTimes(1);
+  chatId = 'oc_target';
+  await lark.replyMenu({ schema: '2.0' }, 'om_new', 'omt_new');
+  expect(exec.mock.calls.at(-1)![0]).toContain('om_new');
+  expect(exec.mock.calls.at(-1)![0]).toContain('--reply-in-thread');
 });
 
 it('binds signed choices to their source and configuration; repeated clicks survive restart without another submission', async () => {
