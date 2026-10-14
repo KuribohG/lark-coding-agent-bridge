@@ -44,6 +44,7 @@ export function parseMessages(value: unknown, hint: 'p2p' | 'group' = 'group'): 
 }
 
 export class InboxLark {
+  reminderCard?: (job: InboxJob, text: string) => object;
   private sources = new Map<string, { name: string; type: 'p2p' | 'group'; checkedAt: number }>();
   private abort = new AbortController();
   private exec: LarkCliExec;
@@ -105,11 +106,21 @@ export class InboxLark {
       '--start', iso(start), '--end', iso(end), '--page-size', '50', '--no-reactions'], 'messages');
     return parseMessages(raw, source.type).filter(m => m.time >= start && m.time <= end).map(m => ({ ...m, chatName: source.name, chatType: source.type }));
   }
+  async recent(type: 'p2p' | 'group', pageToken = ''): Promise<{ chats: { id: string; name: string }[]; next: string }> {
+    await this.checkOwner(this.config.ownerOpenId);
+    const d = await this.call(['im', '+chat-list', '--as', 'user', '--types', type, '--sort', 'active_time', '--page-size', '8',
+      ...(pageToken ? ['--page-token', pageToken] : [])]);
+    const chats = (Array.isArray(d.chats) ? d.chats : []).map(v => ({ id: str(obj(v).chat_id), name: str(obj(v).name) }))
+      .filter(c => /^oc_\w+$/.test(c.id) && c.name && c.id !== this.config.destination.chatId);
+    for (const c of chats) this.sources.set(c.id, { name: c.name, type, checkedAt: Date.now() });
+    if (d.has_more && (!str(d.page_token) || d.page_token === pageToken)) throw new Error('会话分页未完成，请重新打开列表');
+    return { chats, next: d.has_more ? str(d.page_token) : '' };
+  }
   async source(chatId: string): Promise<{ name: string; type: 'p2p' | 'group' }> {
     if (!/^oc_\w+$/.test(chatId)) throw new Error('invalid chat ID');
     const cached = this.sources.get(chatId);
     if (cached && Date.now() - cached.checkedAt < 5 * 60_000) return cached;
-    // Membership is verified against the user's own conversation list, not the H5 payload.
+    // Membership is verified against the user's own conversation list, not a client payload.
     for (const type of ['p2p', 'group'] as const) {
       const chats = await this.pages(['im', '+chat-list', '--as', 'user', '--types', type, '--sort', 'active_time', '--page-size', '100'], 'chats');
       for (const v of chats) {
@@ -123,9 +134,6 @@ export class InboxLark {
   async deliver(job: InboxJob, phase: 'pending' | 'progress' | 'result'): Promise<void> {
     const d = job.destination;
     if (job.ownerOpenId !== this.config.ownerOpenId || JSON.stringify(d) !== JSON.stringify(this.config.destination)) throw new Error('结果目标已变更，请重新处理待办');
-    const anchor = await this.call(['im', '+messages-mget', '--as', 'bot', '--message-ids', d.replyTo, '--no-reactions']);
-    const messages = parseMessages(anchor.messages);
-    if (!messages.some(m => m.id === d.replyTo && m.chatId === d.chatId && m.threadId === d.threadId)) throw new Error('无法验证结果话题，停止投递');
     const escape = (s: string) => s.replace(/[\r\n]/g, ' ').replace(/[<>`*_\[\]]/g, '');
     const first = job.messages[0]!; const last = job.messages.at(-1)!;
     const header = `来源${job.source.type === 'p2p' ? '私聊' : '群聊'}：${escape(job.source.name)}\n来源会话 ID：${job.source.chatId}\n消息范围：${iso(first.time)} ～ ${iso(last.time)}\n待办：${job.id}\n`;
@@ -133,8 +141,22 @@ export class InboxLark {
     const text = header + '\n' + (phase === 'pending' ? `发现待处理消息。${job.alert || !this.config.autoAnalyze ? '本项只提醒，点击后分析。' : `${this.config.waitMinutes} 分钟未选择后自动分析。`}${entry}`
       : phase === 'progress' ? '正在整理上下文并准备建议回复。' : job.error ? `分析未完成：${job.error}${entry}` : `${job.result}\n\n用量：输入 ${job.inputTokens ?? 0} / 输出 ${job.outputTokens ?? 0} tokens`);
     const link = first.link && /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(first.link) ? `\n原消息：${first.link}` : '';
-    // Plain text avoids remote-image fetches or mentions hidden in model markdown.
+    const key = createHash('sha256').update(`${job.id}:${job.attempt ?? 0}:${phase}`).digest('hex').slice(0, 48);
+    if (phase === 'pending' && this.reminderCard) {
+      await this.replyTopic({ card: this.reminderCard(job, text + link) }, key);
+      return;
+    }
+    if (phase === 'pending' && !this.config.h5.publicUrl) throw new Error('待办操作入口尚未就绪');
+    await this.replyTopic({ text: text + link }, key);
+  }
+  async replyTopic(body: { text?: string; card?: object }, key?: string): Promise<void> {
+    const d = this.config.destination;
+    const anchor = await this.call(['im', '+messages-mget', '--as', 'bot', '--message-ids', d.replyTo, '--no-reactions']);
+    const messages = parseMessages(anchor.messages);
+    if (!messages.some(m => m.id === d.replyTo && m.chatId === d.chatId && m.threadId === d.threadId)) throw new Error('无法验证结果话题，停止投递');
+    // Model results use plain text; native cards render source names as plain_text too.
     await this.call(['im', '+messages-reply', '--as', 'bot', '--message-id', d.replyTo, '--reply-in-thread',
-      '--text', text + link, '--idempotency-key', createHash('sha256').update(`${job.id}:${job.attempt ?? 0}:${phase}`).digest('hex').slice(0, 48)]);
+      ...(body.card ? ['--msg-type', 'interactive', '--content', JSON.stringify(body.card)] : ['--text', (body.text ?? '').replace(/<\/?at\b[^>]*>/gi, '')]),
+      ...(key ? ['--idempotency-key', key] : [])]);
   }
 }

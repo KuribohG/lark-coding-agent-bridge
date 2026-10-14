@@ -7,6 +7,7 @@ import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, loadRootConfig, runtimeProfileConfig, saveRootConfig } from '../../../src/config/profile-store';
 import { normalizeInbox } from '../../../src/inbox/config';
 import { InboxManager } from '../../../src/inbox/manager';
+import { startInboxH5 } from '../../../src/inbox/h5-server';
 
 vi.mock('../../../src/inbox/analyzer', () => ({ loadAnalysisProvider: vi.fn(async () => ({ model: 'test' })), analyzeInbox: vi.fn() }));
 vi.mock('../../../src/inbox/lark', () => ({ InboxLark: class { checkOwner = vi.fn(async () => {}); close = vi.fn(); } }));
@@ -39,4 +40,13 @@ it('persists the global switch without changing profile preferences', async () =
   await manager.configure({ ...root.inbox, enabled: false });
   expect((await manager.view()).running).toBe(false);
   expect((await loadRootConfig(path))!.profiles.codex).toEqual(before);
+});
+
+it('starts without HTTPS and does not open an HTTP listener', async () => {
+  const { create, root, path } = await setup();
+  root.inbox!.h5.publicUrl = ''; await saveRootConfig(root, path);
+  vi.mocked(startInboxH5).mockClear();
+  const manager = create(); await manager.reconcile();
+  expect((await manager.view()).running).toBe(true);
+  expect(startInboxH5).not.toHaveBeenCalled();
 });

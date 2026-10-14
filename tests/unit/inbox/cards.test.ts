@@ -1,0 +1,107 @@
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { expect, it, vi } from 'vitest';
+import { CallbackAuth } from '../../../src/card/callback-auth';
+import { CallbackNonceStore } from '../../../src/card/callback-store';
+import { InboxCards, type InboxCardContext } from '../../../src/inbox/cards';
+import { normalizeInbox, validateInbox } from '../../../src/inbox/config';
+import { InboxLark } from '../../../src/inbox/lark';
+import type { InboxService } from '../../../src/inbox/service';
+import type { InboxJob } from '../../../src/inbox/types';
+
+const context: InboxCardContext = { profile: 'codex', operator: 'ou_owner', chatId: 'oc_target', threadId: 'omt_topic' };
+const config = () => normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner', destination: { chatId: 'oc_target', threadId: 'omt_topic', replyTo: 'om_anchor' } });
+const job = { id: 'job1', source: { chatId: 'oc_source', name: '原会话', type: 'p2p' }, state: 'waiting' } as InboxJob;
+type Element = { tag: string; text?: { content: string }; behaviors?: { value: { cmd: string; arg?: string } }[] };
+function elements(body: { card?: object }): Element[] { return (body.card as { body: { elements: Element[] } }).body.elements; }
+function command(element: Element): string {
+  const value = element.behaviors![0]!.value;
+  return value.cmd.split('.').slice(1).join(' ') + (value.arg ? ` ${value.arg}` : '');
+}
+async function setup() {
+  const path = join(await mkdtemp(join(tmpdir(), 'inbox-cards-')), 'nonces.json');
+  let now = 1000;
+  const service = { config: config(), manual: vi.fn(async () => job), decide: vi.fn(async () => {}), list: vi.fn(() => [job]) };
+  const lark = { replyTopic: vi.fn(async (_body: { card?: object; text?: string }) => {}), recent: vi.fn(async (_type: string, _page?: string) => ({ chats: [{ id: 'oc_source', name: '<at id=all>name</at>' }], next: 'next1' })) };
+  const create = async () => {
+    const store = new CallbackNonceStore(path); await store.load();
+    return new InboxCards(service as unknown as InboxService, lark as unknown as InboxLark,
+      new CallbackAuth({ keys: [{ version: 1, secret: 'fixture-secret' }], nonceStore: store, now: () => now }), store);
+  };
+  return { cards: await create(), create, service, lark, advance: (ms: number) => { now += ms; } };
+}
+
+it('allows a complete configuration with no web URL', () => { expect(() => validateInbox(config())).not.toThrow(); });
+
+it('browses private and group chats without submitting analysis, retaining names and IDs as plain text', async () => {
+  const h = await setup(); await h.cards.handle('private', context); await h.cards.handle('groups', context);
+  expect(h.lark.recent.mock.calls.map(c => c[0])).toEqual(['p2p', 'group']);
+  expect(h.service.manual).not.toHaveBeenCalled(); expect(h.service.decide).not.toHaveBeenCalled();
+  const rows = elements(h.lark.replyTopic.mock.calls[0]![0]);
+  expect(rows.some(e => e.text?.content.includes('<at id=all>name</at>\n会话 ID：oc_source'))).toBe(true);
+  expect(JSON.stringify(rows)).not.toContain('__bridge_cb');
+});
+
+it.each([{ operator: 'ou_other' }, { chatId: 'oc_other' }, { threadId: 'omt_other' }, { threadId: undefined }, { profile: 'claude' }])('rejects another owner, forwarded location or profile: %j', async override => {
+  const h = await setup(); await h.cards.handle('private', { ...context, ...override });
+  expect(h.lark.replyTopic).not.toHaveBeenCalled(); expect(h.lark.recent).not.toHaveBeenCalled();
+});
+
+it('binds signed choices to their source and configuration; repeated clicks survive restart without another submission', async () => {
+  const h = await setup(); await h.cards.handle('private', context);
+  const cmd = command(elements(h.lark.replyTopic.mock.calls[0]![0]).find(e => e.text?.content === '分析此会话')!);
+  await expect(h.cards.handle(cmd.replace(Buffer.from('oc_source').toString('base64url'), Buffer.from('oc_other').toString('base64url')), context)).rejects.toThrow('失效');
+  h.service.config.waitMinutes++;
+  await expect(h.cards.handle(cmd, context)).rejects.toThrow('失效'); h.service.config.waitMinutes--;
+  await h.cards.handle(cmd, context); expect(h.service.manual).toHaveBeenCalledWith('oc_source');
+  await expect((await h.create()).handle(cmd, context)).rejects.toThrow('已经处理');
+  expect(h.service.manual).toHaveBeenCalledTimes(1);
+});
+
+it('expires selection cards and preserves unused reminder actions across restart', async () => {
+  const h = await setup(); await h.cards.handle('private', context);
+  const cmd = command(elements(h.lark.replyTopic.mock.calls[0]![0]).find(e => e.text?.content === '分析此会话')!);
+  const reminder = h.cards.reminder(job, '提醒');
+  h.advance(31 * 60_000); await expect(h.cards.handle(cmd, context)).rejects.toThrow('失效');
+  const ignore = command(elements({ card: reminder }).find(e => e.text?.content === '忽略')!);
+  await (await h.create()).handle(ignore, context);
+  expect(h.service.decide).toHaveBeenCalledWith('job1', 'ignore', 'ou_owner'); expect(h.service.decide).toHaveBeenCalledTimes(1);
+  expect(h.service.manual).not.toHaveBeenCalled();
+});
+
+it('carries a signed opaque pagination cursor without model calls', async () => {
+  const h = await setup(); await h.cards.handle('groups', context);
+  const cmd = command(elements(h.lark.replyTopic.mock.calls[0]![0]).find(e => e.text?.content === '下一页')!);
+  await h.cards.handle(cmd, context);
+  expect(h.lark.recent).toHaveBeenLastCalledWith('group', 'next1'); expect(h.service.manual).not.toHaveBeenCalled();
+});
+
+it('continues across an empty chat-list page and keeps the configured output conversation out of choices', async () => {
+  const exec = vi.fn(async (args: string[]) => ({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify(args[0] === 'auth'
+    ? { identities: { user: { openId: 'ou_owner', scope: 'search:message' } } }
+    : { ok: true, data: args.includes('--page-token') ? { chats: [{ chat_id: 'oc_target', name: '结果群' }, { chat_id: 'oc_source', name: '来源群' }] }
+      : { chats: [], has_more: true, page_token: 'next' } }) }));
+  const lark = new InboxLark({ profile: 'codex' }, config(), exec);
+  expect(await lark.recent('group')).toEqual({ chats: [], next: 'next' });
+  expect(await lark.recent('group', 'next')).toEqual({ chats: [{ id: 'oc_source', name: '来源群' }], next: '' });
+});
+
+it('sends reminder cards only as a bot reply in the verified topic', async () => {
+  const exec = vi.fn(async (_args: string[]) => ({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data: {
+    messages: [{ message_id: 'om_anchor', chat_id: 'oc_target', thread_id: 'omt_topic', create_time: '2026-10-14 20:00' }] } }) }));
+  const lark = new InboxLark({ profile: 'codex' }, config(), exec);
+  lark.reminderCard = () => ({ schema: '2.0', body: { elements: [] } });
+  await lark.deliver({ ...job, ownerOpenId: 'ou_owner', destination: config().destination,
+    messages: [{ time: 1_000_000 }], automatic: true } as InboxJob, 'pending');
+  const args = exec.mock.calls[1]![0]; expect(args).toContain('--reply-in-thread'); expect(args).toContain('bot'); expect(args).toContain('om_anchor');
+  expect(args).toContain('interactive'); expect(args).not.toContain('oc_source');
+});
+
+it('does not turn model or source text into structured mentions', async () => {
+  const exec = vi.fn(async (_args: string[]) => ({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data: {
+    messages: [{ message_id: 'om_anchor', chat_id: 'oc_target', thread_id: 'omt_topic', create_time: '2026-10-14 20:00' }] } }) }));
+  const lark = new InboxLark({ profile: 'codex' }, config(), exec);
+  await lark.replyTopic({ text: '<at user_id="all">everyone</at> 建议回复' });
+  const args = exec.mock.calls[1]![0]; expect(args[args.indexOf('--text') + 1]).toBe('everyone 建议回复');
+});

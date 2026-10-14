@@ -59,9 +59,9 @@ export class InboxService {
     await this.running;
     await this.chain;
   }
-  list(): InboxJob[] {
+  list(limit = 100): InboxJob[] {
     const jobs = structuredClone(this.store.data.jobs).reverse();
-    return [...jobs.filter(j => !terminal.has(j.state)), ...jobs.filter(j => terminal.has(j.state))].slice(0, 100);
+    return [...jobs.filter(j => !terminal.has(j.state)), ...jobs.filter(j => terminal.has(j.state))].slice(0, limit);
   }
   async manual(chatId: string): Promise<InboxJob> {
     if (!/^oc_\w+$/.test(chatId)) throw new Error('invalid chat ID');

@@ -45,7 +45,6 @@ export function validateInbox(c: InboxConfig): void {
   if (!/^oc_\w+$/.test(c.destination.chatId) || !/^omt_\w+$/.test(c.destination.threadId) || !/^om_\w+$/.test(c.destination.replyTo)) {
     throw new Error('请设置结果群 ID、话题 ID 和话题内的回复消息 ID');
   }
-  if (!c.h5.publicUrl) throw new Error('请先设置助理页面 HTTPS 地址，以便选择处理或忽略待办');
   if (c.h5.publicUrl) {
     const url = new URL(c.h5.publicUrl);
     if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || !url.pathname.endsWith('/')) {

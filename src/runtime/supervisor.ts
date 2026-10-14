@@ -81,6 +81,7 @@ class ManagedProfile {
     private startChannelFn: StartChannelFn,
     private onExitCommand: (profile: string) => void,
     private onRuntimeChange: () => Promise<void>,
+    private inbox: InboxManager,
   ) {}
 
   get appId(): string {
@@ -174,6 +175,7 @@ class ManagedProfile {
   ): Controls {
     const self = this;
     const currentControls: Controls = {
+      inbox: this.inbox,
       profile: currentPaths.profile,
       profileConfig: currentProfileConfig,
       ownerRefreshState: 'unknown',
@@ -363,6 +365,7 @@ export class Supervisor {
       this.startChannelFn,
       (p) => void this.stopProfile(p).catch(() => undefined),
       () => this.inbox.reconcile(),
+      this.inbox,
     );
     await managed.bringUp(new Date().toISOString());
     this.managed.set(appPaths.profile, managed);

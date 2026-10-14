@@ -156,7 +156,7 @@ describe('Lark boundary', () => {
   it('never uses source chat as output target, and emits text rather than parsing remote images', async () => {
     const { service } = await setup(); await service.tick(); const job = service.list()[0]!;
     const exec = vi.fn(async (_args: string[]) => ({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data: { messages: [{ message_id: 'om_anchor', chat_id: 'oc_target', thread_id: 'omt_topic', create_time: '2026-10-14 20:00', sender: { sender_type: 'user' }, content: '' }] } }) }));
-    const cli = new InboxLark({ profile: 'codex' }, config(), exec); await cli.deliver(job, 'pending');
+    const cli = new InboxLark({ profile: 'codex' }, config(), exec); await cli.deliver(job, 'progress');
     const args = exec.mock.calls[1]![0]; expect(args).toContain('--reply-in-thread'); expect(args).toContain('om_anchor'); expect(args).toContain('bot'); expect(args).toContain('--text'); expect(args).not.toContain('--markdown');
     expect(args[args.indexOf('--text') + 1]).toContain('源会话'); expect(args[args.indexOf('--text') + 1]).toContain('oc_source');
     job.destination.replyTo = 'om_evil'; await expect(cli.deliver(job, 'result')).rejects.toThrow('目标已变更');

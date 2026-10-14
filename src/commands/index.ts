@@ -91,8 +91,10 @@ import { isMeetingNo } from '../meeting/api';
 import { answerInMeeting, meetingScopeId } from '../meeting/orchestrator';
 import type { MeetingSession } from '../meeting/session';
 import { hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
+import type { InboxManager } from '../inbox/manager';
 
 export interface Controls {
+  inbox?: InboxManager;
   cancelPendingInput?(scope: string): number;
   btw?: BtwManager;
   launchTimedRun?(job: TimedRun, message: NormalizedMessage): Promise<void>;
@@ -178,6 +180,14 @@ const AUDIT_SAFE_COMMAND_REPLY = '命令已处理。';
 const RESUME_APPLIED_REPLY = '已完成，请继续发送下一条消息。';
 
 const handlers: Record<string, Handler> = {
+  '/inbox': async (args, ctx) => {
+    const manager = ctx.controls.inbox;
+    if (!manager) { await reply(ctx, '当前 Bridge 尚未启用会话助理。'); return; }
+    // CLI reads and history retrieval can exceed the card callback deadline.
+    const work = () => manager.command(args, { profile: ctx.controls.profile, operator: ctx.msg.senderId, chatId: ctx.msg.chatId, threadId: ctx.msg.threadId });
+    if (ctx.fromCardAction) void work().catch(() => {});
+    else await work();
+  },
   '/new': handleNew,
   '/reset': handleNew,
   '/cd': handleCd,

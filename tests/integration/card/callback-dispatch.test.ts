@@ -1,5 +1,5 @@
 import type { CardActionEvent } from '@larksuite/channel';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import type { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
@@ -19,6 +19,18 @@ const cleanups: Array<() => Promise<void>> = [];
 describe('signed card callback dispatch', () => {
   afterEach(async () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
+  });
+
+  it('dispatches native inbox actions with carrier topic context and no active agent run', async () => {
+    const h = await createHarness({ chatMode: 'topic', callbackAuth: false });
+    h.channel.rawThreadIds.set('om_card', 'omt_topic');
+    const command = vi.fn(async () => {});
+    h.controls.inbox = { command } as unknown as NonNullable<Controls['inbox']>;
+    await h.dispatch({ cmd: 'inbox.action', arg: 'choose encoded signed-action' });
+    expect(command).toHaveBeenCalledWith('action choose encoded signed-action', {
+      profile: 'claude', operator: 'ou_operator', chatId: 'oc_group', threadId: 'omt_topic',
+    });
+    expect(h.pending.cancel('oc_group:omt_topic')).toHaveLength(0);
   });
 
   it('runs built-in command callbacks only when the bridge token verifies', async () => {
