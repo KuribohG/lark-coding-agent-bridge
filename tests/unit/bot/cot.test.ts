@@ -4,6 +4,23 @@ import type { AgentEvent } from '../../../src/agent/types.js';
 import type { RunState } from '../../../src/card/run-state.js';
 
 describe('COT event mapping', () => {
+  it('shows retry progress without completing the process message as an error', async () => {
+    const client = new FakeCotClient();
+    const publisher = new CotPublisher({ client, chatId: 'oc_chat', originMessageId: 'om_origin',
+      runId: 'retry-run', scope: 'oc_chat', inputPreview: 'task' });
+    await publisher.start();
+    await consumeCotEvents(iterate([
+      { type: 'retry', attempt: 1, maxAttempts: 3, delayMs: 30_000 },
+      { type: 'retry', attempt: 1, maxAttempts: 3, delayMs: 0 },
+      { type: 'done', terminationReason: 'normal' },
+    ]), publisher, { detail: 'brief' });
+    const deltas = client.events.filter(e => e.event_type === 'TEXT_MESSAGE_CONTENT')
+      .map(e => JSON.parse(e.content).delta);
+    expect(deltas).toEqual(['⏳ API 限流，30 秒后自动重试（1/3）', '🔄 正在自动重试（1/3）']);
+    expect(client.events.some(e => e.event_type === 'RUN_ERROR')).toBe(false);
+    expect(client.completed).toEqual(['done']);
+  });
+
   it('publishes assistant progress text and brief tool summaries', async () => {
     const client = new FakeCotClient();
     const publisher = new CotPublisher({

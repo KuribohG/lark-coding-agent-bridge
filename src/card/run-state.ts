@@ -24,6 +24,7 @@ export interface RunState {
   footer: FooterStatus;
   terminal: Terminal;
   errorMsg?: string;
+  retry?: Extract<AgentEvent, { type: 'retry' }>;
   /** Set when terminal === 'idle_timeout' — how long claude was idle before
    * the watchdog gave up (so the message can say "N 分钟无响应"). */
   idleTimeoutMinutes?: number;
@@ -43,7 +44,11 @@ function closeStreamingText(blocks: Block[]): Block[] {
 }
 
 export function reduce(state: RunState, evt: AgentEvent): RunState {
+  if (state.retry && evt.type !== 'retry' && evt.type !== 'usage') state = { ...state, retry: undefined };
   switch (evt.type) {
+    case 'retry':
+      return { ...state, retry: evt, blocks: closeStreamingText(state.blocks),
+        reasoning: { ...state.reasoning, active: false }, footer: null };
     case 'text': {
       const last = state.blocks[state.blocks.length - 1];
       if (last && last.kind === 'text' && last.streaming) {
@@ -138,6 +143,13 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
     default:
       return state;
   }
+}
+
+export function retryStatus(retry: NonNullable<RunState['retry']>): string {
+  const progress = `（${retry.attempt}/${retry.maxAttempts}）`;
+  return retry.delayMs > 0
+    ? `⏳ API 限流，${Math.ceil(retry.delayMs / 1000)} 秒后自动重试${progress}`
+    : `🔄 正在自动重试${progress}`;
 }
 
 export function markInterrupted(state: RunState): RunState {

@@ -1723,7 +1723,7 @@ async function processAgentStream(
   let idleFired = false;
   let timer: NodeJS.Timeout | undefined;
   const inFlightTools = new Set<string>();
-  const armOrPauseIdle = (): void => {
+  const armOrPauseIdle = (retryDelayMs = 0): void => {
     if (!idleTimeoutMs) return;
     if (timer) clearTimeout(timer);
     timer = undefined;
@@ -1735,7 +1735,7 @@ async function processAgentStream(
       void handle.run.stop().catch(() => {
         /* stop errors are non-fatal */
       });
-    }, idleTimeoutMs);
+    }, idleTimeoutMs + retryDelayMs);
   };
   armOrPauseIdle();
 
@@ -1756,7 +1756,8 @@ async function processAgentStream(
         inFlightTools.delete(evt.id);
         log.info('agent', 'tool-done', { inFlight: inFlightTools.size });
       }
-      armOrPauseIdle();
+      if (evt.type === 'retry') inFlightTools.clear();
+      armOrPauseIdle(evt.type === 'retry' ? evt.delayMs : 0);
 
       if (evt.type === 'system') {
         recordSession(evt);

@@ -1,6 +1,7 @@
 import { rewriteFileLinks, type FileLinkRenderOptions } from './file-links';
 import { maskEmails } from './mask-email';
 import type { Block, RunState, ToolEntry } from './run-state';
+import { retryStatus } from './run-state';
 import { toolHeaderText } from './tool-render';
 
 /**
@@ -28,6 +29,8 @@ export function renderText(state: RunState, options: FileLinkRenderOptions = {})
     parts.push(`_⏱ ${mins} 分钟无响应,已自动终止_`);
   } else if (state.terminal === 'error' && state.errorMsg) {
     parts.push(`⚠️ agent 失败:${state.errorMsg}`);
+  } else if (state.terminal === 'running' && state.retry) {
+    parts.push(retryStatus(state.retry));
   } else if (state.terminal === 'running' && state.footer) {
     parts.push(footerLine(state.footer));
   }

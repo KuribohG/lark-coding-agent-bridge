@@ -1,4 +1,5 @@
 import type { AgentEvent } from '../agent/types';
+import { retryStatus } from '../card/run-state';
 import type { CotMessagesMode, TenantBrand } from '../config/schema';
 import { log } from '../core/logger';
 import { toolHeaderText } from '../card/tool-render';
@@ -277,6 +278,15 @@ export async function consumeCotEvents(
   try {
     for await (const evt of events) {
       if (evt.type === 'system' || evt.type === 'usage') continue;
+      if (evt.type === 'retry') {
+        closeReasoningIfNeeded();
+        closeTextIfNeeded();
+        const messageId = `retry-${publisher.runId}-${evt.attempt}-${evt.delayMs}`;
+        publisher.enqueue('TEXT_MESSAGE_START', { messageId, role: 'assistant' });
+        publisher.enqueue('TEXT_MESSAGE_CONTENT', { messageId, delta: retryStatus(evt) });
+        publisher.enqueue('TEXT_MESSAGE_END', { messageId });
+        continue;
+      }
       if (evt.type === 'thinking') {
         closeTextIfNeeded();
         if (!reasoningOpen) {

@@ -5,6 +5,7 @@ import { ProcessPool } from '../bot/process-pool';
 import type { RunPolicyAllow } from '../policy/run-policy';
 import { log } from '../core/logger';
 import { RunRejected, SpawnFailed } from './errors';
+import { isQuotaError, retryingRun } from './retrying-run';
 
 export interface RunExecutorDeps {
   agent: AgentAdapter;
@@ -146,6 +147,7 @@ export class RunExecutor {
       stopGraceMs: input.stopGraceMs,
     };
     let run: AgentRun;
+    let handle!: RunHandle;
     try {
       await this.agent.prepareRun?.(runOptions);
       checkDeadline();
@@ -168,7 +170,15 @@ export class RunExecutor {
       );
     }
     try {
-      run = this.agent.run(runOptions);
+      run = retryingRun({
+        agent: this.agent,
+        initialRun: this.agent.run(runOptions),
+        options: runOptions,
+        exitGraceMs: this.postDoneExitGraceMs,
+        canRetry: () => !controller.signal.aborted && !handle?.interrupted
+          && !this.activeRuns.newRunsPaused()
+          && (input.deadlineAt === undefined || input.deadlineAt > this.now()),
+      });
     } catch (err) {
       release();
       releaseScope();
@@ -191,7 +201,6 @@ export class RunExecutor {
       permissionMode: input.policy.permissionMode,
     });
 
-    let handle: RunHandle;
     try {
       handle = this.activeRuns.register(input.scopeId, run);
       handle.modelSettings = { model: input.model, reasoningEffort: input.reasoningEffort };
@@ -242,7 +251,7 @@ export class RunExecutor {
       now: this.now,
       onTerminal: (event) => {
         terminal = event.type === 'done' && event.terminationReason === 'normal' ? 'completed' : 'failed';
-        if (input.deadlineAt !== undefined && event.type === 'error' && /\[bridge-quota\]|insufficient_quota|quota_exceeded|budget_exceeded|budget has been exceeded|credit balance (?:is )?too low|daily (?:quota|budget) (?:is )?(?:exhausted|exceeded)/i.test(event.message)) terminal = 'quota';
+        if (input.deadlineAt !== undefined && event.type === 'error' && isQuotaError(event.message)) terminal = 'quota';
         // The independent watchdog can fire before this event loop's timer.
         if (input.deadlineAt !== undefined && input.deadlineAt <= this.now() && terminal !== 'completed') {
           handle.interrupted = true;

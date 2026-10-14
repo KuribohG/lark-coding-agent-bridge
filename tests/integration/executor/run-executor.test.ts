@@ -9,7 +9,6 @@ import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile';
 import {
   FakeAgentAdapter,
   type FakeAgentEvents,
-  type FakeAgentRun,
 } from '../../helpers/fake-agent';
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -241,7 +240,7 @@ describe('RunExecutor', () => {
 
     await execution.stop();
 
-    const run = execution.run as FakeAgentRun;
+    const run = h.agent.runs[0]!;
     expect(run.stopped).toBe(true);
     expect(run.waitForExitCalls).toBe(1);
   });
@@ -258,7 +257,7 @@ describe('RunExecutor', () => {
 
     await collect(execution.subscribe());
 
-    const run = execution.run as FakeAgentRun;
+    const run = h.agent.runs[0]!;
     expect(run.waitForExitCalls).toBe(1);
     expect(run.stopped).toBe(true);
     expect(h.activeRuns.get('scope-1')).toBeUndefined();

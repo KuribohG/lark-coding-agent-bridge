@@ -1,6 +1,7 @@
 import { rewriteFileLinks, type FileLinkRenderOptions } from './file-links';
 import { deepMaskEmails } from './mask-email';
 import type { Block, FooterStatus, RunState, ToolEntry } from './run-state';
+import { retryStatus } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 
 const REASONING_MAX = 1500;
@@ -51,7 +52,8 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
   }
 
   if (state.terminal === 'running') {
-    if (state.footer) elements.push(footerStatus(state.footer));
+    if (state.retry) elements.push(noteMd(retryStatus(state.retry)));
+    else if (state.footer) elements.push(footerStatus(state.footer));
     elements.push(stopButton(options));
   }
 
@@ -212,6 +214,7 @@ function summaryText(state: RunState): string {
   if (state.terminal === 'idle_timeout') return '已超时';
   if (state.terminal === 'error') return '出错';
   if (state.terminal === 'done') return '已完成';
+  if (state.retry) return '自动重试中';
   if (state.footer === 'tool_running') return '正在调用工具';
   if (state.footer === 'streaming') return '正在输出';
   return '思考中';

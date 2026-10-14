@@ -25,6 +25,10 @@ Send additional text normally: `turn/steer` appends it to the same process, thre
 
 `/stop` cancels queued messages and input preparation before interrupting the active run, and sends a receipt. It does not undo completed actions. Existing topic isolation, access checks, and mention requirements still apply. Text can steer timed runs without changing their deadline; other timed-run input remains rejected rather than queued.
 
+## Automatic rate-limit retries
+
+For ordinary tasks, after the agent exhausts its own API rate-limit retries (for example, `exceeded retry limit, last status: 429 Too Many Requests`), the bridge retries up to three times, waiting 30, 60, and 120 seconds. Process messages and streaming replies show retry progress. Stop commands, session switches, and task deadlines cancel retries. After partial progress, the bridge resumes the session reported by this run and asks the agent to check completed operations before continuing. Quota/budget exhaustion, authentication failures, and follow-up input with unknown delivery status are not retried. Temporary forked tasks and runs that produced output without reporting a session ID are also excluded.
+
 ## Prerequisites
 
 - Node.js **>= 20.12.0**
