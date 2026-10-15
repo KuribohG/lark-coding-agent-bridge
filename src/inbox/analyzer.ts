@@ -52,14 +52,40 @@ export async function analyzeInbox(job: InboxJob, provider: AnalysisProvider, si
 }
 
 async function requestModel(body: object, provider: AnalysisProvider, signal: AbortSignal, request = fetch, onText?: (text: string) => void) {
+  const completed = await requestInboxResponse(body, provider, signal, request, onText);
+  // Never dispatch function calls, even if a provider emits one despite tool_choice:none.
+  const output = Array.isArray(completed.output) ? completed.output : [];
+  if (output.some(v => !['message', 'reasoning'].includes(String(obj(v).type)))) throw new Error('模型返回了不允许的工具调用');
+  const text = inboxResponseText(completed);
+  if (!text) throw new Error('模型没有返回分析文本');
+  if (!signal.aborted) onText?.(text);
+  const usage = obj(completed.usage);
+  return { text, inputTokens: Number(usage.input_tokens) || 0, outputTokens: Number(usage.output_tokens) || 0 };
+}
+
+export function inboxResponseText(completed: Record<string, unknown>): string {
+  return (Array.isArray(completed.output) ? completed.output : [])
+    .flatMap(v => { const m = obj(v); return m.type === 'message' && Array.isArray(m.content) ? m.content : []; })
+    .filter(v => obj(v).type === 'output_text').map(v => String(obj(v).text || '')).join('\n').trim();
+}
+
+export async function requestInboxResponse(body: object, provider: AnalysisProvider, signal: AbortSignal, request = fetch, onText?: (text: string) => void) {
   const response = await request(provider.url, {
-    method: 'POST', signal: AbortSignal.any([signal, AbortSignal.timeout(180_000)]),
+    method: 'POST', redirect: 'error', signal: AbortSignal.any([signal, AbortSignal.timeout(180_000)]),
     headers: { ...provider.headers, authorization: `Bearer ${provider.key}`, 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
   if (!response.ok || !response.body) throw new Error(`模型请求失败（HTTP ${response.status}），可手动重试`);
   let completed: Record<string, unknown> | undefined;
-  if (response.headers.get('content-type')?.includes('application/json')) completed = obj(await response.json());
+  if (response.headers.get('content-type')?.includes('application/json')) {
+    let text = ''; let bytes = 0; const decoder = new TextDecoder();
+    for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+      signal.throwIfAborted(); bytes += chunk.byteLength;
+      if (bytes > 2_000_000) throw new Error('模型响应超出限制');
+      text += decoder.decode(chunk, { stream: true });
+    }
+    completed = obj(JSON.parse(text + decoder.decode()));
+  }
   else {
     let buffer = '', preview = ''; const decoder = new TextDecoder(); let bytes = 0;
     const line = (value: string) => {
@@ -74,6 +100,7 @@ async function requestModel(body: object, provider: AnalysisProvider, signal: Ab
       if (event.type === 'error' || event.type === 'response.failed') throw new Error('模型分析失败');
     };
     for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+      signal.throwIfAborted();
       bytes += chunk.byteLength;
       if (bytes > 2_000_000) throw new Error('模型响应超出限制');
       buffer += decoder.decode(chunk, { stream: true });
@@ -85,15 +112,8 @@ async function requestModel(body: object, provider: AnalysisProvider, signal: Ab
     line(buffer + decoder.decode());
   }
   if (!completed || completed.status !== 'completed') throw new Error('模型未完成分析，请手动重试');
-  // Never dispatch function calls, even if a provider emits one despite tool_choice:none.
-  const output = Array.isArray(completed.output) ? completed.output : [];
-  if (output.some(v => !['message', 'reasoning'].includes(String(obj(v).type)))) throw new Error('模型返回了不允许的工具调用');
-  const text = output.flatMap(v => { const m = obj(v); return m.type === 'message' && Array.isArray(m.content) ? m.content : []; })
-    .filter(v => obj(v).type === 'output_text').map(v => String(obj(v).text || '')).join('\n').trim();
-  if (!text) throw new Error('模型没有返回分析文本');
-  if (!signal.aborted) onText?.(text);
-  const usage = obj(completed.usage);
-  return { text, inputTokens: Number(usage.input_tokens) || 0, outputTokens: Number(usage.output_tokens) || 0 };
+  signal.throwIfAborted();
+  return completed;
 }
 
 export const ATTENTION_RULES = '严格筛选，只关注有明确证据要求本人回复、确认、拍板、执行的请求及截止期限，或本人负责的系统发生且需要本人采取动作的故障、回归、风险、阻塞。领域关键词、本人在群内、@全体、FATAL/严重标签、通用的“请检查”都不能推定本人负责。机器告警没有本人责任、本人任务受影响或明确交办的证据时应 quiet，不进入待核对；告警内容技术上严重不等于与本人相关。普通闲聊、FYI、无需动作的成功通知、已解决问题、无变化的重复报警应 quiet。uncertain 仅用于已经有明确个人关联，但必要事实不足以决定是否行动的事项；先查相关上下文，不能把所有无法证明无关的消息都交给人工。';
