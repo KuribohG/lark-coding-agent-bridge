@@ -103,6 +103,7 @@ export interface Controls {
   profile: string;
   profileConfig: ProfileConfig;
   botOwnerId?: string;
+  botIdentity?: { openId: string; name?: string };
   ownerRefreshState: OwnerRefreshState;
   ownerRefreshedAt?: number;
   ownerRefreshError?: string;

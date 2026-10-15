@@ -2,7 +2,7 @@ import { ATTENTION_RULES, INBOX_ANALYSIS_MODEL, inboxResponseText, parseTriageRe
 import { readToolRequest, INBOX_READ_TOOLS, type InboxReadTools } from './read-tools';
 import { INBOX_TRIAGE_BATCH_SIZE } from './config';
 import type { InboxIO, InboxJob } from './types';
-import { obj } from './values';
+import { InboxToolArgumentsError, obj, parseModelJson } from './values';
 
 export function chatTriageInstructions(jobs: InboxJob[]): string {
   return `你正在执行用户授权的自动关注筛选。所属用户 open_id=${jobs[0]?.ownerOpenId}。
@@ -27,6 +27,7 @@ function materials(jobs: InboxJob[], background: string): string {
 /** Store a useful error category without copying raw CLI stderr, tool output or credentials. */
 export function triageFailureReason(error: unknown): string {
   const message = error instanceof Error ? error.message : '';
+  if (error instanceof InboxToolArgumentsError) return '查询工具参数格式无效';
   if (/429|rate.limit|限流/i.test(message)) return '模型服务限流';
   if (/timed?\s*out|timeout|超时/i.test(message)) return '筛选超时';
   if (/401|403|auth|credential|授权|绑定|not bound/i.test(message)) return '工具或模型授权暂不可用';
@@ -46,24 +47,34 @@ export async function triageWithChatTools(jobs: InboxJob[], background: string, 
   const preview = (text: string) => { if (!signal.aborted) onProgress?.(triagePreviews(text, ids)); };
   const input: unknown[] = [{ role: 'user', content: materials(jobs, background) }];
   const callIds = new Set<string>();
+  let argumentFailures = 0;
   try {
     for (let round = 0; round < 16; round++) {
       signal.throwIfAborted();
       if (Buffer.byteLength(JSON.stringify(input)) > 1_000_000) throw new Error('聊天查询上下文超出限制');
       const response = await requestInboxResponse({ model: INBOX_ANALYSIS_MODEL, store: false, stream: true,
-        max_output_tokens: 12000, instructions: chatTriageInstructions(jobs), input,
+        instructions: chatTriageInstructions(jobs), input,
         tools: INBOX_READ_TOOLS, tool_choice: 'auto', parallel_tool_calls: false }, provider, signal, request, preview);
       const output = Array.isArray(response.output) ? response.output.map(obj) : [];
       if (output.some(item => !['message', 'reasoning', 'function_call'].includes(String(item.type)))) throw new Error('不允许的工具调用');
       const calls = output.filter(item => item.type === 'function_call').map(item => {
         if (typeof item.name !== 'string' || typeof item.call_id !== 'string' || !item.call_id || item.call_id.length > 200 ||
           callIds.has(item.call_id) || typeof item.arguments !== 'string' || item.arguments.length > 8192) throw new Error('工具调用格式无效');
-        const args: unknown = JSON.parse(item.arguments);
-        readToolRequest(item.name, args);
+        if (!INBOX_READ_TOOLS.some(tool => tool.name === item.name)) throw new Error('不允许的工具调用');
+        let args: unknown;
+        let invalidArguments = false;
+        try {
+          args = parseModelJson(item.arguments);
+          readToolRequest(item.name, args);
+        } catch (error) {
+          if (!(error instanceof InboxToolArgumentsError) && !(error instanceof SyntaxError)) throw error;
+          invalidArguments = true;
+        }
         callIds.add(item.call_id);
-        return { name: item.name, id: item.call_id, args };
+        return { name: item.name, id: item.call_id, args, invalidArguments };
       });
       if (callIds.size > 64) throw new Error('聊天查询次数超出限制');
+      if (calls.some(call => call.invalidArguments) && ++argumentFailures > 2) throw new InboxToolArgumentsError('工具参数纠正次数超出限制');
       if (!calls.length) {
         const text = inboxResponseText(response);
         if (!text || text.length > 100_000) throw new Error('筛选结果缺失或格式不完整');
@@ -72,6 +83,11 @@ export async function triageWithChatTools(jobs: InboxJob[], background: string, 
       input.push(...output);
       for (const call of calls) {
         signal.throwIfAborted();
+        if (call.invalidArguments) {
+          input.push({ type: 'function_call_output', call_id: call.id, output: JSON.stringify({ error: 'invalid_arguments',
+            message: '此调用未执行。请按工具 schema 重新提交参数，核对字段名、类型和 ID；业务查询请先查 describe_lark_read_tool，不要扩大查询范围或权限。' }) });
+          continue;
+        }
         onProgress?.(jobs.map(j => ({ id: j.id, text: '正在只读查询飞书相关资料…' })));
         const result = await tools.execute(call.name, call.args, signal);
         input.push({ type: 'function_call_output', call_id: call.id, output: JSON.stringify(result) });

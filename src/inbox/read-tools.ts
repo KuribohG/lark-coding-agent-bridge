@@ -1,6 +1,6 @@
 import catalogue from './lark-read-catalogue.json';
 import { chatToolArgs, INBOX_CHAT_TOOLS, InboxChatTools } from './chat-tools';
-import { obj, type Obj } from './values';
+import { InboxToolArgumentsError, obj, parseModelJson, type Obj } from './values';
 
 interface Schema {
   type?: string;
@@ -32,7 +32,7 @@ export const INBOX_READ_TOOLS = [...INBOX_CHAT_TOOLS,
     { operation: { type: 'string' }, argumentsJson: { type: 'string', description: '符合查询 schema 的 JSON 对象；键不带 --。不支持 @file、stdin 或输出路径。' } }),
 ];
 
-const invalid = () => new Error('飞书只读工具参数无效');
+const invalid = () => new InboxToolArgumentsError('飞书只读工具参数无效');
 const own = (value: object, key: string) => Object.prototype.hasOwnProperty.call(value, key);
 function record(value: unknown): Obj {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw invalid();
@@ -110,7 +110,9 @@ export function readToolRequest(name: string, input: unknown): ReadRequest {
   const data = fields(input, ['operation', 'argumentsJson']);
   const op = operation(data.operation);
   if (typeof data.argumentsJson !== 'string' || data.argumentsJson.length > 16_000) throw invalid();
-  const args = record(JSON.parse(data.argumentsJson));
+  let parsed: unknown;
+  try { parsed = parseModelJson(data.argumentsJson); } catch { throw invalid(); }
+  const args = record(parsed);
   validate(args, { type: 'object', properties: op.parameters, required: op.required }, 'arguments');
   const argv = op.name.split(' ');
   for (const [key, value] of Object.entries(args)) {

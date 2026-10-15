@@ -91,7 +91,7 @@ export class InboxManager {
   private async reload(): Promise<void> {
     const root = await loadRootConfig(this.configPath); const config = normalizeInbox(root?.inbox);
     const controls = this.controls(config.executorProfile);
-    const fingerprint = JSON.stringify([connectionConfig(config), controls?.cfg.accounts.app, controls?.profileConfig.mode, controls?.profileConfig.codex, controls?.profileConfig.preferences.model]);
+    const fingerprint = JSON.stringify([connectionConfig(config), controls?.cfg.accounts.app, controls?.botIdentity?.openId, controls?.profileConfig.mode, controls?.profileConfig.codex, controls?.profileConfig.preferences.model]);
     if (this.service && controls && fingerprint === this.fingerprint) {
       await withConfigFileLock(this.configPath, async () => {
         const latest = normalizeInbox((await loadRootConfig(this.configPath))?.inbox);
@@ -125,6 +125,7 @@ export class InboxManager {
         } finally { signal.removeEventListener('abort', cancel); reader.close(); }
       });
       this.service = new InboxService(new InboxStore(join(folder, 'state.json')), config, {
+        selfSenderIds: [controls.cfg.accounts.app.id, controls.botIdentity?.openId].filter((id): id is string => Boolean(id)),
         cancel: () => lark.close(),
         cancelPending: () => lark.cancelPending(),
         checkOwner: id => lark.checkOwner(id), collect: (...args) => lark.collect(...args), context: (...args) => lark.context(...args),

@@ -64,6 +64,15 @@ it('keeps query text literal and serializes typed API params and JSON bodies', (
   });
 });
 
+it('repairs nested argument JSON while retaining field and identity validation', () => {
+  expect(readToolRequest('call_lark_read_tool', { operation: 'docs +fetch', argumentsJson: "{doc:'doc_token',}" })).toMatchObject({
+    args: ['docs', '+fetch', '--doc=doc_token', '--as=user'],
+  });
+  for (const argumentsJson of ["{doc:'doc_token',as:'bot'}", "{doc:'@private.json'}", "{doc:42}", "{__proto__:{doc:'doc_token'}}"]) {
+    expect(() => readToolRequest('call_lark_read_tool', { operation: 'docs +fetch', argumentsJson })).toThrow();
+  }
+});
+
 it('fixes safe inline-only modes and rejects prototype keys', () => {
   expect(readToolRequest('call_lark_read_tool', request('minutes +detail', { 'minute-tokens': 'abc' }))).toMatchObject({
     args: ['minutes', '+detail', '--minute-tokens=abc', '--summary=true', '--transcript=false', '--as=user'],

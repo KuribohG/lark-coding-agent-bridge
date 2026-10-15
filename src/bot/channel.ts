@@ -550,6 +550,7 @@ export async function startChannel(deps: StartChannelDeps): Promise<BridgeChanne
   const knownChatsRefresh = startKnownChatsRefreshTimer(channel, controls);
 
   const identity = channel.botIdentity;
+  controls.botIdentity = identity;
   // Late-bind the bot's own IM identity into the agent adapter so the system
   // prompt can state "this open_id is you" with the real value. Covers both
   // initial start and credential-swap reconnects (both go through here).
