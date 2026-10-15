@@ -1,7 +1,7 @@
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CodexAdapter } from '../../src/agent/codex/adapter';
 import type { AgentEvent } from '../../src/agent/types';
 
@@ -35,6 +35,8 @@ rl.on('line', line => {
   if(mode==='reject') {send({id:m.id,error:{code:-32600,message:'unexpected failure'}});return;}
   reply(m.id,{turnId:'turn-1'});
   if(mode==='keep-running') return;
+  notify('item/agentMessage/delta',{threadId:'other-thread',turnId:'other',itemId:'bad',delta:'must not leak'});
+  notify('item/agentMessage/delta',{threadId:'thread-1',turnId:'turn-1',itemId:'answer',delta:'used additional input'});
   notify('item/completed',{threadId:'other-thread',turnId:'other',item:{id:'bad',type:'agentMessage',text:'must not leak'}});
   notify('item/completed',{threadId:'thread-1',turnId:'turn-1',item:{id:'cmd',type:'commandExecution',aggregatedOutput:'finished without interruption',exitCode:0}});
   notify('item/completed',{threadId:'thread-1',turnId:'turn-1',item:{id:'answer',type:'agentMessage',text:'used additional input'}});
@@ -56,10 +58,14 @@ async function collect(events: AsyncIterable<AgentEvent>) { const all: AgentEven
 describe('Codex native in-flight input', () => {
   it('appends to the same turn without stopping, restarting, or starting a second turn', async () => {
     const h = await harness();
-    const run = h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'original task', sandbox: 'read-only', reasoningEffort: 'high' });
+    const preview = vi.fn();
+    const run = h.adapter.run({ runId: 'r', cwd: h.dir, onMessageDelta: preview, prompt: 'original task', sandbox: 'read-only', reasoningEffort: 'high' });
     const output = collect(run.events);
     expect(await run.steer!('supplement', 'message-2')).toBe('accepted');
-    expect(await output).toContainEqual({ type: 'final_text', content: 'used additional input' });
+    const events = await output;
+    expect(events.filter(e => e.type === 'final_text')).toEqual([{ type: 'final_text', content: 'used additional input' }]);
+    expect(preview).toHaveBeenCalledTimes(1);
+    expect(preview).toHaveBeenCalledWith('answer', 'used additional input');
     expect(await run.waitForExit(1000)).toBe(true);
     const requests = await h.requests();
     expect(requests.filter(x => x.method === 'turn/start')).toHaveLength(1);

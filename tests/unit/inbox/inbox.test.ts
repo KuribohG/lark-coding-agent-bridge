@@ -38,9 +38,9 @@ describe('durable inbox', () => {
     expect(service.list()[0]?.state).toBe('waiting'); expect(service.list()[0]?.dueAt).toBeUndefined();
     expect(io.analyze).not.toHaveBeenCalled(); expect(io.deliver).not.toHaveBeenCalled();
   });
-  it('shows unavailable triage as uncertain without posting or running deep analysis', async () => {
+  it('keeps unavailable triage pending without posting or running deep analysis', async () => {
     const { service, io, advance } = await setup(); await service.tick(); advance(61_000); await service.tick();
-    expect(service.list()[0]?.attention?.state).toBe('uncertain'); expect(io.deliver).not.toHaveBeenCalled();
+    expect(service.list()[0]?.attention?.state).toBe('pending'); expect(service.list()[0]?.attention?.retry).toBeDefined(); expect(io.deliver).not.toHaveBeenCalled();
     expect(io.analyze).not.toHaveBeenCalled();
   });
   it('deduplicates polls and repeated manual submissions', async () => {
@@ -488,11 +488,59 @@ describe('lightweight attention and quiet delivery', () => {
   });
   it('leaves failures visible and enforces the durable triage budget', async () => {
     const s = await screened({ triage: vi.fn(async () => { throw Error('bad response'); }) });
-    await vi.waitFor(() => expect(s.service.list()[0]?.attention?.state).toBe('uncertain'));
+    await vi.waitFor(() => expect(s.service.list()[0]?.attention?.retry?.attempts).toBe(1));
     await s.service.tick(); expect(s.io.notifyAttention).not.toHaveBeenCalled();
     expect(s.store.data.triageUsage?.['1970-01-01']).toBe(1);
     s.service.config.dailyTriageLimit = 1; s.store.data.jobs[0]!.attention = { state: 'pending', reason: '' }; s.advance(61_000); await s.service.tick();
-    expect(s.io.triage).toHaveBeenCalledTimes(1); expect(s.service.list()[0]?.attention?.state).toBe('uncertain');
+    expect(s.io.triage).toHaveBeenCalledTimes(1); expect(s.service.list()[0]?.attention).toMatchObject({ state: 'pending', retry: { nextAt: 86400_000 } });
+  });
+  it('persists backoff across restart, retries automatically and clears metadata after success', async () => {
+    const triage = vi.fn<NonNullable<InboxIO['triage']>>().mockRejectedValueOnce(Error('HTTP 429')).mockRejectedValueOnce(Error('connection lost')).mockImplementation(classify);
+    const s = await screened({ triage });
+    await vi.waitFor(() => expect(s.service.list()[0]?.attention?.retry?.attempts).toBe(1));
+    const first = s.service.list()[0]!.attention!.retry!;
+    expect(first.nextAt).toBe(1_091_000); expect(first.error).toBe('模型服务限流');
+    await s.service.close();
+    const store = new InboxStore(s.store.path);
+    let now = 1_090_999;
+    const service = new InboxService(store, s.service.config, s.io, () => now); services.push(service); await service.start();
+    await service.tick(); expect(triage).toHaveBeenCalledTimes(1);
+    now++; await service.tick();
+    await vi.waitFor(() => expect(service.list()[0]?.attention?.retry?.attempts).toBe(2));
+    expect(service.list()[0]?.attention?.retry?.nextAt).toBe(now + 120_000);
+    expect(s.io.notifyAttention).not.toHaveBeenCalled();
+    now += 120_000; await service.tick();
+    await vi.waitFor(() => expect(service.list()[0]?.attention?.state).toBe('needed'));
+    expect(service.list()[0]?.attention?.retry).toBeUndefined(); expect(store.data.triageUsage?.['1970-01-01']).toBe(3);
+  });
+  it('migrates only unresolved legacy execution failures, not genuine uncertainty or handled items', async () => {
+    const s = await setup(); await s.service.tick(); await s.service.close();
+    const base = s.store.data.jobs[0]!;
+    s.store.data.jobs = [
+      { ...base, id: 'failed', attention: { state: 'uncertain', reason: '关注筛选未完成，请人工核对' } },
+      { ...base, id: 'genuine', attention: { state: 'uncertain', reason: '本人相关，但谁负责上线尚未确认' } },
+      { ...base, id: 'handled', handlingState: 'handled', attention: { state: 'uncertain', reason: '关注筛选未完成，请人工核对' } },
+    ];
+    await s.store.save();
+    const service = new InboxService(new InboxStore(s.store.path), s.service.config, s.io, () => 1_001_000); services.push(service); await service.start();
+    expect(service.list().find(j => j.id === 'failed')?.attention).toMatchObject({ state: 'pending', retry: { attempts: 0 } });
+    expect(service.list().find(j => j.id === 'genuine')?.attention?.state).toBe('uncertain');
+    expect(service.list().find(j => j.id === 'handled')?.attention?.state).toBe('uncertain');
+  });
+  it.each(['off', 'scope', 'changed', 'handled'] as const)('does not schedule obsolete failures after %s', async action => {
+    let fail!: (error: Error) => void;
+    const s = await screened({ triage: vi.fn<NonNullable<InboxIO['triage']>>(() => new Promise((_resolve, reject) => { fail = reject; })) });
+    await vi.waitFor(() => expect(fail).toBeDefined());
+    const before = s.service.list()[0]!;
+    if (action === 'off') await s.service.setMode('off');
+    if (action === 'scope') await s.service.setScope('private');
+    if (action === 'handled') await s.service.batchReview({ items: [{ id: before.id, revision: before.revision }], handlingState: 'handled' }, 'ou_owner', 'retry-handled');
+    if (action === 'changed') {
+      const changed = message({ text: '新消息' });
+      vi.mocked(s.io.collect).mockResolvedValue([changed]); vi.mocked(s.io.context).mockResolvedValue([changed]); s.advance(61_000); await s.service.tick();
+    }
+    fail(Error('network')); await new Promise(r => setTimeout(r, 20));
+    expect(s.service.list()[0]?.attention?.retry).toBeUndefined(); expect(s.io.notifyAttention).not.toHaveBeenCalled();
   });
   it('suppresses stale digest retries after a selected item is handled', async () => {
     const s = await screened({ notifyAttention: vi.fn(async () => { throw Error('uncertain send'); }) });

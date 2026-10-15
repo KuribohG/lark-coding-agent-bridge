@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { INBOX_TRIAGE_BATCH_SIZE, inboxMode, intakeScope, type IntakeScope, type InboxConfig, type InboxMode } from './config';
 import { InboxStore } from './store';
 import { handlingState, replyContent, resultText } from './reply';
+import { triageFailureReason } from './codex-triage';
 import type { Attention, InboxIO, InboxJob, InboxMessage } from './types';
 
 const signature = (job: InboxJob) => createHash('sha256').update(JSON.stringify(job.messages)).digest('hex');
@@ -52,6 +53,13 @@ export class InboxService {
     const key = `${this.config.executorProfile}:${this.config.ownerOpenId}`;
     if (this.store.data.ownerKey && this.store.data.ownerKey !== key) throw new Error('待办归属已改变，请为新账号使用独立状态目录');
     this.store.data.ownerKey = key;
+    for (const job of this.store.data.jobs) {
+      if (!resolved(job) && job.attention?.state === 'uncertain' &&
+        ['关注筛选未完成，请人工核对', '关注筛选结果缺失，请人工核对', '关注筛选暂不可用或今日额度已用完，请人工核对'].includes(job.attention.reason)) {
+        job.attention = { state: 'pending', reason: '上次筛选未完成，等待自动重试', retry: { attempts: 0, nextAt: this.now(), error: '旧版筛选未完成' } };
+        this.touch(job);
+      }
+    }
     for (const kind of ['p2p', 'mention', 'group']) this.store.data.cursors[kind] ??= this.now();
     await this.setMode(inboxMode(this.config));
     this.timer = setInterval(() => void this.tick().catch(() => {}), 5000);
@@ -301,12 +309,14 @@ export class InboxService {
           this.launch(signal => this.run(next, signal));
         } else {
           const candidates = this.store.data.jobs.filter(j => !resolved(j) && this.acceptsSource(j) && j.attention?.state === 'pending' &&
-            (this.now() - j.updatedAt >= 60_000 || this.now() - j.createdAt >= 120_000)).slice(0, INBOX_TRIAGE_BATCH_SIZE);
+            (j.attention.retry ? j.attention.retry.nextAt <= this.now() :
+              this.now() - j.updatedAt >= 60_000 || this.now() - j.createdAt >= 120_000)).slice(0, INBOX_TRIAGE_BATCH_SIZE);
           if (candidates.length) {
             const day = new Date(this.now()).toISOString().slice(0, 10);
             const usage = this.store.data.triageUsage ??= {};
             if (!this.io.triage || (usage[day] ?? 0) >= this.config.dailyTriageLimit) {
-              for (const job of candidates) { job.attention = { state: 'uncertain', reason: '关注筛选暂不可用或今日额度已用完，请人工核对' }; this.touch(job); }
+              for (const job of candidates) this.retryTriage(job, !this.io.triage ? '筛选服务暂不可用' : '今日筛选额度已用完',
+                !this.io.triage ? this.now() + 900_000 : (Math.floor(this.now() / 86400_000) + 1) * 86400_000);
               await this.store.save();
             } else {
               usage[day] = (usage[day] ?? 0) + 1; await this.store.save();
@@ -381,7 +391,8 @@ export class InboxService {
     const inputs = structuredClone(jobs);
     for (const job of inputs) this.triageProgress.set(job.id, { signature: signature(job), progress: { startedAt: this.now(), updatedAt: this.now(), text: '' } });
     try {
-      let results: Awaited<ReturnType<NonNullable<InboxIO['triage']>>>;
+      let results: Awaited<ReturnType<NonNullable<InboxIO['triage']>>> = [];
+      let failure: string | undefined;
       try { results = await this.io.triage!(inputs, signal, updates => {
         if (signal.aborted || this.blocked()) return;
         for (const update of updates) {
@@ -389,19 +400,25 @@ export class InboxService {
           if (entry && entry.progress.text !== update.text) entry.progress = { ...entry.progress, text: update.text.slice(0, 240), updatedAt: this.now() };
         }
       }); }
-      catch { results = inputs.map(j => ({ id: j.id, state: 'uncertain', reason: '关注筛选未完成，请人工核对' })); }
+      catch (error) { failure = triageFailureReason(error); }
       await this.serial(async () => {
         if (signal.aborted || this.blocked()) return;
         for (const input of inputs) {
           const job = this.store.data.jobs.find(j => j.id === input.id);
           if (!job || resolved(job) || !this.acceptsSource(job) || signature(job) !== signature(input) || job.attention?.state !== 'pending') continue;
           const result = results.find(r => r.id === job.id);
-          job.attention = result ? { state: result.state, reason: result.reason, priority: result.priority } : { state: 'uncertain', reason: '关注筛选结果缺失，请人工核对' };
-          this.touch(job);
+          if (failure || !result || result.state === 'pending') this.retryTriage(job, failure || (result ? '必要的上下文查询未完成' : '关注筛选结果缺失'));
+          else { job.attention = { state: result.state, reason: result.reason, priority: result.priority }; this.touch(job); }
         }
         await this.store.save();
       });
     } finally { for (const job of inputs) this.triageProgress.delete(job.id); }
+  }
+  private retryTriage(job: InboxJob, error: string, nextAt?: number): void {
+    const attempts = (job.attention?.retry?.attempts ?? 0) + 1;
+    const delay = [30_000, 120_000, 300_000, 900_000][Math.min(attempts - 1, 3)]!;
+    job.attention = { state: 'pending', reason: `${error}，将自动重试`, retry: { attempts, nextAt: nextAt ?? this.now() + delay, error } };
+    this.touch(job);
   }
   private async notifyAttention(): Promise<void> {
     if (this.blocked() || !this.io.notifyAttention) return;

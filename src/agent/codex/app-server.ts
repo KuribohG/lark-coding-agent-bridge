@@ -111,7 +111,9 @@ export function startAppServerRun(input: {
       return;
     }
     if (p.turnId && turnId && p.turnId !== turnId) return;
-    if (method === 'item/started' || method === 'item/completed') {
+    if (method === 'item/agentMessage/delta') {
+      opts.onMessageDelta?.(text(p.itemId), text(p.delta));
+    } else if (method === 'item/started' || method === 'item/completed') {
       const item = object(p.item);
       const completed = method === 'item/completed';
       if (item.type === 'agentMessage' && completed) {

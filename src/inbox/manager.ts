@@ -6,7 +6,8 @@ import { resolveAppPaths } from '../config/app-paths';
 import { loadRootConfig, saveRootConfig, withConfigFileLock } from '../config/profile-store';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { inboxMode, intakeScope, normalizeInbox, validateInbox, type InboxConfig, type InboxMode, type IntakeScope } from './config';
-import { loadAnalysisProvider, analyzeInbox, triageInbox } from './analyzer';
+import { loadAnalysisProvider, analyzeInbox } from './analyzer';
+import { createTriageAgent, triageWithCodex } from './codex-triage';
 import { InboxLark } from './lark';
 import { InboxService } from './service';
 import { InboxStore } from './store';
@@ -111,13 +112,15 @@ export class InboxManager {
       this.unlock = await lockfile.lock(lease, { stale: 60_000, update: 10_000, retries: 0, onCompromised: () => { void this.close(); } });
       const lark = new InboxLark({ profile: config.executorProfile, rootDir: this.rootDir }, config);
       this.lark = lark;
+      const triageAgent = createTriageAgent(controls.profileConfig, paths);
       this.service = new InboxService(new InboxStore(join(folder, 'state.json')), config, {
         cancel: () => lark.close(),
         cancelPending: () => lark.cancelPending(),
         checkOwner: id => lark.checkOwner(id), collect: (...args) => lark.collect(...args), context: (...args) => lark.context(...args),
         source: id => lark.source(id), deliver: (...args) => lark.deliver(...args),
-        analyze: async (job, signal) => analyzeInbox(job, await loadAnalysisProvider(controls.profileConfig, 'deep'), signal),
-        triage: async (jobs, signal, onProgress) => triageInbox(jobs, config.attentionProfile, await loadAnalysisProvider(controls.profileConfig, 'triage'), signal, fetch, onProgress),
+        analyze: async (job, signal) => analyzeInbox(job, await loadAnalysisProvider(controls.profileConfig), signal),
+        triage: (jobs, signal, onProgress) => triageWithCodex(jobs, config.attentionProfile, triageAgent,
+          controls.profileConfig.workspaces.default || paths.defaultWorkspaceDir, signal, onProgress),
         notifyAttention: (jobs, id) => lark.notifyAttention(jobs, id),
       });
       const secret = await resolveAppSecret(controls.cfg, paths);

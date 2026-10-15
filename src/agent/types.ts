@@ -30,6 +30,8 @@ export type AgentEvent =
 export const CLAUDE_DEFAULT_PERMISSION_MODE: ClaudePermissionMode = 'bypassPermissions';
 
 export interface AgentRunOptions {
+  /** Optional provisional answer deltas, separate from the authoritative final_text event. */
+  onMessageDelta?: (itemId: string, delta: string) => void;
   /** Absolute hard deadline, enforced by the adapter's independent watchdog. */
   deadlineAt?: number;
   runId: string;
