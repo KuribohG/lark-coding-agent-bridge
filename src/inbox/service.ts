@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { inboxMode, type InboxConfig, type InboxMode } from './config';
+import { inboxMode, intakeScope, type IntakeScope, type InboxConfig, type InboxMode } from './config';
 import { InboxStore } from './store';
 import { handlingState, replyContent, resultText } from './reply';
 import type { InboxIO, InboxJob, InboxMessage } from './types';
@@ -48,7 +48,7 @@ export class InboxService {
     const key = `${this.config.executorProfile}:${this.config.ownerOpenId}`;
     if (this.store.data.ownerKey && this.store.data.ownerKey !== key) throw new Error('待办归属已改变，请为新账号使用独立状态目录');
     this.store.data.ownerKey = key;
-    for (const kind of ['p2p', 'mention']) this.store.data.cursors[kind] ??= this.now();
+    for (const kind of ['p2p', 'mention', 'group']) this.store.data.cursors[kind] ??= this.now();
     await this.setMode(inboxMode(this.config));
     this.timer = setInterval(() => void this.tick().catch(() => {}), 5000);
     this.timer.unref();
@@ -90,6 +90,35 @@ export class InboxService {
         if (previous === 'off' && mode !== 'off') {
           for (const kind of Object.keys(this.store.data.cursors)) this.store.data.cursors[kind] = this.now();
           this.lastPoll = 0;
+        }
+        await this.store.save();
+      });
+    } finally { this.modeChanges--; }
+  }
+  private acceptsSource(job: InboxJob): boolean {
+    return job.source.type === 'p2p' ? this.config.watchPrivate : this.config.watchMentions &&
+      (intakeScope(this.config) === 'all' || job.intakeTrigger === 'mention' || job.messages.some(m => m.mentions.includes(this.config.ownerOpenId)));
+  }
+  async setScope(scope: IntakeScope, persist?: () => Promise<void>): Promise<void> {
+    if (!['private', 'private_mentions', 'all'].includes(scope)) throw new Error('无效接收范围');
+    this.modeChanges++;
+    if (this.store.data.jobs.some(j => j.state === 'running' && j.automatic)) this.controller?.abort();
+    this.io.cancelPending?.();
+    try {
+      await this.serial(async () => {
+        if (this.stopped) throw new Error('助理连接已关闭');
+        await persist?.();
+        this.config.intakeScope = scope;
+        this.config.watchPrivate = true; this.config.watchMentions = scope !== 'private';
+        // New scopes start now; the indexing overlap must not backfill old conversations.
+        for (const key of Object.keys(this.store.data.cursors)) this.store.data.cursors[key] = this.now();
+        this.store.data.cursors.intakeSince = this.now(); this.lastPoll = 0;
+        for (const job of this.store.data.jobs) {
+          if (job.automatic && (!this.acceptsSource(job) || job.state === 'running')) {
+            job.automatic = false; job.dueAt = undefined;
+            if (['queued', 'running', 'notifying'].includes(job.state)) job.state = 'waiting';
+            job.error = '接收范围已更新，已有事项可手动处理'; this.touch(job);
+          }
         }
         await this.store.save();
       });
@@ -197,9 +226,9 @@ export class InboxService {
         if (now - this.lastPoll >= this.config.pollSeconds * 1000) {
           this.lastPoll = now;
           await this.io.checkOwner(this.config.ownerOpenId);
-          for (const kind of ['p2p', 'mention'] as const) {
+          for (const kind of ['p2p', 'mention', 'group'] as const) {
             if (this.blocked()) return;
-            if (kind === 'p2p' ? !this.config.watchPrivate : !this.config.watchMentions) continue;
+            if (kind === 'p2p' ? !this.config.watchPrivate : kind === 'group' ? intakeScope(this.config) !== 'all' : !this.config.watchMentions || intakeScope(this.config) === 'all') continue;
             const start = this.store.data.cursors[kind] ?? now;
             // Search indexing can lag. IDs, rather than timestamps, deduplicate overlap.
             const messages = await this.io.collect(kind, start - 300_000, now);
@@ -210,7 +239,7 @@ export class InboxService {
           }
           // Replies/recovery often do not mention the owner. Check active sources too.
           const activeSources = new Map<string, InboxJob>();
-          for (const job of this.store.data.jobs) if (!resolved(job)) activeSources.set(job.source.chatId, job);
+          for (const job of this.store.data.jobs) if (!resolved(job) && this.acceptsSource(job)) activeSources.set(job.source.chatId, job);
           for (const [chatId, job] of [...activeSources].sort((a, b) => (this.store.data.cursors[`context:${a[0]}`] ?? 0) - (this.store.data.cursors[`context:${b[0]}`] ?? 0)).slice(0, 10)) {
             const key = `context:${chatId}`;
             const since = this.store.data.cursors[key] ?? job.messages[0]!.time;
@@ -223,7 +252,7 @@ export class InboxService {
         }
         for (const job of this.store.data.jobs) {
           if (this.blocked()) return;
-          if ((job.retryAt ?? 0) > now) continue;
+          if ((job.retryAt ?? 0) > now || (job.automatic && !this.acceptsSource(job))) continue;
           if (job.state === 'notifying' && (now - job.updatedAt >= 60_000 || now - job.createdAt >= 120_000)) {
             job.retryAt = now + 60_000; await this.store.save();
             await this.io.deliver(job, 'pending');
@@ -252,7 +281,7 @@ export class InboxService {
         this.lastError = undefined;
       } catch (e) { this.lastError = e instanceof Error ? e.message : 'inbox poll failed'; }
       if (!this.running && !this.blocked()) {
-        const next = this.store.data.jobs.find(j => j.state === 'queued' && (!j.automatic || this.config.autoAnalyze));
+        const next = this.store.data.jobs.find(j => j.state === 'queued' && (!j.automatic || (this.config.autoAnalyze && this.acceptsSource(j))));
         if (next) {
           const day = new Date(this.now()).toISOString().slice(0, 10);
           if (next.automatic && (this.store.data.autoUsage[day] ?? 0) >= this.config.dailyAutoLimit) { next.state = 'waiting'; return; }
@@ -273,11 +302,13 @@ export class InboxService {
     const job: InboxJob = { id: randomUUID(), ownerOpenId: this.config.ownerOpenId, profile: this.config.executorProfile,
       destination: { ...this.config.destination }, source: { chatId: m.chatId, name: source?.name || m.chatName, type: source?.type || m.chatType, threadId: m.threadId },
       messages: boundMessages(messages, this.config.maxContextChars), state: automatic ? 'notifying' : 'queued',
+      intakeTrigger: m.chatType === 'p2p' ? 'private' : m.mentions.includes(this.config.ownerOpenId) ? 'mention' : 'group',
       createdAt: this.now(), updatedAt: this.now(), revision: 0, handlingState: 'open', automatic, alert: messages.some(m => classifyMessage(m) === 'alert'), incidentId: m.incidentId };
     this.store.data.jobs.push(job); return job;
   }
   private ingest(m: InboxMessage, earliest: number): void {
-    if (m.time < earliest || m.chatId === this.config.destination.chatId) return;
+    if (m.time < Math.max(earliest, this.store.data.cursors.intakeSince ?? 0) ||
+      (m.chatType === 'p2p' ? !this.config.watchPrivate : !this.config.watchMentions) || m.chatId === this.config.destination.chatId) return;
     const known = this.store.data.jobs.flatMap(j => j.messages).find(x => x.id === m.id);
     if (known ? known.text === m.text : this.store.data.seen[m.id]) return;
     this.store.data.seen[m.id] = this.now();
@@ -285,7 +316,7 @@ export class InboxService {
     catch (error) { delete this.store.data.seen[m.id]; throw error; }
   }
   private ingestNew(m: InboxMessage): void {
-    const jobs = this.store.data.jobs.filter(j => j.source.chatId === m.chatId && !resolved(j));
+    const jobs = this.store.data.jobs.filter(j => j.source.chatId === m.chatId && !resolved(j) && this.acceptsSource(j));
     if (m.senderId === this.config.ownerOpenId) {
       for (const job of jobs) if (compareMessages(m, job.messages.at(-1)!) > 0 && (m.chatType === 'p2p' ||
         (m.threadId && m.threadId === job.source.threadId) || job.messages.some(x => x.id === m.parentId))) {
@@ -299,11 +330,12 @@ export class InboxService {
       return;
     }
     const related = jobs.find(j => j.messages.some(x => x.id === m.id)) ?? jobs.find(j => (m.threadId && m.threadId === j.source.threadId) || j.messages.some(x => x.id === m.parentId));
-    if (m.chatType === 'group' && !m.mentions.includes(this.config.ownerOpenId) && !related) return;
+    if (m.chatType === 'group' && intakeScope(this.config) !== 'all' && !m.mentions.includes(this.config.ownerOpenId) && !related) return;
     const category = classifyMessage(m);
     if (category === 'skip' || (m.chatType === 'p2p' && m.bot)) return;
     const previous = related ?? jobs.find(j => j.source.threadId === m.threadId && (m.incidentId ? j.incidentId === m.incidentId && j.messages[0]?.senderId === m.senderId : !j.incidentId && (Boolean(j.result) || j.state === 'running' || this.now() - j.updatedAt < 5 * 60_000)));
     if (previous) {
+      if (m.mentions.includes(this.config.ownerOpenId)) previous.intakeTrigger = 'mention';
       previous.messages = boundMessages([...previous.messages.filter(x => x.id !== m.id), m], this.config.maxContextChars);
       previous.alert ||= category === 'alert'; this.touch(previous);
       if (previous.result || previous.replyDraft) previous.draftStale = true;

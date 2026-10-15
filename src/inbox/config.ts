@@ -1,3 +1,6 @@
+export type IntakeScope = 'private' | 'private_mentions' | 'all';
+export const intakeScope = (c: Pick<InboxConfig, 'intakeScope' | 'watchPrivate' | 'watchMentions'>): IntakeScope | undefined =>
+  c.intakeScope ?? (c.watchPrivate ? c.watchMentions ? 'private_mentions' : 'private' : undefined);
 export type InboxMode = 'off' | 'manual' | 'auto';
 export const inboxMode = (config: Pick<InboxConfig, 'enabled' | 'autoAnalyze'>): InboxMode =>
   !config.enabled ? 'off' : config.autoAnalyze ? 'auto' : 'manual';
@@ -8,6 +11,7 @@ export interface InboxConfig {
   ownerOpenId: string;
   destination: { chatId: string; threadId: string; replyTo: string };
   deliveryMode: 'thread' | 'new_topic';
+  intakeScope?: IntakeScope;
   watchPrivate: boolean;
   watchMentions: boolean;
   autoAnalyze: boolean;
@@ -36,11 +40,13 @@ export function normalizeInbox(input: unknown): InboxConfig {
   const str = (v: unknown) => typeof v === 'string' ? v.trim() : '';
   const num = (v: unknown, min: number, max: number, fallback: number) =>
     typeof v === 'number' && Number.isFinite(v) ? Math.max(min, Math.min(max, Math.floor(v))) : fallback;
+  const scope = ['private', 'private_mentions', 'all'].includes(String(r.intakeScope)) ? r.intakeScope : undefined;
   return {
+    intakeScope: scope,
     enabled: r.enabled === true, executorProfile: str(r.executorProfile), ownerOpenId: str(r.ownerOpenId),
     destination: { chatId: str(r.destination?.chatId), threadId: str(r.destination?.threadId), replyTo: str(r.destination?.replyTo) },
     deliveryMode: r.deliveryMode === 'new_topic' ? 'new_topic' : 'thread',
-    watchPrivate: r.watchPrivate !== false, watchMentions: r.watchMentions !== false, autoAnalyze: r.autoAnalyze !== false,
+    watchPrivate: scope ? true : r.watchPrivate !== false, watchMentions: scope ? scope !== 'private' : r.watchMentions !== false, autoAnalyze: r.autoAnalyze !== false,
     waitMinutes: num(r.waitMinutes, 1, 1440, 30), pollSeconds: num(r.pollSeconds, 30, 3600, 60),
     contextMinutes: num(r.contextMinutes, 5, 1440, 15), maxContextChars: num(r.maxContextChars, 2000, 100_000, 24_000),
     dailyAutoLimit: num(r.dailyAutoLimit, 0, 1000, 20),

@@ -367,3 +367,63 @@ describe('reply workbench', () => {
     expect(s.service.list()[0]?.messages[0]?.text).toBe('修改后的请求');
   });
 });
+
+describe('intake scopes', () => {
+  it.each([
+    ['private', ['p2p'], ['p2p']],
+    ['private_mentions', ['p2p', 'mention'], ['p2p', 'mention']],
+    ['all', ['p2p', 'group'], ['p2p', 'mention', 'group']],
+  ] as const)('collects and admits only %s messages', async (scope, kinds, ids) => {
+    const messages = [message({ id: 'p2p' }), message({ id: 'mention', chatId: 'oc_mention', chatType: 'group', mentions: ['ou_owner'] }),
+      message({ id: 'group', chatId: 'oc_group', chatType: 'group' })];
+    const collect = vi.fn(async (_kind: string) => messages);
+    const { service } = await setup({ collect });
+    await service.setScope(scope); await service.tick();
+    expect(collect.mock.calls.map(c => c[0])).toEqual(kinds);
+    expect(service.list().flatMap(j => j.messages.map(m => m.id)).sort()).toEqual([...ids].sort());
+  });
+  it('keeps scope changes independent of off mode and persists before applying', async () => {
+    const { service, io } = await setup(); await service.setMode('off');
+    await expect(service.setScope('all', async () => { throw Error('disk full'); })).rejects.toThrow('disk full');
+    expect(service.config.intakeScope).not.toBe('all');
+    await service.setScope('all'); await service.tick();
+    expect(service.config).toMatchObject({ enabled: false, autoAnalyze: false, intakeScope: 'all' });
+    expect(io.collect).not.toHaveBeenCalled(); expect(io.analyze).not.toHaveBeenCalled();
+  });
+  it('does not backfill the overlap when widening scope', async () => {
+    const collect = vi.fn(async () => [message({ id: 'old', chatType: 'group', time: 1_000_000 }),
+      message({ id: 'new', chatType: 'group', time: 1_061_001 })]);
+    const { service, advance } = await setup({ collect }); advance(61_000); await service.setScope('all');
+    await service.tick(); expect(service.list().flatMap(j => j.messages.map(m => m.id))).toEqual(['new']);
+  });
+  it('retains unrelated group jobs but stops background follow-up and automatic execution after narrowing', async () => {
+    const group = message({ chatType: 'group', chatId: 'oc_group' });
+    const { service, io, store, advance } = await setup({ collect: vi.fn(async () => [group]) });
+    await service.setScope('all'); await service.tick();
+    store.data.jobs[0]!.state = 'queued';
+    await service.setScope('private_mentions'); advance(61_000); await service.tick();
+    expect(service.list()[0]).toMatchObject({ state: 'waiting', automatic: false });
+    expect(io.context).not.toHaveBeenCalled(); expect(io.analyze).not.toHaveBeenCalled();
+  });
+  it('discards a collection returning during a scope transition', async () => {
+    let release!: (messages: InboxMessage[]) => void;
+    const collect = vi.fn(() => new Promise<InboxMessage[]>(resolve => { release = resolve; }));
+    const { service } = await setup({ collect });
+    const poll = service.tick(); await vi.waitFor(() => expect(collect).toHaveBeenCalled());
+    const change = service.setScope('private'); release([message()]);
+    await Promise.all([poll, change]); expect(service.list()).toEqual([]);
+  });
+  it('preserves legacy restricted configurations until a scope is chosen', () => {
+    const old = normalizeInbox({ watchPrivate: false, watchMentions: true });
+    expect(old).toMatchObject({ watchPrivate: false, watchMentions: true });
+    expect(old.intakeScope).toBeUndefined();
+    expect(normalizeInbox({ ...old, intakeScope: 'all' })).toMatchObject({ watchPrivate: true, watchMentions: true });
+  });
+  it('queries all group messages without the at-me filter', async () => {
+    const exec = vi.fn(async (_args: string[]) => ({ code: 0, stdout: JSON.stringify({ ok: true, data: { messages: [] } }), stderr: '', timedOut: false }));
+    const lark = new InboxLark({ profile: 'codex' }, config(), exec);
+    await lark.collect('group', 1_000_000, 1_060_000);
+    expect(exec.mock.calls[0]![0]).toEqual(expect.arrayContaining(['--chat-type', 'group']));
+    expect(exec.mock.calls[0]![0]).not.toContain('--is-at-me'); lark.close();
+  });
+});

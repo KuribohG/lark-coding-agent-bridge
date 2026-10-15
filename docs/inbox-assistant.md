@@ -129,3 +129,18 @@ location /assistant/ {
 - [网页登录](https://open.feishu.cn/document/web-app/gadget-api/open-ability/login/requestaccess.md)
 - [JSAPI 鉴权](https://open.feishu.cn/document/web-app/gadget-api/open-ability/authentication/h5sdkconfig.md)
 - [机器人菜单](https://open.feishu.cn/document/client-docs/bot-v3/bot-customized-menu.md)
+
+## 接收范围
+
+工作台在运行模式旁提供三档 `intakeScope`，通过 `scope` 指令等待 Bridge 持久化后生效：
+
+- `private`：私聊。
+- `private_mentions`：私聊、直接 @ 本人的群消息，以及这些事项的相关回复。
+- `all`：可读取的私聊和群消息，包括未 @ 本人的群消息。
+
+范围与 `off/manual/auto` 独立；关闭时可保存范围，但不采集、不分析。
+更改范围从当时的新消息开始，索引重叠窗口不补入更改前的会话。
+缩小范围保留已有事项，停止范围外的自动处理和背景跟进；仍可显式手动处理已有事项或指定会话。
+普通结束语、本人消息、结果群等既有过滤继续适用，机器人报警仍只提醒。
+旧 `watchPrivate/watchMentions` 配置继续读取，不能对应三档的旧配置不会自动扩大；用户选择新范围后同步两项兼容字段。
+所有收件助理分析继续固定使用 `deepseek-flash`。

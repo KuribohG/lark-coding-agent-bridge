@@ -18,6 +18,7 @@ export interface InboxJob {
   messages: InboxMessage[];
   state: 'notifying' | 'waiting' | 'queued' | 'running' | 'ready' | 'done' | 'ignored' | 'claimed' | 'failed';
   createdAt: number; updatedAt: number; notifiedAt?: number; dueAt?: number;
+  intakeTrigger?: 'private' | 'mention' | 'group';
   automatic: boolean; alert: boolean; result?: string; error?: string;
   inputTokens?: number; outputTokens?: number;
   deliveredAt?: number;
@@ -50,7 +51,7 @@ export interface InboxIO {
   cancel?(): void;
   cancelPending?(): void;
   checkOwner(owner: string): Promise<void>;
-  collect(kind: 'p2p' | 'mention', start: number, end: number): Promise<InboxMessage[]>;
+  collect(kind: 'p2p' | 'mention' | 'group', start: number, end: number): Promise<InboxMessage[]>;
   context(chatId: string, start: number, end: number): Promise<InboxMessage[]>;
   source(chatId: string): Promise<{ name: string; type: 'p2p' | 'group' }>;
   deliver(job: InboxJob, phase: 'pending' | 'progress' | 'result'): Promise<void>;

@@ -5,13 +5,13 @@ import type { InboxLark } from './lark';
 import type { InboxJob } from './types';
 import { obj } from './values';
 import { handlingState, replyContent } from './reply';
-import { inboxMode, type InboxMode } from './config';
+import { inboxMode, intakeScope, type IntakeScope, type InboxMode } from './config';
 
 interface Command { id: string; action: string; target: string; expiresAt: number }
 interface Receipt { id: string; ok: boolean; result: string; time: number }
 interface Ledger { ownerKey: string; receipts: Record<string, Receipt> }
 const uuid = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i;
-const actions = new Set(['browse', 'manual', 'detail', 'process', 'claim', 'ignore', 'mode', 'review']);
+const actions = new Set(['browse', 'manual', 'detail', 'process', 'claim', 'ignore', 'mode', 'review', 'scope']);
 export const guiSummary = (job: InboxJob) => ({ id: job.id, name: job.source.name.slice(0, 80),
   chatId: job.source.chatId, type: job.source.type, state: job.state,
   preview: job.messages.at(-1)?.text.slice(0, 80) || '', messageCount: job.messages.length,
@@ -60,7 +60,8 @@ export class InboxGui {
   lastError?: string;
   constructor(private service: InboxService, private lark: InboxLark, private appId: string,
     private ledgerPath: string, private request: typeof fetch = fetch,
-    private changeMode?: (mode: InboxMode) => Promise<void>) {
+    private changeMode?: (mode: InboxMode) => Promise<void>,
+    private changeScope?: (scope: IntakeScope) => Promise<void>) {
     this.ledger = { ownerKey: `${service.config.executorProfile}:${service.config.ownerOpenId}`, receipts: {} };
   }
   async start(): Promise<void> {
@@ -101,17 +102,10 @@ export class InboxGui {
   async tick(): Promise<void> {
     if (this.stopped) return;
     const config = this.service.config;
-    if (config.deliveryMode === 'new_topic') {
-      this.resultUrl = `https://applink.feishu.cn/client/chat/open?openChatId=${config.destination.chatId}`;
-    } else if (!this.resultUrl) {
-      const anchor = await this.lark.call(['im', '+messages-mget', '--as', 'bot', '--message-ids', config.destination.replyTo, '--no-reactions']);
-      const messages = Array.isArray(anchor.messages) ? anchor.messages : [];
-      const message = messages.map(obj).find(m => m.message_id === config.destination.replyTo &&
-        m.chat_id === config.destination.chatId && m.thread_id === config.destination.threadId);
-      const link = message?.message_app_link;
-      this.resultUrl = typeof link === 'string' && /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(link) ? link :
-        `https://applink.feishu.cn/client/chat/open?openChatId=${config.destination.chatId}`;
-    }
+    // The control connection must not wait on a chat-history lookup.
+    this.resultUrl = config.deliveryMode === 'new_topic'
+      ? `https://applink.feishu.cn/client/chat/open?openChatId=${config.destination.chatId}`
+      : `https://applink.feishu.cn/client/thread/open?open_chat_id=${config.destination.chatId}&open_thread_id=${config.destination.threadId}`;
     const data = await this.sync();
     if (!Array.isArray(data.commands)) throw new Error('工作台同步响应无效');
     for (const value of data.commands.slice(0, 10)) {
@@ -132,7 +126,7 @@ export class InboxGui {
         for (const [id, entry] of Object.entries(this.ledger.receipts)) if (Date.now() - entry.time > 86400000) delete this.ledger.receipts[id];
         await writeFileAtomic(this.ledgerPath, JSON.stringify(this.ledger), { mode: 0o600 });
       }
-      if (['mode', 'review'].includes(command.action) && receipt.ok) await this.sync();
+      if (['mode', 'review', 'scope'].includes(command.action) && receipt.ok) await this.sync();
       await this.call('receipt', { bridgeKey: this.ledger.ownerKey, id: receipt.id, ok: receipt.ok, result: receipt.result });
       if (command.action === 'mode') return;
     }
@@ -144,7 +138,7 @@ export class InboxGui {
     return this.call('sync', { bridgeKey: this.ledger.ownerKey,
       ownerOpenId: config.ownerOpenId, feishuClientId: this.appId,
       snapshot: { jobs, total: all.length, enabled: config.enabled, autoAnalyze: config.autoAnalyze,
-        modeControl: Boolean(this.changeMode), draftControl: true,
+        modeControl: Boolean(this.changeMode), draftControl: true, intakeScope: intakeScope(config), scopeControl: Boolean(this.changeScope),
         waitMinutes: config.waitMinutes, dailyAutoLimit: config.dailyAutoLimit,
         resultUrl: this.resultUrl,
         error: this.service.lastError?.slice(0, 1000) } });
@@ -155,6 +149,11 @@ export class InboxGui {
       if (!this.changeMode || !['off', 'manual', 'auto'].includes(command.target)) throw new Error('无效运行模式');
       await this.changeMode(command.target as InboxMode);
       return { mode: inboxMode(this.service.config) };
+    }
+    if (command.action === 'scope') {
+      if (!this.changeScope || !['private', 'private_mentions', 'all'].includes(command.target)) throw new Error('无效接收范围');
+      await this.changeScope(command.target as IntakeScope);
+      return { intakeScope: intakeScope(this.service.config) };
     }
     if (command.action === 'review') {
       const job = await this.service.review(JSON.parse(command.target), this.service.config.ownerOpenId, command.id);

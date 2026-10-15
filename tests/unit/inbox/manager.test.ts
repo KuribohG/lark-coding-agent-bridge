@@ -12,7 +12,7 @@ import { startInboxH5 } from '../../../src/inbox/h5-server';
 
 vi.mock('../../../src/inbox/analyzer', () => ({ loadAnalysisProvider: vi.fn(async () => ({ model: 'test' })), analyzeInbox: vi.fn() }));
 vi.mock('../../../src/inbox/lark', () => ({ InboxLark: class { checkOwner = vi.fn(async () => {}); close = vi.fn(); cancelPending = vi.fn(); } }));
-vi.mock('../../../src/inbox/gui', () => ({ InboxGui: vi.fn(function (...args: unknown[]) { return { start: vi.fn(async () => {}), close: vi.fn(async () => {}), setMode: args[5] }; }) }));
+vi.mock('../../../src/inbox/gui', () => ({ InboxGui: vi.fn(function (...args: unknown[]) { return { start: vi.fn(async () => {}), close: vi.fn(async () => {}), setMode: args[5], setScope: args[6] }; }) }));
 vi.mock('../../../src/inbox/h5-server', () => ({ startInboxH5: vi.fn(async () => ({ close: async () => {} })) }));
 const managers: InboxManager[] = [];
 afterEach(async () => { for (const manager of managers.splice(0)) await manager.close(); });
@@ -76,4 +76,21 @@ it('keeps the GUI connected while off, persists mode, and can re-enable after re
   expect(second).not.toBe(gui); expect((await restarted.view()).running).toBe(false);
   await second.setMode('auto'); expect((await restarted.view()).running).toBe(true);
   expect((await loadRootConfig(path))!.inbox).toMatchObject({ enabled: true, autoAnalyze: true });
+});
+
+it('persists GUI intake changes while off and retains them after restart', async () => {
+  const { create, path, root } = await setup();
+  root.inbox!.gui = { publicUrl: 'https://gui.example', apiKeyFile: join(path, '..', 'key') };
+  root.inbox!.enabled = false; root.inbox!.autoAnalyze = false; await saveRootConfig(root, path);
+  const before = (await loadRootConfig(path))!.profiles;
+  const manager = create(); await manager.reconcile();
+  const gui = vi.mocked(InboxGui).mock.results.at(-1)!.value as { setScope(scope: string): Promise<void>; close: ReturnType<typeof vi.fn> };
+  for (const scope of ['private', 'private_mentions', 'all']) {
+    await gui.setScope(scope); await manager.reconcile();
+    expect((await loadRootConfig(path))!.inbox).toMatchObject({ intakeScope: scope, enabled: false, autoAnalyze: false });
+    expect((await manager.view()).running).toBe(false); expect(gui.close).not.toHaveBeenCalled();
+  }
+  expect((await loadRootConfig(path))!.profiles).toEqual(before);
+  await manager.close(); const restarted = create(); await restarted.reconcile();
+  expect((await restarted.view()).config.intakeScope).toBe('all');
 });

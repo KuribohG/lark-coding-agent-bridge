@@ -3,7 +3,7 @@ import { chmod, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { InboxGui } from '../../../src/inbox/gui';
-import { normalizeInbox } from '../../../src/inbox/config';
+import { normalizeInbox, type IntakeScope } from '../../../src/inbox/config';
 import type { InboxService } from '../../../src/inbox/service';
 import type { InboxLark } from '../../../src/inbox/lark';
 import type { InboxJob } from '../../../src/inbox/types';
@@ -28,10 +28,11 @@ async function setup() {
   });
   const ledger = join(dir, 'receipts.json');
   const changeMode = vi.fn(async (mode: string) => { config.enabled = mode !== 'off'; config.autoAnalyze = mode === 'auto'; });
+  const changeScope = vi.fn(async (scope: IntakeScope) => { service.config.intakeScope = scope; });
   const make = () => { const worker = new InboxGui(service as unknown as InboxService, lark as unknown as InboxLark,
-    'cli_test', ledger, request, changeMode); workers.push(worker); return worker; };
+    'cli_test', ledger, request, changeMode, changeScope); workers.push(worker); return worker; };
   const worker = make();
-  return { key, ledger, changeMode, service, lark, request, worker, make,
+  return { key, ledger, changeMode, changeScope, service, lark, request, worker, make,
     commands: (value: object[]) => { commands = value; }, failReceipt: () => { failReceipt = true; } };
 }
 const command = (action: string, target: string) => ({ id, action, target, expiresAt: Date.now() + 60000 });
@@ -105,4 +106,30 @@ describe('hosted inbox connection', () => {
     await s.worker.tick(); expect(s.service.decide).not.toHaveBeenCalled();
     expect(JSON.parse(String(s.request.mock.calls.at(-1)?.[1]?.body)).ok).toBe(false);
   });
+});
+
+it('acknowledges a persisted scope while off without starting work', async () => {
+  const s = await setup(); s.service.config.enabled = false; s.commands([command('scope', 'all')]);
+  await s.worker.start(); await vi.waitFor(() => expect(s.request).toHaveBeenCalledTimes(3));
+  expect(s.changeScope).toHaveBeenCalledWith('all');
+  const sync = JSON.parse(String(s.request.mock.calls[1]?.[1]?.body));
+  expect(sync.snapshot).toMatchObject({ intakeScope: 'all', scopeControl: true, enabled: false });
+  expect(s.changeMode).not.toHaveBeenCalled(); expect(s.service.manual).not.toHaveBeenCalled();
+  await s.worker.tick(); expect(s.changeScope).toHaveBeenCalledTimes(1);
+});
+it('rejects unknown intake scopes', async () => {
+  const s = await setup(); s.commands([command('scope', 'unknown')]);
+  await s.worker.start(); await vi.waitFor(() => expect(s.request).toHaveBeenCalledTimes(2));
+  expect(s.changeScope).not.toHaveBeenCalled();
+  expect(JSON.parse(String(s.request.mock.calls[1]?.[1]?.body)).ok).toBe(false);
+});
+
+it('connects while off even when Feishu message lookup is unavailable', async () => {
+  const s = await setup(); s.service.config.enabled = false;
+  s.lark.call.mockRejectedValue(new Error('chat API unavailable'));
+  await s.worker.start(); await idle(s.request);
+  expect(s.lark.call).not.toHaveBeenCalled();
+  const body = JSON.parse(String(s.request.mock.calls[0]?.[1]?.body));
+  expect(body.snapshot.enabled).toBe(false);
+  expect(body.snapshot.resultUrl).toContain('open_thread_id=omt_result');
 });

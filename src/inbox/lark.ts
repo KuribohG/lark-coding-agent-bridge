@@ -92,9 +92,9 @@ export class InboxLark {
     }
     throw new Error('消息超过单轮读取上限，保留进度；请缩小监听范围');
   }
-  async collect(kind: 'p2p' | 'mention', start: number, end: number): Promise<InboxMessage[]> {
+  async collect(kind: 'p2p' | 'mention' | 'group', start: number, end: number): Promise<InboxMessage[]> {
     const raw = await this.pages(['im', '+messages-search', '--as', 'user', '--start', iso(start), '--end', iso(end),
-      '--page-size', '50', '--no-reactions', ...(kind === 'p2p' ? ['--chat-type', 'p2p'] : ['--is-at-me'])], 'messages');
+      '--page-size', '50', '--no-reactions', ...(kind === 'mention' ? ['--is-at-me'] : ['--chat-type', kind])], 'messages');
     const messages = parseMessages(raw, kind === 'p2p' ? 'p2p' : 'group');
     for (const m of messages) {
       if (!m.chatName) m.chatName = (await this.source(m.chatId)).name;

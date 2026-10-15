@@ -5,7 +5,7 @@ import type { Controls } from '../commands';
 import { resolveAppPaths } from '../config/app-paths';
 import { loadRootConfig, saveRootConfig, withConfigFileLock } from '../config/profile-store';
 import { resolveAppSecret } from '../config/secret-resolver';
-import { inboxMode, normalizeInbox, validateInbox, type InboxConfig, type InboxMode } from './config';
+import { inboxMode, intakeScope, normalizeInbox, validateInbox, type InboxConfig, type InboxMode, type IntakeScope } from './config';
 import { loadAnalysisProvider, analyzeInbox } from './analyzer';
 import { InboxLark } from './lark';
 import { InboxService } from './service';
@@ -17,7 +17,8 @@ import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { InboxGui } from './gui';
 
-const connectionConfig = ({ enabled: _, autoAnalyze: __, ...config }: InboxConfig) => config;
+const connectionConfig = ({ enabled: _, autoAnalyze: __, intakeScope: ___, watchPrivate, watchMentions, ...config }: InboxConfig) =>
+  ({ ...config, legacyIntake: watchPrivate ? undefined : { watchPrivate, watchMentions } });
 
 export class InboxManager {
   private service?: InboxService;
@@ -74,6 +75,17 @@ export class InboxManager {
       await service.setMode(mode, async () => { root.inbox = config; await saveRootConfig(root, this.configPath); });
     });
   }
+  private async changeScope(service: InboxService, scope: IntakeScope): Promise<void> {
+    await withConfigFileLock(this.configPath, async () => {
+      const root = await loadRootConfig(this.configPath);
+      const config = normalizeInbox(root?.inbox);
+      if (!root || this.service !== service || JSON.stringify(connectionConfig(config)) !== JSON.stringify(connectionConfig(service.config))) {
+        throw new Error('助理配置正在更新，请稍后重试');
+      }
+      const next = normalizeInbox({ ...config, intakeScope: scope });
+      await service.setScope(scope, async () => { root.inbox = next; await saveRootConfig(root, this.configPath); });
+    });
+  }
   private async reload(): Promise<void> {
     const root = await loadRootConfig(this.configPath); const config = normalizeInbox(root?.inbox);
     const controls = this.controls(config.executorProfile);
@@ -81,6 +93,7 @@ export class InboxManager {
     if (this.service && controls && fingerprint === this.fingerprint) {
       await withConfigFileLock(this.configPath, async () => {
         const latest = normalizeInbox((await loadRootConfig(this.configPath))?.inbox);
+        if (this.service && intakeScope(latest) && intakeScope(latest) !== intakeScope(this.service.config)) await this.service.setScope(intakeScope(latest)!);
         if (this.service && inboxMode(latest) !== inboxMode(this.service.config)) await this.service.setMode(inboxMode(latest));
       });
       return;
@@ -116,7 +129,7 @@ export class InboxManager {
       if (config.gui.publicUrl) {
         const service = this.service;
         this.gui = new InboxGui(service, lark, controls.cfg.accounts.app.id, join(folder, 'gui-receipts.json'), fetch,
-          mode => this.changeMode(service, mode));
+          mode => this.changeMode(service, mode), scope => this.changeScope(service, scope));
         await this.gui.start();
       }
       if (config.h5.publicUrl) {
