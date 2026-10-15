@@ -418,7 +418,7 @@ export class InboxService {
           const job = this.store.data.jobs.find(j => j.id === input.id);
           if (!job || resolved(job) || !this.acceptsSource(job) || signature(job) !== signature(input) || job.attention?.state !== 'pending') continue;
           const result = results.find(r => r.id === job.id);
-          if (failure || !result || result.state === 'pending') this.retryTriage(job, failure || (result ? '必要的上下文查询未完成' : '关注筛选结果缺失'));
+          if (failure || !result || result.state === 'pending') this.retryTriage(job, failure || (result ? result.reason || '必要的上下文查询未完成' : '关注筛选结果缺失'));
           else { job.attention = { state: result.state, reason: result.reason, priority: result.priority }; this.touch(job); }
         }
         await this.store.save();

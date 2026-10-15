@@ -1,5 +1,5 @@
 import { parseMessages } from './lark';
-import { obj, type Obj } from './values';
+import { InboxToolArgumentsError, obj, type Obj } from './values';
 
 const optionalText = { type: ['string', 'null'] };
 const page = { pageToken: { ...optionalText, description: '上一页返回的 nextPageToken；首页传 null。' } };
@@ -19,7 +19,7 @@ export const INBOX_CHAT_TOOLS = [
     { messageIds: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 20 } }),
 ];
 
-const invalid = () => new Error('飞书聊天工具参数无效');
+const invalid = () => new InboxToolArgumentsError('飞书聊天工具参数无效');
 function string(value: unknown, limit: number): string {
   if (typeof value !== 'string' || !value.trim() || value.length > limit || /[\x00-\x1f\x7f]/u.test(value)) throw invalid();
   return value;
