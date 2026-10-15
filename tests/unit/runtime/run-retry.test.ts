@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent } from '../../../src/agent/types';
+import { CodexJsonlTranslator } from '../../../src/agent/codex/jsonl';
 import { ActiveRuns } from '../../../src/bot/active-runs';
 import { ProcessPool } from '../../../src/bot/process-pool';
 import { initialState, reduce } from '../../../src/card/run-state';
@@ -82,6 +83,103 @@ describe('rate-limit retries through RunExecutor', () => {
     expect(h.agent.runs).toHaveLength(4);
     expect(await run.result).toBe('failed');
     expect(h.pool.snapshot().active).toBe(0);
+  });
+
+  it.each<AgentEvent>([
+    { type: 'text', delta: 'continuing the task' },
+    { type: 'final_text', content: 'partial answer' },
+    { type: 'thinking', delta: 'checking the next step' },
+    { type: 'tool_use', id: 'read', name: 'read', input: {} },
+    { type: 'tool_result', id: 'read', output: '', isError: false },
+  ])('resets the retry count and backoff after $type progress', async progress => {
+    const system: AgentEvent = { type: 'system', threadId: 'thread-1' };
+    const h = harness([[system, rateLimit], [system, progress, rateLimit],
+      [system, rateLimit], [system, rateLimit], [done]]);
+    const run = await h.executor.submit({ scopeId: 's', policy: h.policy, images: ['/picture.png'] });
+    const output = collect(run.subscribe());
+    await vi.advanceTimersByTimeAsync(240_000);
+    const events = await output;
+    expect(events.filter(e => e.type === 'retry' && e.delayMs > 0)).toEqual([
+      { type: 'retry', attempt: 1, maxAttempts: 3, delayMs: 30_000 },
+      { type: 'retry', attempt: 1, maxAttempts: 3, delayMs: 30_000 },
+      { type: 'retry', attempt: 2, maxAttempts: 3, delayMs: 60_000 },
+      { type: 'retry', attempt: 3, maxAttempts: 3, delayMs: 120_000 },
+    ]);
+    expect(events.filter(e => e.type === 'retry' && e.delayMs === 0).map(e => e.type === 'retry' && e.attempt))
+      .toEqual([1, 1, 2, 3]);
+    expect(events).toContainEqual(progress);
+    expect(events.filter(e => e.type === 'error')).toEqual([]);
+    expect(events.filter(e => e.type === 'done')).toEqual([done]);
+    expect(h.agent.runs).toHaveLength(5);
+    for (const options of h.agent.runOptions.slice(2)) {
+      expect(options.threadId).toBe('thread-1');
+      expect(options.prompt).toContain('不要重复执行已完成的操作');
+      expect(options.images).toBeUndefined();
+    }
+    expect(await run.result).toBe('completed');
+    expect(h.activeRuns.get('s')).toBeUndefined();
+    expect(h.pool.snapshot().active).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('allows another retry when progress resumes on the last allowed attempt', async () => {
+    const h = harness([[{ type: 'system', sessionId: 'session-1' }, rateLimit], [rateLimit], [rateLimit],
+      [{ type: 'text', delta: 'recovered' }, rateLimit], [done]]);
+    const run = await h.executor.submit({ scopeId: 's', policy: h.policy });
+    const output = collect(run.subscribe());
+    await vi.advanceTimersByTimeAsync(240_000);
+    const events = await output;
+    expect(events.filter(e => e.type === 'retry' && e.delayMs > 0).map(e => e.type === 'retry' && e.attempt))
+      .toEqual([1, 2, 3, 1]);
+    expect(h.agent.runOptions[4]?.sessionId).toBe('session-1');
+    expect(await run.result).toBe('completed');
+  });
+
+  it.each(['exec', 'app-server'])('keeps resetting after repeated Codex %s output followed by 429', async transport => {
+    const attempts = Array.from({ length: 5 }, (_, index) => {
+      const translator = new CodexJsonlTranslator();
+      return [
+        ...translator.translate({ type: 'thread.started', thread_id: 'thread-1' }),
+        ...translator.translate({ type: 'item.completed', item: {
+          id: `message-${index}`, type: 'agent_message', text: `completed step ${index + 1}`,
+        } }),
+        ...(transport === 'app-server' ? translator.fail(rateLimit.message)
+          : translator.translate({ type: 'turn.failed', error: { message: rateLimit.message } })),
+      ];
+    });
+    const h = harness([...attempts, [done]]);
+    const run = await h.executor.submit({ scopeId: 's', policy: h.policy });
+    const output = collect(run.subscribe());
+    await vi.advanceTimersByTimeAsync(150_000);
+    const events = await output;
+    expect(events.filter(e => e.type === 'retry' && e.delayMs > 0)).toEqual(
+      Array.from({ length: 5 }, () => ({ type: 'retry', attempt: 1, maxAttempts: 3, delayMs: 30_000 })),
+    );
+    expect(events.filter(e => e.type === 'text')).toEqual(
+      Array.from({ length: 5 }, (_, index) => ({ type: 'text', delta: `completed step ${index + 1}` })),
+    );
+    expect(events.filter(e => e.type === 'error')).toEqual([]);
+    expect(h.agent.runs).toHaveLength(6);
+    expect(await run.result).toBe('completed');
+    expect(h.pool.snapshot().active).toBe(0);
+  });
+
+  it('does not reset retries for session metadata, usage, or empty output', async () => {
+    const noProgress: AgentEvent[] = [{ type: 'system', threadId: 'thread-1' },
+      { type: 'usage', inputTokens: 100, outputTokens: 1 },
+      { type: 'text', delta: '' }, { type: 'text', delta: ' \n' },
+      { type: 'thinking', delta: '' }, { type: 'thinking', delta: ' \n' },
+      { type: 'final_text', content: '' }, { type: 'final_text', content: ' \n' }, rateLimit];
+    const h = harness([noProgress, noProgress, noProgress, noProgress, [done]]);
+    const run = await h.executor.submit({ scopeId: 's', policy: h.policy });
+    const output = collect(run.subscribe());
+    await vi.advanceTimersByTimeAsync(210_000);
+    const events = await output;
+    expect(events.filter(e => e.type === 'retry' && e.delayMs > 0).map(e => e.type === 'retry' && e.delayMs))
+      .toEqual([30_000, 60_000, 120_000]);
+    expect(events.filter(e => e.type === 'error')).toEqual([rateLimit]);
+    expect(h.agent.runs).toHaveLength(4);
+    expect(await run.result).toBe('failed');
   });
 
   it.each(['execution', 'scope', 'abort', 'all'] as const)('cancels the pending timer via %s without another spawn', async kind => {

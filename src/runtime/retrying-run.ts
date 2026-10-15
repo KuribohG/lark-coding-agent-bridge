@@ -15,7 +15,22 @@ function isRateLimitError(event: AgentEvent): boolean {
     && /\b429\b|too many requests|rate[_ -]limit(?:[_ -]exceeded|[_ -]error|ed)?/i.test(event.message);
 }
 
-/** Keep one scope, pool slot, and stop handle across bounded rate-limit retries. */
+function isProgressEvent(event: AgentEvent): boolean {
+  switch (event.type) {
+    case 'text':
+    case 'thinking':
+      return event.delta.trim().length > 0;
+    case 'final_text':
+      return event.content.trim().length > 0;
+    case 'tool_use':
+    case 'tool_result':
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** Keep one scope, pool slot, and stop handle across consecutive rate-limit retries. */
 export function retryingRun(input: {
   agent: AgentAdapter;
   initialRun: AgentRun;
@@ -46,7 +61,11 @@ export function retryingRun(input: {
             sessionId = event.sessionId ?? sessionId;
             threadId = event.threadId ?? threadId;
           }
-          if (['text', 'final_text', 'thinking', 'tool_use', 'tool_result'].includes(event.type)) madeProgress = true;
+          if (isProgressEvent(event)) {
+            madeProgress = true;
+            // Recovery starts a fresh retry budget, but keeps the session's progress.
+            attempt = 0;
+          }
           if (event.type === 'error' && isRateLimitError(event) && attempt < RETRY_DELAYS_MS.length
             && !input.options.forkSession && (!(madeProgress || steered) || sessionId || threadId) && canRetry()) {
             failure = event;
