@@ -26,7 +26,7 @@ async function setup() {
   const controls: Controls = { cfg: runtimeProfileConfig(root, 'codex'), profileConfig: profile, profile: 'codex', configPath: path,
     ownerRefreshState: 'ok', processId: 'test', refreshOwner: async () => {}, restart: async () => {}, exit: async () => {} };
   const create = () => { const m = new InboxManager(path, () => controls, rootDir); managers.push(m); return m; };
-  return { create, path, root };
+  return { create, path, root, rootDir, controls };
 }
 
 it('allows one watcher across managers, releasing the lease on stop', async () => {
@@ -95,4 +95,22 @@ it('persists GUI intake changes while off and retains them after restart', async
   expect((await loadRootConfig(path))!.profiles).toEqual(before);
   await manager.close(); const restarted = create(); await restarted.reconcile();
   expect((await restarted.view()).config.intakeScope).toBe('all');
+});
+
+it('wires the connected bot app ID and open ID into startup cleanup', async () => {
+  const { create, controls, rootDir } = await setup();
+  controls.botIdentity = { openId: 'ou_self' };
+  const { InboxStore } = await import('../../../src/inbox/store');
+  const store = new InboxStore(join(rootDir, 'inbox', 'state.json'));
+  store.data.jobs = ['cli_fixture', 'ou_self'].map((senderId, i) => ({
+    id: `self-${i}`, ownerOpenId: 'ou_owner', profile: 'codex', destination: { chatId: 'oc_group', threadId: 'omt_topic', replyTo: 'om_message' },
+    source: { chatId: 'oc_source', name: '群', type: 'group' }, state: 'queued', automatic: true, alert: true, createdAt: 1, updatedAt: 1,
+    analysisRequested: true, attention: { state: 'pending', reason: '旧输出' },
+    messages: [{ id: `om_${i}`, chatId: 'oc_source', chatName: '群', chatType: 'group', senderId, senderName: '助理', bot: true, time: 1, text: '请确认', mentions: [] }],
+  }));
+  await store.save();
+  const manager = create(); await manager.reconcile();
+  expect((await manager.view()).running).toBe(true);
+  const saved = new InboxStore(store.path); await saved.load();
+  expect(saved.data.jobs.map(j => j.state)).toEqual(['ignored', 'ignored']);
 });

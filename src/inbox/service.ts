@@ -53,6 +53,7 @@ export class InboxService {
     const key = `${this.config.executorProfile}:${this.config.ownerOpenId}`;
     if (this.store.data.ownerKey && this.store.data.ownerKey !== key) throw new Error('待办归属已改变，请为新账号使用独立状态目录');
     this.store.data.ownerKey = key;
+    this.removeSelfMessages();
     for (const job of this.store.data.jobs) {
       if (handlingState(job) === 'ignored' && (job.attention?.state !== 'quiet' || job.attention.retry || job.analysisRequested)) {
         this.ignore(job); this.touch(job);
@@ -115,7 +116,43 @@ export class InboxService {
       });
     } finally { this.modeChanges--; }
   }
+  private acceptsMessage(message: InboxMessage): boolean {
+    return !(this.io.selfSenderIds ?? []).some(id => Boolean(id) && (message.senderId === id || message.senderOpenId === id));
+  }
+  private safeSource(job: InboxJob): boolean {
+    return job.messages.length > 0 && job.messages.every(m => this.acceptsMessage(m));
+  }
+  /** Exclude restored self output before any screening, analysis or delivery. */
+  private removeSelfMessages(): void {
+    for (const job of this.store.data.jobs) {
+      const messages = job.messages.filter(m => this.acceptsMessage(m));
+      if (messages.length === job.messages.length) continue;
+      const reason = '助理自身消息，不参与筛选';
+      if (!messages.length && job.handlingState === 'ignored' && job.attention?.state === 'quiet' &&
+        job.attention.reason === reason && !job.attention.retry && !job.analysisRequested && !job.retryAt) continue;
+      if (job.state === 'running') this.controller?.abort();
+      job.analysisRequested = false; job.retryAt = undefined; job.dueAt = undefined;
+      job.notificationSuppressed = true; job.error = undefined;
+      job.draftStale = Boolean(job.result || job.replyDraft);
+      if (!messages.length) {
+        // Keep historical messages for audit, but never schedule them again.
+        this.ignore(job); job.attention = { state: 'quiet', reason };
+      } else {
+        job.messages = messages; job.alert = messages.some(m => classifyMessage(m) === 'alert');
+        if (!resolved(job)) {
+          job.state = 'waiting'; job.attention = { state: 'pending', reason: '已排除助理自身消息，重新筛选' };
+          job.notificationSuppressed = false; job.notifiedAt = undefined;
+        }
+      }
+      this.touch(job);
+    }
+    if (this.store.data.notificationOutbox?.jobs.some(entry => {
+      const job = this.store.data.jobs.find(j => j.id === entry.id);
+      return !job || !this.safeSource(job) || signature(job) !== entry.signature;
+    })) this.store.data.notificationOutbox = undefined;
+  }
   private acceptsSource(job: InboxJob): boolean {
+    if (!this.safeSource(job)) return false;
     return job.source.type === 'p2p' ? this.config.watchPrivate : this.config.watchMentions &&
       (intakeScope(this.config) === 'all' || job.intakeTrigger === 'mention' || job.messages.some(m => m.mentions.includes(this.config.ownerOpenId)));
   }
@@ -152,14 +189,15 @@ export class InboxService {
       const replay = requestId && this.store.data.jobs.find(j => j.manualRequestId === requestId || j.manualRequestIds?.includes(requestId));
       if (replay) {
         if (replay.source.chatId !== chatId) throw new Error('request ID already used');
+        if (!this.safeSource(replay)) throw new Error('助理自身消息不可处理');
         return structuredClone(replay);
       }
       await this.io.checkOwner(this.config.ownerOpenId);
       const source = await this.io.source(chatId);
-      let messages = await this.io.context(chatId, this.now() - this.config.contextMinutes * 60_000, this.now());
-      if (!messages.length && !this.stopped) messages = await this.io.context(chatId, this.now() - 86400_000, this.now());
+      let messages = (await this.io.context(chatId, this.now() - this.config.contextMinutes * 60_000, this.now())).filter(m => this.acceptsMessage(m));
+      if (!messages.length && !this.stopped) messages = (await this.io.context(chatId, this.now() - 86400_000, this.now())).filter(m => this.acceptsMessage(m));
       this.assertEnabled();
-      if (!messages.length) throw new Error('最近一天没有可读取的消息');
+      if (!messages.length) throw new Error('最近一天没有可处理的非助理消息');
       messages = boundMessages(messages, this.config.maxContextChars);
       const ids = messages.map(m => m.id).sort().join(',');
       const submitted = this.store.data.jobs.find(j => j.source.chatId === chatId && ['running', 'ready', 'done', 'queued'].includes(j.state) &&
@@ -195,6 +233,7 @@ export class InboxService {
       if (!['process', 'claim', 'ignore'].includes(action)) throw new Error('invalid action');
       if (resolved(job)) return;
       if (action === 'process') {
+        if (!this.safeSource(job)) throw new Error('助理自身消息不可处理');
         if (job.state === 'running') return;
         if (job.state === 'queued') { job.automatic = false; job.analysisRequested = true; await this.store.save(); return; }
         job.state = 'queued'; job.automatic = false; job.analysisRequested = true;
@@ -230,6 +269,7 @@ export class InboxService {
       if (!job) throw new Error('待办不存在或已归档');
       if (job.lastReviewRequestId === requestId) return structuredClone(job);
       if ((job.revision ?? 0) !== input.revision) throw new Error('事项已更新，草稿未覆盖，请核对最新内容后重试');
+      if (input.handlingState === 'open' && !this.safeSource(job)) throw new Error('助理自身消息不可恢复');
       const before = structuredClone(job);
       if (job.state === 'running') this.controller?.abort();
       if (['notifying', 'queued', 'running', 'ready'].includes(job.state)) job.state = 'waiting';
@@ -292,6 +332,7 @@ export class InboxService {
     await this.serial(async () => {
       if (this.blocked()) return;
       try {
+        this.removeSelfMessages();
         const now = this.now();
         // Deep results are read in the workbench. No pending, progress or failure posts.
         for (const job of this.store.data.jobs) {
@@ -313,7 +354,7 @@ export class InboxService {
         await this.store.save();
       } catch (e) { this.lastError = e instanceof Error ? e.message : 'inbox poll failed'; }
       if (!this.running && !this.blocked()) {
-        const next = this.store.data.jobs.find(j => j.state === 'queued' && j.analysisRequested && !resolved(j));
+        const next = this.store.data.jobs.find(j => this.safeSource(j) && j.state === 'queued' && j.analysisRequested && !resolved(j));
         if (next) {
           next.state = 'running'; next.attempt = (next.attempt ?? 0) + 1; await this.store.save();
           if (this.blocked()) { next.state = 'waiting'; next.analysisRequested = false; await this.store.save(); return; }
@@ -352,7 +393,7 @@ export class InboxService {
     this.store.data.jobs.push(job); return job;
   }
   private ingest(m: InboxMessage, earliest: number): void {
-    if (m.time < Math.max(earliest, this.store.data.cursors.intakeSince ?? 0) ||
+    if (!this.acceptsMessage(m) || m.time < Math.max(earliest, this.store.data.cursors.intakeSince ?? 0) ||
       (m.chatType === 'p2p' ? !this.config.watchPrivate : !this.config.watchMentions) || m.chatId === this.config.destination.chatId) return;
     const known = this.store.data.jobs.flatMap(j => j.messages).find(x => x.id === m.id);
     if (known ? known.text === m.text : this.store.data.seen[m.id]) return;
@@ -399,7 +440,8 @@ export class InboxService {
       .finally(() => { this.running = undefined; this.controller = undefined; });
   }
   private async triage(jobs: InboxJob[], signal: AbortSignal): Promise<void> {
-    const inputs = structuredClone(jobs);
+    const inputs = structuredClone(jobs.filter(job => this.safeSource(job)));
+    if (!inputs.length) return;
     for (const job of inputs) this.triageProgress.set(job.id, { signature: signature(job), progress: { startedAt: this.now(), updatedAt: this.now(), text: '' } });
     try {
       let results: Awaited<ReturnType<NonNullable<InboxIO['triage']>>> = [];
@@ -486,9 +528,10 @@ export class InboxService {
   private async run(job: InboxJob, signal: AbortSignal): Promise<void> {
     let revision = job.revision ?? 0;
     try {
+      if (!this.safeSource(job)) throw new Error('助理自身消息不可处理');
       await this.io.checkOwner(this.config.ownerOpenId);
       const context = await this.io.context(job.source.chatId, job.messages[0]!.time - this.config.contextMinutes * 60_000, this.now());
-      const relevant = job.source.threadId ? context.filter(m => m.threadId === job.source.threadId) : context;
+      const relevant = context.filter(m => this.acceptsMessage(m) && (!job.source.threadId || m.threadId === job.source.threadId));
       if (job.automatic && relevant.some(m => m.senderId === this.config.ownerOpenId && compareMessages(m, job.messages.at(-1)!) > 0 &&
         (job.source.type === 'p2p' || Boolean(job.source.threadId) || job.messages.some(x => x.id === m.parentId)))) {
         await this.serial(async () => { if (job.state === 'running' && (job.revision ?? 0) === revision) { job.state = 'claimed'; job.handlingState = 'handled'; this.touch(job); } await this.store.save(); }); return;

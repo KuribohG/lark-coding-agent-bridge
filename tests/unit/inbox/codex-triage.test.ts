@@ -2,6 +2,7 @@ import { expect, it, vi } from 'vitest';
 import type { InboxJob } from '../../../src/inbox/types';
 import { triageFailureReason, triageWithChatTools } from '../../../src/inbox/codex-triage';
 import { InboxReadTools, INBOX_READ_TOOLS } from '../../../src/inbox/read-tools';
+import { analysisBody, requestInboxResponse } from '../../../src/inbox/analyzer';
 
 const job = (id: string): InboxJob => ({ id, ownerOpenId: 'ou_owner', source: { chatId: 'oc_source', name: 'test', type: 'p2p' }, messages: [] } as unknown as InboxJob);
 const answer = (id: string, state = 'quiet') => ({ id, state, reason: '具体事实', priority: 'normal' });
@@ -25,6 +26,9 @@ it('advertises only read-only Lark functions, with fixed flash model and origina
   expect(body).toMatchObject({ model: 'deepseek-flash', tools: INBOX_READ_TOOLS, tool_choice: 'auto', store: false });
   expect(body.tools.map((t: { type: string }) => t.type)).toEqual(Array(7).fill('function'));
   expect(body).not.toHaveProperty('cwd');
+  expect(body).not.toHaveProperty('max_output_tokens');
+  expect(body).not.toHaveProperty('max_tokens');
+  expect(analysisBody(job('a'), provider)).not.toHaveProperty('max_output_tokens');
   expect(provider.model).toBe('default-model');
   expect(f.call).not.toHaveBeenCalled();
 });
@@ -36,6 +40,66 @@ it('executes validated chat reads and returns call outputs to the next model rou
   expect(f.call).toHaveBeenCalledWith(['im', '+threads-messages-list', '--thread=omt_topic', '--order=asc', '--page-size=50', '--as=user', '--no-reactions'], expect.any(AbortSignal));
   const second = JSON.parse(String(request.mock.calls[1]![1]!.body));
   expect(second.input).toContainEqual({ type: 'function_call_output', call_id: 'call_1', output: JSON.stringify({ messages: [], hasMore: false, nextPageToken: null, truncated: false }) });
+});
+
+it('repairs unquoted ISO timestamps from the observed failure before validating and dispatching the read', async () => {
+  const f = fixture();
+  const broken = { ...toolCall('read_chat_messages'), arguments: '{"chatId":"oc_source","start":2026-10-15T00:00:00.000Z,"end":2026-10-15T01:00:00.000Z,"pageToken":null}' };
+  const request = vi.fn<typeof fetch>().mockResolvedValueOnce(response([broken])).mockResolvedValueOnce(response([message()]));
+  expect(await run(f.tools, request)).toEqual([answer('a')]);
+  expect(f.call).toHaveBeenCalledWith(expect.arrayContaining(['--chat-id=oc_source', '--start=2026-10-15T00:00:00.000Z', '--end=2026-10-15T01:00:00.000Z']), expect.any(AbortSignal));
+});
+
+it('lets the model correct a schema error without dispatching the invalid read', async () => {
+  const f = fixture();
+  const broken = { ...toolCall(), arguments: '{threadId:42, pageToken:null,}' };
+  const request = vi.fn<typeof fetch>().mockResolvedValueOnce(response([broken]))
+    .mockResolvedValueOnce(response([toolCall('read_thread_messages', { threadId: 'omt_topic' }, 'corrected')]))
+    .mockResolvedValueOnce(response([message()]));
+  expect(await run(f.tools, request)).toEqual([answer('a')]);
+  expect(f.call).toHaveBeenCalledTimes(1);
+  const feedback = JSON.parse(String(request.mock.calls[1]![1]!.body)).input.find((v: { type: string }) => v.type === 'function_call_output');
+  expect(JSON.parse(feedback.output)).toMatchObject({ error: 'invalid_arguments' });
+});
+
+it('bounds schema corrections and rejects unauthorized tools even with repairable arguments', async () => {
+  const f = fixture(); let round = 0;
+  const request = vi.fn<typeof fetch>(async () => response([{ ...toolCall('read_thread_messages', {}, `call_${++round}`), arguments: '{threadId:42}' }]));
+  await expect(run(f.tools, request)).rejects.toThrow('纠正次数');
+  expect(request).toHaveBeenCalledTimes(3); expect(f.call).not.toHaveBeenCalled();
+  const unsafe = { ...toolCall('exec_command', {}, 'unsafe'), arguments: '{command:"pwd",}' };
+  await expect(run(f.tools, vi.fn(async () => response([toolCall(), unsafe])))).rejects.toThrow('不允许');
+  expect(f.call).not.toHaveBeenCalled();
+});
+
+it('repairs result punctuation and defaults only omitted priority while retaining result integrity checks', async () => {
+  const m = (text: string) => ({ type: 'message', content: [{ type: 'output_text', text }] });
+  expect(await run(fixture().tools, vi.fn(async () => response([m("{items:[{id:'a',state:'quiet',reason:'无需动作',},],}")]))))
+    .toEqual([{ id: 'a', state: 'quiet', reason: '无需动作', priority: 'normal' }]);
+  for (const text of ["{items:[{id:'a',state:'quiet'}]}", "{items:[{id:'a',state:'wrong',reason:'x'}]}",
+    "{items:[{id:'a',state:'quiet',reason:'x',priority:'critical'}]}", "{items:[{id:'a',state:'quiet',reason:'x'},{id:'a',state:'quiet',reason:'x'}]}"]) {
+    await expect(run(fixture().tools, vi.fn(async () => response([m(text)])))).rejects.toThrow();
+  }
+});
+
+it('accepts a long reasoning stream without a cumulative size cap or reasoning previews', async () => {
+  const progress = vi.fn();
+  const reasoning = `data: ${JSON.stringify({ type: 'response.reasoning_text.delta', delta: 'x'.repeat(1000) })}\n\n`;
+  const final = `data: ${JSON.stringify({ type: 'response.completed', response: { status: 'completed', output: [message()] } })}\n\n`;
+  const raw = reasoning.repeat(2200) + final;
+  expect(raw.length).toBeGreaterThan(2_000_000);
+  const result = await requestInboxResponse({}, provider, new AbortController().signal,
+    vi.fn(async () => new Response(raw, { headers: { 'content-type': 'text/event-stream' } })), progress);
+  expect(result.status).toBe('completed'); expect(progress).not.toHaveBeenCalled();
+});
+
+it('still rejects an oversized individual event and a provider-truncated response', async () => {
+  const event = 'data: ' + 'x'.repeat(2_000_001);
+  await expect(requestInboxResponse({}, provider, new AbortController().signal,
+    vi.fn(async () => new Response(event, { headers: { 'content-type': 'text/event-stream' } })))).rejects.toThrow('事件超出限制');
+  const raw = `data: ${JSON.stringify({ type: 'response.incomplete', response: { status: 'incomplete', output: [message()] } })}\n\n`;
+  await expect(requestInboxResponse({}, provider, new AbortController().signal,
+    vi.fn(async () => new Response(raw, { headers: { 'content-type': 'text/event-stream' } })))).rejects.toThrow('未完成');
 });
 
 it('validates cross-domain calls in the whole response before dispatching any', async () => {
