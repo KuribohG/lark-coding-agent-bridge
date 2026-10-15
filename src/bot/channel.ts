@@ -1217,6 +1217,22 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 
   try {
     if (cotEnabled) {
+      let latestState: RunState = initialState;
+      let producerStarted = false;
+      let markdownCtrl: { setContent(markdown: string): Promise<void> } | undefined;
+      let renderDone!: Promise<RunState>;
+      let degradedNotice: Promise<void> | undefined;
+      const progress = createLazyProgressStream(scope, 'markdown', () =>
+        channel.stream(chatId, {
+          markdown: async (ctrl) => {
+            producerStarted = true;
+            if (progress.abandoned()) return;
+            markdownCtrl = ctrl;
+            await ctrl.setContent(renderText(filterForPrefs(latestState), cardRenderOptions));
+            await renderDone;
+          },
+        }, sendOpts),
+      );
       const cotPublisher = new CotPublisher({
         client: cotClient,
         chatId,
@@ -1228,35 +1244,53 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         runId: execution.runId,
         scope,
         inputPreview: lastMsg.content,
+        onDegraded: (reason) => {
+          // Switch while the run is active, even if it is silent during backoff.
+          degradedNotice = sendCotDegradedNotice({ channel, chatId, scope, sendOpts, reason,
+            running: latestState.terminal === 'running' });
+          if (latestState.terminal === 'running') progress.ensureOpen();
+        },
       });
       await cotPublisher.start();
       if (!cotPublisher.disabled) {
         const cotDone = consumeCotEvents(execution.subscribe(), cotPublisher, {
           detail: cotMessages,
         });
-        const finalState = await processAgentStream(
+        renderDone = processAgentStream(
           handle,
           eventStream,
           scope,
           idleTimeoutMs,
           recordSession,
-          async () => {},
+          async (state) => {
+            latestState = state;
+            if (!markdownCtrl || progress.abandoned()) return;
+            try {
+              await markdownCtrl.setContent(renderText(filterForPrefs(state), cardRenderOptions));
+            } catch (err) {
+              progress.abandon();
+              log.fail('stream', err, { mode: 'markdown', step: 'cot-fallback-update' });
+            }
+          },
         );
+        const progressDone = awaitRenderAwareStream({
+          mode: 'markdown', progress, renderDone,
+          producerStarted: () => producerStarted,
+          fallback: async () => { progress.abandon(); },
+        }).catch((err) => {
+          progress.abandon();
+          log.fail('stream', err, { mode: 'markdown', step: 'cot-fallback' });
+        });
+        const finalState = await renderDone;
         await cotDone;
-        if (cotPublisher.degradedReason) {
-          await sendCotDegradedNotice({
-            channel,
-            chatId,
-            scope,
-            sendOpts,
-            reason: cotPublisher.degradedReason,
-          });
-        }
+        await progressDone;
+        await degradedNotice;
+        await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(finalState), scope);
         await sendFinalReply({
           channel,
           chatId,
           scope,
-          state: finalAnswerOnlyState(finalState),
+          state: finalReplyState(progress, finalState),
           replyMode,
           sendOpts,
           cardRenderOptions,
@@ -1649,6 +1683,7 @@ async function sendCotDegradedNotice(input: {
   scope: string;
   sendOpts: { replyTo: string; replyInThread?: boolean };
   reason: string;
+  running: boolean;
 }): Promise<void> {
   log.warn('cot', 'degraded', {
     scope: input.scope,
@@ -1658,7 +1693,9 @@ async function sendCotDegradedNotice(input: {
   try {
     await input.channel.send(
       input.chatId,
-      { markdown: 'COT 过程消息更新失败，已停止展示过程；最终答案仍会继续发送。' },
+      { markdown: input.running
+        ? '过程消息更新中断，任务仍在执行。正在切换进度显示，最终答复会单独发送。'
+        : '过程消息更新中断，最终答复会单独发送。' },
       input.sendOpts,
     );
   } catch (err) {

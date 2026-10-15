@@ -105,6 +105,8 @@ export function retryingRun(input: {
         if (!canRetry()) break;
         current = input.agent.run(options);
         waiting = false;
+        log.info('run', 'rate-limit-retry-started', { runId: input.options.runId, agent: input.agent.id,
+          attempt, maxAttempts: RETRY_DELAYS_MS.length });
         yield { type: 'retry', attempt, maxAttempts: RETRY_DELAYS_MS.length, delayMs: 0 };
       }
       finish();

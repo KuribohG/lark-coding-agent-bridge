@@ -1,9 +1,32 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { consumeCotEvents, CotClient, CotPublisher, cotBriefToolTitle, finalAnswerOnlyState } from '../../../src/bot/cot.js';
 import type { AgentEvent } from '../../../src/agent/types.js';
 import type { RunState } from '../../../src/card/run-state.js';
 
 describe('COT event mapping', () => {
+  it('uses distinct process message ids when progress resets the retry count', async () => {
+    const client = new FakeCotClient();
+    const publisher = new CotPublisher({ client, chatId: 'oc_chat', originMessageId: 'om_origin',
+      runId: 'retry-reset', scope: 'oc_chat', inputPreview: 'task' });
+    await publisher.start();
+    await consumeCotEvents(iterate([
+      { type: 'retry', attempt: 1, maxAttempts: 3, delayMs: 30_000 },
+      { type: 'retry', attempt: 1, maxAttempts: 3, delayMs: 0 },
+      { type: 'text', delta: 'recovered' },
+      { type: 'retry', attempt: 1, maxAttempts: 3, delayMs: 30_000 },
+      { type: 'retry', attempt: 1, maxAttempts: 3, delayMs: 0 },
+      { type: 'done', terminationReason: 'normal' },
+    ]), publisher, { detail: 'brief' });
+    const starts = client.events.filter(e => e.event_type === 'TEXT_MESSAGE_START')
+      .map(e => JSON.parse(e.content).messageId);
+    expect(new Set(starts).size).toBe(starts.length);
+    expect(client.events.filter(e => e.event_type === 'TEXT_MESSAGE_CONTENT')
+      .map(e => JSON.parse(e.content).delta).filter(delta => delta.includes('重试'))).toEqual([
+      '⏳ API 限流，30 秒后自动重试（1/3）', '🔄 正在自动重试（1/3）',
+      '⏳ API 限流，30 秒后自动重试（1/3）', '🔄 正在自动重试（1/3）',
+    ]);
+  });
+
   it('shows retry progress without completing the process message as an error', async () => {
     const client = new FakeCotClient();
     const publisher = new CotPublisher({ client, chatId: 'oc_chat', originMessageId: 'om_origin',
@@ -183,6 +206,7 @@ describe('COT event mapping', () => {
   it('marks the publisher degraded when COT updates fail', async () => {
     const client = new FakeCotClient();
     client.failUpdate = new Error('field validation failed');
+    const onDegraded = vi.fn();
     const publisher = new CotPublisher({
       client,
       chatId: 'oc_chat',
@@ -190,6 +214,7 @@ describe('COT event mapping', () => {
       runId: 'run-degraded',
       scope: 'oc_chat',
       inputPreview: 'run',
+      onDegraded,
     });
     await publisher.start();
 
@@ -200,6 +225,8 @@ describe('COT event mapping', () => {
 
     expect(publisher.disabled).toBe(true);
     expect(publisher.degradedReason).toBe('field validation failed');
+    expect(onDegraded).toHaveBeenCalledTimes(1);
+    expect(onDegraded).toHaveBeenCalledWith('field validation failed');
     expect(client.completed).toEqual([]);
   });
 });

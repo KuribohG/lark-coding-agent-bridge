@@ -140,6 +140,7 @@ export class CotPublisher {
   private buffer: CotEvent[] = [];
   private flushing: Promise<void> | undefined;
   private timer: NodeJS.Timeout | undefined;
+  private readonly onDegraded?: (reason: string) => void;
 
   constructor(opts: {
     client: Pick<CotClient, 'create' | 'update' | 'complete'>;
@@ -148,6 +149,7 @@ export class CotPublisher {
     runId: string;
     scope: string;
     inputPreview: string;
+    onDegraded?: (reason: string) => void;
   }) {
     this.client = opts.client;
     this.chatId = opts.chatId;
@@ -155,6 +157,7 @@ export class CotPublisher {
     this.runId = opts.runId;
     this.scope = opts.scope;
     this.inputPreview = opts.inputPreview;
+    this.onDegraded = opts.onDegraded;
   }
 
   async start(): Promise<void> {
@@ -240,7 +243,13 @@ export class CotPublisher {
       .catch((err) => {
         this.disabled = true;
         this.degradedReason = err instanceof Error ? err.message : String(err);
+        this.buffer = [];
         log.warn('cot', 'update-failed', { err: this.degradedReason });
+        try {
+          this.onDegraded?.(this.degradedReason);
+        } catch (error) {
+          log.warn('cot', 'degraded-handler-failed', { err: String(error) });
+        }
       })
       .finally(() => {
         this.flushing = undefined;
@@ -270,6 +279,7 @@ export async function consumeCotEvents(
   let textStepOpen = false;
   let textMessageOpen = false;
   let textMessageIndex = 0;
+  let retryMessageIndex = 0;
   let textMessageId: string | undefined;
   const toolBrief = new Map<string, { name: string; input: unknown }>();
   const reasoningMessageId = `reasoning-${publisher.runId}`;
@@ -281,7 +291,7 @@ export async function consumeCotEvents(
       if (evt.type === 'retry') {
         closeReasoningIfNeeded();
         closeTextIfNeeded();
-        const messageId = `retry-${publisher.runId}-${evt.attempt}-${evt.delayMs}`;
+        const messageId = `retry-${publisher.runId}-${++retryMessageIndex}`;
         publisher.enqueue('TEXT_MESSAGE_START', { messageId, role: 'assistant' });
         publisher.enqueue('TEXT_MESSAGE_CONTENT', { messageId, delta: retryStatus(evt) });
         publisher.enqueue('TEXT_MESSAGE_END', { messageId });

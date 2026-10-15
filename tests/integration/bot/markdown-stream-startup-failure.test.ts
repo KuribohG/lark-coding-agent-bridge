@@ -6,6 +6,7 @@ import type { AgentEvent } from '../../../src/agent/types.js';
 import type { FakeAgentEvents } from '../../helpers/fake-agent.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { log } from '../../../src/core/logger.js';
+import { CotClient } from '../../../src/bot/cot.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
@@ -82,6 +83,63 @@ afterEach(async () => {
 });
 
 describe('markdown stream startup failures', () => {
+  it.each([false, true])('reports COT failure during backoff and preserves retry execution (fallback fails: %s)', async failFallback => {
+    vi.spyOn(CotClient.prototype, 'create').mockResolvedValue({ cot_id: 'cot_test', message_id: 'om_cot' });
+    vi.spyOn(CotClient.prototype, 'update').mockRejectedValue(new Error('COT update timed out'));
+    vi.spyOn(CotClient.prototype, 'complete').mockResolvedValue(undefined);
+    const resumed = deferred<void>();
+    const finished = deferred<void>();
+    const visible: string[] = [];
+    const streams: unknown[] = [];
+    const h = await createHarness({ events: [], stream: async (_chatId, input, options) => {
+      streams.push(options);
+      if (failFallback) throw new Error('fallback connection failed');
+      await (input as { markdown(ctrl: { setContent(value: string): Promise<void> }): Promise<void> })
+        .markdown({ setContent: async value => { visible.push(value); } });
+    } });
+    h.profileConfig.preferences.cotMessages = 'brief';
+    const spawn = h.agent.run.bind(h.agent);
+    h.agent.run = options => {
+      const raw = spawn(options);
+      return { runId: raw.runId, waitForExit: raw.waitForExit.bind(raw),
+        stop: async () => { resumed.resolve(undefined); finished.resolve(undefined); await raw.stop(); },
+        events: { async *[Symbol.asyncIterator](): AsyncGenerator<AgentEvent> {
+          yield { type: 'retry', attempt: 2, maxAttempts: 3, delayMs: 60_000 };
+          await resumed.promise;
+          yield { type: 'retry', attempt: 2, maxAttempts: 3, delayMs: 0 };
+          yield { type: 'text', delta: 'WORK_RESUMED' };
+          await finished.promise;
+          yield { type: 'final_text', content: 'FINAL_AFTER_RETRY' };
+          yield { type: 'done', terminationReason: 'normal' };
+        } },
+      };
+    };
+    await startTestBridge(h);
+    await h.channel.handlers.message?.(message('om_retry_visibility', 'run'));
+    try {
+      // The degradation must be visible while the agent is still silent.
+      await waitFor(() => h.channel.sent.some(m => JSON.stringify(m.content).includes('过程消息更新中断')));
+      expect(JSON.stringify(h.channel.sent)).not.toContain('FINAL_AFTER_RETRY');
+      await waitFor(() => streams.length === 1);
+      expect(streams[0]).toMatchObject({ replyTo: 'om_retry_visibility' });
+      if (!failFallback) expect(visible.join('\n')).toContain('60 秒后自动重试（2/3）');
+      resumed.resolve(undefined);
+      if (!failFallback) {
+        await waitFor(() => visible.some(value => value.includes('WORK_RESUMED')));
+        expect(visible.join('\n')).toContain('正在自动重试（2/3）');
+      }
+      finished.resolve(undefined);
+      await waitFor(() => h.channel.sent.some(m => JSON.stringify(m.content).includes('FINAL_AFTER_RETRY')));
+      expect(h.channel.sent.filter(m => JSON.stringify(m.content).includes('过程消息更新中断'))).toHaveLength(1);
+      expect(h.channel.sent.filter(m => JSON.stringify(m.content).includes('FINAL_AFTER_RETRY'))).toHaveLength(1);
+      expect(visible.join('\n')).not.toContain('FINAL_AFTER_RETRY');
+      expect(h.agent.runs[0]?.stopped).toBe(false);
+    } finally {
+      resumed.resolve(undefined);
+      finished.resolve(undefined);
+    }
+  });
+
   const fileLinks = [{ localRoot: '/exports', fileBaseUrl: 'https://example.com/files/', browseBaseUrl: 'https://example.com/tree/' }];
   it.each(['claude', 'codex'] as const)('maps %s replies in every mode, including stream failure fallback', async agentKind => {
     for (const messageReply of ['text', 'markdown', 'card'] as const) {
