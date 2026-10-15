@@ -33,7 +33,7 @@ export function parseMessages(value: unknown, hint: 'p2p' | 'group' = 'group'): 
       id: str(m.message_id), chatId: str(m.chat_id), chatName: str(m.chat_name) || str(obj(m.chat_partner).name),
       chatType: m.chat_type === 'p2p' ? 'p2p' : hint,
       senderId: str(sender.id), senderName: str(sender.name), bot: sender.sender_type !== 'user',
-      time, text, threadId: str(m.thread_id) || undefined, parentId: str(m.parent_id) || undefined,
+      time, text, threadId: str(m.thread_id) || undefined, parentId: str(m.parent_id) || str(m.reply_to) || undefined,
       position: str(m.message_position) || undefined,
       link: str(m.message_app_link) || undefined, mentions,
       ...(incidentId ? { incidentId, recovered: alert.status === 'resolved' || alert.status === 'recovered' } : {}),
@@ -157,11 +157,21 @@ export class InboxLark {
       j.attention?.state !== 'needed' || j.handlingState === 'handled' || j.handlingState === 'ignored' ||
       JSON.stringify(j.destination) !== JSON.stringify(this.config.destination))) throw new Error('关注通知已失效');
     const clean = (s: string) => s.replace(/[\r\n]/g, ' ').replace(/<\/?at\b[^>]*>/gi, '').slice(0, 180);
+    if (this.config.deliveryMode === 'new_topic') {
+      for (const job of jobs) {
+        const source = [...job.messages].reverse().find(m => /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(m.link || ''))?.link;
+        const text = `待处理 · ${clean(job.source.name)}\n${clean(job.attention!.reason)}` +
+          (source ? `\n原消息：${source}` : '') +
+          `\n查看与处理：${this.config.gui.publicUrl || this.config.h5.publicUrl}#job=${job.id}`;
+        const key = createHash('sha256').update(`attention:${id}:${job.id}:${this.config.destination.chatId}`).digest('hex').slice(0, 48);
+        await this.sendNewTopic({ text }, key);
+      }
+      return;
+    }
     const text = `有 ${jobs.length} 项新事项需要你关注：\n` + jobs.map((j, i) => `${i + 1}. ${clean(j.source.name)}：${clean(j.attention!.reason)}`).join('\n') +
       `\n在工作台查看、批量处理或深入分析：${this.config.gui.publicUrl || this.config.h5.publicUrl}`;
     const key = createHash('sha256').update(`attention:${id}`).digest('hex').slice(0, 48);
-    if (this.config.deliveryMode === 'new_topic') await this.sendNewTopic({ text }, key);
-    else await this.replyTopic({ text }, key);
+    await this.replyTopic({ text }, key);
   }
   private async sendNewTopic(body: { text?: string; card?: object }, key: string): Promise<void> {
     const chatId = this.config.destination.chatId;

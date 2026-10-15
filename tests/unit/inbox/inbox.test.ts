@@ -203,8 +203,9 @@ describe('Lark boundary', () => {
   });
   it('parses mentions, thread replies and timestamp without host timezone', () => {
     const raw = { message_id: 'om_1', chat_id: 'oc_1', create_time: '2026-10-14 20:00', content: 'hello', mentions: [{ id: 'ou_owner' }], sender: { id: 'ou_sender', sender_type: 'user' } };
-    const parsed = parseMessages([{ ...raw, thread_replies: [{ ...raw, message_id: 'om_2' }] }]);
+    const parsed = parseMessages([{ ...raw, thread_replies: [{ ...raw, message_id: 'om_2', reply_to: 'om_1' }] }]);
     expect(parsed).toHaveLength(2); expect(parsed[0]?.mentions).toEqual(['ou_owner']); expect(messageTime(raw.create_time)).toBe(Date.parse('2026-10-14T12:00:00Z'));
+    expect(parsed[1]?.parentId).toBe('om_1');
   });
   it('finds recent replies even when their topic root predates the context window', async () => {
     const exec = vi.fn(async (args: string[]) => ({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data:
@@ -224,7 +225,7 @@ describe('Lark boundary', () => {
     job.destination.replyTo = 'om_evil'; await expect(cli.deliver(job, 'result')).rejects.toThrow('目标已变更');
   });
   it('bounds content while keeping latest messages', () => { const bounded = boundMessages([message({ text: 'a'.repeat(3000) }), message({ id: 'latest', time: 2_000_000, text: 'latest' })], 1000); expect(bounded.at(-1)?.id).toBe('latest'); expect(bounded.map(m => m.text).join('').length).toBeLessThanOrEqual(1000); });
-  it('publishes only qualified digests in the configured topic group with a stable retry key', async () => {
+  it('publishes only qualified items in the configured topic group with a stable retry key', async () => {
     const { service } = await setup(); await service.tick(); const job = service.list()[0]!;
     const c = config(); c.deliveryMode = 'new_topic'; c.gui.publicUrl = 'https://gui.example';
     job.attention = { state: 'needed', reason: '需要确认 <at user_id="ou_other">someone</at>' };
@@ -238,6 +239,26 @@ describe('Lark boundary', () => {
     expect(sends[0]![sends[0]!.indexOf('--text') + 1]).not.toContain('<at');
     job.attention.state = 'uncertain'; await expect(cli.notifyAttention([job], 'bad')).rejects.toThrow('失效');
     expect(exec).toHaveBeenCalledTimes(4);
+  });
+  it('opens a separate topic per item and preserves each key on a partially failed retry', async () => {
+    const { service } = await setup(); await service.tick();
+    const c = config(); c.deliveryMode = 'new_topic'; c.gui.publicUrl = 'https://gui.example';
+    const first = service.list()[0]!; first.attention = { state: 'needed', reason: '评估依赖' };
+    const second = { ...structuredClone(first), id: 'second', attention: { state: 'needed' as const, reason: '确认方案' } };
+    let sends = 0;
+    const exec = vi.fn(async (args: string[]) => {
+      if (args.includes('+messages-send') && ++sends === 2) throw Error('network');
+      return { code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data: { chat_mode: 'topic' } }) };
+    });
+    const cli = new InboxLark({ profile: 'codex' }, c, exec);
+    await expect(cli.notifyAttention([first, second], 'batch')).rejects.toThrow('network');
+    await cli.notifyAttention([first, second], 'batch');
+    const calls = exec.mock.calls.map(([args]) => args).filter(args => args.includes('+messages-send'));
+    const keys = calls.map(args => args[args.indexOf('--idempotency-key') + 1]);
+    expect(keys[0]).not.toBe(keys[1]); expect(keys.slice(2)).toEqual(keys.slice(0, 2));
+    expect(calls[0]![calls[0]!.indexOf('--text') + 1]).toContain(`#job=${first.id}`);
+    expect(calls[1]![calls[1]!.indexOf('--text') + 1]).toContain('#job=second');
+    expect(exec.mock.calls.some(([args]) => args.includes('+messages-reply'))).toBe(false);
   });
   it('does not fall back to a thread or source chat when the result group is not a topic group', async () => {
     const { service } = await setup(); await service.tick();
