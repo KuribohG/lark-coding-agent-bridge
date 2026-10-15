@@ -116,6 +116,7 @@ export class InboxManager {
       const lark = new InboxLark({ profile: config.executorProfile, rootDir: this.rootDir }, config);
       this.lark = lark;
       const agent = createRuntimeAgent(controls.profileConfig, { ...paths, configPath: this.configPath });
+      if (controls.botIdentity) agent.setBotIdentity?.(controls.botIdentity);
       const readTools = new InboxReadTools(async (args, signal) => {
         const reader = new InboxLark({ profile: config.executorProfile, rootDir: this.rootDir }, config);
         const cancel = () => reader.close();
@@ -128,6 +129,7 @@ export class InboxManager {
         } finally { signal.removeEventListener('abort', cancel); reader.close(); }
       });
       this.service = new InboxService(new InboxStore(join(folder, 'state.json')), config, {
+        selfSenderIds: [controls.cfg.accounts.app.id, controls.botIdentity?.openId].filter((id): id is string => Boolean(id)),
         cancel: () => lark.close(),
         cancelPending: () => lark.cancelPending(),
         checkOwner: id => lark.checkOwner(id), collect: (...args) => lark.collect(...args), context: (...args) => lark.context(...args),

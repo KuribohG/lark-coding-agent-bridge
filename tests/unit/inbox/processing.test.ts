@@ -143,7 +143,7 @@ it('runs a fresh Flash agent in an item workspace, returning only final structur
   const workspace = await mkdtemp(join(tmpdir(), 'inbox-agent-'));
   expect(await processInbox(job, agent, workspace, '所属用户背景', new AbortController().signal)).toEqual(result);
   const opts = vi.mocked(agent.run).mock.calls[0]![0];
-  expect(opts).toMatchObject({ model: 'deepseek-flash', cwd: join(workspace, 'inbox', job.id) });
+  expect(opts).toMatchObject({ model: 'deepseek-flash', reasoningEffort: 'max', cwd: join(workspace, 'inbox', job.id) });
   expect(opts.threadId).toBeUndefined(); expect(opts.sessionId).toBeUndefined();
   expect(opts.prompt).toContain('不要向任何人发消息'); expect(opts.prompt).toContain('replyDraft');
   expect(run.stop).not.toHaveBeenCalled();

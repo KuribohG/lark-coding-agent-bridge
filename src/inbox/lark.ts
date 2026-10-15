@@ -33,7 +33,7 @@ export function parseMessages(value: unknown, hint: 'p2p' | 'group' = 'group'): 
     if (str(m.message_id) && str(m.chat_id) && Number.isFinite(time)) messages.push({
       id: str(m.message_id), chatId: str(m.chat_id), chatName: str(m.chat_name) || str(obj(m.chat_partner).name),
       chatType: m.chat_type === 'p2p' ? 'p2p' : hint,
-      senderId: str(sender.id), senderName: str(sender.name), bot: sender.sender_type !== 'user',
+      senderId: str(sender.id), senderOpenId: str(sender.open_bot_id) || undefined, senderName: str(sender.name), bot: sender.sender_type !== 'user',
       time, text, threadId: str(m.thread_id) || undefined, parentId: str(m.parent_id) || undefined,
       position: str(m.message_position) || undefined,
       link: str(m.message_app_link) || undefined, mentions,

@@ -2,7 +2,7 @@ import type { InboxConfig } from './config';
 
 export interface InboxMessage {
   id: string; chatId: string; chatName: string; chatType: 'p2p' | 'group';
-  senderId: string; senderName: string; bot: boolean;
+  senderId: string; senderOpenId?: string; senderName: string; bot: boolean;
   time: number; text: string; threadId?: string; parentId?: string; link?: string;
   position?: string;
   mentions: string[];
@@ -67,6 +67,8 @@ export interface InboxState {
 }
 
 export interface InboxIO {
+  /** Trusted app/open IDs of this bridge bot; never the human owner ID. */
+  selfSenderIds?: readonly string[];
   cancel?(): void;
   cancelPending?(): void;
   checkOwner(owner: string): Promise<void>;
