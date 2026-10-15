@@ -32,18 +32,16 @@ async function setup(overrides: Partial<InboxIO> = {}) {
 async function settle(s: InboxService) { for (let i = 0; i < 10; i++) { await new Promise(r => setTimeout(r, 10)); if (!s.list().some(j => j.state === 'running')) return; } }
 
 describe('durable inbox', () => {
-  it('starts countdown only after successful notification and does not analyze on collection', async () => {
+  it('never starts deep analysis or pending notifications without a click, even after hours', async () => {
     const { service, io, advance } = await setup(); await service.tick();
-    expect(service.list()[0]?.state).toBe('notifying'); expect(io.analyze).not.toHaveBeenCalled();
-    advance(61_000); await service.tick(); expect(service.list()[0]?.dueAt).toBe(1_121_000);
-    advance(61_000); await service.tick(); await settle(service); await service.tick();
-    expect(service.list()[0]?.state).toBe('done'); expect(io.analyze).toHaveBeenCalledTimes(1);
-    expect(service.list()[0]?.inputTokens).toBe(100);
+    advance(3600_000); await service.tick(); await settle(service);
+    expect(service.list()[0]?.state).toBe('waiting'); expect(service.list()[0]?.dueAt).toBeUndefined();
+    expect(io.analyze).not.toHaveBeenCalled(); expect(io.deliver).not.toHaveBeenCalled();
   });
-  it('keeps notification failure pending, without starting its timer', async () => {
-    const { service, advance } = await setup({ deliver: vi.fn(async () => { throw new Error('offline'); }) });
-    await service.tick(); advance(61_000); await service.tick();
-    expect(service.list()[0]?.state).toBe('notifying'); expect(service.list()[0]?.dueAt).toBeUndefined();
+  it('shows unavailable triage as uncertain without posting or running deep analysis', async () => {
+    const { service, io, advance } = await setup(); await service.tick(); advance(61_000); await service.tick();
+    expect(service.list()[0]?.attention?.state).toBe('uncertain'); expect(io.deliver).not.toHaveBeenCalled();
+    expect(io.analyze).not.toHaveBeenCalled();
   });
   it('deduplicates polls and repeated manual submissions', async () => {
     const { service, io, advance } = await setup(); await service.tick(); advance(61_000); await service.tick();
@@ -80,15 +78,15 @@ describe('durable inbox', () => {
     const { service } = await setup(); await service.tick();
     await expect(service.decide(service.list()[0]!.id, 'process', 'ou_other')).rejects.toThrow('forbidden');
   });
-  it('serializes timeout/click race and counts one analysis', async () => {
+  it('serializes poll/click race and counts one analysis', async () => {
     const { service, io, advance } = await setup(); await service.tick(); advance(61_000); await service.tick(); advance(61_000);
-    await Promise.all([service.tick(), service.decide(service.list()[0]!.id, 'process', 'ou_owner')]); await settle(service);
+    await Promise.all([service.tick(), service.decide(service.list()[0]!.id, 'process', 'ou_owner')]); await service.tick(); await settle(service);
     expect(io.analyze).toHaveBeenCalledTimes(1);
   });
-  it('keeps daily limit and waiting countdown across restart', async () => {
+  it('preserves stored usage across restart without reviving a countdown', async () => {
     const { service, store, advance } = await setup(); await service.tick(); advance(61_000); await service.tick();
     store.data.autoUsage['1970-01-01'] = 20; await store.save(); const resumed = new InboxStore(store.path); await resumed.load();
-    expect(resumed.data.jobs[0]?.dueAt).toBe(1_121_000); expect(resumed.data.autoUsage['1970-01-01']).toBe(20);
+    expect(resumed.data.jobs[0]?.dueAt).toBeUndefined(); expect(resumed.data.autoUsage['1970-01-01']).toBe(20);
     advance(61_000); await service.tick(); expect(service.list()[0]?.state).toBe('waiting');
   });
   it('does not turn interrupted runs into duplicate model calls', async () => {
@@ -115,21 +113,21 @@ describe('durable inbox', () => {
     expect(io.collect).not.toHaveBeenCalled(); expect(io.analyze).not.toHaveBeenCalled();
     expect(service.list()[0]?.state).toBe('waiting');
     await expect(service.manual('oc_source')).rejects.toThrow('关闭');
-    await service.setMode('auto'); await service.tick();
+    await service.setMode('on'); await service.tick();
     expect(io.analyze).not.toHaveBeenCalled(); // suspended jobs require an explicit click
     await service.decide(job.id, 'process', 'ou_owner'); await service.tick(); await settle(service);
     expect(io.analyze).toHaveBeenCalledTimes(1);
     expect(store.data.jobs[0]?.result).toBe('建议回复');
   });
-  it('manual mode blocks overdue and already queued automatic work, but accepts explicit processing', async () => {
+  it('enabled mode blocks legacy overdue and already queued automatic work, but accepts explicit processing', async () => {
     const { service, io, store, advance } = await setup(); await service.tick();
     store.data.jobs[0]!.state = 'queued';
-    await service.setMode('manual'); advance(3600_000); await service.tick();
+    await service.setMode('on'); advance(3600_000); await service.tick();
     expect(io.analyze).not.toHaveBeenCalled(); expect(io.collect).toHaveBeenCalled();
     await service.decide(store.data.jobs[0]!.id, 'process', 'ou_owner'); await service.tick(); await settle(service);
     expect(io.analyze).toHaveBeenCalledTimes(1);
   });
-  it('never dispatches legacy queued automatic work after a restart in manual mode', async () => {
+  it('never dispatches legacy queued automatic work after a restart', async () => {
     const { service, io, store } = await setup(); await service.tick();
     store.data.jobs[0]!.state = 'queued'; service.config.autoAnalyze = false;
     await service.tick(); expect(io.analyze).not.toHaveBeenCalled();
@@ -141,12 +139,12 @@ describe('durable inbox', () => {
     const off = service.setMode('off'); finish([message()]); await tick; await off;
     expect(service.list()).toHaveLength(0); expect(io.analyze).not.toHaveBeenCalled();
   });
-  it.each(['off', 'manual'] as const)('aborts automatic analysis in %s mode and discards late output', async mode => {
+  it('aborts clicked analysis when turned off and discards late output', async () => {
     let finish!: (r: { text: string; inputTokens: number; outputTokens: number }) => void;
     const { service, io, store } = await setup({ analyze: vi.fn(() => new Promise<{ text: string; inputTokens: number; outputTokens: number }>(r => { finish = r; })) });
-    await service.tick(); store.data.jobs[0]!.state = 'queued'; await service.tick();
+    await service.manual('oc_source'); await service.tick();
     await vi.waitFor(() => expect(finish).toBeDefined());
-    const signal = vi.mocked(io.analyze).mock.calls[0]![1]; await service.setMode(mode);
+    const signal = vi.mocked(io.analyze).mock.calls[0]![1]; await service.setMode('off');
     expect(signal.aborted).toBe(true);
     finish({ text: 'obsolete', inputTokens: 1, outputTokens: 1 }); await settle(service); await service.tick();
     expect(service.list()[0]?.state).toBe('waiting'); expect(service.list()[0]?.result).toBeUndefined();
@@ -154,8 +152,8 @@ describe('durable inbox', () => {
   });
   it('reports persistence failure without claiming a mode change succeeded', async () => {
     const { service } = await setup();
-    await expect(service.setMode('manual', async () => { throw new Error('disk failure'); })).rejects.toThrow('disk failure');
-    expect(service.config.autoAnalyze).toBe(true);
+    await expect(service.setMode('on', async () => { throw new Error('disk failure'); })).rejects.toThrow('disk failure');
+    expect(service.config.autoAnalyze).toBe(false);
   });
   it('preserves global inbox settings through root serialization', async () => {
     const path = join(await mkdtemp(join(tmpdir(), 'inbox-config-')), 'config.json');
@@ -219,37 +217,34 @@ describe('Lark boundary', () => {
   it('never uses source chat as output target, and emits text rather than parsing remote images', async () => {
     const { service } = await setup(); await service.tick(); const job = service.list()[0]!;
     const exec = vi.fn(async (_args: string[]) => ({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data: { messages: [{ message_id: 'om_anchor', chat_id: 'oc_target', thread_id: 'omt_topic', create_time: '2026-10-14 20:00', sender: { sender_type: 'user' }, content: '' }] } }) }));
-    const cli = new InboxLark({ profile: 'codex' }, config(), exec); await cli.deliver(job, 'progress');
+    const cli = new InboxLark({ profile: 'codex' }, config(), exec);
+    job.attention = { state: 'needed', reason: '需要确认发布日期' }; await cli.notifyAttention([job], 'digest');
     const args = exec.mock.calls[1]![0]; expect(args).toContain('--reply-in-thread'); expect(args).toContain('om_anchor'); expect(args).toContain('bot'); expect(args).toContain('--text'); expect(args).not.toContain('--markdown');
-    expect(args[args.indexOf('--text') + 1]).toContain('源会话'); expect(args[args.indexOf('--text') + 1]).toContain('oc_source');
+    expect(args[args.indexOf('--text') + 1]).toContain('源会话'); expect(args[args.indexOf('--text') + 1]).toContain('需要确认发布日期');
     job.destination.replyTo = 'om_evil'; await expect(cli.deliver(job, 'result')).rejects.toThrow('目标已变更');
   });
   it('bounds content while keeping latest messages', () => { const bounded = boundMessages([message({ text: 'a'.repeat(3000) }), message({ id: 'latest', time: 2_000_000, text: 'latest' })], 1000); expect(bounded.at(-1)?.id).toBe('latest'); expect(bounded.map(m => m.text).join('').length).toBeLessThanOrEqual(1000); });
-  it('publishes results and reminders as new roots in the configured topic group', async () => {
+  it('publishes only qualified digests in the configured topic group with a stable retry key', async () => {
     const { service } = await setup(); await service.tick(); const job = service.list()[0]!;
     const c = config(); c.deliveryMode = 'new_topic'; c.gui.publicUrl = 'https://gui.example';
-    job.result = '建议回复 <at user_id="ou_other">someone</at>';
+    job.attention = { state: 'needed', reason: '需要确认 <at user_id="ou_other">someone</at>' };
     const exec = vi.fn(async (_args: string[]) => ({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data: { chat_mode: 'topic' } }) }));
     const cli = new InboxLark({ profile: 'codex' }, c, exec);
-    await cli.deliver(job, 'pending'); await cli.deliver(job, 'result'); await cli.deliver(job, 'result');
+    await cli.deliver(job, 'pending'); await cli.deliver(job, 'result'); expect(exec).not.toHaveBeenCalled();
+    await cli.notifyAttention([job], 'same'); await cli.notifyAttention([job], 'same');
     const sends = exec.mock.calls.map(([args]) => args).filter(args => args.includes('+messages-send'));
-    expect(sends).toHaveLength(3);
-    for (const args of sends) {
-      expect(args).toContain('bot'); expect(args[args.indexOf('--chat-id') + 1]).toBe('oc_target');
-      expect(args).not.toContain('--message-id'); expect(args).not.toContain('--reply-in-thread');
-      expect(args[args.indexOf('--text') + 1]).toContain('来源会话 ID：oc_source');
-      expect(args[args.indexOf('--text') + 1]).not.toContain('<at');
-    }
-    expect(sends[1]).toEqual(sends[2]);
-    expect(sends[0]![sends[0]!.indexOf('--idempotency-key') + 1]).not.toBe(sends[1]![sends[1]!.indexOf('--idempotency-key') + 1]);
-    job.destination.chatId = 'oc_other'; await expect(cli.deliver(job, 'result')).rejects.toThrow('目标已变更');
-    expect(exec).toHaveBeenCalledTimes(6);
+    expect(sends).toHaveLength(2); expect(sends[0]).toEqual(sends[1]);
+    expect(sends[0]).toEqual(expect.arrayContaining(['bot', '--chat-id', 'oc_target']));
+    expect(sends[0]![sends[0]!.indexOf('--text') + 1]).not.toContain('<at');
+    job.attention.state = 'uncertain'; await expect(cli.notifyAttention([job], 'bad')).rejects.toThrow('失效');
+    expect(exec).toHaveBeenCalledTimes(4);
   });
   it('does not fall back to a thread or source chat when the result group is not a topic group', async () => {
     const { service } = await setup(); await service.tick();
     const c = config(); c.deliveryMode = 'new_topic';
     const exec = vi.fn(async (_args: string[]) => ({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data: { chat_mode: 'group' } }) }));
-    await expect(new InboxLark({ profile: 'codex' }, c, exec).deliver(service.list()[0]!, 'result')).rejects.toThrow('不是话题群');
+    const job = service.list()[0]!; job.attention = { state: 'needed', reason: '需要确认' };
+    await expect(new InboxLark({ profile: 'codex' }, c, exec).notifyAttention([job], 'digest')).rejects.toThrow('不是话题群');
     expect(exec).toHaveBeenCalledTimes(1);
   });
   it('rejects invalid enabled configuration', () => { expect(() => validateInbox(normalizeInbox({ enabled: true }))).toThrow(); });
@@ -425,5 +420,84 @@ describe('intake scopes', () => {
     await lark.collect('group', 1_000_000, 1_060_000);
     expect(exec.mock.calls[0]![0]).toEqual(expect.arrayContaining(['--chat-type', 'group']));
     expect(exec.mock.calls[0]![0]).not.toContain('--is-at-me'); lark.close();
+  });
+});
+
+describe('lightweight attention and quiet delivery', () => {
+  const classify: NonNullable<InboxIO['triage']> = async jobs => jobs.map(j => ({ id: j.id, state: 'needed', reason: '需要本人确认日期', priority: 'normal' }));
+  async function screened(overrides: Partial<InboxIO> = {}) {
+    const s = await setup({ triage: vi.fn(classify), notifyAttention: vi.fn(async () => {}), ...overrides });
+    await s.service.tick(); s.advance(61_000); await s.service.tick();
+    return s;
+  }
+  it('uses model decisions for relevance and never starts deep work automatically', async () => {
+    const messages = [message(), message({ id: 'om_quiet', chatId: 'oc_quiet' }), message({ id: 'om_unknown', chatId: 'oc_unknown' })];
+    const triage = vi.fn<NonNullable<InboxIO['triage']>>(async jobs => jobs.map((j, i) => ({ id: j.id, state: ['needed', 'quiet', 'uncertain'][i] as 'needed' | 'quiet' | 'uncertain', reason: '模型判断', priority: 'normal' })));
+    const s = await screened({ collect: vi.fn(async () => messages), context: vi.fn(async () => []), triage });
+    await vi.waitFor(() => expect(s.service.list().filter(j => j.attention?.state === 'pending')).toHaveLength(0));
+    await s.service.tick();
+    expect(triage).toHaveBeenCalledTimes(1); expect(triage.mock.calls[0]![0]).toHaveLength(3);
+    expect(s.io.notifyAttention).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(s.io.notifyAttention!).mock.calls[0]![0]).toHaveLength(1);
+    expect(s.io.analyze).not.toHaveBeenCalled(); expect(s.io.deliver).not.toHaveBeenCalled();
+    s.advance(3600_000); await s.service.tick(); expect(s.io.notifyAttention).toHaveBeenCalledTimes(1);
+  });
+  it('persists retries with a stable digest id and never duplicates a acknowledged item', async () => {
+    const notifyAttention = vi.fn<NonNullable<InboxIO['notifyAttention']>>().mockRejectedValueOnce(Error('network')).mockResolvedValue(undefined);
+    const s = await screened({ notifyAttention });
+    await vi.waitFor(() => expect(s.service.list()[0]?.attention?.state).toBe('needed')); await s.service.tick();
+    const outbox = s.store.data.notificationOutbox!; expect(outbox.attempts).toBe(1);
+    const saved = new InboxStore(s.store.path); await saved.load(); expect(saved.data.notificationOutbox?.id).toBe(outbox.id);
+    s.advance(61_000); await s.service.tick();
+    expect(notifyAttention).toHaveBeenCalledTimes(2); expect(notifyAttention.mock.calls[0]![1]).toBe(notifyAttention.mock.calls[1]![1]);
+    expect(s.store.data.notificationOutbox).toBeUndefined();
+    s.advance(3600_000); await s.service.tick(); expect(notifyAttention).toHaveBeenCalledTimes(2);
+  });
+  it.each(['off', 'scope', 'changed', 'handled'] as const)('drops obsolete triage after %s', async action => {
+    let complete!: (value: Awaited<ReturnType<NonNullable<InboxIO['triage']>>>) => void;
+    const triage = vi.fn<NonNullable<InboxIO['triage']>>(() => new Promise(resolve => { complete = resolve; }));
+    const s = await screened({ triage }); await vi.waitFor(() => expect(complete).toBeDefined());
+    const before = s.service.list()[0]!;
+    if (action === 'off') await s.service.setMode('off');
+    if (action === 'scope') await s.service.setScope('private');
+    if (action === 'handled') await s.service.batchReview({ items: [{ id: before.id, revision: before.revision }], handlingState: 'handled' }, 'ou_owner', 'batch1');
+    if (action === 'changed') {
+      const changed = message({ text: '新问题需要重新筛选' });
+      vi.mocked(s.io.collect).mockResolvedValue([changed]); vi.mocked(s.io.context).mockResolvedValue([changed]); s.advance(61_000); await s.service.tick();
+    }
+    complete(await classify([before], new AbortController().signal)); await new Promise(r => setTimeout(r, 20));
+    expect(s.service.list()[0]?.attention?.state).not.toBe('needed'); expect(s.io.notifyAttention).not.toHaveBeenCalled();
+  });
+  it('leaves failures visible and enforces the durable triage budget', async () => {
+    const s = await screened({ triage: vi.fn(async () => { throw Error('bad response'); }) });
+    await vi.waitFor(() => expect(s.service.list()[0]?.attention?.state).toBe('uncertain'));
+    await s.service.tick(); expect(s.io.notifyAttention).not.toHaveBeenCalled();
+    expect(s.store.data.triageUsage?.['1970-01-01']).toBe(1);
+    s.service.config.dailyTriageLimit = 1; s.store.data.jobs[0]!.attention = { state: 'pending', reason: '' }; s.advance(61_000); await s.service.tick();
+    expect(s.io.triage).toHaveBeenCalledTimes(1); expect(s.service.list()[0]?.attention?.state).toBe('uncertain');
+  });
+  it('suppresses stale digest retries after a selected item is handled', async () => {
+    const s = await screened({ notifyAttention: vi.fn(async () => { throw Error('uncertain send'); }) });
+    await vi.waitFor(() => expect(s.service.list()[0]?.attention?.state).toBe('needed')); await s.service.tick();
+    const job = s.service.list()[0]!;
+    await s.service.batchReview({ items: [{ id: job.id, revision: job.revision }], handlingState: 'ignored' }, 'ou_owner', 'batch');
+    s.advance(61_000); await s.service.tick(); expect(s.io.notifyAttention).toHaveBeenCalledTimes(1);
+    expect(s.store.data.notificationOutbox).toBeUndefined();
+  });
+  it('checks every revision before an atomic batch, including off mode and replay', async () => {
+    const messages = [message(), message({ id: 'om_second', chatId: 'oc_second' })];
+    const s = await setup({ collect: vi.fn(async () => messages) }); await s.service.tick(); await s.service.setMode('off');
+    const items = s.service.list().map(j => ({ id: j.id, revision: j.revision! }));
+    await expect(s.service.batchReview({ items, handlingState: 'handled' }, 'ou_other', 'batch')).rejects.toThrow('forbidden');
+    await expect(s.service.batchReview({ items: [items[0], { ...items[1], revision: 90 }], handlingState: 'handled' }, 'ou_owner', 'batch')).rejects.toThrow('未修改');
+    expect(s.service.list().every(j => j.handlingState === 'open')).toBe(true);
+    const request = { items, handlingState: 'handled' };
+    vi.spyOn(s.store, 'save').mockRejectedValueOnce(Error('disk failure'));
+    await expect(s.service.batchReview(request, 'ou_owner', 'batch')).rejects.toThrow('disk failure');
+    expect(s.service.list().every(j => j.handlingState === 'open')).toBe(true);
+    await s.service.batchReview(request, 'ou_owner', 'batch'); await s.service.batchReview(request, 'ou_owner', 'batch');
+    expect(s.service.list().every(j => j.handlingState === 'handled' && j.revision === 1)).toBe(true);
+    const stored = new InboxStore(s.store.path); await stored.load(); expect(stored.data.jobs.every(j => j.handlingState === 'handled')).toBe(true);
+    expect(s.io.analyze).not.toHaveBeenCalled(); expect(s.io.deliver).not.toHaveBeenCalled();
   });
 });

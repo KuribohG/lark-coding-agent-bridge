@@ -113,15 +113,14 @@ it('continues across an empty chat-list page and keeps the configured output con
   expect(await lark.recent('group', 'next')).toEqual({ chats: [{ id: 'oc_source', name: '来源群' }], next: '' });
 });
 
-it('sends reminder cards only as a bot reply in the verified topic', async () => {
+it('suppresses old pending reminder cards', async () => {
   const exec = vi.fn(async (_args: string[]) => ({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data: {
     messages: [{ message_id: 'om_anchor', chat_id: 'oc_target', thread_id: 'omt_topic', create_time: '2026-10-14 20:00' }] } }) }));
   const lark = new InboxLark({ profile: 'codex' }, config(), exec);
   lark.reminderCard = () => ({ schema: '2.0', body: { elements: [] } });
   await lark.deliver({ ...job, ownerOpenId: 'ou_owner', destination: config().destination,
     messages: [{ time: 1_000_000 }], automatic: true } as InboxJob, 'pending');
-  const args = exec.mock.calls[1]![0]; expect(args).toContain('--reply-in-thread'); expect(args).toContain('bot'); expect(args).toContain('om_anchor');
-  expect(args).toContain('interactive'); expect(args).not.toContain('oc_source');
+  expect(exec).not.toHaveBeenCalled();
 });
 
 it('does not turn model or source text into structured mentions', async () => {

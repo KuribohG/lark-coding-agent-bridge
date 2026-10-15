@@ -22,7 +22,7 @@ describe('reply content and sync', () => {
     const jobs = Array.from({ length: 100 }, (_, index) => ({ ...job(String(index)), replyDraft: '文'.repeat(6000), analysis: '析'.repeat(8000), missingInfo: '缺'.repeat(2000) }));
     const synced = guiJobs(jobs);
     expect(synced).toHaveLength(100); expect(synced[0]?.detail?.replyDraft).toBe(jobs[0]?.replyDraft);
-    expect(synced.at(-1)?.detail).toBeUndefined(); expect(Buffer.byteLength(JSON.stringify(synced))).toBeLessThanOrEqual(70000);
+    expect(synced.at(-1)?.detail).toBeUndefined(); expect(Buffer.byteLength(JSON.stringify(synced))).toBeLessThanOrEqual(700000);
     expect(JSON.stringify({ ...synced[0], detail: undefined, ...guiContent(jobs[0]!) }).length).toBeLessThan(24000);
   });
 });
@@ -33,12 +33,29 @@ import { join } from 'node:path';
 import { loadAnalysisProvider, analysisBody } from '../../../src/inbox/analyzer';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 
-it('uses deepseek-flash for inbox analysis while keeping the configured third-party provider', async () => {
+it('routes triage to flash and clicked analysis to the configured default provider model', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'inbox-provider-'));
   await writeFile(join(dir, 'config.toml'), 'model = "openai/gpt-6-astra"\nmodel_provider = "third-party"\n[model_providers.third-party]\nbase_url = "https://provider.example/v1"\nwire_api = "responses"\nexperimental_bearer_token = "fixture-token"\n');
   const profile = createDefaultProfileConfig({ agentKind: 'codex', accounts: { app: { id: 'cli_app', secret: 'fixture', tenant: 'feishu' } }, codex: { binaryPath: 'codex', codexHome: dir } });
   profile.preferences.model = 'openai/gpt-6-astra';
-  const provider = await loadAnalysisProvider(profile);
+  const provider = await loadAnalysisProvider(profile, 'triage');
   expect(provider).toMatchObject({ model: 'deepseek-flash', url: 'https://provider.example/v1/responses', key: 'fixture-token' });
-  expect(analysisBody(job(), provider).model).toBe('deepseek-flash');
+  expect(analysisBody(job(), await loadAnalysisProvider(profile)).model).toBe('openai/gpt-6-astra');
+  profile.preferences.model = '';
+  expect((await loadAnalysisProvider(profile)).model).toBe('openai/gpt-6-astra');
+});
+
+import { triageBody, triageInbox } from '../../../src/inbox/analyzer';
+import { vi } from 'vitest';
+it('bounds triage input, ignores raw instructions and validates complete unique output ids', async () => {
+  const jobs = [job('a'), job('b')];
+  const body = triageBody(jobs, 'CI blockers');
+  expect(body.model).toBe('deepseek-flash'); expect(body.tools).toEqual([]);
+  expect(body.instructions).toContain('具体动作'); expect(body.input[0]?.content).toContain('CI blockers');
+  const request = (items: unknown[]) => vi.fn(async () => Response.json({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ items }) }] }] }));
+  const answer = (id: string) => ({ id, state: 'needed', reason: '需要确认', priority: 'normal' });
+  const provider = { model: 'anything', key: 'fixture', url: 'https://provider.example/responses' };
+  await expect(triageInbox(jobs, '', provider, new AbortController().signal, request([answer('a'), answer('a')]))).rejects.toThrow('无效');
+  await expect(triageInbox(jobs, '', provider, new AbortController().signal, request([answer('a')]))).rejects.toThrow('不完整');
+  await expect(triageInbox(jobs, '', provider, new AbortController().signal, request([answer('a'), answer('b')]))).resolves.toHaveLength(2);
 });

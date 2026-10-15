@@ -5,17 +5,19 @@ import type { InboxLark } from './lark';
 import type { InboxJob } from './types';
 import { obj } from './values';
 import { handlingState, replyContent } from './reply';
+import { ATTENTION_RULES } from './analyzer';
 import { inboxMode, intakeScope, type IntakeScope, type InboxMode } from './config';
 
 interface Command { id: string; action: string; target: string; expiresAt: number }
 interface Receipt { id: string; ok: boolean; result: string; time: number }
 interface Ledger { ownerKey: string; receipts: Record<string, Receipt> }
 const uuid = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i;
-const actions = new Set(['browse', 'manual', 'detail', 'process', 'claim', 'ignore', 'mode', 'review', 'scope']);
+const actions = new Set(['browse', 'manual', 'detail', 'process', 'claim', 'ignore', 'mode', 'review', 'scope', 'batch']);
 export const guiSummary = (job: InboxJob) => ({ id: job.id, name: job.source.name.slice(0, 80),
   chatId: job.source.chatId, type: job.source.type, state: job.state,
   preview: job.messages.at(-1)?.text.slice(0, 80) || '', messageCount: job.messages.length,
   updatedAt: job.updatedAt, dueAt: job.dueAt, automatic: job.automatic, alert: job.alert,
+  attention: job.attention,
   revision: job.revision ?? 0, handlingState: handlingState(job) });
 
 export function guiContent(job: InboxJob) {
@@ -36,14 +38,14 @@ export function guiContent(job: InboxJob) {
 
 /** Keep the list intact; prefetch content only while the snapshot budget permits. */
 export function guiJobs(all: InboxJob[]) {
-  const selected = all.slice(0, 100);
+  const selected = all.slice(0, 500);
   const jobs = selected.map(job => ({ ...guiSummary(job), detail: undefined as ReturnType<typeof guiContent> | undefined }));
-  while (Buffer.byteLength(JSON.stringify(jobs)) > 65000) { jobs.pop(); selected.pop(); }
+  while (Buffer.byteLength(JSON.stringify(jobs)) > 600000) { jobs.pop(); selected.pop(); }
   let bytes = Buffer.byteLength(JSON.stringify(jobs));
   for (let i = 0; i < jobs.length; i++) {
     const detail = guiContent(selected[i]!);
     const extra = Buffer.byteLength(JSON.stringify(detail)) + 10;
-    if (bytes + extra <= 70000) { jobs[i]!.detail = detail; bytes += extra; }
+    if (bytes + extra <= 700000) { jobs[i]!.detail = detail; bytes += extra; }
   }
   return jobs;
 }
@@ -90,13 +92,13 @@ export class InboxGui {
   private async call(path: string, body: object): Promise<Record<string, unknown>> {
     const base = this.service.config.gui.publicUrl.replace(/\/$/, '');
     const encoded = JSON.stringify(body);
-    if (Buffer.byteLength(encoded) > 95000) throw new Error('工作台同步内容过大');
+    if (Buffer.byteLength(encoded) > 950000) throw new Error('工作台同步内容过大');
     const response = await this.request(`${base}/openapi/inbox/${path}`, { method: 'POST', redirect: 'error',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${this.key}` }, body: encoded,
       signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(20000)]) });
     if (!response.ok) throw new Error(`工作台同步失败（HTTP ${response.status}）`);
     const text = await response.text();
-    if (text.length > 200000) throw new Error('工作台响应过大');
+    if (text.length > 900000) throw new Error('工作台响应过大');
     return obj(JSON.parse(text));
   }
   async tick(): Promise<void> {
@@ -112,7 +114,7 @@ export class InboxGui {
       if (this.stopped) return;
       const c = obj(value);
       if (typeof c.id !== 'string' || !uuid.test(c.id) || typeof c.action !== 'string' ||
-        typeof c.target !== 'string' || c.target.length > 16000 || typeof c.expiresAt !== 'number') continue;
+        typeof c.target !== 'string' || c.target.length > 64000 || typeof c.expiresAt !== 'number') continue;
       const command: Command = { id: c.id, action: c.action, target: c.target, expiresAt: c.expiresAt };
       let receipt = this.ledger.receipts[command.id];
       if (!receipt) {
@@ -126,7 +128,7 @@ export class InboxGui {
         for (const [id, entry] of Object.entries(this.ledger.receipts)) if (Date.now() - entry.time > 86400000) delete this.ledger.receipts[id];
         await writeFileAtomic(this.ledgerPath, JSON.stringify(this.ledger), { mode: 0o600 });
       }
-      if (['mode', 'review', 'scope'].includes(command.action) && receipt.ok) await this.sync();
+      if (['mode', 'review', 'scope', 'batch'].includes(command.action) && receipt.ok) await this.sync();
       await this.call('receipt', { bridgeKey: this.ledger.ownerKey, id: receipt.id, ok: receipt.ok, result: receipt.result });
       if (command.action === 'mode') return;
     }
@@ -138,6 +140,7 @@ export class InboxGui {
     return this.call('sync', { bridgeKey: this.ledger.ownerKey,
       ownerOpenId: config.ownerOpenId, feishuClientId: this.appId,
       snapshot: { jobs, total: all.length, enabled: config.enabled, autoAnalyze: config.autoAnalyze,
+        attentionControl: true, attentionProfile: config.attentionProfile || ATTENTION_RULES, batchControl: true,
         modeControl: Boolean(this.changeMode), draftControl: true, intakeScope: intakeScope(config), scopeControl: Boolean(this.changeScope),
         waitMinutes: config.waitMinutes, dailyAutoLimit: config.dailyAutoLimit,
         resultUrl: this.resultUrl,
@@ -146,7 +149,7 @@ export class InboxGui {
   private async execute(command: Command): Promise<unknown> {
     if (this.stopped) throw new Error('助理已关闭');
     if (command.action === 'mode') {
-      if (!this.changeMode || !['off', 'manual', 'auto'].includes(command.target)) throw new Error('无效运行模式');
+      if (!this.changeMode || !['off', 'on'].includes(command.target)) throw new Error('无效运行模式');
       await this.changeMode(command.target as InboxMode);
       return { mode: inboxMode(this.service.config) };
     }
@@ -155,11 +158,15 @@ export class InboxGui {
       await this.changeScope(command.target as IntakeScope);
       return { intakeScope: intakeScope(this.service.config) };
     }
+    if (command.action === 'batch') {
+      await this.service.batchReview(JSON.parse(command.target), this.service.config.ownerOpenId, command.id);
+      return { ok: true };
+    }
     if (command.action === 'review') {
       const job = await this.service.review(JSON.parse(command.target), this.service.config.ownerOpenId, command.id);
       return { ...guiSummary(job), ...guiContent(job) };
     }
-    if (!this.service.config.enabled && command.action !== 'detail') throw new Error('助理已关闭，请先选择仅手动或自动模式');
+    if (!this.service.config.enabled && command.action !== 'detail') throw new Error('助理已关闭，请先开启助理');
     if (command.action === 'browse') {
       const target = obj(JSON.parse(command.target));
       if ((target.type !== 'p2p' && target.type !== 'group') || typeof target.page !== 'string') throw new Error('无效会话分页');

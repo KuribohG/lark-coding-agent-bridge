@@ -6,7 +6,7 @@ import { resolveAppPaths } from '../config/app-paths';
 import { loadRootConfig, saveRootConfig, withConfigFileLock } from '../config/profile-store';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { inboxMode, intakeScope, normalizeInbox, validateInbox, type InboxConfig, type InboxMode, type IntakeScope } from './config';
-import { loadAnalysisProvider, analyzeInbox } from './analyzer';
+import { loadAnalysisProvider, analyzeInbox, triageInbox } from './analyzer';
 import { InboxLark } from './lark';
 import { InboxService } from './service';
 import { InboxStore } from './store';
@@ -71,7 +71,7 @@ export class InboxManager {
       if (!root || this.service !== service || JSON.stringify(connectionConfig(config)) !== JSON.stringify(connectionConfig(service.config))) {
         throw new Error('助理配置正在更新，请稍后重试');
       }
-      config.enabled = mode !== 'off'; config.autoAnalyze = mode === 'auto'; validateInbox(config);
+      config.enabled = mode !== 'off'; config.autoAnalyze = false; validateInbox(config);
       await service.setMode(mode, async () => { root.inbox = config; await saveRootConfig(root, this.configPath); });
     });
   }
@@ -109,7 +109,6 @@ export class InboxManager {
       await mkdir(folder, { recursive: true, mode: 0o700 });
       const lease = join(folder, 'service'); await writeFile(lease, '', { flag: 'a', mode: 0o600 });
       this.unlock = await lockfile.lock(lease, { stale: 60_000, update: 10_000, retries: 0, onCompromised: () => { void this.close(); } });
-      let provider: ReturnType<typeof loadAnalysisProvider> | undefined;
       const lark = new InboxLark({ profile: config.executorProfile, rootDir: this.rootDir }, config);
       this.lark = lark;
       this.service = new InboxService(new InboxStore(join(folder, 'state.json')), config, {
@@ -117,7 +116,9 @@ export class InboxManager {
         cancelPending: () => lark.cancelPending(),
         checkOwner: id => lark.checkOwner(id), collect: (...args) => lark.collect(...args), context: (...args) => lark.context(...args),
         source: id => lark.source(id), deliver: (...args) => lark.deliver(...args),
-        analyze: async (job, signal) => analyzeInbox(job, await (provider ??= loadAnalysisProvider(controls.profileConfig)), signal),
+        analyze: async (job, signal) => analyzeInbox(job, await loadAnalysisProvider(controls.profileConfig, 'deep'), signal),
+        triage: async (jobs, signal) => triageInbox(jobs, config.attentionProfile, await loadAnalysisProvider(controls.profileConfig, 'triage'), signal),
+        notifyAttention: (jobs, id) => lark.notifyAttention(jobs, id),
       });
       const secret = await resolveAppSecret(controls.cfg, paths);
       this.nonces = new CallbackNonceStore(join(folder, 'card-nonces.json'));

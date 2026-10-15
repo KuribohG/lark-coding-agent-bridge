@@ -1,9 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { inboxMode, intakeScope, type IntakeScope, type InboxConfig, type InboxMode } from './config';
 import { InboxStore } from './store';
 import { handlingState, replyContent, resultText } from './reply';
 import type { InboxIO, InboxJob, InboxMessage } from './types';
 
+const signature = (job: InboxJob) => createHash('sha256').update(JSON.stringify(job.messages)).digest('hex');
 const resolved = (job: InboxJob) => handlingState(job) !== 'open';
 export function compareMessages(a: InboxMessage, b: InboxMessage): number {
   if (a.chatId === b.chatId && /^\d+$/.test(a.position ?? '') && /^\d+$/.test(b.position ?? '')) {
@@ -63,33 +64,31 @@ export class InboxService {
   }
   list(limit = 100): InboxJob[] {
     const jobs = structuredClone(this.store.data.jobs).reverse();
-    return [...jobs.filter(j => !resolved(j)), ...jobs.filter(j => resolved(j))].slice(0, limit);
+    return [...jobs.filter(j => !resolved(j) && j.attention?.state === 'needed'),
+      ...jobs.filter(j => !resolved(j) && j.attention?.state !== 'needed' && j.attention?.state !== 'quiet'),
+      ...jobs.filter(j => !resolved(j) && j.attention?.state === 'quiet'), ...jobs.filter(resolved)].slice(0, limit);
   }
   async setMode(mode: InboxMode, persist?: () => Promise<void>): Promise<void> {
-    if (!['off', 'manual', 'auto'].includes(mode)) throw new Error('无效运行模式');
-    // Gate new work immediately, even while a collection holds the serial lock.
+    if (!['off', 'on'].includes(mode)) throw new Error('无效运行模式');
     this.modeChanges++;
-    if (mode === 'off' || (mode === 'manual' && this.store.data.jobs.some(j => j.state === 'running' && j.automatic))) {
-      this.controller?.abort();
-    }
-    if (mode === 'off') this.io.cancelPending?.();
+    if (mode === 'off') { this.controller?.abort(); this.io.cancelPending?.(); }
     try {
       await this.serial(async () => {
         if (this.stopped) throw new Error('助理连接已关闭');
         await persist?.();
         const previous = inboxMode(this.config);
-        this.config.enabled = mode !== 'off'; this.config.autoAnalyze = mode === 'auto';
+        this.config.enabled = mode === 'on'; this.config.autoAnalyze = false;
         for (const job of this.store.data.jobs) {
-          if (['queued', 'running'].includes(job.state) && (mode === 'off' || (mode === 'manual' && job.automatic))) {
-            job.state = 'waiting'; job.automatic = false; job.dueAt = undefined;
-            job.error = '已暂停，请手动处理'; job.updatedAt = this.now();
-          } else if (mode === 'auto' && previous !== 'auto' && job.state === 'waiting' && job.automatic) {
-            job.dueAt = this.now() + this.config.waitMinutes * 60_000;
+          job.dueAt = undefined;
+          job.attention ??= { state: 'pending', reason: '等待关注筛选' };
+          if (job.state === 'notifying' || (['queued', 'running'].includes(job.state) && (mode === 'off' || !job.analysisRequested))) {
+            job.state = 'waiting'; job.analysisRequested = false;
           }
+          if (mode === 'off') job.analysisRequested = false;
         }
-        if (previous === 'off' && mode !== 'off') {
+        if (previous === 'off' && mode === 'on') {
           for (const kind of Object.keys(this.store.data.cursors)) this.store.data.cursors[kind] = this.now();
-          this.lastPoll = 0;
+          this.store.data.cursors.intakeSince = this.now(); this.lastPoll = 0;
         }
         await this.store.save();
       });
@@ -102,7 +101,7 @@ export class InboxService {
   async setScope(scope: IntakeScope, persist?: () => Promise<void>): Promise<void> {
     if (!['private', 'private_mentions', 'all'].includes(scope)) throw new Error('无效接收范围');
     this.modeChanges++;
-    if (this.store.data.jobs.some(j => j.state === 'running' && j.automatic)) this.controller?.abort();
+    this.controller?.abort();
     this.io.cancelPending?.();
     try {
       await this.serial(async () => {
@@ -158,7 +157,8 @@ export class InboxService {
       job.destination = { ...this.config.destination };
       job.manualSignature = ids;
       if (requestId) job.manualRequestIds = [...(job.manualRequestIds || []), requestId].slice(-100);
-      job.automatic = false; job.state = 'queued'; this.touch(job);
+      job.automatic = false; job.analysisRequested = true; job.notificationSuppressed = true;
+      job.attention = { state: 'needed', reason: '你主动选择了此会话' }; job.state = 'queued'; this.touch(job);
       job.draftStale = Boolean(job.result || job.replyDraft);
       await this.store.save();
       return structuredClone(job);
@@ -174,8 +174,8 @@ export class InboxService {
       if (resolved(job)) return;
       if (action === 'process') {
         if (job.state === 'running') return;
-        if (job.state === 'queued') { job.automatic = false; await this.store.save(); return; }
-        job.state = 'queued'; job.automatic = false;
+        if (job.state === 'queued') { job.automatic = false; job.analysisRequested = true; await this.store.save(); return; }
+        job.state = 'queued'; job.automatic = false; job.analysisRequested = true;
         job.error = undefined; job.deliveredAt = undefined;
         job.draftStale = Boolean(job.result || job.replyDraft);
         job.destination = { ...this.config.destination };
@@ -205,7 +205,7 @@ export class InboxService {
       const before = structuredClone(job);
       if (job.state === 'running') this.controller?.abort();
       if (['notifying', 'queued', 'running', 'ready'].includes(job.state)) job.state = 'waiting';
-      job.automatic = false; job.dueAt = undefined;
+      job.automatic = false; job.analysisRequested = false; job.dueAt = undefined;
       if (input.replyDraft !== undefined) { job.replyDraft = input.replyDraft as string; job.draftEdited = true; job.draftStale = false; }
       if (input.handlingState !== undefined) job.handlingState = input.handlingState as InboxJob['handlingState'];
       if (input.handlingState === 'open' && ['claimed', 'ignored'].includes(job.state)) job.state = job.result ? 'done' : 'waiting';
@@ -250,46 +250,46 @@ export class InboxService {
             this.store.data.cursors[key] = now;
           }
         }
+        // Deep results are read in the workbench. No pending, progress or failure posts.
         for (const job of this.store.data.jobs) {
-          if (this.blocked()) return;
-          if ((job.retryAt ?? 0) > now || (job.automatic && !this.acceptsSource(job))) continue;
-          if (job.state === 'notifying' && (now - job.updatedAt >= 60_000 || now - job.createdAt >= 120_000)) {
-            job.retryAt = now + 60_000; await this.store.save();
-            await this.io.deliver(job, 'pending');
-            job.notifiedAt = this.now(); job.dueAt = job.notifiedAt + this.config.waitMinutes * 60_000;
-            job.state = 'waiting'; job.retryAt = undefined; await this.store.save();
-          }
-          if (!resolved(job) && (job.state === 'ready' || (job.state === 'failed' && !job.deliveredAt))) {
-            if (job.state === 'ready' && job.automatic && await this.ownerReplied(job)) {
-              job.state = 'claimed'; job.handlingState = 'handled'; this.touch(job); await this.store.save(); continue;
+          if (job.state === 'ready') {
+            if (!this.config.gui.publicUrl && !job.automatic && job.attention?.state === 'needed' && !job.deliveredAt) {
+              if ((job.retryAt ?? 0) > now) continue;
+              job.retryAt = now + 60_000; await this.store.save();
+              await this.io.deliver(job, 'result'); job.deliveredAt = this.now(); job.retryAt = undefined;
             }
-            if (this.blocked()) return;
-            job.retryAt = now + 60_000; await this.store.save();
-            await this.io.deliver(job, 'result');
-            if (job.state === 'ready') job.state = 'done';
-            job.deliveredAt = this.now(); job.retryAt = undefined; await this.store.save();
+            job.state = 'done';
           }
-          if (job.state === 'waiting' && job.automatic && this.config.autoAnalyze && !job.alert && job.dueAt! <= now) {
-            const day = new Date(now).toISOString().slice(0, 10);
-            if ((this.store.data.autoUsage[day] ?? 0) < this.config.dailyAutoLimit) { job.state = 'queued'; job.automatic = true; }
-          }
+          if (job.state === 'notifying' || (job.state === 'queued' && !job.analysisRequested)) job.state = 'waiting';
         }
+        await this.notifyAttention();
         // Keep durable state bounded; retain active jobs regardless of age.
-        this.store.data.jobs = this.store.data.jobs.filter(j => !resolved(j) || now - j.updatedAt < 7 * 86400_000);
+        const quiet = new Set(this.store.data.jobs.filter(j => !resolved(j) && j.attention?.state === 'quiet').slice(-500).map(j => j.id));
+        this.store.data.jobs = this.store.data.jobs.filter(j => resolved(j) ? now - j.updatedAt < 7 * 86400_000 : j.attention?.state !== 'quiet' || quiet.has(j.id));
         for (const [id, time] of Object.entries(this.store.data.seen)) if (now - time > 2 * 86400_000) delete this.store.data.seen[id];
         await this.store.save();
         this.lastError = undefined;
       } catch (e) { this.lastError = e instanceof Error ? e.message : 'inbox poll failed'; }
       if (!this.running && !this.blocked()) {
-        const next = this.store.data.jobs.find(j => j.state === 'queued' && (!j.automatic || (this.config.autoAnalyze && this.acceptsSource(j))));
+        const next = this.store.data.jobs.find(j => j.state === 'queued' && j.analysisRequested && !resolved(j));
         if (next) {
-          const day = new Date(this.now()).toISOString().slice(0, 10);
-          if (next.automatic && (this.store.data.autoUsage[day] ?? 0) >= this.config.dailyAutoLimit) { next.state = 'waiting'; return; }
-          if (next.automatic) this.store.data.autoUsage[day] = (this.store.data.autoUsage[day] ?? 0) + 1;
           next.state = 'running'; next.attempt = (next.attempt ?? 0) + 1; await this.store.save();
-          if (this.blocked()) { next.state = 'queued'; await this.store.save(); return; }
-          this.controller = new AbortController();
-          this.running = this.run(next, this.controller.signal).catch(() => { this.lastError = '待办状态保存失败，停止自动任务'; this.stopped = true; }).finally(() => { this.running = undefined; this.controller = undefined; });
+          if (this.blocked()) { next.state = 'waiting'; next.analysisRequested = false; await this.store.save(); return; }
+          this.launch(signal => this.run(next, signal));
+        } else {
+          const candidates = this.store.data.jobs.filter(j => !resolved(j) && this.acceptsSource(j) && j.attention?.state === 'pending' &&
+            (this.now() - j.updatedAt >= 60_000 || this.now() - j.createdAt >= 120_000)).slice(0, 8);
+          if (candidates.length) {
+            const day = new Date(this.now()).toISOString().slice(0, 10);
+            const usage = this.store.data.triageUsage ??= {};
+            if (!this.io.triage || (usage[day] ?? 0) >= this.config.dailyTriageLimit) {
+              for (const job of candidates) { job.attention = { state: 'uncertain', reason: '关注筛选暂不可用或今日额度已用完，请人工核对' }; this.touch(job); }
+              await this.store.save();
+            } else {
+              usage[day] = (usage[day] ?? 0) + 1; await this.store.save();
+              this.launch(signal => this.triage(candidates, signal));
+            }
+          }
         }
       }
     });
@@ -297,11 +297,12 @@ export class InboxService {
   private blocked(): boolean { return this.stopped || !this.config.enabled || this.modeChanges > 0; }
   private assertEnabled(): void { if (this.blocked()) throw new Error('助理已关闭或正在切换模式'); }
   private create(messages: InboxMessage[], automatic: boolean, source?: { name: string; type: 'p2p' | 'group' }): InboxJob {
-    if (this.store.data.jobs.filter(j => !resolved(j)).length >= 500) throw new Error('待办已达 500 项，暂停采集，请先处理或忽略已有待办');
+    if (this.store.data.jobs.filter(j => !resolved(j) && j.attention?.state !== 'quiet').length >= 500) throw new Error('待办已达 500 项，暂停采集，请先处理或忽略已有待办');
     const m = messages[0]!;
     const job: InboxJob = { id: randomUUID(), ownerOpenId: this.config.ownerOpenId, profile: this.config.executorProfile,
       destination: { ...this.config.destination }, source: { chatId: m.chatId, name: source?.name || m.chatName, type: source?.type || m.chatType, threadId: m.threadId },
-      messages: boundMessages(messages, this.config.maxContextChars), state: automatic ? 'notifying' : 'queued',
+      messages: boundMessages(messages, this.config.maxContextChars), state: automatic ? 'waiting' : 'queued',
+      analysisRequested: !automatic, attention: { state: automatic ? 'pending' : 'needed', reason: automatic ? '等待关注筛选' : '你主动选择了此会话' },
       intakeTrigger: m.chatType === 'p2p' ? 'private' : m.mentions.includes(this.config.ownerOpenId) ? 'mention' : 'group',
       createdAt: this.now(), updatedAt: this.now(), revision: 0, handlingState: 'open', automatic, alert: messages.some(m => classifyMessage(m) === 'alert'), incidentId: m.incidentId };
     this.store.data.jobs.push(job); return job;
@@ -331,25 +332,95 @@ export class InboxService {
     }
     const related = jobs.find(j => j.messages.some(x => x.id === m.id)) ?? jobs.find(j => (m.threadId && m.threadId === j.source.threadId) || j.messages.some(x => x.id === m.parentId));
     if (m.chatType === 'group' && intakeScope(this.config) !== 'all' && !m.mentions.includes(this.config.ownerOpenId) && !related) return;
+    if (!related && m.bot && jobs.some(j => j.messages.at(-1)?.text === m.text && j.source.threadId === m.threadId)) return;
     const category = classifyMessage(m);
     if (category === 'skip' || (m.chatType === 'p2p' && m.bot)) return;
     const previous = related ?? jobs.find(j => j.source.threadId === m.threadId && (m.incidentId ? j.incidentId === m.incidentId && j.messages[0]?.senderId === m.senderId : !j.incidentId && (Boolean(j.result) || j.state === 'running' || this.now() - j.updatedAt < 5 * 60_000)));
     if (previous) {
       if (m.mentions.includes(this.config.ownerOpenId)) previous.intakeTrigger = 'mention';
       previous.messages = boundMessages([...previous.messages.filter(x => x.id !== m.id), m], this.config.maxContextChars);
-      previous.alert ||= category === 'alert'; this.touch(previous);
+      previous.alert ||= category === 'alert'; previous.attention = { state: 'pending', reason: '新消息等待筛选' };
+      previous.analysisRequested = false; this.touch(previous);
       if (previous.result || previous.replyDraft) previous.draftStale = true;
-      if (['running', 'ready', 'done', 'failed'].includes(previous.state)) {
+      if (['queued', 'running', 'ready', 'done', 'failed'].includes(previous.state)) {
         if (previous.state === 'running') this.controller?.abort();
         previous.state = 'waiting'; previous.automatic = false; previous.dueAt = undefined;
         previous.error = '消息已更新，请检查草稿或重新生成';
       }
     } else this.create([m], true);
   }
-  private async ownerReplied(job: InboxJob): Promise<boolean> {
-    const context = await this.io.context(job.source.chatId, job.messages.at(-1)!.time, this.now());
-    return context.some(m => m.senderId === job.ownerOpenId && compareMessages(m, job.messages.at(-1)!) > 0 &&
-      (job.source.type === 'p2p' || (job.source.threadId && m.threadId === job.source.threadId) || job.messages.some(x => x.id === m.parentId)));
+  private launch(fn: (signal: AbortSignal) => Promise<void>): void {
+    this.controller = new AbortController();
+    this.running = fn(this.controller.signal).catch(() => { this.lastError = '状态保存失败，助理已暂停'; this.stopped = true; })
+      .finally(() => { this.running = undefined; this.controller = undefined; });
+  }
+  private async triage(jobs: InboxJob[], signal: AbortSignal): Promise<void> {
+    const inputs = structuredClone(jobs);
+    let results: Awaited<ReturnType<NonNullable<InboxIO['triage']>>>;
+    try { results = await this.io.triage!(inputs, signal); }
+    catch { results = inputs.map(j => ({ id: j.id, state: 'uncertain', reason: '关注筛选未完成，请人工核对' })); }
+    await this.serial(async () => {
+      if (signal.aborted || this.blocked()) return;
+      for (const input of inputs) {
+        const job = this.store.data.jobs.find(j => j.id === input.id);
+        if (!job || resolved(job) || !this.acceptsSource(job) || signature(job) !== signature(input) || job.attention?.state !== 'pending') continue;
+        const result = results.find(r => r.id === job.id);
+        job.attention = result ? { state: result.state, reason: result.reason, priority: result.priority } : { state: 'uncertain', reason: '关注筛选结果缺失，请人工核对' };
+        this.touch(job);
+      }
+      await this.store.save();
+    });
+  }
+  private async notifyAttention(): Promise<void> {
+    if (this.blocked() || !this.io.notifyAttention) return;
+    const data = this.store.data; const now = this.now();
+    const eligible = (j: InboxJob) => !resolved(j) && this.acceptsSource(j) && j.attention?.state === 'needed' && !j.notifiedAt && !j.notificationSuppressed;
+    let outbox = data.notificationOutbox;
+    if (!outbox) {
+      const day = new Date(now).toISOString().slice(0, 10);
+      const usage = data.notificationUsage ??= {};
+      if ((data.lastDigestAt !== undefined && now - data.lastDigestAt < 600_000) || (usage[day] ?? 0) >= 12) return;
+      const jobs = data.jobs.filter(eligible).slice(0, 20);
+      if (!jobs.length) return;
+      outbox = data.notificationOutbox = { id: randomUUID(), jobs: jobs.map(j => ({ id: j.id, signature: signature(j) })), attempts: 0, retryAt: now };
+      data.lastDigestAt = now; usage[day] = (usage[day] ?? 0) + 1; await this.store.save();
+    }
+    if (outbox.retryAt > now) return;
+    const jobs = outbox.jobs.map(entry => data.jobs.find(j => j.id === entry.id && signature(j) === entry.signature && eligible(j)));
+    // Do not change an already-sent digest's content during retries.
+    if (jobs.some(j => !j) || outbox.attempts >= 3 || now - (data.lastDigestAt ?? now) > 240_000) {
+      if (outbox.attempts) for (const entry of outbox.jobs) { const j = data.jobs.find(j => j.id === entry.id); if (j) j.notificationSuppressed = true; }
+      data.notificationOutbox = undefined; await this.store.save(); return;
+    }
+    outbox.attempts++; outbox.retryAt = now + 60_000; await this.store.save();
+    await this.io.notifyAttention(jobs as InboxJob[], outbox.id);
+    for (const job of jobs) job!.notifiedAt = this.now();
+    data.notificationOutbox = undefined; await this.store.save();
+  }
+  async batchReview(value: unknown, owner: string, requestId?: string): Promise<void> {
+    if (owner !== this.config.ownerOpenId) throw new Error('forbidden');
+    const input = value as { items?: { id: string; revision: number }[]; handlingState?: string };
+    if (!input || !Array.isArray(input.items) || !input.items.length || input.items.length > 500 ||
+      !['handled', 'ignored'].includes(input.handlingState ?? '') || input.items.some(i => !i || typeof i.id !== 'string' || !Number.isSafeInteger(i.revision)) ||
+      new Set(input.items.map(i => i.id)).size !== input.items.length) throw new Error('无效批量操作');
+    await this.serial(async () => {
+      if (this.stopped) throw new Error('助理连接已关闭');
+      const jobs = input.items!.map(item => {
+        const job = this.store.data.jobs.find(j => j.id === item.id && j.ownerOpenId === owner);
+        if (!job || ((!requestId || job.lastReviewRequestId !== requestId) && (job.revision ?? 0) !== item.revision)) throw new Error('所选事项已更新，请刷新并重新选择；本次未修改任何事项');
+        return job;
+      });
+      if (requestId && jobs.every(j => j.lastReviewRequestId === requestId)) return;
+      const before = structuredClone(jobs);
+      for (const job of jobs) {
+        if (job.state === 'running') this.controller?.abort();
+        job.handlingState = input.handlingState as 'handled' | 'ignored';
+        job.state = input.handlingState === 'handled' ? 'claimed' : 'ignored';
+        job.analysisRequested = false; job.lastReviewRequestId = requestId; job.dueAt = undefined; this.touch(job);
+      }
+      try { await this.store.save(); }
+      catch (error) { jobs.forEach((job, i) => { for (const key of Object.keys(job)) delete (job as unknown as Record<string, unknown>)[key]; Object.assign(job, before[i]); }); throw error; }
+    });
   }
   private async run(job: InboxJob, signal: AbortSignal): Promise<void> {
     let revision = job.revision ?? 0;
@@ -368,9 +439,8 @@ export class InboxService {
         if (JSON.stringify(messages) !== JSON.stringify(job.messages)) { job.messages = messages; this.touch(job); }
         revision = job.revision ?? 0; await this.store.save();
       });
-      await this.io.deliver(job, 'progress');
       signal.throwIfAborted();
-      if (!this.config.enabled) throw new Error('助理已关闭');
+      if (!this.config.enabled || !job.analysisRequested) throw new Error('分析未由用户发起或助理已关闭');
       const result = await this.io.analyze(structuredClone(job), signal);
       await this.serial(async () => {
         job.inputTokens = result.inputTokens; job.outputTokens = result.outputTokens;
@@ -378,7 +448,7 @@ export class InboxService {
           const fields = replyContent(result.text);
           job.result = resultText(result.text); job.analysis = fields.analysis; job.missingInfo = fields.missingInfo;
           if (!job.draftEdited) { job.replyDraft = fields.replyDraft; job.draftStale = false; }
-          job.state = 'ready'; job.error = undefined; this.touch(job);
+          job.state = 'ready'; job.analysisRequested = false; job.error = undefined; this.touch(job);
         }
         else if (job.state === 'running') { job.state = 'failed'; job.error = '分析已取消'; }
         job.updatedAt = this.now(); await this.store.save();

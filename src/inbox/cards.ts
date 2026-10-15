@@ -34,7 +34,7 @@ export class InboxCards {
     return card('会话助理 · 待办', [text(content), ...this.decisions(job), button('处理其他会话', 'inbox.open')]);
   }
   private decisions(job: InboxJob): object[] {
-    return [['立即处理', 'process'], ['我来处理', 'claim'], ['忽略', 'ignore']].map(([label, action]) =>
+    return [['深入分析', 'process'], ['我来处理', 'claim'], ['忽略', 'ignore']].map(([label, action]) =>
       this.action(label!, action!, job.id, 7 * 86400_000));
   }
   async handle(args: string, ctx: InboxCardContext): Promise<void> {
@@ -92,5 +92,5 @@ export class InboxCards {
 }
 
 function stateName(state: InboxJob['state']): string {
-  return { notifying: '等待提醒', waiting: '等待决定', queued: '已排队', running: '分析中', ready: '结果待发送', done: '已完成', ignored: '已忽略', claimed: '你来处理', failed: '分析未完成，可重试' }[state];
+  return { notifying: '等待提醒', waiting: '等待决定', queued: '已排队', running: '分析中', ready: '分析已完成', done: '已完成', ignored: '已忽略', claimed: '你来处理', failed: '分析未完成，可重试' }[state];
 }

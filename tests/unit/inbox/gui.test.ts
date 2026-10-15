@@ -74,13 +74,13 @@ describe('hosted inbox connection', () => {
     expect(body.ok).toBe(false); expect(s.service.manual).not.toHaveBeenCalled(); expect(s.service.decide).not.toHaveBeenCalled();
   });
   it('switches modes while off, syncs confirmation before acknowledgement, and does not replay a mode change', async () => {
-    const s = await setup(); s.service.config.enabled = false; s.commands([command('mode', 'manual')]);
+    const s = await setup(); s.service.config.enabled = false; s.commands([command('mode', 'on')]);
     await s.worker.start(); await vi.waitFor(() => expect(s.request).toHaveBeenCalledTimes(3));
-    expect(s.changeMode).toHaveBeenCalledWith('manual');
+    expect(s.changeMode).toHaveBeenCalledWith('on');
     const synced = JSON.parse(String(s.request.mock.calls[1]?.[1]?.body));
     expect(synced.snapshot).toMatchObject({ enabled: true, autoAnalyze: false, modeControl: true });
     const receipt = JSON.parse(String(s.request.mock.calls[2]?.[1]?.body));
-    expect(receipt.ok).toBe(true); expect(JSON.parse(receipt.result).mode).toBe('manual');
+    expect(receipt.ok).toBe(true); expect(JSON.parse(receipt.result).mode).toBe('on');
     await s.worker.tick(); expect(s.changeMode).toHaveBeenCalledTimes(1);
   });
   it.each(['browse', 'manual', 'process'])('blocks %s while off at the command boundary', async action => {

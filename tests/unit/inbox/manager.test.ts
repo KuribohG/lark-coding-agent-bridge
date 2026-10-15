@@ -67,15 +67,15 @@ it('keeps the GUI connected while off, persists mode, and can re-enable after re
   const manager = create(); await manager.reconcile();
   const gui = vi.mocked(InboxGui).mock.results.at(-1)!.value as { setMode(mode: string): Promise<void>; close: ReturnType<typeof vi.fn> };
   expect((await manager.view()).running).toBe(false);
-  await gui.setMode('manual'); expect((await manager.view()).running).toBe(true);
+  await gui.setMode('on'); expect((await manager.view()).running).toBe(true);
   expect((await loadRootConfig(path))!.inbox).toMatchObject({ enabled: true, autoAnalyze: false });
   await gui.setMode('off'); await manager.reconcile(); expect(gui.close).not.toHaveBeenCalled();
   await manager.close();
   const restarted = create(); await restarted.reconcile();
   const second = vi.mocked(InboxGui).mock.results.at(-1)!.value as typeof gui;
   expect(second).not.toBe(gui); expect((await restarted.view()).running).toBe(false);
-  await second.setMode('auto'); expect((await restarted.view()).running).toBe(true);
-  expect((await loadRootConfig(path))!.inbox).toMatchObject({ enabled: true, autoAnalyze: true });
+  await second.setMode('on'); expect((await restarted.view()).running).toBe(true);
+  expect((await loadRootConfig(path))!.inbox).toMatchObject({ enabled: true, autoAnalyze: false });
 });
 
 it('persists GUI intake changes while off and retains them after restart', async () => {

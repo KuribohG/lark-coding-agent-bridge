@@ -9,6 +9,11 @@ export interface InboxMessage {
   incidentId?: string; recovered?: boolean;
 }
 
+export interface Attention {
+  state: 'pending' | 'needed' | 'quiet' | 'uncertain';
+  reason: string;
+  priority?: 'normal' | 'high';
+}
 export interface InboxJob {
   id: string;
   ownerOpenId: string;
@@ -19,6 +24,9 @@ export interface InboxJob {
   state: 'notifying' | 'waiting' | 'queued' | 'running' | 'ready' | 'done' | 'ignored' | 'claimed' | 'failed';
   createdAt: number; updatedAt: number; notifiedAt?: number; dueAt?: number;
   intakeTrigger?: 'private' | 'mention' | 'group';
+  attention?: Attention;
+  analysisRequested?: boolean;
+  notificationSuppressed?: boolean;
   automatic: boolean; alert: boolean; result?: string; error?: string;
   inputTokens?: number; outputTokens?: number;
   deliveredAt?: number;
@@ -45,6 +53,10 @@ export interface InboxState {
   seen: Record<string, number>;
   jobs: InboxJob[];
   autoUsage: Record<string, number>;
+  triageUsage?: Record<string, number>;
+  notificationUsage?: Record<string, number>;
+  lastDigestAt?: number;
+  notificationOutbox?: { id: string; jobs: { id: string; signature: string }[]; attempts: number; retryAt: number };
 }
 
 export interface InboxIO {
@@ -55,5 +67,7 @@ export interface InboxIO {
   context(chatId: string, start: number, end: number): Promise<InboxMessage[]>;
   source(chatId: string): Promise<{ name: string; type: 'p2p' | 'group' }>;
   deliver(job: InboxJob, phase: 'pending' | 'progress' | 'result'): Promise<void>;
+  triage?(jobs: InboxJob[], signal: AbortSignal): Promise<(Attention & { id: string })[]>;
+  notifyAttention?(jobs: InboxJob[], id: string): Promise<void>;
   analyze(job: InboxJob, signal: AbortSignal): Promise<{ text: string; inputTokens: number; outputTokens: number }>;
 }
