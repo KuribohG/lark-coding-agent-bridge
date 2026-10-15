@@ -1,6 +1,7 @@
 import catalogue from './lark-read-catalogue.json';
 import { chatToolArgs, INBOX_CHAT_TOOLS, InboxChatTools } from './chat-tools';
-import { InboxToolArgumentsError, obj, parseModelJson, type Obj } from './values';
+import { InboxToolArgumentsError, obj, type Obj } from './values';
+import { parseModelJson } from './model-json';
 
 interface Schema {
   type?: string;

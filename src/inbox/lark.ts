@@ -73,8 +73,13 @@ export class InboxLark {
   async callValue(args: string[]): Promise<unknown> {
     this.abort.signal.throwIfAborted();
     const r = await this.exec([...args, '--json'], { ...larkCliEnv(this.ctx), TZ: 'Asia/Shanghai' }, 60_000);
+    this.abort.signal.throwIfAborted();
+    if (r.timedOut) throw new Error('飞书读取超时');
+    if (r.code !== 0 && /lark-channel context detected[^\n]*not[^\n]*bound/i.test(r.stderr + '\n' + r.stdout)) {
+      throw new Error('当前 bridge 未绑定，请重启 bridge 或运行 doctor/preflight');
+    }
     let envelope: Obj;
-    try { envelope = obj(JSON.parse(r.stdout)); } catch { throw new Error('飞书读取失败，请检查当前 profile 的用户授权和 bridge 绑定状态'); }
+    try { envelope = obj(JSON.parse(r.stdout)); } catch { throw new Error('飞书读取响应无效'); }
     if (r.code !== 0 || r.timedOut || envelope.ok !== true) throw new Error('飞书接口失败，请检查当前 profile 的权限；未自动切换身份');
     return envelope.data;
   }

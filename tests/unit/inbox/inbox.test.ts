@@ -31,6 +31,16 @@ async function setup(overrides: Partial<InboxIO> = {}) {
 }
 async function settle(s: InboxService) { for (let i = 0; i < 10; i++) { await new Promise(r => setTimeout(r, 10)); if (!s.list().some(j => j.state === 'running')) return; } }
 
+it.each([
+  [{ code: 1, stdout: '', stderr: 'lark-channel context detected but lark-cli is not bound to it', timedOut: false }, '当前 bridge 未绑定'],
+  [{ code: null, stdout: '{', stderr: 'private-error-content', timedOut: true }, '飞书读取超时'],
+  [{ code: 1, stdout: 'private-invalid-output', stderr: 'private-error-content', timedOut: false }, '飞书读取响应无效'],
+])('distinguishes failed CLI reads without exposing raw output', async (result, expected) => {
+  const lark = new InboxLark({ profile: 'codex' }, config(), vi.fn(async () => result));
+  await expect(lark.callValue(['im', '+chat-messages-list'])).rejects.toThrow(expected);
+  lark.close();
+});
+
 describe('durable inbox', () => {
   it('never starts deep analysis or pending notifications without a click, even after hours', async () => {
     const { service, io, advance } = await setup(); await service.tick();
@@ -533,6 +543,20 @@ describe('lightweight attention and quiet delivery', () => {
     now += 120_000; await service.tick();
     await vi.waitFor(() => expect(service.list()[0]?.attention?.state).toBe('needed'));
     expect(service.list()[0]?.attention?.retry).toBeUndefined(); expect(store.data.triageUsage?.['1970-01-01']).toBe(3);
+  });
+  it('persists partial successes and retries only failed items with their specific reason', async () => {
+    const triage = vi.fn<NonNullable<InboxIO['triage']>>(async jobs => jobs.map((j, i) => ({ id: j.id,
+      state: i === 0 ? 'quiet' : 'pending', reason: i === 0 ? '无需动作' : '筛选结果缺少事项', priority: 'normal' })));
+    const s = await screened({ triage, collect: vi.fn(async kind => kind === 'p2p' ? [message(), message({ id: 'om_second', chatId: 'oc_second' })] : []) });
+    await vi.waitFor(() => expect(s.service.list().some(j => j.attention?.retry)).toBe(true));
+    const done = s.service.list().find(j => j.attention?.state === 'quiet')!;
+    const retry = s.service.list().find(j => j.attention?.retry)!;
+    expect(done.attention?.retry).toBeUndefined();
+    expect(retry.attention?.retry?.error).toBe('筛选结果缺少事项');
+    s.advance(30_000); await s.service.tick();
+    await vi.waitFor(() => expect(triage).toHaveBeenCalledTimes(2));
+    expect(triage.mock.calls[1]![0].map(j => j.id)).toEqual([retry.id]);
+    expect(s.io.notifyAttention).not.toHaveBeenCalled();
   });
   it('migrates only unresolved legacy execution failures, not genuine uncertainty or handled items', async () => {
     const s = await setup(); await s.service.tick(); await s.service.close();

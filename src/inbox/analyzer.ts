@@ -4,7 +4,8 @@ import { join } from 'node:path';
 import { parse } from 'smol-toml';
 import type { ProfileConfig } from '../config/profile-schema';
 import type { Attention, InboxJob } from './types';
-import { obj, parseModelJson } from './values';
+import { obj } from './values';
+import { parseModelJson } from './model-json';
 
 export const INBOX_ANALYSIS_MODEL = 'deepseek-flash';
 
@@ -112,7 +113,11 @@ export async function requestInboxResponse(body: object, provider: AnalysisProvi
     }
     line(buffer + decoder.decode());
   }
-  if (!completed || completed.status !== 'completed') throw new Error('模型未完成分析，请手动重试');
+  if (!completed) throw new Error('模型响应中断，未收到完成事件');
+  if (completed.status !== 'completed') {
+    if (obj(completed.incomplete_details).reason === 'max_output_tokens') throw new Error('模型输出达到长度限制');
+    throw new Error('模型未完成分析，请手动重试');
+  }
   signal.throwIfAborted();
   return completed;
 }
@@ -161,17 +166,39 @@ export function triagePreviews(text: string, ids: Set<string>): { id: string; te
   });
 }
 
-export function parseTriageResult(text: string, jobs: InboxJob[]): (Attention & { id: string })[] {
-  const parsed = obj(parseModelJson(text));
-  if (!Array.isArray(parsed.items) || parsed.items.length !== jobs.length) throw new Error('关注筛选结果不完整');
-  const seen = new Set<string>();
-  return parsed.items.map(value => {
+type TriageDecision = Attention & { id: string };
+export class InboxTriageResultError extends Error {
+  constructor(message: string, readonly validItems: TriageDecision[] = []) { super(message); }
+}
+
+export function parseTriageResult(text: string, jobs: InboxJob[]): TriageDecision[] {
+  if (!text.trim()) throw new InboxTriageResultError('筛选未返回结果文本');
+  if (text.length > 100_000) throw new InboxTriageResultError('筛选结果超过长度限制');
+  let parsed: Record<string, unknown>;
+  try { parsed = obj(parseModelJson(text)); }
+  catch { throw new InboxTriageResultError('筛选结果 JSON 无效或未闭合'); }
+  if (!Array.isArray(parsed.items)) throw new InboxTriageResultError('筛选结果缺少 items 数组');
+  const expected = new Set(jobs.map(j => j.id));
+  const counts = new Map<unknown, number>();
+  for (const value of parsed.items) {
+    const id = obj(value).id;
+    counts.set(id, (counts.get(id) ?? 0) + 1);
+    if (typeof id === 'string' && !expected.has(id)) throw new InboxTriageResultError('筛选结果包含未知事项 ID');
+  }
+  const valid: TriageDecision[] = [];
+  for (const value of parsed.items) {
     const item = obj(value);
     const priority = item.priority === undefined ? 'normal' : item.priority;
-    if (typeof item.id !== 'string' || seen.has(item.id) || !jobs.some(j => j.id === item.id) ||
-      !['needed', 'quiet', 'uncertain', 'retry'].includes(String(item.state)) || typeof item.reason !== 'string' || !item.reason.trim() ||
-      !['normal', 'high'].includes(String(priority))) throw new Error('关注筛选结果无效');
-    seen.add(item.id);
-    return { id: item.id, state: item.state === 'retry' ? 'pending' : item.state as Attention['state'], reason: item.reason.slice(0, 180), priority: priority as Attention['priority'] };
-  });
+    if (typeof item.id !== 'string' || counts.get(item.id) !== 1 ||
+      typeof item.state !== 'string' || !['needed', 'quiet', 'uncertain', 'retry'].includes(item.state) ||
+      typeof item.reason !== 'string' || !item.reason.trim() ||
+      typeof priority !== 'string' || !['normal', 'high'].includes(priority)) continue;
+    valid.push({ id: item.id, state: item.state === 'retry' ? 'pending' : item.state as Attention['state'], reason: item.reason.slice(0, 180), priority: priority as Attention['priority'] });
+  }
+  if (valid.length !== jobs.length || parsed.items.length !== jobs.length) {
+    const issue = [...counts.values()].some(count => count > 1) ? '事项 ID 重复' :
+      valid.length < parsed.items.length ? '字段无效' : '缺少事项';
+    throw new InboxTriageResultError(`筛选结果${issue}`, valid);
+  }
+  return valid;
 }
