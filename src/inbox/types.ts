@@ -27,6 +27,14 @@ export interface InboxJob {
   manualSignature?: string;
   manualRequestId?: string;
   manualRequestIds?: string[];
+  revision?: number;
+  handlingState?: 'open' | 'handled' | 'ignored';
+  replyDraft?: string;
+  analysis?: string;
+  missingInfo?: string;
+  draftEdited?: boolean;
+  draftStale?: boolean;
+  lastReviewRequestId?: string;
 }
 
 export interface InboxState {

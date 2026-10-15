@@ -301,3 +301,69 @@ describe('H5 authentication and model capabilities', () => {
     const r = await analyzeInbox(job, { url: 'https://model.test/responses', key: 'secret', model: 'test' }, new AbortController().signal, request); expect(r).toEqual({ text: '建议回复', inputTokens: 7, outputTokens: 3 });
   });
 });
+
+describe('reply workbench', () => {
+  it('keeps generated results open and retains them beyond seven days', async () => {
+    const s = await setup({ analyze: vi.fn(async () => ({ text: JSON.stringify({ replyDraft: '我先核对版本。', analysis: '尚缺兼容性结论。', missingInfo: '客户端版本' }), inputTokens: 10, outputTokens: 5 })) });
+    await s.service.manual('oc_source'); await s.service.tick(); await settle(s.service); await s.service.tick();
+    expect(s.service.list()[0]).toMatchObject({ state: 'done', handlingState: 'open', replyDraft: '我先核对版本。', missingInfo: '客户端版本' });
+    s.advance(8 * 86400_000); await s.service.tick(); expect(s.service.list()).toHaveLength(1);
+  });
+  it('persists edits and handling while off without collection, delivery, or model calls', async () => {
+    const s = await setup(); const job = await s.service.manual('oc_source'); await s.service.setMode('off');
+    vi.mocked(s.io.context).mockClear(); vi.mocked(s.io.checkOwner).mockClear();
+    const saved = await s.service.review({ id: job.id, revision: job.revision, replyDraft: '我修改的回复' }, 'ou_owner', 'edit-one');
+    expect(saved).toMatchObject({ replyDraft: '我修改的回复', draftEdited: true, handlingState: 'open' });
+    expect((await s.service.review({ id: job.id, revision: job.revision, replyDraft: '我修改的回复' }, 'ou_owner', 'edit-one')).revision).toBe(saved.revision);
+    const handled = await s.service.review({ id: job.id, revision: saved.revision, handlingState: 'handled' }, 'ou_owner', 'handle-one');
+    expect(handled.handlingState).toBe('handled');
+    await s.service.tick();
+    for (const fn of [s.io.context, s.io.collect, s.io.checkOwner, s.io.analyze, s.io.deliver]) expect(fn).not.toHaveBeenCalled();
+    const loaded = new InboxStore(s.store.path); await loaded.load();
+    expect(loaded.data.jobs[0]).toMatchObject({ replyDraft: '我修改的回复', handlingState: 'handled' });
+  });
+  it('rejects other owners, stale revisions and oversized edits', async () => {
+    const s = await setup(); const job = await s.service.manual('oc_source');
+    await expect(s.service.review({ id: job.id, revision: job.revision, replyDraft: 'x' }, 'ou_other', 'a')).rejects.toThrow('forbidden');
+    await s.service.review({ id: job.id, revision: job.revision, replyDraft: 'new' }, 'ou_owner', 'b');
+    await expect(s.service.review({ id: job.id, revision: job.revision, replyDraft: 'old' }, 'ou_owner', 'c')).rejects.toThrow('已更新');
+    await expect(s.service.review({ id: job.id, revision: 2, replyDraft: 'x'.repeat(6001) }, 'ou_owner', 'd')).rejects.toThrow('无效');
+    expect(s.service.list()[0]?.replyDraft).toBe('new');
+  });
+  it('rolls back an edit on persistence failure, allowing a real retry', async () => {
+    const s = await setup(); const job = await s.service.manual('oc_source');
+    vi.spyOn(s.store, 'save').mockRejectedValueOnce(new Error('disk error'));
+    const edit = { id: job.id, revision: job.revision, replyDraft: 'durable' };
+    await expect(s.service.review(edit, 'ou_owner', 'edit')).rejects.toThrow('disk error');
+    expect(s.service.list()[0]?.replyDraft).toBeUndefined();
+    expect((await s.service.review(edit, 'ou_owner', 'edit')).replyDraft).toBe('durable');
+  });
+  it('never overwrites a saved edit with a late model result', async () => {
+    let finish!: (r: { text: string; inputTokens: number; outputTokens: number }) => void;
+    const s = await setup({ analyze: vi.fn(() => new Promise<{ text: string; inputTokens: number; outputTokens: number }>(resolve => { finish = resolve; })) });
+    await s.service.manual('oc_source'); await s.service.tick(); await vi.waitFor(() => expect(finish).toBeDefined());
+    const job = s.service.list()[0]!;
+    await s.service.review({ id: job.id, revision: job.revision, replyDraft: '用户最终修改' }, 'ou_owner', 'save');
+    finish({ text: JSON.stringify({ replyDraft: '过期生成内容', analysis: '分析', missingInfo: '' }), inputTokens: 1, outputTokens: 1 });
+    await settle(s.service); await s.service.tick();
+    expect(s.service.list()[0]).toMatchObject({ replyDraft: '用户最终修改', handlingState: 'open', state: 'waiting' });
+    expect(s.service.list()[0]?.result).toBeUndefined();
+  });
+  it('marks a prepared draft stale for new messages and closes it only after an owner reply', async () => {
+    const s = await setup(); await s.service.manual('oc_source'); await s.service.tick(); await settle(s.service); await s.service.tick();
+    const job = s.service.list()[0]!;
+    await s.service.review({ id: job.id, revision: job.revision, replyDraft: '已有修改' }, 'ou_owner', 'save');
+    vi.mocked(s.io.collect).mockResolvedValue([message({ id: 'om_followup', time: 1_061_000, text: '版本改成了 2.0，请重新确认。' })]);
+    s.advance(61_000); await s.service.tick();
+    expect(s.service.list()[0]).toMatchObject({ draftStale: true, replyDraft: '已有修改', handlingState: 'open', state: 'waiting' });
+    vi.mocked(s.io.collect).mockResolvedValue([message({ id: 'om_owner', senderId: 'ou_owner', time: 1_122_000 })]);
+    s.advance(61_000); await s.service.tick(); expect(s.service.list()[0]?.handlingState).toBe('handled');
+  });
+  it('does not create a duplicate item when a known message is edited', async () => {
+    const s = await setup(); await s.service.tick();
+    vi.mocked(s.io.collect).mockResolvedValue([message({ text: '修改后的请求' })]);
+    vi.mocked(s.io.context).mockResolvedValue([message({ text: '修改后的请求' })]); s.advance(61_000); await s.service.tick();
+    expect(s.service.list()).toHaveLength(1); expect(s.service.list()[0]?.messages).toHaveLength(1);
+    expect(s.service.list()[0]?.messages[0]?.text).toBe('修改后的请求');
+  });
+});

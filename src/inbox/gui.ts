@@ -4,17 +4,49 @@ import type { InboxService } from './service';
 import type { InboxLark } from './lark';
 import type { InboxJob } from './types';
 import { obj } from './values';
+import { handlingState, replyContent } from './reply';
 import { inboxMode, type InboxMode } from './config';
 
 interface Command { id: string; action: string; target: string; expiresAt: number }
 interface Receipt { id: string; ok: boolean; result: string; time: number }
 interface Ledger { ownerKey: string; receipts: Record<string, Receipt> }
 const uuid = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i;
-const actions = new Set(['browse', 'manual', 'detail', 'process', 'claim', 'ignore', 'mode']);
+const actions = new Set(['browse', 'manual', 'detail', 'process', 'claim', 'ignore', 'mode', 'review']);
 export const guiSummary = (job: InboxJob) => ({ id: job.id, name: job.source.name.slice(0, 80),
   chatId: job.source.chatId, type: job.source.type, state: job.state,
   preview: job.messages.at(-1)?.text.slice(0, 80) || '', messageCount: job.messages.length,
-  updatedAt: job.updatedAt, dueAt: job.dueAt, automatic: job.automatic, alert: job.alert });
+  updatedAt: job.updatedAt, dueAt: job.dueAt, automatic: job.automatic, alert: job.alert,
+  revision: job.revision ?? 0, handlingState: handlingState(job) });
+
+export function guiContent(job: InboxJob) {
+  const legacy = replyContent(job.result);
+  const content = { replyDraft: job.replyDraft ?? legacy.replyDraft, analysis: (job.analysis ?? legacy.analysis).slice(0, 8000),
+    missingInfo: job.missingInfo ?? legacy.missingInfo, draftEdited: Boolean(job.draftEdited), draftStale: Boolean(job.draftStale),
+    error: job.error?.slice(0, 1000), sourceUrl: job.messages.find(m => /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(m.link || ''))?.link?.slice(0, 1000) ||
+      `https://applink.feishu.cn/client/chat/open?openChatId=${job.source.chatId}`,
+    messages: job.messages.slice(-5).map(m => ({ name: m.senderName.slice(0, 80), time: m.time, text: m.text.slice(0, 300) })),
+    inputTokens: job.inputTokens, outputTokens: job.outputTokens };
+  while (JSON.stringify(content).length > 22000) {
+    if (content.analysis.length) content.analysis = content.analysis.slice(0, Math.floor(content.analysis.length / 2));
+    else if (content.messages.length) content.messages.pop();
+    else content.missingInfo = content.missingInfo.slice(0, Math.floor(content.missingInfo.length / 2));
+  }
+  return content;
+}
+
+/** Keep the list intact; prefetch content only while the snapshot budget permits. */
+export function guiJobs(all: InboxJob[]) {
+  const selected = all.slice(0, 100);
+  const jobs = selected.map(job => ({ ...guiSummary(job), detail: undefined as ReturnType<typeof guiContent> | undefined }));
+  while (Buffer.byteLength(JSON.stringify(jobs)) > 65000) { jobs.pop(); selected.pop(); }
+  let bytes = Buffer.byteLength(JSON.stringify(jobs));
+  for (let i = 0; i < jobs.length; i++) {
+    const detail = guiContent(selected[i]!);
+    const extra = Buffer.byteLength(JSON.stringify(detail)) + 10;
+    if (bytes + extra <= 70000) { jobs[i]!.detail = detail; bytes += extra; }
+  }
+  return jobs;
+}
 
 /** Outbound-only connection to the owner-authenticated hosted workbench. */
 export class InboxGui {
@@ -100,7 +132,7 @@ export class InboxGui {
         for (const [id, entry] of Object.entries(this.ledger.receipts)) if (Date.now() - entry.time > 86400000) delete this.ledger.receipts[id];
         await writeFileAtomic(this.ledgerPath, JSON.stringify(this.ledger), { mode: 0o600 });
       }
-      if (command.action === 'mode' && receipt.ok) await this.sync();
+      if (['mode', 'review'].includes(command.action) && receipt.ok) await this.sync();
       await this.call('receipt', { bridgeKey: this.ledger.ownerKey, id: receipt.id, ok: receipt.ok, result: receipt.result });
       if (command.action === 'mode') return;
     }
@@ -108,12 +140,11 @@ export class InboxGui {
   private async sync(): Promise<Record<string, unknown>> {
     const config = this.service.config;
     const all = this.service.list(500).filter(j => j.ownerOpenId === config.ownerOpenId);
-    const jobs = all.slice(0, 100).map(guiSummary);
-    while (Buffer.byteLength(JSON.stringify(jobs)) > 70000) jobs.pop();
+    const jobs = guiJobs(all);
     return this.call('sync', { bridgeKey: this.ledger.ownerKey,
       ownerOpenId: config.ownerOpenId, feishuClientId: this.appId,
       snapshot: { jobs, total: all.length, enabled: config.enabled, autoAnalyze: config.autoAnalyze,
-        modeControl: Boolean(this.changeMode),
+        modeControl: Boolean(this.changeMode), draftControl: true,
         waitMinutes: config.waitMinutes, dailyAutoLimit: config.dailyAutoLimit,
         resultUrl: this.resultUrl,
         error: this.service.lastError?.slice(0, 1000) } });
@@ -124,6 +155,10 @@ export class InboxGui {
       if (!this.changeMode || !['off', 'manual', 'auto'].includes(command.target)) throw new Error('无效运行模式');
       await this.changeMode(command.target as InboxMode);
       return { mode: inboxMode(this.service.config) };
+    }
+    if (command.action === 'review') {
+      const job = await this.service.review(JSON.parse(command.target), this.service.config.ownerOpenId, command.id);
+      return { ...guiSummary(job), ...guiContent(job) };
     }
     if (!this.service.config.enabled && command.action !== 'detail') throw new Error('助理已关闭，请先选择仅手动或自动模式');
     if (command.action === 'browse') {
@@ -136,11 +171,7 @@ export class InboxGui {
     const job = this.service.list(500).find(j => j.id === command.target && j.ownerOpenId === this.service.config.ownerOpenId);
     if (!job) throw new Error('待办不存在或已归档');
     if (command.action === 'detail') {
-      const sourceUrl = job.messages.find(m => /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(m.link || ''))?.link ||
-        `https://applink.feishu.cn/client/chat/open?openChatId=${job.source.chatId}`;
-      return { ...guiSummary(job), result: job.result, error: job.error, sourceUrl,
-        messages: job.messages.slice(-5).map(m => ({ name: m.senderName, time: m.time, text: m.text.slice(0, 300) })),
-        inputTokens: job.inputTokens, outputTokens: job.outputTokens };
+      return { ...guiSummary(job), ...guiContent(job) };
     }
     await this.service.decide(job.id, command.action, this.service.config.ownerOpenId);
     return { id: job.id };

@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { inboxMode, type InboxConfig, type InboxMode } from './config';
 import { InboxStore } from './store';
+import { handlingState, replyContent, resultText } from './reply';
 import type { InboxIO, InboxJob, InboxMessage } from './types';
 
-const terminal = new Set(['done', 'ignored', 'claimed', 'failed']);
+const resolved = (job: InboxJob) => handlingState(job) !== 'open';
 export function compareMessages(a: InboxMessage, b: InboxMessage): number {
   if (a.chatId === b.chatId && /^\d+$/.test(a.position ?? '') && /^\d+$/.test(b.position ?? '')) {
     return BigInt(a.position!) < BigInt(b.position!) ? -1 : BigInt(a.position!) > BigInt(b.position!) ? 1 : 0;
@@ -62,7 +63,7 @@ export class InboxService {
   }
   list(limit = 100): InboxJob[] {
     const jobs = structuredClone(this.store.data.jobs).reverse();
-    return [...jobs.filter(j => !terminal.has(j.state)), ...jobs.filter(j => terminal.has(j.state))].slice(0, limit);
+    return [...jobs.filter(j => !resolved(j)), ...jobs.filter(j => resolved(j))].slice(0, limit);
   }
   async setMode(mode: InboxMode, persist?: () => Promise<void>): Promise<void> {
     if (!['off', 'manual', 'auto'].includes(mode)) throw new Error('无效运行模式');
@@ -128,7 +129,8 @@ export class InboxService {
       job.destination = { ...this.config.destination };
       job.manualSignature = ids;
       if (requestId) job.manualRequestIds = [...(job.manualRequestIds || []), requestId].slice(-100);
-      job.automatic = false; job.state = 'queued'; job.updatedAt = this.now();
+      job.automatic = false; job.state = 'queued'; this.touch(job);
+      job.draftStale = Boolean(job.result || job.replyDraft);
       await this.store.save();
       return structuredClone(job);
     });
@@ -140,18 +142,51 @@ export class InboxService {
       const job = this.store.data.jobs.find(j => j.id === id);
       if (!job || job.ownerOpenId !== owner) throw new Error('unknown job');
       if (!['process', 'claim', 'ignore'].includes(action)) throw new Error('invalid action');
-      if (['done', 'ignored', 'claimed'].includes(job.state)) return;
+      if (resolved(job)) return;
       if (action === 'process') {
-        if (['running', 'ready'].includes(job.state)) return;
+        if (job.state === 'running') return;
         if (job.state === 'queued') { job.automatic = false; await this.store.save(); return; }
         job.state = 'queued'; job.automatic = false;
-        job.error = undefined; job.result = undefined; job.deliveredAt = undefined;
+        job.error = undefined; job.deliveredAt = undefined;
+        job.draftStale = Boolean(job.result || job.replyDraft);
         job.destination = { ...this.config.destination };
       } else {
         if (job.state === 'running') this.controller?.abort();
         job.state = action === 'claim' ? 'claimed' : 'ignored';
+        job.handlingState = action === 'claim' ? 'handled' : 'ignored';
       }
-      job.updatedAt = this.now(); await this.store.save();
+      this.touch(job); await this.store.save();
+    });
+  }
+  private touch(job: InboxJob): void { job.revision = (job.revision ?? 0) + 1; job.updatedAt = this.now(); }
+  async review(value: unknown, owner: string, requestId: string): Promise<InboxJob> {
+    if (owner !== this.config.ownerOpenId) throw new Error('forbidden');
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('无效草稿操作');
+    const input = value as Record<string, unknown>;
+    if (typeof input.id !== 'string' || !Number.isSafeInteger(input.revision) || Number(input.revision) < 0 ||
+      (input.replyDraft === undefined && input.handlingState === undefined) ||
+      (input.replyDraft !== undefined && (typeof input.replyDraft !== 'string' || input.replyDraft.length > 6000)) ||
+      (input.handlingState !== undefined && !['open', 'handled', 'ignored'].includes(String(input.handlingState)))) throw new Error('无效草稿操作');
+    return this.serial(async () => {
+      if (this.stopped) throw new Error('助理连接已关闭');
+      const job = this.store.data.jobs.find(j => j.id === input.id && j.ownerOpenId === owner);
+      if (!job) throw new Error('待办不存在或已归档');
+      if (job.lastReviewRequestId === requestId) return structuredClone(job);
+      if ((job.revision ?? 0) !== input.revision) throw new Error('事项已更新，草稿未覆盖，请核对最新内容后重试');
+      const before = structuredClone(job);
+      if (job.state === 'running') this.controller?.abort();
+      if (['notifying', 'queued', 'running', 'ready'].includes(job.state)) job.state = 'waiting';
+      job.automatic = false; job.dueAt = undefined;
+      if (input.replyDraft !== undefined) { job.replyDraft = input.replyDraft as string; job.draftEdited = true; job.draftStale = false; }
+      if (input.handlingState !== undefined) job.handlingState = input.handlingState as InboxJob['handlingState'];
+      if (input.handlingState === 'open' && ['claimed', 'ignored'].includes(job.state)) job.state = job.result ? 'done' : 'waiting';
+      job.lastReviewRequestId = requestId; this.touch(job);
+      try { await this.store.save(); }
+      catch (error) {
+        for (const key of Object.keys(job)) delete (job as unknown as Record<string, unknown>)[key];
+        Object.assign(job, before); throw error;
+      }
+      return structuredClone(job);
     });
   }
   async tick(): Promise<void> {
@@ -175,7 +210,7 @@ export class InboxService {
           }
           // Replies/recovery often do not mention the owner. Check active sources too.
           const activeSources = new Map<string, InboxJob>();
-          for (const job of this.store.data.jobs) if (['notifying', 'waiting', 'queued'].includes(job.state)) activeSources.set(job.source.chatId, job);
+          for (const job of this.store.data.jobs) if (!resolved(job)) activeSources.set(job.source.chatId, job);
           for (const [chatId, job] of [...activeSources].sort((a, b) => (this.store.data.cursors[`context:${a[0]}`] ?? 0) - (this.store.data.cursors[`context:${b[0]}`] ?? 0)).slice(0, 10)) {
             const key = `context:${chatId}`;
             const since = this.store.data.cursors[key] ?? job.messages[0]!.time;
@@ -195,9 +230,9 @@ export class InboxService {
             job.notifiedAt = this.now(); job.dueAt = job.notifiedAt + this.config.waitMinutes * 60_000;
             job.state = 'waiting'; job.retryAt = undefined; await this.store.save();
           }
-          if (job.state === 'ready' || (job.state === 'failed' && !job.deliveredAt)) {
+          if (!resolved(job) && (job.state === 'ready' || (job.state === 'failed' && !job.deliveredAt))) {
             if (job.state === 'ready' && job.automatic && await this.ownerReplied(job)) {
-              job.state = 'claimed'; job.updatedAt = now; await this.store.save(); continue;
+              job.state = 'claimed'; job.handlingState = 'handled'; this.touch(job); await this.store.save(); continue;
             }
             if (this.blocked()) return;
             job.retryAt = now + 60_000; await this.store.save();
@@ -211,7 +246,7 @@ export class InboxService {
           }
         }
         // Keep durable state bounded; retain active jobs regardless of age.
-        this.store.data.jobs = this.store.data.jobs.filter(j => !terminal.has(j.state) || now - j.updatedAt < 7 * 86400_000);
+        this.store.data.jobs = this.store.data.jobs.filter(j => !resolved(j) || now - j.updatedAt < 7 * 86400_000);
         for (const [id, time] of Object.entries(this.store.data.seen)) if (now - time > 2 * 86400_000) delete this.store.data.seen[id];
         await this.store.save();
         this.lastError = undefined;
@@ -233,38 +268,50 @@ export class InboxService {
   private blocked(): boolean { return this.stopped || !this.config.enabled || this.modeChanges > 0; }
   private assertEnabled(): void { if (this.blocked()) throw new Error('助理已关闭或正在切换模式'); }
   private create(messages: InboxMessage[], automatic: boolean, source?: { name: string; type: 'p2p' | 'group' }): InboxJob {
-    if (this.store.data.jobs.filter(j => !terminal.has(j.state)).length >= 500) throw new Error('待办已达 500 项，暂停采集，请先处理或忽略已有待办');
+    if (this.store.data.jobs.filter(j => !resolved(j)).length >= 500) throw new Error('待办已达 500 项，暂停采集，请先处理或忽略已有待办');
     const m = messages[0]!;
     const job: InboxJob = { id: randomUUID(), ownerOpenId: this.config.ownerOpenId, profile: this.config.executorProfile,
       destination: { ...this.config.destination }, source: { chatId: m.chatId, name: source?.name || m.chatName, type: source?.type || m.chatType, threadId: m.threadId },
       messages: boundMessages(messages, this.config.maxContextChars), state: automatic ? 'notifying' : 'queued',
-      createdAt: this.now(), updatedAt: this.now(), automatic, alert: messages.some(m => classifyMessage(m) === 'alert'), incidentId: m.incidentId };
+      createdAt: this.now(), updatedAt: this.now(), revision: 0, handlingState: 'open', automatic, alert: messages.some(m => classifyMessage(m) === 'alert'), incidentId: m.incidentId };
     this.store.data.jobs.push(job); return job;
   }
   private ingest(m: InboxMessage, earliest: number): void {
-    if (this.store.data.seen[m.id] || m.time < earliest || m.chatId === this.config.destination.chatId) return;
+    if (m.time < earliest || m.chatId === this.config.destination.chatId) return;
+    const known = this.store.data.jobs.flatMap(j => j.messages).find(x => x.id === m.id);
+    if (known ? known.text === m.text : this.store.data.seen[m.id]) return;
     this.store.data.seen[m.id] = this.now();
     try { this.ingestNew(m); }
     catch (error) { delete this.store.data.seen[m.id]; throw error; }
   }
   private ingestNew(m: InboxMessage): void {
-    const jobs = this.store.data.jobs.filter(j => j.source.chatId === m.chatId && ['waiting', 'notifying', 'queued'].includes(j.state));
+    const jobs = this.store.data.jobs.filter(j => j.source.chatId === m.chatId && !resolved(j));
     if (m.senderId === this.config.ownerOpenId) {
-      for (const job of jobs) if (job.automatic && compareMessages(m, job.messages.at(-1)!) > 0 && (m.chatType === 'p2p' ||
-        (m.threadId && m.threadId === job.source.threadId) || job.messages.some(x => x.id === m.parentId))) job.state = 'claimed';
+      for (const job of jobs) if (compareMessages(m, job.messages.at(-1)!) > 0 && (m.chatType === 'p2p' ||
+        (m.threadId && m.threadId === job.source.threadId) || job.messages.some(x => x.id === m.parentId))) {
+        if (job.state === 'running') this.controller?.abort();
+        job.state = 'claimed'; job.handlingState = 'handled'; this.touch(job);
+      }
       return;
     }
     if (m.recovered && m.incidentId && m.bot) {
-      for (const job of jobs) if (job.incidentId === m.incidentId && job.messages[0]?.senderId === m.senderId) job.state = 'ignored';
+      for (const job of jobs) if (job.incidentId === m.incidentId && job.messages[0]?.senderId === m.senderId) { job.state = 'ignored'; job.handlingState = 'ignored'; this.touch(job); }
       return;
     }
-    if (m.chatType === 'group' && !m.mentions.includes(this.config.ownerOpenId)) return;
+    const related = jobs.find(j => j.messages.some(x => x.id === m.id)) ?? jobs.find(j => (m.threadId && m.threadId === j.source.threadId) || j.messages.some(x => x.id === m.parentId));
+    if (m.chatType === 'group' && !m.mentions.includes(this.config.ownerOpenId) && !related) return;
     const category = classifyMessage(m);
     if (category === 'skip' || (m.chatType === 'p2p' && m.bot)) return;
-    const previous = jobs.find(j => j.source.threadId === m.threadId && (m.incidentId ? j.incidentId === m.incidentId && j.messages[0]?.senderId === m.senderId : !j.incidentId && this.now() - j.updatedAt < 5 * 60_000));
+    const previous = related ?? jobs.find(j => j.source.threadId === m.threadId && (m.incidentId ? j.incidentId === m.incidentId && j.messages[0]?.senderId === m.senderId : !j.incidentId && (Boolean(j.result) || j.state === 'running' || this.now() - j.updatedAt < 5 * 60_000)));
     if (previous) {
-      if (!previous.messages.some(x => x.text === m.text)) previous.messages = boundMessages([...previous.messages, m], this.config.maxContextChars);
-      previous.alert ||= category === 'alert'; previous.updatedAt = this.now();
+      previous.messages = boundMessages([...previous.messages.filter(x => x.id !== m.id), m], this.config.maxContextChars);
+      previous.alert ||= category === 'alert'; this.touch(previous);
+      if (previous.result || previous.replyDraft) previous.draftStale = true;
+      if (['running', 'ready', 'done', 'failed'].includes(previous.state)) {
+        if (previous.state === 'running') this.controller?.abort();
+        previous.state = 'waiting'; previous.automatic = false; previous.dueAt = undefined;
+        previous.error = '消息已更新，请检查草稿或重新生成';
+      }
     } else this.create([m], true);
   }
   private async ownerReplied(job: InboxJob): Promise<boolean> {
@@ -273,23 +320,34 @@ export class InboxService {
       (job.source.type === 'p2p' || (job.source.threadId && m.threadId === job.source.threadId) || job.messages.some(x => x.id === m.parentId)));
   }
   private async run(job: InboxJob, signal: AbortSignal): Promise<void> {
+    let revision = job.revision ?? 0;
     try {
       await this.io.checkOwner(this.config.ownerOpenId);
       const context = await this.io.context(job.source.chatId, job.messages[0]!.time - this.config.contextMinutes * 60_000, this.now());
       const relevant = job.source.threadId ? context.filter(m => m.threadId === job.source.threadId) : context;
       if (job.automatic && relevant.some(m => m.senderId === this.config.ownerOpenId && compareMessages(m, job.messages.at(-1)!) > 0 &&
         (job.source.type === 'p2p' || Boolean(job.source.threadId) || job.messages.some(x => x.id === m.parentId)))) {
-        await this.serial(async () => { if (job.state === 'running') job.state = 'claimed'; await this.store.save(); }); return;
+        await this.serial(async () => { if (job.state === 'running' && (job.revision ?? 0) === revision) { job.state = 'claimed'; job.handlingState = 'handled'; this.touch(job); } await this.store.save(); }); return;
       }
       if (signal.aborted) throw new Error('分析已取消');
-      job.messages = boundMessages([...new Map([...job.messages, ...relevant].map(m => [m.id, m])).values()], this.config.maxContextChars);
+      await this.serial(async () => {
+        if (job.state !== 'running' || signal.aborted || (job.revision ?? 0) !== revision) throw new Error('事项已更新');
+        const messages = boundMessages([...new Map([...job.messages, ...relevant].map(m => [m.id, m])).values()], this.config.maxContextChars);
+        if (JSON.stringify(messages) !== JSON.stringify(job.messages)) { job.messages = messages; this.touch(job); }
+        revision = job.revision ?? 0; await this.store.save();
+      });
       await this.io.deliver(job, 'progress');
       signal.throwIfAborted();
       if (!this.config.enabled) throw new Error('助理已关闭');
       const result = await this.io.analyze(structuredClone(job), signal);
       await this.serial(async () => {
         job.inputTokens = result.inputTokens; job.outputTokens = result.outputTokens;
-        if (job.state === 'running' && !signal.aborted) { job.result = result.text.slice(0, 20_000); job.state = 'ready'; }
+        if (job.state === 'running' && !signal.aborted && (job.revision ?? 0) === revision) {
+          const fields = replyContent(result.text);
+          job.result = resultText(result.text); job.analysis = fields.analysis; job.missingInfo = fields.missingInfo;
+          if (!job.draftEdited) { job.replyDraft = fields.replyDraft; job.draftStale = false; }
+          job.state = 'ready'; job.error = undefined; this.touch(job);
+        }
         else if (job.state === 'running') { job.state = 'failed'; job.error = '分析已取消'; }
         job.updatedAt = this.now(); await this.store.save();
       });
