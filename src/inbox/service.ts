@@ -54,6 +54,9 @@ export class InboxService {
     if (this.store.data.ownerKey && this.store.data.ownerKey !== key) throw new Error('待办归属已改变，请为新账号使用独立状态目录');
     this.store.data.ownerKey = key;
     for (const job of this.store.data.jobs) {
+      if (handlingState(job) === 'ignored' && (job.attention?.state !== 'quiet' || job.attention.retry || job.analysisRequested)) {
+        this.ignore(job); this.touch(job);
+      }
       if (!resolved(job) && job.attention?.state === 'uncertain' &&
         ['关注筛选未完成，请人工核对', '关注筛选结果缺失，请人工核对', '关注筛选暂不可用或今日额度已用完，请人工核对'].includes(job.attention.reason)) {
         job.attention = { state: 'pending', reason: '上次筛选未完成，等待自动重试', retry: { attempts: 0, nextAt: this.now(), error: '旧版筛选未完成' } };
@@ -202,11 +205,17 @@ export class InboxService {
         if (job.state === 'running') this.controller?.abort();
         job.state = action === 'claim' ? 'claimed' : 'ignored';
         job.handlingState = action === 'claim' ? 'handled' : 'ignored';
+        if (action === 'ignore') this.ignore(job);
       }
       this.touch(job); await this.store.save();
     });
   }
   private touch(job: InboxJob): void { job.revision = (job.revision ?? 0) + 1; job.updatedAt = this.now(); }
+  private ignore(job: InboxJob): void {
+    job.state = 'ignored'; job.handlingState = 'ignored'; job.analysisRequested = false; job.dueAt = undefined;
+    job.attention = { state: 'quiet', reason: '你已忽略此事项，无需动作' };
+    if (this.triageProgress.delete(job.id) && !this.triageProgress.size) this.controller?.abort();
+  }
   async review(value: unknown, owner: string, requestId: string): Promise<InboxJob> {
     if (owner !== this.config.ownerOpenId) throw new Error('forbidden');
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('无效草稿操作');
@@ -227,6 +236,8 @@ export class InboxService {
       job.automatic = false; job.analysisRequested = false; job.dueAt = undefined;
       if (input.replyDraft !== undefined) { job.replyDraft = input.replyDraft as string; job.draftEdited = true; job.draftStale = false; }
       if (input.handlingState !== undefined) job.handlingState = input.handlingState as InboxJob['handlingState'];
+      if (input.handlingState === 'ignored') this.ignore(job);
+      if (input.handlingState === 'open' && handlingState(before) === 'ignored') job.attention = { state: 'pending', reason: '你已恢复此事项，等待重新筛选' };
       if (input.handlingState === 'open' && ['claimed', 'ignored'].includes(job.state)) job.state = job.result ? 'done' : 'waiting';
       job.lastReviewRequestId = requestId; this.touch(job);
       try { await this.store.save(); }
@@ -465,6 +476,7 @@ export class InboxService {
         if (job.state === 'running') this.controller?.abort();
         job.handlingState = input.handlingState as 'handled' | 'ignored';
         job.state = input.handlingState === 'handled' ? 'claimed' : 'ignored';
+        if (input.handlingState === 'ignored') this.ignore(job);
         job.analysisRequested = false; job.lastReviewRequestId = requestId; job.dueAt = undefined; this.touch(job);
       }
       try { await this.store.save(); }

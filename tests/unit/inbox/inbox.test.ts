@@ -527,6 +527,35 @@ describe('lightweight attention and quiet delivery', () => {
     expect(service.list().find(j => j.id === 'genuine')?.attention?.state).toBe('uncertain');
     expect(service.list().find(j => j.id === 'handled')?.attention?.state).toBe('uncertain');
   });
+  it('treats ignored items as quiet, never retries them, and only rescreens after explicit restore', async () => {
+    const s = await setup({ triage: vi.fn(classify) }); await s.service.tick();
+    const job = s.store.data.jobs[0]!;
+    job.attention = { state: 'pending', reason: '连接中断', retry: { attempts: 1, nextAt: 0, error: '连接中断' } };
+    await s.service.batchReview({ items: [{ id: job.id, revision: job.revision }], handlingState: 'ignored' }, 'ou_owner', 'ignore-one');
+    expect(s.service.list()[0]?.attention).toEqual({ state: 'quiet', reason: '你已忽略此事项，无需动作' });
+    s.advance(120_000); await s.service.tick(); expect(s.io.triage).not.toHaveBeenCalled();
+    await s.service.close();
+    job.attention = { state: 'uncertain', reason: '关注筛选未完成，请人工核对' }; await s.store.save();
+    const service = new InboxService(new InboxStore(s.store.path), s.service.config, s.io, () => 1_120_000); services.push(service); await service.start();
+    expect(service.list()[0]?.attention?.state).toBe('quiet');
+    await service.tick(); expect(s.io.triage).not.toHaveBeenCalled();
+    const ignored = service.list()[0]!;
+    await service.review({ id: ignored.id, revision: ignored.revision, handlingState: 'open' }, 'ou_owner', 'restore-one');
+    expect(service.list()[0]).toMatchObject({ handlingState: 'open', state: 'waiting', attention: { state: 'pending' } });
+  });
+  it('cancels active screening when every item in its batch has been ignored', async () => {
+    let signal!: AbortSignal;
+    let complete!: (value: []) => void;
+    const s = await screened({ triage: vi.fn<NonNullable<InboxIO['triage']>>((_jobs, current) => {
+      signal = current; return new Promise(resolve => { complete = resolve; });
+    }) });
+    await vi.waitFor(() => expect(signal).toBeDefined());
+    const job = s.service.list()[0]!;
+    await s.service.batchReview({ items: [{ id: job.id, revision: job.revision }], handlingState: 'ignored' }, 'ou_owner', 'ignore-active');
+    expect(signal.aborted).toBe(true); complete([]);
+    await new Promise(r => setTimeout(r, 20));
+    expect(s.service.list()[0]?.attention?.state).toBe('quiet'); expect(s.io.notifyAttention).not.toHaveBeenCalled();
+  });
   it.each(['off', 'scope', 'changed', 'handled'] as const)('does not schedule obsolete failures after %s', async action => {
     let fail!: (error: Error) => void;
     const s = await screened({ triage: vi.fn<NonNullable<InboxIO['triage']>>(() => new Promise((_resolve, reject) => { fail = reject; })) });
