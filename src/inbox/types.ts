@@ -30,6 +30,9 @@ export interface InboxJob {
   intakeTrigger?: 'private' | 'mention' | 'group';
   attention?: Attention;
   analysisRequested?: boolean;
+  analysisTopic?: InboxConfig['destination'];
+  startDelivery?: { id: string; text: string; attempts: number; startedAt: number; retryAt: number };
+  resultDelivery?: { attempts: number; startedAt: number; retryAt: number };
   notificationSuppressed?: boolean;
   automatic: boolean; alert: boolean; result?: string; error?: string;
   inputTokens?: number; outputTokens?: number;
@@ -64,6 +67,7 @@ export interface InboxState {
 }
 
 export interface InboxIO {
+  /** Trusted app/open IDs of this bridge bot; never the human owner ID. */
   selfSenderIds?: readonly string[];
   cancel?(): void;
   cancelPending?(): void;
@@ -72,6 +76,7 @@ export interface InboxIO {
   context(chatId: string, start: number, end: number): Promise<InboxMessage[]>;
   source(chatId: string): Promise<{ name: string; type: 'p2p' | 'group' }>;
   deliver(job: InboxJob, phase: 'pending' | 'progress' | 'result'): Promise<void>;
+  beginAnalysis?(job: InboxJob, text: string): Promise<InboxConfig['destination']>;
   triage?(jobs: InboxJob[], signal: AbortSignal, onProgress?: (updates: { id: string; text: string }[]) => void): Promise<(Attention & { id: string })[]>;
   notifyAttention?(jobs: InboxJob[], id: string): Promise<void>;
   analyze(job: InboxJob, signal: AbortSignal): Promise<{ text: string; inputTokens: number; outputTokens: number }>;

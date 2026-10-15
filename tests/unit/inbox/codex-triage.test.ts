@@ -180,3 +180,18 @@ it('propagates timeout to the in-flight tool and redacts operational errors', as
   expect(stopped).toBe(true);
   expect(triageFailureReason(Error('HTTP 401 Bearer sensitive-token'))).toBe('工具或模型授权暂不可用');
 });
+
+it('defaults omitted priority to normal while preserving all decisions and explicit high priority', async () => {
+  const items = ['quiet', 'needed', 'uncertain', 'retry'].map((state, index) => ({ id: String(index), state, reason: '具体事实' }));
+  const request = vi.fn<typeof fetch>(async () => response([{ type: 'message', role: 'assistant', content: [{ type: 'output_text',
+    text: JSON.stringify({ items: [...items, { ...answer('urgent', 'needed'), priority: 'high' }] }) }] }]));
+  const result = await run(fixture().tools, request, [...items.map(item => job(item.id)), job('urgent')]);
+  expect(result.map(item => item.state)).toEqual(['quiet', 'needed', 'uncertain', 'pending', 'needed']);
+  expect(result.map(item => item.priority)).toEqual(['normal', 'normal', 'normal', 'normal', 'high']);
+});
+
+it.each([{ reason: '' }, { reason: undefined }, { state: undefined }, { id: 'unknown' }, { priority: 'urgent' }, { priority: null }])(
+  'still rejects invalid final fields %j', async fields => {
+    const request = vi.fn<typeof fetch>(async () => response([message([{ ...answer('a'), ...fields } as ReturnType<typeof answer>])]));
+    await expect(run(fixture().tools, request)).rejects.toThrow('无效');
+  });

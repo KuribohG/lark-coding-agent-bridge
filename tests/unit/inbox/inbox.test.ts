@@ -461,7 +461,7 @@ describe('lightweight attention and quiet delivery', () => {
     expect(vi.mocked(s.io.triage!).mock.calls[1]![0]).toHaveLength(1);
     expect(s.store.data.triageUsage?.['1970-01-01']).toBe(2);
   });
-  it('uses model decisions for relevance and never starts deep work automatically', async () => {
+  it('keeps the legacy digest without automatic work when no topic-announcement adapter is available', async () => {
     const messages = [message(), message({ id: 'om_quiet', chatId: 'oc_quiet' }), message({ id: 'om_unknown', chatId: 'oc_unknown' })];
     const triage = vi.fn<NonNullable<InboxIO['triage']>>(async jobs => jobs.map((j, i) => ({ id: j.id, state: ['needed', 'quiet', 'uncertain'][i] as 'needed' | 'quiet' | 'uncertain', reason: '模型判断', priority: 'normal' })));
     const s = await screened({ collect: vi.fn(async () => messages), context: vi.fn(async () => []), triage });

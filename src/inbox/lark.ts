@@ -4,6 +4,7 @@ import { mergeProcessEnv, spawnProcess } from '../platform/spawn';
 import type { InboxConfig } from './config';
 import type { InboxJob, InboxMessage } from './types';
 import { obj, type Obj } from './values';
+import { handlingState } from './reply';
 
 const str = (v: unknown) => typeof v === 'string' ? v : '';
 const iso = (n: number) => new Date(n).toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -136,19 +137,42 @@ export class InboxLark {
     }
     throw new Error('无法确认你属于该会话，或无法取得会话名称');
   }
+  async beginAnalysis(job: InboxJob, text: string): Promise<InboxConfig['destination']> {
+    if (!this.config.enabled || job.ownerOpenId !== this.config.ownerOpenId || handlingState(job) !== 'open' ||
+      JSON.stringify(job.destination) !== JSON.stringify(this.config.destination)) throw new Error('分析通知已失效');
+    const key = createHash('sha256').update(`inbox-start:${job.id}:${job.startDelivery?.id}`).digest('hex').slice(0, 48);
+    if (job.analysisTopic || this.config.deliveryMode === 'thread') {
+      const target = job.analysisTopic ?? this.config.destination;
+      if (target.chatId !== this.config.destination.chatId) throw new Error('分析话题目标已变更');
+      await this.replyAt(target, { text }, key);
+      return { ...target };
+    }
+    const response = await this.sendNewTopic({ text }, key);
+    const message = obj(response.message ?? response);
+    const replyTo = str(message.message_id);
+    if (!/^om_\w+$/.test(replyTo)) throw new Error('无法确认新建话题消息');
+    // Read the server's topic ID rather than deriving one from a message ID.
+    const anchor = await this.call(['im', '+messages-mget', '--as', 'bot', '--message-ids', replyTo, '--no-reactions']);
+    const root = parseMessages(anchor.messages).find(m => m.id === replyTo && m.chatId === this.config.destination.chatId);
+    if (!root?.threadId || !/^omt_\w+$/.test(root.threadId)) throw new Error('无法确认新建话题位置');
+    return { chatId: root.chatId, replyTo, threadId: root.threadId };
+  }
   async deliver(job: InboxJob, phase: 'pending' | 'progress' | 'result'): Promise<void> {
     const d = job.destination;
     if (job.ownerOpenId !== this.config.ownerOpenId || JSON.stringify(d) !== JSON.stringify(this.config.destination)) throw new Error('结果目标已变更，请重新处理待办');
-    if (phase !== 'result' || this.config.gui.publicUrl || job.attention?.state !== 'needed') return;
+    if (phase !== 'result' || !this.config.enabled || handlingState(job) !== 'open' || (job.draftStale && !job.error) ||
+      (!job.analysisTopic && (this.config.gui.publicUrl || job.attention?.state !== 'needed'))) return;
+    if (job.analysisTopic && job.analysisTopic.chatId !== d.chatId) throw new Error('分析话题目标已变更');
     const escape = (s: string) => s.replace(/[\r\n]/g, ' ').replace(/[<>`*_\[\]]/g, '');
-    const first = job.messages[0]!; const last = job.messages.at(-1)!;
-    const header = `来源${job.source.type === 'p2p' ? '私聊' : '群聊'}：${escape(job.source.name)}\n来源会话 ID：${job.source.chatId}\n消息范围：${iso(first.time)} ～ ${iso(last.time)}\n待办：${job.id}\n`;
+    const first = job.messages[0]!;
+    const header = `分析结果 · ${escape(job.source.name)}\n`;
     const page = this.config.gui.publicUrl || this.config.h5.publicUrl;
     const entry = page ? `\n打开会话助理：${page}#job=${job.id}` : '';
-    const text = header + '\n' + (job.error ? `分析未完成：${job.error}${entry}` : `${job.result}\n\n用量：输入 ${job.inputTokens ?? 0} / 输出 ${job.outputTokens ?? 0} tokens`);
+    const text = header + '\n' + (job.error ? `分析未完成：${job.error}${entry}` :
+      `回复草稿（供你确认后发送）：\n${job.replyDraft || '暂时无法起草，请查看下方待确认信息。'}\n\n分析结果：\n${job.analysis || job.result || ''}\n\n待确认：${job.missingInfo || '无'}${entry}`);
     const link = first.link && /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(first.link) ? `\n原消息：${first.link}` : '';
     const key = createHash('sha256').update(`${job.id}:${job.attempt ?? 0}:${phase}${this.config.deliveryMode === 'new_topic' ? `:new_topic:${d.chatId}` : ''}`).digest('hex').slice(0, 48);
-    const publish = (body: { text?: string; card?: object }) => this.config.deliveryMode === 'new_topic'
+    const publish = (body: { text?: string; card?: object }) => job.analysisTopic ? this.replyAt(job.analysisTopic, body, key) : this.config.deliveryMode === 'new_topic'
       ? this.sendNewTopic(body, key) : this.replyTopic(body, key);
     await publish({ text: text + link });
   }
@@ -173,11 +197,11 @@ export class InboxLark {
     const key = createHash('sha256').update(`attention:${id}`).digest('hex').slice(0, 48);
     await this.replyTopic({ text }, key);
   }
-  private async sendNewTopic(body: { text?: string; card?: object }, key: string): Promise<void> {
+  private async sendNewTopic(body: { text?: string; card?: object }, key: string): Promise<Obj> {
     const chatId = this.config.destination.chatId;
     const chat = await this.call(['im', 'chats', 'get', '--as', 'bot', '--chat-id', chatId]);
     if (chat.chat_mode !== 'topic') throw new Error('结果群不是话题群，停止新建话题');
-    await this.call(['im', '+messages-send', '--as', 'bot', '--chat-id', chatId,
+    return this.call(['im', '+messages-send', '--as', 'bot', '--chat-id', chatId,
       ...(body.card ? ['--msg-type', 'interactive', '--content', JSON.stringify(body.card)] : ['--text', (body.text ?? '').replace(/<\/?at\b[^>]*>/gi, '')]),
       '--idempotency-key', key]);
   }
