@@ -8,7 +8,7 @@ import { resolveAppSecret } from '../config/secret-resolver';
 import { inboxMode, intakeScope, normalizeInbox, validateInbox, type InboxConfig, type InboxMode, type IntakeScope } from './config';
 import { loadAnalysisProvider, analyzeInbox } from './analyzer';
 import { triageWithChatTools } from './codex-triage';
-import { InboxChatTools } from './chat-tools';
+import { InboxReadTools } from './read-tools';
 import { InboxLark } from './lark';
 import { InboxService } from './service';
 import { InboxStore } from './store';
@@ -113,7 +113,7 @@ export class InboxManager {
       this.unlock = await lockfile.lock(lease, { stale: 60_000, update: 10_000, retries: 0, onCompromised: () => { void this.close(); } });
       const lark = new InboxLark({ profile: config.executorProfile, rootDir: this.rootDir }, config);
       this.lark = lark;
-      const chatTools = new InboxChatTools(async (args, signal) => {
+      const readTools = new InboxReadTools(async (args, signal) => {
         const reader = new InboxLark({ profile: config.executorProfile, rootDir: this.rootDir }, config);
         const cancel = () => reader.close();
         signal.addEventListener('abort', cancel, { once: true });
@@ -121,7 +121,7 @@ export class InboxManager {
           signal.throwIfAborted();
           await reader.checkOwner(config.ownerOpenId);
           signal.throwIfAborted();
-          return await reader.call(args);
+          return await reader.callValue(args);
         } finally { signal.removeEventListener('abort', cancel); reader.close(); }
       });
       this.service = new InboxService(new InboxStore(join(folder, 'state.json')), config, {
@@ -131,7 +131,7 @@ export class InboxManager {
         source: id => lark.source(id), deliver: (...args) => lark.deliver(...args),
         analyze: async (job, signal) => analyzeInbox(job, await loadAnalysisProvider(controls.profileConfig), signal),
         triage: async (jobs, signal, onProgress) => triageWithChatTools(jobs, config.attentionProfile,
-          await loadAnalysisProvider(controls.profileConfig), chatTools, signal, onProgress),
+          await loadAnalysisProvider(controls.profileConfig), readTools, signal, onProgress),
         notifyAttention: (jobs, id) => lark.notifyAttention(jobs, id),
       });
       const secret = await resolveAppSecret(controls.cfg, paths);

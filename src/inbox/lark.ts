@@ -67,12 +67,15 @@ export class InboxLark {
   close(): void { this.abort.abort(); }
   cancelPending(): void { this.abort.abort(); this.abort = new AbortController(); }
   async call(args: string[]): Promise<Obj> {
+    return obj(await this.callValue(args));
+  }
+  async callValue(args: string[]): Promise<unknown> {
     this.abort.signal.throwIfAborted();
     const r = await this.exec([...args, '--json'], { ...larkCliEnv(this.ctx), TZ: 'Asia/Shanghai' }, 60_000);
     let envelope: Obj;
     try { envelope = obj(JSON.parse(r.stdout)); } catch { throw new Error('飞书读取失败，请检查当前 profile 的用户授权和 bridge 绑定状态'); }
     if (r.code !== 0 || r.timedOut || envelope.ok !== true) throw new Error('飞书接口失败，请检查当前 profile 的权限；未自动切换身份');
-    return obj(envelope.data);
+    return envelope.data;
   }
   async checkOwner(owner: string): Promise<void> {
     const auth = await getUserAuthStatus(this.ctx, this.exec);

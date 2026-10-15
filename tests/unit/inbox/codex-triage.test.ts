@@ -1,7 +1,7 @@
 import { expect, it, vi } from 'vitest';
 import type { InboxJob } from '../../../src/inbox/types';
 import { triageFailureReason, triageWithChatTools } from '../../../src/inbox/codex-triage';
-import { InboxChatTools, INBOX_CHAT_TOOLS } from '../../../src/inbox/chat-tools';
+import { InboxReadTools, INBOX_READ_TOOLS } from '../../../src/inbox/read-tools';
 
 const job = (id: string): InboxJob => ({ id, ownerOpenId: 'ou_owner', source: { chatId: 'oc_source', name: 'test', type: 'p2p' }, messages: [] } as unknown as InboxJob);
 const answer = (id: string, state = 'quiet') => ({ id, state, reason: '具体事实', priority: 'normal' });
@@ -10,11 +10,11 @@ const message = (items = [answer('a')]) => ({ type: 'message', role: 'assistant'
 const toolCall = (name = 'read_thread_messages', args: unknown = { threadId: 'omt_topic', pageToken: null }, id = 'call_1') =>
   ({ type: 'function_call', name, arguments: JSON.stringify(args), call_id: id });
 const response = (output: unknown[], status = 'completed') => new Response(JSON.stringify({ status, output }), { headers: { 'content-type': 'application/json' } });
-const fixture = () => { const call = vi.fn(async () => ({ messages: [] })); return { call, tools: new InboxChatTools(call) }; };
-const run = (tools: InboxChatTools, request: typeof fetch, jobs = [job('a')], signal = new AbortController().signal) =>
+const fixture = () => { const call = vi.fn(async () => ({ messages: [] })); return { call, tools: new InboxReadTools(call) }; };
+const run = (tools: InboxReadTools, request: typeof fetch, jobs = [job('a')], signal = new AbortController().signal) =>
   triageWithChatTools(jobs, '关联背景', provider, tools, signal, undefined, request);
 
-it('advertises only four read-only chat functions, with fixed flash model and original provider', async () => {
+it('advertises only read-only Lark functions, with fixed flash model and original provider', async () => {
   const f = fixture();
   const request = vi.fn<typeof fetch>(async () => response([message()]));
   expect(await run(f.tools, request)).toEqual([answer('a')]);
@@ -22,8 +22,8 @@ it('advertises only four read-only chat functions, with fixed flash model and or
   const body = JSON.parse(String(options!.body));
   expect(url).toBe(provider.url);
   expect(options).toMatchObject({ redirect: 'error', headers: { authorization: 'Bearer private-token' } });
-  expect(body).toMatchObject({ model: 'deepseek-flash', tools: INBOX_CHAT_TOOLS, tool_choice: 'auto', store: false });
-  expect(body.tools.map((t: { type: string }) => t.type)).toEqual(['function', 'function', 'function', 'function']);
+  expect(body).toMatchObject({ model: 'deepseek-flash', tools: INBOX_READ_TOOLS, tool_choice: 'auto', store: false });
+  expect(body.tools.map((t: { type: string }) => t.type)).toEqual(Array(7).fill('function'));
   expect(body).not.toHaveProperty('cwd');
   expect(provider.model).toBe('default-model');
   expect(f.call).not.toHaveBeenCalled();
@@ -36,6 +36,14 @@ it('executes validated chat reads and returns call outputs to the next model rou
   expect(f.call).toHaveBeenCalledWith(['im', '+threads-messages-list', '--thread=omt_topic', '--order=asc', '--page-size=50', '--as=user', '--no-reactions'], expect.any(AbortSignal));
   const second = JSON.parse(String(request.mock.calls[1]![1]!.body));
   expect(second.input).toContainEqual({ type: 'function_call_output', call_id: 'call_1', output: JSON.stringify({ messages: [], hasMore: false, nextPageToken: null, truncated: false }) });
+});
+
+it('validates cross-domain calls in the whole response before dispatching any', async () => {
+  const f = fixture();
+  const request = vi.fn<typeof fetch>(async () => response([toolCall(), toolCall('call_lark_read_tool',
+    { operation: 'docs +update', argumentsJson: '{}' }, 'bad')]));
+  await expect(run(f.tools, request)).rejects.toThrow('不允许');
+  expect(f.call).not.toHaveBeenCalled();
 });
 
 it.each(['exec', 'exec_command', 'read_file', 'apply_patch', 'mcp__grafana__query', 'messages_send', 'download_resources', 'spawn_agent', 'constructor', '__proto__'])('rejects unauthorized %s before any CLI execution', async name => {
@@ -100,7 +108,7 @@ it('cancels model requests and never accepts late results or starts a tool after
 
 it('propagates timeout to the in-flight tool and redacts operational errors', async () => {
   let stopped = false;
-  const tools = new InboxChatTools(async (_args, signal) => new Promise((_resolve, reject) => {
+  const tools = new InboxReadTools(async (_args, signal) => new Promise((_resolve, reject) => {
     signal.addEventListener('abort', () => { stopped = true; reject(signal.reason); }, { once: true });
   }));
   await expect(triageWithChatTools([job('a')], '', provider, tools, new AbortController().signal, undefined,
