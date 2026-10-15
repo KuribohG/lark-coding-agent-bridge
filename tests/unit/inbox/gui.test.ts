@@ -11,7 +11,7 @@ import type { InboxJob } from '../../../src/inbox/types';
 const workers: InboxGui[] = [];
 afterEach(async () => { await Promise.all(workers.splice(0).map(w => w.close())); });
 const id = '01234567-0123-4123-8123-0123456789ab';
-async function setup() {
+async function setup(compactSync = false) {
   const dir = await mkdtemp(join(tmpdir(), 'inbox-gui-test-'));
   const key = join(dir, 'key'); await writeFile(key, 'test-key', { mode: 0o600 });
   const config = normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner',
@@ -24,7 +24,7 @@ async function setup() {
   let commands: object[] = []; let failReceipt = false;
   const request = vi.fn(async (url: string | URL | Request, options?: RequestInit) => {
     if (String(url).endsWith('/receipt') && failReceipt) return new Response('', { status: 503 });
-    return Response.json(String(url).endsWith('/sync') ? { commands } : { ok: true });
+    return Response.json(String(url).endsWith('/sync') ? { commands, compactSync } : { ok: true });
   });
   const ledger = join(dir, 'receipts.json');
   const changeMode = vi.fn(async (mode: string) => { config.enabled = mode !== 'off'; config.autoAnalyze = mode === 'auto'; });
@@ -132,4 +132,22 @@ it('connects while off even when Feishu message lookup is unavailable', async ()
   const body = JSON.parse(String(s.request.mock.calls[0]?.[1]?.body));
   expect(body.snapshot.enabled).toBe(false);
   expect(body.snapshot.resultUrl).toContain('open_thread_id=omt_result');
+});
+
+it('uses compact polls only after negotiation and periodically resends the full snapshot', async () => {
+  const s = await setup(true); await s.worker.start(); await idle(s.request);
+  expect(JSON.parse(String(s.request.mock.calls[0]![1]?.body)).snapshot).toBeDefined();
+  await s.worker.tick(); expect(JSON.parse(String(s.request.mock.calls.at(-1)![1]?.body)).snapshot).toBeUndefined();
+  const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 16000);
+  try { await s.worker.tick(); expect(JSON.parse(String(s.request.mock.calls.at(-1)![1]?.body)).snapshot).toBeDefined(); }
+  finally { clock.mockRestore(); }
+});
+it('saves changed snapshot with the receipt in two requests rather than three', async () => {
+  const s = await setup(true); s.service.config.enabled = false; s.commands([command('mode', 'on')]);
+  await s.worker.start(); await vi.waitFor(() => expect(s.request).toHaveBeenCalledTimes(2));
+  const [url, options] = s.request.mock.calls[1]!;
+  expect(String(url)).toContain('/receipt');
+  const body = JSON.parse(String(options?.body));
+  expect(body.ok).toBe(true); expect(body.snapshot.enabled).toBe(true);
+  await s.worker.tick(); expect(s.changeMode).toHaveBeenCalledTimes(1);
 });

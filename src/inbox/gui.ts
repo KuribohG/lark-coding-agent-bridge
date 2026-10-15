@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { writeFileAtomic } from '../platform/atomic-write';
 import type { InboxService } from './service';
@@ -56,6 +57,10 @@ export class InboxGui {
   private running?: Promise<void>;
   private stopped = false;
   private key = '';
+  private compactSync = false;
+  private lastPulse = 0;
+  private lastSnapshot = '';
+  private snapshotAt = 0;
   private resultUrl = '';
   private ledger: Ledger;
   private abort = new AbortController();
@@ -77,11 +82,12 @@ export class InboxGui {
       if (saved.ownerKey !== this.ledger.ownerKey || !saved.receipts) throw new Error('工作台回执归属不匹配');
       this.ledger = saved;
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-    this.timer = setInterval(() => this.pulse(), 5000); this.timer.unref();
+    this.timer = setInterval(() => this.pulse(), 1000); this.timer.unref();
     this.pulse();
   }
   private pulse(): void {
-    if (this.stopped || this.running) return;
+    if (this.stopped || this.running || (!this.compactSync && Date.now() - this.lastPulse < 5000)) return;
+    this.lastPulse = Date.now();
     this.running = this.tick().then(() => { this.lastError = undefined; }).catch(error => {
       if (!this.stopped) this.lastError = error instanceof Error ? error.message : '工作台同步失败';
     }).finally(() => { this.running = undefined; });
@@ -128,23 +134,37 @@ export class InboxGui {
         for (const [id, entry] of Object.entries(this.ledger.receipts)) if (Date.now() - entry.time > 86400000) delete this.ledger.receipts[id];
         await writeFileAtomic(this.ledgerPath, JSON.stringify(this.ledger), { mode: 0o600 });
       }
-      if (['mode', 'review', 'scope', 'batch'].includes(command.action) && receipt.ok) await this.sync();
-      await this.call('receipt', { bridgeKey: this.ledger.ownerKey, id: receipt.id, ok: receipt.ok, result: receipt.result });
+      const changed = ['mode', 'review', 'scope', 'batch'].includes(command.action) && receipt.ok;
+      if (changed && !this.compactSync) await this.sync();
+      const snapshot = changed && this.compactSync ? this.snapshot() : undefined;
+      await this.call('receipt', { bridgeKey: this.ledger.ownerKey, id: receipt.id, ok: receipt.ok, result: receipt.result, ...(snapshot ? { snapshot } : {}) });
+      // Periodic full sync also repairs an acknowledged-receipt replay after reconnect.
+      if (snapshot) { this.lastSnapshot = this.snapshotHash(snapshot); this.snapshotAt = Date.now(); }
       if (command.action === 'mode') return;
     }
   }
-  private async sync(): Promise<Record<string, unknown>> {
+  private snapshot() {
     const config = this.service.config;
     const all = this.service.list(500).filter(j => j.ownerOpenId === config.ownerOpenId);
     const jobs = guiJobs(all);
-    return this.call('sync', { bridgeKey: this.ledger.ownerKey,
-      ownerOpenId: config.ownerOpenId, feishuClientId: this.appId,
-      snapshot: { jobs, total: all.length, enabled: config.enabled, autoAnalyze: config.autoAnalyze,
-        attentionControl: true, attentionProfile: config.attentionProfile || ATTENTION_RULES, batchControl: true,
-        modeControl: Boolean(this.changeMode), draftControl: true, intakeScope: intakeScope(config), scopeControl: Boolean(this.changeScope),
-        waitMinutes: config.waitMinutes, dailyAutoLimit: config.dailyAutoLimit,
-        resultUrl: this.resultUrl,
-        error: this.service.lastError?.slice(0, 1000) } });
+    return { jobs, total: all.length, enabled: config.enabled, autoAnalyze: config.autoAnalyze,
+      attentionControl: true, attentionProfile: config.attentionProfile || ATTENTION_RULES, batchControl: true,
+      modeControl: Boolean(this.changeMode), draftControl: true, intakeScope: intakeScope(config), scopeControl: Boolean(this.changeScope),
+      waitMinutes: config.waitMinutes, dailyAutoLimit: config.dailyAutoLimit,
+      resultUrl: this.resultUrl, error: this.service.lastError?.slice(0, 1000) };
+  }
+  private snapshotHash(snapshot: object): string { return createHash('sha256').update(JSON.stringify(snapshot)).digest('hex'); }
+  private async sync(): Promise<Record<string, unknown>> {
+    const config = this.service.config;
+    const snapshot = this.snapshot(); const hash = this.snapshotHash(snapshot);
+    const include = !this.compactSync || hash !== this.lastSnapshot || Date.now() - this.snapshotAt >= 15000;
+    try {
+      const response = await this.call('sync', { bridgeKey: this.ledger.ownerKey,
+        ownerOpenId: config.ownerOpenId, feishuClientId: this.appId, ...(include ? { snapshot } : {}) });
+      this.compactSync = response.compactSync === true;
+      if (include) { this.lastSnapshot = hash; this.snapshotAt = Date.now(); }
+      return response;
+    } catch (error) { this.compactSync = false; throw error; }
   }
   private async execute(command: Command): Promise<unknown> {
     if (this.stopped) throw new Error('助理已关闭');

@@ -38,6 +38,8 @@ export class InboxService {
   private stopped = false;
   private modeChanges = 0;
   private lastPoll = 0;
+  private polling?: Promise<void>;
+  private intakeGeneration = 0;
   lastError?: string;
   constructor(readonly store: InboxStore, readonly config: InboxConfig, private io: InboxIO, private now = Date.now) {}
   private serial<T>(fn: () => Promise<T>): Promise<T> {
@@ -60,6 +62,7 @@ export class InboxService {
     this.controller?.abort();
     this.io.cancel?.();
     await this.running;
+    await this.polling;
     await this.chain;
   }
   list(limit = 100): InboxJob[] {
@@ -70,7 +73,7 @@ export class InboxService {
   }
   async setMode(mode: InboxMode, persist?: () => Promise<void>): Promise<void> {
     if (!['off', 'on'].includes(mode)) throw new Error('无效运行模式');
-    this.modeChanges++;
+    this.modeChanges++; this.intakeGeneration++;
     if (mode === 'off') { this.controller?.abort(); this.io.cancelPending?.(); }
     try {
       await this.serial(async () => {
@@ -100,7 +103,7 @@ export class InboxService {
   }
   async setScope(scope: IntakeScope, persist?: () => Promise<void>): Promise<void> {
     if (!['private', 'private_mentions', 'all'].includes(scope)) throw new Error('无效接收范围');
-    this.modeChanges++;
+    this.modeChanges++; this.intakeGeneration++;
     this.controller?.abort();
     this.io.cancelPending?.();
     try {
@@ -218,38 +221,51 @@ export class InboxService {
       return structuredClone(job);
     });
   }
+  private async poll(): Promise<void> {
+    const now = this.now();
+    if (this.blocked() || now - this.lastPoll < this.config.pollSeconds * 1000) return;
+    this.lastPoll = now;
+    const generation = this.intakeGeneration;
+    const current = () => !this.blocked() && generation === this.intakeGeneration;
+    try {
+      await this.io.checkOwner(this.config.ownerOpenId);
+      for (const kind of ['p2p', 'mention', 'group'] as const) {
+        if (!current()) return;
+        if (kind === 'p2p' ? !this.config.watchPrivate : kind === 'group' ? intakeScope(this.config) !== 'all' : !this.config.watchMentions || intakeScope(this.config) === 'all') continue;
+        const start = this.store.data.cursors[kind] ?? now;
+        const messages = await this.io.collect(kind, start - 300_000, now);
+        await this.serial(async () => {
+          if (!current()) return;
+          for (const m of messages.sort(compareMessages)) this.ingest(m, start - 300_000);
+          this.store.data.cursors[kind] = now; await this.store.save();
+        });
+      }
+      if (!current()) return;
+      const sources = new Map<string, InboxJob>();
+      for (const job of this.store.data.jobs) if (!resolved(job) && this.acceptsSource(job)) sources.set(job.source.chatId, structuredClone(job));
+      for (const [chatId, job] of [...sources].sort((a, b) => (this.store.data.cursors[`context:${a[0]}`] ?? 0) - (this.store.data.cursors[`context:${b[0]}`] ?? 0)).slice(0, 10)) {
+        if (!current()) return;
+        const key = `context:${chatId}`;
+        const since = this.store.data.cursors[key] ?? job.messages[0]!.time;
+        if (now - since < 60_000) continue;
+        const context = await this.io.context(chatId, since - 60_000, now);
+        await this.serial(async () => {
+          if (!current()) return;
+          for (const m of context.sort(compareMessages)) this.ingest(m, since - 60_000);
+          this.store.data.cursors[key] = now; await this.store.save();
+        });
+      }
+      if (current()) this.lastError = undefined;
+    } catch (error) { if (current()) this.lastError = error instanceof Error ? error.message : 'inbox poll failed'; }
+  }
   async tick(): Promise<void> {
+    if (this.blocked()) return;
+    if (!this.polling) this.polling = this.poll().finally(() => { this.polling = undefined; });
+    await this.polling;
     await this.serial(async () => {
       if (this.blocked()) return;
       try {
         const now = this.now();
-        if (now - this.lastPoll >= this.config.pollSeconds * 1000) {
-          this.lastPoll = now;
-          await this.io.checkOwner(this.config.ownerOpenId);
-          for (const kind of ['p2p', 'mention', 'group'] as const) {
-            if (this.blocked()) return;
-            if (kind === 'p2p' ? !this.config.watchPrivate : kind === 'group' ? intakeScope(this.config) !== 'all' : !this.config.watchMentions || intakeScope(this.config) === 'all') continue;
-            const start = this.store.data.cursors[kind] ?? now;
-            // Search indexing can lag. IDs, rather than timestamps, deduplicate overlap.
-            const messages = await this.io.collect(kind, start - 300_000, now);
-            if (this.blocked()) return;
-            for (const m of messages.sort(compareMessages)) this.ingest(m, start - 300_000);
-            this.store.data.cursors[kind] = now;
-            await this.store.save();
-          }
-          // Replies/recovery often do not mention the owner. Check active sources too.
-          const activeSources = new Map<string, InboxJob>();
-          for (const job of this.store.data.jobs) if (!resolved(job) && this.acceptsSource(job)) activeSources.set(job.source.chatId, job);
-          for (const [chatId, job] of [...activeSources].sort((a, b) => (this.store.data.cursors[`context:${a[0]}`] ?? 0) - (this.store.data.cursors[`context:${b[0]}`] ?? 0)).slice(0, 10)) {
-            const key = `context:${chatId}`;
-            const since = this.store.data.cursors[key] ?? job.messages[0]!.time;
-            if (now - since < 60_000) continue;
-            const context = await this.io.context(chatId, since - 60_000, now);
-            if (this.blocked()) return;
-            for (const m of context.sort(compareMessages)) this.ingest(m, since - 60_000);
-            this.store.data.cursors[key] = now;
-          }
-        }
         // Deep results are read in the workbench. No pending, progress or failure posts.
         for (const job of this.store.data.jobs) {
           if (job.state === 'ready') {
@@ -268,7 +284,6 @@ export class InboxService {
         this.store.data.jobs = this.store.data.jobs.filter(j => resolved(j) ? now - j.updatedAt < 7 * 86400_000 : j.attention?.state !== 'quiet' || quiet.has(j.id));
         for (const [id, time] of Object.entries(this.store.data.seen)) if (now - time > 2 * 86400_000) delete this.store.data.seen[id];
         await this.store.save();
-        this.lastError = undefined;
       } catch (e) { this.lastError = e instanceof Error ? e.message : 'inbox poll failed'; }
       if (!this.running && !this.blocked()) {
         const next = this.store.data.jobs.find(j => j.state === 'queued' && j.analysisRequested && !resolved(j));

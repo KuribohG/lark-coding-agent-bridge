@@ -501,3 +501,22 @@ describe('lightweight attention and quiet delivery', () => {
     expect(s.io.analyze).not.toHaveBeenCalled(); expect(s.io.deliver).not.toHaveBeenCalled();
   });
 });
+
+
+it('allows batch handling during an unfinished remote collection', async () => {
+  const s = await setup(); await s.service.tick(); const job = s.service.list()[0]!;
+  let finish!: (value: InboxMessage[]) => void;
+  vi.mocked(s.io.collect).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  s.advance(61000); const polling = s.service.tick(); await vi.waitFor(() => expect(finish).toBeDefined());
+  try {
+    await s.service.batchReview({ items: [{ id: job.id, revision: job.revision }], handlingState: 'handled' }, 'ou_owner', 'quick-batch');
+    expect(s.service.list()[0]?.handlingState).toBe('handled');
+  } finally { finish([]); await s.service.setMode('off'); await polling; }
+});
+it('rejects stale collection across an off/on cycle even when enabled again', async () => {
+  let finish!: (value: InboxMessage[]) => void;
+  const s = await setup({ collect: vi.fn(() => new Promise<InboxMessage[]>(resolve => { finish = resolve; })) });
+  const polling = s.service.tick(); await vi.waitFor(() => expect(finish).toBeDefined());
+  await s.service.setMode('off'); await s.service.setMode('on'); finish([message()]); await polling;
+  expect(s.service.list()).toHaveLength(0); expect(s.io.analyze).not.toHaveBeenCalled();
+});

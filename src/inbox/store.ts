@@ -5,6 +5,7 @@ import type { InboxState } from './types';
 
 export class InboxStore {
   data: InboxState = { version: 1, cursors: {}, seen: {}, jobs: [], autoUsage: {} };
+  private persisted = '';
   constructor(readonly path: string) {}
   async load(): Promise<void> {
     await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
@@ -17,5 +18,9 @@ export class InboxStore {
     } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
     await this.save();
   }
-  async save(): Promise<void> { await writeFileAtomic(this.path, JSON.stringify(this.data), { mode: 0o600 }); }
+  async save(): Promise<void> {
+    const encoded = JSON.stringify(this.data);
+    if (encoded === this.persisted) return;
+    await writeFileAtomic(this.path, encoded, { mode: 0o600 }); this.persisted = encoded;
+  }
 }
