@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { inboxMode, intakeScope, type IntakeScope, type InboxConfig, type InboxMode } from './config';
 import { InboxStore } from './store';
 import { handlingState, replyContent, resultText } from './reply';
-import type { InboxIO, InboxJob, InboxMessage } from './types';
+import type { Attention, InboxIO, InboxJob, InboxMessage } from './types';
 
 const signature = (job: InboxJob) => createHash('sha256').update(JSON.stringify(job.messages)).digest('hex');
 const resolved = (job: InboxJob) => handlingState(job) !== 'open';
@@ -40,6 +40,7 @@ export class InboxService {
   private lastPoll = 0;
   private polling?: Promise<void>;
   private intakeGeneration = 0;
+  private triageProgress = new Map<string, { signature: string; progress: NonNullable<Attention['progress']> }>();
   lastError?: string;
   constructor(readonly store: InboxStore, readonly config: InboxConfig, private io: InboxIO, private now = Date.now) {}
   private serial<T>(fn: () => Promise<T>): Promise<T> {
@@ -67,6 +68,12 @@ export class InboxService {
   }
   list(limit = 100): InboxJob[] {
     const jobs = structuredClone(this.store.data.jobs).reverse();
+    for (const job of jobs) {
+      const entry = this.triageProgress.get(job.id);
+      if (entry && !this.blocked() && !resolved(job) && this.acceptsSource(job) && job.attention?.state === 'pending' && signature(job) === entry.signature) {
+        job.attention.progress = { ...entry.progress };
+      }
+    }
     return [...jobs.filter(j => !resolved(j) && j.attention?.state === 'needed'),
       ...jobs.filter(j => !resolved(j) && j.attention?.state !== 'needed' && j.attention?.state !== 'quiet'),
       ...jobs.filter(j => !resolved(j) && j.attention?.state === 'quiet'), ...jobs.filter(resolved)].slice(0, limit);
@@ -74,7 +81,7 @@ export class InboxService {
   async setMode(mode: InboxMode, persist?: () => Promise<void>): Promise<void> {
     if (!['off', 'on'].includes(mode)) throw new Error('无效运行模式');
     this.modeChanges++; this.intakeGeneration++;
-    if (mode === 'off') { this.controller?.abort(); this.io.cancelPending?.(); }
+    if (mode === 'off') { this.controller?.abort(); this.io.cancelPending?.(); this.triageProgress.clear(); }
     try {
       await this.serial(async () => {
         if (this.stopped) throw new Error('助理连接已关闭');
@@ -106,6 +113,7 @@ export class InboxService {
     this.modeChanges++; this.intakeGeneration++;
     this.controller?.abort();
     this.io.cancelPending?.();
+    this.triageProgress.clear();
     try {
       await this.serial(async () => {
         if (this.stopped) throw new Error('助理连接已关闭');
@@ -371,20 +379,29 @@ export class InboxService {
   }
   private async triage(jobs: InboxJob[], signal: AbortSignal): Promise<void> {
     const inputs = structuredClone(jobs);
-    let results: Awaited<ReturnType<NonNullable<InboxIO['triage']>>>;
-    try { results = await this.io.triage!(inputs, signal); }
-    catch { results = inputs.map(j => ({ id: j.id, state: 'uncertain', reason: '关注筛选未完成，请人工核对' })); }
-    await this.serial(async () => {
-      if (signal.aborted || this.blocked()) return;
-      for (const input of inputs) {
-        const job = this.store.data.jobs.find(j => j.id === input.id);
-        if (!job || resolved(job) || !this.acceptsSource(job) || signature(job) !== signature(input) || job.attention?.state !== 'pending') continue;
-        const result = results.find(r => r.id === job.id);
-        job.attention = result ? { state: result.state, reason: result.reason, priority: result.priority } : { state: 'uncertain', reason: '关注筛选结果缺失，请人工核对' };
-        this.touch(job);
-      }
-      await this.store.save();
-    });
+    for (const job of inputs) this.triageProgress.set(job.id, { signature: signature(job), progress: { startedAt: this.now(), updatedAt: this.now(), text: '' } });
+    try {
+      let results: Awaited<ReturnType<NonNullable<InboxIO['triage']>>>;
+      try { results = await this.io.triage!(inputs, signal, updates => {
+        if (signal.aborted || this.blocked()) return;
+        for (const update of updates) {
+          const entry = this.triageProgress.get(update.id);
+          if (entry && entry.progress.text !== update.text) entry.progress = { ...entry.progress, text: update.text.slice(0, 240), updatedAt: this.now() };
+        }
+      }); }
+      catch { results = inputs.map(j => ({ id: j.id, state: 'uncertain', reason: '关注筛选未完成，请人工核对' })); }
+      await this.serial(async () => {
+        if (signal.aborted || this.blocked()) return;
+        for (const input of inputs) {
+          const job = this.store.data.jobs.find(j => j.id === input.id);
+          if (!job || resolved(job) || !this.acceptsSource(job) || signature(job) !== signature(input) || job.attention?.state !== 'pending') continue;
+          const result = results.find(r => r.id === job.id);
+          job.attention = result ? { state: result.state, reason: result.reason, priority: result.priority } : { state: 'uncertain', reason: '关注筛选结果缺失，请人工核对' };
+          this.touch(job);
+        }
+        await this.store.save();
+      });
+    } finally { for (const job of inputs) this.triageProgress.delete(job.id); }
   }
   private async notifyAttention(): Promise<void> {
     if (this.blocked() || !this.io.notifyAttention) return;

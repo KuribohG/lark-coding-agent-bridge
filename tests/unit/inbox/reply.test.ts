@@ -59,3 +59,26 @@ it('bounds triage input, ignores raw instructions and validates complete unique 
   await expect(triageInbox(jobs, '', provider, new AbortController().signal, request([answer('a')]))).rejects.toThrow('不完整');
   await expect(triageInbox(jobs, '', provider, new AbortController().signal, request([answer('a'), answer('b')]))).resolves.toHaveLength(2);
 });
+
+it('streams per-item answer prefixes before completion, handling split escapes without exposing reasoning', async () => {
+  let stream!: ReadableStreamDefaultController<Uint8Array>;
+  const request = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; } }), { headers: { 'content-type': 'text/event-stream' } }));
+  const progress = vi.fn(); let finished = false;
+  const task = triageInbox([job('a'), job('b')], '', { model: 'test', key: 'fixture', url: 'https://model.test' }, new AbortController().signal, request, progress)
+    .then(result => { finished = true; return result; });
+  const emit = (event: object, newline = true) => {
+    const bytes = new TextEncoder().encode('data: ' + JSON.stringify(event) + (newline ? '\n\n' : ''));
+    for (let i = 0; i < bytes.length; i += 7) stream.enqueue(bytes.slice(i, i + 7));
+  };
+  emit({ type: 'response.reasoning_text.delta', delta: 'private-reasoning' });
+  emit({ type: 'response.output_text.delta', delta: '{"items":[{"id":"a","state":"needed","reason":"需要\\u786' });
+  await vi.waitFor(() => expect(progress).toHaveBeenLastCalledWith([{ id: 'a', text: '需要' }]));
+  expect(finished).toBe(false);
+  emit({ type: 'response.output_text.delta', delta: 'e认\\"版本{A}\\"","priority":"normal"},{"id":"b","reason":"信息不足' });
+  await vi.waitFor(() => expect(progress).toHaveBeenLastCalledWith([{ id: 'a', text: '需要确认"版本{A}"' }, { id: 'b', text: '信息不足' }]));
+  const items = [{ id: 'a', state: 'needed', reason: '需要确认"版本{A}"', priority: 'normal' }, { id: 'b', state: 'uncertain', reason: '信息不足', priority: 'normal' }];
+  emit({ type: 'response.completed', response: { status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ items }) }] }] } }, false);
+  stream.close();
+  expect(await task).toEqual(items);
+  expect(JSON.stringify(progress.mock.calls)).not.toContain('private-reasoning');
+});

@@ -455,9 +455,15 @@ describe('lightweight attention and quiet delivery', () => {
   });
   it.each(['off', 'scope', 'changed', 'handled'] as const)('drops obsolete triage after %s', async action => {
     let complete!: (value: Awaited<ReturnType<NonNullable<InboxIO['triage']>>>) => void;
-    const triage = vi.fn<NonNullable<InboxIO['triage']>>(() => new Promise(resolve => { complete = resolve; }));
+    let progress!: NonNullable<Parameters<NonNullable<InboxIO['triage']>>[2]>;
+    const triage = vi.fn<NonNullable<InboxIO['triage']>>((_jobs, _signal, onProgress) => new Promise(resolve => { complete = resolve; progress = onProgress!; }));
     const s = await screened({ triage }); await vi.waitFor(() => expect(complete).toBeDefined());
     const before = s.service.list()[0]!;
+    const save = vi.spyOn(s.store, 'save');
+    progress([{ id: before.id, text: '需要确认' }]);
+    expect(s.service.list()[0]?.attention?.progress?.text).toBe('需要确认');
+    expect(s.store.data.jobs[0]?.attention?.progress).toBeUndefined();
+    expect(s.service.list()[0]?.revision).toBe(before.revision); expect(save).not.toHaveBeenCalled();
     if (action === 'off') await s.service.setMode('off');
     if (action === 'scope') await s.service.setScope('private');
     if (action === 'handled') await s.service.batchReview({ items: [{ id: before.id, revision: before.revision }], handlingState: 'handled' }, 'ou_owner', 'batch1');
@@ -465,6 +471,8 @@ describe('lightweight attention and quiet delivery', () => {
       const changed = message({ text: '新问题需要重新筛选' });
       vi.mocked(s.io.collect).mockResolvedValue([changed]); vi.mocked(s.io.context).mockResolvedValue([changed]); s.advance(61_000); await s.service.tick();
     }
+    progress([{ id: before.id, text: '过期的后续文本' }]);
+    expect(s.service.list()[0]?.attention?.progress).toBeUndefined();
     complete(await classify([before], new AbortController().signal)); await new Promise(r => setTimeout(r, 20));
     expect(s.service.list()[0]?.attention?.state).not.toBe('needed'); expect(s.io.notifyAttention).not.toHaveBeenCalled();
   });

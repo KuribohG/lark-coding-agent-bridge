@@ -51,7 +51,7 @@ export async function analyzeInbox(job: InboxJob, provider: AnalysisProvider, si
   return requestModel(analysisBody(job, provider), provider, signal, request);
 }
 
-async function requestModel(body: object, provider: AnalysisProvider, signal: AbortSignal, request = fetch) {
+async function requestModel(body: object, provider: AnalysisProvider, signal: AbortSignal, request = fetch, onText?: (text: string) => void) {
   const response = await request(provider.url, {
     method: 'POST', signal: AbortSignal.any([signal, AbortSignal.timeout(180_000)]),
     headers: { ...provider.headers, authorization: `Bearer ${provider.key}`, 'content-type': 'application/json' },
@@ -61,20 +61,28 @@ async function requestModel(body: object, provider: AnalysisProvider, signal: Ab
   let completed: Record<string, unknown> | undefined;
   if (response.headers.get('content-type')?.includes('application/json')) completed = obj(await response.json());
   else {
-    let buffer = ''; const decoder = new TextDecoder(); let bytes = 0;
+    let buffer = '', preview = ''; const decoder = new TextDecoder(); let bytes = 0;
+    const line = (value: string) => {
+      value = value.trim();
+      if (!value.startsWith('data:') || value === 'data: [DONE]') return;
+      const event = obj(JSON.parse(value.slice(5)));
+      // Only display answer text; reasoning and tool events are never forwarded.
+      if (event.type === 'response.output_text.delta' && typeof event.delta === 'string' && preview.length < 30000) {
+        preview += event.delta; if (!signal.aborted) onText?.(preview);
+      }
+      if (event.type === 'response.completed' || event.type === 'response.incomplete') completed = obj(event.response);
+      if (event.type === 'error' || event.type === 'response.failed') throw new Error('模型分析失败');
+    };
     for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
       bytes += chunk.byteLength;
       if (bytes > 2_000_000) throw new Error('模型响应超出限制');
       buffer += decoder.decode(chunk, { stream: true });
       let end: number;
       while ((end = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0, end).trim(); buffer = buffer.slice(end + 1);
-        if (!line.startsWith('data:') || line === 'data: [DONE]') continue;
-        const event = obj(JSON.parse(line.slice(5)));
-        if (event.type === 'response.completed' || event.type === 'response.incomplete') completed = obj(event.response);
-        if (event.type === 'error' || event.type === 'response.failed') throw new Error('模型分析失败');
+        line(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
       }
     }
+    line(buffer + decoder.decode());
   }
   if (!completed || completed.status !== 'completed') throw new Error('模型未完成分析，请手动重试');
   // Never dispatch function calls, even if a provider emits one despite tool_choice:none.
@@ -83,6 +91,7 @@ async function requestModel(body: object, provider: AnalysisProvider, signal: Ab
   const text = output.flatMap(v => { const m = obj(v); return m.type === 'message' && Array.isArray(m.content) ? m.content : []; })
     .filter(v => obj(v).type === 'output_text').map(v => String(obj(v).text || '')).join('\n').trim();
   if (!text) throw new Error('模型没有返回分析文本');
+  if (!signal.aborted) onText?.(text);
   const usage = obj(completed.usage);
   return { text, inputTokens: Number(usage.input_tokens) || 0, outputTokens: Number(usage.output_tokens) || 0 };
 }
@@ -101,8 +110,53 @@ export function triageBody(jobs: InboxJob[], profile: string) {
   };
 }
 
-export async function triageInbox(jobs: InboxJob[], profile: string, provider: AnalysisProvider, signal: AbortSignal, request = fetch): Promise<(Attention & { id: string })[]> {
-  const result = await requestModel(triageBody(jobs, profile), provider, signal, request);
+// Read complete strings and the available prefix of an unfinished JSON string.
+function partialString(text: string, start: number) {
+  let value = '', end = start + 1;
+  while (end < text.length) {
+    const char = text[end]!;
+    if (char === '"') return { value, end: end + 1, closed: true };
+    if (char === '\\') {
+      const size = text[end + 1] === 'u' ? 6 : 2;
+      if (end + size > text.length) break;
+      try { value += JSON.parse('"' + text.slice(end, end + size) + '"') as string; } catch { break; }
+      end += size;
+    } else { if (char < ' ') break; value += char; end++; }
+  }
+  return { value, end: text.length, closed: false };
+}
+
+function triagePreviews(text: string, ids: Set<string>): { id: string; text: string }[] {
+  const fragments: string[] = [];
+  let depth = 0, start = -1;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '"') { i = partialString(text, i).end - 1; continue; }
+    if (text[i] === '{' && ++depth === 2) start = i;
+    if (text[i] === '}') { if (depth-- === 2) { fragments.push(text.slice(start, i + 1)); start = -1; } }
+  }
+  if (start >= 0) fragments.push(text.slice(start));
+  return fragments.flatMap(fragment => {
+    let id = '', reason = '';
+    for (let i = 0; i < fragment.length; i++) {
+      if (fragment[i] !== '"') continue;
+      const key = partialString(fragment, i); i = key.end - 1;
+      const rest = fragment.slice(key.end).match(/^\s*:\s*/);
+      if (!key.closed || !rest) continue;
+      const at = key.end + rest[0].length;
+      if (fragment[at] !== '"') continue;
+      const field = partialString(fragment, at); i = field.end - 1;
+      if (key.value === 'id' && field.closed) id = field.value;
+      if (key.value === 'reason') reason = field.value;
+    }
+    return ids.has(id) && reason ? [{ id, text: reason.slice(0, 240) }] : [];
+  });
+}
+
+export async function triageInbox(jobs: InboxJob[], profile: string, provider: AnalysisProvider, signal: AbortSignal, request = fetch,
+  onProgress?: (updates: { id: string; text: string }[]) => void): Promise<(Attention & { id: string })[]> {
+  const ids = new Set(jobs.map(job => job.id));
+  const result = await requestModel(triageBody(jobs, profile), provider, signal, request,
+    onProgress ? text => onProgress(triagePreviews(text, ids)) : undefined);
   const parsed = obj(JSON.parse(result.text));
   if (!Array.isArray(parsed.items) || parsed.items.length !== jobs.length) throw new Error('关注筛选结果不完整');
   const seen = new Set<string>();

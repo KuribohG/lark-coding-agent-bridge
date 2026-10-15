@@ -117,7 +117,7 @@ export class InboxManager {
         checkOwner: id => lark.checkOwner(id), collect: (...args) => lark.collect(...args), context: (...args) => lark.context(...args),
         source: id => lark.source(id), deliver: (...args) => lark.deliver(...args),
         analyze: async (job, signal) => analyzeInbox(job, await loadAnalysisProvider(controls.profileConfig, 'deep'), signal),
-        triage: async (jobs, signal) => triageInbox(jobs, config.attentionProfile, await loadAnalysisProvider(controls.profileConfig, 'triage'), signal),
+        triage: async (jobs, signal, onProgress) => triageInbox(jobs, config.attentionProfile, await loadAnalysisProvider(controls.profileConfig, 'triage'), signal, fetch, onProgress),
         notifyAttention: (jobs, id) => lark.notifyAttention(jobs, id),
       });
       const secret = await resolveAppSecret(controls.cfg, paths);

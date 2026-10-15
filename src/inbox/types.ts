@@ -13,6 +13,8 @@ export interface Attention {
   state: 'pending' | 'needed' | 'quiet' | 'uncertain';
   reason: string;
   priority?: 'normal' | 'high';
+  /** Transient output preview; not a final decision and never persisted to the store. */
+  progress?: { startedAt: number; updatedAt: number; text: string };
 }
 export interface InboxJob {
   id: string;
@@ -67,7 +69,7 @@ export interface InboxIO {
   context(chatId: string, start: number, end: number): Promise<InboxMessage[]>;
   source(chatId: string): Promise<{ name: string; type: 'p2p' | 'group' }>;
   deliver(job: InboxJob, phase: 'pending' | 'progress' | 'result'): Promise<void>;
-  triage?(jobs: InboxJob[], signal: AbortSignal): Promise<(Attention & { id: string })[]>;
+  triage?(jobs: InboxJob[], signal: AbortSignal, onProgress?: (updates: { id: string; text: string }[]) => void): Promise<(Attention & { id: string })[]>;
   notifyAttention?(jobs: InboxJob[], id: string): Promise<void>;
   analyze(job: InboxJob, signal: AbortSignal): Promise<{ text: string; inputTokens: number; outputTokens: number }>;
 }
