@@ -6,7 +6,9 @@ import { resolveAppPaths } from '../config/app-paths';
 import { loadRootConfig, saveRootConfig, withConfigFileLock } from '../config/profile-store';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { inboxMode, intakeScope, normalizeInbox, validateInbox, type InboxConfig, type InboxMode, type IntakeScope } from './config';
-import { loadAnalysisProvider, analyzeInbox } from './analyzer';
+import { loadAnalysisProvider } from './analyzer';
+import { processInbox } from './processor';
+import { createRuntimeAgent } from '../runtime/agent-runtime';
 import { triageWithChatTools } from './codex-triage';
 import { InboxReadTools } from './read-tools';
 import { InboxLark } from './lark';
@@ -113,6 +115,7 @@ export class InboxManager {
       this.unlock = await lockfile.lock(lease, { stale: 60_000, update: 10_000, retries: 0, onCompromised: () => { void this.close(); } });
       const lark = new InboxLark({ profile: config.executorProfile, rootDir: this.rootDir }, config);
       this.lark = lark;
+      const agent = createRuntimeAgent(controls.profileConfig, { ...paths, configPath: this.configPath });
       const readTools = new InboxReadTools(async (args, signal) => {
         const reader = new InboxLark({ profile: config.executorProfile, rootDir: this.rootDir }, config);
         const cancel = () => reader.close();
@@ -129,7 +132,8 @@ export class InboxManager {
         cancelPending: () => lark.cancelPending(),
         checkOwner: id => lark.checkOwner(id), collect: (...args) => lark.collect(...args), context: (...args) => lark.context(...args),
         source: id => lark.source(id), deliver: (...args) => lark.deliver(...args),
-        analyze: async (job, signal) => analyzeInbox(job, await loadAnalysisProvider(controls.profileConfig), signal),
+        beginAnalysis: (job, text) => lark.beginAnalysis(job, text),
+        analyze: (job, signal) => processInbox(job, agent, controls.profileConfig.workspaces.default || paths.defaultWorkspaceDir, config.attentionProfile, signal),
         triage: async (jobs, signal, onProgress) => triageWithChatTools(jobs, config.attentionProfile,
           await loadAnalysisProvider(controls.profileConfig), readTools, signal, onProgress),
         notifyAttention: (jobs, id) => lark.notifyAttention(jobs, id),

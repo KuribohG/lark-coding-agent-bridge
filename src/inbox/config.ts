@@ -16,7 +16,7 @@ export interface InboxConfig {
   intakeScope?: IntakeScope;
   watchPrivate: boolean;
   watchMentions: boolean;
-  /** Retained for older snapshots; automatic deep analysis is disabled. */
+  /** Retained for older snapshots; legacy countdown-based analysis is disabled. */
   autoAnalyze: boolean;
   attentionProfile: string;
   dailyTriageLimit: number;
