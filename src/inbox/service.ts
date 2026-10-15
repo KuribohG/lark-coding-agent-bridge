@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { inboxMode, intakeScope, type IntakeScope, type InboxConfig, type InboxMode } from './config';
+import { INBOX_TRIAGE_BATCH_SIZE, inboxMode, intakeScope, type IntakeScope, type InboxConfig, type InboxMode } from './config';
 import { InboxStore } from './store';
 import { handlingState, replyContent, resultText } from './reply';
 import type { Attention, InboxIO, InboxJob, InboxMessage } from './types';
@@ -301,7 +301,7 @@ export class InboxService {
           this.launch(signal => this.run(next, signal));
         } else {
           const candidates = this.store.data.jobs.filter(j => !resolved(j) && this.acceptsSource(j) && j.attention?.state === 'pending' &&
-            (this.now() - j.updatedAt >= 60_000 || this.now() - j.createdAt >= 120_000)).slice(0, 8);
+            (this.now() - j.updatedAt >= 60_000 || this.now() - j.createdAt >= 120_000)).slice(0, INBOX_TRIAGE_BATCH_SIZE);
           if (candidates.length) {
             const day = new Date(this.now()).toISOString().slice(0, 10);
             const usage = this.store.data.triageUsage ??= {};

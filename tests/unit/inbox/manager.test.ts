@@ -41,6 +41,8 @@ it('persists the global switch without changing profile preferences', async () =
   const before = (await loadRootConfig(path))!.profiles.codex;
   await manager.configure({ ...root.inbox, enabled: false });
   expect((await manager.view()).running).toBe(false);
+  expect((await manager.view()).config.dailyTriageLimit).toBe(1_000_000);
+  expect((await loadRootConfig(path))!.inbox?.dailyTriageLimit).toBe(1_000_000);
   expect((await loadRootConfig(path))!.profiles.codex).toEqual(before);
 });
 

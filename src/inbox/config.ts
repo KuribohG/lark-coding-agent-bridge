@@ -2,6 +2,8 @@ export type IntakeScope = 'private' | 'private_mentions' | 'all';
 export const intakeScope = (c: Pick<InboxConfig, 'intakeScope' | 'watchPrivate' | 'watchMentions'>): IntakeScope | undefined =>
   c.intakeScope ?? (c.watchPrivate ? c.watchMentions ? 'private_mentions' : 'private' : undefined);
 export type InboxMode = 'off' | 'on';
+export const INBOX_TRIAGE_BATCH_SIZE = 50;
+export const INBOX_DAILY_TRIAGE_LIMIT = 1_000_000;
 export const inboxMode = (config: Pick<InboxConfig, 'enabled' | 'autoAnalyze'>): InboxMode =>
   config.enabled ? 'on' : 'off';
 
@@ -32,7 +34,7 @@ export const INBOX_DEFAULTS: InboxConfig = {
   destination: { chatId: '', threadId: '', replyTo: '' },
   deliveryMode: 'thread',
   watchPrivate: true, watchMentions: true, autoAnalyze: false,
-  attentionProfile: '', dailyTriageLimit: 100,
+  attentionProfile: '', dailyTriageLimit: INBOX_DAILY_TRIAGE_LIMIT,
   waitMinutes: 30, pollSeconds: 60, contextMinutes: 15,
   maxContextChars: 24_000, dailyAutoLimit: 20,
   h5: { publicUrl: '', port: 19182 },
@@ -51,7 +53,7 @@ export function normalizeInbox(input: unknown): InboxConfig {
     destination: { chatId: str(r.destination?.chatId), threadId: str(r.destination?.threadId), replyTo: str(r.destination?.replyTo) },
     deliveryMode: r.deliveryMode === 'new_topic' ? 'new_topic' : 'thread',
     watchPrivate: scope ? true : r.watchPrivate !== false, watchMentions: scope ? scope !== 'private' : r.watchMentions !== false, autoAnalyze: false,
-    attentionProfile: str(r.attentionProfile).slice(0, 3000), dailyTriageLimit: num(r.dailyTriageLimit, 0, 1000, 100),
+    attentionProfile: str(r.attentionProfile).slice(0, 3000), dailyTriageLimit: num(r.dailyTriageLimit, 0, INBOX_DAILY_TRIAGE_LIMIT, INBOX_DAILY_TRIAGE_LIMIT),
     waitMinutes: num(r.waitMinutes, 1, 1440, 30), pollSeconds: num(r.pollSeconds, 30, 3600, 60),
     contextMinutes: num(r.contextMinutes, 5, 1440, 15), maxContextChars: num(r.maxContextChars, 2000, 100_000, 24_000),
     dailyAutoLimit: num(r.dailyAutoLimit, 0, 1000, 20),

@@ -82,3 +82,18 @@ it('streams per-item answer prefixes before completion, handling split escapes w
   expect(await task).toEqual(items);
   expect(JSON.stringify(progress.mock.calls)).not.toContain('private-reasoning');
 });
+
+it('sends all 50 items with a scaled output budget and rejects oversized calls before requesting', async () => {
+  const jobs = Array.from({ length: 50 }, (_, i) => job(String(i)));
+  const items = jobs.map(j => ({ id: j.id, state: 'quiet', reason: '无需动作', priority: 'normal' }));
+  const request = vi.fn(async (_url: unknown, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body));
+    expect(JSON.parse(body.input[0].content).items.map((v: { id: string }) => v.id)).toEqual(jobs.map(j => j.id));
+    expect(body.max_output_tokens).toBe(16000); expect(body.model).toBe('deepseek-flash');
+    return Response.json({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ items }) }] }] });
+  });
+  const provider = { model: 'test', key: 'fixture', url: 'https://model.test' };
+  await expect(triageInbox(jobs, '', provider, new AbortController().signal, request)).resolves.toHaveLength(50);
+  await expect(triageInbox([...jobs, job('extra')], '', provider, new AbortController().signal, request)).rejects.toThrow('50');
+  expect(request).toHaveBeenCalledTimes(1);
+});

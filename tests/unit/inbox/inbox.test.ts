@@ -430,6 +430,16 @@ describe('lightweight attention and quiet delivery', () => {
     await s.service.tick(); s.advance(61_000); await s.service.tick();
     return s;
   }
+  it('screens 51 ready items in batches of 50 and 1, counting model calls rather than items', async () => {
+    const messages = Array.from({ length: 51 }, (_, i) => message({ id: `om_${i}`, chatId: `oc_${i}` }));
+    const s = await screened({ collect: vi.fn(async kind => kind === 'p2p' ? messages : []), context: vi.fn(async () => []) });
+    await vi.waitFor(() => expect(s.service.list().filter(j => j.attention?.state === 'needed')).toHaveLength(50));
+    expect(vi.mocked(s.io.triage!).mock.calls[0]![0]).toHaveLength(50);
+    await s.service.tick();
+    await vi.waitFor(() => expect(s.service.list().filter(j => j.attention?.state === 'needed')).toHaveLength(51));
+    expect(vi.mocked(s.io.triage!).mock.calls[1]![0]).toHaveLength(1);
+    expect(s.store.data.triageUsage?.['1970-01-01']).toBe(2);
+  });
   it('uses model decisions for relevance and never starts deep work automatically', async () => {
     const messages = [message(), message({ id: 'om_quiet', chatId: 'oc_quiet' }), message({ id: 'om_unknown', chatId: 'oc_unknown' })];
     const triage = vi.fn<NonNullable<InboxIO['triage']>>(async jobs => jobs.map((j, i) => ({ id: j.id, state: ['needed', 'quiet', 'uncertain'][i] as 'needed' | 'quiet' | 'uncertain', reason: '模型判断', priority: 'normal' })));
