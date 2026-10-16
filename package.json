@@ -10,14 +10,15 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/zarazhangrui/feishu-claude-code-bridge.git"
+    "url": "git+https://github.com/KuribohG/lark-coding-agent-bridge.git"
   },
   "bugs": {
-    "url": "https://github.com/zarazhangrui/feishu-claude-code-bridge/issues"
+    "url": "https://github.com/KuribohG/lark-coding-agent-bridge/issues"
   },
-  "homepage": "https://github.com/zarazhangrui/feishu-claude-code-bridge#readme",
+  "homepage": "https://github.com/KuribohG/lark-coding-agent-bridge#readme",
   "bin": {
-    "lark-channel-bridge": "./bin/lark-channel-bridge.mjs"
+    "lark-channel-bridge": "./bin/lark-channel-bridge.mjs",
+    "run-lark-cc": "./bin/run-lark-cc.mjs"
   },
   "exports": {
     ".": {
@@ -31,22 +32,24 @@
     "README.md",
     "README.zh.md",
     "docs/inbox-assistant.md",
-    "LICENSE"
+    "LICENSE",
+    "docs/self-contained.md"
   ],
   "scripts": {
     "dev": "tsup --watch",
     "build:web": "vite build web",
-    "build": "pnpm build:web && tsup",
+    "build": "npm run build:web && tsup",
     "typecheck": "tsc --noEmit",
-    "pretest": "pnpm build:web",
+    "pretest": "npm run build:web",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit --passWithNoTests",
     "test:integration": "vitest run tests/integration --passWithNoTests",
     "test:process": "vitest run tests/process --passWithNoTests",
-    "ci:local": "git diff --check && pnpm test && pnpm typecheck && pnpm build",
-    "ci:platform": "pnpm test && pnpm typecheck && pnpm build",
+    "ci:local": "git diff --check && npm run test && npm run typecheck && npm run build",
+    "ci:platform": "npm run test && npm run typecheck && npm run build",
     "prepare": "npm run build",
-    "prepublishOnly": "pnpm typecheck && pnpm build"
+    "prepublishOnly": "npm run typecheck && npm run build",
+    "typecheck:web": "tsc --noEmit -p web/tsconfig.json"
   },
   "dependencies": {
     "@clack/prompts": "^1.4.0",
@@ -93,12 +96,13 @@
     "vitest": "^2.1.8"
   },
   "engines": {
-    "node": ">=20.12.0"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild",
-      "protobufjs"
+      "protobufjs",
+      "@larksuite/cli"
     ]
   },
   "keywords": [
@@ -111,5 +115,8 @@
     "channel",
     "bridge"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "optionalDependencies": {
+    "@larksuite/cli": "1.0.77"
+  }
 }

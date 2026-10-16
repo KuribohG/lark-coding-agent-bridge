@@ -8,7 +8,10 @@ import { resolveAppSecret } from '../config/secret-resolver';
 import { getCotMessages } from '../config/schema';
 import { CotClient } from '../bot/cot';
 import { inboxMode, intakeScope, normalizeInbox, validateInbox, type InboxConfig, type InboxMode, type IntakeScope } from './config';
-import { loadAnalysisProvider } from './analyzer';
+import { INBOX_ANALYSIS_MODEL, loadAnalysisProvider } from './analyzer';
+import { getUserAuthStatus } from '../lark-cli/user-im';
+import { guiJobs } from './presentation';
+import { executeInboxCommand } from './workbench';
 import { processInbox } from './processor';
 import { startInboxProgress } from './progress';
 import { createRuntimeAgent } from '../runtime/agent-runtime';
@@ -44,7 +47,66 @@ export class InboxManager {
     return { config: normalizeInbox(root?.inbox), running: Boolean(this.service?.config.enabled), error: this.error || this.service?.lastError || this.gui?.lastError,
       jobs: this.service?.list().map(({ messages: _, result: __, ...j }) => j) || [] };
   }
+  async workbench() {
+    const view = await this.view();
+    return { ...view, connected: Boolean(this.service), jobs: guiJobs(this.service?.list(500).filter(j =>
+      j.ownerOpenId === view.config.ownerOpenId && j.profile === view.config.executorProfile) ?? []) };
+  }
+  async workbenchCommand(input: unknown) {
+    const service = this.service, lark = this.lark;
+    if (!service || !lark) throw new Error('请先完成配置并启动执行 profile');
+    return executeInboxCommand(service, lark, input, mode => this.changeMode(service, mode), scope => this.changeScope(service, scope));
+  }
+  async checkSetup(input: unknown) {
+    const config = normalizeInbox(input);
+    const root = await loadRootConfig(this.configPath);
+    const profile = root?.profiles[config.executorProfile];
+    const checks: { label: string; ok: boolean; detail: string }[] = [];
+    const check = async (label: string, fn: () => Promise<string> | string) => {
+      try { checks.push({ label, ok: true, detail: await fn() }); }
+      catch (error) { checks.push({ label, ok: false, detail: error instanceof Error ? error.message : '检查失败' }); }
+    };
+    await check('执行环境', () => {
+      if (!profile || profile.agentKind !== 'codex' || profile.mode === 'team') throw new Error('请选择个人模式的 Codex profile');
+      if (!this.controls(config.executorProfile)) throw new Error('请先在上方启动这个 profile');
+      return config.executorProfile;
+    });
+    let ownerOpenId = '';
+    if (profile) {
+      await check('飞书用户授权', async () => {
+        const auth = await getUserAuthStatus({ profile: config.executorProfile, rootDir: this.rootDir });
+        ownerOpenId = auth.openId ?? '';
+        if (!ownerOpenId) throw new Error('请先完成飞书用户授权；若未安装 lark-cli，请运行 npm install -g @larksuite/cli@1.0.77 并重启 profile');
+        if (config.ownerOpenId && ownerOpenId !== config.ownerOpenId) throw new Error('授权用户与助理所属用户不一致');
+        const missing = ['search:message', 'im:chat:read', 'im:message.p2p_msg:get_as_user', 'im:message.group_msg:get_as_user'].filter(s => !auth.scopes.includes(s));
+        if (missing.length) throw new Error(`缺少授权：${missing.join('、')}`);
+        if (profile.larkCli.identityPreset !== 'user-default') throw new Error('请在 profile 设置中允许已授权用户身份，或完成本页的授权流程');
+        return auth.userName || ownerOpenId;
+      });
+      await check('模型配置', async () => {
+        const provider = await loadAnalysisProvider(profile, config.analysisModel ?? INBOX_ANALYSIS_MODEL);
+        return `${provider.model}（已找到 Responses API 配置与凭据；尚未请求模型）`;
+      });
+    }
+    await check('结果话题配置', () => {
+      validateInbox({ ...config, ownerOpenId: config.ownerOpenId || ownerOpenId, enabled: true });
+      return '已填写；请确保机器人在结果群内并可发消息';
+    });
+    return { checks, ownerOpenId, ok: checks.every(c => c.ok) };
+  }
   async command(args: string, ctx: InboxCardContext): Promise<string | undefined> {
+    if (args === 'setup') {
+      const controls = this.controls(ctx.profile);
+      if (!controls || controls.profileConfig.agentKind !== 'codex' || controls.profileConfig.mode === 'team') return '请使用个人 Codex profile 的机器人设置会话助理。';
+      if (!ctx.threadId) return '请在结果群的目标话题内发送 /inbox setup。';
+      const auth = await getUserAuthStatus({ profile: ctx.profile, rootDir: this.rootDir });
+      if (auth.openId !== ctx.operator) return '请先在本地控制台完成当前 profile 的用户授权，再由该用户发送 /inbox setup。';
+      const current = (await this.view()).config;
+      if (current.ownerOpenId && current.ownerOpenId !== ctx.operator) return '此助理已属于另一用户，请使用独立配置目录。';
+      await this.configure({ ...current, executorProfile: ctx.profile, ownerOpenId: ctx.operator,
+        destination: { chatId: ctx.chatId, threadId: ctx.threadId, replyTo: ctx.messageId } });
+      return '已记录当前结果话题。请在本地控制台的会话助理设置中点击“重新读取设置”，检查模型配置后开启。';
+    }
     const cards = this.cards; const lark = this.lark;
     if (!cards || !lark) return '会话助理当前未运行，请检查 Bridge 全局设置中的开关和运行状态。';
     if (!cards.accepts(ctx)) return '请由助理所属用户在配置的结果群话题中发送 /inbox。';
@@ -106,7 +168,7 @@ export class InboxManager {
       return;
     }
     await this.stop();
-    if (!config.enabled && !config.gui.publicUrl) { this.error = undefined; return; }
+    if (!config.enabled && !config.gui.publicUrl && !config.executorProfile) { this.error = undefined; return; }
     try {
       validateInbox({ ...config, enabled: true });
       if (!controls) throw new Error('执行 profile 尚未上线');
@@ -145,13 +207,16 @@ export class InboxManager {
           let success = false;
           try {
             const result = await processInbox(job, agent, controls.profileConfig.workspaces.default || paths.defaultWorkspaceDir,
-              config.attentionProfile, signal, undefined, event => progress?.event(event));
+              config.attentionProfile, signal, undefined, event => progress?.event(event), {
+                model: (await loadAnalysisProvider(controls.profileConfig, config.analysisModel ?? INBOX_ANALYSIS_MODEL)).model,
+                reasoningEffort: config.analysisModel === undefined ? 'max' : controls.profileConfig.preferences.reasoningEffort,
+              });
             success = true;
             return result;
           } finally { await progress?.finish(success); }
         },
         triage: async (jobs, signal, onProgress) => triageWithChatTools(jobs, config.attentionProfile,
-          await loadAnalysisProvider(controls.profileConfig), readTools, signal, onProgress),
+          await loadAnalysisProvider(controls.profileConfig, config.analysisModel ?? INBOX_ANALYSIS_MODEL), readTools, signal, onProgress),
         notifyAttention: (jobs, id) => lark.notifyAttention(jobs, id),
       });
       this.nonces = new CallbackNonceStore(join(folder, 'card-nonces.json'));

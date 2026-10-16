@@ -41,6 +41,7 @@ it('routes clicked analysis to the configured default provider model', async () 
   const provider = await loadAnalysisProvider(profile);
   expect(provider).toMatchObject({ model: 'openai/gpt-6-astra', url: 'https://provider.example/v1/responses', key: 'fixture-token' });
   expect(analysisBody(job(), await loadAnalysisProvider(profile)).model).toBe('openai/gpt-6-astra');
+  expect((await loadAnalysisProvider(profile, 'another-model')).model).toBe('another-model');
   profile.preferences.model = '';
   expect((await loadAnalysisProvider(profile)).model).toBe('openai/gpt-6-astra');
 });

@@ -1,4 +1,5 @@
 import { Command } from 'commander';
+import { useBundledLarkCli } from '../platform/bundled-tools';
 import pkg from '../../package.json';
 import { formatAgentPreflightDiagnostic, getAgentPreflightDiagnostic } from '../agent/preflight';
 import { runMigrate } from './commands/migrate';
@@ -27,6 +28,8 @@ import { runStart } from './commands/start';
 import { runUi } from './commands/ui';
 
 const program = new Command();
+
+useBundledLarkCli(import.meta.url);
 
 program
   .name('lark-channel-bridge')

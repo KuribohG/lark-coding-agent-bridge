@@ -131,16 +131,31 @@ async function route(
   const p = method === 'POST';
   const sup = deps.supervisor;
 
+  if (path === '/api/shutdown' && p && deps.requestShutdown) {
+    sendJson(res, 200, { ok: true });
+    setImmediate(deps.requestShutdown);
+    return;
+  }
+
   if (path === '/api/inbox' && (g || p)) {
     if (!sup.inbox) throw new HttpError(503, '会话助理尚不可用');
     try { sendJson(res, 200, p ? await sup.inbox.configure(await readJsonBody(req)) : await sup.inbox.view()); }
     catch (e) { throw new HttpError(400, e instanceof Error ? e.message : '配置失败'); }
     return;
   }
+  if (path.startsWith('/api/inbox/')) {
+    if (!sup.inbox) throw new HttpError(503, '会话助理尚不可用');
+    try {
+      if (path === '/api/inbox/workbench' && g) { sendJson(res, 200, await sup.inbox.workbench()); return; }
+      if (path === '/api/inbox/command' && p) { sendJson(res, 200, await sup.inbox.workbenchCommand(await readJsonBody(req))); return; }
+      if (path === '/api/inbox/check' && p) { sendJson(res, 200, await sup.inbox.checkSetup(await readJsonBody(req))); return; }
+    } catch (error) { throw new HttpError(400, error instanceof Error ? error.message : '操作失败'); }
+  }
 
   if (path === '/api/status' && g) {
     sendJson(res, 200, {
       hosted: true,
+      pid: process.pid,
       version: deps.version,
       activeProfile: await readActiveProfile(deps.rootDir),
       online: sup.list().length,

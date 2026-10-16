@@ -12,7 +12,8 @@ import {
 import type { AgentAdapter } from '../../agent/types';
 import { startChannel, type BridgeChannel } from '../../bot/channel';
 import type { Controls } from '../../commands';
-import type { AppPaths } from '../../config/app-paths';
+import { resolveAppPaths, type AppPaths } from '../../config/app-paths';
+import { loadRootConfig } from '../../config/profile-store';
 import {
   type AgentKind,
   type ProfileConfig,
@@ -172,14 +173,16 @@ async function runClassic(opts: StartOptions): Promise<void> {
  * running control plane and prints its URL instead of launching a duplicate.
  */
 async function runSupervisorConsole(opts: StartOptions): Promise<void> {
-  const runtime = await resolveProfileRuntime({
+  const initialPaths = resolveAppPaths();
+  const root = await loadRootConfig(opts.config ?? initialPaths.configFile);
+  // An empty install must reach the web wizard without terminal prompts.
+  const runtime = root || opts.appId ? await resolveProfileRuntime({
     ...opts,
     allowBootstrap: true,
     handleActiveBridgeMigrationConflict: migrationConflictHandler,
-  });
-  const cfg = runtime.cfg;
-  const configPath = runtime.configPath;
-  const appPaths = runtime.appPaths;
+  }) : undefined;
+  const configPath = runtime?.configPath ?? opts.config ?? initialPaths.configFile;
+  const appPaths = runtime?.appPaths ?? initialPaths;
   configureLogger({ logsDir: appPaths.hostLogsDir });
 
   // One supervisor per machine. If one is already running, print its console
@@ -197,8 +200,8 @@ async function runSupervisorConsole(opts: StartOptions): Promise<void> {
 
   await loadTelemetryAdapter({
     version: pkg.version,
-    appId: cfg.accounts.app.id,
-    tenant: cfg.accounts.app.tenant,
+    appId: runtime?.cfg.accounts.app.id ?? '',
+    tenant: runtime?.cfg.accounts.app.tenant ?? 'feishu',
     hostname: os.hostname(),
   });
   await gcOldLogs();
@@ -208,17 +211,22 @@ async function runSupervisorConsole(opts: StartOptions): Promise<void> {
   // Single web console (host sidecar), backed by the supervisor.
   let uiServer: UiServerHandle | undefined;
   try {
-    uiServer = await startUiServer({ supervisor, version: pkg.version, rootDir: appPaths.rootDir });
+    uiServer = await startUiServer({ supervisor, version: pkg.version, rootDir: appPaths.rootDir,
+      requestShutdown: () => process.emit('SIGTERM', 'SIGTERM') });
     await writeUiSidecar(appPaths.hostUiFile, uiServer, new Date().toISOString());
     console.log(`✓ 控制台：${uiServer.url}`);
   } catch (err) {
     log.warn('ui', 'server-start-failed', { err: String(err) });
   }
 
-  // Auto-start only the active profile; others start on demand from the console.
+  // Register shutdown before starting a channel (which may wait on the network).
+  const parked = parkWithShutdown(supervisor, appPaths, uiServer, hostLock);
+  // Auto-start only the selected profile; others start on demand from the console.
   try {
-    await supervisor.startProfile(appPaths.profile);
-    console.log(`✓ profile「${appPaths.profile}」已上线`);
+    if (runtime) {
+      await supervisor.startProfile(appPaths.profile);
+      console.log(`✓ profile「${appPaths.profile}」已上线`);
+    }
   } catch (err) {
     console.warn(
       `⚠️ active profile「${appPaths.profile}」启动失败：${err instanceof Error ? err.message : String(err)}`,
@@ -226,7 +234,7 @@ async function runSupervisorConsole(opts: StartOptions): Promise<void> {
     log.warn('supervisor', 'active-start-failed', { profile: appPaths.profile, err: String(err) });
   }
 
-  await parkWithShutdown(supervisor, appPaths, uiServer, hostLock);
+  await parked;
 }
 
 /**

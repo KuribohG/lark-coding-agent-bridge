@@ -6,6 +6,25 @@
 
 关于能实现的效果，详情可以阅读[飞书文档](https://larkcommunity.feishu.cn/docx/OaRIdFIRFoLM3xxTmKwcetHqn5e)
 
+
+## 此分支的一体化安装
+
+此仓库 `dev` 分支包含便携启动器和本地会话助理工作台。无需另外部署妙搭、数据库或公网服务。
+
+```bash
+git clone --branch dev https://github.com/KuribohG/lark-coding-agent-bridge.git
+cd lark-coding-agent-bridge
+npm install
+npm link
+run-lark-cc
+```
+
+`run-lark-cc` 默认后台启动本地 GUI；新用户在网页中扫码创建应用和配置 profile。已有用户可使用 `run-lark-cc codex`，容器前台运行用 `run-lark-cc fg codex`。`run-lark-cc ui` 打开网页，`status` 查状态，`stop` 停止该配置目录的 GUI supervisor，`log` 查看启动日志。
+
+**会话助理默认关闭。** 在网页内完成用户授权、结果话题和模型配置后开启。它需要个人 Codex profile 及支持 Responses 的 API 凭据；模型可选，不要求 DeepSeek Flash。已有未指定模型的旧配置继续使用 Flash，避免升级后改变成本策略。
+
+远程主机使用 SSH 端口转发访问本地 GUI；妙搭远程工作台仍是可选连接器。具体安装、升级、代理、配置迁移和限制见 [自包含部署指南](docs/self-contained.md)。下方保留原 CLI 的使用方式；直接安装 npm 上的同名包不保证包含此分支改动。
+
 ## 主要功能
 
 - 在飞书私聊直接发消息，或在群里 `@bot`，把任务转给本机 Claude Code / Codex CLI。
@@ -31,7 +50,7 @@ Codex 0.162.1 已验证支持原生双向接口。要启用，在对应 profile 
 
 ## 前置条件
 
-- Node.js **>= 20.12.0**
+- Node.js **20.19+ or 22.12+**
 - 本机至少安装并登录一个 agent：
   - Claude Code：`claude`，安装说明：https://docs.anthropic.com/en/docs/claude-code/quickstart
   - Codex CLI：`codex`，安装说明：https://developers.openai.com/codex/cli

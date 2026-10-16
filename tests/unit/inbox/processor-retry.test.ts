@@ -96,3 +96,11 @@ it.each<{ name: string; events: AgentEvent[]; code: string }>([
   expect(await h.outcome).toMatchObject({ error: { code } });
   expect(h.agent.runs).toHaveLength(1);
 });
+
+
+it('honors the configured model and effort on an isolated analysis run', async () => {
+  const workspace = await mkdtemp(join(tmpdir(), 'inbox-model-'));
+  const agent = new FakeAgentAdapter({ events: [[final, done]] });
+  await processInbox(job, agent, workspace, '', new AbortController().signal, undefined, undefined, { model: 'selected-model', reasoningEffort: 'high' });
+  expect(agent.runOptions[0]).toMatchObject({ model: 'selected-model', reasoningEffort: 'high' });
+});

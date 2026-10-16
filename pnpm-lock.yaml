@@ -129,6 +129,10 @@ importers:
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.19.17)(lightningcss@1.32.0)
+    optionalDependencies:
+      '@larksuite/cli':
+        specifier: 1.0.77
+        version: 1.0.77
 
 packages:
 
@@ -477,6 +481,13 @@ packages:
   '@larksuite/channel@0.6.0':
     resolution: {integrity: sha512-nCxhGo/fOTNY6XRIRC8fGLdJlqhZnsygKnlO8iDZxsbAYvuR1Y3/0+YLxKI9435jzMWsNRwSl368J8UmMe9Zqw==}
     engines: {node: '>=18'}
+
+  '@larksuite/cli@1.0.77':
+    resolution: {integrity: sha512-xsyUkGS6WsMmxiVHG7Qpl/U8vmi5qoZterAprAMBYQ0/lA5kMjUv5NL2pfDv/Krp2frQme/OtRjD5+jlEw0RPg==}
+    engines: {node: '>=16'}
+    cpu: [x64, arm64, riscv64]
+    os: [darwin, linux, win32]
+    hasBin: true
 
   '@larksuiteoapi/node-sdk@1.73.0':
     resolution: {integrity: sha512-gs4EiupJ6RdYAEJGtuYrCVsB7wSMBwtUDK+ilpmOHD6RTvbtciW6AWciQO9coOQVuBZfh7hvAi25dPfCsny/nA==}
@@ -2381,6 +2392,11 @@ snapshots:
       - debug
       - supports-color
       - utf-8-validate
+
+  '@larksuite/cli@1.0.77':
+    dependencies:
+      '@clack/prompts': 1.4.0
+    optional: true
 
   '@larksuiteoapi/node-sdk@1.73.0':
     dependencies:

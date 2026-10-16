@@ -19,6 +19,8 @@ export interface InboxConfig {
   /** Retained for older snapshots; legacy countdown-based analysis is disabled. */
   autoAnalyze: boolean;
   attentionProfile: string;
+  /** Empty = profile/provider default; absent on legacy configs = DeepSeek Flash. */
+  analysisModel?: string;
   dailyTriageLimit: number;
   waitMinutes: number;
   pollSeconds: number;
@@ -34,7 +36,7 @@ export const INBOX_DEFAULTS: InboxConfig = {
   destination: { chatId: '', threadId: '', replyTo: '' },
   deliveryMode: 'thread',
   watchPrivate: true, watchMentions: true, autoAnalyze: false,
-  attentionProfile: '', dailyTriageLimit: INBOX_DAILY_TRIAGE_LIMIT,
+  attentionProfile: '', analysisModel: '', dailyTriageLimit: INBOX_DAILY_TRIAGE_LIMIT,
   waitMinutes: 30, pollSeconds: 60, contextMinutes: 15,
   maxContextChars: 24_000, dailyAutoLimit: 20,
   h5: { publicUrl: '', port: 19182 },
@@ -49,6 +51,7 @@ export function normalizeInbox(input: unknown): InboxConfig {
   const scope = ['private', 'private_mentions', 'all'].includes(String(r.intakeScope)) ? r.intakeScope : undefined;
   return {
     intakeScope: scope,
+    analysisModel: input == null ? '' : typeof r.analysisModel === 'string' ? str(r.analysisModel).slice(0, 200) : undefined,
     enabled: r.enabled === true, executorProfile: str(r.executorProfile), ownerOpenId: str(r.ownerOpenId),
     destination: { chatId: str(r.destination?.chatId), threadId: str(r.destination?.threadId), replyTo: str(r.destination?.replyTo) },
     deliveryMode: r.deliveryMode === 'new_topic' ? 'new_topic' : 'thread',

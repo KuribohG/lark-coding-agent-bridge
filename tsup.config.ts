@@ -2,7 +2,7 @@ import { defineConfig } from 'tsup';
 
 export default defineConfig([
   {
-    entry: { cli: 'src/cli/index.ts' },
+    entry: { cli: 'src/cli/index.ts', launcher: 'src/cli/launcher.ts' },
     outDir: 'dist',
     format: ['esm'],
     target: 'node20',

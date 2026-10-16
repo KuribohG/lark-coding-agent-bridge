@@ -20,14 +20,15 @@ export function processingPrompt(job: InboxJob, background: string): string {
 
 /** One isolated agent run per item; only the authoritative final answer is returned for delivery. */
 export async function processInbox(job: InboxJob, agent: AgentAdapter, workspace: string, background: string,
-  signal: AbortSignal, timeoutMs = 30 * 60_000, onEvent?: (event: AgentEvent) => void) {
+  signal: AbortSignal, timeoutMs = 30 * 60_000, onEvent?: (event: AgentEvent) => void,
+  preferences: Pick<AgentRunOptions, 'model' | 'reasoningEffort'> = { model: INBOX_ANALYSIS_MODEL, reasoningEffort: 'max' }) {
   if (!/^[\w-]+$/.test(job.id)) throw new Error('无效待办 ID');
   signal.throwIfAborted();
   const cwd = join(workspace, 'inbox', job.id);
   await mkdir(cwd, { recursive: true, mode: 0o700 });
   const deadlineAt = Date.now() + timeoutMs;
   const options: AgentRunOptions = { runId: `inbox-${job.id}-${job.attempt ?? 0}`, cwd,
-    model: INBOX_ANALYSIS_MODEL, reasoningEffort: 'max', prompt: processingPrompt(job, background), deadlineAt };
+    ...preferences, prompt: processingPrompt(job, background), deadlineAt };
   await agent.prepareRun?.(options);
   signal.throwIfAborted();
   if (Date.now() >= deadlineAt) throw new InboxAnalysisError('timeout');

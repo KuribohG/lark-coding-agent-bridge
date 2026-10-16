@@ -11,16 +11,18 @@ import { InboxManager } from '../../../src/inbox/manager';
 import { InboxGui } from '../../../src/inbox/gui';
 import { startInboxH5 } from '../../../src/inbox/h5-server';
 
-vi.mock('../../../src/inbox/analyzer', () => ({ loadAnalysisProvider: vi.fn(async () => ({ model: 'test' })), analyzeInbox: vi.fn() }));
+vi.mock('../../../src/inbox/analyzer', () => ({ INBOX_ANALYSIS_MODEL: 'deepseek-flash', loadAnalysisProvider: vi.fn(async () => ({ model: 'test' })), analyzeInbox: vi.fn() }));
 vi.mock('../../../src/inbox/lark', () => ({ InboxLark: class { checkOwner = vi.fn(async () => {}); close = vi.fn(); cancelPending = vi.fn(); } }));
 vi.mock('../../../src/inbox/gui', () => ({ InboxGui: vi.fn(function (...args: unknown[]) { return { start: vi.fn(async () => {}), close: vi.fn(async () => {}), setMode: args[5], setScope: args[6] }; }) }));
 vi.mock('../../../src/inbox/h5-server', () => ({ startInboxH5: vi.fn(async () => ({ close: async () => {} })) }));
+vi.mock('../../../src/lark-cli/user-im', () => ({ getUserAuthStatus: vi.fn(async () => ({ openId: 'ou_owner', scopes: ['search:message', 'im:chat:read', 'im:message.p2p_msg:get_as_user', 'im:message.group_msg:get_as_user'] })) }));
 const managers: InboxManager[] = [];
 afterEach(async () => { for (const manager of managers.splice(0)) await manager.close(); });
 
 async function setup() {
   const rootDir = await mkdtemp(join(tmpdir(), 'inbox-manager-')); const path = join(rootDir, 'config.json');
   const profile = createDefaultProfileConfig({ agentKind: 'codex', accounts: { app: { id: 'cli_fixture', secret: 'fixture', tenant: 'feishu' } }, codex: { binaryPath: 'codex' } });
+  profile.larkCli.identityPreset = 'user-default';
   const root = createRootConfig('codex', profile);
   root.inbox = normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner', destination: { chatId: 'oc_group', threadId: 'omt_topic', replyTo: 'om_message' }, h5: { publicUrl: 'https://example.com/assistant/', port: 19182 } });
   await saveRootConfig(root, path);
@@ -119,4 +121,35 @@ it('uses the shared Codex runtime configuration and quarantines both trusted bot
     const saved = new InboxStore(store.path); await saved.load();
     expect(saved.data.jobs.map(j => j.state)).toEqual(['ignored', 'ignored']);
   } finally { spy.mockRestore(); }
+});
+
+
+it('fills a result topic only for the authorized owner without enabling collection', async () => {
+  const { create, root, path } = await setup();
+  root.inbox = normalizeInbox(undefined); await saveRootConfig(root, path);
+  const manager = create();
+  const ctx = { profile: 'codex', operator: 'ou_other', chatId: 'oc_output', threadId: 'omt_output', messageId: 'om_anchor' };
+  expect(await manager.command('setup', ctx)).toContain('授权');
+  expect((await manager.view()).config.executorProfile).toBe('');
+  expect(await manager.command('setup', { ...ctx, operator: 'ou_owner' })).toContain('已记录');
+  expect((await manager.view()).config).toMatchObject({ enabled: false, analysisModel: '', ownerOpenId: 'ou_owner',
+    destination: { chatId: 'oc_output', threadId: 'omt_output', replyTo: 'om_anchor' } });
+});
+
+it('checks owner, model and destination without exposing provider credentials', async () => {
+  const { create, root } = await setup(); const manager = create();
+  const result = await manager.checkSetup(root.inbox);
+  expect(result.ok).toBe(true); expect(result.ownerOpenId).toBe('ou_owner');
+  expect(JSON.stringify(result)).not.toContain('key');
+  const other = await manager.checkSetup({ ...root.inbox, ownerOpenId: 'ou_wrong' });
+  expect(other.ok).toBe(false);
+  expect(other.checks.find(c => c.label === '飞书用户授权')?.detail).toContain('不一致');
+});
+
+it('retains local workbench reviews while paused, without a hosted GUI', async () => {
+  const { create, root, path } = await setup();
+  root.inbox!.enabled = false; root.inbox!.h5.publicUrl = ''; await saveRootConfig(root, path);
+  const manager = create(); await manager.reconcile();
+  expect(await manager.workbench()).toMatchObject({ running: false, connected: true, jobs: [] });
+  await expect(manager.workbenchCommand({ id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', action: 'manual', target: 'oc_source' })).rejects.toThrow('已关闭');
 });

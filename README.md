@@ -6,6 +6,23 @@ A lightweight bot that bridges Feishu / Lark messenger with your local Claude Co
 
 For a product walkthrough, see the [Feishu document](https://larkcommunity.feishu.cn/docx/OaRIdFIRFoLM3xxTmKwcetHqn5e).
 
+
+## Self-contained setup on this fork
+
+The `dev` branch ships `run-lark-cc` and a bundled local inbox workbench. No separate Miaoda deployment, database, or public server is required for local use.
+
+```bash
+git clone --branch dev https://github.com/KuribohG/lark-coding-agent-bridge.git
+cd lark-coding-agent-bridge
+npm install
+npm link
+run-lark-cc
+```
+
+The launcher starts the local GUI in the background; complete first-run setup in your browser. Use `run-lark-cc fg codex` in a foreground container, `ui` to open the console, `status` to inspect it, `stop` to stop the supervisor, and `log` for startup logs. The inbox is off until you authorize it and configure a destination and a Responses API provider. New installs inherit the configured model; legacy inbox configs keep their Flash model until explicitly changed.
+
+See the [deployment guide](docs/self-contained.md) for prerequisites, SSH forwarding, upgrades, and optional remote workbenches. The upstream npm package mentioned below may not include this fork's changes.
+
 ## What it does
 
 - Forwards Feishu / Lark messages to local Claude Code or Codex CLI. Send a DM directly, or `@bot` in a group.
@@ -31,7 +48,7 @@ For ordinary tasks, after the agent exhausts its own API rate-limit retries (for
 
 ## Prerequisites
 
-- Node.js **>= 20.12.0**
+- Node.js **20.19+ or 22.12+**
 - At least one local agent installed and logged in:
   - Claude Code: `claude`, see https://docs.anthropic.com/en/docs/claude-code/quickstart
   - Codex CLI: `codex`, see https://developers.openai.com/codex/cli

@@ -3,54 +3,18 @@ import { readFile, stat } from 'node:fs/promises';
 import { writeFileAtomic } from '../platform/atomic-write';
 import type { InboxService } from './service';
 import type { InboxLark } from './lark';
-import type { InboxJob } from './types';
 import { obj } from './values';
-import { handlingState, replyContent } from './reply';
+import { guiJobs } from './presentation';
+export { guiSummary, guiContent, guiJobs } from './presentation';
+import { executeInboxCommand } from './workbench';
 import { ATTENTION_RULES } from './analyzer';
-import { inboxMode, intakeScope, type IntakeScope, type InboxMode } from './config';
+import { intakeScope, type IntakeScope, type InboxMode } from './config';
 
 interface Command { id: string; action: string; target: string; expiresAt: number }
 interface Receipt { id: string; ok: boolean; result: string; time: number }
 interface Ledger { ownerKey: string; receipts: Record<string, Receipt> }
 const uuid = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i;
 const actions = new Set(['browse', 'manual', 'detail', 'process', 'claim', 'ignore', 'mode', 'review', 'scope', 'batch']);
-export const guiSummary = (job: InboxJob) => ({ id: job.id, name: job.source.name.slice(0, 80),
-  chatId: job.source.chatId, type: job.source.type, state: job.state,
-  preview: job.messages.at(-1)?.text.slice(0, 80) || '', messageCount: job.messages.length,
-  updatedAt: job.updatedAt, dueAt: job.dueAt, automatic: job.automatic, alert: job.alert,
-  attention: job.attention,
-  revision: job.revision ?? 0, handlingState: handlingState(job) });
-
-export function guiContent(job: InboxJob) {
-  const legacy = replyContent(job.result);
-  const content = { replyDraft: job.replyDraft ?? legacy.replyDraft, analysis: (job.analysis ?? legacy.analysis).slice(0, 8000),
-    missingInfo: job.missingInfo ?? legacy.missingInfo, draftEdited: Boolean(job.draftEdited), draftStale: Boolean(job.draftStale),
-    error: job.error?.slice(0, 1000), sourceUrl: job.messages.find(m => /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(m.link || ''))?.link?.slice(0, 1000) ||
-      `https://applink.feishu.cn/client/chat/open?openChatId=${job.source.chatId}`,
-    messages: job.messages.slice(-5).map(m => ({ name: m.senderName.slice(0, 80), time: m.time, text: m.text.slice(0, 300) })),
-    inputTokens: job.inputTokens, outputTokens: job.outputTokens };
-  while (JSON.stringify(content).length > 22000) {
-    if (content.analysis.length) content.analysis = content.analysis.slice(0, Math.floor(content.analysis.length / 2));
-    else if (content.messages.length) content.messages.pop();
-    else content.missingInfo = content.missingInfo.slice(0, Math.floor(content.missingInfo.length / 2));
-  }
-  return content;
-}
-
-/** Keep the list intact; prefetch content only while the snapshot budget permits. */
-export function guiJobs(all: InboxJob[]) {
-  const selected = all.slice(0, 500);
-  const jobs = selected.map(job => ({ ...guiSummary(job), detail: undefined as ReturnType<typeof guiContent> | undefined }));
-  while (Buffer.byteLength(JSON.stringify(jobs)) > 600000) { jobs.pop(); selected.pop(); }
-  let bytes = Buffer.byteLength(JSON.stringify(jobs));
-  for (let i = 0; i < jobs.length; i++) {
-    const detail = guiContent(selected[i]!);
-    const extra = Buffer.byteLength(JSON.stringify(detail)) + 10;
-    if (bytes + extra <= 700000) { jobs[i]!.detail = detail; bytes += extra; }
-  }
-  return jobs;
-}
-
 /** Outbound-only connection to the owner-authenticated hosted workbench. */
 export class InboxGui {
   private timer?: NodeJS.Timeout;
@@ -168,38 +132,6 @@ export class InboxGui {
   }
   private async execute(command: Command): Promise<unknown> {
     if (this.stopped) throw new Error('助理已关闭');
-    if (command.action === 'mode') {
-      if (!this.changeMode || !['off', 'on'].includes(command.target)) throw new Error('无效运行模式');
-      await this.changeMode(command.target as InboxMode);
-      return { mode: inboxMode(this.service.config) };
-    }
-    if (command.action === 'scope') {
-      if (!this.changeScope || !['private', 'private_mentions', 'all'].includes(command.target)) throw new Error('无效接收范围');
-      await this.changeScope(command.target as IntakeScope);
-      return { intakeScope: intakeScope(this.service.config) };
-    }
-    if (command.action === 'batch') {
-      await this.service.batchReview(JSON.parse(command.target), this.service.config.ownerOpenId, command.id);
-      return { ok: true };
-    }
-    if (command.action === 'review') {
-      const job = await this.service.review(JSON.parse(command.target), this.service.config.ownerOpenId, command.id);
-      return { ...guiSummary(job), ...guiContent(job) };
-    }
-    if (!this.service.config.enabled && command.action !== 'detail') throw new Error('助理已关闭，请先开启助理');
-    if (command.action === 'browse') {
-      const target = obj(JSON.parse(command.target));
-      if ((target.type !== 'p2p' && target.type !== 'group') || typeof target.page !== 'string') throw new Error('无效会话分页');
-      await this.lark.checkOwner(this.service.config.ownerOpenId);
-      return this.lark.recent(target.type, target.page);
-    }
-    if (command.action === 'manual') return { id: (await this.service.manual(command.target, command.id)).id };
-    const job = this.service.list(500).find(j => j.id === command.target && j.ownerOpenId === this.service.config.ownerOpenId);
-    if (!job) throw new Error('待办不存在或已归档');
-    if (command.action === 'detail') {
-      return { ...guiSummary(job), ...guiContent(job) };
-    }
-    await this.service.decide(job.id, command.action, this.service.config.ownerOpenId);
-    return { id: job.id };
+    return executeInboxCommand(this.service, this.lark, command, this.changeMode, this.changeScope);
   }
 }

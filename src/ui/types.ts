@@ -40,6 +40,7 @@ export interface UiServerDeps {
   host?: string;
   /** Bind port; 0 (default) picks an ephemeral port. */
   port?: number;
+  requestShutdown?: () => void;
 }
 
 export interface UiServerHandle {

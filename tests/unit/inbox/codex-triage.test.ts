@@ -16,7 +16,7 @@ const fixture = () => { const call = vi.fn(async (_args: string[], _signal: Abor
 const run = (tools: InboxReadTools, request: typeof fetch, jobs = [job('a')], signal = new AbortController().signal) =>
   triageWithChatTools(jobs, '关联背景', provider, tools, signal, undefined, request);
 
-it('advertises only read-only Lark functions, with fixed flash model and original provider', async () => {
+it('advertises only read-only Lark functions, with the selected model and original provider', async () => {
   const f = fixture();
   const request = vi.fn<typeof fetch>(async () => response([message()]));
   expect(await run(f.tools, request)).toEqual([answer('a')]);
@@ -24,7 +24,7 @@ it('advertises only read-only Lark functions, with fixed flash model and origina
   const body = JSON.parse(String(options!.body));
   expect(url).toBe(provider.url);
   expect(options).toMatchObject({ redirect: 'error', headers: { authorization: 'Bearer private-token' } });
-  expect(body).toMatchObject({ model: 'deepseek-flash', tools: INBOX_READ_TOOLS, tool_choice: 'auto', store: false });
+  expect(body).toMatchObject({ model: provider.model, tools: INBOX_READ_TOOLS, tool_choice: 'auto', store: false });
   expect(body.tools.map((t: { type: string }) => t.type)).toEqual(Array(7).fill('function'));
   expect(body).not.toHaveProperty('cwd');
   expect(body).not.toHaveProperty('max_output_tokens');

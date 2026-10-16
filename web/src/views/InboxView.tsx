@@ -1,31 +1,131 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { apiGet, apiPost } from '@/lib/api';
+import type { DeviceLogin, ProfileInfo, UserAuthStatus } from '@/lib/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { intakeScope, type IntakeScope, type InboxConfig } from '../../../src/inbox/config';
+import { InboxWorkbench, type WorkbenchView } from './InboxWorkbench';
 
-type View = { config: InboxConfig; running: boolean; error?: string; jobs: { id: string; state: string; source: { name: string } }[] };
+const scopes = ['search:message', 'im:chat:read', 'im:message.p2p_msg:get_as_user', 'im:message.group_msg:get_as_user'];
+type SetupCheck = { checks: { label: string; ok: boolean; detail: string }[]; ownerOpenId: string; ok: boolean };
+
 export function InboxView() {
-  const [view, setView] = useState<View>(); const [config, setConfig] = useState<InboxConfig>(); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
-  useEffect(() => { void apiGet<View>('/api/inbox').then(v => { setView(v); setConfig(v.config); }).catch(e => setError(e.message)); }, []);
-  if (!config) return error ? <p className="text-destructive">{error}</p> : null;
-  const change = (patch: Partial<InboxConfig>) => setConfig({ ...config, ...patch });
-  return <Card className="mt-6"><CardHeader><CardTitle>会话助理 · 全局设置</CardTitle></CardHeader><CardContent className="space-y-4">
-    <p className="text-sm text-muted-foreground">按接收范围整理新消息。确认需要本人处理后，先通知已开始分析，再使用 DeepSeek Flash 处理，结果和回复草稿发到同一话题，由你确认后发送。启用后在结果群任意话题发送 /inbox，即可打开工作台或卡片入口；是否需要 @ 机器人取决于该群的消息接收设置。</p>
-    <label className="flex gap-2"><input type="checkbox" checked={config.enabled} onChange={e => change({ enabled: e.target.checked })} />开启会话助理</label>
-    <label className="flex gap-2"><input type="checkbox" checked={config.deliveryMode === 'new_topic'} onChange={e => change({ deliveryMode: e.target.checked ? 'new_topic' : 'thread' })} />每个事项在结果群新开话题，分析结果回复在该话题下（仅支持话题群）</label>
-    <div className="grid gap-3 sm:grid-cols-2">
-      {([['executorProfile', '执行 profile'], ['ownerOpenId', '本人 Open ID']] as const).map(([key, label]) => <label key={key}>{label}<Input value={config[key]} onChange={e => change({ [key]: e.target.value })} /></label>)}
-      {([['chatId', '结果群 ID'], ['threadId', '结果话题 ID'], ['replyTo', '话题内回复消息 ID']] as const).map(([key, label]) => <label key={key}>{label}<Input value={config.destination[key]} onChange={e => change({ destination: { ...config.destination, [key]: e.target.value } })} /></label>)}
-      <label>可选网页入口（留空使用飞书卡片）<Input placeholder="可留空；https://example.com/assistant/" value={config.h5.publicUrl} onChange={e => change({ h5: { ...config.h5, publicUrl: e.target.value } })} /></label>
-      <label>可选网页服务端口<Input type="number" value={config.h5.port} onChange={e => change({ h5: { ...config.h5, port: Number(e.target.value) } })} /></label>
-      {([['dailyTriageLimit', '每日轻量筛选批次上限'], ['contextMinutes', '近期上下文分钟数'], ['pollSeconds', '检测间隔秒数']] as const).map(([key, label]) => <label key={key}>{label}<Input type="number" value={config[key]} onChange={e => change({ [key]: Number(e.target.value) })} /></label>)}
+  const [view, setView] = useState<WorkbenchView>();
+  const [config, setConfig] = useState<InboxConfig>();
+  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [checks, setChecks] = useState<SetupCheck>();
+  const [login, setLogin] = useState<(DeviceLogin & { profile: string })>();
+  const refresh = useCallback(async () => {
+    const v = await apiGet<WorkbenchView>('/api/inbox/workbench');
+    setView(v); setConfig(c => c ?? v.config);
+  }, []);
+  useEffect(() => {
+    let active = true;
+    const poll = async () => {
+      try { if (active) await refresh(); } catch (e) { if (active) setError((e as Error).message); }
+    };
+    void poll();
+    const timer = setInterval(() => void poll(), 3000);
+    void apiGet<{ profiles: ProfileInfo[] }>('/api/profiles').then(v => setProfiles(v.profiles)).catch(e => setError(e.message));
+    return () => { active = false; clearInterval(timer); };
+  }, [refresh]);
+  const perform = async (fn: () => Promise<void>) => {
+    setBusy(true); setError('');
+    try { await fn(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+  };
+  const command = async (action: string, target: unknown) => {
+    const result = await apiPost('/api/inbox/command', { id: crypto.randomUUID(), action, target: typeof target === 'string' ? target : JSON.stringify(target) });
+    await refresh(); return result;
+  };
+  if (!config) return <p className="text-sm">{error || '加载会话助理…'}</p>;
+  const change = (patch: Partial<InboxConfig>) => { setConfig({ ...config, ...patch }); setChecks(undefined); };
+  const check = async () => {
+    const result = await apiPost<SetupCheck>('/api/inbox/check', config);
+    setChecks(result);
+    if (!config.ownerOpenId && result.ownerOpenId) setConfig({ ...config, ownerOpenId: result.ownerOpenId });
+  };
+  return <Card className="mt-6" id="inbox"><CardHeader><CardTitle>会话助理</CardTitle></CardHeader><CardContent className="space-y-4">
+    <p className="text-sm text-muted-foreground">在本机整理待办、核对分析并编辑草稿。首次配置后手动开启；可选接入远程工作台。</p>
+    <div className="flex flex-wrap items-center gap-3">
+      <span>{view?.running ? '正在接收消息' : '已暂停接收'}</span>
+      {view?.connected && <Button disabled={busy} variant="outline" onClick={() => void perform(async () => {
+        await command('mode', view.running ? 'off' : 'on');
+        setConfig(c => c && ({ ...c, enabled: !view.running }));
+      })}>{view.running ? '暂停接收' : '开启接收'}</Button>}
+      <Button variant="ghost" disabled={busy} onClick={() => void perform(refresh)}>刷新</Button>
     </div>
-    <fieldset className="flex flex-wrap gap-3"><legend>接收范围</legend>{([['private', '私聊'], ['private_mentions', '私聊和 @ 我'], ['all', '全部']] as [IntakeScope, string][]).map(([value, label]) => <Button key={value} variant={intakeScope(config) === value ? 'secondary' : 'outline'} aria-pressed={intakeScope(config) === value} onClick={() => change({ intakeScope: value, watchPrivate: true, watchMentions: value !== 'private' })}>{label}</Button>)}</fieldset>
-    <p className="text-sm">{view?.running ? '运行中' : '未运行'}{view?.error ? `：${view.error}` : ''}</p>
-    {error && <p className="text-destructive">{error}</p>}
-    <Button disabled={busy} onClick={() => { setBusy(true); void apiPost<View>('/api/inbox', config).then(v => { setView(v); setConfig(v.config); setError(''); }).catch(e => setError(e.message)).finally(() => setBusy(false)); }}>保存全局设置</Button>
-    {view?.jobs.slice(0, 5).map(j => <p key={j.id} className="text-sm">{j.source.name} · {j.state}</p>)}
+    {(error || view?.error) && <p role="alert" className="text-sm text-destructive">{error || view?.error}</p>}
+    {view && <InboxWorkbench view={view} command={command} />}
+    <details open={!view?.config.executorProfile} className="rounded-lg border p-4">
+      <summary className="cursor-pointer font-medium">配置与首次使用检查</summary>
+      <div className="mt-4 space-y-4">
+        <p className="text-sm">1. 创建并启动个人 Codex profile。2. 授权读取飞书消息。3. 设置结果话题和模型。4. 检查后开启。</p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label>执行 profile<select className="mt-1 w-full rounded border bg-background p-2" value={config.executorProfile} onChange={e => change({ executorProfile: e.target.value })}>
+            <option value="">请选择</option>{profiles.filter(p => p.agentKind === 'codex').map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+          </select></label>
+          <label>所属用户 Open ID<Input value={config.ownerOpenId} placeholder="授权检查后自动填写" onChange={e => change({ ownerOpenId: e.target.value })} /></label>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" disabled={busy || !config.executorProfile} onClick={() => void perform(async () => {
+            await apiPost('/api/profiles/start', { profile: config.executorProfile }); await refresh();
+          })}>启动执行 profile</Button>
+          <Button variant="outline" disabled={busy || !config.executorProfile} onClick={() => void perform(async () => {
+            const result = await apiPost<DeviceLogin>('/api/auth/login/start', { profile: config.executorProfile, scopes });
+            setLogin({ ...result, profile: config.executorProfile });
+          })}>授权飞书消息读取</Button>
+          <Button variant="ghost" disabled={busy || !config.executorProfile} onClick={() => void perform(async () => {
+            const auth = await apiGet<UserAuthStatus>(`/api/auth/status?profile=${encodeURIComponent(config.executorProfile)}`);
+            if (!auth.openId) throw new Error('此 profile 尚无用户授权');
+            change({ ownerOpenId: auth.openId });
+          })}>读取已授权身份</Button>
+        </div>
+        {login && <div className="space-y-2 rounded border p-3 text-sm">
+          <p>在浏览器中授权后，点击“完成授权”。</p>
+          <a className="break-all text-primary underline" href={login.verificationUrl} target="_blank" rel="noreferrer">{login.verificationUrl}</a>
+          <Button disabled={busy} onClick={() => void perform(async () => {
+            await apiPost('/api/auth/login/complete', { profile: login.profile, deviceCode: login.deviceCode });
+            await apiPost(`/api/config?profile=${encodeURIComponent(login.profile)}`, { larkCliIdentity: 'user-default' });
+            const auth = await apiGet<UserAuthStatus>(`/api/auth/status?profile=${encodeURIComponent(login.profile)}`);
+            if (config.executorProfile === login.profile && auth.openId) change({ ownerOpenId: auth.openId });
+            setLogin(undefined);
+          })}>完成授权</Button>
+        </div>}
+        <div className="grid gap-3 sm:grid-cols-2">
+          {([['chatId', '结果群 ID'], ['threadId', '结果话题 ID'], ['replyTo', '话题内回复消息 ID']] as const).map(([key, label]) => <label key={key}>{label}<Input value={config.destination[key]} onChange={e => change({ destination: { ...config.destination, [key]: e.target.value } })} /></label>)}
+          <label>筛选与分析模型<Input value={config.analysisModel ?? 'deepseek-flash'} placeholder="留空使用 Codex 默认模型" onChange={e => change({ analysisModel: e.target.value })} /></label>
+        </div>
+        <p className="text-xs text-muted-foreground">授权后把机器人加入结果群，在目标话题发送 /inbox setup（按群设置 @ 机器人），然后点击“重新读取设置”即可自动填入三个 ID。模型使用该 profile 的 Responses API 配置；仅有 Codex 网页登录授权还不够。</p>
+        <Button variant="ghost" disabled={busy} onClick={() => void perform(async () => {
+          const saved = await apiGet<{ config: InboxConfig }>('/api/inbox'); setConfig(saved.config); setChecks(undefined);
+        })}>重新读取设置</Button>
+        <label className="flex gap-2 text-sm"><input type="checkbox" checked={config.deliveryMode === 'new_topic'} onChange={e => change({ deliveryMode: e.target.checked ? 'new_topic' : 'thread' })} />每个事项新开结果话题（需话题群）</label>
+        <fieldset className="flex flex-wrap gap-2"><legend className="mb-2 text-sm">接收范围</legend>{([['private', '私聊'], ['private_mentions', '私聊和 @ 我'], ['all', '全部']] as [IntakeScope, string][]).map(([value, label]) => <Button key={value} variant={intakeScope(config) === value ? 'secondary' : 'outline'} aria-pressed={intakeScope(config) === value} onClick={() => change({ intakeScope: value, watchPrivate: true, watchMentions: value !== 'private' })}>{label}</Button>)}</fieldset>
+        <label className="block text-sm">本人职责与关注范围<textarea className="mt-1 min-h-24 w-full rounded border bg-background p-2" maxLength={3000} value={config.attentionProfile} onChange={e => change({ attentionProfile: e.target.value })} placeholder="填写你的职责、项目和需要关注的事项；留空使用通用筛选规则" /></label>
+        <details><summary className="cursor-pointer text-sm">高级设置与可选远程入口</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">
+          {([['dailyTriageLimit', '每日筛选批次上限'], ['contextMinutes', '近期上下文分钟数'], ['pollSeconds', '检测间隔秒数']] as const).map(([key, label]) => <label key={key}>{label}<Input type="number" value={config[key]} onChange={e => change({ [key]: Number(e.target.value) })} /></label>)}
+          <label>远程工作台 URL<Input value={config.gui.publicUrl} onChange={e => change({ gui: { ...config.gui, publicUrl: e.target.value } })} /></label>
+          <label>远程工作台凭证文件<Input value={config.gui.apiKeyFile} onChange={e => change({ gui: { ...config.gui, apiKeyFile: e.target.value } })} /></label>
+          <label>独立 H5 入口 URL<Input value={config.h5.publicUrl} onChange={e => change({ h5: { ...config.h5, publicUrl: e.target.value } })} /></label>
+          <label>独立 H5 端口<Input type="number" value={config.h5.port} onChange={e => change({ h5: { ...config.h5, port: Number(e.target.value) } })} /></label>
+        </div></details>
+        <label className="flex gap-2"><input type="checkbox" checked={config.enabled} onChange={e => change({ enabled: e.target.checked })} />保存后开启会话助理</label>
+        <div className="flex gap-2"><Button variant="outline" disabled={busy} onClick={() => void perform(check)}>检查配置</Button>
+          <Button disabled={busy} onClick={() => void perform(async () => {
+            let next = config;
+            if (config.enabled) {
+              const result = await apiPost<SetupCheck>('/api/inbox/check', config); setChecks(result);
+              if (!result.ok) throw new Error('请先解决检查中未通过的项目');
+              if (!config.ownerOpenId && result.ownerOpenId) next = { ...config, ownerOpenId: result.ownerOpenId };
+            }
+            const saved = await apiPost<{ config: InboxConfig }>('/api/inbox', next);
+            setConfig(saved.config); await refresh();
+          })}>保存配置</Button></div>
+        {checks && <ul className="space-y-1 text-sm">{checks.checks.map(c => <li key={c.label} className={c.ok ? '' : 'text-destructive'}>{c.ok ? '✓' : '✗'} {c.label}：{c.detail}</li>)}</ul>}
+      </div>
+    </details>
   </CardContent></Card>;
 }

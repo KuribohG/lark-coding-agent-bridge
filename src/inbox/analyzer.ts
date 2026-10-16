@@ -12,12 +12,15 @@ export const INBOX_ANALYSIS_MODEL = 'deepseek-flash';
 export interface AnalysisProvider { url: string; model: string; key: string; headers?: Record<string, string> }
 
 /** Reuse the selected Codex Responses provider without starting a tool-capable agent. */
-export async function loadAnalysisProvider(profile: ProfileConfig): Promise<AnalysisProvider> {
+export async function loadAnalysisProvider(profile: ProfileConfig, modelOverride?: string): Promise<AnalysisProvider> {
   if (profile.agentKind !== 'codex') throw new Error('会话助理当前需要 Codex profile');
   const home = profile.codex?.codexHome || process.env.CODEX_HOME || join(homedir(), '.codex');
   let config: Record<string, unknown>;
   try { config = obj(parse(await readFile(join(home, 'config.toml'), 'utf8'))); }
-  catch { throw new Error('无法读取 Codex 模型配置，请检查配置文件格式'); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') config = {};
+    else throw new Error('无法读取 Codex 模型配置，请检查配置文件格式');
+  }
   const provider = obj(obj(config.model_providers)[String(config.model_provider || 'openai')]);
   if (provider.wire_api && provider.wire_api !== 'responses') throw new Error('助理需要 Responses 模型接口');
   let key = typeof provider.experimental_bearer_token === 'string' ? provider.experimental_bearer_token : '';
@@ -33,7 +36,7 @@ export async function loadAnalysisProvider(profile: ProfileConfig): Promise<Anal
   for (const [k, v] of Object.entries(obj(provider.http_headers))) if (typeof v === 'string') headers[k] = v;
   for (const [k, v] of Object.entries(obj(provider.env_http_headers))) if (typeof v === 'string' && process.env[v]) headers[k] = process.env[v]!;
   // Inbox automation has an independent cost policy; reuse only provider routing and authentication.
-  const model = profile.preferences.model || String(config.model || '');
+  const model = modelOverride || profile.preferences.model || String(config.model || '');
   if (!model) throw new Error('请在 Codex 配置中设置默认模型');
   return { url: base.href.replace(/\/$/, '') + '/responses', model, key, headers };
 }
