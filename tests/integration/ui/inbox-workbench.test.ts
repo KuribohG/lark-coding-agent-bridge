@@ -51,6 +51,14 @@ it('serves local jobs and persists version-checked reviews through authenticated
   expect(checkOwner).not.toHaveBeenCalled(); // paused: no collection or external calls
   const reloaded = new InboxStore(store.path); await reloaded.load();
   expect(reloaded.data.jobs[0]!.replyDraft).toBe('edited by owner');
+  store.data.jobs[0]!.state = 'queued'; store.data.jobs[0]!.analysisRequested = true;
+  const stop = { id: patch.id, revision: store.data.jobs[0]!.revision };
+  expect((await command(stop, 'bad', 'stop')).status).toBe(401);
+  expect(store.data.jobs[0]!.state).toBe('queued');
+  const stopped = await command(stop, server.token, 'stop');
+  expect(stopped.status).toBe(200);
+  expect(await stopped.json()).toMatchObject({ state: 'waiting', analysisStoppedAt: expect.any(Number), replyDraft: 'edited by owner' });
+  await reloaded.load(); expect(reloaded.data.jobs[0]!.analysisRequested).toBe(false);
   expect((await fetch(`${url}/api/shutdown`, { method: 'POST' })).status).toBe(401);
   expect(shutdown).not.toHaveBeenCalled();
   expect((await fetch(`${url}/api/shutdown`, { method: 'POST', headers: { 'x-ui-token': server.token } })).status).toBe(200);
@@ -71,8 +79,14 @@ it('shows and reviews CI source jobs in the same authenticated workbench with ch
     const response = await fetch(`${url}/api/inbox/workbench`, { headers });
     expect(response.status).toBe(200); const view = await response.text();
     expect(view).toContain('gitlab-ci'); expect(view).toContain('CI draft');
+    const queued = await source.submit({ key: 'pipeline-2', title: 'repo CI #2', reason: 'CI failed', url: 'https://gitlab.test/pipelines/2',
+      time: Date.now(), data: {}, initial: { state: 'queued', analysisRequested: true } });
+    const stop = await fetch(`${url}/api/inbox/command`, { method: 'POST', headers,
+      body: JSON.stringify({ id: randomUUID(), action: 'stop', target: JSON.stringify({ id: queued.id, revision: queued.revision }) }) });
+    expect(stop.status).toBe(200);
+    expect(await stop.json()).toMatchObject({ id: queued.id, state: 'waiting', analysisStoppedAt: expect.any(Number), handlingState: 'open' });
     const review = await fetch(`${url}/api/inbox/command`, { method: 'POST', headers,
       body: JSON.stringify({ id: randomUUID(), action: 'review', target: JSON.stringify({ id: job.id, revision: job.revision, handlingState: 'handled' }) }) });
-    expect(review.status).toBe(200); expect(manager.sources.list()[0]?.handlingState).toBe('handled');
+    expect(review.status).toBe(200); expect(manager.sources.list().find(item => item.id === job.id)?.handlingState).toBe('handled');
   } finally { await manager.close(); }
 });

@@ -34,8 +34,10 @@ export class InboxCards {
     return card('会话助理 · 待办', [text(content), ...this.decisions(job), button('处理其他会话', 'inbox.open')]);
   }
   private decisions(job: InboxJob): object[] {
-    return [['深入分析', 'process'], ['我来处理', 'claim'], ['忽略', 'ignore']].map(([label, action]) =>
-      this.action(label!, action!, job.id, 7 * 86400_000));
+    return [(['queued', 'running'].includes(job.state)
+      ? this.action('停止深度分析', 'stop', JSON.stringify({ id: job.id, revision: job.revision ?? 0 }), 7 * 86400_000)
+      : this.action('深入分析', 'process', job.id, 7 * 86400_000)),
+      ...[['我来处理', 'claim'], ['忽略', 'ignore']].map(([label, action]) => this.action(label!, action!, job.id, 7 * 86400_000))];
   }
   async handle(args: string, ctx: InboxCardContext): Promise<void> {
     if (!this.accepts(ctx)) return;
@@ -63,6 +65,9 @@ export class InboxCards {
     } else if (action === 'choose') {
       const job = await this.service.manual(target);
       await this.lark.replyTopic({ text: `已提交分析：${job.source.name}\n来源会话 ID：${job.source.chatId}\n待办：${job.id}\n分析结果会继续发到本话题。` });
+    } else if (action === 'stop') {
+      const job = await this.service.stopAnalysis(JSON.parse(target), ctx.operator);
+      await this.menu(card('会话助理 · 分析已停止', [text(`${job.source.name}\n已停止深度分析，事项保留待处理。需要时可重新分析。`), ...this.decisions(job)]), ctx);
     } else if (['process', 'claim', 'ignore'].includes(action!)) {
       await this.service.decide(target, action!, ctx.operator);
       const job = this.service.get(target);
@@ -84,7 +89,7 @@ export class InboxCards {
   private async pending(offset: number, ctx: InboxCardContext): Promise<void> {
     const jobs = this.service.list(500).filter(j => !['done', 'ignored', 'claimed'].includes(j.state));
     const elements: object[] = [...navigation()];
-    for (const j of jobs.slice(offset, offset + 5)) elements.push(text(`${j.source.name}\n会话 ID：${j.source.chatId}\n状态：${stateName(j.state)}`), ...this.decisions(j));
+    for (const j of jobs.slice(offset, offset + 5)) elements.push(text(`${j.source.name}\n会话 ID：${j.source.chatId}\n状态：${j.analysisStoppedAt !== undefined && j.state === 'waiting' ? '分析已停止 · 待处理' : stateName(j.state)}`), ...this.decisions(j));
     if (!jobs.length) elements.push(text('当前没有待办。'));
     if (jobs.length > offset + 5) elements.push(this.action('下一页待办', 'pending', String(offset + 5)));
     await this.menu(card('会话助理 · 待办列表', elements), ctx);

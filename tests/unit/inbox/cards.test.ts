@@ -22,7 +22,7 @@ function command(element: Element): string {
 async function setup() {
   const path = join(await mkdtemp(join(tmpdir(), 'inbox-cards-')), 'nonces.json');
   let now = 1000;
-  const service = { config: config(), manual: vi.fn(async () => job), decide: vi.fn(async () => {}), list: vi.fn(() => [job]), get: vi.fn(() => job) };
+  const service = { config: config(), manual: vi.fn(async () => job), decide: vi.fn(async () => {}), list: vi.fn(() => [job]), get: vi.fn(() => job), stopAnalysis: vi.fn(async () => job) };
   const lark = { replyTopic: vi.fn(async (_body: { card?: object; text?: string }) => {}), replyMenu: vi.fn(async (_card: object, _messageId: string, _threadId: string) => {}), recent: vi.fn(async (_type: string, _page?: string) => ({ chats: [{ id: 'oc_source', name: '<at id=all>name</at>' }], next: 'next1' })) };
   const create = async () => {
     const store = new CallbackNonceStore(path); await store.load();
@@ -33,6 +33,18 @@ async function setup() {
 }
 
 it('allows a complete configuration with no web URL', () => { expect(() => validateInbox(config())).not.toThrow(); });
+
+it('signs a versioned stop button and confirms cancellation in the original topic', async () => {
+  const h = await setup(); const active = { ...job, state: 'running' as const, revision: 7 };
+  const reminder = h.cards.reminder(active, '正在分析');
+  const cmd = command(elements({ card: reminder }).find(e => e.text?.content === '停止深度分析')!);
+  await h.cards.handle(cmd, { ...context, messageId: 'om_card', threadId: 'omt_item' });
+  expect(h.service.stopAnalysis).toHaveBeenCalledWith({ id: job.id, revision: 7 }, 'ou_owner');
+  expect(h.service.decide).not.toHaveBeenCalled();
+  expect(h.lark.replyMenu).toHaveBeenCalledWith(expect.objectContaining({ schema: '2.0' }), 'om_card', 'omt_item');
+  await expect(h.cards.handle(cmd, context)).rejects.toThrow('已经处理');
+  expect(h.service.stopAnalysis).toHaveBeenCalledOnce();
+});
 
 it('browses private and group chats without submitting analysis, retaining names and IDs as plain text', async () => {
   const h = await setup(); await h.cards.handle('private', context); await h.cards.handle('groups', context);

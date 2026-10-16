@@ -50,7 +50,7 @@ export class WorkItemLifecycle {
   }
   request(job: WorkItem): void {
     if (handlingState(job) !== 'open' || job.state === 'running') return;
-    job.restartPending = undefined; job.analysisPaused = false;
+    job.restartPending = undefined; job.analysisPaused = false; job.analysisStoppedAt = undefined;
     if (job.state === 'queued') { job.automatic = false; job.analysisRequested = true; return; }
     job.state = 'queued'; job.automatic = false; job.analysisRequested = true;
     job.error = undefined; job.deliveredAt = undefined;

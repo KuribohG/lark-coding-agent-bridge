@@ -244,3 +244,19 @@ it('counts each screening attempt against the daily budget', async () => {
   expect(s.store.data.triageUsage?.['1970-01-01']).toBe(2);
   expect(s.store.data.jobs.filter(job => job.attention?.retry)).toHaveLength(3);
 });
+
+it('stops one running item and one queued item while preserving the other analyses and screening', async () => {
+  const s = await setup();
+  for (let i = 0; i < 6; i++) s.add(`analysis-${i}`, 'queued');
+  s.add('screening', 'waiting');
+  await s.service.tick(); await vi.waitFor(() => expect(s.analyses).toHaveLength(5));
+  await s.service.stopAnalysis({ id: 'analysis-5', revision: s.service.get('analysis-5')?.revision ?? 0 }, 'ou_owner', 'stop-queued');
+  await s.service.stopAnalysis({ id: 'analysis-2', revision: s.service.get('analysis-2')?.revision ?? 0 }, 'ou_owner', 'stop-running');
+  await vi.waitFor(() => expect(s.analyses[2]!.signal.aborted).toBe(true));
+  expect(s.analyses.filter(run => run.signal.aborted).map(run => run.id)).toEqual(['analysis-2']);
+  expect(s.screenings[0]!.signal.aborted).toBe(false);
+  await s.service.tick(); expect(s.analyses).toHaveLength(5);
+  for (const id of ['analysis-2', 'analysis-5']) expect(s.service.get(id)).toMatchObject({
+    state: 'waiting', analysisRequested: false, analysisPaused: true, analysisStoppedAt: expect.any(Number),
+  });
+});

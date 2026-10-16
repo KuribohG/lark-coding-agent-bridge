@@ -13,6 +13,10 @@ export async function executeInboxCommand(service: WorkItemService & { manual?: 
   if (typeof command.id !== 'string' || !/^[\da-f-]{36}$/i.test(command.id) ||
     typeof command.action !== 'string' || typeof command.target !== 'string' || command.target.length > 64000) throw new Error('无效工作台操作');
   const owner = service.config.ownerOpenId;
+  if (command.action === 'stop') {
+    const job = await service.stopAnalysis(JSON.parse(command.target), owner, command.id);
+    return { ...guiSummary(job), ...guiContent(job) };
+  }
   if (command.action === 'mode') {
     if (!changeMode || !['off', 'on'].includes(command.target)) throw new Error('无效运行模式');
     await changeMode(command.target as InboxMode); return { mode: inboxMode(service.config) };
@@ -49,7 +53,7 @@ export async function executeInboxCommand(service: WorkItemService & { manual?: 
 export async function executeSourceCommand(sources: WorkItemSources, input: unknown, scope?: { owner: string; profile: string }) {
   const command = obj(input);
   if (['mode', 'scope', 'browse', 'manual'].includes(String(command.action))) return { handled: false };
-  const target = ['review', 'batch'].includes(String(command.action)) && typeof command.target === 'string'
+  const target = ['review', 'batch', 'stop'].includes(String(command.action)) && typeof command.target === 'string'
     ? obj(JSON.parse(command.target)) : { id: command.target };
   const ids = command.action === 'batch' && Array.isArray(target.items) ? target.items.map(item => obj(item).id) : [target.id];
   const service = sources.select(ids.filter((id): id is string => typeof id === 'string'), scope);

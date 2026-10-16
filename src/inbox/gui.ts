@@ -15,7 +15,7 @@ interface Command { id: string; action: string; target: string; expiresAt: numbe
 interface Receipt { id: string; ok: boolean; result: string; time: number }
 interface Ledger { ownerKey: string; receipts: Record<string, Receipt> }
 const uuid = /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i;
-const actions = new Set(['browse', 'manual', 'detail', 'process', 'claim', 'ignore', 'mode', 'review', 'scope', 'batch']);
+const actions = new Set(['browse', 'manual', 'detail', 'process', 'stop', 'claim', 'ignore', 'mode', 'review', 'scope', 'batch']);
 /** Outbound-only connection to the owner-authenticated hosted workbench. */
 export class InboxGui {
   private timer?: NodeJS.Timeout;
@@ -99,7 +99,7 @@ export class InboxGui {
         for (const [id, entry] of Object.entries(this.ledger.receipts)) if (Date.now() - entry.time > 86400000) delete this.ledger.receipts[id];
         await writeFileAtomic(this.ledgerPath, JSON.stringify(this.ledger), { mode: 0o600 });
       }
-      const changed = ['mode', 'review', 'scope', 'batch'].includes(command.action) && receipt.ok;
+      const changed = ['mode', 'review', 'scope', 'batch', 'stop'].includes(command.action) && receipt.ok;
       if (changed && !this.compactSync) await this.sync();
       const snapshot = changed && this.compactSync ? this.snapshot() : undefined;
       await this.call('receipt', { bridgeKey: this.ledger.ownerKey, id: receipt.id, ok: receipt.ok, result: receipt.result, ...(snapshot ? { snapshot } : {}) });
@@ -114,7 +114,7 @@ export class InboxGui {
       j.ownerOpenId === config.ownerOpenId && j.profile === config.executorProfile);
     const jobs = guiJobs(all);
     return { jobs, total: all.length, enabled: config.enabled, autoAnalyze: config.autoAnalyze,
-      attentionControl: true, attentionProfile: config.attentionProfile || ATTENTION_RULES, batchControl: true,
+      attentionControl: true, attentionProfile: config.attentionProfile || ATTENTION_RULES, batchControl: true, stopControl: true,
       modeControl: Boolean(this.changeMode), draftControl: true, intakeScope: intakeScope(config), scopeControl: Boolean(this.changeScope),
       waitMinutes: config.waitMinutes, dailyAutoLimit: config.dailyAutoLimit,
       resultUrl: this.resultUrl, error: this.service.lastError?.slice(0, 1000) };

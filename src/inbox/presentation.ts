@@ -6,7 +6,7 @@ export const guiSummary = (job: InboxJob) => ({ id: job.id, name: job.source.nam
   chatId: job.source.chatId, type: job.source.type, state: job.state,
   preview: (job.messages.at(-1)?.text || job.attention?.reason || '').slice(0, 80), messageCount: job.messages.length,
   updatedAt: job.updatedAt, dueAt: job.dueAt, automatic: job.automatic, alert: job.alert,
-  attention: job.attention,
+  attention: job.attention, analysisStoppedAt: job.analysisStoppedAt,
   revision: job.revision ?? 0, handlingState: handlingState(job),
   businessState: job.businessState, evidenceVersion: job.evidenceVersion, analyzedVersion: job.analyzedVersion });
 

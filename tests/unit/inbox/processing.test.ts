@@ -9,6 +9,8 @@ import { InboxLark } from '../../../src/inbox/lark';
 import { processInbox } from '../../../src/monitoring/sources/lark/processor';
 import { InboxService } from '../../../src/inbox/service';
 import { InboxStore } from '../../../src/inbox/store';
+import { InboxAnalysisQueue } from '../../../src/inbox/task-source';
+import { executeInboxCommand } from '../../../src/inbox/workbench';
 import type { InboxIO, InboxJob, InboxMessage } from '../../../src/inbox/types';
 
 const executionCapabilities = { finalAnswer: 'separate-event', input: 'unsupported' } as const;
@@ -22,18 +24,116 @@ const result = { text: JSON.stringify({ replyDraft: '已确认，请按这个方
 const services: InboxService[] = [];
 afterEach(async () => { await Promise.all(services.splice(0).map(s => s.close())); });
 
-async function setup(overrides: Partial<InboxIO> = {}) {
+async function setup(overrides: Partial<InboxIO> = {}, queue?: InboxAnalysisQueue) {
   let now = 1_000_000;
   const io: InboxIO = { checkOwner: vi.fn(async () => {}), collect: vi.fn(async kind => kind === 'p2p' ? [message] : []),
     context: vi.fn(async () => [message]), source: vi.fn(async () => ({ name: '项目群', type: 'p2p' as const })),
     beginAnalysis: vi.fn(async () => topic), deliver: vi.fn(async () => {}), analyze: vi.fn(async () => result),
     notifyAttention: vi.fn(async () => {}), triage: vi.fn<NonNullable<InboxIO['triage']>>(async j => ({ id: j.id, state: 'needed', reason: '需要回复方案' })), ...overrides };
   const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-processing-')), 'state.json'));
-  const service = new InboxService(store, config(), io, () => now); services.push(service); await service.start();
+  const service = new InboxService(store, config(), io, () => now, queue); services.push(service); await service.start();
   await service.tick();
   await vi.waitFor(() => expect(service.list()[0]?.attention?.state).toBe('needed'));
   return { service, store, io, advance: (ms: number) => { now += ms; } };
 }
+
+it('stops the selected agent through the workbench command and rejects late output without delivering a failure', async () => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const run = { runId: 'stoppable', capabilities: executionCapabilities, events: (async function* (): AsyncGenerator<AgentEvent> {
+    await gate; yield { type: 'final_text', content: result.text }; yield { type: 'done', terminationReason: 'normal' };
+  })(), stop: vi.fn(async () => { release(); }), waitForExit: vi.fn(async () => true) };
+  const agent = { capabilities: executionCapabilities, run: vi.fn(() => run) } as unknown as AgentAdapter;
+  const cwd = await mkdtemp(join(tmpdir(), 'inbox-stop-'));
+  const s = await setup({ analyze: (job, signal) => processInbox(job, agent, cwd, '', signal) });
+  await s.service.tick(); await vi.waitFor(() => expect(agent.run).toHaveBeenCalledOnce());
+  const job = s.service.list()[0]!;
+  s.store.data.jobs[0]!.replyDraft = '保留已有草稿';
+  const stopped = await executeInboxCommand(s.service, {} as InboxLark, {
+    id: '01234567-0123-4123-8123-0123456789ab', action: 'stop', target: JSON.stringify({ id: job.id, revision: job.revision }),
+  });
+  expect(stopped).toMatchObject({ state: 'waiting', handlingState: 'open', analysisStoppedAt: expect.any(Number), replyDraft: '保留已有草稿' });
+  await vi.waitFor(() => expect(run.stop).toHaveBeenCalledOnce());
+  await s.service.close();
+  expect(s.service.list()[0]).toMatchObject({ state: 'waiting', analysisRequested: false, analysisTopic: topic, replyDraft: '保留已有草稿' });
+  expect(s.service.list()[0]?.result).toBeUndefined(); expect(s.service.list()[0]?.error).toBeUndefined();
+  expect(s.io.deliver).not.toHaveBeenCalled();
+});
+
+it('keeps a queued cancellation across restart and new messages until the owner explicitly retries', async () => {
+  const s = await setup(); const job = s.service.list()[0]!;
+  const input = { id: job.id, revision: job.revision };
+  await s.service.stopAnalysis(input, 'ou_owner', 'stop-1');
+  await s.service.stopAnalysis(input, 'ou_owner', 'stop-1');
+  await s.service.tick(); expect(s.io.analyze).not.toHaveBeenCalled();
+  await s.service.close();
+  const store = new InboxStore(s.store.path);
+  const resumed = new InboxService(store, config(), s.io, () => 2_000_000); services.push(resumed); await resumed.start();
+  const newMessage = { ...message, id: 'om_update', parentId: message.id, time: 2_000_000, text: '再补充一些信息' };
+  vi.mocked(s.io.collect).mockResolvedValue([newMessage]); vi.mocked(s.io.context).mockResolvedValue([newMessage]);
+  await resumed.tick(); await vi.waitFor(() => expect(resumed.list()[0]?.attention?.state).toBe('needed'));
+  await resumed.tick(); expect(s.io.analyze).not.toHaveBeenCalled();
+  expect(resumed.list()[0]).toMatchObject({ id: job.id, state: 'waiting', analysisStoppedAt: expect.any(Number) });
+  await resumed.decide(job.id, 'process', 'ou_owner');
+  // Replayed or stale stop requests must not cancel a newly requested analysis.
+  await resumed.stopAnalysis(input, 'ou_owner', 'stop-1');
+  await expect(resumed.stopAnalysis(input, 'ou_owner', 'stop-2')).rejects.toThrow('已更新');
+  expect(resumed.list()[0]?.state).toBe('queued'); expect(resumed.list()[0]?.analysisStoppedAt).toBeUndefined();
+  await resumed.tick(); await vi.waitFor(() => expect(s.io.analyze).toHaveBeenCalledOnce());
+});
+
+it('preserves a late-created topic but never starts the model after stopping its announcement', async () => {
+  let finish!: (value: typeof topic) => void;
+  const s = await setup({ beginAnalysis: vi.fn(() => new Promise<typeof topic>(resolve => { finish = resolve; })) });
+  await s.service.tick(); await vi.waitFor(() => expect(finish).toBeDefined());
+  const job = s.service.list()[0]!;
+  await s.service.stopAnalysis({ id: job.id, revision: job.revision }, 'ou_owner');
+  finish(topic); await s.service.close();
+  expect(s.service.list()[0]).toMatchObject({ state: 'waiting', analysisTopic: topic, analysisRequested: false });
+  expect(s.io.analyze).not.toHaveBeenCalled(); expect(s.io.deliver).not.toHaveBeenCalled();
+});
+
+it('validates ownership and revision and rolls back a failed save before cancelling the agent', async () => {
+  let signal!: AbortSignal;
+  const s = await setup({ analyze: vi.fn(async (_job, abort) => {
+    signal = abort; await new Promise<void>(resolve => abort.addEventListener('abort', () => resolve(), { once: true })); return result;
+  }) });
+  await s.service.tick(); await vi.waitFor(() => expect(signal).toBeDefined());
+  const job = s.service.list()[0]!; const input = { id: job.id, revision: job.revision };
+  await expect(s.service.stopAnalysis(input, 'ou_other')).rejects.toThrow('forbidden');
+  await expect(s.service.stopAnalysis({ ...input, revision: -1 }, 'ou_owner')).rejects.toThrow('无效');
+  await expect(s.service.stopAnalysis({ ...input, revision: (job.revision ?? 0) + 1 }, 'ou_owner')).rejects.toThrow('已更新');
+  vi.spyOn(s.store, 'save').mockRejectedValueOnce(Error('disk full'));
+  await expect(s.service.stopAnalysis(input, 'ou_owner')).rejects.toThrow('disk full');
+  expect(signal.aborted).toBe(false); expect(s.service.list()[0]).toEqual(job);
+  await s.service.stopAnalysis(input, 'ou_owner'); expect(signal.aborted).toBe(true);
+});
+
+it('does not abort another analysis or concurrent screening when removing a queued item', async () => {
+  let analysisSignal!: AbortSignal, triageSignal!: AbortSignal;
+  const s = await setup({ analyze: vi.fn(async (_job, signal) => {
+    analysisSignal = signal; await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true })); return result;
+  }) }, new InboxAnalysisQueue(1));
+  await s.service.tick(); await vi.waitFor(() => expect(analysisSignal).toBeDefined());
+  const job = s.store.data.jobs[0]!;
+  s.store.data.jobs.push({ ...structuredClone(job), id: 'queued', state: 'queued' },
+    { ...structuredClone(job), id: 'screening', state: 'waiting', analysisRequested: false, attention: { state: 'pending', reason: '等待筛选' } });
+  vi.mocked(s.io.triage!).mockImplementationOnce(async (item, signal) => {
+    triageSignal = signal; await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true })); return { id: item.id, state: 'needed', reason: '需要处理' };
+  });
+  s.advance(61_000); await s.service.tick(); await vi.waitFor(() => expect(triageSignal).toBeDefined());
+  await s.service.stopAnalysis({ id: 'queued', revision: job.revision }, 'ou_owner');
+  expect(analysisSignal.aborted).toBe(false); expect(triageSignal.aborted).toBe(false);
+  await s.service.stopAnalysis({ id: job.id, revision: job.revision }, 'ou_owner');
+  expect(analysisSignal.aborted).toBe(true); expect(triageSignal.aborted).toBe(false);
+});
+
+it('does not discard an already completed result for a late stop command', async () => {
+  const s = await setup(); await s.service.tick(); await vi.waitFor(() => expect(s.service.list()[0]?.state).toBe('ready'));
+  const job = s.service.list()[0]!;
+  await expect(s.service.stopAnalysis({ id: job.id, revision: job.revision }, 'ou_owner')).rejects.toThrow('没有正在');
+  expect(s.service.list()[0]).toEqual(job);
+});
 
 it('announces once before Flash runs, persists its topic and replies there with a draft even with GUI enabled', async () => {
   const s = await setup();

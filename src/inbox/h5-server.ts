@@ -27,7 +27,8 @@ export async function startInboxH5(service: InboxService, auth: InboxH5Auth) {
       }
       if (path === '/api/process') { sendJson(res, 200, { jobId: (await service.manual(String(body.chatId || ''))).id }); return; }
       if (path === '/api/decide') {
-        await service.decide(String(body.id || ''), String(body.action || ''), service.config.ownerOpenId);
+        if (body.action === 'stop') await service.stopAnalysis(body, service.config.ownerOpenId);
+        else await service.decide(String(body.id || ''), String(body.action || ''), service.config.ownerOpenId);
         sendJson(res, 200, { ok: true }); return;
       }
       sendJson(res, 404, { error: 'not found' });

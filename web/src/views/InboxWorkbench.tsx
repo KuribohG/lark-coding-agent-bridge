@@ -60,7 +60,7 @@ export function InboxWorkbench({ view, command }: { view: WorkbenchView; command
       {list.map(job => <article key={job.id} className="flex items-start gap-3 rounded-lg border p-3">
         <input type="checkbox" aria-label={`选择 ${job.name}`} checked={job.id in selection} onChange={e => setSelection(old => { const next = { ...old }; if (e.target.checked) next[job.id] = job.revision; else delete next[job.id]; return next; })} />
         <button className="min-w-0 flex-1 space-y-1 text-left" onClick={() => void perform(() => show(job))} disabled={busy}>
-          <div className="flex flex-wrap justify-between gap-2 text-sm"><strong>{job.name}</strong><span>{stateNames[job.state] || job.state}</span></div>
+          <div className="flex flex-wrap justify-between gap-2 text-sm"><strong>{job.name}</strong><span>{job.analysisStoppedAt !== undefined && job.state === 'waiting' && job.handlingState === 'open' ? '分析已停止 · 待处理' : stateNames[job.state] || job.state}</span></div>
           <p className="line-clamp-2 text-sm">{job.attention?.reason || job.preview}</p>
           {job.attention?.progress && <p className="line-clamp-3 whitespace-pre-wrap text-xs text-muted-foreground">筛选中：{job.attention.progress.text}</p>}
           <p className="text-xs text-muted-foreground">{new Date(job.updatedAt).toLocaleString()} · {job.sourceKind === 'conversation' ? `${job.messageCount} 条消息` : job.sourceKind} · {job.executorProfile}</p>
@@ -86,6 +86,7 @@ function JobDetail({ detail, latest, connected, running, command, onClose }: { d
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const dirty = draft !== base.replyDraft;
+  const current = latest || base;
   useEffect(() => {
     if (!dirty && latest?.detail && latest.revision !== base.revision) {
       setBase({ ...latest, ...latest.detail }); setDraft(latest.detail.replyDraft);
@@ -103,6 +104,7 @@ function JobDetail({ detail, latest, connected, running, command, onClose }: { d
     <div className="flex items-center justify-between gap-2"><h3 className="font-medium">{base.name}</h3><Button variant="ghost" onClick={onClose}>关闭详情</Button></div>
     {base.sourceUrl && <a className="text-sm text-primary underline" href={base.sourceUrl} target="_blank" rel="noreferrer">{base.sourceKind === 'conversation' ? '打开原会话' : '打开来源'}</a>}
     {base.evidenceDir && <p className="break-all text-xs text-muted-foreground">证据目录：{base.evidenceDir}</p>}
+    {current.analysisStoppedAt !== undefined && current.state === 'waiting' && current.handlingState === 'open' && <p className="text-sm">已停止深度分析，事项保留待处理。需要时可重新分析。</p>}
     <p className="whitespace-pre-wrap text-sm">{base.analysis || '尚无分析结果'}</p>
     {base.error && <p className="text-sm text-destructive">{base.error}</p>}
     {base.missingInfo && <p className="whitespace-pre-wrap text-sm">待确认：{base.missingInfo}</p>}
@@ -113,6 +115,11 @@ function JobDetail({ detail, latest, connected, running, command, onClose }: { d
       <Button disabled={busy || (!dirty && !base.draftStale) || !connected} onClick={() => void perform(() => review({ replyDraft: draft }))}>{!dirty && base.draftStale ? '确认草稿' : '保存草稿'}</Button>
       <Button variant="outline" disabled={busy || !draft} onClick={() => void perform(async () => { await navigator.clipboard.writeText(draft); setNotice('草稿已复制，请到原会话核对后发送。'); })}>复制草稿</Button>
       <Button variant="outline" disabled={busy || !running || dirty || ['running', 'queued'].includes(latest?.state || base.state)} onClick={() => void perform(async () => { await command('process', base.id); setNotice('已提交分析'); })}>分析 / 重试</Button>
+      {['running', 'queued'].includes(current.state) && <Button variant="outline" disabled={busy || !connected} onClick={() => void perform(async () => {
+        const result = await command('stop', { id: base.id, revision: current.revision }) as Detail;
+        setBase(result); if (!dirty) setDraft(result.replyDraft);
+        setNotice('已停止深度分析，事项保留待处理。');
+      })}>停止深度分析</Button>}
       {(['handled', 'ignored', 'open'] as const).map(state => <Button key={state} variant="ghost" disabled={busy || !connected || dirty || base.handlingState === state} onClick={() => void perform(() => review({ handlingState: state }))}>{state === 'handled' ? '已处理' : state === 'ignored' ? '忽略' : '恢复待办'}</Button>)}
     </div>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}{notice && <p role="status" className="text-sm">{notice}</p>}

@@ -273,6 +273,34 @@ export class WorkItemService {
       this.touch(job); await this.store.save();
     });
   }
+  async stopAnalysis(value: unknown, owner: string, requestId?: string): Promise<WorkItem> {
+    if (owner !== this.config.ownerOpenId) throw new Error('forbidden');
+    const input = value as { id?: string; revision?: number } | null;
+    if (!input || typeof input.id !== 'string' || !Number.isSafeInteger(input.revision) || Number(input.revision) < 0) throw new Error('无效停止操作');
+    return this.serial(async () => {
+      if (this.stopped) throw new Error('助理连接已关闭');
+      const job = this.store.data.jobs.find(j => j.id === input.id && j.ownerOpenId === owner);
+      if (!job) throw new Error('待办不存在或已归档');
+      if (requestId && job.lastStopRequestId === requestId) return structuredClone(job);
+      if ((job.revision ?? 0) !== input.revision) throw new Error('事项已更新，请刷新后重新停止分析');
+      if (resolved(job) || !['queued', 'running'].includes(job.state)) throw new Error('此事项没有正在进行或排队的分析');
+      const before = structuredClone(job);
+      const controller = job.state === 'running' ? this.analyses.get(job.id)?.controller : undefined;
+      job.state = 'waiting'; job.automatic = false; job.analysisRequested = false;
+      job.analysisPaused = true; job.restartPending = undefined;
+      job.analysisStoppedAt = this.now(); job.lastStopRequestId = requestId;
+      job.startDelivery = undefined; job.resultDelivery = undefined; job.retryAt = undefined; job.dueAt = undefined; job.error = undefined;
+      this.touch(job);
+      try { await this.store.save(); }
+      catch (error) {
+        for (const key of Object.keys(job)) delete (job as unknown as Record<string, unknown>)[key];
+        Object.assign(job, before); throw error;
+      }
+      // Persist the cancellation before aborting; late output cannot revive this item.
+      controller?.abort();
+      return structuredClone(job);
+    });
+  }
   private touch(job: WorkItem): void { this.lifecycle.touch(job); }
   private ignore(job: WorkItem): void { this.lifecycle.ignore(job); }
   async review(value: unknown, owner: string, requestId: string): Promise<WorkItem> {

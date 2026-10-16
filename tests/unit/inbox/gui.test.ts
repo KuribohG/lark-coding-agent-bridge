@@ -19,7 +19,7 @@ async function setup(compactSync = false) {
     destination: { chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_anchor' },
     gui: { publicUrl: 'https://gui.example', apiKeyFile: key } });
   const service = { config, list: vi.fn((_limit = 100): InboxJob[] => []), get: vi.fn((): InboxJob | undefined => undefined), manual: vi.fn(async () => ({ id: 'job1' })),
-    decide: vi.fn(async () => {}) };
+    decide: vi.fn(async () => {}), stopAnalysis: vi.fn<InboxService['stopAnalysis']>() };
   const lark = { call: vi.fn(async () => ({ messages: [] })), checkOwner: vi.fn(async () => {}),
     recent: vi.fn(async () => ({ chats: [], next: '' })) };
   let commands: object[] = []; let failReceipt = false;
@@ -30,7 +30,7 @@ async function setup(compactSync = false) {
   const ledger = join(dir, 'receipts.json');
   const changeMode = vi.fn(async (mode: string) => { config.enabled = mode !== 'off'; config.autoAnalyze = mode === 'auto'; });
   const changeScope = vi.fn(async (scope: IntakeScope) => { service.config.intakeScope = scope; });
-  const taskSources = { list: vi.fn((_limit = 500): InboxJob[] => []), command: vi.fn(async () => ({ handled: false })) };
+  const taskSources = { select: vi.fn(() => undefined), list: vi.fn((_limit = 500): InboxJob[] => []), command: vi.fn(async () => ({ handled: false })) };
   const make = () => { const worker = new InboxGui(service as unknown as InboxService, lark as unknown as InboxLark,
     'cli_test', ledger, request, changeMode, changeScope, taskSources as unknown as InboxTaskSources); workers.push(worker); return worker; };
   const worker = make();
@@ -58,6 +58,22 @@ describe('hosted inbox connection', () => {
     expect(snapshot.jobs.map((j: { id: string }) => j.id)).toEqual(expect.arrayContaining(['chat-0', ...tasks.map(j => j.id)]));
     expect(snapshot.jobs.some((j: { id: string }) => j.id.startsWith('foreign-'))).toBe(false);
     expect(snapshot.total).toBe(640);
+  });
+
+  it.each([false, true])('syncs a stopped job with its receipt and does not replay cancellation (compact=%s)', async compact => {
+    const s = await setup(compact);
+    const job = { id: 'job1', ownerOpenId: 'ou_owner', profile: 'codex', state: 'waiting', revision: 2, analysisStoppedAt: 1000,
+      source: { name: '示例', chatId: 'oc_source', type: 'p2p' }, messages: [] } as unknown as InboxJob;
+    s.service.stopAnalysis.mockImplementation(async () => { s.service.list.mockReturnValue([job]); return job; });
+    s.commands([command('stop', JSON.stringify({ id: job.id, revision: 1 }))]);
+    await s.worker.start(); await vi.waitFor(() => expect(s.request.mock.calls.some(c => String(c[0]).endsWith('/receipt'))).toBe(true));
+    expect(s.service.stopAnalysis).toHaveBeenCalledWith({ id: job.id, revision: 1 }, 'ou_owner', id);
+    const receipt = JSON.parse(String(s.request.mock.calls.find(c => String(c[0]).endsWith('/receipt'))![1]?.body));
+    expect(receipt.ok).toBe(true); expect(JSON.parse(receipt.result)).toMatchObject({ state: 'waiting', analysisStoppedAt: 1000 });
+    const snapshot = compact ? receipt.snapshot : JSON.parse(String(s.request.mock.calls.at(-2)![1]?.body)).snapshot;
+    expect(snapshot.stopControl).toBe(true); expect(snapshot.jobs[0]).toMatchObject({ state: 'waiting', analysisStoppedAt: 1000 });
+    await s.worker.close(); const restarted = s.make(); await restarted.start(); await idle(s.request);
+    expect(s.service.stopAnalysis).toHaveBeenCalledOnce();
   });
   it('requires a private credential file before any outbound request', async () => {
     const s = await setup(); await chmod(s.key, 0o644);

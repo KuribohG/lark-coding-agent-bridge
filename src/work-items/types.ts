@@ -44,6 +44,8 @@ export interface WorkItem {
   analysisBasis?: { messages: Record<string, string>; attention: Attention };
   /** Manual stops require an explicit process request; sources may opt into restart recovery. */
   analysisPaused?: boolean;
+  analysisStoppedAt?: number;
+  lastStopRequestId?: string;
   restartPending?: boolean;
   lastReviewRequestId?: string;
   /** Events from configured watchers use the same lifecycle as conversation jobs. */
