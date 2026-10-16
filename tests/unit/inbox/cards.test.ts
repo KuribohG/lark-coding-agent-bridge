@@ -22,7 +22,7 @@ function command(element: Element): string {
 async function setup() {
   const path = join(await mkdtemp(join(tmpdir(), 'inbox-cards-')), 'nonces.json');
   let now = 1000;
-  const service = { config: config(), manual: vi.fn(async () => job), decide: vi.fn(async () => {}), list: vi.fn(() => [job]) };
+  const service = { config: config(), manual: vi.fn(async () => job), decide: vi.fn(async () => {}), list: vi.fn(() => [job]), get: vi.fn(() => job) };
   const lark = { replyTopic: vi.fn(async (_body: { card?: object; text?: string }) => {}), replyMenu: vi.fn(async (_card: object, _messageId: string, _threadId: string) => {}), recent: vi.fn(async (_type: string, _page?: string) => ({ chats: [{ id: 'oc_source', name: '<at id=all>name</at>' }], next: 'next1' })) };
   const create = async () => {
     const store = new CallbackNonceStore(path); await store.load();
@@ -89,11 +89,14 @@ it('expires selection cards and preserves unused reminder actions across restart
   const h = await setup(); await h.cards.handle('private', context);
   const cmd = command(elements(h.lark.replyTopic.mock.calls[0]![0]).find(e => e.text?.content === '分析此会话')!);
   const reminder = h.cards.reminder(job, '提醒');
+  h.service.list.mockReturnValue([]);
+  h.service.get.mockReturnValue({ ...job, state: 'ignored' });
   h.advance(31 * 60_000); await expect(h.cards.handle(cmd, context)).rejects.toThrow('失效');
   const ignore = command(elements({ card: reminder }).find(e => e.text?.content === '忽略')!);
   await (await h.create()).handle(ignore, context);
   expect(h.service.decide).toHaveBeenCalledWith('job1', 'ignore', 'ou_owner'); expect(h.service.decide).toHaveBeenCalledTimes(1);
   expect(h.service.manual).not.toHaveBeenCalled();
+  expect(h.lark.replyTopic).toHaveBeenCalledWith({ text: '待办已更新：原会话\n来源会话 ID：oc_source\n状态：已忽略' });
 });
 
 it('carries a signed opaque pagination cursor without model calls', async () => {

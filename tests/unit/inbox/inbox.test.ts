@@ -503,6 +503,7 @@ describe('lightweight attention and quiet delivery', () => {
     const save = vi.spyOn(s.store, 'save');
     progress([{ id: before.id, text: '需要确认' }]);
     expect(s.service.list()[0]?.attention?.progress?.text).toBe('需要确认');
+    expect(s.service.get(before.id)?.attention?.progress?.text).toBe('需要确认');
     expect(s.store.data.jobs[0]?.attention?.progress).toBeUndefined();
     expect(s.service.list()[0]?.revision).toBe(before.revision); expect(save).not.toHaveBeenCalled();
     if (action === 'off') await s.service.setMode('off');
@@ -514,6 +515,7 @@ describe('lightweight attention and quiet delivery', () => {
     }
     progress([{ id: before.id, text: '过期的后续文本' }]);
     expect(s.service.list()[0]?.attention?.progress).toBeUndefined();
+    expect(s.service.get(before.id)?.attention?.progress).toBeUndefined();
     complete(await classify([before], new AbortController().signal)); await new Promise(r => setTimeout(r, 20));
     expect(s.service.list()[0]?.attention?.state).not.toBe('needed'); expect(s.io.notifyAttention).not.toHaveBeenCalled();
   });

@@ -81,15 +81,21 @@ export class InboxService {
   }
   list(limit = 100): InboxJob[] {
     const jobs = structuredClone(this.store.data.jobs).reverse();
-    for (const job of jobs) {
-      const entry = this.triageProgress.get(job.id);
-      if (entry && !this.blocked() && !resolved(job) && this.acceptsSource(job) && job.attention?.state === 'pending' && signature(job) === entry.signature) {
-        job.attention.progress = { ...entry.progress };
-      }
-    }
+    for (const job of jobs) this.withProgress(job);
     return [...jobs.filter(j => !resolved(j) && j.attention?.state === 'needed'),
       ...jobs.filter(j => !resolved(j) && j.attention?.state !== 'needed' && j.attention?.state !== 'quiet'),
       ...jobs.filter(j => !resolved(j) && j.attention?.state === 'quiet'), ...jobs.filter(resolved)].slice(0, limit);
+  }
+  get(id: string): InboxJob | undefined {
+    const job = this.store.data.jobs.find(j => j.id === id && j.ownerOpenId === this.config.ownerOpenId);
+    return job ? this.withProgress(structuredClone(job)) : undefined;
+  }
+  private withProgress(job: InboxJob): InboxJob {
+    const entry = this.triageProgress.get(job.id);
+    if (entry && !this.blocked() && !resolved(job) && this.acceptsSource(job) && job.attention?.state === 'pending' && signature(job) === entry.signature) {
+      job.attention.progress = { ...entry.progress };
+    }
+    return job;
   }
   async setMode(mode: InboxMode, persist?: () => Promise<void>): Promise<void> {
     if (!['off', 'on'].includes(mode)) throw new Error('无效运行模式');

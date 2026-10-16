@@ -33,8 +33,8 @@ export async function executeInboxCommand(service: InboxService, lark: InboxLark
     await lark.checkOwner(owner); return lark.recent(target.type, target.page);
   }
   if (command.action === 'manual') return { id: (await service.manual(command.target, command.id)).id };
-  const job = service.list(500).find(j => j.id === command.target && j.ownerOpenId === owner);
-  if (!job) throw new Error('待办不存在或已归档');
+  const job = service.get(command.target);
+  if (!job || job.ownerOpenId !== owner) throw new Error('待办不存在或已归档');
   if (command.action === 'detail') return { ...guiSummary(job), ...guiContent(job) };
   await service.decide(job.id, command.action, owner); return { id: job.id };
 }

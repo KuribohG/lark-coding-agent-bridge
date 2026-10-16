@@ -17,7 +17,7 @@ async function setup(compactSync = false) {
   const config = normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner',
     destination: { chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_anchor' },
     gui: { publicUrl: 'https://gui.example', apiKeyFile: key } });
-  const service = { config, list: vi.fn((): InboxJob[] => []), manual: vi.fn(async () => ({ id: 'job1' })),
+  const service = { config, list: vi.fn((): InboxJob[] => []), get: vi.fn((): InboxJob | undefined => undefined), manual: vi.fn(async () => ({ id: 'job1' })),
     decide: vi.fn(async () => {}) };
   const lark = { call: vi.fn(async () => ({ messages: [] })), checkOwner: vi.fn(async () => {}),
     recent: vi.fn(async () => ({ chats: [], next: '' })) };
@@ -102,6 +102,7 @@ describe('hosted inbox connection', () => {
     await vi.waitFor(() => expect(s.request).toHaveBeenCalledTimes(2)); expect(s.lark.recent).not.toHaveBeenCalled();
     s.service.list.mockReturnValue([{ id: 'foreign', ownerOpenId: 'ou_other', source: { name: 'other', chatId: 'oc_other', type: 'p2p' },
       messages: [], state: 'waiting' } as unknown as InboxJob]);
+    s.service.get.mockReturnValue(s.service.list()[0]);
     s.commands([{ ...command('claim', 'foreign'), id: '11234567-0123-4123-8123-0123456789ab' }]);
     await s.worker.tick(); expect(s.service.decide).not.toHaveBeenCalled();
     expect(JSON.parse(String(s.request.mock.calls.at(-1)?.[1]?.body)).ok).toBe(false);

@@ -65,7 +65,7 @@ export class InboxCards {
       await this.lark.replyTopic({ text: `已提交分析：${job.source.name}\n来源会话 ID：${job.source.chatId}\n待办：${job.id}\n分析结果会继续发到本话题。` });
     } else if (['process', 'claim', 'ignore'].includes(action!)) {
       await this.service.decide(target, action!, ctx.operator);
-      const job = this.service.list(500).find(j => j.id === target);
+      const job = this.service.get(target);
       await this.lark.replyTopic({ text: `待办已更新：${job?.source.name ?? target}\n来源会话 ID：${job?.source.chatId ?? ''}\n状态：${job ? stateName(job.state) : '已处理'}` });
     } else throw new Error('无效的助理操作');
   }
