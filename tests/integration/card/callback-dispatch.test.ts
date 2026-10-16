@@ -1,5 +1,6 @@
 import type { CardActionEvent } from '@larksuite/channel';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { UserQuestions } from '../../../src/bot/user-questions';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import type { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
@@ -17,6 +18,14 @@ import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js'
 const cleanups: Array<() => Promise<void>> = [];
 
 describe('signed card callback dispatch', () => {
+  it('routes question forms by the carrier topic even after the run has ended', async () => {
+    const answer = vi.fn(async () => {});
+    const h = await createHarness({ chatMode: 'topic', userQuestions: { answer } as unknown as UserQuestions });
+    h.channel.rawThreadIds.set('om_card', 'th_topic');
+    await h.dispatch({ cmd: 'question.answer', question_id: 'q', choice: 'text', bridge_token: 'checked-by-question-handler' }, { answer: 'my answer' });
+    expect(answer).toHaveBeenCalledWith(expect.objectContaining({ scope: 'oc_group:th_topic', formValue: { answer: 'my answer' } }));
+    expect(h.pending.cancel('oc_group:th_topic')).toHaveLength(0);
+  });
   afterEach(async () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
   });
@@ -145,7 +154,7 @@ type Harness = {
 };
 
 async function createHarness(
-  opts: { callbackAuth?: boolean; chatMode?: 'p2p' | 'group' | 'topic' } = {},
+  opts: { callbackAuth?: boolean; chatMode?: 'p2p' | 'group' | 'topic'; userQuestions?: UserQuestions } = {},
 ): Promise<Harness> {
   const tmp = await createTmpProfile('callback-dispatch-test-');
   const channel = createFakeChannel();
@@ -226,6 +235,7 @@ async function createHarness(
         chatModeCache,
         ...(opts.callbackAuth === false ? {} : { callbackAuth: auth }),
         callbackPolicyFingerprint: 'fp-1',
+        userQuestions: opts.userQuestions,
       }),
   };
 }

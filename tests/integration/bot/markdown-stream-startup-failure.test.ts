@@ -151,6 +151,35 @@ describe('markdown stream startup failures', () => {
     expect(h.agent.runs[0]?.stopped).toBe(false);
   });
 
+  it.each(['text', 'markdown', 'card'] as const)('delivers an async question before completion in %s mode', async messageReply => {
+    const finished = deferred<void>();
+    const h = await createHarness({ events: [], messageReply });
+    const spawn = h.agent.run.bind(h.agent);
+    h.agent.run = options => {
+      const raw = spawn(options);
+      return { runId: raw.runId, waitForExit: raw.waitForExit.bind(raw),
+        stop: async () => { finished.resolve(undefined); await raw.stop(); },
+        events: { async *[Symbol.asyncIterator](): AsyncGenerator<AgentEvent> {
+          yield { type: 'user_input', id: 'q', threadId: 'codex-thread', questions: [{ title: 'QUESTION_WHILE_RUNNING', options: ['A', 'B'] }] };
+          await finished.promise;
+          yield { type: 'final_text', content: 'FINAL_AFTER_QUESTION' };
+          yield { type: 'done', terminationReason: 'normal' };
+        } },
+      };
+    };
+    await startTestBridge(h);
+    await h.channel.handlers.message?.(message('om_question', 'run'));
+    try {
+      // The test channel has no CardKit API, exercising the visible text fallback.
+      await waitFor(() => h.channel.sent.some(m => JSON.stringify(m.content).includes('QUESTION_WHILE_RUNNING')));
+      expect(JSON.stringify(h.channel.sent)).not.toContain('FINAL_AFTER_QUESTION');
+      expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_question' });
+      expect(h.agent.runs[0]?.stopped).toBe(false);
+      finished.resolve(undefined);
+      await waitFor(() => h.channel.sent.some(m => JSON.stringify(m.content).includes('FINAL_AFTER_QUESTION')));
+    } finally { finished.resolve(undefined); }
+  });
+
   it.each([false, true])('silently falls back on COT update failure during backoff and preserves retry execution (fallback fails: %s)', async failFallback => {
     vi.spyOn(CotClient.prototype, 'create').mockResolvedValue({ cot_id: 'cot_test', message_id: 'om_cot' });
     vi.spyOn(CotClient.prototype, 'update').mockRejectedValue(new Error('COT update timed out'));

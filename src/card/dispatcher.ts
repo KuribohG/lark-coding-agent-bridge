@@ -14,6 +14,7 @@ import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { commandSessionCatalogIdentity } from '../bot/session-catalog-identity';
 import { lookupMessageThreadId } from '../bot/thread-id';
+import type { UserQuestions } from '../bot/user-questions';
 
 /** Marker key on a button's value object that flags the cardAction as
  * a callback that should be forwarded back to the agent instead
@@ -38,6 +39,7 @@ export interface CardDispatchDeps {
   pending: PendingQueue;
   chatModeCache: ChatModeCache;
   callbackAuth?: CallbackAuth;
+  userQuestions?: UserQuestions;
   callbackPolicyFingerprint?: string;
   callbackPolicyFingerprintForScope?: (scope: string) => string | undefined;
 }
@@ -83,6 +85,16 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
   }
 
   const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
+  if (cmd === 'question.answer') {
+    await deps.userQuestions?.answer({
+      evt: deps.evt, scope, formValue,
+      identity: await commandSessionCatalogIdentity({
+        msg: makeFakeMsg(deps.evt, threadId), scope, mode,
+        workspaces: deps.workspaces, controls: deps.controls, access: accessDecision,
+      }),
+    });
+    return;
+  }
   if ((cmd === 'model.submit' || cmd.startsWith('run.')) && payload.settings_scope !== scope) {
     // Never widen a topic preference to the whole chat after a failed lookup
     // or a forwarded card. The payload only verifies the API-derived scope.

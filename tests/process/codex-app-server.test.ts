@@ -27,6 +27,12 @@ rl.on('line', line => {
  if(m.method==='turn/start') {
   reply(m.id,{turn:{id:'turn-1'}});
   notify('turn/started',{threadId:'thread-1',turn:{id:'turn-1'}});
+  if(mode==='questions') {
+   const item={id:'question-1',type:'agentMessage',text:'请选择范围',questions:[{title:'处理范围？',options:['全部','仅本次']},{title:'补充说明',options:null}]};
+   notify('item/completed',{threadId:'other-thread',turnId:'turn-1',item:{...item,id:'wrong-thread'}});
+   notify('item/completed',{threadId:'thread-1',turnId:'turn-1',item});
+   notify('item/completed',{threadId:'thread-1',turnId:'turn-1',item});
+  }
   notify('item/started',{threadId:'thread-1',turnId:'turn-1',item:{id:'cmd',type:'commandExecution',command:'long-running-command'}});
  }
  if(m.method==='turn/steer') {
@@ -56,6 +62,23 @@ rl.on('close',()=>process.exit(0));
 async function collect(events: AsyncIterable<AgentEvent>) { const all: AgentEvent[] = []; for await (const e of events) all.push(e); return all; }
 
 describe('Codex native in-flight input', () => {
+  it('delivers native async questions once and keeps working until an answer is steered', async () => {
+    const h = await harness('questions');
+    const run = h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' });
+    const events: AgentEvent[] = [];
+    const output = (async () => { for await (const event of run.events) events.push(event); })();
+    await vi.waitFor(() => expect(events.some(e => e.type === 'tool_use')).toBe(true));
+    expect(events.filter(e => e.type === 'user_input')).toEqual([{
+      type: 'user_input', id: 'question-1', threadId: 'thread-1',
+      questions: [{ title: '处理范围？', options: ['全部', '仅本次'] }, { title: '补充说明' }],
+    }]);
+    expect(events.some(e => e.type === 'done')).toBe(false);
+    await run.steer!('仅本次', 'answer');
+    await output;
+    await run.waitForExit(1000);
+    expect(events.filter(e => e.type === 'final_text')).toEqual([{ type: 'final_text', content: 'used additional input' }]);
+    expect(events.some(e => e.type === 'text' && e.delta.includes('请选择范围'))).toBe(false);
+  });
   it.each([undefined, 'app-server'] as const)('appends to the same turn with transport=%s without stopping, restarting, or starting a second turn', async transport => {
     const h = await harness('normal', transport);
     const preview = vi.fn();

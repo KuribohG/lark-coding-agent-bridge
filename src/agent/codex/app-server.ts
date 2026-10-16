@@ -28,6 +28,7 @@ export function startAppServerRun(input: {
     cwd: opts.cwd, env: input.env, stdio: ['pipe', 'pipe', 'pipe'],
   }, opts.deadlineAt) as SpawnedProcessByStdio<Writable, Readable, Readable>;
   const translator = new CodexJsonlTranslator();
+  const questionItems = new Set<string>();
   const events: AgentEvent[] = [];
   let wake: (() => void) | undefined;
   let ended = false;
@@ -117,7 +118,16 @@ export function startAppServerRun(input: {
       const item = object(p.item);
       const completed = method === 'item/completed';
       if (item.type === 'agentMessage' && completed) {
-        push(translator.translate({ type: 'item.completed', item: { ...item, type: 'agent_message' } }));
+        const questions = parseAsyncQuestions(item.questions);
+        if (questions.length && text(item.id)) {
+          const id = text(item.id);
+          if (!questionItems.has(id)) {
+            questionItems.add(id);
+            push([{ type: 'user_input', id, threadId: threadId!, questions }]);
+          }
+        } else {
+          push(translator.translate({ type: 'item.completed', item: { ...item, type: 'agent_message' } }));
+        }
       } else if (item.type === 'commandExecution') {
         push(translator.translate({ type: completed ? 'item.completed' : 'item.started', item: {
           ...item, type: 'command_execution', aggregated_output: item.aggregatedOutput, exit_code: item.exitCode,
@@ -216,4 +226,14 @@ export function startAppServerRun(input: {
     },
     waitForExit,
   };
+}
+
+function parseAsyncQuestions(value: unknown): Array<{ title: string; options?: string[] }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap(raw => {
+    const q = object(raw);
+    if (!text(q.title).trim()) return [];
+    const options = Array.isArray(q.options) ? q.options.filter((v): v is string => typeof v === 'string' && Boolean(v.trim())) : [];
+    return [{ title: text(q.title), ...(options.length ? { options } : {}) }];
+  });
 }

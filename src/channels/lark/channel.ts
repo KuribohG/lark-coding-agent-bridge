@@ -59,6 +59,7 @@ import { commandSessionCatalogIdentity } from '../../bot/session-catalog-identit
 import { startKeepalive } from '../../bot/keepalive';
 import { PendingQueue } from '../../bot/pending-queue';
 import { FollowupRouter } from '../../bot/followup';
+import { UserQuestions } from '../../bot/user-questions';
 import { ProcessPool } from '../../runtime/process-pool';
 import { fetchQuotedContext, fetchTopicContext, type QuotedContext } from '../../bot/quote';
 import { lookupMessageThreadId } from '../../bot/thread-id';
@@ -314,6 +315,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           controls,
           cotClient,
           callbackAuth,
+          userQuestions,
           activePolicyFingerprints,
           lastRunModelByScope,
           scope,
@@ -328,6 +330,9 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       }
     });
   });
+
+  const userQuestions = new UserQuestions({ channel, auth: callbackAuth, activeRuns, followups,
+    pending, catalog: sessionCatalog, isTimed: scope => Boolean(controls.activeTimedRun?.(scope)) });
 
   controls.cancelPendingInput = (scope) => {
     batchControllers.get(scope)?.abort();
@@ -363,7 +368,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
         await runAgentBatch({
           channel, executor, sessions, sessionCatalog, workspaces, media,
           batch: [{ ...message, content: job.task, resources: [], rawContentType: 'text' }],
-          controls, cotClient, callbackAuth, activePolicyFingerprints, lastRunModelByScope,
+          controls, cotClient, callbackAuth, userQuestions, activePolicyFingerprints, lastRunModelByScope,
           scope: job.scope, mode, timedJob: job, signal: controller.signal,
         });
       } catch (err) {
@@ -425,6 +430,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           pending,
           chatModeCache,
           callbackAuth,
+          userQuestions,
           callbackPolicyFingerprintForScope: (scope) => activePolicyFingerprints.get(scope),
         });
       }).catch((err) => log.fail('cardAction', err));
@@ -578,6 +584,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       meetingManager?.dispose();
       controls.meeting = undefined;
       pending.cancelAll();
+      userQuestions.close();
       const [disconnectResult, stopAllResult, ...flushResults] = await Promise.allSettled([
         channel.disconnect(),
         activeRuns.stopAll(),
@@ -894,6 +901,7 @@ interface RunBatchDeps {
   controls: Controls;
   cotClient: CotClient;
   callbackAuth?: CallbackAuth;
+  userQuestions: UserQuestions;
   activePolicyFingerprints: Map<string, string>;
   lastRunModelByScope: Map<string, string>;
   scope: string;
@@ -1185,6 +1193,21 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       : {}),
   };
 
+  const questionsDone = (async () => {
+    for await (const event of execution.subscribe()) {
+      if (event.type !== 'user_input') continue;
+      try {
+        await deps.userQuestions.publish(event, {
+          runId: execution.runId,
+          identity: { scopeId: scope, agentId: capability.agentId, cwdRealpath: cwd, policyFingerprint: flow.policy.policyFingerprint },
+          message: firstMsg, replyTo: lastMsg.messageId,
+          mentionUser: firstMsg.chatType !== 'p2p' && senderTypeOf(firstMsg) === 'user',
+          allowQueue: !deps.timedJob, isCancelled: () => handle.interrupted || Boolean(deps.signal?.aborted),
+        });
+      } catch (err) { log.warn('question', 'delivery-failed', { scope, err: String(err) }); }
+    }
+  })();
+
   try {
     await presentRunOutput(execution, createLarkRunOutput({
       channel, chatId, replyMode, sendOpts, cardRenderOptions,
@@ -1200,6 +1223,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       await execution.stop();
       await timedResult;
     }
+    await questionsDone;
   }
 }
 
