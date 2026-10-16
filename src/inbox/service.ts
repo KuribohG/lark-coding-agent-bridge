@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { log } from '../core/logger';
+import { analysisFailureReason } from './analysis-error';
 import { INBOX_TRIAGE_BATCH_SIZE, inboxMode, intakeScope, type IntakeScope, type InboxConfig, type InboxMode } from './config';
 import { InboxStore } from './store';
 import { handlingState, replyContent, resultText } from './reply';
@@ -614,12 +616,16 @@ export class InboxService {
         job.updatedAt = this.now(); await this.store.save();
       });
     } catch (e) {
+      log.warn('inbox', 'analysis-failed', { jobId: job.id, announcing, error: e instanceof Error ? e.message : String(e) });
       await this.serial(async () => {
         if (job.state === 'running') {
           const delivery = job.startDelivery;
           if (announcing && !signal.aborted && !this.blocked() && delivery && delivery.attempts < 3 && this.now() - delivery.startedAt <= 180_000) {
             job.state = 'queued'; job.error = '分析通知暂未确认，等待重试';
-          } else { job.state = 'failed'; job.analysisRequested = false; job.error = announcing ? '话题通知未确认，尚未启动分析；请在工作台核对' : '分析未完成，请在工作台重试'; }
+          } else {
+            job.state = 'failed'; job.analysisRequested = false;
+            job.error = signal.aborted ? '分析已取消' : announcing ? '话题通知未确认，尚未启动分析；请在工作台核对' : analysisFailureReason(e);
+          }
         }
         job.updatedAt = this.now(); await this.store.save();
       });

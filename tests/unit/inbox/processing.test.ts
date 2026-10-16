@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { AgentAdapter, AgentEvent } from '../../../src/agent/types';
 import { normalizeInbox } from '../../../src/inbox/config';
+import { InboxAnalysisError } from '../../../src/inbox/analysis-error';
 import { InboxLark } from '../../../src/inbox/lark';
 import { processInbox } from '../../../src/inbox/processor';
 import { InboxService } from '../../../src/inbox/service';
@@ -61,6 +62,18 @@ it('persists an idempotent announcement before sending and never analyzes when c
   expect(beginAnalysis.mock.calls[1]![1]).toBe(beginAnalysis.mock.calls[0]![1]);
   expect(s.io.analyze).toHaveBeenCalledTimes(1);
 });
+
+it.each([new InboxAnalysisError('rate_limit'), Error('provider failed with private diagnostic')])(
+  'persists and delivers a safe analysis failure reason (%s)', async error => {
+    const s = await setup({ analyze: vi.fn(async () => { throw error; }) });
+    await s.service.tick(); await vi.waitFor(() => expect(s.service.list()[0]?.state).toBe('failed'));
+    const expected = error instanceof InboxAnalysisError ? error.message : '分析执行失败，详情已记录；请在工作台重试';
+    const saved = new InboxStore(s.store.path); await saved.load();
+    expect(saved.data.jobs[0]?.error).toBe(expected);
+    await s.service.tick();
+    expect(s.io.deliver).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(s.io.deliver).mock.calls[0]![0]).toMatchObject({ error: expected, analysisTopic: topic });
+  });
 
 it('only processes confirmed needed items, leaving quiet and uncertain items out of the agent queue', async () => {
   const messages = [message, { ...message, id: 'om_quiet', chatId: 'oc_quiet' }, { ...message, id: 'om_uncertain', chatId: 'oc_uncertain' }];

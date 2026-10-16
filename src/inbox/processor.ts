@@ -1,6 +1,9 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AgentAdapter, AgentEvent, AgentRunOptions } from '../agent/types';
+import { log } from '../core/logger';
+import { retryingRun } from '../runtime/retrying-run';
+import { agentAnalysisError, InboxAnalysisError } from './analysis-error';
 import { INBOX_ANALYSIS_MODEL } from './analyzer';
 import type { InboxJob } from './types';
 import { obj, parseModelJson } from './values';
@@ -22,15 +25,18 @@ export async function processInbox(job: InboxJob, agent: AgentAdapter, workspace
   signal.throwIfAborted();
   const cwd = join(workspace, 'inbox', job.id);
   await mkdir(cwd, { recursive: true, mode: 0o700 });
+  const deadlineAt = Date.now() + timeoutMs;
   const options: AgentRunOptions = { runId: `inbox-${job.id}-${job.attempt ?? 0}`, cwd,
-    model: INBOX_ANALYSIS_MODEL, reasoningEffort: 'max', prompt: processingPrompt(job, background), deadlineAt: Date.now() + timeoutMs };
+    model: INBOX_ANALYSIS_MODEL, reasoningEffort: 'max', prompt: processingPrompt(job, background), deadlineAt };
   await agent.prepareRun?.(options);
   signal.throwIfAborted();
-  const run = agent.run(options);
+  if (Date.now() >= deadlineAt) throw new InboxAnalysisError('timeout');
+  const run = retryingRun({ agent, initialRun: agent.run(options), options, exitGraceMs: 1000,
+    canRetry: () => !signal.aborted && Date.now() < deadlineAt });
   let stopping: Promise<void> | undefined;
   let timedOut = false;
   const stop = () => { stopping ??= run.stop(); void stopping.catch(() => {}); };
-  const timer = setTimeout(() => { timedOut = true; stop(); }, timeoutMs);
+  const timer = setTimeout(() => { timedOut = true; stop(); }, Math.max(0, deadlineAt - Date.now()));
   signal.addEventListener('abort', stop, { once: true });
   let text = '', inputTokens = 0, outputTokens = 0, completed = false;
   try {
@@ -40,14 +46,28 @@ export async function processInbox(job: InboxJob, agent: AgentAdapter, workspace
       onEvent?.(event);
       if (event.type === 'final_text') text = event.content;
       if (event.type === 'usage') { inputTokens = event.inputTokens ?? inputTokens; outputTokens = event.outputTokens ?? outputTokens; }
-      if (event.type === 'error') throw new Error('自动分析未完成，请在工作台重试');
-      if (event.type === 'done') { completed = event.terminationReason === 'normal'; break; }
+      // An unsuccessful attempt's final text must not become the resumed run's result.
+      if (event.type === 'retry' && event.delayMs > 0) text = '';
+      if (event.type === 'error') {
+        log.warn('inbox', 'analysis-agent-error', { jobId: job.id, runId: options.runId, error: event.message });
+        if (timedOut || Date.now() >= deadlineAt || event.terminationReason === 'timeout') throw new InboxAnalysisError('timeout');
+        if (event.terminationReason === 'interrupted') throw new InboxAnalysisError('cancelled');
+        throw agentAnalysisError(event.message);
+      }
+      if (event.type === 'done') {
+        if (timedOut || Date.now() >= deadlineAt || event.terminationReason === 'timeout') throw new InboxAnalysisError('timeout');
+        if (event.terminationReason === 'interrupted') throw new InboxAnalysisError('cancelled');
+        completed = true; break;
+      }
     }
     signal.throwIfAborted();
-    if (timedOut || !completed || !text || text.length > 30_000) throw new Error('自动分析未返回完整结果');
-    const fields = obj(parseModelJson(text));
+    if (timedOut) throw new InboxAnalysisError('timeout');
+    if (!completed || !text || text.length > 30_000) throw new InboxAnalysisError('incomplete');
+    let fields: Record<string, unknown>;
+    try { fields = obj(parseModelJson(text)); }
+    catch { throw new InboxAnalysisError('invalid_result'); }
     if (typeof fields.replyDraft !== 'string' || typeof fields.analysis !== 'string' || !fields.analysis.trim() || typeof fields.missingInfo !== 'string') {
-      throw new Error('自动分析结果格式不完整');
+      throw new InboxAnalysisError('invalid_result');
     }
     return { text: JSON.stringify({ replyDraft: fields.replyDraft.slice(0, 6000), analysis: fields.analysis.slice(0, 8000),
       missingInfo: fields.missingInfo.slice(0, 2000) }), inputTokens, outputTokens };
