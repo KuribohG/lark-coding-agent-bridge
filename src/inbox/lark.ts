@@ -162,6 +162,24 @@ export class InboxLark {
     if (!root?.threadId || !/^omt_\w+$/.test(root.threadId)) throw new Error('无法确认新建话题位置');
     return { chatId: root.chatId, replyTo, threadId: root.threadId };
   }
+  async progressAnchor(job: InboxJob, signal: AbortSignal): Promise<string> {
+    const target = job.analysisTopic;
+    if (!this.config.enabled || signal.aborted || !target || job.ownerOpenId !== this.config.ownerOpenId ||
+      handlingState(job) !== 'open' || target.chatId !== this.config.destination.chatId ||
+      JSON.stringify(job.destination) !== JSON.stringify(this.config.destination)) throw new Error('分析进度目标已失效');
+    const key = createHash('sha256').update(`inbox-progress:${job.id}:${job.attempt ?? 0}`).digest('hex').slice(0, 48);
+    // CoT attached to a topic root may appear at chat level; create an in-topic origin.
+    const response = await this.replyAt(target, { text: '正在深入分析，进度会在本话题更新。' }, key, signal);
+    signal.throwIfAborted();
+    const id = str(obj(response.message ?? response).message_id);
+    if (!/^om_\w+$/.test(id) || id === target.replyTo) throw new Error('无法确认进度回复');
+    const anchor = await this.call(['im', '+messages-mget', '--as', 'bot', '--message-ids', id, '--no-reactions']);
+    signal.throwIfAborted();
+    if (!parseMessages(anchor.messages).some(m => m.id === id && m.chatId === target.chatId && m.threadId === target.threadId)) {
+      throw new Error('无法确认进度话题');
+    }
+    return id;
+  }
   async deliver(job: InboxJob, phase: 'pending' | 'progress' | 'result'): Promise<void> {
     const d = job.destination;
     if (job.ownerOpenId !== this.config.ownerOpenId || JSON.stringify(d) !== JSON.stringify(this.config.destination)) throw new Error('结果目标已变更，请重新处理待办');
@@ -217,12 +235,13 @@ export class InboxLark {
     if (!/^om_\w+$/.test(messageId) || !/^omt_\w+$/.test(threadId)) throw new Error('无法确认入口所在话题，请在群话题中重新发送 /inbox');
     await this.replyAt({ chatId: this.config.destination.chatId, replyTo: messageId, threadId }, { card });
   }
-  private async replyAt(d: InboxConfig['destination'], body: { text?: string; card?: object }, key?: string): Promise<void> {
+  private async replyAt(d: InboxConfig['destination'], body: { text?: string; card?: object }, key?: string, signal?: AbortSignal): Promise<Obj> {
     const anchor = await this.call(['im', '+messages-mget', '--as', 'bot', '--message-ids', d.replyTo, '--no-reactions']);
     const messages = parseMessages(anchor.messages);
     if (!messages.some(m => m.id === d.replyTo && m.chatId === d.chatId && m.threadId === d.threadId)) throw new Error('无法验证回复话题，停止投递');
+    signal?.throwIfAborted();
     // Model results use plain text; native cards render source names as plain_text too.
-    await this.call(['im', '+messages-reply', '--as', 'bot', '--message-id', d.replyTo, '--reply-in-thread',
+    return this.call(['im', '+messages-reply', '--as', 'bot', '--message-id', d.replyTo, '--reply-in-thread',
       ...(body.card ? ['--msg-type', 'interactive', '--content', JSON.stringify(body.card)] : ['--text', (body.text ?? '').replace(/<\/?at\b[^>]*>/gi, '')]),
       ...(key ? ['--idempotency-key', key] : [])]);
   }

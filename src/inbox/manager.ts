@@ -5,9 +5,12 @@ import type { Controls } from '../commands';
 import { resolveAppPaths } from '../config/app-paths';
 import { loadRootConfig, saveRootConfig, withConfigFileLock } from '../config/profile-store';
 import { resolveAppSecret } from '../config/secret-resolver';
+import { getCotMessages } from '../config/schema';
+import { CotClient } from '../bot/cot';
 import { inboxMode, intakeScope, normalizeInbox, validateInbox, type InboxConfig, type InboxMode, type IntakeScope } from './config';
 import { loadAnalysisProvider } from './analyzer';
 import { processInbox } from './processor';
+import { startInboxProgress } from './progress';
 import { createRuntimeAgent } from '../runtime/agent-runtime';
 import { triageWithChatTools } from './codex-triage';
 import { InboxReadTools } from './read-tools';
@@ -128,6 +131,8 @@ export class InboxManager {
           return await reader.callValue(args);
         } finally { signal.removeEventListener('abort', cancel); reader.close(); }
       });
+      const secret = await resolveAppSecret(controls.cfg, paths);
+      const cotClient = new CotClient({ tenant: controls.cfg.accounts.app.tenant, appId: controls.cfg.accounts.app.id, appSecret: secret });
       this.service = new InboxService(new InboxStore(join(folder, 'state.json')), config, {
         selfSenderIds: [controls.cfg.accounts.app.id, controls.botIdentity?.openId].filter((id): id is string => Boolean(id)),
         cancel: () => lark.close(),
@@ -135,12 +140,20 @@ export class InboxManager {
         checkOwner: id => lark.checkOwner(id), collect: (...args) => lark.collect(...args), context: (...args) => lark.context(...args),
         source: id => lark.source(id), deliver: (...args) => lark.deliver(...args),
         beginAnalysis: (job, text) => lark.beginAnalysis(job, text),
-        analyze: (job, signal) => processInbox(job, agent, controls.profileConfig.workspaces.default || paths.defaultWorkspaceDir, config.attentionProfile, signal),
+        analyze: async (job, signal) => {
+          const progress = await startInboxProgress(job, lark, cotClient, getCotMessages(controls.cfg), signal);
+          let success = false;
+          try {
+            const result = await processInbox(job, agent, controls.profileConfig.workspaces.default || paths.defaultWorkspaceDir,
+              config.attentionProfile, signal, undefined, event => progress?.event(event));
+            success = true;
+            return result;
+          } finally { await progress?.finish(success); }
+        },
         triage: async (jobs, signal, onProgress) => triageWithChatTools(jobs, config.attentionProfile,
           await loadAnalysisProvider(controls.profileConfig), readTools, signal, onProgress),
         notifyAttention: (jobs, id) => lark.notifyAttention(jobs, id),
       });
-      const secret = await resolveAppSecret(controls.cfg, paths);
       this.nonces = new CallbackNonceStore(join(folder, 'card-nonces.json'));
       await this.nonces.load();
       const cards = new InboxCards(this.service, lark, new CallbackAuth({ keys: [{ version: 1, secret }], nonceStore: this.nonces }), this.nonces);

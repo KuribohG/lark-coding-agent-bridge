@@ -141,7 +141,9 @@ it.each([false, true])('runs a fresh Flash agent with final structured output (r
   const run = { runId: 'test', events: (async function* () { yield* events; })(), stop: vi.fn(async () => {}), waitForExit: vi.fn(async () => true) };
   const agent: AgentAdapter = { id: 'codex', displayName: 'Codex', isAvailable: vi.fn(async () => true), prepareRun: vi.fn(async () => {}), run: vi.fn(() => run) };
   const workspace = await mkdtemp(join(tmpdir(), 'inbox-agent-'));
-  expect(await processInbox(job, agent, workspace, '所属用户背景', new AbortController().signal)).toEqual(result);
+  const onEvent = vi.fn();
+  expect(await processInbox(job, agent, workspace, '所属用户背景', new AbortController().signal, undefined, onEvent)).toEqual(result);
+  expect(onEvent.mock.calls.map(([event]) => event)).toEqual(events);
   const opts = vi.mocked(agent.run).mock.calls[0]![0];
   expect(opts).toMatchObject({ model: 'deepseek-flash', reasoningEffort: 'max', cwd: join(workspace, 'inbox', job.id) });
   expect(opts.threadId).toBeUndefined(); expect(opts.sessionId).toBeUndefined();
@@ -156,8 +158,10 @@ it('cancels the processing agent and rejects late final output', async () => {
   const run = { runId: 'test', events: (async function* (): AsyncGenerator<AgentEvent> { await gate; yield { type: 'final_text', content: result.text }; })(),
     stop: vi.fn(async () => { release(); }), waitForExit: vi.fn(async () => true) };
   const agent: AgentAdapter = { id: 'codex', displayName: 'Codex', isAvailable: async () => true, run: vi.fn(() => run) };
-  const promise = processInbox(s.service.list()[0]!, agent, await mkdtemp(join(tmpdir(), 'inbox-abort-')), '', controller.signal);
+  const onEvent = vi.fn();
+  const promise = processInbox(s.service.list()[0]!, agent, await mkdtemp(join(tmpdir(), 'inbox-abort-')), '', controller.signal, undefined, onEvent);
   const rejected = expect(promise).rejects.toThrow();
   await vi.waitFor(() => expect(agent.run).toHaveBeenCalled()); controller.abort(); await rejected;
   expect(run.stop).toHaveBeenCalledTimes(1);
+  expect(onEvent).not.toHaveBeenCalled();
 });
