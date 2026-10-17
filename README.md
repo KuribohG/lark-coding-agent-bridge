@@ -29,7 +29,7 @@ See the [deployment guide](docs/self-contained.md) for prerequisites, SSH forwar
 - **Streaming card**: text replies and tool calls update on one Lark card in real time.
 - **COT process messages**: optionally send a process message with agent progress text and tool calls, then send the final answer separately.
 - **Session continuity**: each chat, topic, or document comment thread keeps its own session.
-- **Queueing and batching**: messages sent in quick succession are handled together; with the Codex app-server transport, plain text sent during a run is appended to the active turn and acknowledged; other input is queued for the next turn, while commands like `/new`, `/cd`, `/ws use`, and `/stop` can interrupt the current task.
+- **Queueing and batching**: messages sent in quick succession are handled together; with Codex app-server or Claude Code streaming input, plain text sent during a run is appended to the active task and acknowledged; other input is queued for the next turn, while commands like `/new`, `/cd`, `/ws use`, and `/stop` can interrupt the current task.
 - **Multiple workspaces**: use `/cd` to switch the current project, and `/ws` to save and reuse common project directories.
 - **Images and files**: send them to the bot directly, and the bridge downloads them locally for the agent.
 - **Interactive cards**: `/help`, `/ws list`, and `/status` return cards with clickable buttons.
@@ -41,6 +41,14 @@ Native bidirectional input is verified with Codex 0.162.1. Set `codex.transport`
 Send additional text normally: `turn/steer` appends it to the same process, thread, and turn. The acknowledgement means Codex accepted the input, not that the model has acted on it. Quoted context is included; attachments and card callbacks still use the queue. Input explicitly rejected because the turn ended falls back to the next turn. Ambiguous delivery failures are reported without automatic replay.
 
 `/stop` cancels queued messages and input preparation before interrupting the active run, and sends a receipt. It does not undo completed actions. Existing topic isolation, access checks, and mention requirements still apply. Text can steer timed runs without changing their deadline; other timed-run input remains rejected rather than queued.
+
+## In-flight Claude input
+
+Bidirectional input is verified with Claude Code 2.1.302. Upgrade the `claude` executable used by the bridge and load this bridge version; no extra profile setting is required. The adapter keeps `--input-format stream-json` open so additional text reaches the same process and session. Claude incorporates it when it can process new input, or continues in the same process if the current generation has already finished.
+
+The bridge acknowledges delivery only after a receipt containing the input ID. It finishes only when results cover every submitted input, so an earlier result cannot discard a new message. Acceptance does not mean execution and does not forcibly interrupt a running tool. Quoted context, attachment queueing, access checks, timed deadlines, and `/stop` follow the rules above. Missing receipts or disconnections are reported as unknown delivery without replay; errors with unaccounted supplemental input are not automatically retried.
+
+Older CLIs can complete a single prompt, but supplemental input requires result correlation IDs. Missing fields produce an explicit failure instead of a false completion.
 
 ## Automatic rate-limit retries
 

@@ -26,9 +26,9 @@ afterEach(async () => {
   for (const fn of cleanup.splice(0).reverse()) await fn();
 });
 
-describe('in-flight IM delivery', () => {
+describe.each(['codex', 'claude'] as const)('in-flight %s IM delivery', agentKind => {
   it('delivers ordinary text to the existing turn with scoped acknowledgement', async () => {
-    const h = await harness();
+    const h = await harness(agentKind);
     await h.message('original task');
     await vi.waitFor(() => expect(h.agent.options).toHaveLength(1), { timeout: 2500 });
     await h.message('focus on hg02', { messageId: 'supplement' });
@@ -42,7 +42,7 @@ describe('in-flight IM delivery', () => {
     expect(h.agent.stops.length).toBeGreaterThan(0);
   });
   it('keeps authorization and mention gates ahead of in-flight delivery', async () => {
-    const h = await harness();
+    const h = await harness(agentKind);
     await h.message('original');
     await vi.waitFor(() => expect(h.agent.options).toHaveLength(1), { timeout: 2500 });
     h.controls.profileConfig.access.allowedChats = [];
@@ -51,7 +51,7 @@ describe('in-flight IM delivery', () => {
     expect(h.agent.supplements).toHaveLength(0);
   });
   it('does not create an unbounded follow-up when a timed turn ends during delivery', async () => {
-    const h = await harness();
+    const h = await harness(agentKind);
     await h.message('original');
     await vi.waitFor(() => expect(h.agent.options).toHaveLength(1), { timeout: 2500 });
     h.controls.activeTimedRun = () => 'timed-job';
@@ -66,7 +66,7 @@ describe('in-flight IM delivery', () => {
     expect(h.agent.options).toHaveLength(1);
   });
   it('cancels queued text before stop acknowledgement and never auto-resumes it', async () => {
-    const h = await harness(); h.agent.supportsSteer = false;
+    const h = await harness(agentKind); h.agent.supportsSteer = false;
     await h.message('original');
     await vi.waitFor(() => expect(h.agent.options).toHaveLength(1), { timeout: 2500 });
     await h.message('queued');
@@ -77,7 +77,7 @@ describe('in-flight IM delivery', () => {
     expect(h.agent.options).toHaveLength(1);
   });
   it('does not spawn after /stop cancels preparation', async () => {
-    const h = await harness();
+    const h = await harness(agentKind);
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const prepare = vi.spyOn(h.agent, 'prepareRun').mockImplementation(() => gate);
@@ -88,7 +88,7 @@ describe('in-flight IM delivery', () => {
     expect(h.agent.options).toHaveLength(0);
   });
   it('cancels a debouncing message even when no run has started', async () => {
-    const h = await harness();
+    const h = await harness(agentKind);
     await h.message('pending'); await h.message('/stop');
     await new Promise(resolve => setTimeout(resolve, 800));
     expect(h.agent.options).toHaveLength(0);
@@ -97,8 +97,8 @@ describe('in-flight IM delivery', () => {
 });
 
 class GateAgent implements AgentAdapter {
-  readonly id = 'codex';
-  readonly displayName = 'Test Codex';
+  readonly displayName = 'Test Agent';
+  constructor(readonly id: 'codex' | 'claude') {}
   readonly options: AgentRunOptions[] = [];
   readonly supplements: string[] = [];
   supportsSteer = true;
@@ -160,7 +160,7 @@ async function harness(agentKind: 'claude' | 'codex' = 'codex') {
   sdk.channel = channel;
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
-  const agent = new GateAgent();
+  const agent = new GateAgent(agentKind);
   cleanup.push(async () => { await sessions.flush(); await workspaces.flush(); await tmp.cleanup(); });
   const bridge = await startChannel({ cfg: controls.cfg, agent, sessions, workspaces, controls });
   cleanup.push(async () => { await bridge.disconnect(); });

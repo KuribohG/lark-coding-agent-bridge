@@ -55,7 +55,8 @@ describe('ClaudeAdapter system prompt wiring', () => {
     adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
 
     // The prompt goes via stdin, never argv (cmd.exe would mangle it on Windows).
-    expect(await readAll(child.stdin)).toBe('hi');
+    expect(JSON.parse(child.stdin.read().toString()).message.content).toBe('hi');
+    expect(child.stdin.writableEnded).toBe(false);
     expect(systemPromptFileContent()).toBe(
       buildBridgeSystemPrompt({ openId: 'ou_bot_self', name: 'Bridge' }),
     );
@@ -68,7 +69,8 @@ describe('ClaudeAdapter system prompt wiring', () => {
 
     adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
 
-    expect(await readAll(child.stdin)).toBe('hi');
+    expect(JSON.parse(child.stdin.read().toString()).message.content).toBe('hi');
+    expect(child.stdin.writableEnded).toBe(false);
     expect(systemPromptFileContent()).toBe(buildBridgeSystemPrompt(undefined));
   });
 

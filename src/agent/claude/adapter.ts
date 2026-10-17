@@ -19,6 +19,7 @@ import {
   type AgentRunOptions,
 } from '../types';
 import { isTaskNotificationResult, translateEvent } from './stream-json';
+import { ClaudeStreamInput } from './stream-input';
 import { spawnWithDeadline } from '../deadline';
 
 export interface ClaudeAdapterOptions {
@@ -79,6 +80,9 @@ export class ClaudeAdapter implements AgentAdapter {
       '-p',
       '--output-format',
       'stream-json',
+      '--input-format',
+      'stream-json',
+      '--replay-user-messages',
       '--verbose',
       '--permission-mode',
       opts.permissionMode ?? CLAUDE_DEFAULT_PERMISSION_MODE,
@@ -113,6 +117,7 @@ export class ClaudeAdapter implements AgentAdapter {
     // defer attachment to the async-generator body, those events fire into
     // the void and the generator hangs.
     const stderrChunks: Buffer[] = [];
+    const input = new ClaudeStreamInput(child.stdin, opts.sessionId);
     let runtimeError: Error | null = null;
     let stderrBuffer = '';
     child.stderr.on('data', (chunk: Buffer) => {
@@ -134,16 +139,19 @@ export class ClaudeAdapter implements AgentAdapter {
 
     child.on('error', (err) => {
       runtimeError = err;
+      input.close();
       runFiles.cleanup();
     });
     child.on('exit', (code, signal) => {
+      input.close();
       log.info('agent', 'exit', { pid: child.pid ?? null, code, signal });
       runFiles.cleanup();
     });
     child.stdin.on('error', (err) => {
       log.warn('agent', 'stdin-error', { message: err.message });
+      input.close();
     });
-    child.stdin.end(opts.prompt, 'utf8');
+    input.start(opts.prompt);
 
     // Default 5s if caller didn't specify — claude often has live
     // subprocesses (lark-cli waiting for OAuth, long Bash, etc.) and the
@@ -154,8 +162,10 @@ export class ClaudeAdapter implements AgentAdapter {
 
     return {
       runId: opts.runId,
-      events: createEventStream(child, stderrChunks, () => runtimeError, opts.forkSession),
+      events: createEventStream(child, stderrChunks, () => runtimeError, input, opts.forkSession),
+      steer: (prompt, messageId) => input.steer(prompt, messageId),
       async stop() {
+        input.close();
         if (child.exitCode !== null || child.signalCode !== null) return;
         log.info('agent', 'stop-sigterm', { pid: child.pid ?? null, graceMs: stopGraceMs });
         child.kill('SIGTERM');
@@ -201,6 +211,7 @@ async function* createEventStream(
   child: ClaudeChild,
   stderrChunks: Buffer[],
   getError: () => Error | null,
+  input: ClaudeStreamInput,
   finalAnswer?: boolean,
 ): AsyncGenerator<AgentEvent> {
   // If fork itself failed synchronously, child.pid is undefined. The 'error'
@@ -217,6 +228,7 @@ async function* createEventStream(
 
   const rl = createInterface({ input: child.stdout, crlfDelay: Infinity });
   let sawStdout = false;
+  let sawResult = false;
   let silentExitTimer: ReturnType<typeof setTimeout> | undefined;
   const closeSilentStdout = (): void => {
     silentExitTimer = setTimeout(() => {
@@ -235,6 +247,9 @@ async function* createEventStream(
       } catch {
         continue;
       }
+      parsed = input.receive(parsed);
+      if (parsed === undefined) continue;
+      if (parsed && typeof parsed === 'object' && (parsed as { type?: string }).type === 'result' && !isTaskNotificationResult(parsed)) sawResult = true;
       if (finalAnswer && parsed && typeof parsed === 'object') {
         const result = parsed as { type?: string; result?: unknown; is_error?: boolean };
         if (result.type === 'result' && !result.is_error && typeof result.result === 'string' && !isTaskNotificationResult(parsed)) {
@@ -244,6 +259,7 @@ async function* createEventStream(
       yield* translateEvent(parsed);
     }
   } finally {
+    input.close();
     if (silentExitTimer) clearTimeout(silentExitTimer);
     child.removeListener('exit', closeSilentStdout);
     rl.close();
@@ -253,7 +269,7 @@ async function* createEventStream(
   if (earlyRuntimeError && child.exitCode === null && child.signalCode === null) {
     yield {
       type: 'error',
-      message: `claude runtime error: ${earlyRuntimeError.message}`,
+      message: input.errorMessage(`claude runtime error: ${earlyRuntimeError.message}`),
       terminationReason: 'failed',
     };
     return;
@@ -276,15 +292,17 @@ async function* createEventStream(
     const detail = stderr ? `: ${stderr.slice(0, 500)}` : '';
     yield {
       type: 'error',
-      message: `claude exited with code ${exitCode}${detail}`,
+      message: input.errorMessage(`claude exited with code ${exitCode}${detail}`),
       terminationReason: 'failed',
     };
   } else if (runtimeError) {
     yield {
       type: 'error',
-      message: `claude runtime error: ${runtimeError.message}`,
+      message: input.errorMessage(`claude runtime error: ${runtimeError.message}`),
       terminationReason: 'failed',
     };
+  } else if (exitCode === 0 && !sawResult) {
+    yield { type: 'error', message: input.errorMessage('claude exited without a final result'), terminationReason: 'failed' };
   }
 }
 

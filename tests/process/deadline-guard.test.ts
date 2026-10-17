@@ -17,8 +17,8 @@ describe.skipIf(process.platform !== 'linux')('independent deadline process guar
       const binary = join(tmp.root, 'fake-agent.mjs');
       const pidFile = join(tmp.root, 'agent.json');
       await writeFile(binary, `#!${process.execPath}\nimport {writeFileSync} from 'node:fs';
-        let prompt=''; process.stdin.on('data',chunk=>{prompt+=chunk});
-        process.stdin.on('end',()=>writeFileSync(${JSON.stringify(pidFile)},JSON.stringify({pid:process.pid,prompt,deadline:process.env.LARK_RUN_STOP_AT})));
+        let prompt=''; process.stdin.on('data',chunk=>{prompt+=chunk;
+          writeFileSync(${JSON.stringify(pidFile)},JSON.stringify({pid:process.pid,prompt,deadline:process.env.LARK_RUN_STOP_AT})); });
         setInterval(()=>{},1000);
       `, { mode: 0o700 });
       const adapter = kind === 'codex' ? new CodexAdapter({ binary, profileStateDir: tmp.profile }) : new ClaudeAdapter({ binary });

@@ -45,11 +45,14 @@ describe('ClaudeAdapter process contract', () => {
     expect(record.env.LARK_CHANNEL).toBe('1');
     // The prompt goes via stdin, and the bridge system prompt via a temp file,
     // so neither ever touches argv (which cmd.exe would mangle on Windows).
-    expect(record.stdin).toBe('hello');
-    expect(record.argv.slice(0, 7)).toEqual([
+    expect(JSON.parse(record.stdin).message.content).toBe('hello');
+    expect(record.argv.slice(0, 10)).toEqual([
       '-p',
       '--output-format',
       'stream-json',
+      '--input-format',
+      'stream-json',
+      '--replay-user-messages',
       '--verbose',
       '--permission-mode',
       'acceptEdits',
@@ -124,7 +127,7 @@ describe('ClaudeAdapter process contract', () => {
     const record = await readRecord(fake.recordPath);
 
     expect(record.argv.slice(-6)).toEqual(['--resume', 'sess-old', '--model', 'private/sonnet', '--effort', 'high']);
-    expect(record.argv[5]).toBe('bypassPermissions');
+    expect(record.argv[8]).toBe('bypassPermissions');
   });
 
   it('maps timed-run ultra to the ultracode settings file and blocks scheduling tools before the deadline', async () => {
@@ -147,7 +150,7 @@ describe('ClaudeAdapter process contract', () => {
     expect(record.argv).not.toContain('ultra');
     expect(JSON.parse(record.settings!)).toEqual({ ultracode: true, workflowSizeGuideline: 'large' });
     expect(record.argv[record.argv.indexOf('--disallowedTools') + 1]).toBe('CronCreate,CronDelete,CronList,ScheduleWakeup');
-    expect(record.stdin).toBe('deep task');
+    expect(JSON.parse(record.stdin).message.content).toBe('deep task');
   });
 
   it('forks a parent for a side answer and exposes the final result', async () => {
@@ -162,7 +165,7 @@ describe('ClaudeAdapter process contract', () => {
     const record = await readRecord(fake.recordPath);
     expect(record.argv).toContain('--fork-session');
     expect(record.argv[record.argv.indexOf('--resume') + 1]).toBe('parent');
-    expect(record.stdin).toBe('side question');
+    expect(JSON.parse(record.stdin).message.content).toBe('side question');
     expect(() => adapter.run({ runId: 'invalid', prompt: 'no parent', cwd: fake.dir, forkSession: true })).toThrow('parent');
   });
 
@@ -262,6 +265,71 @@ describe('ClaudeAdapter process contract', () => {
     await iterator.return?.();
   });
 
+  it.each(['merged', 'late', 'crash', 'stop'] as const)('handles %s supplemental input through the live stdin pipe', async mode => {
+    const dir = await mkdtemp(join(tmpdir(), 'claude-duplex-test-'));
+    cleanup.push(dir);
+    const binary = join(dir, 'fake-claude.mjs');
+    const recordPath = join(dir, 'inputs.json');
+    await writeFile(binary, `#!/usr/bin/env node
+      import { createInterface } from 'node:readline';
+      import { writeFileSync } from 'node:fs';
+      const mode = ${JSON.stringify(mode)};
+      const inputs = [];
+      const emit = event => console.log(JSON.stringify(event));
+      const result = ids => emit({ type: 'result', session_id: 'same-session', user_message_uuids: ids });
+      const rl = createInterface({ input: process.stdin });
+      rl.on('line', line => {
+        const input = JSON.parse(line); inputs.push(input);
+        writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify(inputs));
+        if (inputs.length === 1) {
+          emit({ type: 'system', subtype: 'init', session_id: 'same-session' });
+          emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tool', name: 'Bash', input: { command: 'working' } }] } });
+        } else if (mode === 'crash') {
+          process.stderr.write('429 Too Many Requests'); process.exit(42);
+        } else if (mode !== 'stop') {
+          emit({ type: 'command_lifecycle', state: 'queued', command_uuid: input.uuid });
+          if (mode === 'late') result([inputs[0].uuid]);
+          setTimeout(() => {
+            emit({ type: 'user', isReplay: true, uuid: input.uuid, message: input.message });
+            emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'supplement processed' }] } });
+            result(inputs.map(x => x.uuid));
+          }, 20);
+        }
+      });
+      process.stdin.on('end', () => process.exit(0));
+    `, { mode: 0o700 });
+    const run = new ClaudeAdapter({ binary }).run({ runId: 'duplex', prompt: 'original', cwd: dir, stopGraceMs: 100 });
+    const events: AgentEvent[] = [];
+    let delivery: Promise<string> | undefined;
+    try {
+      for await (const event of run.events) {
+        events.push(event);
+        if (event.type === 'tool_use') {
+          // Read stdout concurrently with the pending input acknowledgement.
+          delivery = run.steer!('supplement', 'im-2').catch(error => String(error));
+          if (mode === 'stop') {
+            const { vi } = await import('vitest');
+            await vi.waitFor(async () => expect(JSON.parse(await readFile(recordPath, 'utf8'))).toHaveLength(2));
+            await run.stop();
+          }
+        }
+      }
+      const inputs = JSON.parse(await readFile(recordPath, 'utf8'));
+      expect(inputs).toHaveLength(2);
+      expect(inputs[1]).toMatchObject({ session_id: 'same-session', message: { content: 'supplement' } });
+      if (mode === 'crash' || mode === 'stop') {
+        expect(await delivery).toContain('delivery is unknown');
+        if (mode === 'crash') expect(events).toContainEqual(expect.objectContaining({ type: 'error', message: expect.stringContaining('delivery is unknown') }));
+      } else {
+        expect(await delivery).toBe('accepted');
+        expect(events.filter(event => event.type === 'done')).toHaveLength(1);
+        expect(events.findIndex(event => event.type === 'done')).toBeGreaterThan(events.findIndex(event => event.type === 'text'));
+        expect(await run.steer!('late', 'im-3')).toBe('inactive');
+      }
+      expect(await run.waitForExit(1000)).toBe(true);
+    } finally { await run.stop(); }
+  });
+
   it('requires cwd to be resolved by policy before spawning', () => {
     expect(() =>
       new ClaudeAdapter({ binary: 'unused' }).run({ runId: 'run-no-cwd', prompt: 'hi' }),
@@ -296,7 +364,9 @@ async function createFakeClaude(options: {
       'const settings = settingsIdx !== -1 ? readFileSync(argv[settingsIdx + 1], "utf8") : null;',
       'let stdin = "";',
       'process.stdin.on("data", (c) => { stdin += c; });',
-      'process.stdin.on("end", () => {',
+      'const rl = (await import("node:readline")).createInterface({ input: process.stdin });',
+      'rl.once("line", line => {',
+      '  const input = JSON.parse(line);',
       `  writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({`,
       '    argv,',
       '    stdin,',
@@ -312,9 +382,11 @@ async function createFakeClaude(options: {
       '    },',
       '  }));',
       `  const lines = ${JSON.stringify(options.lines)};`,
-      '  for (const line of lines) console.log(JSON.stringify(line));',
+      '  console.log(JSON.stringify({ ...input, isReplay: true }));',
+      '  for (const line of lines) console.log(JSON.stringify(line.type === "result" ? { ...line, user_message_uuids: [input.uuid] } : line));',
       options.stderr ? `  process.stderr.write(${JSON.stringify(options.stderr)});` : '',
-      `  setTimeout(() => process.exit(${options.exitCode ?? 0}), ${options.exitDelayMs ?? 0});`,
+      `  const exit = () => setTimeout(() => process.exit(${options.exitCode ?? 0}), ${options.exitDelayMs ?? 0});`,
+      '  if (lines.some(line => line.type === "result")) process.stdin.on("end", exit); else exit();',
       '});',
     ].filter(Boolean).join('\n'),
     'utf8',

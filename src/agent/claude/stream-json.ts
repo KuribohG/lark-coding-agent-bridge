@@ -18,7 +18,7 @@ interface ClaudeRawEvent {
   session_id?: string;
   cwd?: string;
   model?: string;
-  message?: { content?: ContentBlock[] };
+  message?: { content?: ContentBlock[] | string };
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
@@ -53,7 +53,7 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
     return;
   }
 
-  if (evt.type === 'assistant' && evt.message?.content) {
+  if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
     for (const block of evt.message.content) {
       if (block.type === 'text' && typeof block.text === 'string' && block.text) {
         yield { type: 'text', delta: block.text };
@@ -66,7 +66,7 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
     return;
   }
 
-  if (evt.type === 'user' && evt.message?.content) {
+  if (evt.type === 'user' && Array.isArray(evt.message?.content)) {
     for (const block of evt.message.content) {
       if (block.type === 'tool_result' && block.tool_use_id) {
         const output =
