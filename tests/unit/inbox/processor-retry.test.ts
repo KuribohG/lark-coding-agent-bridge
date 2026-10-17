@@ -19,7 +19,7 @@ afterEach(() => vi.useRealTimers());
 async function start(events: AgentEvent[][], timeoutMs = 30 * 60_000) {
   const workspace = await mkdtemp(join(tmpdir(), 'inbox-retry-'));
   vi.useFakeTimers();
-  const agent = new FakeAgentAdapter({ events });
+  const agent = new FakeAgentAdapter({ capabilities: { finalAnswer: 'separate-event', input: 'unsupported' }, events });
   const controller = new AbortController();
   let retryReady!: () => void;
   const retry = new Promise<void>(resolve => { retryReady = resolve; });
@@ -100,7 +100,7 @@ it.each<{ name: string; events: AgentEvent[]; code: string }>([
 
 it('honors the configured model and effort on an isolated analysis run', async () => {
   const workspace = await mkdtemp(join(tmpdir(), 'inbox-model-'));
-  const agent = new FakeAgentAdapter({ events: [[final, done]] });
+  const agent = new FakeAgentAdapter({ capabilities: { finalAnswer: 'separate-event', input: 'unsupported' }, events: [[final, done]] });
   await processInbox(job, agent, workspace, '', new AbortController().signal, undefined, undefined, { model: 'selected-model', reasoningEffort: 'high' });
   expect(agent.runOptions[0]).toMatchObject({ model: 'selected-model', reasoningEffort: 'high' });
 });

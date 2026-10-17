@@ -1,18 +1,17 @@
-import type { AgentAdapter, AgentEvent, AgentRun, AgentRunOptions } from '../agent/types';
+import type { AgentAdapter, AgentEvent, AgentInput, AgentInputReceipt, AgentRun, AgentRunOptions } from '../agent/types';
+import { agentFailureKind, classifyAgentFailure, sendRunInput, supportsRunInput } from '../agent/execution';
 import { log } from '../core/logger';
 
 const RETRY_DELAYS_MS = [30_000, 60_000, 120_000] as const;
 const CONTINUE_PROMPT = '上次执行因 API 限流中断。请从当前会话的已有进度继续完成用户请求，包括中途补充的要求。先检查已完成的操作和工具结果，不要重复执行已完成的操作。';
 
 export function isQuotaError(message: string): boolean {
-  return /\[bridge-quota\]|insufficient_quota|quota_exceeded|budget_exceeded|budget has been exceeded|credit balance (?:is )?too low|daily (?:quota|budget) (?:is )?(?:exhausted|exceeded)/i.test(message);
+  return classifyAgentFailure(message) === 'quota';
 }
 
 function isRateLimitError(event: AgentEvent): boolean {
   return event.type === 'error' && event.terminationReason === 'failed'
-    && !isQuotaError(event.message)
-    && !/delivery is unknown|unauthorized|forbidden|invalid[_ ]api[_ ]key|authentication/i.test(event.message)
-    && /\b429\b|too many requests|rate[_ -]limit(?:[_ -]exceeded|[_ -]error|ed)?/i.test(event.message);
+    && agentFailureKind(event) === 'rate_limit';
 }
 
 function isProgressEvent(event: AgentEvent): boolean {
@@ -43,6 +42,8 @@ export function retryingRun(input: {
   let terminal = false;
   let waiting = false;
   let steered = false;
+  let uncertainInput = false;
+  let pendingInputs = 0;
   let resolveFinished!: () => void;
   const finished = new Promise<void>(resolve => { resolveFinished = resolve; });
   const finish = () => { terminal = true; resolveFinished(); };
@@ -67,8 +68,10 @@ export function retryingRun(input: {
             attempt = 0;
           }
           if (event.type === 'error' && isRateLimitError(event) && attempt < RETRY_DELAYS_MS.length
+            && !uncertainInput && pendingInputs === 0
             && !input.options.forkSession && (!(madeProgress || steered) || sessionId || threadId) && canRetry()) {
             failure = event;
+            waiting = true;
             break;
           }
           if (event.type === 'done' || event.type === 'error') finish();
@@ -77,7 +80,6 @@ export function retryingRun(input: {
         }
         if (!failure) return;
 
-        waiting = true;
         if (!await current.waitForExit(input.exitGraceMs)) {
           await current.stop();
           if (!await current.waitForExit(input.exitGraceMs)) {
@@ -114,20 +116,31 @@ export function retryingRun(input: {
     } catch (error) {
       finish();
       if (controller.signal.aborted) yield { type: 'done', terminationReason: 'interrupted' };
-      else yield { type: 'error', terminationReason: 'failed', message: String(error) };
+      else yield { type: 'error', terminationReason: 'failed', message: String(error), failureKind: classifyAgentFailure(String(error)) };
     } finally {
       finish();
     }
   }
 
+  const sendInput = async (message: AgentInput): Promise<AgentInputReceipt> => {
+    if (waiting || terminal || controller.signal.aborted) return { status: 'inactive', messageId: message.messageId };
+    pendingInputs++;
+    try {
+      const result = await sendRunInput(current, message);
+      if (result.status === 'accepted') steered = true;
+      if (result.status === 'unknown') uncertainInput = true;
+      return result;
+    } finally { pendingInputs--; }
+  };
+
   return {
     runId: input.options.runId,
+    get capabilities() { return current.capabilities; },
     events: events(),
-    ...(current.steer ? { async steer(prompt: string, messageId: string) {
-      if (waiting || terminal || controller.signal.aborted) return 'inactive' as const;
-      const result = await current.steer!(prompt, messageId);
-      if (result === 'accepted') steered = true;
-      return result;
+    ...(supportsRunInput(current) ? { sendInput, async steer(text: string, messageId: string) {
+      const result = await sendInput({ text, messageId });
+      if (result.status === 'unknown') throw new Error(result.message);
+      return result.status === 'accepted' ? 'accepted' as const : 'inactive' as const;
     } } : {}),
     async stop() {
       controller.abort();

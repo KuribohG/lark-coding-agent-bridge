@@ -33,6 +33,7 @@
     "README.zh.md",
     "docs/inbox-assistant.md",
     "docs/gitlab-ci-watch.md",
+    "docs/agent-execution.md",
     "LICENSE",
     "docs/self-contained.md"
   ],

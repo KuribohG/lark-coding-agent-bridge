@@ -19,6 +19,8 @@ import { buildCodexArgs } from './argv';
 import { spawnWithDeadline } from '../deadline';
 import { CodexJsonlTranslator, type CodexFinishReason } from './jsonl';
 import { startAppServerRun } from './app-server';
+import { withExecutionContract } from '../execution';
+import { codexExecutionCapabilities } from './capabilities';
 
 export interface CodexAdapterOptions {
   binary: string;
@@ -38,6 +40,7 @@ type CodexChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
 export class CodexAdapter implements AgentAdapter {
   readonly id = 'codex';
   readonly displayName = 'Codex CLI';
+  get capabilities() { return codexExecutionCapabilities(this.transport); }
 
   private readonly binary: string;
   private readonly profileStateDir: string;
@@ -97,6 +100,10 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   run(opts: AgentRunOptions): AgentRun {
+    return withExecutionContract(this.runNative(opts), this.capabilities);
+  }
+
+  private runNative(opts: AgentRunOptions): AgentRun {
     if (!opts.cwd) {
       throw new Error('cwd is required for CodexAdapter.run');
     }

@@ -2,6 +2,7 @@ import type {
   AgentAdapter,
   AgentBotIdentity,
   AgentEvent,
+  AgentExecutionCapabilities,
   AgentRun,
   AgentRunOptions,
 } from '../../src/agent/types.js';
@@ -24,6 +25,7 @@ class FakeRun implements FakeAgentRun {
     opts: AgentRunOptions,
     events: readonly AgentEvent[],
     waitForExitResult: boolean,
+    readonly capabilities?: AgentExecutionCapabilities,
   ) {
     this.runId = opts.runId;
     this.opts = opts;
@@ -63,6 +65,7 @@ export type FakeAgentEvents =
 export class FakeAgentAdapter implements AgentAdapter {
   readonly id: string;
   readonly displayName: string;
+  readonly capabilities?: AgentExecutionCapabilities;
   readonly runs: FakeAgentRun[] = [];
   readonly runOptions: AgentRunOptions[] = [];
   botIdentity: AgentBotIdentity | undefined;
@@ -73,12 +76,14 @@ export class FakeAgentAdapter implements AgentAdapter {
   constructor(options: {
     id?: string;
     displayName?: string;
+    capabilities?: AgentExecutionCapabilities;
     available?: boolean;
     events?: FakeAgentEvents;
     waitForExit?: boolean | readonly boolean[];
   } = {}) {
     this.id = options.id ?? 'fake-agent';
     this.displayName = options.displayName ?? 'Fake Agent';
+    this.capabilities = options.capabilities;
     this.#available = options.available ?? true;
     this.#eventRuns = normalizeEventRuns(options.events ?? []);
     this.#waitForExitResults = normalizeWaitForExitResults(options.waitForExit);
@@ -96,7 +101,7 @@ export class FakeAgentAdapter implements AgentAdapter {
     this.runOptions.push(opts);
     const events = this.#eventRuns.shift() ?? [];
     const waitForExitResult = this.#waitForExitResults.shift() ?? true;
-    const run = new FakeRun(opts, events, waitForExitResult);
+    const run = new FakeRun(opts, events, waitForExitResult, this.capabilities);
     this.runs.push(run);
     return run;
   }

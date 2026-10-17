@@ -175,6 +175,18 @@ describe('markdown stream startup failures', () => {
     }
   }, 30000);
 
+  it.each(['text', 'markdown', 'card'] as const)('uses run output semantics even when the profile name differs (%s)', async messageReply => {
+    const h = await createHarness({ agentKind: 'claude', finalAnswer: 'separate-event', messageReply,
+      events: [{ type: 'text', delta: 'progress' }, { type: 'final_text', content: 'contract final' }, { type: 'done', terminationReason: 'normal' }],
+      stream: async () => { throw new Error('test stream failure'); },
+    });
+    await startTestBridge(h);
+    await h.channel.handlers.message?.(message('om_contract', 'run'));
+    await waitFor(() => h.channel.sent.some(sent => JSON.stringify(sent.content).includes('contract final')));
+    expect(h.channel.sent).toHaveLength(1);
+    expect(JSON.stringify(h.channel.sent[0]?.content)).not.toContain('progress');
+  });
+
   it('does not leave the IM queue blocked when the agent exits before stream producer starts', async () => {
     const h = await createHarness();
     await startTestBridge(h);
@@ -531,6 +543,7 @@ async function createHarness(options: {
   messageReply?: 'card' | 'markdown' | 'text';
   /** Codex holds its answer back for a dedicated final reply; Claude streams it. */
   agentKind?: 'claude' | 'codex';
+  finalAnswer?: 'separate-event' | 'stream';
 } = {}): Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel;
@@ -569,8 +582,9 @@ async function createHarness(options: {
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
   const agent = new FakeAgentAdapter({
-    id: 'codex',
-    displayName: 'Codex',
+    id: 'arbitrary-backend',
+    displayName: 'Contract test backend',
+    capabilities: { finalAnswer: options.finalAnswer ?? ((options.agentKind ?? 'codex') === 'codex' ? 'separate-event' : 'stream'), input: 'unsupported' },
     events: options.events ?? [
       [
         {

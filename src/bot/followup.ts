@@ -1,4 +1,5 @@
 import type { AgentRun } from '../agent/types';
+import { sendRunInput, supportsRunInput } from '../agent/execution';
 import type { ActiveRuns } from './active-runs';
 
 export type FollowupResult = 'accepted' | 'queued' | 'cancelled' | 'unknown';
@@ -15,7 +16,7 @@ export class FollowupRouter {
   }): Promise<FollowupResult> {
     const { scope, activeRuns } = input;
     const handle = activeRuns.get(scope);
-    if (!handle?.run.steer || handle.interrupted) return Promise.resolve('queued');
+    if (!handle || !supportsRunInput(handle.run) || handle.interrupted) return Promise.resolve('queued');
     const generation = activeRuns.generation(scope);
     const cancelled = () => generation !== activeRuns.generation(scope) || handle.interrupted;
     const result = (this.tails.get(handle.run) ?? Promise.resolve()).then(async (): Promise<FollowupResult> => {
@@ -24,14 +25,9 @@ export class FollowupRouter {
       try { prompt = await input.prepare(); } catch { return cancelled() ? 'cancelled' : 'queued'; }
       if (cancelled()) return 'cancelled';
       if (activeRuns.get(scope) !== handle) return 'queued';
-      try {
-        const result = await handle.run.steer!(prompt, input.messageId);
-        if (cancelled()) return 'cancelled';
-        return result === 'accepted' ? 'accepted' : 'queued';
-      } catch {
-        // An acknowledgement may have been lost after acceptance. Never replay automatically.
-        return cancelled() ? 'cancelled' : 'unknown';
-      }
+      const result = await sendRunInput(handle.run, { text: prompt, messageId: input.messageId });
+      if (cancelled()) return 'cancelled';
+      return result.status === 'unknown' ? 'unknown' : result.status === 'accepted' ? 'accepted' : 'queued';
     });
     this.tails.set(handle.run, result);
     return result;

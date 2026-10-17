@@ -8,7 +8,9 @@ import { resolveAppSecret } from '../config/secret-resolver';
 import { getCotMessages } from '../config/schema';
 import { CotClient } from '../bot/cot';
 import { inboxMode, intakeScope, normalizeInbox, validateInbox, type InboxConfig, type InboxMode, type IntakeScope } from './config';
-import { INBOX_ANALYSIS_MODEL, loadAnalysisProvider } from './analyzer';
+import { INBOX_ANALYSIS_MODEL } from './analyzer';
+import { loadProfileModelService } from '../agent/model-service';
+import { supportsBackgroundProfile } from '../runtime/agent-capabilities';
 import { getUserAuthStatus } from '../lark-cli/user-im';
 import { guiJobs } from './presentation';
 import { executeInboxCommand } from './workbench';
@@ -67,7 +69,7 @@ export class InboxManager {
       catch (error) { checks.push({ label, ok: false, detail: error instanceof Error ? error.message : '检查失败' }); }
     };
     await check('执行环境', () => {
-      if (!profile || profile.agentKind !== 'codex' || profile.mode === 'team') throw new Error('请选择个人模式的 Codex profile');
+      if (!profile || !supportsBackgroundProfile(profile)) throw new Error('请选择个人模式的 Codex profile');
       if (!this.controls(config.executorProfile)) throw new Error('请先在上方启动这个 profile');
       return config.executorProfile;
     });
@@ -84,7 +86,7 @@ export class InboxManager {
         return auth.userName || ownerOpenId;
       });
       await check('模型配置', async () => {
-        const provider = await loadAnalysisProvider(profile, config.analysisModel ?? INBOX_ANALYSIS_MODEL);
+        const provider = await loadProfileModelService(profile, config.analysisModel ?? INBOX_ANALYSIS_MODEL);
         return `${provider.model}（已找到 Responses API 配置与凭据；尚未请求模型）`;
       });
     }
@@ -97,7 +99,7 @@ export class InboxManager {
   async command(args: string, ctx: InboxCardContext): Promise<string | undefined> {
     if (args === 'setup') {
       const controls = this.controls(ctx.profile);
-      if (!controls || controls.profileConfig.agentKind !== 'codex' || controls.profileConfig.mode === 'team') return '请使用个人 Codex profile 的机器人设置会话助理。';
+      if (!controls || !supportsBackgroundProfile(controls.profileConfig)) return '请使用个人 Codex profile 的机器人设置会话助理。';
       if (!ctx.threadId) return '请在结果群的目标话题内发送 /inbox setup。';
       const auth = await getUserAuthStatus({ profile: ctx.profile, rootDir: this.rootDir });
       if (auth.openId !== ctx.operator) return '请先在本地控制台完成当前 profile 的用户授权，再由该用户发送 /inbox setup。';
@@ -124,7 +126,7 @@ export class InboxManager {
       const root = await loadRootConfig(this.configPath);
       if (!root) throw new Error('找不到 Bridge 配置');
       const p = root.profiles[config.executorProfile];
-      if (config.enabled && (!p || p.mode === 'team' || p.agentKind !== 'codex')) throw new Error('请选择个人模式的 Codex profile');
+      if (config.enabled && (!p || !supportsBackgroundProfile(p))) throw new Error('请选择个人模式的 Codex profile');
       root.inbox = config; await saveRootConfig(root, this.configPath);
     });
     await this.reconcile(); return this.view();
@@ -158,7 +160,7 @@ export class InboxManager {
   private async reload(): Promise<void> {
     const root = await loadRootConfig(this.configPath); const config = normalizeInbox(root?.inbox);
     const controls = this.controls(config.executorProfile);
-    const fingerprint = JSON.stringify([connectionConfig(config), controls?.cfg.accounts.app, controls?.botIdentity?.openId, controls?.profileConfig.mode, controls?.profileConfig.codex, controls?.profileConfig.preferences.model]);
+    const fingerprint = JSON.stringify([connectionConfig(config), controls?.cfg.accounts.app, controls?.botIdentity?.openId, controls?.profileConfig.mode, controls?.profileConfig.agentKind, controls?.profileConfig.codex, controls?.profileConfig.preferences.model]);
     if (this.service && controls && fingerprint === this.fingerprint) {
       await withConfigFileLock(this.configPath, async () => {
         const latest = normalizeInbox((await loadRootConfig(this.configPath))?.inbox);
@@ -173,6 +175,7 @@ export class InboxManager {
       validateInbox({ ...config, enabled: true });
       if (!controls) throw new Error('执行 profile 尚未上线');
       if (controls.profileConfig.mode === 'team') throw new Error('团队模式不允许使用个人收件助理');
+      if (!supportsBackgroundProfile(controls.profileConfig)) throw new Error('当前 profile 尚不支持后台分析');
       const paths = resolveAppPaths({ rootDir: this.rootDir, profile: config.executorProfile });
       const folder = join(dirname(this.configPath), 'inbox');
       await mkdir(folder, { recursive: true, mode: 0o700 });
@@ -208,7 +211,7 @@ export class InboxManager {
           try {
             const result = await processInbox(job, agent, controls.profileConfig.workspaces.default || paths.defaultWorkspaceDir,
               config.attentionProfile, signal, undefined, event => progress?.event(event), {
-                model: (await loadAnalysisProvider(controls.profileConfig, config.analysisModel ?? INBOX_ANALYSIS_MODEL)).model,
+                model: (await loadProfileModelService(controls.profileConfig, config.analysisModel ?? INBOX_ANALYSIS_MODEL)).model,
                 reasoningEffort: config.analysisModel === undefined ? 'max' : controls.profileConfig.preferences.reasoningEffort,
               });
             success = true;
@@ -216,7 +219,7 @@ export class InboxManager {
           } finally { await progress?.finish(success); }
         },
         triage: async (jobs, signal, onProgress) => triageWithChatTools(jobs, config.attentionProfile,
-          await loadAnalysisProvider(controls.profileConfig, config.analysisModel ?? INBOX_ANALYSIS_MODEL), readTools, signal, onProgress),
+          await loadProfileModelService(controls.profileConfig, config.analysisModel ?? INBOX_ANALYSIS_MODEL), readTools, signal, onProgress),
         notifyAttention: (jobs, id) => lark.notifyAttention(jobs, id),
       });
       this.nonces = new CallbackNonceStore(join(folder, 'card-nonces.json'));

@@ -61,7 +61,10 @@ describe('Codex native in-flight input', () => {
     const preview = vi.fn();
     const run = h.adapter.run({ runId: 'r', cwd: h.dir, onMessageDelta: preview, prompt: 'original task', sandbox: 'read-only', reasoningEffort: 'high' });
     const output = collect(run.events);
-    expect(await run.steer!('supplement', 'message-2')).toBe('accepted');
+    expect(run.capabilities).toEqual({ finalAnswer: 'separate-event', input: 'active-turn' });
+    expect(h.adapter.capabilities).toEqual(run.capabilities);
+    expect(await run.sendInput!({ text: 'supplement', messageId: 'message-2' }))
+      .toEqual({ status: 'accepted', messageId: 'message-2', scope: 'active-turn' });
     const events = await output;
     expect(events.filter(e => e.type === 'final_text')).toEqual([{ type: 'final_text', content: 'used additional input' }]);
     expect(preview).toHaveBeenCalledTimes(1);
@@ -97,14 +100,14 @@ describe('Codex native in-flight input', () => {
     const h = await harness('inactive');
     const run = h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' });
     const output = collect(run.events);
-    expect(await run.steer!('late', 'm')).toBe('inactive');
+    expect(await run.sendInput!({ text: 'late', messageId: 'm' })).toEqual({ status: 'inactive', messageId: 'm' });
     await run.stop(); await output;
   });
   it.each(['reject', 'disconnect'])('does not retry delivery on %s', async mode => {
     const h = await harness(mode);
     const run = h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' });
     const output = collect(run.events);
-    await expect(run.steer!('more', 'm')).rejects.toThrow();
+    expect(await run.sendInput!({ text: 'more', messageId: 'm' })).toMatchObject({ status: 'unknown', messageId: 'm' });
     await run.stop(); await output;
     expect((await h.requests()).filter(x => x.method === 'turn/steer')).toHaveLength(1);
   });

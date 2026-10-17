@@ -11,6 +11,8 @@ import { InboxService } from '../../../src/inbox/service';
 import { InboxStore } from '../../../src/inbox/store';
 import type { InboxIO, InboxJob, InboxMessage } from '../../../src/inbox/types';
 
+const executionCapabilities = { finalAnswer: 'separate-event', input: 'unsupported' } as const;
+
 const topic = { chatId: 'oc_target', threadId: 'omt_item', replyTo: 'om_item' };
 const config = () => normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner', deliveryMode: 'new_topic',
   destination: { chatId: 'oc_target', threadId: 'omt_menu', replyTo: 'om_menu' }, gui: { publicUrl: 'https://gui.example', apiKeyFile: '/key' } });
@@ -151,8 +153,8 @@ it.each([false, true])('runs a fresh Flash agent with final structured output (r
   const s = await setup(); const job = s.service.list()[0]!;
   const events: AgentEvent[] = [{ type: 'thinking', delta: 'private' }, { type: 'text', delta: 'provisional' },
     { type: 'final_text', content: repair ? result.text.replace(/"(replyDraft|analysis|missingInfo)":/g, '$1:') : result.text }, { type: 'usage', inputTokens: 10, outputTokens: 20 }, { type: 'done', terminationReason: 'normal' }];
-  const run = { runId: 'test', events: (async function* () { yield* events; })(), stop: vi.fn(async () => {}), waitForExit: vi.fn(async () => true) };
-  const agent: AgentAdapter = { id: 'codex', displayName: 'Codex', isAvailable: vi.fn(async () => true), prepareRun: vi.fn(async () => {}), run: vi.fn(() => run) };
+  const run = { capabilities: executionCapabilities, runId: 'test', events: (async function* () { yield* events; })(), stop: vi.fn(async () => {}), waitForExit: vi.fn(async () => true) };
+  const agent: AgentAdapter = { capabilities: executionCapabilities, id: 'contract-backend', displayName: 'Codex', isAvailable: vi.fn(async () => true), prepareRun: vi.fn(async () => {}), run: vi.fn(() => run) };
   const workspace = await mkdtemp(join(tmpdir(), 'inbox-agent-'));
   const onEvent = vi.fn();
   expect(await processInbox(job, agent, workspace, '所属用户背景', new AbortController().signal, undefined, onEvent)).toEqual(result);
@@ -168,9 +170,9 @@ it('cancels the processing agent and rejects late final output', async () => {
   const s = await setup(); const controller = new AbortController();
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
-  const run = { runId: 'test', events: (async function* (): AsyncGenerator<AgentEvent> { await gate; yield { type: 'final_text', content: result.text }; })(),
+  const run = { capabilities: executionCapabilities, runId: 'test', events: (async function* (): AsyncGenerator<AgentEvent> { await gate; yield { type: 'final_text', content: result.text }; })(),
     stop: vi.fn(async () => { release(); }), waitForExit: vi.fn(async () => true) };
-  const agent: AgentAdapter = { id: 'codex', displayName: 'Codex', isAvailable: async () => true, run: vi.fn(() => run) };
+  const agent: AgentAdapter = { capabilities: executionCapabilities, id: 'contract-backend', displayName: 'Codex', isAvailable: async () => true, run: vi.fn(() => run) };
   const onEvent = vi.fn();
   const promise = processInbox(s.service.list()[0]!, agent, await mkdtemp(join(tmpdir(), 'inbox-abort-')), '', controller.signal, undefined, onEvent);
   const rejected = expect(promise).rejects.toThrow();

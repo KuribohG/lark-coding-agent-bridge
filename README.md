@@ -508,3 +508,5 @@ sends, COT records, meeting replies and document comments have separate output
 paths and are not rewritten by this feature. No agent skill or memory is needed.
 
 GitLab CI failure monitoring and automatic Flash investigations: [configuration and behavior](docs/gitlab-ci-watch.md).
+
+For adapter development, see the [agent execution contract](docs/agent-execution.md).

@@ -72,7 +72,7 @@ async function createHarness(): Promise<{
   profileConfig: ReturnType<typeof createDefaultProfileConfig>;
 }> {
   const tmp = await createTmpProfile('attachment-run-flow-');
-  const agent = new FakeAgentAdapter({
+  const agent = new FakeAgentAdapter({ capabilities: { finalAnswer: 'separate-event', input: 'unsupported' },
     id: 'codex',
     displayName: 'Codex',
     events: [{ type: 'done', terminationReason: 'normal' }],

@@ -3,6 +3,25 @@ import type { ClaudePermissionMode, CodexSandboxMode } from '../config/permissio
 
 export type { ClaudePermissionMode } from '../config/permissions';
 
+/** Execution semantics, independent of native session identity and permission policy. */
+export interface AgentExecutionCapabilities {
+  readonly finalAnswer: 'separate-event' | 'stream';
+  readonly input: 'active-turn' | 'active-session' | 'unsupported';
+}
+
+export type AgentFailureKind = 'rate_limit' | 'quota' | 'authentication' | 'delivery_unknown' | 'runtime';
+
+export interface AgentInput {
+  text: string;
+  messageId: string;
+}
+
+/** Accepted means acknowledged by the transport, not yet processed by the model. */
+export type AgentInputReceipt =
+  | { status: 'accepted'; messageId: string; scope: 'active-turn' | 'active-session' }
+  | { status: 'inactive' | 'unsupported'; messageId: string }
+  | { status: 'unknown'; messageId: string; message: string };
+
 export type AgentEvent =
   | { type: 'system'; sessionId?: string; threadId?: string; cwd?: string; model?: string }
   | { type: 'text'; delta: string }
@@ -25,7 +44,7 @@ export type AgentEvent =
       threadId?: string;
       terminationReason: 'normal' | 'interrupted' | 'timeout';
     }
-  | { type: 'error'; message: string; terminationReason: 'failed' | 'interrupted' | 'timeout' };
+  | { type: 'error'; message: string; terminationReason: 'failed' | 'interrupted' | 'timeout'; failureKind?: AgentFailureKind };
 
 export const CLAUDE_DEFAULT_PERMISSION_MODE: ClaudePermissionMode = 'bypassPermissions';
 
@@ -59,8 +78,11 @@ export interface AgentRunOptions {
 export interface AgentRun {
   readonly runId: string;
   readonly events: AsyncIterable<AgentEvent>;
+  /** Omitted by legacy adapters; consumers must not infer capabilities from the agent name. */
+  readonly capabilities?: AgentExecutionCapabilities;
+  sendInput?(input: AgentInput): Promise<AgentInputReceipt>;
   stop(): Promise<void>;
-  /** Append to the active turn. A transport failure must not be retried blindly. */
+  /** @deprecated Native input hook. Business code uses the execution contract's sendRunInput. */
   steer?(prompt: string, messageId: string): Promise<'accepted' | 'inactive'>;
   /**
    * Wait up to `timeoutMs` for the agent process to exit on its own.
@@ -89,6 +111,7 @@ export interface AgentBotIdentity {
 export interface AgentAdapter {
   readonly id: string;
   readonly displayName: string;
+  readonly capabilities?: AgentExecutionCapabilities;
   isAvailable(): Promise<boolean>;
   checkAvailability?(): Promise<AgentAvailability>;
   prepareRun?(opts: AgentRunOptions): Promise<void>;

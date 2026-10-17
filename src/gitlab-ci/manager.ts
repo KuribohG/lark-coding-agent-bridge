@@ -1,3 +1,4 @@
+import { supportsBackgroundProfile } from '../runtime/agent-capabilities';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import * as lockfile from 'proper-lockfile';
@@ -43,7 +44,7 @@ export class GitLabCiManager {
     await this.stop();
     if (!config.enabled || !controls) { this.error = config.enabled ? 'GitLab CI executor profile is offline' : undefined; return; }
     validateGitLabCi(config);
-    if (controls.profileConfig.agentKind !== 'codex' || controls.profileConfig.mode === 'team') throw new Error('GitLab CI requires a personal Codex executor profile');
+    if (!supportsBackgroundProfile(controls.profileConfig)) throw new Error('GitLab CI requires a personal Codex executor profile');
     const client = new GitLabClient(config.url, await loadGitLabToken(config));
     const paths = resolveAppPaths({ rootDir: this.rootDir, profile: config.executorProfile });
     const folder = join(dirname(this.configPath), 'gitlab-ci');

@@ -15,6 +15,15 @@ function harness() {
 function gate() { let resolve!: (value: string) => void; const promise = new Promise<string>(r => { resolve = r; }); return { promise, resolve }; }
 
 describe('follow-up routing', () => {
+  it('routes a contract-only run without requiring the native steer method', async () => {
+    const h = harness(); delete h.run.steer;
+    h.run.sendInput = vi.fn(async input => ({ status: 'accepted', messageId: input.messageId, scope: 'active-turn' } as const));
+    expect(await h.deliver()).toBe('accepted');
+    expect(h.run.sendInput).toHaveBeenCalledWith({ text: 'supplement', messageId: 'm' });
+    h.run.sendInput = vi.fn(async input => ({ status: 'unknown', messageId: input.messageId, message: 'lost receipt' } as const));
+    expect(await h.deliver()).toBe('unknown');
+    expect(h.run.sendInput).toHaveBeenCalledTimes(1);
+  });
   it('keeps preparation and delivery ordered', async () => {
     const h = harness(); const g = gate();
     const first = h.deliver(() => g.promise); const second = h.deliver(async () => 'second');

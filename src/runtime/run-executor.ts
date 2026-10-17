@@ -5,7 +5,8 @@ import { ProcessPool } from '../bot/process-pool';
 import type { RunPolicyAllow } from '../policy/run-policy';
 import { log } from '../core/logger';
 import { RunRejected, SpawnFailed } from './errors';
-import { isQuotaError, retryingRun } from './retrying-run';
+import { retryingRun } from './retrying-run';
+import { agentFailureKind } from '../agent/execution';
 
 export interface RunExecutorDeps {
   agent: AgentAdapter;
@@ -251,7 +252,7 @@ export class RunExecutor {
       now: this.now,
       onTerminal: (event) => {
         terminal = event.type === 'done' && event.terminationReason === 'normal' ? 'completed' : 'failed';
-        if (input.deadlineAt !== undefined && event.type === 'error' && isQuotaError(event.message)) terminal = 'quota';
+        if (input.deadlineAt !== undefined && event.type === 'error' && agentFailureKind(event) === 'quota') terminal = 'quota';
         // The independent watchdog can fire before this event loop's timer.
         if (input.deadlineAt !== undefined && input.deadlineAt <= this.now() && terminal !== 'completed') {
           handle.interrupted = true;

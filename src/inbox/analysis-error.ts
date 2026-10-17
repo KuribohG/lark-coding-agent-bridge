@@ -1,4 +1,5 @@
-import { isQuotaError } from '../runtime/retrying-run';
+import { classifyAgentFailure } from '../agent/execution';
+import { BackgroundExecutionError } from '../runtime/background-executor';
 
 const reasons = {
   rate_limit: '模型服务限流（429），本次分析未完成；请稍后在工作台重试',
@@ -17,10 +18,14 @@ export class InboxAnalysisError extends Error {
 }
 
 export function agentAnalysisError(message: string): InboxAnalysisError {
-  if (isQuotaError(message)) return new InboxAnalysisError('quota');
-  if (/unauthorized|forbidden|invalid[_ ]api[_ ]key|authentication|\b40[13]\b/i.test(message)) return new InboxAnalysisError('authentication');
-  if (/\b429\b|too many requests|rate[_ -]limit/i.test(message)) return new InboxAnalysisError('rate_limit');
-  return new InboxAnalysisError('agent');
+  const kind = classifyAgentFailure(message);
+  return new InboxAnalysisError(kind === 'rate_limit' || kind === 'quota' || kind === 'authentication' ? kind : 'agent');
+}
+
+export function backgroundAnalysisError(error: unknown): unknown {
+  if (!(error instanceof BackgroundExecutionError)) return error;
+  const code = error.code;
+  return new InboxAnalysisError(code === 'runtime' || code === 'delivery_unknown' || code === 'unsupported' ? 'agent' : code);
 }
 
 export function analysisFailureReason(error: unknown): string {

@@ -59,6 +59,8 @@ describe('CodexAdapter process contract', () => {
     });
 
     expect(run.runId).toBe('run-fresh');
+    expect(run.capabilities).toEqual({ finalAnswer: 'separate-event', input: 'unsupported' });
+    expect(run.sendInput).toBeUndefined();
     expect(await collect(run.events)).toEqual([
       { type: 'system', threadId: 'thread-fresh' },
       { type: 'final_text', content: 'hello user' },
@@ -333,6 +335,7 @@ describe('CodexAdapter process contract', () => {
         type: 'error',
         message: 'codex exited with code 42: boom',
         terminationReason: 'failed',
+        failureKind: 'runtime',
       },
     ]);
   });

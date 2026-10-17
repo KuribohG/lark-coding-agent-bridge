@@ -1,3 +1,4 @@
+import { executionCapabilities, supportsRunInput } from '../agent/execution';
 import type { FileLinkRenderOptions } from '../card/file-links';
 import { modelRunArguments } from '../agent/model-settings';
 import { deadlineInstructions } from '../runtime/run-deadline';
@@ -868,7 +869,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
 
   const wasBusy = pending.hasWork(scope) || Boolean(activeRuns.get(scope));
   const wasTimed = Boolean(controls.activeTimedRun?.(scope));
-  if (emsg.resources.length === 0 && activeRuns.get(scope)?.run.steer) {
+  if (emsg.resources.length === 0 && supportsRunInput(activeRuns.get(scope)?.run)) {
     const result = await deps.followups.deliver({
       scope, messageId: emsg.messageId, activeRuns,
       prepare: async () => {
@@ -1134,6 +1135,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   }
   activePolicyFingerprints.set(scope, flow.policy.policyFingerprint);
   const handle = execution.handle;
+  const separateFinalAnswer = executionCapabilities(handle.run).finalAnswer === 'separate-event';
   const eventStream = execution.subscribe();
   if (flow.resumeFrom) {
     log.info('session', 'resume', { sessionId: flow.resumeFrom, cwd });
@@ -1346,7 +1348,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           renderDone,
           producerStarted: () => producerStarted,
           fallback: async (state) => {
-            if (controls.profileConfig.agentKind === 'codex') return;
+            if (separateFinalAnswer) return;
             if (renderText(filterForPrefs(state), cardRenderOptions).trim() === '') return;
             await channel.send(
               chatId,
@@ -1356,11 +1358,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           },
         });
       } catch (err) {
-        if (controls.profileConfig.agentKind !== 'codex') throw err;
+        if (!separateFinalAnswer) throw err;
         log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
       }
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
-      if (controls.profileConfig.agentKind === 'codex') {
+      if (separateFinalAnswer) {
         await sendFinalReply({
           channel,
           chatId,
@@ -1411,7 +1413,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           renderDone,
           producerStarted: () => producerStarted,
           fallback: async (state) => {
-            if (controls.profileConfig.agentKind === 'codex') return;
+            if (separateFinalAnswer) return;
             const body = renderText(filterForPrefs(state), cardRenderOptions);
             if (body.trim()) {
               await channel.send(chatId, { markdown: body }, sendOpts);
@@ -1419,11 +1421,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
           },
         });
       } catch (err) {
-        if (controls.profileConfig.agentKind !== 'codex') throw err;
+        if (!separateFinalAnswer) throw err;
         log.fail('stream', err, { mode: replyMode, step: 'progress-stream' });
       }
       await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(latestState), scope);
-      if (controls.profileConfig.agentKind === 'codex') {
+      if (separateFinalAnswer) {
         await sendFinalReply({
           channel,
           chatId,
@@ -1451,7 +1453,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         chatId,
         scope,
         state:
-          controls.profileConfig.agentKind === 'codex'
+          separateFinalAnswer
             ? finalAnswerOnlyState(filterForPrefs(finalState))
             : filterForPrefs(finalState),
         replyMode,

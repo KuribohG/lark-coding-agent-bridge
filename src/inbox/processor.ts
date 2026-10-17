@@ -1,9 +1,7 @@
-import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AgentAdapter, AgentEvent, AgentRunOptions } from '../agent/types';
-import { log } from '../core/logger';
-import { retryingRun } from '../runtime/retrying-run';
-import { agentAnalysisError, InboxAnalysisError } from './analysis-error';
+import { executeBackgroundRun } from '../runtime/background-executor';
+import { backgroundAnalysisError, InboxAnalysisError } from './analysis-error';
 import { INBOX_ANALYSIS_MODEL } from './analyzer';
 import type { InboxJob } from './types';
 import { obj, parseModelJson } from './values';
@@ -28,47 +26,12 @@ export async function processInbox(job: InboxJob, agent: AgentAdapter, workspace
     ...preferences, prompt: processingPrompt(job, background), deadlineAt: Date.now() + timeoutMs }, signal, onEvent);
 }
 
-/** Shared runtime for background investigations with a validated structured final result. */
+/** Validate the report schema shared by inbox and CI investigations. */
 export async function processAnalysis(agent: AgentAdapter, options: AgentRunOptions & { cwd: string }, signal: AbortSignal,
   onEvent?: (event: AgentEvent) => void) {
-  signal.throwIfAborted();
-  await mkdir(options.cwd, { recursive: true, mode: 0o700 });
-  const deadlineAt = options.deadlineAt ?? Date.now() + 30 * 60_000;
-  await agent.prepareRun?.(options);
-  signal.throwIfAborted();
-  if (Date.now() >= deadlineAt) throw new InboxAnalysisError('timeout');
-  const run = retryingRun({ agent, initialRun: agent.run(options), options, exitGraceMs: 1000,
-    canRetry: () => !signal.aborted && Date.now() < deadlineAt });
-  let stopping: Promise<void> | undefined;
-  let timedOut = false;
-  const stop = () => { stopping ??= run.stop(); void stopping.catch(() => {}); };
-  const timer = setTimeout(() => { timedOut = true; stop(); }, Math.max(0, deadlineAt - Date.now()));
-  signal.addEventListener('abort', stop, { once: true });
-  let text = '', inputTokens = 0, outputTokens = 0, completed = false;
   try {
-    if (signal.aborted) { stop(); signal.throwIfAborted(); }
-    for await (const event of run.events) {
-      signal.throwIfAborted();
-      onEvent?.(event);
-      if (event.type === 'final_text') text = event.content;
-      if (event.type === 'usage') { inputTokens = event.inputTokens ?? inputTokens; outputTokens = event.outputTokens ?? outputTokens; }
-      // An unsuccessful attempt's final text must not become the resumed run's result.
-      if (event.type === 'retry' && event.delayMs > 0) text = '';
-      if (event.type === 'error') {
-        log.warn('inbox', 'analysis-agent-error', { runId: options.runId, error: event.message });
-        if (timedOut || Date.now() >= deadlineAt || event.terminationReason === 'timeout') throw new InboxAnalysisError('timeout');
-        if (event.terminationReason === 'interrupted') throw new InboxAnalysisError('cancelled');
-        throw agentAnalysisError(event.message);
-      }
-      if (event.type === 'done') {
-        if (timedOut || Date.now() >= deadlineAt || event.terminationReason === 'timeout') throw new InboxAnalysisError('timeout');
-        if (event.terminationReason === 'interrupted') throw new InboxAnalysisError('cancelled');
-        completed = true; break;
-      }
-    }
-    signal.throwIfAborted();
-    if (timedOut) throw new InboxAnalysisError('timeout');
-    if (!completed || !text || text.length > 30_000) throw new InboxAnalysisError('incomplete');
+    const { text, ...usage } = await executeBackgroundRun(agent, options, signal, onEvent);
+    if (text.length > 30_000) throw new InboxAnalysisError('incomplete');
     let fields: Record<string, unknown>;
     try { fields = obj(parseModelJson(text)); }
     catch { throw new InboxAnalysisError('invalid_result'); }
@@ -76,10 +39,6 @@ export async function processAnalysis(agent: AgentAdapter, options: AgentRunOpti
       throw new InboxAnalysisError('invalid_result');
     }
     return { text: JSON.stringify({ replyDraft: fields.replyDraft.slice(0, 6000), analysis: fields.analysis.slice(0, 8000),
-      missingInfo: fields.missingInfo.slice(0, 2000) }), inputTokens, outputTokens };
-  } finally {
-    clearTimeout(timer); signal.removeEventListener('abort', stop);
-    if (!completed || !await run.waitForExit(1000)) stop();
-    await stopping;
-  }
+      missingInfo: fields.missingInfo.slice(0, 2000) }), ...usage };
+  } catch (error) { throw backgroundAnalysisError(error); }
 }
