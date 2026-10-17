@@ -23,12 +23,17 @@ export async function processInbox(job: InboxJob, agent: AgentAdapter, workspace
   signal: AbortSignal, timeoutMs = 30 * 60_000, onEvent?: (event: AgentEvent) => void,
   preferences: Pick<AgentRunOptions, 'model' | 'reasoningEffort'> = { model: INBOX_ANALYSIS_MODEL, reasoningEffort: 'max' }) {
   if (!/^[\w-]+$/.test(job.id)) throw new Error('无效待办 ID');
-  signal.throwIfAborted();
   const cwd = join(workspace, 'inbox', job.id);
-  await mkdir(cwd, { recursive: true, mode: 0o700 });
-  const deadlineAt = Date.now() + timeoutMs;
-  const options: AgentRunOptions = { runId: `inbox-${job.id}-${job.attempt ?? 0}`, cwd,
-    ...preferences, prompt: processingPrompt(job, background), deadlineAt };
+  return processAnalysis(agent, { runId: `inbox-${job.id}-${job.attempt ?? 0}`, cwd,
+    ...preferences, prompt: processingPrompt(job, background), deadlineAt: Date.now() + timeoutMs }, signal, onEvent);
+}
+
+/** Shared runtime for background investigations with a validated structured final result. */
+export async function processAnalysis(agent: AgentAdapter, options: AgentRunOptions & { cwd: string }, signal: AbortSignal,
+  onEvent?: (event: AgentEvent) => void) {
+  signal.throwIfAborted();
+  await mkdir(options.cwd, { recursive: true, mode: 0o700 });
+  const deadlineAt = options.deadlineAt ?? Date.now() + 30 * 60_000;
   await agent.prepareRun?.(options);
   signal.throwIfAborted();
   if (Date.now() >= deadlineAt) throw new InboxAnalysisError('timeout');
@@ -50,7 +55,7 @@ export async function processInbox(job: InboxJob, agent: AgentAdapter, workspace
       // An unsuccessful attempt's final text must not become the resumed run's result.
       if (event.type === 'retry' && event.delayMs > 0) text = '';
       if (event.type === 'error') {
-        log.warn('inbox', 'analysis-agent-error', { jobId: job.id, runId: options.runId, error: event.message });
+        log.warn('inbox', 'analysis-agent-error', { runId: options.runId, error: event.message });
         if (timedOut || Date.now() >= deadlineAt || event.terminationReason === 'timeout') throw new InboxAnalysisError('timeout');
         if (event.terminationReason === 'interrupted') throw new InboxAnalysisError('cancelled');
         throw agentAnalysisError(event.message);

@@ -26,6 +26,7 @@ import {
 } from './commands/service';
 import { runStart } from './commands/start';
 import { runUi } from './commands/ui';
+import { configureCiWatch, statusCiWatch } from './commands/ci-watch';
 
 const program = new Command();
 
@@ -77,6 +78,12 @@ program
 const profile = program
   .command('profile')
   .description('Manage local bridge profiles');
+
+const ciWatch = program.command('ci-watch').description('Configure and inspect GitLab CI failure analysis');
+ciWatch.command('configure <file>').option('-c, --config <path>', 'path to bridge root config')
+  .description('Load CI watch settings from a JSON file').action(configureCiWatch);
+ciWatch.command('status').option('-c, --config <path>', 'path to bridge root config')
+  .description('Show configuration and persisted CI analysis state').action(statusCiWatch);
 
 profile
   .command('list')

@@ -492,3 +492,5 @@ Claude/Codex 共用转换逻辑，覆盖文本、流式 Markdown、完整卡片�
 
 配置按 profile 生效，未配置时关闭。外部 `lark-cli` 直接发消息、COT 记录、会议回复和
 云文档评论走独立链路，不在此次转换范围内。无需配置 agent skill 或 memory。
+
+GitLab CI 失败监控与 Flash 自动分析：[配置与行为说明](docs/gitlab-ci-watch.md)。

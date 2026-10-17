@@ -1,5 +1,6 @@
 import pkg from '../../package.json';
 import { InboxManager } from '../inbox/manager';
+import { GitLabCiManager } from '../gitlab-ci/manager';
 import { startChannel as realStartChannel, type BridgeChannel } from '../bot/channel';
 import type { Controls } from '../commands';
 import type { AppPaths } from '../config/app-paths';
@@ -280,9 +281,11 @@ class ManagedProfile {
 export class Supervisor {
   private managed = new Map<string, ManagedProfile>();
   readonly inbox: InboxManager;
+  readonly gitlabCi: GitLabCiManager;
 
   constructor(private opts: SupervisorOptions) {
     this.inbox = new InboxManager(opts.configPath, profile => this.controlsFor(profile), opts.rootDir);
+    this.gitlabCi = new GitLabCiManager(opts.configPath, profile => this.controlsFor(profile), opts.rootDir);
   }
 
   private get startChannelFn(): StartChannelFn {
@@ -364,12 +367,13 @@ export class Supervisor {
       workspaces,
       this.startChannelFn,
       (p) => void this.stopProfile(p).catch(() => undefined),
-      () => this.inbox.reconcile(),
+      async () => { await this.inbox.reconcile(); await this.gitlabCi.reconcile(); },
       this.inbox,
     );
     await managed.bringUp(new Date().toISOString());
     this.managed.set(appPaths.profile, managed);
     await this.inbox.reconcile();
+    await this.gitlabCi.reconcile();
     log.info('supervisor', 'profile-online', { profile: appPaths.profile, appId: cfg.accounts.app.id });
   }
 
@@ -379,6 +383,7 @@ export class Supervisor {
     if (!managed) return;
     this.managed.delete(profile);
     await this.inbox.reconcile();
+    await this.gitlabCi.reconcile();
     await managed.stop();
     log.info('supervisor', 'profile-offline', { profile });
   }
@@ -388,10 +393,12 @@ export class Supervisor {
     if (!managed) throw new Error(`profile 未在运行：${profile}`);
     await managed.controls.restart();
     await this.inbox.reconcile();
+    await this.gitlabCi.reconcile();
   }
 
   /** Stop every profile — for process shutdown. */
   async shutdown(): Promise<void> {
+    await this.gitlabCi.close();
     await this.inbox.close();
     const all = [...this.managed.values()];
     this.managed.clear();

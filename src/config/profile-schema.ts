@@ -188,6 +188,7 @@ export interface RootConfig {
   activeProfile: string;
   preferences: Record<string, never>;
   inbox?: import('../inbox/config').InboxConfig;
+  gitlabCi?: import('../gitlab-ci/config').GitLabCiConfig;
   secrets?: SecretsConfig;
   migrations?: {
     permissionDefaultsV1?: string[];

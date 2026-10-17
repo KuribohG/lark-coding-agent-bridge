@@ -498,3 +498,5 @@ boundary or end of reply arrives.
 Configuration is per profile and disabled when omitted. External `lark-cli`
 sends, COT records, meeting replies and document comments have separate output
 paths and are not rewritten by this feature. No agent skill or memory is needed.
+
+GitLab CI failure monitoring and automatic Flash investigations: [configuration and behavior](docs/gitlab-ci-watch.md).
