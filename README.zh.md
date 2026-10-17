@@ -21,7 +21,7 @@ run-lark-cc
 
 `run-lark-cc` 默认后台启动本地 GUI；新用户在网页中扫码创建应用和配置 profile。已有用户可使用 `run-lark-cc codex`，容器前台运行用 `run-lark-cc fg codex`。`run-lark-cc ui` 打开网页，`status` 查状态，`stop` 停止该配置目录的 GUI supervisor，`log` 查看启动日志。
 
-**会话助理默认关闭。** 在网页内完成用户授权、结果话题和模型配置后开启。它需要个人 Codex profile 及支持 Responses 的 API 凭据；模型可选，不要求 DeepSeek Flash。已有未指定模型的旧配置继续使用 Flash，避免升级后改变成本策略。
+**会话助理默认关闭。** 在网页内完成用户授权、结果话题和模型配置后开启。个人 Claude 或 Codex profile 都可执行深入分析；筛选需要支持 Responses 的 API 凭据，Claude 执行时需单独选择提供模型服务的 Codex profile。模型可选，不要求 DeepSeek Flash；已有未指定模型的 Codex 旧配置继续使用 Flash，避免升级后改变成本策略。独立筛选配置见[会话助理文档](docs/inbox-assistant.md)。
 
 远程主机使用 SSH 端口转发访问本地 GUI；妙搭远程工作台仍是可选连接器。具体安装、升级、代理、配置迁移和限制见 [自包含部署指南](docs/self-contained.md)。下方保留原 CLI 的使用方式；直接安装 npm 上的同名包不保证包含此分支改动。
 
@@ -267,7 +267,7 @@ bot 默认值存于 `config.json` 的 `profiles.<profile>.preferences`；聊天�
 
 任务使用当前话题/聊天的上下文，本次模型/强度保存为任务快照，不修改 `/model`、`/effort` 或 bot 默认值；其他话题/聊天不受影响。应提供具体目标或任务列表，完成后提前结束，不会为了耗尽额度无限循环。
 
-固定停止时间覆盖进程槽位排队和受监管的 CLI 进程树，过期任务不能启动。可识别的明确额度耗尽错误（含 LiteLLM 类网关的 `budget_exceeded`）会终止任务，普通限流不会误判为额度耗尽。可用 `/run stop`、`/stop` 或任务卡停止，`/run status` 查看最新/正在运行的任务。仅创建者可启动；创建者或管理员可用任务卡停止，普通 `/stop` 权限保持原样。当前话题已有任务时需先等它结束或停止；限时任务期间收到的普通消息、agent 卡片回调会明确提示未排队，避免截止后触发无限时续跑。
+固定停止时间覆盖进程槽位排队和受监管的 CLI 进程树，过期任务不能启动。可识别的明确额度耗尽错误（含 LiteLLM 类网关的 `budget_exceeded`）会终止任务，普通限流不会误判为额度耗尽。可用 `/run stop`、`/stop` 或任务卡停止，`/run status` 查看最新/正在运行的任务。仅创建者可启动；创建者或管理员可用任务卡停止，普通 `/stop` 权限保持原样。当前话题已有任务时需先等它结束或停止；限时任务内，Codex app-server 可将文字追加到当前回合，Claude 双向输入可追加到当前会话，均不延长截止时间。其他输入和 agent 卡片回调会明确提示未排队，避免截止后触发无限时续跑。
 
 任务持久化到 `profiles/<profile>/timed-runs.json`。已启动任务不能重复启动；停止、到期、失败或 bridge 重启后都不会自动继续，续做需新建任务。第一版没有每日自动调度或服务商余额查询。Linux 进程树清理已由进程测试覆盖，macOS/Windows 实现尚未实机验证。本地终止不能保证服务商对已接收请求的跨额度周期计费方式，严格的费用限制仍需服务端支持。
 

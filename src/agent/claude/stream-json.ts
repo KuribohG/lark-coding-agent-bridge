@@ -18,7 +18,8 @@ interface ClaudeRawEvent {
   session_id?: string;
   cwd?: string;
   model?: string;
-  message?: { content?: ContentBlock[] | string };
+  message?: { id?: string; content?: ContentBlock[] | string };
+  parent_tool_use_id?: string | null;
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
@@ -29,6 +30,51 @@ interface ClaudeRawEvent {
   result?: string;
   errors?: string[];
   origin?: { kind?: string };
+}
+
+/** Claude emits content blocks separately, then repeats the final text in result. */
+export class ClaudeRunTranslator {
+  private pendingText: string[] = [];
+  private messageId?: string;
+
+  *flushProgress(): Generator<AgentEvent> {
+    for (const delta of this.pendingText) yield { type: 'text', delta };
+    this.pendingText = [];
+  }
+
+  *translate(raw: unknown): Generator<AgentEvent> {
+    if (!raw || typeof raw !== 'object') return;
+    const event = raw as ClaudeRawEvent;
+    if (isTaskNotificationResult(event)) return;
+    // Nested task results cannot finish the parent, nor replace its pending answer.
+    if (event.parent_tool_use_id) {
+      if (event.type !== 'result') yield* translateEvent(event);
+      return;
+    }
+    if (event.type === 'assistant') {
+      const id = event.message?.id;
+      if (id && this.messageId && id !== this.messageId) yield* this.flushProgress();
+      this.messageId = id ?? this.messageId;
+      const events = [...translateEvent(event)];
+      if (events.some(e => e.type === 'tool_use')) {
+        yield* this.flushProgress();
+        yield* events;
+      } else {
+        for (const e of events) {
+          if (e.type === 'text') this.pendingText.push(e.delta);
+          else yield e;
+        }
+      }
+      return;
+    }
+    if (event.type === 'result') {
+      if (!event.is_error && !event.subtype?.startsWith('error') && typeof event.result === 'string') {
+        this.pendingText = [];
+        if (event.result) yield { type: 'final_text', content: event.result };
+      } else yield* this.flushProgress();
+    }
+    yield* translateEvent(event);
+  }
 }
 
 // A resumed session whose earlier background tasks were orphaned emits a

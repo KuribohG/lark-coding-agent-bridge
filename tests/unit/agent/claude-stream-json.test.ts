@@ -120,6 +120,7 @@ describe('Claude stream-json reader behavior', () => {
         type: 'error',
         message: `claude exited with code 7: ${stderr}`,
         terminationReason: 'failed',
+        failureKind: 'runtime',
       },
     ]);
   });

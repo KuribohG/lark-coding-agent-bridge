@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ClaudeAdapter } from '../../src/agent/claude/adapter.js';
 import type { AgentEvent } from '../../src/agent/types.js';
+import { processAnalysis } from '../../src/inbox/processor.js';
 
 interface FakeBinary {
   path: string;
@@ -36,6 +37,7 @@ describe('ClaudeAdapter process contract', () => {
     });
 
     expect(run.runId).toBe('run-fresh');
+    expect(run.capabilities).toEqual({ finalAnswer: 'separate-event', input: 'active-session' });
     expect(await collect(run.events)).toEqual([
       { type: 'done', sessionId: 'sess-fresh', terminationReason: 'normal' },
     ]);
@@ -206,8 +208,44 @@ describe('ClaudeAdapter process contract', () => {
         type: 'error',
         message: 'claude exited with code 42: boom',
         terminationReason: 'failed',
+        failureKind: 'runtime',
       },
     ]);
+  });
+
+  it('ends once at the first covered top-level result, ignoring late duplicate output', async () => {
+    const fake = await createFakeClaude({ lines: [
+      { type: 'assistant', message: { id: 'final', content: [{ type: 'text', text: 'answer' }] } },
+      { type: 'result', result: 'answer', session_id: 'session' },
+      { type: 'result', result: 'duplicate', session_id: 'session' },
+    ] });
+    cleanup.push(fake.dir);
+    const run = new ClaudeAdapter({ binary: fake.path }).run({ runId: 'terminal', prompt: 'task', cwd: fake.dir });
+    expect(await collect(run.events)).toEqual([
+      { type: 'final_text', content: 'answer' }, { type: 'done', sessionId: 'session', terminationReason: 'normal' },
+    ]);
+    expect(await run.waitForExit(1000)).toBe(true);
+  });
+
+  it.each(['success', 'missing', 'failure'])('validates background reports through the shared executor (%s)', async mode => {
+    const text = JSON.stringify({ replyDraft: '草稿', analysis: '核对完成', missingInfo: '' });
+    const fake = await createFakeClaude({ lines: [
+      { type: 'assistant', message: { id: 'progress', content: [{ type: 'text', text: 'checking' }, { type: 'tool_use', id: 'read', name: 'Read', input: {} }] } },
+      { type: 'assistant', message: { id: 'answer', content: [{ type: 'text', text }] } },
+      { type: 'result', session_id: 'session', usage: { input_tokens: 10, output_tokens: 20 },
+        ...(mode === 'success' ? { result: text } : mode === 'failure' ? { is_error: true, errors: ['provider rejection'] } : {}) },
+    ] });
+    cleanup.push(fake.dir);
+    const events: AgentEvent[] = [];
+    const result = processAnalysis(new ClaudeAdapter({ binary: fake.path }),
+      { runId: 'background', prompt: 'investigate', cwd: fake.dir }, new AbortController().signal, event => events.push(event));
+    if (mode === 'success') {
+      expect(await result).toEqual({ text, inputTokens: 10, outputTokens: 20 });
+      expect(events.filter(e => e.type === 'text')).toEqual([{ type: 'text', delta: 'checking' }]);
+    } else {
+      await expect(result).rejects.toMatchObject({ code: mode === 'missing' ? 'incomplete' : 'agent' });
+      expect(events.filter(e => e.type === 'final_text')).toEqual([]);
+    }
   });
 
   it('surfaces spawn errors as stream error events', async () => {
@@ -276,7 +314,7 @@ describe('ClaudeAdapter process contract', () => {
       const mode = ${JSON.stringify(mode)};
       const inputs = [];
       const emit = event => console.log(JSON.stringify(event));
-      const result = ids => emit({ type: 'result', session_id: 'same-session', user_message_uuids: ids });
+      const result = ids => emit({ type: 'result', session_id: 'same-session', result: 'supplement processed', user_message_uuids: ids });
       const rl = createInterface({ input: process.stdin });
       rl.on('line', line => {
         const input = JSON.parse(line); inputs.push(input);
@@ -306,7 +344,10 @@ describe('ClaudeAdapter process contract', () => {
         events.push(event);
         if (event.type === 'tool_use') {
           // Read stdout concurrently with the pending input acknowledgement.
-          delivery = run.steer!('supplement', 'im-2').catch(error => String(error));
+          delivery = run.sendInput!({ text: 'supplement', messageId: 'im-2' }).then(receipt => {
+            if (receipt.status === 'accepted') expect(receipt.scope).toBe('active-session');
+            return receipt.status === 'unknown' ? receipt.message : receipt.status;
+          });
           if (mode === 'stop') {
             const { vi } = await import('vitest');
             await vi.waitFor(async () => expect(JSON.parse(await readFile(recordPath, 'utf8'))).toHaveLength(2));
@@ -319,11 +360,14 @@ describe('ClaudeAdapter process contract', () => {
       expect(inputs[1]).toMatchObject({ session_id: 'same-session', message: { content: 'supplement' } });
       if (mode === 'crash' || mode === 'stop') {
         expect(await delivery).toContain('delivery is unknown');
+        if (mode === 'stop') expect(events).toContainEqual({ type: 'done', terminationReason: 'interrupted' });
         if (mode === 'crash') expect(events).toContainEqual(expect.objectContaining({ type: 'error', message: expect.stringContaining('delivery is unknown') }));
       } else {
         expect(await delivery).toBe('accepted');
         expect(events.filter(event => event.type === 'done')).toHaveLength(1);
-        expect(events.findIndex(event => event.type === 'done')).toBeGreaterThan(events.findIndex(event => event.type === 'text'));
+        expect(events.filter(event => event.type === 'final_text')).toEqual([{ type: 'final_text', content: 'supplement processed' }]);
+        expect(events.filter(event => event.type === 'text')).toEqual([]);
+        expect(events.findIndex(event => event.type === 'done')).toBeGreaterThan(events.findIndex(event => event.type === 'final_text'));
         expect(await run.steer!('late', 'im-3')).toBe('inactive');
       }
       expect(await run.waitForExit(1000)).toBe(true);

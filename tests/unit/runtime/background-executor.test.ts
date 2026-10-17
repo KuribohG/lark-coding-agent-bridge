@@ -69,5 +69,5 @@ it.each(['exec', 'app-server'] as const)('declares the same %s capabilities for 
   expect(profileExecutionCapabilities(profile)).toEqual(agent.capabilities);
   expect(supportsBackgroundProfile(profile)).toBe(true);
   expect(supportsBackgroundProfile({ ...profile, mode: 'team' })).toBe(false);
-  expect(supportsBackgroundProfile({ ...profile, agentKind: 'claude' })).toBe(false);
+  expect(supportsBackgroundProfile({ ...profile, agentKind: 'claude' })).toBe(true);
 });

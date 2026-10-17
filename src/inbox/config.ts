@@ -19,8 +19,11 @@ export interface InboxConfig {
   /** Retained for older snapshots; legacy countdown-based analysis is disabled. */
   autoAnalyze: boolean;
   attentionProfile: string;
-  /** Empty = profile/provider default; absent on legacy configs = DeepSeek Flash. */
+  /** Empty follows the executor's defaults; absent keeps Flash for legacy Codex configs. */
   analysisModel?: string;
+  /** Direct screening calls may use a different profile's model service. */
+  triageProfile?: string;
+  triageModel?: string;
   dailyTriageLimit: number;
   waitMinutes: number;
   pollSeconds: number;
@@ -52,6 +55,8 @@ export function normalizeInbox(input: unknown): InboxConfig {
   return {
     intakeScope: scope,
     analysisModel: input == null ? '' : typeof r.analysisModel === 'string' ? str(r.analysisModel).slice(0, 200) : undefined,
+    ...(str(r.triageProfile) ? { triageProfile: str(r.triageProfile) } : {}),
+    ...(typeof r.triageModel === 'string' ? { triageModel: str(r.triageModel).slice(0, 200) } : {}),
     enabled: r.enabled === true, executorProfile: str(r.executorProfile), ownerOpenId: str(r.ownerOpenId),
     destination: { chatId: str(r.destination?.chatId), threadId: str(r.destination?.threadId), replyTo: str(r.destination?.replyTo) },
     deliveryMode: r.deliveryMode === 'new_topic' ? 'new_topic' : 'thread',

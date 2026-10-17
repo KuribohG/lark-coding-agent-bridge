@@ -14,7 +14,8 @@ export interface GitLabCiConfig {
   tokenEnv: string;
   credentialsFile: string;
   pollSeconds: number;
-  model: string;
+  /** Absent preserves the executor's background default; empty follows its profile/CLI. */
+  model?: string;
   outputDir: string;
   repositories: GitLabRepository[];
   notification?: Pick<InboxConfig, 'ownerOpenId' | 'destination' | 'deliveryMode'>;
@@ -31,7 +32,7 @@ export function normalizeGitLabCi(input: unknown): GitLabCiConfig {
     credentialsFile: str(c.credentialsFile),
     pollSeconds: typeof c.pollSeconds === 'number' && Number.isFinite(c.pollSeconds)
       ? Math.max(30, Math.min(3600, Math.floor(c.pollSeconds))) : 60,
-    model: str(c.model) || 'deepseek-flash',
+    ...(typeof c.model === 'string' ? { model: str(c.model) } : {}),
     outputDir: str(c.outputDir),
     repositories: Array.isArray(c.repositories) ? c.repositories.map(r => ({
       project: str(r?.project), sourceDir: str(r?.sourceDir),

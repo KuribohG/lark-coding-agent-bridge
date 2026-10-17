@@ -1,5 +1,5 @@
 import { codexExecutionCapabilities } from '../agent/codex/capabilities';
-import { LEGACY_EXECUTION_CAPABILITIES } from '../agent/execution';
+import { CLAUDE_EXECUTION_CAPABILITIES } from '../agent/claude/capabilities';
 import type { AgentExecutionCapabilities } from '../agent/types';
 import type { ProfileConfig } from '../config/profile-schema';
 
@@ -7,7 +7,7 @@ import type { ProfileConfig } from '../config/profile-schema';
 export function profileExecutionCapabilities(profile: ProfileConfig): AgentExecutionCapabilities {
   return profile.agentKind === 'codex'
     ? codexExecutionCapabilities(profile.codex?.transport)
-    : LEGACY_EXECUTION_CAPABILITIES;
+    : CLAUDE_EXECUTION_CAPABILITIES;
 }
 
 export function supportsBackgroundProfile(profile: ProfileConfig): boolean {

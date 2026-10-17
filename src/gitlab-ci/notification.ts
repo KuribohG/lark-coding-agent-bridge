@@ -24,7 +24,7 @@ export function ciNotification(config: GitLabCiConfig, rootDir?: string): Pick<C
     close: () => lark.close(),
     announce: async (run, signal) => {
       signal.throwIfAborted();
-      return lark.beginAnalysis(job(run), `${run.repository.project} CI #${run.pipeline.id} 失败，已开始分析（${config.model}）。\n${run.pipeline.web_url}`);
+      return lark.beginAnalysis(job(run), `${run.repository.project} CI #${run.pipeline.id} 失败，已开始分析（${config.model || '默认模型'}）。\n${run.pipeline.web_url}`);
     },
     deliver: async (run, signal) => {
       signal.throwIfAborted();

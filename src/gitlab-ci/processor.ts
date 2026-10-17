@@ -1,13 +1,14 @@
 import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AgentAdapter } from '../agent/types';
+import type { ModelSettings } from '../agent/model-settings';
 import { processAnalysis } from '../inbox/processor';
 import { writeFileAtomic } from '../platform/atomic-write';
 import { GitLabClient, GitLabError } from './client';
 import type { GitLabCiConfig } from './config';
 import { failureId, type CiRun } from './service';
 
-export async function analyzeCi(run: CiRun, config: GitLabCiConfig, client: GitLabClient, agent: AgentAdapter, signal: AbortSignal) {
+export async function analyzeCi(run: CiRun, config: GitLabCiConfig, client: GitLabClient, agent: AgentAdapter, signal: AbortSignal, settings: ModelSettings) {
   const folder = join(config.outputDir, run.id);
   const resultPath = join(folder, 'result.json');
   await mkdir(folder, { recursive: true, mode: 0o700 });
@@ -41,9 +42,9 @@ export async function analyzeCi(run: CiRun, config: GitLabCiConfig, client: GitL
 本次材料：${JSON.stringify({ project: run.repository.project, pipeline, sourceDir: run.repository.sourceDir,
     evidenceFile: join(folder, 'evidence.json'), failedJobs: failures })}`;
   const result = await processAnalysis(agent, { runId: `gitlab-ci-${run.id}-${run.attempts}`, cwd: folder, prompt,
-    model: config.model, reasoningEffort: 'max', deadlineAt: Date.now() + 30 * 60_000 }, signal);
+    ...settings, deadlineAt: Date.now() + 30 * 60_000 }, signal);
   signal.throwIfAborted();
-  await writeFileAtomic(resultPath, JSON.stringify({ runId: run.id, model: config.model, completedAt: new Date().toISOString(),
+  await writeFileAtomic(resultPath, JSON.stringify({ runId: run.id, model: settings.model ?? 'default', completedAt: new Date().toISOString(),
     ...JSON.parse(result.text) as object, inputTokens: result.inputTokens, outputTokens: result.outputTokens }, null, 2));
   return resultPath;
 }

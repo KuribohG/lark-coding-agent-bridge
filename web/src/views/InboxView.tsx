@@ -42,6 +42,8 @@ export function InboxView() {
   };
   if (!config) return <p className="text-sm">{error || '加载会话助理…'}</p>;
   const change = (patch: Partial<InboxConfig>) => { setConfig({ ...config, ...patch }); setChecks(undefined); };
+  const executor = profiles.find(p => p.name === config.executorProfile);
+  const separateTriage = config.triageProfile && config.triageProfile !== config.executorProfile;
   const check = async () => {
     const result = await apiPost<SetupCheck>('/api/inbox/check', config);
     setChecks(result);
@@ -62,10 +64,11 @@ export function InboxView() {
     <details open={!view?.config.executorProfile} className="rounded-lg border p-4">
       <summary className="cursor-pointer font-medium">配置与首次使用检查</summary>
       <div className="mt-4 space-y-4">
-        <p className="text-sm">1. 创建并启动个人 Codex profile。2. 授权读取飞书消息。3. 设置结果话题和模型。4. 检查后开启。</p>
+        <p className="text-sm">1. 创建并启动个人 Claude 或 Codex profile。2. 授权读取飞书消息。3. 设置结果话题和模型。4. 检查后开启。</p>
         <div className="grid gap-3 sm:grid-cols-2">
-          <label>执行 profile<select className="mt-1 w-full rounded border bg-background p-2" value={config.executorProfile} onChange={e => change({ executorProfile: e.target.value })}>
-            <option value="">请选择</option>{profiles.filter(p => p.agentKind === 'codex').map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+          <label>执行 profile<select className="mt-1 w-full rounded border bg-background p-2" value={config.executorProfile} onChange={e => change({ executorProfile: e.target.value,
+            ...(profiles.find(p => p.name === e.target.value)?.agentKind !== executor?.agentKind ? { analysisModel: '' } : {}) })}>
+            <option value="">请选择</option>{profiles.filter(p => p.capabilities?.backgroundAnalysis).map(p => <option key={p.name} value={p.name}>{p.name}（{p.agentKind}）</option>)}
           </select></label>
           <label>所属用户 Open ID<Input value={config.ownerOpenId} placeholder="授权检查后自动填写" onChange={e => change({ ownerOpenId: e.target.value })} /></label>
         </div>
@@ -96,9 +99,14 @@ export function InboxView() {
         </div>}
         <div className="grid gap-3 sm:grid-cols-2">
           {([['chatId', '结果群 ID'], ['threadId', '结果话题 ID'], ['replyTo', '话题内回复消息 ID']] as const).map(([key, label]) => <label key={key}>{label}<Input value={config.destination[key]} onChange={e => change({ destination: { ...config.destination, [key]: e.target.value } })} /></label>)}
-          <label>筛选与分析模型<Input value={config.analysisModel ?? 'deepseek-flash'} placeholder="留空使用 Codex 默认模型" onChange={e => change({ analysisModel: e.target.value })} /></label>
+          <label>深入分析模型<Input value={config.analysisModel ?? (executor?.agentKind === 'codex' ? 'deepseek-flash' : '')} placeholder="留空使用执行 profile 默认模型" onChange={e => change({ analysisModel: e.target.value })} /></label>
+          <label>筛选模型服务 profile<select className="mt-1 w-full rounded border bg-background p-2" value={config.triageProfile ?? ''} onChange={e => change({ triageProfile: e.target.value })}>
+            <option value="">跟随执行 profile</option>{profiles.filter(p => p.capabilities?.modelService).map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+          </select></label>
+          <label>筛选模型<Input value={config.triageModel ?? (separateTriage ? 'deepseek-flash' : config.analysisModel ?? 'deepseek-flash')} placeholder="留空使用筛选 profile 默认模型" onChange={e => change({ triageModel: e.target.value })} /></label>
         </div>
-        <p className="text-xs text-muted-foreground">授权后把机器人加入结果群，在目标话题发送 /inbox setup（按群设置 @ 机器人），然后点击“重新读取设置”即可自动填入三个 ID。模型使用该 profile 的 Responses API 配置；仅有 Codex 网页登录授权还不够。</p>
+        <p className="text-xs text-muted-foreground">筛选需要支持 Responses 的 API 配置与凭据；仅有 Codex 网页登录授权还不够。Claude 执行深入分析时，请为筛选单独选择已有模型服务的 profile。读取飞书消息仍使用执行 profile 的用户授权。</p>
+        <p className="text-xs text-muted-foreground">授权后把机器人加入结果群，在目标话题发送 /inbox setup（按群设置 @ 机器人），然后点击“重新读取设置”即可自动填入三个 ID。</p>
         <Button variant="ghost" disabled={busy} onClick={() => void perform(async () => {
           const saved = await apiGet<{ config: InboxConfig }>('/api/inbox'); setConfig(saved.config); setChecks(undefined);
         })}>重新读取设置</Button>

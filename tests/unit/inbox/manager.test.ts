@@ -11,7 +11,7 @@ import { InboxManager } from '../../../src/inbox/manager';
 import { InboxGui } from '../../../src/inbox/gui';
 import { startInboxH5 } from '../../../src/inbox/h5-server';
 
-vi.mock('../../../src/agent/model-service', () => ({ loadProfileModelService: vi.fn(async () => ({ model: 'test' })) }));
+vi.mock('../../../src/agent/model-service', async importOriginal => ({ ...await importOriginal<typeof import('../../../src/agent/model-service')>(), loadProfileModelService: vi.fn(async () => ({ model: 'test' })) }));
 vi.mock('../../../src/inbox/analyzer', () => ({ INBOX_ANALYSIS_MODEL: 'deepseek-flash', loadAnalysisProvider: vi.fn(async () => ({ model: 'test' })), analyzeInbox: vi.fn() }));
 vi.mock('../../../src/inbox/lark', () => ({ InboxLark: class { checkOwner = vi.fn(async () => {}); close = vi.fn(); cancelPending = vi.fn(); } }));
 vi.mock('../../../src/inbox/gui', () => ({ InboxGui: vi.fn(function (...args: unknown[]) { return { start: vi.fn(async () => {}), close: vi.fn(async () => {}), setMode: args[5], setScope: args[6] }; }) }));

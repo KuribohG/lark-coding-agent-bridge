@@ -1,7 +1,7 @@
 # GitLab CI failure analysis
 
 The bridge can poll a configurable list of GitLab projects and investigate failed
-pipelines with `deepseek-flash`. It uses the executor profile's normal Codex
+pipelines using a configured Claude or Codex agent. It uses the executor profile's normal agent
 runtime, tools and rules, with `max` reasoning effort. The investigation prompt
 permits reading source and downloading evidence, and prohibits modifying a repo,
 retrying CI, pushing, merging, deploying or sending messages. These are agent task
@@ -102,3 +102,17 @@ use a stable idempotency key and never rerun a completed model analysis. Deliver
 is attempted at most three times; an undelivered `ready` result remains available
 locally. The destination should be a dedicated results group, such as the existing
 inbox results group, so human follow-up does not create unrelated inbox work.
+
+
+## Claude executor
+
+A personal Claude profile can be used as `executorProfile` (Claude Code 2.1.302+).
+Set `model` to an available Claude model, or to `""` to follow its profile/CLI
+default. An omitted model preserves Flash for Codex and uses the profile/CLI default
+for Claude. Existing explicit model values remain unchanged when changing the
+executor, so clear or replace a previously configured `deepseek-flash` override.
+CI retains its max-effort request and the existing model compatibility resolution.
+
+CI analysis runs through the shared background executor and does not require a
+separate Responses API screening service. Lark notification identity remains the
+configured execution profile. No new monitor is enabled by this adapter change.

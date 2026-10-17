@@ -30,7 +30,8 @@ describe.skipIf(process.platform !== 'linux')('independent deadline process guar
       const info = JSON.parse(await readFile(pidFile, 'utf8'));
       expect(info.prompt).toContain('deadline <stdin> task');
       expect(Number(info.deadline)).toBe(deadlineAt);
-      expect(events).toContainEqual(expect.objectContaining({ type: 'error', message: expect.stringContaining('124') }));
+      if (kind === 'claude') expect(events).toContainEqual({ type: 'done', terminationReason: 'timeout' });
+      else expect(events).toContainEqual(expect.objectContaining({ type: 'error', message: expect.stringContaining('124') }));
       expect(await running(info.pid)).toBe(false);
     } finally { await tmp.cleanup(); }
   }, 8000);

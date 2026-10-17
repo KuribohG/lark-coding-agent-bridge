@@ -1,4 +1,5 @@
 import { supportsBackgroundProfile } from '../runtime/agent-capabilities';
+import { backgroundModelSettings } from '../runtime/background-model';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import * as lockfile from 'proper-lockfile';
@@ -39,12 +40,12 @@ export class GitLabCiManager {
     const config = normalizeGitLabCi(root?.gitlabCi);
     const controls = this.controls(config.executorProfile);
     const fingerprint = JSON.stringify([config, controls?.profileConfig.codex, controls?.profileConfig.sandbox,
-      controls?.profileConfig.agentKind, controls?.profileConfig.mode, controls?.botIdentity]);
+      controls?.profileConfig.agentKind, controls?.profileConfig.mode, controls?.profileConfig.preferences, controls?.botIdentity]);
     if (this.service && controls && fingerprint === this.fingerprint) return;
     await this.stop();
     if (!config.enabled || !controls) { this.error = config.enabled ? 'GitLab CI executor profile is offline' : undefined; return; }
     validateGitLabCi(config);
-    if (!supportsBackgroundProfile(controls.profileConfig)) throw new Error('GitLab CI requires a personal Codex executor profile');
+    if (!supportsBackgroundProfile(controls.profileConfig)) throw new Error('GitLab CI requires a personal executor profile with background analysis support');
     const client = new GitLabClient(config.url, await loadGitLabToken(config));
     const paths = resolveAppPaths({ rootDir: this.rootDir, profile: config.executorProfile });
     const folder = join(dirname(this.configPath), 'gitlab-ci');
@@ -56,20 +57,21 @@ export class GitLabCiManager {
     try {
       const agent = createRuntimeAgent(controls.profileConfig, { ...paths, configPath: this.configPath });
       if (controls.botIdentity) agent.setBotIdentity?.(controls.botIdentity);
-      const notification = ciNotification(config, this.rootDir);
+      const settings = await backgroundModelSettings(controls.profileConfig, paths.profileDir, config.model, 'max');
+      const notification = ciNotification({ ...config, model: settings.model }, this.rootDir);
       this.notification = notification;
       this.service = new GitLabCiService(join(folder, 'state.json'), config, {
         ...notification,
         pipelines: (...args) => client.pipelines(...args), failures: (...args) => client.failures(...args),
         analyze: async (run, signal) => {
-          const path = await analyzeCi(run, config, client, agent, signal);
+          const path = await analyzeCi(run, config, client, agent, signal, settings);
           log.info('gitlab-ci', path ? 'analysis-complete' : 'failure-obsolete', { project: run.repository.project, pipeline: run.pipeline.id, resultPath: path });
           return path;
         },
       });
       await this.service.start();
       this.fingerprint = fingerprint; this.error = undefined;
-      log.info('gitlab-ci', 'watch-started', { repositories: config.repositories.map(r => r.project), model: config.model });
+      log.info('gitlab-ci', 'watch-started', { repositories: config.repositories.map(r => r.project), model: settings.model ?? 'default' });
     } catch (error) { await this.stop(); throw error; }
   }
   private async stop(): Promise<void> {

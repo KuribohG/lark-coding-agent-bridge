@@ -9,6 +9,8 @@ import { listAllProfiles } from '../runtime/profile-discovery';
 import type { AgentKind } from '../config/profile-schema';
 import { HttpError } from './http';
 import type { UiSupervisor } from './types';
+import { supportsBackgroundProfile } from '../runtime/agent-capabilities';
+import { supportsProfileModelService } from '../agent/model-service';
 
 export interface ProfileSummary {
   name: string;
@@ -16,6 +18,7 @@ export interface ProfileSummary {
   active: boolean;
   /** Whether the supervisor currently hosts this profile's channel. */
   running: boolean;
+  capabilities: { backgroundAnalysis: boolean; modelService: boolean };
 }
 
 export interface BotSummary {
@@ -51,11 +54,16 @@ export async function listProfiles(
   rootDir?: string,
 ): Promise<ProfileSummary[]> {
   const profiles = await listAllProfiles(rootDir).catch(() => []);
+  const root = await loadRootConfig(resolveAppPaths({ rootDir }).configFile);
   return profiles.map((p) => ({
     name: p.name,
     agentKind: p.agentKind,
     active: p.active,
     running: supervisor.isOnline(p.name),
+    capabilities: {
+      backgroundAnalysis: Boolean(root?.profiles[p.name] && supportsBackgroundProfile(root.profiles[p.name]!)),
+      modelService: Boolean(root?.profiles[p.name] && root.profiles[p.name]!.mode !== 'team' && supportsProfileModelService(root.profiles[p.name]!)),
+    },
   }));
 }
 

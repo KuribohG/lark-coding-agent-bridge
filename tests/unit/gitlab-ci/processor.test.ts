@@ -29,34 +29,34 @@ async function setup() {
 }
 
 it('archives evidence and runs Flash at max effort with read-only investigation instructions', async () => {
-  const s = await setup(); const path = await analyzeCi(s.run, s.config, s.client, s.agent, s.signal);
+  const s = await setup(); const path = await analyzeCi(s.run, s.config, s.client, s.agent, s.signal, { model: 'deepseek-flash', reasoningEffort: 'max' });
   expect(processAnalysis).toHaveBeenCalledWith(s.agent, expect.objectContaining({ model: 'deepseek-flash', reasoningEffort: 'max',
     cwd: join(s.config.outputDir, s.run.id), prompt: expect.stringContaining('不要重试/取消/触发 CI') }), s.signal);
   expect(JSON.parse(await readFile(path!, 'utf8'))).toMatchObject({ runId: s.run.id, analysis: '已核实日志', model: 'deepseek-flash' });
   const evidence = JSON.parse(await readFile(join(s.config.outputDir, s.run.id, 'evidence.json'), 'utf8'));
   expect(evidence.pipeline.sha).toBe('a'.repeat(40));
   expect(evidence.evidence[0].trace.tail).toBe('test failed');
-  await analyzeCi(s.run, s.config, s.client, s.agent, s.signal);
+  await analyzeCi(s.run, s.config, s.client, s.agent, s.signal, { model: 'deepseek-flash', reasoningEffort: 'max' });
   expect(processAnalysis).toHaveBeenCalledTimes(1);
 });
 
 it.each(['success', 'running', 'canceled'])('skips a failure that is now %s', async status => {
   const s = await setup(); vi.mocked(s.client.pipeline).mockResolvedValue({ ...s.run.pipeline, status });
-  expect(await analyzeCi(s.run, s.config, s.client, s.agent, s.signal)).toBeUndefined();
+  expect(await analyzeCi(s.run, s.config, s.client, s.agent, s.signal, { model: 'deepseek-flash', reasoningEffort: 'max' })).toBeUndefined();
   expect(processAnalysis).not.toHaveBeenCalled();
 });
 
 it('skips an obsolete failure signature after a retry', async () => {
   const s = await setup(); vi.mocked(s.client.failures).mockResolvedValue([{ ...s.run.failures[0]!, id: 21 }]);
-  expect(await analyzeCi(s.run, s.config, s.client, s.agent, s.signal)).toBeUndefined();
+  expect(await analyzeCi(s.run, s.config, s.client, s.agent, s.signal, { model: 'deepseek-flash', reasoningEffort: 'max' })).toBeUndefined();
   expect(processAnalysis).not.toHaveBeenCalled();
 });
 
 it('records erased traces as missing evidence and retries transient errors', async () => {
   const s = await setup(); vi.mocked(s.client.trace).mockRejectedValue(new GitLabError('GitLab API HTTP 404'));
-  await analyzeCi(s.run, s.config, s.client, s.agent, s.signal);
+  await analyzeCi(s.run, s.config, s.client, s.agent, s.signal, { model: 'deepseek-flash', reasoningEffort: 'max' });
   expect(await readFile(join(s.config.outputDir, s.run.id, 'evidence.json'), 'utf8')).toContain('missingTrace');
   const next = await setup(); vi.mocked(next.client.trace).mockRejectedValue(new GitLabError('GitLab API HTTP 503'));
-  await expect(analyzeCi(next.run, next.config, next.client, next.agent, next.signal)).rejects.toThrow('503');
+  await expect(analyzeCi(next.run, next.config, next.client, next.agent, next.signal, { model: 'deepseek-flash', reasoningEffort: 'max' })).rejects.toThrow('503');
   expect(processAnalysis).toHaveBeenCalledTimes(1);
 });

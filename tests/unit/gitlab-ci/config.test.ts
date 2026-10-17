@@ -8,7 +8,7 @@ import { normalizeGitLabCi, validateGitLabCi } from '../../../src/gitlab-ci/conf
 import { configureCiWatch } from '../../../src/cli/commands/ci-watch';
 
 it('keeps CI watch disabled unless explicitly enabled and validates enabled settings', () => {
-  expect(normalizeGitLabCi(undefined)).toMatchObject({ enabled: false, model: 'deepseek-flash', pollSeconds: 60 });
+  expect(normalizeGitLabCi(undefined)).toMatchObject({ enabled: false, pollSeconds: 60 });
   const config = normalizeGitLabCi({ enabled: true, url: 'https://gitlab.test', executorProfile: 'codex',
     outputDir: '/private/ci', repositories: [{ project: 'data_platform/3fs-vnext' }] });
   expect(() => validateGitLabCi(config)).not.toThrow();

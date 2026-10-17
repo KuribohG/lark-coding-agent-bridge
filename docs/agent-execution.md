@@ -1,9 +1,9 @@
 # Agent execution contract
 
-Codex `exec` and `app-server` expose the same execution contract. Chat rendering,
-follow-up delivery, retries, and background analysis consume this contract without
-selecting behavior by agent name. Claude retains its existing adapter and legacy
-input path; this migration does not enable new Claude features.
+Codex `exec`, Codex `app-server`, and Claude Code expose the same execution
+contract. Chat rendering, follow-up delivery, retries, and background analysis
+consume this contract without selecting behavior by agent name. Claude streaming
+input requires Claude Code 2.1.302 or later for correlated completion receipts.
 
 ```mermaid
 flowchart TD
@@ -15,6 +15,8 @@ flowchart TD
   Retry --> Adapter[CodexAdapter]
   Adapter --> Exec[Codex exec]
   Adapter --> Server[Codex app-server]
+  Retry --> Claude[ClaudeAdapter]
+  Claude --> Stream[Claude stream-json]
 ```
 
 ## Capabilities and events
@@ -23,23 +25,31 @@ flowchart TD
 separately from the session identity and access policy in `src/agent/capability.ts`.
 The adapter declares its capabilities and attaches them to every run. The retry
 wrapper retains the current attempt's declaration. Profile-time discovery uses
-the same declaration in `src/agent/codex/capabilities.ts`.
+the same declarations in `src/agent/{codex,claude}/capabilities.ts`.
 
-| Contract | Codex exec | Codex app-server |
-| --- | --- | --- |
-| `finalAnswer` | `separate-event` | `separate-event` |
-| `input` | `unsupported` | `active-turn` |
-| Native session | Codex thread | Codex thread |
+| Contract | Codex exec | Codex app-server | Claude Code |
+| --- | --- | --- | --- |
+| `finalAnswer` | `separate-event` | `separate-event` | `separate-event` |
+| `input` | `unsupported` | `active-turn` | `active-session` |
+| Native session | Codex thread | Codex thread | Claude session |
 
 - `text` is public progress; `final_text` is the authoritative answer. Provisional
   message deltas are not final answers. A `done` event with normal termination is
   required before a background result can be delivered.
 - `error.failureKind` distinguishes rate limits, quota, authentication, ambiguous
-  input delivery, and other runtime failures. The Codex adapter normalizes legacy
-  text errors at its boundary. Explicit kinds take precedence over message text.
+  input delivery, and other runtime failures. Both adapters normalize native
+  text errors at their boundary. Explicit kinds take precedence over message text.
 - The native translators, watchdogs, session/thread IDs, sandbox and permission
   policies remain owned by their adapters and the existing runtime policy layer.
   No session is converted between engines.
+
+Claude holds the last assistant message's text blocks until the native `result`
+arrives. Earlier messages and text preceding tool calls become public progress;
+the authoritative result is emitted only once as `final_text`, followed by usage
+and completion. Subagent results and orphaned task notifications cannot terminate
+the parent. An error or missing result never promotes buffered text to an answer.
+Completion waits until the result covers all supplemental input IDs. A late
+supplement may therefore continue in a subsequent native turn of the same session.
 
 ## Input delivery
 
@@ -75,8 +85,8 @@ and usage; it knows nothing about Lark cards, inbox items, GitLab, or report JSO
 The inbox/CI report validator owns the report schema and safe user-facing errors.
 
 Background profile eligibility requires a personal profile with the final-answer
-contract. Only Codex currently declares it. Inbox and CI use this shared check;
-their existing UI choices remain unchanged.
+contract. Both Codex and Claude declare it. Inbox and CI use this shared check;
+the inbox UI lists eligible personal profiles using backend capability metadata.
 
 Direct Responses API screening is separate from agent execution:
 `loadProfileModelService()` resolves a model endpoint, model, and credentials.
@@ -84,7 +94,16 @@ The current implementation reuses Codex configuration via
 `src/agent/codex/model-service.ts`, preserving credential precedence, HTTPS checks,
 and model overrides. This is an internal boundary, not a new configuration format
 or a second credential store. `loadAnalysisProvider` remains an alias for existing
-callers.
+callers. Inbox `triageProfile` selects this service independently from its
+`executorProfile`, and `triageModel` can differ from `analysisModel`. Claude's
+native Anthropic configuration is not interpreted as a Responses API service.
+
+`backgroundModelSettings()` resolves native task models without reading direct
+API credentials. An omitted legacy Codex model keeps Flash/max; an empty model
+inherits profile/CLI settings. Claude omitted/empty models inherit Claude's own
+settings. CI continues to request max effort through the existing model resolver.
+Existing explicit model names are preserved; when changing engines, select a
+model supported by the destination engine or clear the override.
 
 ## Extending the contract
 
