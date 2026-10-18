@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { normalizeInbox } from '../../../src/inbox/config';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import {
   createRootConfig,
@@ -102,11 +103,39 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await handle.close();
   await Promise.all(roots.splice(0).map((r) => rm(r, { recursive: true, force: true })));
 });
 
 describe('ui server (supervisor-backed)', () => {
+  it('manages independent model services behind console auth, without exposing resolved credentials', async () => {
+    vi.stubEnv('TEST_UI_MODEL_KEY', 'private-ui-model-key');
+    const config = { protocol: 'responses', baseUrl: 'https://model.test/v1', model: 'screen', apiKey: { source: 'env', id: 'TEST_UI_MODEL_KEY' } };
+    expect((await get('/api/model-services')).status).toBe(401);
+    expect((await post('/api/model-services', 'wrong', { name: 'screen', config })).status).toBe(401);
+    expect((await get('/api/model-services', handle.token, { origin: 'https://evil.example' })).status).toBe(403);
+    expect((await post('/api/model-services', handle.token, { name: 'screen', config })).status).toBe(200);
+    const view = await json(await get('/api/model-services', handle.token));
+    expect(view.services.screen).toEqual(config);
+    expect(JSON.stringify(view)).not.toContain('private-ui-model-key');
+    const checked = await json(await post('/api/model-services/check', handle.token, { name: 'screen' }));
+    expect(checked).toEqual({ model: 'screen', note: expect.stringContaining('尚未请求') });
+    expect(JSON.stringify(checked)).not.toContain('private-ui-model-key');
+    await post('/api/config?profile=work', handle.token, { model: 'sonnet' });
+    expect((await loadRootConfig(configPath))!.modelServices!.screen).toEqual(config);
+    const before = await readFile(configPath, 'utf8');
+    const invalid = await post('/api/model-services', handle.token, { name: 'screen', config: { ...config, apiKey: 'literal-private-key' } });
+    expect(invalid.status).toBe(400); expect(await invalid.text()).not.toContain('literal-private-key');
+    expect(await readFile(configPath, 'utf8')).toBe(before);
+    const root = (await loadRootConfig(configPath))!;
+    root.inbox = normalizeInbox({ executorProfile: 'claude', triageService: 'screen', enabled: false }); await saveRootConfig(root, configPath);
+    expect((await post('/api/model-services/remove', handle.token, { name: 'screen' })).status).toBe(400);
+    delete root.inbox.triageService; await saveRootConfig(root, configPath);
+    expect((await post('/api/model-services/remove', handle.token, { name: 'screen' })).status).toBe(200);
+    expect(await json(await get('/api/model-services', handle.token))).toEqual({ services: {} });
+  });
+
   it('rejects API calls without the token', async () => {
     expect((await get('/api/status')).status).toBe(401);
     expect((await get('/api/config', 'wrong-token-value')).status).toBe(401);

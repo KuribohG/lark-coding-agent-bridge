@@ -48,8 +48,8 @@
 1. 创建并启动个人 Claude 或 Codex profile 作为执行器。
 2. 点击“授权飞书消息读取”，在浏览器授权后点击“完成授权”。应用侧也需要开通对应权限：`search:message`、`im:chat:read`、`im:message.p2p_msg:get_as_user`、`im:message.group_msg:get_as_user`。若飞书租户要求审批，先完成应用审批。
 3. 将机器人加入结果话题群，在目标话题发送 `/inbox setup`（群要求 @ 时需 @ 机器人）。回到网页点击“重新读取设置”，即可填入本人、结果群、话题和回复锚点 ID。
-4. 为筛选配置 Responses API 模型凭据。助理读取“筛选模型服务 profile”的 Codex 配置和对应 API 凭据；Claude 执行时需在这里另选个人 Codex profile，该筛选 profile 无需启动。仅有普通 Codex 网页登录授权还不够；需要 provider 的 `env_key`、受支持的凭据配置或 `OPENAI_API_KEY`。密钥留在本机，不填在网页中。飞书读取始终使用执行 profile 的用户授权。
-5. 深入分析模型留空时沿用执行 profile / CLI 的默认模型；也可填写执行器支持的模型 ID。旧 Codex 配置未包含 `analysisModel` 时继续使用 `deepseek-flash`；在网页保存为空即可切换到继承模式。筛选模型可独立填写，留空沿用筛选 profile 的默认模型；省略字段时同源筛选沿用深入分析模型、跨 profile 筛选使用 Flash。配置示例见[会话助理文档](inbox-assistant.md)。
+4. 在“模型 API 服务”中添加服务，填写 HTTPS API 根地址、默认模型和 API Key 的环境变量/文件引用，然后在助理中选择该筛选服务。密钥内容保留在本机，不填在网页中。只使用 Claude 时也无需 Codex profile。旧配置仍可选“沿用旧版 profile 配置”。详见[模型服务配置](model-services.md)；飞书读取始终使用执行 profile 的用户授权。
+5. 深入分析模型留空时沿用执行 profile / CLI 的默认模型；也可填写执行器支持的模型 ID。旧 Codex 配置未包含 `analysisModel` 时继续使用 `deepseek-flash`；在网页保存为空即可切换到继承模式。独立筛选服务使用自己的默认模型，筛选模型覆盖留空或省略时均继承该默认值；只有旧版 profile 路由保留原来同源跟随深入分析模型、跨 profile 使用 Flash 的省略规则。配置示例见[会话助理文档](inbox-assistant.md)。
 6. 填写本人职责、选择接收范围，运行“检查配置”，勾选开启并保存。
 
 检查只验证本地配置、已授予的 scope 和凭据是否存在，不发送模型请求，也不保证模型服务/飞书实际调用成功。实际错误会显示在工作台。

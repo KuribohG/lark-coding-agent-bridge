@@ -23,6 +23,9 @@ import {
   userLoginStart,
 } from './api';
 import { activateProfile, listBots, listProfiles } from './fleet';
+import { resolveAppPaths } from '../config/app-paths';
+import { modelServiceName } from '../model-service/config';
+import { checkModelService, configureModelService, listModelServices, removeModelService } from '../model-service/registry';
 import { onboardCreate, onboardState, onboardValidate } from './onboard';
 import { finishQrRegistration, qrStatus, startQrRegistration } from './qr-register';
 import {
@@ -130,6 +133,24 @@ async function route(
   const g = method === 'GET';
   const p = method === 'POST';
   const sup = deps.supervisor;
+
+  if (path === '/api/model-services' || path === '/api/model-services/check' || path === '/api/model-services/remove') {
+    const configPath = resolveAppPaths({ rootDir: deps.rootDir }).configFile;
+    try {
+      if (path === '/api/model-services' && g) { sendJson(res, 200, { services: await listModelServices(configPath) }); return; }
+      if (p) {
+        const input = await readJsonBody(req);
+        if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('模型服务请求须为对象');
+        const body = input as { name?: unknown; config?: unknown };
+        const name = modelServiceName(body.name);
+        if (path === '/api/model-services/check') { sendJson(res, 200, await checkModelService(configPath, name)); return; }
+        if (path === '/api/model-services/remove') await removeModelService(configPath, name);
+        else await configureModelService(configPath, name, body.config);
+        await sup.inbox?.reconcile();
+        sendJson(res, 200, { services: await listModelServices(configPath) }); return;
+      }
+    } catch (error) { throw new HttpError(400, error instanceof Error ? error.message : '模型服务配置失败'); }
+  }
 
   if (path === '/api/shutdown' && p && deps.requestShutdown) {
     sendJson(res, 200, { ok: true });

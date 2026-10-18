@@ -2,7 +2,8 @@ import type { ProfileConfig } from '../config/profile-schema';
 import { loadCodexModelService } from './codex/model-service';
 
 /** Direct model calls are distinct from a tool-capable AgentAdapter run. */
-export interface ResponsesModelService { url: string; model: string; key: string; headers?: Record<string, string> }
+export type { ResponsesModelService } from '../model-service/service';
+import type { ResponsesModelService } from '../model-service/service';
 
 export function supportsProfileModelService(profile: ProfileConfig): boolean {
   return profile.agentKind === 'codex';

@@ -34,6 +34,7 @@
     "docs/inbox-assistant.md",
     "docs/gitlab-ci-watch.md",
     "docs/agent-execution.md",
+    "docs/model-services.md",
     "LICENSE",
     "docs/self-contained.md"
   ],

@@ -16,14 +16,15 @@ it('keeps CI watch disabled unless explicitly enabled and validates enabled sett
   expect(() => validateGitLabCi({ ...config, repositories: [...config.repositories, ...config.repositories] })).toThrow('unique');
 });
 
-it('saves CI settings without dropping other root fields or profile preferences', async () => {
+it.each(['codex', 'claude'] as const)('saves %s CI settings without dropping model services or profile preferences', async kind => {
   const dir = await mkdtemp(join(tmpdir(), 'ci-config-'));
   const path = join(dir, 'config.json');
-  const root = createRootConfig('codex', createDefaultProfileConfig({ agentKind: 'codex', codex: { binaryPath: 'codex' },
+  const root = createRootConfig('executor', createDefaultProfileConfig({ agentKind: kind, codex: { binaryPath: 'codex' },
     accounts: { app: { id: 'cli_fixture', secret: 'fixture', tenant: 'feishu' } } }));
+  root.modelServices = { screening: { protocol: 'responses', baseUrl: 'https://model.test/v1', model: 'screen', apiKey: { source: 'env', id: 'MODEL_KEY' } } };
   await saveRootConfig(root, path);
   const before = (await loadRootConfig(path))!.profiles;
-  const settings = normalizeGitLabCi({ enabled: true, executorProfile: 'codex', url: 'https://gitlab.test', outputDir: dir,
+  const settings = normalizeGitLabCi({ enabled: true, executorProfile: 'executor', url: 'https://gitlab.test', outputDir: dir,
     repositories: [{ project: 'group/repo' }] });
   const input = join(dir, 'ci.json'); await writeFile(input, JSON.stringify(settings));
   const output = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -31,7 +32,8 @@ it('saves CI settings without dropping other root fields or profile preferences'
   const saved = (await loadRootConfig(path))!;
   expect(saved.gitlabCi).toEqual(settings);
   expect(saved.profiles).toEqual(before);
-  saved.profiles.codex!.preferences.model = 'another-model';
+  expect(saved.modelServices).toEqual(root.modelServices);
+  saved.profiles.executor!.preferences.model = 'another-model';
   await saveRootConfig(saved, path);
   expect((await loadRootConfig(path))!.gitlabCi).toEqual(settings);
 });

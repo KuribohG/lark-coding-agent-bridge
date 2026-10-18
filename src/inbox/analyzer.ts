@@ -1,9 +1,9 @@
 import type { Attention, InboxJob } from './types';
 import { obj } from './values';
 import { parseModelJson } from './model-json';
-import type { ResponsesModelService as AnalysisProvider } from '../agent/model-service';
+import type { ResponsesModelService as AnalysisProvider } from '../model-service/service';
 
-export type { ResponsesModelService as AnalysisProvider } from '../agent/model-service';
+export type { ResponsesModelService as AnalysisProvider } from '../model-service/service';
 export { loadProfileModelService as loadAnalysisProvider } from '../agent/model-service';
 export const INBOX_ANALYSIS_MODEL = 'deepseek-flash';
 

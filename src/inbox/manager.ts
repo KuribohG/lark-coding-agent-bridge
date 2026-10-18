@@ -8,7 +8,7 @@ import { resolveAppSecret } from '../config/secret-resolver';
 import { getCotMessages } from '../config/schema';
 import { CotClient } from '../bot/cot';
 import { inboxMode, intakeScope, normalizeInbox, validateInbox, type InboxConfig, type InboxMode, type IntakeScope } from './config';
-import { inboxTriageProfile, loadInboxTriageModel } from './model-routing';
+import { inboxTriageSource, loadInboxTriageSource } from './model-routing';
 import { backgroundModelSettings } from '../runtime/background-model';
 import { supportsBackgroundProfile } from '../runtime/agent-capabilities';
 import { getUserAuthStatus } from '../lark-cli/user-im';
@@ -86,8 +86,7 @@ export class InboxManager {
         return auth.userName || ownerOpenId;
       });
       await check('模型配置', async () => {
-        const paths = resolveAppPaths({ rootDir: this.rootDir, profile: config.triageProfile || config.executorProfile });
-        const provider = await loadInboxTriageModel(config, inboxTriageProfile(config, root!.profiles), paths.profileDir);
+        const provider = await loadInboxTriageSource(config, inboxTriageSource(config, root!), this.rootDir);
         return `${provider.model}（已找到 Responses API 配置与凭据；尚未请求模型）`;
       });
       await check('深入分析模型', async () => {
@@ -133,7 +132,7 @@ export class InboxManager {
       if (!root) throw new Error('找不到 Bridge 配置');
       const p = root.profiles[config.executorProfile];
       if (config.enabled && (!p || !supportsBackgroundProfile(p))) throw new Error('请选择支持后台分析的个人 profile');
-      if (config.enabled) inboxTriageProfile(config, root.profiles);
+      if (config.enabled || config.triageService) inboxTriageSource(config, root);
       root.inbox = config; await saveRootConfig(root, this.configPath);
     });
     await this.reconcile(); return this.view();
@@ -167,9 +166,10 @@ export class InboxManager {
   private async reload(): Promise<void> {
     const root = await loadRootConfig(this.configPath); const config = normalizeInbox(root?.inbox);
     const controls = this.controls(config.executorProfile);
-    const sourceProfile = root?.profiles[config.triageProfile || config.executorProfile];
+    const sourceProfile = config.triageService ? undefined : root?.profiles[config.triageProfile || config.executorProfile];
     const fingerprint = JSON.stringify([connectionConfig(config), controls?.cfg.accounts.app, controls?.botIdentity?.openId, controls?.profileConfig.mode, controls?.profileConfig.agentKind, controls?.profileConfig.codex, controls?.profileConfig.preferences,
-      sourceProfile?.agentKind, sourceProfile?.mode, sourceProfile?.codex, sourceProfile?.preferences]);
+      sourceProfile?.agentKind, sourceProfile?.mode, sourceProfile?.codex, sourceProfile?.preferences,
+      config.triageService ? root?.modelServices?.[config.triageService] : undefined]);
     if (this.service && controls && fingerprint === this.fingerprint) {
       await withConfigFileLock(this.configPath, async () => {
         const latest = normalizeInbox((await loadRootConfig(this.configPath))?.inbox);
@@ -185,8 +185,7 @@ export class InboxManager {
       if (!controls) throw new Error('执行 profile 尚未上线');
       if (controls.profileConfig.mode === 'team') throw new Error('团队模式不允许使用个人收件助理');
       if (!supportsBackgroundProfile(controls.profileConfig)) throw new Error('当前 profile 尚不支持后台分析');
-      const triageProfile = inboxTriageProfile(config, root!.profiles);
-      const triagePaths = resolveAppPaths({ rootDir: this.rootDir, profile: config.triageProfile || config.executorProfile });
+      const triageSource = inboxTriageSource(config, root!);
       const paths = resolveAppPaths({ rootDir: this.rootDir, profile: config.executorProfile });
       const folder = join(dirname(this.configPath), 'inbox');
       await mkdir(folder, { recursive: true, mode: 0o700 });
@@ -228,7 +227,7 @@ export class InboxManager {
           } finally { await progress?.finish(success); }
         },
         triage: async (jobs, signal, onProgress) => triageWithChatTools(jobs, config.attentionProfile,
-          await loadInboxTriageModel(config, triageProfile, triagePaths.profileDir), readTools, signal, onProgress),
+          await loadInboxTriageSource(config, triageSource, this.rootDir), readTools, signal, onProgress),
         notifyAttention: (jobs, id) => lark.notifyAttention(jobs, id),
       });
       this.nonces = new CallbackNonceStore(join(folder, 'card-nonces.json'));

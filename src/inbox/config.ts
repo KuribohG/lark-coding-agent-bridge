@@ -21,7 +21,9 @@ export interface InboxConfig {
   attentionProfile: string;
   /** Empty follows the executor's defaults; absent keeps Flash for legacy Codex configs. */
   analysisModel?: string;
-  /** Direct screening calls may use a different profile's model service. */
+  /** Explicit standalone service; takes precedence over all legacy profile routing. */
+  triageService?: string;
+  /** Legacy Codex model configuration source, used only without triageService. */
   triageProfile?: string;
   triageModel?: string;
   dailyTriageLimit: number;
@@ -56,6 +58,7 @@ export function normalizeInbox(input: unknown): InboxConfig {
     intakeScope: scope,
     analysisModel: input == null ? '' : typeof r.analysisModel === 'string' ? str(r.analysisModel).slice(0, 200) : undefined,
     ...(str(r.triageProfile) ? { triageProfile: str(r.triageProfile) } : {}),
+    ...(str(r.triageService) ? { triageService: str(r.triageService) } : {}),
     ...(typeof r.triageModel === 'string' ? { triageModel: str(r.triageModel).slice(0, 200) } : {}),
     enabled: r.enabled === true, executorProfile: str(r.executorProfile), ownerOpenId: str(r.ownerOpenId),
     destination: { chatId: str(r.destination?.chatId), threadId: str(r.destination?.threadId), replyTo: str(r.destination?.replyTo) },

@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { resolveAppPaths } from '../../config/app-paths';
 import { loadRootConfig, saveRootConfig, withConfigFileLock } from '../../config/profile-store';
 import { normalizeGitLabCi, validateGitLabCi } from '../../gitlab-ci/config';
+import { supportsBackgroundProfile } from '../../runtime/agent-capabilities';
 
 export async function configureCiWatch(file: string, opts: { config?: string }): Promise<void> {
   const config = normalizeGitLabCi(JSON.parse(await readFile(file, 'utf8')));
@@ -12,8 +13,8 @@ export async function configureCiWatch(file: string, opts: { config?: string }):
     const root = await loadRootConfig(path);
     if (!root) throw new Error('Bridge root configuration not found');
     const profile = root.profiles[config.executorProfile];
-    if (config.enabled && (!profile || profile.agentKind !== 'codex' || profile.mode === 'team')) {
-      throw new Error('GitLab CI requires a personal Codex executor profile');
+    if (config.enabled && (!profile || !supportsBackgroundProfile(profile))) {
+      throw new Error('GitLab CI requires a personal executor profile with background analysis support');
     }
     root.gitlabCi = config;
     await saveRootConfig(root, path);

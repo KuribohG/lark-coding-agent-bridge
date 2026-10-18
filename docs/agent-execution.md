@@ -88,15 +88,20 @@ Background profile eligibility requires a personal profile with the final-answer
 contract. Both Codex and Claude declare it. Inbox and CI use this shared check;
 the inbox UI lists eligible personal profiles using backend capability metadata.
 
-Direct Responses API screening is separate from agent execution:
-`loadProfileModelService()` resolves a model endpoint, model, and credentials.
-The current implementation reuses Codex configuration via
-`src/agent/codex/model-service.ts`, preserving credential precedence, HTTPS checks,
-and model overrides. This is an internal boundary, not a new configuration format
-or a second credential store. `loadAnalysisProvider` remains an alias for existing
-callers. Inbox `triageProfile` selects this service independently from its
-`executorProfile`, and `triageModel` can differ from `analysisModel`. Claude's
-native Anthropic configuration is not interpreted as a Responses API service.
+Direct Responses API screening uses the independent `modelServices` registry.
+`src/model-service/config.ts` defines endpoint, default model and credential
+references; `service.ts` resolves them without reading agent configuration.
+Inbox `triageService` selects a service independently of `executorProfile`.
+Missing or invalid explicit services fail without credential fallback. An absent
+or empty `triageModel` uses the selected service's model, independent of
+`analysisModel`. The local UI and CLI manage this registry without returning
+resolved credentials. See [model services](model-services.md).
+
+Without `triageService`, the legacy `triageProfile`/executor routing still uses
+`loadProfileModelService()` and `src/agent/codex/model-service.ts`. Its credential
+precedence and model defaults remain compatible. `loadAnalysisProvider` remains
+a legacy alias. No credentials are automatically copied, and Claude's native
+Anthropic configuration is not interpreted as a Responses API service.
 
 `backgroundModelSettings()` resolves native task models without reading direct
 API credentials. An omitted legacy Codex model keeps Flash/max; an empty model
@@ -112,4 +117,4 @@ each run, and translate native events/receipts at the adapter boundary. Run the
 contract tests plus transport process tests and chat/background regressions.
 In particular, verify final versus progress text, stop and completion races,
 ambiguous receipts, retries, and deadline propagation. Native question handling
-and provider-independent model configuration are separate future changes.
+and additional direct model protocols are separate future changes.

@@ -7,12 +7,14 @@ import { ProfilesView } from "@/views/ProfilesView";
 import { ProfileDetail } from "@/views/ProfileDetail";
 import { OnboardWizard } from "@/views/OnboardWizard";
 import { InboxView } from "@/views/InboxView";
+import { ModelServicesView } from "@/views/ModelServicesView";
 
 export function App() {
   const [onboard, setOnboard] = useState<OnboardState | null>(null);
   const [status, setStatus] = useState<Status | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [servicesRevision, setServicesRevision] = useState(0);
 
   const refresh = useCallback(async () => {
     try {
@@ -53,7 +55,8 @@ export function App() {
       ) : (
         <>
           <ProfilesView onOpen={setSelected} />
-          <InboxView />
+          <ModelServicesView onChange={() => setServicesRevision(value => value + 1)} />
+          <InboxView servicesRevision={servicesRevision} />
           {status && (
             <p className="mt-6 text-xs text-muted-foreground">
               单主进程托管所有 profile · v{status.version} · {status.online} 个在线 · 改在线 profile 的配置即时生效

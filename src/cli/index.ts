@@ -27,6 +27,7 @@ import {
 import { runStart } from './commands/start';
 import { runUi } from './commands/ui';
 import { configureCiWatch, statusCiWatch } from './commands/ci-watch';
+import { checkService, configureService, listServices, removeService } from './commands/model-service';
 
 const program = new Command();
 
@@ -84,6 +85,16 @@ ciWatch.command('configure <file>').option('-c, --config <path>', 'path to bridg
   .description('Load CI watch settings from a JSON file').action(configureCiWatch);
 ciWatch.command('status').option('-c, --config <path>', 'path to bridge root config')
   .description('Show configuration and persisted CI analysis state').action(statusCiWatch);
+
+const modelService = program.command('model-service').description('Manage independent model API services');
+modelService.command('list').option('-c, --config <path>', 'path to bridge root config')
+  .description('Show model service configuration and credential references').action(listServices);
+modelService.command('configure <name> <file>').option('-c, --config <path>', 'path to bridge root config')
+  .description('Save a model service from a JSON file').action(configureService);
+modelService.command('remove <name>').option('-c, --config <path>', 'path to bridge root config')
+  .description('Remove an unused model service').action(removeService);
+modelService.command('check <name>').option('-c, --config <path>', 'path to bridge root config')
+  .description('Validate local settings and credential access without a model request').action(checkService);
 
 profile
   .command('list')

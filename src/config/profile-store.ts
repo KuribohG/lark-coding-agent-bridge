@@ -12,6 +12,7 @@ import {
 import type { AppConfig } from './schema';
 import { normalizeInbox } from '../inbox/config';
 import { normalizeGitLabCi } from '../gitlab-ci/config';
+import { normalizeModelServices } from '../model-service/config';
 
 export async function loadRootConfig(path: string): Promise<RootConfig | undefined> {
   try {
@@ -35,6 +36,7 @@ function normalizeRootConfig(root: RootConfig): RootConfig {
     preferences: {},
     ...(root.inbox ? { inbox: normalizeInbox(root.inbox) } : {}),
     ...(root.gitlabCi ? { gitlabCi: normalizeGitLabCi(root.gitlabCi) } : {}),
+    ...(root.modelServices ? { modelServices: normalizeModelServices(root.modelServices) } : {}),
     ...(root.secrets ? { secrets: root.secrets } : {}),
     ...(migrations ? { migrations } : {}),
     profiles,
@@ -84,6 +86,7 @@ function serializeRootConfig(root: RootConfig): StoredRootConfig {
     preferences: {},
     ...(root.inbox ? { inbox: normalizeInbox(root.inbox) } : {}),
     ...(root.gitlabCi ? { gitlabCi: normalizeGitLabCi(root.gitlabCi) } : {}),
+    ...(root.modelServices ? { modelServices: normalizeModelServices(root.modelServices) } : {}),
     ...(root.secrets ? { secrets: root.secrets } : {}),
     ...(migrations ? { migrations } : {}),
     profiles,

@@ -22,7 +22,9 @@
 
 自身消息硬过滤使用运行时可信的机器人 app ID 和 open ID，同时识别飞书 `sender.id` 与 `sender.open_bot_id`，不依赖模型判断或消息正文。当前结果群及已有事项记录的结果群不作为来源；采集、手动选会话、上下文补充、队列执行和投递均受此约束。启动时把旧的自身消息事项归为忽略并清除筛选/分析/投递重试；混有真实请求的记录移除自身内容后重新筛选，已有草稿标记过期。此类自身事项不可通过恢复或手动处理重新入队；其他机器人的告警仍按个人关联规则筛选。
 
-轻量筛选使用 `triageProfile` 的 Responses 模型服务及 `triageModel`，直接运行受限工具循环，不启动 Agent，也不加载工作目录、MCP、skills 或共享 agent 指令。目前模型服务仍从所选个人 Codex profile 的配置读取 provider 和凭证；该 profile 无需启动。省略 `triageProfile` 时沿用执行 profile，省略 `triageModel` 时同源筛选沿用 `analysisModel`，跨 profile 筛选使用 Flash，保留旧配置行为。`triageModel` 显式留空时使用筛选 profile 的默认模型。Claude 执行深入分析时需另选已有 Responses 服务的筛选 profile；飞书读取仍固定使用执行 profile 的用户授权，不使用筛选 profile 的飞书身份。模型可调用 `search_messages`、`read_chat_messages`、`read_thread_messages`、`get_messages` 四个聊天快捷工具，以及 `list_lark_read_tools` / `describe_lark_read_tool` / `call_lark_read_tool` 查询已审核的飞书只读目录。目录来自 lark-cli 1.0.77 的 risk=read、支持用户身份的业务接口，覆盖文档、表格、多维表格、日历、任务、邮件、知识库等；仅在用户已有授权内读取，不自动申请或切换权限。程序在执行前校验工具名及参数，固定以当前 bridge-bound 用户身份调用固定白名单中的读取命令；无 shell、文件读写、任意 CLI/API、附件下载、发消息或其他 agent 入口。每个目录操作固定命令路径和允许参数；禁止 `@file` / stdin、输出路径和全局参数覆盖，路径标识符拒绝遍历和 URL 注入。目录排除下载、导出任务、本地 Git 凭证、API key、生成分享链接、监听落盘及本地目录比对。纪要只查摘要等内联信息，画板仅返回原始结构，表格单次输出限制 20,000 字符。查询返回值有长度上限及截断/分页提示。新增接口或升级 CLI 时需重新审核目录，不能凭命令名猜测只读。查询失败进入自动重试，发通知仍由外层服务统一处理。
+轻量筛选使用 `triageService` 选择根配置中的独立 Responses 模型服务，不依赖 Codex profile。默认模型和凭据引用在“模型 API 服务”中配置，`triageModel` 非空时只覆盖筛选模型；省略或为空均使用服务默认值，与深入分析的 `analysisModel` 无关。显式服务不存在或凭据无效时直接报错，不回退到其他配置。详见[独立模型服务](model-services.md)。
+
+没有 `triageService` 的旧配置仍使用 `triageProfile` 的 Codex Responses 配置；省略 `triageProfile` 时沿用执行 profile，省略 `triageModel` 时同源筛选沿用 `analysisModel`、跨 profile 使用 Flash，显式留空时使用筛选 profile 的默认模型。升级不会自动复制凭据或改变旧模型策略。筛选直接运行受限工具循环，不启动 Agent，也不加载工作目录、MCP、skills 或共享 agent 指令。飞书读取始终使用执行 profile 的用户授权。模型可调用 `search_messages`、`read_chat_messages`、`read_thread_messages`、`get_messages` 四个聊天快捷工具，以及 `list_lark_read_tools` / `describe_lark_read_tool` / `call_lark_read_tool` 查询已审核的飞书只读目录。目录来自 lark-cli 1.0.77 的 risk=read、支持用户身份的业务接口，覆盖文档、表格、多维表格、日历、任务、邮件、知识库等；仅在用户已有授权内读取，不自动申请或切换权限。程序在执行前校验工具名及参数，固定以当前 bridge-bound 用户身份调用固定白名单中的读取命令；无 shell、文件读写、任意 CLI/API、附件下载、发消息或其他 agent 入口。每个目录操作固定命令路径和允许参数；禁止 `@file` / stdin、输出路径和全局参数覆盖，路径标识符拒绝遍历和 URL 注入。目录排除下载、导出任务、本地 Git 凭证、API key、生成分享链接、监听落盘及本地目录比对。纪要只查摘要等内联信息，画板仅返回原始结构，表格单次输出限制 20,000 字符。查询返回值有长度上限及截断/分页提示。新增接口或升级 CLI 时需重新审核目录，不能凭命令名猜测只读。查询失败进入自动重试，发通知仍由外层服务统一处理。
 
 每批最多 50 项，初始摘录每项最多 6 条、每条 500 字符，关注背景最多 3000 字符；工具可补充相关飞书资料。输入聊天不能作为系统指令。最终判断须覆盖每个事项且 ID 唯一。筛选和深入分析可并行运行，每次筛选最长 10 分钟，最多 16 轮模型请求（含纠正）、64 次只读工具调用；重复工具调用 ID、未授权工具及超限结果均拒绝。`dailyTriageLimit` 默认每天 1,000,000 次筛选运行（含重试）；一次运行可有多轮模型与工具调用，不等于 provider 的请求数。额度在启动运行前持久化，不限制手动深入分析。
 
@@ -97,15 +99,15 @@ JSON 仍是本地权威状态。迁移数据库应独立评估历史留存、索
 ## Claude 执行器配置
 
 本地控制台可以选择个人 Claude profile 作为执行器，筛选服务另选已配置
-Responses API 的个人 Codex profile。下面是现有助理配置中的相关字段示例；
+Responses API 模型服务（无需 Codex profile）。下面是现有助理配置中的相关字段示例；
 所属用户、目标话题等其余配置继续保留：
 
 ```json
 {
   "executorProfile": "claude",
   "analysisModel": "",
-  "triageProfile": "codex",
-  "triageModel": "deepseek-flash"
+  "triageService": "screening",
+  "triageModel": ""
 }
 ```
 

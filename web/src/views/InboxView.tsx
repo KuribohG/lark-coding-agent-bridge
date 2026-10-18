@@ -6,14 +6,16 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { intakeScope, type IntakeScope, type InboxConfig } from '../../../src/inbox/config';
 import { InboxWorkbench, type WorkbenchView } from './InboxWorkbench';
+import type { ModelServiceConfig } from '../../../src/model-service/config';
 
 const scopes = ['search:message', 'im:chat:read', 'im:message.p2p_msg:get_as_user', 'im:message.group_msg:get_as_user'];
 type SetupCheck = { checks: { label: string; ok: boolean; detail: string }[]; ownerOpenId: string; ok: boolean };
 
-export function InboxView() {
+export function InboxView({ servicesRevision = 0 }: { servicesRevision?: number }) {
   const [view, setView] = useState<WorkbenchView>();
   const [config, setConfig] = useState<InboxConfig>();
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
+  const [services, setServices] = useState<Record<string, ModelServiceConfig>>({});
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [checks, setChecks] = useState<SetupCheck>();
@@ -32,6 +34,8 @@ export function InboxView() {
     void apiGet<{ profiles: ProfileInfo[] }>('/api/profiles').then(v => setProfiles(v.profiles)).catch(e => setError(e.message));
     return () => { active = false; clearInterval(timer); };
   }, [refresh]);
+  useEffect(() => { void apiGet<{ services: Record<string, ModelServiceConfig> }>('/api/model-services')
+    .then(result => { setServices(result.services); setChecks(undefined); }).catch(e => setError(e.message)); }, [servicesRevision]);
   const perform = async (fn: () => Promise<void>) => {
     setBusy(true); setError('');
     try { await fn(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
@@ -100,12 +104,18 @@ export function InboxView() {
         <div className="grid gap-3 sm:grid-cols-2">
           {([['chatId', '结果群 ID'], ['threadId', '结果话题 ID'], ['replyTo', '话题内回复消息 ID']] as const).map(([key, label]) => <label key={key}>{label}<Input value={config.destination[key]} onChange={e => change({ destination: { ...config.destination, [key]: e.target.value } })} /></label>)}
           <label>深入分析模型<Input value={config.analysisModel ?? (executor?.agentKind === 'codex' ? 'deepseek-flash' : '')} placeholder="留空使用执行 profile 默认模型" onChange={e => change({ analysisModel: e.target.value })} /></label>
-          <label>筛选模型服务 profile<select className="mt-1 w-full rounded border bg-background p-2" value={config.triageProfile ?? ''} onChange={e => change({ triageProfile: e.target.value })}>
-            <option value="">跟随执行 profile</option>{profiles.filter(p => p.capabilities?.modelService).map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+          <label>筛选模型服务<select className="mt-1 w-full rounded border bg-background p-2" value={config.triageService ?? ''} onChange={e => change({ triageService: e.target.value,
+            ...(e.target.value ? { triageProfile: undefined, triageModel: '' } : {}) })}>
+            <option value="">沿用旧版 profile 配置</option>{Object.entries(services).map(([name, service]) => <option key={name} value={name}>{name}（{service.model}）</option>)}
+            {config.triageService && !services[config.triageService] && <option value={config.triageService}>{config.triageService}（未找到）</option>}
           </select></label>
-          <label>筛选模型<Input value={config.triageModel ?? (separateTriage ? 'deepseek-flash' : config.analysisModel ?? 'deepseek-flash')} placeholder="留空使用筛选 profile 默认模型" onChange={e => change({ triageModel: e.target.value })} /></label>
+          {!config.triageService && <label>旧版筛选 profile<select className="mt-1 w-full rounded border bg-background p-2" value={config.triageProfile ?? ''} onChange={e => change({ triageProfile: e.target.value })}>
+            <option value="">跟随执行 profile</option>{profiles.filter(p => p.capabilities?.modelService).map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
+          </select></label>}
+          <label>筛选模型覆盖<Input value={config.triageModel ?? (config.triageService ? '' : separateTriage ? 'deepseek-flash' : config.analysisModel ?? 'deepseek-flash')}
+            placeholder={config.triageService ? `留空使用 ${services[config.triageService]?.model || '服务默认模型'}` : '留空使用筛选 profile 默认模型'} onChange={e => change({ triageModel: e.target.value })} /></label>
         </div>
-        <p className="text-xs text-muted-foreground">筛选需要支持 Responses 的 API 配置与凭据；仅有 Codex 网页登录授权还不够。Claude 执行深入分析时，请为筛选单独选择已有模型服务的 profile。读取飞书消息仍使用执行 profile 的用户授权。</p>
+        <p className="text-xs text-muted-foreground">可在上方“模型 API 服务”中添加独立筛选服务，无需 Codex profile。选择旧版配置时继续读取对应 Codex 配置；仅有 Codex 网页登录授权不够。读取飞书消息始终使用执行 profile 的用户授权。</p>
         <p className="text-xs text-muted-foreground">授权后把机器人加入结果群，在目标话题发送 /inbox setup（按群设置 @ 机器人），然后点击“重新读取设置”即可自动填入三个 ID。</p>
         <Button variant="ghost" disabled={busy} onClick={() => void perform(async () => {
           const saved = await apiGet<{ config: InboxConfig }>('/api/inbox'); setConfig(saved.config); setChecks(undefined);
