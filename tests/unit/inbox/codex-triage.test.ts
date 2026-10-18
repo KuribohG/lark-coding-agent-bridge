@@ -1,20 +1,77 @@
 import { expect, it, vi } from 'vitest';
 import type { InboxJob } from '../../../src/inbox/types';
-import { triageFailureReason, triageWithChatTools } from '../../../src/inbox/codex-triage';
+import { triageBatch, triageFailureReason, triageWithChatTools } from '../../../src/inbox/codex-triage';
 import { InboxReadTools, INBOX_READ_TOOLS } from '../../../src/inbox/read-tools';
 import { InboxToolArgumentsError } from '../../../src/inbox/values';
 import { analysisBody, requestInboxResponse, InboxTriageResultError, parseTriageResult } from '../../../src/inbox/analyzer';
+import { messageBasis } from '../../../src/inbox/updates';
 
 const job = (id: string): InboxJob => ({ id, ownerOpenId: 'ou_owner', source: { chatId: 'oc_source', name: 'test', type: 'p2p' }, messages: [] } as unknown as InboxJob);
 const answer = (id: string, state = 'quiet') => ({ id, state, reason: '具体事实', priority: 'normal' });
 const provider = { url: 'https://model.test/responses', key: 'private-token', model: 'default-model' };
-const message = (items = [answer('a')]) => ({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: JSON.stringify({ items }) }] });
+const message = (items: (ReturnType<typeof answer> & { followUp?: string })[] = [answer('a')]) =>
+  ({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: JSON.stringify({ items }) }] });
 const toolCall = (name = 'read_thread_messages', args: unknown = { threadId: 'omt_topic', pageToken: null }, id = 'call_1') =>
   ({ type: 'function_call', name, arguments: JSON.stringify(args), call_id: id });
 const response = (output: unknown[], status = 'completed') => new Response(JSON.stringify({ status, output }), { headers: { 'content-type': 'application/json' } });
 const fixture = () => { const call = vi.fn(async (_args: string[], _signal: AbortSignal) => ({ messages: [] })); return { call, tools: new InboxReadTools(call) }; };
 const run = (tools: InboxReadTools, request: typeof fetch, jobs = [job('a')], signal = new AbortController().signal) =>
   triageWithChatTools(jobs, '关联背景', provider, tools, signal, undefined, request);
+
+const followUpJob = () => {
+  const item = job('a');
+  item.result = JSON.stringify({ replyDraft: '原结论', analysis: '已核对原任务', missingInfo: '' });
+  item.messages = [{ id: 'old', time: 1000, text: '原任务', senderId: 'ou_sender', senderName: '同事', mentions: [] } as unknown as InboxJob['messages'][number]];
+  item.analysisBasis = { messages: messageBasis(item.messages), attention: { state: 'needed', reason: '本人负责' } };
+  for (let i = 0; i < 9; i++) item.messages.push({ ...item.messages[0]!, id: `new_${i}`, text: `补充 ${i}` });
+  return item;
+};
+
+it('provides prior conclusions and every bounded addition, including additions outside the recent excerpt', async () => {
+  const request = vi.fn<typeof fetch>(async () => response([message([{ ...answer('a', 'needed'), followUp: 'unchanged' }])]));
+  await run(fixture().tools, request, [followUpJob()]);
+  const body = JSON.parse(String(request.mock.calls[0]![1]!.body));
+  const item = JSON.parse(body.input[0].content).items[0];
+  expect(item.previousAnalysis.analysis).toBe('已核对原任务'); expect(item.previousAnalysis.attention.state).toBe('needed');
+  expect(item.changes).toHaveLength(9); expect(item.changes[0].text).toBe('补充 0'); expect(item.messages).toHaveLength(6);
+  expect(body.instructions).toContain('不把“新增消息无关”误判为原问题已解决');
+});
+
+it.each([
+  { state: 'needed' }, { state: 'quiet' }, { state: 'quiet', followUp: 'reanalyze' },
+  { state: 'needed', followUp: 'resolved' }, { state: 'needed', followUp: 'invalid' },
+  { state: 'uncertain', followUp: 'unchanged' }, { state: 'retry', followUp: 'unchanged' },
+])('rejects unsafe incremental decisions: %j', fields => {
+  expect(() => parseTriageResult(JSON.stringify({ items: [{ ...answer('a'), ...fields }] }), [followUpJob()])).toThrow(InboxTriageResultError);
+});
+
+it.each([
+  { state: 'needed', followUp: 'unchanged' }, { state: 'needed', followUp: 'reanalyze' },
+  { state: 'quiet', followUp: 'resolved' }, { state: 'uncertain' }, { state: 'retry' },
+])('accepts explicit updates or preserves uncertainty and retry: %j', fields => {
+  const parsed = parseTriageResult(JSON.stringify({ items: [{ ...answer('a'), ...fields }] }), [followUpJob()]);
+  expect(parsed[0]?.state).toBe(fields.state === 'retry' ? 'pending' : fields.state);
+  expect(parsed[0]?.followUp).toBe(fields.followUp);
+});
+
+it('splits large follow-up batches without truncating additions or exceeding the tool context budget', async () => {
+  const pending = Array.from({ length: 5 }, (_, i) => {
+    const item = followUpJob(); item.id = String(i);
+    item.messages = [{ ...item.messages[1]!, text: '增'.repeat(100_000) }]; return item;
+  });
+  const visited: string[] = [];
+  while (pending.length) {
+    const batch = triageBatch(pending);
+    const request = vi.fn<typeof fetch>(async () => response([message(batch.map(j => ({ ...answer(j.id, 'needed'), followUp: 'unchanged' })))]));
+    await run(fixture().tools, request, batch);
+    const body = JSON.parse(String(request.mock.calls[0]![1]!.body));
+    expect(Buffer.byteLength(JSON.stringify(body.input))).toBeLessThan(600_000);
+    expect(JSON.parse(body.input[0].content).items[0].changes[0].text).toHaveLength(100_000);
+    visited.push(...batch.map(j => j.id)); pending.splice(0, batch.length);
+  }
+  expect(visited).toEqual(['0', '1', '2', '3', '4']);
+  expect(triageBatch(Array.from({ length: 51 }, (_, i) => job(String(i))))).toHaveLength(50);
+});
 
 it('advertises only read-only Lark functions, with the selected model and original provider', async () => {
   const f = fixture();

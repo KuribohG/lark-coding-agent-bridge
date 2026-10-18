@@ -91,11 +91,14 @@ it('does not let a late screening overwrite manual analysis of the same item', a
   await s.service.tick(); expect(s.analyses).toHaveLength(1); expect(s.io.deliver).toHaveBeenCalledTimes(1);
 });
 
-it('cancels obsolete analysis after a new message without aborting another screening', async () => {
+it('keeps analysis and unrelated screening running when a message is updated', async () => {
   const s = await setup(); const job = s.add('analysis', 'queued'); s.add('screening', 'waiting');
   await s.service.tick(); await vi.waitFor(() => expect(s.analyses).toHaveLength(1));
   vi.mocked(s.io.collect).mockResolvedValue([{ ...job.messages[0]!, text: '新的问题', time: 1_120_000 }]);
   s.advance(); await s.service.tick();
-  expect(s.analyses[0]!.signal.aborted).toBe(true); expect(s.screenings[0]!.signal.aborted).toBe(false);
-  expect(job.state).toBe('waiting'); expect(job.attention?.state).toBe('pending');
+  expect(s.analyses[0]!.signal.aborted).toBe(false); expect(s.screenings[0]!.signal.aborted).toBe(false);
+  expect(job.state).toBe('running'); expect(job.messages[0]?.text).toBe('新的问题');
+  s.analyses[0]!.resolve(result);
+  await vi.waitFor(() => expect(job.state).toBe('waiting'));
+  expect(job.replyDraft).toBe('已核实'); expect(job.attention?.state).toBe('pending');
 });

@@ -18,6 +18,7 @@ export interface Attention {
   /** Transient output preview; not a final decision and never persisted to the store. */
   progress?: { startedAt: number; updatedAt: number; text: string };
 }
+export type TriageDecision = Attention & { id: string; followUp?: 'unchanged' | 'reanalyze' | 'resolved' };
 export interface InboxJob {
   id: string;
   ownerOpenId: string;
@@ -50,6 +51,10 @@ export interface InboxJob {
   missingInfo?: string;
   draftEdited?: boolean;
   draftStale?: boolean;
+  /** Messages covered by the completed analysis or its last incremental review. */
+  analysisBasis?: { messages: Record<string, string>; attention: Attention };
+  /** Only an explicit process request releases a stopped or interrupted analysis. */
+  analysisPaused?: boolean;
   lastReviewRequestId?: string;
   /** Events from configured watchers use the same lifecycle as conversation jobs. */
   external?: {
@@ -84,7 +89,7 @@ export interface InboxIO {
   source(chatId: string): Promise<{ name: string; type: 'p2p' | 'group' }>;
   deliver(job: InboxJob, phase: 'pending' | 'progress' | 'result'): Promise<void>;
   beginAnalysis?(job: InboxJob, text: string): Promise<InboxConfig['destination']>;
-  triage?(jobs: InboxJob[], signal: AbortSignal, onProgress?: (updates: { id: string; text: string }[]) => void): Promise<(Attention & { id: string })[]>;
+  triage?(jobs: InboxJob[], signal: AbortSignal, onProgress?: (updates: { id: string; text: string }[]) => void): Promise<TriageDecision[]>;
   notifyAttention?(jobs: InboxJob[], id: string): Promise<void>;
   analyze(job: InboxJob, signal: AbortSignal): Promise<{ text: string; inputTokens: number; outputTokens: number }>;
 }

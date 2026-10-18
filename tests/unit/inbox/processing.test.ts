@@ -106,21 +106,13 @@ it('bounds unknown delivery retries without rerunning analysis or creating anoth
   expect(s.service.list()[0]?.error).toContain('投递未确认');
 });
 
-it.each(['off', 'handled', 'new-message'] as const)('keeps the topic but drops obsolete work when %s happens during creation', async action => {
+it.each(['off', 'handled'] as const)('keeps the topic but drops obsolete work when %s happens during creation', async action => {
   let finish!: (value: typeof topic) => void;
   const s = await setup({ beginAnalysis: vi.fn(() => new Promise<typeof topic>(resolve => { finish = resolve; })) });
   await s.service.tick(); await vi.waitFor(() => expect(finish).toBeDefined());
   const job = s.service.list()[0]!;
   if (action === 'off') await s.service.setMode('off');
   if (action === 'handled') await s.service.review({ id: job.id, revision: job.revision, handlingState: 'handled' }, 'ou_owner', 'handle');
-  if (action === 'new-message') {
-    vi.mocked(s.io.triage!).mockImplementation((_jobs, signal) => new Promise((_resolve, reject) => {
-      signal.addEventListener('abort', () => reject(Error('cancelled')), { once: true });
-    }));
-    const updated = { ...message, text: '有新信息，先不要沿用旧方案' };
-    vi.mocked(s.io.collect).mockResolvedValue([updated]); vi.mocked(s.io.context).mockResolvedValue([updated]);
-    s.advance(60_000); await s.service.tick();
-  }
   finish(topic); await vi.waitFor(() => expect(s.service.list()[0]?.analysisTopic).toEqual(topic));
   expect(s.io.analyze).not.toHaveBeenCalled(); expect(s.io.deliver).not.toHaveBeenCalled();
 });

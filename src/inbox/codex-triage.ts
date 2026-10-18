@@ -4,6 +4,7 @@ import { INBOX_TRIAGE_BATCH_SIZE } from './config';
 import type { InboxIO, InboxJob } from './types';
 import { InboxToolArgumentsError, obj } from './values';
 import { parseModelJson } from './model-json';
+import { analysisChanges, previousAnalysis } from './updates';
 
 export function chatTriageInstructions(jobs: InboxJob[]): string {
   return `你正在执行用户授权的自动关注筛选。所属用户 open_id=${jobs[0]?.ownerOpenId}。
@@ -13,15 +14,31 @@ ${ATTENTION_RULES}
 群聊且 directlyMentioned=false 时采用更高门槛：当前材料必须明确涉及 用户实际负责的系统/具体任务，或明确点名交办本人，才继续判断或回查。泛泛的网络、存储、性能、CI 失败、监控告警、其他团队日常讨论不构成关联，默认 quiet，也不要为了证明可能有关而扩散搜索。其他团队的机器告警在无明确本人交办/本人系统受影响证据时 quiet。仅出现用户关注的领域关键词仍不够，还必须有未解决且需要本人采取动作的事实；成功通知、一般讨论仍 quiet。没有个人关联的群消息不能用 uncertain 把负担交回用户。私聊或直接 @ 本人可结合明确请求判断，但也不能仅因 @ 就认定需要关注。
 查询工具失败、临时不可用或无法完成必要检索时，state=retry，交由程序自动重试；只有成功检索后仍缺少责任归属或具体事实时才用 uncertain。不能把查询失败等同于无需动作。初始证据充分时无需为了调用工具而查询。
 只做关注筛选，不深入解决问题或起草回复。reason 限 100 字以内，先写判断与需要的动作，再简述具体证据；不要复制长路径、主机地址或整段原文。回查过历史时注明时间或话题及发现，不声称未经实际查询的事实。needed 必须有具体动作和相关性证据，不能仅凭关键词或 @；high 仅用于明确紧急或数据安全风险。
-最终只输出 JSON：{"items":[{"id":"输入id","state":"needed|quiet|uncertain|retry","reason":"依据和动作","priority":"normal|high"}]}。必须覆盖每个输入 id，恰好一次。不加前言、结语或引用块。`;
+提供 previousAnalysis 和 changes 的事项已经完成分析，本次只核对新增/修改消息对已有结论的影响。先看已有结论及证据，再逐条比较 changes；需要时用只读工具补查。同群不同任务、无关报警或没有实质变化的重复消息应 followUp=unchanged，保留原事项的关注结论，不把“新增消息无关”误判为原问题已解决。只有新证据使原结论、建议、责任、风险或待办动作需要实质更新，或明确交办了新的相关动作时，才 followUp=reanalyze 且 state=needed。明确确认原问题已解决、撤回或不再需要本人动作时，followUp=resolved 且 state=quiet。判断必须同时考虑整个增量和已有分析，不能因任一无关消息漏掉其他有意义的变化；无法完成必要检索用 retry，事实仍不足用 uncertain。needed/quiet 的增量判断必须带 followUp；unchanged 的 state 沿用已有关注状态。禁止因为又收到一条消息或已有事项仍需要本人动作就重跑分析。
+最终只输出 JSON：{"items":[{"id":"输入id","state":"needed|quiet|uncertain|retry","reason":"依据和动作","priority":"normal|high","followUp":"unchanged|reanalyze|resolved"}]}。followUp 仅用于有 previousAnalysis 和 changes 的事项；普通首次筛选省略。必须覆盖每个输入 id，恰好一次。不加前言、结语或引用块。`;
 }
 
 function materials(jobs: InboxJob[], background: string): string {
   return JSON.stringify({ background: background.slice(0, 3000), items: jobs.map(job => ({ id: job.id, ownerOpenId: job.ownerOpenId,
     source: job.source, directlyMentioned: job.messages.some(m => m.mentions.includes(job.ownerOpenId)), excerpt: true, totalMessages: job.messages.length,
+    ...(job.result ? { previousAnalysis: previousAnalysis(job),
+      changes: analysisChanges(job).map(m => ({ id: m.id, time: new Date(m.time).toISOString(), senderId: m.senderId,
+        sender: m.senderName, bot: m.bot, mentions: m.mentions, parentId: m.parentId, threadId: m.threadId, text: m.text })) } : {}),
     messages: job.messages.slice(-6).map(m => ({ id: m.id, time: new Date(m.time).toISOString(), senderId: m.senderId,
       sender: m.senderName, bot: m.bot, mentions: m.mentions, parentId: m.parentId, threadId: m.threadId, text: m.text.slice(0, 500) })),
   })) });
+}
+
+/** Leave room for tool results when completed analyses make a batch much larger. */
+export function triageBatch(jobs: InboxJob[]): InboxJob[] {
+  const batch: InboxJob[] = [];
+  let bytes = 12_000;
+  for (const job of jobs.slice(0, INBOX_TRIAGE_BATCH_SIZE)) {
+    const size = Buffer.byteLength(JSON.stringify(materials([job], '')));
+    if (batch.length && bytes + size > 600_000) break;
+    batch.push(job); bytes += size;
+  }
+  return batch;
 }
 
 /** Store a useful error category without copying raw CLI stderr, tool output or credentials. */

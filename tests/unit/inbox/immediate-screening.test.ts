@@ -36,9 +36,9 @@ async function setup() {
       senderName: '同事', bot: false, time: now, position: String(messages.length + 1), text: `请确认 ${id}`, mentions: [], ...overrides };
     messages.push(message); return message;
   };
-  const complete = async (index: number, state: 'needed' | 'quiet') => {
+  const complete = async (index: number, state: 'needed' | 'quiet', followUp?: Decisions[number]['followUp']) => {
     const batch = batches[index]!;
-    batch.resolve(batch.jobs.map(j => ({ id: j.id, state, reason: '已核对' })));
+    batch.resolve(batch.jobs.map(j => ({ id: j.id, state, reason: '已核对', followUp })));
     await vi.waitFor(() => expect(service.list().some(j => j.attention?.progress)).toBe(false));
     // Progress is hidden as soon as an input becomes stale; also drain the result commit.
     await new Promise(resolve => setTimeout(resolve, 20));
@@ -130,7 +130,8 @@ it('reuses an in-flight announcement for the latest context and only launches on
   s.add('om_one'); await s.service.tick(); await s.complete(0, 'needed'); await s.service.tick();
   await vi.waitFor(() => expect(announce).toBeDefined());
   const announcementId = s.store.data.jobs[0]!.startDelivery!.id;
-  s.advance(); s.add('om_two'); s.add('om_three'); await s.service.tick(); await s.complete(1, 'needed');
+  s.advance(); s.add('om_two'); s.add('om_three'); await s.service.tick();
+  expect(s.batches).toHaveLength(1);
   expect(s.store.data.jobs[0]?.startDelivery?.id).toBe(announcementId);
   announce(); await vi.waitFor(() => expect(s.store.data.jobs[0]?.startDelivery?.confirmed).toBe(true));
   await vi.waitFor(async () => { await s.service.tick(); expect(s.io.analyze).toHaveBeenCalledTimes(1); });
@@ -156,23 +157,27 @@ it('keeps an unconfirmed announcement id and retry deadline across new messages'
   expect(vi.mocked(s.io.analyze).mock.calls[0]![0].messages).toHaveLength(2);
 });
 
-it('waits for cancelled analysis to exit, discards its late output and analyzes only the latest burst', async () => {
+it('finishes the current analysis then reviews a burst once before supplemental analysis', async () => {
   const s = await setup(); let finishOld!: () => void;
   vi.mocked(s.io.analyze).mockImplementationOnce(() => new Promise(resolve => {
-    finishOld = () => resolve({ text: '{"replyDraft":"过时的回复"}', inputTokens: 1, outputTokens: 1 });
+    finishOld = () => resolve({ text: '{"replyDraft":"第一轮回复","analysis":"已有证据","missingInfo":""}', inputTokens: 1, outputTokens: 1 });
   }));
   s.add('om_one'); await s.service.tick(); await s.complete(0, 'needed'); await s.service.tick();
   await vi.waitFor(() => expect(finishOld).toBeDefined());
   s.advance(); s.add('om_two'); await s.service.tick();
-  expect(vi.mocked(s.io.analyze).mock.calls[0]![1].aborted).toBe(true);
-  s.advance(); s.add('om_three'); await s.service.tick(); await s.complete(1, 'needed');
-  // The second screening also became stale; only its successor can queue the latest analysis.
-  await s.service.tick(); await s.complete(2, 'needed'); await s.service.tick();
+  expect(vi.mocked(s.io.analyze).mock.calls[0]![1].aborted).toBe(false);
+  s.advance(); s.add('om_three'); await s.service.tick();
+  expect(s.batches).toHaveLength(1);
   expect(s.io.analyze).toHaveBeenCalledTimes(1);
   finishOld();
+  await vi.waitFor(() => expect(s.batches).toHaveLength(2));
+  expect(s.batches[1]!.jobs[0]).toMatchObject({ replyDraft: '第一轮回复', analysis: '已有证据', draftStale: true });
+  expect(s.io.deliver).not.toHaveBeenCalled();
+  await s.complete(1, 'needed', 'reanalyze');
   await vi.waitFor(async () => { await s.service.tick(); expect(s.io.analyze).toHaveBeenCalledTimes(2); });
   await vi.waitFor(() => expect(s.store.data.jobs[0]?.replyDraft).toBe('已核对'));
   expect(vi.mocked(s.io.analyze).mock.calls[1]![0].messages).toHaveLength(3);
+  expect(vi.mocked(s.io.analyze).mock.calls[1]![0].analysis).toBe('已有证据');
   await s.service.tick();
   expect(s.store.data.jobs).toHaveLength(1); expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1);
   expect(s.io.deliver).toHaveBeenCalledTimes(1);

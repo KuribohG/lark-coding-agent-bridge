@@ -1,4 +1,5 @@
-import type { Attention, InboxJob } from './types';
+import type { Attention, InboxJob, TriageDecision } from './types';
+import { validFollowUp } from './updates';
 import { obj } from './values';
 import { parseModelJson } from './model-json';
 import type { ResponsesModelService as AnalysisProvider } from '../model-service/service';
@@ -135,7 +136,6 @@ export function triagePreviews(text: string, ids: Set<string>): { id: string; te
   });
 }
 
-type TriageDecision = Attention & { id: string };
 export class InboxTriageResultError extends Error {
   constructor(message: string, readonly validItems: TriageDecision[] = []) { super(message); }
 }
@@ -162,7 +162,11 @@ export function parseTriageResult(text: string, jobs: InboxJob[]): TriageDecisio
       typeof item.state !== 'string' || !['needed', 'quiet', 'uncertain', 'retry'].includes(item.state) ||
       typeof item.reason !== 'string' || !item.reason.trim() ||
       typeof priority !== 'string' || !['normal', 'high'].includes(priority)) continue;
-    valid.push({ id: item.id, state: item.state === 'retry' ? 'pending' : item.state as Attention['state'], reason: item.reason.slice(0, 180), priority: priority as Attention['priority'] });
+    if (item.followUp !== undefined && !['unchanged', 'reanalyze', 'resolved'].includes(String(item.followUp))) continue;
+    const decision: TriageDecision = { id: item.id, state: item.state === 'retry' ? 'pending' : item.state as Attention['state'],
+      reason: item.reason.slice(0, 180), priority: priority as Attention['priority'],
+      ...(item.followUp === undefined ? {} : { followUp: item.followUp as TriageDecision['followUp'] }) };
+    if (validFollowUp(jobs.find(job => job.id === item.id)!, decision)) valid.push(decision);
   }
   if (valid.length !== jobs.length || parsed.items.length !== jobs.length) {
     const issue = [...counts.values()].some(count => count > 1) ? '事项 ID 重复' :
