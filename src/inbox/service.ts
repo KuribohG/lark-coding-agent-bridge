@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { log } from '../core/logger';
 import { analysisFailureReason } from './analysis-error';
-import { INBOX_TRIAGE_BATCH_SIZE, inboxMode, intakeScope, type IntakeScope, type InboxConfig, type InboxMode } from './config';
+import { INBOX_MIN_POLL_SECONDS, INBOX_TRIAGE_BATCH_SIZE, inboxMode, intakeScope, type IntakeScope, type InboxConfig, type InboxMode } from './config';
 import { InboxStore } from './store';
 import { handlingState, replyContent, resultText } from './reply';
 import { triageFailureReason } from './codex-triage';
@@ -43,6 +43,7 @@ export class InboxService {
   private lastPoll = 0;
   private pollRetryAt = 0;
   private polling?: Promise<void>;
+  private ticking?: Promise<void>;
   private intakeGeneration = 0;
   private triageProgress = new Map<string, { signature: string; progress: NonNullable<Attention['progress']> }>();
   lastError?: string;
@@ -70,7 +71,7 @@ export class InboxService {
     }
     for (const kind of ['p2p', 'mention', 'group']) this.store.data.cursors[kind] ??= this.now();
     await this.setMode(inboxMode(this.config));
-    this.timer = setInterval(() => void this.tick().catch(() => {}), 5000);
+    this.timer = setInterval(() => void this.tick().catch(() => {}), INBOX_MIN_POLL_SECONDS * 1000);
     this.timer.unref();
   }
   async close(): Promise<void> {
@@ -80,6 +81,7 @@ export class InboxService {
     this.io.cancel?.();
     await Promise.all(Object.values(this.tasks).map(task => task.done));
     await this.polling;
+    await this.ticking;
     await this.chain;
   }
   list(limit = 100): InboxJob[] {
@@ -383,7 +385,11 @@ export class InboxService {
       }
     }
   }
-  async tick(): Promise<void> {
+  tick(): Promise<void> {
+    // Coalesce the whole tick so slow IO cannot queue duplicate maintenance work.
+    return this.ticking ??= this.runTick().finally(() => { this.ticking = undefined; });
+  }
+  private async runTick(): Promise<void> {
     if (this.blocked()) return;
     if (!this.polling) this.polling = this.poll().finally(() => { this.polling = undefined; });
     await this.polling;

@@ -4,7 +4,7 @@ export const intakeScope = (c: Pick<InboxConfig, 'intakeScope' | 'watchPrivate' 
 export type InboxMode = 'off' | 'on';
 export const INBOX_TRIAGE_BATCH_SIZE = 50;
 export const INBOX_DAILY_TRIAGE_LIMIT = 1_000_000;
-export const INBOX_MIN_POLL_SECONDS = 5;
+export const INBOX_MIN_POLL_SECONDS = 1;
 export const inboxMode = (config: Pick<InboxConfig, 'enabled' | 'autoAnalyze'>): InboxMode =>
   config.enabled ? 'on' : 'off';
 

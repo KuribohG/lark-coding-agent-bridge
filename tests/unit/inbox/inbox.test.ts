@@ -18,7 +18,7 @@ const config = () => normalizeInbox({ enabled: true, executorProfile: 'codex', o
 const message = (overrides: Partial<InboxMessage> = {}): InboxMessage => ({ id: 'om_source', chatId: 'oc_source', chatName: '源会话', chatType: 'p2p',
   senderId: 'ou_sender', senderName: '发送者', bot: false, time: 1_000_000, text: '请帮我确认发布日期', mentions: [], ...overrides });
 const services: InboxService[] = [];
-afterEach(async () => { await Promise.all(services.splice(0).map(s => s.close())); });
+afterEach(async () => { await Promise.all(services.splice(0).map(s => s.close())); vi.useRealTimers(); });
 async function setup(overrides: Partial<InboxIO> = {}) {
   let now = 1_000_000;
   const io: InboxIO = { checkOwner: vi.fn(async () => {}), collect: vi.fn(async kind => kind === 'p2p' ? [message()] : []),
@@ -42,45 +42,99 @@ it.each([
 });
 
 describe('durable inbox', () => {
-  it('collects fresh messages at five-second intervals while deduplicating the overlap', async () => {
+  it('automatically collects on the one-second scheduler', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const s = await setup(); s.advance(1000);
+    await vi.advanceTimersByTimeAsync(999); expect(s.io.collect).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await vi.waitFor(() => expect(s.io.collect).toHaveBeenCalledTimes(2));
+    await s.service.tick();
+    s.advance(1000); await vi.advanceTimersByTimeAsync(1000);
+    await vi.waitFor(() => expect(s.io.collect).toHaveBeenCalledTimes(4));
+  });
+  it('collects fresh messages at one-second intervals while deduplicating the overlap', async () => {
     const s = await setup(); await s.service.tick();
     expect(s.io.collect).toHaveBeenCalledTimes(2);
-    s.advance(4999); await s.service.tick();
+    s.advance(999); await s.service.tick();
     expect(s.io.collect).toHaveBeenCalledTimes(2);
     vi.mocked(s.io.collect).mockImplementation(async kind => kind === 'p2p'
-      ? [message(), message({ id: 'om_new', time: 1_005_000 })] : []);
+      ? [message(), message({ id: 'om_new', time: 1_001_000 })] : []);
     s.advance(1); await s.service.tick();
     expect(s.io.collect).toHaveBeenCalledTimes(4);
-    expect(s.io.collect).toHaveBeenLastCalledWith('mention', 700_000, 1_005_000);
+    expect(s.io.collect).toHaveBeenLastCalledWith('mention', 700_000, 1_001_000);
     expect(s.store.data.jobs.flatMap(j => j.messages).map(m => m.id)).toEqual(['om_source', 'om_new']);
     expect(s.io.analyze).not.toHaveBeenCalled();
   });
   it('shares a slow collection across ticks instead of starting overlapping requests', async () => {
     let finish!: (messages: InboxMessage[]) => void;
     const s = await setup();
+    const save = vi.spyOn(s.store, 'save');
     vi.mocked(s.io.collect).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
     const first = s.service.tick(); await vi.waitFor(() => expect(finish).toBeDefined());
-    s.advance(5000); const second = s.service.tick();
-    s.advance(5000); const third = s.service.tick();
+    s.advance(1000); const second = s.service.tick();
+    s.advance(1000); const third = s.service.tick();
     try { expect(s.io.collect).toHaveBeenCalledTimes(1); }
     finally { finish([message()]); await Promise.all([first, second, third]); }
     expect(s.io.collect).toHaveBeenCalledTimes(2);
+    expect(save).toHaveBeenCalledTimes(3);
     expect(s.service.list()).toHaveLength(1);
   });
-  it('backs off failed collection for a minute and resumes five-second polls after recovery', async () => {
+  it('backs off failed collection for a minute and resumes one-second polls after recovery', async () => {
     const s = await setup();
     vi.mocked(s.io.collect).mockRejectedValueOnce(new Error('rate limited'));
     await s.service.tick();
     expect(s.service.lastError).toBe('rate limited');
     expect(s.store.data.cursors.p2p).toBe(1_000_000);
-    for (let i = 0; i < 11; i++) { s.advance(5000); await s.service.tick(); }
+    for (let i = 0; i < 59; i++) { s.advance(1000); await s.service.tick(); }
     expect(s.io.collect).toHaveBeenCalledTimes(1);
-    s.advance(5000); await s.service.tick();
+    s.advance(1000); await s.service.tick();
     expect(s.io.collect).toHaveBeenCalledTimes(3);
     expect(s.service.lastError).toBeUndefined();
     expect(s.store.data.cursors.p2p).toBe(1_060_000);
-    s.advance(5000); await s.service.tick();
+    s.advance(1000); await s.service.tick();
     expect(s.io.collect).toHaveBeenCalledTimes(5);
+  });
+  it('picks up a late-indexed message from the five-minute overlap without duplicating history', async () => {
+    const s = await setup(); await s.service.tick();
+    vi.mocked(s.io.collect).mockImplementation(async kind => kind === 'p2p'
+      ? [message({ id: 'om_late', time: 760_000 }), message()] : []);
+    s.advance(1000); await s.service.tick();
+    expect(s.io.collect).toHaveBeenCalledWith('p2p', 700_000, 1_001_000);
+    s.advance(1000); await s.service.tick();
+    expect(s.service.list()).toHaveLength(1);
+    expect(s.service.list()[0]?.messages.map(m => m.id)).toEqual(['om_late', 'om_source']);
+  });
+  it('still expands analysis context fifteen minutes before the first message', async () => {
+    const s = await setup(); await s.service.tick();
+    vi.mocked(s.io.context).mockResolvedValue([message({ id: 'om_history', time: 200_000 }), message()]);
+    await s.service.decide(s.service.list()[0]!.id, 'process', 'ou_owner');
+    s.advance(1000); await s.service.tick();
+    await vi.waitFor(() => expect(s.io.analyze).toHaveBeenCalledTimes(1));
+    expect(s.io.context).toHaveBeenLastCalledWith('oc_source', 100_000, 1_001_000);
+    expect(vi.mocked(s.io.analyze).mock.calls[0]![0].messages.map(m => m.id)).toEqual(['om_history', 'om_source']);
+  });
+  it('preserves the cursor after a failed page and ingests all pages on retry', async () => {
+    const raw = (id: string, time: number) => ({ message_id: id, chat_id: 'oc_source', chat_name: '源会话', chat_type: 'p2p',
+      sender: { id: 'ou_sender', name: '发送者', sender_type: 'user' }, create_time: new Date(time).toISOString(), content: '请确认' });
+    const page = (messages: unknown[], hasMore: boolean) => ({ code: 0, stderr: '', timedOut: false,
+      stdout: JSON.stringify({ ok: true, data: { messages, has_more: hasMore, page_token: hasMore ? 'page-two' : '' } }) });
+    const firstPage = page([raw('om_page_one', 950_000)], true);
+    const secondPage = page([raw('om_page_two', 960_000)], false);
+    const exec = vi.fn(async (_args: string[]) => secondPage).mockResolvedValueOnce(firstPage)
+      .mockResolvedValueOnce({ code: 1, stderr: '', timedOut: false, stdout: '{"ok":false}' }).mockResolvedValueOnce(firstPage);
+    const lark = new InboxLark({ profile: 'codex' }, config(), exec);
+    const s = await setup({ collect: vi.fn(async (kind, start, end) => kind === 'p2p' ? lark.collect(kind, start, end) : []),
+      context: vi.fn(async () => []) });
+    try {
+      await s.service.tick();
+      expect(s.service.list()).toHaveLength(0);
+      expect(s.store.data.cursors.p2p).toBe(1_000_000);
+      s.advance(60_000); await s.service.tick();
+      expect(s.store.data.cursors.p2p).toBe(1_060_000);
+      expect(s.service.list()[0]?.messages.map(m => m.id)).toEqual(['om_page_one', 'om_page_two']);
+      expect(exec.mock.calls[1]![0]).toEqual(expect.arrayContaining(['--page-token', 'page-two']));
+      expect(exec.mock.calls[3]![0]).toEqual(expect.arrayContaining(['--page-token', 'page-two']));
+    } finally { lark.close(); }
   });
   it('never starts deep analysis or pending notifications without a click, even after hours', async () => {
     const { service, io, advance } = await setup(); await service.tick();
