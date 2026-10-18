@@ -212,8 +212,8 @@ export function configFormCard(opts: ConfigFormOpts): object {
               tag: 'markdown',
               content:
                 '\n**COT 过程消息**\n' +
-                '_关闭:只发送最终回复_\n' +
-                '_简略:展示 agent 过程文本和工具摘要_\n' +
+                '_关闭:使用普通进度显示_\n' +
+                '_简略(默认):使用飞书原生 COT 展示 agent 过程文本和工具摘要_\n' +
                 '_详细:额外展示工具参数和输出摘要_',
             },
             {
@@ -222,7 +222,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
               initial_option: opts.cotMessages,
               options: [
                 { text: { tag: 'plain_text', content: '关闭' }, value: 'off' },
-                { text: { tag: 'plain_text', content: '简略' }, value: 'brief' },
+                { text: { tag: 'plain_text', content: '简略(默认)' }, value: 'brief' },
                 { text: { tag: 'plain_text', content: '详细' }, value: 'detailed' },
               ],
             },

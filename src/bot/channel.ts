@@ -1224,7 +1224,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       let producerStarted = false;
       let markdownCtrl: { setContent(markdown: string): Promise<void> } | undefined;
       let renderDone!: Promise<RunState>;
-      let degradedNotice: Promise<void> | undefined;
       const progress = createLazyProgressStream(scope, 'markdown', () =>
         channel.stream(chatId, {
           markdown: async (ctrl) => {
@@ -1249,8 +1248,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         inputPreview: lastMsg.content,
         onDegraded: (reason) => {
           // Switch while the run is active, even if it is silent during backoff.
-          degradedNotice = sendCotDegradedNotice({ channel, chatId, scope, sendOpts, reason,
-            running: latestState.terminal === 'running' });
+          log.warn('cot', 'degraded', { scope, reason, replyInThread: sendOpts.replyInThread === true });
           if (latestState.terminal === 'running') progress.ensureOpen();
         },
       });
@@ -1287,7 +1285,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         const finalState = await renderDone;
         await cotDone;
         await progressDone;
-        await degradedNotice;
         await recallIfEmptyStreamedReply(channel, progress, filterForPrefs(finalState), scope);
         await sendFinalReply({
           channel,
@@ -1301,6 +1298,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         return;
       }
       log.warn('cot', 'fallback-existing-reply', { reason: 'create-disabled' });
+      await sendCotCreateFailedNotice({ channel, chatId, scope, sendOpts });
     }
 
     if (replyMode === 'card') {
@@ -1680,29 +1678,20 @@ function requireMessageReceipt(result: { messageId?: string }, type: string): vo
   }
 }
 
-async function sendCotDegradedNotice(input: {
+async function sendCotCreateFailedNotice(input: {
   channel: LarkChannel;
   chatId: string;
   scope: string;
   sendOpts: { replyTo: string; replyInThread?: boolean };
-  reason: string;
-  running: boolean;
 }): Promise<void> {
-  log.warn('cot', 'degraded', {
-    scope: input.scope,
-    reason: input.reason,
-    replyInThread: input.sendOpts.replyInThread === true,
-  });
   try {
     await input.channel.send(
       input.chatId,
-      { markdown: input.running
-        ? '过程消息更新中断，任务仍在执行。正在切换进度显示，最终答复会单独发送。'
-        : '过程消息更新中断，最终答复会单独发送。' },
+      { markdown: '原生 COT 过程消息创建失败，已异常回退为普通进度显示。任务仍会继续，最终答复会单独发送；请检查 Bridge 日志排查原因。' },
       input.sendOpts,
     );
   } catch (err) {
-    log.warn('cot', 'degraded-notice-failed', {
+    log.warn('cot', 'create-failed-notice-failed', {
       scope: input.scope,
       err: err instanceof Error ? err.message : String(err),
     });

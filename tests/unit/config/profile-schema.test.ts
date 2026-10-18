@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { getCotMessages } from '../../../src/config/schema';
 import {
   accessToClaudePermissionMode,
   clampAccess,
@@ -16,6 +17,20 @@ const app = {
 };
 
 describe('profile schema', () => {
+  it.each(['claude', 'codex'] as const)('defaults %s process display to brief native COT', (agentKind) => {
+    const cfg = createDefaultProfileConfig({ agentKind, accounts: { app }, codex: { binaryPath: 'codex' } });
+    expect(getCotMessages(cfg)).toBe('brief');
+    expect(getCotMessages(normalizeProfileConfig(JSON.parse(JSON.stringify(cfg))))).toBe('brief');
+  });
+
+  it.each([
+    ['off', 'off'], ['brief', 'brief'], ['simple', 'brief'],
+    ['detailed', 'detailed'], ['on', 'detailed'],
+  ] as const)('preserves the COT preference %s as %s', (cotMessages, expected) => {
+    const cfg = createDefaultProfileConfig({ agentKind: 'claude', accounts: { app }, preferences: { cotMessages } });
+    expect(getCotMessages(cfg)).toBe(expected);
+  });
+
   it('defaults Claude sandbox to danger-full-access through canonical permissions', () => {
     const cfg = createDefaultProfileConfig({
       agentKind: 'claude',

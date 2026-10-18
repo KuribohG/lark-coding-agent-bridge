@@ -159,7 +159,7 @@ export function ConfigView({ profile }: { profile: string }) {
             onChange={(v) => set("showToolCalls", v)} />
           <Field label="COT 过程消息">
             <SelectRow value={cfg.cotMessages} onChange={(v) => set("cotMessages", v as ConfigData["cotMessages"])}
-              options={[["off", "关闭"], ["brief", "简略"], ["detailed", "详细"]]} />
+              options={[["off", "关闭"], ["brief", "简略（默认）"], ["detailed", "详细"]]} />
           </Field>
           <div className="grid grid-cols-2 gap-4">
             <Field label="并发上限（1-50）">

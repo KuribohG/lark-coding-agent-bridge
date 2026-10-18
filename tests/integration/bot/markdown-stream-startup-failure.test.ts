@@ -83,7 +83,75 @@ afterEach(async () => {
 });
 
 describe('markdown stream startup failures', () => {
-  it.each([false, true])('reports COT failure during backoff and preserves retry execution (fallback fails: %s)', async failFallback => {
+  it('uses native COT by default and sends the final answer separately', async () => {
+    const create = vi.spyOn(CotClient.prototype, 'create').mockResolvedValue({ cot_id: 'cot_test', message_id: 'om_cot' });
+    const update = vi.spyOn(CotClient.prototype, 'update').mockResolvedValue(undefined);
+    vi.spyOn(CotClient.prototype, 'complete').mockResolvedValue(undefined);
+    const stream = vi.fn(async () => {});
+    const h = await createHarness({ stream, events: [
+      { type: 'text', delta: 'COT_PROGRESS' },
+      { type: 'tool_use', id: 'tool_1', name: 'Bash', input: { command: 'pwd' } },
+      { type: 'tool_result', id: 'tool_1', output: '/workspace', isError: false },
+      { type: 'final_text', content: 'FINAL_WITH_COT' },
+      { type: 'done', terminationReason: 'normal' },
+    ] });
+    delete h.profileConfig.preferences.cotMessages;
+    await startTestBridge(h);
+    await h.channel.handlers.message?.(message('om_default_cot', 'run'));
+    await waitFor(() => h.channel.sent.length === 1);
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledWith('oc_dm', 'om_default_cot');
+    const events = update.mock.calls.flatMap(call => call[1]);
+    expect(JSON.stringify(events)).toContain('COT_PROGRESS');
+    expect(events.some(event => event.event_type === 'TOOL_CALL_START')).toBe(true);
+    expect(events.some(event => event.event_type === 'TOOL_CALL_ARGS')).toBe(false);
+    expect(stream).not.toHaveBeenCalled();
+    expect(lastMarkdown(h.channel)).toContain('FINAL_WITH_COT');
+  });
+
+  it.each(['rejected', 'missing-ids', 'notice-failed'] as const)('notifies once on initial COT creation failure and preserves the final answer (%s)', async failure => {
+    const create = vi.spyOn(CotClient.prototype, 'create');
+    if (failure === 'missing-ids') create.mockResolvedValue({});
+    else create.mockRejectedValue(new Error('fetch failed'));
+    const update = vi.spyOn(CotClient.prototype, 'update');
+    const visible: string[] = [];
+    const h = await createHarness({
+      events: [
+        { type: 'text', delta: 'FALLBACK_PROGRESS' },
+        { type: 'final_text', content: 'FINAL_AFTER_CREATE_FAILURE' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+      send: async (_chatId, content) => {
+        if (failure === 'notice-failed' && JSON.stringify(content).includes('COT 过程消息创建失败')) {
+          throw new Error('notice delivery failed');
+        }
+        return { messageId: 'om_sent' };
+      },
+      stream: async (_chatId, input) => {
+        await (input as { markdown(ctrl: { setContent(value: string): Promise<void> }): Promise<void> })
+          .markdown({ setContent: async value => { visible.push(value); } });
+      },
+    });
+    delete h.profileConfig.preferences.cotMessages;
+    h.profileConfig.access.allowedChats = ['oc_topic'];
+    await startTestBridge(h);
+    await h.channel.handlers.message?.({ ...message('om_create_failure', 'run'),
+      chatType: 'group', chatId: 'oc_topic', mentionedBot: true, threadId: 'omt_test' });
+    await waitFor(() => h.channel.sent.some(m => JSON.stringify(m.content).includes('FINAL_AFTER_CREATE_FAILURE')));
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(update).not.toHaveBeenCalled();
+    const notices = h.channel.sent.filter(m => JSON.stringify(m.content).includes('COT 过程消息创建失败'));
+    expect(notices).toHaveLength(1);
+    expect(JSON.stringify(notices[0]?.content)).toContain('异常回退');
+    expect(notices[0]?.options).toMatchObject({ replyTo: 'om_create_failure', replyInThread: true });
+    expect(visible.join('\n')).toContain('FALLBACK_PROGRESS');
+    expect(lastMarkdown(h.channel)).toContain('FINAL_AFTER_CREATE_FAILURE');
+    expect(h.agent.runs[0]?.stopped).toBe(false);
+  });
+
+  it.each([false, true])('silently falls back on COT update failure during backoff and preserves retry execution (fallback fails: %s)', async failFallback => {
     vi.spyOn(CotClient.prototype, 'create').mockResolvedValue({ cot_id: 'cot_test', message_id: 'om_cot' });
     vi.spyOn(CotClient.prototype, 'update').mockRejectedValue(new Error('COT update timed out'));
     vi.spyOn(CotClient.prototype, 'complete').mockResolvedValue(undefined);
@@ -117,10 +185,8 @@ describe('markdown stream startup failures', () => {
     await startTestBridge(h);
     await h.channel.handlers.message?.(message('om_retry_visibility', 'run'));
     try {
-      // The degradation must be visible while the agent is still silent.
-      await waitFor(() => h.channel.sent.some(m => JSON.stringify(m.content).includes('过程消息更新中断')));
-      expect(JSON.stringify(h.channel.sent)).not.toContain('FINAL_AFTER_RETRY');
       await waitFor(() => streams.length === 1);
+      expect(h.channel.sent).toHaveLength(0);
       expect(streams[0]).toMatchObject({ replyTo: 'om_retry_visibility' });
       if (!failFallback) expect(visible.join('\n')).toContain('60 秒后自动重试（2/3）');
       resumed.resolve(undefined);
@@ -130,7 +196,7 @@ describe('markdown stream startup failures', () => {
       }
       finished.resolve(undefined);
       await waitFor(() => h.channel.sent.some(m => JSON.stringify(m.content).includes('FINAL_AFTER_RETRY')));
-      expect(h.channel.sent.filter(m => JSON.stringify(m.content).includes('过程消息更新中断'))).toHaveLength(1);
+      expect(h.channel.sent).toHaveLength(1);
       expect(h.channel.sent.filter(m => JSON.stringify(m.content).includes('FINAL_AFTER_RETRY'))).toHaveLength(1);
       expect(visible.join('\n')).not.toContain('FINAL_AFTER_RETRY');
       expect(h.agent.runs[0]?.stopped).toBe(false);
@@ -308,7 +374,8 @@ describe('markdown stream startup failures', () => {
     expect(h.channel.sent[0]?.options).toMatchObject({ replyTo: 'om_final' });
   });
 
-  it('opens no progress stream for a final-only round', async () => {
+  it('opens no progress stream or COT for a final-only round with COT explicitly off', async () => {
+    const createCot = vi.spyOn(CotClient.prototype, 'create');
     // The regression this guards: Codex answering without any commentary. The
     // SDK sends its streaming card as soon as `stream()` is called and finishes
     // an empty one with "(no content)", so the user saw that placeholder for a
@@ -331,6 +398,7 @@ describe('markdown stream startup failures', () => {
     await new Promise((resolve) => setTimeout(resolve, 80));
 
     expect(streamCalls).toHaveLength(0);
+    expect(createCot).not.toHaveBeenCalled();
     expect(h.channel.sent).toHaveLength(1);
     expect(lastMarkdown(h.channel)).toContain('FINAL_ONLY_SENTINEL');
   });
@@ -570,7 +638,10 @@ async function createHarness(options: {
     codex: {
       binaryPath: '/usr/local/bin/codex',
     },
-    ...(options.messageReply ? { preferences: { messageReply: options.messageReply, messageReplyMigrated: true } } : {}),
+    preferences: {
+      cotMessages: 'off',
+      ...(options.messageReply ? { messageReply: options.messageReply, messageReplyMigrated: true } : {}),
+    },
   });
   const profileConfig = {
     ...baseProfileConfig,

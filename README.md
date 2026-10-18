@@ -29,7 +29,7 @@ See the [deployment guide](docs/self-contained.md) for prerequisites, SSH forwar
 
 - Forwards Feishu / Lark messages to local Claude Code or Codex CLI. Send a DM directly, or `@bot` in a group.
 - **Streaming card**: text replies and tool calls update on one Lark card in real time.
-- **COT process messages**: optionally send a process message with agent progress text and tool calls, then send the final answer separately.
+- **COT process messages**: use the native Feishu/Lark COT control by default for agent progress text and tool summaries, then send the final answer separately.
 - **Session continuity**: each chat, topic, or document comment thread keeps its own session.
 - **Queueing and batching**: messages sent in quick succession are handled together; with Codex app-server or Claude Code streaming input, plain text sent during a run is appended to the active task and acknowledged; other input is queued for the next turn, while commands like `/new`, `/cd`, `/ws use`, and `/stop` can interrupt the current task.
 - **Multiple workspaces**: use `/cd` to switch the current project, and `/ws` to save and reuse common project directories.
@@ -277,7 +277,9 @@ Tasks are persisted in `profiles/<profile>/timed-runs.json`. A started task cann
 
 - **Message reply mode**: `message card` streams the final reply; `plain text` sends once after the run finishes.
 - **Tool-call display**: controls whether tool blocks appear in the final card / markdown reply.
-- **COT process message**: `off` sends only the final reply; `brief` first sends a COT message with agent progress text and tool summaries; `detailed` also includes tool args and truncated output.
+- **COT process message**: `brief` is the default and uses the native Feishu/Lark COT control for agent progress text and tool summaries without manual setup; `detailed` also includes tool args and truncated output; `off` uses ordinary progress display. Explicit preferences are preserved; older profiles without this setting also use `brief`.
+
+If the initial COT creation fails, the bridge sends one notice that the run has fallen back to ordinary progress display. Update failures after successful creation switch progress display without an extra notice. The final answer is still sent separately.
 
 When COT is enabled, the bridge splits the process view and final answer into two messages. The COT message is for tracing what the agent did; the final answer is still generated from the agent's raw text, without heuristic bridge-side filtering. If an agent emits final-answer text as ordinary stream text, that text can also appear in the COT process message.
 

@@ -239,6 +239,7 @@ async function createHarness(): Promise<{
   const workspace = await realpath(tmp.workspace);
   const baseProfileConfig = createDefaultProfileConfig({
     agentKind: 'claude',
+    preferences: { cotMessages: 'off' },
     accounts: {
       app: {
         id: 'cli_test',
