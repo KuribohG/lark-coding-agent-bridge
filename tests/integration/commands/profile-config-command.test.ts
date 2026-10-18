@@ -15,6 +15,7 @@ import { runtimeProfileConfig } from '../../../src/config/profile-store';
 import { getMessageReplyMode, getRequireMentionInGroup, secretKeyForApp } from '../../../src/config/schema';
 import { SessionStore } from '../../../src/session/store';
 import { WorkspaceStore } from '../../../src/workspace/store';
+import { applyConfig, loadProfileState } from '../../../src/ui/api';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
 import { createFakeChannel } from '../../helpers/fake-channel';
 
@@ -54,6 +55,36 @@ afterEach(async () => {
 });
 
 describe('profile-aware account and config commands', () => {
+  it('applies equivalent card and web settings through the same validation and identity policy', async () => {
+    vi.useFakeTimers();
+    const card = await createHarness();
+    const web = await createHarness();
+    await card.command('/config submit', {
+      model_pick: '__manual__', model: 'private/custom-model', reasoning_effort: 'high',
+      message_reply: 'text', show_tool_calls: 'hide', cot_messages: 'on',
+      max_concurrent_runs: '99', run_idle_timeout_minutes: '0', require_mention_in_group: 'no',
+      deploy_mode: 'team', lark_cli_identity: 'user-default',
+    });
+    await applyConfig({
+      ...await loadProfileState('claude', web.rootDir),
+      async refreshOwner() {}, async restart() {},
+    }, {
+      model: 'private/custom-model', reasoningEffort: 'high', messageReply: 'text',
+      showToolCalls: false, cotMessages: 'detailed', maxConcurrentRuns: 99,
+      runIdleTimeoutMinutes: 0, requireMentionInGroup: false, mode: 'team', larkCliIdentity: 'user-default',
+    });
+    const cardRoot = await waitForRoot(card.rootDir, root => root.profiles.claude?.mode === 'team');
+    const webRoot = await readRoot(web.rootDir);
+    const actual = cardRoot.profiles.claude!;
+    const expected = webRoot.profiles.claude!;
+    expect(actual.preferences).toEqual(expected.preferences);
+    expect(actual.access).toEqual(expected.access);
+    expect(actual.larkCli.identityPreset).toBe(expected.larkCli.identityPreset);
+    expect(actual.preferences.maxConcurrentRuns).toBe(50);
+    expect(actual.preferences.runIdleTimeoutMinutes).toBe(0);
+    await vi.advanceTimersByTimeAsync(1000);
+  });
+
   it('saves /config submit into the active v2 profile without flattening root config', async () => {
     vi.useFakeTimers();
     const h = await createHarness();

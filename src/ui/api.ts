@@ -1,49 +1,44 @@
-import { parseEffort, resolveModelSettings, availableEfforts } from '../agent/model-settings';
+import { applyPreferencesChange,preparePreferencesChange,PreferencesApplyError,PreferencesValidationError } from '../config/preferences';
+import { availableEfforts } from '../agent/model-settings';
 import { modelEnvironment } from '../runtime/model-settings';
 import type { LarkChannel } from '@larksuite/channel';
 import { fetchKnownChats } from '../bot/lark-info';
 import {
-  ADD_BOT_SCOPES,
-  addBotToChat,
-  completeDeviceLogin,
-  getUserAuthStatus,
-  hasScope,
-  listUserChats,
-  searchUserChats,
-  startDeviceLogin,
-  type AddBotResult,
+ADD_BOT_SCOPES,
+addBotToChat,
+completeDeviceLogin,
+getUserAuthStatus,
+hasScope,
+listUserChats,
+searchUserChats,
+startDeviceLogin,
+type AddBotResult,
 } from '../lark-cli/user-im';
 import { isMeetingNo } from '../meeting/api';
-import { checkMeetingPreflight, type MeetingPreflight } from '../meeting/preflight';
-import { describeMeetingError, type MeetingManager, type MeetingPushHealth } from '../meeting/manager';
+import { checkMeetingPreflight,type MeetingPreflight } from '../meeting/preflight';
+import { describeMeetingError,type MeetingManager,type MeetingPushHealth } from '../meeting/manager';
 import type { MeetingSessionStatus } from '../meeting/session';
 import { resolveAppPaths } from '../config/app-paths';
-import { loadRootConfig, runtimeProfileConfig } from '../config/profile-store';
+import { loadRootConfig,runtimeProfileConfig } from '../config/profile-store';
 import {
-  applyProfileLarkCliIdentity,
-  saveAccessConfig,
-  savePreferencesConfig,
-  type MutableProfileState,
+saveAccessConfig,type MutableProfileState
 } from '../config/config-ops';
 import {
-  getCotMessages,
-  getMaxConcurrentRuns,
-  getMessageReplyMode,
-  getRequireMentionInGroup,
-  getRunIdleTimeoutMs,
-  getShowToolCalls,
-  type AppPreferences,
-  type CotMessagesMode,
-  type MessageReplyMode,
+getCotMessages,
+getMaxConcurrentRuns,
+getMessageReplyMode,
+getRequireMentionInGroup,
+getRunIdleTimeoutMs,
+getShowToolCalls,type CotMessagesMode,
+type MessageReplyMode
 } from '../config/schema';
 import {
-  effectiveLarkCliIdentity,
-  type MeetingConfig,
-  type LarkCliIdentityPreset,
-  type ProfileAccess,
-  type ProfileMode,
+type MeetingConfig,
+type LarkCliIdentityPreset,
+type ProfileAccess,
+type ProfileMode
 } from '../config/profile-schema';
-import { DEFAULT_MODEL, normalizeModelSelection, validateModelId } from '../agent/models';
+import { normalizeModelSelection } from '../agent/models';
 import { log } from '../core/logger';
 import { HttpError } from './http';
 import type { UiRuntime } from './types';
@@ -149,222 +144,33 @@ function asRecord(body: unknown): Record<string, unknown> {
   return body as Record<string, unknown>;
 }
 
-function clampInt(value: unknown, min: number, max: number, fallback: number): number {
-  const n = typeof value === 'number' ? value : Number(value);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.min(max, Math.max(min, Math.floor(n)));
-}
-
-/**
- * Parse the in-meeting agent section. Unspecified fields keep their current
- * value; numbers are clamped to the same bounds the schema normalizer uses.
- */
-function parseMeetingBody(body: unknown, current: MeetingConfig): MeetingConfig {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return current;
-  const fv = body as Record<string, unknown>;
-  const t = (fv.transcript && typeof fv.transcript === 'object' ? fv.transcript : {}) as Record<string, unknown>;
-  const trigger = typeof fv.trigger === 'string' && fv.trigger.trim() ? fv.trigger.trim() : current.trigger;
-  return {
-    enabled: typeof fv.enabled === 'boolean' ? fv.enabled : current.enabled,
-    autoJoinOnInvite:
-      typeof fv.autoJoinOnInvite === 'boolean' ? fv.autoJoinOnInvite : current.autoJoinOnInvite,
-    transcript: {
-      keep: t.keep === undefined ? current.transcript.keep : clampInt(t.keep, 10, 2000, current.transcript.keep),
-      stabilizeMs:
-        t.stabilizeMs === undefined
-          ? current.transcript.stabilizeMs
-          : clampInt(t.stabilizeMs, 0, 30_000, current.transcript.stabilizeMs),
-    },
-    respondIn:
-      fv.respondIn === 'meeting' || fv.respondIn === 'im' || fv.respondIn === 'both'
-        ? fv.respondIn
-        : current.respondIn,
-    trigger,
-    pollIntervalMs:
-      fv.pollIntervalMs === undefined
-        ? current.pollIntervalMs
-        : clampInt(fv.pollIntervalMs, 1000, 60_000, current.pollIntervalMs),
-    summaryOnEnd: typeof fv.summaryOnEnd === 'boolean' ? fv.summaryOnEnd : current.summaryOnEnd,
-    summaryTarget:
-      fv.summaryTarget === 'origin' || fv.summaryTarget === 'owner'
-        ? fv.summaryTarget
-        : current.summaryTarget,
-  };
-}
-
-interface ParsedConfig {
-  mode: ProfileMode;
-  meeting: MeetingConfig;
-  larkCliIdentity: LarkCliIdentityPreset;
-  requireMentionInGroup: boolean;
-  nextPreferences: AppPreferences;
-  nextEffectiveIdentity: LarkCliIdentityPreset;
-  previousEffectiveIdentity: LarkCliIdentityPreset;
-  identityChanged: boolean;
-}
-
-/**
- * Parse a settings body against a profile's current state. Mirrors the chat
- * `submitConfig` validation/clamps exactly. Unspecified fields keep their
- * current value, so the SPA can PATCH just what changed.
- */
-function parseConfigBody(state: MutableProfileState, body: unknown): ParsedConfig {
-  const fv = asRecord(body);
-  const agentKind = state.profileConfig.agentKind;
-
-  const mode: ProfileMode =
-    fv.mode === 'team' || fv.mode === 'personal' ? fv.mode : state.profileConfig.mode;
-  const larkCliIdentity: LarkCliIdentityPreset =
-    fv.larkCliIdentity === 'user-default' || fv.larkCliIdentity === 'bot-only'
-      ? fv.larkCliIdentity
-      : state.profileConfig.larkCli.identityPreset;
-
-  let modelSelection: string;
-  let reasoningEffort: import('../agent/model-settings').ReasoningEffort | undefined;
-  try {
-    if (fv.model !== undefined && typeof fv.model !== 'string') throw new Error('模型名必须是字符串。');
-    modelSelection = fv.model === undefined
-      ? normalizeModelSelection(agentKind, state.cfg.preferences?.model)
-      : fv.model === '' ? DEFAULT_MODEL : validateModelId(fv.model as string);
-    reasoningEffort = fv.reasoningEffort === undefined
-      ? state.cfg.preferences?.reasoningEffort : parseEffort(fv.reasoningEffort, agentKind);
-  } catch (err) {
-    throw new ApiError(400, err instanceof Error ? err.message : String(err));
-  }
-  const model = modelSelection === DEFAULT_MODEL ? undefined : modelSelection;
-
-  const messageReply: MessageReplyMode =
-    fv.messageReply === 'markdown' || fv.messageReply === 'text' || fv.messageReply === 'card'
-      ? fv.messageReply
-      : getMessageReplyMode(state.cfg);
-  const showToolCalls =
-    typeof fv.showToolCalls === 'boolean' ? fv.showToolCalls : getShowToolCalls(state.cfg);
-  const cotMessages: CotMessagesMode =
-    fv.cotMessages === 'brief' || fv.cotMessages === 'detailed' || fv.cotMessages === 'off'
-      ? fv.cotMessages
-      : getCotMessages(state.cfg);
-  const maxConcurrentRuns =
-    fv.maxConcurrentRuns === undefined
-      ? getMaxConcurrentRuns(state.cfg)
-      : clampInt(fv.maxConcurrentRuns, 1, 50, getMaxConcurrentRuns(state.cfg));
-
-  const currentIdleMs = getRunIdleTimeoutMs(state.cfg);
-  const currentIdleMinutes = currentIdleMs ? Math.round(currentIdleMs / 60_000) : 0;
-  let runIdleTimeoutMinutes: number;
-  if (fv.runIdleTimeoutMinutes === undefined) {
-    runIdleTimeoutMinutes = currentIdleMinutes;
-  } else {
-    const n = Number(fv.runIdleTimeoutMinutes);
-    runIdleTimeoutMinutes =
-      !Number.isFinite(n) || n < 0 ? currentIdleMinutes : n === 0 ? 0 : clampInt(n, 1, 120, currentIdleMinutes);
-  }
-
-  const requireMentionInGroup =
-    typeof fv.requireMentionInGroup === 'boolean'
-      ? fv.requireMentionInGroup
-      : getRequireMentionInGroup(state.cfg);
-
-  const meeting = parseMeetingBody(fv.meeting, state.profileConfig.meeting);
-
-  const nextEffectiveIdentity: LarkCliIdentityPreset = mode === 'team' ? 'bot-only' : larkCliIdentity;
-  const previousEffectiveIdentity = effectiveLarkCliIdentity(state.profileConfig);
-
-  return {
-    mode,
-    meeting,
-    larkCliIdentity,
-    requireMentionInGroup,
-    nextEffectiveIdentity,
-    previousEffectiveIdentity,
-    identityChanged: nextEffectiveIdentity !== previousEffectiveIdentity,
-    nextPreferences: {
-      ...(state.cfg.preferences ?? {}),
-      model,
-      reasoningEffort,
-      messageReply,
-      messageReplyMigrated: true,
-      showToolCalls,
-      cotMessages,
-      maxConcurrentRuns,
-      runIdleTimeoutMinutes,
-    },
-  };
-}
-
-async function validateModelPreferences(state: MutableProfileState, preferences: AppPreferences): Promise<void> {
-  try {
-    const resolved = resolveModelSettings(preferences, {}, await modelEnvironment(state));
-    if (preferences.reasoningEffort && preferences.reasoningEffort !== resolved.reasoningEffort) {
-      throw new Error(resolved.notice ?? '模型与思考强度不匹配。');
-    }
-  } catch (err) {
-    throw new ApiError(400, err instanceof Error ? err.message : String(err));
-  }
-}
-
 /**
  * Apply a settings change to the profile whose process hosts the UI — live,
  * in-memory, no restart. Runs the lark-cli identity policy (with rollback) like
  * the chat form. Use {@link applyConfigToDisk} for other profiles.
  */
 export async function applyConfig(rt: UiRuntime, body: unknown): Promise<ConfigView> {
-  const p = parseConfigBody(rt, body);
-  await validateModelPreferences(rt, p.nextPreferences);
-  let identityApplied = false;
-  try {
-    if (p.identityChanged) {
-      const ok = await applyProfileLarkCliIdentity(rt, p.nextEffectiveIdentity);
-      if (!ok) throw new ApiError(500, 'lark-cli 身份策略未生效');
-      identityApplied = true;
-    }
-    await savePreferencesConfig(
-      rt,
-      p.nextPreferences,
-      p.requireMentionInGroup,
-      p.larkCliIdentity,
-      p.mode,
-      p.meeting,
-    );
-  } catch (err) {
-    if (identityApplied) {
-      await applyProfileLarkCliIdentity(rt, p.previousEffectiveIdentity).catch(() =>
-        log.warn('ui', 'identity-rollback-failed', { profile: rt.profile }),
-      );
-    }
-    if (err instanceof ApiError) throw err;
-    throw new ApiError(500, `保存失败：${err instanceof Error ? err.message : String(err)}`);
-  }
-  log.info('ui', 'config-saved', { profile: rt.profile, mode: p.mode, live: true });
-  return buildConfigView(rt, true);
+  return changeConfig(rt, body, 'live');
 }
 
-/**
- * Persist a settings change for a non-hosting profile (running elsewhere or
- * not at all). Writes to disk only — the lark-cli identity policy is NOT run
- * here (it would spawn lark-cli against a maybe-unbound profile); it's applied
- * from `mode`/preset when that profile next starts (see preflight). Takes
- * effect on that profile's next start/restart.
- */
-export async function applyConfigToDisk(
-  state: MutableProfileState,
-  body: unknown,
-): Promise<ConfigView> {
-  const p = parseConfigBody(state, body);
-  await validateModelPreferences(state, p.nextPreferences);
+export async function applyConfigToDisk(state: MutableProfileState, body: unknown): Promise<ConfigView> {
+  return changeConfig(state, body, 'disk');
+}
+
+async function changeConfig(state: MutableProfileState, body: unknown, mode: 'live' | 'disk'): Promise<ConfigView> {
   try {
-    await savePreferencesConfig(
-      state,
-      p.nextPreferences,
-      p.requireMentionInGroup,
-      p.larkCliIdentity,
-      p.mode,
-      p.meeting,
-    );
+    const change = await preparePreferencesChange(state, body);
+    await applyPreferencesChange(state, change, mode);
+    log.info('ui', 'config-saved', { profile: state.profile, mode: change.mode, live: mode === 'live' });
   } catch (err) {
-    throw new ApiError(500, `保存失败：${err instanceof Error ? err.message : String(err)}`);
+    if (err instanceof PreferencesValidationError) throw new ApiError(400, err.message);
+    if (err instanceof PreferencesApplyError) {
+      if (err.rollbackFailed) log.warn('ui', 'identity-rollback-failed', { profile: state.profile });
+      throw new ApiError(500, err.step === 'config.lark-cli-policy' ? err.message : `保存失败：${err.message}`);
+    }
+    throw err;
   }
-  log.info('ui', 'config-saved', { profile: state.profile, mode: p.mode, live: false });
-  return buildConfigView(state, false);
+  return buildConfigView(state, mode === 'live');
 }
 
 type AccessKind = 'user' | 'admin' | 'chat';

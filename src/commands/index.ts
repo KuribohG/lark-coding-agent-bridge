@@ -1,80 +1,77 @@
-import { handleModelCommand, modelStatus } from './model';
+import { applyPreferencesChange,preparePreferencesChange,PreferencesApplyError,type PreferencesChange } from '../config/preferences';
+import { handleModelCommand,modelStatus } from './model';
 import { handleRun } from './run';
 import type { BtwManager } from '../bot/btw';
 import type { TimedRun } from '../runtime/timed-runs';
-import { parseEffort, resolveModelSettings } from '../agent/model-settings';
 import { modelEnvironment } from '../runtime/model-settings';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, isAbsolute } from 'node:path';
-import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
-import { claudeCapability, codexCapability } from '../agent/capability';
-import { DEFAULT_MODEL, normalizeModelSelection, validateModelId } from '../agent/models';
+import { dirname,isAbsolute } from 'node:path';
+import type { LarkChannel,NormalizedMessage } from '@larksuite/channel';
+import { claudeCapability,codexCapability } from '../agent/capability';
+import { normalizeModelSelection } from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import {
-  accountCurrentCard,
-  accountFailureCard,
-  accountFormCard,
-  accountSuccessCard,
+accountCurrentCard,
+accountFailureCard,
+accountFormCard,
+accountSuccessCard,
 } from '../card/account-cards';
 import {
-  configCancelledCard,
-  configFailedCard,
-  configFormCard,
-  configSavedCard,
-  groupMsgScopeGrantCard,
-  groupMsgScopeGrantedCard,
+configCancelledCard,
+configFailedCard,
+configFormCard,
+configSavedCard,
+groupMsgScopeGrantCard,
+groupMsgScopeGrantedCard,
 } from '../card/config-card';
-import { GROUP_MSG_SCOPE, hasGroupMsgScope } from '../bot/app-scope';
+import { GROUP_MSG_SCOPE,hasGroupMsgScope } from '../bot/app-scope';
 import { requestScopeGrantLink } from '../bot/wizard';
-import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
-import { helpCard, resumeCard, statusCard, workspacesCard } from '../card/templates';
-import type { AppConfig, AppPreferences, MessageReplyMode, TenantBrand } from '../config/schema';
+import { forgetManagedCard,sendManagedCard,updateManagedCard } from '../card/managed';
+import { helpCard,resumeCard,statusCard,workspacesCard } from '../card/templates';
+import type { AppConfig,TenantBrand } from '../config/schema';
 import {
-  getAgentStopGraceMs,
-  getCotMessages,
-  getMaxConcurrentRuns,
-  getMessageReplyMode,
-  getRequireMentionInGroup,
-  getRunIdleTimeoutMs,
-  getShowToolCalls,
+getAgentStopGraceMs,
+getCotMessages,
+getMaxConcurrentRuns,
+getMessageReplyMode,
+getRequireMentionInGroup,
+getRunIdleTimeoutMs,
+getShowToolCalls,
 } from '../config/schema';
 import type {
-  LarkCliIdentityPreset,
-  ProfileAccess,
-  ProfileConfig,
-  ProfileMode,
+ProfileAccess,
+ProfileConfig
 } from '../config/profile-schema';
-import { effectiveLarkCliIdentity } from '../config/profile-schema';
 import { resolveAppPaths } from '../config/app-paths';
 import { accessToClaudePermissionMode } from '../config/permissions';
 import {
-  canRunAdminCommand,
-  canUseDm,
-  canUseGroup,
-  type OwnerRefreshState,
+canRunAdminCommand,
+canUseDm,
+canUseGroup,
+type OwnerRefreshState,
 } from '../policy/access';
 import { buildEncryptedAccountConfig } from '../config/store';
 import * as configOps from '../config/config-ops';
-import { log, reportMetric } from '../core/logger';
+import { log,reportMetric } from '../core/logger';
 import { renderCard } from '../card/run-renderer';
 import {
-  finalizeIfRunning,
-  initialState,
-  markInterrupted,
-  reduce,
-  type RunState,
+finalizeIfRunning,
+initialState,
+markInterrupted,
+reduce,
+type RunState,
 } from '../card/run-state';
-import { formatRelTime, listRecentSessions, type SessionSummary } from '../session/history';
+import { formatRelTime,listRecentSessions,type SessionSummary } from '../session/history';
 import {
-  listCodexThreadHistory,
-  type CodexThreadHistoryEntry,
-  type ListCodexThreadHistoryOptions,
+listCodexThreadHistory,
+type CodexThreadHistoryEntry,
+type ListCodexThreadHistoryOptions,
 } from '../session/codex-history';
-import type { SessionCatalog, SessionCatalogIdentity } from '../session/catalog';
-import { isAlive, readAndPrune, resolveTarget } from '../runtime/registry';
+import type { SessionCatalog,SessionCatalogIdentity } from '../session/catalog';
+import { isAlive,readAndPrune,resolveTarget } from '../runtime/registry';
 import { readUiSidecar } from '../ui/sidecar';
 import type { SessionStore } from '../session/store';
 import { resolveWorkingDirectory } from '../policy/workspace';
@@ -84,11 +81,11 @@ import type { RunExecutor } from '../runtime/run-executor';
 import { RunRejected } from '../runtime/errors';
 import { validateAppCredentials } from '../utils/feishu-auth';
 import type { WorkspaceStore } from '../workspace/store';
-import { createBoundChat, defaultChatName } from '../bot/group';
-import { fetchKnownChats, type KnownChat } from '../bot/lark-info';
-import { describeMeetingError, type MeetingManager } from '../meeting/manager';
+import { createBoundChat,defaultChatName } from '../bot/group';
+import { fetchKnownChats,type KnownChat } from '../bot/lark-info';
+import { describeMeetingError,type MeetingManager } from '../meeting/manager';
 import { isMeetingNo } from '../meeting/api';
-import { answerInMeeting, meetingScopeId } from '../meeting/orchestrator';
+import { answerInMeeting,meetingScopeId } from '../meeting/orchestrator';
 import type { MeetingSession } from '../meeting/session';
 import { hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
 import type { InboxManager } from '../monitoring/sources/lark/manager';
@@ -1842,96 +1839,39 @@ async function cancelConfig(ctx: CommandContext): Promise<void> {
   }
 }
 
+/** Convert CardKit's string fields while retaining legacy empty-field semantics. */
+function configFormPatch(fv: Record<string, unknown>): Record<string, unknown> {
+  const text = (key: string) => String(fv[key] ?? '').trim();
+  const picked = fv.model_pick;
+  const rawModel = picked && picked !== '__manual__' ? String(picked) : fv.model;
+  const maxConcurrentRuns = Number(text('max_concurrent_runs'));
+  const mention = text('require_mention_in_group');
+  return {
+    model: rawModel === undefined ? undefined : String(rawModel).trim(),
+    reasoningEffort: fv.reasoning_effort,
+    messageReply: text('message_reply'),
+    showToolCalls: text('show_tool_calls') !== 'hide',
+    cotMessages: text('cot_messages') === 'on' ? 'detailed' : text('cot_messages'),
+    maxConcurrentRuns: Number.isFinite(maxConcurrentRuns) && maxConcurrentRuns >= 1 ? maxConcurrentRuns : undefined,
+    runIdleTimeoutMinutes: text('run_idle_timeout_minutes') || undefined,
+    requireMentionInGroup: mention === 'yes' ? true : mention === 'no' ? false : undefined,
+    mode: text('deploy_mode'),
+    larkCliIdentity: text('lark_cli_identity'),
+  };
+}
+
 async function submitConfig(ctx: CommandContext): Promise<void> {
-  const fv = ctx.formValue ?? {};
-  const rawReply = String(fv.message_reply ?? '').trim();
-  const messageReply: MessageReplyMode =
-    rawReply === 'markdown' || rawReply === 'text' || rawReply === 'card'
-      ? (rawReply as MessageReplyMode)
-      : getMessageReplyMode(ctx.controls.cfg);
-  const rawTools = String(fv.show_tool_calls ?? '').trim();
-  const showToolCalls = rawTools !== 'hide';
-  const agentKind = ctx.controls.profileConfig.agentKind;
-  let modelSelection: string;
-  let reasoningEffort: import('../agent/model-settings').ReasoningEffort | undefined;
+  let change: PreferencesChange;
   try {
-    const picked = fv.model_pick;
-    const rawModel = picked && picked !== '__manual__' ? String(picked) : fv.model;
-    modelSelection = rawModel === undefined
-      ? normalizeModelSelection(agentKind, ctx.controls.cfg.preferences?.model)
-      : String(rawModel).trim() === '' ? DEFAULT_MODEL : validateModelId(String(rawModel));
-    reasoningEffort = fv.reasoning_effort === undefined
-      ? ctx.controls.cfg.preferences?.reasoningEffort : parseEffort(fv.reasoning_effort, agentKind);
-    const environment = await modelEnvironment(ctx.controls);
-    const resolved = resolveModelSettings({
-      model: modelSelection === DEFAULT_MODEL ? undefined : modelSelection, reasoningEffort,
-    }, {}, environment);
-    if (reasoningEffort && resolved.reasoningEffort !== reasoningEffort) throw new Error(resolved.notice);
+    change = await preparePreferencesChange(ctx.controls, configFormPatch(ctx.formValue ?? {}));
   } catch (err) {
     await reply(ctx, `设置未保存：${err instanceof Error ? err.message : String(err)}`);
     return;
   }
-  const model = modelSelection === DEFAULT_MODEL ? undefined : modelSelection;
-  const rawCotMessages = String(fv.cot_messages ?? '').trim();
-  const cotMessages =
-    rawCotMessages === 'brief'
-      ? 'brief'
-      : rawCotMessages === 'detailed' || rawCotMessages === 'on'
-        ? 'detailed'
-        : rawCotMessages === 'off'
-          ? 'off'
-          : getCotMessages(ctx.controls.cfg);
-  // Parse max_concurrent_runs; invalid input falls back to current value.
-  const rawMaxCC = String(fv.max_concurrent_runs ?? '').trim();
-  const parsedMaxCC = Number(rawMaxCC);
-  const maxConcurrentRuns =
-    Number.isFinite(parsedMaxCC) && parsedMaxCC >= 1
-      ? Math.min(50, Math.floor(parsedMaxCC))
-      : getMaxConcurrentRuns(ctx.controls.cfg);
-  // Parse run_idle_timeout_minutes. 0 disables; otherwise clamp 1-120.
-  // Empty string keeps current value.
-  const rawIdle = String(fv.run_idle_timeout_minutes ?? '').trim();
-  const currentIdleMs = getRunIdleTimeoutMs(ctx.controls.cfg);
-  const currentIdleMinutes = currentIdleMs ? Math.round(currentIdleMs / 60_000) : 0;
-  let runIdleTimeoutMinutes: number;
-  if (rawIdle === '') {
-    runIdleTimeoutMinutes = currentIdleMinutes;
-  } else {
-    const parsedIdle = Number(rawIdle);
-    if (!Number.isFinite(parsedIdle) || parsedIdle < 0) {
-      runIdleTimeoutMinutes = currentIdleMinutes;
-    } else if (parsedIdle === 0) {
-      runIdleTimeoutMinutes = 0;
-    } else {
-      runIdleTimeoutMinutes = Math.min(120, Math.max(1, Math.floor(parsedIdle)));
-    }
-  }
-  // Parse require_mention_in_group. Empty / unexpected keeps current.
-  const rawRequireMention = String(fv.require_mention_in_group ?? '').trim();
-  let requireMentionInGroup: boolean;
-  if (rawRequireMention === 'yes') requireMentionInGroup = true;
-  else if (rawRequireMention === 'no') requireMentionInGroup = false;
-  else requireMentionInGroup = getRequireMentionInGroup(ctx.controls.cfg);
-  // Parse deployment mode. Empty / unexpected keeps current.
-  const rawMode = String(fv.deploy_mode ?? '').trim();
-  const mode: ProfileMode =
-    rawMode === 'team' || rawMode === 'personal'
-      ? rawMode
-      : ctx.controls.profileConfig.mode;
-  const rawLarkCliIdentity = String(fv.lark_cli_identity ?? '').trim();
-  const larkCliIdentity =
-    rawLarkCliIdentity === 'user-default' || rawLarkCliIdentity === 'bot-only'
-      ? rawLarkCliIdentity
-      : ctx.controls.profileConfig.larkCli.identityPreset;
-  // Effective preset = what actually gets applied to lark-cli. Team mode forces
-  // bot-only regardless of the stored identity select; the select value is still
-  // saved verbatim so it comes back when switching to personal mode. Re-apply
-  // the lark-cli policy whenever the *effective* preset changes (covers both a
-  // direct identity-select change and a personal↔team flip).
-  const nextEffectiveIdentity: LarkCliIdentityPreset =
-    mode === 'team' ? 'bot-only' : larkCliIdentity;
-  const previousEffectiveIdentity = effectiveLarkCliIdentity(ctx.controls.profileConfig);
-  const larkCliIdentityChanged = nextEffectiveIdentity !== previousEffectiveIdentity;
+  const { mode, larkCliIdentity, requireMentionInGroup } = change;
+  const { model, reasoningEffort, messageReply, showToolCalls, cotMessages, maxConcurrentRuns, runIdleTimeoutMinutes } = change.nextPreferences;
+  const agentKind = ctx.controls.profileConfig.agentKind;
+  const modelSelection = normalizeModelSelection(agentKind, model);
 
   const formMsgId = ctx.msg.messageId;
   const access = ctx.controls.profileConfig.access;
@@ -1948,48 +1888,13 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       }
     };
 
-    const nextPreferences: AppPreferences = {
-      ...(ctx.controls.cfg.preferences ?? {}),
-      model,
-      reasoningEffort,
-      messageReply,
-      // Mark the messageReply value as living in the new (post-0.1.27)
-      // semantic — `text` now means real plain text, not the lightweight
-      // markdown card. Set unconditionally on every submit so a user who
-      // explicitly picks any option gets out of the legacy-coerce path.
-      messageReplyMigrated: true,
-      showToolCalls,
-      cotMessages,
-      maxConcurrentRuns,
-      runIdleTimeoutMinutes,
-      requireMentionInGroup,
-    };
-
-    let failureStep = 'config.save';
-    let larkCliPolicyApplied = false;
     try {
-      if (larkCliIdentityChanged) {
-        failureStep = 'config.lark-cli-policy';
-        const applied = await applyConfigLarkCliIdentityPolicy(ctx, nextEffectiveIdentity);
-        if (!applied) {
-          throw new Error('lark-cli identity policy apply failed');
-        }
-        larkCliPolicyApplied = true;
-        failureStep = 'config.save';
-      }
-      await savePreferencesConfig(ctx, nextPreferences, requireMentionInGroup, larkCliIdentity, mode);
+      await applyPreferencesChange(ctx.controls, change);
     } catch (err) {
-      let rollbackFailed = false;
-      if (larkCliIdentityChanged) {
-        const rolledBack = await applyConfigLarkCliIdentityPolicy(ctx, previousEffectiveIdentity);
-        if (!rolledBack) {
-          rollbackFailed = true;
-          log.warn('command', 'lark-cli-identity-policy-rollback-failed', {
-            profile: ctx.controls.profile,
-            identity: previousEffectiveIdentity,
-          });
-        }
-      }
+      const failureStep = err instanceof PreferencesApplyError ? err.step : 'config.save';
+      const rollbackFailed = err instanceof PreferencesApplyError && err.rollbackFailed;
+      const larkCliPolicyApplied = err instanceof PreferencesApplyError && err.identityApplied;
+      if (rollbackFailed) log.warn('command', 'lark-cli-identity-policy-rollback-failed', { profile: ctx.controls.profile });
       log.fail('command', err, { step: failureStep });
       reportMetric('command_fail', 1, { step: failureStep });
       await waitForSettle();
@@ -2118,35 +2023,12 @@ function commandProfilePaths(ctx: CommandContext) {
   });
 }
 
-async function applyConfigLarkCliIdentityPolicy(
-  ctx: CommandContext,
-  larkCliIdentity: ProfileConfig['larkCli']['identityPreset'],
-): Promise<boolean> {
-  return configOps.applyProfileLarkCliIdentity(ctx.controls, larkCliIdentity);
-}
-
 async function saveAccountConfig(
   ctx: CommandContext,
   newCfg: AppConfig,
   plaintextSecret: string,
 ): Promise<void> {
   return configOps.saveAccountConfig(ctx.controls, newCfg, plaintextSecret);
-}
-
-async function savePreferencesConfig(
-  ctx: CommandContext,
-  preferences: AppPreferences,
-  requireMentionInGroup: boolean,
-  larkCliIdentity: ProfileConfig['larkCli']['identityPreset'],
-  mode: ProfileMode,
-): Promise<void> {
-  return configOps.savePreferencesConfig(
-    ctx.controls,
-    preferences,
-    requireMentionInGroup,
-    larkCliIdentity,
-    mode,
-  );
 }
 
 // ────────────── /meeting — in-meeting agent (智能体入会) ──────────────
