@@ -1,8 +1,8 @@
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
-import type { InboxConfig } from '../inbox/config';
-import { normalizeInbox, validateInbox } from '../inbox/config';
-import { array, boolean, choice, fail, integer, string, table } from '../monitoring/validation';
+import { normalizeNotification, validateNotification, notificationSchema, type MonitorNotification } from '../../notification';
+import { defineMonitorConfig } from '../../module';
+import { array, boolean, choice, fail, integer, string, table } from '../../validation';
 
 export interface StorageCluster { id: string; datasource: string; database: string; minConnectedNodes: number }
 export interface TaskPlatform { id: string; datasource: string }
@@ -18,7 +18,7 @@ export interface StorageMonitorConfig {
   reanalyzeSeconds: number; latencyMs: number; maxTasks: number; dailyAnalysisLimit: number; outputDir: string; muted: boolean;
   grafana: { url: string; credentialsFile: string };
   clusters: StorageCluster[]; platforms: TaskPlatform[]; watches: StorageWatch[];
-  notification?: Pick<InboxConfig, 'ownerOpenId' | 'destination' | 'deliveryMode'>;
+  notification?: MonitorNotification;
 }
 const schema = table({
   enabled: boolean, executorProfile: string, model: string, muted: boolean,
@@ -30,8 +30,7 @@ const schema = table({
   platforms: array(table({ id: string, datasource: string })),
   watches: array(table({ id: string, kind: choice('cluster', 'user'), enabled: boolean,
     cluster: string, platform: string, uid: integer(1, 2147483647), clusters: array(string) })),
-  notification: table({ ownerOpenId: string, deliveryMode: choice('thread', 'new_topic'),
-    destination: table({ chatId: string, threadId: string, replyTo: string }) }),
+  notification: notificationSchema,
 });
 
 export function parseStorageConfig(value: unknown = {}): StorageMonitorConfig {
@@ -87,9 +86,13 @@ export function parseStorageConfig(value: unknown = {}): StorageMonitorConfig {
     check(config.clusters.length > 0, 'clusters', '需要至少一个指标集群');
   }
   if (config.notification) {
-    const n = normalizeInbox({ ...config.notification, enabled: true, executorProfile: config.executorProfile });
-    validateInbox(n);
-    config.notification = { ownerOpenId: n.ownerOpenId, destination: n.destination, deliveryMode: n.deliveryMode };
+    config.notification = normalizeNotification(config.notification);
+    validateNotification(config.notification, config.executorProfile);
   }
   return config;
 }
+
+export const storageMonitorConfig = defineMonitorConfig({
+  id: 'storage', key: 'storageMonitor', parse: parseStorageConfig,
+  summary: config => ({ watches: config?.watches ?? [] }),
+});

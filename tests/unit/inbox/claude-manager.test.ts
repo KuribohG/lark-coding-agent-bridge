@@ -8,12 +8,12 @@ import { createRootConfig, runtimeProfileConfig, saveRootConfig } from '../../..
 import { configureModelService } from '../../../src/model-service/registry';
 import { normalizeInbox } from '../../../src/inbox/config';
 import type { WorkItemRuntime } from '../../../src/work-items/contracts';
-import { InboxManager } from '../../../src/inbox/manager';
+import { InboxManager } from '../../../src/monitoring/sources/lark/manager';
 import { InboxLark } from '../../../src/inbox/lark';
 import { InboxService } from '../../../src/inbox/service';
 import type { InboxJob } from '../../../src/inbox/types';
-import { processInbox } from '../../../src/inbox/processor';
-import { triageWithChatTools } from '../../../src/inbox/codex-triage';
+import { processInbox } from '../../../src/monitoring/sources/lark/processor';
+import { triageWithChatTools } from '../../../src/monitoring/sources/lark/codex-triage';
 import { loadProfileModelService } from '../../../src/agent/model-service';
 
 vi.mock('../../../src/inbox/service', () => ({ InboxService: vi.fn(function (_store, config) {
@@ -21,9 +21,9 @@ vi.mock('../../../src/inbox/service', () => ({ InboxService: vi.fn(function (_st
 }) }));
 vi.mock('../../../src/inbox/lark', () => ({ InboxLark: vi.fn(function () { return { close: vi.fn() }; }) }));
 vi.mock('../../../src/inbox/progress', () => ({ startInboxProgress: vi.fn(async () => undefined) }));
-vi.mock('../../../src/inbox/processor', () => ({ processInbox: vi.fn(async () => ({ text: '{}' })) }));
-vi.mock('../../../src/inbox/codex-triage', async importOriginal => ({
-  ...await importOriginal<typeof import('../../../src/inbox/codex-triage')>(), triageWithChatTools: vi.fn(async () => []),
+vi.mock('../../../src/monitoring/sources/lark/processor', () => ({ processInbox: vi.fn(async () => ({ text: '{}' })) }));
+vi.mock('../../../src/monitoring/sources/lark/codex-triage', async importOriginal => ({
+  ...await importOriginal<typeof import('../../../src/monitoring/sources/lark/codex-triage')>(), triageWithChatTools: vi.fn(async () => []),
 }));
 vi.mock('../../../src/agent/model-service', async importOriginal => ({ ...await importOriginal<typeof import('../../../src/agent/model-service')>(),
   loadProfileModelService: vi.fn(async (_profile, model) => ({ model, url: 'https://test/responses', key: 'fixture' })),

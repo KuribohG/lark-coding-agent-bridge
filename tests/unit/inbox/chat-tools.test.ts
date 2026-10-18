@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { chatToolArgs, InboxChatTools } from '../../../src/inbox/chat-tools';
+import { chatToolArgs, InboxChatTools } from '../../../src/monitoring/sources/lark/chat-tools';
 
 it.each([
   ['read_chat_messages', { chatId: '/etc/passwd' }],

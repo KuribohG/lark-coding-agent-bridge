@@ -10,7 +10,7 @@ import { executeInboxCommand } from '../../../src/inbox/workbench';
 import { guiJobs } from '../../../src/inbox/presentation';
 import { startUiServer } from '../../../src/ui/server';
 import type { UiServerHandle, UiSupervisor } from '../../../src/ui/types';
-import { InboxManager } from '../../../src/inbox/manager';
+import { InboxManager } from '../../../src/monitoring/sources/lark/manager';
 import type { InboxLark } from '../../../src/inbox/lark';
 import type { InboxIO, InboxJob } from '../../../src/inbox/types';
 

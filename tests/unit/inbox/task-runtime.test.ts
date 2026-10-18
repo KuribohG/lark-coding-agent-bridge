@@ -6,11 +6,11 @@ import type { Controls } from '../../../src/commands';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, runtimeProfileConfig } from '../../../src/config/profile-store';
 import { createRuntimeAgent } from '../../../src/runtime/agent-runtime';
-import { processAnalysis } from '../../../src/inbox/processor';
+import { processAnalysis } from '../../../src/work-items/analysis';
 import { InboxTaskSources } from '../../../src/inbox/task-sources';
 
 vi.mock('../../../src/runtime/agent-runtime', () => ({ createRuntimeAgent: vi.fn(() => ({})) }));
-vi.mock('../../../src/inbox/processor', () => ({ processAnalysis: vi.fn(async () => ({
+vi.mock('../../../src/work-items/analysis', () => ({ processAnalysis: vi.fn(async () => ({
   text: JSON.stringify({ replyDraft: 'CI draft', analysis: 'CI evidence', missingInfo: '' }), inputTokens: 1, outputTokens: 2,
 })) }));
 

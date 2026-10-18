@@ -2,9 +2,9 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { normalizeGitLabCi } from '../../../src/gitlab-ci/config';
-import { GitLabCiService, type CiIO } from '../../../src/gitlab-ci/service';
-import { GitLabError, type FailedJob, type Pipeline } from '../../../src/gitlab-ci/client';
+import { normalizeGitLabCi } from '../../../src/monitoring/sources/gitlab-ci/config';
+import { GitLabCiService, type CiIO } from '../../../src/monitoring/sources/gitlab-ci/service';
+import { GitLabError, type FailedJob, type Pipeline } from '../../../src/monitoring/sources/gitlab-ci/client';
 
 const pipeline: Pipeline = { id: 10, status: 'failed', ref: 'main', sha: 'a'.repeat(40), web_url: 'https://gitlab.test/pipelines/10', updated_at: '2026-10-17T10:00:00Z' };
 const failure: FailedJob = { id: 20, name: 'test', stage: 'test', status: 'failed', allow_failure: false, web_url: '', kind: 'job' };

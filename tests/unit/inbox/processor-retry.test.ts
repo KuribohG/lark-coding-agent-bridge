@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { AgentEvent } from '../../../src/agent/types';
-import { processInbox } from '../../../src/inbox/processor';
+import { processInbox } from '../../../src/monitoring/sources/lark/processor';
 import type { InboxJob } from '../../../src/inbox/types';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
 

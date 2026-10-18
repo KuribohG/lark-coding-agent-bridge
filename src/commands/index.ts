@@ -91,7 +91,7 @@ import { isMeetingNo } from '../meeting/api';
 import { answerInMeeting, meetingScopeId } from '../meeting/orchestrator';
 import type { MeetingSession } from '../meeting/session';
 import { hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
-import type { InboxManager } from '../inbox/manager';
+import type { InboxManager } from '../monitoring/sources/lark/manager';
 
 export interface Controls {
   inbox?: InboxManager;

@@ -1,7 +1,7 @@
 import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { InboxTaskResult, PreparedInboxTask } from '../inbox/task-source';
-import { writeFileAtomic } from '../platform/atomic-write';
+import type { AnalysisResult as InboxTaskResult, PreparedInvestigation as PreparedInboxTask } from '../../../work-items/contracts';
+import { writeFileAtomic } from '../../../platform/atomic-write';
 import { GitLabClient, GitLabError } from './client';
 import type { GitLabCiConfig } from './config';
 import { failureId, type CiRun } from './service';

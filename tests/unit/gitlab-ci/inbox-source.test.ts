@@ -2,9 +2,9 @@ import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it } from 'vitest';
-import { normalizeGitLabCi } from '../../../src/gitlab-ci/config';
-import { ciTaskEvent } from '../../../src/gitlab-ci/inbox-source';
-import type { CiRun } from '../../../src/gitlab-ci/service';
+import { normalizeGitLabCi } from '../../../src/monitoring/sources/gitlab-ci/config';
+import { ciTaskEvent } from '../../../src/monitoring/sources/gitlab-ci/inbox-source';
+import type { CiRun } from '../../../src/monitoring/sources/gitlab-ci/service';
 
 async function fixture() {
   const outputDir = await mkdtemp(join(tmpdir(), 'ci-import-'));

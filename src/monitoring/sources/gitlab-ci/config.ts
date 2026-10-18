@@ -1,5 +1,7 @@
 import { isAbsolute } from 'node:path';
-import { normalizeInbox, validateInbox, type InboxConfig } from '../inbox/config';
+import { normalizeNotification, validateNotification, notificationSchema, type MonitorNotification } from '../../notification';
+import { table, string, boolean, integer, array } from '../../validation';
+import { defineMonitorConfig } from '../../module';
 
 export interface GitLabRepository {
   project: string;
@@ -18,7 +20,7 @@ export interface GitLabCiConfig {
   model?: string;
   outputDir: string;
   repositories: GitLabRepository[];
-  notification?: Pick<InboxConfig, 'ownerOpenId' | 'destination' | 'deliveryMode'>;
+  notification?: MonitorNotification;
 }
 
 export function normalizeGitLabCi(input: unknown): GitLabCiConfig {
@@ -38,11 +40,7 @@ export function normalizeGitLabCi(input: unknown): GitLabCiConfig {
       project: str(r?.project), sourceDir: str(r?.sourceDir),
       refs: Array.isArray(r?.refs) ? [...new Set(r.refs.map(str).filter(Boolean))] : [],
     })) : [],
-    ...(c.notification ? { notification: {
-      ownerOpenId: str(c.notification.ownerOpenId),
-      destination: normalizeInbox(c.notification).destination,
-      deliveryMode: c.notification.deliveryMode === 'new_topic' ? 'new_topic' as const : 'thread' as const,
-    } } : {}),
+    ...(c.notification ? { notification: normalizeNotification(c.notification) } : {}),
   };
 }
 
@@ -57,7 +55,7 @@ export function validateGitLabCi(c: GitLabCiConfig): void {
     throw new Error('GitLab CI requires a token environment variable or an absolute credentialsFile');
   }
   if (!c.repositories.length) throw new Error('GitLab CI requires at least one repository');
-  if (c.notification) validateInbox(normalizeInbox({ ...c.notification, enabled: true, executorProfile: c.executorProfile }));
+  if (c.notification) validateNotification(c.notification, c.executorProfile);
   const seen = new Set<string>();
   for (const r of c.repositories) {
     if (!/^(?:[1-9]\d*|[\w.-]+(?:\/[\w.-]+)+)$/.test(r.project) || seen.has(r.project)) {
@@ -67,3 +65,16 @@ export function validateGitLabCi(c: GitLabCiConfig): void {
     seen.add(r.project);
   }
 }
+
+const schema = table({
+  enabled: boolean, executorProfile: string, url: string, tokenEnv: string, credentialsFile: string,
+  pollSeconds: integer(1, 3600), model: string, outputDir: string,
+  repositories: array(table({ project: string, refs: array(string), sourceDir: string })),
+  notification: notificationSchema,
+});
+
+export const gitlabMonitorConfig = defineMonitorConfig({
+  id: 'gitlab_ci', key: 'gitlabCi',
+  parse(value) { schema(value, 'monitors.sources.gitlab_ci'); const config = normalizeGitLabCi(value); validateGitLabCi(config); return config; },
+  summary: config => ({ repositories: config?.repositories.map(r => r.project) ?? [] }),
+});

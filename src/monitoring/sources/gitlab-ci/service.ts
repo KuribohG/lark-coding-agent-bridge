@@ -1,9 +1,9 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { writeFileAtomic } from '../platform/atomic-write';
+import { writeFileAtomic } from '../../../platform/atomic-write';
 import { GitLabError, type FailedJob, type Pipeline } from './client';
 import type { GitLabCiConfig, GitLabRepository } from './config';
-import type { InboxConfig } from '../inbox/config';
+import type { DeliveryTarget } from '../../../work-items/config';
 
 export interface CiRun {
   id: string; repository: GitLabRepository; pipeline: Pipeline; failures: FailedJob[];
@@ -12,7 +12,7 @@ export interface CiRun {
   state: 'queued' | 'running' | 'ready' | 'done' | 'failed' | 'obsolete' | 'submitted';
   inboxJobId?: string; submissionAttempts?: number;
   resultPath?: string; error?: string;
-  topic?: InboxConfig['destination']; deliveryAttempts?: number; deliveredAt?: number;
+  topic?: DeliveryTarget; deliveryAttempts?: number; deliveredAt?: number;
 }
 interface CiState {
   version: 1;

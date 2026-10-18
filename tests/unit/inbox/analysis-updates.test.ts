@@ -6,7 +6,7 @@ import { normalizeInbox } from '../../../src/inbox/config';
 import { InboxService } from '../../../src/inbox/service';
 import { InboxStore } from '../../../src/inbox/store';
 import { analysisChanges } from '../../../src/inbox/updates';
-import { processingPrompt } from '../../../src/inbox/processor';
+import { processingPrompt } from '../../../src/monitoring/sources/lark/processor';
 import type { InboxIO, InboxJob, InboxMessage, TriageDecision } from '../../../src/inbox/types';
 
 const result = { text: JSON.stringify({ replyDraft: '原建议', analysis: '已核实的证据', missingInfo: '' }), inputTokens: 1, outputTokens: 1 };

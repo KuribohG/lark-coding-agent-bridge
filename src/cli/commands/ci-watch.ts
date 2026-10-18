@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { resolveAppPaths } from '../../config/app-paths';
 import { withConfigFileLock } from '../../config/profile-store';
 import { loadMonitorRoot, saveMonitorRoot } from '../../monitoring/store';
-import { normalizeGitLabCi, validateGitLabCi } from '../../gitlab-ci/config';
+import { normalizeGitLabCi, validateGitLabCi } from '../../monitoring/sources/gitlab-ci/config';
 import { supportsBackgroundProfile } from '../../runtime/agent-capabilities';
 
 export async function configureCiWatch(file: string, opts: { config?: string }): Promise<void> {

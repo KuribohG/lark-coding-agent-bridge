@@ -9,7 +9,7 @@ import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
 import { normalizeInbox } from '../../../src/inbox/config';
 import { inboxTriageSource, loadInboxTriageSource } from '../../../src/inbox/model-routing';
-import { triageWithChatTools } from '../../../src/inbox/codex-triage';
+import { triageWithChatTools } from '../../../src/monitoring/sources/lark/codex-triage';
 import type { InboxJob } from '../../../src/inbox/types';
 
 const service: ModelServiceConfig = { protocol: 'responses', baseUrl: 'https://model.test/v1/', model: 'screen-default', apiKey: { source: 'env', id: 'TEST_MODEL_KEY' } };

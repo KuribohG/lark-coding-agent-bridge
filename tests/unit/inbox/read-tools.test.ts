@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { InboxReadTools, readToolRequest } from '../../../src/inbox/read-tools';
+import { InboxReadTools, readToolRequest } from '../../../src/monitoring/sources/lark/read-tools';
 
 const signal = () => new AbortController().signal;
 const request = (operation: string, args: unknown = {}) => ({ operation, argumentsJson: JSON.stringify(args) });

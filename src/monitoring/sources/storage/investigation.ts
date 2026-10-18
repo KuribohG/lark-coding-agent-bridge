@@ -1,7 +1,7 @@
 import { join } from 'node:path';
-import type { InvestigationDriver } from '../work-items/contracts';
-import type { WorkItem } from '../work-items/types';
-import { writeFileAtomic } from '../platform/atomic-write';
+import type { InvestigationDriver } from '../../../work-items/contracts';
+import type { WorkItem } from '../../../work-items/types';
+import { writeFileAtomic } from '../../../platform/atomic-write';
 import type { StorageMonitorConfig } from './config';
 import type { StorageProvider } from './provider';
 import { storageScope, type IncidentEvidence, type StorageMonitorService } from './service';

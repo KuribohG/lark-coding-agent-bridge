@@ -1,3 +1,5 @@
+import { normalizeNotification, validateNotification } from '../monitoring/notification';
+
 export type IntakeScope = 'private' | 'private_mentions' | 'all';
 export const intakeScope = (c: Pick<InboxConfig, 'intakeScope' | 'watchPrivate' | 'watchMentions'>): IntakeScope | undefined =>
   c.intakeScope ?? (c.watchPrivate ? c.watchMentions ? 'private_mentions' : 'private' : undefined);
@@ -61,9 +63,7 @@ export function normalizeInbox(input: unknown): InboxConfig {
     ...(str(r.triageProfile) ? { triageProfile: str(r.triageProfile) } : {}),
     ...(str(r.triageService) ? { triageService: str(r.triageService) } : {}),
     ...(typeof r.triageModel === 'string' ? { triageModel: str(r.triageModel).slice(0, 200) } : {}),
-    enabled: r.enabled === true, executorProfile: str(r.executorProfile), ownerOpenId: str(r.ownerOpenId),
-    destination: { chatId: str(r.destination?.chatId), threadId: str(r.destination?.threadId), replyTo: str(r.destination?.replyTo) },
-    deliveryMode: r.deliveryMode === 'new_topic' ? 'new_topic' : 'thread',
+    enabled: r.enabled === true, executorProfile: str(r.executorProfile), ...normalizeNotification(r),
     watchPrivate: scope ? true : r.watchPrivate !== false, watchMentions: scope ? scope !== 'private' : r.watchMentions !== false, autoAnalyze: false,
     attentionProfile: str(r.attentionProfile).slice(0, 3000), dailyTriageLimit: num(r.dailyTriageLimit, 0, INBOX_DAILY_TRIAGE_LIMIT, INBOX_DAILY_TRIAGE_LIMIT),
     waitMinutes: num(r.waitMinutes, 1, 1440, 30), pollSeconds: num(r.pollSeconds, INBOX_MIN_POLL_SECONDS, 3600, INBOX_DEFAULTS.pollSeconds),
@@ -76,10 +76,7 @@ export function normalizeInbox(input: unknown): InboxConfig {
 
 export function validateInbox(c: InboxConfig): void {
   if (!c.enabled) return;
-  if (!c.executorProfile || !/^ou_[\w]+$/.test(c.ownerOpenId)) throw new Error('请设置执行 profile 和用户 Open ID');
-  if (!/^oc_\w+$/.test(c.destination.chatId) || !/^omt_\w+$/.test(c.destination.threadId) || !/^om_\w+$/.test(c.destination.replyTo)) {
-    throw new Error('请设置结果群 ID、话题 ID 和话题内的回复消息 ID');
-  }
+  validateNotification(c, c.executorProfile);
   if (c.h5.publicUrl) {
     const url = new URL(c.h5.publicUrl);
     if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || !url.pathname.endsWith('/')) {

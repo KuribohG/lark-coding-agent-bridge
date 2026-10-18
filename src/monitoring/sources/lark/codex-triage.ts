@@ -1,10 +1,10 @@
 import { ATTENTION_RULES, InboxTriageResultError, inboxResponseText, parseTriageResult, requestInboxResponse, triagePreviews, type AnalysisProvider } from './analyzer';
 import { readToolRequest, INBOX_READ_TOOLS, type InboxReadTools } from './read-tools';
-import { INBOX_TRIAGE_BATCH_SIZE } from './config';
-import type { InboxIO, InboxJob } from './types';
-import { InboxToolArgumentsError, obj } from './values';
-import { parseModelJson } from './model-json';
-import { analysisChanges, previousAnalysis } from './updates';
+import { INBOX_TRIAGE_BATCH_SIZE } from '../../../inbox/config';
+import type { InboxIO, InboxJob } from '../../../inbox/types';
+import { InboxToolArgumentsError, obj } from '../../../inbox/values';
+import { parseModelJson } from '../../../inbox/model-json';
+import { analysisChanges, previousAnalysis } from '../../../inbox/updates';
 
 export function chatTriageInstructions(jobs: InboxJob[]): string {
   return `你正在执行用户授权的自动关注筛选。所属用户 open_id=${jobs[0]?.ownerOpenId}。

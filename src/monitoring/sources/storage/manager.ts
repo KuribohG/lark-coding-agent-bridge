@@ -1,12 +1,12 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import * as lockfile from 'proper-lockfile';
-import type { Controls } from '../commands';
-import { resolveAppPaths } from '../config/app-paths';
-import { loadMonitorRoot } from '../monitoring/store';
-import { supportsBackgroundProfile } from '../runtime/agent-capabilities';
-import { backgroundModelSettings } from '../runtime/background-model';
-import { WorkItemSources } from '../work-items/registry';
+import type { Controls } from '../../../commands';
+import { resolveAppPaths } from '../../../config/app-paths';
+import { loadMonitorRoot } from '../../store';
+import { supportsBackgroundProfile } from '../../../runtime/agent-capabilities';
+import { backgroundModelSettings } from '../../../runtime/background-model';
+import { WorkItemSources } from '../../../work-items/registry';
 import { parseStorageConfig } from './config';
 import { GrafanaQueryClient, grafanaCredentials } from './grafana';
 import { GrafanaStorageProvider } from './provider';

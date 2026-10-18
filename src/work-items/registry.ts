@@ -15,10 +15,10 @@ import type { SourceAdapter, RuleAssessmentPolicy, InvestigationDriver } from '.
 import type { WorkItem } from './types';
 import { normalizeInbox, type InboxConfig } from '../inbox/config';
 import { InboxLark } from '../inbox/lark';
-import { processAnalysis } from '../inbox/processor';
+import { processAnalysis } from './analysis';
 import { startInboxProgress } from '../inbox/progress';
-import { InboxService } from '../inbox/service';
-import { InboxStore } from '../inbox/store';
+import { WorkItemService } from './service';
+import { WorkItemStore } from './store';
 import { AnalysisScheduler } from './scheduler';
 import type { WorkItemEvent } from './events';
 import { executeInboxCommand } from '../inbox/workbench';
@@ -39,7 +39,7 @@ export interface WorkItemSourceOptions {
   assessment?: RuleAssessmentPolicy;
   driver: InvestigationDriver & { accepts?(item: WorkItem): boolean };
 }
-interface Entry { service: InboxService; lark?: InboxLark; label: string; status?: WorkItemSourceOptions['status']; close(): Promise<void> }
+interface Entry { service: WorkItemService; lark?: InboxLark; label: string; status?: WorkItemSourceOptions['status']; close(): Promise<void> }
 
 /** Source/account partitions share lifecycle code, the analysis queue and workbench. */
 export class WorkItemSources {
@@ -64,12 +64,12 @@ export class WorkItemSources {
     const folder = join(dirname(this.configPath), 'inbox', 'sources', options.id, scope);
     await mkdir(folder, { recursive: true, mode: 0o700 });
     const lease = join(folder, 'service'); await writeFile(lease, '', { flag: 'a', mode: 0o600 });
-    let service: InboxService | undefined;
+    let service: WorkItemService | undefined;
     const unlock = await lockfile.lock(lease, { stale: 60_000, update: 10_000, retries: 0,
       onCompromised: () => { void service?.close(); } });
     const lark = options.notification && !options.muted ? new InboxLark({ profile: options.profile, rootDir: this.rootDir }, config) : undefined;
     try {
-      service = new InboxService(new InboxStore(join(folder, 'state.json')), config, {
+      service = new WorkItemService(new WorkItemStore(join(folder, 'state.json')), config, {
         source: options.source ?? new EventSource(options.id, options.driver.accepts!, options.assessment),
         dailyAnalysisLimit: options.dailyAnalysisLimit, resumeInterrupted: options.resumeInterrupted,
         checkAccess: async () => {},

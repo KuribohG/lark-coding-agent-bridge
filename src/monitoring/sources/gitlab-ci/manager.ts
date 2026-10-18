@@ -1,13 +1,13 @@
-import { supportsBackgroundProfile } from '../runtime/agent-capabilities';
-import { backgroundModelSettings } from '../runtime/background-model';
+import { supportsBackgroundProfile } from '../../../runtime/agent-capabilities';
+import { backgroundModelSettings } from '../../../runtime/background-model';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import * as lockfile from 'proper-lockfile';
-import type { Controls } from '../commands';
-import { resolveAppPaths } from '../config/app-paths';
-import { loadMonitorRoot } from '../monitoring/store';
-import { log } from '../core/logger';
-import { InboxTaskSources } from '../inbox/task-sources';
+import type { Controls } from '../../../commands';
+import { resolveAppPaths } from '../../../config/app-paths';
+import { loadMonitorRoot } from '../../store';
+import { log } from '../../../core/logger';
+import { WorkItemSources } from '../../../work-items/registry';
 import { GitLabClient, loadGitLabToken } from './client';
 import { normalizeGitLabCi, validateGitLabCi } from './config';
 import { ciAssessment, ciTaskDriver, ciTaskEvent } from './inbox-source';
@@ -17,14 +17,14 @@ export class GitLabCiManager {
   private service?: GitLabCiService;
   private unlock?: () => Promise<void>;
   private fingerprint = '';
-  private source?: Awaited<ReturnType<InboxTaskSources['connect']>>;
-  private sources: InboxTaskSources;
+  private source?: Awaited<ReturnType<WorkItemSources['connect']>>;
+  private sources: WorkItemSources;
   private chain: Promise<void> = Promise.resolve();
   private timer: ReturnType<typeof setInterval>;
   private closed = false;
   error?: string;
-  constructor(private configPath: string, private controls: (profile: string) => Controls | undefined, private rootDir?: string, sources?: InboxTaskSources) {
-    this.sources = sources ?? new InboxTaskSources(configPath, rootDir);
+  constructor(private configPath: string, private controls: (profile: string) => Controls | undefined, private rootDir?: string, sources?: WorkItemSources) {
+    this.sources = sources ?? new WorkItemSources(configPath, rootDir);
     this.timer = setInterval(() => { void this.reconcile(); }, 15_000);
     this.timer.unref();
   }

@@ -1,13 +1,13 @@
-import { log } from '../core/logger';
-import type { BatchAssessmentPolicy } from '../work-items/contracts';
-import type { InboxConfig } from './config';
-import type { InboxIO } from './types';
-import { triageBatch } from './codex-triage';
-import { analysisChanges, messageBasis, validFollowUp } from './updates';
+import { log } from '../../../core/logger';
+import type { BatchAssessmentPolicy } from '../../../work-items/contracts';
+import type { InboxConfig } from '../../../inbox/config';
+import type { InboxIO } from '../../../inbox/types';
+import { triageBatch, triageFailureReason } from './codex-triage';
+import { analysisChanges, messageBasis, validFollowUp } from '../../../inbox/updates';
 
 export function createLarkAssessment(config: InboxConfig, io: InboxIO): BatchAssessmentPolicy {
   return {
-    kind: 'batch',
+    kind: 'batch', failureReason: triageFailureReason,
     available: Boolean(io.triage),
     select: triageBatch,
     evaluate: (items, signal, progress) => io.triage!(items, signal, progress),

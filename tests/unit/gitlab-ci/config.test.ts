@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
-import { normalizeGitLabCi, validateGitLabCi } from '../../../src/gitlab-ci/config';
+import { normalizeGitLabCi, validateGitLabCi } from '../../../src/monitoring/sources/gitlab-ci/config';
 import { configureCiWatch } from '../../../src/cli/commands/ci-watch';
 
 it('keeps CI watch disabled unless explicitly enabled and validates enabled settings', () => {

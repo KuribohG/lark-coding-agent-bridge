@@ -1,9 +1,9 @@
 import { expect, it, vi } from 'vitest';
 import type { InboxJob } from '../../../src/inbox/types';
-import { triageBatch, triageFailureReason, triageWithChatTools } from '../../../src/inbox/codex-triage';
-import { InboxReadTools, INBOX_READ_TOOLS } from '../../../src/inbox/read-tools';
+import { triageBatch, triageFailureReason, triageWithChatTools } from '../../../src/monitoring/sources/lark/codex-triage';
+import { InboxReadTools, INBOX_READ_TOOLS } from '../../../src/monitoring/sources/lark/read-tools';
 import { InboxToolArgumentsError } from '../../../src/inbox/values';
-import { analysisBody, requestInboxResponse, InboxTriageResultError, parseTriageResult } from '../../../src/inbox/analyzer';
+import { analysisBody, requestInboxResponse, InboxTriageResultError, parseTriageResult } from '../../../src/monitoring/sources/lark/analyzer';
 import { messageBasis } from '../../../src/inbox/updates';
 
 const job = (id: string): InboxJob => ({ id, ownerOpenId: 'ou_owner', source: { chatId: 'oc_source', name: 'test', type: 'p2p' }, messages: [] } as unknown as InboxJob);

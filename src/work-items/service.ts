@@ -4,7 +4,6 @@ import { analysisFailureReason } from '../inbox/analysis-error';
 import type { WorkItemConfig, WorkItemMode } from './config';
 import { WorkItemStore } from './store';
 import { handlingState, replyContent, resultText } from './result';
-import { triageFailureReason } from '../inbox/codex-triage';
 import type { Attention } from '../inbox/types';
 import type { WorkItem } from './types';
 import type { BatchAssessmentPolicy, SourceAdapter, WorkItemRuntime } from './contracts';
@@ -407,7 +406,7 @@ export class WorkItemService {
           if (entry && entry.progress.text !== update.text) entry.progress = { ...entry.progress, text: update.text.slice(0, 240), updatedAt: this.now() };
         }
       }); }
-      catch (error) { failure = triageFailureReason(error); }
+      catch (error) { failure = this.batchPolicy?.failureReason?.(error) ?? '筛选未正常完成'; }
       await this.serial(async () => {
         if (signal.aborted || this.blocked()) return;
         for (const input of inputs) {

@@ -1,11 +1,11 @@
 import { join } from 'node:path';
-import type { AgentAdapter, AgentEvent, AgentRunOptions } from '../agent/types';
-import { processAnalysis } from '../work-items/analysis';
+import type { AgentAdapter, AgentEvent, AgentRunOptions } from '../../../agent/types';
+import { processAnalysis } from '../../../work-items/analysis';
 import { INBOX_ANALYSIS_MODEL } from './analyzer';
-import type { InboxJob } from './types';
-import { analysisChanges, previousAnalysis } from './updates';
-import { createInvestigator } from '../work-items/investigation';
-import type { InvestigationDriver } from '../work-items/contracts';
+import type { InboxJob } from '../../../inbox/types';
+import { analysisChanges, previousAnalysis } from '../../../inbox/updates';
+import { createInvestigator } from '../../../work-items/investigation';
+import type { InvestigationDriver } from '../../../work-items/contracts';
 
 export function processingPrompt(job: InboxJob, background: string): string {
   return `你正在处理所属用户已授权自动分析的会话待办，用户 open_id=${job.ownerOpenId}。该事项已被确认为需要本人处理。
@@ -37,4 +37,4 @@ export async function processInbox(job: InboxJob, agent: AgentAdapter, workspace
       ...preferences, deadlineAt: Date.now() + timeoutMs }, currentSignal, onEvent), preferences)(job, signal);
 }
 
-export { processAnalysis } from '../work-items/analysis';
+export { processAnalysis } from '../../../work-items/analysis';

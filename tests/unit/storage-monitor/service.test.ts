@@ -2,9 +2,9 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseStorageConfig } from '../../../src/storage-monitor/config';
-import { StorageMonitorService } from '../../../src/storage-monitor/service';
-import type { StorageProvider, TaskRun } from '../../../src/storage-monitor/provider';
+import { parseStorageConfig } from '../../../src/monitoring/sources/storage/config';
+import { StorageMonitorService } from '../../../src/monitoring/sources/storage/service';
+import type { StorageProvider, TaskRun } from '../../../src/monitoring/sources/storage/provider';
 import * as atomic from '../../../src/platform/atomic-write';
 import type { WorkItemEvent } from '../../../src/work-items/events';
 

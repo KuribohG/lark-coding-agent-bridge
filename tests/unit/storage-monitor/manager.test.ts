@@ -5,14 +5,14 @@ import { join } from 'node:path';
 import { createRootConfig, saveRootConfig } from '../../../src/config/profile-store';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { formatMonitorConfig } from '../../../src/monitoring/config';
-import { parseStorageConfig } from '../../../src/storage-monitor/config';
-import { StorageMonitorManager } from '../../../src/storage-monitor/manager';
+import { parseStorageConfig } from '../../../src/monitoring/sources/storage/config';
+import { StorageMonitorManager } from '../../../src/monitoring/sources/storage/manager';
 import type { WorkItemSources } from '../../../src/work-items/registry';
 import type { Controls } from '../../../src/commands';
 
 const mocks = vi.hoisted(() => ({ credentials: vi.fn(async () => ({ url: 'https://grafana.test', headers: {} })) }));
-vi.mock('../../../src/storage-monitor/grafana', () => ({ grafanaCredentials: mocks.credentials, GrafanaQueryClient: class {} }));
-vi.mock('../../../src/storage-monitor/provider', () => ({ GrafanaStorageProvider: class {
+vi.mock('../../../src/monitoring/sources/storage/grafana', () => ({ grafanaCredentials: mocks.credentials, GrafanaQueryClient: class {} }));
+vi.mock('../../../src/monitoring/sources/storage/provider', () => ({ GrafanaStorageProvider: class {
   async cluster(c: { id: string }) { return { id: c.id, at: Date.now(), connectedNodes: 10, io: [] }; }
   async tasks() { return []; }
 } }));

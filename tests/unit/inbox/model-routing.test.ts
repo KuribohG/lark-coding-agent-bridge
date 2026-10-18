@@ -6,7 +6,7 @@ import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { normalizeInbox } from '../../../src/inbox/config';
 import { inboxTriageProfile, loadInboxTriageModel } from '../../../src/inbox/model-routing';
 import { backgroundModelSettings } from '../../../src/runtime/background-model';
-import { normalizeGitLabCi } from '../../../src/gitlab-ci/config';
+import { normalizeGitLabCi } from '../../../src/monitoring/sources/gitlab-ci/config';
 
 const dirs: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });

@@ -1,7 +1,7 @@
 import { expect, it, vi } from 'vitest';
-import { frameRows, GrafanaQueryClient, numberField, type QueryClient } from '../../../src/storage-monitor/grafana';
-import { GrafanaStorageProvider } from '../../../src/storage-monitor/provider';
-import { parseStorageConfig } from '../../../src/storage-monitor/config';
+import { frameRows, GrafanaQueryClient, numberField, type QueryClient } from '../../../src/monitoring/sources/storage/grafana';
+import { GrafanaStorageProvider } from '../../../src/monitoring/sources/storage/provider';
+import { parseStorageConfig } from '../../../src/monitoring/sources/storage/config';
 
 const config = () => parseStorageConfig({ platforms: [{ id: 'p', datasource: 'db' }], maxTasks: 2 });
 const watch = { id: 'u', kind: 'user' as const, uid: 42, platform: 'p', enabled: true, clusters: [] };

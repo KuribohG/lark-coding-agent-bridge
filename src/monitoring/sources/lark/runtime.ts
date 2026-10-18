@@ -1,8 +1,8 @@
-import type { WorkItemRuntime } from '../work-items/contracts';
-import { EventSource } from '../work-items/event-source';
-import type { InboxConfig } from './config';
+import type { WorkItemRuntime } from '../../../work-items/contracts';
+import { EventSource } from '../../../work-items/event-source';
+import type { InboxConfig } from '../../../inbox/config';
 import { LarkSource } from './source';
-import type { InboxIO } from './types';
+import type { InboxIO } from '../../../inbox/types';
 
 export function larkRuntime(config: InboxConfig, io: InboxIO, now = Date.now): WorkItemRuntime {
   return {

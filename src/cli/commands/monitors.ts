@@ -1,11 +1,12 @@
-import { storageScope, type StorageState } from '../../storage-monitor/service';
+import { monitorConfigs } from '../../monitoring/sources/configs';
+import { storageScope, type StorageState } from '../../monitoring/sources/storage/service';
 import { join } from 'node:path';
 import { readFile, mkdir, open } from 'node:fs/promises';
 import { dirname, relative, resolve } from 'node:path';
 import { resolveAppPaths } from '../../config/app-paths';
 import { loadRootConfig, saveRootConfig, withConfigFileLock } from '../../config/profile-store';
 import { normalizeInbox } from '../../inbox/config';
-import { normalizeGitLabCi } from '../../gitlab-ci/config';
+import { normalizeGitLabCi } from '../../monitoring/sources/gitlab-ci/config';
 import { formatMonitorConfig, parseMonitorConfig, validateMonitorReferences } from '../../monitoring/config';
 import { loadMonitorRoot, monitorConfigPath, readMonitorFile } from '../../monitoring/store';
 
@@ -67,11 +68,5 @@ export async function statusMonitors(opts: Options): Promise<void> {
     catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('存储监控状态文件无法读取'); }
   }
   console.log(JSON.stringify({ storageState, file: monitorConfigPath(root, path) ?? null, mode: root.monitorConfigFile === undefined ? 'legacy-json' : 'toml',
-    sources: [
-      { id: 'lark', enabled: root.inbox?.enabled ?? false, executorProfile: root.inbox?.executorProfile ?? '', pollSeconds: root.inbox?.pollSeconds },
-      { id: 'gitlab_ci', enabled: root.gitlabCi?.enabled ?? false, executorProfile: root.gitlabCi?.executorProfile ?? '',
-        pollSeconds: root.gitlabCi?.pollSeconds, repositories: root.gitlabCi?.repositories.map(r => r.project) ?? [] },
-      { id: 'storage', enabled: root.storageMonitor?.enabled ?? false, executorProfile: root.storageMonitor?.executorProfile ?? '',
-        pollSeconds: root.storageMonitor?.pollSeconds, watches: root.storageMonitor?.watches ?? [] },
-    ], note: '配置状态；enabled 不代表来源或执行器在线。' }, null, 2));
+    sources: monitorConfigs.map(source => source.summary(root)), note: '配置状态；enabled 不代表来源或执行器在线。' }, null, 2));
 }

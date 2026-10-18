@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { intakeScope, type InboxConfig, type IntakeScope } from './config';
-import { handlingState } from './reply';
-import type { InboxIO, InboxJob, InboxMessage } from './types';
-import type { SourceAdapter, SourceContext } from '../work-items/contracts';
-import { evidenceSignature as signature, recordObservation } from '../work-items/identity';
+import { intakeScope, type InboxConfig, type IntakeScope } from '../../../inbox/config';
+import { handlingState } from '../../../inbox/reply';
+import type { InboxIO, InboxJob, InboxMessage } from '../../../inbox/types';
+import type { SourceAdapter, SourceContext } from '../../../work-items/contracts';
+import { evidenceSignature as signature, recordObservation } from '../../../work-items/identity';
 import { createLarkAssessment } from './assessment';
-import { analysisChanges, messageBasis } from './updates';
+import { analysisChanges, messageBasis } from '../../../inbox/updates';
 
 const resolved = (job: InboxJob) => handlingState(job) !== 'open';
 export function compareMessages(a: InboxMessage, b: InboxMessage): number {

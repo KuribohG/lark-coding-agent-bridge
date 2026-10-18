@@ -11,8 +11,8 @@ import {
 } from './profile-schema';
 import type { AppConfig } from './schema';
 import { normalizeInbox } from '../inbox/config';
-import { parseStorageConfig } from '../storage-monitor/config';
-import { normalizeGitLabCi } from '../gitlab-ci/config';
+import { parseStorageConfig } from '../monitoring/sources/storage/config';
+import { normalizeGitLabCi } from '../monitoring/sources/gitlab-ci/config';
 import { normalizeModelServices } from '../model-service/config';
 
 export async function loadRootConfig(path: string): Promise<RootConfig | undefined> {

@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { writeFileAtomic } from '../platform/atomic-write';
-import type { WorkItemEvent } from '../work-items/events';
+import { writeFileAtomic } from '../../../platform/atomic-write';
+import type { WorkItemEvent } from '../../../work-items/events';
 import type { StorageMonitorConfig, StorageWatch } from './config';
 import type { ClusterSample, IoSample, StorageProvider, TaskRun } from './provider';
 

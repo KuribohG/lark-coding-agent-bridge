@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { parseMonitorConfig, formatMonitorConfig } from '../../../src/monitoring/config';
-import { parseStorageConfig } from '../../../src/storage-monitor/config';
+import { parseStorageConfig } from '../../../src/monitoring/sources/storage/config';
 
 it('round trips UID and cluster subscriptions alongside existing sources', () => {
   const config = parseMonitorConfig(`version = 1

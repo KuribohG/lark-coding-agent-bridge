@@ -190,8 +190,8 @@ export interface RootConfig {
   /** Relative to the root config directory; monitoring settings then live only in this TOML file. */
   monitorConfigFile?: string;
   inbox?: import('../inbox/config').InboxConfig;
-  gitlabCi?: import('../gitlab-ci/config').GitLabCiConfig;
-  storageMonitor?: import('../storage-monitor/config').StorageMonitorConfig;
+  gitlabCi?: import('../monitoring/sources/gitlab-ci/config').GitLabCiConfig;
+  storageMonitor?: import('../monitoring/sources/storage/config').StorageMonitorConfig;
   modelServices?: Record<string, import('../model-service/config').ModelServiceConfig>;
   secrets?: SecretsConfig;
   migrations?: {

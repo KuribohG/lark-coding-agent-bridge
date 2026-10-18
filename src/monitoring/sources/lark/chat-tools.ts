@@ -1,5 +1,5 @@
-import { parseMessages } from './lark';
-import { InboxToolArgumentsError, obj, type Obj } from './values';
+import { parseMessages } from '../../../inbox/lark';
+import { InboxToolArgumentsError, obj, type Obj } from '../../../inbox/values';
 
 const optionalText = { type: ['string', 'null'] };
 const page = { pageToken: { ...optionalText, description: '上一页返回的 nextPageToken；首页传 null。' } };

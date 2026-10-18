@@ -1,3 +1,4 @@
+import { monitorConfigs } from './sources/configs';
 import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
@@ -39,7 +40,7 @@ export async function loadMonitorRoot(configPath: string): Promise<RootConfig | 
   let settings;
   try { settings = parseMonitorConfig(text); validateMonitorReferences(settings, root); }
   catch (error) { throw new Error(`${path}: ${error instanceof Error ? error.message : '监控配置无效'}`); }
-  delete root.inbox; delete root.gitlabCi; delete root.storageMonitor;
+  for (const source of monitorConfigs) delete root[source.key];
   Object.assign(root, settings);
   snapshots.set(root, { path, text });
   return root;

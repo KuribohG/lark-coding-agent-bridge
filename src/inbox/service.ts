@@ -4,9 +4,9 @@ import type { InboxStore } from './store';
 import type { InboxAnalysisQueue } from './task-source';
 import { WorkItemService } from '../work-items/service';
 import type { WorkItemRuntime } from '../work-items/contracts';
-import { larkRuntime } from './runtime';
-import { LarkSource } from './source';
-export { boundMessages, classifyMessage, compareMessages } from './source';
+import { larkRuntime } from '../monitoring/sources/lark/runtime';
+import { LarkSource } from '../monitoring/sources/lark/source';
+export { boundMessages, classifyMessage, compareMessages } from '../monitoring/sources/lark/source';
 
 /** Compatibility facade for existing UI commands and test integrations. */
 export class InboxService extends WorkItemService {

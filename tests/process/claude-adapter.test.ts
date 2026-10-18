@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ClaudeAdapter } from '../../src/agent/claude/adapter.js';
 import type { AgentEvent } from '../../src/agent/types.js';
-import { processAnalysis } from '../../src/inbox/processor.js';
+import { processAnalysis } from '../../src/monitoring/sources/lark/processor.js';
 
 interface FakeBinary {
   path: string;

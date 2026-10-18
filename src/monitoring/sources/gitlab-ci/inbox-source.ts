@@ -1,13 +1,14 @@
 import { join } from 'node:path';
-import type { InboxTaskDriver, InboxTaskEvent } from '../inbox/task-source';
-import type { InboxJob } from '../inbox/types';
-import { replyContent } from '../inbox/reply';
-import { writeFileAtomic } from '../platform/atomic-write';
+import type { InvestigationDriver } from '../../../work-items/contracts';
+import type { WorkItemEvent as InboxTaskEvent } from '../../../work-items/events';
+import type { WorkItem as InboxJob } from '../../../work-items/types';
+import { replyContent } from '../../../work-items/result';
+import { writeFileAtomic } from '../../../platform/atomic-write';
 import type { GitLabClient } from './client';
 import type { GitLabCiConfig } from './config';
 import { prepareCi, readCiResult } from './processor';
 import type { CiRun } from './service';
-import type { RuleAssessmentPolicy } from '../work-items/contracts';
+import type { RuleAssessmentPolicy } from '../../../work-items/contracts';
 
 export const ciAssessment: RuleAssessmentPolicy = {
   kind: 'rule',
@@ -17,7 +18,7 @@ export const ciAssessment: RuleAssessmentPolicy = {
   },
 };
 
-export function ciTaskDriver(config: GitLabCiConfig, client?: GitLabClient): InboxTaskDriver {
+export function ciTaskDriver(config: GitLabCiConfig, client?: GitLabClient): InvestigationDriver & { accepts(item: InboxJob): boolean } {
   return {
     accepts(job) {
       const run = job.external?.data as CiRun | undefined;

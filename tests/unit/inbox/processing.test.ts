@@ -6,7 +6,7 @@ import type { AgentAdapter, AgentEvent } from '../../../src/agent/types';
 import { normalizeInbox } from '../../../src/inbox/config';
 import { InboxAnalysisError } from '../../../src/inbox/analysis-error';
 import { InboxLark } from '../../../src/inbox/lark';
-import { processInbox } from '../../../src/inbox/processor';
+import { processInbox } from '../../../src/monitoring/sources/lark/processor';
 import { InboxService } from '../../../src/inbox/service';
 import { InboxStore } from '../../../src/inbox/store';
 import type { InboxIO, InboxJob, InboxMessage } from '../../../src/inbox/types';

@@ -1,10 +1,62 @@
 # Unified work-item sources
 
-The bridge uses a shared work-item engine for Lark conversation checks and GitLab CI investigations. Source collection and attention rules remain independent; persistence, human controls, analysis scheduling, execution and delivery share one lifecycle.
+The bridge uses a shared work-item engine for Lark conversation checks, GitLab CI investigations and storage/UID incidents. Source collection and attention rules remain independent; persistence, human controls, analysis scheduling, execution and delivery share one lifecycle.
 
-Both existing sources can now be configured in a shared [monitor TOML file](monitor-config.md). This configuration layer selects settings; durable observations and lifecycle state remain in the work-item engine.
+All built-in sources can be configured in a shared [monitor TOML file](monitor-config.md). This configuration layer selects settings; durable observations and lifecycle state remain in the work-item engine.
 
-This is an internal TypeScript integration API. It does not enable 3FS/Yinghuo monitoring or load arbitrary plugins from configuration. Those sources can be implemented against these contracts later.
+This is an internal TypeScript integration API with statically registered modules. It does not load arbitrary code from configuration. Storage and UID monitoring is described in [storage-monitoring.md](storage-monitoring.md); configuring a source does not deploy or activate a newer Bridge binary.
+
+## Source modules and dependency boundaries
+
+Each monitoring method has one directory under `src/monitoring/sources/`:
+
+```text
+src/monitoring/
+  module.ts          # Config registration and runtime lifecycle contracts
+  config.ts          # TOML envelope; delegates each section to its module
+  store.ts           # Shared config persistence and conflict checks
+  runtime.ts         # Shared engine ownership and module lifecycle
+  notification.ts    # Common delivery settings, independent of source rules
+  sources/
+    configs.ts       # Static configuration registrations; no runtime imports
+    index.ts         # Static runtime factories
+    lark/            # Collection, model screening, tools, investigation, manager
+    gitlab-ci/       # GitLab client, polling, failure rules, investigation, manager
+    storage/         # Grafana provider, cluster/UID rules, investigation, manager
+src/work-items/      # Persistence, versioning, scheduling, analysis, controls
+src/inbox/           # Shared Lark transport/workbench and legacy compatibility types
+```
+
+A module exposes a config registration (`id`, legacy root field, parser, optional
+reference validation and status summary) and a runtime factory. `MonitorContext`
+provides the config path, current profile controls and the shared `WorkItemSources`.
+The factory constructs a controller; constructors must not start I/O. Controllers
+implement `reconcile()` and `close()`, own their collector timers/leases, and retain
+last-valid-config and cancellation behavior. `MonitorRuntime` reconciles them
+independently, closes them in reverse registration order, then closes the shared
+engine. A module never closes an engine supplied by the host.
+
+GitLab and storage do not import Lark collection or screening. Their notification
+configuration uses the shared delivery contract. The common event registry creates
+`WorkItemService` directly; it does not create a Lark source facade. Source-specific
+screening error descriptions are provided through `AssessmentPolicy.failureReason`.
+The existing shared workbench and Lark delivery transport are still reused.
+
+To add a built-in source:
+
+1. Add `sources/<name>/` with its configuration, collector/provider, investigation
+   driver and controller. Publish versioned observations through `WorkItemSources`;
+   do not create another analysis queue or notification retry loop.
+2. Register its config in `sources/configs.ts` and its factory in `sources/index.ts`.
+   A new typed root setting also needs its field in `RootConfig`/`MonitorSettings`.
+   Keep config registration imports free of managers, credentials and network I/O,
+   so CLI validation remains local and side-effect free.
+3. Reuse shared work-item, notification and validation contracts. Avoid importing
+   another source's implementation. Add source-specific tests and a disabled TOML
+   example; lifecycle and generic TOML parsing do not need new source branches.
+
+Existing `sources.lark`, `sources.gitlab_ci`, `sources.storage`, source IDs and state
+paths remain unchanged. This reorganization requires no configuration or data migration.
 
 ## Contracts
 
@@ -65,7 +117,7 @@ The existing report format (`replyDraft`, `analysis`, `missingInfo`) remains sup
 
 `WorkItemSources.connect()` registers an event source under a source/owner/profile partition. It accepts an optional `SourceAdapter`, optional deterministic assessment, the investigation driver, execution settings and notification configuration. Existing `InboxTaskSources` and `InboxTaskDriver` imports remain compatibility aliases.
 
-The Lark manager passes `larkRuntime()` into the same `WorkItemService` through the `InboxService` compatibility facade. Lark source logic lives in `src/inbox/source.ts`, model-decision application in `src/inbox/assessment.ts`, and evidence preparation in `larkInvestigationDriver`. Lark-only commands such as selecting a chat or changing intake scope remain on the facade.
+The Lark manager passes `larkRuntime()` into the same `WorkItemService` through the `InboxService` compatibility facade. Lark source logic lives in `src/monitoring/sources/lark/source.ts`, model-decision application in `src/monitoring/sources/lark/assessment.ts`, and evidence preparation in `larkInvestigationDriver`. Lark-only commands such as selecting a chat or changing intake scope remain on the facade.
 
 GitLab registers `EventSource` with `ciAssessment` and `ciTaskDriver`. Its collector still validates pipeline and job status and supplies a stable failure identity; the common engine owns all subsequent handling.
 
@@ -75,13 +127,13 @@ Keep source-specific operations out of the shared engine. New collectors should 
 
 Loading existing records fills missing origin/version fields and removes synthetic messages from external events. It preserves item IDs, results, manually edited drafts, pause flags, topics, attempts and delivery receipts. Inbox and source state directories are unchanged, and the UI continues to receive its existing fields. Conversation display fields remain in the persisted compatibility representation; new event producers do not need to supply them.
 
-An interrupted investigation still requires an explicit retry, matching the existing behavior. This refactor does not enable automatic recovery of interrupted monitoring investigations, priority/reserved execution slots, cross-source incident correlation, or new monitors. Those require separate source and scheduler policies.
+An interrupted investigation still requires an explicit retry, matching the existing behavior. Lark and GitLab retain explicit retry after interrupted investigations. Storage opts into bounded automatic recovery and a separate incident slot as described below. General cross-source incident correlation is not implemented.
 
 Tests cover existing Lark/CI behavior plus migration, observation replay/order conflicts, save failure rollback, late results, source recovery, manual controls, owner isolation and cancellation between investigation phases. Model and Lark writes are mocked in these tests; they do not establish live operational monitoring.
 
 ## Storage and UID source
 
-`storage-monitor` uses the same versioned event/lifecycle contract. It opts into an
+`src/monitoring/sources/storage/` uses the same versioned event/lifecycle contract. It opts into an
 independent shared incident analysis slot, persisted source notices, a daily automatic
 attempt limit, and bounded recovery of restart-interrupted analyses. Existing Lark
 and GitLab sources keep their queue and explicit restart-retry semantics.

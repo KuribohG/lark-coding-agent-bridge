@@ -3,7 +3,7 @@ import type { ProfileConfig, RootConfig } from '../config/profile-schema';
 import { resolveAppPaths } from '../config/app-paths';
 import { modelServiceName, normalizeModelService, type ModelServiceConfig } from '../model-service/config';
 import { loadModelService } from '../model-service/service';
-import { INBOX_ANALYSIS_MODEL } from './analyzer';
+import { INBOX_ANALYSIS_MODEL } from '../monitoring/sources/lark/analyzer';
 import type { InboxConfig } from './config';
 
 export type InboxTriageSource = { kind: 'service'; config: ModelServiceConfig }

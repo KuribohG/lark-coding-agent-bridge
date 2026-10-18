@@ -7,7 +7,7 @@ import { InboxStore } from '../../../src/inbox/store';
 import { InboxService, boundMessages } from '../../../src/inbox/service';
 import { InboxLark, messageTime, parseMessages } from '../../../src/inbox/lark';
 import { InboxH5Auth } from '../../../src/inbox/h5-auth';
-import { analyzeInbox, analysisBody } from '../../../src/inbox/analyzer';
+import { analyzeInbox, analysisBody } from '../../../src/monitoring/sources/lark/analyzer';
 import { startInboxH5 } from '../../../src/inbox/h5-server';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';

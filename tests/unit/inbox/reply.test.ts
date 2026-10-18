@@ -30,7 +30,7 @@ describe('reply content and sync', () => {
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loadAnalysisProvider, analysisBody } from '../../../src/inbox/analyzer';
+import { loadAnalysisProvider, analysisBody } from '../../../src/monitoring/sources/lark/analyzer';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 
 it('routes clicked analysis to the configured default provider model', async () => {

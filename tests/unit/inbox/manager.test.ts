@@ -7,7 +7,7 @@ import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, loadRootConfig, runtimeProfileConfig, saveRootConfig } from '../../../src/config/profile-store';
 import { normalizeInbox } from '../../../src/inbox/config';
 import * as runtimeAgent from '../../../src/runtime/agent-runtime';
-import { InboxManager } from '../../../src/inbox/manager';
+import { InboxManager } from '../../../src/monitoring/sources/lark/manager';
 import { InboxGui } from '../../../src/inbox/gui';
 import { startInboxH5 } from '../../../src/inbox/h5-server';
 import { initMonitors } from '../../../src/cli/commands/monitors';
@@ -15,7 +15,7 @@ import { loadMonitorRoot } from '../../../src/monitoring/store';
 import { formatMonitorConfig } from '../../../src/monitoring/config';
 
 vi.mock('../../../src/agent/model-service', async importOriginal => ({ ...await importOriginal<typeof import('../../../src/agent/model-service')>(), loadProfileModelService: vi.fn(async () => ({ model: 'test' })) }));
-vi.mock('../../../src/inbox/analyzer', () => ({ INBOX_ANALYSIS_MODEL: 'deepseek-flash', loadAnalysisProvider: vi.fn(async () => ({ model: 'test' })), analyzeInbox: vi.fn() }));
+vi.mock('../../../src/monitoring/sources/lark/analyzer', () => ({ INBOX_ANALYSIS_MODEL: 'deepseek-flash', loadAnalysisProvider: vi.fn(async () => ({ model: 'test' })), analyzeInbox: vi.fn() }));
 vi.mock('../../../src/inbox/lark', () => ({ InboxLark: class { checkOwner = vi.fn(async () => {}); close = vi.fn(); cancelPending = vi.fn(); } }));
 vi.mock('../../../src/inbox/gui', () => ({ InboxGui: vi.fn(function (...args: unknown[]) { return { start: vi.fn(async () => {}), close: vi.fn(async () => {}), setMode: args[5], setScope: args[6] }; }) }));
 vi.mock('../../../src/inbox/h5-server', () => ({ startInboxH5: vi.fn(async () => ({ close: async () => {} })) }));

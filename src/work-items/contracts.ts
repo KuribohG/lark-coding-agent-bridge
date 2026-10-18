@@ -48,6 +48,7 @@ export interface RuleAssessmentPolicy {
 }
 export interface BatchAssessmentPolicy {
   kind: 'batch';
+  failureReason?(error: unknown): string;
   available?: boolean;
   select(items: WorkItem[]): WorkItem[];
   evaluate(items: WorkItem[], signal: AbortSignal,

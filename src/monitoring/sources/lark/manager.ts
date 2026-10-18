@@ -1,35 +1,35 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import * as lockfile from 'proper-lockfile';
-import type { Controls } from '../commands';
-import { resolveAppPaths } from '../config/app-paths';
-import { withConfigFileLock } from '../config/profile-store';
-import { loadMonitorRoot, saveMonitorRoot, monitorConfigPath, larkConfigRevision } from '../monitoring/store';
-import { resolveAppSecret } from '../config/secret-resolver';
-import { getCotMessages } from '../config/schema';
-import { CotClient } from '../bot/cot';
-import { inboxMode, intakeScope, normalizeInbox, validateInbox, type InboxConfig, type InboxMode, type IntakeScope } from './config';
-import { inboxTriageSource, loadInboxTriageSource } from './model-routing';
-import { backgroundModelSettings } from '../runtime/background-model';
-import { supportsBackgroundProfile } from '../runtime/agent-capabilities';
-import { getUserAuthStatus } from '../lark-cli/user-im';
-import { guiJobs } from './presentation';
-import { executeInboxCommand } from './workbench';
+import type { Controls } from '../../../commands';
+import { resolveAppPaths } from '../../../config/app-paths';
+import { withConfigFileLock } from '../../../config/profile-store';
+import { loadMonitorRoot, saveMonitorRoot, monitorConfigPath, larkConfigRevision } from '../../store';
+import { resolveAppSecret } from '../../../config/secret-resolver';
+import { getCotMessages } from '../../../config/schema';
+import { CotClient } from '../../../bot/cot';
+import { inboxMode, intakeScope, normalizeInbox, validateInbox, type InboxConfig, type InboxMode, type IntakeScope } from '../../../inbox/config';
+import { inboxTriageSource, loadInboxTriageSource } from '../../../inbox/model-routing';
+import { backgroundModelSettings } from '../../../runtime/background-model';
+import { supportsBackgroundProfile } from '../../../runtime/agent-capabilities';
+import { getUserAuthStatus } from '../../../lark-cli/user-im';
+import { guiJobs } from '../../../inbox/presentation';
+import { executeInboxCommand } from '../../../inbox/workbench';
 import { processInbox } from './processor';
-import { startInboxProgress } from './progress';
-import { createRuntimeAgent } from '../runtime/agent-runtime';
+import { startInboxProgress } from '../../../inbox/progress';
+import { createRuntimeAgent } from '../../../runtime/agent-runtime';
 import { triageWithChatTools } from './codex-triage';
 import { InboxReadTools } from './read-tools';
-import { InboxLark } from './lark';
-import { InboxService } from './service';
-import { InboxStore } from './store';
-import { InboxH5Auth } from './h5-auth';
-import { startInboxH5 } from './h5-server';
-import { InboxCards, type InboxCardContext } from './cards';
-import { CallbackAuth } from '../card/callback-auth';
-import { CallbackNonceStore } from '../card/callback-store';
-import { InboxGui } from './gui';
-import { InboxTaskSources } from './task-sources';
+import { InboxLark } from '../../../inbox/lark';
+import { InboxService } from '../../../inbox/service';
+import { InboxStore } from '../../../inbox/store';
+import { InboxH5Auth } from '../../../inbox/h5-auth';
+import { startInboxH5 } from '../../../inbox/h5-server';
+import { InboxCards, type InboxCardContext } from '../../../inbox/cards';
+import { CallbackAuth } from '../../../card/callback-auth';
+import { CallbackNonceStore } from '../../../card/callback-store';
+import { InboxGui } from '../../../inbox/gui';
+import { InboxTaskSources } from '../../../inbox/task-sources';
 import { larkRuntime } from './runtime';
 
 const connectionConfig = ({ enabled: _, autoAnalyze: __, intakeScope: ___, watchPrivate, watchMentions, ...config }: InboxConfig) =>
@@ -49,8 +49,8 @@ export class InboxManager {
   private timer: ReturnType<typeof setInterval>;
   private closed = false;
   error?: string;
-  constructor(private configPath: string, private controls: (profile: string) => Controls | undefined, private rootDir?: string) {
-    this.sources = new InboxTaskSources(configPath, rootDir);
+  constructor(private configPath: string, private controls: (profile: string) => Controls | undefined, private rootDir?: string, private sharedSources?: InboxTaskSources) {
+    this.sources = sharedSources ?? new InboxTaskSources(configPath, rootDir);
     this.timer = setInterval(() => { void this.reconcile(); }, 15_000);
     this.timer.unref();
   }
@@ -297,6 +297,6 @@ export class InboxManager {
   }
   async close(): Promise<void> {
     this.closed = true; clearInterval(this.timer);
-    await this.chain; await this.stop(); await this.sources.close();
+    await this.chain; await this.stop(); if (!this.sharedSources) await this.sources.close();
   }
 }

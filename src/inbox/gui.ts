@@ -8,7 +8,7 @@ import { guiJobs } from './presentation';
 export { guiSummary, guiContent, guiJobs } from './presentation';
 import { executeInboxCommand } from './workbench';
 import type { InboxTaskSources } from './task-sources';
-import { ATTENTION_RULES } from './analyzer';
+import { ATTENTION_RULES } from '../monitoring/sources/lark/analyzer';
 import { intakeScope, type IntakeScope, type InboxMode } from './config';
 
 interface Command { id: string; action: string; target: string; expiresAt: number }
