@@ -2,6 +2,20 @@
 
 [手册首页](README.md) · [会话助理](assistant.md)
 
+## 统一配置文件
+
+加载支持统一监控配置的新版后，可以把飞书消息检查和 GitLab CI 盯盘都放进一个带注释的 `monitors.toml`：
+
+```sh
+lark-channel-bridge monitors init
+lark-channel-bridge monitors check
+lark-channel-bridge monitors status
+```
+
+`init` 从原配置迁移，保留现有开关、模型、范围和通知目标；不会覆盖已有文件。随后编辑 `[sources.lark]`、`[sources.gitlab_ci]` 和仓库列表即可。账号密钥仍使用原凭据存储，文件里只写引用。
+
+工作台会显示文件位置，设置保存也更新同一个文件。两个来源每 15 秒检查配置，不依赖页面打开；文件有错时保留上一次有效运行配置并显示错误。未迁移的安装继续使用原 JSON。格式示例见[带注释的 TOML](../monitors.example.toml)，迁移、校验和回写细节见[统一监控配置](../monitor-config.md)。
+
 ## 与会话助理的关系
 
 当前 Git 仓库盯盘专门监控 **GitLab CI 失败**。它直接向会话助理提交事项，在同一个本地工作台中查看和处理：
@@ -27,6 +41,8 @@ GitLab 仓库轮询 → 发现新的失败 → 助理待办 → 复查并采集�
 先让个人 Claude / Codex profile 上线，准备能够读取目标 GitLab 项目、pipeline、job 和 trace 的凭据。无需为 CI 单独配置 Responses 筛选服务，也无需开启飞书消息采集。
 
 保存下面的完整 CI 配置为 `ci-watch.json`，替换地址、profile、仓库和绝对路径：
+
+这是兼容的单来源导入方式；已迁移到 TOML 时，它会更新同一个监控文件中的 GitLab 配置。
 
 ```json
 {

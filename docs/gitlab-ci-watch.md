@@ -2,6 +2,8 @@
 
 中文操作说明见[用户手册：盯盘与任务来源](user-guide/monitoring.md)。
 
+New versions can keep both CI and Lark settings in a single [monitor TOML file](monitor-config.md). The JSON import command below remains supported and updates that file after migration.
+
 CI is a task source of the conversation assistant. The watcher only polls and
 submits durable, idempotent events. The assistant owns analysis scheduling,
 retries, drafts, review state, and notifications. The bundled assistant workbench

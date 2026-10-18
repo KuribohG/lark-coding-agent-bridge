@@ -1,6 +1,7 @@
 import { loadRootConfig, saveRootConfig, withConfigFileLock } from '../config/profile-store';
 import { modelServiceName, normalizeModelService } from './config';
 import { loadModelService } from './service';
+import { loadMonitorRoot } from '../monitoring/store';
 
 export async function listModelServices(configPath: string) {
   return (await loadRootConfig(configPath))?.modelServices ?? {};
@@ -22,7 +23,7 @@ export async function removeModelService(configPath: string, name: string): Prom
   await withConfigFileLock(configPath, async () => {
     const root = await loadRootConfig(configPath);
     if (!root) throw new Error('找不到 Bridge 配置');
-    if (root.inbox?.triageService === name) throw new Error('会话助理仍引用此模型服务，请先更改筛选服务');
+    if ((await loadMonitorRoot(configPath))?.inbox?.triageService === name) throw new Error('会话助理仍引用此模型服务，请先更改筛选服务');
     if (root.modelServices) delete root.modelServices[name];
     await saveRootConfig(root, configPath);
   });

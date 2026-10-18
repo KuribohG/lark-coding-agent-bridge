@@ -1,0 +1,48 @@
+# Copy this file, fill in your own profile/IDs/paths, then run:
+# lark-channel-bridge monitors check /absolute/path/monitors.toml
+# lark-channel-bridge monitors configure /absolute/path/monitors.toml
+# Both sources start disabled. For existing installations, prefer monitors init.
+version = 1
+
+# Lark conversation checks: private, private_mentions, or all.
+[sources.lark]
+enabled = false
+executorProfile = "codex"
+ownerOpenId = "ou_OWNER"
+intakeScope = "private_mentions"
+pollSeconds = 10
+analysisModel = "" # Follow the executor profile; an explicit model is also supported.
+attentionProfile = "关注需要我回复或跟进的问题，以及重要的 CI 和存储故障。"
+deliveryMode = "new_topic"
+# triageService = "screening" # Optional existing model-service name.
+
+[sources.lark.destination]
+chatId = "oc_RESULTS"
+threadId = "omt_SETUP_TOPIC"
+replyTo = "om_SETUP_MESSAGE"
+
+# GitLab repository monitoring currently checks failed CI pipelines.
+[sources.gitlab_ci]
+enabled = false
+executorProfile = "codex"
+url = "https://gitlab.example.com"
+tokenEnv = "GITLAB_TOKEN" # Environment variable name, never the token itself.
+# credentialsFile = "/absolute/private/gitlab.env"
+pollSeconds = 30
+model = ""
+outputDir = "/absolute/private/gitlab-ci-analysis"
+
+[[sources.gitlab_ci.repositories]]
+project = "team/project"
+refs = ["dev", "main"] # Empty means all refs.
+sourceDir = "/absolute/path/project"
+
+# Omit this entire notification section to keep results only in the workbench/files.
+[sources.gitlab_ci.notification]
+ownerOpenId = "ou_OWNER"
+deliveryMode = "new_topic"
+
+[sources.gitlab_ci.notification.destination]
+chatId = "oc_RESULTS"
+threadId = "omt_SETUP_TOPIC"
+replyTo = "om_SETUP_MESSAGE"

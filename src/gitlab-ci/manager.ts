@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import * as lockfile from 'proper-lockfile';
 import type { Controls } from '../commands';
 import { resolveAppPaths } from '../config/app-paths';
-import { loadRootConfig } from '../config/profile-store';
+import { loadMonitorRoot } from '../monitoring/store';
 import { log } from '../core/logger';
 import { InboxTaskSources } from '../inbox/task-sources';
 import { GitLabClient, loadGitLabToken } from './client';
@@ -29,20 +29,24 @@ export class GitLabCiManager {
     this.timer.unref();
   }
   reconcile(): Promise<void> {
-    const next = this.chain.then(() => this.reload()).catch(error => {
+    const next = this.chain.then(() => this.reload()).catch(async error => {
       this.error = error instanceof Error ? error.message : 'GitLab CI setup failed';
       log.warn('gitlab-ci', 'setup-failed', { error: this.error });
+      const executor = this.service && this.controls(this.service.config.executorProfile);
+      if (this.service && (!executor || !supportsBackgroundProfile(executor.profileConfig))) await this.stop();
     });
     this.chain = next; return next;
   }
   private async reload(): Promise<void> {
     if (this.closed) return;
-    const root = await loadRootConfig(this.configPath);
+    const root = await loadMonitorRoot(this.configPath);
     const config = normalizeGitLabCi(root?.gitlabCi);
     const controls = this.controls(config.executorProfile);
     const fingerprint = JSON.stringify([config, controls?.profileConfig.codex, controls?.profileConfig.sandbox,
       controls?.profileConfig.agentKind, controls?.profileConfig.mode, controls?.profileConfig.preferences, controls?.botIdentity]);
-    if (this.source && fingerprint === this.fingerprint) return;
+    if (this.source && fingerprint === this.fingerprint) {
+      this.error = config.enabled && !controls ? 'GitLab CI executor profile is offline' : undefined; return;
+    }
     await this.stop();
     if (!config.executorProfile) { this.error = undefined; return; }
     validateGitLabCi(config);

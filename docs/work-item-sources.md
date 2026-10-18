@@ -2,6 +2,8 @@
 
 The bridge uses a shared work-item engine for Lark conversation checks and GitLab CI investigations. Source collection and attention rules remain independent; persistence, human controls, analysis scheduling, execution and delivery share one lifecycle.
 
+Both existing sources can now be configured in a shared [monitor TOML file](monitor-config.md). This configuration layer selects settings; durable observations and lifecycle state remain in the work-item engine.
+
 This is an internal TypeScript integration API. It does not enable 3FS/Yinghuo monitoring or load arbitrary plugins from configuration. Those sources can be implemented against these contracts later.
 
 ## Contracts

@@ -187,6 +187,8 @@ export interface RootConfig {
   schemaVersion: 2;
   activeProfile: string;
   preferences: Record<string, never>;
+  /** Relative to the root config directory; monitoring settings then live only in this TOML file. */
+  monitorConfigFile?: string;
   inbox?: import('../inbox/config').InboxConfig;
   gitlabCi?: import('../gitlab-ci/config').GitLabCiConfig;
   modelServices?: Record<string, import('../model-service/config').ModelServiceConfig>;

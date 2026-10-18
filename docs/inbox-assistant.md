@@ -2,6 +2,8 @@
 
 # 会话助理
 
+支持统一配置的新版可通过 `monitors init` 把飞书与 CI 设置迁移到同一个 [monitors.toml](monitor-config.md)。工作台设置继续可用，并回写该文件。
+
 操作入门见[用户手册](user-guide/assistant.md)。GitLab CI 现通过公共任务来源入口进入助理，复用事项生命周期、分析队列、结果与草稿、复核和通知机制。本地工作台统一展示并可按来源筛选；盯盘保持独立开关，不经过个人关注筛选。下文的采集、范围及开关规则指飞书消息来源，关闭它不会关闭独立开启的盯盘。来源和迁移细节见[盯盘用户文档](user-guide/monitoring.md)。
 
 助理随 Bridge supervisor 启动，复用个人 Claude 或 Codex 执行 profile 的用户授权。托管工作台连接在助理关闭时仍保持心跳，可查看历史、编辑草稿和标记处理。

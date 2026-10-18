@@ -1,0 +1,46 @@
+# Unified monitor configuration
+
+Versions containing the monitor-config implementation can keep Lark conversation checks and GitLab CI monitoring in one TOML file. Source behavior, credentials, item state and the unified investigation engine remain separate from the configuration file.
+
+## Existing installations
+
+Run these commands with the new Bridge version and the intended root configuration:
+
+```sh
+lark-channel-bridge monitors init --config /path/to/config.json
+lark-channel-bridge monitors check --config /path/to/config.json
+lark-channel-bridge monitors status --config /path/to/config.json
+```
+
+`init` writes `monitors.toml` beside `config.json`, preserving existing source switches, scope, model omission/default semantics, credential references and notification targets. It sets `monitorConfigFile` in the root JSON and removes the old `inbox`/`gitlabCi` configuration copies. Profiles, credentials, polling cursors, items and drafts are not migrated or reset. A missing source gets a disabled starter section. Existing target files are never overwritten; use `configure` to select an existing file. Repeating `init` on an already migrated installation is a read-only check.
+
+`--output /path/to/monitors.toml` chooses another new file. The root reference is relative to the root JSON's directory, independent of the process working directory. If creating the file succeeds but saving the root reference fails, the unselected file is retained; check it and use `configure` to complete migration.
+
+Older Bridge binaries do not resolve `monitorConfigFile`. Deploy the supporting version before migration. Installations without the root reference continue to use their original JSON settings.
+
+## Editing and applying
+
+The [commented example](monitors.example.toml) shows both sources. To select a manually prepared file:
+
+```sh
+lark-channel-bridge monitors check /path/to/monitors.toml
+lark-channel-bridge monitors configure /path/to/monitors.toml
+```
+
+`configure` selects that file directly; subsequent edits to it are authoritative. It replaces the complete monitoring configuration: omitting a source disables/removes its configuration rather than inheriting a stale JSON copy. `check` validates syntax, known fields, ranges, required settings and executor/screening references without reading credentials or contacting Lark, GitLab or a model. `status` reports the selected path and configured sources; it is not a runtime health check.
+
+Each running source manager checks configuration every 15 seconds, including when no web page is open. Slow shutdown/setup can delay application. Invalid or missing selected files leave an already running source on its last valid settings and expose an error; they never silently reactivate legacy JSON settings. A stopped/offline executor is still stopped even when the file is invalid. Repairing the file resumes normal configuration reload.
+
+The workbench shows the file path. Its Lark settings, mode and scope controls write this file. The legacy `ci-watch configure <json>` command also writes the GitLab section here once migration is selected. The writer holds the shared configuration lock, preserves the other source's values, checks for external edits before writing, saves the previous text as `monitors.toml.bak`, and atomically replaces the file. Programmatic edits normalize formatting and regenerate explanatory comments; the backup retains user comments. Repeated no-op saves leave the file and backup untouched. Workbench configuration drafts carry a revision; saving an older draft after another Lark configuration change is rejected. Reload settings after manual file edits before saving a draft configuration.
+
+## Fields and boundaries
+
+- `version = 1` is required. Sources are `[sources.lark]` and `[sources.gitlab_ci]`; unknown source names and misspelled keys are rejected.
+- Both use `enabled`, `executorProfile` and `pollSeconds` (integer seconds, 1–3600).
+- Lark uses `intakeScope`, `attentionProfile`, `analysisModel`, optional `triageService`/legacy screening fields, and `[sources.lark.destination]`. Existing context, quota, H5 and GUI fields also round-trip.
+- GitLab uses `url`, `tokenEnv` or `credentialsFile`, `model`, `outputDir`, `[[sources.gitlab_ci.repositories]]`, and optional `notification`/`notification.destination` tables. Its detailed behavior remains in [GitLab CI reference](gitlab-ci-watch.md).
+- `analysisModel = ""` / `model = ""` follows the executor defaults. Omission preserves the existing legacy background-model policy. Migration preserves that distinction.
+- Credentials remain in existing profile/model-service stores, environment variables or referenced credential files. This file does not accept raw token/API-key fields. Relative credential, output and source directory paths are not introduced; the existing absolute-path contracts apply.
+- This version supports one Lark source and one GitLab source (with multiple repositories), matching the current managers. The file does not enable 3FS/Yinghuo monitors or arbitrary plugins.
+
+The configuration file controls subscriptions/settings only. Observations, source cursors, evidence, investigation state and delivery receipts stay in their existing durable stores. Source implementation contracts are described in [work-item sources](work-item-sources.md).
