@@ -52,6 +52,10 @@ Example for 3fs-vnext (replace the local paths and profile name):
 
 `project` accepts a numeric ID or namespace/project path. Empty `refs` watches all
 refs, including MR pipelines; otherwise entries are exact GitLab ref names.
+Versions with one-second CI polling support accept `pollSeconds` from 1 to 3600;
+the default remains 60. Earlier versions clamp it to at least 30 seconds and must
+be upgraded first. Polls do not overlap: a slow query delays the next completed
+check, so this setting is not a guarantee of one-second failure notification.
 `sourceDir` is optional context for reading code, not a directory the watcher
 checks out or modifies. Add more entries to `repositories` to watch other repos
 on the same GitLab server. Tokens come from `tokenEnv`, or from literal

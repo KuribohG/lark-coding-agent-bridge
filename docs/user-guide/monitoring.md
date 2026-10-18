@@ -32,7 +32,7 @@ GitLab 仓库轮询 → 发现新的失败 → 助理待办 → 复查并采集�
   "executorProfile": "codex",
   "url": "https://gitlab.example.com",
   "tokenEnv": "GITLAB_TOKEN",
-  "pollSeconds": 60,
+  "pollSeconds": 1,
   "model": "",
   "outputDir": "/absolute/private/gitlab-ci-analysis",
   "repositories": [
@@ -51,6 +51,7 @@ lark-channel-bridge ci-watch status
 ```
 
 - `project` 可以是项目数字 ID 或 `namespace/project`；`refs` 是精确 ref 名，空数组表示所有 ref。
+- 加载支持 CI 每秒轮询的版本后，`pollSeconds` 可设为 1–3600，默认仍为 60。旧版下限为 30 秒，需先升级。查询串行执行，慢请求会延后下一次完成检查的时间。
 - `sourceDir` 是可选的本地源码参考位置，盯盘不会自动 checkout 或修改这个目录。
 - `model: ""` 跟随执行 profile / CLI。省略时保留旧 Codex 的 Flash 策略，Claude 使用自身默认值。
 - `tokenEnv` 指启动 Bridge 时已有的环境变量。也可以填写 `credentialsFile`，使用私有文件中的字面量 `GITLAB_TOKEN` / `GITLAB_URL` 赋值；文件不会被当作 shell 执行。

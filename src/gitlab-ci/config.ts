@@ -31,7 +31,7 @@ export function normalizeGitLabCi(input: unknown): GitLabCiConfig {
     tokenEnv: str(c.tokenEnv) || 'GITLAB_TOKEN',
     credentialsFile: str(c.credentialsFile),
     pollSeconds: typeof c.pollSeconds === 'number' && Number.isFinite(c.pollSeconds)
-      ? Math.max(30, Math.min(3600, Math.floor(c.pollSeconds))) : 60,
+      ? Math.max(1, Math.min(3600, Math.floor(c.pollSeconds))) : 60,
     ...(typeof c.model === 'string' ? { model: str(c.model) } : {}),
     outputDir: str(c.outputDir),
     repositories: Array.isArray(c.repositories) ? c.repositories.map(r => ({
