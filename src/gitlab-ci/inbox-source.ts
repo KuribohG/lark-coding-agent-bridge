@@ -40,7 +40,7 @@ export async function ciTaskEvent(run: CiRun, config: GitLabCiConfig): Promise<I
   if (run.resultPath) {
     try {
       // The canonical private run path is authoritative, never an arbitrary saved path.
-      const result = await readCiResult(join(config.outputDir, run.id, 'result.json'));
+      const result = await readCiResult(join(config.outputDir, run.id, 'result.json'), run.id);
       Object.assign(initial, replyContent(result.text), { result: result.text, inputTokens: result.inputTokens, outputTokens: result.outputTokens,
         state: run.deliveredAt || !config.notification || (run.deliveryAttempts ?? 0) > 0 ? 'done' : 'ready' });
       if (!run.deliveredAt && (run.deliveryAttempts ?? 0) > 0) initial.error = '旧任务投递未确认，结果已导入工作台，不再自动发送';

@@ -29,7 +29,7 @@ it('archives exact evidence and prepares a read-only inbox task without executin
   const evidence = JSON.parse(await readFile(join(task.cwd, 'evidence.json'), 'utf8'));
   expect(evidence.pipeline.sha).toBe('a'.repeat(40));
   expect(evidence.evidence[0].trace.tail).toBe('test failed');
-  await writeFile(join(task.cwd, 'result.json'), JSON.stringify({ replyDraft: '结论', analysis: '已核实日志', missingInfo: '' }));
+  await writeFile(join(task.cwd, 'result.json'), JSON.stringify({ runId: s.run.id, replyDraft: '结论', analysis: '已核实日志', missingInfo: '' }));
   const cached = await prepareCi(s.run, s.config, s.client, s.signal);
   expect(cached.cached?.text).toContain('已核实日志');
   expect(s.client.pipeline).toHaveBeenCalledTimes(1);

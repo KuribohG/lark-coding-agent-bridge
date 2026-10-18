@@ -6,8 +6,9 @@ import { GitLabClient, GitLabError } from './client';
 import type { GitLabCiConfig } from './config';
 import { failureId, type CiRun } from './service';
 
-export async function readCiResult(path: string): Promise<InboxTaskResult> {
+export async function readCiResult(path: string, runId: string): Promise<InboxTaskResult> {
   const result = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+  if (result.runId !== runId) throw new Error('Stored CI result belongs to another failure');
   if (typeof result.replyDraft !== 'string' || typeof result.analysis !== 'string' || !result.analysis.trim() || typeof result.missingInfo !== 'string') {
     throw new Error('Invalid stored CI result');
   }
@@ -21,7 +22,7 @@ export async function prepareCi(run: CiRun, config: GitLabCiConfig, client: GitL
   const folder = join(config.outputDir, run.id);
   await mkdir(folder, { recursive: true, mode: 0o700 });
   if (reuse) {
-    try { return { cwd: folder, prompt: '', cached: await readCiResult(join(folder, 'result.json')) }; }
+    try { return { cwd: folder, prompt: '', cached: await readCiResult(join(folder, 'result.json'), run.id) }; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
   const obsolete = (): PreparedInboxTask => ({ cwd: folder, prompt: '', cached: { inputTokens: 0, outputTokens: 0,

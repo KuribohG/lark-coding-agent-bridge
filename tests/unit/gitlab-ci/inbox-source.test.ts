@@ -15,7 +15,7 @@ async function fixture() {
     pipeline: { id: 1, ref: 'dev', sha: 'a'.repeat(40), web_url: 'https://gitlab.test/group/repo/-/pipelines/1', status: 'failed', updated_at: '' },
     state: 'ready', attempts: 1, retryAt: 0, resultPath: join(outputDir, 'a'.repeat(32), 'result.json'), topic: config.notification!.destination };
   await mkdir(join(outputDir, run.id));
-  await writeFile(run.resultPath!, JSON.stringify({ replyDraft: '旧结论', analysis: '旧证据', missingInfo: '' }));
+  await writeFile(run.resultPath!, JSON.stringify({ runId: run.id, replyDraft: '旧结论', analysis: '旧证据', missingInfo: '' }));
   return { config, run };
 }
 
@@ -40,4 +40,11 @@ it('rejects arbitrary result paths and does not expose an off-site pipeline URL'
   run.pipeline.web_url = 'javascript:alert(1)';
   const event = await ciTaskEvent(run, config);
   expect(event.url).toBe(''); expect(event.initial?.analysis).toBe('旧证据');
+});
+
+it('does not attach a valid report belonging to a different failure', async () => {
+  const { config, run } = await fixture();
+  await writeFile(run.resultPath!, JSON.stringify({ runId: 'b'.repeat(32), replyDraft: 'other draft', analysis: 'other evidence', missingInfo: '' }));
+  expect((await ciTaskEvent(run, config)).initial).toMatchObject({ state: 'failed' });
+  expect((await ciTaskEvent(run, config)).initial?.analysis).toBeUndefined();
 });
