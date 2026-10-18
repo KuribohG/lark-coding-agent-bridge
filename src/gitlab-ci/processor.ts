@@ -1,25 +1,35 @@
 import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { AgentAdapter } from '../agent/types';
-import type { ModelSettings } from '../agent/model-settings';
-import { processAnalysis } from '../inbox/processor';
+import type { InboxTaskResult, PreparedInboxTask } from '../inbox/task-source';
 import { writeFileAtomic } from '../platform/atomic-write';
 import { GitLabClient, GitLabError } from './client';
 import type { GitLabCiConfig } from './config';
 import { failureId, type CiRun } from './service';
 
-export async function analyzeCi(run: CiRun, config: GitLabCiConfig, client: GitLabClient, agent: AgentAdapter, signal: AbortSignal, settings: ModelSettings) {
+export async function readCiResult(path: string): Promise<InboxTaskResult> {
+  const result = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
+  if (typeof result.replyDraft !== 'string' || typeof result.analysis !== 'string' || !result.analysis.trim() || typeof result.missingInfo !== 'string') {
+    throw new Error('Invalid stored CI result');
+  }
+  return { text: JSON.stringify({ replyDraft: result.replyDraft.slice(0, 6000), analysis: result.analysis.slice(0, 8000), missingInfo: result.missingInfo.slice(0, 2000) }),
+    inputTokens: typeof result.inputTokens === 'number' ? result.inputTokens : 0, outputTokens: typeof result.outputTokens === 'number' ? result.outputTokens : 0 };
+}
+
+export async function prepareCi(run: CiRun, config: GitLabCiConfig, client: GitLabClient, signal: AbortSignal,
+  reuse = true): Promise<PreparedInboxTask> {
+  if (!/^[a-f0-9]{32}$/.test(run.id)) throw new Error('Invalid CI failure ID');
   const folder = join(config.outputDir, run.id);
-  const resultPath = join(folder, 'result.json');
   await mkdir(folder, { recursive: true, mode: 0o700 });
-  try {
-    const result = JSON.parse(await readFile(resultPath, 'utf8')) as Record<string, unknown>;
-    if (result.runId === run.id && typeof result.analysis === 'string' && result.analysis) return resultPath;
-  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  if (reuse) {
+    try { return { cwd: folder, prompt: '', cached: await readCiResult(join(folder, 'result.json')) }; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+  }
+  const obsolete = (): PreparedInboxTask => ({ cwd: folder, prompt: '', cached: { inputTokens: 0, outputTokens: 0,
+    text: JSON.stringify({ replyDraft: '已跳过：pipeline 状态或失败 job 已改变。', analysis: '执行前复查发现此失败已过期，未启动模型分析。新的失败由盯盘继续跟踪。', missingInfo: '' }) } });
   const pipeline = await client.pipeline(run.repository.project, run.pipeline.id, signal);
-  if (pipeline.status !== 'failed') return undefined;
+  if (pipeline.status !== 'failed') return obsolete();
   const failures = await client.failures(run.repository.project, pipeline.id, signal);
-  if (failureId(config.url, run.repository.project, pipeline.id, failures) !== run.id) return undefined;
+  if (failureId(config.url, run.repository.project, pipeline.id, failures) !== run.id) return obsolete();
   const evidence: object[] = [];
   for (const job of failures) {
     if (job.kind === 'bridge') { evidence.push({ job, note: 'Inspect the linked downstream pipeline and its jobs; bridge jobs have no trace.' }); continue; }
@@ -41,10 +51,5 @@ export async function analyzeCi(run: CiRun, config: GitLabCiConfig, client: GitL
 最终仅输出 JSON，字段均为中文字符串：replyDraft（简洁结论和建议）、analysis（事实、根因判断、证据和验证）、missingInfo（证据缺口或待确认动作，没有则为空）。不加 Markdown 围栏。
 本次材料：${JSON.stringify({ project: run.repository.project, pipeline, sourceDir: run.repository.sourceDir,
     evidenceFile: join(folder, 'evidence.json'), failedJobs: failures })}`;
-  const result = await processAnalysis(agent, { runId: `gitlab-ci-${run.id}-${run.attempts}`, cwd: folder, prompt,
-    ...settings, deadlineAt: Date.now() + 30 * 60_000 }, signal);
-  signal.throwIfAborted();
-  await writeFileAtomic(resultPath, JSON.stringify({ runId: run.id, model: settings.model ?? 'default', completedAt: new Date().toISOString(),
-    ...JSON.parse(result.text) as object, inputTokens: result.inputTokens, outputTokens: result.outputTokens }, null, 2));
-  return resultPath;
+  return { cwd: folder, prompt };
 }

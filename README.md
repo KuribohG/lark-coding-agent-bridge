@@ -4,6 +4,8 @@ A lightweight bot that bridges Feishu / Lark messenger with your local Claude Co
 
 [中文 README](./README.zh.md)
 
+See the **[Chinese user guide](docs/user-guide/README.md)** for setup, everyday tasks, models, the assistant, monitoring, operations, and command reference. GitLab CI events now enter the assistant workbench as a task source.
+
 For a product walkthrough, see the [Feishu document](https://larkcommunity.feishu.cn/docx/OaRIdFIRFoLM3xxTmKwcetHqn5e).
 
 

@@ -28,11 +28,13 @@ import { InboxCards, type InboxCardContext } from './cards';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { InboxGui } from './gui';
+import { InboxTaskSources } from './task-sources';
 
 const connectionConfig = ({ enabled: _, autoAnalyze: __, intakeScope: ___, watchPrivate, watchMentions, ...config }: InboxConfig) =>
   ({ ...config, legacyIntake: watchPrivate ? undefined : { watchPrivate, watchMentions } });
 
 export class InboxManager {
+  readonly sources: InboxTaskSources;
   private service?: InboxService;
   private cards?: InboxCards;
   private lark?: InboxLark;
@@ -43,7 +45,9 @@ export class InboxManager {
   private fingerprint = '';
   private chain: Promise<unknown> = Promise.resolve();
   error?: string;
-  constructor(private configPath: string, private controls: (profile: string) => Controls | undefined, private rootDir?: string) {}
+  constructor(private configPath: string, private controls: (profile: string) => Controls | undefined, private rootDir?: string) {
+    this.sources = new InboxTaskSources(configPath, rootDir);
+  }
   async view() {
     const root = await loadRootConfig(this.configPath);
     return { config: normalizeInbox(root?.inbox), running: Boolean(this.service?.config.enabled), error: this.error || this.service?.lastError || this.gui?.lastError,
@@ -51,10 +55,14 @@ export class InboxManager {
   }
   async workbench() {
     const view = await this.view();
-    return { ...view, connected: Boolean(this.service), jobs: guiJobs(this.service?.list(500).filter(j =>
-      j.ownerOpenId === view.config.ownerOpenId && j.profile === view.config.executorProfile) ?? []) };
+    const sources = this.sources.statuses();
+    const jobs = [...(this.service?.list(500).filter(j => j.ownerOpenId === view.config.ownerOpenId && j.profile === view.config.executorProfile) ?? []), ...this.sources.list()];
+    return { ...view, connected: Boolean(this.service) || sources.length > 0, sources,
+      jobs: guiJobs(jobs.sort((a, b) => Number(a.handlingState === 'handled' || a.handlingState === 'ignored' || a.attention?.state === 'quiet') - Number(b.handlingState === 'handled' || b.handlingState === 'ignored' || b.attention?.state === 'quiet') || b.updatedAt - a.updatedAt)) };
   }
   async workbenchCommand(input: unknown) {
+    const source = await this.sources.command(input);
+    if (source.handled) return source.result;
     const service = this.service, lark = this.lark;
     if (!service || !lark) throw new Error('请先完成配置并启动执行 profile');
     return executeInboxCommand(service, lark, input, mode => this.changeMode(service, mode), scope => this.changeScope(service, scope));
@@ -229,7 +237,7 @@ export class InboxManager {
         triage: async (jobs, signal, onProgress) => triageWithChatTools(jobs, config.attentionProfile,
           await loadInboxTriageSource(config, triageSource, this.rootDir), readTools, signal, onProgress),
         notifyAttention: (jobs, id) => lark.notifyAttention(jobs, id),
-      });
+      }, Date.now, this.sources.queue);
       this.nonces = new CallbackNonceStore(join(folder, 'card-nonces.json'));
       await this.nonces.load();
       const cards = new InboxCards(this.service, lark, new CallbackAuth({ keys: [{ version: 1, secret }], nonceStore: this.nonces }), this.nonces);
@@ -239,7 +247,7 @@ export class InboxManager {
       if (config.gui.publicUrl) {
         const service = this.service;
         this.gui = new InboxGui(service, lark, controls.cfg.accounts.app.id, join(folder, 'gui-receipts.json'), fetch,
-          mode => this.changeMode(service, mode), scope => this.changeScope(service, scope));
+          mode => this.changeMode(service, mode), scope => this.changeScope(service, scope), this.sources);
         await this.gui.start();
       }
       if (config.h5.publicUrl) {
@@ -264,5 +272,5 @@ export class InboxManager {
     await this.unlock?.(); this.unlock = undefined;
     this.fingerprint = '';
   }
-  async close(): Promise<void> { await this.chain; await this.stop(); }
+  async close(): Promise<void> { await this.chain; await this.stop(); await this.sources.close(); }
 }

@@ -35,7 +35,7 @@ it('leases one watcher, uses the normal runtime, and releases it when the profil
   await first.reconcile(); await second.reconcile();
   expect(GitLabCiService).toHaveBeenCalledTimes(1);
   expect(second.error).toBeDefined();
-  expect(runtime.createRuntimeAgent).toHaveBeenCalledWith(expect.objectContaining({ agentKind: 'codex' }), expect.objectContaining({ configPath: s.path, rootDir: s.dir }));
+  expect(runtime.createRuntimeAgent).not.toHaveBeenCalled(); // only the inbox worker creates an agent
   await first.close(); await second.reconcile(); expect(second.error).toBeUndefined();
   const instance = vi.mocked(GitLabCiService).mock.results.at(-1)!.value as GitLabCiService;
   s.offline(); await second.reconcile(); expect(instance.close).toHaveBeenCalled();

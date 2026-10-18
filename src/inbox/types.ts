@@ -31,7 +31,7 @@ export interface InboxJob {
   attention?: Attention;
   analysisRequested?: boolean;
   analysisTopic?: InboxConfig['destination'];
-  startDelivery?: { id: string; text: string; attempts: number; startedAt: number; retryAt: number };
+  startDelivery?: { id: string; text: string; attempts: number; startedAt: number; retryAt: number; confirmed?: boolean };
   resultDelivery?: { attempts: number; startedAt: number; retryAt: number };
   notificationSuppressed?: boolean;
   automatic: boolean; alert: boolean; result?: string; error?: string;
@@ -51,6 +51,11 @@ export interface InboxJob {
   draftEdited?: boolean;
   draftStale?: boolean;
   lastReviewRequestId?: string;
+  /** Events from configured watchers use the same lifecycle as conversation jobs. */
+  external?: {
+    source: string; key: string; url: string; data: unknown;
+    analysisAttempts: number; maxAttempts: number; evidenceDir?: string;
+  };
 }
 
 export interface InboxState {
@@ -67,6 +72,8 @@ export interface InboxState {
 }
 
 export interface InboxIO {
+  /** A source partition never performs chat intake or personal attention screening. */
+  taskSource?: { id: string; accepts(job: InboxJob): boolean };
   /** Trusted app/open IDs of this bridge bot; never the human owner ID. */
   selfSenderIds?: readonly string[];
   cancel?(): void;

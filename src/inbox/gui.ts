@@ -7,6 +7,7 @@ import { obj } from './values';
 import { guiJobs } from './presentation';
 export { guiSummary, guiContent, guiJobs } from './presentation';
 import { executeInboxCommand } from './workbench';
+import type { InboxTaskSources } from './task-sources';
 import { ATTENTION_RULES } from './analyzer';
 import { intakeScope, type IntakeScope, type InboxMode } from './config';
 
@@ -32,7 +33,7 @@ export class InboxGui {
   constructor(private service: InboxService, private lark: InboxLark, private appId: string,
     private ledgerPath: string, private request: typeof fetch = fetch,
     private changeMode?: (mode: InboxMode) => Promise<void>,
-    private changeScope?: (scope: IntakeScope) => Promise<void>) {
+    private changeScope?: (scope: IntakeScope) => Promise<void>, private taskSources?: InboxTaskSources) {
     this.ledger = { ownerKey: `${service.config.executorProfile}:${service.config.ownerOpenId}`, receipts: {} };
   }
   async start(): Promise<void> {
@@ -109,7 +110,8 @@ export class InboxGui {
   }
   private snapshot() {
     const config = this.service.config;
-    const all = this.service.list(500).filter(j => j.ownerOpenId === config.ownerOpenId);
+    const all = [...this.service.list(500), ...(this.taskSources?.list() ?? []).filter(j =>
+      j.ownerOpenId === config.ownerOpenId && j.profile === config.executorProfile)].filter(j => j.ownerOpenId === config.ownerOpenId);
     const jobs = guiJobs(all);
     return { jobs, total: all.length, enabled: config.enabled, autoAnalyze: config.autoAnalyze,
       attentionControl: true, attentionProfile: config.attentionProfile || ATTENTION_RULES, batchControl: true,
@@ -132,6 +134,8 @@ export class InboxGui {
   }
   private async execute(command: Command): Promise<unknown> {
     if (this.stopped) throw new Error('助理已关闭');
+    const source = await this.taskSources?.command(command, { owner: this.service.config.ownerOpenId, profile: this.service.config.executorProfile });
+    if (source?.handled) return source.result;
     return executeInboxCommand(this.service, this.lark, command, this.changeMode, this.changeScope);
   }
 }

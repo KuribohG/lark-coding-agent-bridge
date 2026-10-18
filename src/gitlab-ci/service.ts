@@ -9,7 +9,8 @@ export interface CiRun {
   id: string; repository: GitLabRepository; pipeline: Pipeline; failures: FailedJob[];
   url: string; executorProfile: string;
   createdAt: number; updatedAt: number; attempts: number; retryAt: number;
-  state: 'queued' | 'running' | 'ready' | 'done' | 'failed' | 'obsolete';
+  state: 'queued' | 'running' | 'ready' | 'done' | 'failed' | 'obsolete' | 'submitted';
+  inboxJobId?: string; submissionAttempts?: number;
   resultPath?: string; error?: string;
   topic?: InboxConfig['destination']; deliveryAttempts?: number; deliveredAt?: number;
 }
@@ -22,9 +23,7 @@ interface CiState {
 export interface CiIO {
   pipelines(project: string, since: number, until: number, signal: AbortSignal): Promise<Pipeline[]>;
   failures(project: string, id: number, signal: AbortSignal): Promise<FailedJob[]>;
-  analyze(run: CiRun, signal: AbortSignal): Promise<string | undefined>;
-  announce?(run: CiRun, signal: AbortSignal): Promise<InboxConfig['destination']>;
-  deliver?(run: CiRun, signal: AbortSignal): Promise<void>;
+  submit(run: CiRun, signal: AbortSignal): Promise<string>;
 }
 
 export function failureId(url: string, project: string, pipeline: number, failures: FailedJob[]): string {
@@ -48,10 +47,6 @@ export class GitLabCiService {
       if (data.version !== 1 || !data.repositories || !Array.isArray(data.runs)) throw new Error('Invalid GitLab CI state');
       this.data = data;
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-    for (const run of this.data.runs) if (run.state === 'running') {
-      run.state = run.attempts < 3 ? 'queued' : 'failed';
-      run.error = 'Bridge interrupted the analysis';
-    }
     // Persist the baseline before the first request, including when GitLab is unavailable.
     for (const repo of this.config.repositories) {
       this.data.repositories[this.repoKey(repo)] ??= { since: this.now(), cursor: this.now() };
@@ -107,7 +102,7 @@ export class GitLabCiService {
     if (!failed) this.lastError = undefined;
     this.data.lastPollAt = this.now(); this.data.lastError = this.lastError;
     // Results remain on disk; retain a month of compact deduplication records.
-    this.data.runs = this.data.runs.filter(r => ['queued', 'running', 'ready'].includes(r.state) || r.updatedAt > this.now() - 30 * 86400_000);
+    this.data.runs = this.data.runs.filter(r => !r.inboxJobId || r.updatedAt > this.now() - 30 * 86400_000);
     await this.save();
   }
   private kickWorker(): void {
@@ -120,44 +115,16 @@ export class GitLabCiService {
     while (!this.abort.signal.aborted) {
       const belongs = (r: CiRun) => r.url === this.config.url && r.executorProfile === this.config.executorProfile &&
         this.config.repositories.some(repo => repo.project === r.repository.project && (!repo.refs.length || repo.refs.includes(r.pipeline.ref)));
-      const delivery = this.data.runs.find(r => belongs(r) && ['ready', 'failed', 'obsolete'].includes(r.state) &&
-        r.topic && !r.deliveredAt && (r.deliveryAttempts ?? 0) < 3 && r.retryAt <= this.now());
-      if (delivery && this.io.deliver) {
-        delivery.deliveryAttempts = (delivery.deliveryAttempts ?? 0) + 1;
-        await this.save();
-        try {
-          await this.io.deliver(delivery, this.abort.signal);
-          this.abort.signal.throwIfAborted();
-          delivery.deliveredAt = this.now();
-          if (delivery.state === 'ready') delivery.state = 'done';
-        } catch {
-          delivery.retryAt = this.now() + 60_000 * 2 ** (delivery.deliveryAttempts - 1);
-        }
-        await this.save();
-        continue;
-      }
-      const run = this.data.runs.find(r => r.state === 'queued' && r.retryAt <= this.now() &&
-        belongs(r));
+      const run = this.data.runs.find(r => !r.inboxJobId && r.retryAt <= this.now() && belongs(r));
       if (!run) return;
-      run.state = 'running'; run.attempts++; run.updatedAt = this.now();
-      await this.save();
       try {
-        if (!run.topic && this.io.announce) {
-          run.topic = await this.io.announce(run, this.abort.signal);
-          await this.save();
-          this.abort.signal.throwIfAborted();
-        }
-        const resultPath = await this.io.analyze(run, this.abort.signal);
-        this.abort.signal.throwIfAborted();
-        run.resultPath = resultPath;
-        run.state = resultPath ? this.io.deliver ? 'ready' : 'done' : 'obsolete';
-        run.retryAt = 0;
-        run.error = undefined;
-      } catch (error) {
-        run.state = run.attempts < 3 ? 'queued' : 'failed';
-        run.retryAt = this.now() + 60_000 * 2 ** (run.attempts - 1);
-        run.error = this.abort.signal.aborted ? 'Bridge interrupted the analysis' :
-          error instanceof GitLabError ? error.message : 'CI analysis failed; see the private run directory';
+        // Submit is idempotent: a crash between the two stores must not run a task twice.
+        run.inboxJobId = await this.io.submit(structuredClone(run), this.abort.signal);
+        run.state = 'submitted'; run.retryAt = 0; run.error = undefined;
+      } catch {
+        run.submissionAttempts = (run.submissionAttempts ?? 0) + 1;
+        run.retryAt = this.now() + Math.min(300_000, 30_000 * 2 ** Math.min(run.submissionAttempts - 1, 4));
+        run.error = 'Cannot submit CI event to the conversation assistant';
       }
       run.updatedAt = this.now();
       await this.save();

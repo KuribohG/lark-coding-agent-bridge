@@ -4,6 +4,8 @@
 
 [English README](./README.md)
 
+完整中文用户文档见 **[Bridge 用户手册](docs/user-guide/README.md)**：安装、日常任务、模型与账号、会话助理、盯盘、维护及命令速查。GitLab CI 已作为任务来源接入助理工作台。
+
 关于能实现的效果，详情可以阅读[飞书文档](https://larkcommunity.feishu.cn/docx/OaRIdFIRFoLM3xxTmKwcetHqn5e)
 
 

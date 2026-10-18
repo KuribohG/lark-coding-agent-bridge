@@ -56,7 +56,7 @@ export function InboxView({ servicesRevision = 0 }: { servicesRevision?: number 
   return <Card className="mt-6" id="inbox"><CardHeader><CardTitle>会话助理</CardTitle></CardHeader><CardContent className="space-y-4">
     <p className="text-sm text-muted-foreground">在本机整理待办、核对分析并编辑草稿。首次配置后手动开启；可选接入远程工作台。</p>
     <div className="flex flex-wrap items-center gap-3">
-      <span>{view?.running ? '正在接收消息' : '已暂停接收'}</span>
+      <span>{view?.running ? '正在接收飞书消息' : '已暂停接收飞书消息'}；盯盘来源独立控制</span>
       {view?.connected && <Button disabled={busy} variant="outline" onClick={() => void perform(async () => {
         await command('mode', view.running ? 'off' : 'on');
         setConfig(c => c && ({ ...c, enabled: !view.running }));
@@ -130,7 +130,7 @@ export function InboxView({ servicesRevision = 0 }: { servicesRevision?: number 
           <label>独立 H5 入口 URL<Input value={config.h5.publicUrl} onChange={e => change({ h5: { ...config.h5, publicUrl: e.target.value } })} /></label>
           <label>独立 H5 端口<Input type="number" value={config.h5.port} onChange={e => change({ h5: { ...config.h5, port: Number(e.target.value) } })} /></label>
         </div></details>
-        <label className="flex gap-2"><input type="checkbox" checked={config.enabled} onChange={e => change({ enabled: e.target.checked })} />保存后开启会话助理</label>
+        <label className="flex gap-2"><input type="checkbox" checked={config.enabled} onChange={e => change({ enabled: e.target.checked })} />保存后开启飞书消息采集</label>
         <div className="flex gap-2"><Button variant="outline" disabled={busy} onClick={() => void perform(check)}>检查配置</Button>
           <Button disabled={busy} onClick={() => void perform(async () => {
             let next = config;

@@ -5,7 +5,7 @@ import { guiContent, guiSummary } from './presentation';
 import { obj } from './values';
 
 /** Shared by the bundled console and optional hosted GUI; neither can send replies. */
-export async function executeInboxCommand(service: InboxService, lark: InboxLark, input: unknown,
+export async function executeInboxCommand(service: InboxService, lark: InboxLark | undefined, input: unknown,
   changeMode?: (mode: InboxMode) => Promise<void>, changeScope?: (scope: IntakeScope) => Promise<void>): Promise<unknown> {
   const command = obj(input);
   if (typeof command.id !== 'string' || !/^[\da-f-]{36}$/i.test(command.id) ||
@@ -28,6 +28,7 @@ export async function executeInboxCommand(service: InboxService, lark: InboxLark
   }
   if (!service.config.enabled && command.action !== 'detail') throw new Error('助理已关闭，请先开启助理');
   if (command.action === 'browse') {
+    if (!lark) throw new Error('此来源不读取飞书会话');
     const target = obj(JSON.parse(command.target));
     if ((target.type !== 'p2p' && target.type !== 'group') || typeof target.page !== 'string') throw new Error('无效会话分页');
     await lark.checkOwner(owner); return lark.recent(target.type, target.page);

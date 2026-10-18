@@ -6,7 +6,7 @@ import type { guiContent, guiSummary } from '../../../src/inbox/presentation';
 
 type Summary = ReturnType<typeof guiSummary>;
 type Detail = Summary & ReturnType<typeof guiContent>;
-export type WorkbenchView = { config: InboxConfig; running: boolean; connected: boolean; error?: string; jobs: (Summary & { detail?: ReturnType<typeof guiContent> })[] };
+export type WorkbenchView = { config: InboxConfig; running: boolean; connected: boolean; error?: string; sources?: { id: string; label: string; running: boolean; error?: string }[]; jobs: (Summary & { detail?: ReturnType<typeof guiContent> })[] };
 type Command = (action: string, target: unknown) => Promise<unknown>;
 const stateNames: Record<string, string> = { waiting: '待处理', notifying: '准备通知', queued: '等待分析', running: '分析中', ready: '待投递', done: '分析完成', ignored: '已忽略', claimed: '已处理', failed: '分析失败' };
 const category = (job: Summary) => job.handlingState !== 'open' || job.attention?.state === 'quiet' ? 'history' : job.attention?.state === 'needed' || ['queued', 'running', 'ready', 'done', 'failed'].includes(job.state) ? 'pending' : 'screening';
@@ -14,6 +14,7 @@ const category = (job: Summary) => job.handlingState !== 'open' || job.attention
 export function InboxWorkbench({ view, command }: { view: WorkbenchView; command: Command }) {
   const [tab, setTab] = useState('pending');
   const [query, setQuery] = useState('');
+  const [source, setSource] = useState('all');
   const [detail, setDetail] = useState<Detail>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -35,9 +36,12 @@ export function InboxWorkbench({ view, command }: { view: WorkbenchView; command
     const result = await command('browse', { type, page: next }) as { chats: typeof chats; next: string };
     setChats(next ? [...chats, ...result.chats] : result.chats); setPage(result.next); setChatType(type);
   };
-  const list = view.jobs.filter(j => category(j) === tab && (!query || `${j.name} ${j.preview} ${j.attention?.reason}`.toLowerCase().includes(query.toLowerCase())));
+  const inSource = (job: Summary) => source === 'all' || job.sourceKind === source;
+  const list = view.jobs.filter(j => inSource(j) && category(j) === tab && (!query || `${j.name} ${j.preview} ${j.attention?.reason}`.toLowerCase().includes(query.toLowerCase())));
   return <section className="space-y-3">
-    <div className="flex flex-wrap gap-2">{[['pending', '待处理'], ['screening', '筛选与待核对'], ['history', '历史']].map(([value, label]) => <Button key={value} variant={tab === value ? 'secondary' : 'outline'} onClick={() => { setTab(value); setSelection({}); }}>{label} ({view.jobs.filter(j => category(j) === value).length})</Button>)}</div>
+    <div className="flex flex-wrap gap-2">{[['all', '全部来源'], ['conversation', '飞书会话'], ...(view.sources ?? []).map(s => [s.id, s.label])].map(([id, label]) => <Button key={id} variant={source === id ? 'secondary' : 'outline'} onClick={() => { setSource(id!); setSelection({}); }}>{label}</Button>)}</div>
+    {(view.sources ?? []).map(s => <p key={s.id} className="text-xs text-muted-foreground">{s.label}：{s.running ? '已开启' : '已暂停'}{s.error ? ` · ${s.error}` : ''}</p>)}
+    <div className="flex flex-wrap gap-2">{[['pending', '待处理'], ['screening', '筛选与待核对'], ['history', '历史']].map(([value, label]) => <Button key={value} variant={tab === value ? 'secondary' : 'outline'} onClick={() => { setTab(value); setSelection({}); }}>{label} ({view.jobs.filter(j => inSource(j) && category(j) === value).length})</Button>)}</div>
     <Input aria-label="搜索待办" placeholder="搜索会话、消息或筛选原因" value={query} onChange={e => setQuery(e.target.value)} />
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     {notice && <p role="status" className="text-sm">{notice}</p>}
@@ -54,11 +58,11 @@ export function InboxWorkbench({ view, command }: { view: WorkbenchView; command
           <div className="flex flex-wrap justify-between gap-2 text-sm"><strong>{job.name}</strong><span>{stateNames[job.state] || job.state}</span></div>
           <p className="line-clamp-2 text-sm">{job.attention?.reason || job.preview}</p>
           {job.attention?.progress && <p className="line-clamp-3 whitespace-pre-wrap text-xs text-muted-foreground">筛选中：{job.attention.progress.text}</p>}
-          <p className="text-xs text-muted-foreground">{new Date(job.updatedAt).toLocaleString()} · {job.messageCount} 条消息</p>
+          <p className="text-xs text-muted-foreground">{new Date(job.updatedAt).toLocaleString()} · {job.sourceKind === 'conversation' ? `${job.messageCount} 条消息` : job.sourceKind} · {job.executorProfile}</p>
         </button>
       </article>)}
     </div>
-    {detail && <JobDetail key={detail.id} detail={detail} latest={view.jobs.find(j => j.id === detail.id)} connected={view.connected} running={view.running} command={command} onClose={() => setDetail(undefined)} />}
+    {detail && <JobDetail key={detail.id} detail={detail} latest={view.jobs.find(j => j.id === detail.id)} connected={view.connected} running={detail.sourceKind === 'conversation' ? view.running : Boolean(view.sources?.find(s => s.id === detail.sourceKind)?.running)} command={command} onClose={() => setDetail(undefined)} />}
     <details className="rounded-lg border p-3"><summary className="cursor-pointer text-sm font-medium">主动选择会话分析</summary>
       <div className="mt-3 space-y-2">
         <div className="flex gap-2"><Button variant="outline" disabled={busy || !view.running} onClick={() => void perform(() => browse('p2p'))}>最近私聊</Button><Button variant="outline" disabled={busy || !view.running} onClick={() => void perform(() => browse('group'))}>最近群聊</Button></div>
@@ -92,7 +96,8 @@ function JobDetail({ detail, latest, connected, running, command, onClose }: { d
   };
   return <div className="space-y-3 rounded-lg border-2 p-4">
     <div className="flex items-center justify-between gap-2"><h3 className="font-medium">{base.name}</h3><Button variant="ghost" onClick={onClose}>关闭详情</Button></div>
-    <a className="text-sm text-primary underline" href={base.sourceUrl} target="_blank" rel="noreferrer">打开原会话</a>
+    {base.sourceUrl && <a className="text-sm text-primary underline" href={base.sourceUrl} target="_blank" rel="noreferrer">{base.sourceKind === 'conversation' ? '打开原会话' : '打开来源'}</a>}
+    {base.evidenceDir && <p className="break-all text-xs text-muted-foreground">证据目录：{base.evidenceDir}</p>}
     <p className="whitespace-pre-wrap text-sm">{base.analysis || '尚无分析结果'}</p>
     {base.error && <p className="text-sm text-destructive">{base.error}</p>}
     {base.missingInfo && <p className="whitespace-pre-wrap text-sm">待确认：{base.missingInfo}</p>}

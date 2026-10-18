@@ -1,5 +1,7 @@
 # 独立模型 API 服务
 
+首次配置可先阅读[用户手册：模型与账号](user-guide/models-and-accounts.md)。
+
 加载本功能的 Bridge 可在根配置 `modelServices` 中保存模型服务，供筛选、分类等直接 API 调用使用。配置不依赖 Claude/Codex profile，不启动 Agent，也不继承其工具或会话。当前接入协议为 Responses API；Claude Code/Codex 带工具任务继续使用各自的 CLI 配置。
 
 ## 配置

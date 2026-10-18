@@ -10,7 +10,7 @@ import { executeInboxCommand } from '../../../src/inbox/workbench';
 import { guiJobs } from '../../../src/inbox/presentation';
 import { startUiServer } from '../../../src/ui/server';
 import type { UiServerHandle, UiSupervisor } from '../../../src/ui/types';
-import type { InboxManager } from '../../../src/inbox/manager';
+import { InboxManager } from '../../../src/inbox/manager';
 import type { InboxLark } from '../../../src/inbox/lark';
 import type { InboxIO, InboxJob } from '../../../src/inbox/types';
 
@@ -54,4 +54,24 @@ it('serves local jobs and persists version-checked reviews through authenticated
   expect(shutdown).not.toHaveBeenCalled();
   expect((await fetch(`${url}/api/shutdown`, { method: 'POST', headers: { 'x-ui-token': server.token } })).status).toBe(200);
   await vi.waitFor(() => expect(shutdown).toHaveBeenCalledOnce());
+});
+
+it('shows and reviews CI source jobs in the same authenticated workbench with chat intake unconfigured', async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), 'local-source-workbench-'));
+  const manager = new InboxManager(join(rootDir, 'config.json'), () => undefined, rootDir);
+  try {
+    const source = await manager.sources.connect({ id: 'gitlab-ci', label: 'GitLab CI', profile: 'codex', enabled: false,
+      settings: {}, driver: { accepts: () => true, prepare: vi.fn() } });
+    const job = await source.submit({ key: 'pipeline-1', title: 'repo CI #1', reason: 'CI failed', url: 'https://gitlab.test/pipelines/1',
+      time: Date.now(), data: {}, initial: { state: 'done', replyDraft: 'CI draft', analysis: 'CI evidence' } });
+    server = await startUiServer({ rootDir, supervisor: { inbox: manager, list: () => [] } as unknown as UiSupervisor, version: 'test' });
+    const url = `http://127.0.0.1:${server.port}`;
+    const headers = { 'content-type': 'application/json', 'x-ui-token': server.token };
+    const response = await fetch(`${url}/api/inbox/workbench`, { headers });
+    expect(response.status).toBe(200); const view = await response.text();
+    expect(view).toContain('gitlab-ci'); expect(view).toContain('CI draft');
+    const review = await fetch(`${url}/api/inbox/command`, { method: 'POST', headers,
+      body: JSON.stringify({ id: randomUUID(), action: 'review', target: JSON.stringify({ id: job.id, revision: job.revision, handlingState: 'handled' }) }) });
+    expect(review.status).toBe(200); expect(manager.sources.list()[0]?.handlingState).toBe('handled');
+  } finally { await manager.close(); }
 });

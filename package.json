@@ -36,7 +36,8 @@
     "docs/agent-execution.md",
     "docs/model-services.md",
     "LICENSE",
-    "docs/self-contained.md"
+    "docs/self-contained.md",
+    "docs/user-guide"
   ],
   "scripts": {
     "dev": "tsup --watch",

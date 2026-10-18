@@ -7,23 +7,24 @@ import type { Controls } from '../commands';
 import { resolveAppPaths } from '../config/app-paths';
 import { loadRootConfig } from '../config/profile-store';
 import { log } from '../core/logger';
-import { createRuntimeAgent } from '../runtime/agent-runtime';
+import { InboxTaskSources } from '../inbox/task-sources';
 import { GitLabClient, loadGitLabToken } from './client';
 import { normalizeGitLabCi, validateGitLabCi } from './config';
-import { analyzeCi } from './processor';
+import { ciTaskDriver, ciTaskEvent } from './inbox-source';
 import { GitLabCiService } from './service';
-import { ciNotification } from './notification';
 
 export class GitLabCiManager {
   private service?: GitLabCiService;
   private unlock?: () => Promise<void>;
   private fingerprint = '';
-  private notification?: ReturnType<typeof ciNotification>;
+  private source?: Awaited<ReturnType<InboxTaskSources['connect']>>;
+  private sources: InboxTaskSources;
   private chain: Promise<void> = Promise.resolve();
   private timer: ReturnType<typeof setInterval>;
   private closed = false;
   error?: string;
-  constructor(private configPath: string, private controls: (profile: string) => Controls | undefined, private rootDir?: string) {
+  constructor(private configPath: string, private controls: (profile: string) => Controls | undefined, private rootDir?: string, sources?: InboxTaskSources) {
+    this.sources = sources ?? new InboxTaskSources(configPath, rootDir);
     this.timer = setInterval(() => { void this.reconcile(); }, 15_000);
     this.timer.unref();
   }
@@ -41,12 +42,13 @@ export class GitLabCiManager {
     const controls = this.controls(config.executorProfile);
     const fingerprint = JSON.stringify([config, controls?.profileConfig.codex, controls?.profileConfig.sandbox,
       controls?.profileConfig.agentKind, controls?.profileConfig.mode, controls?.profileConfig.preferences, controls?.botIdentity]);
-    if (this.service && controls && fingerprint === this.fingerprint) return;
+    if (this.source && fingerprint === this.fingerprint) return;
     await this.stop();
-    if (!config.enabled || !controls) { this.error = config.enabled ? 'GitLab CI executor profile is offline' : undefined; return; }
+    if (!config.executorProfile) { this.error = undefined; return; }
     validateGitLabCi(config);
-    if (!supportsBackgroundProfile(controls.profileConfig)) throw new Error('GitLab CI requires a personal executor profile with background analysis support');
-    const client = new GitLabClient(config.url, await loadGitLabToken(config));
+    if (controls && !supportsBackgroundProfile(controls.profileConfig)) throw new Error('GitLab CI requires a personal executor profile with background analysis support');
+    const enabled = config.enabled && Boolean(controls);
+    const client = enabled ? new GitLabClient(config.url, await loadGitLabToken(config)) : undefined;
     const paths = resolveAppPaths({ rootDir: this.rootDir, profile: config.executorProfile });
     const folder = join(dirname(this.configPath), 'gitlab-ci');
     await mkdir(folder, { recursive: true, mode: 0o700 });
@@ -55,18 +57,17 @@ export class GitLabCiManager {
     this.unlock = await lockfile.lock(lease, { stale: 60_000, update: 10_000, retries: 0,
       onCompromised: () => { void this.close(); } });
     try {
-      const agent = createRuntimeAgent(controls.profileConfig, { ...paths, configPath: this.configPath });
-      if (controls.botIdentity) agent.setBotIdentity?.(controls.botIdentity);
-      const settings = await backgroundModelSettings(controls.profileConfig, paths.profileDir, config.model, 'max');
-      const notification = ciNotification({ ...config, model: settings.model }, this.rootDir);
-      this.notification = notification;
+      const settings = controls ? await backgroundModelSettings(controls.profileConfig, paths.profileDir, config.model, 'max') : {};
+      this.source = await this.sources.connect({ id: 'gitlab-ci', label: 'GitLab CI', profile: config.executorProfile,
+        enabled, controls, notification: config.notification, settings, driver: ciTaskDriver(config, client) });
+      this.fingerprint = fingerprint;
+      if (!client) { this.error = config.enabled ? 'GitLab CI executor profile is offline' : undefined; return; }
+      const source = this.source;
       this.service = new GitLabCiService(join(folder, 'state.json'), config, {
-        ...notification,
         pipelines: (...args) => client.pipelines(...args), failures: (...args) => client.failures(...args),
-        analyze: async (run, signal) => {
-          const path = await analyzeCi(run, config, client, agent, signal, settings);
-          log.info('gitlab-ci', path ? 'analysis-complete' : 'failure-obsolete', { project: run.repository.project, pipeline: run.pipeline.id, resultPath: path });
-          return path;
+        submit: async (run, signal) => {
+          signal.throwIfAborted();
+          return (await source.submit(await ciTaskEvent(run, config))).id;
         },
       });
       await this.service.start();
@@ -75,8 +76,8 @@ export class GitLabCiManager {
     } catch (error) { await this.stop(); throw error; }
   }
   private async stop(): Promise<void> {
-    this.notification?.close(); this.notification = undefined;
     await this.service?.close(); this.service = undefined;
+    await this.source?.close(); this.source = undefined;
     await this.unlock?.(); this.unlock = undefined;
     this.fingerprint = '';
   }

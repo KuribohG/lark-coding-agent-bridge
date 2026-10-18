@@ -2,6 +2,7 @@ import type { InboxJob } from './types';
 import { handlingState, replyContent } from './reply';
 
 export const guiSummary = (job: InboxJob) => ({ id: job.id, name: job.source.name.slice(0, 80),
+  sourceKind: job.external?.source ?? 'conversation', executorProfile: job.profile,
   chatId: job.source.chatId, type: job.source.type, state: job.state,
   preview: job.messages.at(-1)?.text.slice(0, 80) || '', messageCount: job.messages.length,
   updatedAt: job.updatedAt, dueAt: job.dueAt, automatic: job.automatic, alert: job.alert,
@@ -12,7 +13,8 @@ export function guiContent(job: InboxJob) {
   const legacy = replyContent(job.result);
   const content = { replyDraft: job.replyDraft ?? legacy.replyDraft, analysis: (job.analysis ?? legacy.analysis).slice(0, 8000),
     missingInfo: job.missingInfo ?? legacy.missingInfo, draftEdited: Boolean(job.draftEdited), draftStale: Boolean(job.draftStale),
-    error: job.error?.slice(0, 1000), sourceUrl: job.messages.find(m => /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(m.link || ''))?.link?.slice(0, 1000) ||
+    error: job.error?.slice(0, 1000), evidenceDir: job.external?.evidenceDir,
+    sourceUrl: job.external ? (/^https:\/\//.test(job.external.url) ? job.external.url : '') : job.messages.find(m => /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(m.link || ''))?.link?.slice(0, 1000) ||
       `https://applink.feishu.cn/client/chat/open?openChatId=${job.source.chatId}`,
     messages: job.messages.slice(-5).map(m => ({ name: m.senderName.slice(0, 80), time: m.time, text: m.text.slice(0, 300) })),
     inputTokens: job.inputTokens, outputTokens: job.outputTokens };

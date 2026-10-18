@@ -285,7 +285,7 @@ export class Supervisor {
 
   constructor(private opts: SupervisorOptions) {
     this.inbox = new InboxManager(opts.configPath, profile => this.controlsFor(profile), opts.rootDir);
-    this.gitlabCi = new GitLabCiManager(opts.configPath, profile => this.controlsFor(profile), opts.rootDir);
+    this.gitlabCi = new GitLabCiManager(opts.configPath, profile => this.controlsFor(profile), opts.rootDir, this.inbox.sources);
   }
 
   private get startChannelFn(): StartChannelFn {

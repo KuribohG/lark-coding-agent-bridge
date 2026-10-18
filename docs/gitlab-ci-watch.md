@@ -1,5 +1,13 @@
 # GitLab CI failure analysis
 
+中文操作说明见[用户手册：盯盘与任务来源](user-guide/monitoring.md)。
+
+CI is a task source of the conversation assistant. The watcher only polls and
+submits durable, idempotent events. The assistant owns analysis scheduling,
+retries, drafts, review state, and notifications. The bundled assistant workbench
+shows CI and conversation items together; use the source filter to inspect CI.
+Chat intake and CI keep independent switches and execution model settings.
+
 The bridge can poll a configurable list of GitLab projects and investigate failed
 pipelines using a configured Claude or Codex agent. It uses the executor profile's normal agent
 runtime, tools and rules, with `max` reasoning effort. The investigation prompt
@@ -66,19 +74,22 @@ still investigated. Immediately before evidence collection, the watcher rechecks
 the pipeline and failure IDs and skips obsolete work.
 
 Each distinct pipeline plus set of current failed job/bridge IDs is deduplicated.
-A retried job with a new failed job ID can trigger another analysis. One analysis
-runs at a time while polling continues. Analysis failures retry at most three
-attempts, including attempts interrupted by a bridge restart. Finished results
-are reused after a restart. Deduplication records are kept for 30 days; evidence
+A retried job with a new failed job ID can trigger another analysis. Conversation and source analyses share one FIFO execution slot per Bridge
+process while polling continues. Automatic CI analysis failures retry at most
+three attempts. Explicit user retries do not automatically repeat on failure.
+An analysis interrupted by a Bridge restart requires a manual retry; completed
+results are reused. Deduplication records are kept for 30 days; evidence
 and results remain in `outputDir/<run-id>/` until the owner removes them.
 
 The run directory contains `evidence.json`, raw `job-<id>.log` files and a
 structured `result.json`. Trace downloads are capped at 32 MiB per job and explicitly
-mark truncation. Missing/erased logs are reported as evidence gaps. State and queue
-records live beside bridge configuration in `gitlab-ci/state.json`. Stop the
+mark truncation. Missing/erased logs are reported as evidence gaps. Watcher cursors and submission IDs live beside bridge configuration in
+`gitlab-ci/state.json`; assistant tasks live in
+`inbox/sources/gitlab-ci/<identity-scope>/state.json`. Stop the
 executor profile or set `enabled: false` to stop polling and abort active work.
 
-Without `notification`, results stay local. To have the bridge announce and deliver
+Without `notification`, results are available in the local assistant workbench
+and private run directory, without sending Lark messages. To have the bridge announce and deliver
 results as the bot, add an explicitly chosen destination:
 
 ```json
@@ -100,8 +111,9 @@ topic. Destinations are checked using the bot's access before sending. The start
 announcement and topic are persisted before launching the agent. Delivery retries
 use a stable idempotency key and never rerun a completed model analysis. Delivery
 is attempted at most three times; an undelivered `ready` result remains available
-locally. The destination should be a dedicated results group, such as the existing
-inbox results group, so human follow-up does not create unrelated inbox work.
+locally. The destination can be the existing assistant results group. Events enter
+the assistant directly, not by re-reading bot notifications. Chat intake filters
+its own output as before.
 
 
 ## Claude executor
@@ -116,3 +128,21 @@ CI retains its max-effort request and the existing model compatibility resolutio
 CI analysis runs through the shared background executor and does not require a
 separate Responses API screening service. Lark notification identity remains the
 configured execution profile. No new monitor is enabled by this adapter change.
+
+
+## Existing installations
+
+On the first active poll with this version, known legacy runs are imported into
+assistant tasks. Completed results are imported without model execution; known
+delivered results are not sent again. If an old delivery was attempted but never
+confirmed, keep the result in the workbench for review instead of resending with
+a new notification key. Missing or interrupted results require manual retry.
+Submission is acknowledged only after the assistant store is saved, so a restart
+between the two stores cannot create a second task.
+
+Disabling CI stops its polling and active work, preserving history. Pausing the
+assistant's Lark message intake does not disable CI. Different owner/profile
+combinations use separate state partitions; data is not automatically transferred
+when changing identity. The local workbench aggregates registered sources. The
+optional hosted workbench syncs source items only for its matching owner and
+executor profile; its frontend may need an update to expose source-specific UI.
