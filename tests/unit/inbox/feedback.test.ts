@@ -75,7 +75,7 @@ it('rescreens mixed historical jobs without self output and keeps edited drafts 
 
 it('filters self output from refreshed analysis context and never lets it invalidate a real human request', async () => {
   const s = await setup([], { collect: vi.fn(async kind => kind === 'group' ? [human] : []), context: vi.fn(async () => [human, self]) });
-  await s.service.tick(); s.advance(61_000); await s.service.tick(); await vi.waitFor(() => expect(s.service.list()[0]?.state).toBe('queued'));
+  await s.service.tick(); await vi.waitFor(() => expect(s.service.list()[0]?.state).toBe('queued'));
   await s.service.tick(); await vi.waitFor(() => expect(s.io.analyze).toHaveBeenCalledTimes(1));
   expect(vi.mocked(s.io.analyze).mock.calls[0]![0].messages).toEqual([human]);
   await vi.waitFor(() => expect(s.service.list()[0]?.state).toBe('ready'));

@@ -427,7 +427,8 @@ export class InboxService {
       } catch (e) { this.lastError = e instanceof Error ? e.message : 'inbox poll failed'; }
       if (!this.tasks.analysis && !this.blocked()) {
         const next = this.store.data.jobs.find(j => this.safeSource(j) && j.state === 'queued' && j.analysisRequested && !resolved(j) &&
-          (!j.automatic || (j.attention?.state === 'needed' && this.acceptsSource(j))) && (j.startDelivery?.retryAt ?? 0) <= this.now() && (j.retryAt ?? 0) <= this.now());
+          (!j.automatic || (j.attention?.state === 'needed' && this.acceptsSource(j))) &&
+          (j.startDelivery?.confirmed || (j.startDelivery?.retryAt ?? 0) <= this.now()) && (j.retryAt ?? 0) <= this.now());
         if (next) {
           next.state = 'running'; next.attempt = (next.attempt ?? 0) + 1; await this.store.save();
           if (this.blocked()) { next.state = 'waiting'; next.analysisRequested = false; await this.store.save(); return; }
@@ -438,8 +439,7 @@ export class InboxService {
       if (!this.tasks.triage && !this.blocked()) {
         const candidates = this.store.data.jobs.filter(j => !j.external && !resolved(j) && this.acceptsSource(j) && !j.analysisRequested &&
           !['queued', 'running'].includes(j.state) && j.attention?.state === 'pending' &&
-          (j.attention.retry ? j.attention.retry.nextAt <= this.now() :
-            this.now() - j.updatedAt >= 60_000 || this.now() - j.createdAt >= 120_000)).slice(0, INBOX_TRIAGE_BATCH_SIZE);
+          (j.attention.retry?.nextAt ?? 0) <= this.now()).slice(0, INBOX_TRIAGE_BATCH_SIZE);
         if (candidates.length) {
           const day = new Date(this.now()).toISOString().slice(0, 10);
           const usage = this.store.data.triageUsage ??= {};
@@ -500,7 +500,10 @@ export class InboxService {
     if (previous) {
       if (m.mentions.includes(this.config.ownerOpenId)) previous.intakeTrigger = 'mention';
       previous.messages = boundMessages([...previous.messages.filter(x => x.id !== m.id), m], this.config.maxContextChars);
-      previous.alert ||= category === 'alert'; previous.attention = { state: 'pending', reason: '新消息等待筛选' };
+      // New context supersedes a decision, but must not bypass a failed request's backoff.
+      const retry = previous.attention?.retry;
+      previous.alert ||= category === 'alert';
+      previous.attention = { state: 'pending', reason: retry ? previous.attention!.reason : '新消息等待筛选', ...(retry ? { retry } : {}) };
       previous.analysisRequested = false; this.touch(previous);
       if (previous.result || previous.replyDraft) previous.draftStale = true;
       if (['queued', 'running', 'ready', 'done', 'failed'].includes(previous.state)) {
@@ -546,7 +549,8 @@ export class InboxService {
             if (result.state === 'needed' && this.io.beginAnalysis && !job.draftEdited) {
               job.state = 'queued'; job.automatic = true; job.analysisRequested = true;
               job.destination = { ...this.config.destination };
-              job.startDelivery = undefined; job.resultDelivery = undefined; job.deliveredAt = undefined; job.error = undefined;
+              // A newer screening shares the item's announcement, including an in-flight send.
+              job.resultDelivery = undefined; job.deliveredAt = undefined; job.error = undefined;
             }
             this.touch(job);
           }
@@ -651,10 +655,13 @@ export class InboxService {
           await this.store.save();
         });
         signal.throwIfAborted();
-        const topic = await this.io.beginAnalysis(structuredClone(job), job.startDelivery!.text);
+        const delivery = job.startDelivery!;
+        const topic = await this.io.beginAnalysis(structuredClone(job), delivery.text);
         await this.serial(async () => {
           // Keep a confirmed topic even if the user cancels while the send is in flight.
-          job.analysisTopic = topic; job.startDelivery!.confirmed = true; await this.store.save();
+          job.analysisTopic = topic;
+          if (job.startDelivery?.id === delivery.id) job.startDelivery.confirmed = true;
+          await this.store.save();
         });
         signal.throwIfAborted();
         if (job.state !== 'running' || (job.revision ?? 0) !== revision || this.blocked()) throw new Error('事项已更新');

@@ -30,7 +30,7 @@ async function setup(overrides: Partial<InboxIO> = {}) {
     notifyAttention: vi.fn(async () => {}), triage: vi.fn<NonNullable<InboxIO['triage']>>(async jobs => jobs.map(j => ({ id: j.id, state: 'needed', reason: '需要回复方案' }))), ...overrides };
   const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-processing-')), 'state.json'));
   const service = new InboxService(store, config(), io, () => now); services.push(service); await service.start();
-  await service.tick(); now += 61_000; await service.tick();
+  await service.tick();
   await vi.waitFor(() => expect(service.list()[0]?.attention?.state).toBe('needed'));
   return { service, store, io, advance: (ms: number) => { now += ms; } };
 }

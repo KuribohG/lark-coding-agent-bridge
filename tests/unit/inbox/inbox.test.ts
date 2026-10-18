@@ -76,7 +76,7 @@ describe('durable inbox', () => {
     try { expect(s.io.collect).toHaveBeenCalledTimes(1); }
     finally { finish([message()]); await Promise.all([first, second, third]); }
     expect(s.io.collect).toHaveBeenCalledTimes(2);
-    expect(save).toHaveBeenCalledTimes(3);
+    expect(save).toHaveBeenCalledTimes(4);
     expect(s.service.list()).toHaveLength(1);
   });
   it('backs off failed collection for a minute and resumes one-second polls after recovery', async () => {
@@ -552,7 +552,7 @@ describe('lightweight attention and quiet delivery', () => {
   const classify: NonNullable<InboxIO['triage']> = async jobs => jobs.map(j => ({ id: j.id, state: 'needed', reason: '需要本人确认日期', priority: 'normal' }));
   async function screened(overrides: Partial<InboxIO> = {}) {
     const s = await setup({ triage: vi.fn(classify), notifyAttention: vi.fn(async () => {}), ...overrides });
-    await s.service.tick(); s.advance(61_000); await s.service.tick();
+    await s.service.tick();
     return s;
   }
   it('screens 51 ready items in batches of 50 and 1, counting model calls rather than items', async () => {
@@ -626,10 +626,10 @@ describe('lightweight attention and quiet delivery', () => {
     const s = await screened({ triage });
     await vi.waitFor(() => expect(s.service.list()[0]?.attention?.retry?.attempts).toBe(1));
     const first = s.service.list()[0]!.attention!.retry!;
-    expect(first.nextAt).toBe(1_091_000); expect(first.error).toBe('模型服务限流');
+    expect(first.nextAt).toBe(1_030_000); expect(first.error).toBe('模型服务限流');
     await s.service.close();
     const store = new InboxStore(s.store.path);
-    let now = 1_090_999;
+    let now = 1_029_999;
     const service = new InboxService(store, s.service.config, s.io, () => now); services.push(service); await service.start();
     await service.tick(); expect(triage).toHaveBeenCalledTimes(1);
     now++; await service.tick();
@@ -670,6 +670,8 @@ describe('lightweight attention and quiet delivery', () => {
   });
   it('treats ignored items as quiet, never retries them, and only rescreens after explicit restore', async () => {
     const s = await setup({ triage: vi.fn(classify) }); await s.service.tick();
+    await vi.waitFor(() => expect(s.service.list()[0]?.attention?.state).toBe('needed'));
+    vi.mocked(s.io.triage!).mockClear();
     const job = s.store.data.jobs[0]!;
     job.attention = { state: 'pending', reason: '连接中断', retry: { attempts: 1, nextAt: 0, error: '连接中断' } };
     await s.service.batchReview({ items: [{ id: job.id, revision: job.revision }], handlingState: 'ignored' }, 'ou_owner', 'ignore-one');
@@ -732,7 +734,7 @@ describe('lightweight attention and quiet delivery', () => {
     await expect(s.service.batchReview(request, 'ou_owner', 'batch')).rejects.toThrow('disk failure');
     expect(s.service.list().every(j => j.handlingState === 'open')).toBe(true);
     await s.service.batchReview(request, 'ou_owner', 'batch'); await s.service.batchReview(request, 'ou_owner', 'batch');
-    expect(s.service.list().every(j => j.handlingState === 'handled' && j.revision === 1)).toBe(true);
+    expect(s.service.list().every(j => j.handlingState === 'handled' && j.revision === items.find(i => i.id === j.id)!.revision + 1)).toBe(true);
     const stored = new InboxStore(s.store.path); await stored.load(); expect(stored.data.jobs.every(j => j.handlingState === 'handled')).toBe(true);
     expect(s.io.analyze).not.toHaveBeenCalled(); expect(s.io.deliver).not.toHaveBeenCalled();
   });
