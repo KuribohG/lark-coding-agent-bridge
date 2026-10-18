@@ -15,6 +15,16 @@ const toolCall = (name = 'read_thread_messages', args: unknown = { threadId: 'om
   ({ type: 'function_call', name, arguments: JSON.stringify(args), call_id: id });
 const response = (output: unknown[], status = 'completed') => new Response(JSON.stringify({ status, output }), { headers: { 'content-type': 'application/json' } });
 const fixture = () => { const call = vi.fn(async (_args: string[], _signal: AbortSignal) => ({ messages: [] })); return { call, tools: new InboxReadTools(call) }; };
+
+it('uses configured excerpt limits in the actual model request', async () => {
+  const item = followUpJob();
+  const request = vi.fn<typeof fetch>(async () => response([message([{ ...answer('a', 'needed'), followUp: 'unchanged' }])]));
+  await triageWithChatTools([item], '', provider, fixture().tools, new AbortController().signal, undefined, request, 600_000,
+    { triageMessageLimit: 3, triageMessageChars: 200 });
+  const payload = JSON.parse(JSON.parse(String(request.mock.calls[0]![1]!.body)).input[0].content).items[0];
+  expect(payload.messages.map((m: { id: string }) => m.id)).toEqual(['old', 'new_7', 'new_8']);
+  expect(payload.changes).toHaveLength(9);
+});
 const run = (tools: InboxReadTools, request: typeof fetch, jobs = [job('a')], signal = new AbortController().signal) =>
   triageWithChatTools(jobs, '关联背景', provider, tools, signal, undefined, request);
 
@@ -33,7 +43,7 @@ it('provides prior conclusions and every bounded addition, including additions o
   const body = JSON.parse(String(request.mock.calls[0]![1]!.body));
   const item = JSON.parse(body.input[0].content).items[0];
   expect(item.previousAnalysis.analysis).toBe('已核对原任务'); expect(item.previousAnalysis.attention.state).toBe('needed');
-  expect(item.changes).toHaveLength(9); expect(item.changes[0].text).toBe('补充 0'); expect(item.messages).toHaveLength(6);
+  expect(item.changes).toHaveLength(9); expect(item.changes[0].text).toBe('补充 0'); expect(item.messages).toHaveLength(10);
   expect(body.instructions).toContain('不把“新增消息无关”误判为原问题已解决');
 });
 

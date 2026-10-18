@@ -54,8 +54,20 @@ it.each([
   ['version = 1\n[sources.gitlab_ci]\n[[sources.gitlab_ci.repositories]]\nprojet = "typo"', 'projet'],
   ['version = 1\n[sources.gitlab_ci]\ntoken = "secret"', 'token'],
   ['version = 1\n[sources.lark]\nautoAnalyze = true', 'autoAnalyze'],
+  ['version = 1\n[sources.lark]\ntriageMessageLimit = 1', 'triageMessageLimit'],
+  ['version = 1\n[sources.lark]\ntriageMessageLimit = 101', 'triageMessageLimit'],
+  ['version = 1\n[sources.lark]\ntriageMessageChars = 199', 'triageMessageChars'],
+  ['version = 1\n[sources.lark]\ntriageMessageChars = 16001', 'triageMessageChars'],
+  ['version = 1\n[sources.lark]\ntriageMessageChars = 500.5', 'triageMessageChars'],
 ])('rejects malformed or unsupported settings instead of silently defaulting: %s', (text, field) => {
   expect(() => parseMonitorConfig(text)).toThrow(field);
+});
+
+it('round-trips screening limits and applies defaults to existing TOML installations', () => {
+  const old = parseMonitorConfig('version = 1\n[sources.lark]');
+  expect(old.inbox).toMatchObject({ triageMessageLimit: 12, triageMessageChars: 2000 });
+  const settings = parseMonitorConfig('version = 1\n[sources.lark]\ntriageMessageLimit = 6\ntriageMessageChars = 500');
+  expect(parseMonitorConfig(formatMonitorConfig(settings)).inbox).toMatchObject({ triageMessageLimit: 6, triageMessageChars: 500 });
 });
 
 it('reports syntax locations without echoing the input code block', () => {

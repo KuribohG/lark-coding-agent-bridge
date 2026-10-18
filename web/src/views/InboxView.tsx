@@ -128,6 +128,11 @@ export function InboxView({ servicesRevision = 0 }: { servicesRevision?: number 
         <label className="flex gap-2 text-sm"><input type="checkbox" checked={config.deliveryMode === 'new_topic'} onChange={e => change({ deliveryMode: e.target.checked ? 'new_topic' : 'thread' })} />每个事项新开结果话题（需话题群）</label>
         <fieldset className="flex flex-wrap gap-2"><legend className="mb-2 text-sm">接收范围</legend>{([['private', '私聊'], ['private_mentions', '私聊和 @ 我'], ['all', '全部']] as [IntakeScope, string][]).map(([value, label]) => <Button key={value} variant={intakeScope(config) === value ? 'secondary' : 'outline'} aria-pressed={intakeScope(config) === value} onClick={() => change({ intakeScope: value, watchPrivate: true, watchMentions: value !== 'private' })}>{label}</Button>)}</fieldset>
         <label className="block text-sm">本人职责与关注范围<textarea className="mt-1 min-h-24 w-full rounded border bg-background p-2" maxLength={3000} value={config.attentionProfile} onChange={e => change({ attentionProfile: e.target.value })} placeholder="填写你的职责、项目和需要关注的事项；留空使用通用筛选规则" /></label>
+        <div className="grid gap-3 sm:grid-cols-2 text-sm">
+          <label>筛选消息条数上限<Input type="number" min={2} max={100} value={config.triageMessageLimit} onChange={e => change({ triageMessageLimit: Number(e.target.value) })} /></label>
+          <label>筛选每条消息字符上限<Input type="number" min={200} max={16000} value={config.triageMessageChars} onChange={e => change({ triageMessageChars: Number(e.target.value) })} /></label>
+        </div>
+        <p className="text-xs text-muted-foreground">默认 12 条、每条 2000 字符。保留最早留存消息和近期内容；长消息保留首尾。提高上限可减少上下文缺失，也会增加模型用量。修改后会重新加载收件助理。</p>
         <details><summary className="cursor-pointer text-sm">高级设置与可选远程入口</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">
           {([['dailyTriageLimit', '每日筛选批次上限'], ['contextMinutes', '近期上下文分钟数'], ['pollSeconds', `消息采集间隔秒数（最短 ${INBOX_MIN_POLL_SECONDS} 秒）`]] as const).map(([key, label]) => <label key={key}>{label}<Input type="number" min={key === 'pollSeconds' ? INBOX_MIN_POLL_SECONDS : undefined} max={key === 'pollSeconds' ? 3600 : undefined} value={config[key]} onChange={e => change({ [key]: Number(e.target.value) })} /></label>)}
           <label>远程工作台 URL<Input value={config.gui.publicUrl} onChange={e => change({ gui: { ...config.gui, publicUrl: e.target.value } })} /></label>

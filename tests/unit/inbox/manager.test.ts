@@ -88,6 +88,23 @@ it('retains a running source on invalid TOML and picks up a repaired file withou
   expect((await manager.view()).running).toBe(false);
 });
 
+it('recreates the inbox with changed TOML excerpt limits while preserving its stored jobs', async () => {
+  const { create, path, rootDir, root } = await setup();
+  root.inbox!.gui = { publicUrl: 'https://gui.example', apiKeyFile: join(rootDir, 'key') };
+  await saveRootConfig(root, path); await initMonitors({ config: path });
+  const manager = create(); await manager.reconcile();
+  const before = vi.mocked(InboxGui).mock.calls.at(-1)![0];
+  const store = join(rootDir, 'inbox', 'state.json'); const jobs = JSON.parse(await readFile(store, 'utf8')).jobs;
+  const settings = (await loadMonitorRoot(path))!;
+  settings.inbox!.triageMessageLimit = 20; settings.inbox!.triageMessageChars = 4000;
+  await writeFile(join(rootDir, 'monitors.toml'), formatMonitorConfig(settings));
+  await manager.reconcile();
+  const after = vi.mocked(InboxGui).mock.calls.at(-1)![0];
+  expect(after).not.toBe(before);
+  expect(after.config).toMatchObject({ triageMessageLimit: 20, triageMessageChars: 4000 });
+  expect(JSON.parse(await readFile(store, 'utf8')).jobs).toEqual(jobs);
+});
+
 it('starts without HTTPS and does not open an HTTP listener', async () => {
   const { create, root, path } = await setup();
   root.inbox!.h5.publicUrl = ''; await saveRootConfig(root, path);

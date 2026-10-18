@@ -9,7 +9,7 @@ export function createLarkAssessment(config: InboxConfig, io: InboxIO): BatchAss
   return {
     kind: 'batch', failureReason: triageFailureReason,
     available: Boolean(io.triage),
-    select: triageBatch,
+    select: items => triageBatch(items, config),
     evaluate: (items, signal, progress) => io.triage!(items, signal, progress),
     valid: validFollowUp,
     apply(job, input, result) {

@@ -92,7 +92,7 @@ export async function requestInboxResponse(body: object, provider: AnalysisProvi
   return completed;
 }
 
-export const ATTENTION_RULES = '严格筛选，只关注有明确证据要求本人回复、确认、拍板、执行的请求及截止期限，或本人负责的系统发生且需要本人采取动作的故障、回归、风险、阻塞。领域关键词、本人在群内、@全体、FATAL/严重标签、通用的“请检查”都不能推定本人负责。机器告警没有本人责任、本人任务受影响或明确交办的证据时应 quiet，不进入待核对；告警内容技术上严重不等于与本人相关。普通闲聊、FYI、无需动作的成功通知、已解决问题、无变化的重复报警应 quiet。uncertain 仅用于已经有明确个人关联，但必要事实不足以决定是否行动的事项；先查相关上下文，不能把所有无法证明无关的消息都交给人工。';
+export const ATTENTION_RULES = '根据本人职责和未闭环影响筛选：明确要求本人回复、确认、拍板、执行的请求及期限应关注；本人负责的系统或具体任务出现未解决的故障、回归、风险、阻塞，也应关注。所需动作可以是核实影响、确认排查安排或跟进风险，不限于本人亲自修复；无需等待点名交办。领域关键词、本人在群内、@全体、FATAL/严重标签不能单独推定本人负责。没有本人责任或本人系统受影响证据的机器告警应 quiet。普通闲聊、纯 FYI、成功通知、已解决问题、无变化的重复报警应 quiet。uncertain 仅用于已经有明确个人关联，但回查后仍缺少决定是否行动的必要事实；不能把所有无法证明无关的消息都交给人工。';
 
 // Read complete strings and the available prefix of an unfinished JSON string.
 function partialString(text: string, start: number) {

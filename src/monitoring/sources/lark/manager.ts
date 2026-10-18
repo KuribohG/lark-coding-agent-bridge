@@ -258,7 +258,7 @@ export class InboxManager {
           } finally { await progress?.finish(success); }
         },
         triage: async (jobs, signal, onProgress) => triageWithChatTools(jobs, config.attentionProfile,
-          await loadInboxTriageSource(config, triageSource, this.rootDir), readTools, signal, onProgress),
+          await loadInboxTriageSource(config, triageSource, this.rootDir), readTools, signal, onProgress, undefined, undefined, config),
         notifyAttention: (jobs, id) => lark.notifyAttention(jobs, id),
       }), Date.now, this.sources.queue);
       this.nonces = new CallbackNonceStore(join(folder, 'card-nonces.json'));

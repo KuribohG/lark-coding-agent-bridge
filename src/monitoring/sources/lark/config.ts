@@ -9,6 +9,7 @@ const schema = table({
   intakeScope: choice('private', 'private_mentions', 'all'), watchPrivate: boolean, watchMentions: boolean,
   autoAnalyze: (v, p) => { if (v !== false) fail(p, '旧版 autoAnalyze 仅支持 false'); },
   attentionProfile: string, analysisModel: string, triageService: string, triageProfile: string, triageModel: string,
+  triageMessageLimit: integer(2, 100), triageMessageChars: integer(200, 16_000),
   dailyTriageLimit: integer(0, 1_000_000), waitMinutes: integer(1, 1440), pollSeconds: integer(1, 3600),
   contextMinutes: integer(5, 1440), maxContextChars: integer(2000, 100_000), dailyAutoLimit: integer(0, 1000),
   h5: table({ publicUrl: string, port: integer(1024, 65535) }), gui: table({ publicUrl: string, apiKeyFile: string }),
