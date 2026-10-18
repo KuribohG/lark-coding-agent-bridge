@@ -69,7 +69,7 @@ it('coalesces an in-flight burst into one latest screening and never analyzes th
   await s.service.tick();
   expect(s.batches).toHaveLength(2); expect(s.batches[1]!.jobs[0]!.messages).toHaveLength(16);
   await s.complete(1, 'needed'); await s.service.tick();
-  await vi.waitFor(() => expect(s.store.data.jobs[0]?.state).toBe('ready'));
+  await vi.waitFor(() => expect(['ready', 'done']).toContain(s.store.data.jobs[0]?.state));
   s.advance(); await s.service.tick(); await s.service.tick();
   expect(s.batches).toHaveLength(2); expect(s.io.analyze).toHaveBeenCalledTimes(1);
   expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1); expect(s.io.deliver).toHaveBeenCalledTimes(1);
@@ -95,13 +95,21 @@ it('keeps different topics separate while combining a burst within each topic', 
 });
 
 it('withdraws a queued stale analysis when the next collection contains more context', async () => {
-  const s = await setup(); s.add('om_one'); await s.service.tick(); await s.complete(0, 'needed');
-  expect(s.store.data.jobs[0]?.state).toBe('queued');
+  const s = await setup(); let finishBusy!: () => void;
+  vi.mocked(s.io.analyze).mockImplementationOnce((_job, signal) => new Promise((resolve, reject) => {
+    finishBusy = () => resolve({ text: '{"analysis":"完成"}', inputTokens: 1, outputTokens: 1 });
+    signal.addEventListener('abort', () => reject(Error('cancelled')), { once: true });
+  }));
+  s.add('om_busy', { chatId: 'oc_busy' }); await s.service.tick(); await s.complete(0, 'needed');
+  await vi.waitFor(() => expect(finishBusy).toBeDefined());
+  s.advance(); s.add('om_one'); await s.service.tick(); await s.complete(1, 'needed');
+  const target = s.store.data.jobs.find(j => j.source.chatId === 'oc_source')!;
+  expect(target.state).toBe('queued');
   s.advance(); s.add('om_two'); s.add('om_three'); await s.service.tick();
-  expect(s.io.analyze).not.toHaveBeenCalled(); expect(s.io.beginAnalysis).not.toHaveBeenCalled();
-  expect(s.batches).toHaveLength(2); expect(s.batches[1]!.jobs[0]!.messages).toHaveLength(3);
-  await s.complete(1, 'quiet'); await s.service.tick();
-  expect(s.io.analyze).not.toHaveBeenCalled(); expect(s.store.data.jobs[0]?.attention?.state).toBe('quiet');
+  expect(s.io.analyze).toHaveBeenCalledTimes(1); expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1);
+  expect(s.batches).toHaveLength(3); expect(s.batches[2]!.jobs[0]!.messages).toHaveLength(3);
+  await s.complete(2, 'quiet'); finishBusy(); await s.service.tick();
+  expect(s.io.analyze).toHaveBeenCalledTimes(1); expect(target.attention?.state).toBe('quiet');
 });
 
 it('preserves failure backoff when more messages arrive and retries the latest combined context', async () => {
@@ -141,7 +149,7 @@ it('keeps an unconfirmed announcement id and retry deadline across new messages'
   s.advance(); s.add('om_two'); await s.service.tick(); await s.complete(1, 'needed'); await s.service.tick();
   expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1); expect(s.io.analyze).not.toHaveBeenCalled();
   expect(s.store.data.jobs[0]?.startDelivery).toEqual(delivery);
-  s.advance(59_000); await s.service.tick(); await vi.waitFor(() => expect(s.store.data.jobs[0]?.state).toBe('ready'));
+  s.advance(59_000); await s.service.tick(); await vi.waitFor(() => expect(['ready', 'done']).toContain(s.store.data.jobs[0]?.state));
   expect(s.io.beginAnalysis).toHaveBeenCalledTimes(2);
   expect(vi.mocked(s.io.beginAnalysis!).mock.calls[1]![0].startDelivery?.id).toBe(delivery.id);
   expect(s.io.analyze).toHaveBeenCalledTimes(1);

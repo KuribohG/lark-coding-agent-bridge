@@ -43,7 +43,12 @@ export class InboxService {
   private lastPoll = 0;
   private pollRetryAt = 0;
   private polling?: Promise<void>;
+  private refreshing?: Promise<void>;
+  private contextRetryAt = 0;
+  private contextError?: string;
   private ticking?: Promise<void>;
+  private dispatching?: Promise<void>;
+  private dispatchRequested = false;
   private intakeGeneration = 0;
   private triageProgress = new Map<string, { signature: string; progress: NonNullable<Attention['progress']> }>();
   lastError?: string;
@@ -81,7 +86,9 @@ export class InboxService {
     this.io.cancel?.();
     await Promise.all(Object.values(this.tasks).map(task => task.done));
     await this.polling;
+    await this.refreshing;
     await this.ticking;
+    await this.dispatching;
     await this.chain;
   }
   list(limit = 100): InboxJob[] {
@@ -354,29 +361,15 @@ export class InboxService {
         if (!current()) return;
         if (kind === 'p2p' ? !this.config.watchPrivate : kind === 'group' ? intakeScope(this.config) !== 'all' : !this.config.watchMentions || intakeScope(this.config) === 'all') continue;
         const start = this.store.data.cursors[kind] ?? now;
+        const snapshot = this.intakeSnapshot();
         const messages = await this.io.collect(kind, start - 300_000, now);
         await this.serial(async () => {
           if (!current()) return;
-          for (const m of messages.sort(compareMessages)) this.ingest(m, start - 300_000);
+          this.ingestBatch(messages, start - 300_000, snapshot);
           this.store.data.cursors[kind] = now; await this.store.save();
         });
       }
-      if (!current()) return;
-      const sources = new Map<string, InboxJob>();
-      for (const job of this.store.data.jobs) if (!resolved(job) && this.acceptsSource(job)) sources.set(job.source.chatId, structuredClone(job));
-      for (const [chatId, job] of [...sources].sort((a, b) => (this.store.data.cursors[`context:${a[0]}`] ?? 0) - (this.store.data.cursors[`context:${b[0]}`] ?? 0)).slice(0, 10)) {
-        if (!current()) return;
-        const key = `context:${chatId}`;
-        const since = this.store.data.cursors[key] ?? job.messages[0]!.time;
-        if (now - since < 60_000) continue;
-        const context = await this.io.context(chatId, since - 60_000, now);
-        await this.serial(async () => {
-          if (!current()) return;
-          for (const m of context.sort(compareMessages)) this.ingest(m, since - 60_000);
-          this.store.data.cursors[key] = now; await this.store.save();
-        });
-      }
-      if (current()) { this.lastError = undefined; this.pollRetryAt = 0; }
+      if (current()) { this.lastError = this.contextError; this.pollRetryAt = 0; }
     } catch (error) {
       if (current()) {
         this.lastError = error instanceof Error ? error.message : 'inbox poll failed';
@@ -385,8 +378,47 @@ export class InboxService {
       }
     }
   }
+  private async refreshContexts(): Promise<void> {
+    if (this.io.taskSource || this.blocked() || this.now() < this.contextRetryAt) return;
+    const now = this.now();
+    const generation = this.intakeGeneration;
+    const current = () => !this.blocked() && generation === this.intakeGeneration;
+    try {
+      const sources = new Map<string, InboxJob>();
+      for (const job of this.store.data.jobs) if (!resolved(job) && this.acceptsSource(job)) sources.set(job.source.chatId, structuredClone(job));
+      const due = [...sources].sort((a, b) => (this.store.data.cursors[`context:${a[0]}`] ?? 0) - (this.store.data.cursors[`context:${b[0]}`] ?? 0))
+        .slice(0, 10).filter(([chatId, job]) => now - (this.store.data.cursors[`context:${chatId}`] ?? job.messages[0]!.time) >= 60_000);
+      if (!due.length) return;
+      await this.io.checkOwner(this.config.ownerOpenId);
+      for (const [chatId, job] of due) {
+        if (!current()) return;
+        const key = `context:${chatId}`;
+        const since = this.store.data.cursors[key] ?? job.messages[0]!.time;
+        if (now - since < 60_000) continue;
+        const snapshot = this.intakeSnapshot();
+        const context = await this.io.context(chatId, since - 60_000, now);
+        await this.serial(async () => {
+          if (!current()) return;
+          this.ingestBatch(context, since - 60_000, snapshot);
+          this.store.data.cursors[key] = now; await this.store.save();
+        });
+        if (current()) await this.dispatch();
+      }
+      if (current()) {
+        this.contextRetryAt = 0;
+        if (this.lastError === this.contextError) this.lastError = undefined;
+        this.contextError = undefined;
+      }
+    } catch (error) {
+      if (current()) {
+        this.contextError = error instanceof Error ? error.message : 'inbox context refresh failed';
+        this.lastError = this.contextError;
+        this.contextRetryAt = this.now() + 60_000;
+      }
+    }
+  }
   tick(): Promise<void> {
-    // Coalesce the whole tick so slow IO cannot queue duplicate maintenance work.
+    // Collection, history refresh and dispatch each have at most one in-flight pass.
     return this.ticking ??= this.runTick().finally(() => { this.ticking = undefined; });
   }
   private async runTick(): Promise<void> {
@@ -425,38 +457,73 @@ export class InboxService {
         for (const [id, time] of Object.entries(this.store.data.seen)) if (now - time > 2 * 86400_000) delete this.store.data.seen[id];
         await this.store.save();
       } catch (e) { this.lastError = e instanceof Error ? e.message : 'inbox poll failed'; }
-      if (!this.tasks.analysis && !this.blocked()) {
-        const next = this.store.data.jobs.find(j => this.safeSource(j) && j.state === 'queued' && j.analysisRequested && !resolved(j) &&
-          (!j.automatic || (j.attention?.state === 'needed' && this.acceptsSource(j))) &&
-          (j.startDelivery?.confirmed || (j.startDelivery?.retryAt ?? 0) <= this.now()) && (j.retryAt ?? 0) <= this.now());
-        if (next) {
-          next.state = 'running'; next.attempt = (next.attempt ?? 0) + 1; await this.store.save();
-          if (this.blocked()) { next.state = 'waiting'; next.analysisRequested = false; await this.store.save(); return; }
-          this.launch('analysis', signal => this.analysisQueue
-            ? this.analysisQueue.run(signal, current => this.run(next, current)) : this.run(next, signal));
-        }
-      }
-      if (!this.tasks.triage && !this.blocked()) {
-        const candidates = this.store.data.jobs.filter(j => !j.external && !resolved(j) && this.acceptsSource(j) && !j.analysisRequested &&
-          !['queued', 'running'].includes(j.state) && j.attention?.state === 'pending' &&
-          (j.attention.retry?.nextAt ?? 0) <= this.now()).slice(0, INBOX_TRIAGE_BATCH_SIZE);
-        if (candidates.length) {
-          const day = new Date(this.now()).toISOString().slice(0, 10);
-          const usage = this.store.data.triageUsage ??= {};
-          if (!this.io.triage || (usage[day] ?? 0) >= this.config.dailyTriageLimit) {
-            for (const job of candidates) this.retryTriage(job, !this.io.triage ? '筛选服务暂不可用' : '今日筛选额度已用完',
-              !this.io.triage ? this.now() + 900_000 : (Math.floor(this.now() / 86400_000) + 1) * 86400_000);
-            await this.store.save();
-          } else {
-            usage[day] = (usage[day] ?? 0) + 1; await this.store.save();
-            if (!this.blocked()) this.launch('triage', signal => this.triage(candidates, signal));
-          }
-        }
-      }
     });
+    await this.dispatch();
+    if (!this.refreshing && !this.blocked()) {
+      this.refreshing = this.refreshContexts().finally(() => { this.refreshing = undefined; });
+    }
+  }
+  private dispatch(): Promise<void> {
+    this.dispatchRequested = true;
+    return this.dispatching ??= this.runDispatch().catch(error => {
+      this.pauseAfterFailure(); throw error;
+    }).finally(() => {
+      this.dispatching = undefined;
+      // A completion can request dispatch between the loop exit and this cleanup.
+      if (this.dispatchRequested && !this.blocked()) void this.dispatch().catch(() => {});
+    });
+  }
+  private async runDispatch(): Promise<void> {
+    do {
+      this.dispatchRequested = false;
+      await this.serial(() => this.dispatchJobs());
+    } while (this.dispatchRequested && !this.blocked());
+  }
+  private async dispatchJobs(): Promise<void> {
+    if (!this.tasks.analysis && !this.blocked()) {
+      const next = this.store.data.jobs.find(j => this.safeSource(j) && j.state === 'queued' && j.analysisRequested && !resolved(j) &&
+        (!j.automatic || (j.attention?.state === 'needed' && this.acceptsSource(j))) &&
+        (j.startDelivery?.confirmed || (j.startDelivery?.retryAt ?? 0) <= this.now()) && (j.retryAt ?? 0) <= this.now());
+      if (next) {
+        next.state = 'running'; next.attempt = (next.attempt ?? 0) + 1; await this.store.save();
+        if (this.blocked()) { next.state = 'waiting'; next.analysisRequested = false; await this.store.save(); return; }
+        this.launch('analysis', signal => this.analysisQueue
+          ? this.analysisQueue.run(signal, current => this.run(next, current)) : this.run(next, signal));
+      }
+    }
+    if (!this.tasks.triage && !this.blocked()) {
+      const candidates = this.store.data.jobs.filter(j => !j.external && !resolved(j) && this.acceptsSource(j) && !j.analysisRequested &&
+        !['queued', 'running'].includes(j.state) && j.attention?.state === 'pending' &&
+        (j.attention.retry?.nextAt ?? 0) <= this.now()).slice(0, INBOX_TRIAGE_BATCH_SIZE);
+      if (candidates.length) {
+        const day = new Date(this.now()).toISOString().slice(0, 10);
+        const usage = this.store.data.triageUsage ??= {};
+        if (!this.io.triage || (usage[day] ?? 0) >= this.config.dailyTriageLimit) {
+          for (const job of candidates) this.retryTriage(job, !this.io.triage ? '筛选服务暂不可用' : '今日筛选额度已用完',
+            !this.io.triage ? this.now() + 900_000 : (Math.floor(this.now() / 86400_000) + 1) * 86400_000);
+          await this.store.save();
+        } else {
+          usage[day] = (usage[day] ?? 0) + 1; await this.store.save();
+          if (!this.blocked()) this.launch('triage', signal => this.triage(candidates, signal));
+        }
+      }
+    }
   }
   private blocked(): boolean { return this.stopped || !this.config.enabled || this.modeChanges > 0; }
   private assertEnabled(): void { if (this.blocked()) throw new Error('助理已关闭或正在切换模式'); }
+  private intakeSnapshot(): Map<string, string> {
+    const snapshot = new Map<string, string>();
+    for (const job of this.store.data.jobs) for (const m of job.messages) if (!snapshot.has(m.id)) snapshot.set(m.id, m.text);
+    return snapshot;
+  }
+  private ingestBatch(messages: InboxMessage[], earliest: number, snapshot: Map<string, string>): void {
+    const current = this.intakeSnapshot();
+    for (const m of messages.sort(compareMessages)) {
+      // An older in-flight read cannot undo a message changed by another reader.
+      if (current.has(m.id) && current.get(m.id) !== snapshot.get(m.id)) continue;
+      this.ingest(m, earliest);
+    }
+  }
   private create(messages: InboxMessage[], automatic: boolean, source?: { name: string; type: 'p2p' | 'group' }): InboxJob {
     if (this.store.data.jobs.filter(j => !resolved(j) && j.attention?.state !== 'quiet').length >= 500) throw new Error('待办已达 500 项，暂停采集，请先处理或忽略已有待办');
     const m = messages[0]!;
@@ -515,15 +582,23 @@ export class InboxService {
   }
   private launch(kind: 'analysis' | 'triage', fn: (signal: AbortSignal) => Promise<void>): void {
     const controller = new AbortController();
-    const done = fn(controller.signal).catch(() => {
-      this.lastError = '状态保存失败，助理已暂停'; this.stopped = true;
-      for (const task of Object.values(this.tasks)) task.controller.abort();
-    }).finally(() => { delete this.tasks[kind]; });
+    const done = fn(controller.signal).catch(() => this.pauseAfterFailure()).finally(() => {
+      delete this.tasks[kind];
+      // Model completion must not wait for the next collection/history round.
+      if (!this.blocked()) void this.dispatch().catch(() => {});
+    });
     this.tasks[kind] = { controller, done };
+  }
+  private pauseAfterFailure(): void {
+    this.lastError = '状态保存失败，助理已暂停'; this.stopped = true;
+    for (const task of Object.values(this.tasks)) task.controller.abort();
   }
   private async triage(jobs: InboxJob[], signal: AbortSignal): Promise<void> {
     const inputs = structuredClone(jobs.filter(job => this.safeSource(job)));
     if (!inputs.length) return;
+    const startedAt = this.now();
+    const batchId = randomUUID();
+    log.info('inbox', 'triage-started', { batchId, jobIds: inputs.map(job => job.id) });
     for (const job of inputs) this.triageProgress.set(job.id, { signature: signature(job), progress: { startedAt: this.now(), updatedAt: this.now(), text: '' } });
     try {
       let results: Awaited<ReturnType<NonNullable<InboxIO['triage']>>> = [];
@@ -557,7 +632,10 @@ export class InboxService {
         }
         await this.store.save();
       });
-    } finally { for (const job of inputs) this.triageProgress.delete(job.id); }
+    } finally {
+      for (const job of inputs) this.triageProgress.delete(job.id);
+      log.info('inbox', 'triage-finished', { batchId, elapsedMs: this.now() - startedAt, aborted: signal.aborted });
+    }
   }
   private retryTriage(job: InboxJob, error: string, nextAt?: number): void {
     const attempts = (job.attention?.retry?.attempts ?? 0) + 1;
@@ -672,6 +750,7 @@ export class InboxService {
         await this.serial(async () => { job.external!.analysisAttempts++; await this.store.save(); });
         signal.throwIfAborted();
       }
+      log.info('inbox', 'analysis-started', { jobId: job.id, attempt: job.attempt });
       const result = await this.io.analyze(structuredClone(job), signal);
       await this.serial(async () => {
         job.inputTokens = result.inputTokens; job.outputTokens = result.outputTokens;

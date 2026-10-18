@@ -110,7 +110,7 @@ describe('durable inbox', () => {
     await s.service.decide(s.service.list()[0]!.id, 'process', 'ou_owner');
     s.advance(1000); await s.service.tick();
     await vi.waitFor(() => expect(s.io.analyze).toHaveBeenCalledTimes(1));
-    expect(s.io.context).toHaveBeenLastCalledWith('oc_source', 100_000, 1_001_000);
+    expect(s.io.context).toHaveBeenCalledWith('oc_source', 100_000, 1_001_000);
     expect(vi.mocked(s.io.analyze).mock.calls[0]![0].messages.map(m => m.id)).toEqual(['om_history', 'om_source']);
   });
   it('preserves the cursor after a failed page and ingests all pages on retry', async () => {
@@ -189,6 +189,7 @@ describe('durable inbox', () => {
   });
   it('preserves stored usage across restart without reviving a countdown', async () => {
     const { service, store, advance } = await setup(); await service.tick(); advance(61_000); await service.tick();
+    await service.close();
     store.data.autoUsage['1970-01-01'] = 20; await store.save(); const resumed = new InboxStore(store.path); await resumed.load();
     expect(resumed.data.jobs[0]?.dueAt).toBeUndefined(); expect(resumed.data.autoUsage['1970-01-01']).toBe(20);
     advance(61_000); await service.tick(); expect(service.list()[0]?.state).toBe('waiting');
@@ -610,6 +611,9 @@ describe('lightweight attention and quiet delivery', () => {
     progress([{ id: before.id, text: '过期的后续文本' }]);
     expect(s.service.list()[0]?.attention?.progress).toBeUndefined();
     expect(s.service.get(before.id)?.attention?.progress).toBeUndefined();
+    vi.mocked(s.io.triage!).mockImplementation((_jobs, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(Error('cancelled')), { once: true });
+    }));
     complete(await classify([before], new AbortController().signal)); await new Promise(r => setTimeout(r, 20));
     expect(s.service.list()[0]?.attention?.state).not.toBe('needed'); expect(s.io.notifyAttention).not.toHaveBeenCalled();
   });
@@ -711,6 +715,9 @@ describe('lightweight attention and quiet delivery', () => {
       const changed = message({ text: '新消息' });
       vi.mocked(s.io.collect).mockResolvedValue([changed]); vi.mocked(s.io.context).mockResolvedValue([changed]); s.advance(61_000); await s.service.tick();
     }
+    vi.mocked(s.io.triage!).mockImplementation((_jobs, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(Error('cancelled')), { once: true });
+    }));
     fail(Error('network')); await new Promise(r => setTimeout(r, 20));
     expect(s.service.list()[0]?.attention?.retry).toBeUndefined(); expect(s.io.notifyAttention).not.toHaveBeenCalled();
   });
