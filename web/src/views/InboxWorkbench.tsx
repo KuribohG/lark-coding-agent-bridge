@@ -6,7 +6,7 @@ import type { guiContent, guiSummary } from '../../../src/inbox/presentation';
 
 type Summary = ReturnType<typeof guiSummary>;
 type Detail = Summary & ReturnType<typeof guiContent>;
-export type WorkbenchView = { config: InboxConfig; configFile?: string; configRevision?: string; running: boolean; connected: boolean; error?: string; sources?: { id: string; label: string; running: boolean; error?: string }[]; jobs: (Summary & { detail?: ReturnType<typeof guiContent> })[] };
+export type WorkbenchView = { config: InboxConfig; configFile?: string; configRevision?: string; running: boolean; connected: boolean; error?: string; sources?: { id: string; label: string; running: boolean; error?: string; health?: { checkedAt?: number; checks: { id: string; state: string; detail: string; lastSuccessAt?: number }[] } }[]; jobs: (Summary & { detail?: ReturnType<typeof guiContent> })[] };
 type Command = (action: string, target: unknown) => Promise<unknown>;
 const stateNames: Record<string, string> = { waiting: '待处理', notifying: '准备通知', queued: '等待分析', running: '分析中', ready: '待投递', done: '分析完成', ignored: '已忽略', claimed: '已处理', failed: '分析失败' };
 const category = (job: Summary) => job.handlingState !== 'open' || job.attention?.state === 'quiet' ? 'history' : job.attention?.state === 'needed' || ['queued', 'running', 'ready', 'done', 'failed'].includes(job.state) ? 'pending' : 'screening';
@@ -41,6 +41,10 @@ export function InboxWorkbench({ view, command }: { view: WorkbenchView; command
   return <section className="space-y-3">
     <div className="flex flex-wrap gap-2">{[['all', '全部来源'], ['conversation', '飞书会话'], ...(view.sources ?? []).map(s => [s.id, s.label])].map(([id, label]) => <Button key={id} variant={source === id ? 'secondary' : 'outline'} onClick={() => { setSource(id!); setSelection({}); }}>{label}</Button>)}</div>
     {(view.sources ?? []).map(s => <p key={s.id} className="text-xs text-muted-foreground">{s.label}：{s.running ? '已开启' : '已暂停'}{s.error ? ` · ${s.error}` : ''}</p>)}
+    {(view.sources ?? []).filter(s => s.health).map(s => <details key={`${s.id}-health`} className="text-xs"><summary>{s.label} · 采集覆盖（{s.health!.checks.length}）</summary>
+      <p>最近轮询：{s.health!.checkedAt ? new Date(s.health!.checkedAt).toLocaleString() : '尚未完成'}</p>
+      {s.health!.checks.map(c => <p key={c.id}>{c.id} · {({ healthy: '正常', alert: '异常', unknown: '未知', idle: '无活动', pending: '待检查' } as Record<string, string>)[c.state] ?? c.state} · {c.detail}{c.lastSuccessAt ? ` · 上次成功 ${new Date(c.lastSuccessAt).toLocaleString()}` : ''}</p>)}
+    </details>)}
     <div className="flex flex-wrap gap-2">{[['pending', '待处理'], ['screening', '筛选与待核对'], ['history', '历史']].map(([value, label]) => <Button key={value} variant={tab === value ? 'secondary' : 'outline'} onClick={() => { setTab(value); setSelection({}); }}>{label} ({view.jobs.filter(j => inSource(j) && category(j) === value).length})</Button>)}</div>
     <Input aria-label="搜索待办" placeholder="搜索会话、消息或筛选原因" value={query} onChange={e => setQuery(e.target.value)} />
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}

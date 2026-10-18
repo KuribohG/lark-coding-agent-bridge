@@ -191,6 +191,7 @@ export interface RootConfig {
   monitorConfigFile?: string;
   inbox?: import('../inbox/config').InboxConfig;
   gitlabCi?: import('../gitlab-ci/config').GitLabCiConfig;
+  storageMonitor?: import('../storage-monitor/config').StorageMonitorConfig;
   modelServices?: Record<string, import('../model-service/config').ModelServiceConfig>;
   secrets?: SecretsConfig;
   migrations?: {

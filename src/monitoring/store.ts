@@ -39,7 +39,7 @@ export async function loadMonitorRoot(configPath: string): Promise<RootConfig | 
   let settings;
   try { settings = parseMonitorConfig(text); validateMonitorReferences(settings, root); }
   catch (error) { throw new Error(`${path}: ${error instanceof Error ? error.message : '监控配置无效'}`); }
-  delete root.inbox; delete root.gitlabCi;
+  delete root.inbox; delete root.gitlabCi; delete root.storageMonitor;
   Object.assign(root, settings);
   snapshots.set(root, { path, text });
   return root;

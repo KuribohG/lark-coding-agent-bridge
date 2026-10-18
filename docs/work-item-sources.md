@@ -78,3 +78,15 @@ Loading existing records fills missing origin/version fields and removes synthet
 An interrupted investigation still requires an explicit retry, matching the existing behavior. This refactor does not enable automatic recovery of interrupted monitoring investigations, priority/reserved execution slots, cross-source incident correlation, or new monitors. Those require separate source and scheduler policies.
 
 Tests cover existing Lark/CI behavior plus migration, observation replay/order conflicts, save failure rollback, late results, source recovery, manual controls, owner isolation and cancellation between investigation phases. Model and Lark writes are mocked in these tests; they do not establish live operational monitoring.
+
+## Storage and UID source
+
+`storage-monitor` uses the same versioned event/lifecycle contract. It opts into an
+independent shared incident analysis slot, persisted source notices, a daily automatic
+attempt limit, and bounded recovery of restart-interrupted analyses. Existing Lark
+and GitLab sources keep their queue and explicit restart-retry semantics.
+Source notices run outside the model queue, establish a confirmed topic, and retain
+bounded retry receipts. Alert delivery failure does not block storage investigation.
+Recovery is issued by the collector after fresh sustained observations, never by the
+model. Material updates coalesce while analysis is running; source-confirmed recovery
+can cancel stale work. Manual draft edits, stops and handling state remain authoritative.

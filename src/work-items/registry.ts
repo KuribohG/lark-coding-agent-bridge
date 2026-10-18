@@ -27,21 +27,31 @@ import { obj } from '../inbox/values';
 export interface WorkItemSourceOptions {
   id: string; label: string; profile: string; enabled: boolean;
   controls?: Controls;
+  lane?: 'normal' | 'incident';
+  sourceNotifications?: boolean;
+  muted?: boolean;
+  dailyAnalysisLimit?: number;
+  resumeInterrupted?: boolean;
+  status?: () => { error?: string; health?: { checkedAt?: number; checks: { id: string; state: string; detail: string; lastSuccessAt?: number }[] } };
   notification?: Pick<InboxConfig, 'ownerOpenId' | 'destination' | 'deliveryMode'>;
   settings: ModelSettings;
   source?: SourceAdapter;
   assessment?: RuleAssessmentPolicy;
   driver: InvestigationDriver & { accepts?(item: WorkItem): boolean };
 }
-interface Entry { service: InboxService; lark?: InboxLark; label: string; close(): Promise<void> }
+interface Entry { service: InboxService; lark?: InboxLark; label: string; status?: WorkItemSourceOptions['status']; close(): Promise<void> }
 
 /** Source/account partitions share lifecycle code, the analysis queue and workbench. */
 export class WorkItemSources {
+  private incidentQueue = new AnalysisScheduler();
   private entries = new Map<string, Entry>();
   constructor(private configPath: string, private rootDir?: string, readonly queue = new AnalysisScheduler()) {}
+  isAnalyzing(id: string, key: string): boolean { return this.entries.get(id)?.service.store.data.jobs.some(j => j.external?.key === key && j.state === 'running') ?? false; }
   list() { return [...this.entries.values()].flatMap(entry => entry.service.list(500)); }
-  statuses() { return [...this.entries].map(([id, entry]) => ({ id, label: entry.label,
-    running: entry.service.config.enabled, error: entry.service.lastError })); }
+  statuses() { return [...this.entries].map(([id, entry]) => {
+    const status = entry.status?.();
+    return { id, label: entry.label, running: entry.service.config.enabled, ...status, error: status?.error ?? entry.service.lastError };
+  }); }
   async connect(options: WorkItemSourceOptions) {
     if (!/^[a-z][a-z0-9-]*$/.test(options.id)) throw new Error('Invalid inbox task source');
     if ((options.source && options.source.id !== options.id) || (!options.source && !options.driver.accepts)) throw new Error('Invalid source adapter');
@@ -57,14 +67,17 @@ export class WorkItemSources {
     let service: InboxService | undefined;
     const unlock = await lockfile.lock(lease, { stale: 60_000, update: 10_000, retries: 0,
       onCompromised: () => { void service?.close(); } });
-    const lark = options.notification ? new InboxLark({ profile: options.profile, rootDir: this.rootDir }, config) : undefined;
+    const lark = options.notification && !options.muted ? new InboxLark({ profile: options.profile, rootDir: this.rootDir }, config) : undefined;
     try {
       service = new InboxService(new InboxStore(join(folder, 'state.json')), config, {
         source: options.source ?? new EventSource(options.id, options.driver.accepts!, options.assessment),
+        dailyAnalysisLimit: options.dailyAnalysisLimit, resumeInterrupted: options.resumeInterrupted,
         checkAccess: async () => {},
         cancel: () => lark?.close(),
         deliver: async (job, phase) => { await lark?.deliver(job, phase); },
-        ...(lark ? { beginAnalysis: (job: Parameters<InboxLark['beginAnalysis']>[0], text: string) => lark.beginAnalysis(job, text) } : {}),
+        ...(lark && !options.sourceNotifications ? { beginAnalysis: (job: Parameters<InboxLark['beginAnalysis']>[0], text: string) => lark.beginAnalysis(job, text) } : {}),
+        ...(lark && options.sourceNotifications ? { notifyChange: (job: WorkItem, notice: NonNullable<WorkItem['sourceNotices']>[number]) =>
+          lark.beginAnalysis({ ...job, startDelivery: { ...notice, confirmed: false } }, notice.text) } : {}),
         investigate: async (job, signal) => {
           const controls = options.controls;
           if (!controls || !options.enabled) throw new Error('盯盘执行器未上线');
@@ -75,10 +88,12 @@ export class WorkItemSources {
               const paths = resolveAppPaths({ rootDir: this.rootDir, profile: options.profile });
               const agent = createRuntimeAgent(controls.profileConfig, { ...paths, configPath: this.configPath });
               if (controls.botIdentity) agent.setBotIdentity?.(controls.botIdentity);
-              if (lark && getCotMessages(controls.cfg) !== 'off') {
-                const secret = await resolveAppSecret(controls.cfg, paths);
-                progress = await startInboxProgress(job, lark, new CotClient({ tenant: controls.cfg.accounts.app.tenant,
-                  appId: controls.cfg.accounts.app.id, appSecret: secret }), getCotMessages(controls.cfg), signal);
+              if (lark && job.analysisTopic && getCotMessages(controls.cfg) !== 'off') {
+                try {
+                  const secret = await resolveAppSecret(controls.cfg, paths);
+                  progress = await startInboxProgress(job, lark, new CotClient({ tenant: controls.cfg.accounts.app.tenant,
+                    appId: controls.cfg.accounts.app.id, appSecret: secret }), getCotMessages(controls.cfg), signal);
+                } catch (error) { if (!options.sourceNotifications) throw error; }
               }
               return processAnalysis(agent, { runId: `inbox-${job.id}-${job.attempt}`, cwd: prepared.cwd,
                 prompt: prepared.prompt, ...options.settings, deadlineAt: Date.now() + 30 * 60_000 }, signal, event => progress?.event(event));
@@ -86,11 +101,11 @@ export class WorkItemSources {
             success = true; return result;
           } finally { await progress?.finish(success); }
         },
-      }, Date.now, this.queue);
+      }, Date.now, options.lane === 'incident' ? this.incidentQueue : this.queue);
       await service.start();
       const active = service;
       let closed = false;
-      const entry: Entry = { service, lark, label: options.label, close: async () => {
+      const entry: Entry = { service, lark, label: options.label, status: options.status, close: async () => {
         if (closed) return; closed = true;
         if (this.entries.get(options.id) === entry) this.entries.delete(options.id);
         await active.close(); await unlock();

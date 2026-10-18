@@ -11,6 +11,7 @@ import {
 } from './profile-schema';
 import type { AppConfig } from './schema';
 import { normalizeInbox } from '../inbox/config';
+import { parseStorageConfig } from '../storage-monitor/config';
 import { normalizeGitLabCi } from '../gitlab-ci/config';
 import { normalizeModelServices } from '../model-service/config';
 
@@ -37,6 +38,7 @@ function normalizeRootConfig(root: RootConfig): RootConfig {
     ...(root.monitorConfigFile !== undefined ? { monitorConfigFile: root.monitorConfigFile } : {}),
     ...(root.inbox ? { inbox: normalizeInbox(root.inbox) } : {}),
     ...(root.gitlabCi ? { gitlabCi: normalizeGitLabCi(root.gitlabCi) } : {}),
+    ...(root.monitorConfigFile === undefined && root.storageMonitor ? { storageMonitor: parseStorageConfig(root.storageMonitor) } : {}),
     ...(root.modelServices ? { modelServices: normalizeModelServices(root.modelServices) } : {}),
     ...(root.secrets ? { secrets: root.secrets } : {}),
     ...(migrations ? { migrations } : {}),
@@ -88,6 +90,7 @@ function serializeRootConfig(root: RootConfig): StoredRootConfig {
     ...(root.monitorConfigFile !== undefined ? { monitorConfigFile: root.monitorConfigFile } : {}),
     ...(root.monitorConfigFile === undefined && root.inbox ? { inbox: normalizeInbox(root.inbox) } : {}),
     ...(root.monitorConfigFile === undefined && root.gitlabCi ? { gitlabCi: normalizeGitLabCi(root.gitlabCi) } : {}),
+    ...(root.monitorConfigFile === undefined && root.storageMonitor ? { storageMonitor: parseStorageConfig(root.storageMonitor) } : {}),
     ...(root.modelServices ? { modelServices: normalizeModelServices(root.modelServices) } : {}),
     ...(root.secrets ? { secrets: root.secrets } : {}),
     ...(migrations ? { migrations } : {}),

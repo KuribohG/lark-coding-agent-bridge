@@ -23,6 +23,7 @@ export class WorkItemService {
   private modeChanges = 0;
   private polling?: Promise<void>;
   private refreshing?: Promise<void>;
+  private notifying?: Promise<void>;
   private ticking?: Promise<void>;
   private dispatching?: Promise<void>;
   private dispatchRequested = false;
@@ -58,6 +59,11 @@ export class WorkItemService {
     this.store.data.ownerKey = key;
     this.removeFeedback();
     for (const job of this.store.data.jobs) {
+      if (this.io.resumeInterrupted && job.restartPending && !resolved(job) && this.acceptsSource(job) &&
+        job.businessState !== 'resolved' && job.external && job.external.analysisAttempts < job.external.maxAttempts && !job.draftEdited) {
+        job.state = 'queued'; job.analysisRequested = true; job.analysisPaused = false; job.error = undefined;
+      }
+      job.restartPending = undefined;
       if (handlingState(job) === 'ignored' && (job.attention?.state !== 'quiet' || job.attention.retry || job.analysisRequested)) {
         this.ignore(job); this.touch(job);
       }
@@ -83,6 +89,7 @@ export class WorkItemService {
     await Promise.all(Object.values(this.tasks).map(task => task.done));
     await this.polling;
     await this.refreshing;
+    await this.notifying;
     await this.ticking;
     await this.dispatching;
     await this.chain;
@@ -146,6 +153,7 @@ export class WorkItemService {
         external: { source, key: event.key, url: event.url, data: structuredClone(event.data),
           analysisAttempts: 0, maxAttempts: Math.max(1, Math.min(3, event.maxAttempts ?? 3)), evidenceDir: event.evidenceDir },
       };
+      this.enqueueNotice(job, event);
       recordObservation(job);
       if (event.revision !== undefined) job.observation = { id: event.eventId!, revision: event.revision, time: event.time, digest };
       if (event.operation === 'resolve') {
@@ -189,6 +197,7 @@ export class WorkItemService {
         job.state = job.result ? 'done' : 'waiting';
       }
     }
+    this.enqueueNotice(job, event);
     this.touch(job);
     try { await this.store.save(); }
     catch (error) {
@@ -209,7 +218,7 @@ export class WorkItemService {
       if (action === 'process') {
         if (!this.safeSource(job)) throw new Error('助理自身消息或结果群内容不可处理');
         if (job.state === 'running') return;
-        job.analysisPaused = false;
+        job.restartPending = undefined; job.analysisPaused = false;
         if (job.state === 'queued') { job.automatic = false; job.analysisRequested = true; await this.store.save(); return; }
         job.state = 'queued'; job.automatic = false; job.analysisRequested = true;
         job.error = undefined; job.deliveredAt = undefined;
@@ -251,6 +260,7 @@ export class WorkItemService {
       const before = structuredClone(job);
       if (job.state === 'running') this.tasks.analysis?.controller.abort();
       if (['notifying', 'queued', 'running', 'ready'].includes(job.state)) job.state = 'waiting';
+      job.restartPending = undefined;
       job.automatic = false; job.analysisRequested = false; job.analysisPaused = true; job.dueAt = undefined;
       if (input.replyDraft !== undefined) { job.replyDraft = input.replyDraft as string; job.draftEdited = true; job.draftStale = false; }
       if (input.handlingState !== undefined) job.handlingState = input.handlingState as WorkItem['handlingState'];
@@ -275,6 +285,8 @@ export class WorkItemService {
     if (this.blocked()) return;
     if (!this.polling) this.polling = (this.source.poll?.() ?? Promise.resolve()).finally(() => { this.polling = undefined; });
     await this.polling;
+    if (!this.notifying && this.io.notifyChange && !this.blocked()) this.notifying = this.notifyChanges()
+      .catch(() => { this.pauseAfterFailure(); }).finally(() => { this.notifying = undefined; });
     await this.serial(async () => {
       if (this.blocked()) return;
       try {
@@ -282,8 +294,8 @@ export class WorkItemService {
         const now = this.now();
         // The persisted topic is the only output target for an automatic run.
         for (const job of this.store.data.jobs) {
-          if (job.state === 'ready' || (job.state === 'failed' && job.analysisTopic)) {
-            if (!resolved(job) && this.safeSource(job) && (!job.draftStale || job.error) && (!job.automatic || this.acceptsSource(job)) && !job.deliveredAt &&
+          if (job.state === 'ready' || (job.state === 'failed' && job.analysisTopic) || (this.io.notifyChange && job.state === 'done' && job.result && !job.deliveredAt && job.analysisTopic)) {
+            if ((!this.io.notifyChange || job.businessState !== 'resolved') && !resolved(job) && this.safeSource(job) && (!job.draftStale || job.error) && (!job.automatic || this.acceptsSource(job)) && !job.deliveredAt &&
               (job.analysisTopic || (!this.config.gui.publicUrl && !job.automatic && job.attention?.state === 'needed'))) {
               const delivery = job.resultDelivery ??= { attempts: 0, startedAt: now, retryAt: now };
               if (delivery.attempts >= 3 || now - delivery.startedAt > 240_000) {
@@ -331,10 +343,14 @@ export class WorkItemService {
   }
   private async dispatchJobs(): Promise<void> {
     if (!this.tasks.analysis && !this.blocked()) {
-      const next = this.store.data.jobs.find(j => this.safeSource(j) && j.state === 'queued' && j.analysisRequested && !resolved(j) &&
+      const day = new Date(this.now()).toISOString().slice(0, 10);
+      const budgetAvailable = this.io.dailyAnalysisLimit === undefined || (this.store.data.autoUsage[day] ?? 0) < this.io.dailyAnalysisLimit;
+      for (const job of this.store.data.jobs) if (job.state === 'queued' && job.automatic && !budgetAvailable) job.error = '今日自动分析额度已用完，告警保留，次日继续或手动处理';
+      const next = this.store.data.jobs.find(j => (!j.automatic || budgetAvailable) && this.safeSource(j) && j.state === 'queued' && j.analysisRequested && !resolved(j) &&
         (!j.automatic || (j.attention?.state === 'needed' && this.acceptsSource(j))) &&
         (j.startDelivery?.confirmed || (j.startDelivery?.retryAt ?? 0) <= this.now()) && (j.retryAt ?? 0) <= this.now());
       if (next) {
+        if (next.automatic && this.io.dailyAnalysisLimit !== undefined) this.store.data.autoUsage[day] = (this.store.data.autoUsage[day] ?? 0) + 1;
         next.state = 'running'; next.attempt = (next.attempt ?? 0) + 1; await this.store.save();
         if (this.blocked()) { next.state = 'waiting'; next.analysisRequested = false; await this.store.save(); return; }
         this.launch('analysis', signal => this.analysisQueue
@@ -418,6 +434,40 @@ export class WorkItemService {
     const delay = [30_000, 120_000, 300_000, 900_000][Math.min(attempts - 1, 3)]!;
     job.attention = { state: 'pending', reason: `${error}，将自动重试`, retry: { attempts, nextAt: nextAt ?? this.now() + delay, error } };
     this.touch(job);
+  }
+  private enqueueNotice(job: WorkItem, event: WorkItemEvent): void {
+    if (!event.notice || !this.io.notifyChange) return;
+    const notices = job.sourceNotices ??= [];
+    // Keep only a small receipt history, never discard an outstanding delivery.
+    job.sourceNotices = [...notices.filter(n => !n.sentAt && !n.abandoned),
+      ...notices.filter(n => n.sentAt || n.abandoned).slice(-10),
+      { id: event.eventId ?? randomUUID(), text: event.notice, startedAt: this.now(), attempts: 0, retryAt: this.now() }];
+  }
+  private async notifyChanges(): Promise<void> {
+    if (!this.io.notifyChange || this.blocked()) return;
+    for (const job of [...this.store.data.jobs]) {
+      for (const notice of [...(job.sourceNotices ?? [])]) {
+        const send = await this.serial(async () => {
+          if (this.blocked() || resolved(job) || !this.acceptsSource(job) || job.notificationSuppressed || notice.sentAt || notice.abandoned) return false;
+          if (notice.attempts >= 3 || this.now() - notice.startedAt > 240_000) {
+            notice.abandoned = true; this.lastError = '来源通知未确认，请在工作台查看'; await this.store.save(); return false;
+          }
+          if (notice.retryAt > this.now()) return false;
+          notice.attempts++; notice.retryAt = this.now() + 60_000; await this.store.save();
+          return true;
+        });
+        if (!send) { if (!notice.sentAt && !notice.abandoned) break; continue; }
+        let target: WorkItem['destination'];
+        try { target = await this.io.notifyChange(structuredClone(job), structuredClone(notice)); }
+        catch { this.lastError = '来源通知暂未确认，分析继续运行'; break; }
+        await this.serial(async () => {
+          // A send may finish after cancellation; retain its confirmed receipt and topic.
+          job.analysisTopic = target; notice.sentAt = this.now();
+          if (this.lastError === '来源通知暂未确认，分析继续运行') this.lastError = undefined;
+          await this.store.save();
+        });
+      }
+    }
   }
   private async notifyAttention(): Promise<void> {
     if (this.blocked() || !this.io.notifyAttention || this.io.beginAnalysis) return;
@@ -543,6 +593,7 @@ export class WorkItemService {
             job.error = `${analysisFailureReason(e)}，等待自动重试`;
           } else {
             job.state = 'failed'; job.analysisRequested = false; job.analysisPaused = true;
+            if (this.stopped && this.io.resumeInterrupted) job.restartPending = true;
             job.error = signal.aborted ? '分析已取消' : announcing ? '话题通知未确认，尚未启动分析；请在工作台核对' : analysisFailureReason(e);
           }
         }

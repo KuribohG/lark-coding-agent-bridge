@@ -1,7 +1,7 @@
 # Copy this file, fill in your own profile/IDs/paths, then run:
 # lark-channel-bridge monitors check /absolute/path/monitors.toml
 # lark-channel-bridge monitors configure /absolute/path/monitors.toml
-# Both sources start disabled. For existing installations, prefer monitors init.
+# All sources start disabled. For existing installations, prefer monitors init.
 version = 1
 
 # Lark conversation checks: private, private_mentions, or all.
@@ -43,6 +43,60 @@ ownerOpenId = "ou_OWNER"
 deliveryMode = "new_topic"
 
 [sources.gitlab_ci.notification.destination]
+chatId = "oc_RESULTS"
+threadId = "omt_SETUP_TOPIC"
+replyTo = "om_SETUP_MESSAGE"
+
+# Storage monitoring: cluster subscriptions and platform UID subscriptions.
+# Chain/run tracking is automatic inside UID subscriptions; no Chain ID entry is needed.
+[sources.storage]
+enabled = false
+executorProfile = "codex"
+model = "deepseek-flash"
+pollSeconds = 60
+windowSeconds = 120
+staleSeconds = 180
+sustainSeconds = 180
+recoverySeconds = 180
+reanalyzeSeconds = 600
+dailyAnalysisLimit = 24
+latencyMs = 0 # Disabled until an appropriate weighted-mean latency threshold is chosen.
+maxTasks = 1000
+muted = false
+outputDir = "/absolute/private/storage-monitor-evidence"
+
+[sources.storage.grafana]
+url = "https://grafana.example.com"
+credentialsFile = "/absolute/private/grafana.env"
+
+# Catalog of clusters whose metrics can be queried, including task dependencies.
+[[sources.storage.clusters]]
+id = "prod"
+datasource = "CLICKHOUSE_DATASOURCE_UID"
+database = "hf3fs_prod"
+minConnectedNodes = 0 # Optional explicit floor; never count dormant registry nodes as failed.
+
+[[sources.storage.platforms]]
+id = "platform"
+datasource = "POSTGRES_DATASOURCE_UID"
+
+[[sources.storage.watches]]
+id = "important-cluster"
+kind = "cluster"
+cluster = "prod"
+
+[[sources.storage.watches]]
+id = "user-42"
+kind = "user"
+platform = "platform"
+uid = 42 # Numeric platform user_id, not a Feishu open_id or a task/run ID.
+clusters = ["prod"] # Expected dependencies; also discover I/O on other cataloged clusters.
+
+# Optional: omit to keep alerts/results only in the workbench and evidence directory.
+[sources.storage.notification]
+ownerOpenId = "ou_OWNER"
+deliveryMode = "new_topic"
+[sources.storage.notification.destination]
 chatId = "oc_RESULTS"
 threadId = "omt_SETUP_TOPIC"
 replyTo = "om_SETUP_MESSAGE"

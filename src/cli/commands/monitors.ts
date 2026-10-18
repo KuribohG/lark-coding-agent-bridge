@@ -1,4 +1,6 @@
-import { mkdir, open } from 'node:fs/promises';
+import { storageScope, type StorageState } from '../../storage-monitor/service';
+import { join } from 'node:path';
+import { readFile, mkdir, open } from 'node:fs/promises';
 import { dirname, relative, resolve } from 'node:path';
 import { resolveAppPaths } from '../../config/app-paths';
 import { loadRootConfig, saveRootConfig, withConfigFileLock } from '../../config/profile-store';
@@ -21,7 +23,7 @@ export async function initMonitors(opts: Options & { output?: string }): Promise
     }
     const target = opts.output ? resolve(opts.output) : resolve(dirname(path), 'monitors.toml');
     if (target === resolve(path)) throw new Error('监控配置文件不能覆盖 Bridge 主配置');
-    const text = formatMonitorConfig({ inbox: root.inbox ?? normalizeInbox(undefined), gitlabCi: root.gitlabCi ?? normalizeGitLabCi(undefined) });
+    const text = formatMonitorConfig({ inbox: root.inbox ?? normalizeInbox(undefined), gitlabCi: root.gitlabCi ?? normalizeGitLabCi(undefined), ...(root.storageMonitor ? { storageMonitor: root.storageMonitor } : {}) });
     validateMonitorReferences(parseMonitorConfig(text), root);
     await mkdir(dirname(target), { recursive: true });
     // Until the root points at it, this new file is not consumed by either source.
@@ -59,10 +61,17 @@ export async function checkMonitors(file: string | undefined, opts: Options): Pr
 export async function statusMonitors(opts: Options): Promise<void> {
   const path = rootPath(opts); const root = await loadMonitorRoot(path);
   if (!root) throw new Error('Bridge root configuration not found');
-  console.log(JSON.stringify({ file: monitorConfigPath(root, path) ?? null, mode: root.monitorConfigFile === undefined ? 'legacy-json' : 'toml',
+  let storageState: StorageState | undefined;
+  if (root.storageMonitor) {
+    try { storageState = JSON.parse(await readFile(join(dirname(path), 'storage-monitor', `${storageScope(root.storageMonitor)}.json`), 'utf8')); }
+    catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('存储监控状态文件无法读取'); }
+  }
+  console.log(JSON.stringify({ storageState, file: monitorConfigPath(root, path) ?? null, mode: root.monitorConfigFile === undefined ? 'legacy-json' : 'toml',
     sources: [
       { id: 'lark', enabled: root.inbox?.enabled ?? false, executorProfile: root.inbox?.executorProfile ?? '', pollSeconds: root.inbox?.pollSeconds },
       { id: 'gitlab_ci', enabled: root.gitlabCi?.enabled ?? false, executorProfile: root.gitlabCi?.executorProfile ?? '',
         pollSeconds: root.gitlabCi?.pollSeconds, repositories: root.gitlabCi?.repositories.map(r => r.project) ?? [] },
+      { id: 'storage', enabled: root.storageMonitor?.enabled ?? false, executorProfile: root.storageMonitor?.executorProfile ?? '',
+        pollSeconds: root.storageMonitor?.pollSeconds, watches: root.storageMonitor?.watches ?? [] },
     ], note: '配置状态；enabled 不代表来源或执行器在线。' }, null, 2));
 }

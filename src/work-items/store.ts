@@ -15,10 +15,10 @@ export class WorkItemStore {
       if (d.version !== 1 || !Array.isArray(d.jobs) || !d.cursors || !d.seen || !d.autoUsage) throw new Error('invalid inbox state');
       this.data = d;
       for (const job of d.jobs) migrateWorkItem(job);
-      // An interrupted analysis needs a deliberate retry, never an automatic rerun.
+      // Default to a deliberate retry; the service may opt into bounded restart recovery.
       for (const job of d.jobs) if (job.state === 'running') {
         job.state = 'failed'; job.analysisRequested = false; job.analysisPaused = true;
-        job.error = 'Bridge 重启中断了分析，请重新处理';
+        job.restartPending = true; job.error = 'Bridge 重启中断了分析，请重新处理';
       }
     } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
     await this.save();

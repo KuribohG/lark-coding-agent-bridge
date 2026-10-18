@@ -37,6 +37,7 @@
     "docs/model-services.md",
     "docs/work-item-sources.md",
     "docs/monitor-config.md",
+    "docs/storage-monitoring.md",
     "docs/monitors.example.toml",
     "LICENSE",
     "docs/self-contained.md",

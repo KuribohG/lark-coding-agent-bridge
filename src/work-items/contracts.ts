@@ -69,12 +69,15 @@ export interface InvestigationDriver {
 
 export interface WorkItemRuntime {
   source: SourceAdapter;
+  dailyAnalysisLimit?: number;
+  resumeInterrupted?: boolean;
   investigate(item: WorkItem, signal: AbortSignal): Promise<AnalysisResult>;
   checkAccess(): Promise<void>;
   cancel?(): void;
   cancelPending?(): void;
   deliver(item: WorkItem, phase: 'pending' | 'progress' | 'result'): Promise<void>;
   beginAnalysis?(item: WorkItem, text: string): Promise<WorkItem['destination']>;
+  notifyChange?(item: WorkItem, notice: NonNullable<WorkItem['sourceNotices']>[number]): Promise<WorkItem['destination']>;
   notifyAttention?(items: WorkItem[], id: string): Promise<void>;
 }
 

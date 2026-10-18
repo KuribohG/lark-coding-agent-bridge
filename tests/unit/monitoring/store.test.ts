@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, loadRootConfig, saveRootConfig, withConfigFileLock } from '../../../src/config/profile-store';
 import { normalizeInbox } from '../../../src/inbox/config';
+import { parseStorageConfig } from '../../../src/storage-monitor/config';
 import { normalizeGitLabCi } from '../../../src/gitlab-ci/config';
 import { formatMonitorConfig, parseMonitorConfig } from '../../../src/monitoring/config';
 import { loadMonitorRoot, saveMonitorRoot } from '../../../src/monitoring/store';
@@ -137,4 +138,17 @@ it('protects a screening service referenced only from TOML from removal', async 
   s.root.inbox!.triageService = 'screen'; await saveRootConfig(s.root, s.path); await initMonitors({ config: s.path });
   await expect(removeModelService(s.path, 'screen')).rejects.toThrow('仍引用');
   expect((await loadRootConfig(s.path))!.modelServices?.screen).toBeDefined();
+});
+
+it('keeps UID subscriptions when another source or profile saves the shared configuration', async () => {
+  const s = await setup();
+  s.root.storageMonitor = parseStorageConfig({ executorProfile: 'codex', clusters: [{ id: 'c', database: 'db', datasource: 'metrics' }],
+    platforms: [{ id: 'p', datasource: 'tasks' }], watches: [{ id: 'u', kind: 'user', platform: 'p', uid: 42, clusters: ['c'] }] });
+  await saveRootConfig(s.root, s.path); await initMonitors({ config: s.path });
+  let root = (await loadMonitorRoot(s.path))!; root.inbox!.enabled = false; await saveMonitorRoot(root, s.path);
+  root = (await loadMonitorRoot(s.path))!;
+  expect(root.storageMonitor).toEqual(s.root.storageMonitor);
+  await saveRootConfig(root, s.path);
+  expect(JSON.parse(await readFile(s.path, 'utf8')).storageMonitor).toBeUndefined();
+  expect((await loadMonitorRoot(s.path))!.storageMonitor).toEqual(s.root.storageMonitor);
 });

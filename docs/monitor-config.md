@@ -1,6 +1,6 @@
 # Unified monitor configuration
 
-Versions containing the monitor-config implementation can keep Lark conversation checks and GitLab CI monitoring in one TOML file. Source behavior, credentials, item state and the unified investigation engine remain separate from the configuration file.
+Versions containing the monitor-config implementation can keep Lark conversation checks, GitLab CI and storage/UID monitoring in one TOML file. Source behavior, credentials, item state and the unified investigation engine remain separate from the configuration file.
 
 ## Existing installations
 
@@ -20,14 +20,14 @@ Older Bridge binaries do not resolve `monitorConfigFile`. Deploy the supporting 
 
 ## Editing and applying
 
-The [commented example](monitors.example.toml) shows both sources. To select a manually prepared file:
+The [commented example](monitors.example.toml) shows all sources. To select a manually prepared file:
 
 ```sh
 lark-channel-bridge monitors check /path/to/monitors.toml
 lark-channel-bridge monitors configure /path/to/monitors.toml
 ```
 
-`configure` selects that file directly; subsequent edits to it are authoritative. It replaces the complete monitoring configuration: omitting a source disables/removes its configuration rather than inheriting a stale JSON copy. `check` validates syntax, known fields, ranges, required settings and executor/screening references without reading credentials or contacting Lark, GitLab or a model. `status` reports the selected path and configured sources; it is not a runtime health check.
+`configure` selects that file directly; subsequent edits to it are authoritative. It replaces the complete monitoring configuration: omitting a source disables/removes its configuration rather than inheriting a stale JSON copy. `check` validates syntax, known fields, ranges, required settings and executor/screening references without reading credentials or contacting Lark, GitLab or a model. `status` reports the selected path and configured sources; it does not make live requests. For storage it also includes the last persisted collection state; compare timestamps before treating that state as current.
 
 Each running source manager checks configuration every 15 seconds, including when no web page is open. Slow shutdown/setup can delay application. Invalid or missing selected files leave an already running source on its last valid settings and expose an error; they never silently reactivate legacy JSON settings. A stopped/offline executor is still stopped even when the file is invalid. Repairing the file resumes normal configuration reload.
 
@@ -35,12 +35,12 @@ The workbench shows the file path. Its Lark settings, mode and scope controls wr
 
 ## Fields and boundaries
 
-- `version = 1` is required. Sources are `[sources.lark]` and `[sources.gitlab_ci]`; unknown source names and misspelled keys are rejected.
-- Both use `enabled`, `executorProfile` and `pollSeconds` (integer seconds, 1–3600).
+- `version = 1` is required. Sources are `[sources.lark]`, `[sources.gitlab_ci]` and `[sources.storage]`; unknown source names and misspelled keys are rejected.
+- Lark and GitLab use `enabled`, `executorProfile` and `pollSeconds` (integer seconds, 1–3600).
 - Lark uses `intakeScope`, `attentionProfile`, `analysisModel`, optional `triageService`/legacy screening fields, and `[sources.lark.destination]`. Existing context, quota, H5 and GUI fields also round-trip.
 - GitLab uses `url`, `tokenEnv` or `credentialsFile`, `model`, `outputDir`, `[[sources.gitlab_ci.repositories]]`, and optional `notification`/`notification.destination` tables. Its detailed behavior remains in [GitLab CI reference](gitlab-ci-watch.md).
 - `analysisModel = ""` / `model = ""` follows the executor defaults. Omission preserves the existing legacy background-model policy. Migration preserves that distinction.
 - Credentials remain in existing profile/model-service stores, environment variables or referenced credential files. This file does not accept raw token/API-key fields. Relative credential, output and source directory paths are not introduced; the existing absolute-path contracts apply.
-- This version supports one Lark source and one GitLab source (with multiple repositories), matching the current managers. The file does not enable 3FS/Yinghuo monitors or arbitrary plugins.
+- Storage uses `[sources.storage]` with `clusters`, `platforms` and `watches` arrays. Its two subscription kinds are `cluster` and `user` (numeric platform `uid`). See [storage monitoring](storage-monitoring.md) for signals, task discovery, coverage and recovery semantics. It stays disabled until explicitly configured and enabled. Earlier binaries that only support Lark/GitLab reject the new section; upgrade before adding it.
 
 The configuration file controls subscriptions/settings only. Observations, source cursors, evidence, investigation state and delivery receipts stay in their existing durable stores. Source implementation contracts are described in [work-item sources](work-item-sources.md).

@@ -22,6 +22,7 @@ export interface WorkItem {
   analysisTopic?: DeliveryTarget;
   startDelivery?: { id: string; text: string; attempts: number; startedAt: number; retryAt: number; confirmed?: boolean };
   resultDelivery?: { attempts: number; startedAt: number; retryAt: number };
+  sourceNotices?: { id: string; text: string; startedAt: number; attempts: number; retryAt: number; sentAt?: number; abandoned?: boolean }[];
   notificationSuppressed?: boolean;
   automatic: boolean; alert: boolean; result?: string; error?: string;
   inputTokens?: number; outputTokens?: number;
@@ -41,8 +42,9 @@ export interface WorkItem {
   draftStale?: boolean;
   /** Messages covered by the completed analysis or its last incremental review. */
   analysisBasis?: { messages: Record<string, string>; attention: Attention };
-  /** Only an explicit process request releases a stopped or interrupted analysis. */
+  /** Manual stops require an explicit process request; sources may opt into restart recovery. */
   analysisPaused?: boolean;
+  restartPending?: boolean;
   lastReviewRequestId?: string;
   /** Events from configured watchers use the same lifecycle as conversation jobs. */
   external?: {
