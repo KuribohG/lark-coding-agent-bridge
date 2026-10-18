@@ -35,6 +35,13 @@ it('returns bounded message content and explicit pagination without arbitrary re
   expect((result.messages as { text: string }[])[0]!.text).toHaveLength(4000);
 });
 
+it.each(['search_messages', 'read_chat_messages'])('uses API-compatible seconds without losing time boundaries for %s', async name => {
+  const call = vi.fn(async () => ({ messages: [] }));
+  await new InboxChatTools(call).execute(name, { chatId: 'oc_chat', ...(name === 'search_messages' ? { query: '发布方案' } : {}),
+    start: '2026-10-18T14:03:05.123+08:00', end: '2026-10-18T14:04:06.789+08:00' }, new AbortController().signal);
+  expect(call).toHaveBeenCalledWith(expect.arrayContaining(['--start=2026-10-18T06:03:05Z', '--end=2026-10-18T06:04:07Z']), expect.any(AbortSignal));
+});
+
 it('fails closed if a next page cannot be retrieved', async () => {
   const call = vi.fn(async () => ({ messages: [], has_more: true }));
   await expect(new InboxChatTools(call).execute('read_thread_messages', { threadId: 'omt_thread' }, new AbortController().signal)).rejects.toThrow('分页');

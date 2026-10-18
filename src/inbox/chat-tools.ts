@@ -54,7 +54,10 @@ export function chatToolArgs(name: string, input: unknown): string[] {
   for (const key of ['start', 'end']) if (data[key] != null) {
     const value = string(data[key], 40);
     if (!/^\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d{1,3})?)?(?:Z|[+-]\d\d:\d\d)$/.test(value) || !Number.isFinite(Date.parse(value))) throw invalid();
-    args.push(`--${key}=${new Date(value).toISOString()}`);
+    // Search rejects fractional seconds; round outward to retain boundary messages.
+    const seconds = Date.parse(value) / 1000;
+    const rounded = (key === 'start' ? Math.floor(seconds) : Math.ceil(seconds)) * 1000;
+    args.push(`--${key}=${new Date(rounded).toISOString().replace('.000Z', 'Z')}`);
   }
   if (typeof data.start === 'string' && typeof data.end === 'string' && Date.parse(data.start) > Date.parse(data.end)) throw invalid();
   if (data.pageToken != null) args.push(`--page-token=${string(data.pageToken, 2048)}`);

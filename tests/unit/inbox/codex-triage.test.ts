@@ -52,7 +52,7 @@ it('repairs unquoted timestamps and validates them without another model round',
     .mockResolvedValueOnce(response([message([answer('a'), answer('b')])]));
   expect(await run(f.tools, request, [job('a'), job('b')])).toEqual([answer('a'), answer('b')]);
   expect(f.call).toHaveBeenCalledTimes(2);
-  expect(f.call.mock.calls[0]![0]).toContain('--start=2026-10-15T00:00:00.000Z');
+  expect(f.call.mock.calls[0]![0]).toContain('--start=2026-10-15T00:00:00Z');
   expect(f.call.mock.calls[1]![0]).toContain('+threads-messages-list');
   expect(request).toHaveBeenCalledTimes(2);
 });
@@ -310,7 +310,7 @@ it('repairs unquoted ISO timestamps from the observed failure before validating 
   const broken = { ...toolCall('read_chat_messages'), arguments: '{"chatId":"oc_source","start":2026-10-15T00:00:00.000Z,"end":2026-10-15T01:00:00.000Z,"pageToken":null}' };
   const request = vi.fn<typeof fetch>().mockResolvedValueOnce(response([broken])).mockResolvedValueOnce(response([message()]));
   expect(await run(f.tools, request)).toEqual([answer('a')]);
-  expect(f.call).toHaveBeenCalledWith(expect.arrayContaining(['--chat-id=oc_source', '--start=2026-10-15T00:00:00.000Z', '--end=2026-10-15T01:00:00.000Z']), expect.any(AbortSignal));
+  expect(f.call).toHaveBeenCalledWith(expect.arrayContaining(['--chat-id=oc_source', '--start=2026-10-15T00:00:00Z', '--end=2026-10-15T01:00:00Z']), expect.any(AbortSignal));
 });
 
 it('lets the model correct a schema error without dispatching the invalid read', async () => {
