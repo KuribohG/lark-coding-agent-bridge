@@ -72,7 +72,21 @@ paths remain unchanged. This reorganization requires no configuration or data mi
 
 Source collection continues while analysis waits or runs. Lark collection, history refresh and model screening retain their independent in-flight guards. GitLab retains its repository cursor, bounded polling and failure identity logic, and publishes accepted failures through the event adapter. Neither source implements its own analysis queue.
 
-The source context provides serialized transactions over its partition. A collector must save accepted observations before advancing its cursor. Collection errors are retried as errors and must not be converted into a successful empty query.
+The source context exposes items with read-only lifecycle fields, source-owned evidence,
+cursors and deduplication records. It does not expose the mutable work-item store or
+notification outbox. Source mutations run in serialized transactions: `create` registers
+conversation evidence, and `transition` applies a typed event such as new evidence,
+manual processing, owner handling, recovery, scope change or feedback exclusion.
+`WorkItemLifecycle` owns the resulting analysis, handling, pause and retry rules.
+A collector saves accepted evidence and its cursor together. Collection errors are
+retried as errors and must not be converted into a successful empty query.
+
+Batch screening returns an interpreted decision instead of editing a live item.
+Analysis preflight can add evidence through the same context; the completion hook
+returns the evidence basis and whether additions need review. The engine applies
+both results after checking the active attempt and evidence/review versions.
+`WorkItemDelivery` owns start announcements, source notices, results and attention
+digests; source adapters cannot modify their reservations or receipts.
 
 ## Identity and versions
 
@@ -117,7 +131,7 @@ The existing report format (`replyDraft`, `analysis`, `missingInfo`) remains sup
 
 `WorkItemSources.connect()` registers an event source under a source/owner/profile partition. It accepts an optional `SourceAdapter`, optional deterministic assessment, the investigation driver, execution settings and notification configuration. Existing `InboxTaskSources` and `InboxTaskDriver` imports remain compatibility aliases.
 
-The Lark manager passes `larkRuntime()` into the same `WorkItemService` through the `InboxService` compatibility facade. Lark source logic lives in `src/monitoring/sources/lark/source.ts`, model-decision application in `src/monitoring/sources/lark/assessment.ts`, and evidence preparation in `larkInvestigationDriver`. Lark-only commands such as selecting a chat or changing intake scope remain on the facade.
+The Lark manager passes `larkRuntime()` into the same `WorkItemService` through the `InboxService` compatibility facade. Lark source logic lives in `src/monitoring/sources/lark/source.ts`, model-decision interpretation in `src/monitoring/sources/lark/assessment.ts`, and evidence preparation in `larkInvestigationDriver`. Lark-only commands such as selecting a chat or changing intake scope remain on the facade.
 
 GitLab registers `EventSource` with `ciAssessment` and `ciTaskDriver`. Its collector still validates pipeline and job status and supplies a stable failure identity; the common engine owns all subsequent handling.
 

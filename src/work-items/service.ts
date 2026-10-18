@@ -1,4 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { WorkItemLifecycle } from './lifecycle';
+import { WorkItemDelivery } from './delivery';
 import { log } from '../core/logger';
 import { analysisFailureReason } from '../inbox/analysis-error';
 import type { WorkItemConfig, WorkItemMode } from './config';
@@ -29,16 +31,44 @@ export class WorkItemService {
   private dispatching?: Promise<void>;
   private dispatchRequested = false;
   private triageProgress = new Map<string, { signature: string; progress: NonNullable<Attention['progress']> }>();
+  private lifecycle: WorkItemLifecycle;
+  private delivery: WorkItemDelivery;
   lastError?: string;
   constructor(readonly store: WorkItemStore, readonly config: WorkItemConfig, private io: WorkItemRuntime, private now = Date.now,
     private analysisQueue?: AnalysisScheduler) {
+    this.lifecycle = new WorkItemLifecycle(config, now, job => {
+      if (job.state === 'running') this.tasks.analysis?.controller.abort();
+    }, job => {
+      if (this.triageProgress.delete(job.id) && !this.triageProgress.size) this.tasks.triage?.controller.abort();
+    });
     this.source = io.source;
     const self = this;
-    this.source.attach({ store, get closed() { return self.stopped; },
+    this.delivery = new WorkItemDelivery(store, config, io, now, {
+      transaction: fn => this.serial(fn), blocked: () => this.blocked(),
+      safe: job => this.safeSource(job), accepts: job => this.acceptsSource(job),
+      get error() { return self.lastError; }, set error(value) { self.lastError = value; },
+    });
+    this.source.attach({
+      get items() { return store.data.jobs; }, get cursors() { return store.data.cursors; }, get seen() { return store.data.seen; },
+      save: () => store.save(),
+      create: (seed, automatic) => {
+        if (store.data.jobs.filter(j => !resolved(j) && j.attention?.state !== 'quiet').length >= 500) throw new Error('待办已达 500 项，暂停采集，请先处理或忽略已有待办');
+        const job: WorkItem = { ...seed, id: randomUUID(), ownerOpenId: config.ownerOpenId, profile: config.executorProfile,
+          destination: { ...config.destination }, state: automatic ? 'waiting' : 'queued', analysisRequested: !automatic,
+          attention: { state: automatic ? 'pending' : 'needed', reason: automatic ? '等待关注筛选' : '你主动选择了此会话' },
+          createdAt: now(), updatedAt: now(), revision: 0, handlingState: 'open', automatic };
+        recordObservation(job); store.data.jobs.push(job); return job;
+      },
+      transition: (item, event) => {
+        const job = store.data.jobs.find(j => j === item);
+        if (!job) throw new Error('事项不属于当前来源');
+        this.lifecycle.transition(job, event);
+      },
+      get closed() { return self.stopped; },
       get error() { return self.lastError; }, set error(value) { self.lastError = value; },
       observe: event => this.observe(event),
       transaction: fn => this.serial(fn), blocked: () => this.blocked(), assertEnabled: () => this.assertEnabled(),
-      dispatch: () => this.dispatch(), touch: item => this.touch(item), ignore: item => this.ignore(item),
+      dispatch: () => this.dispatch(),
       abort: kind => { for (const [name, task] of Object.entries(this.tasks)) if (!kind || name === kind) task.controller.abort(); },
       clearAssessmentProgress: () => this.triageProgress.clear(),
       suspend: () => { this.modeChanges++; }, resume: () => { this.modeChanges--; },
@@ -48,7 +78,13 @@ export class WorkItemService {
   private get batchPolicy() { return this.source.assessment?.kind === 'batch' ? this.source.assessment : undefined; }
   private safeSource(job: WorkItem): boolean { return this.source.safe(job); }
   private acceptsSource(job: WorkItem): boolean { return this.source.accepts(job); }
-  private removeFeedback(): void { this.source.reconcile(); }
+  private removeFeedback(): void {
+    this.source.reconcile();
+    if (this.store.data.notificationOutbox?.jobs.some(entry => {
+      const job = this.store.data.jobs.find(j => j.id === entry.id);
+      return !job || !this.safeSource(job) || signature(job) !== entry.signature;
+    })) this.store.data.notificationOutbox = undefined;
+  }
   private serial<T>(fn: () => Promise<T>): Promise<T> {
     const p = this.chain.then(fn); this.chain = p.catch(() => {}); return p;
   }
@@ -156,7 +192,7 @@ export class WorkItemService {
         external: { source, key: event.key, url: event.url, data: structuredClone(event.data),
           analysisAttempts: 0, maxAttempts: Math.max(1, Math.min(3, event.maxAttempts ?? 3)), evidenceDir: event.evidenceDir },
       };
-      this.enqueueNotice(job, event);
+      this.delivery.enqueue(job, event);
       recordObservation(job);
       if (event.revision !== undefined) job.observation = { id: event.eventId!, revision: event.revision, time: event.time, digest };
       if (event.operation === 'resolve') {
@@ -200,7 +236,7 @@ export class WorkItemService {
         job.state = job.result ? 'done' : 'waiting';
       }
     }
-    this.enqueueNotice(job, event);
+    this.delivery.enqueue(job, event);
     this.touch(job);
     try { await this.store.save(); }
     catch (error) {
@@ -221,30 +257,14 @@ export class WorkItemService {
       if (action === 'process') {
         if (!this.safeSource(job)) throw new Error('助理自身消息或结果群内容不可处理');
         if (job.state === 'running') return;
-        job.restartPending = undefined; job.analysisPaused = false;
-        if (job.state === 'queued') { job.automatic = false; job.analysisRequested = true; await this.store.save(); return; }
-        job.state = 'queued'; job.automatic = false; job.analysisRequested = true;
-        job.error = undefined; job.deliveredAt = undefined;
-        job.startDelivery = undefined; job.resultDelivery = undefined;
-        job.draftStale = Boolean(job.result || job.replyDraft);
-        job.destination = { ...this.config.destination };
-        job.retryAt = undefined;
-        if (job.external) job.external.analysisAttempts = 0;
-      } else {
-        if (job.state === 'running') this.tasks.analysis?.controller.abort();
-        job.state = action === 'claim' ? 'claimed' : 'ignored';
-        job.handlingState = action === 'claim' ? 'handled' : 'ignored';
-        if (action === 'ignore') this.ignore(job);
-      }
+        this.lifecycle.request(job);
+      } else if (action === 'claim') this.lifecycle.handle(job);
+      else this.ignore(job);
       this.touch(job); await this.store.save();
     });
   }
-  private touch(job: WorkItem): void { job.revision = (job.revision ?? 0) + 1; job.updatedAt = this.now(); }
-  private ignore(job: WorkItem): void {
-    job.state = 'ignored'; job.handlingState = 'ignored'; job.analysisRequested = false; job.dueAt = undefined;
-    job.attention = { state: 'quiet', reason: '你已忽略此事项，无需动作' };
-    if (this.triageProgress.delete(job.id) && !this.triageProgress.size) this.tasks.triage?.controller.abort();
-  }
+  private touch(job: WorkItem): void { this.lifecycle.touch(job); }
+  private ignore(job: WorkItem): void { this.lifecycle.ignore(job); }
   async review(value: unknown, owner: string, requestId: string): Promise<WorkItem> {
     if (owner !== this.config.ownerOpenId) throw new Error('forbidden');
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('无效草稿操作');
@@ -261,10 +281,7 @@ export class WorkItemService {
       if ((job.revision ?? 0) !== input.revision) throw new Error('事项已更新，草稿未覆盖，请核对最新内容后重试');
       if (input.handlingState === 'open' && !this.safeSource(job)) throw new Error('助理自身消息或结果群内容不可恢复');
       const before = structuredClone(job);
-      if (job.state === 'running') this.tasks.analysis?.controller.abort();
-      if (['notifying', 'queued', 'running', 'ready'].includes(job.state)) job.state = 'waiting';
-      job.restartPending = undefined;
-      job.automatic = false; job.analysisRequested = false; job.analysisPaused = true; job.dueAt = undefined;
+      this.lifecycle.pause(job);
       if (input.replyDraft !== undefined) { job.replyDraft = input.replyDraft as string; job.draftEdited = true; job.draftStale = false; }
       if (input.handlingState !== undefined) job.handlingState = input.handlingState as WorkItem['handlingState'];
       if (input.handlingState === 'ignored') this.ignore(job);
@@ -290,7 +307,7 @@ export class WorkItemService {
     if (this.blocked()) return;
     if (!this.polling) this.polling = (this.source.poll?.() ?? Promise.resolve()).finally(() => { this.polling = undefined; });
     await this.polling;
-    if (!this.notifying && this.io.notifyChange && !this.blocked()) this.notifying = this.notifyChanges()
+    if (!this.notifying && this.io.notifyChange && !this.blocked()) this.notifying = this.delivery.changes()
       .catch(() => { this.pauseAfterFailure(); }).finally(() => { this.notifying = undefined; });
     await this.serial(async () => {
       if (this.blocked()) return;
@@ -307,9 +324,9 @@ export class WorkItemService {
         await this.store.save();
       } catch (e) { this.lastError = e instanceof Error ? e.message : 'inbox poll failed'; }
     });
-    if (!this.delivering && !this.blocked()) this.delivering = this.deliverResults()
+    if (!this.delivering && !this.blocked()) this.delivering = this.delivery.results()
       .catch(() => { this.pauseAfterFailure(); }).finally(() => { this.delivering = undefined; });
-    if (!this.digesting && !this.blocked()) this.digesting = this.notifyAttention()
+    if (!this.digesting && !this.blocked()) this.digesting = this.delivery.attention()
       .catch(() => { this.pauseAfterFailure(); }).finally(() => { this.digesting = undefined; });
     await this.dispatch();
     if (!this.refreshing && !this.blocked()) {
@@ -409,7 +426,7 @@ export class WorkItemService {
           if (failure || !result || result.state === 'pending') this.retryTriage(job, failure || (result ? result.reason || '必要的上下文查询未完成' : '关注筛选结果缺失'));
           else if (!this.batchPolicy!.valid(input, result)) this.retryTriage(job, '增量筛选未说明已有分析是否需要更新');
           else {
-            this.batchPolicy!.apply(job, input, result);
+            this.lifecycle.assess(job, this.batchPolicy!.interpret(input, result));
             this.touch(job);
           }
         }
@@ -425,121 +442,6 @@ export class WorkItemService {
     const delay = [30_000, 120_000, 300_000, 900_000][Math.min(attempts - 1, 3)]!;
     job.attention = { state: 'pending', reason: `${error}，将自动重试`, retry: { attempts, nextAt: nextAt ?? this.now() + delay, error } };
     this.touch(job);
-  }
-  private enqueueNotice(job: WorkItem, event: WorkItemEvent): void {
-    if (!event.notice || !this.io.notifyChange) return;
-    const notices = job.sourceNotices ??= [];
-    // Keep only a small receipt history, never discard an outstanding delivery.
-    job.sourceNotices = [...notices.filter(n => !n.sentAt && !n.abandoned),
-      ...notices.filter(n => n.sentAt || n.abandoned).slice(-10),
-      { id: event.eventId ?? randomUUID(), text: event.notice, startedAt: this.now(), attempts: 0, retryAt: this.now() }];
-  }
-  private async notifyChanges(): Promise<void> {
-    if (!this.io.notifyChange || this.blocked()) return;
-    for (const job of [...this.store.data.jobs]) {
-      for (const notice of [...(job.sourceNotices ?? [])]) {
-        const send = await this.serial(async () => {
-          if (this.blocked() || resolved(job) || !this.acceptsSource(job) || job.notificationSuppressed || notice.sentAt || notice.abandoned) return false;
-          if (notice.attempts >= 3 || this.now() - notice.startedAt > 240_000) {
-            notice.abandoned = true; this.lastError = '来源通知未确认，请在工作台查看'; await this.store.save(); return false;
-          }
-          if (notice.retryAt > this.now()) return false;
-          notice.attempts++; notice.retryAt = this.now() + 60_000; await this.store.save();
-          return true;
-        });
-        if (!send) { if (!notice.sentAt && !notice.abandoned) break; continue; }
-        let target: WorkItem['destination'];
-        try { target = await this.io.notifyChange(structuredClone(job), structuredClone(notice)); }
-        catch { this.lastError = '来源通知暂未确认，分析继续运行'; break; }
-        await this.serial(async () => {
-          // A send may finish after cancellation; retain its confirmed receipt and topic.
-          job.analysisTopic = target; notice.sentAt = this.now();
-          if (this.lastError === '来源通知暂未确认，分析继续运行') this.lastError = undefined;
-          await this.store.save();
-        });
-      }
-    }
-  }
-  private async deliverResults(): Promise<void> {
-    for (const job of [...this.store.data.jobs]) {
-      const pending = await this.serial(async () => {
-        if (this.blocked() || !this.store.data.jobs.includes(job)) return;
-        const now = this.now();
-        if (!(job.state === 'ready' || (job.state === 'failed' && job.analysisTopic) ||
-          (this.io.notifyChange && job.state === 'done' && job.result && !job.deliveredAt && job.analysisTopic))) return;
-        // Automatic results can only use a confirmed topic.
-        if ((!this.io.notifyChange || job.businessState !== 'resolved') && !resolved(job) && this.safeSource(job) &&
-          (!job.draftStale || job.error) && (!job.automatic || this.acceptsSource(job)) && !job.deliveredAt &&
-          (job.analysisTopic || (!this.config.gui.publicUrl && !job.automatic && job.attention?.state === 'needed'))) {
-          const delivery = job.resultDelivery ??= { attempts: 0, startedAt: now, retryAt: now };
-          if (delivery.confirmedAt !== undefined) {
-            if (job.state === 'ready') job.state = 'done';
-            await this.store.save(); return;
-          }
-          if (delivery.attempts >= 3 || now - delivery.startedAt > 240_000) {
-            job.error = '结果投递未确认，请在工作台查看；已停止重复发送';
-          } else {
-            if (delivery.retryAt > now) return;
-            delivery.attempts++; delivery.retryAt = now + 60_000;
-            await this.store.save();
-            return { input: structuredClone(job), delivery };
-          }
-        }
-        if (job.state === 'ready') job.state = 'done';
-        await this.store.save();
-      });
-      if (!pending) continue;
-      try { await this.io.deliver(pending.input, 'result'); }
-      catch { this.lastError = '结果投递暂未确认，等待重试'; continue; }
-      await this.serial(async () => {
-        // The receipt belongs to the reserved output, not a newer analysis or edited draft.
-        if (job.resultDelivery !== pending.delivery) return;
-        pending.delivery.confirmedAt = this.now();
-        if (job.attempt === pending.input.attempt && job.evidenceVersion === pending.input.evidenceVersion &&
-          job.revision === pending.input.revision) {
-          job.deliveredAt = this.now();
-          if (job.state === 'ready') job.state = 'done';
-        }
-        await this.store.save();
-      });
-    }
-  }
-  private async notifyAttention(): Promise<void> {
-    const pending = await this.serial(async () => {
-      if (this.blocked() || !this.io.notifyAttention || this.io.beginAnalysis) return;
-      const data = this.store.data; const now = this.now();
-      const eligible = (j: WorkItem) => !resolved(j) && this.acceptsSource(j) && j.attention?.state === 'needed' && !j.notifiedAt && !j.notificationSuppressed;
-      let outbox = data.notificationOutbox;
-      if (!outbox) {
-        const day = new Date(now).toISOString().slice(0, 10);
-        const usage = data.notificationUsage ??= {};
-        if ((data.lastDigestAt !== undefined && now - data.lastDigestAt < 600_000) || (usage[day] ?? 0) >= 12) return;
-        const jobs = data.jobs.filter(eligible).slice(0, 20);
-        if (!jobs.length) return;
-        outbox = data.notificationOutbox = { id: randomUUID(), jobs: jobs.map(j => ({ id: j.id, signature: signature(j) })), attempts: 0, retryAt: now };
-        data.lastDigestAt = now; usage[day] = (usage[day] ?? 0) + 1;
-      }
-      if (outbox.retryAt > now) return;
-      const jobs = outbox.jobs.map(entry => data.jobs.find(j => j.id === entry.id && signature(j) === entry.signature && eligible(j)));
-      // An ambiguous send must retain its original identity and content on retry.
-      if (jobs.some(j => !j) || outbox.attempts >= 3 || now - (data.lastDigestAt ?? now) > 240_000) {
-        if (outbox.attempts) for (const entry of outbox.jobs) { const j = data.jobs.find(j => j.id === entry.id); if (j) j.notificationSuppressed = true; }
-        data.notificationOutbox = undefined; await this.store.save(); return;
-      }
-      outbox.attempts++; outbox.retryAt = now + 60_000; await this.store.save();
-      return { outbox, jobs: structuredClone(jobs as WorkItem[]) };
-    });
-    if (!pending) return;
-    try { await this.io.notifyAttention!(pending.jobs, pending.outbox.id); }
-    catch { this.lastError = '关注通知暂未确认，等待重试'; return; }
-    await this.serial(async () => {
-      for (const entry of pending.outbox.jobs) {
-        const job = this.store.data.jobs.find(j => j.id === entry.id && signature(j) === entry.signature);
-        if (job) job.notifiedAt = this.now();
-      }
-      if (this.store.data.notificationOutbox === pending.outbox) this.store.data.notificationOutbox = undefined;
-      await this.store.save();
-    });
   }
   async batchReview(value: unknown, owner: string, requestId?: string): Promise<void> {
     if (owner !== this.config.ownerOpenId) throw new Error('forbidden');
@@ -557,11 +459,9 @@ export class WorkItemService {
       if (requestId && jobs.every(j => j.lastReviewRequestId === requestId)) return;
       const before = structuredClone(jobs);
       for (const job of jobs) {
-        if (job.state === 'running') this.tasks.analysis?.controller.abort();
-        job.handlingState = input.handlingState as 'handled' | 'ignored';
-        job.state = input.handlingState === 'handled' ? 'claimed' : 'ignored';
-        if (input.handlingState === 'ignored') this.ignore(job);
-        job.analysisRequested = false; job.lastReviewRequestId = requestId; job.dueAt = undefined; this.touch(job);
+        if (input.handlingState === 'handled') this.lifecycle.handle(job);
+        else this.ignore(job);
+        job.lastReviewRequestId = requestId; this.touch(job);
       }
       try { await this.store.save(); }
       catch (error) { jobs.forEach((job, i) => { for (const key of Object.keys(job)) delete (job as unknown as Record<string, unknown>)[key]; Object.assign(job, before[i]); }); throw error; }
@@ -579,26 +479,7 @@ export class WorkItemService {
       if (!this.config.enabled || !job.analysisRequested) throw new Error('分析已取消或助理已关闭');
       if (this.io.beginAnalysis && !job.startDelivery?.confirmed) {
         announcing = true;
-        await this.serial(async () => {
-          if (!current()) throw new Error('分析已取消');
-          const clean = (s: string) => s.replace(/[\r\n]/g, ' ').replace(/<\/?at\b[^>]*>/gi, '');
-          const page = this.config.gui.publicUrl || this.config.h5.publicUrl;
-          const link = job.messages.find(m => m.link && /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(m.link))?.link;
-          const delivery = job.startDelivery ??= { id: randomUUID(), attempts: 0, startedAt: this.now(), retryAt: this.now(),
-            text: `已开始分析 · ${clean(job.source.name)}\n${clean(job.attention?.reason || '你提交的会话事项')}\n\n我会进行分析，并将结果和回复草稿发在本话题下。${link ? `\n原消息：${link}` : ''}${page ? `\n查看与处理：${page}#job=${job.id}` : ''}` };
-          if (delivery.attempts >= 3 || this.now() - delivery.startedAt > 240_000) throw new Error('话题通知未确认，已停止重复创建；请在工作台核对');
-          delivery.attempts++; delivery.retryAt = this.now() + 60_000;
-          await this.store.save();
-        });
-        signal.throwIfAborted();
-        const delivery = job.startDelivery!;
-        const topic = await this.io.beginAnalysis(structuredClone(job), delivery.text);
-        await this.serial(async () => {
-          // Keep a confirmed topic even if the user cancels while the send is in flight.
-          job.analysisTopic = topic;
-          if (job.startDelivery?.id === delivery.id) job.startDelivery.confirmed = true;
-          await this.store.save();
-        });
+        await this.delivery.begin(job, signal, current);
         signal.throwIfAborted();
         if (!current()) throw new Error('分析已取消');
         announcing = false;
@@ -620,7 +501,8 @@ export class WorkItemService {
           if (result.businessState) job.businessState = result.businessState;
           if (!job.draftEdited) { job.replyDraft = fields.replyDraft; job.draftStale = false; }
           job.state = 'ready'; job.analysisRequested = false; job.error = undefined;
-          this.source.afterAnalysis?.(job, input);
+          const context = this.source.analysisContext?.(job, input);
+          if (context) this.lifecycle.completeContext(job, context);
           this.touch(job);
         }
         else if (job.state === 'running') { job.state = 'failed'; job.analysisRequested = false; job.analysisPaused = true; job.error = '分析已取消'; }

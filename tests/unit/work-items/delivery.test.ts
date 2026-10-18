@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { normalizeInbox } from '../../../src/inbox/config';
 import { WorkItemService } from '../../../src/work-items/service';
@@ -92,4 +95,44 @@ it('sends a digest snapshot outside the lock and does not notify newer evidence 
   } finally { finish.resolve(); await tick; }
   expect(h.service.get(job.id)?.notifiedAt).toBeUndefined();
   expect(h.store.data.notificationOutbox).toBeUndefined();
+});
+
+it('keeps the result receipt when a failed edit rolls back its reservation object', async () => {
+  const sending = deferred(); const finish = deferred();
+  const h = await setup({ deliver: vi.fn(async () => { sending.resolve(); await finish.promise; }) });
+  const job = await h.service.observe({ ...event, initial: ready });
+  const tick = h.service.tick(); await sending.promise;
+  try {
+    h.save.mockRejectedValueOnce(Error('disk failure'));
+    await expect(h.service.review({ id: job.id, revision: job.revision, replyDraft: 'unsaved' }, 'owner', 'edit')).rejects.toThrow('disk failure');
+  } finally { finish.resolve(); await tick; }
+  expect(h.service.get(job.id)).toMatchObject({ replyDraft: 'old draft', deliveredAt: 1000,
+    resultDelivery: { confirmedAt: 1000 } });
+});
+
+
+it('recovers an ambiguous result reservation with its original identity and retry deadline', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'work-item-delivery-'));
+  const store = new WorkItemStore(join(folder, 'state.json'));
+  const config = normalizeInbox({ enabled: true, ownerOpenId: 'owner', executorProfile: 'test' });
+  const runtime: WorkItemRuntime = { source: new EventSource('test', () => true), checkAccess: async () => {},
+    investigate: vi.fn(), deliver: vi.fn().mockRejectedValueOnce(Error('lost response')).mockResolvedValue(undefined) };
+  let now = 1000;
+  const first = new WorkItemService(store, config, runtime, () => now); services.push(first);
+  let restarted: WorkItemService | undefined;
+  try {
+    await first.start(); const job = await first.observe({ ...event, initial: ready }); await first.tick();
+    const reservation = first.get(job.id)!.resultDelivery!;
+    expect(reservation.attempts).toBe(1); expect(reservation.id).toBeDefined();
+    await first.close();
+    restarted = new WorkItemService(new WorkItemStore(store.path), config, runtime, () => now); services.push(restarted);
+    await restarted.start(); await restarted.tick(); expect(runtime.deliver).toHaveBeenCalledTimes(1);
+    now += 60_000; await restarted.tick(); expect(runtime.deliver).toHaveBeenCalledTimes(2);
+    const reloaded = new WorkItemStore(store.path); await reloaded.load();
+    expect(reloaded.data.jobs[0]).toMatchObject({ state: 'done', deliveredAt: now,
+      resultDelivery: { id: reservation.id, attempts: 2, confirmedAt: now } });
+    expect(runtime.investigate).not.toHaveBeenCalled();
+  } finally {
+    await first.close(); await restarted?.close(); await rm(folder, { recursive: true, force: true });
+  }
 });

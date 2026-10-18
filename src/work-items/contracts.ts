@@ -1,11 +1,16 @@
 import type { AgentRunOptions } from '../agent/types';
 import type { Attention, TriageDecision } from '../inbox/types';
 import type { WorkItem } from './types';
-import type { WorkItemStore } from './store';
+import type { SourceItem, SourceSeed, SourceTransition, AssessmentUpdate, AnalysisContext } from './lifecycle';
 import type { WorkItemEvent } from './events';
 
 export interface SourceContext {
-  store: WorkItemStore;
+  readonly items: readonly SourceItem[];
+  readonly cursors: Record<string, number>;
+  readonly seen: Record<string, number>;
+  save(): Promise<void>;
+  create(seed: SourceSeed, automatic: boolean): SourceItem;
+  transition(item: SourceItem, event: SourceTransition): void;
   readonly closed: boolean;
   error?: string;
   observe(event: WorkItemEvent): Promise<WorkItem>;
@@ -13,8 +18,6 @@ export interface SourceContext {
   blocked(): boolean;
   assertEnabled(): void;
   dispatch(): Promise<void>;
-  touch(item: WorkItem): void;
-  ignore(item: WorkItem): void;
   abort(kind?: 'analysis' | 'triage'): void;
   clearAssessmentProgress(): void;
   suspend(): void;
@@ -35,8 +38,8 @@ export interface SourceAdapter {
   modeChanged?(previous: 'off' | 'on', next: 'off' | 'on'): void;
   poll?(): Promise<void>;
   refresh?(): Promise<void>;
-  beforeAnalysis?(item: WorkItem, signal: AbortSignal, current: () => boolean): Promise<boolean>;
-  afterAnalysis?(item: WorkItem, input: WorkItem): void;
+  beforeAnalysis?(item: SourceItem, signal: AbortSignal, current: () => boolean): Promise<boolean>;
+  analysisContext?(item: SourceItem, input: SourceItem): AnalysisContext;
   assessment?: AssessmentPolicy;
 }
 
@@ -54,7 +57,7 @@ export interface BatchAssessmentPolicy {
   evaluate(items: WorkItem[], signal: AbortSignal,
     progress: (updates: { id: string; text: string }[]) => void): Promise<TriageDecision[]>;
   valid(input: WorkItem, decision: TriageDecision): boolean;
-  apply(item: WorkItem, input: WorkItem, decision: TriageDecision): void;
+  interpret(input: SourceItem, decision: TriageDecision): AssessmentUpdate;
 }
 
 export interface AnalysisResult {

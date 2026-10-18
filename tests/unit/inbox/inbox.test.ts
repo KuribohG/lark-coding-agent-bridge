@@ -559,10 +559,10 @@ describe('lightweight attention and quiet delivery', () => {
   it('screens 51 ready items in batches of 50 and 1, counting model calls rather than items', async () => {
     const messages = Array.from({ length: 51 }, (_, i) => message({ id: `om_${i}`, chatId: `oc_${i}` }));
     const s = await screened({ collect: vi.fn(async kind => kind === 'p2p' ? messages : []), context: vi.fn(async () => []) });
-    await vi.waitFor(() => expect(s.service.list().filter(j => j.attention?.state === 'needed')).toHaveLength(50));
-    expect(vi.mocked(s.io.triage!).mock.calls[0]![0]).toHaveLength(50);
-    await s.service.tick();
+    // Completion dispatches the next batch immediately; the 50-item state is transient.
     await vi.waitFor(() => expect(s.service.list().filter(j => j.attention?.state === 'needed')).toHaveLength(51));
+    expect(vi.mocked(s.io.triage!).mock.calls[0]![0]).toHaveLength(50);
+    expect(s.io.triage).toHaveBeenCalledTimes(2);
     expect(vi.mocked(s.io.triage!).mock.calls[1]![0]).toHaveLength(1);
     expect(s.store.data.triageUsage?.['1970-01-01']).toBe(2);
   });

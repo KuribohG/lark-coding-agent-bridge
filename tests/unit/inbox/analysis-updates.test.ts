@@ -14,6 +14,9 @@ const services: InboxService[] = [];
 beforeEach(() => vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }));
 afterEach(async () => { await Promise.all(services.splice(0).map(s => s.close())); vi.useRealTimers(); });
 
+// These assertions wait for persisted transitions, not a one-second I/O deadline.
+const waitFor = (assertion: () => void) => vi.waitFor(assertion, { timeout: 3000 });
+
 function gate<T>(signal: AbortSignal) {
   let resolve!: (value: T) => void, reject!: (error: Error) => void;
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
@@ -49,7 +52,7 @@ async function setup() {
     screens[index]!.resolve(screens[index]!.jobs.map(job => ({ id: job.id, state, followUp, reason: '有明确证据' })));
   };
   await add('你的任务需要处理'); screen(0, 'needed');
-  await vi.waitFor(() => expect(analyses).toHaveLength(1));
+  await waitFor(() => expect(analyses).toHaveLength(1));
   return { service, store, config, io, messages, screens, analyses, add, screen, now: () => now, job: () => store.data.jobs[0]! };
 }
 
@@ -59,54 +62,54 @@ it('retains an actionable result through unrelated bursts and delivers it only o
   expect(s.analyses[0]!.signal.aborted).toBe(false); expect(s.screens).toHaveLength(1);
   expect(s.job().messages).toHaveLength(13); expect(s.analyses[0]!.job.messages).toHaveLength(1);
   s.analyses[0]!.resolve(result);
-  await vi.waitFor(() => expect(s.screens).toHaveLength(2));
+  await waitFor(() => expect(s.screens).toHaveLength(2));
   expect(analysisChanges(s.screens[1]!.jobs[0]!)).toHaveLength(12);
   expect(s.job()).toMatchObject({ replyDraft: '原建议', draftStale: true, state: 'waiting' });
   await s.service.tick(); expect(s.io.deliver).not.toHaveBeenCalled();
   s.screen(1, 'quiet', 'unchanged');
-  await vi.waitFor(() => expect(s.job().state).toBe('ready'));
+  await waitFor(() => expect(s.job().state).toBe('ready'));
   expect(s.job().attention?.state).toBe('needed'); expect(s.job().draftStale).toBe(false);
   await s.service.tick(); await s.add('其他任务新增告警');
   expect(s.screens).toHaveLength(3); expect(analysisChanges(s.screens[2]!.jobs[0]!)).toHaveLength(1);
   s.screen(2, 'needed', 'unchanged');
-  await vi.waitFor(() => expect(s.job().state).toBe('done')); await s.service.tick();
+  await waitFor(() => expect(s.job().state).toBe('done')); await s.service.tick();
   expect(s.analyses).toHaveLength(1); expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1);
   expect(s.io.deliver).toHaveBeenCalledTimes(1); expect(s.store.data.jobs).toHaveLength(1);
 });
 
 it('rejects a stale incremental decision and reuses prior evidence for one supplemental analysis', async () => {
   const s = await setup(); await s.add('告警重复'); s.analyses[0]!.resolve(result);
-  await vi.waitFor(() => expect(s.screens).toHaveLength(2));
+  await waitFor(() => expect(s.screens).toHaveLength(2));
   await s.add('同一任务出现数据丢失'); s.screen(1, 'needed', 'unchanged');
-  await vi.waitFor(() => expect(s.screens).toHaveLength(3));
+  await waitFor(() => expect(s.screens).toHaveLength(3));
   expect(s.job().state).toBe('waiting'); expect(s.io.deliver).not.toHaveBeenCalled();
-  s.screen(2, 'needed', 'reanalyze'); await vi.waitFor(() => expect(s.analyses).toHaveLength(2));
+  s.screen(2, 'needed', 'reanalyze'); await waitFor(() => expect(s.analyses).toHaveLength(2));
   const input = s.analyses[1]!.job;
   expect(analysisChanges(input).map(m => m.text)).toEqual(['告警重复', '同一任务出现数据丢失']);
   expect(processingPrompt(input, '')).toContain('已核实的证据');
   expect(processingPrompt(input, '')).toContain('不要从头重复已完成的调查');
   await s.add('另一条重复告警'); expect(s.analyses[1]!.signal.aborted).toBe(false);
   s.analyses[1]!.resolve({ ...result, text: JSON.stringify({ replyDraft: '补充建议', analysis: '新证据', missingInfo: '' }) });
-  await vi.waitFor(() => expect(s.screens).toHaveLength(4));
+  await waitFor(() => expect(s.screens).toHaveLength(4));
   expect(analysisChanges(s.screens[3]!.jobs[0]!).map(m => m.text)).toEqual(['另一条重复告警']);
-  s.screen(3, 'needed', 'unchanged'); await vi.waitFor(() => expect(s.job().state).toBe('ready'));
+  s.screen(3, 'needed', 'unchanged'); await waitFor(() => expect(s.job().state).toBe('ready'));
   await s.service.tick(); expect(s.job().replyDraft).toBe('补充建议');
   expect(s.analyses).toHaveLength(2); expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1); expect(s.io.deliver).toHaveBeenCalledTimes(1);
 });
 
 it('suppresses an obsolete draft when the issue is resolved, including later unchanged updates', async () => {
   const s = await setup(); await s.add('原任务已恢复，无需操作'); s.analyses[0]!.resolve(result);
-  await vi.waitFor(() => expect(s.screens).toHaveLength(2)); s.screen(1, 'quiet', 'resolved');
-  await vi.waitFor(() => expect(s.job().state).toBe('done')); await s.service.tick();
+  await waitFor(() => expect(s.screens).toHaveLength(2)); s.screen(1, 'quiet', 'resolved');
+  await waitFor(() => expect(s.job().state).toBe('done')); await s.service.tick();
   expect(s.job()).toMatchObject({ attention: { state: 'quiet' }, draftStale: true, replyDraft: '原建议' });
   await s.add('无关任务告警'); s.screen(2, 'quiet', 'unchanged');
-  await vi.waitFor(() => expect(s.job().attention?.state).toBe('quiet')); await s.service.tick();
+  await waitFor(() => expect(s.job().attention?.state).toBe('quiet')); await s.service.tick();
   expect(s.io.deliver).not.toHaveBeenCalled(); expect(s.analyses).toHaveLength(1);
 });
 
 it('retains an edited message and compares its new text with the analysis snapshot', async () => {
   const s = await setup(); await s.add('任务的损坏范围已扩大', 'om_0');
-  s.analyses[0]!.resolve(result); await vi.waitFor(() => expect(s.screens).toHaveLength(2));
+  s.analyses[0]!.resolve(result); await waitFor(() => expect(s.screens).toHaveLength(2));
   expect(s.job().messages).toHaveLength(1);
   expect(analysisChanges(s.screens[1]!.jobs[0]!)[0]?.text).toBe('任务的损坏范围已扩大');
   expect(s.analyses[0]!.job.messages[0]?.text).toBe('你的任务需要处理');
@@ -114,35 +117,35 @@ it('retains an edited message and compares its new text with the analysis snapsh
 
 it('retries an incomplete follow-up decision without discarding the completed analysis', async () => {
   const s = await setup(); await s.add('补充'); s.analyses[0]!.resolve(result);
-  await vi.waitFor(() => expect(s.screens).toHaveLength(2)); s.screen(1, 'needed');
-  await vi.waitFor(() => expect(s.job().attention?.retry).toBeDefined());
+  await waitFor(() => expect(s.screens).toHaveLength(2)); s.screen(1, 'needed');
+  await waitFor(() => expect(s.job().attention?.retry).toBeDefined());
   expect(s.job().replyDraft).toBe('原建议'); expect(s.job().draftStale).toBe(true);
   await s.add('再补充'); expect(s.screens).toHaveLength(2); expect(s.analyses).toHaveLength(1);
 });
 
 it.each(['failure', 'off', 'edit'] as const)('new messages cannot restart an analysis after %s until explicit processing', async action => {
   const s = await setup(); await s.add('运行期间补充');
-  if (action === 'failure') { s.analyses[0]!.reject(Error('cancelled')); await vi.waitFor(() => expect(s.job().state).toBe('failed')); }
+  if (action === 'failure') { s.analyses[0]!.reject(Error('cancelled')); await waitFor(() => expect(s.job().state).toBe('failed')); }
   if (action === 'off') { await s.service.setMode('off'); await s.service.setMode('on'); }
   if (action === 'edit') await s.service.review({ id: s.job().id, revision: s.job().revision, replyDraft: '人工草稿' }, 'ou_owner', 'edit');
   expect(s.job().analysisPaused).toBe(true);
-  await s.add('停止之后新消息'); await vi.waitFor(() => expect(s.screens).toHaveLength(2)); s.screen(1, 'needed');
-  await vi.waitFor(() => expect(s.job().attention?.state).toBe('needed')); await s.service.tick();
+  await s.add('停止之后新消息'); await waitFor(() => expect(s.screens).toHaveLength(2)); s.screen(1, 'needed');
+  await waitFor(() => expect(s.job().attention?.state).toBe('needed')); await s.service.tick();
   expect(s.analyses).toHaveLength(1);
   if (action === 'edit') expect(s.job().replyDraft).toBe('人工草稿');
   await s.service.decide(s.job().id, 'process', 'ou_owner'); await s.service.tick();
-  await vi.waitFor(() => expect(s.analyses).toHaveLength(2)); expect(s.job().analysisPaused).toBe(false);
+  await waitFor(() => expect(s.analyses).toHaveLength(2)); expect(s.job().analysisPaused).toBe(false);
 });
 
 it('persists the completed result and unreviewed additions across a restart', async () => {
   const s = await setup(); await s.add('待补筛内容'); s.analyses[0]!.resolve(result);
-  await vi.waitFor(() => expect(s.screens).toHaveLength(2)); await s.service.close();
+  await waitFor(() => expect(s.screens).toHaveLength(2)); await s.service.close();
   const store = new InboxStore(s.store.path);
   const restarted = new InboxService(store, s.config, s.io, s.now); services.push(restarted); await restarted.start(); await restarted.tick();
-  await vi.waitFor(() => expect(s.screens).toHaveLength(3));
+  await waitFor(() => expect(s.screens).toHaveLength(3));
   expect(s.screens[2]!.jobs[0]?.replyDraft).toBe('原建议');
   expect(analysisChanges(s.screens[2]!.jobs[0]!)[0]?.text).toBe('待补筛内容');
-  s.screen(2, 'needed', 'unchanged'); await vi.waitFor(() => expect(store.data.jobs[0]?.state).toBe('ready'));
+  s.screen(2, 'needed', 'unchanged'); await waitFor(() => expect(store.data.jobs[0]?.state).toBe('ready'));
   await restarted.tick(); expect(s.analyses).toHaveLength(1); expect(s.io.deliver).toHaveBeenCalledTimes(1);
 });
 
@@ -152,4 +155,28 @@ it('requires an explicit retry after loading an interrupted run with new message
   recovered.data = structuredClone(s.store.data); await recovered.save(); await recovered.load();
   expect(recovered.data.jobs[0]).toMatchObject({ state: 'failed', analysisPaused: true, analysisRequested: false });
   expect(recovered.data.jobs[0]?.messages).toHaveLength(2);
+});
+
+it('restores an ignored matter without undoing its pause or implicitly scheduling analysis', async () => {
+  const s = await setup();
+  await s.service.decide(s.job().id, 'ignore', 'ou_owner');
+  expect(s.analyses[0]!.signal.aborted).toBe(true);
+  await s.service.review({ id: s.job().id, revision: s.job().revision, handlingState: 'open' }, 'ou_owner', 'restore');
+  await s.service.tick(); await waitFor(() => expect(s.screens).toHaveLength(2));
+  await s.add('恢复后收到的新证据'); s.screen(1, 'needed');
+  await waitFor(() => expect(s.screens).toHaveLength(3)); s.screen(2, 'needed');
+  await waitFor(() => expect(s.job().attention?.state).toBe('needed')); await s.service.tick();
+  expect(s.job()).toMatchObject({ handlingState: 'open', analysisPaused: true, analysisRequested: false });
+  expect(s.analyses).toHaveLength(1);
+  await s.service.decide(s.job().id, 'process', 'ou_owner'); await s.service.tick();
+  await waitFor(() => expect(s.analyses).toHaveLength(2));
+});
+
+it('keeps manually handled state when a later source context contains new evidence', async () => {
+  const s = await setup();
+  await s.service.review({ id: s.job().id, revision: s.job().revision, handlingState: 'handled', replyDraft: '人工结论' }, 'ou_owner', 'handle');
+  expect(s.analyses[0]!.signal.aborted).toBe(true);
+  await s.add('处理后到来的另一条消息');
+  expect(s.job()).toMatchObject({ handlingState: 'handled', replyDraft: '人工结论', analysisPaused: true, analysisRequested: false });
+  expect(s.analyses).toHaveLength(1);
 });

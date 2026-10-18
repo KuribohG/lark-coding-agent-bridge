@@ -150,7 +150,8 @@ it('keeps an unconfirmed announcement id and retry deadline across new messages'
   s.advance(); s.add('om_two'); await s.service.tick(); await s.complete(1, 'needed'); await s.service.tick();
   expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1); expect(s.io.analyze).not.toHaveBeenCalled();
   expect(s.store.data.jobs[0]?.startDelivery).toEqual(delivery);
-  s.advance(59_000); await s.service.tick(); await vi.waitFor(() => expect(['ready', 'done']).toContain(s.store.data.jobs[0]?.state));
+  s.advance(59_000); await s.service.tick();
+  await vi.waitFor(() => expect(['ready', 'done']).toContain(s.store.data.jobs[0]?.state), { timeout: 3000 });
   expect(s.io.beginAnalysis).toHaveBeenCalledTimes(2);
   expect(vi.mocked(s.io.beginAnalysis!).mock.calls[1]![0].startDelivery?.id).toBe(delivery.id);
   expect(s.io.analyze).toHaveBeenCalledTimes(1);
