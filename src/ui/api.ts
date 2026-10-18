@@ -1,42 +1,46 @@
-import { applyPreferencesChange,preparePreferencesChange,PreferencesApplyError,PreferencesValidationError } from '../config/preferences';
+import {
+  applyPreferencesChange,
+  preparePreferencesChange,
+  PreferencesApplyError,
+  PreferencesValidationError,
+} from '../config/preferences';
 import { availableEfforts } from '../agent/model-settings';
 import { modelEnvironment } from '../runtime/model-settings';
 import type { LarkChannel } from '@larksuite/channel';
 import { fetchKnownChats } from '../bot/lark-info';
 import {
-ADD_BOT_SCOPES,
-addBotToChat,
-completeDeviceLogin,
-getUserAuthStatus,
-hasScope,
-listUserChats,
-searchUserChats,
-startDeviceLogin,
-type AddBotResult,
+  ADD_BOT_SCOPES,
+  addBotToChat,
+  completeDeviceLogin,
+  getUserAuthStatus,
+  hasScope,
+  listUserChats,
+  searchUserChats,
+  startDeviceLogin,
+  type AddBotResult,
 } from '../lark-cli/user-im';
 import { isMeetingNo } from '../meeting/api';
-import { checkMeetingPreflight,type MeetingPreflight } from '../meeting/preflight';
-import { describeMeetingError,type MeetingManager,type MeetingPushHealth } from '../meeting/manager';
+import { checkMeetingPreflight, type MeetingPreflight } from '../meeting/preflight';
+import { describeMeetingError, type MeetingManager, type MeetingPushHealth } from '../meeting/manager';
 import type { MeetingSessionStatus } from '../meeting/session';
 import { resolveAppPaths } from '../config/app-paths';
-import { loadRootConfig,runtimeProfileConfig } from '../config/profile-store';
+import { loadRootConfig, runtimeProfileConfig } from '../config/profile-store';
+import { saveAccessConfig, type MutableProfileState } from '../config/config-ops';
 import {
-saveAccessConfig,type MutableProfileState
-} from '../config/config-ops';
-import {
-getCotMessages,
-getMaxConcurrentRuns,
-getMessageReplyMode,
-getRequireMentionInGroup,
-getRunIdleTimeoutMs,
-getShowToolCalls,type CotMessagesMode,
-type MessageReplyMode
+  getCotMessages,
+  getMaxConcurrentRuns,
+  getMessageReplyMode,
+  getRequireMentionInGroup,
+  getRunIdleTimeoutMs,
+  getShowToolCalls,
+  type CotMessagesMode,
+  type MessageReplyMode,
 } from '../config/schema';
-import {
-type MeetingConfig,
-type LarkCliIdentityPreset,
-type ProfileAccess,
-type ProfileMode
+import type {
+  MeetingConfig,
+  LarkCliIdentityPreset,
+  ProfileAccess,
+  ProfileMode,
 } from '../config/profile-schema';
 import { normalizeModelSelection } from '../agent/models';
 import { log } from '../core/logger';

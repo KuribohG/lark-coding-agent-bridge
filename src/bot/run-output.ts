@@ -2,13 +2,13 @@ import type { LarkChannel } from '@larksuite/channel';
 import type { AgentEvent } from '../agent/types';
 import type { FileLinkRenderOptions } from '../card/file-links';
 import { renderCard } from '../card/run-renderer';
-import { initialState,type RunState } from '../card/run-state';
+import { initialState, type RunState } from '../card/run-state';
 import { renderText } from '../card/text-renderer';
-import { getMessageReplyMode,type CotMessagesMode } from '../config/schema';
+import { getMessageReplyMode, type CotMessagesMode } from '../config/schema';
 import { log } from '../core/logger';
 import type { RunHandle } from './active-runs';
-import { consumeCotEvents,CotClient,CotPublisher,finalAnswerOnlyState } from './cot';
-import { addWorkingReaction,removeReaction } from './reaction';
+import { consumeCotEvents, CotClient, CotPublisher, finalAnswerOnlyState } from './cot';
+import { addWorkingReaction, removeReaction } from './reaction';
 import { processAgentStream } from './run-stream';
 
 const STREAM_TERMINAL_GRACE_MS = 3000;
@@ -533,4 +533,3 @@ function scheduleWorkingReactionCleanup(
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-

@@ -110,6 +110,32 @@ settings. CI continues to request max effort through the existing model resolver
 Existing explicit model names are preserved; when changing engines, select a
 model supported by the destination engine or clear the override.
 
+## Chat output, commands and preferences
+
+`src/bot/channel.ts` handles message intake and run setup. It passes an event
+subscription to `run-output.ts`, which owns progress streams, COT fallback,
+empty-message cleanup and final delivery. Card and Markdown streams share the
+same progress lifecycle. `run-stream.ts` reduces agent events and maintains the
+idle watchdog; rendering keeps the run's execution capabilities and live display
+preferences separate. Changes to output should retain the slow-producer,
+missing-receipt, retry and terminal-event regressions.
+
+`src/commands/catalog.ts` is a data-only catalogue of command aliases, access
+requirements, argument parsing, pending-message policy and help text. Intake and
+help rendering read this catalogue without loading command handlers. The typed
+handler table in `commands/index.ts` must cover every catalogue entry. Text and
+card commands use the same authorization and dispatch function; domain handlers
+live in the adjacent workspace, resume, config, account, access, lifecycle,
+doctor and meeting modules. Existing command context type exports remain valid.
+
+Chat forms translate CardKit string fields before calling the shared preference
+validator in `src/config/preferences.ts`; the web API supplies JSON fields.
+Both use the same model validation, bounds and identity/save transaction. A live
+identity change is rolled back on failure, including a partially applied policy;
+offline edits apply identity settings on the profile's next startup. Omitted
+meeting settings are not written back from a stale snapshot. Surface-specific
+card delays and HTTP error responses remain at their respective boundaries.
+
 ## Extending the contract
 
 When migrating another adapter, declare only verified semantics, attach them to

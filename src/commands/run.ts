@@ -1,4 +1,4 @@
-import type { CommandContext } from './index';
+import type { CommandContext } from './types';
 import { modelEnvironment, resolveRunModelSettings } from '../runtime/model-settings';
 import { modelRunArguments, resolveModelSettings, type ModelSettings } from '../agent/model-settings';
 import { timedRuns } from '../runtime/timed-runs';

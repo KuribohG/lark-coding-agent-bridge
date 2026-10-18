@@ -1,57 +1,49 @@
 import { renderRunOutput } from './run-output';
-import { executionCapabilities,supportsRunInput } from '../agent/execution';
+import { findCommand } from '../commands/catalog';
+import { executionCapabilities, supportsRunInput } from '../agent/execution';
 import { modelRunArguments } from '../agent/model-settings';
 import { deadlineInstructions } from '../runtime/run-deadline';
-import { timedRuns,type TimedRun } from '../runtime/timed-runs';
+import { timedRuns, type TimedRun } from '../runtime/timed-runs';
 import { timedRunCard } from '../card/timed-run-card';
 import { BtwManager } from './btw';
 import { BtwStore } from '../session/btw-store';
 import { sendManagedCard } from '../card/managed';
 import { resolveRunModelSettings } from '../runtime/model-settings';
-import type {
-LarkChannel,
-LarkChannelOptions,
-NormalizedMessage,
-} from '@larksuite/channel';
+import type { LarkChannel, LarkChannelOptions, NormalizedMessage } from '@larksuite/channel';
 import { createLarkChannel } from '@larksuite/channel';
-import { dirname,join } from 'node:path';
-import { claudeCapability,codexCapability } from '../agent/capability';
-import { modelLabel,normalizeModelSelection,resolveModelArg } from '../agent/models';
+import { dirname, join } from 'node:path';
+import { claudeCapability, codexCapability } from '../agent/capability';
+import { modelLabel, normalizeModelSelection, resolveModelArg } from '../agent/models';
 import {
-buildAgentPrompt,
-type BridgePromptInteractiveCard,
-type BridgePromptMention,
-type BridgePromptQuotedMessage,
-type BridgePromptTopicMessage,
+  buildAgentPrompt,
+  type BridgePromptInteractiveCard,
+  type BridgePromptMention,
+  type BridgePromptQuotedMessage,
+  type BridgePromptTopicMessage,
 } from '../agent/prompt';
-import type { AgentAdapter,AgentEvent } from '../agent/types';
+import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { handleCardAction } from '../card/dispatcher';
 import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
-import {
-type RunState
-} from '../card/run-state';
-import { tryHandleCommand,type Controls } from '../commands';
+import type { RunState } from '../card/run-state';
+import { tryHandleCommand, type Controls } from '../commands';
 import type { AppConfig } from '../config/schema';
 import {
-getAgentStopGraceMs,
-getCotMessages,
-getMaxConcurrentRuns,
-getMessageReplyMode,
-getRunIdleTimeoutMs,
-getShowToolCalls,
+  getAgentStopGraceMs,
+  getCotMessages,
+  getMaxConcurrentRuns,
+  getMessageReplyMode,
+  getRunIdleTimeoutMs,
+  getShowToolCalls,
 } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
-import { log,reportMetric,withTrace } from '../core/logger';
-import { MediaCache,type LocalAttachment } from '../media/cache';
-import {
-toPolicyAttachment,
-toPromptAttachment,
-} from '../media/attachment';
-import { canUseDm,canUseGroup,requireMentionForChat } from '../policy/access';
+import { log, reportMetric, withTrace } from '../core/logger';
+import { MediaCache, type LocalAttachment } from '../media/cache';
+import { toPolicyAttachment, toPromptAttachment } from '../media/attachment';
+import { canUseDm, canUseGroup, requireMentionForChat } from '../policy/access';
 import { MeetingManager } from '../meeting/manager';
 import type { VcRequestClient } from '../meeting/api';
-import { attachMeetingAgent,summarizeEndedMeeting } from '../meeting/orchestrator';
+import { attachMeetingAgent, summarizeEndedMeeting } from '../meeting/orchestrator';
 import type { ScopeContext } from '../policy/run-policy';
 import { createOwnerRefreshController } from '../policy/owner';
 import { RunExecutor } from '../runtime/run-executor';
@@ -59,21 +51,19 @@ import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import { ActiveRuns } from './active-runs';
-import { ChatModeCache,type ChatMode } from './chat-mode-cache';
+import { ChatModeCache, type ChatMode } from './chat-mode-cache';
 import { handleCommentMention } from './comments';
-import { recordRunSessionEvent,startRunFlow } from './run-flow';
+import { recordRunSessionEvent, startRunFlow } from './run-flow';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { startKeepalive } from './keepalive';
 import { PendingQueue } from './pending-queue';
 import { FollowupRouter } from './followup';
 import { ProcessPool } from './process-pool';
-import { fetchQuotedContext,fetchTopicContext,type QuotedContext } from './quote';
+import { fetchQuotedContext, fetchTopicContext, type QuotedContext } from './quote';
 import { lookupMessageThreadId } from './thread-id';
 import { fetchKnownChats } from './lark-info';
 import type { AppPaths } from '../config/app-paths';
-import {
-CotClient
-} from './cot';
+import { CotClient } from './cot';
 
 const DEBOUNCE_MS = 600;
 
@@ -849,7 +839,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   });
   if (handled) {
     const name = emsg.content.trim().split(/\s+/)[0];
-    const dropped = ['/model', '/effort', '/status', '/config', '/run', '/btw', '/stop', '/inbox'].includes(name ?? '') ? [] : pending.cancel(scope);
+    const dropped = findCommand(name ?? '')?.pending === 'preserve' ? [] : pending.cancel(scope);
     log.info('intake', 'command', { scope, droppedPending: dropped.length });
     return;
   }

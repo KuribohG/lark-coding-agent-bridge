@@ -1,3 +1,4 @@
+import { commandHelpLines } from '../commands/catalog';
 interface ButtonSpec {
   text: string;
   value: Record<string, unknown>;
@@ -186,27 +187,7 @@ export function helpCard(agentName = 'Agent'): object {
       [
         '**命令列表**',
         '',
-        '- `/new` `/reset` — 清空当前 chat 的会话',
-        '- `/btw 问题` — 当前话题/聊天的旁问，记住此前旁问，不打断主任务',
-        '- `/new chat [name]` — 新建群+新会话，自动拉你进群',
-        '- `/resume [N]` — 列出并恢复历史会话（最多 N 条）',
-        '- `/cd <path>` — 切换工作目录（会重置 session）',
-        '- `/ws list|save <name>|use <name>|remove <name>` — 工作目录',
-        '- `/account` — 查看当前应用；`/account change` 换 appId/secret 并重连',
-        '- `/config` — 调整此 bot 的默认模型、思考强度、展示偏好和 lark-cli 身份策略',
-        '- `/model [模型名|default]` — 当前话题/聊天的模型，支持手填',
-        '- `/effort [强度|default]` — 当前话题/聊天的思考强度；可加 `--scope profile` 改 bot 默认',
-        '- `/run` — 限时任务表单；`/run 任务` 用默认值，`/run defaults` 设置默认值，`/run status` 查看，`/run stop` 取消',
-        '- `/status` — 当前状态',
-        '- `/stop` — 停止当前任务并取消排队消息（也可点卡片底部 ⏹ 终止 按钮）',
-        '- `/stop comment:<scopeHash>` — 管理员停止云文档评论任务',
-        '- `/timeout [N|off|default]` — 当前 session 的探活分钟数,`/config` 改全局默认',
-        '- `/timeout comment:<scopeHash> N` — 管理员设置云文档评论任务探活',
-        '- `/ps` — 列出本机所有 bot,标识当前正在回复的那个',
-        '- `/exit <id|#>` — 关掉指定 bot(用 `/ps` 看 id/序号)',
-        '- `/reconnect` — 强制重连 WebSocket(网络抖动后 bot 没反应时用)',
-        `- \`/doctor [描述]\` — 把日志和描述交给 ${escapedAgentName} 自助诊断`,
-        '- `/help` — 本帮助',
+        ...commandHelpLines(escapedAgentName),
         '',
         `其他内容直接交给 ${escapedAgentName}。`,
       ].join('\n'),

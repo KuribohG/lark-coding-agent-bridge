@@ -1,6 +1,13 @@
 import type { AgentEvent } from '../agent/types';
-import { finalizeIfRunning,initialState,markIdleTimeout,markInterrupted,reduce,type RunState } from '../card/run-state';
-import { log,reportMetric } from '../core/logger';
+import {
+  finalizeIfRunning,
+  initialState,
+  markIdleTimeout,
+  markInterrupted,
+  reduce,
+  type RunState,
+} from '../card/run-state';
+import { log, reportMetric } from '../core/logger';
 import type { RunHandle } from './active-runs';
 
 /**
@@ -128,4 +135,3 @@ export async function processAgentStream(
   }
   return state;
 }
-

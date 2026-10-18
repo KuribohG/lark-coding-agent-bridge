@@ -1,4 +1,4 @@
-import type { CommandContext } from './index';
+import type { CommandContext } from './types';
 import { canRunAdminCommand } from '../policy/access';
 import { saveModelPreferences } from '../config/config-ops';
 import { validateModelId } from '../agent/models';

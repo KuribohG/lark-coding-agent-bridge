@@ -1,13 +1,23 @@
 import { parseEffort, resolveModelSettings } from '../agent/model-settings';
 import { DEFAULT_MODEL, normalizeModelSelection, validateModelId } from '../agent/models';
 import { modelEnvironment } from '../runtime/model-settings';
+import { applyProfileLarkCliIdentity, savePreferencesConfig, type MutableProfileState } from './config-ops';
 import {
-  applyProfileLarkCliIdentity, savePreferencesConfig, type MutableProfileState,
-} from './config-ops';
-import { effectiveLarkCliIdentity, type MeetingConfig, type LarkCliIdentityPreset, type ProfileMode } from './profile-schema';
+  effectiveLarkCliIdentity,
+  type MeetingConfig,
+  type LarkCliIdentityPreset,
+  type ProfileMode,
+} from './profile-schema';
 import {
-  getCotMessages, getMaxConcurrentRuns, getMessageReplyMode, getRequireMentionInGroup,
-  getRunIdleTimeoutMs, getShowToolCalls, type AppPreferences, type CotMessagesMode, type MessageReplyMode,
+  getCotMessages,
+  getMaxConcurrentRuns,
+  getMessageReplyMode,
+  getRequireMentionInGroup,
+  getRunIdleTimeoutMs,
+  getShowToolCalls,
+  type AppPreferences,
+  type CotMessagesMode,
+  type MessageReplyMode,
 } from './schema';
 
 export class PreferencesValidationError extends Error {}
@@ -164,6 +174,7 @@ function parsePreferencesChange(state: MutableProfileState, body: unknown): Pref
       cotMessages,
       maxConcurrentRuns,
       runIdleTimeoutMinutes,
+      requireMentionInGroup,
     },
   };
 }
