@@ -1,11 +1,11 @@
 import { join } from 'node:path';
 import type { AgentAdapter, AgentEvent, AgentRunOptions } from '../agent/types';
-import { executeBackgroundRun } from '../runtime/background-executor';
-import { backgroundAnalysisError, InboxAnalysisError } from './analysis-error';
+import { processAnalysis } from '../work-items/analysis';
 import { INBOX_ANALYSIS_MODEL } from './analyzer';
 import type { InboxJob } from './types';
-import { obj, parseModelJson } from './values';
 import { analysisChanges, previousAnalysis } from './updates';
+import { createInvestigator } from '../work-items/investigation';
+import type { InvestigationDriver } from '../work-items/contracts';
 
 export function processingPrompt(job: InboxJob, background: string): string {
   return `你正在处理所属用户已授权自动分析的会话待办，用户 open_id=${job.ownerOpenId}。该事项已被确认为需要本人处理。
@@ -20,29 +20,21 @@ export function processingPrompt(job: InboxJob, background: string): string {
     messages: job.messages.map(m => ({ id: m.id, sender: m.senderName, senderId: m.senderId, time: new Date(m.time).toISOString(), text: m.text })) })}`;
 }
 
+export function larkInvestigationDriver(workspace: string, background: string): InvestigationDriver {
+  return { prepare: async (job, signal) => {
+    signal.throwIfAborted();
+    if (!/^[\w-]+$/.test(job.id)) throw new Error('无效待办 ID');
+    return { cwd: join(workspace, 'inbox', job.id), prompt: processingPrompt(job, background) };
+  } };
+}
+
 /** One isolated agent run per item; only the authoritative final answer is returned for delivery. */
 export async function processInbox(job: InboxJob, agent: AgentAdapter, workspace: string, background: string,
   signal: AbortSignal, timeoutMs = 30 * 60_000, onEvent?: (event: AgentEvent) => void,
   preferences: Pick<AgentRunOptions, 'model' | 'reasoningEffort'> = { model: INBOX_ANALYSIS_MODEL, reasoningEffort: 'max' }) {
-  if (!/^[\w-]+$/.test(job.id)) throw new Error('无效待办 ID');
-  const cwd = join(workspace, 'inbox', job.id);
-  return processAnalysis(agent, { runId: `inbox-${job.id}-${job.attempt ?? 0}`, cwd,
-    ...preferences, prompt: processingPrompt(job, background), deadlineAt: Date.now() + timeoutMs }, signal, onEvent);
+  return createInvestigator(larkInvestigationDriver(workspace, background), (prepared, input, currentSignal) =>
+    processAnalysis(agent, { runId: `inbox-${input.id}-${input.attempt ?? 0}`, ...prepared,
+      ...preferences, deadlineAt: Date.now() + timeoutMs }, currentSignal, onEvent), preferences)(job, signal);
 }
 
-/** Validate the report schema shared by inbox and CI investigations. */
-export async function processAnalysis(agent: AgentAdapter, options: AgentRunOptions & { cwd: string }, signal: AbortSignal,
-  onEvent?: (event: AgentEvent) => void) {
-  try {
-    const { text, ...usage } = await executeBackgroundRun(agent, options, signal, onEvent);
-    if (text.length > 30_000) throw new InboxAnalysisError('incomplete');
-    let fields: Record<string, unknown>;
-    try { fields = obj(parseModelJson(text)); }
-    catch { throw new InboxAnalysisError('invalid_result'); }
-    if (typeof fields.replyDraft !== 'string' || typeof fields.analysis !== 'string' || !fields.analysis.trim() || typeof fields.missingInfo !== 'string') {
-      throw new InboxAnalysisError('invalid_result');
-    }
-    return { text: JSON.stringify({ replyDraft: fields.replyDraft.slice(0, 6000), analysis: fields.analysis.slice(0, 8000),
-      missingInfo: fields.missingInfo.slice(0, 2000) }), ...usage };
-  } catch (error) { throw backgroundAnalysisError(error); }
-}
+export { processAnalysis } from '../work-items/analysis';

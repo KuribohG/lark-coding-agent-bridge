@@ -10,7 +10,7 @@ import { log } from '../core/logger';
 import { InboxTaskSources } from '../inbox/task-sources';
 import { GitLabClient, loadGitLabToken } from './client';
 import { normalizeGitLabCi, validateGitLabCi } from './config';
-import { ciTaskDriver, ciTaskEvent } from './inbox-source';
+import { ciAssessment, ciTaskDriver, ciTaskEvent } from './inbox-source';
 import { GitLabCiService } from './service';
 
 export class GitLabCiManager {
@@ -59,7 +59,7 @@ export class GitLabCiManager {
     try {
       const settings = controls ? await backgroundModelSettings(controls.profileConfig, paths.profileDir, config.model, 'max') : {};
       this.source = await this.sources.connect({ id: 'gitlab-ci', label: 'GitLab CI', profile: config.executorProfile,
-        enabled, controls, notification: config.notification, settings, driver: ciTaskDriver(config, client) });
+        enabled, controls, notification: config.notification, settings, assessment: ciAssessment, driver: ciTaskDriver(config, client) });
       this.fingerprint = fingerprint;
       if (!client) { this.error = config.enabled ? 'GitLab CI executor profile is offline' : undefined; return; }
       const source = this.source;

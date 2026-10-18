@@ -35,6 +35,7 @@
     "docs/gitlab-ci-watch.md",
     "docs/agent-execution.md",
     "docs/model-services.md",
+    "docs/work-item-sources.md",
     "LICENSE",
     "docs/self-contained.md",
     "docs/user-guide"

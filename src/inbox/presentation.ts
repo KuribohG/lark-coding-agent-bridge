@@ -4,10 +4,11 @@ import { handlingState, replyContent } from './reply';
 export const guiSummary = (job: InboxJob) => ({ id: job.id, name: job.source.name.slice(0, 80),
   sourceKind: job.external?.source ?? 'conversation', executorProfile: job.profile,
   chatId: job.source.chatId, type: job.source.type, state: job.state,
-  preview: job.messages.at(-1)?.text.slice(0, 80) || '', messageCount: job.messages.length,
+  preview: (job.messages.at(-1)?.text || job.attention?.reason || '').slice(0, 80), messageCount: job.messages.length,
   updatedAt: job.updatedAt, dueAt: job.dueAt, automatic: job.automatic, alert: job.alert,
   attention: job.attention,
-  revision: job.revision ?? 0, handlingState: handlingState(job) });
+  revision: job.revision ?? 0, handlingState: handlingState(job),
+  businessState: job.businessState, evidenceVersion: job.evidenceVersion, analyzedVersion: job.analyzedVersion });
 
 export function guiContent(job: InboxJob) {
   const legacy = replyContent(job.result);

@@ -29,6 +29,7 @@ import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { InboxGui } from './gui';
 import { InboxTaskSources } from './task-sources';
+import { larkRuntime } from './runtime';
 
 const connectionConfig = ({ enabled: _, autoAnalyze: __, intakeScope: ___, watchPrivate, watchMentions, ...config }: InboxConfig) =>
   ({ ...config, legacyIntake: watchPrivate ? undefined : { watchPrivate, watchMentions } });
@@ -216,7 +217,7 @@ export class InboxManager {
       });
       const secret = await resolveAppSecret(controls.cfg, paths);
       const cotClient = new CotClient({ tenant: controls.cfg.accounts.app.tenant, appId: controls.cfg.accounts.app.id, appSecret: secret });
-      this.service = new InboxService(new InboxStore(join(folder, 'state.json')), config, {
+      this.service = new InboxService(new InboxStore(join(folder, 'state.json')), config, larkRuntime(config, {
         selfSenderIds: [controls.cfg.accounts.app.id, controls.botIdentity?.openId].filter((id): id is string => Boolean(id)),
         cancel: () => lark.close(),
         cancelPending: () => lark.cancelPending(),
@@ -237,7 +238,7 @@ export class InboxManager {
         triage: async (jobs, signal, onProgress) => triageWithChatTools(jobs, config.attentionProfile,
           await loadInboxTriageSource(config, triageSource, this.rootDir), readTools, signal, onProgress),
         notifyAttention: (jobs, id) => lark.notifyAttention(jobs, id),
-      }, Date.now, this.sources.queue);
+      }), Date.now, this.sources.queue);
       this.nonces = new CallbackNonceStore(join(folder, 'card-nonces.json'));
       await this.nonces.load();
       const cards = new InboxCards(this.service, lark, new CallbackAuth({ keys: [{ version: 1, secret }], nonceStore: this.nonces }), this.nonces);
