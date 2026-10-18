@@ -41,6 +41,7 @@ export class InboxService {
   private stopped = false;
   private modeChanges = 0;
   private lastPoll = 0;
+  private pollRetryAt = 0;
   private polling?: Promise<void>;
   private intakeGeneration = 0;
   private triageProgress = new Map<string, { signature: string; progress: NonNullable<Attention['progress']> }>();
@@ -341,7 +342,7 @@ export class InboxService {
   private async poll(): Promise<void> {
     if (this.io.taskSource) return;
     const now = this.now();
-    if (this.blocked() || now - this.lastPoll < this.config.pollSeconds * 1000) return;
+    if (this.blocked() || now < this.pollRetryAt || now - this.lastPoll < this.config.pollSeconds * 1000) return;
     this.lastPoll = now;
     const generation = this.intakeGeneration;
     const current = () => !this.blocked() && generation === this.intakeGeneration;
@@ -373,8 +374,14 @@ export class InboxService {
           this.store.data.cursors[key] = now; await this.store.save();
         });
       }
-      if (current()) this.lastError = undefined;
-    } catch (error) { if (current()) this.lastError = error instanceof Error ? error.message : 'inbox poll failed'; }
+      if (current()) { this.lastError = undefined; this.pollRetryAt = 0; }
+    } catch (error) {
+      if (current()) {
+        this.lastError = error instanceof Error ? error.message : 'inbox poll failed';
+        // Faster successful polls must not amplify API failures or rate limiting.
+        this.pollRetryAt = this.now() + 60_000;
+      }
+    }
   }
   async tick(): Promise<void> {
     if (this.blocked()) return;

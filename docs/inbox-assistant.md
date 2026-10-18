@@ -50,6 +50,10 @@
 
 ## 设置
 
+加载支持快速轮询的版本后，消息采集默认及最短间隔均为 5 秒，`pollSeconds` 可设为 5–3600。已有配置中的 60 秒会保留，需改为 5 秒并保存；无控制台的 `run --profile` 实例需重启才会读取修改。旧版本仍将低于 30 秒的值归一到 30 秒。
+
+采集轮次不会重叠；请求、分页和上下文回查耗时较长时，实际间隔会超过配置值。采集失败后至少等待 60 秒再重试，避免高频失败。采集间隔不包含飞书搜索索引延迟、关注筛选的 60 秒静默合并窗口（持续来消息时最多等 120 秒）和工作台同步耗时。
+
 根配置的 `inbox` 包含：
 
 ```json
@@ -62,7 +66,7 @@
   "intakeScope": "private_mentions",
   "attentionProfile": "用户授权整理的具体工作背景",
   "dailyTriageLimit": 1000000,
-  "pollSeconds": 60,
+  "pollSeconds": 5,
   "contextMinutes": 15,
   "maxContextChars": 24000,
   "gui": { "publicUrl": "https://your-app.example/app/app_ID", "apiKeyFile": "/absolute/private/key" }

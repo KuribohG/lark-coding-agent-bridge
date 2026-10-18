@@ -42,6 +42,46 @@ it.each([
 });
 
 describe('durable inbox', () => {
+  it('collects fresh messages at five-second intervals while deduplicating the overlap', async () => {
+    const s = await setup(); await s.service.tick();
+    expect(s.io.collect).toHaveBeenCalledTimes(2);
+    s.advance(4999); await s.service.tick();
+    expect(s.io.collect).toHaveBeenCalledTimes(2);
+    vi.mocked(s.io.collect).mockImplementation(async kind => kind === 'p2p'
+      ? [message(), message({ id: 'om_new', time: 1_005_000 })] : []);
+    s.advance(1); await s.service.tick();
+    expect(s.io.collect).toHaveBeenCalledTimes(4);
+    expect(s.io.collect).toHaveBeenLastCalledWith('mention', 700_000, 1_005_000);
+    expect(s.store.data.jobs.flatMap(j => j.messages).map(m => m.id)).toEqual(['om_source', 'om_new']);
+    expect(s.io.analyze).not.toHaveBeenCalled();
+  });
+  it('shares a slow collection across ticks instead of starting overlapping requests', async () => {
+    let finish!: (messages: InboxMessage[]) => void;
+    const s = await setup();
+    vi.mocked(s.io.collect).mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const first = s.service.tick(); await vi.waitFor(() => expect(finish).toBeDefined());
+    s.advance(5000); const second = s.service.tick();
+    s.advance(5000); const third = s.service.tick();
+    try { expect(s.io.collect).toHaveBeenCalledTimes(1); }
+    finally { finish([message()]); await Promise.all([first, second, third]); }
+    expect(s.io.collect).toHaveBeenCalledTimes(2);
+    expect(s.service.list()).toHaveLength(1);
+  });
+  it('backs off failed collection for a minute and resumes five-second polls after recovery', async () => {
+    const s = await setup();
+    vi.mocked(s.io.collect).mockRejectedValueOnce(new Error('rate limited'));
+    await s.service.tick();
+    expect(s.service.lastError).toBe('rate limited');
+    expect(s.store.data.cursors.p2p).toBe(1_000_000);
+    for (let i = 0; i < 11; i++) { s.advance(5000); await s.service.tick(); }
+    expect(s.io.collect).toHaveBeenCalledTimes(1);
+    s.advance(5000); await s.service.tick();
+    expect(s.io.collect).toHaveBeenCalledTimes(3);
+    expect(s.service.lastError).toBeUndefined();
+    expect(s.store.data.cursors.p2p).toBe(1_060_000);
+    s.advance(5000); await s.service.tick();
+    expect(s.io.collect).toHaveBeenCalledTimes(5);
+  });
   it('never starts deep analysis or pending notifications without a click, even after hours', async () => {
     const { service, io, advance } = await setup(); await service.tick();
     advance(3600_000); await service.tick(); await settle(service);
