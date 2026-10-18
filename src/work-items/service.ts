@@ -23,6 +23,8 @@ export class WorkItemService {
   private polling?: Promise<void>;
   private refreshing?: Promise<void>;
   private notifying?: Promise<void>;
+  private delivering?: Promise<void>;
+  private digesting?: Promise<void>;
   private ticking?: Promise<void>;
   private dispatching?: Promise<void>;
   private dispatchRequested = false;
@@ -90,6 +92,8 @@ export class WorkItemService {
     await this.refreshing;
     await this.notifying;
     await this.ticking;
+    await this.delivering;
+    await this.digesting;
     await this.dispatching;
     await this.chain;
     if (sourceError) throw sourceError;
@@ -278,7 +282,9 @@ export class WorkItemService {
   }
   tick(): Promise<void> {
     // Collection, history refresh and dispatch each have at most one in-flight pass.
-    return this.ticking ??= this.runTick().finally(() => { this.ticking = undefined; });
+    const cycle = this.ticking ??= this.runTick().finally(() => { this.ticking = undefined; });
+    // Callers can await delivery, but a slow send must not stall the next collection pass.
+    return cycle.then(async () => { await Promise.all([this.delivering, this.digesting]); });
   }
   private async runTick(): Promise<void> {
     if (this.blocked()) return;
@@ -291,27 +297,9 @@ export class WorkItemService {
       try {
         this.removeFeedback();
         const now = this.now();
-        // The persisted topic is the only output target for an automatic run.
         for (const job of this.store.data.jobs) {
-          if (job.state === 'ready' || (job.state === 'failed' && job.analysisTopic) || (this.io.notifyChange && job.state === 'done' && job.result && !job.deliveredAt && job.analysisTopic)) {
-            if ((!this.io.notifyChange || job.businessState !== 'resolved') && !resolved(job) && this.safeSource(job) && (!job.draftStale || job.error) && (!job.automatic || this.acceptsSource(job)) && !job.deliveredAt &&
-              (job.analysisTopic || (!this.config.gui.publicUrl && !job.automatic && job.attention?.state === 'needed'))) {
-              const delivery = job.resultDelivery ??= { attempts: 0, startedAt: now, retryAt: now };
-              if (delivery.attempts >= 3 || now - delivery.startedAt > 240_000) {
-                job.error = '结果投递未确认，请在工作台查看；已停止重复发送';
-                if (job.state === 'ready') job.state = 'done';
-                continue;
-              }
-              if (delivery.retryAt > now) continue;
-              delivery.attempts++; delivery.retryAt = now + 60_000; await this.store.save();
-              try { await this.io.deliver(structuredClone(job), 'result'); job.deliveredAt = this.now(); }
-              catch { this.lastError = '结果投递暂未确认，等待重试'; continue; }
-            }
-            if (job.state === 'ready') job.state = 'done';
-          }
           if (job.state === 'notifying' || (job.state === 'queued' && !job.analysisRequested)) job.state = 'waiting';
         }
-        await this.notifyAttention();
         // Keep durable state bounded; retain active jobs regardless of age.
         const quiet = new Set(this.store.data.jobs.filter(j => !resolved(j) && j.attention?.state === 'quiet').slice(-500).map(j => j.id));
         this.store.data.jobs = this.store.data.jobs.filter(j => resolved(j) ? now - j.updatedAt < 7 * 86400_000 : j.attention?.state !== 'quiet' || quiet.has(j.id));
@@ -319,6 +307,10 @@ export class WorkItemService {
         await this.store.save();
       } catch (e) { this.lastError = e instanceof Error ? e.message : 'inbox poll failed'; }
     });
+    if (!this.delivering && !this.blocked()) this.delivering = this.deliverResults()
+      .catch(() => { this.pauseAfterFailure(); }).finally(() => { this.delivering = undefined; });
+    if (!this.digesting && !this.blocked()) this.digesting = this.notifyAttention()
+      .catch(() => { this.pauseAfterFailure(); }).finally(() => { this.digesting = undefined; });
     await this.dispatch();
     if (!this.refreshing && !this.blocked()) {
       this.refreshing = (this.source.refresh?.() ?? Promise.resolve()).finally(() => { this.refreshing = undefined; });
@@ -468,31 +460,86 @@ export class WorkItemService {
       }
     }
   }
+  private async deliverResults(): Promise<void> {
+    for (const job of [...this.store.data.jobs]) {
+      const pending = await this.serial(async () => {
+        if (this.blocked() || !this.store.data.jobs.includes(job)) return;
+        const now = this.now();
+        if (!(job.state === 'ready' || (job.state === 'failed' && job.analysisTopic) ||
+          (this.io.notifyChange && job.state === 'done' && job.result && !job.deliveredAt && job.analysisTopic))) return;
+        // Automatic results can only use a confirmed topic.
+        if ((!this.io.notifyChange || job.businessState !== 'resolved') && !resolved(job) && this.safeSource(job) &&
+          (!job.draftStale || job.error) && (!job.automatic || this.acceptsSource(job)) && !job.deliveredAt &&
+          (job.analysisTopic || (!this.config.gui.publicUrl && !job.automatic && job.attention?.state === 'needed'))) {
+          const delivery = job.resultDelivery ??= { attempts: 0, startedAt: now, retryAt: now };
+          if (delivery.confirmedAt !== undefined) {
+            if (job.state === 'ready') job.state = 'done';
+            await this.store.save(); return;
+          }
+          if (delivery.attempts >= 3 || now - delivery.startedAt > 240_000) {
+            job.error = '结果投递未确认，请在工作台查看；已停止重复发送';
+          } else {
+            if (delivery.retryAt > now) return;
+            delivery.attempts++; delivery.retryAt = now + 60_000;
+            await this.store.save();
+            return { input: structuredClone(job), delivery };
+          }
+        }
+        if (job.state === 'ready') job.state = 'done';
+        await this.store.save();
+      });
+      if (!pending) continue;
+      try { await this.io.deliver(pending.input, 'result'); }
+      catch { this.lastError = '结果投递暂未确认，等待重试'; continue; }
+      await this.serial(async () => {
+        // The receipt belongs to the reserved output, not a newer analysis or edited draft.
+        if (job.resultDelivery !== pending.delivery) return;
+        pending.delivery.confirmedAt = this.now();
+        if (job.attempt === pending.input.attempt && job.evidenceVersion === pending.input.evidenceVersion &&
+          job.revision === pending.input.revision) {
+          job.deliveredAt = this.now();
+          if (job.state === 'ready') job.state = 'done';
+        }
+        await this.store.save();
+      });
+    }
+  }
   private async notifyAttention(): Promise<void> {
-    if (this.blocked() || !this.io.notifyAttention || this.io.beginAnalysis) return;
-    const data = this.store.data; const now = this.now();
-    const eligible = (j: WorkItem) => !resolved(j) && this.acceptsSource(j) && j.attention?.state === 'needed' && !j.notifiedAt && !j.notificationSuppressed;
-    let outbox = data.notificationOutbox;
-    if (!outbox) {
-      const day = new Date(now).toISOString().slice(0, 10);
-      const usage = data.notificationUsage ??= {};
-      if ((data.lastDigestAt !== undefined && now - data.lastDigestAt < 600_000) || (usage[day] ?? 0) >= 12) return;
-      const jobs = data.jobs.filter(eligible).slice(0, 20);
-      if (!jobs.length) return;
-      outbox = data.notificationOutbox = { id: randomUUID(), jobs: jobs.map(j => ({ id: j.id, signature: signature(j) })), attempts: 0, retryAt: now };
-      data.lastDigestAt = now; usage[day] = (usage[day] ?? 0) + 1; await this.store.save();
-    }
-    if (outbox.retryAt > now) return;
-    const jobs = outbox.jobs.map(entry => data.jobs.find(j => j.id === entry.id && signature(j) === entry.signature && eligible(j)));
-    // Do not change an already-sent digest's content during retries.
-    if (jobs.some(j => !j) || outbox.attempts >= 3 || now - (data.lastDigestAt ?? now) > 240_000) {
-      if (outbox.attempts) for (const entry of outbox.jobs) { const j = data.jobs.find(j => j.id === entry.id); if (j) j.notificationSuppressed = true; }
-      data.notificationOutbox = undefined; await this.store.save(); return;
-    }
-    outbox.attempts++; outbox.retryAt = now + 60_000; await this.store.save();
-    await this.io.notifyAttention(jobs as WorkItem[], outbox.id);
-    for (const job of jobs) job!.notifiedAt = this.now();
-    data.notificationOutbox = undefined; await this.store.save();
+    const pending = await this.serial(async () => {
+      if (this.blocked() || !this.io.notifyAttention || this.io.beginAnalysis) return;
+      const data = this.store.data; const now = this.now();
+      const eligible = (j: WorkItem) => !resolved(j) && this.acceptsSource(j) && j.attention?.state === 'needed' && !j.notifiedAt && !j.notificationSuppressed;
+      let outbox = data.notificationOutbox;
+      if (!outbox) {
+        const day = new Date(now).toISOString().slice(0, 10);
+        const usage = data.notificationUsage ??= {};
+        if ((data.lastDigestAt !== undefined && now - data.lastDigestAt < 600_000) || (usage[day] ?? 0) >= 12) return;
+        const jobs = data.jobs.filter(eligible).slice(0, 20);
+        if (!jobs.length) return;
+        outbox = data.notificationOutbox = { id: randomUUID(), jobs: jobs.map(j => ({ id: j.id, signature: signature(j) })), attempts: 0, retryAt: now };
+        data.lastDigestAt = now; usage[day] = (usage[day] ?? 0) + 1;
+      }
+      if (outbox.retryAt > now) return;
+      const jobs = outbox.jobs.map(entry => data.jobs.find(j => j.id === entry.id && signature(j) === entry.signature && eligible(j)));
+      // An ambiguous send must retain its original identity and content on retry.
+      if (jobs.some(j => !j) || outbox.attempts >= 3 || now - (data.lastDigestAt ?? now) > 240_000) {
+        if (outbox.attempts) for (const entry of outbox.jobs) { const j = data.jobs.find(j => j.id === entry.id); if (j) j.notificationSuppressed = true; }
+        data.notificationOutbox = undefined; await this.store.save(); return;
+      }
+      outbox.attempts++; outbox.retryAt = now + 60_000; await this.store.save();
+      return { outbox, jobs: structuredClone(jobs as WorkItem[]) };
+    });
+    if (!pending) return;
+    try { await this.io.notifyAttention!(pending.jobs, pending.outbox.id); }
+    catch { this.lastError = '关注通知暂未确认，等待重试'; return; }
+    await this.serial(async () => {
+      for (const entry of pending.outbox.jobs) {
+        const job = this.store.data.jobs.find(j => j.id === entry.id && signature(j) === entry.signature);
+        if (job) job.notifiedAt = this.now();
+      }
+      if (this.store.data.notificationOutbox === pending.outbox) this.store.data.notificationOutbox = undefined;
+      await this.store.save();
+    });
   }
   async batchReview(value: unknown, owner: string, requestId?: string): Promise<void> {
     if (owner !== this.config.ownerOpenId) throw new Error('forbidden');

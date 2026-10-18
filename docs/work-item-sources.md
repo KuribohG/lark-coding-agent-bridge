@@ -142,3 +142,12 @@ bounded retry receipts. Alert delivery failure does not block storage investigat
 Recovery is issued by the collector after fresh sustained observations, never by the
 model. Material updates coalesce while analysis is running; source-confirmed recovery
 can cancel stale work. Manual draft edits, stops and handling state remain authoritative.
+
+Result and attention-digest delivery reserve and persist each attempt inside the
+state transaction, send an immutable snapshot outside it, then persist the receipt
+in another transaction. Collection and human controls continue while a send is
+pending; overlapping ticks share the same delivery pass. Shutdown drains outstanding
+sends. A result receipt records confirmation without marking newer evidence or an
+edited draft as delivered. Existing retry identities, three-attempt bounds and
+restart recovery remain in place; an ambiguous network outcome is not an exactly-once
+delivery guarantee.

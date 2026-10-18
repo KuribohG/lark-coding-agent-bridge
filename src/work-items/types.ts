@@ -21,7 +21,7 @@ export interface WorkItem {
   analysisRequested?: boolean;
   analysisTopic?: DeliveryTarget;
   startDelivery?: { id: string; text: string; attempts: number; startedAt: number; retryAt: number; confirmed?: boolean };
-  resultDelivery?: { attempts: number; startedAt: number; retryAt: number };
+  resultDelivery?: { attempts: number; startedAt: number; retryAt: number; confirmedAt?: number };
   sourceNotices?: { id: string; text: string; startedAt: number; attempts: number; retryAt: number; sentAt?: number; abandoned?: boolean }[];
   notificationSuppressed?: boolean;
   automatic: boolean; alert: boolean; result?: string; error?: string;
