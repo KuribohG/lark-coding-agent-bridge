@@ -25,7 +25,7 @@ export async function prepareCi(run: CiRun, config: GitLabCiConfig, client: GitL
     try { return { cwd: folder, prompt: '', cached: await readCiResult(join(folder, 'result.json'), run.id) }; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
-  const obsolete = (): PreparedInboxTask => ({ cwd: folder, prompt: '', cached: { inputTokens: 0, outputTokens: 0,
+  const obsolete = (): PreparedInboxTask => ({ cwd: folder, prompt: '', cached: { inputTokens: 0, outputTokens: 0, businessState: 'resolved',
     text: JSON.stringify({ replyDraft: '已跳过：pipeline 状态或失败 job 已改变。', analysis: '执行前复查发现此失败已过期，未启动模型分析。新的失败由盯盘继续跟踪。', missingInfo: '' }) } });
   const pipeline = await client.pipeline(run.repository.project, run.pipeline.id, signal);
   if (pipeline.status !== 'failed') return obsolete();

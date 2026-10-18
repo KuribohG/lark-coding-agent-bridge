@@ -68,6 +68,7 @@ it('quarantines restored self-only queues, results and delivery retries, includi
 it('rescreens mixed historical jobs without self output and keeps edited drafts stale until reviewed', async () => {
   const s = await setup([job('mixed', [human, self], { replyDraft: '人工草稿', draftEdited: true })]);
   expect(s.service.list()[0]).toMatchObject({ state: 'waiting', messages: [human], attention: { state: 'pending' }, replyDraft: '人工草稿', draftStale: true });
+  expect(s.service.list()[0]?.evidenceVersion).toBe(2);
   s.advance(61_000); await s.service.tick(); await vi.waitFor(() => expect(s.io.triage).toHaveBeenCalledTimes(1));
   expect(vi.mocked(s.io.triage!).mock.calls[0]![0][0]!.messages).toEqual([human]);
   await s.service.tick(); expect(s.io.analyze).not.toHaveBeenCalled();

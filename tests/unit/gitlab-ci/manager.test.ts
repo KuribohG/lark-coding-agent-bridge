@@ -1,4 +1,4 @@
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -9,9 +9,12 @@ import { normalizeGitLabCi } from '../../../src/gitlab-ci/config';
 import { GitLabCiManager } from '../../../src/gitlab-ci/manager';
 import { GitLabCiService } from '../../../src/gitlab-ci/service';
 import * as runtime from '../../../src/runtime/agent-runtime';
+import { initMonitors } from '../../../src/cli/commands/monitors';
+import { loadMonitorRoot } from '../../../src/monitoring/store';
+import { formatMonitorConfig } from '../../../src/monitoring/config';
 
 vi.mock('../../../src/gitlab-ci/client', () => ({ GitLabClient: vi.fn(), loadGitLabToken: vi.fn(async () => 'fixture') }));
-vi.mock('../../../src/gitlab-ci/service', () => ({ GitLabCiService: vi.fn(function () { return { start: vi.fn(), close: vi.fn() }; }) }));
+vi.mock('../../../src/gitlab-ci/service', () => ({ GitLabCiService: vi.fn(function (_path, config) { return { config, start: vi.fn(), close: vi.fn() }; }) }));
 vi.mock('../../../src/runtime/agent-runtime', () => ({ createRuntimeAgent: vi.fn(() => ({})) }));
 const managers: GitLabCiManager[] = [];
 afterEach(async () => { for (const manager of managers.splice(0)) await manager.close(); vi.clearAllMocks(); });
@@ -39,6 +42,7 @@ it('leases one watcher, uses the normal runtime, and releases it when the profil
   await first.close(); await second.reconcile(); expect(second.error).toBeUndefined();
   const instance = vi.mocked(GitLabCiService).mock.results.at(-1)!.value as GitLabCiService;
   s.offline(); await second.reconcile(); expect(instance.close).toHaveBeenCalled();
+  await second.reconcile(); expect(second.error).toContain('offline');
 });
 
 it('reloads configuration without restarting an unchanged watcher', async () => {
@@ -49,4 +53,21 @@ it('reloads configuration without restarting an unchanged watcher', async () => 
   const instance = vi.mocked(GitLabCiService).mock.results.at(-1)!.value as GitLabCiService;
   s.root.gitlabCi!.enabled = false; await saveRootConfig(s.root, s.path); await manager.reconcile();
   expect(instance.close).toHaveBeenCalled();
+});
+
+it('reloads TOML, retains the last valid watcher on errors, and still stops when its profile goes offline', async () => {
+  const s = await setup(); await initMonitors({ config: s.path });
+  const file = join(s.dir, 'monitors.toml'); const valid = await readFile(file, 'utf8');
+  const manager = s.create(); await manager.reconcile();
+  const instance = vi.mocked(GitLabCiService).mock.results.at(-1)!.value as GitLabCiService;
+  await writeFile(file, 'version=1\n[sources.gitlab_ci]\npollSeconds=0'); await manager.reconcile();
+  expect(manager.error).toContain('pollSeconds'); expect(instance.close).not.toHaveBeenCalled();
+  await writeFile(file, valid); await manager.reconcile();
+  expect(manager.error).toBeUndefined(); expect(GitLabCiService).toHaveBeenCalledTimes(1);
+  const root = (await loadMonitorRoot(s.path))!; root.gitlabCi!.pollSeconds = 8;
+  await writeFile(file, formatMonitorConfig(root)); await manager.reconcile();
+  expect(instance.close).toHaveBeenCalled(); expect(GitLabCiService).toHaveBeenCalledTimes(2);
+  const latest = vi.mocked(GitLabCiService).mock.results.at(-1)!.value as GitLabCiService;
+  s.offline(); await writeFile(file, 'invalid'); await manager.reconcile();
+  expect(latest.close).toHaveBeenCalled();
 });

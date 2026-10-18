@@ -187,13 +187,13 @@ export class InboxLark {
       (!job.analysisTopic && (this.config.gui.publicUrl || job.attention?.state !== 'needed'))) return;
     if (job.analysisTopic && job.analysisTopic.chatId !== d.chatId) throw new Error('分析话题目标已变更');
     const escape = (s: string) => s.replace(/[\r\n]/g, ' ').replace(/[<>`*_\[\]]/g, '');
-    const first = job.messages[0]!;
+    const first = job.messages[0];
     const header = `分析结果 · ${escape(job.source.name)}\n`;
     const page = this.config.gui.publicUrl || this.config.h5.publicUrl;
     const entry = page ? `\n打开会话助理：${page}#job=${job.id}` : '';
     const text = header + '\n' + (job.error ? `分析未完成：${job.error}${entry}` :
       `回复草稿（供你确认后发送）：\n${job.replyDraft || '暂时无法起草，请查看下方待确认信息。'}\n\n分析结果：\n${job.analysis || job.result || ''}\n\n待确认：${job.missingInfo || '无'}${entry}`);
-    const link = first.link && /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(first.link) ? `\n原消息：${first.link}` : '';
+    const link = first?.link && /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(first.link) ? `\n原消息：${first.link}` : '';
     const key = createHash('sha256').update(`${job.id}:${job.attempt ?? 0}:${phase}${this.config.deliveryMode === 'new_topic' ? `:new_topic:${d.chatId}` : ''}`).digest('hex').slice(0, 48);
     const publish = (body: { text?: string; card?: object }) => job.analysisTopic ? this.replyAt(job.analysisTopic, body, key) : this.config.deliveryMode === 'new_topic'
       ? this.sendNewTopic(body, key) : this.replyTopic(body, key);

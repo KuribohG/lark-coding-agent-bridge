@@ -3,7 +3,8 @@ import { dirname, join } from 'node:path';
 import * as lockfile from 'proper-lockfile';
 import type { Controls } from '../commands';
 import { resolveAppPaths } from '../config/app-paths';
-import { loadRootConfig, saveRootConfig, withConfigFileLock } from '../config/profile-store';
+import { withConfigFileLock } from '../config/profile-store';
+import { loadMonitorRoot, saveMonitorRoot, monitorConfigPath, larkConfigRevision } from '../monitoring/store';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { getCotMessages } from '../config/schema';
 import { CotClient } from '../bot/cot';
@@ -29,6 +30,7 @@ import { CallbackAuth } from '../card/callback-auth';
 import { CallbackNonceStore } from '../card/callback-store';
 import { InboxGui } from './gui';
 import { InboxTaskSources } from './task-sources';
+import { larkRuntime } from './runtime';
 
 const connectionConfig = ({ enabled: _, autoAnalyze: __, intakeScope: ___, watchPrivate, watchMentions, ...config }: InboxConfig) =>
   ({ ...config, legacyIntake: watchPrivate ? undefined : { watchPrivate, watchMentions } });
@@ -44,13 +46,25 @@ export class InboxManager {
   private unlock?: () => Promise<void>;
   private fingerprint = '';
   private chain: Promise<unknown> = Promise.resolve();
+  private timer: ReturnType<typeof setInterval>;
+  private closed = false;
   error?: string;
   constructor(private configPath: string, private controls: (profile: string) => Controls | undefined, private rootDir?: string) {
     this.sources = new InboxTaskSources(configPath, rootDir);
+    this.timer = setInterval(() => { void this.reconcile(); }, 15_000);
+    this.timer.unref();
   }
   async view() {
-    const root = await loadRootConfig(this.configPath);
-    return { config: normalizeInbox(root?.inbox), running: Boolean(this.service?.config.enabled), error: this.error || this.service?.lastError || this.gui?.lastError,
+    let config = this.service?.config ?? normalizeInbox(undefined);
+    let configFile: string | undefined;
+    let configRevision: string | undefined;
+    try {
+      const root = await loadMonitorRoot(this.configPath);
+      config = normalizeInbox(root?.inbox);
+      configFile = root ? monitorConfigPath(root, this.configPath) : undefined;
+      configRevision = root ? larkConfigRevision(root) : undefined;
+    } catch (error) { this.error = error instanceof Error ? error.message : '监控配置读取失败'; }
+    return { config, configFile, configRevision, running: Boolean(this.service?.config.enabled), error: this.error || this.service?.lastError || this.gui?.lastError,
       jobs: this.service?.list().map(({ messages: _, result: __, ...j }) => j) || [] };
   }
   async workbench() {
@@ -69,7 +83,7 @@ export class InboxManager {
   }
   async checkSetup(input: unknown) {
     const config = normalizeInbox(input);
-    const root = await loadRootConfig(this.configPath);
+    const root = await loadMonitorRoot(this.configPath);
     const profile = root?.profiles[config.executorProfile];
     const checks: { label: string; ok: boolean; detail: string }[] = [];
     const check = async (label: string, fn: () => Promise<string> | string) => {
@@ -136,43 +150,51 @@ export class InboxManager {
   async configure(input: unknown) {
     const config = normalizeInbox(input); validateInbox(config);
     await withConfigFileLock(this.configPath, async () => {
-      const root = await loadRootConfig(this.configPath);
+      const root = await loadMonitorRoot(this.configPath);
       if (!root) throw new Error('找不到 Bridge 配置');
+      const expected = input && typeof input === 'object' ? (input as { configRevision?: unknown }).configRevision : undefined;
+      if (expected !== undefined && expected !== larkConfigRevision(root)) throw new Error('飞书监控配置已更新，请重新读取设置后保存；本次未覆盖');
       const p = root.profiles[config.executorProfile];
       if (config.enabled && (!p || !supportsBackgroundProfile(p))) throw new Error('请选择支持后台分析的个人 profile');
       if (config.enabled || config.triageService) inboxTriageSource(config, root);
-      root.inbox = config; await saveRootConfig(root, this.configPath);
+      root.inbox = config; await saveMonitorRoot(root, this.configPath);
     });
     await this.reconcile(); return this.view();
   }
   reconcile(): Promise<void> {
-    const p = this.chain.then(() => this.reload()); this.chain = p.catch(() => {}); return p;
+    if (this.closed) return Promise.resolve();
+    const p = this.chain.then(() => this.reload()).catch(async error => {
+      this.error = error instanceof Error ? error.message : '监控配置读取失败';
+      const executor = this.service && this.controls(this.service.config.executorProfile);
+      if (this.service && (!executor || !supportsBackgroundProfile(executor.profileConfig))) await this.stop();
+    }); this.chain = p.catch(() => {}); return p;
   }
   private async changeMode(service: InboxService, mode: InboxMode): Promise<void> {
     // Do not reconcile here: this callback is awaited by the GUI poll itself.
     await withConfigFileLock(this.configPath, async () => {
-      const root = await loadRootConfig(this.configPath);
+      const root = await loadMonitorRoot(this.configPath);
       const config = normalizeInbox(root?.inbox);
       if (!root || this.service !== service || JSON.stringify(connectionConfig(config)) !== JSON.stringify(connectionConfig(service.config))) {
         throw new Error('助理配置正在更新，请稍后重试');
       }
       config.enabled = mode !== 'off'; config.autoAnalyze = false; validateInbox(config);
-      await service.setMode(mode, async () => { root.inbox = config; await saveRootConfig(root, this.configPath); });
+      await service.setMode(mode, async () => { root.inbox = config; await saveMonitorRoot(root, this.configPath); });
     });
   }
   private async changeScope(service: InboxService, scope: IntakeScope): Promise<void> {
     await withConfigFileLock(this.configPath, async () => {
-      const root = await loadRootConfig(this.configPath);
+      const root = await loadMonitorRoot(this.configPath);
       const config = normalizeInbox(root?.inbox);
       if (!root || this.service !== service || JSON.stringify(connectionConfig(config)) !== JSON.stringify(connectionConfig(service.config))) {
         throw new Error('助理配置正在更新，请稍后重试');
       }
       const next = normalizeInbox({ ...config, intakeScope: scope });
-      await service.setScope(scope, async () => { root.inbox = next; await saveRootConfig(root, this.configPath); });
+      await service.setScope(scope, async () => { root.inbox = next; await saveMonitorRoot(root, this.configPath); });
     });
   }
   private async reload(): Promise<void> {
-    const root = await loadRootConfig(this.configPath); const config = normalizeInbox(root?.inbox);
+    if (this.closed) return;
+    const root = await loadMonitorRoot(this.configPath); const config = normalizeInbox(root?.inbox);
     const controls = this.controls(config.executorProfile);
     const sourceProfile = config.triageService ? undefined : root?.profiles[config.triageProfile || config.executorProfile];
     const fingerprint = JSON.stringify([connectionConfig(config), controls?.cfg.accounts.app, controls?.botIdentity?.openId, controls?.profileConfig.mode, controls?.profileConfig.agentKind, controls?.profileConfig.codex, controls?.profileConfig.preferences,
@@ -180,10 +202,11 @@ export class InboxManager {
       config.triageService ? root?.modelServices?.[config.triageService] : undefined]);
     if (this.service && controls && fingerprint === this.fingerprint) {
       await withConfigFileLock(this.configPath, async () => {
-        const latest = normalizeInbox((await loadRootConfig(this.configPath))?.inbox);
+        const latest = normalizeInbox((await loadMonitorRoot(this.configPath))?.inbox);
         if (this.service && intakeScope(latest) && intakeScope(latest) !== intakeScope(this.service.config)) await this.service.setScope(intakeScope(latest)!);
         if (this.service && inboxMode(latest) !== inboxMode(this.service.config)) await this.service.setMode(inboxMode(latest));
       });
+      this.error = undefined;
       return;
     }
     await this.stop();
@@ -216,7 +239,7 @@ export class InboxManager {
       });
       const secret = await resolveAppSecret(controls.cfg, paths);
       const cotClient = new CotClient({ tenant: controls.cfg.accounts.app.tenant, appId: controls.cfg.accounts.app.id, appSecret: secret });
-      this.service = new InboxService(new InboxStore(join(folder, 'state.json')), config, {
+      this.service = new InboxService(new InboxStore(join(folder, 'state.json')), config, larkRuntime(config, {
         selfSenderIds: [controls.cfg.accounts.app.id, controls.botIdentity?.openId].filter((id): id is string => Boolean(id)),
         cancel: () => lark.close(),
         cancelPending: () => lark.cancelPending(),
@@ -237,7 +260,7 @@ export class InboxManager {
         triage: async (jobs, signal, onProgress) => triageWithChatTools(jobs, config.attentionProfile,
           await loadInboxTriageSource(config, triageSource, this.rootDir), readTools, signal, onProgress),
         notifyAttention: (jobs, id) => lark.notifyAttention(jobs, id),
-      }, Date.now, this.sources.queue);
+      }), Date.now, this.sources.queue);
       this.nonces = new CallbackNonceStore(join(folder, 'card-nonces.json'));
       await this.nonces.load();
       const cards = new InboxCards(this.service, lark, new CallbackAuth({ keys: [{ version: 1, secret }], nonceStore: this.nonces }), this.nonces);
@@ -272,5 +295,8 @@ export class InboxManager {
     await this.unlock?.(); this.unlock = undefined;
     this.fingerprint = '';
   }
-  async close(): Promise<void> { await this.chain; await this.stop(); await this.sources.close(); }
+  async close(): Promise<void> {
+    this.closed = true; clearInterval(this.timer);
+    await this.chain; await this.stop(); await this.sources.close();
+  }
 }

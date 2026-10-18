@@ -14,6 +14,7 @@ type SetupCheck = { checks: { label: string; ok: boolean; detail: string }[]; ow
 export function InboxView({ servicesRevision = 0 }: { servicesRevision?: number }) {
   const [view, setView] = useState<WorkbenchView>();
   const [config, setConfig] = useState<InboxConfig>();
+  const [configRevision, setConfigRevision] = useState<string>();
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [services, setServices] = useState<Record<string, ModelServiceConfig>>({});
   const [error, setError] = useState('');
@@ -24,6 +25,9 @@ export function InboxView({ servicesRevision = 0 }: { servicesRevision?: number 
     const v = await apiGet<WorkbenchView>('/api/inbox/workbench');
     setView(v); setConfig(c => c ?? v.config);
   }, []);
+  useEffect(() => {
+    if (view && JSON.stringify(config) === JSON.stringify(view.config)) setConfigRevision(view.configRevision);
+  }, [config, view]);
   useEffect(() => {
     let active = true;
     const poll = async () => {
@@ -55,6 +59,7 @@ export function InboxView({ servicesRevision = 0 }: { servicesRevision?: number 
   };
   return <Card className="mt-6" id="inbox"><CardHeader><CardTitle>会话助理</CardTitle></CardHeader><CardContent className="space-y-4">
     <p className="text-sm text-muted-foreground">在本机整理待办、核对分析并编辑草稿。首次配置后手动开启；可选接入远程工作台。</p>
+    {view?.configFile && <p className="break-all text-sm text-muted-foreground">统一监控配置：{view.configFile}。此页保存会更新该文件；手动编辑后可重新读取设置。</p>}
     <div className="flex flex-wrap items-center gap-3">
       <span>{view?.running ? '正在接收飞书消息' : '已暂停接收飞书消息'}；盯盘来源独立控制</span>
       {view?.connected && <Button disabled={busy} variant="outline" onClick={() => void perform(async () => {
@@ -118,7 +123,7 @@ export function InboxView({ servicesRevision = 0 }: { servicesRevision?: number 
         <p className="text-xs text-muted-foreground">可在上方“模型 API 服务”中添加独立筛选服务，无需 Codex profile。选择旧版配置时继续读取对应 Codex 配置；仅有 Codex 网页登录授权不够。读取飞书消息始终使用执行 profile 的用户授权。</p>
         <p className="text-xs text-muted-foreground">授权后把机器人加入结果群，在目标话题发送 /inbox setup（按群设置 @ 机器人），然后点击“重新读取设置”即可自动填入三个 ID。</p>
         <Button variant="ghost" disabled={busy} onClick={() => void perform(async () => {
-          const saved = await apiGet<{ config: InboxConfig }>('/api/inbox'); setConfig(saved.config); setChecks(undefined);
+          const saved = await apiGet<WorkbenchView>('/api/inbox'); setConfig(saved.config); setConfigRevision(saved.configRevision); setChecks(undefined);
         })}>重新读取设置</Button>
         <label className="flex gap-2 text-sm"><input type="checkbox" checked={config.deliveryMode === 'new_topic'} onChange={e => change({ deliveryMode: e.target.checked ? 'new_topic' : 'thread' })} />每个事项新开结果话题（需话题群）</label>
         <fieldset className="flex flex-wrap gap-2"><legend className="mb-2 text-sm">接收范围</legend>{([['private', '私聊'], ['private_mentions', '私聊和 @ 我'], ['all', '全部']] as [IntakeScope, string][]).map(([value, label]) => <Button key={value} variant={intakeScope(config) === value ? 'secondary' : 'outline'} aria-pressed={intakeScope(config) === value} onClick={() => change({ intakeScope: value, watchPrivate: true, watchMentions: value !== 'private' })}>{label}</Button>)}</fieldset>
@@ -139,8 +144,8 @@ export function InboxView({ servicesRevision = 0 }: { servicesRevision?: number 
               if (!result.ok) throw new Error('请先解决检查中未通过的项目');
               if (!config.ownerOpenId && result.ownerOpenId) next = { ...config, ownerOpenId: result.ownerOpenId };
             }
-            const saved = await apiPost<{ config: InboxConfig }>('/api/inbox', next);
-            setConfig(saved.config); await refresh();
+            const saved = await apiPost<WorkbenchView>('/api/inbox', { ...next, configRevision });
+            setConfig(saved.config); setConfigRevision(saved.configRevision); await refresh();
           })}>保存配置</Button></div>
         {checks && <ul className="space-y-1 text-sm">{checks.checks.map(c => <li key={c.label} className={c.ok ? '' : 'text-destructive'}>{c.ok ? '✓' : '✗'} {c.label}：{c.detail}</li>)}</ul>}
       </div>

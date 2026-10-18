@@ -7,6 +7,15 @@ import type { GitLabClient } from './client';
 import type { GitLabCiConfig } from './config';
 import { prepareCi, readCiResult } from './processor';
 import type { CiRun } from './service';
+import type { RuleAssessmentPolicy } from '../work-items/contracts';
+
+export const ciAssessment: RuleAssessmentPolicy = {
+  kind: 'rule',
+  evaluate(event) {
+    const run = event.data as CiRun;
+    return { state: run.pipeline.status === 'failed' ? 'needed' : 'quiet', reason: event.reason };
+  },
+};
 
 export function ciTaskDriver(config: GitLabCiConfig, client?: GitLabClient): InboxTaskDriver {
   return {
@@ -48,6 +57,7 @@ export async function ciTaskEvent(run: CiRun, config: GitLabCiConfig): Promise<I
   } else if (['running', 'failed', 'ready', 'done'].includes(run.state) || run.attempts >= 3) {
     initial.state = 'failed'; initial.error = '旧分析未完成或结果缺失，请在工作台手动重试';
   } else if (run.state === 'obsolete') {
+    initial.businessState = 'resolved';
     initial.state = 'done'; initial.analysis = '旧盯盘已确认本次失败过期，未重复分析。';
     initial.replyDraft = '此失败已过期。'; initial.missingInfo = '';
   }

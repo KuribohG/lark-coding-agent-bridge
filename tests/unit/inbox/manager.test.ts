@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -10,6 +10,9 @@ import * as runtimeAgent from '../../../src/runtime/agent-runtime';
 import { InboxManager } from '../../../src/inbox/manager';
 import { InboxGui } from '../../../src/inbox/gui';
 import { startInboxH5 } from '../../../src/inbox/h5-server';
+import { initMonitors } from '../../../src/cli/commands/monitors';
+import { loadMonitorRoot } from '../../../src/monitoring/store';
+import { formatMonitorConfig } from '../../../src/monitoring/config';
 
 vi.mock('../../../src/agent/model-service', async importOriginal => ({ ...await importOriginal<typeof import('../../../src/agent/model-service')>(), loadProfileModelService: vi.fn(async () => ({ model: 'test' })) }));
 vi.mock('../../../src/inbox/analyzer', () => ({ INBOX_ANALYSIS_MODEL: 'deepseek-flash', loadAnalysisProvider: vi.fn(async () => ({ model: 'test' })), analyzeInbox: vi.fn() }));
@@ -48,6 +51,41 @@ it('persists the global switch without changing profile preferences', async () =
   expect((await manager.view()).config.dailyTriageLimit).toBe(1_000_000);
   expect((await loadRootConfig(path))!.inbox?.dailyTriageLimit).toBe(1_000_000);
   expect((await loadRootConfig(path))!.profiles.codex).toEqual(before);
+});
+
+it('loads Lark settings from TOML and writes workbench changes back to the same file', async () => {
+  const { create, path, root, rootDir } = await setup();
+  await initMonitors({ config: path });
+  const manager = create(); await manager.reconcile();
+  expect(await manager.view()).toMatchObject({ running: true, configFile: join(rootDir, 'monitors.toml') });
+  const original = await manager.view();
+  await manager.configure({ ...root.inbox, enabled: false, pollSeconds: 3 });
+  await expect(manager.configure({ ...original.config, configRevision: original.configRevision })).rejects.toThrow('本次未覆盖');
+  expect((await loadMonitorRoot(path))!.inbox).toMatchObject({ enabled: false, pollSeconds: 3 });
+  expect((await loadRootConfig(path))!.inbox).toBeUndefined();
+  expect(await readFile(join(rootDir, 'monitors.toml'), 'utf8')).toContain('pollSeconds = 3');
+  const command = (action: string, target: string) => manager.workbenchCommand({ id: '00000000-0000-0000-0000-000000000000', action, target });
+  await command('mode', 'on'); await command('scope', 'all');
+  expect((await loadMonitorRoot(path))!.inbox).toMatchObject({ enabled: true, intakeScope: 'all' });
+});
+
+it('retains a running source on invalid TOML and picks up a repaired file without recreating it', async () => {
+  const { create, path, rootDir } = await setup(); await initMonitors({ config: path });
+  const file = join(rootDir, 'monitors.toml'); const valid = await readFile(file, 'utf8');
+  const manager = create(); await manager.reconcile();
+  await writeFile(file, 'version=1\n[sources.lark]\nenabled="wrong"');
+  await manager.reconcile();
+  expect(await manager.view()).toMatchObject({ running: true, error: expect.stringContaining('enabled') });
+  const invalidReference = valid.replace('executorProfile = "codex"', 'executorProfile = "missing"');
+  await writeFile(file, invalidReference); await manager.reconcile();
+  expect(await manager.view()).toMatchObject({ running: true, error: expect.stringContaining('executorProfile') });
+  await writeFile(file, valid); await manager.reconcile();
+  expect(await manager.view()).toMatchObject({ running: true, error: undefined });
+  const root = (await loadMonitorRoot(path))!; root.inbox!.enabled = false;
+  await writeFile(file, formatMonitorConfig(root)); await manager.reconcile();
+  expect((await manager.view()).running).toBe(false);
+  await manager.close(); await manager.reconcile();
+  expect((await manager.view()).running).toBe(false);
 });
 
 it('starts without HTTPS and does not open an HTTP listener', async () => {

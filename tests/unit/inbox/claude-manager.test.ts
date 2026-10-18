@@ -7,10 +7,11 @@ import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, runtimeProfileConfig, saveRootConfig } from '../../../src/config/profile-store';
 import { configureModelService } from '../../../src/model-service/registry';
 import { normalizeInbox } from '../../../src/inbox/config';
+import type { WorkItemRuntime } from '../../../src/work-items/contracts';
 import { InboxManager } from '../../../src/inbox/manager';
 import { InboxLark } from '../../../src/inbox/lark';
 import { InboxService } from '../../../src/inbox/service';
-import type { InboxIO, InboxJob } from '../../../src/inbox/types';
+import type { InboxJob } from '../../../src/inbox/types';
 import { processInbox } from '../../../src/inbox/processor';
 import { triageWithChatTools } from '../../../src/inbox/codex-triage';
 import { loadProfileModelService } from '../../../src/agent/model-service';
@@ -21,7 +22,9 @@ vi.mock('../../../src/inbox/service', () => ({ InboxService: vi.fn(function (_st
 vi.mock('../../../src/inbox/lark', () => ({ InboxLark: vi.fn(function () { return { close: vi.fn() }; }) }));
 vi.mock('../../../src/inbox/progress', () => ({ startInboxProgress: vi.fn(async () => undefined) }));
 vi.mock('../../../src/inbox/processor', () => ({ processInbox: vi.fn(async () => ({ text: '{}' })) }));
-vi.mock('../../../src/inbox/codex-triage', () => ({ triageWithChatTools: vi.fn(async () => []) }));
+vi.mock('../../../src/inbox/codex-triage', async importOriginal => ({
+  ...await importOriginal<typeof import('../../../src/inbox/codex-triage')>(), triageWithChatTools: vi.fn(async () => []),
+}));
 vi.mock('../../../src/agent/model-service', async importOriginal => ({ ...await importOriginal<typeof import('../../../src/agent/model-service')>(),
   loadProfileModelService: vi.fn(async (_profile, model) => ({ model, url: 'https://test/responses', key: 'fixture' })),
 }));
@@ -54,18 +57,24 @@ async function setup(triageProfile?: string, standalone = false) {
   return { manager, codex, configPath, serviceConfig: root.modelServices?.screen };
 }
 
+async function screen(runtime: WorkItemRuntime) {
+  const policy = runtime.source.assessment;
+  if (policy?.kind !== 'batch') throw new Error('Lark must use batch screening');
+  await policy.evaluate([], new AbortController().signal, () => {});
+}
+
 it('runs Claude analysis while an offline Codex profile supplies only screening model credentials', async () => {
   const h = await setup('codex'); await h.manager.reconcile();
   expect((await h.manager.view()).error).toBeUndefined();
-  const io = vi.mocked(InboxService).mock.calls[0]![2] as InboxIO;
-  await io.analyze!({} as InboxJob, new AbortController().signal);
+  const io = vi.mocked(InboxService).mock.calls[0]![2] as WorkItemRuntime;
+  await io.investigate({} as InboxJob, new AbortController().signal);
   const args = vi.mocked(processInbox).mock.calls[0]!;
   expect(args[1].id).toBe('claude'); expect(args[1].capabilities?.finalAnswer).toBe('separate-event');
   expect(args[7]).toEqual({ model: 'sonnet', reasoningEffort: 'high' });
-  await io.triage!([], new AbortController().signal, undefined);
+  await screen(io);
   expect(loadProfileModelService).toHaveBeenCalledWith(expect.objectContaining({ agentKind: 'codex',
     codex: expect.objectContaining({ codexHome: h.codex.codex?.codexHome }) }), 'cheap', expect.stringMatching(/profiles\/codex$/));
-  expect(triageWithChatTools).toHaveBeenCalledWith([], '', expect.objectContaining({ model: 'cheap' }), expect.anything(), expect.anything(), undefined);
+  expect(triageWithChatTools).toHaveBeenCalledWith([], '', expect.objectContaining({ model: 'cheap' }), expect.anything(), expect.anything(), expect.any(Function));
   expect(InboxLark).toHaveBeenCalledWith(expect.objectContaining({ profile: 'claude' }), expect.anything());
   expect(vi.mocked(InboxLark).mock.calls.every(call => call[0].profile === 'claude')).toBe(true);
 });
@@ -79,17 +88,17 @@ it('rejects missing screening routing before opening Lark or invoking any model'
 it('uses and reloads an independent service on a Claude-only installation without reading Codex', async () => {
   const h = await setup(undefined, true); await h.manager.reconcile();
   expect((await h.manager.view()).error).toBeUndefined();
-  const first = vi.mocked(InboxService).mock.calls[0]![2] as InboxIO;
-  await first.triage!([], new AbortController().signal, undefined);
+  const first = vi.mocked(InboxService).mock.calls[0]![2] as WorkItemRuntime;
+  await screen(first);
   expect(loadProfileModelService).not.toHaveBeenCalled();
-  expect(triageWithChatTools).toHaveBeenLastCalledWith([], '', expect.objectContaining({ model: 'independent-model', key: 'independent-key', url: 'https://independent.test/v1/responses' }), expect.anything(), expect.anything(), undefined);
+  expect(triageWithChatTools).toHaveBeenLastCalledWith([], '', expect.objectContaining({ model: 'independent-model', key: 'independent-key', url: 'https://independent.test/v1/responses' }), expect.anything(), expect.anything(), expect.any(Function));
   await configureModelService(h.configPath, 'screen', { ...h.serviceConfig!, model: 'updated-model' });
   await h.manager.reconcile();
   expect(InboxService).toHaveBeenCalledTimes(2);
-  const second = vi.mocked(InboxService).mock.calls[1]![2] as InboxIO;
-  await second.triage!([], new AbortController().signal, undefined);
-  expect(triageWithChatTools).toHaveBeenLastCalledWith([], '', expect.objectContaining({ model: 'updated-model' }), expect.anything(), expect.anything(), undefined);
-  await second.analyze!({} as InboxJob, new AbortController().signal);
+  const second = vi.mocked(InboxService).mock.calls[1]![2] as WorkItemRuntime;
+  await screen(second);
+  expect(triageWithChatTools).toHaveBeenLastCalledWith([], '', expect.objectContaining({ model: 'updated-model' }), expect.anything(), expect.anything(), expect.any(Function));
+  await second.investigate({} as InboxJob, new AbortController().signal);
   expect(vi.mocked(processInbox).mock.calls[0]![7]).toEqual({ model: 'sonnet', reasoningEffort: 'high' });
   expect(vi.mocked(InboxLark).mock.calls.every(call => call[0].profile === 'claude')).toBe(true);
 });

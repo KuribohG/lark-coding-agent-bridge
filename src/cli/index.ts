@@ -27,6 +27,7 @@ import {
 import { runStart } from './commands/start';
 import { runUi } from './commands/ui';
 import { configureCiWatch, statusCiWatch } from './commands/ci-watch';
+import { checkMonitors, configureMonitors, initMonitors, statusMonitors } from './commands/monitors';
 import { checkService, configureService, listServices, removeService } from './commands/model-service';
 
 const program = new Command();
@@ -85,6 +86,17 @@ ciWatch.command('configure <file>').option('-c, --config <path>', 'path to bridg
   .description('Load CI watch settings from a JSON file').action(configureCiWatch);
 ciWatch.command('status').option('-c, --config <path>', 'path to bridge root config')
   .description('Show configuration and persisted CI analysis state').action(statusCiWatch);
+
+const monitors = program.command('monitors').description('Manage unified Lark and GitLab monitoring in TOML');
+monitors.command('init').option('-c, --config <path>', 'path to bridge root config')
+  .option('-o, --output <path>', 'new TOML file; defaults to monitors.toml beside the root config')
+  .description('Migrate existing monitor settings without changing source switches').action(initMonitors);
+monitors.command('configure <file>').option('-c, --config <path>', 'path to bridge root config')
+  .description('Use an existing validated TOML file as the monitor configuration').action(configureMonitors);
+monitors.command('check [file]').option('-c, --config <path>', 'path to bridge root config')
+  .description('Check TOML and profile references without contacting any source').action(checkMonitors);
+monitors.command('status').option('-c, --config <path>', 'path to bridge root config')
+  .description('Show monitor file location and configured sources').action(statusMonitors);
 
 const modelService = program.command('model-service').description('Manage independent model API services');
 modelService.command('list').option('-c, --config <path>', 'path to bridge root config')
