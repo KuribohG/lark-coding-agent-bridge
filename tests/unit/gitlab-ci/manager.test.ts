@@ -1,8 +1,8 @@
+import { createMonitorHost } from '../../../src/host/monitors';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import type { Controls } from '../../../src/commands';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, runtimeProfileConfig, saveRootConfig } from '../../../src/config/profile-store';
 import { normalizeGitLabCi } from '../../../src/monitoring/sources/gitlab-ci/config';
@@ -26,14 +26,15 @@ async function setup() {
   const root = createRootConfig('codex', profile);
   root.gitlabCi = normalizeGitLabCi({ enabled: true, executorProfile: 'codex', url: 'https://gitlab.test', outputDir: dir, repositories: [{ project: 'a/b' }] });
   await saveRootConfig(root, path);
-  let online = true;
-  const controls: Controls = { cfg: runtimeProfileConfig(root, 'codex'), profileConfig: profile, profile: 'codex', configPath: path,
-    ownerRefreshState: 'ok', processId: 'test', refreshOwner: async () => {}, restart: async () => {}, exit: async () => {} };
-  const create = () => { const m = new GitLabCiManager(path, () => online ? controls : undefined, dir); managers.push(m); return m; };
-  return { create, root, path, dir, offline: () => { online = false; } };
+  let available = true;
+  const host = createMonitorHost(path, dir);
+  host.executors = { resolve: async () => available ? { config: profile, available: true,
+    settings: async () => ({}), execute: vi.fn() } : undefined };
+  const create = () => { const m = new GitLabCiManager(path, host, dir); managers.push(m); return m; };
+  return { create, root, path, dir, offline: () => { available = false; }, online: () => { available = true; } };
 }
 
-it('leases one watcher, uses the normal runtime, and releases it when the profile stops', async () => {
+it('leases one watcher and preserves collection when its executor is unavailable', async () => {
   const s = await setup(); const first = s.create(); const second = s.create();
   await first.reconcile(); await second.reconcile();
   expect(GitLabCiService).toHaveBeenCalledTimes(1);
@@ -41,8 +42,10 @@ it('leases one watcher, uses the normal runtime, and releases it when the profil
   expect(runtime.createRuntimeAgent).not.toHaveBeenCalled(); // only the inbox worker creates an agent
   await first.close(); await second.reconcile(); expect(second.error).toBeUndefined();
   const instance = vi.mocked(GitLabCiService).mock.results.at(-1)!.value as GitLabCiService;
-  s.offline(); await second.reconcile(); expect(instance.close).toHaveBeenCalled();
-  await second.reconcile(); expect(second.error).toContain('offline');
+  s.offline(); await second.reconcile(); expect(instance.close).not.toHaveBeenCalled();
+  await second.reconcile(); expect(second.error).toContain('分析等待');
+  s.online(); await second.reconcile(); expect(second.error).toBeUndefined();
+  expect(instance.close).not.toHaveBeenCalled();
 });
 
 it('reloads configuration without restarting an unchanged watcher', async () => {
@@ -55,7 +58,7 @@ it('reloads configuration without restarting an unchanged watcher', async () => 
   expect(instance.close).toHaveBeenCalled();
 });
 
-it('reloads TOML, retains the last valid watcher on errors, and still stops when its profile goes offline', async () => {
+it('reloads TOML, retains the last valid watcher on errors, and keeps collecting when the executor becomes unavailable', async () => {
   const s = await setup(); await initMonitors({ config: s.path });
   const file = join(s.dir, 'monitors.toml'); const valid = await readFile(file, 'utf8');
   const manager = s.create(); await manager.reconcile();
@@ -69,5 +72,5 @@ it('reloads TOML, retains the last valid watcher on errors, and still stops when
   expect(instance.close).toHaveBeenCalled(); expect(GitLabCiService).toHaveBeenCalledTimes(2);
   const latest = vi.mocked(GitLabCiService).mock.results.at(-1)!.value as GitLabCiService;
   s.offline(); await writeFile(file, 'invalid'); await manager.reconcile();
-  expect(latest.close).toHaveBeenCalled();
+  expect(latest.close).not.toHaveBeenCalled();
 });

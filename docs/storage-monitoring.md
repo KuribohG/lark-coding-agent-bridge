@@ -43,6 +43,8 @@ clusters = ["prod"]
 
 `enabled = false` 暂停来源；单个 watch 的 `enabled = false` 移除该订阅的采集范围；`muted = true` 静默消息但继续采集与分析；工作台停止分析保留草稿且需人工重新处理才恢复分析。服务重启后恢复采集，自动续接未超重试预算的中断调查；人工停止、人工草稿和已处理状态始终保留。改变集群目录、UID 订阅身份或规则会建立新的采集状态分区，旧事项保留，旧分区不再自动分析。
 
+在包含独立后台执行器的版本中，采集开关与 Lark profile 上下线独立；执行器暂不可用时继续保存观测、分析排队，人工暂停保持有效。关闭来源请设置 `enabled = false`。旧版本仍依赖执行 profile 上线，需部署新版本后才具备此语义。
+
 ## 凭据、状态和边界
 
 通过 Grafana `/api/ds/query` 访问 ClickHouse 和只读 PostgreSQL datasource，不直接保存数据库密码。读取 `grafana.credentialsFile` 的 `GRAFANA_URL`、`GRAFANA_TOKEN`、`GRAFANA_USER`/`GRAFANA_PASSWORD` 或 `GRAFANA_COOKIE`；同名环境变量优先。文件只解析赋值，不执行 shell。不要把原始 token 写进 TOML。PostgreSQL datasource 须有上述表的只读权限和跨用户可见性；验证失败显示未知。

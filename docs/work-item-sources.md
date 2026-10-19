@@ -29,7 +29,8 @@ src/inbox/           # Shared Lark transport/workbench and legacy compatibility 
 
 A module exposes a config registration (`id`, legacy root field, parser, optional
 reference validation and status summary) and a runtime factory. `MonitorContext`
-provides the config path, current profile controls and the shared `WorkItemSources`.
+provides the config path, the shared `WorkItemSources` and a `MonitorHost`. The host
+supplies an `ExecutionProvider` and a factory for source execution/delivery adapters.
 The factory constructs a controller; constructors must not start I/O. Controllers
 implement `reconcile()` and `close()`, own their collector timers/leases, and retain
 last-valid-config and cancellation behavior. `MonitorRuntime` reconciles them
@@ -57,6 +58,37 @@ To add a built-in source:
 
 Existing `sources.lark`, `sources.gitlab_ci`, `sources.storage`, source IDs and state
 paths remain unchanged. This reorganization requires no configuration or data migration.
+
+## Host and executor lifecycle
+
+`src/host/monitors.ts` assembles the bridge's monitor modules. GitLab and storage
+receive the source-neutral `MonitorHost`; Lark intake receives a separate, narrow
+`LarkMonitorProfiles` capability for its app, identity and channel configuration.
+No monitor or work-item contract imports chat command `Controls`.
+
+`ProfileExecutionProvider` resolves background execution from the persisted
+profile and local agent availability. It does not require that profile's chat
+channel to be online. The bridge host still explicitly supplies the existing
+Lark-aware agent environment for tool compatibility. Other hosts can inject an
+executor and delivery runtime directly without constructing a Lark client.
+The existing on-disk profile schema and WorkItem conversation fields are retained;
+this change does not add a standalone worker command or migrate configuration.
+
+In a build containing this host/executor separation, disabling a Lark profile
+leaves enabled GitLab/storage collectors running. Unavailable or unsupported
+executors leave new investigations durably queued without spending analysis
+attempts or automatic quota. Readiness is refreshed during monitor reconciliation;
+available execution resumes eligible work while manual pauses remain authoritative.
+Execution-policy replacement or revocation cancels the old executor's work without
+stopping source collection. Source `enabled: false` and supervisor shutdown still
+stop collectors and close their work-item services. Older builds retain the
+profile-online prerequisite; deploy the new build before relying on this behavior.
+
+Delivery remains independent: a configured Lark transport retains the existing
+bounded retries and confirmation rules when unavailable. A host with no result
+transport retains completed reports locally without recording a delivery receipt.
+Normal/incident queues, notification-before-analysis policy for CI/Lark, storage's
+independent source notices and restart-retry rules are preserved.
 
 ## Contracts
 
@@ -129,7 +161,15 @@ The existing report format (`replyDraft`, `analysis`, `missingInfo`) remains sup
 
 ## Registration
 
-`WorkItemSources.connect()` registers an event source under a source/owner/profile partition. It accepts an optional `SourceAdapter`, optional deterministic assessment, the investigation driver, execution settings and notification configuration. Existing `InboxTaskSources` and `InboxTaskDriver` imports remain compatibility aliases.
+`WorkItemSources.connect()` registers a source under the existing source/owner/profile
+partition. Its internal API accepts `config: WorkItemConfig`, `source: SourceAdapter`,
+`runtime: Omit<WorkItemRuntime, 'source'>`, an optional lane and status callback.
+The runtime supplies investigation, readiness and optional delivery hooks; the
+registry does not construct agents, Lark clients, COT or workbench commands.
+`select(ids, scope)` validates source/owner/profile boundaries before returning the
+service for a control operation. `executeSourceCommand` in the workbench adapter
+owns command decoding and presentation. Existing `InboxTaskSources` and
+`InboxTaskDriver` imports remain aliases, with the new internal registration API.
 
 The Lark manager passes `larkRuntime()` into the same `WorkItemService` through the `InboxService` compatibility facade. Lark source logic lives in `src/monitoring/sources/lark/source.ts`, model-decision interpretation in `src/monitoring/sources/lark/assessment.ts`, and evidence preparation in `larkInvestigationDriver`. Lark-only commands such as selecting a chat or changing intake scope remain on the facade.
 

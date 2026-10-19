@@ -8,7 +8,7 @@ import { formatMonitorConfig } from '../../../src/monitoring/config';
 import { parseStorageConfig } from '../../../src/monitoring/sources/storage/config';
 import { StorageMonitorManager } from '../../../src/monitoring/sources/storage/manager';
 import type { WorkItemSources } from '../../../src/work-items/registry';
-import type { Controls } from '../../../src/commands';
+import { createMonitorHost } from '../../../src/host/monitors';
 
 const mocks = vi.hoisted(() => ({ credentials: vi.fn(async () => ({ url: 'https://grafana.test', headers: {} })) }));
 vi.mock('../../../src/monitoring/sources/storage/grafana', () => ({ grafanaCredentials: mocks.credentials, GrafanaQueryClient: class {} }));
@@ -30,7 +30,9 @@ it('retains the last valid collector on a TOML typo and keeps disabled source it
   await writeFile(file, formatMonitorConfig({ storageMonitor: config }));
   const close = vi.fn(async () => {}); const connect = vi.fn(async (_options: unknown) => ({ close, observe: vi.fn() }));
   const sources = { connect, isAnalyzing: () => false } as unknown as WorkItemSources;
-  const manager = new StorageMonitorManager(path, () => ({ profileConfig } as Controls), folder, sources); cleanup.push(() => manager.close());
+  const host = createMonitorHost(path, folder);
+  host.executors = { resolve: async () => undefined };
+  const manager = new StorageMonitorManager(path, host, folder, sources); cleanup.push(() => manager.close());
   await manager.reconcile(); await vi.waitFor(() => expect(manager.status().state?.checkedAt).toBeGreaterThan(0));
   expect(connect).toHaveBeenCalledTimes(1); expect(connect.mock.calls[0]![0]).toMatchObject({ lane: 'incident', runtime: { resumeInterrupted: true } });
   await writeFile(file, 'version = 1\n[sources.storage]\nenabled = "oops"'); await manager.reconcile();

@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import * as lockfile from 'proper-lockfile';
-import type { Controls } from '../../../commands';
+import type { LarkMonitorProfiles } from './host';
 import { resolveAppPaths } from '../../../config/app-paths';
 import { withConfigFileLock } from '../../../config/profile-store';
 import { loadMonitorRoot, saveMonitorRoot, monitorConfigPath, larkConfigRevision } from '../../store';
@@ -49,7 +49,7 @@ export class InboxManager {
   private timer: ReturnType<typeof setInterval>;
   private closed = false;
   error?: string;
-  constructor(private configPath: string, private controls: (profile: string) => Controls | undefined, private rootDir?: string, private sharedSources?: InboxTaskSources) {
+  constructor(private configPath: string, private profiles: LarkMonitorProfiles, private rootDir?: string, private sharedSources?: InboxTaskSources) {
     this.sources = sharedSources ?? new InboxTaskSources(configPath);
     this.timer = setInterval(() => { void this.reconcile(); }, 15_000);
     this.timer.unref();
@@ -92,7 +92,7 @@ export class InboxManager {
     };
     await check('执行环境', () => {
       if (!profile || !supportsBackgroundProfile(profile)) throw new Error('请选择支持后台分析的个人 profile');
-      if (!this.controls(config.executorProfile)) throw new Error('请先在上方启动这个 profile');
+      if (!this.profiles(config.executorProfile)) throw new Error('请先在上方启动这个 profile');
       return config.executorProfile;
     });
     let ownerOpenId = '';
@@ -125,7 +125,7 @@ export class InboxManager {
   }
   async command(args: string, ctx: InboxCardContext): Promise<string | undefined> {
     if (args === 'setup') {
-      const controls = this.controls(ctx.profile);
+      const controls = this.profiles(ctx.profile);
       if (!controls || !supportsBackgroundProfile(controls.profileConfig)) return '请使用支持后台分析的个人 profile 的机器人设置会话助理。';
       if (!ctx.threadId) return '请在结果群的目标话题内发送 /inbox setup。';
       const auth = await getUserAuthStatus({ profile: ctx.profile, rootDir: this.rootDir });
@@ -165,7 +165,7 @@ export class InboxManager {
     if (this.closed) return Promise.resolve();
     const p = this.chain.then(() => this.reload()).catch(async error => {
       this.error = error instanceof Error ? error.message : '监控配置读取失败';
-      const executor = this.service && this.controls(this.service.config.executorProfile);
+      const executor = this.service && this.profiles(this.service.config.executorProfile);
       if (this.service && (!executor || !supportsBackgroundProfile(executor.profileConfig))) await this.stop();
     }); this.chain = p.catch(() => {}); return p;
   }
@@ -195,7 +195,7 @@ export class InboxManager {
   private async reload(): Promise<void> {
     if (this.closed) return;
     const root = await loadMonitorRoot(this.configPath); const config = normalizeInbox(root?.inbox);
-    const controls = this.controls(config.executorProfile);
+    const controls = this.profiles(config.executorProfile);
     const sourceProfile = config.triageService ? undefined : root?.profiles[config.triageProfile || config.executorProfile];
     const fingerprint = JSON.stringify([connectionConfig(config), controls?.cfg.accounts.app, controls?.botIdentity?.openId, controls?.profileConfig.mode, controls?.profileConfig.agentKind, controls?.profileConfig.codex, controls?.profileConfig.preferences,
       sourceProfile?.agentKind, sourceProfile?.mode, sourceProfile?.codex, sourceProfile?.preferences,

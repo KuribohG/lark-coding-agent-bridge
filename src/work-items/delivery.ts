@@ -86,6 +86,10 @@ export class WorkItemDelivery {
         const now = this.now();
         if (!(job.state === 'ready' || (job.state === 'failed' && job.analysisTopic) ||
           (this.io.notifyChange && job.state === 'done' && job.result && !job.deliveredAt && job.analysisTopic))) return;
+        if (!this.io.deliver) {
+          if (job.state === 'ready') job.state = 'done';
+          await this.store.save(); return;
+        }
         // Automatic results can only use a confirmed topic.
         if ((!this.io.notifyChange || job.businessState !== 'resolved') && !resolved(job) && this.host.safe(job) &&
           (!job.draftStale || job.error) && (!job.automatic || this.host.accepts(job)) && !job.deliveredAt &&
@@ -110,7 +114,7 @@ export class WorkItemDelivery {
       });
       if (!pending || this.host.blocked() || resolved(job) || job.resultDelivery?.id !== pending.delivery.id ||
         job.revision !== pending.input.revision || job.evidenceVersion !== pending.input.evidenceVersion) continue;
-      try { await this.io.deliver(pending.input, 'result'); }
+      try { await this.io.deliver!(pending.input, 'result'); }
       catch { this.host.error = '结果投递暂未确认，等待重试'; continue; }
       await this.host.transaction(async () => {
         // The receipt belongs to the reserved output, not a newer analysis or edited draft.

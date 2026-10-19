@@ -1,4 +1,4 @@
-import type { Controls } from '../commands';
+import type { MonitorHost } from './host';
 import type { RootConfig } from '../config/profile-schema';
 import type { WorkItemSources } from '../work-items/registry';
 import { supportsBackgroundProfile } from '../runtime/agent-capabilities';
@@ -41,7 +41,7 @@ export function defineMonitorConfig<K extends keyof MonitorSettings>(options: {
 export interface MonitorContext {
   configPath: string;
   rootDir?: string;
-  controls(profile: string): Controls | undefined;
+  host: MonitorHost;
   sources: WorkItemSources;
 }
 

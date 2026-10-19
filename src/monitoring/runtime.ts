@@ -1,6 +1,5 @@
 import type { MonitorContext, MonitorController, MonitorModule } from './module';
 import { WorkItemSources } from '../work-items/registry';
-import { monitorModules } from './sources';
 
 /** Owns the shared engine; modules own their collectors, timers and leases. */
 export class MonitorRuntime<M extends Record<string, MonitorModule>> {
@@ -41,5 +40,3 @@ export class MonitorRuntime<M extends Record<string, MonitorModule>> {
     if (failures.length) throw new AggregateError(failures.map(r => r.reason), 'Monitor lifecycle failed');
   }
 }
-
-export const createMonitorRuntime = (context: Omit<MonitorContext, 'sources'>) => new MonitorRuntime(context, monitorModules);

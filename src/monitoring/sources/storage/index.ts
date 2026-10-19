@@ -3,5 +3,5 @@ import type { MonitorModule } from '../../module';
 
 export const storageMonitor: MonitorModule<StorageMonitorManager> = {
   id: 'storage',
-  create: c => new StorageMonitorManager(c.configPath, c.controls, c.rootDir, c.sources),
+  create: c => new StorageMonitorManager(c.configPath, c.host, c.rootDir, c.sources),
 };

@@ -1,8 +1,9 @@
+import { createMonitorRuntime, createMonitorHost } from '../../../src/host/monitors';
 import { expect, it, vi } from 'vitest';
-import { MonitorRuntime, createMonitorRuntime } from '../../../src/monitoring/runtime';
+import { MonitorRuntime } from '../../../src/monitoring/runtime';
 import type { MonitorContext, MonitorModule } from '../../../src/monitoring/module';
 
-const context = { configPath: '/unused/config.json', controls: () => undefined };
+const context = { configPath: '/unused/config.json', host: createMonitorHost('/unused/config.json') };
 const controller = () => ({ reconcile: vi.fn(async () => {}), close: vi.fn(async () => {}) });
 
 it('shares one engine and closes collectors before the engine, exactly once', async () => {
@@ -13,7 +14,7 @@ it('shares one engine and closes collectors before the engine, exactly once', as
   } });
   const runtime = new MonitorRuntime(context, { one: module('one'), two: module('two') });
   expect(contexts[0]!.sources).toBe(contexts[1]!.sources);
-  expect(contexts[0]!.controls).toBe(context.controls);
+  expect(contexts[0]!.host).toBe(context.host);
   vi.spyOn(runtime.sources, 'close').mockImplementation(async () => { order.push('engine'); });
   await Promise.all([runtime.close(), runtime.close()]);
   expect(order).toEqual(['two', 'one', 'engine']);
@@ -58,7 +59,7 @@ it('releases every module and the engine even if a close fails; never restarts d
 });
 
 it('built-in modules leave the shared engine owned by their host', async () => {
-  const runtime = createMonitorRuntime(context);
+  const runtime = createMonitorRuntime({ ...context, profiles: () => undefined });
   const close = vi.spyOn(runtime.sources, 'close');
   await runtime.controllers.lark.close();
   expect(close).not.toHaveBeenCalled();

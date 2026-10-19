@@ -38,7 +38,7 @@ GitLab 仓库轮询 → 发现新的失败 → 助理待办 → 复查并采集�
 
 ## 配置 GitLab CI
 
-先让个人 Claude / Codex profile 上线，准备能够读取目标 GitLab 项目、pipeline、job 和 trace 的凭据。无需为 CI 单独配置 Responses 筛选服务，也无需开启飞书消息采集。
+先配置个人 Claude / Codex 执行器，并准备能够读取目标 GitLab 项目、pipeline、job 和 trace 的凭据。包含独立后台执行器的版本可以在 Lark profile 未上线时采集和分析；旧版本仍需让 profile 上线。无需为 CI 单独配置 Responses 筛选服务，也无需开启飞书消息采集。
 
 保存下面的完整 CI 配置为 `ci-watch.json`，替换地址、profile、仓库和绝对路径：
 
@@ -113,7 +113,7 @@ lark-channel-bridge ci-watch status
 
 ## 停止及升级
 
-把原 CI 配置的 `enabled` 改为 `false`，重新运行 `ci-watch configure`，即可停止轮询并取消 CI 在途分析；已有事项和草稿保留。停止其执行 profile 也会停止来源。聊天 `/stop` 和飞书消息采集开关不负责关闭 CI。
+把原 CI 配置的 `enabled` 改为 `false`，重新运行 `ci-watch configure`，即可停止轮询并取消 CI 在途分析；已有事项和草稿保留。在包含独立后台执行器的版本中，停止 Lark profile 不会停止来源；执行器暂不可用时，新分析持久排队，恢复后继续。旧版本仍会随 profile 停止来源。聊天 `/stop` 和飞书消息采集开关不负责关闭 CI。
 
 加载新版本并启动盯盘时，旧 `gitlab-ci/state.json` 中的记录会幂等导入助理。已完成结果直接导入，已投递结果不会重发；旧投递曾尝试但未确认时保留结果供核对，不自动重复发送。旧分析中断或结果文件丢失时标记失败，等待手动重试。
 

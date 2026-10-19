@@ -27,7 +27,9 @@ lark-channel-bridge ci-watch status
 Both commands accept `--config /absolute/path/to/bridge/config.toml`. Settings live
 in `monitors.toml` when selected by `bridge.monitors_file`, or the root TOML's `monitoring.gitlab_ci` table and survive other profile configuration
 changes. A bridge version with this feature reloads settings within 15 seconds;
-the selected executor profile must be online. The status command reports persisted
+builds containing the independent background executor resolve its configuration
+without requiring the Lark profile to be online. Earlier builds require the
+profile online. The supervisor process must keep running in both cases. The status command reports persisted
 state, including the last poll time/error; it does not assert process liveness.
 
 Example for 3fs-vnext (replace the local paths and profile name):
@@ -91,8 +93,10 @@ The run directory contains `evidence.json`, raw `job-<id>.log` files and a
 structured `result.json`. Trace downloads are capped at 32 MiB per job and explicitly
 mark truncation. Missing/erased logs are reported as evidence gaps. Watcher cursors and submission IDs live beside bridge configuration in
 `gitlab-ci/state.json`; assistant tasks live in
-`inbox/sources/gitlab-ci/<identity-scope>/state.json`. Stop the
-executor profile or set `enabled: false` to stop polling and abort active work.
+`inbox/sources/gitlab-ci/<identity-scope>/state.json`. Set `enabled: false` to stop
+polling and abort active work. With the independent background executor, stopping
+the Lark profile leaves CI collection running; if the executor is unavailable,
+new analyses remain queued. This behavior requires deployment of the refactor.
 
 Without `notification`, results are available in the local assistant workbench
 and private run directory, without sending Lark messages. To have the bridge announce and deliver

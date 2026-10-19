@@ -350,7 +350,7 @@ export class WorkItemService {
     } while (this.dispatchRequested && !this.blocked());
   }
   private async dispatchJobs(): Promise<void> {
-    if (!this.tasks.analysis && !this.blocked()) {
+    if (!this.tasks.analysis && !this.blocked() && this.io.canInvestigate?.() !== false) {
       const day = new Date(this.now()).toISOString().slice(0, 10);
       const budgetAvailable = this.io.dailyAnalysisLimit === undefined || (this.store.data.autoUsage[day] ?? 0) < this.io.dailyAnalysisLimit;
       for (const job of this.store.data.jobs) if (job.state === 'queued' && job.automatic && !budgetAvailable) job.error = '今日自动分析额度已用完，告警保留，次日继续或手动处理';
@@ -358,11 +358,12 @@ export class WorkItemService {
         (!j.automatic || (j.attention?.state === 'needed' && this.acceptsSource(j))) &&
         (j.startDelivery?.confirmed || (j.startDelivery?.retryAt ?? 0) <= this.now()) && (j.retryAt ?? 0) <= this.now());
       if (next) {
-        if (next.automatic && this.io.dailyAnalysisLimit !== undefined) this.store.data.autoUsage[day] = (this.store.data.autoUsage[day] ?? 0) + 1;
+        const budgetDay = next.automatic && this.io.dailyAnalysisLimit !== undefined ? day : undefined;
+        if (budgetDay) this.store.data.autoUsage[budgetDay] = (this.store.data.autoUsage[budgetDay] ?? 0) + 1;
         next.state = 'running'; next.attempt = (next.attempt ?? 0) + 1; await this.store.save();
         if (this.blocked()) { next.state = 'waiting'; next.analysisRequested = false; await this.store.save(); return; }
         this.launch('analysis', signal => this.analysisQueue
-          ? this.analysisQueue.run(signal, current => this.run(next, current)) : this.run(next, signal));
+          ? this.analysisQueue.run(signal, current => this.run(next, current, budgetDay)) : this.run(next, signal, budgetDay));
       }
     }
     if (!this.tasks.triage && !this.blocked()) {
@@ -467,12 +468,23 @@ export class WorkItemService {
       catch (error) { jobs.forEach((job, i) => { for (const key of Object.keys(job)) delete (job as unknown as Record<string, unknown>)[key]; Object.assign(job, before[i]); }); throw error; }
     });
   }
-  private async run(job: WorkItem, signal: AbortSignal): Promise<void> {
+  private async waitForExecutor(job: WorkItem, current: () => boolean, budgetDay?: string): Promise<boolean> {
+    if (this.io.canInvestigate?.() !== false) return false;
+    await this.serial(async () => {
+      if (!current()) throw new Error('分析已取消');
+      job.state = 'queued';
+      if (budgetDay) this.store.data.autoUsage[budgetDay] = Math.max(0, (this.store.data.autoUsage[budgetDay] ?? 0) - 1);
+      await this.store.save();
+    });
+    return true;
+  }
+  private async run(job: WorkItem, signal: AbortSignal, budgetDay?: string): Promise<void> {
     const attempt = job.attempt;
     const current = () => job.state === 'running' && job.attempt === attempt && !signal.aborted && !this.blocked();
     let announcing = false;
     try {
       signal.throwIfAborted();
+      if (await this.waitForExecutor(job, current, budgetDay)) return;
       if (!this.safeSource(job)) throw new Error('助理自身消息或结果群内容不可处理');
       if (this.source.beforeAnalysis && !await this.source.beforeAnalysis(job, signal, current)) return;
       signal.throwIfAborted();
@@ -485,6 +497,7 @@ export class WorkItemService {
         announcing = false;
       }
       if (!this.safeSource(job)) throw new Error('事项来源不可处理');
+      if (await this.waitForExecutor(job, current, budgetDay)) return;
       if (job.external) {
         await this.serial(async () => { job.external!.analysisAttempts++; await this.store.save(); });
         signal.throwIfAborted();

@@ -1,4 +1,5 @@
-import { createMonitorRuntime } from '../monitoring/runtime';
+import type { MonitorHost } from '../monitoring/host';
+import { createMonitorRuntime } from '../host/monitors';
 import pkg from '../../package.json';
 import type { InboxManager } from '../monitoring/sources/lark/manager';
 import { startChannel as realStartChannel, type BridgeChannel } from '../bot/channel';
@@ -44,6 +45,7 @@ export interface SupervisorOptions {
   startChannelFn?: StartChannelFn;
   /** Run lark-cli preflight per profile (default true; tests pass false). */
   runPreflight?: boolean;
+  monitorHost?: MonitorHost;
 }
 
 export interface ManagedStatus {
@@ -287,7 +289,7 @@ export class Supervisor {
 
   constructor(private opts: SupervisorOptions) {
     this.monitors = createMonitorRuntime({ configPath: opts.configPath, rootDir: opts.rootDir,
-      controls: profile => this.controlsFor(profile) });
+      profiles: profile => this.controlsFor(profile), host: opts.monitorHost });
   }
 
   private get startChannelFn(): StartChannelFn {

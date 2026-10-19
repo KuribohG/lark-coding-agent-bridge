@@ -1,4 +1,3 @@
-import { createWorkItemSource } from '../../../src/host/work-item-runtime';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -82,8 +81,9 @@ it('gives incident sources an independent slot while the ordinary queue is occup
   const blocker = sources.queue.run(new AbortController().signal, () => new Promise(resolve => { release = resolve; }));
   await vi.waitFor(() => expect(release).toBeDefined());
   try {
-    const connect = (id: string, lane?: 'incident') => sources.connect(createWorkItemSource({ id, label: id, profile: 'p', enabled: true, settings: {}, lane,
-      driver: { accepts: () => true, prepare: async () => ({ cwd: folder, prompt: '' }) } }, join(folder, 'config.json')));
+    const connect = (id: string, lane?: 'incident') => sources.connect({ id, label: id, lane,
+      config: normalizeInbox({ enabled: true, executorProfile: 'p', ownerOpenId: 'local:p' }),
+      source: new EventSource(id, () => true), runtime: { checkAccess: async () => {}, investigate: async () => result } });
     const normal = await connect('ordinary'); const incident = await connect('urgent', 'incident');
     await normal.observe(event); await incident.observe(event);
     await vi.waitFor(() => expect(sources.list().find(j => j.external?.source === 'urgent')?.external?.analysisAttempts).toBe(1), { timeout: 3500 });
