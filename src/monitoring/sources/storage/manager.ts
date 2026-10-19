@@ -1,3 +1,4 @@
+import { createWorkItemSource } from '../../../host/work-item-runtime';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import * as lockfile from 'proper-lockfile';
@@ -54,7 +55,7 @@ export class StorageMonitorManager {
     const lease = join(folder, 'service'); await writeFile(lease, '', { flag: 'a', mode: 0o600 });
     this.unlock = await lockfile.lock(lease, { stale: 60_000, update: 10_000, retries: 0, onCompromised: () => { void this.close(); } });
     try {
-      this.connection = await this.sources.connect({ id: 'storage-monitor', label: '3FS / 萤火任务',
+      this.connection = await this.sources.connect(createWorkItemSource({ id: 'storage-monitor', label: '3FS / 萤火任务',
         dailyAnalysisLimit: config.dailyAnalysisLimit, resumeInterrupted: true,
         status: () => ({ error: this.error ?? this.service?.error, health: { checkedAt: this.service?.state.checkedAt,
           checks: Object.entries(this.service?.state.statuses ?? {}).map(([id, s]) => ({ id, ...s,
@@ -62,7 +63,7 @@ export class StorageMonitorManager {
         profile: config.executorProfile, enabled, controls, settings, lane: 'incident', sourceNotifications: true,
         notification: config.notification, muted: config.muted,
         driver: storageInvestigator(config, provider, () => this.service),
-      });
+      }, this.configPath, this.rootDir));
       this.fingerprint = fingerprint;
       if (!enabled) { this.error = config.enabled ? '存储监控执行 profile 离线' : undefined; return; }
       this.service = new StorageMonitorService(join(folder, `${storageScope(config)}.json`), config, provider, event => this.connection!.observe(event), Date.now, key => this.sources.isAnalyzing('storage-monitor', key));

@@ -1,3 +1,4 @@
+import type { WorkItemSources } from '../work-items/registry';
 import type { InboxService } from './service';
 import type { WorkItemService } from '../work-items/service';
 import type { InboxLark } from './lark';
@@ -43,4 +44,16 @@ export async function executeInboxCommand(service: WorkItemService & { manual?: 
   if (!job || job.ownerOpenId !== owner) throw new Error('待办不存在或已归档');
   if (command.action === 'detail') return { ...guiSummary(job), ...guiContent(job) };
   await service.decide(job.id, command.action, owner); return { id: job.id };
+}
+
+export async function executeSourceCommand(sources: WorkItemSources, input: unknown, scope?: { owner: string; profile: string }) {
+  const command = obj(input);
+  if (['mode', 'scope', 'browse', 'manual'].includes(String(command.action))) return { handled: false };
+  const target = ['review', 'batch'].includes(String(command.action)) && typeof command.target === 'string'
+    ? obj(JSON.parse(command.target)) : { id: command.target };
+  const ids = command.action === 'batch' && Array.isArray(target.items) ? target.items.map(item => obj(item).id) : [target.id];
+  const service = sources.select(ids.filter((id): id is string => typeof id === 'string'), scope);
+  if (!service) return { handled: false };
+  if (ids.some(id => typeof id !== 'string')) throw new Error('无效工作台操作');
+  return { handled: true, result: await executeInboxCommand(service, undefined, input) };
 }

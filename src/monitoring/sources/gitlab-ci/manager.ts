@@ -1,3 +1,4 @@
+import { createWorkItemSource } from '../../../host/work-item-runtime';
 import { supportsBackgroundProfile } from '../../../runtime/agent-capabilities';
 import { backgroundModelSettings } from '../../../runtime/background-model';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -24,7 +25,7 @@ export class GitLabCiManager {
   private closed = false;
   error?: string;
   constructor(private configPath: string, private controls: (profile: string) => Controls | undefined, private rootDir?: string, sources?: WorkItemSources) {
-    this.sources = sources ?? new WorkItemSources(configPath, rootDir);
+    this.sources = sources ?? new WorkItemSources(configPath);
     this.timer = setInterval(() => { void this.reconcile(); }, 15_000);
     this.timer.unref();
   }
@@ -62,8 +63,8 @@ export class GitLabCiManager {
       onCompromised: () => { void this.close(); } });
     try {
       const settings = controls ? await backgroundModelSettings(controls.profileConfig, paths.profileDir, config.model, 'max') : {};
-      this.source = await this.sources.connect({ id: 'gitlab-ci', label: 'GitLab CI', profile: config.executorProfile,
-        enabled, controls, notification: config.notification, settings, assessment: ciAssessment, driver: ciTaskDriver(config, client) });
+      this.source = await this.sources.connect(createWorkItemSource({ id: 'gitlab-ci', label: 'GitLab CI', profile: config.executorProfile,
+        enabled, controls, notification: config.notification, settings, assessment: ciAssessment, driver: ciTaskDriver(config, client) }, this.configPath, this.rootDir));
       this.fingerprint = fingerprint;
       if (!client) { this.error = config.enabled ? 'GitLab CI executor profile is offline' : undefined; return; }
       const source = this.source;

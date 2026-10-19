@@ -9,7 +9,7 @@ export class MonitorRuntime<M extends Record<string, MonitorModule>> {
   private closing?: Promise<void>;
 
   constructor(context: Omit<MonitorContext, 'sources'>, modules: M) {
-    this.sources = new WorkItemSources(context.configPath, context.rootDir);
+    this.sources = new WorkItemSources(context.configPath);
     this.controllers = Object.fromEntries(Object.entries(modules).map(([key, module]) =>
       [key, module.create({ ...context, sources: this.sources })])) as typeof this.controllers;
   }

@@ -32,11 +32,11 @@ it('retains the last valid collector on a TOML typo and keeps disabled source it
   const sources = { connect, isAnalyzing: () => false } as unknown as WorkItemSources;
   const manager = new StorageMonitorManager(path, () => ({ profileConfig } as Controls), folder, sources); cleanup.push(() => manager.close());
   await manager.reconcile(); await vi.waitFor(() => expect(manager.status().state?.checkedAt).toBeGreaterThan(0));
-  expect(connect).toHaveBeenCalledTimes(1); expect(connect.mock.calls[0]![0]).toMatchObject({ lane: 'incident', sourceNotifications: true });
+  expect(connect).toHaveBeenCalledTimes(1); expect(connect.mock.calls[0]![0]).toMatchObject({ lane: 'incident', runtime: { resumeInterrupted: true } });
   await writeFile(file, 'version = 1\n[sources.storage]\nenabled = "oops"'); await manager.reconcile();
   expect(manager.error).toContain('enabled'); expect(close).not.toHaveBeenCalled();
   await writeFile(file, formatMonitorConfig({ storageMonitor: { ...config, enabled: false } })); await manager.reconcile();
   expect(close).toHaveBeenCalledTimes(1); expect(connect).toHaveBeenCalledTimes(2);
-  expect(connect.mock.calls[1]![0]).toMatchObject({ enabled: false });
+  expect(connect.mock.calls[1]![0]).toMatchObject({ config: { enabled: false } });
   expect(mocks.credentials).toHaveBeenCalledTimes(1);
 });

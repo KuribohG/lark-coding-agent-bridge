@@ -1,3 +1,4 @@
+import { createWorkItemSource } from '../../../src/host/work-item-runtime';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -60,8 +61,8 @@ it('shows and reviews CI source jobs in the same authenticated workbench with ch
   const rootDir = await mkdtemp(join(tmpdir(), 'local-source-workbench-'));
   const manager = new InboxManager(join(rootDir, 'config.json'), () => undefined, rootDir);
   try {
-    const source = await manager.sources.connect({ id: 'gitlab-ci', label: 'GitLab CI', profile: 'codex', enabled: false,
-      settings: {}, driver: { accepts: () => true, prepare: vi.fn() } });
+    const source = await manager.sources.connect(createWorkItemSource({ id: 'gitlab-ci', label: 'GitLab CI', profile: 'codex', enabled: false,
+      settings: {}, driver: { accepts: () => true, prepare: vi.fn() } }, join(rootDir, 'config.json')));
     const job = await source.submit({ key: 'pipeline-1', title: 'repo CI #1', reason: 'CI failed', url: 'https://gitlab.test/pipelines/1',
       time: Date.now(), data: {}, initial: { state: 'done', replyDraft: 'CI draft', analysis: 'CI evidence' } });
     server = await startUiServer({ rootDir, supervisor: { inbox: manager, list: () => [] } as unknown as UiSupervisor, version: 'test' });

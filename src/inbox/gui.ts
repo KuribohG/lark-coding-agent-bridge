@@ -6,7 +6,7 @@ import type { InboxLark } from './lark';
 import { obj } from './values';
 import { guiJobs } from './presentation';
 export { guiSummary, guiContent, guiJobs } from './presentation';
-import { executeInboxCommand } from './workbench';
+import { executeInboxCommand, executeSourceCommand } from './workbench';
 import type { InboxTaskSources } from './task-sources';
 import { ATTENTION_RULES } from '../monitoring/sources/lark/analyzer';
 import { intakeScope, type IntakeScope, type InboxMode } from './config';
@@ -134,7 +134,7 @@ export class InboxGui {
   }
   private async execute(command: Command): Promise<unknown> {
     if (this.stopped) throw new Error('助理已关闭');
-    const source = await this.taskSources?.command(command, { owner: this.service.config.ownerOpenId, profile: this.service.config.executorProfile });
+    const source = this.taskSources && await executeSourceCommand(this.taskSources, command, { owner: this.service.config.ownerOpenId, profile: this.service.config.executorProfile });
     if (source?.handled) return source.result;
     return executeInboxCommand(this.service, this.lark, command, this.changeMode, this.changeScope);
   }

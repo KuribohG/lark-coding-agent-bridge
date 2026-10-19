@@ -14,7 +14,7 @@ import { backgroundModelSettings } from '../../../runtime/background-model';
 import { supportsBackgroundProfile } from '../../../runtime/agent-capabilities';
 import { getUserAuthStatus } from '../../../lark-cli/user-im';
 import { guiJobs } from '../../../inbox/presentation';
-import { executeInboxCommand } from '../../../inbox/workbench';
+import { executeInboxCommand, executeSourceCommand } from '../../../inbox/workbench';
 import { processInbox } from './processor';
 import { startInboxProgress } from '../../../inbox/progress';
 import { createRuntimeAgent } from '../../../runtime/agent-runtime';
@@ -50,7 +50,7 @@ export class InboxManager {
   private closed = false;
   error?: string;
   constructor(private configPath: string, private controls: (profile: string) => Controls | undefined, private rootDir?: string, private sharedSources?: InboxTaskSources) {
-    this.sources = sharedSources ?? new InboxTaskSources(configPath, rootDir);
+    this.sources = sharedSources ?? new InboxTaskSources(configPath);
     this.timer = setInterval(() => { void this.reconcile(); }, 15_000);
     this.timer.unref();
   }
@@ -75,7 +75,7 @@ export class InboxManager {
       jobs: guiJobs(jobs) };
   }
   async workbenchCommand(input: unknown) {
-    const source = await this.sources.command(input);
+    const source = await executeSourceCommand(this.sources, input);
     if (source.handled) return source.result;
     const service = this.service, lark = this.lark;
     if (!service || !lark) throw new Error('请先完成配置并启动执行 profile');

@@ -1,3 +1,5 @@
+import { executeSourceCommand } from '../../../src/inbox/workbench';
+import { createWorkItemSource } from '../../../src/host/work-item-runtime';
 import { mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -114,14 +116,14 @@ it('lets the workbench inspect disabled source history, rejects mixed batch acti
   const path = join(await mkdtemp(join(tmpdir(), 'inbox-source-registry-')), 'config.json');
   const registry = new InboxTaskSources(path); sources.push(registry);
   const driver = { accepts: () => true, prepare: vi.fn() };
-  const a = await registry.connect({ id: 'gitlab-ci', label: 'CI', profile: 'codex', enabled: false, settings: {}, driver });
-  const b = await registry.connect({ id: 'another-watch', label: 'Other', profile: 'claude', enabled: false, settings: {}, driver });
+  const a = await registry.connect(createWorkItemSource({ id: 'gitlab-ci', label: 'CI', profile: 'codex', enabled: false, settings: {}, driver }, path));
+  const b = await registry.connect(createWorkItemSource({ id: 'another-watch', label: 'Other', profile: 'claude', enabled: false, settings: {}, driver }, path));
   const x = await a.submit(event); const y = await b.submit(event);
-  const response = await registry.command({ id: '00000000-0000-0000-0000-000000000000', action: 'detail', target: x.id });
+  const response = await executeSourceCommand(registry, { id: '00000000-0000-0000-0000-000000000000', action: 'detail', target: x.id });
   expect(response.handled).toBe(true); expect(JSON.stringify(response.result)).not.toContain('pipeline":10');
-  await expect(registry.command({ id: '00000000-0000-0000-0000-000000000000', action: 'detail', target: x.id },
+  await expect(executeSourceCommand(registry, { id: '00000000-0000-0000-0000-000000000000', action: 'detail', target: x.id },
     { owner: 'ou_other', profile: 'codex' })).rejects.toThrow('不属于当前工作台');
-  await expect(registry.command({ id: '00000000-0000-0000-0000-000000000001', action: 'batch',
+  await expect(executeSourceCommand(registry, { id: '00000000-0000-0000-0000-000000000001', action: 'batch',
     target: JSON.stringify({ items: [{ id: x.id, revision: x.revision }, { id: y.id, revision: y.revision }], handlingState: 'handled' }) })).rejects.toThrow('本次未修改');
   expect(registry.list().every(j => j.handlingState === 'open')).toBe(true);
 });
