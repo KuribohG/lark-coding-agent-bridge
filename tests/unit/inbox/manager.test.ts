@@ -13,6 +13,9 @@ import { startInboxH5 } from '../../../src/inbox/h5-server';
 import { initMonitors } from '../../../src/cli/commands/monitors';
 import { loadMonitorRoot } from '../../../src/monitoring/store';
 import { formatMonitorConfig } from '../../../src/monitoring/config';
+import * as larkRuntime from '../../../src/monitoring/sources/lark/runtime';
+import { FakeAgentAdapter } from '../../helpers/fake-agent';
+import type { InboxJob } from '../../../src/inbox/types';
 
 vi.mock('../../../src/agent/model-service', async importOriginal => ({ ...await importOriginal<typeof import('../../../src/agent/model-service')>(), loadProfileModelService: vi.fn(async () => ({ model: 'test' })) }));
 vi.mock('../../../src/monitoring/sources/lark/analyzer', () => ({ INBOX_ANALYSIS_MODEL: 'deepseek-flash', loadAnalysisProvider: vi.fn(async () => ({ model: 'test' })), analyzeInbox: vi.fn() }));
@@ -103,6 +106,46 @@ it('recreates the inbox with changed TOML excerpt limits while preserving its st
   expect(after).not.toBe(before);
   expect(after.config).toMatchObject({ triageMessageLimit: 20, triageMessageChars: 4000 });
   expect(JSON.parse(await readFile(store, 'utf8')).jobs).toEqual(jobs);
+});
+
+it('saves analysis timeouts without recreating the service and uses the new limit on later runs', async () => {
+  const { create, path, rootDir, root, controls } = await setup();
+  controls.profileConfig.workspaces.default = join(rootDir, 'workspace');
+  root.inbox!.analysisTimeoutMinutes = 90;
+  await saveRootConfig(root, path); await initMonitors({ config: path });
+  const agent = new FakeAgentAdapter({ capabilities: { finalAnswer: 'separate-event', input: 'unsupported' }, events: Array.from({ length: 2 }, () => [
+    { type: 'final_text', content: JSON.stringify({ replyDraft: 'reply', analysis: 'checked', missingInfo: '' }) },
+    { type: 'done', terminationReason: 'normal' },
+  ] as const) });
+  const agentSpy = vi.spyOn(runtimeAgent, 'createRuntimeAgent').mockReturnValue(agent);
+  const ioSpy = vi.spyOn(larkRuntime, 'larkRuntime');
+  try {
+    const manager = create(); await manager.reconcile();
+    const io = ioSpy.mock.calls.at(-1)![1];
+    const service = vi.mocked(startInboxH5).mock.calls.at(-1)![0];
+    const job: InboxJob = { id: 'timeout-check', ownerOpenId: 'ou_owner', profile: 'codex', destination: root.inbox!.destination,
+      source: { chatId: 'oc_source', name: 'source', type: 'p2p' }, messages: [], state: 'running', automatic: false, alert: false,
+      createdAt: Date.now(), updatedAt: Date.now() };
+    const initialStart = Date.now();
+    await io.analyze(job, new AbortController().signal);
+    const firstDeadline = agent.runOptions[0]!.deadlineAt!;
+    expect(firstDeadline).toBeGreaterThanOrEqual(initialStart + 90 * 60_000);
+    expect(firstDeadline).toBeLessThanOrEqual(Date.now() + 90 * 60_000);
+    await manager.configure({ ...(await manager.view()).config, analysisTimeoutMinutes: 60 });
+    expect((await loadMonitorRoot(path))!.inbox?.analysisTimeoutMinutes).toBe(60);
+    expect(service.config.analysisTimeoutMinutes).toBe(60);
+    expect(ioSpy).toHaveBeenCalledTimes(1);
+    expect(agentSpy).toHaveBeenCalledTimes(1);
+    const nextStart = Date.now();
+    await io.analyze(job, new AbortController().signal);
+    expect(agent.runOptions[1]!.deadlineAt).toBeGreaterThanOrEqual(nextStart + 60 * 60_000);
+    expect(agent.runOptions[1]!.deadlineAt).toBeLessThanOrEqual(Date.now() + 60 * 60_000);
+    expect(agent.runOptions[0]!.deadlineAt).toBe(firstDeadline);
+    const edited = (await loadMonitorRoot(path))!; edited.inbox!.analysisTimeoutMinutes = 120;
+    await writeFile(join(rootDir, 'monitors.toml'), formatMonitorConfig(edited)); await manager.reconcile();
+    expect(service.config.analysisTimeoutMinutes).toBe(120);
+    expect(ioSpy).toHaveBeenCalledTimes(1);
+  } finally { agentSpy.mockRestore(); ioSpy.mockRestore(); }
 });
 
 it('starts without HTTPS and does not open an HTTP listener', async () => {

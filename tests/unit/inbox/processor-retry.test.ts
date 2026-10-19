@@ -2,7 +2,8 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import type { AgentEvent } from '../../../src/agent/types';
+import type { AgentAdapter, AgentEvent } from '../../../src/agent/types';
+import { normalizeInbox } from '../../../src/inbox/config';
 import { processInbox } from '../../../src/monitoring/sources/lark/processor';
 import type { InboxJob } from '../../../src/inbox/types';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
@@ -66,6 +67,32 @@ it.each(['cancel', 'timeout'] as const)('stops during retry backoff on %s withou
   expect(h.agent.runs).toHaveLength(1);
   expect(h.agent.runs[0]?.stopped).toBe(true);
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it.each([1, 90])('keeps a run alive until its configured %s-minute deadline and then stops it', async minutes => {
+  const workspace = await mkdtemp(join(tmpdir(), 'inbox-timeout-'));
+  const config = normalizeInbox({ analysisTimeoutMinutes: minutes });
+  vi.useFakeTimers();
+  let release!: () => void, started!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const ready = new Promise<void>(resolve => { started = resolve; });
+  const capabilities = { finalAnswer: 'separate-event', input: 'unsupported' } as const;
+  const run = { capabilities, runId: 'timeout',
+    events: (async function* () { await gate; yield done; })(),
+    stop: vi.fn(async () => { release(); }), waitForExit: vi.fn(async () => true) };
+  const agent: AgentAdapter = { capabilities, id: 'test', displayName: 'test', isAvailable: async () => true,
+    run: vi.fn(() => { started(); return run; }) };
+  const outcome = processInbox(job, agent, workspace, '', new AbortController().signal, config.analysisTimeoutMinutes * 60_000)
+    .then(result => ({ result }), (error: unknown) => ({ error }));
+  try {
+    await ready;
+    await vi.advanceTimersByTimeAsync(minutes * 60_000 - 1);
+    expect(run.stop).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await outcome).toMatchObject({ error: { code: 'timeout' } });
+    expect(run.stop).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally { release(); await outcome; }
 });
 
 it.each([

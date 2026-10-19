@@ -12,6 +12,7 @@ ownerOpenId = "ou_OWNER"
 intakeScope = "private_mentions"
 pollSeconds = 10
 analysisModel = "" # Follow the executor profile; an explicit model is also supported.
+analysisTimeoutMinutes = 30 # Total analysis time including retries, 1–1440 minutes; requires a supporting version.
 attentionProfile = "关注需要我回复或跟进的问题，以及重要的 CI 和存储故障。"
 triageMessageLimit = 12 # Initial screening messages per item, 2–100.
 triageMessageChars = 2000 # Characters per message (head + tail), 200–16000.

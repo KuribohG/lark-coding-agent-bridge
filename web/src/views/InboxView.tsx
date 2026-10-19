@@ -134,6 +134,8 @@ export function InboxView({ servicesRevision = 0 }: { servicesRevision?: number 
         </div>
         <p className="text-xs text-muted-foreground">默认 12 条、每条 2000 字符。保留最早留存消息和近期内容；长消息保留首尾。提高上限可减少上下文缺失，也会增加模型用量。修改后会重新加载收件助理。</p>
         <details><summary className="cursor-pointer text-sm">高级设置与可选远程入口</summary><div className="mt-3 grid gap-3 sm:grid-cols-2">
+          <label>深入分析超时（分钟）<Input type="number" min={1} max={1440} step={1} value={config.analysisTimeoutMinutes} onChange={e => change({ analysisTimeoutMinutes: Number(e.target.value) })} />
+            <span className="text-xs text-muted-foreground">默认 30 分钟，包含重试等待。仅影响后续启动的飞书待办分析；已运行任务保留原时限。</span></label>
           {([['dailyTriageLimit', '每日筛选批次上限'], ['contextMinutes', '近期上下文分钟数'], ['pollSeconds', `消息采集间隔秒数（最短 ${INBOX_MIN_POLL_SECONDS} 秒）`]] as const).map(([key, label]) => <label key={key}>{label}<Input type="number" min={key === 'pollSeconds' ? INBOX_MIN_POLL_SECONDS : undefined} max={key === 'pollSeconds' ? 3600 : undefined} value={config[key]} onChange={e => change({ [key]: Number(e.target.value) })} /></label>)}
           <label>远程工作台 URL<Input value={config.gui.publicUrl} onChange={e => change({ gui: { ...config.gui, publicUrl: e.target.value } })} /></label>
           <label>远程工作台凭证文件<Input value={config.gui.apiKeyFile} onChange={e => change({ gui: { ...config.gui, apiKeyFile: e.target.value } })} /></label>

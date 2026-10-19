@@ -59,6 +59,7 @@ it.each([
   ['version = 1\n[sources.lark]\ntriageMessageChars = 199', 'triageMessageChars'],
   ['version = 1\n[sources.lark]\ntriageMessageChars = 16001', 'triageMessageChars'],
   ['version = 1\n[sources.lark]\ntriageMessageChars = 500.5', 'triageMessageChars'],
+  ...['0', '1441', '1.5', '"60"'].map(value => [`version = 1\n[sources.lark]\nanalysisTimeoutMinutes = ${value}`, 'analysisTimeoutMinutes']),
 ])('rejects malformed or unsupported settings instead of silently defaulting: %s', (text, field) => {
   expect(() => parseMonitorConfig(text)).toThrow(field);
 });
@@ -68,6 +69,14 @@ it('round-trips screening limits and applies defaults to existing TOML installat
   expect(old.inbox).toMatchObject({ triageMessageLimit: 12, triageMessageChars: 2000 });
   const settings = parseMonitorConfig('version = 1\n[sources.lark]\ntriageMessageLimit = 6\ntriageMessageChars = 500');
   expect(parseMonitorConfig(formatMonitorConfig(settings)).inbox).toMatchObject({ triageMessageLimit: 6, triageMessageChars: 500 });
+});
+
+it('defaults old installations to 30 minutes and round-trips configurable analysis timeouts', () => {
+  expect(parseMonitorConfig('version = 1\n[sources.lark]').inbox?.analysisTimeoutMinutes).toBe(30);
+  for (const minutes of [1, 90, 1440]) {
+    const settings = parseMonitorConfig(`version = 1\n[sources.lark]\nanalysisTimeoutMinutes = ${minutes}`);
+    expect(parseMonitorConfig(formatMonitorConfig(settings)).inbox?.analysisTimeoutMinutes).toBe(minutes);
+  }
 });
 
 it('reports syntax locations without echoing the input code block', () => {

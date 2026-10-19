@@ -26,6 +26,7 @@ export interface InboxConfig {
   triageMessageChars: number;
   /** Empty follows the executor's defaults; absent keeps Flash for legacy Codex configs. */
   analysisModel?: string;
+  analysisTimeoutMinutes: number;
   /** Explicit standalone service; takes precedence over all legacy profile routing. */
   triageService?: string;
   /** Legacy Codex model configuration source, used only without triageService. */
@@ -46,7 +47,7 @@ export const INBOX_DEFAULTS: InboxConfig = {
   destination: { chatId: '', threadId: '', replyTo: '' },
   deliveryMode: 'thread',
   watchPrivate: true, watchMentions: true, autoAnalyze: false,
-  attentionProfile: '', analysisModel: '', dailyTriageLimit: INBOX_DAILY_TRIAGE_LIMIT,
+  attentionProfile: '', analysisModel: '', analysisTimeoutMinutes: 30, dailyTriageLimit: INBOX_DAILY_TRIAGE_LIMIT,
   triageMessageLimit: 12, triageMessageChars: 2000,
   waitMinutes: 30, pollSeconds: INBOX_MIN_POLL_SECONDS, contextMinutes: 15,
   maxContextChars: 24_000, dailyAutoLimit: 20,
@@ -63,6 +64,7 @@ export function normalizeInbox(input: unknown): InboxConfig {
   return {
     intakeScope: scope,
     analysisModel: input == null ? '' : typeof r.analysisModel === 'string' ? str(r.analysisModel).slice(0, 200) : undefined,
+    analysisTimeoutMinutes: num(r.analysisTimeoutMinutes, 1, 1440, INBOX_DEFAULTS.analysisTimeoutMinutes),
     ...(str(r.triageProfile) ? { triageProfile: str(r.triageProfile) } : {}),
     ...(str(r.triageService) ? { triageService: str(r.triageService) } : {}),
     ...(typeof r.triageModel === 'string' ? { triageModel: str(r.triageModel).slice(0, 200) } : {}),

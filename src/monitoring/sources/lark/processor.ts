@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import type { AgentAdapter, AgentEvent, AgentRunOptions } from '../../../agent/types';
 import { processAnalysis } from '../../../work-items/analysis';
 import { INBOX_ANALYSIS_MODEL } from './analyzer';
+import { INBOX_DEFAULTS } from '../../../inbox/config';
 import type { InboxJob } from '../../../inbox/types';
 import { analysisChanges, previousAnalysis } from '../../../inbox/updates';
 import { createInvestigator } from '../../../work-items/investigation';
@@ -30,7 +31,7 @@ export function larkInvestigationDriver(workspace: string, background: string): 
 
 /** One isolated agent run per item; only the authoritative final answer is returned for delivery. */
 export async function processInbox(job: InboxJob, agent: AgentAdapter, workspace: string, background: string,
-  signal: AbortSignal, timeoutMs = 30 * 60_000, onEvent?: (event: AgentEvent) => void,
+  signal: AbortSignal, timeoutMs = INBOX_DEFAULTS.analysisTimeoutMinutes * 60_000, onEvent?: (event: AgentEvent) => void,
   preferences: Pick<AgentRunOptions, 'model' | 'reasoningEffort'> = { model: INBOX_ANALYSIS_MODEL, reasoningEffort: 'max' }) {
   return createInvestigator(larkInvestigationDriver(workspace, background), (prepared, input, currentSignal) =>
     processAnalysis(agent, { runId: `inbox-${input.id}-${input.attempt ?? 0}`, ...prepared,

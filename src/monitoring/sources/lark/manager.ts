@@ -32,7 +32,7 @@ import { InboxGui } from '../../../inbox/gui';
 import { InboxTaskSources } from '../../../inbox/task-sources';
 import { larkRuntime } from './runtime';
 
-const connectionConfig = ({ enabled: _, autoAnalyze: __, intakeScope: ___, watchPrivate, watchMentions, ...config }: InboxConfig) =>
+const connectionConfig = ({ enabled: _, autoAnalyze: __, intakeScope: ___, analysisTimeoutMinutes: ____, watchPrivate, watchMentions, ...config }: InboxConfig) =>
   ({ ...config, legacyIntake: watchPrivate ? undefined : { watchPrivate, watchMentions } });
 
 export class InboxManager {
@@ -203,6 +203,7 @@ export class InboxManager {
     if (this.service && controls && fingerprint === this.fingerprint) {
       await withConfigFileLock(this.configPath, async () => {
         const latest = normalizeInbox((await loadMonitorRoot(this.configPath))?.inbox);
+        if (this.service) this.service.config.analysisTimeoutMinutes = latest.analysisTimeoutMinutes;
         if (this.service && intakeScope(latest) && intakeScope(latest) !== intakeScope(this.service.config)) await this.service.setScope(intakeScope(latest)!);
         if (this.service && inboxMode(latest) !== inboxMode(this.service.config)) await this.service.setMode(inboxMode(latest));
       });
@@ -251,7 +252,7 @@ export class InboxManager {
           let success = false;
           try {
             const result = await processInbox(job, agent, controls.profileConfig.workspaces.default || paths.defaultWorkspaceDir,
-              config.attentionProfile, signal, undefined, event => progress?.event(event),
+              config.attentionProfile, signal, config.analysisTimeoutMinutes * 60_000, event => progress?.event(event),
               await backgroundModelSettings(controls.profileConfig, paths.profileDir, config.analysisModel));
             success = true;
             return result;
