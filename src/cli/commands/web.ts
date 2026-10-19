@@ -33,7 +33,7 @@ export async function runWeb(options: RunWebOptions): Promise<void> {
   const binary = options.binary ?? launch?.binaryPath;
   const agent = options.agent === 'claude' ? new ClaudeAdapter({ binary })
     : new CodexAdapter({ binary: binary ?? 'codex', profileStateDir: stateDir,
-        transport: launch?.transport ?? 'app-server', codexHome: launch?.codexHome, inheritCodexHome: launch?.inheritCodexHome, ignoreUserConfig: launch?.ignoreUserConfig, ignoreRules: launch?.ignoreRules ?? false, sandbox: 'workspace-write' });
+        transport: launch?.transport, codexHome: launch?.codexHome, inheritCodexHome: launch?.inheritCodexHome, ignoreUserConfig: launch?.ignoreUserConfig, ignoreRules: launch?.ignoreRules, sandbox: 'workspace-write' });
   const availability = await agent.checkAvailability();
   if (!availability.ok) throw new Error(`${agent.displayName} is unavailable`);
   const config: RunProfileConfig = {

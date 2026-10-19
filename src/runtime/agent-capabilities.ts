@@ -6,7 +6,7 @@ import type { ProfileConfig } from '../config/profile-schema';
 /** Profile-time discovery uses the same declaration as the configured adapter. */
 export function profileExecutionCapabilities(profile: ProfileConfig): AgentExecutionCapabilities {
   return profile.agentKind === 'codex'
-    ? codexExecutionCapabilities(profile.codex?.transport)
+    ? codexExecutionCapabilities()
     : CLAUDE_EXECUTION_CAPABILITIES;
 }
 

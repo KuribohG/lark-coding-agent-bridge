@@ -48,7 +48,7 @@ export function createRuntimeAgent(
       ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
       inheritCodexHome: codex.inheritCodexHome === true,
       ignoreUserConfig: codex.ignoreUserConfig === true,
-      ignoreRules: codex.ignoreRules !== false,
+      ignoreRules: codex.ignoreRules,
       sandbox: profileConfig.sandbox.defaultMode,
       env: buildLarkChannelEnv(larkChannel),
     });

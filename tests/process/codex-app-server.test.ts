@@ -8,7 +8,7 @@ import type { AgentEvent } from '../../src/agent/types';
 const dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 
-async function harness(mode = 'normal') {
+async function harness(mode = 'normal', transport?: 'app-server') {
   const dir = await mkdtemp(join(tmpdir(), 'bridge-app-server-'));
   dirs.push(dir);
   const binary = join(dir, 'codex');
@@ -49,15 +49,15 @@ rl.on('line', line => {
 rl.on('close',()=>process.exit(0));
 `);
   await chmod(binary, 0o700);
-  const adapter = new CodexAdapter({ binary, profileStateDir: dir, transport: 'app-server', ignoreRules: false });
+  const adapter = new CodexAdapter({ binary, profileStateDir: dir, transport });
   const requests = async () => (await readFile(record, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   return { adapter, dir, requests };
 }
 async function collect(events: AsyncIterable<AgentEvent>) { const all: AgentEvent[] = []; for await (const e of events) all.push(e); return all; }
 
 describe('Codex native in-flight input', () => {
-  it('appends to the same turn without stopping, restarting, or starting a second turn', async () => {
-    const h = await harness();
+  it.each([undefined, 'app-server'] as const)('appends to the same turn with transport=%s without stopping, restarting, or starting a second turn', async transport => {
+    const h = await harness('normal', transport);
     const preview = vi.fn();
     const run = h.adapter.run({ runId: 'r', cwd: h.dir, onMessageDelta: preview, prompt: 'original task', sandbox: 'read-only', reasoningEffort: 'high' });
     const output = collect(run.events);
@@ -112,6 +112,9 @@ describe('Codex native in-flight input', () => {
     expect((await h.requests()).filter(x => x.method === 'turn/steer')).toHaveLength(1);
   });
   it('does not silently discard unsupported exec-only configuration', () => {
+    expect(() => new CodexAdapter({ binary: 'codex', profileStateDir: '.', transport: 'exec' as never })).toThrow('removed');
+    expect(() => new CodexAdapter({ binary: 'codex', profileStateDir: '.', ignoreUserConfig: true })).toThrow('ignoreUserConfig');
+    expect(() => new CodexAdapter({ binary: 'codex', profileStateDir: '.', ignoreRules: true })).toThrow('ignoreRules');
     expect(() => new CodexAdapter({ binary: 'codex', profileStateDir: '.', transport: 'app-server', ignoreUserConfig: true, ignoreRules: false })).toThrow('ignoreUserConfig');
     expect(() => new CodexAdapter({ binary: 'codex', profileStateDir: '.', transport: 'app-server', ignoreRules: true })).toThrow('ignoreRules');
   });

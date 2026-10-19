@@ -19,6 +19,16 @@ describe.skipIf(process.platform !== 'linux')('independent deadline process guar
       await writeFile(binary, `#!${process.execPath}\nimport {writeFileSync} from 'node:fs';
         let prompt=''; process.stdin.on('data',chunk=>{prompt+=chunk;
           writeFileSync(${JSON.stringify(pidFile)},JSON.stringify({pid:process.pid,prompt,deadline:process.env.LARK_RUN_STOP_AT})); });
+        if (${JSON.stringify(kind)} === 'codex') {
+          const { createInterface } = await import('node:readline');
+          createInterface({input:process.stdin}).on('line', line => {
+            const m=JSON.parse(line);
+            if (m.id === undefined) return;
+            const result = m.method === 'thread/start' ? {thread:{id:'thread-1'}}
+              : m.method === 'turn/start' ? {turn:{id:'turn-1'}} : {};
+            process.stdout.write(JSON.stringify({id:m.id,result})+'\\n');
+          });
+        }
         setInterval(()=>{},1000);
       `, { mode: 0o700 });
       const adapter = kind === 'codex' ? new CodexAdapter({ binary, profileStateDir: tmp.profile }) : new ClaudeAdapter({ binary });
@@ -31,7 +41,7 @@ describe.skipIf(process.platform !== 'linux')('independent deadline process guar
       expect(info.prompt).toContain('deadline <stdin> task');
       expect(Number(info.deadline)).toBe(deadlineAt);
       if (kind === 'claude') expect(events).toContainEqual({ type: 'done', terminationReason: 'timeout' });
-      else expect(events).toContainEqual(expect.objectContaining({ type: 'error', message: expect.stringContaining('124') }));
+      else expect(events).toContainEqual(expect.objectContaining({ type: 'error', message: expect.stringContaining('deadline') }));
       expect(await running(info.pid)).toBe(false);
     } finally { await tmp.cleanup(); }
   }, 8000);

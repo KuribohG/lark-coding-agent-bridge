@@ -44,7 +44,7 @@ See the [deployment guide](docs/self-contained.md) for prerequisites, SSH forwar
 
 ## In-flight Codex input
 
-Native bidirectional input is verified with Codex 0.162.1. Set `codex.transport` to `"app-server"`, `ignoreUserConfig` to `false`, and `ignoreRules` to `false` in the target profile, then restart the bridge. The default transport remains `exec`. App-server loads normal user configuration and execpolicy `.rules`; it does not support exec-only ignore flags.
+Bridge uses Codex `app-server` for native bidirectional input, verified with Codex 0.162.1. The `exec` backend has been removed. Existing configurations must remove `transport = "exec"` or change it to `"app-server"` under `[agents.codex.launch]` or `[profiles.<name>.launch]`. App-server loads normal user configuration and execpolicy `.rules`; `ignoreUserConfig` and `ignoreRules` default to `false` and must not be `true`. Launch changes require a bridge restart.
 
 Send additional text normally: `turn/steer` appends it to the same process, thread, and turn. The acknowledgement means Codex accepted the input, not that the model has acted on it. Quoted context is included; attachments and card callbacks still use the queue. Input explicitly rejected because the turn ended falls back to the next turn. Ambiguous delivery failures are reported without automatic replay.
 

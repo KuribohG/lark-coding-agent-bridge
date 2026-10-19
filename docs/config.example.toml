@@ -15,7 +15,7 @@ effort = "high"
 
 [agents.codex.launch]
 binaryPath = "codex"
-transport = "app-server"
+transport = "app-server" # Default and only supported Codex backend.
 
 [agents.claude.run]
 effort = "high"

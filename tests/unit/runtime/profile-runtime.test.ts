@@ -444,7 +444,7 @@ describe('profile runtime resolver', () => {
     expect(parseDocument(await readFile(join(root, 'config.toml'), 'utf8')).profiles.claude).not.toHaveProperty('permissionSource');
   });
 
-  it('keeps explicit canonical Codex home and user-config isolation settings', async () => {
+  it('keeps explicit Codex home isolation with app-server user configuration', async () => {
     const root = await tmpRoot();
     const codex = createDefaultProfileConfig({
       agentKind: 'codex',
@@ -452,7 +452,7 @@ describe('profile runtime resolver', () => {
       codex: {
         binaryPath: '/usr/local/bin/codex',
         inheritCodexHome: false,
-        ignoreUserConfig: true,
+        ignoreUserConfig: false,
       },
       permissions: {
         defaultAccess: 'full',
@@ -469,9 +469,9 @@ describe('profile runtime resolver', () => {
     };
 
     expect(runtime.profileConfig.codex?.inheritCodexHome).toBe(false);
-    expect(runtime.profileConfig.codex?.ignoreUserConfig).toBe(true);
+    expect(runtime.profileConfig.codex?.ignoreUserConfig).toBe(false);
     expect(saved.profiles['codex-dev']?.codex?.inheritCodexHome).toBe(false);
-    expect(saved.profiles['codex-dev']?.codex?.ignoreUserConfig).toBe(true);
+    expect(saved.profiles['codex-dev']?.codex?.ignoreUserConfig).toBe(false);
   });
 
   it('creates a managed default workspace for profiles without a default', async () => {

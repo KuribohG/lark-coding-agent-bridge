@@ -46,7 +46,7 @@ run-lark-cc
 
 ## Codex 中途补充
 
-Codex 0.162.1 已验证支持原生双向接口。要启用，在对应 profile 的 `codex` 配置中设置 `transport: "app-server"`、`ignoreUserConfig: false`、`ignoreRules: false`，然后重启 bridge。默认仍使用 `exec`；app-server 会加载正常的用户配置和 execpolicy `.rules`，不支持 exec 专用的忽略选项。
+Bridge 的 Codex 统一使用 `app-server` 全双工模式，原生双向接口已在 Codex 0.162.1 验证，`exec` 后端已移除。已有配置需删除 `[agents.codex.launch]` 或 `[profiles.<name>.launch]` 下的 `transport = "exec"`，或改为 `"app-server"`。app-server 加载正常的用户配置和 execpolicy `.rules`；`ignoreUserConfig`、`ignoreRules` 默认均为 `false`，显式为 `true` 时会提示迁移。修改启动配置后需重启 bridge。
 
 运行期间直接发送补充文字即可：bridge 调用 `turn/steer`，保留同一进程、会话和回合，不停止后续跑，也不新增 slash 命令。收到成功确认后回复“已送入当前任务，等待模型处理”；这表示接口已接受，不表示模型已经落实要求。引用上下文会一同传入，图片、文件和卡片回调仍走队列。
 

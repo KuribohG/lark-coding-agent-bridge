@@ -29,6 +29,8 @@ Omitting a key inherits its parent. Removing a profile override restores inherit
 
 `launch` accepts `binaryPath` for both agents. Codex also accepts `transport`, `codexHome`, `inheritCodexHome`, `ignoreUserConfig` and `ignoreRules`. Configuration validates launch and agent combinations before use.
 
+Codex uses `app-server`, enabling input during an active turn. The `exec` backend has been removed: remove an old `transport = "exec"` setting or change it to `"app-server"`. Both ignore flags default to `false`; explicitly setting either to `true` is rejected because app-server loads normal user configuration and execpolicy rules. Launch changes take effect after restarting the profile.
+
 ## Frontend fields
 
 Lark owns `reply_mode` (`markdown`, `text`, `card`), `show_tools`, `progress` (`off`, `brief`, `detailed`) and `file_links`. Web owns `show_tools` and `show_reasoning`. Web has no Lark COT bubble, card type or identity setting. `defaults.output`, `agents.codex.output` and frontend fields inside `run` are rejected.

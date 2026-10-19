@@ -8,6 +8,17 @@ import { writeVersionExecutable } from '../../helpers/fake-executable.js';
 const cleanups: Array<() => Promise<void>> = [];
 
 describe('CodexAdapter prepareRun', () => {
+  it.each([
+    { options: { cwd: '' }, error: 'cwd' },
+    { options: { forkSession: true }, error: 'parent' },
+    { options: { sandbox: 'invalid' as never }, error: 'sandbox' },
+    { options: { model: '--invalid' }, error: '模型' },
+    { options: { reasoningEffort: 'invalid' as never }, error: '思考强度' },
+  ])('rejects invalid run options before launching: $error', ({ options, error }) => {
+    const adapter = new CodexAdapter({ binary: 'missing-codex', profileStateDir: '.' });
+    expect(() => adapter.run({ runId: 'invalid', cwd: '.', prompt: 'test', ...options })).toThrow(new RegExp(error, 'i'));
+  });
+
   afterEach(async () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
   });

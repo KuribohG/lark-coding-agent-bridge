@@ -135,7 +135,7 @@ describe('rate-limit retries through RunExecutor', () => {
     expect(await run.result).toBe('completed');
   });
 
-  it.each(['exec', 'app-server'])('keeps resetting after repeated Codex %s output followed by 429', async transport => {
+  it('keeps resetting after repeated Codex app-server output followed by 429', async () => {
     const attempts = Array.from({ length: 5 }, (_, index) => {
       const translator = new CodexJsonlTranslator();
       return [
@@ -143,8 +143,7 @@ describe('rate-limit retries through RunExecutor', () => {
         ...translator.translate({ type: 'item.completed', item: {
           id: `message-${index}`, type: 'agent_message', text: `completed step ${index + 1}`,
         } }),
-        ...(transport === 'app-server' ? translator.fail(rateLimit.message)
-          : translator.translate({ type: 'turn.failed', error: { message: rateLimit.message } })),
+        ...translator.fail(rateLimit.message),
       ];
     });
     const h = harness([...attempts, [done]]);

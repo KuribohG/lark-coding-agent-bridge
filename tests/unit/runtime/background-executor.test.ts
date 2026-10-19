@@ -7,6 +7,7 @@ import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { profileExecutionCapabilities, supportsBackgroundProfile } from '../../../src/runtime/agent-capabilities';
 import { executeBackgroundRun } from '../../../src/runtime/background-executor';
 import { CodexAdapter } from '../../../src/agent/codex/adapter';
+import { createRuntimeAgent } from '../../../src/runtime/agent-runtime';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
 
 const capabilities: AgentExecutionCapabilities = { finalAnswer: 'separate-event', input: 'unsupported' };
@@ -62,10 +63,12 @@ it('rejects expired work before preparing or launching an agent', async () => {
   expect(agent.runs).toHaveLength(0);
 });
 
-it.each(['exec', 'app-server'] as const)('declares the same %s capabilities for discovery and execution', transport => {
-  const profile = createDefaultProfileConfig({ agentKind: 'codex', codex: { binaryPath: 'codex', transport, ignoreRules: false },
+it.each([undefined, 'app-server'] as const)('declares the same %s capabilities for discovery and execution', transport => {
+  const profile = createDefaultProfileConfig({ agentKind: 'codex', codex: { binaryPath: 'codex', transport },
     accounts: { app: { id: 'test', secret: 'fixture', tenant: 'feishu' } } });
-  const agent = new CodexAdapter({ binary: 'codex', transport, ignoreRules: false, profileStateDir: '.' });
+  const agent = new CodexAdapter({ binary: 'codex', transport, profileStateDir: '.' });
+  expect(agent.capabilities.input).toBe('active-turn');
+  expect(createRuntimeAgent(profile, { profileDir: '.' }).capabilities).toEqual(agent.capabilities);
   expect(profileExecutionCapabilities(profile)).toEqual(agent.capabilities);
   expect(supportsBackgroundProfile(profile)).toBe(true);
   expect(supportsBackgroundProfile({ ...profile, mode: 'team' })).toBe(false);

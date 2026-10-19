@@ -37,7 +37,7 @@ const CLAUDE_MODELS: ModelOption[] = [
   { value: 'opusplan', label: 'Opus Plan（规划用 Opus，执行用 Sonnet）' },
 ];
 
-/** Codex CLI models. Forwarded to `codex exec --model`. */
+/** Codex models. Forwarded to app-server thread requests. */
 const CODEX_MODELS: ModelOption[] = [
   { value: DEFAULT_MODEL, label: '跟随默认（不指定）' },
   { value: 'gpt-5-codex', label: 'GPT-5 Codex' },

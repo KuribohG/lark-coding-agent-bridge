@@ -41,7 +41,7 @@ export interface SandboxConfig {
 
 export interface CodexConfig {
   binaryPath: string;
-  transport?: 'exec' | 'app-server';
+  transport?: 'app-server';
   realpath?: string;
   version?: string;
   sha256?: string;
@@ -398,9 +398,15 @@ function normalizeWorkspaces(input: {
 }
 
 function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
+  if (input.transport !== undefined && input.transport !== 'app-server') {
+    throw new Error('Codex exec transport has been removed; use transport=app-server');
+  }
+  if (input.ignoreUserConfig || input.ignoreRules) {
+    throw new Error('app-server requires ignoreUserConfig=false and ignoreRules=false; exec-only ignore flags are not supported');
+  }
   const codex: CodexConfig = {
     binaryPath: input.binaryPath,
-    ...(input.transport === 'app-server' ? { transport: 'app-server' as const } : {}),
+    transport: 'app-server',
     ...(typeof input.realpath === 'string' ? { realpath: input.realpath } : {}),
     ...(typeof input.version === 'string' ? { version: input.version } : {}),
     ...(typeof input.sha256 === 'string' ? { sha256: input.sha256 } : {}),
@@ -408,8 +414,8 @@ function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
     ...(typeof input.mode === 'number' ? { mode: input.mode } : {}),
     ...(typeof input.codexHome === 'string' ? { codexHome: input.codexHome } : {}),
     inheritCodexHome: input.inheritCodexHome !== false,
-    ignoreUserConfig: input.ignoreUserConfig === true,
-    ignoreRules: input.ignoreRules !== false,
+    ignoreUserConfig: false,
+    ignoreRules: false,
   };
   return codex;
 }

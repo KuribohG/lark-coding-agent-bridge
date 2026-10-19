@@ -1,6 +1,6 @@
 # Agent execution contract
 
-Codex `exec`, Codex `app-server`, and Claude Code expose the same execution
+Codex `app-server` and Claude Code expose the same execution
 contract. Chat rendering, follow-up delivery, retries, and background analysis
 consume this contract without selecting behavior by agent name. Claude streaming
 input requires Claude Code 2.1.302 or later for correlated completion receipts.
@@ -13,7 +13,6 @@ flowchart TD
   Background --> Retry[Retrying run]
   Run --> Retry
   Retry --> Adapter[CodexAdapter]
-  Adapter --> Exec[Codex exec]
   Adapter --> Server[Codex app-server]
   Retry --> Claude[ClaudeAdapter]
   Claude --> Stream[Claude stream-json]
@@ -27,11 +26,11 @@ The adapter declares its capabilities and attaches them to every run. The retry
 wrapper retains the current attempt's declaration. Profile-time discovery uses
 the same declarations in `src/agent/{codex,claude}/capabilities.ts`.
 
-| Contract | Codex exec | Codex app-server | Claude Code |
-| --- | --- | --- | --- |
-| `finalAnswer` | `separate-event` | `separate-event` | `separate-event` |
-| `input` | `unsupported` | `active-turn` | `active-session` |
-| Native session | Codex thread | Codex thread | Claude session |
+| Contract | Codex app-server | Claude Code |
+| --- | --- | --- |
+| `finalAnswer` | `separate-event` | `separate-event` |
+| `input` | `active-turn` | `active-session` |
+| Native session | Codex thread | Claude session |
 
 - `text` is public progress; `final_text` is the authoritative answer. Provisional
   message deltas are not final answers. A `done` event with normal termination is

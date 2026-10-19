@@ -51,6 +51,24 @@ async function file(text = source) {
 }
 
 describe('layered configuration', () => {
+  it.each([undefined, 'app-server'] as const)('preserves transport=%s across launch inheritance and round trips', transport => {
+    const inherited = source + '\n[agents.codex.launch]\ntransport = "app-server"\n';
+    const text = transport ? inherited + `\n[profiles.bot.launch]\ntransport = "${transport}"\n` : source;
+    const root = documentToRoot(parseDocument(text));
+    const expected = { transport: transport ?? 'app-server', ignoreUserConfig: false, ignoreRules: false };
+    expect(root.profiles.bot!.codex).toMatchObject(expected);
+    expect(documentToRoot(parseDocument(formatDocument(rootToDocument(root)))).profiles.bot!.codex).toMatchObject(expected);
+  });
+
+  it.each([
+    '[agents.codex.launch]\ntransport = "exec"',
+    '[profiles.bot.launch]\ntransport = "exec"',
+    '[agents.codex.launch]\nignoreRules = true',
+    '[profiles.bot.launch]\nignoreUserConfig = true',
+  ])('rejects removed exec settings before runtime: %s', fragment => {
+    expect(() => parseDocument(source + '\n' + fragment)).toThrow(/app-server/);
+  });
+
   it('inherits execution settings independently of each frontend', () => {
     const doc = parseDocument(source); const root = documentToRoot(doc);
     expect(root.profiles.bot!.preferences).toEqual({ model: 'profile-model', reasoningEffort: 'high', maxConcurrentRuns: 3 });
