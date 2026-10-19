@@ -1,3 +1,4 @@
+import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -71,7 +72,7 @@ function post(path: string, token: string, body: unknown) {
   return fetch(`${base}${path}`, {
     method: 'POST',
     headers: { 'x-ui-token': token, 'content-type': 'application/json' },
-    body: JSON.stringify(body),
+    body: encodeFixture(body),
   });
 }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -82,7 +83,7 @@ async function json(res: Response): Promise<any> {
 beforeEach(async () => {
   rootDir = await mkdtemp(join(tmpdir(), 'bridge-ui-'));
   roots.push(rootDir);
-  configPath = join(rootDir, 'config.json');
+  configPath = join(rootDir, 'config.toml');
   await mkdir(join(rootDir, 'profiles', 'claude'), { recursive: true });
   await saveRootConfig(
     createRootConfig('claude', createDefaultProfileConfig({ agentKind: 'claude', accounts: { app } })),
@@ -118,10 +119,10 @@ describe('ui server (supervisor-backed)', () => {
     expect((await post('/api/model-services', handle.token, { name: 'screen', config })).status).toBe(200);
     const view = await json(await get('/api/model-services', handle.token));
     expect(view.services.screen).toEqual(config);
-    expect(JSON.stringify(view)).not.toContain('private-ui-model-key');
+    expect(encodeFixture(view)).not.toContain('private-ui-model-key');
     const checked = await json(await post('/api/model-services/check', handle.token, { name: 'screen' }));
     expect(checked).toEqual({ model: 'screen', note: expect.stringContaining('尚未请求') });
-    expect(JSON.stringify(checked)).not.toContain('private-ui-model-key');
+    expect(encodeFixture(checked)).not.toContain('private-ui-model-key');
     await post('/api/config?profile=work', handle.token, { model: 'sonnet' });
     expect((await loadRootConfig(configPath))!.modelServices!.screen).toEqual(config);
     const before = await readFile(configPath, 'utf8');
@@ -170,7 +171,7 @@ describe('ui server (supervisor-backed)', () => {
     expect(view.live).toBe(true);
     expect(online.get('claude').profileConfig.mode).toBe('team'); // in-memory controls updated
 
-    const saved = JSON.parse(await readFile(configPath, 'utf8'));
+    const saved = decodeFixture(await readFile(configPath, 'utf8'));
     expect(saved.profiles.claude.mode).toBe('team');
   });
 
@@ -182,7 +183,7 @@ describe('ui server (supervisor-backed)', () => {
       await post('/api/config?profile=work', handle.token, { mode: 'team' }),
     );
     expect(saved.live).toBe(false);
-    const disk = JSON.parse(await readFile(configPath, 'utf8'));
+    const disk = decodeFixture(await readFile(configPath, 'utf8'));
     expect(disk.profiles.work.mode).toBe('team');
     expect(disk.profiles.claude.mode).toBe('personal');
   });

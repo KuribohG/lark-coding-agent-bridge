@@ -1,3 +1,4 @@
+import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -19,7 +20,7 @@ afterEach(async () => { vi.restoreAllMocks(); await Promise.all(folders.splice(0
 async function setup() {
   vi.spyOn(console, 'log').mockImplementation(() => {});
   const folder = await mkdtemp(join(tmpdir(), 'monitors-')); folders.push(folder);
-  const path = join(folder, 'config.json'); const file = join(folder, 'monitors.toml');
+  const path = join(folder, 'config.toml'); const file = join(folder, 'monitors.toml');
   const root = createRootConfig('codex', createDefaultProfileConfig({ agentKind: 'codex', codex: { binaryPath: 'codex' },
     accounts: { app: { id: 'cli_fixture', secret: 'PRIVATE_APP_SECRET', tenant: 'feishu' } } }));
   root.inbox = normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner',
@@ -34,7 +35,7 @@ it('migrates both sources without changing switches, model defaults, profiles or
   const s = await setup();
   const state = join(dirname(s.path), 'state.json'); await writeFile(state, 'fixture-state');
   await initMonitors({ config: s.path });
-  const raw = JSON.parse(await readFile(s.path, 'utf8'));
+  const raw = decodeFixture(await readFile(s.path, 'utf8'));
   expect(raw.monitorConfigFile).toBe('monitors.toml'); expect(raw.inbox).toBeUndefined(); expect(raw.gitlabCi).toBeUndefined();
   const loaded = (await loadMonitorRoot(s.path))!;
   expect(loaded.inbox).toEqual(s.root.inbox); expect(loaded.gitlabCi).toEqual(s.root.gitlabCi);
@@ -125,7 +126,7 @@ it('rejects invalid profile references before switching files', async () => {
 
 it('routes the existing CI configure command to TOML without replacing Lark settings', async () => {
   const s = await setup(); await initMonitors({ config: s.path });
-  const ci = join(dirname(s.path), 'ci.json'); await writeFile(ci, JSON.stringify({ ...s.root.gitlabCi, pollSeconds: 9 }));
+  const ci = join(dirname(s.path), 'ci.json'); await writeFile(ci, encodeFixture({ ...s.root.gitlabCi, pollSeconds: 9 }));
   await configureCiWatch(ci, { config: s.path });
   expect(parseMonitorConfig(await readFile(s.file, 'utf8')).gitlabCi?.pollSeconds).toBe(9);
   expect((await loadMonitorRoot(s.path))!.inbox).toEqual(s.root.inbox);
@@ -149,6 +150,6 @@ it('keeps UID subscriptions when another source or profile saves the shared conf
   root = (await loadMonitorRoot(s.path))!;
   expect(root.storageMonitor).toEqual(s.root.storageMonitor);
   await saveRootConfig(root, s.path);
-  expect(JSON.parse(await readFile(s.path, 'utf8')).storageMonitor).toBeUndefined();
+  expect(decodeFixture(await readFile(s.path, 'utf8')).storageMonitor).toBeUndefined();
   expect((await loadMonitorRoot(s.path))!.storageMonitor).toEqual(s.root.storageMonitor);
 });

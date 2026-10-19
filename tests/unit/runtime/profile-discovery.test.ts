@@ -1,3 +1,4 @@
+import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -136,5 +137,5 @@ async function writeRootConfig(
     preferences: {},
     ...overrides,
   };
-  await writeFile(join(root, 'config.json'), `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  await writeFile(join(root, 'config.toml'), `${encodeFixture(config, null, 2)}\n`, 'utf8');
 }

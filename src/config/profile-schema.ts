@@ -153,6 +153,8 @@ export interface ProfileConfig {
     app: AppCredentials;
   };
   secrets?: SecretsConfig;
+  channels?: import('./schema').ChannelDisplayConfig;
+  claude?: { binaryPath?: string };
   preferences: Omit<AppPreferences, 'access' | 'requireMentionInGroup'>;
   access: ProfileAccess;
   workspaces: {
@@ -171,7 +173,7 @@ export interface ProfileConfig {
 
 /** Configuration needed to execute a conversation; no messaging credentials. */
 export type RunProfileConfig = Pick<ProfileConfig,
-  'agentKind' | 'preferences' | 'access' | 'workspaces' | 'permissions' | 'codex' | 'attachments'>;
+  'agentKind' | 'access' | 'workspaces' | 'permissions' | 'codex' | 'attachments'> & { preferences: import('./schema').RunPreferences };
 
 /**
  * The lark-cli identity preset that actually takes effect, after applying the
@@ -187,6 +189,7 @@ export function effectiveLarkCliIdentity(
   return profile.mode === 'team' ? 'bot-only' : profile.larkCli.identityPreset;
 }
 
+/** Resolved runtime DTO. The disk document has its own version and sparse layers. */
 export interface RootConfig {
   schemaVersion: 2;
   activeProfile: string;
@@ -238,6 +241,8 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     mode?: unknown;
     accounts?: unknown;
     secrets?: SecretsConfig;
+    channels?: import('./schema').ChannelDisplayConfig;
+    claude?: { binaryPath?: string };
     preferences?: (AppPreferences & { access?: Partial<ProfileAccess> }) | undefined;
     access?: Partial<ProfileAccess>;
     workspaces?: {
@@ -290,6 +295,8 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     accounts,
     ...(raw.secrets ? { secrets: raw.secrets } : {}),
     preferences,
+    ...(raw.channels ? { channels: raw.channels } : {}),
+    ...(raw.claude ? { claude: raw.claude } : {}),
     access,
     workspaces,
     sandbox,

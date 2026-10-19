@@ -24,8 +24,8 @@ lark-channel-bridge ci-watch configure /absolute/path/ci-watch.json
 lark-channel-bridge ci-watch status
 ```
 
-Both commands accept `--config /absolute/path/to/bridge/config.json`. Settings live
-in the root config's `gitlabCi` field and survive other profile configuration
+Both commands accept `--config /absolute/path/to/bridge/config.toml`. Settings live
+in `monitors.toml` when selected by `bridge.monitors_file`, or the root TOML's `monitoring.gitlab_ci` table and survive other profile configuration
 changes. A bridge version with this feature reloads settings within 15 seconds;
 the selected executor profile must be online. The status command reports persisted
 state, including the last poll time/error; it does not assert process liveness.

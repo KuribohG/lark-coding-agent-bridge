@@ -1,3 +1,5 @@
+import { parseDocument } from '../../../src/config/document';
+import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -119,7 +121,7 @@ describe('profile retention and export', () => {
     try {
       await runProfileRemove('codex', { rootDir: root });
 
-      await expect(stat(join(root, 'config.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(stat(join(root, 'config.toml'))).rejects.toMatchObject({ code: 'ENOENT' });
       await expect(stat(join(root, 'active-profile'))).rejects.toMatchObject({ code: 'ENOENT' });
       await expect(stat(join(root, 'profiles', 'codex'))).rejects.toMatchObject({ code: 'ENOENT' });
       await runProfileCreate('codex', {
@@ -171,9 +173,9 @@ describe('profile retention and export', () => {
     vi.spyOn(console, 'log').mockImplementation((line: string) => lines.push(line));
 
     await runProfileExport('claude', { rootDir: root });
-    const exported = JSON.parse(lines.join('\n')) as RootConfig;
+    const exported = decodeFixture(lines.join('\n')) as RootConfig;
 
-    expect(JSON.stringify(exported)).not.toContain('plain-secret');
+    expect(encodeFixture(exported)).not.toContain('plain-secret');
     expect(exported.profiles.claude?.accounts.app.secret).toBe('[REDACTED]');
     await expect(
       runProfileExport('claude', { rootDir: root, includeSecrets: true }),
@@ -201,17 +203,17 @@ describe('profile retention and export', () => {
       provider: 'bridge',
       id: secretKeyForApp(appId),
     };
-    await writeJson(join(root, 'config.json'), rootConfig);
+    await writeJson(join(root, 'config.toml'), rootConfig);
     await setSecret(secretKeyForApp(appId), exportedSecret, appPaths);
     const lines: string[] = [];
     vi.spyOn(console, 'log').mockImplementation((line: string) => lines.push(line));
 
     await runProfileExport('claude', { rootDir: root });
-    const safeExport = JSON.parse(lines.pop() ?? '') as RootConfig;
+    const safeExport = decodeFixture(lines.pop() ?? '') as RootConfig;
     await runProfileExport('claude', { rootDir: root, includeSecrets: true, yes: true });
-    const secretExport = JSON.parse(lines.pop() ?? '') as RootConfig;
+    const secretExport = decodeFixture(lines.pop() ?? '') as RootConfig;
 
-    expect(JSON.stringify(safeExport)).not.toContain(exportedSecret);
+    expect(encodeFixture(safeExport)).not.toContain(exportedSecret);
     expect(safeExport.profiles.claude?.accounts.app.secret).toBe('[REDACTED]');
     expect(secretExport.profiles.claude?.accounts.app.secret).toBe(exportedSecret);
   });
@@ -227,16 +229,16 @@ describe('profile retention and export', () => {
       source: 'file',
       id: secretFile,
     };
-    await writeJson(join(root, 'config.json'), rootConfig);
+    await writeJson(join(root, 'config.toml'), rootConfig);
     const lines: string[] = [];
     vi.spyOn(console, 'log').mockImplementation((line: string) => lines.push(line));
 
     await runProfileExport('claude', { rootDir: root });
-    const safeExport = JSON.parse(lines.pop() ?? '') as RootConfig;
+    const safeExport = decodeFixture(lines.pop() ?? '') as RootConfig;
     await runProfileExport('claude', { rootDir: root, includeSecrets: true, yes: true });
-    const secretExport = JSON.parse(lines.pop() ?? '') as RootConfig;
+    const secretExport = decodeFixture(lines.pop() ?? '') as RootConfig;
 
-    expect(JSON.stringify(safeExport)).not.toContain(exportedSecret);
+    expect(encodeFixture(safeExport)).not.toContain(exportedSecret);
     expect(safeExport.profiles.claude?.accounts.app.secret).toBe('[REDACTED]');
     expect(secretExport.profiles.claude?.accounts.app.secret).toBe(exportedSecret);
   });
@@ -244,10 +246,10 @@ describe('profile retention and export', () => {
   it('writes exports to a new output file and requires --force when it already exists', async () => {
     const root = await makeRoot();
     await writeProfiles(root, 'claude', ['claude']);
-    const output = join(root, 'profile-export.json');
+    const output = join(root, 'profile-export.toml');
 
     await runProfileExport('claude', { rootDir: root, output });
-    await expect(readFile(output, 'utf8')).resolves.toContain('"activeProfile": "claude"');
+    await expect(readFile(output, 'utf8')).resolves.toContain('active_profile = "claude"');
     await expect(runProfileExport('claude', { rootDir: root, output })).rejects.toThrow(/--force/);
     await runProfileExport('claude', { rootDir: root, output, force: true });
   });
@@ -269,13 +271,14 @@ describe('profile retention and export', () => {
       maxMode: 'workspace-write',
     };
     (profile as typeof profile & { permissionSource?: string }).permissionSource = 'permissions';
-    await writeJson(join(root, 'config.json'), rootConfig);
+    await writeJson(join(root, 'config.toml'), rootConfig);
     const lines: string[] = [];
     vi.spyOn(console, 'log').mockImplementation((line: string) => lines.push(line));
 
     await runProfileExport('claude', { rootDir: root });
 
-    const exported = JSON.parse(lines.pop() ?? '') as RootConfig & {
+    const exportedText = lines.pop() ?? '';
+    const exported = decodeFixture(exportedText) as RootConfig & {
       profiles: Record<string, Record<string, unknown>>;
     };
     expect(exported.migrations).toEqual({ permissionDefaultsV1: ['claude'] });
@@ -283,8 +286,8 @@ describe('profile retention and export', () => {
       defaultAccess: 'workspace',
       maxAccess: 'workspace',
     });
-    expect(exported.profiles.claude).not.toHaveProperty('sandbox');
-    expect(exported.profiles.claude).not.toHaveProperty('permissionSource');
+    expect(parseDocument(exportedText).profiles.claude).not.toHaveProperty('sandbox');
+    expect(parseDocument(exportedText).profiles.claude).not.toHaveProperty('permissionSource');
   });
 });
 
@@ -317,12 +320,12 @@ async function writeProfiles(root: string, activeProfile: string, names: string[
     preferences: {},
     profiles,
   };
-  await writeJson(join(root, 'config.json'), config);
+  await writeJson(join(root, 'config.toml'), config);
   await writeFile(join(root, 'active-profile'), `${activeProfile}\n`, 'utf8');
 }
 
 async function readRoot(root: string): Promise<RootConfig> {
-  return JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as RootConfig;
+  return decodeFixture(await readFile(join(root, 'config.toml'), 'utf8')) as RootConfig;
 }
 
 function processEntry(overrides: Partial<ProcessEntry>): ProcessEntry {
@@ -346,5 +349,5 @@ async function writeRegistry(root: string, entries: ProcessEntry[]): Promise<voi
 
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  await writeFile(path, `${encodeFixture(value, null, 2)}\n`, 'utf8');
 }

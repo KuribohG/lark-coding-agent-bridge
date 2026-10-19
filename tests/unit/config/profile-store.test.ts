@@ -1,3 +1,5 @@
+import { parseDocument } from '../../../src/config/document';
+import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,7 +31,7 @@ async function tmpRoot(): Promise<string> {
 describe('profile store canonical serialization', () => {
   it('saves stored root and profile config without unknown root fields or runtime-only profile fields', async () => {
     const root = await tmpRoot();
-    const configPath = join(root, 'config.json');
+    const configPath = join(root, 'config.toml');
     const rootSecrets = {
       providers: {
         rootEnv: {
@@ -106,7 +108,8 @@ describe('profile store canonical serialization', () => {
       extra: true,
     } as unknown as RootConfig & { extra?: true; preferences: any }, configPath);
 
-    const saved = JSON.parse(await readFile(configPath, 'utf8'));
+    const doc = parseDocument(await readFile(configPath, 'utf8'));
+    const saved = decodeFixture(await readFile(configPath, 'utf8'));
     expect(saved.schemaVersion).toBe(2);
     expect(saved.activeProfile).toBe('codex');
     expect(saved.secrets).toEqual(rootSecrets);
@@ -117,7 +120,7 @@ describe('profile store canonical serialization', () => {
     const savedProfile = saved.profiles.codex;
     expect(savedProfile.accounts).toEqual(profile.accounts);
     expect(savedProfile.secrets).toEqual(profile.secrets);
-    expect(savedProfile.preferences).toEqual(profile.preferences);
+    expect(savedProfile.channels?.lark).toMatchObject({ reply_mode: 'markdown', show_tools: false });
     expect(savedProfile.access).toEqual(profile.access);
     expect(savedProfile.workspaces).toEqual(profile.workspaces);
     expect(savedProfile.codex).toEqual(profile.codex);
@@ -128,14 +131,14 @@ describe('profile store canonical serialization', () => {
       defaultAccess: 'workspace',
       maxAccess: 'full',
     });
-    expect(savedProfile).not.toHaveProperty('runtimeOnlyFutureField');
-    expect(savedProfile).not.toHaveProperty('permissionSource');
-    expect(savedProfile).not.toHaveProperty('sandbox');
+    expect(doc.profiles.codex).not.toHaveProperty('runtimeOnlyFutureField');
+    expect(doc.profiles.codex).not.toHaveProperty('permissionSource');
+    expect(doc.profiles.codex).not.toHaveProperty('sandbox');
   });
 
   it('loads canonical-only saved config and re-derives runtime sandbox', async () => {
     const root = await tmpRoot();
-    const configPath = join(root, 'config.json');
+    const configPath = join(root, 'config.toml');
     const profile = createDefaultProfileConfig({
       agentKind: 'codex',
       accounts: { app },
@@ -166,7 +169,7 @@ describe('profile store canonical serialization', () => {
 
   it('persists deployment mode across save→load round-trip', async () => {
     const root = await tmpRoot();
-    const configPath = join(root, 'config.json');
+    const configPath = join(root, 'config.toml');
     const profile = createDefaultProfileConfig({
       agentKind: 'claude',
       mode: 'team',
@@ -181,7 +184,7 @@ describe('profile store canonical serialization', () => {
     }, configPath);
 
     // On disk: mode is written (not stripped by the serializer).
-    const saved = JSON.parse(await readFile(configPath, 'utf8'));
+    const saved = decodeFixture(await readFile(configPath, 'utf8'));
     expect(saved.profiles.claude.mode).toBe('team');
 
     // Reloaded: mode survives, so team mode is not silently lost on restart.
@@ -191,7 +194,7 @@ describe('profile store canonical serialization', () => {
 
   it('persists per-chat @-mention overrides across save→load round-trip', async () => {
     const root = await tmpRoot();
-    const configPath = join(root, 'config.json');
+    const configPath = join(root, 'config.toml');
     const profile = createDefaultProfileConfig({ agentKind: 'claude', accounts: { app } });
     profile.access.chatRequireMention = { oc_open: false, oc_strict: true };
 
@@ -202,7 +205,7 @@ describe('profile store canonical serialization', () => {
       profiles: { claude: profile },
     }, configPath);
 
-    const saved = JSON.parse(await readFile(configPath, 'utf8'));
+    const saved = decodeFixture(await readFile(configPath, 'utf8'));
     expect(saved.profiles.claude.access.chatRequireMention).toEqual({
       oc_open: false,
       oc_strict: true,
@@ -217,7 +220,7 @@ describe('profile store canonical serialization', () => {
 
   it('persists the in-meeting agent settings across save→load round-trip', async () => {
     const root = await tmpRoot();
-    const configPath = join(root, 'config.json');
+    const configPath = join(root, 'config.toml');
     const profile = createDefaultProfileConfig({ agentKind: 'claude', accounts: { app } });
     // Defaults keep the capability off until a profile opts in.
     expect(profile.meeting.enabled).toBe(false);
@@ -236,7 +239,7 @@ describe('profile store canonical serialization', () => {
       profiles: { claude: profile },
     }, configPath);
 
-    const saved = JSON.parse(await readFile(configPath, 'utf8'));
+    const saved = decodeFixture(await readFile(configPath, 'utf8'));
     expect(saved.profiles.claude.meeting).toMatchObject({ enabled: true, trigger: '@小助手' });
 
     const loaded = await loadRootConfig(configPath);

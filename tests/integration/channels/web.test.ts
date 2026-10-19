@@ -17,7 +17,7 @@ afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) awai
 
 function config(workspace: string): RunProfileConfig {
   return {
-    agentKind: 'claude', preferences: { showToolCalls: false, maxConcurrentRuns: 1 },
+    agentKind: 'claude', preferences: { maxConcurrentRuns: 1 },
     workspaces: { default: workspace }, permissions: { defaultAccess: 'workspace', maxAccess: 'workspace' },
     access: { allowedUsers: [], allowedChats: [], admins: [], requireMentionInGroup: false },
     attachments: { maxCount: 0, maxBytes: 0, maxFileBytes: 0, imageMaxBytes: 0, cacheTtlMs: 0, cacheMaxBytes: 0 },
@@ -42,7 +42,7 @@ async function harness() {
 }
 async function run(runtime: ConversationRuntime, who = identity) {
   const received: WebRunEvent[] = [];
-  const result = await runtime.start({ ...who, prompt: 'hello' }, createWebRunOutput(async event => { received.push(event); }));
+  const result = await runtime.start({ ...who, prompt: 'hello' }, createWebRunOutput(async event => { received.push(event); }, { show_tools: false, show_reasoning: true }));
   if (!result.ok) throw Error(result.rejectReason.code);
   await result.done; await result.execution.result;
   return { received, result };

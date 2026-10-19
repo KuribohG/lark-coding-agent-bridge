@@ -1,3 +1,5 @@
+import { readFile } from 'node:fs/promises';
+import { parseDocument, resolveRun, resolveChannels } from '../../config/document';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { realpath } from 'node:fs/promises';
@@ -10,6 +12,7 @@ import { configureLogger, closeLogger } from '../../core/logger';
 
 export interface RunWebOptions {
   agent: string;
+  config?: string;
   workspace: string;
   stateDir?: string;
   port?: string;
@@ -25,20 +28,23 @@ export async function runWeb(options: RunWebOptions): Promise<void> {
   const workspace = await realpath(resolve(options.workspace));
   const stateDir = resolve(options.stateDir ?? join(homedir(), '.lark-channel', 'web', options.agent));
   configureLogger({ logsDir: join(stateDir, 'logs') });
-  const agent = options.agent === 'claude' ? new ClaudeAdapter({ binary: options.binary })
-    : new CodexAdapter({ binary: options.binary ?? 'codex', profileStateDir: stateDir,
-        transport: 'app-server', ignoreRules: false, sandbox: 'workspace-write' });
+  const doc = options.config ? parseDocument(await readFile(options.config, 'utf8')) : undefined;
+  const launch = doc?.agents?.[options.agent]?.launch;
+  const binary = options.binary ?? launch?.binaryPath;
+  const agent = options.agent === 'claude' ? new ClaudeAdapter({ binary })
+    : new CodexAdapter({ binary: binary ?? 'codex', profileStateDir: stateDir,
+        transport: launch?.transport ?? 'app-server', codexHome: launch?.codexHome, inheritCodexHome: launch?.inheritCodexHome, ignoreUserConfig: launch?.ignoreUserConfig, ignoreRules: launch?.ignoreRules ?? false, sandbox: 'workspace-write' });
   const availability = await agent.checkAvailability();
   if (!availability.ok) throw new Error(`${agent.displayName} is unavailable`);
   const config: RunProfileConfig = {
-    agentKind: options.agent, preferences: { model: options.model, showToolCalls: true, maxConcurrentRuns: 4 },
+    agentKind: options.agent, preferences: { maxConcurrentRuns: 4, ...(doc ? resolveRun(doc, options.agent).preferences : {}), ...(options.model ? { model: options.model } : {}) },
     permissions: { defaultAccess: 'workspace', maxAccess: 'workspace' },
     workspaces: { default: workspace },
     access: { allowedUsers: ['local'], allowedChats: [], admins: [], requireMentionInGroup: false },
     attachments: { maxCount: 0, maxBytes: 0, maxFileBytes: 0, imageMaxBytes: 0, cacheTtlMs: 0, cacheMaxBytes: 0 },
   };
   const host = new ChannelHost();
-  const connection = await host.connect(createWebPlugin({ agent, config, stateDir, namespace: options.agent, port }));
+  const connection = await host.connect(createWebPlugin({ agent, config, stateDir, namespace: options.agent, port, display: doc ? resolveChannels(doc).web : undefined }));
   console.log(`Bridge Chat: ${connection.url}`);
   await new Promise<void>((resolve, reject) => {
     let closing = false;

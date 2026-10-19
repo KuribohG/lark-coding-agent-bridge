@@ -54,7 +54,7 @@ export function resolveAppPaths(opts: ResolveAppPathsOptions = {}): AppPaths {
     profile,
     profileDir,
     defaultWorkspaceDir: join(`${rootDir}-workspaces`, profile, 'default'),
-    configFile: join(rootDir, 'config.json'),
+    configFile: join(rootDir, 'config.toml'),
     activeProfileFile: join(rootDir, 'active-profile'),
     sessionsFile: join(profileDir, 'sessions.json'),
     workspacesFile: join(profileDir, 'workspaces.json'),

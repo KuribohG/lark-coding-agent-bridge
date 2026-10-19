@@ -1,3 +1,4 @@
+import { parseDocument, documentToRoot } from '../../../src/config/document';
 import { describe, expect, it } from 'vitest';
 import { rewriteFileLinks } from '../../../src/card/file-links';
 import { normalizeFileLinks } from '../../../src/config/file-links';
@@ -108,14 +109,14 @@ describe('file link configuration', () => {
   it('retains an optional Markdown preview endpoint across serialization', () => {
     const mapping = [{...rules[0]!, markdownPreviewUrl:'https://example.com/reader.html'}];
     const profile = createDefaultProfileConfig({agentKind:'claude', accounts:{app:{id:'test',secret:'test',tenant:'feishu'}}, preferences:{fileLinks:mapping}});
-    const serialized = JSON.parse(formatRootConfig(createRootConfig('test',profile)));
-    expect(normalizeProfileConfig(serialized.profiles.test).preferences.fileLinks).toEqual(mapping);
+    const serialized = parseDocument(formatRootConfig(createRootConfig('test',profile)));
+    expect(documentToRoot(serialized).profiles.test!.channels?.lark?.file_links).toEqual(mapping);
   });
   it('normalizes and retains mappings across profile serialization', () => {
     const profile = createDefaultProfileConfig({ agentKind: 'claude', accounts: { app: { id: 'test', secret: 'test', tenant: 'feishu' } },
       preferences: { fileLinks: [{ localRoot: '/exports/', fileBaseUrl: 'https://example.com/files', browseBaseUrl: 'https://example.com/lab/tree' }] } });
-    const serialized = JSON.parse(formatRootConfig(createRootConfig('test', profile)));
-    expect(normalizeProfileConfig(serialized.profiles.test).preferences.fileLinks).toEqual(rules);
+    const serialized = parseDocument(formatRootConfig(createRootConfig('test', profile)));
+    expect(documentToRoot(serialized).profiles.test!.channels?.lark?.file_links).toEqual(rules);
   });
 
   it.each([null, {}, [{...rules[0],localRoot:'/'}], [{...rules[0],localRoot:'relative'}],

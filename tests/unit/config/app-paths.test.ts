@@ -1,3 +1,4 @@
+import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,7 +25,7 @@ describe('resolveAppPaths', () => {
 
     expect(paths.rootDir).toBe(root);
     expect(paths.profile).toBe('codex-dev');
-    expect(paths.configFile).toBe(join(root, 'config.json'));
+    expect(paths.configFile).toBe(join(root, 'config.toml'));
     expect(paths.activeProfileFile).toBe(join(root, 'active-profile'));
     expect(paths.registryDir).toBe(join(root, 'registry'));
     expect(paths.userRegistryFile).toBe(join(root, 'registry', 'processes.json'));

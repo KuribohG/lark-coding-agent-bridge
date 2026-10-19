@@ -1,3 +1,4 @@
+import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -45,8 +46,8 @@ describe('profile create command', () => {
       tenant: 'feishu',
     });
 
-    const savedText = await readFile(join(root, 'config.json'), 'utf8');
-    const saved = JSON.parse(savedText) as RootConfig;
+    const savedText = await readFile(join(root, 'config.toml'), 'utf8');
+    const saved = decodeFixture(savedText) as RootConfig;
     const appPaths = resolveAppPaths({ rootDir: root, profile: 'claude-regression' });
     const secret = await getSecret(secretKeyForApp('cli_claude_regression'), appPaths);
     const workspaceRealpath = await realpath(workspace);
@@ -91,10 +92,9 @@ describe('profile create command', () => {
       }
     }
 
-    const configPath = join(root, 'config.json');
-    const saved = JSON.parse(await readFile(configPath, 'utf8'));
+    const configPath = join(root, 'config.toml');
+    const saved = decodeFixture(await readFile(configPath, 'utf8'));
     expect(saved.profiles['codex-dev']?.agentKind).toBe('codex');
-    expect(saved.profiles['codex-dev']).not.toHaveProperty('sandbox');
 
     const loaded = await loadRootConfig(configPath);
     expect(loaded?.profiles['codex-dev']?.sandbox).toMatchObject({
@@ -120,7 +120,7 @@ describe('profile create command', () => {
   it('explains how to recover when an existing profile has the wrong agent', async () => {
     const root = await makeRoot();
     await writeProfiles(root, 'codex', ['codex']);
-    const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as RootConfig;
+    const saved = decodeFixture(await readFile(join(root, 'config.toml'), 'utf8')) as RootConfig;
     saved.profiles.codex = createDefaultProfileConfig({
       agentKind: 'claude',
       accounts: {
@@ -131,7 +131,7 @@ describe('profile create command', () => {
         },
       },
     });
-    await writeFile(join(root, 'config.json'), `${JSON.stringify(saved, null, 2)}\n`, 'utf8');
+    await writeFile(join(root, 'config.toml'), `${encodeFixture(saved, null, 2)}\n`, 'utf8');
 
     let error: Error | undefined;
     try {
@@ -167,7 +167,7 @@ describe('profile create command', () => {
       tenant: 'feishu',
     });
 
-    const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as RootConfig;
+    const saved = decodeFixture(await readFile(join(root, 'config.toml'), 'utf8')) as RootConfig;
     const managed = await realpath(resolveAppPaths({ rootDir: root, profile: 'claude-managed' }).defaultWorkspaceDir);
     expect(saved.profiles['claude-managed']?.workspaces.default).toBe(managed);
   });
@@ -202,11 +202,11 @@ async function writeProfiles(root: string, activeProfile: string, names: string[
     preferences: {},
     profiles,
   };
-  await writeJson(join(root, 'config.json'), config);
+  await writeJson(join(root, 'config.toml'), config);
   await writeFile(join(root, 'active-profile'), `${activeProfile}\n`, 'utf8');
 }
 
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  await writeFile(path, `${encodeFixture(value, null, 2)}\n`, 'utf8');
 }

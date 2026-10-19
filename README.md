@@ -1,5 +1,7 @@
 # lark-channel-bridge
 
+See [layered configuration](docs/configuration.md) and the [TOML example](docs/config.example.toml). This version loads TOML only; execution defaults and frontend display settings are separate.
+
 A lightweight bot that bridges Feishu / Lark messenger with your local Claude Code or Codex CLI. Run one command, scan a QR code to bind a PersonalAgent app, and talk to your local coding agent from chat.
 
 [中文 README](./README.zh.md)
@@ -88,7 +90,7 @@ The first run opens a QR-code wizard:
 2. Scan it with the Feishu / Lark app.
 3. Pick or create a PersonalAgent app.
 4. If prompted, choose which agent to initialize.
-5. Config is written to `~/.lark-channel/config.json`.
+5. Config is written to `~/.lark-channel/config.toml`.
 
 You do not need to choose a project directory up front. The bridge creates a profile-managed default working directory; after startup, send `/cd <path>` in Feishu / Lark to switch to a real project.
 
@@ -153,7 +155,8 @@ lark-channel-bridge status --profile codex
 
 ```text
 lark-channel-bridge run [--profile <name>] [--agent claude|codex] [--workspace <path>] [-c <config>]
-lark-channel-bridge migrate [--profile <name>] [--agent claude|codex]
+lark-channel-bridge config check
+lark-channel-bridge config show --profile <name> --sources
 lark-channel-bridge ps
 lark-channel-bridge kill <id|#>
 lark-channel-bridge --help
@@ -168,7 +171,7 @@ lark-channel-bridge profile list
 lark-channel-bridge profile use <name>
 lark-channel-bridge profile remove <name>
 lark-channel-bridge profile remove <name> --purge --yes
-lark-channel-bridge profile export <name> [--output ./profile.json] [--force]
+lark-channel-bridge profile export <name> [--output ./profile.toml] [--force]
 lark-channel-bridge profile export <name> --include-secrets --yes
 ```
 
@@ -189,7 +192,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/ws remove <name>` | Delete a named workspace |
 | `/resume` | Resume compatible history for the same agent, working directory, and permission mode |
 | `/status` | Show profile, agent, working directory, session, lark-cli identity, and run state |
-| `/config` | Adjust bot default model/effort, presentation preferences, access settings, and lark-cli identity policy |
+| `/config` | Inspect configuration and open separate execution, Lark display or access forms |
 | `/model [model-id\|default]` | View or change the current topic/chat model; accepts custom IDs |
 | `/effort [level\|default]` | View or change the current topic/chat reasoning effort |
 | `/run [defaults\|status\|stop]` | Create a one-shot task, configure its defaults, or inspect/cancel it |
@@ -244,7 +247,7 @@ Changes apply when the next task is submitted. Running or already-submitted task
 
 Known models validate reasoning levels against the local catalog, rejecting explicitly submitted unsupported combinations. If a model switch makes an inherited bridge effort incompatible, a catalog-provided model default is used for that run and noted in the settings summary. Unknown models are validated by the CLI/provider. Inherited CLI defaults are passed through by omitting the corresponding flags; global and project CLI config files are never rewritten.
 
-Bot defaults live in `config.json` under `profiles.<profile>.preferences`. Chat overrides live separately from transcripts in `profiles/<profile>/scope-preferences.json`.
+Bot defaults live in `config.toml` under `profiles.<profile>.run`. Chat overrides live separately from transcripts in `profiles/<profile>/scope-preferences.json`.
 
 ## One-shot tasks with a deadline
 
@@ -277,7 +280,7 @@ Tasks are persisted in `profiles/<profile>/timed-runs.json`. A started task cann
 
 ## Reply Display and COT
 
-`/config` controls three presentation settings:
+`/config lark` controls Lark presentation independently of `channels.web`:
 
 - **Message reply mode**: `message card` streams the final reply; `plain text` sends once after the run finishes.
 - **Tool-call display**: controls whether tool blocks appear in the final card / markdown reply.
@@ -297,7 +300,7 @@ The default policy is `bot-only`: lark-cli uses the app/bot identity and does no
 
 Each profile may define a default working directory through `workspaces.default`. New profiles may be created with `--workspace <path>`; if omitted, the bridge creates a profile-managed default working directory.
 
-This is a profile-field snippet. Do not replace the whole `config.json` with it; edit the matching profile's `workspaces` field.
+This is a profile-field snippet. Do not replace the whole `config.toml` with it; edit the matching profile's `workspaces` field.
 
 ```json
 {
@@ -313,7 +316,7 @@ The bridge checks that a selected directory exists, is a directory, and is not a
 
 The recommended user-facing profile config is `permissions.defaultAccess` and `permissions.maxAccess`. New profiles default to `full` for both values so the bridge can keep local tools, authorization flows, file writes, and other agent features fully usable. To tighten a profile, set one or both values to `workspace` or `read-only`; stricter modes can limit local tool execution, login/authorization flows, file writes, and similar capabilities.
 
-This is a profile-field snippet. Do not replace the whole `config.json` with it; edit the matching profile's `permissions` field.
+This is a profile-field snippet. Do not replace the whole `config.toml` with it; edit the matching profile's `permissions` field.
 
 ```json
 {
@@ -338,7 +341,7 @@ The legacy `sandbox` field is still readable for old configs. After the bridge s
 
 | Path | Content |
 |---|---|
-| `~/.lark-channel/config.json` | Root config with profiles and active profile |
+| `~/.lark-channel/config.toml` | Root config with profiles and active profile |
 | `~/.lark-channel/active-profile` | Last selected profile |
 | `~/.lark-channel/profiles/<profile>/sessions.json` | Session state |
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | Agent-aware session catalog |
@@ -388,23 +391,14 @@ To let other people or groups in, add them to one of three lists:
 
 ### Advanced: editing the config file directly
 
-If you'd rather not do it inside Feishu, `/invite` and `/config` write the matching profile's `access` field in `~/.lark-channel/config.json`. Empty lists mean nobody from that list, not open access. This is a profile-field snippet; do not replace the whole `config.json` with it:
+If you'd rather not do it inside Feishu, `/invite` and `/config` write the matching profile's `access` field in `~/.lark-channel/config.toml`. Empty lists mean nobody from that list, not open access. This is a profile-field snippet; do not replace the whole `config.toml` with it:
 
-```json
-{
-  "schemaVersion": 2,
-  "profiles": {
-    "claude": {
-      "agentKind": "claude",
-      "access": {
-        "allowedUsers": ["ou_xxxxxxxxxxxxx"],
-        "allowedChats": ["oc_xxxxxxxxxxxxx"],
-        "admins": ["ou_xxxxxxxxxxxxx"],
-        "requireMentionInGroup": true
-      }
-    }
-  }
-}
+```toml
+[profiles.claude.access]
+allowedUsers = ["ou_xxxxxxxxxxxxx"]
+allowedChats = ["oc_xxxxxxxxxxxxx"]
+admins = ["ou_xxxxxxxxxxxxx"]
+requireMentionInGroup = true
 ```
 
 `allowedUsers` / `admins` take user `open_id`s; `allowedChats` takes group `chat_id`s. The easiest way to find an ID by hand: have the person message the bot (or `@` it in the group), then check the active profile's log:

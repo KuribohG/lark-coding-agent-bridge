@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { documentToRoot, parseDocument, rootToDocument, formatDocument, type ConfigDocument } from './document';
+import { diffValues, editToml } from './toml-edit';
 import { chmod, mkdir, readFile, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import * as lockfile from 'proper-lockfile';
@@ -15,17 +18,25 @@ import { parseStorageConfig } from '../monitoring/sources/storage/config';
 import { normalizeGitLabCi } from '../monitoring/sources/gitlab-ci/config';
 import { normalizeModelServices } from '../model-service/config';
 
+interface DocumentSnapshot { text: string; document: ConfigDocument; root: RootConfig; revision: string }
+const documents = new WeakMap<RootConfig, DocumentSnapshot>();
+export const configDocument = (root: RootConfig) => documents.get(root);
+export const configRevision = (text: string) => createHash('sha256').update(text).digest('hex');
+
 export async function loadRootConfig(path: string): Promise<RootConfig | undefined> {
   try {
-    const parsed = JSON.parse(await readFile(path, 'utf8')) as unknown;
-    return isRootConfig(parsed) ? normalizeRootConfig(parsed) : undefined;
+    const text = await readFile(path, 'utf8');
+    const document = parseDocument(text);
+    const root = normalizeRootConfig(documentToRoot(document));
+    documents.set(root, { text, document, root: structuredClone(root), revision: configRevision(text) });
+    return root;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw err;
   }
 }
 
-function normalizeRootConfig(root: RootConfig): RootConfig {
+export function normalizeRootConfig(root: RootConfig): RootConfig {
   const profiles: RootConfig['profiles'] = {};
   for (const [name, profile] of Object.entries(root.profiles)) {
     profiles[name] = normalizeProfileConfig(profile);
@@ -46,75 +57,34 @@ function normalizeRootConfig(root: RootConfig): RootConfig {
   };
 }
 
-export async function saveRootConfig(root: RootConfig, path: string): Promise<void> {
-  await writeFileAtomic(path, formatRootConfig(root), { mode: 0o600 });
-}
-
-export function formatRootConfig(root: RootConfig): string {
-  return `${JSON.stringify(serializeRootConfig(root), null, 2)}\n`;
-}
-
-type StoredProfileConfig = Pick<
-  ProfileConfig,
-  | 'schemaVersion'
-  | 'agentKind'
-  | 'mode'
-  | 'accounts'
-  | 'secrets'
-  | 'preferences'
-  | 'access'
-  | 'workspaces'
-  | 'permissions'
-  | 'codex'
-  | 'attachments'
-  | 'comments'
-  | 'meeting'
-  | 'larkCli'
->;
-
-type StoredRootConfig = Omit<RootConfig, 'preferences' | 'profiles'> & {
-  preferences: Record<string, never>;
-  profiles: Record<string, StoredProfileConfig>;
-};
-
-function serializeRootConfig(root: RootConfig): StoredRootConfig {
-  const profiles: StoredRootConfig['profiles'] = {};
-  for (const [name, profile] of Object.entries(root.profiles)) {
-    profiles[name] = serializeProfileConfig(profile);
+export async function saveRootConfig(root: RootConfig, path: string, resetPaths: string[][] = []): Promise<void> {
+  let snapshot = documents.get(root);
+  if (!snapshot) {
+    const current = await loadRootConfig(path);
+    snapshot = current ? documents.get(current) : undefined;
   }
-  const migrations = normalizeRootMigrations(root.migrations);
-  return {
-    schemaVersion: 2,
-    activeProfile: root.activeProfile,
-    preferences: {},
-    ...(root.monitorConfigFile !== undefined ? { monitorConfigFile: root.monitorConfigFile } : {}),
-    ...(root.monitorConfigFile === undefined && root.inbox ? { inbox: normalizeInbox(root.inbox) } : {}),
-    ...(root.monitorConfigFile === undefined && root.gitlabCi ? { gitlabCi: normalizeGitLabCi(root.gitlabCi) } : {}),
-    ...(root.monitorConfigFile === undefined && root.storageMonitor ? { storageMonitor: parseStorageConfig(root.storageMonitor) } : {}),
-    ...(root.modelServices ? { modelServices: normalizeModelServices(root.modelServices) } : {}),
-    ...(root.secrets ? { secrets: root.secrets } : {}),
-    ...(migrations ? { migrations } : {}),
-    profiles,
-  };
+  let text = snapshot?.text ?? formatDocument(rootToDocument(normalizeRootConfig(root)));
+  if (snapshot) {
+    if (await readFile(path, 'utf8') !== snapshot.text) throw new Error('配置文件已改变，请重新读取后保存');
+    for (const change of diffValues(rootToDocument(snapshot.root), rootToDocument(root))) {
+      text = editToml(text, change.path, change.value);
+    }
+  }
+  for (const path of resetPaths) text = editToml(text, path, undefined);
+  const document = parseDocument(text);
+  const resolved = normalizeRootConfig(documentToRoot(document));
+  if (text !== snapshot?.text) {
+    if (snapshot && await readFile(path, 'utf8') !== snapshot.text) throw new Error('配置文件已改变，请重新读取后保存');
+    await writeFileAtomic(path, text, { mode: 0o600 });
+  }
+  for (const key of Object.keys(root)) delete (root as unknown as Record<string, unknown>)[key];
+  Object.assign(root, resolved);
+  documents.set(root, { text, document, root: structuredClone(root), revision: configRevision(text) });
 }
 
-function serializeProfileConfig(profile: ProfileConfig): StoredProfileConfig {
-  return {
-    schemaVersion: profile.schemaVersion,
-    agentKind: profile.agentKind,
-    mode: profile.mode,
-    accounts: profile.accounts,
-    ...(profile.secrets ? { secrets: profile.secrets } : {}),
-    preferences: profile.preferences,
-    access: profile.access,
-    workspaces: profile.workspaces,
-    permissions: profile.permissions,
-    ...(profile.codex ? { codex: profile.codex } : {}),
-    attachments: profile.attachments,
-    comments: {},
-    meeting: profile.meeting,
-    larkCli: profile.larkCli,
-  };
+/** Export a standalone TOML document with this profile's effective settings. */
+export function formatRootConfig(root: RootConfig): string {
+  return formatDocument(rootToDocument(root));
 }
 
 export async function withConfigFileLock<T>(configPath: string, fn: () => Promise<T>): Promise<T> {

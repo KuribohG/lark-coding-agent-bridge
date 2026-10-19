@@ -4,25 +4,15 @@ import * as p from '@clack/prompts';
 import { runRegistrationWizard } from '../bot/wizard';
 import { detectInstalledAgents, type DetectedAgent } from '../cli/agent-detection';
 import {
-  createBootstrapCodexConfig,
   createBootstrapProfileConfig,
-  resolveBootstrapWorkspace,
 } from '../cli/profile-bootstrap';
 import { promptPassword } from '../cli/prompt';
 import { setSecret } from '../config/keystore';
 import { resolveAppPaths, type AppPaths } from '../config/app-paths';
 import {
-  ActiveBridgeMigrationConflictError,
-  collectLegacyDefaultWorkspace,
-  migrateV1ToV2,
-  type MigrateV2Options,
-} from '../config/migrate-v2';
-import {
   agentKindFromString,
   createRootConfig,
-  hasPermissionDefaultsMigration,
   loadRootConfig,
-  markPermissionDefaultsMigration,
   readActiveProfile,
   runtimeProfileConfig,
   saveRootConfig,
@@ -35,21 +25,14 @@ import {
   type ProfileConfig,
   type RootConfig,
 } from '../config/profile-schema';
-import { permissionsToLegacySandbox } from '../config/permissions';
 import type { AppConfig, SecretInput, TenantBrand } from '../config/schema';
-import { isComplete, isSecretRef, secretKeyForApp } from '../config/schema';
+import { isSecretRef, secretKeyForApp } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
 import {
   buildEncryptedAccountConfig,
   ensureSecretsGetterWrapper,
-  loadConfig,
-  saveConfig,
 } from '../config/store';
 import { log } from '../core/logger';
-import {
-  hasLegacyLarkCliSourceOverlay,
-  recoverLegacyLarkCliSourceOverlay,
-} from '../lark-cli/legacy-source-overlay';
 import { validateAppCredentials } from '../utils/feishu-auth';
 
 export interface ResolveProfileRuntimeOptions {
@@ -62,9 +45,6 @@ export interface ResolveProfileRuntimeOptions {
   tenant?: string;
   allowBootstrap?: boolean;
   selectAgent?: (detected: DetectedAgent[]) => AgentKind | undefined | Promise<AgentKind | undefined>;
-  handleActiveBridgeMigrationConflict?: (
-    err: ActiveBridgeMigrationConflictError,
-  ) => boolean | Promise<boolean>;
 }
 
 export interface ProfileRuntime {
@@ -97,10 +77,6 @@ export async function resolveProfileRuntime(
   opts: ResolveProfileRuntimeOptions,
 ): Promise<ProfileRuntime> {
   const rootDir = opts.config ? dirname(opts.config) : undefined;
-  const recoveryConfigFile = opts.config ?? resolveAppPaths({ rootDir }).configFile;
-  if (await hasLegacyLarkCliSourceOverlay(recoveryConfigFile)) {
-    await recoverLegacyLarkCliSourceOverlay(recoveryConfigFile);
-  }
   const requestedAgent = agentKindFromString(opts.agent);
   const explicitProfile = opts.profile;
   const activeProfile = explicitProfile ?? (await readActiveProfile(rootDir));
@@ -127,19 +103,6 @@ export async function resolveProfileRuntime(
   let appPaths = resolveAppPaths({ rootDir, profile });
   const configPath = opts.config ?? appPaths.configFile;
 
-  const migrationAgent = resolveBootstrapAgent(requestedAgent, profile);
-  const needsMigration = await hasLegacyConfig(configPath);
-  await migrateV1ToV2WithActiveBridgeHandling({
-    rootDir: appPaths.rootDir,
-    profile: appPaths.profile,
-    configFile: configPath,
-    workspace: opts.workspace,
-    ...(migrationAgent ? { agentKind: migrationAgent } : {}),
-    ...(needsMigration && migrationAgent === 'codex'
-      ? { codex: await createBootstrapCodexConfig(undefined) }
-      : {}),
-  }, opts.handleActiveBridgeMigrationConflict);
-
   let rootConfig = await loadRootConfig(configPath);
   if (rootConfig) {
     if (!explicitProfile && !activeProfile) {
@@ -161,44 +124,21 @@ export async function resolveProfileRuntime(
       throw new Error(`profile not found: ${profile}`);
     }
     assertRequestedAgentMatchesExistingProfile(profile, profileConfig, requestedAgent);
-    const runtimeUpgrade = upgradeLegacyRuntimeDefaults(rootConfig, profile);
-    if (runtimeUpgrade.changed) {
-      rootConfig = runtimeUpgrade.rootConfig;
-    }
     const defaultWorkspaceUpgrade = await ensureProfileDefaultWorkspace(rootConfig, profile, appPaths);
     if (defaultWorkspaceUpgrade.changed) {
       rootConfig = defaultWorkspaceUpgrade.rootConfig;
     }
-    if (runtimeUpgrade.changed || defaultWorkspaceUpgrade.changed) {
+    if (defaultWorkspaceUpgrade.changed) {
       await saveRootConfig(rootConfig, configPath);
       profileConfig = rootConfig.profiles[profile]!;
-      log.info('profile', 'legacy-runtime-defaults-upgraded', {
+      log.info('profile', 'default-workspace-created', {
         profile,
-        permissions: runtimeUpgrade.permissions,
-        codex: runtimeUpgrade.codex,
         workspace: defaultWorkspaceUpgrade.changed,
       });
     }
     assertBootstrapAppMatchesExistingProfile(opts, profile, profileConfig);
     const cfg = await maybeMigrateRootPlaintextSecret(rootConfig, profile, appPaths, configPath);
     return { cfg, profileConfig, configPath, appPaths, profile };
-  }
-
-  const existing = await loadConfig(configPath);
-  if (isComplete(existing)) {
-    assertBootstrapAppMatchesExistingConfig(opts, profile, existing);
-    const cfg = await maybeMigratePlaintextSecret(existing, configPath, appPaths);
-    const profileConfig = createRuntimeProfileConfig({
-      agentKind: requestedAgent ?? 'claude',
-      accounts: cfg.accounts,
-      preferences: cfg.preferences,
-      secrets: cfg.secrets,
-    });
-    profileConfig.workspaces.default = await resolveConvertedLegacyDefaultWorkspace(opts, appPaths);
-    const root = createRootConfig(profile, profileConfig, cfg.secrets);
-    await saveRootConfig(root, configPath);
-    await writeActiveProfile(appPaths.rootDir, profile);
-    return { cfg: runtimeProfileConfig(root, profile), profileConfig, configPath, appPaths, profile };
   }
 
   if (!opts.allowBootstrap) {
@@ -221,7 +161,7 @@ export async function resolveProfileRuntime(
   await saveRootConfig(root, configPath);
   await writeActiveProfile(appPaths.rootDir, profile);
   console.log(`配置已保存到 ${configPath}\n`);
-  return { cfg: runtimeProfileConfig(root, profile), profileConfig, configPath, appPaths, profile };
+  return { cfg: runtimeProfileConfig(root, profile), profileConfig: root.profiles[profile]!, configPath, appPaths, profile };
 }
 
 async function bootstrapProfileIntoExistingRoot(args: {
@@ -259,94 +199,17 @@ async function bootstrapProfileIntoExistingRoot(args: {
       },
     },
   };
-  await saveRootConfig(markPermissionDefaultsMigration(nextRoot, profile), configPath);
+  await saveRootConfig(nextRoot, configPath);
   console.log(`配置已保存到 ${configPath}\n`);
   return {
     cfg: runtimeProfileConfig(nextRoot, profile),
-    profileConfig,
+    profileConfig: nextRoot.profiles[profile]!,
     configPath,
     appPaths,
     profile,
   };
 }
 
-function upgradeLegacyRuntimeDefaults(
-  rootConfig: RootConfig,
-  profile: string,
-): { rootConfig: RootConfig; changed: boolean; permissions: boolean; codex: boolean } {
-  const profileConfig = rootConfig.profiles[profile];
-  if (!profileConfig) {
-    return { rootConfig, changed: false, permissions: false, codex: false };
-  }
-
-  const permissionDefaultsMigrated = hasPermissionDefaultsMigration(rootConfig, profile);
-  const shouldUpgradeClaudeDefaultPermissions =
-    !permissionDefaultsMigrated &&
-    profileConfig.agentKind === 'claude' &&
-    !profileConfig.permissions.claude?.permissionMode &&
-    profileConfig.permissions.defaultAccess === 'workspace' &&
-    profileConfig.permissions.maxAccess === 'workspace';
-  const legacySandboxPolicy = profileConfig.permissionSource === 'sandbox';
-  const nextPermissions = shouldUpgradeClaudeDefaultPermissions
-    ? { defaultAccess: 'full' as const, maxAccess: 'full' as const }
-    : profileConfig.permissions;
-  const legacyCodexDefaults = profileConfig.permissionSource !== 'permissions';
-  const legacyIsolatedCodexHome =
-    legacyCodexDefaults &&
-    profileConfig.agentKind === 'codex' &&
-    Boolean(profileConfig.codex) &&
-    !profileConfig.codex?.codexHome &&
-    profileConfig.codex?.inheritCodexHome === false;
-  const legacyIgnoredUserConfig =
-    legacyCodexDefaults &&
-    profileConfig.agentKind === 'codex' &&
-    Boolean(profileConfig.codex) &&
-    !profileConfig.codex?.codexHome &&
-    profileConfig.codex?.ignoreUserConfig === true;
-  const permissionsChanged = legacySandboxPolicy || shouldUpgradeClaudeDefaultPermissions;
-  const permissionDefaultsMarkerChanged = !permissionDefaultsMigrated;
-  const codexChanged = legacyIsolatedCodexHome || legacyIgnoredUserConfig;
-  if (!permissionsChanged && !codexChanged && !permissionDefaultsMarkerChanged) {
-    return { rootConfig, changed: false, permissions: false, codex: false };
-  }
-
-  const nextProfile: ProfileConfig = {
-    ...profileConfig,
-    ...(permissionsChanged
-      ? {
-          permissions: nextPermissions,
-          permissionSource: 'permissions' as const,
-          sandbox: permissionsToLegacySandbox(nextPermissions),
-        }
-      : {}),
-    ...(profileConfig.codex
-      ? {
-          codex: {
-            ...profileConfig.codex,
-            ...(legacyIsolatedCodexHome ? { inheritCodexHome: true } : {}),
-            ...(legacyIgnoredUserConfig ? { ignoreUserConfig: false } : {}),
-          },
-        }
-      : {}),
-  };
-
-  const nextRoot = {
-    ...rootConfig,
-    profiles: {
-      ...rootConfig.profiles,
-      [profile]: nextProfile,
-    },
-  };
-
-  return {
-    changed: true,
-    permissions: permissionsChanged,
-    codex: codexChanged,
-    rootConfig: permissionDefaultsMarkerChanged
-      ? markPermissionDefaultsMigration(nextRoot, profile)
-      : nextRoot,
-  };
-}
 
 async function ensureProfileDefaultWorkspace(
   rootConfig: RootConfig,
@@ -380,16 +243,6 @@ async function ensureProfileDefaultWorkspace(
   };
 }
 
-async function resolveConvertedLegacyDefaultWorkspace(
-  opts: ResolveProfileRuntimeOptions,
-  appPaths: AppPaths,
-): Promise<string> {
-  if (opts.workspace) return resolveBootstrapWorkspace(opts.workspace);
-  const legacyDefault = await collectLegacyDefaultWorkspace(appPaths.rootDir);
-  if (legacyDefault) return legacyDefault;
-  await mkdir(appPaths.defaultWorkspaceDir, { recursive: true, mode: 0o700 });
-  return realpath(appPaths.defaultWorkspaceDir);
-}
 
 function resolveBootstrapAgent(
   requestedAgent: AgentKind | undefined,
@@ -398,33 +251,6 @@ function resolveBootstrapAgent(
   return requestedAgent ?? (profile === 'codex' ? 'codex' : undefined);
 }
 
-async function hasLegacyConfig(configPath: string): Promise<boolean> {
-  let raw: string;
-  try {
-    raw = await readFile(configPath, 'utf8');
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw err;
-  }
-  const parsed = JSON.parse(raw) as { schemaVersion?: unknown };
-  return parsed.schemaVersion !== 2;
-}
-
-async function migrateV1ToV2WithActiveBridgeHandling(
-  options: MigrateV2Options,
-  handler: ResolveProfileRuntimeOptions['handleActiveBridgeMigrationConflict'],
-): Promise<void> {
-  for (;;) {
-    try {
-      await migrateV1ToV2(options);
-      return;
-    } catch (err) {
-      if (!(err instanceof ActiveBridgeMigrationConflictError) || !handler) throw err;
-      const shouldRetry = await handler(err);
-      if (!shouldRetry) throw err;
-    }
-  }
-}
 
 async function resolveBootstrapAppConfig(opts: ResolveProfileRuntimeOptions): Promise<AppConfig> {
   if (!opts.appId) {
@@ -552,15 +378,7 @@ export async function materializeEnvSecretForService(
     return true;
   }
 
-  const existing = await loadConfig(configPath);
-  if (!isComplete(existing) || !isEnvBackedSecret(existing.accounts.app.secret)) return false;
-  const encrypted = await encryptedConfigForResolvedSecret(
-    existing,
-    await resolveAppSecret(existing, appPaths),
-    appPaths,
-  );
-  await saveConfig(encrypted, configPath);
-  return true;
+  return false;
 }
 
 function formatAmbiguousAgentSelectionError(
@@ -676,54 +494,6 @@ function isEnvBackedSecret(secret: SecretInput): boolean {
   return isSecretRef(secret) && secret.source === 'env';
 }
 
-async function maybeMigratePlaintextSecret(
-  cfg: AppConfig,
-  configPath: string,
-  appPaths: Pick<AppPaths, 'secretsGetterScript' | 'secretsFile' | 'keystoreSaltFile'>,
-): Promise<AppConfig> {
-  const s = cfg.accounts.app.secret;
-  if (typeof s === 'string' && !/^\$\{[A-Z][A-Z0-9_]*\}$/.test(s)) {
-    try {
-      const next = await buildEncryptedAccountConfig(
-        cfg.accounts.app.id,
-        cfg.accounts.app.tenant,
-        cfg.preferences,
-        appPaths,
-      );
-      await setSecret(secretKeyForApp(cfg.accounts.app.id), s, appPaths);
-      await saveConfig(next, configPath);
-      console.log('🔒 已把 App Secret 加密迁移到 ~/.lark-channel/secrets.enc');
-      return next;
-    } catch (err) {
-      log.warn('config', 'migrate-encrypted-failed', {
-        err: err instanceof Error ? err.message : String(err),
-      });
-      return cfg;
-    }
-  }
-
-  if (typeof s === 'string') return cfg;
-
-  try {
-    const wrapperPath = await ensureSecretsGetterWrapper(appPaths);
-    if (needsProviderRewrite(cfg, wrapperPath)) {
-      const next = await buildEncryptedAccountConfig(
-        cfg.accounts.app.id,
-        cfg.accounts.app.tenant,
-        cfg.preferences,
-        appPaths,
-      );
-      await saveConfig(next, configPath);
-      console.log('🔒 已把 secrets provider 切到 wrapper 形态');
-      return next;
-    }
-  } catch (err) {
-    log.warn('config', 'wrapper-refresh-failed', {
-      err: err instanceof Error ? err.message : String(err),
-    });
-  }
-  return cfg;
-}
 
 function needsProviderRewrite(cfg: AppConfig, wrapperPath: string): boolean {
   const provider = cfg.secrets?.providers?.bridge;

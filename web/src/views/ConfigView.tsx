@@ -38,6 +38,7 @@ import { toast } from "@/components/ui/sonner";
 export function ConfigView({ profile }: { profile: string }) {
   const [cfg, setCfg] = useState<ConfigData | null>(null);
   const [saving, setSaving] = useState(false);
+  const [dirty, setDirty] = useState<(keyof ConfigData)[]>([]);
   const [error, setError] = useState<string | null>(null);
   // chat_id → display name, for the allowed-chats list. Seeded from the bot's
   // known chats and topped up with names captured when adding from the picker.
@@ -47,6 +48,7 @@ export function ConfigView({ profile }: { profile: string }) {
     apiGet<ConfigData>(`/api/config?profile=${encodeURIComponent(profile)}`)
       .then((c) => {
         setCfg(c);
+        setDirty([]);
         setError(null);
       })
       .catch((e) => setError(String(e.message ?? e)));
@@ -67,29 +69,24 @@ export function ConfigView({ profile }: { profile: string }) {
   if (error) return <p className="text-destructive text-sm">加载失败：{error}</p>;
   if (!cfg) return <p className="text-muted-foreground text-sm">加载中…</p>;
 
-  const set = <K extends keyof ConfigData>(k: K, v: ConfigData[K]) =>
+  const set = <K extends keyof ConfigData>(k: K, v: ConfigData[K]) => {
     setCfg({ ...cfg, [k]: v });
+    setDirty(keys => keys.includes(k) ? keys : [...keys, k]);
+  };
   const team = cfg.mode === "team";
 
-  async function save() {
+  async function save(inheritSettings: string[] = []) {
     if (!cfg) return;
     setSaving(true);
     try {
       const next = await apiPost<ConfigData>(`/api/config?profile=${encodeURIComponent(profile)}`, {
-        mode: cfg.mode,
-        meeting: cfg.meeting,
-        model: cfg.model,
-        reasoningEffort: cfg.reasoningEffort,
-        messageReply: cfg.messageReply,
-        showToolCalls: cfg.showToolCalls,
-        cotMessages: cfg.cotMessages,
-        maxConcurrentRuns: cfg.maxConcurrentRuns,
-        runIdleTimeoutMinutes: cfg.runIdleTimeoutMinutes,
-        requireMentionInGroup: cfg.requireMentionInGroup,
-        larkCliIdentity: cfg.larkCliIdentity,
+        configRevision: cfg.configRevision,
+        ...Object.fromEntries(dirty.map(key => [key, cfg[key]])),
+        inheritSettings,
       });
       setCfg(next);
-      toast.success(next.live ? "已保存，立即生效" : "已保存，下次启动该 profile 生效");
+      setDirty([]);
+      toast.success(next.live ? "已保存，下一轮生效" : "已保存，下次启动该 profile 生效");
     } catch (e) {
       toast.error(String((e as Error).message ?? e));
     } finally {
@@ -141,25 +138,17 @@ export function ConfigView({ profile }: { profile: string }) {
       </Card>
 
       <Card>
-        <CardHeader><CardTitle>回复与运行</CardTitle></CardHeader>
+        <CardHeader className="flex-row items-center justify-between"><CardTitle>执行配置</CardTitle>
+          <Button variant="outline" disabled={saving} onClick={() => save(["model", "reasoningEffort", "maxConcurrentRuns", "runIdleTimeoutMinutes"])}>恢复继承</Button>
+        </CardHeader>
         <CardContent className="space-y-4">
-          <Field label="此 bot 的默认模型" hint="可以手填模型名；default 跟随 CLI 默认。已有聊天覆盖保持不变。">
+          <Field label="此 bot 的默认模型" hint="可以手填模型名；default 恢复上层默认。已有聊天覆盖保持不变。">
             <Input list="bridge-models" value={cfg.model} onChange={(e) => set("model", e.target.value)} />
             <datalist id="bridge-models">{cfg.models.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}</datalist>
           </Field>
           <Field label="此 bot 的默认思考强度" hint="按所选模型校验；下一轮新任务生效。">
             <SelectRow value={cfg.reasoningEffort} onChange={(v) => set("reasoningEffort", v)}
-              options={[["default", "跟随 CLI 默认"], ...cfg.reasoningEfforts.map((v): [string, string] => [v, v])]} />
-          </Field>
-          <Field label="消息回复方式">
-            <SelectRow value={cfg.messageReply} onChange={(v) => set("messageReply", v as ConfigData["messageReply"])}
-              options={[["markdown", "消息卡片（默认）"], ["text", "纯文本"]]} />
-          </Field>
-          <ToggleRow label="工具调用显示" hint="显示 bot 执行的命令与文件读写过程" checked={cfg.showToolCalls}
-            onChange={(v) => set("showToolCalls", v)} />
-          <Field label="COT 过程消息">
-            <SelectRow value={cfg.cotMessages} onChange={(v) => set("cotMessages", v as ConfigData["cotMessages"])}
-              options={[["off", "关闭"], ["brief", "简略（默认）"], ["detailed", "详细"]]} />
+              options={[["default", "继承上层默认"], ...cfg.reasoningEfforts.map((v): [string, string] => [v, v])]} />
           </Field>
           <div className="grid grid-cols-2 gap-4">
             <Field label="并发上限（1-50）">
@@ -174,6 +163,25 @@ export function ConfigView({ profile }: { profile: string }) {
           <ToggleRow label="群里需要 @ bot（全局默认）"
             hint="关闭后群里任何消息都会触发（需 im:message.group_msg 权限）。可在下方「允许响应的群」为单个群单独设置，优先级高于此项。"
             checked={cfg.requireMentionInGroup} onChange={(v) => set("requireMentionInGroup", v)} />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader className="flex-row items-center justify-between"><CardTitle>飞书展示</CardTitle>
+          <Button variant="outline" disabled={saving} onClick={() => save(["messageReply", "showToolCalls", "cotMessages"])}>恢复继承</Button>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-xs text-muted-foreground">以下展示选项仅影响飞书；Web 聊天的展示单独设置。</p>
+          <Field label="飞书回复形式">
+            <SelectRow value={cfg.messageReply} onChange={(v) => set("messageReply", v as ConfigData["messageReply"])}
+              options={[["markdown", "消息卡片（默认）"], ["text", "纯文本"]]} />
+          </Field>
+          <ToggleRow label="飞书工具过程" hint="显示 bot 执行的命令与文件读写过程" checked={cfg.showToolCalls}
+            onChange={(v) => set("showToolCalls", v)} />
+          <Field label="飞书过程消息">
+            <SelectRow value={cfg.cotMessages} onChange={(v) => set("cotMessages", v as ConfigData["cotMessages"])}
+              options={[["off", "关闭"], ["brief", "简略（默认）"], ["detailed", "详细"]]} />
+          </Field>
         </CardContent>
       </Card>
 
@@ -227,7 +235,7 @@ export function ConfigView({ profile }: { profile: string }) {
 
       <div className="sticky bottom-0 flex justify-end gap-2 border-t bg-background/90 py-3 backdrop-blur">
         <Button variant="outline" onClick={() => load()} disabled={saving}>重新加载</Button>
-        <Button onClick={save} disabled={saving}>{saving ? "保存中…" : "保存"}</Button>
+        <Button onClick={() => save()} disabled={saving}>{saving ? "保存中…" : "保存"}</Button>
       </div>
     </div>
   );
@@ -621,7 +629,7 @@ function AllowedChats({
         <Button variant="outline" onClick={() => { onAdd(draft); setDraft(""); }}>添加</Button>
       </div>
       <p className="text-xs text-muted-foreground">
-        每个群可单独设置是否需要 @ bot；「跟随全局」时用上面「回复与运行」里的默认值。
+        每个群可单独设置是否需要 @ bot；「跟随全局」时用上面「执行配置」里的默认值。
       </p>
       <GroupPicker
         profile={profile}

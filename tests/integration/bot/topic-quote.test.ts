@@ -1,3 +1,4 @@
+import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import type { NormalizedMessage } from '@larksuite/channel';
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -74,7 +75,7 @@ afterEach(async () => {
 describe('topic message quote handling', () => {
   it('keeps pending messages when changing model and effort, using the new settings for the next task', async () => {
     const h = await createHarness();
-    h.controls.configPath = join(h.tmp.root, 'config.json');
+    h.controls.configPath = join(h.tmp.root, 'config.toml');
     await startTestBridge(h);
     const send = (messageId: string, content: string) => h.channel.handlers.message?.(message({
       messageId, content, rootId: 'om_topic_root', parentId: 'om_topic_root', threadId: 'omt_topic',
@@ -223,7 +224,7 @@ describe('topic message quote handling', () => {
         {
           message_id: 'om_topic_root',
           msg_type: 'text',
-          body: { content: JSON.stringify({ text: 'the real upstream question' }) },
+          body: { content: encodeFixture({ text: 'the real upstream question' }) },
           sender: { id: 'ou_asker', sender_type: 'user' },
           create_time: '1760000000000',
           thread_id: 'omt_topic',
@@ -232,7 +233,7 @@ describe('topic message quote handling', () => {
           // the triggering message itself — must be excluded, not echoed back
           message_id: 'om_at_in_topic',
           msg_type: 'text',
-          body: { content: JSON.stringify({ text: '@Bridge 看下这个' }) },
+          body: { content: encodeFixture({ text: '@Bridge 看下这个' }) },
           sender: { id: 'ou_user', sender_type: 'user' },
           create_time: '1760000001000',
           thread_id: 'omt_topic',
@@ -282,9 +283,9 @@ describe('topic message quote handling', () => {
     await h.channel.handlers.message?.(msg('side-question', '/btw side secret'));
     expect(h.channel.sent).toHaveLength(1); // no parent yet: explanatory side reply
     threadMessages.push(
-      { message_id: 'side-question', msg_type: 'text', body: { content: JSON.stringify({ text: '/btw side secret' }) }, sender: { id: 'ou_user', sender_type: 'user' } },
-      { message_id: 'om_sent_1', msg_type: 'text', body: { content: JSON.stringify({ text: 'private side answer' }) }, sender: { id: 'bot', sender_type: 'app' } },
-      { message_id: 'root', msg_type: 'text', body: { content: JSON.stringify({ text: 'main topic context' }) }, sender: { id: 'ou_user', sender_type: 'user' } },
+      { message_id: 'side-question', msg_type: 'text', body: { content: encodeFixture({ text: '/btw side secret' }) }, sender: { id: 'ou_user', sender_type: 'user' } },
+      { message_id: 'om_sent_1', msg_type: 'text', body: { content: encodeFixture({ text: 'private side answer' }) }, sender: { id: 'bot', sender_type: 'app' } },
+      { message_id: 'root', msg_type: 'text', body: { content: encodeFixture({ text: 'main topic context' }) }, sender: { id: 'ou_user', sender_type: 'user' } },
     );
     await waitFor(() => h.agent.runOptions.length === 1);
     const prompt = h.agent.runOptions[0]?.prompt;
@@ -304,7 +305,7 @@ describe('topic message quote handling', () => {
         {
           message_id: 'om_topic_root',
           msg_type: 'text',
-          body: { content: JSON.stringify({ text: 'the real upstream question' }) },
+          body: { content: encodeFixture({ text: 'the real upstream question' }) },
           sender: { id: 'ou_asker', sender_type: 'user' },
           create_time: '1760000000000',
           thread_id: 'omt_existing',
@@ -625,7 +626,7 @@ function createFakeLarkChannel(options: {
         message_id: messageId,
         msg_type: 'text',
         body: {
-          content: JSON.stringify({
+          content: encodeFixture({
             text: quotedMessages[messageId] ?? 'quoted content',
           }),
         },

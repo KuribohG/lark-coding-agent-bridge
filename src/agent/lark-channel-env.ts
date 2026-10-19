@@ -20,8 +20,7 @@ export function buildLarkChannelEnv(context?: LarkChannelEnvContext): NodeJS.Pro
 
   const configPath =
     nonEmpty(context?.larkCliSourceConfigFile) ??
-    nonEmpty(context?.configPath) ??
-    (rootDir ? join(rootDir, 'config.json') : undefined);
+    (rootDir && profile ? join(rootDir, 'profiles', profile, 'lark-cli-source', 'config.json') : undefined);
   if (configPath) env.LARK_CHANNEL_CONFIG = configPath;
 
   const larkCliConfigDir = nonEmpty(context?.larkCliConfigDir);

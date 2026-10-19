@@ -1,3 +1,4 @@
+import { inspectConfig, reloadProfile, readProfileSnapshot } from '../config/service';
 import {
   applyPreferencesChange,
   preparePreferencesChange,
@@ -39,17 +40,39 @@ export async function handleConfig(args: string, ctx: CommandContext): Promise<v
   const sub = args.trim().split(/\s+/)[0] ?? '';
   switch (sub) {
     case '':
-      return showConfigForm(ctx);
+    case 'show':
+      return showConfigSummary(ctx, sub === 'show' ? args.trim().split(/\s+/)[1] : undefined);
+    case 'run':
+    case 'lark':
+    case 'access':
+      return showConfigForm(ctx, sub);
+    case 'reload': {
+      const result = await reloadProfile(ctx.controls);
+      await reply(ctx, `${result.applied.length ? '执行与展示设置已重新加载，下一轮任务采用。' : 'agent 类型已修改，重启后加载。'}${result.restart.length ? `仍需重启的配置：${result.restart.join(', ')}` : ''}`);
+      return;
+    }
     case 'submit':
       return submitConfig(ctx);
     case 'cancel':
       return cancelConfig(ctx);
     default:
-      await reply(ctx, '用法:`/config`');
+      await reply(ctx, '用法：`/config`、`/config run`、`/config lark`、`/config access`、`/config reload`');
   }
 }
 
-async function showConfigForm(ctx: CommandContext): Promise<void> {
+async function showConfigSummary(ctx: CommandContext, path?: string): Promise<void> {
+  const view = await inspectConfig(ctx.controls.configPath, ctx.controls.profile);
+  const summary = (label: string, values: Record<string, { value: unknown; source: string }>) =>
+    `**${label}**\n` + Object.entries(values).map(([key, entry]) => `- ${key}: ${String(entry.value)}（${entry.source}）`).join('\n');
+  const selected = path === 'run' ? summary('执行', view.run) : path === 'lark' || path === 'web'
+    ? summary(path === 'lark' ? '飞书展示' : 'Web 展示', view.channels[path]!)
+    : [summary('执行', view.run), summary('飞书展示', view.channels.lark!)].join('\n\n');
+  await reply(ctx, `**${view.profile} · ${view.agent}**\n配置文件：${view.file}\n\n${selected}\n\n` +
+    '以上为文件中的 profile 默认值；当前会话覆盖用 /model 查看。\n' +
+    '修改：/config run · /config lark · /config access\n手工编辑后：/config reload（启动参数变化需重启）。');
+}
+
+async function showConfigForm(ctx: CommandContext, section: 'run' | 'lark' | 'access'): Promise<void> {
   await Promise.all([
     ctx.controls.refreshOwner(ctx.channel).catch(() => {}),
     fetchKnownChats(ctx.channel)
@@ -59,30 +82,34 @@ async function showConfigForm(ctx: CommandContext): Promise<void> {
       .catch(() => {}),
   ]);
 
-  const ms = getRunIdleTimeoutMs(ctx.controls.cfg);
-  const access = ctx.controls.profileConfig.access;
+  const snapshot = await readProfileSnapshot(ctx.controls);
+  const view = snapshot.state;
+  const ms = getRunIdleTimeoutMs(view.cfg);
+  const access = view.profileConfig.access;
   // Surface the local web console URL when the supervisor (`--web-ui`) is
   // running — read from the host sidecar and confirm the owning process is
   // alive so we don't advertise a stale address.
   const sidecar = await readUiSidecar(commandProfilePaths(ctx).hostUiFile).catch(() => undefined);
   const consoleUrl = sidecar && isAlive(sidecar.pid) ? sidecar.url : undefined;
-  const environment = await modelEnvironment(ctx.controls);
+  const environment = section === 'run' ? await modelEnvironment(view) : { models: [] };
   const card = configFormCard({
+    section,
+    revision: snapshot.revision,
     models: environment.models,
-    reasoningEffort: ctx.controls.cfg.preferences?.reasoningEffort,
-    agentKind: ctx.controls.profileConfig.agentKind,
-    mode: ctx.controls.profileConfig.mode,
+    reasoningEffort: view.cfg.preferences?.reasoningEffort,
+    agentKind: view.profileConfig.agentKind,
+    mode: view.profileConfig.mode,
     model: normalizeModelSelection(
-      ctx.controls.profileConfig.agentKind,
-      ctx.controls.cfg.preferences?.model,
+      view.profileConfig.agentKind,
+      view.cfg.preferences?.model,
     ),
-    messageReply: getMessageReplyMode(ctx.controls.cfg),
-    showToolCalls: getShowToolCalls(ctx.controls.cfg),
-    cotMessages: getCotMessages(ctx.controls.cfg),
-    maxConcurrentRuns: getMaxConcurrentRuns(ctx.controls.cfg),
+    messageReply: getMessageReplyMode(view.cfg),
+    showToolCalls: getShowToolCalls(view.cfg),
+    cotMessages: getCotMessages(view.cfg),
+    maxConcurrentRuns: getMaxConcurrentRuns(view.cfg),
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
-    requireMentionInGroup: getRequireMentionInGroup(ctx.controls.cfg),
-    larkCliIdentity: ctx.controls.profileConfig.larkCli.identityPreset,
+    requireMentionInGroup: getRequireMentionInGroup(view.cfg),
+    larkCliIdentity: view.profileConfig.larkCli.identityPreset,
     allowedUsers: access.allowedUsers,
     allowedChats: access.allowedChats,
     admins: access.admins,
@@ -121,25 +148,32 @@ async function cancelConfig(ctx: CommandContext): Promise<void> {
   }
 }
 
-/** Convert CardKit's string fields while retaining legacy empty-field semantics. */
+/** Translate the short form into a sparse settings patch. */
 function configFormPatch(fv: Record<string, unknown>): Record<string, unknown> {
   const text = (key: string) => String(fv[key] ?? '').trim();
   const picked = fv.model_pick;
   const rawModel = picked && picked !== '__manual__' ? String(picked) : fv.model;
   const maxConcurrentRuns = Number(text('max_concurrent_runs'));
   const mention = text('require_mention_in_group');
-  return {
-    model: rawModel === undefined ? undefined : String(rawModel).trim(),
-    reasoningEffort: fv.reasoning_effort,
-    messageReply: text('message_reply'),
-    showToolCalls: text('show_tool_calls') !== 'hide',
-    cotMessages: text('cot_messages') === 'on' ? 'detailed' : text('cot_messages'),
-    maxConcurrentRuns: Number.isFinite(maxConcurrentRuns) && maxConcurrentRuns >= 1 ? maxConcurrentRuns : undefined,
-    runIdleTimeoutMinutes: text('run_idle_timeout_minutes') || undefined,
-    requireMentionInGroup: mention === 'yes' ? true : mention === 'no' ? false : undefined,
-    mode: text('deploy_mode'),
-    larkCliIdentity: text('lark_cli_identity'),
-  };
+  const patch: Record<string, unknown> = {};
+  if (rawModel !== undefined) patch.model = String(rawModel).trim();
+  if (fv.reasoning_effort !== undefined) patch.reasoningEffort = fv.reasoning_effort;
+  if (fv.message_reply !== undefined) patch.messageReply = text('message_reply');
+  if (fv.show_tool_calls !== undefined) patch.showToolCalls = text('show_tool_calls') !== 'hide';
+  if (fv.cot_messages !== undefined) patch.cotMessages = text('cot_messages') === 'on' ? 'detailed' : text('cot_messages');
+  if (fv.max_concurrent_runs !== undefined) patch.maxConcurrentRuns = Number.isFinite(maxConcurrentRuns) && maxConcurrentRuns >= 1 ? maxConcurrentRuns : undefined;
+  if (fv.run_idle_timeout_minutes !== undefined) patch.runIdleTimeoutMinutes = text('run_idle_timeout_minutes') || undefined;
+  if (fv.require_mention_in_group !== undefined) patch.requireMentionInGroup = mention === 'yes' ? true : mention === 'no' ? false : undefined;
+  if (fv.deploy_mode !== undefined) patch.mode = text('deploy_mode');
+  if (fv.lark_cli_identity !== undefined) patch.larkCliIdentity = text('lark_cli_identity');
+  const inherit: string[] = [];
+  const fields: Record<string, string> = { message_reply: 'messageReply', show_tool_calls: 'showToolCalls', cot_messages: 'cotMessages', max_concurrent_runs: 'maxConcurrentRuns', run_idle_timeout_minutes: 'runIdleTimeoutMinutes' };
+  for (const [field, key] of Object.entries(fields)) if (text(field) === 'inherit') {
+    inherit.push(key); delete patch[key];
+  }
+  if (inherit.length) patch.inheritSettings = inherit;
+  if (fv.config_revision !== undefined) patch.configRevision = fv.config_revision;
+  return patch;
 }
 
 async function submitConfig(ctx: CommandContext): Promise<void> {
@@ -151,12 +185,8 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     return;
   }
   const { mode, larkCliIdentity, requireMentionInGroup } = change;
-  const { model, reasoningEffort, messageReply, showToolCalls, cotMessages, maxConcurrentRuns, runIdleTimeoutMinutes } = change.nextPreferences;
-  const agentKind = ctx.controls.profileConfig.agentKind;
-  const modelSelection = normalizeModelSelection(agentKind, model);
 
   const formMsgId = ctx.msg.messageId;
-  const access = ctx.controls.profileConfig.access;
 
   // Detach: same reason as account submit — Lark's client locks the form
   // while the cardAction handler is running. Wait out FORM_SETTLE_MS *after*
@@ -188,6 +218,16 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       return;
     }
 
+    const saved = ctx.controls.profileConfig;
+    const agentKind = saved.agentKind;
+    const modelSelection = normalizeModelSelection(agentKind, saved.preferences.model);
+    const reasoningEffort = saved.preferences.reasoningEffort;
+    const messageReply = getMessageReplyMode(saved);
+    const showToolCalls = getShowToolCalls(saved);
+    const cotMessages = getCotMessages(saved);
+    const maxConcurrentRuns = getMaxConcurrentRuns(saved);
+    const runIdleTimeoutMinutes = (getRunIdleTimeoutMs(saved) ?? 0) / 60000;
+    const access = saved.access;
     log.info('command', 'config-saved', {
       mode,
       messageReply,
@@ -206,6 +246,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       ctx,
       formMsgId,
       configSavedCard({
+        section: ctx.formValue?.config_section === 'lark' ? 'lark' : ctx.formValue?.config_section === 'access' ? 'access' : 'run',
         agentKind,
         mode,
         model: modelSelection,

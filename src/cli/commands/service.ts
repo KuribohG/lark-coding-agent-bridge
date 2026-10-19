@@ -15,7 +15,6 @@ import {
 import { readAndPrune, type ProcessEntry } from '../../runtime/registry';
 import { checkRuntimeLock, type RuntimeLockMeta } from '../../runtime/locks';
 import { preFlightChecks } from '../preflight';
-import { promptAndStopActiveBridgeMigrationConflict } from './migrate';
 import { stopProcessEntry, type StopProcessEntryResult } from './ps';
 
 export interface ServiceStartOptions {
@@ -158,13 +157,7 @@ async function ensureBridgeConfigured(
     appSecret: opts.appSecret,
     tenant: opts.tenant,
     allowBootstrap: true,
-    handleActiveBridgeMigrationConflict: async (err) => {
-      const handled = await promptAndStopActiveBridgeMigrationConflict(err, {
-        cancelMessage: '已取消启动。',
-      });
-      if (!handled) process.exit(0);
-      return true;
-    },
+
   });
   if (!isComplete(cfg)) {
     console.error('bot 还没配置 app 凭据。');

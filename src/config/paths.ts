@@ -1,5 +1,3 @@
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 import { resolveAppPaths } from './app-paths';
 
 const appPaths = resolveAppPaths();
@@ -17,20 +15,4 @@ export const paths = {
    * symlink or root-owned (`/usr/bin/node`). Wrapper internals do the
    * `node ... secrets get` invocation; lark-cli only audits the wrapper.
    */
-};
-
-/**
- * Pre-0.1.11 paths (XDG-style). Kept here only so the `migrate` command
- * can detect and move data out of the old location. Don't reference these
- * anywhere in the runtime.
- */
-export const legacyPaths = {
-  appDir: join(
-    process.env.XDG_CONFIG_HOME ?? join(homedir(), '.config'),
-    'lark-channel-bridge',
-  ),
-  cacheDir: join(
-    process.env.XDG_CACHE_HOME ?? join(homedir(), '.cache'),
-    'lark-channel-bridge',
-  ),
 };

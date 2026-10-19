@@ -1,0 +1,63 @@
+version = 3
+
+[bridge]
+active_profile = "codex"
+# monitors_file = "monitors.toml" # Keep the existing monitor file if configured.
+
+[defaults.run]
+max_concurrent_runs = 10
+idle_timeout_minutes = 0
+
+[agents.codex.run]
+effort = "high"
+# model = "provider/model"
+# model = { source = "native" } # Delegate to CLI even if a parent selects a model.
+
+[agents.codex.launch]
+binaryPath = "codex"
+transport = "app-server"
+
+[agents.claude.run]
+effort = "high"
+
+[channels.lark]
+reply_mode = "markdown"
+show_tools = true
+progress = "brief"
+
+[channels.web]
+show_tools = true
+show_reasoning = false
+
+[channels.lark.profiles.codex]
+progress = "detailed"
+
+[profiles.codex]
+agent = "codex"
+mode = "personal"
+
+[profiles.codex.accounts.app]
+id = "cli_CODEX_EXAMPLE"
+tenant = "feishu"
+secret = { source = "env", id = "CODEX_BOT_APP_SECRET" }
+
+[profiles.codex.access]
+allowedUsers = []
+allowedChats = []
+admins = []
+requireMentionInGroup = true
+
+[profiles.claude]
+agent = "claude"
+mode = "personal"
+
+[profiles.claude.accounts.app]
+id = "cli_CLAUDE_EXAMPLE"
+tenant = "feishu"
+secret = { source = "env", id = "CLAUDE_BOT_APP_SECRET" }
+
+[profiles.claude.access]
+allowedUsers = []
+allowedChats = []
+admins = []
+requireMentionInGroup = true

@@ -1,3 +1,4 @@
+import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -35,13 +36,13 @@ describe('writeNewProfile (new-profile is additive)', () => {
     await expect(writeNewProfile({ ...base, appId: 'cli_b' }, root)).rejects.toThrow(/已存在/);
 
     // The existing profile still points at the original app.
-    const afterCollision = (await loadRootConfig(join(root, 'config.json')))!;
+    const afterCollision = (await loadRootConfig(join(root, 'config.toml')))!;
     expect(afterCollision.profiles.claude?.accounts.app.id).toBe('cli_a');
 
     // A different name is added alongside.
     const second = await writeNewProfile({ ...base, profile: 'work', appId: 'cli_b' }, root);
     expect(second.profile).toBe('work');
-    const root2 = (await loadRootConfig(join(root, 'config.json')))!;
+    const root2 = (await loadRootConfig(join(root, 'config.toml')))!;
     expect(Object.keys(root2.profiles).sort()).toEqual(['claude', 'work']);
   });
 
@@ -61,7 +62,7 @@ describe('writeNewProfile (new-profile is additive)', () => {
     );
     expect(created.profile).toBe('助手');
 
-    const cfg = (await loadRootConfig(join(root, 'config.json')))!;
+    const cfg = (await loadRootConfig(join(root, 'config.toml')))!;
     expect(cfg.profiles['助手']?.accounts.app.id).toBe('cli_nimo');
   });
 

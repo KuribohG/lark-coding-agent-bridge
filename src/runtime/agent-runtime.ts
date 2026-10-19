@@ -53,7 +53,7 @@ export function createRuntimeAgent(
       env: buildLarkChannelEnv(larkChannel),
     });
   }
-  return new ClaudeAdapter({ env: buildLarkChannelEnv(larkChannel), systemPrompt: buildBridgeSystemPrompt });
+  return new ClaudeAdapter({ binary: profileConfig.claude?.binaryPath, env: buildLarkChannelEnv(larkChannel), systemPrompt: buildBridgeSystemPrompt });
 }
 
 export async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promise<AgentAvailability> {

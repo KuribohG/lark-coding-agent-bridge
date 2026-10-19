@@ -1,3 +1,4 @@
+import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { mkdir, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -84,11 +85,11 @@ async function createHarness(): Promise<{
   run(content: string, overrides?: { mentions?: NormalizedMessage['mentions'] }): Promise<boolean>;
 }> {
   const tmp = await createTmpProfile('access-config-race-');
-  const configPath = join(tmp.root, 'config.json');
+  const configPath = join(tmp.root, 'config.toml');
   const profileConfig = appConfig(await realpath(tmp.workspace));
   const { createRootConfig } = await import('../../../src/config/profile-store.js');
   await mkdir(tmp.root, { recursive: true });
-  await writeFile(configPath, `${JSON.stringify(createRootConfig('claude', profileConfig), null, 2)}\n`);
+  await writeFile(configPath, `${encodeFixture(createRootConfig('claude', profileConfig), null, 2)}\n`);
 
   const channel = createFakeChannel();
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));

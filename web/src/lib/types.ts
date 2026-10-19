@@ -37,6 +37,7 @@ export interface ModelOption {
 }
 
 export interface ConfigView {
+  configRevision: string;
   profile: string;
   agentKind: AgentKind;
   mode: ProfileMode;

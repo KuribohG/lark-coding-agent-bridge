@@ -1,3 +1,4 @@
+import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -12,7 +13,7 @@ import {
   type RootConfig,
 } from '../../../src/config/profile-schema';
 import { runtimeProfileConfig } from '../../../src/config/profile-store';
-import { getMessageReplyMode, getRequireMentionInGroup, secretKeyForApp } from '../../../src/config/schema';
+import { getMessageReplyMode, getRequireMentionInGroup, getRunIdleTimeoutMs, secretKeyForApp } from '../../../src/config/schema';
 import { SessionStore } from '../../../src/session/store';
 import { WorkspaceStore } from '../../../src/workspace/store';
 import { applyConfig, loadProfileState } from '../../../src/ui/api';
@@ -81,7 +82,7 @@ describe('profile-aware account and config commands', () => {
     expect(actual.access).toEqual(expected.access);
     expect(actual.larkCli.identityPreset).toBe(expected.larkCli.identityPreset);
     expect(actual.preferences.maxConcurrentRuns).toBe(50);
-    expect(actual.preferences.runIdleTimeoutMinutes).toBe(0);
+    expect(getRunIdleTimeoutMs(actual)).toBeUndefined();
     await vi.advanceTimersByTimeAsync(1000);
   });
 
@@ -99,15 +100,12 @@ describe('profile-aware account and config commands', () => {
     });
 
     const root = await waitForRoot(h.rootDir, (candidate) =>
-      candidate.profiles.claude?.preferences.messageReply === 'text',
+      candidate.profiles.claude?.channels?.lark?.reply_mode === 'text',
     );
     expect(root.schemaVersion).toBe(2);
     expect(root.activeProfile).toBe('claude');
     expect(root.profiles['codex-dev']).toBeDefined();
     expect(root.profiles.claude?.preferences).toMatchObject({
-      messageReply: 'text',
-      messageReplyMigrated: true,
-      showToolCalls: false,
       maxConcurrentRuns: 7,
       runIdleTimeoutMinutes: 15,
     });
@@ -167,8 +165,7 @@ describe('profile-aware account and config commands', () => {
     const root = await waitForRoot(h.rootDir, (candidate) =>
       candidate.profiles.claude?.preferences.maxConcurrentRuns === 8,
     );
-    expect(root.profiles.claude?.preferences.messageReply).toBe('text');
-    expect(root.profiles.claude?.preferences.messageReplyMigrated).toBe(true);
+    expect(root.profiles.claude?.channels?.lark?.reply_mode).toBe('text');
     expect(getMessageReplyMode(runtimeProfileConfig(root, 'claude'))).toBe('text');
   });
 
@@ -198,7 +195,7 @@ describe('profile-aware account and config commands', () => {
       'user-default',
       'bot-only',
     ]);
-    const card = JSON.stringify(h.channel.sent.at(-1)?.content);
+    const card = encodeFixture(h.channel.sent.at(-1)?.content);
     expect(card).toContain('保存失败');
     expect(card).toContain('lark-cli 身份策略');
     expect(card).not.toContain('偏好已保存');
@@ -232,7 +229,7 @@ describe('profile-aware account and config commands', () => {
       'user-default',
       'bot-only',
     ]);
-    const card = JSON.stringify(h.channel.sent.at(-1)?.content);
+    const card = encodeFixture(h.channel.sent.at(-1)?.content);
     expect(card).toContain('保存失败');
     expect(card).toContain('已回滚');
     expect(card).not.toContain('未做任何修改');
@@ -364,7 +361,7 @@ async function writeRoot(
 }
 
 async function readRoot(rootDir: string): Promise<RootConfig> {
-  return JSON.parse(await readFile(resolveAppPaths({ rootDir }).configFile, 'utf8')) as RootConfig;
+  return decodeFixture(await readFile(resolveAppPaths({ rootDir }).configFile, 'utf8')) as RootConfig;
 }
 
 async function waitForRoot(
@@ -401,7 +398,7 @@ function appliedLarkCliIdentities(): unknown[] {
 
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  await writeFile(path, `${encodeFixture(value, null, 2)}\n`, 'utf8');
 }
 
 function message(content: string): NormalizedMessage {

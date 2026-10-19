@@ -1,3 +1,4 @@
+import { readProfileSnapshot } from '../config/service';
 import {
   applyPreferencesChange,
   preparePreferencesChange,
@@ -52,6 +53,7 @@ export class ApiError extends HttpError {}
 
 /** The settings payload the SPA reads and writes. */
 export interface ConfigView {
+  configRevision: string;
   profile: string;
   agentKind: string;
   mode: ProfileMode;
@@ -80,10 +82,13 @@ export interface ConfigView {
 }
 
 export async function buildConfigView(state: MutableProfileState, live = false): Promise<ConfigView> {
+  const snapshot = await readProfileSnapshot(state);
+  state = snapshot.state;
   const environment = await modelEnvironment(state);
   const agentKind = state.profileConfig.agentKind;
   const ms = getRunIdleTimeoutMs(state.cfg);
   return {
+    configRevision: snapshot.revision,
     profile: state.profile,
     agentKind,
     mode: state.profileConfig.mode,

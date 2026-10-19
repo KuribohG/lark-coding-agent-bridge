@@ -10,7 +10,8 @@
 | --- | --- |
 | `/help` | 帮助卡片 |
 | `/status` | 当前 profile、Agent、目录、会话和状态 |
-| `/config` | profile 默认模型、显示、访问和身份设置 |
+| `/config` | 配置摘要和来源；`run`、`lark`、`access` 分别编辑执行、飞书展示、访问设置 |
+| `/config reload` | 校验并重载，报告仍需重启的设置 |
 | `/new`、`/reset` | 重置当前会话 |
 | `/cd <绝对路径>` | 切换项目并重置会话 |
 | `/ws list` | 列出命名工作目录 |
@@ -56,4 +57,4 @@
 | `lark-channel-bridge ci-watch status` | 查看 CI 持久状态 |
 | `lark-channel-bridge --version`、`--help` | 版本与命令帮助 |
 
-`model-service` 和 `ci-watch` 子命令支持 `--config /absolute/path/config.json`。在 Bridge 会话里运行 lark-cli 时，保持已注入的 profile 环境。系统服务命令见[运行维护](operations.md)。
+`model-service` 和 `ci-watch` 子命令支持 `--config /absolute/path/config.toml`。在 Bridge 会话里运行 lark-cli 时，保持已注入的 profile 环境。系统服务命令见[运行维护](operations.md)。

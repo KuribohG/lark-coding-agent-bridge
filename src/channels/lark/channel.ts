@@ -1,3 +1,4 @@
+import { larkDisplay } from './config';
 import { createLarkRunOutput } from './run-output';
 import { presentRunOutput } from '../../runtime/run-output';
 import { findCommand } from '../../commands/catalog';
@@ -35,7 +36,6 @@ import {
   getMaxConcurrentRuns,
   getMessageReplyMode,
   getRunIdleTimeoutMs,
-  getShowToolCalls,
 } from '../../config/schema';
 import { resolveAppSecret } from '../../config/secret-resolver';
 import { log, reportMetric, withTrace } from '../../core/logger';
@@ -1162,14 +1162,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   log.info('flush', 'reply-mode', { mode: replyMode });
   const cotMessages = getCotMessages(controls.cfg);
 
-  // Re-read prefs on every flush so toggling /config mid-stream takes
-  // effect immediately. Cheap object lookups, no allocation when on.
+  const display = larkDisplay(controls.cfg);
   const filterForPrefs = (state: RunState): RunState => {
-    if (getShowToolCalls(controls.cfg)) return state;
+    if (display.show_tools) return state;
     return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
   };
   const cardRenderOptions = {
-    get fileLinks() { return controls.cfg.preferences?.fileLinks; },
+    fileLinks: display.file_links,
     ...(callbackAuth
       ? {
           signCallback: (action: string) =>

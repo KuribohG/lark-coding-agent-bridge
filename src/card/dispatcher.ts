@@ -126,6 +126,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
 
     const [name, ...rest] = cmd.split('.');
     const sub = rest.join(' ');
+    if (name === 'config') ctx.formValue = { ...ctx.formValue, config_revision: payload.revision, config_section: payload.section };
     const args = composeArgs(sub, payload);
 
     try {

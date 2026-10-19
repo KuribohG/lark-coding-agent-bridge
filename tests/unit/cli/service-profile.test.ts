@@ -144,7 +144,6 @@ describe('profile-aware service commands', () => {
       appSecret: undefined,
       tenant: undefined,
       allowBootstrap: true,
-      handleActiveBridgeMigrationConflict: expect.any(Function),
     }));
     expect(mocks.resolveProfileRuntime).toHaveBeenNthCalledWith(2, {
       profile: 'codex-dev',
@@ -464,7 +463,6 @@ describe('profile-aware service commands', () => {
       appSecret: 'manual-secret',
       tenant: 'feishu',
       allowBootstrap: true,
-      handleActiveBridgeMigrationConflict: expect.any(Function),
     }));
     expect(mocks.resolveProfileRuntime).toHaveBeenNthCalledWith(2, {
       profile: 'claude',

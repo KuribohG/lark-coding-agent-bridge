@@ -1,5 +1,7 @@
 # lark-channel-bridge
 
+配置使用 [分层 TOML](docs/configuration.md)（[示例](docs/config.example.toml)）。本版本只加载 TOML，执行默认值与飞书／Web 展示配置独立。
+
 把飞书 / Lark 消息和本地 Claude Code 或 Codex CLI 打通的轻量 bot。用一条命令启动，扫码绑定 PersonalAgent 应用，然后在飞书里和本机编程助手对话，让它读图、处理文件、改代码。
 
 [English README](./README.md)
@@ -90,7 +92,7 @@ lark-channel-bridge run
 2. 用飞书 App 扫码。
 3. 选择或创建 PersonalAgent 应用。
 4. 如果终端提示，选择本次要初始化的 agent。
-5. 成功后配置写入 `~/.lark-channel/config.json`。
+5. 成功后配置写入 `~/.lark-channel/config.toml`。
 
 没有指定项目目录也可以启动。bridge 会创建一个 profile 托管的默认工作目录；启动后在飞书里发送 `/cd <path>` 切到实际项目。
 
@@ -155,7 +157,8 @@ lark-channel-bridge status --profile codex
 
 ```text
 lark-channel-bridge run [--profile <name>] [--agent claude|codex] [--workspace <path>] [-c <config>]
-lark-channel-bridge migrate [--profile <name>] [--agent claude|codex]
+lark-channel-bridge config check
+lark-channel-bridge config show --profile <name> --sources
 lark-channel-bridge ps
 lark-channel-bridge kill <id|#>
 lark-channel-bridge --help
@@ -170,7 +173,7 @@ lark-channel-bridge profile list
 lark-channel-bridge profile use <name>
 lark-channel-bridge profile remove <name>
 lark-channel-bridge profile remove <name> --purge --yes
-lark-channel-bridge profile export <name> [--output ./profile.json] [--force]
+lark-channel-bridge profile export <name> [--output ./profile.toml] [--force]
 lark-channel-bridge profile export <name> --include-secrets --yes
 ```
 
@@ -191,7 +194,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/ws remove <name>` | 删除命名工作空间 |
 | `/resume` | 恢复同 agent、工作目录、权限模式兼容的历史会话 |
 | `/status` | 查看 profile、agent、工作目录、会话、lark-cli 身份和运行状态 |
-| `/config` | 调整 bot 默认模型、思考强度、展示偏好、访问控制和 lark-cli 身份策略 |
+| `/config` | 查看配置摘要，分别进入执行、飞书展示和访问设置 |
 | `/model [模型名\|default]` | 查看或修改当前话题/聊天的模型，支持手填 |
 | `/effort [强度\|default]` | 查看或修改当前话题/聊天的思考强度 |
 | `/run [defaults\|status\|stop]` | 创建一次性限时任务、设置默认值，或查看/取消任务 |
@@ -236,7 +239,7 @@ bot 默认值影响该 profile 下未单独覆盖对应字段的对话，也用�
 
 已知模型会根据本地目录校验思考档位，显式提交不支持的组合会被拒绝。切换模型后，若继承的 bridge 思考设置不兼容且目录提供了模型默认值，则本次使用模型默认，并在设置摘要中说明。未知模型交由 CLI/provider 校验。当字段跟随 CLI 默认时，不传对应参数，也不改写 CLI 的全局或项目配置。
 
-bot 默认值存于 `config.json` 的 `profiles.<profile>.preferences`；聊天覆盖单独存于 `profiles/<profile>/scope-preferences.json`，不和对话历史混用。
+bot 默认值存于 `config.toml` 的 `profiles.<profile>.run`；聊天覆盖单独存于 `profiles/<profile>/scope-preferences.json`，不和对话历史混用。
 
 ## 旁问
 
@@ -279,7 +282,7 @@ bot 默认值存于 `config.json` 的 `profiles.<profile>.preferences`；聊天�
 
 ## 回复展示与 COT
 
-`/config` 可以调整三类展示选项：
+`/config lark` 管理飞书展示；Web 使用独立的 `channels.web` 配置：
 
 - **消息回复方式**：`消息卡片` 流式更新最终回复；`纯文本` 在 run 完成后一次性发送。
 - **工具调用显示**：控制最终回复卡片 / markdown 中是否展示工具块。
@@ -299,7 +302,7 @@ bot 默认值存于 `config.json` 的 `profiles.<profile>.preferences`；聊天�
 
 每个 profile 都可以有一个默认工作目录：`workspaces.default`。新建 profile 时可以传 `--workspace <path>` 作为初始目录；没传时 bridge 会创建一个 profile 托管的默认工作目录。
 
-下面只是 profile 里的字段片段，不要整段覆盖 `config.json`；请改对应 profile 下的 `workspaces` 字段。
+下面只是 profile 里的字段片段，不要整段覆盖 `config.toml`；请改对应 profile 下的 `workspaces` 字段。
 
 ```json
 {
@@ -315,7 +318,7 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 
 推荐给用户配置的是 `permissions.defaultAccess` 和 `permissions.maxAccess`。新 profile 默认两项都是 `full`，以保持 bridge 的本地工具、授权流程、文件写入等能力完整可用。如需收紧权限，可以改成 `workspace` 或 `read-only`；收紧后本地工具执行、登录 / 授权流程、文件写入等能力可能受限。
 
-下面只是 profile 里的字段片段，不要整段覆盖 `config.json`；请改对应 profile 下的 `permissions` 字段。
+下面只是 profile 里的字段片段，不要整段覆盖 `config.toml`；请改对应 profile 下的 `permissions` 字段。
 
 ```json
 {
@@ -340,7 +343,7 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 
 | 路径 | 内容 |
 |---|---|
-| `~/.lark-channel/config.json` | root config，包含 profiles 和 active profile |
+| `~/.lark-channel/config.toml` | root config，包含 profiles 和 active profile |
 | `~/.lark-channel/active-profile` | 最近选择的 profile |
 | `~/.lark-channel/profiles/<profile>/sessions.json` | 会话状态 |
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | agent-aware 会话索引 |
@@ -390,23 +393,14 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 
 ### 高级：直接改配置文件
 
-不想在飞书里点的话，`/invite`、`/config` 背后写的是 `~/.lark-channel/config.json` 中对应 profile 的 `access` 字段。空白名单表示这个名单没人，不表示所有人都能用。下面只是 profile 里的字段片段，不要整段覆盖 `config.json`：
+不想在飞书里点的话，`/invite`、`/config` 背后写的是 `~/.lark-channel/config.toml` 中对应 profile 的 `access` 字段。空白名单表示这个名单没人，不表示所有人都能用。下面只是 profile 里的字段片段，不要整段覆盖 `config.toml`：
 
-```json
-{
-  "schemaVersion": 2,
-  "profiles": {
-    "claude": {
-      "agentKind": "claude",
-      "access": {
-        "allowedUsers": ["ou_xxxxxxxxxxxxx"],
-        "allowedChats": ["oc_xxxxxxxxxxxxx"],
-        "admins": ["ou_xxxxxxxxxxxxx"],
-        "requireMentionInGroup": true
-      }
-    }
-  }
-}
+```toml
+[profiles.claude.access]
+allowedUsers = ["ou_xxxxxxxxxxxxx"]
+allowedChats = ["oc_xxxxxxxxxxxxx"]
+admins = ["ou_xxxxxxxxxxxxx"]
+requireMentionInGroup = true
 ```
 
 `allowedUsers` / `admins` 填用户 `open_id`，`allowedChats` 填群 `chat_id`。手动找 ID 最简单的办法：让对方给 bot 发条消息（群里就 @ 它一下），然后看当前 profile 的日志：

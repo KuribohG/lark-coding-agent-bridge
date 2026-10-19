@@ -1,3 +1,4 @@
+import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -73,7 +74,7 @@ describe('profile management commands', () => {
 
     await runProfileUse('codex-dev', { rootDir: root });
 
-    const rootConfig = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as RootConfig;
+    const rootConfig = decodeFixture(await readFile(join(root, 'config.toml'), 'utf8')) as RootConfig;
     await expect(readFile(join(root, 'active-profile'), 'utf8')).resolves.toBe('codex-dev\n');
     expect(rootConfig.activeProfile).toBe('codex-dev');
     expect(await readFile(registryFile, 'utf8')).toBe(beforeRegistry);
@@ -103,7 +104,7 @@ async function writeProfiles(root: string, activeProfile: string, names: string[
     preferences: {},
     profiles,
   };
-  await writeFile(join(root, 'config.json'), `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  await writeFile(join(root, 'config.toml'), `${encodeFixture(config, null, 2)}\n`, 'utf8');
   await writeFile(join(root, 'active-profile'), `${activeProfile}\n`, 'utf8');
 }
 
@@ -128,5 +129,5 @@ async function writeRegistry(root: string, entries: ProcessEntry[]): Promise<voi
 
 async function writeJson(path: string, value: unknown): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  await writeFile(path, `${encodeFixture(value, null, 2)}\n`, 'utf8');
 }

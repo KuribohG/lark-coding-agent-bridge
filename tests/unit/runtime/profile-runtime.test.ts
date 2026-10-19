@@ -1,3 +1,5 @@
+import { parseDocument } from '../../../src/config/document';
+import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { delimiter, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -52,54 +54,13 @@ const app = {
 };
 
 describe('profile runtime resolver', () => {
-  it('recovers a crashed legacy lark-cli source overlay before loading the root config', async () => {
-    const root = await tmpRoot();
-    const configFile = join(root, 'config.json');
-    const { backupFile, markerFile } = legacyLarkCliSourceOverlayPaths(configFile);
-    const original = `${JSON.stringify({
-      schemaVersion: 2,
-      activeProfile: 'codex',
-      profiles: {
-        codex: createDefaultProfileConfig({
-          agentKind: 'codex',
-          accounts: { app },
-          codex: { binaryPath: 'codex' },
-        }),
-      },
-    }, null, 2)}\n`;
-    const overlay = `${JSON.stringify({ accounts: { app: { id: 'cli_overlay' } } }, null, 2)}\n`;
-    await writeFile(backupFile, original, { mode: 0o600 });
-    await writeFile(markerFile, `${JSON.stringify({ hadConfig: true, profile: 'codex' })}\n`, {
-      mode: 0o600,
-    });
-    await writeFile(configFile, overlay, { mode: 0o600 });
-
-    const runtime = await resolveProfileRuntime({
-      config: configFile,
-      profile: 'codex',
-      allowBootstrap: false,
-    });
-
-    expect(runtime.profile).toBe('codex');
-    const recovered = JSON.parse(await readFile(configFile, 'utf8')) as {
-      schemaVersion?: number;
-      profiles?: Record<string, unknown>;
-      accounts?: unknown;
-    };
-    expect(recovered.schemaVersion).toBe(2);
-    expect(recovered.profiles?.codex).toBeTruthy();
-    expect(recovered.accounts).toBeUndefined();
-    await expect(readFile(backupFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
-    await expect(readFile(markerFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
-  });
-
   it('bootstraps first-run profile from existing app credentials without QR registration', async () => {
     const root = await tmpRoot();
     const workspace = join(root, 'workspace');
     await mkdir(join(workspace, '.git'), { recursive: true });
 
     const runtime = await resolveProfileRuntime({
-      config: join(root, 'config.json'),
+      config: join(root, 'config.toml'),
       agent: 'claude',
       workspace,
       allowBootstrap: true,
@@ -112,8 +73,8 @@ describe('profile runtime resolver', () => {
       tenant: 'feishu';
     });
 
-    const savedText = await readFile(join(root, 'config.json'), 'utf8');
-    const saved = JSON.parse(savedText) as {
+    const savedText = await readFile(join(root, 'config.toml'), 'utf8');
+    const saved = decodeFixture(savedText) as {
       activeProfile: string;
       profiles: Record<string, { accounts: { app: { id: string; secret: unknown } } }>;
       secrets?: { providers?: Record<string, { command?: string }> };
@@ -149,7 +110,7 @@ describe('profile runtime resolver', () => {
 
     await expect(
       resolveProfileRuntime({
-        config: join(root, 'config.json'),
+        config: join(root, 'config.toml'),
         agent: 'claude',
         workspace,
         allowBootstrap: true,
@@ -162,7 +123,7 @@ describe('profile runtime resolver', () => {
         tenant: 'feishu';
       }),
     ).rejects.toThrow(/code=999/);
-    await expect(readFile(join(root, 'config.json'), 'utf8')).rejects.toMatchObject({
+    await expect(readFile(join(root, 'config.toml'), 'utf8')).rejects.toMatchObject({
       code: 'ENOENT',
     });
   });
@@ -173,14 +134,14 @@ describe('profile runtime resolver', () => {
     await withTty(false, false, async () => {
       await expect(
         resolveProfileRuntime({
-          config: join(root, 'config.json'),
+          config: join(root, 'config.toml'),
           agent: 'claude',
           allowBootstrap: true,
         }),
       ).rejects.toThrow(/非交互模式无法完成扫码创建应用/);
     });
 
-    await expect(readFile(join(root, 'config.json'), 'utf8')).rejects.toMatchObject({
+    await expect(readFile(join(root, 'config.toml'), 'utf8')).rejects.toMatchObject({
       code: 'ENOENT',
     });
   });
@@ -191,7 +152,7 @@ describe('profile runtime resolver', () => {
     await withTty(false, false, async () => {
       await expect(
         resolveProfileRuntime({
-          config: join(root, 'config.json'),
+          config: join(root, 'config.toml'),
           agent: 'claude',
           allowBootstrap: true,
           appId: 'cli_missing_secret',
@@ -200,7 +161,7 @@ describe('profile runtime resolver', () => {
       ).rejects.toThrow(/非交互模式缺少 App Secret/);
     });
 
-    await expect(readFile(join(root, 'config.json'), 'utf8')).rejects.toMatchObject({
+    await expect(readFile(join(root, 'config.toml'), 'utf8')).rejects.toMatchObject({
       code: 'ENOENT',
     });
   });
@@ -209,7 +170,7 @@ describe('profile runtime resolver', () => {
     const root = await tmpRoot();
 
     const runtime = await resolveProfileRuntime({
-      config: join(root, 'config.json'),
+      config: join(root, 'config.toml'),
       agent: 'claude',
       allowBootstrap: true,
       appId: 'cli_existing',
@@ -222,8 +183,8 @@ describe('profile runtime resolver', () => {
     });
 
     const managed = await realpath(resolveAppPaths({ rootDir: root, profile: 'claude' }).defaultWorkspaceDir);
-    const savedText = await readFile(join(root, 'config.json'), 'utf8');
-    const saved = JSON.parse(savedText) as {
+    const savedText = await readFile(join(root, 'config.toml'), 'utf8');
+    const saved = decodeFixture(savedText) as {
       profiles: Record<string, { workspaces?: { default?: string } }>;
     };
     expect(runtime.profileConfig.workspaces.default).toBe(managed);
@@ -246,7 +207,7 @@ describe('profile runtime resolver', () => {
       let error: Error | undefined;
       try {
         await resolveProfileRuntime({
-          config: join(root, 'config.json'),
+          config: join(root, 'config.toml'),
           allowBootstrap: true,
           selectAgent: () => undefined,
         });
@@ -293,7 +254,7 @@ describe('profile runtime resolver', () => {
     try {
       const runtime = await withTty(true, true, () =>
         resolveProfileRuntime({
-          config: join(root, 'config.json'),
+          config: join(root, 'config.toml'),
           allowBootstrap: true,
           selectAgent: (detected) => {
             expect(detected.map((agent) => agent.kind)).toEqual(['claude', 'codex']);
@@ -320,238 +281,7 @@ describe('profile runtime resolver', () => {
     }
   });
 
-  it('adds a managed default workspace when converting an explicit legacy config', async () => {
-    const root = await tmpRoot();
-    await writeFile(
-      join(root, 'config.json'),
-      `${JSON.stringify({
-        accounts: { app },
-        preferences: {},
-      }, null, 2)}\n`,
-    );
-
-    const runtime = await resolveProfileRuntime({
-      config: join(root, 'config.json'),
-      agent: 'claude',
-      allowBootstrap: true,
-    });
-
-    const managed = await realpath(resolveAppPaths({ rootDir: root, profile: 'claude' }).defaultWorkspaceDir);
-    const savedText = await readFile(join(root, 'config.json'), 'utf8');
-    const saved = JSON.parse(savedText) as {
-      profiles: Record<string, { workspaces?: { default?: string } }>;
-    };
-    expect(runtime.profileConfig.workspaces.default).toBe(managed);
-    expect(saved.profiles.claude?.workspaces?.default).toBe(managed);
-  });
-
-  it('uses a requested workspace when converting an explicit legacy config', async () => {
-    const root = await tmpRoot();
-    const workspace = join(root, 'requested-workspace');
-    await mkdir(workspace, { recursive: true });
-    await writeFile(
-      join(root, 'config.json'),
-      `${JSON.stringify({
-        accounts: { app },
-        preferences: {},
-      }, null, 2)}\n`,
-    );
-
-    const runtime = await resolveProfileRuntime({
-      config: join(root, 'config.json'),
-      agent: 'claude',
-      workspace,
-      allowBootstrap: true,
-    });
-
-    const workspaceRealpath = await realpath(workspace);
-    expect(runtime.profileConfig.workspaces.default).toBe(workspaceRealpath);
-  });
-
-  it('migrates an origin-main v1 config to canonical profile permissions without stored sandbox', async () => {
-    const root = await tmpRoot();
-    const workspace = join(root, 'requested-workspace');
-    await mkdir(workspace, { recursive: true });
-    await writeFile(
-      join(root, 'config.json'),
-      `${JSON.stringify({
-        accounts: { app },
-        preferences: {
-          messageReply: 'card',
-          showToolCalls: false,
-          maxConcurrentRuns: 3,
-          requireMentionInGroup: false,
-          access: {
-            allowedUsers: ['ou_allowed'],
-            allowedChats: ['oc_allowed'],
-            admins: ['ou_admin'],
-          },
-        },
-      }, null, 2)}\n`,
-    );
-
-    const runtime = await resolveProfileRuntime({
-      config: join(root, 'config.json'),
-      profile: 'claude',
-      workspace,
-      allowBootstrap: false,
-    });
-    const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as {
-      profiles: Record<string, {
-        permissions?: unknown;
-        sandbox?: unknown;
-        access?: unknown;
-        preferences?: unknown;
-      }>;
-    };
-
-    expect(runtime.profileConfig.permissions).toEqual({
-      defaultAccess: 'full',
-      maxAccess: 'full',
-    });
-    expect(runtime.profileConfig.access).toEqual({
-      allowedUsers: ['ou_allowed'],
-      allowedChats: ['oc_allowed'],
-      admins: ['ou_admin'],
-      requireMentionInGroup: false,
-    });
-    expect(runtime.profileConfig.preferences).toMatchObject({
-      messageReply: 'card',
-      showToolCalls: false,
-      maxConcurrentRuns: 3,
-    });
-    expect(saved.profiles.claude?.permissions).toEqual({
-      defaultAccess: 'full',
-      maxAccess: 'full',
-    });
-    expect(saved.profiles.claude).not.toHaveProperty('sandbox');
-    expect(saved.profiles.claude?.access).toEqual({
-      allowedUsers: ['ou_allowed'],
-      allowedChats: ['oc_allowed'],
-      admins: ['ou_admin'],
-      requireMentionInGroup: false,
-    });
-    expect(saved.profiles.claude?.preferences).toMatchObject({
-      messageReply: 'card',
-      showToolCalls: false,
-      maxConcurrentRuns: 3,
-    });
-  });
-
-  it('uses the requested agent when migrating a legacy config into an explicit profile', async () => {
-    const root = await tmpRoot();
-    const bin = join(root, 'bin');
-    const codex = await writeExecutable(bin, 'codex');
-    const oldPath = process.env.PATH;
-    const oldHome = process.env.LARK_CHANNEL_HOME;
-    process.env.PATH = `${bin}${delimiter}${oldPath ?? ''}`;
-    process.env.LARK_CHANNEL_HOME = root;
-    await writeFile(
-      join(root, 'config.json'),
-      `${JSON.stringify({
-        accounts: { app },
-        preferences: {},
-      }, null, 2)}\n`,
-    );
-
-    try {
-      const runtime = await resolveProfileRuntime({
-        profile: 'codex',
-        agent: 'codex',
-        allowBootstrap: true,
-      });
-      const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as {
-        profiles: Record<string, { agentKind: string; codex?: { binaryPath?: string } }>;
-      };
-
-      expect(runtime.profile).toBe('codex');
-      expect(runtime.profileConfig.agentKind).toBe('codex');
-      expect(runtime.profileConfig.codex?.binaryPath).toBe(codex);
-      expect(saved.profiles.codex?.agentKind).toBe('codex');
-      expect(saved.profiles.codex?.codex?.binaryPath).toBe(codex);
-    } finally {
-      process.env.PATH = oldPath;
-      if (oldHome === undefined) {
-        delete process.env.LARK_CHANNEL_HOME;
-      } else {
-        process.env.LARK_CHANNEL_HOME = oldHome;
-      }
-    }
-  });
-
-  it('runs the same v2 migration for explicit config paths', async () => {
-    const root = await tmpRoot();
-    const bin = join(root, 'bin');
-    const codex = await writeExecutable(bin, 'codex');
-    const oldPath = process.env.PATH;
-    process.env.PATH = `${bin}${delimiter}${oldPath ?? ''}`;
-    await writeFile(
-      join(root, 'config.json'),
-      `${JSON.stringify({
-        accounts: { app },
-        preferences: {},
-      }, null, 2)}\n`,
-    );
-    await writeFile(
-      join(root, 'sessions.json'),
-      `${JSON.stringify({ chat_a: { threadId: 'thread-1' } }, null, 2)}\n`,
-    );
-
-    try {
-      const runtime = await resolveProfileRuntime({
-        config: join(root, 'config.json'),
-        profile: 'codex',
-        agent: 'codex',
-        allowBootstrap: true,
-      });
-
-      expect(runtime.profileConfig.agentKind).toBe('codex');
-      expect(runtime.profileConfig.codex).toMatchObject({
-        binaryPath: codex,
-      });
-      expect(runtime.profileConfig.codex?.realpath).toBeUndefined();
-      expect(runtime.profileConfig.codex?.version).toBeUndefined();
-      expect(runtime.profileConfig.codex?.sha256).toBeUndefined();
-      await expect(readFile(join(root, 'profiles', 'codex', 'sessions.json'), 'utf8')).resolves
-        .toContain('thread-1');
-      await expect(readFile(join(root, 'sessions.json'), 'utf8')).rejects.toMatchObject({
-        code: 'ENOENT',
-      });
-    } finally {
-      process.env.PATH = oldPath;
-    }
-  });
-
-  it('imports a valid legacy workspace when converting an explicit legacy config', async () => {
-    const root = await tmpRoot();
-    const workspace = join(root, 'legacy-workspace');
-    await mkdir(workspace, { recursive: true });
-    await writeFile(
-      join(root, 'config.json'),
-      `${JSON.stringify({
-        accounts: { app },
-        preferences: {},
-      }, null, 2)}\n`,
-    );
-    await writeFile(
-      join(root, 'workspaces.json'),
-      `${JSON.stringify({
-        chats: { chat_a: { cwd: workspace } },
-        named: {},
-      }, null, 2)}\n`,
-    );
-
-    const runtime = await resolveProfileRuntime({
-      config: join(root, 'config.json'),
-      agent: 'claude',
-      allowBootstrap: true,
-    });
-
-    const workspaceRealpath = await realpath(workspace);
-    expect(runtime.profileConfig.workspaces.default).toBe(workspaceRealpath);
-  });
-
-  it('resolves the active Codex profile from a v2 root config', async () => {
+  it('resolves the active Codex profile from TOML', async () => {
     const root = await tmpRoot();
     await writeProfileRoot(root, 'codex-dev', {
       claude: createDefaultProfileConfig({ agentKind: 'claude', accounts: { app } }),
@@ -562,175 +292,11 @@ describe('profile runtime resolver', () => {
       }),
     });
 
-    const runtime = await resolveProfileRuntime({ config: join(root, 'config.json') });
+    const runtime = await resolveProfileRuntime({ config: join(root, 'config.toml') });
 
     expect(runtime.profile).toBe('codex-dev');
     expect(runtime.profileConfig.agentKind).toBe('codex');
     expect(runtime.appPaths.profileDir).toBe(join(root, 'profiles', 'codex-dev'));
-  });
-
-  it('canonicalizes legacy Codex sandbox while fixing old Codex runtime defaults', async () => {
-    const root = await tmpRoot();
-    const legacyCodex = createDefaultProfileConfig({
-      agentKind: 'codex',
-      accounts: { app: { ...app, id: 'cli_codex' } },
-      codex: { binaryPath: '/usr/local/bin/codex' },
-    }) as unknown as Record<string, unknown>;
-    legacyCodex.sandbox = {
-      default: 'read-only',
-      max: 'read-only',
-      defaultMode: 'read-only',
-      maxMode: 'read-only',
-    };
-    delete legacyCodex.permissions;
-    delete legacyCodex.permissionSource;
-    (legacyCodex.codex as { inheritCodexHome?: boolean }).inheritCodexHome = false;
-    await writeProfileRoot(root, 'codex-dev', {
-      'codex-dev': legacyCodex,
-    });
-
-    const runtime = await resolveProfileRuntime({ config: join(root, 'config.json') });
-    const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as {
-      profiles: Record<string, {
-        permissions?: unknown;
-        sandbox?: unknown;
-        permissionSource?: unknown;
-        codex?: { inheritCodexHome?: boolean; ignoreUserConfig?: boolean };
-      }>;
-    };
-
-    expect(runtime.profileConfig.permissions).toEqual({
-      defaultAccess: 'read-only',
-      maxAccess: 'read-only',
-    });
-    expect(runtime.profileConfig.sandbox).toMatchObject({
-      defaultMode: 'read-only',
-      maxMode: 'read-only',
-    });
-    expect(runtime.profileConfig.codex?.inheritCodexHome).toBe(true);
-    expect(runtime.profileConfig.codex?.ignoreUserConfig).toBe(false);
-    expect(saved.profiles['codex-dev']?.permissions).toEqual({
-      defaultAccess: 'read-only',
-      maxAccess: 'read-only',
-    });
-    expect(saved.profiles['codex-dev']).not.toHaveProperty('sandbox');
-    expect(saved.profiles['codex-dev']).not.toHaveProperty('permissionSource');
-    expect(saved.profiles['codex-dev']?.codex?.inheritCodexHome).toBe(true);
-    expect(saved.profiles['codex-dev']?.codex?.ignoreUserConfig).toBe(false);
-  });
-
-  it('upgrades legacy Claude workspace sandbox default to full access', async () => {
-    const root = await tmpRoot();
-    const legacyClaude = createDefaultProfileConfig({
-      agentKind: 'claude',
-      accounts: { app },
-    }) as unknown as Record<string, unknown>;
-    legacyClaude.sandbox = {
-      default: 'workspace-write',
-      max: 'workspace-write',
-      defaultMode: 'workspace-write',
-      maxMode: 'workspace-write',
-    };
-    delete legacyClaude.permissions;
-    delete legacyClaude.permissionSource;
-    await writeProfileRoot(root, 'claude', { claude: legacyClaude });
-
-    const runtime = await resolveProfileRuntime({ config: join(root, 'config.json') });
-    const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as {
-      migrations?: { permissionDefaultsV1?: string[] };
-      profiles: Record<string, {
-        permissions?: unknown;
-        sandbox?: unknown;
-        permissionSource?: unknown;
-      }>;
-    };
-
-    expect(runtime.profileConfig.permissions).toEqual({
-      defaultAccess: 'full',
-      maxAccess: 'full',
-    });
-    expect(runtime.profileConfig.sandbox).toMatchObject({
-      defaultMode: 'danger-full-access',
-      maxMode: 'danger-full-access',
-    });
-    expect(saved.profiles.claude?.permissions).toEqual({
-      defaultAccess: 'full',
-      maxAccess: 'full',
-    });
-    expect(saved.profiles.claude).not.toHaveProperty('sandbox');
-    expect(saved.profiles.claude).not.toHaveProperty('permissionSource');
-    expect(saved.migrations?.permissionDefaultsV1).toContain('claude');
-  });
-
-  it('canonicalizes legacy Claude read-only sandbox without widening permissions', async () => {
-      const root = await tmpRoot();
-      const legacyClaude = createDefaultProfileConfig({
-        agentKind: 'claude',
-        accounts: { app },
-      }) as unknown as Record<string, unknown>;
-      legacyClaude.sandbox = {
-        default: 'read-only',
-        max: 'read-only',
-        defaultMode: 'read-only',
-        maxMode: 'read-only',
-      };
-      delete legacyClaude.permissions;
-      delete legacyClaude.permissionSource;
-      await writeProfileRoot(root, 'claude', { claude: legacyClaude });
-
-      const runtime = await resolveProfileRuntime({ config: join(root, 'config.json') });
-      const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as {
-        profiles: Record<string, {
-          permissions?: unknown;
-          sandbox?: unknown;
-          permissionSource?: unknown;
-        }>;
-      };
-
-      expect(runtime.profileConfig.permissions).toEqual({
-        defaultAccess: 'read-only',
-        maxAccess: 'read-only',
-      });
-      expect(runtime.profileConfig.sandbox).toMatchObject({
-        defaultMode: 'read-only',
-        maxMode: 'read-only',
-      });
-      expect(saved.profiles.claude?.permissions).toEqual({
-        defaultAccess: 'read-only',
-        maxAccess: 'read-only',
-      });
-      expect(saved.profiles.claude).not.toHaveProperty('sandbox');
-      expect(saved.profiles.claude).not.toHaveProperty('permissionSource');
-  });
-
-  it('upgrades unmarked canonical Claude workspace defaults from internal migrations', async () => {
-    const root = await tmpRoot();
-    const claude = createDefaultProfileConfig({
-      agentKind: 'claude',
-      accounts: { app },
-      permissions: {
-        defaultAccess: 'workspace',
-        maxAccess: 'workspace',
-      },
-    });
-    await writeProfileRoot(root, 'claude', { claude });
-
-    const runtime = await resolveProfileRuntime({ config: join(root, 'config.json') });
-    const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as {
-      migrations?: { permissionDefaultsV1?: string[] };
-      profiles: Record<string, { permissions?: unknown; sandbox?: unknown }>;
-    };
-
-    expect(runtime.profileConfig.permissions).toEqual({
-      defaultAccess: 'full',
-      maxAccess: 'full',
-    });
-    expect(saved.profiles.claude?.permissions).toEqual({
-      defaultAccess: 'full',
-      maxAccess: 'full',
-    });
-    expect(saved.profiles.claude).not.toHaveProperty('sandbox');
-    expect(saved.migrations?.permissionDefaultsV1).toContain('claude');
   });
 
   it('keeps marked canonical Claude workspace permissions for users who lower access after migration', async () => {
@@ -747,8 +313,8 @@ describe('profile runtime resolver', () => {
       migrations: { permissionDefaultsV1: ['claude'] },
     });
 
-    const runtime = await resolveProfileRuntime({ config: join(root, 'config.json') });
-    const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as {
+    const runtime = await resolveProfileRuntime({ config: join(root, 'config.toml') });
+    const saved = decodeFixture(await readFile(join(root, 'config.toml'), 'utf8')) as {
       migrations?: { permissionDefaultsV1?: string[] };
       profiles: Record<string, { permissions?: unknown; sandbox?: unknown }>;
     };
@@ -761,7 +327,6 @@ describe('profile runtime resolver', () => {
       defaultAccess: 'workspace',
       maxAccess: 'workspace',
     });
-    expect(saved.profiles.claude).not.toHaveProperty('sandbox');
     expect(saved.migrations?.permissionDefaultsV1).toContain('claude');
   });
 
@@ -780,8 +345,8 @@ describe('profile runtime resolver', () => {
     });
     await writeProfileRoot(root, 'claude', { claude });
 
-    const runtime = await resolveProfileRuntime({ config: join(root, 'config.json') });
-    const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as {
+    const runtime = await resolveProfileRuntime({ config: join(root, 'config.toml') });
+    const saved = decodeFixture(await readFile(join(root, 'config.toml'), 'utf8')) as {
       migrations?: { permissionDefaultsV1?: string[] };
       profiles: Record<string, { permissions?: unknown; sandbox?: unknown }>;
     };
@@ -800,8 +365,7 @@ describe('profile runtime resolver', () => {
         permissionMode: 'acceptEdits',
       },
     });
-    expect(saved.profiles.claude).not.toHaveProperty('sandbox');
-    expect(saved.migrations?.permissionDefaultsV1).toContain('claude');
+    expect(saved.migrations?.permissionDefaultsV1).toBeUndefined();
   });
 
   it('keeps legacy Claude mixed lower sandbox permissions when resolving an existing profile', async () => {
@@ -820,8 +384,8 @@ describe('profile runtime resolver', () => {
     delete legacyClaude.permissionSource;
     await writeProfileRoot(root, 'claude', { claude: legacyClaude });
 
-    const runtime = await resolveProfileRuntime({ config: join(root, 'config.json') });
-    const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as {
+    const runtime = await resolveProfileRuntime({ config: join(root, 'config.toml') });
+    const saved = decodeFixture(await readFile(join(root, 'config.toml'), 'utf8')) as {
       profiles: Record<string, {
         permissions?: unknown;
         sandbox?: unknown;
@@ -841,8 +405,7 @@ describe('profile runtime resolver', () => {
       defaultAccess: 'read-only',
       maxAccess: 'workspace',
     });
-    expect(saved.profiles.claude).not.toHaveProperty('sandbox');
-    expect(saved.profiles.claude).not.toHaveProperty('permissionSource');
+    expect(parseDocument(await readFile(join(root, 'config.toml'), 'utf8')).profiles.claude).not.toHaveProperty('permissionSource');
   });
 
   it('keeps explicit canonical lower permissions when resolving an existing profile', async () => {
@@ -857,8 +420,8 @@ describe('profile runtime resolver', () => {
     });
     await writeProfileRoot(root, 'claude', { claude });
 
-    const runtime = await resolveProfileRuntime({ config: join(root, 'config.json') });
-    const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as {
+    const runtime = await resolveProfileRuntime({ config: join(root, 'config.toml') });
+    const saved = decodeFixture(await readFile(join(root, 'config.toml'), 'utf8')) as {
       profiles: Record<string, {
         permissions?: unknown;
         sandbox?: unknown;
@@ -878,38 +441,7 @@ describe('profile runtime resolver', () => {
       defaultAccess: 'read-only',
       maxAccess: 'read-only',
     });
-    expect(saved.profiles.claude).not.toHaveProperty('sandbox');
-    expect(saved.profiles.claude).not.toHaveProperty('permissionSource');
-  });
-
-  it('upgrades legacy isolated Codex config even after sandbox was already upgraded', async () => {
-    const root = await tmpRoot();
-    const legacyCodex = createDefaultProfileConfig({
-      agentKind: 'codex',
-      accounts: { app: { ...app, id: 'cli_codex' } },
-      codex: { binaryPath: '/usr/local/bin/codex' },
-    }) as unknown as Record<string, unknown>;
-    delete legacyCodex.permissions;
-    delete legacyCodex.permissionSource;
-    (legacyCodex.codex as { inheritCodexHome?: boolean }).inheritCodexHome = false;
-    (legacyCodex.codex as { ignoreUserConfig?: boolean }).ignoreUserConfig = true;
-    await writeProfileRoot(root, 'codex-dev', {
-      'codex-dev': legacyCodex,
-    });
-
-    const runtime = await resolveProfileRuntime({ config: join(root, 'config.json') });
-    const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as {
-      profiles: Record<string, { codex?: { inheritCodexHome?: boolean; ignoreUserConfig?: boolean } }>;
-    };
-
-    expect(runtime.profileConfig.sandbox).toMatchObject({
-      defaultMode: 'danger-full-access',
-      maxMode: 'danger-full-access',
-    });
-    expect(runtime.profileConfig.codex?.inheritCodexHome).toBe(true);
-    expect(runtime.profileConfig.codex?.ignoreUserConfig).toBe(false);
-    expect(saved.profiles['codex-dev']?.codex?.inheritCodexHome).toBe(true);
-    expect(saved.profiles['codex-dev']?.codex?.ignoreUserConfig).toBe(false);
+    expect(parseDocument(await readFile(join(root, 'config.toml'), 'utf8')).profiles.claude).not.toHaveProperty('permissionSource');
   });
 
   it('keeps explicit canonical Codex home and user-config isolation settings', async () => {
@@ -931,8 +463,8 @@ describe('profile runtime resolver', () => {
       'codex-dev': codex,
     });
 
-    const runtime = await resolveProfileRuntime({ config: join(root, 'config.json') });
-    const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as {
+    const runtime = await resolveProfileRuntime({ config: join(root, 'config.toml') });
+    const saved = decodeFixture(await readFile(join(root, 'config.toml'), 'utf8')) as {
       profiles: Record<string, { codex?: { inheritCodexHome?: boolean; ignoreUserConfig?: boolean } }>;
     };
 
@@ -951,7 +483,7 @@ describe('profile runtime resolver', () => {
     profile.workspaces = {};
     await writeProfileRoot(root, 'claude', { claude: profile });
 
-    const runtime = await resolveProfileRuntime({ config: join(root, 'config.json') });
+    const runtime = await resolveProfileRuntime({ config: join(root, 'config.toml') });
 
     const managed = await realpath(resolveAppPaths({ rootDir: root, profile: 'claude' }).defaultWorkspaceDir);
     expect(runtime.profileConfig.workspaces.default).toBe(managed);
@@ -969,7 +501,7 @@ describe('profile runtime resolver', () => {
     });
 
     const runtime = await resolveProfileRuntime({
-      config: join(root, 'config.json'),
+      config: join(root, 'config.toml'),
       profile: 'claude',
     });
 
@@ -986,7 +518,7 @@ describe('profile runtime resolver', () => {
     let error: Error | undefined;
     try {
       await resolveProfileRuntime({
-        config: join(root, 'config.json'),
+        config: join(root, 'config.toml'),
         profile: 'codex',
         agent: 'codex',
         allowBootstrap: true,
@@ -1012,7 +544,7 @@ describe('profile runtime resolver', () => {
     });
 
     await expect(
-      resolveProfileRuntime({ config: join(root, 'config.json') }),
+      resolveProfileRuntime({ config: join(root, 'config.toml') }),
     ).rejects.toThrow(/profile not found/i);
   });
 
@@ -1040,14 +572,14 @@ describe('profile runtime resolver', () => {
 
     const runtime = await withTty(true, true, () =>
       resolveProfileRuntime({
-        config: join(root, 'config.json'),
+        config: join(root, 'config.toml'),
         profile: 'claude-regression',
         agent: 'claude',
         workspace,
         allowBootstrap: true,
       }),
     );
-    const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as {
+    const saved = decodeFixture(await readFile(join(root, 'config.toml'), 'utf8')) as {
       activeProfile: string;
       profiles: Record<string, { agentKind: string; accounts: { app: { id: string } } }>;
     };
@@ -1083,7 +615,7 @@ describe('profile runtime resolver', () => {
     };
     await writeProfileRoot(root, 'codex-dev', { 'codex-dev': codex });
 
-    const runtime = await resolveProfileRuntime({ config: join(root, 'config.json') });
+    const runtime = await resolveProfileRuntime({ config: join(root, 'config.toml') });
 
     expect(runtime.profileConfig.workspaces.default).toBe('/repo/project');
     expect(runtime.profileConfig.codex).not.toHaveProperty('flags');
@@ -1107,24 +639,24 @@ describe('profile runtime resolver', () => {
     });
 
     const changed = await materializeEnvSecretForService({
-      config: join(root, 'config.json'),
+      config: join(root, 'config.toml'),
       profile: 'codex-dev',
     });
 
-    const saved = JSON.parse(await readFile(join(root, 'config.json'), 'utf8')) as {
+    const saved = decodeFixture(await readFile(join(root, 'config.toml'), 'utf8')) as {
       profiles: Record<string, { accounts: { app: { secret: unknown } } }>;
       secrets?: { providers?: Record<string, { command?: string }> };
     };
     const appPaths = resolveAppPaths({ rootDir: root, profile: 'codex-dev' });
     const secret = await getSecret(secretKeyForApp('cli_codex'), appPaths);
     const runtime = await resolveProfileRuntime({
-      config: join(root, 'config.json'),
+      config: join(root, 'config.toml'),
       profile: 'codex-dev',
       allowBootstrap: false,
     });
     const projectionPath = await writeLarkCliSourceProjection(runtime.cfg, appPaths);
     const projectionText = await readFile(projectionPath, 'utf8');
-    const projection = JSON.parse(projectionText) as {
+    const projection = decodeFixture(projectionText) as {
       accounts: { app: { secret: unknown } };
       secrets?: { providers?: Record<string, { command?: string; env?: Record<string, string> }> };
     };
@@ -1172,8 +704,8 @@ async function writeProfileRoot(
 ): Promise<void> {
   await mkdir(root, { recursive: true });
   await writeFile(
-    join(root, 'config.json'),
-    `${JSON.stringify({
+    join(root, 'config.toml'),
+    `${encodeFixture({
       schemaVersion: 2,
       activeProfile,
       preferences: {},

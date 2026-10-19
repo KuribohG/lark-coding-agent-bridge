@@ -1,0 +1,233 @@
+import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { applyPreferencesChange, preparePreferencesChange } from '../../../src/config/preferences';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { parse } from 'smol-toml';
+import { documentToRoot, parseDocument, resolveRun, rootToDocument, formatDocument } from '../../../src/config/document';
+import { editToml, parseKeyPath } from '../../../src/config/toml-edit';
+import { loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
+import { inspectConfig, migrateConfig, patchConfig, reloadProfile } from '../../../src/config/service';
+import { larkDisplay } from '../../../src/channels/lark/config';
+import { filterWebState } from '../../../src/channels/web/config';
+import { initialState } from '../../../src/runtime/run-state';
+
+vi.mock('../../../src/runtime/model-settings', () => ({ modelEnvironment: async () => ({ defaults: {}, models: [] }) }));
+
+const source = `# handwritten configuration
+version = 3
+[defaults.run]
+model = "global-model" # keep this
+max_concurrent_runs = 3
+[agents.codex.run]
+effort = "high"
+[channels.lark]
+show_tools = false
+progress = "detailed"
+[channels.web]
+show_tools = true
+show_reasoning = false
+[profiles.bot]
+agent = "codex"
+[profiles.bot.accounts.app]
+id = "cli_test"
+secret = { source = "env", id = "TEST_SECRET" }
+tenant = "feishu"
+[profiles.bot.run]
+model = "profile-model"
+[profiles.other]
+agent = "claude"
+[profiles.other.accounts.app]
+id = "cli_other"
+secret = { source = "env", id = "OTHER_SECRET" }
+tenant = "feishu"
+`;
+const roots: string[] = [];
+afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+async function file(text = source) {
+  const root = await mkdtemp(join(tmpdir(), 'bridge-config-v3-')); roots.push(root);
+  const path = join(root, 'config.toml'); await writeFile(path, text); return path;
+}
+
+describe('layered configuration', () => {
+  it('inherits execution settings independently of each frontend', () => {
+    const doc = parseDocument(source); const root = documentToRoot(doc);
+    expect(root.profiles.bot!.preferences).toEqual({ model: 'profile-model', reasoningEffort: 'high', maxConcurrentRuns: 3 });
+    expect(root.profiles.other!.preferences.model).toBe('global-model');
+    expect(root.profiles.bot!.preferences).not.toHaveProperty('showToolCalls');
+    expect(root.profiles.bot!.channels?.lark).toMatchObject({ show_tools: false, progress: 'detailed' });
+    expect(root.profiles.bot!.channels?.web).toEqual({ show_tools: true, show_reasoning: false });
+    expect(resolveRun(doc, 'codex', 'bot').sources.model).toBe('profiles.bot.run.model');
+  });
+
+  it('distinguishes removing an override, native delegation and disabled values', () => {
+    const inherited = parseDocument(editToml(source, ['profiles','bot','run','model'], undefined));
+    expect(resolveRun(inherited, 'codex', 'bot').preferences.model).toBe('global-model');
+    const native = parseDocument(editToml(source, ['profiles','bot','run','model'], { source: 'native' }));
+    expect(resolveRun(native, 'codex', 'bot').preferences.model).toBeUndefined();
+    const zero = parseDocument(editToml(source, ['profiles','bot','run','idle_timeout_minutes'], 0));
+    expect(resolveRun(zero, 'codex', 'bot').preferences.runIdleTimeoutMinutes).toBe(0);
+  });
+
+  it.each([
+    'channels = false',
+    '[profiles.bot]\nagent = "codex"\n[profiles.bot.access]\nallowedUser = ["oops"]',
+    '[profiles.bot]\nagent = "codex"\n[profiles.bot.access]\nrequireMentionInGroup = "false"',
+    '[defaults.output]\nprogress = "brief"',
+    '[agents.codex.output]\nshow_tools = false',
+    '[profiles.bot.run]\nshow_tools = false',
+    '[channels.web]\nprogress = "brief"',
+    '[defaults.run]\nmax_concurrent_runs = 0',
+  ])('rejects misplaced or invalid settings: %s', fragment => {
+    expect(() => parseDocument(`version = 3\n${fragment}`)).toThrow();
+  });
+
+  it('rejects JSON instead of maintaining a second runtime format', async () => {
+    await expect(loadRootConfig(await file('{"schemaVersion":2,"profiles":{}}'))).rejects.toThrow();
+  });
+
+  it('writes only changed overrides and preserves unrelated comments', async () => {
+    const path = await file(); const root = (await loadRootConfig(path))!;
+    root.profiles.bot!.preferences.reasoningEffort = 'medium';
+    await saveRootConfig(root, path);
+    const text = await readFile(path, 'utf8'); const doc = parseDocument(text);
+    expect(text).toContain('# handwritten configuration'); expect(text).toContain('# keep this');
+    expect(doc.profiles.bot!.run).toEqual({ model: 'profile-model', effort: 'medium' });
+    expect(doc.profiles.bot!.run).not.toHaveProperty('max_concurrent_runs');
+    expect(doc.channels?.lark).toEqual({ show_tools: false, progress: 'detailed' });
+    expect(doc.channels?.lark).not.toHaveProperty('profiles');
+  });
+
+  it('rejects stale saves and invalid patches without changing disk', async () => {
+    const path = await file(); const root = (await loadRootConfig(path))!;
+    const revision = (await inspectConfig(path, 'bot')).revision;
+    await patchConfig(path, ['channels','web','show_tools'], false, revision);
+    const current = await readFile(path, 'utf8');
+    root.profiles.bot!.preferences.model = 'stale';
+    await expect(saveRootConfig(root, path)).rejects.toThrow('改变');
+    await expect(patchConfig(path, ['defaults','run','model'], 'stale', revision)).rejects.toThrow('改变');
+    await expect(patchConfig(path, ['defaults','run','max_concurrent_runs'], 999)).rejects.toThrow();
+    expect(await readFile(path, 'utf8')).toBe(current);
+  });
+
+  it('changes channel overrides without changing execution or another frontend', async () => {
+    const path = await file();
+    await patchConfig(path, ['channels','lark','profiles','bot','show_tools'], true);
+    const root = (await loadRootConfig(path))!;
+    expect(larkDisplay(root.profiles.bot!).show_tools).toBe(true);
+    expect(larkDisplay(root.profiles.other!).show_tools).toBe(false);
+    expect(root.profiles.bot!.channels?.web?.show_tools).toBe(true);
+    expect(root.profiles.bot!.preferences.model).toBe('profile-model');
+  });
+
+  it('reloads safe settings while reporting reconstruction requirements', async () => {
+    const path = await file(); const root = (await loadRootConfig(path))!;
+    const state = { configPath: path, profile: 'bot', profileConfig: root.profiles.bot!, cfg: root.profiles.bot! };
+    await patchConfig(path, ['agents','codex','launch','binaryPath'], '/new/codex');
+    await patchConfig(path, ['channels','lark','progress'], 'off');
+    const result = await reloadProfile(state);
+    expect(result.restart).toContain('codex');
+    expect(state.profileConfig.codex?.binaryPath).toBe('codex');
+    expect(larkDisplay(state.cfg).progress).toBe('off');
+  });
+
+  it('lets a newly added profile inherit global execution and frontend settings', async () => {
+    const path = await file(); const root = (await loadRootConfig(path))!;
+    root.profiles.newbot = createDefaultProfileConfig({ agentKind: 'claude', accounts: root.profiles.other!.accounts });
+    await saveRootConfig(root, path);
+    expect(root.profiles.newbot.preferences.model).toBe('global-model');
+    expect(root.profiles.newbot.channels?.lark?.show_tools).toBe(false);
+    const doc = parseDocument(await readFile(path, 'utf8'));
+    expect(doc.profiles.newbot!.run).toEqual({});
+    expect(doc.channels?.lark.profiles?.newbot).toBeUndefined();
+  });
+
+  it('saves a short frontend form without pinning execution defaults or other channel fields', async () => {
+    const path = await file(source.replace('max_concurrent_runs = 3\n', ''));
+    const root = (await loadRootConfig(path))!;
+    const state = { configPath: path, profile: 'bot', profileConfig: root.profiles.bot!, cfg: root.profiles.bot! };
+    const change = await preparePreferencesChange(state, { configRevision: (await inspectConfig(path, 'bot')).revision, showToolCalls: true });
+    await applyPreferencesChange(state, change, 'disk');
+    const doc = parseDocument(await readFile(path, 'utf8'));
+    expect(doc.profiles.bot!.run).toEqual({ model: 'profile-model' });
+    expect(doc.channels?.lark.profiles.bot).toEqual({ show_tools: true });
+    expect(doc.channels?.web).toEqual({ show_tools: true, show_reasoning: false });
+    expect(doc.profiles.bot).not.toHaveProperty('larkCli');
+  });
+
+  it('restores parent settings even when a native override resolves to an omitted CLI parameter', async () => {
+    const path = await file(editToml(source, ['profiles', 'bot', 'run', 'model'], { source: 'native' }));
+    const root = (await loadRootConfig(path))!;
+    const state = { configPath: path, profile: 'bot', profileConfig: root.profiles.bot!, cfg: root.profiles.bot! };
+    await applyPreferencesChange(state, await preparePreferencesChange(state, { showToolCalls: true }), 'disk');
+    expect(parseDocument(await readFile(path, 'utf8')).profiles.bot!.run.model).toEqual({ source: 'native' });
+    const change = await preparePreferencesChange(state, { inheritSettings: ['model', 'showToolCalls'] });
+    await applyPreferencesChange(state, change, 'disk');
+    expect(state.cfg.preferences.model).toBe('global-model');
+    expect(state.cfg.channels?.lark?.show_tools).toBe(false);
+    expect(parseDocument(await readFile(path, 'utf8')).profiles.bot!.run).not.toHaveProperty('model');
+  });
+
+  it('rejects stale frontend forms before writing or changing runtime state', async () => {
+    const path = await file(); const root = (await loadRootConfig(path))!;
+    const state = { configPath: path, profile: 'bot', profileConfig: root.profiles.bot!, cfg: root.profiles.bot! };
+    const revision = (await inspectConfig(path, 'bot')).revision;
+    const change = await preparePreferencesChange(state, { configRevision: revision, showToolCalls: true });
+    await patchConfig(path, ['defaults', 'run', 'idle_timeout_minutes'], 5);
+    await expect(preparePreferencesChange(state, { configRevision: revision, showToolCalls: true })).rejects.toThrow('改变');
+    await expect(applyPreferencesChange(state, change, 'disk')).rejects.toThrow('改变');
+    expect(state.cfg.channels?.lark?.show_tools).toBe(false);
+    expect(parseDocument(await readFile(path, 'utf8')).channels?.lark).not.toHaveProperty('profiles');
+  });
+
+  it('filters Web presentation without modifying the execution event state', () => {
+    const state = { ...initialState, reasoning: { content: 'thinking', active: false },
+      blocks: [{ kind: 'tool' as const, tool: { id: 'x', name: 'Read', input: {}, status: 'done' as const } }] };
+    const displayed = filterWebState(state, { show_tools: false, show_reasoning: false });
+    expect(displayed.blocks).toEqual([]); expect(displayed.reasoning.content).toBe('');
+    expect(state.blocks).toHaveLength(1); expect(state.reasoning.content).toBe('thinking');
+  });
+});
+
+describe('TOML text editing', () => {
+  it('edits dotted and quoted keys, multiline values and inline tables', () => {
+    let text = '# comment\n[a]\n"b.c" = """hello\nworld""" # trailing\nx = { y = 1, z = 2 }\n';
+    text = editToml(text, ['a','b.c'], 'new');
+    text = editToml(text, ['a','x','y'], 3);
+    expect(parse(text)).toEqual({ a: { 'b.c': 'new', x: { y: 3, z: 2 } } });
+    expect(text).toContain('# comment'); expect(text).toContain('# trailing');
+  });
+  it('parses quoted paths and rejects unsafe paths and parser snippets containing secrets', () => {
+    expect(parseKeyPath('profiles."bot.one".run.model')).toEqual(['profiles', 'bot.one', 'run', 'model']);
+    expect(() => parseKeyPath('__proto__.key')).toThrow('invalid');
+    expect(() => editToml('secret = "sensitive-value"oops', ['secret'], 'replacement')).toThrow('TOML syntax error');
+    try { editToml('secret = "sensitive-value"oops', ['secret'], 'replacement'); }
+    catch (error) { expect(String(error)).not.toContain('sensitive-value'); }
+  });
+  it('replaces arrays instead of merging their members', () => {
+    expect(parse(editToml('[access]\nusers = ["a", "b"]\n', ['access','users'], []))).toEqual({ access: { users: [] } });
+  });
+  it('is byte-preserving for no-op saves', () => {
+    expect(editToml(source, ['defaults','run','model'], 'global-model')).toBe(source);
+  });
+});
+
+describe('one-time JSON conversion', () => {
+  it('preserves execution, display, credentials and scopes without changing source', async () => {
+    const root = documentToRoot(parseDocument(source));
+    root.profiles.bot!.preferences.messageReply = 'text';
+    delete root.profiles.bot!.channels;
+    const json = JSON.stringify(root);
+    const input = (await file()).replace('config.toml','old.json'); await writeFile(input, json);
+    const output = input.replace('old.json', 'converted.toml');
+    await migrateConfig(input, output, false);
+    expect(await readFile(input,'utf8')).toBe(json);
+    const migrated = (await loadRootConfig(output))!;
+    expect(migrated.profiles.bot!.channels?.lark?.reply_mode).toBe('markdown');
+    expect(migrated.profiles.bot!.accounts).toEqual(root.profiles.bot!.accounts);
+    expect(migrated.profiles.bot!.preferences.model).toBe('profile-model');
+    expect(parseDocument(await readFile(output,'utf8')).profiles.bot).not.toHaveProperty('preferences');
+    await expect(migrateConfig(input, output, false)).rejects.toThrow();
+  });
+});

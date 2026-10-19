@@ -7,16 +7,16 @@ Versions containing the monitor-config implementation can keep Lark conversation
 Run these commands with the new Bridge version and the intended root configuration:
 
 ```sh
-lark-channel-bridge monitors init --config /path/to/config.json
-lark-channel-bridge monitors check --config /path/to/config.json
-lark-channel-bridge monitors status --config /path/to/config.json
+lark-channel-bridge monitors init --config /path/to/config.toml
+lark-channel-bridge monitors check --config /path/to/config.toml
+lark-channel-bridge monitors status --config /path/to/config.toml
 ```
 
-`init` writes `monitors.toml` beside `config.json`, preserving existing source switches, scope, model omission/default semantics, credential references and notification targets. It sets `monitorConfigFile` in the root JSON and removes the old `inbox`/`gitlabCi` configuration copies. Profiles, credentials, polling cursors, items and drafts are not migrated or reset. A missing source gets a disabled starter section. Existing target files are never overwritten; use `configure` to select an existing file. Repeating `init` on an already migrated installation is a read-only check.
+`init` writes `monitors.toml` beside `config.toml`, preserving existing source switches, scope, model omission/default semantics, credential references and notification targets. It sets `bridge.monitors_file` in the root TOML and removes the inline monitoring configuration. Profiles, credentials, polling cursors, items and drafts are not migrated or reset. A missing source gets a disabled starter section. Existing target files are never overwritten; use `configure` to select an existing file. Repeating `init` on an already migrated installation is a read-only check.
 
-`--output /path/to/monitors.toml` chooses another new file. The root reference is relative to the root JSON's directory, independent of the process working directory. If creating the file succeeds but saving the root reference fails, the unselected file is retained; check it and use `configure` to complete migration.
+`--output /path/to/monitors.toml` chooses another new file. The root reference is relative to the root TOML's directory, independent of the process working directory. If creating the file succeeds but saving the root reference fails, the unselected file is retained; check it and use `configure` to complete migration.
 
-Older Bridge binaries do not resolve `monitorConfigFile`. Deploy the supporting version before migration. Installations without the root reference continue to use their original JSON settings.
+Older Bridge binaries do not resolve `bridge.monitors_file`. Deploy the supporting version before migration. Installations without the root reference continue to use their inline monitoring settings.
 
 ## Editing and applying
 
@@ -27,9 +27,9 @@ lark-channel-bridge monitors check /path/to/monitors.toml
 lark-channel-bridge monitors configure /path/to/monitors.toml
 ```
 
-`configure` selects that file directly; subsequent edits to it are authoritative. It replaces the complete monitoring configuration: omitting a source disables/removes its configuration rather than inheriting a stale JSON copy. `check` validates syntax, known fields, ranges, required settings and executor/screening references without reading credentials or contacting Lark, GitLab or a model. `status` reports the selected path and configured sources; it does not make live requests. For storage it also includes the last persisted collection state; compare timestamps before treating that state as current.
+`configure` selects that file directly; subsequent edits to it are authoritative. It replaces the complete monitoring configuration: omitting a source disables/removes its configuration rather than inheriting stale inline settings. `check` validates syntax, known fields, ranges, required settings and executor/screening references without reading credentials or contacting Lark, GitLab or a model. `status` reports the selected path and configured sources; it does not make live requests. For storage it also includes the last persisted collection state; compare timestamps before treating that state as current.
 
-Each running source manager checks configuration every 15 seconds, including when no web page is open. Slow shutdown/setup can delay application. Invalid or missing selected files leave an already running source on its last valid settings and expose an error; they never silently reactivate legacy JSON settings. A stopped/offline executor is still stopped even when the file is invalid. Repairing the file resumes normal configuration reload.
+Each running source manager checks configuration every 15 seconds, including when no web page is open. Slow shutdown/setup can delay application. Invalid or missing selected files leave an already running source on its last valid settings and expose an error; they never silently reactivate inline monitoring settings. A stopped/offline executor is still stopped even when the file is invalid. Repairing the file resumes normal configuration reload.
 
 The workbench shows the file path. Its Lark settings, mode and scope controls write this file. The legacy `ci-watch configure <json>` command also writes the GitLab section here once migration is selected. The writer holds the shared configuration lock, preserves the other source's values, checks for external edits before writing, saves the previous text as `monitors.toml.bak`, and atomically replaces the file. Programmatic edits normalize formatting and regenerate explanatory comments; the backup retains user comments. Repeated no-op saves leave the file and backup untouched. Workbench configuration drafts carry a revision; saving an older draft after another Lark configuration change is rejected. Reload settings after manual file edits before saving a draft configuration.
 

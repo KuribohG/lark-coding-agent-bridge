@@ -1,3 +1,4 @@
+import { larkDisplay } from '../channels/lark/config';
 import { rewriteFileLinks } from '../card/file-links';
 import type { CommandContext } from '../commands';
 import { claudeCapability, codexCapability } from '../agent/capability';
@@ -69,7 +70,7 @@ export class BtwManager {
 
   private async reply(ctx: CommandContext, answer: string): Promise<void> {
     if (this.closing) return;
-    const content = { markdown: `**${LABEL}**\n\n${rewriteFileLinks(answer, ctx.controls.cfg.preferences?.fileLinks)}` };
+    const content = { markdown: `**${LABEL}**\n\n${rewriteFileLinks(answer, larkDisplay(ctx.controls.cfg).file_links)}` };
     const options = {
       replyTo: ctx.msg.messageId,
       ...(ctx.msg.threadId ? { replyInThread: true } : {}),

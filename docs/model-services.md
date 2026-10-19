@@ -2,28 +2,31 @@
 
 首次配置可先阅读[用户手册：模型与账号](user-guide/models-and-accounts.md)。
 
-加载本功能的 Bridge 可在根配置 `modelServices` 中保存模型服务，供筛选、分类等直接 API 调用使用。配置不依赖 Claude/Codex profile，不启动 Agent，也不继承其工具或会话。当前接入协议为 Responses API；Claude Code/Codex 带工具任务继续使用各自的 CLI 配置。
+加载本功能的 Bridge 可在根配置 `model_services` 中保存模型服务，供筛选、分类等直接 API 调用使用。配置不依赖 Claude/Codex profile，不启动 Agent，也不继承其工具或会话。当前接入协议为 Responses API；Claude Code/Codex 带工具任务继续使用各自的 CLI 配置。
 
 ## 配置
 
-```json
-{
-  "modelServices": {
-    "screening": {
-      "protocol": "responses",
-      "baseUrl": "https://api.example.com/v1",
-      "model": "your-screening-model",
-      "apiKey": { "source": "env", "id": "SCREENING_API_KEY" }
-    }
-  },
-  "inbox": {
-    "executorProfile": "claude",
-    "analysisModel": "",
-    "triageService": "screening",
-    "triageModel": ""
-  }
-}
+在 `config.toml` 中添加服务：
+
+```toml
+[model_services.screening]
+protocol = "responses"
+baseUrl = "https://api.example.com/v1"
+model = "your-screening-model"
+apiKey = { source = "env", id = "SCREENING_API_KEY" }
 ```
+
+在已选中的 `monitors.toml` 配置对应来源：
+
+```toml
+[sources.lark]
+executorProfile = "claude"
+analysisModel = ""
+triageService = "screening"
+triageModel = ""
+```
+
+尚未拆分监控文件时，对应根配置节是 `[monitoring.lark]`。
 
 示例只展示相关字段；保留实际的 profile、授权、目标话题和启用配置。`baseUrl` 是 HTTPS API 根地址，请求时添加 `/responses`，不要填写完整 `/responses` 路径。地址不能包含用户名、密码、查询参数或片段。默认模型必填，服务名称为 1–64 位字母、数字、下划线或横线，并以字母或数字开头。
 
@@ -59,7 +62,7 @@ lark-channel-bridge model-service check screening
 lark-channel-bridge model-service remove screening
 ```
 
-每个子命令支持 `--config /absolute/path/bridge/config.json`。保存仅校验配置结构；`check` 还检查凭据是否可读取。两者均不请求模型，因此不代表远端模型或授权已经验收。服务配置通过配置锁合并保存，不会覆盖其他服务或 profile。运行新版 supervisor 时，所选服务配置变化会使助理重载，正在进行的旧任务沿用助理现有的取消处理；CLI 写入在下一次配置检查时生效。单 profile 进程的服务配置遵循其原有启动和后台模块行为。
+每个子命令支持 `--config /absolute/path/bridge/config.toml`。保存仅校验配置结构；`check` 还检查凭据是否可读取。两者均不请求模型，因此不代表远端模型或授权已经验收。服务配置通过配置锁合并保存，不会覆盖其他服务或 profile。运行新版 supervisor 时，所选服务配置变化会使助理重载，正在进行的旧任务沿用助理现有的取消处理；CLI 写入在下一次配置检查时生效。单 profile 进程的服务配置遵循其原有启动和后台模块行为。
 
 ## 模型选择和旧配置迁移
 
@@ -76,6 +79,6 @@ lark-channel-bridge model-service remove screening
 2. 运行本地检查。
 3. 在会话助理中选择新服务并保存；确认 `triageModel` 是否应使用服务默认值或保留原覆盖值。界面切换到独立服务会清空旧筛选 profile 和模型覆盖，便于明确采用新默认值。
 
-`analysisModel` 和 GitLab CI 的执行模型仍属于原生 Agent 任务设置，不读取 `modelServices`。飞书授权和通知身份始终属于执行 profile。只安装和配置 Claude 的用户现在也可设置独立筛选服务，无需创建 Codex profile。
+`analysisModel` 和 GitLab CI 的执行模型仍属于原生 Agent 任务设置，不读取 `model_services`。飞书授权和通知身份始终属于执行 profile。只安装和配置 Claude 的用户现在也可设置独立筛选服务，无需创建 Codex profile。
 
-服务配置位于 schema 2 根配置的新字段。旧 Bridge 不识别它，并可能在写回根配置时丢弃新字段；完成升级后再配置，避免由旧实例同时改写同一配置。推送或打包不会自动切换正在运行的 Bridge。
+服务配置位于 version 3 TOML 的 `model_services`。旧 Bridge 无法加载主 TOML；切换前需完成各实例升级。推送或打包不会自动切换正在运行的 Bridge。

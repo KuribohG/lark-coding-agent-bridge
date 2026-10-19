@@ -1,8 +1,8 @@
+import { checkConfig, showConfig, setConfig, unsetConfig, migrateToToml } from './commands/config';
 import { Command } from 'commander';
 import { useBundledLarkCli } from '../platform/bundled-tools';
 import pkg from '../../package.json';
 import { formatAgentPreflightDiagnostic, getAgentPreflightDiagnostic } from '../agent/preflight';
-import { runMigrate } from './commands/migrate';
 import { runKillCli, runPs } from './commands/ps';
 import {
   runSecretsGet,
@@ -69,6 +69,7 @@ program
   });
 
 program.command('web')
+  .option('-c, --config <path>', 'execution defaults and Web presentation from TOML')
   .description('Run standalone browser chat without a Lark account')
   .requiredOption('--agent <kind>', 'claude or codex')
   .requiredOption('--workspace <path>', 'workspace for browser conversations')
@@ -78,15 +79,12 @@ program.command('web')
   .option('--model <id>', 'model for new runs')
   .action(runWeb);
 
-program
-  .command('migrate')
-  .description('Migrate legacy bridge config/state into the current profile layout')
-  .option('-c, --config <path>', 'path to config file')
-  .option('--profile <name>', 'target profile name for legacy v1 config migration')
-  .option('--agent <kind>', 'agent kind for legacy v1 profile migration (claude or codex)')
-  .action(async (opts: { config?: string; profile?: string; agent?: string }) => {
-    await runMigrate(opts);
-  });
+const config = program.command('config').description('Inspect and edit layered execution and channel configuration');
+config.command('check').option('-c, --config <path>').action(checkConfig);
+config.command('show').option('-c, --config <path>').option('--profile <name>').option('--sources').action(showConfig);
+config.command('set <key> <value>').option('-c, --config <path>').action(setConfig);
+config.command('unset <key>').option('-c, --config <path>').action(unsetConfig);
+config.command('migrate').option('-c, --config <path>').option('--output <path>').option('--dry-run').action(migrateToToml);
 
 const profile = program
   .command('profile')

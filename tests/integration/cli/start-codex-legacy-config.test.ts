@@ -1,3 +1,4 @@
+import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -115,7 +116,7 @@ async function createLegacyCodexConfig(options: {
   });
   profile.workspaces.default = workspace;
   const rootConfig = createRootConfig('codex', profile, secrets);
-  const configPath = join(root, 'config.json');
+  const configPath = join(root, 'config.toml');
   await saveRootConfig(rootConfig, configPath);
 
   return { root, configPath, workspace, codex };

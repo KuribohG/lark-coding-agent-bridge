@@ -1,3 +1,6 @@
+import { readFile } from 'node:fs/promises';
+import { configRevision } from './profile-store';
+import { larkDisplay } from '../channels/lark/config';
 import { dirname } from 'node:path';
 import { resolveAppPaths } from './app-paths';
 import { setSecret } from './keystore';
@@ -7,7 +10,6 @@ import {
   saveRootConfig,
   withConfigFileLock,
 } from './profile-store';
-import { saveConfig } from './store';
 import { secretKeyForApp, type AppConfig, type AppPreferences } from './schema';
 import type { ProfileAccess, ProfileConfig, ProfileMode } from './profile-schema';
 import { applyLarkCliIdentityPolicy } from '../lark-cli/identity-policy';
@@ -36,13 +38,13 @@ export async function saveModelPreferences(
 ): Promise<void> {
   await withConfigFileLock(state.configPath, async () => {
     const root = await loadRootConfig(state.configPath);
-    if (!root) throw new Error('请先将配置迁移到 profile 格式。');
+    if (!root) throw new Error('root config not found');
     const profile = root.profiles[state.profile];
     if (!profile) throw new Error(`profile not found: ${state.profile}`);
     root.profiles[state.profile] = { ...profile, preferences: { ...profile.preferences, ...patch } };
     await saveRootConfig(root, state.configPath);
-    state.profileConfig = root.profiles[state.profile]!;
-    state.cfg = runtimeProfileConfig(root, state.profile);
+    state.profileConfig = { ...state.profileConfig, preferences: root.profiles[state.profile]!.preferences };
+    state.cfg = { ...state.cfg, preferences: state.profileConfig.preferences };
   });
 }
 
@@ -92,27 +94,7 @@ export async function saveAccessConfig(
   try {
     return await withConfigFileLock(state.configPath, async () => {
       const root = await loadRootConfig(state.configPath);
-      if (!root) {
-        const access = mutate(state.profileConfig.access);
-        state.profileConfig = {
-          ...state.profileConfig,
-          access,
-        };
-        state.cfg.preferences = {
-          ...(state.cfg.preferences ?? {}),
-          access: {
-            allowedUsers: access.allowedUsers,
-            allowedChats: access.allowedChats,
-            admins: access.admins,
-            ...(access.chatRequireMention && Object.keys(access.chatRequireMention).length > 0
-              ? { chatRequireMention: access.chatRequireMention }
-              : {}),
-          },
-          requireMentionInGroup: access.requireMentionInGroup,
-        };
-        await saveConfig(state.cfg, state.configPath);
-        return access;
-      }
+      if (!root) throw new Error('root config not found');
 
       const profile = root.profiles[state.profile];
       if (!profile) throw new Error(`profile not found: ${state.profile}`);
@@ -122,8 +104,8 @@ export async function saveAccessConfig(
         access,
       };
       await saveRootConfig(root, state.configPath);
-      state.profileConfig = root.profiles[state.profile]!;
-      state.cfg = runtimeProfileConfig(root, state.profile);
+      state.profileConfig = { ...state.profileConfig, access: root.profiles[state.profile]!.access };
+      state.cfg = { ...state.cfg, ...state.profileConfig };
       log.info('config-ops', 'access-mutated', {
         allowedUsers: access.allowedUsers.length,
         allowedChats: access.allowedChats.length,
@@ -139,7 +121,7 @@ export async function saveAccessConfig(
 
 /**
  * Store a new App Secret in the keystore and persist the account config
- * (SecretRef in config.json, plaintext only in the keystore), refreshing
+ * (SecretRef in config.toml, plaintext only in the keystore), refreshing
  * in-memory state. Callers restart the bridge afterwards to reconnect with
  * the new credentials.
  */
@@ -151,23 +133,21 @@ export async function saveAccountConfig(
   const appPaths = profileAppPaths(state);
   await setSecret(secretKeyForApp(newCfg.accounts.app.id), plaintextSecret, appPaths);
 
-  const root = await loadRootConfig(state.configPath);
-  if (!root) {
-    await saveConfig(newCfg, state.configPath);
-    state.cfg = newCfg;
-    return;
-  }
+  await withConfigFileLock(state.configPath, async () => {
+    const root = await loadRootConfig(state.configPath);
+    if (!root) throw new Error('root config not found');
 
-  const profile = root.profiles[state.profile];
-  if (!profile) throw new Error(`profile not found: ${state.profile}`);
-  root.profiles[state.profile] = {
-    ...profile,
-    accounts: newCfg.accounts,
-  };
-  if (newCfg.secrets) root.secrets = newCfg.secrets;
-  await saveRootConfig(root, state.configPath);
-  state.profileConfig = root.profiles[state.profile]!;
-  state.cfg = runtimeProfileConfig(root, state.profile);
+    const profile = root.profiles[state.profile];
+    if (!profile) throw new Error(`profile not found: ${state.profile}`);
+    root.profiles[state.profile] = {
+      ...profile,
+      accounts: newCfg.accounts,
+    };
+    if (newCfg.secrets) root.secrets = newCfg.secrets;
+    await saveRootConfig(root, state.configPath);
+    state.profileConfig = root.profiles[state.profile]!;
+    state.cfg = runtimeProfileConfig(root, state.profile);
+  });
 }
 
 /**
@@ -184,8 +164,10 @@ export async function savePreferencesConfig(
   mode: ProfileMode,
   /** In-meeting agent settings; omitted by callers that don't edit them. */
   meeting?: ProfileConfig['meeting'],
+  expectedRevision?: string,
+  resetPaths: string[][] = [],
 ): Promise<void> {
-  const larkCli = {
+  const updatedLarkCli = {
     identityPreset: larkCliIdentity,
     localUserImport: {
       status: 'not-needed' as const,
@@ -194,22 +176,24 @@ export async function savePreferencesConfig(
     },
   };
   await withConfigFileLock(state.configPath, async () => {
+    if (expectedRevision && configRevision(await readFile(state.configPath, 'utf8')) !== expectedRevision) throw new Error('配置已改变，请重新打开设置');
     const root = await loadRootConfig(state.configPath);
-    if (!root) {
-      state.cfg.preferences = preferences;
-      state.profileConfig.larkCli = larkCli;
-      state.profileConfig.mode = mode;
-      if (meeting) state.profileConfig.meeting = meeting;
-      await saveConfig(state.cfg, state.configPath);
-      return;
-    }
+    if (!root) throw new Error('root config not found');
 
     const profile = root.profiles[state.profile];
     if (!profile) throw new Error(`profile not found: ${state.profile}`);
     const { requireMentionInGroup: _requireMention, access: _access, ...profilePreferences } = preferences;
+    const display = { ...larkDisplay(profile) };
+    if (preferences.messageReply !== undefined) display.reply_mode = preferences.messageReply;
+    if (preferences.showToolCalls !== undefined) display.show_tools = preferences.showToolCalls;
+    if (preferences.cotMessages !== undefined) display.progress = preferences.cotMessages === 'on' ? 'detailed' : preferences.cotMessages === 'simple' ? 'brief' : preferences.cotMessages;
+    if (preferences.fileLinks !== undefined) display.file_links = preferences.fileLinks;
+    const channels = { ...profile.channels, lark: display };
+    for (const key of ['messageReply', 'messageReplyMigrated', 'showToolCalls', 'cotMessages', 'fileLinks'] as const) delete profilePreferences[key];
     root.profiles[state.profile] = {
       ...profile,
       mode,
+      ...(channels ? { channels } : {}),
       preferences: {
         ...profile.preferences,
         ...profilePreferences,
@@ -219,10 +203,12 @@ export async function savePreferencesConfig(
         requireMentionInGroup,
       },
       ...(meeting ? { meeting } : {}),
-      larkCli,
+      larkCli: profile.larkCli.identityPreset === larkCliIdentity ? profile.larkCli : updatedLarkCli,
     };
-    await saveRootConfig(root, state.configPath);
-    state.profileConfig = root.profiles[state.profile]!;
-    state.cfg = runtimeProfileConfig(root, state.profile);
+    await saveRootConfig(root, state.configPath, resetPaths);
+    const saved = root.profiles[state.profile]!;
+    state.profileConfig = { ...state.profileConfig, preferences: saved.preferences, channels: saved.channels,
+      access: saved.access, mode: saved.mode, larkCli: saved.larkCli, ...(meeting ? { meeting: saved.meeting } : {}) };
+    state.cfg = { ...state.cfg, ...state.profileConfig };
   });
 }

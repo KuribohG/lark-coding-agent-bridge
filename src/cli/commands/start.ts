@@ -29,7 +29,6 @@ import type { UiServerHandle } from '../../ui/types';
 import { Supervisor } from '../../runtime/supervisor';
 import { acquireHostLock } from '../../runtime/host-lock';
 import { preFlightChecks } from '../preflight';
-import { promptAndStopActiveBridgeMigrationConflict } from './migrate';
 import { stopProcessEntry, type StopProcessEntryResult } from './ps';
 import {
   cleanupTmpFiles,
@@ -115,13 +114,6 @@ export async function runStart(opts: StartOptions): Promise<void> {
   await runClassic(opts);
 }
 
-const migrationConflictHandler = async (err: unknown): Promise<boolean> => {
-  const handled = await promptAndStopActiveBridgeMigrationConflict(err as never, {
-    cancelMessage: '已取消启动。',
-  });
-  if (!handled) process.exit(0);
-  return true;
-};
 
 /**
  * Classic single-profile foreground run (the pre-supervisor default). Uses the
@@ -133,7 +125,6 @@ async function runClassic(opts: StartOptions): Promise<void> {
   const runtime = await resolveProfileRuntime({
     ...opts,
     allowBootstrap: true,
-    handleActiveBridgeMigrationConflict: migrationConflictHandler,
   });
   const { cfg, configPath, appPaths } = runtime;
   configureLogger({ logsDir: appPaths.logsDir });
@@ -179,7 +170,6 @@ async function runSupervisorConsole(opts: StartOptions): Promise<void> {
   const runtime = root || opts.appId ? await resolveProfileRuntime({
     ...opts,
     allowBootstrap: true,
-    handleActiveBridgeMigrationConflict: migrationConflictHandler,
   }) : undefined;
   const configPath = runtime?.configPath ?? opts.config ?? initialPaths.configFile;
   const appPaths = runtime?.appPaths ?? initialPaths;

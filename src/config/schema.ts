@@ -1,8 +1,9 @@
+import { larkDisplay } from '../channels/lark/config';
 export type TenantBrand = 'feishu' | 'lark';
 
 /**
  * SecretRef points at a secret stored outside this file — keeps secrets out
- * of `config.json` so backups / accidental git commits / log dumps don't
+ * of `config.toml` so backups / accidental git commits / log dumps don't
  * leak the bot's App Secret. Matches lark-cli's `SecretRef` shape so
  * `--source lark-channel` reads it through the same generic
  * `ResolveSecretInput` pipeline.
@@ -18,7 +19,7 @@ export interface SecretRef {
 }
 
 /** A secret field can be either a plain string (potentially a `${VAR}`
- * template) or a SecretRef. JSON deserializer accepts both forms. */
+ * template) or a SecretRef. The configuration reader accepts both forms. */
 export type SecretInput = string | SecretRef;
 
 export interface AppCredentials {
@@ -73,7 +74,7 @@ export type CotMessagesMode = 'off' | 'brief' | 'detailed';
  * Access control settings. Empty lists are fail-closed in the v2 policy:
  * no DM senders, no group chats, and only the runtime owner can administer
  * the bot. Runtime owner/admin bypass is applied by the policy layer because
- * owner identity is refreshed from Lark rather than stored in config.json.
+ * owner identity is refreshed from Lark rather than stored in config.toml.
  */
 export interface AppAccess {
   /** open_id allowlist for DM senders. Group senders are gated by chat. */
@@ -161,15 +162,17 @@ export interface AppPreferences {
   agentStopGraceMs?: number;
 }
 
-/**
- * Top-level config shape on disk.
- *
- * `accounts` is a namespace for credential-flavored fields (currently just
- * the bot app, room for OAuth / alternate apps later). `preferences`
- * holds user-tunable behavior knobs. Other future sections (mcp, etc.)
- * belong at this top level alongside them.
- */
+/** Frontend presentation carried alongside the resolved runtime configuration. */
+export interface ChannelDisplayConfig {
+  lark?: Partial<import('../channels/lark/config').LarkDisplayConfig>;
+  web?: Partial<import('../channels/web/config').WebDisplayConfig>;
+}
+
+export type RunPreferences = Pick<AppPreferences, 'model' | 'reasoningEffort' | 'maxConcurrentRuns' | 'runIdleTimeoutMinutes' | 'agentStopGraceMs'>;
+
+/** In-memory account and preference view; the public file format is ConfigDocument. */
 export interface AppConfig {
+  channels?: ChannelDisplayConfig;
   accounts: {
     app: AppCredentials;
   };
@@ -210,24 +213,16 @@ export function secretKeyForApp(appId: string): string {
  * Default for fresh configs (no `messageReply` set) is `'markdown'`.
  */
 export function getMessageReplyMode(cfg: AppConfig): MessageReplyMode {
-  const raw = cfg.preferences?.messageReply;
-  if (raw === 'text' && cfg.preferences?.messageReplyMigrated !== true) {
-    return 'markdown';
-  }
-  if (raw === 'card' || raw === 'markdown' || raw === 'text') return raw;
-  return 'markdown';
+  return larkDisplay(cfg).reply_mode;
 }
 
 /** Resolve the show-tool-calls preference with default fallback. */
 export function getShowToolCalls(cfg: AppConfig): boolean {
-  return cfg.preferences?.showToolCalls !== false;
+  return larkDisplay(cfg).show_tools;
 }
 
 export function getCotMessages(cfg: AppConfig): CotMessagesMode {
-  const raw = cfg.preferences?.cotMessages;
-  if (raw === 'off') return 'off';
-  if (raw === 'detailed' || raw === 'on') return 'detailed';
-  return 'brief';
+  return larkDisplay(cfg).progress;
 }
 
 /** Resolve the max-concurrent-runs preference with default + sanity clamp. */

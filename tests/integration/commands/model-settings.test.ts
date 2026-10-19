@@ -1,3 +1,4 @@
+import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -29,7 +30,7 @@ async function harness() {
   const home = join(tmp.root, 'codex-home');
   await mkdir(home);
   await writeFile(join(home, 'config.toml'), 'model = "provider/base"\nmodel_reasoning_effort = "medium"\n');
-  await writeFile(join(home, 'models_cache.json'), JSON.stringify({ models: [
+  await writeFile(join(home, 'models_cache.json'), encodeFixture({ models: [
     { slug: 'provider/base', supported_reasoning_levels: [{ effort: 'medium' }, { effort: 'high' }], default_reasoning_level: 'medium' },
     { slug: 'provider/restricted', supported_reasoning_levels: [{ effort: 'low' }, { effort: 'high' }], default_reasoning_level: 'high' },
   ] }));
@@ -40,8 +41,8 @@ async function harness() {
   });
   const root: RootConfig = { schemaVersion: 2, activeProfile: 'codex', preferences: {},
     profiles: { codex: profile, other: structuredClone(profile) } };
-  const configPath = join(tmp.root, 'config.json');
-  await writeFile(configPath, JSON.stringify(root));
+  const configPath = join(tmp.root, 'config.toml');
+  await writeFile(configPath, encodeFixture(root));
   const controls: Controls = { profile: 'codex', profileConfig: profile, cfg: runtimeProfileConfig(root, 'codex'),
     configPath, processId: 'test', botOwnerId: 'owner', ownerRefreshState: 'ok',
     async refreshOwner() {}, async restart() {}, async exit() {},
@@ -92,7 +93,7 @@ describe('model and effort scope settings', () => {
     await h.command('/effort high --scope profile');
     expect(await resolveRunModelSettings(h.controls, h.ctx.scope)).toMatchObject({ model: 'scoped/model', reasoningEffort: 'high', effortSource: 'profile' });
     expect(await resolveRunModelSettings(h.controls, 'another-chat')).toMatchObject({ model: 'global/model', reasoningEffort: 'high' });
-    const root = JSON.parse(await readFile(h.controls.configPath, 'utf8'));
+    const root = decodeFixture(await readFile(h.controls.configPath, 'utf8'));
     expect(root.profiles.other.preferences.model).toBeUndefined();
     await h.command('/model default');
     expect((await resolveRunModelSettings(h.controls, h.ctx.scope)).model).toBe('global/model');
@@ -104,7 +105,7 @@ describe('model and effort scope settings', () => {
     expect(h.controls.profileConfig.preferences.model).toBeUndefined();
     await runCommandHandler('effort', 'high --scope profile', { ...h.ctx, fromCardAction: true });
     expect(h.controls.profileConfig.preferences.reasoningEffort).toBeUndefined();
-    expect(JSON.stringify(h.channel.sent)).toContain('owner/管理员');
+    expect(encodeFixture(h.channel.sent)).toContain('owner/管理员');
   });
 
   it('validates model/effort combinations and rejects flag-like model input', async () => {
@@ -116,7 +117,7 @@ describe('model and effort scope settings', () => {
     expect((await scopePreferences(h.controls)).get('codex', h.ctx.scope).reasoningEffort).toBeUndefined();
     await h.command('/model --dangerously-bypass-approvals-and-sandbox');
     expect((await resolveRunModelSettings(h.controls, h.ctx.scope)).model).toBe('provider/restricted');
-    expect(JSON.stringify(h.channel.sent)).toContain('设置未保存');
+    expect(encodeFixture(h.channel.sent)).toContain('设置未保存');
   });
 
   it('accepts hand-written names in the card and keeps concurrent field updates', async () => {
@@ -149,7 +150,7 @@ describe('model and effort scope settings', () => {
       expect(h.ctx.activeRuns.get(h.ctx.scope)?.modelSettings).toEqual({ model: 'private/old', reasoningEffort: 'high' });
       expect(await resolveRunModelSettings(h.controls, h.ctx.scope)).toMatchObject({ model: 'private/next', reasoningEffort: 'low' });
       await h.command('/status');
-      const status = JSON.stringify(h.channel.sent.at(-1));
+      const status = encodeFixture(h.channel.sent.at(-1));
       expect(status).toContain('private/old');
       expect(status).toContain('private/next');
     } finally {
@@ -161,7 +162,7 @@ describe('model and effort scope settings', () => {
     const h = await harness();
     Object.assign(h.channel, { getChatMode: async () => 'group' });
     await h.command('/model');
-    expect(JSON.stringify(h.channel.sent.at(-1))).toContain('settings_scope');
+    expect(encodeFixture(h.channel.sent.at(-1))).toContain('settings_scope');
     h.channel.rawThreadIds.set('card', 'topic-a');
     const pending = new PendingQueue(60_000, () => {});
     const deps = {
@@ -180,7 +181,7 @@ describe('model and effort scope settings', () => {
     h.channel.rawThreadIds.clear();
     await handleCardAction(deps);
     expect(store.get('codex', 'group')).toEqual({});
-    expect(JSON.stringify(h.channel.sent.at(-1))).toContain('设置未保存');
+    expect(encodeFixture(h.channel.sent.at(-1))).toContain('设置未保存');
     pending.cancelAll();
   });
 });

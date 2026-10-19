@@ -1,3 +1,7 @@
+import { readProfileSnapshot } from './service';
+import { configDocument, loadRootConfig } from './profile-store';
+import { documentToRoot } from './document';
+import { setPath } from './toml-edit';
 import { parseEffort, resolveModelSettings } from '../agent/model-settings';
 import { DEFAULT_MODEL, normalizeModelSelection, validateModelId } from '../agent/models';
 import { modelEnvironment } from '../runtime/model-settings';
@@ -77,6 +81,9 @@ function parseMeetingBody(body: unknown, current: MeetingConfig): MeetingConfig 
 }
 
 export interface PreferencesChange {
+  configRevision?: string;
+  preferencePatch: AppPreferences;
+  resetPaths: string[][];
   mode: ProfileMode;
   meeting?: MeetingConfig;
   larkCliIdentity: LarkCliIdentityPreset;
@@ -112,9 +119,9 @@ function parsePreferencesChange(state: MutableProfileState, body: unknown): Pref
     if (fv.model !== undefined && typeof fv.model !== 'string') throw new Error('模型名必须是字符串。');
     modelSelection = fv.model === undefined
       ? normalizeModelSelection(agentKind, state.cfg.preferences?.model)
-      : fv.model === '' ? DEFAULT_MODEL : validateModelId(fv.model as string);
+      : fv.model === '' || fv.model === 'inherit' ? DEFAULT_MODEL : validateModelId(fv.model as string);
     reasoningEffort = fv.reasoningEffort === undefined
-      ? state.cfg.preferences?.reasoningEffort : parseEffort(fv.reasoningEffort, agentKind);
+      ? state.cfg.preferences?.reasoningEffort : parseEffort(fv.reasoningEffort === 'inherit' ? 'default' : fv.reasoningEffort, agentKind);
   } catch (err) {
     throw new PreferencesValidationError(err instanceof Error ? err.message : String(err));
   }
@@ -157,6 +164,9 @@ function parsePreferencesChange(state: MutableProfileState, body: unknown): Pref
   const previousEffectiveIdentity = effectiveLarkCliIdentity(state.profileConfig);
 
   return {
+    configRevision: typeof fv.configRevision === 'string' ? fv.configRevision : undefined,
+    preferencePatch: {},
+    resetPaths: [],
     mode,
     meeting,
     larkCliIdentity,
@@ -191,8 +201,53 @@ async function validateModelPreferences(state: MutableProfileState, preferences:
 }
 
 export async function preparePreferencesChange(state: MutableProfileState, body: unknown): Promise<PreferencesChange> {
+  const liveIdentity = effectiveLarkCliIdentity(state.profileConfig);
+  const revision = body && typeof body === 'object' ? (body as Record<string, unknown>).configRevision : undefined;
+  if (typeof revision === 'string') {
+    const snapshot = await readProfileSnapshot(state);
+    if (revision !== snapshot.revision) throw new PreferencesValidationError('配置已改变，请重新打开设置');
+    if (snapshot.state.profileConfig.agentKind !== state.profileConfig.agentKind) throw new PreferencesValidationError('agent 类型已改变，请先重启此 bot');
+    state = snapshot.state;
+  }
   const change = parsePreferencesChange(state, body);
-  await validateModelPreferences(state, change.nextPreferences);
+  change.previousEffectiveIdentity = liveIdentity;
+  change.identityChanged = change.nextEffectiveIdentity !== liveIdentity;
+  const fv = body as Record<string, unknown>;
+  const fields = ['model', 'reasoningEffort', 'maxConcurrentRuns', 'runIdleTimeoutMinutes', 'messageReply', 'showToolCalls', 'cotMessages'] as const;
+  for (const key of fields) if (fv[key] !== undefined) {
+    const value = change.nextPreferences[key];
+    const current = key === 'maxConcurrentRuns' ? getMaxConcurrentRuns(state.cfg)
+      : key === 'runIdleTimeoutMinutes' ? (getRunIdleTimeoutMs(state.cfg) ?? 0) / 60000
+      : key === 'messageReply' ? getMessageReplyMode(state.cfg)
+      : key === 'showToolCalls' ? getShowToolCalls(state.cfg)
+      : key === 'cotMessages' ? getCotMessages(state.cfg) : state.cfg.preferences?.[key];
+    if (value !== current) Object.assign(change.preferencePatch, { [key]: value });
+  }
+  const resets = new Set<string>();
+  if (fv.model === 'inherit' || (fv.model === '' || fv.model === DEFAULT_MODEL) && state.cfg.preferences?.model !== undefined) resets.add('model');
+  if (fv.reasoningEffort === 'inherit' || fv.reasoningEffort === 'default' && state.cfg.preferences?.reasoningEffort !== undefined) resets.add('reasoningEffort');
+  if (fv.inheritSettings !== undefined) {
+    if (!Array.isArray(fv.inheritSettings) || fv.inheritSettings.some(k => !fields.includes(k))) throw new PreferencesValidationError('invalid inherit setting');
+    for (const key of fv.inheritSettings) resets.add(key);
+  }
+  const runPaths: Record<string, string> = { model: 'model', reasoningEffort: 'effort', maxConcurrentRuns: 'max_concurrent_runs', runIdleTimeoutMinutes: 'idle_timeout_minutes' };
+  const displayPaths: Record<string, string> = { messageReply: 'reply_mode', showToolCalls: 'show_tools', cotMessages: 'progress' };
+  for (const key of resets) {
+    delete change.preferencePatch[key as keyof AppPreferences];
+    change.resetPaths.push(runPaths[key] ? ['profiles', state.profile, 'run', runPaths[key]!]
+      : ['channels', 'lark', 'profiles', state.profile, displayPaths[key]!]);
+  }
+  let resolvedPreferences: AppPreferences = change.nextPreferences;
+  if (resets.size) {
+    const root = await loadRootConfig(state.configPath);
+    if (!root) throw new PreferencesValidationError('root config not found');
+    const doc = structuredClone(configDocument(root)!.document);
+    for (const path of change.resetPaths) setPath(doc, path, undefined);
+    resolvedPreferences = { ...documentToRoot(doc).profiles[state.profile]!.preferences, ...change.preferencePatch };
+  }
+  if (fv.model !== undefined || fv.reasoningEffort !== undefined || resets.has('model') || resets.has('reasoningEffort')) {
+    await validateModelPreferences(state, resolvedPreferences);
+  }
   return change;
 }
 
@@ -215,8 +270,8 @@ export async function applyPreferencesChange(
       identityApplied = true;
     }
     step = 'config.save';
-    await savePreferencesConfig(state, change.nextPreferences, change.requireMentionInGroup,
-      change.larkCliIdentity, change.mode, change.meeting);
+    await savePreferencesConfig(state, change.preferencePatch, change.requireMentionInGroup,
+      change.larkCliIdentity, change.mode, change.meeting, change.configRevision, change.resetPaths);
   } catch (cause) {
     // A failed policy call may already have applied one of its CLI settings.
     const rollbackFailed = identityAttempted && !await applyProfileLarkCliIdentity(state, change.previousEffectiveIdentity).catch(() => false);

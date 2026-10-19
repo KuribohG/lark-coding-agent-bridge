@@ -108,8 +108,7 @@ export class ConversationRuntime {
       const done = presentRunOutput(flow.execution, output, {
         idleTimeoutMs: config.preferences.runIdleTimeoutMinutes
           ? config.preferences.runIdleTimeoutMinutes * 60_000 : undefined,
-        filterForPrefs: state => config.preferences.showToolCalls === false
-          ? { ...state, blocks: state.blocks.filter(block => block.kind !== 'tool') } : state,
+        filterForPrefs: state => state,
         recordSession: event => recordRunSessionEvent({ scopeId, sessions: this.sessions,
           sessionCatalog: this.catalog, capability, policy: flow.policy, event }),
       }).finally(dispose);

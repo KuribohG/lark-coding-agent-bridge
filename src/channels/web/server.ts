@@ -1,3 +1,4 @@
+import { WEB_DISPLAY_DEFAULTS, type WebDisplayConfig } from './config';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -12,6 +13,7 @@ import { acquireHostLock } from '../../runtime/host-lock';
 
 export interface WebChannelOptions extends Omit<WebChatRuntimeOptions, 'authorize'> {
   port?: number;
+  display?: Partial<WebDisplayConfig>;
 }
 export interface WebConnection {
   url: string;
@@ -33,7 +35,7 @@ async function startWebChannel(options: WebChannelOptions): Promise<WebConnectio
   const token = randomBytes(32).toString('hex');
   let closing = false;
   const server = createServer((req, res) => {
-    handle(req, res, runtime, token, closing).catch(() => {
+    handle(req, res, runtime, token, closing, { ...WEB_DISPLAY_DEFAULTS, ...options.display }).catch(() => {
       if (!res.headersSent) sendJson(res, 500, { error: 'request failed' });
       else res.end();
     });
@@ -59,7 +61,7 @@ async function startWebChannel(options: WebChannelOptions): Promise<WebConnectio
   };
 }
 
-async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebChatRuntime, token: string, closing: boolean) {
+async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebChatRuntime, token: string, closing: boolean, display: WebDisplayConfig) {
   if (!isLocalRequest(req)) { sendJson(res, 403, { error: 'forbidden' }); return; }
   const url = new URL(req.url ?? '/', 'http://localhost');
   if (url.pathname === '/' && req.method === 'GET') { sendHtml(res, html); return; }
@@ -97,7 +99,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
       if (!res.write(`${JSON.stringify(event)}\n`)) await once(res, 'drain', { signal: controller.signal });
     };
     try {
-      const run = await runtime.start({ ...identity, prompt, signal: controller.signal }, createWebRunOutput(write));
+      const run = await runtime.start({ ...identity, prompt, signal: controller.signal }, createWebRunOutput(write, display));
       if (!run.ok) { sendJson(res, 409, { error: run.rejectReason.userVisible }); return; }
       await run.done;
       await write({ type: 'run.finished', runId: run.execution.runId, result: await run.execution.result });

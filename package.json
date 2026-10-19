@@ -54,7 +54,9 @@
     "LICENSE",
     "docs/self-contained.md",
     "docs/user-guide",
-    "docs/channels.md"
+    "docs/channels.md",
+    "docs/configuration.md",
+    "docs/config.example.toml"
   ],
   "scripts": {
     "dev": "tsup --watch",
@@ -81,7 +83,8 @@
     "jsonrepair": "3.15.0",
     "proper-lockfile": "^4.1.2",
     "qrcode-terminal": "^0.12.0",
-    "smol-toml": "^1.8.0"
+    "smol-toml": "^1.8.0",
+    "toml-eslint-parser": "0.10.0"
   },
   "devDependencies": {
     "@radix-ui/react-dialog": "^1.1.19",
