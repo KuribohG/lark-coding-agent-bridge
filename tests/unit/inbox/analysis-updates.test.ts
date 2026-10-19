@@ -6,6 +6,7 @@ import { normalizeInbox } from '../../../src/inbox/config';
 import { InboxService } from '../../../src/inbox/service';
 import { InboxStore } from '../../../src/inbox/store';
 import { analysisChanges } from '../../../src/inbox/updates';
+import { guiContent } from '../../../src/inbox/presentation';
 import { processingPrompt } from '../../../src/monitoring/sources/lark/processor';
 import type { InboxIO, InboxJob, InboxMessage, TriageDecision } from '../../../src/inbox/types';
 
@@ -75,6 +76,18 @@ it('retains an actionable result through unrelated bursts and delivers it only o
   await waitFor(() => expect(s.job().state).toBe('done')); await s.service.tick();
   expect(s.analyses).toHaveLength(1); expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1);
   expect(s.io.deliver).toHaveBeenCalledTimes(1); expect(s.store.data.jobs).toHaveLength(1);
+});
+
+it('does not mark a completed draft stale when polling the same message text again', async () => {
+  const s = await setup();
+  s.analyses[0]!.resolve(result);
+  await waitFor(() => expect(s.job().state).toBe('ready'));
+  await s.service.tick();
+  const version = s.job().evidenceVersion;
+  await s.add('你的任务需要处理', 'om_0');
+  expect(s.job().evidenceVersion).toBe(version);
+  expect(guiContent(s.job())).toMatchObject({ draftStale: false, replyDraft: '原建议', error: undefined });
+  expect(s.screens).toHaveLength(1); expect(s.analyses).toHaveLength(1);
 });
 
 it('rejects a stale incremental decision and reuses prior evidence for one supplemental analysis', async () => {

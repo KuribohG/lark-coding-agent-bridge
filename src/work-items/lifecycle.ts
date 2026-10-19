@@ -110,7 +110,6 @@ export class WorkItemLifecycle {
         job.analysisRequested = false;
         if (['queued', 'ready', 'done', 'failed'].includes(job.state)) {
           job.state = 'waiting'; job.automatic = false; job.dueAt = undefined;
-          job.error = '消息已更新，请检查草稿或重新生成';
         }
         break;
       }

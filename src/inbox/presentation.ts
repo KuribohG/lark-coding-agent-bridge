@@ -12,8 +12,11 @@ export const guiSummary = (job: InboxJob) => ({ id: job.id, name: job.source.nam
 
 export function guiContent(job: InboxJob) {
   const legacy = replyContent(job.result);
-  const content = { replyDraft: job.replyDraft ?? legacy.replyDraft, analysis: (job.analysis ?? legacy.analysis).slice(0, 8000),
-    missingInfo: job.missingInfo ?? legacy.missingInfo, draftEdited: Boolean(job.draftEdited), draftStale: Boolean(job.draftStale),
+  const replyDraft = job.replyDraft ?? legacy.replyDraft;
+  const draftStale = Boolean(job.draftStale && replyDraft.trim()) && handlingState(job) === 'open' &&
+    job.attention?.state !== 'quiet' && job.businessState !== 'resolved';
+  const content = { replyDraft, analysis: (job.analysis ?? legacy.analysis).slice(0, 8000),
+    missingInfo: job.missingInfo ?? legacy.missingInfo, draftEdited: Boolean(job.draftEdited), draftStale,
     error: job.error?.slice(0, 1000), evidenceDir: job.external?.evidenceDir,
     sourceUrl: job.external ? (/^https:\/\//.test(job.external.url) ? job.external.url : '') : job.messages.find(m => /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(m.link || ''))?.link?.slice(0, 1000) ||
       `https://applink.feishu.cn/client/chat/open?openChatId=${job.source.chatId}`,

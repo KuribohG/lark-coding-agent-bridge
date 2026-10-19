@@ -27,12 +27,24 @@ function setup() {
 
 it.each(['handled', 'ignored'] as const)('keeps details readable after %s moves the item beyond the first 500', async handlingState => {
   const s = setup();
+  s.job.replyDraft = '已有草稿'; s.job.draftStale = true;
+  await expect(s.execute('detail', s.job.id)).resolves.toMatchObject({ draftStale: true });
   expect(s.service.list(500).some(j => j.id === s.job.id)).toBe(true);
   await s.execute('review', JSON.stringify({ id: s.job.id, revision: 0, handlingState }));
   expect(s.service.list(500)).toHaveLength(500);
   expect(s.service.list(500).some(j => j.id === s.job.id)).toBe(false);
   await expect(s.execute('detail', s.job.id)).resolves.toMatchObject({ id: s.job.id, handlingState,
-    messages: [{ text: '请确认' }] });
+    messages: [{ text: '请确认' }], replyDraft: '已有草稿', draftStale: false });
+});
+
+it('confirms an unchanged draft and clears its review notice', async () => {
+  const s = setup();
+  s.job.replyDraft = '已有草稿'; s.job.draftStale = true;
+  await expect(s.execute('detail', s.job.id)).resolves.toMatchObject({ draftStale: true });
+  await expect(s.execute('review', JSON.stringify({ id: s.job.id, revision: 0, replyDraft: '已有草稿' })))
+    .resolves.toMatchObject({ replyDraft: '已有草稿', draftStale: false });
+  await expect(s.execute('detail', s.job.id)).resolves.toMatchObject({ replyDraft: '已有草稿', draftStale: false });
+  expect(s.job.analysisRequested).toBe(false);
 });
 
 it.each(['process', 'claim', 'ignore'])('accepts %s for a retained item outside the list window', async action => {

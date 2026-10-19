@@ -106,10 +106,11 @@ function JobDetail({ detail, latest, connected, running, command, onClose }: { d
     <p className="whitespace-pre-wrap text-sm">{base.analysis || '尚无分析结果'}</p>
     {base.error && <p className="text-sm text-destructive">{base.error}</p>}
     {base.missingInfo && <p className="whitespace-pre-wrap text-sm">待确认：{base.missingInfo}</p>}
-    {(base.draftStale || dirty && latest && latest.revision !== base.revision) && <p className="text-sm text-amber-700">事项已更新，请核对最新内容。你的编辑仍保留，保存时会检查版本。</p>}
+    {base.draftStale && <p className="text-sm text-amber-700">现有草稿待核对，请确认草稿或重新分析。</p>}
+    {dirty && latest && latest.revision !== base.revision && <p className="text-sm text-amber-700">事项状态已变化，请核对最新内容。你的编辑仍保留。</p>}
     <label className="block text-sm">回复草稿<textarea className="mt-1 min-h-32 w-full rounded border bg-background p-2" value={draft} maxLength={6000} onChange={e => setDraft(e.target.value)} /></label>
     <div className="flex flex-wrap gap-2">
-      <Button disabled={busy || !dirty || !connected} onClick={() => void perform(() => review({ replyDraft: draft }))}>保存草稿</Button>
+      <Button disabled={busy || (!dirty && !base.draftStale) || !connected} onClick={() => void perform(() => review({ replyDraft: draft }))}>{!dirty && base.draftStale ? '确认草稿' : '保存草稿'}</Button>
       <Button variant="outline" disabled={busy || !draft} onClick={() => void perform(async () => { await navigator.clipboard.writeText(draft); setNotice('草稿已复制，请到原会话核对后发送。'); })}>复制草稿</Button>
       <Button variant="outline" disabled={busy || !running || dirty || ['running', 'queued'].includes(latest?.state || base.state)} onClick={() => void perform(async () => { await command('process', base.id); setNotice('已提交分析'); })}>分析 / 重试</Button>
       {(['handled', 'ignored', 'open'] as const).map(state => <Button key={state} variant="ghost" disabled={busy || !connected || dirty || base.handlingState === state} onClick={() => void perform(() => review({ handlingState: state }))}>{state === 'handled' ? '已处理' : state === 'ignored' ? '忽略' : '恢复待办'}</Button>)}
