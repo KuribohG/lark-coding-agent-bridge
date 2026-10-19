@@ -72,7 +72,7 @@ export class InboxManager {
     const sources = this.sources.statuses();
     const jobs = [...(this.service?.list(500).filter(j => j.ownerOpenId === view.config.ownerOpenId && j.profile === view.config.executorProfile) ?? []), ...this.sources.list()];
     return { ...view, connected: Boolean(this.service) || sources.length > 0, sources,
-      jobs: guiJobs(jobs.sort((a, b) => Number(a.handlingState === 'handled' || a.handlingState === 'ignored' || a.attention?.state === 'quiet') - Number(b.handlingState === 'handled' || b.handlingState === 'ignored' || b.attention?.state === 'quiet') || b.updatedAt - a.updatedAt)) };
+      jobs: guiJobs(jobs) };
   }
   async workbenchCommand(input: unknown) {
     const source = await this.sources.command(input);

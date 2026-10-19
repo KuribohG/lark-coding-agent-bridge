@@ -47,7 +47,7 @@ export class WorkItemSources {
   private entries = new Map<string, Entry>();
   constructor(private configPath: string, private rootDir?: string, readonly queue = new AnalysisScheduler()) {}
   isAnalyzing(id: string, key: string): boolean { return this.entries.get(id)?.service.store.data.jobs.some(j => j.external?.key === key && j.state === 'running') ?? false; }
-  list() { return [...this.entries.values()].flatMap(entry => entry.service.list(500)); }
+  list(limit = 500) { return [...this.entries.values()].flatMap(entry => entry.service.list(limit)); }
   statuses() { return [...this.entries].map(([id, entry]) => {
     const status = entry.status?.();
     return { id, label: entry.label, running: entry.service.config.enabled, ...status, error: status?.error ?? entry.service.lastError };

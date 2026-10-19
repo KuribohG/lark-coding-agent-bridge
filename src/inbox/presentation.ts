@@ -27,9 +27,12 @@ export function guiContent(job: InboxJob) {
   return content;
 }
 
-/** Keep the list intact; prefetch content only while the snapshot budget permits. */
+const listPriority = (job: InboxJob) => handlingState(job) !== 'open' || job.attention?.state === 'quiet'
+  ? 2 : job.attention?.state === 'pending' ? 1 : 0;
+
+/** Prioritize pending work across sources before applying count and byte limits. */
 export function guiJobs(all: InboxJob[]) {
-  const selected = all.slice(0, 500);
+  const selected = [...all].sort((a, b) => listPriority(a) - listPriority(b) || b.updatedAt - a.updatedAt).slice(0, 500);
   const jobs = selected.map(job => ({ ...guiSummary(job), detail: undefined as ReturnType<typeof guiContent> | undefined }));
   while (Buffer.byteLength(JSON.stringify(jobs)) > 600000) { jobs.pop(); selected.pop(); }
   let bytes = Buffer.byteLength(JSON.stringify(jobs));

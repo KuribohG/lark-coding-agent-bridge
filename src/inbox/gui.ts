@@ -110,8 +110,8 @@ export class InboxGui {
   }
   private snapshot() {
     const config = this.service.config;
-    const all = [...this.service.list(500), ...(this.taskSources?.list() ?? []).filter(j =>
-      j.ownerOpenId === config.ownerOpenId && j.profile === config.executorProfile)].filter(j => j.ownerOpenId === config.ownerOpenId);
+    const all = [...this.service.list(Infinity), ...(this.taskSources?.list(Infinity) ?? [])].filter(j =>
+      j.ownerOpenId === config.ownerOpenId && j.profile === config.executorProfile);
     const jobs = guiJobs(all);
     return { jobs, total: all.length, enabled: config.enabled, autoAnalyze: config.autoAnalyze,
       attentionControl: true, attentionProfile: config.attentionProfile || ATTENTION_RULES, batchControl: true,

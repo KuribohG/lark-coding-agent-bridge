@@ -25,6 +25,28 @@ describe('reply content and sync', () => {
     expect(synced.at(-1)?.detail).toBeUndefined(); expect(Buffer.byteLength(JSON.stringify(synced))).toBeLessThanOrEqual(700000);
     expect(JSON.stringify({ ...synced[0], detail: undefined, ...guiContent(jobs[0]!) }).length).toBeLessThan(24000);
   });
+  it('keeps confirmed and uncertain pending work ahead of newer screening and history without mutating the input', () => {
+    const jobs: InboxJob[] = Array.from({ length: 500 }, (_, i) => ({ ...job(`screen-${i}`), updatedAt: i + 10,
+      attention: { state: 'pending', reason: '等待筛选' } }));
+    jobs.push({ ...job('claimed'), state: 'claimed', updatedAt: 10000 },
+      { ...job('quiet'), updatedAt: 10000, attention: { state: 'quiet', reason: '无需动作' } },
+      { ...job('needed'), attention: { state: 'needed', reason: '需要处理' } },
+      { ...job('uncertain'), updatedAt: 2, attention: { state: 'uncertain', reason: '需要确认' } });
+    const before = structuredClone(jobs);
+    const synced = guiJobs(jobs);
+    expect(synced).toHaveLength(500);
+    expect(synced.slice(0, 3).map(j => j.id)).toEqual(['uncertain', 'needed', 'screen-499']);
+    expect(jobs).toEqual(before);
+  });
+  it('prioritizes pending summaries when verbose history reaches the byte limit', () => {
+    const jobs: InboxJob[] = Array.from({ length: 100 }, (_, i) => ({ ...job(`history-${i}`), updatedAt: 10 + i,
+      attention: { state: 'quiet', reason: '历史'.repeat(3000) } }));
+    jobs.push({ ...job('pending'), attention: { state: 'needed', reason: '需要处理' } });
+    const synced = guiJobs(jobs);
+    expect(synced[0]?.id).toBe('pending');
+    expect(synced.length).toBeLessThan(jobs.length);
+    expect(Buffer.byteLength(JSON.stringify(synced))).toBeLessThanOrEqual(700000);
+  });
 });
 
 import { mkdtemp, writeFile } from 'node:fs/promises';

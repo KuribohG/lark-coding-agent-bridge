@@ -7,6 +7,7 @@ import { normalizeInbox, type IntakeScope } from '../../../src/inbox/config';
 import type { InboxService } from '../../../src/inbox/service';
 import type { InboxLark } from '../../../src/inbox/lark';
 import type { InboxJob } from '../../../src/inbox/types';
+import type { InboxTaskSources } from '../../../src/inbox/task-sources';
 
 const workers: InboxGui[] = [];
 afterEach(async () => { await Promise.all(workers.splice(0).map(w => w.close())); });
@@ -17,7 +18,7 @@ async function setup(compactSync = false) {
   const config = normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner',
     destination: { chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_anchor' },
     gui: { publicUrl: 'https://gui.example', apiKeyFile: key } });
-  const service = { config, list: vi.fn((): InboxJob[] => []), get: vi.fn((): InboxJob | undefined => undefined), manual: vi.fn(async () => ({ id: 'job1' })),
+  const service = { config, list: vi.fn((_limit = 100): InboxJob[] => []), get: vi.fn((): InboxJob | undefined => undefined), manual: vi.fn(async () => ({ id: 'job1' })),
     decide: vi.fn(async () => {}) };
   const lark = { call: vi.fn(async () => ({ messages: [] })), checkOwner: vi.fn(async () => {}),
     recent: vi.fn(async () => ({ chats: [], next: '' })) };
@@ -29,16 +30,35 @@ async function setup(compactSync = false) {
   const ledger = join(dir, 'receipts.json');
   const changeMode = vi.fn(async (mode: string) => { config.enabled = mode !== 'off'; config.autoAnalyze = mode === 'auto'; });
   const changeScope = vi.fn(async (scope: IntakeScope) => { service.config.intakeScope = scope; });
+  const taskSources = { list: vi.fn((_limit = 500): InboxJob[] => []), command: vi.fn(async () => ({ handled: false })) };
   const make = () => { const worker = new InboxGui(service as unknown as InboxService, lark as unknown as InboxLark,
-    'cli_test', ledger, request, changeMode, changeScope); workers.push(worker); return worker; };
+    'cli_test', ledger, request, changeMode, changeScope, taskSources as unknown as InboxTaskSources); workers.push(worker); return worker; };
   const worker = make();
-  return { key, ledger, changeMode, changeScope, service, lark, request, worker, make,
+  return { key, ledger, changeMode, changeScope, service, lark, request, worker, make, taskSources,
     commands: (value: object[]) => { commands = value; }, failReceipt: () => { failReceipt = true; } };
 }
 const command = (action: string, target: string) => ({ id, action, target, expiresAt: Date.now() + 60000 });
 const idle = async (request: ReturnType<typeof vi.fn>) => { await vi.waitFor(() => expect(request).toHaveBeenCalled()); await new Promise(r => setTimeout(r, 20)); };
 
 describe('hosted inbox connection', () => {
+  it('keeps pending work from every source ahead of history and reports the full owner-scoped total', async () => {
+    const s = await setup();
+    const job = (id: string): InboxJob => ({ id, ownerOpenId: 'ou_owner', profile: 'codex', destination: s.service.config.destination,
+      source: { name: id, chatId: 'oc_source', type: 'p2p' }, messages: [], state: 'done', handlingState: 'open',
+      attention: { state: 'needed', reason: '需要确认' }, createdAt: 1, updatedAt: 1, automatic: true, alert: false });
+    const conversations = Array.from({ length: 634 }, (_, i) => ({ ...job(`chat-${i}`),
+      attention: { state: i === 0 ? 'needed' as const : 'quiet' as const, reason: '会话' }, updatedAt: 1000 + i }));
+    const tasks = Array.from({ length: 6 }, (_, i) => ({ ...job(`ci-${i}`),
+      external: { source: 'gitlab-ci', key: `ci-${i}`, url: 'https://gitlab.test', data: {}, analysisAttempts: 1, maxAttempts: 3 } }));
+    s.service.list.mockImplementation((limit = 100) => conversations.slice(0, limit));
+    s.taskSources.list.mockReturnValue([...tasks, { ...job('foreign-owner'), ownerOpenId: 'ou_other' }, { ...job('foreign-profile'), profile: 'claude' }]);
+    await s.worker.start(); await idle(s.request);
+    const { snapshot } = JSON.parse(String(s.request.mock.calls[0]?.[1]?.body));
+    expect(snapshot.jobs).toHaveLength(500);
+    expect(snapshot.jobs.map((j: { id: string }) => j.id)).toEqual(expect.arrayContaining(['chat-0', ...tasks.map(j => j.id)]));
+    expect(snapshot.jobs.some((j: { id: string }) => j.id.startsWith('foreign-'))).toBe(false);
+    expect(snapshot.total).toBe(640);
+  });
   it('requires a private credential file before any outbound request', async () => {
     const s = await setup(); await chmod(s.key, 0o644);
     await expect(s.worker.start()).rejects.toThrow('仅本人'); expect(s.request).not.toHaveBeenCalled();
