@@ -5,8 +5,7 @@ import type { SandboxMode } from '../../config/profile-schema';
 import { log } from '../../core/logger';
 import { mergeProcessEnv, type SpawnedProcessByStdio } from '../../platform/spawn';
 import { SpawnFailed } from '../../runtime/errors';
-import { prefixBridgeSystemPrompt } from '../bridge-system-prompt';
-import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
+import { prefixSystemPrompt, resolveSystemPrompt, type AgentSystemPrompt } from '../system-prompt';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
 import type {
   AgentAdapter,
@@ -24,6 +23,7 @@ import { codexExecutionCapabilities } from './capabilities';
 
 export interface CodexAdapterOptions {
   binary: string;
+  systemPrompt?: AgentSystemPrompt;
   transport?: 'exec' | 'app-server';
   profileStateDir: string;
   codexHome?: string;
@@ -32,7 +32,7 @@ export interface CodexAdapterOptions {
   ignoreRules?: boolean;
   sandbox?: SandboxMode;
   stopGraceMs?: number;
-  larkChannel?: LarkChannelEnvContext;
+  env?: NodeJS.ProcessEnv;
 }
 
 type CodexChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
@@ -43,6 +43,7 @@ export class CodexAdapter implements AgentAdapter {
   get capabilities() { return codexExecutionCapabilities(this.transport); }
 
   private readonly binary: string;
+  private readonly systemPrompt: AgentSystemPrompt | undefined;
   private readonly profileStateDir: string;
   private readonly codexHome: string | undefined;
   private readonly inheritCodexHome: boolean;
@@ -50,7 +51,7 @@ export class CodexAdapter implements AgentAdapter {
   private readonly ignoreRules: boolean;
   private readonly sandbox: SandboxMode;
   private readonly defaultStopGraceMs: number;
-  private readonly larkChannel: LarkChannelEnvContext | undefined;
+  private readonly env: NodeJS.ProcessEnv;
   private botIdentity: AgentBotIdentity | undefined;
   private readonly transport: 'exec' | 'app-server';
 
@@ -60,6 +61,7 @@ export class CodexAdapter implements AgentAdapter {
       throw new Error('app-server requires ignoreUserConfig=false and ignoreRules=false; exec-only ignore flags are not supported');
     }
     this.binary = opts.binary;
+    this.systemPrompt = opts.systemPrompt;
     this.profileStateDir = opts.profileStateDir;
     this.codexHome = opts.codexHome;
     this.inheritCodexHome = opts.inheritCodexHome !== false;
@@ -67,7 +69,11 @@ export class CodexAdapter implements AgentAdapter {
     this.ignoreRules = opts.ignoreRules !== false;
     this.sandbox = opts.sandbox ?? 'danger-full-access';
     this.defaultStopGraceMs = opts.stopGraceMs ?? 5000;
-    this.larkChannel = opts.larkChannel;
+    this.env = { ...opts.env };
+  }
+
+  private promptFor(opts: AgentRunOptions): string {
+    return prefixSystemPrompt(opts.prompt, opts.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity));
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -119,7 +125,7 @@ export class CodexAdapter implements AgentAdapter {
       model: opts.model,
       reasoningEffort: opts.reasoningEffort,
     });
-    const envOverrides: NodeJS.ProcessEnv = buildLarkChannelEnv(this.larkChannel);
+    const envOverrides: NodeJS.ProcessEnv = { ...this.env };
     if (this.codexHome) {
       envOverrides.CODEX_HOME = this.codexHome;
     } else if (!this.inheritCodexHome) {
@@ -130,7 +136,7 @@ export class CodexAdapter implements AgentAdapter {
         binary: this.binary, opts,
         env: mergeProcessEnv(process.env, envOverrides),
         sandbox: opts.sandbox ?? this.sandbox,
-        prompt: prefixBridgeSystemPrompt(opts.prompt, this.botIdentity),
+        prompt: this.promptFor(opts),
         stopGraceMs: opts.stopGraceMs ?? this.defaultStopGraceMs,
       });
     }
@@ -180,7 +186,7 @@ export class CodexAdapter implements AgentAdapter {
     child.stdin.on('error', (err) => {
       log.warn('agent', 'stdin-error', { message: err.message });
     });
-    child.stdin.end(prefixBridgeSystemPrompt(opts.prompt, this.botIdentity), 'utf8');
+    child.stdin.end(this.promptFor(opts), 'utf8');
 
     const stopGraceMs = opts.deadlineAt ? Math.max(1000, opts.stopGraceMs ?? 1000) : opts.stopGraceMs ?? this.defaultStopGraceMs;
 

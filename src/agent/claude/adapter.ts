@@ -7,8 +7,7 @@ import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { log } from '../../core/logger';
 import { mergeProcessEnv, type SpawnedProcessByStdio } from '../../platform/spawn';
-import { buildBridgeSystemPrompt } from '../bridge-system-prompt';
-import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../lark-channel-env';
+import { resolveSystemPrompt, type AgentSystemPrompt } from '../system-prompt';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
 import {
   CLAUDE_DEFAULT_PERMISSION_MODE,
@@ -26,7 +25,8 @@ import { CLAUDE_EXECUTION_CAPABILITIES } from './capabilities';
 
 export interface ClaudeAdapterOptions {
   binary?: string;
-  larkChannel?: LarkChannelEnvContext;
+  systemPrompt?: AgentSystemPrompt;
+  env?: NodeJS.ProcessEnv;
 }
 
 type ClaudeChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
@@ -37,12 +37,14 @@ export class ClaudeAdapter implements AgentAdapter {
   readonly capabilities = CLAUDE_EXECUTION_CAPABILITIES;
 
   private readonly binary: string;
-  private readonly larkChannel: LarkChannelEnvContext | undefined;
+  private readonly systemPrompt: AgentSystemPrompt | undefined;
+  private readonly env: NodeJS.ProcessEnv;
   private botIdentity: AgentBotIdentity | undefined;
 
   constructor(opts: ClaudeAdapterOptions = {}) {
     this.binary = opts.binary ?? 'claude';
-    this.larkChannel = opts.larkChannel;
+    this.systemPrompt = opts.systemPrompt;
+    this.env = { ...opts.env };
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -80,7 +82,7 @@ export class ClaudeAdapter implements AgentAdapter {
     // stream-json response. Pass the prompt via stdin and the appended system
     // prompt via a temp file (the same approach the Codex adapter uses) so no
     // special characters ever reach the shell.
-    const runFiles = writeRunFiles(buildBridgeSystemPrompt(this.botIdentity),
+    const runFiles = writeRunFiles(opts.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity),
       opts.reasoningEffort === ULTRA_EFFORT ? ULTRACODE_SETTINGS : undefined);
 
     const args = [
@@ -106,7 +108,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
     const child = spawnWithDeadline(this.binary, args, {
       cwd: opts.cwd,
-      env: mergeProcessEnv(process.env, buildLarkChannelEnv(this.larkChannel)),
+      env: mergeProcessEnv(process.env, { ...this.env }),
       stdio: ['pipe', 'pipe', 'pipe'],
     }, opts.deadlineAt) as ClaudeChild;
 

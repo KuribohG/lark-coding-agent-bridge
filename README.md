@@ -9,6 +9,10 @@ See the **[Chinese user guide](docs/user-guide/README.md)** for setup, everyday 
 For a product walkthrough, see the [Feishu document](https://larkcommunity.feishu.cn/docx/OaRIdFIRFoLM3xxTmKwcetHqn5e).
 
 
+## Standalone browser chat and channel plugins
+
+Run `lark-channel-bridge web --agent codex --workspace /absolute/project/path --port 8787` for the bundled browser chat, without a Lark account. Lark and Web use separate channel plugins with a shared conversation runtime. See [channel architecture and integration](docs/channels.md).
+
 ## Self-contained setup on this fork
 
 The `dev` branch ships `run-lark-cc` and a bundled local inbox workbench. No separate Miaoda deployment, database, or public server is required for local use.

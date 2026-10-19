@@ -45,11 +45,25 @@ beforeEach(() => {
   spawnMock.spawnProcess.mockReset();
 });
 
+describe('channel-neutral adapter defaults', () => {
+  it('does not add Lark instructions to Claude without a configured channel', () => {
+    const child = fakeChild(); spawnMock.spawnProcess.mockReturnValue(child);
+    new ClaudeAdapter().run({ runId: 'r', prompt: 'hello', cwd: '/tmp' });
+    const args = spawnMock.spawnProcess.mock.calls[0]?.[1] as string[];
+    expect(readFileSync(args[args.indexOf('--append-system-prompt-file') + 1]!, 'utf8')).toBe('');
+  });
+  it('does not add Lark instructions to Codex without a configured channel', async () => {
+    const child = fakeChild(); spawnMock.spawnProcess.mockReturnValue(child);
+    new CodexAdapter({ binary: 'codex', profileStateDir: '/tmp' }).run({ runId: 'r', prompt: 'hello', cwd: '/tmp' });
+    expect(await readAll(child.stdin)).toBe('hello');
+  });
+});
+
 describe('ClaudeAdapter system prompt wiring', () => {
   it('appends the identity-aware bridge system prompt via a temp file after setBotIdentity', async () => {
     const child = fakeChild();
     spawnMock.spawnProcess.mockReturnValue(child);
-    const adapter = new ClaudeAdapter();
+    const adapter = new ClaudeAdapter({ systemPrompt: buildBridgeSystemPrompt });
     adapter.setBotIdentity({ openId: 'ou_bot_self', name: 'Bridge' });
 
     adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
@@ -65,13 +79,22 @@ describe('ClaudeAdapter system prompt wiring', () => {
   it('falls back to the base system prompt when no identity was set', async () => {
     const child = fakeChild();
     spawnMock.spawnProcess.mockReturnValue(child);
-    const adapter = new ClaudeAdapter();
+    const adapter = new ClaudeAdapter({ systemPrompt: buildBridgeSystemPrompt });
 
     adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
 
     expect(JSON.parse(child.stdin.read().toString()).message.content).toBe('hi');
     expect(child.stdin.writableEnded).toBe(false);
     expect(systemPromptFileContent()).toBe(buildBridgeSystemPrompt(undefined));
+  });
+
+  it('uses host instructions for a non-Lark run', () => {
+    const child = fakeChild();
+    spawnMock.spawnProcess.mockReturnValue(child);
+    const adapter = new ClaudeAdapter({ systemPrompt: buildBridgeSystemPrompt });
+    adapter.setBotIdentity({ openId: 'ou_bot_self' });
+    adapter.run({ runId: 'web', prompt: 'hello', cwd: '/tmp', systemPrompt: 'Web instructions' });
+    expect(systemPromptFileContent()).toBe('Web instructions');
   });
 
   function systemPromptFileContent(): string {
@@ -87,6 +110,7 @@ describe('CodexAdapter system prompt wiring', () => {
   function codexAdapter(): CodexAdapter {
     return new CodexAdapter({
       binary: '/usr/local/bin/codex',
+      systemPrompt: buildBridgeSystemPrompt,
       profileStateDir: '/tmp/codex-profile',
     });
   }
@@ -103,6 +127,15 @@ describe('CodexAdapter system prompt wiring', () => {
     expect(stdin).toBe(
       prefixBridgeSystemPrompt('hi', { openId: 'ou_bot_self', name: 'Bridge' }),
     );
+  });
+
+  it('uses per-run host instructions instead of the Lark prompt', async () => {
+    const child = fakeChild();
+    spawnMock.spawnProcess.mockReturnValue(child);
+    const adapter = codexAdapter();
+    adapter.setBotIdentity({ openId: 'ou_bot_self' });
+    adapter.run({ runId: 'web', prompt: 'hello', cwd: '/tmp', systemPrompt: 'Web instructions' });
+    expect(await readAll(child.stdin)).toBe('Web instructions\n\n## user_message\n\nhello');
   });
 
   it('falls back to the base system prompt when no identity was set', async () => {

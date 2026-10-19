@@ -54,7 +54,7 @@ describe('/reconnect profile lifecycle', () => {
   });
 
   it('guards direct bridge disconnects and IM commands with the current profile runtime context', async () => {
-    const source = await readFile(new URL('../../../src/bot/channel.ts', import.meta.url), 'utf8');
+    const source = await readFile(new URL('../../../src/channels/lark/channel.ts', import.meta.url), 'utf8');
     const disconnectBlock = source.slice(
       source.indexOf('disconnect: async () => {'),
       source.indexOf('async function commandSessionCatalogIdentity'),

@@ -1,3 +1,5 @@
+import { buildLarkChannelEnv } from '../../src/agent/lark-channel-env';
+import { buildBridgeSystemPrompt } from '../../src/channels/lark/system-prompt';
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -50,6 +52,8 @@ describe('CodexAdapter process contract', () => {
 
     const run = new CodexAdapter({
       binary: fake.path,
+      systemPrompt: buildBridgeSystemPrompt,
+      env: buildLarkChannelEnv(),
       profileStateDir: fake.dir,
       sandbox: 'read-only',
     }).run({
@@ -117,13 +121,13 @@ describe('CodexAdapter process contract', () => {
     const run = new CodexAdapter({
       binary: fake.path,
       profileStateDir: fake.dir,
-      larkChannel: {
+      env: buildLarkChannelEnv({
         profile: 'codex-dev',
         rootDir,
         configPath,
         larkCliConfigDir,
         larkCliSourceConfigFile,
-      },
+      }),
     }).run({
       runId: 'run-profile-env',
       prompt: 'profile',

@@ -1,10 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { BRIDGE_SYSTEM_PROMPT } from '../../../src/agent/bridge-system-prompt';
 import { claudeCapability, codexCapability } from '../../../src/agent/capability';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 
 describe('agent capability contract', () => {
-  it('defines Claude capability with legacy callback marker compatibility', () => {
+  it('defines Claude execution capability independently of a channel', () => {
     const capability = claudeCapability();
 
     expect(capability).toMatchObject({
@@ -12,11 +11,6 @@ describe('agent capability contract', () => {
       sessionKind: 'claude-session',
       promptInjection: 'append-system-prompt',
       supportsNativeHistory: true,
-      systemPrompt: BRIDGE_SYSTEM_PROMPT,
-      callback: {
-        marker: '__bridge_cb',
-        legacyMarkers: ['__claude_cb'],
-      },
     });
   });
 
@@ -44,7 +38,6 @@ describe('agent capability contract', () => {
       sessionKind: 'codex-thread',
       promptInjection: 'stdin-prefix',
       supportsNativeHistory: false,
-      systemPrompt: BRIDGE_SYSTEM_PROMPT,
       permissions: {
         maxAccess: 'workspace',
       },

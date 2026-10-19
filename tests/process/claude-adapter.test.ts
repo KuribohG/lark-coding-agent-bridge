@@ -1,3 +1,5 @@
+import { buildLarkChannelEnv } from '../../src/agent/lark-channel-env';
+import { buildBridgeSystemPrompt } from '../../src/channels/lark/system-prompt';
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -29,7 +31,7 @@ describe('ClaudeAdapter process contract', () => {
     });
     cleanup.push(fake.dir);
 
-    const run = new ClaudeAdapter({ binary: fake.path }).run({
+    const run = new ClaudeAdapter({ binary: fake.path, systemPrompt: buildBridgeSystemPrompt, env: buildLarkChannelEnv() }).run({
       runId: 'run-fresh',
       prompt: 'hello',
       cwd: fake.dir,
@@ -83,13 +85,13 @@ describe('ClaudeAdapter process contract', () => {
 
     const run = new ClaudeAdapter({
       binary: fake.path,
-      larkChannel: {
+      env: buildLarkChannelEnv({
         profile: 'codex-dev',
         rootDir,
         configPath,
         larkCliConfigDir,
         larkCliSourceConfigFile,
-      },
+      }),
     }).run({
       runId: 'run-profile-env',
       prompt: 'profile',

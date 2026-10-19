@@ -13,7 +13,10 @@ export interface FingerprintInputV2 {
 }
 
 export interface ResourceScopeDigestInput {
-  source: 'im' | 'card' | 'comment' | 'meeting';
+  source: 'im' | 'card' | 'comment' | 'meeting' | 'channel';
+  conversationId?: string;
+  channelId?: string;
+  actorId?: string;
   chatId?: string;
   threadId?: string;
   commentScopeId?: string;
@@ -56,6 +59,7 @@ export function accessPolicyDigest(access: ProfileConfig['access']): string {
 export function resourceScopeDigest(input: ResourceScopeDigestInput): string {
   return digestCanonical({
     source: input.source,
+    ...(input.source === 'channel' ? { channelId: input.channelId, actorId: input.actorId, conversationId: input.conversationId } : {}),
     chatId: input.chatId ?? null,
     threadId: input.threadId ?? null,
     commentScopeId: input.commentScopeId ?? null,

@@ -169,6 +169,10 @@ export interface ProfileConfig {
   larkCli: LarkCliConfig;
 }
 
+/** Configuration needed to execute a conversation; no messaging credentials. */
+export type RunProfileConfig = Pick<ProfileConfig,
+  'agentKind' | 'preferences' | 'access' | 'workspaces' | 'permissions' | 'codex' | 'attachments'>;
+
 /**
  * The lark-cli identity preset that actually takes effect, after applying the
  * deployment-mode override. Team mode forces `bot-only` regardless of the

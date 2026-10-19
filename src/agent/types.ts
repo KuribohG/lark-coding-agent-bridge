@@ -55,6 +55,8 @@ export interface AgentRunOptions {
   deadlineAt?: number;
   runId: string;
   prompt: string;
+  /** Trusted host instructions; overrides the adapter default for this run. */
+  systemPrompt?: string;
   cwd?: string;
   sessionId?: string;
   threadId?: string;

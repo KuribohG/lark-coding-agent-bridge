@@ -7,17 +7,20 @@ import {
   type ClaudePermissionMode,
   type CodexSandboxMode,
 } from '../config/permissions';
-import type { ProfileConfig } from '../config/profile-schema';
+import type { RunProfileConfig } from '../config/profile-schema';
 import type { AccessDecision } from './access';
 import {
   accessPolicyDigest,
+  digestCanonical,
   attachmentPolicyConfigDigest,
   policyFingerprint,
   resourceScopeDigest,
 } from './fingerprint';
 
 export interface ScopeContext {
-  source: 'im' | 'card' | 'comment' | 'meeting';
+  source: 'im' | 'card' | 'comment' | 'meeting' | 'channel';
+  conversationId?: string;
+  channelId?: string;
   chatId?: string;
   threadId?: string;
   actorId: string;
@@ -46,11 +49,12 @@ export interface RunPolicyInput {
   scope: ScopeContext;
   attachments: AgentAttachment[];
   prompt: string;
+  systemPrompt?: string;
   requestedCwd: string;
   cwdRealpath: string;
   access: AccessDecision;
   capability: AgentCapability;
-  profileConfig: ProfileConfig;
+  profileConfig: RunProfileConfig;
   now: number;
   codexHome?: string;
   inheritCodexHome?: boolean;
@@ -114,13 +118,18 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
     accessMode,
     input.profileConfig.permissions,
   );
-  const resourceDigest = resourceScopeDigest({
+  const scopeDigest = resourceScopeDigest({
     source: input.scope.source,
+    actorId: input.scope.actorId,
+    conversationId: input.scope.conversationId,
+    channelId: input.scope.channelId,
     chatId: input.scope.chatId,
     threadId: input.scope.threadId,
     commentScopeId: input.scope.commentScopeId,
     resourceBindings: input.scope.resourceBindings?.map((binding) => binding.id),
   });
+  const resourceDigest = input.scope.source === 'channel'
+    ? digestCanonical({ scope: scopeDigest, instructions: input.systemPrompt ?? '' }) : scopeDigest;
   const attachmentDigest = attachmentPolicyConfigDigest(input.profileConfig.attachments);
   const accessDigest =
     input.scope.source === 'comment' && input.access.reason === 'comment-mention'

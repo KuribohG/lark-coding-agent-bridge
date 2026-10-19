@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { AgentAdapter, AgentEvent, AgentRun } from '../agent/types';
-import { ActiveRuns, type RunHandle } from '../bot/active-runs';
-import { ProcessPool } from '../bot/process-pool';
+import { ActiveRuns, type RunHandle } from './active-runs';
+import { ProcessPool } from './process-pool';
 import type { RunPolicyAllow } from '../policy/run-policy';
 import { log } from '../core/logger';
 import { RunRejected, SpawnFailed } from './errors';
@@ -21,6 +21,7 @@ export interface SubmitRunInput {
   deadlineAt?: number;
   signal?: AbortSignal;
   scopeId: string;
+  systemPrompt?: string;
   policy: RunPolicyAllow;
   sessionId?: string;
   threadId?: string;
@@ -136,6 +137,7 @@ export class RunExecutor {
       deadlineAt: input.deadlineAt,
       runId,
       prompt: input.policy.prompt,
+      systemPrompt: input.systemPrompt,
       cwd: input.policy.cwdRealpath,
       sessionId: input.sessionId,
       threadId: input.threadId,

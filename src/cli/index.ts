@@ -26,6 +26,7 @@ import {
 } from './commands/service';
 import { runStart } from './commands/start';
 import { runUi } from './commands/ui';
+import { runWeb } from './commands/web';
 import { configureCiWatch, statusCiWatch } from './commands/ci-watch';
 import { checkMonitors, configureMonitors, initMonitors, statusMonitors } from './commands/monitors';
 import { checkService, configureService, listServices, removeService } from './commands/model-service';
@@ -66,6 +67,16 @@ program
   }) => {
     await runStart(opts);
   });
+
+program.command('web')
+  .description('Run standalone browser chat without a Lark account')
+  .requiredOption('--agent <kind>', 'claude or codex')
+  .requiredOption('--workspace <path>', 'workspace for browser conversations')
+  .option('--state-dir <path>', 'private conversation state directory')
+  .option('--port <port>', 'localhost port; default 8787, use 0 for a free port')
+  .option('--binary <path>', 'agent executable')
+  .option('--model <id>', 'model for new runs')
+  .action(runWeb);
 
 program
   .command('migrate')

@@ -1,3 +1,5 @@
+import { buildLarkChannelEnv } from '../agent/lark-channel-env';
+import { buildBridgeSystemPrompt } from '../channels/lark/system-prompt';
 import { ClaudeAdapter } from '../agent/claude/adapter';
 import { CodexAdapter } from '../agent/codex/adapter';
 import { AgentPreflightError, type AgentAvailability } from '../agent/preflight';
@@ -40,6 +42,7 @@ export function createRuntimeAgent(
     }
     return new CodexAdapter({
       binary: codex.binaryPath,
+      systemPrompt: buildBridgeSystemPrompt,
       transport: codex.transport,
       profileStateDir: appPaths.profileDir,
       ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
@@ -47,10 +50,10 @@ export function createRuntimeAgent(
       ignoreUserConfig: codex.ignoreUserConfig === true,
       ignoreRules: codex.ignoreRules !== false,
       sandbox: profileConfig.sandbox.defaultMode,
-      larkChannel,
+      env: buildLarkChannelEnv(larkChannel),
     });
   }
-  return new ClaudeAdapter({ larkChannel });
+  return new ClaudeAdapter({ env: buildLarkChannelEnv(larkChannel), systemPrompt: buildBridgeSystemPrompt });
 }
 
 export async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promise<AgentAvailability> {

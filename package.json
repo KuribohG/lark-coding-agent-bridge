@@ -24,6 +24,18 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js"
+    },
+    "./channels/lark": {
+      "types": "./dist/lark.d.ts",
+      "import": "./dist/lark.js"
+    },
+    "./channels/web": {
+      "types": "./dist/web.d.ts",
+      "import": "./dist/web.js"
     }
   },
   "files": [
@@ -41,7 +53,8 @@
     "docs/monitors.example.toml",
     "LICENSE",
     "docs/self-contained.md",
-    "docs/user-guide"
+    "docs/user-guide",
+    "docs/channels.md"
   ],
   "scripts": {
     "dev": "tsup --watch",
