@@ -844,7 +844,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     return;
   }
 
-  const wasBusy = pending.hasWork(scope) || Boolean(activeRuns.get(scope));
+  const wasBusy = pending.isBlocked(scope) || Boolean(activeRuns.get(scope));
   const wasTimed = Boolean(controls.activeTimedRun?.(scope));
   if (emsg.resources.length === 0 && supportsRunInput(activeRuns.get(scope)?.run)) {
     const result = await deps.followups.deliver({

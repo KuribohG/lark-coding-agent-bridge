@@ -27,6 +27,44 @@ afterEach(async () => {
 });
 
 describe.each(['codex', 'claude'] as const)('in-flight %s IM delivery', agentKind => {
+  it('silently merges messages in the debounce window into the same run', async () => {
+    const h = await harness(agentKind);
+    await h.message('original task', { messageId: 'original' });
+    await h.message('additional context', { messageId: 'supplement' });
+    expect(h.agent.options).toHaveLength(0);
+    expect(h.channel.sent).toHaveLength(0);
+    await vi.waitFor(() => expect(h.agent.options).toHaveLength(1), { timeout: 2500 });
+    expect(h.agent.options[0]!.prompt).toContain('original task');
+    expect(h.agent.options[0]!.prompt).toContain('additional context');
+    expect(h.agent.supplements).toHaveLength(0);
+    await h.message('/stop');
+  });
+  it('acknowledges input queued behind a batch that is still being prepared', async () => {
+    const h = await harness(agentKind);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const prepare = vi.spyOn(h.agent, 'prepareRun').mockImplementationOnce(() => gate);
+    try {
+      await h.message('original task', { messageId: 'original' });
+      await vi.waitFor(() => expect(prepare).toHaveBeenCalled(), { timeout: 2500 });
+      await h.message('queued context', { messageId: 'supplement' });
+      expect(h.agent.options).toHaveLength(0);
+      expect(h.channel.sent.at(-1)).toMatchObject({
+        content: { markdown: '已排队，将在当前任务结束后处理；/stop 会同时取消排队消息。' },
+        options: { replyTo: 'supplement', replyInThread: true },
+      });
+      release();
+      await vi.waitFor(() => expect(h.agent.options).toHaveLength(1), { timeout: 2500 });
+      expect(h.agent.options[0]!.prompt).not.toContain('queued context');
+      h.agent.finish(0);
+      await vi.waitFor(() => expect(h.agent.options).toHaveLength(2), { timeout: 2500 });
+      expect(h.agent.options[1]!.prompt).toContain('queued context');
+      expect(h.agent.supplements).toHaveLength(0);
+      await h.message('/stop');
+    } finally {
+      release();
+    }
+  });
   it('delivers ordinary text to the existing turn with scoped acknowledgement', async () => {
     const h = await harness(agentKind);
     await h.message('original task');
