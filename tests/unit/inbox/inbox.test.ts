@@ -329,6 +329,55 @@ describe('Lark boundary', () => {
     expect(args[args.indexOf('--text') + 1]).toContain('源会话'); expect(args[args.indexOf('--text') + 1]).toContain('需要确认发布日期');
     job.destination.replyTo = 'om_evil'; await expect(cli.deliver(job, 'result')).rejects.toThrow('目标已变更');
   });
+  it.each(['analysis-topic', 'thread', 'new_topic'])('renders analysis Markdown as a native post via %s', async route => {
+    const { service } = await setup(); await service.tick(); const job = service.list()[0]!;
+    const c = config(); c.deliveryMode = route === 'thread' ? 'thread' : 'new_topic';
+    job.attention = { state: 'needed', reason: '需要回复' }; job.draftStale = false;
+    if (route === 'analysis-topic') {
+      job.analysisTopic = { chatId: 'oc_target', replyTo: 'om_analysis', threadId: 'omt_analysis' };
+      c.gui.publicUrl = 'https://gui.example';
+    }
+    job.source.name = 'data_platform/**source**';
+    job.replyDraft = '**已核实**：`read()`\n\n- 修复短读\n- 补充验证\n<at user_id="ou_other">someone</at>';
+    job.analysis = '```ts\nread();\n```\n\n[证据](https://example.com/log)\n![image](https://example.com/private.png)';
+    job.missingInfo = '需要确认版本';
+    job.messages[0]!.link = 'https://applink.feishu.cn/client/thread/open?open_chat_id=oc_source';
+    const target = job.analysisTopic ?? c.destination;
+    const exec = vi.fn(async (_args: string[]) => ({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data: {
+      chat_mode: 'topic', messages: [{ message_id: target.replyTo, chat_id: target.chatId, thread_id: target.threadId,
+        create_time: '2026-10-14 20:00', sender: { sender_type: 'user' }, content: '' }],
+    } }) }));
+    const cli = new InboxLark({ profile: 'codex' }, c, exec);
+    await cli.deliver(job, 'result'); await cli.deliver(job, 'result');
+    const sends = exec.mock.calls.map(([args]) => args).filter(args => args.includes('+messages-reply') || args.includes('+messages-send'));
+    expect(sends).toHaveLength(2); expect(sends[0]).toEqual(sends[1]);
+    const args = sends[0]!;
+    expect(args).toEqual(expect.arrayContaining(['--as', 'bot', '--msg-type', 'post', '--idempotency-key']));
+    expect(args).not.toContain('--text'); expect(args).not.toContain('--markdown'); expect(args).not.toContain('oc_source');
+    expect(args).toEqual(expect.arrayContaining(route === 'new_topic'
+      ? ['+messages-send', '--chat-id', 'oc_target'] : ['+messages-reply', '--reply-in-thread', '--message-id', target.replyTo]));
+    const post = JSON.parse(args[args.indexOf('--content') + 1]!).zh_cn;
+    expect(post.title).toBe('分析结果 · data_platform/**source**');
+    expect(post.content.slice(0, 3)).toEqual([
+      [{ tag: 'md', text: '**回复草稿（供你确认后发送）**\n\n**已核实**：`read()`\n\n- 修复短读\n- 补充验证\nsomeone' }],
+      [{ tag: 'md', text: `**分析结果**\n\n${job.analysis}` }],
+      [{ tag: 'md', text: '**待确认**\n\n需要确认版本' }],
+    ]);
+    expect(post.content.at(-1)).toEqual([{ tag: 'a', text: '原消息', href: job.messages[0]!.link }]);
+    if (route === 'analysis-topic') expect(post.content[3]).toEqual([{ tag: 'a', text: '打开会话助理', href: `https://gui.example#job=${job.id}` }]);
+  });
+  it('renders failed analyses without including an old draft', async () => {
+    const { service } = await setup(); await service.tick(); const job = service.list()[0]!;
+    job.analysisTopic = { ...job.destination }; job.error = '查询 `logs` 超时'; job.replyDraft = '过期草稿'; job.draftStale = true;
+    const exec = vi.fn(async (_args: string[]) => ({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data: {
+      messages: [{ message_id: 'om_anchor', chat_id: 'oc_target', thread_id: 'omt_topic', create_time: '2026-10-14 20:00', sender: { sender_type: 'user' }, content: '' }],
+    } }) }));
+    await new InboxLark({ profile: 'codex' }, config(), exec).deliver(job, 'result');
+    const args = exec.mock.calls[1]![0];
+    const post = JSON.parse(args[args.indexOf('--content') + 1]!).zh_cn;
+    expect(post.content).toEqual([[{ tag: 'md', text: '**分析未完成**\n\n查询 `logs` 超时' }]]);
+    expect(JSON.stringify(post)).not.toContain('过期草稿');
+  });
   it('bounds content while keeping latest messages', () => { const bounded = boundMessages([message({ text: 'a'.repeat(3000) }), message({ id: 'latest', time: 2_000_000, text: 'latest' })], 1000); expect(bounded.at(-1)?.id).toBe('latest'); expect(bounded.map(m => m.text).join('').length).toBeLessThanOrEqual(1000); });
   it('publishes only qualified items in the configured topic group with a stable retry key', async () => {
     const { service } = await setup(); await service.tick(); const job = service.list()[0]!;

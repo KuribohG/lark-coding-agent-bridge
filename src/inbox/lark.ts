@@ -8,6 +8,12 @@ import { handlingState } from './reply';
 
 const str = (v: unknown) => typeof v === 'string' ? v : '';
 const iso = (n: number) => new Date(n).toISOString().replace(/\.\d{3}Z$/, 'Z');
+type MessageBody = { text?: string; card?: object; post?: object };
+const withoutMentions = (text: string) => text.replace(/<\/?at\b[^>]*>/gi, '');
+const messageArgs = (body: MessageBody): string[] => body.card
+  ? ['--msg-type', 'interactive', '--content', JSON.stringify(body.card)]
+  : body.post ? ['--msg-type', 'post', '--content', JSON.stringify(body.post)]
+    : ['--text', withoutMentions(body.text ?? '')];
 
 /** The subprocess runs in Asia/Shanghai so minute-resolution dates have a fixed offset. */
 export function messageTime(v: unknown): number {
@@ -189,18 +195,24 @@ export class InboxLark {
     if (phase !== 'result' || !this.config.enabled || handlingState(job) !== 'open' || (job.draftStale && !job.error) ||
       (!job.analysisTopic && (this.config.gui.publicUrl || job.attention?.state !== 'needed'))) return;
     if (job.analysisTopic && job.analysisTopic.chatId !== d.chatId) throw new Error('分析话题目标已变更');
-    const escape = (s: string) => s.replace(/[\r\n]/g, ' ').replace(/[<>`*_\[\]]/g, '');
     const first = job.messages[0];
-    const header = `分析结果 · ${escape(job.source.name)}\n`;
     const page = this.config.gui.publicUrl || this.config.h5.publicUrl;
-    const entry = page ? `\n打开会话助理：${page}#job=${job.id}` : '';
-    const text = header + '\n' + (job.error ? `分析未完成：${job.error}${entry}` :
-      `回复草稿（供你确认后发送）：\n${job.replyDraft || '暂时无法起草，请查看下方待确认信息。'}\n\n分析结果：\n${job.analysis || job.result || ''}\n\n待确认：${job.missingInfo || '无'}${entry}`);
-    const link = first?.link && /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(first.link) ? `\n原消息：${first.link}` : '';
+    const section = (title: string, text: string) => [{ tag: 'md', text: `**${title}**\n\n${withoutMentions(text)}` }];
+    // Native md elements render Markdown without the CLI fetching model-supplied images.
+    const post = { zh_cn: { title: `分析结果 · ${withoutMentions(job.source.name).replace(/[\r\n]/g, ' ')}`, content: [
+      ...(job.error ? [section('分析未完成', job.error)] : [
+        section('回复草稿（供你确认后发送）', job.replyDraft || '暂时无法起草，请查看下方待确认信息。'),
+        section('分析结果', job.analysis || job.result || ''),
+        section('待确认', job.missingInfo || '无'),
+      ]),
+      ...(page ? [[{ tag: 'a', text: '打开会话助理', href: `${page}#job=${job.id}` }]] : []),
+      ...(first?.link && /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(first.link)
+        ? [[{ tag: 'a', text: '原消息', href: first.link }]] : []),
+    ] } };
     const key = createHash('sha256').update(`${job.id}:${job.attempt ?? 0}:${phase}${this.config.deliveryMode === 'new_topic' ? `:new_topic:${d.chatId}` : ''}`).digest('hex').slice(0, 48);
-    const publish = (body: { text?: string; card?: object }) => job.analysisTopic ? this.replyAt(job.analysisTopic, body, key) : this.config.deliveryMode === 'new_topic'
+    const publish = (body: MessageBody) => job.analysisTopic ? this.replyAt(job.analysisTopic, body, key) : this.config.deliveryMode === 'new_topic'
       ? this.sendNewTopic(body, key) : this.replyTopic(body, key);
-    await publish({ text: text + link });
+    await publish({ post });
   }
   async notifyAttention(jobs: InboxJob[], id: string): Promise<void> {
     if (!this.config.enabled || !jobs.length || jobs.some(j => j.ownerOpenId !== this.config.ownerOpenId ||
@@ -223,29 +235,28 @@ export class InboxLark {
     const key = createHash('sha256').update(`attention:${id}`).digest('hex').slice(0, 48);
     await this.replyTopic({ text }, key);
   }
-  private async sendNewTopic(body: { text?: string; card?: object }, key: string): Promise<Obj> {
+  private async sendNewTopic(body: MessageBody, key: string): Promise<Obj> {
     const chatId = this.config.destination.chatId;
     const chat = await this.call(['im', 'chats', 'get', '--as', 'bot', '--chat-id', chatId]);
     if (chat.chat_mode !== 'topic') throw new Error('结果群不是话题群，停止新建话题');
     return this.call(['im', '+messages-send', '--as', 'bot', '--chat-id', chatId,
-      ...(body.card ? ['--msg-type', 'interactive', '--content', JSON.stringify(body.card)] : ['--text', (body.text ?? '').replace(/<\/?at\b[^>]*>/gi, '')]),
+      ...messageArgs(body),
       '--idempotency-key', key]);
   }
-  async replyTopic(body: { text?: string; card?: object }, key?: string): Promise<void> {
+  async replyTopic(body: MessageBody, key?: string): Promise<void> {
     await this.replyAt(this.config.destination, body, key);
   }
   async replyMenu(card: object, messageId: string, threadId: string): Promise<void> {
     if (!/^om_\w+$/.test(messageId) || !/^omt_\w+$/.test(threadId)) throw new Error('无法确认入口所在话题，请在群话题中重新发送 /inbox');
     await this.replyAt({ chatId: this.config.destination.chatId, replyTo: messageId, threadId }, { card });
   }
-  private async replyAt(d: InboxConfig['destination'], body: { text?: string; card?: object }, key?: string, signal?: AbortSignal): Promise<Obj> {
+  private async replyAt(d: InboxConfig['destination'], body: MessageBody, key?: string, signal?: AbortSignal): Promise<Obj> {
     const anchor = await this.call(['im', '+messages-mget', '--as', 'bot', '--message-ids', d.replyTo, '--no-reactions']);
     const messages = parseMessages(anchor.messages);
     if (!messages.some(m => m.id === d.replyTo && m.chatId === d.chatId && m.threadId === d.threadId)) throw new Error('无法验证回复话题，停止投递');
     signal?.throwIfAborted();
-    // Model results use plain text; native cards render source names as plain_text too.
     return this.call(['im', '+messages-reply', '--as', 'bot', '--message-id', d.replyTo, '--reply-in-thread',
-      ...(body.card ? ['--msg-type', 'interactive', '--content', JSON.stringify(body.card)] : ['--text', (body.text ?? '').replace(/<\/?at\b[^>]*>/gi, '')]),
+      ...messageArgs(body),
       ...(key ? ['--idempotency-key', key] : [])]);
   }
 }

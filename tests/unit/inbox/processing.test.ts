@@ -239,8 +239,10 @@ it('Lark creates a bot topic then uses its verified anchor for the result, witho
   expect(sends).toHaveLength(2); expect(sends[0]).toContain('--chat-id'); expect(sends[0]).toContain('oc_target');
   expect(sends[1]).toContain('--reply-in-thread'); expect(sends[1]).toContain('om_item'); expect(sends[1]).not.toContain('om_menu');
   for (const args of sends) { expect(args).toContain('bot'); expect(args).not.toContain('oc_source'); }
-  expect(sends[1]![sends[1]!.indexOf('--text') + 1]).toContain('回复草稿');
-  expect(sends[1]![sends[1]!.indexOf('--text') + 1]).not.toContain('<at');
+  expect(sends[0]).toContain('--text'); expect(sends[1]).toEqual(expect.arrayContaining(['--msg-type', 'post']));
+  const content = sends[1]![sends[1]!.indexOf('--content') + 1]!;
+  expect(JSON.parse(content).zh_cn.content[0][0]).toEqual({ tag: 'md', text: '**回复草稿（供你确认后发送）**\n\n同事，方案已核实。' });
+  expect(content).not.toContain('<at');
   job.analysisTopic.chatId = 'oc_source'; await expect(lark.deliver(job, 'result')).rejects.toThrow('目标已变更');
 });
 
