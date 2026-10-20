@@ -1,3 +1,4 @@
+import { terminateChild } from '../platform/terminate';
 import { createHash } from 'node:crypto';
 import { larkCliEnv, getUserAuthStatus, type LarkCliExec, type UserImContext } from '../lark-cli/user-im';
 import { mergeProcessEnv, spawnProcess } from '../platform/spawn';
@@ -63,7 +64,7 @@ export class InboxLark {
       if (this.abort.signal.aborted) { reject(new Error('助理已关闭')); return; }
       const child = spawnProcess('lark-cli', args, { env: mergeProcessEnv(process.env, env), stdio: ['ignore', 'pipe', 'pipe'] });
       let stdout = ''; let stderr = ''; let bytes = 0; let timedOut = false;
-      const kill = () => { child.kill('SIGKILL'); };
+      const kill = () => { terminateChild(child, 'SIGKILL'); };
       const signal = this.abort.signal;
       signal.addEventListener('abort', kill, { once: true });
       const timer = setTimeout(() => { timedOut = true; kill(); }, timeoutMs);

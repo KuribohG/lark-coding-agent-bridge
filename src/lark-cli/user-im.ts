@@ -1,3 +1,4 @@
+import { terminateChild } from '../platform/terminate';
 import { resolveAppPaths } from '../config/app-paths';
 import { buildLarkChannelEnv } from '../agent/lark-channel-env';
 import { mergeProcessEnv, spawnProcess } from '../platform/spawn';
@@ -87,7 +88,7 @@ const defaultExec: LarkCliExec = (args, env, timeoutMs) =>
     child.stderr?.on('data', (b: Buffer) => (stderr += b.toString('utf8')));
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
+      terminateChild(child, 'SIGTERM');
     }, timeoutMs);
     child.once('error', (err) => {
       clearTimeout(timer);

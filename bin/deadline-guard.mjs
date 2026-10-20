@@ -44,7 +44,7 @@ function collectDescendants() {
 function killTree() {
   if (!child.pid) return;
   if (process.platform === 'win32') {
-    crossSpawn.sync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+    crossSpawn.sync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 5000 });
     return;
   }
   collectDescendants();

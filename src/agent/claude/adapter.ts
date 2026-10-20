@@ -1,3 +1,4 @@
+import { terminateChild } from '../../platform/terminate';
 import { ULTRA_EFFORT, parseEffort } from '../model-settings';
 import { validateModelId } from '../models';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -141,7 +142,7 @@ export class ClaudeAdapter implements AgentAdapter {
         if (isWindowsCommandNotFoundLine(line)) {
           runtimeError = new Error(`failed to spawn claude: ${line.trim()}`);
           child.stdout.destroy();
-          child.kill();
+          terminateChild(child);
         }
         nl = stderrBuffer.indexOf('\n');
       }
@@ -179,7 +180,7 @@ export class ClaudeAdapter implements AgentAdapter {
         input.close();
         if (child.exitCode !== null || child.signalCode !== null) return;
         log.info('agent', 'stop-sigterm', { pid: child.pid ?? null, graceMs: stopGraceMs });
-        child.kill('SIGTERM');
+        terminateChild(child, 'SIGTERM');
         await new Promise<void>((resolve) => {
           const timer = setTimeout(() => {
             if (child.exitCode === null && child.signalCode === null) {
@@ -188,7 +189,7 @@ export class ClaudeAdapter implements AgentAdapter {
                 graceMs: stopGraceMs,
                 reason: 'grace-period-expired',
               });
-              child.kill('SIGKILL');
+              terminateChild(child, 'SIGKILL');
             }
             resolve();
           }, stopGraceMs);

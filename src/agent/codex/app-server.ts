@@ -1,3 +1,4 @@
+import { terminateChild } from '../../platform/terminate';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import type { SpawnedProcessByStdio } from '../../platform/spawn';
@@ -215,9 +216,9 @@ export function startAppServerRun(input: {
           if (await waitForExit(input.stopGraceMs)) return;
         }
         if (!exited) {
-          child.kill('SIGTERM');
+          terminateChild(child, 'SIGTERM');
           if (!await waitForExit(input.stopGraceMs)) {
-            child.kill('SIGKILL');
+            terminateChild(child, 'SIGKILL');
             await waitForExit(input.stopGraceMs);
           }
         }

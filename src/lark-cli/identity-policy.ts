@@ -1,3 +1,4 @@
+import { terminateChild } from '../platform/terminate';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../agent/lark-channel-env';
 import { mergeProcessEnv, spawnProcess } from '../platform/spawn';
 import type { LarkCliIdentityPreset } from '../config/profile-schema';
@@ -59,7 +60,7 @@ async function runQuiet(
     });
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
+      terminateChild(child, 'SIGTERM');
     }, POLICY_TIMEOUT_MS);
     child.once('error', () => {
       clearTimeout(timer);

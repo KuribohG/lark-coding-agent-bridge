@@ -10,6 +10,7 @@ import {
   windowsLauncherCmdPath,
 } from './paths';
 import { paths } from '../config/paths';
+import { batchArgument, batchLiteral, BATCH_PREAMBLE } from '../platform/windows-cmd';
 
 export interface LauncherInputs {
   /** Absolute path to node.exe. */
@@ -41,13 +42,12 @@ export interface LauncherInputs {
  * daemon restarts.
  */
 export function buildLauncherCmd(inputs: LauncherInputs): string {
-  // Profile names / flags are validated safe tokens (no spaces).
-  const runArgs = inputs.runArgs.join(' ');
+  const runArgs = inputs.runArgs.map(batchArgument).join(' ');
   return [
-    '@echo off',
-    `set "LARK_CHANNEL_HOME=${inputs.channelHome}"`,
-    `set "PATH=${inputs.envPath}"`,
-    `"${inputs.nodePath}" "${inputs.bridgeEntryPath}" ${runArgs} >> "${daemonStdoutPath(inputs.profile)}" 2>> "${daemonStderrPath(inputs.profile)}"`,
+    ...BATCH_PREAMBLE,
+    `set "LARK_CHANNEL_HOME=${batchLiteral(inputs.channelHome)}"`,
+    `set "PATH=${batchLiteral(inputs.envPath.replace(/"/g, ''))}"`,
+    `${batchArgument(inputs.nodePath)} ${batchArgument(inputs.bridgeEntryPath)} ${runArgs} >> ${batchArgument(daemonStdoutPath(inputs.profile))} 2>> ${batchArgument(daemonStderrPath(inputs.profile))}`,
     '',
   ].join('\r\n');
 }
@@ -78,12 +78,24 @@ interface SchtasksResult {
 }
 
 function runSchtasks(args: string[]): SchtasksResult {
-  const r = spawnSync('schtasks', args, { encoding: 'utf8' });
+  const r = spawnSync('schtasks', args, { encoding: 'utf8', windowsHide: true, timeout: 15_000 });
   return {
     ok: r.status === 0,
-    stderr: r.stderr ?? '',
+    stderr: r.error?.message || r.stderr || '',
     stdout: r.stdout ?? '',
   };
+}
+
+function runTaskScript(script: string): SchtasksResult {
+  const r = spawnSync('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive',
+    '-EncodedCommand', Buffer.from(`$ErrorActionPreference = 'Stop'; ${script}`, 'utf16le').toString('base64')],
+  { encoding: 'utf8', windowsHide: true, timeout: 15_000 });
+  return { ok: r.status === 0, stdout: r.stdout ?? '', stderr: r.error?.message || r.stderr || '' };
+}
+
+function taskScriptPrelude(profile: string): string {
+  const taskName = windowsTaskName(profile).replace(/'/g, "''");
+  return `$service = New-Object -ComObject 'Schedule.Service'; $service.Connect(); $folder = $service.GetFolder('\\'); $name = '${taskName}'; `;
 }
 
 /**
@@ -99,7 +111,7 @@ export async function installTask(
   runArgs: string[] = ['run'],
 ): Promise<SchtasksResult> {
   await writeLauncherCmd(profile, runArgs);
-  return runSchtasks([
+  const created = runSchtasks([
     '/Create',
     '/F',
     '/SC',
@@ -111,6 +123,16 @@ export async function installTask(
     '/TR',
     `"${windowsLauncherCmdPath(profile)}"`,
   ]);
+  if (!created.ok) return created;
+  // Task Scheduler defaults stop a task after 72 hours and when switching
+  // to battery power. Persist daemon settings before the caller starts it.
+  return runTaskScript(taskScriptPrelude(profile) +
+    `$task = $folder.GetTask($name).Definition; ` +
+    `$task.Settings.ExecutionTimeLimit = 'PT0S'; ` +
+    `$task.Settings.DisallowStartIfOnBatteries = $false; ` +
+    `$task.Settings.StopIfGoingOnBatteries = $false; ` +
+    `$user = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; ` +
+    `$null = $folder.RegisterTaskDefinition($name, $task, 6, $user, $null, 3, $null)`);
 }
 
 /** Start the task now (regardless of trigger). */
@@ -147,7 +169,9 @@ export function endAndDisable(profile: string): SchtasksResult {
 /** Schtasks has no native restart — end, wait, run. */
 export async function restartTask(profile: string): Promise<SchtasksResult> {
   endTask(profile); // best-effort; ignore if not running
-  await waitUntilStopped(profile);
+  if (!await waitUntilStopped(profile)) {
+    return { ok: false, stderr: 'scheduled task did not stop before restart', stdout: '' };
+  }
   return runTask(profile);
 }
 
@@ -163,14 +187,20 @@ export function isTaskRegistered(profile: string): boolean {
 }
 
 /**
- * Parse `/Query /V /FO LIST` output for the current run state. Looks for
- * `Status: Running` in the verbose listing. Other states include
- * "Ready" (registered, not currently running) and "Disabled".
+ * Read TASK_STATE through COM; schtasks display output is localized.
+ * Queued tasks also count as active so a restart waits for them to stop.
  */
 export function isTaskRunning(profile: string): boolean {
-  const r = runSchtasks(['/Query', '/V', '/FO', 'LIST', '/TN', windowsTaskName(profile)]);
-  if (!r.ok) return false;
-  return /Status:\s+Running/i.test(r.stdout);
+  const r = runTaskScript(taskScriptPrelude(profile) +
+    `try { [int]$folder.GetTask($name).State } catch { ` +
+    `$cause = $_.Exception; while ($cause.InnerException) { $cause = $cause.InnerException }; ` +
+    `if ($cause.HResult -eq -2147024894) { 'missing' } else { throw } }`);
+  const state = r.stdout?.trim();
+  if (r.ok && state === 'missing') return false;
+  if (!r.ok || !/^[0-4]$/.test(state ?? '') || state === '0') {
+    throw new Error(`cannot query scheduled task state: ${r.stderr.trim() || state || 'unknown'}`);
+  }
+  return state === '2' || state === '4';
 }
 
 export function describeTask(profile: string): string {
@@ -190,7 +220,7 @@ export async function waitUntilStopped(profile: string, timeoutMs = 5000): Promi
 export async function deleteTask(profile: string): Promise<SchtasksResult> {
   const r = runSchtasks(['/Delete', '/F', '/TN', windowsTaskName(profile)]);
   // Remove the launcher script too; best-effort.
-  if (existsSync(windowsLauncherCmdPath(profile))) {
+  if (r.ok && existsSync(windowsLauncherCmdPath(profile))) {
     await rm(windowsLauncherCmdPath(profile), { force: true });
   }
   return r;

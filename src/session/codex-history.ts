@@ -1,3 +1,4 @@
+import { terminateChild } from '../platform/terminate';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { join } from 'node:path';
@@ -95,7 +96,7 @@ export async function listCodexThreadHistory(
       child.removeListener('error', fail);
       child.stdin.removeListener('error', fail);
       child.stderr.removeAllListeners('data');
-      if (options.kill && child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+      if (options.kill && child.exitCode === null && child.signalCode === null) terminateChild(child, 'SIGTERM');
     };
 
     timer = setTimeout(() => {
@@ -255,7 +256,7 @@ async function waitForChildExit(child: CodexAppServerChild, timeoutMs: number): 
   if (child.exitCode !== null || child.signalCode !== null) return;
   await new Promise<void>((resolve) => {
     const timer = setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+      if (child.exitCode === null && child.signalCode === null) terminateChild(child, 'SIGTERM');
       resolve();
     }, timeoutMs);
     child.once('exit', () => {

@@ -1,3 +1,4 @@
+import { terminateChild } from '../platform/terminate';
 import { resolveAppPaths } from '../config/app-paths';
 import { buildLarkChannelEnv } from '../agent/lark-channel-env';
 import { mergeProcessEnv, spawnProcess } from '../platform/spawn';
@@ -90,7 +91,7 @@ const defaultExec: PreflightExec = (args, env) =>
     });
     child.stdout?.on('data', (b: Buffer) => (stdout += b.toString('utf8')));
     child.stderr?.on('data', (b: Buffer) => (stderr += b.toString('utf8')));
-    const timer = setTimeout(() => child.kill('SIGTERM'), 20_000);
+    const timer = setTimeout(() => terminateChild(child, 'SIGTERM'), 20_000);
     child.once('error', (err) => {
       clearTimeout(timer);
       resolve({ code: null, stdout, stderr: stderr || String(err) });

@@ -1,3 +1,4 @@
+import { terminateChild } from '../platform/terminate';
 import * as p from '@clack/prompts';
 import { readFile } from 'node:fs/promises';
 import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../agent/lark-channel-env';
@@ -743,7 +744,7 @@ async function runCapture(
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
+      terminateChild(child, 'SIGTERM');
     }, timeoutMs);
 
     child.once('error', () => {

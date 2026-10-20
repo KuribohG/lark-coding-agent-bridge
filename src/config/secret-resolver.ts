@@ -1,3 +1,4 @@
+import { terminateChild } from '../platform/terminate';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
@@ -185,7 +186,7 @@ async function spawnExecProvider(pc: ProviderConfig, ref: SecretRef): Promise<st
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
-      child.kill('SIGKILL');
+      terminateChild(child, 'SIGKILL');
       reject(new Error(`exec provider timed out after ${timeoutMs}ms`));
     }, timeoutMs);
 
@@ -193,7 +194,7 @@ async function spawnExecProvider(pc: ProviderConfig, ref: SecretRef): Promise<st
       if (truncated) return;
       if (stdout.length + chunk.length > maxOutput) {
         truncated = true;
-        child.kill('SIGKILL');
+        terminateChild(child, 'SIGKILL');
         return;
       }
       stdout += chunk.toString('utf8');

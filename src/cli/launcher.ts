@@ -1,3 +1,4 @@
+import { terminateChild } from '../platform/terminate';
 import { spawn } from 'node:child_process';
 import { createReadStream } from 'node:fs';
 import { mkdir, open, stat } from 'node:fs/promises';
@@ -76,7 +77,7 @@ LARK_CHANNEL_HOME 可指定独立配置目录。后台进程不会跨机器重�
   }
   if (opts.action === 'fg') {
     const child = spawn(process.execPath, runArgs, { stdio: 'inherit' });
-    const forward = (signal: NodeJS.Signals) => { child.kill(signal); };
+    const forward = (signal: NodeJS.Signals) => { terminateChild(child, signal); };
     const interrupt = () => forward('SIGINT'), terminate = () => forward('SIGTERM');
     process.on('SIGINT', interrupt); process.on('SIGTERM', terminate);
     try {

@@ -48,7 +48,7 @@ describe('profile-scoped daemon paths and arguments', () => {
     expect(buildPlist(inputs)).toContain('<key>LARK_CHANNEL_HOME</key>\n        <string>/tmp/lark-channel-home</string>');
     expect(buildUnit(inputs)).toContain('run --profile codex-dev');
     expect(buildUnit(inputs)).toContain('Environment="LARK_CHANNEL_HOME=/tmp/lark-channel-home"');
-    expect(buildLauncherCmd(inputs)).toContain('run --profile codex-dev');
+    expect(buildLauncherCmd(inputs)).toContain('"run" "--profile" "codex-dev"');
     expect(buildLauncherCmd(inputs)).toContain('set "LARK_CHANNEL_HOME=/tmp/lark-channel-home"');
   });
 
@@ -66,7 +66,7 @@ describe('profile-scoped daemon paths and arguments', () => {
     expect(buildPlist(inputs)).not.toContain('--profile');
     expect(buildUnit(inputs)).toContain('run --web-ui');
     expect(buildUnit(inputs)).not.toContain('--profile');
-    expect(buildLauncherCmd(inputs)).toContain('run --web-ui');
+    expect(buildLauncherCmd(inputs)).toContain('"run" "--web-ui"');
     expect(buildLauncherCmd(inputs)).not.toContain('--profile');
   });
 });

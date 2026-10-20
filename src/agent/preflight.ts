@@ -1,3 +1,4 @@
+import { terminateChild } from '../platform/terminate';
 import { spawnProcess } from '../platform/spawn';
 
 export type LocalAgentId = 'claude' | 'codex';
@@ -118,7 +119,7 @@ export async function checkAgentVersion(input: CheckAgentVersionInput): Promise<
     if (!child) return;
 
     timer = setTimeout(() => {
-      child.kill('SIGTERM');
+      terminateChild(child, 'SIGTERM');
       finish(() =>
         reject(
           new AgentPreflightError({

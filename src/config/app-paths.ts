@@ -89,6 +89,9 @@ function normalizeProfileName(profile: string): string {
   if (/[\u0000-\u001f\s/\\:*?"<>|]/.test(trimmed) || trimmed === '.' || trimmed === '..') {
     throw new Error(`invalid profile name: ${profile}`);
   }
+  if (/\.$/.test(trimmed) || /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(trimmed)) {
+    throw new Error(`invalid profile name: ${profile}`);
+  }
   return trimmed;
 }
 
