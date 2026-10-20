@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { CardActionEvent, LarkChannel, NormalizedMessage } from '@larksuite/channel';
+import type { CardActionEvent, CardActionResponse, LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import type { AgentEvent } from '../agent/types';
 import { buildAgentPrompt } from '../agent/prompt';
 import type { CallbackAuth } from '../card/callback-auth';
@@ -74,7 +74,7 @@ export class UserQuestions {
     scope: string;
     identity?: SessionCatalogIdentity;
     formValue?: Record<string, unknown>;
-  }): Promise<void> {
+  }): Promise<CardActionResponse | void> {
     this.prune();
     const payload = input.evt.action.value as Record<string, unknown>;
     const entry = this.entries.get(String(payload.question_id));
@@ -88,17 +88,15 @@ export class UserQuestions {
       await notice('这张提问卡片已失效，或不属于你；请在原话题直接回复。');
       return;
     }
-    if (entry.status) { await notice(entry.status); return; }
+    if (entry.status) { await notice(entry.status); return this.response(entry); }
     const active = this.deps.activeRuns.get(input.scope);
     if (active && active.run.runId !== entry.runId) {
-      await this.finish(entry, '当前话题已有新的任务，请直接回复并说明这条答案对应的问题。');
-      return;
+      return this.finish(entry, '当前话题已有新的任务，请直接回复并说明这条答案对应的问题。');
     }
     if (entry.isCancelled() || !input.identity || sessionCatalogKey(input.identity) !== sessionCatalogKey(entry.identity) ||
         this.deps.activeRuns.generation(input.scope) !== entry.generation ||
         this.deps.catalog?.activeFor(input.identity)?.threadId !== entry.threadId) {
-      await this.finish(entry, '原任务已停止或会话已切换，请在原话题重新说明你的选择。');
-      return;
+      return this.finish(entry, '原任务已停止或会话已切换，请在原话题重新说明你的选择。');
     }
     const choice = payload.choice;
     const answer = choice === 'text' ? input.formValue?.answer :
@@ -141,12 +139,17 @@ export class UserQuestions {
       status = `已提交：${answer.trim()}\n已排队，将在原会话继续处理。`;
     }
     log.info('question', 'answered', { scope: input.scope, runId: entry.runId, delivery: result });
-    await this.finish(entry, status);
+    return this.finish(entry, status);
   }
 
-  private async finish(entry: Entry, status: string): Promise<void> {
+  private response(entry: Entry): CardActionResponse {
+    // Match the persisted card in the click response so the client keeps the settled form.
+    return { card: { type: 'raw', data: this.card(entry) } };
+  }
+
+  private async finish(entry: Entry, status: string): Promise<CardActionResponse> {
     entry.status = status;
-    if (!entry.messageId) return;
+    if (!entry.messageId) return this.response(entry);
     try { await updateManagedCard(this.deps.channel, entry.messageId, this.card(entry)); }
     catch (err) {
       log.warn('question', 'update-failed', { messageId: entry.messageId, err: String(err) });
@@ -154,6 +157,7 @@ export class UserQuestions {
         replyTo: entry.messageId, ...(entry.message.threadId ? { replyInThread: true } : {}),
       });
     }
+    return this.response(entry);
   }
 
   private action(entry: Entry, choice: number | 'text'): string { return `question.answer:${entry.id}:${choice}`; }

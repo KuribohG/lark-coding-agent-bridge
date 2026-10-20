@@ -1,4 +1,4 @@
-import type { NormalizedMessage } from '@larksuite/channel';
+import type { CardActionEvent, CardActionResponse, NormalizedMessage } from '@larksuite/channel';
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -7,6 +7,7 @@ import type { FakeAgentEvents } from '../../helpers/fake-agent.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { log } from '../../../src/core/logger.js';
 import { CotClient } from '../../../src/bot/cot.js';
+import { UserQuestions } from '../../../src/bot/user-questions.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
@@ -32,6 +33,7 @@ import { startChannel } from '../../../src/bot/channel.js';
 
 interface MessageHandlerMap {
   message?: (msg: NormalizedMessage) => Promise<void> | void;
+  cardAction?: (evt: CardActionEvent) => Promise<CardActionResponse | void>;
 }
 
 interface FakeLarkChannel {
@@ -83,6 +85,18 @@ afterEach(async () => {
 });
 
 describe('markdown stream startup failures', () => {
+  it('returns a question confirmation through the registered SDK callback', async () => {
+    const response = { card: { type: 'raw', data: { schema: '2.0', body: { elements: [] } } } };
+    const answer = vi.spyOn(UserQuestions.prototype, 'answer').mockResolvedValue(response);
+    const h = await createHarness();
+    h.profileConfig.access.allowedChats.push('oc_group');
+    await startTestBridge(h);
+    const result = await h.channel.handlers.cardAction?.({ chatId: 'oc_group', messageId: 'om_question',
+      operator: { openId: 'ou_user' }, action: { value: { cmd: 'question.answer' } },
+    } as CardActionEvent);
+    expect(answer).toHaveBeenCalledOnce();
+    expect(result).toEqual(response);
+  });
   it('uses native COT by default and sends the final answer separately', async () => {
     const create = vi.spyOn(CotClient.prototype, 'create').mockResolvedValue({ cot_id: 'cot_test', message_id: 'om_cot' });
     const update = vi.spyOn(CotClient.prototype, 'update').mockResolvedValue(undefined);

@@ -1,4 +1,4 @@
-import type { CardActionEvent } from '@larksuite/channel';
+import type { CardActionEvent, CardActionResponse } from '@larksuite/channel';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { UserQuestions } from '../../../src/bot/user-questions';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
@@ -19,10 +19,11 @@ const cleanups: Array<() => Promise<void>> = [];
 
 describe('signed card callback dispatch', () => {
   it('routes question forms by the carrier topic even after the run has ended', async () => {
-    const answer = vi.fn(async () => {});
+    const response = { card: { type: 'raw', data: { schema: '2.0', body: { elements: [] } } } };
+    const answer = vi.fn(async () => response);
     const h = await createHarness({ chatMode: 'topic', userQuestions: { answer } as unknown as UserQuestions });
     h.channel.rawThreadIds.set('om_card', 'th_topic');
-    await h.dispatch({ cmd: 'question.answer', question_id: 'q', choice: 'text', bridge_token: 'checked-by-question-handler' }, { answer: 'my answer' });
+    expect(await h.dispatch({ cmd: 'question.answer', question_id: 'q', choice: 'text', bridge_token: 'checked-by-question-handler' }, { answer: 'my answer' })).toEqual(response);
     expect(answer).toHaveBeenCalledWith(expect.objectContaining({ scope: 'oc_group:th_topic', formValue: { answer: 'my answer' } }));
     expect(h.pending.cancel('oc_group:th_topic')).toHaveLength(0);
   });
@@ -146,7 +147,7 @@ type Harness = {
   controls: Controls;
   pending: PendingQueue;
   auth: CallbackAuth;
-  dispatch(value: Record<string, unknown>, formValue?: Record<string, unknown>): Promise<void>;
+  dispatch(value: Record<string, unknown>, formValue?: Record<string, unknown>): Promise<CardActionResponse | void>;
   token(
     action: string,
     overrides?: { operatorOpenId?: string; nonce?: string; scope?: string },

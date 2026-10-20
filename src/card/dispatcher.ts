@@ -1,4 +1,4 @@
-import type { CardActionEvent, LarkChannel, NormalizedMessage } from '@larksuite/channel';
+import type { CardActionEvent, CardActionResponse, LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import type { ChatModeCache } from '../bot/chat-mode-cache';
@@ -44,7 +44,7 @@ export interface CardDispatchDeps {
   callbackPolicyFingerprintForScope?: (scope: string) => string | undefined;
 }
 
-export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
+export async function handleCardAction(deps: CardDispatchDeps): Promise<CardActionResponse | void> {
   const value = deps.evt.action.value;
   if (!value || typeof value !== 'object') return;
   const payload = value as Record<string, unknown>;
@@ -86,14 +86,13 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<void> {
 
   const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
   if (cmd === 'question.answer') {
-    await deps.userQuestions?.answer({
+    return deps.userQuestions?.answer({
       evt: deps.evt, scope, formValue,
       identity: await commandSessionCatalogIdentity({
         msg: makeFakeMsg(deps.evt, threadId), scope, mode,
         workspaces: deps.workspaces, controls: deps.controls, access: accessDecision,
       }),
     });
-    return;
   }
   if ((cmd === 'model.submit' || cmd.startsWith('run.')) && payload.settings_scope !== scope) {
     // Never widen a topic preference to the whole chat after a failed lookup

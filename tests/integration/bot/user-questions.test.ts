@@ -82,6 +82,20 @@ describe('native async question cards', () => {
     await h.click(payload, { form: { answer: '只处理新消息' } });
     expect(h.steer.mock.calls[0]?.[0]).toContain('只处理新消息');
   });
+  it('returns the settled card to the clicking client and keeps repeated answers settled', async () => {
+    const h = await harness(); await h.publish();
+    const payload = h.values()[0]!;
+    const response = await h.click(payload);
+    const update = h.channel.rawClient.requests.find(r => r.method === 'cardkit.v1.card.update')!;
+    expect(response).toEqual({ card: { type: 'raw', data: (update.params as { cardJson: unknown }).cardJson } });
+    const encoded = JSON.stringify(response);
+    expect(encoded).toContain('已提交：全部');
+    expect(encoded).not.toContain('需要你回复');
+    expect(encoded).not.toContain('question.answer');
+    expect(encoded).not.toContain('bridge_token');
+    expect(await h.click(payload)).toEqual(response);
+    expect(h.steer).toHaveBeenCalledOnce();
+  });
   it.each(['operator', 'scope', 'carrier', 'choice', 'signature', 'policy'] as const)('rejects a mismatched %s', async kind => {
     const h = await harness(); await h.publish();
     const value = { ...h.values()[0]! };
