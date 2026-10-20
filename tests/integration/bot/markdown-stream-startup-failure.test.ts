@@ -157,7 +157,7 @@ describe('markdown stream startup failures', () => {
     const spawn = h.agent.run.bind(h.agent);
     h.agent.run = options => {
       const raw = spawn(options);
-      return { runId: raw.runId, waitForExit: raw.waitForExit.bind(raw),
+      return { runId: raw.runId, capabilities: raw.capabilities, waitForExit: raw.waitForExit.bind(raw),
         stop: async () => { finished.resolve(undefined); await raw.stop(); },
         events: { async *[Symbol.asyncIterator](): AsyncGenerator<AgentEvent> {
           yield { type: 'user_input', id: 'q', threadId: 'codex-thread', questions: [{ title: 'QUESTION_WHILE_RUNNING', options: ['A', 'B'] }] };
@@ -198,7 +198,7 @@ describe('markdown stream startup failures', () => {
     const spawn = h.agent.run.bind(h.agent);
     h.agent.run = options => {
       const raw = spawn(options);
-      return { runId: raw.runId, waitForExit: raw.waitForExit.bind(raw),
+      return { runId: raw.runId, capabilities: raw.capabilities, waitForExit: raw.waitForExit.bind(raw),
         stop: async () => { resumed.resolve(undefined); finished.resolve(undefined); await raw.stop(); },
         events: { async *[Symbol.asyncIterator](): AsyncGenerator<AgentEvent> {
           yield { type: 'retry', attempt: 2, maxAttempts: 3, delayMs: 60_000 };

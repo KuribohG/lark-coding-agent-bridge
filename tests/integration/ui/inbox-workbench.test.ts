@@ -80,7 +80,7 @@ it('shows and reviews CI source jobs in the same authenticated workbench with ch
     expect(response.status).toBe(200); const view = await response.text();
     expect(view).toContain('gitlab-ci'); expect(view).toContain('CI draft');
     const queued = await source.submit({ key: 'pipeline-2', title: 'repo CI #2', reason: 'CI failed', url: 'https://gitlab.test/pipelines/2',
-      time: Date.now(), data: {}, initial: { state: 'queued', analysisRequested: true } });
+      time: Date.now(), data: {}, initial: { state: 'queued' } });
     const stop = await fetch(`${url}/api/inbox/command`, { method: 'POST', headers,
       body: JSON.stringify({ id: randomUUID(), action: 'stop', target: JSON.stringify({ id: queued.id, revision: queued.revision }) }) });
     expect(stop.status).toBe(200);
