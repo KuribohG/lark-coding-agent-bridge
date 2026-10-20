@@ -1,4 +1,5 @@
 import { parseMessages } from '../../../inbox/lark';
+import { messageIdentity } from '../../../inbox/identity';
 import { InboxToolArgumentsError, obj, type Obj } from '../../../inbox/values';
 
 const optionalText = { type: ['string', 'null'] };
@@ -66,7 +67,7 @@ export function chatToolArgs(name: string, input: unknown): string[] {
 }
 
 export class InboxChatTools {
-  constructor(private call: (args: string[], signal: AbortSignal) => Promise<Obj>) {}
+  constructor(private call: (args: string[], signal: AbortSignal) => Promise<Obj>, private ownerOpenId?: string) {}
   async execute(name: string, input: unknown, signal: AbortSignal): Promise<Obj> {
     const args = chatToolArgs(name, input);
     signal.throwIfAborted();
@@ -82,7 +83,7 @@ export class InboxChatTools {
       const text = m.text.slice(0, Math.min(budget, 4000));
       truncated ||= text.length < m.text.length; budget -= text.length;
       messages.push({ id: m.id, chatId: m.chatId, chatName: m.chatName.slice(0, 100), threadId: m.threadId,
-        parentId: m.parentId, time: new Date(m.time).toISOString(), senderId: m.senderId,
+        parentId: m.parentId, time: new Date(m.time).toISOString(), ...messageIdentity(m, this.ownerOpenId),
         sender: m.senderName.slice(0, 100), bot: m.bot, text });
     }
     const hasMore = result.has_more === true;

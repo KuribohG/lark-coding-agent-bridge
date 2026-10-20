@@ -3,12 +3,27 @@ import { normalizeInbox } from '../../../src/inbox/config';
 import { triageMaterials } from '../../../src/monitoring/sources/lark/triage-materials';
 import { createLarkAssessment } from '../../../src/monitoring/sources/lark/assessment';
 import type { InboxIO, InboxJob, InboxMessage } from '../../../src/inbox/types';
+import { processingPrompt } from '../../../src/monitoring/sources/lark/processor';
 
 const message = (id: string, text: string, bot = false): InboxMessage => ({ id, text, bot, time: 1000,
   chatId: 'oc_source', chatName: 'service users', chatType: 'group', senderId: bot ? 'cli_helper' : 'ou_colleague',
   senderName: bot ? 'helper' : 'colleague', mentions: [], threadId: 'omt_topic' });
 const job = (messages: InboxMessage[]): InboxJob => ({ id: 'item', ownerOpenId: 'ou_owner',
   source: { chatId: 'oc_source', name: 'service users', type: 'group', threadId: 'omt_topic' }, messages } as InboxJob);
+
+it('keeps owner identity separate from another mention even when their display names match', () => {
+  const item = job([{ ...message('om_other', '+ @本人'), mentions: ['ou_other'],
+    mentionDetails: [{ openId: 'ou_other', name: '本人' }] },
+    { ...message('om_owner', '我来核实'), senderId: 'ou_owner', senderName: '本人' }]);
+  const materials = JSON.parse(triageMaterials([item], '本人姓名=本人；open_id=ou_owner'));
+  expect(materials.background).toContain('open_id=ou_owner');
+  expect(materials.items[0]).toMatchObject({ ownerOpenId: 'ou_owner', directlyMentioned: false,
+    messages: [{ senderIsOwner: false, mentionsOwner: false, mentionDetails: [{ openId: 'ou_other', name: '本人' }] },
+      { senderIsOwner: true, mentionsOwner: false }] });
+  const prompt = processingPrompt(item, materials.background);
+  expect(prompt).not.toContain('该事项已被确认为需要本人处理');
+  expect(prompt).toContain('"mentionDetails":[{"openId":"ou_other","name":"本人"}]');
+});
 
 it('retains the original question and report tail when a long incident ends with bot control/status messages', () => {
   const messages = [message('question', '任务失败是否和我们负责的文件系统有关？'),

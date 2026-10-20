@@ -140,7 +140,8 @@ export class InboxTriageResultError extends Error {
   constructor(message: string, readonly validItems: TriageDecision[] = []) { super(message); }
 }
 
-export function parseTriageResult(text: string, jobs: InboxJob[]): TriageDecision[] {
+export function parseTriageResult(text: string, jobs: InboxJob[],
+  mentionEvidence: ReadonlyMap<string, readonly string[]> = new Map(jobs.flatMap(job => job.messages.map(m => [m.id, m.mentions] as const)))): TriageDecision[] {
   if (!text.trim()) throw new InboxTriageResultError('筛选未返回结果文本');
   if (text.length > 100_000) throw new InboxTriageResultError('筛选结果超过长度限制');
   let parsed: Record<string, unknown>;
@@ -155,6 +156,7 @@ export function parseTriageResult(text: string, jobs: InboxJob[]): TriageDecisio
     if (typeof id === 'string' && !expected.has(id)) throw new InboxTriageResultError('筛选结果包含未知事项 ID');
   }
   const valid: TriageDecision[] = [];
+  let invalidMentions = false;
   for (const value of parsed.items) {
     const item = obj(value);
     const priority = item.priority === undefined ? 'normal' : item.priority;
@@ -163,13 +165,23 @@ export function parseTriageResult(text: string, jobs: InboxJob[]): TriageDecisio
       typeof item.reason !== 'string' || !item.reason.trim() ||
       typeof priority !== 'string' || !['normal', 'high'].includes(priority)) continue;
     if (item.followUp !== undefined && !['unchanged', 'reanalyze', 'resolved'].includes(String(item.followUp))) continue;
+    const job = jobs.find(job => job.id === item.id)!;
+    const mentionIds = item.ownerMentionMessageIds;
+    if (mentionIds !== undefined || (job.source.type === 'group' && ['needed', 'uncertain'].includes(item.state))) {
+      if (!Array.isArray(mentionIds) || mentionIds.length > 20 || new Set(mentionIds).size !== mentionIds.length ||
+        mentionIds.some(id => typeof id !== 'string' || !mentionEvidence.get(id)?.includes(job.ownerOpenId))) {
+        invalidMentions = true; continue;
+      }
+    }
     const decision: TriageDecision = { id: item.id, state: item.state === 'retry' ? 'pending' : item.state as Attention['state'],
       reason: item.reason.slice(0, 180), priority: priority as Attention['priority'],
+      ...(mentionIds === undefined ? {} : { ownerMentionMessageIds: mentionIds as string[] }),
       ...(item.followUp === undefined ? {} : { followUp: item.followUp as TriageDecision['followUp'] }) };
-    if (validFollowUp(jobs.find(job => job.id === item.id)!, decision)) valid.push(decision);
+    if (validFollowUp(job, decision)) valid.push(decision);
   }
   if (valid.length !== jobs.length || parsed.items.length !== jobs.length) {
     const issue = [...counts.values()].some(count => count > 1) ? '事项 ID 重复' :
+      invalidMentions ? '本人 @ 证据缺失或与 ownerOpenId 不匹配' :
       valid.length < parsed.items.length ? '字段无效' : '缺少事项';
     throw new InboxTriageResultError(`筛选结果${issue}`, valid);
   }

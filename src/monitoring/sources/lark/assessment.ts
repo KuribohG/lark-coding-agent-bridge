@@ -17,7 +17,8 @@ export function createLarkAssessment(config: InboxConfig, io: InboxIO): BatchAss
       if (followUp) log.info('inbox', 'analysis-update-reviewed', { jobId: input.id, decision: result.followUp ?? result.state,
         changedMessages: analysisChanges(input).length });
       return {
-        attention: { state: result.state, reason: result.reason, priority: result.priority },
+        attention: { state: result.state, reason: result.reason, priority: result.priority,
+          ...(result.ownerMentionMessageIds === undefined ? {} : { ownerMentionMessageIds: result.ownerMentionMessageIds }) },
         followUp: followUp ? result.followUp : undefined,
         basis: followUp ? messageBasis(input.messages) : undefined,
         autoAnalyze: Boolean(io.beginAnalysis),

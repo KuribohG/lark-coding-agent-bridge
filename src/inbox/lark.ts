@@ -22,10 +22,13 @@ export function parseMessages(value: unknown, hint: 'p2p' | 'group' = 'group'): 
     const m = obj(v); const sender = obj(m.sender);
     if (m.deleted) continue;
     const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
-    const mentions = (Array.isArray(m.mentions) ? m.mentions : []).map(v => {
-      const mention = obj(v); return str(obj(mention.id).open_id) || str(mention.id) || str(mention.open_id);
-    });
-    for (const match of text.matchAll(/<at\b[^>]*(?:user_id|open_id)=["'](ou_\w+)["']/g)) mentions.push(match[1]!);
+    const mentionDetails = (Array.isArray(m.mentions) ? m.mentions : []).map(v => {
+      const mention = obj(v);
+      return { openId: str(obj(mention.id).open_id) || str(mention.id) || str(mention.open_id), name: str(mention.name),
+        ...(str(mention.key) ? { key: str(mention.key) } : {}) };
+    }).filter(mention => mention.openId);
+    // Rendered text and forwarded bodies are not structured mentions of the enclosing message.
+    const mentions = [...new Set(mentionDetails.map(mention => mention.openId))];
     const time = messageTime(m.create_time);
     let alert: Obj = {};
     try { alert = obj(JSON.parse(text)); } catch { /* only explicit structured recovery is authoritative */ }
@@ -36,7 +39,7 @@ export function parseMessages(value: unknown, hint: 'p2p' | 'group' = 'group'): 
       senderId: str(sender.id), senderOpenId: str(sender.open_bot_id) || undefined, senderName: str(sender.name), bot: sender.sender_type !== 'user',
       time, text, threadId: str(m.thread_id) || undefined, parentId: str(m.parent_id) || str(m.reply_to) || undefined,
       position: str(m.message_position) || undefined,
-      link: str(m.message_app_link) || undefined, mentions,
+      link: str(m.message_app_link) || undefined, mentions, mentionDetails,
       ...(incidentId ? { incidentId, recovered: alert.status === 'resolved' || alert.status === 'recovered' } : {}),
     });
     messages.push(...parseMessages(m.thread_replies, hint));

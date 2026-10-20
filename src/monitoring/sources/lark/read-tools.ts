@@ -127,8 +127,8 @@ export function readToolRequest(name: string, input: unknown): ReadRequest {
 
 export class InboxReadTools {
   private chat: InboxChatTools;
-  constructor(private call: (args: string[], signal: AbortSignal) => Promise<unknown>) {
-    this.chat = new InboxChatTools(async (args, signal) => obj(await call(args, signal)));
+  constructor(private call: (args: string[], signal: AbortSignal) => Promise<unknown>, ownerOpenId?: string) {
+    this.chat = new InboxChatTools(async (args, signal) => obj(await call(args, signal)), ownerOpenId);
   }
   async execute(name: string, input: unknown, signal: AbortSignal): Promise<Obj> {
     const request = readToolRequest(name, input);

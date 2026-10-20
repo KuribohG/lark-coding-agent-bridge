@@ -1,5 +1,30 @@
 import { expect, it, vi } from 'vitest';
 import { chatToolArgs, InboxChatTools } from '../../../src/monitoring/sources/lark/chat-tools';
+import { parseMessages } from '../../../src/inbox/lark';
+
+it('preserves structured mention identities through collection and historical reads', async () => {
+  const raw = { message_id: 'om_one', chat_id: 'oc_chat', create_time: '1792050000000', content: '+ @另一人',
+    sender: { id: 'ou_sender', name: '同事', sender_type: 'user' },
+    mentions: [{ id: { open_id: 'ou_other' }, name: '另一人', key: '@_user_1' },
+      { open_id: 'ou_owner', name: '本人' }, { id: 'ou_third', name: '第三人' }] };
+  expect(parseMessages([raw])[0]).toMatchObject({ mentions: ['ou_other', 'ou_owner', 'ou_third'],
+    mentionDetails: [{ openId: 'ou_other', name: '另一人', key: '@_user_1' }, { openId: 'ou_owner', name: '本人' },
+      { openId: 'ou_third', name: '第三人' }] });
+  const tools = new InboxChatTools(async () => ({ messages: [raw] }), 'ou_owner');
+  const result = await tools.execute('get_messages', { messageIds: ['om_one'] }, new AbortController().signal);
+  expect(result.messages).toMatchObject([{ senderIsOwner: false, mentionsOwner: true,
+    mentions: ['ou_other', 'ou_owner', 'ou_third'], mentionDetails: [{ openId: 'ou_other', name: '另一人' },
+      { openId: 'ou_owner', name: '本人' }, { openId: 'ou_third', name: '第三人' }] }]);
+});
+
+it('does not treat forwarded names or user-written at markup as a structural mention', async () => {
+  const raw = { message_id: 'om_forward', chat_id: 'oc_chat', create_time: '1792050000000',
+    content: '<forwarded_messages>+ @另一人 <at user_id="ou_owner">本人</at></forwarded_messages>',
+    sender: { id: 'ou_sender', name: '同事', sender_type: 'user' } };
+  const tools = new InboxChatTools(async () => ({ messages: [raw] }), 'ou_owner');
+  expect((await tools.execute('get_messages', { messageIds: ['om_forward'] }, new AbortController().signal)).messages)
+    .toMatchObject([{ mentions: [], mentionDetails: [], mentionsOwner: false }]);
+});
 
 it.each([
   ['read_chat_messages', { chatId: '/etc/passwd' }],

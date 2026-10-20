@@ -237,7 +237,7 @@ export class InboxManager {
           signal.throwIfAborted();
           return await reader.callValue(args);
         } finally { signal.removeEventListener('abort', cancel); reader.close(); }
-      });
+      }, config.ownerOpenId);
       const secret = await resolveAppSecret(controls.cfg, paths);
       const cotClient = new CotClient({ tenant: controls.cfg.accounts.app.tenant, appId: controls.cfg.accounts.app.id, appSecret: secret });
       this.service = new InboxService(new InboxStore(join(folder, 'state.json')), config, larkRuntime(config, {
