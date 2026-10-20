@@ -31,10 +31,10 @@ it('uses an independent service with no Codex profile and its own model default'
   expect(provider).toMatchObject({ model: 'screen-default', url: 'https://model.test/v1/responses', key: 'private-fixture' });
   expect((await loadInboxTriageSource({ ...config, triageModel: 'override' }, source)).model).toBe('override');
   expect((await loadInboxTriageSource({ ...config, triageModel: '' }, source)).model).toBe('screen-default');
-  const request = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ items: [{ id: 'a', state: 'quiet', reason: 'verified', priority: 'normal' }] }) }] }] }), { headers: { 'content-type': 'application/json' } }));
-  const result = await triageWithChatTools([{ id: 'a', ownerOpenId: 'ou_owner', source: { chatId: 'oc_test' }, messages: [] } as unknown as InboxJob], '', provider,
+  const request = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ id: 'a', state: 'quiet', reason: 'verified', priority: 'normal' }) }] }] }), { headers: { 'content-type': 'application/json' } }));
+  const result = await triageWithChatTools({ id: 'a', ownerOpenId: 'ou_owner', source: { chatId: 'oc_test' }, messages: [] } as unknown as InboxJob, '', provider,
     { execute: vi.fn() }, new AbortController().signal, undefined, request);
-  expect(result).toMatchObject([{ id: 'a', state: 'quiet' }]);
+  expect(result).toMatchObject({ id: 'a', state: 'quiet' });
   expect(request.mock.calls[0]![0]).toBe('https://model.test/v1/responses');
   expect(request.mock.calls[0]![1]).toMatchObject({ redirect: 'error', headers: { authorization: 'Bearer private-fixture' } });
   expect(JSON.parse(String(request.mock.calls[0]![1]!.body)).model).toBe('screen-default');

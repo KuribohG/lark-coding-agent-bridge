@@ -23,7 +23,7 @@ vi.mock('../../../src/inbox/lark', () => ({ InboxLark: vi.fn(function () { retur
 vi.mock('../../../src/inbox/progress', () => ({ startInboxProgress: vi.fn(async () => undefined) }));
 vi.mock('../../../src/monitoring/sources/lark/processor', () => ({ processInbox: vi.fn(async () => ({ text: '{}' })) }));
 vi.mock('../../../src/monitoring/sources/lark/codex-triage', async importOriginal => ({
-  ...await importOriginal<typeof import('../../../src/monitoring/sources/lark/codex-triage')>(), triageWithChatTools: vi.fn(async () => []),
+  ...await importOriginal<typeof import('../../../src/monitoring/sources/lark/codex-triage')>(), triageWithChatTools: vi.fn(async () => ({ id: 'fixture', state: 'quiet', reason: 'fixture' })),
 }));
 vi.mock('../../../src/agent/model-service', async importOriginal => ({ ...await importOriginal<typeof import('../../../src/agent/model-service')>(),
   loadProfileModelService: vi.fn(async (_profile, model) => ({ model, url: 'https://test/responses', key: 'fixture' })),
@@ -60,8 +60,8 @@ async function setup(triageProfile?: string, standalone = false) {
 
 async function screen(runtime: WorkItemRuntime) {
   const policy = runtime.source.assessment;
-  if (policy?.kind !== 'batch') throw new Error('Lark must use batch screening');
-  await policy.evaluate([], new AbortController().signal, () => {});
+  if (policy?.kind !== 'item') throw new Error('Lark must screen one item at a time');
+  await policy.evaluate({ id: 'fixture' } as InboxJob, new AbortController().signal, () => {});
 }
 
 it('runs Claude analysis while an offline Codex profile supplies only screening model credentials', async () => {
@@ -75,7 +75,7 @@ it('runs Claude analysis while an offline Codex profile supplies only screening 
   await screen(io);
   expect(loadProfileModelService).toHaveBeenCalledWith(expect.objectContaining({ agentKind: 'codex',
     codex: expect.objectContaining({ codexHome: h.codex.codex?.codexHome }) }), 'cheap', expect.stringMatching(/profiles\/codex$/));
-  expect(triageWithChatTools).toHaveBeenCalledWith([], '', expect.objectContaining({ model: 'cheap' }), expect.anything(), expect.anything(), expect.any(Function),
+  expect(triageWithChatTools).toHaveBeenCalledWith({ id: 'fixture' }, '', expect.objectContaining({ model: 'cheap' }), expect.anything(), expect.anything(), expect.any(Function),
     undefined, undefined, expect.objectContaining({ triageMessageLimit: 17, triageMessageChars: 1000 }));
   expect(InboxLark).toHaveBeenCalledWith(expect.objectContaining({ profile: 'claude' }), expect.anything());
   expect(vi.mocked(InboxLark).mock.calls.every(call => call[0].profile === 'claude')).toBe(true);
@@ -93,14 +93,14 @@ it('uses and reloads an independent service on a Claude-only installation withou
   const first = vi.mocked(InboxService).mock.calls[0]![2] as WorkItemRuntime;
   await screen(first);
   expect(loadProfileModelService).not.toHaveBeenCalled();
-  expect(triageWithChatTools).toHaveBeenLastCalledWith([], '', expect.objectContaining({ model: 'independent-model', key: 'independent-key', url: 'https://independent.test/v1/responses' }), expect.anything(), expect.anything(), expect.any(Function),
+  expect(triageWithChatTools).toHaveBeenLastCalledWith({ id: 'fixture' }, '', expect.objectContaining({ model: 'independent-model', key: 'independent-key', url: 'https://independent.test/v1/responses' }), expect.anything(), expect.anything(), expect.any(Function),
     undefined, undefined, expect.objectContaining({ triageMessageLimit: 17, triageMessageChars: 1000 }));
   await configureModelService(h.configPath, 'screen', { ...h.serviceConfig!, model: 'updated-model' });
   await h.manager.reconcile();
   expect(InboxService).toHaveBeenCalledTimes(2);
   const second = vi.mocked(InboxService).mock.calls[1]![2] as WorkItemRuntime;
   await screen(second);
-  expect(triageWithChatTools).toHaveBeenLastCalledWith([], '', expect.objectContaining({ model: 'updated-model' }), expect.anything(), expect.anything(), expect.any(Function),
+  expect(triageWithChatTools).toHaveBeenLastCalledWith({ id: 'fixture' }, '', expect.objectContaining({ model: 'updated-model' }), expect.anything(), expect.anything(), expect.any(Function),
     undefined, undefined, expect.objectContaining({ triageMessageLimit: 17, triageMessageChars: 1000 }));
   await second.investigate({} as InboxJob, new AbortController().signal);
   expect(vi.mocked(processInbox).mock.calls[0]![7]).toEqual({ model: 'sonnet', reasoningEffort: 'high' });

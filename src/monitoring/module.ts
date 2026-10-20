@@ -4,10 +4,10 @@ import type { WorkItemSources } from '../work-items/registry';
 import { supportsBackgroundProfile } from '../runtime/agent-capabilities';
 import { fail } from './validation';
 
-export type MonitorSettings = Pick<RootConfig, 'inbox' | 'gitlabCi' | 'storageMonitor'>;
+export type MonitorSettings = Pick<RootConfig, 'inbox' | 'gitlabCi' | 'storageMonitor' | 'workItemConcurrency'>;
 
 /** Configuration registrations must be safe to import without starting a runtime. */
-export function defineMonitorConfig<K extends keyof MonitorSettings>(options: {
+export function defineMonitorConfig<K extends Exclude<keyof MonitorSettings, 'workItemConcurrency'>>(options: {
   id: string;
   key: K;
   parse(value: unknown): NonNullable<MonitorSettings[K]>;

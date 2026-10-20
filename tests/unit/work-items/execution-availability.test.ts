@@ -5,7 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { WorkItemService } from '../../../src/work-items/service';
 import { WorkItemStore } from '../../../src/work-items/store';
 import { EventSource } from '../../../src/work-items/event-source';
-import { AnalysisScheduler } from '../../../src/work-items/scheduler';
+import { WorkItemScheduler } from '../../../src/work-items/scheduler';
 import type { WorkItemConfig } from '../../../src/work-items/config';
 import type { WorkItemRuntime } from '../../../src/work-items/contracts';
 
@@ -13,7 +13,7 @@ const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
 const result = { text: JSON.stringify({ replyDraft: 'draft', analysis: 'evidence', missingInfo: '' }), inputTokens: 1, outputTokens: 2 };
 const event = { key: 'issue', title: 'issue', reason: 'failure', time: 1000, url: '', eventId: '1', revision: 1, data: {} };
-async function setup(extra: Partial<WorkItemRuntime> = {}, queue?: AnalysisScheduler) {
+async function setup(extra: Partial<WorkItemRuntime> = {}, queue?: WorkItemScheduler) {
   const dir = await mkdtemp(join(tmpdir(), 'execution-availability-')); cleanups.push(() => rm(dir, { recursive: true, force: true }));
   const path = join(dir, 'state.json');
   const config: WorkItemConfig = { enabled: true, executorProfile: 'local', ownerOpenId: 'local:owner',
@@ -53,7 +53,7 @@ it('persists queued evidence without attempts or quota use, then resumes after r
 });
 
 it('returns work to the durable queue and refunds reserved quota when the executor disappears while waiting for a slot', async () => {
-  const queue = new AnalysisScheduler(); let release!: () => void;
+  const queue = new WorkItemScheduler(1); let release!: () => void;
   const blocker = queue.run(new AbortController().signal, () => new Promise<void>(resolve => { release = resolve; }));
   await vi.waitFor(() => expect(release).toBeDefined());
   const h = await setup({}, queue); h.available(true);

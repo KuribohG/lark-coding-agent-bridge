@@ -47,6 +47,24 @@ it('migrates both sources without changing switches, model defaults, profiles or
   expect(await readFile(s.file, 'utf8')).toBe(original);
 });
 
+it('migrates and edits concurrency independently of source settings without copying file settings back inline', async () => {
+  const s = await setup(); s.root.workItemConcurrency = { analysis: 7, triage: 60 };
+  await saveRootConfig(s.root, s.path);
+  expect((await loadMonitorRoot(s.path))?.workItemConcurrency).toEqual(s.root.workItemConcurrency);
+  await initMonitors({ config: s.path });
+  expect((await loadRootConfig(s.path))?.workItemConcurrency).toBeUndefined();
+  const root = (await loadMonitorRoot(s.path))!;
+  expect(root.workItemConcurrency).toEqual(s.root.workItemConcurrency);
+  root.workItemConcurrency!.triage = 9; await saveMonitorRoot(root, s.path);
+  expect((await loadMonitorRoot(s.path))?.workItemConcurrency?.triage).toBe(9);
+  expect((await loadMonitorRoot(s.path))?.inbox).toEqual(s.root.inbox);
+  root.workItemConcurrency = { analysis: 99, triage: 99 };
+  await saveRootConfig(root, s.path);
+  expect((await loadRootConfig(s.path))?.workItemConcurrency).toBeUndefined();
+  await writeFile(s.file, 'version = 1\n[sources]');
+  expect((await loadMonitorRoot(s.path))?.workItemConcurrency).toBeUndefined();
+});
+
 it('retains JSON behavior until migration and unrelated root edits never copy monitor settings back', async () => {
   const s = await setup(); let root = (await loadMonitorRoot(s.path))!;
   root.inbox!.pollSeconds = 2; await saveMonitorRoot(root, s.path);

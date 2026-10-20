@@ -102,7 +102,7 @@ it('keeps pending events on source disable and completed imports never run again
 });
 
 it('serializes sources with one shared queue and cancellation cannot hold the next task', async () => {
-  const queue = new InboxAnalysisQueue(); let finish!: (value: typeof result) => void;
+  const queue = new InboxAnalysisQueue(1); let finish!: (value: typeof result) => void;
   const first = await setup({ analyze: vi.fn(() => new Promise<typeof result>(resolve => { finish = resolve; })) }, true, queue);
   const second = await setup({}, true, queue); const third = await setup({}, true, queue);
   await first.service.submitTask(event); const b = await second.service.submitTask(event); await third.service.submitTask(event);

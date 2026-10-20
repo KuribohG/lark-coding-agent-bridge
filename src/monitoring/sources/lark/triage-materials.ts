@@ -21,23 +21,21 @@ function excerpt(message: InboxMessage, limit: number, ownerOpenId: string) {
     text: truncated ? message.text.slice(0, head) + marker + message.text.slice(-tail) : message.text };
 }
 
-export function triageMaterials(jobs: InboxJob[], background: string, settings: TriageExcerptConfig = INBOX_DEFAULTS): string {
+export function triageMaterials(job: InboxJob, background: string, settings: TriageExcerptConfig = INBOX_DEFAULTS): string {
   const config = normalizeInbox(settings);
-  return JSON.stringify({ background: background.slice(0, 3000), items: jobs.map(job => {
-    const candidates = job.messages.filter(message => !progressOnly(message));
-    // Keep the first retained question plus recent evidence, without duplicating short threads.
-    const selected = candidates.length > config.triageMessageLimit
-      ? [candidates[0]!, ...candidates.slice(-(config.triageMessageLimit - 1))] : candidates;
-    const messages = selected.map(message => excerpt(message, config.triageMessageChars, job.ownerOpenId));
-    return { id: job.id, ownerOpenId: job.ownerOpenId, source: job.source,
-      directlyMentioned: job.messages.some(message => message.mentions.includes(job.ownerOpenId)),
-      excerpt: selected.length < job.messages.length || messages.some(message => message.truncated),
-      totalMessages: job.messages.length, omittedMessages: job.messages.length - selected.length,
-      omittedProgressMessages: job.messages.length - candidates.length,
-      ...(job.result ? { previousAnalysis: previousAnalysis(job),
-        changes: analysisChanges(job).map(message => ({ id: message.id, time: new Date(message.time).toISOString(),
-          ...messageIdentity(message, job.ownerOpenId), bot: message.bot,
-          parentId: message.parentId, threadId: message.threadId, text: message.text })) } : {}),
-      messages };
-  }) });
+  const candidates = job.messages.filter(message => !progressOnly(message));
+  // Keep the first retained question plus recent evidence, without duplicating short threads.
+  const selected = candidates.length > config.triageMessageLimit
+    ? [candidates[0]!, ...candidates.slice(-(config.triageMessageLimit - 1))] : candidates;
+  const messages = selected.map(message => excerpt(message, config.triageMessageChars, job.ownerOpenId));
+  return JSON.stringify({ background: background.slice(0, 3000), item: { id: job.id, ownerOpenId: job.ownerOpenId, source: job.source,
+    directlyMentioned: job.messages.some(message => message.mentions.includes(job.ownerOpenId)),
+    excerpt: selected.length < job.messages.length || messages.some(message => message.truncated),
+    totalMessages: job.messages.length, omittedMessages: job.messages.length - selected.length,
+    omittedProgressMessages: job.messages.length - candidates.length,
+    ...(job.result ? { previousAnalysis: previousAnalysis(job),
+      changes: analysisChanges(job).map(message => ({ id: message.id, time: new Date(message.time).toISOString(),
+        ...messageIdentity(message, job.ownerOpenId), bot: message.bot,
+        parentId: message.parentId, threadId: message.threadId, text: message.text })) } : {}),
+    messages } });
 }

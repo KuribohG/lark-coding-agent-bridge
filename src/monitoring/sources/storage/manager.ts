@@ -35,7 +35,9 @@ export class StorageMonitorManager {
   }
   private async reload(): Promise<void> {
     if (this.closed) return;
-    const config = parseStorageConfig((await loadMonitorRoot(this.configPath))?.storageMonitor);
+    const root = await loadMonitorRoot(this.configPath);
+    if (root) this.sources.configureConcurrency(root.workItemConcurrency);
+    const config = parseStorageConfig(root?.storageMonitor);
     if (config.enabled) await this.refreshExecutor(config.executorProfile);
     else { this.executor = undefined; this.executionError = undefined; }
     const fingerprint = JSON.stringify(config);
@@ -56,7 +58,7 @@ export class StorageMonitorManager {
         status: () => ({ error: this.error ?? this.service?.error, health: { checkedAt: this.service?.state.checkedAt,
           checks: Object.entries(this.service?.state.statuses ?? {}).map(([id, s]) => ({ id, ...s,
             state: !s.lastSuccessAt || Date.now() - s.lastSuccessAt > config.staleSeconds * 1000 ? 'unknown' : s.state })) } }),
-        profile: config.executorProfile, enabled, executor: () => this.executor, model: config.model, reasoningEffort: 'max', lane: 'incident', sourceNotifications: true,
+        profile: config.executorProfile, enabled, executor: () => this.executor, model: config.model, reasoningEffort: 'max', sourceNotifications: true,
         notification: config.notification, muted: config.muted,
         driver: storageInvestigator(config, provider, () => this.service),
       }));

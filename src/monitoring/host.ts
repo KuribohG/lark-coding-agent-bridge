@@ -8,7 +8,6 @@ import type { MonitorNotification } from './notification';
 export interface MonitorSourceOptions {
   id: string; label: string; profile: string; enabled: boolean;
   executor(): ExecutionProfile | undefined;
-  lane?: 'normal' | 'incident';
   sourceNotifications?: boolean;
   muted?: boolean;
   dailyAnalysisLimit?: number;

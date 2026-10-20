@@ -44,18 +44,16 @@ export interface SourceAdapter {
 }
 
 /** Model screening and deterministic rules use the same decision lifecycle. */
-export type AssessmentPolicy = BatchAssessmentPolicy | RuleAssessmentPolicy;
+export type AssessmentPolicy = ItemAssessmentPolicy | RuleAssessmentPolicy;
 export interface RuleAssessmentPolicy {
   kind: 'rule';
   evaluate(event: WorkItemEvent): ItemDecision;
 }
-export interface BatchAssessmentPolicy {
-  kind: 'batch';
+export interface ItemAssessmentPolicy {
+  kind: 'item';
   failureReason?(error: unknown): string;
   available?: boolean;
-  select(items: WorkItem[]): WorkItem[];
-  evaluate(items: WorkItem[], signal: AbortSignal,
-    progress: (updates: { id: string; text: string }[]) => void): Promise<TriageDecision[]>;
+  evaluate(item: WorkItem, signal: AbortSignal, progress: (text: string) => void): Promise<TriageDecision>;
   valid(input: WorkItem, decision: TriageDecision): boolean;
   interpret(input: SourceItem, decision: TriageDecision): AssessmentUpdate;
 }

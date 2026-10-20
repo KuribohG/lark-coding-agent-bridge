@@ -110,80 +110,52 @@ function partialString(text: string, start: number) {
   return { value, end: text.length, closed: false };
 }
 
-export function triagePreviews(text: string, ids: Set<string>): { id: string; text: string }[] {
-  const fragments: string[] = [];
-  let depth = 0, start = -1;
+export function triagePreview(text: string, expectedId: string): string | undefined {
+  let id = '', reason = '', depth = 0;
   for (let i = 0; i < text.length; i++) {
-    if (text[i] === '"') { i = partialString(text, i).end - 1; continue; }
-    if (text[i] === '{' && ++depth === 2) start = i;
-    if (text[i] === '}') { if (depth-- === 2) { fragments.push(text.slice(start, i + 1)); start = -1; } }
+    if (text[i] === '{') { depth++; continue; }
+    if (text[i] === '}') { depth--; continue; }
+    if (text[i] !== '"') continue;
+    const key = partialString(text, i); i = key.end - 1;
+    const rest = text.slice(key.end).match(/^\s*:\s*/);
+    if (depth !== 1 || !key.closed || !rest) continue;
+    const at = key.end + rest[0].length;
+    if (text[at] !== '"') continue;
+    const field = partialString(text, at); i = field.end - 1;
+    if (key.value === 'id' && field.closed) id = field.value;
+    if (key.value === 'reason') reason = field.value;
   }
-  if (start >= 0) fragments.push(text.slice(start));
-  return fragments.flatMap(fragment => {
-    let id = '', reason = '';
-    for (let i = 0; i < fragment.length; i++) {
-      if (fragment[i] !== '"') continue;
-      const key = partialString(fragment, i); i = key.end - 1;
-      const rest = fragment.slice(key.end).match(/^\s*:\s*/);
-      if (!key.closed || !rest) continue;
-      const at = key.end + rest[0].length;
-      if (fragment[at] !== '"') continue;
-      const field = partialString(fragment, at); i = field.end - 1;
-      if (key.value === 'id' && field.closed) id = field.value;
-      if (key.value === 'reason') reason = field.value;
-    }
-    return ids.has(id) && reason ? [{ id, text: reason.slice(0, 240) }] : [];
-  });
+  return id === expectedId && reason ? reason.slice(0, 240) : undefined;
 }
 
-export class InboxTriageResultError extends Error {
-  constructor(message: string, readonly validItems: TriageDecision[] = []) { super(message); }
-}
+export class InboxTriageResultError extends Error {}
 
-export function parseTriageResult(text: string, jobs: InboxJob[],
-  mentionEvidence: ReadonlyMap<string, readonly string[]> = new Map(jobs.flatMap(job => job.messages.map(m => [m.id, m.mentions] as const)))): TriageDecision[] {
+export function parseTriageResult(text: string, job: InboxJob,
+  mentionEvidence: ReadonlyMap<string, readonly string[]> = new Map(job.messages.map(m => [m.id, m.mentions] as const))): TriageDecision {
   if (!text.trim()) throw new InboxTriageResultError('筛选未返回结果文本');
   if (text.length > 100_000) throw new InboxTriageResultError('筛选结果超过长度限制');
-  let parsed: Record<string, unknown>;
-  try { parsed = obj(parseModelJson(text)); }
+  let item: Record<string, unknown>;
+  try { item = obj(parseModelJson(text)); }
   catch { throw new InboxTriageResultError('筛选结果 JSON 无效或未闭合'); }
-  if (!Array.isArray(parsed.items)) throw new InboxTriageResultError('筛选结果缺少 items 数组');
-  const expected = new Set(jobs.map(j => j.id));
-  const counts = new Map<unknown, number>();
-  for (const value of parsed.items) {
-    const id = obj(value).id;
-    counts.set(id, (counts.get(id) ?? 0) + 1);
-    if (typeof id === 'string' && !expected.has(id)) throw new InboxTriageResultError('筛选结果包含未知事项 ID');
+  if (item.id !== job.id) throw new InboxTriageResultError('筛选结果事项 ID 缺失或不匹配');
+  const priority = item.priority === undefined ? 'normal' : item.priority;
+  if (typeof item.state !== 'string' || !['needed', 'quiet', 'uncertain', 'retry'].includes(item.state) ||
+    typeof item.reason !== 'string' || !item.reason.trim() ||
+    typeof priority !== 'string' || !['normal', 'high'].includes(priority) ||
+    (item.followUp !== undefined && (typeof item.followUp !== 'string' || !['unchanged', 'reanalyze', 'resolved'].includes(item.followUp)))) {
+    throw new InboxTriageResultError('筛选结果字段无效');
   }
-  const valid: TriageDecision[] = [];
-  let invalidMentions = false;
-  for (const value of parsed.items) {
-    const item = obj(value);
-    const priority = item.priority === undefined ? 'normal' : item.priority;
-    if (typeof item.id !== 'string' || counts.get(item.id) !== 1 ||
-      typeof item.state !== 'string' || !['needed', 'quiet', 'uncertain', 'retry'].includes(item.state) ||
-      typeof item.reason !== 'string' || !item.reason.trim() ||
-      typeof priority !== 'string' || !['normal', 'high'].includes(priority)) continue;
-    if (item.followUp !== undefined && !['unchanged', 'reanalyze', 'resolved'].includes(String(item.followUp))) continue;
-    const job = jobs.find(job => job.id === item.id)!;
-    const mentionIds = item.ownerMentionMessageIds;
-    if (mentionIds !== undefined || (job.source.type === 'group' && ['needed', 'uncertain'].includes(item.state))) {
-      if (!Array.isArray(mentionIds) || mentionIds.length > 20 || new Set(mentionIds).size !== mentionIds.length ||
-        mentionIds.some(id => typeof id !== 'string' || !mentionEvidence.get(id)?.includes(job.ownerOpenId))) {
-        invalidMentions = true; continue;
-      }
+  const mentionIds = item.ownerMentionMessageIds;
+  if (mentionIds !== undefined || (job.source.type === 'group' && ['needed', 'uncertain'].includes(item.state))) {
+    if (!Array.isArray(mentionIds) || mentionIds.length > 20 || new Set(mentionIds).size !== mentionIds.length ||
+      mentionIds.some(id => typeof id !== 'string' || !mentionEvidence.get(id)?.includes(job.ownerOpenId))) {
+      throw new InboxTriageResultError('筛选结果本人 @ 证据缺失或与 ownerOpenId 不匹配');
     }
-    const decision: TriageDecision = { id: item.id, state: item.state === 'retry' ? 'pending' : item.state as Attention['state'],
-      reason: item.reason.slice(0, 180), priority: priority as Attention['priority'],
-      ...(mentionIds === undefined ? {} : { ownerMentionMessageIds: mentionIds as string[] }),
-      ...(item.followUp === undefined ? {} : { followUp: item.followUp as TriageDecision['followUp'] }) };
-    if (validFollowUp(job, decision)) valid.push(decision);
   }
-  if (valid.length !== jobs.length || parsed.items.length !== jobs.length) {
-    const issue = [...counts.values()].some(count => count > 1) ? '事项 ID 重复' :
-      invalidMentions ? '本人 @ 证据缺失或与 ownerOpenId 不匹配' :
-      valid.length < parsed.items.length ? '字段无效' : '缺少事项';
-    throw new InboxTriageResultError(`筛选结果${issue}`, valid);
-  }
-  return valid;
+  const decision: TriageDecision = { id: job.id, state: item.state === 'retry' ? 'pending' : item.state as Attention['state'],
+    reason: item.reason.slice(0, 180), priority: priority as Attention['priority'],
+    ...(mentionIds === undefined ? {} : { ownerMentionMessageIds: mentionIds as string[] }),
+    ...(item.followUp === undefined ? {} : { followUp: item.followUp as TriageDecision['followUp'] }) };
+  if (!validFollowUp(job, decision)) throw new InboxTriageResultError('增量筛选判断无效');
+  return decision;
 }

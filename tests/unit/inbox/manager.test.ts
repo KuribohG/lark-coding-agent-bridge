@@ -148,6 +148,30 @@ it('saves analysis timeouts without recreating the service and uses the new limi
   } finally { agentSpy.mockRestore(); ioSpy.mockRestore(); }
 });
 
+it.each(['inline', 'file'])('saves and reloads shared concurrency in %s without recreating the inbox', async format => {
+  const { create, path, rootDir, root } = await setup();
+  root.inbox!.gui = { publicUrl: 'https://gui.example', apiKeyFile: join(rootDir, 'key') };
+  await saveRootConfig(root, path);
+  if (format === 'file') await initMonitors({ config: path });
+  const manager = create(); await manager.reconcile();
+  const service = vi.mocked(InboxGui).mock.calls.at(-1)![0];
+  const before = await manager.view();
+  const settings = { analysis: 8, triage: 60 };
+  await manager.configureConcurrency({ concurrency: settings, concurrencyRevision: before.concurrencyRevision });
+  await manager.reconcile();
+  expect(manager.sources.concurrency).toEqual(settings);
+  expect((await loadMonitorRoot(path))?.workItemConcurrency).toEqual(settings);
+  expect(vi.mocked(InboxGui).mock.calls.at(-1)![0]).toBe(service);
+  await expect(manager.configureConcurrency({ concurrency: before.concurrency, concurrencyRevision: before.concurrencyRevision })).rejects.toThrow('本次未覆盖');
+  await expect(manager.configureConcurrency({ concurrency: { ...settings, triage: 0 } })).rejects.toThrow('triage');
+  expect(manager.sources.concurrency).toEqual(settings);
+  const changed = (await loadMonitorRoot(path))!; changed.workItemConcurrency = { analysis: 2, triage: 20 };
+  if (format === 'file') await writeFile(join(rootDir, 'monitors.toml'), formatMonitorConfig(changed));
+  else await saveRootConfig(changed, path);
+  await manager.reconcile(); expect(manager.sources.concurrency).toEqual(changed.workItemConcurrency);
+  expect(vi.mocked(InboxGui).mock.calls.at(-1)![0]).toBe(service);
+});
+
 it('starts without HTTPS and does not open an HTTP listener', async () => {
   const { create, root, path } = await setup();
   root.inbox!.h5.publicUrl = ''; await saveRootConfig(root, path);

@@ -24,7 +24,7 @@ async function setup(jobs: InboxJob[] = [], overrides: Partial<InboxIO> = {}) {
   const io: InboxIO = { selfSenderIds: ['cli_self', 'ou_self'], checkOwner: vi.fn(async () => {}), collect: vi.fn(async () => []), context: vi.fn(async () => []),
     source: vi.fn(async () => ({ name: '项目群', type: 'group' as const })), deliver: vi.fn(async () => {}), beginAnalysis: vi.fn(async () => destination),
     analyze: vi.fn(async () => ({ text: '{"replyDraft":"草稿","analysis":"已核实","missingInfo":""}', inputTokens: 1, outputTokens: 1 })),
-    triage: vi.fn<NonNullable<InboxIO['triage']>>(async jobs => jobs.map(j => ({ id: j.id, state: 'needed', reason: '同事需要回复' }))), ...overrides };
+    triage: vi.fn<NonNullable<InboxIO['triage']>>(async j => ({ id: j.id, state: 'needed', reason: '同事需要回复' })), ...overrides };
   const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-feedback-')), 'state.json'));
   store.data.jobs = jobs;
   if (jobs.length) store.data.notificationOutbox = { id: 'digest', jobs: jobs.map(j => ({ id: j.id, signature: 'old' })), attempts: 1, retryAt: 0 };
@@ -48,7 +48,7 @@ it('drops self IDs and result-group messages before ingestion while retaining ex
   await s.service.tick();
   expect(s.service.list().flatMap(j => j.messages.map(m => m.id))).toEqual(['om_alert']);
   s.advance(61_000); await s.service.tick(); await vi.waitFor(() => expect(s.io.triage).toHaveBeenCalledTimes(1));
-  expect(vi.mocked(s.io.triage!).mock.calls[0]![0][0]!.messages).toEqual([external]);
+  expect(vi.mocked(s.io.triage!).mock.calls[0]![0].messages).toEqual([external]);
 });
 
 it('quarantines restored self-only queues, results and delivery retries, including previous result groups', async () => {
@@ -70,7 +70,7 @@ it('rescreens mixed historical jobs without self output and keeps edited drafts 
   expect(s.service.list()[0]).toMatchObject({ state: 'waiting', messages: [human], attention: { state: 'pending' }, replyDraft: '人工草稿', draftStale: true });
   expect(s.service.list()[0]?.evidenceVersion).toBe(2);
   s.advance(61_000); await s.service.tick(); await vi.waitFor(() => expect(s.io.triage).toHaveBeenCalledTimes(1));
-  expect(vi.mocked(s.io.triage!).mock.calls[0]![0][0]!.messages).toEqual([human]);
+  expect(vi.mocked(s.io.triage!).mock.calls[0]![0].messages).toEqual([human]);
   await s.service.tick(); expect(s.io.analyze).not.toHaveBeenCalled();
 });
 

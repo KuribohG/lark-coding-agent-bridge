@@ -26,7 +26,7 @@ async function setup(jobs: InboxJob[] = [], overrides: Partial<InboxIO> = {}) {
     context: vi.fn(async () => []), source: vi.fn(async () => ({ name: human.chatName, type: 'group' as const })),
     deliver: vi.fn(async () => {}), notifyAttention: vi.fn(async () => {}),
     analyze: vi.fn(async () => ({ text: '分析结果', inputTokens: 1, outputTokens: 1 })),
-    triage: vi.fn(async (jobs: InboxJob[]) => jobs.map(j => ({ id: j.id, state: 'quiet' as const, reason: '无需动作' }))), ...overrides };
+    triage: vi.fn(async (j: InboxJob) => ({ id: j.id, state: 'quiet' as const, reason: '无需动作' })), ...overrides };
   const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-self-')), 'state.json'));
   store.data.jobs = structuredClone(jobs);
   if (jobs.length) store.data.notificationOutbox = { id: 'old-outbox', attempts: 0, retryAt: 0,
@@ -51,8 +51,8 @@ it('drops self identities at ingestion without suppressing humans, matching disp
   await s.service.tick();
   expect(s.service.list().flatMap(j => j.messages.map(m => m.id)).sort()).toEqual(['om_alert', 'om_human']);
   expect(s.store.data.seen.om_self).toBeUndefined();
-  s.advance(61_000); await s.service.tick(); await vi.waitFor(() => expect(s.io.triage).toHaveBeenCalledTimes(1));
-  expect(vi.mocked(s.io.triage!).mock.calls[0]![0].flatMap(j => j.messages.map(m => m.id)).sort()).toEqual(['om_alert', 'om_human']);
+  s.advance(61_000); await s.service.tick(); await vi.waitFor(() => expect(s.io.triage).toHaveBeenCalledTimes(2));
+  expect(vi.mocked(s.io.triage!).mock.calls.flatMap(([j]) => j.messages.map(m => m.id)).sort()).toEqual(['om_alert', 'om_human']);
 });
 
 it('cancels persisted self-only screening, analysis and delivery without any model calls', async () => {
@@ -78,7 +78,7 @@ it('preserves real requests in mixed history and invalidates old assistant-deriv
   expect(s.service.list()[0]).toMatchObject({ state: 'waiting', messages: [human], attention: { state: 'pending' },
     replyDraft: '人工草稿', draftStale: true, analysisRequested: false });
   s.advance(61_000); await s.service.tick(); await vi.waitFor(() => expect(s.io.triage).toHaveBeenCalledTimes(1));
-  expect(vi.mocked(s.io.triage!).mock.calls[0]![0][0]!.messages).toEqual([human]);
+  expect(vi.mocked(s.io.triage!).mock.calls[0]![0].messages).toEqual([human]);
   expect(s.io.analyze).not.toHaveBeenCalled();
 });
 

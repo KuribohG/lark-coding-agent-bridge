@@ -14,6 +14,7 @@ import {
 } from './profile-schema';
 import type { AppConfig } from './schema';
 import { normalizeInbox } from '../inbox/config';
+import { parseWorkItemConcurrency } from '../work-items/concurrency';
 import { parseStorageConfig } from '../monitoring/sources/storage/config';
 import { normalizeGitLabCi } from '../monitoring/sources/gitlab-ci/config';
 import { normalizeModelServices } from '../model-service/config';
@@ -50,6 +51,7 @@ export function normalizeRootConfig(root: RootConfig): RootConfig {
     ...(root.inbox ? { inbox: normalizeInbox(root.inbox) } : {}),
     ...(root.gitlabCi ? { gitlabCi: normalizeGitLabCi(root.gitlabCi) } : {}),
     ...(root.monitorConfigFile === undefined && root.storageMonitor ? { storageMonitor: parseStorageConfig(root.storageMonitor) } : {}),
+    ...(root.monitorConfigFile === undefined && root.workItemConcurrency !== undefined ? { workItemConcurrency: parseWorkItemConcurrency(root.workItemConcurrency) } : {}),
     ...(root.modelServices ? { modelServices: normalizeModelServices(root.modelServices) } : {}),
     ...(root.secrets ? { secrets: root.secrets } : {}),
     ...(migrations ? { migrations } : {}),

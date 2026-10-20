@@ -6,7 +6,7 @@ import { normalizeInbox } from '../../../src/inbox/config';
 import { WorkItemService } from '../../../src/work-items/service';
 import { WorkItemStore } from '../../../src/work-items/store';
 import { EventSource } from '../../../src/work-items/event-source';
-import { AnalysisScheduler } from '../../../src/work-items/scheduler';
+import { WorkItemScheduler } from '../../../src/work-items/scheduler';
 import { WorkItemSources } from '../../../src/work-items/registry';
 import type { WorkItemRuntime } from '../../../src/work-items/contracts';
 
@@ -15,7 +15,7 @@ afterEach(async () => { for (const fn of cleanups.splice(0).reverse()) await fn(
 const result = { text: JSON.stringify({ replyDraft: 'summary', analysis: 'evidence', missingInfo: '' }), inputTokens: 1, outputTokens: 1 };
 const topic = { chatId: 'oc_out', threadId: 'omt_out', replyTo: 'om_out' };
 const event = { key: 'c', title: 'cluster', reason: 'I/O error', url: '', time: 1000, eventId: '1', revision: 1, data: {}, notice: 'first alert' };
-async function setup(io: Partial<WorkItemRuntime> = {}, queue?: AnalysisScheduler) {
+async function setup(io: Partial<WorkItemRuntime> = {}, queue?: WorkItemScheduler) {
   const folder = await mkdtemp(join(tmpdir(), 'source-notices-')); cleanups.push(() => rm(folder, { recursive: true, force: true }));
   const store = new WorkItemStore(join(folder, 'state.json'));
   const runtime: WorkItemRuntime = { source: new EventSource('test', () => true), checkAccess: async () => {},
@@ -28,7 +28,7 @@ async function setup(io: Partial<WorkItemRuntime> = {}, queue?: AnalysisSchedule
 }
 
 it('sends an alert before acquiring an analysis slot, and does not duplicate a replay', async () => {
-  const queue = new AnalysisScheduler(); let release!: () => void;
+  const queue = new WorkItemScheduler(1); let release!: () => void;
   const blocker = queue.run(new AbortController().signal, () => new Promise(resolve => { release = resolve; }));
   await vi.waitFor(() => expect(release).toBeDefined());
   const h = await setup({}, queue);
@@ -74,20 +74,22 @@ it('resumes interrupted storage work within budget but preserves a manual pause'
   expect(restarted.get(item.id)).toMatchObject({ state: 'queued', analysisPaused: false });
   expect(restarted.get(paused.id)).toMatchObject({ analysisPaused: true, replyDraft: 'human draft' });
 });
-it('gives incident sources an independent slot while the ordinary queue is occupied', async () => {
-  const folder = await mkdtemp(join(tmpdir(), 'source-lanes-')); cleanups.push(() => rm(folder, { recursive: true, force: true }));
-  const sources = new WorkItemSources(join(folder, 'config.json'));
+it('shares the execution limit across ordinary and storage sources', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'source-shared-queue-')); cleanups.push(() => rm(folder, { recursive: true, force: true }));
+  const sources = new WorkItemSources(join(folder, 'config.json'), new WorkItemScheduler(1));
   let release!: () => void;
   const blocker = sources.queue.run(new AbortController().signal, () => new Promise(resolve => { release = resolve; }));
   await vi.waitFor(() => expect(release).toBeDefined());
   try {
-    const connect = (id: string, lane?: 'incident') => sources.connect({ id, label: id, lane,
+    const connect = (id: string) => sources.connect({ id, label: id,
       config: normalizeInbox({ enabled: true, executorProfile: 'p', ownerOpenId: 'local:p' }),
       source: new EventSource(id, () => true), runtime: { checkAccess: async () => {}, investigate: async () => result } });
-    const normal = await connect('ordinary'); const incident = await connect('urgent', 'incident');
+    const normal = await connect('ordinary'); const incident = await connect('storage');
     await normal.observe(event); await incident.observe(event);
-    await vi.waitFor(() => expect(sources.list().find(j => j.external?.source === 'urgent')?.external?.analysisAttempts).toBe(1), { timeout: 3500 });
-    expect(sources.list().find(j => j.external?.source === 'ordinary')?.external?.analysisAttempts).toBe(0);
+    await vi.waitFor(() => expect(sources.list().filter(j => j.state === 'running')).toHaveLength(2), { timeout: 3500 });
+    expect(sources.list().every(j => j.external?.analysisAttempts === 0)).toBe(true);
+    release(); await blocker;
+    await vi.waitFor(() => expect(sources.list().every(j => j.external?.analysisAttempts === 1)).toBe(true));
   } finally { release(); await blocker; await sources.close(); }
 });
 
@@ -101,4 +103,17 @@ it('a slow notification cannot occupy the lifecycle lock or stop investigation',
     await h.service.observe({ ...event, key: 'another', eventId: 'another', notice: undefined });
     expect(h.service.list()).toHaveLength(2);
   } finally { finish(topic); }
+});
+
+it('reserves the daily budget for each parallel automatic analysis and still permits manual work', async () => {
+  const h = await setup({ dailyAnalysisLimit: 2 });
+  const items = [];
+  for (let i = 0; i < 7; i++) items.push(await h.service.observe({ ...event, key: `item-${i}`, notice: undefined }));
+  await h.service.tick(); await vi.waitFor(() => expect(h.runtime.investigate).toHaveBeenCalledTimes(2));
+  await h.service.tick(); expect(h.runtime.investigate).toHaveBeenCalledTimes(2);
+  expect(h.store.data.autoUsage['1970-01-01']).toBe(2);
+  expect(h.service.list().filter(j => j.state === 'queued')).toHaveLength(5);
+  await h.service.decide(items[6]!.id, 'process', 'ou_owner'); await h.service.tick();
+  await vi.waitFor(() => expect(h.runtime.investigate).toHaveBeenCalledTimes(3));
+  expect(h.store.data.autoUsage['1970-01-01']).toBe(2);
 });

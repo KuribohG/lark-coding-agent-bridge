@@ -9,6 +9,7 @@ import { normalizeInbox } from '../../inbox/config';
 import { normalizeGitLabCi } from '../../monitoring/sources/gitlab-ci/config';
 import { formatMonitorConfig, parseMonitorConfig, validateMonitorReferences } from '../../monitoring/config';
 import { loadMonitorRoot, monitorConfigPath, readMonitorFile } from '../../monitoring/store';
+import { parseWorkItemConcurrency } from '../../work-items/concurrency';
 
 type Options = { config?: string };
 const rootPath = (opts: Options) => opts.config ?? resolveAppPaths().configFile;
@@ -24,7 +25,8 @@ export async function initMonitors(opts: Options & { output?: string }): Promise
     }
     const target = opts.output ? resolve(opts.output) : resolve(dirname(path), 'monitors.toml');
     if (target === resolve(path)) throw new Error('监控配置文件不能覆盖 Bridge 主配置');
-    const text = formatMonitorConfig({ inbox: root.inbox ?? normalizeInbox(undefined), gitlabCi: root.gitlabCi ?? normalizeGitLabCi(undefined), ...(root.storageMonitor ? { storageMonitor: root.storageMonitor } : {}) });
+    const text = formatMonitorConfig({ workItemConcurrency: parseWorkItemConcurrency(root.workItemConcurrency),
+      inbox: root.inbox ?? normalizeInbox(undefined), gitlabCi: root.gitlabCi ?? normalizeGitLabCi(undefined), ...(root.storageMonitor ? { storageMonitor: root.storageMonitor } : {}) });
     validateMonitorReferences(parseMonitorConfig(text), root);
     await mkdir(dirname(target), { recursive: true });
     // Until the root points at it, this new file is not consumed by either source.
@@ -67,6 +69,6 @@ export async function statusMonitors(opts: Options): Promise<void> {
     try { storageState = JSON.parse(await readFile(join(dirname(path), 'storage-monitor', `${storageScope(root.storageMonitor)}.json`), 'utf8')); }
     catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('存储监控状态文件无法读取'); }
   }
-  console.log(JSON.stringify({ storageState, file: monitorConfigPath(root, path) ?? null, mode: root.monitorConfigFile === undefined ? 'legacy-json' : 'toml',
+  console.log(JSON.stringify({ storageState, concurrency: parseWorkItemConcurrency(root.workItemConcurrency), file: monitorConfigPath(root, path) ?? null, mode: root.monitorConfigFile === undefined ? 'legacy-json' : 'toml',
     sources: monitorConfigs.map(source => source.summary(root)), note: '配置状态；enabled 不代表来源或执行器在线。' }, null, 2));
 }

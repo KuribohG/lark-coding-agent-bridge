@@ -15,9 +15,9 @@ it('keeps owner identity separate from another mention even when their display n
   const item = job([{ ...message('om_other', '+ @本人'), mentions: ['ou_other'],
     mentionDetails: [{ openId: 'ou_other', name: '本人' }] },
     { ...message('om_owner', '我来核实'), senderId: 'ou_owner', senderName: '本人' }]);
-  const materials = JSON.parse(triageMaterials([item], '本人姓名=本人；open_id=ou_owner'));
+  const materials = JSON.parse(triageMaterials(item, '本人姓名=本人；open_id=ou_owner'));
   expect(materials.background).toContain('open_id=ou_owner');
-  expect(materials.items[0]).toMatchObject({ ownerOpenId: 'ou_owner', directlyMentioned: false,
+  expect(materials.item).toMatchObject({ ownerOpenId: 'ou_owner', directlyMentioned: false,
     messages: [{ senderIsOwner: false, mentionsOwner: false, mentionDetails: [{ openId: 'ou_other', name: '本人' }] },
       { senderIsOwner: true, mentionsOwner: false }] });
   const prompt = processingPrompt(item, materials.background);
@@ -33,7 +33,7 @@ it('retains the original question and report tail when a long incident ends with
     message('review', "💾 Self-improvement review: Skill 'incident-review' patched", true),
     message('empty', '[System: Empty message content sanitised to satisfy protocol]', true),
     message('stop', '@helper /stop'), message('stopped', 'No active task to stop.', true)];
-  const item = JSON.parse(triageMaterials([job(messages)], '', { triageMessageLimit: 6, triageMessageChars: 500 })).items[0];
+  const item = JSON.parse(triageMaterials(job(messages), '', { triageMessageLimit: 6, triageMessageChars: 500 })).item;
   expect(item.totalMessages).toBe(29);
   expect(item.messages).toHaveLength(6);
   expect(item.messages[0].id).toBe('question');
@@ -50,25 +50,24 @@ it('keeps explicit recovery evidence and does not discard substantive bot report
   const messages = [message('question', '客户端反复断连'),
     message('recovery', '已确认退出原因并修复，重试成功，维护者无需继续处理。', true),
     message('human', 'No active task to stop.')];
-  const item = JSON.parse(triageMaterials([job(messages)], '')).items[0];
+  const item = JSON.parse(triageMaterials(job(messages), '')).item;
   expect(item.messages.map((m: InboxMessage) => m.id)).toEqual(['question', 'recovery', 'human']);
   expect(item).toMatchObject({ excerpt: false, omittedMessages: 0 });
 });
 
 it('marks long-message omission even when every message fits the count limit', () => {
-  const item = JSON.parse(triageMaterials([job([message('report', 'a'.repeat(2001))])], '')).items[0];
+  const item = JSON.parse(triageMaterials(job([message('report', 'a'.repeat(2001))]), '')).item;
   expect(item).toMatchObject({ excerpt: true, omittedMessages: 0 });
   expect(item.messages[0].text).toHaveLength(2000);
   expect(normalizeInbox({ triageMessageLimit: 1, triageMessageChars: Infinity })).toMatchObject({
     triageMessageLimit: 2, triageMessageChars: 2000 });
 });
 
-it('sizes real assessment batches with the configured limits instead of the old fixed excerpt size', () => {
+it('applies large configured excerpts to one item without combining unrelated contexts', () => {
   const config = normalizeInbox({ triageMessageLimit: 100, triageMessageChars: 16000 });
-  const jobs = Array.from({ length: 10 }, (_, i) => ({ ...job(Array.from({ length: 10 }, (_, j) =>
-    message(`m_${j}`, '长'.repeat(10_000)))), id: String(i) }));
-  const batch = createLarkAssessment(config, {} as InboxIO).select(jobs);
-  expect(batch.length).toBeGreaterThan(0);
-  expect(batch.length).toBeLessThan(jobs.length);
-  expect(Buffer.byteLength(JSON.stringify([{ role: 'user', content: triageMaterials(batch, '', config) }]))).toBeLessThan(600_000);
+  const item = job(Array.from({ length: 10 }, (_, i) => message(`m_${i}`, '长'.repeat(10_000))));
+  const material = JSON.parse(triageMaterials(item, '', config));
+  expect(material.item.messages).toHaveLength(10);
+  expect(material.item.messages[0].text).toHaveLength(10_000);
+  expect(material).not.toHaveProperty('items');
 });

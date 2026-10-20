@@ -4,7 +4,8 @@ import * as lockfile from 'proper-lockfile';
 import type { LarkMonitorProfiles } from './host';
 import { resolveAppPaths } from '../../../config/app-paths';
 import { withConfigFileLock } from '../../../config/profile-store';
-import { loadMonitorRoot, saveMonitorRoot, monitorConfigPath, larkConfigRevision } from '../../store';
+import { loadMonitorRoot, saveMonitorRoot, monitorConfigPath, larkConfigRevision, concurrencyConfigRevision } from '../../store';
+import { parseWorkItemConcurrency } from '../../../work-items/concurrency';
 import { resolveAppSecret } from '../../../config/secret-resolver';
 import { getCotMessages } from '../../../config/schema';
 import { CotClient } from '../../../bot/cot';
@@ -58,13 +59,17 @@ export class InboxManager {
     let config = this.service?.config ?? normalizeInbox(undefined);
     let configFile: string | undefined;
     let configRevision: string | undefined;
+    let concurrency = this.sources.concurrency;
+    let concurrencyRevision: string | undefined;
     try {
       const root = await loadMonitorRoot(this.configPath);
       config = normalizeInbox(root?.inbox);
       configFile = root ? monitorConfigPath(root, this.configPath) : undefined;
       configRevision = root ? larkConfigRevision(root) : undefined;
+      concurrency = parseWorkItemConcurrency(root?.workItemConcurrency);
+      concurrencyRevision = root ? concurrencyConfigRevision(root) : undefined;
     } catch (error) { this.error = error instanceof Error ? error.message : '监控配置读取失败'; }
-    return { config, configFile, configRevision, running: Boolean(this.service?.config.enabled), error: this.error || this.service?.lastError || this.gui?.lastError,
+    return { config, configFile, configRevision, concurrency, concurrencyRevision, running: Boolean(this.service?.config.enabled), error: this.error || this.service?.lastError || this.gui?.lastError,
       jobs: this.service?.list().map(({ messages: _, result: __, ...j }) => j) || [] };
   }
   async workbench() {
@@ -161,6 +166,20 @@ export class InboxManager {
     });
     await this.reconcile(); return this.view();
   }
+  async configureConcurrency(input: unknown) {
+    if (!input || typeof input !== 'object' || !('concurrency' in input)) throw new Error('缺少并发配置');
+    const config = parseWorkItemConcurrency(input.concurrency);
+    await withConfigFileLock(this.configPath, async () => {
+      const root = await loadMonitorRoot(this.configPath);
+      if (!root) throw new Error('找不到 Bridge 配置');
+      const expected = 'concurrencyRevision' in input ? input.concurrencyRevision : undefined;
+      if (expected !== undefined && expected !== concurrencyConfigRevision(root)) throw new Error('并发配置已更新，请重新读取设置后保存；本次未覆盖');
+      root.workItemConcurrency = config;
+      await saveMonitorRoot(root, this.configPath);
+      this.sources.configureConcurrency(config);
+    });
+    return this.view();
+  }
   reconcile(): Promise<void> {
     if (this.closed) return Promise.resolve();
     const p = this.chain.then(() => this.reload()).catch(async error => {
@@ -195,6 +214,7 @@ export class InboxManager {
   private async reload(): Promise<void> {
     if (this.closed) return;
     const root = await loadMonitorRoot(this.configPath); const config = normalizeInbox(root?.inbox);
+    if (root) this.sources.configureConcurrency(root.workItemConcurrency);
     const controls = this.profiles(config.executorProfile);
     const sourceProfile = config.triageService ? undefined : root?.profiles[config.triageProfile || config.executorProfile];
     const fingerprint = JSON.stringify([connectionConfig(config), controls?.cfg.accounts.app, controls?.botIdentity?.openId, controls?.profileConfig.mode, controls?.profileConfig.agentKind, controls?.profileConfig.codex, controls?.profileConfig.preferences,
@@ -258,10 +278,10 @@ export class InboxManager {
             return result;
           } finally { await progress?.finish(success); }
         },
-        triage: async (jobs, signal, onProgress) => triageWithChatTools(jobs, config.attentionProfile,
+        triage: async (job, signal, onProgress) => triageWithChatTools(job, config.attentionProfile,
           await loadInboxTriageSource(config, triageSource, this.rootDir), readTools, signal, onProgress, undefined, undefined, config),
         notifyAttention: (jobs, id) => lark.notifyAttention(jobs, id),
-      }), Date.now, this.sources.queue);
+      }), Date.now, this.sources.queue, this.sources.triageQueue);
       this.nonces = new CallbackNonceStore(join(folder, 'card-nonces.json'));
       await this.nonces.load();
       const cards = new InboxCards(this.service, lark, new CallbackAuth({ keys: [{ version: 1, secret }], nonceStore: this.nonces }), this.nonces);

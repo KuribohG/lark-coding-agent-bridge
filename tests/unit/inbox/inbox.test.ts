@@ -550,29 +550,27 @@ describe('intake scopes', () => {
 });
 
 describe('lightweight attention and quiet delivery', () => {
-  const classify: NonNullable<InboxIO['triage']> = async jobs => jobs.map(j => ({ id: j.id, state: 'needed', reason: '需要本人确认日期', priority: 'normal' }));
+  const classify: NonNullable<InboxIO['triage']> = async j => ({ id: j.id, state: 'needed', reason: '需要本人确认日期', priority: 'normal' });
   async function screened(overrides: Partial<InboxIO> = {}) {
     const s = await setup({ triage: vi.fn(classify), notifyAttention: vi.fn(async () => {}), ...overrides });
     await s.service.tick();
     return s;
   }
-  it('screens 51 ready items in batches of 50 and 1, counting model calls rather than items', async () => {
+  it('screens 51 ready items individually and counts each attempt against the daily limit', async () => {
     const messages = Array.from({ length: 51 }, (_, i) => message({ id: `om_${i}`, chatId: `oc_${i}` }));
     const s = await screened({ collect: vi.fn(async kind => kind === 'p2p' ? messages : []), context: vi.fn(async () => []) });
-    // Completion dispatches the next batch immediately; the 50-item state is transient.
     await vi.waitFor(() => expect(s.service.list().filter(j => j.attention?.state === 'needed')).toHaveLength(51));
-    expect(vi.mocked(s.io.triage!).mock.calls[0]![0]).toHaveLength(50);
-    expect(s.io.triage).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(s.io.triage!).mock.calls[1]![0]).toHaveLength(1);
-    expect(s.store.data.triageUsage?.['1970-01-01']).toBe(2);
+    expect(s.io.triage).toHaveBeenCalledTimes(51);
+    expect(new Set(vi.mocked(s.io.triage!).mock.calls.map(([item]) => item.id)).size).toBe(51);
+    expect(s.store.data.triageUsage?.['1970-01-01']).toBe(51);
   });
   it('keeps the legacy digest without automatic work when no topic-announcement adapter is available', async () => {
     const messages = [message(), message({ id: 'om_quiet', chatId: 'oc_quiet' }), message({ id: 'om_unknown', chatId: 'oc_unknown' })];
-    const triage = vi.fn<NonNullable<InboxIO['triage']>>(async jobs => jobs.map((j, i) => ({ id: j.id, state: ['needed', 'quiet', 'uncertain'][i] as 'needed' | 'quiet' | 'uncertain', reason: '模型判断', priority: 'normal' })));
+    const triage = vi.fn<NonNullable<InboxIO['triage']>>(async j => ({ id: j.id, state: j.source.chatId === 'oc_quiet' ? 'quiet' : j.source.chatId === 'oc_unknown' ? 'uncertain' : 'needed', reason: '模型判断', priority: 'normal' }));
     const s = await screened({ collect: vi.fn(async () => messages), context: vi.fn(async () => []), triage });
     await vi.waitFor(() => expect(s.service.list().filter(j => j.attention?.state === 'pending')).toHaveLength(0));
     await s.service.tick();
-    expect(triage).toHaveBeenCalledTimes(1); expect(triage.mock.calls[0]![0]).toHaveLength(3);
+    expect(triage).toHaveBeenCalledTimes(3);
     expect(s.io.notifyAttention).toHaveBeenCalledTimes(1);
     expect(vi.mocked(s.io.notifyAttention!).mock.calls[0]![0]).toHaveLength(1);
     expect(s.io.analyze).not.toHaveBeenCalled(); expect(s.io.deliver).not.toHaveBeenCalled();
@@ -596,7 +594,7 @@ describe('lightweight attention and quiet delivery', () => {
     const s = await screened({ triage }); await vi.waitFor(() => expect(complete).toBeDefined());
     const before = s.service.list()[0]!;
     const save = vi.spyOn(s.store, 'save');
-    progress([{ id: before.id, text: '需要确认' }]);
+    progress('需要确认');
     expect(s.service.list()[0]?.attention?.progress?.text).toBe('需要确认');
     expect(s.service.get(before.id)?.attention?.progress?.text).toBe('需要确认');
     expect(s.store.data.jobs[0]?.attention?.progress).toBeUndefined();
@@ -608,13 +606,13 @@ describe('lightweight attention and quiet delivery', () => {
       const changed = message({ text: '新问题需要重新筛选' });
       vi.mocked(s.io.collect).mockResolvedValue([changed]); vi.mocked(s.io.context).mockResolvedValue([changed]); s.advance(61_000); await s.service.tick();
     }
-    progress([{ id: before.id, text: '过期的后续文本' }]);
+    progress('过期的后续文本');
     expect(s.service.list()[0]?.attention?.progress).toBeUndefined();
     expect(s.service.get(before.id)?.attention?.progress).toBeUndefined();
     vi.mocked(s.io.triage!).mockImplementation((_jobs, signal) => new Promise((_resolve, reject) => {
       signal.addEventListener('abort', () => reject(Error('cancelled')), { once: true });
     }));
-    complete(await classify([before], new AbortController().signal)); await new Promise(r => setTimeout(r, 20));
+    complete(await classify(before, new AbortController().signal)); await new Promise(r => setTimeout(r, 20));
     expect(s.service.list()[0]?.attention?.state).not.toBe('needed'); expect(s.io.notifyAttention).not.toHaveBeenCalled();
   });
   it('leaves failures visible and enforces the durable triage budget', async () => {
@@ -644,18 +642,18 @@ describe('lightweight attention and quiet delivery', () => {
     await vi.waitFor(() => expect(service.list()[0]?.attention?.state).toBe('needed'));
     expect(service.list()[0]?.attention?.retry).toBeUndefined(); expect(store.data.triageUsage?.['1970-01-01']).toBe(3);
   });
-  it('persists partial successes and retries only failed items with their specific reason', async () => {
-    const triage = vi.fn<NonNullable<InboxIO['triage']>>(async jobs => jobs.map((j, i) => ({ id: j.id,
-      state: i === 0 ? 'quiet' : 'pending', reason: i === 0 ? '无需动作' : '筛选结果缺少事项', priority: 'normal' })));
+  it('persists independent successes and retries only failed items with their specific reason', async () => {
+    const triage = vi.fn<NonNullable<InboxIO['triage']>>(async j => ({ id: j.id,
+      state: j.source.chatId === 'oc_second' ? 'pending' : 'quiet', reason: j.source.chatId === 'oc_second' ? '筛选未完成' : '无需动作', priority: 'normal' }));
     const s = await screened({ triage, collect: vi.fn(async kind => kind === 'p2p' ? [message(), message({ id: 'om_second', chatId: 'oc_second' })] : []) });
     await vi.waitFor(() => expect(s.service.list().some(j => j.attention?.retry)).toBe(true));
     const done = s.service.list().find(j => j.attention?.state === 'quiet')!;
     const retry = s.service.list().find(j => j.attention?.retry)!;
     expect(done.attention?.retry).toBeUndefined();
-    expect(retry.attention?.retry?.error).toBe('筛选结果缺少事项');
+    expect(retry.attention?.retry?.error).toBe('筛选未完成');
     s.advance(30_000); await s.service.tick();
-    await vi.waitFor(() => expect(triage).toHaveBeenCalledTimes(2));
-    expect(triage.mock.calls[1]![0].map(j => j.id)).toEqual([retry.id]);
+    await vi.waitFor(() => expect(triage).toHaveBeenCalledTimes(3));
+    expect(triage.mock.calls[2]![0].id).toBe(retry.id);
     expect(s.io.notifyAttention).not.toHaveBeenCalled();
   });
   it('migrates only unresolved legacy execution failures, not genuine uncertainty or handled items', async () => {
@@ -690,16 +688,16 @@ describe('lightweight attention and quiet delivery', () => {
     await service.review({ id: ignored.id, revision: ignored.revision, handlingState: 'open' }, 'ou_owner', 'restore-one');
     expect(service.list()[0]).toMatchObject({ handlingState: 'open', state: 'waiting', attention: { state: 'pending' } });
   });
-  it('cancels active screening when every item in its batch has been ignored', async () => {
+  it('cancels active screening when its item is ignored', async () => {
     let signal!: AbortSignal;
-    let complete!: (value: []) => void;
+    let complete!: (value: Awaited<ReturnType<NonNullable<InboxIO['triage']>>>) => void;
     const s = await screened({ triage: vi.fn<NonNullable<InboxIO['triage']>>((_jobs, current) => {
       signal = current; return new Promise(resolve => { complete = resolve; });
     }) });
     await vi.waitFor(() => expect(signal).toBeDefined());
     const job = s.service.list()[0]!;
     await s.service.batchReview({ items: [{ id: job.id, revision: job.revision }], handlingState: 'ignored' }, 'ou_owner', 'ignore-active');
-    expect(signal.aborted).toBe(true); complete([]);
+    expect(signal.aborted).toBe(true); complete({ id: job.id, state: 'quiet', reason: 'ignored' });
     await new Promise(r => setTimeout(r, 20));
     expect(s.service.list()[0]?.attention?.state).toBe('quiet'); expect(s.io.notifyAttention).not.toHaveBeenCalled();
   });

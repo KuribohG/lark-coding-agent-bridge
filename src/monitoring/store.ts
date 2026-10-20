@@ -6,8 +6,13 @@ import type { RootConfig } from '../config/profile-schema';
 import { loadRootConfig, saveRootConfig } from '../config/profile-store';
 import { writeFileAtomic } from '../platform/atomic-write';
 import { formatMonitorConfig, parseMonitorConfig, validateMonitorReferences } from './config';
+import { parseWorkItemConcurrency } from '../work-items/concurrency';
 
 const snapshots = new WeakMap<RootConfig, { path: string; text: string }>();
+
+export function concurrencyConfigRevision(root: RootConfig): string {
+  return createHash('sha256').update(JSON.stringify([snapshots.get(root)?.path, parseWorkItemConcurrency(root.workItemConcurrency)])).digest('hex');
+}
 
 export function larkConfigRevision(root: RootConfig): string | undefined {
   const snapshot = snapshots.get(root);
@@ -41,6 +46,7 @@ export async function loadMonitorRoot(configPath: string): Promise<RootConfig | 
   try { settings = parseMonitorConfig(text); validateMonitorReferences(settings, root); }
   catch (error) { throw new Error(`${path}: ${error instanceof Error ? error.message : '监控配置无效'}`); }
   for (const source of monitorConfigs) delete root[source.key];
+  delete root.workItemConcurrency;
   Object.assign(root, settings);
   snapshots.set(root, { path, text });
   return root;

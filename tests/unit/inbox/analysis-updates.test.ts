@@ -27,7 +27,7 @@ function gate<T>(signal: AbortSignal) {
 async function setup() {
   let now = 1_000_000;
   const messages: InboxMessage[] = [];
-  const screens: (ReturnType<typeof gate<TriageDecision[]>> & { jobs: InboxJob[] })[] = [];
+  const screens: (ReturnType<typeof gate<TriageDecision>> & { item: InboxJob })[] = [];
   const analyses: (ReturnType<typeof gate<typeof result>> & { job: InboxJob })[] = [];
   const config = normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner', intakeScope: 'all',
     destination: { chatId: 'oc_target', threadId: 'omt_item', replyTo: 'om_item' } });
@@ -36,7 +36,7 @@ async function setup() {
     collect: vi.fn(async kind => kind === 'group' ? structuredClone(messages) : []), context: vi.fn(async () => []),
     beginAnalysis: vi.fn(async () => config.destination), deliver: vi.fn(async () => {}),
     analyze: vi.fn((job, signal) => { const run = { ...gate<typeof result>(signal), job }; analyses.push(run); return run.promise; }),
-    triage: vi.fn((jobs, signal) => { const run = { ...gate<TriageDecision[]>(signal), jobs }; screens.push(run); return run.promise; }),
+    triage: vi.fn((item, signal) => { const run = { ...gate<TriageDecision>(signal), item }; screens.push(run); return run.promise; }),
   };
   const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-updates-')), 'state.json'));
   const service = new InboxService(store, config, io, () => now); services.push(service); await service.start();
@@ -49,7 +49,7 @@ async function setup() {
     await service.tick();
   };
   const screen = (index: number, state: TriageDecision['state'], followUp?: TriageDecision['followUp']) => {
-    screens[index]!.resolve(screens[index]!.jobs.map(job => ({ id: job.id, state, followUp, reason: '有明确证据' })));
+    screens[index]!.resolve({ id: screens[index]!.item.id, state, followUp, reason: '有明确证据' });
   };
   await add('你的任务需要处理'); screen(0, 'needed');
   await waitFor(() => expect(analyses).toHaveLength(1));
@@ -63,14 +63,14 @@ it('retains an actionable result through unrelated bursts and delivers it only o
   expect(s.job().messages).toHaveLength(13); expect(s.analyses[0]!.job.messages).toHaveLength(1);
   s.analyses[0]!.resolve(result);
   await waitFor(() => expect(s.screens).toHaveLength(2));
-  expect(analysisChanges(s.screens[1]!.jobs[0]!)).toHaveLength(12);
+  expect(analysisChanges(s.screens[1]!.item)).toHaveLength(12);
   expect(s.job()).toMatchObject({ replyDraft: '原建议', draftStale: true, state: 'waiting' });
   await s.service.tick(); expect(s.io.deliver).not.toHaveBeenCalled();
   s.screen(1, 'quiet', 'unchanged');
   await waitFor(() => expect(s.job().state).toBe('ready'));
   expect(s.job().attention?.state).toBe('needed'); expect(s.job().draftStale).toBe(false);
   await s.service.tick(); await s.add('其他任务新增告警');
-  expect(s.screens).toHaveLength(3); expect(analysisChanges(s.screens[2]!.jobs[0]!)).toHaveLength(1);
+  expect(s.screens).toHaveLength(3); expect(analysisChanges(s.screens[2]!.item)).toHaveLength(1);
   s.screen(2, 'needed', 'unchanged');
   await waitFor(() => expect(s.job().state).toBe('done')); await s.service.tick();
   expect(s.analyses).toHaveLength(1); expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1);
@@ -91,7 +91,7 @@ it('rejects a stale incremental decision and reuses prior evidence for one suppl
   await s.add('另一条重复告警'); expect(s.analyses[1]!.signal.aborted).toBe(false);
   s.analyses[1]!.resolve({ ...result, text: JSON.stringify({ replyDraft: '补充建议', analysis: '新证据', missingInfo: '' }) });
   await waitFor(() => expect(s.screens).toHaveLength(4));
-  expect(analysisChanges(s.screens[3]!.jobs[0]!).map(m => m.text)).toEqual(['另一条重复告警']);
+  expect(analysisChanges(s.screens[3]!.item).map(m => m.text)).toEqual(['另一条重复告警']);
   s.screen(3, 'needed', 'unchanged'); await waitFor(() => expect(s.job().state).toBe('ready'));
   await s.service.tick(); expect(s.job().replyDraft).toBe('补充建议');
   expect(s.analyses).toHaveLength(2); expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1); expect(s.io.deliver).toHaveBeenCalledTimes(1);
@@ -111,7 +111,7 @@ it('retains an edited message and compares its new text with the analysis snapsh
   const s = await setup(); await s.add('任务的损坏范围已扩大', 'om_0');
   s.analyses[0]!.resolve(result); await waitFor(() => expect(s.screens).toHaveLength(2));
   expect(s.job().messages).toHaveLength(1);
-  expect(analysisChanges(s.screens[1]!.jobs[0]!)[0]?.text).toBe('任务的损坏范围已扩大');
+  expect(analysisChanges(s.screens[1]!.item)[0]?.text).toBe('任务的损坏范围已扩大');
   expect(s.analyses[0]!.job.messages[0]?.text).toBe('你的任务需要处理');
 });
 
@@ -143,8 +143,8 @@ it('persists the completed result and unreviewed additions across a restart', as
   const store = new InboxStore(s.store.path);
   const restarted = new InboxService(store, s.config, s.io, s.now); services.push(restarted); await restarted.start(); await restarted.tick();
   await waitFor(() => expect(s.screens).toHaveLength(3));
-  expect(s.screens[2]!.jobs[0]?.replyDraft).toBe('原建议');
-  expect(analysisChanges(s.screens[2]!.jobs[0]!)[0]?.text).toBe('待补筛内容');
+  expect(s.screens[2]!.item?.replyDraft).toBe('原建议');
+  expect(analysisChanges(s.screens[2]!.item)[0]?.text).toBe('待补筛内容');
   s.screen(2, 'needed', 'unchanged'); await waitFor(() => expect(store.data.jobs[0]?.state).toBe('ready'));
   await restarted.tick(); expect(s.analyses).toHaveLength(1); expect(s.io.deliver).toHaveBeenCalledTimes(1);
 });

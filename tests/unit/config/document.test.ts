@@ -51,6 +51,24 @@ async function file(text = source) {
 }
 
 describe('layered configuration', () => {
+  it('preserves inline concurrency and unrelated comments across configuration saves', async () => {
+    const path = await file(source + '\n[monitoring.concurrency]\nanalysis = 7\ntriage = 60\n');
+    const root = (await loadRootConfig(path))!;
+    expect(root.workItemConcurrency).toEqual({ analysis: 7, triage: 60 });
+    root.workItemConcurrency!.analysis = 3;
+    await saveRootConfig(root, path);
+    expect((await loadRootConfig(path))!.workItemConcurrency).toEqual({ analysis: 3, triage: 60 });
+    const text = await readFile(path, 'utf8');
+    expect(text).toContain('# keep this');
+    expect(documentToRoot(parseDocument(formatDocument(rootToDocument(root)))).workItemConcurrency)
+      .toEqual({ analysis: 3, triage: 60 });
+  });
+
+  it.each(['analysis = 0', 'triage = 101', 'analysis = "5"', 'triage = 1.5', 'maxConcurrent = 10'])(
+    'rejects invalid inline concurrency: %s', value => {
+      expect(() => parseDocument(source + '\n[monitoring.concurrency]\n' + value)).toThrow();
+    });
+
   it.each([undefined, 'app-server'] as const)('preserves transport=%s across launch inheritance and round trips', transport => {
     const inherited = source + '\n[agents.codex.launch]\ntransport = "app-server"\n';
     const text = transport ? inherited + `\n[profiles.bot.launch]\ntransport = "${transport}"\n` : source;

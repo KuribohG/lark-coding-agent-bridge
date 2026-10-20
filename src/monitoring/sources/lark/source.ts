@@ -40,7 +40,7 @@ export class LarkSource implements SourceAdapter {
   private intakeGeneration = 0;
   readonly assessment;
   constructor(private config: InboxConfig, private io: InboxIO, private now = Date.now) {
-    this.assessment = createLarkAssessment(config, io);
+    this.assessment = createLarkAssessment(io);
   }
   attach(context: SourceContext): void { this.host = context; }
   private get lastError() { return this.host.error; }

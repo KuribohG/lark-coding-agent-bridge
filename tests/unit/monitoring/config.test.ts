@@ -1,6 +1,7 @@
 import { expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { formatMonitorConfig, parseMonitorConfig } from '../../../src/monitoring/config';
+import { parseWorkItemConcurrency } from '../../../src/work-items/concurrency';
 
 it('ships a valid, disabled example for both sources', async () => {
   const example = await readFile(new URL('../../../docs/monitors.example.toml', import.meta.url), 'utf8');
@@ -93,3 +94,16 @@ it('preserves legacy model omission and explicit default-model selection across 
   expect(parseMonitorConfig(formatMonitorConfig(explicit)).inbox?.analysisModel).toBe('');
   expect(parseMonitorConfig(formatMonitorConfig(explicit)).gitlabCi?.model).toBe('');
 });
+
+it('defaults old configurations to five analysis and fifty screening slots and round-trips overrides', () => {
+  const old = parseMonitorConfig('version = 1\n[sources]');
+  expect(parseWorkItemConcurrency(old.workItemConcurrency)).toEqual({ analysis: 5, triage: 50 });
+  const settings = parseMonitorConfig('version = 1\n[concurrency]\nanalysis = 8\ntriage = 60\n[sources]');
+  expect(settings.workItemConcurrency).toEqual({ analysis: 8, triage: 60 });
+  expect(parseMonitorConfig(formatMonitorConfig(settings))).toEqual(settings);
+});
+
+it.each(['analysis = 0', 'triage = 101', 'triage = -1', 'triage = 1.5', 'analysis = "5"', 'maxConcurrent = 10', 'incidentAnalysis = 5'])(
+  'rejects invalid concurrency settings: %s', field => {
+    expect(() => parseMonitorConfig(`version = 1\n[concurrency]\n${field}\n[sources]`)).toThrow('monitors.concurrency');
+  });

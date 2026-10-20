@@ -167,6 +167,7 @@ async function route(
   if (path.startsWith('/api/inbox/')) {
     if (!sup.inbox) throw new HttpError(503, '会话助理尚不可用');
     try {
+      if (path === '/api/inbox/concurrency' && p) { sendJson(res, 200, await sup.inbox.configureConcurrency(await readJsonBody(req))); return; }
       if (path === '/api/inbox/workbench' && g) { sendJson(res, 200, await sup.inbox.workbench()); return; }
       if (path === '/api/inbox/command' && p) { sendJson(res, 200, await sup.inbox.workbenchCommand(await readJsonBody(req))); return; }
       if (path === '/api/inbox/check' && p) { sendJson(res, 200, await sup.inbox.checkSetup(await readJsonBody(req))); return; }

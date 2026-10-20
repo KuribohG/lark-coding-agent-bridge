@@ -6,7 +6,8 @@ import type { WorkItemConfig } from './config';
 import type { SourceAdapter, WorkItemRuntime } from './contracts';
 import { WorkItemService } from './service';
 import { WorkItemStore } from './store';
-import { AnalysisScheduler } from './scheduler';
+import { WorkItemScheduler } from './scheduler';
+import { parseWorkItemConcurrency, WORK_ITEM_CONCURRENCY_DEFAULTS } from './concurrency';
 import type { WorkItemEvent } from './events';
 
 export interface WorkItemSourceOptions {
@@ -14,16 +15,20 @@ export interface WorkItemSourceOptions {
   config: WorkItemConfig;
   source: SourceAdapter;
   runtime: Omit<WorkItemRuntime, 'source'>;
-  lane?: 'normal' | 'incident';
   status?: () => { error?: string; health?: { checkedAt?: number; checks: { id: string; state: string; detail: string; lastSuccessAt?: number }[] } };
 }
 interface Entry { service: WorkItemService; label: string; status?: WorkItemSourceOptions['status']; close(): Promise<void> }
 
-/** Source/account partitions share lifecycle code, the analysis queue and workbench. */
+/** Source/account partitions share lifecycle code, per-kind execution queues and the workbench. */
 export class WorkItemSources {
-  private incidentQueue = new AnalysisScheduler();
+  readonly triageQueue = new WorkItemScheduler(WORK_ITEM_CONCURRENCY_DEFAULTS.triage);
   private entries = new Map<string, Entry>();
-  constructor(private configPath: string, readonly queue = new AnalysisScheduler()) {}
+  constructor(private configPath: string, readonly queue = new WorkItemScheduler()) {}
+  get concurrency() { return { analysis: this.queue.concurrency, triage: this.triageQueue.concurrency }; }
+  configureConcurrency(input: unknown): void {
+    const config = parseWorkItemConcurrency(input);
+    this.queue.resize(config.analysis); this.triageQueue.resize(config.triage);
+  }
   isAnalyzing(id: string, key: string): boolean { return this.entries.get(id)?.service.store.data.jobs.some(j => j.external?.key === key && j.state === 'running') ?? false; }
   list(limit = 500) { return [...this.entries.values()].flatMap(entry => entry.service.list(limit)); }
   statuses() { return [...this.entries].map(([id, entry]) => {
@@ -44,7 +49,7 @@ export class WorkItemSources {
       onCompromised: () => { void service?.close(); } });
     try {
       service = new WorkItemService(new WorkItemStore(join(folder, 'state.json')), config,
-        { ...options.runtime, source: options.source }, Date.now, options.lane === 'incident' ? this.incidentQueue : this.queue);
+        { ...options.runtime, source: options.source }, Date.now, this.queue, this.triageQueue);
       await service.start();
       const active = service;
       let closed = false;

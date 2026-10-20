@@ -26,7 +26,7 @@ async function setup() {
   const io: InboxIO = {
     checkOwner: vi.fn(async () => {}), collect: vi.fn(async kind => kind === 'p2p' ? [...messages] : []),
     context: vi.fn(async () => []), source: vi.fn(async () => ({ name: '同事', type: 'p2p' as const })),
-    triage: vi.fn<NonNullable<InboxIO['triage']>>(async jobs => jobs.map(j => ({ id: j.id, state: 'quiet', reason: '已核对' }))),
+    triage: vi.fn<NonNullable<InboxIO['triage']>>(async j => ({ id: j.id, state: 'quiet', reason: '已核对' })),
     beginAnalysis: vi.fn(async () => config.destination), deliver: vi.fn(async () => {}),
     analyze: vi.fn(async () => ({ text: '{"analysis":"已完成","replyDraft":"草稿","missingInfo":""}', inputTokens: 1, outputTokens: 1 })),
   };
@@ -50,7 +50,7 @@ it('keeps collecting and screening while one history refresh is blocked, without
     await s.service.tick(); await vi.waitFor(() => expect(s.io.context).toHaveBeenCalledTimes(1));
     messages.push(s.message('om_fresh')); s.advance(); await s.service.tick();
     await vi.waitFor(() => expect(s.io.triage).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(s.io.triage!).mock.calls[0]![0][0]!.messages[0]!.id).toBe('om_fresh');
+    expect(vi.mocked(s.io.triage!).mock.calls[0]![0].messages[0]!.id).toBe('om_fresh');
     for (let i = 0; i < 3; i++) { s.advance(); await s.service.tick(); }
     expect(s.io.collect).toHaveBeenCalledTimes(10); expect(s.io.context).toHaveBeenCalledTimes(1);
     expect(s.store.data.cursors['context:oc_old']).toBeUndefined();
@@ -67,7 +67,7 @@ it('dispatches a completed screening while the next collection is still blocked'
   vi.mocked(s.io.collect).mockReturnValueOnce(collection.promise); s.advance(); const tick = s.service.tick();
   try {
     await vi.waitFor(() => expect(s.io.collect).toHaveBeenCalledTimes(3));
-    screening.resolve([{ id: job.id, state: 'needed', reason: '需要处理' }]);
+    screening.resolve({ id: job.id, state: 'needed', reason: '需要处理' });
     await vi.waitFor(() => expect(s.io.analyze).toHaveBeenCalledTimes(1));
     expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1);
     expect(s.store.data.cursors.p2p).toBe(1_000_000);
@@ -81,7 +81,7 @@ it('dispatches history discoveries before the rest of the history batch has fini
   try {
     await s.service.tick(); await vi.waitFor(() => expect(s.io.context).toHaveBeenCalledTimes(2));
     expect(s.io.triage).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(s.io.triage!).mock.calls[0]![0][0]!.messages.some(m => m.id === reply.id)).toBe(true);
+    expect(vi.mocked(s.io.triage!).mock.calls[0]![0].messages.some(m => m.id === reply.id)).toBe(true);
   } finally { later.resolve([]); }
 });
 

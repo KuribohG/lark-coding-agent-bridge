@@ -38,7 +38,7 @@ export interface InboxIO {
   source(chatId: string): Promise<{ name: string; type: 'p2p' | 'group' }>;
   deliver(job: InboxJob, phase: 'pending' | 'progress' | 'result'): Promise<void>;
   beginAnalysis?(job: InboxJob, text: string): Promise<InboxConfig['destination']>;
-  triage?(jobs: InboxJob[], signal: AbortSignal, onProgress?: (updates: { id: string; text: string }[]) => void): Promise<TriageDecision[]>;
+  triage?(job: InboxJob, signal: AbortSignal, onProgress?: (text: string) => void): Promise<TriageDecision>;
   notifyAttention?(jobs: InboxJob[], id: string): Promise<void>;
   analyze(job: InboxJob, signal: AbortSignal): Promise<{ text: string; inputTokens: number; outputTokens: number }>;
 }

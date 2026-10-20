@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
 import type { InboxJob } from '../../../src/inbox/types';
-import { triageBatch, triageFailureReason, triageWithChatTools } from '../../../src/monitoring/sources/lark/codex-triage';
+import { triageFailureReason, triageWithChatTools } from '../../../src/monitoring/sources/lark/codex-triage';
 import { InboxReadTools, INBOX_READ_TOOLS } from '../../../src/monitoring/sources/lark/read-tools';
 import { InboxToolArgumentsError } from '../../../src/inbox/values';
 import { analysisBody, requestInboxResponse, InboxTriageResultError, parseTriageResult } from '../../../src/monitoring/sources/lark/analyzer';
@@ -9,8 +9,8 @@ import { messageBasis } from '../../../src/inbox/updates';
 const job = (id: string): InboxJob => ({ id, ownerOpenId: 'ou_owner', source: { chatId: 'oc_source', name: 'test', type: 'p2p' }, messages: [] } as unknown as InboxJob);
 const answer = (id: string, state = 'quiet') => ({ id, state, reason: '具体事实', priority: 'normal' });
 const provider = { url: 'https://model.test/responses', key: 'private-token', model: 'default-model' };
-const message = (items: (ReturnType<typeof answer> & { followUp?: string })[] = [answer('a')]) =>
-  ({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: JSON.stringify({ items }) }] });
+const message = (item: unknown = answer('a')) =>
+  ({ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: JSON.stringify(item) }] });
 const toolCall = (name = 'read_thread_messages', args: unknown = { threadId: 'omt_topic', pageToken: null }, id = 'call_1') =>
   ({ type: 'function_call', name, arguments: JSON.stringify(args), call_id: id });
 const response = (output: unknown[], status = 'completed') => new Response(JSON.stringify({ status, output }), { headers: { 'content-type': 'application/json' } });
@@ -18,15 +18,15 @@ const fixture = () => { const call = vi.fn(async (_args: string[], _signal: Abor
 
 it('uses configured excerpt limits in the actual model request', async () => {
   const item = followUpJob();
-  const request = vi.fn<typeof fetch>(async () => response([message([{ ...answer('a', 'needed'), followUp: 'unchanged' }])]));
-  await triageWithChatTools([item], '', provider, fixture().tools, new AbortController().signal, undefined, request, 600_000,
+  const request = vi.fn<typeof fetch>(async () => response([message({ ...answer('a', 'needed'), followUp: 'unchanged' })]));
+  await triageWithChatTools(item, '', provider, fixture().tools, new AbortController().signal, undefined, request, 600_000,
     { triageMessageLimit: 3, triageMessageChars: 200 });
-  const payload = JSON.parse(JSON.parse(String(request.mock.calls[0]![1]!.body)).input[0].content).items[0];
+  const payload = JSON.parse(JSON.parse(String(request.mock.calls[0]![1]!.body)).input[0].content).item;
   expect(payload.messages.map((m: { id: string }) => m.id)).toEqual(['old', 'new_7', 'new_8']);
   expect(payload.changes).toHaveLength(9);
 });
-const run = (tools: InboxReadTools, request: typeof fetch, jobs = [job('a')], signal = new AbortController().signal) =>
-  triageWithChatTools(jobs, '关联背景', provider, tools, signal, undefined, request);
+const run = (tools: InboxReadTools, request: typeof fetch, item = job('a'), signal = new AbortController().signal) =>
+  triageWithChatTools(item, '关联背景', provider, tools, signal, undefined, request);
 
 const followUpJob = () => {
   const item = job('a');
@@ -38,10 +38,10 @@ const followUpJob = () => {
 };
 
 it('provides prior conclusions and every bounded addition, including additions outside the recent excerpt', async () => {
-  const request = vi.fn<typeof fetch>(async () => response([message([{ ...answer('a', 'needed'), followUp: 'unchanged' }])]));
-  await run(fixture().tools, request, [followUpJob()]);
+  const request = vi.fn<typeof fetch>(async () => response([message({ ...answer('a', 'needed'), followUp: 'unchanged' })]));
+  await run(fixture().tools, request, followUpJob());
   const body = JSON.parse(String(request.mock.calls[0]![1]!.body));
-  const item = JSON.parse(body.input[0].content).items[0];
+  const item = JSON.parse(body.input[0].content).item;
   expect(item.previousAnalysis.analysis).toBe('已核对原任务'); expect(item.previousAnalysis.attention.state).toBe('needed');
   expect(item.changes).toHaveLength(9); expect(item.changes[0].text).toBe('补充 0'); expect(item.messages).toHaveLength(10);
   expect(body.instructions).toContain('不把“新增消息无关”误判为原问题已解决');
@@ -52,41 +52,33 @@ it.each([
   { state: 'needed', followUp: 'resolved' }, { state: 'needed', followUp: 'invalid' },
   { state: 'uncertain', followUp: 'unchanged' }, { state: 'retry', followUp: 'unchanged' },
 ])('rejects unsafe incremental decisions: %j', fields => {
-  expect(() => parseTriageResult(JSON.stringify({ items: [{ ...answer('a'), ...fields }] }), [followUpJob()])).toThrow(InboxTriageResultError);
+  expect(() => parseTriageResult(JSON.stringify({ ...answer('a'), ...fields }), followUpJob())).toThrow(InboxTriageResultError);
 });
 
 it.each([
   { state: 'needed', followUp: 'unchanged' }, { state: 'needed', followUp: 'reanalyze' },
   { state: 'quiet', followUp: 'resolved' }, { state: 'uncertain' }, { state: 'retry' },
 ])('accepts explicit updates or preserves uncertainty and retry: %j', fields => {
-  const parsed = parseTriageResult(JSON.stringify({ items: [{ ...answer('a'), ...fields }] }), [followUpJob()]);
-  expect(parsed[0]?.state).toBe(fields.state === 'retry' ? 'pending' : fields.state);
-  expect(parsed[0]?.followUp).toBe(fields.followUp);
+  const parsed = parseTriageResult(JSON.stringify({ ...answer('a'), ...fields }), followUpJob());
+  expect(parsed.state).toBe(fields.state === 'retry' ? 'pending' : fields.state);
+  expect(parsed.followUp).toBe(fields.followUp);
 });
 
-it('splits large follow-up batches without truncating additions or exceeding the tool context budget', async () => {
-  const pending = Array.from({ length: 5 }, (_, i) => {
-    const item = followUpJob(); item.id = String(i);
-    item.messages = [{ ...item.messages[1]!, text: '增'.repeat(100_000) }]; return item;
-  });
-  const visited: string[] = [];
-  while (pending.length) {
-    const batch = triageBatch(pending);
-    const request = vi.fn<typeof fetch>(async () => response([message(batch.map(j => ({ ...answer(j.id, 'needed'), followUp: 'unchanged' })))]));
-    await run(fixture().tools, request, batch);
-    const body = JSON.parse(String(request.mock.calls[0]![1]!.body));
-    expect(Buffer.byteLength(JSON.stringify(body.input))).toBeLessThan(600_000);
-    expect(JSON.parse(body.input[0].content).items[0].changes[0].text).toHaveLength(100_000);
-    visited.push(...batch.map(j => j.id)); pending.splice(0, batch.length);
-  }
-  expect(visited).toEqual(['0', '1', '2', '3', '4']);
-  expect(triageBatch(Array.from({ length: 51 }, (_, i) => job(String(i))))).toHaveLength(50);
+it('keeps large additions in one item without mixing other item contexts', async () => {
+  const item = followUpJob(); item.messages = [{ ...item.messages[1]!, text: '增'.repeat(100_000) }];
+  const request = vi.fn<typeof fetch>(async () => response([message({ ...answer('a', 'needed'), followUp: 'unchanged' })]));
+  await run(fixture().tools, request, item);
+  const input = JSON.parse(String(request.mock.calls[0]![1]!.body)).input;
+  expect(Buffer.byteLength(JSON.stringify(input))).toBeLessThan(600_000);
+  const material = JSON.parse(input[0].content);
+  expect(material.item.changes[0].text).toHaveLength(100_000);
+  expect(material).not.toHaveProperty('items');
 });
 
 it('advertises only read-only Lark functions, with the selected model and original provider', async () => {
   const f = fixture();
   const request = vi.fn<typeof fetch>(async () => response([message()]));
-  expect(await run(f.tools, request)).toEqual([answer('a')]);
+  expect(await run(f.tools, request)).toEqual(answer('a'));
   const [url, options] = request.mock.calls[0]!;
   const body = JSON.parse(String(options!.body));
   expect(url).toBe(provider.url);
@@ -103,8 +95,8 @@ it('advertises only read-only Lark functions, with the selected model and origin
 
 it('executes validated chat reads and returns call outputs to the next model round', async () => {
   const f = fixture();
-  const request = vi.fn<typeof fetch>().mockResolvedValueOnce(response([toolCall()])).mockResolvedValueOnce(response([message([answer('a', 'needed')])]));
-  expect(await run(f.tools, request)).toEqual([answer('a', 'needed')]);
+  const request = vi.fn<typeof fetch>().mockResolvedValueOnce(response([toolCall()])).mockResolvedValueOnce(response([message(answer('a', 'needed'))]));
+  expect(await run(f.tools, request)).toEqual(answer('a', 'needed'));
   expect(f.call).toHaveBeenCalledWith(['im', '+threads-messages-list', '--thread=omt_topic', '--order=asc', '--page-size=50', '--as=user', '--no-reactions'], expect.any(AbortSignal));
   const second = JSON.parse(String(request.mock.calls[1]![1]!.body));
   expect(second.input).toContainEqual({ type: 'function_call_output', call_id: 'call_1', output: JSON.stringify({ messages: [], hasMore: false, nextPageToken: null, truncated: false }) });
@@ -116,8 +108,8 @@ it('repairs unquoted timestamps and validates them without another model round',
     arguments: '{"chatId":"oc_source","start":2026-10-15T00:00:00.000Z,"end":null,"pageToken":null}' };
   const request = vi.fn<typeof fetch>()
     .mockResolvedValueOnce(response([malformed, toolCall('read_thread_messages', { threadId: 'omt_topic', pageToken: null }, 'valid')]))
-    .mockResolvedValueOnce(response([message([answer('a'), answer('b')])]));
-  expect(await run(f.tools, request, [job('a'), job('b')])).toEqual([answer('a'), answer('b')]);
+    .mockResolvedValueOnce(response([message(answer('a'))]));
+  expect(await run(f.tools, request)).toEqual(answer('a'));
   expect(f.call).toHaveBeenCalledTimes(2);
   expect(f.call.mock.calls[0]![0]).toContain('--start=2026-10-15T00:00:00Z');
   expect(f.call.mock.calls[1]![0]).toContain('+threads-messages-list');
@@ -130,7 +122,7 @@ it.each([
 ])('returns invalid read parameters for correction without dispatching them', async invalid => {
   const f = fixture();
   const request = vi.fn<typeof fetch>().mockResolvedValueOnce(response([invalid])).mockResolvedValueOnce(response([message()]));
-  expect(await run(f.tools, request)).toEqual([answer('a')]);
+  expect(await run(f.tools, request)).toEqual(answer('a'));
   expect(f.call).not.toHaveBeenCalled();
   const second = JSON.parse(String(request.mock.calls[1]![1]!.body));
   expect(JSON.parse(second.input.at(-1).output).error).toBe('invalid_arguments');
@@ -190,29 +182,29 @@ it.each(['missing', 'duplicate', 'partial'] as const)('rejects %s final results'
   await expect(run(fixture().tools, request)).rejects.toThrow();
 });
 
-it('defaults omitted priority to normal while preserving all decisions and explicit high priority', async () => {
-  const items = ['quiet', 'needed', 'uncertain', 'retry'].map((state, index) => ({ id: String(index), state, reason: '具体事实' }));
-  const request = vi.fn<typeof fetch>(async () => response([{ type: 'message', role: 'assistant', content: [{ type: 'output_text',
-    text: JSON.stringify({ items: [...items, { ...answer('urgent', 'needed'), priority: 'high' }] }) }] }]));
-  const result = await run(fixture().tools, request, [...items.map(item => job(item.id)), job('urgent')]);
-  expect(result.map(item => item.state)).toEqual(['quiet', 'needed', 'uncertain', 'pending', 'needed']);
-  expect(result.map(item => item.priority)).toEqual(['normal', 'normal', 'normal', 'normal', 'high']);
+it.each(['quiet', 'needed', 'uncertain', 'retry'])('defaults omitted priority for a single %s decision', async state => {
+  const request = vi.fn<typeof fetch>(async () => response([message({ id: 'a', state, reason: '具体事实' })]));
+  expect(await run(fixture().tools, request)).toEqual({ id: 'a', state: state === 'retry' ? 'pending' : state, reason: '具体事实', priority: 'normal' });
+});
+it('preserves explicit high priority', async () => {
+  const request = vi.fn<typeof fetch>(async () => response([message({ ...answer('a', 'needed'), priority: 'high' })]));
+  expect((await run(fixture().tools, request)).priority).toBe('high');
 });
 
 it.each([{ reason: '' }, { reason: undefined }, { state: undefined }, { id: 'unknown' }, { priority: 'urgent' }, { priority: null }])(
   'still rejects invalid final fields %j', async fields => {
-    const request = vi.fn<typeof fetch>(async () => response([message([{ ...answer('a'), ...fields } as ReturnType<typeof answer>])]));
+    const request = vi.fn<typeof fetch>(async () => response([message({ ...answer('a'), ...fields } as ReturnType<typeof answer>)]));
     await expect(run(fixture().tools, request)).rejects.toBeInstanceOf(InboxTriageResultError);
     expect(request).toHaveBeenCalledTimes(3);
   });
 
 it('retains uncertainty and returns necessary query failures for automatic retry', async () => {
-  const request = vi.fn<typeof fetch>(async () => response([message([answer('a', 'uncertain'), answer('b', 'retry')])]));
-  expect((await run(fixture().tools, request, [job('a'), job('b')])).map(r => r.state)).toEqual(['uncertain', 'pending']);
+  const request = vi.fn<typeof fetch>(async () => response([message(answer('a', 'uncertain'))]));
+  expect((await run(fixture().tools, request)).state).toBe('uncertain');
   const f = fixture(); f.call.mockRejectedValueOnce(new Error('飞书读取失败'));
   const failedRead = vi.fn<typeof fetch>().mockResolvedValueOnce(response([toolCall()]))
-    .mockResolvedValueOnce(response([message([answer('a', 'retry'), answer('b')])]));
-  expect((await run(f.tools, failedRead, [job('a'), job('b')])).map(r => r.state)).toEqual(['pending', 'quiet']);
+    .mockResolvedValueOnce(response([message(answer('a', 'retry'))]));
+  expect((await run(f.tools, failedRead)).state).toBe('pending');
   const feedback = JSON.parse(String(failedRead.mock.calls[1]![1]!.body)).input.at(-1).output;
   expect(JSON.parse(feedback)).toMatchObject({ error: 'query_failed' });
   expect(feedback).not.toContain('飞书读取失败');
@@ -220,67 +212,59 @@ it('retains uncertainty and returns necessary query failures for automatic retry
 
 it('repairs final JSON syntax locally and still defaults only omitted priority', async () => {
   const request = vi.fn<typeof fetch>(async () => response([{ type: 'message', role: 'assistant', content: [{ type: 'output_text',
-    text: "```json\n{items:[{id:'a',state:'quiet',reason:'无需动作',},]}\n```" }] }]));
-  expect(await run(fixture().tools, request)).toEqual([{ id: 'a', state: 'quiet', reason: '无需动作', priority: 'normal' }]);
+    text: "```json\n{id:'a',state:'quiet',reason:'无需动作',}\n```" }] }]));
+  expect(await run(fixture().tools, request)).toEqual({ id: 'a', state: 'quiet', reason: '无需动作', priority: 'normal' });
   expect(request).toHaveBeenCalledTimes(1);
 });
 
-it('corrects only unresolved IDs in the same context and preserves accepted decisions', async () => {
+it('corrects an invalid result in the same item context without repeating reads', async () => {
   const f = fixture();
-  const request = vi.fn<typeof fetch>()
-    .mockResolvedValueOnce(response([toolCall()]))
-    .mockResolvedValueOnce(response([message([answer('a')])]))
-    .mockResolvedValueOnce(response([message([answer('b', 'needed')])]));
-  expect(await run(f.tools, request, [job('a'), job('b')])).toEqual([answer('a'), answer('b', 'needed')]);
+  const request = vi.fn<typeof fetch>().mockResolvedValueOnce(response([toolCall()]))
+    .mockResolvedValueOnce(response([message({ ...answer('a'), state: 'invalid' })]))
+    .mockResolvedValueOnce(response([message(answer('a', 'needed'))]));
+  expect(await run(f.tools, request)).toEqual(answer('a', 'needed'));
   const repair = JSON.parse(String(request.mock.calls[2]![1]!.body));
   expect(repair.tool_choice).toBe('none');
-  expect(JSON.parse(repair.input.at(-1).content)).toMatchObject({ error: 'invalid_triage_result', remainingIds: ['b'] });
+  expect(JSON.parse(repair.input.at(-1).content)).toMatchObject({ error: 'invalid_triage_result', expectedId: 'a' });
   expect(repair.input.some((item: { type: string }) => item.type === 'function_call_output')).toBe(true);
   expect(f.call).toHaveBeenCalledTimes(1);
 });
 
-it('retains valid items after two unsuccessful corrections and retries only the unresolved item', async () => {
-  const request = vi.fn<typeof fetch>().mockResolvedValueOnce(response([message([answer('a')])]))
-    .mockImplementation(async () => response([message([])]));
-  expect(await run(fixture().tools, request, [job('a'), job('b')])).toEqual([
-    answer('a'), { id: 'b', state: 'pending', reason: '筛选结果缺少事项', priority: 'normal' },
-  ]);
+it('fails an item after two unsuccessful result corrections', async () => {
+  const request = vi.fn<typeof fetch>(async () => response([message({})]));
+  await expect(run(fixture().tools, request)).rejects.toBeInstanceOf(InboxTriageResultError);
   expect(request).toHaveBeenCalledTimes(3);
 });
 
-it('preserves accepted decisions when the correction request loses its connection', async () => {
-  const request = vi.fn<typeof fetch>().mockResolvedValueOnce(response([message([answer('a')])]))
+it('propagates connection loss during correction for this item to retry', async () => {
+  const request = vi.fn<typeof fetch>().mockResolvedValueOnce(response([message({})]))
     .mockRejectedValueOnce(Error('network connection lost'));
-  expect(await run(fixture().tools, request, [job('a'), job('b')])).toEqual([
-    answer('a'), { id: 'b', state: 'pending', reason: '连接中断', priority: 'normal' },
-  ]);
+  const error = await run(fixture().tools, request).catch(error => error);
+  expect(triageFailureReason(error)).toBe('连接中断');
 });
 
 it.each(['', 'undefined', 'NaN', 'None'])('does not fill an absent query value (%s) with null and broaden a read', async value => {
   const f = fixture();
   const request = vi.fn<typeof fetch>().mockResolvedValueOnce(response([{ ...toolCall('search_messages'),
     arguments: `{"query":${value},"chatId":"oc_source","start":null,"end":null,"pageToken":null}` }]))
-    .mockResolvedValueOnce(response([message([answer('a', 'retry')])]));
-  expect((await run(f.tools, request))[0]?.state).toBe('pending');
+    .mockResolvedValueOnce(response([message(answer('a', 'retry'))]));
+  expect((await run(f.tools, request)).state).toBe('pending');
   expect(f.call).not.toHaveBeenCalled();
   expect(JSON.parse(JSON.parse(String(request.mock.calls[1]![1]!.body)).input.at(-1).output).error).toBe('invalid_arguments');
 });
 
-it('does not choose between duplicate conflicting decisions for an ID', async () => {
-  const request = vi.fn<typeof fetch>().mockResolvedValueOnce(response([message([answer('a'), answer('b'), answer('b', 'needed')])]))
-    .mockImplementation(async () => response([message([answer('b'), answer('b', 'needed')])]));
-  const result = await run(fixture().tools, request, [job('a'), job('b')]);
-  expect(result[0]).toEqual(answer('a'));
-  expect(result[1]).toMatchObject({ id: 'b', state: 'pending', reason: '筛选结果事项 ID 重复' });
+it('rejects result arrays and does not choose among conflicting item decisions', async () => {
+  const request = vi.fn<typeof fetch>(async () => response([message([answer('a'), answer('a', 'needed')])]));
+  await expect(run(fixture().tools, request)).rejects.toBeInstanceOf(InboxTriageResultError);
 });
 
 it.each([
-  '{"items":[{"id":"a","state":"quiet","reason":"还需要确认',
-  '{"items":[{"id":"a","state":"quiet","reason":"依据"}]',
-  JSON.stringify({ items: [{ ...answer('a'), state: ['quiet'] }] }),
-  JSON.stringify({ items: [{ ...answer('a'), priority: ['normal'] }] }),
+  '{"id":"a","state":"quiet","reason":"还需要确认',
+  '{"id":"a","state":"quiet","reason":"依据"',
+  JSON.stringify({ ...answer('a'), state: ['quiet'] }),
+  JSON.stringify({ ...answer('a'), priority: ['normal'] }),
 ])('does not manufacture decisions from truncated JSON or coerced field types', text => {
-  expect(() => parseTriageResult(text, [job('a')])).toThrow(InboxTriageResultError);
+  expect(() => parseTriageResult(text, job('a'))).toThrow(InboxTriageResultError);
 });
 
 it('validates repaired nested read arguments and rejects repaired unauthorized operations', async () => {
@@ -311,14 +295,14 @@ it('does not recover through a broken bridge binding or cancellation', async () 
   const controller = new AbortController();
   const canceled = vi.fn<typeof fetch>().mockResolvedValueOnce(response([message([])]))
     .mockImplementation(async () => { controller.abort(); return response([message()]); });
-  await expect(run(f.tools, canceled, [job('a')], controller.signal)).rejects.toThrow();
+  await expect(run(f.tools, canceled, job('a'), controller.signal)).rejects.toThrow();
 });
 
-it('lets the model isolate a failed CLI response to its dependent item', async () => {
+it('reports a failed CLI response to the affected item', async () => {
   const f = fixture(); f.call.mockRejectedValueOnce(Error('飞书读取响应无效'));
   const request = vi.fn<typeof fetch>().mockResolvedValueOnce(response([toolCall()]))
-    .mockResolvedValueOnce(response([message([answer('a', 'retry'), answer('b')])]));
-  expect((await run(f.tools, request, [job('a'), job('b')])).map(r => r.state)).toEqual(['pending', 'quiet']);
+    .mockResolvedValueOnce(response([message(answer('a', 'retry'))]));
+  expect((await run(f.tools, request)).state).toBe('pending');
   const feedback = JSON.parse(JSON.parse(String(request.mock.calls[1]![1]!.body)).input.at(-1).output);
   expect(feedback).toMatchObject({ error: 'query_failed', message: '飞书只读查询响应无效' });
 });
@@ -335,29 +319,29 @@ it('classifies token truncation and missing completion separately from malformed
 
 it('streams only answer previews, without raw tool content or private reasoning', async () => {
   const progress = vi.fn();
-  const completed = { status: 'completed', output: [message([answer('a', 'needed')])] };
+  const completed = { status: 'completed', output: [message(answer('a', 'needed'))] };
   const events = [{ type: 'response.reasoning_text.delta', delta: 'private-reasoning' },
-    { type: 'response.output_text.delta', delta: '{"items":[{"id":"a","reason":"需要确认' },
+    { type: 'response.output_text.delta', delta: '{"id":"a","reason":"需要确认' },
     { type: 'response.completed', response: completed }];
   const request = vi.fn<typeof fetch>(async () => new Response(events.map(e => `data: ${JSON.stringify(e)}\n\n`).join(''), { headers: { 'content-type': 'text/event-stream' } }));
-  await triageWithChatTools([job('a')], '', provider, fixture().tools, new AbortController().signal, progress, request);
-  expect(progress).toHaveBeenCalledWith([{ id: 'a', text: '需要确认' }]);
+  await triageWithChatTools(job('a'), '', provider, fixture().tools, new AbortController().signal, progress, request);
+  expect(progress).toHaveBeenCalledWith('需要确认');
   expect(JSON.stringify(progress.mock.calls)).not.toMatch(/private-/);
 });
 
-it('passes 50 items and rejects oversized batches before a model request', async () => {
-  const jobs = Array.from({ length: 50 }, (_, i) => job(String(i)));
-  const request = vi.fn<typeof fetch>(async () => response([message(jobs.map(j => answer(j.id)))]));
-  expect(await run(fixture().tools, request, jobs)).toHaveLength(50);
-  expect(JSON.parse(JSON.parse(String(request.mock.calls[0]![1]!.body)).input[0].content).items).toHaveLength(50);
-  await expect(run(fixture().tools, request, [...jobs, job('extra')])).rejects.toThrow('50');
-  expect(request).toHaveBeenCalledTimes(1);
+it('sends only the selected item and requests a single result object', async () => {
+  const request = vi.fn<typeof fetch>(async () => response([message()]));
+  expect(await run(fixture().tools, request)).toEqual(answer('a'));
+  const body = JSON.parse(String(request.mock.calls[0]![1]!.body));
+  expect(JSON.parse(body.input[0].content)).toMatchObject({ item: { id: 'a' } });
+  expect(JSON.parse(body.input[0].content)).not.toHaveProperty('items');
+  expect(body.instructions).toContain('不要输出数组或 items 包装');
 });
 
 it('cancels model requests and never accepts late results or starts a tool after cancellation', async () => {
   const controller = new AbortController(); const f = fixture();
   const request = vi.fn<typeof fetch>(async () => { controller.abort(); return response([toolCall()]); });
-  await expect(run(f.tools, request, [job('a')], controller.signal)).rejects.toThrow();
+  await expect(run(f.tools, request, job('a'), controller.signal)).rejects.toThrow();
   expect(f.call).not.toHaveBeenCalled();
 });
 
@@ -366,7 +350,7 @@ it('propagates timeout to the in-flight tool and redacts operational errors', as
   const tools = new InboxReadTools(async (_args, signal) => new Promise((_resolve, reject) => {
     signal.addEventListener('abort', () => { stopped = true; reject(signal.reason); }, { once: true });
   }));
-  await expect(triageWithChatTools([job('a')], '', provider, tools, new AbortController().signal, undefined,
+  await expect(triageWithChatTools(job('a'), '', provider, tools, new AbortController().signal, undefined,
     vi.fn(async () => response([toolCall()])), 20)).rejects.toThrow('超时');
   expect(stopped).toBe(true);
   expect(triageFailureReason(Error('HTTP 401 Bearer sensitive-token'))).toBe('工具或模型授权暂不可用');
@@ -376,7 +360,7 @@ it('repairs unquoted ISO timestamps from the observed failure before validating 
   const f = fixture();
   const broken = { ...toolCall('read_chat_messages'), arguments: '{"chatId":"oc_source","start":2026-10-15T00:00:00.000Z,"end":2026-10-15T01:00:00.000Z,"pageToken":null}' };
   const request = vi.fn<typeof fetch>().mockResolvedValueOnce(response([broken])).mockResolvedValueOnce(response([message()]));
-  expect(await run(f.tools, request)).toEqual([answer('a')]);
+  expect(await run(f.tools, request)).toEqual(answer('a'));
   expect(f.call).toHaveBeenCalledWith(expect.arrayContaining(['--chat-id=oc_source', '--start=2026-10-15T00:00:00Z', '--end=2026-10-15T01:00:00Z']), expect.any(AbortSignal));
 });
 
@@ -386,7 +370,7 @@ it('lets the model correct a schema error without dispatching the invalid read',
   const request = vi.fn<typeof fetch>().mockResolvedValueOnce(response([broken]))
     .mockResolvedValueOnce(response([toolCall('read_thread_messages', { threadId: 'omt_topic' }, 'corrected')]))
     .mockResolvedValueOnce(response([message()]));
-  expect(await run(f.tools, request)).toEqual([answer('a')]);
+  expect(await run(f.tools, request)).toEqual(answer('a'));
   expect(f.call).toHaveBeenCalledTimes(1);
   const feedback = JSON.parse(String(request.mock.calls[1]![1]!.body)).input.find((v: { type: string }) => v.type === 'function_call_output');
   expect(JSON.parse(feedback.output)).toMatchObject({ error: 'invalid_arguments' });
@@ -404,10 +388,10 @@ it('bounds schema corrections and rejects unauthorized tools even with repairabl
 
 it('repairs result punctuation and defaults only omitted priority while retaining result integrity checks', async () => {
   const m = (text: string) => ({ type: 'message', content: [{ type: 'output_text', text }] });
-  expect(await run(fixture().tools, vi.fn(async () => response([m("{items:[{id:'a',state:'quiet',reason:'无需动作',},],}")]))))
-    .toEqual([{ id: 'a', state: 'quiet', reason: '无需动作', priority: 'normal' }]);
-  for (const text of ["{items:[{id:'a',state:'quiet'}]}", "{items:[{id:'a',state:'wrong',reason:'x'}]}",
-    "{items:[{id:'a',state:'quiet',reason:'x',priority:'critical'}]}", "{items:[{id:'a',state:'quiet',reason:'x'},{id:'a',state:'quiet',reason:'x'}]}"]) {
+  expect(await run(fixture().tools, vi.fn(async () => response([m("{id:'a',state:'quiet',reason:'无需动作',}")]))))
+    .toEqual({ id: 'a', state: 'quiet', reason: '无需动作', priority: 'normal' });
+  for (const text of ["{id:'a',state:'quiet'}", "{id:'a',state:'wrong',reason:'x'}",
+    "{id:'a',state:'quiet',reason:'x',priority:'critical'}", "{items:[{id:'a',state:'quiet',reason:'x'},{id:'a',state:'quiet',reason:'x'}]}"]) {
     await expect(run(fixture().tools, vi.fn(async () => response([m(text)])))).rejects.toThrow();
   }
 });

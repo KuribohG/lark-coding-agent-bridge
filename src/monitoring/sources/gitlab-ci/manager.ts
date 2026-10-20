@@ -39,6 +39,7 @@ export class GitLabCiManager {
   private async reload(): Promise<void> {
     if (this.closed) return;
     const root = await loadMonitorRoot(this.configPath);
+    if (root) this.sources.configureConcurrency(root.workItemConcurrency);
     const config = normalizeGitLabCi(root?.gitlabCi);
     if (config.enabled) await this.refreshExecutor(config.executorProfile);
     else { this.executor = undefined; this.executionError = undefined; }

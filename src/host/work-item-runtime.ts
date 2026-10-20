@@ -18,7 +18,7 @@ export function createWorkItemSource(options: MonitorSourceOptions, configPath: 
     ownerOpenId: options.notification?.ownerOpenId || `local:${options.profile}`, enabled: options.enabled,
     watchPrivate: false, watchMentions: false });
   const lark = options.notification && !options.muted ? new InboxLark({ profile: options.profile, rootDir }, config) : undefined;
-  return { id: options.id, label: options.label, config, lane: options.lane, status: options.status,
+  return { id: options.id, label: options.label, config, status: options.status,
     source: options.source ?? new EventSource(options.id, options.driver.accepts!, options.assessment),
     runtime: {
       dailyAnalysisLimit: options.dailyAnalysisLimit, resumeInterrupted: options.resumeInterrupted,

@@ -147,6 +147,26 @@ it('records recovery separately from human handling and blocks a late active-inc
   expect(s.runtime.investigate).toHaveBeenCalledTimes(1); expect(s.runtime.deliver).not.toHaveBeenCalled();
 });
 
+it('replaces only the affected parallel investigation and waits for its old attempt to settle', async () => {
+  const runs: { id: string; signal: AbortSignal; finish: (result: AnalysisResult) => void }[] = [];
+  const s = await setup({ runtime: { investigate: vi.fn<WorkItemRuntime['investigate']>((item, signal) =>
+    new Promise(resolve => { runs.push({ id: item.id, signal, finish: resolve }); })) } });
+  const item = await s.service.observe(event);
+  const other = await s.service.observe({ ...event, key: 'unrelated' });
+  try {
+    await s.service.tick(); await vi.waitFor(() => expect(runs).toHaveLength(2));
+    await s.service.observe(update(2)); await s.service.tick();
+    expect(runs).toHaveLength(2);
+    expect(runs[0]!.signal.aborted).toBe(true); expect(runs[1]!.signal.aborted).toBe(false);
+    runs[0]!.finish(report('stale'));
+    await vi.waitFor(() => expect(runs).toHaveLength(3), { timeout: 3000 });
+    expect(runs[2]!.id).toBe(item.id); expect(s.service.get(item.id)?.replyDraft).toBeUndefined();
+    runs[2]!.finish(report('updated')); runs[1]!.finish(report('unrelated'));
+    await vi.waitFor(() => expect(s.service.get(item.id)?.replyDraft).toBe('updated'));
+    await vi.waitFor(() => expect(s.service.get(other.id)?.replyDraft).toBe('unrelated'));
+  } finally { runs.forEach(run => run.finish(report())); }
+});
+
 it.each(['open', 'ignored', 'handled'] as const)('updates evidence without reviving a manually controlled %s item', async handlingState => {
   const s = await setup(); const item = await s.service.observe(event);
   await s.service.review({ id: item.id, revision: item.revision, handlingState, replyDraft: 'human draft' }, 'ou_owner', 'review-1');

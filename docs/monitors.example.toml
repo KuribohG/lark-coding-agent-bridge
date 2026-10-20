@@ -4,6 +4,11 @@
 # All sources start disabled. For existing installations, prefer monitors init.
 version = 1
 
+# Available in versions supporting per-item screening; each limit is 1–100.
+[concurrency]
+triage = 50 # Individual items screened concurrently.
+analysis = 5 # Individual investigations shared by Lark, GitLab CI and storage.
+
 # Lark conversation checks: private, private_mentions, or all.
 [sources.lark]
 enabled = false

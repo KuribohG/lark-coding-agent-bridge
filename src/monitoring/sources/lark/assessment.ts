@@ -1,16 +1,14 @@
 import { log } from '../../../core/logger';
-import type { BatchAssessmentPolicy } from '../../../work-items/contracts';
-import type { InboxConfig } from '../../../inbox/config';
+import type { ItemAssessmentPolicy } from '../../../work-items/contracts';
 import type { InboxIO } from '../../../inbox/types';
-import { triageBatch, triageFailureReason } from './codex-triage';
+import { triageFailureReason } from './codex-triage';
 import { analysisChanges, messageBasis, validFollowUp } from '../../../inbox/updates';
 
-export function createLarkAssessment(config: InboxConfig, io: InboxIO): BatchAssessmentPolicy {
+export function createLarkAssessment(io: InboxIO): ItemAssessmentPolicy {
   return {
-    kind: 'batch', failureReason: triageFailureReason,
+    kind: 'item', failureReason: triageFailureReason,
     available: Boolean(io.triage),
-    select: items => triageBatch(items, config),
-    evaluate: (items, signal, progress) => io.triage!(items, signal, progress),
+    evaluate: (item, signal, progress) => io.triage!(item, signal, progress),
     valid: validFollowUp,
     interpret(input, result) {
       const followUp = Boolean(input.result);

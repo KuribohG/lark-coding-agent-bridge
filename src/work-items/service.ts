@@ -8,17 +8,20 @@ import { WorkItemStore } from './store';
 import { handlingState, replyContent, resultText } from './result';
 import type { Attention } from '../inbox/types';
 import type { WorkItem } from './types';
-import type { BatchAssessmentPolicy, SourceAdapter, WorkItemRuntime } from './contracts';
-import type { AnalysisScheduler } from './scheduler';
+import type { ItemAssessmentPolicy, SourceAdapter, WorkItemRuntime } from './contracts';
+import { WorkItemScheduler } from './scheduler';
+import { WORK_ITEM_CONCURRENCY_DEFAULTS } from './concurrency';
 import type { WorkItemEvent } from './events';
 import { evidenceSignature as signature, observationDigest, recordObservation } from './identity';
 
 const resolved = (job: WorkItem) => handlingState(job) !== 'open';
+interface RunningTask { controller: AbortController; done: Promise<void> }
 /** All state transitions are serialized. Model execution happens outside the lock. */
 export class WorkItemService {
   private chain: Promise<unknown> = Promise.resolve();
   private timer?: NodeJS.Timeout;
-  private tasks: Partial<Record<'analysis' | 'triage', { controller: AbortController; done: Promise<void> }>> = {};
+  private analyses = new Map<string, RunningTask>();
+  private screenings = new Map<string, RunningTask>();
   private stopped = false;
   private closing?: Promise<void>;
   private modeChanges = 0;
@@ -35,11 +38,12 @@ export class WorkItemService {
   private delivery: WorkItemDelivery;
   lastError?: string;
   constructor(readonly store: WorkItemStore, readonly config: WorkItemConfig, private io: WorkItemRuntime, private now = Date.now,
-    private analysisQueue?: AnalysisScheduler) {
+    private queue = new WorkItemScheduler(), private triageQueue = new WorkItemScheduler(WORK_ITEM_CONCURRENCY_DEFAULTS.triage)) {
     this.lifecycle = new WorkItemLifecycle(config, now, job => {
-      if (job.state === 'running') this.tasks.analysis?.controller.abort();
+      this.analyses.get(job.id)?.controller.abort();
     }, job => {
-      if (this.triageProgress.delete(job.id) && !this.triageProgress.size) this.tasks.triage?.controller.abort();
+      this.triageProgress.delete(job.id);
+      this.screenings.get(job.id)?.controller.abort();
     });
     this.source = io.source;
     const self = this;
@@ -69,13 +73,13 @@ export class WorkItemService {
       observe: event => this.observe(event),
       transaction: fn => this.serial(fn), blocked: () => this.blocked(), assertEnabled: () => this.assertEnabled(),
       dispatch: () => this.dispatch(),
-      abort: kind => { for (const [name, task] of Object.entries(this.tasks)) if (!kind || name === kind) task.controller.abort(); },
+      abort: kind => this.abortTasks(kind),
       clearAssessmentProgress: () => this.triageProgress.clear(),
       suspend: () => { this.modeChanges++; }, resume: () => { this.modeChanges--; },
     });
   }
   readonly source: SourceAdapter;
-  private get batchPolicy() { return this.source.assessment?.kind === 'batch' ? this.source.assessment : undefined; }
+  private get itemPolicy() { return this.source.assessment?.kind === 'item' ? this.source.assessment : undefined; }
   private safeSource(job: WorkItem): boolean { return this.source.safe(job); }
   private acceptsSource(job: WorkItem): boolean { return this.source.accepts(job); }
   private removeFeedback(): void {
@@ -87,6 +91,12 @@ export class WorkItemService {
   }
   private serial<T>(fn: () => Promise<T>): Promise<T> {
     const p = this.chain.then(fn); this.chain = p.catch(() => {}); return p;
+  }
+  private runningTasks(kind?: 'analysis' | 'triage'): RunningTask[] {
+    return [...(kind === 'triage' ? [] : this.analyses.values()), ...(kind === 'analysis' ? [] : this.screenings.values())];
+  }
+  private abortTasks(kind?: 'analysis' | 'triage'): void {
+    for (const task of this.runningTasks(kind)) task.controller.abort();
   }
   async start(): Promise<void> {
     if (this.config.enabled) await this.io.checkAccess();
@@ -119,11 +129,11 @@ export class WorkItemService {
   private async shutdown(): Promise<void> {
     this.stopped = true;
     clearInterval(this.timer);
-    for (const task of Object.values(this.tasks)) task.controller.abort();
+    this.abortTasks();
     this.io.cancel?.();
     let sourceError: unknown;
     try { await this.source.close?.(); } catch (error) { sourceError = error; }
-    await Promise.all(Object.values(this.tasks).map(task => task.done));
+    await Promise.all(this.runningTasks().map(task => task.done));
     await this.polling;
     await this.refreshing;
     await this.notifying;
@@ -155,7 +165,7 @@ export class WorkItemService {
   async setMode(mode: WorkItemMode, persist?: () => Promise<void>): Promise<void> {
     if (!['off', 'on'].includes(mode)) throw new Error('无效运行模式');
     this.modeChanges++; this.source.invalidate();
-    if (mode === 'off') { for (const task of Object.values(this.tasks)) task.controller.abort(); this.io.cancelPending?.(); this.triageProgress.clear(); }
+    if (mode === 'off') { this.abortTasks(); this.io.cancelPending?.(); this.triageProgress.clear(); }
     try {
       await this.serial(async () => {
         if (this.stopped) throw new Error('助理连接已关闭');
@@ -243,7 +253,7 @@ export class WorkItemService {
       for (const key of Object.keys(job)) delete (job as unknown as Record<string, unknown>)[key];
       Object.assign(job, before); throw error;
     }
-    if (wasRunning) this.tasks.analysis?.controller.abort();
+    if (wasRunning) this.analyses.get(job.id)?.controller.abort();
     return structuredClone(job);
   }
   async decide(id: string, action: string, owner: string): Promise<void> {
@@ -350,92 +360,96 @@ export class WorkItemService {
     } while (this.dispatchRequested && !this.blocked());
   }
   private async dispatchJobs(): Promise<void> {
-    if (!this.tasks.analysis && !this.blocked() && this.io.canInvestigate?.() !== false) {
-      const day = new Date(this.now()).toISOString().slice(0, 10);
-      const budgetAvailable = this.io.dailyAnalysisLimit === undefined || (this.store.data.autoUsage[day] ?? 0) < this.io.dailyAnalysisLimit;
-      for (const job of this.store.data.jobs) if (job.state === 'queued' && job.automatic && !budgetAvailable) job.error = '今日自动分析额度已用完，告警保留，次日继续或手动处理';
-      const next = this.store.data.jobs.find(j => (!j.automatic || budgetAvailable) && this.safeSource(j) && j.state === 'queued' && j.analysisRequested && !resolved(j) &&
-        (!j.automatic || (j.attention?.state === 'needed' && this.acceptsSource(j))) &&
-        (j.startDelivery?.confirmed || (j.startDelivery?.retryAt ?? 0) <= this.now()) && (j.retryAt ?? 0) <= this.now());
-      if (next) {
-        const budgetDay = next.automatic && this.io.dailyAnalysisLimit !== undefined ? day : undefined;
-        if (budgetDay) this.store.data.autoUsage[budgetDay] = (this.store.data.autoUsage[budgetDay] ?? 0) + 1;
-        next.state = 'running'; next.attempt = (next.attempt ?? 0) + 1; await this.store.save();
-        if (this.blocked()) { next.state = 'waiting'; next.analysisRequested = false; await this.store.save(); return; }
-        this.launch('analysis', signal => this.analysisQueue
-          ? this.analysisQueue.run(signal, current => this.run(next, current, budgetDay)) : this.run(next, signal, budgetDay));
+    for (const kind of ['analysis', 'triage'] as const) {
+      const tasks = kind === 'analysis' ? this.analyses : this.screenings;
+      const queue = kind === 'analysis' ? this.queue : this.triageQueue;
+      while (tasks.size < queue.concurrency && !this.blocked()) {
+        if (!await (kind === 'analysis' ? this.dispatchAnalysis() : this.dispatchTriage())) break;
       }
     }
-    if (!this.tasks.triage && !this.blocked()) {
-      const candidates = this.batchPolicy?.select(this.store.data.jobs.filter(j => !resolved(j) && this.acceptsSource(j) && !j.analysisRequested &&
-        !['queued', 'running'].includes(j.state) && j.attention?.state === 'pending' &&
-        (j.attention.retry?.nextAt ?? 0) <= this.now())) ?? [];
-      if (candidates.length) {
-        const day = new Date(this.now()).toISOString().slice(0, 10);
-        const usage = this.store.data.triageUsage ??= {};
-        if (this.batchPolicy?.available === false || (usage[day] ?? 0) >= this.config.dailyTriageLimit) {
-          for (const job of candidates) this.retryTriage(job, this.batchPolicy?.available === false ? '筛选服务暂不可用' : '今日筛选额度已用完',
-            this.batchPolicy?.available === false ? this.now() + 900_000 : (Math.floor(this.now() / 86400_000) + 1) * 86400_000);
-          await this.store.save();
-        } else {
-          usage[day] = (usage[day] ?? 0) + 1; await this.store.save();
-          if (!this.blocked()) this.launch('triage', signal => this.triage(candidates, signal));
-        }
-      }
+  }
+  private async dispatchAnalysis(): Promise<boolean> {
+    if (this.blocked() || this.io.canInvestigate?.() === false) return false;
+    const day = new Date(this.now()).toISOString().slice(0, 10);
+    const budgetAvailable = this.io.dailyAnalysisLimit === undefined || (this.store.data.autoUsage[day] ?? 0) < this.io.dailyAnalysisLimit;
+    for (const job of this.store.data.jobs) if (job.state === 'queued' && job.automatic && !budgetAvailable) job.error = '今日自动分析额度已用完，告警保留，次日继续或手动处理';
+    const next = this.store.data.jobs.find(j => !this.analyses.has(j.id) && (!j.automatic || budgetAvailable) && this.safeSource(j) && j.state === 'queued' && j.analysisRequested && !resolved(j) &&
+      (!j.automatic || (j.attention?.state === 'needed' && this.acceptsSource(j))) &&
+      (j.startDelivery?.confirmed || (j.startDelivery?.retryAt ?? 0) <= this.now()) && (j.retryAt ?? 0) <= this.now());
+    if (!next) return false;
+    const budgetDay = next.automatic && this.io.dailyAnalysisLimit !== undefined ? day : undefined;
+    if (budgetDay) this.store.data.autoUsage[budgetDay] = (this.store.data.autoUsage[budgetDay] ?? 0) + 1;
+    next.state = 'running'; next.attempt = (next.attempt ?? 0) + 1; await this.store.save();
+    if (this.blocked()) { next.state = 'waiting'; next.analysisRequested = false; await this.store.save(); return false; }
+    this.analyses.set(next.id, this.launch(signal => this.run(next, signal, budgetDay), () => { this.analyses.delete(next.id); }));
+    return true;
+  }
+  private async dispatchTriage(): Promise<boolean> {
+    if (this.blocked() || !this.itemPolicy) return false;
+    const job = this.store.data.jobs.find(j => !this.screenings.has(j.id) && !resolved(j) && this.safeSource(j) && this.acceptsSource(j) && !j.analysisRequested &&
+      !['queued', 'running'].includes(j.state) && j.attention?.state === 'pending' && (j.attention.retry?.nextAt ?? 0) <= this.now());
+    if (!job) return false;
+    const day = new Date(this.now()).toISOString().slice(0, 10);
+    const usage = this.store.data.triageUsage ??= {};
+    if (this.itemPolicy.available === false || (usage[day] ?? 0) >= this.config.dailyTriageLimit) {
+      this.retryTriage(job, this.itemPolicy.available === false ? '筛选服务暂不可用' : '今日筛选额度已用完',
+        this.itemPolicy.available === false ? this.now() + 900_000 : (Math.floor(this.now() / 86400_000) + 1) * 86400_000);
+      await this.store.save();
+    } else {
+      usage[day] = (usage[day] ?? 0) + 1; await this.store.save();
+      if (!this.blocked()) this.screenings.set(job.id, this.launch(signal => this.triage(job, signal), () => {
+        this.screenings.delete(job.id);
+      }, this.triageQueue));
     }
+    return true;
   }
   private blocked(): boolean { return this.stopped || !this.config.enabled || this.modeChanges > 0; }
   private assertEnabled(): void { if (this.blocked()) throw new Error('助理已关闭或正在切换模式'); }
-  private launch(kind: 'analysis' | 'triage', fn: (signal: AbortSignal) => Promise<void>): void {
+  private launch(fn: (signal: AbortSignal) => Promise<void>, release: () => void, queue = this.queue): RunningTask {
     const controller = new AbortController();
-    const done = fn(controller.signal).catch(() => this.pauseAfterFailure()).finally(() => {
-      delete this.tasks[kind];
+    const done = Promise.resolve().then(() => queue.run(controller.signal, fn)).catch(() => this.pauseAfterFailure()).finally(() => {
+      release();
       // Model completion must not wait for the next collection/history round.
       if (!this.blocked()) void this.dispatch().catch(() => {});
     });
-    this.tasks[kind] = { controller, done };
+    return { controller, done };
   }
   private pauseAfterFailure(): void {
     this.lastError = '状态保存失败，助理已暂停'; this.stopped = true;
-    for (const task of Object.values(this.tasks)) task.controller.abort();
+    this.abortTasks();
   }
-  private async triage(jobs: WorkItem[], signal: AbortSignal): Promise<void> {
-    const inputs = structuredClone(jobs.filter(job => this.safeSource(job)));
-    if (!inputs.length) return;
+  private async triage(job: WorkItem, signal: AbortSignal): Promise<void> {
+    if (signal.aborted || this.blocked() || !this.safeSource(job) || resolved(job) || job.analysisRequested ||
+      ['queued', 'running'].includes(job.state) || job.attention?.state !== 'pending') return;
+    const input = structuredClone(job);
     const startedAt = this.now();
-    const batchId = randomUUID();
-    log.info('inbox', 'triage-started', { batchId, jobIds: inputs.map(job => job.id) });
-    for (const job of inputs) this.triageProgress.set(job.id, { signature: signature(job), progress: { startedAt: this.now(), updatedAt: this.now(), text: '' } });
+    log.info('inbox', 'triage-started', { jobId: input.id });
+    this.triageProgress.set(input.id, { signature: signature(input), progress: { startedAt, updatedAt: startedAt, text: '' } });
     try {
-      let results: Awaited<ReturnType<BatchAssessmentPolicy['evaluate']>> = [];
+      let result: Awaited<ReturnType<ItemAssessmentPolicy['evaluate']>> | undefined;
       let failure: string | undefined;
-      try { results = await this.batchPolicy!.evaluate(inputs, signal, updates => {
+      try { result = await this.itemPolicy!.evaluate(input, signal, text => {
         if (signal.aborted || this.blocked()) return;
-        for (const update of updates) {
-          const entry = this.triageProgress.get(update.id);
-          if (entry && entry.progress.text !== update.text) entry.progress = { ...entry.progress, text: update.text.slice(0, 240), updatedAt: this.now() };
-        }
+        const entry = this.triageProgress.get(input.id);
+        if (entry && entry.progress.text !== text) entry.progress = { ...entry.progress, text: text.slice(0, 240), updatedAt: this.now() };
       }); }
-      catch (error) { failure = this.batchPolicy?.failureReason?.(error) ?? '筛选未正常完成'; }
+      catch (error) { failure = this.itemPolicy?.failureReason?.(error) ?? '筛选未正常完成'; }
       await this.serial(async () => {
         if (signal.aborted || this.blocked()) return;
-        for (const input of inputs) {
-          const job = this.store.data.jobs.find(j => j.id === input.id);
-          if (!job || resolved(job) || !this.acceptsSource(job) || signature(job) !== signature(input) || (job.revision ?? 0) !== (input.revision ?? 0) ||
-            job.analysisRequested || ['queued', 'running'].includes(job.state) || job.attention?.state !== 'pending') continue;
-          const result = results.find(r => r.id === job.id);
-          if (failure || !result || result.state === 'pending') this.retryTriage(job, failure || (result ? result.reason || '必要的上下文查询未完成' : '关注筛选结果缺失'));
-          else if (!this.batchPolicy!.valid(input, result)) this.retryTriage(job, '增量筛选未说明已有分析是否需要更新');
-          else {
-            this.lifecycle.assess(job, this.batchPolicy!.interpret(input, result));
-            this.touch(job);
-          }
+        const current = this.store.data.jobs.find(j => j.id === input.id);
+        if (!current || resolved(current) || !this.acceptsSource(current) || signature(current) !== signature(input) || (current.revision ?? 0) !== (input.revision ?? 0) ||
+          current.analysisRequested || ['queued', 'running'].includes(current.state) || current.attention?.state !== 'pending') return;
+        if (failure || !result || result.id !== input.id || result.state === 'pending') this.retryTriage(current, failure || (result?.id === input.id ? result.reason || '必要的上下文查询未完成' : '关注筛选结果缺失或事项不匹配'));
+        else if (!this.itemPolicy!.valid(input, result)) this.retryTriage(current, '增量筛选未说明已有分析是否需要更新');
+        else {
+          this.lifecycle.assess(current, this.itemPolicy!.interpret(input, result));
+          this.touch(current);
         }
         await this.store.save();
       });
     } finally {
-      for (const job of inputs) this.triageProgress.delete(job.id);
-      log.info('inbox', 'triage-finished', { batchId, elapsedMs: this.now() - startedAt, aborted: signal.aborted });
+      this.triageProgress.delete(input.id);
+      log.info('inbox', 'triage-finished', { jobId: input.id, elapsedMs: this.now() - startedAt, aborted: signal.aborted });
     }
   }
   private retryTriage(job: WorkItem, error: string, nextAt?: number): void {

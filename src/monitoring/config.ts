@@ -3,6 +3,7 @@ import type { RootConfig } from '../config/profile-schema';
 import type { MonitorSettings } from './module';
 import { monitorConfigs } from './sources/configs';
 import { table, integer, fail } from './validation';
+import { parseWorkItemConcurrency } from '../work-items/concurrency';
 export type { MonitorSettings } from './module';
 
 export function parseMonitorConfig(text: string): MonitorSettings {
@@ -14,9 +15,10 @@ export function parseMonitorConfig(text: string): MonitorSettings {
   }
   const settings: MonitorSettings = {};
   const fields = Object.fromEntries(monitorConfigs.map(source => [source.id, () => {}]));
-  table({ version: integer(1, 1), sources: table(fields) })(value, 'monitors');
+  table({ version: integer(1, 1), sources: table(fields), concurrency: (v, p) => { parseWorkItemConcurrency(v, p); } })(value, 'monitors');
   if (value.version !== 1 || !value.sources) fail('monitors', '需要 version = 1 和 [sources]');
   const sources = value.sources as Record<string, unknown>;
+  if (value.concurrency !== undefined) settings.workItemConcurrency = parseWorkItemConcurrency(value.concurrency, 'monitors.concurrency');
   for (const source of monitorConfigs) if (Object.hasOwn(sources, source.id)) source.parseInto(settings, sources[source.id]);
   return settings;
 }
@@ -30,7 +32,8 @@ export function formatMonitorConfig(settings: MonitorSettings): string {
     '# enabled 控制来源开关；executorProfile 选择执行身份；pollSeconds 单位为秒。\n' +
     '# 凭据只填环境变量名或文件路径，密钥保留在现有凭据存储中。\n' +
     '# 工作台保存会规范化格式，原文件（含注释）保存在同路径的 .bak 文件。\n\n' +
-    stringify(JSON.parse(JSON.stringify({ version: 1, sources }))) + '\n';
+    stringify(JSON.parse(JSON.stringify({ version: 1,
+      ...(settings.workItemConcurrency !== undefined ? { concurrency: parseWorkItemConcurrency(settings.workItemConcurrency) } : {}), sources }))) + '\n';
 }
 
 /** Checks references without reading credentials or contacting any source. */

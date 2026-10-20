@@ -27,7 +27,7 @@ async function setup(overrides: Partial<InboxIO> = {}) {
   const io: InboxIO = { checkOwner: vi.fn(async () => {}), collect: vi.fn(async kind => kind === 'p2p' ? [message] : []),
     context: vi.fn(async () => [message]), source: vi.fn(async () => ({ name: '项目群', type: 'p2p' as const })),
     beginAnalysis: vi.fn(async () => topic), deliver: vi.fn(async () => {}), analyze: vi.fn(async () => result),
-    notifyAttention: vi.fn(async () => {}), triage: vi.fn<NonNullable<InboxIO['triage']>>(async jobs => jobs.map(j => ({ id: j.id, state: 'needed', reason: '需要回复方案' }))), ...overrides };
+    notifyAttention: vi.fn(async () => {}), triage: vi.fn<NonNullable<InboxIO['triage']>>(async j => ({ id: j.id, state: 'needed', reason: '需要回复方案' })), ...overrides };
   const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-processing-')), 'state.json'));
   const service = new InboxService(store, config(), io, () => now); services.push(service); await service.start();
   await service.tick();
@@ -80,8 +80,8 @@ it.each([new InboxAnalysisError('rate_limit'), Error('provider failed with priva
 it('only processes confirmed needed items, leaving quiet and uncertain items out of the agent queue', async () => {
   const messages = [message, { ...message, id: 'om_quiet', chatId: 'oc_quiet' }, { ...message, id: 'om_uncertain', chatId: 'oc_uncertain' }];
   const s = await setup({ collect: vi.fn(async kind => kind === 'p2p' ? messages : []), context: vi.fn(async () => []),
-    triage: vi.fn<NonNullable<InboxIO['triage']>>(async jobs => jobs.map(j => ({ id: j.id,
-      state: j.source.chatId === 'oc_quiet' ? 'quiet' : j.source.chatId === 'oc_uncertain' ? 'uncertain' : 'needed', reason: '根据当前事实判断' }))) });
+    triage: vi.fn<NonNullable<InboxIO['triage']>>(async j => ({ id: j.id,
+      state: j.source.chatId === 'oc_quiet' ? 'quiet' : j.source.chatId === 'oc_uncertain' ? 'uncertain' : 'needed', reason: '根据当前事实判断' })) });
   await s.service.tick(); await vi.waitFor(() => expect(s.service.list().find(j => j.source.chatId === 'oc_source')?.state).toBe('ready'));
   await s.service.tick();
   expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1); expect(s.io.analyze).toHaveBeenCalledTimes(1);

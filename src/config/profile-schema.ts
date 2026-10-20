@@ -196,6 +196,7 @@ export interface RootConfig {
   preferences: Record<string, never>;
   /** Relative to the root config directory; monitoring settings then live only in this TOML file. */
   monitorConfigFile?: string;
+  workItemConcurrency?: import('../work-items/concurrency').WorkItemConcurrency;
   inbox?: import('../inbox/config').InboxConfig;
   gitlabCi?: import('../monitoring/sources/gitlab-ci/config').GitLabCiConfig;
   storageMonitor?: import('../monitoring/sources/storage/config').StorageMonitorConfig;

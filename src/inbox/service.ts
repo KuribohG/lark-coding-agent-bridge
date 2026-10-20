@@ -11,9 +11,9 @@ export { boundMessages, classifyMessage, compareMessages } from '../monitoring/s
 /** Compatibility facade for existing UI commands and test integrations. */
 export class InboxService extends WorkItemService {
   declare readonly config: InboxConfig;
-  constructor(store: InboxStore, config: InboxConfig, io: InboxIO | WorkItemRuntime, now = Date.now, queue?: InboxAnalysisQueue) {
+  constructor(store: InboxStore, config: InboxConfig, io: InboxIO | WorkItemRuntime, now = Date.now, queue?: InboxAnalysisQueue, triageQueue?: InboxAnalysisQueue) {
     const runtime = 'investigate' in io ? io : larkRuntime(config, io, now);
-    super(store, config, runtime, now, queue);
+    super(store, config, runtime, now, queue, triageQueue);
   }
   async setScope(scope: IntakeScope, persist?: () => Promise<void>): Promise<void> {
     if (!(this.source instanceof LarkSource)) throw new Error('此来源不支持会话接收范围');

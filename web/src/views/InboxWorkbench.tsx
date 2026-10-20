@@ -2,11 +2,12 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import type { InboxConfig } from '../../../src/inbox/config';
+import type { WorkItemConcurrency } from '../../../src/work-items/concurrency';
 import type { guiContent, guiSummary } from '../../../src/inbox/presentation';
 
 type Summary = ReturnType<typeof guiSummary>;
 type Detail = Summary & ReturnType<typeof guiContent>;
-export type WorkbenchView = { config: InboxConfig; configFile?: string; configRevision?: string; running: boolean; connected: boolean; error?: string; sources?: { id: string; label: string; running: boolean; error?: string; health?: { checkedAt?: number; checks: { id: string; state: string; detail: string; lastSuccessAt?: number }[] } }[]; jobs: (Summary & { detail?: ReturnType<typeof guiContent> })[] };
+export type WorkbenchView = { config: InboxConfig; configFile?: string; configRevision?: string; concurrency?: WorkItemConcurrency; concurrencyRevision?: string; running: boolean; connected: boolean; error?: string; sources?: { id: string; label: string; running: boolean; error?: string; health?: { checkedAt?: number; checks: { id: string; state: string; detail: string; lastSuccessAt?: number }[] } }[]; jobs: (Summary & { detail?: ReturnType<typeof guiContent> })[] };
 type Command = (action: string, target: unknown) => Promise<unknown>;
 const stateNames: Record<string, string> = { waiting: '待处理', notifying: '准备通知', queued: '等待分析', running: '分析中', ready: '待投递', done: '分析完成', ignored: '已忽略', claimed: '已处理', failed: '分析失败' };
 const category = (job: Summary) => job.handlingState !== 'open' || job.attention?.state === 'quiet' ? 'history' : job.attention?.state === 'needed' || ['queued', 'running', 'ready', 'done', 'failed'].includes(job.state) ? 'pending' : 'screening';
