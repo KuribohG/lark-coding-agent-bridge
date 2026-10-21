@@ -40,6 +40,7 @@ const CLAUDE_MODELS: ModelOption[] = [
 /** Codex models. Forwarded to app-server thread requests. */
 const CODEX_MODELS: ModelOption[] = [
   { value: DEFAULT_MODEL, label: '跟随默认（不指定）' },
+  { value: 'openai-codex/gpt-6.1-sol', label: 'OpenAI 官方 GPT-6.1 Sol' },
   { value: 'gpt-5-codex', label: 'GPT-5 Codex' },
   { value: 'gpt-5', label: 'GPT-5' },
   { value: 'o3', label: 'o3' },
@@ -48,6 +49,7 @@ const CODEX_MODELS: ModelOption[] = [
 /** Pi owns its provider/model catalog; custom provider/model IDs remain typeable. */
 const PI_MODELS: ModelOption[] = [
   { value: DEFAULT_MODEL, label: '跟随 Pi 配置（不指定）' },
+  { value: 'openai-codex/gpt-6.1-sol', label: 'OpenAI 官方 GPT-6.1 Sol' },
 ];
 
 /** The model picker options for a profile's agent kind. */

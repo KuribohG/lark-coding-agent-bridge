@@ -6,9 +6,13 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { CodexAdapter, type CodexAdapterOptions } from '../../src/agent/codex/adapter';
 import type { AgentEvent } from '../../src/agent/types';
+import { ModelProviderRegistry } from '../../src/model-provider/provider';
 
 const dirs: string[] = [];
-afterEach(async () => { await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
+afterEach(async () => {
+  delete process.env.CODEX_PROVIDER_TEST_KEY;
+  await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
+});
 
 async function harness(mode = 'normal', options: Partial<CodexAdapterOptions> = {}) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'codex-adapter-')));
@@ -20,7 +24,8 @@ async function harness(mode = 'normal', options: Partial<CodexAdapterOptions> = 
 const fs = require('node:fs');
 const rl = require('node:readline').createInterface({ input: process.stdin });
 fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({argv:process.argv.slice(2),cwd:process.cwd(),env:Object.fromEntries(
- ['CODEX_HOME','LARK_CHANNEL','LARK_CHANNEL_PROFILE','LARK_CHANNEL_HOME','LARK_CHANNEL_CONFIG','LARKSUITE_CLI_CONFIG_DIR'].map(k=>[k,process.env[k]]))}));
+ ['CODEX_HOME','LARK_CHANNEL','LARK_CHANNEL_PROFILE','LARK_CHANNEL_HOME','LARK_CHANNEL_CONFIG','LARKSUITE_CLI_CONFIG_DIR'].map(k=>[k,process.env[k]])),
+ providerEnv:Object.entries(process.env).filter(([key])=>key.startsWith('LARK_MODEL_PROVIDER_'))}));
 const send = value => process.stdout.write(JSON.stringify(value)+'\\n');
 const notify = (method,params) => send({method,params});
 rl.on('line', line => {
@@ -96,6 +101,57 @@ describe('CodexAdapter app-server process contract', () => {
     const requests = await h.requests();
     expect(requests.find(r => r.method === 'thread/fork')?.params).toMatchObject({ threadId: 'parent', ephemeral: true });
     expect(requests.some(r => r.method === 'thread/resume')).toBe(false);
+  });
+
+  it('applies a Responses provider through app-server config and environment auth', async () => {
+    process.env.CODEX_PROVIDER_TEST_KEY = 'private-provider-key';
+    const h = await harness();
+    const provider = await new ModelProviderRegistry({
+      deepseek: {
+        protocol: 'responses',
+        baseUrl: 'https://gateway.example/v1',
+        model: 'deepseek-flash',
+        apiKey: { source: 'env', id: 'CODEX_PROVIDER_TEST_KEY' },
+      },
+    }).resolve('codex', 'deepseek/deepseek-v4-pro');
+    await collect(h.adapter.run({
+      runId: 'provider',
+      cwd: h.dir,
+      prompt: 'provider',
+      model: provider!.model,
+      modelProvider: provider,
+    }).events);
+
+    const record = await h.record();
+    const argv = record.argv.join(' ');
+    expect(argv).toContain('model_provider="lark_deepseek_');
+    expect(argv).toContain('https://gateway.example/v1');
+    expect(argv).toContain('wire_api="responses"');
+    expect(argv).not.toContain('private-provider-key');
+    if (provider?.codex?.auth !== 'api-key') throw new Error('expected api-key provider');
+    expect(record.providerEnv).toContainEqual([
+      provider.codex.apiKeyEnv,
+      'private-provider-key',
+    ]);
+    expect((await h.requests()).find(r => r.method === 'thread/start')?.params.model).toBe('deepseek-v4-pro');
+  });
+
+  it('switches Codex back to its native provider for an official OpenAI model', async () => {
+    const h = await harness();
+    const provider = await new ModelProviderRegistry().resolve('codex', 'openai-codex/gpt-6.1-sol');
+    await collect(h.adapter.run({
+      runId: 'openai-native',
+      cwd: h.dir,
+      prompt: 'official',
+      model: provider!.model,
+      modelProvider: provider,
+    }).events);
+
+    const record = await h.record();
+    expect(record.argv).toContain('model_provider="openai"');
+    expect(record.argv).toContain('forced_login_method="chatgpt"');
+    expect(record.argv.join(' ')).not.toContain('model_providers.openai');
+    expect((await h.requests()).find(r => r.method === 'thread/start')?.params.model).toBe('gpt-6.1-sol');
   });
 
   it.each(['inherited', 'isolated', 'explicit'] as const)('preserves %s Codex home selection and profile environment', async home => {

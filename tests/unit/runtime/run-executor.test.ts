@@ -35,6 +35,56 @@ describe('RunExecutor policy runtime options', () => {
 
     await collect(execution.subscribe());
   });
+
+  it('resolves provider-qualified models before the agent adapter sees them', async () => {
+    const agent = new FakeAgentAdapter({
+      events: [{ type: 'done', terminationReason: 'normal' }],
+    });
+    const provider = {
+      id: 'deepseek',
+      displayName: 'DeepSeek',
+      model: 'lark_deepseek_123/deepseek-flash',
+      env: { LARK_MODEL_PROVIDER_KEY_123: 'private' },
+      pi: {
+        providerId: 'lark_deepseek_123',
+        name: 'DeepSeek',
+        baseUrl: 'https://gateway.example/v1',
+        api: 'openai-responses' as const,
+        apiKeyEnv: 'LARK_MODEL_PROVIDER_KEY_123',
+        model: {
+          id: 'deepseek-flash',
+          name: 'DeepSeek-Flash',
+          api: 'openai-responses' as const,
+          reasoning: true,
+          input: ['text'] as Array<'text' | 'image'>,
+          contextWindow: 1000,
+          maxTokens: 100,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        },
+      },
+    };
+    const executor = new RunExecutor({
+      agent,
+      resolveModelProvider: async (_kind, model) => model === 'deepseek/deepseek-flash' ? provider : undefined,
+      pool: new ProcessPool(() => 1),
+      activeRuns: new ActiveRuns(),
+      createRunId: () => 'run-provider',
+      now: () => 1000,
+      postDoneExitGraceMs: 10,
+    });
+
+    const execution = await executor.submit({
+      scopeId: 'scope-provider',
+      policy: policy(),
+      model: 'deepseek/deepseek-flash',
+    });
+
+    expect(agent.runOptions[0]).toMatchObject({
+      model: 'lark_deepseek_123/deepseek-flash',
+      modelProvider: provider,
+    });
+    await collect(execution.subscribe());
+  });
 });
 
 function policy(overrides: Partial<RunPolicyAllow> = {}): RunPolicyAllow {

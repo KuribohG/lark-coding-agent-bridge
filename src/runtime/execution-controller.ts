@@ -13,6 +13,10 @@ import type {
 } from '../config/profile-schema';
 import type { ScopeExecutionStore } from '../session/scope-execution';
 import { checkRuntimeAgentAvailability } from './agent-runtime';
+import {
+  ModelProviderRegistry,
+  type ResolvedModelProvider,
+} from '../model-provider/provider';
 
 export interface ExecutionController {
   readonly defaultAgentKind: AgentKind;
@@ -21,6 +25,7 @@ export interface ExecutionController {
   kindFor(scope: string): AgentKind;
   profileFor(scope: string): AgentExecutionProfile;
   capabilityFor(scope: string): AgentCapability;
+  resolveModelProvider(agentKind: AgentKind, model?: string): Promise<ResolvedModelProvider | undefined>;
   setBotIdentity(identity: AgentBotIdentity): void;
   setScopeKind(scope: string, kind: AgentKind): Promise<void>;
 }
@@ -53,6 +58,7 @@ export interface ProfileExecutionControllerOptions {
     };
   systemPrompt?: AgentSystemPrompt;
   larkChannel?: LarkChannelEnvContext;
+  modelProviders?: ModelProviderRegistry;
 }
 
 /** Shared execution routing for Lark and standalone Web conversation channels. */
@@ -87,6 +93,13 @@ export class ProfileExecutionController implements ExecutionController {
 
   capabilityFor(scope: string): AgentCapability {
     return capabilityForProfile(this.profileFor(scope));
+  }
+
+  async resolveModelProvider(
+    agentKind: AgentKind,
+    model?: string,
+  ): Promise<ResolvedModelProvider | undefined> {
+    return this.options.modelProviders?.resolve(agentKind, model);
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -144,6 +157,7 @@ export class FixedExecutionController implements ExecutionController {
   kindFor(): AgentKind { return this.defaultAgentKind; }
   profileFor(): AgentExecutionProfile { return this.profileConfig; }
   capabilityFor(): AgentCapability { return capabilityForProfile(this.profileConfig); }
+  async resolveModelProvider(): Promise<undefined> { return undefined; }
   setBotIdentity(identity: AgentBotIdentity): void { this.agent.setBotIdentity?.(identity); }
   async setScopeKind(): Promise<void> {
     throw new Error('fixed execution controller does not support engine overrides');

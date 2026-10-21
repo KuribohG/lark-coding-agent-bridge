@@ -188,7 +188,12 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   // Concurrency cap — reads `preferences.maxConcurrentRuns` on each acquire,
   // so /config bumps take effect for the next run.
   const pool = new ProcessPool(() => getMaxConcurrentRuns(controls.cfg));
-  const executor = new RunExecutor({ resolveAgent, pool, activeRuns });
+  const executor = new RunExecutor({
+    resolveAgent,
+    resolveModelProvider: (agentKind, model) => execution.resolveModelProvider(agentKind, model),
+    pool,
+    activeRuns,
+  });
 
   // Resolve the App Secret to plaintext. The config field can be a literal
   // string, a "${VAR}" template, or a {source, id} SecretRef referencing

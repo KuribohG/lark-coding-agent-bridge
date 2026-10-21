@@ -1,5 +1,6 @@
 import type { AgentAvailability } from './preflight';
 import type { ClaudePermissionMode, CodexSandboxMode } from '../config/permissions';
+import type { ResolvedModelProvider } from '../model-provider/provider';
 
 export type { ClaudePermissionMode } from '../config/permissions';
 
@@ -64,6 +65,8 @@ export interface AgentRunOptions {
   /** Run a side question from a snapshot; never append to the parent session. */
   forkSession?: boolean;
   model?: string;
+  /** Backend-specific routing for a provider-qualified model selection. */
+  modelProvider?: ResolvedModelProvider;
   reasoningEffort?: import('./model-settings').ReasoningEffort;
   images?: readonly string[];
   sandbox?: CodexSandboxMode;

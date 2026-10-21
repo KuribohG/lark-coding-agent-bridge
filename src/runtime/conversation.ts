@@ -84,8 +84,12 @@ export class ConversationRuntime {
     this.sessions = new SessionStore(join(options.stateDir, 'sessions.json'));
     this.catalog = new SessionCatalog(join(options.stateDir, 'sessions.catalog.json'));
     this.workspaces = new WorkspaceStore(join(options.stateDir, 'workspaces.json'));
-    this.executor = new RunExecutor({ resolveAgent: scope => this.execution.get(scope), activeRuns: this.active,
-      pool: new ProcessPool(() => Math.max(1, options.config.preferences.maxConcurrentRuns ?? 4)) });
+    this.executor = new RunExecutor({
+      resolveAgent: scope => this.execution.get(scope),
+      resolveModelProvider: (agentKind, model) => this.execution.resolveModelProvider(agentKind, model),
+      activeRuns: this.active,
+      pool: new ProcessPool(() => Math.max(1, options.config.preferences.maxConcurrentRuns ?? 4)),
+    });
   }
 
   async load(): Promise<void> {

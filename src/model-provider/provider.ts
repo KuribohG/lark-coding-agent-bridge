@@ -1,0 +1,241 @@
+import { createHash } from 'node:crypto';
+import { validateModelId } from '../agent/models';
+import type { AgentKind } from '../config/profile-schema';
+import type { ModelServiceConfig } from '../model-service/config';
+import { loadModelService } from '../model-service/service';
+
+export interface PiProviderRegistration {
+  providerId: string;
+  name: string;
+  baseUrl: string;
+  api: 'openai-responses';
+  apiKeyEnv: string;
+  headers?: Record<string, string>;
+  model: {
+    id: string;
+    name: string;
+    api: 'openai-responses';
+    reasoning: boolean;
+    input: Array<'text' | 'image'>;
+    contextWindow: number;
+    maxTokens: number;
+    cost: {
+      input: number;
+      output: number;
+      cacheRead: number;
+      cacheWrite: number;
+    };
+    thinkingLevelMap?: Record<string, string | null>;
+  };
+}
+
+export type CodexProviderRegistration =
+  | {
+      providerId: string;
+      name: string;
+      auth: 'native';
+    }
+  | {
+      providerId: string;
+      name: string;
+      auth: 'api-key';
+      baseUrl: string;
+      wireApi: 'responses';
+      apiKeyEnv: string;
+      headersEnv?: Record<string, string>;
+    };
+
+/**
+ * Agent-neutral provider selection resolved into backend-specific connection
+ * data. Credentials live only in `env`; generated extension/config text uses
+ * environment-variable names so secrets never reach argv or disk.
+ */
+export interface ResolvedModelProvider {
+  id: string;
+  displayName: string;
+  model: string;
+  env?: NodeJS.ProcessEnv;
+  pi?: PiProviderRegistration;
+  codex?: CodexProviderRegistration;
+}
+
+/** A model service that can be bound to one or more Agent CLIs. */
+export abstract class ModelProvider {
+  constructor(
+    readonly id: string,
+    readonly displayName: string,
+  ) {}
+
+  abstract supports(agentKind: AgentKind): boolean;
+  abstract bind(agentKind: AgentKind, model: string): Promise<ResolvedModelProvider>;
+
+  protected assertSupported(agentKind: AgentKind): void {
+    if (!this.supports(agentKind)) {
+      throw new Error(`模型 provider「${this.displayName}」不支持 ${agentKind} agent`);
+    }
+  }
+}
+
+/**
+ * OpenAI Codex subscription/OAuth is native to the Agent CLIs. Pi needs the
+ * provider-qualified model id; Codex CLI selects the same model in its own
+ * configured provider.
+ */
+export class OpenAICodexModelProvider extends ModelProvider {
+  constructor() {
+    super('openai-codex', 'OpenAI 官方账号');
+  }
+
+  supports(agentKind: AgentKind): boolean {
+    return agentKind === 'pi' || agentKind === 'codex';
+  }
+
+  async bind(agentKind: AgentKind, model: string): Promise<ResolvedModelProvider> {
+    this.assertSupported(agentKind);
+    const modelId = validateModelId(model);
+    return {
+      id: this.id,
+      displayName: this.displayName,
+      model: agentKind === 'pi' ? `${this.id}/${modelId}` : modelId,
+      ...(agentKind === 'codex'
+        ? { codex: { providerId: 'openai', name: 'OpenAI 官方账号', auth: 'native' as const } }
+        : {}),
+    };
+  }
+}
+
+/** An existing Responses model service exposed to Pi and Codex agent runs. */
+export class ResponsesModelProvider extends ModelProvider {
+  constructor(id: string, private readonly config: ModelServiceConfig) {
+    super(id, id);
+  }
+
+  supports(agentKind: AgentKind): boolean {
+    return agentKind === 'pi' || agentKind === 'codex';
+  }
+
+  async bind(agentKind: AgentKind, model: string): Promise<ResolvedModelProvider> {
+    this.assertSupported(agentKind);
+    const modelId = validateModelId(model);
+    const service = await loadModelService(this.config, modelId);
+    const suffix = stableSuffix(`${this.id}\0${modelId}`);
+    const env: NodeJS.ProcessEnv = {
+      [`LARK_MODEL_PROVIDER_KEY_${suffix}`]: service.key,
+    };
+    const headersEnv: Record<string, string> = {};
+    for (const [name, value] of Object.entries(service.headers ?? {})) {
+      const envName = `LARK_MODEL_PROVIDER_HEADER_${stableSuffix(`${this.id}\0${name}`)}`;
+      env[envName] = value;
+      headersEnv[name] = envName;
+    }
+
+    if (agentKind === 'pi') {
+      const providerId = `lark_${this.id.replace(/[^a-zA-Z0-9_]/g, '_')}_${suffix.toLowerCase()}`;
+      return {
+        id: this.id,
+        displayName: this.displayName,
+        model: `${providerId}/${modelId}`,
+        env,
+        pi: {
+          providerId,
+          name: this.displayName,
+          baseUrl: this.config.baseUrl,
+          api: 'openai-responses',
+          apiKeyEnv: `LARK_MODEL_PROVIDER_KEY_${suffix}`,
+          ...(Object.keys(headersEnv).length > 0 ? { headers: headersEnv } : {}),
+          model: providerModel(modelId),
+        },
+      };
+    }
+
+    const providerId = `lark_${this.id.replace(/[^a-zA-Z0-9_]/g, '_')}_${suffix.toLowerCase()}`;
+    return {
+      id: this.id,
+      displayName: this.displayName,
+      model: modelId,
+      env,
+      codex: {
+        providerId,
+        name: this.displayName,
+        auth: 'api-key',
+        baseUrl: this.config.baseUrl,
+        wireApi: 'responses',
+        apiKeyEnv: `LARK_MODEL_PROVIDER_KEY_${suffix}`,
+        ...(Object.keys(headersEnv).length > 0 ? { headersEnv } : {}),
+      },
+    };
+  }
+}
+
+/** Provider registry shared by Lark, Web, background and timed runs. */
+export class ModelProviderRegistry {
+  private readonly providers: ModelProvider[];
+
+  constructor(services: Record<string, ModelServiceConfig> = {}) {
+    const custom = Object.entries(services).map(([id, config]) => new ResponsesModelProvider(id, config));
+    if (services['openai-codex']) throw new Error('模型服务名称 openai-codex 为内置 provider 保留');
+    this.providers = [new OpenAICodexModelProvider(), ...custom]
+      .sort((left, right) => right.id.length - left.id.length);
+  }
+
+  list(): ReadonlyArray<Pick<ModelProvider, 'id' | 'displayName'>> {
+    return this.providers.map(({ id, displayName }) => ({ id, displayName }));
+  }
+
+  async resolve(agentKind: AgentKind, selection: string | undefined): Promise<ResolvedModelProvider | undefined> {
+    if (!selection || selection === 'default') return undefined;
+    const provider = this.providers.find(candidate => selection.startsWith(`${candidate.id}/`));
+    if (!provider) return undefined;
+    const model = selection.slice(provider.id.length + 1);
+    if (!model) throw new Error(`模型选择 ${selection} 缺少模型 ID`);
+    return provider.bind(agentKind, model);
+  }
+}
+
+function providerModel(id: string): PiProviderRegistration['model'] {
+  if (id.startsWith('deepseek')) {
+    return {
+      id,
+      name: id === 'deepseek-flash' ? 'DeepSeek-Flash' : id,
+      api: 'openai-responses',
+      reasoning: true,
+      input: ['text', 'image'],
+      contextWindow: 1_048_576,
+      maxTokens: 384_000,
+      cost: {
+        input: 0.3,
+        output: 1.2,
+        cacheRead: 0.006,
+        cacheWrite: 0,
+      },
+      thinkingLevelMap: {
+        off: null,
+        minimal: 'low',
+        low: 'low',
+        medium: 'high',
+        high: 'high',
+        xhigh: 'max',
+        max: 'max',
+      },
+    };
+  }
+  return {
+    id,
+    name: id,
+    api: 'openai-responses',
+    reasoning: true,
+    input: ['text', 'image'],
+    contextWindow: 200_000,
+    maxTokens: 32_000,
+    cost: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    },
+  };
+}
+
+function stableSuffix(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 12).toUpperCase();
+}

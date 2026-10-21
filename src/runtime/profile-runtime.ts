@@ -51,6 +51,7 @@ export interface ResolveProfileRuntimeOptions {
 export interface ProfileRuntime {
   cfg: AppConfig & { agentKind?: AgentKind };
   profileConfig: ProfileConfig;
+  modelServices: Record<string, import('../model-service/config').ModelServiceConfig>;
   configPath: string;
   appPaths: AppPaths;
   profile: string;
@@ -141,7 +142,7 @@ export async function resolveProfileRuntime(
     }
     assertBootstrapAppMatchesExistingProfile(opts, profile, profileConfig);
     const cfg = await maybeMigrateRootPlaintextSecret(rootConfig, profile, appPaths, configPath);
-    return { cfg, profileConfig, configPath, appPaths, profile };
+    return { cfg, profileConfig, modelServices: rootConfig.modelServices ?? {}, configPath, appPaths, profile };
   }
 
   if (!opts.allowBootstrap) {
@@ -164,7 +165,14 @@ export async function resolveProfileRuntime(
   await saveRootConfig(root, configPath);
   await writeActiveProfile(appPaths.rootDir, profile);
   console.log(`配置已保存到 ${configPath}\n`);
-  return { cfg: runtimeProfileConfig(root, profile), profileConfig: root.profiles[profile]!, configPath, appPaths, profile };
+  return {
+    cfg: runtimeProfileConfig(root, profile),
+    profileConfig: root.profiles[profile]!,
+    modelServices: root.modelServices ?? {},
+    configPath,
+    appPaths,
+    profile,
+  };
 }
 
 async function bootstrapProfileIntoExistingRoot(args: {
@@ -207,6 +215,7 @@ async function bootstrapProfileIntoExistingRoot(args: {
   return {
     cfg: runtimeProfileConfig(nextRoot, profile),
     profileConfig: nextRoot.profiles[profile]!,
+    modelServices: nextRoot.modelServices ?? {},
     configPath,
     appPaths,
     profile,

@@ -34,6 +34,7 @@ function normalizeExecutionDeps(deps: LarkStartChannelEntryDeps): StartChannelDe
     kindFor,
     profileFor: scope => profileForAgentKind(rest.controls.profileConfig, kindFor(scope)),
     capabilityFor: scope => capabilityForProfile(profileForAgentKind(rest.controls.profileConfig, kindFor(scope))),
+    async resolveModelProvider() { return undefined; },
     setBotIdentity(identity) {
       setAgentIdentity?.(identity);
       agent.setBotIdentity?.(identity);

@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Readable, Writable } from 'node:stream';
@@ -10,6 +11,7 @@ import { checkAgentAvailability, type AgentAvailability } from '../preflight';
 import { spawnWithDeadline } from '../deadline';
 import { parseEffort } from '../model-settings';
 import { validateModelId } from '../models';
+import type { ResolvedModelProvider } from '../../model-provider/provider';
 import { resolveSystemPrompt, type AgentSystemPrompt } from '../system-prompt';
 import type {
   AgentAdapter,
@@ -28,6 +30,7 @@ export interface PiAdapterOptions {
   systemPrompt?: AgentSystemPrompt;
   env?: NodeJS.ProcessEnv;
   stopGraceMs?: number;
+  profileStateDir?: string;
 }
 
 type PiChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
@@ -41,6 +44,7 @@ export class PiAdapter implements AgentAdapter {
   private readonly systemPrompt: AgentSystemPrompt | undefined;
   private readonly env: NodeJS.ProcessEnv;
   private readonly defaultStopGraceMs: number;
+  private readonly profileStateDir: string;
   private botIdentity: AgentBotIdentity | undefined;
 
   constructor(opts: PiAdapterOptions = {}) {
@@ -48,6 +52,7 @@ export class PiAdapter implements AgentAdapter {
     this.systemPrompt = opts.systemPrompt;
     this.env = { ...opts.env };
     this.defaultStopGraceMs = opts.stopGraceMs ?? 5000;
+    this.profileStateDir = opts.profileStateDir ?? join(tmpdir(), 'lark-channel-pi-providers');
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -108,6 +113,9 @@ export class PiAdapter implements AgentAdapter {
     if (opts.reasoningEffort) {
       args.push('--thinking', piThinkingLevel(parseEffort(opts.reasoningEffort, 'pi')!));
     }
+    if (opts.modelProvider?.pi) {
+      args.push('--extension', writePiProviderExtension(this.profileStateDir, opts.modelProvider));
+    }
     if (sandbox === 'read-only') {
       args.push('--no-extensions', '--tools', 'read,grep,find,ls');
     } else if (opts.deadlineAt !== undefined) {
@@ -120,6 +128,7 @@ export class PiAdapter implements AgentAdapter {
       cwd: opts.cwd,
       env: mergeProcessEnv(process.env, {
         ...this.env,
+        ...opts.modelProvider?.env,
         PI_SKIP_VERSION_CHECK: '1',
         PI_TELEMETRY: '0',
       }),
@@ -132,6 +141,7 @@ export class PiAdapter implements AgentAdapter {
       hasSession: Boolean(opts.sessionId),
       promptChars: opts.prompt.length,
       model: opts.model,
+      modelProvider: opts.modelProvider?.id,
       reasoningEffort: opts.reasoningEffort,
       access: sandbox,
     });
@@ -220,6 +230,31 @@ export class PiAdapter implements AgentAdapter {
       },
     };
   }
+}
+
+function writePiProviderExtension(
+  stateDir: string,
+  provider: ResolvedModelProvider,
+): string {
+  const registration = provider.pi!;
+  const config = {
+    name: registration.name,
+    baseUrl: registration.baseUrl,
+    api: registration.api,
+    apiKey: `$${registration.apiKeyEnv}`,
+    authHeader: true,
+    ...(registration.headers
+      ? { headers: Object.fromEntries(Object.entries(registration.headers).map(([name, env]) => [name, `$${env}`])) }
+      : {}),
+    models: [registration.model],
+  };
+  const text = `export default function register(pi) {\n  pi.registerProvider(${JSON.stringify(registration.providerId)}, ${JSON.stringify(config, null, 2)});\n}\n`;
+  const hash = createHash('sha256').update(text).digest('hex').slice(0, 16);
+  const dir = join(stateDir, 'pi-model-providers');
+  const file = join(dir, `${hash}.js`);
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  writeFileSync(file, text, { encoding: 'utf8', mode: 0o600 });
+  return file;
 }
 
 async function* createEventStream(

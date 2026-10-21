@@ -5,10 +5,12 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { PiAdapter } from '../../src/agent/pi/adapter';
 import { buildBridgeSystemPrompt } from '../../src/channels/lark/system-prompt';
 import type { AgentEvent } from '../../src/agent/types';
+import { ModelProviderRegistry } from '../../src/model-provider/provider';
 
 const dirs: string[] = [];
 
 afterEach(async () => {
+  delete process.env.PI_PROVIDER_TEST_KEY;
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -93,6 +95,40 @@ describe('PiAdapter process contract', () => {
     expect(record.argv).not.toContain('--session');
   });
 
+  it('loads a provider extension and keeps its API key out of argv and disk', async () => {
+    process.env.PI_PROVIDER_TEST_KEY = 'private-provider-key';
+    const harness = await createFakePi([
+      { type: 'session', id: 'sess-provider' },
+      { type: 'agent_settled', aborted: false },
+    ]);
+    dirs.push(harness.dir);
+    const provider = await new ModelProviderRegistry({
+      deepseek: {
+        protocol: 'responses',
+        baseUrl: 'https://gateway.example/v1',
+        model: 'deepseek-flash',
+        apiKey: { source: 'env', id: 'PI_PROVIDER_TEST_KEY' },
+      },
+    }).resolve('pi', 'deepseek/deepseek-flash');
+    const adapter = new PiAdapter({ binary: harness.binary, profileStateDir: harness.dir });
+    await collect(adapter.run({
+      runId: 'pi-provider',
+      prompt: 'hello',
+      cwd: harness.dir,
+      model: provider!.model,
+      modelProvider: provider,
+    }).events);
+
+    const record = await readRecord(harness.recordPath);
+    const extensionIndex = record.argv.indexOf('--extension');
+    expect(extensionIndex).toBeGreaterThanOrEqual(0);
+    const extension = await readFile(record.argv[extensionIndex + 1]!, 'utf8');
+    expect(extension).toContain('registerProvider');
+    expect(extension).toContain('https://gateway.example/v1');
+    expect(extension).not.toContain('private-provider-key');
+    expect(record.providerEnv).toContainEqual(['LARK_MODEL_PROVIDER_KEY_73395B78866F', 'private-provider-key']);
+  });
+
   it('rejects workspace mode instead of claiming filesystem isolation', () => {
     const adapter = new PiAdapter({ binary: 'pi' });
     expect(() => adapter.run({
@@ -169,6 +205,7 @@ async function createFakePi(
     '    argv, stdin, cwd: process.cwd(),',
     '    systemPrompt: promptIndex >= 0 ? readFileSync(argv[promptIndex + 1], "utf8") : "",',
     '    env: { PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK, PI_TELEMETRY: process.env.PI_TELEMETRY },',
+    '    providerEnv: Object.entries(process.env).filter(([key]) => key.startsWith("LARK_MODEL_PROVIDER_")),',
     '  }));',
     `  for (const line of ${JSON.stringify(lines)}) process.stdout.write(JSON.stringify(line) + "\\n");`,
     options.stderr ? `  process.stderr.write(${JSON.stringify(options.stderr)});` : '',
@@ -193,6 +230,7 @@ async function readRecord(path: string): Promise<{
   cwd: string;
   systemPrompt: string;
   env: { PI_SKIP_VERSION_CHECK?: string; PI_TELEMETRY?: string };
+  providerEnv: Array<[string, string]>;
 }> {
   return JSON.parse(await readFile(path, 'utf8')) as {
     argv: string[];
@@ -200,5 +238,6 @@ async function readRecord(path: string): Promise<{
     cwd: string;
     systemPrompt: string;
     env: { PI_SKIP_VERSION_CHECK?: string; PI_TELEMETRY?: string };
+    providerEnv: Array<[string, string]>;
   };
 }

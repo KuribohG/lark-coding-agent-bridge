@@ -117,12 +117,37 @@ export class CodexAdapter implements AgentAdapter {
     } else if (!this.inheritCodexHome) {
       envOverrides.CODEX_HOME = join(this.profileStateDir, 'codex-home');
     }
+    const provider = opts.modelProvider?.codex;
+    const configOverrides: string[] = [];
+    if (provider) {
+      Object.assign(envOverrides, opts.modelProvider?.env);
+      configOverrides.push(`model_provider=${quoteToml(provider.providerId)}`);
+      if (provider.auth === 'api-key') {
+        const prefix = `model_providers.${provider.providerId}`;
+        configOverrides.push(
+          `${prefix}.name=${quoteToml(provider.name)}`,
+          `${prefix}.base_url=${quoteToml(provider.baseUrl)}`,
+          `${prefix}.wire_api=${quoteToml(provider.wireApi)}`,
+          `${prefix}.env_key=${quoteToml(provider.apiKeyEnv)}`,
+        );
+        if (provider.headersEnv) {
+          configOverrides.push(`${prefix}.env_http_headers=${quoteToml(provider.headersEnv)}`);
+        }
+      } else {
+        configOverrides.push('forced_login_method="chatgpt"');
+      }
+    }
     return startAppServerRun({
       binary: this.binary, opts,
       env: mergeProcessEnv(process.env, envOverrides),
       sandbox,
       prompt: this.promptFor(opts),
       stopGraceMs: opts.stopGraceMs ?? this.defaultStopGraceMs,
+      configOverrides,
     });
   }
+}
+
+function quoteToml(value: string | Record<string, string>): string {
+  return JSON.stringify(value);
 }

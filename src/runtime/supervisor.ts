@@ -21,6 +21,7 @@ import {
   releaseRuntimeLocks,
 } from './agent-runtime';
 import { ProfileExecutionController } from './execution-controller';
+import { ModelProviderRegistry } from '../model-provider/provider';
 import {
   acquireAppRuntimeLock,
   acquireProfileRuntimeLock,
@@ -42,13 +43,15 @@ function createExecutionController(input: {
   scopeExecution: ScopeExecutionStore;
   appPaths: AppPaths;
   configPath: string;
+  modelServices?: Record<string, import('../model-service/config').ModelServiceConfig>;
 }): ProfileExecutionController {
-  const { profileConfig, scopeExecution, appPaths, configPath } = input;
+  const { profileConfig, scopeExecution, appPaths, configPath, modelServices } = input;
   return new ProfileExecutionController({
     profileConfig,
     scopeExecution,
     appPaths: { ...appPaths, configPath },
     systemPrompt: buildBridgeSystemPrompt,
+    modelProviders: new ModelProviderRegistry(modelServices),
     larkChannel: {
       profile: appPaths.profile,
       rootDir: appPaths.rootDir,
@@ -253,6 +256,7 @@ class ManagedProfile {
         scopeExecution: this.scopeExecution,
         appPaths: nextRuntime.appPaths,
         configPath: this.configPath,
+        modelServices: nextRuntime.modelServices,
       });
       const availability = await checkRuntimeAgentAvailability(nextExecution.defaultAgent());
       if (!availability.ok) throw availability.error;
@@ -335,6 +339,7 @@ class ManagedProfile {
         scopeExecution: this.scopeExecution,
         appPaths: nextRuntime.appPaths,
         configPath: this.configPath,
+        modelServices: nextRuntime.modelServices,
       });
       const availability = await checkRuntimeAgentAvailability(nextExecution.defaultAgent());
       if (!availability.ok) throw availability.error;
@@ -454,6 +459,7 @@ export class Supervisor {
       scopeExecution,
       appPaths,
       configPath,
+      modelServices: runtime.modelServices,
     });
     if (this.opts.runPreflight !== false) {
       const availability = await checkRuntimeAgentAvailability(execution.defaultAgent());

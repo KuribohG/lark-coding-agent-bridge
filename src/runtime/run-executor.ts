@@ -7,6 +7,8 @@ import { log } from '../core/logger';
 import { RunRejected, SpawnFailed } from './errors';
 import { retryingRun } from './retrying-run';
 import { agentFailureKind } from '../agent/execution';
+import type { ResolvedModelProvider } from '../model-provider/provider';
+import type { AgentKind } from '../config/profile-schema';
 
 export interface RunExecutorDeps {
   /** Fixed adapter for legacy single-engine runtimes. */
@@ -18,6 +20,10 @@ export interface RunExecutorDeps {
   createRunId?: () => string;
   now?: () => number;
   postDoneExitGraceMs?: number;
+  resolveModelProvider?: (
+    agentKind: AgentKind,
+    model?: string,
+  ) => Promise<ResolvedModelProvider | undefined>;
 }
 
 export interface SubmitRunInput {
@@ -63,6 +69,9 @@ export class RunExecutor {
   private readonly createRunId: () => string;
   private readonly now: () => number;
   private readonly postDoneExitGraceMs: number;
+  private readonly resolveModelProvider:
+    | ((agentKind: AgentKind, model?: string) => Promise<ResolvedModelProvider | undefined>)
+    | undefined;
 
   constructor(deps: RunExecutorDeps) {
     const resolved = deps.resolveAgent
@@ -74,6 +83,7 @@ export class RunExecutor {
     this.createRunId = deps.createRunId ?? randomUUID;
     this.now = deps.now ?? Date.now;
     this.postDoneExitGraceMs = deps.postDoneExitGraceMs ?? DEFAULT_POST_DONE_EXIT_GRACE_MS;
+    this.resolveModelProvider = deps.resolveModelProvider;
   }
 
   async submit(input: SubmitRunInput): Promise<RunExecution> {
@@ -148,6 +158,15 @@ export class RunExecutor {
       dispose();
       throw new SpawnFailed('agent resolve failed', err, 'agent-prepare-failed');
     }
+    let modelProvider: ResolvedModelProvider | undefined;
+    try {
+      modelProvider = await this.resolveModelProvider?.(agent.id as AgentKind, input.model);
+    } catch (err) {
+      release();
+      releaseScope();
+      dispose();
+      throw new SpawnFailed('model provider resolve failed', err, 'agent-prepare-failed');
+    }
     const runOptions = {
       deadlineAt: input.deadlineAt,
       runId,
@@ -157,7 +176,8 @@ export class RunExecutor {
       sessionId: input.sessionId,
       threadId: input.threadId,
       forkSession: input.forkSession,
-      model: input.model,
+      model: modelProvider?.model ?? input.model,
+      modelProvider,
       reasoningEffort: input.reasoningEffort,
       images: input.images,
       sandbox: input.policy.sandbox,
@@ -217,6 +237,7 @@ export class RunExecutor {
       accessMode: input.policy.accessMode,
       sandbox: input.policy.sandbox,
       permissionMode: input.policy.permissionMode,
+      modelProvider: modelProvider?.id,
     });
 
     try {

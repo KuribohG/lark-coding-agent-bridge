@@ -83,10 +83,10 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
     capability: piCapability,
     executionCapabilities: () => PI_EXECUTION_CAPABILITIES,
     launchPatch: (binaryPath) => ({ pi: { binaryPath } }),
-    createAdapter: ({ profile, env, systemPrompt }) => {
+    createAdapter: ({ profile, profileDir, env, systemPrompt }) => {
       const pi = profile.pi;
       if (!pi?.binaryPath) throw new Error('pi profile requires pi.binaryPath');
-      return new PiAdapter({ binary: pi.binaryPath, env, systemPrompt });
+      return new PiAdapter({ binary: pi.binaryPath, profileStateDir: profileDir, env, systemPrompt });
     },
   },
 };

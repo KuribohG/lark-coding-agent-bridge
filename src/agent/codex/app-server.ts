@@ -20,10 +20,12 @@ export function startAppServerRun(input: {
   sandbox: string;
   prompt: string;
   stopGraceMs: number;
+  configOverrides?: readonly string[];
 }): AgentRun {
   const { opts } = input;
   const args = ['app-server', '--listen', 'stdio://',
     '-c', 'approval_policy="never"', '-c', 'shell_environment_policy.inherit="all"'];
+  for (const override of input.configOverrides ?? []) args.push('-c', override);
   if (opts.forkSession) args.push('-c', 'features.goals=false');
   const child = spawnWithDeadline(input.binary, args, {
     cwd: opts.cwd, env: input.env, stdio: ['pipe', 'pipe', 'pipe'],

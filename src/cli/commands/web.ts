@@ -22,6 +22,8 @@ import { configureLogger, closeLogger } from '../../core/logger';
 import { ProfileExecutionController } from '../../runtime/execution-controller';
 import { checkRuntimeAgentAvailability } from '../../runtime/agent-runtime';
 import { ScopeExecutionStore } from '../../session/scope-execution';
+import { normalizeModelServices } from '../../model-service/config';
+import { ModelProviderRegistry } from '../../model-provider/provider';
 
 export interface RunWebOptions {
   agent?: string;
@@ -58,6 +60,7 @@ export async function runWeb(options: RunWebOptions): Promise<void> {
     scopeExecution,
     appPaths: { profileDir: stateDir },
     systemPrompt: WEB_SYSTEM_PROMPT,
+    modelProviders: new ModelProviderRegistry(normalizeModelServices(doc?.model_services)),
   });
   const initialAgent = execution.defaultAgent();
   const availability = await checkRuntimeAgentAvailability(initialAgent);

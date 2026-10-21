@@ -73,6 +73,7 @@ class SwitchableExecutionController implements ExecutionController {
     return profileForAgentKind(this.config, this.kindFor(scope));
   }
   capabilityFor(scope: string) { return capabilityForProfile(this.profileFor(scope)); }
+  async resolveModelProvider() { return undefined; }
   setBotIdentity(identity: AgentBotIdentity): void {
     for (const agent of Object.values(this.agents)) agent.setBotIdentity?.(identity);
   }

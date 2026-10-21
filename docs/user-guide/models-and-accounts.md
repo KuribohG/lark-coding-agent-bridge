@@ -25,6 +25,14 @@
 
 设置从下一次提交的任务生效；正在执行或已经提交排队的任务保留原参数。同一话题里的用户共用设置。可手填模型名，建议列表不是白名单；最终可用性由 CLI 和模型服务决定。
 
+模型名可使用 `<provider>/<model>` 明确选择服务：
+
+- `openai-codex/gpt-6.1-sol`：复用 Pi 或 Codex 自身的 OpenAI 官方账号登录。
+- `screening/model-name`：复用“模型 API 服务”中名为 `screening` 的 Responses endpoint 和凭据。
+
+同一话题可随时切换 provider，不需要重启 Bridge。官方账号要在本机 Agent 中完成
+登录；模型 API 服务的密钥仍只使用环境变量或私有文件引用。
+
 ## 配置独立模型 API 服务
 
 当前独立服务支持 **Responses API**。它供会话助理轻量筛选使用，不启动 Agent，也不继承其 MCP、skills 或本地工具。

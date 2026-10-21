@@ -2,7 +2,7 @@
 
 首次配置可先阅读[用户手册：模型与账号](user-guide/models-and-accounts.md)。
 
-加载本功能的 Bridge 可在根配置 `model_services` 中保存模型服务，供筛选、分类等直接 API 调用使用。配置不依赖 Claude/Codex profile，不启动 Agent，也不继承其工具或会话。当前接入协议为 Responses API；Claude Code/Codex 带工具任务继续使用各自的 CLI 配置。
+加载本功能的 Bridge 可在根配置 `model_services` 中保存模型服务，供筛选、分类等直接 API 调用，也可作为 Pi/Codex Agent 的 Responses provider。配置不依赖 Claude/Codex profile，不启动 Agent，也不继承其工具或会话。当前接入协议为 Responses API。
 
 ## 配置
 
@@ -29,6 +29,26 @@ triageModel = ""
 尚未拆分监控文件时，对应根配置节是 `[monitoring.lark]`。
 
 示例只展示相关字段；保留实际的 profile、授权、目标话题和启用配置。`baseUrl` 是 HTTPS API 根地址，请求时添加 `/responses`，不要填写完整 `/responses` 路径。地址不能包含用户名、密码、查询参数或片段。默认模型必填，服务名称为 1–64 位字母、数字、下划线或横线，并以字母或数字开头。
+
+同一服务可同时供直接 API 和 Agent 使用。Agent 选择带 provider 前缀的模型：
+
+```text
+/model screening/your-screening-model
+```
+
+Pi 会在每次运行时通过临时 extension 注册该 provider；Codex 会通过 app-server
+的 `model_providers` 配置注入 endpoint 和 `env_key`。两者都只把凭据放进子进程
+环境，不写进命令行参数或生成的 provider 文件。Responses 服务当前支持 Pi 和
+Codex，不兼容 Claude Code 的 Anthropic Messages 协议。
+
+OpenAI 官方账号使用 Agent 自身的 OAuth，不需要在 Bridge 中保存 API key：
+
+```text
+/model openai-codex/gpt-6.1-sol
+```
+
+Pi 和 Codex 分别复用各自的官方账号登录态。未登录时会在 Agent 启动阶段报授权
+错误，Bridge 不会改用其他 provider 或借用第三方密钥。
 
 `apiKey` 只接受引用，不能填写明文密钥：
 
