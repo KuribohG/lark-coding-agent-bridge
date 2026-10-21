@@ -372,6 +372,12 @@ Pi supports `read-only` (built-in read/search tools only) and `full`. It has no 
 
 Set `LARK_CHANNEL_HOME=/path/to/state` to move all local bridge state. `LARK_CHANNEL_LOG_DAYS` overrides log retention.
 
+Profile secrets are encrypted with a stable local key derived from the
+persisted profile salt and username. Containers should inject
+`LARK_CHANNEL_KEYSTORE_MASTER_KEY` from their secret manager so the key does
+not depend on the hostname. Existing v1 entries are migrated when the profile
+next reads or writes a secret.
+
 ## Access control
 
 **Chat access is private by default: out of the box, only *you* can use the bot in DMs and groups.** "You" = whoever created / owns the Feishu app (the person who scanned the QR to set it up). The bot figures out who the app owner is automatically from Feishu, so **solo chat use needs zero configuration** — you can DM it and `@`-mention it in any group, and everyone else's chat messages are silently ignored (no "permission denied" reply, which would only confirm the bot exists). Cloud-doc comments are document-scoped; see below.

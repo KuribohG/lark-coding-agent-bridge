@@ -30,8 +30,10 @@ Generated batch files use UTF-8, disable delayed expansion and quote static
 arguments. Profiles cannot use Windows device names (`CON`, `NUL`, `COM1`,
 etc.) or end with a dot. When moving from Linux, recreate machine credentials
 and rewrite workspace/executable paths: copying the config directory is not a
-credential migration. The bridge keystore derives its key using the machine
-hostname and username.
+credential migration. The bridge keystore derives its current key from the
+persisted profile salt and username. Set `LARK_CHANNEL_KEYSTORE_MASTER_KEY`
+when the credential should follow an externally managed key; old host-derived
+entries migrate when the profile next reads or writes a secret.
 
 Stopping a child on Windows uses `taskkill /T /F` while its root is alive.
 Codex first attempts the protocol interrupt. Forced termination is not a

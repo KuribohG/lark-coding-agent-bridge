@@ -374,6 +374,10 @@ Pi 支持 `read-only`（只开放读取/搜索工具）和 `full`。Pi 没有可
 
 设置 `LARK_CHANNEL_HOME=/path/to/state` 可以迁移整棵本地状态目录。`LARK_CHANNEL_LOG_DAYS` 可以调整日志保留天数。
 
+profile secret 使用持久 salt 和用户名派生稳定本地密钥。容器部署建议通过
+secret manager 注入 `LARK_CHANNEL_KEYSTORE_MASTER_KEY`，避免密钥依赖主机名；
+已有的 v1 secret 会在该 profile 下一次读取或写入时自动迁移。
+
 ## 访问控制
 
 **聊天访问默认是私有的：开箱即用时，只有"你"能在私聊和群聊里用这个 bot。** 这里的"你" = 创建 / 拥有这个飞书应用的人（也就是扫码把 bot 建起来的那位）。bot 会自动从飞书查出谁是应用 owner，所以**一个人用聊天入口完全不用配置**——你私聊它、在任意群里 @它都正常工作，其他人的聊天消息会被静默忽略（bot 不会回"你没权限"，免得暴露自己的存在）。云文档评论按文档权限生效，见下文。
