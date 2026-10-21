@@ -114,6 +114,9 @@ Lark credentials and protocol tokens have separate owners:
 
 - A profile's `SecretRef` resolves the long-lived App Secret from the encrypted
   keystore, an environment variable, a mounted file or an exec provider.
+- `LarkProfileAuth` owns one profile's resolved credentials, tenant-token
+  provider and callback keys. The Lark channel, inbox and monitoring adapters
+  receive this object instead of resolving or caching credentials separately.
 - `TenantTokenProvider` is the only component that exchanges App ID and App
   Secret for a short-lived tenant token. It single-flights refreshes and caches
   the token until shortly before expiry. CoT, H5 ticket acquisition and
@@ -123,6 +126,16 @@ Lark credentials and protocol tokens have separate owners:
   new cards use the active derived key.
 - Lark user OAuth remains owned by `lark-cli`; it is not derived from or mixed
   with the application tenant token.
+
+The shared execution runtime does not import the Lark SDK or construct agent
+environment/prompts. `channels/lark/agent-host.ts` supplies those values, while
+`ProfileExecutionController` only consumes injected environment and prompt
+objects. Work-item monitoring similarly depends on `WorkItemDeliveryPort`;
+`monitoring/sources/lark/work-item-delivery.ts` is the Lark implementation.
+
+Agent session and image semantics are declared by each backend capability.
+Runtime code uses `sessionIdField`, `imageInput` and `legacySessionStore` rather
+than checking for Claude, Codex or Pi by name.
 
 Launch scripts therefore do not need to inject credentials before every
 command. A container should provide them through its secret manager and run the

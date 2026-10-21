@@ -1,4 +1,4 @@
-import { larkDisplay } from '../channels/lark/config';
+import { larkDisplay } from './lark-display';
 export type TenantBrand = 'feishu' | 'lark';
 
 /**
@@ -164,7 +164,7 @@ export interface AppPreferences {
 
 /** Frontend presentation carried alongside the resolved runtime configuration. */
 export interface ChannelDisplayConfig {
-  lark?: Partial<import('../channels/lark/config').LarkDisplayConfig>;
+  lark?: Partial<import('./lark-display').LarkDisplayConfig>;
   web?: Partial<import('../channels/web/config').WebDisplayConfig>;
 }
 

@@ -4,6 +4,7 @@ import type { SourceAdapter, RuleAssessmentPolicy, InvestigationDriver } from '.
 import type { WorkItem } from '../work-items/types';
 import type { WorkItemSourceOptions } from '../work-items/registry';
 import type { MonitorNotification } from './notification';
+import type { WorkItemDeliveryPort } from '../work-items/delivery-port';
 
 export interface MonitorSourceOptions {
   id: string; label: string; profile: string; enabled: boolean;
@@ -14,6 +15,7 @@ export interface MonitorSourceOptions {
   resumeInterrupted?: boolean;
   status?: () => { error?: string; health?: { checkedAt?: number; checks: { id: string; state: string; detail: string; lastSuccessAt?: number }[] } };
   notification?: MonitorNotification;
+  delivery?: WorkItemDeliveryPort;
   model?: string;
   reasoningEffort?: ReasoningEffort;
   source?: SourceAdapter;

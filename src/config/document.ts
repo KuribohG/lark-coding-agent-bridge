@@ -11,7 +11,7 @@ import {
   permissionsToLegacySandbox,
   type PermissionConfig,
 } from './permissions';
-import { larkDisplay } from '../channels/lark/config';
+import { larkDisplay } from './lark-display';
 import { WEB_DISPLAY_DEFAULTS } from '../channels/web/config';
 import { normalizeFileLinks } from './file-links';
 import type { RunPreferences } from './schema';

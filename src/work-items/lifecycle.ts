@@ -1,6 +1,6 @@
 import type { WorkItemConfig } from './config';
 import type { WorkItem } from './types';
-import type { Attention } from '../inbox/types';
+import type { Attention } from './evidence';
 import { handlingState } from './result';
 import { recordObservation } from './identity';
 

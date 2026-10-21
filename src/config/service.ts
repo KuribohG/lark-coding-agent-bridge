@@ -6,7 +6,7 @@ import { documentToRoot, formatDocument, parseDocument, resolveRun, rootToDocume
 import { diffValues, editToml, getPath } from './toml-edit';
 import type { MutableProfileState } from './config-ops';
 import { writeFileAtomic } from '../platform/atomic-write';
-import { larkDisplay } from '../channels/lark/config';
+import { larkDisplay } from './lark-display';
 import { WEB_DISPLAY_DEFAULTS } from '../channels/web/config';
 import { getMaxConcurrentRuns, getRunIdleTimeoutMs, getAgentStopGraceMs } from './schema';
 

@@ -3,6 +3,8 @@ import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
 import { readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { telemetry } from './telemetry';
+import type { LogContext, LogFields } from './log-types';
+export type { LogContext, LogFields } from './log-types';
 
 export interface LoggerOptions {
   logsDir?: string;
@@ -56,12 +58,6 @@ const STDOUT_INFO_ALLOWLIST = new Set<string>([
  * downstream `log.*` calls pick up the same fields.
  */
 
-export interface LogContext {
-  traceId?: string;
-  chatId?: string;
-  msgId?: string;
-}
-
 const als = new AsyncLocalStorage<LogContext>();
 
 let stream: WriteStream | null = null;
@@ -102,8 +98,6 @@ function getStream(): WriteStream | null {
 }
 
 type Level = 'info' | 'warn' | 'error';
-export type LogFields = Record<string, unknown>;
-
 /**
  * Field keys we own — callers MUST NOT clobber these via the `fields` arg.
  * If they try (e.g. `log.fail('comment', err, { phase: 'postCommentReply' })`),

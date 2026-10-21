@@ -40,9 +40,7 @@ import {
   getMessageReplyMode,
   getRunIdleTimeoutMs,
 } from '../../config/schema';
-import { resolveAppSecret } from '../../config/secret-resolver';
-import { larkCallbackSigningKeys } from '../../lark-auth/callback-key';
-import { TenantTokenProvider } from '../../lark-auth/tenant-token';
+import { LarkProfileAuth } from '../../lark-auth/profile-auth';
 import { log, reportMetric, withTrace } from '../../core/logger';
 import { MediaCache, type LocalAttachment } from '../../media/cache';
 import { toPolicyAttachment, toPromptAttachment } from '../../media/attachment';
@@ -174,6 +172,7 @@ export interface StartChannelDeps {
   workspaces: WorkspaceStore;
   controls: Controls;
   appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir'>;
+  larkAuth?: LarkProfileAuth;
 }
 
 export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
@@ -201,14 +200,16 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   // string, a "${VAR}" template, or a {source, id} SecretRef referencing
   // the encrypted keystore / env / file / exec provider. Re-resolved on
   // every startChannel so /account change picks up new secrets.
-  const appSecret = await resolveAppSecret(cfg, deps.appPaths);
+  const larkAuth = deps.larkAuth ?? new LarkProfileAuth(cfg, deps.appPaths);
+  controls.larkAuth = larkAuth;
+  const { appSecret } = await larkAuth.credentials();
   const callbackNonceStore = deps.appPaths?.mediaDir
     ? new CallbackNonceStore(join(dirname(deps.appPaths.mediaDir), 'callback-nonces.json'))
     : undefined;
   await callbackNonceStore?.load();
   const callbackAuth = callbackNonceStore
     ? new CallbackAuth({
-        keys: larkCallbackSigningKeys(appSecret),
+        keys: await larkAuth.callbackKeys(),
         nonceStore: callbackNonceStore,
       })
     : undefined;
@@ -217,11 +218,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   // switch can inject a one-time "model changed" note into the next (resumed)
   // prompt. In-memory only: on restart the first run re-seeds silently.
   const lastRunModelByScope = new Map<string, string>();
-  const tenantTokens = new TenantTokenProvider({
-    tenant: cfg.accounts.app.tenant,
-    appId: cfg.accounts.app.id,
-    appSecret,
-  });
+  const tenantTokens = await larkAuth.tenantTokens();
   const cotClient = new CotClient({
     tenant: cfg.accounts.app.tenant,
     appId: cfg.accounts.app.id,

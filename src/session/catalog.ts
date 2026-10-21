@@ -3,7 +3,10 @@ import { open, readFile, rename, mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
-import type { AgentCapabilityId } from '../agent/capability';
+import {
+  sessionIdFieldForAgent,
+  type AgentCapabilityId,
+} from '../agent/capability';
 
 export type CatalogAgentId = AgentCapabilityId;
 export type SessionCatalogStatus = 'active' | 'archived';
@@ -247,20 +250,20 @@ function matchesIdentity(entry: SessionCatalogEntry, input: SessionCatalogIdenti
 }
 
 function isValidAgentEntry(entry: SessionCatalogEntry): boolean {
-  if (entry.agentId === 'claude' || entry.agentId === 'pi') {
+  if (sessionIdFieldForAgent(entry.agentId) === 'sessionId') {
     return Boolean(entry.sessionId) && !entry.threadId;
   }
   return Boolean(entry.threadId) && !entry.sessionId;
 }
 
 function assertAgentIdentity(input: UpsertSessionCatalogInput): void {
-  if (input.agentId === 'claude' || input.agentId === 'pi') {
+  if (sessionIdFieldForAgent(input.agentId) === 'sessionId') {
     if (!input.sessionId || input.threadId) {
       throw new Error(`${input.agentId} catalog entries require sessionId and must not include threadId`);
     }
     return;
   }
   if (!input.threadId || input.sessionId) {
-    throw new Error('Codex catalog entries require threadId and must not include sessionId');
+    throw new Error(`${input.agentId} catalog entries require threadId and must not include sessionId`);
   }
 }

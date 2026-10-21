@@ -24,6 +24,7 @@ export interface AgentBackend {
   executionCapabilities(
     profile: Pick<AgentExecutionProfile, 'agentKind' | 'permissions'>,
   ): AgentExecutionCapabilities;
+  existingProfile(profile: AgentExecutionProfile): Partial<AgentExecutionProfile>;
   launchPatch(binaryPath: string): Pick<AgentExecutionProfile, 'claude' | 'codex' | 'pi'>;
   createAdapter(input: CreateAgentAdapterInput): AgentAdapter;
 }
@@ -43,6 +44,7 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
     commandEnv: 'LARK_CHANNEL_CLAUDE_BIN',
     capability: claudeCapability,
     executionCapabilities: () => CLAUDE_EXECUTION_CAPABILITIES,
+    existingProfile: (profile) => profile.claude ? { claude: profile.claude } : {},
     launchPatch: (binaryPath) => ({ claude: { binaryPath } }),
     createAdapter: ({ profile, env, systemPrompt }) => new ClaudeAdapter({
       binary: profile.claude?.binaryPath,
@@ -57,6 +59,7 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
     commandEnv: 'LARK_CHANNEL_CODEX_BIN',
     capability: codexCapability,
     executionCapabilities: () => codexExecutionCapabilities(),
+    existingProfile: (profile) => profile.codex ? { codex: profile.codex } : {},
     launchPatch: (binaryPath) => ({ codex: { binaryPath } }),
     createAdapter: ({ profile, profileDir, env, systemPrompt }) => {
       const codex = profile.codex;
@@ -82,6 +85,7 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
     commandEnv: 'LARK_CHANNEL_PI_BIN',
     capability: piCapability,
     executionCapabilities: () => PI_EXECUTION_CAPABILITIES,
+    existingProfile: (profile) => profile.pi ? { pi: profile.pi } : {},
     launchPatch: (binaryPath) => ({ pi: { binaryPath } }),
     createAdapter: ({ profile, profileDir, env, systemPrompt }) => {
       const pi = profile.pi;

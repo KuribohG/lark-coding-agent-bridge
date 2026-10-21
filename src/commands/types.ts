@@ -1,4 +1,3 @@
-import type { BtwManager } from '../bot/btw';
 import type { TimedRun } from '../runtime/timed-runs';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import type { AgentAdapter } from '../agent/types';
@@ -16,11 +15,20 @@ import type { WorkspaceStore } from '../workspace/store';
 import type { KnownChat } from '../bot/lark-info';
 import type { MeetingManager } from '../meeting/manager';
 import type { InboxManager } from '../monitoring/sources/lark/manager';
+import type { LarkProfileAuth } from '../lark-auth/profile-auth';
+import type { QuotedContext } from '../bot/quote';
+
+export interface BtwCommandControl {
+  enqueue(question: string, ctx: CommandContext): Promise<void>;
+  excludes(scope: string, msg: QuotedContext): boolean;
+  reset(scope: string): void;
+  cancel(scope: string): void;
+}
 
 export interface Controls {
   inbox?: InboxManager;
   cancelPendingInput?(scope: string): number;
-  btw?: BtwManager;
+  btw?: BtwCommandControl;
   launchTimedRun?(job: TimedRun, message: NormalizedMessage): Promise<void>;
   cancelTimedRun?(scope: string, id?: string): void;
   activeTimedRun?(scope: string): string | undefined;
@@ -44,6 +52,8 @@ export interface Controls {
   configPath: string;
   /** The current app config (snapshot at startChannel time). */
   cfg: AppConfig;
+  /** Profile-scoped Lark credentials and short-lived token cache. */
+  larkAuth?: LarkProfileAuth;
   /** This process's short id in the registry. Used by /ps to highlight the
    * receiving process and by /exit to detect self-target. */
   processId: string;

@@ -5,7 +5,6 @@ import {
 } from '../agent/backends';
 import type { AgentCapability } from '../agent/capability';
 import type { AgentAdapter, AgentBotIdentity } from '../agent/types';
-import { buildLarkChannelEnv, type LarkChannelEnvContext } from '../agent/lark-channel-env';
 import type { AgentSystemPrompt } from '../agent/system-prompt';
 import type {
   AgentExecutionProfile,
@@ -36,12 +35,8 @@ export function profileForAgentKind<T extends AgentExecutionProfile>(
 ): T {
   if (profileConfig.agentKind === agentKind) return profileConfig;
   const backend = backendFor(agentKind);
-  const existing = agentKind === 'claude'
-    ? profileConfig.claude
-    : agentKind === 'codex'
-      ? profileConfig.codex
-      : profileConfig.pi;
-  if (existing) return { ...profileConfig, agentKind };
+  const existing = backend.existingProfile(profileConfig);
+  if (Object.keys(existing).length > 0) return { ...profileConfig, agentKind, ...existing };
   const command = process.env[backend.commandEnv] ?? backend.defaultCommand;
   return { ...profileConfig, agentKind, ...backend.launchPatch(command) } as T;
 }
@@ -57,7 +52,7 @@ export interface ProfileExecutionControllerOptions {
       configPath?: string;
     };
   systemPrompt?: AgentSystemPrompt;
-  larkChannel?: LarkChannelEnvContext;
+  env?: NodeJS.ProcessEnv;
   modelProviders?: ModelProviderRegistry;
 }
 
@@ -131,9 +126,7 @@ export class ProfileExecutionController implements ExecutionController {
       agent = createAgentAdapter({
         profile,
         profileDir: this.options.appPaths.profileDir,
-        env: this.options.larkChannel
-          ? buildLarkChannelEnv(this.options.larkChannel)
-          : {},
+        env: this.options.env ?? {},
         systemPrompt: this.options.systemPrompt ?? '',
       });
       if (this.botIdentity) agent.setBotIdentity?.(this.botIdentity);

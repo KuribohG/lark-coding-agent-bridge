@@ -112,6 +112,8 @@ export async function withConfigFileLock<T>(configPath: string, fn: () => Promis
 }
 
 export async function readActiveProfile(rootDir?: string): Promise<string | undefined> {
+  // The sidecar is the runtime source of truth; config.toml.activeProfile is
+  // the serialized mirror used when importing or rebuilding a config.
   const activeProfileFile = join(
     rootDir ?? process.env.LARK_CHANNEL_HOME ?? resolveAppPaths().rootDir,
     'active-profile',

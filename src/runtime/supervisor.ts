@@ -14,7 +14,7 @@ import { SessionCatalog } from '../session/catalog';
 import { ScopeExecutionStore } from '../session/scope-execution';
 import { WorkspaceStore } from '../workspace/store';
 import { preFlightChecks } from '../cli/preflight';
-import { buildBridgeSystemPrompt } from '../channels/lark/system-prompt';
+import { larkAgentHostContext } from '../channels/lark/agent-host';
 import {
   assertReconnectAgentKindUnchanged,
   checkRuntimeAgentAvailability,
@@ -22,6 +22,7 @@ import {
 } from './agent-runtime';
 import { ProfileExecutionController } from './execution-controller';
 import { ModelProviderRegistry } from '../model-provider/provider';
+import { LarkProfileAuth } from '../lark-auth/profile-auth';
 import {
   acquireAppRuntimeLock,
   acquireProfileRuntimeLock,
@@ -46,19 +47,14 @@ function createExecutionController(input: {
   modelServices?: Record<string, import('../model-service/config').ModelServiceConfig>;
 }): ProfileExecutionController {
   const { profileConfig, scopeExecution, appPaths, configPath, modelServices } = input;
+  const host = larkAgentHostContext(appPaths, configPath);
   return new ProfileExecutionController({
     profileConfig,
     scopeExecution,
     appPaths: { ...appPaths, configPath },
-    systemPrompt: buildBridgeSystemPrompt,
+    systemPrompt: host.systemPrompt,
+    env: host.env,
     modelProviders: new ModelProviderRegistry(modelServices),
-    larkChannel: {
-      profile: appPaths.profile,
-      rootDir: appPaths.rootDir,
-      configPath,
-      larkCliConfigDir: appPaths.larkCliConfigDir,
-      larkCliSourceConfigFile: appPaths.larkCliSourceConfigFile,
-    },
   });
 }
 
@@ -112,6 +108,7 @@ class ManagedProfile {
     private onExitCommand: (profile: string) => void,
     private onRuntimeChange: () => Promise<void>,
     private inbox: InboxManager,
+    private larkAuth: LarkProfileAuth,
   ) {}
 
   get appId(): string {
@@ -152,6 +149,7 @@ class ManagedProfile {
         workspaces: this.workspaces,
         controls: this.controls,
         appPaths: this.appPaths,
+        larkAuth: this.larkAuth,
       });
       const botName = this.bridge.channel.botIdentity?.name;
       if (botName) {
@@ -202,6 +200,7 @@ class ManagedProfile {
     currentPaths: AppPaths,
     currentCfg: AppConfig,
     currentProfileConfig: ProfileConfig,
+    larkAuth = this.larkAuth,
   ): Controls {
     const self = this;
     const currentControls: Controls = {
@@ -217,6 +216,7 @@ class ManagedProfile {
       },
       configPath: self.configPath,
       cfg: currentCfg,
+      larkAuth,
       processId: self.entry.id,
       async exit() {
         // `/exit` from chat stops THIS profile's channel; the supervisor lives on.
@@ -258,6 +258,7 @@ class ManagedProfile {
         configPath: this.configPath,
         modelServices: nextRuntime.modelServices,
       });
+      const nextLarkAuth = new LarkProfileAuth(next, nextRuntime.appPaths);
       const availability = await checkRuntimeAgentAvailability(nextExecution.defaultAgent());
       if (!availability.ok) throw availability.error;
 
@@ -269,7 +270,12 @@ class ManagedProfile {
           nextExecution.defaultAgentKind,
         );
       }
-      const nextControls = this.makeControls(nextRuntime.appPaths, next, nextRuntime.profileConfig);
+      const nextControls = this.makeControls(
+        nextRuntime.appPaths,
+        next,
+        nextRuntime.profileConfig,
+        nextLarkAuth,
+      );
       const nextBridge = await this.startChannelFn({
         cfg: next,
         execution: nextExecution,
@@ -278,6 +284,7 @@ class ManagedProfile {
         workspaces: this.workspaces,
         controls: nextControls,
         appPaths: nextRuntime.appPaths,
+        larkAuth: nextLarkAuth,
       });
       try {
         await this.bridge.disconnect();
@@ -304,6 +311,7 @@ class ManagedProfile {
       this.cfg = next;
       this.profileConfig = nextRuntime.profileConfig;
       this.execution = nextExecution;
+      this.larkAuth = nextLarkAuth;
       this.controls = nextControls;
     } finally {
       if (nextAppLock) await nextAppLock.release().catch(() => undefined);
@@ -325,6 +333,7 @@ class ManagedProfile {
       cfg: this.cfg,
       profileConfig: this.profileConfig,
       execution: this.execution,
+      larkAuth: this.larkAuth,
     };
     try {
       const nextRuntime = await resolveProfileRuntime({
@@ -341,6 +350,7 @@ class ManagedProfile {
         configPath: this.configPath,
         modelServices: nextRuntime.modelServices,
       });
+      const nextLarkAuth = new LarkProfileAuth(nextRuntime.cfg, nextRuntime.appPaths);
       const availability = await checkRuntimeAgentAvailability(nextExecution.defaultAgent());
       if (!availability.ok) throw availability.error;
 
@@ -349,6 +359,7 @@ class ManagedProfile {
       this.cfg = nextRuntime.cfg;
       this.profileConfig = nextRuntime.profileConfig;
       this.execution = nextExecution;
+      this.larkAuth = nextLarkAuth;
       try {
         await this.bringUp(new Date().toISOString());
       } catch (error) {
@@ -356,6 +367,7 @@ class ManagedProfile {
         this.cfg = previous.cfg;
         this.profileConfig = previous.profileConfig;
         this.execution = previous.execution;
+        this.larkAuth = previous.larkAuth;
         await this.bringUp(new Date().toISOString()).catch((rollbackError) => {
           log.fail('supervisor', rollbackError, {
             step: 'restore-after-agent-switch',
@@ -483,6 +495,7 @@ export class Supervisor {
       (p) => void this.stopProfile(p).catch(() => undefined),
       async () => { await this.monitors.reconcile(); },
       this.inbox,
+      new LarkProfileAuth(cfg, appPaths),
     );
     await managed.bringUp(new Date().toISOString());
     this.managed.set(appPaths.profile, managed);

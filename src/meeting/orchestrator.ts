@@ -3,7 +3,7 @@ import { resolveRunModelSettings } from '../runtime/model-settings';
 import type { LarkChannel } from '@larksuite/channel';
 import type { AgentEvent } from '../agent/types';
 import { capabilityForProfile } from '../agent/backends';
-import type { Controls } from '../commands';
+import type { Controls } from '../commands/types';
 import { log } from '../core/logger';
 import type { RunExecutor } from '../runtime/run-executor';
 import type { ActiveRuns } from '../bot/active-runs';

@@ -1,5 +1,5 @@
 import type { AgentRunOptions } from '../agent/types';
-import type { Attention, TriageDecision } from '../inbox/types';
+import type { Attention, TriageDecision } from './evidence';
 import type { WorkItem } from './types';
 import type { SourceItem, SourceSeed, SourceTransition, AssessmentUpdate, AnalysisContext } from './lifecycle';
 import type { WorkItemEvent } from './events';

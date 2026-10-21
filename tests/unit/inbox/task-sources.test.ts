@@ -116,8 +116,8 @@ it('lets the workbench inspect disabled source history, rejects mixed batch acti
   const path = join(await mkdtemp(join(tmpdir(), 'inbox-source-registry-')), 'config.json');
   const registry = new InboxTaskSources(path); sources.push(registry);
   const driver = { accepts: () => true, prepare: vi.fn() };
-  const a = await registry.connect(createWorkItemSource({ id: 'gitlab-ci', label: 'CI', profile: 'codex', enabled: false, executor: () => undefined, driver }, path));
-  const b = await registry.connect(createWorkItemSource({ id: 'another-watch', label: 'Other', profile: 'claude', enabled: false, executor: () => undefined, driver }, path));
+  const a = await registry.connect(createWorkItemSource({ id: 'gitlab-ci', label: 'CI', profile: 'codex', enabled: false, executor: () => undefined, driver }));
+  const b = await registry.connect(createWorkItemSource({ id: 'another-watch', label: 'Other', profile: 'claude', enabled: false, executor: () => undefined, driver }));
   const x = await a.submit(event); const y = await b.submit(event);
   const response = await executeSourceCommand(registry, { id: '00000000-0000-0000-0000-000000000000', action: 'detail', target: x.id });
   expect(response.handled).toBe(true); expect(JSON.stringify(response.result)).not.toContain('pipeline":10');

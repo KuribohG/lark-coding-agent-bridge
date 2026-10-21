@@ -1,4 +1,4 @@
-import type { LogContext, LogFields } from './logger';
+import type { LogContext, LogFields } from './log-types';
 
 /**
  * Optional telemetry hook.

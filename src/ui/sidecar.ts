@@ -3,7 +3,8 @@ import { dirname } from 'node:path';
 import { mkdir } from 'node:fs/promises';
 import { writeFileAtomic } from '../platform/atomic-write';
 import { log } from '../core/logger';
-import type { UiServerHandle } from './types';
+
+type UiSidecarSource = Pick<UiSidecar, 'url' | 'token' | 'port'>;
 
 /**
  * Discovery record for a running bridge's local web-config server, written to
@@ -21,7 +22,7 @@ export interface UiSidecar {
 
 export async function writeUiSidecar(
   uiFile: string,
-  handle: Pick<UiServerHandle, 'url' | 'token' | 'port'>,
+  handle: UiSidecarSource,
   startedAt: string,
 ): Promise<void> {
   const record: UiSidecar = {

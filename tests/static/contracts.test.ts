@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { dirname, resolve } from 'node:path';
 
 const root = process.cwd();
 const read = (p: string) => readFileSync(join(root, p), 'utf8');
@@ -17,6 +18,61 @@ const collectTsFiles = (path: string): string[] => {
     .flatMap((entry) => collectTsFiles(join(path, entry)))
     .sort();
 };
+
+function internalCycles(): string[][] {
+  const files = collectTsFiles('src');
+  const known = new Set(files.map((file) => resolve(root, file)));
+  const graph = new Map<string, string[]>();
+  for (const file of files) {
+    const absolute = resolve(root, file);
+    const source = read(file);
+    const imports: string[] = [];
+    const pattern = /(?:import|export)\s+(?:type\s+)?(?:[^;\n]*?\s+from\s+)?["']([^"']+)["']/g;
+    for (const match of source.matchAll(pattern)) {
+      const specifier = match[1];
+      if (!specifier?.startsWith('.')) continue;
+      const base = resolve(dirname(absolute), specifier);
+      const resolved = [`${base}.ts`, join(base, 'index.ts'), base]
+        .find((candidate) => known.has(candidate));
+      if (resolved) imports.push(resolved);
+    }
+    graph.set(absolute, imports);
+  }
+
+  let index = 0;
+  const stack: string[] = [];
+  const active = new Set<string>();
+  const indices = new Map<string, number>();
+  const low = new Map<string, number>();
+  const cycles: string[][] = [];
+  const visit = (node: string): void => {
+    indices.set(node, index);
+    low.set(node, index++);
+    stack.push(node);
+    active.add(node);
+    for (const next of graph.get(node) ?? []) {
+      if (!indices.has(next)) {
+        visit(next);
+        low.set(node, Math.min(low.get(node)!, low.get(next)!));
+      } else if (active.has(next)) {
+        low.set(node, Math.min(low.get(node)!, indices.get(next)!));
+      }
+    }
+    if (low.get(node) !== indices.get(node)) return;
+    const component: string[] = [];
+    let current: string;
+    do {
+      current = stack.pop()!;
+      active.delete(current);
+      component.push(current);
+    } while (current !== node);
+    if (component.length > 1 || (graph.get(node) ?? []).includes(node)) {
+      cycles.push(component.map((item) => item.replace(`${root}/`, '')).sort());
+    }
+  };
+  for (const file of graph.keys()) if (!indices.has(file)) visit(file);
+  return cycles;
+}
 
 describe('static architecture contracts', () => {
   it('does not route production runs by importing Codex internals in shared bot/card code', () => {
@@ -53,5 +109,22 @@ describe('static architecture contracts', () => {
       expect(source, file).toContain('mode: 0o600');
       expect(source, file).not.toMatch(/\bwriteFile\(/);
     }
+  });
+
+  it('keeps generic runtime and work-item domains independent from Lark adapters', () => {
+    const runtimeFiles = ['src/runtime/agent-runtime.ts', 'src/runtime/execution-controller.ts'];
+    for (const file of runtimeFiles) {
+      expect(read(file), file).not.toMatch(/channels\/lark|@larksuite\/channel/);
+    }
+    for (const file of collectTsFiles('src/work-items')) {
+      expect(read(file), file).not.toMatch(/from ['"](?:\.\.\/)+inbox/);
+    }
+    for (const file of collectTsFiles('src/config')) {
+      expect(read(file), file).not.toMatch(/channels\/lark/);
+    }
+  });
+
+  it('contains no internal import cycles', () => {
+    expect(internalCycles()).toEqual([]);
   });
 });

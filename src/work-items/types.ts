@@ -1,5 +1,5 @@
 import type { DeliveryTarget } from './config';
-import type { Attention, InboxMessage } from '../inbox/types';
+import type { Attention, EvidenceMessage } from './evidence';
 
 export interface WorkItem {
   /** Source identity and evidence lifecycle; populated when loading legacy records. */
@@ -13,7 +13,7 @@ export interface WorkItem {
   profile: string;
   destination: DeliveryTarget;
   source: { chatId: string; name: string; type: 'p2p' | 'group' | 'external'; threadId?: string };
-  messages: InboxMessage[];
+  messages: EvidenceMessage[];
   state: 'notifying' | 'waiting' | 'queued' | 'running' | 'ready' | 'done' | 'ignored' | 'claimed' | 'failed';
   createdAt: number; updatedAt: number; notifiedAt?: number; dueAt?: number;
   intakeTrigger?: 'private' | 'mention' | 'group';

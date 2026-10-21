@@ -7,7 +7,7 @@ import type { CommentEvent, LarkChannel } from '@larksuite/channel';
 import { capabilityForProfile } from '../agent/backends';
 import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { getAgentStopGraceMs } from '../config/schema';
-import type { Controls } from '../commands';
+import type { Controls } from '../commands/types';
 import { resolveAppPaths } from '../config/app-paths';
 import { log } from '../core/logger';
 import { evaluateRunPolicy } from '../policy/run-policy';

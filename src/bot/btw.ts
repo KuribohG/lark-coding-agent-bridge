@@ -1,6 +1,6 @@
 import { larkDisplay } from '../channels/lark/config';
 import { rewriteFileLinks } from '../card/file-links';
-import type { CommandContext } from '../commands';
+import type { CommandContext } from '../commands/types';
 import { capabilityForProfile } from '../agent/backends';
 import { profileForAgentKind } from '../runtime/execution-controller';
 import { modelRunArguments } from '../agent/model-settings';

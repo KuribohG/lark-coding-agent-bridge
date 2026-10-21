@@ -1,6 +1,6 @@
 import type { NormalizedMessage } from '@larksuite/channel';
 import { capabilityForProfile } from '../agent/backends';
-import type { Controls } from '../commands';
+import type { Controls } from '../commands/types';
 import type { AccessDecision } from '../policy/access';
 import { evaluateRunPolicy } from '../policy/run-policy';
 import { resolveWorkingDirectory } from '../policy/workspace';

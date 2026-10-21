@@ -6,9 +6,7 @@ import { resolveAppPaths } from '../../../config/app-paths';
 import { withConfigFileLock } from '../../../config/profile-store';
 import { loadMonitorRoot, saveMonitorRoot, monitorConfigPath, larkConfigRevision, concurrencyConfigRevision } from '../../store';
 import { parseWorkItemConcurrency } from '../../../work-items/concurrency';
-import { resolveAppSecret } from '../../../config/secret-resolver';
-import { larkCallbackSigningKeys } from '../../../lark-auth/callback-key';
-import { TenantTokenProvider } from '../../../lark-auth/tenant-token';
+import { LarkProfileAuth } from '../../../lark-auth/profile-auth';
 import { getCotMessages } from '../../../config/schema';
 import { CotClient } from '../../../bot/cot';
 import { inboxMode, intakeScope, normalizeInbox, validateInbox, type InboxConfig, type InboxMode, type IntakeScope } from '../../../inbox/config';
@@ -20,7 +18,7 @@ import { guiJobs } from '../../../inbox/presentation';
 import { executeInboxCommand, executeSourceCommand } from '../../../inbox/workbench';
 import { processInbox } from './processor';
 import { startInboxProgress } from '../../../inbox/progress';
-import { createRuntimeAgent } from '../../../runtime/agent-runtime';
+import { createLarkRuntimeAgent } from '../../../channels/lark/agent-host';
 import { triageWithChatTools } from './codex-triage';
 import { InboxReadTools } from './read-tools';
 import { InboxLark } from '../../../inbox/lark';
@@ -247,7 +245,7 @@ export class InboxManager {
       this.unlock = await lockfile.lock(lease, { stale: 60_000, update: 10_000, retries: 0, onCompromised: () => { void this.close(); } });
       const lark = new InboxLark({ profile: config.executorProfile, rootDir: this.rootDir }, config);
       this.lark = lark;
-      const agent = createRuntimeAgent(controls.profileConfig, { ...paths, configPath: this.configPath });
+      const agent = createLarkRuntimeAgent(controls.profileConfig, paths, this.configPath);
       if (controls.botIdentity) agent.setBotIdentity?.(controls.botIdentity);
       const readTools = new InboxReadTools(async (args, signal) => {
         const reader = new InboxLark({ profile: config.executorProfile, rootDir: this.rootDir }, config);
@@ -260,16 +258,13 @@ export class InboxManager {
           return await reader.callValue(args);
         } finally { signal.removeEventListener('abort', cancel); reader.close(); }
       }, config.ownerOpenId);
-      const secret = await resolveAppSecret(controls.cfg, paths);
-      const tenantTokens = new TenantTokenProvider({
-        tenant: controls.cfg.accounts.app.tenant,
-        appId: controls.cfg.accounts.app.id,
-        appSecret: secret,
-      });
+      const larkAuth = controls.larkAuth ?? new LarkProfileAuth(controls.cfg, paths);
+      const credentials = await larkAuth.credentials();
+      const tenantTokens = await larkAuth.tenantTokens();
       const cotClient = new CotClient({
-        tenant: controls.cfg.accounts.app.tenant,
-        appId: controls.cfg.accounts.app.id,
-        appSecret: secret,
+        tenant: credentials.tenant,
+        appId: credentials.appId,
+        appSecret: credentials.appSecret,
         tenantTokens,
       });
       this.service = new InboxService(new InboxStore(join(folder, 'state.json')), config, larkRuntime(config, {
@@ -297,7 +292,7 @@ export class InboxManager {
       this.nonces = new CallbackNonceStore(join(folder, 'card-nonces.json'));
       await this.nonces.load();
       const cards = new InboxCards(this.service, lark, new CallbackAuth({
-        keys: larkCallbackSigningKeys(secret),
+        keys: await larkAuth.callbackKeys(),
         nonceStore: this.nonces,
       }), this.nonces);
       this.cards = cards;
@@ -312,7 +307,7 @@ export class InboxManager {
       if (config.h5.publicUrl) {
         const auth = new InboxH5Auth({
           appId: controls.cfg.accounts.app.id,
-          appSecret: secret,
+          appSecret: credentials.appSecret,
           ownerOpenId: config.ownerOpenId,
           publicUrl: config.h5.publicUrl,
           tenant: controls.cfg.accounts.app.tenant,

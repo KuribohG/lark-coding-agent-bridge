@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { configRevision } from './profile-store';
-import { larkDisplay } from '../channels/lark/config';
+import { larkDisplay } from './lark-display';
 import { dirname } from 'node:path';
 import { resolveAppPaths } from './app-paths';
 import { setSecret } from './keystore';

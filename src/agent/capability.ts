@@ -10,6 +10,8 @@ export interface AgentCapability {
   sessionKind: AgentSessionKind;
   /** AgentRunOptions field used to resume this backend. */
   sessionIdField: 'sessionId' | 'threadId';
+  imageInput: 'paths' | 'attachments';
+  legacySessionStore: boolean;
   promptInjection: PromptInjectionMode;
   supportsNativeHistory: boolean;
   permissions: {
@@ -24,6 +26,8 @@ export function claudeCapability(profile?: Pick<ProfileConfig, 'permissions'>): 
     agentId: 'claude',
     sessionKind: 'claude-session',
     sessionIdField: 'sessionId',
+    imageInput: 'attachments',
+    legacySessionStore: true,
     promptInjection: 'append-system-prompt',
     supportsNativeHistory: true,
     permissions: { maxAccess },
@@ -36,6 +40,8 @@ export function codexCapability(profile: Pick<ProfileConfig, 'permissions'>): Ag
     agentId: 'codex',
     sessionKind: 'codex-thread',
     sessionIdField: 'threadId',
+    imageInput: 'paths',
+    legacySessionStore: false,
     promptInjection: 'stdin-prefix',
     supportsNativeHistory: false,
     permissions: { maxAccess },
@@ -47,6 +53,8 @@ export function piCapability(profile: Pick<ProfileConfig, 'permissions'>): Agent
     agentId: 'pi',
     sessionKind: 'pi-session',
     sessionIdField: 'sessionId',
+    imageInput: 'attachments',
+    legacySessionStore: false,
     promptInjection: 'append-system-prompt',
     supportsNativeHistory: true,
     permissions: {
@@ -56,4 +64,10 @@ export function piCapability(profile: Pick<ProfileConfig, 'permissions'>): Agent
       supportedAccess: ['read-only', 'full'],
     },
   };
+}
+
+export function sessionIdFieldForAgent(
+  agentId: AgentCapabilityId,
+): AgentCapability['sessionIdField'] {
+  return agentId === 'codex' ? 'threadId' : 'sessionId';
 }

@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'smol-toml';
 import type { ProfileConfig } from '../../config/profile-schema';
-import type { ResponsesModelService } from '../model-service';
+import type { ResponsesModelService } from '../../model-service/service';
 
 const obj = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};

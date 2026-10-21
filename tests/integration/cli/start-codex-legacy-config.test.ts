@@ -4,8 +4,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, saveRootConfig } from '../../../src/config/profile-store';
-import { createRuntimeAgent } from '../../../src/runtime/agent-runtime';
+import { createLarkRuntimeAgent } from '../../../src/channels/lark/agent-host';
 import { resolveProfileRuntime } from '../../../src/runtime/profile-runtime';
+import { resolveAppPaths } from '../../../src/config/app-paths';
 
 const { loadRootConfig } = await import('../../../src/config/profile-store');
 
@@ -19,7 +20,7 @@ describe('Codex startup compatibility with legacy binary metadata', () => {
   it('loads a legacy Codex profile that only has binaryPath, past agent availability', async () => {
     const h = await createLegacyCodexConfig({ codexMetadata: {} });
     const runtime = await resolveProfileRuntime({ config: h.configPath, profile: 'codex', allowBootstrap: false });
-    const agent = createRuntimeAgent(runtime.profileConfig, { ...runtime.appPaths, configPath: runtime.configPath });
+    const agent = createLarkRuntimeAgent(runtime.profileConfig, runtime.appPaths, runtime.configPath);
     expect(agent.id).toBe('codex');
     expect(await agent.isAvailable()).toBe(true);
   });
@@ -27,7 +28,7 @@ describe('Codex startup compatibility with legacy binary metadata', () => {
   it('loads and refreshes stale legacy Codex metadata, past agent availability', async () => {
     const h = await createLegacyCodexConfig({ codexMetadata: staleLegacyMetadata() });
     const runtime = await resolveProfileRuntime({ config: h.configPath, profile: 'codex', allowBootstrap: false });
-    const agent = createRuntimeAgent(runtime.profileConfig, { ...runtime.appPaths, configPath: runtime.configPath });
+    const agent = createLarkRuntimeAgent(runtime.profileConfig, runtime.appPaths, runtime.configPath);
     expect(agent.id).toBe('codex');
     expect(await agent.isAvailable()).toBe(true);
   });
@@ -40,12 +41,11 @@ describe('Codex startup compatibility with legacy binary metadata', () => {
     const profile = root?.profiles.codex;
     expect(profile).toBeDefined();
 
-    const agent = createRuntimeAgent(profile!, {
-      profile: 'codex',
-      rootDir: h.root,
-      profileDir: join(h.root, 'profiles', 'codex'),
-      configPath: h.configPath,
-    });
+    const agent = createLarkRuntimeAgent(
+      profile!,
+      resolveAppPaths({ rootDir: h.root, profile: 'codex' }),
+      h.configPath,
+    );
 
     await expect(
       agent.prepareRun?.({

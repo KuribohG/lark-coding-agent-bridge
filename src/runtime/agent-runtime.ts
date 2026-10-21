@@ -1,44 +1,28 @@
-import { buildLarkChannelEnv } from '../agent/lark-channel-env';
-import { buildBridgeSystemPrompt } from '../channels/lark/system-prompt';
 import { backendFor, createAgentAdapter, isAgentKind } from '../agent/backends';
 import { AgentPreflightError, type AgentAvailability } from '../agent/preflight';
 import type { AgentAdapter } from '../agent/types';
+import type { AgentSystemPrompt } from '../agent/system-prompt';
 import type { AppPaths } from '../config/app-paths';
 import type { AgentExecutionProfile, AgentKind } from '../config/profile-schema';
 import type { AcquiredRuntimeLock } from './locks';
 
 /**
- * Build the agent adapter for a profile, wiring its per-profile lark-channel env
- * (so spawned agent processes see this profile's LARKSUITE_CLI_CONFIG_DIR etc.).
- * Shared by the foreground run path and the supervisor so both produce an
- * identically-configured adapter. Each profile MUST get its own adapter — the
- * adapter stores bot identity on itself (see `setBotIdentity`).
+ * Build a generic agent adapter. Channel-specific environment and prompts are
+ * supplied by the host instead of being inferred here.
  */
 export function createRuntimeAgent(
   profileConfig: AgentExecutionProfile,
-  appPaths: Pick<AppPaths, 'profileDir'> &
-    Partial<Pick<AppPaths, 'rootDir' | 'profile' | 'configFile' | 'larkCliConfigDir' | 'larkCliSourceConfigFile'>> & {
-      configPath?: string;
-    },
+  appPaths: Pick<AppPaths, 'profileDir'>,
+  host: {
+    env?: NodeJS.ProcessEnv;
+    systemPrompt?: AgentSystemPrompt;
+  } = {},
 ): AgentAdapter {
-  const larkChannelConfigPath = appPaths.configPath ?? appPaths.configFile;
-  const larkChannel =
-    appPaths.rootDir && appPaths.profile
-      ? {
-          profile: appPaths.profile,
-          rootDir: appPaths.rootDir,
-          ...(larkChannelConfigPath ? { configPath: larkChannelConfigPath } : {}),
-          ...(appPaths.larkCliConfigDir ? { larkCliConfigDir: appPaths.larkCliConfigDir } : {}),
-          ...(appPaths.larkCliSourceConfigFile
-            ? { larkCliSourceConfigFile: appPaths.larkCliSourceConfigFile }
-            : {}),
-        }
-      : undefined;
   return createAgentAdapter({
     profile: profileConfig,
     profileDir: appPaths.profileDir,
-    env: buildLarkChannelEnv(larkChannel),
-    systemPrompt: buildBridgeSystemPrompt,
+    env: host.env ?? {},
+    systemPrompt: host.systemPrompt ?? '',
   });
 }
 

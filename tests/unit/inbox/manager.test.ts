@@ -225,7 +225,7 @@ it('persists GUI intake changes while off and retains them after restart', async
 
 
 it('uses the shared Codex runtime configuration and quarantines both trusted bot identity forms on startup', async () => {
-  const { create, controls, rootDir, path } = await setup();
+  const { create, controls, rootDir } = await setup();
   controls.botIdentity = { openId: 'ou_self', name: '助理' };
   const spy = vi.spyOn(runtimeAgent, 'createRuntimeAgent');
   const { InboxStore } = await import('../../../src/inbox/store');
@@ -240,7 +240,18 @@ it('uses the shared Codex runtime configuration and quarantines both trusted bot
   try {
     const manager = create(); await manager.reconcile();
     expect((await manager.view()).running).toBe(true);
-    expect(spy).toHaveBeenCalledWith(controls.profileConfig, expect.objectContaining({ rootDir, profile: 'codex', configPath: path }));
+    expect(spy).toHaveBeenCalledWith(
+      controls.profileConfig,
+      expect.objectContaining({ rootDir, profile: 'codex' }),
+      expect.objectContaining({
+        env: expect.objectContaining({
+          LARK_CHANNEL_HOME: rootDir,
+          LARK_CHANNEL_PROFILE: 'codex',
+          LARK_CHANNEL_CONFIG: join(rootDir, 'profiles', 'codex', 'lark-cli-source', 'config.json'),
+        }),
+        systemPrompt: expect.any(Function),
+      }),
+    );
     const saved = new InboxStore(store.path); await saved.load();
     expect(saved.data.jobs.map(j => j.state)).toEqual(['ignored', 'ignored']);
   } finally { spy.mockRestore(); }
