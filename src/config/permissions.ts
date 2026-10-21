@@ -59,7 +59,7 @@ export function normalizePermissions(input: {
   };
 }
 
-export function assertAccessPair(
+function assertAccessPair(
   defaultAccess: AccessMode,
   maxAccess: AccessMode,
   source: PermissionSource | 'sandbox' = 'permissions',
@@ -80,7 +80,7 @@ export function clampAccess(
   return ACCESS_ORDER[defaultAccess] <= ACCESS_ORDER[maxAllowed] ? defaultAccess : maxAllowed;
 }
 
-export function codexSandboxToAccess(mode: CodexSandboxMode): AccessMode {
+function codexSandboxToAccess(mode: CodexSandboxMode): AccessMode {
   switch (mode) {
     case 'read-only':
       return 'read-only';

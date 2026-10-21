@@ -274,7 +274,7 @@ export function getAgentPreflightDiagnostic(err: unknown): AgentPreflightDiagnos
   return getAgentPreflightDiagnostic((err as { cause?: unknown }).cause);
 }
 
-export function isAgentPreflightDiagnostic(input: unknown): input is AgentPreflightDiagnostic {
+function isAgentPreflightDiagnostic(input: unknown): input is AgentPreflightDiagnostic {
   if (!input || typeof input !== 'object') return false;
   const raw = input as { code?: unknown; agentId?: unknown; agentName?: unknown; command?: unknown };
   return (

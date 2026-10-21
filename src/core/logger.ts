@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { createWriteStream, mkdirSync, type WriteStream } from 'node:fs';
-import { open, readdir, rm, stat } from 'node:fs/promises';
+import { readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { telemetry } from './telemetry';
 
@@ -539,7 +539,7 @@ export function withTrace<T>(ctx: LogContext, fn: () => Promise<T>): Promise<T> 
   return als.run({ ...ctx, traceId }, fn);
 }
 
-export function newTraceId(): string {
+function newTraceId(): string {
   // Short, easy-to-grep, base36 random.
   return Math.random().toString(36).slice(2, 10);
 }
@@ -586,7 +586,7 @@ export function sanitizeLogsForDoctor(logs: string): string {
   return redactDiagnosticText(out);
 }
 
-export function redactDiagnosticText(text: string): string {
+function redactDiagnosticText(text: string): string {
   let out = redactJsonCredentialText(text);
   out = redactResourceText(out);
   out = out.replace(
@@ -629,32 +629,6 @@ function redactResourceText(text: string): string {
 }
 
 /**
- * Read the tail of today's (and optionally yesterday's) log file.
- *
- * Returns up to `maxBytes` of complete JSON lines, oldest-first. If the
- * tail starts mid-line we drop the partial leader.
- */
-export async function readRecentLogs(opts: { maxBytes: number }): Promise<string> {
-  const dir = logsDir();
-  if (!dir) return '';
-  const today = todayKey();
-  const yesterday = new Date(loggerOptions.now().getTime() - 86_400_000)
-    .toISOString()
-    .slice(0, 10)
-    .replace(/-/g, '');
-  const todayPath = join(dir, logFileName(today));
-  const yesterdayPath = join(dir, logFileName(yesterday));
-
-  const tail = await readTail(todayPath, opts.maxBytes);
-  if (tail.length >= opts.maxBytes / 2) return tail;
-
-  // Top up from yesterday's file if today's is sparse.
-  const remaining = opts.maxBytes - Buffer.byteLength(tail, 'utf8');
-  const earlier = await readTail(yesterdayPath, remaining);
-  return earlier + tail;
-}
-
-/**
  * Delete log files older than the retention window. Best-effort, called
  * on bridge startup. Returns the number of files removed.
  */
@@ -685,29 +659,6 @@ export async function gcOldLogs(): Promise<number> {
     log.info('logger', 'gc', { removed, retentionDays: loggerOptions.retentionDays });
   }
   return removed;
-}
-
-async function readTail(path: string, maxBytes: number): Promise<string> {
-  try {
-    const st = await stat(path);
-    const start = Math.max(0, st.size - maxBytes);
-    const handle = await open(path, 'r');
-    try {
-      const buf = Buffer.alloc(st.size - start);
-      await handle.read(buf, 0, buf.length, start);
-      let content = buf.toString('utf8');
-      if (start > 0) {
-        const nl = content.indexOf('\n');
-        if (nl !== -1) content = content.slice(nl + 1);
-      }
-      return content;
-    } finally {
-      await handle.close();
-    }
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return '';
-    throw err;
-  }
 }
 
 export function reportMetric(

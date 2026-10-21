@@ -158,12 +158,6 @@ export function createRootConfig(profile: string, cfg: ProfileConfig, secrets = 
   };
 }
 
-export function isRootConfig(value: unknown): value is RootConfig {
-  if (!value || typeof value !== 'object') return false;
-  const root = value as Partial<RootConfig>;
-  return root.schemaVersion === 2 && Boolean(root.profiles && typeof root.profiles === 'object');
-}
-
 export function hasPermissionDefaultsMigration(root: RootConfig, profile: string): boolean {
   return root.migrations?.permissionDefaultsV1?.includes(profile) ?? false;
 }

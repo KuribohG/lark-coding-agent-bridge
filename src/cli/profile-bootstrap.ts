@@ -54,7 +54,7 @@ export async function createBootstrapProfileConfig(
   return profile;
 }
 
-export async function resolveBootstrapWorkspace(workspace: string): Promise<string> {
+async function resolveBootstrapWorkspace(workspace: string): Promise<string> {
   const resolved = await resolveWorkingDirectory(workspace);
   if (!resolved.ok) throw new Error(resolved.userVisible);
   return resolved.cwdRealpath;
@@ -65,7 +65,7 @@ async function ensureManagedDefaultWorkspace(path: string): Promise<string> {
   return realpath(path);
 }
 
-export async function createBootstrapCodexConfig(binaryPath: string | undefined) {
+async function createBootstrapCodexConfig(binaryPath: string | undefined) {
   return createBootstrapBinaryConfig({
     binaryPath,
     envName: 'LARK_CHANNEL_CODEX_BIN',
@@ -75,7 +75,7 @@ export async function createBootstrapCodexConfig(binaryPath: string | undefined)
   });
 }
 
-export async function createBootstrapPiConfig(binaryPath: string | undefined) {
+async function createBootstrapPiConfig(binaryPath: string | undefined) {
   return createBootstrapBinaryConfig({
     binaryPath,
     envName: 'LARK_CHANNEL_PI_BIN',

@@ -1,1 +1,1 @@
-export { handlingState, replyContent, resultText } from '../work-items/result';
+export { handlingState, replyContent } from '../work-items/result';

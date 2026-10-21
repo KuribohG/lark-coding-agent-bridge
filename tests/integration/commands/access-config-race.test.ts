@@ -1,4 +1,4 @@
-import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
+import { encodeFixture } from '../../helpers/config-fixture';
 import { mkdir, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';

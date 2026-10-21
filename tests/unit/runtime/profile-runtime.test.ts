@@ -1,7 +1,7 @@
 import { parseDocument } from '../../../src/config/document';
 import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
-import { delimiter, join } from 'node:path';
+import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdtemp } from 'node:fs/promises';
 import { describe, expect, it, vi } from 'vitest';
@@ -13,7 +13,6 @@ import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { resolveAppPaths } from '../../../src/config/app-paths';
 import { getSecret } from '../../../src/config/keystore';
 import { secretKeyForApp } from '../../../src/config/schema';
-import { legacyLarkCliSourceOverlayPaths } from '../../../src/lark-cli/legacy-source-overlay';
 import { writeLarkCliSourceProjection } from '../../../src/lark-cli/profile-projection';
 import { writeVersionExecutable } from '../../helpers/fake-executable';
 

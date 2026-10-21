@@ -108,7 +108,7 @@ function writeAtomicSync(entries: ProcessEntry[], path: string): void {
 /** Generate a short, human-typable id. Collisions are caller's problem;
  * acceptable since dead entries are pruned and same-machine fleets are
  * small. */
-export function generateShortId(): string {
+function generateShortId(): string {
   return randomBytes(2).toString('hex');
 }
 
@@ -212,7 +212,7 @@ export function cleanupTmpFiles(registryFile: string = paths.processesFile): voi
  * Find registry entries with the same appId, excluding `excludePid` (typically
  * the caller's own pid) so a process doesn't flag itself as a conflict.
  */
-export function sameAppOthers(
+function sameAppOthers(
   appId: string,
   excludePid = process.pid,
   registryFile: string = paths.processesFile,

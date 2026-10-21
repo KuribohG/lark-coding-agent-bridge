@@ -13,7 +13,7 @@ export async function writeVersionExecutable(
   return file;
 }
 
-export async function writeVersionExecutableFile(
+async function writeVersionExecutableFile(
   file: string,
   version: string,
   marker = '',

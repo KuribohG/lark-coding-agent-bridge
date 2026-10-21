@@ -1,4 +1,4 @@
-import { access, readFile, rm } from 'node:fs/promises';
+import { readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { withConfigFileLock } from '../config/profile-store';
 import { writeFileAtomic } from '../platform/atomic-write';
@@ -23,17 +23,6 @@ export async function recoverLegacyLarkCliSourceOverlay(configFile: string): Pro
   await withConfigFileLock(configFile, async () => {
     await recoverLegacyLarkCliSourceOverlayUnlocked(configFile);
   });
-}
-
-export async function hasLegacyLarkCliSourceOverlay(configFile: string): Promise<boolean> {
-  const { markerFile } = legacyLarkCliSourceOverlayPaths(configFile);
-  try {
-    await access(markerFile);
-    return true;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw err;
-  }
 }
 
 export async function withLegacyLarkCliSourceOverlay<T>(

@@ -23,7 +23,7 @@ export class GitLabCiManager {
   private timer: ReturnType<typeof setInterval>;
   private closed = false;
   error?: string;
-  constructor(private configPath: string, private host: MonitorHost, private rootDir?: string, sources?: WorkItemSources) {
+  constructor(private configPath: string, private host: MonitorHost, sources?: WorkItemSources) {
     this.sources = sources ?? new WorkItemSources(configPath);
     this.timer = setInterval(() => { void this.reconcile(); }, 15_000);
     this.timer.unref();

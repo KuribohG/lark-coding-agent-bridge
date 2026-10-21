@@ -128,14 +128,6 @@ export function accountFormCard(opts: FormCardOpts = {}): object {
   };
 }
 
-export function accountValidatingCard(): object {
-  return {
-    schema: '2.0',
-    config: { summary: { content: '正在校验...' } },
-    body: { elements: [{ tag: 'markdown', content: '⏳ **正在校验凭据...**' }] },
-  };
-}
-
 export function accountSuccessCard(info: CurrentInfo): object {
   return {
     schema: '2.0',
@@ -174,13 +166,5 @@ export function accountFailureCard(reason: string): object {
         },
       ],
     },
-  };
-}
-
-export function accountCancelledCard(): object {
-  return {
-    schema: '2.0',
-    config: { summary: { content: '已取消' } },
-    body: { elements: [{ tag: 'markdown', content: '已取消，未做任何修改。' }] },
   };
 }

@@ -58,7 +58,7 @@ export interface AddBotResult {
  * Note `im:chat` / `im:chat:readonly` are NOT grantable here — the granular
  * `im:chat:read` / `im:chat.members:write_only` are the operative ones.
  */
-export const LIST_CHAT_SCOPES = ['im:chat:read'];
+const LIST_CHAT_SCOPES = ['im:chat:read'];
 export const ADD_BOT_SCOPES = ['im:chat.members:write_only'];
 
 interface ExecResult {

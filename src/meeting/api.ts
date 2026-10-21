@@ -160,19 +160,6 @@ export async function sendMeetingText(
   });
 }
 
-/** Send an in-meeting reaction (e.g. `LOVE`, `THUMBSUP`, `VC_SoundsClear`). */
-export async function sendMeetingReaction(
-  client: VcRequestClient,
-  meetingId: string,
-  emojiType: string,
-): Promise<void> {
-  await call(client, {
-    method: 'POST',
-    url: `${BASE}/message`,
-    data: { meeting_id: meetingId, msg_type: 'reaction', content: emojiType },
-  });
-}
-
 /** One raw in-meeting activity record (shape mirrors the push payload's items). */
 export interface RawActivityItem {
   event_id?: string;

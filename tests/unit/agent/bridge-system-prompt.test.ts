@@ -3,7 +3,7 @@ import {
   BRIDGE_SYSTEM_PROMPT,
   buildBridgeSystemPrompt,
   prefixBridgeSystemPrompt,
-} from '../../../src/agent/bridge-system-prompt';
+} from '../../../src/channels/lark/system-prompt';
 
 describe('bridge system prompt bot collaboration rules', () => {
   it('states that bots only receive messages via a real structured mention', () => {

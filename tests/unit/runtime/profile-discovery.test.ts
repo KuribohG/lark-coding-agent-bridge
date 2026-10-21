@@ -1,4 +1,4 @@
-import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
+import { encodeFixture } from '../../helpers/config-fixture';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

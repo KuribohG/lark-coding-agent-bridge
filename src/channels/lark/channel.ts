@@ -2,7 +2,7 @@ import { larkDisplay } from './config';
 import { createLarkRunOutput } from './run-output';
 import { presentRunOutput } from '../../runtime/run-output';
 import { findCommand } from '../../commands/catalog';
-import { executionCapabilities, supportsRunInput } from '../../agent/execution';
+import { supportsRunInput } from '../../agent/execution';
 import { modelRunArguments } from '../../agent/model-settings';
 import { deadlineInstructions } from '../../runtime/run-deadline';
 import { timedRuns, type TimedRun } from '../../runtime/timed-runs';

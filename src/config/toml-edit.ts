@@ -14,7 +14,7 @@ export function setPath(value: any, path: KeyPath, next: any): void {
   }
   if (next === undefined) delete value[path.at(-1)!]; else value[path.at(-1)!] = next;
 }
-export const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
+const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 const prefix = (a: readonly (string | number)[], b: readonly (string | number)[]) => a.length <= b.length && a.every((k, i) => k === b[i]);
 const keyText = (path: KeyPath) => path.map(k => /^[A-Za-z0-9_-]+$/.test(k) ? k : JSON.stringify(k)).join('.');
 function inline(value: any): string {

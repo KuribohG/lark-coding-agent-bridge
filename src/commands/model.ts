@@ -7,7 +7,7 @@ import { modelEnvironment, resolveRunModelSettings, scopePreferences } from '../
 import { modelFormCard, modelSettingsSummary } from '../card/model-card';
 import { sendManagedCard } from '../card/managed';
 
-export function modelScopeLabel(ctx: CommandContext): string {
+function modelScopeLabel(ctx: CommandContext): string {
   return ctx.chatMode === 'topic' ? '当前话题' : ctx.chatMode === 'p2p' ? '当前私聊' : '当前群聊';
 }
 

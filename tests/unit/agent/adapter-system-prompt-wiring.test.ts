@@ -12,7 +12,7 @@ vi.mock('../../../src/platform/spawn', async (importOriginal) => {
   return { ...actual, spawnProcess: spawnMock.spawnProcess };
 });
 
-import { buildBridgeSystemPrompt } from '../../../src/agent/bridge-system-prompt';
+import { buildBridgeSystemPrompt } from '../../../src/channels/lark/system-prompt';
 import { ClaudeAdapter } from '../../../src/agent/claude/adapter';
 
 interface FakeChild extends EventEmitter {

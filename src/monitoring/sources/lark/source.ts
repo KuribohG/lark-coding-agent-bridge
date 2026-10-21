@@ -7,13 +7,13 @@ import { createLarkAssessment } from './assessment';
 import { analysisChanges, messageBasis } from '../../../inbox/updates';
 
 const resolved = (job: InboxJob) => handlingState(job) !== 'open';
-export function compareMessages(a: InboxMessage, b: InboxMessage): number {
+function compareMessages(a: InboxMessage, b: InboxMessage): number {
   if (a.chatId === b.chatId && /^\d+$/.test(a.position ?? '') && /^\d+$/.test(b.position ?? '')) {
     return BigInt(a.position!) < BigInt(b.position!) ? -1 : BigInt(a.position!) > BigInt(b.position!) ? 1 : 0;
   }
   return a.time - b.time;
 }
-export function classifyMessage(m: InboxMessage): 'skip' | 'alert' | 'request' {
+function classifyMessage(m: InboxMessage): 'skip' | 'alert' | 'request' {
   const text = m.text.trim();
   if (!text || /^(收到|谢谢|好的|好|嗯|OK|ok|Thanks|👍|👌)[。！!\s]*$/i.test(text)) return 'skip';
   return m.bot || /报警|告警|alert|firing|resolved/i.test(text) ? 'alert' : 'request';

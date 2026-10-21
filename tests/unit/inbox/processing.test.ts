@@ -11,7 +11,7 @@ import { InboxService } from '../../../src/inbox/service';
 import { InboxStore } from '../../../src/inbox/store';
 import { InboxAnalysisQueue } from '../../../src/inbox/task-source';
 import { executeInboxCommand } from '../../../src/inbox/workbench';
-import type { InboxIO, InboxJob, InboxMessage } from '../../../src/inbox/types';
+import type { InboxIO, InboxMessage } from '../../../src/inbox/types';
 
 const executionCapabilities = { finalAnswer: 'separate-event', input: 'unsupported' } as const;
 

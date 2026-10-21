@@ -2,7 +2,7 @@ import { parseDocument, documentToRoot } from '../../../src/config/document';
 import { describe, expect, it } from 'vitest';
 import { rewriteFileLinks } from '../../../src/card/file-links';
 import { normalizeFileLinks } from '../../../src/config/file-links';
-import { createDefaultProfileConfig, normalizeProfileConfig } from '../../../src/config/profile-schema';
+import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, formatRootConfig } from '../../../src/config/profile-store';
 import { renderText } from '../../../src/card/text-renderer';
 import { renderCard } from '../../../src/card/run-renderer';

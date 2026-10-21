@@ -380,7 +380,7 @@ export async function runServiceStart(opts: ServiceStartOptions = {}): Promise<v
  * simply shows it offline in the console.
  */
 async function runServiceStartWebUi(opts: ServiceStartOptions): Promise<void> {
-  const { profile, cfg, profileConfig, appPaths, configPath } = await ensureBridgeConfigured(opts);
+  const { profile, profileConfig, appPaths, configPath } = await ensureBridgeConfigured(opts);
   const adapter = requireAdapter('start', SUPERVISOR_SERVICE_ID, WEB_UI_RUN_ARGS);
   await materializeEnvSecretForService({ profile });
   const bridgeConfig = (await resolveProfileRuntime({ profile, allowBootstrap: false })).cfg;

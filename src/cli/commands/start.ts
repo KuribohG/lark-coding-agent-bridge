@@ -2,63 +2,22 @@ import dns from 'node:dns';
 import os from 'node:os';
 import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
-import { ClaudeAdapter } from '../../agent/claude/adapter';
-import { CodexAdapter } from '../../agent/codex/adapter';
-import {
-  AgentPreflightError,
-  formatAgentPreflightDiagnostic,
-  type AgentAvailability,
-} from '../../agent/preflight';
-import type { AgentAdapter } from '../../agent/types';
-import { startChannel, type BridgeChannel } from '../../bot/channel';
-import type { Controls } from '../../commands';
 import { resolveAppPaths, type AppPaths } from '../../config/app-paths';
 import { loadRootConfig } from '../../config/profile-store';
-import {
-  type AgentKind,
-  type ProfileConfig,
-} from '../../config/profile-schema';
-import type { AppConfig } from '../../config/schema';
-import { isComplete } from '../../config/schema';
 import { configureLogger, gcOldLogs, log, reportError } from '../../core/logger';
 import { loadTelemetryAdapter, telemetry } from '../../core/telemetry';
-import { gcMediaCache } from '../../media/cache';
 import { startUiServer } from '../../ui/server';
 import { readUiSidecar, removeUiSidecar, writeUiSidecar } from '../../ui/sidecar';
 import type { UiServerHandle } from '../../ui/types';
 import { Supervisor } from '../../runtime/supervisor';
 import { acquireHostLock } from '../../runtime/host-lock';
-import { preFlightChecks } from '../preflight';
 import { stopProcessEntry, type StopProcessEntryResult } from './ps';
+import { cleanupTmpFiles } from '../../runtime/registry';
 import {
-  cleanupTmpFiles,
-  register,
-  sameAppLiveOthers,
-  unregisterSync,
-  updateEntry,
-  type ProcessEntry,
-} from '../../runtime/registry';
-import {
-  acquireAppRuntimeLock,
   RuntimeLockConflictError,
-  withProfileAndAppLocks,
-  type AcquiredRuntimeLock,
   type RuntimeLockMeta,
 } from '../../runtime/locks';
 import { resolveProfileRuntime } from '../../runtime/profile-runtime';
-import {
-  assertReconnectAgentKindUnchanged,
-  checkRuntimeAgentAvailability,
-  createRuntimeAgent,
-  releaseRuntimeLocks,
-} from '../../runtime/agent-runtime';
-import { refreshOwnerControls } from '../../policy/owner';
-
-// Re-exported for existing tests that import these from this module.
-export { assertReconnectAgentKindUnchanged, createRuntimeAgent };
-import { SessionStore } from '../../session/store';
-import { SessionCatalog } from '../../session/catalog';
-import { WorkspaceStore } from '../../workspace/store';
 
 // Prefer IPv4 — Node 20+ defaults to "verbatim" which respects whatever
 // the resolver returns first; in IPv6-broken networks (WSL2, certain VPNs,
@@ -79,8 +38,6 @@ process.on('uncaughtException', (err) => {
   log.fail('process', err, { kind: 'uncaughtException' });
   reportError(err, { kind: 'uncaughtException' });
 });
-
-const MEDIA_GC_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export interface StartOptions {
   config?: string;
@@ -267,59 +224,6 @@ function parkWithShutdown(
 }
 
 
-/**
- * Print the same-app conflict, then ask the user how to proceed. Returns
- * true to continue starting (after killing the old ones), false to cancel.
- *
- * Non-TTY (launchd / systemd / piped) skips the prompt and warns — a service
- * manager can't answer questions, and erroring out by default would surprise
- * users running a daemon.
- */
-async function resolveConflict(conflicts: ProcessEntry[]): Promise<boolean> {
-  console.log(
-    `⚠️  检测到这个飞书应用已经有 ${conflicts.length} 个 bot 正在运行:`,
-  );
-  for (const e of conflicts) {
-    const ago = formatAgo(Date.now() - new Date(e.startedAt).getTime());
-    // botName 只在 WS 连上后才回填,刚启动 / 连接失败的旧 entry 可能没有。
-    const label = e.botName ? `bot ${e.botName} (${e.appId})` : `bot ${e.appId}`;
-    console.log(`   - ${label},进程 ${e.id},${ago}启动`);
-  }
-  console.log('');
-
-  if (!process.stdin.isTTY) {
-    console.warn(
-      '⚠️  当前不是交互式启动,已自动取消。如需替换,先用 `kill <bot id>` 关掉旧的。\n',
-    );
-    return false;
-  }
-
-  const rl = createInterface({ input: process.stdin, output: process.stdout });
-  const ask = (q: string): Promise<string> => new Promise((resolve) => rl.question(q, resolve));
-  try {
-    const verb = conflicts.length > 1 ? '它们' : '那个';
-    const answer = (await ask(`继续启动会先关掉${verb},是否继续? [y/N]: `))
-      .trim()
-      .toLowerCase();
-    if (answer !== 'y' && answer !== 'yes') {
-      return false;
-    }
-    for (const e of conflicts) {
-      try {
-        process.kill(e.pid, 'SIGTERM');
-        console.log(`✓ 已关掉 bot ${e.id}`);
-      } catch (err) {
-        console.warn(`✗ 关掉 bot ${e.id} 失败:${(err as Error).message}`);
-      }
-    }
-    // Brief wait so targets unregister themselves before we register on top.
-    await new Promise((r) => setTimeout(r, 1500));
-    return true;
-  } finally {
-    rl.close();
-  }
-}
-
 type RuntimeLockConflictAction = 'retry' | 'cancel' | 'unhandled';
 
 async function handleRuntimeLockConflict(
@@ -384,11 +288,4 @@ async function flushTelemetry(timeoutMs = 2000): Promise<void> {
   } catch {
     /* best effort during shutdown */
   }
-}
-
-function formatAgo(ms: number): string {
-  if (ms < 60_000) return `${Math.floor(ms / 1000)} 秒前`;
-  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)} 分钟前`;
-  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)} 小时前`;
-  return `${Math.floor(ms / 86_400_000)} 天前`;
 }

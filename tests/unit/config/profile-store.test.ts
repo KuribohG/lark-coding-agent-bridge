@@ -1,5 +1,5 @@
 import { parseDocument } from '../../../src/config/document';
-import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
+import { decodeFixture } from '../../helpers/config-fixture';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

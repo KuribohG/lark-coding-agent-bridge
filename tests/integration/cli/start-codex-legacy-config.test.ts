@@ -1,11 +1,10 @@
-import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { chmod, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, saveRootConfig } from '../../../src/config/profile-store';
-import { createRuntimeAgent } from '../../../src/cli/commands/start';
+import { createRuntimeAgent } from '../../../src/runtime/agent-runtime';
 import { resolveProfileRuntime } from '../../../src/runtime/profile-runtime';
 
 const { loadRootConfig } = await import('../../../src/config/profile-store');

@@ -51,7 +51,7 @@ import { HttpError } from './http';
 import type { UiRuntime } from './types';
 
 /** HTTP-shaped error the server turns into a JSON error response. */
-export class ApiError extends HttpError {}
+class ApiError extends HttpError {}
 
 /** The settings payload the SPA reads and writes. */
 export interface ConfigView {
@@ -135,18 +135,6 @@ export async function loadProfileState(
     profile,
     cfg: runtimeProfileConfig(root, profile),
     profileConfig: root.profiles[profile]!,
-  };
-}
-
-export function buildStatus(rt: UiRuntime, channel: LarkChannel | undefined, version: string) {
-  return {
-    profile: rt.profile,
-    agentKind: rt.profileConfig.agentKind,
-    mode: rt.profileConfig.mode,
-    version,
-    connected: Boolean(channel?.botIdentity?.name),
-    botName: channel?.botIdentity?.name,
-    botOwnerId: rt.botOwnerId,
   };
 }
 

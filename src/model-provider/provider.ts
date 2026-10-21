@@ -60,7 +60,7 @@ export interface ResolvedModelProvider {
 }
 
 /** A model service that can be bound to one or more Agent CLIs. */
-export abstract class ModelProvider {
+abstract class ModelProvider {
   constructor(
     readonly id: string,
     readonly displayName: string,
@@ -83,7 +83,7 @@ export abstract class ModelProvider {
  * provider-qualified model id; Codex CLI selects the same model in its own
  * configured provider.
  */
-export class OpenAICodexModelProvider extends ModelProvider {
+class OpenAICodexModelProvider extends ModelProvider {
   constructor() {
     super('openai-codex', 'OpenAI 官方账号');
   }
@@ -107,7 +107,7 @@ export class OpenAICodexModelProvider extends ModelProvider {
 }
 
 /** An existing Responses model service exposed to Pi and Codex agent runs. */
-export class ResponsesModelProvider extends ModelProvider {
+class ResponsesModelProvider extends ModelProvider {
   constructor(id: string, private readonly config: ModelServiceConfig) {
     super(id, id);
   }

@@ -1,5 +1,5 @@
 import type { CardActionEvent, NormalizedMessage } from '@larksuite/channel';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentAdapter, AgentEvent, AgentRunOptions } from '../../../src/agent/types';
@@ -8,8 +8,6 @@ import { createDefaultProfileConfig, type RootConfig } from '../../../src/config
 import { runtimeProfileConfig } from '../../../src/config/profile-store';
 import { SessionStore } from '../../../src/session/store';
 import { WorkspaceStore } from '../../../src/workspace/store';
-import { timedRuns } from '../../../src/runtime/timed-runs';
-import { readRunDefaults, runDefaultsPath } from '../../../src/runtime/run-defaults';
 import { createFakeChannel } from '../../helpers/fake-channel';
 import { createTmpProfile } from '../../helpers/tmp-profile';
 

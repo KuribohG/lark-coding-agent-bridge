@@ -73,7 +73,7 @@ async function renameWithRetry(
   throw lastErr;
 }
 
-export function isTransientRenameError(err: unknown): boolean {
+function isTransientRenameError(err: unknown): boolean {
   const code = (err as NodeJS.ErrnoException | undefined)?.code;
   return code === 'EPERM' || code === 'EBUSY';
 }

@@ -18,14 +18,6 @@ export function CardTitle({ className, ...props }: React.ComponentProps<"div">) 
   return <div className={cn("font-semibold leading-none tracking-tight", className)} {...props} />;
 }
 
-export function CardDescription({ className, ...props }: React.ComponentProps<"div">) {
-  return <div className={cn("text-sm text-muted-foreground", className)} {...props} />;
-}
-
 export function CardContent({ className, ...props }: React.ComponentProps<"div">) {
   return <div className={cn("p-5 pt-0", className)} {...props} />;
-}
-
-export function CardFooter({ className, ...props }: React.ComponentProps<"div">) {
-  return <div className={cn("flex items-center p-5 pt-0", className)} {...props} />;
 }

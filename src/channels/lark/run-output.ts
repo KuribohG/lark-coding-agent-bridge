@@ -85,7 +85,7 @@ class ProgressOutput {
   }
 }
 
-export async function renderRunOutput(input: RunOutputInput): Promise<void> {
+async function renderRunOutput(input: RunOutputInput): Promise<void> {
   const reaction = input.cotMessages !== 'off' || input.replyMode === 'card'
     ? undefined : addWorkingReaction(input.channel, input.originMessageId);
   try {

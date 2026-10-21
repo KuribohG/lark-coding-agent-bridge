@@ -5,7 +5,7 @@ import type { InboxService } from './service';
 import type { InboxLark } from './lark';
 import { obj } from './values';
 import { guiJobs } from './presentation';
-export { guiSummary, guiContent, guiJobs } from './presentation';
+export { guiContent, guiJobs } from './presentation';
 import { executeInboxCommand, executeSourceCommand } from './workbench';
 import type { InboxTaskSources } from './task-sources';
 import { ATTENTION_RULES } from '../monitoring/sources/lark/analyzer';

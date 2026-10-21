@@ -98,7 +98,7 @@ export function runtimeLockMetaFile(target: string): string {
   return `${target}.meta.json`;
 }
 
-export async function readRuntimeLockMeta(target: string): Promise<RuntimeLockMeta | undefined> {
+async function readRuntimeLockMeta(target: string): Promise<RuntimeLockMeta | undefined> {
   try {
     const parsed = JSON.parse(await readFile(runtimeLockMetaFile(target), 'utf8')) as unknown;
     return isRuntimeLockMeta(parsed) ? parsed : undefined;

@@ -1,10 +1,10 @@
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { beforeEach, expect, it, vi } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { GitLabClient, GitLabError, type FailedJob, type Pipeline } from '../../../src/monitoring/sources/gitlab-ci/client';
 import { normalizeGitLabCi } from '../../../src/monitoring/sources/gitlab-ci/config';
-import { prepareCi, readCiResult } from '../../../src/monitoring/sources/gitlab-ci/processor';
+import { prepareCi } from '../../../src/monitoring/sources/gitlab-ci/processor';
 import { failureId, type CiRun } from '../../../src/monitoring/sources/gitlab-ci/service';
 
 async function setup() {

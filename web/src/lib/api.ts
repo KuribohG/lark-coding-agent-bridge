@@ -1,6 +1,6 @@
 const TOKEN = new URLSearchParams(location.search).get("token") ?? "";
 
-export async function api<T = unknown>(path: string, opts: RequestInit = {}): Promise<T> {
+async function api<T = unknown>(path: string, opts: RequestInit = {}): Promise<T> {
   const res = await fetch(path, {
     ...opts,
     headers: {

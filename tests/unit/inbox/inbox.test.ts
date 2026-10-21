@@ -11,7 +11,7 @@ import { analyzeInbox, analysisBody } from '../../../src/monitoring/sources/lark
 import { startInboxH5 } from '../../../src/inbox/h5-server';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
-import type { InboxIO, InboxJob, InboxMessage } from '../../../src/inbox/types';
+import type { InboxIO, InboxMessage } from '../../../src/inbox/types';
 
 const config = () => normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner',
   destination: { chatId: 'oc_target', threadId: 'omt_topic', replyTo: 'om_anchor' }, waitMinutes: 1 });
@@ -246,7 +246,7 @@ describe('durable inbox', () => {
   });
   it('aborts clicked analysis when turned off and discards late output', async () => {
     let finish!: (r: { text: string; inputTokens: number; outputTokens: number }) => void;
-    const { service, io, store } = await setup({ analyze: vi.fn(() => new Promise<{ text: string; inputTokens: number; outputTokens: number }>(r => { finish = r; })) });
+    const { service, io } = await setup({ analyze: vi.fn(() => new Promise<{ text: string; inputTokens: number; outputTokens: number }>(r => { finish = r; })) });
     await service.manual('oc_source'); await service.tick();
     await vi.waitFor(() => expect(finish).toBeDefined());
     const signal = vi.mocked(io.analyze).mock.calls[0]![1]; await service.setMode('off');

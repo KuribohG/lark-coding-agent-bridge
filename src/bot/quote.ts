@@ -251,26 +251,3 @@ async function fetchSubTreeItems(
     throw err;
   }
 }
-
-/**
- * Render one or more quoted contexts as an XML block intended to sit at the
- * top of the prompt body (after `<bridge_context>`, before the user's actual
- * question). Returns empty string when there are no quotes — keeps callers
- * concatenating without conditional checks.
- */
-export function renderQuotedBlock(quotes: QuotedContext[]): string {
-  if (quotes.length === 0) return '';
-  const parts = quotes.map((q) => {
-    const attrs = [
-      `id="${q.messageId}"`,
-      q.senderId ? `sender_id="${q.senderId}"` : '',
-      q.senderName ? `sender_name="${q.senderName}"` : '',
-      q.createdAt ? `created_at="${q.createdAt}"` : '',
-      `type="${q.rawContentType}"`,
-    ]
-      .filter(Boolean)
-      .join(' ');
-    return `<quoted_message ${attrs}>\n${q.content}\n</quoted_message>`;
-  });
-  return parts.join('\n');
-}

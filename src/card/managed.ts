@@ -86,11 +86,6 @@ export async function updateManagedCard(
   }
 }
 
-/** True iff we have the card_id mapping for this messageId. */
-export function isManaged(messageId: string): boolean {
-  return byMessageId.has(messageId);
-}
-
 /** Drop the mapping; call after the card is recalled or the flow ends. */
 export function forgetManagedCard(messageId: string): void {
   byMessageId.delete(messageId);

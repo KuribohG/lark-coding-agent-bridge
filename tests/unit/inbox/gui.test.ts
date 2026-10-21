@@ -23,7 +23,7 @@ async function setup(compactSync = false) {
   const lark = { call: vi.fn(async () => ({ messages: [] })), checkOwner: vi.fn(async () => {}),
     recent: vi.fn(async () => ({ chats: [], next: '' })) };
   let commands: object[] = []; let failReceipt = false;
-  const request = vi.fn(async (url: string | URL | Request, options?: RequestInit) => {
+  const request = vi.fn(async (url: string | URL | Request, _options?: RequestInit) => {
     if (String(url).endsWith('/receipt') && failReceipt) return new Response('', { status: 503 });
     return Response.json(String(url).endsWith('/sync') ? { commands, compactSync } : { ok: true });
   });

@@ -49,7 +49,7 @@ export async function saveModelPreferences(
 }
 
 /** App paths for a profile, derived from its config path. */
-export function profileAppPaths(state: Pick<MutableProfileState, 'configPath' | 'profile'>) {
+function profileAppPaths(state: Pick<MutableProfileState, 'configPath' | 'profile'>) {
   return resolveAppPaths({
     rootDir: dirname(state.configPath),
     profile: state.profile,

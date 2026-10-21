@@ -37,7 +37,7 @@ const LARK_KEYS = ['reply_mode', 'show_tools', 'progress', 'file_links'];
 const WEB_KEYS = ['show_tools', 'show_reasoning'];
 const LAUNCH_KEYS = ['binaryPath', 'transport', 'codexHome', 'inheritCodexHome', 'ignoreUserConfig', 'ignoreRules', 'realpath', 'version', 'sha256', 'owner', 'mode'];
 
-export function object(value: unknown, path: string): Table {
+function object(value: unknown, path: string): Table {
   if (!value || Object.getPrototypeOf(value) !== Object.prototype) throw new Error(`${path}: expected a table`);
   return value as Table;
 }
@@ -143,7 +143,7 @@ function checkProfile(p: Table, path: string): void {
   if (p.secrets !== undefined) checkSecrets(p.secrets, `${path}.secrets`);
 }
 
-export function validateDocument(input: unknown): ConfigDocument {
+function validateDocument(input: unknown): ConfigDocument {
   const doc = keys(input, ['version', 'bridge', 'defaults', 'agents', 'channels', 'profiles', 'secrets', 'migrations', 'model_services', 'monitoring'], 'config');
   if (doc.version !== 3) throw new Error('config.version must be 3');
   if (doc.bridge !== undefined) {
@@ -314,7 +314,7 @@ export function documentToRoot(doc: ConfigDocument): RootConfig {
   };
 }
 
-export function profileDocument(p: ProfileConfig): Table {
+function profileDocument(p: ProfileConfig): Table {
   const out: Table = { agent: p.agentKind, run: {} };
   for (const [key, internal] of Object.entries(RUN_KEYS)) if (p.preferences[internal as keyof RunPreferences] !== undefined) out.run[key] = p.preferences[internal as keyof RunPreferences];
   for (const key of PROFILE_KEYS) if (!['agent', 'run', 'launch'].includes(key) && (p as unknown as Table)[key] !== undefined) out[key] = (p as unknown as Table)[key];

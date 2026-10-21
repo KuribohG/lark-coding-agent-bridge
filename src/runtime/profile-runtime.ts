@@ -1,4 +1,4 @@
-import { mkdir, readFile, realpath } from 'node:fs/promises';
+import { mkdir, realpath } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import * as p from '@clack/prompts';
 import { agentDisplayName } from '../agent/backends';
@@ -20,19 +20,14 @@ import {
   writeActiveProfile,
 } from '../config/profile-store';
 import {
-  createDefaultProfileConfig,
   type AgentKind,
-  type CreateDefaultProfileConfigInput,
   type ProfileConfig,
   type RootConfig,
 } from '../config/profile-schema';
 import type { AppConfig, SecretInput, TenantBrand } from '../config/schema';
 import { isSecretRef, secretKeyForApp } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
-import {
-  buildEncryptedAccountConfig,
-  ensureSecretsGetterWrapper,
-} from '../config/store';
+import { buildEncryptedAccountConfig } from '../config/store';
 import { log } from '../core/logger';
 import { validateAppCredentials } from '../utils/feishu-auth';
 
@@ -63,19 +58,6 @@ export interface MaterializeEnvSecretForServiceOptions {
 }
 
 const ENV_SECRET_TEMPLATE_RE = /^\$\{[A-Z][A-Z0-9_]{0,127}\}$/;
-
-export function createRuntimeProfileConfig(
-  input: CreateDefaultProfileConfigInput,
-): ProfileConfig {
-  return createDefaultProfileConfig({
-    ...input,
-    ...(input.agentKind === 'codex'
-      ? { codex: input.codex ?? { binaryPath: process.env.LARK_CHANNEL_CODEX_BIN ?? 'codex' } }
-      : input.agentKind === 'pi'
-        ? { pi: input.pi ?? { binaryPath: process.env.LARK_CHANNEL_PI_BIN ?? 'pi' } }
-        : {}),
-  });
-}
 
 export async function resolveProfileRuntime(
   opts: ResolveProfileRuntimeOptions,
@@ -347,18 +329,6 @@ function assertRequestedAgentMatchesExistingProfile(
   );
 }
 
-function assertBootstrapAppMatchesExistingConfig(
-  opts: ResolveProfileRuntimeOptions,
-  profile: string,
-  cfg: AppConfig,
-): void {
-  if (!opts.appId || opts.appId === cfg.accounts.app.id) return;
-  throw new Error(
-    `profile already exists: ${profile}; it uses app ${cfg.accounts.app.id}. ` +
-      'omit --app-id or create another profile',
-  );
-}
-
 export async function materializeEnvSecretForService(
   opts: MaterializeEnvSecretForServiceOptions = {},
 ): Promise<boolean> {
@@ -508,13 +478,4 @@ async function encryptedConfigForResolvedSecret(
 function isEnvBackedSecret(secret: SecretInput): boolean {
   if (typeof secret === 'string') return ENV_SECRET_TEMPLATE_RE.test(secret);
   return isSecretRef(secret) && secret.source === 'env';
-}
-
-
-function needsProviderRewrite(cfg: AppConfig, wrapperPath: string): boolean {
-  const provider = cfg.secrets?.providers?.bridge;
-  if (!provider) return true;
-  if (provider.command !== wrapperPath) return true;
-  if (!Array.isArray(provider.args) || provider.args.length !== 0) return true;
-  return false;
 }

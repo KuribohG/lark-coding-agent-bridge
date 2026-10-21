@@ -18,7 +18,7 @@ export const GROUP_MSG_SCOPE = 'im:message.group_msg';
  * Returns `null` on API failure — the caller treats "unknown" as "don't
  * nag the user" rather than guessing the scope is missing.
  */
-export async function fetchGrantedScopes(
+async function fetchGrantedScopes(
   channel: LarkChannel,
   appId: string,
 ): Promise<Set<string> | null> {

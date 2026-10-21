@@ -1,4 +1,4 @@
-import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
+import { encodeFixture } from '../../helpers/config-fixture';
 import type { NormalizedMessage } from '@larksuite/channel';
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';

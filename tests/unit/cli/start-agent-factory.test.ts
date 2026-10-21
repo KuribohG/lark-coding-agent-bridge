@@ -5,9 +5,8 @@ import { describe, expect, it } from 'vitest';
 import {
   assertReconnectAgentKindUnchanged,
   createRuntimeAgent,
-} from '../../../src/cli/commands/start.js';
+} from '../../../src/runtime/agent-runtime.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
-import { createRuntimeProfileConfig } from '../../../src/runtime/profile-runtime.js';
 
 describe('start runtime agent factory', () => {
   it('keeps Claude as the default runtime agent', () => {
@@ -60,19 +59,11 @@ describe('start runtime agent factory', () => {
     expect(agent.displayName).toBe('Codex CLI');
   });
 
-  it('seeds a default Codex binary when bootstrapping a new Codex profile', () => {
-    const profile = createRuntimeProfileConfig({
-      agentKind: 'codex',
-      accounts: appAccount(),
-    });
-
-    expect(profile.codex?.binaryPath).toBe('codex');
-  });
-
-  it('creates a Pi runtime agent and seeds its configured binary', () => {
-    const profile = createRuntimeProfileConfig({
+  it('creates a Pi runtime agent from its configured binary', () => {
+    const profile = createDefaultProfileConfig({
       agentKind: 'pi',
       accounts: appAccount(),
+      pi: { binaryPath: 'pi' },
     });
     const agent = createRuntimeAgent(profile, {
       profileDir: '/tmp/lark-channel-bridge/profiles/pi-e2e',
@@ -80,7 +71,6 @@ describe('start runtime agent factory', () => {
 
     expect(agent.id).toBe('pi');
     expect(agent.displayName).toBe('Pi Coding Agent');
-    expect(profile.pi?.binaryPath).toBe('pi');
     expect(agent.capabilities).toEqual({ finalAnswer: 'stream', input: 'unsupported' });
   });
 

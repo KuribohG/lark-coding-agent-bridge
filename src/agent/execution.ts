@@ -1,6 +1,6 @@
 import type { AgentEvent, AgentExecutionCapabilities, AgentFailureKind, AgentInput, AgentInputReceipt, AgentRun } from './types';
 
-export const LEGACY_EXECUTION_CAPABILITIES: AgentExecutionCapabilities = Object.freeze({
+const LEGACY_EXECUTION_CAPABILITIES: AgentExecutionCapabilities = Object.freeze({
   finalAnswer: 'stream', input: 'unsupported',
 });
 

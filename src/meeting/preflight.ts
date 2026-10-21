@@ -20,7 +20,7 @@ import { log } from '../core/logger';
  */
 
 /** Early-bird group to request the allowlisted beta (error 20017). */
-export const MEETING_BETA_CHAT_URL =
+const MEETING_BETA_CHAT_URL =
   'https://go.larkoffice.com/join-chat/2f4nb0e1-fe00-4f67-bed7-25beaf533fbd';
 
 /**

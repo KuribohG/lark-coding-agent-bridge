@@ -91,7 +91,6 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
   },
 };
 
-export const AGENT_BACKENDS = Object.freeze(BACKENDS);
 export const AGENT_KINDS = Object.freeze(Object.keys(BACKENDS) as AgentKind[]);
 export const AGENT_OPTIONS = Object.freeze(AGENT_KINDS.map((kind) => ({
   value: kind,

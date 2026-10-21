@@ -9,7 +9,7 @@ import { paths } from '../config/paths';
  * unit name. Single-instance for now; if we ever support multiple bots
  * per machine the suffix can grow `.{appid}` without breaking installs.
  */
-export const SERVICE_NAME = 'lark-channel-bridge.bot';
+const SERVICE_NAME = 'lark-channel-bridge.bot';
 
 /**
  * Reserved service id for the machine-wide supervisor+console daemon
@@ -35,13 +35,11 @@ export function serviceProfileId(profile: string): string {
   return `${base}-${hash}`;
 }
 
-export function serviceNameForProfile(profile: string = paths.profile): string {
+function serviceNameForProfile(profile: string = paths.profile): string {
   return `${SERVICE_NAME}.${serviceProfileId(profile)}`;
 }
 
 // === macOS launchd ===
-
-export const LAUNCH_AGENT_LABEL = launchAgentLabel();
 
 export function launchAgentLabel(profile: string = paths.profile): string {
   return `ai.${serviceNameForProfile(profile)}`;
@@ -56,8 +54,6 @@ export function launchAgentPlistPath(profile: string = paths.profile): string {
 }
 
 // === Linux systemd (user units) ===
-
-export const SYSTEMD_UNIT_NAME = systemdUnitName();
 
 export function systemdUnitName(profile: string = paths.profile): string {
   return `${serviceNameForProfile(profile)}.service`;
@@ -80,8 +76,6 @@ export function systemdUnitPath(profile: string = paths.profile): string {
  * `LarkChannelBridge\Bot` would create a Bot task under a LarkChannelBridge
  * folder. We keep it flat for now.
  */
-export const WINDOWS_TASK_NAME = windowsTaskName();
-
 export function windowsTaskName(profile: string = paths.profile): string {
   return `LarkChannelBridge.Bot.${serviceProfileId(profile)}`;
 }

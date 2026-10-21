@@ -1,8 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 
-export const LOCALHOST_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
-export const MAX_BODY_BYTES = 256 * 1024;
+const LOCALHOST_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1']);
+const MAX_BODY_BYTES = 256 * 1024;
 
 /** Reject anything not addressed to localhost, and any cross-origin request. */
 export function isLocalRequest(req: IncomingMessage): boolean {
@@ -43,7 +43,7 @@ export async function readJsonBody(req: IncomingMessage): Promise<unknown> {
   }
 }
 
-export function send(res: ServerResponse, status: number, contentType: string, body: string): void {
+function send(res: ServerResponse, status: number, contentType: string, body: string): void {
   res.writeHead(status, {
     'Content-Type': contentType,
     'Cache-Control': 'no-store',
@@ -58,10 +58,6 @@ export function sendJson(res: ServerResponse, status: number, body: unknown): vo
 
 export function sendHtml(res: ServerResponse, html: string): void {
   send(res, 200, 'text/html; charset=utf-8', html);
-}
-
-export function sendJs(res: ServerResponse, js: string): void {
-  send(res, 200, 'application/javascript; charset=utf-8', js);
 }
 
 /** HTTP-shaped error the servers turn into a JSON error response. */

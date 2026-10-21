@@ -110,11 +110,11 @@ export function buildAgentPrompt(input: BuildAgentPromptInput): string {
   return sections.filter(Boolean).join('\n\n');
 }
 
-export function promptSection(tag: string, value: unknown): string {
+function promptSection(tag: string, value: unknown): string {
   return `<${tag}>\n${safeJsonStringify(value)}\n</${tag}>`;
 }
 
-export function safeJsonStringify(value: unknown): string {
+function safeJsonStringify(value: unknown): string {
   return (JSON.stringify(value) ?? 'null')
     .replace(/</g, '\\u003c')
     .replace(/>/g, '\\u003e')

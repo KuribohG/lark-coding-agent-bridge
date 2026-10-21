@@ -5,10 +5,6 @@ import { log } from '../core/logger';
 const RETRY_DELAYS_MS = [30_000, 60_000, 120_000] as const;
 const CONTINUE_PROMPT = '上次执行因 API 限流中断。请从当前会话的已有进度继续完成用户请求，包括中途补充的要求。先检查已完成的操作和工具结果，不要重复执行已完成的操作。';
 
-export function isQuotaError(message: string): boolean {
-  return classifyAgentFailure(message) === 'quota';
-}
-
 function isRateLimitError(event: AgentEvent): boolean {
   return event.type === 'error' && event.terminationReason === 'failed'
     && agentFailureKind(event) === 'rate_limit';

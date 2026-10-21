@@ -1,5 +1,5 @@
 import { WORK_ITEM_CONCURRENCY_DEFAULTS } from './concurrency';
-export const DEFAULT_WORK_ITEM_CONCURRENCY = WORK_ITEM_CONCURRENCY_DEFAULTS.analysis;
+const DEFAULT_WORK_ITEM_CONCURRENCY = WORK_ITEM_CONCURRENCY_DEFAULTS.analysis;
 
 /** Reusable FIFO execution slots, shared across sources within each task kind. */
 export class WorkItemScheduler {

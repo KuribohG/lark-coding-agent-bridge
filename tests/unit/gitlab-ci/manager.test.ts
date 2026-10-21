@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
-import { createRootConfig, runtimeProfileConfig, saveRootConfig } from '../../../src/config/profile-store';
+import { createRootConfig, saveRootConfig } from '../../../src/config/profile-store';
 import { normalizeGitLabCi } from '../../../src/monitoring/sources/gitlab-ci/config';
 import { GitLabCiManager } from '../../../src/monitoring/sources/gitlab-ci/manager';
 import { GitLabCiService } from '../../../src/monitoring/sources/gitlab-ci/service';
@@ -30,7 +30,7 @@ async function setup() {
   const host = createMonitorHost(path, dir);
   host.executors = { resolve: async () => available ? { config: profile, available: true,
     settings: async () => ({}), execute: vi.fn() } : undefined };
-  const create = () => { const m = new GitLabCiManager(path, host, dir); managers.push(m); return m; };
+  const create = () => { const m = new GitLabCiManager(path, host); managers.push(m); return m; };
   return { create, root, path, dir, offline: () => { available = false; }, online: () => { available = true; } };
 }
 

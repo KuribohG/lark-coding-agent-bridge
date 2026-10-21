@@ -22,7 +22,7 @@ export function processingPrompt(job: InboxJob, background: string): string {
     messages: job.messages.map(m => ({ id: m.id, ...messageIdentity(m, job.ownerOpenId), time: new Date(m.time).toISOString(), text: m.text })) })}`;
 }
 
-export function larkInvestigationDriver(workspace: string, background: string): InvestigationDriver {
+function larkInvestigationDriver(workspace: string, background: string): InvestigationDriver {
   return { prepare: async (job, signal) => {
     signal.throwIfAborted();
     if (!/^[\w-]+$/.test(job.id)) throw new Error('无效待办 ID');

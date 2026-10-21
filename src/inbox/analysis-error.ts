@@ -1,4 +1,3 @@
-import { classifyAgentFailure } from '../agent/execution';
 import { BackgroundExecutionError } from '../runtime/background-executor';
 
 const reasons = {
@@ -15,11 +14,6 @@ const reasons = {
 /** Only reviewed messages may cross from runtime failures into the result topic. */
 export class InboxAnalysisError extends Error {
   constructor(readonly code: keyof typeof reasons) { super(reasons[code]); }
-}
-
-export function agentAnalysisError(message: string): InboxAnalysisError {
-  const kind = classifyAgentFailure(message);
-  return new InboxAnalysisError(kind === 'rate_limit' || kind === 'quota' || kind === 'authentication' ? kind : 'agent');
 }
 
 export function backgroundAnalysisError(error: unknown): unknown {

@@ -22,8 +22,7 @@ export class StorageMonitorManager {
   private timer: NodeJS.Timeout;
   private closed = false;
   error?: string;
-  constructor(private configPath: string, private host: MonitorHost,
-    private rootDir: string | undefined, private sources: WorkItemSources) {
+  constructor(private configPath: string, private host: MonitorHost, private sources: WorkItemSources) {
     this.timer = setInterval(() => { void this.reconcile(); }, 15_000); this.timer.unref();
   }
   status() { return { error: this.error ?? this.service?.error, state: this.service?.state }; }

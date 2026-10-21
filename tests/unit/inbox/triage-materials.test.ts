@@ -1,8 +1,7 @@
 import { expect, it } from 'vitest';
 import { normalizeInbox } from '../../../src/inbox/config';
 import { triageMaterials } from '../../../src/monitoring/sources/lark/triage-materials';
-import { createLarkAssessment } from '../../../src/monitoring/sources/lark/assessment';
-import type { InboxIO, InboxJob, InboxMessage } from '../../../src/inbox/types';
+import type { InboxJob, InboxMessage } from '../../../src/inbox/types';
 import { processingPrompt } from '../../../src/monitoring/sources/lark/processor';
 
 const message = (id: string, text: string, bot = false): InboxMessage => ({ id, text, bot, time: 1000,

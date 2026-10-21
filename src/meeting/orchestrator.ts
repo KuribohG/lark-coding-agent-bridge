@@ -192,7 +192,7 @@ export interface MeetingPromptInput {
 }
 
 /** Compose the agent prompt: meeting context first, then the actual ask. */
-export function buildMeetingPrompt(input: MeetingPromptInput): string {
+function buildMeetingPrompt(input: MeetingPromptInput): string {
   const parts: string[] = [];
   parts.push('你正在参加一场飞书视频会议，以下是会议的实时字幕上下文。');
   if (input.topic) parts.push(`会议主题：${input.topic}`);

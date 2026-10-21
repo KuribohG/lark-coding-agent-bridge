@@ -25,7 +25,7 @@
  * All branches wrap output in an `<interactive_card>` block. Claude is
  * taught in BRIDGE_SYSTEM_PROMPT not to echo the XML tag back to the user.
  */
-export const INTERACTIVE_CARD_PLACEHOLDER = '[interactive card]';
+const INTERACTIVE_CARD_PLACEHOLDER = '[interactive card]';
 
 export function expandInteractiveCard(
   flattenedContent: string,

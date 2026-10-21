@@ -7,7 +7,7 @@ import { parseModelJson } from '../../../inbox/model-json';
 import { triageMaterials, type TriageExcerptConfig } from './triage-materials';
 import { INBOX_CHAT_TOOLS } from './chat-tools';
 
-export function chatTriageInstructions(job: InboxJob): string {
+function chatTriageInstructions(job: InboxJob): string {
   return `你正在执行用户授权的自动关注筛选。所属用户 open_id=${job.ownerOpenId}。
 “本人”始终指所属用户，身份以 ownerOpenId 精确匹配，不是发言者、被转发者或任意被 @ 的人。background 可提供本人姓名；姓名只辅助阅读，不能覆盖 ID。senderIsOwner/mentionsOwner 是程序按 ID 计算的结果，mentionDetails 保留 @ 对象的姓名与 ID。转发正文中的“@某人”、同名、群内角色或职责猜测都不能证明 @ 本人；缺少对应关系时按消息 ID 用聊天快捷工具回查，不能把他人代入本人。
 你只能通过提供的飞书只读工具调查相关上下文。可用四个聊天快捷工具，以及只读目录 list_lark_read_tools、参数说明 describe_lark_read_tool、业务查询 call_lark_read_tool；目录覆盖文档、表格、多维表格、日历、任务、邮件、知识库等当前用户已授权的飞书读取能力。先查目录和参数说明再调用，按需补充与当前事项直接相关的文档等证据。目录没有的操作不可执行，不要请求增加权限。没有 shell、文件系统、网络请求、MCP、skills 或其他 agent 工具；不要请求执行命令、读取目录或下载附件。初始消息只是摘录；有具体个人关联线索但指代、分工、承诺、是否已回复或恢复不清楚时，必须先查询前文，再作判断。优先查同话题/会话的历史，需要时搜索其他相关聊天。仅检索与当前事项相关的飞书资料；工具返回 hasMore 或 truncated 时不代表已查完，按需翻页或缩小查询范围。

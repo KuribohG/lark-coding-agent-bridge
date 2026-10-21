@@ -32,7 +32,7 @@ it('retains the last valid collector on a TOML typo and keeps disabled source it
   const sources = { connect, isAnalyzing: () => false, configureConcurrency: vi.fn() } as unknown as WorkItemSources;
   const host = createMonitorHost(path, folder);
   host.executors = { resolve: async () => undefined };
-  const manager = new StorageMonitorManager(path, host, folder, sources); cleanup.push(() => manager.close());
+  const manager = new StorageMonitorManager(path, host, sources); cleanup.push(() => manager.close());
   await manager.reconcile(); await vi.waitFor(() => expect(manager.status().state?.checkedAt).toBeGreaterThan(0));
   expect(connect).toHaveBeenCalledTimes(1); expect(connect.mock.calls[0]![0]).toMatchObject({ runtime: { resumeInterrupted: true } });
   await writeFile(file, 'version = 1\n[sources.storage]\nenabled = "oops"'); await manager.reconcile();
