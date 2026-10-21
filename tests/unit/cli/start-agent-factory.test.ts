@@ -69,6 +69,21 @@ describe('start runtime agent factory', () => {
     expect(profile.codex?.binaryPath).toBe('codex');
   });
 
+  it('creates a Pi runtime agent and seeds its configured binary', () => {
+    const profile = createRuntimeProfileConfig({
+      agentKind: 'pi',
+      accounts: appAccount(),
+    });
+    const agent = createRuntimeAgent(profile, {
+      profileDir: '/tmp/lark-channel-bridge/profiles/pi-e2e',
+    });
+
+    expect(agent.id).toBe('pi');
+    expect(agent.displayName).toBe('Pi Coding Agent');
+    expect(profile.pi?.binaryPath).toBe('pi');
+    expect(agent.capabilities).toEqual({ finalAnswer: 'stream', input: 'unsupported' });
+  });
+
   it('updates the process registry before releasing the old app lock during reconnect', async () => {
     // Reconnect ordering now lives in the supervisor's ManagedProfile.restart().
     const source = await readFile(join(process.cwd(), 'src/runtime/supervisor.ts'), 'utf8');

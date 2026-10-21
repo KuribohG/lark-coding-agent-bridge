@@ -14,7 +14,7 @@ import { resolveRunModelSettings } from '../../runtime/model-settings';
 import type { LarkChannel, LarkChannelOptions, NormalizedMessage } from '@larksuite/channel';
 import { createLarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
-import { claudeCapability, codexCapability } from '../../agent/capability';
+import { capabilityForProfile } from '../../agent/backends';
 import { modelLabel, normalizeModelSelection, resolveModelArg } from '../../agent/models';
 import {
   buildAgentPrompt,
@@ -1063,10 +1063,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     actorId: firstMsg.senderId,
     ...(threadId ? { threadId } : {}),
   };
-  const capability =
-    controls.profileConfig.agentKind === 'codex'
-      ? codexCapability(controls.profileConfig)
-      : claudeCapability(controls.profileConfig);
+  const capability = capabilityForProfile(controls.profileConfig);
   const flow = await startRunFlow({
     modelSettings: runArguments,
     deadlineAt: deps.timedJob?.stopAt,

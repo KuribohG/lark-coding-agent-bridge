@@ -223,7 +223,7 @@ describe('profile runtime resolver', () => {
       expect(message).toContain(claude);
       expect(message).toContain('codex');
       expect(message).toContain(codex);
-      expect(message).toContain('--agent <claude|codex>');
+      expect(message).toContain('--agent <claude|codex|pi>');
     } finally {
       process.env.PATH = oldPath;
       if (oldClaude === undefined) {

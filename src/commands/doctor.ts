@@ -1,4 +1,4 @@
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { capabilityForProfile } from '../agent/backends';
 import { getAgentStopGraceMs } from '../config/schema';
 import { canRunAdminCommand, canUseDm, canUseGroup } from '../policy/access';
 import { log, reportMetric } from '../core/logger';
@@ -79,10 +79,7 @@ export async function handleDoctor(args: string, ctx: CommandContext): Promise<v
   }
   doctorLastByOperator.set(rateKey, now);
 
-  const capability =
-    ctx.controls.profileConfig.agentKind === 'codex'
-      ? codexCapability(ctx.controls.profileConfig)
-      : claudeCapability(ctx.controls.profileConfig);
+  const capability = capabilityForProfile(ctx.controls.profileConfig);
   const policy = evaluateRunPolicy({
     scope: {
       source: 'im',

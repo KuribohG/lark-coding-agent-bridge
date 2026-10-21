@@ -143,7 +143,7 @@ export function validateDocument(input: unknown): ConfigDocument {
   for (const [name, value] of Object.entries(profiles)) {
     if (!name.trim() || /[\u0000-\u001f\s/\\:*?"<>|]/.test(name) || ['.', '..', '__proto__', 'prototype', 'constructor'].includes(name)) throw new Error('invalid profile name');
     const p = keys(value, PROFILE_KEYS, `profiles.${name}`);
-    if (!['codex', 'claude'].includes(p.agent)) throw new Error(`profiles.${name}.agent: expected codex or claude`);
+    if (!['codex', 'claude', 'pi'].includes(p.agent)) throw new Error(`profiles.${name}.agent: expected codex, claude, or pi`);
     if (p.run !== undefined) checkRun(p.run, `profiles.${name}.run`, p.agent);
     if (p.launch !== undefined) checkLaunch(p.launch, p.agent, `profiles.${name}.launch`);
     checkProfile(p, `profiles.${name}`);
@@ -153,7 +153,7 @@ export function validateDocument(input: unknown): ConfigDocument {
     keys(doc.defaults, ['run'], 'defaults');
     if (doc.defaults.run !== undefined) checkRun(doc.defaults.run, 'defaults.run');
   }
-  if (doc.agents !== undefined) for (const [agent, value] of Object.entries(keys(doc.agents, ['codex', 'claude'], 'agents'))) {
+  if (doc.agents !== undefined) for (const [agent, value] of Object.entries(keys(doc.agents, ['codex', 'claude', 'pi'], 'agents'))) {
     const layer = keys(value, ['run', 'launch'], `agents.${agent}`);
     if (layer.run !== undefined) checkRun(layer.run, `agents.${agent}.run`, agent as AgentKind);
     if (layer.launch !== undefined) checkLaunch(layer.launch, agent, `agents.${agent}.launch`);
@@ -217,7 +217,11 @@ export function documentToRoot(doc: ConfigDocument): RootConfig {
     const mergedLaunch = { ...(doc.agents?.[agent as AgentKind]?.launch ?? {}), ...launch };
     profiles[name] = normalizeProfileConfig({ ...rest, schemaVersion: 2, agentKind: agent,
       preferences: resolveRun(doc, agent, name).preferences, channels: resolveChannels(doc, name),
-      ...(agent === 'codex' ? { codex: { binaryPath: 'codex', ...mergedLaunch } } : { claude: mergedLaunch }),
+      ...(agent === 'codex'
+        ? { codex: { binaryPath: 'codex', ...mergedLaunch } }
+        : agent === 'pi'
+          ? { pi: { binaryPath: 'pi', ...mergedLaunch } }
+          : { claude: mergedLaunch }),
     });
   }
   return { schemaVersion: 2, activeProfile: doc.bridge?.active_profile ?? Object.keys(profiles)[0] ?? '', preferences: {}, profiles,
@@ -235,7 +239,7 @@ export function profileDocument(p: ProfileConfig): Table {
   const out: Table = { agent: p.agentKind, run: {} };
   for (const [key, internal] of Object.entries(RUN_KEYS)) if (p.preferences[internal as keyof RunPreferences] !== undefined) out.run[key] = p.preferences[internal as keyof RunPreferences];
   for (const key of PROFILE_KEYS) if (!['agent', 'run', 'launch'].includes(key) && (p as unknown as Table)[key] !== undefined) out[key] = (p as unknown as Table)[key];
-  const launch = p.agentKind === 'codex' ? p.codex : p.claude;
+  const launch = p.agentKind === 'codex' ? p.codex : p.agentKind === 'pi' ? p.pi : p.claude;
   if (launch) out.launch = launch;
   return out;
 }

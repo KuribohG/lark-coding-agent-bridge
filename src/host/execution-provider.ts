@@ -20,7 +20,7 @@ export class ProfileExecutionProvider implements ExecutionProvider {
     try { profile = (await loadRootConfig(this.configPath))?.profiles[name]; }
     catch (error) { this.revoke(name); throw error; }
     if (!profile || !supportsBackgroundProfile(profile)) { this.revoke(name); return; }
-    const key = JSON.stringify([profile.agentKind, profile.mode, profile.claude, profile.codex,
+    const key = JSON.stringify([profile.agentKind, profile.mode, profile.claude, profile.codex, profile.pi,
       profile.sandbox, profile.permissions, profile.permissionSource, profile.access, profile.workspaces, profile.larkCli]);
     let policy = this.policies.get(name);
     if (!policy || policy.key !== key) {
@@ -30,7 +30,7 @@ export class ProfileExecutionProvider implements ExecutionProvider {
     const agent = this.createAgent(profile, paths);
     const availability = await checkRuntimeAgentAvailability(agent);
     const config: RunProfileConfig = { agentKind: profile.agentKind, access: profile.access, workspaces: profile.workspaces,
-      permissions: profile.permissions, codex: profile.codex, attachments: profile.attachments, preferences: profile.preferences };
+      permissions: profile.permissions, codex: profile.codex, pi: profile.pi, attachments: profile.attachments, preferences: profile.preferences };
     return {
       config, available: availability.ok, signal: policy.controller.signal,
       error: availability.ok ? undefined : `执行器不可用：${availability.diagnostic.code}`,

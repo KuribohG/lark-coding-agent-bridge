@@ -10,6 +10,7 @@ export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'x
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 const CODEX_EFFORTS: string[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
 const CLAUDE_EFFORTS: string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
+const PI_EFFORTS: string[] = ['minimal', 'low', 'medium', 'high', 'xhigh'];
 /** Strongest tier. Claude maps it to ultracode (xhigh + standing workflow orchestration), offered only to deadline-bounded runs. */
 export const ULTRA_EFFORT = 'ultra';
 export interface ModelSettings {
@@ -35,7 +36,9 @@ export function parseEffort(value: unknown, agentKind: AgentKind, opts: { timedR
 }
 
 export function availableEfforts(agentKind: AgentKind, model?: ModelOption): string[] {
-  return model?.reasoningEfforts ?? [...(agentKind === 'claude' ? CLAUDE_EFFORTS : CODEX_EFFORTS)];
+  return model?.reasoningEfforts ?? [
+    ...(agentKind === 'claude' ? CLAUDE_EFFORTS : agentKind === 'pi' ? PI_EFFORTS : CODEX_EFFORTS),
+  ];
 }
 
 export function timedRunEfforts(agentKind: AgentKind): string[] {
@@ -102,7 +105,10 @@ export async function readModelEnvironment(profile: ProfileConfig, profileDir: s
 
 async function loadModelEnvironment(profile: ProfileConfig, profileDir: string): Promise<ModelEnvironment> {
   const fallback = { defaults: {}, models: supportedModels(profile.agentKind) };
-  if (profile.agentKind !== 'codex') {
+  if (profile.agentKind === 'pi') {
+    return fallback;
+  }
+  if (profile.agentKind === 'claude') {
     const text = await readOptional(join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'settings.json'));
     const settings = text ? JSON.parse(text) : {};
     const model = process.env.ANTHROPIC_MODEL ?? settings.model;

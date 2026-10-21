@@ -205,6 +205,23 @@ describe('layered configuration', () => {
     expect(parseDocument(await readFile(path, 'utf8')).profiles.bot!.run).not.toHaveProperty('model');
   });
 
+  it('round-trips Pi launch metadata through the generic TOML launch layer', () => {
+    const text = `${source}
+[profiles.pi]
+agent = "pi"
+[profiles.pi.accounts.app]
+id = "cli_pi"
+secret = { source = "env", id = "PI_SECRET" }
+tenant = "feishu"
+[profiles.pi.launch]
+binaryPath = "/opt/bin/pi"
+`;
+    const root = documentToRoot(parseDocument(text));
+    expect(root.profiles.pi?.pi?.binaryPath).toBe('/opt/bin/pi');
+    const roundTrip = documentToRoot(parseDocument(formatDocument(rootToDocument(root))));
+    expect(roundTrip.profiles.pi?.pi?.binaryPath).toBe('/opt/bin/pi');
+  });
+
   it('rejects stale frontend forms before writing or changing runtime state', async () => {
     const path = await file(); const root = (await loadRootConfig(path))!;
     const state = { configPath: path, profile: 'bot', profileConfig: root.profiles.bot!, cfg: root.profiles.bot! };

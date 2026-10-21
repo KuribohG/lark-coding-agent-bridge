@@ -2,7 +2,7 @@
 
 See [layered configuration](docs/configuration.md) and the [TOML example](docs/config.example.toml). This version loads TOML only; execution defaults and frontend display settings are separate.
 
-A lightweight bot that bridges Feishu / Lark messenger with your local Claude Code or Codex CLI. Run one command, scan a QR code to bind a PersonalAgent app, and talk to your local coding agent from chat.
+A lightweight bot that bridges Feishu / Lark messenger with your local Claude Code, Codex CLI, or Pi Coding Agent. Run one command, scan a QR code to bind a PersonalAgent app, and talk to your local coding agent from chat.
 
 [中文 README](./README.zh.md)
 
@@ -33,7 +33,7 @@ See the [deployment guide](docs/self-contained.md) for prerequisites, SSH forwar
 
 ## What it does
 
-- Forwards Feishu / Lark messages to local Claude Code or Codex CLI. Send a DM directly, or `@bot` in a group.
+- Forwards Feishu / Lark messages to local Claude Code, Codex CLI, or Pi Coding Agent. Send a DM directly, or `@bot` in a group.
 - **Streaming card**: text replies and tool calls update on one Lark card in real time.
 - **COT process messages**: use the native Feishu/Lark COT control by default for agent progress text and tool summaries, then send the final answer separately.
 - **Session continuity**: each chat, topic, or document comment thread keeps its own session.
@@ -60,6 +60,14 @@ The bridge acknowledges delivery only after a receipt containing the input ID. I
 
 Older CLIs can complete a single prompt, but supplemental input requires result correlation IDs. Missing fields produce an explicit failure instead of a false completion.
 
+## Pi Coding Agent backend
+
+Create a Pi profile with `lark-channel-bridge profile create pi --agent pi`, or use `--agent pi` during first-run setup. The adapter invokes `pi --mode json`, translates Pi's JSONL events, persists the returned session ID, and resumes later turns with `--session`. `LARK_CHANNEL_PI_BIN` overrides the `pi` executable used during profile creation.
+
+Pi JSON mode is request/response rather than a duplex transport, so messages sent while a Pi turn is running queue for the next turn instead of steering the active one. Read-only profiles expose only `read`, `grep`, `find`, and `ls` and disable extensions. Full profiles inherit Pi's normal tools. Pi has no portable workspace-only filesystem sandbox, so the bridge rejects the `workspace` access mode rather than silently treating it as isolated.
+
+The current `@earendil-works/pi-coding-agent` package requires Node.js 22.19 or newer. The adapter also accepts the `@mariozechner/pi-coding-agent` 0.73 JSON protocol on supported Node versions.
+
 ## Automatic rate-limit retries
 
 For ordinary tasks, after the agent exhausts its own API rate-limit retries (for example, `exceeded retry limit, last status: 429 Too Many Requests`), the bridge retries up to three consecutive times without progress, waiting 30, 60, and 120 seconds. New non-whitespace text, thinking content, or tool activity resets the retry count and backoff, so the next rate limit starts at attempt 1 with a 30-second wait. Session metadata, usage statistics, and blank output do not reset retries. Process messages and streaming replies show retry progress. If a process-message update fails, the bridge reports it immediately and switches to ordinary streaming progress while execution and retries continue. Stop commands, session switches, and task deadlines cancel retries. After partial progress, the bridge resumes the session reported by this run and asks the agent to check completed operations before continuing. Quota/budget exhaustion, authentication failures, and follow-up input with unknown delivery status are not retried. Temporary forked tasks and runs that produced output without reporting a session ID are also excluded.
@@ -70,6 +78,7 @@ For ordinary tasks, after the agent exhausts its own API rate-limit retries (for
 - At least one local agent installed and logged in:
   - Claude Code: `claude`, see https://docs.anthropic.com/en/docs/claude-code/quickstart
   - Codex CLI: `codex`, see https://developers.openai.com/codex/cli
+  - Pi Coding Agent: `pi`, see https://github.com/earendil-works/pi
 - A Feishu / Lark **PersonalAgent** app. The first-run QR wizard can create and bind one for you.
 
 ## Install
@@ -156,7 +165,7 @@ lark-channel-bridge status --profile codex
 ### Host CLI
 
 ```text
-lark-channel-bridge run [--profile <name>] [--agent claude|codex] [--workspace <path>] [-c <config>]
+lark-channel-bridge run [--profile <name>] [--agent claude|codex|pi] [--workspace <path>] [-c <config>]
 lark-channel-bridge config check
 lark-channel-bridge config show --profile <name> --sources
 lark-channel-bridge ps
@@ -164,11 +173,12 @@ lark-channel-bridge kill <id|#>
 lark-channel-bridge --help
 ```
 
-`profile use <name>` changes the profile used by later default starts. Use these profile management commands when running separate Claude / Codex bots, connecting multiple PersonalAgent apps, or doing scripted deployment:
+`profile use <name>` changes the profile used by later default starts. Use these profile management commands when running separate Claude / Codex / Pi bots, connecting multiple PersonalAgent apps, or doing scripted deployment:
 
 ```bash
 lark-channel-bridge profile create claude --agent claude
 lark-channel-bridge profile create codex --agent codex
+lark-channel-bridge profile create pi --agent pi
 lark-channel-bridge profile list
 lark-channel-bridge profile use <name>
 lark-channel-bridge profile remove <name>

@@ -14,6 +14,7 @@ export interface BootstrapProfileInput {
   workspace?: string;
   defaultWorkspace?: string;
   codexBinaryPath?: string;
+  piBinaryPath?: string;
   profileDir?: string;
 }
 
@@ -29,12 +30,17 @@ export async function createBootstrapProfileConfig(
     input.agentKind === 'codex'
       ? await createBootstrapCodexConfig(input.codexBinaryPath)
       : undefined;
+  const pi =
+    input.agentKind === 'pi'
+      ? await createBootstrapPiConfig(input.piBinaryPath)
+      : undefined;
   const profile = createDefaultProfileConfig({
     agentKind: input.agentKind,
     accounts: input.accounts,
     preferences: input.preferences,
     secrets: input.secrets,
     ...(codex ? { codex } : {}),
+    ...(pi ? { pi } : {}),
   });
   if (workspace) {
     profile.workspaces = {
@@ -60,16 +66,42 @@ async function ensureManagedDefaultWorkspace(path: string): Promise<string> {
 }
 
 export async function createBootstrapCodexConfig(binaryPath: string | undefined) {
-  const command = binaryPath ?? process.env.LARK_CHANNEL_CODEX_BIN ?? 'codex';
+  return createBootstrapBinaryConfig({
+    binaryPath,
+    envName: 'LARK_CHANNEL_CODEX_BIN',
+    fallback: 'codex',
+    agentId: 'codex',
+    agentName: 'Codex CLI',
+  });
+}
+
+export async function createBootstrapPiConfig(binaryPath: string | undefined) {
+  return createBootstrapBinaryConfig({
+    binaryPath,
+    envName: 'LARK_CHANNEL_PI_BIN',
+    fallback: 'pi',
+    agentId: 'pi',
+    agentName: 'Pi Coding Agent',
+  });
+}
+
+async function createBootstrapBinaryConfig(input: {
+  binaryPath?: string;
+  envName: string;
+  fallback: string;
+  agentId: 'codex' | 'pi';
+  agentName: string;
+}) {
+  const command = input.binaryPath ?? process.env[input.envName] ?? input.fallback;
   let resolvedBinary: string;
   try {
     resolvedBinary = await resolveExecutablePath(command);
   } catch (err) {
     const errno = (err as NodeJS.ErrnoException).code;
     throw new AgentPreflightError({
-      code: codexBootstrapBinaryErrorCode(errno),
-      agentId: 'codex',
-      agentName: 'Codex CLI',
+      code: bootstrapBinaryErrorCode(errno),
+      agentId: input.agentId,
+      agentName: input.agentName,
       command,
       binaryPath: command,
       errno,
@@ -78,7 +110,7 @@ export async function createBootstrapCodexConfig(binaryPath: string | undefined)
   return { binaryPath: resolvedBinary };
 }
 
-function codexBootstrapBinaryErrorCode(errno: string | undefined) {
+function bootstrapBinaryErrorCode(errno: string | undefined) {
   if (errno === 'EACCES' || errno === 'EPERM') return 'agent-binary-not-executable';
   if (errno === 'ELOOP' || errno === 'ENOTDIR' || errno === 'EINVAL') {
     return 'agent-binary-resolve-failed';

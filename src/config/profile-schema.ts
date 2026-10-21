@@ -14,7 +14,7 @@ import {
   type PermissionSource,
 } from './permissions';
 
-export type AgentKind = 'claude' | 'codex';
+export type AgentKind = 'claude' | 'codex' | 'pi';
 export type SandboxMode = CodexSandboxMode;
 export type { AccessMode, PermissionConfig, PermissionSource };
 
@@ -51,6 +51,15 @@ export interface CodexConfig {
   inheritCodexHome?: boolean;
   ignoreUserConfig?: boolean;
   ignoreRules?: boolean;
+}
+
+export interface PiConfig {
+  binaryPath: string;
+  realpath?: string;
+  version?: string;
+  sha256?: string;
+  owner?: number;
+  mode?: number;
 }
 
 export interface AttachmentConfig {
@@ -155,6 +164,7 @@ export interface ProfileConfig {
   secrets?: SecretsConfig;
   channels?: import('./schema').ChannelDisplayConfig;
   claude?: { binaryPath?: string };
+  pi?: PiConfig;
   preferences: Omit<AppPreferences, 'access' | 'requireMentionInGroup'>;
   access: ProfileAccess;
   workspaces: {
@@ -173,7 +183,7 @@ export interface ProfileConfig {
 
 /** Configuration needed to execute a conversation; no messaging credentials. */
 export type RunProfileConfig = Pick<ProfileConfig,
-  'agentKind' | 'access' | 'workspaces' | 'permissions' | 'codex' | 'attachments'> & { preferences: import('./schema').RunPreferences };
+  'agentKind' | 'access' | 'workspaces' | 'permissions' | 'codex' | 'pi' | 'attachments'> & { preferences: import('./schema').RunPreferences };
 
 /**
  * The lark-cli identity preset that actually takes effect, after applying the
@@ -220,6 +230,7 @@ export interface CreateDefaultProfileConfigInput {
   sandbox?: Partial<SandboxConfig>;
   permissions?: Partial<PermissionConfig>;
   codex?: CodexConfig;
+  pi?: PiConfig;
   secrets?: SecretsConfig;
 }
 
@@ -244,6 +255,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     secrets?: SecretsConfig;
     channels?: import('./schema').ChannelDisplayConfig;
     claude?: { binaryPath?: string };
+    pi?: PiConfig;
     preferences?: (AppPreferences & { access?: Partial<ProfileAccess> }) | undefined;
     access?: Partial<ProfileAccess>;
     workspaces?: {
@@ -266,12 +278,15 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   if (raw.schemaVersion !== 2) {
     throw new Error('profile schemaVersion must be 2');
   }
-  if (raw.agentKind !== 'claude' && raw.agentKind !== 'codex') {
-    throw new Error('agentKind must be claude or codex');
+  if (raw.agentKind !== 'claude' && raw.agentKind !== 'codex' && raw.agentKind !== 'pi') {
+    throw new Error('agentKind must be claude, codex, or pi');
   }
   const accounts = normalizeAccounts(raw.accounts);
   if (raw.agentKind === 'codex' && !raw.codex) {
     throw new Error('codex profile requires codex configuration');
+  }
+  if (raw.agentKind === 'pi' && !raw.pi) {
+    throw new Error('pi profile requires pi configuration');
   }
 
   const preferences = normalizePreferences(raw.preferences);
@@ -298,6 +313,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     preferences,
     ...(raw.channels ? { channels: raw.channels } : {}),
     ...(raw.claude ? { claude: raw.claude } : {}),
+    ...(raw.pi ? { pi: normalizePi(raw.pi) } : {}),
     access,
     workspaces,
     sandbox,
@@ -419,6 +435,20 @@ function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
     ignoreRules: false,
   };
   return codex;
+}
+
+function normalizePi(input: PiConfig): PiConfig {
+  if (!input || typeof input !== 'object' || typeof input.binaryPath !== 'string' || !input.binaryPath) {
+    throw new Error('pi.binaryPath is required');
+  }
+  return {
+    binaryPath: input.binaryPath,
+    ...(typeof input.realpath === 'string' ? { realpath: input.realpath } : {}),
+    ...(typeof input.version === 'string' ? { version: input.version } : {}),
+    ...(typeof input.sha256 === 'string' ? { sha256: input.sha256 } : {}),
+    ...(typeof input.owner === 'number' ? { owner: input.owner } : {}),
+    ...(typeof input.mode === 'number' ? { mode: input.mode } : {}),
+  };
 }
 
 function normalizeComments(_input: unknown): CommentConfig {

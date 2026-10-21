@@ -1,13 +1,10 @@
-import { codexExecutionCapabilities } from '../agent/codex/capabilities';
-import { CLAUDE_EXECUTION_CAPABILITIES } from '../agent/claude/capabilities';
+import { executionCapabilitiesForProfile } from '../agent/backends';
 import type { AgentExecutionCapabilities } from '../agent/types';
 import type { ProfileConfig } from '../config/profile-schema';
 
 /** Profile-time discovery uses the same declaration as the configured adapter. */
 export function profileExecutionCapabilities(profile: ProfileConfig): AgentExecutionCapabilities {
-  return profile.agentKind === 'codex'
-    ? codexExecutionCapabilities()
-    : CLAUDE_EXECUTION_CAPABILITIES;
+  return executionCapabilitiesForProfile(profile);
 }
 
 export function supportsBackgroundProfile(profile: ProfileConfig): boolean {

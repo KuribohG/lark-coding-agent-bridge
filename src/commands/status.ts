@@ -21,6 +21,14 @@ export function runtimeAccessStatus(
       ),
     };
   }
+  if (profileConfig.agentKind === 'pi') {
+    return {
+      label: 'tools',
+      value: profileConfig.permissions.defaultAccess === 'read-only'
+        ? 'read-only allowlist'
+        : 'Pi tools (no OS sandbox)',
+    };
+  }
   return {
     label: 'sandbox',
     value: `${profileConfig.sandbox.defaultMode}/${profileConfig.sandbox.maxMode}`,

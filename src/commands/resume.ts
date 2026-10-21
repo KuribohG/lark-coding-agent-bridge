@@ -4,13 +4,14 @@ import { log } from '../core/logger';
 import { formatRelTime, listRecentSessions, type SessionSummary } from '../session/history';
 import { listCodexThreadHistory, type CodexThreadHistoryEntry } from '../session/codex-history';
 import type { SessionCatalogIdentity } from '../session/catalog';
+import type { AgentCapabilityId } from '../agent/capability';
 import type { CommandContext } from './types';
 import { reply, commandReplyOptions } from './presentation';
 import { commandProfilePaths, effectiveWorkspaceCwd } from './context';
 
 interface ResumeCandidate {
   scopeId: string;
-  agentId: 'claude' | 'codex';
+  agentId: AgentCapabilityId;
   cwdRealpath: string;
   policyFingerprint: string;
   sessionId?: string;
@@ -83,6 +84,25 @@ export async function handleResume(args: string, ctx: CommandContext): Promise<v
     return;
   }
 
+  if (ctx.controls.profileConfig.agentKind === 'pi') {
+    const identity = ctx.sessionCatalogIdentity;
+    const entry =
+      ctx.sessionCatalog && identity
+        ? ctx.sessionCatalog.activeFor(identity)
+        : undefined;
+    if (entry?.sessionId && identity) {
+      const nonce = issueResumeCandidate(identity, { sessionId: entry.sessionId });
+      await reply(
+        ctx,
+        `当前 Pi session 可恢复。\n使用 \`/resume use ${nonce}\` 恢复（10 分钟内有效）。`,
+      );
+      return;
+    }
+    const card = resumeCard(cwd, []);
+    await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
+    return;
+  }
+
   const sessions = await listClaudeResumeHistory(ctx, cwd, limit);
   const currentSession = ctx.sessions.getRaw(ctx.scope);
   const identity = ctx.sessionCatalogIdentity;
@@ -119,7 +139,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
       } else {
         ctx.sessionCatalog.upsertActive({
           scopeId: ctx.sessionCatalogIdentity.scopeId,
-          agentId: 'claude',
+          agentId: ctx.sessionCatalogIdentity.agentId,
           cwdRealpath: ctx.sessionCatalogIdentity.cwdRealpath,
           policyFingerprint: ctx.sessionCatalogIdentity.policyFingerprint,
           sessionId: resolved.sessionId!,
@@ -141,9 +161,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     ctx.controls.btw?.reset(ctx.scope);
     ctx.controls.cancelTimedRun?.(ctx.scope);
     ctx.activeRuns.interrupt(ctx.scope);
-    if (ctx.sessionCatalogIdentity.agentId === 'claude') {
-      ctx.sessions.set(ctx.scope, sessionId, ctx.sessionCatalogIdentity.cwdRealpath);
-    }
+    ctx.sessions.set(ctx.scope, sessionId, ctx.sessionCatalogIdentity.cwdRealpath);
     await reply(ctx, RESUME_APPLIED_REPLY);
     return;
   }
@@ -196,7 +214,7 @@ function consumeResumeCandidate(
     candidate.agentId !== identity.agentId ||
     candidate.cwdRealpath !== identity.cwdRealpath ||
     candidate.policyFingerprint !== identity.policyFingerprint ||
-    (identity.agentId === 'claude' && !candidate.sessionId) ||
+    (identity.agentId !== 'codex' && !candidate.sessionId) ||
     (identity.agentId === 'codex' && !candidate.threadId)
   ) {
     return undefined;

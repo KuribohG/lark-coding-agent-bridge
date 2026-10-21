@@ -15,7 +15,7 @@ export class ScopePreferencesStore {
       const raw = JSON.parse(await readFile(this.path, 'utf8'));
       for (const [key, value] of Object.entries(raw)) {
         const [agent] = JSON.parse(key);
-        if (agent !== 'claude' && agent !== 'codex') continue;
+        if (agent !== 'claude' && agent !== 'codex' && agent !== 'pi') continue;
         const entry = value as ModelSettings;
         this.data.set(key, {
           ...(entry.model ? { model: validateModelId(entry.model) } : {}),

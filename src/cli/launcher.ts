@@ -21,7 +21,7 @@ export function parseLauncherArgs(args: string[]) {
       if (profile || !args[i + 1] || args[i + 1]!.startsWith('-')) throw new Error('--profile 需要一个名称');
       profile = args[++i]; continue;
     }
-    if (arg === 'claude' || arg === 'codex') {
+    if (arg === 'claude' || arg === 'codex' || arg === 'pi') {
       if (profile) throw new Error('只能选择一个 profile');
       profile = arg; continue;
     }
@@ -50,7 +50,7 @@ export async function liveConsole(path: string): Promise<UiSidecar | undefined> 
 export async function runLauncher(args: string[]): Promise<void> {
   const opts = parseLauncherArgs(args);
   if (opts.help) {
-    console.log(`run-lark-cc [start|fg|status|stop|log|ui] [claude|codex] [--profile NAME] [--print]
+    console.log(`run-lark-cc [start|fg|status|stop|log|ui] [claude|codex|pi] [--profile NAME] [--print]
 
 start（默认）  后台启动 Bridge 和本地 GUI，无需 systemd
 fg            前台运行（容器可用；Ctrl-C 停止）
@@ -60,7 +60,7 @@ stop          关闭此配置目录下的整个 GUI supervisor
 log           输出启动日志的末尾部分
 
 首次启动在网页中扫码配置；未指定 profile 时沿用当前选择。
-claude/codex 只选择启动的 profile；一个 GUI 管理多个 profile。
+claude/codex/pi 只选择启动的 profile；一个 GUI 管理多个 profile。
 LARK_CHANNEL_HOME 可指定独立配置目录。后台进程不会跨机器重启自动恢复；
 需要开机自启可使用 lark-channel-bridge start --web-ui。
 `);

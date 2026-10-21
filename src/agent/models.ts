@@ -45,9 +45,14 @@ const CODEX_MODELS: ModelOption[] = [
   { value: 'o3', label: 'o3' },
 ];
 
+/** Pi owns its provider/model catalog; custom provider/model IDs remain typeable. */
+const PI_MODELS: ModelOption[] = [
+  { value: DEFAULT_MODEL, label: '跟随 Pi 配置（不指定）' },
+];
+
 /** The model picker options for a profile's agent kind. */
 export function supportedModels(agentKind: AgentKind): ModelOption[] {
-  return agentKind === 'codex' ? CODEX_MODELS : CLAUDE_MODELS;
+  return agentKind === 'codex' ? CODEX_MODELS : agentKind === 'pi' ? PI_MODELS : CLAUDE_MODELS;
 }
 
 /** True when the selection means "use the agent default" (no `--model`). */

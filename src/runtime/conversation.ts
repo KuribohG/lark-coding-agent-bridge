@@ -1,6 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { capabilityForProfile } from '../agent/backends';
 import { sendRunInput } from '../agent/execution';
 import type { AgentAdapter, AgentInput, AgentInputReceipt } from '../agent/types';
 import { ActiveRuns } from './active-runs';
@@ -93,7 +93,7 @@ export class ConversationRuntime {
       input.signal?.removeEventListener('abort', abort);
     };
     const config = this.options.config;
-    const capability = config.agentKind === 'codex' ? codexCapability(config) : claudeCapability(config);
+    const capability = capabilityForProfile(config);
     try {
       const flow = await startRunFlow({
         scopeId, scope: { source: 'channel', channelId: this.options.channelId,

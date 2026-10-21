@@ -2,7 +2,7 @@
 
 配置使用 [分层 TOML](docs/configuration.md)（[示例](docs/config.example.toml)）。本版本只加载 TOML，执行默认值与飞书／Web 展示配置独立。
 
-把飞书 / Lark 消息和本地 Claude Code 或 Codex CLI 打通的轻量 bot。用一条命令启动，扫码绑定 PersonalAgent 应用，然后在飞书里和本机编程助手对话，让它读图、处理文件、改代码。
+把飞书 / Lark 消息和本地 Claude Code、Codex CLI 或 Pi Coding Agent 打通的轻量 bot。用一条命令启动，扫码绑定 PersonalAgent 应用，然后在飞书里和本机编程助手对话，让它读图、处理文件、改代码。
 
 [English README](./README.md)
 
@@ -35,7 +35,7 @@ run-lark-cc
 
 ## 主要功能
 
-- 在飞书私聊直接发消息，或在群里 `@bot`，把任务转给本机 Claude Code / Codex CLI。
+- 在飞书私聊直接发消息，或在群里 `@bot`，把任务转给本机 Claude Code / Codex CLI / Pi Coding Agent。
 - **流式卡片**：文本回复和工具调用实时更新在同一张卡片上。
 - **COT 过程消息**：默认用飞书原生 COT 控件展示 agent 的阶段性文本和工具摘要，再单独发送最终答案。
 - **会话延续**：每个聊天、话题或文档评论有自己的会话，不会互相串。
@@ -62,6 +62,14 @@ bridge 收到带输入 ID 的接收回执后才回复“已送入当前任务，
 
 较旧 CLI 的单次输入仍可使用，但中途补充需要结果中的输入 ID；缺少这些字段时 bridge 会报告无法确认，而不会把任务误判为完成。
 
+## Pi Coding Agent 后端
+
+使用 `lark-channel-bridge profile create pi --agent pi` 创建 Pi profile，也可在首次初始化时传 `--agent pi`。适配器通过 `pi --mode json` 读取 JSONL 事件，保存 Pi 返回的 session ID，后续轮次使用 `--session` 续聊。创建 profile 时可用 `LARK_CHANNEL_PI_BIN` 指定 `pi` 可执行文件。
+
+Pi JSON 模式是单轮请求/响应，不是全双工输入通道，因此运行中的补充消息会排队到下一轮，不会 steer 当前回合。只读 profile 仅开放 `read`、`grep`、`find`、`ls` 并禁用扩展；完整权限 profile 继承 Pi 的常规工具。Pi 没有可移植的“仅工作区可写”文件系统沙箱，所以 bridge 会明确拒绝 `workspace` 权限模式，不会把它静默当成隔离环境。
+
+当前 `@earendil-works/pi-coding-agent` 要求 Node.js 22.19 或更新版本；适配器也兼容支持范围内的 `@mariozechner/pi-coding-agent` 0.73 JSON 协议。
+
 ## 限流自动重试
 
 普通任务遇到 API 限流（如 `exceeded retry limit, last status: 429 Too Many Requests`）时，bridge 会在 agent 自身重试结束后，再等待 30、60、120 秒各重试一次。次数按连续无进展计算：收到新的非空白正文、思考内容或工具调用/结果后，重试次数和等待时间重置；之后再次限流会从第 1 次、等待 30 秒开始。仅收到会话元信息、用量统计或空白输出不会重置。过程消息和流式回复会显示重试进度；过程消息更新失败时，会立即提示并切换到普通流式进度，任务与重试继续执行；`/stop`、切换会话和任务截止时间会取消重试。已有进度时会续接本轮报告的会话，并提示 agent 检查已完成的操作后继续。额度或预算耗尽、鉴权错误、送达状态未知的补充消息不自动重试；临时分叉任务，以及已有输出但未获得本轮会话 ID 的任务也不自动重试。
@@ -72,6 +80,7 @@ bridge 收到带输入 ID 的接收回执后才回复“已送入当前任务，
 - 本机至少安装并登录一个 agent：
   - Claude Code：`claude`，安装说明：https://docs.anthropic.com/en/docs/claude-code/quickstart
   - Codex CLI：`codex`，安装说明：https://developers.openai.com/codex/cli
+  - Pi Coding Agent：`pi`，安装说明：https://github.com/earendil-works/pi
 - 一个飞书 / Lark PersonalAgent 应用。首次启动的扫码向导可以帮你创建并绑定。
 
 ## 安装
@@ -158,7 +167,7 @@ lark-channel-bridge status --profile codex
 ### 宿主 CLI
 
 ```text
-lark-channel-bridge run [--profile <name>] [--agent claude|codex] [--workspace <path>] [-c <config>]
+lark-channel-bridge run [--profile <name>] [--agent claude|codex|pi] [--workspace <path>] [-c <config>]
 lark-channel-bridge config check
 lark-channel-bridge config show --profile <name> --sources
 lark-channel-bridge ps
@@ -166,11 +175,12 @@ lark-channel-bridge kill <id|#>
 lark-channel-bridge --help
 ```
 
-`profile use <name>` 会切换后续默认启动使用的 profile。需要同时跑 Claude / Codex 两个 bot、连接多套 PersonalAgent 应用，或做脚本化部署时，再使用这些 profile 管理命令：
+`profile use <name>` 会切换后续默认启动使用的 profile。需要同时跑 Claude / Codex / Pi 等多个 bot、连接多套 PersonalAgent 应用，或做脚本化部署时，再使用这些 profile 管理命令：
 
 ```bash
 lark-channel-bridge profile create claude --agent claude
 lark-channel-bridge profile create codex --agent codex
+lark-channel-bridge profile create pi --agent pi
 lark-channel-bridge profile list
 lark-channel-bridge profile use <name>
 lark-channel-bridge profile remove <name>

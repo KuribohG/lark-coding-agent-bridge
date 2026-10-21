@@ -14,6 +14,7 @@ import {
 } from '../../runtime/profile-runtime';
 import { readAndPrune, type ProcessEntry } from '../../runtime/registry';
 import { checkRuntimeLock, type RuntimeLockMeta } from '../../runtime/locks';
+import { agentDisplayName } from '../../agent/backends';
 import { preFlightChecks } from '../preflight';
 import { stopProcessEntry, type StopProcessEntryResult } from './ps';
 
@@ -598,7 +599,5 @@ async function maybeResolveProfileRuntime(
 }
 
 function agentDisplay(agentKind: ProcessEntry['agentKind']): { id: string; displayName: string } {
-  return agentKind === 'codex'
-    ? { id: 'codex', displayName: 'Codex CLI' }
-    : { id: 'claude', displayName: 'Claude Code' };
+  return { id: agentKind, displayName: agentDisplayName(agentKind) };
 }

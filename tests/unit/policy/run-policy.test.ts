@@ -1,9 +1,9 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { claudeCapability, codexCapability } from '../../../src/agent/capability';
+import { claudeCapability, codexCapability, piCapability } from '../../../src/agent/capability';
 import type { AccessMode } from '../../../src/config/permissions';
-import { createDefaultProfileConfig, type ProfileConfig } from '../../../src/config/profile-schema';
+import { createDefaultProfileConfig, type AgentKind, type ProfileConfig } from '../../../src/config/profile-schema';
 import {
   evaluateRunPolicy,
   type RunPolicyInput,
@@ -83,6 +83,24 @@ describe('run policy', () => {
     expect(result.accessMode).toBe('read-only');
     expect(result.sandbox).toBe('read-only');
     expect(result.permissionMode).toBe('plan');
+  });
+
+  it('rejects Pi workspace access instead of claiming a sandbox it cannot enforce', () => {
+    const piProfile = profile({
+      agentKind: 'pi',
+      permissions: { defaultAccess: 'workspace', maxAccess: 'workspace' },
+    });
+    const result = evaluateRunPolicy({
+      ...baseInput({ profileConfig: piProfile }),
+      capability: piCapability(piProfile),
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      rejectReason: {
+        code: 'capability-access-unsupported',
+      },
+    });
   });
 
   it('returns an expiry and a stable policy fingerprint for accepted runs', () => {
@@ -175,7 +193,7 @@ function baseInput(overrides: Partial<RunPolicyInput> = {}): RunPolicyInput {
 }
 
 function profile(options: {
-  agentKind?: 'claude' | 'codex';
+  agentKind?: AgentKind;
   permissions?: {
     defaultAccess: AccessMode;
     maxAccess: AccessMode;
@@ -193,6 +211,8 @@ function profile(options: {
     },
     ...(options.agentKind === 'codex'
       ? { codex: { binaryPath: '/usr/local/bin/codex' } }
+      : options.agentKind === 'pi'
+        ? { pi: { binaryPath: '/usr/local/bin/pi' } }
       : {}),
     permissions: options.permissions,
   });

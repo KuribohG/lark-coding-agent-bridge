@@ -12,8 +12,10 @@ describe('agent model catalog', () => {
   it('offers a distinct catalog per agent kind, each led by the default sentinel', () => {
     const claude = supportedModels('claude');
     const codex = supportedModels('codex');
+    const pi = supportedModels('pi');
     expect(claude[0]?.value).toBe(DEFAULT_MODEL);
     expect(codex[0]?.value).toBe(DEFAULT_MODEL);
+    expect(pi).toEqual([{ value: DEFAULT_MODEL, label: '跟随 Pi 配置（不指定）' }]);
     expect(claude.map((m) => m.value)).toContain('claude-opus-4-8');
     expect(codex.map((m) => m.value)).toContain('gpt-5-codex');
     expect(claude.map((m) => m.value)).not.toContain('gpt-5-codex');
@@ -37,6 +39,7 @@ describe('agent model catalog', () => {
     expect(resolveModelArg('claude', DEFAULT_MODEL)).toBeUndefined();
     expect(resolveModelArg('claude', undefined)).toBeUndefined();
     expect(resolveModelArg('codex', 'custom/claude-opus')).toBe('custom/claude-opus');
+    expect(resolveModelArg('pi', 'openrouter/vendor/model')).toBe('openrouter/vendor/model');
   });
 
   it('labels a stored value using the picker option text', () => {

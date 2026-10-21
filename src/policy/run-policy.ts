@@ -81,7 +81,8 @@ export interface RunPolicyReject {
     code:
       | 'access-denied'
       | 'folder-allowlist-unverified'
-      | 'required-attachment-rejected';
+      | 'required-attachment-rejected'
+      | 'capability-access-unsupported';
     userVisible: string;
   };
 }
@@ -113,6 +114,15 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
     input.profileConfig.permissions.maxAccess,
     input.capability.permissions.maxAccess,
   );
+  if (
+    input.capability.permissions.supportedAccess &&
+    !input.capability.permissions.supportedAccess.includes(accessMode)
+  ) {
+    return reject(
+      'capability-access-unsupported',
+      `${input.capability.agentId} 后端不支持 ${accessMode} 执行模式；请选择 read-only 或 full。`,
+    );
+  }
   const sandbox = accessToCodexSandbox(accessMode);
   const permissionMode = accessToClaudePermissionMode(
     accessMode,

@@ -1,7 +1,7 @@
 import { larkDisplay } from '../channels/lark/config';
 import { rewriteFileLinks } from '../card/file-links';
 import type { CommandContext } from '../commands';
-import { claudeCapability, codexCapability } from '../agent/capability';
+import { capabilityForProfile } from '../agent/backends';
 import { modelRunArguments } from '../agent/model-settings';
 import { buildAgentPrompt } from '../agent/prompt';
 import { getAgentStopGraceMs } from '../config/schema';
@@ -103,7 +103,7 @@ export class BtwManager {
   private async run(question: string, ctx: CommandContext, signal: AbortSignal): Promise<void> {
     if (!ctx.runExecutor) throw new Error('btw requires a run executor');
     const { profileConfig } = ctx.controls;
-    const capability = profileConfig.agentKind === 'codex' ? codexCapability(profileConfig) : claudeCapability(profileConfig);
+    const capability = capabilityForProfile(profileConfig);
     const access = ctx.msg.chatType === 'p2p'
       ? canUseDm(profileConfig, ctx.controls, ctx.msg.senderId)
       : canUseGroup(profileConfig, ctx.controls, ctx.msg.chatId, ctx.msg.senderId);

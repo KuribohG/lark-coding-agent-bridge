@@ -1,7 +1,6 @@
 import { buildLarkChannelEnv } from '../agent/lark-channel-env';
 import { buildBridgeSystemPrompt } from '../channels/lark/system-prompt';
-import { ClaudeAdapter } from '../agent/claude/adapter';
-import { CodexAdapter } from '../agent/codex/adapter';
+import { backendFor, createAgentAdapter, isAgentKind } from '../agent/backends';
 import { AgentPreflightError, type AgentAvailability } from '../agent/preflight';
 import type { AgentAdapter } from '../agent/types';
 import type { AppPaths } from '../config/app-paths';
@@ -35,36 +34,24 @@ export function createRuntimeAgent(
             : {}),
         }
       : undefined;
-  if (profileConfig.agentKind === 'codex') {
-    const codex = profileConfig.codex;
-    if (!codex?.binaryPath) {
-      throw new Error('codex profile requires codex.binaryPath');
-    }
-    return new CodexAdapter({
-      binary: codex.binaryPath,
-      systemPrompt: buildBridgeSystemPrompt,
-      transport: codex.transport,
-      profileStateDir: appPaths.profileDir,
-      ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
-      inheritCodexHome: codex.inheritCodexHome === true,
-      ignoreUserConfig: codex.ignoreUserConfig === true,
-      ignoreRules: codex.ignoreRules,
-      sandbox: profileConfig.sandbox.defaultMode,
-      env: buildLarkChannelEnv(larkChannel),
-    });
-  }
-  return new ClaudeAdapter({ binary: profileConfig.claude?.binaryPath, env: buildLarkChannelEnv(larkChannel), systemPrompt: buildBridgeSystemPrompt });
+  return createAgentAdapter({
+    profile: profileConfig,
+    profileDir: appPaths.profileDir,
+    env: buildLarkChannelEnv(larkChannel),
+    systemPrompt: buildBridgeSystemPrompt,
+  });
 }
 
 export async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promise<AgentAvailability> {
   if (agent.checkAvailability) return agent.checkAvailability();
   const ok = await agent.isAvailable();
   if (ok) return { ok: true };
+  const backend = backendFor(isAgentKind(agent.id) ? agent.id : 'claude');
   const diagnostic = {
     code: 'agent-binary-not-found' as const,
-    agentId: agent.id === 'codex' ? ('codex' as const) : ('claude' as const),
+    agentId: backend.kind,
     agentName: agent.displayName,
-    command: agent.id === 'codex' ? 'codex' : 'claude',
+    command: backend.defaultCommand,
   };
   return { ok: false, diagnostic, error: new AgentPreflightError(diagnostic) };
 }
