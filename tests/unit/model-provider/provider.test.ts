@@ -71,6 +71,29 @@ describe('agent model provider registry', () => {
     await expect(new ModelProviderRegistry(services).resolve('pi', 'anthropic/claude-opus-5.5')).resolves.toBeUndefined();
   });
 
+  it('resolves an existing bare model when exactly one compatible service declares it', async () => {
+    process.env.PROVIDER_TEST_KEY = 'private-provider-key';
+    const registry = new ModelProviderRegistry(services);
+    await expect(registry.resolve('pi', 'deepseek-flash')).resolves.toMatchObject({
+      id: 'deepseek',
+      model: expect.stringContaining('/deepseek-flash'),
+    });
+    await expect(registry.resolve('codex', 'deepseek-flash')).resolves.toMatchObject({
+      id: 'deepseek',
+      model: 'deepseek-flash',
+    });
+    await expect(registry.resolve('claude', 'deepseek-flash')).resolves.toBeUndefined();
+  });
+
+  it('rejects an ambiguous bare model instead of choosing a provider', async () => {
+    process.env.PROVIDER_TEST_KEY = 'private-provider-key';
+    const registry = new ModelProviderRegistry({
+      ...services,
+      second: { ...services.deepseek!, baseUrl: 'https://second.example/v1' },
+    });
+    await expect(registry.resolve('pi', 'deepseek-flash')).rejects.toThrow('多个 provider');
+  });
+
   it('reserves the native provider id', () => {
     expect(() => new ModelProviderRegistry({
       'openai-codex': services.deepseek!,

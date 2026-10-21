@@ -68,6 +68,8 @@ export abstract class ModelProvider {
 
   abstract supports(agentKind: AgentKind): boolean;
   abstract bind(agentKind: AgentKind, model: string): Promise<ResolvedModelProvider>;
+  /** Bare model IDs this provider may resolve when no provider prefix is used. */
+  bareModels(_agentKind: AgentKind): readonly string[] { return []; }
 
   protected assertSupported(agentKind: AgentKind): void {
     if (!this.supports(agentKind)) {
@@ -112,6 +114,10 @@ export class ResponsesModelProvider extends ModelProvider {
 
   supports(agentKind: AgentKind): boolean {
     return agentKind === 'pi' || agentKind === 'codex';
+  }
+
+  override bareModels(agentKind: AgentKind): readonly string[] {
+    return this.supports(agentKind) ? [this.config.model] : [];
   }
 
   async bind(agentKind: AgentKind, model: string): Promise<ResolvedModelProvider> {
@@ -185,10 +191,16 @@ export class ModelProviderRegistry {
   async resolve(agentKind: AgentKind, selection: string | undefined): Promise<ResolvedModelProvider | undefined> {
     if (!selection || selection === 'default') return undefined;
     const provider = this.providers.find(candidate => selection.startsWith(`${candidate.id}/`));
-    if (!provider) return undefined;
-    const model = selection.slice(provider.id.length + 1);
-    if (!model) throw new Error(`模型选择 ${selection} 缺少模型 ID`);
-    return provider.bind(agentKind, model);
+    if (provider) {
+      const model = selection.slice(provider.id.length + 1);
+      if (!model) throw new Error(`模型选择 ${selection} 缺少模型 ID`);
+      return provider.bind(agentKind, model);
+    }
+    const bare = this.providers.filter(candidate => candidate.bareModels(agentKind).includes(selection));
+    if (bare.length > 1) {
+      throw new Error(`模型 ${selection} 同时由多个 provider 提供，请使用 provider/model 明确选择`);
+    }
+    return bare[0]?.bind(agentKind, selection);
   }
 }
 

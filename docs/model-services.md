@@ -36,6 +36,10 @@ triageModel = ""
 /model screening/your-screening-model
 ```
 
+如果只有一个支持当前 Agent 的服务声明了该默认模型，也可以继续使用裸模型名，
+Bridge 会唯一解析到该服务；多个服务声明相同模型时会明确报歧义，要求改用
+`<provider>/<model>`。
+
 Pi 会在每次运行时通过临时 extension 注册该 provider；Codex 会通过 app-server
 的 `model_providers` 配置注入 endpoint 和 `env_key`。两者都只把凭据放进子进程
 环境，不写进命令行参数或生成的 provider 文件。Responses 服务当前支持 Pi 和
