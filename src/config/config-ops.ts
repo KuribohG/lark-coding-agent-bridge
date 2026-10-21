@@ -166,6 +166,10 @@ export async function savePreferencesConfig(
   meeting?: ProfileConfig['meeting'],
   expectedRevision?: string,
   resetPaths: string[][] = [],
+  agentSwitch?: {
+    agentKind: ProfileConfig['agentKind'];
+    launchPatch: Pick<ProfileConfig, 'claude' | 'codex' | 'pi'>;
+  },
 ): Promise<void> {
   const updatedLarkCli = {
     identityPreset: larkCliIdentity,
@@ -192,6 +196,7 @@ export async function savePreferencesConfig(
     for (const key of ['messageReply', 'messageReplyMigrated', 'showToolCalls', 'cotMessages', 'fileLinks'] as const) delete profilePreferences[key];
     root.profiles[state.profile] = {
       ...profile,
+      ...(agentSwitch ? { agentKind: agentSwitch.agentKind, ...agentSwitch.launchPatch } : {}),
       mode,
       ...(channels ? { channels } : {}),
       preferences: {
@@ -207,7 +212,14 @@ export async function savePreferencesConfig(
     };
     await saveRootConfig(root, state.configPath, resetPaths);
     const saved = root.profiles[state.profile]!;
-    state.profileConfig = { ...state.profileConfig, preferences: saved.preferences, channels: saved.channels,
+    state.profileConfig = { ...state.profileConfig, ...(agentSwitch ? {} : {
+      agentKind: saved.agentKind,
+      claude: saved.claude,
+      codex: saved.codex,
+      pi: saved.pi,
+      sandbox: saved.sandbox,
+      permissionSource: saved.permissionSource,
+    }), preferences: saved.preferences, channels: saved.channels,
       access: saved.access, mode: saved.mode, larkCli: saved.larkCli, ...(meeting ? { meeting: saved.meeting } : {}) };
     state.cfg = { ...state.cfg, ...state.profileConfig };
   });

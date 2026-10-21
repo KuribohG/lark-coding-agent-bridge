@@ -1,7 +1,7 @@
 import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import type { NormalizedMessage } from '@larksuite/channel';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActiveRuns } from '../../../src/bot/active-runs';
@@ -144,6 +144,37 @@ describe('profile-aware account and config commands', () => {
     );
     expect(cleared.profiles.claude?.preferences.model).toBeUndefined();
     expect(cleared.profiles.claude?.preferences.reasoningEffort).toBeUndefined();
+  });
+
+  it('switches a profile execution engine through the shared config API', async () => {
+    const h = await createHarness({ preferences: { model: 'old-model', reasoningEffort: 'high' } });
+    const binDir = join(h.rootDir, 'bin');
+    await mkdir(binDir, { recursive: true });
+    const pi = join(binDir, 'pi');
+    await writeFile(pi, '#!/bin/sh\necho "pi 0.test"\n', 'utf8');
+    await chmod(pi, 0o755);
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${binDir}${delimiter}${oldPath ?? ''}`;
+    const switchAgent = vi.fn(async () => {});
+    try {
+      const state = await loadProfileState('claude', h.rootDir);
+      const view = await applyConfig({
+        ...state,
+        async refreshOwner() {},
+        async restart() {},
+        switchAgent,
+      }, { agentKind: 'pi' });
+
+      expect(view).toMatchObject({ profile: 'claude', agentKind: 'pi', live: true });
+      const root = await readRoot(h.rootDir);
+      expect(root.profiles.claude?.agentKind).toBe('pi');
+      expect(root.profiles.claude?.pi?.binaryPath).toBe(pi);
+      expect(root.profiles.claude?.preferences.model).toBeUndefined();
+      expect(root.profiles.claude?.preferences.reasoningEffort).toBeUndefined();
+      expect(switchAgent).toHaveBeenCalledOnce();
+    } finally {
+      process.env.PATH = oldPath;
+    }
   });
 
   it('keeps the current message reply mode when the config submit payload omits it', async () => {

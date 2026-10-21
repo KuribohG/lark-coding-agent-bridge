@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { delimiter, join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyPreferencesChange, preparePreferencesChange, PreferencesApplyError } from '../../../src/config/preferences';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { runtimeProfileConfig } from '../../../src/config/profile-store';
@@ -49,4 +52,46 @@ describe('shared preference changes', () => {
     await expect(result).rejects.toBeInstanceOf(PreferencesApplyError);
     await expect(result).rejects.toMatchObject({ step: 'config.save', identityApplied: true, rollbackFailed: true });
   });
+
+  it('validates and records a backend switch, clearing backend-specific model settings', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bridge-preference-pi-'));
+    temporaryDirs.push(dir);
+    const pi = join(dir, 'pi');
+    await writeFile(pi, '#!/bin/sh\necho "pi test"\n', 'utf8');
+    await chmod(pi, 0o755);
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${dir}${delimiter}${oldPath ?? ''}`;
+    try {
+      const s = state();
+      s.profileConfig.preferences = {
+        ...s.profileConfig.preferences,
+        model: 'old-backend-model',
+        reasoningEffort: 'high',
+      };
+      s.cfg.preferences = s.profileConfig.preferences;
+      const change = await preparePreferencesChange(s, { agentKind: 'pi' });
+
+      expect(change.nextAgentKind).toBe('pi');
+      expect(change.agentSwitch).toMatchObject({
+        agentKind: 'pi',
+        launchPatch: { pi: { binaryPath: pi } },
+      });
+      expect(change.nextPreferences.model).toBeUndefined();
+      expect(change.nextPreferences.reasoningEffort).toBeUndefined();
+
+      await applyPreferencesChange(s, change, 'disk');
+      expect(vi.mocked(ops.savePreferencesConfig).mock.calls[0]?.[8]).toMatchObject({
+        agentKind: 'pi',
+        launchPatch: { pi: { binaryPath: pi } },
+      });
+    } finally {
+      process.env.PATH = oldPath;
+    }
+  });
+});
+
+const temporaryDirs: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(temporaryDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });

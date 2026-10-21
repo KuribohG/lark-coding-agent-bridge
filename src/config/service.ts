@@ -83,7 +83,7 @@ export async function migrateConfig(path: string, output: string | undefined, dr
   for (const key of Object.keys(raw)) if (!allowedRoot.includes(key)) throw new Error(`unknown legacy field: ${key}`);
   if (Object.keys(raw.preferences ?? {}).length) throw new Error('legacy root preferences is not empty; review before migration');
   const preferences = [...Object.values(RUN_KEYS), 'messageReply', 'messageReplyMigrated', 'showToolCalls', 'cotMessages', 'fileLinks', 'access', 'requireMentionInGroup'];
-  const profileKeys = ['schemaVersion', 'agentKind', 'mode', 'accounts', 'secrets', 'preferences', 'access', 'workspaces', 'sandbox', 'permissions', 'permissionSource', 'codex', 'claude', 'channels', 'attachments', 'comments', 'meeting', 'larkCli'];
+  const profileKeys = ['schemaVersion', 'agentKind', 'mode', 'accounts', 'secrets', 'preferences', 'access', 'workspaces', 'sandbox', 'permissions', 'permissionSource', 'codex', 'claude', 'pi', 'channels', 'attachments', 'comments', 'meeting', 'larkCli'];
   for (const [name,p] of Object.entries(raw.profiles) as [string, Record<string, any>][]) {
     for (const key of Object.keys(p)) if (!profileKeys.includes(key)) throw new Error(`unknown legacy field: profiles.${name}.${key}`);
     for (const key of Object.keys(p.preferences ?? {})) if (!preferences.includes(key)) throw new Error(`unknown legacy preference: profiles.${name}.${key}`);
@@ -95,7 +95,7 @@ export async function migrateConfig(path: string, output: string | undefined, dr
   const migrated = documentToRoot(parseDocument(text));
   for (const [name, original] of Object.entries(root.profiles)) {
     const p = migrated.profiles[name]!;
-    for (const key of ['accounts', 'access', 'workspaces', 'permissions', 'attachments', 'meeting', 'larkCli', 'codex'] as const) {
+    for (const key of ['accounts', 'access', 'workspaces', 'permissions', 'attachments', 'meeting', 'larkCli', 'codex', 'claude', 'pi'] as const) {
       if (JSON.stringify(original[key]) !== JSON.stringify(p[key])) throw new Error(`migration mismatch: ${name}.${key}`);
     }
     if (JSON.stringify(larkDisplay(original)) !== JSON.stringify(larkDisplay(p))) throw new Error(`display migration mismatch: ${name}`);

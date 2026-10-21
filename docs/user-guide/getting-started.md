@@ -47,14 +47,15 @@ run-lark-cc
 | 命令 | 用途 |
 | --- | --- |
 | `run-lark-cc` | 后台启动本地控制台；已有可验证的实例时打开它 |
-| `run-lark-cc codex` | 启动时选择 codex profile |
 | `run-lark-cc --profile work` | 选择名为 work 的 profile |
-| `run-lark-cc fg codex` | 前台运行，适合容器；Ctrl-C 退出 |
+| `run-lark-cc fg` | 前台运行，适合容器；Ctrl-C 退出 |
 | `run-lark-cc ui` | 打开已有控制台 |
 | `run-lark-cc ui --print` | 只打印控制台地址 |
 | `run-lark-cc status` | 查看控制台及 profile 状态 |
 
 `run-lark-cc` 的后台模式不提供开机自启或崩溃重启。系统服务和无界面运行方式见[运行维护](operations.md)。不要让两个独立进程同时连接同一个飞书应用。
+
+执行引擎不再要求写在启动参数里。打开 `/config run`（或本地 Web 控制台的执行配置）选择 Claude Code、Codex CLI 或 Pi Coding Agent；在线 profile 会自动短暂重连，下次直接运行 `run-lark-cc` 即可沿用该选择。
 
 ## Bridge 在远程服务器上
 

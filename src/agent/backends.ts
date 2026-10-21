@@ -23,6 +23,7 @@ export interface AgentBackend {
   executionCapabilities(
     profile: Pick<ProfileConfig, 'agentKind' | 'permissions'>,
   ): AgentExecutionCapabilities;
+  launchPatch(binaryPath: string): Pick<ProfileConfig, 'claude' | 'codex' | 'pi'>;
   createAdapter(input: CreateAgentAdapterInput): AgentAdapter;
 }
 
@@ -41,6 +42,7 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
     commandEnv: 'LARK_CHANNEL_CLAUDE_BIN',
     capability: claudeCapability,
     executionCapabilities: () => CLAUDE_EXECUTION_CAPABILITIES,
+    launchPatch: (binaryPath) => ({ claude: { binaryPath } }),
     createAdapter: ({ profile, env, systemPrompt }) => new ClaudeAdapter({
       binary: profile.claude?.binaryPath,
       env,
@@ -54,6 +56,7 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
     commandEnv: 'LARK_CHANNEL_CODEX_BIN',
     capability: codexCapability,
     executionCapabilities: () => codexExecutionCapabilities(),
+    launchPatch: (binaryPath) => ({ codex: { binaryPath } }),
     createAdapter: ({ profile, profileDir, env, systemPrompt }) => {
       const codex = profile.codex;
       if (!codex?.binaryPath) throw new Error('codex profile requires codex.binaryPath');
@@ -78,6 +81,7 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
     commandEnv: 'LARK_CHANNEL_PI_BIN',
     capability: piCapability,
     executionCapabilities: () => PI_EXECUTION_CAPABILITIES,
+    launchPatch: (binaryPath) => ({ pi: { binaryPath } }),
     createAdapter: ({ profile, env, systemPrompt }) => {
       const pi = profile.pi;
       if (!pi?.binaryPath) throw new Error('pi profile requires pi.binaryPath');
@@ -88,6 +92,10 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
 
 export const AGENT_BACKENDS = Object.freeze(BACKENDS);
 export const AGENT_KINDS = Object.freeze(Object.keys(BACKENDS) as AgentKind[]);
+export const AGENT_OPTIONS = Object.freeze(AGENT_KINDS.map((kind) => ({
+  value: kind,
+  label: BACKENDS[kind].displayName,
+})));
 
 export function backendFor(kind: AgentKind): AgentBackend {
   return BACKENDS[kind];

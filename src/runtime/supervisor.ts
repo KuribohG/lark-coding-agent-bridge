@@ -199,6 +199,10 @@ class ManagedProfile {
         await self.restart();
         await self.onRuntimeChange();
       },
+      async switchAgent() {
+        await self.switchAgent();
+        await self.onRuntimeChange();
+      },
     };
     return currentControls;
   }
@@ -270,6 +274,61 @@ class ManagedProfile {
       this.controls = nextControls;
     } finally {
       if (nextAppLock) await nextAppLock.release().catch(() => undefined);
+      this.restarting = false;
+    }
+  }
+
+  /**
+   * An agent switch cannot use connect-before-disconnect: one Feishu app must
+   * not have two listeners, and the old/new adapters have different runtime
+   * contracts. Persist-then-switch therefore performs a short full profile
+   * bounce and restores the old profile if the selected backend cannot start.
+   */
+  private async switchAgent(): Promise<void> {
+    if (this.restarting) return;
+    this.restarting = true;
+    const previous = {
+      appPaths: this.appPaths,
+      cfg: this.cfg,
+      profileConfig: this.profileConfig,
+      agent: this.agent,
+    };
+    try {
+      const nextRuntime = await resolveProfileRuntime({
+        config: this.configPath,
+        profile: this.appPaths.profile,
+        allowBootstrap: false,
+      });
+      if (nextRuntime.profileConfig.agentKind === this.profileConfig.agentKind) return;
+      if (!isComplete(nextRuntime.cfg)) throw new Error('config incomplete after agent switch');
+      const nextAgent = createRuntimeAgent(nextRuntime.profileConfig, {
+        ...nextRuntime.appPaths,
+        configPath: nextRuntime.configPath,
+      });
+      const availability = await checkRuntimeAgentAvailability(nextAgent);
+      if (!availability.ok) throw availability.error;
+
+      await this.stop();
+      this.appPaths = nextRuntime.appPaths;
+      this.cfg = nextRuntime.cfg;
+      this.profileConfig = nextRuntime.profileConfig;
+      this.agent = nextAgent;
+      try {
+        await this.bringUp(new Date().toISOString());
+      } catch (error) {
+        this.appPaths = previous.appPaths;
+        this.cfg = previous.cfg;
+        this.profileConfig = previous.profileConfig;
+        this.agent = previous.agent;
+        await this.bringUp(new Date().toISOString()).catch((rollbackError) => {
+          log.fail('supervisor', rollbackError, {
+            step: 'restore-after-agent-switch',
+            profile: this.profile,
+          });
+        });
+        throw error;
+      }
+    } finally {
       this.restarting = false;
     }
   }

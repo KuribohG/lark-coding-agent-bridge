@@ -84,9 +84,12 @@ export function ConfigView({ profile }: { profile: string }) {
         ...Object.fromEntries(dirty.map(key => [key, cfg[key]])),
         inheritSettings,
       });
+      const switched = cfg.agentKind !== next.agentKind;
       setCfg(next);
       setDirty([]);
-      toast.success(next.live ? "已保存，下一轮生效" : "已保存，下次启动该 profile 生效");
+      toast.success(switched
+        ? (next.live ? "已切换执行引擎，profile 正在重连" : "已保存，下次启动该 profile 时使用新引擎")
+        : (next.live ? "已保存，下一轮生效" : "已保存，下次启动该 profile 生效"));
     } catch (e) {
       toast.error(String((e as Error).message ?? e));
     } finally {
@@ -142,6 +145,10 @@ export function ConfigView({ profile }: { profile: string }) {
           <Button variant="outline" disabled={saving} onClick={() => save(["model", "reasoningEffort", "maxConcurrentRuns", "runIdleTimeoutMinutes"])}>恢复继承</Button>
         </CardHeader>
         <CardContent className="space-y-4">
+          <Field label="执行引擎" hint="切换后会停止当前任务、清除模型与思考强度，并重连此 profile。">
+            <SelectRow value={cfg.agentKind} onChange={(v) => set("agentKind", v as ConfigData["agentKind"])}
+              options={cfg.agents.map((agent): [string, string] => [agent.value, agent.label])} />
+          </Field>
           <Field label="此 bot 的默认模型" hint="可以手填模型名；default 恢复上层默认。已有聊天覆盖保持不变。">
             <Input list="bridge-models" value={cfg.model} onChange={(e) => set("model", e.target.value)} />
             <datalist id="bridge-models">{cfg.models.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}</datalist>

@@ -35,6 +35,8 @@ export interface Controls {
   /** Restart the bridge in-process: disconnect WS, kill claude runs, reload
    * config, reconnect with the new credentials. */
   restart(opts?: { wait?: boolean }): Promise<void>;
+  /** Apply a persisted agentKind change by briefly taking this profile offline. */
+  switchAgent?(): Promise<void>;
   /** Stop this whole process gracefully (disconnect + exit). Used by /exit
    * when the user targets the receiving process itself. */
   exit(): Promise<void>;

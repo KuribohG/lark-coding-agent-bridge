@@ -5,6 +5,7 @@ import {
   PreferencesApplyError,
   PreferencesValidationError,
 } from '../config/preferences';
+import { AGENT_OPTIONS } from '../agent/backends';
 import { availableEfforts } from '../agent/model-settings';
 import { modelEnvironment } from '../runtime/model-settings';
 import type { LarkChannel } from '@larksuite/channel';
@@ -38,6 +39,7 @@ import {
   type MessageReplyMode,
 } from '../config/schema';
 import type {
+  AgentKind,
   MeetingConfig,
   LarkCliIdentityPreset,
   ProfileAccess,
@@ -55,7 +57,8 @@ export class ApiError extends HttpError {}
 export interface ConfigView {
   configRevision: string;
   profile: string;
-  agentKind: string;
+  agentKind: AgentKind;
+  agents: { value: AgentKind; label: string }[];
   mode: ProfileMode;
   model: string;
   reasoningEffort: string;
@@ -91,6 +94,7 @@ export async function buildConfigView(state: MutableProfileState, live = false):
     configRevision: snapshot.revision,
     profile: state.profile,
     agentKind,
+    agents: [...AGENT_OPTIONS],
     mode: state.profileConfig.mode,
     model: normalizeModelSelection(agentKind, state.cfg.preferences?.model),
     models: environment.models,
@@ -170,6 +174,16 @@ async function changeConfig(state: MutableProfileState, body: unknown, mode: 'li
   try {
     const change = await preparePreferencesChange(state, body);
     await applyPreferencesChange(state, change, mode);
+    if (mode === 'live' && change.agentSwitch) {
+      if (!('switchAgent' in state) || typeof state.switchAgent !== 'function') {
+        throw new ApiError(409, 'agent 类型已保存，但当前运行入口不支持自动切换；请重启此 profile。');
+      }
+      try {
+        await state.switchAgent();
+      } catch (err) {
+        throw new ApiError(500, `agent 类型已保存，但自动切换失败：${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     log.info('ui', 'config-saved', { profile: state.profile, mode: change.mode, live: mode === 'live' });
   } catch (err) {
     if (err instanceof PreferencesValidationError) throw new ApiError(400, err.message);

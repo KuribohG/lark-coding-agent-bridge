@@ -40,6 +40,7 @@ export interface ConfigView {
   configRevision: string;
   profile: string;
   agentKind: AgentKind;
+  agents: { value: AgentKind; label: string }[];
   mode: ProfileMode;
   model: string;
   reasoningEffort: string;

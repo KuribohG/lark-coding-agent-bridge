@@ -17,7 +17,7 @@ run-lark-cc stop
 | 运行方式 | 启动 | 停止 |
 | --- | --- | --- |
 | 便携后台控制台 | `run-lark-cc` | `run-lark-cc stop` |
-| 前台控制台 | `run-lark-cc fg codex` | Ctrl-C |
+| 前台控制台 | `run-lark-cc fg` | Ctrl-C |
 | 系统服务控制台 | `lark-channel-bridge start --web-ui` | `lark-channel-bridge stop --web-ui` |
 | 无网页单 profile | `lark-channel-bridge run --profile codex` | Ctrl-C |
 

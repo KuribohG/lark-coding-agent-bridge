@@ -149,13 +149,17 @@ async function cancelConfig(ctx: CommandContext): Promise<void> {
 }
 
 /** Translate the short form into a sparse settings patch. */
-function configFormPatch(fv: Record<string, unknown>): Record<string, unknown> {
+function configFormPatch(
+  fv: Record<string, unknown>,
+  currentAgentKind: import('../config/profile-schema').AgentKind,
+): Record<string, unknown> {
   const text = (key: string) => String(fv[key] ?? '').trim();
   const picked = fv.model_pick;
   const rawModel = picked && picked !== '__manual__' ? String(picked) : fv.model;
   const maxConcurrentRuns = Number(text('max_concurrent_runs'));
   const mention = text('require_mention_in_group');
   const patch: Record<string, unknown> = {};
+  if (fv.agent_kind !== undefined) patch.agentKind = text('agent_kind');
   if (rawModel !== undefined) patch.model = String(rawModel).trim();
   if (fv.reasoning_effort !== undefined) patch.reasoningEffort = fv.reasoning_effort;
   if (fv.message_reply !== undefined) patch.messageReply = text('message_reply');
@@ -173,13 +177,20 @@ function configFormPatch(fv: Record<string, unknown>): Record<string, unknown> {
   }
   if (inherit.length) patch.inheritSettings = inherit;
   if (fv.config_revision !== undefined) patch.configRevision = fv.config_revision;
+  if (patch.agentKind !== undefined && patch.agentKind !== currentAgentKind) {
+    delete patch.model;
+    delete patch.reasoningEffort;
+  }
   return patch;
 }
 
 async function submitConfig(ctx: CommandContext): Promise<void> {
   let change: PreferencesChange;
   try {
-    change = await preparePreferencesChange(ctx.controls, configFormPatch(ctx.formValue ?? {}));
+    change = await preparePreferencesChange(
+      ctx.controls,
+      configFormPatch(ctx.formValue ?? {}, ctx.controls.profileConfig.agentKind),
+    );
   } catch (err) {
     await reply(ctx, `设置未保存：${err instanceof Error ? err.message : String(err)}`);
     return;
@@ -219,7 +230,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     }
 
     const saved = ctx.controls.profileConfig;
-    const agentKind = saved.agentKind;
+    const agentKind = change.nextAgentKind;
     const modelSelection = normalizeModelSelection(agentKind, saved.preferences.model);
     const reasoningEffort = saved.preferences.reasoningEffort;
     const messageReply = getMessageReplyMode(saved);
@@ -230,6 +241,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     const access = saved.access;
     log.info('command', 'config-saved', {
       mode,
+      agentKind,
       messageReply,
       showToolCalls,
       cotMessages,
@@ -258,18 +270,26 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         runIdleTimeoutMinutes,
         requireMentionInGroup,
         larkCliIdentity,
+        agentSwitched: Boolean(change.agentSwitch),
         allowedUsers: access.allowedUsers,
         allowedChats: access.allowedChats,
         admins: access.admins,
         knownChats: ctx.controls.knownChats ?? [],
       }),
     );
-
     // "群里不需要 @ bot" only works if the app can actually receive non-@
     // group messages (`im:message.group_msg`). When the user opts in, verify
     // the scope and, if missing, push a one-click re-authorization link.
     if (!requireMentionInGroup) {
       await promptGroupMsgScopeIfMissing(ctx);
+    }
+    if (change.agentSwitch) {
+      await new Promise((resolve) => setTimeout(resolve, FORM_SETTLE_MS));
+      if (ctx.controls.switchAgent) {
+        await ctx.controls.switchAgent().catch((err) => {
+          log.fail('command', err, { step: 'config.switch-agent' });
+        });
+      }
     }
   })();
 }

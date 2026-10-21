@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -95,5 +95,31 @@ describe('Supervisor', () => {
     await sup.startProfile('claude');
     await sup.startProfile('claude');
     expect(started.filter((p) => p === 'claude')).toHaveLength(1);
+  });
+
+  it('switches a running profile backend with a short offline bounce', async () => {
+    await sup.startProfile('claude');
+    const binDir = join(root, 'bin');
+    await mkdir(binDir, { recursive: true });
+    const pi = join(binDir, 'pi');
+    await writeFile(pi, '#!/bin/sh\necho "pi 0.test"\n', 'utf8');
+    await chmod(pi, 0o755);
+
+    const configPath = join(root, 'config.json');
+    const next = (await loadRootConfig(configPath))!;
+    next.profiles.claude = {
+      ...next.profiles.claude!,
+      agentKind: 'pi',
+      pi: { binaryPath: pi },
+    };
+    await saveRootConfig(next, configPath);
+
+    await sup.controlsFor('claude')!.switchAgent!();
+
+    expect(disconnected).toContain('claude');
+    expect(started.filter((p) => p === 'claude')).toHaveLength(2);
+    expect(sup.list()).toEqual([
+      expect.objectContaining({ profile: 'claude', agentKind: 'pi', online: true }),
+    ]);
   });
 });

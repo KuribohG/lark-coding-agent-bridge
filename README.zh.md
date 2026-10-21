@@ -27,7 +27,7 @@ npm link
 run-lark-cc
 ```
 
-`run-lark-cc` 默认后台启动本地 GUI；新用户在网页中扫码创建应用和配置 profile。已有用户可使用 `run-lark-cc codex`，容器前台运行用 `run-lark-cc fg codex`。`run-lark-cc ui` 打开网页，`status` 查状态，`stop` 停止该配置目录的 GUI supervisor，`log` 查看启动日志。
+`run-lark-cc` 默认后台启动本地 GUI；新用户在网页中扫码创建应用和配置 profile。容器前台运行用 `run-lark-cc fg`。当前 profile 的执行引擎（Claude Code、Codex CLI 或 Pi Coding Agent）保存在配置中，可在 `/config run` 修改；在线切换时 profile 会短暂重连飞书通道。`run-lark-cc ui` 打开网页，`status` 查状态，`stop` 停止该配置目录的 GUI supervisor，`log` 查看启动日志。
 
 **会话助理默认关闭。** 在网页内完成用户授权、结果话题和模型配置后开启。个人 Claude 或 Codex profile 都可执行深入分析；筛选可选择独立的模型 API 服务，只使用 Claude 时也无需 Codex profile；旧 Codex 配置仍兼容。模型可选，不要求 DeepSeek Flash；已有未指定模型的 Codex 旧配置继续使用 Flash，避免升级后改变成本策略。配置方法见[模型 API 服务](docs/model-services.md)和[会话助理文档](docs/inbox-assistant.md)。
 

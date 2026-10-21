@@ -42,12 +42,12 @@
 | 命令 | 用途 |
 | --- | --- |
 | `run-lark-cc` | 启动控制台 |
-| `run-lark-cc fg codex` | 前台运行控制台 |
+| `run-lark-cc fg` | 前台运行控制台 |
 | `run-lark-cc ui --print` | 获取本地网页地址 |
 | `run-lark-cc status`、`run-lark-cc log` | 查看运行状态和启动日志 |
 | `run-lark-cc stop` | 停止整个便携控制台 |
 | `lark-channel-bridge profile list` | 列出 profile |
-| `lark-channel-bridge profile create <名称> --agent claude` | 创建 Claude profile，Codex 使用 `--agent codex` |
+| `lark-channel-bridge profile create <名称> --agent claude` | 创建 Claude profile；Codex/Pi 分别使用 `--agent codex` / `--agent pi` |
 | `lark-channel-bridge profile use <名称>` | 切换默认选择 |
 | `lark-channel-bridge model-service list` | 列出独立模型 API 服务 |
 | `lark-channel-bridge model-service configure <名称> <文件>` | 保存单个服务对象 |

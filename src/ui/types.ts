@@ -15,6 +15,7 @@ export interface UiRuntime extends MutableProfileState {
   knownChats?: KnownChat[];
   refreshOwner(channel?: LarkChannel): Promise<void>;
   restart(opts?: { wait?: boolean }): Promise<void>;
+  switchAgent?(): Promise<void>;
 }
 
 /** The subset of the supervisor the console needs (structurally satisfied). */

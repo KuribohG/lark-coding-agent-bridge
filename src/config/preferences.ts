@@ -2,12 +2,15 @@ import { readProfileSnapshot } from './service';
 import { configDocument, loadRootConfig } from './profile-store';
 import { documentToRoot } from './document';
 import { setPath } from './toml-edit';
+import { backendFor, capabilityForProfile, isAgentKind } from '../agent/backends';
 import { parseEffort, resolveModelSettings } from '../agent/model-settings';
 import { DEFAULT_MODEL, normalizeModelSelection, validateModelId } from '../agent/models';
 import { modelEnvironment } from '../runtime/model-settings';
 import { applyProfileLarkCliIdentity, savePreferencesConfig, type MutableProfileState } from './config-ops';
+import { resolveExecutablePath } from '../cli/agent-detection';
 import {
   effectiveLarkCliIdentity,
+  type AgentKind,
   type MeetingConfig,
   type LarkCliIdentityPreset,
   type ProfileMode,
@@ -82,6 +85,11 @@ function parseMeetingBody(body: unknown, current: MeetingConfig): MeetingConfig 
 
 export interface PreferencesChange {
   configRevision?: string;
+  nextAgentKind: AgentKind;
+  agentSwitch?: {
+    agentKind: AgentKind;
+    launchPatch: Pick<import('./profile-schema').ProfileConfig, 'claude' | 'codex' | 'pi'>;
+  };
   preferencePatch: AppPreferences;
   resetPaths: string[][];
   mode: ProfileMode;
@@ -104,7 +112,12 @@ function parsePreferencesChange(state: MutableProfileState, body: unknown): Pref
     throw new PreferencesValidationError('expected a JSON object body');
   }
   const fv = body as Record<string, unknown>;
-  const agentKind = state.profileConfig.agentKind;
+  const currentAgentKind = state.profileConfig.agentKind;
+  if (fv.agentKind !== undefined && (typeof fv.agentKind !== 'string' || !isAgentKind(fv.agentKind))) {
+    throw new PreferencesValidationError('agentKind must be claude, codex, or pi');
+  }
+  const agentKind = typeof fv.agentKind === 'string' ? fv.agentKind : currentAgentKind;
+  const agentChanged = agentKind !== currentAgentKind;
 
   const mode: ProfileMode =
     fv.mode === 'team' || fv.mode === 'personal' ? fv.mode : state.profileConfig.mode;
@@ -118,10 +131,13 @@ function parsePreferencesChange(state: MutableProfileState, body: unknown): Pref
   try {
     if (fv.model !== undefined && typeof fv.model !== 'string') throw new Error('模型名必须是字符串。');
     modelSelection = fv.model === undefined
-      ? normalizeModelSelection(agentKind, state.cfg.preferences?.model)
+      ? agentChanged
+        ? DEFAULT_MODEL
+        : normalizeModelSelection(agentKind, state.cfg.preferences?.model)
       : fv.model === '' || fv.model === 'inherit' ? DEFAULT_MODEL : validateModelId(fv.model as string);
     reasoningEffort = fv.reasoningEffort === undefined
-      ? state.cfg.preferences?.reasoningEffort : parseEffort(fv.reasoningEffort === 'inherit' ? 'default' : fv.reasoningEffort, agentKind);
+      ? agentChanged ? undefined : state.cfg.preferences?.reasoningEffort
+      : parseEffort(fv.reasoningEffort === 'inherit' ? 'default' : fv.reasoningEffort, agentKind);
   } catch (err) {
     throw new PreferencesValidationError(err instanceof Error ? err.message : String(err));
   }
@@ -165,6 +181,7 @@ function parsePreferencesChange(state: MutableProfileState, body: unknown): Pref
 
   return {
     configRevision: typeof fv.configRevision === 'string' ? fv.configRevision : undefined,
+    nextAgentKind: agentKind,
     preferencePatch: {},
     resetPaths: [],
     mode,
@@ -210,9 +227,41 @@ export async function preparePreferencesChange(state: MutableProfileState, body:
     state = snapshot.state;
   }
   const change = parsePreferencesChange(state, body);
+  const fv = body as Record<string, unknown>;
+  if (change.nextAgentKind !== state.profileConfig.agentKind) {
+    if (fv.model === undefined) {
+      change.resetPaths.push(['profiles', state.profile, 'run', 'model']);
+    }
+    if (fv.reasoningEffort === undefined) {
+      change.resetPaths.push(['profiles', state.profile, 'run', 'effort']);
+    }
+    const capability = capabilityForProfile({
+      agentKind: change.nextAgentKind,
+      permissions: state.profileConfig.permissions,
+    });
+    const accessMode = state.profileConfig.permissions.defaultAccess;
+    if (capability.permissions.supportedAccess && !capability.permissions.supportedAccess.includes(accessMode)) {
+      throw new PreferencesValidationError(
+        `${capability.agentId} 后端不支持 ${accessMode} 执行模式；请先在权限配置中选择 read-only 或 full。`,
+      );
+    }
+    const backend = backendFor(change.nextAgentKind);
+    const command = process.env[backend.commandEnv] ?? backend.defaultCommand;
+    try {
+      const binaryPath = await resolveExecutablePath(command);
+      change.agentSwitch = {
+        agentKind: change.nextAgentKind,
+        launchPatch: backend.launchPatch(binaryPath),
+      };
+    } catch (err) {
+      throw new PreferencesValidationError(
+        `无法切换到 ${backend.displayName}：未找到可执行的 ${command}`,
+        { cause: err },
+      );
+    }
+  }
   change.previousEffectiveIdentity = liveIdentity;
   change.identityChanged = change.nextEffectiveIdentity !== liveIdentity;
-  const fv = body as Record<string, unknown>;
   const fields = ['model', 'reasoningEffort', 'maxConcurrentRuns', 'runIdleTimeoutMinutes', 'messageReply', 'showToolCalls', 'cotMessages'] as const;
   for (const key of fields) if (fv[key] !== undefined) {
     const value = change.nextPreferences[key];
@@ -246,7 +295,24 @@ export async function preparePreferencesChange(state: MutableProfileState, body:
     resolvedPreferences = { ...documentToRoot(doc).profiles[state.profile]!.preferences, ...change.preferencePatch };
   }
   if (fv.model !== undefined || fv.reasoningEffort !== undefined || resets.has('model') || resets.has('reasoningEffort')) {
-    await validateModelPreferences(state, resolvedPreferences);
+    const validationState = change.agentSwitch
+      ? {
+          ...state,
+          profileConfig: {
+            ...state.profileConfig,
+            agentKind: change.agentSwitch.agentKind,
+            ...change.agentSwitch.launchPatch,
+            preferences: resolvedPreferences,
+          },
+          cfg: {
+            ...state.cfg,
+            agentKind: change.agentSwitch.agentKind,
+            ...change.agentSwitch.launchPatch,
+            preferences: resolvedPreferences,
+          },
+        }
+      : state;
+    await validateModelPreferences(validationState, resolvedPreferences);
   }
   return change;
 }
@@ -271,7 +337,8 @@ export async function applyPreferencesChange(
     }
     step = 'config.save';
     await savePreferencesConfig(state, change.preferencePatch, change.requireMentionInGroup,
-      change.larkCliIdentity, change.mode, change.meeting, change.configRevision, change.resetPaths);
+      change.larkCliIdentity, change.mode, change.meeting, change.configRevision, change.resetPaths,
+      change.agentSwitch);
   } catch (cause) {
     // A failed policy call may already have applied one of its CLI settings.
     const rollbackFailed = identityAttempted && !await applyProfileLarkCliIdentity(state, change.previousEffectiveIdentity).catch(() => false);

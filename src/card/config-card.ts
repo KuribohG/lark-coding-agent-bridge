@@ -1,5 +1,6 @@
 import { availableEfforts } from '../agent/model-settings';
 import { modelLabel, type ModelOption } from '../agent/models';
+import { AGENT_OPTIONS } from '../agent/backends';
 import type { KnownChat } from '../bot/lark-info';
 import type { AgentKind, LarkCliIdentityPreset, ProfileMode } from '../config/profile-schema';
 import type { CotMessagesMode, MessageReplyMode } from '../config/schema';
@@ -30,6 +31,8 @@ export interface ConfigFormOpts {
   /** URL of the running local web console (supervisor `--web-ui` mode). Shown
    * at the top of the card when present; omitted when no console is running. */
   consoleUrl?: string;
+  /** The saved run settings also changed the profile's execution backend. */
+  agentSwitched?: boolean;
 }
 
 /** Form card for `/config`. */
@@ -45,6 +48,9 @@ export function configFormCard(opts: ConfigFormOpts): object {
       options: options.map(([value, content]) => ({ value, text: { tag: 'plain_text', content } })) });
   };
   if (section === 'run') {
+    select('agent_kind', '**执行引擎**', opts.agentKind,
+      AGENT_OPTIONS.map(({ value, label }) => [value, label]));
+    note('切换执行引擎会停止当前任务并重连此 profile；模型和思考强度会被清除，需要重新选择。');
     input('model', '**模型**（inherit 恢复上层默认）', opts.model);
     select('reasoning_effort', '**思考强度**', opts.reasoningEffort ?? 'default',
       ['default', 'inherit', ...availableEfforts(opts.agentKind)].map(v => [v, v === 'inherit' ? '恢复继承' : v === 'default' ? '未设置' : v]));
@@ -79,9 +85,12 @@ export function configSavedCard(opts: ConfigFormOpts): object {
     ? [`回复形式：${opts.messageReply}`, `工具过程：${opts.showToolCalls ? '显示' : '隐藏'}`, `过程消息：${cotMessagesLabel(opts.cotMessages)}`]
     : opts.section === 'access'
       ? [`使用模式：${opts.mode === 'team' ? '团队' : '个人'}`, `群里需要 @：${opts.requireMentionInGroup ? '是' : '否'}`, `身份策略：${opts.mode === 'team' || opts.larkCliIdentity === 'bot-only' ? '应用身份' : '允许已授权用户身份'}`]
-      : [`模型：${modelLabel(opts.agentKind, opts.model)}`, `思考强度：${opts.reasoningEffort ?? 'CLI 默认'}`, `并发上限：${opts.maxConcurrentRuns}`, `无输出超时：${opts.runIdleTimeoutMinutes ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'}`];
+      : [`执行引擎：${AGENT_OPTIONS.find((item) => item.value === opts.agentKind)?.label ?? opts.agentKind}`, `模型：${modelLabel(opts.agentKind, opts.model)}`, `思考强度：${opts.reasoningEffort ?? 'CLI 默认'}`, `并发上限：${opts.maxConcurrentRuns}`, `无输出超时：${opts.runIdleTimeoutMinutes ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'}`];
   return { schema: '2.0', config: { summary: { content: '偏好已保存' } }, body: { elements: [
-    { tag: 'markdown', content: '✅ **偏好已保存**\n\n' + details.join('\n') + '\n\n下条消息开始生效。完整设置见 /config。' },
+    { tag: 'markdown', content: '✅ **偏好已保存**\n\n' + details.join('\n') + '\n\n' +
+      (opts.agentSwitched
+        ? '此 profile 正在切换执行引擎并重连飞书通道；稍后直接发送消息即可。'
+        : '下条消息开始生效。完整设置见 /config。') },
   ] } };
 }
 
