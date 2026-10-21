@@ -27,7 +27,7 @@ npm link
 run-lark-cc
 ```
 
-The launcher starts the local GUI in the background; complete first-run setup in your browser. Use `run-lark-cc fg` in a foreground container, `ui` to open the console, `status` to inspect it, `stop` to stop the supervisor, and `log` for startup logs. The active profile's execution engine (Claude Code, Codex CLI, or Pi Coding Agent) is stored in config and can be changed under `/config run`; switching a running profile briefly reconnects its Lark channel. The inbox is off until you authorize it and configure a destination and a Responses API provider. A personal Claude, Codex, or Pi profile can execute deep analysis; Responses screening can use an independent model API service; existing Codex profile routing remains compatible. New installs inherit the configured execution model; legacy Codex inbox configs keep their Flash model until explicitly changed. See [model services](docs/model-services.md) and [inbox setup](docs/inbox-assistant.md) for configuration.
+The launcher starts the local GUI in the background; complete first-run setup in your browser. Use `run-lark-cc fg` in a foreground container, `ui` to open the console, `status` to inspect it, `stop` to stop the supervisor, and `log` for startup logs. A profile stores its default execution engine (Claude Code, Codex CLI, or Pi Coding Agent); `/config run` overrides the engine only for the current chat or topic, while the Web profile configuration changes the default. The inbox is off until you authorize it and configure a destination and a Responses API provider. A personal Claude, Codex, or Pi profile can execute deep analysis; Responses screening can use an independent model API service; existing Codex profile routing remains compatible. New installs inherit the configured execution model; legacy Codex inbox configs keep their Flash model until explicitly changed. See [model services](docs/model-services.md) and [inbox setup](docs/inbox-assistant.md) for configuration.
 
 See the [deployment guide](docs/self-contained.md) for prerequisites, SSH forwarding, upgrades, and optional remote workbenches. The upstream npm package mentioned below may not include this fork's changes.
 
@@ -349,6 +349,8 @@ Mode mapping:
 
 The legacy `sandbox` field is still readable for old configs. After the bridge saves the profile, it migrates that setting to canonical `permissions`.
 
+Pi supports `read-only` (built-in read/search tools only) and `full`. It has no portable workspace-only sandbox, so `workspace` engine selection is rejected.
+
 ## Data directories
 
 | Path | Content |
@@ -357,6 +359,7 @@ The legacy `sandbox` field is still readable for old configs. After the bridge s
 | `~/.lark-channel/active-profile` | Last selected profile |
 | `~/.lark-channel/profiles/<profile>/sessions.json` | Session state |
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | Agent-aware session catalog |
+| `~/.lark-channel/profiles/<profile>/scope-execution.json` | Per-chat/topic execution-engine overrides |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | Current and named workspace bindings |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | Profile-local encrypted secrets |
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | Profile-local lark-cli directory |

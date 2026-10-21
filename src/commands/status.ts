@@ -1,7 +1,7 @@
 import { modelStatus } from './model';
 import { readFile } from 'node:fs/promises';
 import { statusCard } from '../card/templates';
-import type { ProfileConfig } from '../config/profile-schema';
+import type { AgentKind, ProfileConfig } from '../config/profile-schema';
 import { accessToClaudePermissionMode } from '../config/permissions';
 import { canRunAdminCommand } from '../policy/access';
 import { hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
@@ -11,8 +11,9 @@ import { commandReplyOptions } from './presentation';
 
 export function runtimeAccessStatus(
   profileConfig: ProfileConfig,
+  agentKind: AgentKind = profileConfig.agentKind,
 ): { label: string; value: string } {
-  if (profileConfig.agentKind === 'claude') {
+  if (agentKind === 'claude') {
     return {
       label: 'permission',
       value: accessToClaudePermissionMode(
@@ -21,7 +22,7 @@ export function runtimeAccessStatus(
       ),
     };
   }
-  if (profileConfig.agentKind === 'pi') {
+  if (agentKind === 'pi') {
     return {
       label: 'tools',
       value: profileConfig.permissions.defaultAccess === 'read-only'
@@ -70,20 +71,23 @@ async function larkCliStatus(ctx: CommandContext): Promise<'app' | 'user-ready' 
 export async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
   const cwd = effectiveWorkspaceCwd(ctx);
   const sess = ctx.sessions.getRaw(ctx.scope);
-  const isCodex = ctx.controls.profileConfig.agentKind === 'codex';
+  const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
+  const isCodex = agentKind === 'codex';
   const catalogEntry =
-    isCodex && ctx.sessionCatalog && ctx.sessionCatalogIdentity
+    ctx.sessionCatalog && ctx.sessionCatalogIdentity
       ? ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity)
       : undefined;
   const card = statusCard({
     profileName: ctx.controls.profile,
     modelStatus: await modelStatus(ctx),
     cwd,
-    sessionId: isCodex ? catalogEntry?.threadId : sess?.sessionId,
+    sessionId: isCodex
+      ? catalogEntry?.threadId
+      : catalogEntry?.sessionId ?? (agentKind === 'claude' ? sess?.sessionId : undefined),
     emptySessionText: isCodex ? '(未建立)' : undefined,
     sessionStale: !isCodex && Boolean(cwd && sess && sess.cwd !== cwd),
     agentName: ctx.agent.displayName,
-    runtimeAccess: runtimeAccessStatus(ctx.controls.profileConfig),
+    runtimeAccess: runtimeAccessStatus(ctx.controls.profileConfig, agentKind),
     larkCliStatus: await larkCliStatus(ctx),
     activeRun: Boolean(ctx.activeRuns.get(ctx.scope)),
     activeScopes: ctx.activeRuns.scopes().filter((scope) => !scope.startsWith('comment:')),

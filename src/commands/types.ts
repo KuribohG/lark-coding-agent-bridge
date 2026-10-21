@@ -4,7 +4,7 @@ import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../bot/active-runs';
 import type { AppConfig } from '../config/schema';
-import type { ProfileConfig } from '../config/profile-schema';
+import type { AgentKind, ProfileConfig } from '../config/profile-schema';
 import type { OwnerRefreshState } from '../policy/access';
 import type { SessionSummary } from '../session/history';
 import type { CodexThreadHistoryEntry, ListCodexThreadHistoryOptions } from '../session/codex-history';
@@ -73,6 +73,10 @@ export interface CommandContext {
   sessionCatalogIdentity?: SessionCatalogIdentity;
   workspaces: WorkspaceStore;
   agent: AgentAdapter;
+  /** Effective engine for this scope; legacy tests may omit it. */
+  agentKind?: AgentKind;
+  defaultAgentKind?: AgentKind;
+  setAgentKind?(scope: string, kind: AgentKind): Promise<void>;
   activeRuns: ActiveRuns;
   processPool?: ProcessPool;
   runExecutor?: RunExecutor;

@@ -155,6 +155,7 @@ export interface LarkCliConfig {
 
 export interface ProfileConfig {
   schemaVersion: 2;
+  /** Default engine for new/unconfigured scopes and background work. */
   agentKind: AgentKind;
   /** Deployment mode switch. Default 'personal'. See {@link ProfileMode}. */
   mode: ProfileMode;

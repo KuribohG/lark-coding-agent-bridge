@@ -1,5 +1,6 @@
 import type { CardActionEvent, CardActionResponse, LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import type { AgentAdapter } from '../agent/types';
+import type { AgentKind } from '../config/profile-schema';
 import type { ActiveRuns } from '../bot/active-runs';
 import type { ChatModeCache } from '../bot/chat-mode-cache';
 import type { PendingQueue } from '../bot/pending-queue';
@@ -32,7 +33,10 @@ export interface CardDispatchDeps {
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
   activeRuns: ActiveRuns;
-  agent: AgentAdapter;
+  agent?: AgentAdapter;
+  resolveAgent?(scope: string): AgentAdapter;
+  resolveAgentKind?(scope: string): AgentKind;
+  setAgentKind?(scope: string, kind: AgentKind): Promise<void>;
   processPool?: ProcessPool;
   runExecutor?: RunExecutor;
   controls: Controls;
@@ -66,6 +70,13 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<CardActi
   // Done before the access check so we know the chat mode (p2p vs group)
   // and can skip the chat allowlist for DMs.
   const { scope, threadId, mode } = await resolveScope(deps);
+  const resolveAgent = deps.resolveAgent
+    ?? (deps.agent ? () => deps.agent! : undefined);
+  if (!resolveAgent) throw new Error('card action requires agent or resolveAgent');
+  const resolveAgentKind = deps.resolveAgentKind
+    ?? (() => deps.controls.profileConfig.agentKind);
+  const scopeAgent = resolveAgent(scope);
+  const scopeAgentKind = resolveAgentKind(scope);
 
   const accessDecision =
     mode === 'p2p'
@@ -91,6 +102,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<CardActi
       identity: await commandSessionCatalogIdentity({
         msg: makeFakeMsg(deps.evt, threadId), scope, mode,
         workspaces: deps.workspaces, controls: deps.controls, access: accessDecision,
+        agentKind: scopeAgentKind,
       }),
     });
   }
@@ -124,10 +136,14 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<CardActi
         workspaces: deps.workspaces,
         controls: deps.controls,
         access: accessDecision,
+        agentKind: scopeAgentKind,
       }),
       workspaces: deps.workspaces,
       activeRuns: deps.activeRuns,
-      agent: deps.agent,
+      agent: scopeAgent,
+      agentKind: scopeAgentKind,
+      defaultAgentKind: deps.controls.profileConfig.agentKind,
+      setAgentKind: deps.setAgentKind,
       processPool: deps.processPool,
       runExecutor: deps.runExecutor,
       controls: deps.controls,

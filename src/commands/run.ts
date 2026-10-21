@@ -38,11 +38,13 @@ export async function handleRun(args: string, ctx: CommandContext): Promise<void
       await ctx.controls.launchTimedRun(job, ctx.msg);
       return;
     }
-    const defaults = defaultsCommand === 'defaults reset' ? builtinRunDefaults() : await readRunDefaults(ctx.controls);
-    const agentKind = ctx.controls.profileConfig.agentKind;
+    const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
+    const defaults = defaultsCommand === 'defaults reset'
+      ? builtinRunDefaults()
+      : await readRunDefaults(ctx.controls, agentKind);
     if (!args.trim() || args.trim() === 'defaults') {
       await sendManagedCard(ctx.channel, ctx.msg.chatId, timedRunForm(ctx.scope,
-        agentKind, await modelEnvironment(ctx.controls), defaults, args.trim() === 'defaults'), opts);
+        agentKind, await modelEnvironment(ctx.controls, agentKind), defaults, args.trim() === 'defaults'), opts);
       return;
     }
     const savingDefaults = action === 'defaults';
@@ -67,7 +69,7 @@ export async function handleRun(args: string, ctx: CommandContext): Promise<void
     }
     const input = parseRunSettings(form, defaults, agentKind);
     if (savingDefaults) {
-      const checked = resolveModelSettings({}, input, await modelEnvironment(ctx.controls));
+      const checked = resolveModelSettings({}, input, await modelEnvironment(ctx.controls, agentKind));
       if (input.reasoningEffort && checked.reasoningEffort !== input.reasoningEffort) throw new Error(checked.notice);
       await saveRunDefaults(ctx.controls, input);
       await reply(`已保存此 bot 的 /run 默认值：\n截止：${input.until}（${input.timeZone}），提前 ${input.marginMinutes} 分钟停止。\n模型：${input.model ?? '沿用当前对话'}；思考强度：${input.reasoningEffort ?? '沿用当前对话'}。\n以后发送 \`/run 具体任务\` 即可生成预览。已创建的任务保持原设置。`);
@@ -84,11 +86,12 @@ export async function handleRun(args: string, ctx: CommandContext): Promise<void
     if (input.model) patch.model = input.model;
     const effort = input.reasoningEffort;
     if (effort) patch.reasoningEffort = effort;
-    const settings = await resolveRunModelSettings(ctx.controls, ctx.scope, patch);
+    const settings = await resolveRunModelSettings(ctx.controls, ctx.scope, patch, agentKind);
     if (effort && settings.reasoningEffort !== effort) throw new Error(settings.notice);
     const job = await store.create({
       scope: ctx.scope, owner: ctx.msg.senderId, task, timeZone, deadlineAt, stopAt,
       windDownAt: Math.max(now, stopAt - 5 * 60_000), modelSettings: modelRunArguments(settings),
+      agentKind,
     });
     await sendManagedCard(ctx.channel, ctx.msg.chatId, timedRunCard(job), opts);
   } catch (err) {

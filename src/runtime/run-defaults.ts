@@ -42,14 +42,17 @@ export function runDefaultsPath(state: Pick<MutableProfileState, 'configPath' | 
   return join(paths.profileDir, 'run-defaults.json');
 }
 
-export async function readRunDefaults(state: MutableProfileState): Promise<RunDefaults> {
+export async function readRunDefaults(
+  state: MutableProfileState,
+  agentKind: AgentKind = state.profileConfig.agentKind,
+): Promise<RunDefaults> {
   try {
     const raw = JSON.parse(await readFile(runDefaultsPath(state), 'utf8'));
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('限时任务默认值格式无效。');
     const settings = parseRunSettings({
       until: raw.until, time_zone: raw.timeZone, margin: raw.marginMinutes,
       model: raw.model, effort: raw.reasoningEffort,
-    }, builtinRunDefaults(), state.profileConfig.agentKind);
+    }, builtinRunDefaults(), agentKind);
     validateReusable(settings);
     return settings;
   } catch (err) {

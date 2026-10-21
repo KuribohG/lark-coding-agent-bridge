@@ -6,6 +6,8 @@ import {
   type PreferencesChange,
 } from '../config/preferences';
 import { modelEnvironment } from '../runtime/model-settings';
+import { capabilityForProfile, isAgentKind } from '../agent/backends';
+import { profileForAgentKind } from '../runtime/agent-runtime';
 import { normalizeModelSelection } from '../agent/models';
 import {
   configCancelledCard,
@@ -67,7 +69,8 @@ async function showConfigSummary(ctx: CommandContext, path?: string): Promise<vo
   const selected = path === 'run' ? summary('执行', view.run) : path === 'lark' || path === 'web'
     ? summary(path === 'lark' ? '飞书展示' : 'Web 展示', view.channels[path]!)
     : [summary('执行', view.run), summary('飞书展示', view.channels.lark!)].join('\n\n');
-  await reply(ctx, `**${view.profile} · ${view.agent}**\n配置文件：${view.file}\n\n${selected}\n\n` +
+  const activeAgent = ctx.agentKind ?? view.agent;
+  await reply(ctx, `**${view.profile} · 默认 ${view.agent} · 当前上下文 ${activeAgent}**\n配置文件：${view.file}\n\n${selected}\n\n` +
     '以上为文件中的 profile 默认值；当前会话覆盖用 /model 查看。\n' +
     '修改：/config run · /config lark · /config access\n手工编辑后：/config reload（启动参数变化需重启）。');
 }
@@ -91,16 +94,17 @@ async function showConfigForm(ctx: CommandContext, section: 'run' | 'lark' | 'ac
   // alive so we don't advertise a stale address.
   const sidecar = await readUiSidecar(commandProfilePaths(ctx).hostUiFile).catch(() => undefined);
   const consoleUrl = sidecar && isAlive(sidecar.pid) ? sidecar.url : undefined;
-  const environment = section === 'run' ? await modelEnvironment(view) : { models: [] };
+  const agentKind = ctx.agentKind ?? view.profileConfig.agentKind;
+  const environment = section === 'run' ? await modelEnvironment(view, agentKind) : { models: [] };
   const card = configFormCard({
     section,
     revision: snapshot.revision,
     models: environment.models,
     reasoningEffort: view.cfg.preferences?.reasoningEffort,
-    agentKind: view.profileConfig.agentKind,
+    agentKind,
     mode: view.profileConfig.mode,
     model: normalizeModelSelection(
-      view.profileConfig.agentKind,
+      agentKind,
       view.cfg.preferences?.model,
     ),
     messageReply: getMessageReplyMode(view.cfg),
@@ -151,7 +155,6 @@ async function cancelConfig(ctx: CommandContext): Promise<void> {
 /** Translate the short form into a sparse settings patch. */
 function configFormPatch(
   fv: Record<string, unknown>,
-  currentAgentKind: import('../config/profile-schema').AgentKind,
 ): Record<string, unknown> {
   const text = (key: string) => String(fv[key] ?? '').trim();
   const picked = fv.model_pick;
@@ -159,7 +162,6 @@ function configFormPatch(
   const maxConcurrentRuns = Number(text('max_concurrent_runs'));
   const mention = text('require_mention_in_group');
   const patch: Record<string, unknown> = {};
-  if (fv.agent_kind !== undefined) patch.agentKind = text('agent_kind');
   if (rawModel !== undefined) patch.model = String(rawModel).trim();
   if (fv.reasoning_effort !== undefined) patch.reasoningEffort = fv.reasoning_effort;
   if (fv.message_reply !== undefined) patch.messageReply = text('message_reply');
@@ -177,20 +179,38 @@ function configFormPatch(
   }
   if (inherit.length) patch.inheritSettings = inherit;
   if (fv.config_revision !== undefined) patch.configRevision = fv.config_revision;
-  if (patch.agentKind !== undefined && patch.agentKind !== currentAgentKind) {
-    delete patch.model;
-    delete patch.reasoningEffort;
-  }
   return patch;
 }
 
 async function submitConfig(ctx: CommandContext): Promise<void> {
   let change: PreferencesChange;
+  const requestedAgentKind = String(ctx.formValue?.agent_kind ?? '').trim();
+  const currentAgentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
+  if (requestedAgentKind && !isAgentKind(requestedAgentKind)) {
+    await reply(ctx, '设置未保存：未知执行引擎。');
+    return;
+  }
+  const nextAgentKind = requestedAgentKind && isAgentKind(requestedAgentKind)
+    ? requestedAgentKind
+    : currentAgentKind;
+  const scopeAgentChanged = nextAgentKind !== currentAgentKind;
+  const scopedProfile = profileForAgentKind(ctx.controls.profileConfig, nextAgentKind);
+  const capability = capabilityForProfile(scopedProfile);
+  if (
+    scopeAgentChanged &&
+    capability.permissions.supportedAccess &&
+    !capability.permissions.supportedAccess.includes(ctx.controls.profileConfig.permissions.defaultAccess)
+  ) {
+    await reply(ctx, `设置未保存：${nextAgentKind} 不支持当前的 ${ctx.controls.profileConfig.permissions.defaultAccess} 权限。`);
+    return;
+  }
+  const patch = configFormPatch(ctx.formValue ?? {});
+  if (scopeAgentChanged) {
+    delete patch.model;
+    delete patch.reasoningEffort;
+  }
   try {
-    change = await preparePreferencesChange(
-      ctx.controls,
-      configFormPatch(ctx.formValue ?? {}, ctx.controls.profileConfig.agentKind),
-    );
+    change = await preparePreferencesChange(ctx.controls, patch);
   } catch (err) {
     await reply(ctx, `设置未保存：${err instanceof Error ? err.message : String(err)}`);
     return;
@@ -213,6 +233,10 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
 
     try {
       await applyPreferencesChange(ctx.controls, change);
+      if (scopeAgentChanged) {
+        if (!ctx.setAgentKind) throw new Error('当前运行入口不支持按上下文切换执行引擎。');
+        await ctx.setAgentKind(ctx.scope, nextAgentKind);
+      }
     } catch (err) {
       const failureStep = err instanceof PreferencesApplyError ? err.step : 'config.save';
       const rollbackFailed = err instanceof PreferencesApplyError && err.rollbackFailed;
@@ -230,9 +254,11 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     }
 
     const saved = ctx.controls.profileConfig;
-    const agentKind = change.nextAgentKind;
-    const modelSelection = normalizeModelSelection(agentKind, saved.preferences.model);
-    const reasoningEffort = saved.preferences.reasoningEffort;
+    const agentKind = nextAgentKind;
+    const modelSelection = scopeAgentChanged
+      ? 'default'
+      : normalizeModelSelection(agentKind, saved.preferences.model);
+    const reasoningEffort = scopeAgentChanged ? undefined : saved.preferences.reasoningEffort;
     const messageReply = getMessageReplyMode(saved);
     const showToolCalls = getShowToolCalls(saved);
     const cotMessages = getCotMessages(saved);
@@ -270,7 +296,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         runIdleTimeoutMinutes,
         requireMentionInGroup,
         larkCliIdentity,
-        agentSwitched: Boolean(change.agentSwitch),
+        scopeAgentSwitched: scopeAgentChanged,
         allowedUsers: access.allowedUsers,
         allowedChats: access.allowedChats,
         admins: access.admins,
@@ -282,14 +308,6 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
     // the scope and, if missing, push a one-click re-authorization link.
     if (!requireMentionInGroup) {
       await promptGroupMsgScopeIfMissing(ctx);
-    }
-    if (change.agentSwitch) {
-      await new Promise((resolve) => setTimeout(resolve, FORM_SETTLE_MS));
-      if (ctx.controls.switchAgent) {
-        await ctx.controls.switchAgent().catch((err) => {
-          log.fail('command', err, { step: 'config.switch-agent' });
-        });
-      }
     }
   })();
 }

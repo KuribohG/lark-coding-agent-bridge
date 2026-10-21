@@ -26,6 +26,7 @@ const resumeCandidates = new Map<string, ResumeCandidate>();
 const RESUME_APPLIED_REPLY = '已完成，请继续发送下一条消息。';
 
 export async function handleResume(args: string, ctx: CommandContext): Promise<void> {
+  const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
   const parts = args.trim().split(/\s+/).filter(Boolean);
   const sub = parts[0] ?? '';
   const rest = parts.slice(1).join(' ').trim();
@@ -49,7 +50,7 @@ export async function handleResume(args: string, ctx: CommandContext): Promise<v
     return;
   }
 
-  if (ctx.controls.profileConfig.agentKind === 'codex') {
+  if (agentKind === 'codex') {
     const identity = ctx.sessionCatalogIdentity;
     const entry =
       ctx.sessionCatalog && identity
@@ -84,7 +85,7 @@ export async function handleResume(args: string, ctx: CommandContext): Promise<v
     return;
   }
 
-  if (ctx.controls.profileConfig.agentKind === 'pi') {
+  if (agentKind === 'pi') {
     const identity = ctx.sessionCatalogIdentity;
     const entry =
       ctx.sessionCatalog && identity
@@ -121,6 +122,7 @@ export async function handleResume(args: string, ctx: CommandContext): Promise<v
 }
 
 async function applyResume(sessionId: string, ctx: CommandContext): Promise<void> {
+  const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
   if (ctx.sessionCatalog && ctx.sessionCatalogIdentity) {
     const entry = ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity);
     const resolved = consumeResumeCandidate(sessionId, ctx.sessionCatalogIdentity);
@@ -161,12 +163,14 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     ctx.controls.btw?.reset(ctx.scope);
     ctx.controls.cancelTimedRun?.(ctx.scope);
     ctx.activeRuns.interrupt(ctx.scope);
-    ctx.sessions.set(ctx.scope, sessionId, ctx.sessionCatalogIdentity.cwdRealpath);
+    if (ctx.sessionCatalogIdentity.agentId === 'claude') {
+      ctx.sessions.set(ctx.scope, sessionId, ctx.sessionCatalogIdentity.cwdRealpath);
+    }
     await reply(ctx, RESUME_APPLIED_REPLY);
     return;
   }
 
-  if (ctx.controls.profileConfig.agentKind === 'codex') {
+  if (agentKind === 'codex') {
     await reply(ctx, '当前上下文没有可恢复的 Codex thread，请先在当前工作区完成一次运行。');
     return;
   }

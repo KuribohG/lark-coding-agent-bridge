@@ -2,6 +2,7 @@ import { larkDisplay } from '../channels/lark/config';
 import { rewriteFileLinks } from '../card/file-links';
 import type { CommandContext } from '../commands';
 import { capabilityForProfile } from '../agent/backends';
+import { profileForAgentKind } from '../runtime/agent-runtime';
 import { modelRunArguments } from '../agent/model-settings';
 import { buildAgentPrompt } from '../agent/prompt';
 import { getAgentStopGraceMs } from '../config/schema';
@@ -103,16 +104,20 @@ export class BtwManager {
   private async run(question: string, ctx: CommandContext, signal: AbortSignal): Promise<void> {
     if (!ctx.runExecutor) throw new Error('btw requires a run executor');
     const { profileConfig } = ctx.controls;
-    const capability = capabilityForProfile(profileConfig);
+    const agentKind = ctx.agentKind ?? profileConfig.agentKind;
+    const scopedProfile = profileForAgentKind(profileConfig, agentKind);
+    const capability = capabilityForProfile(scopedProfile);
     const access = ctx.msg.chatType === 'p2p'
       ? canUseDm(profileConfig, ctx.controls, ctx.msg.senderId)
       : canUseGroup(profileConfig, ctx.controls, ctx.msg.chatId, ctx.msg.senderId);
     let generation = '';
-    const modelSettings = modelRunArguments(await resolveRunModelSettings(ctx.controls, ctx.scope));
+    const modelSettings = modelRunArguments(
+      await resolveRunModelSettings(ctx.controls, ctx.scope, undefined, agentKind),
+    );
     const started = await startRunFlow({
       scopeId: ctx.scope,
       scope: { source: 'im', chatId: ctx.msg.chatId, threadId: ctx.msg.threadId, actorId: ctx.msg.senderId },
-      prompt: question, attachments: [], access, capability, profileConfig,
+      prompt: question, attachments: [], access, capability, profileConfig: scopedProfile,
       sessions: ctx.sessions, sessionCatalog: ctx.sessionCatalog, workspaces: ctx.workspaces,
       executor: ctx.runExecutor, now: Date.now(), signal, modelSettings,
       stopGraceMs: getAgentStopGraceMs(ctx.controls.cfg),

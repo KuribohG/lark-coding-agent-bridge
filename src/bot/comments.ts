@@ -19,6 +19,8 @@ import type { RunExecutor } from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
+import type { AgentKind } from '../config/profile-schema';
+import { profileForAgentKind } from '../runtime/agent-runtime';
 import {
   commentDocumentScopeId,
   commentScopeId,
@@ -32,7 +34,9 @@ export { commentDocumentScopeId, commentScopeId } from './comment-resource';
 export interface CommentDeps {
   channel: LarkChannel;
   evt: CommentEvent;
-  agent: AgentAdapter;
+  agent?: AgentAdapter;
+  resolveAgent?(scope: string): AgentAdapter;
+  resolveAgentKind?(scope: string): AgentKind;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
@@ -126,6 +130,8 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
   const targetDocScopeId = commentDocumentScopeId(target.fileToken);
   const commentThreadScopeId = eventCommentScopeId;
   const runScopeId = commentExecutionScopeId(commentThreadScopeId);
+  const agentKind = deps.resolveAgentKind?.(runScopeId) ?? controls.profileConfig.agentKind;
+  const scopedProfile = profileForAgentKind(controls.profileConfig, agentKind);
   const docSessionScopeId = commentDocumentSessionScopeId(target.fileToken);
   const legacyDocSessionScopeId = legacyCommentDocumentSessionScopeId(target.fileToken);
   const agentSessionScopeId = docSessionScopeId;
@@ -188,7 +194,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
     : false;
 
   try {
-    const capability = capabilityForProfile(controls.profileConfig);
+    const capability = capabilityForProfile(scopedProfile);
     const runTimeoutMs = commentRunTimeoutMs(sessions, runScopeId);
     const threadTimeoutMs = commentRunTimeoutMs(sessions, commentThreadScopeId);
     const commentTimeoutMs = runTimeoutMs !== undefined ? runTimeoutMs : threadTimeoutMs;
@@ -208,7 +214,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
       cwdRealpath,
       access: { ok: true, reason: 'comment-mention' },
       capability,
-      profileConfig: controls.profileConfig,
+      profileConfig: scopedProfile,
       now: Date.now(),
       codexHome: controls.profileConfig.codex?.codexHome,
       inheritCodexHome: controls.profileConfig.codex?.inheritCodexHome,
@@ -242,10 +248,12 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
           })
         : undefined;
       const sessionId =
-        canResumeAgentSession && capability.sessionIdField === 'sessionId'
+        canResumeAgentSession && capability.agentId === 'claude'
           ? sessions.resumeFor(docSessionScopeId, cwdRealpath) ??
             sessions.resumeFor(legacyDocSessionScopeId, cwdRealpath)
-          : undefined;
+          : capability.sessionIdField === 'sessionId'
+            ? catalogEntry?.sessionId
+            : undefined;
       const threadId = capability.sessionIdField === 'threadId' ? catalogEntry?.threadId : undefined;
       log.info('comment', 'session', {
         commentScopeId: runScopeId,
@@ -256,7 +264,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
       });
 
       const execution = await deps.executor.submit({
-        ...modelRunArguments(await resolveRunModelSettings(controls, agentSessionScopeId)),
+        ...modelRunArguments(await resolveRunModelSettings(controls, runScopeId, undefined, agentKind)),
         scopeId: runScopeId,
         policy,
         sessionId,

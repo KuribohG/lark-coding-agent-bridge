@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { ModelSettings } from '../agent/model-settings';
 import type { MutableProfileState } from '../config/config-ops';
+import type { AgentKind } from '../config/profile-schema';
 import { resolveAppPaths } from '../config/app-paths';
 import { writeFileAtomic } from '../platform/atomic-write';
 
@@ -17,6 +18,8 @@ export interface TimedRun {
   stopAt: number;
   windDownAt: number;
   modelSettings: ModelSettings;
+  /** Engine selected when the task was created; absent on legacy records. */
+  agentKind?: AgentKind;
   createdAt: number;
   state: TimedRunState;
   finishedAt?: number;

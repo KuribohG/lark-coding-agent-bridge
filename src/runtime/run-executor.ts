@@ -9,7 +9,10 @@ import { retryingRun } from './retrying-run';
 import { agentFailureKind } from '../agent/execution';
 
 export interface RunExecutorDeps {
-  agent: AgentAdapter;
+  /** Fixed adapter for legacy single-engine runtimes. */
+  agent?: AgentAdapter;
+  /** Resolve the adapter from the originating chat/topic scope for each run. */
+  resolveAgent?: (scopeId: string) => AgentAdapter;
   pool: ProcessPool;
   activeRuns: ActiveRuns;
   createRunId?: () => string;
@@ -54,7 +57,7 @@ export interface RunExecution {
 const DEFAULT_POST_DONE_EXIT_GRACE_MS = 2000;
 
 export class RunExecutor {
-  private readonly agent: AgentAdapter;
+  private readonly resolveAgent: (scopeId: string) => AgentAdapter;
   private readonly pool: ProcessPool;
   private readonly activeRuns: ActiveRuns;
   private readonly createRunId: () => string;
@@ -62,7 +65,10 @@ export class RunExecutor {
   private readonly postDoneExitGraceMs: number;
 
   constructor(deps: RunExecutorDeps) {
-    this.agent = deps.agent;
+    const resolved = deps.resolveAgent
+      ?? (deps.agent ? () => deps.agent! : undefined);
+    if (!resolved) throw new Error('RunExecutor requires agent or resolveAgent');
+    this.resolveAgent = resolved;
     this.pool = deps.pool;
     this.activeRuns = deps.activeRuns;
     this.createRunId = deps.createRunId ?? randomUUID;
@@ -133,6 +139,15 @@ export class RunExecutor {
     const runId = this.createRunId();
     const startedAt = this.now();
     const queueWaitMs = startedAt - submittedAt;
+    let agent: AgentAdapter;
+    try {
+      agent = this.resolveAgent(input.scopeId);
+    } catch (err) {
+      release();
+      releaseScope();
+      dispose();
+      throw new SpawnFailed('agent resolve failed', err, 'agent-prepare-failed');
+    }
     const runOptions = {
       deadlineAt: input.deadlineAt,
       runId,
@@ -152,7 +167,7 @@ export class RunExecutor {
     let run: AgentRun;
     let handle!: RunHandle;
     try {
-      await this.agent.prepareRun?.(runOptions);
+      await agent.prepareRun?.(runOptions);
       checkDeadline();
       controller.signal.throwIfAborted();
     } catch (err) {
@@ -174,8 +189,8 @@ export class RunExecutor {
     }
     try {
       run = retryingRun({
-        agent: this.agent,
-        initialRun: this.agent.run(runOptions),
+        agent,
+        initialRun: agent.run(runOptions),
         options: runOptions,
         exitGraceMs: this.postDoneExitGraceMs,
         canRetry: () => !controller.signal.aborted && !handle?.interrupted
@@ -191,7 +206,7 @@ export class RunExecutor {
     const dimensions = {
       runId,
       profile: input.observability?.profile ?? 'unknown',
-      agent: input.observability?.agent ?? this.agent.id,
+      agent: input.observability?.agent ?? agent.id,
       scope: input.scopeId,
       source: input.observability?.source ?? 'unknown',
       stage: input.observability?.stage ?? 'submit',

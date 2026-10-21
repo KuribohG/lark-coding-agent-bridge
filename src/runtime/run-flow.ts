@@ -138,7 +138,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       resumeFrom = threadId;
     }
   }
-  if (!resumeFrom && input.capability.sessionIdField === 'sessionId' && input.scope.source !== 'channel') {
+  if (!resumeFrom && input.capability.agentId === 'claude' && input.scope.source !== 'channel') {
     resumeFrom = input.sessions.resumeFor(input.scopeId, workspace.cwdRealpath);
     sessionId = resumeFrom;
     const stale = input.sessions.getRaw(input.scopeId);
@@ -168,7 +168,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       sessionId,
       threadId,
       ...(input.modelSettings ?? {
-        model: resolveModelArg(input.profileConfig.agentKind, input.profileConfig.preferences.model),
+        model: resolveModelArg(input.capability.agentId, input.profileConfig.preferences.model),
         reasoningEffort: input.profileConfig.preferences.reasoningEffort,
       }),
       images:
@@ -215,7 +215,9 @@ export function recordRunSessionEvent(input: RecordRunSessionEventInput): void {
   if (input.event.type !== 'system') return;
   if (input.capability.sessionIdField === 'sessionId' && input.event.sessionId) {
     const cwdRealpath = input.event.cwd ?? input.policy.cwdRealpath;
-    input.sessions.set(input.scopeId, input.event.sessionId, cwdRealpath);
+    if (input.capability.agentId === 'claude') {
+      input.sessions.set(input.scopeId, input.event.sessionId, cwdRealpath);
+    }
     input.sessionCatalog?.upsertActive({
       scopeId: input.scopeId,
       agentId: input.capability.agentId,

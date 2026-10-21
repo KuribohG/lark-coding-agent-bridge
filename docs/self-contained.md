@@ -28,7 +28,7 @@
 
 | 命令 | 行为 |
 | --- | --- |
-| `run-lark-cc` | 后台启动 GUI supervisor 并沿用当前 active profile；执行引擎由 `/config run` 保存 |
+| `run-lark-cc` | 后台启动 GUI supervisor 并沿用当前 active profile 的默认执行引擎 |
 | `run-lark-cc fg` | 前台运行，适合容器，Ctrl-C 退出 |
 | `run-lark-cc --profile work` | 选择其他名称的 profile |
 | `run-lark-cc ui --print` | 只打印当前网页地址 |

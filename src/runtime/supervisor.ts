@@ -12,12 +12,14 @@ import { log } from '../core/logger';
 import { refreshOwnerControls } from '../policy/owner';
 import { SessionStore } from '../session/store';
 import { SessionCatalog } from '../session/catalog';
+import { ScopeExecutionStore } from '../session/scope-execution';
 import { WorkspaceStore } from '../workspace/store';
 import { preFlightChecks } from '../cli/preflight';
 import {
   assertReconnectAgentKindUnchanged,
   checkRuntimeAgentAvailability,
   createRuntimeAgent,
+  RuntimeAgentResolver,
   releaseRuntimeLocks,
 } from './agent-runtime';
 import {
@@ -80,12 +82,18 @@ class ManagedProfile {
     private agent: AgentAdapter,
     private sessions: SessionStore,
     private sessionCatalog: SessionCatalog,
+    private scopeExecution: ScopeExecutionStore,
     private workspaces: WorkspaceStore,
     private startChannelFn: StartChannelFn,
     private onExitCommand: (profile: string) => void,
     private onRuntimeChange: () => Promise<void>,
     private inbox: InboxManager,
-  ) {}
+  ) {
+    this.runtimeAgents = new RuntimeAgentResolver(profileConfig, appPaths, scopeExecution);
+    this.agent = this.runtimeAgents.defaultAgent();
+  }
+
+  private runtimeAgents: RuntimeAgentResolver;
 
   get appId(): string {
     return this.cfg.accounts.app.id;
@@ -122,6 +130,10 @@ class ManagedProfile {
         agent: this.agent,
         sessions: this.sessions,
         sessionCatalog: this.sessionCatalog,
+        resolveAgent: (scope) => this.runtimeAgents.get(scope),
+        resolveAgentKind: (scope) => this.runtimeAgents.kindFor(scope),
+        setAgentIdentity: (identity) => this.runtimeAgents.setBotIdentity(identity),
+        setAgentKind: (scope, kind) => this.runtimeAgents.setScopeKind(scope, kind),
         workspaces: this.workspaces,
         controls: this.controls,
         appPaths: this.appPaths,
@@ -221,10 +233,12 @@ class ManagedProfile {
       const next = nextRuntime.cfg;
       if (!isComplete(next)) throw new Error('config incomplete after change');
       assertReconnectAgentKindUnchanged(this.profileConfig.agentKind, nextRuntime.profileConfig.agentKind);
-      const nextAgent = createRuntimeAgent(nextRuntime.profileConfig, {
-        ...nextRuntime.appPaths,
-        configPath: nextRuntime.configPath,
-      });
+      const nextRuntimeAgents = new RuntimeAgentResolver(
+        nextRuntime.profileConfig,
+        nextRuntime.appPaths,
+        this.scopeExecution,
+      );
+      const nextAgent = nextRuntimeAgents.defaultAgent();
       const availability = await checkRuntimeAgentAvailability(nextAgent);
       if (!availability.ok) throw availability.error;
 
@@ -242,6 +256,10 @@ class ManagedProfile {
         agent: nextAgent,
         sessions: this.sessions,
         sessionCatalog: this.sessionCatalog,
+        resolveAgent: (scope) => nextRuntimeAgents.get(scope),
+        resolveAgentKind: (scope) => nextRuntimeAgents.kindFor(scope),
+        setAgentIdentity: (identity) => nextRuntimeAgents.setBotIdentity(identity),
+        setAgentKind: (scope, kind) => nextRuntimeAgents.setScopeKind(scope, kind),
         workspaces: this.workspaces,
         controls: nextControls,
         appPaths: nextRuntime.appPaths,
@@ -271,6 +289,7 @@ class ManagedProfile {
       this.cfg = next;
       this.profileConfig = nextRuntime.profileConfig;
       this.agent = nextAgent;
+      this.runtimeAgents = nextRuntimeAgents;
       this.controls = nextControls;
     } finally {
       if (nextAppLock) await nextAppLock.release().catch(() => undefined);
@@ -301,17 +320,21 @@ class ManagedProfile {
       });
       if (nextRuntime.profileConfig.agentKind === this.profileConfig.agentKind) return;
       if (!isComplete(nextRuntime.cfg)) throw new Error('config incomplete after agent switch');
-      const nextAgent = createRuntimeAgent(nextRuntime.profileConfig, {
-        ...nextRuntime.appPaths,
-        configPath: nextRuntime.configPath,
-      });
+      const nextRuntimeAgents = new RuntimeAgentResolver(
+        nextRuntime.profileConfig,
+        nextRuntime.appPaths,
+        this.scopeExecution,
+      );
+      const nextAgent = nextRuntimeAgents.defaultAgent();
       const availability = await checkRuntimeAgentAvailability(nextAgent);
       if (!availability.ok) throw availability.error;
 
       await this.stop();
+      await this.scopeExecution.clearAgentKind(nextRuntime.profileConfig.agentKind);
       this.appPaths = nextRuntime.appPaths;
       this.cfg = nextRuntime.cfg;
       this.profileConfig = nextRuntime.profileConfig;
+      this.runtimeAgents = nextRuntimeAgents;
       this.agent = nextAgent;
       try {
         await this.bringUp(new Date().toISOString());
@@ -320,6 +343,11 @@ class ManagedProfile {
         this.cfg = previous.cfg;
         this.profileConfig = previous.profileConfig;
         this.agent = previous.agent;
+        this.runtimeAgents = new RuntimeAgentResolver(
+          previous.profileConfig,
+          previous.appPaths,
+          this.scopeExecution,
+        );
         await this.bringUp(new Date().toISOString()).catch((rollbackError) => {
           log.fail('supervisor', rollbackError, {
             step: 'restore-after-agent-switch',
@@ -415,6 +443,8 @@ export class Supervisor {
     await sessions.load();
     const sessionCatalog = new SessionCatalog(`${appPaths.sessionsFile}.catalog.json`);
     await sessionCatalog.load();
+    const scopeExecution = new ScopeExecutionStore(appPaths.scopeExecutionFile);
+    await scopeExecution.load();
     const workspaces = new WorkspaceStore(appPaths.workspacesFile);
     await workspaces.load();
 
@@ -427,6 +457,7 @@ export class Supervisor {
       agent,
       sessions,
       sessionCatalog,
+      scopeExecution,
       workspaces,
       this.startChannelFn,
       (p) => void this.stopProfile(p).catch(() => undefined),

@@ -1,4 +1,5 @@
 import { capabilityForProfile } from '../agent/backends';
+import { profileForAgentKind } from '../runtime/agent-runtime';
 import { getAgentStopGraceMs } from '../config/schema';
 import { canRunAdminCommand, canUseDm, canUseGroup } from '../policy/access';
 import { log, reportMetric } from '../core/logger';
@@ -79,7 +80,9 @@ export async function handleDoctor(args: string, ctx: CommandContext): Promise<v
   }
   doctorLastByOperator.set(rateKey, now);
 
-  const capability = capabilityForProfile(ctx.controls.profileConfig);
+  const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
+  const scopedProfile = profileForAgentKind(ctx.controls.profileConfig, agentKind);
+  const capability = capabilityForProfile(scopedProfile);
   const policy = evaluateRunPolicy({
     scope: {
       source: 'im',
@@ -107,7 +110,7 @@ export async function handleDoctor(args: string, ctx: CommandContext): Promise<v
     );
     return;
   }
-  const runtimeAccess = runtimeAccessStatus(ctx.controls.profileConfig);
+  const runtimeAccess = runtimeAccessStatus(ctx.controls.profileConfig, agentKind);
   const doctorReport = (echoCheck: string): string =>
     buildDoctorReport(ctx, {
       workspaceCheck: `ok (${workspace.cwdRealpath})`,
@@ -233,12 +236,13 @@ function buildDoctorReport(
     echoCheck?: string;
   } = {},
 ): string {
+  const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
   const queue = ctx.processPool?.snapshot();
   const queueLine = queue
     ? `${queue.active}/${queue.cap} active, ${queue.waiting} waiting`
     : 'unknown';
   const cwd = effectiveWorkspaceCwd(ctx);
-  const runtimeAccess = runtimeAccessStatus(ctx.controls.profileConfig);
+  const runtimeAccess = runtimeAccessStatus(ctx.controls.profileConfig, agentKind);
   const access =
     ctx.msg.chatType === 'p2p'
       ? canUseDm(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId)
@@ -251,7 +255,7 @@ function buildDoctorReport(
   return [
     'self-check: ok',
     `profile: ${ctx.controls.profile}`,
-    `agent: ${ctx.agent.displayName} (${ctx.controls.profileConfig.agentKind})`,
+    `agent: ${ctx.agent.displayName} (${agentKind})`,
     `workspace: ${cwd ?? '(未设置)'}`,
     `workspace default: ${ctx.controls.profileConfig.workspaces.default ? 'set' : 'missing'}`,
     `${runtimeAccess.label}: ${runtimeAccess.value}`,

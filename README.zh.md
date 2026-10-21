@@ -27,7 +27,7 @@ npm link
 run-lark-cc
 ```
 
-`run-lark-cc` 默认后台启动本地 GUI；新用户在网页中扫码创建应用和配置 profile。容器前台运行用 `run-lark-cc fg`。当前 profile 的执行引擎（Claude Code、Codex CLI 或 Pi Coding Agent）保存在配置中，可在 `/config run` 修改；在线切换时 profile 会短暂重连飞书通道。`run-lark-cc ui` 打开网页，`status` 查状态，`stop` 停止该配置目录的 GUI supervisor，`log` 查看启动日志。
+`run-lark-cc` 默认后台启动本地 GUI；新用户在网页中扫码创建应用和配置 profile。容器前台运行用 `run-lark-cc fg`。Profile 保存默认执行引擎（Claude Code、Codex CLI 或 Pi Coding Agent）；`/config run` 只覆盖当前聊天或话题的引擎，Web 配置页修改 profile 默认值。`run-lark-cc ui` 打开网页，`status` 查状态，`stop` 停止该配置目录的 GUI supervisor，`log` 查看启动日志。
 
 **会话助理默认关闭。** 在网页内完成用户授权、结果话题和模型配置后开启。个人 Claude 或 Codex profile 都可执行深入分析；筛选可选择独立的模型 API 服务，只使用 Claude 时也无需 Codex profile；旧 Codex 配置仍兼容。模型可选，不要求 DeepSeek Flash；已有未指定模型的 Codex 旧配置继续使用 Flash，避免升级后改变成本策略。配置方法见[模型 API 服务](docs/model-services.md)和[会话助理文档](docs/inbox-assistant.md)。
 
@@ -351,6 +351,8 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 
 旧版 `sandbox` 字段仍可读取。bridge 保存 profile 后，会把该设置迁移为 canonical `permissions`。
 
+Pi 支持 `read-only`（只开放读取/搜索工具）和 `full`。Pi 没有可移植的 workspace-only 沙箱，因此会在选择 `workspace` 引擎时明确拒绝。
+
 ## 数据目录
 
 | 路径 | 内容 |
@@ -359,6 +361,7 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 | `~/.lark-channel/active-profile` | 最近选择的 profile |
 | `~/.lark-channel/profiles/<profile>/sessions.json` | 会话状态 |
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | agent-aware 会话索引 |
+| `~/.lark-channel/profiles/<profile>/scope-execution.json` | 各聊天 / 话题的执行引擎覆盖 |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | 当前和命名工作空间绑定 |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | profile 本地加密 secret |
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | 当前 profile 的 lark-cli 目录 |

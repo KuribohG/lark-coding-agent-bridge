@@ -19,8 +19,11 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
   const reply = (markdown: string) => ctx.channel.send(ctx.msg.chatId, { markdown }, replyOptions(ctx));
   let saved = false;
   try {
-    const [store, environment] = await Promise.all([scopePreferences(ctx.controls), modelEnvironment(ctx.controls)]);
-    const agentKind = ctx.controls.profileConfig.agentKind;
+    const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
+    const [store, environment] = await Promise.all([
+      scopePreferences(ctx.controls),
+      modelEnvironment(ctx.controls, agentKind),
+    ]);
     const overrides = store.get(agentKind, ctx.scope);
     if (!args.trim()) {
       const resolved = resolveModelSettings(ctx.controls.profileConfig.preferences, overrides, environment);
@@ -48,12 +51,21 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
       await reply('修改 bot 默认值仅 owner/管理员可用。');
       return;
     }
+    const profileDefaults = agentKind === ctx.controls.profileConfig.agentKind
+      ? ctx.controls.profileConfig.preferences
+      : { ...ctx.controls.profileConfig.preferences, model: undefined, reasoningEffort: undefined };
     const next = resolveModelSettings(
-      target === 'profile' ? { ...ctx.controls.profileConfig.preferences, ...patch } : ctx.controls.profileConfig.preferences,
-      target === 'profile' ? {} : { ...overrides, ...patch }, environment,
+      target === 'profile' ? { ...profileDefaults, ...patch } : profileDefaults,
+      target === 'profile' ? {} : { ...overrides, ...patch },
+      environment,
     );
     if (patch.reasoningEffort && next.reasoningEffort !== patch.reasoningEffort) throw new Error(next.notice);
-    if (target === 'profile') await saveModelPreferences(ctx.controls, patch);
+    if (target === 'profile') {
+      if (agentKind !== ctx.controls.profileConfig.agentKind) {
+        throw new Error('profile 默认模型只能为 profile 默认执行引擎设置；当前上下文使用覆盖引擎，请保存到当前聊天。');
+      }
+      await saveModelPreferences(ctx.controls, patch);
+    }
     else await store.update(agentKind, ctx.scope, patch);
     saved = true;
     await reply(`已保存到${target === 'profile' ? '此 bot 默认值（已有聊天覆盖保留）' : modelScopeLabel(ctx)}。\n${modelSettingsSummary(next)}\n下一轮新任务生效，当前任务继续原设置。`);
@@ -63,7 +75,8 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
 }
 
 export async function modelStatus(ctx: CommandContext): Promise<string> {
-  const next = await resolveRunModelSettings(ctx.controls, ctx.scope);
+  const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
+  const next = await resolveRunModelSettings(ctx.controls, ctx.scope, undefined, agentKind);
   const active = ctx.activeRuns.get(ctx.scope)?.modelSettings;
   return `**下一轮 · ${modelScopeLabel(ctx)}**\n${modelSettingsSummary(next)}` +
     (active ? `\n**当前任务**：\`${active.model ?? 'CLI 默认'}\` / \`${active.reasoningEffort ?? 'CLI 默认'}\`` : '');

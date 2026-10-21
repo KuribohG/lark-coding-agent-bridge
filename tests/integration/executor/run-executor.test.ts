@@ -18,6 +18,28 @@ afterEach(async () => {
 });
 
 describe('RunExecutor', () => {
+  it('resolves a different backend for each originating scope', async () => {
+    const tmp = await createTmpProfile('run-executor-router-');
+    cleanups.push(tmp.cleanup);
+    const agents = {
+      chat: new FakeAgentAdapter({ id: 'claude', events: [{ type: 'done', terminationReason: 'normal' }] }),
+      topic: new FakeAgentAdapter({ id: 'pi', events: [{ type: 'done', terminationReason: 'normal' }] }),
+    };
+    const executor = new RunExecutor({
+      resolveAgent: (scope) => scope.includes(':') ? agents.topic : agents.chat,
+      pool: new ProcessPool(() => 2),
+      activeRuns: new ActiveRuns(),
+      now: () => 1000,
+    });
+
+    const chat = await executor.submit({ scopeId: 'chat-1', policy: policy(tmp.workspace) });
+    const topic = await executor.submit({ scopeId: 'chat-1:topic-1', policy: policy(tmp.workspace) });
+    await Promise.all([collect(chat.subscribe()), collect(topic.subscribe())]);
+
+    expect(agents.chat.runOptions).toHaveLength(1);
+    expect(agents.topic.runOptions).toHaveLength(1);
+  });
+
   it('generates one runId and wires it through adapter, record, and active runs', async () => {
     const h = await createHarness({
       events: [{ type: 'done', terminationReason: 'normal' }],

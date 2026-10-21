@@ -3,6 +3,8 @@ import type { MutableProfileState } from '../config/config-ops';
 import { resolveAppPaths } from '../config/app-paths';
 import { ScopePreferencesStore } from '../session/scope-preferences';
 import { readModelEnvironment, resolveModelSettings, type ModelSettings } from '../agent/model-settings';
+import type { AgentKind } from '../config/profile-schema';
+import { profileForAgentKind } from './agent-runtime';
 
 const stores = new WeakMap<object, Promise<ScopePreferencesStore>>();
 
@@ -21,13 +23,24 @@ export function scopePreferences(state: MutableProfileState): Promise<ScopePrefe
   return pending;
 }
 
-export function modelEnvironment(state: MutableProfileState) {
+export function modelEnvironment(
+  state: MutableProfileState,
+  agentKind: AgentKind = state.profileConfig.agentKind,
+) {
   const paths = resolveAppPaths({ rootDir: dirname(state.configPath), profile: state.profile });
-  return readModelEnvironment(state.profileConfig, paths.profileDir);
+  return readModelEnvironment(profileForAgentKind(state.profileConfig, agentKind), paths.profileDir);
 }
 
-export async function resolveRunModelSettings(state: MutableProfileState, scope: string, patch?: Partial<ModelSettings>) {
-  const [store, environment] = await Promise.all([scopePreferences(state), modelEnvironment(state)]);
-  const overrides = { ...store.get(state.profileConfig.agentKind, scope), ...patch };
-  return resolveModelSettings(state.profileConfig.preferences, overrides, environment);
+export async function resolveRunModelSettings(
+  state: MutableProfileState,
+  scope: string,
+  patch?: Partial<ModelSettings>,
+  agentKind: AgentKind = state.profileConfig.agentKind,
+) {
+  const [store, environment] = await Promise.all([scopePreferences(state), modelEnvironment(state, agentKind)]);
+  const overrides = { ...store.get(agentKind, scope), ...patch };
+  const profilePreferences = agentKind === state.profileConfig.agentKind
+    ? state.profileConfig.preferences
+    : { ...state.profileConfig.preferences, model: undefined, reasoningEffort: undefined };
+  return resolveModelSettings(profilePreferences, overrides, environment);
 }

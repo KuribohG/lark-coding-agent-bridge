@@ -55,7 +55,7 @@ run-lark-cc
 
 `run-lark-cc` 的后台模式不提供开机自启或崩溃重启。系统服务和无界面运行方式见[运行维护](operations.md)。不要让两个独立进程同时连接同一个飞书应用。
 
-执行引擎不再要求写在启动参数里。打开 `/config run`（或本地 Web 控制台的执行配置）选择 Claude Code、Codex CLI 或 Pi Coding Agent；在线 profile 会自动短暂重连，下次直接运行 `run-lark-cc` 即可沿用该选择。
+执行引擎不再要求写在启动参数里。Web 控制台的执行配置设置 profile 默认引擎；在飞书 `/config run` 中选择的引擎只作用于当前聊天或话题，下一条消息直接切换，不需要重连。
 
 ## Bridge 在远程服务器上
 

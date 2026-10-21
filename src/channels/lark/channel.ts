@@ -15,6 +15,7 @@ import type { LarkChannel, LarkChannelOptions, NormalizedMessage } from '@larksu
 import { createLarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
 import { capabilityForProfile } from '../../agent/backends';
+import { profileForAgentKind } from '../../runtime/agent-runtime';
 import { modelLabel, normalizeModelSelection, resolveModelArg } from '../../agent/models';
 import {
   buildAgentPrompt,
@@ -23,13 +24,14 @@ import {
   type BridgePromptQuotedMessage,
   type BridgePromptTopicMessage,
 } from '../../agent/prompt';
-import type { AgentAdapter, AgentEvent } from '../../agent/types';
+import type { AgentAdapter, AgentBotIdentity, AgentEvent } from '../../agent/types';
 import { handleCardAction } from '../../card/dispatcher';
 import { CallbackAuth } from '../../card/callback-auth';
 import { CallbackNonceStore } from '../../card/callback-store';
 import type { RunState } from '../../runtime/run-state';
 import { tryHandleCommand, type Controls } from '../../commands';
 import type { AppConfig } from '../../config/schema';
+import type { AgentKind } from '../../config/profile-schema';
 import {
   getAgentStopGraceMs,
   getCotMessages,
@@ -163,7 +165,12 @@ export interface BridgeChannel {
 
 export interface StartChannelDeps {
   cfg: AppConfig;
+  /** Profile default adapter. */
   agent: AgentAdapter;
+  resolveAgent?(scope: string): AgentAdapter;
+  resolveAgentKind?(scope: string): AgentKind;
+  setAgentIdentity?(identity: AgentBotIdentity): void;
+  setAgentKind?(scope: string, kind: AgentKind): Promise<void>;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
@@ -173,6 +180,8 @@ export interface StartChannelDeps {
 
 export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
   const { cfg, agent, sessions, sessionCatalog, workspaces, controls } = deps;
+  const resolveAgent = deps.resolveAgent ?? (() => agent);
+  const resolveAgentKind = deps.resolveAgentKind ?? (() => controls.profileConfig.agentKind);
   const activeRuns = new ActiveRuns();
   const followups = new FollowupRouter();
   const batchControllers = new Map<string, AbortController>();
@@ -182,7 +191,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   // Concurrency cap — reads `preferences.maxConcurrentRuns` on each acquire,
   // so /config bumps take effect for the next run.
   const pool = new ProcessPool(() => getMaxConcurrentRuns(controls.cfg));
-  const executor = new RunExecutor({ agent, pool, activeRuns });
+  const executor = new RunExecutor({ resolveAgent, pool, activeRuns });
 
   // Resolve the App Secret to plaintext. The config field can be a literal
   // string, a "${VAR}" template, or a {source, id} SecretRef referencing
@@ -319,6 +328,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           activePolicyFingerprints,
           lastRunModelByScope,
           scope,
+          agentKind: resolveAgentKind(scope),
           mode,
         });
       } catch (err) {
@@ -369,7 +379,8 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           channel, executor, sessions, sessionCatalog, workspaces, media,
           batch: [{ ...message, content: job.task, resources: [], rawContentType: 'text' }],
           controls, cotClient, callbackAuth, userQuestions, activePolicyFingerprints, lastRunModelByScope,
-          scope: job.scope, mode, timedJob: job, signal: controller.signal,
+          scope: job.scope, agentKind: job.agentKind ?? resolveAgentKind(job.scope), mode,
+          timedJob: job, signal: controller.signal,
         });
       } catch (err) {
         log.fail('timed-run', err, { jobId: job.id });
@@ -396,7 +407,9 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
         intakeMessage({
           followups,
           channel,
-          agent,
+          resolveAgent,
+          resolveAgentKind,
+          setAgentKind: deps.setAgentKind,
           sessions,
           sessionCatalog,
           workspaces,
@@ -423,7 +436,9 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           sessionCatalog,
           workspaces,
           activeRuns,
-          agent,
+          resolveAgent,
+          resolveAgentKind,
+          setAgentKind: deps.setAgentKind,
           processPool: pool,
           runExecutor: executor,
           controls,
@@ -440,7 +455,8 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
         await handleCommentMention({
           channel,
           evt,
-          agent,
+          resolveAgent,
+          resolveAgentKind,
           sessions,
           sessionCatalog,
           workspaces,
@@ -508,6 +524,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           sessions,
           ...(sessionCatalog ? { sessionCatalog } : {}),
           workspaces,
+          resolveAgentKind,
         }).catch((err) => log.warn('meeting', 'summary-failed', { err: String(err) })),
       onSession: (session) =>
         attachMeetingAgent({
@@ -519,6 +536,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           sessions,
           ...(sessionCatalog ? { sessionCatalog } : {}),
           workspaces,
+          resolveAgentKind,
         }),
     });
     meetingManager.attachPush();
@@ -681,7 +699,9 @@ async function sendForwardFetchFailedHint(
 interface IntakeDeps {
   followups: FollowupRouter;
   channel: LarkChannel;
-  agent: AgentAdapter;
+  resolveAgent(scope: string): AgentAdapter;
+  resolveAgentKind(scope: string): AgentKind;
+  setAgentKind?(scope: string, kind: AgentKind): Promise<void>;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
@@ -704,7 +724,9 @@ type LogThreadModeOverride = (input: {
 async function intakeMessage(deps: IntakeDeps): Promise<void> {
   const {
     channel,
-    agent,
+    resolveAgent,
+    resolveAgentKind,
+    setAgentKind,
     sessions,
     sessionCatalog,
     workspaces,
@@ -823,6 +845,8 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     return;
   }
 
+  const scopeAgentKind = resolveAgentKind(scope);
+  const scopeAgent = resolveAgent(scope);
   const handled = await tryHandleCommand({
     channel,
     msg: emsg,
@@ -830,7 +854,10 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     chatMode,
     sessions,
     workspaces,
-    agent,
+    agent: scopeAgent,
+    agentKind: scopeAgentKind,
+    defaultAgentKind: controls.profileConfig.agentKind,
+    setAgentKind,
     activeRuns,
     sessionCatalog,
     sessionCatalogIdentity: await commandSessionCatalogIdentity({
@@ -840,6 +867,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
       workspaces,
       controls,
       access: accessDecision,
+      agentKind: scopeAgentKind,
     }),
     runExecutor: executor,
     processPool: pool,
@@ -905,6 +933,7 @@ interface RunBatchDeps {
   activePolicyFingerprints: Map<string, string>;
   lastRunModelByScope: Map<string, string>;
   scope: string;
+  agentKind: AgentKind;
   mode: ChatMode;
 }
 
@@ -923,6 +952,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     activePolicyFingerprints,
     lastRunModelByScope,
     scope,
+    agentKind,
     mode,
   } = deps;
   if (batch.length === 0) return;
@@ -1005,15 +1035,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // for this scope (never on the first run) and the selection actually
   // changed. `requestedModel` (the `--model` value, or undefined for default)
   // is reused below to log requested-vs-actual against the init event.
-  const agentKind = controls.profileConfig.agentKind;
-  const runModelSettings = await resolveRunModelSettings(controls, scope);
+  const runModelSettings = await resolveRunModelSettings(controls, scope, undefined, agentKind);
   const runArguments = deps.timedJob?.modelSettings ?? modelRunArguments(runModelSettings);
   const modelPref = runArguments.model;
   const modelSelection = normalizeModelSelection(agentKind, modelPref);
   const requestedModel = resolveModelArg(agentKind, modelPref);
-  const prevModel = lastRunModelByScope.get(scope);
+  const modelStateKey = `${agentKind}\x1f${scope}`;
+  const prevModel = lastRunModelByScope.get(modelStateKey);
   const modelSwitched = prevModel !== undefined && prevModel !== modelSelection;
-  lastRunModelByScope.set(scope, modelSelection);
+  lastRunModelByScope.set(modelStateKey, modelSelection);
   const extraInstructions = modelSwitched
     ? [
         `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
@@ -1063,7 +1093,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     actorId: firstMsg.senderId,
     ...(threadId ? { threadId } : {}),
   };
-  const capability = capabilityForProfile(controls.profileConfig);
+  const scopedProfile = profileForAgentKind(controls.profileConfig, agentKind);
+  const capability = capabilityForProfile(scopedProfile);
   const flow = await startRunFlow({
     modelSettings: runArguments,
     deadlineAt: deps.timedJob?.stopAt,

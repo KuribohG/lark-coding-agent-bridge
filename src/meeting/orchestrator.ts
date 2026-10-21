@@ -14,6 +14,8 @@ import { startRunFlow } from '../bot/run-flow';
 import { describeMeetingError } from './manager';
 import type { MeetingSession } from './session';
 import type { MeetingSummaryTarget } from '../config/profile-schema';
+import type { AgentKind } from '../config/profile-schema';
+import { profileForAgentKind } from '../runtime/agent-runtime';
 import type { ChatEvent, MeetingEvent } from './types';
 
 /**
@@ -36,6 +38,7 @@ export interface MeetingAgentDeps {
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
+  resolveAgentKind?(scope: string): AgentKind;
 }
 
 /** Scope id for a meeting's agent session — one conversation per meeting. */
@@ -297,9 +300,11 @@ async function runMeetingAgent(
 ): Promise<string> {
   const { session, controls } = deps;
   const scopeId = meetingScopeId(session.meetingId);
-  const capability = capabilityForProfile(controls.profileConfig);
+  const agentKind = deps.resolveAgentKind?.(scopeId) ?? controls.profileConfig.agentKind;
+  const scopedProfile = profileForAgentKind(controls.profileConfig, agentKind);
+  const capability = capabilityForProfile(scopedProfile);
   const result = await startRunFlow({
-    modelSettings: modelRunArguments(await resolveRunModelSettings(controls, scopeId)),
+    modelSettings: modelRunArguments(await resolveRunModelSettings(controls, scopeId, undefined, agentKind)),
     scopeId,
     scope: {
       source: 'meeting',
@@ -312,7 +317,7 @@ async function runMeetingAgent(
     // meeting"; the per-chat allowlist doesn't apply here.
     access: { ok: true, reason: 'allowed-chat' },
     capability,
-    profileConfig: controls.profileConfig,
+    profileConfig: scopedProfile,
     sessions: deps.sessions,
     ...(deps.sessionCatalog ? { sessionCatalog: deps.sessionCatalog } : {}),
     workspaces: deps.workspaces,

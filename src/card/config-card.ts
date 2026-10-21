@@ -33,6 +33,7 @@ export interface ConfigFormOpts {
   consoleUrl?: string;
   /** The saved run settings also changed the profile's execution backend. */
   agentSwitched?: boolean;
+  scopeAgentSwitched?: boolean;
 }
 
 /** Form card for `/config`. */
@@ -48,10 +49,10 @@ export function configFormCard(opts: ConfigFormOpts): object {
       options: options.map(([value, content]) => ({ value, text: { tag: 'plain_text', content } })) });
   };
   if (section === 'run') {
-    select('agent_kind', '**执行引擎**', opts.agentKind,
+    select('agent_kind', '**执行引擎（当前上下文）**', opts.agentKind,
       AGENT_OPTIONS.map(({ value, label }) => [value, label]));
-    note('切换执行引擎会停止当前任务并重连此 profile；模型和思考强度会被清除，需要重新选择。');
-    input('model', '**模型**（inherit 恢复上层默认）', opts.model);
+    note('仅修改当前聊天/话题；下一条消息使用新引擎。Profile 默认引擎在本地网页配置页修改。');
+    input('model', '**Profile 默认模型**（当前上下文请用 `/model`）', opts.model);
     select('reasoning_effort', '**思考强度**', opts.reasoningEffort ?? 'default',
       ['default', 'inherit', ...availableEfforts(opts.agentKind)].map(v => [v, v === 'inherit' ? '恢复继承' : v === 'default' ? '未设置' : v]));
     input('max_concurrent_runs', '**此 bot 并发上限**（1–50，inherit 恢复继承）', String(opts.maxConcurrentRuns));
@@ -88,8 +89,10 @@ export function configSavedCard(opts: ConfigFormOpts): object {
       : [`执行引擎：${AGENT_OPTIONS.find((item) => item.value === opts.agentKind)?.label ?? opts.agentKind}`, `模型：${modelLabel(opts.agentKind, opts.model)}`, `思考强度：${opts.reasoningEffort ?? 'CLI 默认'}`, `并发上限：${opts.maxConcurrentRuns}`, `无输出超时：${opts.runIdleTimeoutMinutes ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'}`];
   return { schema: '2.0', config: { summary: { content: '偏好已保存' } }, body: { elements: [
     { tag: 'markdown', content: '✅ **偏好已保存**\n\n' + details.join('\n') + '\n\n' +
-      (opts.agentSwitched
-        ? '此 profile 正在切换执行引擎并重连飞书通道；稍后直接发送消息即可。'
+      (opts.scopeAgentSwitched
+        ? '当前聊天/话题的执行引擎已切换；从下一条消息开始使用新引擎，飞书通道无需重连。'
+        : opts.agentSwitched
+          ? '此 profile 正在切换执行引擎并重连飞书通道；稍后直接发送消息即可。'
         : '下条消息开始生效。完整设置见 /config。') },
   ] } };
 }

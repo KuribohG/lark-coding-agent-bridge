@@ -1,7 +1,7 @@
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { claudeCapability, codexCapability } from '../../../src/agent/capability.js';
+import { claudeCapability, codexCapability, piCapability } from '../../../src/agent/capability.js';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
 import { ProcessPool } from '../../../src/bot/process-pool.js';
 import {
@@ -9,7 +9,11 @@ import {
   startRunFlow,
   type StartRunFlowInput,
 } from '../../../src/bot/run-flow.js';
-import { createDefaultProfileConfig, type ProfileConfig } from '../../../src/config/profile-schema.js';
+import {
+  createDefaultProfileConfig,
+  type AgentKind,
+  type ProfileConfig,
+} from '../../../src/config/profile-schema.js';
 import { RunExecutor } from '../../../src/runtime/run-executor.js';
 import { SessionCatalog } from '../../../src/session/catalog.js';
 import { SessionStore } from '../../../src/session/store.js';
@@ -171,10 +175,31 @@ describe('agent-aware run-flow resume', () => {
       }),
     ).toMatchObject({ threadId: 'thread-recorded' });
     expect(codex.sessions.getRaw('chat-1')).toBeUndefined();
+
+    const pi = await createHarness('pi');
+    const piRun = await start(pi);
+    expect(piRun.ok).toBe(true);
+    if (!piRun.ok) throw new Error('expected pi run');
+    await collect(piRun.execution.subscribe());
+    recordRunSessionEvent({
+      scopeId: 'chat-1',
+      sessions: pi.sessions,
+      sessionCatalog: pi.catalog,
+      capability: piCapability(pi.profileConfig),
+      policy: piRun.policy,
+      event: { type: 'system', sessionId: 'pi-recorded', cwd: piRun.cwdRealpath },
+    });
+    expect(pi.catalog.activeFor({
+      scopeId: 'chat-1',
+      agentId: 'pi',
+      cwdRealpath: piRun.cwdRealpath,
+      policyFingerprint: piRun.policy.policyFingerprint,
+    })).toMatchObject({ sessionId: 'pi-recorded' });
+    expect(pi.sessions.getRaw('chat-1')).toBeUndefined();
   });
 });
 
-async function createHarness(agentKind: 'claude' | 'codex'): Promise<{
+async function createHarness(agentKind: AgentKind): Promise<{
   tmp: TmpProfile;
   agent: FakeAgentAdapter;
   executor: RunExecutor;
@@ -198,7 +223,11 @@ async function createHarness(agentKind: 'claude' | 'codex'): Promise<{
         tenant: 'feishu',
       },
     },
-    ...(agentKind === 'codex' ? { codex: { binaryPath: '/usr/local/bin/codex' } } : {}),
+    ...(agentKind === 'codex'
+      ? { codex: { binaryPath: '/usr/local/bin/codex' } }
+      : agentKind === 'pi'
+        ? { pi: { binaryPath: '/usr/local/bin/pi' } }
+        : {}),
   });
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
   workspaces.setCwd('chat-1', tmp.workspace);
@@ -244,9 +273,10 @@ async function start(h: Awaited<ReturnType<typeof createHarness>>) {
     prompt: 'hello',
     attachments: [],
     access: { ok: true, reason: 'allowed-user' },
-    capability:
-      h.profileConfig.agentKind === 'codex'
-        ? codexCapability(h.profileConfig)
+    capability: h.profileConfig.agentKind === 'codex'
+      ? codexCapability(h.profileConfig)
+      : h.profileConfig.agentKind === 'pi'
+        ? piCapability(h.profileConfig)
         : claudeCapability(h.profileConfig),
     profileConfig: h.profileConfig,
     sessions: h.sessions,
