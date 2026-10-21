@@ -15,7 +15,7 @@ import { describeMeetingError } from './manager';
 import type { MeetingSession } from './session';
 import type { MeetingSummaryTarget } from '../config/profile-schema';
 import type { AgentKind } from '../config/profile-schema';
-import { profileForAgentKind } from '../runtime/agent-runtime';
+import { profileForAgentKind } from '../runtime/execution-controller';
 import type { ChatEvent, MeetingEvent } from './types';
 
 /**

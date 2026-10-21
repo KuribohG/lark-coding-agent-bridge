@@ -13,7 +13,7 @@ For a product walkthrough, see the [Feishu document](https://larkcommunity.feish
 
 ## Standalone browser chat and channel plugins
 
-Run `lark-channel-bridge web --agent codex --workspace /absolute/project/path --port 8787` for the bundled browser chat, without a Lark account. Lark and Web use separate channel plugins with a shared conversation runtime. See [channel architecture and integration](docs/channels.md).
+Run `lark-channel-bridge web --workspace /absolute/project/path --port 8787` for the bundled browser chat, without a Lark account. With `--config`, the active profile supplies the initial engine and Web display settings; the page can switch each conversation between Claude Code, Codex CLI and Pi. Lark and Web use separate channel plugins with a shared execution controller and conversation runtime. See [channel architecture and integration](docs/channels.md).
 
 ## Self-contained setup on this fork
 
@@ -365,6 +365,8 @@ Pi supports `read-only` (built-in read/search tools only) and `full`. It has no 
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | Profile-local lark-cli directory |
 | `~/.lark-channel/profiles/<profile>/media/` | Attachment cache |
 | `~/.lark-channel/profiles/<profile>/logs/` | Structured run logs |
+| `~/.lark-channel/web/default/scope-execution.json` | Per-conversation standalone Web engine overrides |
+| `~/.lark-channel/web/default/sessions.catalog.json` | Agent-aware standalone Web session catalog |
 | `~/.lark-channel/registry/processes.json` | Local process registry |
 | `~/.lark-channel/registry/locks/` | Profile and app locks |
 

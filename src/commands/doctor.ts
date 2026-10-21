@@ -1,5 +1,5 @@
 import { capabilityForProfile } from '../agent/backends';
-import { profileForAgentKind } from '../runtime/agent-runtime';
+import { profileForAgentKind } from '../runtime/execution-controller';
 import { getAgentStopGraceMs } from '../config/schema';
 import { canRunAdminCommand, canUseDm, canUseGroup } from '../policy/access';
 import { log, reportMetric } from '../core/logger';

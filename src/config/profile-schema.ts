@@ -153,10 +153,19 @@ export interface LarkCliConfig {
   };
 }
 
-export interface ProfileConfig {
-  schemaVersion: 2;
+/** The subset needed to select and launch an agent, independent of IM account state. */
+export interface AgentExecutionProfile {
   /** Default engine for new/unconfigured scopes and background work. */
   agentKind: AgentKind;
+  sandbox?: SandboxConfig;
+  permissions: PermissionConfig;
+  claude?: { binaryPath?: string };
+  codex?: CodexConfig;
+  pi?: PiConfig;
+}
+
+export interface ProfileConfig extends AgentExecutionProfile {
+  schemaVersion: 2;
   /** Deployment mode switch. Default 'personal'. See {@link ProfileMode}. */
   mode: ProfileMode;
   accounts: {
@@ -164,17 +173,12 @@ export interface ProfileConfig {
   };
   secrets?: SecretsConfig;
   channels?: import('./schema').ChannelDisplayConfig;
-  claude?: { binaryPath?: string };
-  pi?: PiConfig;
   preferences: Omit<AppPreferences, 'access' | 'requireMentionInGroup'>;
   access: ProfileAccess;
   workspaces: {
     default?: string;
   };
-  sandbox: SandboxConfig;
-  permissions: PermissionConfig;
   permissionSource?: PermissionSource;
-  codex?: CodexConfig;
   attachments: AttachmentConfig;
   comments: CommentConfig;
   /** In-meeting agent settings. See {@link MeetingConfig}. */
@@ -183,8 +187,8 @@ export interface ProfileConfig {
 }
 
 /** Configuration needed to execute a conversation; no messaging credentials. */
-export type RunProfileConfig = Pick<ProfileConfig,
-  'agentKind' | 'access' | 'workspaces' | 'permissions' | 'codex' | 'pi' | 'attachments'> & { preferences: import('./schema').RunPreferences };
+export type RunProfileConfig = AgentExecutionProfile & Pick<ProfileConfig,
+  'access' | 'workspaces' | 'attachments'> & { preferences: import('./schema').RunPreferences };
 
 /**
  * The lark-cli identity preset that actually takes effect, after applying the

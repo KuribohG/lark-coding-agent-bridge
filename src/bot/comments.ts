@@ -20,7 +20,7 @@ import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
 import type { AgentKind } from '../config/profile-schema';
-import { profileForAgentKind } from '../runtime/agent-runtime';
+import { profileForAgentKind } from '../runtime/execution-controller';
 import {
   commentDocumentScopeId,
   commentScopeId,

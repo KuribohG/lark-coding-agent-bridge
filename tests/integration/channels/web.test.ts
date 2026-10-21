@@ -4,10 +4,19 @@ import { createConversationRuntime, type ConversationRuntime } from '../../../sr
 import { createWebRunOutput, type WebRunEvent } from '../../../src/channels/web/output';
 import { createWebPlugin } from '../../../src/channels/web/server';
 import { ChannelHost } from '../../../src/channels/plugin';
-import type { RunProfileConfig } from '../../../src/config/profile-schema';
-import type { AgentAdapter, AgentEvent } from '../../../src/agent/types';
+import type {
+  AgentExecutionProfile,
+  AgentKind,
+  RunProfileConfig,
+} from '../../../src/config/profile-schema';
+import type { AgentAdapter, AgentBotIdentity, AgentEvent } from '../../../src/agent/types';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
 import { createTmpProfile } from '../../helpers/tmp-profile';
+import { capabilityForProfile } from '../../../src/agent/backends';
+import {
+  profileForAgentKind,
+  type ExecutionController,
+} from '../../../src/runtime/execution-controller';
 
 // Importing or starting the second channel must never initialize the Lark SDK.
 vi.mock('@larksuite/channel', () => { throw new Error('Web imported the Lark SDK'); });
@@ -46,6 +55,53 @@ async function run(runtime: ConversationRuntime, who = identity) {
   if (!result.ok) throw Error(result.rejectReason.code);
   await result.done; await result.execution.result;
   return { received, result };
+}
+
+class SwitchableExecutionController implements ExecutionController {
+  readonly defaultAgentKind: AgentKind = 'claude';
+  private readonly selected = new Map<string, AgentKind>();
+
+  constructor(
+    private readonly config: AgentExecutionProfile,
+    private readonly agents: Record<AgentKind, AgentAdapter>,
+  ) {}
+
+  defaultAgent(): AgentAdapter { return this.agents.claude; }
+  get(scope: string): AgentAdapter { return this.agents[this.kindFor(scope)]; }
+  kindFor(scope: string): AgentKind { return this.selected.get(scope) ?? this.defaultAgentKind; }
+  profileFor(scope: string): AgentExecutionProfile {
+    return profileForAgentKind(this.config, this.kindFor(scope));
+  }
+  capabilityFor(scope: string) { return capabilityForProfile(this.profileFor(scope)); }
+  setBotIdentity(identity: AgentBotIdentity): void {
+    for (const agent of Object.values(this.agents)) agent.setBotIdentity?.(identity);
+  }
+  async setScopeKind(scope: string, kind: AgentKind): Promise<void> {
+    this.selected.set(scope, kind);
+  }
+}
+
+async function switchableHarness() {
+  const tmp = await createTmpProfile('bridge-web-switch-'); cleanups.push(tmp.cleanup);
+  const claude = new FakeAgentAdapter({ id: 'claude', events });
+  const pi = new FakeAgentAdapter({ id: 'pi', events });
+  const base = {
+    ...config(tmp.workspace),
+    permissions: { defaultAccess: 'full' as const, maxAccess: 'full' as const },
+  };
+  const execution = new SwitchableExecutionController(base, { claude, pi, codex: new FakeAgentAdapter({ id: 'codex' }) });
+  const options = {
+    execution,
+    config: base,
+    configForAgent: (kind: AgentKind): RunProfileConfig => ({ ...base, agentKind: kind }),
+    namespace: 'switch',
+    channelId: 'web',
+    systemPrompt: 'Browser host instructions',
+    stateDir: tmp.profile,
+    authorize: async () => true,
+  };
+  const runtime = await createConversationRuntime(options); cleanups.push(() => runtime.close());
+  return { tmp, claude, pi, options, runtime };
 }
 
 describe('channel-independent conversations', () => {
@@ -118,6 +174,7 @@ describe('channel-independent conversations', () => {
     const id = result.execution.runId;
     const duplicate = await runtime.start({ ...identity, prompt: 'duplicate' }, createWebRunOutput(async () => {}));
     expect(duplicate).toMatchObject({ ok: false, rejectReason: { code: 'run-already-active' } });
+    await expect(runtime.setAgentKind(identity, 'pi')).rejects.toThrow(/run is active/);
     expect(await runtime.stop({ ...identity, actorId: 'bob' }, id)).toBe(false);
     expect(await runtime.stop(identity, 'old-run')).toBe(false);
     expect(await runtime.sendInput(identity, id, { text: 'continue', messageId: 'm1' })).toMatchObject({ status: 'accepted' });
@@ -132,6 +189,20 @@ describe('channel-independent conversations', () => {
     if (!result.ok) throw Error('expected started');
     await expect(result.done).rejects.toThrow('socket closed');
     expect(h.agent.runs[0]?.stopped).toBe(true);
+  });
+
+  it('routes each conversation to its selected engine without sharing native sessions', async () => {
+    const h = await switchableHarness();
+    await run(h.runtime);
+    await h.runtime.setAgentKind(identity, 'pi');
+    h.pi.setEvents(events);
+    await run(h.runtime);
+    expect(h.pi.runOptions[0]?.sessionId).toBeUndefined();
+
+    await h.runtime.setAgentKind(identity, 'claude');
+    h.claude.setEvents(events);
+    await run(h.runtime);
+    expect(h.claude.runOptions.at(-1)?.sessionId).toBe('session-one');
   });
 });
 
@@ -166,5 +237,40 @@ describe('standalone Web plugin', () => {
     await host.connect({ id: 'b', connect: async () => ({ close: async () => { throw Error('b'); } }) });
     await expect(host.close()).rejects.toThrow('channel shutdown failed');
     expect(close).toHaveBeenCalledOnce();
+  });
+
+  it('reports and switches the engine for an existing browser conversation', async () => {
+    const h = await switchableHarness(); await h.runtime.close();
+    const host = new ChannelHost(); cleanups.push(() => host.close());
+    const web = await host.connect(createWebPlugin({ ...h.options, stateDir: join(h.tmp.root, 'switch-server') }));
+    const url = new URL(web.url);
+    const token = new URLSearchParams(url.hash.slice(1)).get('token')!;
+    const base = url.origin;
+    const headers = { 'x-ui-token': token };
+
+    const initial = await (await fetch(`${base}/api/engine?conversationId=browser`, { headers })).json() as {
+      agent: string;
+      defaultAgent: string;
+      options: Array<{ value: string }>;
+    };
+    expect(initial).toMatchObject({ agent: 'claude', defaultAgent: 'claude' });
+    expect(initial.options.map((option: { value: string }) => option.value)).toEqual(['claude', 'codex', 'pi']);
+
+    const switched = await (await fetch(`${base}/api/engine`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conversationId: 'browser', agent: 'pi' }),
+    })).json();
+    expect(switched).toMatchObject({ agent: 'pi', defaultAgent: 'claude' });
+
+    const response = await fetch(`${base}/api/chat`, {
+      method: 'POST',
+      headers: { ...headers, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ conversationId: 'browser', text: 'hello' }),
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+    expect(h.pi.runs).toHaveLength(1);
+    expect(h.claude.runs).toHaveLength(0);
   });
 });

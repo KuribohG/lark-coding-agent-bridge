@@ -7,7 +7,7 @@ import {
 } from '../config/preferences';
 import { modelEnvironment } from '../runtime/model-settings';
 import { capabilityForProfile, isAgentKind } from '../agent/backends';
-import { profileForAgentKind } from '../runtime/agent-runtime';
+import { profileForAgentKind } from '../runtime/execution-controller';
 import { normalizeModelSelection } from '../agent/models';
 import {
   configCancelledCard,

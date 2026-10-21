@@ -8,7 +8,7 @@ import type { SessionCatalogIdentity } from '../session/catalog';
 import type { WorkspaceStore } from '../workspace/store';
 import type { ChatMode } from './chat-mode-cache';
 import type { AgentKind } from '../config/profile-schema';
-import { profileForAgentKind } from '../runtime/agent-runtime';
+import { profileForAgentKind } from '../runtime/execution-controller';
 
 export async function commandSessionCatalogIdentity(input: {
   msg: NormalizedMessage;

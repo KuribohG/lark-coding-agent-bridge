@@ -7,7 +7,6 @@ import type { Controls } from '../commands';
 import type { AppPaths } from '../config/app-paths';
 import { isComplete, type AppConfig } from '../config/schema';
 import type { AgentKind, ProfileConfig } from '../config/profile-schema';
-import type { AgentAdapter } from '../agent/types';
 import { log } from '../core/logger';
 import { refreshOwnerControls } from '../policy/owner';
 import { SessionStore } from '../session/store';
@@ -15,13 +14,13 @@ import { SessionCatalog } from '../session/catalog';
 import { ScopeExecutionStore } from '../session/scope-execution';
 import { WorkspaceStore } from '../workspace/store';
 import { preFlightChecks } from '../cli/preflight';
+import { buildBridgeSystemPrompt } from '../channels/lark/system-prompt';
 import {
   assertReconnectAgentKindUnchanged,
   checkRuntimeAgentAvailability,
-  createRuntimeAgent,
-  RuntimeAgentResolver,
   releaseRuntimeLocks,
 } from './agent-runtime';
+import { ProfileExecutionController } from './execution-controller';
 import {
   acquireAppRuntimeLock,
   acquireProfileRuntimeLock,
@@ -37,6 +36,28 @@ import {
 } from './registry';
 
 type StartChannelFn = typeof realStartChannel;
+
+function createExecutionController(input: {
+  profileConfig: ProfileConfig;
+  scopeExecution: ScopeExecutionStore;
+  appPaths: AppPaths;
+  configPath: string;
+}): ProfileExecutionController {
+  const { profileConfig, scopeExecution, appPaths, configPath } = input;
+  return new ProfileExecutionController({
+    profileConfig,
+    scopeExecution,
+    appPaths: { ...appPaths, configPath },
+    systemPrompt: buildBridgeSystemPrompt,
+    larkChannel: {
+      profile: appPaths.profile,
+      rootDir: appPaths.rootDir,
+      configPath,
+      larkCliConfigDir: appPaths.larkCliConfigDir,
+      larkCliSourceConfigFile: appPaths.larkCliSourceConfigFile,
+    },
+  });
+}
 
 export interface SupervisorOptions {
   /** Root config path (config.json). */
@@ -79,7 +100,7 @@ class ManagedProfile {
     private configPath: string,
     private cfg: AppConfig,
     private profileConfig: ProfileConfig,
-    private agent: AgentAdapter,
+    private execution: ProfileExecutionController,
     private sessions: SessionStore,
     private sessionCatalog: SessionCatalog,
     private scopeExecution: ScopeExecutionStore,
@@ -88,12 +109,7 @@ class ManagedProfile {
     private onExitCommand: (profile: string) => void,
     private onRuntimeChange: () => Promise<void>,
     private inbox: InboxManager,
-  ) {
-    this.runtimeAgents = new RuntimeAgentResolver(profileConfig, appPaths, scopeExecution);
-    this.agent = this.runtimeAgents.defaultAgent();
-  }
-
-  private runtimeAgents: RuntimeAgentResolver;
+  ) {}
 
   get appId(): string {
     return this.cfg.accounts.app.id;
@@ -110,16 +126,16 @@ class ManagedProfile {
     // this.locks and gets released by the catch — otherwise it would leak and
     // a retry in the same process would fail to re-lock.
     this.locks = [];
-    this.locks.push(await acquireProfileRuntimeLock(this.appPaths, this.profileConfig.agentKind));
+    this.locks.push(await acquireProfileRuntimeLock(this.appPaths, this.execution.defaultAgentKind));
     this.locks.push(
-      await acquireAppRuntimeLock(this.appPaths, this.appId, this.profileConfig.agentKind),
+      await acquireAppRuntimeLock(this.appPaths, this.appId, this.execution.defaultAgentKind),
     );
     try {
       this.entry = await register({
         appId: this.appId,
         tenant: this.cfg.accounts.app.tenant,
         profileName: this.appPaths.profile,
-        agentKind: this.profileConfig.agentKind,
+        agentKind: this.execution.defaultAgentKind,
         configPath: this.configPath,
         version: pkg.version,
         registryFile: this.appPaths.userRegistryFile,
@@ -127,13 +143,9 @@ class ManagedProfile {
       this.controls = this.makeControls(this.appPaths, this.cfg, this.profileConfig);
       this.bridge = await this.startChannelFn({
         cfg: this.cfg,
-        agent: this.agent,
+        execution: this.execution,
         sessions: this.sessions,
         sessionCatalog: this.sessionCatalog,
-        resolveAgent: (scope) => this.runtimeAgents.get(scope),
-        resolveAgentKind: (scope) => this.runtimeAgents.kindFor(scope),
-        setAgentIdentity: (identity) => this.runtimeAgents.setBotIdentity(identity),
-        setAgentKind: (scope, kind) => this.runtimeAgents.setScopeKind(scope, kind),
         workspaces: this.workspaces,
         controls: this.controls,
         appPaths: this.appPaths,
@@ -174,7 +186,7 @@ class ManagedProfile {
   status(pid: number): ManagedStatus {
     return {
       profile: this.profile,
-      agentKind: this.profileConfig.agentKind,
+      agentKind: this.execution.defaultAgentKind,
       online: true,
       pid,
       startedAt: this.startedAt,
@@ -232,14 +244,17 @@ class ManagedProfile {
       });
       const next = nextRuntime.cfg;
       if (!isComplete(next)) throw new Error('config incomplete after change');
-      assertReconnectAgentKindUnchanged(this.profileConfig.agentKind, nextRuntime.profileConfig.agentKind);
-      const nextRuntimeAgents = new RuntimeAgentResolver(
-        nextRuntime.profileConfig,
-        nextRuntime.appPaths,
-        this.scopeExecution,
+      assertReconnectAgentKindUnchanged(
+        this.execution.defaultAgentKind,
+        nextRuntime.profileConfig.agentKind,
       );
-      const nextAgent = nextRuntimeAgents.defaultAgent();
-      const availability = await checkRuntimeAgentAvailability(nextAgent);
+      const nextExecution = createExecutionController({
+        profileConfig: nextRuntime.profileConfig,
+        scopeExecution: this.scopeExecution,
+        appPaths: nextRuntime.appPaths,
+        configPath: this.configPath,
+      });
+      const availability = await checkRuntimeAgentAvailability(nextExecution.defaultAgent());
       if (!availability.ok) throw availability.error;
 
       const appChanged = next.accounts.app.id !== this.cfg.accounts.app.id;
@@ -247,19 +262,15 @@ class ManagedProfile {
         nextAppLock = await acquireAppRuntimeLock(
           nextRuntime.appPaths,
           next.accounts.app.id,
-          nextRuntime.profileConfig.agentKind,
+          nextExecution.defaultAgentKind,
         );
       }
       const nextControls = this.makeControls(nextRuntime.appPaths, next, nextRuntime.profileConfig);
       const nextBridge = await this.startChannelFn({
         cfg: next,
-        agent: nextAgent,
+        execution: nextExecution,
         sessions: this.sessions,
         sessionCatalog: this.sessionCatalog,
-        resolveAgent: (scope) => nextRuntimeAgents.get(scope),
-        resolveAgentKind: (scope) => nextRuntimeAgents.kindFor(scope),
-        setAgentIdentity: (identity) => nextRuntimeAgents.setBotIdentity(identity),
-        setAgentKind: (scope, kind) => nextRuntimeAgents.setScopeKind(scope, kind),
         workspaces: this.workspaces,
         controls: nextControls,
         appPaths: nextRuntime.appPaths,
@@ -288,8 +299,7 @@ class ManagedProfile {
       }
       this.cfg = next;
       this.profileConfig = nextRuntime.profileConfig;
-      this.agent = nextAgent;
-      this.runtimeAgents = nextRuntimeAgents;
+      this.execution = nextExecution;
       this.controls = nextControls;
     } finally {
       if (nextAppLock) await nextAppLock.release().catch(() => undefined);
@@ -310,7 +320,7 @@ class ManagedProfile {
       appPaths: this.appPaths,
       cfg: this.cfg,
       profileConfig: this.profileConfig,
-      agent: this.agent,
+      execution: this.execution,
     };
     try {
       const nextRuntime = await resolveProfileRuntime({
@@ -320,34 +330,27 @@ class ManagedProfile {
       });
       if (nextRuntime.profileConfig.agentKind === this.profileConfig.agentKind) return;
       if (!isComplete(nextRuntime.cfg)) throw new Error('config incomplete after agent switch');
-      const nextRuntimeAgents = new RuntimeAgentResolver(
-        nextRuntime.profileConfig,
-        nextRuntime.appPaths,
-        this.scopeExecution,
-      );
-      const nextAgent = nextRuntimeAgents.defaultAgent();
-      const availability = await checkRuntimeAgentAvailability(nextAgent);
+      const nextExecution = createExecutionController({
+        profileConfig: nextRuntime.profileConfig,
+        scopeExecution: this.scopeExecution,
+        appPaths: nextRuntime.appPaths,
+        configPath: this.configPath,
+      });
+      const availability = await checkRuntimeAgentAvailability(nextExecution.defaultAgent());
       if (!availability.ok) throw availability.error;
 
       await this.stop();
-      await this.scopeExecution.clearAgentKind(nextRuntime.profileConfig.agentKind);
       this.appPaths = nextRuntime.appPaths;
       this.cfg = nextRuntime.cfg;
       this.profileConfig = nextRuntime.profileConfig;
-      this.runtimeAgents = nextRuntimeAgents;
-      this.agent = nextAgent;
+      this.execution = nextExecution;
       try {
         await this.bringUp(new Date().toISOString());
       } catch (error) {
         this.appPaths = previous.appPaths;
         this.cfg = previous.cfg;
         this.profileConfig = previous.profileConfig;
-        this.agent = previous.agent;
-        this.runtimeAgents = new RuntimeAgentResolver(
-          previous.profileConfig,
-          previous.appPaths,
-          this.scopeExecution,
-        );
+        this.execution = previous.execution;
         await this.bringUp(new Date().toISOString()).catch((rollbackError) => {
           log.fail('supervisor', rollbackError, {
             step: 'restore-after-agent-switch',
@@ -356,6 +359,13 @@ class ManagedProfile {
         });
         throw error;
       }
+      await this.scopeExecution
+        .clearAgentKind(nextRuntime.profileConfig.agentKind)
+        .catch((err) => log.warn('supervisor', 'scope-engine-cleanup-failed', {
+          profile: this.profile,
+          agentKind: nextRuntime.profileConfig.agentKind,
+          err: String(err),
+        }));
     } finally {
       this.restarting = false;
     }
@@ -433,18 +443,22 @@ export class Supervisor {
       });
     }
 
-    const agent = createRuntimeAgent(profileConfig, { ...appPaths, configPath });
-    if (this.opts.runPreflight !== false) {
-      const availability = await checkRuntimeAgentAvailability(agent);
-      if (!availability.ok) throw availability.error;
-    }
-
     const sessions = new SessionStore(appPaths.sessionsFile);
     await sessions.load();
     const sessionCatalog = new SessionCatalog(`${appPaths.sessionsFile}.catalog.json`);
     await sessionCatalog.load();
     const scopeExecution = new ScopeExecutionStore(appPaths.scopeExecutionFile);
     await scopeExecution.load();
+    const execution = createExecutionController({
+      profileConfig,
+      scopeExecution,
+      appPaths,
+      configPath,
+    });
+    if (this.opts.runPreflight !== false) {
+      const availability = await checkRuntimeAgentAvailability(execution.defaultAgent());
+      if (!availability.ok) throw availability.error;
+    }
     const workspaces = new WorkspaceStore(appPaths.workspacesFile);
     await workspaces.load();
 
@@ -454,7 +468,7 @@ export class Supervisor {
       configPath,
       cfg,
       profileConfig,
-      agent,
+      execution,
       sessions,
       sessionCatalog,
       scopeExecution,

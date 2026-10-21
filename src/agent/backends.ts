@@ -12,23 +12,24 @@ import {
 } from './capability';
 import type { AgentAdapter, AgentExecutionCapabilities } from './types';
 import type { AgentSystemPrompt } from './system-prompt';
-import type { AgentKind, ProfileConfig } from '../config/profile-schema';
+import type { AgentExecutionProfile, AgentKind } from '../config/profile-schema';
+import { accessToCodexSandbox } from '../config/permissions';
 
 export interface AgentBackend {
   readonly kind: AgentKind;
   readonly displayName: string;
   readonly defaultCommand: string;
   readonly commandEnv: string;
-  capability(profile: Pick<ProfileConfig, 'agentKind' | 'permissions'>): AgentCapability;
+  capability(profile: Pick<AgentExecutionProfile, 'agentKind' | 'permissions'>): AgentCapability;
   executionCapabilities(
-    profile: Pick<ProfileConfig, 'agentKind' | 'permissions'>,
+    profile: Pick<AgentExecutionProfile, 'agentKind' | 'permissions'>,
   ): AgentExecutionCapabilities;
-  launchPatch(binaryPath: string): Pick<ProfileConfig, 'claude' | 'codex' | 'pi'>;
+  launchPatch(binaryPath: string): Pick<AgentExecutionProfile, 'claude' | 'codex' | 'pi'>;
   createAdapter(input: CreateAgentAdapterInput): AgentAdapter;
 }
 
 export interface CreateAgentAdapterInput {
-  profile: ProfileConfig;
+  profile: AgentExecutionProfile;
   profileDir: string;
   env: NodeJS.ProcessEnv;
   systemPrompt: AgentSystemPrompt;
@@ -69,7 +70,7 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
         inheritCodexHome: codex.inheritCodexHome === true,
         ignoreUserConfig: codex.ignoreUserConfig === true,
         ignoreRules: codex.ignoreRules,
-        sandbox: profile.sandbox.defaultMode,
+        sandbox: profile.sandbox?.defaultMode ?? accessToCodexSandbox(profile.permissions.defaultAccess),
         env,
       });
     },
@@ -106,13 +107,13 @@ export function isAgentKind(value: string): value is AgentKind {
 }
 
 export function capabilityForProfile(
-  profile: Pick<ProfileConfig, 'agentKind' | 'permissions'>,
+  profile: Pick<AgentExecutionProfile, 'agentKind' | 'permissions'>,
 ): AgentCapability {
   return backendFor(profile.agentKind).capability(profile);
 }
 
 export function executionCapabilitiesForProfile(
-  profile: Pick<ProfileConfig, 'agentKind' | 'permissions'>,
+  profile: Pick<AgentExecutionProfile, 'agentKind' | 'permissions'>,
 ): AgentExecutionCapabilities {
   return backendFor(profile.agentKind).executionCapabilities(profile);
 }

@@ -10,6 +10,7 @@ import { createWebChatRuntime, type WebChatRuntimeOptions, type WebChatRuntime }
 import { createWebRunOutput } from './output';
 import html from './page.html';
 import { acquireHostLock } from '../../runtime/host-lock';
+import { AGENT_OPTIONS, isAgentKind } from '../../agent/backends';
 
 export interface WebChannelOptions extends Omit<WebChatRuntimeOptions, 'authorize'> {
   port?: number;
@@ -67,7 +68,22 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
   if (url.pathname === '/' && req.method === 'GET') { sendHtml(res, html); return; }
   if (!checkToken(req, url, token)) { sendJson(res, 401, { error: 'unauthorized' }); return; }
   if (closing) { sendJson(res, 503, { error: 'channel is closing' }); return; }
-  if (req.method !== 'POST' || !['/api/chat', '/api/stop', '/api/input'].includes(url.pathname)) {
+  if (req.method === 'GET' && url.pathname === '/api/engine') {
+    try {
+      const conversationId = boundedValue(url.searchParams.get('conversationId'), 'conversationId');
+      const identity = { actorId: 'local', conversationId };
+      sendJson(res, 200, {
+        agent: await runtime.agentKind(identity),
+        defaultAgent: runtime.defaultAgentKind,
+        options: AGENT_OPTIONS,
+      });
+    } catch (error) {
+      sendJson(res, error instanceof HttpError ? error.status : 400,
+        { error: error instanceof Error ? error.message : 'invalid request' });
+    }
+    return;
+  }
+  if (req.method !== 'POST' || !['/api/chat', '/api/stop', '/api/input', '/api/engine'].includes(url.pathname)) {
     sendJson(res, 404, { error: 'not found' }); return;
   }
   try {
@@ -76,10 +92,23 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
     const data = body as Record<string, unknown>;
     const required = (key: string) => {
       const value = data[key];
-      if (typeof value !== 'string' || !value.trim() || value.length > 100_000) throw new HttpError(400, `invalid ${key}`);
-      return value;
+      return boundedValue(value, key);
     };
     const identity = { actorId: 'local', conversationId: required('conversationId') };
+    if (url.pathname === '/api/engine') {
+      const agent = required('agent');
+      if (!isAgentKind(agent)) throw new HttpError(400, 'invalid agent');
+      try {
+        await runtime.setAgentKind(identity, agent);
+      } catch (error) {
+        if (error instanceof Error && /run is active/.test(error.message)) {
+          throw new HttpError(409, error.message);
+        }
+        throw error;
+      }
+      sendJson(res, 200, { agent: await runtime.agentKind(identity), defaultAgent: runtime.defaultAgentKind });
+      return;
+    }
     if (url.pathname === '/api/stop') {
       sendJson(res, 200, { stopped: await runtime.stop(identity, required('runId')) }); return;
     }
@@ -114,4 +143,11 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
       { error: error instanceof Error ? error.message : 'invalid request' });
     else throw error;
   }
+}
+
+function boundedValue(value: unknown, key: string): string {
+  if (typeof value !== 'string' || !value.trim() || value.length > 100_000) {
+    throw new HttpError(400, `invalid ${key}`);
+  }
+  return value;
 }

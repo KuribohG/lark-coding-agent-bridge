@@ -2,7 +2,7 @@ import { larkDisplay } from '../channels/lark/config';
 import { rewriteFileLinks } from '../card/file-links';
 import type { CommandContext } from '../commands';
 import { capabilityForProfile } from '../agent/backends';
-import { profileForAgentKind } from '../runtime/agent-runtime';
+import { profileForAgentKind } from '../runtime/execution-controller';
 import { modelRunArguments } from '../agent/model-settings';
 import { buildAgentPrompt } from '../agent/prompt';
 import { getAgentStopGraceMs } from '../config/schema';

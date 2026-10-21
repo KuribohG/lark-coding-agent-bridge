@@ -4,7 +4,7 @@ import { resolveAppPaths } from '../config/app-paths';
 import { ScopePreferencesStore } from '../session/scope-preferences';
 import { readModelEnvironment, resolveModelSettings, type ModelSettings } from '../agent/model-settings';
 import type { AgentKind } from '../config/profile-schema';
-import { profileForAgentKind } from './agent-runtime';
+import { profileForAgentKind } from './execution-controller';
 
 const stores = new WeakMap<object, Promise<ScopePreferencesStore>>();
 

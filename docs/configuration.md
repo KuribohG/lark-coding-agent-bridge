@@ -9,7 +9,7 @@ Execution and presentation have separate ownership:
 | Execution defaults | `defaults.run`, `agents.<kind>.run`, `profiles.<name>.run` | Built-in defaults, then global, agent, profile, conversation overrides, explicit task parameters |
 | Agent launch | `agents.<kind>.launch`, `profiles.<name>.launch` | Agent defaults, then profile overrides |
 | Feishu/Lark display | `channels.lark`, `channels.lark.profiles.<name>` | Lark defaults, then settings for that bot |
-| Browser display | `channels.web`, `channels.web.profiles.<name>` | Web defaults, then host-selected profile settings |
+| Browser display | `channels.web`, `channels.web.profiles.<name>` | Web defaults, then the selected profile |
 | Accounts, access, permissions, workspace, meetings | `profiles.<name>` | Explicit bot settings; not inherited from another bot or a conversation |
 | Monitoring | `bridge.monitors_file` | Existing `monitors.toml`, with its own validation and application rules |
 
@@ -38,10 +38,10 @@ Lark owns `reply_mode` (`markdown`, `text`, `card`), `show_tools`, `progress` (`
 For a standalone browser host:
 
 ```sh
-lark-channel-bridge web --agent codex --workspace /path/to/repo --config /path/to/config.toml
+lark-channel-bridge web --workspace /path/to/repo --config /path/to/config.toml
 ```
 
-It uses global/agent execution defaults and `channels.web`, without bootstrapping a Lark account. Standalone Web does not select a bot profile. Profile-scoped channel options are available to hosts that explicitly select that profile.
+The active TOML profile supplies the initial execution engine and `channels.web` settings; `--profile <name>` selects another profile, and `--agent <kind>` remains an optional one-run initial override. Without `--config`, Web starts with Claude Code and its own local defaults. The browser page can switch the current conversation among all three backends. Standalone Web reads execution and presentation settings only: it does not bootstrap a Lark account, resolve App Secrets, or establish a Lark connection.
 
 ## Inspecting and editing
 

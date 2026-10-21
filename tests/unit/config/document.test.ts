@@ -5,7 +5,14 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'smol-toml';
-import { documentToRoot, parseDocument, resolveRun, rootToDocument, formatDocument } from '../../../src/config/document';
+import {
+  documentToRoot,
+  formatDocument,
+  parseDocument,
+  resolveExecutionProfile,
+  resolveRun,
+  rootToDocument,
+} from '../../../src/config/document';
 import { editToml, parseKeyPath } from '../../../src/config/toml-edit';
 import { loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
 import { inspectConfig, migrateConfig, patchConfig, reloadProfile } from '../../../src/config/service';
@@ -95,6 +102,23 @@ describe('layered configuration', () => {
     expect(root.profiles.bot!.channels?.lark).toMatchObject({ show_tools: false, progress: 'detailed' });
     expect(root.profiles.bot!.channels?.web).toEqual({ show_tools: true, show_reasoning: false });
     expect(resolveRun(doc, 'codex', 'bot').sources.model).toBe('profiles.bot.run.model');
+  });
+
+  it('resolves an account-free execution profile for standalone channels', () => {
+    const doc = parseDocument(source + `
+[agents.codex.launch]
+binaryPath = "/opt/codex"
+[agents.pi.launch]
+binaryPath = "/opt/pi"
+`);
+    const execution = resolveExecutionProfile(doc, 'codex', {
+      profile: 'bot',
+      fallbackPermissions: { defaultAccess: 'workspace', maxAccess: 'workspace' },
+    });
+    expect(execution.agentKind).toBe('codex');
+    expect(execution.permissions).toEqual({ defaultAccess: 'workspace', maxAccess: 'workspace' });
+    expect(execution.codex?.binaryPath).toBe('/opt/codex');
+    expect(execution.pi?.binaryPath).toBe('/opt/pi');
   });
 
   it('distinguishes removing an override, native delegation and disabled values', () => {

@@ -11,6 +11,15 @@ export { ChannelHost } from '../channels/plugin';
 export type { ChannelPlugin, ChannelConnection } from '../channels/plugin';
 export { createConversationRuntime, ConversationRuntime } from './conversation';
 export type { ConversationRuntimeOptions, ConversationIdentity, ConversationInput } from './conversation';
+export {
+  FixedExecutionController,
+  ProfileExecutionController,
+  profileForAgentKind,
+} from './execution-controller';
+export type {
+  ExecutionController,
+  ProfileExecutionControllerOptions,
+} from './execution-controller';
 export { processAgentStream } from './run-stream';
 export { initialState, reduce, finalizeIfRunning, markInterrupted } from './run-state';
 export type { AgentSystemPrompt } from '../agent/system-prompt';

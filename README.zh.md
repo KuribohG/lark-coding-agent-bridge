@@ -13,7 +13,7 @@
 
 ## 独立 Web 聊天与渠道插件
 
-运行 `lark-channel-bridge web --agent codex --workspace /absolute/project/path --port 8787` 可启动自带的浏览器聊天入口，无需飞书账号。飞书和 Web 作为独立渠道插件，共用会话执行核心。详见[渠道架构与接入说明](docs/channels.md)。
+运行 `lark-channel-bridge web --workspace /absolute/project/path --port 8787` 可启动自带的浏览器聊天入口，无需飞书账号。指定 `--config` 时，初始引擎和 Web 展示设置来自 active profile；页面可以按 conversation 在 Claude Code、Codex CLI 和 Pi 之间切换。飞书和 Web 作为独立渠道插件，共用执行控制器和会话运行时。详见[渠道架构与接入说明](docs/channels.md)。
 
 ## 此分支的一体化安装
 
@@ -367,6 +367,8 @@ Pi 支持 `read-only`（只开放读取/搜索工具）和 `full`。Pi 没有可
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | 当前 profile 的 lark-cli 目录 |
 | `~/.lark-channel/profiles/<profile>/media/` | 附件缓存 |
 | `~/.lark-channel/profiles/<profile>/logs/` | 结构化运行日志 |
+| `~/.lark-channel/web/default/scope-execution.json` | 独立 Web 各 conversation 的执行引擎覆盖 |
+| `~/.lark-channel/web/default/sessions.catalog.json` | 独立 Web 的 agent-aware 会话索引 |
 | `~/.lark-channel/registry/processes.json` | 本机进程注册表 |
 | `~/.lark-channel/registry/locks/` | profile lock 和 app lock |
 

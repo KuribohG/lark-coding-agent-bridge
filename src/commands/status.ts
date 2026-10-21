@@ -2,7 +2,7 @@ import { modelStatus } from './model';
 import { readFile } from 'node:fs/promises';
 import { statusCard } from '../card/templates';
 import type { AgentKind, ProfileConfig } from '../config/profile-schema';
-import { accessToClaudePermissionMode } from '../config/permissions';
+import { accessToClaudePermissionMode, accessToCodexSandbox } from '../config/permissions';
 import { canRunAdminCommand } from '../policy/access';
 import { hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
 import type { CommandContext } from './types';
@@ -30,9 +30,12 @@ export function runtimeAccessStatus(
         : 'Pi tools (no OS sandbox)',
     };
   }
+  const sandbox = profileConfig.sandbox;
   return {
     label: 'sandbox',
-    value: `${profileConfig.sandbox.defaultMode}/${profileConfig.sandbox.maxMode}`,
+    value: sandbox
+      ? `${sandbox.defaultMode}/${sandbox.maxMode}`
+      : `${accessToCodexSandbox(profileConfig.permissions.defaultAccess)}/${accessToCodexSandbox(profileConfig.permissions.maxAccess)}`,
   };
 }
 

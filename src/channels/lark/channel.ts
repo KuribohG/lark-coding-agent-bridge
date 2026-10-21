@@ -15,7 +15,7 @@ import type { LarkChannel, LarkChannelOptions, NormalizedMessage } from '@larksu
 import { createLarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
 import { capabilityForProfile } from '../../agent/backends';
-import { profileForAgentKind } from '../../runtime/agent-runtime';
+import { profileForAgentKind } from '../../runtime/execution-controller';
 import { modelLabel, normalizeModelSelection, resolveModelArg } from '../../agent/models';
 import {
   buildAgentPrompt,
@@ -24,7 +24,8 @@ import {
   type BridgePromptQuotedMessage,
   type BridgePromptTopicMessage,
 } from '../../agent/prompt';
-import type { AgentAdapter, AgentBotIdentity, AgentEvent } from '../../agent/types';
+import type { AgentAdapter, AgentEvent } from '../../agent/types';
+import type { ExecutionController } from '../../runtime/execution-controller';
 import { handleCardAction } from '../../card/dispatcher';
 import { CallbackAuth } from '../../card/callback-auth';
 import { CallbackNonceStore } from '../../card/callback-store';
@@ -165,12 +166,7 @@ export interface BridgeChannel {
 
 export interface StartChannelDeps {
   cfg: AppConfig;
-  /** Profile default adapter. */
-  agent: AgentAdapter;
-  resolveAgent?(scope: string): AgentAdapter;
-  resolveAgentKind?(scope: string): AgentKind;
-  setAgentIdentity?(identity: AgentBotIdentity): void;
-  setAgentKind?(scope: string, kind: AgentKind): Promise<void>;
+  execution: ExecutionController;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
@@ -179,9 +175,10 @@ export interface StartChannelDeps {
 }
 
 export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
-  const { cfg, agent, sessions, sessionCatalog, workspaces, controls } = deps;
-  const resolveAgent = deps.resolveAgent ?? (() => agent);
-  const resolveAgentKind = deps.resolveAgentKind ?? (() => controls.profileConfig.agentKind);
+  const { cfg, execution, sessions, sessionCatalog, workspaces, controls } = deps;
+  const resolveAgent = (scope: string) => execution.get(scope);
+  const resolveAgentKind = (scope: string) => execution.kindFor(scope);
+  const setAgentKind = (scope: string, kind: AgentKind) => execution.setScopeKind(scope, kind);
   const activeRuns = new ActiveRuns();
   const followups = new FollowupRouter();
   const batchControllers = new Map<string, AbortController>();
@@ -409,7 +406,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           channel,
           resolveAgent,
           resolveAgentKind,
-          setAgentKind: deps.setAgentKind,
+          setAgentKind,
           sessions,
           sessionCatalog,
           workspaces,
@@ -438,7 +435,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           activeRuns,
           resolveAgent,
           resolveAgentKind,
-          setAgentKind: deps.setAgentKind,
+          setAgentKind,
           processPool: pool,
           runExecutor: executor,
           controls,
@@ -558,15 +555,16 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   // prompt can state "this open_id is you" with the real value. Covers both
   // initial start and credential-swap reconnects (both go through here).
   if (identity?.openId) {
-    agent.setBotIdentity?.({
+    execution.setBotIdentity({
       openId: identity.openId,
       ...(identity.name ? { name: identity.name } : {}),
     });
   }
+  const defaultAgent = execution.defaultAgent();
   log.info('ws', 'connected', {
     bot: identity?.name ?? 'unknown',
     openId: identity?.openId ?? '-',
-    agent: `${agent.displayName} (${agent.id})`,
+    agent: `${defaultAgent.displayName} (${defaultAgent.id})`,
     appId: cfg.accounts.app.id,
     procId: controls.processId,
   });

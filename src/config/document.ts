@@ -1,5 +1,16 @@
 import { parse, stringify, TomlError } from 'smol-toml';
-import { normalizeProfileConfig, type RootConfig, type ProfileConfig, type AgentKind } from './profile-schema';
+import {
+  normalizeProfileConfig,
+  type AgentExecutionProfile,
+  type AgentKind,
+  type ProfileConfig,
+  type RootConfig,
+} from './profile-schema';
+import {
+  normalizePermissions,
+  permissionsToLegacySandbox,
+  type PermissionConfig,
+} from './permissions';
 import { larkDisplay } from '../channels/lark/config';
 import { WEB_DISPLAY_DEFAULTS } from '../channels/web/config';
 import { normalizeFileLinks } from './file-links';
@@ -197,6 +208,74 @@ export function resolveRun(doc: ConfigDocument, agent: AgentKind, profile?: stri
     preferences[internal] = typeof run[key] === 'object' ? undefined : run[key];
   }
   return { preferences, sources };
+}
+
+export interface ResolveExecutionProfileOptions {
+  profile?: string;
+  fallbackPermissions?: PermissionConfig;
+}
+
+/**
+ * Select the engine and engine launch metadata without requiring a Lark
+ * account. Used by channel hosts that need the shared execution runtime but
+ * do not own a Feishu bot binding.
+ */
+export function resolveExecutionProfile(
+  doc: ConfigDocument,
+  agentKind: AgentKind,
+  options: ResolveExecutionProfileOptions = {},
+): AgentExecutionProfile {
+  const profile = options.profile ? doc.profiles[options.profile] : undefined;
+  if (options.profile && !profile) throw new Error(`profile not found: ${options.profile}`);
+  const configuredPermissions = profile?.permissions !== undefined || profile?.sandbox !== undefined;
+  const permissions = configuredPermissions
+    ? normalizePermissions({ permissions: profile?.permissions, sandbox: profile?.sandbox }).permissions
+    : options.fallbackPermissions ?? { defaultAccess: 'full', maxAccess: 'full' };
+  const launchFor = (kind: AgentKind) => ({
+    ...(doc.agents?.[kind]?.launch ?? {}),
+    ...(profile?.agent === kind ? profile.launch ?? {} : {}),
+  });
+
+  const claudeLaunch = launchFor('claude');
+  const codexLaunch = launchFor('codex');
+  const piLaunch = launchFor('pi');
+  return {
+    agentKind,
+    permissions,
+    sandbox: permissionsToLegacySandbox(permissions),
+    ...(claudeLaunch.binaryPath ? { claude: { binaryPath: claudeLaunch.binaryPath } } : {}),
+    ...(codexLaunch.binaryPath || agentKind === 'codex'
+      ? {
+          codex: {
+            binaryPath: codexLaunch.binaryPath ?? 'codex',
+            transport: 'app-server' as const,
+            ...(typeof codexLaunch.codexHome === 'string' ? { codexHome: codexLaunch.codexHome } : {}),
+            ...(typeof codexLaunch.inheritCodexHome === 'boolean'
+              ? { inheritCodexHome: codexLaunch.inheritCodexHome }
+              : {}),
+            ignoreUserConfig: false,
+            ignoreRules: false,
+            ...(typeof codexLaunch.realpath === 'string' ? { realpath: codexLaunch.realpath } : {}),
+            ...(typeof codexLaunch.version === 'string' ? { version: codexLaunch.version } : {}),
+            ...(typeof codexLaunch.sha256 === 'string' ? { sha256: codexLaunch.sha256 } : {}),
+            ...(typeof codexLaunch.owner === 'number' ? { owner: codexLaunch.owner } : {}),
+            ...(typeof codexLaunch.mode === 'number' ? { mode: codexLaunch.mode } : {}),
+          },
+        }
+      : {}),
+    ...(piLaunch.binaryPath || agentKind === 'pi'
+      ? {
+          pi: {
+            binaryPath: piLaunch.binaryPath ?? 'pi',
+            ...(typeof piLaunch.realpath === 'string' ? { realpath: piLaunch.realpath } : {}),
+            ...(typeof piLaunch.version === 'string' ? { version: piLaunch.version } : {}),
+            ...(typeof piLaunch.sha256 === 'string' ? { sha256: piLaunch.sha256 } : {}),
+            ...(typeof piLaunch.owner === 'number' ? { owner: piLaunch.owner } : {}),
+            ...(typeof piLaunch.mode === 'number' ? { mode: piLaunch.mode } : {}),
+          },
+        }
+      : {}),
+  };
 }
 
 export function resolveChannels(doc: ConfigDocument, profile?: string) {

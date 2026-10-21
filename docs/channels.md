@@ -26,20 +26,28 @@ not download or execute plugin names from chat messages or browser requests.
 ## Run the bundled Web channel
 
 ```sh
+lark-channel-bridge web --workspace /absolute/project/path --port 8787
+# optional initial engine override
 lark-channel-bridge web --agent codex --workspace /absolute/project/path --port 8787
-# or
-lark-channel-bridge web --agent claude --workspace /absolute/project/path --port 8787
 ```
 
 Open the printed URL. No Lark account, app secret, Lark profile, Lark CLI binding
 or Lark WebSocket connection is required. An installed, authenticated agent CLI
-is still required. `--binary`, `--model` and `--state-dir` customize that host.
+is still required. With `--config`, the active profile supplies the initial
+backend and `channels.web` display settings; `--profile` selects another profile
+and `--agent` remains an optional initial override. `--binary`, `--model` and
+`--state-dir` customize that host.
 This command starts browser chat; `run --web-ui` still starts the existing Lark
 profile management console.
 
 The page supports new conversations, streamed progress and final answers,
 supplemental input when supported by the selected agent, and stopping the active
-run. The server persists native session IDs; the browser keeps its conversation
+run. It also switches an idle conversation between Claude Code, Codex CLI and Pi,
+subject to the selected profile's permission compatibility (Pi requires
+`read-only` or `full` and cannot emulate a workspace-only sandbox).
+Each engine has an isolated native-session key, so switching away and back can
+resume the matching backend without passing a Claude session to Pi or Codex. The
+server persists native session IDs; the browser keeps its conversation
 ID and displayed transcript locally. Use the same URL origin, state directory
 and workspace to continue after a restart. A workspace or policy change starts
 a fresh native session. Transcript history is browser-local, not a synchronized
@@ -65,7 +73,8 @@ Public package entry points:
 A new IM plugin owns its SDK, credentials, incoming-message normalization,
 authentication, channel-specific UI and connection lifecycle. It creates a
 `ConversationRuntime` with its `channelId`, instance `namespace`, private
-`stateDir`, `RunProfileConfig`, agent adapter and `authorize` callback. That
+`stateDir`, `RunProfileConfig`, shared `ExecutionController` and `authorize`
+callback. That
 configuration needs no messaging account. Its inbound handler calls:
 
 ```ts
