@@ -1,4 +1,4 @@
-import { availableEfforts, type ModelEnvironment, type ModelSettings, type ResolvedModelSettings } from '../agent/model-settings';
+import { reasoningEffortOptions, type ModelEnvironment, type ModelSettings, type ResolvedModelSettings } from '../agent/model-settings';
 import type { AgentKind } from '../config/profile-schema';
 
 export function modelSettingsSummary(settings: ResolvedModelSettings): string {
@@ -31,8 +31,8 @@ export function modelFormCard(input: {
         ] },
         { tag: 'markdown', content: '**思考强度**（保存时按所选模型校验）' },
         { tag: 'select_static', name: 'reasoning_effort', initial_option: input.overrides.reasoningEffort ?? 'default', options:
-          ['default', ...availableEfforts(input.agentKind)].map((value) => ({
-            text: { tag: 'plain_text', content: value === 'default' ? '跟随 bot 默认' : value }, value,
+          reasoningEffortOptions(input.agentKind).map(({ value, label }) => ({
+            text: { tag: 'plain_text', content: label }, value,
           })),
         },
         { tag: 'button', name: 'save', type: 'primary', form_action_type: 'submit',

@@ -8,11 +8,17 @@ import { supportedModels, validateModelId, type ModelOption } from './models';
 
 export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
-const CODEX_EFFORTS: string[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-const CLAUDE_EFFORTS: string[] = ['low', 'medium', 'high', 'xhigh', 'max'];
-const PI_EFFORTS: string[] = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+const AGENT_EFFORTS: Record<AgentKind, readonly ReasoningEffort[]> = {
+  codex: REASONING_EFFORTS,
+  claude: ['low', 'medium', 'high', 'xhigh', 'max'],
+  pi: ['minimal', 'low', 'medium', 'high', 'xhigh'],
+};
 /** Strongest tier. Claude maps it to ultracode (xhigh + standing workflow orchestration), offered only to deadline-bounded runs. */
 export const ULTRA_EFFORT = 'ultra';
+export interface ReasoningEffortOption {
+  value: string;
+  label: string;
+}
 export interface ModelSettings {
   model?: string;
   reasoningEffort?: ReasoningEffort;
@@ -36,13 +42,19 @@ export function parseEffort(value: unknown, agentKind: AgentKind, opts: { timedR
 }
 
 export function availableEfforts(agentKind: AgentKind, model?: ModelOption): string[] {
-  return model?.reasoningEfforts ?? [
-    ...(agentKind === 'claude' ? CLAUDE_EFFORTS : agentKind === 'pi' ? PI_EFFORTS : CODEX_EFFORTS),
-  ];
+  return model?.reasoningEfforts ?? [...AGENT_EFFORTS[agentKind]];
 }
 
 export function timedRunEfforts(agentKind: AgentKind): string[] {
-  return agentKind === 'claude' ? [...CLAUDE_EFFORTS, ULTRA_EFFORT] : availableEfforts(agentKind);
+  return agentKind === 'claude' ? [...AGENT_EFFORTS.claude, ULTRA_EFFORT] : availableEfforts(agentKind);
+}
+
+/** Shared selector options for every chat-facing reasoning-effort setting. */
+export function reasoningEffortOptions(agentKind: AgentKind, model?: ModelOption): ReasoningEffortOption[] {
+  return [
+    { value: 'default', label: '跟随上层默认' },
+    ...availableEfforts(agentKind, model).map((value) => ({ value, label: value })),
+  ];
 }
 
 /** Validate the combined settings; unknown provider models remain usable. */

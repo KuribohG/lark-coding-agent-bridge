@@ -1,4 +1,4 @@
-import { availableEfforts } from '../agent/model-settings';
+import { reasoningEffortOptions } from '../agent/model-settings';
 import { modelLabel, type ModelOption } from '../agent/models';
 import { AGENT_OPTIONS } from '../agent/backends';
 import type { KnownChat } from '../bot/lark-info';
@@ -54,7 +54,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
     note('仅修改当前聊天/话题；下一条消息使用新引擎。Profile 默认引擎在本地网页配置页修改。');
     input('model', '**Profile 默认模型**（当前上下文请用 `/model`）', opts.model);
     select('reasoning_effort', '**思考强度**', opts.reasoningEffort ?? 'default',
-      ['default', 'inherit', ...availableEfforts(opts.agentKind)].map(v => [v, v === 'inherit' ? '恢复继承' : v === 'default' ? '未设置' : v]));
+      reasoningEffortOptions(opts.agentKind).map(({ value, label }) => [value, label]));
     input('max_concurrent_runs', '**此 bot 并发上限**（1–50，inherit 恢复继承）', String(opts.maxConcurrentRuns));
     input('run_idle_timeout_minutes', '**无输出超时**（分钟，0 关闭，inherit 恢复继承）', String(opts.runIdleTimeoutMinutes));
   } else if (section === 'lark') {

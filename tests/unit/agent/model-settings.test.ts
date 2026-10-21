@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { availableEfforts, modelRunArguments, parseEffort, readModelEnvironment, resolveModelSettings, timedRunEfforts } from '../../../src/agent/model-settings';
+import { availableEfforts, modelRunArguments, parseEffort, readModelEnvironment, reasoningEffortOptions, REASONING_EFFORTS, resolveModelSettings, timedRunEfforts } from '../../../src/agent/model-settings';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createTmpProfile } from '../../helpers/tmp-profile';
 
@@ -38,6 +38,14 @@ describe('model settings resolution', () => {
     expect(parseEffort('ultra', 'codex')).toBe('ultra');
     expect(parseEffort('ultra', 'codex', { timedRun: true })).toBe('ultra');
     expect(() => parseEffort('ultracode', 'claude', { timedRun: true })).toThrow('不支持');
+  });
+
+  it('derives the Codex list and common selector options from one effort enum', () => {
+    expect(availableEfforts('codex')).toEqual(REASONING_EFFORTS);
+    expect(reasoningEffortOptions('codex')).toEqual([
+      { value: 'default', label: '跟随上层默认' },
+      ...REASONING_EFFORTS.map((value) => ({ value, label: value })),
+    ]);
   });
 
   it('reads a profile-local Codex catalog and tolerates a corrupt optional cache', async () => {
