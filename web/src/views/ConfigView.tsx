@@ -145,7 +145,7 @@ export function ConfigView({ profile }: { profile: string }) {
           <Button variant="outline" disabled={saving} onClick={() => save(["model", "reasoningEffort", "maxConcurrentRuns", "runIdleTimeoutMinutes"])}>恢复继承</Button>
         </CardHeader>
         <CardContent className="space-y-4">
-          <Field label="执行引擎" hint="切换后会停止当前任务、清除模型与思考强度，并重连此 profile。">
+          <Field label="Profile 默认执行引擎" hint="新聊天默认继承此引擎。飞书 /config run 可为单个聊天或话题覆盖；切换 profile 默认值会重连。">
             <SelectRow value={cfg.agentKind} onChange={(v) => set("agentKind", v as ConfigData["agentKind"])}
               options={cfg.agents.map((agent): [string, string] => [agent.value, agent.label])} />
           </Field>
