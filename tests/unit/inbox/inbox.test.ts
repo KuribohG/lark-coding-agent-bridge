@@ -430,7 +430,17 @@ describe('H5 authentication and model capabilities', () => {
     const request = vi.fn(async (url: string | URL | Request) => new Response(JSON.stringify(String(url).includes('ticket') ? { code: 0, data: { ticket: 'ticket', expire_in: 7200 } }
       : String(url).includes('user_info') ? { code: 0, data: { open_id: owner } }
         : String(url).includes('oauth/token') ? { code: 0, access_token: 'ephemeral' } : { code: 0, tenant_access_token: 'tenant' }), { headers: { 'content-type': 'application/json' } }));
-    return { request, auth: new InboxH5Auth('cli_app', 'secret', 'ou_owner', 'https://example.com/assistant/', 'feishu', request) };
+    return {
+      request,
+      auth: new InboxH5Auth({
+        appId: 'cli_app',
+        appSecret: 'secret',
+        ownerOpenId: 'ou_owner',
+        publicUrl: 'https://example.com/assistant/',
+        tenant: 'feishu',
+        request,
+      }),
+    };
   }
   it('signs only the configured page, caches tickets, never exposes ticket or secret', async () => {
     const { auth, request } = fakeAuth(); await expect(auth.bootstrap('https://evil.test/assistant/')).rejects.toThrow('非法');

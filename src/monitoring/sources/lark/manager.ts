@@ -7,6 +7,8 @@ import { withConfigFileLock } from '../../../config/profile-store';
 import { loadMonitorRoot, saveMonitorRoot, monitorConfigPath, larkConfigRevision, concurrencyConfigRevision } from '../../store';
 import { parseWorkItemConcurrency } from '../../../work-items/concurrency';
 import { resolveAppSecret } from '../../../config/secret-resolver';
+import { larkCallbackSigningKeys } from '../../../lark-auth/callback-key';
+import { TenantTokenProvider } from '../../../lark-auth/tenant-token';
 import { getCotMessages } from '../../../config/schema';
 import { CotClient } from '../../../bot/cot';
 import { inboxMode, intakeScope, normalizeInbox, validateInbox, type InboxConfig, type InboxMode, type IntakeScope } from '../../../inbox/config';
@@ -259,7 +261,17 @@ export class InboxManager {
         } finally { signal.removeEventListener('abort', cancel); reader.close(); }
       }, config.ownerOpenId);
       const secret = await resolveAppSecret(controls.cfg, paths);
-      const cotClient = new CotClient({ tenant: controls.cfg.accounts.app.tenant, appId: controls.cfg.accounts.app.id, appSecret: secret });
+      const tenantTokens = new TenantTokenProvider({
+        tenant: controls.cfg.accounts.app.tenant,
+        appId: controls.cfg.accounts.app.id,
+        appSecret: secret,
+      });
+      const cotClient = new CotClient({
+        tenant: controls.cfg.accounts.app.tenant,
+        appId: controls.cfg.accounts.app.id,
+        appSecret: secret,
+        tenantTokens,
+      });
       this.service = new InboxService(new InboxStore(join(folder, 'state.json')), config, larkRuntime(config, {
         selfSenderIds: [controls.cfg.accounts.app.id, controls.botIdentity?.openId].filter((id): id is string => Boolean(id)),
         cancel: () => lark.close(),
@@ -284,7 +296,10 @@ export class InboxManager {
       }), Date.now, this.sources.queue, this.sources.triageQueue);
       this.nonces = new CallbackNonceStore(join(folder, 'card-nonces.json'));
       await this.nonces.load();
-      const cards = new InboxCards(this.service, lark, new CallbackAuth({ keys: [{ version: 1, secret }], nonceStore: this.nonces }), this.nonces);
+      const cards = new InboxCards(this.service, lark, new CallbackAuth({
+        keys: larkCallbackSigningKeys(secret),
+        nonceStore: this.nonces,
+      }), this.nonces);
       this.cards = cards;
       lark.reminderCard = (job, content) => cards.reminder(job, content);
       await this.service.start();
@@ -295,7 +310,14 @@ export class InboxManager {
         await this.gui.start();
       }
       if (config.h5.publicUrl) {
-        const auth = new InboxH5Auth(controls.cfg.accounts.app.id, secret, config.ownerOpenId, config.h5.publicUrl, controls.cfg.accounts.app.tenant);
+        const auth = new InboxH5Auth({
+          appId: controls.cfg.accounts.app.id,
+          appSecret: secret,
+          ownerOpenId: config.ownerOpenId,
+          publicUrl: config.h5.publicUrl,
+          tenant: controls.cfg.accounts.app.tenant,
+          tenantTokens,
+        });
         this.h5 = await startInboxH5(this.service, auth);
       }
       this.fingerprint = fingerprint; this.error = undefined;

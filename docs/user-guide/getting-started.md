@@ -46,6 +46,8 @@ run-lark-cc
 
 | 命令 | 用途 |
 | --- | --- |
+| `lark-channel-bridge run --profile codex` | 容器内无界面前台运行；推荐由容器或外部进程管理器负责重启 |
+| `lark-channel-bridge start --profile codex` | 注册为系统服务并在后台运行 |
 | `run-lark-cc` | 后台启动本地控制台；已有可验证的实例时打开它 |
 | `run-lark-cc --profile work` | 选择名为 work 的 profile |
 | `run-lark-cc fg` | 前台运行，适合容器；Ctrl-C 退出 |
@@ -54,6 +56,33 @@ run-lark-cc
 | `run-lark-cc status` | 查看控制台及 profile 状态 |
 
 `run-lark-cc` 的后台模式不提供开机自启或崩溃重启。系统服务和无界面运行方式见[运行维护](operations.md)。不要让两个独立进程同时连接同一个飞书应用。
+
+不需要本地网页控制台时，推荐直接使用标准 CLI，不再通过自定义 shell
+wrapper 在每次启动前写入 App Secret：
+
+```bash
+lark-channel-bridge run --profile codex
+```
+
+App Secret 应保存在 profile 配置引用的 `env`、`file`、`exec` 来源中。配置
+已经使用 v2 keystore 时，上述命令会直接读取它；容器重启不会因为 hostname
+变化重新加密。源码目录尚未全局安装时，可执行
+`node bin/lark-channel-bridge.mjs run --profile codex`。
+
+容器挂载只读 Secret 时，推荐让配置直接引用文件：
+
+```toml
+[profiles.codex.accounts.app]
+id = "cli_xxx"
+tenant = "feishu"
+secret = { source = "file", id = "/run/secrets/feishu_app_secret" }
+```
+
+然后由容器的进程管理器执行并负责重启：
+
+```bash
+exec lark-channel-bridge run --profile codex
+```
 
 执行引擎不再要求写在启动参数里。Web 控制台的执行配置设置 profile 默认引擎；在飞书 `/config run` 中选择的引擎只作用于当前聊天或话题，下一条消息直接切换，不需要重连。
 

@@ -1,14 +1,48 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { TenantTokenProvider } from '../lark-auth/tenant-token';
 import { obj } from './values';
 
+export interface InboxH5AuthOptions {
+  appId: string;
+  appSecret: string;
+  ownerOpenId: string;
+  publicUrl: string;
+  tenant: 'feishu' | 'lark';
+  request?: typeof fetch;
+  now?: () => number;
+  tenantTokens?: TenantTokenProvider;
+}
+
 export class InboxH5Auth {
+  private readonly appId: string;
+  private readonly secret: string;
+  private readonly owner: string;
+  readonly publicUrl: string;
+  private readonly brand: 'feishu' | 'lark';
+  private readonly request: typeof fetch;
+  private readonly now: () => number;
+  private readonly tenantTokens: TenantTokenProvider;
   private ticket?: { value: string; expires: number };
   private ticketPending?: Promise<string>;
   private challenges = new Map<string, number>();
   private sessions = new Map<string, number>();
   private requests: number[] = [];
-  constructor(readonly appId: string, private secret: string, private owner: string,
-    readonly publicUrl: string, private brand: 'feishu' | 'lark', private request = fetch, private now = Date.now) {}
+  constructor(options: InboxH5AuthOptions) {
+    this.appId = options.appId;
+    this.secret = options.appSecret;
+    this.owner = options.ownerOpenId;
+    this.publicUrl = options.publicUrl;
+    this.brand = options.tenant;
+    this.request = options.request ?? fetch;
+    this.now = options.now ?? Date.now;
+    this.tenantTokens = options.tenantTokens ?? new TenantTokenProvider({
+      tenant: options.tenant,
+      appId: options.appId,
+      appSecret: options.appSecret,
+      request: this.request,
+      now: this.now,
+    });
+  }
   private get host() { return this.brand === 'lark' ? 'https://open.larksuite.com' : 'https://open.feishu.cn'; }
   private async api(path: string, body?: unknown, token?: string) {
     const r = await this.request(this.host + path, { method: body ? 'POST' : 'GET', signal: AbortSignal.timeout(15_000),
@@ -28,8 +62,8 @@ export class InboxH5Auth {
     if (this.ticket && this.ticket.expires > this.now()) return this.ticket.value;
     if (this.ticketPending) return this.ticketPending;
     this.ticketPending = (async () => {
-      const auth = await this.api('/open-apis/auth/v3/tenant_access_token/internal', { app_id: this.appId, app_secret: this.secret });
-      const data = obj((await this.api('/open-apis/jssdk/ticket/get', {}, String(auth.tenant_access_token))).data);
+      const token = await this.tenantTokens.getToken();
+      const data = obj((await this.api('/open-apis/jssdk/ticket/get', {}, token)).data);
       if (typeof data.ticket !== 'string' || typeof data.expire_in !== 'number') throw new Error('invalid JSAPI ticket');
       this.ticket = { value: data.ticket, expires: this.now() + Math.max(0, data.expire_in - 60) * 1000 };
       return data.ticket;

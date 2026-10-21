@@ -108,6 +108,34 @@ provide authenticated identity, per-conversation authorization and workspace
 isolation in that host; do not take `actorId` or filesystem paths from its JSON
 request body.
 
+## Lark authentication boundaries
+
+Lark credentials and protocol tokens have separate owners:
+
+- A profile's `SecretRef` resolves the long-lived App Secret from the encrypted
+  keystore, an environment variable, a mounted file or an exec provider.
+- `TenantTokenProvider` is the only component that exchanges App ID and App
+  Secret for a short-lived tenant token. It single-flights refreshes and caches
+  the token until shortly before expiry. CoT, H5 ticket acquisition and
+  credential validation all consume this provider.
+- Card callback signatures use a purpose-specific key derived from the App
+  Secret. Version 1 remains verify-only for cards issued before the refactor;
+  new cards use the active derived key.
+- Lark user OAuth remains owned by `lark-cli`; it is not derived from or mixed
+  with the application tenant token.
+
+Launch scripts therefore do not need to inject credentials before every
+command. A container should provide them through its secret manager and run the
+canonical CLI in the foreground:
+
+```sh
+lark-channel-bridge run --profile codex
+```
+
+For a source checkout, run `node bin/lark-channel-bridge.mjs run --profile
+codex` after building. Use the bundled `run-lark-cc` launcher only when the local
+Web management console is wanted.
+
 ## Lark compatibility and verification
 
 Existing Lark profile launchers continue through a compatibility entry point to

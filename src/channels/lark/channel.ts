@@ -41,6 +41,8 @@ import {
   getRunIdleTimeoutMs,
 } from '../../config/schema';
 import { resolveAppSecret } from '../../config/secret-resolver';
+import { larkCallbackSigningKeys } from '../../lark-auth/callback-key';
+import { TenantTokenProvider } from '../../lark-auth/tenant-token';
 import { log, reportMetric, withTrace } from '../../core/logger';
 import { MediaCache, type LocalAttachment } from '../../media/cache';
 import { toPolicyAttachment, toPromptAttachment } from '../../media/attachment';
@@ -206,7 +208,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   await callbackNonceStore?.load();
   const callbackAuth = callbackNonceStore
     ? new CallbackAuth({
-        keys: [{ version: 1, secret: appSecret }],
+        keys: larkCallbackSigningKeys(appSecret),
         nonceStore: callbackNonceStore,
       })
     : undefined;
@@ -215,10 +217,16 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   // switch can inject a one-time "model changed" note into the next (resumed)
   // prompt. In-memory only: on restart the first run re-seeds silently.
   const lastRunModelByScope = new Map<string, string>();
+  const tenantTokens = new TenantTokenProvider({
+    tenant: cfg.accounts.app.tenant,
+    appId: cfg.accounts.app.id,
+    appSecret,
+  });
   const cotClient = new CotClient({
     tenant: cfg.accounts.app.tenant,
     appId: cfg.accounts.app.id,
     appSecret,
+    tenantTokens,
   });
   const threadModeOverrideWarnedChats = new Set<string>();
   const logThreadModeOverride: LogThreadModeOverride = ({ chatId, resolvedMode, threadId }) => {

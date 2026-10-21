@@ -29,6 +29,16 @@ run-lark-cc
 
 The launcher starts the local GUI in the background; complete first-run setup in your browser. Use `run-lark-cc fg` in a foreground container, `ui` to open the console, `status` to inspect it, `stop` to stop the supervisor, and `log` for startup logs. A profile stores its default execution engine (Claude Code, Codex CLI, or Pi Coding Agent); `/config run` overrides the engine only for the current chat or topic, while the Web profile configuration changes the default. The inbox is off until you authorize it and configure a destination and a Responses API provider. A personal Claude, Codex, or Pi profile can execute deep analysis; Responses screening can use an independent model API service; existing Codex profile routing remains compatible. New installs inherit the configured execution model; legacy Codex inbox configs keep their Flash model until explicitly changed. See [model services](docs/model-services.md) and [inbox setup](docs/inbox-assistant.md) for configuration.
 
+For a headless bot without the local management console, run the standard CLI:
+
+```bash
+lark-channel-bridge run --profile codex
+```
+
+Provide the App Secret through the profile's `SecretRef` (`env`, mounted `file`,
+or an `exec` provider). Once credentials use the v2 keystore, startup does not
+need to rewrite them.
+
 See the [deployment guide](docs/self-contained.md) for prerequisites, SSH forwarding, upgrades, and optional remote workbenches. The upstream npm package mentioned below may not include this fork's changes.
 
 ## What it does

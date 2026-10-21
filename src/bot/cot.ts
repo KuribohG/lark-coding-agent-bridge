@@ -4,11 +4,10 @@ import type { CotMessagesMode, TenantBrand } from '../config/schema';
 import { log } from '../core/logger';
 import { toolHeaderText } from '../card/tool-render';
 import type { RunState } from '../card/run-state';
-
-const ENDPOINTS: Record<TenantBrand, string> = {
-  feishu: 'https://open.feishu.cn',
-  lark: 'https://open.larksuite.com',
-};
+import {
+  TenantTokenProvider,
+  larkOpenApiOrigin,
+} from '../lark-auth/tenant-token';
 
 const COT_UPDATE_THROTTLE_MS = 600;
 const COT_TOOL_OUTPUT_MAX = 1200;
@@ -20,35 +19,20 @@ const COT_REQUEST_TIMEOUT_MS = 15_000;
 
 export class CotClient {
   private readonly baseUrl: string;
-  private readonly appId: string;
-  private readonly appSecret: string;
-  private token: string | undefined;
-  private tokenExpiresAt = 0;
+  private readonly tenantTokens: TenantTokenProvider;
 
-  constructor(opts: { tenant: TenantBrand; appId: string; appSecret: string }) {
-    this.baseUrl = ENDPOINTS[opts.tenant];
-    this.appId = opts.appId;
-    this.appSecret = opts.appSecret;
+  constructor(opts: {
+    tenant: TenantBrand;
+    appId: string;
+    appSecret: string;
+    tenantTokens?: TenantTokenProvider;
+  }) {
+    this.baseUrl = larkOpenApiOrigin(opts.tenant);
+    this.tenantTokens = opts.tenantTokens ?? new TenantTokenProvider(opts);
   }
 
   async tenantToken(): Promise<string> {
-    const now = Date.now();
-    if (this.token && this.tokenExpiresAt - now > 60_000) return this.token;
-    const resp = await fetch(`${this.baseUrl}/open-apis/auth/v3/tenant_access_token/internal`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ app_id: this.appId, app_secret: this.appSecret }),
-      signal: AbortSignal.timeout(COT_REQUEST_TIMEOUT_MS),
-    });
-    if (!resp.ok) throw new Error(`tenant token HTTP ${resp.status}`);
-    const data = await resp.json() as { code?: number; msg?: string; tenant_access_token?: string; expire?: number };
-    if (data.code !== 0 || !data.tenant_access_token) {
-      throw new Error(`tenant token failed: code=${data.code ?? '?'} msg=${data.msg ?? '<no msg>'}`);
-    }
-    this.token = data.tenant_access_token;
-    const expireSeconds = typeof data.expire === 'number' ? data.expire : 7200;
-    this.tokenExpiresAt = now + Math.max(60, expireSeconds - 60) * 1000;
-    return this.token;
+    return this.tenantTokens.getToken();
   }
 
   async request(path: string, init: RequestInit = {}): Promise<Record<string, unknown>> {

@@ -1,21 +1,15 @@
 import type { TenantBrand } from '../config/schema';
-
-const ENDPOINTS: Record<TenantBrand, string> = {
-  feishu: 'https://open.feishu.cn',
-  lark: 'https://open.larksuite.com',
-};
+import {
+  TenantTokenError,
+  TenantTokenProvider,
+  larkOpenApiOrigin,
+} from '../lark-auth/tenant-token';
 
 export interface ValidationResult {
   ok: boolean;
   reason?: string;
   botName?: string;
   botOpenId?: string;
-}
-
-interface TokenResp {
-  code?: number;
-  msg?: string;
-  tenant_access_token?: string;
 }
 
 interface BotInfoResp {
@@ -36,31 +30,32 @@ export async function validateAppCredentials(
   appSecret: string,
   tenant: TenantBrand,
 ): Promise<ValidationResult> {
-  const base = ENDPOINTS[tenant];
-  let resp: Response;
+  const base = larkOpenApiOrigin(tenant);
+  let token: string;
   try {
-    resp = await fetch(`${base}/open-apis/auth/v3/tenant_access_token/internal`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
-    });
+    token = await new TenantTokenProvider({ tenant, appId, appSecret }).getToken();
   } catch (err) {
-    return { ok: false, reason: `网络错误：${err instanceof Error ? err.message : String(err)}` };
-  }
-  if (!resp.ok) return { ok: false, reason: `HTTP ${resp.status}` };
-
-  let data: TokenResp;
-  try {
-    data = (await resp.json()) as TokenResp;
-  } catch {
-    return { ok: false, reason: '响应不是合法 JSON' };
-  }
-  if (data.code !== 0 || !data.tenant_access_token) {
-    return { ok: false, reason: `code=${data.code ?? '?'} msg=${data.msg ?? '<no msg>'}` };
+    return { ok: false, reason: validationFailureReason(err) };
   }
 
-  const info = await fetchBotInfo(base, data.tenant_access_token).catch(() => undefined);
+  const info = await fetchBotInfo(base, token).catch(() => undefined);
   return { ok: true, botName: info?.bot?.app_name, botOpenId: info?.bot?.open_id };
+}
+
+function validationFailureReason(err: unknown): string {
+  if (err instanceof TenantTokenError) {
+    switch (err.kind) {
+      case 'network':
+        return `网络错误：${err.message}`;
+      case 'http':
+        return `HTTP ${err.details.status ?? '?'}`;
+      case 'invalid-json':
+        return '响应不是合法 JSON';
+      case 'api':
+        return `code=${err.details.code ?? '?'} msg=${err.details.apiMessage ?? '<no msg>'}`;
+    }
+  }
+  return err instanceof Error ? err.message : String(err);
 }
 
 async function fetchBotInfo(base: string, token: string): Promise<BotInfoResp | undefined> {
