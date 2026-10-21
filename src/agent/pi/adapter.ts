@@ -242,18 +242,23 @@ async function* createEventStream(
   }
 
   const translator = new PiRunTranslator();
-  for await (const line of readPiJsonLines(child.stdout)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(trimmed);
-    } catch {
-      continue;
+  try {
+    for await (const line of readPiJsonLines(child.stdout.iterator({ destroyOnReturn: false }))) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(trimmed);
+      } catch {
+        continue;
+      }
+      const events = translator.translate(parsed);
+      for (const event of events) yield event;
+      if (translator.terminalEmitted()) return;
     }
-    const events = translator.translate(parsed);
-    for (const event of events) yield event;
-    if (translator.terminalEmitted()) return;
+  } finally {
+    // Pi can still flush output after a terminal event or consumer return.
+    child.stdout.resume();
   }
 
   const exitCode = await new Promise<number | null>((resolve) => {

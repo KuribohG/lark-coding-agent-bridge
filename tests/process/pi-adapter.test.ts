@@ -126,6 +126,22 @@ describe('PiAdapter process contract', () => {
     ]);
     expect((events[1] as { message: string }).message).toContain('provider down');
   });
+
+  it('lets Pi flush trailing output after the consumer stops at done', async () => {
+    const harness = await createFakePi([
+      { type: 'session', id: 'sess-trailing' },
+      { type: 'agent_settled', aborted: false },
+    ], { trailingBytes: 256 * 1024 });
+    dirs.push(harness.dir);
+    const run = new PiAdapter({ binary: harness.binary }).run({
+      runId: 'pi-trailing', prompt: 'hello', cwd: harness.dir,
+    });
+    for await (const event of run.events) {
+      if (event.type === 'done') break;
+    }
+    expect(await run.waitForExit(3000)).toBe(true);
+    expect(await readFile(join(harness.dir, 'clean-exit'), 'utf8')).toBe('ok');
+  });
 });
 
 async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
@@ -136,7 +152,7 @@ async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]>
 
 async function createFakePi(
   lines: unknown[],
-  options: { exitCode?: number; stderr?: string } = {},
+  options: { exitCode?: number; stderr?: string; trailingBytes?: number } = {},
 ): Promise<{ dir: string; binary: string; recordPath: string }> {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'pi-adapter-')));
   const binary = join(dir, 'pi');
@@ -156,7 +172,15 @@ async function createFakePi(
     '  }));',
     `  for (const line of ${JSON.stringify(lines)}) process.stdout.write(JSON.stringify(line) + "\\n");`,
     options.stderr ? `  process.stderr.write(${JSON.stringify(options.stderr)});` : '',
-    `  process.exit(${options.exitCode ?? 0});`,
+    options.trailingBytes ? [
+      '  setTimeout(() => {',
+      `    process.stdout.write("x".repeat(${options.trailingBytes}) + "\\n", error => {`,
+      '      if (error) process.exit(2);',
+      `      writeFileSync(${JSON.stringify(join(dir, 'clean-exit'))}, "ok");`,
+      '      process.exit(0);',
+      '    });',
+      '  }, 100);',
+    ].join('\n') : `  process.exit(${options.exitCode ?? 0});`,
     '});',
   ].filter(Boolean).join('\n'), 'utf8');
   await chmod(binary, 0o755);
