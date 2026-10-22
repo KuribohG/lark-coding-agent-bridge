@@ -441,4 +441,3 @@ paths and are not rewritten by this feature. No agent skill or memory is needed.
 GitLab CI failure monitoring and automatic Flash investigations: [configuration and behavior](gitlab-ci-watch.md).
 
 For adapter development, see the [agent execution contract](agent-execution.md).
-

@@ -431,4 +431,3 @@ Claude/Codex 共用转换逻辑，覆盖文本、流式 Markdown、完整卡片�
 GitLab CI 失败监控与 Flash 自动分析：[配置与行为说明](../gitlab-ci-watch.md)。
 
 Agent 适配器开发：[执行契约与分层说明](../agent-execution.md)。
-
