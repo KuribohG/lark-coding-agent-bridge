@@ -13,6 +13,7 @@ Talk to local **Codex CLI, Claude Code, or Pi Coding Agent** from your browser o
 | Chat with an agent in a browser | `web --agent codex` | **Bridge Chat**, normally on port 8787 | No |
 | Set up a Lark bot, profiles or the inbox | `node bin/run-lark-cc.mjs` | **Management console**, at the printed address | Yes, to connect a bot |
 | Run an already configured Lark bot without a console | `run --profile <name>` | Terminal logs | Yes |
+| Connect a Slack bot | `slack --workspace /absolute/project/path --allowed-users U... --allowed-channels C...` | Slack threads via Socket Mode; see [setup](docs/channels.md#run-the-bundled-slack-channel) | No |
 
 **Browser chat and the management console are different applications.** `run-lark-cc` and `run --web-ui` do not open standalone chat. For a first local test, choose browser chat.
 

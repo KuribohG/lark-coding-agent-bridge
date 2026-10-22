@@ -13,6 +13,7 @@
 | 在浏览器里和 Agent 聊天 | `web --agent codex` | **Bridge Chat 聊天页**，默认 8787 端口 | 不需要 |
 | 配飞书机器人、profile、会话助理 | `node bin/run-lark-cc.mjs` | **管理控制台**，地址以终端输出为准 | 接机器人时需要 |
 | 已有飞书配置，只想无界面运行 | `run --profile <名称>` | 终端日志 | 需要 |
+| 接入 Slack Bot | `slack --workspace /absolute/project/path --allowed-users U... --allowed-channels C...` | Socket Mode，每个 thread 独立会话；见[接入说明](docs/channels.md#run-the-bundled-slack-channel) | 否 |
 
 **聊天页和管理控制台不是同一个页面。** `run-lark-cc`、`run --web-ui` 都不是独立聊天入口。只想先跑起来体验，选 Web 聊天即可。
 

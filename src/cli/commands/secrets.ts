@@ -98,6 +98,24 @@ export async function runSecretsSet(
   console.log(`✓ 已加密存到 ~/.lark-channel/secrets.enc`);
 }
 
+export async function runSecretPut(
+  id: string | undefined,
+  opts: SecretProfileOptions = {},
+): Promise<void> {
+  if (!id?.trim()) {
+    console.error('用法: lark-channel-bridge secrets put <id>');
+    process.exit(1);
+  }
+  const plaintext = await promptPassword(`输入 ${id} 的 secret: `);
+  if (!plaintext) {
+    console.error('✗ 取消(secret 为空)');
+    process.exit(1);
+  }
+  const appPaths = await resolveSecretProfilePaths(opts);
+  await setSecret(id.trim(), plaintext, appPaths);
+  console.log(`✓ 已加密存到 ${appPaths.secretsFile}`);
+}
+
 export async function runSecretsList(opts: SecretProfileOptions = {}): Promise<void> {
   const appPaths = await resolveSecretProfilePaths(opts);
   const ids = await listSecretIds(appPaths);

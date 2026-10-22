@@ -166,6 +166,7 @@ export interface AppPreferences {
 export interface ChannelDisplayConfig {
   lark?: Partial<import('./lark-display').LarkDisplayConfig>;
   web?: Partial<import('../channels/web/config').WebDisplayConfig>;
+  slack?: Partial<import('../channels/slack/config').SlackDisplayConfig>;
 }
 
 export type RunPreferences = Pick<AppPreferences, 'model' | 'reasoningEffort' | 'maxConcurrentRuns' | 'runIdleTimeoutMinutes' | 'agentStopGraceMs'>;

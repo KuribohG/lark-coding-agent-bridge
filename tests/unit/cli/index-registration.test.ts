@@ -24,4 +24,13 @@ describe('CLI command registration', () => {
     expect(source).toContain("'print build, service, runtime and config-revision state as JSON'");
     expect(source).toContain('json: opts.json');
   });
+
+  it('registers the standalone Slack channel and named secret storage', async () => {
+    const source = await readFile(join(process.cwd(), 'src', 'cli', 'index.ts'), 'utf8');
+
+    expect(source).toMatch(/\.command\(['"]slack['"]\)/);
+    expect(source).toContain("runSlack");
+    expect(source).toMatch(/\.command\(['"]put <id>['"]\)/);
+    expect(source).toContain('runSecretPut');
+  });
 });

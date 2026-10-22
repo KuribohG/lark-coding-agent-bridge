@@ -48,6 +48,11 @@ export interface ConversationInput extends ConversationIdentity {
   deadlineAt?: number;
 }
 
+export interface ConversationStatus {
+  agentKind: AgentKind;
+  activeRunId?: string;
+}
+
 export async function createConversationRuntime(options: ConversationRuntimeOptions): Promise<ConversationRuntime> {
   await mkdir(options.stateDir, { recursive: true, mode: 0o700 });
   const runtime = new ConversationRuntime(options);
@@ -171,6 +176,26 @@ export class ConversationRuntime {
     const scope = await this.authorizedScope(identity);
     if (this.active.get(scope)) throw new Error('cannot switch execution engine while a run is active');
     await this.execution.setScopeKind(scope, kind);
+  }
+
+  async status(identity: ConversationIdentity): Promise<ConversationStatus> {
+    const scope = await this.authorizedScope(identity);
+    const activeRunId = this.active.get(scope)?.run.runId;
+    return {
+      agentKind: this.execution.kindFor(scope),
+      ...(activeRunId ? { activeRunId } : {}),
+    };
+  }
+
+  /** Forget native session state for one conversation without changing cwd or policy. */
+  async reset(identity: ConversationIdentity): Promise<boolean> {
+    const scope = await this.authorizedScope(identity);
+    if (this.active.get(scope)) throw new Error('cannot reset a conversation while a run is active');
+    const hadLegacySession = this.sessions.getRaw(scope) !== undefined;
+    this.sessions.clear(scope);
+    const archived = this.catalog.archiveScope(scope);
+    await Promise.all([this.sessions.flush(), this.catalog.flush()]);
+    return hadLegacySession || archived > 0;
   }
 
   async close(): Promise<void> {

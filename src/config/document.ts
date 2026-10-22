@@ -13,6 +13,7 @@ import {
 } from './permissions';
 import { larkDisplay } from './lark-display';
 import { WEB_DISPLAY_DEFAULTS } from '../channels/web/config';
+import { SLACK_DISPLAY_DEFAULTS } from '../channels/slack/config';
 import { normalizeFileLinks } from './file-links';
 import type { RunPreferences } from './schema';
 import { parseEffort } from '../agent/model-settings';
@@ -40,6 +41,7 @@ export const RUN_KEYS = {
 const PROFILE_KEYS = ['agent', 'run', 'mode', 'accounts', 'secrets', 'access', 'workspaces', 'permissions', 'attachments', 'meeting', 'larkCli', 'launch'];
 const LARK_KEYS = ['reply_mode', 'show_tools', 'progress', 'message_debounce_ms', 'file_links'];
 const WEB_KEYS = ['show_tools', 'show_reasoning'];
+const SLACK_KEYS = ['show_tools', 'show_progress'];
 function object(value: unknown, path: string): Table {
   if (!value || Object.getPrototypeOf(value) !== Object.prototype) throw new Error(`${path}: expected a table`);
   return value as Table;
@@ -68,7 +70,11 @@ function checkRun(value: unknown, path: string, agent?: AgentKind): void {
   }
 }
 function checkDisplay(value: unknown, channel: string, path: string): void {
-  const display = keys(value, channel === 'lark' ? LARK_KEYS : WEB_KEYS, path);
+  const display = keys(
+    value,
+    channel === 'lark' ? LARK_KEYS : channel === 'slack' ? SLACK_KEYS : WEB_KEYS,
+    path,
+  );
   for (const [k, v] of Object.entries(display)) {
     if (k.startsWith('show_') && typeof v !== 'boolean') throw new Error(`${path}.${k}: expected boolean`);
     if (k === 'reply_mode' && !['markdown', 'text', 'card'].includes(v)) throw new Error(`${path}.${k}: invalid reply mode`);
@@ -209,7 +215,7 @@ function validateDocument(input: unknown): ConfigDocument {
     if (layer.run !== undefined) checkRun(layer.run, `agents.${agent}.run`, agent);
     if (layer.launch !== undefined) checkLaunch(layer.launch, agent, `agents.${agent}.launch`);
   }
-  if (doc.channels !== undefined) for (const [channel, value] of Object.entries(keys(doc.channels, ['lark', 'web'], 'channels'))) {
+  if (doc.channels !== undefined) for (const [channel, value] of Object.entries(keys(doc.channels, ['lark', 'web', 'slack'], 'channels'))) {
     const c = object(value, `channels.${channel}`);
     const { profiles: overrides, ...display } = c;
     checkDisplay(display, channel, `channels.${channel}`);
@@ -347,7 +353,8 @@ export function resolveChannels(doc: ConfigDocument, profile?: string) {
     return result;
   };
   return { lark: resolve('lark', larkDisplay({})) as ReturnType<typeof larkDisplay>,
-    web: resolve('web', WEB_DISPLAY_DEFAULTS) as typeof WEB_DISPLAY_DEFAULTS };
+    web: resolve('web', WEB_DISPLAY_DEFAULTS) as typeof WEB_DISPLAY_DEFAULTS,
+    slack: resolve('slack', SLACK_DISPLAY_DEFAULTS) as typeof SLACK_DISPLAY_DEFAULTS };
 }
 
 export function documentToRoot(doc: ConfigDocument): RootConfig {
@@ -397,6 +404,7 @@ export function rootToDocument(root: RootConfig): ConfigDocument {
       doc.channels!.lark.profiles[name] = larkDisplay(profile);
     }
     if (profile.channels?.web) (doc.channels!.web ??= { profiles: {} }).profiles[name] = profile.channels.web;
+    if (profile.channels?.slack) (doc.channels!.slack ??= { profiles: {} }).profiles[name] = profile.channels.slack;
   }
   if (root.secrets) doc.secrets = root.secrets;
   if (root.migrations) doc.migrations = root.migrations;

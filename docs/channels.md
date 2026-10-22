@@ -1,4 +1,4 @@
-# Channel plugins and standalone browser chat
+# Channel plugins, browser chat, and Slack
 
 [Documentation index](README.md) · [Web startup and usage (中文)](user-guide/web-chat.md) · [Quick start](../README.md)
 
@@ -12,13 +12,13 @@ they no longer assume the conversation takes place in Lark.
 
 ```text
 Lark events -> Lark plugin (context/access/attachments) --+
-                                                       +-> run policy / session catalog
-Browser    -> Web plugin -> ConversationRuntime --------+   -> RunExecutor -> agent
-New IM     -> IM plugin  -> ConversationRuntime --------+         |
+Slack events -> Slack plugin (Socket Mode/threads) ------+
+Browser     -> Web plugin -> ConversationRuntime --------+-> run policy / session catalog
+New IM      -> IM plugin  -> ConversationRuntime --------+   -> RunExecutor -> agent
                                                                  v
                                                  RunOutputPlugin / RunState
-                                                 /                       \
-                                        Lark cards/COT             Web JSON stream
+                                                 /            |            \
+                                        Lark cards/COT  Slack messages  Web JSON stream
 ```
 
 `ChannelHost` connects and closes configured plugins. A plugin's `connect()`
@@ -125,6 +125,52 @@ permission level, executable or system prompt. A browser disconnect cancels that
 run; this first version does not replay an interrupted HTTP stream. This is a
 local operator component, not a public multi-user deployment preset.
 
+## Run the bundled Slack channel
+
+The Slack plugin uses Socket Mode, so the bridge does not need a public callback
+URL. A Slack thread maps to one bridge conversation:
+
+- a top-level channel mention starts a new thread and a new native session;
+- replies in a thread the bridge has seen continue that session without another
+  `@` mention;
+- a new top-level message starts a separate conversation;
+- DMs work without mentions.
+
+Create a Slack app with Socket Mode enabled, install it to the target workspace,
+and configure:
+
+- App token with `connections:write`;
+- bot scopes `app_mentions:read`, `chat:write`, `reactions:write`,
+  `im:history`, `channels:history`, and `groups:history`;
+- bot events `app_mention`, `message.im`, `message.channels`, and
+  `message.groups`;
+- the bot invited to every channel that should be usable.
+
+Store the Slack tokens through the encrypted bridge keystore rather than placing
+them in command lines:
+
+```sh
+lark-channel-bridge secrets put slack-bot-token --profile codex
+lark-channel-bridge secrets put slack-app-token --profile codex
+
+lark-channel-bridge slack \
+  --profile codex \
+  --agent codex \
+  --workspace /absolute/project/path \
+  --allowed-users U01234567 \
+  --allowed-channels C01234567
+```
+
+`--allowed-users` is mandatory unless `--allow-all-users` is explicitly set.
+Omitting `--allowed-channels` leaves the bot DM-only. The authenticated Slack
+team is pinned automatically; `--team-id` adds an additional expected-team
+check. Slack users cannot select a local workspace, executable, permission mode,
+or system prompt.
+
+The channel supports `/help`, `/status`, `/stop`, `/new`, and `/model` in text.
+Progress reuses and updates one thread message, then replaces it with the final
+answer. `[channels.slack]` controls `show_tools` and `show_progress`.
+
 ## Integrate another IM
 
 Public package entry points:
@@ -133,6 +179,7 @@ Public package entry points:
 | --- | --- |
 | `lark-channel-bridge/runtime` | `ChannelHost`, `ChannelPlugin`, `PluginHost`, `BridgePlugin`, `ConversationRuntime`, agent and output contracts |
 | `lark-channel-bridge/channels/lark` | `createLarkPlugin`, `createLarkRunOutput` |
+| `lark-channel-bridge/channels/slack` | `createSlackPlugin`, `createSlackRunOutput`, Socket Mode and Web API adapters |
 | `lark-channel-bridge/channels/web` | `createWebPlugin`, `createWebChatRuntime`, `createWebRunOutput` |
 
 A new IM plugin owns its SDK, credentials, incoming-message normalization,
@@ -227,5 +274,7 @@ commands by this change.
 The Web integration tests deliberately throw if the Lark SDK is imported. They
 exercise no-credential startup, HTTP streaming, session persistence, channel and
 user isolation, authorization, input, cancellation and failed output cleanup.
-Existing Lark flow tests cover its compatibility path. This second working
-channel is the test of the shared boundary, not just a TypeScript interface.
+Slack tests inject fake Socket Mode and Web API adapters, then cover thread
+resumption, deduplication, access checks, command handling, and in-place output.
+Existing Lark flow tests cover its compatibility path. The three working
+channels exercise the shared boundary rather than only a TypeScript interface.

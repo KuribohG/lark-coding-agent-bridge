@@ -15,10 +15,11 @@ Execution and presentation have separate ownership:
 | Model providers | root `model_services` | Named API services; independent from executable and local state |
 | Feishu/Lark display | `channels.lark`, `channels.lark.profiles.<name>` | Lark defaults, then settings for that bot |
 | Browser display | `channels.web`, `channels.web.profiles.<name>` | Web defaults, then the selected profile |
+| Slack display | `channels.slack`, `channels.slack.profiles.<name>` | Slack defaults, then the selected profile |
 | Accounts, access, permissions, workspace, meetings | `profiles.<name>` | Explicit bot settings; not inherited from another bot or a conversation |
 | Monitoring | `bridge.monitors_file` | Existing `monitors.toml`, with its own validation and application rules |
 
-Presentation is never inherited through an agent. The shared runtime produces complete events; the Lark and Web output plugins independently select what to display. Hiding reasoning/progress is a display choice and does not change model effort or generation.
+Presentation is never inherited through an agent. The shared runtime produces complete events; the Lark, Slack, and Web output plugins independently select what to display. Hiding reasoning/progress is a display choice and does not change model effort or generation.
 
 See [config.example.toml](config.example.toml) for a full layered example. `agent` is a type (`codex`, `claude` or `pi`); a profile name identifies a particular bot. Multiple profiles can use the same agent defaults. Existing domain objects (`accounts`, `access`, `permissions`, `attachments`, `meeting`, `larkCli`, launch metadata and model service definitions) retain their established field names. New execution and channel keys use snake_case.
 
@@ -74,7 +75,7 @@ Codex uses `app-server`, enabling input during an active turn. The `exec` backen
 
 ## Frontend fields
 
-Lark owns `reply_mode` (`markdown`, `text`, `card`), `show_tools`, `progress` (`off`, `brief`, `detailed`), `message_debounce_ms` (0–5000) and `file_links`. The debounce is a per-profile quiet window: adjacent messages are merged into one agent prompt until it expires; `0` starts immediately. Web owns `show_tools` and `show_reasoning`. Web has no Lark COT bubble, card type or identity setting. `defaults.output`, `agents.codex.output` and frontend fields inside `run` are rejected.
+Lark owns `reply_mode` (`markdown`, `text`, `card`), `show_tools`, `progress` (`off`, `brief`, `detailed`), `message_debounce_ms` (0–5000) and `file_links`. The debounce is a per-profile quiet window: adjacent messages are merged into one agent prompt until it expires; `0` starts immediately. Web owns `show_tools` and `show_reasoning`. Slack owns `show_tools` and `show_progress`. Web and Slack have no Lark COT bubble, card type or identity setting. `defaults.output`, `agents.codex.output` and frontend fields inside `run` are rejected.
 
 For a standalone browser host:
 
@@ -83,6 +84,18 @@ lark-channel-bridge web --agent codex --workspace /path/to/repo --config /path/t
 ```
 
 The active TOML profile supplies the initial execution engine and `channels.web` settings; `--profile <name>` selects another profile, and `--agent <kind>` remains an optional one-run initial override. Without `--config`, Web starts with Claude Code and its own local defaults. The browser page can switch the current conversation among all three backends. Standalone Web reads execution and presentation settings only: it does not bootstrap a Lark account, resolve App Secrets, or establish a Lark connection.
+
+For a standalone Slack Socket Mode host:
+
+```sh
+lark-channel-bridge slack --workspace /path/to/repo --config /path/to/config.toml \
+  --allowed-users U01234567 --allowed-channels C01234567
+```
+
+The Slack channel reads the same execution layers and `channels.slack` display
+settings. Tokens come from `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN`, or from the
+profile keystore entries `slack-bot-token` / `slack-app-token`. See
+[channels.md](channels.md) for Slack app scopes and events.
 
 ## Inspecting and editing
 

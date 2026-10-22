@@ -27,7 +27,12 @@ export type {
   PluginHttpRoute,
 } from '../plugins/api';
 export { createConversationRuntime, ConversationRuntime } from './conversation';
-export type { ConversationRuntimeOptions, ConversationIdentity, ConversationInput } from './conversation';
+export type {
+  ConversationRuntimeOptions,
+  ConversationIdentity,
+  ConversationInput,
+  ConversationStatus,
+} from './conversation';
 export {
   FixedExecutionController,
   ProfileExecutionController,

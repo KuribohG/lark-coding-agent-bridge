@@ -8,6 +8,7 @@ import type { MutableProfileState } from './config-ops';
 import { writeFileAtomic } from '../platform/atomic-write';
 import { larkDisplay } from './lark-display';
 import { WEB_DISPLAY_DEFAULTS } from '../channels/web/config';
+import { SLACK_DISPLAY_DEFAULTS } from '../channels/slack/config';
 import { getMaxConcurrentRuns, getRunIdleTimeoutMs, getAgentStopGraceMs } from './schema';
 
 export async function readProfileSnapshot(state: MutableProfileState) {
@@ -32,7 +33,11 @@ export async function inspectConfig(path: string, profile?: string) {
       : key === 'stop_grace_ms' ? getAgentStopGraceMs(p) : 'native'),
     source: sources[key] ?? (key === 'model' || key === 'effort' ? 'native CLI' : 'built-in'),
   }]));
-  const channels = { lark: larkDisplay(p), web: { ...WEB_DISPLAY_DEFAULTS, ...p.channels?.web } };
+  const channels = {
+    lark: larkDisplay(p),
+    web: { ...WEB_DISPLAY_DEFAULTS, ...p.channels?.web },
+    slack: { ...SLACK_DISPLAY_DEFAULTS, ...p.channels?.slack },
+  };
   const display = Object.fromEntries(Object.entries(channels).map(([channel, fields]) => [channel,
     Object.fromEntries(Object.entries(fields).filter(([key]) => key !== 'file_links').map(([key, value]) => {
       const override = `channels.${channel}.profiles.${name}.${key}`;

@@ -2,9 +2,6 @@ import { readFile } from 'node:fs/promises';
 import {
   parseDocument,
   resolveChannels,
-  resolveExecutionProfile,
-  resolveRun,
-  type ConfigDocument,
 } from '../../config/document';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -13,8 +10,6 @@ import { ChannelHost } from '../../channels/plugin';
 import { createWebPlugin } from '../../channels/web/server';
 import { WEB_SYSTEM_PROMPT } from '../../channels/web/runtime';
 import { isAgentKind } from '../../agent/backends';
-import { agentBackendSpec } from '../../agent/backend-spec';
-import { withAgentBinary } from '../../agent/capability';
 import type {
   AgentKind,
   RunProfileConfig,
@@ -25,6 +20,11 @@ import { checkRuntimeAgentAvailability } from '../../runtime/agent-runtime';
 import { ScopeExecutionStore } from '../../session/scope-execution';
 import { normalizeModelServices } from '../../model-service/config';
 import { ModelProviderRegistry } from '../../model-provider/provider';
+import {
+  selectStandaloneAgent,
+  selectStandaloneProfile,
+  standaloneProfile,
+} from './standalone-profile';
 
 export interface RunWebOptions {
   agent?: string;
@@ -36,7 +36,6 @@ export interface RunWebOptions {
   binary?: string;
   model?: string;
 }
-
 /** Standalone browser channel: no Lark profile, credential bootstrap or SDK connection. */
 export async function runWeb(options: RunWebOptions): Promise<void> {
   if (options.agent !== undefined && !isAgentKind(options.agent)) {
@@ -48,11 +47,11 @@ export async function runWeb(options: RunWebOptions): Promise<void> {
   const stateDir = resolve(options.stateDir ?? join(homedir(), '.lark-channel', 'web', 'default'));
   configureLogger({ logsDir: join(stateDir, 'logs') });
   const doc = options.config ? parseDocument(await readFile(options.config, 'utf8')) : undefined;
-  const profile = selectWebProfile(doc, options.profile);
-  const defaultAgentKind = selectDefaultAgent(doc, profile, options.agent);
-  const profileConfig = webProfile(doc, profile, defaultAgentKind, workspace, options);
+  const profile = selectStandaloneProfile(doc, options.profile);
+  const defaultAgentKind = selectStandaloneAgent(doc, profile, options.agent);
+  const profileConfig = standaloneProfile(doc, profile, defaultAgentKind, workspace, options);
   const configForAgent = (kind: AgentKind): RunProfileConfig =>
-    webProfile(doc, profile, kind, workspace, options, defaultAgentKind);
+    standaloneProfile(doc, profile, kind, workspace, options, defaultAgentKind);
 
   const scopeExecution = new ScopeExecutionStore(join(stateDir, 'scope-execution.json'));
   await scopeExecution.load();
@@ -89,61 +88,4 @@ export async function runWeb(options: RunWebOptions): Promise<void> {
     };
     process.on('SIGINT', close); process.on('SIGTERM', close);
   });
-}
-
-function selectWebProfile(doc: ConfigDocument | undefined, requested?: string): string | undefined {
-  if (!doc) {
-    if (requested) throw new Error('--profile requires --config');
-    return undefined;
-  }
-  const profile = requested ?? doc.bridge?.active_profile ?? Object.keys(doc.profiles)[0];
-  if (profile && !doc.profiles[profile]) throw new Error(`profile not found: ${profile}`);
-  return profile;
-}
-
-function selectDefaultAgent(
-  doc: ConfigDocument | undefined,
-  profile: string | undefined,
-  requested: string | undefined,
-): AgentKind {
-  if (requested !== undefined) return requested as AgentKind;
-  const selected = profile ? doc?.profiles[profile]?.agent : undefined;
-  if (typeof selected === 'string' && isAgentKind(selected)) return selected;
-  const first = doc ? Object.values(doc.profiles).find(entry => isAgentKind(entry.agent))?.agent : undefined;
-  return typeof first === 'string' && isAgentKind(first) ? first : 'claude';
-}
-
-function webProfile(
-  doc: ConfigDocument | undefined,
-  profile: string | undefined,
-  agentKind: AgentKind,
-  workspace: string,
-  options: RunWebOptions,
-  initialAgentKind: AgentKind = agentKind,
-): RunProfileConfig {
-  const fallbackAccess = agentBackendSpec(agentKind).webDefaultAccess;
-  const fallbackPermissions = {
-    defaultAccess: fallbackAccess,
-    maxAccess: fallbackAccess,
-  };
-  const execution = resolveExecutionProfile(doc ?? { version: 3, profiles: {} }, agentKind, {
-    profile,
-    fallbackPermissions,
-  });
-  const withBinary = options.binary && agentKind === initialAgentKind
-    ? withAgentBinary(execution, agentKind, options.binary)
-    : execution;
-  const profileLayer = profile && doc?.profiles[profile]?.agent === agentKind ? profile : undefined;
-  const preferences = {
-    maxConcurrentRuns: 4,
-    ...(doc ? resolveRun(doc, agentKind, profileLayer).preferences : {}),
-    ...(options.model && agentKind === initialAgentKind ? { model: options.model } : {}),
-  };
-  return {
-    ...withBinary,
-    preferences,
-    workspaces: { default: workspace },
-    access: { allowedUsers: ['local'], allowedChats: [], admins: [], requireMentionInGroup: false },
-    attachments: { maxCount: 0, maxBytes: 0, maxFileBytes: 0, imageMaxBytes: 0, cacheTtlMs: 0, cacheMaxBytes: 0 },
-  };
 }

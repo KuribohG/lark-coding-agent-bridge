@@ -8,6 +8,7 @@ import { runLogs } from './commands/logs';
 import {
   runSecretsGet,
   runSecretsList,
+  runSecretPut,
   runSecretsRemove,
   runSecretsSet,
 } from './commands/secrets';
@@ -29,6 +30,7 @@ import {
 import { runStart } from './commands/start';
 import { runUi } from './commands/ui';
 import { runWeb } from './commands/web';
+import { runSlack } from './commands/slack';
 import { configureCiWatch, statusCiWatch } from './commands/ci-watch';
 import { checkMonitors, configureMonitors, initMonitors, statusMonitors } from './commands/monitors';
 import { checkService, configureService, listServices, removeService } from './commands/model-service';
@@ -82,6 +84,26 @@ program.command('web')
   .option('--binary <path>', 'agent executable')
   .option('--model <id>', 'model for new runs')
   .action(runWeb);
+
+program.command('slack')
+  .option('-c, --config <path>', 'TOML file supplying execution and Slack presentation defaults')
+  .description('Run a standalone Slack channel over Socket Mode')
+  .option('--agent <kind>', 'initial engine override (claude, codex, or pi)')
+  .option('--profile <name>', 'config and secret profile')
+  .requiredOption('--workspace <path>', 'workspace for Slack conversations')
+  .option('--state-dir <path>', 'private conversation state directory')
+  .option('--binary <path>', 'agent executable')
+  .option('--model <id>', 'model for new runs')
+  .option('--team-id <id>', 'require this Slack workspace/team ID')
+  .option('--allowed-users <ids>', 'comma-separated Slack user IDs')
+  .option('--allowed-channels <ids>', 'comma-separated Slack channel IDs')
+  .option('--allow-all-users', 'allow every human user in the authenticated workspace')
+  .option('--show-tools', 'show tool activity in Slack progress')
+  .option('--bot-token-env <name>', 'environment variable holding the bot token', 'SLACK_BOT_TOKEN')
+  .option('--app-token-env <name>', 'environment variable holding the app-level token', 'SLACK_APP_TOKEN')
+  .option('--bot-token-secret <id>', 'keystore ID for the bot token', 'slack-bot-token')
+  .option('--app-token-secret <id>', 'keystore ID for the app-level token', 'slack-app-token')
+  .action(runSlack);
 
 const config = program.command('config').description('Inspect and edit layered execution and channel configuration');
 config.command('check').option('-c, --config <path>').action(checkConfig);
@@ -317,6 +339,14 @@ secrets
   .option('--profile <name>', 'profile name (defaults to active profile)')
   .action(async (opts: { appId: string; profile?: string }) => {
     await runSecretsSet(opts.appId, { profile: opts.profile });
+  });
+
+secrets
+  .command('put <id>')
+  .description('Encrypt and store an arbitrary named secret')
+  .option('--profile <name>', 'profile name (defaults to active profile)')
+  .action(async (id: string, opts: { profile?: string }) => {
+    await runSecretPut(id, { profile: opts.profile });
   });
 
 secrets

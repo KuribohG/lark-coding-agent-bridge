@@ -36,6 +36,10 @@
     "./channels/web": {
       "types": "./dist/web.d.ts",
       "import": "./dist/web.js"
+    },
+    "./channels/slack": {
+      "types": "./dist/slack.d.ts",
+      "import": "./dist/slack.js"
     }
   },
   "files": [
@@ -81,6 +85,8 @@
   "dependencies": {
     "@clack/prompts": "^1.4.0",
     "@larksuite/channel": "^0.6.0",
+    "@slack/socket-mode": "3.1.0",
+    "@slack/web-api": "8.2.0",
     "better-sqlite3": "12.11.1",
     "commander": "^12.1.0",
     "cross-spawn": "^7.0.6",
@@ -90,6 +96,7 @@
     "qrcode-terminal": "^0.12.0",
     "smol-toml": "^1.8.0",
     "toml-eslint-parser": "0.10.0",
+    "undici": "^7.0.0",
     "ws": "8.20.0"
   },
   "devDependencies": {

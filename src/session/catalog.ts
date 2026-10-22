@@ -211,6 +211,18 @@ export class SessionCatalog {
     return true;
   }
 
+  /** Archive every active backend entry for one channel conversation. */
+  archiveScope(scopeId: string): number {
+    let archived = 0;
+    for (const [key, entry] of this.data) {
+      if (entry.scopeId !== scopeId || entry.status !== 'active') continue;
+      this.data.set(key, { ...entry, status: 'archived', updatedAt: Date.now() });
+      archived++;
+    }
+    if (archived > 0) this.schedulePersist();
+    return archived;
+  }
+
   entries(): SessionCatalogEntry[] {
     return [...this.data.values()].map((entry) => ({ ...entry }));
   }

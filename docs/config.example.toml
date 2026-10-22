@@ -46,6 +46,10 @@ message_debounce_ms = 600
 show_tools = true
 show_reasoning = false
 
+[channels.slack]
+show_tools = false
+show_progress = true
+
 [channels.lark.profiles.codex]
 progress = "detailed"
 # message_debounce_ms = 250
