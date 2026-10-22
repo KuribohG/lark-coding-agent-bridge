@@ -5,6 +5,7 @@ import { useBundledLarkCli } from '../platform/bundled-tools';
 import pkg from '../../package.json';
 import { formatAgentPreflightDiagnostic, getAgentPreflightDiagnostic } from '../agent/preflight';
 import { runKillCli, runPs } from './commands/ps';
+import { runLogs } from './commands/logs';
 import {
   runSecretsGet,
   runSecretsList,
@@ -212,6 +213,17 @@ program
   });
 
 program
+  .command('logs')
+  .description('Print recent service logs (and optionally follow them) without platform shell commands')
+  .option('--profile <name>', 'profile name (defaults to active profile)')
+  .option('--web-ui', 'read the machine-wide supervisor logs')
+  .option('--follow', 'follow appended log output until interrupted')
+  .option('--lines <count>', 'initial trailing line count (default 100)', value => Number(value))
+  .action(async (opts: { profile?: string; webUi?: boolean; follow?: boolean; lines?: number }) => {
+    await runLogs(opts);
+  });
+
+program
   .command('kill <target>')
   .description('Kill a running bridge process by short id or list index (SIGTERM, then SIGKILL after 2s). Was `stop <target>` in older versions.')
   .action(async (target: string) => {
@@ -224,7 +236,7 @@ const requireExplicitServiceTarget = !process.stdin.isTTY || !process.stdout.isT
 
 program
   .command('start')
-  .description('Install (if needed) and start the bridge as an OS-managed daemon')
+  .description('Install (if needed) and start the bridge as an OS-managed daemon; Windows uses a current-user ONLOGON task')
   .option('--profile <name>', 'profile name (defaults to active profile)')
   .option('--web-ui', 'run the supervisor + web console as the background service (hosts all profiles) instead of a single profile')
   .option('--agent <kind>', 'agent kind for first-run profile bootstrap (claude, codex, or pi)')

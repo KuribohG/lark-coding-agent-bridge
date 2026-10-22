@@ -1,7 +1,7 @@
 import type { ChildProcess } from 'node:child_process';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawnProcessSync } from '../../../src/platform/spawn';
-import { terminateChild } from '../../../src/platform/terminate';
+import { getProcessTreeController, terminateChild } from '../../../src/platform/terminate';
 
 vi.mock('../../../src/platform/spawn', () => ({ spawnProcessSync: vi.fn() }));
 afterEach(() => { vi.restoreAllMocks(); vi.clearAllMocks(); });
@@ -11,6 +11,17 @@ function child(exitCode: number | null = null) {
 }
 
 describe('child process termination', () => {
+  it('exposes process-tree capabilities without claiming Job Object containment', () => {
+    expect(getProcessTreeController('win32')).toMatchObject({
+      strategy: 'windows-taskkill',
+      ownsDescendantsAfterBridgeExit: false,
+    });
+    expect(getProcessTreeController('linux')).toMatchObject({
+      strategy: 'posix-signals',
+      ownsDescendantsAfterBridgeExit: false,
+    });
+  });
+
   it('kills the Windows tree before the cmd shim can exit', () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
     vi.mocked(spawnProcessSync).mockReturnValue({ status: 0 } as ReturnType<typeof spawnProcessSync>);

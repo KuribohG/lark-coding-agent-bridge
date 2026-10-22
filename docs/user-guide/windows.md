@@ -29,8 +29,11 @@ The Windows service explicitly disables the default 72-hour execution limit
 and the start/stop restrictions on battery power. Re-run service installation
 to update an existing task; a plain restart does not rewrite its definition.
 Status checks use Task Scheduler's numeric state through Windows PowerShell
-and COM, so they do not depend on the OS display language. PowerShell and COM
-access must be available to the service-management account.
+and COM, including the running engine PID and last task result, so they do not
+depend on the OS display language. PowerShell and COM access must be available
+to the service-management account. Use
+`lark-channel-bridge logs --profile <name> --follow` (or `--web-ui`) rather
+than platform-specific `tail`/`Get-Content` commands.
 
 Generated batch files use UTF-8, disable delayed expansion and quote static
 arguments. Profiles cannot use Windows device names (`CON`, `NUL`, `COM1`,

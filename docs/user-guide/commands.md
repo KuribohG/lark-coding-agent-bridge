@@ -56,6 +56,8 @@
 | `lark-channel-bridge model-service remove <名称>` | 删除未被引用的服务 |
 | `lark-channel-bridge ci-watch configure <文件>` | 保存整个 CI 来源配置 |
 | `lark-channel-bridge ci-watch status` | 查看 CI 持久状态 |
+| `lark-channel-bridge logs --profile <名称> --follow` | 跨平台查看并跟随 profile 服务日志 |
+| `lark-channel-bridge logs --web-ui --follow` | 查看 supervisor 服务日志 |
 | `lark-channel-bridge --version`、`--help` | 版本与命令帮助 |
 
 `model-service` 和 `ci-watch` 子命令支持 `--config /absolute/path/config.toml`。在 Bridge 会话里运行 lark-cli 时，保持已注入的 profile 环境。系统服务命令见[运行维护](operations.md)。

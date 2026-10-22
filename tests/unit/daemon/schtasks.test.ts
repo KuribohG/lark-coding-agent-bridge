@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { installTask, isTaskRunning, restartTask, waitUntilStopped } from '../../../src/daemon/schtasks';
+import {
+  describeTask,
+  installTask,
+  isTaskRunning,
+  restartTask,
+  waitUntilStopped,
+} from '../../../src/daemon/schtasks';
 import { paths } from '../../../src/config/paths';
 import { createTmpProfile } from '../../helpers/tmp-profile';
 
@@ -33,6 +39,19 @@ describe('Windows scheduled task state', () => {
   it('surfaces a failed state query', () => {
     spawn.mockReturnValue({ ...result('', 1), stderr: 'access denied' });
     expect(() => isTaskRunning('claude')).toThrow('access denied');
+  });
+
+  it('reads PID and last result through language-independent COM fields', () => {
+    spawn.mockReturnValue(result('STATE=4\r\nPID=12345\r\nLAST_RESULT=3221225786\r\nLAST_RUN_TIME=2026-10-22T12:00:00.0000000+08:00\r\n'));
+
+    expect(describeTask('中文助手')).toContain('PID=12345');
+    const [command, args] = spawn.mock.calls[0]!;
+    expect(command).toBe('powershell.exe');
+    const script = Buffer.from((args as string[]).at(-1)!, 'base64').toString('utf16le');
+    expect(script).toContain('GetInstances(0)');
+    expect(script).toContain('EnginePID');
+    expect(script).toContain('LastTaskResult');
+    expect(script).not.toContain('schtasks /Query');
   });
 
   it('allows first installation when the task does not exist yet', () => {

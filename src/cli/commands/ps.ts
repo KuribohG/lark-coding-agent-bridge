@@ -44,7 +44,7 @@ export async function runKillCli(target: string | undefined): Promise<void> {
     console.error('  用 `lark-channel-bridge ps` 看可选目标。');
     process.exit(1);
   }
-  const owner = findOwningService(entry);
+  const owner = await findOwningService(entry);
   if (owner) {
     console.error(
       `✗ bot ${entry.id} (pid ${entry.pid}) 由 ${owner.platformName} 托管,` +
@@ -80,18 +80,18 @@ export async function runKillCli(target: string | undefined): Promise<void> {
  * Both service shapes are checked: the machine-wide supervisor (whose pid is
  * shared by every profile it hosts in-process) and a classic per-profile one.
  */
-function findOwningService(
+async function findOwningService(
   entry: ProcessEntry,
-): { platformName: string; stopHint: string; restartHint: string } | undefined {
+): Promise<{ platformName: string; stopHint: string; restartHint: string } | undefined> {
   const candidates = [
     { serviceId: SUPERVISOR_SERVICE_ID, flag: '--web-ui' },
     { serviceId: entry.profileName, flag: `--profile ${entry.profileName}` },
   ];
   for (const { serviceId, flag } of candidates) {
     const adapter = getServiceAdapter(serviceId);
-    if (!adapter?.fileExists() || !adapter.isRunning()) continue;
-    const { pid } = adapter.parseStatus(adapter.describeStatus());
-    if (!pid || Number(pid) !== entry.pid) continue;
+    if (!adapter?.fileExists()) continue;
+    const status = await adapter.status();
+    if (status.state !== 'running' || !status.pid || status.pid !== entry.pid) continue;
     return {
       platformName: adapter.platformName,
       stopHint: `lark-channel-bridge stop ${flag}`,

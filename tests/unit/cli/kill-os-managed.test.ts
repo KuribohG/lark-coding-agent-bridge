@@ -117,8 +117,14 @@ function entry(overrides: Partial<ProcessEntry> = {}): ProcessEntry {
 function adapter({ pid }: { pid: string }): ServiceAdapter {
   return {
     platformName: 'launchd (macOS)',
+    capabilities: {
+      loginAutostart: true,
+      bootAutostart: false,
+      currentUserOnly: true,
+      nativeRestart: true,
+    },
     fileExists: () => true,
-    isRunning: () => true,
+    status: async () => ({ state: 'running', pid: Number(pid), source: 'launchd', trigger: 'login' }),
     servicePath: () => '/tmp/service.plist',
     install: async () => {},
     start: () => ({ ok: true, stderr: '' }),
@@ -128,7 +134,5 @@ function adapter({ pid }: { pid: string }): ServiceAdapter {
     restart: () => ({ ok: true, stderr: '' }),
     waitUntilStopped: async () => true,
     deleteFile: async () => {},
-    describeStatus: () => `pid = ${pid}`,
-    parseStatus: (text: string) => ({ pid: text.match(/pid\s*=\s*(\d+)/)?.[1] }),
   };
 }

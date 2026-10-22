@@ -204,8 +204,62 @@ export function isTaskRunning(profile: string): boolean {
 }
 
 export function describeTask(profile: string): string {
-  const r = runSchtasks(['/Query', '/V', '/FO', 'LIST', '/TN', windowsTaskName(profile)]);
-  return r.stdout || r.stderr || '';
+  const r = runTaskScript(taskScriptPrelude(profile) +
+    `try { ` +
+    `$task = $folder.GetTask($name); ` +
+    `$instances = $task.GetInstances(0); ` +
+    `$pid = if ($instances.Count -gt 0) { [string]$instances.Item(1).EnginePID } else { '' }; ` +
+    `$lastRun = if ($task.LastRunTime -and $task.LastRunTime.Year -gt 1900) { $task.LastRunTime.ToString('o') } else { '' }; ` +
+    `"STATE=$([int]$task.State)"; ` +
+    `"PID=$pid"; ` +
+    `"LAST_RESULT=$($task.LastTaskResult)"; ` +
+    `"LAST_RUN_TIME=$lastRun" ` +
+    `} catch { ` +
+    `$cause = $_.Exception; while ($cause.InnerException) { $cause = $cause.InnerException }; ` +
+    `if ($cause.HResult -eq -2147024894) { 'STATE=missing' } else { throw } ` +
+    `}`);
+  return r.ok ? (r.stdout || '') : (r.stderr || '');
+}
+
+export interface WindowsTaskStatus {
+  state: 'running' | 'stopped' | 'failed' | 'unknown';
+  pid?: number;
+  lastExit?: number;
+  lastRunAt?: string;
+}
+
+export function readTaskStatus(
+  profile: string,
+  describe: (profile: string) => string = describeTask,
+): WindowsTaskStatus {
+  const text = describe(profile);
+  const rawState = Number(text.match(/^STATE=(\d+)$/m)?.[1]);
+  const pid = Number(text.match(/^PID=(\d+)$/m)?.[1]);
+  const lastResult = Number(text.match(/^LAST_RESULT=(-?\d+)$/m)?.[1]);
+  const lastRunAt = text.match(/^LAST_RUN_TIME=(.+)$/m)?.[1]?.trim();
+  const lastExit = taskExitCode(lastResult);
+  const state = rawState === 2 || rawState === 4
+    ? 'running'
+    : rawState === 3 && lastExit !== undefined && lastExit !== 0
+      ? 'failed'
+      : rawState === 1 || rawState === 3
+        ? 'stopped'
+        : 'unknown';
+  return {
+    state,
+    ...(Number.isSafeInteger(pid) && pid > 0 ? { pid } : {}),
+    ...(lastExit !== undefined ? { lastExit } : {}),
+    ...(lastRunAt ? { lastRunAt } : {}),
+  };
+}
+
+function taskExitCode(value: number): number | undefined {
+  if (!Number.isSafeInteger(value)) return undefined;
+  // Task Scheduler reports informational SCHED_S_* states as LastTaskResult.
+  // They describe the task lifecycle, not the process exit code.
+  if (value >= 267008 && value <= 267015) return undefined;
+  if (value === 1056) return undefined;
+  return value;
 }
 
 export async function waitUntilStopped(profile: string, timeoutMs = 5000): Promise<boolean> {

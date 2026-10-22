@@ -8,6 +8,24 @@ export interface ServiceResult {
   stderr: string;
 }
 
+export type ServiceState = 'running' | 'stopped' | 'failed' | 'missing' | 'unknown';
+
+export interface ServiceStatus {
+  state: ServiceState;
+  pid?: number;
+  lastExit?: number;
+  lastRunAt?: string;
+  source: 'launchd' | 'systemd' | 'schtasks';
+  trigger: 'login';
+}
+
+export interface ServiceCapabilities {
+  loginAutostart: boolean;
+  bootAutostart: boolean;
+  currentUserOnly: boolean;
+  nativeRestart: boolean;
+}
+
 /** Some platforms' restart is sync (spawnSync), others (schtasks) are
  * naturally async. Adapter methods can return either; callers await. */
 export type ServiceResultLike = ServiceResult | Promise<ServiceResult>;
@@ -20,12 +38,13 @@ export type ServiceResultLike = ServiceResult | Promise<ServiceResult>;
 export interface ServiceAdapter {
   /** Display name used in error / status messages. */
   readonly platformName: string;
+  readonly capabilities: ServiceCapabilities;
 
   /** Whether the service file (plist / unit / task) is on disk / registered. */
   fileExists(): boolean;
 
-  /** Whether the service is currently running (process alive). */
-  isRunning(): boolean;
+  /** Structured service state, independent of localized CLI output. */
+  status(): Promise<ServiceStatus>;
 
   /** Path/name to the service definition (for status output). */
   servicePath(): string;
@@ -58,21 +77,34 @@ export interface ServiceAdapter {
   /** Remove the service definition from the OS. */
   deleteFile(): Promise<void>;
 
-  /** Raw status output from the underlying tool, for downstream parsing. */
-  describeStatus(): string;
-
-  /**
-   * Extract pid / last exit code from `describeStatus()` text. Returns
-   * undefined for fields the platform doesn't expose or hasn't recorded yet.
-   */
-  parseStatus(text: string): { pid?: string; lastExit?: string };
 }
 
 function makeLaunchdAdapter(profile: string, runArgs: string[]): ServiceAdapter {
   return {
     platformName: 'launchd (macOS)',
+    capabilities: {
+      loginAutostart: true,
+      bootAutostart: false,
+      currentUserOnly: true,
+      nativeRestart: true,
+    },
     fileExists: () => launchd.plistExists(profile),
-    isRunning: () => launchd.isLoaded(profile),
+    status: async () => {
+      if (!launchd.plistExists(profile)) {
+        return { state: 'missing', source: 'launchd', trigger: 'login' };
+      }
+      const running = launchd.isLoaded(profile);
+      const text = launchd.describeService(profile);
+      const pid = numberValue(text.match(/pid\s*=\s*(\d+)/)?.[1]);
+      const lastExit = numberValue(text.match(/last exit code\s*=\s*(-?\d+)/i)?.[1]);
+      return {
+        state: running ? 'running' : 'stopped',
+        ...(pid !== undefined ? { pid } : {}),
+        ...(lastExit !== undefined && lastExit >= 0 ? { lastExit } : {}),
+        source: 'launchd',
+        trigger: 'login',
+      };
+    },
     servicePath: () => launchAgentPlistPath(profile),
     install: () => launchd.writePlist(profile, runArgs),
     // A previous `stop` may have left the job disabled in launchd's override
@@ -94,19 +126,32 @@ function makeLaunchdAdapter(profile: string, runArgs: string[]): ServiceAdapter 
     restart: () => launchd.kickstart(profile),
     waitUntilStopped: (timeoutMs) => launchd.waitUntilUnloaded(profile, timeoutMs),
     deleteFile: () => launchd.deletePlist(profile),
-    describeStatus: () => launchd.describeService(profile),
-    parseStatus: (text) => ({
-      pid: text.match(/pid\s*=\s*(\d+)/)?.[1],
-      lastExit: text.match(/last exit code\s*=\s*(-?\d+)/i)?.[1],
-    }),
   };
 }
 
 function makeSystemdAdapter(profile: string, runArgs: string[]): ServiceAdapter {
   return {
     platformName: 'systemd (Linux user)',
+    capabilities: {
+      loginAutostart: true,
+      bootAutostart: false,
+      currentUserOnly: true,
+      nativeRestart: true,
+    },
     fileExists: () => systemd.unitExists(profile),
-    isRunning: () => systemd.isActive(profile),
+    status: async () => {
+      if (!systemd.unitExists(profile)) {
+        return { state: 'missing', source: 'systemd', trigger: 'login' };
+      }
+      const status = systemd.readStatus(profile);
+      return {
+        state: systemdServiceState(status.activeState),
+        ...(status.mainPid ? { pid: status.mainPid } : {}),
+        ...(status.lastExit !== undefined ? { lastExit: status.lastExit } : {}),
+        source: 'systemd',
+        trigger: 'login',
+      };
+    },
     servicePath: () => systemdUnitPath(profile),
     install: async () => {
       await systemd.writeUnit(profile, runArgs);
@@ -123,23 +168,33 @@ function makeSystemdAdapter(profile: string, runArgs: string[]): ServiceAdapter 
       await systemd.deleteUnit(profile);
       systemd.daemonReload();
     },
-    describeStatus: () => systemd.describeService(profile),
-    // `systemctl status` includes a "Main PID:" line and an "Active:"
-    // line. There's no single "last exit code" field in the standard
-    // output but the "Process: <pid> ExecStart=... status=<n>" line on
-    // an inactive service exposes it.
-    parseStatus: (text) => ({
-      pid: text.match(/Main PID:\s*(\d+)/)?.[1],
-      lastExit: text.match(/Process:\s+\d+\s+ExecStart=.*status=(\d+)/)?.[1],
-    }),
   };
 }
 
 function makeSchtasksAdapter(profile: string, runArgs: string[]): ServiceAdapter {
   return {
     platformName: 'Task Scheduler (Windows)',
+    capabilities: {
+      loginAutostart: true,
+      bootAutostart: false,
+      currentUserOnly: true,
+      nativeRestart: false,
+    },
     fileExists: () => schtasks.isTaskRegistered(profile),
-    isRunning: () => schtasks.isTaskRunning(profile),
+    status: async () => {
+      if (!schtasks.isTaskRegistered(profile)) {
+        return { state: 'missing', source: 'schtasks', trigger: 'login' };
+      }
+      const status = schtasks.readTaskStatus(profile);
+      return {
+        state: status.state,
+        ...(status.pid !== undefined ? { pid: status.pid } : {}),
+        ...(status.lastExit !== undefined ? { lastExit: status.lastExit } : {}),
+        ...(status.lastRunAt ? { lastRunAt: status.lastRunAt } : {}),
+        source: 'schtasks',
+        trigger: 'login',
+      };
+    },
     // Windows doesn't have a single "service file" — there's the task
     // registration (queryable via schtasks) and the launcher .cmd we wrote.
     // The task name is what the user would search for in Task Scheduler UI.
@@ -163,16 +218,21 @@ function makeSchtasksAdapter(profile: string, runArgs: string[]): ServiceAdapter
     deleteFile: async () => {
       await schtasks.deleteTask(profile);
     },
-    describeStatus: () => schtasks.describeTask(profile),
-    parseStatus: (text) => ({
-      // `Process ID: <n>` shows up in verbose listing only when task is running.
-      pid: text.match(/Process ID:\s*(\d+)/i)?.[1],
-      // `Last Result: <0|nonzero>` — `0` means last run succeeded.
-      // Filter the `1056` ("task already running") and `267011` ("task hasn't
-      // run") sentinels that aren't real exit codes.
-      lastExit: text.match(/Last Result:\s*(\d+)/i)?.[1],
-    }),
   };
+}
+
+function numberValue(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+}
+
+function systemdServiceState(activeState: string): ServiceState {
+  if (activeState === 'active' || activeState === 'reloading') return 'running';
+  if (activeState === 'failed') return 'failed';
+  if (activeState === 'inactive') return 'stopped';
+  if (!activeState) return 'unknown';
+  return 'unknown';
 }
 
 /**

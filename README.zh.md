@@ -146,6 +146,7 @@ lark-channel-bridge stop [--profile <name>]
 lark-channel-bridge restart [--profile <name>]
 lark-channel-bridge status [--profile <name>]
 lark-channel-bridge unregister [--profile <name>]
+lark-channel-bridge logs [--profile <name>|--web-ui] [--follow] [--lines <count>]
 ```
 
 脚本和非交互环境必须显式指定 `--profile <name>` 或 `--web-ui`。服务命令会先打印实际目标和 profile，避免受 active profile 隐式变化影响。
@@ -163,7 +164,7 @@ lark-channel-bridge profile autostart work
 平台映射：
 - **macOS**：launchd 用户代理 `ai.lark-channel-bridge.bot.<profile>`
 - **Linux**：systemd 用户单元 `lark-channel-bridge.bot.<profile>.service`
-- **Windows**：Task Scheduler 任务 `LarkChannelBridge.Bot.<profile>`，launcher 是 `.cmd`
+- **Windows**：当前用户登录后启动的 Task Scheduler `ONLOGON` 任务 `LarkChannelBridge.Bot.<profile>`，launcher 是 `.cmd`
 
 daemon 日志在 `~/.lark-channel/profiles/<profile>/logs/daemon/`。
 

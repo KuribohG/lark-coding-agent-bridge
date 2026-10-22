@@ -145,6 +145,7 @@ lark-channel-bridge stop [--profile <name>]
 lark-channel-bridge restart [--profile <name>]
 lark-channel-bridge status [--profile <name>]
 lark-channel-bridge unregister [--profile <name>]
+lark-channel-bridge logs [--profile <name>|--web-ui] [--follow] [--lines <count>]
 ```
 
 Scripts and non-interactive callers must provide `--profile <name>` or `--web-ui` explicitly. Lifecycle commands print the resolved service and profile before acting.
@@ -162,7 +163,7 @@ lark-channel-bridge profile autostart work
 Platform mapping:
 - **macOS**: launchd user agent `ai.lark-channel-bridge.bot.<profile>`
 - **Linux**: systemd user unit `lark-channel-bridge.bot.<profile>.service`
-- **Windows**: Task Scheduler task `LarkChannelBridge.Bot.<profile>`, launched through a `.cmd` wrapper
+- **Windows**: current-user `ONLOGON` Task Scheduler task `LarkChannelBridge.Bot.<profile>`, launched through a `.cmd` wrapper
 
 Daemon logs are under `~/.lark-channel/profiles/<profile>/logs/daemon/`.
 

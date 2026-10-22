@@ -140,17 +140,36 @@ export function restart(profile: string): SystemctlResult {
  * `is-active` returns 0 iff service state is "active". inactive/failed
  * both yield non-zero (and the failure reason lands in stdout, not stderr).
  */
-export function isActive(profile: string): boolean {
-  const r = spawnSync('systemctl', ['--user', 'is-active', systemdUnitName(profile)], {
-    stdio: ['ignore', 'ignore', 'ignore'],
-  });
-  return r.status === 0;
+function isActive(profile: string): boolean {
+  return readStatus(profile).activeState === 'active';
 }
 
-/** Raw `systemctl status` output, parsed downstream for pid / exit code. */
-export function describeService(profile: string): string {
-  const r = runSystemctl(['status', systemdUnitName(profile), '--no-pager']);
-  return r.stdout || r.stderr || '';
+export interface SystemdServiceStatus {
+  activeState: string;
+  mainPid?: number;
+  lastExit?: number;
+}
+
+/** Stable machine-readable fields from `systemctl show`, not localized text. */
+export function readStatus(profile: string): SystemdServiceStatus {
+  const r = runSystemctl([
+    'show',
+    systemdUnitName(profile),
+    '--no-pager',
+    '--property=ActiveState,MainPID,ExecMainStatus',
+  ]);
+  const values = new Map<string, string>();
+  for (const line of r.stdout.split(/\r?\n/)) {
+    const index = line.indexOf('=');
+    if (index > 0) values.set(line.slice(0, index), line.slice(index + 1));
+  }
+  const mainPid = Number(values.get('MainPID'));
+  const lastExit = Number(values.get('ExecMainStatus'));
+  return {
+    activeState: values.get('ActiveState') ?? '',
+    ...(Number.isSafeInteger(mainPid) && mainPid > 0 ? { mainPid } : {}),
+    ...(Number.isSafeInteger(lastExit) ? { lastExit } : {}),
+  };
 }
 
 /** systemctl stop is synchronous (waits for exit) but we keep parity with

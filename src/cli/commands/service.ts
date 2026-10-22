@@ -73,6 +73,13 @@ function printServiceTarget(
   opts: { webUi: boolean; profile?: string },
 ): void {
   console.log(`目标服务: ${adapter.servicePath()} (${adapter.platformName})`);
+  const yes = (value: boolean) => value ? 'yes' : 'no';
+  console.log(
+    `能力: 登录后自启=${yes(adapter.capabilities.loginAutostart)}` +
+    ` 开机自启=${yes(adapter.capabilities.bootAutostart)}` +
+    ` 仅当前用户=${yes(adapter.capabilities.currentUserOnly)}` +
+    ` 原生重启=${yes(adapter.capabilities.nativeRestart)}`,
+  );
   console.log(opts.webUi
     ? '模式: machine-wide supervisor'
     : `profile: ${opts.profile ?? '-'}`);
@@ -207,7 +214,8 @@ async function assertLockNotHeldByAnotherRuntime(
     const lock = await checkRuntimeLock(target);
     if (!lock.locked) return;
 
-    const servicePid = adapter.isRunning() ? adapter.parseStatus(adapter.describeStatus()).pid : undefined;
+    const serviceStatus = await adapter.status();
+    const servicePid = serviceStatus.state === 'running' ? serviceStatus.pid : undefined;
     if (servicePid && lock.meta?.pid === Number(servicePid)) return;
 
     console.error(`✗ 当前 ${kind === 'profile' ? 'profile' : 'app'} 已有 bridge 进程占用。`);
@@ -303,6 +311,7 @@ async function reportConnectAfter(
   verb: 'started' | 'restarted',
   profile: string,
   fn: () => ServiceResultLike,
+  logTarget = `--profile ${profile}`,
 ): Promise<void> {
   const { cfg } = await resolveProfileRuntime({ profile, allowBootstrap: false });
   const appId = cfg.accounts?.app?.id ?? '';
@@ -331,8 +340,7 @@ async function reportConnectAfter(
     return;
   }
   console.warn(`⚠ 已下发指令,但 30 秒内未观察到 bot 连接成功 (${verb})。`);
-  console.warn(`  查看日志: tail -f ${daemonStderrPath(profile)}`);
-  console.warn(`              tail -f ${daemonStdoutPath(profile)}`);
+  console.warn(`  查看日志: lark-channel-bridge logs ${logTarget} --follow`);
 }
 
 /**
@@ -379,7 +387,7 @@ export async function runServiceStart(opts: ServiceStartOptions = {}): Promise<v
   await adapter.install();
 
   // If already running, stop first so start operations don't race.
-  if (adapter.isRunning()) {
+  if ((await adapter.status()).state === 'running') {
     console.log('检测到旧 bot 实例,先停掉再重启...');
     const r = await adapter.stop();
     if (!r.ok) {
@@ -446,7 +454,7 @@ async function runServiceStartWebUi(opts: ServiceStartOptions): Promise<void> {
 
   await adapter.install();
 
-  if (adapter.isRunning()) {
+  if ((await adapter.status()).state === 'running') {
     console.log('检测到 supervisor 服务已在运行,先停掉再重启...');
     const r = await adapter.stop();
     if (!r.ok) {
@@ -462,7 +470,7 @@ async function runServiceStartWebUi(opts: ServiceStartOptions): Promise<void> {
   }
 
   if (bootProfiles.length > 0) {
-    await reportConnectAfter('started', bootProfiles[0]!, adapter.start);
+    await reportConnectAfter('started', bootProfiles[0]!, adapter.start, '--web-ui');
   } else {
     const r = await adapter.start();
     if (!r.ok) {
@@ -494,7 +502,8 @@ export async function runServiceStop(opts: ServiceProfileOptions = {}): Promise<
     console.log(webUi ? 'supervisor 还没在后台运行过,无需停止。' : 'bot 还没在后台运行过,无需停止。');
     return;
   }
-  if (!adapter.isRunning()) {
+  const status = await adapter.status();
+  if (status.state !== 'running') {
     // Not running now, but the registration may still carry login-time
     // autostart (launchd RunAtLoad / systemd WantedBy) — which is exactly how
     // a "stopped" daemon comes back on its own. Make `stop` mean stopped.
@@ -554,11 +563,13 @@ export async function runServiceRestart(opts: ServiceProfileOptions = {}): Promi
   // Health-check waits on a profile connecting: classic → the service's own
   // profile; web-ui → whatever the supervisor auto-starts (the active profile).
   const waitProfile = webUi ? await resolveServiceProfile(undefined) : serviceId;
-  if (adapter.isRunning()) {
-    await reportConnectAfter('restarted', waitProfile, adapter.restart);
+  if ((await adapter.status()).state === 'running') {
+    await reportConnectAfter('restarted', waitProfile, adapter.restart,
+      webUi ? '--web-ui' : `--profile ${waitProfile}`);
     return;
   }
-  await reportConnectAfter('started', waitProfile, adapter.start);
+  await reportConnectAfter('started', waitProfile, adapter.start,
+    webUi ? '--web-ui' : `--profile ${waitProfile}`);
 }
 
 /** `bridge status` — report whether the daemon is running, with pid + log paths. */
@@ -574,15 +585,17 @@ export async function runServiceStatus(opts: ServiceProfileOptions = {}): Promis
     console.log(`  通过 ${startHint} 启动`);
     return;
   }
-  if (!adapter.isRunning()) {
-    console.log(`${label} 当前没在后台运行`);
+  const status = await adapter.status();
+  if (status.state !== 'running') {
+    console.log(`${label} 当前没在后台运行（状态: ${status.state}）`);
+    if (status.lastExit !== undefined) console.log(`  上次退出码: ${status.lastExit}`);
     console.log(`  通过 ${startHint} 重新启动`);
     return;
   }
 
   const entry = !webUi && profile ? await lookupProfileEntry(profile) : undefined;
 
-  const { pid, lastExit } = adapter.parseStatus(adapter.describeStatus());
+  const { pid, lastExit } = status;
 
   if (webUi) {
     console.log('✓ 控制面 supervisor 正在后台运行');
@@ -599,8 +612,8 @@ export async function runServiceStatus(opts: ServiceProfileOptions = {}): Promis
   console.log('  日志:');
   console.log(`    ${daemonStdoutPath(serviceId)}`);
   console.log(`    ${daemonStderrPath(serviceId)}`);
-  // -1 is launchd's "no meaningful exit recorded" marker; hide it.
-  if (lastExit && lastExit !== '-1') console.log(`  上次退出码: ${lastExit}`);
+  console.log(`  跟随: lark-channel-bridge logs ${webUi ? '--web-ui' : `--profile ${profile}`} --follow`);
+  if (lastExit !== undefined) console.log(`  上次退出码: ${lastExit}`);
 }
 
 /**
@@ -620,7 +633,7 @@ export async function runServiceUnregister(opts: ServiceProfileOptions = {}): Pr
     console.log(`${label} 还没在后台运行过,无需清理。`);
     return;
   }
-  if (adapter.isRunning()) {
+  if ((await adapter.status()).state === 'running') {
     const r = await adapter.stopAndDisableAutostart();
     if (!r.ok) {
       console.warn(`⚠ 停止 ${label} 时有警告(继续清理):\n${formatServiceStderr(r.stderr)}`);

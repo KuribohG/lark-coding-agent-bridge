@@ -59,15 +59,26 @@ vi.mock('../../../src/cli/preflight', () => ({
   preFlightChecks: mocks.preFlightChecks,
 }));
 
-const { runServiceStart, runServiceStatus, runServiceStop, runServiceUnregister } = await import('../../../src/cli/commands/service');
+const {
+  runServiceStart,
+  runServiceStatus,
+  runServiceStop,
+  runServiceUnregister,
+} = await import('../../../src/cli/commands/service');
 
 describe('profile-aware service commands', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.adapter = {
       platformName: 'mock',
+      capabilities: {
+        loginAutostart: true,
+        bootAutostart: false,
+        currentUserOnly: true,
+        nativeRestart: true,
+      },
       fileExists: vi.fn(() => true),
-      isRunning: vi.fn(() => false),
+      status: vi.fn(async () => ({ state: 'stopped' as const, source: 'systemd' as const, trigger: 'login' as const })),
       servicePath: vi.fn(() => '/tmp/service'),
       install: vi.fn(async () => {}),
       start: vi.fn(() => ({ ok: true, stderr: '' })),
@@ -77,8 +88,6 @@ describe('profile-aware service commands', () => {
       restart: vi.fn(() => ({ ok: true, stderr: '' })),
       waitUntilStopped: vi.fn(async () => true),
       deleteFile: vi.fn(async () => {}),
-      describeStatus: vi.fn(() => ''),
-      parseStatus: vi.fn(() => ({})),
     };
     mocks.getServiceAdapter.mockReturnValue(mocks.adapter);
     mocks.materializeEnvSecretForService.mockResolvedValue(false);
@@ -531,7 +540,10 @@ describe('profile-aware service commands', () => {
     });
     // Machine installed via `start --web-ui`: only the supervisor service
     // exists on disk, and it is the process hosting profile codex-dev.
-    const supervisor = { ...mocks.adapter, isRunning: vi.fn(() => true) } as ServiceAdapter;
+    const supervisor = {
+      ...mocks.adapter,
+      status: vi.fn(async () => ({ state: 'running' as const, pid: 123, source: 'systemd' as const, trigger: 'login' as const })),
+    } as ServiceAdapter;
     mocks.getServiceAdapter.mockImplementation((serviceId: string) =>
       serviceId === 'supervisor'
         ? supervisor
@@ -554,7 +566,7 @@ describe('profile-aware service commands', () => {
       lines.push(line);
     });
 
-    // fileExists=true, isRunning=false — nothing to kill, but the login-time
+    // fileExists=true, status=stopped — nothing to kill, but the login-time
     // autostart is still armed and would bring the daemon back by itself.
     await runServiceStop({ profile: 'codex-dev' });
 
@@ -568,7 +580,10 @@ describe('profile-aware service commands', () => {
     vi.spyOn(console, 'log').mockImplementation((line: string) => {
       lines.push(line);
     });
-    const supervisor = { ...mocks.adapter, isRunning: vi.fn(() => true) } as ServiceAdapter;
+    const supervisor = {
+      ...mocks.adapter,
+      status: vi.fn(async () => ({ state: 'running' as const, source: 'systemd' as const, trigger: 'login' as const })),
+    } as ServiceAdapter;
     const classic = { ...mocks.adapter, fileExists: vi.fn(() => false) } as ServiceAdapter;
     mocks.getServiceAdapter.mockImplementation((serviceId: string) =>
       serviceId === 'supervisor' ? supervisor : classic,
