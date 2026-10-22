@@ -1,40 +1,47 @@
-# Bridge 用户手册
+# Bridge 中文用户手册
 
-Bridge 把飞书 / Lark 和本机 Claude Code、Codex 连在一起。你可以从聊天发起任务，也可以让会话助理整理消息、接收盯盘发现的问题，在工作台核对分析和草稿。
+[快速开始](../../README.zh.md) · [English documentation](../README.md)
 
-本手册对应本仓库 **`dev` 分支，2026-10-18 的实现**。安装包版本号相同也可能包含不同提交；npm 上的同名包不一定具备这里的全部功能。更新代码或安装包后，需要重新启动实际运行的 Bridge 才能使用新功能。
+Bridge 把本机 Codex、Claude Code、Pi 接到浏览器或飞书。先完成一种基础对话，再选择是否使用会话助理、监控和系统服务。本文档跟随本仓库 `dev` 分支；npm 同名包不一定包含相同代码。
 
-## 从这里开始
+## 按顺序阅读
 
-| 你想做什么 | 阅读 |
-| --- | --- |
-| 安装并完成第一次飞书对话 | [安装与首次使用](getting-started.md) |
-| 切换项目、恢复会话、中途补充、停止任务 | [日常对话与任务](chat-and-tasks.md) |
-| 选择模型、配置独立 API、理解两种授权 | [模型与账号配置](models-and-accounts.md) |
-| 自动整理消息、查看待办和编辑草稿 | [会话助理](assistant.md) |
-| 监控 GitLab CI，查看失败分析 | [盯盘与任务来源](monitoring.md) |
-| 升级、常驻运行、备份、排查问题 | [运行维护与常见问题](operations.md) |
-| 查找飞书命令或本机 CLI 命令 | [命令速查](commands.md) |
-
-## 功能地图
-
-| 功能 | 触发方式 | 结果在哪里 |
+| 阶段 | 你要做什么 | 读哪篇 |
 | --- | --- | --- |
-| 普通 Agent 对话 | 私聊机器人，或在群 / 话题中 @机器人 | 当前聊天 / 话题 |
-| 旁问 `/btw` | 在已有主会话中提出旁问 | 当前聊天 / 话题中的旁问回复 |
-| 一次性限时任务 `/run` | 填写任务并确认预览 | 当前聊天 / 话题 |
-| 会话助理的飞书来源 | 开启消息采集，筛选出需要本人处理的事项 | 助理工作台和配置的结果话题 |
-| GitLab CI 盯盘来源 | 轮询指定仓库，发现新的失败 pipeline | **同一个助理工作台**；配置通知后也发到结果话题 |
+| 1. 启动 | 不配飞书，先在浏览器聊天 | [Web 聊天](web-chat.md) |
+| 1. 启动 | 连接飞书应用并完成第一条机器人回复 | [首次飞书接入](getting-started.md) |
+| 1. 启动 | Windows 前台、后台、登录自启怎么选 | [Windows 指南](windows.md) |
+| 2. 使用 | Web 的新对话、停止、引擎和会话续接 | [Web 聊天](web-chat.md) |
+| 2. 使用 | 飞书切项目、恢复历史、旁问、限时任务 | [日常对话与任务](chat-and-tasks.md) |
+| 3. 配置 | 文件放哪里、模型/密钥怎么填、何时重启 | [配置教程](configuration.md) |
+| 3. 配置 | 模型与 Agent 账号、飞书权限和用户授权 | [模型与账号](models-and-accounts.md) |
+| 4. 扩展 | 消息筛选、待办、草稿和结果话题 | [会话助理](assistant.md) |
+| 4. 扩展 | GitLab CI 等自动任务来源 | [盯盘与任务来源](monitoring.md) |
+| 5. 维护 | 升级、备份、服务管理、常见问题 | [运行维护](operations.md) |
 
-会话助理是待办、分析和草稿的统一处理入口。飞书消息来源需要先判断是否与你有关；你主动配置的 CI 盯盘发现失败后直接提交待办。两者共用任务生命周期、分析排队、结果校验和工作台操作，采集方式、开关和模型设置分别保留。
+## 三个容易混淆的入口
 
-普通对话和 `/run` 仍是聊天任务，不会自动成为助理待办。`/run` 也不会每天自动执行。CI 目前监控的是 **GitLab pipeline 失败**，不包含通用 commit / MR 动态监控。
+- **Bridge Chat**：`web` 命令；直接和 Agent 对话，没有飞书管理表单。
+- **管理控制台**：`run-lark-cc` / `run --web-ui`；管理 profile、模型服务和助理，不是独立聊天页。
+- **系统服务**：`start --profile ...` / `start --web-ui`；由操作系统维持进程，不等于便携后台启动。
 
-## 四个常用概念
+停止时使用与启动方式配套的命令，见 [Windows](windows.md) 和[运行维护](operations.md)。
 
-- **profile**：一套机器人配置，包含飞书应用、Agent 类型、权限和默认工作目录。Claude 和 Codex 可各有一个 profile。
-- **会话**：当前聊天或话题里的对话历史。不同话题彼此隔离，同一话题里的成员共用上下文。
-- **模型 API 服务**：独立的 API 地址、默认模型和密钥引用，供轻量筛选等直接调用使用。
-- **任务来源**：把需要处理的事项交给助理的入口，例如飞书消息、GitLab CI。暂停某一来源不等于关闭其他来源。
+## 四个概念
 
-配置目录默认是 `~/.lark-channel`；设置 `LARK_CHANNEL_HOME` 后使用指定目录。本文里的本机命令均在运行 Bridge 的机器上执行，路径也指那台机器。
+| 名称 | 含义 |
+| --- | --- |
+| Agent | 本机执行引擎；`codex`、`claude` 或 `pi` |
+| profile | 一套默认执行/权限与机器人配置；名称可以是 work，不必叫 codex；独立 Web 可以没有 profile |
+| 会话 | 当前聊天/话题/浏览器对话的上下文；不是配置文件，也不是项目目录 |
+| 模型服务 | Bridge 中独立配置的 Responses API；与 Agent 原生登录、飞书授权分开 |
+
+管理配置默认在 `~/.lark-channel/config.toml`；独立 Web 必须显式 `--config` 才读取 Bridge TOML。状态目录规则不同，参见[配置教程](configuration.md)。
+
+## 查表与示例
+
+- 可复制配置：[原生 Codex Web](examples/web-native.toml)、[Responses Web](examples/web-responses.toml)、[Lark Codex](examples/lark-codex.toml)。
+- [命令速查](commands.md)、[完整运行行为参考](runtime-reference.md)、[字段与优先级](../configuration.md)。
+- [实际验证与已知失败](../windows-web-validation.md)：哪些路径已验收，哪些仍未通过；不把测试矩阵当成实机成功证明。
+
+会话助理和监控默认关闭。普通 Web/飞书对话不自动成为助理待办；飞书 `/run` 也不是每天定时执行。GitLab CI 来源发现的失败进入同一个助理工作台，但与飞书消息来源的开关和配置独立。

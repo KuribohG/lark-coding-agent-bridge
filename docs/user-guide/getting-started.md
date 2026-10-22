@@ -1,107 +1,75 @@
-# 安装与首次使用
+# 首次飞书接入
 
-[手册首页](README.md) · 下一篇：[日常对话与任务](chat-and-tasks.md)
+[手册首页](README.md) · [只用浏览器聊天？看这里](web-chat.md) · 下一篇：[日常对话](chat-and-tasks.md)
 
-## 准备环境
+本篇打开的是**飞书管理控制台**，不是 Bridge Chat。要用机器人，需要飞书 / Lark 账号和应用；只用 Web 聊天不需要它们。
 
-准备 Node.js **22.12 或更新版本**（也支持 20.19 系列及更新的 Node 20）、Git，以及已安装、已登录的 Claude Code 或 Codex CLI。先确认 `claude` 或 `codex` 能在准备运行 Bridge 的终端里正常使用。
+## 1. 安装并检查 Agent
 
-Bridge 调用本机 Agent；模型账号、订阅和 CLI 登录需要单独准备。只使用一个 Agent 也可以安装和使用 Bridge。
+按[快速开始](../../README.zh.md#2-安装一次)安装 `dev` 分支，使用项目指定的 pnpm 10.33.0。安装会构建网页和 CLI，不需要单独运行前端或数据库。
 
-## 安装当前 dev 分支
+只需安装一个你实际使用的 Agent，并在运行 Bridge 的同一账号下完成登录/provider 配置和一次直接对话。版本检查不能证明模型可用。
 
-```bash
-git clone --branch dev https://github.com/KuribohG/lark-coding-agent-bridge.git
-cd lark-coding-agent-bridge
-npm install
-npm link
-run-lark-cc
+## 2. 打开控制台
+
+在仓库根目录运行：
+
+```sh
+node bin/run-lark-cc.mjs
 ```
 
-`npm install` 会构建网页和 CLI；`npm link` 注册本机命令。网页已经打包到 Bridge，不需要单独启动前端、数据库或妙搭。已有 pnpm 环境的开发者也可以按仓库锁文件安装。
+默认后台启动。打开打印的完整控制台 URL；端口以实际输出为准，不要套用 Web Chat 的 8787。若想前台观察首次启动日志：
 
-如果收到维护者提供的 tgz 包，可以安装该包，再运行 `run-lark-cc`：
-
-```bash
-npm install -g ./lark-channel-bridge-0.7.1.tgz
-run-lark-cc
+```sh
+node bin/run-lark-cc.mjs fg
 ```
 
-包名以实际收到的文件为准。直接从 npm 安装同名包前，应确认它包含需要的分支功能。
+只选择一种方式，不要同时启动两个进程连接同一个飞书应用。
 
-## 建立机器人并验证第一次对话
+## 3. 完成绑定并验收
 
-1. 打开启动器打印的本地网页地址，在向导中扫码创建或连接自己的飞书应用。
-2. 选择 Claude 或 Codex，以及一个具体的项目目录；也可以先用自动创建的默认目录。
-3. 按飞书租户要求完成应用可用范围、权限和事件订阅配置，然后在 profile 列表中启动机器人。
-4. 私聊机器人发送 `/status`，确认 Agent、工作目录和运行状态。
-5. 发一个简单任务，例如“列出当前项目的主要文件，并说明项目用途”。收到答复后，普通对话链路就已跑通。
-6. 要在群里使用，先把机器人加入群，再用飞书真正的 @选择机器人发送消息。不要只键入文本“@机器人名字”。
+1. 按网页向导扫码创建或连接 PersonalAgent 应用。
+2. 选择已配置的 Agent、profile 名称和项目目录；也可以先用自动创建的默认目录。
+3. 按租户要求完成应用可用范围、权限、事件订阅和审批。
+4. 在 profile 列表中启动机器人；查看是否有连接错误。
+5. 私聊机器人发送 `/status`，确认引擎、项目和运行状态。
+6. 发送“说明当前项目，先不要修改文件”，收到回复后才算基础链路验收通过。
+7. 群聊使用时先加入机器人，再通过飞书的 @选择器真正提及它；纯文本“@机器人”不等同于真实 mention。
 
-聊天访问默认只对应用 owner 开放。想让同事或整个群使用，可按[访问与授权](models-and-accounts.md)中的说明配置。
+聊天默认只向应用 owner 开放。让同事或群使用的配置见[模型与账号](models-and-accounts.md)。普通聊天不依赖会话助理，也不要求先创建独立模型 API 服务。
 
-普通对话不要求开启会话助理，也不要求创建独立模型 API 服务。准备自动整理消息时，再阅读[会话助理](assistant.md)。
+## 4. 以后怎么打开、停止和看日志
 
-## 常用启动方式
+以下均在同一仓库、同一配置环境执行：
 
-| 命令 | 用途 |
-| --- | --- |
-| `lark-channel-bridge run --profile codex` | 容器内无界面前台运行；推荐由容器或外部进程管理器负责重启 |
-| `lark-channel-bridge start --profile codex` | 注册为系统服务并在后台运行 |
-| `run-lark-cc` | 后台启动本地控制台；已有可验证的实例时打开它 |
-| `run-lark-cc --profile work` | 选择名为 work 的 profile |
-| `run-lark-cc fg` | 前台运行，适合容器；Ctrl-C 退出 |
-| `run-lark-cc ui` | 打开已有控制台 |
-| `run-lark-cc ui --print` | 只打印控制台地址 |
-| `run-lark-cc status` | 查看控制台及 profile 状态 |
-
-`run-lark-cc` 的后台模式不提供开机自启或崩溃重启。系统服务和无界面运行方式见[运行维护](operations.md)。不要让两个独立进程同时连接同一个飞书应用。
-
-不需要本地网页控制台时，推荐直接使用标准 CLI，不再通过自定义 shell
-wrapper 在每次启动前写入 App Secret：
-
-```bash
-lark-channel-bridge run --profile codex
+```sh
+node bin/run-lark-cc.mjs ui
+node bin/run-lark-cc.mjs ui --print
+node bin/run-lark-cc.mjs status
+node bin/run-lark-cc.mjs log
+node bin/run-lark-cc.mjs stop
 ```
 
-App Secret 应保存在 profile 配置引用的 `env`、`file`、`exec` 来源中。配置
-已经使用 v2 keystore 时，上述命令会直接读取它；容器重启不会因为 hostname
-变化重新加密。源码目录尚未全局安装时，可执行
-`node bin/lark-channel-bridge.mjs run --profile codex`。
+这些命令只管理此配置根目录下可验证的 GUI supervisor。前台 `fg` 用 Ctrl+C 停止。便携后台模式不提供登录自启或崩溃重启，系统服务见[运行维护](operations.md)。
 
-容器挂载只读 Secret 时，推荐让配置直接引用文件：
+## 5. 配置保存在哪里
 
-```toml
-[profiles.codex.accounts.app]
-id = "cli_xxx"
-tenant = "feishu"
-secret = { source = "file", id = "/run/secrets/feishu_app_secret" }
+默认是 `~/.lark-channel/config.toml`（Windows 中 `~` 为 `$HOME`）。profile 的会话、授权和日志在其 `profiles/<名称>` 目录。`LARK_CHANNEL_HOME` 可为管理控制台指定独立配置根目录，之后的启动、查看和停止必须使用同一设置。
+
+模型原生登录仍由 Agent 管理；飞书 App Secret 与模型 API key 不同。配置字段、密钥引用和何时重启见[配置教程](configuration.md)。修改文件前备份，不要把授权目录公开。
+
+## 6. 已有配置，只想无界面运行
+
+```sh
+node bin/lark-channel-bridge.mjs run --profile codex
 ```
 
-然后由容器的进程管理器执行并负责重启：
+把 `codex` 换成实际 profile 名称。配置不在默认位置时，加 `--config /path/to/config.toml`；项目可用 `--workspace` 指定。App Secret 应使用配置中的 env/file/exec 引用或已有 keystore，不要每次启动都把密钥写入公开脚本。首次手动配置可参考 [lark-codex.toml](examples/lark-codex.toml)。
 
-```bash
-exec lark-channel-bridge run --profile codex
-```
+要使用简短的全局命令，源码安装后可选 `npm link`。注册系统服务前必须确保 CLI 位于稳定路径，不要注册指向临时 npx 缓存的服务。已收到维护者 tgz 包时，可用 `npm install -g ./实际包名.tgz`；不要假设 npm 同名版本必然包含本分支代码。
 
-执行引擎不再要求写在启动参数里。Web 控制台的执行配置设置 profile 默认引擎；在飞书 `/config run` 中选择的引擎只作用于当前聊天或话题，下一条消息直接切换，不需要重连。
+## 远程主机与依赖失败
 
-## Bridge 在远程服务器上
+管理页仅监听运行机器的 `127.0.0.1`。在服务器执行 `node bin/run-lark-cc.mjs ui --print`，用 SSH 转发实际端口，保留打印地址中的管理 token。不要把 token 发到飞书群。具体示例见[自包含部署](../self-contained.md)。
 
-网页只监听服务器的 `127.0.0.1`。在服务器执行 `run-lark-cc ui --print` 获取端口和地址，再在自己的电脑执行：
-
-```bash
-ssh -N -L 19180:127.0.0.1:<网页端口> <你的服务器>
-```
-
-在电脑浏览器打开 `http://127.0.0.1:19180/?token=<打印地址中的 token>`。这是本地管理凭据，留在自己的终端和浏览器中；不要发到群里。管理页不提供公网多用户登录。
-
-## lark-cli 没安装成功
-
-Bridge 通常会安装兼容的 lark-cli。其原生二进制下载失败时，普通聊天可能仍可用，但会话助理的飞书读取需要先修复依赖：
-
-```bash
-npm install -g @larksuite/cli@1.0.77
-```
-
-安装后重启相关 profile，再进行授权检查。更多部署细节见[自包含部署指南](../self-contained.md)。
+`@larksuite/cli` 是可选依赖；二进制下载失败时，安装成功不等于用户授权或消息读取可用。独立 Web 不依赖它；飞书相关能力需要修复并重启 profile，详见[自包含部署](../self-contained.md)及控制台诊断。

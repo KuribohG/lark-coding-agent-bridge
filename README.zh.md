@@ -1,551 +1,124 @@
 # lark-channel-bridge
 
-配置使用 [分层 TOML](docs/configuration.md)（[示例](docs/config.example.toml)）。本版本只加载 TOML，执行默认值与飞书／Web 展示配置独立。
+通过**浏览器或飞书 / Lark**使用本机的 **Codex CLI、Claude Code、Pi Coding Agent**。Agent 在你的机器上运行，处理你指定的项目目录。
 
-把飞书 / Lark 消息和本地 Claude Code、Codex CLI 或 Pi Coding Agent 打通的轻量 bot。用一条命令启动，扫码绑定 PersonalAgent 应用，然后在飞书里和本机编程助手对话，让它读图、处理文件、改代码。
+[English](README.md) · [中文用户手册](docs/user-guide/README.md) · [配置教程](docs/user-guide/configuration.md)
 
-[English README](./README.md)
+> 本文对应本仓库 **`dev` 分支**。npm 上的同名包不一定包含这些功能，第一次使用请按下方步骤从源码安装。
 
-完整中文用户文档见 **[Bridge 用户手册](docs/user-guide/README.md)**：安装、日常任务、模型与账号、会话助理、盯盘、维护及命令速查。GitLab CI 已作为任务来源接入助理工作台。
+## 1. 先选入口
 
-关于能实现的效果，详情可以阅读[飞书文档](https://larkcommunity.feishu.cn/docx/OaRIdFIRFoLM3xxTmKwcetHqn5e)
+| 你想做什么 | 启动入口 | 打开的是什么 | 需要飞书吗 |
+| --- | --- | --- | --- |
+| 在浏览器里和 Agent 聊天 | `web --agent codex` | **Bridge Chat 聊天页**，默认 8787 端口 | 不需要 |
+| 配飞书机器人、profile、会话助理 | `node bin/run-lark-cc.mjs` | **管理控制台**，地址以终端输出为准 | 接机器人时需要 |
+| 已有飞书配置，只想无界面运行 | `run --profile <名称>` | 终端日志 | 需要 |
 
+**聊天页和管理控制台不是同一个页面。** `run-lark-cc`、`run --web-ui` 都不是独立聊天入口。只想先跑起来体验，选 Web 聊天即可。
 
-## 独立 Web 聊天与渠道插件
+## 2. 安装一次
 
-运行 `lark-channel-bridge web --workspace /absolute/project/path --port 8787` 可启动自带的浏览器聊天入口，无需飞书账号。指定 `--config` 时，初始引擎和 Web 展示设置来自 active profile；页面可以按 conversation 在 Claude Code、Codex CLI 和 Pi 之间切换。飞书和 Web 作为独立渠道插件，共用执行控制器和会话运行时。详见[渠道架构与接入说明](docs/channels.md)。
+准备 **Git**、**Node.js 22.12 或更新版本**（也支持 Node 20 中的 20.19 及更新版本），以及至少一个安装并完成登录 / provider 配置的 Agent。在准备运行 Bridge 的同一终端、同一用户下检查：
 
-## 此分支的一体化安装
+```sh
+node --version
+codex --version
+```
 
-此仓库 `dev` 分支包含便携启动器和本地会话助理工作台。无需另外部署妙搭、数据库或公网服务。
+如果使用 Claude 或 Pi，改为检查 `claude --version` 或 `pi --version`。版本命令只证明程序存在；先直接用 Agent 完成一次简单对话，确认模型账号可用。
 
-```bash
+```sh
 git clone --branch dev https://github.com/KuribohG/lark-coding-agent-bridge.git
 cd lark-coding-agent-bridge
-npm install
-npm link
-run-lark-cc
+npx --yes pnpm@10.33.0 install --frozen-lockfile
 ```
 
-`run-lark-cc` 默认后台启动本地 GUI；新用户在网页中扫码创建应用和配置 profile。容器前台运行用 `run-lark-cc fg`。Profile 保存默认执行引擎（Claude Code、Codex CLI 或 Pi Coding Agent）；`/config run` 只覆盖当前聊天或话题的引擎，Web 配置页修改 profile 默认值。`run-lark-cc ui` 打开网页，`status` 查状态，`stop` 停止该配置目录的 GUI supervisor，`log` 查看启动日志。
+**后续命令都在仓库目录执行。** 安装会构建网页和 CLI，无需另起 Vite、数据库、Docker 或 WSL，也不要求全局 `npm link`。固定 pnpm 版本是为了避免不同版本的依赖构建策略导致安装失败。
 
-只需要常驻飞书机器人、不需要本地网页时，推荐直接启动标准 CLI：
+## 3A. 启动 Web 聊天：不配飞书
 
-```bash
-lark-channel-bridge run --profile codex
+```sh
+node bin/lark-channel-bridge.mjs web --agent codex --workspace . --state-dir .web-local/chat --port 8787
 ```
 
-容器应通过 profile 的 `SecretRef`（`env`、挂载 `file` 或 `exec` provider）提供
-App Secret。凭据已迁移到 v2 keystore 后，也不需要每次启动重新写入。
+- `--workspace .` 表示当前仓库；换成你的项目路径即可，路径有空格时加引号。
+- 用 Claude 或 Pi 时，把 `codex` 换为已安装、已配置的 `claude` 或 `pi`。无配置文件时省略 `--agent` 默认选 Claude，**不会自动选 Codex**。
+- 打开终端打印的**完整地址，包括 `#token=...`**。服务只监听本机 `127.0.0.1`。
+- 发送“请解释这个项目，先不要修改文件”。页面提供发送、停止、新对话、切换引擎；Ctrl/⌘+Enter 发送消息。
+- 这是前台运行，终端要保持打开；按 **Ctrl+C** 停止服务。
 
-**会话助理默认关闭。** 在网页内完成用户授权、结果话题和模型配置后开启。个人 Claude 或 Codex profile 都可执行深入分析；筛选可选择独立的模型 API 服务，只使用 Claude 时也无需 Codex profile；旧 Codex 配置仍兼容。模型可选，不要求 DeepSeek Flash；已有未指定模型的 Codex 旧配置继续使用 Flash，避免升级后改变成本策略。配置方法见[模型 API 服务](docs/model-services.md)和[会话助理文档](docs/inbox-assistant.md)。
+**重启后必须使用新打印的地址。** 每次启动的 token 都不同。旧书签、旧 token，或者在新浏览器会话中只打开 `http://127.0.0.1:8787/`，可能出现页面能开但无法发消息。已有标签页只替换了 `#token` 时，还需刷新页面。
 
-远程主机使用 SSH 端口转发访问本地 GUI；妙搭远程工作台仍是可选连接器。具体安装、升级、代理、配置迁移和限制见 [自包含部署指南](docs/self-contained.md)。下方保留原 CLI 的使用方式；直接安装 npm 上的同名包不保证包含此分支改动。
+### Windows：已有自定义 Responses provider，可选后台启动
 
-## 主要功能
+如果本机 Codex 已配置自定义 Responses provider，可在 PowerShell 执行：
 
-- 在飞书私聊直接发消息，或在群里 `@bot`，把任务转给本机 Claude Code / Codex CLI / Pi Coding Agent。
-- **流式卡片**：文本回复和工具调用实时更新在同一张卡片上。
-- **COT 过程消息**：默认用飞书原生 COT 控件展示 agent 的阶段性文本和工具摘要，再单独发送最终答案。
-- **会话延续**：每个聊天、话题或文档评论有自己的会话，不会互相串。
-- **排队与消息合并**：短时间连续发送的消息会合并处理；使用 Codex app-server 或 Claude Code 双向输入时，运行中收到的纯文字会直接追加到当前任务并回执；其他输入排队到下一轮，`/new`、`/cd`、`/ws use`、`/stop` 这类命令可以中断当前任务。
-- **多工作空间**：用 `/cd` 切换当前项目，用 `/ws` 保存和复用常用项目目录。
-- **图片 / 文件**：直接发给 bot，bridge 下载到本地后交给本机 agent 处理。
-- **卡片按钮**：`/help`、`/ws list`、`/status` 返回可点击的交互卡片。
-
-## Codex 中途补充
-
-Bridge 的 Codex 统一使用 `app-server` 全双工模式，原生双向接口已在 Codex 0.162.1 验证，`exec` 后端已移除。已有配置需删除 `[agents.codex.launch]` 或 `[profiles.<name>.launch]` 下的 `transport = "exec"`，或改为 `"app-server"`。app-server 加载正常的用户配置和 execpolicy `.rules`；`ignoreUserConfig`、`ignoreRules` 默认均为 `false`，显式为 `true` 时会提示迁移。修改启动配置后需重启 bridge。
-
-运行期间直接发送补充文字即可：bridge 调用 `turn/steer`，保留同一进程、会话和回合，不停止后续跑，也不新增 slash 命令。收到成功确认后回复“已送入当前任务，等待模型处理”；这表示接口已接受，不表示模型已经落实要求。引用上下文会一同传入，图片、文件和 agent 自行发送的卡片回调仍走队列。
-
-Codex 的原生异步提问（`request_user_input_async`，app-server 的 `agentMessage.questions`）会单独发送“需要你回复”卡片，在群聊原话题 @ 发起任务的用户，不依赖过程消息或回复显示模式。点击选项或填写答案即可提交到当前任务，卡片显示接收结果；没有点击不会自动提交默认选项。任务自然结束后，若原会话仍有效，答案会排队续接。停止任务、切换会话、过期或重启后的旧卡片不能继续操作；按钮仅供提问对象使用。卡片发送失败时会尝试发送普通文字提醒。此功能不包含同步提问/权限审批请求；通知声音仍由飞书客户端设置决定。
-
-任务已结束时，明确拒绝的补充进入下一轮；连接中断等导致送达状态未知时，会提示未确认且不自动重发，避免重复执行。`/stop` 先取消排队消息和准备中的输入，再停止当前任务并回执；它不撤销已经完成的操作。话题隔离、访问权限和群聊 @ 规则保持生效。限时任务内的文字补充不改变截止时间，其余输入仍不自动续跑。
-
-## Claude 中途补充
-
-Claude Code 2.1.302 已验证支持双向输入。升级 bridge 实际调用的 `claude` 后，加载此版本 bridge 即可使用，无需额外配置。运行期间直接发送补充文字，bridge 通过 `--input-format stream-json` 保持输入通道打开，沿用同一进程和会话；Claude 会在能处理新输入时纳入补充，若当前生成已结束，则在同一进程内继续处理。
-
-bridge 收到带输入 ID 的接收回执后才回复“已送入当前任务，等待模型处理”。结果必须涵盖所有已发送的输入才结束任务，避免旧结果先到时丢失补充。接收确认不代表要求已执行，也不会强行中断正在运行的工具。引用、附件排队、权限检查、限时任务截止时间和 `/stop` 规则与上文一致。回执超时或断连时提示送达未知，不自动重发；失败时仍有补充未被结果确认，也不自动续跑。
-
-较旧 CLI 的单次输入仍可使用，但中途补充需要结果中的输入 ID；缺少这些字段时 bridge 会报告无法确认，而不会把任务误判为完成。
-
-## Pi Coding Agent 后端
-
-使用 `lark-channel-bridge profile create pi --agent pi` 创建 Pi profile，也可在首次初始化时传 `--agent pi`。适配器通过 `pi --mode json` 读取 JSONL 事件，保存 Pi 返回的 session ID，后续轮次使用 `--session` 续聊。创建 profile 时可用 `LARK_CHANNEL_PI_BIN` 指定 `pi` 可执行文件。
-
-Pi JSON 模式是单轮请求/响应，不是全双工输入通道，因此运行中的补充消息会排队到下一轮，不会 steer 当前回合。只读 profile 仅开放 `read`、`grep`、`find`、`ls` 并禁用扩展；完整权限 profile 继承 Pi 的常规工具。Pi 没有可移植的“仅工作区可写”文件系统沙箱，所以 bridge 会明确拒绝 `workspace` 权限模式，不会把它静默当成隔离环境。
-
-当前 `@earendil-works/pi-coding-agent` 要求 Node.js 22.19 或更新版本；适配器也兼容支持范围内的 `@mariozechner/pi-coding-agent` 0.73 JSON 协议。
-
-## 限流自动重试
-
-普通任务遇到 API 限流（如 `exceeded retry limit, last status: 429 Too Many Requests`）时，bridge 会在 agent 自身重试结束后，再等待 30、60、120 秒各重试一次。次数按连续无进展计算：收到新的非空白正文、思考内容或工具调用/结果后，重试次数和等待时间重置；之后再次限流会从第 1 次、等待 30 秒开始。仅收到会话元信息、用量统计或空白输出不会重置。过程消息和流式回复会显示重试进度；过程消息更新失败时，会立即提示并切换到普通流式进度，任务与重试继续执行；`/stop`、切换会话和任务截止时间会取消重试。已有进度时会续接本轮报告的会话，并提示 agent 检查已完成的操作后继续。额度或预算耗尽、鉴权错误、送达状态未知的补充消息不自动重试；临时分叉任务，以及已有输出但未获得本轮会话 ID 的任务也不自动重试。
-
-## 前置条件
-
-- Node.js **20.19+ or 22.12+**
-- 本机至少安装并登录一个 agent：
-  - Claude Code：`claude`，安装说明：https://docs.anthropic.com/en/docs/claude-code/quickstart
-  - Codex CLI：`codex`，安装说明：https://developers.openai.com/codex/cli
-  - Pi Coding Agent：`pi`，安装说明：https://github.com/earendil-works/pi
-- 一个飞书 / Lark PersonalAgent 应用。首次启动的扫码向导可以帮你创建并绑定。
-
-## 安装
-
-```bash
-npm i -g lark-channel-bridge
-# 或
-pnpm add -g lark-channel-bridge
+```powershell
+.\bin\windows\start-web.ps1 -Workspace "C:\projects\my-app" -OpenBrowser
+.\bin\windows\stop-web.ps1
 ```
 
-## 首次启动
+脚本隐藏运行后台服务，在 `.web-local` 中隔离 Codex 状态；复用当前模型/provider，不把密钥写入生成配置，也不改全局 Codex 设置，避免与桌面端争用会话或加载其插件。此脚本**不适用于只有官方 OAuth 登录的配置，也不接受 Bridge 的 `--config`**；这些场景使用前台命令。两种启动方式都不会自动注册开机自启。
 
-```bash
-lark-channel-bridge run
+完整说明：[Web 聊天怎么用](docs/user-guide/web-chat.md) · [Windows 启动与维护](docs/user-guide/windows.md)。
+
+## 3B. 如果你想接飞书 / Lark
+
+```sh
+node bin/run-lark-cc.mjs
 ```
 
-第一次运行会进入扫码向导：
+1. 打开启动器打印的**管理控制台**地址。
+2. 按网页向导扫码连接应用，选择 Agent 和项目，然后启动 profile。
+3. 私聊机器人发送 `/status`，再发一个简单任务；群聊需先拉机器人入群并真正 @机器人。
 
-1. 终端渲染二维码。
-2. 用飞书 App 扫码。
-3. 选择或创建 PersonalAgent 应用。
-4. 如果终端提示，选择本次要初始化的 agent。
-5. 成功后配置写入 `~/.lark-channel/config.toml`。
-
-没有指定项目目录也可以启动。bridge 会创建一个 profile 托管的默认工作目录；启动后在飞书里发送 `/cd <path>` 切到实际项目。
-
-如果已经有 PersonalAgent app，可以在初始化时传 `--app-id` 跳过创建应用流程；命令会提示输入 App Secret。
-
-```bash
-lark-channel-bridge run --app-id cli_xxx
-# 或直接初始化并启动后台服务
-lark-channel-bridge start --app-id cli_xxx
+```sh
+node bin/run-lark-cc.mjs ui --print
+node bin/run-lark-cc.mjs status
+node bin/run-lark-cc.mjs stop
 ```
 
-Lark 国际版应用可加 `--tenant lark`。
+这组命令管理的是**控制台**，不是 3A 的聊天进程。会话助理和监控是后续可选功能，默认关闭，普通对话不依赖它们。详见[首次飞书接入](docs/user-guide/getting-started.md)；系统服务是另一步，需要稳定的已安装 CLI 路径。
 
-## 后台运行
+## 4. 配置到底改哪里
 
-`run` 适合首次配置和前台调试。确认 bot 能正常收发消息后，先用 `Ctrl-C` 停掉前台进程，再用系统服务常驻后台：
+| 想改什么 | 改哪里 |
+| --- | --- |
+| Agent 登录、原生 provider | Agent 自己的配置；普通 Bridge 对话可以沿用 |
+| Web 使用的项目和端口 | `web --workspace ... --port ...` |
+| Web 模型、思考强度、展示默认值 | 一个 TOML 文件，通过 `web --config ...` **显式传入** |
+| 飞书应用、profile、权限、默认项目 | 管理控制台，或 `~/.lark-channel/config.toml` |
+| 独立模型 API，供 Codex/Pi 或助理筛选使用 | Bridge TOML 中的 `model_services.<名称>`；密钥使用环境变量 / 文件引用 |
+| 会话助理、GitLab CI 等来源 | 基础对话跑通后再配：[会话助理](docs/user-guide/assistant.md)、[监控](docs/user-guide/monitoring.md) |
 
-```bash
-lark-channel-bridge start
-lark-channel-bridge status
-lark-channel-bridge stop
+**独立 `web` 不会自动读取 `~/.lark-channel/config.toml`。** 需要配置文件就加 `--config`。Bridge 使用 `version = 3` 的 TOML，不能直接加载旧 JSON 配置。
+
+最少配置可以从[沿用原生 Codex 的示例](docs/user-guide/examples/web-native.toml)开始；需要在 Bridge 指定 API 时，用[自定义 Responses 示例](docs/user-guide/examples/web-responses.toml)：
+
+```sh
+node bin/lark-channel-bridge.mjs config check --config docs/user-guide/examples/web-native.toml
+node bin/lark-channel-bridge.mjs web --agent codex --workspace . --state-dir .web-local/chat --config docs/user-guide/examples/web-native.toml
 ```
 
-服务层命令必须先全局安装，不能直接用 `npx`。daemon 的 launchd plist / systemd unit / Windows 任务会记录 bridge CLI 的路径；如果这个路径来自 npm 临时缓存，缓存清掉后 daemon 就起不来。`run` 用 `npx` 单次启动没问题。
+真实配置请复制到**私有文件**再修改，不要直接往仓库示例中写密钥。`config check` 通过只代表结构合法，不代表模型调用成功。独立 Web 改完配置后重启；[配置教程](docs/user-guide/configuration.md)按场景说明完整步骤，[字段参考](docs/configuration.md)解释优先级和生效规则。
 
-服务层命令按 profile 注册，每个 profile 有独立服务：
+## 5. 常见卡点
 
-```bash
-lark-channel-bridge start [--profile <name>]
-lark-channel-bridge stop [--profile <name>]
-lark-channel-bridge restart [--profile <name>]
-lark-channel-bridge status [--profile <name>]
-lark-channel-bridge unregister [--profile <name>]
-lark-channel-bridge logs [--profile <name>|--web-ui] [--follow] [--lines <count>]
-```
+| 现象 | 先检查 |
+| --- | --- |
+| 页面能开，发消息报 `unauthorized` | 使用最近一次启动的完整 token 地址，然后刷新 |
+| 浏览器提示连接被拒绝 | 服务是否仍在运行、端口是否正确、是否同一台机器；远程服务器需端口转发 |
+| 找不到命令或 `dist/cli.js` | 在仓库根目录执行固定版本的安装命令，不要只启动前端 |
+| 找不到 Codex / 模型鉴权失败 | 同一用户下 CLI 能否正常对话；程序不在 PATH 时用 `--binary` |
+| `already has an active writer` | 避免与桌面端共享 Codex 会话目录；满足条件时用隔离启动脚本 |
+| 改了配置没生效 | 是否改对文件、Web 是否传入 `--config`、保存后是否重启正确的服务 |
 
-脚本和非交互环境必须显式指定 `--profile <name>` 或 `--web-ui`。服务命令会先打印实际目标和 profile，避免受 active profile 隐式变化影响。
+继续排查：[Web 故障排查](docs/user-guide/web-chat.md#故障排查) · [运行维护](docs/user-guide/operations.md)。
 
-`start --web-ui` 使用持久化的 `bridge.autostart_profiles` 作为 supervisor 的自动启动集合；旧配置没有该字段时仍回退到 active profile。active profile 只决定 CLI 默认目标，不再隐式定义整套服务的启动集合：
+## 安全与验证范围
 
-```bash
-lark-channel-bridge profile autostart work on
-lark-channel-bridge profile autostart work off
-lark-channel-bridge profile autostart work
-```
+这是**本机操作界面，不是公网多用户服务**。不要分享 token 链接或开放端口。Agent 可以修改文件：独立 Web 的 Codex/Claude 默认是 workspace 权限，Pi 默认 full；飞书 profile 有单独的权限配置。发任务前确认范围，停止不会撤销已完成的修改。
 
-显式执行 `start --web-ui --profile work` 会把 `--profile work` 固化进 supervisor 服务，避免服务重启后跟随 active profile 漂移。
+原生 Windows Web/Codex 已验证真实对话、工具调用和重启续接，**不代表整个仓库测试全通过**；已知失败与未验收功能见[验证记录](docs/windows-web-validation.md)。高级命令、权限、旁问、限时任务等已移至[运行行为详细参考](docs/user-guide/runtime-reference.md)。
 
-平台映射：
-- **macOS**：launchd 用户代理 `ai.lark-channel-bridge.bot.<profile>`
-- **Linux**：systemd 用户单元 `lark-channel-bridge.bot.<profile>.service`
-- **Windows**：当前用户登录后启动的 Task Scheduler `ONLOGON` 任务 `LarkChannelBridge.Bot.<profile>`，launcher 是 `.cmd`
-
-daemon 日志在 `~/.lark-channel/profiles/<profile>/logs/daemon/`。
-
-### 多 profile：分别运行 Claude 和 Codex
-
-`profile use <name>` 只切换 CLI 默认 profile，不修改 supervisor 的自动启动集合。每个 profile 会维护独立的应用凭据、会话、工作目录和日志。只有在需要同时连接多个 PersonalAgent 应用，或分别运行 Claude 和 Codex 时，才需要创建多个 profile：
-
-```bash
-lark-channel-bridge start --profile claude --agent claude
-lark-channel-bridge start --profile codex --agent codex
-```
-
-例如只重启 Codex bot：
-
-```bash
-lark-channel-bridge restart --profile codex
-lark-channel-bridge status --profile codex
-```
-
-## 命令速查
-
-### 宿主 CLI
-
-```text
-lark-channel-bridge run [--profile <name>] [--agent claude|codex|pi] [--workspace <path>] [-c <config>]
-lark-channel-bridge config check
-lark-channel-bridge config show --profile <name> --sources
-lark-channel-bridge ps
-lark-channel-bridge kill <id|#>
-lark-channel-bridge --help
-```
-
-`profile use <name>` 会切换后续默认启动使用的 profile。需要同时跑 Claude / Codex / Pi 等多个 bot、连接多套 PersonalAgent 应用，或做脚本化部署时，再使用这些 profile 管理命令：
-
-```bash
-lark-channel-bridge profile create claude --agent claude
-lark-channel-bridge profile create codex --agent codex
-lark-channel-bridge profile create pi --agent pi
-lark-channel-bridge profile list
-lark-channel-bridge profile use <name>
-lark-channel-bridge profile remove <name>
-lark-channel-bridge profile remove <name> --purge --yes
-lark-channel-bridge profile export <name> [--output ./profile.toml] [--force]
-lark-channel-bridge profile export <name> --include-secrets --yes
-```
-
-`profile remove` 默认归档本地状态，也可以删除当前激活的 profile。若还剩其他 profile，会自动切到下一个；若这是最后一个 profile，会清空 root config，之后可以用同名重新创建。只有加 `--purge --yes` 才会永久删除。`profile export` 默认脱敏 app secret；只有加 `--include-secrets --yes` 才会导出敏感配置。
-
-如果某个 profile 被建成了错误的 agent 类型，先 `stop` 或 `unregister --profile <name>` 清理对应后台服务，再 `profile remove <name>`，然后用正确的 `--agent` 重新创建。
-
-### 飞书内斜杠命令
-
-| 命令 | 作用 |
-|---|---|
-| `/new`, `/reset` | 清空当前会话 |
-| `/btw <问题>` | 在当前话题/聊天回答旁问，并记住之前的旁问问答 |
-| `/cd <path>` | 切换工作目录并重置会话 |
-| `/ws list` | 列出命名工作空间 |
-| `/ws save <name>` | 把当前工作目录保存为命名工作空间 |
-| `/ws use <name>` | 切换到命名工作空间 |
-| `/ws remove <name>` | 删除命名工作空间 |
-| `/resume` | 恢复同 agent、工作目录、权限模式兼容的历史会话 |
-| `/status` | 查看 profile、agent、工作目录、会话、lark-cli 身份和运行状态 |
-| `/config` | 查看配置摘要，分别进入执行、飞书展示和访问设置 |
-| `/model [模型名\|default]` | 查看或修改当前话题/聊天的模型，支持手填 |
-| `/effort [强度\|default]` | 查看或修改当前话题/聊天的思考强度 |
-| `/run [defaults\|status\|stop]` | 创建一次性限时任务、设置默认值，或查看/取消任务 |
-| `/invite user @某人` | 允许用户私聊使用 bot |
-| `/invite admin @某人` | 添加访问控制管理员 |
-| `/invite group` | 允许当前群使用 bot |
-| `/invite all group` | 允许 bot 所在的所有群使用 |
-| `/remove user @某人`, `/remove admin @某人`, `/remove group` | 移除访问控制条目 |
-| `/stop` | 停止当前 run 并取消排队消息，也可点卡片停止按钮 |
-| `/timeout [N\|off\|default]` | 设置或清除当前会话的 idle watchdog |
-| `/ps` | 列出本机 bridge 进程 |
-| `/exit <id\|#>` | 停止指定 bridge 进程 |
-| `/reconnect` | 强制 WebSocket 重连 |
-| `/doctor [描述]` | 执行低敏诊断 |
-| `/help` | 帮助卡片 |
-
-私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。
-
-## 模型与思考强度
-
-```text
-/model provider/custom-model
-/effort high
-/model default
-/effort default
-```
-
-不带参数的 `/model` 或 `/effort` 打开设置卡片，显示设置来源和作用范围。模型名可以直接输入，也可从建议列表选择；列表不是白名单。Codex 优先读取当前 profile 对应 CLI 的本地模型目录。自定义 provider 的模型无需在 bridge 代码中注册；模型是否可用仍由该 provider 决定。
-
-两个字段分别按 **当前话题/聊天覆盖 → bot profile 默认 → CLI 默认** 继承。话题内设置只影响这个话题，普通群和私聊各自按聊天保存；同一话题/群中的用户共用设置。`default` 清除相应字段的覆盖。`/new`、`/cd` 和 bridge 重启保留模型偏好。
-
-owner/admin 可以在 `/config` 或网页控制台填写默认模型和思考强度，也可发送：
-
-```text
-/model provider/custom-model --scope profile
-/effort high --scope profile
-```
-
-bot 默认值影响该 profile 下未单独覆盖对应字段的对话，也用于会议和文档评论任务。其他 profile 和独立终端会话不受影响。网页控制台修改离线 profile 时，下次启动该 profile 才生效。
-
-设置从下一次提交新任务开始生效，正在执行或已提交等待执行的任务保留原参数；等待合并的消息会保留，并在提交时使用新设置。切换不会清空上下文或更换原生会话 ID，无需重启 bridge。`/status` 可同时查看当前任务和下一轮设置。跨模型恢复仍受底层 CLI/provider 的兼容性限制。
-
-已知模型会根据本地目录校验思考档位，显式提交不支持的组合会被拒绝。切换模型后，若继承的 bridge 思考设置不兼容且目录提供了模型默认值，则本次使用模型默认，并在设置摘要中说明。未知模型交由 CLI/provider 校验。当字段跟随 CLI 默认时，不传对应参数，也不改写 CLI 的全局或项目配置。
-
-bot 默认值存于 `config.toml` 的 `profiles.<profile>.run`；聊天覆盖单独存于 `profiles/<profile>/scope-preferences.json`，不和对话历史混用。
-
-## 旁问
-
-`/btw 问题` 在当前话题内（普通群或私聊则在当前聊天）返回一个标有“旁问 /btw”的答复。仅提供 `/btw`，没有别名。Claude 和 Codex 使用相同的交互方式；需要当前话题/聊天已建立主会话。
-
-收到问题后会添加“正在输入”表情反馈，排队和执行期间保留，完成或取消后移除。如果问题在答复发出前被撤回，会尝试回复原话题根消息（需要有效的根消息 ID）；非话题消息则直接发到原聊天。
-
-每次旁问从主会话当前已保存的上下文创建独立分叉，并带上此前成功的旁问问答。旁问按话题独立排队，不合并，不切换主会话；主任务继续运行，有可用进程槽位时可同时回答。旁问被要求仅根据已有上下文回答，不继续主任务。
-
-记录按 bot profile 和话题/聊天隔离，同一话题内的用户共用；bridge 重启后保留。最多回放最近 20 组问答，总计约 60000 字符；过长的单条历史会截断。`/new`、切换工作区和成功 `/resume` 会清空该范围的旁问历史，`/stop` 同时取消主任务及运行中/排队中的旁问。旁问问答不会通过自动话题历史导入主会话，显式引用旁问答复仍可将它带入主会话。
-
-## 一次性限时任务
-
-发送 `/run` 打开表单，填写任务、截止时间、时区、安全余量和本次模型/思考强度，模型名支持手填。提交后先显示预览，**创建者核对具体日期和强制停止时间、点击确认后才会运行**。也可用命令生成预览：
-
-```text
-/run --until 01:00 --tz Asia/Shanghai --margin 5 --effort ultra -- 审查项目并保存发现的问题
-```
-
-可先保存一套默认值（仅 owner/管理员），以后只写任务：
-
-```text
-/run defaults --until 01:00 --tz Asia/Shanghai --margin 5 --effort ultra
-/run 审查项目并保存发现的问题
-```
-
-普通 `/run 任务内容` 直接使用默认值，正文中的 `--`、`--effort` 等内容原样保留；原来的 `/run -- 任务内容` 仍然支持。显式填写运行参数时继续用 `--` 分隔，例如 `/run --effort high -- 审查项目`。如果正文恰好以 `--` 或保留子命令 `status`、`start`、`stop`、`defaults` 开头，用 `/run -- 正文` 表示它是任务内容。单独 `/run` 仍打开表单，管理子命令含义保持不变。
-
-`/run defaults` 打开默认值表单，`/run defaults reset` 恢复内置的两小时时限、五分钟余量、本机时区及沿用对话的模型/强度。默认值属于当前 bot profile，单独存于 `profiles/<profile>/run-defaults.json`，不影响普通聊天设置或其他 bot。任务表单会自动填入默认值；命令显式参数只覆盖本次任务，`--model default`、`--effort default` 表示本次沿用对话设置。默认截止时间只保存钟点或时长，不保存固定日期；每次生成新预览重新计算绝对截止时间，已有预览和运行中的任务不变。若下一次钟点已落入安全余量内，本次拒绝启动，不会顺延一天。简写仍需确认，也不会每天自动执行。
-
-`01:00` 表示指定 IANA 时区的下一次凌晨一点；也支持 `2h`、`90m` 或带时区的完整日期，如 `2026-09-22T01:00+08:00`，最长未来七天。安全余量单位为分钟，默认 5。例如截止 01:00、余量 5 分钟时，提示词要求 agent 在 00:50 开始收尾，独立守护进程在 00:55 强制终止。提前收尾依赖 agent 执行，不保证强停前一定产生总结；已有文件和对话记录保留。原有 idle watchdog 仍独立生效。
-
-`--effort ultra` 在两种 agent 上都表示最强档，只是映射不同：Codex 直接传 `model_reasoning_effort="ultra"`；Claude 通过 `--settings` 开启 Claude Code ultracode（xhigh 加常驻多 agent workflow 编排，最强也最耗额度），因此上面的命令对 Claude bot 原样可用。Claude 的 `ultra` 只用于限时任务，普通 `/effort` 仍为 `low`～`max`。Claude 限时任务还会禁用 `CronCreate`、`ScheduleWakeup` 等会话内定时工具，避免截止后再触发；workflow 子 agent 运行在同一 CLI 进程树内，同样由守护进程到点终止。
-
-任务使用当前话题/聊天的上下文，本次模型/强度保存为任务快照，不修改 `/model`、`/effort` 或 bot 默认值；其他话题/聊天不受影响。应提供具体目标或任务列表，完成后提前结束，不会为了耗尽额度无限循环。
-
-固定停止时间覆盖进程槽位排队和受监管的 CLI 进程树，过期任务不能启动。可识别的明确额度耗尽错误（含 LiteLLM 类网关的 `budget_exceeded`）会终止任务，普通限流不会误判为额度耗尽。可用 `/run stop`、`/stop` 或任务卡停止，`/run status` 查看最新/正在运行的任务。仅创建者可启动；创建者或管理员可用任务卡停止，普通 `/stop` 权限保持原样。当前话题已有任务时需先等它结束或停止；限时任务内，Codex app-server 可将文字追加到当前回合，Claude 双向输入可追加到当前会话，均不延长截止时间。其他输入和 agent 卡片回调会明确提示未排队，避免截止后触发无限时续跑。
-
-任务持久化到 `profiles/<profile>/timed-runs.json`。已启动任务不能重复启动；停止、到期、失败或 bridge 重启后都不会自动继续，续做需新建任务。第一版没有每日自动调度或服务商余额查询。Linux 进程树清理已由进程测试覆盖，macOS/Windows 实现尚未实机验证。本地终止不能保证服务商对已接收请求的跨额度周期计费方式，严格的费用限制仍需服务端支持。
-
-## 回复展示与 COT
-
-`/config lark` 管理飞书展示；Web 使用独立的 `channels.web` 配置：
-
-- **消息回复方式**：`消息卡片` 流式更新最终回复；`纯文本` 在 run 完成后一次性发送。
-- **工具调用显示**：控制最终回复卡片 / markdown 中是否展示工具块。
-- **COT 过程消息**：默认 `简略`，用飞书原生 COT 控件展示 agent 的过程文本和工具摘要，无需手动开启；`详细` 还会展示工具参数和截断后的输出；`关闭` 使用普通进度显示。已有的显式选择会保留，未配置此项的旧 profile 也使用 `简略`。
-
-首次创建 COT 失败时，本轮会提示一次“已异常回退为普通进度显示”；创建成功后的更新失败只回退进度显示，不额外发送提示。最终答复仍会单独发送。
-
-开启 COT 后，bridge 会把过程消息和最终答案拆成两条消息。过程消息用于追踪 agent 做了什么；最终答案仍由 agent 原始文本生成，bridge 不做启发式过滤。若 agent 把最终答案也作为普通流式文本输出，COT 过程消息中可能会出现对应片段。
-
-## lark-cli 身份策略
-
-每个 profile 都使用当前 profile 的 lark-cli 目录：`~/.lark-channel/profiles/<profile>/lark-cli`。agent 子进程会收到指向这个目录的 `LARKSUITE_CLI_CONFIG_DIR`，所以一个 profile 里的个人授权不会共享给另一个 profile。
-
-默认策略是 `bot-only`：lark-cli 使用应用 / bot 身份，不访问个人资源。当用户为了日历、邮箱、云盘等个人资源完成授权后，当前 profile 可以切到 `user-default`，保留应用身份，同时允许已授权的用户身份。owner/admin 可以在 `/config` 查看或切换这个策略；`/status` 会用 `lark-cli: app` 或 `lark-cli: user-ready` 展示当前摘要。
-
-## 工作目录
-
-每个 profile 都可以有一个默认工作目录：`workspaces.default`。新建 profile 时可以传 `--workspace <path>` 作为初始目录；没传时 bridge 会创建一个 profile 托管的默认工作目录。
-
-下面只是 profile 里的字段片段，不要整段覆盖 `config.toml`；请改对应 profile 下的 `workspaces` 字段。
-
-```json
-{
-  "workspaces": {
-    "default": "/Users/me/.lark-channel-workspaces/claude/default"
-  }
-}
-```
-
-bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、系统目录或临时目录根这类范围过大的位置。工作目录只是 agent run 的当前目录，不是文件系统 sandbox；agent 实际能访问哪些文件仍取决于本机 agent 进程及其权限模式。
-
-## 权限模式
-
-推荐给用户配置的是 `permissions.defaultAccess` 和 `permissions.maxAccess`。新 profile 默认两项都是 `full`，以保持 bridge 的本地工具、授权流程、文件写入等能力完整可用。如需收紧权限，可以改成 `workspace` 或 `read-only`；收紧后本地工具执行、登录 / 授权流程、文件写入等能力可能受限。
-
-下面只是 profile 里的字段片段，不要整段覆盖 `config.toml`；请改对应 profile 下的 `permissions` 字段。
-
-```json
-{
-  "permissions": {
-    "defaultAccess": "full",
-    "maxAccess": "full"
-  }
-}
-```
-
-模式映射：
-
-| Bridge access | Claude permission mode | Codex mode |
-|---|---|---|
-| `full` | `bypassPermissions` | `danger-full-access` |
-| `workspace` | `acceptEdits` | `workspace-write` |
-| `read-only` | `plan` | `read-only` |
-
-旧版 `sandbox` 字段仍可读取。bridge 保存 profile 后，会把该设置迁移为 canonical `permissions`。
-
-Pi 支持 `read-only`（只开放读取/搜索工具）和 `full`。Pi 没有可移植的 workspace-only 沙箱，因此会在选择 `workspace` 引擎时明确拒绝。
-
-## 数据目录
-
-| 路径 | 内容 |
-|---|---|
-| `~/.lark-channel/config.toml` | root config，包含 profiles 和 active profile |
-| `~/.lark-channel/active-profile` | 最近选择的 profile |
-| `~/.lark-channel/profiles/<profile>/sessions.json` | 会话状态 |
-| `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | agent-aware 会话索引 |
-| `~/.lark-channel/profiles/<profile>/scope-execution.json` | 各聊天 / 话题的执行引擎覆盖 |
-| `~/.lark-channel/profiles/<profile>/workspaces.json` | 当前和命名工作空间绑定 |
-| `~/.lark-channel/profiles/<profile>/secrets.enc` | profile 本地加密 secret |
-| `~/.lark-channel/profiles/<profile>/lark-cli/` | 当前 profile 的 lark-cli 目录 |
-| `~/.lark-channel/profiles/<profile>/media/` | 附件缓存 |
-| `~/.lark-channel/profiles/<profile>/logs/` | 结构化运行日志 |
-| `~/.lark-channel/web/default/scope-execution.json` | 独立 Web 各 conversation 的执行引擎覆盖 |
-| `~/.lark-channel/web/default/sessions.catalog.json` | 独立 Web 的 agent-aware 会话索引 |
-| `~/.lark-channel/registry/processes.json` | 本机进程注册表 |
-| `~/.lark-channel/registry/locks/` | profile lock 和 app lock |
-
-设置 `LARK_CHANNEL_HOME=/path/to/state` 可以迁移整棵本地状态目录。`LARK_CHANNEL_LOG_DAYS` 可以调整日志保留天数。
-
-profile secret 使用持久 salt 和用户名派生稳定本地密钥。容器部署建议通过
-secret manager 注入 `LARK_CHANNEL_KEYSTORE_MASTER_KEY`，避免密钥依赖主机名；
-已有的 v1 secret 会在该 profile 下一次读取或写入时自动迁移。
-
-## 访问控制
-
-**聊天访问默认是私有的：开箱即用时，只有"你"能在私聊和群聊里用这个 bot。** 这里的"你" = 创建 / 拥有这个飞书应用的人（也就是扫码把 bot 建起来的那位）。bot 会自动从飞书查出谁是应用 owner，所以**一个人用聊天入口完全不用配置**——你私聊它、在任意群里 @它都正常工作，其他人的聊天消息会被静默忽略（bot 不会回"你没权限"，免得暴露自己的存在）。云文档评论按文档权限生效，见下文。
-
-想让别的同事或某些群也能用，就把他们加进下面三类名单：
-
-| 名单 | 控制谁 | 加入 | 移除 |
-|------|--------|------|------|
-| **允许私聊的用户** | 谁可以私聊 bot | `/invite user @某人` | `/remove user @某人` |
-| **响应的群** | bot 在哪些群里对**群内所有人**响应 | `/invite group`（当前群）/ `/invite all group`（bot 所在的全部群） | `/remove group`（当前群） |
-| **管理员** | 谁能改设置、并能在任意群用 bot | `/invite admin @某人` | `/remove admin @某人` |
-
-> `/invite`、`/remove` 这些命令只有**你（创建者）和管理员**能发。命令里 @ 的是**对方**（不是 @ bot），bot 会自动把 @ 解析成对应的人，你不用手动去找 ID。
-
-### 两种"畅通无阻"的身份
-
-- **你（创建者）**：不受任何名单限制——私聊、任意群、所有命令都能用，而且**永远锁不死自己**：哪怕名单配乱了，回到 bot 私聊发 `/config` 总能进来。在飞书后台把应用 owner 转给别人后，bot 也会自动跟着切换。
-- **管理员**：能私聊、能用 `/config` 等管理命令，而且**不受"响应的群"名单限制**——无论群在不在名单里，bot 都会回他们。适合给一起维护 bot 的同事。
-
-### 几种常见配置
-
-- **只给自己用** → 什么都不用做，默认就是。
-- **让某个同事能私聊 bot** → `/invite user @他`
-- **让某个工作群里所有人都能用** → 在那个群里发 `/invite group`
-- **第一次配，想把 bot 已经在的群一次性全开放** → 发 `/invite all group` 一键拉取 bot 所在的全部群加入名单，之后再用 `/remove group` 删掉不想要的
-- **再拉个人一起当管理员** → `/invite admin @他`
-
-### 还需要知道的
-
-- 改完**下一条消息**就生效，不用重启。
-- **群里默认要先 @bot 才会回**（私聊不用 @）。这是另一个独立开关（`/config` →"群里需要 @ bot"），和上面的名单是两回事。
-- 陌生人发消息一律静默丢弃，不会有任何回复。唯一的例外：有人在一个还没开放的群里 @bot，bot 会回一句友好提示，告诉他可以让管理员发 `/invite group` 开放这个群。
-- 云文档评论按文档权限生效：能在支持的文档里评论并 @bot 的人可以触发回复。
-
-### 高级：直接改配置文件
-
-不想在飞书里点的话，`/invite`、`/config` 背后写的是 `~/.lark-channel/config.toml` 中对应 profile 的 `access` 字段。空白名单表示这个名单没人，不表示所有人都能用。下面只是 profile 里的字段片段，不要整段覆盖 `config.toml`：
-
-```toml
-[profiles.claude.access]
-allowedUsers = ["ou_xxxxxxxxxxxxx"]
-allowedChats = ["oc_xxxxxxxxxxxxx"]
-admins = ["ou_xxxxxxxxxxxxx"]
-requireMentionInGroup = true
-```
-
-`allowedUsers` / `admins` 填用户 `open_id`，`allowedChats` 填群 `chat_id`。手动找 ID 最简单的办法：让对方给 bot 发条消息（群里就 @ 它一下），然后看当前 profile 的日志：
-
-```bash
-grep '"event":"enter"' ~/.lark-channel/profiles/<profile>/logs/bridge-$(date +%Y%m%d).jsonl | tail -5
-```
-
-每行都带 `chatId`（群 / 私聊 ID）和 `senderId`（用户 `open_id`）。手改完后**重启 bridge**，或在允许的 admin 上下文里发 `/reconnect` 让它生效。日常调整还是 `/invite` / `/config` 更省事，直接改文件主要用于部署脚本预填。
-
-## 云文档评论
-
-云文档评论不再需要单独绑定工作目录或维护文档白名单。支持的文档评论里 @bot 后，bridge 会在同一个评论线程里回复。评论运行复用文档级 session key；没有记录过文档 cwd 时回退到用户 home 目录。
-
-## 常见问题
-
-**bot 没反应 / agent 不回复**：通常是本机 `claude` 或 `codex` CLI 没登录，或者当前会话指向了不存在的工作目录。发 `/status` 看当前状态；`/new` 重开会话往往就好。
-
-**agent 子进程假死（卡片停在最后一帧不动）**：支持 idle 探活。agent 一段时间没输出就会被 SIGTERM kill，卡片末尾会标出自动终止原因。默认关闭。开启方式：`/config` 设全局值（分钟），或 `/timeout 10` 只对当前会话生效；`/timeout off` 关掉当前会话的探活；`/timeout default` 清掉会话覆盖，回退到全局设置。
-
-**图片发过去 agent 说看不到**：升级到最新版，0.1.0 之前的版本有文件名去重 bug。
-
-## 测试与 CI
-
-本地检查：
-
-```bash
-pnpm test
-pnpm typecheck
-pnpm build
-```
-
-`pnpm test` 包含 unit、integration 和 process-level adapter 测试。CI 在 macOS、Ubuntu、Windows 上执行 `pnpm install --frozen-lockfile`、`pnpm test`、`pnpm typecheck` 和 `pnpm build`。
-
-## 可选：遥测（Telemetry）
-
-默认情况下 bridge **不上报任何数据**：没有指标、没有日志离开你的机器，也不引入任何遥测依赖。下面这个钩子在你主动开启前完全是空操作。
-
-想接自己的监控时，用环境变量指向一个 default export（或导出 `createAdapter`）`AdapterFactory` 的模块：
-
-```bash
-LARK_CHANNEL_TELEMETRY_MODULE=your-telemetry-package lark-channel-bridge start
-```
-
-该模块会收到每一条 `log.*` 事件，以及错误 / 指标钩子，转发到任何你想要的地方。接口从包根导出：
-
-```ts
-import type { AdapterFactory, TelemetryAdapter, TelemetryEvent } from 'lark-channel-bridge';
-
-const createAdapter: AdapterFactory = (meta) => ({
-  emit(event) {/* 上报事件 */},
-  recordError(err, ctx) {/* 上报异常 */},
-  recordMetric(name, value, tags) {/* 上报指标 */},
-  flush(timeoutMs) {/* 冲刷缓冲事件 */},
-});
-export default createAdapter;
-```
-
-模块不存在、工厂函数不合法、或者 adapter 抛错，都会降级为空操作——遥测永远不会阻止 bridge 启动，也不会打断日志。
-
-## 许可
-
-[MIT](./LICENSE)
-
-<img src="./assets/feedback-group-qr.png" alt="飞书反馈群二维码" width="360">
-
-### 本地文件的浏览器链接
-
-在 bridge 配置的 `profiles.<name>.preferences.fileLinks` 中配置本地 POSIX
-目录与网页入口，即可把 IM 回复中的文件路径自动转成可点击链接：
-
-```json
-{
-  "fileLinks": [{
-    "localRoot": "/srv/reports",
-    "fileBaseUrl": "https://jupyter.example/user/alice/files/reports/",
-    "browseBaseUrl": "https://jupyter.example/user/alice/lab/tree/reports/",
-    "markdownPreviewUrl": "https://jupyter.example/user/alice/custom/reader/index.html"
-  }]
-}
-```
-
-网页服务需要事先能访问该目录，例如在 Jupyter 文件根目录下建立 `reports`
-符号链接。bridge 仅转换链接，不上传文件或授予访问权限；URL 不应包含登录 token。
-直接编辑配置文件后重启 bridge 生效。
-
-可选的 `markdownPreviewUrl` 用于轻量阅读页。配置后，`.md` 和 `.markdown` 文件
-改为打开该入口，bridge 把绝对文件路径编码后放入 `path` 查询参数。阅读页自行负责
-文件鉴权和 Markdown 渲染；未配置时仍走 `browseBaseUrl`。此 URL 必须是 HTTPS，
-不含账号、查询参数或片段，查询参数由 bridge 添加。
-
-Claude/Codex 共用转换逻辑，覆盖文本、流式 Markdown、完整卡片、最终回复、发送回退和
-`/btw`。Markdown 文件链接保留标题；正文路径和仅含路径的行内代码转为链接。
-图片、HTML、文本/日志、PDF、CSV/JSON 及常见压缩包走 `fileBaseUrl`，其他文件和目录
-走 `browseBaseUrl`。路径逐段编码，`:42` 等行号后缀不作为文件名（暂不自动跳行）。
-未映射路径、已有网页链接、围栏/缩进代码块、工具记录保持原样。带空格的路径请用行内
-代码或 Markdown 的尖括号目标表示；引用式链接保持原样。流式裸路径会等到边界或回复
-结束后再转换。
-
-配置按 profile 生效，未配置时关闭。外部 `lark-cli` 直接发消息、COT 记录、会议回复和
-云文档评论走独立链路，不在此次转换范围内。无需配置 agent skill 或 memory。
-
-GitLab CI 失败监控与 Flash 自动分析：[配置与行为说明](docs/gitlab-ci-watch.md)。
-
-Agent 适配器开发：[执行契约与分层说明](docs/agent-execution.md)。
+开发验证：使用上方固定版本 pnpm 安装后运行 `pnpm test`、`pnpm typecheck`、`pnpm typecheck:web`、`pnpm build`。架构：[渠道](docs/channels.md) · [Agent 执行](docs/agent-execution.md)。许可证：[MIT](LICENSE)。

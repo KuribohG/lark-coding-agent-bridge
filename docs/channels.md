@@ -1,5 +1,9 @@
 # Channel plugins and standalone browser chat
 
+[Documentation index](README.md) · [Web startup and usage (中文)](user-guide/web-chat.md) · [Quick start](../README.md)
+
+This page describes the CLI and plugin contract. Start with the linked Web guide for page controls, token URLs, configuration and troubleshooting.
+
 The bridge has a shared conversation runtime and separate channel plugins. The
 Lark plugin owns SDK startup, inbound normalization, mentions, topic replies,
 CardKit callbacks and COT. The Web plugin owns a local HTTP server, the bundled

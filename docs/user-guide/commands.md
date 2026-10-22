@@ -2,6 +2,18 @@
 
 [手册首页](README.md)
 
+以下 `lark-channel-bridge` / `run-lark-cc` 命令按全局安装书写。源码安装分别使用 `node bin/lark-channel-bridge.mjs` / `node bin/run-lark-cc.mjs`；注册系统服务前仍需稳定的安装路径。
+
+## 先启动正确的页面
+
+| 本机命令 | 用途 / 停止 |
+| --- | --- |
+| `node bin/lark-channel-bridge.mjs web --agent codex --workspace . --state-dir .web-local/chat` | 独立聊天；终端 Ctrl+C 停止 |
+| `.\bin\windows\start-web.ps1 -OpenBrowser` | Windows 自定义 Responses provider 的隔离后台聊天；配套 `stop-web.ps1` 停止 |
+| `node bin/run-lark-cc.mjs` | 飞书管理控制台；配套 `node bin/run-lark-cc.mjs stop` 停止 |
+
+独立聊天需要打开本次启动的完整 token URL；飞书斜杠命令不在 Web 消息框中解析。更多参数见 [Web 聊天](web-chat.md)。
+
 ## 在飞书里发送
 
 群或话题群按当前设置真正 @机器人；命令中的路径指 Bridge 运行机器。

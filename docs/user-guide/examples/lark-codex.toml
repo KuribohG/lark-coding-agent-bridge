@@ -1,0 +1,25 @@
+version = 3
+
+[bridge]
+active_profile = "codex"
+
+[agents.codex.launch]
+binaryPath = "codex"
+transport = "app-server"
+inheritCodexHome = true
+
+[agents.codex.run]
+model = { source = "native" }
+
+[profiles.codex]
+agent = "codex"
+mode = "personal"
+
+[profiles.codex.accounts.app]
+id = "cli_REPLACE_ME"
+tenant = "feishu"
+secret = { source = "env", id = "FEISHU_APP_SECRET" }
+
+[profiles.codex.permissions]
+defaultAccess = "workspace"
+maxAccess = "workspace"

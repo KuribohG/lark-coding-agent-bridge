@@ -1,6 +1,10 @@
 # Configuration
 
-This version uses `~/.lark-channel/config.toml` (`version = 3`). The runtime does not read or upgrade old JSON configuration. `--config` selects another TOML file. State directories and the monitor file are resolved relative to the selected root file's directory.
+[Documentation index](README.md) · [Step-by-step tutorial (中文)](user-guide/configuration.md) · [Runnable examples](user-guide/README.md#查表与示例)
+
+This is the field and reload reference. For a first setup, choose the native Web, Responses Web or Lark recipe in the tutorial instead of copying the complete example blindly.
+
+Lark and the management console normally use `~/.lark-channel/config.toml` (`version = 3`). The runtime does not read or upgrade old JSON configuration. `--config` selects another TOML file. Lark state and the monitor file are resolved relative to the selected root file's directory. Standalone Web reads Bridge TOML only when `--config` is supplied; its state uses `--state-dir` or `~/.lark-channel/web/default`, not `LARK_CHANNEL_HOME`.
 
 Execution and presentation have separate ownership:
 
@@ -15,7 +19,7 @@ Execution and presentation have separate ownership:
 
 Presentation is never inherited through an agent. The shared runtime produces complete events; the Lark and Web output plugins independently select what to display. Hiding reasoning/progress is a display choice and does not change model effort or generation.
 
-See [config.example.toml](config.example.toml) for a complete example. `agent` is a type (`codex` or `claude`); a profile name identifies a particular bot. Multiple profiles can use the same agent defaults. Existing domain objects (`accounts`, `access`, `permissions`, `attachments`, `meeting`, `larkCli`, launch metadata and model service definitions) retain their established field names. New execution and channel keys use snake_case.
+See [config.example.toml](config.example.toml) for a full layered example. `agent` is a type (`codex`, `claude` or `pi`); a profile name identifies a particular bot. Multiple profiles can use the same agent defaults. Existing domain objects (`accounts`, `access`, `permissions`, `attachments`, `meeting`, `larkCli`, launch metadata and model service definitions) retain their established field names. New execution and channel keys use snake_case.
 
 ## Execution fields
 
@@ -27,7 +31,7 @@ See [config.example.toml](config.example.toml) for a complete example. `agent` i
 
 Omitting a key inherits its parent. Removing a profile override restores inheritance. Arrays replace their parent's entire value; an empty array explicitly clears the list. False and zero are retained. Native model/effort delegation omits the corresponding CLI override so native project/managed configuration remains authoritative. The bridge does not rewrite native Codex/Claude settings.
 
-`launch` accepts `binaryPath` for both agents. Codex also accepts `transport`, `codexHome`, `inheritCodexHome`, `ignoreUserConfig` and `ignoreRules`. Configuration validates launch and agent combinations before use.
+`launch` accepts `binaryPath` for all three agents. Codex also accepts `transport`, `codexHome`, `inheritCodexHome`, `ignoreUserConfig` and `ignoreRules`. Configuration validates launch and agent combinations before use.
 
 Codex uses `app-server`, enabling input during an active turn. The `exec` backend has been removed: remove an old `transport = "exec"` setting or change it to `"app-server"`. Both ignore flags default to `false`; explicitly setting either to `true` is rejected because app-server loads normal user configuration and execpolicy rules. Launch changes take effect after restarting the profile.
 
@@ -38,7 +42,7 @@ Lark owns `reply_mode` (`markdown`, `text`, `card`), `show_tools`, `progress` (`
 For a standalone browser host:
 
 ```sh
-lark-channel-bridge web --workspace /path/to/repo --config /path/to/config.toml
+lark-channel-bridge web --agent codex --workspace /path/to/repo --config /path/to/config.toml
 ```
 
 The active TOML profile supplies the initial execution engine and `channels.web` settings; `--profile <name>` selects another profile, and `--agent <kind>` remains an optional one-run initial override. Without `--config`, Web starts with Claude Code and its own local defaults. The browser page can switch the current conversation among all three backends. Standalone Web reads execution and presentation settings only: it does not bootstrap a Lark account, resolve App Secrets, or establish a Lark connection.
@@ -62,6 +66,8 @@ The local console separates execution from Lark presentation; editing it does no
 After editing a file, use `/config reload` in each affected bot. Execution/display changes apply to subsequent runs; running output uses its existing display snapshot. Access updates affect new messages. Lowering concurrency does not cancel current tasks. Reload reports remaining changes requiring restart (agent launch, account/identity, permissions, workspace or service reconstruction). Changing agent type requires restart before any new execution/display settings are loaded. Reload never starts or restarts a stopped profile. A malformed file leaves already-loaded settings intact and fails explicitly; startup has no JSON fallback.
 
 Monitor reload still follows [its own contract](monitor-config.md). The default TOML path does not change the per-profile JSON projection required by lark-cli. `LARK_CHANNEL_CONFIG` points to that generated JSON, not the human-maintained TOML. Native agent files, sessions, cursors, work items and encrypted credential stores retain their existing formats.
+
+Standalone Web has no `/config reload` endpoint or file watcher. Restart that server after editing its TOML, and reopen the newly printed token URL. The optional Windows isolated launcher reads the native Codex provider at startup and does not accept Bridge `--config`; use the normal Web CLI for file-based Bridge settings.
 
 ## One-time conversion of this installation
 

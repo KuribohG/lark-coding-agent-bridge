@@ -1,7 +1,22 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
-describe('README runtime contract', () => {
+describe('documentation runtime contract', () => {
+  it.each(['README.md', 'README.zh.md'])('keeps %s focused on runnable entry points and configuration', async file => {
+    const readme = await readFile(new URL(`../../../${file}`, import.meta.url), 'utf8');
+    expect(readme.split('\n').length).toBeLessThan(170);
+    for (const entry of [
+      'npx --yes pnpm@10.33.0 install --frozen-lockfile',
+      'web --agent codex --workspace . --state-dir .web-local/chat',
+      'node bin/run-lark-cc.mjs',
+      'bin\\windows\\start-web.ps1',
+      '#token=',
+      'docs/user-guide/configuration.md',
+      'docs/user-guide/examples/web-native.toml',
+      'docs/user-guide/examples/web-responses.toml',
+    ]) expect(readme).toContain(entry);
+  });
+
   it('documents maintained runtime surfaces in user-visible docs', async () => {
     const docs = await readDocs();
 
@@ -94,9 +109,11 @@ describe('README runtime contract', () => {
 });
 
 async function readDocs(): Promise<string> {
-  const [en, zh] = await Promise.all([
+  const documents = await Promise.all([
     readFile(new URL('../../../README.md', import.meta.url), 'utf8'),
     readFile(new URL('../../../README.zh.md', import.meta.url), 'utf8'),
+    readFile(new URL('../../../docs/runtime-reference.md', import.meta.url), 'utf8'),
+    readFile(new URL('../../../docs/user-guide/runtime-reference.md', import.meta.url), 'utf8'),
   ]);
-  return `${en}\n${zh}`;
+  return documents.join('\n');
 }

@@ -2,6 +2,16 @@
 
 [手册首页](README.md) · [命令速查](commands.md)
 
+本篇下方的短命令按已全局安装书写。源码用户把 `run-lark-cc` 换为 `node bin/run-lark-cc.mjs`，把 `lark-channel-bridge` 换为 `node bin/lark-channel-bridge.mjs`；系统服务仍需稳定安装路径。
+
+## 先确认自己运行的是哪一种
+
+- 独立 Web 前台：终端 Ctrl+C 停服务；页面“停止”只停止当前任务。重启后用新的完整 token URL。
+- Windows 后台聊天：配套 `bin/windows/stop-web.ps1`，与启动时使用同一 `-StateDir`。
+- 管理控制台 / 飞书：使用下方的 launcher 或服务命令。
+
+这几类进程不共享停止入口。Web 的使用、状态备份和排错见 [Web 聊天](web-chat.md)；不要用 `run-lark-cc stop` 停止独立聊天页。
+
 ## 查看和停止
 
 ```bash
@@ -40,12 +50,14 @@ lark-channel-bridge profile autostart work off
 
 ```bash
 git pull --ff-only origin dev
-npm install
+npx --yes pnpm@10.33.0 install --frozen-lockfile
 run-lark-cc stop
 run-lark-cc
 ```
 
 这组命令适用于 `npm link` 加便携启动器的安装。系统服务用户使用服务命令重启；自定义发布目录的用户需更新实际发布指针。构建成功、推送 dev、安装包更新和运行中的进程加载新代码是不同状态。
+
+没有 `npm link` 时使用上方的源码命令前缀。独立 Web 也必须停止并重新执行原来的 `web` 命令或 Windows 启动脚本；管理控制台重启不会更新另一个 Web 聊天进程。
 
 保留配置目录和私有凭据。旧实例可能在保存配置时丢弃不认识的新字段，因此先完成升级和进程切换，再配置新的模型 API 服务。不要同时运行新旧实例写同一个配置。
 

@@ -1,6 +1,8 @@
 # 模型与账号配置
 
-[手册首页](README.md) · [会话助理](assistant.md)
+[手册首页](README.md) · [配置教程](configuration.md) · [会话助理](assistant.md)
+
+如果只是想知道“改哪个文件、API key 填哪、改完怎么生效”，先看[配置教程](configuration.md)。本篇解释模型选择、账号和飞书授权的边界。独立 Web 没有下述管理表单或飞书斜杠命令，使用方法见 [Web 聊天](web-chat.md)。
 
 ## 先区分三种配置
 

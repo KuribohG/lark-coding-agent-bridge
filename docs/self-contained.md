@@ -2,6 +2,8 @@
 
 按使用流程阅读请从[用户手册](user-guide/README.md)开始。
 
+本篇是飞书管理控制台/助理的部署参考。仅运行浏览器聊天请看 [Web 聊天指南](user-guide/web-chat.md)，无需完成下方飞书绑定与授权。
+
 本仓库包含 Bridge、`run-lark-cc` 启动器、网页初始化向导、配置页和会话助理工作台。网页构建成单个 HTML 并嵌入 CLI；待办和草稿保存在本地。使用本地工作台不需要单独的前端进程、数据库、妙搭账户或公网入口。
 
 ## 新用户
@@ -13,12 +15,12 @@
    ```bash
    git clone --branch dev https://github.com/KuribohG/lark-coding-agent-bridge.git
    cd lark-coding-agent-bridge
-   npm install
+   npx --yes pnpm@10.33.0 install --frozen-lockfile
    npm link
    run-lark-cc
    ```
 
-   `npm install` 会构建网页和 CLI，不再要求先装 pnpm。也可继续用仓库的 pnpm 锁文件安装。兼容版本的 `@larksuite/cli` 作为可选依赖安装并自动加入 Bridge 的工具路径；其原生二进制下载失败时，普通对话仍可启动，会话助理需先执行 `npm install -g @larksuite/cli@1.0.77` 并重启 profile。
+   固定版本的 pnpm 按锁文件安装并构建网页和 CLI，无需预先全局安装 pnpm。此部署参考使用 `npm link` 注册稳定的短命令；只做源码前台/便携运行时，可跳过 link 并使用 `node bin/run-lark-cc.mjs`。兼容版本的 `@larksuite/cli` 作为可选依赖安装并自动加入 Bridge 的工具路径；原生二进制下载失败时需修复依赖并重启 profile，不能以 npm 安装成功代替飞书能力验收。
 4. 在打印的本地地址中扫码创建飞书应用，选择 agent 和工作目录。创建后在 profile 列表中启动机器人；页面会显示连接错误。
 5. 按飞书应用的可用范围、权限和事件订阅要求完成配置，将机器人加入需要的群。
 
@@ -77,7 +79,7 @@ ssh -N -L 19180:127.0.0.1:<网页端口> <你的服务器>
 
 ```bash
 git pull --ff-only origin dev
-npm install
+npx --yes pnpm@10.33.0 install --frozen-lockfile
 run-lark-cc stop
 run-lark-cc
 ```

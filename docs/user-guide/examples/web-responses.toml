@@ -1,0 +1,19 @@
+version = 3
+
+[agents.codex.launch]
+binaryPath = "codex"
+transport = "app-server"
+inheritCodexHome = true
+
+[agents.codex.run]
+model = "gateway/example-model"
+
+[model_services.gateway]
+protocol = "responses"
+baseUrl = "https://api.example.com/v1"
+model = "example-model"
+apiKey = { source = "env", id = "BRIDGE_MODEL_API_KEY" }
+
+[channels.web]
+show_tools = true
+show_reasoning = false
