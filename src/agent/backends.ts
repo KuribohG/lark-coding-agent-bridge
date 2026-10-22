@@ -70,7 +70,7 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
         transport: codex.transport,
         profileStateDir: profileDir,
         ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
-        inheritCodexHome: codex.inheritCodexHome === true,
+        inheritCodexHome: codex.inheritCodexHome !== false,
         ignoreUserConfig: codex.ignoreUserConfig === true,
         ignoreRules: codex.ignoreRules,
         sandbox: profile.sandbox?.defaultMode ?? accessToCodexSandbox(profile.permissions.defaultAccess),

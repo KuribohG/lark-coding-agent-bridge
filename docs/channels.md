@@ -40,6 +40,39 @@ and `--agent` remains an optional initial override. `--binary`, `--model` and
 This command starts browser chat; `run --web-ui` still starts the existing Lark
 profile management console.
 
+On Windows, run the same command in PowerShell:
+
+```powershell
+node .\bin\lark-channel-bridge.mjs web --agent codex --workspace "C:\projects\my-app" --state-dir ".\web-state" --port 8787
+```
+
+Codex uses the installed CLI's existing home, login and model-provider settings
+by default (`CODEX_HOME`, or its normal user directory). There is no need to copy
+API keys into the bridge. Set `agents.codex.launch.codexHome` or explicitly set
+`inheritCodexHome = false` in TOML only when an isolated configuration is intended.
+
+For a custom Responses provider, the optional Windows background launcher reuses
+the native model/provider settings with a separate Codex home. This avoids sharing
+session writers, desktop plugins and notification hooks with a running Codex app:
+
+```powershell
+.\bin\windows\start-web.ps1 -Workspace "C:\projects\my-app" -OpenBrowser
+.\bin\windows\stop-web.ps1
+```
+
+Both scripts accept `-StateDir`; use the same directory when stopping or restarting.
+The default is the git-ignored `.web-local` directory in the repository. The start
+script prints the authenticated URL, binds only localhost, runs the server hidden,
+and waits for an old state lock to expire on immediate restart. The stop script
+checks the recorded process identity before terminating its process tree.
+
+The isolated launcher reads a custom `wire_api = "responses"` provider from the
+native Codex config. Bearer tokens and literal HTTP header values are passed only
+through child-process environment variables; generated configuration contains
+environment references, not their values. It does not copy login files or change
+the native config. Use the normal `web` command above for OAuth-only or other
+provider configurations.
+
 The page supports new conversations, streamed progress and final answers,
 supplemental input when supported by the selected agent, and stopping the active
 run. It also switches an idle conversation between Claude Code, Codex CLI and Pi,

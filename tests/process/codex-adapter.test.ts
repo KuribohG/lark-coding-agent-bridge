@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { CodexAdapter, type CodexAdapterOptions } from '../../src/agent/codex/adapter';
-import type { AgentEvent } from '../../src/agent/types';
+import type { AgentEvent, AgentRun } from '../../src/agent/types';
 import { ModelProviderRegistry } from '../../src/model-provider/provider';
 
 const dirs: string[] = [];
@@ -55,7 +55,12 @@ rl.on('close',()=>process.exit(0));
     requests: async (): Promise<Array<{ method: string; params: any }>> => (await readFile(requestsFile, 'utf8')).trim().split('\n').map(line => JSON.parse(line)),
   };
 }
-async function collect(events: AsyncIterable<AgentEvent>) { const all: AgentEvent[] = []; for await (const e of events) all.push(e); return all; }
+async function collect(run: AgentRun) {
+  const events: AgentEvent[] = [];
+  for await (const event of run.events) events.push(event);
+  expect(await run.waitForExit(2000)).toBe(true);
+  return events;
+}
 
 describe('CodexAdapter app-server process contract', () => {
   it('starts a duplex run and sends the identity-aware prompt through RPC', async () => {
@@ -63,7 +68,7 @@ describe('CodexAdapter app-server process contract', () => {
     h.adapter.setBotIdentity({ openId: 'ou_test_bot', name: 'Test Bridge' });
     const run = h.adapter.run({ runId: 'fresh', cwd: h.dir, prompt: 'hello from lark', sandbox: 'read-only' });
     expect(run.capabilities).toEqual({ finalAnswer: 'separate-event', input: 'active-turn' });
-    expect(await collect(run.events)).toEqual([
+    expect(await collect(run)).toEqual([
       { type: 'system', threadId: 'thread-1' },
       { type: 'final_text', content: 'hello user' },
       { type: 'done', threadId: 'thread-1', terminationReason: 'normal' },
@@ -84,7 +89,7 @@ describe('CodexAdapter app-server process contract', () => {
   it.each([undefined, 'parent'])('forwards model, effort and images with thread=%s', async threadId => {
     const h = await harness();
     await collect(h.adapter.run({ runId: 'image', cwd: h.dir, prompt: 'image', threadId,
-      images: [join(h.dir, 'image.png')], model: 'private/model-v9', reasoningEffort: 'max' }).events);
+      images: [join(h.dir, 'image.png')], model: 'private/model-v9', reasoningEffort: 'max' }));
     const requests = await h.requests();
     expect(requests.find(r => r.method === (threadId ? 'thread/resume' : 'thread/start'))?.params).toMatchObject({
       model: 'private/model-v9', sandbox: 'danger-full-access', ...(threadId ? { threadId, excludeTurns: true } : {}),
@@ -96,7 +101,7 @@ describe('CodexAdapter app-server process contract', () => {
 
   it('forks side questions ephemerally with inherited goals disabled', async () => {
     const h = await harness();
-    await collect(h.adapter.run({ runId: 'side', cwd: h.dir, prompt: 'side question', threadId: 'parent', forkSession: true }).events);
+    await collect(h.adapter.run({ runId: 'side', cwd: h.dir, prompt: 'side question', threadId: 'parent', forkSession: true }));
     expect((await h.record()).argv).toContain('features.goals=false');
     const requests = await h.requests();
     expect(requests.find(r => r.method === 'thread/fork')?.params).toMatchObject({ threadId: 'parent', ephemeral: true });
@@ -120,7 +125,7 @@ describe('CodexAdapter app-server process contract', () => {
       prompt: 'provider',
       model: provider!.model,
       modelProvider: provider,
-    }).events);
+    }));
 
     const record = await h.record();
     const argv = record.argv.join(' ');
@@ -145,7 +150,7 @@ describe('CodexAdapter app-server process contract', () => {
       prompt: 'official',
       model: provider!.model,
       modelProvider: provider,
-    }).events);
+    }));
 
     const record = await h.record();
     expect(record.argv).toContain('model_provider="openai"');
@@ -161,7 +166,7 @@ describe('CodexAdapter app-server process contract', () => {
       ...(home === 'isolated' ? { inheritCodexHome: false } : {}),
       ...(home === 'explicit' ? { codexHome: '/selected/codex-home' } : {}),
     });
-    await collect(h.adapter.run({ runId: 'env', cwd: h.dir, prompt: 'home' }).events);
+    await collect(h.adapter.run({ runId: 'env', cwd: h.dir, prompt: 'home' }));
     expect((await h.record()).env).toMatchObject({
       CODEX_HOME: home === 'inherited' ? '/outer/codex-home' : home === 'isolated' ? join(h.dir, 'codex-home') : '/selected/codex-home',
       LARK_CHANNEL: '1', LARK_CHANNEL_PROFILE: 'codex-test', LARK_CHANNEL_HOME: '/bridge-root',
@@ -171,19 +176,19 @@ describe('CodexAdapter app-server process contract', () => {
 
   it('leaves CODEX_HOME unset when it is absent from the environment', async () => {
     const h = await harness('normal', { env: { CODEX_HOME: undefined } });
-    await collect(h.adapter.run({ runId: 'home', cwd: h.dir, prompt: 'home' }).events);
+    await collect(h.adapter.run({ runId: 'home', cwd: h.dir, prompt: 'home' }));
     expect((await h.record()).env.CODEX_HOME).toBeUndefined();
   });
 
   it('uses per-run host instructions without adding Lark instructions', async () => {
     const h = await harness('normal', { systemPrompt: buildBridgeSystemPrompt });
-    await collect(h.adapter.run({ runId: 'web', cwd: h.dir, prompt: 'hello', systemPrompt: 'Web instructions' }).events);
+    await collect(h.adapter.run({ runId: 'web', cwd: h.dir, prompt: 'hello', systemPrompt: 'Web instructions' }));
     expect((await h.requests()).find(r => r.method === 'turn/start')?.params.input[0].text).toBe('Web instructions\n\n## user_message\n\nhello');
   });
 
   it('reports stderr and never promotes an incomplete answer on process failure', async () => {
     const h = await harness('fail');
-    const events = await collect(h.adapter.run({ runId: 'fail', cwd: h.dir, prompt: 'fail' }).events);
+    const events = await collect(h.adapter.run({ runId: 'fail', cwd: h.dir, prompt: 'fail' }));
     expect(events).toContainEqual(expect.objectContaining({ type: 'error', failureKind: 'runtime', message: expect.stringContaining('boom') }));
     expect(events.some(e => e.type === 'final_text' || e.type === 'done')).toBe(false);
   });
@@ -191,7 +196,7 @@ describe('CodexAdapter app-server process contract', () => {
   it('interrupts a running turn and waits for process exit', async () => {
     const h = await harness('hold');
     const run = h.adapter.run({ runId: 'stop', cwd: h.dir, prompt: 'hold', stopGraceMs: 100 });
-    const events = collect(run.events);
+    const events = collect(run);
     for (let i = 0; i < 100; i++) {
       if ((await h.requests().catch(() => [])).some(r => r.method === 'turn/start')) break;
       await new Promise(resolve => setTimeout(resolve, 10));

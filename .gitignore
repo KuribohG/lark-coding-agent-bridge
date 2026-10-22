@@ -6,6 +6,7 @@ coverage/
 src/ui/generated/
 web/dist/
 .corepack/
+.web-local/
 *.log
 *.tsbuildinfo
 

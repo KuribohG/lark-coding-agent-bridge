@@ -132,19 +132,10 @@ function webProfile(
   const fallbackPermissions = agentKind === 'pi'
     ? WEB_PI_FALLBACK_PERMISSIONS
     : WEB_FALLBACK_PERMISSIONS;
-  const execution: AgentExecutionProfile = doc
-    ? resolveExecutionProfile(doc, agentKind, {
-        profile,
-        fallbackPermissions,
-      })
-    : {
-        agentKind,
-        permissions: fallbackPermissions,
-        sandbox: {
-          defaultMode: agentKind === 'pi' ? 'danger-full-access' : 'workspace-write',
-          maxMode: agentKind === 'pi' ? 'danger-full-access' : 'workspace-write',
-        },
-      };
+  const execution = resolveExecutionProfile(doc ?? { version: 3, profiles: {} }, agentKind, {
+    profile,
+    fallbackPermissions,
+  });
   const withBinary = options.binary && agentKind === initialAgentKind
     ? applyBinaryOverride(execution, agentKind, options.binary)
     : execution;
