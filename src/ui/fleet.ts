@@ -1,5 +1,6 @@
 import { resolveAppPaths } from '../config/app-paths';
 import {
+  getAutostartProfiles,
   loadRootConfig,
   saveRootConfig,
   withConfigFileLock,
@@ -16,6 +17,8 @@ export interface ProfileSummary {
   name: string;
   agentKind: AgentKind;
   active: boolean;
+  /** Whether the machine-wide supervisor starts this profile on boot. */
+  autostart: boolean;
   /** Whether the supervisor currently hosts this profile's channel. */
   running: boolean;
   capabilities: { backgroundAnalysis: boolean; modelService: boolean };
@@ -55,16 +58,37 @@ export async function listProfiles(
 ): Promise<ProfileSummary[]> {
   const profiles = await listAllProfiles(rootDir).catch(() => []);
   const root = await loadRootConfig(resolveAppPaths({ rootDir }).configFile);
+  const autostart = new Set(root ? getAutostartProfiles(root) : []);
   return profiles.map((p) => ({
     name: p.name,
     agentKind: p.agentKind,
     active: p.active,
+    autostart: autostart.has(p.name),
     running: supervisor.isOnline(p.name),
     capabilities: {
       backgroundAnalysis: Boolean(root?.profiles[p.name] && supportsBackgroundProfile(root.profiles[p.name]!)),
       modelService: Boolean(root?.profiles[p.name] && root.profiles[p.name]!.mode !== 'team' && supportsProfileModelService(root.profiles[p.name]!)),
     },
   }));
+}
+
+/** Change the supervisor boot set without changing the CLI active profile. */
+export async function setProfileAutostart(
+  name: string,
+  enabled: boolean,
+  rootDir?: string,
+): Promise<{ ok: true; autostart: string[] }> {
+  const appPaths = resolveAppPaths({ rootDir });
+  return withConfigFileLock(appPaths.configFile, async () => {
+    const root = await loadRootConfig(appPaths.configFile);
+    if (!root?.profiles[name]) throw new HttpError(404, `profile not found: ${name}`);
+    const current = getAutostartProfiles(root);
+    root.autostartProfiles = enabled
+      ? [...new Set([...current, name])].sort()
+      : current.filter(profile => profile !== name);
+    await saveRootConfig(root, appPaths.configFile);
+    return { ok: true, autostart: root.autostartProfiles };
+  });
 }
 
 /** Switch the active profile (disk metadata only; does not stop/start channels). */

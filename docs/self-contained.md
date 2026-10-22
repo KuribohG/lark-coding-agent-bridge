@@ -38,6 +38,8 @@
 
 后台启动不依赖 systemd，也不提供崩溃重启或开机自启。需要系统服务时使用 `lark-channel-bridge start --web-ui`，并通过 `lark-channel-bridge stop --web-ui` 停止服务，避免服务管理器自动拉起。原来的 `lark-channel-bridge run --profile codex` 仍是无 GUI 的单 profile 模式。
 
+supervisor 的自动启动集合保存在 `bridge.autostart_profiles`，与 CLI 的 active profile 分离。首次迁移不写该字段，继续沿用 active profile；在 Profile 详情页启用“登录后自启”或执行 `lark-channel-bridge profile autostart <name> on|off` 后会写入显式集合。
+
 启动器只管理它能验证身份的 GUI supervisor，不会用进程名称匹配去杀别的用户或其他配置目录的进程。原来的个人版脚本使用无界面模式时，先用旧脚本停止，再使用新版入口启动；不要同时连接同一个飞书应用。
 
 `LARK_CHANNEL_HOME` 控制配置目录。启动器继承当前 shell 的环境，不主动 source `.bashrc`，不带固定代理、个人模型服务地址、密钥或发布路径。需要代理时在启动前配置标准代理环境变量；特殊 Node 代理兼容层可自行通过 `NODE_OPTIONS` 注入。

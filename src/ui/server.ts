@@ -22,7 +22,7 @@ import {
   userLoginComplete,
   userLoginStart,
 } from './api';
-import { activateProfile, listBots, listProfiles } from './fleet';
+import { activateProfile, listBots, listProfiles, setProfileAutostart } from './fleet';
 import { resolveAppPaths } from '../config/app-paths';
 import { modelServiceName } from '../model-service/config';
 import { checkModelService, configureModelService, listModelServices, removeModelService } from '../model-service/registry';
@@ -218,6 +218,14 @@ async function route(
     const body = (await readJsonBody(req)) as { profile?: string };
     if (!body.profile) throw new HttpError(400, 'profile is required');
     sendJson(res, 200, await activateProfile(body.profile, deps.rootDir));
+    return;
+  }
+  if (path === '/api/profiles/autostart' && p) {
+    const body = (await readJsonBody(req)) as { profile?: string; enabled?: boolean };
+    if (!body.profile || typeof body.enabled !== 'boolean') {
+      throw new HttpError(400, 'profile and enabled are required');
+    }
+    sendJson(res, 200, await setProfileAutostart(body.profile, body.enabled, deps.rootDir));
     return;
   }
   if (path === '/api/profiles/validate' && p) {

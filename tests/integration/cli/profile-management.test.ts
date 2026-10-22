@@ -9,7 +9,8 @@ import {
   type AgentKind,
   type RootConfig,
 } from '../../../src/config/profile-schema';
-import { runProfileList, runProfileUse } from '../../../src/cli/commands/profile';
+import { runProfileAutostart, runProfileList, runProfileUse } from '../../../src/cli/commands/profile';
+import { loadRootConfig } from '../../../src/config/profile-store';
 import type { ProcessEntry } from '../../../src/runtime/registry';
 
 const roots: string[] = [];
@@ -28,7 +29,7 @@ afterEach(async () => {
 describe('profile management commands', () => {
   it('lists active profile first with running pid and agent identity', async () => {
     const root = await makeRoot();
-    await writeProfiles(root, 'codex-dev', ['alpha', 'claude', 'codex-dev']);
+    await writeProfiles(root, 'codex-dev', ['alpha', 'claude', 'codex-dev'], ['codex-dev']);
     await writeRegistry(root, [
       processEntry({
         id: 'run1',
@@ -46,10 +47,10 @@ describe('profile management commands', () => {
     await runProfileList({ rootDir: root });
 
     expect(lines).toEqual([
-      'ACTIVE  PROFILE    AGENT   STATUS',
-      '*       codex-dev  codex   pid=12345 agent=codex',
-      '        alpha      claude  -',
-      '        claude     claude  -',
+      'ACTIVE  PROFILE    AGENT   AUTOSTART  STATUS',
+      '*       codex-dev  codex   yes        pid=12345 agent=codex',
+      '        alpha      claude             -',
+      '        claude     claude             -',
     ]);
   });
 
@@ -79,9 +80,28 @@ describe('profile management commands', () => {
     expect(rootConfig.activeProfile).toBe('codex-dev');
     expect(await readFile(registryFile, 'utf8')).toBe(beforeRegistry);
   });
+
+  it('changes the supervisor boot set without changing the active profile', async () => {
+    const root = await makeRoot();
+    await writeProfiles(root, 'claude', ['alpha', 'claude']);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await runProfileAutostart('alpha', true, { rootDir: root });
+    await expect(readFile(join(root, 'active-profile'), 'utf8')).resolves.toBe('claude\n');
+    expect((await loadRootConfig(join(root, 'config.toml')))?.autostartProfiles).toEqual(['alpha', 'claude']);
+
+    await runProfileAutostart('claude', false, { rootDir: root });
+    expect((await loadRootConfig(join(root, 'config.toml')))?.autostartProfiles).toEqual(['alpha']);
+    await expect(readFile(join(root, 'active-profile'), 'utf8')).resolves.toBe('claude\n');
+  });
 });
 
-async function writeProfiles(root: string, activeProfile: string, names: string[]): Promise<void> {
+async function writeProfiles(
+  root: string,
+  activeProfile: string,
+  names: string[],
+  autostartProfiles?: string[],
+): Promise<void> {
   const profiles: RootConfig['profiles'] = {};
   for (const name of names) {
     const agentKind: AgentKind = name.startsWith('codex') ? 'codex' : 'claude';
@@ -101,6 +121,7 @@ async function writeProfiles(root: string, activeProfile: string, names: string[
   const config: RootConfig = {
     schemaVersion: 2,
     activeProfile,
+    ...(autostartProfiles ? { autostartProfiles } : {}),
     preferences: {},
     profiles,
   };

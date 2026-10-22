@@ -14,7 +14,7 @@ import {
   rootToDocument,
 } from '../../../src/config/document';
 import { editToml, parseKeyPath } from '../../../src/config/toml-edit';
-import { loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
+import { getAutostartProfiles, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
 import { inspectConfig, migrateConfig, patchConfig, reloadProfile } from '../../../src/config/service';
 import { larkDisplay } from '../../../src/channels/lark/config';
 import { filterWebState } from '../../../src/channels/web/config';
@@ -102,6 +102,29 @@ describe('layered configuration', () => {
     expect(root.profiles.bot!.channels?.lark).toMatchObject({ show_tools: false, progress: 'detailed' });
     expect(root.profiles.bot!.channels?.web).toEqual({ show_tools: true, show_reasoning: false });
     expect(resolveRun(doc, 'codex', 'bot').sources.model).toBe('profiles.bot.run.model');
+  });
+
+  it('keeps the supervisor autostart set independent from the active profile', () => {
+    const withBootSet = source + `
+[bridge]
+active_profile = "bot"
+autostart_profiles = ["bot", "other"]
+`;
+    const root = documentToRoot(parseDocument(withBootSet));
+    expect(root.activeProfile).toBe('bot');
+    expect(getAutostartProfiles(root)).toEqual(['bot', 'other']);
+    expect(documentToRoot(parseDocument(formatDocument(rootToDocument(root)))).autostartProfiles)
+      .toEqual(['bot', 'other']);
+
+    const legacy = documentToRoot(parseDocument(source));
+    expect(legacy.autostartProfiles).toBeUndefined();
+    expect(getAutostartProfiles(legacy)).toEqual(['bot']);
+
+    const empty = documentToRoot(parseDocument(withBootSet.replace('["bot", "other"]', '[]')));
+    expect(getAutostartProfiles(empty)).toEqual([]);
+
+    expect(() => parseDocument(withBootSet.replace('"other"]', '"missing"]')))
+      .toThrow('autostart_profiles: profile not found');
   });
 
   it('resolves an account-free execution profile for standalone channels', () => {

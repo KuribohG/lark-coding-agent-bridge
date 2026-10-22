@@ -32,6 +32,7 @@ export function ProfileDetail({ profile, onBack }: { profile: string; onBack: ()
   const [confirm, setConfirm] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [updatingAutostart, setUpdatingAutostart] = useState(false);
 
   const loadRuntime = useCallback(async () => {
     const [pr, bt] = await Promise.all([
@@ -75,6 +76,20 @@ export function ProfileDetail({ profile, onBack }: { profile: string; onBack: ()
     }
   }
 
+  async function toggleAutostart() {
+    if (!info) return;
+    setUpdatingAutostart(true);
+    try {
+      await apiPost("/api/profiles/autostart", { profile, enabled: !info.autostart });
+      toast.success(info.autostart ? `已关闭 ${profile} 的登录后自启` : `已启用 ${profile} 的登录后自启`);
+      await loadRuntime();
+    } catch (e) {
+      toast.error(String((e as Error).message ?? e));
+    } finally {
+      setUpdatingAutostart(false);
+    }
+  }
+
   const running = info?.running ?? bots.length > 0;
 
   return (
@@ -85,6 +100,7 @@ export function ProfileDetail({ profile, onBack }: { profile: string; onBack: ()
         </Button>
         <h1 className="text-2xl font-semibold">{profile}</h1>
         {info && <Badge variant="secondary">{info.agentKind}</Badge>}
+        {info?.autostart && <Badge variant="outline">登录后自启</Badge>}
         {running ? <Badge variant="success">在线</Badge> : <Badge variant="outline">未运行</Badge>}
         {!running && (
           <Button className="ml-auto" size="sm" disabled={starting} onClick={start}>
@@ -116,6 +132,20 @@ export function ProfileDetail({ profile, onBack }: { profile: string; onBack: ()
               ))}
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Supervisor 启动策略</CardTitle>
+        </CardHeader>
+        <CardContent className="flex items-center justify-between gap-3">
+          <p className="text-sm text-muted-foreground">
+            登录后自启只影响 <code>start --web-ui</code> 的 supervisor；active profile 仅作为 CLI 默认目标。
+          </p>
+          <Button variant="outline" size="sm" disabled={!info || updatingAutostart} onClick={toggleAutostart}>
+            {updatingAutostart ? "保存中…" : info?.autostart ? "关闭登录后自启" : "启用登录后自启"}
+          </Button>
         </CardContent>
       </Card>
 

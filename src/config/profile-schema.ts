@@ -208,6 +208,11 @@ export function effectiveLarkCliIdentity(
 export interface RootConfig {
   schemaVersion: 2;
   activeProfile: string;
+  /**
+   * Profiles the machine-wide supervisor starts automatically. When omitted,
+   * fall back to activeProfile for backwards compatibility.
+   */
+  autostartProfiles?: string[];
   preferences: Record<string, never>;
   /** Relative to the root config directory; monitoring settings then live only in this TOML file. */
   monitorConfigFile?: string;

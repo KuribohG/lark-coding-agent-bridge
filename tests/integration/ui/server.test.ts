@@ -163,6 +163,30 @@ describe('ui server (supervisor-backed)', () => {
     expect(config.live).toBe(true);
   });
 
+  it('changes supervisor autostart independently from the active profile', async () => {
+    let profiles = await json(await get('/api/profiles', handle.token));
+    expect(profiles.profiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'claude', active: true, autostart: true }),
+      expect.objectContaining({ name: 'work', active: false, autostart: false }),
+    ]));
+
+    await json(await post('/api/profiles/autostart', handle.token, {
+      profile: 'claude',
+      enabled: false,
+    }));
+    await json(await post('/api/profiles/autostart', handle.token, {
+      profile: 'work',
+      enabled: true,
+    }));
+
+    profiles = await json(await get('/api/profiles', handle.token));
+    expect(profiles.profiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'claude', active: true, autostart: false }),
+      expect.objectContaining({ name: 'work', active: false, autostart: true }),
+    ]));
+    expect((await loadRootConfig(configPath))?.autostartProfiles).toEqual(['work']);
+  });
+
   it('applies a config change live to an online profile and persists it', async () => {
     const view = await json(
       await post('/api/config', handle.token, { mode: 'team', maxConcurrentRuns: 7, requireMentionInGroup: false }),

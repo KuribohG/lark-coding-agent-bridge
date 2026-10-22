@@ -52,7 +52,7 @@ describe('profile-scoped daemon paths and arguments', () => {
     expect(buildLauncherCmd(inputs)).toContain('set "LARK_CHANNEL_HOME=/tmp/lark-channel-home"');
   });
 
-  it('supervisor service runs `run --web-ui` with no --profile', () => {
+  it('supervisor service can run without a pinned boot profile', () => {
     const inputs = {
       nodePath: '/usr/local/bin/node',
       bridgeEntryPath: '/repo/bin/lark-channel-bridge.mjs',

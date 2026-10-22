@@ -148,6 +148,18 @@ lark-channel-bridge status [--profile <name>]
 lark-channel-bridge unregister [--profile <name>]
 ```
 
+脚本和非交互环境必须显式指定 `--profile <name>` 或 `--web-ui`。服务命令会先打印实际目标和 profile，避免受 active profile 隐式变化影响。
+
+`start --web-ui` 使用持久化的 `bridge.autostart_profiles` 作为 supervisor 的自动启动集合；旧配置没有该字段时仍回退到 active profile。active profile 只决定 CLI 默认目标，不再隐式定义整套服务的启动集合：
+
+```bash
+lark-channel-bridge profile autostart work on
+lark-channel-bridge profile autostart work off
+lark-channel-bridge profile autostart work
+```
+
+显式执行 `start --web-ui --profile work` 会把 `--profile work` 固化进 supervisor 服务，避免服务重启后跟随 active profile 漂移。
+
 平台映射：
 - **macOS**：launchd 用户代理 `ai.lark-channel-bridge.bot.<profile>`
 - **Linux**：systemd 用户单元 `lark-channel-bridge.bot.<profile>.service`
@@ -157,7 +169,7 @@ daemon 日志在 `~/.lark-channel/profiles/<profile>/logs/daemon/`。
 
 ### 多 profile：分别运行 Claude 和 Codex
 
-默认情况下，bridge 使用当前激活的 profile；可以通过 `profile use <name>` 切换。每个 profile 会维护独立的应用凭据、会话、工作目录和日志。只有在需要同时连接多个 PersonalAgent 应用，或分别运行 Claude 和 Codex 时，才需要创建多个 profile：
+`profile use <name>` 只切换 CLI 默认 profile，不修改 supervisor 的自动启动集合。每个 profile 会维护独立的应用凭据、会话、工作目录和日志。只有在需要同时连接多个 PersonalAgent 应用，或分别运行 Claude 和 Codex 时，才需要创建多个 profile：
 
 ```bash
 lark-channel-bridge start --profile claude --agent claude

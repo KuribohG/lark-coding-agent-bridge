@@ -1,5 +1,6 @@
 import { checkConfig, showConfig, setConfig, unsetConfig, migrateToToml } from './commands/config';
 import { Command } from 'commander';
+import { dirname } from 'node:path';
 import { useBundledLarkCli } from '../platform/bundled-tools';
 import pkg from '../../package.json';
 import { formatAgentPreflightDiagnostic, getAgentPreflightDiagnostic } from '../agent/preflight';
@@ -12,6 +13,7 @@ import {
 } from './commands/secrets';
 import {
   runProfileCreate,
+  runProfileAutostart,
   runProfileExport,
   runProfileList,
   runProfileRemove,
@@ -151,6 +153,19 @@ profile
   });
 
 profile
+  .command('autostart <name> [state]')
+  .description('Show or change whether a profile starts with the supervisor service')
+  .option('-c, --config <path>', 'root config path')
+  .action(async (name: string, state: string | undefined, opts: { config?: string }) => {
+    const normalized = state?.toLowerCase();
+    if (normalized !== undefined && normalized !== 'on' && normalized !== 'off') {
+      throw new Error('state must be on or off');
+    }
+    await runProfileAutostart(name, normalized === undefined ? undefined : normalized === 'on',
+      opts.config ? { rootDir: dirname(opts.config) } : {});
+  });
+
+profile
   .command('remove <name>')
   .description('Archive a profile and its local state')
   .option('--purge', 'permanently delete profile state instead of archiving')
@@ -205,6 +220,8 @@ program
 
 // === service-level commands (OS-managed daemon: launchd/systemd/schtasks) ===
 
+const requireExplicitServiceTarget = !process.stdin.isTTY || !process.stdout.isTTY;
+
 program
   .command('start')
   .description('Install (if needed) and start the bridge as an OS-managed daemon')
@@ -226,7 +243,7 @@ program
     tenant?: string;
     skipCheckLarkCli?: boolean;
   }) => {
-    await runServiceStart(opts);
+    await runServiceStart({ ...opts, requireExplicitTarget: requireExplicitServiceTarget });
   });
 
 program
@@ -235,7 +252,8 @@ program
   .option('--profile <name>', 'profile name (defaults to active profile)')
   .option('--web-ui', 'target the supervisor service (auto-detected when no per-profile service exists)')
   .action(async (opts: { profile?: string; webUi?: boolean }) => {
-    await runServiceStop({ profile: opts.profile, webUi: opts.webUi });
+    await runServiceStop({ profile: opts.profile, webUi: opts.webUi,
+      requireExplicitTarget: requireExplicitServiceTarget });
   });
 
 program
@@ -244,7 +262,8 @@ program
   .option('--profile <name>', 'profile name (defaults to active profile)')
   .option('--web-ui', 'target the supervisor service instead of a per-profile one')
   .action(async (opts: { profile?: string; webUi?: boolean }) => {
-    await runServiceRestart({ profile: opts.profile, webUi: opts.webUi });
+    await runServiceRestart({ profile: opts.profile, webUi: opts.webUi,
+      requireExplicitTarget: requireExplicitServiceTarget });
   });
 
 program
@@ -253,7 +272,8 @@ program
   .option('--profile <name>', 'profile name (defaults to active profile)')
   .option('--web-ui', 'target the supervisor service instead of a per-profile one')
   .action(async (opts: { profile?: string; webUi?: boolean }) => {
-    await runServiceStatus({ profile: opts.profile, webUi: opts.webUi });
+    await runServiceStatus({ profile: opts.profile, webUi: opts.webUi,
+      requireExplicitTarget: requireExplicitServiceTarget });
   });
 
 program
@@ -262,7 +282,8 @@ program
   .option('--profile <name>', 'profile name (defaults to active profile)')
   .option('--web-ui', 'target the supervisor service instead of a per-profile one')
   .action(async (opts: { profile?: string; webUi?: boolean }) => {
-    await runServiceUnregister({ profile: opts.profile, webUi: opts.webUi });
+    await runServiceUnregister({ profile: opts.profile, webUi: opts.webUi,
+      requireExplicitTarget: requireExplicitServiceTarget });
   });
 
 const secrets = program

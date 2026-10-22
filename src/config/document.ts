@@ -147,8 +147,22 @@ function validateDocument(input: unknown): ConfigDocument {
   const doc = keys(input, ['version', 'bridge', 'defaults', 'agents', 'channels', 'profiles', 'secrets', 'migrations', 'model_services', 'monitoring'], 'config');
   if (doc.version !== 3) throw new Error('config.version must be 3');
   if (doc.bridge !== undefined) {
-    const bridge = keys(doc.bridge, ['active_profile', 'monitors_file'], 'bridge');
-    for (const [k,v] of Object.entries(bridge)) if (typeof v !== 'string' || !v) throw new Error(`bridge.${k}: expected nonempty string`);
+    const bridge = keys(doc.bridge, ['active_profile', 'autostart_profiles', 'monitors_file'], 'bridge');
+    for (const k of ['active_profile', 'monitors_file']) {
+      const value = bridge[k];
+      if (value !== undefined && (typeof value !== 'string' || !value)) {
+        throw new Error(`bridge.${k}: expected nonempty string`);
+      }
+    }
+    if (bridge.autostart_profiles !== undefined) {
+      if (!Array.isArray(bridge.autostart_profiles)
+        || bridge.autostart_profiles.some(value => typeof value !== 'string' || !value.trim())) {
+        throw new Error('bridge.autostart_profiles: expected nonempty profile names');
+      }
+      if (new Set(bridge.autostart_profiles).size !== bridge.autostart_profiles.length) {
+        throw new Error('bridge.autostart_profiles: duplicate profile');
+      }
+    }
   }
   const profiles = object(doc.profiles ?? {}, 'profiles');
   for (const [name, value] of Object.entries(profiles)) {
@@ -184,6 +198,9 @@ function validateDocument(input: unknown): ConfigDocument {
   }
   if (doc.secrets !== undefined) checkSecrets(doc.secrets, 'secrets');
   if (doc.bridge?.active_profile && !Object.hasOwn(profiles, doc.bridge.active_profile)) throw new Error('bridge.active_profile: profile not found');
+  for (const profile of doc.bridge?.autostart_profiles ?? []) {
+    if (!Object.hasOwn(profiles, profile)) throw new Error(`bridge.autostart_profiles: profile not found: ${profile}`);
+  }
   if (doc.bridge?.monitors_file && doc.monitoring) throw new Error('use bridge.monitors_file or inline monitoring, not both');
   return { ...doc, profiles } as ConfigDocument;
 }
@@ -303,7 +320,9 @@ export function documentToRoot(doc: ConfigDocument): RootConfig {
           : { claude: mergedLaunch }),
     });
   }
+  const autostartProfiles = doc.bridge?.autostart_profiles as string[] | undefined;
   return { schemaVersion: 2, activeProfile: doc.bridge?.active_profile ?? Object.keys(profiles)[0] ?? '', preferences: {}, profiles,
+    ...(autostartProfiles !== undefined ? { autostartProfiles: [...autostartProfiles] } : {}),
     ...(doc.bridge?.monitors_file ? { monitorConfigFile: doc.bridge.monitors_file } : {}),
     ...(doc.secrets ? { secrets: doc.secrets } : {}), ...(doc.migrations ? { migrations: doc.migrations } : {}),
     ...(doc.model_services ? { modelServices: doc.model_services } : {}),
@@ -325,6 +344,7 @@ function profileDocument(p: ProfileConfig): Table {
 
 export function rootToDocument(root: RootConfig): ConfigDocument {
   const doc: ConfigDocument = { version: 3, bridge: { ...(root.activeProfile ? { active_profile: root.activeProfile } : {}),
+    ...(root.autostartProfiles !== undefined ? { autostart_profiles: [...root.autostartProfiles] } : {}),
     ...(root.monitorConfigFile ? { monitors_file: root.monitorConfigFile } : {}) }, profiles: {}, channels: { lark: { profiles: {} } } };
   for (const [name, profile] of Object.entries(root.profiles)) {
     doc.profiles[name] = profileDocument(profile);

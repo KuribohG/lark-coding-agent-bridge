@@ -23,6 +23,15 @@ run-lark-cc stop
 
 单 profile 模式也使用 supervisor 管理该 profile；其配置的后台来源需要相应执行 profile 在线。统一网页管理推荐使用控制台模式。
 
+`start --web-ui` 自动启动 `bridge.autostart_profiles` 中的 profile；字段缺失时兼容回退到 active profile。active profile 只决定 CLI 默认目标，不会因为 Web UI 临时启停而自动改变服务启动集合。可在 Profile 详情页或终端设置：
+
+```bash
+lark-channel-bridge profile autostart work on
+lark-channel-bridge profile autostart work off
+```
+
+系统服务和脚本中应显式使用 `--profile <name>` 或 `--web-ui`；命令会先打印实际服务目标。显式安装 `start --web-ui --profile work` 后，服务定义会固化 `work`，不会在下次登录或重启时跟随其他 active profile。
+
 系统服务需要稳定的全局安装路径，不要从临时 npx 路径注册。通过对应的服务命令停止服务，避免服务管理器重新拉起；不要混用服务和便携启动器连接同一个应用。
 
 ## 升级

@@ -147,6 +147,18 @@ lark-channel-bridge status [--profile <name>]
 lark-channel-bridge unregister [--profile <name>]
 ```
 
+Scripts and non-interactive callers must provide `--profile <name>` or `--web-ui` explicitly. Lifecycle commands print the resolved service and profile before acting.
+
+`start --web-ui` starts the persisted `bridge.autostart_profiles` set. Existing configurations without that field keep the legacy active-profile fallback. The active profile is now only the CLI default and does not implicitly define the supervisor boot set:
+
+```bash
+lark-channel-bridge profile autostart work on
+lark-channel-bridge profile autostart work off
+lark-channel-bridge profile autostart work
+```
+
+`start --web-ui --profile work` pins `work` into the installed supervisor service so later active-profile changes cannot redirect a service restart.
+
 Platform mapping:
 - **macOS**: launchd user agent `ai.lark-channel-bridge.bot.<profile>`
 - **Linux**: systemd user unit `lark-channel-bridge.bot.<profile>.service`
@@ -156,7 +168,7 @@ Daemon logs are under `~/.lark-channel/profiles/<profile>/logs/daemon/`.
 
 ### Multiple profiles: Claude and Codex
 
-By default, the bridge starts with the currently selected profile. Use `profile use <name>` to change it. Each profile keeps its own app credentials, sessions, working directories, and logs. Create multiple profiles only when you need to connect multiple PersonalAgent apps, or run Claude and Codex as separate bots:
+`profile use <name>` changes the CLI default only; it does not change the supervisor boot set. Each profile keeps its own app credentials, sessions, working directories, and logs. Create multiple profiles only when you need to connect multiple PersonalAgent apps, or run Claude and Codex as separate bots:
 
 ```bash
 lark-channel-bridge start --profile claude --agent claude

@@ -6,6 +6,7 @@ import {
   loadRootConfig,
   agentKindFromString,
   formatRootConfig,
+  getAutostartProfiles,
   hasPermissionDefaultsMigration,
   markPermissionDefaultsMigration,
   readActiveProfile,
@@ -61,6 +62,8 @@ export async function runProfileList(opts: ProfileCommandOptions = {}): Promise<
 
   const registryFile = resolveAppPaths({ rootDir }).userRegistryFile;
   const running = readAndPrune(registryFile);
+  const root = await loadRootConfig(resolveAppPaths({ rootDir }).configFile);
+  const autostart = new Set(root ? getAutostartProfiles(root) : []);
   const rows = profiles.map((profile) => {
     const holders = running
       .filter((entry) => entry.profileName === profile.name)
@@ -69,6 +72,7 @@ export async function runProfileList(opts: ProfileCommandOptions = {}): Promise<
       active: profile.active ? '*' : '',
       profile: profile.name,
       agent: profile.agentKind,
+      autostart: autostart.has(profile.name) ? 'yes' : '',
       status: holders.length > 0 ? holders.join(', ') : '-',
     };
   });
@@ -76,11 +80,13 @@ export async function runProfileList(opts: ProfileCommandOptions = {}): Promise<
     active: Math.max('ACTIVE'.length, ...rows.map((row) => row.active.length)),
     profile: Math.max('PROFILE'.length, ...rows.map((row) => row.profile.length)),
     agent: Math.max('AGENT'.length, ...rows.map((row) => row.agent.length)),
+    autostart: Math.max('AUTOSTART'.length, ...rows.map((row) => row.autostart.length)),
   };
   console.log(formatProfileListRow({
     active: 'ACTIVE',
     profile: 'PROFILE',
     agent: 'AGENT',
+    autostart: 'AUTOSTART',
     status: 'STATUS',
   }, widths));
   for (const row of rows) {
@@ -89,13 +95,14 @@ export async function runProfileList(opts: ProfileCommandOptions = {}): Promise<
 }
 
 function formatProfileListRow(
-  row: { active: string; profile: string; agent: string; status: string },
-  widths: { active: number; profile: number; agent: number },
+  row: { active: string; profile: string; agent: string; autostart: string; status: string },
+  widths: { active: number; profile: number; agent: number; autostart: number },
 ): string {
   return [
     row.active.padEnd(widths.active),
     row.profile.padEnd(widths.profile),
     row.agent.padEnd(widths.agent),
+    row.autostart.padEnd(widths.autostart),
     row.status,
   ].join('  ');
 }
@@ -150,6 +157,30 @@ export async function runProfileUse(
     await writeActiveProfile(rootDir, name);
   });
   console.log(`已切换到 profile: ${name}`);
+}
+
+export async function runProfileAutostart(
+  name: string,
+  enabled?: boolean,
+  opts: ProfileCommandOptions = {},
+): Promise<void> {
+  const rootDir = opts.rootDir ?? paths.rootDir;
+  const configFile = resolveAppPaths({ rootDir }).configFile;
+  await withConfigFileLock(configFile, async () => {
+    const root = await loadRootConfig(configFile);
+    if (!root?.profiles[name]) throw new Error(`profile not found: ${name}`);
+    const current = getAutostartProfiles(root);
+    if (enabled === undefined) {
+      console.log(`${current.includes(name) ? 'enabled' : 'disabled'}: ${name}`);
+      return;
+    }
+    const next = enabled
+      ? [...new Set([...current, name])].sort()
+      : current.filter(profile => profile !== name);
+    root.autostartProfiles = next;
+    await saveRootConfig(root, configFile);
+    console.log(`${enabled ? '已启用' : '已关闭'}登录后自动启动: ${name}`);
+  });
 }
 
 export async function runProfileRemove(

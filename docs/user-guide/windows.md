@@ -19,6 +19,12 @@ sleep and power loss are outside the continuous-running guarantee. Do not run
 it as SYSTEM to work around installation errors: that changes the user home,
 credentials and agent configuration.
 
+The supervisor starts `bridge.autostart_profiles`, independent of the CLI
+active profile. Set it from the Profile page or with
+`lark-channel-bridge profile autostart <name> on|off`. Installing with
+`start --web-ui --profile <name>` pins that profile into the scheduled-task
+launcher; a plain `restart` operates the existing definition.
+
 The Windows service explicitly disables the default 72-hour execution limit
 and the start/stop restrictions on battery power. Re-run service installation
 to update an existing task; a plain restart does not rewrite its definition.

@@ -49,6 +49,7 @@
 | `lark-channel-bridge profile list` | 列出 profile |
 | `lark-channel-bridge profile create <名称> --agent claude` | 创建 Claude profile；Codex/Pi 分别使用 `--agent codex` / `--agent pi` |
 | `lark-channel-bridge profile use <名称>` | 切换默认选择 |
+| `lark-channel-bridge profile autostart <名称> on\|off` | 设置 supervisor 登录后自动启动集合，不影响 active profile |
 | `lark-channel-bridge model-service list` | 列出独立模型 API 服务 |
 | `lark-channel-bridge model-service configure <名称> <文件>` | 保存单个服务对象 |
 | `lark-channel-bridge model-service check <名称>` | 本地校验配置和凭据 |

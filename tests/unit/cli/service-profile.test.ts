@@ -181,6 +181,37 @@ describe('profile-aware service commands', () => {
     expect(lines).toContain(
       '✓ 已启动  bot: Codex Bot (cli_codex)  agent: Codex CLI (codex)  进程: p1',
     );
+    expect(lines).toContain('目标服务: /tmp/service (mock)');
+    expect(lines).toContain('profile: codex-dev');
+  });
+
+  it('pins an explicit profile into the supervisor service launcher', async () => {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    mocks.readAndPrune
+      .mockReturnValueOnce([])
+      .mockReturnValue([
+        processEntry({
+          id: 'p1',
+          pid: 12345,
+          appId: 'cli_codex',
+          profileName: 'codex-dev',
+          agentKind: 'codex',
+          botName: 'Codex Bot',
+        }),
+      ]);
+
+    await runServiceStart({
+      webUi: true,
+      profile: 'codex-dev',
+      skipCheckLarkCli: true,
+    });
+
+    expect(mocks.getServiceAdapter).toHaveBeenCalledWith(
+      'supervisor',
+      ['run', '--web-ui', '--profile', 'codex-dev'],
+    );
+    expect(mocks.adapter.install).toHaveBeenCalled();
+    expect(mocks.adapter.start).toHaveBeenCalled();
   });
 
   it('uses materialized config for service preflight after env secret materialization', async () => {
@@ -486,6 +517,11 @@ describe('profile-aware service commands', () => {
     mocks.readActiveProfile.mockResolvedValue(undefined);
     mocks.loadRootConfig.mockResolvedValue(undefined);
     await expect(runServiceStatus()).rejects.toThrow('active profile is required');
+  });
+
+  it('requires an explicit target for non-interactive service scripts', async () => {
+    await expect(runServiceStatus({ requireExplicitTarget: true }))
+      .rejects.toThrow('requires --profile <name> or --web-ui');
   });
 
   it('falls back to the supervisor service when the active profile has no service of its own', async () => {

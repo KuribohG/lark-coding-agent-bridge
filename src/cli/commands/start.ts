@@ -3,7 +3,8 @@ import os from 'node:os';
 import { createInterface } from 'node:readline';
 import pkg from '../../../package.json';
 import { resolveAppPaths, type AppPaths } from '../../config/app-paths';
-import { loadRootConfig } from '../../config/profile-store';
+import { getAutostartProfiles, loadRootConfig } from '../../config/profile-store';
+import type { RootConfig } from '../../config/profile-schema';
 import { configureLogger, gcOldLogs, log, reportError } from '../../core/logger';
 import { loadTelemetryAdapter, telemetry } from '../../core/telemetry';
 import { startUiServer } from '../../ui/server';
@@ -168,20 +169,38 @@ async function runSupervisorConsole(opts: StartOptions): Promise<void> {
 
   // Register shutdown before starting a channel (which may wait on the network).
   const parked = parkWithShutdown(supervisor, appPaths, uiServer, hostLock);
-  // Auto-start only the selected profile; others start on demand from the console.
-  try {
-    if (runtime) {
-      await supervisor.startProfile(appPaths.profile);
-      console.log(`✓ profile「${appPaths.profile}」已上线`);
+  // An explicit --profile is a one-run override. Otherwise start the persisted
+  // supervisor boot set; missing config still falls back to the active profile.
+  const bootProfiles = resolveSupervisorBootProfiles({
+    root,
+    resolvedProfile: runtime?.profile,
+    explicitProfile: opts.profile,
+  });
+  for (const profile of bootProfiles) {
+    try {
+      await supervisor.startProfile(profile);
+      console.log(`✓ profile「${profile}」已上线`);
+    } catch (err) {
+      console.warn(
+        `⚠️ profile「${profile}」启动失败：${err instanceof Error ? err.message : String(err)}`,
+      );
+      log.warn('supervisor', 'profile-start-failed', { profile, err: String(err) });
     }
-  } catch (err) {
-    console.warn(
-      `⚠️ active profile「${appPaths.profile}」启动失败：${err instanceof Error ? err.message : String(err)}`,
-    );
-    log.warn('supervisor', 'active-start-failed', { profile: appPaths.profile, err: String(err) });
   }
 
   await parked;
+}
+
+export function resolveSupervisorBootProfiles(input: {
+  root?: RootConfig;
+  resolvedProfile?: string;
+  explicitProfile?: string;
+}): string[] {
+  if (input.explicitProfile) return input.resolvedProfile ? [input.resolvedProfile] : [];
+  if (input.root?.autostartProfiles !== undefined) return getAutostartProfiles(input.root);
+  if (input.resolvedProfile && input.root?.profiles[input.resolvedProfile]) return [input.resolvedProfile];
+  if (input.root) return getAutostartProfiles(input.root);
+  return input.resolvedProfile ? [input.resolvedProfile] : [];
 }
 
 /**

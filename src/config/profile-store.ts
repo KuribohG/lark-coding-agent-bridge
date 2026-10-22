@@ -46,6 +46,9 @@ export function normalizeRootConfig(root: RootConfig): RootConfig {
   return {
     schemaVersion: 2,
     activeProfile: root.activeProfile,
+    ...(root.autostartProfiles !== undefined
+      ? { autostartProfiles: uniqueSortedStrings(root.autostartProfiles).filter(name => Boolean(profiles[name])) }
+      : {}),
     preferences: {},
     ...(root.monitorConfigFile !== undefined ? { monitorConfigFile: root.monitorConfigFile } : {}),
     ...(root.inbox ? { inbox: normalizeInbox(root.inbox) } : {}),
@@ -131,6 +134,12 @@ export async function readActiveProfile(rootDir?: string): Promise<string | unde
 export async function writeActiveProfile(rootDir: string, profile: string): Promise<void> {
   const activeProfileFile = join(rootDir, 'active-profile');
   await writeFileAtomic(activeProfileFile, `${profile}\n`, { mode: 0o600 });
+}
+
+/** Supervisor boot set. Missing config preserves the legacy active-profile behavior. */
+export function getAutostartProfiles(root: Pick<RootConfig, 'activeProfile' | 'autostartProfiles' | 'profiles'>): string[] {
+  const configured = root.autostartProfiles ?? (root.activeProfile ? [root.activeProfile] : []);
+  return uniqueSortedStrings(configured).filter(name => Boolean(root.profiles[name]));
 }
 
 export function runtimeProfileConfig(root: RootConfig, profile: string): AppConfig & ProfileConfig {
@@ -220,6 +229,9 @@ export async function removeProfile(
   delete next.profiles[profile];
   if (root.activeProfile === profile) {
     next.activeProfile = Object.keys(next.profiles).sort((a, b) => a.localeCompare(b))[0] ?? '';
+  }
+  if (root.autostartProfiles !== undefined) {
+    next.autostartProfiles = root.autostartProfiles.filter(name => name !== profile);
   }
   const profileDir = resolveAppPaths({ rootDir, profile }).profileDir;
   if (opts.purge) {

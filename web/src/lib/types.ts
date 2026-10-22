@@ -27,6 +27,7 @@ export interface ProfileInfo {
   name: string;
   agentKind: AgentKind;
   active: boolean;
+  autostart: boolean;
   running: boolean;
   capabilities?: { backgroundAnalysis: boolean; modelService: boolean };
 }
