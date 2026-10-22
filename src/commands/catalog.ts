@@ -5,6 +5,7 @@ export const commandDefinitions = [
   ] },
   { name: 'btw', access: 'user', pending: 'preserve', arguments: 'verbatim', help: ['`/btw 问题` — 当前话题/聊天的旁问，记住此前旁问，不打断主任务'] },
   { name: 'resume', access: 'user', pending: 'cancel', arguments: 'words', help: ['`/resume [N]` — 列出并恢复历史会话（最多 N 条）'] },
+  { name: 'recent', access: 'user', pending: 'preserve', arguments: 'words', help: ['`/recent [N]` — 列出最近完成的 session（默认 5 条，最多 20 条）'] },
   { name: 'cd', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/cd <path>` — 切换工作目录（会重置 session）'] },
   { name: 'ws', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/ws list|save <name>|use <name>|remove <name>` — 工作目录'] },
   { name: 'account', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/account` — 查看当前应用；`/account change` 换 appId/secret 并重连'] },

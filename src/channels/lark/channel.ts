@@ -1162,7 +1162,9 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   } else {
     log.info('session', 'fresh', { cwd });
   }
+  let sessionCwd = cwd;
   const recordSession = (evt: AgentEvent): void => {
+    if (evt.type === 'system' && evt.cwd) sessionCwd = evt.cwd;
     recordRunSessionEvent({
       scopeId: scope,
       sessions,
@@ -1249,6 +1251,15 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       channel, chatId, replyMode, sendOpts, cardRenderOptions,
       cotMessages, cotClient, originMessageId: lastMsg.messageId, inputPreview: lastMsg.content,
     }), { idleTimeoutMs, recordSession, filterForPrefs });
+    if (await execution.result === 'completed' && sessionCatalog) {
+      sessionCatalog.markCompleted({
+        scopeId: scope,
+        agentId: capability.agentId,
+        cwdRealpath: sessionCwd,
+        policyFingerprint: flow.policy.policyFingerprint,
+        lastSummary: summarizeRunInput(batch),
+      });
+    }
   } catch (err) {
     log.fail('stream', err);
   } finally {
@@ -1261,6 +1272,14 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
     await questionsDone;
   }
+}
+
+function summarizeRunInput(batch: NormalizedMessage[]): string {
+  return batch
+    .map((message) => message.content.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join(' / ')
+    .slice(0, 180);
 }
 
 function buildPrompt(

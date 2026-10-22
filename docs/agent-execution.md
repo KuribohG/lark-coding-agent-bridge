@@ -126,6 +126,9 @@ handler table in `commands/index.ts` must cover every catalogue entry. Text and
 card commands use the same authorization and dispatch function; domain handlers
 live in the adjacent workspace, resume, config, account, access, lifecycle,
 doctor and meeting modules. Existing command context type exports remain valid.
+The `recent` handler reads the profile session catalog without spawning an
+agent; active runs are omitted and non-admin callers are limited to their
+current chat/topic scope.
 
 Chat forms translate CardKit string fields before calling the shared preference
 validator in `src/config/preferences.ts`; the web API supplies JSON fields.

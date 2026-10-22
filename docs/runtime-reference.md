@@ -135,6 +135,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/ws use <name>` | Switch to a named workspace |
 | `/ws remove <name>` | Delete a named workspace |
 | `/resume` | Resume compatible history for the same agent, working directory, and permission mode |
+| `/recent [N]` | List recently completed sessions (default 5, maximum 20); owners/admins see the whole profile, other users see the current chat/topic |
 | `/status` | Show profile, agent, working directory, session, lark-cli identity, and run state |
 | `/config` | Inspect configuration and open separate execution, Lark display or access forms |
 | `/model [model-id\|default]` | View or change the current topic/chat model; accepts custom IDs |

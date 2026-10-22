@@ -22,6 +22,7 @@ export interface SessionCatalogEntry extends SessionCatalogIdentity {
   key: string;
   status: SessionCatalogStatus;
   updatedAt: number;
+  completedAt?: number;
   sessionId?: string;
   threadId?: string;
   lastSummary?: string;
@@ -36,6 +37,11 @@ export interface UpsertSessionCatalogInput extends SessionCatalogIdentity {
 
 export interface ArchiveSessionCatalogInput extends SessionCatalogIdentity {
   now?: number;
+}
+
+export interface MarkSessionCatalogCompletedInput extends SessionCatalogIdentity {
+  now?: number;
+  lastSummary?: string;
 }
 
 export interface SessionCatalogGcOptions {
@@ -105,6 +111,14 @@ export class SessionCatalog {
   upsertActive(input: UpsertSessionCatalogInput): SessionCatalogEntry {
     assertAgentIdentity(input);
     const key = sessionCatalogKey(input);
+    const previous = this.data.get(key);
+    const continuesSession = Boolean(previous && (
+      (input.sessionId !== undefined && previous.sessionId === input.sessionId) ||
+      (input.threadId !== undefined && previous.threadId === input.threadId)
+    ));
+    const completedAt = continuesSession ? previous?.completedAt : undefined;
+    const lastSummary = input.lastSummary
+      ?? (continuesSession ? previous?.lastSummary : undefined);
     const entry: SessionCatalogEntry = {
       key,
       scopeId: input.scopeId,
@@ -113,9 +127,10 @@ export class SessionCatalog {
       policyFingerprint: input.policyFingerprint,
       status: 'active',
       updatedAt: input.now ?? Date.now(),
+      ...(completedAt !== undefined ? { completedAt } : {}),
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
       ...(input.threadId ? { threadId: input.threadId } : {}),
-      ...(input.lastSummary ? { lastSummary: input.lastSummary } : {}),
+      ...(lastSummary ? { lastSummary } : {}),
     };
     this.data.set(key, entry);
     this.schedulePersist();
@@ -130,6 +145,22 @@ export class SessionCatalog {
       ...entry,
       status: 'archived',
       updatedAt: input.now ?? Date.now(),
+    });
+    this.schedulePersist();
+    return true;
+  }
+
+  markCompleted(input: MarkSessionCatalogCompletedInput): boolean {
+    const key = sessionCatalogKey(input);
+    const entry = this.data.get(key);
+    if (!entry) return false;
+    const completedAt = input.now ?? Date.now();
+    const lastSummary = normalizeSummary(input.lastSummary) ?? entry.lastSummary;
+    this.data.set(key, {
+      ...entry,
+      updatedAt: completedAt,
+      completedAt,
+      ...(lastSummary ? { lastSummary } : {}),
     });
     this.schedulePersist();
     return true;
@@ -233,10 +264,17 @@ function normalizeEntry(input: unknown): SessionCatalogEntry | undefined {
     policyFingerprint: raw.policyFingerprint,
     status: raw.status,
     updatedAt: raw.updatedAt,
+    ...(typeof raw.completedAt === 'number' ? { completedAt: raw.completedAt } : {}),
     ...(typeof raw.sessionId === 'string' ? { sessionId: raw.sessionId } : {}),
     ...(typeof raw.threadId === 'string' ? { threadId: raw.threadId } : {}),
     ...(typeof raw.lastSummary === 'string' ? { lastSummary: raw.lastSummary } : {}),
   };
+}
+
+function normalizeSummary(input: string | undefined): string | undefined {
+  if (!input) return undefined;
+  const summary = input.replace(/\s+/g, ' ').trim();
+  return summary ? summary.slice(0, 180) : undefined;
 }
 
 function matchesIdentity(entry: SessionCatalogEntry, input: SessionCatalogIdentity): boolean {

@@ -6,6 +6,7 @@ import type { Handler, CommandContext } from './types';
 import { reply } from './presentation';
 import { handleNew, handleCd, handleWs } from './workspace';
 import { handleResume } from './resume';
+import { handleRecent } from './recent';
 import { handleStatus } from './status';
 import { handleHelp, handleDoc } from './utility';
 import { handleAccount } from './account';
@@ -32,6 +33,7 @@ const handlers = {
   cd: handleCd,
   ws: handleWs,
   resume: handleResume,
+  recent: handleRecent,
   status: handleStatus,
   help: handleHelp,
   account: handleAccount,
