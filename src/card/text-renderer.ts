@@ -15,6 +15,23 @@ import { toolHeaderText } from './tool-render';
  *   - Footer is appended inline at the bottom while running
  */
 export function renderText(state: RunState, options: FileLinkRenderOptions = {}): string {
+  return renderTextInternal(state, options, true);
+}
+
+/**
+ * Render cumulative progress without transient footer states. Keeping a
+ * changing "working" line at the end would make every cumulative snapshot
+ * non-prefix, defeating streaming append/rollover.
+ */
+export function renderProgressText(state: RunState, options: FileLinkRenderOptions = {}): string {
+  return renderTextInternal(state, options, false);
+}
+
+function renderTextInternal(
+  state: RunState,
+  options: FileLinkRenderOptions,
+  includeFooter: boolean,
+): string {
   const parts: string[] = [];
 
   for (const block of state.blocks) {
@@ -31,7 +48,7 @@ export function renderText(state: RunState, options: FileLinkRenderOptions = {})
     parts.push(`⚠️ agent 失败:${state.errorMsg}`);
   } else if (state.terminal === 'running' && state.retry) {
     parts.push(retryStatus(state.retry));
-  } else if (state.terminal === 'running' && state.footer) {
+  } else if (includeFooter && state.terminal === 'running' && state.footer) {
     parts.push(footerLine(state.footer));
   }
 

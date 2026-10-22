@@ -3,12 +3,13 @@ import type { RunOutputContext, RunOutputPlugin } from '../../runtime/run-output
 import type { FileLinkRenderOptions } from '../../card/file-links';
 import { renderCard } from '../../card/run-renderer';
 import { initialState, type RunState } from '../../runtime/run-state';
-import { renderText } from '../../card/text-renderer';
+import { renderProgressText, renderText } from '../../card/text-renderer';
 import { getMessageReplyMode, type CotMessagesMode } from '../../config/schema';
 import { log } from '../../core/logger';
 import { consumeCotEvents, CotClient, CotPublisher, finalAnswerOnlyState } from '../../bot/cot';
 import { addWorkingReaction, removeReaction } from '../../bot/reaction';
 import { processAgentStream } from '../../runtime/run-stream';
+import { createProgressMarkdownWriter } from './progress-markdown';
 
 const STREAM_TERMINAL_GRACE_MS = 3000;
 const REACTION_CLEANUP_GRACE_MS = 1000;
@@ -55,7 +56,10 @@ class ProgressOutput {
           producer: ctrl => produce(() => ctrl.update(renderCard(content(), input.cardRenderOptions))),
         } }, input.sendOpts)
       : input.channel.stream(input.chatId, {
-          markdown: ctrl => produce(() => ctrl.setContent(renderText(content(), input.cardRenderOptions))),
+          markdown: ctrl => {
+            const writeProgress = createProgressMarkdownWriter(ctrl);
+            return produce(() => writeProgress(renderProgressText(content(), input.cardRenderOptions)));
+          },
         }, input.sendOpts));
   }
 
@@ -224,7 +228,7 @@ function createLazyProgressStream(
  */
 function shouldOpenProgressStream(state: RunState): boolean {
   if (state.terminal !== 'running') return false;
-  return renderText({ ...state, footer: null }).trim() !== '';
+  return renderProgressText(state).trim() !== '';
 }
 
 /**

@@ -7,7 +7,7 @@ import {
   reduce,
   type RunState,
 } from '../../../src/card/run-state.js';
-import { renderText } from '../../../src/card/text-renderer.js';
+import { renderProgressText, renderText } from '../../../src/card/text-renderer.js';
 import type { AgentEvent } from '../../../src/agent/types.js';
 import { normalizeCard } from '../../helpers/card-normalize.js';
 
@@ -83,6 +83,17 @@ describe('run card renderer snapshots', () => {
     expect(renderText(markInterrupted(state))).toMatchSnapshot();
     expect(renderText(markIdleTimeout(state, 10))).toMatchSnapshot();
     expect(renderText(stateFrom([{ type: 'error', message: 'process failed', terminationReason: 'failed' }]))).toMatchSnapshot();
+  });
+
+  it('keeps transient footer states out of cumulative progress', () => {
+    const first = stateFrom([
+      { type: 'text', delta: 'first' },
+      { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'pwd' } },
+    ]);
+    const next = reduce(first, { type: 'text', delta: 'second' });
+
+    expect(renderProgressText(first)).not.toContain('正在调用工具');
+    expect(renderProgressText(next).startsWith(renderProgressText(first))).toBe(true);
   });
 
   it('injects signed bridge callback values for managed run controls', () => {
