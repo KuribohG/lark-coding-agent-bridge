@@ -111,6 +111,7 @@ Responses 模型服务可供 Codex / Pi 使用，不能把它直接当成 Claude
 | Web 是否显示工具 | `[channels.web] show_tools = true` | 独立聊天页 |
 | Web 是否显示推理 | `[channels.web] show_reasoning = false` | 仅改变展示，不改变模型思考强度 |
 | 飞书过程显示 | `[channels.lark] progress = "brief"` | 飞书；可选 off / brief / detailed |
+| 飞书消息合并窗口 | `[channels.lark.profiles.work] message_debounce_ms = 250` | 该 profile；0–5000ms，0 表示不等待 |
 | Codex 程序位置 | `[agents.codex.launch] binaryPath = 'C:\tools\codex.exe'` | Agent 进程启动 |
 | 某个飞书 profile 默认目录 | `[profiles.work.workspaces] default = 'C:\projects\my-app'` | 该 bot 的默认项目；独立 Web 使用 `--workspace` |
 | 权限限制 | `[profiles.work.permissions] defaultAccess = "workspace"` 与 `maxAccess = "workspace"` | 明确 profile 的默认及最高权限 |

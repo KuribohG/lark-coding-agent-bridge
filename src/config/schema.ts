@@ -225,6 +225,13 @@ export function getCotMessages(cfg: AppConfig): CotMessagesMode {
   return larkDisplay(cfg).progress;
 }
 
+/** Quiet window used to merge adjacent IM messages into one agent turn. */
+export function getMessageDebounceMs(cfg: AppConfig): number {
+  const raw = larkDisplay(cfg).message_debounce_ms;
+  if (!Number.isFinite(raw)) return 600;
+  return Math.min(5_000, Math.max(0, Math.floor(raw)));
+}
+
 /** Resolve the max-concurrent-runs preference with default + sanity clamp. */
 export function getMaxConcurrentRuns(cfg: AppConfig): number {
   const raw = cfg.preferences?.maxConcurrentRuns;

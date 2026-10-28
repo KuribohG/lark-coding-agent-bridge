@@ -37,6 +37,7 @@ import {
   getAgentStopGraceMs,
   getCotMessages,
   getMaxConcurrentRuns,
+  getMessageDebounceMs,
   getMessageReplyMode,
   getRunIdleTimeoutMs,
 } from '../../config/schema';
@@ -73,8 +74,6 @@ import { lookupMessageThreadId } from '../../bot/thread-id';
 import { fetchKnownChats } from '../../bot/lark-info';
 import type { AppPaths } from '../../config/app-paths';
 import { CotClient, CotPublisher } from '../../bot/cot';
-
-const DEBOUNCE_MS = 600;
 
 const BRIDGE_AGENT_INSTRUCTIONS = [
   '你在 bridge 进程中运行，普通 lark-cli 会继承 LARK_CHANNEL=1 并进入 bridge-bound 模式。',
@@ -294,8 +293,8 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   // queue so messages keep accumulating without flushing. When the run ends,
   // unblock arms a fresh quiet-window timer. Net effect: at most one run per
   // chat in flight, and everything sent during a run merges into the next
-  // batch (only flushed once 600ms of silence has passed *after* the run).
-  const pending = new PendingQueue(DEBOUNCE_MS, (scope, batch) => {
+  // batch (only flushed once the configured quiet window has passed *after the run*).
+  const pending = new PendingQueue(() => getMessageDebounceMs(controls.cfg), (scope, batch) => {
     const firstMsg = batch[0];
     if (!firstMsg) return;
     const preparedCot = preparedCots.get(scope);
@@ -975,7 +974,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   log.info('intake', 'queued', {
     scope,
     queueSize: size,
-    debounceMs: DEBOUNCE_MS,
+    debounceMs: getMessageDebounceMs(controls.cfg),
     cotPrepared: Boolean(preparedCot),
   });
 }

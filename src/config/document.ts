@@ -38,7 +38,7 @@ export const RUN_KEYS = {
   idle_timeout_minutes: 'runIdleTimeoutMinutes', stop_grace_ms: 'agentStopGraceMs',
 } as const;
 const PROFILE_KEYS = ['agent', 'run', 'mode', 'accounts', 'secrets', 'access', 'workspaces', 'permissions', 'attachments', 'meeting', 'larkCli', 'launch'];
-const LARK_KEYS = ['reply_mode', 'show_tools', 'progress', 'file_links'];
+const LARK_KEYS = ['reply_mode', 'show_tools', 'progress', 'message_debounce_ms', 'file_links'];
 const WEB_KEYS = ['show_tools', 'show_reasoning'];
 function object(value: unknown, path: string): Table {
   if (!value || Object.getPrototypeOf(value) !== Object.prototype) throw new Error(`${path}: expected a table`);
@@ -73,6 +73,9 @@ function checkDisplay(value: unknown, channel: string, path: string): void {
     if (k.startsWith('show_') && typeof v !== 'boolean') throw new Error(`${path}.${k}: expected boolean`);
     if (k === 'reply_mode' && !['markdown', 'text', 'card'].includes(v)) throw new Error(`${path}.${k}: invalid reply mode`);
     if (k === 'progress' && !['off', 'brief', 'detailed'].includes(v)) throw new Error(`${path}.${k}: invalid progress mode`);
+    if (k === 'message_debounce_ms' && (!Number.isSafeInteger(v) || v < 0 || v > 5000)) {
+      throw new Error(`${path}.${k}: expected integer 0..5000`);
+    }
     if (k === 'file_links') {
       normalizeFileLinks(v);
       for (const rule of v) keys(rule, ['localRoot', 'fileBaseUrl', 'browseBaseUrl', 'markdownPreviewUrl'], `${path}.file_links`);

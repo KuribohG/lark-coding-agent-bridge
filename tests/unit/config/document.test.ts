@@ -160,6 +160,19 @@ HTTPS_PROXY = "\${HTTPS_PROXY}"
     expect(resolveRun(doc, 'codex', 'bot').sources.model).toBe('profiles.bot.run.model');
   });
 
+  it('inherits and round-trips the per-profile Lark message debounce', () => {
+    const text = source.replace(
+      'progress = "detailed"',
+      'progress = "detailed"\nmessage_debounce_ms = 600',
+    ) + '\n[channels.lark.profiles.bot]\nmessage_debounce_ms = 250\n';
+    const root = documentToRoot(parseDocument(text));
+
+    expect(larkDisplay(root.profiles.bot!).message_debounce_ms).toBe(250);
+    expect(larkDisplay(root.profiles.other!).message_debounce_ms).toBe(600);
+    expect(documentToRoot(parseDocument(formatDocument(rootToDocument(root))))
+      .profiles.bot!.channels?.lark?.message_debounce_ms).toBe(250);
+  });
+
   it('keeps the supervisor autostart set independent from the active profile', () => {
     const withBootSet = source + `
 [bridge]
@@ -219,6 +232,10 @@ binaryPath = "/opt/pi"
     '[agents.codex.output]\nshow_tools = false',
     '[profiles.bot.run]\nshow_tools = false',
     '[channels.web]\nprogress = "brief"',
+    '[channels.lark]\nmessage_debounce_ms = -1',
+    '[channels.lark]\nmessage_debounce_ms = 5001',
+    '[channels.lark]\nmessage_debounce_ms = 1.5',
+    '[channels.lark]\nmessage_debounce_ms = "250"',
     '[defaults.run]\nmax_concurrent_runs = 0',
   ])('rejects misplaced or invalid settings: %s', fragment => {
     expect(() => parseDocument(`version = 3\n${fragment}`)).toThrow();

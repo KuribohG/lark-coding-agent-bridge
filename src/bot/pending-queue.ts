@@ -23,11 +23,11 @@ export type FlushHandler = (scope: string, batch: NormalizedMessage[]) => void;
 export class PendingQueue {
   private readonly map = new Map<string, PendingEntry>();
   private readonly blocked = new Set<string>();
-  private readonly delayMs: number;
+  private readonly delayMs: () => number;
   private readonly onFlush: FlushHandler;
 
-  constructor(delayMs: number, onFlush: FlushHandler) {
-    this.delayMs = delayMs;
+  constructor(delayMs: number | (() => number), onFlush: FlushHandler) {
+    this.delayMs = typeof delayMs === 'number' ? () => delayMs : delayMs;
     this.onFlush = onFlush;
   }
 
@@ -94,7 +94,7 @@ export class PendingQueue {
   }
 
   private armTimer(scope: string): NodeJS.Timeout {
-    return setTimeout(() => this.flush(scope), this.delayMs);
+    return setTimeout(() => this.flush(scope), Math.max(0, this.delayMs()));
   }
 
   private flush(scope: string): void {

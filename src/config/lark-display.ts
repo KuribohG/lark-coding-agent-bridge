@@ -15,6 +15,7 @@ export interface LarkDisplayConfig {
   reply_mode: MessageReplyMode;
   show_tools: boolean;
   progress: CotMessagesMode;
+  message_debounce_ms: number;
   file_links?: FileLinkMapping[];
 }
 
@@ -37,6 +38,7 @@ export function larkDisplay(config: {
         : progress === 'off'
           ? 'off'
           : 'brief',
+    message_debounce_ms: 600,
     ...(old?.fileLinks ? { file_links: old.fileLinks } : {}),
     ...config.channels?.lark,
   };

@@ -72,7 +72,7 @@ Codex uses `app-server`, enabling input during an active turn. The `exec` backen
 
 ## Frontend fields
 
-Lark owns `reply_mode` (`markdown`, `text`, `card`), `show_tools`, `progress` (`off`, `brief`, `detailed`) and `file_links`. Web owns `show_tools` and `show_reasoning`. Web has no Lark COT bubble, card type or identity setting. `defaults.output`, `agents.codex.output` and frontend fields inside `run` are rejected.
+Lark owns `reply_mode` (`markdown`, `text`, `card`), `show_tools`, `progress` (`off`, `brief`, `detailed`), `message_debounce_ms` (0–5000) and `file_links`. The debounce is a per-profile quiet window: adjacent messages are merged into one agent prompt until it expires; `0` starts immediately. Web owns `show_tools` and `show_reasoning`. Web has no Lark COT bubble, card type or identity setting. `defaults.output`, `agents.codex.output` and frontend fields inside `run` are rejected.
 
 For a standalone browser host:
 
