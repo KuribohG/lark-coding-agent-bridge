@@ -65,6 +65,7 @@ export class ClaudeAdapter implements AgentAdapter {
       agentName: 'Claude Code',
       command: this.binary,
       binaryPath: this.binary,
+      env: this.env,
     });
   }
 

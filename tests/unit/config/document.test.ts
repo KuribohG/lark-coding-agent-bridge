@@ -115,6 +115,32 @@ codexHome = "/state/codex"
     expect(() => parseDocument(source + '\n[agents.pi.launch]\ncodexHome = "/state/codex"\n')).toThrow(/unknown setting/);
   });
 
+  it('inherits, merges and round-trips launch environment values', () => {
+    const text = source + `
+[agents.codex.launch.env]
+HTTP_PROXY = "$HTTP_PROXY"
+NO_PROXY = "localhost,127.0.0.1"
+[profiles.bot.launch.env]
+HTTP_PROXY = "http://profile-proxy.internal:8080"
+HTTPS_PROXY = "\${HTTPS_PROXY}"
+`;
+    const root = documentToRoot(parseDocument(text));
+    expect(root.profiles.bot!.codex?.env).toEqual({
+      HTTP_PROXY: 'http://profile-proxy.internal:8080',
+      HTTPS_PROXY: '${HTTPS_PROXY}',
+      NO_PROXY: 'localhost,127.0.0.1',
+    });
+    expect(documentToRoot(parseDocument(formatDocument(rootToDocument(root))))
+      .profiles.bot!.codex?.env).toEqual(root.profiles.bot!.codex?.env);
+  });
+
+  it.each([
+    '[agents.codex.launch.env]\n"BAD-NAME" = "x"\n',
+    '[agents.pi.launch.env]\nHTTP_PROXY = 8080\n',
+  ])('rejects invalid launch environment tables: %s', fragment => {
+    expect(() => parseDocument(source + fragment)).toThrow(/env/);
+  });
+
   it.each([
     '[agents.codex.launch]\ntransport = "exec"',
     '[profiles.bot.launch]\ntransport = "exec"',
@@ -161,6 +187,7 @@ autostart_profiles = ["bot", "other"]
     const doc = parseDocument(source + `
 [agents.codex.launch]
 binaryPath = "/opt/codex"
+env = { HTTP_PROXY = "$HTTP_PROXY" }
 [agents.pi.launch]
 binaryPath = "/opt/pi"
 `);
@@ -171,6 +198,7 @@ binaryPath = "/opt/pi"
     expect(execution.agentKind).toBe('codex');
     expect(execution.permissions).toEqual({ defaultAccess: 'workspace', maxAccess: 'workspace' });
     expect(execution.codex?.binaryPath).toBe('/opt/codex');
+    expect(execution.codex?.env).toEqual({ HTTP_PROXY: '$HTTP_PROXY' });
     expect(execution.pi?.binaryPath).toBe('/opt/pi');
   });
 

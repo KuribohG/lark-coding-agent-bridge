@@ -33,13 +33,31 @@ See [config.example.toml](config.example.toml) for a full layered example. `agen
 Omitting a key inherits its parent. Removing a profile override restores inheritance. Arrays replace their parent's entire value; an empty array explicitly clears the list. False and zero are retained. Native model/effort delegation omits the corresponding CLI override so native project/managed configuration remains authoritative. The bridge does not rewrite native Codex/Claude settings.
 
 `launch` is the single ownership boundary for the executable and agent-local
-configuration/authentication state. It accepts `binaryPath` for all three
-agents, plus:
+configuration/authentication state. It accepts `binaryPath` and an optional
+`env` table for all three agents, plus:
 
 - Claude: `configDir`, exposed to the child as `CLAUDE_CONFIG_DIR`.
 - Codex: `codexHome`, exposed as `CODEX_HOME`, plus `transport`,
   `inheritCodexHome`, `ignoreUserConfig` and `ignoreRules`.
 - pi: `agentDir`, exposed as `PI_CODING_AGENT_DIR`.
+
+`env` adds environment variables to the selected agent process and its tool
+subprocesses. `$NAME` and `${NAME}` references are resolved from the Bridge
+process environment; `$$` escapes a literal dollar sign. A missing referenced
+variable is an error rather than a silently empty value. For example:
+
+```toml
+[agents.codex.launch.env]
+HTTPS_PROXY = "$HTTPS_PROXY"
+HTTP_PROXY = "$HTTP_PROXY"
+NO_PROXY = "localhost,127.0.0.1,.internal"
+```
+
+Per-profile `profiles.<name>.launch.env` entries overlay the matching agent's
+global `env` entries. Launch environment changes require a Bridge restart.
+Bridge does not invoke a shell to apply this table. If startup needs arbitrary
+shell initialization, point `binaryPath` at a reviewed wrapper script that
+ends with `exec <real-agent> "$@"`.
 
 Global `agents.<kind>.launch` settings apply whenever that backend is selected,
 including per-chat engine switches. `profiles.<name>.launch` overrides only the

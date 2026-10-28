@@ -80,6 +80,7 @@ export class CodexAdapter implements AgentAdapter {
       agentName: 'Codex CLI',
       command: this.binary,
       binaryPath: this.binary,
+      env: this.env,
     });
   }
 

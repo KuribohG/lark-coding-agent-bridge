@@ -14,6 +14,7 @@ import type { AgentAdapter, AgentExecutionCapabilities } from './types';
 import type { AgentSystemPrompt } from './system-prompt';
 import type { AgentExecutionProfile, AgentKind } from '../config/profile-schema';
 import { accessToCodexSandbox } from '../config/permissions';
+import { buildAgentEnvironment } from './launch-env';
 
 export interface AgentBackend {
   readonly kind: AgentKind;
@@ -49,7 +50,7 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
     createAdapter: ({ profile, env, systemPrompt }) => new ClaudeAdapter({
       binary: profile.claude?.binaryPath,
       configDir: profile.claude?.configDir,
-      env,
+      env: buildAgentEnvironment(env, profile.claude?.env),
       systemPrompt,
     }),
   },
@@ -75,7 +76,7 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
         ignoreUserConfig: codex.ignoreUserConfig === true,
         ignoreRules: codex.ignoreRules,
         sandbox: profile.sandbox?.defaultMode ?? accessToCodexSandbox(profile.permissions.defaultAccess),
-        env,
+        env: buildAgentEnvironment(env, codex.env),
       });
     },
   },
@@ -95,7 +96,7 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
         binary: pi.binaryPath,
         agentDir: pi.agentDir,
         profileStateDir: profileDir,
-        env,
+        env: buildAgentEnvironment(env, pi.env),
         systemPrompt,
       });
     },

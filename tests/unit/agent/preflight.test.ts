@@ -118,6 +118,17 @@ describe('agent preflight diagnostics', () => {
     });
   });
 
+  it('runs the version check with the configured child environment', async () => {
+    await expect(checkAgentVersion({
+      agentId: 'pi',
+      agentName: 'Pi Coding Agent',
+      command: 'pi',
+      binaryPath: process.execPath,
+      args: ['-e', 'process.stdout.write(process.env.HTTPS_PROXY ?? "missing")'],
+      env: { HTTPS_PROXY: 'http://proxy.internal:8443' },
+    })).resolves.toBe('http://proxy.internal:8443');
+  });
+
   it('renders concise messages for each diagnostic category', () => {
     const cases = [
       ['agent-binary-not-found', '✗ 未找到本地 Codex CLI。'],

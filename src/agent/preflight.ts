@@ -1,5 +1,5 @@
 import { terminateChild } from '../platform/terminate';
-import { spawnProcess } from '../platform/spawn';
+import { mergeProcessEnv, spawnProcess } from '../platform/spawn';
 
 export type LocalAgentId = 'claude' | 'codex' | 'pi';
 
@@ -45,6 +45,7 @@ export interface CheckAgentVersionInput {
   realpath?: string;
   args?: readonly string[];
   timeoutMs?: number;
+  env?: NodeJS.ProcessEnv;
 }
 
 export class AgentPreflightError extends Error {
@@ -101,6 +102,7 @@ export async function checkAgentVersion(input: CheckAgentVersionInput): Promise<
     const child = (() => {
       try {
         return spawnProcess(executable, [...args], {
+          ...(input.env ? { env: mergeProcessEnv(process.env, input.env) } : {}),
           stdio: ['ignore', 'pipe', 'pipe'],
         });
       } catch (err) {

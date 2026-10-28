@@ -72,6 +72,7 @@ export class PiAdapter implements AgentAdapter {
       agentName: this.displayName,
       command: this.binary,
       binaryPath: this.binary,
+      env: this.env,
     });
   }
 

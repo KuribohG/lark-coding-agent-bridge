@@ -17,7 +17,11 @@ import {
 export type AgentKind = 'claude' | 'codex' | 'pi';
 export type SandboxMode = CodexSandboxMode;
 export type { AccessMode, PermissionConfig, PermissionSource };
-export type AgentLaunchConfig = Record<string, string | number | boolean>;
+export type AgentLaunchEnvironment = Record<string, string>;
+export type AgentLaunchConfig = Record<
+  string,
+  string | number | boolean | AgentLaunchEnvironment
+>;
 
 export interface ProfileAccess {
   allowedUsers: string[];
@@ -52,12 +56,16 @@ export interface CodexConfig {
   inheritCodexHome?: boolean;
   ignoreUserConfig?: boolean;
   ignoreRules?: boolean;
+  /** Extra environment variables inherited by the Codex child process. */
+  env?: AgentLaunchEnvironment;
 }
 
 export interface ClaudeConfig {
   binaryPath?: string;
   /** Directory containing Claude Code settings, projects, and other local state. */
   configDir?: string;
+  /** Extra environment variables inherited by the Claude child process. */
+  env?: AgentLaunchEnvironment;
 }
 
 export interface PiConfig {
@@ -69,6 +77,8 @@ export interface PiConfig {
   sha256?: string;
   owner?: number;
   mode?: number;
+  /** Extra environment variables inherited by the pi child process. */
+  env?: AgentLaunchEnvironment;
 }
 
 export interface AttachmentConfig {
@@ -455,6 +465,7 @@ function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
     inheritCodexHome: input.inheritCodexHome !== false,
     ignoreUserConfig: false,
     ignoreRules: false,
+    ...(input.env !== undefined ? { env: normalizeLaunchEnvironment(input.env) } : {}),
   };
   return codex;
 }
@@ -471,6 +482,7 @@ function normalizePi(input: PiConfig): PiConfig {
     ...(typeof input.sha256 === 'string' ? { sha256: input.sha256 } : {}),
     ...(typeof input.owner === 'number' ? { owner: input.owner } : {}),
     ...(typeof input.mode === 'number' ? { mode: input.mode } : {}),
+    ...(input.env !== undefined ? { env: normalizeLaunchEnvironment(input.env) } : {}),
   };
 }
 
@@ -478,7 +490,24 @@ function normalizeClaude(input: ClaudeConfig): ClaudeConfig {
   return {
     ...(typeof input.binaryPath === 'string' && input.binaryPath ? { binaryPath: input.binaryPath } : {}),
     ...(typeof input.configDir === 'string' && input.configDir ? { configDir: input.configDir } : {}),
+    ...(input.env !== undefined ? { env: normalizeLaunchEnvironment(input.env) } : {}),
   };
+}
+
+function normalizeLaunchEnvironment(input: unknown): AgentLaunchEnvironment {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error('launch env must be a table of string values');
+  }
+  const entries = Object.entries(input);
+  for (const [key, value] of entries) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+      throw new Error(`launch env has invalid variable name: ${key}`);
+    }
+    if (typeof value !== 'string') {
+      throw new Error(`launch env ${key} must be a string`);
+    }
+  }
+  return Object.fromEntries(entries) as AgentLaunchEnvironment;
 }
 
 function normalizeComments(_input: unknown): CommentConfig {

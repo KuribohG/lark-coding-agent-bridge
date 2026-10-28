@@ -17,6 +17,9 @@ effort = "high"
 binaryPath = "codex"
 transport = "app-server" # Default and only supported Codex backend.
 # codexHome = "/absolute/private/codex-home"
+# [agents.codex.launch.env]
+# HTTPS_PROXY = "$HTTPS_PROXY"
+# NO_PROXY = "localhost,127.0.0.1"
 
 [agents.claude.run]
 effort = "high"
@@ -24,10 +27,12 @@ effort = "high"
 [agents.claude.launch]
 binaryPath = "claude"
 # configDir = "/absolute/private/claude-config"
+# env = { HTTPS_PROXY = "$HTTPS_PROXY", NO_PROXY = "localhost,127.0.0.1" }
 
 [agents.pi.launch]
 binaryPath = "pi"
 # agentDir = "/absolute/private/pi-agent"
+# env = { HTTPS_PROXY = "$HTTPS_PROXY", NO_PROXY = "localhost,127.0.0.1" }
 
 [channels.lark]
 reply_mode = "markdown"

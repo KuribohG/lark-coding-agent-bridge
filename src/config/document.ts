@@ -35,7 +35,7 @@ export const RUN_KEYS = {
 const PROFILE_KEYS = ['agent', 'run', 'mode', 'accounts', 'secrets', 'access', 'workspaces', 'permissions', 'attachments', 'meeting', 'larkCli', 'launch'];
 const LARK_KEYS = ['reply_mode', 'show_tools', 'progress', 'file_links'];
 const WEB_KEYS = ['show_tools', 'show_reasoning'];
-const COMMON_LAUNCH_KEYS = ['binaryPath', 'realpath', 'version', 'sha256', 'owner', 'mode'];
+const COMMON_LAUNCH_KEYS = ['binaryPath', 'env', 'realpath', 'version', 'sha256', 'owner', 'mode'];
 const LAUNCH_KEYS: Record<AgentKind, readonly string[]> = {
   claude: [...COMMON_LAUNCH_KEYS, 'configDir'],
   codex: [...COMMON_LAUNCH_KEYS, 'transport', 'codexHome', 'inheritCodexHome', 'ignoreUserConfig', 'ignoreRules'],
@@ -84,6 +84,18 @@ function checkDisplay(value: unknown, channel: string, path: string): void {
 function checkLaunch(value: unknown, agent: string, path: string): void {
   const launch = keys(value, LAUNCH_KEYS[agent as AgentKind], path);
   for (const [k, v] of Object.entries(launch)) {
+    if (k === 'env') {
+      const env = object(v, `${path}.env`);
+      for (const [name, value] of Object.entries(env)) {
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+          throw new Error(`${path}.env.${name}: invalid environment variable name`);
+        }
+        if (typeof value !== 'string') {
+          throw new Error(`${path}.env.${name}: expected string`);
+        }
+      }
+      continue;
+    }
     const kind = ['inheritCodexHome', 'ignoreUserConfig', 'ignoreRules'].includes(k) ? 'boolean' : ['mode', 'owner'].includes(k) ? 'number' : 'string';
     if (typeof v !== kind) throw new Error(`${path}.${k}: expected ${kind}`);
     if (k === 'transport' && v !== 'app-server') throw new Error(`${path}.transport: Codex exec transport has been removed; use app-server`);
@@ -253,10 +265,16 @@ export function resolveExecutionProfile(
   const permissions = configuredPermissions
     ? normalizePermissions({ permissions: profile?.permissions, sandbox: profile?.sandbox }).permissions
     : options.fallbackPermissions ?? { defaultAccess: 'full', maxAccess: 'full' };
-  const launchFor = (kind: AgentKind) => ({
-    ...(doc.agents?.[kind]?.launch ?? {}),
-    ...(profile?.agent === kind ? profile.launch ?? {} : {}),
-  });
+  const launchFor = (kind: AgentKind) => {
+    const inherited = doc.agents?.[kind]?.launch ?? {};
+    const override = profile?.agent === kind ? profile.launch ?? {} : {};
+    const env = { ...(inherited.env ?? {}), ...(override.env ?? {}) };
+    return {
+      ...inherited,
+      ...override,
+      ...(Object.keys(env).length > 0 ? { env } : {}),
+    };
+  };
 
   const claudeLaunch = launchFor('claude');
   const codexLaunch = launchFor('codex');
@@ -265,11 +283,12 @@ export function resolveExecutionProfile(
     agentKind,
     permissions,
     sandbox: permissionsToLegacySandbox(permissions),
-    ...(claudeLaunch.binaryPath || claudeLaunch.configDir
+    ...(claudeLaunch.binaryPath || claudeLaunch.configDir || claudeLaunch.env
       ? {
           claude: {
             ...(typeof claudeLaunch.binaryPath === 'string' ? { binaryPath: claudeLaunch.binaryPath } : {}),
             ...(typeof claudeLaunch.configDir === 'string' ? { configDir: claudeLaunch.configDir } : {}),
+            ...(claudeLaunch.env ? { env: claudeLaunch.env } : {}),
           },
         }
       : {}),
@@ -289,6 +308,7 @@ export function resolveExecutionProfile(
             ...(typeof codexLaunch.sha256 === 'string' ? { sha256: codexLaunch.sha256 } : {}),
             ...(typeof codexLaunch.owner === 'number' ? { owner: codexLaunch.owner } : {}),
             ...(typeof codexLaunch.mode === 'number' ? { mode: codexLaunch.mode } : {}),
+            ...(codexLaunch.env ? { env: codexLaunch.env } : {}),
           },
         }
       : {}),
@@ -302,6 +322,7 @@ export function resolveExecutionProfile(
             ...(typeof piLaunch.sha256 === 'string' ? { sha256: piLaunch.sha256 } : {}),
             ...(typeof piLaunch.owner === 'number' ? { owner: piLaunch.owner } : {}),
             ...(typeof piLaunch.mode === 'number' ? { mode: piLaunch.mode } : {}),
+            ...(piLaunch.env ? { env: piLaunch.env } : {}),
           },
         }
       : {}),
