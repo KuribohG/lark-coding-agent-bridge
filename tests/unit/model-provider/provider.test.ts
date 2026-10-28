@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { ModelProviderRegistry } from '../../../src/model-provider/provider';
+import {
+  AUTO_MODEL_PROVIDER,
+  ModelProviderRegistry,
+  composeProviderSelection,
+  selectedProvider,
+} from '../../../src/model-provider/provider';
 import type { ModelServiceConfig } from '../../../src/model-service/config';
 
 const previousKey = process.env.PROVIDER_TEST_KEY;
@@ -98,5 +103,18 @@ describe('agent model provider registry', () => {
     expect(() => new ModelProviderRegistry({
       'openai-codex': services.deepseek!,
     })).toThrow('保留');
+  });
+
+  it('publishes Agent-filtered Provider choices and composes card selections', async () => {
+    const options = new ModelProviderRegistry(services).options('pi');
+    expect(options).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'openai-codex', defaultModel: 'gpt-6.1-sol' }),
+      expect.objectContaining({ id: 'deepseek', defaultModel: 'deepseek-flash' }),
+    ]));
+    expect(selectedProvider(options, 'deepseek/deepseek-flash')?.id).toBe('deepseek');
+    expect(selectedProvider(options, 'deepseek-flash')?.id).toBe('deepseek');
+    expect(composeProviderSelection(options, 'deepseek', 'deepseek-flash')).toBe('deepseek/deepseek-flash');
+    expect(composeProviderSelection(options, 'openai-codex', 'deepseek/deepseek-flash')).toBe('openai-codex/deepseek-flash');
+    expect(composeProviderSelection(options, AUTO_MODEL_PROVIDER, 'native/model')).toBe('native/model');
   });
 });

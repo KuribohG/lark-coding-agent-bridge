@@ -3,9 +3,18 @@ import { canRunAdminCommand } from '../policy/access';
 import { saveModelPreferences } from '../config/config-ops';
 import { validateModelId } from '../agent/models';
 import { parseEffort, resolveModelSettings, type ModelSettings } from '../agent/model-settings';
-import { modelEnvironment, resolveRunModelSettings, scopePreferences } from '../runtime/model-settings';
+import {
+  modelEnvironment,
+  modelProviderOptions,
+  resolveRunModelSettings,
+  scopePreferences,
+} from '../runtime/model-settings';
 import { modelFormCard, modelSettingsSummary } from '../card/model-card';
 import { sendManagedCard } from '../card/managed';
+import {
+  AUTO_MODEL_PROVIDER,
+  composeProviderSelection,
+} from '../model-provider/provider';
 
 function modelScopeLabel(ctx: CommandContext): string {
   return ctx.chatMode === 'topic' ? '当前话题' : ctx.chatMode === 'p2p' ? '当前私聊' : '当前群聊';
@@ -20,15 +29,16 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
   let saved = false;
   try {
     const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
-    const [store, environment] = await Promise.all([
+    const [store, environment, providers] = await Promise.all([
       scopePreferences(ctx.controls),
       modelEnvironment(ctx.controls, agentKind),
+      modelProviderOptions(ctx.controls, agentKind),
     ]);
     const overrides = store.get(agentKind, ctx.scope);
     if (!args.trim()) {
       const resolved = resolveModelSettings(ctx.controls.profileConfig.preferences, overrides, environment);
       await sendManagedCard(ctx.channel, ctx.msg.chatId, modelFormCard({
-        agentKind, scope: ctx.scope, scopeLabel: modelScopeLabel(ctx), overrides, resolved, environment,
+        agentKind, scope: ctx.scope, scopeLabel: modelScopeLabel(ctx), overrides, resolved, environment, providers,
       }), replyOptions(ctx));
       return;
     }
@@ -37,8 +47,17 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
     if (args === 'submit' && ctx.fromCardAction) {
       const form = ctx.formValue ?? {};
       const picked = form.model_pick;
-      const model = picked && picked !== '__manual__' ? String(picked) : String(form.model ?? 'default').trim();
-      patch.model = model === 'default' || model === '' ? undefined : validateModelId(model);
+      const model = picked === '__provider_default__'
+        ? 'default'
+        : picked && picked !== '__manual__'
+          ? String(picked)
+          : String(form.model ?? 'default').trim();
+      const qualified = composeProviderSelection(
+        providers,
+        String(form.provider_pick ?? AUTO_MODEL_PROVIDER),
+        model,
+      );
+      patch.model = qualified && qualified !== 'default' ? validateModelId(qualified) : undefined;
       patch.reasoningEffort = parseEffort(form.reasoning_effort, agentKind);
     } else {
       const match = /^(\S+)(?:\s+--scope\s+(chat|profile))?$/.exec(args.trim());

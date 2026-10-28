@@ -5,6 +5,11 @@ import { ScopePreferencesStore } from '../session/scope-preferences';
 import { readModelEnvironment, resolveModelSettings, type ModelSettings } from '../agent/model-settings';
 import type { AgentKind } from '../config/profile-schema';
 import { profileForAgentKind } from './execution-controller';
+import { loadRootConfig } from '../config/profile-store';
+import {
+  ModelProviderRegistry,
+  type ModelProviderOption,
+} from '../model-provider/provider';
 
 const stores = new WeakMap<object, Promise<ScopePreferencesStore>>();
 
@@ -29,6 +34,14 @@ export function modelEnvironment(
 ) {
   const paths = resolveAppPaths({ rootDir: dirname(state.configPath), profile: state.profile });
   return readModelEnvironment(profileForAgentKind(state.profileConfig, agentKind), paths.profileDir);
+}
+
+export async function modelProviderOptions(
+  state: MutableProfileState,
+  agentKind: AgentKind = state.profileConfig.agentKind,
+): Promise<ModelProviderOption[]> {
+  const root = await loadRootConfig(state.configPath);
+  return new ModelProviderRegistry(root?.modelServices ?? {}).options(agentKind);
 }
 
 export async function resolveRunModelSettings(

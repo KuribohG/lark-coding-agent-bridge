@@ -36,6 +36,9 @@ triageModel = ""
 /model screening/your-screening-model
 ```
 
+在飞书中发送 `/provider` 可直接打开切换卡片；下拉选项来自 Bridge 的 Provider
+registry，并按当前 Agent 的 `supports()` 能力过滤，不需要在卡片代码里维护品牌分支。
+
 如果只有一个支持当前 Agent 的服务声明了该默认模型，也可以继续使用裸模型名，
 Bridge 会唯一解析到该服务；多个服务声明相同模型时会明确报歧义，要求改用
 `<provider>/<model>`。

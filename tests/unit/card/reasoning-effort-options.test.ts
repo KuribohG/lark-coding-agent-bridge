@@ -51,9 +51,34 @@ describe('reasoning effort selectors', () => {
         overrides: {},
         resolved: { modelSource: 'cli', effortSource: 'cli' },
         environment: { defaults: {}, models: [] },
+        providers: [],
       });
 
       expect(selectValues(config, 'reasoning_effort')).toEqual(selectValues(model, 'reasoning_effort'));
     },
   );
+
+  it('renders Provider choices from registry metadata', () => {
+    const card = modelFormCard({
+      agentKind: 'pi',
+      scope: 'chat',
+      scopeLabel: '当前聊天',
+      overrides: { model: 'deepseek/deepseek-flash' },
+      resolved: { model: 'deepseek/deepseek-flash', modelSource: 'scope', effortSource: 'cli' },
+      environment: { defaults: {}, models: [] },
+      providers: [
+        { id: 'deepseek', label: 'DeepSeek Gateway', defaultModel: 'deepseek-flash' },
+        { id: 'openai-codex', label: 'OpenAI 官方账号', defaultModel: 'gpt-6.1-sol' },
+      ],
+    });
+    expect(selectValues(card, 'provider_pick')).toEqual([
+      ['__auto__', '自动 / 保留当前模型'],
+      ['deepseek', 'DeepSeek Gateway'],
+      ['openai-codex', 'OpenAI 官方账号'],
+    ]);
+    expect(selectValues(card, 'model_pick')).toContainEqual([
+      '__provider_default__',
+      '使用所选 Provider 的默认模型',
+    ]);
+  });
 });

@@ -59,6 +59,14 @@ export interface ResolvedModelProvider {
   codex?: CodexProviderRegistration;
 }
 
+export interface ModelProviderOption {
+  id: string;
+  label: string;
+  defaultModel?: string;
+}
+
+export const AUTO_MODEL_PROVIDER = '__auto__';
+
 /** A model service that can be bound to one or more Agent CLIs. */
 abstract class ModelProvider {
   constructor(
@@ -70,6 +78,7 @@ abstract class ModelProvider {
   abstract bind(agentKind: AgentKind, model: string): Promise<ResolvedModelProvider>;
   /** Bare model IDs this provider may resolve when no provider prefix is used. */
   bareModels(_agentKind: AgentKind): readonly string[] { return []; }
+  defaultModel(_agentKind: AgentKind): string | undefined { return undefined; }
 
   protected assertSupported(agentKind: AgentKind): void {
     if (!this.supports(agentKind)) {
@@ -90,6 +99,10 @@ class OpenAICodexModelProvider extends ModelProvider {
 
   supports(agentKind: AgentKind): boolean {
     return agentKind === 'pi' || agentKind === 'codex';
+  }
+
+  override defaultModel(agentKind: AgentKind): string | undefined {
+    return this.supports(agentKind) ? 'gpt-6.1-sol' : undefined;
   }
 
   async bind(agentKind: AgentKind, model: string): Promise<ResolvedModelProvider> {
@@ -118,6 +131,10 @@ class ResponsesModelProvider extends ModelProvider {
 
   override bareModels(agentKind: AgentKind): readonly string[] {
     return this.supports(agentKind) ? [this.config.model] : [];
+  }
+
+  override defaultModel(agentKind: AgentKind): string | undefined {
+    return this.supports(agentKind) ? this.config.model : undefined;
   }
 
   async bind(agentKind: AgentKind, model: string): Promise<ResolvedModelProvider> {
@@ -188,6 +205,16 @@ export class ModelProviderRegistry {
     return this.providers.map(({ id, displayName }) => ({ id, displayName }));
   }
 
+  options(agentKind: AgentKind): ModelProviderOption[] {
+    return this.providers
+      .filter(provider => provider.supports(agentKind))
+      .map(provider => ({
+        id: provider.id,
+        label: provider.displayName,
+        ...(provider.defaultModel(agentKind) ? { defaultModel: provider.defaultModel(agentKind) } : {}),
+      }));
+  }
+
   async resolve(agentKind: AgentKind, selection: string | undefined): Promise<ResolvedModelProvider | undefined> {
     if (!selection || selection === 'default') return undefined;
     const provider = this.providers.find(candidate => selection.startsWith(`${candidate.id}/`));
@@ -202,6 +229,35 @@ export class ModelProviderRegistry {
     }
     return bare[0]?.bind(agentKind, selection);
   }
+}
+
+/** Split a model selection into a registered provider and its local model id. */
+export function selectedProvider(
+  options: readonly ModelProviderOption[],
+  model: string | undefined,
+): ModelProviderOption | undefined {
+  if (!model || model === 'default') return undefined;
+  const prefixed = options.find(option => model.startsWith(`${option.id}/`));
+  if (prefixed) return prefixed;
+  const defaults = options.filter(option => option.defaultModel === model);
+  return defaults.length === 1 ? defaults[0] : undefined;
+}
+
+/** Compose the provider-qualified selection consumed by the shared runtime. */
+export function composeProviderSelection(
+  options: readonly ModelProviderOption[],
+  providerId: string,
+  model: string | undefined,
+): string | undefined {
+  if (!providerId || providerId === AUTO_MODEL_PROVIDER) return model;
+  const option = options.find(candidate => candidate.id === providerId);
+  if (!option) throw new Error(`未知模型 Provider：${providerId}`);
+  const requested = model && model !== 'default' ? model : option.defaultModel;
+  if (!requested) throw new Error(`Provider ${option.label} 没有默认模型，请填写模型 ID`);
+  const existing = options.find(candidate => requested.startsWith(`${candidate.id}/`));
+  const modelId = existing ? requested.slice(existing.id.length + 1) : requested;
+  if (!modelId) throw new Error(`Provider ${option.label} 缺少模型 ID`);
+  return `${option.id}/${modelId}`;
 }
 
 function providerModel(id: string): PiProviderRegistration['model'] {

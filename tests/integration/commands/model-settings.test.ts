@@ -130,6 +130,32 @@ describe('model and effort scope settings', () => {
     expect(store.get('codex', h.ctx.scope)).toEqual({ model: 'private/next', reasoningEffort: 'max' });
   });
 
+  it('switches Provider and model together from the Feishu card', async () => {
+    const h = await harness();
+    const root = decodeFixture(await readFile(h.controls.configPath, 'utf8'));
+    root.modelServices = {
+      deepseek: {
+        protocol: 'responses',
+        baseUrl: 'https://gateway.example/v1',
+        model: 'deepseek-flash',
+        apiKey: { source: 'env', id: 'PROVIDER_TEST_KEY' },
+      },
+    };
+    await writeFile(h.controls.configPath, encodeFixture(root));
+    await h.command('/provider');
+    const card = encodeFixture(h.channel.sent.at(-1));
+    expect(card).toContain('provider_pick');
+    expect(card).toContain('deepseek');
+
+    await runCommandHandler('model', 'submit', { ...h.ctx, fromCardAction: true,
+      formValue: { provider_pick: 'deepseek', model_pick: '__provider_default__', model: 'deepseek-flash', reasoning_effort: 'high' } });
+
+    expect((await scopePreferences(h.controls)).get('codex', h.ctx.scope)).toEqual({
+      model: 'deepseek/deepseek-flash',
+      reasoningEffort: 'high',
+    });
+  });
+
   it('keeps the active task snapshot while showing the next task settings', async () => {
     const h = await harness();
     await h.command('/model private/old');

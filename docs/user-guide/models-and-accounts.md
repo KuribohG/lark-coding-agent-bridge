@@ -21,6 +21,7 @@
 /effort high
 /model default
 /effort default
+/provider
 ```
 
 模型和思考强度分别按“当前话题 / 聊天 → profile 默认 → CLI 默认”继承。`default` 清除当前覆盖，`/new` 不会清除模型偏好。owner / 管理员可在 `/config` 或控制台设置 profile 默认值。
@@ -34,6 +35,10 @@
 
 同一话题可随时切换 provider，不需要重启 Bridge。官方账号要在本机 Agent 中完成
 登录；模型 API 服务的密钥仍只使用环境变量或私有文件引用。
+
+发送 `/provider` 会打开与 `/model` 共用的飞书卡片。Provider 下拉项由 Bridge 的
+共享 registry 和当前 Agent 的能力生成，选择后填写模型 ID 即可保存到当前话题。
+切换只影响下一条新任务，不中断正在运行的任务。
 
 ## 配置独立模型 API 服务
 

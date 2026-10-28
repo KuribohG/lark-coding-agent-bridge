@@ -10,7 +10,10 @@ export const commandDefinitions = [
   { name: 'ws', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/ws list|save <name>|use <name>|remove <name>` — 工作目录'] },
   { name: 'account', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/account` — 查看当前应用；`/account change` 换 appId/secret 并重连'] },
   { name: 'config', access: 'admin', pending: 'preserve', arguments: 'words', help: ['`/config run` — 调整当前聊天/话题的执行引擎、模型和其他运行偏好；`lark-cli 身份策略` 在 `/config access`'] },
-  { name: 'model', access: 'user', pending: 'preserve', arguments: 'words', help: ['`/model [模型名|default]` — 当前话题/聊天的模型，支持手填'] },
+  { name: 'model', aliases: ['provider'], access: 'user', pending: 'preserve', arguments: 'words', help: [
+    '`/model [模型名|default]` — 当前话题/聊天的模型，支持手填',
+    '`/provider` — 打开 Provider 与模型切换卡片',
+  ] },
   { name: 'effort', access: 'user', pending: 'preserve', arguments: 'words', help: ['`/effort [强度|default]` — 当前话题/聊天的思考强度；可加 `--scope profile` 改 bot 默认'] },
   { name: 'run', access: 'user', pending: 'preserve', arguments: 'verbatim', help: ['`/run` — 限时任务表单；`/run 任务` 用默认值，`/run defaults` 设置默认值，`/run status` 查看，`/run stop` 取消'] },
   { name: 'status', access: 'user', pending: 'preserve', arguments: 'words', help: ['`/status` — 当前状态'] },
