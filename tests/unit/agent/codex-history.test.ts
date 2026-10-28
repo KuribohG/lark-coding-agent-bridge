@@ -52,7 +52,7 @@ describe('Codex thread history provider', () => {
         cwd: '/repo',
         createdAtMs: 1_700_000_000_000,
         updatedAtMs: 1_700_000_050_000,
-        source: 'exec',
+        source: 'appServer',
         name: 'New work',
       },
       {
@@ -236,7 +236,7 @@ rl.on('line', (line) => {
                 cwd: '/repo',
                 cliVersion: '0.130.0',
                 source: 'exec',
-                threadSource: null,
+                threadSource: 'appServer',
                 forkedFromId: null,
                 agentNickname: null,
                 agentRole: null,

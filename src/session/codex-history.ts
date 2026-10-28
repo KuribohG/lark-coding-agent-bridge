@@ -248,7 +248,7 @@ function normalizeThread(input: unknown): CodexThreadHistoryEntry | undefined {
     cwd,
     createdAtMs: Math.round((createdAt ?? 0) * 1000),
     updatedAtMs: Math.round((updatedAt ?? 0) * 1000),
-    source: sourceValue(raw.source),
+    source: sourceValue(raw.threadSource ?? raw.source),
     ...(stringValue(raw.name) ? { name: stringValue(raw.name) } : {}),
   };
 }

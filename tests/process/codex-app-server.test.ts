@@ -4,9 +4,13 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CodexAdapter } from '../../src/agent/codex/adapter';
 import type { AgentEvent } from '../../src/agent/types';
+import { log } from '../../src/core/logger';
 
 const dirs: string[] = [];
-afterEach(async () => { await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
+});
 
 async function harness(mode = 'normal', transport?: 'app-server') {
   const dir = await mkdtemp(join(tmpdir(), 'bridge-app-server-'));
@@ -27,6 +31,25 @@ rl.on('line', line => {
  if(m.method==='turn/start') {
   reply(m.id,{turn:{id:'turn-1'}});
   notify('turn/started',{threadId:'thread-1',turn:{id:'turn-1'}});
+  if(mode==='rate-failure' || mode==='quota-failure') {
+   notify('turn/completed',{threadId:'thread-1',turn:{id:'turn-1',status:'failed',error:{
+    message: mode==='quota-failure' ? 'session budget exceeded' : 'upstream throttled',
+    codexErrorInfo: mode==='quota-failure'
+      ? 'sessionBudgetExceeded'
+      : {httpConnectionFailed:{httpStatusCode:429}}
+   }}});
+   return;
+  }
+  if(mode==='protocol-notifications') {
+   notify('configWarning',{summary:'recoverable config issue',details:'details',path:'/config.toml'});
+   notify('warning',{threadId:'thread-1',message:'runtime warning'});
+   notify('mcpServer/startupStatus/updated',{threadId:'thread-1',name:'grafana',status:'failed',failureReason:'reauthenticationRequired',error:null});
+   notify('account/rateLimits/updated',{rateLimits:{limitId:'codex',primary:{usedPercent:91},secondary:null,rateLimitReachedType:null}});
+   notify('error',{threadId:'thread-1',turnId:'turn-1',willRetry:true,error:{message:'retrying request',codexErrorInfo:'rateLimitExceeded'}});
+   notify('item/completed',{threadId:'thread-1',turnId:'turn-1',item:{id:'answer',type:'agentMessage',text:'completed after retry'}});
+   notify('turn/completed',{threadId:'thread-1',turn:{id:'turn-1',status:'completed'}});
+   return;
+  }
   if(mode==='compact') {
    notify('thread/tokenUsage/updated',{threadId:'thread-1',turnId:'turn-1',tokenUsage:{
     last:{inputTokens:900000,outputTokens:120,cachedInputTokens:800000,reasoningOutputTokens:20,totalTokens:900120},
@@ -48,6 +71,11 @@ rl.on('line', line => {
  }
  if(m.method==='turn/steer') {
   if(mode==='inactive') {send({id:m.id,error:{code:-32600,message:'no active turn'}});return;}
+  if(mode==='not-steerable') {
+   const data={codexErrorInfo:{activeTurnNotSteerable:{turnKind:'review'}}};
+   send({id:m.id,error:{code:-32600,message:'cannot steer active turn',data}});
+   return;
+  }
   if(mode==='disconnect') {process.exit(1);return;}
   if(mode==='reject') {send({id:m.id,error:{code:-32600,message:'unexpected failure'}});return;}
   reply(m.id,{turnId:'turn-1'});
@@ -131,6 +159,60 @@ describe('Codex native in-flight input', () => {
       { type: 'text', text: 'task', text_elements: [] },
     ]);
   });
+  it.each([
+    ['rate-failure', 'rate_limit'],
+    ['quota-failure', 'quota'],
+  ] as const)('maps structured %s failures without relying on message text', async (mode, failureKind) => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    const h = await harness(mode);
+    const events = await collect(h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' }).events);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'error',
+      failureKind,
+      terminationReason: 'failed',
+    }));
+    expect(warn).toHaveBeenCalledWith('codex', 'turn-failed', expect.objectContaining({
+      codexErrorInfo: expect.anything(),
+    }));
+  });
+  it('processes global warnings, rate limits, MCP failures, and retry errors before thread filtering', async () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    const info = vi.spyOn(log, 'info').mockImplementation(() => {});
+    const h = await harness('protocol-notifications');
+    const events = await collect(h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' }).events);
+
+    expect(events).toContainEqual({
+      type: 'status',
+      code: 'codex_warning:runtime warning',
+      content: '⚠️ runtime warning',
+    });
+    expect(events).toContainEqual({
+      type: 'status',
+      code: 'mcp_startup_failed:grafana:reauthenticationRequired',
+      content: '⚠️ MCP 服务 grafana 需要重新授权，相关工具暂时不可用。',
+    });
+    expect(events).toContainEqual({
+      type: 'status',
+      code: 'codex_retry',
+      content: '⚠️ Codex 请求失败，正在自动重试。',
+    });
+    expect(warn).toHaveBeenCalledWith('codex', 'config-warning', expect.objectContaining({
+      summary: 'recoverable config issue',
+    }));
+    expect(warn).toHaveBeenCalledWith('codex', 'mcp-startup-failed', expect.objectContaining({
+      serverName: 'grafana',
+      failureReason: 'reauthenticationRequired',
+    }));
+    expect(warn).toHaveBeenCalledWith('codex', 'error-notification', expect.objectContaining({
+      willRetry: true,
+      variant: 'rateLimitExceeded',
+      failureKind: 'rate_limit',
+    }));
+    expect(info).toHaveBeenCalledWith('codex', 'rate-limits-updated', expect.objectContaining({
+      limitId: 'codex',
+      primaryUsedPercent: 91,
+    }));
+  });
   it('reports context compaction and model context occupancy', async () => {
     const h = await harness('compact');
     const run = h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' });
@@ -170,6 +252,13 @@ describe('Codex native in-flight input', () => {
   });
   it('only allows a new-turn fallback after explicit inactive rejection', async () => {
     const h = await harness('inactive');
+    const run = h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' });
+    const output = collect(run.events);
+    expect(await run.sendInput!({ text: 'late', messageId: 'm' })).toEqual({ status: 'inactive', messageId: 'm' });
+    await run.stop(); await output;
+  });
+  it('treats structured activeTurnNotSteerable rejection as inactive', async () => {
+    const h = await harness('not-steerable');
     const run = h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' });
     const output = collect(run.events);
     expect(await run.sendInput!({ text: 'late', messageId: 'm' })).toEqual({ status: 'inactive', messageId: 'm' });

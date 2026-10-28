@@ -79,8 +79,18 @@ describe('CodexAdapter app-server process contract', () => {
     expect(record.argv).toEqual(['app-server', '--listen', 'stdio://', '-c', 'approval_policy="never"', '-c', 'shell_environment_policy.inherit="all"']);
     expect(record.env.LARK_CHANNEL).toBe('1');
     const requests = await h.requests();
+    expect(requests.find(r => r.method === 'initialize')?.params.clientInfo).toMatchObject({
+      name: 'lark_channel_bridge',
+      title: 'Lark Channel Bridge',
+    });
     const thread = requests.find(r => r.method === 'thread/start')?.params;
-    expect(thread).toMatchObject({ cwd: h.dir, sandbox: 'read-only', approvalPolicy: 'never' });
+    expect(thread).toMatchObject({
+      cwd: h.dir,
+      sandbox: 'read-only',
+      approvalPolicy: 'never',
+      threadSource: 'appServer',
+      serviceName: 'lark-channel-bridge',
+    });
     expect(thread?.developerInstructions).toContain('ou_test_bot');
     expect(thread?.developerInstructions).toContain('lark-channel-bridge 运行约定');
     const prompt = requests.find(r => r.method === 'turn/start')?.params.input[0].text;
@@ -105,7 +115,11 @@ describe('CodexAdapter app-server process contract', () => {
     await collect(h.adapter.run({ runId: 'side', cwd: h.dir, prompt: 'side question', threadId: 'parent', forkSession: true }));
     expect((await h.record()).argv).toContain('features.goals=false');
     const requests = await h.requests();
-    expect(requests.find(r => r.method === 'thread/fork')?.params).toMatchObject({ threadId: 'parent', ephemeral: true });
+    expect(requests.find(r => r.method === 'thread/fork')?.params).toMatchObject({
+      threadId: 'parent',
+      ephemeral: true,
+      threadSource: 'appServer',
+    });
     expect(requests.some(r => r.method === 'thread/resume')).toBe(false);
   });
 

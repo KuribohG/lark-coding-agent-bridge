@@ -1,4 +1,4 @@
-import type { AgentEvent } from '../types';
+import type { AgentEvent, AgentFailureKind } from '../types';
 import { log } from '../../core/logger';
 
 export type CodexFinishReason = 'failed' | 'interrupted' | 'timeout';
@@ -12,6 +12,7 @@ export class CodexJsonlTranslator {
   private threadId: string | undefined;
   private terminal = false;
   private lastNonTerminalError: string | undefined;
+  private lastNonTerminalFailureKind: AgentFailureKind | undefined;
   private pendingAgentMessage: string | undefined;
   private readonly startedItems = new Set<string>();
   private drift: ProtocolDriftState = {
@@ -62,6 +63,7 @@ export class CodexJsonlTranslator {
           type: 'error',
           message: truncate(`codex stream ended before a terminal event${detail}`, 4096),
           terminationReason: 'failed',
+          ...(this.lastNonTerminalFailureKind ? { failureKind: this.lastNonTerminalFailureKind } : {}),
         },
       ]);
     }
@@ -70,12 +72,22 @@ export class CodexJsonlTranslator {
     ]);
   }
 
-  fail(message: string): AgentEvent[] {
+  fail(message: string, failureKind?: AgentFailureKind): AgentEvent[] {
     if (this.terminal) return [];
     this.terminal = true;
     return this.prependPendingText([
-      { type: 'error', message: truncate(message, 4096), terminationReason: 'failed' },
+      {
+        type: 'error',
+        message: truncate(message, 4096),
+        terminationReason: 'failed',
+        ...(failureKind ? { failureKind } : {}),
+      },
     ]);
+  }
+
+  recordError(message: string, failureKind?: AgentFailureKind): void {
+    this.lastNonTerminalError = message;
+    this.lastNonTerminalFailureKind = failureKind;
   }
 
   protocolDrift(): ProtocolDriftState {
@@ -209,7 +221,7 @@ export class CodexJsonlTranslator {
 
   private translateNonTerminalError(raw: Record<string, unknown>, fallback: string): AgentEvent[] {
     const message = errorMessage(raw, fallback);
-    this.lastNonTerminalError = message;
+    this.recordError(message);
     log.warn('jsonl', 'error_event', { message: truncate(message, 500) });
     return [];
   }

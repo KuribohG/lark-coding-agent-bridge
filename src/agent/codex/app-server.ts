@@ -6,12 +6,39 @@ import { spawnWithDeadline } from '../deadline';
 import type { AgentEvent, AgentRun, AgentRunOptions } from '../types';
 import { CodexJsonlTranslator } from './jsonl';
 import { getBuildInfo } from '../../build-info';
+import { log } from '../../core/logger';
+import {
+  isActiveTurnNotSteerable,
+  summarizeCodexErrorInfo,
+  type CodexErrorSummary,
+} from './error-info';
 
 type ObjectValue = Record<string, unknown>;
 const object = (v: unknown): ObjectValue => v !== null && typeof v === 'object' ? v as ObjectValue : {};
 const text = (v: unknown): string => typeof v === 'string' ? v : '';
+const THREAD_SOURCE = 'appServer';
+const SERVICE_NAME = 'lark-channel-bridge';
 
-class RpcError extends Error {}
+class RpcError extends Error {
+  readonly method: string;
+  readonly code: unknown;
+  readonly data: unknown;
+  readonly codexError: CodexErrorSummary;
+
+  constructor(message: string, input: {
+    method: string;
+    code?: unknown;
+    data?: unknown;
+    codexError?: CodexErrorSummary;
+  }) {
+    super(message);
+    this.name = 'RpcError';
+    this.method = input.method;
+    this.code = input.code;
+    this.data = input.data;
+    this.codexError = input.codexError ?? {};
+  }
+}
 
 /** One stdio server per run keeps profile environments and process lifetimes isolated. */
 export function startAppServerRun(input: {
@@ -50,11 +77,18 @@ export function startAppServerRun(input: {
     resolve(value: ObjectValue): void;
     reject(error: Error): void;
     timer: NodeJS.Timeout;
+    method: string;
   }>();
+  const statuses = new Set<string>();
   const push = (batch: AgentEvent[]) => {
     events.push(...batch);
     wake?.();
     wake = undefined;
+  };
+  const pushStatusOnce = (code: string, content: string) => {
+    if (ended || statuses.has(code)) return;
+    statuses.add(code);
+    push([{ type: 'status', code, content }]);
   };
   const finish = (batch: AgentEvent[]) => {
     if (ended) return;
@@ -75,7 +109,7 @@ export function startAppServerRun(input: {
         pending.delete(id);
         reject(new Error(`app-server ${method} acknowledgement timed out; delivery is unknown`));
       }, timeoutMs);
-      pending.set(id, { resolve, reject, timer });
+      pending.set(id, { resolve, reject, timer, method });
       write({ id, method, params });
     });
   };
@@ -100,7 +134,16 @@ export function startAppServerRun(input: {
       if (!p) return;
       pending.delete(message.id);
       clearTimeout(p.timer);
-      if (message.error) p.reject(new RpcError(text(object(message.error).message) || 'app-server rejected request'));
+      if (message.error) {
+        const rpcError = object(message.error);
+        const data = rpcError.data;
+        p.reject(new RpcError(text(rpcError.message) || 'app-server rejected request', {
+          method: p.method,
+          code: rpcError.code,
+          data,
+          codexError: summarizeCodexErrorInfo(data),
+        }));
+      }
       else p.resolve(object(message.result));
       return;
     }
@@ -111,13 +154,81 @@ export function startAppServerRun(input: {
     }
     const method = text(message.method);
     const p = object(message.params);
-    if (ended || p.threadId !== threadId) return;
+    if (method === 'account/rateLimits/updated') {
+      log.info('codex', 'rate-limits-updated', rateLimitFields(object(p.rateLimits)));
+      return;
+    }
+    if (method === 'configWarning') {
+      log.warn('codex', 'config-warning', {
+        summary: text(p.summary),
+        details: text(p.details) || undefined,
+        path: text(p.path) || undefined,
+      });
+      return;
+    }
+    if (ended) return;
+    const eventThreadId = text(p.threadId);
+    if (eventThreadId && threadId && eventThreadId !== threadId) return;
+    if (method === 'warning') {
+      const warning = text(p.message) || 'Codex reported a warning';
+      log.warn('codex', 'runtime-warning', { message: warning, eventThreadId: eventThreadId || undefined });
+      pushStatusOnce(`codex_warning:${warning}`, `⚠️ ${truncate(warning, 500)}`);
+      return;
+    }
+    if (method === 'mcpServer/startupStatus/updated') {
+      const name = text(p.name) || 'unknown';
+      const status = text(p.status);
+      const failureReason = text(p.failureReason);
+      const error = text(p.error);
+      if (status === 'failed') {
+        log.warn('codex', 'mcp-startup-failed', { serverName: name, status, failureReason: failureReason || undefined, error: error || undefined });
+        pushStatusOnce(
+          `mcp_startup_failed:${name}:${failureReason || error}`,
+          failureReason === 'reauthenticationRequired'
+            ? `⚠️ MCP 服务 ${name} 需要重新授权，相关工具暂时不可用。`
+            : `⚠️ MCP 服务 ${name} 启动失败${error ? `：${truncate(error, 300)}` : '。'}`,
+        );
+      } else {
+        log.info('codex', 'mcp-startup-status', { serverName: name, status, failureReason: failureReason || undefined });
+      }
+      return;
+    }
     if (method === 'turn/started') {
       turnId = text(object(p.turn).id) || turnId;
       return;
     }
     if (p.turnId && turnId && p.turnId !== turnId) return;
-    if (method === 'item/agentMessage/delta') {
+    if (method === 'thread/status/changed') {
+      const threadStatus = object(p.status);
+      const status = text(threadStatus.type) || 'unknown';
+      const activeFlags = Array.isArray(threadStatus.activeFlags)
+        ? threadStatus.activeFlags.filter((value): value is string => typeof value === 'string')
+        : undefined;
+      const fields = {
+        threadStatus: status,
+        activeFlags,
+      };
+      if (status === 'systemError') {
+        log.warn('codex', 'thread-status', fields);
+        pushStatusOnce('thread_system_error', '⚠️ Codex thread 进入系统错误状态，任务可能无法继续。');
+      } else {
+        log.info('codex', 'thread-status', fields);
+      }
+    } else if (method === 'error') {
+      const error = object(p.error);
+      const message = text(error.message) || 'Codex reported an error';
+      const summary = summarizeCodexErrorInfo(error);
+      log.warn('codex', 'error-notification', {
+        message,
+        willRetry: p.willRetry === true,
+        additionalDetails: text(error.additionalDetails) || undefined,
+        ...summary,
+      });
+      translator.recordError(message, summary.failureKind);
+      if (p.willRetry === true) {
+        pushStatusOnce('codex_retry', '⚠️ Codex 请求失败，正在自动重试。');
+      }
+    } else if (method === 'item/agentMessage/delta') {
       opts.onMessageDelta?.(text(p.itemId), text(p.delta));
     } else if (method === 'item/started' || method === 'item/completed') {
       const item = object(p.item);
@@ -161,21 +272,40 @@ export function startAppServerRun(input: {
       const turn = object(p.turn);
       if (turnId && turn.id !== turnId) return;
       turnId = undefined;
-      finish(turn.status === 'completed' ? translator.translate({ type: 'turn.completed' })
-        : turn.status === 'interrupted' ? translator.finish('interrupted')
-        : translator.fail(text(object(turn.error).message) || 'Codex turn failed'));
+      if (turn.status === 'completed') {
+        finish(translator.translate({ type: 'turn.completed' }));
+      } else if (turn.status === 'interrupted') {
+        finish(translator.finish('interrupted'));
+      } else {
+        const error = object(turn.error);
+        const message = text(error.message) || 'Codex turn failed';
+        const summary = summarizeCodexErrorInfo(error);
+        log.warn('codex', 'turn-failed', {
+          message,
+          additionalDetails: text(error.additionalDetails) || undefined,
+          ...summary,
+        });
+        finish(translator.fail(message, summary.failureKind));
+      }
     }
   });
 
   const ready = (async () => {
     await request('initialize', {
-      clientInfo: { name: 'lark_channel_bridge', version: getBuildInfo().version },
+      clientInfo: {
+        name: 'lark_channel_bridge',
+        title: 'Lark Channel Bridge',
+        version: getBuildInfo().version,
+      },
     });
     write({ method: 'initialized' });
     if (stopping) return;
-    const thread = await request(opts.threadId ? opts.forkSession ? 'thread/fork' : 'thread/resume' : 'thread/start', {
+    const creatingThread = !opts.threadId;
+    const thread = await request(creatingThread ? 'thread/start' : opts.forkSession ? 'thread/fork' : 'thread/resume', {
       ...(opts.threadId ? { threadId: opts.threadId, excludeTurns: true } : {}),
       ...(opts.forkSession ? { ephemeral: true } : {}),
+      ...(creatingThread || opts.forkSession ? { threadSource: THREAD_SOURCE } : {}),
+      ...(creatingThread ? { serviceName: SERVICE_NAME } : {}),
       ...(input.developerInstructions ? { developerInstructions: input.developerInstructions } : {}),
       cwd: opts.cwd, model: opts.model, sandbox: input.sandbox, approvalPolicy: 'never',
     });
@@ -190,7 +320,12 @@ export function startAppServerRun(input: {
     });
     if (!ended) turnId = text(object(result.turn).id) || turnId;
   })();
-  void ready.catch(error => finish(stopping ? translator.finish('interrupted') : translator.fail(String(error))));
+  void ready.catch(error => {
+    if (!stopping) log.warn('codex', 'app-server-request-failed', rpcErrorFields(error));
+    finish(stopping
+      ? translator.finish('interrupted')
+      : translator.fail(errorMessage(error), error instanceof RpcError ? error.codexError.failureKind : undefined));
+  });
 
   async function waitForExit(timeoutMs: number): Promise<boolean> {
     if (exited) return true;
@@ -218,7 +353,14 @@ export function startAppServerRun(input: {
         if (result.turnId !== expectedTurnId) throw new Error('app-server returned an unexpected steer turn id; delivery is unknown');
         return 'accepted';
       } catch (error) {
-        if (error instanceof RpcError && /no active turn|not.*active|turn.*(?:mismatch|does not match)/i.test(error.message)) return 'inactive';
+        if (error instanceof RpcError) {
+          if (isActiveTurnNotSteerable(error.codexError.codexErrorInfo)
+            || isActiveTurnNotSteerable(error.data)
+            || /no active turn|not.*active|turn.*(?:mismatch|does not match)|not steerable|cannot steer.*active turn|active turn.*cannot accept/i.test(error.message)) {
+            return 'inactive';
+          }
+          log.warn('codex', 'turn-steer-failed', rpcErrorFields(error));
+        }
         throw error;
       }
     },
@@ -242,6 +384,45 @@ export function startAppServerRun(input: {
     },
     waitForExit,
   };
+}
+
+function rateLimitFields(value: ObjectValue): ObjectValue {
+  const primary = object(value.primary);
+  const secondary = object(value.secondary);
+  return {
+    limitId: text(value.limitId) || undefined,
+    limitName: text(value.limitName) || undefined,
+    planType: text(value.planType) || undefined,
+    primaryUsedPercent: numberValue(primary.usedPercent),
+    secondaryUsedPercent: numberValue(secondary.usedPercent),
+    rateLimitReachedType: text(value.rateLimitReachedType) || undefined,
+    spendControlReached: typeof value.spendControlReached === 'boolean' ? value.spendControlReached : undefined,
+  };
+}
+
+function rpcErrorFields(error: unknown): ObjectValue {
+  if (error instanceof RpcError) {
+    return {
+      message: error.message,
+      method: error.method,
+      rpcCode: error.code,
+      rpcData: error.data,
+      ...error.codexError,
+    };
+  }
+  return { message: errorMessage(error) };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function truncate(value: string, max: number): string {
+  return value.length > max ? `${value.slice(0, max)}…` : value;
 }
 
 function parseAsyncQuestions(value: unknown): Array<{ title: string; options?: string[] }> {
