@@ -18,4 +18,21 @@ export type {
   AdapterMeta,
   TelemetryEvent,
 } from './core/telemetry';
+export type {
+  BridgePlugin,
+  BridgePluginFactory,
+  PluginAction,
+  PluginContext,
+  PluginHttpRequest,
+  PluginHttpResponse,
+  PluginHttpRoute,
+} from './plugins/api';
+export { PluginHost } from './plugins/host';
+export type { CommandDefinition } from './commands/catalog';
+export type {
+  CommandContext,
+  Controls,
+  FeatureCommandContribution,
+  Handler,
+} from './commands/types';
 export { reportMetric, reportError } from './core/logger';

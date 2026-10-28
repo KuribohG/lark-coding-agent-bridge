@@ -101,7 +101,7 @@ it('recreates the inbox with changed TOML excerpt limits while preserving its st
   await saveRootConfig(root, path); await initMonitors({ config: path });
   const manager = create(); await manager.reconcile();
   const before = vi.mocked(InboxGui).mock.calls.at(-1)![0];
-  const store = join(rootDir, 'inbox', 'state.json'); const jobs = JSON.parse(await readFile(store, 'utf8')).jobs;
+  const jobs = structuredClone(before.store.data.jobs);
   const settings = (await loadMonitorRoot(path))!;
   settings.inbox!.triageMessageLimit = 20; settings.inbox!.triageMessageChars = 4000;
   await writeFile(join(rootDir, 'monitors.toml'), formatMonitorConfig(settings));
@@ -109,7 +109,7 @@ it('recreates the inbox with changed TOML excerpt limits while preserving its st
   const after = vi.mocked(InboxGui).mock.calls.at(-1)![0];
   expect(after).not.toBe(before);
   expect(after.config).toMatchObject({ triageMessageLimit: 20, triageMessageChars: 4000 });
-  expect(JSON.parse(await readFile(store, 'utf8')).jobs).toEqual(jobs);
+  expect(after.store.data.jobs).toEqual(jobs);
 });
 
 it('saves analysis timeouts without recreating the service and uses the new limit on later runs', async () => {

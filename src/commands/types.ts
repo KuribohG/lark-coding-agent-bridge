@@ -14,9 +14,9 @@ import type { RunExecutor } from '../runtime/run-executor';
 import type { WorkspaceStore } from '../workspace/store';
 import type { KnownChat } from '../bot/lark-info';
 import type { MeetingManager } from '../meeting/manager';
-import type { InboxManager } from '../monitoring/sources/lark/manager';
 import type { LarkProfileAuth } from '../lark-auth/profile-auth';
 import type { QuotedContext } from '../bot/quote';
+import type { CommandDefinition } from './catalog';
 
 export interface BtwCommandControl {
   enqueue(question: string, ctx: CommandContext): Promise<void>;
@@ -25,8 +25,17 @@ export interface BtwCommandControl {
   cancel(scope: string): void;
 }
 
+export interface CommandDispatcher {
+  find(name: string): CommandDefinition | undefined;
+  list(): readonly CommandDefinition[];
+  helpLines(escapedAgentName: string): string[];
+  tryHandle(ctx: CommandContext): Promise<boolean>;
+  run(name: string, args: string, ctx: CommandContext): Promise<boolean>;
+}
+
 export interface Controls {
-  inbox?: InboxManager;
+  /** Commands contributed by the active plugin host. */
+  commands?: CommandDispatcher;
   cancelPendingInput?(scope: string): number;
   btw?: BtwCommandControl;
   launchTimedRun?(job: TimedRun, message: NormalizedMessage): Promise<void>;
@@ -104,3 +113,9 @@ export interface CommandContext {
 }
 
 export type Handler = (args: string, ctx: CommandContext) => Promise<void>;
+
+export interface FeatureCommandContribution {
+  pluginId: string;
+  definition: CommandDefinition;
+  handler: Handler;
+}

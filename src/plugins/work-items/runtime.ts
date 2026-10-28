@@ -1,11 +1,11 @@
-import { MonitorRuntime } from '../monitoring/runtime';
-import { monitorModules } from '../monitoring/sources';
-import type { MonitorHost } from '../monitoring/host';
-import type { LarkMonitorProfiles } from '../monitoring/sources/lark/host';
-import { createLarkRuntimeAgent } from '../channels/lark/agent-host';
+import { MonitorRuntime } from '../../monitoring/runtime';
+import { monitorModules } from '../../monitoring/sources';
+import type { MonitorHost } from '../../monitoring/host';
+import type { LarkMonitorProfiles } from '../../monitoring/sources/lark/host';
+import { createLarkRuntimeAgent } from '../../channels/lark/agent-host';
 import { ProfileExecutionProvider } from './execution-provider';
 import { createWorkItemSource } from './work-item-runtime';
-import { createLarkWorkItemDelivery } from '../monitoring/sources/lark/work-item-delivery';
+import { createLarkWorkItemDelivery } from '../../monitoring/sources/lark/work-item-delivery';
 
 export function createMonitorHost(configPath: string, rootDir?: string, profiles: LarkMonitorProfiles = () => undefined): MonitorHost {
   return {

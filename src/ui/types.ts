@@ -3,6 +3,7 @@ import type { KnownChat } from '../bot/lark-info';
 import type { MutableProfileState } from '../config/config-ops';
 import type { Controls } from '../commands';
 import type { ManagedStatus } from '../runtime/supervisor';
+import type { PluginAction, PluginHttpRoute } from '../plugins/api';
 
 /**
  * The live per-profile runtime the console edits. The supervisor's `Controls`
@@ -20,7 +21,6 @@ export interface UiRuntime extends MutableProfileState {
 
 /** The subset of the supervisor the console needs (structurally satisfied). */
 export interface UiSupervisor {
-  inbox?: import('../monitoring/sources/lark/manager').InboxManager;
   isOnline(profile: string): boolean;
   controlsFor(profile: string): Controls | undefined;
   channelFor(profile: string): LarkChannel | undefined;
@@ -28,6 +28,9 @@ export interface UiSupervisor {
   startProfile(profile: string): Promise<void>;
   stopProfile(profile: string): Promise<void>;
   restartProfile(profile: string): Promise<void>;
+  pluginRoutes?(): readonly PluginHttpRoute[];
+  validatePluginAction?(action: PluginAction): Promise<void>;
+  reconcilePlugins?(): Promise<void>;
 }
 
 /** Everything the console server needs from the supervisor host. */

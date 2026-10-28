@@ -93,7 +93,7 @@ The run directory contains `evidence.json`, raw `job-<id>.log` files and a
 structured `result.json`. Trace downloads are capped at 32 MiB per job and explicitly
 mark truncation. Missing/erased logs are reported as evidence gaps. Watcher cursors and submission IDs live beside bridge configuration in
 `gitlab-ci/state.json`; assistant tasks live in
-`inbox/sources/gitlab-ci/<identity-scope>/state.json`. Set `enabled: false` to stop
+`inbox/sources/gitlab-ci/<identity-scope>/state.sqlite`. Set `enabled: false` to stop
 polling and abort active work. With the independent background executor, stopping
 the Lark profile leaves CI collection running; if the executor is unavailable,
 new analyses remain queued. This behavior requires deployment of the refactor.

@@ -1,6 +1,6 @@
 import { executeSourceCommand } from '../../../src/inbox/workbench';
-import { createWorkItemSource } from '../../../src/host/work-item-runtime';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { createWorkItemSource } from '../../../src/plugins/work-items/work-item-runtime';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -47,7 +47,8 @@ it('persists before acknowledging an event and does not accept a failed save', a
   const s = await setup(); const save = vi.spyOn(s.store, 'save').mockRejectedValueOnce(Error('disk full'));
   await expect(s.service.submitTask(event)).rejects.toThrow('disk full'); expect(s.service.list()).toHaveLength(0);
   save.mockRestore(); await s.service.submitTask(event);
-  expect(JSON.parse(await readFile(s.store.path, 'utf8')).jobs).toHaveLength(1);
+  const persisted = new InboxStore(s.store.path); await persisted.load();
+  expect(persisted.data.jobs).toHaveLength(1);
 });
 
 it('uses the same bounded notification retries and never reruns a completed analysis', async () => {
@@ -67,7 +68,8 @@ it('limits automatic analysis attempts but keeps explicit retries under user con
     await s.service.tick(); await vi.waitFor(() => expect(s.service.get(job.id)?.state).toBe(i === 2 ? 'failed' : 'queued')); s.advance();
   }
   await s.service.tick(); expect(s.io.analyze).toHaveBeenCalledTimes(3);
-  expect(await readFile(s.store.path, 'utf8')).not.toContain('private upstream');
+  const persisted = new InboxStore(s.store.path); await persisted.load();
+  expect(JSON.stringify(persisted.data)).not.toContain('private upstream');
   await s.service.decide(job.id, 'process', 'ou_owner'); await s.service.tick();
   await vi.waitFor(() => expect(s.service.get(job.id)?.state).toBe('failed'));
   s.advance(); await s.service.tick(); expect(s.io.analyze).toHaveBeenCalledTimes(4);

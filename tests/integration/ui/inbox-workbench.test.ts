@@ -1,4 +1,4 @@
-import { createWorkItemSource } from '../../../src/host/work-item-runtime';
+import { createWorkItemSource } from '../../../src/plugins/work-items/work-item-runtime';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,6 +15,7 @@ import { InboxManager } from '../../../src/monitoring/sources/lark/manager';
 import type { InboxLark } from '../../../src/inbox/lark';
 import type { InboxIO, InboxJob } from '../../../src/inbox/types';
 import { workItemTarget } from '../../../src/inbox/lark-target';
+import { createInboxHttpRoutes } from '../../../src/plugins/work-items/plugin';
 
 let server: UiServerHandle | undefined, service: InboxService | undefined;
 afterEach(async () => { await server?.close(); await service?.close(); });
@@ -37,7 +38,10 @@ it('serves local jobs and persists version-checked reviews through authenticated
   const manager = { workbench: async () => ({ running: false, jobs: guiJobs(service!.list()), config }),
     workbenchCommand: (input: unknown) => executeInboxCommand(service!, {} as InboxLark, input) } as unknown as InboxManager;
   const shutdown = vi.fn();
-  const sup = { inbox: manager, list: () => [] } as unknown as UiSupervisor;
+  const sup = {
+    list: () => [],
+    pluginRoutes: () => createInboxHttpRoutes(manager),
+  } as unknown as UiSupervisor;
   server = await startUiServer({ rootDir, supervisor: sup, version: 'test', requestShutdown: shutdown });
   const url = `http://127.0.0.1:${server.port}`;
   const command = (target: unknown, token = server!.token, action = 'review') => fetch(`${url}/api/inbox/command`, {
@@ -78,7 +82,14 @@ it('shows and reviews CI source jobs in the same authenticated workbench with ch
       executor: () => undefined, driver: { accepts: () => true, prepare: vi.fn() } }));
     const job = await source.submit({ key: 'pipeline-1', title: 'repo CI #1', reason: 'CI failed', url: 'https://gitlab.test/pipelines/1',
       time: Date.now(), data: {}, initial: { state: 'done', replyDraft: 'CI draft', analysis: 'CI evidence' } });
-    server = await startUiServer({ rootDir, supervisor: { inbox: manager, list: () => [] } as unknown as UiSupervisor, version: 'test' });
+    server = await startUiServer({
+      rootDir,
+      supervisor: {
+        list: () => [],
+        pluginRoutes: () => createInboxHttpRoutes(manager),
+      } as unknown as UiSupervisor,
+      version: 'test',
+    });
     const url = `http://127.0.0.1:${server.port}`;
     const headers = { 'content-type': 'application/json', 'x-ui-token': server.token };
     const response = await fetch(`${url}/api/inbox/workbench`, { headers });

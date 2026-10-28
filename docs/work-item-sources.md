@@ -4,7 +4,7 @@ The bridge uses a shared work-item engine for Lark conversation checks, GitLab C
 
 All built-in sources can be configured in a shared [monitor TOML file](monitor-config.md). This configuration layer selects settings; durable observations and lifecycle state remain in the work-item engine.
 
-This is an internal TypeScript integration API with statically registered modules. It does not load arbitrary code from configuration. Storage and UID monitoring is described in [storage-monitoring.md](storage-monitoring.md); configuring a source does not deploy or activate a newer Bridge binary.
+This is an internal TypeScript integration API with statically registered plugins and source modules. It does not load arbitrary code from configuration. Storage and UID monitoring is described in [storage-monitoring.md](storage-monitoring.md); configuring a source does not deploy or activate a newer Bridge binary.
 
 ## Source modules and dependency boundaries
 
@@ -56,13 +56,16 @@ To add a built-in source:
    another source's implementation. Add source-specific tests and a disabled TOML
    example; lifecycle and generic TOML parsing do not need new source branches.
 
-Lark, GitLab CI and storage source IDs and state paths are unchanged. The generic
-work-item state uses schema version 2; a version-1 conversation-shaped state file is
-reset with a warning instead of being migrated.
+Lark, GitLab CI and storage source IDs remain unchanged. Each source now persists
+its generic work-item state as `state.sqlite` beside the former `state.json`.
+The SQLite transaction stores jobs, cursors, dedupe keys, budgets and the
+notification outbox together. A version-2 legacy JSON file is imported once and
+archived; an unsupported version-1 conversation-shaped file is archived without
+being overwritten.
 
 ## Host and executor lifecycle
 
-`src/host/monitors.ts` assembles the bridge's monitor modules. GitLab and storage
+`src/plugins/work-items/runtime.ts` assembles the bridge's monitor modules. GitLab and storage
 receive the source-neutral `MonitorHost`; Lark intake receives a separate, narrow
 `LarkMonitorProfiles` capability for its app, identity and channel configuration.
 No monitor or work-item contract imports chat command `Controls`.
@@ -188,14 +191,15 @@ Keep source-specific operations out of the shared engine. New collectors should 
 
 ## Migration and limits
 
-Work-item state is version 2. A version-1 file used the previous chat-specific shape
-and is reset with a warning because monitoring observations can be collected again.
-No dual-field or TOML migration is retained. Item state directories are unchanged.
-The UI maps the canonical fields to its presentation model.
+The work-item document schema remains version 2. SQLite storage and its migrations
+are versioned independently. A version-1 file used the previous chat-specific
+shape and is archived because its fields cannot be mapped safely without inventing
+source data. No dual-field or TOML migration is retained. Item state directories
+are unchanged. The UI maps the canonical fields to its presentation model.
 
 An interrupted investigation still requires an explicit retry, matching the existing behavior. Lark and GitLab retain explicit retry after interrupted investigations. Storage opts into bounded automatic recovery and a separate incident slot as described below. General cross-source incident correlation is not implemented.
 
-Tests cover existing Lark/CI behavior plus schema reset, observation replay/order
+Tests cover existing Lark/CI behavior plus schema migration, observation replay/order
 conflicts, save failure rollback, late results, source recovery, manual controls,
 owner isolation and cancellation between investigation phases. Model and Lark writes
 are mocked in these tests; they do not establish live operational monitoring.

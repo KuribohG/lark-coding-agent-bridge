@@ -27,6 +27,34 @@ shutdown attempts to close every connected plugin even if one fails. Factories
 are statically imported or supplied by the embedding application; this API does
 not download or execute plugin names from chat messages or browser requests.
 
+## Feature plugins
+
+Channel transport and host features are separate extension points:
+
+```text
+AgentBackend    Codex / Claude / Pi
+ChannelPlugin   Lark / Web / another IM
+BridgePlugin    work items, inbox commands and workbench routes
+                         |
+                  PluginHost / Supervisor
+```
+
+A `BridgePlugin` owns a stable ID, lifecycle (`reconcile`, `close`) and optional
+command and HTTP-route contributions. `PluginHost` validates duplicate IDs,
+commands and routes, reconciles every plugin independently and closes them in
+reverse order. `Supervisor` only stores that generic registry; it has no getter
+or branch for a concrete inbox implementation. The management console dispatches
+plugin HTTP routes through the same authenticated server, and slash-command help
+is built from the active command registry.
+
+The built-in work-item/inbox feature is composed in `src/plugins/defaults.ts`.
+Its implementation contributes `/inbox`, the `/api/inbox/*` workbench routes,
+monitor lifecycle and SQLite-backed work-item storage. Core command, UI and
+supervisor modules do not import `src/inbox`,
+`src/monitoring/sources/lark` or the concrete plugin. Static architecture tests
+enforce that direction. Plugins still run in-process and are explicitly
+registered; this contract does not introduce remote code loading.
+
 ## Run the bundled Web channel
 
 ```sh
@@ -103,7 +131,7 @@ Public package entry points:
 
 | Import | Purpose |
 | --- | --- |
-| `lark-channel-bridge/runtime` | `ChannelHost`, `ChannelPlugin`, `ConversationRuntime`, agent and output contracts |
+| `lark-channel-bridge/runtime` | `ChannelHost`, `ChannelPlugin`, `PluginHost`, `BridgePlugin`, `ConversationRuntime`, agent and output contracts |
 | `lark-channel-bridge/channels/lark` | `createLarkPlugin`, `createLarkRunOutput` |
 | `lark-channel-bridge/channels/web` | `createWebPlugin`, `createWebChatRuntime`, `createWebRunOutput` |
 

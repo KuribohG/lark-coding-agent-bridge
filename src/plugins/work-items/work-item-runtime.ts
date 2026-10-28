@@ -1,9 +1,9 @@
-import { EventSource } from '../work-items/event-source';
-import { createInvestigator } from '../work-items/investigation';
-import type { WorkItemConfig } from '../work-items/config';
-import type { WorkItemDeliveryPort } from '../work-items/delivery-port';
-import type { WorkItemSourceOptions } from '../work-items/registry';
-import type { MonitorSourceOptions } from '../monitoring/host';
+import { EventSource } from '../../work-items/event-source';
+import { createInvestigator } from '../../work-items/investigation';
+import type { WorkItemConfig } from '../../work-items/config';
+import type { WorkItemDeliveryPort } from '../../work-items/delivery-port';
+import type { WorkItemSourceOptions } from '../../work-items/registry';
+import type { MonitorSourceOptions } from '../../monitoring/host';
 
 /** Assemble generic work-item execution around an injected delivery port. */
 export function createWorkItemSource(

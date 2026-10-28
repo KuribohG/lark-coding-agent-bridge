@@ -1,3 +1,12 @@
+export interface CommandDefinition {
+  name: string;
+  aliases?: readonly string[];
+  access: 'user' | 'admin';
+  pending: 'preserve' | 'cancel';
+  arguments: 'words' | 'verbatim';
+  help: readonly string[];
+}
+
 /** Data-only command metadata is shared by intake, dispatch and help rendering. */
 export const commandDefinitions = [
   { name: 'new', aliases: ['reset'], access: 'user', pending: 'cancel', arguments: 'words', help: [
@@ -28,23 +37,14 @@ export const commandDefinitions = [
   { name: 'exit', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/exit <id|#>` — 关掉指定 bot(用 `/ps` 看 id/序号)'] },
   { name: 'reconnect', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/reconnect` — 强制重连 WebSocket(网络抖动后 bot 没反应时用)'] },
   { name: 'doctor', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/doctor [描述]` — 把日志和描述交给 {agent} 自助诊断'] },
-  { name: 'inbox', access: 'user', pending: 'preserve', arguments: 'words', help: ['`/inbox` — 查看和处理会话助理事项'] },
   { name: 'invite', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/invite` — 管理用户、群聊和管理员访问权限'] },
   { name: 'remove', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/remove` — 移除用户、群聊或管理员访问权限'] },
   { name: 'meeting', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/meeting` — 加入、离开或查看会议，以及向会议智能体提问'] },
   { name: 'doc', access: 'user', pending: 'cancel', arguments: 'words', help: ['`/doc` — 云文档使用说明'] },
   { name: 'help', access: 'user', pending: 'cancel', arguments: 'words', help: ['`/help` — 本帮助'] },
-] as const satisfies readonly {
-  name: string;
-  aliases?: readonly string[];
-  access: 'user' | 'admin';
-  pending: 'preserve' | 'cancel';
-  arguments: 'words' | 'verbatim';
-  help: readonly string[];
-}[];
+] as const satisfies readonly CommandDefinition[];
 
 export type CommandName = typeof commandDefinitions[number]['name'];
-export type CommandDefinition = typeof commandDefinitions[number];
 
 const byName = new Map<string, CommandDefinition>();
 for (const definition of commandDefinitions) {
@@ -59,6 +59,10 @@ export function findCommand(name: string): CommandDefinition | undefined {
   return byName.get(name.startsWith('/') ? name.slice(1) : name);
 }
 
-export function commandHelpLines(escapedAgentName: string): string[] {
-  return commandDefinitions.flatMap(definition => definition.help.map(line => `- ${line.replace('{agent}', () => escapedAgentName)}`));
+export function commandHelpLines(
+  escapedAgentName: string,
+  definitions: readonly CommandDefinition[] = commandDefinitions,
+): string[] {
+  return definitions.flatMap(definition =>
+    definition.help.map(line => `- ${line.replace('{agent}', () => escapedAgentName)}`));
 }

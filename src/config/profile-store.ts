@@ -12,10 +12,8 @@ import {
   type RootConfig,
 } from './profile-schema';
 import type { AppConfig } from './schema';
-import { normalizeInbox } from '../inbox/config';
 import { parseWorkItemConcurrency } from '../work-items/concurrency';
-import { parseStorageConfig } from '../monitoring/sources/storage/config';
-import { normalizeGitLabCi } from '../monitoring/sources/gitlab-ci/config';
+import { normalizeMonitorRootValues } from '../monitoring/sources/configs';
 import { normalizeModelServices } from '../model-service/config';
 import { configRevision } from './revision';
 
@@ -43,6 +41,11 @@ export function normalizeRootConfig(root: RootConfig): RootConfig {
     profiles[name] = normalizeProfileConfig(profile);
   }
   const migrations = normalizeRootMigrations(root.migrations);
+  const monitoring = normalizeMonitorRootValues({
+    inbox: root.inbox,
+    gitlabCi: root.gitlabCi,
+    storageMonitor: root.monitorConfigFile === undefined ? root.storageMonitor : undefined,
+  });
   return {
     schemaVersion: 2,
     activeProfile: root.activeProfile,
@@ -51,9 +54,7 @@ export function normalizeRootConfig(root: RootConfig): RootConfig {
       : {}),
     preferences: {},
     ...(root.monitorConfigFile !== undefined ? { monitorConfigFile: root.monitorConfigFile } : {}),
-    ...(root.inbox ? { inbox: normalizeInbox(root.inbox) } : {}),
-    ...(root.gitlabCi ? { gitlabCi: normalizeGitLabCi(root.gitlabCi) } : {}),
-    ...(root.monitorConfigFile === undefined && root.storageMonitor ? { storageMonitor: parseStorageConfig(root.storageMonitor) } : {}),
+    ...monitoring,
     ...(root.monitorConfigFile === undefined && root.workItemConcurrency !== undefined ? { workItemConcurrency: parseWorkItemConcurrency(root.workItemConcurrency) } : {}),
     ...(root.modelServices ? { modelServices: normalizeModelServices(root.modelServices) } : {}),
     ...(root.secrets ? { secrets: root.secrets } : {}),

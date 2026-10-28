@@ -14,6 +14,7 @@ import {
 } from '../../../src/config/profile-store';
 import { startUiServer } from '../../../src/ui/server';
 import type { UiServerHandle, UiSupervisor } from '../../../src/ui/types';
+import { validateWorkItemsAction } from '../../../src/plugins/work-items/plugin';
 
 const app = { id: 'cli_test', secret: '${APP_SECRET}', tenant: 'feishu' as const };
 
@@ -62,6 +63,7 @@ function stubSupervisor(): UiSupervisor {
       online.delete(p);
     },
     restartProfile: async () => {},
+    validatePluginAction: action => validateWorkItemsAction({ configPath }, action),
   };
 }
 

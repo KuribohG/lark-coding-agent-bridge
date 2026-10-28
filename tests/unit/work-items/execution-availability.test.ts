@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -40,8 +40,8 @@ it('persists queued evidence without attempts or quota use, then resumes after r
   expect(h.investigate).not.toHaveBeenCalled();
   expect(h.service.get(pending.id)).toMatchObject({ state: 'queued', external: { analysisAttempts: 0 } });
   expect(h.store.data.autoUsage).toEqual({});
-  const saved = JSON.parse(await readFile(h.path, 'utf8'));
-  expect(saved.jobs.find((job: { id: string }) => job.id === pending.id).state).toBe('queued');
+  const saved = new WorkItemStore(h.path); await saved.load();
+  expect(saved.data.jobs.find((job) => job.id === pending.id)?.state).toBe('queued');
   await h.service.close();
   const restarted = await h.create(); h.available(true); await restarted.service.tick();
   await vi.waitFor(() => expect(restarted.service.get(pending.id)?.state).toBe('ready'));

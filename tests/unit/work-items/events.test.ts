@@ -103,8 +103,8 @@ it('rolls back a failed update save so replay can still apply the same observati
   await expect(s.service.observe(update(2))).rejects.toThrow('disk full');
   expect(s.service.get(first.id)).toEqual(first);
   save.mockRestore(); await s.service.observe(update(2));
-  const persisted = JSON.parse(await readFile(s.store.path, 'utf8'));
-  expect(persisted.jobs[0]).toMatchObject({ observation: { revision: 2 }, evidenceVersion: 2 });
+  const persisted = new WorkItemStore(s.store.path); await persisted.load();
+  expect(persisted.data.jobs[0]).toMatchObject({ observation: { revision: 2 }, evidenceVersion: 2 });
 });
 
 it('does not cancel a running investigation when persisting its replacement failed', async () => {
@@ -178,11 +178,13 @@ it.each(['open', 'ignored', 'handled'] as const)('updates evidence without reviv
 });
 
 it('resets unsupported version-1 state instead of migrating removed Lark fields', async () => {
-  const s = await setup({ enabled: false }); const item = await s.service.observe(event);
-  await writeFile(s.store.path, JSON.stringify({ ...s.store.data, version: 1, jobs: [item] }));
-  const loaded = new WorkItemStore(s.store.path); await loaded.load();
+  const folder = await mkdtemp(join(tmpdir(), 'work-items-v1-'));
+  const path = join(folder, 'state.json');
+  await writeFile(path, JSON.stringify({ version: 1, jobs: [{ id: 'legacy' }], cursors: {}, seen: {}, autoUsage: {} }));
+  const loaded = new WorkItemStore(path); await loaded.load();
   expect(loaded.data).toMatchObject({ version: 2, jobs: [], cursors: {}, seen: {}, autoUsage: {} });
-  expect(JSON.parse(await readFile(s.store.path, 'utf8')).version).toBe(2);
+  expect(loaded.data.jobs).toEqual([]);
+  await expect(readFile(path, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
 });
 
 it('retains create-only semantics for old collectors and scopes the same key by owner', async () => {

@@ -1,4 +1,4 @@
-import { createMonitorHost } from '../../../src/host/monitors';
+import { createMonitorHost } from '../../../src/plugins/work-items/runtime';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

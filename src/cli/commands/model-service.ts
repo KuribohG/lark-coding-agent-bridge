@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { resolveAppPaths } from '../../config/app-paths';
 import { checkModelService, configureModelService, listModelServices, removeModelService } from '../../model-service/registry';
+import { validateBuiltinPluginAction } from '../../plugins/defaults';
 
 type Options = { config?: string };
 const path = (opts: Options) => opts.config ?? resolveAppPaths().configFile;
@@ -16,7 +17,15 @@ export async function configureService(name: string, file: string, opts: Options
   console.log('模型服务配置已保存；尚未请求模型服务。');
 }
 export async function removeService(name: string, opts: Options): Promise<void> {
-  await removeModelService(path(opts), name);
+  const configPath = path(opts);
+  await validateBuiltinPluginAction({
+    configPath,
+    controlsFor: () => undefined,
+  }, {
+    type: 'model-service.remove',
+    resource: name,
+  });
+  await removeModelService(configPath, name);
   console.log('模型服务引用已删除；凭据文件未删除。');
 }
 export async function checkService(name: string, opts: Options): Promise<void> {

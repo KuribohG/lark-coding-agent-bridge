@@ -75,6 +75,7 @@ const schema = table({
 
 export const gitlabMonitorConfig = defineMonitorConfig({
   id: 'gitlab_ci', key: 'gitlabCi',
+  normalize: normalizeGitLabCi,
   parse(value) { schema(value, 'monitors.sources.gitlab_ci'); const config = normalizeGitLabCi(value); validateGitLabCi(config); return config; },
   summary: config => ({ repositories: config?.repositories.map(r => r.project) ?? [] }),
 });

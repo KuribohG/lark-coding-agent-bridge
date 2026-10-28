@@ -1,9 +1,7 @@
-import type { MonitorHost } from '../monitoring/host';
-import { createMonitorRuntime } from '../host/monitors';
 import pkg from '../../package.json';
-import type { InboxManager } from '../monitoring/sources/lark/manager';
 import { startChannel as realStartChannel, type BridgeChannel } from '../bot/channel';
 import type { Controls } from '../commands';
+import { CommandRegistry } from '../commands/registry';
 import type { AppPaths } from '../config/app-paths';
 import { isComplete, type AppConfig } from '../config/schema';
 import type { AgentKind, ProfileConfig } from '../config/profile-schema';
@@ -37,6 +35,13 @@ import {
   updateEntry,
   type ProcessEntry,
 } from './registry';
+import type {
+  BridgePlugin,
+  BridgePluginFactory,
+  PluginAction,
+  PluginHttpRoute,
+} from '../plugins/api';
+import { PluginHost } from '../plugins/host';
 
 type StartChannelFn = typeof realStartChannel;
 
@@ -68,7 +73,8 @@ export interface SupervisorOptions {
   startChannelFn?: StartChannelFn;
   /** Run lark-cli preflight per profile (default true; tests pass false). */
   runPreflight?: boolean;
-  monitorHost?: MonitorHost;
+  /** Explicit feature composition. Core supervision has no concrete plugins. */
+  plugins?: BridgePluginFactory;
 }
 
 export interface ManagedStatus {
@@ -108,7 +114,7 @@ class ManagedProfile {
     private startChannelFn: StartChannelFn,
     private onExitCommand: (profile: string) => void,
     private onRuntimeChange: () => Promise<void>,
-    private inbox: InboxManager,
+    private commands: CommandRegistry,
     private larkAuth: LarkProfileAuth,
   ) {}
 
@@ -205,7 +211,7 @@ class ManagedProfile {
   ): Controls {
     const self = this;
     const currentControls: Controls = {
-      inbox: this.inbox,
+      commands: this.commands,
       profile: currentPaths.profile,
       profileConfig: currentProfileConfig,
       ownerRefreshState: 'unknown',
@@ -400,14 +406,16 @@ class ManagedProfile {
  */
 export class Supervisor {
   private managed = new Map<string, ManagedProfile>();
-  readonly monitors: ReturnType<typeof createMonitorRuntime>;
-  get inbox() { return this.monitors.controllers.lark; }
-  get gitlabCi() { return this.monitors.controllers.gitlab_ci; }
-  get storageMonitor() { return this.monitors.controllers.storage; }
+  private readonly plugins: PluginHost;
+  private readonly commands: CommandRegistry;
 
   constructor(private opts: SupervisorOptions) {
-    this.monitors = createMonitorRuntime({ configPath: opts.configPath, rootDir: opts.rootDir,
-      profiles: profile => this.controlsFor(profile), host: opts.monitorHost });
+    this.plugins = new PluginHost(opts.plugins, {
+      configPath: opts.configPath,
+      rootDir: opts.rootDir,
+      controlsFor: profile => this.controlsFor(profile),
+    });
+    this.commands = new CommandRegistry(this.plugins.commands());
   }
 
   private get startChannelFn(): StartChannelFn {
@@ -424,6 +432,22 @@ export class Supervisor {
 
   channelFor(profile: string) {
     return this.managed.get(profile)?.bridge.channel;
+  }
+
+  plugin<T extends BridgePlugin = BridgePlugin>(id: string): T | undefined {
+    return this.plugins.get<T>(id);
+  }
+
+  pluginRoutes(): readonly PluginHttpRoute[] {
+    return this.plugins.routes();
+  }
+
+  reconcilePlugins(): Promise<void> {
+    return this.plugins.reconcile();
+  }
+
+  validatePluginAction(action: PluginAction): Promise<void> {
+    return this.plugins.validateAction(action);
   }
 
   list(): ManagedStatus[] {
@@ -497,13 +521,13 @@ export class Supervisor {
       workspaces,
       this.startChannelFn,
       (p) => void this.stopProfile(p).catch(() => undefined),
-      async () => { await this.monitors.reconcile(); },
-      this.inbox,
+      async () => { await this.reconcilePlugins(); },
+      this.commands,
       new LarkProfileAuth(cfg, appPaths),
     );
     await managed.bringUp(new Date().toISOString());
     this.managed.set(appPaths.profile, managed);
-    await this.monitors.reconcile();
+    await this.reconcilePlugins();
     log.info('supervisor', 'profile-online', { profile: appPaths.profile, appId: cfg.accounts.app.id });
   }
 
@@ -512,7 +536,7 @@ export class Supervisor {
     const managed = this.managed.get(profile);
     if (!managed) return;
     this.managed.delete(profile);
-    await this.monitors.reconcile();
+    await this.reconcilePlugins();
     await managed.stop();
     log.info('supervisor', 'profile-offline', { profile });
   }
@@ -521,12 +545,12 @@ export class Supervisor {
     const managed = this.managed.get(profile);
     if (!managed) throw new Error(`profile 未在运行：${profile}`);
     await managed.controls.restart();
-    await this.monitors.reconcile();
+    await this.reconcilePlugins();
   }
 
   /** Stop every profile — for process shutdown. */
   async shutdown(): Promise<void> {
-    await this.monitors.close();
+    await this.plugins.close();
     const all = [...this.managed.values()];
     this.managed.clear();
     await Promise.allSettled(all.map((m) => m.stop()));

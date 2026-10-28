@@ -11,6 +11,7 @@ import { normalizeInbox } from '../../../src/inbox/config';
 import { inboxTriageSource, loadInboxTriageSource } from '../../../src/inbox/model-routing';
 import { triageWithChatTools } from '../../../src/monitoring/sources/lark/codex-triage';
 import type { InboxJob } from '../../../src/inbox/types';
+import { removeService as removeServiceCli } from '../../../src/cli/commands/model-service';
 
 const service: ModelServiceConfig = { protocol: 'responses', baseUrl: 'https://model.test/v1/', model: 'screen-default', apiKey: { source: 'env', id: 'TEST_MODEL_KEY' } };
 const dirs: string[] = [];
@@ -69,8 +70,25 @@ it('preserves the registry on profile writes and serializes concurrent service e
   root.profiles.claude!.preferences.model = 'sonnet'; await saveRootConfig(root, h.configPath);
   expect(Object.keys(await listModelServices(h.configPath)).sort()).toEqual(['a', 'b']);
   root.inbox = normalizeInbox({ enabled: false, executorProfile: 'claude', triageService: 'a' }); await saveRootConfig(root, h.configPath);
-  await expect(removeModelService(h.configPath, 'a')).rejects.toThrow('仍引用');
+  await removeModelService(h.configPath, 'a');
+  expect(Object.keys(await listModelServices(h.configPath))).toEqual(['b']);
+  await configureModelService(h.configPath, 'a', service);
   await removeModelService(h.configPath, 'b'); expect(Object.keys(await listModelServices(h.configPath))).toEqual(['a']);
+});
+
+it('blocks CLI removal while a plugin references the service', async () => {
+  const h = await setup();
+  await configureModelService(h.configPath, 'screen', service);
+  const root = (await loadRootConfig(h.configPath))!;
+  root.inbox = normalizeInbox({
+    enabled: false,
+    executorProfile: 'claude',
+    triageService: 'screen',
+  });
+  await saveRootConfig(root, h.configPath);
+  await expect(removeServiceCli('screen', { config: h.configPath }))
+    .rejects.toThrow('仍引用');
+  expect((await listModelServices(h.configPath)).screen).toBeDefined();
 });
 
 it.each([

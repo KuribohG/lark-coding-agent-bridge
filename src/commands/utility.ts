@@ -8,6 +8,8 @@ export async function handleDoc(args: string, ctx: CommandContext): Promise<void
 }
 
 export async function handleHelp(_args: string, ctx: CommandContext): Promise<void> {
-  const card = helpCard(ctx.agent.displayName);
+  const card = helpCard(ctx.agent.displayName, ctx.controls.commands?.helpLines(
+    ctx.agent.displayName.replace(/([*_`\\])/g, '\\$1'),
+  ));
   await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
 }

@@ -19,6 +19,7 @@ import {
   type RuntimeLockMeta,
 } from '../../runtime/locks';
 import { resolveProfileRuntime } from '../../runtime/profile-runtime';
+import { createBuiltinPlugins } from '../../plugins/defaults';
 
 // Prefer IPv4 — Node 20+ defaults to "verbatim" which respects whatever
 // the resolver returns first; in IPv6-broken networks (WSL2, certain VPNs,
@@ -94,7 +95,11 @@ async function runClassic(opts: StartOptions): Promise<void> {
   });
   await gcOldLogs();
 
-  const supervisor = new Supervisor({ configPath, rootDir: appPaths.rootDir });
+  const supervisor = new Supervisor({
+    configPath,
+    rootDir: appPaths.rootDir,
+    plugins: createBuiltinPlugins(),
+  });
 
   // Retry loop: on a profile/app runtime-lock conflict, offer to stop the
   // holder and try again (same UX as older single-profile `run`).
@@ -154,7 +159,11 @@ async function runSupervisorConsole(opts: StartOptions): Promise<void> {
   });
   await gcOldLogs();
 
-  const supervisor = new Supervisor({ configPath, rootDir: appPaths.rootDir });
+  const supervisor = new Supervisor({
+    configPath,
+    rootDir: appPaths.rootDir,
+    plugins: createBuiltinPlugins(),
+  });
 
   // Single web console (host sidecar), backed by the supervisor.
   let uiServer: UiServerHandle | undefined;

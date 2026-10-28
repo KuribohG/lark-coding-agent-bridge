@@ -1,5 +1,5 @@
-import { ProfileExecutionProvider } from '../../../src/host/execution-provider';
-import { createWorkItemSource } from '../../../src/host/work-item-runtime';
+import { ProfileExecutionProvider } from '../../../src/plugins/work-items/execution-provider';
+import { createWorkItemSource } from '../../../src/plugins/work-items/work-item-runtime';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

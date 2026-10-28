@@ -8,6 +8,7 @@ import { CallbackAuth } from '../../../src/card/callback-auth.js';
 import { CallbackNonceStore } from '../../../src/card/callback-store.js';
 import { handleCardAction } from '../../../src/card/dispatcher.js';
 import type { Controls } from '../../../src/commands/index.js';
+import { CommandRegistry } from '../../../src/commands/index.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
@@ -34,8 +35,26 @@ describe('signed card callback dispatch', () => {
   it('dispatches native inbox actions with carrier topic context and no active agent run', async () => {
     const h = await createHarness({ chatMode: 'topic', callbackAuth: false });
     h.channel.rawThreadIds.set('om_card', 'omt_topic');
-    const command = vi.fn(async () => {});
-    h.controls.inbox = { command } as unknown as NonNullable<Controls['inbox']>;
+    const command = vi.fn(async (_args: string, _ctx: unknown) => {});
+    h.controls.commands = new CommandRegistry([{
+      pluginId: 'test-inbox',
+      definition: {
+        name: 'inbox',
+        access: 'user',
+        pending: 'preserve',
+        arguments: 'words',
+        help: ['`/inbox` — test'],
+      },
+      handler: async (args, ctx) => {
+        await command(args, {
+          profile: ctx.controls.profile,
+          operator: ctx.msg.senderId,
+          chatId: ctx.msg.chatId,
+          threadId: ctx.msg.threadId,
+          messageId: ctx.msg.messageId,
+        });
+      },
+    }]);
     await h.dispatch({ cmd: 'inbox.action', arg: 'choose encoded signed-action' });
     expect(command).toHaveBeenCalledWith('action choose encoded signed-action', {
       profile: 'claude', operator: 'ou_operator', chatId: 'oc_group', threadId: 'omt_topic', messageId: 'om_card',

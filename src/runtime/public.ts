@@ -9,6 +9,23 @@ export { CodexAdapter } from '../agent/codex/adapter';
 export type { AgentAdapter, AgentRun, AgentEvent, AgentInput, AgentInputReceipt, AgentRunOptions } from '../agent/types';
 export { ChannelHost } from '../channels/plugin';
 export type { ChannelPlugin, ChannelConnection } from '../channels/plugin';
+export { PluginHost } from '../plugins/host';
+export type { CommandDefinition } from '../commands/catalog';
+export type {
+  CommandContext,
+  Controls,
+  FeatureCommandContribution,
+  Handler,
+} from '../commands/types';
+export type {
+  BridgePlugin,
+  BridgePluginFactory,
+  PluginAction,
+  PluginContext,
+  PluginHttpRequest,
+  PluginHttpResponse,
+  PluginHttpRoute,
+} from '../plugins/api';
 export { createConversationRuntime, ConversationRuntime } from './conversation';
 export type { ConversationRuntimeOptions, ConversationIdentity, ConversationInput } from './conversation';
 export {

@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { tryHandleCommand, runCommandHandler, type CommandContext } from '../../../src/commands';
+import {
+  tryHandleCommand,
+  runCommandHandler,
+  CommandRegistry,
+  type CommandContext,
+} from '../../../src/commands';
 import { handleRun } from '../../../src/commands/run';
 import { helpCard } from '../../../src/card/templates';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
@@ -63,7 +68,18 @@ describe('command dispatch contract', () => {
   });
 
   it('includes assistant, meeting and access commands in help', () => {
-    const text = JSON.stringify(helpCard('Agent'));
+    const commands = new CommandRegistry([{
+      pluginId: 'work-items',
+      definition: {
+        name: 'inbox',
+        access: 'user',
+        pending: 'preserve',
+        arguments: 'words',
+        help: ['`/inbox` — 查看和处理会话助理事项'],
+      },
+      handler: async () => {},
+    }]);
+    const text = JSON.stringify(helpCard('Agent', commands.helpLines('Agent')));
     for (const name of ['inbox', 'meeting', 'invite', 'remove', 'reset']) expect(text).toContain(`/${name}`);
   });
 });

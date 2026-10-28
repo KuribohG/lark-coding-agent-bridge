@@ -914,7 +914,8 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   });
   if (handled) {
     const name = emsg.content.trim().split(/\s+/)[0];
-    const dropped = findCommand(name ?? '')?.pending === 'preserve' ? [] : pending.cancel(scope);
+    const definition = controls.commands?.find(name ?? '') ?? findCommand(name ?? '');
+    const dropped = definition?.pending === 'preserve' ? [] : pending.cancel(scope);
     if (dropped.length > 0) {
       const preparedCot = preparedCots.get(scope);
       preparedCots.delete(scope);

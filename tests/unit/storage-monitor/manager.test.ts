@@ -8,7 +8,7 @@ import { formatMonitorConfig } from '../../../src/monitoring/config';
 import { parseStorageConfig } from '../../../src/monitoring/sources/storage/config';
 import { StorageMonitorManager } from '../../../src/monitoring/sources/storage/manager';
 import type { WorkItemSources } from '../../../src/work-items/registry';
-import { createMonitorHost } from '../../../src/host/monitors';
+import { createMonitorHost } from '../../../src/plugins/work-items/runtime';
 
 const mocks = vi.hoisted(() => ({ credentials: vi.fn(async () => ({ url: 'https://grafana.test', headers: {} })) }));
 vi.mock('../../../src/monitoring/sources/storage/grafana', () => ({ grafanaCredentials: mocks.credentials, GrafanaQueryClient: class {} }));

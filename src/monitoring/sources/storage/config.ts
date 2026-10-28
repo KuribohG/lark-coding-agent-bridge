@@ -93,6 +93,6 @@ export function parseStorageConfig(value: unknown = {}): StorageMonitorConfig {
 }
 
 export const storageMonitorConfig = defineMonitorConfig({
-  id: 'storage', key: 'storageMonitor', parse: parseStorageConfig,
+  id: 'storage', key: 'storageMonitor', normalize: parseStorageConfig, parse: parseStorageConfig,
   summary: config => ({ watches: config?.watches ?? [] }),
 });

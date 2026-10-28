@@ -10,6 +10,8 @@ export type MonitorSettings = Pick<RootConfig, 'inbox' | 'gitlabCi' | 'storageMo
 export function defineMonitorConfig<K extends Exclude<keyof MonitorSettings, 'workItemConcurrency'>>(options: {
   id: string;
   key: K;
+  /** Lenient runtime normalization for inline root-config compatibility. */
+  normalize(value: unknown): NonNullable<MonitorSettings[K]>;
   parse(value: unknown): NonNullable<MonitorSettings[K]>;
   /** Strip runtime-only fields before handing the stored shape to parse(). */
   format?(config: NonNullable<MonitorSettings[K]>): unknown;
@@ -18,6 +20,8 @@ export function defineMonitorConfig<K extends Exclude<keyof MonitorSettings, 'wo
 }) {
   return {
     id: options.id, key: options.key,
+    normalize: options.normalize,
+    parse: options.parse,
     parseInto(settings: MonitorSettings, value: unknown) { settings[options.key] = options.parse(value); },
     format(settings: MonitorSettings) {
       const config = settings[options.key];

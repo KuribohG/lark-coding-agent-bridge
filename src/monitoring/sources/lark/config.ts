@@ -19,6 +19,7 @@ const schema = table({
 
 export const larkMonitorConfig = defineMonitorConfig({
   id: 'lark', key: 'inbox',
+  normalize: normalizeInbox,
   parse(value) { schema(value, 'monitors.sources.lark'); const config = normalizeInbox(value); validateInbox(config); return config; },
   format(config) {
     const { ownerKey: _, ...stored } = config;

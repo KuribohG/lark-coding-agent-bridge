@@ -1,12 +1,12 @@
-import type { AgentAdapter } from '../agent/types';
-import type { ProfileConfig, RunProfileConfig } from '../config/profile-schema';
-import { loadRootConfig } from '../config/profile-store';
-import { resolveAppPaths, type AppPaths } from '../config/app-paths';
-import { supportsBackgroundProfile } from '../runtime/agent-capabilities';
-import { backgroundModelSettings } from '../runtime/background-model';
-import { checkRuntimeAgentAvailability } from '../runtime/agent-runtime';
-import type { ExecutionProfile, ExecutionProvider } from '../runtime/execution-provider';
-import { processAnalysis } from '../work-items/analysis';
+import type { AgentAdapter } from '../../agent/types';
+import type { ProfileConfig, RunProfileConfig } from '../../config/profile-schema';
+import { loadRootConfig } from '../../config/profile-store';
+import { resolveAppPaths, type AppPaths } from '../../config/app-paths';
+import { supportsBackgroundProfile } from '../../runtime/agent-capabilities';
+import { backgroundModelSettings } from '../../runtime/background-model';
+import { checkRuntimeAgentAvailability } from '../../runtime/agent-runtime';
+import type { ExecutionProfile, ExecutionProvider } from '../../runtime/execution-provider';
+import { processAnalysis } from '../../work-items/analysis';
 
 /** Reads execution profiles from disk; channel start/stop does not own these profiles. */
 export class ProfileExecutionProvider implements ExecutionProvider {

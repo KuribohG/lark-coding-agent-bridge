@@ -38,6 +38,7 @@ import {
 } from './http';
 import type { Controls } from '../commands';
 import type { UiServerDeps, UiServerHandle } from './types';
+import { pluginRouteMatches } from '../plugins/api';
 
 const DEFAULT_HOST = '127.0.0.1';
 
@@ -144,9 +145,15 @@ async function route(
         const body = input as { name?: unknown; config?: unknown };
         const name = modelServiceName(body.name);
         if (path === '/api/model-services/check') { sendJson(res, 200, await checkModelService(configPath, name)); return; }
-        if (path === '/api/model-services/remove') await removeModelService(configPath, name);
+        if (path === '/api/model-services/remove') {
+          await sup.validatePluginAction?.({
+            type: 'model-service.remove',
+            resource: name,
+          });
+          await removeModelService(configPath, name);
+        }
         else await configureModelService(configPath, name, body.config);
-        await sup.inbox?.reconcile();
+        await sup.reconcilePlugins?.();
         sendJson(res, 200, { services: await listModelServices(configPath) }); return;
       }
     } catch (error) { throw new HttpError(400, error instanceof Error ? error.message : '模型服务配置失败'); }
@@ -156,22 +163,6 @@ async function route(
     sendJson(res, 200, { ok: true });
     setImmediate(deps.requestShutdown);
     return;
-  }
-
-  if (path === '/api/inbox' && (g || p)) {
-    if (!sup.inbox) throw new HttpError(503, '会话助理尚不可用');
-    try { sendJson(res, 200, p ? await sup.inbox.configure(await readJsonBody(req)) : await sup.inbox.view()); }
-    catch (e) { throw new HttpError(400, e instanceof Error ? e.message : '配置失败'); }
-    return;
-  }
-  if (path.startsWith('/api/inbox/')) {
-    if (!sup.inbox) throw new HttpError(503, '会话助理尚不可用');
-    try {
-      if (path === '/api/inbox/concurrency' && p) { sendJson(res, 200, await sup.inbox.configureConcurrency(await readJsonBody(req))); return; }
-      if (path === '/api/inbox/workbench' && g) { sendJson(res, 200, await sup.inbox.workbench()); return; }
-      if (path === '/api/inbox/command' && p) { sendJson(res, 200, await sup.inbox.workbenchCommand(await readJsonBody(req))); return; }
-      if (path === '/api/inbox/check' && p) { sendJson(res, 200, await sup.inbox.checkSetup(await readJsonBody(req))); return; }
-    } catch (error) { throw new HttpError(400, error instanceof Error ? error.message : '操作失败'); }
   }
 
   if (path === '/api/status' && g) {
@@ -351,6 +342,19 @@ async function route(
     const profile = body.profile ?? (await readActiveProfile(deps.rootDir));
     if (!profile) throw new HttpError(400, 'profile is required');
     sendJson(res, 200, await meetingLeave(sup.controlsFor(profile)?.meeting, body));
+    return;
+  }
+
+  const pluginRoute = sup.pluginRoutes?.().find(route =>
+    pluginRouteMatches(route, method, path));
+  if (pluginRoute) {
+    const response = await pluginRoute.handle({
+      method,
+      path,
+      url,
+      readJson: () => readJsonBody(req),
+    });
+    sendJson(res, response.status ?? 200, response.body);
     return;
   }
 

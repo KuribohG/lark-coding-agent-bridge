@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -68,7 +68,7 @@ it('resumes interrupted storage work within budget but preserves a manual pause'
   await h.service.review({ id: paused.id, revision: current.revision, replyDraft: 'human draft' }, 'ou_owner', 'stop');
   await h.service.close();
   const job = h.store.data.jobs.find(j => j.id === item.id)!; job.state = 'running'; job.external!.analysisAttempts = 1;
-  await writeFile(h.store.path, JSON.stringify(h.store.data));
+  await h.store.save();
   const restarted = new WorkItemService(new WorkItemStore(h.store.path), h.config,
     { ...h.runtime, source: new EventSource('test', () => true) }, () => 1000);
   cleanups.push(() => restarted.close()); await restarted.start();

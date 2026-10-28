@@ -1,4 +1,4 @@
-import { createMonitorRuntime, createMonitorHost } from '../../../src/host/monitors';
+import { createMonitorRuntime, createMonitorHost } from '../../../src/plugins/work-items/runtime';
 import { expect, it, vi } from 'vitest';
 import { MonitorRuntime } from '../../../src/monitoring/runtime';
 import type { MonitorContext, MonitorModule } from '../../../src/monitoring/module';

@@ -148,6 +148,27 @@ describe('static architecture contracts', () => {
     }
   });
 
+  it('keeps core command, UI and supervisor code independent from concrete feature plugins', () => {
+    const coreFiles = [
+      'src/commands/catalog.ts',
+      'src/commands/index.ts',
+      'src/commands/registry.ts',
+      'src/commands/types.ts',
+      'src/config/document.ts',
+      'src/config/profile-store.ts',
+      'src/model-service/registry.ts',
+      'src/runtime/supervisor.ts',
+      'src/ui/server.ts',
+      'src/ui/types.ts',
+    ];
+    for (const file of coreFiles) {
+      const source = read(file);
+      expect(source, file).not.toMatch(
+        /from ['"][^'"]*(?:inbox|monitoring\/sources\/lark|plugins\/work-items)[^'"]*['"]/,
+      );
+    }
+  });
+
   it('contains no internal import cycles', () => {
     expect(internalCycles()).toEqual([]);
   });

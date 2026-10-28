@@ -12,7 +12,7 @@ import { formatMonitorConfig, parseMonitorConfig } from '../../../src/monitoring
 import { loadMonitorRoot, saveMonitorRoot } from '../../../src/monitoring/store';
 import { checkMonitors, configureMonitors, initMonitors, statusMonitors } from '../../../src/cli/commands/monitors';
 import { configureCiWatch } from '../../../src/cli/commands/ci-watch';
-import { removeModelService } from '../../../src/model-service/registry';
+import { validateWorkItemsAction } from '../../../src/plugins/work-items/plugin';
 import * as atomic from '../../../src/platform/atomic-write';
 import { workItemTarget } from '../../../src/inbox/lark-target';
 
@@ -156,7 +156,10 @@ it('protects a screening service referenced only from TOML from removal', async 
   const s = await setup();
   s.root.modelServices = { screen: { protocol: 'responses', baseUrl: 'https://model.test/v1', model: 'small', apiKey: { source: 'env', id: 'MODEL_KEY' } } };
   s.root.inbox!.triageService = 'screen'; await saveRootConfig(s.root, s.path); await initMonitors({ config: s.path });
-  await expect(removeModelService(s.path, 'screen')).rejects.toThrow('仍引用');
+  await expect(validateWorkItemsAction(
+    { configPath: s.path },
+    { type: 'model-service.remove', resource: 'screen' },
+  )).rejects.toThrow('仍引用');
   expect((await loadRootConfig(s.path))!.modelServices?.screen).toBeDefined();
 });
 

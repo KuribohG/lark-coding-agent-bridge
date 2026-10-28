@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
-import { ProfileExecutionProvider } from '../../../src/host/execution-provider';
+import { ProfileExecutionProvider } from '../../../src/plugins/work-items/execution-provider';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, saveRootConfig } from '../../../src/config/profile-store';
 import type { AgentAdapter } from '../../../src/agent/types';

@@ -180,14 +180,14 @@ export function resumeCard(cwd: string, entries: ResumeEntry[]): object {
   return shell('🔁 恢复历史会话', elements);
 }
 
-export function helpCard(agentName = 'Agent'): object {
+export function helpCard(agentName = 'Agent', helpLines?: readonly string[]): object {
   const escapedAgentName = escapeMd(agentName);
   return shell('💡 使用帮助', [
     divMd(
       [
         '**命令列表**',
         '',
-        ...commandHelpLines(escapedAgentName),
+        ...(helpLines ?? commandHelpLines(escapedAgentName)),
         '',
         `其他内容直接交给 ${escapedAgentName}。`,
       ].join('\n'),
