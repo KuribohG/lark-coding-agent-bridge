@@ -76,7 +76,12 @@ describe('CodexAdapter app-server process contract', () => {
     expect(await run.waitForExit(1000)).toBe(true);
     const record = await h.record();
     expect(record.cwd).toBe(h.dir);
-    expect(record.argv).toEqual(['app-server', '--listen', 'stdio://', '-c', 'approval_policy="never"', '-c', 'shell_environment_policy.inherit="all"']);
+    expect(record.argv).toEqual([
+      'app-server', '--listen', 'stdio://',
+      '-c', 'approval_policy="never"',
+      '-c', 'shell_environment_policy.inherit="all"',
+      '-c', 'memories.generate_memories=false',
+    ]);
     expect(record.env.LARK_CHANNEL).toBe('1');
     const requests = await h.requests();
     expect(requests.find(r => r.method === 'initialize')?.params.clientInfo).toMatchObject({

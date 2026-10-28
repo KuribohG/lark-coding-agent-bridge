@@ -1,4 +1,5 @@
 import { terminateChild } from '../../platform/terminate';
+import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import type { SpawnedProcessByStdio } from '../../platform/spawn';
@@ -18,6 +19,15 @@ const object = (v: unknown): ObjectValue => v !== null && typeof v === 'object' 
 const text = (v: unknown): string => typeof v === 'string' ? v : '';
 const THREAD_SOURCE = 'appServer';
 const SERVICE_NAME = 'lark-channel-bridge';
+// App-server Unix sockets speak WebSocket, while Bridge's protocol adapter is
+// JSONL over stdio. Keep this translation local so daemon lifecycle stays owned
+// by Codex and does not depend on `app-server proxy` transport behavior.
+const WS_PROXY = fileURLToPath(new URL(
+  import.meta.url.endsWith('.ts')
+    ? '../../../bin/codex-app-server-ws-proxy.mjs'
+    : '../bin/codex-app-server-ws-proxy.mjs',
+  import.meta.url,
+));
 
 class RpcError extends Error {
   readonly method: string;
@@ -40,23 +50,47 @@ class RpcError extends Error {
   }
 }
 
-/** One stdio server per run keeps profile environments and process lifetimes isolated. */
+/**
+ * In daemon mode each run is a short-lived proxy to Codex's persistent
+ * app-server. In per-run mode the app-server is scoped to this run and must
+ * not create background memory jobs that would die with the process.
+ */
 export function startAppServerRun(input: {
   binary: string;
   opts: AgentRunOptions;
   env: NodeJS.ProcessEnv;
   sandbox: string;
+  appServerMode?: 'daemon' | 'per-run';
+  daemonSocketPath?: string;
   prompt: string;
   developerInstructions?: string;
+  modelProviderId?: string;
+  threadConfig?: Readonly<Record<string, unknown>>;
   stopGraceMs: number;
   configOverrides?: readonly string[];
 }): AgentRun {
   const { opts } = input;
-  const args = ['app-server', '--listen', 'stdio://',
-    '-c', 'approval_policy="never"', '-c', 'shell_environment_policy.inherit="all"'];
-  for (const override of input.configOverrides ?? []) args.push('-c', override);
-  if (opts.forkSession) args.push('-c', 'features.goals=false');
-  const child = spawnWithDeadline(input.binary, args, {
+  const appServerMode = input.appServerMode ?? 'per-run';
+  let command = input.binary;
+  const args = appServerMode === 'daemon'
+    ? (() => {
+        if (!input.daemonSocketPath) throw new Error('daemon app-server socket path is required');
+        return [WS_PROXY, input.daemonSocketPath];
+      })()
+    : ['app-server', '--listen', 'stdio://',
+        '-c', 'approval_policy="never"', '-c', 'shell_environment_policy.inherit="all"'];
+  if (appServerMode === 'daemon') {
+    command = process.execPath;
+  } else {
+    for (const override of input.configOverrides ?? []) args.push('-c', override);
+  }
+  if (appServerMode === 'per-run') {
+    // Existing memories and startup processing remain available, but this
+    // short-lived process must not add its own thread as a generation input.
+    args.push('-c', 'memories.generate_memories=false');
+  }
+  if (opts.forkSession && appServerMode === 'per-run') args.push('-c', 'features.goals=false');
+  const child = spawnWithDeadline(command, args, {
     cwd: opts.cwd, env: input.env, stdio: ['pipe', 'pipe', 'pipe'],
   }, opts.deadlineAt) as SpawnedProcessByStdio<Writable, Readable, Readable>;
   const translator = new CodexJsonlTranslator();
@@ -307,6 +341,8 @@ export function startAppServerRun(input: {
       ...(creatingThread || opts.forkSession ? { threadSource: THREAD_SOURCE } : {}),
       ...(creatingThread ? { serviceName: SERVICE_NAME } : {}),
       ...(input.developerInstructions ? { developerInstructions: input.developerInstructions } : {}),
+      ...(input.modelProviderId ? { modelProvider: input.modelProviderId } : {}),
+      ...(input.threadConfig ? { config: input.threadConfig } : {}),
       cwd: opts.cwd, model: opts.model, sandbox: input.sandbox, approvalPolicy: 'never',
     });
     threadId = text(object(thread.thread).id);

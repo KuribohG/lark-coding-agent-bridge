@@ -89,7 +89,8 @@
     "proper-lockfile": "^4.1.2",
     "qrcode-terminal": "^0.12.0",
     "smol-toml": "^1.8.0",
-    "toml-eslint-parser": "0.10.0"
+    "toml-eslint-parser": "0.10.0",
+    "ws": "8.20.0"
   },
   "devDependencies": {
     "@radix-ui/react-dialog": "^1.1.19",
@@ -109,6 +110,7 @@
     "@types/qrcode-terminal": "^0.12.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "@types/ws": "8.18.1",
     "@vitejs/plugin-react": "^6.0.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

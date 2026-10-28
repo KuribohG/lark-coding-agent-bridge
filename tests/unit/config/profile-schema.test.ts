@@ -322,6 +322,7 @@ describe('profile schema', () => {
       ignoreUserConfig: false,
       ignoreRules: false,
       transport: 'app-server',
+      appServerMode: 'daemon',
     });
     expect(cfg.codex).not.toHaveProperty('flags');
   });
@@ -338,6 +339,29 @@ describe('profile schema', () => {
     });
 
     expect(cfg.codex?.inheritCodexHome).toBe(false);
+  });
+
+  it('preserves explicit per-run app-server mode and rejects unknown modes', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'codex',
+      accounts: { app },
+      codex: {
+        binaryPath: '/usr/local/bin/codex',
+        appServerMode: 'per-run',
+      },
+    });
+
+    expect(cfg.codex?.appServerMode).toBe('per-run');
+    expect(() => normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'codex',
+      accounts: { app },
+      codex: {
+        binaryPath: '/usr/local/bin/codex',
+        appServerMode: 'background',
+      },
+    })).toThrow(/appServerMode/);
   });
 
   it('defaults Claude permissions to full/full and derives legacy sandbox for runtime compatibility', () => {

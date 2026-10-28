@@ -41,6 +41,9 @@ importers:
       toml-eslint-parser:
         specifier: 0.10.0
         version: 0.10.0
+      ws:
+        specifier: 8.20.0
+        version: 8.20.0
     devDependencies:
       '@radix-ui/react-dialog':
         specifier: ^1.1.19
@@ -93,6 +96,9 @@ importers:
       '@types/react-dom':
         specifier: ^19.2.3
         version: 19.2.3(@types/react@19.2.17)
+      '@types/ws':
+        specifier: 8.18.1
+        version: 8.18.1
       '@vitejs/plugin-react':
         specifier: ^6.0.3
         version: 6.0.3(vite@8.1.5(@types/node@22.19.17)(esbuild@0.27.7)(jiti@2.7.0)(yaml@2.9.1))
@@ -1384,6 +1390,9 @@ packages:
 
   '@types/retry@0.12.5':
     resolution: {integrity: sha512-3xSjTp3v03X/lSQLkczaN9UIEwJMoMCA1+Nb5HfbJEQWogdeQIyVtTvxPXDQjZ5zws8rFQfVfRdz03ARihPJgw==}
+
+  '@types/ws@8.18.1':
+    resolution: {integrity: sha512-ThVF6DCVhA8kUGy+aazFQ4kXQ7E1Ty7A3ypFOe0IcJV8O/M511G99AW24irKrW56Wt44yG9+ij8FaqoBGkuBXg==}
 
   '@vitejs/plugin-react@6.0.3':
     resolution: {integrity: sha512-vmFvco5/QuC2f9Oj+wTk0+9XeDFkHxSamwZKYc7MxYwKICfvUvlMhqKI0VuICPltGqh1neqBKDvO4kes1ya8vg==}
@@ -3447,6 +3456,10 @@ snapshots:
       csstype: 3.2.3
 
   '@types/retry@0.12.5': {}
+
+  '@types/ws@8.18.1':
+    dependencies:
+      '@types/node': 22.19.17
 
   '@vitejs/plugin-react@6.0.3(vite@8.1.5(@types/node@22.19.17)(esbuild@0.27.7)(jiti@2.7.0)(yaml@2.9.1))':
     dependencies:

@@ -66,6 +66,7 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
         binary: codex.binaryPath,
         systemPrompt,
         transport: codex.transport,
+        appServerMode: codex.appServerMode,
         profileStateDir: profileDir,
         ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
         inheritCodexHome: codex.inheritCodexHome !== false,

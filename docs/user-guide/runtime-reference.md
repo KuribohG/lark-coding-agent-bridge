@@ -8,6 +8,8 @@
 
 Bridge 的 Codex 统一使用 `app-server` 全双工模式，原生双向接口已在 Codex 0.162.1 验证，`exec` 后端已移除。已有配置需删除 `[agents.codex.launch]` 或 `[profiles.<name>.launch]` 下的 `transport = "exec"`，或改为 `"app-server"`。app-server 加载正常的用户配置和 execpolicy `.rules`；`ignoreUserConfig`、`ignoreRules` 默认均为 `false`，显式为 `true` 时会提示迁移。修改启动配置后需重启 bridge。
 
+Codex 启动默认使用 `appServerMode = "daemon"`。Bridge 会确保官方本地 app-server daemon 运行，每次任务只连接一个短生命周期的 stdio 到 Unix WebSocket 桥，因此 daemon 负责的 memory 抽取和整合不会随着单次任务退出。显式配置 `appServerMode = "per-run"` 时，app-server 只存活于当前任务，并强制设置 `memories.generate_memories = false`；已有 memory 的读取和 Codex 原生 memory startup 路径保留，但当前 thread 不会作为新的 memory 生成输入。
+
 运行期间直接发送补充文字即可：bridge 调用 `turn/steer`，保留同一进程、会话和回合，不停止后续跑，也不新增 slash 命令。收到成功确认后回复“已送入当前任务，等待模型处理”；这表示接口已接受，不表示模型已经落实要求。引用上下文会一同传入，图片、文件和 agent 自行发送的卡片回调仍走队列。
 
 Codex 的原生异步提问（`request_user_input_async`，app-server 的 `agentMessage.questions`）会单独发送“需要你回复”卡片，在群聊原话题 @ 发起任务的用户，不依赖过程消息或回复显示模式。点击选项或填写答案即可提交到当前任务，卡片显示接收结果；没有点击不会自动提交默认选项。任务自然结束后，若原会话仍有效，答案会排队续接。停止任务、切换会话、过期或重启后的旧卡片不能继续操作；按钮仅供提问对象使用。卡片发送失败时会尝试发送普通文字提醒。此功能不包含同步提问/权限审批请求；通知声音仍由飞书客户端设置决定。

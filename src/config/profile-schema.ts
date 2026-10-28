@@ -50,9 +50,18 @@ export interface SandboxConfig {
   maxMode: SandboxMode;
 }
 
+export type CodexAppServerMode = 'daemon' | 'per-run';
+
 export interface CodexConfig {
   binaryPath: string;
   transport?: 'app-server';
+  /**
+   * `daemon` keeps Codex's app-server alive across Bridge runs so native
+   * background memory extraction/consolidation can finish. `per-run` starts a
+   * short-lived app-server and disables generation from new threads while
+   * retaining Codex's native memory read/startup path.
+   */
+  appServerMode?: CodexAppServerMode;
   realpath?: string;
   version?: string;
   sha256?: string;
@@ -456,12 +465,18 @@ function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
   if (input.transport !== undefined && input.transport !== 'app-server') {
     throw new Error('Codex exec transport has been removed; use transport=app-server');
   }
+  if (input.appServerMode !== undefined
+    && input.appServerMode !== 'daemon'
+    && input.appServerMode !== 'per-run') {
+    throw new Error('codex.appServerMode must be daemon or per-run');
+  }
   if (input.ignoreUserConfig || input.ignoreRules) {
     throw new Error('app-server requires ignoreUserConfig=false and ignoreRules=false; exec-only ignore flags are not supported');
   }
   const codex: CodexConfig = {
     binaryPath: input.binaryPath,
     transport: 'app-server',
+    appServerMode: input.appServerMode ?? 'daemon',
     ...(typeof input.realpath === 'string' ? { realpath: input.realpath } : {}),
     ...(typeof input.version === 'string' ? { version: input.version } : {}),
     ...(typeof input.sha256 === 'string' ? { sha256: input.sha256 } : {}),

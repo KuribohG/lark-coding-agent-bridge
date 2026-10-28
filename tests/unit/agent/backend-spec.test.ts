@@ -58,6 +58,7 @@ describe('agent backend specification', () => {
     expect(agentBackendSpec('claude').launchKeys).toContain('configDir');
     expect(agentBackendSpec('codex').launchKeys).toEqual(expect.arrayContaining([
       'transport',
+      'appServerMode',
       'codexHome',
       'inheritCodexHome',
     ]));

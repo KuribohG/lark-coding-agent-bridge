@@ -38,7 +38,7 @@ configuration/authentication state. It accepts `binaryPath` and an optional
 
 - Claude: `configDir`, exposed to the child as `CLAUDE_CONFIG_DIR`.
 - Codex: `codexHome`, exposed as `CODEX_HOME`, plus `transport`,
-  `inheritCodexHome`, `ignoreUserConfig` and `ignoreRules`.
+  `appServerMode`, `inheritCodexHome`, `ignoreUserConfig` and `ignoreRules`.
 - pi: `agentDir`, exposed as `PI_CODING_AGENT_DIR`.
 
 `env` adds environment variables to the selected agent process and its tool
@@ -69,6 +69,8 @@ agent-specific fields are rejected, so a `codexHome` cannot silently be applied
 to pi or a `configDir` to Codex.
 
 Codex uses `app-server`, enabling input during an active turn. The `exec` backend has been removed: remove an old `transport = "exec"` setting or change it to `"app-server"`. Both ignore flags default to `false`; explicitly setting either to `true` is rejected because app-server loads normal user configuration and execpolicy rules. Launch changes take effect after restarting the profile.
+
+`appServerMode` defaults to `daemon`. Bridge ensures Codex's official app-server daemon is running and attaches each run through a short-lived stdio-to-Unix-WebSocket bridge; the daemon stays alive after a run so native background memory extraction and consolidation can finish. `appServerMode = "per-run"` keeps the app-server scoped to one Bridge run and forces `memories.generate_memories = false`; existing memory reads and Codex's native memory startup path remain available, while the thread is not added as a source for new memory generation.
 
 ## Frontend fields
 

@@ -100,6 +100,7 @@ const CODEX_SPEC: AgentBackendSpec = Object.freeze({
   launchKeys: Object.freeze([
     ...COMMON_AGENT_LAUNCH_KEYS,
     'transport',
+    'appServerMode',
     'codexHome',
     'inheritCodexHome',
     'ignoreUserConfig',

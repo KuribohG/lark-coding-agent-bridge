@@ -80,9 +80,27 @@ describe('layered configuration', () => {
     const inherited = source + '\n[agents.codex.launch]\ntransport = "app-server"\n';
     const text = transport ? inherited + `\n[profiles.bot.launch]\ntransport = "${transport}"\n` : source;
     const root = documentToRoot(parseDocument(text));
-    const expected = { transport: transport ?? 'app-server', ignoreUserConfig: false, ignoreRules: false };
+    const expected = {
+      transport: transport ?? 'app-server',
+      appServerMode: 'daemon',
+      ignoreUserConfig: false,
+      ignoreRules: false,
+    };
     expect(root.profiles.bot!.codex).toMatchObject(expected);
     expect(documentToRoot(parseDocument(formatDocument(rootToDocument(root)))).profiles.bot!.codex).toMatchObject(expected);
+  });
+
+  it('inherits and round-trips explicit per-run app-server mode', () => {
+    const text = source + `
+[agents.codex.launch]
+appServerMode = "per-run"
+`;
+    const root = documentToRoot(parseDocument(text));
+    expect(root.profiles.bot!.codex?.appServerMode).toBe('per-run');
+    expect(documentToRoot(parseDocument(formatDocument(rootToDocument(root))))
+      .profiles.bot!.codex?.appServerMode).toBe('per-run');
+    expect(() => parseDocument(source + '\n[agents.codex.launch]\nappServerMode = "background"\n'))
+      .toThrow(/daemon or per-run/);
   });
 
   it('keeps executable and state-directory controls separate for every switchable agent', () => {

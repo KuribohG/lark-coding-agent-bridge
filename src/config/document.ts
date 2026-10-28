@@ -102,6 +102,9 @@ function checkLaunch(value: unknown, agent: string, path: string): void {
     const kind = ['inheritCodexHome', 'ignoreUserConfig', 'ignoreRules'].includes(k) ? 'boolean' : ['mode', 'owner'].includes(k) ? 'number' : 'string';
     if (typeof v !== kind) throw new Error(`${path}.${k}: expected ${kind}`);
     if (k === 'transport' && v !== 'app-server') throw new Error(`${path}.transport: Codex exec transport has been removed; use app-server`);
+    if (k === 'appServerMode' && !['daemon', 'per-run'].includes(v)) {
+      throw new Error(`${path}.${k}: expected daemon or per-run`);
+    }
     if (['ignoreUserConfig', 'ignoreRules'].includes(k) && v) throw new Error(`${path}.${k}: app-server requires false`);
   }
 }
@@ -303,6 +306,7 @@ export function resolveExecutionProfile(
           codex: {
             binaryPath: codexLaunch.binaryPath ?? 'codex',
             transport: 'app-server' as const,
+            appServerMode: codexLaunch.appServerMode === 'per-run' ? 'per-run' as const : 'daemon' as const,
             ...(typeof codexLaunch.codexHome === 'string' ? { codexHome: codexLaunch.codexHome } : {}),
             ...(typeof codexLaunch.inheritCodexHome === 'boolean'
               ? { inheritCodexHome: codexLaunch.inheritCodexHome }

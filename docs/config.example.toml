@@ -16,6 +16,7 @@ effort = "high"
 [agents.codex.launch]
 binaryPath = "codex"
 transport = "app-server" # Default and only supported Codex backend.
+appServerMode = "daemon" # Persistent app-server; "per-run" disables new memory generation.
 # codexHome = "/absolute/private/codex-home"
 # [agents.codex.launch.env]
 # HTTPS_PROXY = "$HTTPS_PROXY"
