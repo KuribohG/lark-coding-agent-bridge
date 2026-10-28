@@ -24,6 +24,7 @@ export interface SessionCatalogEntry extends SessionCatalogIdentity {
   status: SessionCatalogStatus;
   updatedAt: number;
   completedAt?: number;
+  sourceMessageId?: string;
   sessionId?: string;
   threadId?: string;
   lastSummary?: string;
@@ -42,6 +43,7 @@ export interface ArchiveSessionCatalogInput extends SessionCatalogIdentity {
 
 export interface MarkSessionCatalogCompletedInput extends SessionCatalogIdentity {
   now?: number;
+  sourceMessageId?: string;
   lastSummary?: string;
 }
 
@@ -120,6 +122,7 @@ export class SessionCatalog {
     const completedAt = continuesSession ? previous?.completedAt : undefined;
     const lastSummary = input.lastSummary
       ?? (continuesSession ? previous?.lastSummary : undefined);
+    const sourceMessageId = continuesSession ? previous?.sourceMessageId : undefined;
     const entry: SessionCatalogEntry = {
       key,
       scopeId: input.scopeId,
@@ -129,6 +132,7 @@ export class SessionCatalog {
       status: 'active',
       updatedAt: input.now ?? Date.now(),
       ...(completedAt !== undefined ? { completedAt } : {}),
+      ...(sourceMessageId ? { sourceMessageId } : {}),
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
       ...(input.threadId ? { threadId: input.threadId } : {}),
       ...(lastSummary ? { lastSummary } : {}),
@@ -157,10 +161,12 @@ export class SessionCatalog {
     if (!entry) return false;
     const completedAt = input.now ?? Date.now();
     const lastSummary = normalizeSummary(input.lastSummary) ?? entry.lastSummary;
+    const sourceMessageId = normalizeMessageId(input.sourceMessageId) ?? entry.sourceMessageId;
     this.data.set(key, {
       ...entry,
       updatedAt: completedAt,
       completedAt,
+      ...(sourceMessageId ? { sourceMessageId } : {}),
       ...(lastSummary ? { lastSummary } : {}),
     });
     this.schedulePersist();
@@ -257,6 +263,7 @@ function normalizeEntry(input: unknown): SessionCatalogEntry | undefined {
   ) {
     return undefined;
   }
+  const sourceMessageId = normalizeMessageId(raw.sourceMessageId);
   return {
     key: raw.key,
     scopeId: raw.scopeId,
@@ -266,6 +273,7 @@ function normalizeEntry(input: unknown): SessionCatalogEntry | undefined {
     status: raw.status,
     updatedAt: raw.updatedAt,
     ...(typeof raw.completedAt === 'number' ? { completedAt: raw.completedAt } : {}),
+    ...(sourceMessageId ? { sourceMessageId } : {}),
     ...(typeof raw.sessionId === 'string' ? { sessionId: raw.sessionId } : {}),
     ...(typeof raw.threadId === 'string' ? { threadId: raw.threadId } : {}),
     ...(typeof raw.lastSummary === 'string' ? { lastSummary: raw.lastSummary } : {}),
@@ -276,6 +284,10 @@ function normalizeSummary(input: string | undefined): string | undefined {
   if (!input) return undefined;
   const summary = input.replace(/\s+/g, ' ').trim();
   return summary ? summary.slice(0, 180) : undefined;
+}
+
+function normalizeMessageId(input: string | undefined): string | undefined {
+  return input && /^om_\w+$/.test(input) ? input : undefined;
 }
 
 function matchesIdentity(entry: SessionCatalogEntry, input: SessionCatalogIdentity): boolean {

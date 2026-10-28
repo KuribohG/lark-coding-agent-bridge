@@ -135,7 +135,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/ws use <name>` | 切换到命名工作空间 |
 | `/ws remove <name>` | 删除命名工作空间 |
 | `/resume` | 恢复同 agent、工作目录、权限模式兼容的历史会话 |
-| `/recent [N]` | 列出最近完成的 session（默认 5 条、最多 20 条）；owner/admin 看整个 profile，其他用户只看当前话题/聊天 |
+| `/recent [N]` | 列出最近完成的 session（默认 5 条、最多 20 条），标题可跳到原消息或对应话题；owner/admin 看整个 profile，其他用户只看当前话题/聊天 |
 | `/status` | 查看 profile、agent、工作目录、会话、lark-cli 身份和运行状态 |
 | `/config` | 查看配置摘要，分别进入执行、飞书展示和访问设置 |
 | `/model [模型名\|default]` | 查看或修改当前话题/聊天的模型，支持手填 |

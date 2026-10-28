@@ -30,7 +30,7 @@
 | `/ws save <名称>`、`/ws use <名称>` | 保存当前目录、切换目录 |
 | `/ws remove <名称>` | 删除命名绑定，保留文件 |
 | `/resume` | 恢复兼容的历史会话 |
-| `/recent [N]` | 列出最近完成的 session；owner/admin 看整个 profile，其他用户只看当前话题 / 聊天 |
+| `/recent [N]` | 列出最近完成的 session，标题可跳到原消息或对应话题；owner/admin 看整个 profile，其他用户只看当前话题 / 聊天 |
 | `/model [模型名或 default]` | 当前话题 / 聊天的模型 |
 | `/effort [强度或 default]` | 当前话题 / 聊天的思考强度 |
 | `/btw <问题>` | 基于主会话的旁问 |

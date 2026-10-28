@@ -3,11 +3,17 @@ import type { SessionCatalogEntry } from '../session/catalog';
 import { formatRelTime } from '../session/history';
 import { canRunAdminCommand } from '../policy/access';
 import { agentDisplayName } from '../agent/backend-spec';
+import {
+  lookupMessageAppLink,
+  scopeAppLink,
+} from '../bot/message-links';
 import type { CommandContext } from './types';
 import { reply } from './presentation';
 
 const DEFAULT_RECENT_LIMIT = 5;
 const MAX_RECENT_LIMIT = 20;
+
+type CompletedSessionCatalogEntry = SessionCatalogEntry & { completedAt: number };
 
 export async function handleRecent(args: string, ctx: CommandContext): Promise<void> {
   const requested = Number.parseInt(args.trim(), 10);
@@ -25,13 +31,12 @@ export async function handleRecent(args: string, ctx: CommandContext): Promise<v
     ctx.controls,
     ctx.msg.senderId,
   ).ok;
-  const runningScopes = new Set(ctx.activeRuns.scopes());
+  const active = activeSessionFilter(ctx);
   const recent = uniqueRecent(entries
-    .filter((entry: SessionCatalogEntry) => !runningScopes.has(entry.scopeId))
-    .filter((entry: SessionCatalogEntry) => profileWide || entry.scopeId === ctx.scope)
-    .filter((entry: SessionCatalogEntry) => Boolean(entry.sessionId || entry.threadId))
-    .sort((a: SessionCatalogEntry, b: SessionCatalogEntry) =>
-      activityAt(b) - activityAt(a)))
+    .filter(isCompleted)
+    .filter((entry) => !isActivelyRunning(entry, active))
+    .filter((entry) => profileWide || entry.scopeId === ctx.scope)
+    .sort((a, b) => b.completedAt - a.completedAt))
     .slice(0, limit);
 
   if (recent.length === 0) {
@@ -41,30 +46,33 @@ export async function handleRecent(args: string, ctx: CommandContext): Promise<v
 
   const heading = profileWide ? '（当前 profile）' : '（当前会话）';
   const lines = [`最近完成的 ${recent.length} 个 session${heading}：`];
-  recent.forEach((entry: SessionCatalogEntry, index: number) => {
-    const identity = entry.threadId ?? entry.sessionId ?? entry.key;
-    const summary = formatSummary(entry.lastSummary);
+  const links = await Promise.all(recent.map((entry) => resolveRecentLink(ctx, entry)));
+  recent.forEach((entry, index) => {
+    const summary = formatSummary(entry.lastSummary) ?? basename(entry.cwdRealpath);
+    const title = links[index]
+      ? `[${escapeMarkdownLinkLabel(summary)}](${links[index]})`
+      : escapeMarkdownLinkLabel(summary);
     lines.push(
-      `${index + 1}. ${agentDisplayName(entry.agentId)} · ${formatRelTime(activityAt(entry))}`
+      `${index + 1}. ${title}`,
+      `   ${agentDisplayName(entry.agentId)} · ${formatCompletionTime(entry.completedAt)}`
         + ` · ${scopeLabel(entry.scopeId, ctx)}`,
-      `   \`${identity.slice(0, 8)}\`${summary ? ` · ${summary}` : ` · ${basename(entry.cwdRealpath)}`}`,
     );
   });
   await reply(ctx, lines.join('\n'));
 }
 
-function uniqueRecent(entries: SessionCatalogEntry[]): SessionCatalogEntry[] {
+function uniqueRecent(entries: CompletedSessionCatalogEntry[]): CompletedSessionCatalogEntry[] {
   const seen = new Set<string>();
-  return entries.filter((entry: SessionCatalogEntry) => {
-    const identity = `${entry.agentId}:${entry.threadId ?? entry.sessionId ?? entry.key}`;
+  return entries.filter((entry) => {
+    const identity = nativeSessionKey(entry);
     if (seen.has(identity)) return false;
     seen.add(identity);
     return true;
   });
 }
 
-function activityAt(entry: SessionCatalogEntry): number {
-  return entry.completedAt ?? entry.updatedAt;
+function isCompleted(entry: SessionCatalogEntry): entry is CompletedSessionCatalogEntry {
+  return entry.completedAt !== undefined && Boolean(entry.sessionId || entry.threadId);
 }
 
 function scopeLabel(scopeId: string, ctx: CommandContext): string {
@@ -81,6 +89,81 @@ function formatSummary(summary: string | undefined): string | undefined {
   if (!summary) return undefined;
   const value = summary.replace(/\s+/g, ' ').replaceAll('`', "'").trim();
   return value ? value.slice(0, 120) : undefined;
+}
+
+function formatCompletionTime(completedAt: number): string {
+  const completed = new Date(completedAt);
+  const now = new Date();
+  const day = (date: Date) => new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+  const absolute = day(completed) === day(now)
+    ? new Intl.DateTimeFormat('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).format(completed)
+    : new Intl.DateTimeFormat('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).format(completed);
+  return `${absolute}（${formatRelTime(completedAt)}）`;
+}
+
+async function resolveRecentLink(
+  ctx: CommandContext,
+  entry: CompletedSessionCatalogEntry,
+): Promise<string | undefined> {
+  if (entry.sourceMessageId) {
+    const link = await lookupMessageAppLink(ctx.channel, entry.sourceMessageId, 1_500);
+    if (link) return link;
+  }
+  return scopeAppLink(entry.scopeId);
+}
+
+function activeSessionFilter(ctx: CommandContext): {
+  nativeKeys: Set<string>;
+  unidentifiedScopes: Set<string>;
+} {
+  const nativeKeys = new Set<string>();
+  const unidentifiedScopes = new Set<string>();
+  for (const scope of ctx.activeRuns.scopes()) {
+    const identity = ctx.activeRuns.get(scope)?.sessionIdentity;
+    if (!identity?.sessionId && !identity?.threadId) {
+      unidentifiedScopes.add(scope);
+      continue;
+    }
+    nativeKeys.add(nativeSessionKey(identity));
+  }
+  return { nativeKeys, unidentifiedScopes };
+}
+
+function isActivelyRunning(
+  entry: CompletedSessionCatalogEntry,
+  active: ReturnType<typeof activeSessionFilter>,
+): boolean {
+  return active.unidentifiedScopes.has(entry.scopeId)
+    || active.nativeKeys.has(nativeSessionKey(entry));
+}
+
+function nativeSessionKey(entry: {
+  agentId: string;
+  sessionId?: string;
+  threadId?: string;
+}): string {
+  return `${entry.agentId}:${entry.threadId ?? entry.sessionId ?? ''}`;
+}
+
+function escapeMarkdownLinkLabel(value: string): string {
+  return value.replace(/([\\[\]])/g, '\\$1');
 }
 
 function plainText(value: string): string {

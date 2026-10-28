@@ -36,9 +36,21 @@ describe('/recent command', () => {
 
   it('lists completed sessions across the profile for the owner in newest-first order', async () => {
     const h = await createHarness();
-    addSession(h.catalog, 'chat-1', '1111aaaa', 'old task', 1000, 2000);
-    addSession(h.catalog, 'chat-2', '3333cccc', 'new task', 3000, 5000);
-    addSession(h.catalog, 'chat-3', '2222bbbb', 'middle task', 2000, 4000);
+    const oldLink = messageLink('chat-1', 'thread-old', 1);
+    const newLink = messageLink('chat-2', 'thread-new', 3);
+    const middleLink = messageLink('chat-3', 'thread-middle', 2);
+    h.channel.rawMessageLinks.set('om_old', oldLink);
+    h.channel.rawMessageLinks.set('om_new', newLink);
+    h.channel.rawMessageLinks.set('om_middle', middleLink);
+    addSession(h.catalog, 'chat-1', 'thread-old', 'old task', 1000, 2000, {
+      sourceMessageId: 'om_old',
+    });
+    addSession(h.catalog, 'chat-2', 'thread-new', 'new task', 3000, 5000, {
+      sourceMessageId: 'om_new',
+    });
+    addSession(h.catalog, 'chat-3', 'thread-middle', 'middle task', 2000, 4000, {
+      sourceMessageId: 'om_middle',
+    });
 
     await expect(h.run('/recent 2')).resolves.toBe(true);
 
@@ -47,9 +59,33 @@ describe('/recent command', () => {
     expect(output).toContain('new task');
     expect(output).toContain('middle task');
     expect(output.indexOf('new task')).toBeLessThan(output.indexOf('middle task'));
-    expect(output).toContain('3333cccc');
-    expect(output).toContain('2222bbbb');
+    expect(output).toContain(`](${newLink})`);
+    expect(output).toContain(`](${middleLink})`);
     expect(output).not.toContain('old task');
+  });
+
+  it('links to the exact source message when only its ID is retained', async () => {
+    const h = await createHarness();
+    const exact = messageLink('chat-1', 'thread-exact', 7);
+    h.channel.rawMessageLinks.set('om_source', exact);
+    addSession(h.catalog, 'chat-1', 'thread-exact', 'linked task', 1000, 2000, {
+      sourceMessageId: 'om_source',
+    });
+
+    await expect(h.run('/recent')).resolves.toBe(true);
+
+    expect(lastMarkdown(h.channel)).toContain(`[linked task](${exact})`);
+  });
+
+  it('falls back to a topic link for records created before source messages were stored', async () => {
+    const h = await createHarness();
+    addSession(h.catalog, 'oc_chat:omt_topic', 'thread-old', 'legacy task', 1000, 2000);
+
+    await expect(h.run('/recent')).resolves.toBe(true);
+
+    expect(lastMarkdown(h.channel)).toContain(
+      '[legacy task](https://applink.feishu.cn/client/thread/open?open_chat_id=oc_chat&open_thread_id=omt_topic)',
+    );
   });
 
   it('limits non-admin callers to the current chat or topic scope', async () => {
@@ -76,6 +112,44 @@ describe('/recent command', () => {
     const output = lastMarkdown(h.channel);
     expect(output).toContain('finished task');
     expect(output).not.toContain('running task');
+  });
+
+  it('hides only the running native session, not older sessions in the same scope', async () => {
+    const h = await createHarness();
+    addSession(h.catalog, 'chat-1', 'thread-done', 'finished task', 1000, 2000, {
+      policyFingerprint: 'fp-done',
+    });
+    addSession(h.catalog, 'chat-1', 'thread-running', 'running task', 3000, 4000, {
+      policyFingerprint: 'fp-running',
+    });
+    const run = createFakeAgent().run({ runId: 'run-1', prompt: 'running' });
+    h.activeRuns.register('chat-1', run);
+    h.activeRuns.identifySession('chat-1', run, {
+      agentId: 'codex',
+      threadId: 'thread-running',
+    });
+
+    await expect(h.run('/recent')).resolves.toBe(true);
+
+    const output = lastMarkdown(h.channel);
+    expect(output).toContain('finished task');
+    expect(output).not.toContain('running task');
+  });
+
+  it('does not treat an unfinished catalog entry as a completed session', async () => {
+    const h = await createHarness();
+    h.catalog.upsertActive({
+      scopeId: 'chat-1',
+      agentId: 'codex',
+      cwdRealpath: '/repo',
+      policyFingerprint: 'fp-1',
+      threadId: 'thread-unfinished',
+      now: 3000,
+    });
+
+    await expect(h.run('/recent')).resolves.toBe(true);
+
+    expect(lastMarkdown(h.channel)).toContain('最近没有已完成的 session');
   });
 
   it('explains when there are no completed sessions', async () => {
@@ -139,15 +213,24 @@ function addSession(
   summary: string,
   startedAt: number,
   completedAt: number,
+  options: {
+    policyFingerprint?: string;
+    sourceMessageId?: string;
+  } = {},
 ): void {
   const identity = {
     scopeId,
     agentId: 'codex' as const,
     cwdRealpath: '/repo',
-    policyFingerprint: 'fp-1',
+    policyFingerprint: options.policyFingerprint ?? 'fp-1',
   };
   catalog.upsertActive({ ...identity, threadId, now: startedAt });
-  catalog.markCompleted({ ...identity, now: completedAt, lastSummary: summary });
+  catalog.markCompleted({
+    ...identity,
+    now: completedAt,
+    lastSummary: summary,
+    ...(options.sourceMessageId ? { sourceMessageId: options.sourceMessageId } : {}),
+  });
 }
 
 function appConfig(defaultWorkspace: string): ProfileConfig {
@@ -178,4 +261,9 @@ function lastMarkdown(channel: FakeChannel): string {
   const content = channel.sent.at(-1)?.content as { markdown?: unknown } | undefined;
   expect(content?.markdown).toBeTypeOf('string');
   return String(content?.markdown);
+}
+
+function messageLink(chatId: string, threadId: string, position: number): string {
+  return 'https://applink.feishu.cn/client/thread/open'
+    + `?open_chat_id=${chatId}&open_thread_id=${threadId}&thread_position=${position}`;
 }

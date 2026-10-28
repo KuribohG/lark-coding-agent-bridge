@@ -335,6 +335,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           sessionCatalog,
           workspaces,
           media,
+          activeRuns,
           batch,
           controls,
           cotClient,
@@ -397,6 +398,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
         await sendManagedCard(channel, message.chatId, timedRunCard(timedStore.get(job.id)!), sendOpts);
         await runAgentBatch({
           channel, executor, sessions, sessionCatalog, workspaces, media,
+          activeRuns,
           batch: [{ ...message, content: job.task, resources: [], rawContentType: 'text' }],
           controls, cotClient, callbackAuth, userQuestions, activePolicyFingerprints, lastRunModelByScope,
           scope: job.scope, agentKind: job.agentKind ?? resolveAgentKind(job.scope), mode,
@@ -988,6 +990,7 @@ interface RunBatchDeps {
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
   media: MediaCache;
+  activeRuns: ActiveRuns;
   batch: NormalizedMessage[];
   controls: Controls;
   cotClient: CotClient;
@@ -1009,6 +1012,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     sessionCatalog,
     workspaces,
     media,
+    activeRuns,
     batch,
     controls,
     cotClient,
@@ -1255,6 +1259,19 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       policy: flow.policy,
       event: evt,
     });
+    if (evt.type === 'system') {
+      if (capability.sessionIdField === 'sessionId' && evt.sessionId) {
+        activeRuns.identifySession(scope, handle.run, {
+          agentId: capability.agentId,
+          sessionId: evt.sessionId,
+        });
+      } else if (capability.sessionIdField === 'threadId' && evt.threadId) {
+        activeRuns.identifySession(scope, handle.run, {
+          agentId: capability.agentId,
+          threadId: evt.threadId,
+        });
+      }
+    }
     if (evt.type === 'system' && evt.sessionId) {
       log.info('session', 'set', { sessionId: evt.sessionId });
     }
@@ -1334,11 +1351,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       cotMessages, cotClient, preparedCot, originMessageId: lastMsg.messageId, inputPreview: lastMsg.content,
     }), { idleTimeoutMs, recordSession, filterForPrefs });
     if (await execution.result === 'completed' && sessionCatalog) {
+      const sourceMessageId = firstMsg.messageId;
       sessionCatalog.markCompleted({
         scopeId: scope,
         agentId: capability.agentId,
         cwdRealpath: sessionCwd,
         policyFingerprint: flow.policy.policyFingerprint,
+        sourceMessageId,
         lastSummary: summarizeRunInput(batch),
       });
     }

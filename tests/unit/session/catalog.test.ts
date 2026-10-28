@@ -151,6 +151,7 @@ describe('agent-aware session catalog', () => {
       ...identity,
       now: 2000,
       lastSummary: '  finished\n task  ',
+      sourceMessageId: 'om_source',
     })).toBe(true);
 
     expect(catalog.activeFor(identity)).toMatchObject({
@@ -159,12 +160,14 @@ describe('agent-aware session catalog', () => {
       updatedAt: 2000,
       completedAt: 2000,
       lastSummary: 'finished task',
+      sourceMessageId: 'om_source',
     });
 
     catalog.upsertActive({ ...identity, threadId: 'thread-1', now: 3000 });
     expect(catalog.activeFor(identity)).toMatchObject({
       completedAt: 2000,
       lastSummary: 'finished task',
+      sourceMessageId: 'om_source',
       updatedAt: 3000,
     });
 
@@ -172,6 +175,7 @@ describe('agent-aware session catalog', () => {
     expect(catalog.activeFor(identity)).toMatchObject({ threadId: 'thread-2' });
     expect(catalog.activeFor(identity)).not.toHaveProperty('completedAt');
     expect(catalog.activeFor(identity)).not.toHaveProperty('lastSummary');
+    expect(catalog.activeFor(identity)).not.toHaveProperty('sourceMessageId');
     await catalog.flush();
   });
 

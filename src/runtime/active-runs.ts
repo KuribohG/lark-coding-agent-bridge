@@ -1,10 +1,17 @@
 import type { AgentRun } from '../agent/types';
 
+export interface ActiveSessionIdentity {
+  agentId: string;
+  sessionId?: string;
+  threadId?: string;
+}
+
 export interface RunHandle {
   run: AgentRun;
   interrupted: boolean;
   modelSettings?: import('../agent/model-settings').ModelSettings;
   stopReason?: 'deadline' | 'cancelled';
+  sessionIdentity?: ActiveSessionIdentity;
 }
 
 export class ActiveRuns {
@@ -35,6 +42,12 @@ export class ActiveRuns {
     const handle: RunHandle = { run, interrupted: false };
     this.handles.set(chatId, handle);
     return handle;
+  }
+
+  identifySession(chatId: string, run: AgentRun, identity: ActiveSessionIdentity): void {
+    const handle = this.handles.get(chatId);
+    if (handle?.run !== run) return;
+    handle.sessionIdentity = { ...identity };
   }
 
   pauseNewRuns(reason: string): () => void {

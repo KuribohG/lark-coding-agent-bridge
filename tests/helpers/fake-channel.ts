@@ -26,7 +26,12 @@ export interface FakeChannel {
    * card dispatcher reads to scope topic-group clicks. Empty by default.
    */
   readonly rawThreadIds: Map<string, string>;
-  fetchRawMessage(messageId: string): Promise<Array<{ thread_id?: string }>>;
+  readonly rawMessageLinks: Map<string, string>;
+  fetchRawMessage(messageId: string): Promise<Array<{
+    message_id?: string;
+    message_app_link?: string;
+    thread_id?: string;
+  }>>;
   readonly rawClient: {
     readonly requests: FakeRawClientRequest[];
     request(method: string, params: unknown): Promise<unknown>;
@@ -59,6 +64,7 @@ export function createFakeChannel(): FakeChannel {
   const streams: FakeChannelStream[] = [];
   const requests: FakeRawClientRequest[] = [];
   const rawThreadIds = new Map<string, string>();
+  const rawMessageLinks = new Map<string, string>();
   const cardById = new Map<string, unknown>();
   let nextCard = 1;
   let nextMessage = 1;
@@ -78,9 +84,19 @@ export function createFakeChannel(): FakeChannel {
     sent,
     streams,
     rawThreadIds,
-    async fetchRawMessage(messageId: string): Promise<Array<{ thread_id?: string }>> {
+    rawMessageLinks,
+    async fetchRawMessage(messageId: string): Promise<Array<{
+      message_id?: string;
+      message_app_link?: string;
+      thread_id?: string;
+    }>> {
       const threadId = rawThreadIds.get(messageId);
-      return [threadId ? { thread_id: threadId } : {}];
+      const messageAppLink = rawMessageLinks.get(messageId);
+      return [{
+        message_id: messageId,
+        ...(threadId ? { thread_id: threadId } : {}),
+        ...(messageAppLink ? { message_app_link: messageAppLink } : {}),
+      }];
     },
     rawClient: {
       requests,
