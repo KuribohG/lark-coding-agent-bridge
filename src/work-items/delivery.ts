@@ -24,7 +24,7 @@ export class WorkItemDelivery {
     const pending = await this.host.transaction(async () => {
       if (!current()) throw new Error('分析已取消');
       const clean = (s: string) => s.replace(/[\r\n]/g, ' ').replace(/<\/?at\b[^>]*>/gi, '');
-      const page = this.config.gui.publicUrl || this.config.h5.publicUrl;
+      const page = this.config.workbenchUrl || this.config.gui.publicUrl || this.config.h5.publicUrl;
       const link = job.messages.find(m => m.link && /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(m.link))?.link;
       const delivery = job.startDelivery ??= { id: randomUUID(), attempts: 0, startedAt: this.now(), retryAt: this.now(),
         text: `已开始分析 · ${clean(job.source.name)}\n${clean(job.attention?.reason || '你提交的会话事项')}\n\n我会进行分析，并将结果和回复草稿发在本话题下。${link ? `\n原消息：${link}` : ''}${page ? `\n查看与处理：${page}#job=${job.id}` : ''}` };
@@ -93,7 +93,7 @@ export class WorkItemDelivery {
         // Automatic results can only use a confirmed topic.
         if ((!this.io.notifyChange || job.businessState !== 'resolved') && !resolved(job) && this.host.safe(job) &&
           (!job.draftStale || job.error) && (!job.automatic || this.host.accepts(job)) && !job.deliveredAt &&
-          (job.analysisTopic || (!this.config.gui.publicUrl && !job.automatic && job.attention?.state === 'needed'))) {
+          (job.analysisTopic || (!(this.config.workbenchUrl || this.config.gui.publicUrl) && !job.automatic && job.attention?.state === 'needed'))) {
           const delivery = job.resultDelivery ??= { attempts: 0, startedAt: now, retryAt: now };
           delivery.id ??= randomUUID();
           if (delivery.confirmedAt !== undefined) {

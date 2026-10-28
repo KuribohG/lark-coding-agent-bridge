@@ -2,7 +2,7 @@ import { terminateChild } from '../platform/terminate';
 import { createHash } from 'node:crypto';
 import { larkCliEnv, getUserAuthStatus, type LarkCliExec, type UserImContext } from '../lark-cli/user-im';
 import { mergeProcessEnv, spawnProcess } from '../platform/spawn';
-import type { InboxConfig } from './config';
+import { inboxWorkbenchUrl, type InboxConfig } from './config';
 import type { InboxJob, InboxMessage } from './types';
 import { obj, type Obj } from './values';
 import { handlingState } from './reply';
@@ -194,10 +194,10 @@ export class InboxLark {
     const d = job.destination;
     if (job.ownerOpenId !== this.config.ownerOpenId || JSON.stringify(d) !== JSON.stringify(this.config.destination)) throw new Error('结果目标已变更，请重新处理待办');
     if (phase !== 'result' || !this.config.enabled || handlingState(job) !== 'open' || (job.draftStale && !job.error) ||
-      (!job.analysisTopic && (this.config.gui.publicUrl || job.attention?.state !== 'needed'))) return;
+      (!job.analysisTopic && (inboxWorkbenchUrl(this.config) || job.attention?.state !== 'needed'))) return;
     if (job.analysisTopic && job.analysisTopic.chatId !== d.chatId) throw new Error('分析话题目标已变更');
     const first = job.messages[0];
-    const page = this.config.gui.publicUrl || this.config.h5.publicUrl;
+    const page = inboxWorkbenchUrl(this.config);
     const section = (title: string, text: string) => [{ tag: 'md', text: `**${title}**\n\n${withoutMentions(text)}` }];
     // Native md elements render Markdown without the CLI fetching model-supplied images.
     const post = { zh_cn: { title: `分析结果 · ${withoutMentions(job.source.name).replace(/[\r\n]/g, ' ')}`, content: [
@@ -225,14 +225,14 @@ export class InboxLark {
         const source = [...job.messages].reverse().find(m => /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(m.link || ''))?.link;
         const text = `待处理 · ${clean(job.source.name)}\n${clean(job.attention!.reason)}` +
           (source ? `\n原消息：${source}` : '') +
-          `\n查看与处理：${this.config.gui.publicUrl || this.config.h5.publicUrl}#job=${job.id}`;
+          `\n查看与处理：${inboxWorkbenchUrl(this.config)}#job=${job.id}`;
         const key = createHash('sha256').update(`attention:${id}:${job.id}:${this.config.destination.chatId}`).digest('hex').slice(0, 48);
         await this.sendNewTopic({ text }, key);
       }
       return;
     }
     const text = `有 ${jobs.length} 项新事项需要你关注：\n` + jobs.map((j, i) => `${i + 1}. ${clean(j.source.name)}：${clean(j.attention!.reason)}`).join('\n') +
-      `\n在工作台查看、批量处理或深入分析：${this.config.gui.publicUrl || this.config.h5.publicUrl}`;
+      `\n在工作台查看、批量处理或深入分析：${inboxWorkbenchUrl(this.config)}`;
     const key = createHash('sha256').update(`attention:${id}`).digest('hex').slice(0, 48);
     await this.replyTopic({ text }, key);
   }

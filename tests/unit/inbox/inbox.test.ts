@@ -329,6 +329,20 @@ describe('Lark boundary', () => {
     expect(args[args.indexOf('--text') + 1]).toContain('源会话'); expect(args[args.indexOf('--text') + 1]).toContain('需要确认发布日期');
     job.destination.replyTo = 'om_evil'; await expect(cli.deliver(job, 'result')).rejects.toThrow('目标已变更');
   });
+  it('uses the dedicated Jupyter workbench URL ahead of the retired hosted GUI link', async () => {
+    const { service } = await setup(); await service.tick(); const job = service.list()[0]!;
+    const c = config();
+    c.workbenchUrl = 'https://jupyter.example/custom/inbox-assistant/index.html';
+    c.gui.publicUrl = 'https://retired-miaoda.example/app';
+    job.attention = { state: 'needed', reason: '需要处理' };
+    const exec = vi.fn(async (_args: string[]) => ({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data: {
+      messages: [{ message_id: 'om_anchor', chat_id: 'oc_target', thread_id: 'omt_topic', create_time: '2026-10-14 20:00', sender: { sender_type: 'user' }, content: '' }],
+    } }) }));
+    await new InboxLark({ profile: 'codex' }, c, exec).notifyAttention([job], 'digest');
+    const text = exec.mock.calls.map(([args]) => args[args.indexOf('--text') + 1]).filter(Boolean).join('\n');
+    expect(text).toContain(c.workbenchUrl);
+    expect(text).not.toContain(c.gui.publicUrl);
+  });
   it.each(['analysis-topic', 'thread', 'new_topic'])('renders analysis Markdown as a native post via %s', async route => {
     const { service } = await setup(); await service.tick(); const job = service.list()[0]!;
     const c = config(); c.deliveryMode = route === 'thread' ? 'thread' : 'new_topic';

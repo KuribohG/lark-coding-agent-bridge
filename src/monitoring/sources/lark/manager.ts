@@ -9,7 +9,7 @@ import { parseWorkItemConcurrency } from '../../../work-items/concurrency';
 import { LarkProfileAuth } from '../../../lark-auth/profile-auth';
 import { getCotMessages } from '../../../config/schema';
 import { CotClient } from '../../../bot/cot';
-import { inboxMode, intakeScope, normalizeInbox, validateInbox, type InboxConfig, type InboxMode, type IntakeScope } from '../../../inbox/config';
+import { inboxMode, inboxWorkbenchUrl, intakeScope, normalizeInbox, validateInbox, type InboxConfig, type InboxMode, type IntakeScope } from '../../../inbox/config';
 import { inboxTriageSource, loadInboxTriageSource } from '../../../inbox/model-routing';
 import { backgroundModelSettings } from '../../../runtime/background-model';
 import { supportsBackgroundProfile } from '../../../runtime/agent-capabilities';
@@ -31,9 +31,10 @@ import { CallbackAuth } from '../../../card/callback-auth';
 import { CallbackNonceStore } from '../../../card/callback-store';
 import { InboxGui } from '../../../inbox/gui';
 import { InboxTaskSources } from '../../../inbox/task-sources';
+import { startInboxControl, type InboxControlHandle } from '../../../inbox/control-server';
 import { larkRuntime } from './runtime';
 
-const connectionConfig = ({ enabled: _, autoAnalyze: __, intakeScope: ___, analysisTimeoutMinutes: ____, watchPrivate, watchMentions, ...config }: InboxConfig) =>
+const connectionConfig = ({ enabled: _, autoAnalyze: __, intakeScope: ___, analysisTimeoutMinutes: ____, workbenchUrl: _____, watchPrivate, watchMentions, ...config }: InboxConfig) =>
   ({ ...config, legacyIntake: watchPrivate ? undefined : { watchPrivate, watchMentions } });
 
 export class InboxManager {
@@ -44,6 +45,7 @@ export class InboxManager {
   private nonces?: CallbackNonceStore;
   private h5?: { close(): Promise<void> };
   private gui?: InboxGui;
+  private control?: InboxControlHandle;
   private unlock?: () => Promise<void>;
   private fingerprint = '';
   private chain: Promise<unknown> = Promise.resolve();
@@ -144,8 +146,8 @@ export class InboxManager {
     const cards = this.cards; const lark = this.lark;
     if (!cards || !lark) return '会话助理当前未运行，请检查 Bridge 全局设置中的开关和运行状态。';
     if (!cards.accepts(ctx)) return '请由助理所属用户在配置的结果群话题中发送 /inbox。';
-    if (this.service?.config.gui.publicUrl && (!args || ['open', 'private', 'groups', 'pending'].includes(args))) {
-      return `会话助理工作台：${this.service.config.gui.publicUrl}\n在页面中查看待办、选择会话和查看分析结果。`;
+    if (this.service && inboxWorkbenchUrl(this.service.config) && (!args || ['open', 'private', 'groups', 'pending'].includes(args))) {
+      return `会话助理工作台：${inboxWorkbenchUrl(this.service.config)}\n在页面中查看待办、选择会话和查看分析结果。`;
     }
     try { await cards.handle(args, ctx); }
     catch (error) {
@@ -223,7 +225,10 @@ export class InboxManager {
     if (this.service && controls && fingerprint === this.fingerprint) {
       await withConfigFileLock(this.configPath, async () => {
         const latest = normalizeInbox((await loadMonitorRoot(this.configPath))?.inbox);
-        if (this.service) this.service.config.analysisTimeoutMinutes = latest.analysisTimeoutMinutes;
+        if (this.service) {
+          this.service.config.analysisTimeoutMinutes = latest.analysisTimeoutMinutes;
+          this.service.config.workbenchUrl = latest.workbenchUrl;
+        }
         if (this.service && intakeScope(latest) && intakeScope(latest) !== intakeScope(this.service.config)) await this.service.setScope(intakeScope(latest)!);
         if (this.service && inboxMode(latest) !== inboxMode(this.service.config)) await this.service.setMode(inboxMode(latest));
       });
@@ -298,6 +303,11 @@ export class InboxManager {
       this.cards = cards;
       lark.reminderCard = (job, content) => cards.reminder(job, content);
       await this.service.start();
+      this.control = await startInboxControl(
+        join(this.rootDir ?? dirname(this.configPath), 'inbox-control.json'),
+        { profile: config.executorProfile, ownerOpenId: config.ownerOpenId },
+        input => this.workbenchCommand(input),
+      );
       if (config.gui.publicUrl) {
         const service = this.service;
         this.gui = new InboxGui(service, lark, controls.cfg.accounts.app.id, join(folder, 'gui-receipts.json'), fetch,
@@ -325,6 +335,8 @@ export class InboxManager {
     const service = this.service; this.service = undefined;
     this.cards = undefined;
     const gui = this.gui; this.gui = undefined;
+    const control = this.control; this.control = undefined;
+    await control?.close();
     await gui?.close();
     await service?.close();
     this.lark?.close(); this.lark = undefined;

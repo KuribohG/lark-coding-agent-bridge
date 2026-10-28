@@ -11,4 +11,5 @@ export interface WorkItemConfig {
   dailyTriageLimit: number;
   gui: { publicUrl: string };
   h5: { publicUrl: string };
+  workbenchUrl?: string;
 }

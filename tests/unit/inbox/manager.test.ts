@@ -22,6 +22,7 @@ vi.mock('../../../src/monitoring/sources/lark/analyzer', () => ({ INBOX_ANALYSIS
 vi.mock('../../../src/inbox/lark', () => ({ InboxLark: class { checkOwner = vi.fn(async () => {}); close = vi.fn(); cancelPending = vi.fn(); } }));
 vi.mock('../../../src/inbox/gui', () => ({ InboxGui: vi.fn(function (...args: unknown[]) { return { start: vi.fn(async () => {}), close: vi.fn(async () => {}), setMode: args[5], setScope: args[6] }; }) }));
 vi.mock('../../../src/inbox/h5-server', () => ({ startInboxH5: vi.fn(async () => ({ close: async () => {} })) }));
+vi.mock('../../../src/inbox/control-server', () => ({ startInboxControl: vi.fn(async () => ({ url: 'http://127.0.0.1:1', port: 1, close: vi.fn(async () => {}) })) }));
 vi.mock('../../../src/lark-cli/user-im', () => ({ getUserAuthStatus: vi.fn(async () => ({ openId: 'ou_owner', scopes: ['search:message', 'im:chat:read', 'im:message.p2p_msg:get_as_user', 'im:message.group_msg:get_as_user'] })) }));
 const managers: InboxManager[] = [];
 afterEach(async () => { for (const manager of managers.splice(0)) await manager.close(); });
