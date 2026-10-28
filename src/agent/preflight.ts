@@ -1,5 +1,6 @@
 import { terminateChild } from '../platform/terminate';
 import { mergeProcessEnv, spawnProcess } from '../platform/spawn';
+import { isAgentKind } from './backend-spec';
 
 export type LocalAgentId = 'claude' | 'codex' | 'pi';
 
@@ -282,7 +283,7 @@ function isAgentPreflightDiagnostic(input: unknown): input is AgentPreflightDiag
   return (
     typeof raw.code === 'string' &&
     raw.code.startsWith('agent-') &&
-    (raw.agentId === 'claude' || raw.agentId === 'codex' || raw.agentId === 'pi') &&
+    isAgentKind(raw.agentId) &&
     typeof raw.agentName === 'string' &&
     typeof raw.command === 'string'
   );

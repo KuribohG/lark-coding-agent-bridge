@@ -1,11 +1,14 @@
 import { modelRunArguments, readModelEnvironment, resolveModelSettings, type ModelSettings, type ReasoningEffort } from '../agent/model-settings';
+import { agentBackendSpec } from '../agent/backend-spec';
 import type { ProfileConfig } from '../config/profile-schema';
 
-/** Preserve the legacy Codex cost policy; other executors inherit their own defaults. */
+/** Apply backend-owned background defaults without branching on agent names. */
 export async function backgroundModelSettings(profile: ProfileConfig, profileDir: string, model?: string, reasoningEffort?: ReasoningEffort): Promise<ModelSettings> {
-  const legacyCodex = model === undefined && profile.agentKind === 'codex';
+  const defaults = model === undefined
+    ? agentBackendSpec(profile.agentKind).backgroundDefaults
+    : undefined;
   return modelRunArguments(resolveModelSettings(profile.preferences, {
-    model: legacyCodex ? 'deepseek-flash' : model || undefined,
-    reasoningEffort: reasoningEffort ?? (legacyCodex ? 'max' : undefined),
+    model: defaults?.model ?? (model || undefined),
+    reasoningEffort: reasoningEffort ?? defaults?.reasoningEffort as ReasoningEffort | undefined,
   }, await readModelEnvironment(profile, profileDir)));
 }

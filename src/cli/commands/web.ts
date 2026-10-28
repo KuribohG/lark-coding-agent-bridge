@@ -13,8 +13,9 @@ import { ChannelHost } from '../../channels/plugin';
 import { createWebPlugin } from '../../channels/web/server';
 import { WEB_SYSTEM_PROMPT } from '../../channels/web/runtime';
 import { isAgentKind } from '../../agent/backends';
+import { agentBackendSpec } from '../../agent/backend-spec';
+import { withAgentBinary } from '../../agent/capability';
 import type {
-  AgentExecutionProfile,
   AgentKind,
   RunProfileConfig,
 } from '../../config/profile-schema';
@@ -90,15 +91,6 @@ export async function runWeb(options: RunWebOptions): Promise<void> {
   });
 }
 
-const WEB_FALLBACK_PERMISSIONS = {
-  defaultAccess: 'workspace' as const,
-  maxAccess: 'workspace' as const,
-};
-const WEB_PI_FALLBACK_PERMISSIONS = {
-  defaultAccess: 'full' as const,
-  maxAccess: 'full' as const,
-};
-
 function selectWebProfile(doc: ConfigDocument | undefined, requested?: string): string | undefined {
   if (!doc) {
     if (requested) throw new Error('--profile requires --config');
@@ -129,15 +121,17 @@ function webProfile(
   options: RunWebOptions,
   initialAgentKind: AgentKind = agentKind,
 ): RunProfileConfig {
-  const fallbackPermissions = agentKind === 'pi'
-    ? WEB_PI_FALLBACK_PERMISSIONS
-    : WEB_FALLBACK_PERMISSIONS;
+  const fallbackAccess = agentBackendSpec(agentKind).webDefaultAccess;
+  const fallbackPermissions = {
+    defaultAccess: fallbackAccess,
+    maxAccess: fallbackAccess,
+  };
   const execution = resolveExecutionProfile(doc ?? { version: 3, profiles: {} }, agentKind, {
     profile,
     fallbackPermissions,
   });
   const withBinary = options.binary && agentKind === initialAgentKind
-    ? applyBinaryOverride(execution, agentKind, options.binary)
+    ? withAgentBinary(execution, agentKind, options.binary)
     : execution;
   const profileLayer = profile && doc?.profiles[profile]?.agent === agentKind ? profile : undefined;
   const preferences = {
@@ -152,16 +146,4 @@ function webProfile(
     access: { allowedUsers: ['local'], allowedChats: [], admins: [], requireMentionInGroup: false },
     attachments: { maxCount: 0, maxBytes: 0, maxFileBytes: 0, imageMaxBytes: 0, cacheTtlMs: 0, cacheMaxBytes: 0 },
   };
-}
-
-function applyBinaryOverride(
-  profile: AgentExecutionProfile,
-  kind: AgentKind,
-  binary: string,
-): AgentExecutionProfile {
-  if (kind === 'codex') {
-    return { ...profile, codex: { ...(profile.codex ?? { binaryPath: binary }), binaryPath: binary } };
-  }
-  if (kind === 'pi') return { ...profile, pi: { ...(profile.pi ?? { binaryPath: binary }), binaryPath: binary } };
-  return { ...profile, claude: { ...(profile.claude ?? {}), binaryPath: binary } };
 }

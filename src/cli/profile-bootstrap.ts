@@ -1,6 +1,8 @@
 import { mkdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { AgentPreflightError } from '../agent/preflight';
+import { agentBackendSpec } from '../agent/backend-spec';
+import { agentLaunchPatch } from '../agent/capability';
 import { createDefaultProfileConfig, type AgentKind, type ProfileConfig } from '../config/profile-schema';
 import type { AppConfig } from '../config/schema';
 import { resolveWorkingDirectory } from '../policy/workspace';
@@ -26,21 +28,27 @@ export async function createBootstrapProfileConfig(
     : input.defaultWorkspace
       ? await ensureManagedDefaultWorkspace(input.defaultWorkspace)
       : undefined;
-  const codex =
-    input.agentKind === 'codex'
-      ? await createBootstrapCodexConfig(input.codexBinaryPath)
+  const spec = agentBackendSpec(input.agentKind);
+  const requestedBinary = input.agentKind === 'codex'
+    ? input.codexBinaryPath
+    : input.agentKind === 'pi'
+      ? input.piBinaryPath
       : undefined;
-  const pi =
-    input.agentKind === 'pi'
-      ? await createBootstrapPiConfig(input.piBinaryPath)
-      : undefined;
+  const launch = spec.launchRequired
+    ? await createBootstrapBinaryConfig({
+        binaryPath: requestedBinary,
+        envName: spec.commandEnv,
+        fallback: spec.defaultCommand,
+        agentId: spec.kind,
+        agentName: spec.displayName,
+      })
+    : undefined;
   const profile = createDefaultProfileConfig({
     agentKind: input.agentKind,
     accounts: input.accounts,
     preferences: input.preferences,
     secrets: input.secrets,
-    ...(codex ? { codex } : {}),
-    ...(pi ? { pi } : {}),
+    ...(launch ? agentLaunchPatch(input.agentKind, launch.binaryPath) : {}),
   });
   if (workspace) {
     profile.workspaces = {
@@ -65,31 +73,11 @@ async function ensureManagedDefaultWorkspace(path: string): Promise<string> {
   return realpath(path);
 }
 
-async function createBootstrapCodexConfig(binaryPath: string | undefined) {
-  return createBootstrapBinaryConfig({
-    binaryPath,
-    envName: 'LARK_CHANNEL_CODEX_BIN',
-    fallback: 'codex',
-    agentId: 'codex',
-    agentName: 'Codex CLI',
-  });
-}
-
-async function createBootstrapPiConfig(binaryPath: string | undefined) {
-  return createBootstrapBinaryConfig({
-    binaryPath,
-    envName: 'LARK_CHANNEL_PI_BIN',
-    fallback: 'pi',
-    agentId: 'pi',
-    agentName: 'Pi Coding Agent',
-  });
-}
-
 async function createBootstrapBinaryConfig(input: {
   binaryPath?: string;
   envName: string;
   fallback: string;
-  agentId: 'codex' | 'pi';
+  agentId: AgentKind;
   agentName: string;
 }) {
   const command = input.binaryPath ?? process.env[input.envName] ?? input.fallback;

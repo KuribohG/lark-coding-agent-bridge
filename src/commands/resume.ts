@@ -4,7 +4,12 @@ import { log } from '../core/logger';
 import { formatRelTime, listRecentSessions, type SessionSummary } from '../session/history';
 import { listCodexThreadHistory, type CodexThreadHistoryEntry } from '../session/codex-history';
 import type { SessionCatalogIdentity } from '../session/catalog';
-import type { AgentCapabilityId } from '../agent/capability';
+import {
+  agentBackendSpec,
+  agentShortDisplayName,
+  sessionIdFieldForAgent,
+  type AgentCapabilityId,
+} from '../agent/backend-spec';
 import type { CommandContext } from './types';
 import { reply, commandReplyOptions } from './presentation';
 import { commandProfilePaths, effectiveWorkspaceCwd } from './context';
@@ -27,6 +32,7 @@ const RESUME_APPLIED_REPLY = '已完成，请继续发送下一条消息。';
 
 export async function handleResume(args: string, ctx: CommandContext): Promise<void> {
   const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
+  const spec = agentBackendSpec(agentKind);
   const parts = args.trim().split(/\s+/).filter(Boolean);
   const sub = parts[0] ?? '';
   const rest = parts.slice(1).join(' ').trim();
@@ -50,7 +56,7 @@ export async function handleResume(args: string, ctx: CommandContext): Promise<v
     return;
   }
 
-  if (agentKind === 'codex') {
+  if (spec.historySource === 'codex-thread-list') {
     const identity = ctx.sessionCatalogIdentity;
     const entry =
       ctx.sessionCatalog && identity
@@ -64,7 +70,7 @@ export async function handleResume(args: string, ctx: CommandContext): Promise<v
           sessionId: nonce,
           preview: thread.name || thread.preview,
           relTime: formatRelTime(thread.updatedAtMs),
-          detail: `Codex · ${thread.source}`,
+          detail: `${agentShortDisplayName(agentKind)} · ${thread.source}`,
           current: thread.threadId === entry?.threadId,
         };
       });
@@ -76,7 +82,7 @@ export async function handleResume(args: string, ctx: CommandContext): Promise<v
       const nonce = issueResumeCandidate(identity, { threadId: entry.threadId });
       await reply(
         ctx,
-        `当前 Codex thread 可恢复。\n使用 \`/resume use ${nonce}\` 恢复（10 分钟内有效）。`,
+        `当前 ${agentShortDisplayName(agentKind)} thread 可恢复。\n使用 \`/resume use ${nonce}\` 恢复（10 分钟内有效）。`,
       );
       return;
     }
@@ -85,7 +91,7 @@ export async function handleResume(args: string, ctx: CommandContext): Promise<v
     return;
   }
 
-  if (agentKind === 'pi') {
+  if (spec.historySource === 'catalog') {
     const identity = ctx.sessionCatalogIdentity;
     const entry =
       ctx.sessionCatalog && identity
@@ -95,7 +101,7 @@ export async function handleResume(args: string, ctx: CommandContext): Promise<v
       const nonce = issueResumeCandidate(identity, { sessionId: entry.sessionId });
       await reply(
         ctx,
-        `当前 Pi session 可恢复。\n使用 \`/resume use ${nonce}\` 恢复（10 分钟内有效）。`,
+        `当前 ${agentShortDisplayName(agentKind)} session 可恢复。\n使用 \`/resume use ${nonce}\` 恢复（10 分钟内有效）。`,
       );
       return;
     }
@@ -123,17 +129,19 @@ export async function handleResume(args: string, ctx: CommandContext): Promise<v
 
 async function applyResume(sessionId: string, ctx: CommandContext): Promise<void> {
   const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
+  const spec = agentBackendSpec(agentKind);
   if (ctx.sessionCatalog && ctx.sessionCatalogIdentity) {
+    const identitySpec = agentBackendSpec(ctx.sessionCatalogIdentity.agentId);
     const entry = ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity);
     const resolved = consumeResumeCandidate(sessionId, ctx.sessionCatalogIdentity);
     if (resolved) {
       ctx.controls.btw?.reset(ctx.scope);
       ctx.controls.cancelTimedRun?.(ctx.scope);
       ctx.activeRuns.interrupt(ctx.scope);
-      if (ctx.sessionCatalogIdentity.agentId === 'codex') {
+      if (identitySpec.sessionIdField === 'threadId') {
         ctx.sessionCatalog.upsertActive({
           scopeId: ctx.sessionCatalogIdentity.scopeId,
-          agentId: 'codex',
+          agentId: ctx.sessionCatalogIdentity.agentId,
           cwdRealpath: ctx.sessionCatalogIdentity.cwdRealpath,
           policyFingerprint: ctx.sessionCatalogIdentity.policyFingerprint,
           threadId: resolved.threadId!,
@@ -146,12 +154,14 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
           policyFingerprint: ctx.sessionCatalogIdentity.policyFingerprint,
           sessionId: resolved.sessionId!,
         });
-        ctx.sessions.set(ctx.scope, resolved.sessionId!, ctx.sessionCatalogIdentity.cwdRealpath);
+        if (identitySpec.legacySessionStore) {
+          ctx.sessions.set(ctx.scope, resolved.sessionId!, ctx.sessionCatalogIdentity.cwdRealpath);
+        }
       }
       await reply(ctx, RESUME_APPLIED_REPLY);
       return;
     }
-    if (ctx.sessionCatalogIdentity.agentId === 'codex') {
+    if (identitySpec.sessionIdField === 'threadId') {
       await reply(ctx, '当前上下文不可恢复这个会话，请先用 `/resume` 重新生成恢复候选。');
       return;
     }
@@ -163,15 +173,19 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     ctx.controls.btw?.reset(ctx.scope);
     ctx.controls.cancelTimedRun?.(ctx.scope);
     ctx.activeRuns.interrupt(ctx.scope);
-    if (ctx.sessionCatalogIdentity.agentId === 'claude') {
+    if (identitySpec.legacySessionStore) {
       ctx.sessions.set(ctx.scope, sessionId, ctx.sessionCatalogIdentity.cwdRealpath);
     }
     await reply(ctx, RESUME_APPLIED_REPLY);
     return;
   }
 
-  if (agentKind === 'codex') {
-    await reply(ctx, '当前上下文没有可恢复的 Codex thread，请先在当前工作区完成一次运行。');
+  if (spec.sessionIdField === 'threadId') {
+    await reply(ctx, `当前上下文没有可恢复的 ${agentShortDisplayName(agentKind)} thread，请先在当前工作区完成一次运行。`);
+    return;
+  }
+  if (!spec.legacySessionStore) {
+    await reply(ctx, `当前上下文没有可恢复的 ${agentShortDisplayName(agentKind)} session，请先在当前工作区完成一次运行。`);
     return;
   }
 
@@ -213,13 +227,14 @@ function consumeResumeCandidate(
   const candidate = resumeCandidates.get(nonce);
   if (!candidate) return undefined;
   resumeCandidates.delete(nonce);
+  const field = sessionIdFieldForAgent(identity.agentId);
   if (
     candidate.scopeId !== identity.scopeId ||
     candidate.agentId !== identity.agentId ||
     candidate.cwdRealpath !== identity.cwdRealpath ||
     candidate.policyFingerprint !== identity.policyFingerprint ||
-    (identity.agentId !== 'codex' && !candidate.sessionId) ||
-    (identity.agentId === 'codex' && !candidate.threadId)
+    (field === 'sessionId' && !candidate.sessionId) ||
+    (field === 'threadId' && !candidate.threadId)
   ) {
     return undefined;
   }

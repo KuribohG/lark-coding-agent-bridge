@@ -3,6 +3,7 @@ import { dirname } from 'node:path';
 import * as lockfile from 'proper-lockfile';
 import type { AppPaths } from '../config/app-paths';
 import type { AgentKind } from '../config/profile-schema';
+import { isAgentKind } from '../agent/backend-spec';
 
 export type RuntimeLockKind = 'profile' | 'app';
 
@@ -178,7 +179,7 @@ function isRuntimeLockMeta(value: unknown): value is RuntimeLockMeta {
     (meta.kind === 'profile' || meta.kind === 'app') &&
     typeof meta.target === 'string' &&
     typeof meta.profile === 'string' &&
-    (meta.agentKind === 'claude' || meta.agentKind === 'codex' || meta.agentKind === 'pi') &&
+    isAgentKind(meta.agentKind) &&
     typeof meta.pid === 'number' &&
     typeof meta.startedAt === 'string' &&
     (meta.appId === undefined || typeof meta.appId === 'string')

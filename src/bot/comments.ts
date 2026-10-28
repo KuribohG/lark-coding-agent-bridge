@@ -248,7 +248,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
           })
         : undefined;
       const sessionId =
-        canResumeAgentSession && capability.agentId === 'claude'
+        canResumeAgentSession && capability.legacySessionStore
           ? sessions.resumeFor(docSessionScopeId, cwdRealpath) ??
             sessions.resumeFor(legacyDocSessionScopeId, cwdRealpath)
           : capability.sessionIdField === 'sessionId'

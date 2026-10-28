@@ -86,6 +86,26 @@ describe('static architecture contracts', () => {
     }
   });
 
+  it('routes shared agent behavior through the backend descriptor', () => {
+    const descriptorConsumers = [
+      'src/commands/recent.ts',
+      'src/commands/resume.ts',
+      'src/commands/status.ts',
+      'src/agent/model-service.ts',
+      'src/agent/model-settings.ts',
+      'src/model-provider/provider.ts',
+      'src/runtime/background-model.ts',
+      'src/runtime/locks.ts',
+      'src/runtime/registry.ts',
+      'src/session/catalog.ts',
+    ];
+    for (const file of descriptorConsumers) {
+      expect(read(file), file).not.toMatch(
+        /(?:agentKind|agentId|kind)\s*===\s*['"](?:claude|codex|pi)['"]/,
+      );
+    }
+  });
+
   it('does not keep legacy open access semantics in config helpers', () => {
     const schema = read('src/config/schema.ts');
     expect(schema).not.toMatch(/legacy-open|access\.semantics/);

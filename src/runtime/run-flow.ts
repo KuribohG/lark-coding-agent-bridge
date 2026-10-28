@@ -20,6 +20,8 @@ import { RunRejected, type RunRejectedCode } from '../runtime/errors';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
+import { agentBackendSpec } from '../agent/backend-spec';
+import { agentStateDirectory } from '../agent/capability';
 
 export interface StartRunFlowInput {
   deadlineAt?: number;
@@ -109,11 +111,9 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     capability: input.capability,
     profileConfig: input.profileConfig,
     now: input.now,
-    agentStateDir: input.profileConfig.agentKind === 'pi'
-      ? input.profileConfig.pi?.agentDir
-      : input.profileConfig.agentKind === 'claude'
-        ? input.profileConfig.claude?.configDir
-        : undefined,
+    agentStateDir: agentBackendSpec(input.profileConfig.agentKind).includeStateDirectoryInPolicy
+      ? agentStateDirectory(input.profileConfig)
+      : undefined,
     codexHome: input.profileConfig.codex?.codexHome,
     inheritCodexHome: input.profileConfig.codex?.inheritCodexHome,
   });

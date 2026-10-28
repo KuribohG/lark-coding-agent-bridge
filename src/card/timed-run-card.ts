@@ -1,5 +1,6 @@
 import type { ModelEnvironment } from '../agent/model-settings';
 import { ULTRA_EFFORT, timedRunEfforts } from '../agent/model-settings';
+import { agentBackendSpec } from '../agent/backend-spec';
 import type { AgentKind } from '../config/profile-schema';
 import { formatRunTime } from '../runtime/run-deadline';
 import type { TimedRun } from '../runtime/timed-runs';
@@ -40,7 +41,9 @@ export function timedRunForm(scope: string, agentKind: AgentKind, environment: M
         { tag: 'select_static', name: 'effort', initial_option: defaults.reasoningEffort ?? 'default', options:
           ['default', ...timedRunEfforts(agentKind)].map((value) => ({
             text: { tag: 'plain_text', content: value === 'default' ? '沿用当前对话设置'
-              : value === ULTRA_EFFORT && agentKind === 'claude' ? 'ultra（Claude ultracode：xhigh + 多 agent 编排）' : value }, value,
+              : value === ULTRA_EFFORT && agentBackendSpec(agentKind).timedRunReasoningEfforts?.includes(ULTRA_EFFORT)
+                ? 'ultra（Claude ultracode：xhigh + 多 agent 编排）'
+                : value }, value,
           })),
         },
         { tag: 'button', name: 'preview', type: 'primary', form_action_type: 'submit',

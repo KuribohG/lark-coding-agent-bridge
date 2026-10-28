@@ -5,22 +5,24 @@ import { codexExecutionCapabilities } from './codex/capabilities';
 import { PiAdapter } from './pi/adapter';
 import { PI_EXECUTION_CAPABILITIES } from './pi/capabilities';
 import {
-  claudeCapability,
-  codexCapability,
-  piCapability,
+  agentLaunchPatch,
+  capabilityForBackend,
   type AgentCapability,
 } from './capability';
+import {
+  AGENT_BACKEND_SPECS,
+  AGENT_KINDS,
+  agentDisplayName,
+  isAgentKind,
+  type AgentBackendSpec,
+} from './backend-spec';
 import type { AgentAdapter, AgentExecutionCapabilities } from './types';
 import type { AgentSystemPrompt } from './system-prompt';
 import type { AgentExecutionProfile, AgentKind } from '../config/profile-schema';
 import { accessToCodexSandbox } from '../config/permissions';
 import { buildAgentEnvironment } from './launch-env';
 
-export interface AgentBackend {
-  readonly kind: AgentKind;
-  readonly displayName: string;
-  readonly defaultCommand: string;
-  readonly commandEnv: string;
+export interface AgentBackend extends AgentBackendSpec {
   capability(profile: Pick<AgentExecutionProfile, 'agentKind' | 'permissions'>): AgentCapability;
   executionCapabilities(
     profile: Pick<AgentExecutionProfile, 'agentKind' | 'permissions'>,
@@ -39,14 +41,11 @@ export interface CreateAgentAdapterInput {
 
 const BACKENDS: Record<AgentKind, AgentBackend> = {
   claude: {
-    kind: 'claude',
-    displayName: 'Claude Code',
-    defaultCommand: 'claude',
-    commandEnv: 'LARK_CHANNEL_CLAUDE_BIN',
-    capability: claudeCapability,
+    ...AGENT_BACKEND_SPECS.claude,
+    capability: (profile) => capabilityForBackend('claude', profile),
     executionCapabilities: () => CLAUDE_EXECUTION_CAPABILITIES,
     existingProfile: (profile) => profile.claude ? { claude: profile.claude } : {},
-    launchPatch: (binaryPath) => ({ claude: { binaryPath } }),
+    launchPatch: (binaryPath) => agentLaunchPatch('claude', binaryPath),
     createAdapter: ({ profile, env, systemPrompt }) => new ClaudeAdapter({
       binary: profile.claude?.binaryPath,
       configDir: profile.claude?.configDir,
@@ -55,14 +54,11 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
     }),
   },
   codex: {
-    kind: 'codex',
-    displayName: 'Codex CLI',
-    defaultCommand: 'codex',
-    commandEnv: 'LARK_CHANNEL_CODEX_BIN',
-    capability: codexCapability,
+    ...AGENT_BACKEND_SPECS.codex,
+    capability: (profile) => capabilityForBackend('codex', profile),
     executionCapabilities: () => codexExecutionCapabilities(),
     existingProfile: (profile) => profile.codex ? { codex: profile.codex } : {},
-    launchPatch: (binaryPath) => ({ codex: { binaryPath } }),
+    launchPatch: (binaryPath) => agentLaunchPatch('codex', binaryPath),
     createAdapter: ({ profile, profileDir, env, systemPrompt }) => {
       const codex = profile.codex;
       if (!codex?.binaryPath) throw new Error('codex profile requires codex.binaryPath');
@@ -81,14 +77,11 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
     },
   },
   pi: {
-    kind: 'pi',
-    displayName: 'Pi Coding Agent',
-    defaultCommand: 'pi',
-    commandEnv: 'LARK_CHANNEL_PI_BIN',
-    capability: piCapability,
+    ...AGENT_BACKEND_SPECS.pi,
+    capability: (profile) => capabilityForBackend('pi', profile),
     executionCapabilities: () => PI_EXECUTION_CAPABILITIES,
     existingProfile: (profile) => profile.pi ? { pi: profile.pi } : {},
-    launchPatch: (binaryPath) => ({ pi: { binaryPath } }),
+    launchPatch: (binaryPath) => agentLaunchPatch('pi', binaryPath),
     createAdapter: ({ profile, profileDir, env, systemPrompt }) => {
       const pi = profile.pi;
       if (!pi?.binaryPath) throw new Error('pi profile requires pi.binaryPath');
@@ -103,7 +96,7 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
   },
 };
 
-export const AGENT_KINDS = Object.freeze(Object.keys(BACKENDS) as AgentKind[]);
+export { AGENT_KINDS };
 export const AGENT_OPTIONS = Object.freeze(AGENT_KINDS.map((kind) => ({
   value: kind,
   label: BACKENDS[kind].displayName,
@@ -113,9 +106,7 @@ export function backendFor(kind: AgentKind): AgentBackend {
   return BACKENDS[kind];
 }
 
-export function isAgentKind(value: string): value is AgentKind {
-  return Object.prototype.hasOwnProperty.call(BACKENDS, value);
-}
+export { agentDisplayName, isAgentKind };
 
 export function capabilityForProfile(
   profile: Pick<AgentExecutionProfile, 'agentKind' | 'permissions'>,
@@ -127,10 +118,6 @@ export function executionCapabilitiesForProfile(
   profile: Pick<AgentExecutionProfile, 'agentKind' | 'permissions'>,
 ): AgentExecutionCapabilities {
   return backendFor(profile.agentKind).executionCapabilities(profile);
-}
-
-export function agentDisplayName(kind: AgentKind): string {
-  return backendFor(kind).displayName;
 }
 
 export function detectedAgentCandidates(): Array<{

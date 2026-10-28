@@ -4,9 +4,10 @@ import { dirname } from 'node:path';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
 import {
+  isAgentKind,
   sessionIdFieldForAgent,
   type AgentCapabilityId,
-} from '../agent/capability';
+} from '../agent/backend-spec';
 
 export type CatalogAgentId = AgentCapabilityId;
 export type SessionCatalogStatus = 'active' | 'archived';
@@ -248,7 +249,7 @@ function normalizeEntry(input: unknown): SessionCatalogEntry | undefined {
   if (
     typeof raw.key !== 'string' ||
     typeof raw.scopeId !== 'string' ||
-    (raw.agentId !== 'claude' && raw.agentId !== 'codex' && raw.agentId !== 'pi') ||
+    !isAgentKind(raw.agentId) ||
     typeof raw.cwdRealpath !== 'string' ||
     typeof raw.policyFingerprint !== 'string' ||
     (raw.status !== 'active' && raw.status !== 'archived') ||

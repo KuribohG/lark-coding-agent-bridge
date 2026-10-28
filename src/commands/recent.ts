@@ -2,6 +2,7 @@ import { basename } from 'node:path';
 import type { SessionCatalogEntry } from '../session/catalog';
 import { formatRelTime } from '../session/history';
 import { canRunAdminCommand } from '../policy/access';
+import { agentDisplayName } from '../agent/backend-spec';
 import type { CommandContext } from './types';
 import { reply } from './presentation';
 
@@ -44,7 +45,7 @@ export async function handleRecent(args: string, ctx: CommandContext): Promise<v
     const identity = entry.threadId ?? entry.sessionId ?? entry.key;
     const summary = formatSummary(entry.lastSummary);
     lines.push(
-      `${index + 1}. ${agentLabel(entry.agentId)} · ${formatRelTime(activityAt(entry))}`
+      `${index + 1}. ${agentDisplayName(entry.agentId)} · ${formatRelTime(activityAt(entry))}`
         + ` · ${scopeLabel(entry.scopeId, ctx)}`,
       `   \`${identity.slice(0, 8)}\`${summary ? ` · ${summary}` : ` · ${basename(entry.cwdRealpath)}`}`,
     );
@@ -64,12 +65,6 @@ function uniqueRecent(entries: SessionCatalogEntry[]): SessionCatalogEntry[] {
 
 function activityAt(entry: SessionCatalogEntry): number {
   return entry.completedAt ?? entry.updatedAt;
-}
-
-function agentLabel(agentId: SessionCatalogEntry['agentId']): string {
-  if (agentId === 'codex') return 'Codex';
-  if (agentId === 'claude') return 'Claude';
-  return 'Pi';
 }
 
 function scopeLabel(scopeId: string, ctx: CommandContext): string {

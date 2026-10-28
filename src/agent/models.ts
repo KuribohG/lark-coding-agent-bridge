@@ -1,4 +1,5 @@
 import type { AgentKind } from '../config/profile-schema';
+import { agentBackendSpec, type AgentModelCatalog } from './backend-spec';
 
 /**
  * Sentinel selection meaning "don't pass `--model`; let the agent CLI /
@@ -52,9 +53,15 @@ const PI_MODELS: ModelOption[] = [
   { value: 'openai-codex/gpt-6.1-sol', label: 'OpenAI 官方 GPT-6.1 Sol' },
 ];
 
+const MODEL_CATALOGS: Record<AgentModelCatalog, ModelOption[]> = {
+  claude: CLAUDE_MODELS,
+  codex: CODEX_MODELS,
+  pi: PI_MODELS,
+};
+
 /** The model picker options for a profile's agent kind. */
 export function supportedModels(agentKind: AgentKind): ModelOption[] {
-  return agentKind === 'codex' ? CODEX_MODELS : agentKind === 'pi' ? PI_MODELS : CLAUDE_MODELS;
+  return MODEL_CATALOGS[agentBackendSpec(agentKind).modelCatalog];
 }
 
 /** True when the selection means "use the agent default" (no `--model`). */

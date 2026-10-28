@@ -13,8 +13,14 @@ import {
   type PermissionConfig,
   type PermissionSource,
 } from './permissions';
+import {
+  AGENT_KINDS,
+  agentBackendSpec,
+  isAgentKind,
+  type AgentKind,
+} from '../agent/backend-spec';
 
-export type AgentKind = 'claude' | 'codex' | 'pi';
+export type { AgentKind };
 export type SandboxMode = CodexSandboxMode;
 export type { AccessMode, PermissionConfig, PermissionSource };
 export type AgentLaunchEnvironment = Record<string, string>;
@@ -310,15 +316,15 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   if (raw.schemaVersion !== 2) {
     throw new Error('profile schemaVersion must be 2');
   }
-  if (raw.agentKind !== 'claude' && raw.agentKind !== 'codex' && raw.agentKind !== 'pi') {
-    throw new Error('agentKind must be claude, codex, or pi');
+  if (!isAgentKind(raw.agentKind)) {
+    throw new Error(`agentKind must be one of: ${AGENT_KINDS.join(', ')}`);
   }
   const accounts = normalizeAccounts(raw.accounts);
-  if (raw.agentKind === 'codex' && !raw.codex) {
-    throw new Error('codex profile requires codex configuration');
-  }
-  if (raw.agentKind === 'pi' && !raw.pi) {
-    throw new Error('pi profile requires pi configuration');
+  const backend = agentBackendSpec(raw.agentKind);
+  if (backend.launchRequired && !raw[raw.agentKind]) {
+    throw new Error(
+      `${raw.agentKind} profile requires ${raw.agentKind} configuration`,
+    );
   }
 
   const preferences = normalizePreferences(raw.preferences);

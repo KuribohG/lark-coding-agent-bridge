@@ -8,12 +8,14 @@ import { hasStructuredLarkCliUserAuth } from '../lark-cli/identity-policy';
 import type { CommandContext } from './types';
 import { commandProfilePaths, effectiveWorkspaceCwd } from './context';
 import { commandReplyOptions } from './presentation';
+import { agentBackendSpec } from '../agent/backend-spec';
 
 export function runtimeAccessStatus(
   profileConfig: ProfileConfig,
   agentKind: AgentKind = profileConfig.agentKind,
 ): { label: string; value: string } {
-  if (agentKind === 'claude') {
+  const spec = agentBackendSpec(agentKind);
+  if (spec.permissionView === 'permission') {
     return {
       label: 'permission',
       value: accessToClaudePermissionMode(
@@ -22,7 +24,7 @@ export function runtimeAccessStatus(
       ),
     };
   }
-  if (agentKind === 'pi') {
+  if (spec.permissionView === 'tools') {
     return {
       label: 'tools',
       value: profileConfig.permissions.defaultAccess === 'read-only'
@@ -75,7 +77,8 @@ export async function handleStatus(_args: string, ctx: CommandContext): Promise<
   const cwd = effectiveWorkspaceCwd(ctx);
   const sess = ctx.sessions.getRaw(ctx.scope);
   const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
-  const isCodex = agentKind === 'codex';
+  const spec = agentBackendSpec(agentKind);
+  const usesThread = spec.sessionIdField === 'threadId';
   const catalogEntry =
     ctx.sessionCatalog && ctx.sessionCatalogIdentity
       ? ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity)
@@ -84,11 +87,11 @@ export async function handleStatus(_args: string, ctx: CommandContext): Promise<
     profileName: ctx.controls.profile,
     modelStatus: await modelStatus(ctx),
     cwd,
-    sessionId: isCodex
+    sessionId: usesThread
       ? catalogEntry?.threadId
-      : catalogEntry?.sessionId ?? (agentKind === 'claude' ? sess?.sessionId : undefined),
-    emptySessionText: isCodex ? '(未建立)' : undefined,
-    sessionStale: !isCodex && Boolean(cwd && sess && sess.cwd !== cwd),
+      : catalogEntry?.sessionId ?? (spec.legacySessionStore ? sess?.sessionId : undefined),
+    emptySessionText: usesThread ? '(未建立)' : undefined,
+    sessionStale: spec.legacySessionStore && Boolean(cwd && sess && sess.cwd !== cwd),
     agentName: ctx.agent.displayName,
     runtimeAccess: runtimeAccessStatus(ctx.controls.profileConfig, agentKind),
     larkCliStatus: await larkCliStatus(ctx),

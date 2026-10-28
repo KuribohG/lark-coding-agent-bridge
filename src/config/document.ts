@@ -17,6 +17,11 @@ import { normalizeFileLinks } from './file-links';
 import type { RunPreferences } from './schema';
 import { parseEffort } from '../agent/model-settings';
 import { parseWorkItemConcurrency } from '../work-items/concurrency';
+import {
+  AGENT_KINDS,
+  agentBackendSpec,
+  isAgentKind,
+} from '../agent/backend-spec';
 
 export type Table = Record<string, any>;
 export interface ConfigDocument extends Table {
@@ -35,13 +40,6 @@ export const RUN_KEYS = {
 const PROFILE_KEYS = ['agent', 'run', 'mode', 'accounts', 'secrets', 'access', 'workspaces', 'permissions', 'attachments', 'meeting', 'larkCli', 'launch'];
 const LARK_KEYS = ['reply_mode', 'show_tools', 'progress', 'file_links'];
 const WEB_KEYS = ['show_tools', 'show_reasoning'];
-const COMMON_LAUNCH_KEYS = ['binaryPath', 'env', 'realpath', 'version', 'sha256', 'owner', 'mode'];
-const LAUNCH_KEYS: Record<AgentKind, readonly string[]> = {
-  claude: [...COMMON_LAUNCH_KEYS, 'configDir'],
-  codex: [...COMMON_LAUNCH_KEYS, 'transport', 'codexHome', 'inheritCodexHome', 'ignoreUserConfig', 'ignoreRules'],
-  pi: [...COMMON_LAUNCH_KEYS, 'agentDir'],
-};
-
 function object(value: unknown, path: string): Table {
   if (!value || Object.getPrototypeOf(value) !== Object.prototype) throw new Error(`${path}: expected a table`);
   return value as Table;
@@ -82,7 +80,9 @@ function checkDisplay(value: unknown, channel: string, path: string): void {
   }
 }
 function checkLaunch(value: unknown, agent: string, path: string): void {
-  const launch = keys(value, LAUNCH_KEYS[agent as AgentKind], path);
+  if (!isAgentKind(agent)) throw new Error(`${path}: unsupported agent ${agent}`);
+  const spec = agentBackendSpec(agent);
+  const launch = keys(value, spec.launchKeys, path);
   for (const [k, v] of Object.entries(launch)) {
     if (k === 'env') {
       const env = object(v, `${path}.env`);
@@ -185,7 +185,9 @@ function validateDocument(input: unknown): ConfigDocument {
   for (const [name, value] of Object.entries(profiles)) {
     if (!name.trim() || /[\u0000-\u001f\s/\\:*?"<>|]/.test(name) || ['.', '..', '__proto__', 'prototype', 'constructor'].includes(name)) throw new Error('invalid profile name');
     const p = keys(value, PROFILE_KEYS, `profiles.${name}`);
-    if (!['codex', 'claude', 'pi'].includes(p.agent)) throw new Error(`profiles.${name}.agent: expected codex, claude, or pi`);
+    if (!isAgentKind(p.agent)) {
+      throw new Error(`profiles.${name}.agent: expected one of ${AGENT_KINDS.join(', ')}`);
+    }
     if (p.run !== undefined) checkRun(p.run, `profiles.${name}.run`, p.agent);
     if (p.launch !== undefined) checkLaunch(p.launch, p.agent, `profiles.${name}.launch`);
     checkProfile(p, `profiles.${name}`);
@@ -195,9 +197,10 @@ function validateDocument(input: unknown): ConfigDocument {
     keys(doc.defaults, ['run'], 'defaults');
     if (doc.defaults.run !== undefined) checkRun(doc.defaults.run, 'defaults.run');
   }
-  if (doc.agents !== undefined) for (const [agent, value] of Object.entries(keys(doc.agents, ['codex', 'claude', 'pi'], 'agents'))) {
+  if (doc.agents !== undefined) for (const [agent, value] of Object.entries(keys(doc.agents, AGENT_KINDS, 'agents'))) {
     const layer = keys(value, ['run', 'launch'], `agents.${agent}`);
-    if (layer.run !== undefined) checkRun(layer.run, `agents.${agent}.run`, agent as AgentKind);
+    if (!isAgentKind(agent)) throw new Error(`agents.${agent}: unsupported agent`);
+    if (layer.run !== undefined) checkRun(layer.run, `agents.${agent}.run`, agent);
     if (layer.launch !== undefined) checkLaunch(layer.launch, agent, `agents.${agent}.launch`);
   }
   if (doc.channels !== undefined) for (const [channel, value] of Object.entries(keys(doc.channels, ['lark', 'web'], 'channels'))) {
@@ -371,7 +374,7 @@ function profileDocument(p: ProfileConfig): Table {
   const out: Table = { agent: p.agentKind, run: {} };
   for (const [key, internal] of Object.entries(RUN_KEYS)) if (p.preferences[internal as keyof RunPreferences] !== undefined) out.run[key] = p.preferences[internal as keyof RunPreferences];
   for (const key of PROFILE_KEYS) if (!['agent', 'run', 'launch'].includes(key) && (p as unknown as Table)[key] !== undefined) out[key] = (p as unknown as Table)[key];
-  const launch = p.agentKind === 'codex' ? p.codex : p.agentKind === 'pi' ? p.pi : p.claude;
+  const launch = p[p.agentKind];
   if (launch) out.launch = launch;
   return out;
 }

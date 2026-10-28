@@ -3,6 +3,7 @@ import { validateModelId } from '../agent/models';
 import type { AgentKind } from '../config/profile-schema';
 import type { ModelServiceConfig } from '../model-service/config';
 import { loadModelService } from '../model-service/service';
+import { agentBackendSpec } from '../agent/backend-spec';
 
 export interface PiProviderRegistration {
   providerId: string;
@@ -87,7 +88,7 @@ class ResponsesModelProvider extends ModelProvider {
   }
 
   supports(agentKind: AgentKind): boolean {
-    return agentKind === 'pi' || agentKind === 'codex';
+    return agentBackendSpec(agentKind).supportsResponsesProvider;
   }
 
   override bareModels(agentKind: AgentKind): readonly string[] {
@@ -113,7 +114,8 @@ class ResponsesModelProvider extends ModelProvider {
       headersEnv[name] = envName;
     }
 
-    if (agentKind === 'pi') {
+    const binding = agentBackendSpec(agentKind).responsesBinding;
+    if (binding === 'pi-extension') {
       const providerId = `lark_${this.id.replace(/[^a-zA-Z0-9_]/g, '_')}_${suffix.toLowerCase()}`;
       return {
         id: this.id,
@@ -130,6 +132,9 @@ class ResponsesModelProvider extends ModelProvider {
           model: providerModel(modelId),
         },
       };
+    }
+    if (binding !== 'codex-config') {
+      throw new Error(`${agentKind} agent 没有 Responses provider 绑定方式`);
     }
 
     const providerId = `lark_${this.id.replace(/[^a-zA-Z0-9_]/g, '_')}_${suffix.toLowerCase()}`;

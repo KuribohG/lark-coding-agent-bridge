@@ -1,18 +1,22 @@
 import type { AccessMode } from '../config/permissions';
-import type { ProfileConfig } from '../config/profile-schema';
+import type { AgentExecutionProfile, ProfileConfig } from '../config/profile-schema';
+import {
+  agentBackendSpec,
+  type AgentCapabilityId,
+  type AgentSessionIdField,
+} from './backend-spec';
 
-export type AgentCapabilityId = 'claude' | 'codex' | 'pi';
-export type AgentSessionKind = 'claude-session' | 'codex-thread' | 'pi-session';
-export type PromptInjectionMode = 'append-system-prompt' | 'stdin-prefix';
+export type { AgentSessionKind, PromptInjectionMode } from './backend-spec';
+export type { AgentCapabilityId };
 
 export interface AgentCapability {
   agentId: AgentCapabilityId;
-  sessionKind: AgentSessionKind;
+  sessionKind: import('./backend-spec').AgentSessionKind;
   /** AgentRunOptions field used to resume this backend. */
-  sessionIdField: 'sessionId' | 'threadId';
-  imageInput: 'paths' | 'attachments';
+  sessionIdField: AgentSessionIdField;
+  imageInput: import('./backend-spec').AgentImageInput;
   legacySessionStore: boolean;
-  promptInjection: PromptInjectionMode;
+  promptInjection: import('./backend-spec').PromptInjectionMode;
   supportsNativeHistory: boolean;
   permissions: {
     maxAccess: AccessMode;
@@ -20,54 +24,66 @@ export interface AgentCapability {
     supportedAccess?: readonly AccessMode[];
   };
 }
-export function claudeCapability(profile?: Pick<ProfileConfig, 'permissions'>): AgentCapability {
-  const maxAccess = profile?.permissions.maxAccess ?? 'full';
-  return {
-    agentId: 'claude',
-    sessionKind: 'claude-session',
-    sessionIdField: 'sessionId',
-    imageInput: 'attachments',
-    legacySessionStore: true,
-    promptInjection: 'append-system-prompt',
-    supportsNativeHistory: true,
-    permissions: { maxAccess },
-  };
-}
 
-export function codexCapability(profile: Pick<ProfileConfig, 'permissions'>): AgentCapability {
-  const maxAccess = profile.permissions.maxAccess;
+export function capabilityForBackend(
+  kind: AgentCapabilityId,
+  profile?: Pick<ProfileConfig, 'permissions'>,
+): AgentCapability {
+  const spec = agentBackendSpec(kind);
   return {
-    agentId: 'codex',
-    sessionKind: 'codex-thread',
-    sessionIdField: 'threadId',
-    imageInput: 'paths',
-    legacySessionStore: false,
-    promptInjection: 'stdin-prefix',
-    supportsNativeHistory: false,
-    permissions: { maxAccess },
-  };
-}
-
-export function piCapability(profile: Pick<ProfileConfig, 'permissions'>): AgentCapability {
-  return {
-    agentId: 'pi',
-    sessionKind: 'pi-session',
-    sessionIdField: 'sessionId',
-    imageInput: 'attachments',
-    legacySessionStore: false,
-    promptInjection: 'append-system-prompt',
-    supportsNativeHistory: true,
+    agentId: spec.kind,
+    sessionKind: spec.sessionKind,
+    sessionIdField: spec.sessionIdField,
+    imageInput: spec.imageInput,
+    legacySessionStore: spec.legacySessionStore,
+    promptInjection: spec.promptInjection,
+    supportsNativeHistory: spec.supportsNativeHistory,
     permissions: {
-      maxAccess: profile.permissions.maxAccess,
-      // Pi has no portable filesystem sandbox. Read-only is enforced by an
-      // explicit built-in tool allowlist; full access inherits Pi's tools.
-      supportedAccess: ['read-only', 'full'],
+      maxAccess: profile?.permissions.maxAccess ?? 'full',
+      ...(spec.supportedAccess ? { supportedAccess: spec.supportedAccess } : {}),
     },
   };
 }
 
-export function sessionIdFieldForAgent(
-  agentId: AgentCapabilityId,
-): AgentCapability['sessionIdField'] {
-  return agentId === 'codex' ? 'threadId' : 'sessionId';
+export function claudeCapability(profile?: Pick<ProfileConfig, 'permissions'>): AgentCapability {
+  return capabilityForBackend('claude', profile);
+}
+
+export function codexCapability(profile: Pick<ProfileConfig, 'permissions'>): AgentCapability {
+  return capabilityForBackend('codex', profile);
+}
+
+export function piCapability(profile: Pick<ProfileConfig, 'permissions'>): AgentCapability {
+  return capabilityForBackend('pi', profile);
+}
+
+export function agentLaunchPatch(
+  kind: AgentCapabilityId,
+  binaryPath: string,
+): Pick<AgentExecutionProfile, 'claude' | 'codex' | 'pi'> {
+  return { [kind]: { binaryPath } } as Pick<
+    AgentExecutionProfile,
+    'claude' | 'codex' | 'pi'
+  >;
+}
+
+export function withAgentBinary(
+  profile: AgentExecutionProfile,
+  kind: AgentCapabilityId,
+  binaryPath: string,
+): AgentExecutionProfile {
+  const current = profile[kind] as unknown as Record<string, unknown> | undefined;
+  return {
+    ...profile,
+    [kind]: { ...current, binaryPath },
+  } as AgentExecutionProfile;
+}
+
+export function agentStateDirectory(
+  profile: Pick<ProfileConfig, 'agentKind' | 'claude' | 'codex' | 'pi'>,
+): string | undefined {
+  const spec = agentBackendSpec(profile.agentKind);
+  const launch = profile[profile.agentKind] as unknown as Record<string, unknown> | undefined;
+  const value = launch?.[spec.stateDirectory.field];
+  return typeof value === 'string' ? value : undefined;
 }

@@ -20,11 +20,14 @@ flowchart TD
 
 ## Capabilities and events
 
-`AgentExecutionCapabilities` in `src/agent/types.ts` describes execution semantics,
-separately from the session identity and access policy in `src/agent/capability.ts`.
-The adapter declares its capabilities and attaches them to every run. The retry
-wrapper retains the current attempt's declaration. Profile-time discovery uses
-the same declarations in `src/agent/{codex,claude}/capabilities.ts`.
+`AgentExecutionCapabilities` in `src/agent/types.ts` describes execution semantics.
+`src/agent/backend-spec.ts` is the single static descriptor for launch fields,
+state-directory environment names, session identity/history, permission display,
+model catalogs and provider support. `src/agent/capability.ts` combines that
+descriptor with profile-specific permission ceilings. The adapter declares its
+execution capabilities and attaches them to every run. The retry wrapper retains
+the current attempt's declaration. Profile-time discovery uses the same
+declarations in `src/agent/{codex,claude}/capabilities.ts`.
 
 | Contract | Codex app-server | Claude Code |
 | --- | --- | --- |

@@ -4,6 +4,7 @@ import { resolveAppPaths } from '../config/app-paths';
 import { loadRootConfig } from '../config/profile-store';
 import type { TenantBrand } from '../config/schema';
 import type { AgentKind } from '../config/profile-schema';
+import { isAgentKind } from '../agent/backend-spec';
 import { validateAppCredentials } from '../utils/feishu-auth';
 import { log } from '../core/logger';
 import { HttpError } from './http';
@@ -152,11 +153,7 @@ export async function finishQrRegistration(
   if (s.status === 'error') throw new HttpError(400, s.error ?? '扫码创建失败');
   if (!s.app) throw new HttpError(409, '尚未完成扫码');
 
-  const agentKind: AgentKind = fv.agentKind === 'codex'
-    ? 'codex'
-    : fv.agentKind === 'pi'
-      ? 'pi'
-      : 'claude';
+  const agentKind: AgentKind = isAgentKind(fv.agentKind) ? fv.agentKind : 'claude';
   const profile = String(fv.profile ?? '').trim() || s.suggestedProfile || agentKind;
   const created = await writeNewProfile(
     { profile, agentKind, appId: s.app.appId, appSecret: s.app.appSecret, tenant: s.app.tenant },

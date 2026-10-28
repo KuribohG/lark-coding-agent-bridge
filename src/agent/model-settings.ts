@@ -5,14 +5,10 @@ import { parse } from 'smol-toml';
 import type { AgentKind, ProfileConfig } from '../config/profile-schema';
 import { log } from '../core/logger';
 import { supportedModels, validateModelId, type ModelOption } from './models';
+import { agentBackendSpec } from './backend-spec';
 
 export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
-const AGENT_EFFORTS: Record<AgentKind, readonly ReasoningEffort[]> = {
-  codex: REASONING_EFFORTS,
-  claude: ['low', 'medium', 'high', 'xhigh', 'max'],
-  pi: ['minimal', 'low', 'medium', 'high', 'xhigh'],
-};
 /** Strongest tier. Claude maps it to ultracode (xhigh + standing workflow orchestration), offered only to deadline-bounded runs. */
 export const ULTRA_EFFORT = 'ultra';
 export interface ReasoningEffortOption {
@@ -42,11 +38,14 @@ export function parseEffort(value: unknown, agentKind: AgentKind, opts: { timedR
 }
 
 export function availableEfforts(agentKind: AgentKind, model?: ModelOption): string[] {
-  return model?.reasoningEfforts ?? [...AGENT_EFFORTS[agentKind]];
+  return model?.reasoningEfforts ?? [...agentBackendSpec(agentKind).reasoningEfforts];
 }
 
 export function timedRunEfforts(agentKind: AgentKind): string[] {
-  return agentKind === 'claude' ? [...AGENT_EFFORTS.claude, ULTRA_EFFORT] : availableEfforts(agentKind);
+  const spec = agentBackendSpec(agentKind);
+  return spec.timedRunReasoningEfforts
+    ? [...spec.timedRunReasoningEfforts]
+    : availableEfforts(agentKind);
 }
 
 /** Shared selector options for every chat-facing reasoning-effort setting. */
@@ -117,10 +116,11 @@ export async function readModelEnvironment(profile: ProfileConfig, profileDir: s
 
 async function loadModelEnvironment(profile: ProfileConfig, profileDir: string): Promise<ModelEnvironment> {
   const fallback = { defaults: {}, models: supportedModels(profile.agentKind) };
-  if (profile.agentKind === 'pi') {
+  const source = agentBackendSpec(profile.agentKind).modelEnvironmentSource;
+  if (source === 'catalog') {
     return fallback;
   }
-  if (profile.agentKind === 'claude') {
+  if (source === 'claude-settings') {
     const configDir = profile.claude?.configDir ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
     const text = await readOptional(join(configDir, 'settings.json'));
     const settings = text ? JSON.parse(text) : {};
