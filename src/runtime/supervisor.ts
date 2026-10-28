@@ -29,6 +29,7 @@ import {
   type AcquiredRuntimeLock,
 } from './locks';
 import { resolveProfileRuntime } from './profile-runtime';
+import { readConfigRevision } from '../config/revision';
 import {
   register,
   unregister,
@@ -292,6 +293,8 @@ class ManagedProfile {
         log.warn('supervisor', 'old-disconnect-failed', { profile: this.profile, err: String(err) });
       }
       this.bridge = nextBridge;
+      const startupConfigRevision = await readConfigRevision(this.configPath)
+        .catch(() => undefined);
       await updateEntry(
         this.entry.id,
         {
@@ -299,6 +302,7 @@ class ManagedProfile {
           tenant: next.accounts.app.tenant,
           configPath: this.configPath,
           botName: nextBridge.channel.botIdentity?.name,
+          ...(startupConfigRevision ? { startupConfigRevision } : {}),
         },
         this.appPaths.userRegistryFile,
       ).catch((err) => log.warn('registry', 'update-failed', { err: String(err) }));

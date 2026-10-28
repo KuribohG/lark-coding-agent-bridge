@@ -5,6 +5,7 @@ import type { SpawnedProcessByStdio } from '../../platform/spawn';
 import { spawnWithDeadline } from '../deadline';
 import type { AgentEvent, AgentRun, AgentRunOptions } from '../types';
 import { CodexJsonlTranslator } from './jsonl';
+import { getBuildInfo } from '../../build-info';
 
 type ObjectValue = Record<string, unknown>;
 const object = (v: unknown): ObjectValue => v !== null && typeof v === 'object' ? v as ObjectValue : {};
@@ -158,7 +159,9 @@ export function startAppServerRun(input: {
   });
 
   const ready = (async () => {
-    await request('initialize', { clientInfo: { name: 'lark_channel_bridge', version: '0.7.1' } });
+    await request('initialize', {
+      clientInfo: { name: 'lark_channel_bridge', version: getBuildInfo().version },
+    });
     write({ method: 'initialized' });
     if (stopping) return;
     const thread = await request(opts.threadId ? opts.forkSession ? 'thread/fork' : 'thread/resume' : 'thread/start', {

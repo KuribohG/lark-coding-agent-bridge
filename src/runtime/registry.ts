@@ -18,6 +18,8 @@ import { paths } from '../config/paths';
 import type { AgentKind } from '../config/profile-schema';
 import type { TenantBrand } from '../config/schema';
 import { isAgentKind } from '../agent/backend-spec';
+import { getBuildInfo } from '../build-info';
+import { readConfigRevisionSync } from '../config/revision';
 import { writeFileAtomic } from '../platform/atomic-write';
 import { checkRuntimeLock } from './locks';
 
@@ -44,6 +46,14 @@ export interface ProcessEntry {
   configPath: string;
   startedAt: string;
   version: string;
+  buildCommit?: string;
+  buildTime?: string;
+  buildDirty?: boolean;
+  entrypoint?: string;
+  releasePath?: string;
+  releaseId?: string;
+  nodeVersion?: string;
+  startupConfigRevision?: string;
   /** Bot's display name. Filled in by startChannel after the
    * WS handshake — undefined until the connection is up, or on processes
    * registered by older versions of the bridge. */
@@ -68,7 +78,15 @@ function isValidEntry(e: unknown): e is ProcessEntry {
     isAgentKind(x.agentKind) &&
     typeof x.configPath === 'string' &&
     typeof x.startedAt === 'string' &&
-    typeof x.version === 'string'
+    typeof x.version === 'string' &&
+    optionalString(x.buildCommit) &&
+    optionalString(x.buildTime) &&
+    (x.buildDirty === undefined || typeof x.buildDirty === 'boolean') &&
+    optionalString(x.entrypoint) &&
+    optionalString(x.releasePath) &&
+    optionalString(x.releaseId) &&
+    optionalString(x.nodeVersion) &&
+    optionalString(x.startupConfigRevision)
   );
 }
 
@@ -132,6 +150,8 @@ export interface RegisterArgs {
  */
 export async function register(args: RegisterArgs): Promise<ProcessEntry> {
   const registryFile = args.registryFile ?? paths.processesFile;
+  const build = getBuildInfo();
+  const startupConfigRevision = readConfigRevisionSync(args.configPath);
   const entry: ProcessEntry = {
     id: generateShortId(),
     pid: process.pid,
@@ -142,6 +162,14 @@ export async function register(args: RegisterArgs): Promise<ProcessEntry> {
     configPath: args.configPath,
     startedAt: new Date().toISOString(),
     version: args.version,
+    buildCommit: build.commit,
+    buildTime: build.builtAt,
+    ...(build.dirty !== undefined ? { buildDirty: build.dirty } : {}),
+    entrypoint: build.entrypoint,
+    nodeVersion: build.nodeVersion,
+    ...(build.release ? { releasePath: build.release } : {}),
+    ...(build.releaseId ? { releaseId: build.releaseId } : {}),
+    ...(startupConfigRevision ? { startupConfigRevision } : {}),
   };
   await withRegistryFileLock(registryFile, async () => {
     const { entries: live } = await readForWriteState(registryFile);
@@ -167,7 +195,10 @@ export async function unregister(id: string, registryFile: string = paths.proces
  */
 export async function updateEntry(
   id: string,
-  patch: Partial<Pick<ProcessEntry, 'appId' | 'tenant' | 'configPath' | 'botName'>>,
+  patch: Partial<Pick<
+    ProcessEntry,
+    'appId' | 'tenant' | 'configPath' | 'botName' | 'startupConfigRevision'
+  >>,
   registryFile: string = paths.processesFile,
 ): Promise<void> {
   await withRegistryFileLock(registryFile, async () => {
@@ -181,6 +212,10 @@ export async function updateEntry(
     if (!changed && !pruned) return;
     await writeAtomic(next, registryFile);
   });
+}
+
+function optionalString(value: unknown): boolean {
+  return value === undefined || typeof value === 'string';
 }
 
 /**

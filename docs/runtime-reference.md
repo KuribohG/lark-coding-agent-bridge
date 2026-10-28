@@ -59,6 +59,15 @@ lark-channel-bridge logs [--profile <name>|--web-ui] [--follow] [--lines <count>
 
 Scripts and non-interactive callers must provide `--profile <name>` or `--web-ui` explicitly. Lifecycle commands print the resolved service and profile before acting.
 
+`status --json` is the machine-readable deployment snapshot and does not require
+an explicit service target. It reports the executing package version, embedded
+build commit/time, entry file and release directory, OS service state, every
+registered profile/agent/PID/bot, startup and current config revisions, and
+whether each process matches the invoking build. A config hash difference means
+the file changed after that process registered; it does not by itself prove that
+`/config reload` was not applied. `status --json` does not resolve secrets or
+contact agents/providers.
+
 `start --web-ui` starts the persisted `bridge.autostart_profiles` set. Existing configurations without that field keep the legacy active-profile fallback. The active profile is now only the CLI default and does not implicitly define the supervisor boot set:
 
 ```bash
@@ -100,6 +109,7 @@ lark-channel-bridge status --profile codex
 lark-channel-bridge run [--profile <name>] [--agent claude|codex|pi] [--workspace <path>] [-c <config>]
 lark-channel-bridge config check
 lark-channel-bridge config show --profile <name> --sources
+lark-channel-bridge status --json
 lark-channel-bridge ps
 lark-channel-bridge kill <id|#>
 lark-channel-bridge --help

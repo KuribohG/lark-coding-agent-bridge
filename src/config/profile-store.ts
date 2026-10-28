@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { documentToRoot, parseDocument, rootToDocument, formatDocument, type ConfigDocument } from './document';
 import { diffValues, editToml } from './toml-edit';
 import { chmod, mkdir, readFile, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises';
@@ -18,12 +17,13 @@ import { parseWorkItemConcurrency } from '../work-items/concurrency';
 import { parseStorageConfig } from '../monitoring/sources/storage/config';
 import { normalizeGitLabCi } from '../monitoring/sources/gitlab-ci/config';
 import { normalizeModelServices } from '../model-service/config';
+import { configRevision } from './revision';
+
+export { configRevision } from './revision';
 
 interface DocumentSnapshot { text: string; document: ConfigDocument; root: RootConfig; revision: string }
 const documents = new WeakMap<RootConfig, DocumentSnapshot>();
 export const configDocument = (root: RootConfig) => documents.get(root);
-export const configRevision = (text: string) => createHash('sha256').update(text).digest('hex');
-
 export async function loadRootConfig(path: string): Promise<RootConfig | undefined> {
   try {
     const text = await readFile(path, 'utf8');

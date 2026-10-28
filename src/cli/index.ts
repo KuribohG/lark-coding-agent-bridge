@@ -2,7 +2,6 @@ import { checkConfig, showConfig, setConfig, unsetConfig, migrateToToml } from '
 import { Command } from 'commander';
 import { dirname } from 'node:path';
 import { useBundledLarkCli } from '../platform/bundled-tools';
-import pkg from '../../package.json';
 import { formatAgentPreflightDiagnostic, getAgentPreflightDiagnostic } from '../agent/preflight';
 import { runKillCli, runPs } from './commands/ps';
 import { runLogs } from './commands/logs';
@@ -33,6 +32,7 @@ import { runWeb } from './commands/web';
 import { configureCiWatch, statusCiWatch } from './commands/ci-watch';
 import { checkMonitors, configureMonitors, initMonitors, statusMonitors } from './commands/monitors';
 import { checkService, configureService, listServices, removeService } from './commands/model-service';
+import { formatBuildVersion } from '../build-info';
 
 const program = new Command();
 
@@ -41,7 +41,7 @@ useBundledLarkCli(import.meta.url);
 program
   .name('lark-channel-bridge')
   .description('Bridge Feishu/Lark messenger with local CLI coding agents')
-  .version(pkg.version, '-v, --version');
+  .version(formatBuildVersion(), '-v, --version');
 
 // === process-level commands (work directly on bridge processes) ===
 
@@ -283,9 +283,10 @@ program
   .description('Show OS service status (pid, last exit, log paths)')
   .option('--profile <name>', 'profile name (defaults to active profile)')
   .option('--web-ui', 'target the supervisor service instead of a per-profile one')
-  .action(async (opts: { profile?: string; webUi?: boolean }) => {
+  .option('--json', 'print build, service, runtime and config-revision state as JSON')
+  .action(async (opts: { profile?: string; webUi?: boolean; json?: boolean }) => {
     await runServiceStatus({ profile: opts.profile, webUi: opts.webUi,
-      requireExplicitTarget: requireExplicitServiceTarget });
+      json: opts.json, requireExplicitTarget: requireExplicitServiceTarget });
   });
 
 program

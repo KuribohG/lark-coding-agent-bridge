@@ -1,7 +1,8 @@
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { configRevision } from '../../../src/config/revision';
 import {
   readAndPrune,
   register,
@@ -20,6 +21,7 @@ async function makeRoot(): Promise<string> {
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
 
@@ -45,6 +47,11 @@ describe('process registry', () => {
   it('write path prunes entries with stale profile/app locks and records profile plus agent identity', async () => {
     const root = await makeRoot();
     const registryFile = join(root, 'registry', 'processes.json');
+    const configPath = join(root, 'config.toml');
+    const configText = 'version = 3\n';
+    vi.stubEnv('LARK_BUILD_COMMIT', 'registry-commit');
+    vi.stubEnv('LARK_BUILD_TIME', '2026-10-28T11:00:00.000Z');
+    await writeFile(configPath, configText);
     await writeJson(registryFile, {
       entries: [entry({ id: 'dead', pid: 999_999_999, profileName: 'claude', agentKind: 'claude' })],
     });
@@ -52,7 +59,7 @@ describe('process registry', () => {
     const registered = await register({
       appId: 'cli_test',
       tenant: 'feishu',
-      configPath: join(root, 'config.json'),
+      configPath,
       version: '0.1.32',
       profileName: 'codex-dev',
       agentKind: 'codex',
@@ -68,6 +75,10 @@ describe('process registry', () => {
       profileName: 'codex-dev',
       agentKind: 'codex',
       pid: process.pid,
+      buildCommit: 'registry-commit',
+      buildTime: '2026-10-28T11:00:00.000Z',
+      nodeVersion: process.version,
+      startupConfigRevision: configRevision(configText),
     });
 
     await unregister(registered.id, registryFile);

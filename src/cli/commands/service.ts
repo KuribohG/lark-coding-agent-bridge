@@ -21,6 +21,11 @@ import { checkRuntimeLock, type RuntimeLockMeta } from '../../runtime/locks';
 import { agentDisplayName } from '../../agent/backends';
 import { preFlightChecks } from '../preflight';
 import { stopProcessEntry, type StopProcessEntryResult } from './ps';
+import { formatBuildVersion, getBuildInfo } from '../../build-info';
+import {
+  collectBridgeStatus,
+  type BridgeStatusService,
+} from '../../runtime/status';
 
 export interface ServiceStartOptions {
   profile?: string;
@@ -46,6 +51,10 @@ export interface ServiceProfileOptions {
   webUi?: boolean;
   /** Reject implicit active-profile targeting in scripts/non-interactive use. */
   requireExplicitTarget?: boolean;
+}
+
+export interface ServiceStatusOptions extends ServiceProfileOptions {
+  json?: boolean;
 }
 
 /** CLI args a classic per-profile daemon launches with. Pinning `--profile`
@@ -572,12 +581,21 @@ export async function runServiceRestart(opts: ServiceProfileOptions = {}): Promi
     webUi ? '--web-ui' : `--profile ${waitProfile}`);
 }
 
-/** `bridge status` — report whether the daemon is running, with pid + log paths. */
-export async function runServiceStatus(opts: ServiceProfileOptions = {}): Promise<void> {
+/** `bridge status` — report build, service, runtime and config-revision state. */
+export async function runServiceStatus(opts: ServiceStatusOptions = {}): Promise<void> {
+  if (opts.json) {
+    const report = await collectBridgeStatus({ service: await statusService(opts) });
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
   requireExplicitTarget(opts, 'status');
   const { serviceId, profile, webUi } = await resolveServiceTarget(opts);
   const adapter = requireAdapter('status', serviceId);
   printServiceTarget(adapter, { webUi, profile });
+  const build = getBuildInfo();
+  console.log(`Bridge build: ${formatBuildVersion(build)}  node=${build.nodeVersion}`);
+  console.log(`  entry: ${build.entrypoint || '(unknown)'}`);
+  if (build.release) console.log(`  release: ${build.release}`);
   const startHint = webUi ? '`start --web-ui`' : '`start`';
   const label = webUi ? '控制面 supervisor' : 'bot';
   if (!adapter.fileExists()) {
@@ -614,6 +632,74 @@ export async function runServiceStatus(opts: ServiceProfileOptions = {}): Promis
   console.log(`    ${daemonStderrPath(serviceId)}`);
   console.log(`  跟随: lark-channel-bridge logs ${webUi ? '--web-ui' : `--profile ${profile}`} --follow`);
   if (lastExit !== undefined) console.log(`  上次退出码: ${lastExit}`);
+}
+
+async function statusService(opts: ServiceStatusOptions): Promise<BridgeStatusService | undefined> {
+  const target = await resolveStatusTarget(opts);
+  if (!target) return undefined;
+  const adapter = getServiceAdapter(target.serviceId);
+  const requested = target.webUi ? 'supervisor' as const : 'profile' as const;
+  if (!adapter) {
+    return {
+      requested,
+      ...(target.profile ? { profile: target.profile } : {}),
+      state: 'unsupported',
+    };
+  }
+  let status: Awaited<ReturnType<ServiceAdapter['status']>>;
+  try {
+    status = await adapter.status();
+  } catch (error) {
+    return {
+      requested,
+      ...(target.profile ? { profile: target.profile } : {}),
+      platform: adapter.platformName,
+      servicePath: adapter.servicePath(),
+      state: 'unknown',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+  return {
+    requested,
+    ...(target.profile ? { profile: target.profile } : {}),
+    platform: adapter.platformName,
+    servicePath: adapter.servicePath(),
+    state: status.state,
+    ...(status.pid !== undefined ? { pid: status.pid } : {}),
+    ...(status.lastExit !== undefined ? { lastExit: status.lastExit } : {}),
+    ...(status.lastRunAt ? { lastRunAt: status.lastRunAt } : {}),
+    source: status.source,
+    trigger: status.trigger,
+  };
+}
+
+async function resolveStatusTarget(
+  opts: ServiceStatusOptions,
+): Promise<{ serviceId: string; profile?: string; webUi: boolean } | undefined> {
+  if (opts.webUi) return { serviceId: SUPERVISOR_SERVICE_ID, webUi: true };
+  if (opts.profile) return { serviceId: opts.profile, profile: opts.profile, webUi: false };
+  let live: ProcessEntry[] = [];
+  try {
+    live = readAndPrune();
+  } catch {
+    // The runtime report will surface the registry error.
+  }
+  if (live.length === 1 && live[0]) {
+    return { serviceId: live[0].profileName, profile: live[0].profileName, webUi: false };
+  }
+  if (live.length > 1 && serviceFileExists(SUPERVISOR_SERVICE_ID)) {
+    return { serviceId: SUPERVISOR_SERVICE_ID, webUi: true };
+  }
+  try {
+    const profile = await resolveServiceProfile(undefined);
+    if (serviceFileExists(profile)) return { serviceId: profile, profile, webUi: false };
+  } catch {
+    // JSON status remains available before the first profile is configured.
+  }
+  if (serviceFileExists(SUPERVISOR_SERVICE_ID)) {
+    return { serviceId: SUPERVISOR_SERVICE_ID, webUi: true };
+  }
+  return undefined;
 }
 
 /**

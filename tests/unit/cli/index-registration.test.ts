@@ -16,4 +16,12 @@ describe('CLI command registration', () => {
     const appSecretOptions = source.match(/--app-secret <secret>/g) ?? [];
     expect(appSecretOptions.length).toBeGreaterThanOrEqual(3);
   });
+
+  it('exposes machine-readable build and deployment status', async () => {
+    const source = await readFile(join(process.cwd(), 'src', 'cli', 'index.ts'), 'utf8');
+
+    expect(source).toContain("formatBuildVersion()");
+    expect(source).toContain("'print build, service, runtime and config-revision state as JSON'");
+    expect(source).toContain('json: opts.json');
+  });
 });

@@ -8,6 +8,7 @@ import {
   type SpawnedProcessByStdio,
 } from '../platform/spawn';
 import { normalizeSessionPreview } from './preview';
+import { getBuildInfo } from '../build-info';
 
 type CodexAppServerChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
 
@@ -193,7 +194,7 @@ function initializeRequest() {
       clientInfo: {
         name: 'lark-channel-bridge',
         title: 'Lark Channel Bridge',
-        version: '0.2.3',
+        version: getBuildInfo().version,
       },
       capabilities: null,
     },
