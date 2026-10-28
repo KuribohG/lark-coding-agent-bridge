@@ -72,8 +72,8 @@
     "test:integration": "vitest run tests/integration --passWithNoTests",
     "test:process": "vitest run tests/process --passWithNoTests",
     "lint:dead": "knip --include files,exports",
-    "ci:local": "git diff --check && npm run lint:dead && npm run test && npm run typecheck && npm run build",
-    "ci:platform": "npm run lint:dead && npm run test && npm run typecheck && npm run build",
+    "ci:local": "git diff --check && npm run lint:dead && npm run test && npm run typecheck && npm run typecheck:web && npm run build",
+    "ci:platform": "npm run lint:dead && npm run test && npm run typecheck && npm run typecheck:web && npm run build",
     "prepare": "npm run build",
     "prepublishOnly": "npm run typecheck && npm run build",
     "typecheck:web": "tsc --noEmit -p web/tsconfig.json"

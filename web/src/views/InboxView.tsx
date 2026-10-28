@@ -56,7 +56,7 @@ export function InboxView({ servicesRevision = 0 }: { servicesRevision?: number 
   const check = async () => {
     const result = await apiPost<SetupCheck>('/api/inbox/check', config);
     setChecks(result);
-    if (!config.ownerOpenId && result.ownerOpenId) setConfig({ ...config, ownerOpenId: result.ownerOpenId });
+    if (!config.recipientKey && result.ownerOpenId) setConfig({ ...config, recipientKey: result.ownerOpenId });
   };
   return <Card className="mt-6" id="inbox"><CardHeader><CardTitle>会话助理</CardTitle></CardHeader><CardContent className="space-y-4">
     <p className="text-sm text-muted-foreground">在本机整理待办、核对分析并编辑草稿。首次配置后手动开启；可选接入远程工作台。</p>
@@ -81,7 +81,7 @@ export function InboxView({ servicesRevision = 0 }: { servicesRevision?: number 
             ...(profiles.find(p => p.name === e.target.value)?.agentKind !== executor?.agentKind ? { analysisModel: '' } : {}) })}>
             <option value="">请选择</option>{profiles.filter(p => p.capabilities?.backgroundAnalysis).map(p => <option key={p.name} value={p.name}>{p.name}（{p.agentKind}）</option>)}
           </select></label>
-          <label>所属用户 Open ID<Input value={config.ownerOpenId} placeholder="授权检查后自动填写" onChange={e => change({ ownerOpenId: e.target.value })} /></label>
+          <label>所属用户 Open ID<Input value={config.recipientKey} placeholder="授权检查后自动填写" onChange={e => change({ recipientKey: e.target.value })} /></label>
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="outline" disabled={busy || !config.executorProfile} onClick={() => void perform(async () => {
@@ -94,7 +94,7 @@ export function InboxView({ servicesRevision = 0 }: { servicesRevision?: number 
           <Button variant="ghost" disabled={busy || !config.executorProfile} onClick={() => void perform(async () => {
             const auth = await apiGet<UserAuthStatus>(`/api/auth/status?profile=${encodeURIComponent(config.executorProfile)}`);
             if (!auth.openId) throw new Error('此 profile 尚无用户授权');
-            change({ ownerOpenId: auth.openId });
+            change({ recipientKey: auth.openId });
           })}>读取已授权身份</Button>
         </div>
         {login && <div className="space-y-2 rounded border p-3 text-sm">
@@ -104,12 +104,12 @@ export function InboxView({ servicesRevision = 0 }: { servicesRevision?: number 
             await apiPost('/api/auth/login/complete', { profile: login.profile, deviceCode: login.deviceCode });
             await apiPost(`/api/config?profile=${encodeURIComponent(login.profile)}`, { larkCliIdentity: 'user-default' });
             const auth = await apiGet<UserAuthStatus>(`/api/auth/status?profile=${encodeURIComponent(login.profile)}`);
-            if (config.executorProfile === login.profile && auth.openId) change({ ownerOpenId: auth.openId });
+            if (config.executorProfile === login.profile && auth.openId) change({ recipientKey: auth.openId });
             setLogin(undefined);
           })}>完成授权</Button>
         </div>}
         <div className="grid gap-3 sm:grid-cols-2">
-          {([['chatId', '结果群 ID'], ['threadId', '结果话题 ID'], ['replyTo', '话题内回复消息 ID']] as const).map(([key, label]) => <label key={key}>{label}<Input value={config.destination[key]} onChange={e => change({ destination: { ...config.destination, [key]: e.target.value } })} /></label>)}
+          {([['containerId', '结果群 ID'], ['threadId', '结果话题 ID'], ['replyTo', '话题内回复消息 ID']] as const).map(([key, label]) => <label key={key}>{label}<Input value={config.target[key] ?? ''} onChange={e => change({ target: { ...config.target, [key]: e.target.value } })} /></label>)}
           <label>深入分析模型<Input value={config.analysisModel ?? (executor?.agentKind === 'codex' ? 'deepseek-flash' : '')} placeholder="留空使用执行 profile 默认模型" onChange={e => change({ analysisModel: e.target.value })} /></label>
           <label>筛选模型服务<select className="mt-1 w-full rounded border bg-background p-2" value={config.triageService ?? ''} onChange={e => change({ triageService: e.target.value,
             ...(e.target.value ? { triageProfile: undefined, triageModel: '' } : {}) })}>
@@ -151,7 +151,7 @@ export function InboxView({ servicesRevision = 0 }: { servicesRevision?: number 
             if (config.enabled) {
               const result = await apiPost<SetupCheck>('/api/inbox/check', config); setChecks(result);
               if (!result.ok) throw new Error('请先解决检查中未通过的项目');
-              if (!config.ownerOpenId && result.ownerOpenId) next = { ...config, ownerOpenId: result.ownerOpenId };
+              if (!config.recipientKey && result.ownerOpenId) next = { ...config, recipientKey: result.ownerOpenId };
             }
             const saved = await apiPost<WorkbenchView>('/api/inbox', { ...next, configRevision });
             setConfig(saved.config); setConfigRevision(saved.configRevision); await refresh();
