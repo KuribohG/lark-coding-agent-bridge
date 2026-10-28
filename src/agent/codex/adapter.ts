@@ -44,6 +44,7 @@ export class CodexAdapter implements AgentAdapter {
   private readonly defaultStopGraceMs: number;
   private readonly env: NodeJS.ProcessEnv;
   private botIdentity: AgentBotIdentity | undefined;
+  private successfulAvailability: Promise<AgentAvailability> | undefined;
 
   constructor(opts: CodexAdapterOptions) {
     if (opts.transport !== undefined && opts.transport !== 'app-server') {
@@ -75,13 +76,26 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   async checkAvailability(): Promise<AgentAvailability> {
-    return checkAgentAvailability({
+    if (this.successfulAvailability) return this.successfulAvailability;
+    const pending = checkAgentAvailability({
       agentId: 'codex',
       agentName: 'Codex CLI',
       command: this.binary,
       binaryPath: this.binary,
       env: this.env,
     });
+    this.successfulAvailability = pending;
+    pending.then(
+      (availability) => {
+        if (!availability.ok && this.successfulAvailability === pending) {
+          this.successfulAvailability = undefined;
+        }
+      },
+      () => {
+        if (this.successfulAvailability === pending) this.successfulAvailability = undefined;
+      },
+    );
+    return pending;
   }
 
   async prepareRun(): Promise<void> {

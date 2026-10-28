@@ -33,6 +33,32 @@ describe('CodexAdapter prepareRun', () => {
     await expect(adapter.prepareRun()).resolves.toBeUndefined();
   });
 
+  it('reuses a successful availability check instead of spawning codex every run', async () => {
+    const binary = await writeCodexBinary('codex 1.2.3');
+    const adapter = new CodexAdapter({
+      binary,
+      profileStateDir: join(tmpdir(), 'codex-profile'),
+    });
+
+    await adapter.prepareRun();
+    await rm(binary, { force: true });
+    await expect(adapter.prepareRun()).resolves.toBeUndefined();
+  });
+
+  it('does not cache a failed availability check', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'codex-prepare-retry-'));
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    const binary = join(dir, 'codex');
+    const adapter = new CodexAdapter({
+      binary,
+      profileStateDir: join(tmpdir(), 'codex-profile'),
+    });
+
+    await expect(adapter.prepareRun()).rejects.toMatchObject({ code: 'agent-binary-not-found' });
+    await writeVersionExecutable(dir, 'codex', 'codex 1.2.3');
+    await expect(adapter.prepareRun()).resolves.toBeUndefined();
+  });
+
   it('reports a preflight diagnostic when the configured Codex binary is missing', async () => {
     const adapter = new CodexAdapter({
       binary: join(tmpdir(), 'missing-codex'),

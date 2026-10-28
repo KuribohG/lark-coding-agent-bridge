@@ -4,10 +4,10 @@ import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
+import { SessionCatalog } from '../../../src/session/catalog.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
-import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
-import type { AgentEvent } from '../../../src/agent/types.js';
+import { FakeAgentAdapter, type FakeAgentEvents } from '../../helpers/fake-agent.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
 
 const sdkMock = vi.hoisted(() => ({
@@ -333,6 +333,52 @@ describe('topic message quote handling', () => {
     expect(prompt).not.toContain('<topic_context>');
   });
 
+  it('uses an active catalog thread to avoid refetching topic context', async () => {
+    const h = await createHarness({
+      chatMode: 'topic',
+      threadMessages: [
+        {
+          message_id: 'om_topic_root',
+          msg_type: 'text',
+          body: { content: encodeFixture({ text: 'the real upstream question' }) },
+          sender: { id: 'ou_asker', sender_type: 'user' },
+          create_time: '1760000000000',
+          thread_id: 'omt_catalog',
+        },
+      ],
+      agentEvents: [
+        [
+          { type: 'system', threadId: 'codex-thread-1' },
+          { type: 'done', terminationReason: 'normal' },
+        ],
+        [{ type: 'done', terminationReason: 'normal' }],
+      ],
+    });
+    h.profileConfig.agentKind = 'codex';
+    h.controls.profileConfig.agentKind = 'codex';
+    await startTestBridge(h);
+    const scope = 'oc_topic_chat:omt_catalog';
+    const input = (messageId: string) => message({
+      messageId,
+      rootId: 'om_topic_root',
+      parentId: 'om_topic_root',
+      threadId: 'omt_catalog',
+      content: '@Bridge 接着说',
+    });
+
+    await h.channel.handlers.message?.(input('om_first'));
+    await waitFor(() => h.agent.runOptions.length === 1);
+    await waitFor(() => h.catalog.entries().some(entry => entry.scopeId === scope));
+    const callsAfterFirst = h.channel.rawClient.im.v1.message.list.mock.calls.length;
+    expect(callsAfterFirst).toBe(1);
+    h.sessions.clear(scope);
+
+    await h.channel.handlers.message?.(input('om_second'));
+    await waitFor(() => h.agent.runOptions.length === 2);
+    expect(h.channel.rawClient.im.v1.message.list).toHaveBeenCalledTimes(callsAfterFirst);
+    expect(h.agent.runOptions[1]?.prompt).not.toContain('<topic_context>');
+  });
+
   it('does not open a progress stream when the agent produces no content', async () => {
     // The SDK starts a stream eagerly and finishes an empty one with its
     // "(no content)" placeholder, so a content-less run used to post a card and
@@ -511,11 +557,12 @@ async function createHarness(options: {
   quotedMessages?: Record<string, string>;
   rawThreadIds?: Record<string, string>;
   threadMessages?: Array<Record<string, unknown>>;
-  agentEvents?: AgentEvent[];
+  agentEvents?: FakeAgentEvents;
 } = {}):Promise<{
   tmp: TmpProfile;
   channel: FakeLarkChannel & { handlers: MessageHandlerMap };
   agent: FakeAgentAdapter;
+  catalog: SessionCatalog;
   sessions: SessionStore;
   workspaces: WorkspaceStore;
   profileConfig: ReturnType<typeof createDefaultProfileConfig>;
@@ -546,6 +593,8 @@ async function createHarness(options: {
     },
   };
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
+  const catalog = new SessionCatalog(join(tmp.profile, 'sessions.json.catalog.json'));
+  await catalog.load();
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
   const agent = new FakeAgentAdapter({
     events: options.agentEvents ?? [{ type: 'done', terminationReason: 'normal' }],
@@ -554,13 +603,14 @@ async function createHarness(options: {
   sdkMock.channel = channel;
   const controls = createControls(profileConfig);
   cleanups.push(async () => {
-    await Promise.all([sessions.flush(), workspaces.flush()]);
+    await Promise.all([sessions.flush(), catalog.flush(), workspaces.flush()]);
     await tmp.cleanup();
   });
   return {
     tmp,
     channel,
     agent,
+    catalog,
     sessions,
     workspaces,
     profileConfig,
@@ -571,6 +621,7 @@ async function createHarness(options: {
 async function startTestBridge(h: {
   profileConfig: ReturnType<typeof createDefaultProfileConfig>;
   agent: FakeAgentAdapter;
+  catalog: SessionCatalog;
   sessions: SessionStore;
   workspaces: WorkspaceStore;
   controls: ReturnType<typeof createControls>;
@@ -578,6 +629,7 @@ async function startTestBridge(h: {
   const bridge = await startChannel({
     cfg: h.profileConfig,
     agent: h.agent,
+    sessionCatalog: h.catalog,
     sessions: h.sessions,
     workspaces: h.workspaces,
     controls: h.controls,

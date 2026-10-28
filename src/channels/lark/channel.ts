@@ -57,7 +57,11 @@ import type { WorkspaceStore } from '../../workspace/store';
 import { ActiveRuns } from '../../runtime/active-runs';
 import { ChatModeCache, type ChatMode } from '../../bot/chat-mode-cache';
 import { handleCommentMention } from '../../bot/comments';
-import { recordRunSessionEvent, startRunFlow } from '../../runtime/run-flow';
+import {
+  recordRunSessionEvent,
+  resolveRunFlowContext,
+  startRunFlow,
+} from '../../runtime/run-flow';
 import { commandSessionCatalogIdentity } from '../../bot/session-catalog-identity';
 import { startKeepalive } from '../../bot/keepalive';
 import { PendingQueue } from '../../bot/pending-queue';
@@ -311,9 +315,6 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
         const resolvedMode = firstMsg.threadId
           ? 'topic'
           : await chatModeCache.resolve(channel, firstMsg.chatId);
-        if (firstMsg.threadId) {
-          void chatModeCache.resolve(channel, firstMsg.chatId);
-        }
         // Feishu/Lark converted topic groups may still resolve as `group` from
         // the chat info API/cache, while message events already carry threadId.
         // Treat threadId as authoritative for IM messages so scope and replies
@@ -775,11 +776,8 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   // downstream consumer keys off these.
   let resolvedMode: ChatMode;
   if (msg.threadId) {
-    // A thread id is authoritative for topic routing. Warm the chat cache in
-    // the background so a later top-level event doesn't need the same lookup
-    // without delaying this message behind a redundant chat.get request.
+    // A thread id is authoritative for topic routing.
     resolvedMode = 'topic';
-    void chatModeCache.resolve(channel, msg.chatId);
   } else {
     resolvedMode = await chatModeCache.resolve(channel, msg.chatId);
   }
@@ -1030,6 +1028,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 
   const chatId = firstMsg.chatId;
   const threadId = firstMsg.threadId;
+  const scopedProfile = profileForAgentKind(controls.profileConfig, agentKind);
+  const capability = capabilityForProfile(scopedProfile);
 
   const resourceItems = batch.flatMap((m) =>
     m.resources.map((r) => ({ messageId: m.messageId, resource: r })),
@@ -1073,6 +1073,17 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
   }
 
+  const accessDecision =
+    firstMsg.chatType === 'p2p'
+      ? canUseDm(controls.profileConfig, controls, firstMsg.senderId)
+      : canUseGroup(controls.profileConfig, controls, firstMsg.chatId, firstMsg.senderId);
+  const scopeContext: ScopeContext = {
+    source: 'im',
+    chatId,
+    actorId: firstMsg.senderId,
+    ...(threadId ? { threadId } : {}),
+  };
+
   // Topic upstream context. When the bot is pulled into a topic for the FIRST
   // time (no session yet for this scope), the topic's earlier messages — the
   // root question that may never have @-mentioned the bot, plus prior replies —
@@ -1080,7 +1091,30 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // the user is pointing at. An already-engaged topic keeps that history in its
   // resumed session, so we skip the fetch there.
   let topicContext: QuotedContext[] = [];
-  if (mode === 'topic' && threadId && !sessions.getRaw(scope)) {
+  let needsTopicContext = mode === 'topic' && Boolean(threadId);
+  if (needsTopicContext) {
+    const context = await resolveRunFlowContext({
+      scopeId: scope,
+      scope: scopeContext,
+      prompt: '',
+      attachments: attachments.map(toPolicyAttachment),
+      access: accessDecision,
+      capability,
+      profileConfig: controls.profileConfig,
+      sessions,
+      sessionCatalog,
+      workspaces,
+      now: Date.now(),
+    });
+    needsTopicContext = context.ok && !context.resumeFrom;
+    if (context.ok && context.resumeFrom) {
+      log.info('topic', 'context-skipped-resumable-session', {
+        scope,
+        threadId,
+      });
+    }
+  }
+  if (needsTopicContext && threadId) {
     const exclude = new Set([...batchIds, ...quoteTargets]);
     topicContext = await fetchTopicContext(channel, threadId, {
       maxMessages: 40,
@@ -1151,18 +1185,6 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     replyInThread: sendOpts.replyInThread === true,
   });
 
-  const accessDecision =
-    firstMsg.chatType === 'p2p'
-      ? canUseDm(controls.profileConfig, controls, firstMsg.senderId)
-      : canUseGroup(controls.profileConfig, controls, firstMsg.chatId, firstMsg.senderId);
-  const scopeContext: ScopeContext = {
-    source: 'im',
-    chatId,
-    actorId: firstMsg.senderId,
-    ...(threadId ? { threadId } : {}),
-  };
-  const scopedProfile = profileForAgentKind(controls.profileConfig, agentKind);
-  const capability = capabilityForProfile(scopedProfile);
   const flow = await startRunFlow({
     modelSettings: runArguments,
     deadlineAt: deps.timedJob?.stopAt,

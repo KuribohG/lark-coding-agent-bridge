@@ -23,15 +23,12 @@ import type { WorkspaceStore } from '../workspace/store';
 import { agentBackendSpec } from '../agent/backend-spec';
 import { agentStateDirectory } from '../agent/capability';
 
-export interface StartRunFlowInput {
-  deadlineAt?: number;
-  signal?: AbortSignal;
+export interface RunFlowContextInput {
   scopeId: string;
   fork?: {
     executionScopeId: string;
     prompt(parentId: string, policy: RunPolicyAllow): string;
   };
-  modelSettings?: import('../agent/model-settings').ModelSettings;
   scope: ScopeContext;
   prompt: string;
   systemPrompt?: string;
@@ -42,8 +39,14 @@ export interface StartRunFlowInput {
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
-  executor: RunExecutor;
   now: number;
+}
+
+export interface StartRunFlowInput extends RunFlowContextInput {
+  deadlineAt?: number;
+  signal?: AbortSignal;
+  modelSettings?: import('../agent/model-settings').ModelSettings;
+  executor: RunExecutor;
   stopGraceMs?: number;
   observability?: {
     profile: string;
@@ -76,6 +79,17 @@ export type StartRunFlowResult =
       workspace?: WorkingDirectoryResolveResult;
     };
 
+export type RunFlowContextResult =
+  | {
+      ok: true;
+      policy: RunPolicyAllow;
+      workspace: Extract<WorkingDirectoryResolveResult, { ok: true }>;
+      sessionId?: string;
+      threadId?: string;
+      resumeFrom?: string;
+    }
+  | Extract<StartRunFlowResult, { ok: false }>;
+
 export interface RecordRunSessionEventInput {
   scopeId: string;
   sessions: SessionStore;
@@ -85,7 +99,10 @@ export interface RecordRunSessionEventInput {
   event: AgentEvent;
 }
 
-export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFlowResult> {
+/** Resolve policy, workspace, and resumable identity without spawning an agent. */
+export async function resolveRunFlowContext(
+  input: RunFlowContextInput,
+): Promise<RunFlowContextResult> {
   const requestedCwd =
     input.workspaces.cwdFor(input.scopeId) ?? input.profileConfig.workspaces.default ?? '';
   const workspace = await resolveWorkingDirectory(requestedCwd);
@@ -160,6 +177,21 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     };
     policy.prompt = input.fork.prompt(resumeFrom, policy);
   }
+
+  return {
+    ok: true,
+    policy,
+    workspace,
+    ...(resumeFrom ? { resumeFrom } : {}),
+    ...(sessionId ? { sessionId } : {}),
+    ...(threadId ? { threadId } : {}),
+  };
+}
+
+export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFlowResult> {
+  const context = await resolveRunFlowContext(input);
+  if (!context.ok) return context;
+  const { policy, workspace, resumeFrom, sessionId, threadId } = context;
 
   let execution: RunExecution;
   try {
