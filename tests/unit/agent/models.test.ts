@@ -17,6 +17,8 @@ describe('agent model catalog', () => {
     expect(codex[0]?.value).toBe(DEFAULT_MODEL);
     expect(pi[0]?.value).toBe(DEFAULT_MODEL);
     expect(pi.map((m) => m.value)).toContain('openai-codex/gpt-6.1-sol');
+    expect(codex.map((m) => m.value)).toContain('gpt-6.1-sol');
+    expect(codex.map((m) => m.value)).not.toContain('openai-codex/gpt-6.1-sol');
     expect(claude.map((m) => m.value)).toContain('claude-opus-4-8');
     expect(codex.map((m) => m.value)).toContain('gpt-5-codex');
     expect(claude.map((m) => m.value)).not.toContain('gpt-5-codex');

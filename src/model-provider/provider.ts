@@ -29,21 +29,14 @@ export interface PiProviderRegistration {
   };
 }
 
-export type CodexProviderRegistration =
-  | {
-      providerId: string;
-      name: string;
-      auth: 'native';
-    }
-  | {
-      providerId: string;
-      name: string;
-      auth: 'api-key';
-      baseUrl: string;
-      wireApi: 'responses';
-      apiKeyEnv: string;
-      headersEnv?: Record<string, string>;
-    };
+export interface CodexProviderRegistration {
+  providerId: string;
+  name: string;
+  baseUrl: string;
+  wireApi: 'responses';
+  apiKeyEnv: string;
+  headersEnv?: Record<string, string>;
+}
 
 /**
  * Agent-neutral provider selection resolved into backend-specific connection
@@ -84,38 +77,6 @@ abstract class ModelProvider {
     if (!this.supports(agentKind)) {
       throw new Error(`模型 provider「${this.displayName}」不支持 ${agentKind} agent`);
     }
-  }
-}
-
-/**
- * OpenAI Codex subscription/OAuth is native to the Agent CLIs. Pi needs the
- * provider-qualified model id; Codex CLI selects the same model in its own
- * configured provider.
- */
-class OpenAICodexModelProvider extends ModelProvider {
-  constructor() {
-    super('openai-codex', 'OpenAI 官方账号');
-  }
-
-  supports(agentKind: AgentKind): boolean {
-    return agentKind === 'pi' || agentKind === 'codex';
-  }
-
-  override defaultModel(agentKind: AgentKind): string | undefined {
-    return this.supports(agentKind) ? 'gpt-6.1-sol' : undefined;
-  }
-
-  async bind(agentKind: AgentKind, model: string): Promise<ResolvedModelProvider> {
-    this.assertSupported(agentKind);
-    const modelId = validateModelId(model);
-    return {
-      id: this.id,
-      displayName: this.displayName,
-      model: agentKind === 'pi' ? `${this.id}/${modelId}` : modelId,
-      ...(agentKind === 'codex'
-        ? { codex: { providerId: 'openai', name: 'OpenAI 官方账号', auth: 'native' as const } }
-        : {}),
-    };
   }
 }
 
@@ -180,7 +141,6 @@ class ResponsesModelProvider extends ModelProvider {
       codex: {
         providerId,
         name: this.displayName,
-        auth: 'api-key',
         baseUrl: this.config.baseUrl,
         wireApi: 'responses',
         apiKeyEnv: `LARK_MODEL_PROVIDER_KEY_${suffix}`,
@@ -196,8 +156,7 @@ export class ModelProviderRegistry {
 
   constructor(services: Record<string, ModelServiceConfig> = {}) {
     const custom = Object.entries(services).map(([id, config]) => new ResponsesModelProvider(id, config));
-    if (services['openai-codex']) throw new Error('模型服务名称 openai-codex 为内置 provider 保留');
-    this.providers = [new OpenAICodexModelProvider(), ...custom]
+    this.providers = custom
       .sort((left, right) => right.id.length - left.id.length);
   }
 

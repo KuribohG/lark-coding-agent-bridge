@@ -24,20 +24,6 @@ describe('agent model provider registry', () => {
     },
   };
 
-  it('routes the official GPT account through native Pi and Codex authentication', async () => {
-    const registry = new ModelProviderRegistry();
-    await expect(registry.resolve('pi', 'openai-codex/gpt-6.1-sol')).resolves.toMatchObject({
-      id: 'openai-codex',
-      model: 'openai-codex/gpt-6.1-sol',
-    });
-    await expect(registry.resolve('codex', 'openai-codex/gpt-6.1-sol')).resolves.toMatchObject({
-      id: 'openai-codex',
-      model: 'gpt-6.1-sol',
-      codex: { providerId: 'openai', auth: 'native' },
-    });
-    await expect(registry.resolve('claude', 'openai-codex/gpt-6.1-sol')).rejects.toThrow('不支持 claude');
-  });
-
   it('binds a Responses service to Pi without writing the credential to its extension', async () => {
     process.env.PROVIDER_TEST_KEY = 'private-provider-key';
     const resolved = await new ModelProviderRegistry(services).resolve('pi', 'deepseek/deepseek-flash');
@@ -62,13 +48,11 @@ describe('agent model provider registry', () => {
       id: 'deepseek',
       model: 'deepseek-v4-pro',
       codex: {
-        auth: 'api-key',
         baseUrl: 'https://gateway.example/v1',
         wireApi: 'responses',
       },
     });
-    expect(resolved?.codex?.auth).toBe('api-key');
-    if (resolved?.codex?.auth !== 'api-key') throw new Error('expected api-key provider');
+    if (!resolved?.codex) throw new Error('expected API-key provider');
     expect(resolved.codex.apiKeyEnv).toMatch(/^LARK_MODEL_PROVIDER_KEY_[A-F0-9]+$/);
   });
 
@@ -99,22 +83,19 @@ describe('agent model provider registry', () => {
     await expect(registry.resolve('pi', 'deepseek-flash')).rejects.toThrow('多个 provider');
   });
 
-  it('reserves the native provider id', () => {
-    expect(() => new ModelProviderRegistry({
-      'openai-codex': services.deepseek!,
-    })).toThrow('保留');
+  it('does not publish unconfigured native accounts as Providers', () => {
+    expect(new ModelProviderRegistry().options('codex')).toEqual([]);
+    expect(new ModelProviderRegistry().options('pi')).toEqual([]);
   });
 
   it('publishes Agent-filtered Provider choices and composes card selections', async () => {
     const options = new ModelProviderRegistry(services).options('pi');
-    expect(options).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'openai-codex', defaultModel: 'gpt-6.1-sol' }),
+    expect(options).toEqual([
       expect.objectContaining({ id: 'deepseek', defaultModel: 'deepseek-flash' }),
-    ]));
+    ]);
     expect(selectedProvider(options, 'deepseek/deepseek-flash')?.id).toBe('deepseek');
     expect(selectedProvider(options, 'deepseek-flash')?.id).toBe('deepseek');
     expect(composeProviderSelection(options, 'deepseek', 'deepseek-flash')).toBe('deepseek/deepseek-flash');
-    expect(composeProviderSelection(options, 'openai-codex', 'deepseek/deepseek-flash')).toBe('openai-codex/deepseek-flash');
     expect(composeProviderSelection(options, AUTO_MODEL_PROVIDER, 'native/model')).toBe('native/model');
   });
 });

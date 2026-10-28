@@ -133,30 +133,12 @@ describe('CodexAdapter app-server process contract', () => {
     expect(argv).toContain('https://gateway.example/v1');
     expect(argv).toContain('wire_api="responses"');
     expect(argv).not.toContain('private-provider-key');
-    if (provider?.codex?.auth !== 'api-key') throw new Error('expected api-key provider');
+    if (!provider?.codex) throw new Error('expected API-key provider');
     expect(record.providerEnv).toContainEqual([
       provider.codex.apiKeyEnv,
       'private-provider-key',
     ]);
     expect((await h.requests()).find(r => r.method === 'thread/start')?.params.model).toBe('deepseek-v4-pro');
-  });
-
-  it('switches Codex back to its native provider for an official OpenAI model', async () => {
-    const h = await harness();
-    const provider = await new ModelProviderRegistry().resolve('codex', 'openai-codex/gpt-6.1-sol');
-    await collect(h.adapter.run({
-      runId: 'openai-native',
-      cwd: h.dir,
-      prompt: 'official',
-      model: provider!.model,
-      modelProvider: provider,
-    }));
-
-    const record = await h.record();
-    expect(record.argv).toContain('model_provider="openai"');
-    expect(record.argv).toContain('forced_login_method="chatgpt"');
-    expect(record.argv.join(' ')).not.toContain('model_providers.openai');
-    expect((await h.requests()).find(r => r.method === 'thread/start')?.params.model).toBe('gpt-6.1-sol');
   });
 
   it.each(['inherited', 'isolated', 'explicit'] as const)('preserves %s Codex home selection and profile environment', async home => {

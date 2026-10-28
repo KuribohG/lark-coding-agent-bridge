@@ -30,11 +30,12 @@
 
 模型名可使用 `<provider>/<model>` 明确选择服务：
 
-- `openai-codex/gpt-6.1-sol`：复用 Pi 或 Codex 自身的 OpenAI 官方账号登录。
 - `screening/model-name`：复用“模型 API 服务”中名为 `screening` 的 Responses endpoint 和凭据。
 
-同一话题可随时切换 provider，不需要重启 Bridge。官方账号要在本机 Agent 中完成
-登录；模型 API 服务的密钥仍只使用环境变量或私有文件引用。
+同一话题可随时切换 Provider，不需要重启 Bridge。这里只列出根配置
+`model_services` 中实际配置的 API Key 服务。OpenAI 官方账号属于 Agent 自身的
+登录态，不作为 Bridge Provider 展示；Codex 使用原生模型 ID，pi 使用自身的
+`openai-codex/...` 模型选择。
 
 发送 `/provider` 会打开与 `/model` 共用的飞书卡片。Provider 下拉项由 Bridge 的
 共享 registry 和当前 Agent 的能力生成，选择后填写模型 ID 即可保存到当前话题。

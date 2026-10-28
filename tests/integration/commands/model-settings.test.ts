@@ -146,6 +146,7 @@ describe('model and effort scope settings', () => {
     const card = encodeFixture(h.channel.sent.at(-1));
     expect(card).toContain('provider_pick');
     expect(card).toContain('deepseek');
+    expect(card).not.toContain('OpenAI 官方账号');
 
     await runCommandHandler('model', 'submit', { ...h.ctx, fromCardAction: true,
       formValue: { provider_pick: 'deepseek', model_pick: '__provider_default__', model: 'deepseek-flash', reasoning_effort: 'high' } });

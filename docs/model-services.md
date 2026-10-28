@@ -2,7 +2,7 @@
 
 首次配置可先阅读[用户手册：模型与账号](user-guide/models-and-accounts.md)。
 
-加载本功能的 Bridge 可在根配置 `model_services` 中保存模型服务，供筛选、分类等直接 API 调用，也可作为 Pi/Codex Agent 的 Responses provider。配置不依赖 Claude/Codex profile，不启动 Agent，也不继承其工具或会话。当前接入协议为 Responses API。
+加载本功能的 Bridge 可在根配置 `model_services` 中保存模型服务，供筛选、分类等直接 API 调用，也可作为 Pi/Codex Agent 的 Responses provider。Provider 列表只展示这里实际配置的服务。配置不依赖 Claude/Codex profile，不启动 Agent，也不继承其工具或会话。当前接入协议为 Responses API。
 
 ## 配置
 
@@ -48,14 +48,15 @@ Pi 会在每次运行时通过临时 extension 注册该 provider；Codex 会通
 环境，不写进命令行参数或生成的 provider 文件。Responses 服务当前支持 Pi 和
 Codex，不兼容 Claude Code 的 Anthropic Messages 协议。
 
-OpenAI 官方账号使用 Agent 自身的 OAuth，不需要在 Bridge 中保存 API key：
+OpenAI 官方账号使用 Agent 自身的 OAuth，不进入 Bridge 的 API Key Provider 列表：
 
 ```text
-/model openai-codex/gpt-6.1-sol
+/model gpt-6.1-sol
 ```
 
-Pi 和 Codex 分别复用各自的官方账号登录态。未登录时会在 Agent 启动阶段报授权
-错误，Bridge 不会改用其他 provider 或借用第三方密钥。
+Codex 使用原生 OpenAI provider。Pi 应使用其自身的
+`openai-codex/gpt-6.1-sol` 模型选择。两者分别复用各自的官方账号登录态；未登录时
+会在 Agent 启动阶段报授权错误，Bridge 不会改用其他 provider 或借用第三方密钥。
 
 `apiKey` 只接受引用，不能填写明文密钥：
 

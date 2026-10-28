@@ -122,19 +122,15 @@ export class CodexAdapter implements AgentAdapter {
     if (provider) {
       Object.assign(envOverrides, opts.modelProvider?.env);
       configOverrides.push(`model_provider=${quoteToml(provider.providerId)}`);
-      if (provider.auth === 'api-key') {
-        const prefix = `model_providers.${provider.providerId}`;
-        configOverrides.push(
-          `${prefix}.name=${quoteToml(provider.name)}`,
-          `${prefix}.base_url=${quoteToml(provider.baseUrl)}`,
-          `${prefix}.wire_api=${quoteToml(provider.wireApi)}`,
-          `${prefix}.env_key=${quoteToml(provider.apiKeyEnv)}`,
-        );
-        if (provider.headersEnv) {
-          configOverrides.push(`${prefix}.env_http_headers=${quoteToml(provider.headersEnv)}`);
-        }
-      } else {
-        configOverrides.push('forced_login_method="chatgpt"');
+      const prefix = `model_providers.${provider.providerId}`;
+      configOverrides.push(
+        `${prefix}.name=${quoteToml(provider.name)}`,
+        `${prefix}.base_url=${quoteToml(provider.baseUrl)}`,
+        `${prefix}.wire_api=${quoteToml(provider.wireApi)}`,
+        `${prefix}.env_key=${quoteToml(provider.apiKeyEnv)}`,
+      );
+      if (provider.headersEnv) {
+        configOverrides.push(`${prefix}.env_http_headers=${quoteToml(provider.headersEnv)}`);
       }
     }
     return startAppServerRun({
