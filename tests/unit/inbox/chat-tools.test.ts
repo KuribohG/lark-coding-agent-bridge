@@ -7,9 +7,11 @@ it('preserves structured mention identities through collection and historical re
     sender: { id: 'ou_sender', name: '同事', sender_type: 'user' },
     mentions: [{ id: { open_id: 'ou_other' }, name: '另一人', key: '@_user_1' },
       { open_id: 'ou_owner', name: '本人' }, { id: 'ou_third', name: '第三人' }] };
-  expect(parseMessages([raw])[0]).toMatchObject({ mentions: ['ou_other', 'ou_owner', 'ou_third'],
-    mentionDetails: [{ openId: 'ou_other', name: '另一人', key: '@_user_1' }, { openId: 'ou_owner', name: '本人' },
-      { openId: 'ou_third', name: '第三人' }] });
+  expect(parseMessages([raw])[0]).toMatchObject({ mentions: [
+    { id: 'ou_other', name: '另一人', key: '@_user_1' },
+    { id: 'ou_owner', name: '本人' },
+    { id: 'ou_third', name: '第三人' },
+  ] });
   const tools = new InboxChatTools(async () => ({ messages: [raw] }), 'ou_owner');
   const result = await tools.execute('get_messages', { messageIds: ['om_one'] }, new AbortController().signal);
   expect(result.messages).toMatchObject([{ senderIsOwner: false, mentionsOwner: true,

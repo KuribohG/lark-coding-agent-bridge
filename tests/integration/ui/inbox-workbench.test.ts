@@ -14,6 +14,7 @@ import type { UiServerHandle, UiSupervisor } from '../../../src/ui/types';
 import { InboxManager } from '../../../src/monitoring/sources/lark/manager';
 import type { InboxLark } from '../../../src/inbox/lark';
 import type { InboxIO, InboxJob } from '../../../src/inbox/types';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
 let server: UiServerHandle | undefined, service: InboxService | undefined;
 afterEach(async () => { await server?.close(); await service?.close(); });
@@ -21,9 +22,13 @@ afterEach(async () => { await server?.close(); await service?.close(); });
 it('serves local jobs and persists version-checked reviews through authenticated HTTP without a cloud connector', async () => {
   const rootDir = await mkdtemp(join(tmpdir(), 'local-inbox-'));
   const store = new InboxStore(join(rootDir, 'state.json'));
-  const config = normalizeInbox({ enabled: false, executorProfile: 'codex', ownerOpenId: 'ou_owner' });
-  store.data.jobs = [{ id: randomUUID(), profile: 'codex', ownerOpenId: 'ou_owner', source: { chatId: 'oc_source', name: 'Example', type: 'p2p' },
-    destination: config.destination, messages: [{ id: 'om_input', chatId: 'oc_source', chatName: 'Example', chatType: 'p2p', senderId: 'ou_other', senderName: 'Colleague', bot: false, time: Date.now(), text: 'Please review', mentions: [] }], state: 'done', handlingState: 'open', automatic: false, alert: false,
+  const config = normalizeInbox({ enabled: false, executorProfile: 'codex', recipientKey: 'ou_owner',
+    target: workItemTarget({ chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_result' }) });
+  store.data.jobs = [{ id: randomUUID(), profile: 'codex', ownerKey: 'ou_owner',
+    sourceRef: { transport: 'lark', containerId: 'oc_source', name: 'Example', kind: 'direct' }, target: config.target,
+    messages: [{ id: 'om_input', containerId: 'oc_source', containerName: 'Example', containerKind: 'direct',
+      senderId: 'ou_other', senderName: 'Colleague', senderBot: false, time: Date.now(),
+      text: 'Please review', mentions: [] }], state: 'done', handlingState: 'open', automatic: false, alert: false,
     createdAt: Date.now(), updatedAt: Date.now(), revision: 1, replyDraft: 'old', analysis: 'evidence' } satisfies InboxJob];
   await store.save();
   const checkOwner = vi.fn();

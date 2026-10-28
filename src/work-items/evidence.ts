@@ -1,30 +1,34 @@
+export interface EvidenceMention {
+  id: string;
+  name: string;
+  key?: string;
+}
+
 export interface EvidenceMessage {
   id: string;
-  chatId: string;
-  chatName: string;
-  chatType: 'p2p' | 'group';
+  containerId: string;
+  containerName: string;
+  containerKind: string;
   senderId: string;
-  senderOpenId?: string;
   senderName: string;
-  bot: boolean;
+  senderBot: boolean;
+  senderAliases?: string[];
   time: number;
   text: string;
   threadId?: string;
-  parentId?: string;
+  replyTo?: string;
   link?: string;
-  position?: string;
-  mentions: string[];
-  mentionDetails?: { openId: string; name: string; key?: string }[];
-  incidentId?: string;
-  recovered?: boolean;
+  sequence?: string;
+  mentions: EvidenceMention[];
+  metadata?: Record<string, unknown>;
 }
 
 export interface Attention {
   state: 'pending' | 'needed' | 'quiet' | 'uncertain';
   reason: string;
   priority?: 'normal' | 'high';
-  /** Message IDs whose structured mentions were checked against the owner ID. */
-  ownerMentionMessageIds?: string[];
+  /** Evidence message IDs whose structured mentions matched the relevant principal. */
+  mentionedPrincipalMessageIds?: string[];
   /** Execution failures stay pending; genuine uncertainty is a completed decision. */
   retry?: { attempts: number; nextAt: number; error: string };
   /** Transient output preview; not a final decision and never persisted to the store. */

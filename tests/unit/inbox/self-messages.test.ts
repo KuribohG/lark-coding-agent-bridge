@@ -8,13 +8,16 @@ import { parseMessages } from '../../../src/inbox/lark';
 import { InboxService } from '../../../src/inbox/service';
 import { InboxStore } from '../../../src/inbox/store';
 import type { InboxIO, InboxJob, InboxMessage } from '../../../src/inbox/types';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
-const destination = { chatId: 'oc_result', threadId: 'omt_menu', replyTo: 'om_menu' };
-const human: InboxMessage = { id: 'om_human', chatId: 'oc_source', chatName: '项目群', chatType: 'group',
-  senderId: 'ou_colleague', senderName: '同事', bot: false, time: 1_000_000, text: '请确认这个问题', mentions: [] };
-const self: InboxMessage = { ...human, id: 'om_self', senderId: 'cli_self', bot: true, text: '正在处理，请确认' };
+const destination = workItemTarget({ chatId: 'oc_result', threadId: 'omt_menu', replyTo: 'om_menu' });
+const human: InboxMessage = { id: 'om_human', containerId: 'oc_source', containerName: '项目群', containerKind: 'group',
+  senderId: 'ou_colleague', senderName: '同事', senderBot: false, time: 1_000_000, text: '请确认这个问题', mentions: [] };
+const self: InboxMessage = { ...human, id: 'om_self', senderId: 'cli_self', senderAliases: ['ou_self'],
+  senderBot: true, text: '正在处理，请确认' };
 const job = (id: string, messages: InboxMessage[], extra: Partial<InboxJob> = {}): InboxJob => ({
-  id, ownerOpenId: 'ou_owner', profile: 'codex', destination, source: { chatId: human.chatId, name: human.chatName, type: 'group' },
+  id, ownerKey: 'ou_owner', profile: 'codex', target: destination,
+  sourceRef: { transport: 'lark', containerId: human.containerId, name: human.containerName, kind: 'group' },
   messages, state: 'waiting', handlingState: 'open', createdAt: human.time, updatedAt: human.time, revision: 0,
   automatic: true, alert: true, attention: { state: 'pending', reason: '旧失败', retry: { attempts: 11, nextAt: 0, error: '旧失败' } }, ...extra,
 });
@@ -23,7 +26,7 @@ afterEach(async () => { for (const service of services.splice(0)) await service.
 async function setup(jobs: InboxJob[] = [], overrides: Partial<InboxIO> = {}) {
   let now = human.time;
   const io: InboxIO = { selfSenderIds: ['cli_self', 'ou_self'], checkOwner: vi.fn(async () => {}), collect: vi.fn(async () => []),
-    context: vi.fn(async () => []), source: vi.fn(async () => ({ name: human.chatName, type: 'group' as const })),
+    context: vi.fn(async () => []), source: vi.fn(async () => ({ name: human.containerName, type: 'group' as const })),
     deliver: vi.fn(async () => {}), notifyAttention: vi.fn(async () => {}),
     analyze: vi.fn(async () => ({ text: '分析结果', inputTokens: 1, outputTokens: 1 })),
     triage: vi.fn(async (j: InboxJob) => ({ id: j.id, state: 'quiet' as const, reason: '无需动作' })), ...overrides };
@@ -32,7 +35,7 @@ async function setup(jobs: InboxJob[] = [], overrides: Partial<InboxIO> = {}) {
   if (jobs.length) store.data.notificationOutbox = { id: 'old-outbox', attempts: 0, retryAt: 0,
     jobs: jobs.map(j => ({ id: j.id, signature: createHash('sha256').update(JSON.stringify(j.messages)).digest('hex') })) };
   await store.save();
-  const service = new InboxService(store, normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner', intakeScope: 'all', destination }), io, () => now);
+  const service = new InboxService(store, normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner', intakeScope: 'all', target: destination }), io, () => now);
   services.push(service); await service.start();
   return { io, store, service, advance: (ms: number) => { now += ms; } };
 }
@@ -40,13 +43,14 @@ async function setup(jobs: InboxJob[] = [], overrides: Partial<InboxIO> = {}) {
 it('retains both trusted sender identity forms from the Lark response', () => {
   const parsed = parseMessages([{ message_id: 'om_self', chat_id: 'oc_source', create_time: '1000', content: '我的输出',
     sender: { id: 'cli_self', id_type: 'app_id', open_bot_id: 'ou_self', sender_type: 'app' } }]);
-  expect(parsed[0]).toMatchObject({ senderId: 'cli_self', senderOpenId: 'ou_self', bot: true });
+  expect(parsed[0]).toMatchObject({ senderId: 'cli_self', senderAliases: ['ou_self'], senderBot: true });
 });
 
 it('drops self identities at ingestion without suppressing humans, matching display names or other bots', async () => {
-  const external = { ...self, id: 'om_alert', senderId: 'cli_alert', chatId: 'oc_alert', mentions: ['ou_self'] };
-  const messages = [self, { ...self, id: 'om_open', senderId: 'ou_self', bot: false },
-    { ...self, id: 'om_alias', senderId: 'cli_alias', senderOpenId: 'ou_self' }, human, external];
+  const external = { ...self, id: 'om_alert', senderId: 'cli_alert', senderAliases: [], containerId: 'oc_alert',
+    mentions: [{ id: 'ou_self', name: '助理' }] };
+  const messages = [self, { ...self, id: 'om_open', senderId: 'ou_self', senderBot: false },
+    { ...self, id: 'om_alias', senderId: 'cli_alias', senderAliases: ['ou_self'] }, human, external];
   const s = await setup([], { collect: vi.fn(async kind => kind === 'group' ? messages : []) });
   await s.service.tick();
   expect(s.service.list().flatMap(j => j.messages.map(m => m.id)).sort()).toEqual(['om_alert', 'om_human']);
@@ -92,11 +96,11 @@ it('does not let new self output reset a completed human screening decision', as
 
 it('filters manual selection and refreshed analysis context, and blocks self-only manual replay', async () => {
   const s = await setup([], { context: vi.fn(async () => [self]) });
-  await expect(s.service.manual(human.chatId)).rejects.toThrow('非助理消息');
+  await expect(s.service.manual(human.containerId)).rejects.toThrow('非助理消息');
   vi.mocked(s.io.context).mockResolvedValue([human, self]);
-  const submitted = await s.service.manual(human.chatId); expect(submitted.messages).toEqual([human]);
+  const submitted = await s.service.manual(human.containerId); expect(submitted.messages).toEqual([human]);
   await s.service.tick(); await vi.waitFor(() => expect(s.io.analyze).toHaveBeenCalledTimes(1));
   expect(vi.mocked(s.io.analyze).mock.calls[0]![0].messages).toEqual([human]);
   const replay = await setup([job('old-manual', [self], { manualRequestId: 'old-request' })]);
-  await expect(replay.service.manual(human.chatId, 'old-request')).rejects.toThrow('不可处理');
+  await expect(replay.service.manual(human.containerId, 'old-request')).rejects.toThrow('不可处理');
 });

@@ -16,6 +16,7 @@ import { formatMonitorConfig } from '../../../src/monitoring/config';
 import * as larkRuntime from '../../../src/monitoring/sources/lark/runtime';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
 import type { InboxJob } from '../../../src/inbox/types';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
 vi.mock('../../../src/agent/model-service', async importOriginal => ({ ...await importOriginal<typeof import('../../../src/agent/model-service')>(), loadProfileModelService: vi.fn(async () => ({ model: 'test' })) }));
 vi.mock('../../../src/monitoring/sources/lark/analyzer', () => ({ INBOX_ANALYSIS_MODEL: 'deepseek-flash', loadAnalysisProvider: vi.fn(async () => ({ model: 'test' })), analyzeInbox: vi.fn() }));
@@ -32,7 +33,9 @@ async function setup() {
   const profile = createDefaultProfileConfig({ agentKind: 'codex', accounts: { app: { id: 'cli_fixture', secret: 'fixture', tenant: 'feishu' } }, codex: { binaryPath: 'codex' } });
   profile.larkCli.identityPreset = 'user-default';
   const root = createRootConfig('codex', profile);
-  root.inbox = normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner', destination: { chatId: 'oc_group', threadId: 'omt_topic', replyTo: 'om_message' }, h5: { publicUrl: 'https://example.com/assistant/', port: 19182 } });
+  root.inbox = normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner',
+    target: workItemTarget({ chatId: 'oc_group', threadId: 'omt_topic', replyTo: 'om_message' }),
+    h5: { publicUrl: 'https://example.com/assistant/', port: 19182 } });
   await saveRootConfig(root, path);
   const controls: Controls = { cfg: runtimeProfileConfig(root, 'codex'), profileConfig: profile, profile: 'codex', configPath: path,
     ownerRefreshState: 'ok', processId: 'test', refreshOwner: async () => {}, restart: async () => {}, exit: async () => {} };
@@ -124,8 +127,8 @@ it('saves analysis timeouts without recreating the service and uses the new limi
     const manager = create(); await manager.reconcile();
     const io = ioSpy.mock.calls.at(-1)![1];
     const service = vi.mocked(startInboxH5).mock.calls.at(-1)![0];
-    const job: InboxJob = { id: 'timeout-check', ownerOpenId: 'ou_owner', profile: 'codex', destination: root.inbox!.destination,
-      source: { chatId: 'oc_source', name: 'source', type: 'p2p' }, messages: [], state: 'running', automatic: false, alert: false,
+    const job: InboxJob = { id: 'timeout-check', ownerKey: 'ou_owner', profile: 'codex', target: root.inbox!.target,
+      sourceRef: { containerId: 'oc_source', name: 'source', transport: 'lark', kind: 'direct' }, messages: [], state: 'running', automatic: false, alert: false,
       createdAt: Date.now(), updatedAt: Date.now() };
     const initialStart = Date.now();
     await io.analyze(job, new AbortController().signal);
@@ -232,10 +235,12 @@ it('uses the shared Codex runtime configuration and quarantines both trusted bot
   const { InboxStore } = await import('../../../src/inbox/store');
   const store = new InboxStore(join(rootDir, 'inbox', 'state.json'));
   store.data.jobs = ['cli_fixture', 'ou_self'].map((senderId, i) => ({
-    id: `self-${i}`, ownerOpenId: 'ou_owner', profile: 'codex', destination: { chatId: 'oc_group', threadId: 'omt_topic', replyTo: 'om_message' },
-    source: { chatId: 'oc_source', name: '群', type: 'group' }, state: 'queued', automatic: true, alert: true, createdAt: 1, updatedAt: 1,
+    id: `self-${i}`, ownerKey: 'ou_owner', profile: 'codex',
+    target: workItemTarget({ chatId: 'oc_group', threadId: 'omt_topic', replyTo: 'om_message' }),
+    sourceRef: { containerId: 'oc_source', name: '群', transport: 'lark', kind: 'group' }, state: 'queued', automatic: true, alert: true, createdAt: 1, updatedAt: 1,
     analysisRequested: true, attention: { state: 'needed', reason: '旧输出' },
-    messages: [{ id: `om_${i}`, chatId: 'oc_source', chatName: '群', chatType: 'group', senderId, senderName: '助理', bot: true, time: 1, text: '请确认', mentions: [] }],
+    messages: [{ id: `om_${i}`, containerId: 'oc_source', containerName: '群', containerKind: 'group',
+      senderId, senderName: '助理', senderBot: true, time: 1, text: '请确认', mentions: [] }],
   }));
   await store.save();
   try {
@@ -267,8 +272,8 @@ it('fills a result topic only for the authorized owner without enabling collecti
   expect(await manager.command('setup', ctx)).toContain('授权');
   expect((await manager.view()).config.executorProfile).toBe('');
   expect(await manager.command('setup', { ...ctx, operator: 'ou_owner' })).toContain('已记录');
-  expect((await manager.view()).config).toMatchObject({ enabled: false, analysisModel: '', ownerOpenId: 'ou_owner',
-    destination: { chatId: 'oc_output', threadId: 'omt_output', replyTo: 'om_anchor' } });
+  expect((await manager.view()).config).toMatchObject({ enabled: false, analysisModel: '', recipientKey: 'ou_owner',
+    target: { transport: 'lark', containerId: 'oc_output', threadId: 'omt_output', replyTo: 'om_anchor' } });
 });
 
 it('checks owner, model and destination without exposing provider credentials', async () => {
@@ -276,7 +281,7 @@ it('checks owner, model and destination without exposing provider credentials', 
   const result = await manager.checkSetup(root.inbox);
   expect(result.ok).toBe(true); expect(result.ownerOpenId).toBe('ou_owner');
   expect(JSON.stringify(result)).not.toContain('key');
-  const other = await manager.checkSetup({ ...root.inbox, ownerOpenId: 'ou_wrong' });
+  const other = await manager.checkSetup({ ...root.inbox, recipientKey: 'ou_wrong', ownerKey: 'ou_wrong' });
   expect(other.ok).toBe(false);
   expect(other.checks.find(c => c.label === '飞书用户授权')?.detail).toContain('不一致');
 });

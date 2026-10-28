@@ -25,10 +25,11 @@ outputDir = "/private/ci"
 pollSeconds = 1
 tokenEnv = "MY_GITLAB_TOKEN"
 [sources.gitlab_ci.notification]
-ownerOpenId = "ou_owner"
+recipientKey = "ou_owner"
 deliveryMode = "new_topic"
-[sources.gitlab_ci.notification.destination]
-chatId = "oc_results"
+[sources.gitlab_ci.notification.target]
+transport = "lark"
+containerId = "oc_results"
 threadId = "omt_topic"
 replyTo = "om_message"
 [[sources.gitlab_ci.repositories]]

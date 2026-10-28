@@ -5,15 +5,17 @@ import { expect, it } from 'vitest';
 import { normalizeGitLabCi } from '../../../src/monitoring/sources/gitlab-ci/config';
 import { ciTaskEvent } from '../../../src/monitoring/sources/gitlab-ci/inbox-source';
 import type { CiRun } from '../../../src/monitoring/sources/gitlab-ci/service';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
 async function fixture() {
   const outputDir = await mkdtemp(join(tmpdir(), 'ci-import-'));
   const config = normalizeGitLabCi({ executorProfile: 'codex', url: 'https://gitlab.test', outputDir,
-    notification: { ownerOpenId: 'ou_owner', destination: { chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_result' } } });
+    notification: { recipientKey: 'ou_owner',
+      target: workItemTarget({ chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_result' }) } });
   const run: CiRun = { id: 'a'.repeat(32), url: config.url, executorProfile: 'codex', createdAt: 1, updatedAt: 1,
     repository: { project: 'group/repo', refs: [], sourceDir: '' }, failures: [],
     pipeline: { id: 1, ref: 'dev', sha: 'a'.repeat(40), web_url: 'https://gitlab.test/group/repo/-/pipelines/1', status: 'failed', updated_at: '' },
-    state: 'ready', attempts: 1, retryAt: 0, resultPath: join(outputDir, 'a'.repeat(32), 'result.json'), topic: config.notification!.destination };
+    state: 'ready', attempts: 1, retryAt: 0, resultPath: join(outputDir, 'a'.repeat(32), 'result.json'), topic: config.notification!.target };
   await mkdir(join(outputDir, run.id));
   await writeFile(run.resultPath!, JSON.stringify({ runId: run.id, replyDraft: '旧结论', analysis: '旧证据', missingInfo: '' }));
   return { config, run };
@@ -22,7 +24,7 @@ async function fixture() {
 it.each([0, 1, 3])('imports previous delivery attempt count %s without an ambiguous resend', async deliveryAttempts => {
   const { config, run } = await fixture(); run.deliveryAttempts = deliveryAttempts;
   const event = await ciTaskEvent(run, config);
-  expect(event.initial).toMatchObject({ state: deliveryAttempts ? 'done' : 'ready', replyDraft: '旧结论', analysisTopic: run.topic });
+  expect(event.initial).toMatchObject({ state: deliveryAttempts ? 'done' : 'ready', replyDraft: '旧结论', analysisTarget: run.topic });
   if (deliveryAttempts) expect(event.initial?.error).toContain('不再自动发送');
 });
 

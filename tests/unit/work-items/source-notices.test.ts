@@ -9,18 +9,19 @@ import { EventSource } from '../../../src/work-items/event-source';
 import { WorkItemScheduler } from '../../../src/work-items/scheduler';
 import { WorkItemSources } from '../../../src/work-items/registry';
 import type { WorkItemRuntime } from '../../../src/work-items/contracts';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const fn of cleanups.splice(0).reverse()) await fn(); });
 const result = { text: JSON.stringify({ replyDraft: 'summary', analysis: 'evidence', missingInfo: '' }), inputTokens: 1, outputTokens: 1 };
-const topic = { chatId: 'oc_out', threadId: 'omt_out', replyTo: 'om_out' };
+const topic = workItemTarget({ chatId: 'oc_out', threadId: 'omt_out', replyTo: 'om_out' });
 const event = { key: 'c', title: 'cluster', reason: 'I/O error', url: '', time: 1000, eventId: '1', revision: 1, data: {}, notice: 'first alert' };
 async function setup(io: Partial<WorkItemRuntime> = {}, queue?: WorkItemScheduler) {
   const folder = await mkdtemp(join(tmpdir(), 'source-notices-')); cleanups.push(() => rm(folder, { recursive: true, force: true }));
   const store = new WorkItemStore(join(folder, 'state.json'));
   const runtime: WorkItemRuntime = { source: new EventSource('test', () => true), checkAccess: async () => {},
     investigate: vi.fn(async () => result), deliver: vi.fn(async () => {}), notifyChange: vi.fn(async () => topic), ...io };
-  const config = normalizeInbox({ enabled: true, executorProfile: 'p', ownerOpenId: 'ou_owner' });
+  const config = normalizeInbox({ enabled: true, executorProfile: 'p', recipientKey: 'ou_owner', target: topic });
   let now = 1000;
   const service = new WorkItemService(store, config, runtime, () => now, queue);
   cleanups.push(() => service.close()); await service.start();
@@ -44,13 +45,13 @@ it('continues analysis when alert delivery fails, then delivers result into the 
   await vi.waitFor(() => expect(h.service.get(item.id)?.state).toBe('ready'));
   await h.service.tick(); expect(h.runtime.deliver).not.toHaveBeenCalled();
   h.advance(60_000); await h.service.tick();
-  await vi.waitFor(() => expect(h.service.get(item.id)?.analysisTopic).toEqual(topic));
+  await vi.waitFor(() => expect(h.service.get(item.id)?.analysisTarget).toEqual(topic));
   await h.service.tick();
   expect(h.runtime.deliver).toHaveBeenCalledTimes(1);
   await h.service.observe({ ...event, eventId: '2', revision: 2, operation: 'resolve', notice: 'recovered' });
   await h.service.tick();
   await vi.waitFor(() => expect(notifyChange).toHaveBeenCalledTimes(3));
-  expect(notifyChange.mock.calls[2]![0].analysisTopic).toEqual(topic);
+  expect(notifyChange.mock.calls[2]![0].analysisTarget).toEqual(topic);
   expect(h.runtime.investigate).toHaveBeenCalledTimes(1);
 });
 it('retains alerts and work items at zero daily model budget', async () => {
@@ -82,7 +83,7 @@ it('shares the execution limit across ordinary and storage sources', async () =>
   await vi.waitFor(() => expect(release).toBeDefined());
   try {
     const connect = (id: string) => sources.connect({ id, label: id,
-      config: normalizeInbox({ enabled: true, executorProfile: 'p', ownerOpenId: 'local:p' }),
+      config: normalizeInbox({ enabled: true, executorProfile: 'p', recipientKey: 'local:p', target: topic }),
       source: new EventSource(id, () => true), runtime: { checkAccess: async () => {}, investigate: async () => result } });
     const normal = await connect('ordinary'); const incident = await connect('storage');
     await normal.observe(event); await incident.observe(event);

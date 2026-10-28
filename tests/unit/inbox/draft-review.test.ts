@@ -3,12 +3,14 @@ import { normalizeInbox } from '../../../src/inbox/config';
 import { guiContent } from '../../../src/inbox/presentation';
 import { WorkItemLifecycle } from '../../../src/work-items/lifecycle';
 import type { WorkItem } from '../../../src/work-items/types';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
-const config = normalizeInbox({ ownerOpenId: 'ou_owner', executorProfile: 'codex' });
+const config = normalizeInbox({ recipientKey: 'ou_owner', executorProfile: 'codex',
+  target: workItemTarget({ chatId: 'oc_target', threadId: 'omt_target', replyTo: 'om_target' }) });
 const lifecycle = () => new WorkItemLifecycle(config, () => 1000, vi.fn(), vi.fn());
 const result = JSON.stringify({ replyDraft: '原建议', analysis: '已核实的证据', missingInfo: '' });
-const job = (patch: Partial<WorkItem> = {}): WorkItem => ({ id: 'item', ownerOpenId: 'ou_owner', profile: 'codex',
-  destination: config.destination, source: { chatId: 'oc_source', name: '来源会话', type: 'group' }, messages: [],
+const job = (patch: Partial<WorkItem> = {}): WorkItem => ({ id: 'item', ownerKey: 'ou_owner', profile: 'codex',
+  target: config.target, sourceRef: { transport: 'lark', containerId: 'oc_source', name: '来源会话', kind: 'group' }, messages: [],
   state: 'done', handlingState: 'open', createdAt: 1, updatedAt: 1, automatic: true, alert: false,
   attention: { state: 'needed', reason: '需要处理' }, ...patch });
 

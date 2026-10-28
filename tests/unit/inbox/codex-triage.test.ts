@@ -6,7 +6,8 @@ import { InboxToolArgumentsError } from '../../../src/inbox/values';
 import { analysisBody, requestInboxResponse, InboxTriageResultError, parseTriageResult } from '../../../src/monitoring/sources/lark/analyzer';
 import { messageBasis } from '../../../src/inbox/updates';
 
-const job = (id: string): InboxJob => ({ id, ownerOpenId: 'ou_owner', source: { chatId: 'oc_source', name: 'test', type: 'p2p' }, messages: [] } as unknown as InboxJob);
+const job = (id: string): InboxJob => ({ id, ownerKey: 'ou_owner',
+  sourceRef: { transport: 'lark', containerId: 'oc_source', name: 'test', kind: 'direct' }, messages: [] } as unknown as InboxJob);
 const answer = (id: string, state = 'quiet') => ({ id, state, reason: '具体事实', priority: 'normal' });
 const provider = { url: 'https://model.test/responses', key: 'private-token', model: 'default-model' };
 const message = (item: unknown = answer('a')) =>

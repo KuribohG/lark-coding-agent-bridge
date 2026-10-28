@@ -8,6 +8,7 @@ import { startInboxProgress } from '../../../inbox/progress';
 import { normalizeInbox } from '../../../inbox/config';
 import type { WorkItemDeliveryPort } from '../../../work-items/delivery-port';
 import type { MonitorNotification } from '../../notification';
+import { validateLarkNotification } from './notification';
 
 export function createLarkWorkItemDelivery(options: {
   profile: string;
@@ -19,31 +20,34 @@ export function createLarkWorkItemDelivery(options: {
   larkAuth?: LarkProfileAuth;
 }): WorkItemDeliveryPort | undefined {
   if (!options.notification || options.muted) return;
+  validateLarkNotification(options.notification, options.profile);
   const config = normalizeInbox({
     ...options.notification,
     executorProfile: options.profile,
-    ownerOpenId: options.notification.ownerOpenId,
     enabled: true,
     watchPrivate: false,
     watchMentions: false,
   });
   const lark = new InboxLark({ profile: options.profile, rootDir: options.rootDir }, config);
   return {
-    ownerKey: options.notification.ownerOpenId,
-    destination: options.notification.destination,
+    ownerKey: options.notification.recipientKey,
+    target: options.notification.target,
     close: () => lark.close(),
     deliver: lark.deliver.bind(lark),
     ...(options.sourceNotifications
       ? {
           notifyChange: (job, notice) =>
-            lark.beginAnalysis({ ...job, startDelivery: { ...notice, confirmed: false } }, notice.text),
+            lark.beginAnalysis(
+              { ...job, startDelivery: { ...notice, confirmed: false } },
+              notice.text,
+            ),
         }
       : {
           beginAnalysis: lark.beginAnalysis.bind(lark),
         }),
     notifyAttention: lark.notifyAttention.bind(lark),
     progress: async (job, signal) => {
-      if (!job.analysisTopic) return;
+      if (!job.analysisTarget) return;
       const root = await loadRootConfig(options.configPath);
       if (!root?.profiles[options.profile]) throw new Error('通知 profile 不存在');
       const cfg = runtimeProfileConfig(root, options.profile);

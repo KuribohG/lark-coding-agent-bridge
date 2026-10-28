@@ -5,9 +5,9 @@ import { handlingState } from './result';
 import { recordObservation } from './identity';
 
 /** Sources may update evidence; lifecycle fields are read-only through their context. */
-type EvidenceFields = 'messages' | 'source' | 'alert' | 'intakeTrigger' | 'incidentId' | 'manualSignature' | 'manualRequestIds';
+type EvidenceFields = 'messages' | 'sourceRef' | 'alert' | 'intakeTrigger' | 'incidentId' | 'manualSignature' | 'manualRequestIds';
 export type SourceItem = Readonly<Omit<WorkItem, EvidenceFields>> & Pick<WorkItem, EvidenceFields>;
-export type SourceSeed = Pick<WorkItem, 'source' | 'messages' | 'alert' | 'intakeTrigger' | 'incidentId'>;
+export type SourceSeed = Pick<WorkItem, 'sourceRef' | 'messages' | 'alert' | 'intakeTrigger' | 'incidentId'>;
 export type SourceTransition =
   | { type: 'mode'; mode: 'on' | 'off' }
   | { type: 'scope' }
@@ -56,7 +56,8 @@ export class WorkItemLifecycle {
     job.error = undefined; job.deliveredAt = undefined;
     job.startDelivery = undefined; job.resultDelivery = undefined;
     job.draftStale = Boolean(job.result || job.replyDraft);
-    job.destination = { ...this.config.destination }; job.retryAt = undefined;
+    job.target = { ...this.config.target };
+    job.retryAt = undefined;
     if (job.external) job.external.analysisAttempts = 0;
   }
   transition(job: WorkItem, event: SourceTransition): void {
@@ -92,7 +93,7 @@ export class WorkItemLifecycle {
         if (handlingState(job) !== 'open' || job.state === 'running') return;
         recordObservation(job);
         this.request(job);
-        job.destination = { ...this.config.destination };
+        job.target = { ...this.config.target };
         job.notificationSuppressed = true; job.startDelivery = undefined; job.resultDelivery = undefined; job.deliveredAt = undefined;
         job.attention = { state: 'needed', reason: '你主动选择了此会话' };
         job.draftStale = Boolean(job.result || job.replyDraft);
@@ -135,7 +136,7 @@ export class WorkItemLifecycle {
     if (job.attention.state === 'needed') job.businessState = 'open';
     if (job.attention.state === 'needed' && update.autoAnalyze && !job.draftEdited && !job.analysisPaused) {
       job.state = 'queued'; job.automatic = true; job.analysisRequested = true;
-      job.destination = { ...this.config.destination };
+      job.target = { ...this.config.target };
       job.resultDelivery = undefined; job.deliveredAt = undefined; job.error = undefined;
     }
   }

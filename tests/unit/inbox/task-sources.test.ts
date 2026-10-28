@@ -11,6 +11,7 @@ import { InboxAnalysisQueue, type InboxTaskEvent } from '../../../src/inbox/task
 import type { InboxIO } from '../../../src/inbox/types';
 import { guiContent, guiSummary } from '../../../src/inbox/presentation';
 import { InboxTaskSources } from '../../../src/inbox/task-sources';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
 const services: InboxService[] = [];
 const sources: InboxTaskSources[] = [];
@@ -24,7 +25,7 @@ async function setup(overrides: Partial<InboxIO> = {}, enabled = true, queue?: I
     source: vi.fn(async () => ({ name: 'unused', type: 'group' as const })), deliver: vi.fn(async () => {}), analyze: vi.fn(async () => result),
     taskSource: { id: 'gitlab-ci', accepts: () => true }, ...overrides };
   const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-source-')), 'state.json'));
-  const config = normalizeInbox({ enabled, ownerOpenId: 'ou_owner', executorProfile: 'codex', watchPrivate: false, watchMentions: false });
+  const config = normalizeInbox({ enabled, recipientKey: 'ou_owner', executorProfile: 'codex', watchPrivate: false, watchMentions: false });
   const service = new InboxService(store, config, io, () => now, queue); services.push(service); await service.start();
   return { service, store, io, config, advance: () => { now += 300_000; } };
 }
@@ -50,7 +51,7 @@ it('persists before acknowledging an event and does not accept a failed save', a
 });
 
 it('uses the same bounded notification retries and never reruns a completed analysis', async () => {
-  const topic = { chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_result' };
+  const topic = workItemTarget({ chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_result' });
   const s = await setup({ beginAnalysis: vi.fn(async () => topic), deliver: vi.fn(async () => { throw Error('lost response'); }) });
   const job = await s.service.submitTask(event); await s.service.tick();
   await vi.waitFor(() => expect(s.service.get(job.id)?.state).toBe('ready'));
@@ -84,7 +85,7 @@ it('does not overwrite a human draft with a late analysis, and restoring an igno
 });
 
 it('retries an analysis after a long attempt without repeating or expiring its confirmed announcement', async () => {
-  const topic = { chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_result' };
+  const topic = workItemTarget({ chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_result' });
   const analyze = vi.fn<InboxIO['analyze']>().mockRejectedValueOnce(Error('transient')).mockResolvedValue(result);
   const s = await setup({ analyze, beginAnalysis: vi.fn(async () => topic) });
   const job = await s.service.submitTask(event); await s.service.tick();

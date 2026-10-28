@@ -11,26 +11,12 @@ export function observationDigest(event: WorkItemEvent): string {
 export function recordObservation(item: WorkItem): void {
   item.origin ??= item.external
     ? { sourceId: item.external.source, key: item.external.key, kind: item.external.source, url: item.external.url }
-    : { sourceId: 'lark', key: item.id, kind: item.source.type };
+    : { sourceId: item.sourceRef.transport, key: item.id, kind: item.sourceRef.kind };
   item.evidenceVersion = (item.evidenceVersion ?? 0) + 1;
   item.businessState ??= 'open';
 }
 
-export function migrateWorkItem(item: WorkItem): void {
-  if (!item.origin) {
-    const version = item.evidenceVersion;
-    recordObservation(item);
-    item.evidenceVersion = version ?? 1;
-  }
-  item.businessState ??= 'open';
-  if (item.external) {
-    item.source = { chatId: '', name: item.source.name, type: 'external' };
-    item.messages = [];
-  }
-}
-
 export function evidenceSignature(item: WorkItem): string {
-  // Preserve existing Lark digest receipts when migrating old state.
   return createHash('sha256').update(JSON.stringify(item.external
     ? [item.origin, item.evidenceVersion, item.external.data] : item.messages)).digest('hex');
 }

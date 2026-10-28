@@ -14,7 +14,7 @@
 
 采集入口按当前执行 profile 的应用 ID 和 bot open_id 直接排除助理自身发言，不创建筛选事项。历史纯自身事项启动时转为忽略并取消重试；混合事项只移除助理消息，保留真人和其他机器人内容，必要时重新筛选。手动选会话和深入分析的上下文读取也执行同样过滤。自身身份来自已连接 profile，不按显示名称或消息内容推断。
 
-加载身份校验版本后，采集、聊天回查、筛选及深入分析材料保留结构化 @ 对象的姓名和 ID，并按 `ownerOpenId` 计算是否为本人。正文或转发中的 `@姓名`、`<at>` 文本不能充当结构化 @ 证据。群聊的 `needed/uncertain` 筛选结果须提供 `ownerMentionMessageIds`：引用的消息必须在输入或聊天快捷工具回查结果中确实 @ 了本人，否则进入现有结果纠正/重试流程。没有 @ 证据时填空数组，仍可凭明确职责、交办或系统影响判断相关性；此校验不替代对职责和剩余动作的判断。深入分析也需复核筛选归属，不将筛选理由当作已核实事实。仅修改 `attentionProfile` 不会启用这些代码行为，旧运行实例仍需升级并重启。
+加载身份校验版本后，采集、聊天回查、筛选及深入分析材料保留结构化 @ 对象的姓名和 ID，并按 `recipientKey` 计算是否为本人。正文或转发中的 `@姓名`、`<at>` 文本不能充当结构化 @ 证据。群聊的 `needed/uncertain` 筛选结果须提供 `ownerMentionMessageIds`：引用的消息必须在输入或聊天快捷工具回查结果中确实 @ 了本人，否则进入现有结果纠正/重试流程。没有 @ 证据时填空数组，仍可凭明确职责、交办或系统影响判断相关性；此校验不替代对职责和剩余动作的判断。深入分析也需复核筛选归属，不将筛选理由当作已核实事实。仅修改 `attentionProfile` 不会启用这些代码行为，旧运行实例仍需升级并重启。
 
 筛选和深入分析请求均不设置 `max_output_tokens` 或 `max_tokens`，输出长度由模型服务决定。流式响应不按累计流量截断，仍限制单条事件大小，并保留取消和超时机制；服务端标记 `incomplete` 的结果不会作为成功接受。
 
@@ -82,8 +82,8 @@
 {
   "enabled": false,
   "executorProfile": "codex",
-  "ownerOpenId": "ou_OWNER",
-  "destination": { "chatId": "oc_RESULT", "threadId": "omt_TOPIC", "replyTo": "om_ANCHOR" },
+  "recipientKey": "ou_OWNER",
+  "target": { "transport": "lark", "containerId": "oc_RESULT", "threadId": "omt_TOPIC", "replyTo": "om_ANCHOR" },
   "deliveryMode": "thread",
   "intakeScope": "private_mentions",
   "attentionProfile": "用户授权整理的具体工作背景",
@@ -106,7 +106,7 @@
 
 `deliveryMode=new_topic` 将每个需要关注的事项单独发到配置的话题群，包含原消息和工作台入口；批内部分发送失败时，各事项保持独立幂等键重试。关注筛选将用户授权的重点协作群、近期实质参与、小群具体请求和同议题追问作为关联线索，必要时先查前文；群小或活跃本身不自动产生待办，普通闲聊和无个人关联的机器告警仍过滤。
 
-本地权威状态为配置目录下 `inbox/state.json`，权限 0600，原子写入；包含消息、筛选结果、草稿、版本、已处理状态、额度和通知 outbox。妙搭 PostgreSQL 保存工作台快照和 owner-scoped 指令；浏览器不是持久化来源。当前在采集周期清理 7 天前已处理事项，并限制无需动作的旧记录，不提供永久归档。
+本地权威状态为配置目录下 `inbox/state.json`，权限 0600，原子写入；包含消息、筛选结果、草稿、版本、已处理状态、额度和通知 outbox。WorkItem 状态格式为 version 2；检测到旧 conversation 形状的 version 1 文件时会记录警告并从空状态重新采集，不再保留双字段兼容。妙搭 PostgreSQL 保存工作台快照和 owner-scoped 指令；浏览器不是持久化来源。当前在采集周期清理 7 天前已处理事项，并限制无需动作的旧记录，不提供永久归档。
 
 `review` 支持草稿保存和处理状态；`batch` 支持最多 500 项已处理或忽略。批量传 `{items:[{id,revision}],handlingState:"handled"|"ignored"}`，所有归属与版本均匹配后一次保存，任何冲突都不修改，落盘失败恢复内存状态；命令 ID 支持重试去重。关闭时可操作，不调用模型。运行中分析被取消，晚到结果不能覆盖人工操作。
 

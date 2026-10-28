@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { writeFileAtomic } from '../../../platform/atomic-write';
 import { GitLabError, type FailedJob, type Pipeline } from './client';
 import type { GitLabCiConfig, GitLabRepository } from './config';
-import type { DeliveryTarget } from '../../../work-items/config';
+import type { WorkItemTarget } from '../../../work-items/domain';
 
 export interface CiRun {
   id: string; repository: GitLabRepository; pipeline: Pipeline; failures: FailedJob[];
@@ -12,7 +12,7 @@ export interface CiRun {
   state: 'queued' | 'running' | 'ready' | 'done' | 'failed' | 'obsolete' | 'submitted';
   inboxJobId?: string; submissionAttempts?: number;
   resultPath?: string; error?: string;
-  topic?: DeliveryTarget; deliveryAttempts?: number; deliveredAt?: number;
+  topic?: WorkItemTarget; deliveryAttempts?: number; deliveredAt?: number;
 }
 interface CiState {
   version: 1;

@@ -24,7 +24,7 @@ src/monitoring/
     gitlab-ci/       # GitLab client, polling, failure rules, investigation, manager
     storage/         # Grafana provider, cluster/UID rules, investigation, manager
 src/work-items/      # Persistence, versioning, scheduling, analysis, controls
-src/inbox/           # Shared Lark transport/workbench and legacy compatibility types
+src/inbox/           # Lark transport/workbench adapter and hosted UI
 ```
 
 A module exposes a config registration (`id`, legacy root field, parser, optional
@@ -56,8 +56,9 @@ To add a built-in source:
    another source's implementation. Add source-specific tests and a disabled TOML
    example; lifecycle and generic TOML parsing do not need new source branches.
 
-Existing `sources.lark`, `sources.gitlab_ci`, `sources.storage`, source IDs and state
-paths remain unchanged. This reorganization requires no configuration or data migration.
+Lark, GitLab CI and storage source IDs and state paths are unchanged. The generic
+work-item state uses schema version 2; a version-1 conversation-shaped state file is
+reset with a warning instead of being migrated.
 
 ## Host and executor lifecycle
 
@@ -71,8 +72,9 @@ profile and local agent availability. It does not require that profile's chat
 channel to be online. The bridge host still explicitly supplies the existing
 Lark-aware agent environment for tool compatibility. Other hosts can inject an
 executor and delivery runtime directly without constructing a Lark client.
-The existing on-disk profile schema and WorkItem conversation fields are retained;
-this change does not add a standalone worker command or migrate configuration.
+Profiles remain in the existing on-disk schema. Work items use transport-neutral
+owner, source and target fields; chat-specific identifiers are confined to source
+adapters. This change does not add a standalone worker command.
 
 In a build containing this host/executor separation, disabling a Lark profile
 leaves enabled GitLab/storage collectors running. Unavailable or unsupported
@@ -100,7 +102,7 @@ independent source notices and restart-retry rules are preserved.
 | `AssessmentPolicy` | Decide whether an observation needs attention | Lark per-item model screening; GitLab deterministic failure rule |
 | `InvestigationDriver` | Prepare evidence and prompt; optionally archive a validated result | `larkInvestigationDriver`; `ciTaskDriver` |
 
-`WorkItemService` owns serialized changes, user control, screening dispatch, analysis and notification state. `WorkItemStore` preserves the existing partition paths and schema-1 records. In versions supporting per-item screening, `WorkItemScheduler` supplies the same FIFO/resize/cancellation implementation to two independent pools: `[concurrency].triage` defaults to fifty individual screening tasks; `analysis` defaults to five investigations shared by Lark, CI and storage. A common admission loop fills each pool up to its own limit. `ItemAssessmentPolicy` evaluates one item and returns one decision; no batch assembly, size selection or partial-result tracking is required. Both task maps key cancellation and ownership by item ID. Live resizing drains existing tasks when lowering the limit. An aborted task keeps its slot and item reservation until it settles, preventing overlapping retries. Completion immediately requests dispatch, independently of collection. Screening can finish and enqueue investigation while other items are still screening. `createInvestigator` runs the same prepare/execute/complete sequence for existing sources, checking cancellation before each phase.
+`WorkItemService` owns serialized changes, user control, screening dispatch, analysis and notification state. `WorkItemStore` preserves the existing partition paths and schema-2 records. In versions supporting per-item screening, `WorkItemScheduler` supplies the same FIFO/resize/cancellation implementation to two independent pools: `[concurrency].triage` defaults to fifty individual screening tasks; `analysis` defaults to five investigations shared by Lark, CI and storage. A common admission loop fills each pool up to its own limit. `ItemAssessmentPolicy` evaluates one item and returns one decision; no batch assembly, size selection or partial-result tracking is required. Both task maps key cancellation and ownership by item ID. Live resizing drains existing tasks when lowering the limit. An aborted task keeps its slot and item reservation until it settles, preventing overlapping retries. Completion immediately requests dispatch, independently of collection. Screening can finish and enqueue investigation while other items are still screening. `createInvestigator` runs the same prepare/execute/complete sequence for existing sources, checking cancellation before each phase.
 
 Source collection continues while analysis waits or runs. Lark collection, history refresh and model screening retain their independent in-flight guards. GitLab retains its repository cursor, bounded polling and failure identity logic, and publishes accepted failures through the event adapter. Neither source implements its own analysis queue.
 
@@ -122,9 +124,16 @@ digests; source adapters cannot modify their reservations or receipts.
 
 ## Identity and versions
 
-A work item is the persistent matter being handled. Observations add evidence; an analysis uses one evidence version. `origin` records source and stable key, `evidenceVersion` tracks accepted evidence, and `analyzedVersion` records the basis of the retained report.
+A work item is the persistent matter being handled. `ownerKey`, `sourceRef` and
+`target` are transport-neutral keys. Observations add transport-neutral evidence
+messages with `containerId`, `containerKind`, structured principal mentions and
+thread/reply references. `origin` records source and stable key, `evidenceVersion`
+tracks accepted evidence, and `analyzedVersion` records the basis of the retained report.
 
-For event sources, item IDs keep the existing hash of `[source, owner, executorProfile, key]`. Lark retains existing UUIDs and conversation grouping. Existing CI failure keys still distinguish pipeline and failed-job sets; this change does not combine distinct CI failures into a new incident model.
+For event sources, item IDs use the hash of `[source, ownerKey, executorProfile, key]`.
+Lark retains conversation grouping inside its adapter. Existing CI failure keys still
+distinguish pipeline and failed-job sets; this change does not combine distinct CI
+failures into a new incident model.
 
 `WorkItemEvent` is a complete source snapshot:
 
@@ -155,7 +164,7 @@ Versioned event updates cancel an obsolete investigation and queue the current v
 
 `businessState` describes whether the source issue is open or resolved. `state` describes investigation/delivery progress. `handlingState` describes the user's handling decision. Analysis completion does not resolve a source issue; ignoring a matter does not mark it recovered.
 
-Updates preserve edited drafts, existing analysis topics and explicit pause controls. A stopped analysis cannot be reactivated by source updates or process restart. Only an explicit process request clears its pause. Source-verified preflight may return a cached result with `businessState: 'resolved'`, as GitLab does when a failure has become obsolete; the model cannot set this field through its output.
+Updates preserve edited drafts, existing analysis targets and explicit pause controls. A stopped analysis cannot be reactivated by source updates or process restart. Only an explicit process request clears its pause. Source-verified preflight may return a cached result with `businessState: 'resolved'`, as GitLab does when a failure has become obsolete; the model cannot set this field through its output.
 
 The existing report format (`replyDraft`, `analysis`, `missingInfo`) remains supported and required by the shared result validator. Source-specific input stays in its evidence payload; external items have no fabricated chat messages.
 
@@ -171,7 +180,7 @@ service for a control operation. `executeSourceCommand` in the workbench adapter
 owns command decoding and presentation. Existing `InboxTaskSources` and
 `InboxTaskDriver` imports remain aliases, with the new internal registration API.
 
-The Lark manager passes `larkRuntime()` into the same `WorkItemService` through the `InboxService` compatibility facade. Lark source logic lives in `src/monitoring/sources/lark/source.ts`, model-decision interpretation in `src/monitoring/sources/lark/assessment.ts`, and evidence preparation in `larkInvestigationDriver`. Lark-only commands such as selecting a chat or changing intake scope remain on the facade.
+The Lark manager passes `larkRuntime()` into the same `WorkItemService` through the `InboxService` adapter. Lark source logic lives in `src/monitoring/sources/lark/source.ts`, model-decision interpretation in `src/monitoring/sources/lark/assessment.ts`, and evidence preparation in `larkInvestigationDriver`. Lark-only commands such as selecting a container or changing intake scope remain on that adapter.
 
 GitLab registers `EventSource` with `ciAssessment` and `ciTaskDriver`. Its collector still validates pipeline and job status and supplies a stable failure identity; the common engine owns all subsequent handling.
 
@@ -179,11 +188,17 @@ Keep source-specific operations out of the shared engine. New collectors should 
 
 ## Migration and limits
 
-Loading existing records fills missing origin/version fields and removes synthetic messages from external events. It preserves item IDs, results, manually edited drafts, pause flags, topics, attempts and delivery receipts. Inbox and source state directories are unchanged, and the UI continues to receive its existing fields. Conversation display fields remain in the persisted compatibility representation; new event producers do not need to supply them.
+Work-item state is version 2. A version-1 file used the previous chat-specific shape
+and is reset with a warning because monitoring observations can be collected again.
+No dual-field or TOML migration is retained. Item state directories are unchanged.
+The UI maps the canonical fields to its presentation model.
 
 An interrupted investigation still requires an explicit retry, matching the existing behavior. Lark and GitLab retain explicit retry after interrupted investigations. Storage opts into bounded automatic recovery and a separate incident slot as described below. General cross-source incident correlation is not implemented.
 
-Tests cover existing Lark/CI behavior plus migration, observation replay/order conflicts, save failure rollback, late results, source recovery, manual controls, owner isolation and cancellation between investigation phases. Model and Lark writes are mocked in these tests; they do not establish live operational monitoring.
+Tests cover existing Lark/CI behavior plus schema reset, observation replay/order
+conflicts, save failure rollback, late results, source recovery, manual controls,
+owner isolation and cancellation between investigation phases. Model and Lark writes
+are mocked in these tests; they do not establish live operational monitoring.
 
 ## Storage and UID source
 

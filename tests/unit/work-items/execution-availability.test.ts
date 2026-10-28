@@ -8,6 +8,7 @@ import { EventSource } from '../../../src/work-items/event-source';
 import { WorkItemScheduler } from '../../../src/work-items/scheduler';
 import type { WorkItemConfig } from '../../../src/work-items/config';
 import type { WorkItemRuntime } from '../../../src/work-items/contracts';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -16,9 +17,9 @@ const event = { key: 'issue', title: 'issue', reason: 'failure', time: 1000, url
 async function setup(extra: Partial<WorkItemRuntime> = {}, queue?: WorkItemScheduler) {
   const dir = await mkdtemp(join(tmpdir(), 'execution-availability-')); cleanups.push(() => rm(dir, { recursive: true, force: true }));
   const path = join(dir, 'state.json');
-  const config: WorkItemConfig = { enabled: true, executorProfile: 'local', ownerOpenId: 'local:owner',
-    destination: { chatId: '', threadId: '', replyTo: '' }, autoAnalyze: false, dailyTriageLimit: 0,
-    gui: { publicUrl: '' }, h5: { publicUrl: '' } };
+  const config: WorkItemConfig = { enabled: true, executorProfile: 'local', ownerKey: 'local:owner',
+    target: workItemTarget({ chatId: 'oc_local', threadId: 'omt_local', replyTo: 'om_local' }),
+    autoAnalyze: false, dailyTriageLimit: 0 };
   let available = false;
   const investigate = vi.fn(async () => result);
   const create = async () => {

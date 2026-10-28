@@ -44,7 +44,7 @@ export async function ciTaskEvent(run: CiRun, config: GitLabCiConfig): Promise<I
   const initial: InboxTaskEvent['initial'] = {};
   let url = '';
   try { const parsed = new URL(run.pipeline.web_url); if (parsed.origin === new URL(config.url).origin && !parsed.username && !parsed.password) url = parsed.href; } catch { /* optional source link */ }
-  if (run.topic) initial.analysisTopic = run.topic;
+  if (run.topic) initial.analysisTarget = run.topic;
   if (run.deliveredAt) initial.deliveredAt = run.deliveredAt;
   if (run.topic) initial.startDelivery = { id: run.id, text: `继续分析 · ${run.repository.project} CI #${run.pipeline.id}`, attempts: 0, startedAt: Date.now(), retryAt: 0, confirmed: true };
   if (run.resultPath) {

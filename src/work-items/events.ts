@@ -18,5 +18,5 @@ export interface WorkItemEvent {
   notice?: string;
   /** Used only when importing a previously unseen item. */
   initial?: Partial<Pick<WorkItem, 'state' | 'replyDraft' | 'analysis' | 'missingInfo' | 'result' | 'error' |
-    'analysisTopic' | 'deliveredAt' | 'startDelivery' | 'resultDelivery' | 'inputTokens' | 'outputTokens' | 'attempt' | 'businessState'>>;
+    'analysisTarget' | 'deliveredAt' | 'startDelivery' | 'resultDelivery' | 'inputTokens' | 'outputTokens' | 'attempt' | 'businessState'>>;
 }

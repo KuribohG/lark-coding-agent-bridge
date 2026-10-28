@@ -1,4 +1,6 @@
-import { normalizeNotification, validateNotification } from '../monitoring/notification';
+import { normalizeNotification } from '../monitoring/notification';
+import { validateLarkNotification } from '../monitoring/sources/lark/notification';
+import type { WorkItemConfig } from '../work-items/config';
 
 export type IntakeScope = 'private' | 'private_mentions' | 'all';
 export const intakeScope = (c: Pick<InboxConfig, 'intakeScope' | 'watchPrivate' | 'watchMentions'>): IntakeScope | undefined =>
@@ -11,11 +13,8 @@ export const inboxMode = (config: Pick<InboxConfig, 'enabled' | 'autoAnalyze'>):
 export const inboxWorkbenchUrl = (config: Pick<InboxConfig, 'workbenchUrl' | 'gui' | 'h5'>): string =>
   config.workbenchUrl || config.gui.publicUrl || config.h5.publicUrl;
 
-export interface InboxConfig {
-  enabled: boolean;
-  executorProfile: string;
-  ownerOpenId: string;
-  destination: { chatId: string; threadId: string; replyTo: string };
+export interface InboxConfig extends WorkItemConfig {
+  recipientKey: string;
   deliveryMode: 'thread' | 'new_topic';
   intakeScope?: IntakeScope;
   watchPrivate: boolean;
@@ -46,8 +45,8 @@ export interface InboxConfig {
 }
 
 export const INBOX_DEFAULTS: InboxConfig = {
-  enabled: false, executorProfile: '', ownerOpenId: '',
-  destination: { chatId: '', threadId: '', replyTo: '' },
+  enabled: false, executorProfile: '', ownerKey: '', recipientKey: '',
+  target: { transport: 'lark', containerId: '', threadId: '', replyTo: '' },
   deliveryMode: 'thread',
   watchPrivate: true, watchMentions: true, autoAnalyze: false,
   attentionProfile: '', analysisModel: '', analysisTimeoutMinutes: 30, workbenchUrl: '', dailyTriageLimit: INBOX_DAILY_TRIAGE_LIMIT,
@@ -64,15 +63,19 @@ export function normalizeInbox(input: unknown): InboxConfig {
   const num = (v: unknown, min: number, max: number, fallback: number) =>
     typeof v === 'number' && Number.isFinite(v) ? Math.max(min, Math.min(max, Math.floor(v))) : fallback;
   const scope = ['private', 'private_mentions', 'all'].includes(String(r.intakeScope)) ? r.intakeScope : undefined;
+  const notification = normalizeNotification(r);
+  const h5 = { publicUrl: str(r.h5?.publicUrl), port: num(r.h5?.port, 1024, 65535, 19182) };
+  const gui = { publicUrl: str(r.gui?.publicUrl), apiKeyFile: str(r.gui?.apiKeyFile) };
   return {
     intakeScope: scope,
     analysisModel: input == null ? '' : typeof r.analysisModel === 'string' ? str(r.analysisModel).slice(0, 200) : undefined,
     analysisTimeoutMinutes: num(r.analysisTimeoutMinutes, 1, 1440, INBOX_DEFAULTS.analysisTimeoutMinutes),
-    workbenchUrl: str(r.workbenchUrl).slice(0, 2000),
+    workbenchUrl: (str(r.workbenchUrl) || gui.publicUrl || h5.publicUrl).slice(0, 2000),
     ...(str(r.triageProfile) ? { triageProfile: str(r.triageProfile) } : {}),
     ...(str(r.triageService) ? { triageService: str(r.triageService) } : {}),
     ...(typeof r.triageModel === 'string' ? { triageModel: str(r.triageModel).slice(0, 200) } : {}),
-    enabled: r.enabled === true, executorProfile: str(r.executorProfile), ...normalizeNotification(r),
+    enabled: r.enabled === true, executorProfile: str(r.executorProfile),
+    ownerKey: notification.recipientKey, ...notification,
     watchPrivate: scope ? true : r.watchPrivate !== false, watchMentions: scope ? scope !== 'private' : r.watchMentions !== false, autoAnalyze: false,
     attentionProfile: str(r.attentionProfile).slice(0, 3000), dailyTriageLimit: num(r.dailyTriageLimit, 0, INBOX_DAILY_TRIAGE_LIMIT, INBOX_DAILY_TRIAGE_LIMIT),
     triageMessageLimit: num(r.triageMessageLimit, 2, 100, INBOX_DEFAULTS.triageMessageLimit),
@@ -80,14 +83,13 @@ export function normalizeInbox(input: unknown): InboxConfig {
     waitMinutes: num(r.waitMinutes, 1, 1440, 30), pollSeconds: num(r.pollSeconds, INBOX_MIN_POLL_SECONDS, 3600, INBOX_DEFAULTS.pollSeconds),
     contextMinutes: num(r.contextMinutes, 5, 1440, 15), maxContextChars: num(r.maxContextChars, 2000, 100_000, 24_000),
     dailyAutoLimit: num(r.dailyAutoLimit, 0, 1000, 20),
-    h5: { publicUrl: str(r.h5?.publicUrl), port: num(r.h5?.port, 1024, 65535, 19182) },
-    gui: { publicUrl: str(r.gui?.publicUrl), apiKeyFile: str(r.gui?.apiKeyFile) },
+    h5, gui,
   };
 }
 
 export function validateInbox(c: InboxConfig): void {
   if (!c.enabled) return;
-  validateNotification(c, c.executorProfile);
+  validateLarkNotification(c, c.executorProfile);
   if (c.workbenchUrl) {
     const url = new URL(c.workbenchUrl);
     if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) {

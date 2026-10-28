@@ -9,7 +9,8 @@ import { createLarkAssessment } from '../../../src/monitoring/sources/lark/asses
 const raw = (id: string, mentioned: string) => ({ message_id: id, chat_id: 'oc_source', create_time: '1792050000000',
   content: '+ @同名用户', sender: { id: 'ou_sender', name: '同事', sender_type: 'user' },
   mentions: [{ id: mentioned, name: '同名用户' }] });
-const job = { id: 'item', ownerOpenId: 'ou_owner', source: { chatId: 'oc_source', name: '项目群', type: 'group' },
+const job = { id: 'item', ownerKey: 'ou_owner',
+  sourceRef: { transport: 'lark', containerId: 'oc_source', name: '项目群', kind: 'group' },
   messages: parseMessages([raw('om_other', 'ou_other'), raw('om_owner', 'ou_owner')]) } as InboxJob;
 const answer = (ids: unknown = []) => ({ id: job.id, state: 'needed', reason: '需要确认本人负责系统的未解决故障',
   priority: 'normal', ownerMentionMessageIds: ids });
@@ -31,9 +32,9 @@ it('requires an explicit mention-evidence decision for actionable group items', 
 
 it.each([[], ['om_owner']].map(ids => ({ ids })))('accepts system responsibility without a mention and preserves verified mention evidence: %j', ({ ids }) => {
   const decision = parseTriageResult(JSON.stringify(answer(ids)), job);
-  expect(decision).toMatchObject({ state: 'needed', ownerMentionMessageIds: ids });
+  expect(decision).toMatchObject({ state: 'needed', mentionedPrincipalMessageIds: ids });
   const interpreted = createLarkAssessment({} as never).interpret(job, decision!);
-  expect(interpreted.attention).toMatchObject({ ownerMentionMessageIds: ids });
+  expect(interpreted.attention).toMatchObject({ mentionedPrincipalMessageIds: ids });
 });
 
 it('corrects a wrong-owner claim before accepting the current item', async () => {
@@ -53,7 +54,7 @@ it('validates mentions fetched from history rather than rejecting evidence absen
     .mockResolvedValueOnce(response([result(answer(['om_history']))]));
   const tools = new InboxReadTools(async () => ({ messages: [raw('om_history', 'ou_owner')] }), 'ou_owner');
   expect(await triageWithChatTools(job, '', provider, tools, new AbortController().signal, undefined, request))
-    .toMatchObject({ ownerMentionMessageIds: ['om_history'], state: 'needed' });
+    .toMatchObject({ mentionedPrincipalMessageIds: ['om_history'], state: 'needed' });
   const input = JSON.parse(String(request.mock.calls[1]![1]!.body)).input;
   expect(JSON.parse(input.at(-1).output).messages[0]).toMatchObject({ mentionsOwner: true,
     mentionDetails: [{ openId: 'ou_owner', name: '同名用户' }] });

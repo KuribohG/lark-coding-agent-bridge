@@ -7,6 +7,7 @@ import { InboxService } from '../../../src/inbox/service';
 import { InboxStore } from '../../../src/inbox/store';
 import type { InboxIO, InboxJob, InboxMessage } from '../../../src/inbox/types';
 import { InboxAnalysisQueue } from '../../../src/inbox/task-source';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
 type Decision = Awaited<ReturnType<NonNullable<InboxIO['triage']>>>;
 const services: InboxService[] = [];
@@ -17,13 +18,13 @@ async function setup(queue?: InboxAnalysisQueue) {
   let now = 1_000_000;
   const messages: InboxMessage[] = [];
   const screens: { item: InboxJob; resolve: (value: Decision) => void; reject: (error: Error) => void }[] = [];
-  const config = normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner', intakeScope: 'all',
-    destination: { chatId: 'oc_target', threadId: 'omt_item', replyTo: 'om_item' } });
+  const config = normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner', intakeScope: 'all',
+    target: workItemTarget({ chatId: 'oc_target', threadId: 'omt_item', replyTo: 'om_item' }) });
   const io: InboxIO = {
     checkOwner: vi.fn(async () => {}),
-    collect: vi.fn(async kind => messages.filter(m => m.chatType === (kind === 'p2p' ? 'p2p' : 'group'))),
+    collect: vi.fn(async kind => messages.filter(m => m.containerKind === (kind === 'p2p' ? 'direct' : 'group'))),
     context: vi.fn(async () => []), source: vi.fn(async () => ({ name: '同事', type: 'p2p' as const })),
-    beginAnalysis: vi.fn(async () => config.destination), deliver: vi.fn(async () => {}),
+    beginAnalysis: vi.fn(async () => config.target), deliver: vi.fn(async () => {}),
     analyze: vi.fn(async () => ({ text: '{"replyDraft":"已核对","analysis":"最新上下文","missingInfo":""}', inputTokens: 1, outputTokens: 1 })),
     triage: vi.fn((item, signal) => new Promise<Decision>((resolve, reject) => {
       signal.addEventListener('abort', () => reject(Error('cancelled')), { once: true });
@@ -33,8 +34,9 @@ async function setup(queue?: InboxAnalysisQueue) {
   const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-immediate-')), 'state.json'));
   const service = new InboxService(store, config, io, () => now, queue); services.push(service); await service.start();
   const add = (id: string, overrides: Partial<InboxMessage> = {}) => {
-    const message: InboxMessage = { id, chatId: 'oc_source', chatName: '同事', chatType: 'p2p', senderId: 'ou_sender',
-      senderName: '同事', bot: false, time: now, position: String(messages.length + 1), text: `请确认 ${id}`, mentions: [], ...overrides };
+    const message: InboxMessage = { id, containerId: 'oc_source', containerName: '同事', containerKind: 'direct',
+      senderId: 'ou_sender', senderName: '同事', senderBot: false, time: now, sequence: String(messages.length + 1),
+      text: `请确认 ${id}`, mentions: [], ...overrides };
     messages.push(message); return message;
   };
   const complete = async (index: number, state: 'needed' | 'quiet', followUp?: Decision['followUp']) => {
@@ -88,11 +90,11 @@ it('rescreens new context immediately after a quiet decision but ignores duplica
 it('keeps different topics separate while combining a burst within each topic', async () => {
   const s = await setup();
   for (const topic of ['omt_a', 'omt_b']) for (let i = 0; i < 3; i++) {
-    s.add(`om_${topic}_${i}`, { chatType: 'group', threadId: topic });
+    s.add(`om_${topic}_${i}`, { containerKind: 'group', threadId: topic });
   }
   await s.service.tick();
   expect(s.store.data.jobs).toHaveLength(2); expect(s.screens).toHaveLength(2);
-  expect(s.screens.map(({ item }) => [item.source.threadId, item.messages.length])).toEqual([['omt_a', 3], ['omt_b', 3]]);
+  expect(s.screens.map(({ item }) => [item.sourceRef.threadId, item.messages.length])).toEqual([['omt_a', 3], ['omt_b', 3]]);
 });
 
 it('withdraws a queued stale analysis when the next collection contains more context', async () => {
@@ -101,10 +103,10 @@ it('withdraws a queued stale analysis when the next collection contains more con
     finishBusy = () => resolve({ text: '{"analysis":"完成"}', inputTokens: 1, outputTokens: 1 });
     signal.addEventListener('abort', () => reject(Error('cancelled')), { once: true });
   }));
-  s.add('om_busy', { chatId: 'oc_busy' }); await s.service.tick(); await s.complete(0, 'needed');
+  s.add('om_busy', { containerId: 'oc_busy' }); await s.service.tick(); await s.complete(0, 'needed');
   await vi.waitFor(() => expect(finishBusy).toBeDefined());
   s.advance(); s.add('om_one'); await s.service.tick(); await s.complete(1, 'needed');
-  const target = s.store.data.jobs.find(j => j.source.chatId === 'oc_source')!;
+  const target = s.store.data.jobs.find(j => j.sourceRef.containerId === 'oc_source')!;
   expect(target.state).toBe('queued');
   s.advance(); s.add('om_two'); s.add('om_three'); await s.service.tick();
   expect(s.io.analyze).toHaveBeenCalledTimes(1); expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1);
@@ -128,7 +130,7 @@ it('preserves failure backoff when more messages arrive and retries the latest c
 it('reuses an in-flight announcement for the latest context and only launches one analysis', async () => {
   const s = await setup(); let announce!: () => void;
   vi.mocked(s.io.beginAnalysis!).mockImplementation(() => new Promise(resolve => {
-    announce = () => resolve(s.service.config.destination);
+    announce = () => resolve(s.service.config.target);
   }));
   s.add('om_one'); await s.service.tick(); await s.complete(0, 'needed'); await s.service.tick();
   await vi.waitFor(() => expect(announce).toBeDefined());

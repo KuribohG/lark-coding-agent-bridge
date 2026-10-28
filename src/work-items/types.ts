@@ -1,4 +1,7 @@
-import type { DeliveryTarget } from './config';
+import type {
+  WorkItemSourceRef,
+  WorkItemTarget,
+} from './domain';
 import type { Attention, EvidenceMessage } from './evidence';
 
 export interface WorkItem {
@@ -9,17 +12,18 @@ export interface WorkItem {
   analyzedVersion?: number;
   observation?: { id: string; revision: number; time: number; digest: string };
   id: string;
-  ownerOpenId: string;
+  ownerKey: string;
+  target: WorkItemTarget;
+  sourceRef: WorkItemSourceRef;
+  analysisTarget?: WorkItemTarget;
   profile: string;
-  destination: DeliveryTarget;
-  source: { chatId: string; name: string; type: 'p2p' | 'group' | 'external'; threadId?: string };
   messages: EvidenceMessage[];
   state: 'notifying' | 'waiting' | 'queued' | 'running' | 'ready' | 'done' | 'ignored' | 'claimed' | 'failed';
   createdAt: number; updatedAt: number; notifiedAt?: number; dueAt?: number;
-  intakeTrigger?: 'private' | 'mention' | 'group';
+  /** Source-defined reason for admitting this item; the shared engine treats it as opaque. */
+  intakeTrigger?: string;
   attention?: Attention;
   analysisRequested?: boolean;
-  analysisTopic?: DeliveryTarget;
   startDelivery?: { id: string; text: string; attempts: number; startedAt: number; retryAt: number; confirmed?: boolean };
   resultDelivery?: { id?: string; attempts: number; startedAt: number; retryAt: number; confirmedAt?: number };
   sourceNotices?: { id: string; text: string; startedAt: number; attempts: number; retryAt: number; sentAt?: number; abandoned?: boolean }[];
@@ -56,7 +60,7 @@ export interface WorkItem {
 }
 
 export interface WorkItemState {
-  version: 1;
+  version: 2;
   ownerKey?: string;
   cursors: Record<string, number>;
   seen: Record<string, number>;

@@ -3,9 +3,11 @@ import { createHash } from 'node:crypto';
 import { larkCliEnv, getUserAuthStatus, type LarkCliExec, type UserImContext } from '../lark-cli/user-im';
 import { mergeProcessEnv, spawnProcess } from '../platform/spawn';
 import { inboxWorkbenchUrl, type InboxConfig } from './config';
+import { larkTarget, workItemTarget, type LarkTarget } from './lark-target';
 import type { InboxJob, InboxMessage } from './types';
 import { obj, type Obj } from './values';
 import { handlingState } from './reply';
+import { sameTarget, type WorkItemTarget } from '../work-items/domain';
 
 const str = (v: unknown) => typeof v === 'string' ? v : '';
 const iso = (n: number) => new Date(n).toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -29,25 +31,25 @@ export function parseMessages(value: unknown, hint: 'p2p' | 'group' = 'group'): 
     const m = obj(v); const sender = obj(m.sender);
     if (m.deleted) continue;
     const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content ?? '');
-    const mentionDetails = (Array.isArray(m.mentions) ? m.mentions : []).map(v => {
+    const mentions = (Array.isArray(m.mentions) ? m.mentions : []).map(v => {
       const mention = obj(v);
-      return { openId: str(obj(mention.id).open_id) || str(mention.id) || str(mention.open_id), name: str(mention.name),
+      return { id: str(obj(mention.id).open_id) || str(mention.id) || str(mention.open_id), name: str(mention.name),
         ...(str(mention.key) ? { key: str(mention.key) } : {}) };
-    }).filter(mention => mention.openId);
-    // Rendered text and forwarded bodies are not structured mentions of the enclosing message.
-    const mentions = [...new Set(mentionDetails.map(mention => mention.openId))];
+    }).filter(mention => mention.id);
     const time = messageTime(m.create_time);
     let alert: Obj = {};
     try { alert = obj(JSON.parse(text)); } catch { /* only explicit structured recovery is authoritative */ }
     const incidentId = str(alert.fingerprint) || str(alert.alert_id);
     if (str(m.message_id) && str(m.chat_id) && Number.isFinite(time)) messages.push({
-      id: str(m.message_id), chatId: str(m.chat_id), chatName: str(m.chat_name) || str(obj(m.chat_partner).name),
-      chatType: m.chat_type === 'p2p' ? 'p2p' : hint,
-      senderId: str(sender.id), senderOpenId: str(sender.open_bot_id) || undefined, senderName: str(sender.name), bot: sender.sender_type !== 'user',
-      time, text, threadId: str(m.thread_id) || undefined, parentId: str(m.parent_id) || str(m.reply_to) || undefined,
-      position: str(m.message_position) || undefined,
-      link: str(m.message_app_link) || undefined, mentions, mentionDetails,
-      ...(incidentId ? { incidentId, recovered: alert.status === 'resolved' || alert.status === 'recovered' } : {}),
+      id: str(m.message_id), containerId: str(m.chat_id),
+      containerName: str(m.chat_name) || str(obj(m.chat_partner).name),
+      containerKind: m.chat_type === 'p2p' || hint === 'p2p' ? 'direct' : 'group',
+      senderId: str(sender.id), senderName: str(sender.name), senderBot: sender.sender_type !== 'user',
+      ...(str(sender.open_bot_id) ? { senderAliases: [str(sender.open_bot_id)] } : {}),
+      time, text, threadId: str(m.thread_id) || undefined, replyTo: str(m.parent_id) || str(m.reply_to) || undefined,
+      sequence: str(m.message_position) || undefined,
+      link: str(m.message_app_link) || undefined, mentions,
+      ...(incidentId ? { metadata: { incidentId, recovered: alert.status === 'resolved' || alert.status === 'recovered' } } : {}),
     });
     messages.push(...parseMessages(m.thread_replies, hint));
   }
@@ -116,7 +118,7 @@ export class InboxLark {
       '--page-size', '50', '--no-reactions', ...(kind === 'mention' ? ['--is-at-me'] : ['--chat-type', kind])], 'messages');
     const messages = parseMessages(raw, kind === 'p2p' ? 'p2p' : 'group');
     for (const m of messages) {
-      if (!m.chatName) m.chatName = (await this.source(m.chatId)).name;
+      if (!m.containerName) m.containerName = (await this.source(m.containerId)).name;
     }
     return messages;
   }
@@ -125,14 +127,18 @@ export class InboxLark {
     // Chat history filters topic roots by creation time, losing fresh replies to old topics.
     const raw = await this.pages(['im', '+messages-search', '--as', 'user', '--chat-id', chatId,
       '--start', iso(start), '--end', iso(end), '--page-size', '50', '--no-reactions'], 'messages');
-    return parseMessages(raw, source.type).filter(m => m.time >= start && m.time <= end).map(m => ({ ...m, chatName: source.name, chatType: source.type }));
+    return parseMessages(raw, source.type).filter(m => m.time >= start && m.time <= end).map(m => ({
+      ...m,
+      containerName: source.name,
+      containerKind: source.type === 'p2p' ? 'direct' : 'group',
+    }));
   }
   async recent(type: 'p2p' | 'group', pageToken = ''): Promise<{ chats: { id: string; name: string }[]; next: string }> {
-    await this.checkOwner(this.config.ownerOpenId);
+    await this.checkOwner(this.config.recipientKey);
     const d = await this.call(['im', '+chat-list', '--as', 'user', '--types', type, '--sort', 'active_time', '--page-size', '8',
       ...(pageToken ? ['--page-token', pageToken] : [])]);
     const chats = (Array.isArray(d.chats) ? d.chats : []).map(v => ({ id: str(obj(v).chat_id), name: str(obj(v).name) }))
-      .filter(c => /^oc_\w+$/.test(c.id) && c.name && c.id !== this.config.destination.chatId);
+      .filter(c => /^oc_\w+$/.test(c.id) && c.name && c.id !== this.config.target.containerId);
     for (const c of chats) this.sources.set(c.id, { name: c.name, type, checkedAt: Date.now() });
     if (d.has_more && (!str(d.page_token) || d.page_token === pageToken)) throw new Error('会话分页未完成，请重新打开列表');
     return { chats, next: d.has_more ? str(d.page_token) : '' };
@@ -152,15 +158,16 @@ export class InboxLark {
     }
     throw new Error('无法确认你属于该会话，或无法取得会话名称');
   }
-  async beginAnalysis(job: InboxJob, text: string): Promise<InboxConfig['destination']> {
-    if (!this.config.enabled || job.ownerOpenId !== this.config.ownerOpenId || handlingState(job) !== 'open' ||
-      JSON.stringify(job.destination) !== JSON.stringify(this.config.destination)) throw new Error('分析通知已失效');
+  async beginAnalysis(job: InboxJob, text: string): Promise<WorkItemTarget> {
+    const destination = larkTarget(this.config.target);
+    if (!this.config.enabled || job.ownerKey !== this.config.ownerKey || handlingState(job) !== 'open' ||
+      !sameTarget(job.target, this.config.target)) throw new Error('分析通知已失效');
     const key = createHash('sha256').update(`inbox-start:${job.id}:${job.startDelivery?.id}`).digest('hex').slice(0, 48);
-    if (job.analysisTopic || this.config.deliveryMode === 'thread') {
-      const target = job.analysisTopic ?? this.config.destination;
-      if (target.chatId !== this.config.destination.chatId) throw new Error('分析话题目标已变更');
+    if (job.analysisTarget || this.config.deliveryMode === 'thread') {
+      const target = larkTarget(job.analysisTarget ?? this.config.target);
+      if (target.chatId !== destination.chatId) throw new Error('分析话题目标已变更');
       await this.replyAt(target, { text }, key);
-      return { ...target };
+      return workItemTarget(target);
     }
     const response = await this.sendNewTopic({ text }, key);
     const message = obj(response.message ?? response);
@@ -168,15 +175,16 @@ export class InboxLark {
     if (!/^om_\w+$/.test(replyTo)) throw new Error('无法确认新建话题消息');
     // Read the server's topic ID rather than deriving one from a message ID.
     const anchor = await this.call(['im', '+messages-mget', '--as', 'bot', '--message-ids', replyTo, '--no-reactions']);
-    const root = parseMessages(anchor.messages).find(m => m.id === replyTo && m.chatId === this.config.destination.chatId);
+    const root = parseMessages(anchor.messages).find(m => m.id === replyTo && m.containerId === destination.chatId);
     if (!root?.threadId || !/^omt_\w+$/.test(root.threadId)) throw new Error('无法确认新建话题位置');
-    return { chatId: root.chatId, replyTo, threadId: root.threadId };
+    return workItemTarget({ chatId: root.containerId, replyTo, threadId: root.threadId });
   }
   async progressAnchor(job: InboxJob, signal: AbortSignal): Promise<string> {
-    const target = job.analysisTopic;
-    if (!this.config.enabled || signal.aborted || !target || job.ownerOpenId !== this.config.ownerOpenId ||
-      handlingState(job) !== 'open' || target.chatId !== this.config.destination.chatId ||
-      JSON.stringify(job.destination) !== JSON.stringify(this.config.destination)) throw new Error('分析进度目标已失效');
+    const target = job.analysisTarget && larkTarget(job.analysisTarget);
+    const destination = larkTarget(this.config.target);
+    if (!this.config.enabled || signal.aborted || !target || job.ownerKey !== this.config.ownerKey ||
+      handlingState(job) !== 'open' || target.chatId !== destination.chatId ||
+      !sameTarget(job.target, this.config.target)) throw new Error('分析进度目标已失效');
     const key = createHash('sha256').update(`inbox-progress:${job.id}:${job.attempt ?? 0}`).digest('hex').slice(0, 48);
     // CoT attached to a topic root may appear at chat level; create an in-topic origin.
     const response = await this.replyAt(target, { text: '正在深入分析，进度会在本话题更新。' }, key, signal);
@@ -185,22 +193,24 @@ export class InboxLark {
     if (!/^om_\w+$/.test(id) || id === target.replyTo) throw new Error('无法确认进度回复');
     const anchor = await this.call(['im', '+messages-mget', '--as', 'bot', '--message-ids', id, '--no-reactions']);
     signal.throwIfAborted();
-    if (!parseMessages(anchor.messages).some(m => m.id === id && m.chatId === target.chatId && m.threadId === target.threadId)) {
+    if (!parseMessages(anchor.messages).some(m => m.id === id && m.containerId === target.chatId && m.threadId === target.threadId)) {
       throw new Error('无法确认进度话题');
     }
     return id;
   }
   async deliver(job: InboxJob, phase: 'pending' | 'progress' | 'result'): Promise<void> {
-    const d = job.destination;
-    if (job.ownerOpenId !== this.config.ownerOpenId || JSON.stringify(d) !== JSON.stringify(this.config.destination)) throw new Error('结果目标已变更，请重新处理待办');
+    const d = larkTarget(job.target);
+    const destination = larkTarget(this.config.target);
+    if (job.ownerKey !== this.config.ownerKey || !sameTarget(job.target, this.config.target)) throw new Error('结果目标已变更，请重新处理待办');
     if (phase !== 'result' || !this.config.enabled || handlingState(job) !== 'open' || (job.draftStale && !job.error) ||
-      (!job.analysisTopic && (inboxWorkbenchUrl(this.config) || job.attention?.state !== 'needed'))) return;
-    if (job.analysisTopic && job.analysisTopic.chatId !== d.chatId) throw new Error('分析话题目标已变更');
+      (!job.analysisTarget && (inboxWorkbenchUrl(this.config) || job.attention?.state !== 'needed'))) return;
+    const analysisTarget = job.analysisTarget && larkTarget(job.analysisTarget);
+    if (analysisTarget && analysisTarget.chatId !== d.chatId) throw new Error('分析话题目标已变更');
     const first = job.messages[0];
     const page = inboxWorkbenchUrl(this.config);
     const section = (title: string, text: string) => [{ tag: 'md', text: `**${title}**\n\n${withoutMentions(text)}` }];
     // Native md elements render Markdown without the CLI fetching model-supplied images.
-    const post = { zh_cn: { title: `分析结果 · ${withoutMentions(job.source.name).replace(/[\r\n]/g, ' ')}`, content: [
+    const post = { zh_cn: { title: `分析结果 · ${withoutMentions(job.sourceRef.name).replace(/[\r\n]/g, ' ')}`, content: [
       ...(job.error ? [section('分析未完成', job.error)] : [
         section('回复草稿（供你确认后发送）', job.replyDraft || '暂时无法起草，请查看下方待确认信息。'),
         section('分析结果', job.analysis || job.result || ''),
@@ -210,34 +220,35 @@ export class InboxLark {
       ...(first?.link && /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(first.link)
         ? [[{ tag: 'a', text: '原消息', href: first.link }]] : []),
     ] } };
-    const key = createHash('sha256').update(`${job.id}:${job.attempt ?? 0}:${phase}${this.config.deliveryMode === 'new_topic' ? `:new_topic:${d.chatId}` : ''}`).digest('hex').slice(0, 48);
-    const publish = (body: MessageBody) => job.analysisTopic ? this.replyAt(job.analysisTopic, body, key) : this.config.deliveryMode === 'new_topic'
+    const key = createHash('sha256').update(`${job.id}:${job.attempt ?? 0}:${phase}${this.config.deliveryMode === 'new_topic' ? `:new_topic:${destination.chatId}` : ''}`).digest('hex').slice(0, 48);
+    const publish = (body: MessageBody) => analysisTarget ? this.replyAt(analysisTarget, body, key) : this.config.deliveryMode === 'new_topic'
       ? this.sendNewTopic(body, key) : this.replyTopic(body, key);
     await publish({ post });
   }
   async notifyAttention(jobs: InboxJob[], id: string): Promise<void> {
-    if (!this.config.enabled || !jobs.length || jobs.some(j => j.ownerOpenId !== this.config.ownerOpenId ||
+    const destination = larkTarget(this.config.target);
+    if (!this.config.enabled || !jobs.length || jobs.some(j => j.ownerKey !== this.config.ownerKey ||
       j.attention?.state !== 'needed' || j.handlingState === 'handled' || j.handlingState === 'ignored' ||
-      JSON.stringify(j.destination) !== JSON.stringify(this.config.destination))) throw new Error('关注通知已失效');
+      !sameTarget(j.target, this.config.target))) throw new Error('关注通知已失效');
     const clean = (s: string) => s.replace(/[\r\n]/g, ' ').replace(/<\/?at\b[^>]*>/gi, '').slice(0, 180);
     if (this.config.deliveryMode === 'new_topic') {
       for (const job of jobs) {
         const source = [...job.messages].reverse().find(m => /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(m.link || ''))?.link;
-        const text = `待处理 · ${clean(job.source.name)}\n${clean(job.attention!.reason)}` +
+        const text = `待处理 · ${clean(job.sourceRef.name)}\n${clean(job.attention!.reason)}` +
           (source ? `\n原消息：${source}` : '') +
           `\n查看与处理：${inboxWorkbenchUrl(this.config)}#job=${job.id}`;
-        const key = createHash('sha256').update(`attention:${id}:${job.id}:${this.config.destination.chatId}`).digest('hex').slice(0, 48);
+        const key = createHash('sha256').update(`attention:${id}:${job.id}:${destination.chatId}`).digest('hex').slice(0, 48);
         await this.sendNewTopic({ text }, key);
       }
       return;
     }
-    const text = `有 ${jobs.length} 项新事项需要你关注：\n` + jobs.map((j, i) => `${i + 1}. ${clean(j.source.name)}：${clean(j.attention!.reason)}`).join('\n') +
+    const text = `有 ${jobs.length} 项新事项需要你关注：\n` + jobs.map((j, i) => `${i + 1}. ${clean(j.sourceRef.name)}：${clean(j.attention!.reason)}`).join('\n') +
       `\n在工作台查看、批量处理或深入分析：${inboxWorkbenchUrl(this.config)}`;
     const key = createHash('sha256').update(`attention:${id}`).digest('hex').slice(0, 48);
     await this.replyTopic({ text }, key);
   }
   private async sendNewTopic(body: MessageBody, key: string): Promise<Obj> {
-    const chatId = this.config.destination.chatId;
+    const chatId = larkTarget(this.config.target).chatId;
     const chat = await this.call(['im', 'chats', 'get', '--as', 'bot', '--chat-id', chatId]);
     if (chat.chat_mode !== 'topic') throw new Error('结果群不是话题群，停止新建话题');
     return this.call(['im', '+messages-send', '--as', 'bot', '--chat-id', chatId,
@@ -245,16 +256,16 @@ export class InboxLark {
       '--idempotency-key', key]);
   }
   async replyTopic(body: MessageBody, key?: string): Promise<void> {
-    await this.replyAt(this.config.destination, body, key);
+    await this.replyAt(larkTarget(this.config.target), body, key);
   }
   async replyMenu(card: object, messageId: string, threadId: string): Promise<void> {
     if (!/^om_\w+$/.test(messageId) || !/^omt_\w+$/.test(threadId)) throw new Error('无法确认入口所在话题，请在群话题中重新发送 /inbox');
-    await this.replyAt({ chatId: this.config.destination.chatId, replyTo: messageId, threadId }, { card });
+    await this.replyAt({ chatId: larkTarget(this.config.target).chatId, replyTo: messageId, threadId }, { card });
   }
-  private async replyAt(d: InboxConfig['destination'], body: MessageBody, key?: string, signal?: AbortSignal): Promise<Obj> {
+  private async replyAt(d: LarkTarget, body: MessageBody, key?: string, signal?: AbortSignal): Promise<Obj> {
     const anchor = await this.call(['im', '+messages-mget', '--as', 'bot', '--message-ids', d.replyTo, '--no-reactions']);
     const messages = parseMessages(anchor.messages);
-    if (!messages.some(m => m.id === d.replyTo && m.chatId === d.chatId && m.threadId === d.threadId)) throw new Error('无法验证回复话题，停止投递');
+    if (!messages.some(m => m.id === d.replyTo && m.containerId === d.chatId && m.threadId === d.threadId)) throw new Error('无法验证回复话题，停止投递');
     signal?.throwIfAborted();
     return this.call(['im', '+messages-reply', '--as', 'bot', '--message-id', d.replyTo, '--reply-in-thread',
       ...messageArgs(body),

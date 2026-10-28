@@ -15,6 +15,7 @@ import type { InboxJob } from '../../../src/inbox/types';
 import { processInbox } from '../../../src/monitoring/sources/lark/processor';
 import { triageWithChatTools } from '../../../src/monitoring/sources/lark/codex-triage';
 import { loadProfileModelService } from '../../../src/agent/model-service';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
 vi.mock('../../../src/inbox/service', () => ({ InboxService: vi.fn(function (_store, config) {
   return { config, start: vi.fn(), close: vi.fn(), list: () => [] };
@@ -44,7 +45,7 @@ async function setup(triageProfile?: string, standalone = false) {
   const root = createRootConfig('claude', claude); root.profiles.codex = codex;
   root.inbox = normalizeInbox({ enabled: true, executorProfile: 'claude', triageProfile, triageModel: 'cheap', analysisModel: '',
     triageMessageLimit: 17, triageMessageChars: 1000,
-    ownerOpenId: 'ou_owner', destination: { chatId: 'oc_group', threadId: 'omt_topic', replyTo: 'om_anchor' } });
+    recipientKey: 'ou_owner', target: workItemTarget({ chatId: 'oc_group', threadId: 'omt_topic', replyTo: 'om_anchor' }) });
   if (standalone) {
     delete root.profiles.codex;
     vi.stubEnv('TEST_INBOX_MODEL_KEY', 'independent-key');

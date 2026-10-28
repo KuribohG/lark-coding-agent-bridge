@@ -1,11 +1,11 @@
 import { table, string, boolean, integer, choice, fail } from '../../validation';
-import { destinationSchema as destination, deliveryModeSchema as deliveryMode } from '../../notification';
+import { targetSchema as target, deliveryModeSchema as deliveryMode } from '../../notification';
 import { defineMonitorConfig } from '../../module';
 import { normalizeInbox, validateInbox } from '../../../inbox/config';
 import { inboxTriageSource } from '../../../inbox/model-routing';
 
 const schema = table({
-  enabled: boolean, executorProfile: string, ownerOpenId: string, destination, deliveryMode,
+  enabled: boolean, executorProfile: string, recipientKey: string, target, deliveryMode,
   intakeScope: choice('private', 'private_mentions', 'all'), watchPrivate: boolean, watchMentions: boolean,
   autoAnalyze: (v, p) => { if (v !== false) fail(p, '旧版 autoAnalyze 仅支持 false'); },
   attentionProfile: string, analysisModel: string, triageService: string, triageProfile: string, triageModel: string,
@@ -20,5 +20,9 @@ const schema = table({
 export const larkMonitorConfig = defineMonitorConfig({
   id: 'lark', key: 'inbox',
   parse(value) { schema(value, 'monitors.sources.lark'); const config = normalizeInbox(value); validateInbox(config); return config; },
+  format(config) {
+    const { ownerKey: _, ...stored } = config;
+    return JSON.parse(JSON.stringify(stored));
+  },
   references(config, root) { if (config.enabled || config.triageService) inboxTriageSource(config, root); },
 });

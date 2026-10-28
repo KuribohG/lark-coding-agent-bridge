@@ -77,7 +77,7 @@ export class InboxManager {
   async workbench() {
     const view = await this.view();
     const sources = this.sources.statuses();
-    const jobs = [...(this.service?.list(500).filter(j => j.ownerOpenId === view.config.ownerOpenId && j.profile === view.config.executorProfile) ?? []), ...this.sources.list()];
+    const jobs = [...(this.service?.list(500).filter(j => j.ownerKey === view.config.ownerKey && j.profile === view.config.executorProfile) ?? []), ...this.sources.list()];
     return { ...view, connected: Boolean(this.service) || sources.length > 0, sources,
       jobs: guiJobs(jobs) };
   }
@@ -108,7 +108,7 @@ export class InboxManager {
         const auth = await getUserAuthStatus({ profile: config.executorProfile, rootDir: this.rootDir });
         ownerOpenId = auth.openId ?? '';
         if (!ownerOpenId) throw new Error('请先完成飞书用户授权；若未安装 lark-cli，请运行 npm install -g @larksuite/cli@1.0.77 并重启 profile');
-        if (config.ownerOpenId && ownerOpenId !== config.ownerOpenId) throw new Error('授权用户与助理所属用户不一致');
+        if (config.recipientKey && ownerOpenId !== config.recipientKey) throw new Error('授权用户与助理所属用户不一致');
         const missing = ['search:message', 'im:chat:read', 'im:message.p2p_msg:get_as_user', 'im:message.group_msg:get_as_user'].filter(s => !auth.scopes.includes(s));
         if (missing.length) throw new Error(`缺少授权：${missing.join('、')}`);
         if (profile.larkCli.identityPreset !== 'user-default') throw new Error('请在 profile 设置中允许已授权用户身份，或完成本页的授权流程');
@@ -125,7 +125,8 @@ export class InboxManager {
       });
     }
     await check('结果话题配置', () => {
-      validateInbox({ ...config, ownerOpenId: config.ownerOpenId || ownerOpenId, enabled: true });
+      const recipientKey = config.recipientKey || ownerOpenId;
+      validateInbox({ ...config, recipientKey, ownerKey: recipientKey, enabled: true });
       return '已填写；请确保机器人在结果群内并可发消息';
     });
     return { checks, ownerOpenId, ok: checks.every(c => c.ok) };
@@ -138,9 +139,9 @@ export class InboxManager {
       const auth = await getUserAuthStatus({ profile: ctx.profile, rootDir: this.rootDir });
       if (auth.openId !== ctx.operator) return '请先在本地控制台完成当前 profile 的用户授权，再由该用户发送 /inbox setup。';
       const current = (await this.view()).config;
-      if (current.ownerOpenId && current.ownerOpenId !== ctx.operator) return '此助理已属于另一用户，请使用独立配置目录。';
-      await this.configure({ ...current, executorProfile: ctx.profile, ownerOpenId: ctx.operator,
-        destination: { chatId: ctx.chatId, threadId: ctx.threadId, replyTo: ctx.messageId } });
+      if (current.recipientKey && current.recipientKey !== ctx.operator) return '此助理已属于另一用户，请使用独立配置目录。';
+      await this.configure({ ...current, executorProfile: ctx.profile, recipientKey: ctx.operator, ownerKey: ctx.operator,
+        target: { transport: 'lark', containerId: ctx.chatId, threadId: ctx.threadId, replyTo: ctx.messageId } });
       return '已记录当前结果话题。请在本地控制台的会话助理设置中点击“重新读取设置”，检查模型配置后开启。';
     }
     const cards = this.cards; const lark = this.lark;
@@ -258,11 +259,11 @@ export class InboxManager {
         signal.addEventListener('abort', cancel, { once: true });
         try {
           signal.throwIfAborted();
-          await reader.checkOwner(config.ownerOpenId);
+          await reader.checkOwner(config.recipientKey);
           signal.throwIfAborted();
           return await reader.callValue(args);
         } finally { signal.removeEventListener('abort', cancel); reader.close(); }
-      }, config.ownerOpenId);
+      }, config.recipientKey);
       const larkAuth = controls.larkAuth ?? new LarkProfileAuth(controls.cfg, paths);
       const credentials = await larkAuth.credentials();
       const tenantTokens = await larkAuth.tenantTokens();
@@ -305,7 +306,7 @@ export class InboxManager {
       await this.service.start();
       this.control = await startInboxControl(
         join(this.rootDir ?? dirname(this.configPath), 'inbox-control.json'),
-        { profile: config.executorProfile, ownerOpenId: config.ownerOpenId },
+        { profile: config.executorProfile, ownerOpenId: config.recipientKey },
         input => this.workbenchCommand(input),
       );
       if (config.gui.publicUrl) {
@@ -318,7 +319,7 @@ export class InboxManager {
         const auth = new InboxH5Auth({
           appId: controls.cfg.accounts.app.id,
           appSecret: credentials.appSecret,
-          ownerOpenId: config.ownerOpenId,
+          ownerOpenId: config.recipientKey,
           publicUrl: config.h5.publicUrl,
           tenant: controls.cfg.accounts.app.tenant,
           tenantTokens,

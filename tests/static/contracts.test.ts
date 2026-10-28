@@ -138,6 +138,10 @@ describe('static architecture contracts', () => {
     }
     for (const file of collectTsFiles('src/work-items')) {
       expect(read(file), file).not.toMatch(/from ['"](?:\.\.\/)+inbox/);
+      expect(read(file), file).not.toMatch(
+        /\b(?:ownerOpenId|chatId|chatType|senderOpenId|parentId|analysisTopic)\b/,
+      );
+      expect(read(file), file).not.toMatch(/applink\.(?:feishu\.cn|larksuite\.com)/);
     }
     for (const file of collectTsFiles('src/config')) {
       expect(read(file), file).not.toMatch(/channels\/lark/);

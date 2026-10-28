@@ -1,15 +1,13 @@
 export type WorkItemMode = 'off' | 'on';
-export interface DeliveryTarget { chatId: string; threadId: string; replyTo: string }
+import type { WorkItemTarget } from './domain';
 
-/** Existing inbox configuration is structurally compatible with these shared settings. */
+/** Transport-neutral settings shared by every work-item source. */
 export interface WorkItemConfig {
   enabled: boolean;
   executorProfile: string;
-  ownerOpenId: string;
-  destination: DeliveryTarget;
+  ownerKey: string;
+  target: WorkItemTarget;
   autoAnalyze: boolean;
   dailyTriageLimit: number;
-  gui: { publicUrl: string };
-  h5: { publicUrl: string };
   workbenchUrl?: string;
 }

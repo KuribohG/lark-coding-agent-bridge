@@ -7,7 +7,7 @@ import type { StorageMonitorConfig, StorageWatch } from './config';
 import type { ClusterSample, IoSample, StorageProvider, TaskRun } from './provider';
 
 export const storageScope = (c: StorageMonitorConfig) => createHash('sha256').update(JSON.stringify([
-  c.executorProfile, c.notification?.ownerOpenId, c.grafana.url, c.clusters, c.platforms,
+  c.executorProfile, c.notification?.recipientKey, c.grafana.url, c.clusters, c.platforms,
   c.watches.filter(w => w.enabled), c.latencyMs, c.windowSeconds, c.sustainSeconds,
 ])).digest('hex').slice(0, 24);
 const hash = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex').slice(0, 32);

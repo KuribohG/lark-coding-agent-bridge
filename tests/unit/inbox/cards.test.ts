@@ -9,10 +9,13 @@ import { normalizeInbox, validateInbox } from '../../../src/inbox/config';
 import { InboxLark } from '../../../src/inbox/lark';
 import type { InboxService } from '../../../src/inbox/service';
 import type { InboxJob } from '../../../src/inbox/types';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
 const context: InboxCardContext = { profile: 'codex', operator: 'ou_owner', chatId: 'oc_target', threadId: 'omt_topic' };
-const config = () => normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner', destination: { chatId: 'oc_target', threadId: 'omt_topic', replyTo: 'om_anchor' } });
-const job = { id: 'job1', source: { chatId: 'oc_source', name: '原会话', type: 'p2p' }, state: 'waiting' } as InboxJob;
+const config = () => normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner',
+  target: workItemTarget({ chatId: 'oc_target', threadId: 'omt_topic', replyTo: 'om_anchor' }) });
+const job = { id: 'job1', ownerKey: 'ou_owner', target: config().target,
+  sourceRef: { transport: 'lark', containerId: 'oc_source', name: '原会话', kind: 'direct' }, state: 'waiting' } as InboxJob;
 type Element = { tag: string; text?: { content: string }; behaviors?: { value: { cmd: string; arg?: string } }[] };
 function elements(body: { card?: object }): Element[] { return (body.card as { body: { elements: Element[] } }).body.elements; }
 function command(element: Element): string {
@@ -70,7 +73,7 @@ it('opens and browses in a new topic of the configured group, while submitting r
   await h.cards.handle(cmd, from);
   expect(h.service.manual).toHaveBeenCalledWith('oc_source');
   expect(h.lark.replyTopic).toHaveBeenCalledWith({ text: expect.stringContaining('原会话') });
-  expect(h.service.config.destination).toEqual(config().destination);
+  expect(h.service.config.target).toEqual(config().target);
 });
 
 it('validates menu carriers in the configured group before replying to their new topic', async () => {
@@ -133,7 +136,7 @@ it('suppresses old pending reminder cards', async () => {
     messages: [{ message_id: 'om_anchor', chat_id: 'oc_target', thread_id: 'omt_topic', create_time: '2026-10-14 20:00' }] } }) }));
   const lark = new InboxLark({ profile: 'codex' }, config(), exec);
   lark.reminderCard = () => ({ schema: '2.0', body: { elements: [] } });
-  await lark.deliver({ ...job, ownerOpenId: 'ou_owner', destination: config().destination,
+  await lark.deliver({ ...job, ownerKey: 'ou_owner', target: config().target,
     messages: [{ time: 1_000_000 }], automatic: true } as InboxJob, 'pending');
   expect(exec).not.toHaveBeenCalled();
 });

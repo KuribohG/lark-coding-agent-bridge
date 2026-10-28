@@ -96,10 +96,11 @@ lark-channel-bridge ci-watch status
 ```json
 {
   "notification": {
-    "ownerOpenId": "ou_OWNER",
+    "recipientKey": "ou_OWNER",
     "deliveryMode": "new_topic",
-    "destination": {
-      "chatId": "oc_RESULT",
+    "target": {
+      "transport": "lark",
+      "containerId": "oc_RESULT",
       "threadId": "omt_SETUP_TOPIC",
       "replyTo": "om_SETUP_MESSAGE"
     }

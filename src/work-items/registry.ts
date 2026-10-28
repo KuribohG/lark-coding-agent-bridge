@@ -40,7 +40,7 @@ export class WorkItemSources {
     if (options.source.id !== options.id) throw new Error('Invalid source adapter');
     if (this.entries.has(options.id)) throw new Error('Inbox task source already connected');
     const config = options.config;
-    const scope = createHash('sha256').update(JSON.stringify([config.ownerOpenId, config.executorProfile])).digest('hex').slice(0, 24);
+    const scope = createHash('sha256').update(JSON.stringify([config.ownerKey, config.executorProfile])).digest('hex').slice(0, 24);
     const folder = join(dirname(this.configPath), 'inbox', 'sources', options.id, scope);
     await mkdir(folder, { recursive: true, mode: 0o700 });
     const lease = join(folder, 'service'); await writeFile(lease, '', { flag: 'a', mode: 0o600 });
@@ -65,7 +65,10 @@ export class WorkItemSources {
   select(ids: readonly string[], scope?: { owner: string; profile: string }): WorkItemService | undefined {
     const entries = [...this.entries.values()].filter(entry => ids.some(id => typeof id === 'string' && entry.service.get(id)));
     if (!entries.length) return undefined;
-    if (scope && entries.some(entry => entry.service.config.ownerOpenId !== scope.owner || entry.service.config.executorProfile !== scope.profile)) {
+    if (scope && entries.some(entry => {
+      const config = entry.service.config;
+      return config.ownerKey !== scope.owner || config.executorProfile !== scope.profile;
+    })) {
       throw new Error('待办不属于当前工作台');
     }
     if (entries.length !== 1 || !ids.every(id => typeof id === 'string' && entries[0]!.service.get(id))) {

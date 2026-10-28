@@ -105,10 +105,11 @@ results as the bot, add an explicitly chosen destination:
 ```json
 {
   "notification": {
-    "ownerOpenId": "ou_owner",
+    "recipientKey": "ou_owner",
     "deliveryMode": "new_topic",
-    "destination": {
-      "chatId": "oc_result_group",
+    "target": {
+      "transport": "lark",
+      "containerId": "oc_result_group",
       "threadId": "omt_existing_setup_topic",
       "replyTo": "om_existing_setup_message"
     }
@@ -117,7 +118,7 @@ results as the bot, add an explicitly chosen destination:
 ```
 
 `new_topic` creates one topic per failure; `thread` replies to the configured
-topic. Destinations are checked using the bot's access before sending. The start
+topic. Targets are checked using the bot's access before sending. The start
 announcement and topic are persisted before launching the agent. Delivery retries
 use a stable idempotency key and never rerun a completed model analysis. Delivery
 is attempted at most three times; an undelivered `ready` result remains available

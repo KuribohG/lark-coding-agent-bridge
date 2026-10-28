@@ -7,14 +7,16 @@ import { parseMessages } from '../../../src/inbox/lark';
 import { InboxService } from '../../../src/inbox/service';
 import { InboxStore } from '../../../src/inbox/store';
 import type { InboxIO, InboxJob, InboxMessage } from '../../../src/inbox/types';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
-const destination = { chatId: 'oc_result', threadId: 'omt_menu', replyTo: 'om_menu' };
-const config = () => normalizeInbox({ enabled: true, ownerOpenId: 'ou_owner', executorProfile: 'codex', intakeScope: 'all', destination });
-const human: InboxMessage = { id: 'om_human', chatId: 'oc_source', chatName: '项目群', chatType: 'group',
-  senderId: 'ou_colleague', senderName: '同事', bot: false, time: 1_000_000, text: '请确认这个问题', mentions: [] };
-const self: InboxMessage = { ...human, id: 'om_self', senderId: 'cli_self', bot: true, text: '已开始分析，请确认重启' };
-const job = (id: string, messages: InboxMessage[], extras: Partial<InboxJob> = {}): InboxJob => ({ id, messages, ownerOpenId: 'ou_owner', profile: 'codex', destination,
-  source: { chatId: messages[0]!.chatId, name: '项目群', type: 'group' }, automatic: true, alert: true, state: 'queued', analysisRequested: true,
+const destination = workItemTarget({ chatId: 'oc_result', threadId: 'omt_menu', replyTo: 'om_menu' });
+const config = () => normalizeInbox({ enabled: true, recipientKey: 'ou_owner', executorProfile: 'codex', intakeScope: 'all', target: destination });
+const human: InboxMessage = { id: 'om_human', containerId: 'oc_source', containerName: '项目群', containerKind: 'group',
+  senderId: 'ou_colleague', senderName: '同事', senderBot: false, time: 1_000_000, text: '请确认这个问题', mentions: [] };
+const self: InboxMessage = { ...human, id: 'om_self', senderId: 'cli_self', senderAliases: ['ou_self'],
+  senderBot: true, text: '已开始分析，请确认重启' };
+const job = (id: string, messages: InboxMessage[], extras: Partial<InboxJob> = {}): InboxJob => ({ id, messages, ownerKey: 'ou_owner', profile: 'codex', target: destination,
+  sourceRef: { transport: 'lark', containerId: messages[0]!.containerId, name: '项目群', kind: 'group' }, automatic: true, alert: true, state: 'queued', analysisRequested: true,
   createdAt: 900_000, updatedAt: 900_000, revision: 1, attention: { state: 'needed', reason: '旧版误判', retry: { attempts: 6, nextAt: 0, error: '重试' } },
   startDelivery: { id: 'old-start', text: '旧通知', attempts: 1, startedAt: 0, retryAt: 0 }, resultDelivery: { attempts: 1, startedAt: 0, retryAt: 0 }, ...extras });
 const services: InboxService[] = [];
@@ -36,14 +38,14 @@ async function setup(jobs: InboxJob[] = [], overrides: Partial<InboxIO> = {}) {
 it('preserves app and open-bot identities from real Lark sender shapes', () => {
   const parsed = parseMessages([{ message_id: 'om_self', chat_id: 'oc_source', create_time: '1000', content: '我的输出',
     sender: { id: 'cli_self', id_type: 'app_id', open_bot_id: 'ou_self', sender_type: 'app' } }]);
-  expect(parsed[0]).toMatchObject({ senderId: 'cli_self', senderOpenId: 'ou_self', bot: true });
+  expect(parsed[0]).toMatchObject({ senderId: 'cli_self', senderAliases: ['ou_self'], senderBot: true });
 });
 
 it('drops self IDs and result-group messages before ingestion while retaining external bot alerts', async () => {
-  const external = { ...self, id: 'om_alert', senderId: 'cli_alert', text: '告警：磁盘异常' };
-  const messages = [self, { ...self, id: 'om_open', senderId: 'ou_self', bot: false },
-    { ...self, id: 'om_alias', senderId: 'cli_alias', senderOpenId: 'ou_self' },
-    { ...human, id: 'om_result', chatId: destination.chatId }, external];
+  const external = { ...self, id: 'om_alert', senderId: 'cli_alert', senderAliases: [], text: '告警：磁盘异常' };
+  const messages = [self, { ...self, id: 'om_open', senderId: 'ou_self', senderBot: false },
+    { ...self, id: 'om_alias', senderId: 'cli_alias', senderAliases: ['ou_self'] },
+    { ...human, id: 'om_result', containerId: destination.containerId }, external];
   const s = await setup([], { collect: vi.fn(async kind => kind === 'group' ? messages : []) });
   await s.service.tick();
   expect(s.service.list().flatMap(j => j.messages.map(m => m.id))).toEqual(['om_alert']);
@@ -52,8 +54,8 @@ it('drops self IDs and result-group messages before ingestion while retaining ex
 });
 
 it('quarantines restored self-only queues, results and delivery retries, including previous result groups', async () => {
-  const jobs = ['queued', 'ready', 'failed', 'waiting'].map((state, i) => job(`self-${i}`, [self], { state: state as InboxJob['state'], analysisTopic: destination }));
-  jobs.push(job('old-result', [{ ...human, chatId: 'oc_previous' }], { destination: { ...destination, chatId: 'oc_previous' } }));
+  const jobs = ['queued', 'ready', 'failed', 'waiting'].map((state, i) => job(`self-${i}`, [self], { state: state as InboxJob['state'], analysisTarget: destination }));
+  jobs.push(job('old-result', [{ ...human, containerId: 'oc_previous' }], { target: { ...destination, containerId: 'oc_previous' } }));
   const s = await setup(jobs); await s.service.tick();
   for (const j of s.service.list()) {
     expect(j).toMatchObject({ state: 'ignored', handlingState: 'ignored', attention: { state: 'quiet' }, analysisRequested: false });
@@ -68,7 +70,7 @@ it('quarantines restored self-only queues, results and delivery retries, includi
 it('rescreens mixed historical jobs without self output and keeps edited drafts stale until reviewed', async () => {
   const s = await setup([job('mixed', [human, self], { replyDraft: '人工草稿', draftEdited: true })]);
   expect(s.service.list()[0]).toMatchObject({ state: 'waiting', messages: [human], attention: { state: 'pending' }, replyDraft: '人工草稿', draftStale: true });
-  expect(s.service.list()[0]?.evidenceVersion).toBe(2);
+  expect(s.service.list()[0]?.evidenceVersion).toBe(1);
   s.advance(61_000); await s.service.tick(); await vi.waitFor(() => expect(s.io.triage).toHaveBeenCalledTimes(1));
   expect(vi.mocked(s.io.triage!).mock.calls[0]![0].messages).toEqual([human]);
   await s.service.tick(); expect(s.io.analyze).not.toHaveBeenCalled();
@@ -86,8 +88,8 @@ it('filters self output from refreshed analysis context and never lets it invali
 
 it('blocks manual result-group selection and self-only context, while allowing a genuine mixed conversation', async () => {
   const s = await setup([], { context: vi.fn(async () => [self]) });
-  await expect(s.service.manual(destination.chatId)).rejects.toThrow('结果群');
-  await expect(s.service.manual(human.chatId)).rejects.toThrow('非助理消息');
+  await expect(s.service.manual(destination.containerId)).rejects.toThrow('结果群');
+  await expect(s.service.manual(human.containerId)).rejects.toThrow('非助理消息');
   vi.mocked(s.io.context).mockResolvedValue([human, self]);
-  const submitted = await s.service.manual(human.chatId); expect(submitted.messages).toEqual([human]);
+  const submitted = await s.service.manual(human.containerId); expect(submitted.messages).toEqual([human]);
 });

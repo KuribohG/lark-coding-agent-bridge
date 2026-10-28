@@ -3,7 +3,8 @@ import { replyContent, handlingState } from '../../../src/inbox/reply';
 import { guiJobs, guiContent } from '../../../src/inbox/gui';
 import type { InboxJob } from '../../../src/inbox/types';
 
-const job = (id = 'one'): InboxJob => ({ id, source: { chatId: 'oc_source', name: '会话', type: 'p2p' }, messages: [],
+const job = (id = 'one'): InboxJob => ({ id,
+  sourceRef: { transport: 'lark', containerId: 'oc_source', name: '会话', kind: 'direct' }, messages: [],
   state: 'done', updatedAt: 1, automatic: true, alert: false, result: '## 分析结论\n事实不足\n\n## 建议回复\n请补充版本。\n\n## 待确认事项\n目标版本' } as unknown as InboxJob);
 
 describe('reply content and sync', () => {

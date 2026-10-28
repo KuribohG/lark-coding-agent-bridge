@@ -8,6 +8,7 @@ import { WorkItemStore } from '../../../src/work-items/store';
 import { EventSource } from '../../../src/work-items/event-source';
 import type { AnalysisResult, RuleAssessmentPolicy, SourceContext, WorkItemRuntime } from '../../../src/work-items/contracts';
 import type { WorkItemEvent } from '../../../src/work-items/events';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
 const services: WorkItemService[] = [];
 afterEach(async () => { await Promise.all(services.splice(0).map(service => service.close())); });
@@ -21,7 +22,8 @@ const update = (revision: number, extra: Partial<WorkItemEvent> = {}): WorkItemE
 
 async function setup(options: { runtime?: Partial<WorkItemRuntime>; enabled?: boolean; policy?: RuleAssessmentPolicy; owner?: string } = {}) {
   const folder = await mkdtemp(join(tmpdir(), 'work-items-'));
-  const config = normalizeInbox({ enabled: options.enabled ?? true, ownerOpenId: options.owner ?? 'ou_owner', executorProfile: 'codex' });
+  const config = normalizeInbox({ enabled: options.enabled ?? true, recipientKey: options.owner ?? 'ou_owner', executorProfile: 'codex',
+    target: workItemTarget({ chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_result' }) });
   const runtime: WorkItemRuntime = { source: new EventSource('test-source', () => true, options.policy),
     checkAccess: vi.fn(async () => {}), deliver: vi.fn(async () => {}), investigate: vi.fn(async () => report()), ...options.runtime };
   const store = new WorkItemStore(join(folder, 'state.json'));
@@ -32,7 +34,7 @@ async function setup(options: { runtime?: Partial<WorkItemRuntime>; enabled?: bo
 
 it('supports a source without chat IO, and analysis completion leaves the source issue open', async () => {
   const s = await setup(); const item = await s.service.observe(event);
-  expect(item).toMatchObject({ origin: { sourceId: 'test-source', key: event.key }, source: { type: 'external' }, messages: [], evidenceVersion: 1 });
+  expect(item).toMatchObject({ origin: { sourceId: 'test-source', key: event.key }, sourceRef: { kind: 'external' }, messages: [], evidenceVersion: 1 });
   await s.service.tick(); await vi.waitFor(() => expect(s.service.get(item.id)?.state).toBe('ready'));
   expect(s.service.get(item.id)).toMatchObject({ businessState: 'open', handlingState: 'open', analyzedVersion: 1 });
   expect(s.runtime.investigate).toHaveBeenCalledTimes(1);
@@ -123,7 +125,7 @@ it('discards a superseded result and investigates the new evidence in the same i
   let finish!: (result: AnalysisResult) => void;
   const investigate = vi.fn<WorkItemRuntime['investigate']>()
     .mockImplementationOnce(() => new Promise(resolve => { finish = resolve; })).mockResolvedValue(report('new'));
-  const topic = { chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_result' };
+  const topic = workItemTarget({ chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_result' });
   const s = await setup({ runtime: { investigate, beginAnalysis: vi.fn(async () => topic) } });
   const item = await s.service.observe(event); await s.service.tick(); await vi.waitFor(() => expect(finish).toBeDefined());
   await s.service.observe(update(2));
@@ -131,7 +133,7 @@ it('discards a superseded result and investigates the new evidence in the same i
   finish(report('old'));
   await vi.waitFor(() => expect(s.service.get(item.id)?.replyDraft).toBe('new'));
   expect(s.service.list()).toHaveLength(1);
-  expect(s.service.get(item.id)).toMatchObject({ analyzedVersion: 2, evidenceVersion: 2, analysisTopic: topic, businessState: 'open' });
+  expect(s.service.get(item.id)).toMatchObject({ analyzedVersion: 2, evidenceVersion: 2, analysisTarget: topic, businessState: 'open' });
   expect(s.runtime.beginAnalysis).toHaveBeenCalledTimes(1);
 });
 
@@ -175,18 +177,12 @@ it.each(['open', 'ignored', 'handled'] as const)('updates evidence without reviv
   expect(s.runtime.investigate).not.toHaveBeenCalled();
 });
 
-it('migrates old events without changing IDs, draft edits, topics, stop markers or delivery receipts', async () => {
+it('resets unsupported version-1 state instead of migrating removed Lark fields', async () => {
   const s = await setup({ enabled: false }); const item = await s.service.observe(event);
-  const legacy = { ...item, origin: undefined, evidenceVersion: undefined, observation: undefined, state: 'done',
-    source: { name: item.source.name, chatId: '', type: 'group' }, messages: [{ id: 'old', text: 'synthetic message' }],
-    replyDraft: 'edited', draftEdited: true, analysisPaused: true, deliveredAt: 88,
-    analysisTopic: { chatId: 'oc_keep', threadId: 'omt_keep', replyTo: 'om_keep' } };
-  await writeFile(s.store.path, JSON.stringify({ ...s.store.data, jobs: [legacy] }));
-  const migrated = new WorkItemStore(s.store.path); await migrated.load();
-  expect(migrated.data.jobs[0]).toMatchObject({ id: item.id, replyDraft: 'edited', draftEdited: true, analysisPaused: true,
-    deliveredAt: 88, analysisTopic: legacy.analysisTopic, origin: { sourceId: 'test-source' }, source: { type: 'external' }, messages: [] });
-  const once = await readFile(s.store.path, 'utf8'); await migrated.load();
-  expect(await readFile(s.store.path, 'utf8')).toBe(once);
+  await writeFile(s.store.path, JSON.stringify({ ...s.store.data, version: 1, jobs: [item] }));
+  const loaded = new WorkItemStore(s.store.path); await loaded.load();
+  expect(loaded.data).toMatchObject({ version: 2, jobs: [], cursors: {}, seen: {}, autoUsage: {} });
+  expect(JSON.parse(await readFile(s.store.path, 'utf8')).version).toBe(2);
 });
 
 it('retains create-only semantics for old collectors and scopes the same key by owner', async () => {

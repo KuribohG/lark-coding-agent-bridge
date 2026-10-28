@@ -1,9 +1,9 @@
 import type { InboxJob } from './types';
 import { handlingState, replyContent } from './reply';
 
-export const guiSummary = (job: InboxJob) => ({ id: job.id, name: job.source.name.slice(0, 80),
+export const guiSummary = (job: InboxJob) => ({ id: job.id, name: job.sourceRef.name.slice(0, 80),
   sourceKind: job.external?.source ?? 'conversation', executorProfile: job.profile,
-  chatId: job.source.chatId, type: job.source.type, state: job.state,
+  chatId: job.sourceRef.containerId, type: job.sourceRef.kind, state: job.state,
   preview: (job.messages.at(-1)?.text || job.attention?.reason || '').slice(0, 80), messageCount: job.messages.length,
   updatedAt: job.updatedAt, dueAt: job.dueAt, automatic: job.automatic, alert: job.alert,
   attention: job.attention, analysisStoppedAt: job.analysisStoppedAt,
@@ -19,7 +19,7 @@ export function guiContent(job: InboxJob) {
     missingInfo: job.missingInfo ?? legacy.missingInfo, draftEdited: Boolean(job.draftEdited), draftStale,
     error: job.error?.slice(0, 1000), evidenceDir: job.external?.evidenceDir,
     sourceUrl: job.external ? (/^https:\/\//.test(job.external.url) ? job.external.url : '') : job.messages.find(m => /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(m.link || ''))?.link?.slice(0, 1000) ||
-      `https://applink.feishu.cn/client/chat/open?openChatId=${job.source.chatId}`,
+      `https://applink.feishu.cn/client/chat/open?openChatId=${job.sourceRef.containerId}`,
     messages: job.messages.slice(-5).map(m => ({ name: m.senderName.slice(0, 80), time: m.time, text: m.text.slice(0, 300) })),
     inputTokens: job.inputTokens, outputTokens: job.outputTokens };
   while (JSON.stringify(content).length > 22000) {

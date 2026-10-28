@@ -4,16 +4,17 @@ import { consumeCotEvents, CotPublisher, type CotClient } from '../bot/cot';
 import type { CotMessagesMode } from '../config/schema';
 import { log } from '../core/logger';
 import type { InboxLark } from './lark';
+import { larkTarget } from './lark-target';
 import type { InboxJob } from './types';
 
 /** Progress is separate from the structured result and never carries raw reasoning. */
 export async function startInboxProgress(job: InboxJob, lark: InboxLark,
   client: Pick<CotClient, 'create' | 'update' | 'complete'>, mode: CotMessagesMode, signal: AbortSignal) {
-  if (mode === 'off' || !job.analysisTopic || signal.aborted) return;
+  if (mode === 'off' || !job.analysisTarget || signal.aborted) return;
   try {
     const originMessageId = await lark.progressAnchor(job, signal);
     signal.throwIfAborted();
-    const topic = job.analysisTopic;
+    const topic = larkTarget(job.analysisTarget);
     const publisher = new CotPublisher({ client, chatId: topic.chatId, originMessageId,
       runId: `inbox-${job.id}-${job.attempt ?? 0}`, scope: `${topic.chatId}:${topic.threadId}`,
       inputPreview: '会话待办深入分析' });

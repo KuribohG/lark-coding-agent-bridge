@@ -3,11 +3,12 @@ import { startInboxProgress } from '../../../src/inbox/progress';
 import { InboxLark } from '../../../src/inbox/lark';
 import { normalizeInbox } from '../../../src/inbox/config';
 import type { InboxJob } from '../../../src/inbox/types';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
-const destination = { chatId: 'oc_target', threadId: 'omt_menu', replyTo: 'om_menu' };
-const topic = { chatId: 'oc_target', threadId: 'omt_item', replyTo: 'om_root' };
-const job: InboxJob = { id: 'item', ownerOpenId: 'ou_owner', profile: 'codex', destination, analysisTopic: topic,
-  source: { chatId: 'oc_source', name: '项目群', type: 'group' }, messages: [], state: 'running', attempt: 1,
+const destination = workItemTarget({ chatId: 'oc_target', threadId: 'omt_menu', replyTo: 'om_menu' });
+const topic = workItemTarget({ chatId: 'oc_target', threadId: 'omt_item', replyTo: 'om_root' });
+const job: InboxJob = { id: 'item', ownerKey: 'ou_owner', profile: 'codex', target: destination, analysisTarget: topic,
+  sourceRef: { transport: 'lark', containerId: 'oc_source', name: '项目群', kind: 'group' }, messages: [], state: 'running', attempt: 1,
   automatic: true, alert: false, createdAt: 1, updatedAt: 1 };
 
 function setup() {
@@ -17,7 +18,7 @@ function setup() {
       args.includes('+messages-reply') ? { message_id: 'om_progress' } : { messages: [{ message_id: id,
         chat_id: 'oc_target', thread_id: 'omt_item', create_time: '1000000', content: '', sender: { sender_type: 'app' } }] } }) };
   });
-  const lark = new InboxLark({ profile: 'codex' }, normalizeInbox({ enabled: true, ownerOpenId: 'ou_owner', destination }), exec);
+  const lark = new InboxLark({ profile: 'codex' }, normalizeInbox({ enabled: true, recipientKey: 'ou_owner', target: destination }), exec);
   const events: { event_type: string; content: string }[] = [];
   const client = { create: vi.fn(async () => ({ cot_id: 'cot_test', message_id: 'om_cot' })),
     update: vi.fn(async (_ref: unknown, updates: readonly { event_type: string; content: string }[]) => { events.push(...updates); }),
@@ -53,9 +54,9 @@ it('anchors progress inside the item topic, displaying public progress and tools
 
 it.each(['off', 'missing-topic', 'cancelled', 'wrong-chat', 'wrong-anchor'] as const)('does not create progress in an unverified target (%s)', async kind => {
   const s = setup(); const controller = new AbortController(); const input = structuredClone(job);
-  if (kind === 'missing-topic') input.analysisTopic = undefined;
+  if (kind === 'missing-topic') input.analysisTarget = undefined;
   if (kind === 'cancelled') controller.abort();
-  if (kind === 'wrong-chat') input.analysisTopic!.chatId = 'oc_source';
+  if (kind === 'wrong-chat') input.analysisTarget!.containerId = 'oc_source';
   if (kind === 'wrong-anchor') s.exec.mockResolvedValue({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data: { messages: [] } }) });
   expect(await startInboxProgress(input, s.lark, s.client, kind === 'off' ? 'off' : 'brief', controller.signal)).toBeUndefined();
   expect(s.client.create).not.toHaveBeenCalled();

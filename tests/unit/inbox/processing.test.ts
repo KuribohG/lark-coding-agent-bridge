@@ -12,14 +12,16 @@ import { InboxStore } from '../../../src/inbox/store';
 import { InboxAnalysisQueue } from '../../../src/inbox/task-source';
 import { executeInboxCommand } from '../../../src/inbox/workbench';
 import type { InboxIO, InboxMessage } from '../../../src/inbox/types';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
 const executionCapabilities = { finalAnswer: 'separate-event', input: 'unsupported' } as const;
 
-const topic = { chatId: 'oc_target', threadId: 'omt_item', replyTo: 'om_item' };
-const config = () => normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner', deliveryMode: 'new_topic',
-  destination: { chatId: 'oc_target', threadId: 'omt_menu', replyTo: 'om_menu' }, gui: { publicUrl: 'https://gui.example', apiKeyFile: '/key' } });
-const message: InboxMessage = { id: 'om_source', chatId: 'oc_source', chatName: '项目群', chatType: 'p2p', senderId: 'ou_sender',
-  senderName: '同事', bot: false, time: 1_000_000, text: '请确认这个问题并回复', mentions: [] };
+const topic = workItemTarget({ chatId: 'oc_target', threadId: 'omt_item', replyTo: 'om_item' });
+const config = () => normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner', deliveryMode: 'new_topic',
+  target: workItemTarget({ chatId: 'oc_target', threadId: 'omt_menu', replyTo: 'om_menu' }), gui: { publicUrl: 'https://gui.example', apiKeyFile: '/key' } });
+const message: InboxMessage = { id: 'om_source', containerId: 'oc_source', containerName: '项目群',
+  containerKind: 'direct', senderId: 'ou_sender', senderName: '同事', senderBot: false,
+  time: 1_000_000, text: '请确认这个问题并回复', mentions: [] };
 const result = { text: JSON.stringify({ replyDraft: '已确认，请按这个方案继续。', analysis: '已核对相关记录。', missingInfo: '' }), inputTokens: 10, outputTokens: 20 };
 const services: InboxService[] = [];
 afterEach(async () => { await Promise.all(services.splice(0).map(s => s.close())); });
@@ -55,7 +57,7 @@ it('stops the selected agent through the workbench command and rejects late outp
   expect(stopped).toMatchObject({ state: 'waiting', handlingState: 'open', analysisStoppedAt: expect.any(Number), replyDraft: '保留已有草稿' });
   await vi.waitFor(() => expect(run.stop).toHaveBeenCalledOnce());
   await s.service.close();
-  expect(s.service.list()[0]).toMatchObject({ state: 'waiting', analysisRequested: false, analysisTopic: topic, replyDraft: '保留已有草稿' });
+  expect(s.service.list()[0]).toMatchObject({ state: 'waiting', analysisRequested: false, analysisTarget: topic, replyDraft: '保留已有草稿' });
   expect(s.service.list()[0]?.result).toBeUndefined(); expect(s.service.list()[0]?.error).toBeUndefined();
   expect(s.io.deliver).not.toHaveBeenCalled();
 });
@@ -69,7 +71,7 @@ it('keeps a queued cancellation across restart and new messages until the owner 
   await s.service.close();
   const store = new InboxStore(s.store.path);
   const resumed = new InboxService(store, config(), s.io, () => 2_000_000); services.push(resumed); await resumed.start();
-  const newMessage = { ...message, id: 'om_update', parentId: message.id, time: 2_000_000, text: '再补充一些信息' };
+  const newMessage = { ...message, id: 'om_update', replyTo: message.id, time: 2_000_000, text: '再补充一些信息' };
   vi.mocked(s.io.collect).mockResolvedValue([newMessage]); vi.mocked(s.io.context).mockResolvedValue([newMessage]);
   await resumed.tick(); await vi.waitFor(() => expect(resumed.list()[0]?.attention?.state).toBe('needed'));
   await resumed.tick(); expect(s.io.analyze).not.toHaveBeenCalled();
@@ -89,7 +91,7 @@ it('preserves a late-created topic but never starts the model after stopping its
   const job = s.service.list()[0]!;
   await s.service.stopAnalysis({ id: job.id, revision: job.revision }, 'ou_owner');
   finish(topic); await s.service.close();
-  expect(s.service.list()[0]).toMatchObject({ state: 'waiting', analysisTopic: topic, analysisRequested: false });
+  expect(s.service.list()[0]).toMatchObject({ state: 'waiting', analysisTarget: topic, analysisRequested: false });
   expect(s.io.analyze).not.toHaveBeenCalled(); expect(s.io.deliver).not.toHaveBeenCalled();
 });
 
@@ -141,12 +143,12 @@ it('announces once before Flash runs, persists its topic and replies there with 
   expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1);
   expect(vi.mocked(s.io.beginAnalysis!).mock.calls[0]![1]).toContain('已开始分析');
   expect(vi.mocked(s.io.beginAnalysis!).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(s.io.analyze).mock.invocationCallOrder[0]!);
-  expect(vi.mocked(s.io.analyze).mock.calls[0]![0].analysisTopic).toEqual(topic);
+  expect(vi.mocked(s.io.analyze).mock.calls[0]![0].analysisTarget).toEqual(topic);
   expect(s.io.notifyAttention).not.toHaveBeenCalled();
-  const saved = new InboxStore(s.store.path); await saved.load(); expect(saved.data.jobs[0]?.analysisTopic).toEqual(topic);
+  const saved = new InboxStore(s.store.path); await saved.load(); expect(saved.data.jobs[0]?.analysisTarget).toEqual(topic);
   await s.service.tick(); await s.service.tick();
   expect(s.io.deliver).toHaveBeenCalledTimes(1);
-  expect(vi.mocked(s.io.deliver).mock.calls[0]![0]).toMatchObject({ analysisTopic: topic, replyDraft: '已确认，请按这个方案继续。' });
+  expect(vi.mocked(s.io.deliver).mock.calls[0]![0]).toMatchObject({ analysisTarget: topic, replyDraft: '已确认，请按这个方案继续。' });
   expect(s.service.list()[0]).toMatchObject({ state: 'done', handlingState: 'open' });
   expect(s.io.analyze).toHaveBeenCalledTimes(1);
 });
@@ -174,15 +176,16 @@ it.each([new InboxAnalysisError('rate_limit'), Error('provider failed with priva
     expect(saved.data.jobs[0]?.error).toBe(expected);
     await s.service.tick();
     expect(s.io.deliver).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(s.io.deliver).mock.calls[0]![0]).toMatchObject({ error: expected, analysisTopic: topic });
+    expect(vi.mocked(s.io.deliver).mock.calls[0]![0]).toMatchObject({ error: expected, analysisTarget: topic });
   });
 
 it('only processes confirmed needed items, leaving quiet and uncertain items out of the agent queue', async () => {
-  const messages = [message, { ...message, id: 'om_quiet', chatId: 'oc_quiet' }, { ...message, id: 'om_uncertain', chatId: 'oc_uncertain' }];
+  const messages = [message, { ...message, id: 'om_quiet', containerId: 'oc_quiet' },
+    { ...message, id: 'om_uncertain', containerId: 'oc_uncertain' }];
   const s = await setup({ collect: vi.fn(async kind => kind === 'p2p' ? messages : []), context: vi.fn(async () => []),
     triage: vi.fn<NonNullable<InboxIO['triage']>>(async j => ({ id: j.id,
-      state: j.source.chatId === 'oc_quiet' ? 'quiet' : j.source.chatId === 'oc_uncertain' ? 'uncertain' : 'needed', reason: '根据当前事实判断' })) });
-  await s.service.tick(); await vi.waitFor(() => expect(s.service.list().find(j => j.source.chatId === 'oc_source')?.state).toBe('ready'));
+      state: j.sourceRef.containerId === 'oc_quiet' ? 'quiet' : j.sourceRef.containerId === 'oc_uncertain' ? 'uncertain' : 'needed', reason: '根据当前事实判断' })) });
+  await s.service.tick(); await vi.waitFor(() => expect(s.service.list().find(j => j.sourceRef.containerId === 'oc_source')?.state).toBe('ready'));
   await s.service.tick();
   expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1); expect(s.io.analyze).toHaveBeenCalledTimes(1);
   expect(s.service.list().filter(j => j.state === 'waiting')).toHaveLength(2);
@@ -193,7 +196,7 @@ it('reuses the existing item topic when explicitly reprocessing a finished draft
   await s.service.tick(); const job = s.service.list()[0]!;
   await s.service.decide(job.id, 'process', 'ou_owner'); await s.service.tick();
   await vi.waitFor(() => expect(s.io.analyze).toHaveBeenCalledTimes(2));
-  expect(vi.mocked(s.io.beginAnalysis!).mock.calls[1]![0].analysisTopic).toEqual(topic);
+  expect(vi.mocked(s.io.beginAnalysis!).mock.calls[1]![0].analysisTarget).toEqual(topic);
   expect(vi.mocked(s.io.beginAnalysis!).mock.calls[1]![0].startDelivery?.id).not.toBe(job.startDelivery?.id);
 });
 
@@ -213,7 +216,7 @@ it.each(['off', 'handled'] as const)('keeps the topic but drops obsolete work wh
   const job = s.service.list()[0]!;
   if (action === 'off') await s.service.setMode('off');
   if (action === 'handled') await s.service.review({ id: job.id, revision: job.revision, handlingState: 'handled' }, 'ou_owner', 'handle');
-  finish(topic); await vi.waitFor(() => expect(s.service.list()[0]?.analysisTopic).toEqual(topic));
+  finish(topic); await vi.waitFor(() => expect(s.service.list()[0]?.analysisTarget).toEqual(topic));
   expect(s.io.analyze).not.toHaveBeenCalled(); expect(s.io.deliver).not.toHaveBeenCalled();
 });
 
@@ -231,8 +234,8 @@ it('Lark creates a bot topic then uses its verified anchor for the result, witho
       args.includes('+messages-mget') ? { messages: [{ message_id: 'om_item', chat_id: 'oc_target', thread_id: 'omt_item', create_time: '1000000', content: '', sender: { sender_type: 'app' } }] } : {} }) }));
   const lark = new InboxLark({ profile: 'codex' }, config(), exec);
   job.startDelivery = { id: 'notice', text: '已开始分析', attempts: 1, startedAt: 1, retryAt: 1 };
-  job.analysisTopic = await lark.beginAnalysis(job, '已开始分析');
-  expect(job.analysisTopic).toEqual(topic);
+  job.analysisTarget = await lark.beginAnalysis(job, '已开始分析');
+  expect(job.analysisTarget).toEqual(topic);
   job.replyDraft = '<at user_id="ou_someone">同事</at>，方案已核实。'; job.analysis = '已核对';
   await lark.deliver(job, 'result');
   const sends = exec.mock.calls.map(c => c[0]).filter(a => a.includes('+messages-send') || a.includes('+messages-reply'));
@@ -243,7 +246,7 @@ it('Lark creates a bot topic then uses its verified anchor for the result, witho
   const content = sends[1]![sends[1]!.indexOf('--content') + 1]!;
   expect(JSON.parse(content).zh_cn.content[0][0]).toEqual({ tag: 'md', text: '**回复草稿（供你确认后发送）**\n\n同事，方案已核实。' });
   expect(content).not.toContain('<at');
-  job.analysisTopic.chatId = 'oc_source'; await expect(lark.deliver(job, 'result')).rejects.toThrow('目标已变更');
+  job.analysisTarget.containerId = 'oc_source'; await expect(lark.deliver(job, 'result')).rejects.toThrow('目标已变更');
 });
 
 it.each([false, true])('runs a fresh Flash agent with final structured output (repair=%s)', async repair => {

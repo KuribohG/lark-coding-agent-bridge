@@ -5,18 +5,23 @@ import type { SourceAdapter, SourceContext } from '../../../work-items/contracts
 import type { SourceItem } from '../../../work-items/lifecycle';
 import { createLarkAssessment } from './assessment';
 import { analysisChanges, messageBasis } from '../../../inbox/updates';
+import { larkTarget } from '../../../inbox/lark-target';
 
 const resolved = (job: InboxJob) => handlingState(job) !== 'open';
+const mentioned = (message: InboxMessage, key: string) => message.mentions.some(mention => mention.id === key);
+const incidentId = (message: InboxMessage) =>
+  typeof message.metadata?.incidentId === 'string' ? message.metadata.incidentId : undefined;
+const recovered = (message: InboxMessage) => message.metadata?.recovered === true;
 function compareMessages(a: InboxMessage, b: InboxMessage): number {
-  if (a.chatId === b.chatId && /^\d+$/.test(a.position ?? '') && /^\d+$/.test(b.position ?? '')) {
-    return BigInt(a.position!) < BigInt(b.position!) ? -1 : BigInt(a.position!) > BigInt(b.position!) ? 1 : 0;
+  if (a.containerId === b.containerId && /^\d+$/.test(a.sequence ?? '') && /^\d+$/.test(b.sequence ?? '')) {
+    return BigInt(a.sequence!) < BigInt(b.sequence!) ? -1 : BigInt(a.sequence!) > BigInt(b.sequence!) ? 1 : 0;
   }
   return a.time - b.time;
 }
 function classifyMessage(m: InboxMessage): 'skip' | 'alert' | 'request' {
   const text = m.text.trim();
   if (!text || /^(收到|谢谢|好的|好|嗯|OK|ok|Thanks|👍|👌)[。！!\s]*$/i.test(text)) return 'skip';
-  return m.bot || /报警|告警|alert|firing|resolved/i.test(text) ? 'alert' : 'request';
+  return m.senderBot || /报警|告警|alert|firing|resolved/i.test(text) ? 'alert' : 'request';
 }
 
 export function boundMessages(messages: InboxMessage[], maxChars: number): InboxMessage[] {
@@ -66,23 +71,23 @@ export class LarkSource implements SourceAdapter {
   }
 
   private outputChat(chatId: string): boolean {
-    return chatId === this.config.destination.chatId || this.host.items.some(job =>
-      chatId === job.destination.chatId || chatId === job.analysisTopic?.chatId);
+    return chatId === larkTarget(this.config.target).chatId || this.host.items.some(job =>
+      chatId === job.target.containerId || chatId === job.analysisTarget?.containerId);
   }
 
   private acceptsMessage(message: InboxMessage): boolean {
-    return !this.outputChat(message.chatId) && !(this.io.selfSenderIds ?? []).some(id =>
-      Boolean(id) && (message.senderId === id || message.senderOpenId === id));
+    return !this.outputChat(message.containerId) && !(this.io.selfSenderIds ?? []).some(id =>
+      Boolean(id) && (message.senderId === id || message.senderAliases?.includes(id)));
   }
 
   private safeSource(job: InboxJob): boolean {
-    return !this.outputChat(job.source.chatId) && job.messages.length > 0 && job.messages.every(m => this.acceptsMessage(m));
+    return !this.outputChat(job.sourceRef.containerId) && job.messages.length > 0 && job.messages.every(m => this.acceptsMessage(m));
   }
 
   private removeFeedback(): void {
     for (const job of this.host.items) {
       if (job.external) continue;
-      const messages = this.outputChat(job.source.chatId) ? [] : job.messages.filter(m => this.acceptsMessage(m));
+      const messages = this.outputChat(job.sourceRef.containerId) ? [] : job.messages.filter(m => this.acceptsMessage(m));
       if (messages.length === job.messages.length && messages.length) continue;
       const reason = '助理自身消息或结果群内容，不作为待办处理';
       if (!messages.length && job.handlingState === 'ignored' && job.attention?.state === 'quiet' && job.attention.reason === reason && !job.attention.retry &&
@@ -98,8 +103,9 @@ export class LarkSource implements SourceAdapter {
   private acceptsSource(job: InboxJob): boolean {
     if (!this.safeSource(job)) return false;
     if (job.external) return true;
-    return job.source.type === 'p2p' ? this.config.watchPrivate : this.config.watchMentions &&
-      (intakeScope(this.config) === 'all' || job.intakeTrigger === 'mention' || job.messages.some(m => m.mentions.includes(this.config.ownerOpenId)));
+    return job.sourceRef.kind === 'direct' ? this.config.watchPrivate : this.config.watchMentions &&
+      (intakeScope(this.config) === 'all' || job.intakeTrigger === 'mention' ||
+        job.messages.some(m => mentioned(m, this.config.recipientKey)));
   }
 
   async setScope(scope: IntakeScope, persist?: () => Promise<void>): Promise<void> {
@@ -134,11 +140,11 @@ export class LarkSource implements SourceAdapter {
       this.host.assertEnabled();
       const replay = requestId && this.host.items.find(j => j.manualRequestId === requestId || j.manualRequestIds?.includes(requestId));
       if (replay) {
-        if (replay.source.chatId !== chatId) throw new Error('request ID already used');
+        if (replay.sourceRef.containerId !== chatId) throw new Error('request ID already used');
         if (!this.safeSource(replay)) throw new Error('助理自身消息不可处理');
         return structuredClone(replay);
       }
-      await this.io.checkOwner(this.config.ownerOpenId);
+      await this.io.checkOwner(this.config.recipientKey);
       const source = await this.io.source(chatId);
       let messages = (await this.io.context(chatId, this.now() - this.config.contextMinutes * 60_000, this.now())).filter(m => this.acceptsMessage(m));
       if (!messages.length && !this.host.closed) messages = (await this.io.context(chatId, this.now() - 86400_000, this.now())).filter(m => this.acceptsMessage(m));
@@ -146,7 +152,7 @@ export class LarkSource implements SourceAdapter {
       if (!messages.length) throw new Error('最近一天没有可处理的非助理消息');
       messages = boundMessages(messages, this.config.maxContextChars);
       const ids = messages.map(m => m.id).sort().join(',');
-      const submitted = this.host.items.find(j => j.source.chatId === chatId && ['running', 'ready', 'done', 'queued'].includes(j.state) &&
+      const submitted = this.host.items.find(j => j.sourceRef.containerId === chatId && ['running', 'ready', 'done', 'queued'].includes(j.state) &&
         j.manualSignature === ids && this.now() - j.updatedAt < 30 * 60_000);
       if (submitted) {
         this.host.transition(submitted, { type: 'manual', replay: true });
@@ -156,10 +162,10 @@ export class LarkSource implements SourceAdapter {
         }
         return structuredClone(submitted);
       }
-      const existing = this.host.items.find(j => j.source.chatId === chatId && !resolved(j) && ['waiting', 'notifying', 'queued'].includes(j.state));
+      const existing = this.host.items.find(j => j.sourceRef.containerId === chatId && !resolved(j) && ['waiting', 'notifying', 'queued'].includes(j.state));
       const job = existing ?? this.create(messages, false, source);
       job.messages = boundMessages(messages, this.config.maxContextChars);
-      job.source.threadId = undefined;
+      job.sourceRef.threadId = undefined;
       job.manualSignature = ids;
       if (requestId) job.manualRequestIds = [...(job.manualRequestIds || []), requestId].slice(-100);
       this.host.transition(job, { type: 'manual' });
@@ -175,7 +181,7 @@ export class LarkSource implements SourceAdapter {
     const generation = this.intakeGeneration;
     const current = () => !this.host.blocked() && generation === this.intakeGeneration;
     try {
-      await this.io.checkOwner(this.config.ownerOpenId);
+      await this.io.checkOwner(this.config.recipientKey);
       for (const kind of ['p2p', 'mention', 'group'] as const) {
         if (!current()) return;
         if (kind === 'p2p' ? !this.config.watchPrivate : kind === 'group' ? intakeScope(this.config) !== 'all' : !this.config.watchMentions || intakeScope(this.config) === 'all') continue;
@@ -205,11 +211,11 @@ export class LarkSource implements SourceAdapter {
     const current = () => !this.host.blocked() && generation === this.intakeGeneration;
     try {
       const sources = new Map<string, InboxJob>();
-      for (const job of this.host.items) if (!resolved(job) && this.acceptsSource(job)) sources.set(job.source.chatId, structuredClone(job));
+      for (const job of this.host.items) if (!resolved(job) && this.acceptsSource(job)) sources.set(job.sourceRef.containerId, structuredClone(job));
       const due = [...sources].sort((a, b) => (this.host.cursors[`context:${a[0]}`] ?? 0) - (this.host.cursors[`context:${b[0]}`] ?? 0))
         .slice(0, 10).filter(([chatId, job]) => now - (this.host.cursors[`context:${chatId}`] ?? job.messages[0]!.time) >= 60_000);
       if (!due.length) return;
-      await this.io.checkOwner(this.config.ownerOpenId);
+      await this.io.checkOwner(this.config.recipientKey);
       for (const [chatId, job] of due) {
         if (!current()) return;
         const key = `context:${chatId}`;
@@ -256,16 +262,22 @@ export class LarkSource implements SourceAdapter {
   private create(messages: InboxMessage[], automatic: boolean, source?: { name: string; type: 'p2p' | 'group' }): SourceItem {
     const m = messages[0]!;
     return this.host.create({
-      source: { chatId: m.chatId, name: source?.name || m.chatName, type: source?.type || m.chatType, threadId: m.threadId },
+      sourceRef: {
+        transport: 'lark',
+        containerId: m.containerId,
+        name: source?.name || m.containerName,
+        kind: source?.type === 'p2p' || m.containerKind === 'direct' ? 'direct' : 'group',
+        threadId: m.threadId,
+      },
       messages: boundMessages(messages, this.config.maxContextChars),
-      intakeTrigger: m.chatType === 'p2p' ? 'private' : m.mentions.includes(this.config.ownerOpenId) ? 'mention' : 'group',
-      alert: messages.some(m => classifyMessage(m) === 'alert'), incidentId: m.incidentId,
+      intakeTrigger: m.containerKind === 'direct' ? 'private' : mentioned(m, this.config.recipientKey) ? 'mention' : 'group',
+      alert: messages.some(m => classifyMessage(m) === 'alert'), incidentId: incidentId(m),
     }, automatic);
   }
 
   private ingest(m: InboxMessage, earliest: number): void {
     if (m.time < Math.max(earliest, this.host.cursors.intakeSince ?? 0) ||
-      (m.chatType === 'p2p' ? !this.config.watchPrivate : !this.config.watchMentions) || !this.acceptsMessage(m)) return;
+      (m.containerKind === 'direct' ? !this.config.watchPrivate : !this.config.watchMentions) || !this.acceptsMessage(m)) return;
     const known = this.host.items.flatMap(j => j.messages).find(x => x.id === m.id);
     if (known ? known.text === m.text : this.host.seen[m.id]) return;
     this.host.seen[m.id] = this.now();
@@ -274,39 +286,43 @@ export class LarkSource implements SourceAdapter {
   }
 
   private ingestNew(m: InboxMessage): void {
-    const jobs = this.host.items.filter(j => j.source.chatId === m.chatId && !resolved(j) && this.acceptsSource(j));
-    if (m.senderId === this.config.ownerOpenId) {
-      for (const job of jobs) if (compareMessages(m, job.messages.at(-1)!) > 0 && (m.chatType === 'p2p' ||
-        (m.threadId && m.threadId === job.source.threadId) || job.messages.some(x => x.id === m.parentId))) {
+    const jobs = this.host.items.filter(j => j.sourceRef.containerId === m.containerId && !resolved(j) && this.acceptsSource(j));
+    if (m.senderId === this.config.recipientKey) {
+      for (const job of jobs) if (compareMessages(m, job.messages.at(-1)!) > 0 && (m.containerKind === 'direct' ||
+        (m.threadId && m.threadId === job.sourceRef.threadId) || job.messages.some(x => x.id === m.replyTo))) {
         this.host.transition(job, { type: 'handled' });
       }
       return;
     }
-    if (m.recovered && m.incidentId && m.bot) {
-      for (const job of jobs) if (job.incidentId === m.incidentId && job.messages[0]?.senderId === m.senderId) {
+    if (recovered(m) && incidentId(m) && m.senderBot) {
+      for (const job of jobs) if (job.incidentId === incidentId(m) && job.messages[0]?.senderId === m.senderId) {
         this.host.transition(job, { type: 'recovered' });
       }
       return;
     }
-    const related = jobs.find(j => j.messages.some(x => x.id === m.id)) ?? jobs.find(j => (m.threadId && m.threadId === j.source.threadId) || j.messages.some(x => x.id === m.parentId));
-    if (m.chatType === 'group' && intakeScope(this.config) !== 'all' && !m.mentions.includes(this.config.ownerOpenId) && !related) return;
-    if (!related && m.bot && jobs.some(j => j.messages.at(-1)?.text === m.text && j.source.threadId === m.threadId)) return;
+    const related = jobs.find(j => j.messages.some(x => x.id === m.id)) ??
+      jobs.find(j => (m.threadId && m.threadId === j.sourceRef.threadId) || j.messages.some(x => x.id === m.replyTo));
+    if (m.containerKind !== 'direct' && intakeScope(this.config) !== 'all' && !mentioned(m, this.config.recipientKey) && !related) return;
+    if (!related && m.senderBot && jobs.some(j => j.messages.at(-1)?.text === m.text && j.sourceRef.threadId === m.threadId)) return;
     const category = classifyMessage(m);
-    if (category === 'skip' || (m.chatType === 'p2p' && m.bot)) return;
-    const previous = related ?? jobs.find(j => j.source.threadId === m.threadId && (m.incidentId ? j.incidentId === m.incidentId && j.messages[0]?.senderId === m.senderId : !j.incidentId && (Boolean(j.result) || j.state === 'running' || this.now() - j.updatedAt < 5 * 60_000)));
+    if (category === 'skip' || (m.containerKind === 'direct' && m.senderBot)) return;
+    const incident = incidentId(m);
+    const previous = related ?? jobs.find(j => j.sourceRef.threadId === m.threadId &&
+      (incident ? j.incidentId === incident && j.messages[0]?.senderId === m.senderId :
+        !j.incidentId && (Boolean(j.result) || j.state === 'running' || this.now() - j.updatedAt < 5 * 60_000)));
     if (previous) {
-      if (m.mentions.includes(this.config.ownerOpenId)) previous.intakeTrigger = 'mention';
+      if (mentioned(m, this.config.recipientKey)) previous.intakeTrigger = 'mention';
       previous.messages = boundMessages([...previous.messages.filter(x => x.id !== m.id), m], this.config.maxContextChars);
       previous.alert ||= category === 'alert';
       this.host.transition(previous, { type: 'evidence' });
     } else this.create([m], true);
   }
   async beforeAnalysis(job: SourceItem, signal: AbortSignal, current: () => boolean): Promise<boolean> {
-    await this.io.checkOwner(this.config.ownerOpenId);
-    const context = await this.io.context(job.source.chatId, job.messages[0]!.time - this.config.contextMinutes * 60_000, this.now());
-    const relevant = context.filter(m => this.acceptsMessage(m) && (!job.source.threadId || m.threadId === job.source.threadId));
-    if (job.automatic && relevant.some(m => m.senderId === this.config.ownerOpenId && compareMessages(m, job.messages.at(-1)!) > 0 &&
-      (job.source.type === 'p2p' || Boolean(job.source.threadId) || job.messages.some(x => x.id === m.parentId)))) {
+    await this.io.checkOwner(this.config.recipientKey);
+    const context = await this.io.context(job.sourceRef.containerId, job.messages[0]!.time - this.config.contextMinutes * 60_000, this.now());
+    const relevant = context.filter(m => this.acceptsMessage(m) && (!job.sourceRef.threadId || m.threadId === job.sourceRef.threadId));
+    if (job.automatic && relevant.some(m => m.senderId === this.config.recipientKey && compareMessages(m, job.messages.at(-1)!) > 0 &&
+      (job.sourceRef.kind === 'direct' || Boolean(job.sourceRef.threadId) || job.messages.some(x => x.id === m.replyTo)))) {
       await this.host.transaction(async () => { if (current()) this.host.transition(job, { type: 'handled' }); await this.host.save(); }); return false;
     }
     if (signal.aborted) throw new Error('分析已取消');

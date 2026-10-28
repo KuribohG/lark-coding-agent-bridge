@@ -16,7 +16,9 @@ export function createLarkAssessment(io: InboxIO): ItemAssessmentPolicy {
         changedMessages: analysisChanges(input).length });
       return {
         attention: { state: result.state, reason: result.reason, priority: result.priority,
-          ...(result.ownerMentionMessageIds === undefined ? {} : { ownerMentionMessageIds: result.ownerMentionMessageIds }) },
+          ...(result.mentionedPrincipalMessageIds === undefined
+            ? {}
+            : { mentionedPrincipalMessageIds: result.mentionedPrincipalMessageIds }) },
         followUp: followUp ? result.followUp : undefined,
         basis: followUp ? messageBasis(input.messages) : undefined,
         autoAnalyze: Boolean(io.beginAnalysis),

@@ -10,6 +10,7 @@ import { executeInboxCommand, executeSourceCommand } from './workbench';
 import type { InboxTaskSources } from './task-sources';
 import { ATTENTION_RULES } from '../monitoring/sources/lark/analyzer';
 import { intakeScope, type IntakeScope, type InboxMode } from './config';
+import { larkTarget } from './lark-target';
 
 interface Command { id: string; action: string; target: string; expiresAt: number }
 interface Receipt { id: string; ok: boolean; result: string; time: number }
@@ -34,7 +35,7 @@ export class InboxGui {
     private ledgerPath: string, private request: typeof fetch = fetch,
     private changeMode?: (mode: InboxMode) => Promise<void>,
     private changeScope?: (scope: IntakeScope) => Promise<void>, private taskSources?: InboxTaskSources) {
-    this.ledger = { ownerKey: `${service.config.executorProfile}:${service.config.ownerOpenId}`, receipts: {} };
+    this.ledger = { ownerKey: `${service.config.executorProfile}:${service.config.ownerKey}`, receipts: {} };
   }
   async start(): Promise<void> {
     const path = this.service.config.gui.apiKeyFile;
@@ -75,10 +76,11 @@ export class InboxGui {
   async tick(): Promise<void> {
     if (this.stopped) return;
     const config = this.service.config;
+    const target = larkTarget(config.target);
     // The control connection must not wait on a chat-history lookup.
     this.resultUrl = config.deliveryMode === 'new_topic'
-      ? `https://applink.feishu.cn/client/chat/open?openChatId=${config.destination.chatId}`
-      : `https://applink.feishu.cn/client/thread/open?open_chat_id=${config.destination.chatId}&open_thread_id=${config.destination.threadId}`;
+      ? `https://applink.feishu.cn/client/chat/open?openChatId=${target.chatId}`
+      : `https://applink.feishu.cn/client/thread/open?open_chat_id=${target.chatId}&open_thread_id=${target.threadId}`;
     const data = await this.sync();
     if (!Array.isArray(data.commands)) throw new Error('工作台同步响应无效');
     for (const value of data.commands.slice(0, 10)) {
@@ -111,7 +113,7 @@ export class InboxGui {
   private snapshot() {
     const config = this.service.config;
     const all = [...this.service.list(Infinity), ...(this.taskSources?.list(Infinity) ?? [])].filter(j =>
-      j.ownerOpenId === config.ownerOpenId && j.profile === config.executorProfile);
+      j.ownerKey === config.ownerKey && j.profile === config.executorProfile);
     const jobs = guiJobs(all);
     return { jobs, total: all.length, enabled: config.enabled, autoAnalyze: config.autoAnalyze,
       attentionControl: true, attentionProfile: config.attentionProfile || ATTENTION_RULES, batchControl: true, stopControl: true,
@@ -126,7 +128,7 @@ export class InboxGui {
     const include = !this.compactSync || hash !== this.lastSnapshot || Date.now() - this.snapshotAt >= 15000;
     try {
       const response = await this.call('sync', { bridgeKey: this.ledger.ownerKey,
-        ownerOpenId: config.ownerOpenId, feishuClientId: this.appId, ...(include ? { snapshot } : {}) });
+        ownerOpenId: config.recipientKey, feishuClientId: this.appId, ...(include ? { snapshot } : {}) });
       this.compactSync = response.compactSync === true;
       if (include) { this.lastSnapshot = hash; this.snapshotAt = Date.now(); }
       return response;
@@ -134,7 +136,7 @@ export class InboxGui {
   }
   private async execute(command: Command): Promise<unknown> {
     if (this.stopped) throw new Error('助理已关闭');
-    const source = this.taskSources && await executeSourceCommand(this.taskSources, command, { owner: this.service.config.ownerOpenId, profile: this.service.config.executorProfile });
+    const source = this.taskSources && await executeSourceCommand(this.taskSources, command, { owner: this.service.config.ownerKey, profile: this.service.config.executorProfile });
     if (source?.handled) return source.result;
     return executeInboxCommand(this.service, this.lark, command, this.changeMode, this.changeScope);
   }

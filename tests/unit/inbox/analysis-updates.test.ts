@@ -9,6 +9,7 @@ import { analysisChanges } from '../../../src/inbox/updates';
 import { guiContent } from '../../../src/inbox/presentation';
 import { processingPrompt } from '../../../src/monitoring/sources/lark/processor';
 import type { InboxIO, InboxJob, InboxMessage, TriageDecision } from '../../../src/inbox/types';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
 const result = { text: JSON.stringify({ replyDraft: '原建议', analysis: '已核实的证据', missingInfo: '' }), inputTokens: 1, outputTokens: 1 };
 const services: InboxService[] = [];
@@ -30,12 +31,12 @@ async function setup() {
   const messages: InboxMessage[] = [];
   const screens: (ReturnType<typeof gate<TriageDecision>> & { item: InboxJob })[] = [];
   const analyses: (ReturnType<typeof gate<typeof result>> & { job: InboxJob })[] = [];
-  const config = normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner', intakeScope: 'all',
-    destination: { chatId: 'oc_target', threadId: 'omt_item', replyTo: 'om_item' } });
+  const config = normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner', intakeScope: 'all',
+    target: workItemTarget({ chatId: 'oc_target', threadId: 'omt_item', replyTo: 'om_item' }) });
   const io: InboxIO = {
     checkOwner: vi.fn(async () => {}), source: vi.fn(async () => ({ name: '告警', type: 'group' as const })),
     collect: vi.fn(async kind => kind === 'group' ? structuredClone(messages) : []), context: vi.fn(async () => []),
-    beginAnalysis: vi.fn(async () => config.destination), deliver: vi.fn(async () => {}),
+    beginAnalysis: vi.fn(async () => config.target), deliver: vi.fn(async () => {}),
     analyze: vi.fn((job, signal) => { const run = { ...gate<typeof result>(signal), job }; analyses.push(run); return run.promise; }),
     triage: vi.fn((item, signal) => { const run = { ...gate<TriageDecision>(signal), item }; screens.push(run); return run.promise; }),
   };
@@ -43,8 +44,9 @@ async function setup() {
   const service = new InboxService(store, config, io, () => now); services.push(service); await service.start();
   const add = async (text: string, id = `om_${messages.length}`) => {
     now += 1000;
-    const m: InboxMessage = { id, chatId: 'oc_source', chatName: '告警', chatType: 'group', senderId: 'ou_sender', senderName: '告警助手',
-      bot: true, time: now, text, mentions: ['ou_owner'] };
+    const m: InboxMessage = { id, containerId: 'oc_source', containerName: '告警', containerKind: 'group',
+      senderId: 'ou_sender', senderName: '告警助手', senderBot: true, time: now, text,
+      mentions: [{ id: 'ou_owner', name: '本人' }] };
     const at = messages.findIndex(m => m.id === id);
     if (at < 0) messages.push(m); else messages[at] = m;
     await service.tick();

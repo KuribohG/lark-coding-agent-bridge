@@ -11,7 +11,7 @@ const reasons = {
   agent: '模型调用失败，详情已记录；请在工作台重试',
 };
 
-/** Only reviewed messages may cross from runtime failures into the result topic. */
+/** Only reviewed messages may cross from runtime failures into the result. */
 export class WorkItemAnalysisError extends Error {
   constructor(readonly code: keyof typeof reasons) {
     super(reasons[code]);

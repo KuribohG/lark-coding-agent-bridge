@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { startInboxControl, type InboxControlHandle, type InboxControlSidecar } from '../../../src/inbox/control-server';
 import { inboxWorkbenchUrl, normalizeInbox, validateInbox } from '../../../src/inbox/config';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 import { HttpError } from '../../../src/ui/http';
 
 const handles: InboxControlHandle[] = [];
@@ -80,8 +81,8 @@ it('uses the dedicated workbench URL ahead of legacy GUI and H5 links', () => {
   const config = normalizeInbox({
     enabled: true,
     executorProfile: 'codex',
-    ownerOpenId: 'ou_owner',
-    destination: { chatId: 'oc_target', threadId: 'omt_topic', replyTo: 'om_anchor' },
+    recipientKey: 'ou_owner',
+    target: workItemTarget({ chatId: 'oc_target', threadId: 'omt_topic', replyTo: 'om_anchor' }),
     workbenchUrl: 'https://jupyter.example/custom/inbox/index.html',
     gui: { publicUrl: 'https://miaoda.example/app', apiKeyFile: '/key' },
     h5: { publicUrl: 'https://h5.example/assistant/', port: 19182 },

@@ -1,6 +1,7 @@
 import type { AgentRunOptions } from '../agent/types';
 import type { Attention, TriageDecision } from './evidence';
 import type { WorkItem } from './types';
+import type { WorkItemTarget } from './domain';
 import type { SourceItem, SourceSeed, SourceTransition, AssessmentUpdate, AnalysisContext } from './lifecycle';
 import type { WorkItemEvent } from './events';
 
@@ -79,8 +80,8 @@ export interface WorkItemRuntime {
   cancel?(): void;
   cancelPending?(): void;
   deliver?(item: WorkItem, phase: 'pending' | 'progress' | 'result'): Promise<void>;
-  beginAnalysis?(item: WorkItem, text: string): Promise<WorkItem['destination']>;
-  notifyChange?(item: WorkItem, notice: NonNullable<WorkItem['sourceNotices']>[number]): Promise<WorkItem['destination']>;
+  beginAnalysis?(item: WorkItem, text: string): Promise<WorkItemTarget>;
+  notifyChange?(item: WorkItem, notice: NonNullable<WorkItem['sourceNotices']>[number]): Promise<WorkItemTarget>;
   notifyAttention?(items: WorkItem[], id: string): Promise<void>;
 }
 

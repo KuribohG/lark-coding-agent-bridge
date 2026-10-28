@@ -1,4 +1,4 @@
-import type { InboxConfig } from './config';
+import type { WorkItemTarget } from '../work-items/domain';
 import type {
   EvidenceMessage as InboxMessage,
   TriageDecision,
@@ -24,7 +24,7 @@ export interface InboxIO {
   context(chatId: string, start: number, end: number): Promise<InboxMessage[]>;
   source(chatId: string): Promise<{ name: string; type: 'p2p' | 'group' }>;
   deliver(job: InboxJob, phase: 'pending' | 'progress' | 'result'): Promise<void>;
-  beginAnalysis?(job: InboxJob, text: string): Promise<InboxConfig['destination']>;
+  beginAnalysis?(job: InboxJob, text: string): Promise<WorkItemTarget>;
   triage?(job: InboxJob, signal: AbortSignal, onProgress?: (text: string) => void): Promise<TriageDecision>;
   notifyAttention?(jobs: InboxJob[], id: string): Promise<void>;
   analyze(job: InboxJob, signal: AbortSignal): Promise<{ text: string; inputTokens: number; outputTokens: number }>;

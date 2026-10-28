@@ -7,6 +7,7 @@ import { WorkItemService } from '../../../src/work-items/service';
 import { WorkItemStore } from '../../../src/work-items/store';
 import { EventSource } from '../../../src/work-items/event-source';
 import type { WorkItemRuntime } from '../../../src/work-items/contracts';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
 function deferred<T = void>() {
   let resolve!: (value: T) => void;
@@ -15,7 +16,7 @@ function deferred<T = void>() {
 }
 const services: WorkItemService[] = [];
 afterEach(async () => { await Promise.all(services.splice(0).map(service => service.close())); });
-const topic = { chatId: 'oc_out', threadId: 'omt_out', replyTo: 'om_out' };
+const topic = workItemTarget({ chatId: 'oc_out', threadId: 'omt_out', replyTo: 'om_out' });
 const event = { key: 'issue', title: 'incident', reason: 'failure', url: '', time: 1000, eventId: '1', revision: 1, data: {} };
 async function setup(overrides: Partial<WorkItemRuntime> = {}) {
   const store = new WorkItemStore('unused');
@@ -25,11 +26,12 @@ async function setup(overrides: Partial<WorkItemRuntime> = {}) {
   const runtime: WorkItemRuntime = { source: Object.assign(new EventSource('test', () => true), { poll }),
     checkAccess: async () => {}, investigate: vi.fn(), dailyAnalysisLimit: 0, deliver: vi.fn(async () => {}), ...overrides };
   let now = 1000;
-  const service = new WorkItemService(store, normalizeInbox({ enabled: true, ownerOpenId: 'owner', executorProfile: 'test' }), runtime, () => now);
+  const service = new WorkItemService(store, normalizeInbox({ enabled: true, recipientKey: 'owner', executorProfile: 'test',
+    target: workItemTarget({ chatId: 'oc_out', threadId: 'omt_out', replyTo: 'om_out' }) }), runtime, () => now);
   services.push(service); await service.start();
   return { service, store, runtime, save, poll, advance: () => { now += 60_000; } };
 }
-const ready = { state: 'ready' as const, analysisTopic: topic, result: 'old report', replyDraft: 'old draft' };
+const ready = { state: 'ready' as const, analysisTarget: topic, result: 'old report', replyDraft: 'old draft' };
 
 it('keeps collection and human edits responsive during a result send, with one in-flight attempt', async () => {
   const sending = deferred(); const finish = deferred();
@@ -114,7 +116,8 @@ it('keeps the result receipt when a failed edit rolls back its reservation objec
 it('recovers an ambiguous result reservation with its original identity and retry deadline', async () => {
   const folder = await mkdtemp(join(tmpdir(), 'work-item-delivery-'));
   const store = new WorkItemStore(join(folder, 'state.json'));
-  const config = normalizeInbox({ enabled: true, ownerOpenId: 'owner', executorProfile: 'test' });
+  const config = normalizeInbox({ enabled: true, recipientKey: 'owner', executorProfile: 'test',
+    target: workItemTarget({ chatId: 'oc_out', threadId: 'omt_out', replyTo: 'om_out' }) });
   const runtime: WorkItemRuntime = { source: new EventSource('test', () => true), checkAccess: async () => {},
     investigate: vi.fn(), deliver: vi.fn().mockRejectedValueOnce(Error('lost response')).mockResolvedValue(undefined) };
   let now = 1000;

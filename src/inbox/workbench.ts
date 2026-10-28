@@ -12,7 +12,7 @@ export async function executeInboxCommand(service: WorkItemService & { manual?: 
   const command = obj(input);
   if (typeof command.id !== 'string' || !/^[\da-f-]{36}$/i.test(command.id) ||
     typeof command.action !== 'string' || typeof command.target !== 'string' || command.target.length > 64000) throw new Error('无效工作台操作');
-  const owner = service.config.ownerOpenId;
+  const owner = service.config.ownerKey;
   if (command.action === 'stop') {
     const job = await service.stopAnalysis(JSON.parse(command.target), owner, command.id);
     return { ...guiSummary(job), ...guiContent(job) };
@@ -45,7 +45,7 @@ export async function executeInboxCommand(service: WorkItemService & { manual?: 
     return { id: (await service.manual(command.target, command.id)).id };
   }
   const job = service.get(command.target);
-  if (!job || job.ownerOpenId !== owner) throw new Error('待办不存在或已归档');
+  if (!job || job.ownerKey !== owner) throw new Error('待办不存在或已归档');
   if (command.action === 'detail') return { ...guiSummary(job), ...guiContent(job) };
   await service.decide(job.id, command.action, owner); return { id: job.id };
 }

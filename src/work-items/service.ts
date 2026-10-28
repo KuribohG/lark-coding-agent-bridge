@@ -36,6 +36,8 @@ export class WorkItemService {
   private triageProgress = new Map<string, { signature: string; progress: NonNullable<Attention['progress']> }>();
   private lifecycle: WorkItemLifecycle;
   private delivery: WorkItemDelivery;
+  private get ownerKey(): string { return this.config.ownerKey; }
+  private get target() { return this.config.target; }
   lastError?: string;
   constructor(readonly store: WorkItemStore, readonly config: WorkItemConfig, private io: WorkItemRuntime, private now = Date.now,
     private queue = new WorkItemScheduler(), private triageQueue = new WorkItemScheduler(WORK_ITEM_CONCURRENCY_DEFAULTS.triage)) {
@@ -57,8 +59,9 @@ export class WorkItemService {
       save: () => store.save(),
       create: (seed, automatic) => {
         if (store.data.jobs.filter(j => !resolved(j) && j.attention?.state !== 'quiet').length >= 500) throw new Error('待办已达 500 项，暂停采集，请先处理或忽略已有待办');
-        const job: WorkItem = { ...seed, id: randomUUID(), ownerOpenId: config.ownerOpenId, profile: config.executorProfile,
-          destination: { ...config.destination }, state: automatic ? 'waiting' : 'queued', analysisRequested: !automatic,
+        const job: WorkItem = { ...seed, id: randomUUID(), ownerKey: self.ownerKey,
+          profile: config.executorProfile, target: { ...self.target }, sourceRef: { ...seed.sourceRef },
+          state: automatic ? 'waiting' : 'queued', analysisRequested: !automatic,
           attention: { state: automatic ? 'pending' : 'needed', reason: automatic ? '等待关注筛选' : '你主动选择了此会话' },
           createdAt: now(), updatedAt: now(), revision: 0, handlingState: 'open', automatic };
         recordObservation(job); store.data.jobs.push(job); return job;
@@ -101,7 +104,7 @@ export class WorkItemService {
   async start(): Promise<void> {
     if (this.config.enabled) await this.io.checkAccess();
     await this.store.load();
-    const key = `${this.config.executorProfile}:${this.config.ownerOpenId}`;
+    const key = `${this.config.executorProfile}:${this.ownerKey}`;
     if (this.store.data.ownerKey && this.store.data.ownerKey !== key) throw new Error('待办归属已改变，请为新账号使用独立状态目录');
     this.store.data.ownerKey = key;
     this.removeFeedback();
@@ -152,7 +155,7 @@ export class WorkItemService {
       ...jobs.filter(j => !resolved(j) && j.attention?.state === 'quiet'), ...jobs.filter(resolved)].slice(0, limit);
   }
   get(id: string): WorkItem | undefined {
-    const job = this.store.data.jobs.find(j => j.id === id && j.ownerOpenId === this.config.ownerOpenId);
+    const job = this.store.data.jobs.find(j => j.id === id && j.ownerKey === this.ownerKey);
     return job ? this.withProgress(structuredClone(job)) : undefined;
   }
   private withProgress(job: WorkItem): WorkItem {
@@ -187,14 +190,15 @@ export class WorkItemService {
       ((event.eventId !== undefined || event.operation !== undefined) && event.revision === undefined)) throw new Error('无效盯盘事项');
     return this.serial(async () => {
       if (this.stopped) throw new Error('事项来源已关闭');
-      const id = createHash('sha256').update(JSON.stringify([source, this.config.ownerOpenId, this.config.executorProfile, event.key])).digest('hex');
+      const id = createHash('sha256').update(JSON.stringify([source, this.ownerKey, this.config.executorProfile, event.key])).digest('hex');
       const existing = this.store.data.jobs.find(job => job.id === id);
       if (existing) return this.updateObservation(existing, event);
       const digest = observationDigest(event);
       const decision = this.source.assessment?.kind === 'rule' ? this.source.assessment.evaluate(event) : { state: 'needed' as const, reason: event.reason, priority: event.priority };
       const job: WorkItem = {
-        id, ownerOpenId: this.config.ownerOpenId, profile: this.config.executorProfile,
-        destination: { ...this.config.destination }, source: { chatId: '', name: event.title, type: 'external' },
+        id, ownerKey: this.ownerKey, profile: this.config.executorProfile,
+        target: { ...this.target },
+        sourceRef: { transport: 'event', containerId: '', name: event.title, kind: 'external' },
         messages: [],
         createdAt: event.time, updatedAt: this.now(), state: decision.state === 'needed' ? 'queued' : 'waiting', automatic: true, alert: true,
         attention: decision, handlingState: 'open', revision: 1,
@@ -227,7 +231,7 @@ export class WorkItemService {
     const decision = this.source.assessment?.kind === 'rule' ? this.source.assessment.evaluate(event) : { state: 'needed' as const, reason: event.reason, priority: event.priority };
     const before = structuredClone(job);
     const wasRunning = job.state === 'running';
-    job.source.name = event.title;
+    job.sourceRef.name = event.title;
     job.external!.data = structuredClone(event.data); job.external!.url = event.url;
     job.external!.evidenceDir = event.evidenceDir; job.external!.analysisAttempts = 0;
     recordObservation(job);
@@ -257,11 +261,11 @@ export class WorkItemService {
     return structuredClone(job);
   }
   async decide(id: string, action: string, owner: string): Promise<void> {
-    if (owner !== this.config.ownerOpenId) throw new Error('forbidden');
+    if (owner !== this.ownerKey) throw new Error('forbidden');
     await this.serial(async () => {
       this.assertEnabled();
       const job = this.store.data.jobs.find(j => j.id === id);
-      if (!job || job.ownerOpenId !== owner) throw new Error('unknown job');
+      if (!job || job.ownerKey !== owner) throw new Error('unknown job');
       if (!['process', 'claim', 'ignore'].includes(action)) throw new Error('invalid action');
       if (resolved(job)) return;
       if (action === 'process') {
@@ -274,12 +278,12 @@ export class WorkItemService {
     });
   }
   async stopAnalysis(value: unknown, owner: string, requestId?: string): Promise<WorkItem> {
-    if (owner !== this.config.ownerOpenId) throw new Error('forbidden');
+    if (owner !== this.ownerKey) throw new Error('forbidden');
     const input = value as { id?: string; revision?: number } | null;
     if (!input || typeof input.id !== 'string' || !Number.isSafeInteger(input.revision) || Number(input.revision) < 0) throw new Error('无效停止操作');
     return this.serial(async () => {
       if (this.stopped) throw new Error('助理连接已关闭');
-      const job = this.store.data.jobs.find(j => j.id === input.id && j.ownerOpenId === owner);
+      const job = this.store.data.jobs.find(j => j.id === input.id && j.ownerKey === owner);
       if (!job) throw new Error('待办不存在或已归档');
       if (requestId && job.lastStopRequestId === requestId) return structuredClone(job);
       if ((job.revision ?? 0) !== input.revision) throw new Error('事项已更新，请刷新后重新停止分析');
@@ -304,7 +308,7 @@ export class WorkItemService {
   private touch(job: WorkItem): void { this.lifecycle.touch(job); }
   private ignore(job: WorkItem): void { this.lifecycle.ignore(job); }
   async review(value: unknown, owner: string, requestId: string): Promise<WorkItem> {
-    if (owner !== this.config.ownerOpenId) throw new Error('forbidden');
+    if (owner !== this.ownerKey) throw new Error('forbidden');
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('无效草稿操作');
     const input = value as Record<string, unknown>;
     if (typeof input.id !== 'string' || !Number.isSafeInteger(input.revision) || Number(input.revision) < 0 ||
@@ -313,7 +317,7 @@ export class WorkItemService {
       (input.handlingState !== undefined && !['open', 'handled', 'ignored'].includes(String(input.handlingState)))) throw new Error('无效草稿操作');
     return this.serial(async () => {
       if (this.stopped) throw new Error('助理连接已关闭');
-      const job = this.store.data.jobs.find(j => j.id === input.id && j.ownerOpenId === owner);
+      const job = this.store.data.jobs.find(j => j.id === input.id && j.ownerKey === owner);
       if (!job) throw new Error('待办不存在或已归档');
       if (job.lastReviewRequestId === requestId) return structuredClone(job);
       if ((job.revision ?? 0) !== input.revision) throw new Error('事项已更新，草稿未覆盖，请核对最新内容后重试');
@@ -487,7 +491,7 @@ export class WorkItemService {
     this.touch(job);
   }
   async batchReview(value: unknown, owner: string, requestId?: string): Promise<void> {
-    if (owner !== this.config.ownerOpenId) throw new Error('forbidden');
+    if (owner !== this.ownerKey) throw new Error('forbidden');
     const input = value as { items?: { id: string; revision: number }[]; handlingState?: string };
     if (!input || !Array.isArray(input.items) || !input.items.length || input.items.length > 500 ||
       !['handled', 'ignored'].includes(input.handlingState ?? '') || input.items.some(i => !i || typeof i.id !== 'string' || !Number.isSafeInteger(i.revision)) ||
@@ -495,7 +499,7 @@ export class WorkItemService {
     await this.serial(async () => {
       if (this.stopped) throw new Error('助理连接已关闭');
       const jobs = input.items!.map(item => {
-        const job = this.store.data.jobs.find(j => j.id === item.id && j.ownerOpenId === owner);
+        const job = this.store.data.jobs.find(j => j.id === item.id && j.ownerKey === owner);
         if (!job || ((!requestId || job.lastReviewRequestId !== requestId) && (job.revision ?? 0) !== item.revision)) throw new Error('所选事项已更新，请刷新并重新选择；本次未修改任何事项');
         return job;
       });

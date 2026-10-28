@@ -6,6 +6,7 @@ import type { WorkItem } from './types';
 import type { WorkItemEvent } from './events';
 import { evidenceSignature as signature } from './identity';
 import { handlingState } from './result';
+import type { WorkItemTarget } from './domain';
 
 interface DeliveryHost {
   transaction<T>(fn: () => Promise<T>): Promise<T>;
@@ -24,10 +25,10 @@ export class WorkItemDelivery {
     const pending = await this.host.transaction(async () => {
       if (!current()) throw new Error('分析已取消');
       const clean = (s: string) => s.replace(/[\r\n]/g, ' ').replace(/<\/?at\b[^>]*>/gi, '');
-      const page = this.config.workbenchUrl || this.config.gui.publicUrl || this.config.h5.publicUrl;
-      const link = job.messages.find(m => m.link && /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(m.link))?.link;
+      const page = this.config.workbenchUrl;
+      const link = job.messages.find(m => m.link && /^https:\/\//.test(m.link))?.link;
       const delivery = job.startDelivery ??= { id: randomUUID(), attempts: 0, startedAt: this.now(), retryAt: this.now(),
-        text: `已开始分析 · ${clean(job.source.name)}\n${clean(job.attention?.reason || '你提交的会话事项')}\n\n我会进行分析，并将结果和回复草稿发在本话题下。${link ? `\n原消息：${link}` : ''}${page ? `\n查看与处理：${page}#job=${job.id}` : ''}` };
+        text: `已开始分析 · ${clean(job.sourceRef.name)}\n${clean(job.attention?.reason || '你提交的会话事项')}\n\n我会进行分析，并将结果和回复草稿发在本话题下。${link ? `\n原消息：${link}` : ''}${page ? `\n查看与处理：${page}#job=${job.id}` : ''}` };
       if (delivery.attempts >= 3 || this.now() - delivery.startedAt > 240_000) throw new Error('话题通知未确认，已停止重复创建；请在工作台核对');
       delivery.attempts++; delivery.retryAt = this.now() + 60_000;
       await this.store.save();
@@ -35,10 +36,10 @@ export class WorkItemDelivery {
     });
     signal.throwIfAborted();
     const { delivery } = pending;
-    const topic = await this.io.beginAnalysis!(pending.job, delivery.text);
+    const analysisTarget = await this.io.beginAnalysis!(pending.job, delivery.text);
     await this.host.transaction(async () => {
-      // Keep a confirmed topic even if the user cancels while the send is in flight.
-      job.analysisTopic = topic;
+      // Keep a confirmed analysis target even if the user cancels while the send is in flight.
+      job.analysisTarget = { ...analysisTarget };
       if (job.startDelivery?.id === delivery.id) job.startDelivery.confirmed = true;
       await this.store.save();
     });
@@ -65,12 +66,12 @@ export class WorkItemDelivery {
           return { job: structuredClone(job), notice: structuredClone(notice) };
         });
         if (!send) { if (!notice.sentAt && !notice.abandoned) break; continue; }
-        let target: WorkItem['destination'];
+        let target: WorkItemTarget;
         try { target = await this.io.notifyChange(send.job, send.notice); }
         catch { this.host.error = '来源通知暂未确认，分析继续运行'; break; }
         await this.host.transaction(async () => {
-          // A send may finish after cancellation; retain its confirmed receipt and topic.
-          job.analysisTopic = target;
+          // A send may finish after cancellation; retain its confirmed receipt and target.
+          job.analysisTarget = { ...target };
           const receipt = job.sourceNotices?.find(n => n.id === send.notice.id);
           if (receipt) receipt.sentAt = this.now();
           if (this.host.error === '来源通知暂未确认，分析继续运行') this.host.error = undefined;
@@ -84,16 +85,16 @@ export class WorkItemDelivery {
       const pending = await this.host.transaction(async () => {
         if (this.host.blocked() || !this.store.data.jobs.includes(job)) return;
         const now = this.now();
-        if (!(job.state === 'ready' || (job.state === 'failed' && job.analysisTopic) ||
-          (this.io.notifyChange && job.state === 'done' && job.result && !job.deliveredAt && job.analysisTopic))) return;
+        if (!(job.state === 'ready' || (job.state === 'failed' && job.analysisTarget) ||
+          (this.io.notifyChange && job.state === 'done' && job.result && !job.deliveredAt && job.analysisTarget))) return;
         if (!this.io.deliver) {
           if (job.state === 'ready') job.state = 'done';
           await this.store.save(); return;
         }
-        // Automatic results can only use a confirmed topic.
+        // Automatic results can only use a confirmed analysis target.
         if ((!this.io.notifyChange || job.businessState !== 'resolved') && !resolved(job) && this.host.safe(job) &&
           (!job.draftStale || job.error) && (!job.automatic || this.host.accepts(job)) && !job.deliveredAt &&
-          (job.analysisTopic || (!(this.config.workbenchUrl || this.config.gui.publicUrl) && !job.automatic && job.attention?.state === 'needed'))) {
+          (job.analysisTarget || (!this.config.workbenchUrl && !job.automatic && job.attention?.state === 'needed'))) {
           const delivery = job.resultDelivery ??= { attempts: 0, startedAt: now, retryAt: now };
           delivery.id ??= randomUUID();
           if (delivery.confirmedAt !== undefined) {

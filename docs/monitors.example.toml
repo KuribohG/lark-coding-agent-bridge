@@ -13,7 +13,7 @@ analysis = 5 # Individual investigations shared by Lark, GitLab CI and storage.
 [sources.lark]
 enabled = false
 executorProfile = "codex"
-ownerOpenId = "ou_OWNER"
+recipientKey = "ou_OWNER"
 intakeScope = "private_mentions"
 pollSeconds = 10
 analysisModel = "" # Follow the executor profile; an explicit model is also supported.
@@ -24,8 +24,9 @@ triageMessageChars = 2000 # Characters per message (head + tail), 200–16000.
 deliveryMode = "new_topic"
 # triageService = "screening" # Optional existing model-service name.
 
-[sources.lark.destination]
-chatId = "oc_RESULTS"
+[sources.lark.target]
+transport = "lark"
+containerId = "oc_RESULTS"
 threadId = "omt_SETUP_TOPIC"
 replyTo = "om_SETUP_MESSAGE"
 
@@ -47,11 +48,12 @@ sourceDir = "/absolute/path/project"
 
 # Omit this entire notification section to keep results only in the workbench/files.
 [sources.gitlab_ci.notification]
-ownerOpenId = "ou_OWNER"
+recipientKey = "ou_OWNER"
 deliveryMode = "new_topic"
 
-[sources.gitlab_ci.notification.destination]
-chatId = "oc_RESULTS"
+[sources.gitlab_ci.notification.target]
+transport = "lark"
+containerId = "oc_RESULTS"
 threadId = "omt_SETUP_TOPIC"
 replyTo = "om_SETUP_MESSAGE"
 
@@ -102,9 +104,10 @@ clusters = ["prod"] # Expected dependencies; also discover I/O on other cataloge
 
 # Optional: omit to keep alerts/results only in the workbench and evidence directory.
 [sources.storage.notification]
-ownerOpenId = "ou_OWNER"
+recipientKey = "ou_OWNER"
 deliveryMode = "new_topic"
-[sources.storage.notification.destination]
-chatId = "oc_RESULTS"
+[sources.storage.notification.target]
+transport = "lark"
+containerId = "oc_RESULTS"
 threadId = "omt_SETUP_TOPIC"
 replyTo = "om_SETUP_MESSAGE"

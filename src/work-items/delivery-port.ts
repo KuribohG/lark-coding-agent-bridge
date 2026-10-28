@@ -1,5 +1,5 @@
 import type { AgentEvent } from '../agent/types';
-import type { DeliveryTarget } from './config';
+import type { WorkItemTarget } from './domain';
 import type { WorkItem } from './types';
 
 export interface WorkItemProgressSink {
@@ -7,17 +7,17 @@ export interface WorkItemProgressSink {
   finish(success: boolean): Promise<void>;
 }
 
-/** Transport boundary for work-item notices, topics and final results. */
+/** Transport boundary for work-item notices, analysis targets and final results. */
 export interface WorkItemDeliveryPort {
   readonly ownerKey: string;
-  readonly destination: DeliveryTarget;
+  readonly target: WorkItemTarget;
   close?(): Promise<void> | void;
   deliver?(item: WorkItem, phase: 'pending' | 'progress' | 'result'): Promise<void>;
-  beginAnalysis?(item: WorkItem, text: string): Promise<DeliveryTarget>;
+  beginAnalysis?(item: WorkItem, text: string): Promise<WorkItemTarget>;
   notifyChange?(
     item: WorkItem,
     notice: NonNullable<WorkItem['sourceNotices']>[number],
-  ): Promise<DeliveryTarget>;
+  ): Promise<WorkItemTarget>;
   notifyAttention?(items: WorkItem[], id: string): Promise<void>;
   progress?(item: WorkItem, signal: AbortSignal): Promise<WorkItemProgressSink | undefined>;
 }

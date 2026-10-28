@@ -5,16 +5,17 @@ import { normalizeInbox } from '../../../src/inbox/config';
 import { executeInboxCommand } from '../../../src/inbox/workbench';
 import type { InboxLark } from '../../../src/inbox/lark';
 import type { InboxIO, InboxJob } from '../../../src/inbox/types';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
 const commandId = '01234567-0123-4123-8123-0123456789ab';
 function setup() {
-  const config = normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner',
-    destination: { chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_result' } });
-  const job: InboxJob = { id: 'target', ownerOpenId: 'ou_owner', profile: 'codex', destination: config.destination,
-    source: { chatId: 'oc_source', name: '来源会话', type: 'p2p' }, state: 'waiting', createdAt: 1, updatedAt: 1,
+  const config = normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner',
+    target: workItemTarget({ chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_result' }) });
+  const job: InboxJob = { id: 'target', ownerKey: 'ou_owner', profile: 'codex', target: config.target,
+    sourceRef: { transport: 'lark', containerId: 'oc_source', name: '来源会话', kind: 'direct' }, state: 'waiting', createdAt: 1, updatedAt: 1,
     automatic: false, alert: false, attention: { state: 'needed', reason: '需要处理' }, revision: 0,
-    messages: [{ id: 'om_source', chatId: 'oc_source', chatName: '来源会话', chatType: 'p2p', senderId: 'ou_sender',
-      senderName: '发送者', bot: false, time: 1, text: '请确认', mentions: [] }] };
+    messages: [{ id: 'om_source', containerId: 'oc_source', containerName: '来源会话', containerKind: 'direct',
+      senderId: 'ou_sender', senderName: '发送者', senderBot: false, time: 1, text: '请确认', mentions: [] }] };
   const store = new InboxStore('unused');
   vi.spyOn(store, 'save').mockResolvedValue();
   store.data.jobs = [...Array.from({ length: 500 }, (_, i) => ({ ...structuredClone(job), id: `quiet-${i}`,
@@ -57,7 +58,7 @@ it.each(['process', 'claim', 'ignore'])('accepts %s for a retained item outside 
 });
 
 it('rejects absent and foreign records without exposing content or changing state', async () => {
-  const s = setup(); s.job.ownerOpenId = 'ou_other';
+  const s = setup(); s.job.ownerKey = 'ou_other';
   const before = structuredClone(s.job);
   for (const action of ['detail', 'process', 'claim', 'ignore']) {
     await expect(s.execute(action, 'missing')).rejects.toThrow('待办不存在或已归档');
@@ -77,8 +78,8 @@ it('returns an isolated record and reflects deletion and ownership changes', () 
   const found = s.service.get(s.job.id)!;
   found.messages[0]!.text = 'changed'; found.attention!.reason = 'changed';
   expect(s.job.messages[0]!.text).toBe('请确认'); expect(s.job.attention!.reason).toBe('需要处理');
-  s.job.ownerOpenId = 'ou_other'; expect(s.service.get(s.job.id)).toBeUndefined();
-  s.job.ownerOpenId = 'ou_owner'; expect(s.service.get(s.job.id)).toBeDefined();
+  s.job.ownerKey = 'ou_other'; expect(s.service.get(s.job.id)).toBeUndefined();
+  s.job.ownerKey = 'ou_owner'; expect(s.service.get(s.job.id)).toBeDefined();
   s.store.data.jobs = s.store.data.jobs.filter(j => j.id !== s.job.id);
   expect(s.service.get(s.job.id)).toBeUndefined();
 });

@@ -1,6 +1,6 @@
-import { normalizeInbox } from '../inbox/config';
 import { EventSource } from '../work-items/event-source';
 import { createInvestigator } from '../work-items/investigation';
+import type { WorkItemConfig } from '../work-items/config';
 import type { WorkItemDeliveryPort } from '../work-items/delivery-port';
 import type { WorkItemSourceOptions } from '../work-items/registry';
 import type { MonitorSourceOptions } from '../monitoring/host';
@@ -13,14 +13,22 @@ export function createWorkItemSource(
     throw new Error('Invalid source adapter');
   }
   const delivery = options.delivery;
-  const config = normalizeInbox({
-    ...(delivery ? { destination: delivery.destination } : {}),
+  const ownerKey = delivery?.ownerKey ?? `local:${options.profile}`;
+  const target = delivery?.target ?? {
+    transport: 'local',
+    containerId: '',
+    threadId: '',
+    replyTo: '',
+  };
+  const config: WorkItemConfig = {
     executorProfile: options.profile,
-    ownerOpenId: delivery?.ownerKey ?? `local:${options.profile}`,
+    ownerKey,
+    target,
     enabled: options.enabled,
-    watchPrivate: false,
-    watchMentions: false,
-  });
+    autoAnalyze: false,
+    dailyTriageLimit: 0,
+    workbenchUrl: '',
+  };
   return {
     id: options.id,
     label: options.label,

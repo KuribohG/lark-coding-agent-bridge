@@ -4,19 +4,19 @@ import { triageMaterials } from '../../../src/monitoring/sources/lark/triage-mat
 import type { InboxJob, InboxMessage } from '../../../src/inbox/types';
 import { processingPrompt } from '../../../src/monitoring/sources/lark/processor';
 
-const message = (id: string, text: string, bot = false): InboxMessage => ({ id, text, bot, time: 1000,
-  chatId: 'oc_source', chatName: 'service users', chatType: 'group', senderId: bot ? 'cli_helper' : 'ou_colleague',
-  senderName: bot ? 'helper' : 'colleague', mentions: [], threadId: 'omt_topic' });
-const job = (messages: InboxMessage[]): InboxJob => ({ id: 'item', ownerOpenId: 'ou_owner',
-  source: { chatId: 'oc_source', name: 'service users', type: 'group', threadId: 'omt_topic' }, messages } as InboxJob);
+const message = (id: string, text: string, bot = false): InboxMessage => ({ id, text, senderBot: bot, time: 1000,
+  containerId: 'oc_source', containerName: 'service users', containerKind: 'group',
+  senderId: bot ? 'cli_helper' : 'ou_colleague', senderName: bot ? 'helper' : 'colleague',
+  mentions: [], threadId: 'omt_topic' });
+const job = (messages: InboxMessage[]): InboxJob => ({ id: 'item', ownerKey: 'ou_owner',
+  sourceRef: { transport: 'lark', containerId: 'oc_source', name: 'service users', kind: 'group', threadId: 'omt_topic' }, messages } as InboxJob);
 
 it('keeps owner identity separate from another mention even when their display names match', () => {
-  const item = job([{ ...message('om_other', '+ @本人'), mentions: ['ou_other'],
-    mentionDetails: [{ openId: 'ou_other', name: '本人' }] },
+  const item = job([{ ...message('om_other', '+ @本人'), mentions: [{ id: 'ou_other', name: '本人' }] },
     { ...message('om_owner', '我来核实'), senderId: 'ou_owner', senderName: '本人' }]);
   const materials = JSON.parse(triageMaterials(item, '本人姓名=本人；open_id=ou_owner'));
   expect(materials.background).toContain('open_id=ou_owner');
-  expect(materials.item).toMatchObject({ ownerOpenId: 'ou_owner', directlyMentioned: false,
+  expect(materials.item).toMatchObject({ ownerKey: 'ou_owner', directlyMentioned: false,
     messages: [{ senderIsOwner: false, mentionsOwner: false, mentionDetails: [{ openId: 'ou_other', name: '本人' }] },
       { senderIsOwner: true, mentionsOwner: false }] });
   const prompt = processingPrompt(item, materials.background);

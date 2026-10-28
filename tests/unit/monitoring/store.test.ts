@@ -14,6 +14,7 @@ import { checkMonitors, configureMonitors, initMonitors, statusMonitors } from '
 import { configureCiWatch } from '../../../src/cli/commands/ci-watch';
 import { removeModelService } from '../../../src/model-service/registry';
 import * as atomic from '../../../src/platform/atomic-write';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
 const folders: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(folders.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
@@ -23,8 +24,8 @@ async function setup() {
   const path = join(folder, 'config.toml'); const file = join(folder, 'monitors.toml');
   const root = createRootConfig('codex', createDefaultProfileConfig({ agentKind: 'codex', codex: { binaryPath: 'codex' },
     accounts: { app: { id: 'cli_fixture', secret: 'PRIVATE_APP_SECRET', tenant: 'feishu' } } }));
-  root.inbox = normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner',
-    destination: { chatId: 'oc_group', threadId: 'omt_topic', replyTo: 'om_message' }, intakeScope: 'private_mentions' });
+  root.inbox = normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner',
+    target: workItemTarget({ chatId: 'oc_group', threadId: 'omt_topic', replyTo: 'om_message' }), intakeScope: 'private_mentions' });
   root.gitlabCi = normalizeGitLabCi({ enabled: true, executorProfile: 'codex', url: 'https://gitlab.test', outputDir: folder,
     credentialsFile: join(folder, 'credentials.env'), repositories: [{ project: 'group/repo', refs: ['dev'] }] });
   await saveRootConfig(root, path);

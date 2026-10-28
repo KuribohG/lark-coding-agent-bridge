@@ -82,9 +82,9 @@ export class InboxChatTools {
       if (messages.length >= 60 || budget <= 0) { truncated = true; break; }
       const text = m.text.slice(0, Math.min(budget, 4000));
       truncated ||= text.length < m.text.length; budget -= text.length;
-      messages.push({ id: m.id, chatId: m.chatId, chatName: m.chatName.slice(0, 100), threadId: m.threadId,
-        parentId: m.parentId, time: new Date(m.time).toISOString(), ...messageIdentity(m, this.ownerOpenId),
-        sender: m.senderName.slice(0, 100), bot: m.bot, text });
+      messages.push({ id: m.id, chatId: m.containerId, chatName: m.containerName.slice(0, 100), threadId: m.threadId,
+        parentId: m.replyTo, time: new Date(m.time).toISOString(), ...messageIdentity(m, this.ownerOpenId),
+        sender: m.senderName.slice(0, 100), bot: m.senderBot, text });
     }
     const hasMore = result.has_more === true;
     if (hasMore && (typeof result.page_token !== 'string' || !result.page_token || result.page_token.length > 2048)) {

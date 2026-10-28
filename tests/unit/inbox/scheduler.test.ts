@@ -6,6 +6,7 @@ import { normalizeInbox } from '../../../src/inbox/config';
 import { InboxService } from '../../../src/inbox/service';
 import { InboxStore } from '../../../src/inbox/store';
 import type { InboxIO, InboxJob, InboxMessage } from '../../../src/inbox/types';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
 function gate<T>() {
   let resolve!: (value: T) => void;
@@ -20,23 +21,24 @@ afterEach(async () => { await Promise.all(services.splice(0).map(s => s.close())
 
 async function setup() {
   let now = 1_000_000;
-  const config = normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner',
-    destination: { chatId: 'oc_target', threadId: 'omt_target', replyTo: 'om_target' } });
+  const config = normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner',
+    target: workItemTarget({ chatId: 'oc_target', threadId: 'omt_target', replyTo: 'om_target' }) });
   const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-scheduler-')), 'state.json'));
   const io: InboxIO = {
     checkOwner: vi.fn(async () => {}), collect: vi.fn(async kind => kind === 'p2p' ? [...messages] : []),
     context: vi.fn(async () => []), source: vi.fn(async () => ({ name: '同事', type: 'p2p' as const })),
     triage: vi.fn<NonNullable<InboxIO['triage']>>(async j => ({ id: j.id, state: 'quiet', reason: '已核对' })),
-    beginAnalysis: vi.fn(async () => config.destination), deliver: vi.fn(async () => {}),
+    beginAnalysis: vi.fn(async () => config.target), deliver: vi.fn(async () => {}),
     analyze: vi.fn(async () => ({ text: '{"analysis":"已完成","replyDraft":"草稿","missingInfo":""}', inputTokens: 1, outputTokens: 1 })),
   };
   const service = new InboxService(store, config, io, () => now); services.push(service); await service.start();
-  const message = (id: string, chatId = 'oc_fresh'): InboxMessage => ({ id, chatId, chatName: '同事', chatType: 'p2p',
-    senderId: 'ou_sender', senderName: '同事', bot: false, time: now, text: id, mentions: [] });
+  const message = (id: string, containerId = 'oc_fresh'): InboxMessage => ({ id, containerId, containerName: '同事',
+    containerKind: 'direct', senderId: 'ou_sender', senderName: '同事', senderBot: false,
+    time: now, text: id, mentions: [] });
   const old = (id = 'old') => {
     const m = message(`om_${id}`, `oc_${id}`); m.time = now - 120_000;
-    const job: InboxJob = { id, source: { chatId: m.chatId, name: '旧会话', type: 'p2p' }, ownerOpenId: config.ownerOpenId,
-      profile: config.executorProfile, destination: config.destination, state: 'waiting', analysisRequested: false,
+    const job: InboxJob = { id, sourceRef: { transport: 'lark', containerId: m.containerId, name: '旧会话', kind: 'direct' }, ownerKey: config.ownerKey,
+      profile: config.executorProfile, target: config.target, state: 'waiting', analysisRequested: false,
       automatic: true, alert: false, attention: { state: 'quiet', reason: '无需关注' }, messages: [m], createdAt: m.time, updatedAt: m.time };
     store.data.jobs.push(job); return job;
   };
@@ -76,7 +78,7 @@ it('dispatches a completed screening while the next collection is still blocked'
 
 it('dispatches history discoveries before the rest of the history batch has finished', async () => {
   const s = await setup(); const first = s.old('first'); s.old('second'); const later = gate<InboxMessage[]>();
-  const reply = s.message('om_reply', first.source.chatId);
+  const reply = s.message('om_reply', first.sourceRef.containerId);
   vi.mocked(s.io.context).mockResolvedValueOnce([reply]).mockReturnValueOnce(later.promise);
   try {
     await s.service.tick(); await vi.waitFor(() => expect(s.io.context).toHaveBeenCalledTimes(2));

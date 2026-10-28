@@ -7,6 +7,7 @@ import { InboxStore } from '../../../src/inbox/store';
 import { normalizeInbox } from '../../../src/inbox/config';
 import type { InboxIO, InboxJob } from '../../../src/inbox/types';
 import { InboxAnalysisQueue } from '../../../src/inbox/task-source';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
 const result = { text: JSON.stringify({ replyDraft: '已核实', analysis: '核查结果', missingInfo: '' }), inputTokens: 1, outputTokens: 1 };
 const services: InboxService[] = [];
@@ -26,8 +27,8 @@ function gate<T>(signal: AbortSignal) {
 
 async function setup(queue?: InboxAnalysisQueue, triageQueue?: InboxAnalysisQueue) {
   let now = 1_000_000;
-  const config = normalizeInbox({ enabled: true, ownerOpenId: 'ou_owner', executorProfile: 'codex',
-    destination: { chatId: 'oc_target', threadId: 'omt_item', replyTo: 'om_item' } });
+  const config = normalizeInbox({ enabled: true, recipientKey: 'ou_owner', executorProfile: 'codex',
+    target: workItemTarget({ chatId: 'oc_target', threadId: 'omt_item', replyTo: 'om_item' }) });
   const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-concurrency-')), 'state.json'));
   let started!: () => void;
   const analysisStarted = new Promise<void>(resolve => { started = resolve; });
@@ -35,16 +36,17 @@ async function setup(queue?: InboxAnalysisQueue, triageQueue?: InboxAnalysisQueu
   const screenings: (ReturnType<typeof gate<Awaited<ReturnType<NonNullable<InboxIO['triage']>>>>> & { id: string })[] = [];
   const io: InboxIO = { checkOwner: vi.fn(async () => {}), collect: vi.fn(async () => []), context: vi.fn(async () => []),
     source: vi.fn(async () => ({ name: '群', type: 'p2p' as const })), deliver: vi.fn(async () => {}),
-    beginAnalysis: vi.fn(async () => config.destination),
+    beginAnalysis: vi.fn(async () => config.target),
     analyze: vi.fn((job, signal) => { const run = gate<typeof result>(signal); analyses.push({ ...run, id: job.id }); started(); return run.promise; }),
     triage: vi.fn<NonNullable<InboxIO['triage']>>((job, signal) => { const run = gate<Awaited<ReturnType<NonNullable<InboxIO['triage']>>>>(signal); screenings.push({ ...run, id: job.id }); return run.promise; }) };
   const service = new InboxService(store, config, io, () => now, queue, triageQueue); services.push(service); await service.start();
   const add = (id: string, state: 'queued' | 'waiting') => {
-    const job: InboxJob = { id, ownerOpenId: 'ou_owner', profile: 'codex', destination: config.destination,
-      source: { chatId: `oc_${id}`, name: id, type: 'p2p' }, state, automatic: false, alert: false,
+    const job: InboxJob = { id, ownerKey: 'ou_owner', profile: 'codex', target: config.target,
+      sourceRef: { transport: 'lark', containerId: `oc_${id}`, name: id, kind: 'direct' }, state, automatic: false, alert: false,
       analysisRequested: state === 'queued', attention: { state: state === 'queued' ? 'needed' : 'pending', reason: '请求处理' },
-      createdAt: now - 120_000, updatedAt: now - 120_000, messages: [{ id: `om_${id}`, chatId: `oc_${id}`, chatName: id,
-        chatType: 'p2p', senderId: 'ou_sender', senderName: '同事', bot: false, time: now - 120_000, text: '请确认', mentions: [] }] };
+      createdAt: now - 120_000, updatedAt: now - 120_000, messages: [{ id: `om_${id}`, containerId: `oc_${id}`,
+        containerName: id, containerKind: 'direct', senderId: 'ou_sender', senderName: '同事', senderBot: false,
+        time: now - 120_000, text: '请确认', mentions: [] }] };
     store.data.jobs.push(job); return job;
   };
   return { service, io, store, analysisStarted, analyses, screenings, add, advance: () => { now += 120_000; } };

@@ -11,6 +11,8 @@ export function defineMonitorConfig<K extends Exclude<keyof MonitorSettings, 'wo
   id: string;
   key: K;
   parse(value: unknown): NonNullable<MonitorSettings[K]>;
+  /** Strip runtime-only fields before handing the stored shape to parse(). */
+  format?(config: NonNullable<MonitorSettings[K]>): unknown;
   references?(config: NonNullable<MonitorSettings[K]>, root: RootConfig): void;
   summary?(config: MonitorSettings[K]): object;
 }) {
@@ -19,7 +21,9 @@ export function defineMonitorConfig<K extends Exclude<keyof MonitorSettings, 'wo
     parseInto(settings: MonitorSettings, value: unknown) { settings[options.key] = options.parse(value); },
     format(settings: MonitorSettings) {
       const config = settings[options.key];
-      return config ? options.parse(JSON.parse(JSON.stringify(config))) : undefined;
+      if (!config) return undefined;
+      if (options.format) return options.format(config);
+      return options.parse(JSON.parse(JSON.stringify(config)));
     },
     validateReferences(settings: MonitorSettings, root: RootConfig) {
       const config = settings[options.key];

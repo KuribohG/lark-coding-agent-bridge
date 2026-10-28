@@ -12,11 +12,15 @@ import { startInboxH5 } from '../../../src/inbox/h5-server';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
 import type { InboxIO, InboxMessage } from '../../../src/inbox/types';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
-const config = () => normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner',
-  destination: { chatId: 'oc_target', threadId: 'omt_topic', replyTo: 'om_anchor' }, waitMinutes: 1 });
-const message = (overrides: Partial<InboxMessage> = {}): InboxMessage => ({ id: 'om_source', chatId: 'oc_source', chatName: '源会话', chatType: 'p2p',
-  senderId: 'ou_sender', senderName: '发送者', bot: false, time: 1_000_000, text: '请帮我确认发布日期', mentions: [], ...overrides });
+const config = () => normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner',
+  target: workItemTarget({ chatId: 'oc_target', threadId: 'omt_topic', replyTo: 'om_anchor' }), waitMinutes: 1 });
+const message = (overrides: Partial<InboxMessage> = {}): InboxMessage => ({
+  id: 'om_source', containerId: 'oc_source', containerName: '源会话', containerKind: 'direct',
+  senderId: 'ou_sender', senderName: '发送者', senderBot: false, time: 1_000_000,
+  text: '请帮我确认发布日期', mentions: [], ...overrides,
+});
 const services: InboxService[] = [];
 afterEach(async () => { await Promise.all(services.splice(0).map(s => s.close())); vi.useRealTimers(); });
 async function setup(overrides: Partial<InboxIO> = {}) {
@@ -274,19 +278,20 @@ describe('durable inbox', () => {
     advance(61_000); await service.tick(); expect(service.list()[0]?.state).toBe('claimed');
   });
   it('does not cancel a group task because the owner spoke in an unrelated topic', async () => {
-    const group = message({ chatType: 'group', threadId: 'omt_source', mentions: ['ou_owner'] });
+    const group = message({ containerKind: 'group', threadId: 'omt_source', mentions: [{ id: 'ou_owner', name: '本人' }] });
     const { service, io, advance } = await setup({ collect: vi.fn(async () => [group]), context: vi.fn(async () => [group]) }); await service.tick();
-    vi.mocked(io.collect).mockResolvedValue([message({ id: 'om_reply', senderId: 'ou_owner', chatType: 'group', threadId: 'omt_unrelated', time: 1_001_000 })]);
+    vi.mocked(io.collect).mockResolvedValue([message({ id: 'om_reply', senderId: 'ou_owner', containerKind: 'group', threadId: 'omt_unrelated', time: 1_001_000 })]);
     advance(61_000); await service.tick(); expect(service.list()[0]?.state).toBe('waiting');
   });
   it('filters acknowledgements, own output group, bots in DMs and @all', async () => {
-    const { service } = await setup({ collect: vi.fn(async () => [message({ text: '谢谢！' }), message({ id: '2', chatId: 'oc_target' }),
-      message({ id: '3', bot: true }), message({ id: '4', chatType: 'group', mentions: ['all'] })]) }); await service.tick(); expect(service.list()).toHaveLength(0);
+    const { service } = await setup({ collect: vi.fn(async () => [message({ text: '谢谢！' }), message({ id: '2', containerId: 'oc_target' }),
+      message({ id: '3', senderBot: true }), message({ id: '4', containerKind: 'group', mentions: [{ id: 'all', name: 'all' }] })]) }); await service.tick(); expect(service.list()).toHaveLength(0);
   });
   it('only auto-cancels alerts on matching structured recovery', async () => {
-    const alert = message({ chatType: 'group', bot: true, mentions: ['ou_owner'], incidentId: 'incident1', text: '告警' });
+    const alert = message({ containerKind: 'group', senderBot: true,
+      mentions: [{ id: 'ou_owner', name: '本人' }], metadata: { incidentId: 'incident1' }, text: '告警' });
     const { service, io, advance } = await setup({ collect: vi.fn(async () => [alert]) }); await service.tick();
-    vi.mocked(io.collect).mockResolvedValue([{ ...alert, id: 'om_recovery', recovered: true, mentions: [] }]);
+    vi.mocked(io.collect).mockResolvedValue([{ ...alert, id: 'om_recovery', metadata: { incidentId: 'incident1', recovered: true }, mentions: [] }]);
     advance(61_000); await service.tick(); expect(service.list()[0]?.state).toBe('ignored');
   });
   it('stops an in-flight analysis on claim and never publishes its output', async () => {
@@ -309,8 +314,9 @@ describe('Lark boundary', () => {
   it('parses mentions, thread replies and timestamp without host timezone', () => {
     const raw = { message_id: 'om_1', chat_id: 'oc_1', create_time: '2026-10-14 20:00', content: 'hello', mentions: [{ id: 'ou_owner' }], sender: { id: 'ou_sender', sender_type: 'user' } };
     const parsed = parseMessages([{ ...raw, thread_replies: [{ ...raw, message_id: 'om_2', reply_to: 'om_1' }] }]);
-    expect(parsed).toHaveLength(2); expect(parsed[0]?.mentions).toEqual(['ou_owner']); expect(messageTime(raw.create_time)).toBe(Date.parse('2026-10-14T12:00:00Z'));
-    expect(parsed[1]?.parentId).toBe('om_1');
+    expect(parsed).toHaveLength(2); expect(parsed[0]?.mentions).toEqual([{ id: 'ou_owner', name: '' }]);
+    expect(messageTime(raw.create_time)).toBe(Date.parse('2026-10-14T12:00:00Z'));
+    expect(parsed[1]?.replyTo).toBe('om_1');
   });
   it('finds recent replies even when their topic root predates the context window', async () => {
     const exec = vi.fn(async (args: string[]) => ({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data:
@@ -327,7 +333,7 @@ describe('Lark boundary', () => {
     job.attention = { state: 'needed', reason: '需要确认发布日期' }; await cli.notifyAttention([job], 'digest');
     const args = exec.mock.calls[1]![0]; expect(args).toContain('--reply-in-thread'); expect(args).toContain('om_anchor'); expect(args).toContain('bot'); expect(args).toContain('--text'); expect(args).not.toContain('--markdown');
     expect(args[args.indexOf('--text') + 1]).toContain('源会话'); expect(args[args.indexOf('--text') + 1]).toContain('需要确认发布日期');
-    job.destination.replyTo = 'om_evil'; await expect(cli.deliver(job, 'result')).rejects.toThrow('目标已变更');
+    job.target.replyTo = 'om_evil'; await expect(cli.deliver(job, 'result')).rejects.toThrow('目标已变更');
   });
   it('uses the dedicated Jupyter workbench URL ahead of the retired hosted GUI link', async () => {
     const { service } = await setup(); await service.tick(); const job = service.list()[0]!;
@@ -348,17 +354,17 @@ describe('Lark boundary', () => {
     const c = config(); c.deliveryMode = route === 'thread' ? 'thread' : 'new_topic';
     job.attention = { state: 'needed', reason: '需要回复' }; job.draftStale = false;
     if (route === 'analysis-topic') {
-      job.analysisTopic = { chatId: 'oc_target', replyTo: 'om_analysis', threadId: 'omt_analysis' };
+      job.analysisTarget = workItemTarget({ chatId: 'oc_target', replyTo: 'om_analysis', threadId: 'omt_analysis' });
       c.gui.publicUrl = 'https://gui.example';
     }
-    job.source.name = 'data_platform/**source**';
+    job.sourceRef.name = 'data_platform/**source**';
     job.replyDraft = '**已核实**：`read()`\n\n- 修复短读\n- 补充验证\n<at user_id="ou_other">someone</at>';
     job.analysis = '```ts\nread();\n```\n\n[证据](https://example.com/log)\n![image](https://example.com/private.png)';
     job.missingInfo = '需要确认版本';
     job.messages[0]!.link = 'https://applink.feishu.cn/client/thread/open?open_chat_id=oc_source';
-    const target = job.analysisTopic ?? c.destination;
+    const target = job.analysisTarget ?? c.target;
     const exec = vi.fn(async (_args: string[]) => ({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data: {
-      chat_mode: 'topic', messages: [{ message_id: target.replyTo, chat_id: target.chatId, thread_id: target.threadId,
+      chat_mode: 'topic', messages: [{ message_id: target.replyTo, chat_id: target.containerId, thread_id: target.threadId,
         create_time: '2026-10-14 20:00', sender: { sender_type: 'user' }, content: '' }],
     } }) }));
     const cli = new InboxLark({ profile: 'codex' }, c, exec);
@@ -382,7 +388,7 @@ describe('Lark boundary', () => {
   });
   it('renders failed analyses without including an old draft', async () => {
     const { service } = await setup(); await service.tick(); const job = service.list()[0]!;
-    job.analysisTopic = { ...job.destination }; job.error = '查询 `logs` 超时'; job.replyDraft = '过期草稿'; job.draftStale = true;
+    job.analysisTarget = { ...job.target }; job.error = '查询 `logs` 超时'; job.replyDraft = '过期草稿'; job.draftStale = true;
     const exec = vi.fn(async (_args: string[]) => ({ code: 0, timedOut: false, stderr: '', stdout: JSON.stringify({ ok: true, data: {
       messages: [{ message_id: 'om_anchor', chat_id: 'oc_target', thread_id: 'omt_topic', create_time: '2026-10-14 20:00', sender: { sender_type: 'user' }, content: '' }],
     } }) }));
@@ -480,7 +486,7 @@ describe('H5 authentication and model capabilities', () => {
       const init = await auth.bootstrap('https://example.com/assistant/'); const token = await auth.login('code', init.state);
       expect((await request('/api/config', {}, 'https://example.com', token)).status).toBe(404);
       const processed = await request('/api/process', { chatId: 'oc_source', destination: 'oc_evil' }, 'https://example.com', token);
-      expect(processed.status).toBe(200); expect(service.list()[0]?.destination.chatId).toBe('oc_target');
+      expect(processed.status).toBe(200); expect(service.list()[0]?.target.containerId).toBe('oc_target');
     } finally { await server.close(); }
   });
   it('uses no tools and rejects unexpected function calls instead of executing them', async () => {
@@ -568,8 +574,8 @@ describe('intake scopes', () => {
     ['private_mentions', ['p2p', 'mention'], ['p2p', 'mention']],
     ['all', ['p2p', 'group'], ['p2p', 'mention', 'group']],
   ] as const)('collects and admits only %s messages', async (scope, kinds, ids) => {
-    const messages = [message({ id: 'p2p' }), message({ id: 'mention', chatId: 'oc_mention', chatType: 'group', mentions: ['ou_owner'] }),
-      message({ id: 'group', chatId: 'oc_group', chatType: 'group' })];
+    const messages = [message({ id: 'p2p' }), message({ id: 'mention', containerId: 'oc_mention', containerKind: 'group',
+      mentions: [{ id: 'ou_owner', name: '本人' }] }), message({ id: 'group', containerId: 'oc_group', containerKind: 'group' })];
     const collect = vi.fn(async (_kind: string) => messages);
     const { service } = await setup({ collect });
     await service.setScope(scope); await service.tick();
@@ -585,13 +591,13 @@ describe('intake scopes', () => {
     expect(io.collect).not.toHaveBeenCalled(); expect(io.analyze).not.toHaveBeenCalled();
   });
   it('does not backfill the overlap when widening scope', async () => {
-    const collect = vi.fn(async () => [message({ id: 'old', chatType: 'group', time: 1_000_000 }),
-      message({ id: 'new', chatType: 'group', time: 1_061_001 })]);
+    const collect = vi.fn(async () => [message({ id: 'old', containerKind: 'group', time: 1_000_000 }),
+      message({ id: 'new', containerKind: 'group', time: 1_061_001 })]);
     const { service, advance } = await setup({ collect }); advance(61_000); await service.setScope('all');
     await service.tick(); expect(service.list().flatMap(j => j.messages.map(m => m.id))).toEqual(['new']);
   });
   it('retains unrelated group jobs but stops background follow-up and automatic execution after narrowing', async () => {
-    const group = message({ chatType: 'group', chatId: 'oc_group' });
+    const group = message({ containerKind: 'group', containerId: 'oc_group' });
     const { service, io, store, advance } = await setup({ collect: vi.fn(async () => [group]) });
     await service.setScope('all'); await service.tick();
     store.data.jobs[0]!.state = 'queued';
@@ -630,7 +636,7 @@ describe('lightweight attention and quiet delivery', () => {
     return s;
   }
   it('screens 51 ready items individually and counts each attempt against the daily limit', async () => {
-    const messages = Array.from({ length: 51 }, (_, i) => message({ id: `om_${i}`, chatId: `oc_${i}` }));
+    const messages = Array.from({ length: 51 }, (_, i) => message({ id: `om_${i}`, containerId: `oc_${i}` }));
     const s = await screened({ collect: vi.fn(async kind => kind === 'p2p' ? messages : []), context: vi.fn(async () => []) });
     await vi.waitFor(() => expect(s.service.list().filter(j => j.attention?.state === 'needed')).toHaveLength(51));
     expect(s.io.triage).toHaveBeenCalledTimes(51);
@@ -638,8 +644,8 @@ describe('lightweight attention and quiet delivery', () => {
     expect(s.store.data.triageUsage?.['1970-01-01']).toBe(51);
   });
   it('keeps the legacy digest without automatic work when no topic-announcement adapter is available', async () => {
-    const messages = [message(), message({ id: 'om_quiet', chatId: 'oc_quiet' }), message({ id: 'om_unknown', chatId: 'oc_unknown' })];
-    const triage = vi.fn<NonNullable<InboxIO['triage']>>(async j => ({ id: j.id, state: j.source.chatId === 'oc_quiet' ? 'quiet' : j.source.chatId === 'oc_unknown' ? 'uncertain' : 'needed', reason: '模型判断', priority: 'normal' }));
+    const messages = [message(), message({ id: 'om_quiet', containerId: 'oc_quiet' }), message({ id: 'om_unknown', containerId: 'oc_unknown' })];
+    const triage = vi.fn<NonNullable<InboxIO['triage']>>(async j => ({ id: j.id, state: j.sourceRef.containerId === 'oc_quiet' ? 'quiet' : j.sourceRef.containerId === 'oc_unknown' ? 'uncertain' : 'needed', reason: '模型判断', priority: 'normal' }));
     const s = await screened({ collect: vi.fn(async () => messages), context: vi.fn(async () => []), triage });
     await vi.waitFor(() => expect(s.service.list().filter(j => j.attention?.state === 'pending')).toHaveLength(0));
     await s.service.tick();
@@ -717,8 +723,8 @@ describe('lightweight attention and quiet delivery', () => {
   });
   it('persists independent successes and retries only failed items with their specific reason', async () => {
     const triage = vi.fn<NonNullable<InboxIO['triage']>>(async j => ({ id: j.id,
-      state: j.source.chatId === 'oc_second' ? 'pending' : 'quiet', reason: j.source.chatId === 'oc_second' ? '筛选未完成' : '无需动作', priority: 'normal' }));
-    const s = await screened({ triage, collect: vi.fn(async kind => kind === 'p2p' ? [message(), message({ id: 'om_second', chatId: 'oc_second' })] : []) });
+      state: j.sourceRef.containerId === 'oc_second' ? 'pending' : 'quiet', reason: j.sourceRef.containerId === 'oc_second' ? '筛选未完成' : '无需动作', priority: 'normal' }));
+    const s = await screened({ triage, collect: vi.fn(async kind => kind === 'p2p' ? [message(), message({ id: 'om_second', containerId: 'oc_second' })] : []) });
     await vi.waitFor(() => expect(s.service.list().some(j => j.attention?.retry)).toBe(true));
     const done = s.service.list().find(j => j.attention?.state === 'quiet')!;
     const retry = s.service.list().find(j => j.attention?.retry)!;
@@ -801,7 +807,7 @@ describe('lightweight attention and quiet delivery', () => {
     expect(s.store.data.notificationOutbox).toBeUndefined();
   });
   it('checks every revision before an atomic batch, including off mode and replay', async () => {
-    const messages = [message(), message({ id: 'om_second', chatId: 'oc_second' })];
+    const messages = [message(), message({ id: 'om_second', containerId: 'oc_second' })];
     const s = await setup({ collect: vi.fn(async () => messages) }); await s.service.tick(); await s.service.setMode('off');
     const items = s.service.list().map(j => ({ id: j.id, revision: j.revision! }));
     await expect(s.service.batchReview({ items, handlingState: 'handled' }, 'ou_other', 'batch')).rejects.toThrow('forbidden');

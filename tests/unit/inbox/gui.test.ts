@@ -8,6 +8,7 @@ import type { InboxService } from '../../../src/inbox/service';
 import type { InboxLark } from '../../../src/inbox/lark';
 import type { InboxJob } from '../../../src/inbox/types';
 import type { InboxTaskSources } from '../../../src/inbox/task-sources';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
 const workers: InboxGui[] = [];
 afterEach(async () => { await Promise.all(workers.splice(0).map(w => w.close())); });
@@ -15,8 +16,8 @@ const id = '01234567-0123-4123-8123-0123456789ab';
 async function setup(compactSync = false) {
   const dir = await mkdtemp(join(tmpdir(), 'inbox-gui-test-'));
   const key = join(dir, 'key'); await writeFile(key, 'test-key', { mode: 0o600 });
-  const config = normalizeInbox({ enabled: true, executorProfile: 'codex', ownerOpenId: 'ou_owner',
-    destination: { chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_anchor' },
+  const config = normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner',
+    target: workItemTarget({ chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_anchor' }),
     gui: { publicUrl: 'https://gui.example', apiKeyFile: key } });
   const service = { config, list: vi.fn((_limit = 100): InboxJob[] => []), get: vi.fn((): InboxJob | undefined => undefined), manual: vi.fn(async () => ({ id: 'job1' })),
     decide: vi.fn(async () => {}), stopAnalysis: vi.fn<InboxService['stopAnalysis']>() };
@@ -43,15 +44,15 @@ const idle = async (request: ReturnType<typeof vi.fn>) => { await vi.waitFor(() 
 describe('hosted inbox connection', () => {
   it('keeps pending work from every source ahead of history and reports the full owner-scoped total', async () => {
     const s = await setup();
-    const job = (id: string): InboxJob => ({ id, ownerOpenId: 'ou_owner', profile: 'codex', destination: s.service.config.destination,
-      source: { name: id, chatId: 'oc_source', type: 'p2p' }, messages: [], state: 'done', handlingState: 'open',
+    const job = (id: string): InboxJob => ({ id, ownerKey: 'ou_owner', profile: 'codex', target: s.service.config.target,
+      sourceRef: { name: id, containerId: 'oc_source', transport: 'lark', kind: 'direct' }, messages: [], state: 'done', handlingState: 'open',
       attention: { state: 'needed', reason: '需要确认' }, createdAt: 1, updatedAt: 1, automatic: true, alert: false });
     const conversations = Array.from({ length: 634 }, (_, i) => ({ ...job(`chat-${i}`),
       attention: { state: i === 0 ? 'needed' as const : 'quiet' as const, reason: '会话' }, updatedAt: 1000 + i }));
     const tasks = Array.from({ length: 6 }, (_, i) => ({ ...job(`ci-${i}`),
       external: { source: 'gitlab-ci', key: `ci-${i}`, url: 'https://gitlab.test', data: {}, analysisAttempts: 1, maxAttempts: 3 } }));
     s.service.list.mockImplementation((limit = 100) => conversations.slice(0, limit));
-    s.taskSources.list.mockReturnValue([...tasks, { ...job('foreign-owner'), ownerOpenId: 'ou_other' }, { ...job('foreign-profile'), profile: 'claude' }]);
+    s.taskSources.list.mockReturnValue([...tasks, { ...job('foreign-owner'), ownerKey: 'ou_other' }, { ...job('foreign-profile'), profile: 'claude' }]);
     await s.worker.start(); await idle(s.request);
     const { snapshot } = JSON.parse(String(s.request.mock.calls[0]?.[1]?.body));
     expect(snapshot.jobs).toHaveLength(500);
@@ -62,8 +63,8 @@ describe('hosted inbox connection', () => {
 
   it.each([false, true])('syncs a stopped job with its receipt and does not replay cancellation (compact=%s)', async compact => {
     const s = await setup(compact);
-    const job = { id: 'job1', ownerOpenId: 'ou_owner', profile: 'codex', state: 'waiting', revision: 2, analysisStoppedAt: 1000,
-      source: { name: '示例', chatId: 'oc_source', type: 'p2p' }, messages: [] } as unknown as InboxJob;
+    const job = { id: 'job1', ownerKey: 'ou_owner', profile: 'codex', state: 'waiting', revision: 2, analysisStoppedAt: 1000,
+      sourceRef: { name: '示例', containerId: 'oc_source', transport: 'lark', kind: 'direct' }, messages: [] } as unknown as InboxJob;
     s.service.stopAnalysis.mockImplementation(async () => { s.service.list.mockReturnValue([job]); return job; });
     s.commands([command('stop', JSON.stringify({ id: job.id, revision: 1 }))]);
     await s.worker.start(); await vi.waitFor(() => expect(s.request.mock.calls.some(c => String(c[0]).endsWith('/receipt'))).toBe(true));
@@ -136,7 +137,7 @@ describe('hosted inbox connection', () => {
     const s = await setup(); s.commands([command('browse', JSON.stringify({ type: 'p2p', page: '' }))]);
     s.lark.checkOwner.mockRejectedValueOnce(new Error('wrong owner')); await s.worker.start();
     await vi.waitFor(() => expect(s.request).toHaveBeenCalledTimes(2)); expect(s.lark.recent).not.toHaveBeenCalled();
-    s.service.list.mockReturnValue([{ id: 'foreign', ownerOpenId: 'ou_other', source: { name: 'other', chatId: 'oc_other', type: 'p2p' },
+    s.service.list.mockReturnValue([{ id: 'foreign', ownerKey: 'ou_other', sourceRef: { name: 'other', containerId: 'oc_other', transport: 'lark', kind: 'direct' },
       messages: [], state: 'waiting' } as unknown as InboxJob]);
     s.service.get.mockReturnValue(s.service.list()[0]);
     s.commands([{ ...command('claim', 'foreign'), id: '11234567-0123-4123-8123-0123456789ab' }]);

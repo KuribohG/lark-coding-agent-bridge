@@ -18,12 +18,13 @@ export class InboxCards {
 
   accepts(ctx: InboxCardContext): boolean {
     const c = this.service.config;
-    return ctx.profile === c.executorProfile && ctx.operator === c.ownerOpenId && ctx.chatId === c.destination.chatId && Boolean(ctx.threadId);
+    return ctx.profile === c.executorProfile && ctx.operator === c.recipientKey &&
+      ctx.chatId === c.target.containerId && Boolean(ctx.threadId);
   }
   private expected(action: string, target: string) {
     const c = this.service.config;
-    return { runId: 'inbox', scope: `${c.destination.chatId}:${c.destination.threadId}`, chatId: c.destination.chatId,
-      operatorOpenId: c.ownerOpenId, action: JSON.stringify([action, target]),
+    return { runId: 'inbox', scope: `${c.target.containerId}:${c.target.threadId}`, chatId: c.target.containerId,
+      operatorOpenId: c.recipientKey, action: JSON.stringify([action, target]),
       policyFingerprint: createHash('sha256').update(JSON.stringify(c)).digest('hex') };
   }
   private action(label: string, action: string, target: string, ttlMs = 30 * 60_000): object {
@@ -64,14 +65,14 @@ export class InboxCards {
       await this.pending(offset, ctx);
     } else if (action === 'choose') {
       const job = await this.service.manual(target);
-      await this.lark.replyTopic({ text: `已提交分析：${job.source.name}\n来源会话 ID：${job.source.chatId}\n待办：${job.id}\n分析结果会继续发到本话题。` });
+      await this.lark.replyTopic({ text: `已提交分析：${job.sourceRef.name}\n来源会话 ID：${job.sourceRef.containerId}\n待办：${job.id}\n分析结果会继续发到本话题。` });
     } else if (action === 'stop') {
       const job = await this.service.stopAnalysis(JSON.parse(target), ctx.operator);
-      await this.menu(card('会话助理 · 分析已停止', [text(`${job.source.name}\n已停止深度分析，事项保留待处理。需要时可重新分析。`), ...this.decisions(job)]), ctx);
+      await this.menu(card('会话助理 · 分析已停止', [text(`${job.sourceRef.name}\n已停止深度分析，事项保留待处理。需要时可重新分析。`), ...this.decisions(job)]), ctx);
     } else if (['process', 'claim', 'ignore'].includes(action!)) {
       await this.service.decide(target, action!, ctx.operator);
       const job = this.service.get(target);
-      await this.lark.replyTopic({ text: `待办已更新：${job?.source.name ?? target}\n来源会话 ID：${job?.source.chatId ?? ''}\n状态：${job ? stateName(job.state) : '已处理'}` });
+      await this.lark.replyTopic({ text: `待办已更新：${job?.sourceRef.name ?? target}\n来源会话 ID：${job?.sourceRef.containerId ?? ''}\n状态：${job ? stateName(job.state) : '已处理'}` });
     } else throw new Error('无效的助理操作');
   }
   private async menu(content: object, ctx: InboxCardContext): Promise<void> {
@@ -89,7 +90,7 @@ export class InboxCards {
   private async pending(offset: number, ctx: InboxCardContext): Promise<void> {
     const jobs = this.service.list(500).filter(j => !['done', 'ignored', 'claimed'].includes(j.state));
     const elements: object[] = [...navigation()];
-    for (const j of jobs.slice(offset, offset + 5)) elements.push(text(`${j.source.name}\n会话 ID：${j.source.chatId}\n状态：${j.analysisStoppedAt !== undefined && j.state === 'waiting' ? '分析已停止 · 待处理' : stateName(j.state)}`), ...this.decisions(j));
+    for (const j of jobs.slice(offset, offset + 5)) elements.push(text(`${j.sourceRef.name}\n会话 ID：${j.sourceRef.containerId}\n状态：${j.analysisStoppedAt !== undefined && j.state === 'waiting' ? '分析已停止 · 待处理' : stateName(j.state)}`), ...this.decisions(j));
     if (!jobs.length) elements.push(text('当前没有待办。'));
     if (jobs.length > offset + 5) elements.push(this.action('下一页待办', 'pending', String(offset + 5)));
     await this.menu(card('会话助理 · 待办列表', elements), ctx);

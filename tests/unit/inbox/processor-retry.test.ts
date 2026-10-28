@@ -7,9 +7,11 @@ import { normalizeInbox } from '../../../src/inbox/config';
 import { processInbox } from '../../../src/monitoring/sources/lark/processor';
 import type { InboxJob } from '../../../src/inbox/types';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
+import { workItemTarget } from '../../../src/inbox/lark-target';
 
-const job: InboxJob = { id: 'retry-item', ownerOpenId: 'ou_owner', profile: 'codex',
-  destination: { chatId: 'oc_target', threadId: 'omt_item', replyTo: 'om_item' }, source: { chatId: 'oc_source', name: '项目群', type: 'group' },
+const job: InboxJob = { id: 'retry-item', ownerKey: 'ou_owner', profile: 'codex',
+  target: workItemTarget({ chatId: 'oc_target', threadId: 'omt_item', replyTo: 'om_item' }),
+  sourceRef: { transport: 'lark', containerId: 'oc_source', name: '项目群', kind: 'group' },
   messages: [], state: 'running', attempt: 1, automatic: true, alert: false, createdAt: 1, updatedAt: 1 };
 const rateLimit: AgentEvent = { type: 'error', terminationReason: 'failed', message: 'exceeded retry limit, last status: 429 Too Many Requests' };
 const system: AgentEvent = { type: 'system', threadId: 'existing-thread' };
