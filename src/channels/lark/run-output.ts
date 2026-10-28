@@ -22,6 +22,7 @@ export interface LarkRunOutputOptions {
   cardRenderOptions: FileLinkRenderOptions & { signCallback?: (action: string) => string };
   cotMessages: CotMessagesMode;
   cotClient: CotClient;
+  preparedCot?: CotPublisher;
   originMessageId: string;
   inputPreview: string;
 }
@@ -93,7 +94,11 @@ async function renderRunOutput(input: RunOutputInput): Promise<void> {
   const reaction = input.cotMessages !== 'off' || input.replyMode === 'card'
     ? undefined : addWorkingReaction(input.channel, input.originMessageId);
   try {
-    if (input.cotMessages !== 'off' && await renderCotOutput(input)) return;
+    if (input.cotMessages === 'off') {
+      await input.preparedCot?.finish('cancelled');
+    } else if (await renderCotOutput(input)) {
+      return;
+    }
     if (input.replyMode === 'text') {
       const state = await processAgentStream(input.handle, input.events, input.scope, input.idleTimeoutMs,
         input.recordSession, async () => {});
@@ -127,14 +132,10 @@ async function renderRunOutput(input: RunOutputInput): Promise<void> {
 
 async function renderCotOutput(input: RunOutputInput): Promise<boolean> {
   const output = new ProgressOutput(input, 'markdown', { openOnContent: false, tolerateUpdateFailure: true });
-  const publisher = new CotPublisher({
+  const publisher = input.preparedCot ?? new CotPublisher({
     client: input.cotClient, chatId: input.chatId, originMessageId: input.originMessageId,
-    runId: input.runId, scope: input.scope, inputPreview: input.inputPreview,
-    onDegraded: reason => {
-      log.warn('cot', 'degraded', { scope: input.scope, reason, replyInThread: input.sendOpts.replyInThread === true });
-      if (output.state.terminal === 'running') output.progress.ensureOpen();
-    },
   });
+  publisher.bind({ runId: input.runId, scope: input.scope, inputPreview: input.inputPreview });
   await publisher.start();
   if (publisher.disabled) {
     log.warn('cot', 'fallback-existing-reply', { reason: 'create-disabled' });

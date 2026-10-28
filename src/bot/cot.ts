@@ -10,8 +10,10 @@ import {
 } from '../lark-auth/tenant-token';
 
 const COT_UPDATE_THROTTLE_MS = 600;
-const COT_TOOL_OUTPUT_MAX = 1200;
-const COT_TEXT_MAX = 1200;
+// COT validates content in UTF-8 bytes, not JavaScript characters. Keeping
+// every individual text field below this conservative bound avoids an
+// otherwise valid Chinese response being rejected as "content too long".
+const COT_CONTENT_MAX_BYTES = 1000;
 // Bounds every CoT HTTP call. Without it a hung message_cot endpoint pins
 // start() — which runs before any agent event is drained and before the
 // plain-reply fallback — to undici's ~300s default.
@@ -115,36 +117,48 @@ export class CotPublisher {
   private readonly client: Pick<CotClient, 'create' | 'update' | 'complete'>;
   readonly chatId: string;
   readonly originMessageId: string;
-  readonly runId: string;
-  readonly scope: string;
-  readonly inputPreview: string;
+  runId: string;
+  scope: string;
+  inputPreview: string;
   ref: CotRef | undefined;
   disabled = false;
-  degradedReason: string | undefined;
   private buffer: CotEvent[] = [];
   private flushing: Promise<void> | undefined;
   private timer: NodeJS.Timeout | undefined;
-  private readonly onDegraded?: (reason: string) => void;
+  private preparation: Promise<void> | undefined;
+  private started = false;
+  private finishing: Promise<void> | undefined;
+  private updateFailureCount = 0;
 
   constructor(opts: {
     client: Pick<CotClient, 'create' | 'update' | 'complete'>;
     chatId: string;
     originMessageId: string;
-    runId: string;
-    scope: string;
-    inputPreview: string;
-    onDegraded?: (reason: string) => void;
+    runId?: string;
+    scope?: string;
+    inputPreview?: string;
   }) {
     this.client = opts.client;
     this.chatId = opts.chatId;
     this.originMessageId = opts.originMessageId;
-    this.runId = opts.runId;
-    this.scope = opts.scope;
-    this.inputPreview = opts.inputPreview;
-    this.onDegraded = opts.onDegraded;
+    this.runId = opts.runId ?? '';
+    this.scope = opts.scope ?? '';
+    this.inputPreview = opts.inputPreview ?? '';
   }
 
-  async start(): Promise<void> {
+  bind(input: { runId: string; scope: string; inputPreview: string }): void {
+    this.runId = input.runId;
+    this.scope = input.scope;
+    this.inputPreview = input.inputPreview;
+  }
+
+  prepare(): Promise<void> {
+    if (this.preparation) return this.preparation;
+    this.preparation = this.createBubble();
+    return this.preparation;
+  }
+
+  private async createBubble(): Promise<void> {
     // Single chat_id-addressed create. In topics the bubble follows
     // originMessageId's thread (see CotClient.create); the caller passes an
     // in-topic origin so it lands in the topic. On any failure we disable CoT
@@ -170,10 +184,16 @@ export class CotPublisher {
     }
     this.ref = { cotId, messageId };
     log.info('cot', 'created', { cotId, messageId });
+  }
+
+  async start(): Promise<void> {
+    await this.prepare();
+    if (this.disabled || !this.ref || this.started) return;
+    this.started = true;
     this.enqueue('RUN_STARTED', {
       threadId: this.scope,
       runId: this.runId,
-      input: { query: this.inputPreview },
+      input: { query: truncateCot(this.inputPreview, COT_CONTENT_MAX_BYTES) },
     });
     this.enqueue('STEP_STARTED', {
       stepId: `step-understand-${this.runId}`,
@@ -192,6 +212,13 @@ export class CotPublisher {
   }
 
   async finish(reason: string): Promise<void> {
+    if (this.finishing) return this.finishing;
+    this.finishing = this.finishOnce(reason);
+    return this.finishing;
+  }
+
+  private async finishOnce(reason: string): Promise<void> {
+    await this.prepare();
     if (this.timer) {
       clearTimeout(this.timer);
       this.timer = undefined;
@@ -224,15 +251,24 @@ export class CotPublisher {
     const events = this.buffer.splice(0);
     if (events.length === 0) return;
     this.flushing = this.client.update(this.ref, events)
+      .then(() => {
+        if (this.updateFailureCount > 0) {
+          log.info('cot', 'update-recovered', { afterFailures: this.updateFailureCount });
+        }
+        this.updateFailureCount = 0;
+      })
       .catch((err) => {
-        this.disabled = true;
-        this.degradedReason = err instanceof Error ? err.message : String(err);
-        this.buffer = [];
-        log.warn('cot', 'update-failed', { err: this.degradedReason });
-        try {
-          this.onDegraded?.(this.degradedReason);
-        } catch (error) {
-          log.warn('cot', 'degraded-handler-failed', { err: String(error) });
+        this.updateFailureCount++;
+        // Progress updates are best effort and the API has no replay
+        // idempotency key. Drop this failed batch rather than risk appending
+        // it twice after an ambiguous timeout; future progress can still
+        // update the same COT bubble and finish will still close it.
+        if (this.updateFailureCount === 1 || this.updateFailureCount % 10 === 0) {
+          log.warn('cot', 'update-failed', {
+            err: err instanceof Error ? err.message : String(err),
+            consecutiveFailures: this.updateFailureCount,
+            droppedEvents: events.length,
+          });
         }
       })
       .finally(() => {
@@ -293,7 +329,7 @@ export async function consumeCotEvents(
         }
         publisher.enqueue('REASONING_MESSAGE_CONTENT', {
           messageId: reasoningMessageId,
-          delta: truncateCot(evt.delta, COT_TEXT_MAX),
+          delta: truncateCot(evt.delta, COT_CONTENT_MAX_BYTES),
         });
         continue;
       }
@@ -308,13 +344,13 @@ export async function consumeCotEvents(
         publisher.enqueue('TOOL_CALL_START', {
           toolCallId,
           icon: showSummary ? cotToolIcon(evt.name) : 'default',
-          title,
-          toolCallName: showSummary ? evt.name : 'tool',
+          title: truncateCot(title, COT_CONTENT_MAX_BYTES),
+          toolCallName: truncateCot(showSummary ? evt.name : 'tool', COT_CONTENT_MAX_BYTES),
         });
         if (detailed && evt.input !== undefined) {
           publisher.enqueue('TOOL_CALL_ARGS', {
             toolCallId,
-            delta: JSON.stringify(evt.input),
+            delta: truncateCot(JSON.stringify(evt.input), COT_CONTENT_MAX_BYTES),
           });
         }
         publisher.enqueue('TOOL_CALL_END', { toolCallId });
@@ -328,9 +364,12 @@ export async function consumeCotEvents(
           toolCallId: evt.id,
           role: 'tool',
           content: detailed
-            ? truncateCot(evt.output ?? '', COT_TOOL_OUTPUT_MAX)
+            ? truncateCot(evt.output ?? '', COT_CONTENT_MAX_BYTES)
             : brief
-              ? cotBriefToolTitle(brief.name, brief.input, evt.isError ? 'error' : 'done')
+              ? truncateCot(
+                  cotBriefToolTitle(brief.name, brief.input, evt.isError ? 'error' : 'done'),
+                  COT_CONTENT_MAX_BYTES,
+                )
               : '工具调用已完成',
         });
         toolBrief.delete(evt.id);
@@ -352,7 +391,7 @@ export async function consumeCotEvents(
         }
         publisher.enqueue('TEXT_MESSAGE_CONTENT', {
           messageId: textMessageId,
-          delta: truncateCot(evt.delta, COT_TEXT_MAX),
+          delta: truncateCot(evt.delta, COT_CONTENT_MAX_BYTES),
         });
         continue;
       }
@@ -367,7 +406,10 @@ export async function consumeCotEvents(
           });
         }
         if (evt.type === 'error') {
-          publisher.enqueue('RUN_ERROR', { message: evt.message, code: evt.terminationReason ?? 'error' });
+          publisher.enqueue('RUN_ERROR', {
+            message: truncateCot(evt.message, COT_CONTENT_MAX_BYTES),
+            code: evt.terminationReason ?? 'error',
+          });
           await publisher.finish('error');
         } else {
           const status = evt.terminationReason === 'normal' ? 'done' : evt.terminationReason ?? 'done';
@@ -424,9 +466,15 @@ function cotToolIcon(name: string): string {
   return 'default';
 }
 
-function truncateCot(value: unknown, max: number): string {
+function truncateCot(value: unknown, maxBytes: number): string {
   const text = String(value ?? '');
-  return text.length > max ? `${text.slice(0, max)}...` : text;
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
+  const suffix = '...';
+  let end = Math.min(text.length, Math.max(0, maxBytes - suffix.length));
+  while (end > 0 && Buffer.byteLength(`${text.slice(0, end)}${suffix}`, 'utf8') > maxBytes) {
+    end--;
+  }
+  return `${text.slice(0, end)}${suffix}`;
 }
 
 function stringValue(value: unknown): string | undefined {

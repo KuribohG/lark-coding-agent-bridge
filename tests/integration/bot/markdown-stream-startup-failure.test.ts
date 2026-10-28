@@ -124,6 +124,48 @@ describe('markdown stream startup failures', () => {
     expect(lastMarkdown(h.channel)).toContain('FINAL_WITH_COT');
   });
 
+  it('prepares the native COT acknowledgement before the debounce submits the run', async () => {
+    const h = await createHarness({ events: [
+      { type: 'final_text', content: 'FINAL_AFTER_PREPARED_COT' },
+      { type: 'done', terminationReason: 'normal' },
+    ] });
+    delete h.profileConfig.preferences.cotMessages;
+    let runsWhenCreated = -1;
+    const create = vi.spyOn(CotClient.prototype, 'create').mockImplementation(async () => {
+      runsWhenCreated = h.agent.runs.length;
+      return { cot_id: 'cot_prepared', message_id: 'om_cot_prepared' };
+    });
+    vi.spyOn(CotClient.prototype, 'update').mockResolvedValue(undefined);
+    vi.spyOn(CotClient.prototype, 'complete').mockResolvedValue(undefined);
+
+    await startTestBridge(h);
+    await h.channel.handlers.message?.(message('om_prepared_cot', 'run'));
+
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(runsWhenCreated).toBe(0);
+    expect(h.agent.runs).toHaveLength(0);
+    await waitFor(() => h.channel.sent.some(m => JSON.stringify(m.content).includes('FINAL_AFTER_PREPARED_COT')));
+    expect(create).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not prepare a COT acknowledgement before access checks pass', async () => {
+    const h = await createHarness();
+    delete h.profileConfig.preferences.cotMessages;
+    const create = vi.spyOn(CotClient.prototype, 'create').mockResolvedValue({
+      cot_id: 'cot_unexpected',
+      message_id: 'om_cot_unexpected',
+    });
+
+    await startTestBridge(h);
+    await h.channel.handlers.message?.({
+      ...message('om_untrusted_cot', 'run'),
+      senderId: 'ou_untrusted',
+    });
+
+    expect(create).not.toHaveBeenCalled();
+    expect(h.agent.runs).toHaveLength(0);
+  });
+
   it.each(['rejected', 'missing-ids', 'notice-failed'] as const)('notifies once on initial COT creation failure and preserves the final answer (%s)', async failure => {
     const create = vi.spyOn(CotClient.prototype, 'create');
     if (failure === 'missing-ids') create.mockResolvedValue({});
@@ -194,19 +236,17 @@ describe('markdown stream startup failures', () => {
     } finally { finished.resolve(undefined); }
   });
 
-  it.each([false, true])('silently falls back on COT update failure during backoff and preserves retry execution (fallback fails: %s)', async failFallback => {
+  it('keeps native COT after a transient update failure and preserves retry execution', async () => {
     vi.spyOn(CotClient.prototype, 'create').mockResolvedValue({ cot_id: 'cot_test', message_id: 'om_cot' });
-    vi.spyOn(CotClient.prototype, 'update').mockRejectedValue(new Error('COT update timed out'));
+    const update = vi.spyOn(CotClient.prototype, 'update')
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockResolvedValue(undefined);
     vi.spyOn(CotClient.prototype, 'complete').mockResolvedValue(undefined);
     const resumed = deferred<void>();
     const finished = deferred<void>();
-    const visible: string[] = [];
     const streams: unknown[] = [];
-    const h = await createHarness({ events: [], stream: async (_chatId, input, options) => {
+    const h = await createHarness({ events: [], stream: async (_chatId, _input, options) => {
       streams.push(options);
-      if (failFallback) throw new Error('fallback connection failed');
-      await (input as { markdown(ctrl: { setContent(value: string): Promise<void> }): Promise<void> })
-        .markdown({ setContent: async value => { visible.push(value); } });
     } });
     h.profileConfig.preferences.cotMessages = 'brief';
     const spawn = h.agent.run.bind(h.agent);
@@ -228,20 +268,19 @@ describe('markdown stream startup failures', () => {
     await startTestBridge(h);
     await h.channel.handlers.message?.(message('om_retry_visibility', 'run'));
     try {
-      await waitFor(() => streams.length === 1);
+      await waitFor(() => update.mock.calls.length === 1);
       expect(h.channel.sent).toHaveLength(0);
-      expect(streams[0]).toMatchObject({ replyTo: 'om_retry_visibility' });
-      if (!failFallback) expect(visible.join('\n')).toContain('60 秒后自动重试（2/3）');
+      expect(streams).toHaveLength(0);
       resumed.resolve(undefined);
-      if (!failFallback) {
-        await waitFor(() => visible.some(value => value.includes('WORK_RESUMED')));
-        expect(visible.join('\n')).toContain('正在自动重试（2/3）');
-      }
+      await waitFor(() => update.mock.calls.length >= 2);
+      const published = JSON.stringify(update.mock.calls.flatMap(call => call[1]));
+      expect(published).toContain('WORK_RESUMED');
+      expect(published).toContain('正在自动重试（2/3）');
       finished.resolve(undefined);
       await waitFor(() => h.channel.sent.some(m => JSON.stringify(m.content).includes('FINAL_AFTER_RETRY')));
       expect(h.channel.sent).toHaveLength(1);
       expect(h.channel.sent.filter(m => JSON.stringify(m.content).includes('FINAL_AFTER_RETRY'))).toHaveLength(1);
-      expect(visible.join('\n')).not.toContain('FINAL_AFTER_RETRY');
+      expect(streams).toHaveLength(0);
       expect(h.agent.runs[0]?.stopped).toBe(false);
     } finally {
       resumed.resolve(undefined);

@@ -151,6 +151,37 @@ describe('COT event mapping', () => {
     expect(publisher.disabled).toBe(false);
   });
 
+  it('prepares once, then binds the submitted run before publishing events', async () => {
+    const client = new FakeCotClient();
+    const publisher = new CotPublisher({
+      client,
+      chatId: 'oc_chat',
+      originMessageId: 'om_prepared',
+    });
+
+    await publisher.prepare();
+    expect(client.createCalls).toEqual([
+      { chatId: 'oc_chat', originMessageId: 'om_prepared' },
+    ]);
+
+    publisher.bind({
+      runId: 'actual-run',
+      scope: 'oc_chat:omt_topic',
+      inputPreview: 'prepared input',
+    });
+    await publisher.start();
+    await publisher.finish('done');
+
+    expect(client.createCalls).toHaveLength(1);
+    const started = client.events.find(event => event.event_type === 'RUN_STARTED');
+    expect(JSON.parse(started?.content ?? '{}')).toMatchObject({
+      runId: 'actual-run',
+      threadId: 'oc_chat:omt_topic',
+      input: { query: 'prepared input' },
+    });
+    expect(client.completed).toEqual(['done']);
+  });
+
   it('disables the publisher when the create is rejected and never retries', async () => {
     const client = new FakeCotClient();
     client.failCreate = new Error('COT API failed: code=10002 msg=Bot/User can NOT be out of the chat.');
@@ -203,10 +234,9 @@ describe('COT event mapping', () => {
     expect(calls[0]?.body).toMatchObject({ receive_id: 'oc_chat', origin_message_id: 'om_origin' });
   });
 
-  it('marks the publisher degraded when COT updates fail', async () => {
+  it('drops failed update batches without disabling the COT bubble', async () => {
     const client = new FakeCotClient();
     client.failUpdate = new Error('field validation failed');
-    const onDegraded = vi.fn();
     const publisher = new CotPublisher({
       client,
       chatId: 'oc_chat',
@@ -214,7 +244,6 @@ describe('COT event mapping', () => {
       runId: 'run-degraded',
       scope: 'oc_chat',
       inputPreview: 'run',
-      onDegraded,
     });
     await publisher.start();
 
@@ -223,19 +252,74 @@ describe('COT event mapping', () => {
       { type: 'done', terminationReason: 'normal' },
     ]), publisher, { detail: 'brief' });
 
-    expect(publisher.disabled).toBe(true);
-    expect(publisher.degradedReason).toBe('field validation failed');
-    expect(onDegraded).toHaveBeenCalledTimes(1);
-    expect(onDegraded).toHaveBeenCalledWith('field validation failed');
-    expect(client.completed).toEqual([]);
+    expect(publisher.disabled).toBe(false);
+    expect(client.updateCalls).toBeGreaterThan(0);
+    expect(client.completed).toEqual(['done']);
+  });
+
+  it('continues publishing new progress after a transient update failure', async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new FakeCotClient();
+      client.failUpdateOnce = new Error('fetch failed');
+      const publisher = new CotPublisher({
+        client,
+        chatId: 'oc_chat',
+        originMessageId: 'om_origin',
+        runId: 'run-recovered',
+        scope: 'oc_chat',
+        inputPreview: 'run',
+      });
+      await publisher.start();
+      await vi.advanceTimersByTimeAsync(600);
+      expect(client.updateCalls).toBe(1);
+
+      publisher.enqueue('TEXT_MESSAGE_START', { messageId: 'later', role: 'assistant' });
+      await vi.advanceTimersByTimeAsync(600);
+      expect(client.updateCalls).toBe(2);
+      expect(client.events.some(event => event.event_type === 'TEXT_MESSAGE_START')).toBe(true);
+      expect(publisher.disabled).toBe(false);
+      await publisher.finish('done');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds COT text fields by UTF-8 bytes', async () => {
+    const client = new FakeCotClient();
+    const query = '中'.repeat(1000);
+    const publisher = new CotPublisher({
+      client,
+      chatId: 'oc_chat',
+      originMessageId: 'om_origin',
+      runId: 'run-utf8',
+      scope: 'oc_chat',
+      inputPreview: query,
+    });
+    await publisher.start();
+    await consumeCotEvents(iterate([
+      { type: 'text', delta: query },
+      { type: 'done', terminationReason: 'normal' },
+    ]), publisher, { detail: 'brief' });
+
+    const started = client.events.find(event => event.event_type === 'RUN_STARTED');
+    const text = client.events.find(event => event.event_type === 'TEXT_MESSAGE_CONTENT');
+    const boundedQuery = JSON.parse(started?.content ?? '{}').input.query as string;
+    const boundedText = JSON.parse(text?.content ?? '{}').delta as string;
+    expect(Buffer.byteLength(boundedQuery, 'utf8')).toBeLessThanOrEqual(1000);
+    expect(Buffer.byteLength(boundedText, 'utf8')).toBeLessThanOrEqual(1000);
+    expect(boundedQuery.endsWith('...')).toBe(true);
+    expect(boundedText.endsWith('...')).toBe(true);
   });
 });
 
 class FakeCotClient {
   events: Array<{ event_type: string; content: string; timestamp: number }> = [];
   completed: string[] = [];
+  updateCalls = 0;
   createCalls: Array<{ chatId: string; originMessageId?: string }> = [];
   failUpdate: Error | undefined;
+  failUpdateOnce: Error | undefined;
   failCreate: Error | undefined;
   createResult: Record<string, unknown> | undefined;
 
@@ -246,6 +330,12 @@ class FakeCotClient {
   }
 
   async update(_ref: unknown, events: readonly { event_type: string; content: string; timestamp: number }[]): Promise<void> {
+    this.updateCalls++;
+    if (this.failUpdateOnce) {
+      const error = this.failUpdateOnce;
+      this.failUpdateOnce = undefined;
+      throw error;
+    }
     if (this.failUpdate) throw this.failUpdate;
     this.events.push(...events);
   }

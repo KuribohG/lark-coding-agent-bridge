@@ -68,7 +68,7 @@ import { fetchQuotedContext, fetchTopicContext, type QuotedContext } from '../..
 import { lookupMessageThreadId } from '../../bot/thread-id';
 import { fetchKnownChats } from '../../bot/lark-info';
 import type { AppPaths } from '../../config/app-paths';
-import { CotClient } from '../../bot/cot';
+import { CotClient, CotPublisher } from '../../bot/cot';
 
 const DEBOUNCE_MS = 600;
 
@@ -225,6 +225,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     appSecret,
     tenantTokens,
   });
+  const preparedCots = new Map<string, CotPublisher>();
   const threadModeOverrideWarnedChats = new Set<string>();
   const logThreadModeOverride: LogThreadModeOverride = ({ chatId, resolvedMode, threadId }) => {
     const fields = { chatId, cachedMode: resolvedMode, threadId };
@@ -293,6 +294,8 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   const pending = new PendingQueue(DEBOUNCE_MS, (scope, batch) => {
     const firstMsg = batch[0];
     if (!firstMsg) return;
+    const preparedCot = preparedCots.get(scope);
+    preparedCots.delete(scope);
     pending.block(scope);
     const controller = new AbortController();
     batchControllers.set(scope, controller);
@@ -305,7 +308,12 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
         msgId: firstMsg.messageId,
       });
       try {
-        const resolvedMode = await chatModeCache.resolve(channel, firstMsg.chatId);
+        const resolvedMode = firstMsg.threadId
+          ? 'topic'
+          : await chatModeCache.resolve(channel, firstMsg.chatId);
+        if (firstMsg.threadId) {
+          void chatModeCache.resolve(channel, firstMsg.chatId);
+        }
         // Feishu/Lark converted topic groups may still resolve as `group` from
         // the chat info API/cache, while message events already carry threadId.
         // Treat threadId as authoritative for IM messages so scope and replies
@@ -337,8 +345,10 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           scope,
           agentKind: resolveAgentKind(scope),
           mode,
+          preparedCot,
         });
       } catch (err) {
+        await preparedCot?.finish('error');
         log.fail('flush', err);
       } finally {
         if (batchControllers.get(scope) === controller) batchControllers.delete(scope);
@@ -353,6 +363,9 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
 
   controls.cancelPendingInput = (scope) => {
     batchControllers.get(scope)?.abort();
+    const preparedCot = preparedCots.get(scope);
+    preparedCots.delete(scope);
+    void preparedCot?.finish('cancelled');
     return pending.cancel(scope).length;
   };
 
@@ -428,6 +441,8 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           logThreadModeOverride,
           executor,
           pool,
+          cotClient,
+          preparedCots,
         }),
       ).catch((err) => log.fail('intake', err));
     },
@@ -610,6 +625,10 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       meetingManager?.dispose();
       controls.meeting = undefined;
       pending.cancelAll();
+      for (const preparedCot of preparedCots.values()) {
+        void preparedCot.finish('cancelled');
+      }
+      preparedCots.clear();
       userQuestions.close();
       const [disconnectResult, stopAllResult, ...flushResults] = await Promise.allSettled([
         channel.disconnect(),
@@ -721,6 +740,8 @@ interface IntakeDeps {
   logThreadModeOverride: LogThreadModeOverride;
   executor: RunExecutor;
   pool: ProcessPool;
+  cotClient: CotClient;
+  preparedCots: Map<string, CotPublisher>;
 }
 
 type LogThreadModeOverride = (input: {
@@ -746,11 +767,22 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     logThreadModeOverride,
     executor,
     pool,
+    cotClient,
+    preparedCots,
   } = deps;
   const preview = msg.content.length > 80 ? `${msg.content.slice(0, 80)}…` : msg.content;
   // Resolve scope (and underlying chat mode) once at intake — every
   // downstream consumer keys off these.
-  const resolvedMode = await chatModeCache.resolve(channel, msg.chatId);
+  let resolvedMode: ChatMode;
+  if (msg.threadId) {
+    // A thread id is authoritative for topic routing. Warm the chat cache in
+    // the background so a later top-level event doesn't need the same lookup
+    // without delaying this message behind a redundant chat.get request.
+    resolvedMode = 'topic';
+    void chatModeCache.resolve(channel, msg.chatId);
+  } else {
+    resolvedMode = await chatModeCache.resolve(channel, msg.chatId);
+  }
   // Feishu delivers a sizable fraction of topic-group message events without a
   // `thread_id` (notably the message that opens a new topic). We route topic
   // replies (`replyInThread`) and isolate per-topic session scope off it, so a
@@ -884,6 +916,11 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   if (handled) {
     const name = emsg.content.trim().split(/\s+/)[0];
     const dropped = findCommand(name ?? '')?.pending === 'preserve' ? [] : pending.cancel(scope);
+    if (dropped.length > 0) {
+      const preparedCot = preparedCots.get(scope);
+      preparedCots.delete(scope);
+      void preparedCot?.finish('cancelled');
+    }
     log.info('intake', 'command', { scope, droppedPending: dropped.length });
     return;
   }
@@ -915,13 +952,34 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     });
     return;
   }
+  let preparedCot = preparedCots.get(scope);
+  if (!wasBusy && getCotMessages(controls.cfg) !== 'off') {
+    if (!preparedCot) {
+      preparedCot = new CotPublisher({
+        client: cotClient,
+        chatId: emsg.chatId,
+        originMessageId: emsg.messageId,
+      });
+      preparedCots.set(scope, preparedCot);
+      // The native COT bubble is the first visible acknowledgement. Start it
+      // as soon as the message passes access/mention/command gates, in
+      // parallel with the debounce and agent preparation rather than after
+      // the run has already been submitted.
+      void preparedCot.prepare();
+    }
+  }
   const size = pending.push(scope, emsg);
   if (wasBusy) {
     await channel.send(emsg.chatId, { markdown: '已排队，将在当前任务结束后处理；/stop 会同时取消排队消息。' }, {
       replyTo: emsg.messageId, ...(chatMode === 'topic' ? { replyInThread: true } : {}),
     });
   }
-  log.info('intake', 'queued', { scope, queueSize: size, debounceMs: DEBOUNCE_MS });
+  log.info('intake', 'queued', {
+    scope,
+    queueSize: size,
+    debounceMs: DEBOUNCE_MS,
+    cotPrepared: Boolean(preparedCot),
+  });
 }
 
 interface RunBatchDeps {
@@ -943,6 +1001,7 @@ interface RunBatchDeps {
   scope: string;
   agentKind: AgentKind;
   mode: ChatMode;
+  preparedCot?: CotPublisher;
 }
 
 async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
@@ -962,6 +1021,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     scope,
     agentKind,
     mode,
+    preparedCot,
   } = deps;
   if (batch.length === 0) return;
   const firstMsg = batch[0];
@@ -1134,6 +1194,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       source: 'im',
       code: flow.rejectReason.code,
     });
+    await preparedCot?.finish('error');
     await channel.send(chatId, { markdown: flow.rejectReason.userVisible }, sendOpts);
     if (deps.timedJob) await (await timedRuns(controls)).finish(deps.timedJob.id,
       flow.rejectReason.code === 'deadline-expired' ? 'expired' : flow.rejectReason.code === 'run-cancelled' ? 'stopped' : 'failed');
@@ -1249,7 +1310,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   try {
     await presentRunOutput(execution, createLarkRunOutput({
       channel, chatId, replyMode, sendOpts, cardRenderOptions,
-      cotMessages, cotClient, originMessageId: lastMsg.messageId, inputPreview: lastMsg.content,
+      cotMessages, cotClient, preparedCot, originMessageId: lastMsg.messageId, inputPreview: lastMsg.content,
     }), { idleTimeoutMs, recordSession, filterForPrefs });
     if (await execution.result === 'completed' && sessionCatalog) {
       sessionCatalog.markCompleted({
