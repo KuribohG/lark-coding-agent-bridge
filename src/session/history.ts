@@ -16,13 +16,13 @@ function encodeCwd(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9]/g, '-');
 }
 
-function claudeProjectDir(cwd: string): string {
-  return join(homedir(), '.claude', 'projects', encodeCwd(cwd));
+function claudeProjectDir(cwd: string, configDir?: string): string {
+  return join(configDir ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'projects', encodeCwd(cwd));
 }
 
 /** Return the most recent `limit` jsonl sessions for the given cwd, newest first. */
-export async function listRecentSessions(cwd: string, limit = 5): Promise<SessionSummary[]> {
-  const dir = claudeProjectDir(cwd);
+export async function listRecentSessions(cwd: string, limit = 5, configDir?: string): Promise<SessionSummary[]> {
+  const dir = claudeProjectDir(cwd, configDir);
   let files: string[];
   try {
     files = await readdir(dir);

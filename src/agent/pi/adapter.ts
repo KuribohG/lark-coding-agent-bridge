@@ -27,6 +27,7 @@ import { PiRunTranslator } from './jsonl-translator';
 
 export interface PiAdapterOptions {
   binary?: string;
+  agentDir?: string;
   systemPrompt?: AgentSystemPrompt;
   env?: NodeJS.ProcessEnv;
   stopGraceMs?: number;
@@ -41,6 +42,7 @@ export class PiAdapter implements AgentAdapter {
   readonly capabilities = PI_EXECUTION_CAPABILITIES;
 
   private readonly binary: string;
+  private readonly agentDir: string | undefined;
   private readonly systemPrompt: AgentSystemPrompt | undefined;
   private readonly env: NodeJS.ProcessEnv;
   private readonly defaultStopGraceMs: number;
@@ -49,6 +51,7 @@ export class PiAdapter implements AgentAdapter {
 
   constructor(opts: PiAdapterOptions = {}) {
     this.binary = opts.binary ?? 'pi';
+    this.agentDir = opts.agentDir;
     this.systemPrompt = opts.systemPrompt;
     this.env = { ...opts.env };
     this.defaultStopGraceMs = opts.stopGraceMs ?? 5000;
@@ -129,6 +132,7 @@ export class PiAdapter implements AgentAdapter {
       env: mergeProcessEnv(process.env, {
         ...this.env,
         ...opts.modelProvider?.env,
+        ...(this.agentDir ? { PI_CODING_AGENT_DIR: this.agentDir } : {}),
         PI_SKIP_VERSION_CHECK: '1',
         PI_TELEMETRY: '0',
       }),

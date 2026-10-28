@@ -16,9 +16,18 @@ effort = "high"
 [agents.codex.launch]
 binaryPath = "codex"
 transport = "app-server" # Default and only supported Codex backend.
+# codexHome = "/absolute/private/codex-home"
 
 [agents.claude.run]
 effort = "high"
+
+[agents.claude.launch]
+binaryPath = "claude"
+# configDir = "/absolute/private/claude-config"
+
+[agents.pi.launch]
+binaryPath = "pi"
+# agentDir = "/absolute/private/pi-agent"
 
 [channels.lark]
 reply_mode = "markdown"

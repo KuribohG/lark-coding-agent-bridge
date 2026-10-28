@@ -48,6 +48,7 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
     launchPatch: (binaryPath) => ({ claude: { binaryPath } }),
     createAdapter: ({ profile, env, systemPrompt }) => new ClaudeAdapter({
       binary: profile.claude?.binaryPath,
+      configDir: profile.claude?.configDir,
       env,
       systemPrompt,
     }),
@@ -90,7 +91,13 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
     createAdapter: ({ profile, profileDir, env, systemPrompt }) => {
       const pi = profile.pi;
       if (!pi?.binaryPath) throw new Error('pi profile requires pi.binaryPath');
-      return new PiAdapter({ binary: pi.binaryPath, profileStateDir: profileDir, env, systemPrompt });
+      return new PiAdapter({
+        binary: pi.binaryPath,
+        agentDir: pi.agentDir,
+        profileStateDir: profileDir,
+        env,
+        systemPrompt,
+      });
     },
   },
 };

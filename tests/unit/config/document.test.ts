@@ -85,6 +85,36 @@ describe('layered configuration', () => {
     expect(documentToRoot(parseDocument(formatDocument(rootToDocument(root)))).profiles.bot!.codex).toMatchObject(expected);
   });
 
+  it('keeps executable and state-directory controls separate for every switchable agent', () => {
+    const text = source + `
+[agents.claude.launch]
+binaryPath = "/opt/claude"
+configDir = "/state/claude"
+[agents.pi.launch]
+binaryPath = "/opt/pi"
+agentDir = "/state/pi"
+[agents.codex.launch]
+binaryPath = "/opt/codex"
+codexHome = "/state/codex"
+`;
+    const root = documentToRoot(parseDocument(text));
+    expect(root.profiles.bot).toMatchObject({
+      claude: { binaryPath: '/opt/claude', configDir: '/state/claude' },
+      pi: { binaryPath: '/opt/pi', agentDir: '/state/pi' },
+      codex: { binaryPath: '/opt/codex', codexHome: '/state/codex' },
+    });
+    expect(documentToRoot(parseDocument(formatDocument(rootToDocument(root)))).profiles.bot).toMatchObject({
+      claude: { binaryPath: '/opt/claude', configDir: '/state/claude' },
+      pi: { binaryPath: '/opt/pi', agentDir: '/state/pi' },
+      codex: { binaryPath: '/opt/codex', codexHome: '/state/codex' },
+    });
+  });
+
+  it('rejects native state-directory fields on the wrong agent', () => {
+    expect(() => parseDocument(source + '\n[agents.codex.launch]\nagentDir = "/state/pi"\n')).toThrow(/unknown setting/);
+    expect(() => parseDocument(source + '\n[agents.pi.launch]\ncodexHome = "/state/codex"\n')).toThrow(/unknown setting/);
+  });
+
   it.each([
     '[agents.codex.launch]\ntransport = "exec"',
     '[profiles.bot.launch]\ntransport = "exec"',

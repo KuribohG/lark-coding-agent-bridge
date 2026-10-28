@@ -94,7 +94,7 @@ export interface CommandContext {
   codexHistoryProvider?: (
     options: ListCodexThreadHistoryOptions,
   ) => Promise<CodexThreadHistoryEntry[]>;
-  claudeHistoryProvider?: (cwd: string, limit: number) => Promise<SessionSummary[]>;
+  claudeHistoryProvider?: (cwd: string, limit: number, configDir?: string) => Promise<SessionSummary[]>;
   /** Set when invoked from a CardKit 2.0 form submit. Keys are input `name`s. */
   formValue?: Record<string, unknown>;
   /** True when this invocation came from a card button click rather than a

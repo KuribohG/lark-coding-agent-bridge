@@ -26,6 +26,7 @@ import { CLAUDE_EXECUTION_CAPABILITIES } from './capabilities';
 
 export interface ClaudeAdapterOptions {
   binary?: string;
+  configDir?: string;
   systemPrompt?: AgentSystemPrompt;
   env?: NodeJS.ProcessEnv;
 }
@@ -38,12 +39,14 @@ export class ClaudeAdapter implements AgentAdapter {
   readonly capabilities = CLAUDE_EXECUTION_CAPABILITIES;
 
   private readonly binary: string;
+  private readonly configDir: string | undefined;
   private readonly systemPrompt: AgentSystemPrompt | undefined;
   private readonly env: NodeJS.ProcessEnv;
   private botIdentity: AgentBotIdentity | undefined;
 
   constructor(opts: ClaudeAdapterOptions = {}) {
     this.binary = opts.binary ?? 'claude';
+    this.configDir = opts.configDir;
     this.systemPrompt = opts.systemPrompt;
     this.env = { ...opts.env };
   }
@@ -109,7 +112,10 @@ export class ClaudeAdapter implements AgentAdapter {
 
     const child = spawnWithDeadline(this.binary, args, {
       cwd: opts.cwd,
-      env: mergeProcessEnv(process.env, { ...this.env }),
+      env: mergeProcessEnv(process.env, {
+        ...this.env,
+        ...(this.configDir ? { CLAUDE_CONFIG_DIR: this.configDir } : {}),
+      }),
       stdio: ['pipe', 'pipe', 'pipe'],
     }, opts.deadlineAt) as ClaudeChild;
 

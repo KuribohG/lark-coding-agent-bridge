@@ -12,6 +12,7 @@ Execution and presentation have separate ownership:
 | --- | --- | --- |
 | Execution defaults | `defaults.run`, `agents.<kind>.run`, `profiles.<name>.run` | Built-in defaults, then global, agent, profile, conversation overrides, explicit task parameters |
 | Agent launch | `agents.<kind>.launch`, `profiles.<name>.launch` | Agent defaults, then profile overrides |
+| Model providers | root `model_services` | Named API services; independent from executable and local state |
 | Feishu/Lark display | `channels.lark`, `channels.lark.profiles.<name>` | Lark defaults, then settings for that bot |
 | Browser display | `channels.web`, `channels.web.profiles.<name>` | Web defaults, then the selected profile |
 | Accounts, access, permissions, workspace, meetings | `profiles.<name>` | Explicit bot settings; not inherited from another bot or a conversation |
@@ -31,7 +32,23 @@ See [config.example.toml](config.example.toml) for a full layered example. `agen
 
 Omitting a key inherits its parent. Removing a profile override restores inheritance. Arrays replace their parent's entire value; an empty array explicitly clears the list. False and zero are retained. Native model/effort delegation omits the corresponding CLI override so native project/managed configuration remains authoritative. The bridge does not rewrite native Codex/Claude settings.
 
-`launch` accepts `binaryPath` for all three agents. Codex also accepts `transport`, `codexHome`, `inheritCodexHome`, `ignoreUserConfig` and `ignoreRules`. Configuration validates launch and agent combinations before use.
+`launch` is the single ownership boundary for the executable and agent-local
+configuration/authentication state. It accepts `binaryPath` for all three
+agents, plus:
+
+- Claude: `configDir`, exposed to the child as `CLAUDE_CONFIG_DIR`.
+- Codex: `codexHome`, exposed as `CODEX_HOME`, plus `transport`,
+  `inheritCodexHome`, `ignoreUserConfig` and `ignoreRules`.
+- pi: `agentDir`, exposed as `PI_CODING_AGENT_DIR`.
+
+Global `agents.<kind>.launch` settings apply whenever that backend is selected,
+including per-chat engine switches. `profiles.<name>.launch` overrides only the
+profile's configured `agent`. Model Provider selection never changes which
+executable or local state directory is used.
+
+Configuration validates launch and agent combinations before use. Unknown
+agent-specific fields are rejected, so a `codexHome` cannot silently be applied
+to pi or a `configDir` to Codex.
 
 Codex uses `app-server`, enabling input during an active turn. The `exec` backend has been removed: remove an old `transport = "exec"` setting or change it to `"app-server"`. Both ignore flags default to `false`; explicitly setting either to `true` is rejected because app-server loads normal user configuration and execpolicy rules. Launch changes take effect after restarting the profile.
 

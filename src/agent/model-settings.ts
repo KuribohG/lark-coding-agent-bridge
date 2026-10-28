@@ -121,7 +121,8 @@ async function loadModelEnvironment(profile: ProfileConfig, profileDir: string):
     return fallback;
   }
   if (profile.agentKind === 'claude') {
-    const text = await readOptional(join(process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude'), 'settings.json'));
+    const configDir = profile.claude?.configDir ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
+    const text = await readOptional(join(configDir, 'settings.json'));
     const settings = text ? JSON.parse(text) : {};
     const model = process.env.ANTHROPIC_MODEL ?? settings.model;
     return {

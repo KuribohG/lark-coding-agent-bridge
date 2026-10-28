@@ -35,7 +35,12 @@ export const RUN_KEYS = {
 const PROFILE_KEYS = ['agent', 'run', 'mode', 'accounts', 'secrets', 'access', 'workspaces', 'permissions', 'attachments', 'meeting', 'larkCli', 'launch'];
 const LARK_KEYS = ['reply_mode', 'show_tools', 'progress', 'file_links'];
 const WEB_KEYS = ['show_tools', 'show_reasoning'];
-const LAUNCH_KEYS = ['binaryPath', 'transport', 'codexHome', 'inheritCodexHome', 'ignoreUserConfig', 'ignoreRules', 'realpath', 'version', 'sha256', 'owner', 'mode'];
+const COMMON_LAUNCH_KEYS = ['binaryPath', 'realpath', 'version', 'sha256', 'owner', 'mode'];
+const LAUNCH_KEYS: Record<AgentKind, readonly string[]> = {
+  claude: [...COMMON_LAUNCH_KEYS, 'configDir'],
+  codex: [...COMMON_LAUNCH_KEYS, 'transport', 'codexHome', 'inheritCodexHome', 'ignoreUserConfig', 'ignoreRules'],
+  pi: [...COMMON_LAUNCH_KEYS, 'agentDir'],
+};
 
 function object(value: unknown, path: string): Table {
   if (!value || Object.getPrototypeOf(value) !== Object.prototype) throw new Error(`${path}: expected a table`);
@@ -77,7 +82,7 @@ function checkDisplay(value: unknown, channel: string, path: string): void {
   }
 }
 function checkLaunch(value: unknown, agent: string, path: string): void {
-  const launch = keys(value, agent === 'codex' ? LAUNCH_KEYS : ['binaryPath'], path);
+  const launch = keys(value, LAUNCH_KEYS[agent as AgentKind], path);
   for (const [k, v] of Object.entries(launch)) {
     const kind = ['inheritCodexHome', 'ignoreUserConfig', 'ignoreRules'].includes(k) ? 'boolean' : ['mode', 'owner'].includes(k) ? 'number' : 'string';
     if (typeof v !== kind) throw new Error(`${path}.${k}: expected ${kind}`);
@@ -260,7 +265,14 @@ export function resolveExecutionProfile(
     agentKind,
     permissions,
     sandbox: permissionsToLegacySandbox(permissions),
-    ...(claudeLaunch.binaryPath ? { claude: { binaryPath: claudeLaunch.binaryPath } } : {}),
+    ...(claudeLaunch.binaryPath || claudeLaunch.configDir
+      ? {
+          claude: {
+            ...(typeof claudeLaunch.binaryPath === 'string' ? { binaryPath: claudeLaunch.binaryPath } : {}),
+            ...(typeof claudeLaunch.configDir === 'string' ? { configDir: claudeLaunch.configDir } : {}),
+          },
+        }
+      : {}),
     ...(codexLaunch.binaryPath || agentKind === 'codex'
       ? {
           codex: {
@@ -284,6 +296,7 @@ export function resolveExecutionProfile(
       ? {
           pi: {
             binaryPath: piLaunch.binaryPath ?? 'pi',
+            ...(typeof piLaunch.agentDir === 'string' ? { agentDir: piLaunch.agentDir } : {}),
             ...(typeof piLaunch.realpath === 'string' ? { realpath: piLaunch.realpath } : {}),
             ...(typeof piLaunch.version === 'string' ? { version: piLaunch.version } : {}),
             ...(typeof piLaunch.sha256 === 'string' ? { sha256: piLaunch.sha256 } : {}),
@@ -309,20 +322,20 @@ export function resolveChannels(doc: ConfigDocument, profile?: string) {
 export function documentToRoot(doc: ConfigDocument): RootConfig {
   const profiles: RootConfig['profiles'] = {};
   for (const [name, p] of Object.entries(doc.profiles)) {
-    const { agent, run: _, launch, ...rest } = p;
-    const mergedLaunch = { ...(doc.agents?.[agent as AgentKind]?.launch ?? {}), ...launch };
-    profiles[name] = normalizeProfileConfig({ ...rest, schemaVersion: 2, agentKind: agent,
+    const { agent, run: _, launch: __, ...rest } = p;
+    const execution = resolveExecutionProfile(doc, agent as AgentKind, { profile: name });
+    profiles[name] = normalizeProfileConfig({ ...rest, schemaVersion: 2, ...execution,
       preferences: resolveRun(doc, agent, name).preferences, channels: resolveChannels(doc, name),
-      ...(agent === 'codex'
-        ? { codex: { binaryPath: 'codex', ...mergedLaunch } }
-        : agent === 'pi'
-          ? { pi: { binaryPath: 'pi', ...mergedLaunch } }
-          : { claude: mergedLaunch }),
     });
   }
   const autostartProfiles = doc.bridge?.autostart_profiles as string[] | undefined;
+  const agentLaunches = doc.agents
+    ? Object.fromEntries(Object.entries(doc.agents).flatMap(([kind, layer]) =>
+        layer?.launch ? [[kind, { launch: structuredClone(layer.launch) }]] : []))
+    : undefined;
   return { schemaVersion: 2, activeProfile: doc.bridge?.active_profile ?? Object.keys(profiles)[0] ?? '', preferences: {}, profiles,
     ...(autostartProfiles !== undefined ? { autostartProfiles: [...autostartProfiles] } : {}),
+    ...(agentLaunches && Object.keys(agentLaunches).length > 0 ? { agentLaunches } : {}),
     ...(doc.bridge?.monitors_file ? { monitorConfigFile: doc.bridge.monitors_file } : {}),
     ...(doc.secrets ? { secrets: doc.secrets } : {}), ...(doc.migrations ? { migrations: doc.migrations } : {}),
     ...(doc.model_services ? { modelServices: doc.model_services } : {}),
@@ -346,6 +359,7 @@ export function rootToDocument(root: RootConfig): ConfigDocument {
   const doc: ConfigDocument = { version: 3, bridge: { ...(root.activeProfile ? { active_profile: root.activeProfile } : {}),
     ...(root.autostartProfiles !== undefined ? { autostart_profiles: [...root.autostartProfiles] } : {}),
     ...(root.monitorConfigFile ? { monitors_file: root.monitorConfigFile } : {}) }, profiles: {}, channels: { lark: { profiles: {} } } };
+  if (root.agentLaunches) doc.agents = structuredClone(root.agentLaunches) as ConfigDocument['agents'];
   for (const [name, profile] of Object.entries(root.profiles)) {
     doc.profiles[name] = profileDocument(profile);
     if (profile.channels?.lark || ['messageReply', 'showToolCalls', 'cotMessages', 'fileLinks'].some(key => (profile.preferences as Table)[key] !== undefined)) {

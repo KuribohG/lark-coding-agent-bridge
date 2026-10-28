@@ -17,6 +17,7 @@ import {
 export type AgentKind = 'claude' | 'codex' | 'pi';
 export type SandboxMode = CodexSandboxMode;
 export type { AccessMode, PermissionConfig, PermissionSource };
+export type AgentLaunchConfig = Record<string, string | number | boolean>;
 
 export interface ProfileAccess {
   allowedUsers: string[];
@@ -53,8 +54,16 @@ export interface CodexConfig {
   ignoreRules?: boolean;
 }
 
+export interface ClaudeConfig {
+  binaryPath?: string;
+  /** Directory containing Claude Code settings, projects, and other local state. */
+  configDir?: string;
+}
+
 export interface PiConfig {
   binaryPath: string;
+  /** Directory containing Pi settings, sessions, auth.json, and model catalogs. */
+  agentDir?: string;
   realpath?: string;
   version?: string;
   sha256?: string;
@@ -159,7 +168,7 @@ export interface AgentExecutionProfile {
   agentKind: AgentKind;
   sandbox?: SandboxConfig;
   permissions: PermissionConfig;
-  claude?: { binaryPath?: string };
+  claude?: ClaudeConfig;
   codex?: CodexConfig;
   pi?: PiConfig;
 }
@@ -220,6 +229,8 @@ export interface RootConfig {
   inbox?: import('../inbox/config').InboxConfig;
   gitlabCi?: import('../monitoring/sources/gitlab-ci/config').GitLabCiConfig;
   storageMonitor?: import('../monitoring/sources/storage/config').StorageMonitorConfig;
+  /** Raw global launch layers retained so TOML round trips do not collapse them into profiles. */
+  agentLaunches?: Partial<Record<AgentKind, { launch?: AgentLaunchConfig }>>;
   modelServices?: Record<string, import('../model-service/config').ModelServiceConfig>;
   secrets?: SecretsConfig;
   migrations?: {
@@ -239,6 +250,7 @@ export interface CreateDefaultProfileConfigInput {
   access?: Partial<ProfileAccess>;
   sandbox?: Partial<SandboxConfig>;
   permissions?: Partial<PermissionConfig>;
+  claude?: ClaudeConfig;
   codex?: CodexConfig;
   pi?: PiConfig;
   secrets?: SecretsConfig;
@@ -264,7 +276,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     accounts?: unknown;
     secrets?: SecretsConfig;
     channels?: import('./schema').ChannelDisplayConfig;
-    claude?: { binaryPath?: string };
+    claude?: ClaudeConfig;
     pi?: PiConfig;
     preferences?: (AppPreferences & { access?: Partial<ProfileAccess> }) | undefined;
     access?: Partial<ProfileAccess>;
@@ -322,7 +334,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     ...(raw.secrets ? { secrets: raw.secrets } : {}),
     preferences,
     ...(raw.channels ? { channels: raw.channels } : {}),
-    ...(raw.claude ? { claude: raw.claude } : {}),
+    ...(raw.claude ? { claude: normalizeClaude(raw.claude) } : {}),
     ...(raw.pi ? { pi: normalizePi(raw.pi) } : {}),
     access,
     workspaces,
@@ -453,11 +465,19 @@ function normalizePi(input: PiConfig): PiConfig {
   }
   return {
     binaryPath: input.binaryPath,
+    ...(typeof input.agentDir === 'string' && input.agentDir ? { agentDir: input.agentDir } : {}),
     ...(typeof input.realpath === 'string' ? { realpath: input.realpath } : {}),
     ...(typeof input.version === 'string' ? { version: input.version } : {}),
     ...(typeof input.sha256 === 'string' ? { sha256: input.sha256 } : {}),
     ...(typeof input.owner === 'number' ? { owner: input.owner } : {}),
     ...(typeof input.mode === 'number' ? { mode: input.mode } : {}),
+  };
+}
+
+function normalizeClaude(input: ClaudeConfig): ClaudeConfig {
+  return {
+    ...(typeof input.binaryPath === 'string' && input.binaryPath ? { binaryPath: input.binaryPath } : {}),
+    ...(typeof input.configDir === 'string' && input.configDir ? { configDir: input.configDir } : {}),
   };
 }
 

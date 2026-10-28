@@ -1,12 +1,15 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { availableEfforts, modelRunArguments, parseEffort, readModelEnvironment, reasoningEffortOptions, REASONING_EFFORTS, resolveModelSettings, timedRunEfforts } from '../../../src/agent/model-settings';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createTmpProfile } from '../../helpers/tmp-profile';
 
 const cleanups: Array<() => Promise<void>> = [];
-afterEach(async () => { await Promise.all(cleanups.splice(0).map((cleanup) => cleanup())); });
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
+});
 
 describe('model settings resolution', () => {
   const environment = {
@@ -68,5 +71,27 @@ describe('model settings resolution', () => {
     }));
     await writeFile(catalogPath, '{broken cache');
     await expect(readModelEnvironment(profile, tmp.profile)).resolves.toMatchObject({ defaults: {} });
+  });
+
+  it('reads Claude defaults from the configured Claude directory', async () => {
+    vi.stubEnv('ANTHROPIC_MODEL', undefined);
+    vi.stubEnv('CLAUDE_CODE_EFFORT_LEVEL', undefined);
+    const tmp = await createTmpProfile('model-claude-config-');
+    cleanups.push(tmp.cleanup);
+    const configDir = join(tmp.profile, 'claude-config');
+    await mkdir(configDir, { recursive: true });
+    await writeFile(join(configDir, 'settings.json'), JSON.stringify({
+      model: 'claude-sonnet-5',
+      effortLevel: 'high',
+    }));
+    const profile = createDefaultProfileConfig({
+      agentKind: 'claude',
+      accounts: { app: { id: 'app', secret: '${TEST_SECRET}', tenant: 'feishu' } },
+    });
+    profile.claude = { binaryPath: 'claude', configDir };
+
+    await expect(readModelEnvironment(profile, tmp.profile)).resolves.toMatchObject({
+      defaults: { model: 'claude-sonnet-5', reasoningEffort: 'high' },
+    });
   });
 });

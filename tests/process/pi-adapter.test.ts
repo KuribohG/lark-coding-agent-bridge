@@ -129,6 +129,24 @@ describe('PiAdapter process contract', () => {
     expect(record.providerEnv).toContainEqual(['LARK_MODEL_PROVIDER_KEY_73395B78866F', 'private-provider-key']);
   });
 
+  it('sets the configured Pi agent directory on the child environment', async () => {
+    const harness = await createFakePi([
+      { type: 'session', id: 'sess-agent-dir' },
+      { type: 'agent_settled', aborted: false },
+    ]);
+    dirs.push(harness.dir);
+    await collect(new PiAdapter({
+      binary: harness.binary,
+      agentDir: '/private/pi-agent',
+    }).run({
+      runId: 'pi-agent-dir',
+      prompt: 'hello',
+      cwd: harness.dir,
+    }).events);
+
+    expect((await readRecord(harness.recordPath)).env.PI_CODING_AGENT_DIR).toBe('/private/pi-agent');
+  });
+
   it('rejects workspace mode instead of claiming filesystem isolation', () => {
     const adapter = new PiAdapter({ binary: 'pi' });
     expect(() => adapter.run({
@@ -204,7 +222,7 @@ async function createFakePi(
     `  writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({`,
     '    argv, stdin, cwd: process.cwd(),',
     '    systemPrompt: promptIndex >= 0 ? readFileSync(argv[promptIndex + 1], "utf8") : "",',
-    '    env: { PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK, PI_TELEMETRY: process.env.PI_TELEMETRY },',
+    '    env: { PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK, PI_TELEMETRY: process.env.PI_TELEMETRY },',
     '    providerEnv: Object.entries(process.env).filter(([key]) => key.startsWith("LARK_MODEL_PROVIDER_")),',
     '  }));',
     `  for (const line of ${JSON.stringify(lines)}) process.stdout.write(JSON.stringify(line) + "\\n");`,
@@ -229,7 +247,7 @@ async function readRecord(path: string): Promise<{
   stdin: string;
   cwd: string;
   systemPrompt: string;
-  env: { PI_SKIP_VERSION_CHECK?: string; PI_TELEMETRY?: string };
+  env: { PI_CODING_AGENT_DIR?: string; PI_SKIP_VERSION_CHECK?: string; PI_TELEMETRY?: string };
   providerEnv: Array<[string, string]>;
 }> {
   return JSON.parse(await readFile(path, 'utf8')) as {
@@ -237,7 +255,7 @@ async function readRecord(path: string): Promise<{
     stdin: string;
     cwd: string;
     systemPrompt: string;
-    env: { PI_SKIP_VERSION_CHECK?: string; PI_TELEMETRY?: string };
+    env: { PI_CODING_AGENT_DIR?: string; PI_SKIP_VERSION_CHECK?: string; PI_TELEMETRY?: string };
     providerEnv: Array<[string, string]>;
   };
 }

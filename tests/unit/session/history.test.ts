@@ -84,4 +84,22 @@ describe('Claude local session history', () => {
 
     expect(sessions[0]?.preview).toBe('真实用户问题 第二行');
   });
+
+  it('reads Claude sessions from the configured Claude directory', async () => {
+    const configDir = await mkdtemp(join(tmpdir(), 'claude-history-config-'));
+    cleanup.push(configDir);
+    const { listRecentSessions } = await import('../../../src/session/history.js');
+    const cwd = '/custom-claude-repo';
+    const projectDir = join(configDir, 'projects', '-custom-claude-repo');
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(
+      join(projectDir, 'session-custom.jsonl'),
+      `${JSON.stringify({ type: 'user', message: { content: 'custom config' } })}\n`,
+      'utf8',
+    );
+
+    await expect(listRecentSessions(cwd, 5, configDir)).resolves.toEqual([
+      expect.objectContaining({ sessionId: 'session-custom', preview: 'custom config' }),
+    ]);
+  });
 });

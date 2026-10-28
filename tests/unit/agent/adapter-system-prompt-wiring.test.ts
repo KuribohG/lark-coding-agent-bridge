@@ -48,6 +48,14 @@ describe('channel-neutral adapter defaults', () => {
     const args = spawnMock.spawnProcess.mock.calls[0]?.[1] as string[];
     expect(readFileSync(args[args.indexOf('--append-system-prompt-file') + 1]!, 'utf8')).toBe('');
   });
+
+  it('sets the configured Claude directory on the child environment', () => {
+    const child = fakeChild(); spawnMock.spawnProcess.mockReturnValue(child);
+    new ClaudeAdapter({ configDir: '/private/claude-config' })
+      .run({ runId: 'r', prompt: 'hello', cwd: '/tmp' });
+    const options = spawnMock.spawnProcess.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv };
+    expect(options.env?.CLAUDE_CONFIG_DIR).toBe('/private/claude-config');
+  });
 });
 
 describe('ClaudeAdapter system prompt wiring', () => {

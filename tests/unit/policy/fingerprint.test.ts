@@ -40,6 +40,7 @@ describe('policy fingerprint', () => {
       { accessPolicyDigest: digestOf('access-other') },
       { resourceScopeDigest: digestOf('scope-other') },
       { attachmentPolicyShapeDigest: digestOf('attachments-other') },
+      { agentStateDir: '/state/other-agent-home' },
       { codexHome: '/state/other-codex-home' },
       { inheritCodexHome: true },
     ]) {

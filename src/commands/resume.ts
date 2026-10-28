@@ -238,7 +238,7 @@ async function listClaudeResumeHistory(
   limit: number,
 ): Promise<SessionSummary[]> {
   const provider = ctx.claudeHistoryProvider ?? listRecentSessions;
-  return provider(cwd, limit);
+  return provider(cwd, limit, ctx.controls.profileConfig.claude?.configDir);
 }
 
 async function listCodexResumeHistory(

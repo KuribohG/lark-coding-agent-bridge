@@ -109,6 +109,11 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     capability: input.capability,
     profileConfig: input.profileConfig,
     now: input.now,
+    agentStateDir: input.profileConfig.agentKind === 'pi'
+      ? input.profileConfig.pi?.agentDir
+      : input.profileConfig.agentKind === 'claude'
+        ? input.profileConfig.claude?.configDir
+        : undefined,
     codexHome: input.profileConfig.codex?.codexHome,
     inheritCodexHome: input.profileConfig.codex?.inheritCodexHome,
   });

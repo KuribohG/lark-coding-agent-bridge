@@ -8,6 +8,7 @@ export interface FingerprintInputV2 {
   accessPolicyDigest: string;
   resourceScopeDigest: string;
   attachmentPolicyShapeDigest: string;
+  agentStateDir?: string;
   codexHome?: string;
   inheritCodexHome: boolean;
 }
@@ -42,6 +43,7 @@ export function policyFingerprint(input: FingerprintInputV2): string {
     accessPolicyDigest: input.accessPolicyDigest,
     resourceScopeDigest: input.resourceScopeDigest,
     attachmentPolicyShapeDigest: input.attachmentPolicyShapeDigest,
+    ...(input.agentStateDir ? { agentStateDir: input.agentStateDir } : {}),
     codexHome: input.codexHome ?? null,
     inheritCodexHome: input.inheritCodexHome,
   });

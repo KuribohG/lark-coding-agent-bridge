@@ -56,6 +56,7 @@ export interface RunPolicyInput {
   capability: AgentCapability;
   profileConfig: RunProfileConfig;
   now: number;
+  agentStateDir?: string;
   codexHome?: string;
   inheritCodexHome?: boolean;
   ttlMs?: number;
@@ -163,6 +164,7 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
       accessPolicyDigest: accessDigest,
       resourceScopeDigest: resourceDigest,
       attachmentPolicyShapeDigest: attachmentDigest,
+      agentStateDir: input.agentStateDir,
       codexHome: input.codexHome,
       inheritCodexHome: input.inheritCodexHome ?? false,
     }),
