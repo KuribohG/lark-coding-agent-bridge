@@ -92,6 +92,7 @@ export async function handleStatus(_args: string, ctx: CommandContext): Promise<
       : catalogEntry?.sessionId ?? (spec.legacySessionStore ? sess?.sessionId : undefined),
     emptySessionText: usesThread ? '(未建立)' : undefined,
     sessionStale: spec.legacySessionStore && Boolean(cwd && sess && sess.cwd !== cwd),
+    contextUsage: formatContextUsage(catalogEntry?.contextUsage),
     agentName: ctx.agent.displayName,
     runtimeAccess: runtimeAccessStatus(ctx.controls.profileConfig, agentKind),
     larkCliStatus: await larkCliStatus(ctx),
@@ -104,6 +105,20 @@ export async function handleStatus(_args: string, ctx: CommandContext): Promise<
     chatMode: ctx.chatMode,
   });
   await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
+}
+
+function formatContextUsage(
+  usage: { inputTokens: number; contextWindowTokens: number } | undefined,
+): string | undefined {
+  if (!usage || usage.contextWindowTokens <= 0) return undefined;
+  const percent = Math.round((usage.inputTokens / usage.contextWindowTokens) * 100);
+  return `${percent}% (${formatTokenCount(usage.inputTokens)} / ${formatTokenCount(usage.contextWindowTokens)} tokens)`;
+}
+
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
+  return String(tokens);
 }
 
 export function formatOwnerState(ctx: CommandContext): string {

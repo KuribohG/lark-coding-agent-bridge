@@ -15,6 +15,8 @@ function isProgressEvent(event: AgentEvent): boolean {
     case 'text':
     case 'thinking':
       return event.delta.trim().length > 0;
+    case 'status':
+      return event.content.trim().length > 0;
     case 'final_text':
       return event.content.trim().length > 0;
     case 'tool_use':

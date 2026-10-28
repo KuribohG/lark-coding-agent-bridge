@@ -27,6 +27,17 @@ rl.on('line', line => {
  if(m.method==='turn/start') {
   reply(m.id,{turn:{id:'turn-1'}});
   notify('turn/started',{threadId:'thread-1',turn:{id:'turn-1'}});
+  if(mode==='compact') {
+   notify('thread/tokenUsage/updated',{threadId:'thread-1',turnId:'turn-1',tokenUsage:{
+    last:{inputTokens:900000,outputTokens:120,cachedInputTokens:800000,reasoningOutputTokens:20,totalTokens:900120},
+    total:{inputTokens:1200000,outputTokens:220,cachedInputTokens:1000000,reasoningOutputTokens:40,totalTokens:1200220},
+    modelContextWindow:1000000
+   }});
+   notify('item/completed',{threadId:'thread-1',turnId:'turn-1',item:{id:'compact-1',type:'contextCompaction'}});
+   notify('item/agentMessage/delta',{threadId:'thread-1',turnId:'turn-1',itemId:'answer',delta:'continued'});
+   notify('item/completed',{threadId:'thread-1',turnId:'turn-1',item:{id:'answer',type:'agentMessage',text:'continued'}});
+   notify('turn/completed',{threadId:'thread-1',turn:{id:'turn-1',status:'completed'}});
+  }
   if(mode==='questions') {
    const item={id:'question-1',type:'agentMessage',text:'请选择范围',questions:[{title:'处理范围？',options:['全部','仅本次']},{title:'补充说明',options:null}]};
    notify('item/completed',{threadId:'other-thread',turnId:'turn-1',item:{...item,id:'wrong-thread'}});
@@ -99,6 +110,44 @@ describe('Codex native in-flight input', () => {
     expect(requests.find(x => x.method === 'turn/steer').params).toMatchObject({ threadId: 'thread-1', expectedTurnId: 'turn-1', clientUserMessageId: 'message-2' });
     expect(requests.find(x => x.method === 'thread/start').params).toMatchObject({ sandbox: 'read-only', approvalPolicy: 'never', cwd: h.dir });
     expect(requests.find(x => x.method === 'turn/start').params.effort).toBe('high');
+  });
+  it('passes stable instructions through developerInstructions without duplicating them in user input', async () => {
+    const h = await harness();
+    const adapter = new CodexAdapter({
+      binary: join(h.dir, 'codex'),
+      profileStateDir: h.dir,
+      systemPrompt: identity => `trusted instructions for ${identity?.openId ?? 'unknown'}`,
+    });
+    adapter.setBotIdentity({ openId: 'ou_bot' });
+    const run = adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' });
+    const output = collect(run.events);
+    await run.steer!('finish', 'finish-message');
+    await output;
+    await run.waitForExit(1000);
+    const requests = await h.requests();
+    expect(requests.find(x => x.method === 'thread/start').params.developerInstructions)
+      .toBe('trusted instructions for ou_bot');
+    expect(requests.find(x => x.method === 'turn/start').params.input).toEqual([
+      { type: 'text', text: 'task', text_elements: [] },
+    ]);
+  });
+  it('reports context compaction and model context occupancy', async () => {
+    const h = await harness('compact');
+    const run = h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' });
+    const events = await collect(run.events);
+    expect(events).toContainEqual({
+      type: 'status',
+      code: 'context_compaction',
+      content: '上下文已自动压缩，任务继续执行。',
+    });
+    expect(events).toContainEqual({
+      type: 'usage',
+      inputTokens: 900000,
+      outputTokens: 120,
+      cachedInputTokens: 800000,
+      reasoningOutputTokens: 20,
+      contextWindowTokens: 1000000,
+    });
   });
   it.each([false, true])('preserves resume/fork routing (fork=%s)', async forkSession => {
     const h = await harness();

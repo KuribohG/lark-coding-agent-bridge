@@ -71,6 +71,16 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
     case 'final_text':
       return { ...state, finalText: evt.content };
 
+    case 'status':
+      return {
+        ...state,
+        blocks: [
+          ...closeStreamingText(state.blocks),
+          { kind: 'text', content: evt.content, streaming: false },
+        ],
+        reasoning: { ...state.reasoning, active: false },
+      };
+
     case 'thinking': {
       return {
         ...state,

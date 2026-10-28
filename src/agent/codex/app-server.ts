@@ -20,6 +20,7 @@ export function startAppServerRun(input: {
   env: NodeJS.ProcessEnv;
   sandbox: string;
   prompt: string;
+  developerInstructions?: string;
   stopGraceMs: number;
   configOverrides?: readonly string[];
 }): AgentRun {
@@ -139,15 +140,23 @@ export function startAppServerRun(input: {
       } else if (item.type === 'reasoning' && completed) {
         const summary = Array.isArray(item.summary) ? item.summary.filter(x => typeof x === 'string').join('\n') : '';
         if (summary) push([{ type: 'thinking', delta: summary }]);
+      } else if (item.type === 'contextCompaction' && completed) {
+        push([{
+          type: 'status',
+          code: 'context_compaction',
+          content: '上下文已自动压缩，任务继续执行。',
+        }]);
       } else if (['mcpToolCall', 'dynamicToolCall', 'fileChange'].includes(text(item.type))) {
         const id = text(item.id);
         push(completed ? [{ type: 'tool_result', id, output: JSON.stringify(item.result ?? item.contentItems ?? item.changes ?? item.error ?? ''), isError: item.status === 'failed' || item.success === false }]
           : [{ type: 'tool_use', id, name: text(item.tool) || text(item.type), input: item.arguments ?? item.changes }]);
       }
     } else if (method === 'thread/tokenUsage/updated') {
-      const usage = object(object(p.tokenUsage).last);
+      const tokenUsage = object(p.tokenUsage);
+      const usage = object(tokenUsage.last);
       push([{ type: 'usage', inputTokens: Number(usage.inputTokens) || 0, outputTokens: Number(usage.outputTokens) || 0,
-        cachedInputTokens: Number(usage.cachedInputTokens) || 0, reasoningOutputTokens: Number(usage.reasoningOutputTokens) || 0 }]);
+        cachedInputTokens: Number(usage.cachedInputTokens) || 0, reasoningOutputTokens: Number(usage.reasoningOutputTokens) || 0,
+        contextWindowTokens: Number(tokenUsage.modelContextWindow) || undefined }]);
     } else if (method === 'turn/completed') {
       const turn = object(p.turn);
       if (turnId && turn.id !== turnId) return;
@@ -167,6 +176,7 @@ export function startAppServerRun(input: {
     const thread = await request(opts.threadId ? opts.forkSession ? 'thread/fork' : 'thread/resume' : 'thread/start', {
       ...(opts.threadId ? { threadId: opts.threadId, excludeTurns: true } : {}),
       ...(opts.forkSession ? { ephemeral: true } : {}),
+      ...(input.developerInstructions ? { developerInstructions: input.developerInstructions } : {}),
       cwd: opts.cwd, model: opts.model, sandbox: input.sandbox, approvalPolicy: 'never',
     });
     threadId = text(object(thread.thread).id);

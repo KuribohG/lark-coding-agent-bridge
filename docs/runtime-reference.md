@@ -146,7 +146,7 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/ws remove <name>` | Delete a named workspace |
 | `/resume` | Resume compatible history for the same agent, working directory, and permission mode |
 | `/recent [N]` | List recently completed sessions with links to the originating message (default 5, maximum 20); owners/admins see the whole profile, other users see the current chat/topic |
-| `/status` | Show profile, agent, working directory, session, lark-cli identity, and run state |
+| `/status` | Show profile, agent, working directory, session, context occupancy, lark-cli identity, and run state |
 | `/config` | Inspect configuration and open separate execution, Lark display or access forms |
 | `/model [model-id\|default]` | View or change the current topic/chat model; accepts custom IDs |
 | `/effort [level\|default]` | View or change the current topic/chat reasoning effort |
@@ -165,6 +165,12 @@ If a profile was created with the wrong agent kind, stop or unregister any match
 | `/help` | Help card |
 
 DMs do not require an @ mention. Groups and topic groups require `@bot` by default; `@all` is ignored. Cloud-doc comments in supported document types run when the bot is mentioned.
+
+### Conversation context
+
+Codex receives the stable bridge instructions through app-server `developerInstructions`; per-turn user text contains only the current Lark context and request. Topic groups seed a new native session from the newest upstream messages (normally at most 40 messages / 30,000 characters). A resumed topic imports only messages after the last successfully completed turn, because unmentioned group chatter is not present in the native session. Message IDs already present in the current batch or explicit quote are excluded. Context fetches are best-effort and remain bounded.
+
+When Codex reports context occupancy, `/status` shows the percentage of the model context window used. Automatic Codex compaction is logged and shown as a progress status; completed turns retain the latest measured occupancy in the session catalog.
 
 ## Side questions
 

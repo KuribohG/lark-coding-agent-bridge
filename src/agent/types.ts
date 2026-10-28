@@ -38,8 +38,10 @@ export type AgentEvent =
       outputTokens?: number;
       cachedInputTokens?: number;
       reasoningOutputTokens?: number;
+      contextWindowTokens?: number;
       costUsd?: number;
     }
+  | { type: 'status'; content: string; code?: string }
   | {
       type: 'done';
       sessionId?: string;

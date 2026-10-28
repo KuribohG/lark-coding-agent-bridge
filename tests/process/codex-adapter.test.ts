@@ -79,11 +79,12 @@ describe('CodexAdapter app-server process contract', () => {
     expect(record.argv).toEqual(['app-server', '--listen', 'stdio://', '-c', 'approval_policy="never"', '-c', 'shell_environment_policy.inherit="all"']);
     expect(record.env.LARK_CHANNEL).toBe('1');
     const requests = await h.requests();
-    expect(requests.find(r => r.method === 'thread/start')?.params).toMatchObject({ cwd: h.dir, sandbox: 'read-only', approvalPolicy: 'never' });
+    const thread = requests.find(r => r.method === 'thread/start')?.params;
+    expect(thread).toMatchObject({ cwd: h.dir, sandbox: 'read-only', approvalPolicy: 'never' });
+    expect(thread?.developerInstructions).toContain('ou_test_bot');
+    expect(thread?.developerInstructions).toContain('lark-channel-bridge 运行约定');
     const prompt = requests.find(r => r.method === 'turn/start')?.params.input[0].text;
-    expect(prompt).toContain('ou_test_bot');
-    expect(prompt).toContain('lark-channel-bridge 运行约定');
-    expect(prompt).toContain('hello from lark');
+    expect(prompt).toBe('hello from lark');
   });
 
   it.each([undefined, 'parent'])('forwards model, effort and images with thread=%s', async threadId => {
@@ -165,7 +166,10 @@ describe('CodexAdapter app-server process contract', () => {
   it('uses per-run host instructions without adding Lark instructions', async () => {
     const h = await harness('normal', { systemPrompt: buildBridgeSystemPrompt });
     await collect(h.adapter.run({ runId: 'web', cwd: h.dir, prompt: 'hello', systemPrompt: 'Web instructions' }));
-    expect((await h.requests()).find(r => r.method === 'turn/start')?.params.input[0].text).toBe('Web instructions\n\n## user_message\n\nhello');
+    const requests = await h.requests();
+    expect(requests.find(r => r.method === 'thread/start')?.params.developerInstructions)
+      .toBe('Web instructions');
+    expect(requests.find(r => r.method === 'turn/start')?.params.input[0].text).toBe('hello');
   });
 
   it('reports stderr and never promotes an incomplete answer on process failure', async () => {

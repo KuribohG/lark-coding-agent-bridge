@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildAgentPrompt } from '../../../src/agent/prompt';
+import { BRIDGE_SYSTEM_PROMPT } from '../../../src/channels/lark/system-prompt';
 
 describe('agent prompt builder', () => {
   it('serializes untrusted message, quote, card, and comment text without closing bridge tags', () => {
@@ -104,10 +105,11 @@ describe('agent prompt builder', () => {
 
     expect(source).not.toContain('命令必须写成 env -u LARK_CHANNEL');
     expect(source).not.toContain('env -u LARK_CHANNEL lark-cli');
-    expect(source).toContain('danger-full-access');
-    expect(source).toContain('bypassPermissions');
-    expect(source).toContain('不要 unset LARK_CHANNEL');
-    expect(source).toContain('LARKSUITE_CLI_CONFIG_DIR');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('danger-full-access');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('bypassPermissions');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('不要 unset');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('env -u LARK_CHANNEL');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('LARKSUITE_CLI_CONFIG_DIR');
     expect(source).not.toContain('lark-cli config bind --source lark-channel');
   });
 

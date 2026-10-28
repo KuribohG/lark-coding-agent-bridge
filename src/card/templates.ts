@@ -69,6 +69,8 @@ export interface StatusInfo {
   sessionId?: string;
   emptySessionText?: string;
   sessionStale: boolean;
+  /** Human-readable context occupancy, e.g. "72% (720k / 1M tokens)". */
+  contextUsage?: string;
   agentName: string;
   runtimeAccess: {
     label: string;
@@ -105,6 +107,7 @@ export function statusCard(info: StatusInfo): object {
     `🧩 **profile**: ${escapeMd(info.profileName)}`,
     `📁 **cwd**: ${cwdLine}`,
     `🔗 **session**: ${sessionLine}`,
+    ...(info.contextUsage ? [`🧠 **context**: ${escapeMd(info.contextUsage)}`] : []),
     `🤖 **agent**: ${escapeMd(info.agentName)}`,
     ...(info.modelStatus ? [info.modelStatus] : []),
     `🛡 **${escapeMd(info.runtimeAccess.label)}**: ${escapeMd(info.runtimeAccess.value)}`,

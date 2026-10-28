@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import type { SandboxMode } from '../../config/profile-schema';
 import { mergeProcessEnv } from '../../platform/spawn';
 import { SpawnFailed } from '../../runtime/errors';
-import { prefixSystemPrompt, resolveSystemPrompt, type AgentSystemPrompt } from '../system-prompt';
+import { resolveSystemPrompt, type AgentSystemPrompt } from '../system-prompt';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
 import type {
   AgentAdapter,
@@ -61,10 +61,6 @@ export class CodexAdapter implements AgentAdapter {
     this.sandbox = opts.sandbox ?? 'danger-full-access';
     this.defaultStopGraceMs = opts.stopGraceMs ?? 5000;
     this.env = { ...opts.env };
-  }
-
-  private promptFor(opts: AgentRunOptions): string {
-    return prefixSystemPrompt(opts.prompt, opts.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity));
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -152,7 +148,9 @@ export class CodexAdapter implements AgentAdapter {
       binary: this.binary, opts,
       env: mergeProcessEnv(process.env, envOverrides),
       sandbox,
-      prompt: this.promptFor(opts),
+      prompt: opts.prompt,
+      developerInstructions: opts.systemPrompt
+        ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity),
       stopGraceMs: opts.stopGraceMs ?? this.defaultStopGraceMs,
       configOverrides,
     });

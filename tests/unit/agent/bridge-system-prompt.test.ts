@@ -2,7 +2,6 @@ import { describe, expect, it } from 'vitest';
 import {
   BRIDGE_SYSTEM_PROMPT,
   buildBridgeSystemPrompt,
-  prefixBridgeSystemPrompt,
 } from '../../../src/channels/lark/system-prompt';
 
 describe('bridge system prompt bot collaboration rules', () => {
@@ -33,6 +32,15 @@ describe('bridge system prompt bot collaboration rules', () => {
     expect(BRIDGE_SYSTEM_PROMPT).toContain('mentions');
   });
 
+  it('matches the JSON field and section names emitted by the prompt builder', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('bridge_context.chatId');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('<quoted_messages>');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('<interactive_cards>');
+    expect(BRIDGE_SYSTEM_PROMPT).not.toContain('bridge_context.chat_id');
+    expect(BRIDGE_SYSTEM_PROMPT).not.toContain('<quoted_message>');
+    expect(BRIDGE_SYSTEM_PROMPT).not.toContain('<interactive_card>');
+  });
+
   it('tells the agent not to mimic the batch sender annotation format', () => {
     expect(BRIDGE_SYSTEM_PROMPT).toContain('[名字 (user|bot)]');
     expect(BRIDGE_SYSTEM_PROMPT).toContain('不要模仿');
@@ -54,20 +62,5 @@ describe('buildBridgeSystemPrompt', () => {
   it('appends the identity line even when the bot name is missing', () => {
     const prompt = buildBridgeSystemPrompt({ openId: 'ou_bot_self' });
     expect(prompt).toContain('ou_bot_self');
-  });
-});
-
-describe('prefixBridgeSystemPrompt', () => {
-  it('prefixes the identity-aware system prompt before the user message', () => {
-    const prompt = prefixBridgeSystemPrompt('hello world', { openId: 'ou_bot_self' });
-    expect(prompt).toContain('ou_bot_self');
-    expect(prompt.indexOf('ou_bot_self')).toBeLessThan(prompt.indexOf('## user_message'));
-    expect(prompt.endsWith('hello world')).toBe(true);
-  });
-
-  it('keeps working without an identity', () => {
-    const prompt = prefixBridgeSystemPrompt('hello world', undefined);
-    expect(prompt.startsWith(BRIDGE_SYSTEM_PROMPT)).toBe(true);
-    expect(prompt.endsWith('hello world')).toBe(true);
   });
 });

@@ -52,7 +52,7 @@ import { attachMeetingAgent, summarizeEndedMeeting } from '../../meeting/orchest
 import type { ScopeContext } from '../../policy/run-policy';
 import { createOwnerRefreshController } from '../../policy/owner';
 import { RunExecutor } from '../../runtime/run-executor';
-import type { SessionCatalog } from '../../session/catalog';
+import type { SessionCatalog, SessionContextUsage } from '../../session/catalog';
 import type { SessionStore } from '../../session/store';
 import type { WorkspaceStore } from '../../workspace/store';
 import { ActiveRuns } from '../../runtime/active-runs';
@@ -69,18 +69,18 @@ import { PendingQueue } from '../../bot/pending-queue';
 import { FollowupRouter } from '../../bot/followup';
 import { UserQuestions } from '../../bot/user-questions';
 import { ProcessPool } from '../../runtime/process-pool';
-import { fetchQuotedContext, fetchTopicContext, type QuotedContext } from '../../bot/quote';
+import {
+  fetchQuotedContext,
+  fetchTopicContext,
+  LARK_CONTEXT_MAX_CHARS,
+  type QuotedContext,
+} from '../../bot/quote';
 import { lookupMessageThreadId } from '../../bot/thread-id';
 import { fetchKnownChats } from '../../bot/lark-info';
 import type { AppPaths } from '../../config/app-paths';
 import { CotClient, CotPublisher } from '../../bot/cot';
 
-const BRIDGE_AGENT_INSTRUCTIONS = [
-  '你在 bridge 进程中运行，普通 lark-cli 会继承 LARK_CHANNEL=1 并进入 bridge-bound 模式。',
-  '不要 unset LARK_CHANNEL / LARK_CHANNEL_HOME / LARK_CHANNEL_PROFILE / LARKSUITE_CLI_CONFIG_DIR，也不要用 env -u LARK_CHANNEL 绕回本机普通配置。',
-  'Codex bridge 默认使用 danger-full-access 对齐 Claude bridge 的 bypassPermissions 行为，因此 lark-cli 应能像用户本机终端一样访问 keychain。',
-  '如果提示 lark-channel context detected but not bound，停止当前操作并请用户重启 bridge 或运行 bridge doctor/preflight；不要改用普通 profile，不要自行 bind，也不要直接读取 config.json 里的账号或密钥。',
-];
+const TOPIC_CONTEXT_MAX_MESSAGES = 40;
 
 // Lark SDK logs API errors at error level even when the caller catches them.
 // These specific codes are EXPECTED in our flow (wiki-node lookup that
@@ -1088,15 +1088,13 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     ...(threadId ? { threadId } : {}),
   };
 
-  // Topic upstream context. When the bot is pulled into a topic for the FIRST
-  // time (no session yet for this scope), the topic's earlier messages — the
-  // root question that may never have @-mentioned the bot, plus prior replies —
-  // live nowhere the agent can see them. Fetch them so it isn't blind to what
-  // the user is pointing at. An already-engaged topic keeps that history in its
-  // resumed session, so we skip the fetch there.
+  // Topic upstream context. A resumed native session only contains messages
+  // that actually reached the agent; unmentioned group chatter never does.
+  // Import unseen messages on every topic turn, using the last successful run
+  // as a cursor. A migrated entry without a cursor gets a recent-window seed.
   let topicContext: QuotedContext[] = [];
-  let needsTopicContext = mode === 'topic' && Boolean(threadId);
-  if (needsTopicContext) {
+  let topicContextSince: number | undefined;
+  if (mode === 'topic' && threadId) {
     const context = await resolveRunFlowContext({
       scopeId: scope,
       scope: scopeContext,
@@ -1110,18 +1108,21 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       workspaces,
       now: Date.now(),
     });
-    needsTopicContext = context.ok && !context.resumeFrom;
-    if (context.ok && context.resumeFrom) {
-      log.info('topic', 'context-skipped-resumable-session', {
-        scope,
-        threadId,
-      });
+    if (context.ok && context.resumeFrom && sessionCatalog) {
+      topicContextSince = sessionCatalog.activeFor({
+        scopeId: scope,
+        agentId: capability.agentId,
+        cwdRealpath: context.workspace.cwdRealpath,
+        policyFingerprint: context.policy.policyFingerprint,
+      })?.topicContextThrough;
     }
-  }
-  if (needsTopicContext && threadId) {
+
     const exclude = new Set([...batchIds, ...quoteTargets]);
     topicContext = await fetchTopicContext(channel, threadId, {
-      maxMessages: 40,
+      maxMessages: TOPIC_CONTEXT_MAX_MESSAGES,
+      maxChars: LARK_CONTEXT_MAX_CHARS,
+      ...(topicContextSince !== undefined ? { sinceMs: topicContextSince } : {}),
+      ...(firstMsg.rootId ? { anchorMessageId: firstMsg.rootId } : {}),
       excludeIds: exclude,
     });
     topicContext = topicContext.filter(message => !controls.btw?.excludes(scope, message));
@@ -1130,6 +1131,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         scope,
         threadId,
         count: topicContext.length,
+        incremental: topicContextSince !== undefined,
+        ...(topicContextSince !== undefined ? { sinceMs: topicContextSince } : {}),
       });
     }
   }
@@ -1250,6 +1253,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     log.info('session', 'fresh', { cwd });
   }
   let sessionCwd = cwd;
+  let contextUsage: SessionContextUsage | undefined;
   const recordSession = (evt: AgentEvent): void => {
     if (evt.type === 'system' && evt.cwd) sessionCwd = evt.cwd;
     recordRunSessionEvent({
@@ -1288,6 +1292,19 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
     if (evt.type === 'system' && evt.threadId) {
       log.info('session', 'set-thread', { threadId: evt.threadId });
+    }
+    if (
+      evt.type === 'usage' &&
+      evt.inputTokens !== undefined &&
+      evt.contextWindowTokens !== undefined &&
+      evt.inputTokens > 0 &&
+      evt.contextWindowTokens > 0
+    ) {
+      contextUsage = {
+        inputTokens: evt.inputTokens,
+        contextWindowTokens: evt.contextWindowTokens,
+        updatedAt: Date.now(),
+      };
     }
   };
 
@@ -1359,6 +1376,8 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         cwdRealpath: sessionCwd,
         policyFingerprint: flow.policy.policyFingerprint,
         sourceMessageId,
+        ...(mode === 'topic' ? { topicContextThrough: lastMsg.createTime } : {}),
+        ...(contextUsage ? { contextUsage } : {}),
         lastSummary: summarizeRunInput(batch),
       });
     }
@@ -1430,10 +1449,7 @@ function buildPrompt(
       messageIds: batch.map((m) => m.messageId),
       source: 'im',
     },
-    instructions:
-      extraInstructions && extraInstructions.length > 0
-        ? [...BRIDGE_AGENT_INSTRUCTIONS, ...extraInstructions]
-        : BRIDGE_AGENT_INSTRUCTIONS,
+    instructions: extraInstructions,
     userInput: userPart,
     ...(topicContext.length > 0 ? { topicContext: topicContext.map(toPromptTopicMessage) } : {}),
     quotedMessages: quotes.map(toPromptQuote),

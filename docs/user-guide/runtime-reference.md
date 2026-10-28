@@ -136,7 +136,7 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/ws remove <name>` | 删除命名工作空间 |
 | `/resume` | 恢复同 agent、工作目录、权限模式兼容的历史会话 |
 | `/recent [N]` | 列出最近完成的 session（默认 5 条、最多 20 条），标题可跳到原消息或对应话题；owner/admin 看整个 profile，其他用户只看当前话题/聊天 |
-| `/status` | 查看 profile、agent、工作目录、会话、lark-cli 身份和运行状态 |
+| `/status` | 查看 profile、agent、工作目录、会话、上下文占用、lark-cli 身份和运行状态 |
 | `/config` | 查看配置摘要，分别进入执行、飞书展示和访问设置 |
 | `/model [模型名\|default]` | 查看或修改当前话题/聊天的模型，支持手填 |
 | `/effort [强度\|default]` | 查看或修改当前话题/聊天的思考强度 |
@@ -155,6 +155,12 @@ lark-channel-bridge profile export <name> --include-secrets --yes
 | `/help` | 帮助卡片 |
 
 私聊不需要 @。群和话题群默认必须 `@bot`；`@all` 会被忽略。支持的云文档评论里 @bot 就会触发回复。
+
+### 会话上下文
+
+Codex 的稳定 Bridge 规则通过 app-server 的 `developerInstructions` 注入，每轮 user message 只携带当前飞书上下文和请求。新话题会话会导入最新的上游消息，通常最多 40 条、30000 字符；已有原生会话则从上次成功完成的游标开始，只导入之后的新消息，因为未 @ bot 的群聊内容不会自动进入原生 session。当前批次和显式引用中的消息会去重，抓取失败时保持 best-effort。
+
+Codex 报告上下文用量后，`/status` 会显示模型上下文窗口占用比例。Codex 自动压缩上下文时会写入日志并在过程状态中显示；成功完成的任务会保存最近一次上下文占用。
 
 ## 模型与思考强度
 

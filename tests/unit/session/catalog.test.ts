@@ -152,6 +152,12 @@ describe('agent-aware session catalog', () => {
       now: 2000,
       lastSummary: '  finished\n task  ',
       sourceMessageId: 'om_source',
+      topicContextThrough: 1760000001000,
+      contextUsage: {
+        inputTokens: 720_000,
+        contextWindowTokens: 1_000_000,
+        updatedAt: 2000,
+      },
     })).toBe(true);
 
     expect(catalog.activeFor(identity)).toMatchObject({
@@ -161,6 +167,12 @@ describe('agent-aware session catalog', () => {
       completedAt: 2000,
       lastSummary: 'finished task',
       sourceMessageId: 'om_source',
+      topicContextThrough: 1760000001000,
+      contextUsage: {
+        inputTokens: 720_000,
+        contextWindowTokens: 1_000_000,
+        updatedAt: 2000,
+      },
     });
 
     catalog.upsertActive({ ...identity, threadId: 'thread-1', now: 3000 });
@@ -168,6 +180,7 @@ describe('agent-aware session catalog', () => {
       completedAt: 2000,
       lastSummary: 'finished task',
       sourceMessageId: 'om_source',
+      topicContextThrough: 1760000001000,
       updatedAt: 3000,
     });
 
@@ -176,7 +189,43 @@ describe('agent-aware session catalog', () => {
     expect(catalog.activeFor(identity)).not.toHaveProperty('completedAt');
     expect(catalog.activeFor(identity)).not.toHaveProperty('lastSummary');
     expect(catalog.activeFor(identity)).not.toHaveProperty('sourceMessageId');
+    expect(catalog.activeFor(identity)).not.toHaveProperty('topicContextThrough');
+    expect(catalog.activeFor(identity)).not.toHaveProperty('contextUsage');
     await catalog.flush();
+  });
+
+  it('restores topic and context cursors after reload', async () => {
+    const file = await path();
+    const identity = {
+      scopeId: 'chat-topic',
+      agentId: 'codex' as const,
+      cwdRealpath: '/repo',
+      policyFingerprint: 'fp-topic',
+    };
+    const first = new SessionCatalog(file);
+    first.upsertActive({ ...identity, threadId: 'thread-topic', now: 1000 });
+    first.markCompleted({
+      ...identity,
+      now: 2000,
+      topicContextThrough: 1760000002000,
+      contextUsage: {
+        inputTokens: 800_000,
+        contextWindowTokens: 1_000_000,
+        updatedAt: 2000,
+      },
+    });
+    await first.flush();
+
+    const reloaded = new SessionCatalog(file);
+    await reloaded.load();
+    expect(reloaded.activeFor(identity)).toMatchObject({
+      topicContextThrough: 1760000002000,
+      contextUsage: {
+        inputTokens: 800_000,
+        contextWindowTokens: 1_000_000,
+        updatedAt: 2000,
+      },
+    });
   });
 
   it('garbage-collects old archived entries, per-scope overflow, and profile overflow', async () => {

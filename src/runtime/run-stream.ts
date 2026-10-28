@@ -84,18 +84,31 @@ export async function processAgentStream(
         continue;
       }
       if (evt.type === 'usage') {
-        const { costUsd, inputTokens, outputTokens } = evt;
-        if (costUsd !== undefined || inputTokens !== undefined || outputTokens !== undefined) {
+        recordSession(evt);
+        const { costUsd, inputTokens, outputTokens, contextWindowTokens } = evt;
+        if (
+          costUsd !== undefined ||
+          inputTokens !== undefined ||
+          outputTokens !== undefined ||
+          contextWindowTokens !== undefined
+        ) {
           log.info('agent', 'usage', {
             ...(costUsd !== undefined ? { costUsd: Number(costUsd.toFixed(4)) } : {}),
             ...(inputTokens !== undefined ? { inputTokens } : {}),
             ...(outputTokens !== undefined ? { outputTokens } : {}),
+            ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
           });
           if (costUsd !== undefined) reportMetric('cost_usd', costUsd);
           if (inputTokens !== undefined) reportMetric('tokens_in', inputTokens);
           if (outputTokens !== undefined) reportMetric('tokens_out', outputTokens);
         }
         continue;
+      }
+      if (evt.type === 'status') {
+        log.info('agent', 'status', {
+          code: evt.code,
+          content: evt.content,
+        });
       }
 
       const prevTerminal = state.terminal;

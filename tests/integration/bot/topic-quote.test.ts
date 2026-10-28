@@ -109,8 +109,12 @@ describe('topic message quote handling', () => {
     const prompt = h.agent.runOptions[0]?.prompt ?? '';
     expect(prompt).toContain('"threadId":"omt_topic"');
     expect(prompt).not.toContain('<quoted_messages>');
-    expect(prompt).not.toContain('topic root content');
-    expect(h.channel.fetchRawMessage).not.toHaveBeenCalled();
+    expect(prompt).toContain('<topic_context>');
+    expect(prompt).toContain('topic root content');
+    expect(h.channel.fetchRawMessage).toHaveBeenCalledWith(
+      'om_topic_root',
+      { cardContentType: 'user_card_content' },
+    );
   });
 
   it('treats messages with threadId as topic messages even when chat mode cache says group', async () => {
@@ -140,7 +144,11 @@ describe('topic message quote handling', () => {
     const prompt = h.agent.runOptions[0]?.prompt ?? '';
     expect(prompt).toContain('"threadId":"omt_converted_topic"');
     expect(prompt).not.toContain('<quoted_messages>');
-    expect(h.channel.fetchRawMessage).not.toHaveBeenCalled();
+    expect(prompt).toContain('<topic_context>');
+    expect(h.channel.fetchRawMessage).toHaveBeenCalledWith(
+      'om_topic_root',
+      { cardContentType: 'user_card_content' },
+    );
     await waitFor(() => h.channel.streams.length === 1);
     expect(h.channel.streams[0]?.options).toMatchObject({
       replyTo: 'om_converted_topic',
@@ -296,9 +304,9 @@ describe('topic message quote handling', () => {
     expect(h.agent.runOptions[0]?.forkSession).toBe(false);
   });
 
-  it('does not fetch topic context when the topic session already exists', async () => {
-    // A prior session for this topic scope means the history is already in the
-    // resumed conversation — no need to re-fetch and re-inject it every turn.
+  it('seeds a recent topic window when an existing session has no context cursor', async () => {
+    // Old catalog entries predate the cursor. Seed one recent window once,
+    // then persist the cursor so later turns can use an incremental import.
     const h = await createHarness({
       chatMode: 'topic',
       threadMessages: [
@@ -328,12 +336,13 @@ describe('topic message quote handling', () => {
     );
     await waitFor(() => h.agent.runOptions.length === 1);
 
-    expect(h.channel.rawClient.im.v1.message.list).not.toHaveBeenCalled();
+    expect(h.channel.rawClient.im.v1.message.list).toHaveBeenCalledTimes(1);
     const prompt = h.agent.runOptions[0]?.prompt ?? '';
-    expect(prompt).not.toContain('<topic_context>');
+    expect(prompt).toContain('<topic_context>');
+    expect(prompt).toContain('the real upstream question');
   });
 
-  it('uses an active catalog thread to avoid refetching topic context', async () => {
+  it('imports only unseen topic messages on a resumed catalog thread', async () => {
     const h = await createHarness({
       chatMode: 'topic',
       threadMessages: [
@@ -368,15 +377,61 @@ describe('topic message quote handling', () => {
 
     await h.channel.handlers.message?.(input('om_first'));
     await waitFor(() => h.agent.runOptions.length === 1);
-    await waitFor(() => h.catalog.entries().some(entry => entry.scopeId === scope));
+    await waitFor(() => h.catalog.entries().some(entry =>
+      entry.scopeId === scope && entry.topicContextThrough === 1760000001000));
     const callsAfterFirst = h.channel.rawClient.im.v1.message.list.mock.calls.length;
     expect(callsAfterFirst).toBe(1);
     h.sessions.clear(scope);
+    h.channel.rawClient.im.v1.message.list.mockImplementation(async () => ({
+      data: {
+        items: [
+          {
+            message_id: 'om_unmentioned_context',
+            msg_type: 'text',
+            body: { content: encodeFixture({ text: 'unmentioned context after the first run' }) },
+            sender: { id: 'ou_human', sender_type: 'user' },
+            create_time: '1760000002000',
+            thread_id: 'omt_catalog',
+          },
+        ],
+        has_more: false,
+      },
+    }));
 
     await h.channel.handlers.message?.(input('om_second'));
     await waitFor(() => h.agent.runOptions.length === 2);
-    expect(h.channel.rawClient.im.v1.message.list).toHaveBeenCalledTimes(callsAfterFirst);
-    expect(h.agent.runOptions[1]?.prompt).not.toContain('<topic_context>');
+    expect(h.channel.rawClient.im.v1.message.list).toHaveBeenCalledTimes(callsAfterFirst + 1);
+    expect(h.agent.runOptions[1]?.prompt).toContain('<topic_context>');
+    expect(h.agent.runOptions[1]?.prompt).toContain('unmentioned context after the first run');
+    expect(h.agent.runOptions[1]?.prompt).not.toContain('the real upstream question');
+  });
+
+  it('persists successful context usage for status without blocking the run', async () => {
+    const h = await createHarness({
+      agentEvents: [
+        { type: 'system', sessionId: 'sess-context-usage' },
+        {
+          type: 'usage',
+          inputTokens: 720_000,
+          outputTokens: 123,
+          contextWindowTokens: 1_000_000,
+        },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message({
+      messageId: 'om_context_usage',
+      rootId: 'om_topic_root',
+      parentId: 'om_topic_root',
+      threadId: 'omt_usage',
+      content: '@Bridge 查看上下文占用',
+    }));
+
+    await waitFor(() => h.catalog.entries().some(entry =>
+      entry.scopeId === 'oc_topic_chat:omt_usage'
+      && entry.contextUsage?.inputTokens === 720_000));
   });
 
   it('does not open a progress stream when the agent produces no content', async () => {

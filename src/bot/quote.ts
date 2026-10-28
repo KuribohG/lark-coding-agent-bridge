@@ -24,6 +24,10 @@ export interface QuotedContext {
   rawContentType: string;
 }
 
+const TOPIC_CONTEXT_ITEM_OVERHEAD = 256;
+const TOPIC_CONTEXT_TRUNCATION_MARKER = '\n\n[话题上下文过长，中间内容已省略]\n\n';
+export const LARK_CONTEXT_MAX_CHARS = 30_000;
+
 /**
  * Fetch and normalize the content of a message that the user is reply-quoting.
  *
@@ -65,6 +69,7 @@ function preExpandInteractive(item: ApiMessageItem): ApiMessageItem {
 export async function fetchQuotedContext(
   channel: LarkChannel,
   messageId: string,
+  opts: { maxChars?: number } = {},
 ): Promise<QuotedContext | undefined> {
   let items: ApiMessageItem[];
   try {
@@ -93,7 +98,12 @@ export async function fetchQuotedContext(
     return subItems.map(preExpandInteractive);
   };
 
-  return normalizeItemToQuoted(channel, parent, fetchSubMessages);
+  const quoted = await normalizeItemToQuoted(channel, parent, fetchSubMessages);
+  if (!quoted) return undefined;
+  return boundTopicContext(
+    [quoted],
+    opts.maxChars ?? LARK_CONTEXT_MAX_CHARS,
+  )[0];
 }
 
 function mapSenderType(raw: unknown): 'user' | 'bot' | undefined {
@@ -168,28 +178,35 @@ async function normalizeItemToQuoted(
  * Fetch a Feishu topic's upstream messages (chronological) so the agent has the
  * conversation it's being pulled into. Feishu's `im.v1.message.list` with
  * `container_id_type=thread` returns every message in the topic — including the
- * root that may never have @-mentioned the bot. Used only on the bot's first
- * engagement in a topic (an already-engaged topic keeps its history in the
- * resumed session).
+ * root that may never have @-mentioned the bot. The channel uses a timestamp
+ * cursor on resumed sessions so only unseen messages are imported.
  *
  * `excludeIds` drops the triggering messages and any explicit reply-quotes so
- * they aren't duplicated. Capped at `maxMessages` (keeps the most recent when
- * the topic is longer). Returns `[]` on any error — context is best-effort.
+ * they aren't duplicated. Fetching newest-first keeps `maxMessages` correct
+ * for long topics, while `maxChars` bounds what reaches the model.
  */
 export async function fetchTopicContext(
   channel: LarkChannel,
   threadId: string,
-  opts: { maxMessages: number; excludeIds?: Set<string> },
+  opts: {
+    maxMessages: number;
+    maxChars?: number;
+    sinceMs?: number;
+    anchorMessageId?: string;
+    excludeIds?: Set<string>;
+  },
 ): Promise<QuotedContext[]> {
   const collected: ApiMessageItem[] = [];
+  const exclude = opts.excludeIds ?? new Set<string>();
   let pageToken: string | undefined;
+  let reachedSince = false;
   try {
     do {
       const res = await channel.rawClient.im.v1.message.list({
         params: {
           container_id_type: 'thread',
           container_id: threadId,
-          sort_type: 'ByCreateTimeAsc',
+          sort_type: 'ByCreateTimeDesc',
           page_size: 50,
           ...(pageToken ? { page_token: pageToken } : {}),
         },
@@ -198,9 +215,24 @@ export async function fetchTopicContext(
         data?: { items?: ApiMessageItem[]; messages?: ApiMessageItem[]; has_more?: boolean; page_token?: string };
       }).data;
       const items = data?.items ?? data?.messages ?? [];
-      collected.push(...items);
+      for (const item of items) {
+        const createdAt = messageCreateMs(item);
+        if (opts.sinceMs !== undefined && createdAt !== undefined && createdAt <= opts.sinceMs) {
+          reachedSince = true;
+          break;
+        }
+        if (
+          !item.message_id ||
+          exclude.has(item.message_id) ||
+          (item as { deleted?: boolean }).deleted
+        ) {
+          continue;
+        }
+        collected.push(item);
+        if (collected.length >= opts.maxMessages) break;
+      }
       pageToken = data?.has_more ? data.page_token : undefined;
-    } while (pageToken && collected.length < opts.maxMessages * 4);
+    } while (pageToken && !reachedSince && collected.length < opts.maxMessages);
   } catch (err) {
     log.warn('topic', 'context-fetch-failed', {
       threadId,
@@ -208,16 +240,18 @@ export async function fetchTopicContext(
     });
     return [];
   }
+  if (pageToken && collected.length >= opts.maxMessages) {
+    log.info('topic', 'context-truncated', {
+      threadId,
+      maxMessages: opts.maxMessages,
+      sinceMs: opts.sinceMs,
+    });
+  }
 
-  const exclude = opts.excludeIds ?? new Set<string>();
-  const relevant = collected
-    .filter(
-      (m) => m.message_id && !exclude.has(m.message_id) && !(m as { deleted?: boolean }).deleted,
-    )
-    .slice(-opts.maxMessages);
+  collected.sort((a, b) => (messageCreateMs(a) ?? 0) - (messageCreateMs(b) ?? 0));
 
   const out: QuotedContext[] = [];
-  for (const item of relevant) {
+  for (const item of collected) {
     const fetchSubMessages = async (mid: string): Promise<ApiMessageItem[]> => {
       const source = mid === item.message_id ? [item] : await fetchSubTreeItems(channel, mid);
       return source.map(preExpandInteractive);
@@ -225,7 +259,104 @@ export async function fetchTopicContext(
     const quoted = await normalizeItemToQuoted(channel, item, fetchSubMessages);
     if (quoted) out.push(quoted);
   }
-  return out;
+
+  if (
+    opts.sinceMs === undefined &&
+    opts.anchorMessageId &&
+    !exclude.has(opts.anchorMessageId) &&
+    !out.some(item => item.messageId === opts.anchorMessageId)
+  ) {
+    try {
+      const items = await channel.fetchRawMessage(opts.anchorMessageId, {
+        cardContentType: 'user_card_content',
+      });
+      const anchor = items[0];
+      if (anchor) {
+        const quoted = await normalizeItemToQuoted(
+          channel,
+          anchor,
+          async (mid) => (mid === anchor.message_id
+            ? items.map(preExpandInteractive)
+            : (await fetchSubTreeItems(channel, mid)).map(preExpandInteractive)),
+        );
+        if (quoted) out.unshift(quoted);
+      }
+    } catch (err) {
+      log.warn('topic', 'anchor-fetch-failed', {
+        threadId,
+        messageId: opts.anchorMessageId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  out.sort(compareQuotedContextTime);
+  return boundTopicContext(
+    out,
+    opts.maxChars,
+    opts.sinceMs === undefined ? opts.anchorMessageId : undefined,
+  );
+}
+
+function boundTopicContext(
+  items: QuotedContext[],
+  maxChars: number | undefined,
+  anchorMessageId?: string,
+): QuotedContext[] {
+  if (maxChars === undefined || maxChars <= 0) return items;
+  const selected: QuotedContext[] = [];
+  const order = new Map(items.map((item, index) => [item.messageId, index]));
+  let used = 0;
+  const anchor = anchorMessageId
+    ? items.find(item => item.messageId === anchorMessageId)
+    : undefined;
+  if (anchor) {
+    const fitted = fitTopicContextItem(anchor, Math.min(maxChars, 6_000));
+    if (fitted) {
+      selected.push(fitted);
+      used += quotedContextChars(fitted);
+    }
+  }
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]!;
+    if (item.messageId === anchor?.messageId) continue;
+    const fitted = fitTopicContextItem(item, maxChars - used);
+    if (!fitted) continue;
+    selected.push(fitted);
+    used += quotedContextChars(fitted);
+  }
+  return selected.sort((a, b) =>
+    (order.get(a.messageId) ?? 0) - (order.get(b.messageId) ?? 0));
+}
+
+function fitTopicContextItem(item: QuotedContext, maxChars: number): QuotedContext | undefined {
+  const needed = quotedContextChars(item);
+  if (needed <= maxChars) return item;
+  const contentBudget = maxChars - TOPIC_CONTEXT_ITEM_OVERHEAD - TOPIC_CONTEXT_TRUNCATION_MARKER.length;
+  if (contentBudget < 512) return undefined;
+  const head = Math.ceil(contentBudget * 0.65);
+  const tail = contentBudget - head;
+  const clipped = tail > 0
+    ? `${item.content.slice(0, head)}${TOPIC_CONTEXT_TRUNCATION_MARKER}${item.content.slice(-tail)}`
+    : item.content.slice(0, head);
+  return { ...item, content: clipped };
+}
+
+function quotedContextChars(item: QuotedContext): number {
+  return TOPIC_CONTEXT_ITEM_OVERHEAD + item.content.length;
+}
+
+function messageCreateMs(item: ApiMessageItem): number | undefined {
+  if (item.create_time === undefined) return undefined;
+  const value = Number(item.create_time);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function compareQuotedContextTime(a: QuotedContext, b: QuotedContext): number {
+  const left = Date.parse(a.createdAt);
+  const right = Date.parse(b.createdAt);
+  if (!Number.isFinite(left) || !Number.isFinite(right)) return 0;
+  return left - right;
 }
 
 /**

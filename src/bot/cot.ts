@@ -317,6 +317,15 @@ export async function consumeCotEvents(
         publisher.enqueue('TEXT_MESSAGE_END', { messageId });
         continue;
       }
+      if (evt.type === 'status') {
+        closeReasoningIfNeeded();
+        closeTextIfNeeded();
+        const messageId = `status-${publisher.runId}-${++textMessageIndex}`;
+        publisher.enqueue('TEXT_MESSAGE_START', { messageId, role: 'assistant' });
+        publisher.enqueue('TEXT_MESSAGE_CONTENT', { messageId, delta: evt.content });
+        publisher.enqueue('TEXT_MESSAGE_END', { messageId });
+        continue;
+      }
       if (evt.type === 'thinking') {
         closeTextIfNeeded();
         if (!reasoningOpen) {

@@ -25,9 +25,19 @@ export interface SessionCatalogEntry extends SessionCatalogIdentity {
   updatedAt: number;
   completedAt?: number;
   sourceMessageId?: string;
+  /** Last successfully processed Feishu topic message timestamp (epoch ms). */
+  topicContextThrough?: number;
+  /** Last observed Codex context occupancy for this native session. */
+  contextUsage?: SessionContextUsage;
   sessionId?: string;
   threadId?: string;
   lastSummary?: string;
+}
+
+export interface SessionContextUsage {
+  inputTokens: number;
+  contextWindowTokens: number;
+  updatedAt: number;
 }
 
 export interface UpsertSessionCatalogInput extends SessionCatalogIdentity {
@@ -44,6 +54,8 @@ export interface ArchiveSessionCatalogInput extends SessionCatalogIdentity {
 export interface MarkSessionCatalogCompletedInput extends SessionCatalogIdentity {
   now?: number;
   sourceMessageId?: string;
+  topicContextThrough?: number;
+  contextUsage?: SessionContextUsage;
   lastSummary?: string;
 }
 
@@ -123,6 +135,8 @@ export class SessionCatalog {
     const lastSummary = input.lastSummary
       ?? (continuesSession ? previous?.lastSummary : undefined);
     const sourceMessageId = continuesSession ? previous?.sourceMessageId : undefined;
+    const topicContextThrough = continuesSession ? previous?.topicContextThrough : undefined;
+    const contextUsage = continuesSession ? previous?.contextUsage : undefined;
     const entry: SessionCatalogEntry = {
       key,
       scopeId: input.scopeId,
@@ -133,6 +147,8 @@ export class SessionCatalog {
       updatedAt: input.now ?? Date.now(),
       ...(completedAt !== undefined ? { completedAt } : {}),
       ...(sourceMessageId ? { sourceMessageId } : {}),
+      ...(topicContextThrough !== undefined ? { topicContextThrough } : {}),
+      ...(contextUsage ? { contextUsage } : {}),
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
       ...(input.threadId ? { threadId: input.threadId } : {}),
       ...(lastSummary ? { lastSummary } : {}),
@@ -162,11 +178,16 @@ export class SessionCatalog {
     const completedAt = input.now ?? Date.now();
     const lastSummary = normalizeSummary(input.lastSummary) ?? entry.lastSummary;
     const sourceMessageId = normalizeMessageId(input.sourceMessageId) ?? entry.sourceMessageId;
+    const topicContextThrough = normalizeTimestamp(input.topicContextThrough)
+      ?? entry.topicContextThrough;
+    const contextUsage = normalizeContextUsage(input.contextUsage) ?? entry.contextUsage;
     this.data.set(key, {
       ...entry,
       updatedAt: completedAt,
       completedAt,
       ...(sourceMessageId ? { sourceMessageId } : {}),
+      ...(topicContextThrough !== undefined ? { topicContextThrough } : {}),
+      ...(contextUsage ? { contextUsage } : {}),
       ...(lastSummary ? { lastSummary } : {}),
     });
     this.schedulePersist();
@@ -264,6 +285,8 @@ function normalizeEntry(input: unknown): SessionCatalogEntry | undefined {
     return undefined;
   }
   const sourceMessageId = normalizeMessageId(raw.sourceMessageId);
+  const topicContextThrough = normalizeTimestamp(raw.topicContextThrough);
+  const contextUsage = normalizeContextUsage(raw.contextUsage);
   return {
     key: raw.key,
     scopeId: raw.scopeId,
@@ -274,6 +297,8 @@ function normalizeEntry(input: unknown): SessionCatalogEntry | undefined {
     updatedAt: raw.updatedAt,
     ...(typeof raw.completedAt === 'number' ? { completedAt: raw.completedAt } : {}),
     ...(sourceMessageId ? { sourceMessageId } : {}),
+    ...(topicContextThrough !== undefined ? { topicContextThrough } : {}),
+    ...(contextUsage ? { contextUsage } : {}),
     ...(typeof raw.sessionId === 'string' ? { sessionId: raw.sessionId } : {}),
     ...(typeof raw.threadId === 'string' ? { threadId: raw.threadId } : {}),
     ...(typeof raw.lastSummary === 'string' ? { lastSummary: raw.lastSummary } : {}),
@@ -288,6 +313,23 @@ function normalizeSummary(input: string | undefined): string | undefined {
 
 function normalizeMessageId(input: string | undefined): string | undefined {
   return input && /^om_\w+$/.test(input) ? input : undefined;
+}
+
+function normalizeTimestamp(input: number | undefined): number | undefined {
+  return typeof input === 'number' && Number.isFinite(input) && input > 0
+    ? Math.floor(input)
+    : undefined;
+}
+
+function normalizeContextUsage(input: SessionContextUsage | undefined): SessionContextUsage | undefined {
+  if (!input) return undefined;
+  const inputTokens = normalizeTimestamp(input.inputTokens);
+  const contextWindowTokens = normalizeTimestamp(input.contextWindowTokens);
+  const updatedAt = normalizeTimestamp(input.updatedAt);
+  if (inputTokens === undefined || contextWindowTokens === undefined || updatedAt === undefined) {
+    return undefined;
+  }
+  return { inputTokens, contextWindowTokens, updatedAt };
 }
 
 function matchesIdentity(entry: SessionCatalogEntry, input: SessionCatalogIdentity): boolean {

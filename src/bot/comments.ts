@@ -357,6 +357,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
               terminal = true;
               break;
             case 'usage':
+            case 'status':
               break;
             case 'done':
               terminal = true;
