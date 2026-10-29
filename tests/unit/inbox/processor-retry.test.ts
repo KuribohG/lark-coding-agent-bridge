@@ -49,13 +49,14 @@ it('resumes the same analysis after 429, retains its deadline and emits one succ
 });
 
 it('bounds consecutive 429 retries and preserves a specific failure reason', async () => {
-  const h = await start([[system, rateLimit], [rateLimit], [rateLimit], [rateLimit], [final, done]]);
+  const h = await start([[system, rateLimit], ...Array.from({ length: 100 }, () => [rateLimit]), [final, done]],
+    4 * 60 * 60_000);
   await h.retry;
-  await vi.advanceTimersByTimeAsync(210_000);
+  await vi.advanceTimersByTimeAsync(11_850_000);
   expect(await h.outcome).toMatchObject({ error: { code: 'rate_limit', message: expect.stringContaining('429') } });
-  expect(h.agent.runs).toHaveLength(4);
+  expect(h.agent.runs).toHaveLength(101);
   expect(h.seen.filter(e => e.type === 'retry' && e.delayMs > 0).map(e => e.type === 'retry' && e.delayMs))
-    .toEqual([30_000, 60_000, 120_000]);
+    .toEqual([30_000, 60_000, ...Array(98).fill(120_000)]);
   expect(vi.getTimerCount()).toBe(0);
 });
 

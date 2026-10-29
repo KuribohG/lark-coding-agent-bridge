@@ -50,7 +50,7 @@ describe('rate-limit retries through RunExecutor', () => {
     expect(await secondSubscriber).toEqual(events);
     expect(events.filter(e => e.type === 'error')).toEqual([]);
     expect(events.filter(e => e.type === 'done')).toEqual([done]);
-    expect(events).toContainEqual({ type: 'retry', attempt: 1, maxAttempts: 3, delayMs: 30_000 });
+    expect(events).toContainEqual({ type: 'retry', attempt: 1, maxAttempts: 100, delayMs: 30_000 });
     expect(h.agent.runOptions[1]).toEqual({ ...h.agent.runOptions[0], threadId: 'thread-1' });
     expect(await run.result).toBe('completed');
     expect(h.activeRuns.get('s')).toBeUndefined();
@@ -71,16 +71,16 @@ describe('rate-limit retries through RunExecutor', () => {
     expect(h.agent.runOptions[1]?.images).toBeUndefined();
   });
 
-  it('stops after three retries and reports the last error once', async () => {
-    const h = harness([[rateLimit], [rateLimit], [rateLimit], [rateLimit], [done]]);
+  it('stops after 100 retries, caps the backoff at two minutes, and reports the last error once', async () => {
+    const h = harness([...Array.from({ length: 101 }, () => [rateLimit]), [done]]);
     const run = await h.executor.submit({ scopeId: 's', policy: h.policy });
     const output = collect(run.subscribe());
-    await vi.advanceTimersByTimeAsync(210_000);
+    await vi.advanceTimersByTimeAsync(11_850_000);
     const events = await output;
     expect(events.filter(e => e.type === 'retry' && e.delayMs > 0).map(e => e.type === 'retry' && e.delayMs))
-      .toEqual([30_000, 60_000, 120_000]);
+      .toEqual([30_000, 60_000, ...Array(98).fill(120_000)]);
     expect(events.filter(e => e.type === 'error')).toEqual([rateLimit]);
-    expect(h.agent.runs).toHaveLength(4);
+    expect(h.agent.runs).toHaveLength(101);
     expect(await run.result).toBe('failed');
     expect(h.pool.snapshot().active).toBe(0);
   });
@@ -100,10 +100,10 @@ describe('rate-limit retries through RunExecutor', () => {
     await vi.advanceTimersByTimeAsync(240_000);
     const events = await output;
     expect(events.filter(e => e.type === 'retry' && e.delayMs > 0)).toEqual([
-      { type: 'retry', attempt: 1, maxAttempts: 3, delayMs: 30_000 },
-      { type: 'retry', attempt: 1, maxAttempts: 3, delayMs: 30_000 },
-      { type: 'retry', attempt: 2, maxAttempts: 3, delayMs: 60_000 },
-      { type: 'retry', attempt: 3, maxAttempts: 3, delayMs: 120_000 },
+      { type: 'retry', attempt: 1, maxAttempts: 100, delayMs: 30_000 },
+      { type: 'retry', attempt: 1, maxAttempts: 100, delayMs: 30_000 },
+      { type: 'retry', attempt: 2, maxAttempts: 100, delayMs: 60_000 },
+      { type: 'retry', attempt: 3, maxAttempts: 100, delayMs: 120_000 },
     ]);
     expect(events.filter(e => e.type === 'retry' && e.delayMs === 0).map(e => e.type === 'retry' && e.attempt))
       .toEqual([1, 1, 2, 3]);
@@ -123,15 +123,16 @@ describe('rate-limit retries through RunExecutor', () => {
   });
 
   it('allows another retry when progress resumes on the last allowed attempt', async () => {
-    const h = harness([[{ type: 'system', sessionId: 'session-1' }, rateLimit], [rateLimit], [rateLimit],
+    const h = harness([[{ type: 'system', sessionId: 'session-1' }, rateLimit],
+      ...Array.from({ length: 99 }, () => [rateLimit]),
       [{ type: 'text', delta: 'recovered' }, rateLimit], [done]]);
     const run = await h.executor.submit({ scopeId: 's', policy: h.policy });
     const output = collect(run.subscribe());
-    await vi.advanceTimersByTimeAsync(240_000);
+    await vi.advanceTimersByTimeAsync(11_880_000);
     const events = await output;
     expect(events.filter(e => e.type === 'retry' && e.delayMs > 0).map(e => e.type === 'retry' && e.attempt))
-      .toEqual([1, 2, 3, 1]);
-    expect(h.agent.runOptions[4]?.sessionId).toBe('session-1');
+      .toEqual([...Array.from({ length: 100 }, (_, index) => index + 1), 1]);
+    expect(h.agent.runOptions[101]?.sessionId).toBe('session-1');
     expect(await run.result).toBe('completed');
   });
 
@@ -152,7 +153,7 @@ describe('rate-limit retries through RunExecutor', () => {
     await vi.advanceTimersByTimeAsync(150_000);
     const events = await output;
     expect(events.filter(e => e.type === 'retry' && e.delayMs > 0)).toEqual(
-      Array.from({ length: 5 }, () => ({ type: 'retry', attempt: 1, maxAttempts: 3, delayMs: 30_000 })),
+      Array.from({ length: 5 }, () => ({ type: 'retry', attempt: 1, maxAttempts: 100, delayMs: 30_000 })),
     );
     expect(events.filter(e => e.type === 'text')).toEqual(
       Array.from({ length: 5 }, (_, index) => ({ type: 'text', delta: `completed step ${index + 1}` })),
@@ -169,15 +170,15 @@ describe('rate-limit retries through RunExecutor', () => {
       { type: 'text', delta: '' }, { type: 'text', delta: ' \n' },
       { type: 'thinking', delta: '' }, { type: 'thinking', delta: ' \n' },
       { type: 'final_text', content: '' }, { type: 'final_text', content: ' \n' }, rateLimit];
-    const h = harness([noProgress, noProgress, noProgress, noProgress, [done]]);
+    const h = harness([...Array.from({ length: 101 }, () => noProgress), [done]]);
     const run = await h.executor.submit({ scopeId: 's', policy: h.policy });
     const output = collect(run.subscribe());
-    await vi.advanceTimersByTimeAsync(210_000);
+    await vi.advanceTimersByTimeAsync(11_850_000);
     const events = await output;
     expect(events.filter(e => e.type === 'retry' && e.delayMs > 0).map(e => e.type === 'retry' && e.delayMs))
-      .toEqual([30_000, 60_000, 120_000]);
+      .toEqual([30_000, 60_000, ...Array(98).fill(120_000)]);
     expect(events.filter(e => e.type === 'error')).toEqual([rateLimit]);
-    expect(h.agent.runs).toHaveLength(4);
+    expect(h.agent.runs).toHaveLength(101);
     expect(await run.result).toBe('failed');
   });
 

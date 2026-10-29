@@ -3,6 +3,7 @@ import { agentFailureKind, classifyAgentFailure, sendRunInput, supportsRunInput 
 import { log } from '../core/logger';
 
 const RETRY_DELAYS_MS = [30_000, 60_000, 120_000] as const;
+const MAX_RETRIES = 100;
 const CONTINUE_PROMPT = '上次执行因 API 限流中断。请从当前会话的已有进度继续完成用户请求，包括中途补充的要求。先检查已完成的操作和工具结果，不要重复执行已完成的操作。';
 
 function isRateLimitError(event: AgentEvent): boolean {
@@ -66,7 +67,7 @@ export function retryingRun(input: {
             // Recovery starts a fresh retry budget, but keeps the session's progress.
             attempt = 0;
           }
-          if (event.type === 'error' && isRateLimitError(event) && attempt < RETRY_DELAYS_MS.length
+          if (event.type === 'error' && isRateLimitError(event) && attempt < MAX_RETRIES
             && !uncertainInput && pendingInputs === 0
             && !input.options.forkSession && (!(madeProgress || steered) || sessionId || threadId) && canRetry()) {
             failure = event;
@@ -88,10 +89,10 @@ export function retryingRun(input: {
           }
         }
         if (!canRetry()) break;
-        const delayMs = RETRY_DELAYS_MS[attempt++]!;
+        const delayMs = RETRY_DELAYS_MS[Math.min(attempt++, RETRY_DELAYS_MS.length - 1)]!;
         log.warn('run', 'rate-limit-retry', { runId: input.options.runId, agent: input.agent.id,
-          attempt, maxAttempts: RETRY_DELAYS_MS.length, delayMs, error: failure.message });
-        yield { type: 'retry', attempt, maxAttempts: RETRY_DELAYS_MS.length, delayMs };
+          attempt, maxAttempts: MAX_RETRIES, delayMs, error: failure.message });
+        yield { type: 'retry', attempt, maxAttempts: MAX_RETRIES, delayMs };
         await waitForRetry(delayMs, controller.signal);
         if (!canRetry()) break;
 
@@ -107,8 +108,8 @@ export function retryingRun(input: {
         current = input.agent.run(options);
         waiting = false;
         log.info('run', 'rate-limit-retry-started', { runId: input.options.runId, agent: input.agent.id,
-          attempt, maxAttempts: RETRY_DELAYS_MS.length });
-        yield { type: 'retry', attempt, maxAttempts: RETRY_DELAYS_MS.length, delayMs: 0 };
+          attempt, maxAttempts: MAX_RETRIES });
+        yield { type: 'retry', attempt, maxAttempts: MAX_RETRIES, delayMs: 0 };
       }
       finish();
       yield { type: 'done', terminationReason: 'interrupted' };
