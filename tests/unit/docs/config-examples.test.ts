@@ -7,6 +7,18 @@ import { loadRootConfig } from '../../../src/config/profile-store';
 const exampleUrl = (name: string) => new URL(`../../../docs/user-guide/examples/${name}.toml`, import.meta.url);
 
 describe('copyable configuration examples', () => {
+  it('loads the Antigravity provider recipe without guessing protocol paths', async () => {
+    const guide = await readFile(new URL('../../../docs/antigravity.md', import.meta.url), 'utf8');
+    const snippet = /```toml\n([\s\S]*?)```/.exec(guide)?.[1];
+    expect(snippet).toBeTruthy();
+    const doc = parseDocument(`version = 3\n${snippet}`);
+    expect(resolveExecutionProfile(doc, 'agy').agy?.binaryPath).toBe('agy');
+    expect(resolveRun(doc, 'agy').preferences.model).toBe('high-five-ai/google/gemini-2.5-flash');
+    expect(doc.model_services['high-five-ai'].endpoints.gemini).toMatchObject({
+      baseUrl: 'https://gateway.example', contextWindow: 1048576,
+    });
+  });
+
   it.each(['web-native', 'web-responses', 'lark-codex'])('loads %s with the production config loader without resolving credentials', async name => {
     await expect(loadRootConfig(fileURLToPath(exampleUrl(name)))).resolves.toBeDefined();
   });

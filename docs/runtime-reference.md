@@ -32,6 +32,10 @@ Pi JSON mode is request/response rather than a duplex transport, so messages sen
 
 The current `@earendil-works/pi-coding-agent` package requires Node.js 22.19 or newer. The adapter also accepts the `@mariozechner/pi-coding-agent` 0.73 JSON protocol on supported Node versions.
 
+## Antigravity CLI backend
+
+Use `--agent agy` with Antigravity CLI 1.4.10+. See the [Antigravity guide](antigravity.md) for native Gemini provider configuration, high-five-style multi-protocol services, session and permission semantics.
+
 ## Automatic rate-limit retries
 
 For ordinary tasks, after the agent exhausts its own API rate-limit retries (for example, `exceeded retry limit, last status: 429 Too Many Requests`), the bridge retries up to 100 consecutive times without progress, waiting 30 seconds, then 60 seconds, then 120 seconds for each remaining retry. New non-whitespace text, thinking content, or tool activity resets the retry count and backoff, so the next rate limit starts at attempt 1 with a 30-second wait. Session metadata, usage statistics, and blank output do not reset retries. Process messages and streaming replies show retry progress. If a process-message update fails, the bridge drops that best-effort batch and keeps the existing COT available for later progress while execution and retries continue. Stop commands, session switches, and task deadlines cancel retries. After partial progress, the bridge resumes the session reported by this run and asks the agent to check completed operations before continuing. Quota/budget exhaustion, authentication failures, and follow-up input with unknown delivery status are not retried. Temporary forked tasks and runs that produced output without reporting a session ID are also excluded.

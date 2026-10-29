@@ -30,8 +30,7 @@ describe('first-run profile bootstrap', () => {
       agentKind: 'codex',
       accounts: { app: { id: 'cli_codex', secret: '${APP_SECRET}', tenant: 'feishu' } },
       workspace,
-      codexBinaryPath: codex,
-      profileDir,
+      binaryPath: codex,
     });
 
     const workspaceRealpath = await realpath(workspace);
@@ -54,14 +53,12 @@ describe('first-run profile bootstrap', () => {
   it('creates a profile without requiring a user workspace', async () => {
     const root = await makeRoot();
     const defaultWorkspace = join(root, 'managed-workspaces', 'codex-dev', 'default');
-    const profileDir = join(root, 'profiles', 'codex-dev');
     const codex = await writeVersionExecutable(root, 'codex', 'codex 1.2.3');
 
     const profile = await createBootstrapProfileConfig({
       agentKind: 'codex',
       accounts: { app: { id: 'cli_codex', secret: '${APP_SECRET}', tenant: 'feishu' } },
-      codexBinaryPath: codex,
-      profileDir,
+      binaryPath: codex,
       defaultWorkspace,
     });
 
@@ -77,7 +74,7 @@ describe('first-run profile bootstrap', () => {
       createBootstrapProfileConfig({
         agentKind: 'codex',
         accounts: { app: { id: 'cli_codex', secret: '${APP_SECRET}', tenant: 'feishu' } },
-        codexBinaryPath: missing,
+        binaryPath: missing,
       }),
     ).rejects.toMatchObject({
       diagnostic: {

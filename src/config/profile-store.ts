@@ -1,3 +1,4 @@
+import { isAgentKind } from '../agent/backend-spec';
 import { documentToRoot, parseDocument, rootToDocument, formatDocument, type ConfigDocument } from './document';
 import { diffValues, editToml } from './toml-edit';
 import { chmod, mkdir, readFile, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises';
@@ -291,7 +292,7 @@ async function pathExists(path: string): Promise<boolean> {
 }
 
 export function agentKindFromString(value: string | undefined): AgentKind | undefined {
-  if (value === 'claude' || value === 'codex' || value === 'pi') return value;
+  if (isAgentKind(value)) return value;
   if (value === undefined) return undefined;
   throw new Error(`unsupported agent: ${value}`);
 }

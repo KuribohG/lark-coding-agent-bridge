@@ -1,3 +1,4 @@
+import { AGENT_KINDS } from '../../agent/backend-spec';
 import { readFile } from 'node:fs/promises';
 import {
   parseDocument,
@@ -39,7 +40,7 @@ export interface RunWebOptions {
 /** Standalone browser channel: no Lark profile, credential bootstrap or SDK connection. */
 export async function runWeb(options: RunWebOptions): Promise<void> {
   if (options.agent !== undefined && !isAgentKind(options.agent)) {
-    throw new Error('agent must be claude, codex, or pi');
+    throw new Error(`agent must be ${AGENT_KINDS.join(', ')}`);
   }
   const port = options.port === undefined ? 8787 : Number(options.port);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('invalid port');

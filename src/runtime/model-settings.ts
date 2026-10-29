@@ -2,7 +2,8 @@ import { dirname, join } from 'node:path';
 import type { MutableProfileState } from '../config/config-ops';
 import { resolveAppPaths } from '../config/app-paths';
 import { ScopePreferencesStore } from '../session/scope-preferences';
-import { readModelEnvironment, resolveModelSettings, type ModelSettings } from '../agent/model-settings';
+import { resolveModelSettings, type ModelSettings } from '../agent/model-settings';
+import { readModelEnvironment } from '../agent/model-environment';
 import type { AgentKind } from '../config/profile-schema';
 import { profileForAgentKind } from './execution-controller';
 import { loadRootConfig } from '../config/profile-store';
@@ -28,12 +29,18 @@ export function scopePreferences(state: MutableProfileState): Promise<ScopePrefe
   return pending;
 }
 
-export function modelEnvironment(
+export async function modelEnvironment(
   state: MutableProfileState,
   agentKind: AgentKind = state.profileConfig.agentKind,
+  discover = false,
 ) {
   const paths = resolveAppPaths({ rootDir: dirname(state.configPath), profile: state.profile });
-  return readModelEnvironment(profileForAgentKind(state.profileConfig, agentKind), paths.profileDir);
+  const [native, root] = await Promise.all([
+    readModelEnvironment(profileForAgentKind(state.profileConfig, agentKind), paths.profileDir),
+    loadRootConfig(state.configPath),
+  ]);
+  const models = await new ModelProviderRegistry(root?.modelServices ?? {}).modelOptions(agentKind, discover);
+  return { ...native, models: [...native.models, ...models] };
 }
 
 export async function modelProviderOptions(

@@ -1,3 +1,5 @@
+import { AgyAdapter, AGY_EXECUTION_CAPABILITIES } from './agy/adapter';
+import type { AgentLaunchProfiles } from './launch-config';
 import { ClaudeAdapter } from './claude/adapter';
 import { CLAUDE_EXECUTION_CAPABILITIES } from './claude/capabilities';
 import { CodexAdapter } from './codex/adapter';
@@ -28,7 +30,7 @@ export interface AgentBackend extends AgentBackendSpec {
     profile: Pick<AgentExecutionProfile, 'agentKind' | 'permissions'>,
   ): AgentExecutionCapabilities;
   existingProfile(profile: AgentExecutionProfile): Partial<AgentExecutionProfile>;
-  launchPatch(binaryPath: string): Pick<AgentExecutionProfile, 'claude' | 'codex' | 'pi'>;
+  launchPatch(binaryPath: string): AgentLaunchProfiles;
   createAdapter(input: CreateAgentAdapterInput): AgentAdapter;
 }
 
@@ -39,13 +41,17 @@ export interface CreateAgentAdapterInput {
   systemPrompt: AgentSystemPrompt;
 }
 
-const BACKENDS: Record<AgentKind, AgentBackend> = {
+const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabilities' | 'createAdapter'>> = {
+  agy: {
+    executionCapabilities: () => AGY_EXECUTION_CAPABILITIES,
+    createAdapter: ({ profile, env, systemPrompt }) => new AgyAdapter({
+      binary: profile.agy?.binaryPath,
+      env: buildAgentEnvironment(env, profile.agy?.env),
+      systemPrompt,
+    }),
+  },
   claude: {
-    ...AGENT_BACKEND_SPECS.claude,
-    capability: (profile) => capabilityForBackend('claude', profile),
     executionCapabilities: () => CLAUDE_EXECUTION_CAPABILITIES,
-    existingProfile: (profile) => profile.claude ? { claude: profile.claude } : {},
-    launchPatch: (binaryPath) => agentLaunchPatch('claude', binaryPath),
     createAdapter: ({ profile, env, systemPrompt }) => new ClaudeAdapter({
       binary: profile.claude?.binaryPath,
       configDir: profile.claude?.configDir,
@@ -54,11 +60,7 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
     }),
   },
   codex: {
-    ...AGENT_BACKEND_SPECS.codex,
-    capability: (profile) => capabilityForBackend('codex', profile),
     executionCapabilities: () => codexExecutionCapabilities(),
-    existingProfile: (profile) => profile.codex ? { codex: profile.codex } : {},
-    launchPatch: (binaryPath) => agentLaunchPatch('codex', binaryPath),
     createAdapter: ({ profile, profileDir, env, systemPrompt }) => {
       const codex = profile.codex;
       if (!codex?.binaryPath) throw new Error('codex profile requires codex.binaryPath');
@@ -78,11 +80,7 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
     },
   },
   pi: {
-    ...AGENT_BACKEND_SPECS.pi,
-    capability: (profile) => capabilityForBackend('pi', profile),
     executionCapabilities: () => PI_EXECUTION_CAPABILITIES,
-    existingProfile: (profile) => profile.pi ? { pi: profile.pi } : {},
-    launchPatch: (binaryPath) => agentLaunchPatch('pi', binaryPath),
     createAdapter: ({ profile, profileDir, env, systemPrompt }) => {
       const pi = profile.pi;
       if (!pi?.binaryPath) throw new Error('pi profile requires pi.binaryPath');
@@ -96,6 +94,14 @@ const BACKENDS: Record<AgentKind, AgentBackend> = {
     },
   },
 };
+
+const BACKENDS = Object.fromEntries(AGENT_KINDS.map((kind): [AgentKind, AgentBackend] => [kind, {
+  ...AGENT_BACKEND_SPECS[kind],
+  ...IMPLEMENTATIONS[kind],
+  capability: (profile: Pick<AgentExecutionProfile, 'permissions'>) => capabilityForBackend(kind, profile),
+  existingProfile: (profile: AgentExecutionProfile) => profile[kind] ? { [kind]: profile[kind] } : {},
+  launchPatch: (binaryPath: string) => agentLaunchPatch(kind, binaryPath),
+}])) as Record<AgentKind, AgentBackend>;
 
 export { AGENT_KINDS };
 export const AGENT_OPTIONS = Object.freeze(AGENT_KINDS.map((kind) => ({

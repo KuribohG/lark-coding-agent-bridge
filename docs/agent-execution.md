@@ -149,3 +149,13 @@ contract tests plus transport process tests and chat/background regressions.
 In particular, verify final versus progress text, stop and completion races,
 ambiguous receipts, retries, and deadline propagation. Native question handling
 and additional direct model protocols are separate future changes.
+
+## Backend-owned configuration and protocols
+
+Backend descriptors supply shared capability metadata; launch codecs live with
+the backend. The configuration and bootstrap layers iterate the registry rather
+than branching on backend names. Native model readers and provider wire bindings
+are separate from model preference resolution. Antigravity and Pi share process
+ownership, JSONL framing, termination and deadline handling while keeping their
+event translators and launch protocols independent. Static contract tests reject
+backend-name branches in shared consumers and internal import cycles.

@@ -1,3 +1,4 @@
+import type { AgentLaunchProfiles } from '../agent/launch-config';
 import { readFile } from 'node:fs/promises';
 import { configRevision } from './profile-store';
 import { larkDisplay } from './lark-display';
@@ -168,7 +169,7 @@ export async function savePreferencesConfig(
   resetPaths: string[][] = [],
   agentSwitch?: {
     agentKind: ProfileConfig['agentKind'];
-    launchPatch: Pick<ProfileConfig, 'claude' | 'codex' | 'pi'>;
+    launchPatch: AgentLaunchProfiles;
   },
 ): Promise<void> {
   const updatedLarkCli = {

@@ -1,8 +1,8 @@
 import { terminateChild } from '../platform/terminate';
 import { mergeProcessEnv, spawnProcess } from '../platform/spawn';
-import { isAgentKind } from './backend-spec';
+import { isAgentKind, type AgentKind } from './backend-spec';
 
-export type LocalAgentId = 'claude' | 'codex' | 'pi';
+export type LocalAgentId = AgentKind;
 
 export type AgentPreflightErrorCode =
   | 'agent-binary-not-found'
@@ -13,7 +13,8 @@ export type AgentPreflightErrorCode =
   | 'agent-version-check-timeout'
   | 'agent-version-check-signaled'
   | 'agent-version-check-nonzero-exit'
-  | 'agent-version-check-empty-output';
+  | 'agent-version-check-empty-output'
+  | 'agent-version-unsupported';
 
 export interface AgentPreflightDiagnostic {
   code: AgentPreflightErrorCode;
@@ -47,6 +48,7 @@ export interface CheckAgentVersionInput {
   args?: readonly string[];
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  minimumVersion?: string;
 }
 
 export class AgentPreflightError extends Error {
@@ -187,6 +189,11 @@ export async function checkAgentVersion(input: CheckAgentVersionInput): Promise<
           );
           return;
         }
+        if (input.minimumVersion && !versionAtLeast(version, input.minimumVersion)) {
+          reject(new AgentPreflightError({ ...base(), code: 'agent-version-unsupported',
+            expected: input.minimumVersion, actual: version }));
+          return;
+        }
         resolve(version);
       });
     });
@@ -200,6 +207,8 @@ export function formatAgentPreflightError(err: AgentPreflightError): string {
 export function formatAgentPreflightDiagnostic(diagnostic: AgentPreflightDiagnostic): string {
   const command = commandForDisplay(diagnostic);
   switch (diagnostic.code) {
+    case 'agent-version-unsupported':
+      return `✗ ${diagnostic.agentName} 需要 ${diagnostic.expected} 或更新版本；当前版本：${diagnostic.actual}。`;
     case 'agent-binary-not-found':
       return [
         `✗ 未找到本地 ${diagnostic.agentName}。`,
@@ -306,4 +315,15 @@ function summaryForDiagnostic(diagnostic: AgentPreflightDiagnostic): string {
 function excerpt(value: string): string | undefined {
   const trimmed = value.trim();
   return trimmed ? trimmed.slice(0, 500) : undefined;
+}
+
+function versionAtLeast(actual: string, minimum: string): boolean {
+  const match = /\b(\d+)\.(\d+)\.(\d+)\b/.exec(actual);
+  if (!match) return false;
+  const target = minimum.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    const difference = Number(match[i + 1]) - target[i]!;
+    if (difference !== 0) return difference > 0;
+  }
+  return true;
 }

@@ -1,3 +1,5 @@
+import { AGENT_KINDS } from '../agent/backend-spec';
+import type { AgentLaunchProfiles } from '../agent/launch-config';
 import { readProfileSnapshot } from './service';
 import { configDocument, loadRootConfig } from './profile-store';
 import { documentToRoot } from './document';
@@ -88,7 +90,7 @@ export interface PreferencesChange {
   nextAgentKind: AgentKind;
   agentSwitch?: {
     agentKind: AgentKind;
-    launchPatch: Pick<import('./profile-schema').ProfileConfig, 'claude' | 'codex' | 'pi'>;
+    launchPatch: AgentLaunchProfiles;
   };
   preferencePatch: AppPreferences;
   resetPaths: string[][];
@@ -114,7 +116,7 @@ function parsePreferencesChange(state: MutableProfileState, body: unknown): Pref
   const fv = body as Record<string, unknown>;
   const currentAgentKind = state.profileConfig.agentKind;
   if (fv.agentKind !== undefined && (typeof fv.agentKind !== 'string' || !isAgentKind(fv.agentKind))) {
-    throw new PreferencesValidationError('agentKind must be claude, codex, or pi');
+    throw new PreferencesValidationError(`agentKind must be ${AGENT_KINDS.join(', ')}`);
   }
   const agentKind = typeof fv.agentKind === 'string' ? fv.agentKind : currentAgentKind;
   const agentChanged = agentKind !== currentAgentKind;

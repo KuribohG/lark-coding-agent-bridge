@@ -1,3 +1,4 @@
+import type { AgentLaunchConfig } from '../agent/launch-options';
 import { normalizeFileLinks } from './file-links';
 import type {
   AppCredentials,
@@ -23,11 +24,12 @@ import {
 export type { AgentKind };
 export type SandboxMode = CodexSandboxMode;
 export type { AccessMode, PermissionConfig, PermissionSource };
-export type AgentLaunchEnvironment = Record<string, string>;
-export type AgentLaunchConfig = Record<
-  string,
-  string | number | boolean | AgentLaunchEnvironment
->;
+export type { AgentLaunchEnvironment, AgentLaunchConfig } from '../agent/launch-options';
+export type { CodexConfig, CodexAppServerMode } from '../agent/codex/config';
+export type { ClaudeConfig } from '../agent/claude/config';
+export type { PiConfig } from '../agent/pi/config';
+export type { AgyConfig } from '../agent/agy/config';
+import { normalizeAgentLaunches, type AgentLaunchProfiles } from '../agent/launch-config';
 
 export interface ProfileAccess {
   allowedUsers: string[];
@@ -48,52 +50,6 @@ export interface SandboxConfig {
   max?: SandboxMode;
   defaultMode: SandboxMode;
   maxMode: SandboxMode;
-}
-
-export type CodexAppServerMode = 'daemon' | 'per-run';
-
-export interface CodexConfig {
-  binaryPath: string;
-  transport?: 'app-server';
-  /**
-   * `daemon` keeps Codex's app-server alive across Bridge runs so native
-   * background memory extraction/consolidation can finish. `per-run` starts a
-   * short-lived app-server and disables generation from new threads while
-   * retaining Codex's native memory read/startup path.
-   */
-  appServerMode?: CodexAppServerMode;
-  realpath?: string;
-  version?: string;
-  sha256?: string;
-  owner?: number;
-  mode?: number;
-  codexHome?: string;
-  inheritCodexHome?: boolean;
-  ignoreUserConfig?: boolean;
-  ignoreRules?: boolean;
-  /** Extra environment variables inherited by the Codex child process. */
-  env?: AgentLaunchEnvironment;
-}
-
-export interface ClaudeConfig {
-  binaryPath?: string;
-  /** Directory containing Claude Code settings, projects, and other local state. */
-  configDir?: string;
-  /** Extra environment variables inherited by the Claude child process. */
-  env?: AgentLaunchEnvironment;
-}
-
-export interface PiConfig {
-  binaryPath: string;
-  /** Directory containing Pi settings, sessions, auth.json, and model catalogs. */
-  agentDir?: string;
-  realpath?: string;
-  version?: string;
-  sha256?: string;
-  owner?: number;
-  mode?: number;
-  /** Extra environment variables inherited by the pi child process. */
-  env?: AgentLaunchEnvironment;
 }
 
 export interface AttachmentConfig {
@@ -188,14 +144,11 @@ export interface LarkCliConfig {
 }
 
 /** The subset needed to select and launch an agent, independent of IM account state. */
-export interface AgentExecutionProfile {
+export interface AgentExecutionProfile extends AgentLaunchProfiles {
   /** Default engine for new/unconfigured scopes and background work. */
   agentKind: AgentKind;
   sandbox?: SandboxConfig;
   permissions: PermissionConfig;
-  claude?: ClaudeConfig;
-  codex?: CodexConfig;
-  pi?: PiConfig;
 }
 
 export interface ProfileConfig extends AgentExecutionProfile {
@@ -264,7 +217,7 @@ export interface RootConfig {
   profiles: Record<string, ProfileConfig>;
 }
 
-export interface CreateDefaultProfileConfigInput {
+export interface CreateDefaultProfileConfigInput extends AgentLaunchProfiles {
   agentKind: AgentKind;
   /** Deployment mode. Default 'personal'. */
   mode?: ProfileMode;
@@ -275,9 +228,6 @@ export interface CreateDefaultProfileConfigInput {
   access?: Partial<ProfileAccess>;
   sandbox?: Partial<SandboxConfig>;
   permissions?: Partial<PermissionConfig>;
-  claude?: ClaudeConfig;
-  codex?: CodexConfig;
-  pi?: PiConfig;
   secrets?: SecretsConfig;
 }
 
@@ -294,16 +244,14 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   if (!input || typeof input !== 'object') {
     throw new Error('profile config must be an object');
   }
-  const raw = input as {
+  const raw = input as AgentLaunchProfiles & {
     schemaVersion?: unknown;
     agentKind?: unknown;
     mode?: unknown;
     accounts?: unknown;
     secrets?: SecretsConfig;
     channels?: import('./schema').ChannelDisplayConfig;
-    claude?: ClaudeConfig;
-    pi?: PiConfig;
-    preferences?: (AppPreferences & { access?: Partial<ProfileAccess> }) | undefined;
+        preferences?: (AppPreferences & { access?: Partial<ProfileAccess> }) | undefined;
     access?: Partial<ProfileAccess>;
     workspaces?: {
       default?: unknown;
@@ -315,7 +263,6 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     };
     sandbox?: Partial<SandboxConfig>;
     permissions?: Partial<PermissionConfig>;
-    codex?: CodexConfig & { flags?: unknown };
     attachments?: Partial<AttachmentConfig>;
     comments?: unknown;
     meeting?: unknown;
@@ -359,14 +306,12 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     ...(raw.secrets ? { secrets: raw.secrets } : {}),
     preferences,
     ...(raw.channels ? { channels: raw.channels } : {}),
-    ...(raw.claude ? { claude: normalizeClaude(raw.claude) } : {}),
-    ...(raw.pi ? { pi: normalizePi(raw.pi) } : {}),
+    ...normalizeAgentLaunches(raw),
     access,
     workspaces,
     sandbox,
     permissions,
     permissionSource,
-    ...(raw.codex ? { codex: normalizeCodex(raw.codex) } : {}),
     attachments: {
       maxCount: numberOr(raw.attachments?.maxCount, 10),
       maxBytes: numberOr(raw.attachments?.maxBytes, 100 * 1024 * 1024),
@@ -459,76 +404,6 @@ function normalizeWorkspaces(input: {
     ? input.default.trim()
     : undefined;
   return defaultWorkspace ? { default: defaultWorkspace } : {};
-}
-
-function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
-  if (input.transport !== undefined && input.transport !== 'app-server') {
-    throw new Error('Codex exec transport has been removed; use transport=app-server');
-  }
-  if (input.appServerMode !== undefined
-    && input.appServerMode !== 'daemon'
-    && input.appServerMode !== 'per-run') {
-    throw new Error('codex.appServerMode must be daemon or per-run');
-  }
-  if (input.ignoreUserConfig || input.ignoreRules) {
-    throw new Error('app-server requires ignoreUserConfig=false and ignoreRules=false; exec-only ignore flags are not supported');
-  }
-  const codex: CodexConfig = {
-    binaryPath: input.binaryPath,
-    transport: 'app-server',
-    appServerMode: input.appServerMode ?? 'daemon',
-    ...(typeof input.realpath === 'string' ? { realpath: input.realpath } : {}),
-    ...(typeof input.version === 'string' ? { version: input.version } : {}),
-    ...(typeof input.sha256 === 'string' ? { sha256: input.sha256 } : {}),
-    ...(typeof input.owner === 'number' ? { owner: input.owner } : {}),
-    ...(typeof input.mode === 'number' ? { mode: input.mode } : {}),
-    ...(typeof input.codexHome === 'string' ? { codexHome: input.codexHome } : {}),
-    inheritCodexHome: input.inheritCodexHome !== false,
-    ignoreUserConfig: false,
-    ignoreRules: false,
-    ...(input.env !== undefined ? { env: normalizeLaunchEnvironment(input.env) } : {}),
-  };
-  return codex;
-}
-
-function normalizePi(input: PiConfig): PiConfig {
-  if (!input || typeof input !== 'object' || typeof input.binaryPath !== 'string' || !input.binaryPath) {
-    throw new Error('pi.binaryPath is required');
-  }
-  return {
-    binaryPath: input.binaryPath,
-    ...(typeof input.agentDir === 'string' && input.agentDir ? { agentDir: input.agentDir } : {}),
-    ...(typeof input.realpath === 'string' ? { realpath: input.realpath } : {}),
-    ...(typeof input.version === 'string' ? { version: input.version } : {}),
-    ...(typeof input.sha256 === 'string' ? { sha256: input.sha256 } : {}),
-    ...(typeof input.owner === 'number' ? { owner: input.owner } : {}),
-    ...(typeof input.mode === 'number' ? { mode: input.mode } : {}),
-    ...(input.env !== undefined ? { env: normalizeLaunchEnvironment(input.env) } : {}),
-  };
-}
-
-function normalizeClaude(input: ClaudeConfig): ClaudeConfig {
-  return {
-    ...(typeof input.binaryPath === 'string' && input.binaryPath ? { binaryPath: input.binaryPath } : {}),
-    ...(typeof input.configDir === 'string' && input.configDir ? { configDir: input.configDir } : {}),
-    ...(input.env !== undefined ? { env: normalizeLaunchEnvironment(input.env) } : {}),
-  };
-}
-
-function normalizeLaunchEnvironment(input: unknown): AgentLaunchEnvironment {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) {
-    throw new Error('launch env must be a table of string values');
-  }
-  const entries = Object.entries(input);
-  for (const [key, value] of entries) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
-      throw new Error(`launch env has invalid variable name: ${key}`);
-    }
-    if (typeof value !== 'string') {
-      throw new Error(`launch env ${key} must be a string`);
-    }
-  }
-  return Object.fromEntries(entries) as AgentLaunchEnvironment;
 }
 
 function normalizeComments(_input: unknown): CommentConfig {

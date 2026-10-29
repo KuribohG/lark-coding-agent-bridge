@@ -1,58 +1,15 @@
+import { modelServiceCatalog } from '../model-service/catalog';
+import type { ModelOption } from '../agent/models';
 import { createHash } from 'node:crypto';
 import { validateModelId } from '../agent/models';
 import type { AgentKind } from '../config/profile-schema';
-import type { ModelServiceConfig } from '../model-service/config';
-import { loadModelService } from '../model-service/service';
+import { modelServiceEndpoint, type ModelProtocol, type ModelServiceConfig } from '../model-service/config';
+import { loadModelConnection } from '../model-service/service';
 import { agentBackendSpec } from '../agent/backend-spec';
 
-export interface PiProviderRegistration {
-  providerId: string;
-  name: string;
-  baseUrl: string;
-  api: 'openai-responses';
-  apiKeyEnv: string;
-  headers?: Record<string, string>;
-  model: {
-    id: string;
-    name: string;
-    api: 'openai-responses';
-    reasoning: boolean;
-    input: Array<'text' | 'image'>;
-    contextWindow: number;
-    maxTokens: number;
-    cost: {
-      input: number;
-      output: number;
-      cacheRead: number;
-      cacheWrite: number;
-    };
-    thinkingLevelMap?: Record<string, string | null>;
-  };
-}
-
-export interface CodexProviderRegistration {
-  providerId: string;
-  name: string;
-  baseUrl: string;
-  wireApi: 'responses';
-  apiKeyEnv: string;
-  headersEnv?: Record<string, string>;
-}
-
-/**
- * Agent-neutral provider selection resolved into backend-specific connection
- * data. Credentials live only in `env`; generated extension/config text uses
- * environment-variable names so secrets never reach argv or disk.
- */
-export interface ResolvedModelProvider {
-  id: string;
-  displayName: string;
-  model: string;
-  env?: NodeJS.ProcessEnv;
-  pi?: PiProviderRegistration;
-  codex?: CodexProviderRegistration;
-}
-
+export type { ResolvedModelProvider, PiProviderRegistration, CodexProviderRegistration } from './types';
+import type { ResolvedModelProvider } from './types';
+import { bindModelProvider } from './bindings';
 export interface ModelProviderOption {
   id: string;
   label: string;
@@ -70,6 +27,7 @@ abstract class ModelProvider {
 
   abstract supports(agentKind: AgentKind): boolean;
   abstract bind(agentKind: AgentKind, model: string): Promise<ResolvedModelProvider>;
+  abstract models(agentKind: AgentKind, refresh: boolean): Promise<ModelOption[]>;
   /** Bare model IDs this provider may resolve when no provider prefix is used. */
   bareModels(_agentKind: AgentKind): readonly string[] { return []; }
   defaultModel(_agentKind: AgentKind): string | undefined { return undefined; }
@@ -81,28 +39,29 @@ abstract class ModelProvider {
   }
 }
 
-/** An existing Responses model service exposed to Pi and Codex agent runs. */
-class ResponsesModelProvider extends ModelProvider {
+/** A named API service selects a native wire binding advertised by the backend. */
+class ConfiguredModelProvider extends ModelProvider {
   constructor(id: string, private readonly config: ModelServiceConfig) {
     super(id, id);
   }
 
   supports(agentKind: AgentKind): boolean {
-    return agentBackendSpec(agentKind).supportsResponsesProvider;
+    return this.binding(agentKind) !== undefined;
   }
 
   override bareModels(agentKind: AgentKind): readonly string[] {
-    return this.supports(agentKind) ? [this.config.model] : [];
+    return this.supports(agentKind) ? [this.binding(agentKind)!.endpoint.model] : [];
   }
 
   override defaultModel(agentKind: AgentKind): string | undefined {
-    return this.supports(agentKind) ? this.config.model : undefined;
+    return this.binding(agentKind)?.endpoint.model;
   }
 
   async bind(agentKind: AgentKind, model: string): Promise<ResolvedModelProvider> {
     this.assertSupported(agentKind);
     const modelId = validateModelId(model);
-    const service = await loadModelService(this.config, modelId);
+    const binding = this.binding(agentKind)!;
+    const service = await loadModelConnection(this.config, binding.protocol, modelId);
     const suffix = stableSuffix(`${this.id}\0${modelId}`);
     const env: NodeJS.ProcessEnv = {
       [`LARK_MODEL_PROVIDER_KEY_${suffix}`]: service.key,
@@ -114,44 +73,32 @@ class ResponsesModelProvider extends ModelProvider {
       headersEnv[name] = envName;
     }
 
-    const binding = agentBackendSpec(agentKind).responsesBinding;
-    if (binding === 'pi-extension') {
-      const providerId = `lark_${this.id.replace(/[^a-zA-Z0-9_]/g, '_')}_${suffix.toLowerCase()}`;
-      return {
-        id: this.id,
-        displayName: this.displayName,
-        model: `${providerId}/${modelId}`,
-        env,
-        pi: {
-          providerId,
-          name: this.displayName,
-          baseUrl: this.config.baseUrl,
-          api: 'openai-responses',
-          apiKeyEnv: `LARK_MODEL_PROVIDER_KEY_${suffix}`,
-          ...(Object.keys(headersEnv).length > 0 ? { headers: headersEnv } : {}),
-          model: providerModel(modelId),
-        },
-      };
-    }
-    if (binding !== 'codex-config') {
-      throw new Error(`${agentKind} agent 没有 Responses provider 绑定方式`);
-    }
+    return bindModelProvider(binding.type, {
+      providerId: `lark_${this.id.replace(/[^a-zA-Z0-9_]/g, '_')}_${suffix.toLowerCase()}`,
+      id: this.id, displayName: this.displayName, model: modelId,
+      baseUrl: service.baseUrl, apiKeyEnv: `LARK_MODEL_PROVIDER_KEY_${suffix}`, headersEnv, env,
+      contextWindow: service.contextWindow,
+    });
+  }
 
-    const providerId = `lark_${this.id.replace(/[^a-zA-Z0-9_]/g, '_')}_${suffix.toLowerCase()}`;
-    return {
-      id: this.id,
-      displayName: this.displayName,
-      model: modelId,
-      env,
-      codex: {
-        providerId,
-        name: this.displayName,
-        baseUrl: this.config.baseUrl,
-        wireApi: 'responses',
-        apiKeyEnv: `LARK_MODEL_PROVIDER_KEY_${suffix}`,
-        ...(Object.keys(headersEnv).length > 0 ? { headersEnv } : {}),
-      },
-    };
+  async models(agentKind: AgentKind, refresh: boolean): Promise<ModelOption[]> {
+    const binding = this.binding(agentKind);
+    if (!binding) return [];
+    const catalog = await modelServiceCatalog(this.config, refresh);
+    const models = new Map<string, ModelOption>();
+    for (const model of [{ id: binding.endpoint.model, label: binding.endpoint.model }, ...catalog]) {
+      const value = `${this.id}/${model.id}`;
+      models.set(value, { value, label: `${this.displayName} · ${model.label}` });
+    }
+    return [...models.values()];
+  }
+
+  private binding(agentKind: AgentKind) {
+    for (const [protocol, type] of Object.entries(agentBackendSpec(agentKind).providerBindings)) {
+      const endpoint = modelServiceEndpoint(this.config, protocol as ModelProtocol);
+      if (endpoint) return { protocol: protocol as ModelProtocol, type, endpoint };
+    }
+    return undefined;
   }
 }
 
@@ -160,7 +107,7 @@ export class ModelProviderRegistry {
   private readonly providers: ModelProvider[];
 
   constructor(services: Record<string, ModelServiceConfig> = {}) {
-    const custom = Object.entries(services).map(([id, config]) => new ResponsesModelProvider(id, config));
+    const custom = Object.entries(services).map(([id, config]) => new ConfiguredModelProvider(id, config));
     this.providers = custom
       .sort((left, right) => right.id.length - left.id.length);
   }
@@ -177,6 +124,11 @@ export class ModelProviderRegistry {
         label: provider.displayName,
         ...(provider.defaultModel(agentKind) ? { defaultModel: provider.defaultModel(agentKind) } : {}),
       }));
+  }
+
+  async modelOptions(agentKind: AgentKind, refresh = false): Promise<ModelOption[]> {
+    const catalogs = await Promise.all(this.providers.map(provider => provider.models(agentKind, refresh)));
+    return catalogs.flat();
   }
 
   async resolve(agentKind: AgentKind, selection: string | undefined): Promise<ResolvedModelProvider | undefined> {
@@ -222,50 +174,6 @@ export function composeProviderSelection(
   const modelId = existing ? requested.slice(existing.id.length + 1) : requested;
   if (!modelId) throw new Error(`Provider ${option.label} 缺少模型 ID`);
   return `${option.id}/${modelId}`;
-}
-
-function providerModel(id: string): PiProviderRegistration['model'] {
-  if (id.startsWith('deepseek')) {
-    return {
-      id,
-      name: id === 'deepseek-flash' ? 'DeepSeek-Flash' : id,
-      api: 'openai-responses',
-      reasoning: true,
-      input: ['text', 'image'],
-      contextWindow: 1_048_576,
-      maxTokens: 384_000,
-      cost: {
-        input: 0.3,
-        output: 1.2,
-        cacheRead: 0.006,
-        cacheWrite: 0,
-      },
-      thinkingLevelMap: {
-        off: null,
-        minimal: 'low',
-        low: 'low',
-        medium: 'high',
-        high: 'high',
-        xhigh: 'max',
-        max: 'max',
-      },
-    };
-  }
-  return {
-    id,
-    name: id,
-    api: 'openai-responses',
-    reasoning: true,
-    input: ['text', 'image'],
-    contextWindow: 200_000,
-    maxTokens: 32_000,
-    cost: {
-      input: 0,
-      output: 0,
-      cacheRead: 0,
-      cacheWrite: 0,
-    },
-  };
 }
 
 function stableSuffix(value: string): string {

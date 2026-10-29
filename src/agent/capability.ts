@@ -1,3 +1,4 @@
+import type { AgentLaunchProfiles } from './launch-config';
 import type { AccessMode } from '../config/permissions';
 import type { AgentExecutionProfile, ProfileConfig } from '../config/profile-schema';
 import {
@@ -60,11 +61,8 @@ export function piCapability(profile: Pick<ProfileConfig, 'permissions'>): Agent
 export function agentLaunchPatch(
   kind: AgentCapabilityId,
   binaryPath: string,
-): Pick<AgentExecutionProfile, 'claude' | 'codex' | 'pi'> {
-  return { [kind]: { binaryPath } } as Pick<
-    AgentExecutionProfile,
-    'claude' | 'codex' | 'pi'
-  >;
+): AgentLaunchProfiles {
+  return { [kind]: { binaryPath } } as AgentLaunchProfiles;
 }
 
 export function withAgentBinary(
@@ -80,10 +78,10 @@ export function withAgentBinary(
 }
 
 export function agentStateDirectory(
-  profile: Pick<ProfileConfig, 'agentKind' | 'claude' | 'codex' | 'pi'>,
+  profile: AgentLaunchProfiles & { agentKind: AgentCapabilityId },
 ): string | undefined {
   const spec = agentBackendSpec(profile.agentKind);
   const launch = profile[profile.agentKind] as unknown as Record<string, unknown> | undefined;
-  const value = launch?.[spec.stateDirectory.field];
+  const value = spec.stateDirectory ? launch?.[spec.stateDirectory.field] : undefined;
   return typeof value === 'string' ? value : undefined;
 }

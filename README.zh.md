@@ -1,8 +1,8 @@
 # lark-channel-bridge
 
-通过**浏览器或飞书 / Lark**使用本机的 **Codex CLI、Claude Code、Pi Coding Agent**。Agent 在你的机器上运行，处理你指定的项目目录。
+通过**浏览器或飞书 / Lark**使用本机的 **Codex CLI、Claude Code、Pi Coding Agent、Antigravity CLI**。Agent 在你的机器上运行，处理你指定的项目目录。
 
-[English](README.md) · [中文用户手册](docs/user-guide/README.md) · [配置教程](docs/user-guide/configuration.md)
+[English](README.md) · [中文用户手册](docs/user-guide/README.md) · [配置教程](docs/user-guide/configuration.md) · [Antigravity 接入](docs/antigravity.md)
 
 > 本文对应本仓库 **`dev` 分支**。npm 上的同名包不一定包含这些功能，第一次使用请按下方步骤从源码安装。
 

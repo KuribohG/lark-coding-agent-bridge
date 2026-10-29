@@ -1,28 +1,23 @@
+import { startProcessRun } from '../process-run';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { Readable, Writable } from 'node:stream';
-import { log } from '../../core/logger';
 import { SpawnFailed } from '../../runtime/errors';
-import { terminateChild } from '../../platform/terminate';
-import { mergeProcessEnv, type SpawnedProcessByStdio } from '../../platform/spawn';
+import { mergeProcessEnv } from '../../platform/spawn';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
-import { spawnWithDeadline } from '../deadline';
 import { parseEffort } from '../model-settings';
 import { validateModelId } from '../models';
-import type { ResolvedModelProvider } from '../../model-provider/provider';
+import type { ResolvedModelProvider } from '../../model-provider/types';
 import { resolveSystemPrompt, type AgentSystemPrompt } from '../system-prompt';
 import type {
   AgentAdapter,
   AgentBotIdentity,
-  AgentEvent,
   AgentRun,
   AgentRunOptions,
 } from '../types';
 import { withExecutionContract } from '../execution';
 import { PI_EXECUTION_CAPABILITIES } from './capabilities';
-import { readPiJsonLines } from './jsonl';
 import { PiRunTranslator } from './jsonl-translator';
 
 export interface PiAdapterOptions {
@@ -34,7 +29,6 @@ export interface PiAdapterOptions {
   profileStateDir?: string;
 }
 
-type PiChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
 
 export class PiAdapter implements AgentAdapter {
   readonly id = 'pi';
@@ -128,7 +122,11 @@ export class PiAdapter implements AgentAdapter {
       args.push('--no-extensions');
     }
 
-    const child = spawnWithDeadline(this.binary, args, {
+    return startProcessRun({
+      agent: this.id,
+      runId: opts.runId,
+      command: this.binary,
+      args,
       cwd: opts.cwd,
       env: mergeProcessEnv(process.env, {
         ...this.env,
@@ -137,103 +135,14 @@ export class PiAdapter implements AgentAdapter {
         PI_SKIP_VERSION_CHECK: '1',
         PI_TELEMETRY: '0',
       }),
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }, opts.deadlineAt) as PiChild;
-
-    log.info('agent', 'spawn', {
-      pid: child.pid ?? null,
-      cwd: opts.cwd,
-      hasSession: Boolean(opts.sessionId),
-      promptChars: opts.prompt.length,
-      model: opts.model,
-      modelProvider: opts.modelProvider?.id,
-      reasoningEffort: opts.reasoningEffort,
-      access: sandbox,
+      stdin: opts.prompt,
+      translator: new PiRunTranslator(),
+      deadlineAt: opts.deadlineAt,
+      stopGraceMs: opts.deadlineAt
+        ? Math.max(1000, opts.stopGraceMs ?? 1000)
+        : opts.stopGraceMs ?? this.defaultStopGraceMs,
+      cleanup: runFiles.cleanup,
     });
-
-    const stderrChunks: Buffer[] = [];
-    let runtimeError: Error | undefined;
-    let interrupted = false;
-    let stderrBuffer = '';
-    child.stderr.on('data', (chunk: Buffer) => {
-      stderrChunks.push(chunk);
-      if (stderrChunks.length > 32) stderrChunks.shift();
-      stderrBuffer += chunk.toString('utf8');
-      let newline = stderrBuffer.indexOf('\n');
-      while (newline !== -1) {
-        const line = stderrBuffer.slice(0, newline);
-        stderrBuffer = stderrBuffer.slice(newline + 1);
-        if (line.trim()) log.warn('agent', 'stderr', { line });
-        if (isWindowsCommandNotFoundLine(line)) {
-          runtimeError = new Error(`failed to spawn pi: ${line.trim()}`);
-          child.stdout.destroy();
-          terminateChild(child);
-        }
-        newline = stderrBuffer.indexOf('\n');
-      }
-    });
-    child.on('error', (error) => {
-      runtimeError = error;
-      runFiles.cleanup();
-    });
-    child.on('exit', (code, signal) => {
-      log.info('agent', 'exit', { pid: child.pid ?? null, code, signal });
-      runFiles.cleanup();
-    });
-    child.stdin.on('error', (error) => {
-      log.warn('agent', 'stdin-error', { message: error.message });
-    });
-    child.stdin.end(opts.prompt, 'utf8');
-
-    const stopGraceMs = opts.deadlineAt
-      ? Math.max(1000, opts.stopGraceMs ?? 1000)
-      : opts.stopGraceMs ?? this.defaultStopGraceMs;
-
-    return {
-      runId: opts.runId,
-      events: createEventStream(child, stderrChunks, {
-        getError: () => runtimeError,
-        isInterrupted: () => interrupted,
-        deadlineAt: opts.deadlineAt,
-      }),
-      async stop() {
-        interrupted = true;
-        if (child.exitCode !== null || child.signalCode !== null) return;
-        log.info('agent', 'stop-sigterm', { pid: child.pid ?? null, graceMs: stopGraceMs });
-        terminateChild(child, 'SIGTERM');
-        await new Promise<void>((resolve) => {
-          const timer = setTimeout(() => {
-            if (child.exitCode === null && child.signalCode === null) {
-              log.warn('agent', 'stop-sigkill', {
-                pid: child.pid ?? null,
-                graceMs: stopGraceMs,
-                reason: 'grace-period-expired',
-              });
-              terminateChild(child, 'SIGKILL');
-            }
-            resolve();
-          }, stopGraceMs);
-          child.once('exit', () => {
-            clearTimeout(timer);
-            resolve();
-          });
-        });
-      },
-      waitForExit(timeoutMs: number): Promise<boolean> {
-        if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
-        return new Promise<boolean>((resolve) => {
-          const onExit = (): void => {
-            clearTimeout(timer);
-            resolve(true);
-          };
-          const timer = setTimeout(() => {
-            child.removeListener('exit', onExit);
-            resolve(false);
-          }, timeoutMs);
-          child.once('exit', onExit);
-        });
-      },
-    };
   }
 }
 
@@ -262,61 +171,6 @@ function writePiProviderExtension(
   return file;
 }
 
-async function* createEventStream(
-  child: PiChild,
-  stderrChunks: Buffer[],
-  state: {
-    getError(): Error | undefined;
-    isInterrupted(): boolean;
-    deadlineAt?: number;
-  },
-): AsyncGenerator<AgentEvent> {
-  if (!child.pid) {
-    const error = state.getError();
-    yield {
-      type: 'error',
-      message: error ? `failed to spawn pi: ${error.message}` : 'spawn returned no pid',
-      terminationReason: 'failed',
-    };
-    return;
-  }
-
-  const translator = new PiRunTranslator();
-  try {
-    for await (const line of readPiJsonLines(child.stdout.iterator({ destroyOnReturn: false }))) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      let parsed: unknown;
-      try {
-        parsed = JSON.parse(trimmed);
-      } catch {
-        continue;
-      }
-      const events = translator.translate(parsed);
-      for (const event of events) yield event;
-      if (translator.terminalEmitted()) return;
-    }
-  } finally {
-    // Pi can still flush output after a terminal event or consumer return.
-    child.stdout.resume();
-  }
-
-  const exitCode = await new Promise<number | null>((resolve) => {
-    if (child.exitCode !== null || child.signalCode !== null) resolve(child.exitCode);
-    else child.once('exit', (code) => resolve(code));
-  });
-  const events = translator.finish({
-    exitCode,
-    stderr: Buffer.concat(stderrChunks).toString('utf8').trim(),
-    ...(state.getError() ? { runtimeError: state.getError() } : {}),
-    interrupted: state.isInterrupted() || child.signalCode === 'SIGTERM' || child.signalCode === 'SIGINT',
-    timedOut: state.deadlineAt !== undefined && (
-      exitCode === 124 || state.deadlineAt <= Date.now()
-    ),
-  });
-  for (const event of events) yield event;
-}
-
 function writeSystemPrompt(systemPrompt: string): {
   systemPromptPath: string;
   cleanup: () => void;
@@ -340,9 +194,4 @@ function piThinkingLevel(effort: string): string {
   if (effort === 'max') return 'xhigh';
   if (effort === 'none') return 'off';
   return effort;
-}
-
-function isWindowsCommandNotFoundLine(line: string): boolean {
-  return process.platform === 'win32' &&
-    /is not recognized as an internal or external command|operable program or batch file/i.test(line);
 }

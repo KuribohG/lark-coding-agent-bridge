@@ -1,3 +1,4 @@
+import { AGENT_KINDS } from '../agent/backend-spec';
 import { checkConfig, showConfig, setConfig, unsetConfig, migrateToToml } from './commands/config';
 import { Command } from 'commander';
 import { dirname } from 'node:path';
@@ -53,7 +54,7 @@ program
   .option('-c, --config <path>', 'path to config file')
   .option('--profile <name>', 'profile name to run')
   .option('--web-ui', 'run the machine-wide supervisor + local web console (hosts all profiles); default is a single-profile headless run')
-  .option('--agent <kind>', 'agent kind for a new profile (claude, codex, or pi)')
+  .option('--agent <kind>', `agent kind for a new profile (${AGENT_KINDS.join(', ')})`)
   .option('--workspace <path>', 'initial working directory for first-run profile bootstrap')
   .option('--app-id <id>', 'use an existing Lark/Feishu app instead of QR app creation')
   .option('--app-secret <secret>', 'App Secret for --app-id; prefer interactive input on shared machines')
@@ -76,7 +77,7 @@ program
 program.command('web')
   .option('-c, --config <path>', 'execution defaults and Web presentation from TOML')
   .description('Run standalone browser chat without a Lark account')
-  .option('--agent <kind>', 'initial engine override (claude, codex, or pi)')
+  .option('--agent <kind>', `initial engine override (${AGENT_KINDS.join(', ')})`)
   .option('--profile <name>', 'config profile whose default engine and Web settings are used')
   .requiredOption('--workspace <path>', 'workspace for browser conversations')
   .option('--state-dir <path>', 'private conversation state directory')
@@ -88,7 +89,7 @@ program.command('web')
 program.command('slack')
   .option('-c, --config <path>', 'TOML file supplying execution and Slack presentation defaults')
   .description('Run a standalone Slack channel over Socket Mode')
-  .option('--agent <kind>', 'initial engine override (claude, codex, or pi)')
+  .option('--agent <kind>', `initial engine override (${AGENT_KINDS.join(', ')})`)
   .option('--profile <name>', 'config and secret profile')
   .requiredOption('--workspace <path>', 'workspace for Slack conversations')
   .option('--state-dir <path>', 'private conversation state directory')
@@ -153,7 +154,7 @@ profile
 profile
   .command('create <name>')
   .description('Create a profile from QR registration or existing app credentials')
-  .option('--agent <kind>', 'agent kind (claude, codex, or pi)')
+  .option('--agent <kind>', `agent kind (${AGENT_KINDS.join(', ')})`)
   .option('--workspace <path>', 'initial working directory for this profile')
   .option('--app-id <id>', 'use an existing Lark/Feishu app instead of QR app creation')
   .option('--app-secret <secret>', 'App Secret for --app-id; prefer interactive input on shared machines')
@@ -261,7 +262,7 @@ program
   .description('Install (if needed) and start the bridge as an OS-managed daemon; Windows uses a current-user ONLOGON task')
   .option('--profile <name>', 'profile name (defaults to active profile)')
   .option('--web-ui', 'run the supervisor + web console as the background service (hosts all profiles) instead of a single profile')
-  .option('--agent <kind>', 'agent kind for first-run profile bootstrap (claude, codex, or pi)')
+  .option('--agent <kind>', `agent kind for first-run profile bootstrap (${AGENT_KINDS.join(', ')})`)
   .option('--workspace <path>', 'initial working directory for first-run profile bootstrap')
   .option('--app-id <id>', 'use an existing Lark/Feishu app instead of QR app creation')
   .option('--app-secret <secret>', 'App Secret for --app-id; prefer interactive input on shared machines')

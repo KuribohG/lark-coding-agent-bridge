@@ -1,3 +1,4 @@
+import { AGENT_KINDS } from '../../../src/agent/backend-spec';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createConversationRuntime, type ConversationRuntime } from '../../../src/runtime/conversation';
@@ -90,7 +91,7 @@ async function switchableHarness() {
     ...config(tmp.workspace),
     permissions: { defaultAccess: 'full' as const, maxAccess: 'full' as const },
   };
-  const execution = new SwitchableExecutionController(base, { claude, pi, codex: new FakeAgentAdapter({ id: 'codex' }) });
+  const execution = new SwitchableExecutionController(base, { claude, pi, codex: new FakeAgentAdapter({ id: 'codex' }), agy: new FakeAgentAdapter({ id: 'agy' }) });
   const options = {
     execution,
     config: base,
@@ -255,7 +256,7 @@ describe('standalone Web plugin', () => {
       options: Array<{ value: string }>;
     };
     expect(initial).toMatchObject({ agent: 'claude', defaultAgent: 'claude' });
-    expect(initial.options.map((option: { value: string }) => option.value)).toEqual(['claude', 'codex', 'pi']);
+    expect(initial.options.map((option: { value: string }) => option.value)).toEqual(AGENT_KINDS);
 
     const switched = await (await fetch(`${base}/api/engine`, {
       method: 'POST',

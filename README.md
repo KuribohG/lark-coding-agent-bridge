@@ -1,8 +1,8 @@
 # lark-channel-bridge
 
-Talk to local **Codex CLI, Claude Code, or Pi Coding Agent** from your browser or Feishu / Lark. The agent runs on your machine and works in the project directory you choose.
+Talk to local **Codex CLI, Claude Code, Pi Coding Agent, or Antigravity CLI** from your browser or Feishu / Lark. The agent runs on your machine and works in the project directory you choose.
 
-[中文](README.zh.md) · [Documentation](docs/README.md) · [Configuration reference](docs/configuration.md)
+[中文](README.zh.md) · [Documentation](docs/README.md) · [Configuration reference](docs/configuration.md) · [Antigravity and Gemini providers](docs/antigravity.md)
 
 > This README describes this repository's **`dev` branch**. The npm package with the same name may not contain these changes. Start from source using the steps below.
 
@@ -26,7 +26,7 @@ node --version
 codex --version
 ```
 
-Use `claude --version` or `pi --version` if that is your chosen engine. A version check proves the binary exists, not that model authentication works; complete one direct agent conversation first.
+Use `claude --version`, `pi --version`, or `agy --version` if that is your chosen engine. A version check proves the binary exists, not that model authentication works; complete one direct agent conversation first.
 
 ```sh
 git clone --branch dev https://github.com/KuribohG/lark-coding-agent-bridge.git

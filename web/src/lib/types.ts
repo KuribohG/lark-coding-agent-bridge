@@ -1,4 +1,5 @@
-export type AgentKind = "claude" | "codex" | "pi";
+import type { AgentKind } from '../../../src/agent/backend-spec';
+export type { AgentKind };
 export type ProfileMode = "personal" | "team";
 export type LarkCliIdentity = "bot-only" | "user-default";
 export type MessageReply = "card" | "markdown" | "text";

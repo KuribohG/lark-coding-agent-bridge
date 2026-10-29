@@ -1,3 +1,4 @@
+import { AGENT_KINDS } from '../agent/backend-spec';
 import { mkdir, realpath } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import * as p from '@clack/prompts';
@@ -70,7 +71,7 @@ export async function resolveProfileRuntime(
   if (!profile && opts.allowBootstrap) {
     const detected = await detectInstalledAgents();
     if (detected.length === 0) {
-      throw new Error('no supported local agent found; install claude, codex, or pi first');
+      throw new Error(`no supported local agent found; install ${AGENT_KINDS.join(', ')} first`);
     }
     if (detected.length > 1) {
       const selected = await selectDetectedAgent(detected, opts.selectAgent);
@@ -141,7 +142,6 @@ export async function resolveProfileRuntime(
     secrets: encrypted.secrets,
     workspace,
     defaultWorkspace: appPaths.defaultWorkspaceDir,
-    profileDir: appPaths.profileDir,
   });
   const root = createRootConfig(profile, profileConfig, encrypted.secrets);
   await saveRootConfig(root, configPath);
@@ -177,7 +177,6 @@ async function bootstrapProfileIntoExistingRoot(args: {
     secrets: encrypted.secrets,
     workspace,
     defaultWorkspace: appPaths.defaultWorkspaceDir,
-    profileDir: appPaths.profileDir,
   });
   const nextRoot: RootConfig = {
     ...rootConfig,
@@ -372,7 +371,7 @@ function formatAmbiguousAgentSelectionError(
 ): string {
   const lines = detected.map((agent) => `  - ${agent.kind}: ${agent.binaryPath}`);
   return [
-    '检测到多个本地 agent，请使用 --agent <claude|codex|pi> 指定要初始化哪一个。',
+    `检测到多个本地 agent，请使用 --agent <${AGENT_KINDS.join('|')}> 指定要初始化哪一个。`,
     '已检测到：',
     ...lines,
   ].join('\n');

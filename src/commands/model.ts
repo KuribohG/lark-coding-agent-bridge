@@ -31,7 +31,7 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
     const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
     const [store, environment, providers] = await Promise.all([
       scopePreferences(ctx.controls),
-      modelEnvironment(ctx.controls, agentKind),
+      modelEnvironment(ctx.controls, agentKind, !args.trim()),
       modelProviderOptions(ctx.controls, agentKind),
     ]);
     const overrides = store.get(agentKind, ctx.scope);

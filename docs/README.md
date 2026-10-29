@@ -12,6 +12,7 @@
 | Run on Windows, stop/restart, or set up login autostart | [Windows](user-guide/windows.md) (中文) |
 | Pick a config file and follow a complete recipe | [Configuration tutorial](user-guide/configuration.md) (中文) |
 | Look up field precedence, validation and reload rules | [Configuration reference](configuration.md) |
+| Connect Antigravity to Gemini or a provider such as high-five | [Antigravity backend](antigravity.md) |
 | Configure native agents or independent model services | [Models and accounts](user-guide/models-and-accounts.md) (中文), [model services](model-services.md) |
 | Find a command or runtime behavior | [Command sheet](user-guide/commands.md) (中文), [advanced runtime reference](runtime-reference.md) |
 

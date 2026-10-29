@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { readPiJsonLines } from '../../../src/agent/pi/jsonl';
+import { readJsonLines } from '../../../src/agent/jsonl';
 import { PiRunTranslator } from '../../../src/agent/pi/jsonl-translator';
 
 describe('PiRunTranslator', () => {
@@ -10,7 +10,7 @@ describe('PiRunTranslator', () => {
       Buffer.from(payload.slice(11)),
     ];
     const lines: string[] = [];
-    for await (const line of readPiJsonLines((async function* () {
+    for await (const line of readJsonLines((async function* () {
       yield* chunks;
     })())) lines.push(line);
 

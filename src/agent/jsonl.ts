@@ -1,7 +1,7 @@
 import { StringDecoder } from 'node:string_decoder';
 
-/** Pi JSON/RPC framing splits only on LF, including when U+2028 is inside a JSON string. */
-export async function* readPiJsonLines(
+/** JSONL framing splits only on LF, including when U+2028 is inside a JSON string. */
+export async function* readJsonLines(
   stream: AsyncIterable<Buffer | string>,
 ): AsyncGenerator<string> {
   const decoder = new StringDecoder('utf8');

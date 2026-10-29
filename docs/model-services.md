@@ -2,7 +2,7 @@
 
 首次配置可先阅读[用户手册：模型与账号](user-guide/models-and-accounts.md)。
 
-加载本功能的 Bridge 可在根配置 `model_services` 中保存模型服务，供筛选、分类等直接 API 调用，也可作为 Pi/Codex Agent 的 Responses provider。Provider 列表只展示这里实际配置的服务。配置不依赖 Claude/Codex profile，不启动 Agent，也不继承其工具或会话。当前接入协议为 Responses API。
+加载本功能的 Bridge 可在根配置 `model_services` 中保存模型服务，供筛选、分类等直接 API 调用，也可作为 Pi/Codex 的 Responses provider 或 Antigravity 的 Gemini provider。Provider 列表只展示这里实际配置的服务。配置不依赖 Claude/Codex profile，不启动 Agent，也不继承其工具或会话。支持 Responses 和 Gemini 原生 API；直接筛选调用仍要求 Responses 入口。
 
 ## 配置
 
@@ -76,6 +76,16 @@ Codex 使用原生 OpenAI provider。Pi 应使用其自身的
 ```
 
 `Authorization`、`Content-Type` 和连接/长度相关头由客户端管理，不能在这里覆盖。配置校验拒绝重复头名、非法头名和未知字段。模型请求沿用原有超时、取消、流式响应和禁止重定向的行为。
+
+## 一个 provider 的多协议入口
+
+`protocol` 和 `baseUrl` 定义默认入口；`endpoints` 可为其他协议指定独立地址和默认模型，复用同一个凭据引用。
+例如同一服务的 Responses 地址是 `https://gateway.example/v1`，Gemini 入口是 `https://gateway.example`。
+Antigravity 的 SDK 会在 Gemini 地址后添加 `/v1beta/models/...`，并要求配置对应模型的 `contextWindow`。
+完整配置与 high-five 接入方式见 [Antigravity 后端](antigravity.md)。不会根据品牌名或 Responses URL 猜测原生入口。
+
+模型选择器按后端支持的协议过滤 provider。打开选择器时可以发现远端模型；运行中的任务只使用缓存，不因元数据刷新而改变已选模型。
+Gemini-only 服务不会出现在筛选服务列表中；额外配置 Responses 入口后即可用于筛选。
 
 ## 管理入口
 

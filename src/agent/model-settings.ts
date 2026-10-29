@@ -1,10 +1,5 @@
-import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
-import { parse } from 'smol-toml';
-import type { AgentKind, ProfileConfig } from '../config/profile-schema';
-import { log } from '../core/logger';
-import { supportedModels, validateModelId, type ModelOption } from './models';
+import type { AgentKind } from '../config/profile-schema';
+import type { ModelOption } from './models';
 import { agentBackendSpec } from './backend-spec';
 
 export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
@@ -92,81 +87,4 @@ export function modelRunArguments(settings: ResolvedModelSettings): ModelSetting
     model: settings.modelSource === 'cli' ? undefined : settings.model,
     reasoningEffort: settings.effortSource === 'cli' ? undefined : settings.reasoningEffort,
   };
-}
-
-async function readOptional(path: string): Promise<string | undefined> {
-  try { return await readFile(path, 'utf8'); }
-  catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-    throw err;
-  }
-}
-
-/** Read local defaults/catalog only; never probe a provider or expose credentials. */
-export async function readModelEnvironment(profile: ProfileConfig, profileDir: string): Promise<ModelEnvironment> {
-  try {
-    return await loadModelEnvironment(profile, profileDir);
-  } catch {
-    // Catalogs are advisory; a stale/unreadable cache must not block runs or
-    // expose a parser error containing unrelated CLI configuration values.
-    log.warn('model-settings', 'local-metadata-unavailable', { agentKind: profile.agentKind });
-    return { defaults: {}, models: supportedModels(profile.agentKind) };
-  }
-}
-
-async function loadModelEnvironment(profile: ProfileConfig, profileDir: string): Promise<ModelEnvironment> {
-  const fallback = { defaults: {}, models: supportedModels(profile.agentKind) };
-  const source = agentBackendSpec(profile.agentKind).modelEnvironmentSource;
-  if (source === 'catalog') {
-    return fallback;
-  }
-  if (source === 'claude-settings') {
-    const configDir = profile.claude?.configDir ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude');
-    const text = await readOptional(join(configDir, 'settings.json'));
-    const settings = text ? JSON.parse(text) : {};
-    const model = process.env.ANTHROPIC_MODEL ?? settings.model;
-    return {
-      ...fallback,
-      defaults: {
-        ...(typeof model === 'string' && model !== 'default' ? { model: validateModelId(model) } : {}),
-        reasoningEffort: parseEffort(process.env.CLAUDE_CODE_EFFORT_LEVEL ?? settings.effortLevel, 'claude'),
-      },
-    };
-  }
-  const codex = profile.codex;
-  const codexHome = codex?.codexHome ?? (codex?.inheritCodexHome !== false
-    ? process.env.CODEX_HOME ?? join(homedir(), '.codex') : join(profileDir, 'codex-home'));
-  const configPath = join(codexHome, 'config.toml');
-  const text = codex?.ignoreUserConfig ? undefined : await readOptional(configPath);
-  let config = (text ? parse(text) : {}) as Record<string, unknown>;
-  if (typeof config.profile === 'string') {
-    const profiles = config.profiles as Record<string, object> | undefined;
-    const layer = await readOptional(join(codexHome, `${config.profile}.config.toml`));
-    config = { ...config, ...(profiles?.[config.profile] ?? {}), ...(layer ? parse(layer) : {}) };
-  }
-  const defaults: ModelSettings = {
-    ...(typeof config.model === 'string' ? { model: validateModelId(config.model) } : {}),
-    reasoningEffort: parseEffort(config.model_reasoning_effort, 'codex'),
-  };
-  const catalogPath = typeof config.model_catalog_json === 'string'
-    ? resolve(dirname(configPath), config.model_catalog_json.replace(/^~\//, `${homedir()}/`))
-    : join(codexHome, 'models_cache.json');
-  const catalogText = await readOptional(catalogPath);
-  if (!catalogText) return { ...fallback, defaults };
-  const catalog = JSON.parse(catalogText);
-  const entries = Array.isArray(catalog) ? catalog : catalog.models;
-  const models: ModelOption[] = [];
-  if (Array.isArray(entries)) for (const entry of entries) {
-    if (!entry || typeof entry.slug !== 'string') continue;
-    const levels = Array.isArray(entry.supported_reasoning_levels)
-      ? entry.supported_reasoning_levels.map((v: { effort?: string } | null) => v?.effort)
-        .filter((v: string) => REASONING_EFFORTS.includes(v as ReasoningEffort)) : undefined;
-    models.push({
-      value: validateModelId(entry.slug),
-      label: typeof entry.display_name === 'string' ? entry.display_name : entry.slug,
-      reasoningEfforts: levels,
-      defaultReasoningEffort: parseEffort(entry.default_reasoning_level, 'codex'),
-    });
-  }
-  return { defaults, models: models.length ? [{ value: 'default', label: '跟随默认' }, ...models] : fallback.models };
 }

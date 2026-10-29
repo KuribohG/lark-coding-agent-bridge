@@ -7,7 +7,7 @@ import { log } from '../core/logger';
 import { RunRejected, SpawnFailed } from './errors';
 import { retryingRun } from './retrying-run';
 import { agentFailureKind } from '../agent/execution';
-import type { ResolvedModelProvider } from '../model-provider/provider';
+import type { ResolvedModelProvider } from '../model-provider/types';
 import type { AgentKind } from '../config/profile-schema';
 
 export interface RunExecutorDeps {

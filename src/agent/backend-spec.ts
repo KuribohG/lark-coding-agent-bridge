@@ -1,15 +1,15 @@
-export type AgentKind = 'claude' | 'codex' | 'pi';
+import type { ModelProtocol } from '../model-service/config';
+export type AgentKind = 'claude' | 'codex' | 'pi' | 'agy';
 export type AgentAccessMode = 'read-only' | 'workspace' | 'full';
 export type AgentCapabilityId = AgentKind;
-export type AgentSessionKind = 'claude-session' | 'codex-thread' | 'pi-session';
+export type AgentSessionKind = `${AgentKind}-session` | 'codex-thread';
 export type AgentSessionIdField = 'sessionId' | 'threadId';
 export type AgentImageInput = 'paths' | 'attachments';
 export type PromptInjectionMode = 'append-system-prompt' | 'stdin-prefix';
 export type AgentHistorySource = 'codex-thread-list' | 'claude-jsonl' | 'catalog';
 export type AgentPermissionView = 'permission' | 'sandbox' | 'tools';
-export type AgentModelEnvironmentSource = 'claude-settings' | 'codex-config' | 'catalog';
-export type AgentModelCatalog = 'claude' | 'codex' | 'pi';
-export type AgentResponsesBinding = 'codex-config' | 'pi-extension';
+export type AgentModelCatalog = AgentKind;
+export type AgentProviderBinding = 'codex-config' | 'pi-extension' | 'agy-gemini';
 
 export interface AgentStateDirectorySpec {
   field: string;
@@ -28,7 +28,7 @@ export interface AgentBackendSpec {
   commandEnv: string;
   launchRequired: boolean;
   launchKeys: readonly string[];
-  stateDirectory: AgentStateDirectorySpec;
+  stateDirectory?: AgentStateDirectorySpec;
   includeStateDirectoryInPolicy: boolean;
   sessionKind: AgentSessionKind;
   sessionIdField: AgentSessionIdField;
@@ -38,9 +38,7 @@ export interface AgentBackendSpec {
   supportsNativeHistory: boolean;
   historySource: AgentHistorySource;
   permissionView: AgentPermissionView;
-  modelEnvironmentSource: AgentModelEnvironmentSource;
-  supportsResponsesProvider: boolean;
-  responsesBinding?: AgentResponsesBinding;
+  providerBindings: Partial<Record<ModelProtocol, AgentProviderBinding>>;
   supportsProfileResponsesService: boolean;
   modelCatalog: AgentModelCatalog;
   reasoningEfforts: readonly string[];
@@ -81,8 +79,7 @@ const CLAUDE_SPEC: AgentBackendSpec = Object.freeze({
   supportsNativeHistory: true,
   historySource: 'claude-jsonl',
   permissionView: 'permission',
-  modelEnvironmentSource: 'claude-settings',
-  supportsResponsesProvider: false,
+  providerBindings: Object.freeze({}),
   supportsProfileResponsesService: false,
   modelCatalog: 'claude',
   reasoningEfforts: Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']),
@@ -116,9 +113,7 @@ const CODEX_SPEC: AgentBackendSpec = Object.freeze({
   supportsNativeHistory: false,
   historySource: 'codex-thread-list',
   permissionView: 'sandbox',
-  modelEnvironmentSource: 'codex-config',
-  supportsResponsesProvider: true,
-  responsesBinding: 'codex-config',
+  providerBindings: Object.freeze({ responses: 'codex-config' }),
   supportsProfileResponsesService: true,
   modelCatalog: 'codex',
   reasoningEfforts: Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']),
@@ -147,13 +142,36 @@ const PI_SPEC: AgentBackendSpec = Object.freeze({
   supportsNativeHistory: true,
   historySource: 'catalog',
   permissionView: 'tools',
-  modelEnvironmentSource: 'catalog',
-  supportsResponsesProvider: true,
-  responsesBinding: 'pi-extension',
+  providerBindings: Object.freeze({ responses: 'pi-extension' }),
   supportsProfileResponsesService: false,
   modelCatalog: 'pi',
   reasoningEfforts: Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh']),
   supportedAccess: Object.freeze(['read-only', 'full'] as AgentAccessMode[]),
+  webDefaultAccess: 'full',
+});
+
+const AGY_SPEC: AgentBackendSpec = Object.freeze({
+  kind: 'agy',
+  displayName: 'Antigravity CLI',
+  shortDisplayName: 'Antigravity',
+  defaultCommand: 'agy',
+  commandEnv: 'LARK_CHANNEL_AGY_BIN',
+  launchRequired: true,
+  launchKeys: COMMON_AGENT_LAUNCH_KEYS,
+  includeStateDirectoryInPolicy: false,
+  sessionKind: 'agy-session',
+  sessionIdField: 'sessionId',
+  imageInput: 'paths',
+  legacySessionStore: false,
+  promptInjection: 'stdin-prefix',
+  supportsNativeHistory: true,
+  historySource: 'catalog',
+  permissionView: 'tools',
+  providerBindings: Object.freeze({ gemini: 'agy-gemini' }),
+  supportsProfileResponsesService: false,
+  modelCatalog: 'agy',
+  reasoningEfforts: Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']),
+  supportedAccess: Object.freeze(['full'] as AgentAccessMode[]),
   webDefaultAccess: 'full',
 });
 
@@ -162,6 +180,7 @@ export const AGENT_BACKEND_SPECS: Readonly<Record<AgentKind, AgentBackendSpec>> 
     claude: CLAUDE_SPEC,
     codex: CODEX_SPEC,
     pi: PI_SPEC,
+    agy: AGY_SPEC,
   });
 
 export const AGENT_KINDS = Object.freeze(

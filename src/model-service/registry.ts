@@ -1,6 +1,6 @@
 import { loadRootConfig, saveRootConfig, withConfigFileLock } from '../config/profile-store';
 import { modelServiceName, normalizeModelService } from './config';
-import { loadModelService } from './service';
+import { loadModelConnection } from './service';
 
 export async function listModelServices(configPath: string) {
   return (await loadRootConfig(configPath))?.modelServices ?? {};
@@ -32,6 +32,6 @@ export async function checkModelService(configPath: string, name: string) {
   modelServiceName(name);
   const config = (await listModelServices(configPath))[name];
   if (!config) throw new Error('找不到指定的模型服务');
-  const { model } = await loadModelService(config);
+  const { model } = await loadModelConnection(config, config.protocol);
   return { model, note: '配置与凭据读取通过，尚未请求模型服务' };
 }

@@ -1,3 +1,4 @@
+import { AGENT_KINDS } from '../../agent/backend-spec';
 import {
   resolveExecutionProfile,
   resolveRun,
@@ -35,7 +36,7 @@ export function selectStandaloneAgent(
   requested: string | undefined,
 ): AgentKind {
   if (requested !== undefined) {
-    if (!isAgentKind(requested)) throw new Error('agent must be claude, codex, or pi');
+    if (!isAgentKind(requested)) throw new Error(`agent must be ${AGENT_KINDS.join(', ')}`);
     return requested;
   }
   const selected = profile ? doc?.profiles[profile]?.agent : undefined;

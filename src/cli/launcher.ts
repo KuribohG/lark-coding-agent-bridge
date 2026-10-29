@@ -1,3 +1,4 @@
+import { isAgentKind } from '../agent/backend-spec';
 import { terminateChild } from '../platform/terminate';
 import { spawn } from 'node:child_process';
 import { createReadStream } from 'node:fs';
@@ -21,7 +22,7 @@ export function parseLauncherArgs(args: string[]) {
       if (profile || !args[i + 1] || args[i + 1]!.startsWith('-')) throw new Error('--profile 需要一个名称');
       profile = args[++i]; continue;
     }
-    if (arg === 'claude' || arg === 'codex' || arg === 'pi') {
+    if (isAgentKind(arg)) {
       if (profile) throw new Error('只能选择一个 profile');
       profile = arg; continue;
     }

@@ -1,7 +1,7 @@
 import { loadProfileModelService, supportsProfileModelService } from '../agent/model-service';
 import type { ProfileConfig, RootConfig } from '../config/profile-schema';
 import { resolveAppPaths } from '../config/app-paths';
-import { modelServiceName, normalizeModelService, type ModelServiceConfig } from '../model-service/config';
+import { modelServiceName, normalizeModelService, modelServiceEndpoint, type ModelServiceConfig } from '../model-service/config';
 import { loadModelService } from '../model-service/service';
 import { INBOX_ANALYSIS_MODEL } from '../monitoring/sources/lark/analyzer';
 import type { InboxConfig } from './config';
@@ -14,6 +14,7 @@ export function inboxTriageSource(config: InboxConfig, root: Pick<RootConfig, 'p
     const name = modelServiceName(config.triageService);
     const service = root.modelServices?.[name];
     if (!service) throw new Error('找不到所选筛选模型服务，请在模型 API 服务中配置');
+    if (!modelServiceEndpoint(service, 'responses')) throw new Error('筛选模型服务需要 Responses 协议入口');
     return { kind: 'service', config: normalizeModelService(service) };
   }
   return { kind: 'legacy', profile: inboxTriageProfile(config, root.profiles), profileName: config.triageProfile || config.executorProfile };

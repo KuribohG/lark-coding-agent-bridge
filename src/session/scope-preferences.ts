@@ -1,3 +1,4 @@
+import { isAgentKind } from '../agent/backend-spec';
 import { readFile } from 'node:fs/promises';
 import type { AgentKind } from '../config/profile-schema';
 import { writeFileAtomic } from '../platform/atomic-write';
@@ -15,7 +16,7 @@ export class ScopePreferencesStore {
       const raw = JSON.parse(await readFile(this.path, 'utf8'));
       for (const [key, value] of Object.entries(raw)) {
         const [agent] = JSON.parse(key);
-        if (agent !== 'claude' && agent !== 'codex' && agent !== 'pi') continue;
+        if (!isAgentKind(agent)) continue;
         const entry = value as ModelSettings;
         this.data.set(key, {
           ...(entry.model ? { model: validateModelId(entry.model) } : {}),

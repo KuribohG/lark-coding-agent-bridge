@@ -1,4 +1,5 @@
-import { modelRunArguments, readModelEnvironment, resolveModelSettings, type ModelSettings, type ReasoningEffort } from '../agent/model-settings';
+import { modelRunArguments, resolveModelSettings, type ModelSettings, type ReasoningEffort } from '../agent/model-settings';
+import { readModelEnvironment } from '../agent/model-environment';
 import { agentBackendSpec } from '../agent/backend-spec';
 import type { ProfileConfig } from '../config/profile-schema';
 

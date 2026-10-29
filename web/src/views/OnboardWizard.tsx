@@ -186,7 +186,7 @@ export function OnboardWizard({ onCreated }: { onCreated: (profile: string) => v
         )}
       </div>
       {detected.length === 0 && (
-        <p className="text-center text-xs text-muted-foreground">未检测到已安装的 agent，请确保 claude、codex 或 pi 已安装。</p>
+        <p className="text-center text-xs text-muted-foreground">未检测到已安装的 Agent，请安装受支持的后端后重新检测。</p>
       )}
       <p className="text-center text-xs text-muted-foreground">扫码人会成为应用 owner，自动豁免访问控制。</p>
     </div>

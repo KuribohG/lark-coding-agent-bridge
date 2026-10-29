@@ -1,3 +1,4 @@
+import { resolveAgentLaunches } from '../agent/launch-config';
 import { parse, stringify, TomlError } from 'smol-toml';
 import {
   normalizeProfileConfig,
@@ -291,57 +292,11 @@ export function resolveExecutionProfile(
     };
   };
 
-  const claudeLaunch = launchFor('claude');
-  const codexLaunch = launchFor('codex');
-  const piLaunch = launchFor('pi');
   return {
     agentKind,
     permissions,
     sandbox: permissionsToLegacySandbox(permissions),
-    ...(claudeLaunch.binaryPath || claudeLaunch.configDir || claudeLaunch.env
-      ? {
-          claude: {
-            ...(typeof claudeLaunch.binaryPath === 'string' ? { binaryPath: claudeLaunch.binaryPath } : {}),
-            ...(typeof claudeLaunch.configDir === 'string' ? { configDir: claudeLaunch.configDir } : {}),
-            ...(claudeLaunch.env ? { env: claudeLaunch.env } : {}),
-          },
-        }
-      : {}),
-    ...(codexLaunch.binaryPath || agentKind === 'codex'
-      ? {
-          codex: {
-            binaryPath: codexLaunch.binaryPath ?? 'codex',
-            transport: 'app-server' as const,
-            appServerMode: codexLaunch.appServerMode === 'per-run' ? 'per-run' as const : 'daemon' as const,
-            ...(typeof codexLaunch.codexHome === 'string' ? { codexHome: codexLaunch.codexHome } : {}),
-            ...(typeof codexLaunch.inheritCodexHome === 'boolean'
-              ? { inheritCodexHome: codexLaunch.inheritCodexHome }
-              : {}),
-            ignoreUserConfig: false,
-            ignoreRules: false,
-            ...(typeof codexLaunch.realpath === 'string' ? { realpath: codexLaunch.realpath } : {}),
-            ...(typeof codexLaunch.version === 'string' ? { version: codexLaunch.version } : {}),
-            ...(typeof codexLaunch.sha256 === 'string' ? { sha256: codexLaunch.sha256 } : {}),
-            ...(typeof codexLaunch.owner === 'number' ? { owner: codexLaunch.owner } : {}),
-            ...(typeof codexLaunch.mode === 'number' ? { mode: codexLaunch.mode } : {}),
-            ...(codexLaunch.env ? { env: codexLaunch.env } : {}),
-          },
-        }
-      : {}),
-    ...(piLaunch.binaryPath || agentKind === 'pi'
-      ? {
-          pi: {
-            binaryPath: piLaunch.binaryPath ?? 'pi',
-            ...(typeof piLaunch.agentDir === 'string' ? { agentDir: piLaunch.agentDir } : {}),
-            ...(typeof piLaunch.realpath === 'string' ? { realpath: piLaunch.realpath } : {}),
-            ...(typeof piLaunch.version === 'string' ? { version: piLaunch.version } : {}),
-            ...(typeof piLaunch.sha256 === 'string' ? { sha256: piLaunch.sha256 } : {}),
-            ...(typeof piLaunch.owner === 'number' ? { owner: piLaunch.owner } : {}),
-            ...(typeof piLaunch.mode === 'number' ? { mode: piLaunch.mode } : {}),
-            ...(piLaunch.env ? { env: piLaunch.env } : {}),
-          },
-        }
-      : {}),
+    ...resolveAgentLaunches(agentKind, launchFor),
   };
 }
 

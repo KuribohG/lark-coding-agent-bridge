@@ -57,6 +57,7 @@ const MODEL_CATALOGS: Record<AgentModelCatalog, ModelOption[]> = {
   claude: CLAUDE_MODELS,
   codex: CODEX_MODELS,
   pi: PI_MODELS,
+  agy: [{ value: DEFAULT_MODEL, label: '跟随 Antigravity 配置（不指定）' }],
 };
 
 /** The model picker options for a profile's agent kind. */

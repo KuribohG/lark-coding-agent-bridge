@@ -21,7 +21,7 @@ Execution and presentation have separate ownership:
 
 Presentation is never inherited through an agent. The shared runtime produces complete events; the Lark, Slack, and Web output plugins independently select what to display. Hiding reasoning/progress is a display choice and does not change model effort or generation.
 
-See [config.example.toml](config.example.toml) for a full layered example. `agent` is a type (`codex`, `claude` or `pi`); a profile name identifies a particular bot. Multiple profiles can use the same agent defaults. Existing domain objects (`accounts`, `access`, `permissions`, `attachments`, `meeting`, `larkCli`, launch metadata and model service definitions) retain their established field names. New execution and channel keys use snake_case.
+See [config.example.toml](config.example.toml) for a full layered example. `agent` is a type (`codex`, `claude`, `pi` or `agy`); a profile name identifies a particular bot. Multiple profiles can use the same agent defaults. Existing domain objects (`accounts`, `access`, `permissions`, `attachments`, `meeting`, `larkCli`, launch metadata and model service definitions) retain their established field names. New execution and channel keys use snake_case.
 
 ## Execution fields
 

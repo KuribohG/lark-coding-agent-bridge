@@ -1,11 +1,17 @@
 import { isAbsolute } from 'node:path';
 
+export type ModelProtocol = 'responses' | 'gemini';
+export interface ModelEndpoint { baseUrl: string; model?: string; contextWindow?: number }
+
 /** References only: resolved credentials never belong in the model-service registry. */
 export interface ModelSecretRef { source: 'env' | 'file'; id: string }
 export interface ModelServiceConfig {
-  protocol: 'responses';
+  protocol: ModelProtocol;
+  /** Additional native wire endpoints sharing these credentials. */
+  endpoints?: Partial<Record<ModelProtocol, ModelEndpoint>>;
   baseUrl: string;
   model: string;
+  contextWindow?: number;
   apiKey: ModelSecretRef;
   /** Extra request headers, with values resolved from the same reference format. */
   headers?: Record<string, ModelSecretRef>;
@@ -35,25 +41,61 @@ function secretRef(value: unknown): ModelSecretRef {
 }
 
 export function normalizeModelService(input: unknown): ModelServiceConfig {
-  const config = record(input); fields(config, ['protocol', 'baseUrl', 'model', 'apiKey', 'headers']);
-  if (config.protocol !== 'responses') throw new Error('目前模型服务支持 responses 协议');
-  let url: URL;
-  try { url = new URL(typeof config.baseUrl === 'string' ? config.baseUrl : ''); }
-  catch { throw new Error('模型服务 baseUrl 必须是 HTTPS API 根地址'); }
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('模型服务 baseUrl 必须是 HTTPS，且不含凭据、查询参数或片段');
-  if (typeof config.model !== 'string' || !config.model.trim() || config.model.length > 200 || /[\x00-\x20\x7f]/.test(config.model.trim())) throw new Error('请设置有效的模型服务默认模型');
+  const config = record(input); fields(config, ['protocol', 'baseUrl', 'model', 'apiKey', 'headers', 'endpoints', 'contextWindow']);
+  if (config.protocol !== 'responses' && config.protocol !== 'gemini') throw new Error('模型服务支持 responses 或 gemini 协议');
+  const baseUrl = endpointUrl(config.baseUrl);
+  const model = endpointModel(config.model);
+  const contextWindow = tokenWindow(config.contextWindow);
+  const endpoints: Partial<Record<ModelProtocol, ModelEndpoint>> = {};
+  if (config.endpoints !== undefined) {
+    const inputEndpoints = record(config.endpoints); fields(inputEndpoints, ['responses', 'gemini']);
+    for (const [protocol, value] of Object.entries(inputEndpoints)) {
+      const endpoint = record(value); fields(endpoint, ['baseUrl', 'model', 'contextWindow']);
+      endpoints[protocol as ModelProtocol] = { baseUrl: endpointUrl(endpoint.baseUrl),
+        ...(endpoint.contextWindow !== undefined ? { contextWindow: tokenWindow(endpoint.contextWindow) } : {}),
+        ...(endpoint.model !== undefined ? { model: endpointModel(endpoint.model) } : {}) };
+    }
+  }
   const headers: Record<string, ModelSecretRef> = {};
   if (config.headers !== undefined) for (const [name, ref] of Object.entries(record(config.headers))) {
     if (!/^[!#$%&'*+.^_`|~0-9a-zA-Z-]+$/.test(name) ||
-        ['authorization', 'content-type', 'content-length', 'host', 'connection', 'transfer-encoding', 'constructor', 'prototype', '__proto__'].includes(name.toLowerCase()) ||
+        ['authorization', 'x-goog-api-key', 'content-type', 'content-length', 'host', 'connection', 'transfer-encoding', 'constructor', 'prototype', '__proto__'].includes(name.toLowerCase()) ||
         Object.keys(headers).some(existing => existing.toLowerCase() === name.toLowerCase())) throw new Error('模型服务包含无效、重复或保留的请求头');
     headers[name] = secretRef(ref);
   }
-  return { protocol: 'responses', baseUrl: url.href.replace(/\/+$/, ''), model: config.model.trim(),
+  return { protocol: config.protocol, baseUrl, model,
+    ...(contextWindow !== undefined ? { contextWindow } : {}),
+    ...(Object.keys(endpoints).length ? { endpoints } : {}),
     apiKey: secretRef(config.apiKey), ...(Object.keys(headers).length ? { headers } : {}) };
 }
 
 export function normalizeModelServices(input: unknown): Record<string, ModelServiceConfig> {
   if (input === undefined) return {};
   return Object.fromEntries(Object.entries(record(input)).map(([name, config]) => [modelServiceName(name), normalizeModelService(config)]));
+}
+
+export function modelServiceEndpoint(config: ModelServiceConfig, protocol: ModelProtocol): (ModelEndpoint & { model: string }) | undefined {
+  const endpoint = config.endpoints?.[protocol];
+  if (endpoint) return { ...endpoint, model: endpoint.model ?? config.model };
+  return config.protocol === protocol ? { baseUrl: config.baseUrl, model: config.model,
+    ...(config.contextWindow !== undefined ? { contextWindow: config.contextWindow } : {}) } : undefined;
+}
+
+function tokenWindow(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 1024 || value > 100_000_000) throw new Error('模型 contextWindow 必须是至少 1024 的 token 数');
+  return value;
+}
+
+function endpointUrl(value: unknown): string {
+  let url: URL;
+  try { url = new URL(typeof value === 'string' ? value : ''); }
+  catch { throw new Error('模型服务 baseUrl 必须是 HTTPS API 根地址'); }
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('模型服务 baseUrl 必须是 HTTPS，且不含凭据、查询参数或片段');
+  return url.href.replace(/\/+$/, '');
+}
+
+function endpointModel(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim() || value.length > 200 || /[\x00-\x20\x7f]/.test(value.trim())) throw new Error('请设置有效的模型服务默认模型');
+  return value.trim();
 }

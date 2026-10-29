@@ -1,14 +1,7 @@
+import type { ProcessStreamFinish } from '../process-run';
 import type { AgentEvent } from '../types';
 
 type JsonRecord = Record<string, unknown>;
-
-export interface PiStreamFinish {
-  exitCode: number | null;
-  stderr: string;
-  runtimeError?: Error;
-  interrupted: boolean;
-  timedOut: boolean;
-}
 
 /**
  * Translate Pi's JSONL session-event stream into the bridge contract.
@@ -77,7 +70,7 @@ export class PiRunTranslator {
     }
   }
 
-  finish(input: PiStreamFinish): AgentEvent[] {
+  finish(input: ProcessStreamFinish): AgentEvent[] {
     if (this.terminal) return [];
     this.terminal = true;
     if (input.interrupted) {

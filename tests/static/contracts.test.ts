@@ -1,3 +1,4 @@
+import { AGENT_KINDS } from '../../src/agent/backend-spec';
 import { describe, expect, it } from 'vitest';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -93,6 +94,11 @@ describe('static architecture contracts', () => {
       'src/commands/status.ts',
       'src/agent/model-service.ts',
       'src/agent/model-settings.ts',
+      'src/agent/model-environment.ts',
+      'src/config/document.ts',
+      'src/config/profile-schema.ts',
+      'src/cli/profile-bootstrap.ts',
+      'src/plugins/work-items/execution-provider.ts',
       'src/model-provider/provider.ts',
       'src/runtime/background-model.ts',
       'src/runtime/locks.ts',
@@ -101,7 +107,7 @@ describe('static architecture contracts', () => {
     ];
     for (const file of descriptorConsumers) {
       expect(read(file), file).not.toMatch(
-        /(?:agentKind|agentId|kind)\s*===\s*['"](?:claude|codex|pi)['"]/,
+        new RegExp(`(?:agentKind|agentId|kind)\\s*===\\s*['"](?:${AGENT_KINDS.join('|')})['"]`),
       );
     }
   });

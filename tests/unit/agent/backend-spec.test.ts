@@ -19,20 +19,23 @@ import {
 
 describe('agent backend specification', () => {
   it('is the single static metadata source for every backend', () => {
-    expect(AGENT_KINDS).toEqual(['claude', 'codex', 'pi']);
+    expect(AGENT_KINDS).toEqual(['claude', 'codex', 'pi', 'agy']);
     expect(AGENT_KINDS.map(agentDisplayName)).toEqual([
       'Claude Code',
       'Codex CLI',
       'Pi Coding Agent',
+      'Antigravity CLI',
     ]);
-    expect(AGENT_KINDS.map((kind) => agentBackendSpec(kind).stateDirectory.envName)).toEqual([
+    expect(AGENT_KINDS.map((kind) => agentBackendSpec(kind).stateDirectory?.envName)).toEqual([
       'CLAUDE_CONFIG_DIR',
       'CODEX_HOME',
       'PI_CODING_AGENT_DIR',
+      undefined,
     ]);
     expect(AGENT_KINDS.map(sessionIdFieldForAgent)).toEqual([
       'sessionId',
       'threadId',
+      'sessionId',
       'sessionId',
     ]);
   });
@@ -69,6 +72,9 @@ describe('agent backend specification', () => {
 
   it('builds binary patches and resolves configured state directories generically', () => {
     const profiles = {
+      agy: createDefaultProfileConfig({
+        agentKind: 'agy', accounts: appAccounts(), agy: { binaryPath: 'agy' },
+      }),
       claude: createDefaultProfileConfig({
         agentKind: 'claude',
         accounts: appAccounts(),
@@ -89,6 +95,7 @@ describe('agent backend specification', () => {
     expect(agentStateDirectory(profiles.claude)).toBe('/state/claude');
     expect(agentStateDirectory(profiles.codex)).toBe('/state/codex');
     expect(agentStateDirectory(profiles.pi)).toBe('/state/pi');
+    expect(agentStateDirectory(profiles.agy)).toBeUndefined();
     expect(agentLaunchPatch('pi', '/bin/pi')).toEqual({
       pi: { binaryPath: '/bin/pi' },
     });

@@ -1,3 +1,4 @@
+import { AGENT_KINDS } from '../../../src/agent/backend-spec';
 import { parseDocument } from '../../../src/config/document';
 import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
@@ -222,7 +223,7 @@ describe('profile runtime resolver', () => {
       expect(message).toContain(claude);
       expect(message).toContain('codex');
       expect(message).toContain(codex);
-      expect(message).toContain('--agent <claude|codex|pi>');
+      expect(message).toContain(`--agent <${AGENT_KINDS.join('|')}>`);
     } finally {
       process.env.PATH = oldPath;
       if (oldClaude === undefined) {

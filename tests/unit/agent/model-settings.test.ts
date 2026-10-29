@@ -1,7 +1,8 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { availableEfforts, modelRunArguments, parseEffort, readModelEnvironment, reasoningEffortOptions, REASONING_EFFORTS, resolveModelSettings, timedRunEfforts } from '../../../src/agent/model-settings';
+import { availableEfforts, modelRunArguments, parseEffort, reasoningEffortOptions, REASONING_EFFORTS, resolveModelSettings, timedRunEfforts } from '../../../src/agent/model-settings';
+import { readModelEnvironment } from '../../../src/agent/model-environment';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createTmpProfile } from '../../helpers/tmp-profile';
 

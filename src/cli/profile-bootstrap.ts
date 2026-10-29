@@ -1,5 +1,4 @@
 import { mkdir, realpath } from 'node:fs/promises';
-import { join } from 'node:path';
 import { AgentPreflightError } from '../agent/preflight';
 import { agentBackendSpec } from '../agent/backend-spec';
 import { agentLaunchPatch } from '../agent/capability';
@@ -15,9 +14,7 @@ export interface BootstrapProfileInput {
   secrets?: AppConfig['secrets'];
   workspace?: string;
   defaultWorkspace?: string;
-  codexBinaryPath?: string;
-  piBinaryPath?: string;
-  profileDir?: string;
+  binaryPath?: string;
 }
 
 export async function createBootstrapProfileConfig(
@@ -29,14 +26,9 @@ export async function createBootstrapProfileConfig(
       ? await ensureManagedDefaultWorkspace(input.defaultWorkspace)
       : undefined;
   const spec = agentBackendSpec(input.agentKind);
-  const requestedBinary = input.agentKind === 'codex'
-    ? input.codexBinaryPath
-    : input.agentKind === 'pi'
-      ? input.piBinaryPath
-      : undefined;
   const launch = spec.launchRequired
     ? await createBootstrapBinaryConfig({
-        binaryPath: requestedBinary,
+        binaryPath: input.binaryPath,
         envName: spec.commandEnv,
         fallback: spec.defaultCommand,
         agentId: spec.kind,
@@ -55,9 +47,6 @@ export async function createBootstrapProfileConfig(
       ...profile.workspaces,
       default: workspace,
     };
-  }
-  if (input.profileDir && profile.codex?.inheritCodexHome === false) {
-    await mkdir(join(input.profileDir, 'codex-home'), { recursive: true });
   }
   return profile;
 }

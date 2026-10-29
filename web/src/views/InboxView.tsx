@@ -110,10 +110,10 @@ export function InboxView({ servicesRevision = 0 }: { servicesRevision?: number 
         </div>}
         <div className="grid gap-3 sm:grid-cols-2">
           {([['containerId', '结果群 ID'], ['threadId', '结果话题 ID'], ['replyTo', '话题内回复消息 ID']] as const).map(([key, label]) => <label key={key}>{label}<Input value={config.target[key] ?? ''} onChange={e => change({ target: { ...config.target, [key]: e.target.value } })} /></label>)}
-          <label>深入分析模型<Input value={config.analysisModel ?? (executor?.agentKind === 'codex' ? 'deepseek-flash' : '')} placeholder="留空使用执行 profile 默认模型" onChange={e => change({ analysisModel: e.target.value })} /></label>
+          <label>深入分析模型<Input value={config.analysisModel ?? ''} placeholder="留空使用执行 profile 默认模型" onChange={e => change({ analysisModel: e.target.value })} /></label>
           <label>筛选模型服务<select className="mt-1 w-full rounded border bg-background p-2" value={config.triageService ?? ''} onChange={e => change({ triageService: e.target.value,
             ...(e.target.value ? { triageProfile: undefined, triageModel: '' } : {}) })}>
-            <option value="">沿用旧版 profile 配置</option>{Object.entries(services).map(([name, service]) => <option key={name} value={name}>{name}（{service.model}）</option>)}
+            <option value="">沿用旧版 profile 配置</option>{Object.entries(services).filter(([, service]) => service.protocol === 'responses' || service.endpoints?.responses).map(([name, service]) => <option key={name} value={name}>{name}（{service.model}）</option>)}
             {config.triageService && !services[config.triageService] && <option value={config.triageService}>{config.triageService}（未找到）</option>}
           </select></label>
           {!config.triageService && <label>旧版筛选 profile<select className="mt-1 w-full rounded border bg-background p-2" value={config.triageProfile ?? ''} onChange={e => change({ triageProfile: e.target.value })}>

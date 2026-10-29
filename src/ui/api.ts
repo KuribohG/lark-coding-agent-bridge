@@ -87,7 +87,7 @@ export interface ConfigView {
 export async function buildConfigView(state: MutableProfileState, live = false): Promise<ConfigView> {
   const snapshot = await readProfileSnapshot(state);
   state = snapshot.state;
-  const environment = await modelEnvironment(state);
+  const environment = await modelEnvironment(state, state.profileConfig.agentKind, true);
   const agentKind = state.profileConfig.agentKind;
   const ms = getRunIdleTimeoutMs(state.cfg);
   return {

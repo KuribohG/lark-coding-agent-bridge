@@ -49,16 +49,18 @@ describe('agent backend registry', () => {
   });
 
   it('declares every supported backend through one metadata contract', () => {
-    expect(AGENT_KINDS).toEqual(['claude', 'codex', 'pi']);
+    expect(AGENT_KINDS).toEqual(['claude', 'codex', 'pi', 'agy']);
     expect(AGENT_KINDS.map((kind) => backendFor(kind).displayName)).toEqual([
       'Claude Code',
       'Codex CLI',
       'Pi Coding Agent',
+      'Antigravity CLI',
     ]);
     expect(AGENT_KINDS.map((kind) => backendFor(kind).commandEnv)).toEqual([
       'LARK_CHANNEL_CLAUDE_BIN',
       'LARK_CHANNEL_CODEX_BIN',
       'LARK_CHANNEL_PI_BIN',
+      'LARK_CHANNEL_AGY_BIN',
     ]);
   });
 

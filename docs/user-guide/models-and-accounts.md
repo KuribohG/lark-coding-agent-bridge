@@ -8,11 +8,13 @@
 
 | 配置 | 决定什么 | 在哪里设置 |
 | --- | --- | --- |
-| Agent 执行器 | Claude / Codex、工具、工作目录、CLI 模型账号 | profile 和本机 CLI |
+| Agent 执行器 | Claude / Codex / Pi / Antigravity、工具、工作目录、CLI 模型账号 | profile 和本机 CLI |
 | 模型 API 服务 | 直接 API 请求的地址、默认模型及凭据 | 控制台“模型 API 服务” |
 | 飞书身份 | 机器人发消息、用户读取个人可访问资料 | profile 的飞书应用与用户授权 |
 
 模型 API 的密钥不能替代飞书授权；Claude/Codex 登录也不等于拥有可用于直接 Responses API 调用的密钥。
+
+使用 Antigravity 和 high-five 等 Gemini 服务时，先看 [Antigravity 接入指南](../antigravity.md)。同一 provider 可按协议设置不同的 endpoint 和默认模型。
 
 ## 普通对话的模型
 
