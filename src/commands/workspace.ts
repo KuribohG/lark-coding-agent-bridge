@@ -5,7 +5,7 @@ import { resolveWorkingDirectory } from '../policy/workspace';
 import { createBoundChat, defaultChatName } from '../bot/group';
 import type { CommandContext } from './types';
 import { reply, commandReplyOptions } from './presentation';
-import { effectiveWorkspaceCwd } from './context';
+import { cancelPendingInput, effectiveWorkspaceCwd } from './context';
 
 function expandTilde(p: string): string {
   if (p === '~') return homedir();
@@ -27,6 +27,7 @@ export async function handleNew(args: string, ctx: CommandContext): Promise<void
   }
 
   ctx.controls.cancelTimedRun?.(ctx.scope);
+  await cancelPendingInput(ctx);
   const wasRunning = ctx.activeRuns.interrupt(ctx.scope);
   if (ctx.sessionCatalog && ctx.sessionCatalogIdentity) {
     ctx.sessionCatalog.archiveActive({
@@ -95,6 +96,7 @@ export async function handleCd(args: string, ctx: CommandContext): Promise<void>
     return;
   }
   ctx.controls.cancelTimedRun?.(ctx.scope);
+  await cancelPendingInput(ctx);
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, workspace.cwdRealpath);
   ctx.controls.btw?.reset(ctx.scope);
@@ -162,6 +164,7 @@ async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
     return;
   }
   ctx.controls.cancelTimedRun?.(ctx.scope);
+  await cancelPendingInput(ctx);
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.workspaces.setCwd(ctx.scope, workspace.cwdRealpath);
   ctx.controls.btw?.reset(ctx.scope);

@@ -133,10 +133,13 @@ export class UserQuestions {
     } else if (this.deps.catalog?.activeFor(input.identity)?.threadId !== entry.threadId) {
       status = '会话已切换，答案未发送；请在原话题重新说明你的选择。';
     } else {
-      this.deps.pending.push(input.scope, { ...entry.message, messageId, content,
+      const size = this.deps.pending.push(input.scope, { ...entry.message, messageId, content,
         resources: [], mentions: [], mentionedBot: false, mentionAll: false,
         rawContentType: 'card_action', createTime: Date.now() });
-      status = `已提交：${answer.trim()}\n已排队，将在原会话继续处理。`;
+      if (size !== undefined) await this.deps.pending.flushPersistence();
+      status = size === undefined
+        ? `已提交：${answer.trim()}\n待处理队列已满，回答没有排入后续任务。`
+        : `已提交：${answer.trim()}\n已排队，将在原会话继续处理。`;
     }
     log.info('question', 'answered', { scope: input.scope, runId: entry.runId, delivery: result });
     return this.finish(entry, status);

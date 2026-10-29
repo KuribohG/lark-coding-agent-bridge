@@ -153,6 +153,7 @@ describe('agent-aware session catalog', () => {
       lastSummary: '  finished\n task  ',
       sourceMessageId: 'om_source',
       topicContextThrough: 1760000001000,
+      topicContextSeenMessageIds: ['om_input_a', 'om_input_b'],
       contextUsage: {
         inputTokens: 720_000,
         contextWindowTokens: 1_000_000,
@@ -168,6 +169,7 @@ describe('agent-aware session catalog', () => {
       lastSummary: 'finished task',
       sourceMessageId: 'om_source',
       topicContextThrough: 1760000001000,
+      topicContextSeenMessageIds: ['om_input_a', 'om_input_b'],
       contextUsage: {
         inputTokens: 720_000,
         contextWindowTokens: 1_000_000,
@@ -181,6 +183,7 @@ describe('agent-aware session catalog', () => {
       lastSummary: 'finished task',
       sourceMessageId: 'om_source',
       topicContextThrough: 1760000001000,
+      topicContextSeenMessageIds: ['om_input_a', 'om_input_b'],
       updatedAt: 3000,
     });
 
@@ -190,6 +193,7 @@ describe('agent-aware session catalog', () => {
     expect(catalog.activeFor(identity)).not.toHaveProperty('lastSummary');
     expect(catalog.activeFor(identity)).not.toHaveProperty('sourceMessageId');
     expect(catalog.activeFor(identity)).not.toHaveProperty('topicContextThrough');
+    expect(catalog.activeFor(identity)).not.toHaveProperty('topicContextSeenMessageIds');
     expect(catalog.activeFor(identity)).not.toHaveProperty('contextUsage');
     await catalog.flush();
   });
@@ -208,6 +212,7 @@ describe('agent-aware session catalog', () => {
       ...identity,
       now: 2000,
       topicContextThrough: 1760000002000,
+      topicContextSeenMessageIds: ['om_topic_input'],
       contextUsage: {
         inputTokens: 800_000,
         contextWindowTokens: 1_000_000,
@@ -220,6 +225,7 @@ describe('agent-aware session catalog', () => {
     await reloaded.load();
     expect(reloaded.activeFor(identity)).toMatchObject({
       topicContextThrough: 1760000002000,
+      topicContextSeenMessageIds: ['om_topic_input'],
       contextUsage: {
         inputTokens: 800_000,
         contextWindowTokens: 1_000_000,

@@ -27,6 +27,7 @@ export class FollowupRouter {
       if (activeRuns.get(scope) !== handle) return 'queued';
       const result = await sendRunInput(handle.run, { text: prompt, messageId: input.messageId });
       if (cancelled()) return 'cancelled';
+      if (result.status === 'accepted') activeRuns.recordInput(handle, input.messageId);
       return result.status === 'unknown' ? 'unknown' : result.status === 'accepted' ? 'accepted' : 'queued';
     });
     this.tails.set(handle.run, result);

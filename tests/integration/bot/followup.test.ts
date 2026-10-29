@@ -123,6 +123,17 @@ describe.each(['codex', 'claude'] as const)('in-flight %s IM delivery', agentKin
     await new Promise(resolve => setTimeout(resolve, 800));
     expect(h.agent.options).toHaveLength(0);
   });
+  it('does not spawn the old batch after /new changes session state during preparation', async () => {
+    const h = await harness(agentKind);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const prepare = vi.spyOn(h.agent, 'prepareRun').mockImplementation(() => gate);
+    await h.message('original');
+    await vi.waitFor(() => expect(prepare).toHaveBeenCalled(), { timeout: 2500 });
+    await h.message('/new'); release();
+    await new Promise(resolve => setTimeout(resolve, 800));
+    expect(h.agent.options).toHaveLength(0);
+  });
   it('cancels a debouncing message even when no run has started', async () => {
     const h = await harness(agentKind);
     await h.message('pending'); await h.message('/stop');

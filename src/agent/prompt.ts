@@ -25,6 +25,7 @@ export interface BridgePromptContext {
 export interface BridgePromptQuotedMessage {
   messageId: string;
   senderId: string;
+  openBotId?: string;
   senderName?: string;
   createdAt?: string;
   rawContentType: string;
@@ -45,6 +46,8 @@ export interface BridgePromptInteractiveCard {
 export interface BridgePromptTopicMessage {
   messageId: string;
   senderId: string;
+  /** Bot open_id when Lark provides one, so the model can identify self/other bots. */
+  openBotId?: string;
   senderName?: string;
   senderType?: 'user' | 'bot';
   createdAt?: string;

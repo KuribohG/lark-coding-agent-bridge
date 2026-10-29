@@ -13,6 +13,8 @@ import { Supervisor } from '../../../src/runtime/supervisor';
 const roots: string[] = [];
 const started: string[] = [];
 const disconnected: string[] = [];
+const pendingLifecycle: string[] = [];
+const restorePendingArgs: Array<boolean | undefined> = [];
 let root: string;
 let sup: Supervisor;
 
@@ -24,6 +26,16 @@ function app(id: string) {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const stubStartChannel: any = async (deps: any) => {
   started.push(deps.appPaths.profile);
+  restorePendingArgs.push(deps.restorePending);
+  deps.controls.pausePendingInput = () => pendingLifecycle.push(`pause:${deps.appPaths.profile}`);
+  deps.controls.flushPendingInput = async () => {
+    pendingLifecycle.push(`flush:${deps.appPaths.profile}`);
+  };
+  deps.controls.detachPendingInput = () => pendingLifecycle.push(`detach:${deps.appPaths.profile}`);
+  deps.controls.reloadPendingInput = async () => {
+    pendingLifecycle.push(`reload:${deps.appPaths.profile}`);
+  };
+  deps.controls.resumePendingInput = () => pendingLifecycle.push(`resume:${deps.appPaths.profile}`);
   return {
     channel: { botIdentity: { name: `bot-${deps.appPaths.profile}` } },
     disconnect: async () => {
@@ -35,6 +47,8 @@ const stubStartChannel: any = async (deps: any) => {
 beforeEach(async () => {
   started.length = 0;
   disconnected.length = 0;
+  pendingLifecycle.length = 0;
+  restorePendingArgs.length = 0;
   root = await mkdtemp(join(tmpdir(), 'bridge-sup-'));
   roots.push(root);
   const configPath = join(root, 'config.json');
@@ -120,6 +134,20 @@ describe('Supervisor', () => {
     expect(started.filter((p) => p === 'claude')).toHaveLength(2);
     expect(sup.list()).toEqual([
       expect.objectContaining({ profile: 'claude', agentKind: 'pi', online: true }),
+    ]);
+  });
+
+  it('hands pending input from the old channel to the new channel before resuming it', async () => {
+    await sup.startProfile('claude');
+    await sup.controlsFor('claude')!.restart();
+
+    expect(restorePendingArgs).toEqual([undefined, false]);
+    expect(pendingLifecycle).toEqual([
+      'pause:claude',
+      'flush:claude',
+      'detach:claude',
+      'reload:claude',
+      'resume:claude',
     ]);
   });
 });

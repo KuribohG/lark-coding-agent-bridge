@@ -27,6 +27,8 @@ export interface SessionCatalogEntry extends SessionCatalogIdentity {
   sourceMessageId?: string;
   /** Last successfully processed Feishu topic message timestamp (epoch ms). */
   topicContextThrough?: number;
+  /** Recent inputs already present in the native thread. */
+  topicContextSeenMessageIds?: string[];
   /** Last observed Codex context occupancy for this native session. */
   contextUsage?: SessionContextUsage;
   sessionId?: string;
@@ -55,6 +57,7 @@ export interface MarkSessionCatalogCompletedInput extends SessionCatalogIdentity
   now?: number;
   sourceMessageId?: string;
   topicContextThrough?: number;
+  topicContextSeenMessageIds?: string[];
   contextUsage?: SessionContextUsage;
   lastSummary?: string;
 }
@@ -69,6 +72,7 @@ export interface SessionCatalogGcOptions {
 const DEFAULT_MAX_ARCHIVED_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_ENTRIES_PER_SCOPE = 20;
 const DEFAULT_MAX_ENTRIES_PER_PROFILE = 1000;
+const MAX_SEEN_TOPIC_MESSAGE_IDS = 256;
 const KEY_SEPARATOR = '\x1f';
 
 export function sessionCatalogKey(input: SessionCatalogIdentity): string {
@@ -136,6 +140,9 @@ export class SessionCatalog {
       ?? (continuesSession ? previous?.lastSummary : undefined);
     const sourceMessageId = continuesSession ? previous?.sourceMessageId : undefined;
     const topicContextThrough = continuesSession ? previous?.topicContextThrough : undefined;
+    const topicContextSeenMessageIds = continuesSession
+      ? previous?.topicContextSeenMessageIds
+      : undefined;
     const contextUsage = continuesSession ? previous?.contextUsage : undefined;
     const entry: SessionCatalogEntry = {
       key,
@@ -148,6 +155,9 @@ export class SessionCatalog {
       ...(completedAt !== undefined ? { completedAt } : {}),
       ...(sourceMessageId ? { sourceMessageId } : {}),
       ...(topicContextThrough !== undefined ? { topicContextThrough } : {}),
+      ...(topicContextSeenMessageIds?.length
+        ? { topicContextSeenMessageIds }
+        : {}),
       ...(contextUsage ? { contextUsage } : {}),
       ...(input.sessionId ? { sessionId: input.sessionId } : {}),
       ...(input.threadId ? { threadId: input.threadId } : {}),
@@ -180,6 +190,10 @@ export class SessionCatalog {
     const sourceMessageId = normalizeMessageId(input.sourceMessageId) ?? entry.sourceMessageId;
     const topicContextThrough = normalizeTimestamp(input.topicContextThrough)
       ?? entry.topicContextThrough;
+    const topicContextSeenMessageIds = mergeMessageIds(
+      entry.topicContextSeenMessageIds,
+      input.topicContextSeenMessageIds,
+    );
     const contextUsage = normalizeContextUsage(input.contextUsage) ?? entry.contextUsage;
     this.data.set(key, {
       ...entry,
@@ -187,6 +201,9 @@ export class SessionCatalog {
       completedAt,
       ...(sourceMessageId ? { sourceMessageId } : {}),
       ...(topicContextThrough !== undefined ? { topicContextThrough } : {}),
+      ...(topicContextSeenMessageIds.length > 0
+        ? { topicContextSeenMessageIds }
+        : {}),
       ...(contextUsage ? { contextUsage } : {}),
       ...(lastSummary ? { lastSummary } : {}),
     });
@@ -286,6 +303,7 @@ function normalizeEntry(input: unknown): SessionCatalogEntry | undefined {
   }
   const sourceMessageId = normalizeMessageId(raw.sourceMessageId);
   const topicContextThrough = normalizeTimestamp(raw.topicContextThrough);
+  const topicContextSeenMessageIds = normalizeMessageIds(raw.topicContextSeenMessageIds);
   const contextUsage = normalizeContextUsage(raw.contextUsage);
   return {
     key: raw.key,
@@ -298,6 +316,9 @@ function normalizeEntry(input: unknown): SessionCatalogEntry | undefined {
     ...(typeof raw.completedAt === 'number' ? { completedAt: raw.completedAt } : {}),
     ...(sourceMessageId ? { sourceMessageId } : {}),
     ...(topicContextThrough !== undefined ? { topicContextThrough } : {}),
+    ...(topicContextSeenMessageIds.length > 0
+      ? { topicContextSeenMessageIds }
+      : {}),
     ...(contextUsage ? { contextUsage } : {}),
     ...(typeof raw.sessionId === 'string' ? { sessionId: raw.sessionId } : {}),
     ...(typeof raw.threadId === 'string' ? { threadId: raw.threadId } : {}),
@@ -313,6 +334,26 @@ function normalizeSummary(input: string | undefined): string | undefined {
 
 function normalizeMessageId(input: string | undefined): string | undefined {
   return input && /^om_\w+$/.test(input) ? input : undefined;
+}
+
+function normalizeMessageIds(input: unknown): string[] {
+  if (!Array.isArray(input)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of input) {
+    const messageId = normalizeMessageId(typeof value === 'string' ? value : undefined);
+    if (!messageId || seen.has(messageId)) continue;
+    seen.add(messageId);
+    out.push(messageId);
+  }
+  return out.slice(-MAX_SEEN_TOPIC_MESSAGE_IDS);
+}
+
+function mergeMessageIds(
+  previous: readonly string[] | undefined,
+  current: readonly string[] | undefined,
+): string[] {
+  return normalizeMessageIds([...(previous ?? []), ...(current ?? [])]);
 }
 
 function normalizeTimestamp(input: number | undefined): number | undefined {

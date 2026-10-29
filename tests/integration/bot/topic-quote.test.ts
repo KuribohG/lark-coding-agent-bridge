@@ -367,18 +367,21 @@ describe('topic message quote handling', () => {
     h.controls.profileConfig.agentKind = 'codex';
     await startTestBridge(h);
     const scope = 'oc_topic_chat:omt_catalog';
-    const input = (messageId: string) => message({
+    const input = (messageId: string, createTime = 1760000001000) => message({
       messageId,
       rootId: 'om_topic_root',
       parentId: 'om_topic_root',
       threadId: 'omt_catalog',
       content: '@Bridge 接着说',
+      createTime,
     });
 
     await h.channel.handlers.message?.(input('om_first'));
     await waitFor(() => h.agent.runOptions.length === 1);
     await waitFor(() => h.catalog.entries().some(entry =>
       entry.scopeId === scope && entry.topicContextThrough === 1760000001000));
+    expect(h.catalog.entries().find(entry => entry.scopeId === scope)?.topicContextSeenMessageIds)
+      .toEqual(expect.arrayContaining(['om_topic_root', 'om_first']));
     const callsAfterFirst = h.channel.rawClient.im.v1.message.list.mock.calls.length;
     expect(callsAfterFirst).toBe(1);
     h.sessions.clear(scope);
@@ -398,12 +401,119 @@ describe('topic message quote handling', () => {
       },
     }));
 
-    await h.channel.handlers.message?.(input('om_second'));
+    await h.channel.handlers.message?.(input('om_second', 1760000003000));
     await waitFor(() => h.agent.runOptions.length === 2);
     expect(h.channel.rawClient.im.v1.message.list).toHaveBeenCalledTimes(callsAfterFirst + 1);
     expect(h.agent.runOptions[1]?.prompt).toContain('<topic_context>');
     expect(h.agent.runOptions[1]?.prompt).toContain('unmentioned context after the first run');
     expect(h.agent.runOptions[1]?.prompt).not.toContain('the real upstream question');
+    await waitFor(() => h.catalog.entries().some(entry =>
+      entry.scopeId === scope
+      && entry.topicContextSeenMessageIds?.includes('om_unmentioned_context')));
+  });
+
+  it('does not advance the topic cursor when context import is incomplete', async () => {
+    const h = await createHarness({
+      chatMode: 'topic',
+      agentEvents: [
+        { type: 'system', threadId: 'codex-thread-incomplete' },
+        { type: 'done', terminationReason: 'normal' },
+      ],
+    });
+    h.profileConfig.agentKind = 'codex';
+    h.controls.profileConfig.agentKind = 'codex';
+    h.channel.rawClient.im.v1.message.list.mockRejectedValueOnce(new Error('timeout'));
+    await startTestBridge(h);
+    const scope = 'oc_topic_chat:omt_incomplete';
+
+    await h.channel.handlers.message?.(message({
+      messageId: 'om_incomplete',
+      rootId: 'om_root_incomplete',
+      parentId: 'om_root_incomplete',
+      threadId: 'omt_incomplete',
+      content: '@Bridge 处理上下文不完整的情况',
+    }));
+    await waitFor(() => h.catalog.entries().some(entry =>
+      entry.scopeId === scope && entry.completedAt !== undefined));
+
+    expect(h.catalog.entries().find(entry => entry.scopeId === scope)).not.toHaveProperty('topicContextThrough');
+    expect(h.agent.runOptions[0]?.prompt).toContain('本次话题上下文未能完整导入');
+  });
+
+  it('filters the bridge bot from automatic topic context', async () => {
+    const h = await createHarness({
+      chatMode: 'topic',
+      threadMessages: [
+        {
+          message_id: 'om_human_context',
+          msg_type: 'text',
+          body: { content: encodeFixture({ text: 'human upstream context' }) },
+          sender: { id: 'ou_human', sender_type: 'user', name: 'Human' },
+          create_time: '1760000000500',
+          thread_id: 'omt_self_filter',
+        },
+        {
+          message_id: 'om_bridge_self',
+          msg_type: 'post',
+          body: { content: encodeFixture({ text: 'bridge self output' }) },
+          sender: {
+            id: 'cli_bridge',
+            sender_type: 'app',
+            name: 'Bridge',
+            open_bot_id: 'ou_bot',
+          },
+          create_time: '1760000000600',
+          thread_id: 'omt_self_filter',
+        },
+      ],
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message({
+      messageId: 'om_self_filter_current',
+      rootId: 'om_human_context',
+      parentId: 'om_human_context',
+      threadId: 'omt_self_filter',
+      content: '@Bridge 看上面的上下文',
+    }));
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    const prompt = h.agent.runOptions[0]?.prompt ?? '';
+    expect(prompt).toContain('human upstream context');
+    expect(prompt).toContain('"senderName":"Human"');
+    expect(prompt).not.toContain('bridge self output');
+  });
+
+  it('falls back to topic context when an explicit quote cannot be fetched', async () => {
+    const h = await createHarness({
+      chatMode: 'topic',
+      threadMessages: [{
+        message_id: 'om_quoted_fallback',
+        msg_type: 'text',
+        body: { content: encodeFixture({ text: 'quoted fallback content' }) },
+        sender: { id: 'ou_human', sender_type: 'user', name: 'Human' },
+        create_time: '1760000000500',
+        thread_id: 'omt_quote_fallback',
+      }],
+    });
+    h.channel.fetchRawMessage.mockImplementation(async () => {
+      throw new Error('quote fetch timeout');
+    });
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(message({
+      messageId: 'om_quote_fallback_current',
+      rootId: 'om_quote_fallback_root',
+      parentId: 'om_quoted_fallback',
+      threadId: 'omt_quote_fallback',
+      content: '@Bridge 看这条引用',
+    }));
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    const prompt = h.agent.runOptions[0]?.prompt ?? '';
+    expect(prompt).toContain('quoted fallback content');
+    expect(prompt).toContain('用户引用的消息未能从飞书读取');
+    expect(prompt).not.toContain('<quoted_messages>');
   });
 
   it('persists successful context usage for status without blocking the run', async () => {
@@ -790,6 +900,7 @@ function message(input: {
   content: string;
   rawContentType?: string;
   mentionedBot?: boolean;
+  createTime?: number;
   mentions?: Array<{ key: string; openId: string; name: string; isBot: boolean }>;
 }): NormalizedMessage {
   const mentionedBot = input.mentionedBot ?? true;
@@ -813,7 +924,7 @@ function message(input: {
     parentId: input.parentId,
     ...(input.threadId ? { threadId: input.threadId } : {}),
     replyToMessageId: input.parentId,
-    createTime: 1760000001000,
+    createTime: input.createTime ?? 1760000001000,
   } as unknown as NormalizedMessage;
 }
 

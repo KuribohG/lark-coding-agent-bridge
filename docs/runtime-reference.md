@@ -170,7 +170,7 @@ DMs do not require an @ mention. Groups and topic groups require `@bot` by defau
 
 ### Conversation context
 
-Codex receives the stable bridge instructions through app-server `developerInstructions`; per-turn user text contains only the current Lark context and request. Topic groups seed a new native session from the newest upstream messages (normally at most 40 messages / 30,000 characters). A resumed topic imports only messages after the last successfully completed turn, because unmentioned group chatter is not present in the native session. Message IDs already present in the current batch or explicit quote are excluded. Context fetches are best-effort and remain bounded.
+Codex receives the stable bridge instructions through app-server `developerInstructions`; per-turn user text contains only the current Lark context and request. Topic groups seed a new native session from the newest upstream messages (normally at most 40 messages / 30,000 characters). A resumed topic imports only messages after the last complete context import, because unmentioned group chatter is not present in the native session. Imports stop at the triggering batch's newest timestamp, exclude the bot's own app messages, and track initial/steered input message IDs so already-delivered input is not replayed. A failed, partial, or truncated import does not advance the cursor; the agent is told that the historical context is incomplete.
 
 When Codex reports context occupancy, `/status` shows the percentage of the model context window used. Automatic Codex compaction is logged and shown as a progress status; completed turns retain the latest measured occupancy in the session catalog.
 
@@ -179,6 +179,8 @@ When Codex reports context occupancy, `/status` shows the percentage of the mode
 `/btw <question>` returns one reply labeled “旁问 /btw” in the current topic (or current chat for regular groups and DMs). Only `/btw` is registered, with no aliases. Claude and Codex share this behavior; a main session must already exist in this scope.
 
 A “Typing” reaction acknowledges the question while it is queued or running, and is removed when it finishes or is cancelled. If the question is withdrawn before the answer is sent, the bridge retries against the original topic root when available, or sends to the same chat for non-thread questions.
+
+Incoming-message batches are persisted per profile under `pending-queue.json` and restored only after the channel reconnects. Queues are bounded to 100 messages / 200,000 text characters per scope and flush after at most five seconds even under continuous debounce refresh. `/stop`, `/new`, `/cd`, workspace switches, and `/resume` cancel both queued input and a batch still in preparation before changing run state.
 
 Each question forks the main session's currently saved context and includes earlier successful side Q&A. Side questions have a separate per-scope queue, are never batched, and do not change the main session binding. The main task continues; side work can run concurrently when a process slot is available. The side agent is instructed to answer from existing context without continuing the main task.
 

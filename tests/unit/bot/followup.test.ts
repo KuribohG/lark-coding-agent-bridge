@@ -19,6 +19,7 @@ describe('follow-up routing', () => {
     const h = harness(); delete h.run.steer;
     h.run.sendInput = vi.fn(async input => ({ status: 'accepted', messageId: input.messageId, scope: 'active-turn' } as const));
     expect(await h.deliver()).toBe('accepted');
+    expect(h.activeRuns.get('chat:topic')?.inputMessageIds).toContain('m');
     expect(h.run.sendInput).toHaveBeenCalledWith({ text: 'supplement', messageId: 'm' });
     h.run.sendInput = vi.fn(async input => ({ status: 'unknown', messageId: input.messageId, message: 'lost receipt' } as const));
     expect(await h.deliver()).toBe('unknown');

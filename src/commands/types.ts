@@ -37,6 +37,11 @@ export interface Controls {
   /** Commands contributed by the active plugin host. */
   commands?: CommandDispatcher;
   cancelPendingInput?(scope: string): number;
+  flushPendingInput?(): Promise<void>;
+  pausePendingInput?(): void;
+  resumePendingInput?(): void;
+  detachPendingInput?(): void;
+  reloadPendingInput?(): Promise<void>;
   btw?: BtwCommandControl;
   launchTimedRun?(job: TimedRun, message: NormalizedMessage): Promise<void>;
   cancelTimedRun?(scope: string, id?: string): void;

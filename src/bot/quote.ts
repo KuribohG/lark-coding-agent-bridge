@@ -10,6 +10,8 @@ import { expandInteractiveCard } from './interactive-card';
 export interface QuotedContext {
   messageId: string;
   senderId: string;
+  /** Bot open_id exposed by Lark for app senders. */
+  openBotId?: string;
   senderName?: string;
   /** Human vs bot, derived from the Feishu `sender.sender_type`. Undefined when
    * the source item didn't carry it (single-quote fetch path). */
@@ -27,6 +29,20 @@ export interface QuotedContext {
 const TOPIC_CONTEXT_ITEM_OVERHEAD = 256;
 const TOPIC_CONTEXT_TRUNCATION_MARKER = '\n\n[话题上下文过长，中间内容已省略]\n\n';
 export const LARK_CONTEXT_MAX_CHARS = 30_000;
+
+export type TopicContextIncompleteReason =
+  | 'fetch-failed'
+  | 'message-limit'
+  | 'char-limit'
+  | 'normalize-failed'
+  | 'anchor-fetch-failed';
+
+export interface TopicContextFetchResult {
+  messages: QuotedContext[];
+  /** True only when every message in the requested window was fetched and fit. */
+  complete: boolean;
+  reason?: TopicContextIncompleteReason;
+}
 
 /**
  * Fetch and normalize the content of a message that the user is reply-quoting.
@@ -103,7 +119,7 @@ export async function fetchQuotedContext(
   return boundTopicContext(
     [quoted],
     opts.maxChars ?? LARK_CONTEXT_MAX_CHARS,
-  )[0];
+  ).messages[0];
 }
 
 function mapSenderType(raw: unknown): 'user' | 'bot' | undefined {
@@ -152,11 +168,20 @@ async function normalizeItemToQuoted(
     const createMs = parent.create_time
       ? Number.parseInt(String(parent.create_time), 10)
       : 0;
+    const sender = parent.sender as (ApiMessageItem['sender'] & {
+      name?: unknown;
+      open_bot_id?: unknown;
+    }) | undefined;
     return {
       messageId: parent.message_id,
       senderId: senderOpenId ?? '',
-      senderName: normalized.senderName,
-      senderType: mapSenderType(parent.sender?.sender_type),
+      ...(typeof sender?.open_bot_id === 'string' && sender.open_bot_id
+        ? { openBotId: sender.open_bot_id }
+        : {}),
+      senderName: typeof sender?.name === 'string' && sender.name
+        ? sender.name
+        : normalized.senderName,
+      senderType: mapSenderType(sender?.sender_type),
       createdAt: Number.isFinite(createMs) && createMs > 0
         ? new Date(createMs).toISOString()
         : '',
@@ -192,14 +217,19 @@ export async function fetchTopicContext(
     maxMessages: number;
     maxChars?: number;
     sinceMs?: number;
+    untilMs?: number;
     anchorMessageId?: string;
     excludeIds?: Set<string>;
+    selfOpenId?: string;
+    selfAppId?: string;
   },
-): Promise<QuotedContext[]> {
+): Promise<TopicContextFetchResult> {
   const collected: ApiMessageItem[] = [];
   const exclude = opts.excludeIds ?? new Set<string>();
   let pageToken: string | undefined;
   let reachedSince = false;
+  let hitMessageLimit = false;
+  let incompleteReason: TopicContextIncompleteReason | undefined;
   try {
     do {
       const res = await channel.rawClient.im.v1.message.list({
@@ -215,21 +245,34 @@ export async function fetchTopicContext(
         data?: { items?: ApiMessageItem[]; messages?: ApiMessageItem[]; has_more?: boolean; page_token?: string };
       }).data;
       const items = data?.items ?? data?.messages ?? [];
-      for (const item of items) {
+      for (let index = 0; index < items.length; index += 1) {
+        const item = items[index]!;
         const createdAt = messageCreateMs(item);
+        if (opts.untilMs !== undefined && createdAt !== undefined && createdAt > opts.untilMs) {
+          continue;
+        }
         if (opts.sinceMs !== undefined && createdAt !== undefined && createdAt <= opts.sinceMs) {
           reachedSince = true;
           break;
         }
+        const sender = item.sender as (ApiMessageItem['sender'] & {
+          open_bot_id?: unknown;
+        }) | undefined;
         if (
           !item.message_id ||
           exclude.has(item.message_id) ||
+          (opts.selfOpenId &&
+            sender?.open_bot_id === opts.selfOpenId) ||
+          (opts.selfAppId && sender?.id === opts.selfAppId) ||
           (item as { deleted?: boolean }).deleted
         ) {
           continue;
         }
         collected.push(item);
-        if (collected.length >= opts.maxMessages) break;
+        if (collected.length >= opts.maxMessages) {
+          hitMessageLimit = index < items.length - 1 || data?.has_more === true;
+          break;
+        }
       }
       pageToken = data?.has_more ? data.page_token : undefined;
     } while (pageToken && !reachedSince && collected.length < opts.maxMessages);
@@ -238,9 +281,10 @@ export async function fetchTopicContext(
       threadId,
       err: err instanceof Error ? err.message : String(err),
     });
-    return [];
+    return { messages: [], complete: false, reason: 'fetch-failed' };
   }
-  if (pageToken && collected.length >= opts.maxMessages) {
+  if (hitMessageLimit && !reachedSince) {
+    incompleteReason = 'message-limit';
     log.info('topic', 'context-truncated', {
       threadId,
       maxMessages: opts.maxMessages,
@@ -258,6 +302,7 @@ export async function fetchTopicContext(
     };
     const quoted = await normalizeItemToQuoted(channel, item, fetchSubMessages);
     if (quoted) out.push(quoted);
+    else incompleteReason ??= 'normalize-failed';
   }
 
   if (
@@ -282,6 +327,7 @@ export async function fetchTopicContext(
         if (quoted) out.unshift(quoted);
       }
     } catch (err) {
+      incompleteReason ??= 'anchor-fetch-failed';
       log.warn('topic', 'anchor-fetch-failed', {
         threadId,
         messageId: opts.anchorMessageId,
@@ -291,42 +337,61 @@ export async function fetchTopicContext(
   }
 
   out.sort(compareQuotedContextTime);
-  return boundTopicContext(
+  const bounded = boundTopicContext(
     out,
     opts.maxChars,
     opts.sinceMs === undefined ? opts.anchorMessageId : undefined,
   );
+  if (bounded.truncated) incompleteReason ??= 'char-limit';
+  return {
+    messages: bounded.messages,
+    complete: incompleteReason === undefined,
+    ...(incompleteReason ? { reason: incompleteReason } : {}),
+  };
 }
 
 function boundTopicContext(
   items: QuotedContext[],
   maxChars: number | undefined,
   anchorMessageId?: string,
-): QuotedContext[] {
-  if (maxChars === undefined || maxChars <= 0) return items;
+): { messages: QuotedContext[]; truncated: boolean } {
+  if (maxChars === undefined || maxChars <= 0) {
+    return { messages: items, truncated: false };
+  }
   const selected: QuotedContext[] = [];
   const order = new Map(items.map((item, index) => [item.messageId, index]));
   let used = 0;
+  let truncated = false;
   const anchor = anchorMessageId
     ? items.find(item => item.messageId === anchorMessageId)
     : undefined;
   if (anchor) {
     const fitted = fitTopicContextItem(anchor, Math.min(maxChars, 6_000));
     if (fitted) {
+      if (fitted.content !== anchor.content) truncated = true;
       selected.push(fitted);
       used += quotedContextChars(fitted);
+    } else {
+      truncated = true;
     }
   }
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index]!;
     if (item.messageId === anchor?.messageId) continue;
     const fitted = fitTopicContextItem(item, maxChars - used);
-    if (!fitted) continue;
+    if (!fitted) {
+      truncated = true;
+      continue;
+    }
+    if (fitted.content !== item.content) truncated = true;
     selected.push(fitted);
     used += quotedContextChars(fitted);
   }
-  return selected.sort((a, b) =>
-    (order.get(a.messageId) ?? 0) - (order.get(b.messageId) ?? 0));
+  return {
+    messages: selected.sort((a, b) =>
+      (order.get(a.messageId) ?? 0) - (order.get(b.messageId) ?? 0)),
+    truncated,
+  };
 }
 
 function fitTopicContextItem(item: QuotedContext, maxChars: number): QuotedContext | undefined {

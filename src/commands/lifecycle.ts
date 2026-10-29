@@ -4,6 +4,7 @@ import { log, reportMetric } from '../core/logger';
 import { isAlive, readAndPrune, resolveTarget } from '../runtime/registry';
 import type { CommandContext } from './types';
 import { reply } from './presentation';
+import { cancelPendingInput } from './context';
 
 export async function handleStop(args: string, ctx: CommandContext): Promise<void> {
   const targetScope = args.trim();
@@ -12,7 +13,7 @@ export async function handleStop(args: string, ctx: CommandContext): Promise<voi
     return;
   }
   const scope = targetScope || ctx.scope;
-  const dropped = ctx.controls.cancelPendingInput?.(scope) ?? 0;
+  const dropped = await cancelPendingInput(ctx, scope);
   ctx.controls.btw?.cancel(scope);
   ctx.controls.cancelTimedRun?.(scope);
   const ok = ctx.activeRuns.interrupt(scope);
@@ -209,20 +210,26 @@ export async function handleReconnect(args: string, ctx: CommandContext): Promis
   log.info('command', 'reconnect', { wait });
   await reply(ctx, wait ? '⏳ 将在当前运行结束后重连…' : '⏳ 正在停止当前运行并重连…');
   let resumeNewRuns: (() => void) | undefined;
+  let pausedPending = false;
   try {
     resumeNewRuns = ctx.activeRuns.pauseNewRuns('reconnect-in-progress');
+    ctx.controls.pausePendingInput?.();
+    pausedPending = true;
     if (wait) {
       await ctx.activeRuns.waitForAll();
     } else {
+      for (const scope of ctx.activeRuns.scopes()) await cancelPendingInput(ctx, scope);
       await ctx.activeRuns.stopAll();
     }
     await ctx.controls.restart({ wait });
+    pausedPending = false;
     log.info('command', 'reconnect-ok');
   } catch (err) {
     log.fail('command', err, { step: 'reconnect' });
     reportMetric('command_fail', 1, { step: 'reconnect' });
     await reply(ctx, `❌ 重连失败:${err instanceof Error ? err.message : String(err)}`);
   } finally {
+    if (pausedPending) ctx.controls.resumePendingInput?.();
     resumeNewRuns?.();
   }
 }

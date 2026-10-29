@@ -1,4 +1,7 @@
 import type { NormalizedMessage } from '@larksuite/channel';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
 
@@ -44,8 +47,95 @@ describe('PendingQueue', () => {
       vi.useRealTimers();
     }
   });
+
+  it('caps a scope and forces a batch after the maximum wait', async () => {
+    vi.useFakeTimers();
+    try {
+      const flushed: string[][] = [];
+      const queue = new PendingQueue(
+        10_000,
+        (_scope, batch) => flushed.push(batch.map(message => message.messageId)),
+      );
+
+      for (let index = 0; index < 99; index += 1) {
+        expect(queue.push('topic', message(`m-${index}`))).toBe(index + 1);
+      }
+
+      await vi.advanceTimersByTimeAsync(2_500);
+      expect(flushed).toEqual([]);
+      expect(queue.push('topic', message('m-late'))).toBe(100);
+      expect(queue.push('topic', message('overflow'))).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(2_499);
+      expect(flushed).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(flushed).toHaveLength(1);
+      expect(flushed[0]).toHaveLength(100);
+      expect(flushed[0]?.at(-1)).toBe('m-late');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('persists queued messages and resumes them after restart', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pending-queue-'));
+    const path = join(root, 'pending.json');
+    try {
+      const first = new PendingQueue(20, () => {}, path);
+      expect(first.push('topic', message('persisted'))).toBe(1);
+      await first.flushPersistence();
+      first.suspend();
+      expect(JSON.parse(await readFile(path, 'utf8'))).toHaveLength(1);
+
+      const flushed: string[][] = [];
+      const restarted = new PendingQueue(
+        5,
+        (_scope, batch) => flushed.push(batch.map(message => message.messageId)),
+        path,
+      );
+      await restarted.load();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(flushed).toEqual([]);
+      restarted.resume();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(flushed).toEqual([['persisted']]);
+      await restarted.flushPersistence();
+      expect(JSON.parse(await readFile(path, 'utf8'))).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('holds writes during a connect-before-disconnect handoff and merges live input on reload', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pending-handoff-'));
+    const path = join(root, 'pending.json');
+    try {
+      const first = new PendingQueue(60_000, () => {}, path);
+      first.push('topic', message('before-handoff'));
+      await first.flushPersistence();
+      first.suspend();
+
+      const handoff = new PendingQueue(60_000, () => {}, path);
+      handoff.suspend();
+      handoff.holdPersistence();
+      await handoff.load();
+      handoff.push('topic', message('during-handoff'));
+      await handoff.flushPersistence();
+      const held = JSON.parse(await readFile(path, 'utf8')) as Array<{ messages: NormalizedMessage[] }>;
+      expect(held.flatMap(entry => entry.messages.map(item => item.messageId)))
+        .toEqual(['before-handoff']);
+
+      await handoff.reload();
+      const merged = JSON.parse(await readFile(path, 'utf8')) as Array<{ messages: NormalizedMessage[] }>;
+      expect(merged.flatMap(entry => entry.messages.map(item => item.messageId)))
+        .toEqual(['before-handoff', 'during-handoff']);
+      handoff.suspend();
+      first.suspend();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 function message(messageId: string): NormalizedMessage {
-  return { messageId } as NormalizedMessage;
+  return { messageId, chatId: 'chat', content: messageId } as NormalizedMessage;
 }

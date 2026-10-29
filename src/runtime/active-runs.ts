@@ -12,6 +12,8 @@ export interface RunHandle {
   modelSettings?: import('../agent/model-settings').ModelSettings;
   stopReason?: 'deadline' | 'cancelled';
   sessionIdentity?: ActiveSessionIdentity;
+  /** Message IDs already delivered to this native run (initial batch or steer). */
+  inputMessageIds: Set<string>;
 }
 
 export class ActiveRuns {
@@ -39,7 +41,7 @@ export class ActiveRuns {
       throw new Error(`run already active for scope: ${chatId}`);
     }
     this.reservations.delete(chatId);
-    const handle: RunHandle = { run, interrupted: false };
+    const handle: RunHandle = { run, interrupted: false, inputMessageIds: new Set() };
     this.handles.set(chatId, handle);
     return handle;
   }
@@ -48,6 +50,16 @@ export class ActiveRuns {
     const handle = this.handles.get(chatId);
     if (handle?.run !== run) return;
     handle.sessionIdentity = { ...identity };
+  }
+
+  seedInputMessages(chatId: string, run: AgentRun, messageIds: Iterable<string>): void {
+    const handle = this.handles.get(chatId);
+    if (handle?.run !== run) return;
+    for (const messageId of messageIds) handle.inputMessageIds.add(messageId);
+  }
+
+  recordInput(handle: RunHandle, messageId: string): void {
+    handle.inputMessageIds.add(messageId);
   }
 
   pauseNewRuns(reason: string): () => void {

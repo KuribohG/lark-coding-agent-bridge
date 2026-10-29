@@ -246,7 +246,12 @@ class ManagedProfile {
     if (this.restarting) return;
     this.restarting = true;
     let nextAppLock: AcquiredRuntimeLock | undefined;
+    let pendingPaused = false;
+    let switched = false;
     try {
+      this.controls.pausePendingInput?.();
+      pendingPaused = true;
+      await this.controls.flushPendingInput?.();
       const nextRuntime = await resolveProfileRuntime({
         config: this.configPath,
         profile: this.appPaths.profile,
@@ -292,7 +297,9 @@ class ManagedProfile {
         controls: nextControls,
         appPaths: nextRuntime.appPaths,
         larkAuth: nextLarkAuth,
+        restorePending: false,
       });
+      this.controls.detachPendingInput?.();
       try {
         await this.bridge.disconnect();
       } catch (err) {
@@ -323,7 +330,12 @@ class ManagedProfile {
       this.execution = nextExecution;
       this.larkAuth = nextLarkAuth;
       this.controls = nextControls;
+      await nextControls.reloadPendingInput?.();
+      nextControls.resumePendingInput?.();
+      pendingPaused = false;
+      switched = true;
     } finally {
+      if (pendingPaused && !switched) this.controls.resumePendingInput?.();
       if (nextAppLock) await nextAppLock.release().catch(() => undefined);
       this.restarting = false;
     }

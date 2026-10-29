@@ -65,7 +65,7 @@ import {
 } from '../../runtime/run-flow';
 import { commandSessionCatalogIdentity } from '../../bot/session-catalog-identity';
 import { startKeepalive } from '../../bot/keepalive';
-import { PendingQueue } from '../../bot/pending-queue';
+import { MAX_PENDING_CHARS_PER_SCOPE, PendingQueue } from '../../bot/pending-queue';
 import { FollowupRouter } from '../../bot/followup';
 import { UserQuestions } from '../../bot/user-questions';
 import { ProcessPool } from '../../runtime/process-pool';
@@ -176,6 +176,8 @@ export interface StartChannelDeps {
   controls: Controls;
   appPaths?: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile' | 'mediaDir'>;
   larkAuth?: LarkProfileAuth;
+  /** Connect-before-disconnect restarts suppress restore until the old channel stops. */
+  restorePending?: boolean;
 }
 
 export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
@@ -294,70 +296,81 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   // unblock arms a fresh quiet-window timer. Net effect: at most one run per
   // chat in flight, and everything sent during a run merges into the next
   // batch (only flushed once the configured quiet window has passed *after the run*).
-  const pending = new PendingQueue(() => getMessageDebounceMs(controls.cfg), (scope, batch) => {
-    const firstMsg = batch[0];
-    if (!firstMsg) return;
-    const preparedCot = preparedCots.get(scope);
-    preparedCots.delete(scope);
-    pending.block(scope);
-    const controller = new AbortController();
-    batchControllers.set(scope, controller);
-    void withTrace({ chatId: firstMsg.chatId }, async () => {
-      log.info('flush', 'start', {
-        scope,
-        batchSize: batch.length,
-        chatId: firstMsg.chatId,
-        threadId: firstMsg.threadId,
-        msgId: firstMsg.messageId,
-      });
-      try {
-        const resolvedMode = firstMsg.threadId
-          ? 'topic'
-          : await chatModeCache.resolve(channel, firstMsg.chatId);
-        // Feishu/Lark converted topic groups may still resolve as `group` from
-        // the chat info API/cache, while message events already carry threadId.
-        // Treat threadId as authoritative for IM messages so scope and replies
-        // stay isolated per topic.
-        const mode = firstMsg.threadId ? 'topic' : resolvedMode;
-        if (firstMsg.threadId && resolvedMode !== 'topic') {
-          chatModeCache.invalidate(firstMsg.chatId);
-          logThreadModeOverride({
-            chatId: firstMsg.chatId,
-            resolvedMode,
-            threadId: firstMsg.threadId,
-          });
-        }
-        await runAgentBatch({
-          signal: controller.signal,
-          channel,
-          executor,
-          sessions,
-          sessionCatalog,
-          workspaces,
-          media,
-          activeRuns,
-          batch,
-          controls,
-          cotClient,
-          callbackAuth,
-          userQuestions,
-          activePolicyFingerprints,
-          lastRunModelByScope,
+  const pending = new PendingQueue(
+    () => getMessageDebounceMs(controls.cfg),
+    (scope, batch) => {
+      const firstMsg = batch[0];
+      if (!firstMsg) return;
+      const preparedCot = preparedCots.get(scope);
+      preparedCots.delete(scope);
+      pending.block(scope);
+      const controller = new AbortController();
+      batchControllers.set(scope, controller);
+      void withTrace({ chatId: firstMsg.chatId }, async () => {
+        log.info('flush', 'start', {
           scope,
-          agentKind: resolveAgentKind(scope),
-          mode,
-          preparedCot,
+          batchSize: batch.length,
+          chatId: firstMsg.chatId,
+          threadId: firstMsg.threadId,
+          msgId: firstMsg.messageId,
         });
-      } catch (err) {
-        await preparedCot?.finish('error');
-        log.fail('flush', err);
-      } finally {
-        if (batchControllers.get(scope) === controller) batchControllers.delete(scope);
-        pending.unblock(scope);
-        log.info('flush', 'end');
-      }
-    });
-  });
+        try {
+          const resolvedMode = firstMsg.threadId
+            ? 'topic'
+            : await chatModeCache.resolve(channel, firstMsg.chatId);
+          // Feishu/Lark converted topic groups may still resolve as `group` from
+          // the chat info API/cache, while message events already carry threadId.
+          // Treat threadId as authoritative for IM messages so scope and replies
+          // stay isolated per topic.
+          const mode = firstMsg.threadId ? 'topic' : resolvedMode;
+          if (firstMsg.threadId && resolvedMode !== 'topic') {
+            chatModeCache.invalidate(firstMsg.chatId);
+            logThreadModeOverride({
+              chatId: firstMsg.chatId,
+              resolvedMode,
+              threadId: firstMsg.threadId,
+            });
+          }
+          await runAgentBatch({
+            signal: controller.signal,
+            channel,
+            executor,
+            sessions,
+            sessionCatalog,
+            workspaces,
+            media,
+            activeRuns,
+            batch,
+            controls,
+            cotClient,
+            callbackAuth,
+            userQuestions,
+            activePolicyFingerprints,
+            lastRunModelByScope,
+            scope,
+            agentKind: resolveAgentKind(scope),
+            mode,
+            preparedCot,
+          });
+        } catch (err) {
+          await preparedCot?.finish('error');
+          log.fail('flush', err);
+        } finally {
+          if (batchControllers.get(scope) === controller) batchControllers.delete(scope);
+          pending.unblock(scope);
+          log.info('flush', 'end');
+        }
+      });
+    },
+    deps.appPaths?.mediaDir
+      ? join(dirname(deps.appPaths.mediaDir), 'pending-queue.json')
+      : undefined,
+  );
+  if (deps.restorePending === false) {
+    pending.suspend();
+    pending.holdPersistence();
+  }
+  await pending.load();
 
   const userQuestions = new UserQuestions({ channel, auth: callbackAuth, activeRuns, followups,
     pending, catalog: sessionCatalog, isTimed: scope => Boolean(controls.activeTimedRun?.(scope)) });
@@ -369,6 +382,11 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     void preparedCot?.finish('cancelled');
     return pending.cancel(scope).length;
   };
+  controls.flushPendingInput = () => pending.flushPersistence();
+  controls.pausePendingInput = () => pending.suspend();
+  controls.resumePendingInput = () => pending.resume();
+  controls.detachPendingInput = () => pending.detach();
+  controls.reloadPendingInput = () => pending.reload();
 
   const timedStore = await timedRuns(controls);
   const timedControllers = new Map<string, { id: string; controller: AbortController }>();
@@ -587,6 +605,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       ...(identity.name ? { name: identity.name } : {}),
     });
   }
+  if (deps.restorePending !== false) pending.resume();
   const defaultAgent = execution.defaultAgent();
   log.info('ws', 'connected', {
     bot: identity?.name ?? 'unknown',
@@ -614,6 +633,8 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     channel,
     disconnect: async () => {
       activeRuns.pauseNewRuns('bridge-disconnect');
+      for (const controller of batchControllers.values()) controller.abort();
+      batchControllers.clear();
       controls.btw = undefined;
       const btwClosed = btw.close();
       controls.launchTimedRun = undefined;
@@ -626,7 +647,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       // reconnect would be surprising.
       meetingManager?.dispose();
       controls.meeting = undefined;
-      pending.cancelAll();
+      pending.suspend();
       for (const preparedCot of preparedCots.values()) {
         void preparedCot.finish('cancelled');
       }
@@ -635,6 +656,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       const [disconnectResult, stopAllResult, ...flushResults] = await Promise.allSettled([
         channel.disconnect(),
         activeRuns.stopAll(),
+        pending.flushPersistence(),
         sessions.flush(),
         sessionCatalog?.flush(),
         callbackNonceStore?.flush(),
@@ -819,6 +841,20 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
   const scope = chatMode === 'topic' && threadId
     ? `${msg.chatId}:${threadId}`
     : msg.chatId;
+  if (emsg.content.length > MAX_PENDING_CHARS_PER_SCOPE) {
+    log.warn('intake', 'message-too-large', {
+      scope,
+      msgId: emsg.messageId,
+      chars: emsg.content.length,
+    });
+    await channel.send(emsg.chatId, {
+      markdown: `这条消息正文过长（${emsg.content.length} 字符），超过单条约 200k 字符的安全上限，未提交给 Agent。请拆分后重试。`,
+    }, {
+      replyTo: emsg.messageId,
+      ...(chatMode === 'topic' ? { replyInThread: true } : {}),
+    });
+    return;
+  }
   log.info('intake', 'enter', {
     scope,
     chatType: msg.chatType,
@@ -920,6 +956,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
       const preparedCot = preparedCots.get(scope);
       preparedCots.delete(scope);
       void preparedCot?.finish('cancelled');
+      await pending.flushPersistence();
     }
     log.info('intake', 'command', { scope, droppedPending: dropped.length });
     return;
@@ -934,7 +971,12 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
         const target = replyQuoteTargetForMessage(emsg, chatMode);
         const quote = target ? await fetchQuotedContext(channel, target) : undefined;
         return buildPrompt([emsg], [], quote ? [quote] : [], [], channel.botIdentity,
-          ['这是用户在当前任务执行期间发来的补充消息。请结合原任务处理；消息未明确取消原目标时继续保留原目标。']);
+          [
+            '这是用户在当前任务执行期间发来的补充消息。请结合原任务处理；消息未明确取消原目标时继续保留原目标。',
+            ...(target && !quote
+              ? ['用户引用的消息未能从飞书读取；不要猜测其内容，如上下文不足请明确说明。']
+              : []),
+          ]);
       },
     });
     if (result !== 'queued') {
@@ -969,7 +1011,21 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
     }
   }
   const size = pending.push(scope, emsg);
+  if (size === undefined) {
+    if (preparedCot) {
+      preparedCots.delete(scope);
+      void preparedCot.finish('cancelled');
+    }
+    await channel.send(emsg.chatId, {
+      markdown: '当前话题的待处理队列已满，这条消息没有入队。请等待现有任务结束，或发送 /stop 清空后重试。',
+    }, {
+      replyTo: emsg.messageId,
+      ...(chatMode === 'topic' ? { replyInThread: true } : {}),
+    });
+    return;
+  }
   if (wasBusy) {
+    await pending.flushPersistence();
     await channel.send(emsg.chatId, { markdown: '已排队，将在当前任务结束后处理；/stop 会同时取消排队消息。' }, {
       replyTo: emsg.messageId, ...(chatMode === 'topic' ? { replyInThread: true } : {}),
     });
@@ -1026,6 +1082,11 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     preparedCot,
   } = deps;
   if (batch.length === 0) return;
+  batch.sort((left, right) => {
+    const leftTime = Number.isFinite(left.createTime) ? left.createTime : 0;
+    const rightTime = Number.isFinite(right.createTime) ? right.createTime : 0;
+    return leftTime - rightTime;
+  });
   const firstMsg = batch[0];
   const lastMsg = batch[batch.length - 1];
   if (!firstMsg || !lastMsg) return;
@@ -1065,16 +1126,25 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     ),
   ];
   const quotes: QuotedContext[] = [];
+  const fetchedQuoteIds = new Set<string>();
   for (const targetId of quoteTargets) {
     const q = await fetchQuotedContext(channel, targetId);
     if (q) {
       quotes.push(q);
+      fetchedQuoteIds.add(targetId);
       log.info('quote', 'fetched', {
         messageId: targetId,
         type: q.rawContentType,
         contentChars: q.content.length,
       });
     }
+  }
+  const failedQuoteIds = quoteTargets.filter((targetId) => !fetchedQuoteIds.has(targetId));
+  if (failedQuoteIds.length > 0) {
+    log.warn('quote', 'batch-fetch-incomplete', {
+      count: failedQuoteIds.length,
+      messageIds: failedQuoteIds,
+    });
   }
 
   const accessDecision =
@@ -1090,10 +1160,18 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
 
   // Topic upstream context. A resumed native session only contains messages
   // that actually reached the agent; unmentioned group chatter never does.
-  // Import unseen messages on every topic turn, using the last successful run
-  // as a cursor. A migrated entry without a cursor gets a recent-window seed.
+  // Import unseen messages on every topic turn, using the last complete import
+  // as a cursor. Failed/truncated windows remain pending and are retried.
   let topicContext: QuotedContext[] = [];
   let topicContextSince: number | undefined;
+  let topicContextThrough: number | undefined;
+  let topicContextComplete = true;
+  let topicContextIncompleteReason: string | undefined;
+  let topicContextSeenMessageIds: string[] = [];
+  const topicContextUntil = batch.reduce((latest, message) => {
+    const createTime = Number.isFinite(message.createTime) ? message.createTime : undefined;
+    return createTime !== undefined && createTime > latest ? createTime : latest;
+  }, 0);
   if (mode === 'topic' && threadId) {
     const context = await resolveRunFlowContext({
       scopeId: scope,
@@ -1109,22 +1187,35 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       now: Date.now(),
     });
     if (context.ok && context.resumeFrom && sessionCatalog) {
-      topicContextSince = sessionCatalog.activeFor({
+      const entry = sessionCatalog.activeFor({
         scopeId: scope,
         agentId: capability.agentId,
         cwdRealpath: context.workspace.cwdRealpath,
         policyFingerprint: context.policy.policyFingerprint,
-      })?.topicContextThrough;
+      });
+      topicContextSince = entry?.topicContextThrough;
+      topicContextSeenMessageIds = entry?.topicContextSeenMessageIds ?? [];
     }
 
-    const exclude = new Set([...batchIds, ...quoteTargets]);
-    topicContext = await fetchTopicContext(channel, threadId, {
+    const exclude = new Set([...batchIds, ...fetchedQuoteIds, ...topicContextSeenMessageIds]);
+    const fetched = await fetchTopicContext(channel, threadId, {
       maxMessages: TOPIC_CONTEXT_MAX_MESSAGES,
       maxChars: LARK_CONTEXT_MAX_CHARS,
       ...(topicContextSince !== undefined ? { sinceMs: topicContextSince } : {}),
+      ...(topicContextUntil > 0 ? { untilMs: topicContextUntil } : {}),
       ...(firstMsg.rootId ? { anchorMessageId: firstMsg.rootId } : {}),
       excludeIds: exclude,
+      ...(channel.botIdentity?.openId ? { selfOpenId: channel.botIdentity.openId } : {}),
+      ...(controls.profileConfig.accounts.app.id
+        ? { selfAppId: controls.profileConfig.accounts.app.id }
+        : {}),
     });
+    topicContext = fetched.messages;
+    topicContextComplete = fetched.complete;
+    topicContextIncompleteReason = fetched.reason;
+    if (topicContextComplete && topicContextUntil > 0) {
+      topicContextThrough = topicContextUntil;
+    }
     topicContext = topicContext.filter(message => !controls.btw?.excludes(scope, message));
     if (topicContext.length > 0) {
       log.info('topic', 'context-fetched', {
@@ -1133,6 +1224,14 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         count: topicContext.length,
         incremental: topicContextSince !== undefined,
         ...(topicContextSince !== undefined ? { sinceMs: topicContextSince } : {}),
+      });
+    }
+    if (!topicContextComplete) {
+      log.warn('topic', 'context-incomplete', {
+        scope,
+        threadId,
+        reason: topicContextIncompleteReason,
+        count: topicContext.length,
       });
     }
   }
@@ -1153,12 +1252,20 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const prevModel = lastRunModelByScope.get(modelStateKey);
   const modelSwitched = prevModel !== undefined && prevModel !== modelSelection;
   lastRunModelByScope.set(modelStateKey, modelSelection);
-  const extraInstructions = modelSwitched
-    ? [
+  const extraInstructions = [
+    ...(!topicContextComplete
+      ? ['本次话题上下文未能完整导入。不要假设你已经看到该话题中所有未直接送达 bot 的消息；涉及缺失上下文时应明确说明。']
+      : []),
+    ...(failedQuoteIds.length > 0
+      ? ['有一条或多条用户引用的消息未能从飞书读取。不要猜测这些引用消息的内容；如无法完成任务请明确说明。']
+      : []),
+    ...(modelSwitched
+      ? [
         `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
           '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
-      ]
-    : [];
+        ]
+      : []),
+  ];
   if (deps.timedJob) extraInstructions.push(deadlineInstructions(deps.timedJob.stopAt, deps.timedJob.windDownAt));
 
   const prompt = buildPrompt(
@@ -1247,6 +1354,7 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   }
   activePolicyFingerprints.set(scope, flow.policy.policyFingerprint);
   const handle = execution.handle;
+  activeRuns.seedInputMessages(scope, handle.run, batchIds);
   if (flow.resumeFrom) {
     log.info('session', 'resume', { sessionId: flow.resumeFrom, cwd });
   } else {
@@ -1364,10 +1472,16 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   })();
 
   try {
-    await presentRunOutput(execution, createLarkRunOutput({
-      channel, chatId, replyMode, sendOpts, cardRenderOptions,
-      cotMessages, cotClient, preparedCot, originMessageId: lastMsg.messageId, inputPreview: lastMsg.content,
-    }), { idleTimeoutMs, recordSession, filterForPrefs });
+    try {
+      await presentRunOutput(execution, createLarkRunOutput({
+        channel, chatId, replyMode, sendOpts, cardRenderOptions,
+        cotMessages, cotClient, preparedCot, originMessageId: lastMsg.messageId, inputPreview: lastMsg.content,
+      }), { idleTimeoutMs, recordSession, filterForPrefs });
+    } catch (err) {
+      // Rendering is not part of the model transaction. A failed Feishu write
+      // must not make the next turn forget that this run actually completed.
+      log.fail('stream', err);
+    }
     if (await execution.result === 'completed' && sessionCatalog) {
       const sourceMessageId = firstMsg.messageId;
       sessionCatalog.markCompleted({
@@ -1376,13 +1490,24 @@ async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         cwdRealpath: sessionCwd,
         policyFingerprint: flow.policy.policyFingerprint,
         sourceMessageId,
-        ...(mode === 'topic' ? { topicContextThrough: lastMsg.createTime } : {}),
+        ...(mode === 'topic' && topicContextThrough !== undefined
+          ? { topicContextThrough }
+          : {}),
+        ...(mode === 'topic'
+          ? {
+              topicContextSeenMessageIds: [
+                ...topicContextSeenMessageIds,
+                ...topicContext.map((message) => message.messageId),
+                ...batchIds,
+                ...fetchedQuoteIds,
+                ...handle.inputMessageIds,
+              ],
+            }
+          : {}),
         ...(contextUsage ? { contextUsage } : {}),
         lastSummary: summarizeRunInput(batch),
       });
     }
-  } catch (err) {
-    log.fail('stream', err);
   } finally {
     activePolicyFingerprints.delete(scope);
     if (deps.timedJob) {
@@ -1532,6 +1657,7 @@ function toPromptQuote(q: QuotedContext): BridgePromptQuotedMessage {
   return {
     messageId: q.messageId,
     senderId: q.senderId,
+    ...(q.openBotId ? { openBotId: q.openBotId } : {}),
     ...(q.senderName ? { senderName: q.senderName } : {}),
     ...(q.createdAt ? { createdAt: q.createdAt } : {}),
     rawContentType: q.rawContentType,
@@ -1543,6 +1669,7 @@ function toPromptTopicMessage(q: QuotedContext): BridgePromptTopicMessage {
   return {
     messageId: q.messageId,
     senderId: q.senderId,
+    ...(q.openBotId ? { openBotId: q.openBotId } : {}),
     ...(q.senderName ? { senderName: q.senderName } : {}),
     ...(q.senderType ? { senderType: q.senderType } : {}),
     ...(q.createdAt ? { createdAt: q.createdAt } : {}),

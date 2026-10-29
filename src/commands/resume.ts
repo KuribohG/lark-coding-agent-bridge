@@ -12,7 +12,7 @@ import {
 } from '../agent/backend-spec';
 import type { CommandContext } from './types';
 import { reply, commandReplyOptions } from './presentation';
-import { commandProfilePaths, effectiveWorkspaceCwd } from './context';
+import { cancelPendingInput, commandProfilePaths, effectiveWorkspaceCwd } from './context';
 
 interface ResumeCandidate {
   scopeId: string;
@@ -137,6 +137,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     if (resolved) {
       ctx.controls.btw?.reset(ctx.scope);
       ctx.controls.cancelTimedRun?.(ctx.scope);
+      await cancelPendingInput(ctx);
       ctx.activeRuns.interrupt(ctx.scope);
       if (identitySpec.sessionIdField === 'threadId') {
         ctx.sessionCatalog.upsertActive({
@@ -172,6 +173,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     }
     ctx.controls.btw?.reset(ctx.scope);
     ctx.controls.cancelTimedRun?.(ctx.scope);
+    await cancelPendingInput(ctx);
     ctx.activeRuns.interrupt(ctx.scope);
     if (identitySpec.legacySessionStore) {
       ctx.sessions.set(ctx.scope, sessionId, ctx.sessionCatalogIdentity.cwdRealpath);
@@ -196,6 +198,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
   }
   ctx.controls.btw?.reset(ctx.scope);
   ctx.controls.cancelTimedRun?.(ctx.scope);
+  await cancelPendingInput(ctx);
   ctx.activeRuns.interrupt(ctx.scope);
   ctx.sessions.set(ctx.scope, sessionId, cwd);
   await reply(ctx, RESUME_APPLIED_REPLY);
