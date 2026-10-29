@@ -1,5 +1,6 @@
 import type { BridgePluginFactory, PluginAction, PluginContext } from './api';
 import { PluginHost } from './host';
+import { createWorkflowsPlugin } from './workflows/plugin';
 import {
   createWorkItemsPlugin,
   type WorkItemsPluginOptions,
@@ -11,7 +12,7 @@ export interface BuiltinPluginOptions extends WorkItemsPluginOptions {}
 export function createBuiltinPlugins(
   options: BuiltinPluginOptions = {},
 ): BridgePluginFactory {
-  return context => [createWorkItemsPlugin(context, options)];
+  return context => [createWorkItemsPlugin(context, options), createWorkflowsPlugin()];
 }
 
 /** One-shot validation used by configuration commands that do not host plugins. */

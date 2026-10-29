@@ -136,6 +136,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     const resolved = consumeResumeCandidate(sessionId, ctx.sessionCatalogIdentity);
     if (resolved) {
       ctx.controls.btw?.reset(ctx.scope);
+      ctx.controls.workflow?.invalidate(ctx.scope);
       ctx.controls.cancelTimedRun?.(ctx.scope);
       await cancelPendingInput(ctx);
       ctx.activeRuns.interrupt(ctx.scope);
@@ -172,6 +173,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
       return;
     }
     ctx.controls.btw?.reset(ctx.scope);
+    ctx.controls.workflow?.invalidate(ctx.scope);
     ctx.controls.cancelTimedRun?.(ctx.scope);
     await cancelPendingInput(ctx);
     ctx.activeRuns.interrupt(ctx.scope);
@@ -197,6 +199,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     return;
   }
   ctx.controls.btw?.reset(ctx.scope);
+  ctx.controls.workflow?.invalidate(ctx.scope);
   ctx.controls.cancelTimedRun?.(ctx.scope);
   await cancelPendingInput(ctx);
   ctx.activeRuns.interrupt(ctx.scope);

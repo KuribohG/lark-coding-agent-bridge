@@ -57,7 +57,7 @@ export class AgyAdapter implements AgentAdapter {
     const content = `${instructions}\n\n${options.prompt}${attachments}`;
     return withExecutionContract(startProcessRun({
       agent: this.id, runId: options.runId, command: this.options.binary ?? 'agy', args,
-      cwd: options.cwd!, env: mergeProcessEnv(mergeProcessEnv(process.env, this.options.env), provider?.env),
+      cwd: options.cwd!, env: mergeProcessEnv(mergeProcessEnv(mergeProcessEnv(process.env, this.options.env), provider?.env), options.env),
       stdin: `${JSON.stringify({ event: 'user', message: { content } })}\n`,
       translator: new AgyStreamTranslator(), strictJson: true,
       deadlineAt: options.deadlineAt, stopGraceMs: options.stopGraceMs ?? 1000, stopSignal: 'SIGINT',

@@ -64,7 +64,9 @@
     "docs/user-guide",
     "docs/channels.md",
     "docs/configuration.md",
-    "docs/config.example.toml"
+    "docs/config.example.toml",
+    "docs/workflows.md",
+    "workflow-definitions"
   ],
   "scripts": {
     "dev": "tsup --watch",

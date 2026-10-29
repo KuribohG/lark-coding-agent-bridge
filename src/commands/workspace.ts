@@ -26,6 +26,7 @@ export async function handleNew(args: string, ctx: CommandContext): Promise<void
     return handleNewChat(rawName, ctx);
   }
 
+  ctx.controls.workflow?.invalidate(ctx.scope);
   ctx.controls.cancelTimedRun?.(ctx.scope);
   await cancelPendingInput(ctx);
   const wasRunning = ctx.activeRuns.interrupt(ctx.scope);
@@ -95,6 +96,7 @@ export async function handleCd(args: string, ctx: CommandContext): Promise<void>
     await reply(ctx, workspace.userVisible);
     return;
   }
+  ctx.controls.workflow?.invalidate(ctx.scope);
   ctx.controls.cancelTimedRun?.(ctx.scope);
   await cancelPendingInput(ctx);
   ctx.activeRuns.interrupt(ctx.scope);
@@ -163,6 +165,7 @@ async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
     await reply(ctx, workspace.userVisible);
     return;
   }
+  ctx.controls.workflow?.invalidate(ctx.scope);
   ctx.controls.cancelTimedRun?.(ctx.scope);
   await cancelPendingInput(ctx);
   ctx.activeRuns.interrupt(ctx.scope);

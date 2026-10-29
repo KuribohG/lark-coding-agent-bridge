@@ -115,6 +115,7 @@ export class ClaudeAdapter implements AgentAdapter {
       cwd: opts.cwd,
       env: mergeProcessEnv(process.env, {
         ...this.env,
+        ...opts.env,
         ...(this.configDir ? { CLAUDE_CONFIG_DIR: this.configDir } : {}),
       }),
       stdio: ['pipe', 'pipe', 'pipe'],

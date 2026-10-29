@@ -141,7 +141,7 @@ export class CodexAdapter implements AgentAdapter {
     const provider = opts.modelProvider?.codex;
     const configOverrides: string[] = [];
     const threadConfig: Record<string, unknown> = this.appServerMode === 'daemon'
-      ? { shell_environment_policy: { inherit: 'all' } }
+      ? { shell_environment_policy: { inherit: 'all', ...(opts.env ? { set: opts.env } : {}) } }
       : {};
     if (provider) {
       const prefix = `model_providers.${provider.providerId}`;
@@ -193,7 +193,7 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   private runEnvironment(opts: AgentRunOptions): NodeJS.ProcessEnv {
-    const envOverrides: NodeJS.ProcessEnv = { ...this.env };
+    const envOverrides: NodeJS.ProcessEnv = { ...this.env, ...(this.appServerMode === 'per-run' ? opts.env : {}) };
     if (this.codexHome) {
       envOverrides.CODEX_HOME = this.codexHome;
     } else if (!this.inheritCodexHome) {

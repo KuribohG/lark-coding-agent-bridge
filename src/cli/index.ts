@@ -1,4 +1,5 @@
 import { AGENT_KINDS } from '../agent/backend-spec';
+import { runWorkflow } from './commands/workflow';
 import { checkConfig, showConfig, setConfig, unsetConfig, migrateToToml } from './commands/config';
 import { Command } from 'commander';
 import { dirname } from 'node:path';
@@ -105,6 +106,13 @@ program.command('slack')
   .option('--bot-token-secret <id>', 'keystore ID for the bot token', 'slack-bot-token')
   .option('--app-token-secret <id>', 'keystore ID for the app-level token', 'slack-app-token')
   .action(runSlack);
+
+program.command('workflow <operation>')
+  .description('Call the current bridge-owned workflow using this run’s scoped binding')
+  .option('--input <json>', 'structured operation arguments')
+  .option('--input-file <path>', 'read structured arguments from a JSON file')
+  .option('--json', 'return structured JSON')
+  .action(runWorkflow);
 
 const config = program.command('config').description('Inspect and edit layered execution and channel configuration');
 config.command('check').option('-c, --config <path>').action(checkConfig);

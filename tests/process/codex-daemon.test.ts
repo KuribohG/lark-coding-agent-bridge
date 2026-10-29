@@ -131,6 +131,19 @@ async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]>
 }
 
 describe('Codex persistent app-server mode', () => {
+  it('binds workflow credentials per thread and replaces them on resume without placing them in daemon arguments', async () => {
+    const h = await harness();
+    const first = { ...h.runOptions(), env: { LARK_WORKFLOW_TOKEN: 'turn-one-token', LARK_WORKFLOW_ENDPOINT: 'http://127.0.0.1:1234/workflow' } };
+    await h.adapter.prepareRun(first);
+    await collect(h.adapter.run(first).events);
+    const second = { ...h.runOptions(), runId: 'resume', threadId: 'thread-1', env: { LARK_WORKFLOW_TOKEN: 'turn-two-token' } };
+    await h.adapter.prepareRun(second);
+    await collect(h.adapter.run(second).events);
+    expect(h.requests.find(request => request.method === 'thread/start')?.params.config.shell_environment_policy.set).toEqual(first.env);
+    expect(h.requests.find(request => request.method === 'thread/resume')?.params.config.shell_environment_policy.set).toEqual(second.env);
+    expect(JSON.stringify(await h.records())).not.toContain('turn-one-token');
+    expect(JSON.stringify(await h.records())).not.toContain('turn-two-token');
+  });
   it('starts the daemon once for concurrent preparation, then uses a per-run WebSocket connection', async () => {
     const h = await harness();
     const options = h.runOptions();

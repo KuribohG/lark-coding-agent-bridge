@@ -13,10 +13,11 @@ export async function handleStop(args: string, ctx: CommandContext): Promise<voi
     return;
   }
   const scope = targetScope || ctx.scope;
+  const workflowCancelled = ctx.controls.workflow?.cancel(scope) ?? false;
   const dropped = await cancelPendingInput(ctx, scope);
   ctx.controls.btw?.cancel(scope);
   ctx.controls.cancelTimedRun?.(scope);
-  const ok = ctx.activeRuns.interrupt(scope);
+  const ok = ctx.activeRuns.interrupt(scope) || workflowCancelled;
   log.info('command', 'stop', {
     scope,
     targeted: Boolean(targetScope),

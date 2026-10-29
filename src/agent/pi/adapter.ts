@@ -130,6 +130,7 @@ export class PiAdapter implements AgentAdapter {
       cwd: opts.cwd,
       env: mergeProcessEnv(process.env, {
         ...this.env,
+        ...opts.env,
         ...opts.modelProvider?.env,
         ...(this.agentDir ? { PI_CODING_AGENT_DIR: this.agentDir } : {}),
         PI_SKIP_VERSION_CHECK: '1',

@@ -34,6 +34,11 @@ export interface CommandDispatcher {
 }
 
 export interface Controls {
+  workflow?: {
+    command(scope: string, args: string, message: NormalizedMessage): Promise<string | undefined>;
+    cancel(scope: string): boolean;
+    invalidate(scope: string): void;
+  };
   /** Commands contributed by the active plugin host. */
   commands?: CommandDispatcher;
   cancelPendingInput?(scope: string): number;

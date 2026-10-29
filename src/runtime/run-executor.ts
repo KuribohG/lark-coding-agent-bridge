@@ -27,6 +27,12 @@ export interface RunExecutorDeps {
 }
 
 export interface SubmitRunInput {
+  /** Authorized root used for adapter resolution; scopeId remains the execution mutex. */
+  agentScopeId?: string;
+  env?: Readonly<Record<string, string>>;
+  priority?: 'foreground' | 'background';
+  /** Revalidate a managed worker's authorization after waiting for admission. */
+  validateBeforeRun?(): Promise<void>;
   deadlineAt?: number;
   signal?: AbortSignal;
   scopeId: string;
@@ -122,7 +128,10 @@ export class RunExecutor {
     };
     let release: (() => void) | undefined;
     try {
-      release = input.nowait ? this.pool.tryAcquire() : await this.pool.acquire(controller.signal);
+      release = input.nowait ? this.pool.tryAcquire(input.priority) : await this.pool.acquire(controller.signal, input.priority);
+      checkDeadline();
+      controller.signal.throwIfAborted();
+      if (release) await input.validateBeforeRun?.();
       checkDeadline();
       controller.signal.throwIfAborted();
     } catch (err) {
@@ -151,7 +160,7 @@ export class RunExecutor {
     const queueWaitMs = startedAt - submittedAt;
     let agent: AgentAdapter;
     try {
-      agent = this.resolveAgent(input.scopeId);
+      agent = this.resolveAgent(input.agentScopeId ?? input.scopeId);
     } catch (err) {
       release();
       releaseScope();
@@ -168,6 +177,7 @@ export class RunExecutor {
       throw new SpawnFailed('model provider resolve failed', err, 'agent-prepare-failed');
     }
     const runOptions = {
+      env: input.env,
       deadlineAt: input.deadlineAt,
       runId,
       prompt: input.policy.prompt,
@@ -188,6 +198,7 @@ export class RunExecutor {
     let handle!: RunHandle;
     try {
       await agent.prepareRun?.(runOptions);
+      await input.validateBeforeRun?.();
       checkDeadline();
       controller.signal.throwIfAborted();
     } catch (err) {
