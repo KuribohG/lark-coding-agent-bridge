@@ -32,7 +32,7 @@ describe('workflow IPC and worker execution', () => {
     const policy: RunPolicyAllow = { ok: true, prompt: '', requestedCwd: '/workspace', cwdRealpath: '/workspace',
       accessMode: 'full', sandbox: 'danger-full-access', permissionMode: 'bypassPermissions',
       access: { ok: true, reason: 'allowed-user' }, attachments: [], policyFingerprint: 'policy', expiresAt: Date.now() + 60_000 };
-    const agent = new FakeAgentAdapter({ id: 'codex', events: [
+    const agent = new FakeAgentAdapter({ id: 'codex', capabilities: { finalAnswer: 'separate-event', input: 'unsupported' }, events: [
       [{ type: 'system', threadId: 'child-1' }, { type: 'text', delta: 'progress must not become the result' },
         { type: 'final_text', content: 'proposal' }, { type: 'done', terminationReason: 'normal' }],
       [{ type: 'system', threadId: 'child-1' }, { type: 'final_text', content: 'follow-up answer' }, { type: 'done', terminationReason: 'normal' }],
@@ -51,7 +51,7 @@ describe('workflow IPC and worker execution', () => {
     await runtime.kernel.tick();
     await vi.waitFor(() => expect(runtime.kernel.state(root.scopeId)?.tasks[0]?.status).toBe('result_ready'));
     const state = runtime.kernel.state(root.scopeId)!;
-    expect(resolveAgent).toHaveBeenCalledWith('real-topic');
+    expect(resolveAgent).toHaveBeenCalledWith('real-topic', 'codex');
     expect(agent.runOptions[0]?.threadId).toBeUndefined();
     expect(agent.runOptions[0]?.env?.LARK_WORKFLOW_TOKEN).not.toEqual(main.env.LARK_WORKFLOW_TOKEN);
     expect(state.sessions[0]?.nativeSessionId).toBe('child-1');

@@ -46,6 +46,9 @@ describe('ProfileExecutionController', () => {
     expect(resolver.kindFor('chat:topic-pi')).toBe('pi');
     expect(resolver.get('chat').id).toBe('codex');
     expect(resolver.get('chat:topic-pi').id).toBe('pi');
+    expect(resolver.get('chat', 'pi').id).toBe('pi');
+    expect(resolver.kindFor('chat')).toBe('codex');
+    expect(store.get('chat')).toBeUndefined();
     expect(resolver.profileFor('chat:topic-pi').agentKind).toBe('pi');
     expect(resolver.capabilityFor('chat:topic-pi')).toMatchObject({
       agentId: 'pi',

@@ -20,7 +20,7 @@ import {
 export interface ExecutionController {
   readonly defaultAgentKind: AgentKind;
   defaultAgent(): AgentAdapter;
-  get(scope: string): AgentAdapter;
+  get(scope: string, agentKind?: AgentKind): AgentAdapter;
   kindFor(scope: string): AgentKind;
   profileFor(scope: string): AgentExecutionProfile;
   capabilityFor(scope: string): AgentCapability;
@@ -74,8 +74,8 @@ export class ProfileExecutionController implements ExecutionController {
     return this.agentForKind(this.defaultAgentKind);
   }
 
-  get(scope: string): AgentAdapter {
-    return this.agentForKind(this.kindFor(scope));
+  get(scope: string, agentKind?: AgentKind): AgentAdapter {
+    return this.agentForKind(agentKind ?? this.kindFor(scope));
   }
 
   kindFor(scope: string): AgentKind {
@@ -147,7 +147,10 @@ export class FixedExecutionController implements ExecutionController {
   get defaultAgentKind(): AgentKind { return this.profileConfig.agentKind; }
 
   defaultAgent(): AgentAdapter { return this.agent; }
-  get(): AgentAdapter { return this.agent; }
+  get(_scope?: string, agentKind?: AgentKind): AgentAdapter {
+    if (agentKind && agentKind !== this.defaultAgentKind) throw new Error('fixed execution controller does not support engine overrides');
+    return this.agent;
+  }
   kindFor(): AgentKind { return this.defaultAgentKind; }
   profileFor(): AgentExecutionProfile { return this.profileConfig; }
   capabilityFor(): AgentCapability { return capabilityForProfile(this.profileConfig); }

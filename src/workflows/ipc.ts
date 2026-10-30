@@ -84,6 +84,7 @@ export async function callWorkflow(method: string, args: unknown, env = process.
 
 export const WORKFLOW_TOOL_INSTRUCTIONS = `工作流工具通过 shell 调用：node "$LARK_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。环境里的 CLI 路径属于当前 bridge 版本。
 只在用户要求多 agent 架构设计时 start；pluginId=architecture-review，goal 为完整需求契约。start 需要 operationId；所有其他变更需要 workflowId、唯一 operationId、expectedStateVersion（从 status 返回）。冲突时重读 status，不自动重试不同内容。
-操作：status；start；delegate(role,actorKey,taskKey,objective,inputRefs)；send(taskId,inputId,text，仅空闲子会话)；read_artifact(ref)；publish_artifact(kind=context|architecture-decision,text)；ack_events(eventIds)；begin_revision_round；cancel_task(taskId)；pause；resume；cancel；complete(reportRef,openIssues:[],verificationLimits)。
+操作：status；start；delegate(role,actorKey,taskKey,objective,inputRefs,execution?)；send(taskId,inputId,text，仅空闲子会话)；read_artifact(ref)；publish_artifact(kind=context|architecture-decision,text)；ack_events(eventIds)；begin_revision_round；cancel_task(taskId)；pause；resume；cancel；complete(reportRef,openIssues:[],verificationLimits)。
+delegate 可用 execution:{agentKind,model?,reasoningEffort?} 为 worker 选择 harness；省略时继承主会话。仅限当前已授权 profile，不接受其它 profile、凭据或环境变量。跨 harness 不继承主会话模型；指定目标支持的 model 可固定模型。send 始终沿用已绑定 harness 和原生会话。当前后端必须支持独立 final_text；角色说明不改变权限。
 delegate 后结束 turn，子任务由 bridge 管理。内部事件是子任务通知，不是用户消息，不是原生问题答案。不要读取或展示环境中的调用凭据。
 P0 只提供文本产物，未实现受控测试、需求版本修订或重启恢复。主、子运行沿用已授权 profile；角色只读说明不代表工具沙箱隔离。`;

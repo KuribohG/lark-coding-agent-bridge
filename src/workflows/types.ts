@@ -29,10 +29,24 @@ export interface WorkerSession {
   actorId: string;
   actorKey: string;
   role: string;
+  /** Absent only on instances persisted by older bridge builds. */
+  execution?: WorkerExecution;
   nativeIdKind: 'sessionId' | 'threadId';
   nativeSessionId?: string;
   observedModel?: string;
   generation: number;
+}
+
+export interface WorkerExecutionSelection extends ModelSettings {
+  agentKind: AgentKind;
+}
+
+export interface WorkerExecution {
+  agentKind: AgentKind;
+  profile: string;
+  modelSettings: ModelSettings;
+  policyFingerprint: string;
+  configurationFingerprint: string;
 }
 
 export interface WorkflowTask {
@@ -110,6 +124,7 @@ export interface WorkflowWorkerResult {
 
 export interface WorkflowHost {
   resolveRoot(scopeId: string): Promise<WorkflowRoot | undefined>;
+  resolveWorker?(root: WorkflowRoot, selection: WorkerExecutionSelection): Promise<WorkerExecution>;
   execute(request: WorkflowWorkerRequest): Promise<WorkflowWorkerResult>;
   wakeMain(scopeId: string): Promise<void>;
 }

@@ -5,12 +5,15 @@ import { log } from '../core/logger';
 import { WorkflowKernel } from './kernel';
 import { WorkflowIpc, WORKFLOW_TOOL_INSTRUCTIONS } from './ipc';
 import { workflowDigest } from './definitions';
-import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from './types';
+import { inheritedWorkerExecution } from './execution';
+import type { WorkerExecution, WorkerExecutionSelection, WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from './types';
 
 export interface WorkflowRuntimeDeps {
   path: string;
   executor: RunExecutor;
   resolve(scopeId: string): Promise<{ root: WorkflowRoot; policy: RunPolicyAllow } | undefined>;
+  resolveWorker?(root: WorkflowRoot, selection: WorkerExecutionSelection, policy: RunPolicyAllow):
+    Promise<{ execution: WorkerExecution; policy: RunPolicyAllow }>;
   wakeMain(scopeId: string): Promise<void>;
   /** Source hosts may supply their built CLI; packaged bundles share dist/cli.js. */
   cliPath?: string;
@@ -24,6 +27,7 @@ export class WorkflowRuntime {
   constructor(private readonly deps: WorkflowRuntimeDeps) {
     this.kernel = new WorkflowKernel(deps.path, {
       resolveRoot: async scope => (await deps.resolve(scope))?.root,
+      resolveWorker: async (root, selection) => (await this.resolveWorker(root, selection)).execution,
       execute: request => this.execute(request),
       wakeMain: deps.wakeMain,
     });
@@ -48,25 +52,28 @@ export class WorkflowRuntime {
 
   private async execute(request: WorkflowWorkerRequest): Promise<WorkflowWorkerResult> {
     const { workflow, task, session, attemptId, signal } = request;
-    const current = await this.deps.resolve(workflow.root.scopeId);
-    if (!current || workflowDigest(current.root) !== workflowDigest(workflow.root)) throw new Error('Worker root authorization changed');
+    const pinned = session.execution ?? inheritedWorkerExecution(workflow.root, { agentKind: workflow.root.agentKind });
+    const selection = { agentKind: pinned.agentKind, ...pinned.modelSettings };
+    const current = await this.resolveWorker(workflow.root, selection);
+    if (workflowDigest(current.execution) !== workflowDigest(pinned)) throw new Error('Worker execution binding changed');
     const binding = this.ipc.bind({ kind: 'worker', scopeId: workflow.root.scopeId, workflowId: workflow.workflowId,
       taskId: task.taskId, attemptId }, workflow.deadlineAt);
     try {
       const execution = await this.deps.executor.submit({
         scopeId: `workflow:${workflow.workflowId}:${session.sessionRef}`,
         agentScopeId: workflow.root.scopeId,
+        agentKind: pinned.agentKind, requireFinalAnswer: true,
         priority: 'background', env: binding.env,
         validateBeforeRun: async () => {
-          const admitted = await this.deps.resolve(workflow.root.scopeId);
-          if (!admitted || workflowDigest(admitted.root) !== workflowDigest(workflow.root)) throw new Error('Worker binding changed while queued');
+          const admitted = await this.resolveWorker(workflow.root, selection);
+          if (workflowDigest(admitted.execution) !== workflowDigest(pinned)) throw new Error('Worker binding changed while queued');
         },
         policy: { ...current.policy, prompt: request.prompt },
         systemPrompt: '你是 bridge 管理的工作流子 agent。只完成给定文本分析任务。不要向用户或外部应用发送消息，不要修改代码、执行共享测试或派生子 agent。输出最终答复供主 agent 审查。角色提示不改变实际执行权限。',
-        ...workflow.root.modelSettings,
+        ...pinned.modelSettings,
         ...(session.nativeSessionId ? { [session.nativeIdKind]: session.nativeSessionId } : {}),
         deadlineAt: workflow.deadlineAt, signal,
-        observability: { profile: workflow.root.profile, agent: workflow.root.agentKind, source: 'workflow', stage: session.role },
+        observability: { profile: pinned.profile, agent: pinned.agentKind, source: 'workflow', stage: session.role },
       });
       let text: string | undefined;
       let question: string | undefined;
@@ -95,6 +102,17 @@ export class WorkflowRuntime {
       const result = await execution.result;
       return { status: result === 'completed' && normal ? 'completed' : result === 'stopped' ? 'stopped' : 'failed', text, question, error };
     } finally { binding.release(); }
+  }
+
+  private async resolveWorker(root: WorkflowRoot, selection: WorkerExecutionSelection) {
+    const current = await this.deps.resolve(root.scopeId);
+    if (!current || workflowDigest(current.root) !== workflowDigest(root)) throw new Error('Worker root authorization changed');
+    const resolved = this.deps.resolveWorker
+      ? await this.deps.resolveWorker(root, selection, current.policy)
+      : { execution: inheritedWorkerExecution(root, selection), policy: current.policy };
+    if (resolved.execution.agentKind !== selection.agentKind || resolved.execution.profile !== root.profile
+      || resolved.policy.cwdRealpath !== root.cwdRealpath) throw new Error('Worker resolver changed authorized scope');
+    return resolved;
   }
 
   async close(): Promise<void> {

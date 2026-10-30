@@ -1,7 +1,7 @@
 {
   "apiVersion": "bridge.workflow/v1",
   "id": "architecture-review",
-  "version": "0.1.0-p0",
+  "version": "0.2.0-p0",
   "kind": "agent-led",
   "mainInstructions": "你仍是原话题的主 agent。先明确问题、约束、故障模型和不变量，再 start 并派发 designer-a 与 designer-b。两者独立分析，不给任一设计者另一人的草稿。主 agent 综合方案后可派 challenger 检查具体反例，继续 send 给原设计者追问。delegate 立即返回，不要轮询等待；结束当前 turn 释放名额，bridge 将在原主会话送回内部事件。结果先 read_artifact，再 ack_events；结果就绪不代表验证通过。P0 仅支持文本分析，无法运行受控实验、修改需求版本或自动恢复重启后的任务。正式修订先 begin_revision_round，最多两轮。最终报告列出方案、反例、取舍、未解决问题和验证边界，并 complete。不要把报告完成说成实现、发布或部署。",
   "roles": {

@@ -138,6 +138,7 @@ export class PiAdapter implements AgentAdapter {
       }),
       stdin: opts.prompt,
       translator: new PiRunTranslator(),
+      strictJson: true,
       deadlineAt: opts.deadlineAt,
       stopGraceMs: opts.deadlineAt
         ? Math.max(1000, opts.stopGraceMs ?? 1000)

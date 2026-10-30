@@ -34,6 +34,30 @@ P0 operations: `status`, `start`, `delegate`, `send`, `read_artifact`, `publish_
 
 ## Boundaries and next stages
 
+### Cross-harness workers (definition 0.2.0-p0)
+
+On builds containing this version, a Codex root may delegate a Pi or Claude worker without changing the root's backend or native session. `delegate` accepts an optional `execution` object:
+
+```json
+{
+  "workflowId": "<from status>",
+  "operationId": "<unique operation ID>",
+  "expectedStateVersion": 1,
+  "role": "designer-b",
+  "actorKey": "pi-designer",
+  "taskKey": "alternative-design",
+  "objective": "Propose an independent design under the original requirements",
+  "inputRefs": [],
+  "execution": { "agentKind": "pi", "model": "<model supported by your Pi configuration>", "reasoningEffort": "high" }
+}
+```
+
+Use the current `stateVersion` from `status`, not the example value. Omit `execution` to inherit the root backend and model settings. With another backend, omitted model settings use that backend's scoped/native defaults, never the root backend's model name. Supply an explicit model to pin the model choice; native defaults are not a frozen model configuration. Every actor records its backend, current profile reference, model overrides, configuration/policy fingerprints and observed native session. No credentials are stored in workflow state.
+
+Targets use the current authorized profile's backend launch configuration and provider registry. Arbitrary profiles, environment variables and credentials are not accepted in `execution`. Effective access cannot exceed the root or target capability; unsupported access modes (for example Pi with a workspace sandbox) are rejected. This does not add filesystem isolation. The target must declare authoritative final answers; unsupported backends fail before spawn. Configuration and authorization are checked again after queue admission and before launch. `send` cannot change execution settings and always resumes the original native session; choose a new actor for another backend. Worker identities remain outside the root session catalog.
+
+Pi emits `final_text` only for the last completed assistant message with a normal stop, after `agent_settled` or a successful legacy JSON-mode process exit. Tool output, retries, interrupted/truncated messages, malformed JSON and failed process exits do not become final answers. Pi input remains request/response, which matches P0's idle-session-only `send` contract.
+
 The versioned definition is `workflow-definitions/architecture-review/workflow.json`; the kernel pins a copy and its digest in each instance. The generic kernel, IPC and worker executor are under `src/workflows`; the command contribution is a static `BridgePlugin` under `src/plugins/workflows`. The Lark host supplies root authorization and main-session wake services. The root native identity remains in `SessionCatalog`; worker identities never write its root slot.
 
 P0 stores evidence across restarts but marks unfinished workflows `interrupted` and does not automatically replay them. Cancel the interrupted instance and explicitly start a new one. A reconnect waits for the old channel to close before the new workflow service opens its database.

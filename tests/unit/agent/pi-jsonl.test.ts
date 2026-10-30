@@ -75,6 +75,7 @@ describe('PiRunTranslator', () => {
         cachedInputTokens: 7,
         costUsd: 0.004,
       },
+      { type: 'final_text', content: 'hello' },
       { type: 'done', sessionId: 'sess-1', terminationReason: 'normal' },
     ]);
     expect(translator.terminalEmitted()).toBe(true);
@@ -132,10 +133,56 @@ describe('PiRunTranslator', () => {
         stopReason: 'error',
         errorMessage: '401 unauthorized',
       },
-    })).toContainEqual({
+    })).not.toContainEqual(expect.objectContaining({ type: 'final_text' }));
+    expect(providerFailure.translate({ type: 'agent_settled', aborted: false })).toContainEqual({
       type: 'error',
       message: '401 unauthorized',
       terminationReason: 'failed',
     });
+  });
+
+  it.each(['settled', 'exit'])('publishes only the last completed assistant answer at %s', terminal => {
+    const translator = new PiRunTranslator();
+    translator.translate({ type: 'message_end', message: { role: 'assistant', stopReason: 'toolUse',
+      content: [{ type: 'text', text: 'investigating' }, { type: 'toolCall', id: 't', name: 'read' }] } });
+    translator.translate({ type: 'tool_execution_start', toolCallId: 't', toolName: 'read' });
+    translator.translate({ type: 'tool_execution_end', toolCallId: 't', result: 'tool output' });
+    expect(translator.translate({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop',
+      content: [{ type: 'text', text: 'final answer' }] } })).not.toContainEqual(expect.objectContaining({ type: 'final_text' }));
+    const events = terminal === 'settled' ? translator.translate({ type: 'agent_settled', aborted: false })
+      : translator.finish({ exitCode: 0, stderr: '', interrupted: false, timedOut: false });
+    expect(events).toEqual([{ type: 'final_text', content: 'final answer' }, { type: 'done', terminationReason: 'normal' }]);
+    expect(translator.finish({ exitCode: 0, stderr: '', interrupted: false, timedOut: false })).toEqual([]);
+  });
+
+  it.each(['aborted', 'error', 'retry', 'new-message', 'tool', 'timeout', 'exit-error', 'signal'])('does not promote stale output after %s', reason => {
+    const translator = new PiRunTranslator();
+    translator.translate({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: 'stale' } });
+    let events;
+    if (reason === 'aborted') events = translator.translate({ type: 'agent_settled', aborted: true });
+    else if (['timeout', 'exit-error', 'signal'].includes(reason)) events = translator.finish({
+      exitCode: reason === 'signal' ? null : reason === 'exit-error' ? 1 : 0,
+      stderr: '', interrupted: false, timedOut: reason === 'timeout',
+    });
+    else {
+      if (reason === 'error') translator.translate({ type: 'message_end', message: { role: 'assistant', stopReason: 'error', errorMessage: 'failure' } });
+      if (reason === 'retry') translator.translate({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 0 });
+      if (reason === 'new-message') translator.translate({ type: 'message_start', message: { role: 'assistant' } });
+      if (reason === 'tool') translator.translate({ type: 'tool_execution_start', toolCallId: 't', toolName: 'read' });
+      events = translator.translate({ type: 'agent_settled', aborted: false });
+    }
+    expect(events).not.toContainEqual(expect.objectContaining({ type: 'final_text' }));
+  });
+
+  it('allows native retry after a failed message and publishes the recovered answer', () => {
+    const translator = new PiRunTranslator();
+    translator.translate({ type: 'message_end', message: { role: 'assistant', stopReason: 'error', errorMessage: 'temporary' } });
+    expect(translator.terminalEmitted()).toBe(false);
+    translator.translate({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 0 });
+    translator.translate({ type: 'message_start', message: { role: 'assistant' } });
+    translator.translate({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: 'recovered' } });
+    expect(translator.translate({ type: 'agent_settled', aborted: false })).toEqual([
+      { type: 'final_text', content: 'recovered' }, { type: 'done', terminationReason: 'normal' },
+    ]);
   });
 });

@@ -14,7 +14,7 @@ export interface RunExecutorDeps {
   /** Fixed adapter for legacy single-engine runtimes. */
   agent?: AgentAdapter;
   /** Resolve the adapter from the originating chat/topic scope for each run. */
-  resolveAgent?: (scopeId: string) => AgentAdapter;
+  resolveAgent?: (scopeId: string, agentKind?: AgentKind) => AgentAdapter;
   pool: ProcessPool;
   activeRuns: ActiveRuns;
   createRunId?: () => string;
@@ -29,6 +29,9 @@ export interface RunExecutorDeps {
 export interface SubmitRunInput {
   /** Authorized root used for adapter resolution; scopeId remains the execution mutex. */
   agentScopeId?: string;
+  /** Explicit managed-worker backend; authorization remains rooted in agentScopeId. */
+  agentKind?: AgentKind;
+  requireFinalAnswer?: boolean;
   env?: Readonly<Record<string, string>>;
   priority?: 'foreground' | 'background';
   /** Revalidate a managed worker's authorization after waiting for admission. */
@@ -69,7 +72,7 @@ export interface RunExecution {
 const DEFAULT_POST_DONE_EXIT_GRACE_MS = 2000;
 
 export class RunExecutor {
-  private readonly resolveAgent: (scopeId: string) => AgentAdapter;
+  private readonly resolveAgent: (scopeId: string, agentKind?: AgentKind) => AgentAdapter;
   private readonly pool: ProcessPool;
   private readonly activeRuns: ActiveRuns;
   private readonly createRunId: () => string;
@@ -160,7 +163,12 @@ export class RunExecutor {
     const queueWaitMs = startedAt - submittedAt;
     let agent: AgentAdapter;
     try {
-      agent = this.resolveAgent(input.agentScopeId ?? input.scopeId);
+      const scope = input.agentScopeId ?? input.scopeId;
+      agent = input.agentKind ? this.resolveAgent(scope, input.agentKind) : this.resolveAgent(scope);
+      if (input.agentKind && agent.id !== input.agentKind) throw new Error('Resolved worker backend does not match its binding');
+      if (input.requireFinalAnswer && agent.capabilities?.finalAnswer !== 'separate-event') {
+        throw new Error('Worker backend does not provide authoritative final answers');
+      }
     } catch (err) {
       release();
       releaseScope();

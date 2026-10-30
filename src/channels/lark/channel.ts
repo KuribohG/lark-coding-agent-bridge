@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { WorkflowRuntime } from '../../workflows/runtime';
 import { workflowDigest } from '../../workflows/definitions';
+import { resolveWorkerExecution } from '../../workflows/execution';
 import { larkDisplay } from './config';
 import { createLarkRunOutput } from './run-output';
 import { presentRunOutput } from '../../runtime/run-output';
@@ -185,7 +186,7 @@ export interface StartChannelDeps {
 
 export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
   const { cfg, execution, sessions, sessionCatalog, workspaces, controls } = deps;
-  const resolveAgent = (scope: string) => execution.get(scope);
+  const resolveAgent = (scope: string, agentKind?: AgentKind) => execution.get(scope, agentKind);
   const resolveAgentKind = (scope: string) => execution.kindFor(scope);
   const setAgentKind = (scope: string, kind: AgentKind) => execution.setScopeKind(scope, kind);
   const activeRuns = new ActiveRuns();
@@ -296,6 +297,14 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   let workflows: WorkflowRuntime | undefined;
   const createWorkflows = () => sessionCatalog && deps.appPaths?.mediaDir ? new WorkflowRuntime({
     path: join(dirname(deps.appPaths.mediaDir), 'workflows.sqlite'), executor,
+    resolveWorker: async (root, selection, policy) => {
+      const { agentKind, ...overrides } = selection;
+      const profile = profileForAgentKind(controls.profileConfig, agentKind);
+      const settings = agentKind === root.agentKind ? { ...root.modelSettings, ...overrides }
+        : await resolveRunModelSettings(controls, root.scopeId, overrides, agentKind);
+      return resolveWorkerExecution(root, profile, policy,
+        { model: settings.model, reasoningEffort: settings.reasoningEffort });
+    },
     resolve: async scope => {
       const message = workflowOrigins.get(scope);
       if (!message) return undefined;

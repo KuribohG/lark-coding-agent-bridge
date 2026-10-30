@@ -32,6 +32,8 @@ Create a Pi profile with `lark-channel-bridge profile create pi --agent pi`, or 
 
 Pi JSON mode is request/response rather than a duplex transport, so messages sent while a Pi turn is running queue for the next turn instead of steering the active one. Read-only profiles expose only `read`, `grep`, `find`, and `ls` and disable extensions. Full profiles inherit Pi's normal tools. Pi has no portable workspace-only filesystem sandbox, so the bridge rejects the `workspace` access mode rather than silently treating it as isolated.
 
+Builds with architecture-review `0.2.0-p0` also translate Pi's normal final assistant answer into a separate `final_text` event. This permits Pi workers under a different root harness; see [workflow execution bindings](workflows.md#cross-harness-workers-definition-020-p0). Earlier builds expose only streamed Pi output and cannot use it as a workflow result.
+
 The current `@earendil-works/pi-coding-agent` package requires Node.js 22.19 or newer. The adapter also accepts the `@mariozechner/pi-coding-agent` 0.73 JSON protocol on supported Node versions.
 
 ## Antigravity CLI backend

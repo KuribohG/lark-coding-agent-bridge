@@ -5,6 +5,7 @@ import Database from 'better-sqlite3';
 import { sessionIdFieldForAgent } from '../agent/backend-spec';
 import { log } from '../core/logger';
 import { workflowDefinition, workflowDigest } from './definitions';
+import { inheritedWorkerExecution, workerSelection } from './execution';
 import type {
   WorkflowArtifact, WorkflowCaller, WorkflowEvent, WorkflowHost, WorkflowRoot,
   WorkflowState, WorkflowTask, WorkflowWorkerResult,
@@ -97,6 +98,12 @@ export class WorkflowKernel {
     }
     const root = await this.host.resolveRoot(scope);
     if (!root) throw new Error('No authorized active root session');
+    const selection = method === 'delegate' ? workerSelection(args.execution, root) : undefined;
+    const workerExecution = selection
+      ? await (this.host.resolveWorker?.(root, selection) ?? inheritedWorkerExecution(root, selection)) : undefined;
+    if (selection && workflowDigest(root) !== workflowDigest(await this.host.resolveRoot(scope))) {
+      throw new Error('Root binding changed while resolving worker execution');
+    }
     const committed = this.db.prepare('SELECT digest, response FROM workflow_operations WHERE scope = ? AND id = ?')
       .get(scope, operationId) as { digest: string; response: string } | undefined;
     if (committed) {
@@ -136,7 +143,7 @@ export class WorkflowKernel {
       case 'delegate': {
         if (state.status !== 'active') throw new Error('Workflow is paused');
         const taskKey = requiredText(args.taskKey, 200);
-        const requestDigest = workflowDigest({ role: args.role, actorKey: args.actorKey, objective: args.objective, inputRefs: args.inputRefs });
+        const requestDigest = workflowDigest({ role: args.role, actorKey: args.actorKey, objective: args.objective, inputRefs: args.inputRefs, execution: args.execution });
         const existing = state.tasks.find(task => task.taskKey === taskKey);
         if (existing) {
           if (existing.requestDigest !== requestDigest) throw new Error('taskKey conflict');
@@ -159,7 +166,8 @@ export class WorkflowKernel {
         }
         const sessionRef = randomUUID();
         const actorId = randomUUID();
-        state.sessions.push({ sessionRef, actorId, actorKey, role, generation: 1, nativeIdKind: sessionIdFieldForAgent(root.agentKind) });
+        state.sessions.push({ sessionRef, actorId, actorKey, role, generation: 1, execution: workerExecution,
+          nativeIdKind: sessionIdFieldForAgent(workerExecution!.agentKind) });
         const task: WorkflowTask = { taskId: randomUUID(), taskKey, requestDigest, sessionRef,
           objective: requiredText(args.objective), inputRefs, status: 'queued', attempts: [], inputs: [], resultRefs: [] };
         state.tasks.push(task);
@@ -168,6 +176,7 @@ export class WorkflowKernel {
       }
       case 'send': {
         if (state.status !== 'active') throw new Error('Workflow is paused');
+        if (args.execution !== undefined) throw new Error('send cannot change worker execution; delegate a new actor instead');
         const task = this.task(state, requiredText(args.taskId));
         const inputId = requiredText(args.inputId, 200);
         const text = requiredText(args.text);

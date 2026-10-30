@@ -44,11 +44,12 @@ describe('PiAdapter process contract', () => {
       sandbox: 'read-only',
     });
 
-    expect(run.capabilities).toEqual({ finalAnswer: 'stream', input: 'unsupported' });
+    expect(run.capabilities).toEqual({ finalAnswer: 'separate-event', input: 'unsupported' });
     expect(await collect(run.events)).toEqual([
       { type: 'system', sessionId: 'sess-resumed', cwd: '/repo' },
       { type: 'text', delta: 'OK' },
       { type: 'usage', inputTokens: 2, outputTokens: 1, cachedInputTokens: 0, costUsd: 0 },
+      { type: 'final_text', content: 'OK' },
       { type: 'done', sessionId: 'sess-resumed', terminationReason: 'normal' },
     ]);
     expect(await run.waitForExit(1000)).toBe(true);

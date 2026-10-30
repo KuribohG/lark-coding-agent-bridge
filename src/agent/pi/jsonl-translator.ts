@@ -13,6 +13,7 @@ export class PiRunTranslator {
   private sessionId: string | undefined;
   private terminal = false;
   private lastError: string | undefined;
+  private finalText: string | undefined;
   private textBlocksWithDelta = new Set<number>();
   private thinkingBlocksWithDelta = new Set<number>();
   private startedTools = new Set<string>();
@@ -56,14 +57,10 @@ export class PiRunTranslator {
         return [];
       case 'agent_settled': {
         this.terminal = true;
-        if (raw.aborted === true && this.lastError) {
+        if (this.lastError) {
           return [this.error(this.lastError)];
         }
-        return [{
-          type: 'done',
-          ...(this.sessionId ? { sessionId: this.sessionId } : {}),
-          terminationReason: raw.aborted === true ? 'interrupted' : 'normal',
-        }];
+        return raw.aborted === true ? [this.done('interrupted')] : this.complete();
       }
       default:
         return [];
@@ -82,12 +79,12 @@ export class PiRunTranslator {
     if (input.runtimeError) {
       return [this.error(`pi runtime error: ${input.runtimeError.message}`)];
     }
-    if (input.exitCode !== 0 && input.exitCode !== null) {
+    if (input.exitCode !== 0) {
       const detail = input.stderr ? `: ${input.stderr.slice(0, 500)}` : '';
       return [this.error(`pi exited with code ${input.exitCode}${detail}`)];
     }
     if (this.lastError) return [this.error(this.lastError)];
-    return [this.done('normal')];
+    return this.complete();
   }
 
   terminalEmitted(): boolean {
@@ -159,10 +156,12 @@ export class PiRunTranslator {
       });
     }
     const stopReason = stringValue(message.stopReason);
+    this.finalText = stopReason === 'stop' && !this.startedTools.size
+      && !(Array.isArray(message.content) && message.content.some(block => recordValue(block)?.type === 'toolCall'))
+      ? textContent(message.content) || undefined : undefined;
     if (stopReason === 'error') {
-      const messageText = stringValue(message.errorMessage) ?? this.lastError ?? 'pi model request failed';
-      this.terminal = true;
-      events.push(this.error(messageText));
+      // Pi can retry a failed assistant message before settling the agent.
+      this.lastError = stringValue(message.errorMessage) ?? this.lastError ?? 'pi model request failed';
     } else if (stopReason === 'aborted') {
       this.terminal = true;
       events.push(this.done('interrupted'));
@@ -171,6 +170,7 @@ export class PiRunTranslator {
   }
 
   private translateToolStart(raw: JsonRecord): AgentEvent[] {
+    this.finalText = undefined;
     const id = stringValue(raw.toolCallId);
     const name = stringValue(raw.toolName);
     if (!id || !name || this.startedTools.has(id)) return [];
@@ -191,6 +191,7 @@ export class PiRunTranslator {
   }
 
   private translateRetry(raw: JsonRecord): AgentEvent[] {
+    this.finalText = undefined;
     const attempt = numberValue(raw.attempt);
     const maxAttempts = numberValue(raw.maxAttempts);
     const delayMs = numberValue(raw.delayMs);
@@ -199,8 +200,16 @@ export class PiRunTranslator {
   }
 
   private resetAssistantBlocks(): void {
+    this.finalText = undefined;
     this.textBlocksWithDelta.clear();
     this.thinkingBlocksWithDelta.clear();
+  }
+
+  private complete(): AgentEvent[] {
+    return [
+      ...(this.finalText && !this.startedTools.size ? [{ type: 'final_text' as const, content: this.finalText }] : []),
+      this.done('normal'),
+    ];
   }
 
   private done(terminationReason: 'normal' | 'interrupted' | 'timeout'): AgentEvent {
