@@ -71,18 +71,72 @@ Guest functions:
 
 | API | Behavior |
 | --- | --- |
-| `agent(prompt, {key, harness?, model?, reasoningEffort?, output?})` | Promise of final text, or a parsed JSON value with `output: "json"` |
+| `agent(prompt, {key, member?, harness?, model?, reasoningEffort?, output?})` | Promise of final text, or a parsed JSON value with `output: "json"` |
+| `send(member, text, {key})` / `receive(member, {key})` | Send a durable message or await a stable inbox batch |
 | `parallel([() => ..., () => ...])` | Starts functions and returns results in input order |
 | `pipeline(items, ...stages)` | Processes items concurrently; each item passes through its stages sequentially as `stage(value, index)` |
 | `phase(text)` / `log(text)` | Bounded progress recorded in status; does not wake main |
 
 `key` is required, stable across replay, and unique within one run. A selected harness uses its configured defaults unless model/effort overrides are supplied. Switching harness does not inherit a different harness's model. All calls must be awaited; the interpreter rejects a result while agent calls are still pending. Failures reject promises, including invalid JSON, missing final answers, native questions and unsupported harnesses. `parallel` and `pipeline` reject on failure; use explicit `try/catch` to implement a fallback. JSON parsing does not validate a schema: check required fields in the script.
 
-Only script completion/failure creates a main-agent event, rather than an event for every worker. Final return values are serialized into a `workflow-result` artifact; no return means JSON `null`. The main agent reads the artifact, acknowledges events, and calls `complete` with that artifact reference, `openIssues` and `verificationLimits`. Workers cannot mutate workflow state, send parent answers, or recursively delegate through the workflow API. Worker scheduling belongs to the script; there is no manual delegation or native-session continuation API. A main-authored `report` artifact can also be used for completion.
+Only script completion/failure creates a main-agent event, rather than an event for every worker. Final return values are serialized into a `workflow-result` artifact; no return means JSON `null`. The main agent reads the artifact, acknowledges events, and calls `complete` with that artifact reference, `openIssues` and `verificationLimits`. Persistent members can checkpoint their own work and send internal mailbox messages. Workers cannot send parent answers, manage other members, or recursively delegate through the workflow API. Worker scheduling belongs to the script. Named members continue their native sessions; ordinary agent calls remain independent. A main-authored `report` artifact can also be used for completion.
+
+### Persistent members
+
+Add `member` to an `agent()` call to keep a logical agent across turns. Calls without it retain the independent-task behavior. A member belongs to one workflow and pins its original harness, model, configuration, workspace and authorization. Different members can use different harnesses.
+
+```js
+const proposal = await agent('Propose a design. Save your decisions with checkpoint.', {
+  key: 'proposal', member: 'designer',
+});
+return await parallel([
+  async () => {
+    await receive('designer', { key: 'feedback' });
+    return await agent('Revise your proposal using your inbox and checkpoint.', {
+      key: 'revision', member: 'designer',
+    });
+  },
+  async () => {
+    const review = await agent('Review this proposal in at most 4000 characters: ' + proposal, {
+      key: 'review', member: 'reviewer',
+    });
+    await send('designer', review, { key: 'deliver-review' });
+    return review;
+  },
+]);
+```
+
+The five persisted abstractions are:
+
+| Abstraction | Contract |
+| --- | --- |
+| `DurableAgent` | Stable member identity, current checkpoint, committed/active turn and wait condition. One active turn per member. |
+| `SessionBinding` | The authorized execution binding and native session/thread ID. Every later turn resumes that same conversation. |
+| `AgentTurn` / `TurnAttempt` | Immutable logical input, predecessor turn, starting checkpoint version and input message IDs; each retry has a fresh attempt ID. |
+| `AgentCheckpoint` | Versioned JSON work state, native session reference and result reference. Progress can be saved before a turn completes. |
+| `AgentMailbox` / `WaitState` | Durable messages and receive receipts. Waiting releases worker resources; the script interpreter remains bounded by the workflow deadline. |
+
+`send(member, text, {key})` queues up to 4000 characters for an existing member and returns `{messageId}`. `receive(member, {key})` resolves with up to 16 `{id, from, text}` messages, or waits if none are available. Both are JSON-only sandbox calls and must be awaited. Agent and mailbox keys share one per-run namespace. Script sends are deduplicated across replay; reusing a send key with different content fails.
+
+A receive reserves a stable batch. It does not acknowledge the messages. The next turn for that member receives the batch in its context; successful turn completion atomically saves a checkpoint and acknowledges those messages. Failed or cancelled attempts leave them available to that same logical turn. Messages arriving before a wait are delivered immediately; arrivals after a wait wake it. A member can have only one outstanding receive. Follow it with the next member turn to acknowledge the batch. The script controls which event starts each turn; there is no autonomous member loop.
+
+Members can use their scoped CLI to call:
+
+- `read_context` / `task_status`: inspect their own checkpoint, fixed input batch and current checkpoint version.
+- `checkpoint` with `{operationId, expectedCheckpointVersion, state}`: save up to 16000 characters of JSON work state. Record progress, decisions, next steps and artifact paths. This does not finish the turn or acknowledge input messages.
+- `send_message` with `{operationId, member, text}`: send to another existing member in the same workflow. Sender identity comes from the worker binding.
+
+Worker operation IDs are scoped to the logical turn and deduplicated across attempts. Stale attempt credentials cannot update checkpoints or send messages. The main agent can inspect the latest work state with `read_checkpoint({member})`, and can also use `send_message` with the usual workflow ID, operation ID and state version, including while paused or interrupted; queuing a message does not resume a paused workflow. Members cannot change their execution binding, mutate another member's checkpoint, or create more workers.
+
+Checkpoints, waits, message receipts and turn state are committed together in the bridge's SQLite workflow record. A progress checkpoint survives interruption. Recovery continues from the last saved work state and the backend's persisted native conversation, not a process snapshot. Native transcripts and external file changes are not part of the SQLite transaction. Verify uncertain side effects on retry; delivery and retries do not imply exactly-once external execution. A missing or replaced native session fails visibly rather than silently starting an empty conversation. The bridge records native IDs but relies on the backend's transcript storage and retention.
+
+After a restart, the workflow remains `interrupted` until explicit `replay_script`. Replay reconstructs the script from its beginning, reuses completed turns and receive receipts, then continues pending waits or retries the interrupted turn in its original native session. Persistent turn reuse validates the original request and predecessor chain; the stored input fingerprint includes the checkpoint version and message IDs. Rewriting committed history, skipping its predecessor, or changing a member's execution binding requires a new member name. One-shot tasks still retry in fresh sessions.
+
+Limits per workflow: 32 members, 256 messages, 128 receive receipts, 512 worker/script mailbox operations, and 128 execution attempts including retries. The kernel retains up to 256 recent checkpoints while preserving every member's latest recovery point. Existing workflow call, deadline, replay, output and process-pool limits also apply. This is a workflow-scoped member facility; it does not add a cross-workflow team or a work-claim queue.
 
 ### Replay and lifecycle
 
-`replay_script` requires the usual `workflowId`, unique `operationId` and current `expectedStateVersion`. It optionally replaces `script`, `args` or `execution`; changes to any of these require an updated `plan`. Each replay publishes its plan again and restarts the function from its beginning. Completed calls are reused by a fingerprint of **key, prompt, output mode, resolved worker binding, root binding, goal and workflow definition**. Changing execution order alone does not invalidate unrelated calls. Changing a prompt or harness reruns that call in a fresh worker session; downstream calls rerun when the data in their prompts changes. Failed, cancelled, interrupted or waiting-for-input tasks are never reused. Up to eight replays and 128 total task attempts are retained per workflow.
+`replay_script` requires the usual `workflowId`, unique `operationId` and current `expectedStateVersion`. It optionally replaces `script`, `args` or `execution`; changes to any of these require an updated `plan`. Each replay publishes its plan again and restarts the function from its beginning. Completed calls are reused by a fingerprint of **key, prompt, output mode, resolved worker binding, root binding, goal and workflow definition**. Changing execution order alone does not invalidate unrelated calls. For independent calls, changing a prompt or harness reruns that call in a fresh worker session; downstream calls rerun when the data in their prompts changes. Failed, cancelled, interrupted or waiting-for-input results are never cached. A named member retries the same logical turn in its original session; an independent task retries in a fresh session. Up to eight replays and 128 total task attempts are retained per workflow.
 
 This is result reuse, not replay of external side effects. File contents, network state, time and other implicit dependencies are not automatically hashed. Include relevant revisions or digests in prompts/keys when fresh execution is required. A task interrupted after a side effect may repeat that effect on replay. Worker tasks that modify shared files need an explicit ownership or serialization strategy; the workflow does not create worktrees or resource leases automatically.
 

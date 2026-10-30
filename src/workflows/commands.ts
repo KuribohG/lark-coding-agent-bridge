@@ -42,6 +42,11 @@ export async function handleWorkflowCommand(kernel: WorkflowKernel, scope: strin
   return [`${state.script?.name ?? state.definition.id}：${state.status}`, `需求：${state.goal}`,
     `主 agent：${state.root.agentKind}，模型：${state.root.modelSettings.model ?? '默认'}${state.root.modelSettings.reasoningEffort ? `，思考强度：${state.root.modelSettings.reasoningEffort}` : ''}`,
     ...(state.script ? [`脚本：${state.script.status}${state.script.phase ? `，${state.script.phase}` : ''}，重放 ${state.script.revision} 次`] : []),
+    ...(state.agents ?? []).map(agent => {
+      const receipt = state.mailbox?.receipts.find(item => item.id === agent.wait?.receiptId);
+      const phase = agent.activeTurnId ? '轮次未完成' : receipt?.status === 'waiting' ? '等待消息' : receipt?.status === 'ready' ? '消息已到' : '空闲';
+      return `- 成员 ${agent.key}：${phase}，恢复点 ${agent.checkpointVersion}`;
+    }),
     ...state.tasks.map(task => {
       const session = state.sessions.find(item => item.sessionRef === task.sessionRef)!;
       const settings = session.execution?.modelSettings;

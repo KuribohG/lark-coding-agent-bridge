@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkflowRuntime } from '../../../src/workflows/runtime';
 import { callWorkflow } from '../../../src/workflows/ipc';
@@ -17,7 +20,7 @@ const output = (text: string, kind: string): AgentEvent[] => [
   { type: 'system', ...(kind === 'codex' ? { threadId: randomUUID() } : { sessionId: randomUUID() }) },
   { type: 'final_text', content: text }, { type: 'done', terminationReason: 'normal' },
 ];
-async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootKind: 'claude' | 'codex' | 'pi' = 'codex', showPlan?: ConstructorParameters<typeof WorkflowRuntime>[0]['showPlan']) {
+async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootKind: 'claude' | 'codex' | 'pi' = 'codex', showPlan?: ConstructorParameters<typeof WorkflowRuntime>[0]['showPlan'], path = ':memory:') {
   let root: WorkflowRoot = { scopeId: 'script-topic', profile: 'default', agentKind: rootKind, cwdRealpath: '/workspace',
     policyFingerprint: 'policy', catalogBinding: 'root', modelSettings: { model: 'root-model' } };
   const policy: RunPolicyAllow = { ok: true, prompt: '', requestedCwd: '/workspace', cwdRealpath: '/workspace',
@@ -33,23 +36,101 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
     const state = runtime.kernel.state(root.scopeId)!;
     runtime.kernel.markNotified(root.scopeId, state.events.map(event => event.id));
   });
-  const runtime = new WorkflowRuntime({ path: ':memory:', executor, resolve: async () => ({ root, policy }), wakeMain, showPlan,
+  const deps: ConstructorParameters<typeof WorkflowRuntime>[0] = { path, executor, resolve: async () => ({ root, policy }), wakeMain, showPlan,
     resolveWorker: async (current, selection) => ({ policy, execution: {
       agentKind: selection.agentKind, profile: current.profile, configurationFingerprint: selection.agentKind,
       policyFingerprint: policy.policyFingerprint, modelSettings: { ...(selection.agentKind === current.agentKind ? current.modelSettings : {model: selection.agentKind + '-default'}), ...(selection.model ? {model:selection.model} : {}), ...(selection.reasoningEffort ? {reasoningEffort:selection.reasoningEffort} : {}) },
     } }),
-  });
+  };
+  let runtime = new WorkflowRuntime(deps);
   await runtime.start(); cleanup.push(() => runtime.close());
-  const binding = runtime.bindMain(root.scopeId, 'start');
+  let binding = runtime.bindMain(root.scopeId, 'start');
   const state = () => runtime.kernel.state(root.scopeId)!;
   const call = (method: string, args: Record<string, unknown> = {}) => callWorkflow(method,
     { operationId: randomUUID(), workflowId: state()?.workflowId, expectedStateVersion: state()?.stateVersion, ...(method === 'run_script' || method === 'replay_script' ? {plan:'Review the task with the requested harness and model; return a final result.'} : {}), ...args }, binding.env);
   const until = async (check: () => void) => vi.waitFor(async () => { await runtime.tick(); check(); }, { timeout: 5000, interval: 20 });
-  return { runtime, adapters, resolveAgent, wakeMain, binding, state, call, until,
+  return { get runtime() { return runtime; }, adapters, resolveAgent, wakeMain, binding, state, call, until,
+    restart: async () => { binding.release(); await runtime.close(); runtime = new WorkflowRuntime(deps); await runtime.start(); binding = runtime.bindMain(root.scopeId, 'continue'); },
     changeRoot: () => { root = { ...root, catalogBinding: 'replacement' }; } };
 }
 
 describe('script workflow runtime', () => {
+  it('replays a persisted mailbox wait after a runtime restart without replaying completed agent turns', async () => {
+    const dir=await mkdtemp(join(tmpdir(),'durable-runtime-')); cleanup.push(()=>rm(dir,{recursive:true,force:true}));
+    const h=await harness({},'codex',undefined,join(dir,'state.db'));
+    const events=(text:string):AgentEvent[]=>[{type:'system',threadId:'saved-thread'},{type:'final_text',content:text},{type:'done',terminationReason:'normal'}];
+    h.adapters.codex.setEvents([events('prepared'),events('resumed')]);
+    await h.call('run_script',{goal:'restart recovery',script:'await agent("prepare",{key:"prepare",member:"A"});const m=await receive("A",{key:"inbox"});return await agent(JSON.stringify(m),{key:"resume",member:"A"});'});
+    await h.until(()=>expect(h.state().mailbox?.receipts[0]?.status).toBe('waiting'));
+    await h.restart();
+    await h.runtime.tick();
+    expect(h.state().status).toBe('interrupted');
+    expect(h.adapters.codex.runs).toHaveLength(1);
+    await h.call('send_message',{member:'A',text:'arrived during restart'});
+    await h.call('replay_script');
+    await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
+    expect(h.adapters.codex.runs).toHaveLength(2);
+    expect(h.adapters.codex.runOptions[1]?.threadId).toBe('saved-thread');
+    expect(h.adapters.codex.runOptions[1]?.prompt).toContain('arrived during restart');
+    expect(h.state().script?.calls[0]?.cached).toBe(true);
+    expect(h.state().mailbox?.receipts[0]?.status).toBe('consumed');
+  });
+
+  it.each(['codex', 'claude', 'pi'] as const)('resumes a persistent %s member after releasing its process to wait for a message', async kind => {
+    const h = await harness({},kind);
+    const id = 'persistent-' + kind;
+    const events = (text: string): AgentEvent[] => [
+      {type:'system',...(kind === 'codex' ? {threadId:id} : {sessionId:id})},
+      {type:'final_text',content:text},{type:'done',terminationReason:'normal'},
+    ];
+    h.adapters[kind].setEvents([events('prepared'),events('continued')]);
+    await h.call('run_script',{goal:'wait and continue',script:[
+      'await agent("prepare",{key:"prepare",member:"designer"});',
+      'const messages = await receive("designer",{key:"review"});',
+      'return await agent(JSON.stringify(messages),{key:"continue",member:"designer"});',
+    ].join('\n')});
+    await h.until(()=>expect(h.state().mailbox?.receipts[0]?.status).toBe('waiting'));
+    expect(h.adapters[kind].runs).toHaveLength(1);
+    expect(h.adapters[kind].runs[0]?.waitForExitCalls).toBeGreaterThan(0);
+    expect(h.state().tasks[0]?.status).toBe('result_ready');
+    expect(h.wakeMain).not.toHaveBeenCalled();
+    await h.call('send_message',{member:'designer',text:'review approved'});
+    await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
+    const opts=h.adapters[kind].runOptions[1]!;
+    expect(kind==='codex'?opts.threadId:opts.sessionId).toBe(id);
+    expect(opts.prompt).toContain('review approved');
+    expect(h.state().mailbox!.messages[0]?.consumedByTurnId).toBe(h.state().tasks[1]?.taskId);
+    expect(h.state().artifacts.at(-1)?.text).toBe('"continued"');
+    await h.call('replay_script');
+    await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
+    expect(h.adapters[kind].runs).toHaveLength(2);
+    expect(h.state().sessions).toHaveLength(1);
+  });
+
+  it('runs independent members while a receiver waits and routes script messages through the sandbox', async () => {
+    const h=await harness();
+    const events=(id:string,text:string):AgentEvent[]=>[{type:'system',threadId:id},{type:'final_text',content:text},{type:'done',terminationReason:'normal'}];
+    h.adapters.codex.setEvents([events('A','prepared'),events('B','reviewed'),events('A','revised')]);
+    await h.call('run_script',{goal:'discussion',script:[
+      'await agent("prepare",{key:"a1",member:"A"});',
+      'return await parallel([',
+      ' async()=>{const messages=await receive("A",{key:"inbox"});return await agent(JSON.stringify(messages),{key:"a2",member:"A"});},',
+      ' async()=>{const review=await agent("review",{key:"b1",member:"B"});await send("A",review,{key:"deliver"});return review;}',
+      ']);',
+    ].join('\n')});
+    await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
+    expect(h.state().artifacts.at(-1)?.text).toBe('["revised","reviewed"]');
+    expect(h.adapters.codex.runOptions[2]?.threadId).toBe('A');
+  });
+
+  it('fails a member continuation if the backend silently replaces its native session', async () => {
+    const h=await harness({codex:['first','replacement']});
+    await h.call('run_script',{goal:'session identity',script:'await agent("first",{key:"first",member:"A"});return await agent("second",{key:"second",member:"A"});'});
+    await h.until(()=>expect(h.state().script?.status).toBe('failed'));
+    expect(h.state().tasks[1]?.error).toContain('replaced the native worker session');
+    expect(h.state().agents![0]?.lastTurnId).toBe(h.state().tasks[0]?.taskId);
+  });
+
   it('restricts continuation credentials to the original workflow and denies new starts', async () => {
     const h = await harness();
     expect(() => h.runtime.bindMain('script-topic', 'continue')).toThrow('No active workflow');

@@ -35,6 +35,12 @@ process.stdin.on('end', () => {
   fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify({ argv, prompt, session }) + '\\n');
   const emit = event => console.log(JSON.stringify(event));
   emit({ type: 'session', id: session });
+  if (prompt.includes('SAVE_WORK_STATE')) {
+    const { execFileSync } = require('node:child_process');
+    const call = (method, args) => JSON.parse(execFileSync(process.execPath, [process.env.LARK_WORKFLOW_CLI, 'workflow', method, '--input', JSON.stringify(args), '--json'], { encoding: 'utf8' }));
+    const current = call('task_status', {});
+    call('checkpoint', { operationId: 'saved-progress', expectedCheckpointVersion: current.checkpointVersion, state: { decision: 'persist native session', next: 'review' } });
+  }
   emit({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', delta: 'progress only' } });
   if (prompt.includes('WAIT_FOR_CANCEL')) { setInterval(() => {}, 1000); return; }
   emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: prompt.includes('follow-up') ? 'revised proposal' : 'Pi proposal' }] } });
@@ -56,7 +62,7 @@ process.stdin.on('end', () => {
   const pool = new ProcessPool(() => 3);
   const executor = new RunExecutor({ resolveAgent, pool, activeRuns: new ActiveRuns() });
   const wakeMain = vi.fn(async () => {});
-  const runtime = new WorkflowRuntime({ path: ':memory:', executor, resolve: async () => ({ root, policy }), wakeMain,
+  const runtime = new WorkflowRuntime({ path: ':memory:', cliPath: resolve('dist/cli.js'), executor, resolve: async () => ({ root, policy }), wakeMain,
     resolveWorker: async (boundRoot, selection, rootPolicy) => resolveWorkerExecution(boundRoot, profile, rootPolicy,
       { model: selection.model, reasoningEffort: selection.reasoningEffort }) });
   await runtime.start(); cleanup.push(() => runtime.close());
@@ -67,6 +73,27 @@ process.stdin.on('end', () => {
 }
 
 describe('Codex-root workflow with Pi process workers', () => {
+  it('checkpoints through the worker CLI and resumes its native process session after mailbox delivery', async () => {
+    const f=await fixture();
+    await f.call('run_script',{goal:'persistent process smoke',execution:{agentKind:'pi',model:'pi-only-model'},script:[
+      'await agent("SAVE_WORK_STATE",{key:"prepare",member:"designer"});',
+      'await receive("designer",{key:"feedback"});',
+      'return await agent("follow-up: apply the inbox review",{key:"revise",member:"designer"});',
+    ].join('\n')});
+    await vi.waitFor(()=>expect(f.runtime.kernel.state(f.root.scopeId)?.mailbox?.receipts[0]?.status).toBe('waiting'),{timeout:10000});
+    const saved=await f.call('read_checkpoint',{member:'designer'});
+    expect(saved).toMatchObject({version:2,state:{decision:'persist native session',next:'review'},nativeSessionId:'pi-child'});
+    await f.call('send_message',{member:'designer',text:'approved'});
+    await vi.waitFor(()=>expect(f.runtime.kernel.state(f.root.scopeId)?.script?.status).toBe('result_ready'),{timeout:5000});
+    const runs=(await readFile(f.record,'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+    expect(runs).toHaveLength(2);
+    expect(runs[0].argv).not.toContain('--session');
+    expect(runs[1].argv).toContain('--session');
+    expect(runs[1].session).toBe('pi-child');
+    expect(runs[1].prompt).toContain('persist native session');
+    expect(f.runtime.kernel.state(f.root.scopeId)?.mailbox?.receipts[0]?.status).toBe('consumed');
+  },15000);
+
   it('accepts scripts through the built CLI, cancels a native process on pause, and replays in a fresh session', async () => {
     const f = await fixture();
     const input = join(dirname(f.record), 'script.json');
