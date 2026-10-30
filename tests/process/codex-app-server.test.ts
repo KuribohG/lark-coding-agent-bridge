@@ -12,7 +12,7 @@ afterEach(async () => {
   await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
 });
 
-async function harness(mode = 'normal', transport?: 'app-server') {
+async function harness(mode = 'normal', transport?: 'app-server', failure?: { message: string; codexErrorInfo: unknown }) {
   const dir = await mkdtemp(join(tmpdir(), 'bridge-app-server-'));
   dirs.push(dir);
   const binary = join(dir, 'codex');
@@ -21,6 +21,7 @@ async function harness(mode = 'normal', transport?: 'app-server') {
 const fs = require('node:fs');
 const rl = require('node:readline').createInterface({input:process.stdin});
 const mode = ${JSON.stringify(mode)};
+const failure = ${JSON.stringify(failure ?? null)};
 const send = x => process.stdout.write(JSON.stringify(x)+'\\n');
 const notify = (method, params) => send({method,params});
 const reply = (id,result) => send({id,result});
@@ -34,13 +35,8 @@ rl.on('line', line => {
  if(m.method==='turn/start') {
   reply(m.id,{turn:{id:'turn-1'}});
   notify('turn/started',{threadId:'thread-1',turn:{id:'turn-1'}});
-  if(mode==='rate-failure' || mode==='quota-failure') {
-   notify('turn/completed',{threadId:'thread-1',turn:{id:'turn-1',status:'failed',error:{
-    message: mode==='quota-failure' ? 'session budget exceeded' : 'upstream throttled',
-    codexErrorInfo: mode==='quota-failure'
-      ? 'sessionBudgetExceeded'
-      : {httpConnectionFailed:{httpStatusCode:429}}
-   }}});
+  if(failure) {
+   notify('turn/completed',{threadId:'thread-1',turn:{id:'turn-1',status:'failed',error:failure}});
    return;
   }
   if(mode==='protocol-notifications') {
@@ -181,11 +177,21 @@ describe('Codex native in-flight input', () => {
     ]);
   });
   it.each([
-    ['rate-failure', 'rate_limit'],
-    ['quota-failure', 'quota'],
-  ] as const)('maps structured %s failures without relying on message text', async (mode, failureKind) => {
+    ['upstream throttled', {httpConnectionFailed:{httpStatusCode:429}}, 'rate_limit'],
+    ['session budget exceeded', 'sessionBudgetExceeded', 'quota'],
+    ['upstream unavailable', {httpConnectionFailed:{httpStatusCode:503}}, 'transient'],
+    ['connection lost', {responseStreamDisconnected:{httpStatusCode:null}}, 'transient'],
+    ['stream disconnected before completion: stream closed before response.completed', 'other', 'transient'],
+    ['429 Too Many Requests', 'other', 'rate_limit'],
+    ['429 insufficient_quota', 'other', 'quota'],
+    ['429 Too Many Requests', 'cyberPolicy', 'runtime'],
+    ['stream disconnected before completion', 'badRequest', 'runtime'],
+    ['connection failed', {httpConnectionFailed:{httpStatusCode:400}}, 'runtime'],
+    ['connection failed', {httpConnectionFailed:{httpStatusCode:401}}, 'authentication'],
+    ['invalid encrypted content', 'other', 'runtime'],
+  ] as const)('classifies Codex failure %s with %j as %s', async (message, codexErrorInfo, failureKind) => {
     const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
-    const h = await harness(mode);
+    const h = await harness('failure', undefined, { message, codexErrorInfo });
     const events = await collect(h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' }).events);
     expect(events).toContainEqual(expect.objectContaining({
       type: 'error',

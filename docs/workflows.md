@@ -67,6 +67,18 @@ The envelope has `operationId`, `goal` (the full authorized task), `script` (the
 | `maxConcurrent` | Concurrent workers per workflow, default 4, maximum 16; shared process-pool limits also apply |
 | `timeoutMs` | Total workflow deadline, default 30 minutes, range 1 second to 120 minutes; replay does not extend it |
 
+Workers use the shared executor's automatic retries for HTTP 429 and recognized
+transient connection/server failures, including a stream closing before
+`response.completed`. Backoff is 30 seconds, then 60 seconds, then 120 seconds,
+with at most 100 consecutive retries; substantive progress resets the budget.
+The task stays running and keeps its run/session identity during backoff. After
+partial progress, retries resume the native session with a continuation prompt.
+If that session identity is unavailable, partial work is not replayed automatically.
+Cancellation and the total workflow deadline also stop retries; backoff counts
+toward `timeoutMs`. Policy refusals, authentication/quota errors and invalid
+requests are not retried. A failed worker rejects `agent()` after recovery is
+exhausted or unavailable.
+
 Guest functions:
 
 | API | Behavior |

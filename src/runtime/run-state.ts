@@ -157,8 +157,9 @@ export function reduce(state: RunState, evt: AgentEvent): RunState {
 
 export function retryStatus(retry: NonNullable<RunState['retry']>): string {
   const progress = `（${retry.attempt}/${retry.maxAttempts}）`;
+  const reason = retry.failureKind === 'transient' ? 'API 连接或服务暂时异常' : 'API 限流';
   return retry.delayMs > 0
-    ? `⏳ API 限流，${Math.ceil(retry.delayMs / 1000)} 秒后自动重试${progress}`
+    ? `⏳ ${reason}，${Math.ceil(retry.delayMs / 1000)} 秒后自动重试${progress}`
     : `🔄 正在自动重试${progress}`;
 }
 

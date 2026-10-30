@@ -14,6 +14,7 @@ export function classifyAgentFailure(message: string): AgentFailureKind {
   if (/\[bridge-quota\]|insufficient_quota|quota_exceeded|budget_exceeded|budget has been exceeded|credit balance (?:is )?too low|daily (?:quota|budget) (?:is )?(?:exhausted|exceeded)/i.test(message)) return 'quota';
   if (/unauthorized|forbidden|invalid[_ ]api[_ ]key|authentication|\b40[13]\b/i.test(message)) return 'authentication';
   if (/\b429\b|too many requests|rate[_ -]limit(?:[_ -]exceeded|[_ -]error|ed)?/i.test(message)) return 'rate_limit';
+  if (/stream disconnected before completion|stream closed before response\.completed|\b(?:ECONNRESET|ETIMEDOUT|EAI_AGAIN)\b|\bHTTP(?:\/[\d.]+)?\s+(?:408|500|502|503|504)\b/i.test(message)) return 'transient';
   return 'runtime';
 }
 

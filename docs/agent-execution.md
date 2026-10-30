@@ -38,9 +38,11 @@ declarations in `src/agent/{codex,claude}/capabilities.ts`.
 - `text` is public progress; `final_text` is the authoritative answer. Provisional
   message deltas are not final answers. A `done` event with normal termination is
   required before a background result can be delivered.
-- `error.failureKind` distinguishes rate limits, quota, authentication, ambiguous
-  input delivery, and other runtime failures. Both adapters normalize native
+- `error.failureKind` distinguishes rate limits, transient connection/server errors,
+  quota, authentication, ambiguous input delivery, and other runtime failures. Both adapters normalize native
   text errors at their boundary. Explicit kinds take precedence over message text.
+  Codex's generic `other` variant falls back to message classification; specific
+  policy, authentication, quota and invalid-request errors keep their native classification.
 - The native translators, watchdogs, session/thread IDs, sandbox and permission
   policies remain owned by their adapters and the existing runtime policy layer.
   No session is converted between engines.

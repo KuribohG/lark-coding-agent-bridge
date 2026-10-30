@@ -2,6 +2,7 @@ import { BackgroundExecutionError } from '../runtime/background-executor';
 
 const reasons = {
   rate_limit: '模型服务限流（429），本次分析未完成；请稍后在工作台重试',
+  transient: '模型服务暂时不可用，本次分析未完成；请稍后在工作台重试',
   quota: '模型服务额度不足，请恢复额度后在工作台重试',
   authentication: '模型服务授权失败，请检查授权后重试',
   timeout: '分析已达到本次时间上限，请在工作台重试',

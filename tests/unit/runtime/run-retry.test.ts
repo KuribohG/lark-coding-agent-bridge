@@ -34,6 +34,21 @@ async function collect(events: AsyncIterable<AgentEvent>) {
 }
 
 describe('rate-limit retries through RunExecutor', () => {
+  it('reports a disconnected stream as a transient retry instead of a rate limit', async () => {
+    const h = harness([[{ type: 'system', threadId: 'child' }, { type: 'error', terminationReason: 'failed',
+      message: 'stream disconnected before completion: stream closed before response.completed' }], [done]]);
+    const run = await h.executor.submit({ scopeId: 's', policy: h.policy });
+    const output = collect(run.subscribe());
+    await vi.advanceTimersByTimeAsync(30_000);
+    const events = await output;
+    const retry = events.find(e => e.type === 'retry' && e.delayMs > 0)!;
+    expect(retry).toMatchObject({ type: 'retry', failureKind: 'transient', delayMs: 30_000 });
+    const text = renderText(reduce(initialState, retry));
+    expect(text).toContain('API 连接或服务暂时异常');
+    expect(text).not.toContain('API 限流');
+    expect(await run.result).toBe('completed');
+  });
+
   it('backs off, retains the scope and options, fans out only one successful result, and releases the slot', async () => {
     const h = harness([[{ type: 'system', threadId: 'thread-1' }, rateLimit], [done]]);
     const run = await h.executor.submit({ scopeId: 's', policy: h.policy, model: 'model', reasoningEffort: 'high',

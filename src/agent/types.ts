@@ -10,7 +10,7 @@ export interface AgentExecutionCapabilities {
   readonly input: 'active-turn' | 'active-session' | 'unsupported';
 }
 
-export type AgentFailureKind = 'rate_limit' | 'quota' | 'authentication' | 'delivery_unknown' | 'runtime';
+export type AgentFailureKind = 'rate_limit' | 'transient' | 'quota' | 'authentication' | 'delivery_unknown' | 'runtime';
 
 export interface AgentInput {
   text: string;
@@ -29,7 +29,7 @@ export type AgentEvent =
   | { type: 'final_text'; content: string }
   | { type: 'thinking'; delta: string }
   | { type: 'user_input'; id: string; threadId: string; questions: Array<{ title: string; options?: string[] }> }
-  | { type: 'retry'; attempt: number; maxAttempts: number; delayMs: number }
+  | { type: 'retry'; attempt: number; maxAttempts: number; delayMs: number; failureKind?: 'rate_limit' | 'transient' }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; id: string; output: string; isError: boolean }
   | {

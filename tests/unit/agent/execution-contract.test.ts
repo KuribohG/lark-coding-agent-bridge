@@ -64,6 +64,11 @@ describe('agent execution contract', () => {
   it.each([
     ['429 insufficient_quota', 'quota'], ['429 unauthorized', 'authentication'],
     ['429 delivery is unknown', 'delivery_unknown'], ['429 Too Many Requests', 'rate_limit'], ['process exited', 'runtime'],
+    ['stream disconnected before completion: stream closed before response.completed', 'transient'],
+    ['read ECONNRESET', 'transient'], ['connect ETIMEDOUT', 'transient'], ['getaddrinfo EAI_AGAIN', 'transient'],
+    ['HTTP 503 Service Unavailable', 'transient'], ['HTTP/1.1 502 Bad Gateway', 'transient'],
+    ['HTTP 400 invalid request', 'runtime'], ['HTTP 501 Not Implemented', 'runtime'],
+    ['HTTP 503 delivery is unknown', 'delivery_unknown'], ['HTTP 503 insufficient_quota', 'quota'],
   ])('normalizes %s at the adapter boundary as %s', async (message, failureKind) => {
     const run = withExecutionContract(native([{ type: 'error', terminationReason: 'failed', message }]), capabilities);
     expect(await collect(run.events)).toEqual([{ type: 'error', terminationReason: 'failed', message, failureKind }]);

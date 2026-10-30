@@ -91,6 +91,9 @@ function codexFailureKind(
 ): AgentFailureKind | undefined {
   if (httpStatusCode === 401 || httpStatusCode === 403) return 'authentication';
   if (httpStatusCode === 429) return 'rate_limit';
+  if (httpStatusCode !== undefined) {
+    return [408, 500, 502, 503, 504].includes(httpStatusCode) ? 'transient' : 'runtime';
+  }
   switch (variant) {
     case 'rateLimitExceeded':
     case 'serverOverloaded':
@@ -105,16 +108,19 @@ function codexFailureKind(
     case 'cyberPolicy':
     case 'misalignmentPolicyViolation':
     case 'tooManyDenials':
-    case 'internalServerError':
     case 'badRequest':
     case 'threadRollbackFailed':
     case 'sandboxError':
-    case 'other':
+      return 'runtime';
+    case 'internalServerError':
     case 'httpConnectionFailed':
     case 'responseStreamConnectionFailed':
     case 'responseStreamDisconnected':
     case 'responseTooManyFailedAttempts':
-      return 'runtime';
+      return 'transient';
+    // Codex also wraps rate limits and disconnected streams as "other".
+    // Let the adapter classify its message instead of masking it as runtime.
+    case 'other':
     default:
       return undefined;
   }

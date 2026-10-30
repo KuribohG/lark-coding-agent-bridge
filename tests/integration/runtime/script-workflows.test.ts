@@ -12,7 +12,10 @@ import type { AgentKind } from '../../../src/config/profile-schema';
 import type { AgentEvent } from '../../../src/agent/types';
 
 const cleanup: Array<() => Promise<void>> = [];
-afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
+afterEach(async () => {
+  try { for (const close of cleanup.splice(0).reverse()) await close(); }
+  finally { vi.useRealTimers(); }
+});
 const output = (text: string, kind: string): AgentEvent[] => [
   { type: 'system', ...(kind === 'codex' ? { threadId: randomUUID() } : { sessionId: randomUUID() }) },
   { type: 'final_text', content: text }, { type: 'done', terminationReason: 'normal' },
@@ -50,6 +53,58 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
 }
 
 describe('script workflow runtime', () => {
+  it.each(['codex', 'claude', 'pi'] as const)('keeps a %s worker running across rate limits and disconnections, resuming its session', async kind => {
+    vi.useFakeTimers();
+    const h = await harness();
+    const identity: AgentEvent = { type: 'system', ...(kind === 'codex' ? { threadId: 'child' } : { sessionId: 'child' }) };
+    h.adapters[kind].setEvents([
+      [identity, { type: 'tool_use', id: 'write', name: 'write', input: {} },
+        { type: 'final_text', content: 'incomplete result' },
+        { type: 'error', terminationReason: 'failed', message: 'HTTP 429 Too Many Requests' }],
+      [identity, { type: 'error', terminationReason: 'failed', failureKind: 'transient', message: 'connection lost' }],
+      [identity, { type: 'final_text', content: 'recovered result' }, { type: 'done', terminationReason: 'normal' }],
+    ]);
+    await h.call('run_script', { goal: 'finish the task', script: `return await agent("task",{key:"task",harness:"${kind}"});` });
+    await h.until(() => expect(h.adapters[kind].runs).toHaveLength(1));
+    expect(h.state().tasks[0]?.status).toBe('running');
+    expect(h.wakeMain).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(h.adapters[kind].runs).toHaveLength(2);
+    expect(h.state().tasks[0]?.status).toBe('running');
+    expect(h.state().script?.status).toBe('running');
+    expect(h.state().tasks[0]?.resultRefs).toEqual([]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    await h.until(() => expect(h.state().script?.status).toBe('result_ready'));
+    const state = h.state();
+    expect(state.tasks).toHaveLength(1);
+    expect(state.tasks[0]?.attempts).toHaveLength(1);
+    expect(state.sessions[0]?.nativeSessionId).toBe('child');
+    expect(state.artifacts.find(a => a.taskId)?.text).toBe('recovered result');
+    expect(state.events.map(e => e.kind)).toEqual(['script_result_ready']);
+    const [initial, ...resumed] = h.adapters[kind].runOptions;
+    for (const options of resumed) {
+      expect(options).toMatchObject({ runId: initial!.runId, model: initial!.model,
+        ...(kind === 'codex' ? { threadId: 'child' } : { sessionId: 'child' }) });
+      expect(options.prompt).toContain('不要重复执行已完成的操作');
+    }
+  });
+
+  it.each(['cancel', 'deadline'] as const)('stops a disconnected worker during backoff on %s', async stop => {
+    vi.useFakeTimers();
+    const h = await harness();
+    h.adapters.codex.setEvents([[{ type: 'system', threadId: 'child' },
+      { type: 'error', terminationReason: 'failed', failureKind: 'transient', message: 'connection lost' }]]);
+    await h.call('run_script', { goal: 'bounded retry', timeoutMs: 10_000,
+      script: 'return await agent("task",{key:"task"});' });
+    await h.until(() => expect(h.adapters.codex.runs).toHaveLength(1));
+    const workflowId = h.state().workflowId;
+    if (stop === 'cancel') await h.call('cancel');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.adapters.codex.runs).toHaveLength(1);
+    expect(h.adapters.codex.runs[0]?.stopped).toBe(true);
+    expect(h.runtime.kernel.state('script-topic', workflowId)?.tasks[0]?.status).toBe('cancelled');
+  });
+
   it('restricts continuation credentials to the original workflow and denies new starts', async () => {
     const h = await harness();
     expect(() => h.runtime.bindMain('script-topic', 'continue')).toThrow('No active workflow');

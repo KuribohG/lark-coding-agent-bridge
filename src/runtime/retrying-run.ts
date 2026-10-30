@@ -4,11 +4,11 @@ import { log } from '../core/logger';
 
 const RETRY_DELAYS_MS = [30_000, 60_000, 120_000] as const;
 const MAX_RETRIES = 100;
-const CONTINUE_PROMPT = '上次执行因 API 限流中断。请从当前会话的已有进度继续完成用户请求，包括中途补充的要求。先检查已完成的操作和工具结果，不要重复执行已完成的操作。';
+const CONTINUE_PROMPT = '上次执行因 API 限流或临时连接/服务错误中断。请从当前会话的已有进度继续完成用户请求，包括中途补充的要求。先检查已完成的操作和工具结果，不要重复执行已完成的操作。';
 
-function isRateLimitError(event: AgentEvent): boolean {
+function isRetryableError(event: AgentEvent): boolean {
   return event.type === 'error' && event.terminationReason === 'failed'
-    && agentFailureKind(event) === 'rate_limit';
+    && ['rate_limit', 'transient'].includes(agentFailureKind(event));
 }
 
 function isProgressEvent(event: AgentEvent): boolean {
@@ -29,7 +29,7 @@ function isProgressEvent(event: AgentEvent): boolean {
   }
 }
 
-/** Keep one scope, pool slot, and stop handle across consecutive rate-limit retries. */
+/** Keep one scope, pool slot, and stop handle across consecutive transient failures. */
 export function retryingRun(input: {
   agent: AgentAdapter;
   initialRun: AgentRun;
@@ -67,7 +67,7 @@ export function retryingRun(input: {
             // Recovery starts a fresh retry budget, but keeps the session's progress.
             attempt = 0;
           }
-          if (event.type === 'error' && isRateLimitError(event) && attempt < MAX_RETRIES
+          if (event.type === 'error' && isRetryableError(event) && attempt < MAX_RETRIES
             && !uncertainInput && pendingInputs === 0
             && !input.options.forkSession && (!(madeProgress || steered) || sessionId || threadId) && canRetry()) {
             failure = event;
@@ -90,9 +90,11 @@ export function retryingRun(input: {
         }
         if (!canRetry()) break;
         const delayMs = RETRY_DELAYS_MS[Math.min(attempt++, RETRY_DELAYS_MS.length - 1)]!;
-        log.warn('run', 'rate-limit-retry', { runId: input.options.runId, agent: input.agent.id,
+        const retryEvent = agentFailureKind(failure) === 'rate_limit' ? 'rate-limit-retry' : 'transient-retry';
+        const retryDetails = retryEvent === 'transient-retry' ? { failureKind: 'transient' as const } : {};
+        log.warn('run', retryEvent, { runId: input.options.runId, agent: input.agent.id,
           attempt, maxAttempts: MAX_RETRIES, delayMs, error: failure.message });
-        yield { type: 'retry', attempt, maxAttempts: MAX_RETRIES, delayMs };
+        yield { type: 'retry', attempt, maxAttempts: MAX_RETRIES, delayMs, ...retryDetails };
         await waitForRetry(delayMs, controller.signal);
         if (!canRetry()) break;
 
@@ -107,9 +109,9 @@ export function retryingRun(input: {
         if (!canRetry()) break;
         current = input.agent.run(options);
         waiting = false;
-        log.info('run', 'rate-limit-retry-started', { runId: input.options.runId, agent: input.agent.id,
+        log.info('run', `${retryEvent}-started`, { runId: input.options.runId, agent: input.agent.id,
           attempt, maxAttempts: MAX_RETRIES });
-        yield { type: 'retry', attempt, maxAttempts: MAX_RETRIES, delayMs: 0 };
+        yield { type: 'retry', attempt, maxAttempts: MAX_RETRIES, delayMs: 0, ...retryDetails };
       }
       finish();
       yield { type: 'done', terminationReason: 'interrupted' };
