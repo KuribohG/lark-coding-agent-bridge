@@ -6,7 +6,7 @@ import { accessToClaudePermissionMode, accessToCodexSandbox, clampAccess } from 
 import type { AgentExecutionProfile } from '../config/profile-schema';
 import type { ModelSettings } from '../agent/model-settings';
 import type { RunPolicyAllow } from '../policy/run-policy';
-import { workflowDigest } from './definitions';
+import { workflowDigest } from './digest';
 import type { WorkerExecution, WorkerExecutionSelection, WorkflowRoot } from './types';
 
 export function workerSelection(value: unknown, root: WorkflowRoot): WorkerExecutionSelection {

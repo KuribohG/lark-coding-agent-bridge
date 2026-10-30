@@ -102,7 +102,7 @@ describe('script kernel lifecycle', () => {
     expect(h.state().script?.calls[0]?.cached).toBe(false);
     await expect(h.agent('b',{harness:'unknown'})).rejects.toThrow('Unknown worker');
     await expect(h.agent('b',{profile:'other'})).rejects.toThrow('supports');
-    await expect(h.call('delegate',{role:'worker'})).rejects.toThrow('own their tasks');
+    await expect(h.call('delegate',{role:'worker'})).rejects.toThrow('Unsupported workflow operation');
   });
 
   it('bounds calls, retries, and progress and rejects stale state versions', async () => {

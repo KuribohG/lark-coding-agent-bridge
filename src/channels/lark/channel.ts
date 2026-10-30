@@ -1,6 +1,6 @@
-import { randomUUID } from 'node:crypto';
+import { handleWorkflowCommand } from '../../workflows/commands';
 import { WorkflowRuntime } from '../../workflows/runtime';
-import { workflowDigest } from '../../workflows/definitions';
+import { workflowDigest } from '../../workflows/digest';
 import { resolveWorkerExecution } from '../../workflows/execution';
 import { larkDisplay } from './config';
 import { createLarkRunOutput } from './run-output';
@@ -449,36 +449,13 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     controls.workflow = {
       cancel: scope => runtime.kernel.cancel(scope),
       invalidate: scope => runtime.kernel.invalidate(scope),
-      command: async (scope, args, message) => {
-        const operation = args.trim().split(/\s+/)[0] || 'status';
-        const goal = args.trim().slice(operation.length).trim();
-        if (operation === 'start' || operation === 'script') {
-          if (!goal) return operation === 'script' ? '用法：/workflow script <任务及希望使用的 harness>' : '用法：/workflow start <架构设计需求>';
-          if (runtime.kernel.state(scope)) return '当前话题已绑定工作流，请先完成或取消。';
-          if (controls.activeTimedRun?.(scope)) return '请先结束当前限时任务。';
-          workflowOrigins.set(scope, message);
-          const content = operation === 'script'
-            ? `请编写并运行 run_script 工作流完成以下需求，按需选择各 agent 的 harness：\n${goal}`
-            : `请用 architecture-review 工作流完成以下需求：\n${goal}`;
-          const queued = pending.push(scope, { ...message, content });
-          return queued === undefined ? '消息队列已满，请稍后重试。' : undefined;
-        }
-        if (!['status', 'pause', 'resume', 'cancel'].includes(operation)) return '支持：start <架构需求>、script <任务>、status、pause、resume、cancel。';
-        if (operation === 'cancel') return runtime.kernel.cancel(scope) ? '已请求取消当前工作流。' : '当前没有工作流。';
-        const state = runtime.kernel.state(scope);
-        if (operation !== 'status' && !state) return '当前没有工作流。';
-        const result = await runtime.kernel.call({ kind: 'main', scopeId: scope }, operation,
-          { ...(state ? { workflowId: state.workflowId } : {}), operationId: randomUUID(), expectedStateVersion: state?.stateVersion });
-        if (operation !== 'status') return `工作流已${operation === 'pause' ? '暂停派发' : '恢复派发'}。`;
-        if (!state) return '当前没有工作流。';
-        const detail = result as { status: string };
-        return [`${state.script?.name ?? state.definition.id}：${detail.status}`, `需求：${state.goal}`,
-          ...(state.script ? [`脚本：${state.script.status}${state.script.phase ? `，${state.script.phase}` : ''}，重放 ${state.script.revision} 次`] : []),
-          ...state.tasks.map(task => {
-            const session = state.sessions.find(item => item.sessionRef === task.sessionRef)!;
-            return `- ${task.scriptKey ?? session.role} (${session.execution?.agentKind ?? state.root.agentKind})：${task.status}${session.nativeSessionId ? `，session ${session.nativeSessionId}` : ''}`;
-          }), `待处理事件：${state.events.filter(event => !event.acknowledged).length}`].join('\n');
-      },
+      command: (scope, args, message) => handleWorkflowCommand(runtime.kernel, scope, args, content => {
+        if (controls.activeTimedRun?.(scope)) return '请先结束当前限时任务。';
+        const queued = pending.push(scope, { ...message, content });
+        if (queued === undefined) return '消息队列已满，请稍后重试。';
+        workflowOrigins.set(scope, message);
+        return undefined;
+      }),
     };
   };
 

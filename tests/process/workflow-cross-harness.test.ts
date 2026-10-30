@@ -19,7 +19,7 @@ import type { RunPolicyAllow } from '../../src/policy/run-policy';
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
-async function fixture(start = true) {
+async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'workflow-cross-harness-'));
   cleanup.push(() => rm(dir, { recursive: true, force: true }));
   const binary = join(dir, 'pi.cjs');
@@ -63,13 +63,12 @@ process.stdin.on('end', () => {
   const main = runtime.bindMain(root.scopeId);
   const call = (method: string, args: Record<string, unknown> = {}) => callWorkflow(method,
     { operationId: randomUUID(), expectedStateVersion: runtime.kernel.state(root.scopeId)?.stateVersion, ...args }, main.env);
-  if (start) await call('start', { pluginId: 'architecture-review', goal: 'Cross-harness design' });
   return { runtime, root, profile, call, main, record, resolveAgent, pool, wakeMain };
 }
 
 describe('Codex-root workflow with Pi process workers', () => {
   it('accepts scripts through the built CLI, cancels a native process on pause, and replays in a fresh session', async () => {
-    const f = await fixture(false);
+    const f = await fixture();
     const input = join(dirname(f.record), 'script.json');
     await writeFile(input, JSON.stringify({ operationId: randomUUID(), goal: 'script smoke',
       execution: { agentKind: 'pi', model: 'pi-model' }, script: 'return await agent("WAIT_FOR_CANCEL",{key:"a"});' }));
@@ -90,34 +89,27 @@ describe('Codex-root workflow with Pi process workers', () => {
     expect(runs.every(run => !run.argv.includes('--session'))).toBe(true);
   });
 
-  it('routes Pi results back to the root and continues the same Pi session', async () => {
+  it('routes model-pinned Pi steps back to the root with fresh native sessions', async () => {
     const f = await fixture();
-    await f.call('delegate', { role: 'designer-b', taskKey: 'b', actorKey: 'b', objective: 'independent design',
-      execution: { agentKind: 'pi', model: 'pi-only-model', reasoningEffort: 'high' } });
+    await f.call('run_script', { goal: 'cross-harness review', execution: { agentKind: 'pi', model: 'pi-only-model', reasoningEffort: 'high' },
+      script: 'const a=await agent("independent design",{key:"a"}); const b=await agent("follow-up: "+a,{key:"b"}); return [a,b];' });
     f.main.release();
-    await vi.waitFor(() => expect(f.runtime.kernel.state(f.root.scopeId)?.tasks[0]?.status).toBe('result_ready'));
+    await vi.waitFor(() => expect(f.runtime.kernel.state(f.root.scopeId)?.script?.status).toBe('result_ready'), {timeout:5000});
     const state = f.runtime.kernel.state(f.root.scopeId)!;
-    expect(state.sessions[0]).toMatchObject({ nativeIdKind: 'sessionId', nativeSessionId: 'pi-child',
-      execution: { agentKind: 'pi', modelSettings: { model: 'pi-only-model' } } });
-    expect(state.artifacts.at(-1)?.text).toBe('Pi proposal');
+    expect(state.sessions).toHaveLength(2);
+    expect(state.sessions[0]).toMatchObject({ nativeIdKind: 'sessionId', nativeSessionId: 'pi-child', execution: {agentKind:'pi',modelSettings:{model:'pi-only-model'}} });
+    expect(state.artifacts.at(-1)?.text).toBe('["Pi proposal","revised proposal"]');
     expect(state.root).toEqual(f.root);
     await f.runtime.kernel.tick(); expect(f.wakeMain).toHaveBeenCalledWith('codex-topic');
-    const resumed = f.runtime.bindMain(f.root.scopeId);
-    await callWorkflow('send', { operationId: randomUUID(), expectedStateVersion: f.runtime.kernel.state(f.root.scopeId)!.stateVersion,
-      taskId: state.tasks[0]!.taskId, inputId: 'follow-up', text: 'follow-up on failure handling' }, resumed.env);
-    await vi.waitFor(() => expect(f.runtime.kernel.state(f.root.scopeId)?.tasks[0]?.resultRefs).toHaveLength(2));
-    expect(f.runtime.kernel.state(f.root.scopeId)?.artifacts.at(-1)?.text).toBe('revised proposal');
     const runs = (await readFile(f.record, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     expect(runs).toHaveLength(2);
-    expect(runs[1].session).toBe('pi-child');
-    expect(runs[1].argv).toContain('--session');
-    expect(runs.every(run => run.argv.includes('pi-only-model') && !run.argv.includes('codex-only-model'))).toBe(true);
+    expect(runs.every(run => !run.argv.includes('--session') && run.argv.includes('pi-only-model') && !run.argv.includes('codex-only-model'))).toBe(true);
   });
 
   it('cancels a running Pi process without accepting its progress', async () => {
     const f = await fixture();
-    await f.call('delegate', { role: 'designer-a', taskKey: 'a', actorKey: 'a', objective: 'WAIT_FOR_CANCEL', execution: { agentKind: 'pi' } });
-    await vi.waitFor(() => expect(f.runtime.kernel.state(f.root.scopeId)?.sessions[0]?.nativeSessionId).toBe('pi-child'));
+    await f.call('run_script', { goal: 'cancel', script: 'return await agent("WAIT_FOR_CANCEL",{key:"a",harness:"pi"});' });
+    await vi.waitFor(() => expect(f.runtime.kernel.state(f.root.scopeId)?.sessions[0]?.nativeSessionId).toBe('pi-child'), {timeout:5000});
     const workflowId = f.runtime.kernel.state(f.root.scopeId)!.workflowId;
     await f.call('cancel');
     await vi.waitFor(() => expect(f.runtime.kernel.state(f.root.scopeId, workflowId)?.tasks[0]?.status).toBe('cancelled'));
@@ -128,8 +120,8 @@ describe('Codex-root workflow with Pi process workers', () => {
   it('rejects target configuration drift while a worker waits for admission', async () => {
     const f = await fixture();
     const releases = await Promise.all([f.pool.acquire(), f.pool.acquire(), f.pool.acquire()]);
-    await f.call('delegate', { role: 'designer-a', taskKey: 'a', actorKey: 'a', objective: 'design', execution: { agentKind: 'pi' } });
-    await vi.waitFor(() => expect(f.runtime.kernel.state(f.root.scopeId)?.tasks[0]?.status).toBe('starting'));
+    await f.call('run_script', { goal: 'drift', script: 'return await agent("design",{key:"a",harness:"pi"});' });
+    await vi.waitFor(() => expect(f.runtime.kernel.state(f.root.scopeId)?.tasks[0]?.status).toBe('starting'), {timeout:5000});
     f.profile.pi!.binaryPath = 'replacement-pi';
     releases.forEach(release => release());
     await vi.waitFor(() => expect(f.runtime.kernel.state(f.root.scopeId)?.tasks[0]?.status).toBe('failed'));

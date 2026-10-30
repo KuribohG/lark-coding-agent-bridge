@@ -35,6 +35,9 @@
 | `/effort [强度或 default]` | 当前话题 / 聊天的思考强度 |
 | `/btw <问题>` | 基于主会话的旁问 |
 | `/stop` | 停止当前聊天任务、队列和旁问 |
+| `/workflow start <任务及 worker 的 harness/模型要求>` | 启动脚本工作流；架构评审也使用这一入口 |
+| `/workflow status` | 查看主 agent、worker 的 harness、模型和进度 |
+| `/workflow pause`、`/workflow resume`、`/workflow cancel` | 暂停、复用完成结果重放、取消 |
 | `/run` | 创建一次性限时任务，需确认预览 |
 | `/run status`、`/run stop` | 查看或停止限时任务 |
 | `/run defaults` | 配置以后创建限时任务时使用的默认值 |
@@ -49,6 +52,8 @@
 | `/reconnect` | 强制重连飞书连接 |
 
 访问管理等操作需要 owner / 管理员权限。`/stop`、`/run`、暂停消息采集、关闭 CI 来源分别控制不同任务，见[日常任务](chat-and-tasks.md)和[盯盘](monitoring.md)。
+
+工作流开始前，用 `/config run` 选择主 agent 的执行器，再用 `/model <模型>` 和 `/effort <强度>` 设置主模型。各 worker 的模型写在任务要求里，由脚本逐个指定。调用示例与重放边界见[工作流](../workflows.md)。
 
 ## 在本机终端执行
 

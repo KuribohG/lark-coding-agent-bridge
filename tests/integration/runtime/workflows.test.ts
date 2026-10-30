@@ -26,7 +26,7 @@ describe('workflow IPC and worker execution', () => {
     await expect(callWorkflow('status', {}, expired.env)).rejects.toThrow('expired');
   });
 
-  it('collects final output with native identity, resumes the same child, and keeps root adapter resolution', async () => {
+  it('collects final output with native identity after the main binding ends', async () => {
     const root: WorkflowRoot = { scopeId: 'real-topic', profile: 'default', agentKind: 'codex', cwdRealpath: '/workspace',
       policyFingerprint: 'policy', catalogBinding: 'root', modelSettings: { model: 'model' } };
     const policy: RunPolicyAllow = { ok: true, prompt: '', requestedCwd: '/workspace', cwdRealpath: '/workspace',
@@ -35,7 +35,6 @@ describe('workflow IPC and worker execution', () => {
     const agent = new FakeAgentAdapter({ id: 'codex', capabilities: { finalAnswer: 'separate-event', input: 'unsupported' }, events: [
       [{ type: 'system', threadId: 'child-1' }, { type: 'text', delta: 'progress must not become the result' },
         { type: 'final_text', content: 'proposal' }, { type: 'done', terminationReason: 'normal' }],
-      [{ type: 'system', threadId: 'child-1' }, { type: 'final_text', content: 'follow-up answer' }, { type: 'done', terminationReason: 'normal' }],
     ] });
     const resolveAgent = vi.fn(() => agent);
     const executor = new RunExecutor({ resolveAgent, pool: new ProcessPool(() => 3), activeRuns: new ActiveRuns() });
@@ -45,25 +44,17 @@ describe('workflow IPC and worker execution', () => {
     const main = runtime.bindMain(root.scopeId);
     const call = (method: string, args: Record<string, unknown> = {}) => callWorkflow(method,
       { operationId: randomUUID(), expectedStateVersion: runtime.kernel.state(root.scopeId)?.stateVersion, ...args }, main.env);
-    await call('start', { pluginId: 'architecture-review', goal: 'test design' });
-    await call('delegate', { role: 'designer-a', taskKey: 'a', actorKey: 'a', objective: 'design A' });
+    await call('run_script', { goal: 'test design', script: 'return await agent("design A",{key:"a"});' });
     main.release(); // Child lifetime is independent of the parent CLI turn.
-    await runtime.kernel.tick();
-    await vi.waitFor(() => expect(runtime.kernel.state(root.scopeId)?.tasks[0]?.status).toBe('result_ready'));
+    await runtime.tick();
+    await vi.waitFor(async () => { await runtime.tick(); expect(runtime.kernel.state(root.scopeId)?.script?.status).toBe('result_ready'); });
     const state = runtime.kernel.state(root.scopeId)!;
     expect(resolveAgent).toHaveBeenCalledWith('real-topic', 'codex');
     expect(agent.runOptions[0]?.threadId).toBeUndefined();
     expect(agent.runOptions[0]?.env?.LARK_WORKFLOW_TOKEN).not.toEqual(main.env.LARK_WORKFLOW_TOKEN);
     expect(state.sessions[0]?.nativeSessionId).toBe('child-1');
-    expect(state.artifacts.at(-1)?.text).toBe('proposal');
+    expect(state.artifacts.find(a => a.taskId)?.text).toBe('proposal');
     await runtime.kernel.tick(); expect(wakeMain).toHaveBeenCalledWith('real-topic');
-    const resumed = runtime.bindMain(root.scopeId);
-    await callWorkflow('send', { operationId: randomUUID(), expectedStateVersion: state.stateVersion,
-      taskId: state.tasks[0]!.taskId, inputId: 'follow-up', text: 'explain fencing' }, resumed.env);
-    await runtime.kernel.tick();
-    await vi.waitFor(() => expect(runtime.kernel.state(root.scopeId)?.tasks[0]?.resultRefs).toHaveLength(2));
-    expect(agent.runOptions[1]?.threadId).toBe('child-1');
-    expect(agent.runOptions[1]?.prompt).toContain('explain fencing');
     await expect(callWorkflow('task_status', {}, agent.runOptions[0]!.env)).rejects.toThrow('revoked');
   });
 });

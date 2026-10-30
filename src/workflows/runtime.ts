@@ -4,7 +4,7 @@ import type { RunExecutor } from '../runtime/run-executor';
 import { log } from '../core/logger';
 import { WorkflowKernel } from './kernel';
 import { WorkflowIpc, WORKFLOW_TOOL_INSTRUCTIONS } from './ipc';
-import { workflowDigest } from './definitions';
+import { workflowDigest } from './digest';
 import { inheritedWorkerExecution } from './execution';
 import { runScriptProgram } from './script-vm';
 import type { WorkerExecution, WorkerExecutionSelection, WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from './types';
@@ -141,11 +141,8 @@ export class WorkflowRuntime {
           if (workflowDigest(admitted.execution) !== workflowDigest(pinned)) throw new Error('Worker binding changed while queued');
         },
         policy: { ...current.policy, prompt: request.prompt },
-        systemPrompt: workflow.script
-          ? '你是 bridge 管理的脚本工作流子 agent。只完成指定任务，遵守原始需求的授权范围，不要自行发送消息或派生子 agent。用最终答复返回结果。角色提示不改变实际执行权限。'
-          : '你是 bridge 管理的工作流子 agent。只完成给定文本分析任务。不要向用户或外部应用发送消息，不要修改代码、执行共享测试或派生子 agent。输出最终答复供主 agent 审查。角色提示不改变实际执行权限。',
+        systemPrompt: '你是 bridge 管理的脚本工作流子 agent。只完成指定任务，遵守原始需求的授权范围，不要自行发送消息或派生子 agent。用最终答复返回结果。角色提示不改变实际执行权限。',
         ...pinned.modelSettings,
-        ...(session.nativeSessionId ? { [session.nativeIdKind]: session.nativeSessionId } : {}),
         deadlineAt: workflow.deadlineAt, signal,
         observability: { profile: pinned.profile, agent: pinned.agentKind, source: 'workflow', stage: session.role },
       });

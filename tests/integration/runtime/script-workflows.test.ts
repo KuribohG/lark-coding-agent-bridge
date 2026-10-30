@@ -36,7 +36,7 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
   const runtime = new WorkflowRuntime({ path: ':memory:', executor, resolve: async () => ({ root, policy }), wakeMain,
     resolveWorker: async (current, selection) => ({ policy, execution: {
       agentKind: selection.agentKind, profile: current.profile, configurationFingerprint: selection.agentKind,
-      policyFingerprint: policy.policyFingerprint, modelSettings: { model: selection.model ?? selection.agentKind + '-default' },
+      policyFingerprint: policy.policyFingerprint, modelSettings: { ...(selection.agentKind === current.agentKind ? current.modelSettings : {model: selection.agentKind + '-default'}), ...(selection.model ? {model:selection.model} : {}), ...(selection.reasoningEffort ? {reasoningEffort:selection.reasoningEffort} : {}) },
     } }),
   });
   await runtime.start(); cleanup.push(() => runtime.close());
@@ -56,7 +56,22 @@ describe('script workflow runtime', () => {
     await h.until(() => expect(h.state().script?.status).toBe('result_ready'));
     expect(h.state().root.agentKind).toBe(rootKind);
     expect(h.resolveAgent).toHaveBeenCalledWith('script-topic', rootKind);
+    expect(h.adapters[rootKind].runOptions[0]?.model).toBe('root-model');
     expect(h.state().artifacts.at(-1)?.text).toBe('"value"');
+  });
+
+  it('pins independent models and efforts on the same harness and invalidates only the changed model on replay', async () => {
+    const h = await harness({ pi: ['fast', 'baseline', 'revised'] });
+    const script = 'return await parallel([()=>agent("review",{key:"fast",harness:"pi",model:"service/fast",reasoningEffort:"minimal"}),()=>agent("review",{key:"default"})]);';
+    await h.call('run_script', {goal:'model selection', script, execution:{agentKind:'pi',model:'service/baseline',reasoningEffort:'high'}});
+    await h.until(() => expect(h.state().script?.status).toBe('result_ready'));
+    expect(h.adapters.pi.runOptions.map(o=>({model:o.model,effort:o.reasoningEffort}))).toEqual([
+      {model:'service/fast',effort:'minimal'}, {model:'service/baseline',effort:'high'}]);
+    expect(h.state().root.modelSettings.model).toBe('root-model');
+    await h.call('replay_script', {execution:{agentKind:'pi',model:'service/revised',reasoningEffort:'high'}});
+    await h.until(() => expect(h.state().script?.status).toBe('result_ready'));
+    expect(h.state().script?.calls.map(c=>c.cached)).toEqual([true,false]);
+    expect(h.adapters.pi.runOptions.map(o=>o.model)).toEqual(['service/fast','service/baseline','service/revised']);
   });
 
   it('routes each call through its harness, branches on JSON, and wakes main only for the final artifact', async () => {

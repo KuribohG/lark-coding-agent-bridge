@@ -5,7 +5,7 @@ export interface WorkflowDefinition {
   apiVersion: 'bridge.workflow/v1';
   id: string;
   version: string;
-  kind: 'agent-led' | 'script-led';
+  kind: 'script-led';
   mainInstructions: string;
   roles: Record<string, { instructions: string; outputKind: string }>;
   maxConcurrentWorkers: number;
@@ -58,7 +58,6 @@ export interface WorkflowTask {
   inputRefs: string[];
   status: 'queued' | 'starting' | 'running' | 'result_ready' | 'waiting_input' | 'failed' | 'cancelling' | 'cancelled' | 'interrupted';
   attempts: Array<{ attemptId: string; runId?: string; startedAt: number; endedAt?: number; result?: string }>;
-  inputs: Array<{ inputId: string; text: string; receipt: string }>;
   resultRefs: string[];
   error?: string;
   scriptRunId?: string;
@@ -95,7 +94,7 @@ export interface WorkflowArtifact {
 
 export interface WorkflowEvent {
   id: string;
-  kind: 'task_result_ready' | 'task_failed' | 'worker_question' | 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed';
+  kind: 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed';
   taskId?: string;
   artifactRef?: string;
   summary: string;
@@ -110,7 +109,6 @@ export interface WorkflowState {
   definitionDigest: string;
   goal: string;
   stateVersion: number;
-  revisionRound: number;
   status: 'active' | 'paused' | 'completed' | 'cancelled' | 'binding_attention' | 'interrupted';
   createdAt: number;
   deadlineAt: number;

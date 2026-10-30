@@ -1,89 +1,48 @@
 # Workflows
 
-The bridge supports agent-led architecture reviews and script-led workflows. Both keep the main native session and can select worker harnesses independently, including Codex, Claude and Pi when configured with authoritative final-answer support. The main agent can use any supported root harness; it does not have to be Codex.
+Workflows are script-driven. The bridge owns scheduling, task state, worker sessions and final result notifications; the main agent writes and reviews the script. Both the main agent and each worker can select a harness **and** a model. Configured Codex, Claude and Pi backends can be mixed in one workflow, and multiple workers can use different models under the same harness.
 
-## Architecture review (P0)
+## Invoke from Lark
 
-This release adds an agent-led, text-only architecture review prototype. The current Lark topic keeps its main native session. The bridge owns worker runs, so ending a main turn does not terminate its workers. Workers return artifacts to the main session; their output is not sent directly to Lark.
+First set the main agent in the target chat/topic:
 
-Start with `/workflow start <requirements>`, or explicitly ask the main agent to use the architecture review workflow. The main agent establishes the goal, delegates two independent designers, optionally delegates a challenger, reads their results, and writes a decision report. Ordinary questions do not automatically start a workflow.
+1. Send `/config run` and choose its execution engine (Codex, Claude or Pi).
+2. Send `/model <model ID>` and optionally `/effort <level>` for the main model and reasoning effort. `/model` without arguments opens the selection card. A configured service can be selected with `<provider>/<model>`.
+3. Start the workflow, giving the task and worker selections in natural language:
 
-`/workflow status` shows the task states and observed worker session IDs. `/workflow pause` stops new dispatch while running workers finish. `/workflow resume` resumes dispatch. `/workflow cancel` cancels workers. `/stop` cancels the workflow and the current main turn. A new root session, workspace, model, backend or policy puts the existing workflow into `binding_attention` and prevents further dispatch.
-
-## Execution contract
-
-- One nonterminal workflow per root scope, at most two workers per workflow, two formal revision rounds, 32 tasks, eight attempts per task, and a 120-minute deadline.
-- The shared process pool prioritizes interactive work and reserves one foreground slot when capacity exceeds one. A one-slot host runs stages serially.
-- Each designer starts a fresh native session, with only its goal, objective and explicit artifact inputs. Framework artifact access prevents a designer from receiving another designer's output. This is context routing, not filesystem or credential isolation.
-- `send` queues a new attempt in the same idle worker session. Busy sessions return an error. P0 does not inject inputs into active workers or reinterpret `unknown` transport receipts.
-- Native IDs are recorded only from backend `system` events. Missing history or an unexpected replacement ID fails the task; the framework does not silently substitute a fresh session.
-- A bounded, nonempty `final_text` plus normal completion is required for `result_ready`. Progress, interrupted runs and failed output are not accepted as results. Results are unverified text for the main agent to evaluate.
-- Results and pending main events commit together in SQLite. An automatic wake uses an internal event prompt and the original reply destination. It neither replays the original user input nor advances its IM cursor. Real follow-ups received during that turn are recorded normally.
-- Notification and acknowledgement are separate. The main agent calls `ack_events` after reading results. Unacknowledged events remain in later context. Failed automatic wakes do not enter an unbounded retry loop.
-
-## Main-agent tools
-
-The host injects a short-lived, scope-bound credential and the CLI path for this bridge build. It does not change global CLI configuration. Use:
-
-```sh
-node "$LARK_WORKFLOW_CLI" workflow status --json
-node "$LARK_WORKFLOW_CLI" workflow delegate --input-file task.json --json
+```text
+/workflow start 架构评审：Pi 使用 <方案模型> 提出方案，Claude 使用 <替代模型> 提出独立方案，Codex 使用 <审查模型> 审查并汇总。需求：……
 ```
 
-The installed `lark-channel-bridge workflow <operation>` also exposes the same protocol. It requires a current bridge run binding. The CLI submits to a loopback IPC service; it does not open the workflow database or own workers. Credentials expire and are revoked when the run ends. Codex daemon bindings are injected through the thread configuration, so concurrent threads do not share a daemon-wide workflow identity.
+Replace bracketed placeholders with models supported by the configured harness/provider. In groups, genuinely mention the bot when required by the chat settings. The bot writes the script and starts it, then returns the reviewed result to the same chat/topic. You do not need to write JavaScript in Lark. Explicit natural-language requests to use a workflow work too; ordinary questions do not start one automatically.
 
-`start` takes `operationId`, `pluginId: "architecture-review"` and `goal`. Other mutations take `workflowId`, `operationId` and `expectedStateVersion`; read `status` after a conflict. Identical operation IDs return the committed result; conflicting content is rejected. Delegation additionally uses a stable `taskKey`.
+`/workflow script <task>` remains an alias for the same script entry. It is not a separate engine. Use `/workflow status` to see the main and worker harnesses/models, task state and phase, `/workflow pause` and `/workflow resume` to pause/replay, and `/workflow cancel` or `/stop` to cancel. Choose main settings before starting: changing the root session, engine or model invalidates the existing binding.
 
-P0 operations: `status`, `start`, `delegate`, `send`, `read_artifact`, `publish_artifact`, `ack_events`, `begin_revision_round`, `cancel_task`, `pause`, `resume`, `cancel`, `complete`. Main-authored artifacts support `context` and `architecture-decision`. Completion requires an explicit report reference, an `openIssues` list, `verificationLimits`, no running workers, and no unacknowledged events. Worker bindings can only query their task/context and read explicitly assigned artifacts.
+The old `architecture-review` plugin and agent-led `start`, `delegate`, `send`, `begin_revision_round` API operations have been removed. Architecture review is now an ordinary script use case; there is no fixed designer/challenger plugin. On upgrade, unfinished old instances are cancelled and release their topic binding. Their existing artifacts remain readable by workflow ID, but old instances cannot resume. The packaged review example demonstrates independent proposals and a conditional revision through this common API.
 
-## Boundaries and next stages
+## Harness and model selection
 
-### Cross-harness workers (definition 0.2.0-p0)
+| Selection | Configuration | Scope |
+| --- | --- | --- |
+| Main agent | `/config run`, `/model`, `/effort` | Current chat/topic, captured at workflow creation |
+| Worker defaults | `run_script.execution: {agentKind, model?, reasoningEffort?}` | Calls without an explicit override |
+| Individual worker | `agent(..., {harness, model, reasoningEffort, key})` | This call only; each call can select another model |
 
-On builds containing this version, a Codex root may delegate a Pi or Claude worker without changing the root's backend or native session. `delegate` accepts an optional `execution` object:
+Worker defaults do not change the main agent. With no override, workers inherit settings for the selected harness. Switching harness does not carry a different harness's model name. Explicit model selection is recommended for reproducible runs; an omitted native default is not a frozen model version. The model is part of the cache fingerprint, so changing one worker's model reruns that task and any downstream calls whose inputs change.
 
-```json
-{
-  "workflowId": "<from status>",
-  "operationId": "<unique operation ID>",
-  "expectedStateVersion": 1,
-  "role": "designer-b",
-  "actorKey": "pi-designer",
-  "taskKey": "alternative-design",
-  "objective": "Propose an independent design under the original requirements",
-  "inputRefs": [],
-  "execution": { "agentKind": "pi", "model": "<model supported by your Pi configuration>", "reasoningEffort": "high" }
-}
-```
+Only the original authorized profile, workspace and effective permissions are used. Arbitrary profile names, environment variables or credentials cannot be supplied by a script. The target must provide authoritative `final_text` and support the requested model/access mode. Native IDs are recorded from backend system events and stay outside the root session catalog. Progress, partial output and non-normal completion cannot become worker results.
 
-Use the current `stateVersion` from `status`, not the example value. Omit `execution` to inherit the root backend and model settings. With another backend, omitted model settings use that backend's scoped/native defaults, never the root backend's model name. Supply an explicit model to pin the model choice; native defaults are not a frozen model configuration. Every actor records its backend, current profile reference, model overrides, configuration/policy fingerprints and observed native session. No credentials are stored in workflow state.
-
-Targets use the current authorized profile's backend launch configuration and provider registry. Arbitrary profiles, environment variables and credentials are not accepted in `execution`. Effective access cannot exceed the root or target capability; unsupported access modes (for example Pi with a workspace sandbox) are rejected. This does not add filesystem isolation. The target must declare authoritative final answers; unsupported backends fail before spawn. Configuration and authorization are checked again after queue admission and before launch. `send` cannot change execution settings and always resumes the original native session; choose a new actor for another backend. Worker identities remain outside the root session catalog.
-
-Pi emits `final_text` only for the last completed assistant message with a normal stop, after `agent_settled` or a successful legacy JSON-mode process exit. Tool output, retries, interrupted/truncated messages, malformed JSON and failed process exits do not become final answers. Pi input remains request/response, which matches P0's idle-session-only `send` contract.
-
-The versioned definition is `workflow-definitions/architecture-review/workflow.json`; the kernel pins a copy and its digest in each instance. The generic kernel, IPC and worker executor are under `src/workflows`; the command contribution is a static `BridgePlugin` under `src/plugins/workflows`. The Lark host supplies root authorization and main-session wake services. The root native identity remains in `SessionCatalog`; worker identities never write its root slot.
-
-P0 stores evidence across restarts but marks unfinished workflows `interrupted` and does not automatically replay them. Cancel the interrupted instance and explicitly start a new one. A reconnect waits for the old channel to close before the new workflow service opens its database.
-
-P1 will add requirement revisions, explicit replacement/rebinding, durable decisions and reconciled recovery. P2 will add isolated experiments, resource leases and verification records. P0 does not expose a verifier role, enforce schema-based requirement coverage, prove architecture correctness, or enforce read-only shell access. Workers use the same authorized execution profile; their role instructions are not a sandbox. Native internal subagents are not part of the framework's concurrency accounting.
-
-Unit/integration tests exercise state transitions, scope isolation, cancellation races, process admission, CLI bindings, child session continuation and the Lark internal wake path. Real backend validation must additionally cover the installed version; adapter simulations alone do not establish native compatibility.
-
-
-## Script-led workflows
-
-On builds containing `run_script`, use `/workflow script <task and preferred harnesses>` or ask the main agent to write and run a script workflow. The main agent creates the script and submits it; the bridge executes it independently of that agent's turn. This feature is a bridge implementation using QuickJS, not a Claude-only tool or a wrapper around Claude's workflow runtime. It is independent of the `architecture-review` plugin.
+## Script API
 
 A script is a JavaScript **function body** with top-level `await` and `return`. Control flow is ordinary JavaScript: a worker's result can select a branch, create more calls, or feed subsequent stages. No static graph needs to be declared. See [the cross-harness review example](../workflow-definitions/scripted/examples/review.js).
 
 ```js
 const [proposal, constraints] = await parallel([
-  () => agent(args.subject, { key: 'proposal', harness: 'pi' }),
-  () => agent('List constraints: ' + args.subject, { key: 'constraints', harness: 'claude' }),
+  () => agent(args.subject, { key: 'proposal', harness: 'pi', model: args.proposalModel }),
+  () => agent('List constraints: ' + args.subject, { key: 'constraints', harness: 'claude', model: args.constraintsModel }),
 ]);
 return await agent(JSON.stringify({ proposal, constraints }), {
-  key: 'decision', harness: 'codex',
+  key: 'decision', harness: 'codex', model: args.decisionModel,
 });
 ```
 
@@ -115,7 +74,7 @@ Guest functions:
 
 `key` is required, stable across replay, and unique within one run. A selected harness uses its configured defaults unless model/effort overrides are supplied. Switching harness does not inherit a different harness's model. All calls must be awaited; the interpreter rejects a result while agent calls are still pending. Failures reject promises, including invalid JSON, missing final answers, native questions and unsupported harnesses. `parallel` and `pipeline` reject on failure; use explicit `try/catch` to implement a fallback. JSON parsing does not validate a schema: check required fields in the script.
 
-Only script completion/failure creates a main-agent event, rather than an event for every worker. Final return values are serialized into a `workflow-result` artifact; no return means JSON `null`. The main agent reads the artifact, acknowledges events, and calls `complete` with that artifact reference, `openIssues` and `verificationLimits`. Workers cannot mutate workflow state, send parent answers, or recursively delegate through the workflow API. Manual `delegate` and `send` are rejected in script-led workflows.
+Only script completion/failure creates a main-agent event, rather than an event for every worker. Final return values are serialized into a `workflow-result` artifact; no return means JSON `null`. The main agent reads the artifact, acknowledges events, and calls `complete` with that artifact reference, `openIssues` and `verificationLimits`. Workers cannot mutate workflow state, send parent answers, or recursively delegate through the workflow API. Worker scheduling belongs to the script; there is no manual delegation or native-session continuation API. A main-authored `report` artifact can also be used for completion.
 
 ### Replay and lifecycle
 
@@ -123,7 +82,7 @@ Only script completion/failure creates a main-agent event, rather than an event 
 
 This is result reuse, not replay of external side effects. File contents, network state, time and other implicit dependencies are not automatically hashed. Include relevant revisions or digests in prompts/keys when fresh execution is required. A task interrupted after a side effect may repeat that effect on replay. Worker tasks that modify shared files need an explicit ownership or serialization strategy; the workflow does not create worktrees or resource leases automatically.
 
-For scripts, `/workflow pause` aborts the interpreter and cancels queued/running workers. Wait for worker cancellation to finish before `/workflow resume`; resume replays with cached completed calls. `/workflow cancel` and `/stop` cancel the whole workflow. The architecture-review pause behavior stays as documented above. Root session, workspace, policy or model changes prevent reuse and further dispatch. Target configuration changes invalidate matching worker cache entries. After restart, unfinished scripts are marked `interrupted`; explicit `replay_script` is supported while the original root binding and deadline remain valid. There is no automatic recovery. An expired workflow must be cancelled and a new one started.
+For scripts, `/workflow pause` aborts the interpreter and cancels queued/running workers. Wait for worker cancellation to finish before `/workflow resume`; resume replays with cached completed calls. `/workflow cancel` and `/stop` cancel the whole workflow. Root session, workspace, policy or model changes prevent reuse and further dispatch. Target configuration changes invalidate matching worker cache entries. After restart, unfinished scripts are marked `interrupted`; explicit `replay_script` is supported while the original root binding and deadline remain valid. There is no automatic recovery. An expired workflow must be cancelled and a new one started.
 
 ### Interpreter and execution boundaries
 
