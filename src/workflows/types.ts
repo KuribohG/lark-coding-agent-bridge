@@ -5,7 +5,7 @@ export interface WorkflowDefinition {
   apiVersion: 'bridge.workflow/v1';
   id: string;
   version: string;
-  kind: 'agent-led';
+  kind: 'agent-led' | 'script-led';
   mainInstructions: string;
   roles: Record<string, { instructions: string; outputKind: string }>;
   maxConcurrentWorkers: number;
@@ -61,6 +61,26 @@ export interface WorkflowTask {
   inputs: Array<{ inputId: string; text: string; receipt: string }>;
   resultRefs: string[];
   error?: string;
+  scriptRunId?: string;
+  scriptKey?: string;
+  scriptOutput?: 'text' | 'json';
+  cacheKey?: string;
+}
+
+export interface WorkflowScript {
+  name: string;
+  sourceRef: string;
+  args: unknown;
+  defaults: WorkerExecutionSelection;
+  runId: string;
+  revision: number;
+  status: 'queued' | 'running' | 'paused' | 'result_ready' | 'failed' | 'interrupted' | 'cancelled';
+  maxCalls: number;
+  calls: Array<{ key: string; taskId: string; cached: boolean }>;
+  logs: string[];
+  phase?: string;
+  resultRef?: string;
+  error?: string;
 }
 
 export interface WorkflowArtifact {
@@ -75,7 +95,7 @@ export interface WorkflowArtifact {
 
 export interface WorkflowEvent {
   id: string;
-  kind: 'task_result_ready' | 'task_failed' | 'worker_question' | 'binding_attention' | 'budget_attention';
+  kind: 'task_result_ready' | 'task_failed' | 'worker_question' | 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed';
   taskId?: string;
   artifactRef?: string;
   summary: string;
@@ -98,6 +118,7 @@ export interface WorkflowState {
   tasks: WorkflowTask[];
   artifacts: WorkflowArtifact[];
   events: WorkflowEvent[];
+  script?: WorkflowScript;
 }
 
 export type WorkflowCaller =

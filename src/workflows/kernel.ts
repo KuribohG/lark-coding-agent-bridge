@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
@@ -6,6 +7,7 @@ import { sessionIdFieldForAgent } from '../agent/backend-spec';
 import { log } from '../core/logger';
 import { workflowDefinition, workflowDigest } from './definitions';
 import { inheritedWorkerExecution, workerSelection } from './execution';
+import { boundedInteger, parseScriptAgentCall, scriptArgs, scriptText, SCRIPT_DEFINITION, SCRIPT_MAX_REVISIONS, SCRIPT_MAX_TASKS } from './script-contract';
 import type {
   WorkflowArtifact, WorkflowCaller, WorkflowEvent, WorkflowHost, WorkflowRoot,
   WorkflowState, WorkflowTask, WorkflowWorkerResult,
@@ -22,6 +24,7 @@ export class WorkflowKernel {
   private pumping = false;
   private closed = false;
   private readonly waking = new Set<string>();
+  private readonly changes = new EventEmitter().setMaxListeners(0);
 
   constructor(path: string, private readonly host: WorkflowHost, private readonly now = Date.now) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -38,6 +41,7 @@ export class WorkflowKernel {
     for (const state of this.list()) {
       if (['completed', 'cancelled'].includes(state.status)) continue;
       state.status = 'interrupted';
+      if (state.script) state.script.status = 'interrupted';
       for (const task of state.tasks) if (BUSY.has(task.status)) {
         task.status = 'interrupted';
         task.error = 'Bridge restarted; P0 does not automatically resume workers.';
@@ -62,7 +66,7 @@ export class WorkflowKernel {
     const state = this.state(scopeId);
     return state
       ? `${state.definition.mainInstructions}\n<workflow_context source="bridge">\n${JSON.stringify(this.summary(state))}\n</workflow_context>`
-      : '当前没有绑定工作流。用户明确要求架构设计多 agent 协作时，可调用 workflow start，pluginId 为 architecture-review。';
+      : '当前没有绑定工作流。用户要求架构设计多 agent 协作时可 start architecture-review；要求脚本编排或跨 harness 工作流时可 run_script。普通问答不自动启动。';
   }
 
   private summary(state: WorkflowState): unknown {
@@ -72,10 +76,11 @@ export class WorkflowKernel {
       goalPreview: state.goal.slice(0, 500), revisionRound: state.revisionRound,
       deadlineAt: state.deadlineAt, root: state.root,
       sessions: state.sessions,
-      tasks: state.tasks.map(({ taskId, taskKey, sessionRef, status, resultRefs, error, inputs, attempts }) =>
-        ({ taskId, taskKey, sessionRef, status, resultRefs, error, inputs: inputs.map(({ inputId, receipt }) => ({ inputId, receipt })), attempts })),
+      tasks: state.tasks.map(({ taskId, taskKey, sessionRef, status, resultRefs, error, inputs, attempts, scriptKey }) =>
+        ({ taskId, taskKey, sessionRef, status, resultRefs, error, scriptKey, inputs: inputs.map(({ inputId, receipt }) => ({ inputId, receipt })), attempts })),
       artifacts: state.artifacts.map(({ text: _text, ...artifact }) => artifact),
       events: state.events.filter(event => !event.acknowledged),
+      ...(state.script ? { script: { ...state.script, args: undefined, argsDigest: workflowDigest(state.script.args) } } : {}),
       executionAccess: 'same authorized profile; role read-only instructions are not a sandbox',
     };
   }
@@ -112,17 +117,24 @@ export class WorkflowKernel {
     }
     // The root may have changed while awaiting authorization.
     state = this.state(scope, optionalText(args.workflowId));
-    if (method === 'start') {
+    if (method === 'start' || method === 'run_script') {
       if (state || this.state(scope)) throw new Error('Root already has a workflow; cancel or complete it first');
-      const definition = workflowDefinition(requiredText(args.pluginId, 100));
+      const definition = method === 'run_script' ? structuredClone(SCRIPT_DEFINITION) : workflowDefinition(requiredText(args.pluginId, 100));
+      if (method === 'run_script') definition.maxConcurrentWorkers = boundedInteger(args.maxConcurrent, 4, 1, 16);
       const goal = requiredText(args.goal);
       state = {
         workflowId: randomUUID(), root, definition, definitionDigest: workflowDigest(definition), goal,
         stateVersion: 0, revisionRound: 0, status: 'active', createdAt: this.now(),
-        deadlineAt: this.now() + definition.maxWallTimeMinutes * 60_000,
+        deadlineAt: this.now() + (method === 'run_script' ? boundedInteger(args.timeoutMs, 30 * 60_000, 1000, 120 * 60_000) : definition.maxWallTimeMinutes * 60_000),
         sessions: [], tasks: [], artifacts: [], events: [],
       };
       this.addArtifact(state, 'requirements', goal);
+      if (method === 'run_script') {
+        const source = this.addArtifact(state, 'workflow-script', scriptText(args.script, 'script'));
+        state.script = { name: scriptText(args.name ?? 'Script workflow', 'name', 100), sourceRef: source.ref,
+          args: scriptArgs(args.args), defaults: workerSelection(args.execution, root), runId: randomUUID(), revision: 0,
+          status: 'queued', maxCalls: boundedInteger(args.maxAgents, 32, 1, SCRIPT_MAX_TASKS), calls: [], logs: [] };
+      }
       return this.commitOperation(state, operationId, digest, () => this.summary(state!));
     }
     state = requireState(state);
@@ -136,11 +148,14 @@ export class WorkflowKernel {
       this.cancelState(state);
       return this.commitOperation(state, operationId, digest, () => this.summary(state!));
     }
-    if (!['active', 'paused'].includes(state.status)) throw new Error(`Workflow is ${state.status}; P0 requires explicit cancel and a new workflow`);
+    if (!['active', 'paused'].includes(state.status) && !(state.script && state.status === 'interrupted' && method === 'replay_script')) {
+      throw new Error(`Workflow is ${state.status}; cancel and start a new workflow, or explicitly replay an interrupted script`);
+    }
     if (this.now() >= state.deadlineAt && !['ack_events', 'complete', 'cancel_task'].includes(method)) throw new Error('Workflow deadline reached');
     let response: unknown;
     switch (method) {
       case 'delegate': {
+        if (state.script) throw new Error('Script workflows own their tasks; edit and replay the script instead of delegate');
         if (state.status !== 'active') throw new Error('Workflow is paused');
         const taskKey = requiredText(args.taskKey, 200);
         const requestDigest = workflowDigest({ role: args.role, actorKey: args.actorKey, objective: args.objective, inputRefs: args.inputRefs, execution: args.execution });
@@ -175,6 +190,7 @@ export class WorkflowKernel {
         break;
       }
       case 'send': {
+        if (state.script) throw new Error('Script workflows own their tasks; edit and replay the script instead of send');
         if (state.status !== 'active') throw new Error('Workflow is paused');
         if (args.execution !== undefined) throw new Error('send cannot change worker execution; delegate a new actor instead');
         const task = this.task(state, requiredText(args.taskId));
@@ -221,13 +237,25 @@ export class WorkflowKernel {
         response = { taskId: task.taskId, status: task.status };
         break;
       }
-      case 'pause': state.status = 'paused'; break;
-      case 'resume': state.status = 'active'; break;
+      case 'pause':
+        state.status = 'paused';
+        if (state.script) {
+          state.script.status = 'paused';
+          for (const task of state.tasks) if (BUSY.has(task.status)) this.cancelTask(task);
+        }
+        break;
+      case 'resume':
+        if (!state.script) { state.status = 'active'; break; }
+        if (state.script.status !== 'paused') throw new Error('Use replay_script to relaunch a completed or failed script');
+        this.replayScript(state, args);
+        break;
+      case 'replay_script': this.replayScript(state, args); break;
       case 'complete': {
+        if (state.script && !['result_ready', 'failed'].includes(state.script.status)) throw new Error('Script has not finished');
         if (state.tasks.some(task => BUSY.has(task.status))) throw new Error('Workers are still active');
         if (state.events.some(event => !event.acknowledged)) throw new Error('Acknowledge pending events before completion');
         const report = this.artifact(state, requiredText(args.reportRef));
-        if (report.kind !== 'architecture-decision') throw new Error('Completion requires an architecture-decision artifact');
+        if (report.kind !== 'architecture-decision' && !(state.script && report.kind === 'workflow-result')) throw new Error('Completion requires a decision or script result artifact');
         // Text P0 cannot validate evidence coverage; require explicit disclosure in the completion receipt.
         response = { reportRef: report.ref, openIssues: textArray(args.openIssues), verificationLimits: requiredText(args.verificationLimits) };
         state.status = 'completed';
@@ -266,6 +294,108 @@ export class WorkflowKernel {
     state.stateVersion++;
     this.db.prepare('INSERT INTO workflows(id, scope, status, data) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status=excluded.status, data=excluded.data')
       .run(state.workflowId, state.root.scopeId, state.status, JSON.stringify(state));
+    this.changes.emit(state.root.scopeId);
+  }
+
+  onChange(scopeId: string, listener: () => void): () => void {
+    this.changes.on(scopeId, listener);
+    return () => { this.changes.off(scopeId, listener); };
+  }
+
+  queuedScripts(): WorkflowState[] {
+    return this.list().filter(state => state.status === 'active' && state.script?.status === 'queued');
+  }
+
+  beginScript(scopeId: string, workflowId: string): { state: WorkflowState; source: string } | undefined {
+    const state = this.state(scopeId, workflowId);
+    if (!state || state.status !== 'active' || state.script?.status !== 'queued') return undefined;
+    state.script.status = 'running';
+    this.save(state);
+    return { state, source: this.artifact(state, state.script.sourceRef).text };
+  }
+
+  async scriptAgent(scopeId: string, workflowId: string, runId: string, input: unknown): Promise<{ taskId: string; output: 'text' | 'json' }> {
+    if (this.closed) throw new Error('Workflow service is closed');
+    const snapshot = requireState(this.state(scopeId, workflowId));
+    if (!snapshot.script) throw new Error('Not a script workflow');
+    const call = parseScriptAgentCall(input, snapshot.script.defaults, snapshot.root);
+    const root = await this.host.resolveRoot(scopeId);
+    if (!root || !sameRoot(root, snapshot.root)) throw new Error('Worker root authorization changed');
+    const execution = await (this.host.resolveWorker?.(root, call.selection) ?? inheritedWorkerExecution(root, call.selection));
+    const latestRoot = await this.host.resolveRoot(scopeId);
+    if (!latestRoot || !sameRoot(root, latestRoot)) throw new Error('Worker root authorization changed');
+    if (this.closed) throw new Error('Workflow service is closed');
+    const state = requireState(this.state(scopeId, workflowId));
+    const script = state.script!;
+    if (state.status !== 'active' || script.runId !== runId || script.status !== 'running' || this.now() >= state.deadlineAt) throw new Error('Script run is inactive');
+    if (script.calls.some(item => item.key === call.key)) throw new Error(`Duplicate agent key: ${call.key}`);
+    if (script.calls.length >= script.maxCalls) throw new Error('Script agent call limit reached');
+    const cacheKey = workflowDigest({ key: call.key, prompt: call.prompt, output: call.output, execution,
+      root: state.root, goal: state.goal, definition: state.definitionDigest });
+    const cached = state.tasks.find(task => task.cacheKey === cacheKey && task.status === 'result_ready');
+    let task = cached;
+    if (!task) {
+      if (state.tasks.length >= SCRIPT_MAX_TASKS) throw new Error('Script task history limit reached');
+      const sessionRef = randomUUID();
+      const taskId = randomUUID();
+      state.sessions.push({ sessionRef, actorId: randomUUID(), actorKey: taskId, role: 'worker', generation: 1,
+        nativeIdKind: sessionIdFieldForAgent(execution.agentKind), execution });
+      task = { taskId, taskKey: taskId, requestDigest: cacheKey, sessionRef, objective: call.prompt, inputRefs: [],
+        status: 'queued', attempts: [], inputs: [], resultRefs: [], scriptRunId: runId, scriptKey: call.key, scriptOutput: call.output, cacheKey };
+      state.tasks.push(task);
+    }
+    script.calls.push({ key: call.key, taskId: task.taskId, cached: Boolean(cached) });
+    this.save(state);
+    return { taskId: task.taskId, output: call.output };
+  }
+
+  scriptTaskResult(scopeId: string, workflowId: string, runId: string, taskId: string): string | undefined {
+    const state = requireState(this.state(scopeId, workflowId));
+    if (state.status !== 'active' || state.script?.runId !== runId || state.script.status !== 'running') throw new Error('Script run is inactive');
+    const task = this.task(state, taskId);
+    if (task.status === 'result_ready') return this.artifact(state, task.resultRefs.at(-1)!).text;
+    if (['failed', 'cancelled', 'interrupted', 'waiting_input'].includes(task.status)) throw new Error(task.error ?? `Agent ${task.scriptKey} is ${task.status}`);
+    return undefined;
+  }
+
+  scriptProgress(scopeId: string, workflowId: string, runId: string, kind: 'phase' | 'log', text: string): void {
+    const state = this.state(scopeId, workflowId);
+    if (!state?.script || state.script.runId !== runId || state.script.status !== 'running') return;
+    if (kind === 'phase') state.script.phase = text.slice(0, 200);
+    else state.script.logs = [...state.script.logs, text.slice(0, 1000)].slice(-50);
+    this.save(state);
+  }
+
+  finishScript(scopeId: string, workflowId: string, runId: string, result: { text: string } | { error: string }): void {
+    const state = this.state(scopeId, workflowId);
+    if (!state?.script || state.script.runId !== runId || state.script.status !== 'running' || state.status !== 'active') return;
+    if ('text' in result) {
+      scriptText(result.text, 'script result');
+      const artifact = this.addArtifact(state, 'workflow-result', result.text);
+      state.script.resultRef = artifact.ref;
+      state.script.status = 'result_ready';
+      this.event(state, { kind: 'script_result_ready', artifactRef: artifact.ref, summary: 'Script result ready for main-agent review.' });
+    } else {
+      state.script.status = 'failed';
+      state.script.error = result.error.slice(0, 2000);
+      for (const task of state.tasks) if (task.scriptRunId === runId && BUSY.has(task.status)) this.cancelTask(task);
+      this.event(state, { kind: 'script_failed', summary: state.script.error });
+    }
+    this.save(state);
+  }
+
+  private replayScript(state: WorkflowState, args: Record<string, unknown>): void {
+    const script = state.script;
+    if (!script) throw new Error('Not a script workflow');
+    if (['queued', 'running'].includes(script.status) || state.tasks.some(task => BUSY.has(task.status))) throw new Error('Stop or pause the script and wait for workers to finish before replay');
+    if (script.revision >= SCRIPT_MAX_REVISIONS) throw new Error('Script replay limit reached');
+    if (args.script !== undefined) script.sourceRef = this.addArtifact(state, 'workflow-script', scriptText(args.script, 'script')).ref;
+    if (Object.hasOwn(args, 'args')) script.args = scriptArgs(args.args);
+    if (args.execution !== undefined) script.defaults = workerSelection(args.execution, state.root);
+    script.runId = randomUUID(); script.revision++; script.status = 'queued';
+    script.calls = []; script.logs = []; script.error = undefined; script.resultRef = undefined; script.phase = undefined;
+    state.status = 'active';
+    for (const event of state.events) if (['script_result_ready', 'script_failed'].includes(event.kind)) event.acknowledged = true;
   }
 
   private task(state: WorkflowState, id: string): WorkflowTask {
@@ -308,6 +438,7 @@ export class WorkflowKernel {
     const state = this.state(scopeId);
     if (!state || ['binding_attention', 'interrupted'].includes(state.status)) return;
     state.status = 'binding_attention';
+    if (state.script) state.script.status = 'interrupted';
     for (const task of state.tasks) if (BUSY.has(task.status)) this.cancelTask(task);
     this.event(state, { kind: 'binding_attention', summary: 'Root session, model, workspace or policy changed; new delegation stopped.' });
     this.save(state);
@@ -323,6 +454,7 @@ export class WorkflowKernel {
 
   private cancelState(state: WorkflowState): void {
     state.status = 'cancelled';
+    if (state.script) state.script.status = 'cancelled';
     for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_input') this.cancelTask(task);
   }
 
@@ -345,6 +477,7 @@ export class WorkflowKernel {
         if (!root || !sameRoot(root, state.root)) { this.invalidate(state.root.scopeId); continue; }
         if (this.now() >= state.deadlineAt && state.status === 'active') {
           state.status = 'paused';
+          if (state.script) state.script.status = 'paused';
           for (const task of state.tasks) if (BUSY.has(task.status)) this.cancelTask(task);
           this.event(state, { kind: 'budget_attention', summary: 'Workflow deadline reached; workers cancelled.' });
           this.save(state);
@@ -383,7 +516,10 @@ export class WorkflowKernel {
       const session = workflow.sessions.find(item => item.sessionRef === task.sessionRef)!;
       const role = workflow.definition.roles[session.role]!;
       const inputs = task.inputRefs.map(ref => this.artifact(workflow, ref));
-      const prompt = [role.instructions, '只做文本分析。不要修改项目、执行共享测试、发送飞书消息或再委派子 agent。结果以最终答复返回主 agent。',
+      const instructions = workflow.script
+        ? '只执行指定任务，遵守原始需求的授权范围。不要自行发消息或再委派子 agent。结果以最终答复返回脚本。'
+        : '只做文本分析。不要修改项目、执行共享测试、发送飞书消息或再委派子 agent。结果以最终答复返回主 agent。';
+      const prompt = [role.instructions, instructions,
         `需求：\n${workflow.goal}`, `任务：\n${task.objective}`,
         `明确输入产物：\n${JSON.stringify(inputs)}`, ...task.inputs.filter(input => input.receipt === 'queued').map(input => `主 agent 补充：\n${input.text}`)].join('\n\n');
       signal.throwIfAborted();
@@ -405,23 +541,28 @@ export class WorkflowKernel {
     const state = requireState(this.state(scopeId, workflowId));
     const task = this.task(state, taskId);
     if (task.attempts.at(-1)?.attemptId !== attemptId) return;
+    if (task.scriptOutput === 'json' && result.status === 'completed') {
+      try { JSON.parse(result.text ?? ''); }
+      catch { result = { status: 'failed', error: 'Agent output is not valid JSON' }; }
+    }
     task.attempts.at(-1)!.endedAt = this.now();
     task.attempts.at(-1)!.result = result.status;
     if (signal.aborted || task.status === 'cancelling' || state.status === 'cancelled' || state.status === 'binding_attention') {
       task.status = 'cancelled';
     } else if (result.question) {
       task.status = 'waiting_input';
-      this.event(state, { kind: 'worker_question', taskId, summary: result.question.slice(0, 2000) });
+      if (state.script) task.error = `Worker requires input: ${result.question.slice(0, 1800)}`;
+      if (!state.script) this.event(state, { kind: 'worker_question', taskId, summary: result.question.slice(0, 2000) });
     } else if (result.status === 'completed' && result.text?.trim() && result.text.length <= MAX_TEXT) {
       const session = state.sessions.find(item => item.sessionRef === task.sessionRef)!;
       const artifact = this.addArtifact(state, state.definition.roles[session.role]!.outputKind, result.text, task);
       task.resultRefs.push(artifact.ref);
       task.status = 'result_ready';
-      this.event(state, { kind: 'task_result_ready', taskId, artifactRef: artifact.ref, summary: 'Final text ready for main-agent review; verification not run.' });
+      if (!state.script) this.event(state, { kind: 'task_result_ready', taskId, artifactRef: artifact.ref, summary: 'Final text ready for main-agent review; verification not run.' });
     } else {
       task.status = 'failed';
       task.error = result.error ?? 'Worker did not produce a bounded final answer with a normal terminal result';
-      this.event(state, { kind: 'task_failed', taskId, summary: task.error.slice(0, 2000) });
+      if (!state.script) this.event(state, { kind: 'task_failed', taskId, summary: task.error.slice(0, 2000) });
     }
     this.save(state);
   }

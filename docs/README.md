@@ -27,6 +27,7 @@ Examples contain placeholders, never usable credentials. Copy to a private file 
 
 ## Optional features and reference
 
+- [Workflows](workflows.md): architecture reviews and scripted branches, parallel tasks, replay, and selectable agent harnesses.
 - [Assistant](user-guide/assistant.md), [monitoring](user-guide/monitoring.md), [operations](user-guide/operations.md) — 中文.
 - [Self-contained deployment](self-contained.md), [Inbox configuration](inbox-assistant.md), [GitLab CI](gitlab-ci-watch.md), [storage monitoring](storage-monitoring.md).
 - [Monitor configuration](monitor-config.md), [task sources](work-item-sources.md), [agent execution contract](agent-execution.md), [channel integration](channels.md).

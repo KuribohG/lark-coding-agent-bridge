@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PiAdapter } from '../../src/agent/pi/adapter';
 import { WorkflowRuntime } from '../../src/workflows/runtime';
@@ -17,7 +19,7 @@ import type { RunPolicyAllow } from '../../src/policy/run-policy';
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
-async function fixture() {
+async function fixture(start = true) {
   const dir = await mkdtemp(join(tmpdir(), 'workflow-cross-harness-'));
   cleanup.push(() => rm(dir, { recursive: true, force: true }));
   const binary = join(dir, 'pi.cjs');
@@ -61,11 +63,33 @@ process.stdin.on('end', () => {
   const main = runtime.bindMain(root.scopeId);
   const call = (method: string, args: Record<string, unknown> = {}) => callWorkflow(method,
     { operationId: randomUUID(), expectedStateVersion: runtime.kernel.state(root.scopeId)?.stateVersion, ...args }, main.env);
-  await call('start', { pluginId: 'architecture-review', goal: 'Cross-harness design' });
+  if (start) await call('start', { pluginId: 'architecture-review', goal: 'Cross-harness design' });
   return { runtime, root, profile, call, main, record, resolveAgent, pool, wakeMain };
 }
 
 describe('Codex-root workflow with Pi process workers', () => {
+  it('accepts scripts through the built CLI, cancels a native process on pause, and replays in a fresh session', async () => {
+    const f = await fixture(false);
+    const input = join(dirname(f.record), 'script.json');
+    await writeFile(input, JSON.stringify({ operationId: randomUUID(), goal: 'script smoke',
+      execution: { agentKind: 'pi', model: 'pi-model' }, script: 'return await agent("WAIT_FOR_CANCEL",{key:"a"});' }));
+    const cli = await promisify(execFile)(process.execPath, [resolve('dist/cli.js'), 'workflow', 'run-script', '--input-file', input, '--json'],
+      { env: { ...process.env, ...f.main.env } });
+    expect(JSON.parse(cli.stdout).script.status).toBe('queued');
+    await vi.waitFor(() => expect(f.runtime.kernel.state(f.root.scopeId)?.sessions[0]?.nativeSessionId).toBe('pi-child'), { timeout: 5000 });
+    await f.call('pause');
+    await vi.waitFor(() => expect(f.runtime.kernel.state(f.root.scopeId)?.tasks[0]?.status).toBe('cancelled'));
+    expect(f.runtime.kernel.state(f.root.scopeId)?.tasks[0]?.resultRefs).toEqual([]);
+    await f.call('replay_script', { script: 'return await agent("ready",{key:"a"});' });
+    await vi.waitFor(() => expect(f.runtime.kernel.state(f.root.scopeId)?.script?.status).toBe('result_ready'), { timeout: 5000 });
+    const state = f.runtime.kernel.state(f.root.scopeId)!;
+    expect(state.artifacts.find(a => a.ref === state.script?.resultRef)?.text).toBe('"Pi proposal"');
+    expect(state.events.map(e => e.kind)).toEqual(['script_result_ready']);
+    const runs = (await readFile(f.record, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    expect(runs).toHaveLength(2);
+    expect(runs.every(run => !run.argv.includes('--session'))).toBe(true);
+  });
+
   it('routes Pi results back to the root and continues the same Pi session', async () => {
     const f = await fixture();
     await f.call('delegate', { role: 'designer-b', taskKey: 'b', actorKey: 'b', objective: 'independent design',

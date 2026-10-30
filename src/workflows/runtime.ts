@@ -6,6 +6,7 @@ import { WorkflowKernel } from './kernel';
 import { WorkflowIpc, WORKFLOW_TOOL_INSTRUCTIONS } from './ipc';
 import { workflowDigest } from './definitions';
 import { inheritedWorkerExecution } from './execution';
+import { runScriptProgram } from './script-vm';
 import type { WorkerExecution, WorkerExecutionSelection, WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from './types';
 
 export interface WorkflowRuntimeDeps {
@@ -23,6 +24,9 @@ export class WorkflowRuntime {
   readonly kernel: WorkflowKernel;
   private readonly ipc: WorkflowIpc;
   private timer?: NodeJS.Timeout;
+  private closed = false;
+  private ticking = false;
+  private readonly scripts = new Map<string, { controller: AbortController; done: Promise<void> }>();
 
   constructor(private readonly deps: WorkflowRuntimeDeps) {
     this.kernel = new WorkflowKernel(deps.path, {
@@ -38,9 +42,77 @@ export class WorkflowRuntime {
   async start(): Promise<void> {
     await this.ipc.listen();
     this.timer = setInterval(() => {
-      void this.kernel.tick().catch(error => log.warn('workflow', 'tick-failed', { error: String(error) }));
+      void this.tick().catch(error => log.warn('workflow', 'tick-failed', { error: String(error) }));
     }, 500);
     this.timer.unref();
+  }
+
+  async tick(): Promise<void> {
+    if (this.closed || this.ticking) return;
+    this.ticking = true;
+    try {
+      await this.kernel.tick();
+      if (this.closed) return;
+      for (const state of this.kernel.queuedScripts()) {
+        if (this.scripts.size >= 4) break;
+        if (this.scripts.has(state.workflowId)) continue;
+        const controller = new AbortController();
+        const done = Promise.resolve().then(() => this.runScript(state.root.scopeId, state.workflowId, controller));
+        this.scripts.set(state.workflowId, { controller, done });
+        void done.finally(() => this.scripts.delete(state.workflowId))
+          .catch(error => log.warn('workflow', 'script-failed', { error: String(error) }));
+      }
+    } finally { this.ticking = false; }
+  }
+
+  private async runScript(scopeId: string, workflowId: string, controller: AbortController): Promise<void> {
+    if (this.closed) return;
+    const begun = this.kernel.beginScript(scopeId, workflowId);
+    if (!begun) return;
+    const { runId } = begun.state.script!;
+    const stop = this.kernel.onChange(scopeId, () => {
+      const state = this.kernel.state(scopeId, workflowId);
+      if (state?.status !== 'active' || state.script?.status !== 'running' || state.script.runId !== runId) controller.abort();
+    });
+    const deadline = setTimeout(() => controller.abort(new Error('Script deadline reached')),
+      Math.max(0, begun.state.deadlineAt - Date.now()));
+    deadline.unref();
+    try {
+      const text = await runScriptProgram({ source: begun.source, args: begun.state.script!.args, signal: controller.signal,
+        agent: async input => {
+          controller.signal.throwIfAborted();
+          const call = await this.kernel.scriptAgent(scopeId, workflowId, runId, input);
+          const result = await this.waitForScriptTask(scopeId, workflowId, runId, call.taskId, controller.signal);
+          if (call.output === 'text') return result;
+          try { return JSON.parse(result) as unknown; }
+          catch { throw new Error('Agent output is not valid JSON'); }
+        },
+        progress: (kind, text) => this.kernel.scriptProgress(scopeId, workflowId, runId, kind, text),
+      });
+      this.kernel.finishScript(scopeId, workflowId, runId, { text });
+    } catch (error) {
+      if (!this.closed) this.kernel.finishScript(scopeId, workflowId, runId, { error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      clearTimeout(deadline);
+      stop();
+      controller.abort();
+    }
+  }
+
+  private waitForScriptTask(scopeId: string, workflowId: string, runId: string, taskId: string, signal: AbortSignal): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const cleanup = () => { stop(); signal.removeEventListener('abort', check); };
+      const check = () => {
+        try {
+          signal.throwIfAborted();
+          const text = this.kernel.scriptTaskResult(scopeId, workflowId, runId, taskId);
+          if (text !== undefined) { cleanup(); resolve(text); }
+        } catch (error) { cleanup(); reject(error); }
+      };
+      const stop = this.kernel.onChange(scopeId, check);
+      signal.addEventListener('abort', check, { once: true });
+      check();
+    });
   }
 
   bindMain(scopeId: string, deadlineAt = Date.now() + 24 * 60 * 60_000) {
@@ -69,7 +141,9 @@ export class WorkflowRuntime {
           if (workflowDigest(admitted.execution) !== workflowDigest(pinned)) throw new Error('Worker binding changed while queued');
         },
         policy: { ...current.policy, prompt: request.prompt },
-        systemPrompt: '你是 bridge 管理的工作流子 agent。只完成给定文本分析任务。不要向用户或外部应用发送消息，不要修改代码、执行共享测试或派生子 agent。输出最终答复供主 agent 审查。角色提示不改变实际执行权限。',
+        systemPrompt: workflow.script
+          ? '你是 bridge 管理的脚本工作流子 agent。只完成指定任务，遵守原始需求的授权范围，不要自行发送消息或派生子 agent。用最终答复返回结果。角色提示不改变实际执行权限。'
+          : '你是 bridge 管理的工作流子 agent。只完成给定文本分析任务。不要向用户或外部应用发送消息，不要修改代码、执行共享测试或派生子 agent。输出最终答复供主 agent 审查。角色提示不改变实际执行权限。',
         ...pinned.modelSettings,
         ...(session.nativeSessionId ? { [session.nativeIdKind]: session.nativeSessionId } : {}),
         deadlineAt: workflow.deadlineAt, signal,
@@ -116,7 +190,10 @@ export class WorkflowRuntime {
   }
 
   async close(): Promise<void> {
+    this.closed = true;
     if (this.timer) clearInterval(this.timer);
+    for (const run of this.scripts.values()) run.controller.abort();
+    await Promise.allSettled([...this.scripts.values()].map(run => run.done));
     await this.ipc.close();
     await this.kernel.close();
   }

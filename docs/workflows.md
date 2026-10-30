@@ -1,4 +1,8 @@
-# Architecture review workflow (P0)
+# Workflows
+
+The bridge supports agent-led architecture reviews and script-led workflows. Both keep the main native session and can select worker harnesses independently, including Codex, Claude and Pi when configured with authoritative final-answer support. The main agent can use any supported root harness; it does not have to be Codex.
+
+## Architecture review (P0)
 
 This release adds an agent-led, text-only architecture review prototype. The current Lark topic keeps its main native session. The bridge owns worker runs, so ending a main turn does not terminate its workers. Workers return artifacts to the main session; their output is not sent directly to Lark.
 
@@ -65,3 +69,64 @@ P0 stores evidence across restarts but marks unfinished workflows `interrupted` 
 P1 will add requirement revisions, explicit replacement/rebinding, durable decisions and reconciled recovery. P2 will add isolated experiments, resource leases and verification records. P0 does not expose a verifier role, enforce schema-based requirement coverage, prove architecture correctness, or enforce read-only shell access. Workers use the same authorized execution profile; their role instructions are not a sandbox. Native internal subagents are not part of the framework's concurrency accounting.
 
 Unit/integration tests exercise state transitions, scope isolation, cancellation races, process admission, CLI bindings, child session continuation and the Lark internal wake path. Real backend validation must additionally cover the installed version; adapter simulations alone do not establish native compatibility.
+
+
+## Script-led workflows
+
+On builds containing `run_script`, use `/workflow script <task and preferred harnesses>` or ask the main agent to write and run a script workflow. The main agent creates the script and submits it; the bridge executes it independently of that agent's turn. This feature is a bridge implementation using QuickJS, not a Claude-only tool or a wrapper around Claude's workflow runtime. It is independent of the `architecture-review` plugin.
+
+A script is a JavaScript **function body** with top-level `await` and `return`. Control flow is ordinary JavaScript: a worker's result can select a branch, create more calls, or feed subsequent stages. No static graph needs to be declared. See [the cross-harness review example](../workflow-definitions/scripted/examples/review.js).
+
+```js
+const [proposal, constraints] = await parallel([
+  () => agent(args.subject, { key: 'proposal', harness: 'pi' }),
+  () => agent('List constraints: ' + args.subject, { key: 'constraints', harness: 'claude' }),
+]);
+return await agent(JSON.stringify({ proposal, constraints }), {
+  key: 'decision', harness: 'codex',
+});
+```
+
+Submit a JSON envelope using the existing scope-bound CLI:
+
+```sh
+node "$LARK_WORKFLOW_CLI" workflow run_script --input-file workflow.json --json
+```
+
+The envelope has `operationId`, `goal` (the full authorized task) and `script` (the function body as a string). Optional fields:
+
+| Field | Meaning |
+| --- | --- |
+| `name` | Display name, up to 100 characters |
+| `args` | JSON data exposed as `args` in the interpreter |
+| `execution` | Default `{agentKind, model?, reasoningEffort?}`; otherwise root harness/settings |
+| `maxAgents` | Calls per script run, default 32, maximum 128; cache hits count |
+| `maxConcurrent` | Concurrent workers per workflow, default 4, maximum 16; shared process-pool limits also apply |
+| `timeoutMs` | Total workflow deadline, default 30 minutes, range 1 second to 120 minutes; replay does not extend it |
+
+Guest functions:
+
+| API | Behavior |
+| --- | --- |
+| `agent(prompt, {key, harness?, model?, reasoningEffort?, output?})` | Promise of final text, or a parsed JSON value with `output: "json"` |
+| `parallel([() => ..., () => ...])` | Starts functions and returns results in input order |
+| `pipeline(items, ...stages)` | Processes items concurrently; each item passes through its stages sequentially as `stage(value, index)` |
+| `phase(text)` / `log(text)` | Bounded progress recorded in status; does not wake main |
+
+`key` is required, stable across replay, and unique within one run. A selected harness uses its configured defaults unless model/effort overrides are supplied. Switching harness does not inherit a different harness's model. All calls must be awaited; the interpreter rejects a result while agent calls are still pending. Failures reject promises, including invalid JSON, missing final answers, native questions and unsupported harnesses. `parallel` and `pipeline` reject on failure; use explicit `try/catch` to implement a fallback. JSON parsing does not validate a schema: check required fields in the script.
+
+Only script completion/failure creates a main-agent event, rather than an event for every worker. Final return values are serialized into a `workflow-result` artifact; no return means JSON `null`. The main agent reads the artifact, acknowledges events, and calls `complete` with that artifact reference, `openIssues` and `verificationLimits`. Workers cannot mutate workflow state, send parent answers, or recursively delegate through the workflow API. Manual `delegate` and `send` are rejected in script-led workflows.
+
+### Replay and lifecycle
+
+`replay_script` requires the usual `workflowId`, unique `operationId` and current `expectedStateVersion`. It optionally replaces `script`, `args` or `execution`, and restarts the function from its beginning. Completed calls are reused by a fingerprint of **key, prompt, output mode, resolved worker binding, root binding, goal and workflow definition**. Changing execution order alone does not invalidate unrelated calls. Changing a prompt or harness reruns that call in a fresh worker session; downstream calls rerun when the data in their prompts changes. Failed, cancelled, interrupted or waiting-for-input tasks are never reused. Up to eight replays and 128 total task attempts are retained per workflow.
+
+This is result reuse, not replay of external side effects. File contents, network state, time and other implicit dependencies are not automatically hashed. Include relevant revisions or digests in prompts/keys when fresh execution is required. A task interrupted after a side effect may repeat that effect on replay. Worker tasks that modify shared files need an explicit ownership or serialization strategy; the workflow does not create worktrees or resource leases automatically.
+
+For scripts, `/workflow pause` aborts the interpreter and cancels queued/running workers. Wait for worker cancellation to finish before `/workflow resume`; resume replays with cached completed calls. `/workflow cancel` and `/stop` cancel the whole workflow. The architecture-review pause behavior stays as documented above. Root session, workspace, policy or model changes prevent reuse and further dispatch. Target configuration changes invalidate matching worker cache entries. After restart, unfinished scripts are marked `interrupted`; explicit `replay_script` is supported while the original root binding and deadline remain valid. There is no automatic recovery. An expired workflow must be cancelled and a new one started.
+
+### Interpreter and execution boundaries
+
+QuickJS/WASM runs the script with JSON-only host callbacks, no host objects, process, filesystem, network or module loader. `Date` and `Math.random` are disabled; pass such inputs through `args`. Each interpreter has a 32 MiB guest heap, 512 KiB stack, 100 ms synchronous slices, approximately 2 seconds of guest CPU and 100,000 promise jobs. There are at most four active interpreters per runtime. Source, arguments, worker output and final output have bounded sizes (100,000 characters); status retains at most 50 log entries of 1,000 characters. A deadline/abort signal also terminates scripts awaiting an unresolved promise.
+
+The interpreter boundary does **not** isolate workers: a worker is a normal configured harness under the original authorized profile, workspace and effective permissions. Scripts cannot select another profile or provide environment variables or credentials. Workers may perform only tasks authorized by the goal, and their final answers do not establish that tests or side effects succeeded. The main agent reviews evidence and reports validation limits.
