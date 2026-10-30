@@ -32,7 +32,7 @@ export async function readCodexModels(profile: ProfileConfig, profileDir: string
   const entries = Array.isArray(catalog) ? catalog : catalog.models;
   const models: ModelOption[] = [];
   if (Array.isArray(entries)) for (const entry of entries) {
-    if (!entry || typeof entry.slug !== 'string') continue;
+    if (!entry || typeof entry.slug !== 'string' || entry.visibility === 'hide') continue;
     const levels = Array.isArray(entry.supported_reasoning_levels)
       ? entry.supported_reasoning_levels.map((v: { effort?: string } | null) => v?.effort)
         .filter((v: string) => REASONING_EFFORTS.includes(v as ReasoningEffort)) : undefined;

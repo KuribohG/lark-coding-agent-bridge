@@ -65,11 +65,12 @@ describe('model settings resolution', () => {
     const catalogPath = join(home, 'catalog.json');
     await writeFile(catalogPath, JSON.stringify({ models: [{ slug: 'private/catalog-model',
       supported_reasoning_levels: [{ effort: 'low' }, { effort: 'high' }], default_reasoning_level: 'low',
-    }] }));
+    }, { slug: 'private/hidden-model', visibility: 'hide' }] }));
     const found = await readModelEnvironment(profile, tmp.profile);
     expect(found.models).toContainEqual(expect.objectContaining({
       value: 'private/catalog-model', reasoningEfforts: ['low', 'high'], defaultReasoningEffort: 'low',
     }));
+    expect(found.models.map((model) => model.value)).not.toContain('private/hidden-model');
     await writeFile(catalogPath, '{broken cache');
     await expect(readModelEnvironment(profile, tmp.profile)).resolves.toMatchObject({ defaults: {} });
   });
