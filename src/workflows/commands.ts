@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { WorkflowKernel } from './kernel';
+import { renderWorkflowStatus } from './status';
 
 const WORKFLOW_HELP = [
   'Workflow 命令',
@@ -8,7 +9,7 @@ const WORKFLOW_HELP = [
   '- `/workflow start <任务>` — 启动工作流，可在任务中指定各子 agent 的执行器、模型和思考强度。',
   '- `/workflow script <任务>` — `start` 的别名。',
   '- `/workflow plan` — 查看执行方案；结束后可查看最近一次方案。',
-  '- `/workflow status` 或 `/workflow` — 查看当前工作流的状态、模型和进度。',
+  '- `/workflow status [成员名]` 或 `/workflow` — 查看状态、恢复点和失败原因；结束后显示最近一次。',
   '- `/workflow pause` — 暂停工作流并取消正在执行的子任务。',
   '- `/workflow resume` — 恢复已暂停的工作流，复用已完成结果。',
   '- `/workflow cancel` — 取消当前工作流。',
@@ -32,25 +33,13 @@ export async function handleWorkflowCommand(kernel: WorkflowKernel, scope: strin
   }
   if (!['plan', 'status', 'pause', 'resume', 'cancel'].includes(operation)) return '未知的工作流子命令。发送 /workflow help 查看用法。';
   if (operation === 'cancel') return kernel.cancel(scope) ? '已请求取消当前工作流。' : '当前没有工作流。';
-  const state = kernel.state(scope) ?? (operation === 'plan' ? kernel.latest(scope) : undefined);
+  const current = kernel.state(scope);
+  const state = current ?? (operation === 'plan' || operation === 'status' ? kernel.latest(scope) : undefined);
   if (!state) return '当前没有工作流。';
   if (operation === 'plan') return state.script ? kernel.plan(scope, state.workflowId) : '旧版工作流没有保存脚本执行方案。';
+  if (operation === 'status') return renderWorkflowStatus(state, goal || undefined, !current);
   await kernel.call({ kind: 'main', scopeId: scope }, operation,
     { workflowId: state.workflowId, operationId: randomUUID(), expectedStateVersion: state.stateVersion });
   if (operation === 'pause') return '已暂停工作流并请求取消在途任务；恢复时复用已完成结果。';
   if (operation === 'resume') return '已恢复工作流，正在从已完成结果重放。';
-  return [`${state.script?.name ?? state.definition.id}：${state.status}`, `需求：${state.goal}`,
-    `主 agent：${state.root.agentKind}，模型：${state.root.modelSettings.model ?? '默认'}${state.root.modelSettings.reasoningEffort ? `，思考强度：${state.root.modelSettings.reasoningEffort}` : ''}`,
-    ...(state.script ? [`脚本：${state.script.status}${state.script.phase ? `，${state.script.phase}` : ''}，重放 ${state.script.revision} 次`] : []),
-    ...(state.agents ?? []).map(agent => {
-      const receipt = state.mailbox?.receipts.find(item => item.id === agent.wait?.receiptId);
-      const phase = agent.activeTurnId ? '轮次未完成' : receipt?.status === 'waiting' ? '等待消息' : receipt?.status === 'ready' ? '消息已到' : '空闲';
-      return `- 成员 ${agent.key}：${phase}，恢复点 ${agent.checkpointVersion}`;
-    }),
-    ...state.tasks.map(task => {
-      const session = state.sessions.find(item => item.sessionRef === task.sessionRef)!;
-      const settings = session.execution?.modelSettings;
-      const model = settings?.model ?? session.observedModel ?? '默认';
-      return `- ${task.scriptKey ?? session.role}：${task.status}，${session.execution?.agentKind ?? state.root.agentKind}，模型：${model}${settings?.reasoningEffort ? `，思考强度：${settings.reasoningEffort}` : ''}`;
-    }), `待处理事件：${state.events.filter(event => !event.acknowledged).length}`].join('\n');
 }
