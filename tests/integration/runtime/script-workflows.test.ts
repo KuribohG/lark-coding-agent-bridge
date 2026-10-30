@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -9,7 +9,7 @@ import { RunExecutor } from '../../../src/runtime/run-executor';
 import { ProcessPool } from '../../../src/runtime/process-pool';
 import { ActiveRuns } from '../../../src/runtime/active-runs';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
-import type { WorkflowRoot } from '../../../src/workflows/types';
+import type { WorkflowRoot, WorkflowWorkItem } from '../../../src/workflows/types';
 import type { RunPolicyAllow } from '../../../src/policy/run-policy';
 import type { AgentKind } from '../../../src/config/profile-schema';
 import type { AgentEvent } from '../../../src/agent/types';
@@ -58,6 +58,68 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
 }
 
 describe('script workflow runtime', () => {
+  it('runs the queue example through QuickJS and worker IPC, adopts an interrupted claim, and replays without duplicating work', async () => {
+    const h = await harness();
+    const run = h.adapters.codex.run.bind(h.adapters.codex);
+    let startOthers!: () => void;
+    let stopFirst!: () => void;
+    const others = new Promise<void>(resolve => { startOthers = resolve; });
+    const first = new Promise<void>(resolve => { stopFirst = resolve; });
+    cleanup.push(async () => { startOthers(); stopFirst(); });
+    let abandoned: {claimId: string; generation: number; item: WorkflowWorkItem} | undefined;
+    const recovered: unknown[] = [];
+    let index = 0;
+    h.adapters.codex.run = opts => {
+      const native = run(opts);
+      const order = index++;
+      const events = (async function* (): AsyncGenerator<AgentEvent> {
+        yield { type: 'system', threadId: opts.threadId ?? randomUUID() };
+        const call = (method: string, args: Record<string, unknown> = {}) => callWorkflow(method, {operationId:randomUUID(),...args}, opts.env);
+        if (order === 0) {
+          abandoned = await call('claim_work') as typeof abandoned;
+          await call('checkpoint_work', {claimId:abandoned!.claimId,generation:abandoned!.generation,expectedProgressVersion:0,state:{stage:'adopt-me'}});
+          await first;
+          return;
+        }
+        await others;
+        for (;;) {
+          const grant = await call('claim_work') as typeof abandoned;
+          if (!grant) break;
+          if (grant.item.progress.version) recovered.push(grant.item.progress.state);
+          await call('complete_work', {claimId:grant.claimId,generation:grant.generation,result:(grant.item.input as number)**2});
+        }
+        yield {type:'final_text',content:'done'};
+        yield {type:'done',terminationReason:'normal'};
+      })();
+      return {runId:native.runId,events,capabilities:native.capabilities,
+        stop:async()=>{ await native.stop(); if(order===0) stopFirst(); },waitForExit:ms=>native.waitForExit(ms)};
+    };
+    const script = await readFile(new URL('../../../workflow-definitions/scripted/examples/work-queue.js', import.meta.url), 'utf8');
+    await h.call('run_script', {goal:'Consume ten items and recover saved progress',script,args:{
+      items:Array.from({length:10},(_,i)=>({key:`item-${i}`,title:`Square ${i}`,input:i})),
+      members:['A','B','C'].map(name=>({name})),consumerPrompt:'Compute the square of item.input.',
+    }});
+    await h.until(()=>expect(h.state().workQueue?.items[0]?.progress.version).toBe(1));
+    const original = h.state().tasks[0]!;
+    const oldEnv = h.adapters.codex.runOptions[0]!.env;
+    await h.call('cancel_task', {taskId:original.taskId});
+    await h.until(()=>expect(h.state().tasks[0]?.status).toBe('cancelled'));
+    startOthers();
+    await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
+    expect(recovered).toEqual([{stage:'adopt-me'}]);
+    expect(h.state().workQueue!.items.map(item=>item.result)).toEqual(Array.from({length:10},(_,i)=>i**2));
+    expect(h.state().workQueue!.claims.filter(claim=>claim.status==='completed')).toHaveLength(10);
+    await expect(callWorkflow('complete_work',{operationId:'late',claimId:abandoned!.claimId,generation:abandoned!.generation,result:-1},oldEnv)).rejects.toThrow(/revoked|inactive/);
+    const ids = h.state().workQueue!.items.map(item=>item.id);
+    await h.call('replay_script');
+    await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
+    expect(h.state().workQueue!.items.map(item=>item.id)).toEqual(ids);
+    expect(h.state().workQueue!.claims).toHaveLength(11);
+    expect(h.adapters.codex.runs).toHaveLength(4);
+    expect(h.adapters.codex.runOptions[3]?.threadId).toBe(h.state().sessions[0]?.nativeSessionId);
+    expect(JSON.parse(h.state().artifacts.at(-1)!.text).status).toMatchObject({total:10,completed:10,pending:0,claimed:0});
+  });
+
   it.each(['codex', 'claude', 'pi'] as const)('keeps a %s worker running across rate limits and disconnections, resuming its session', async kind => {
     vi.useFakeTimers();
     const h = await harness();

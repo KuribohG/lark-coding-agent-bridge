@@ -104,6 +104,45 @@ export interface AgentMailbox {
   operations: Array<{ key: string; digest: string; response: unknown }>;
 }
 
+/** Work and progress survive replacement of the member that claims them. */
+export interface WorkflowWorkItem {
+  id: string;
+  key: string;
+  digest: string;
+  title: string;
+  input: unknown;
+  resources: string[];
+  maxAttempts: number;
+  generation: number;
+  status: 'pending' | 'claimed' | 'completed' | 'failed' | 'cancelled';
+  claimId?: string;
+  progress: { version: number; state: unknown; updatedAt?: number };
+  result?: unknown;
+  error?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface WorkClaim {
+  id: string;
+  itemId: string;
+  agentId: string;
+  taskId: string;
+  attemptId: string;
+  generation: number;
+  leaseUntil: number;
+  status: 'active' | 'completed' | 'failed' | 'released' | 'expired' | 'cancelled';
+  createdAt: number;
+  endedAt?: number;
+  reason?: string;
+}
+
+export interface WorkflowWorkQueue {
+  items: WorkflowWorkItem[];
+  claims: WorkClaim[];
+  operations: Array<{ key: string; digest: string; response: unknown }>;
+}
+
 export interface WorkerExecutionSelection extends ModelSettings {
   agentKind: AgentKind;
 }
@@ -151,6 +190,7 @@ export interface WorkflowScript {
   maxCalls: number;
   calls: Array<{ key: string; taskId: string; cached: boolean }>;
   mailboxCalls?: string[];
+  workCalls?: string[];
   logs: string[];
   phase?: string;
   resultRef?: string;
@@ -194,6 +234,7 @@ export interface WorkflowState {
   agents?: DurableAgent[];
   checkpoints?: AgentCheckpoint[];
   mailbox?: AgentMailbox;
+  workQueue?: WorkflowWorkQueue;
   script?: WorkflowScript;
 }
 

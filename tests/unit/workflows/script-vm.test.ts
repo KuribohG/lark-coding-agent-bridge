@@ -68,4 +68,21 @@ describe('script interpreter', () => {
     await expect(run('return () => {};')).rejects.toThrow('not JSON serializable');
     expect(await run('return undefined;')).toBe('null');
   });
+
+  it('routes bounded work calls through a hidden JSON-only host', async () => {
+    const work = vi.fn(async (call: unknown) => call);
+    expect(JSON.parse(await run('await enqueueWork({key:"one",title:"One",input:7}); return await workStatus({limit:3});', { work })))
+      .toEqual({ kind: 'status', limit: 3 });
+    expect(work.mock.calls).toEqual([[{kind:'enqueue',key:'one',title:'One',input:7}], [{kind:'status',limit:3}]]);
+    expect(await run('return typeof __bridgeWork;')).toBe('"undefined"');
+    await expect(run('await enqueueWork([]);', { work })).rejects.toThrow('enqueueWork');
+    await expect(run('await workStatus();')).rejects.toThrow('host is unavailable');
+    await expect(run('for(let i=0;i<129;i++) await workStatus();', { work })).rejects.toThrow('call limit');
+    await expect(run('await workStatus();', { work: async () => { throw new Error('queue failure'); } })).rejects.toThrow('queue failure');
+  });
+
+  it('rejects unawaited work and aborts a pending queue call', async () => {
+    await expect(run('enqueueWork({key:"a"}); return 0;', { work: () => new Promise(() => {}) })).rejects.toThrow('await every call');
+    await expect(run('await workStatus();', { signal: AbortSignal.timeout(30), work: () => new Promise(() => {}) })).rejects.toThrow();
+  });
 });

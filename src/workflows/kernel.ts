@@ -7,6 +7,7 @@ import { sessionIdFieldForAgent } from '../agent/backend-spec';
 import { log } from '../core/logger';
 import { workflowDigest } from './digest';
 import { renderWorkflowPlan } from './presentation';
+import { cancelWork, enqueueWork, expireWorkClaims, mutateWork, releaseWorkClaims, retryWork, unfinishedWork, workContext, workStatus, WORK_MUTATIONS } from './work-queue';
 import { checkpoint, completeMemberTurn, mailboxOperation, member, memberContext, receiveMessages, receiptMessages, saveCheckpoint, scheduleMemberTurn, sendMessage, taskAgent } from './durable-agents';
 import { inheritedWorkerExecution, workerSelection } from './execution';
 import { boundedInteger, parseScriptAgentCall, scriptArgs, scriptText, SCRIPT_DEFINITION, SCRIPT_MAX_REVISIONS, SCRIPT_MAX_TASKS } from './script-contract';
@@ -43,6 +44,7 @@ export class WorkflowKernel {
       if (['completed', 'cancelled'].includes(state.status)) continue;
       state.status = state.script ? 'interrupted' : 'cancelled';
       if (state.script) state.script.status = 'interrupted';
+      releaseWorkClaims(state, this.now(), 'Bridge restarted; explicitly replay to continue');
       for (const task of state.tasks) if (BUSY.has(task.status) || (!state.script && task.status === 'waiting_input')) {
         task.status = state.script ? 'interrupted' : 'cancelled';
         task.error = state.script ? 'Bridge restarted; explicitly replay the script to continue.' : 'Agent-led workflows have been retired.';
@@ -84,6 +86,7 @@ export class WorkflowKernel {
       deadlineAt: state.deadlineAt, root: state.root,
       sessions: state.sessions,
       agents: state.agents ?? [],
+      workQueue: state.workQueue ? workStatus(state) : undefined,
       checkpoints: (state.checkpoints ?? []).filter(item => state.agents?.some(agent => agent.checkpointRef === item.ref))
         .map(({ state: _state, ...item }) => item),
       mailbox: state.mailbox ? {
@@ -104,7 +107,7 @@ export class WorkflowKernel {
   async call(caller: WorkflowCaller, method: string, args: Record<string, unknown>): Promise<unknown> {
     if (this.closed) throw new Error('Workflow service is closed');
     if (caller.kind === 'worker') {
-      if (method === 'checkpoint' || method === 'send_message') {
+      if (method === 'checkpoint' || method === 'send_message' || WORK_MUTATIONS.includes(method)) {
         const root = await this.host.resolveRoot(caller.scopeId);
         if (this.closed) throw new Error('Workflow service is closed');
         const state = requireState(this.state(caller.scopeId, caller.workflowId));
@@ -112,7 +115,7 @@ export class WorkflowKernel {
       }
       return this.workerCall(caller, method, args);
     }
-    if (!['status', 'read_artifact', 'run_script', 'replay_script', 'publish_artifact', 'ack_events', 'cancel_task', 'pause', 'resume', 'cancel', 'complete', 'send_message', 'read_checkpoint'].includes(method)) {
+    if (!['status', 'read_artifact', 'run_script', 'replay_script', 'publish_artifact', 'ack_events', 'cancel_task', 'pause', 'resume', 'cancel', 'complete', 'send_message', 'read_checkpoint', 'enqueue_work', 'retry_work', 'work_status'].includes(method)) {
       throw new Error(`Unsupported workflow operation: ${method}. Use run_script/replay_script.`);
     }
     if (method === 'run_script' && caller.allowStart !== true) {
@@ -127,6 +130,7 @@ export class WorkflowKernel {
     if (method === 'status') return state ? this.summary(state) : { status: 'unbound' };
     if (method === 'read_artifact') return this.artifact(requireState(state), requiredText(args.ref));
     if (method === 'read_checkpoint') return checkpoint(requireState(state), member(requireState(state), requiredText(args.member, 100))) ?? null;
+    if (method === 'work_status') return workStatus(requireState(state), { itemId: args.itemId, offset: args.offset, limit: args.limit });
 
     const operationId = requiredText(args.operationId, 200);
     const digest = workflowDigest({ method, args });
@@ -177,12 +181,19 @@ export class WorkflowKernel {
       this.cancelState(state);
       return this.commitOperation(state, operationId, digest, () => this.summary(state!));
     }
-    if (!['active', 'paused'].includes(state.status) && !(state.status === 'interrupted' && ['replay_script', 'send_message'].includes(method))) {
+    if (!['active', 'paused'].includes(state.status) && !(state.status === 'interrupted' && ['replay_script', 'send_message', 'enqueue_work', 'retry_work'].includes(method))) {
       throw new Error(`Workflow is ${state.status}; cancel and start a new workflow, or explicitly replay an interrupted script`);
     }
     if (this.now() >= state.deadlineAt && !['ack_events', 'complete', 'cancel_task'].includes(method)) throw new Error('Workflow deadline reached');
     let response: unknown;
     switch (method) {
+      case 'enqueue_work':
+        this.checkWorkKey(state, args.key);
+        response = enqueueWork(state, Object.fromEntries(Object.entries(args).filter(([key]) => !['workflowId', 'operationId', 'expectedStateVersion'].includes(key))), this.now());
+        break;
+      case 'retry_work':
+        response = retryWork(state, Object.fromEntries(Object.entries(args).filter(([key]) => !['workflowId', 'operationId', 'expectedStateVersion'].includes(key))), this.now());
+        break;
       case 'send_message':
         response = sendMessage(state, requiredText(args.member, 100), args.text, this.now());
         break;
@@ -202,14 +213,14 @@ export class WorkflowKernel {
       }
       case 'cancel_task': {
         const task = this.task(state, requiredText(args.taskId));
-        this.cancelTask(task);
+        this.cancelTask(task, state);
         response = { taskId: task.taskId, status: task.status };
         break;
       }
       case 'pause':
         state.status = 'paused';
         state.script.status = 'paused';
-        for (const task of state.tasks) if (BUSY.has(task.status)) this.cancelTask(task);
+        for (const task of state.tasks) if (BUSY.has(task.status)) this.cancelTask(task, state);
         break;
       case 'resume':
         if (state.script.status !== 'paused') throw new Error('Use replay_script to relaunch a completed or failed script');
@@ -219,6 +230,7 @@ export class WorkflowKernel {
       case 'complete': {
         if (!['result_ready', 'failed'].includes(state.script.status)) throw new Error('Script has not finished');
         if (state.tasks.some(task => BUSY.has(task.status))) throw new Error('Workers are still active');
+        if (unfinishedWork(state)) throw new Error('Work items are unfinished; finish them or cancel the workflow');
         if (state.events.some(event => !event.acknowledged)) throw new Error('Acknowledge pending events before completion');
         const report = this.artifact(state, requiredText(args.reportRef));
         if (!['report', 'workflow-result'].includes(report.kind)) throw new Error('Completion requires a report or script result artifact');
@@ -234,12 +246,20 @@ export class WorkflowKernel {
 
   private workerCall(caller: Extract<WorkflowCaller, { kind: 'worker' }>, method: string, args: Record<string, unknown>): unknown {
     const state = requireState(this.state(caller.scopeId, caller.workflowId));
+    if (WORK_MUTATIONS.includes(method)) this.expireClaims(state);
     const task = this.task(state, caller.taskId);
     if (!['starting', 'running'].includes(task.status) || task.attempts.at(-1)?.attemptId !== caller.attemptId) throw new Error('Worker binding is inactive');
     const agent = taskAgent(state, task);
     if (agent && agent.activeTurnId !== task.taskId) throw new Error('Member turn is no longer active');
     if (method === 'task_status') return { taskId: task.taskId, status: task.status, checkpointVersion: agent?.checkpointVersion };
-    if (method === 'read_context') return { goal: state.goal, objective: task.objective, inputRefs: task.inputRefs, member: memberContext(state, task) };
+    if (method === 'read_context') return { goal: state.goal, objective: task.objective, inputRefs: task.inputRefs, member: memberContext(state, task), workQueue: workContext(state, task) };
+    if (method === 'work_status') return workStatus(state, args);
+    if (WORK_MUTATIONS.includes(method)) {
+      if (state.status !== 'active' || state.script?.status !== 'running' || this.now() >= state.deadlineAt) throw new Error('Workflow is inactive');
+      const response = mutateWork(state, task, caller.attemptId, method, args, this.now());
+      this.save(state);
+      return response;
+    }
     if (method === 'checkpoint' || method === 'send_message') {
       if (!agent) throw new Error('This operation requires a persistent member');
       if (state.status !== 'active' || state.script?.status !== 'running' || this.now() >= state.deadlineAt) throw new Error('Workflow is inactive');
@@ -309,7 +329,7 @@ export class WorkflowKernel {
     const state = requireState(this.state(scopeId, workflowId));
     const script = state.script!;
     if (state.status !== 'active' || script.runId !== runId || script.status !== 'running' || this.now() >= state.deadlineAt) throw new Error('Script run is inactive');
-    if (script.calls.some(item => item.key === call.key) || script.mailboxCalls?.includes(call.key)) throw new Error(`Duplicate agent key: ${call.key}`);
+    if (script.calls.some(item => item.key === call.key) || script.mailboxCalls?.includes(call.key) || state.workQueue?.items.some(item => item.key === call.key)) throw new Error(`Duplicate agent key: ${call.key}`);
     if (script.calls.length >= script.maxCalls) throw new Error('Script agent call limit reached');
     if (call.member) {
       const scheduled = scheduleMemberTurn(state, call, execution);
@@ -336,6 +356,33 @@ export class WorkflowKernel {
     return { taskId: task.taskId, output: call.output };
   }
 
+  private checkWorkKey(state: WorkflowState, value: unknown): string {
+    const key = scriptText(value, 'work key', 160);
+    if (state.tasks.some(task => task.scriptKey === key) || state.mailbox?.receipts.some(receipt => receipt.key === key)
+      || state.mailbox?.operations.some(operation => operation.key === 'script:' + key)) throw new Error('Script key already belongs to another operation: ' + key);
+    return key;
+  }
+
+  async scriptWork(scopeId: string, workflowId: string, runId: string, input: unknown): Promise<unknown> {
+    if (this.closed) throw new Error('Workflow service is closed');
+    const root = await this.host.resolveRoot(scopeId);
+    if (this.closed) throw new Error('Workflow service is closed');
+    const state = requireState(this.state(scopeId, workflowId));
+    if (!root || !sameRoot(root, state.root)) throw new Error('Root binding changed');
+    if (state.status !== 'active' || state.script?.runId !== runId || state.script.status !== 'running' || this.now() >= state.deadlineAt) throw new Error('Script run is inactive');
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid work queue call');
+    const { kind, ...args } = input as Record<string, unknown>;
+    if (kind === 'status') return workStatus(state, args);
+    if (kind !== 'enqueue') throw new Error('Unknown script work operation');
+    const key = this.checkWorkKey(state, args.key);
+    if (state.script.workCalls?.includes(key)) throw new Error('Duplicate script key: ' + key);
+    if ((state.script.workCalls?.length ?? 0) >= 128) throw new Error('Work queue script call limit reached');
+    const response = enqueueWork(state, args, this.now());
+    (state.script.workCalls ??= []).push(key);
+    this.save(state);
+    return response;
+  }
+
   async scriptMailbox(scopeId: string, workflowId: string, runId: string, input: unknown): Promise<{ receiptId?: string; result?: unknown }> {
     if (this.closed) throw new Error('Workflow service is closed');
     const root = await this.host.resolveRoot(scopeId);
@@ -350,7 +397,7 @@ export class WorkflowKernel {
     const key = scriptText(args.key, 'mailbox key', 160);
     const target = scriptText(args.member, 'member name', 100);
     if (key.trim() !== key) throw new Error('Mailbox key must not contain surrounding whitespace');
-    if (state.script.calls.some(call => call.key === key) || state.script.mailboxCalls?.includes(key)) throw new Error('Duplicate script key: ' + key);
+    if (state.script.calls.some(call => call.key === key) || state.script.mailboxCalls?.includes(key) || state.workQueue?.items.some(item => item.key === key)) throw new Error('Duplicate script key: ' + key);
     if ((state.script.mailboxCalls?.length ?? 0) >= 128) throw new Error('Mailbox call limit reached');
     if (args.kind === 'receive' ? state.mailbox?.operations.some(item => item.key === 'script:' + key)
       : state.mailbox?.receipts.some(item => item.key === key)) throw new Error('Mailbox key changed operation kind');
@@ -388,6 +435,7 @@ export class WorkflowKernel {
   finishScript(scopeId: string, workflowId: string, runId: string, result: { text: string } | { error: string }): void {
     const state = this.state(scopeId, workflowId);
     if (!state?.script || state.script.runId !== runId || state.script.status !== 'running' || state.status !== 'active') return;
+    if ('text' in result && unfinishedWork(state)) result = { error: 'Script returned with unfinished work items; continue consumption or explicitly cancel the workflow.' };
     if ('text' in result) {
       scriptText(result.text, 'script result');
       const artifact = this.addArtifact(state, 'workflow-result', result.text);
@@ -397,7 +445,7 @@ export class WorkflowKernel {
     } else {
       state.script.status = 'failed';
       state.script.error = result.error.slice(0, 2000);
-      for (const task of state.tasks) if (task.scriptRunId === runId && BUSY.has(task.status)) this.cancelTask(task);
+      for (const task of state.tasks) if (task.scriptRunId === runId && BUSY.has(task.status)) this.cancelTask(task, state);
       this.event(state, { kind: 'script_failed', summary: state.script.error });
     }
     this.save(state);
@@ -425,7 +473,7 @@ export class WorkflowKernel {
     if (Object.hasOwn(args, 'args')) script.args = scriptArgs(args.args);
     if (args.execution !== undefined) script.defaults = workerSelection(args.execution, state.root);
     script.runId = randomUUID(); script.revision++; script.status = 'queued';
-    script.calls = []; script.mailboxCalls = []; script.logs = []; script.error = undefined; script.resultRef = undefined; script.phase = undefined;
+    script.calls = []; script.mailboxCalls = []; script.workCalls = []; script.logs = []; script.error = undefined; script.resultRef = undefined; script.phase = undefined;
     state.status = 'active';
     for (const event of state.events) if (['script_result_ready', 'script_failed'].includes(event.kind)) event.acknowledged = true;
   }
@@ -471,7 +519,7 @@ export class WorkflowKernel {
     if (!state || ['binding_attention', 'interrupted'].includes(state.status)) return;
     state.status = 'binding_attention';
     if (state.script) state.script.status = 'interrupted';
-    for (const task of state.tasks) if (BUSY.has(task.status)) this.cancelTask(task);
+    for (const task of state.tasks) if (BUSY.has(task.status)) this.cancelTask(task, state);
     this.event(state, { kind: 'binding_attention', summary: 'Root session, model, workspace or policy changed; new delegation stopped.' });
     this.save(state);
   }
@@ -487,10 +535,25 @@ export class WorkflowKernel {
   private cancelState(state: WorkflowState): void {
     state.status = 'cancelled';
     if (state.script) state.script.status = 'cancelled';
-    for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_input') this.cancelTask(task);
+    cancelWork(state, this.now());
+    for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_input') this.cancelTask(task, state);
   }
 
-  private cancelTask(task: WorkflowTask): void {
+  private expireClaims(state: WorkflowState): void {
+    const expired = expireWorkClaims(state, this.now());
+    if (!expired.length) return;
+    for (const claim of expired) {
+      const task = state.tasks.find(task => task.taskId === claim.taskId);
+      if (task && task.attempts.at(-1)?.attemptId === claim.attemptId && BUSY.has(task.status)) {
+        task.error = 'Work claim lease expired; saved work progress is available to another member';
+        this.cancelTask(task, state);
+      }
+    }
+    this.save(state);
+  }
+
+  private cancelTask(task: WorkflowTask, state: WorkflowState): void {
+    releaseWorkClaims(state, this.now(), 'Member execution cancelled', task.taskId);
     const active = this.running.get(task.taskId);
     task.status = active ? 'cancelling' : 'cancelled';
     active?.controller.abort();
@@ -506,11 +569,12 @@ export class WorkflowKernel {
         if (this.closed) return;
         const state = this.state(snapshot.root.scopeId, snapshot.workflowId)!;
         if (!['active', 'paused'].includes(state.status)) continue;
+        this.expireClaims(state);
         if (!root || !sameRoot(root, state.root)) { this.invalidate(state.root.scopeId); continue; }
         if (this.now() >= state.deadlineAt && state.status === 'active') {
           state.status = 'paused';
           if (state.script) state.script.status = 'paused';
-          for (const task of state.tasks) if (BUSY.has(task.status)) this.cancelTask(task);
+          for (const task of state.tasks) if (BUSY.has(task.status)) this.cancelTask(task, state);
           this.event(state, { kind: 'budget_attention', summary: 'Workflow deadline reached; workers cancelled.' });
           this.save(state);
         }
@@ -557,7 +621,8 @@ export class WorkflowKernel {
         task.agentId ? '只执行指定任务，遵守原始需求的授权范围。可保存 checkpoint 或发送工作流内部消息；不要发外部消息或再委派子 agent。结果以最终答复返回脚本。' : '只执行指定任务，遵守原始需求的授权范围。不要自行发消息或再委派子 agent。结果以最终答复返回脚本。',
         `需求：\n${workflow.goal}`, `任务：\n${task.objective}`, `明确输入产物：\n${JSON.stringify(inputs)}`].join('\n\n');
       const recovery = memberContext(workflow, task);
-      const memberPrompt = recovery ? prompt + '\n\n持久成员上下文（只处理本轮输入；检查已发生的副作用，避免重复执行）：\n' + JSON.stringify(recovery) : prompt;
+      const memberPrompt = recovery ? prompt + '\n\n持久成员上下文（只处理本轮输入；检查已发生的副作用，避免重复执行）：\n'
+        + JSON.stringify(recovery) + (workflow.workQueue ? '\n\n工作队列：\n' + JSON.stringify(workContext(workflow, task)) : '') : prompt;
       signal.throwIfAborted();
       result = await this.host.execute({ workflow, task, session, attemptId, prompt: memberPrompt, signal,
         onRun: runId => this.updateAttempt(scopeId, workflowId, taskId, attemptId, state => {
@@ -576,6 +641,7 @@ export class WorkflowKernel {
     const state = requireState(this.state(scopeId, workflowId));
     const task = this.task(state, taskId);
     if (task.attempts.at(-1)?.attemptId !== attemptId) return;
+    releaseWorkClaims(state, this.now(), 'Member turn ended without completing its claim', taskId, attemptId);
     if (task.agentId && result.status === 'completed' && !state.sessions.find(session => session.sessionRef === task.sessionRef)?.nativeSessionId) {
       result = { status: 'failed', error: 'Member completed without a native session ID; cannot safely continue its conversation' };
     }

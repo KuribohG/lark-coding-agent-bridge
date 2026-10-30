@@ -1,5 +1,5 @@
 import { sanitizeLogsForDoctor } from '../core/logger';
-import type { DurableAgent, WorkflowState, WorkflowTask } from './types';
+import type { DurableAgent, WorkflowState, WorkflowTask, WorkflowWorkItem } from './types';
 
 const TASK_STATUS: Record<WorkflowTask['status'], string> = {
   queued: '排队', starting: '启动中', running: '执行中', result_ready: '本轮已完成',
@@ -69,6 +69,41 @@ function taskLines(state: WorkflowState, task: WorkflowTask): string[] {
     ...(task.error ? [`  原因：${errorText(task.error)}`] : [])];
 }
 
+function workLines(state: WorkflowState, item: WorkflowWorkItem): string[] {
+  const claim = state.workQueue?.claims.find(claim => claim.id === item.claimId);
+  const owner = claim && state.agents?.find(agent => agent.agentId === claim.agentId)?.key;
+  return [`- 工作项 ${compact(item.key, 100)}：${item.status}，认领 ${item.generation}/${item.maxAttempts} 次，进展 #${item.progress.version}`,
+    `  内容：${compact(item.title, 200)}`,
+    ...(claim ? [`  负责成员：${compact(owner ?? claim.agentId, 100)}，认领版本 ${claim.generation}，租约至 ${time(claim.leaseUntil)}`] : []),
+    ...(item.progress.updatedAt ? [`  进展保存于：${time(item.progress.updatedAt)}`] : []),
+    ...(item.resources.length ? [`  资源归属：${compact(item.resources.join('、'), 240)}`] : []),
+    ...(item.error ? [`  原因：${errorText(item.error)}`] : [])];
+}
+
+function queueLines(state: WorkflowState, limit: number, member?: DurableAgent): string[] {
+  const items = state.workQueue?.items ?? [];
+  if (!items.length) return [];
+  const counts = (status: WorkflowWorkItem['status']) => items.filter(item => item.status === status).length;
+  const lines = [`工作队列：${items.length} 项，待领取 ${counts('pending')}，已认领 ${counts('claimed')}，完成 ${counts('completed')}，失败 ${counts('failed')}，取消 ${counts('cancelled')}`];
+  const order = { claimed: 0, failed: 1, pending: 2, completed: 3, cancelled: 4 };
+  const selected = items.filter(item => !member || state.workQueue?.claims.some(claim => claim.id === item.claimId && claim.agentId === member.agentId))
+    .sort((a, b) => order[a.status] - order[b.status]);
+  for (const item of selected.slice(0, limit)) lines.push(...workLines(state, item));
+  if (selected.length > limit) lines.push(`另有 ${selected.length - limit} 项未展开。`);
+  lines.push('用 /workflow work <工作项 key> 查看某项的认领、资源归属和进展版本。');
+  return lines;
+}
+
+export function renderWorkStatus(state: WorkflowState, key?: string): string {
+  if (!state.workQueue?.items.length) return '这个工作流还没有工作项。';
+  if (!key) return bounded(queueLines(state, 12));
+  const item = state.workQueue.items.find(item => item.key === key);
+  if (!item) return `未找到工作项：${compact(key, 100)}`;
+  const history = state.workQueue.claims.filter(claim => claim.itemId === item.id);
+  return bounded([...workLines(state, item), '最近认领：', ...history.slice(-6).map(claim =>
+    `- 版本 ${claim.generation}：${claim.status}，成员 ${compact(state.agents?.find(member => member.agentId === claim.agentId)?.key ?? claim.agentId, 100)}${claim.reason ? `，${errorText(claim.reason)}` : ''}`)]);
+}
+
 export function renderWorkflowStatus(state: WorkflowState, memberKey?: string, latest = false): string {
   const lines = [`${compact(state.script?.name ?? state.definition.id, 100)}：${state.status}${latest ? '（最近一次）' : ''}`,
     `需求：${compact(state.goal, 300)}`,
@@ -88,7 +123,9 @@ export function renderWorkflowStatus(state: WorkflowState, memberKey?: string, l
     const member = state.agents?.find(item => item.key === memberKey);
     if (!member) return bounded([...lines, `未找到成员：${compact(memberKey, 100)}。用 /workflow status 查看成员列表。`]);
     lines.push(...memberLines(state, member, true));
+    lines.push(...queueLines(state, 1, member));
   } else {
+    lines.push(...queueLines(state, 5));
     const members = [...state.agents ?? []].sort((a, b) =>
       Number(ATTENTION.has(currentTask(state, b)?.status ?? 'result_ready')) - Number(ATTENTION.has(currentTask(state, a)?.status ?? 'result_ready')));
     for (const member of members.slice(0, 8)) lines.push(...memberLines(state, member, false));

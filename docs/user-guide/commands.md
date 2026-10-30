@@ -39,6 +39,7 @@
 | `/workflow start <任务及 worker 的 harness/模型要求>` | 启动脚本工作流；`/workflow script` 是同一入口的别名 |
 | `/workflow plan` | 查看具体执行方案；启动和重放前也会自动展示 |
 | `/workflow status [成员名]` | 查看执行状态、等待、恢复点和失败原因；指定成员查看最近轮次，结束后查看最近一次 |
+| `/workflow work [工作项 key]` | 查看队列进度、领取成员、租约、重试次数和资源占用；指定 key 查看进度版本与领取历史 |
 | `/workflow pause`、`/workflow resume`、`/workflow cancel` | 暂停、复用完成结果重放、取消 |
 | `/run` | 创建一次性限时任务，需确认预览 |
 | `/run status`、`/run stop` | 查看或停止限时任务 |

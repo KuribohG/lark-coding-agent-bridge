@@ -97,6 +97,10 @@ export class WorkflowRuntime {
             ? this.waitForScriptValue(scopeId, controller.signal, () => this.kernel.scriptMailboxResult(scopeId, workflowId, runId, call.receiptId!))
             : call.result;
         },
+        work: async input => {
+          controller.signal.throwIfAborted();
+          return this.kernel.scriptWork(scopeId, workflowId, runId, input);
+        },
         progress: (kind, text) => this.kernel.scriptProgress(scopeId, workflowId, runId, kind, text),
       });
       this.kernel.finishScript(scopeId, workflowId, runId, { text });

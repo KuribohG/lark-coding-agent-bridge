@@ -11,6 +11,7 @@ import { profileForAgentKind } from '../../src/runtime/execution-controller';
 import { createAgentAdapter } from '../../src/agent/backends';
 import { larkAgentHostContext } from '../../src/channels/lark/agent-host';
 import { WorkflowRuntime } from '../../src/workflows/runtime';
+import { callWorkflow } from '../../src/workflows/ipc';
 import { RunExecutor } from '../../src/runtime/run-executor';
 import { ActiveRuns } from '../../src/runtime/active-runs';
 import { ProcessPool } from '../../src/runtime/process-pool';
@@ -33,7 +34,7 @@ const save = (path: string, data: unknown) => writeFile(path, JSON.stringify(dat
 type Backend = Extract<AgentKind, 'codex' | 'claude' | 'pi'>;
 type Case = {
   id: string;
-  scenario: 'memory' | 'interrupt' | 'discussion';
+  scenario: 'memory' | 'interrupt' | 'discussion' | 'queue';
   backend: Backend;
   reviewer?: Backend;
   marker: string;
@@ -70,9 +71,10 @@ async function currentProfile() {
   return { paths, config };
 }
 
-function wrap(adapter: AgentAdapter, kind: Backend, phase: string, test: Case, observations: Observation[]): AgentAdapter {
+function wrap(adapter: AgentAdapter, kind: Backend, phase: string, test: Case, observations: Observation[], runs: AgentRunOptions[]): AgentAdapter {
   const runNative = adapter.run.bind(adapter);
   adapter.run = (opts: AgentRunOptions): AgentRun => {
+    runs.push(opts);
     const observation: Observation = { backend: kind, phase, resumed: opts.threadId ?? opts.sessionId,
       markerInPrompt: opts.prompt.includes(test.marker), tools: [], sleep: false };
     observations.push(observation);
@@ -126,6 +128,7 @@ async function childPhase(test: Case, phase: string, directory: string) {
   const workspace = join(directory, 'workspace');
   await mkdir(workspace, { recursive: true });
   const observations: Observation[] = [];
+  const nativeRuns: AgentRunOptions[] = [];
   const root: WorkflowRoot = { scopeId: test.id, profile: paths.profile, agentKind: test.backend, cwdRealpath: workspace,
     catalogBinding: test.id, policyFingerprint: test.id, modelSettings: {} };
   const policy: RunPolicyAllow = { ok: true, prompt: '', requestedCwd: workspace, cwdRealpath: workspace,
@@ -137,7 +140,7 @@ async function childPhase(test: Case, phase: string, directory: string) {
     const profile = profileForAgentKind(config, kind);
     const adapter = createAgentAdapter({ profile, profileDir: paths.profileDir, env: host.env, systemPrompt: '' });
     // No startup provider override: native configuration remains unchanged; a running Codex daemon is never restarted.
-    adapters.set(kind, wrap(adapter, kind, phase, test, observations));
+    adapters.set(kind, wrap(adapter, kind, phase, test, observations, nativeRuns));
   }
   const activeRuns = new ActiveRuns();
   const executor = new RunExecutor({ resolveAgent: (_, kind) => {
@@ -174,6 +177,52 @@ async function childPhase(test: Case, phase: string, directory: string) {
   };
   await runtime.start();
   try {
+    if (test.scenario === 'queue') {
+      assert.equal(phase, 'prepare');
+      const consumer = join(workspace, 'consumer.mjs');
+      await writeFile(consumer, await readFile(join(project, 'tests/acceptance/workflow-queue-consumer.mjs')), {mode:0o600});
+      const script = await readFile(join(project, 'workflow-definitions/scripted/examples/work-queue.js'), 'utf8');
+      const command = 'node ' + "'" + consumer.replaceAll("'", "'\\''") + "'";
+      await call('run_script', {
+        goal:'Isolated queue acceptance: three native members run only the provided local consumer helper in the foreground. It may use the worker CLI to claim/checkpoint/complete ten arithmetic items, and read/write synchronization markers beside itself. Its bounded wait is intentional for this test. No other file access, external messages, credentials or delegation.',
+        plan:`Run members A, B and C using ${test.backend} and its currently configured native model. A saves partial progress; the test controller interrupts A. B and C then take over and complete all ten items through the actual worker CLI. Verify progress retention, generations and stale-result rejection.`,
+        script, timeoutMs:600_000, maxConcurrent:3, args:{
+          items:Array.from({length:10},(_,i)=>({key:`square-${i}`,title:`Square ${i}`,input:i})),
+          members:['A','B','C'].map(name=>({name,harness:test.backend})),
+          consumerPrompt:`Execute exactly this foreground shell command: ${command} . The trusted test helper implements the entire queue protocol and intentional bounded synchronization; do not replace or repeat it, read other files, or invoke additional tools. Wait for it to finish and return its JSON stdout as your final answer.`,
+        },
+      });
+      await until(current=>current.workQueue?.items.some(item=>(item.progress.state as {stage?:string})?.stage==='armed')===true);
+      const armed = state().workQueue!.items.find(item=>(item.progress.state as {stage?:string})?.stage==='armed')!;
+      const abandoned = state().workQueue!.claims.find(claim=>claim.id===armed.claimId)!;
+      const original = state().tasks.find(task=>task.taskId===abandoned.taskId)!;
+      const oldRun = nativeRuns.find(run=>run.runId===original.attempts.at(-1)?.runId)!;
+      assert(oldRun?.env, 'Missing original worker IPC binding');
+      await call('cancel_task', {taskId:original.taskId});
+      await until(current=>current.tasks.find(task=>task.taskId===original.taskId)?.status==='cancelled');
+      await assert.rejects(callWorkflow('complete_work', {operationId:randomUUID(),claimId:abandoned.id,generation:abandoned.generation,result:-1}, oldRun.env), /inactive|revoked/);
+      await writeFile(join(workspace, 'adopt-ready'), 'ready', {mode:0o600});
+      const done = await until(current=>current.script?.status==='result_ready');
+      const work = done.workQueue!;
+      assert.equal(done.agents!.length, 3);
+      assert.equal(observations.length, 3);
+      assert(done.sessions.every(session=>session.nativeSessionId));
+      assert.equal(work.items.length, 10);
+      assert(work.items.every(item=>item.status==='completed'));
+      assert.equal(work.claims.filter(claim=>claim.status==='completed').length, 10);
+      assert.equal(work.claims.filter(claim=>claim.status==='cancelled').length, 1);
+      for (const item of work.items) assert.equal((item.result as {square:number}).square, (item.input as number)**2);
+      const adopted = work.items.find(item=>item.id===armed.id)!;
+      assert.equal(adopted.generation, 2);
+      assert.deepEqual((adopted.result as {inherited:unknown}).inherited, {stage:'armed',partial:7});
+      for (const member of ['B', 'C']) assert(work.items.some(item=>(item.result as {member:string}).member===member));
+      await call('ack_events', {eventIds:done.events.filter(event=>!event.acknowledged).map(event=>event.id)});
+      await call('complete', {reportRef:done.script!.resultRef,openIssues:[],verificationLimits:'Native queue acceptance in an isolated controller; production runtime unchanged. Resource keys do not provide filesystem isolation or exactly-once side effects.'});
+      await save(join(directory, 'result.json'), {passed:true,scenario:'queue',backend:test.backend,
+        nativeSessions:done.sessions.map(session=>({member:session.actorKey,nativeId:session.nativeSessionId,model:session.observedModel})),
+        items:work.items,claims:work.claims,staleSubmissionRejected:true,wakeCount});
+      return;
+    }
     if(phase==='prepare') {
       await call('run_script',{goal:'Native workflow acceptance: only the specified local checkpoint command and sleep are permitted tools; do not read files, credentials, send external messages, or create agents outside this script.',
         plan:'Validate native session retention, persistent checkpoints, and mailbox wakeups in an isolated test workspace.',
@@ -307,8 +356,8 @@ if (childDirectory) {
   const backends = option('backends', 'codex,claude,pi')!.split(',') as Backend[];
   assert(backends.length > 0 && backends.every(b => ['codex', 'claude', 'pi'].includes(b)), 'Unsupported backend');
   const scenarios = option('scenarios', 'memory,interrupt,discussion')!.split(',');
-  assert(scenarios.length > 0 && scenarios.every(s => ['memory', 'interrupt', 'discussion'].includes(s)), 'Unsupported scenario');
-  const cases: Case[] = backends.flatMap(backend => (['memory', 'interrupt'] as const)
+  assert(scenarios.length > 0 && scenarios.every(s => ['memory', 'interrupt', 'discussion', 'queue'].includes(s)), 'Unsupported scenario');
+  const cases: Case[] = backends.flatMap(backend => (['memory', 'interrupt', 'queue'] as const)
     .filter(s => scenarios.includes(s))
     .map(scenario => ({
       id: backend + '-' + scenario + '-' + randomUUID().slice(0, 8),
@@ -328,8 +377,10 @@ if (childDirectory) {
     try {
       await launch(test, 'prepare', directory);
       assert(!cancelled, 'Acceptance cancelled');
-      console.log(JSON.stringify({ case: test.id, phase: 'recover' }));
-      await launch(test, 'recover', directory);
+      if (test.scenario !== 'queue') {
+        console.log(JSON.stringify({ case: test.id, phase: 'recover' }));
+        await launch(test, 'recover', directory);
+      }
       results.push({ id: test.id, passed: true });
     } catch (error) {
       results.push({ id: test.id, passed: false, error: String(error) });

@@ -87,6 +87,8 @@ Guest functions:
 | --- | --- |
 | `agent(prompt, {key, member?, harness?, model?, reasoningEffort?, output?})` | Promise of final text, or a parsed JSON value with `output: "json"` |
 | `send(member, text, {key})` / `receive(member, {key})` | Send a durable message or await a stable inbox batch |
+| `enqueueWork({key, title, input, resources?, maxAttempts?})` | Persist an immutable work item; returns `{itemId, key}` and reuses it on replay |
+| `workStatus({itemId?, offset?, limit?})` | Read one item with its payload, or bounded queue counts and summaries |
 | `parallel([() => ..., () => ...])` | Starts functions and returns results in input order |
 | `pipeline(items, ...stages)` | Processes items concurrently; each item passes through its stages sequentially as `stage(value, index)` |
 | `phase(text)` / `log(text)` | Bounded progress recorded in status; does not wake main |
@@ -146,7 +148,48 @@ Checkpoints, waits, message receipts and turn state are committed together in th
 
 After a restart, the workflow remains `interrupted` until explicit `replay_script`. Replay reconstructs the script from its beginning, reuses completed turns and receive receipts, then continues pending waits or retries the interrupted turn in its original native session. Persistent turn reuse validates the original request and predecessor chain; the stored input fingerprint includes the checkpoint version and message IDs. Rewriting committed history, skipping its predecessor, or changing a member's execution binding requires a new member name. One-shot tasks still retry in fresh sessions.
 
-Limits per workflow: 32 members, 256 messages, 128 receive receipts, 512 worker/script mailbox operations, and 128 execution attempts including retries. The kernel retains up to 256 recent checkpoints while preserving every member's latest recovery point. Existing workflow call, deadline, replay, output and process-pool limits also apply. This is a workflow-scoped member facility; it does not add a cross-workflow team or a work-claim queue.
+Limits per workflow: 32 members, 256 messages, 128 receive receipts, 512 worker/script mailbox operations, and 128 execution attempts including retries. The kernel retains up to 256 recent checkpoints while preserving every member's latest recovery point. Existing workflow call, deadline, replay, output and process-pool limits also apply. Members and the work queue below are scoped to one workflow; they do not create a cross-workflow team.
+
+### Work items and claims
+
+Work items persist independently of members. A script enqueues authorized work and starts persistent members; members actively claim items through their scoped CLI. The bridge atomically assigns an available item and stores ownership, lease and saved progress in the same SQLite workflow record. Work progress belongs to the item, so another member can adopt it after interruption.
+
+```js
+await enqueueWork({
+  key: 'fix-parser', title: 'Fix parser handling of empty input',
+  input: { issue: 'Empty input throws instead of returning an empty result' },
+  resources: ['worktree:parser'], maxAttempts: 3,
+});
+return await agent('Claim work, read saved progress, implement and verify it, then complete_work.', {
+  key: 'consume', member: 'developer',
+});
+```
+
+For multiple consumers and recovery, use [the queue example](../workflow-definitions/scripted/examples/work-queue.js). Its arguments are `items` (enqueue objects), `members` (`{name, harness?, model?}`), and `consumerPrompt` (task-specific handling instructions within the original goal). It catches member failures and lets successful members take further turns when work remains. A failed member cannot skip its original unfinished turn with a new key; explicit replay retries that turn in its original session. The example stops on failed items, no remaining consumers, or its eight-round limit. Independent one-shot agents cannot claim work.
+
+Worker operations:
+
+| Operation | Arguments beyond `operationId` | Result |
+| --- | --- | --- |
+| `claim_work` | `leaseMs?` | `{claimId, generation, leaseUntil, item}`, or `null` if nothing is currently claimable |
+| `renew_claim` | `claimId, generation, leaseMs?` | Updated lease, never shorter than the existing lease |
+| `checkpoint_work` | `claimId, generation, expectedProgressVersion, state` | Persisted item progress version |
+| `complete_work` | `claimId, generation, result` | Terminal completed status |
+| `fail_work` | `claimId, generation, error, retry?` | Failed status, or pending when `retry: true` and attempts remain |
+| `release_claim` | `claimId, generation, reason` | Pending status, or failed when attempts are exhausted |
+| `work_status` | `itemId?` or `offset?, limit?`; no `operationId` | Item detail or queue summary |
+
+Each member can hold one active claim. Grants are bound to member, logical turn, execution attempt, claim ID and monotonically increasing item generation. The default lease is 120 seconds, with a 1–300 second range capped by the workflow deadline. Save progress before important boundaries and renew early enough for long tools or model calls. Lease expiry cancels the owning turn and requeues the item, unless its attempt budget is exhausted. Turn exit, pause, cancellation, binding invalidation and controller restart also release unfinished claims; saved item progress remains. Restart/pause never starts consumers automatically: explicit replay is still required. `claim_work: null` means end the current consumer turn; the script decides whether another round is needed.
+
+Queue mutation IDs are scoped to the current execution attempt. Repeating the same operation returns its recorded response; different content under that ID conflicts. Retrying a claim does not revive an expired/completed grant, and repeating a `null` claim returns `null`; use a new operation ID for a later claim query. Repeating an already committed completion with its original ID is harmless. Old attempts, owners and generations cannot make a new submission or overwrite a result. This fences bridge state only: external tool/file side effects are not transactional and are not guaranteed exactly once.
+
+`resources` contains explicit exclusion keys. Items sharing a key cannot hold active claims simultaneously; for example, use one canonical `worktree:<path>` key for all items that edit that worktree. Keys are opaque, matched exactly and local to this workflow. The bridge neither creates worktrees nor enforces filesystem access. A stale external process may still produce side effects after lease loss; verify those effects before resuming uncertain work.
+
+Enqueue keys share the script's key namespace. Replaying the same key/input reuses its existing item and does not reset its result or progress; changing immutable input under that key fails. `maxAttempts` defaults to 3. Every new grant consumes an attempt, including voluntarily released and expired grants. Main can use `enqueue_work` or `retry_work({itemId, additionalAttempts?})` with the usual workflow ID, operation ID and state version. Retry applies only to failed items, adds a default allowance of one (1–8 per request, at most 32 cumulative generations), and never resets the generation. Resolve the failure and explicitly replay as needed. Retry does not cause previously successful, cached consumer turns to run again: add a new round/member when all original consumer calls were already successful. Pending or claimed work prevents script success and main completion. Failed items remain visible for main review; the packaged example treats them as an error.
+
+Use `/workflow work` for counts and ownership, or `/workflow work <key>` for resource keys, saved progress version/time and recent claim history. `/workflow status [member]` also shows queue progress and member ownership. Summary output omits input/progress/result payloads; authorized `work_status({itemId})` returns the full item. Queries are read-only and do not renew leases or restart execution.
+
+Limits per workflow: 256 items, 512 claim records, 2048 queue mutation records, 16 resource keys per item, and 2 MB serialized queue state. Each input, progress state and result is limited to 16000 JSON characters. Status defaults to 16 items per page (maximum 64); use `nextOffset` for the next page. A script run can make at most 128 queue calls, including status queries, independently of its agent-call budget. The queue is bounded and intended for work within one workflow, not an unbounded service queue.
 
 ### Discussion example and native acceptance
 
@@ -170,13 +213,14 @@ npm run build
 npm run test:workflow-native -- --output /absolute/path/outside-the-repository/native-acceptance
 ```
 
-Use `--backends codex` to limit the backends, and `--scenarios memory,interrupt,discussion` to select cases. The discussion uses the first selected backend for A and the second for B, or the first for both if only one is selected. The runner uses native configured defaults without injecting a model service override, copying credentials, or switching profiles. The observed model is recorded when the backend reports it. Missing native authentication is a failed acceptance prerequisite, not a passing test.
+Use `--backends codex` to limit the backends, and `--scenarios memory,interrupt,discussion,queue` to select cases. The default scenarios are memory, interrupt and discussion; opt into `--scenarios queue` for the three-consumer queue test. The discussion uses the first selected backend for A and the second for B, or the first for both if only one is selected. The runner uses native configured defaults without injecting a model service override, copying credentials, or switching profiles. The observed model is recorded when the backend reports it. Missing native authentication is a failed acceptance prerequisite, not a passing test.
 
 The runner covers:
 
 - **Native memory:** a member memorizes a random, non-secret marker and replies `READY`. After the controller exits, a fresh process explicitly replays and asks the same native session to recall it. The marker is absent from the recall input and saved checkpoint; neither turn may use tools.
 - **Interrupted work:** a member saves `state.stage = "armed"` through the actual worker CLI, then starts a foreground sleep. The controller pauses that attempt. A fresh controller replays the same logical turn and native session; the saved checkpoint tells it to finish without repeating the checkpoint or sleep.
 - **Discussion:** the packaged example waits with both inboxes persisted. A fresh controller queues B's wakeup and explicitly replays. Completed proposal/bootstrap turns are cached, B reviews, and A consumes the review and revises. Both native IDs must remain unchanged and both receipts must be consumed.
+- **Work queue:** the packaged queue example starts three native members for ten arithmetic items. Each runs a local helper through its real shell tool and worker CLI. A saves partial progress and is interrupted; B and C adopt the work and finish all items. Checks require ten completed claims, preserved partial progress, a new generation/owner, and rejection of the revoked worker's late submission. This case uses one isolated controller; kernel and runtime tests cover lease expiry and restart separately.
 
 Artifacts include `summary.json` plus each case's `before.json`, `result.json`, process logs and observations. They record process IDs, native session IDs, checkpoint/attempt state and final outputs. Inspect the actual proposal, review and revision for design quality; the automated checks establish the protocol and required fields. Keep this directory private because logs and model responses may contain local paths and conversation content.
 
@@ -186,7 +230,7 @@ These tests restart only isolated test controllers and databases. They do not re
 
 `replay_script` requires the usual `workflowId`, unique `operationId` and current `expectedStateVersion`. It optionally replaces `script`, `args` or `execution`; changes to any of these require an updated `plan`. Each replay publishes its plan again and restarts the function from its beginning. Completed calls are reused by a fingerprint of **key, prompt, output mode, resolved worker binding, root binding, goal and workflow definition**. Changing execution order alone does not invalidate unrelated calls. For independent calls, changing a prompt or harness reruns that call in a fresh worker session; downstream calls rerun when the data in their prompts changes. Failed, cancelled, interrupted or waiting-for-input results are never cached. A named member retries the same logical turn in its original session; an independent task retries in a fresh session. Up to eight replays and 128 total task attempts are retained per workflow.
 
-This is result reuse, not replay of external side effects. File contents, network state, time and other implicit dependencies are not automatically hashed. Include relevant revisions or digests in prompts/keys when fresh execution is required. A task interrupted after a side effect may repeat that effect on replay. Worker tasks that modify shared files need an explicit ownership or serialization strategy; the workflow does not create worktrees or resource leases automatically.
+This is result reuse, not replay of external side effects. File contents, network state, time and other implicit dependencies are not automatically hashed. Include relevant revisions or digests in prompts/keys when fresh execution is required. A task interrupted after a side effect may repeat that effect on replay. Worker tasks that modify shared files need an explicit ownership or serialization strategy. Queue resource keys can serialize claims when supplied; the workflow does not create worktrees or infer which files a task will modify.
 
 For scripts, `/workflow pause` aborts the interpreter and cancels queued/running workers. Wait for worker cancellation to finish before `/workflow resume`; resume replays with cached completed calls. `/workflow cancel` and `/stop` cancel the whole workflow. Root session, workspace, policy or model changes prevent reuse and further dispatch. Target configuration changes invalidate matching worker cache entries. After restart, unfinished scripts are marked `interrupted`; explicit `replay_script` is supported while the original root binding and deadline remain valid. There is no automatic recovery. An expired workflow must be cancelled and a new one started.
 
