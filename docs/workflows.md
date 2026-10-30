@@ -146,6 +146,40 @@ After a restart, the workflow remains `interrupted` until explicit `replay_scrip
 
 Limits per workflow: 32 members, 256 messages, 128 receive receipts, 512 worker/script mailbox operations, and 128 execution attempts including retries. The kernel retains up to 256 recent checkpoints while preserving every member's latest recovery point. Existing workflow call, deadline, replay, output and process-pool limits also apply. This is a workflow-scoped member facility; it does not add a cross-workflow team or a work-claim queue.
 
+### Discussion example and native acceptance
+
+[The A → B → A example](../workflow-definitions/scripted/examples/discussion.js) creates two persistent members. A proposes a design, B reviews it, and A revises its original proposal using B's mailbox message. It returns all three documents and validates the response fields. Supply these script arguments:
+
+```json
+{
+  "subject": "a cache with a 60-second TTL; prevent a delayed refresh from overwriting a newer value",
+  "designerHarness": "codex",
+  "reviewerHarness": "codex",
+  "reviewId": "review-1"
+}
+```
+
+Optional `designerModel` and `reviewerModel` select models supported by those harnesses. Keep the member bindings and `reviewId` stable on replay. By default the discussion runs to completion. Set `waitForStart: true` to wait at B's inbox after both members are created; a main-agent `send_message` to member `B` starts the review. If the workflow has been interrupted, explicitly replay it after queuing the message. A's inbox wait then receives the review, and its successful revision consumes that receipt.
+
+The opt-in acceptance runner uses real Codex, Claude and Pi CLIs in the current authorized bridge profile. It calls model services and can incur usage costs. From a source checkout with dependencies installed and `dist/cli.js` built:
+
+```sh
+npm run build
+npm run test:workflow-native -- --output /absolute/path/outside-the-repository/native-acceptance
+```
+
+Use `--backends codex` to limit the backends, and `--scenarios memory,interrupt,discussion` to select cases. The discussion uses the first selected backend for A and the second for B, or the first for both if only one is selected. The runner uses native configured defaults without injecting a model service override, copying credentials, or switching profiles. The observed model is recorded when the backend reports it. Missing native authentication is a failed acceptance prerequisite, not a passing test.
+
+The runner covers:
+
+- **Native memory:** a member memorizes a random, non-secret marker and replies `READY`. After the controller exits, a fresh process explicitly replays and asks the same native session to recall it. The marker is absent from the recall input and saved checkpoint; neither turn may use tools.
+- **Interrupted work:** a member saves `state.stage = "armed"` through the actual worker CLI, then starts a foreground sleep. The controller pauses that attempt. A fresh controller replays the same logical turn and native session; the saved checkpoint tells it to finish without repeating the checkpoint or sleep.
+- **Discussion:** the packaged example waits with both inboxes persisted. A fresh controller queues B's wakeup and explicitly replays. Completed proposal/bootstrap turns are cached, B reviews, and A consumes the review and revises. Both native IDs must remain unchanged and both receipts must be consumed.
+
+Artifacts include `summary.json` plus each case's `before.json`, `result.json`, process logs and observations. They record process IDs, native session IDs, checkpoint/attempt state and final outputs. Inspect the actual proposal, review and revision for design quality; the automated checks establish the protocol and required fields. Keep this directory private because logs and model responses may contain local paths and conversation content.
+
+These tests restart only isolated test controllers and databases. They do not restart a production bridge or the shared Codex daemon, and do not certify recovery from arbitrary machine crashes, backend transcript loss, or exactly-once external side effects. Normal CI continues to use controlled adapters; native acceptance is run explicitly.
+
 ### Replay and lifecycle
 
 `replay_script` requires the usual `workflowId`, unique `operationId` and current `expectedStateVersion`. It optionally replaces `script`, `args` or `execution`; changes to any of these require an updated `plan`. Each replay publishes its plan again and restarts the function from its beginning. Completed calls are reused by a fingerprint of **key, prompt, output mode, resolved worker binding, root binding, goal and workflow definition**. Changing execution order alone does not invalidate unrelated calls. For independent calls, changing a prompt or harness reruns that call in a fresh worker session; downstream calls rerun when the data in their prompts changes. Failed, cancelled, interrupted or waiting-for-input results are never cached. A named member retries the same logical turn in its original session; an independent task retries in a fresh session. Up to eight replays and 128 total task attempts are retained per workflow.

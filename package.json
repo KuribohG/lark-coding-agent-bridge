@@ -83,7 +83,8 @@
     "ci:platform": "npm run lint:dead && npm run test && npm run typecheck && npm run typecheck:web && npm run build",
     "prepare": "npm run build",
     "prepublishOnly": "npm run typecheck && npm run build",
-    "typecheck:web": "tsc --noEmit -p web/tsconfig.json"
+    "typecheck:web": "tsc --noEmit -p web/tsconfig.json",
+    "test:workflow-native": "node tests/acceptance/run-workflow-native.mjs"
   },
   "dependencies": {
     "@clack/prompts": "^1.4.0",
