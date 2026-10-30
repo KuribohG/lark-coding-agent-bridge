@@ -56,6 +56,18 @@ describe('agent model provider registry', () => {
     expect(resolved.codex.apiKeyEnv).toMatch(/^LARK_MODEL_PROVIDER_KEY_[A-F0-9]+$/);
   });
 
+  it('uses the configured service name for Codex and resolves pending selections without credentials', async () => {
+    delete process.env.PROVIDER_TEST_KEY;
+    const registry = new ModelProviderRegistry(services);
+    const selected = await registry.resolve('codex', 'deepseek/deepseek-flash', false);
+    expect(selected?.codex?.providerId).toBe('deepseek');
+    expect(selected?.env).toEqual({});
+    process.env.PROVIDER_TEST_KEY = 'startup-key';
+    const startup = await registry.resolveStartup('codex', 'custom-model', 'deepseek');
+    expect(startup).toMatchObject({ id: 'deepseek', model: 'custom-model', codex: { providerId: 'deepseek' } });
+    expect((await registry.resolveStartup('codex'))?.model).toBe('deepseek-flash');
+  });
+
   it('leaves native bare model selections unchanged', async () => {
     await expect(new ModelProviderRegistry(services).resolve('pi', 'anthropic/claude-opus-5.5')).resolves.toBeUndefined();
   });

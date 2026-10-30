@@ -94,7 +94,7 @@ export class ProfileExecutionController implements ExecutionController {
     agentKind: AgentKind,
     model?: string,
   ): Promise<ResolvedModelProvider | undefined> {
-    return this.options.modelProviders?.resolve(agentKind, model);
+    return this.options.modelProviders?.resolve(agentKind, model, backendFor(agentKind).providerSwitching !== 'startup');
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -124,6 +124,7 @@ export class ProfileExecutionController implements ExecutionController {
     if (!agent) {
       const profile = profileForAgentKind(this.profileConfig, kind);
       agent = createAgentAdapter({
+        modelProviders: this.options.modelProviders,
         profile,
         profileDir: this.options.appPaths.profileDir,
         env: this.options.env ?? {},

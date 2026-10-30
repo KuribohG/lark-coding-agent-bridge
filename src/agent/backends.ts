@@ -23,6 +23,7 @@ import type { AgentSystemPrompt } from './system-prompt';
 import type { AgentExecutionProfile, AgentKind } from '../config/profile-schema';
 import { accessToCodexSandbox } from '../config/permissions';
 import { buildAgentEnvironment } from './launch-env';
+import type { ModelProviderRegistry } from '../model-provider/provider';
 
 export interface AgentBackend extends AgentBackendSpec {
   capability(profile: Pick<AgentExecutionProfile, 'agentKind' | 'permissions'>): AgentCapability;
@@ -35,7 +36,8 @@ export interface AgentBackend extends AgentBackendSpec {
 }
 
 export interface CreateAgentAdapterInput {
-  profile: AgentExecutionProfile;
+  modelProviders?: ModelProviderRegistry;
+  profile: AgentExecutionProfile & { preferences?: { model?: string } };
   profileDir: string;
   env: NodeJS.ProcessEnv;
   systemPrompt: AgentSystemPrompt;
@@ -61,7 +63,7 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
   },
   codex: {
     executionCapabilities: () => codexExecutionCapabilities(),
-    createAdapter: ({ profile, profileDir, env, systemPrompt }) => {
+    createAdapter: ({ profile, profileDir, env, systemPrompt, modelProviders }) => {
       const codex = profile.codex;
       if (!codex?.binaryPath) throw new Error('codex profile requires codex.binaryPath');
       return new CodexAdapter({
@@ -69,9 +71,10 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
         systemPrompt,
         transport: codex.transport,
         appServerMode: codex.appServerMode,
+        startupProvider: () => modelProviders?.resolveStartup('codex', profile.preferences?.model, codex.provider),
         profileStateDir: profileDir,
         ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
-        inheritCodexHome: codex.inheritCodexHome !== false,
+        inheritCodexHome: codex.inheritCodexHome === true,
         ignoreUserConfig: codex.ignoreUserConfig === true,
         ignoreRules: codex.ignoreRules,
         sandbox: profile.sandbox?.defaultMode ?? accessToCodexSandbox(profile.permissions.defaultAccess),

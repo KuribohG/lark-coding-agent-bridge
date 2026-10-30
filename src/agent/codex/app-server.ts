@@ -65,6 +65,7 @@ export function startAppServerRun(input: {
   prompt: string;
   developerInstructions?: string;
   modelProviderId?: string;
+  initialNotice?: string;
   threadConfig?: Readonly<Record<string, unknown>>;
   stopGraceMs: number;
   configOverrides?: readonly string[];
@@ -333,9 +334,10 @@ export function startAppServerRun(input: {
       },
     });
     write({ method: 'initialized' });
+    if (input.initialNotice) pushStatusOnce('provider-restart-required', input.initialNotice);
     if (stopping) return;
     const creatingThread = !opts.threadId;
-    const thread = await request(creatingThread ? 'thread/start' : opts.forkSession ? 'thread/fork' : 'thread/resume', {
+    const threadParams = {
       ...(opts.threadId ? { threadId: opts.threadId, excludeTurns: true } : {}),
       ...(opts.forkSession ? { ephemeral: true } : {}),
       ...(creatingThread || opts.forkSession ? { threadSource: THREAD_SOURCE } : {}),
@@ -344,7 +346,24 @@ export function startAppServerRun(input: {
       ...(input.modelProviderId ? { modelProvider: input.modelProviderId } : {}),
       ...(input.threadConfig ? { config: input.threadConfig } : {}),
       cwd: opts.cwd, model: opts.model, sandbox: input.sandbox, approvalPolicy: 'never',
-    });
+    };
+    let thread: ObjectValue;
+    try {
+      thread = await request(creatingThread ? 'thread/start' : opts.forkSession ? 'thread/fork' : 'thread/resume', threadParams);
+    } catch (error) {
+      if (stopping || creatingThread || opts.forkSession || !(error instanceof RpcError)
+        || error.code !== -32600
+        || !['modelProviderMismatch', 'modelProviderNotConfigured'].includes(text(object(error.data).type))) throw error;
+      // Provider identity is immutable on newer Codex threads. Fork preserves
+      // history under the selected provider and leaves the source untouched.
+      thread = await request('thread/fork', { ...threadParams, threadSource: THREAD_SOURCE });
+      log.info('codex', 'provider-thread-forked', {
+        sourceThreadId: opts.threadId,
+        threadId: text(object(thread.thread).id),
+        modelProvider: input.modelProviderId ?? object(error.data).currentModelProvider,
+      });
+      pushStatusOnce('provider-thread-forked', '已切换模型 Provider，历史已保留到新会话。');
+    }
     threadId = text(object(thread.thread).id);
     if (!threadId) throw new Error('app-server did not return a thread id');
     push(translator.translate({ type: 'thread.started', thread_id: threadId }));

@@ -11,6 +11,8 @@ export interface CodexConfig extends ExecutableLaunchConfig {
    * retaining Codex's native memory read/startup path.
    */
   appServerMode?: CodexAppServerMode;
+  /** Model service selected once at Bridge startup. */
+  provider?: string;
   codexHome?: string;
   inheritCodexHome?: boolean;
   ignoreUserConfig?: boolean;
@@ -18,6 +20,9 @@ export interface CodexConfig extends ExecutableLaunchConfig {
 }
 
 export function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexConfig {
+  if (input.provider !== undefined && !/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$/.test(input.provider)) {
+    throw new Error('codex.provider must be a model service name');
+  }
   if (input.transport !== undefined && input.transport !== 'app-server') {
     throw new Error('Codex exec transport has been removed; use transport=app-server');
   }
@@ -33,8 +38,9 @@ export function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexC
     ...normalizeExecutableLaunch(input, 'codex'),
     transport: 'app-server',
     appServerMode: input.appServerMode ?? 'daemon',
+    ...(input.provider ? { provider: input.provider } : {}),
     ...(typeof input.codexHome === 'string' ? { codexHome: input.codexHome } : {}),
-    inheritCodexHome: input.inheritCodexHome !== false,
+    inheritCodexHome: input.inheritCodexHome === true,
     ignoreUserConfig: false,
     ignoreRules: false,
   };

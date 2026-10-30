@@ -318,7 +318,7 @@ describe('profile schema', () => {
       sha256: 'abc123',
       owner: 501,
       mode: 0o755,
-      inheritCodexHome: true,
+      inheritCodexHome: false,
       ignoreUserConfig: false,
       ignoreRules: false,
       transport: 'app-server',

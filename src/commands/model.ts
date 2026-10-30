@@ -35,10 +35,11 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
       modelProviderOptions(ctx.controls, agentKind),
     ]);
     const overrides = store.get(agentKind, ctx.scope);
+    const activeProvider = await ctx.agent.modelProviderState?.();
     if (!args.trim()) {
       const resolved = resolveModelSettings(ctx.controls.profileConfig.preferences, overrides, environment);
       await sendManagedCard(ctx.channel, ctx.msg.chatId, modelFormCard({
-        agentKind, scope: ctx.scope, scopeLabel: modelScopeLabel(ctx), overrides, resolved, environment, providers,
+        agentKind, scope: ctx.scope, scopeLabel: modelScopeLabel(ctx), overrides, resolved, environment, providers, activeProvider,
       }), replyOptions(ctx));
       return;
     }
@@ -79,6 +80,11 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
       environment,
     );
     if (patch.reasoningEffort && next.reasoningEffort !== patch.reasoningEffort) throw new Error(next.notice);
+    const requestedProvider = providers.find(provider => next.model?.startsWith(`${provider.id}/`) || next.model === provider.defaultModel);
+    if (activeProvider?.fixedUntilRestart && requestedProvider && requestedProvider.id !== activeProvider.id) {
+      await reply(`Provider 未切换，设置未保存。当前继续使用 ${activeProvider.displayName}；请修改 bridge 的 launch.provider 配置并重启后使用 ${requestedProvider.label}。普通消息仍可继续发送。`);
+      return;
+    }
     if (target === 'profile') {
       if (agentKind !== ctx.controls.profileConfig.agentKind) {
         throw new Error('profile 默认模型只能为 profile 默认执行引擎设置；当前上下文使用覆盖引擎，请保存到当前聊天。');
@@ -97,6 +103,7 @@ export async function modelStatus(ctx: CommandContext): Promise<string> {
   const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
   const next = await resolveRunModelSettings(ctx.controls, ctx.scope, undefined, agentKind);
   const active = ctx.activeRuns.get(ctx.scope)?.modelSettings;
-  return `**下一轮 · ${modelScopeLabel(ctx)}**\n${modelSettingsSummary(next)}` +
+  const provider = await ctx.agent.modelProviderState?.();
+  return (provider ? `当前 Provider：\`${provider.displayName}\`（启动时固定）\n` : '') + `**下一轮 · ${modelScopeLabel(ctx)}**\n${modelSettingsSummary(next)}` +
     (active ? `\n**当前任务**：\`${active.model ?? 'CLI 默认'}\` / \`${active.reasoningEffort ?? 'CLI 默认'}\`` : '');
 }

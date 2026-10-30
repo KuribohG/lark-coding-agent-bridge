@@ -39,6 +39,7 @@ export interface AgentBackendSpec {
   historySource: AgentHistorySource;
   permissionView: AgentPermissionView;
   providerBindings: Partial<Record<ModelProtocol, AgentProviderBinding>>;
+  providerSwitching?: 'startup';
   supportsProfileResponsesService: boolean;
   modelCatalog: AgentModelCatalog;
   reasoningEfforts: readonly string[];
@@ -98,6 +99,7 @@ const CODEX_SPEC: AgentBackendSpec = Object.freeze({
     ...COMMON_AGENT_LAUNCH_KEYS,
     'transport',
     'appServerMode',
+    'provider',
     'codexHome',
     'inheritCodexHome',
     'ignoreUserConfig',
@@ -114,6 +116,7 @@ const CODEX_SPEC: AgentBackendSpec = Object.freeze({
   historySource: 'codex-thread-list',
   permissionView: 'sandbox',
   providerBindings: Object.freeze({ responses: 'codex-config' }),
+  providerSwitching: 'startup',
   supportsProfileResponsesService: true,
   modelCatalog: 'codex',
   reasoningEfforts: Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']),

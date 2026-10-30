@@ -38,7 +38,7 @@ describe('first-run profile bootstrap', () => {
     expect(profile.workspaces).toEqual({ default: workspaceRealpath });
     expect(profile.codex).toMatchObject({
       binaryPath: codex,
-      inheritCodexHome: true,
+      inheritCodexHome: false,
     });
     expect(profile.codex?.realpath).toBeUndefined();
     expect(profile.codex?.version).toBeUndefined();

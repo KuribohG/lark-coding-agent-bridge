@@ -62,6 +62,21 @@ async function harness() {
 }
 
 describe('model and effort scope settings', () => {
+  it('shows the active startup provider and refuses a provider setting without poisoning later requests', async () => {
+    const h = await harness();
+    const root = decodeFixture(await readFile(h.controls.configPath, 'utf8'));
+    root.modelServices = Object.fromEntries(['current', 'other'].map(id => [id, { protocol: 'responses', baseUrl: `https://${id}.example/v1`, model: `${id}-model`, apiKey: { source: 'env', id: 'UNSET_TEST_KEY' } }]));
+    await writeFile(h.controls.configPath, encodeFixture(root));
+    h.ctx.agent.modelProviderState = async () => ({ id: 'current', displayName: 'Current Provider', fixedUntilRestart: true });
+    await h.command('/model other/other-model');
+    expect((await scopePreferences(h.controls)).get('codex', h.ctx.scope).model).toBeUndefined();
+    expect(encodeFixture(h.channel.sent)).toContain('Provider 未切换');
+    await h.command('/model current/next-model');
+    expect((await scopePreferences(h.controls)).get('codex', h.ctx.scope).model).toBe('current/next-model');
+    await h.command('/model');
+    expect(encodeFixture(h.channel.sent)).toContain('Current Provider');
+  });
+
   it('accepts a provider model not in the catalog, isolates topics, and resets to CLI defaults', async () => {
     const h = await harness();
     await h.command('/model my-provider/custom-v7');

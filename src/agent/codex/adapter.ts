@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import type { CodexAppServerMode, SandboxMode } from '../../config/profile-schema';
 import { mergeProcessEnv } from '../../platform/spawn';
 import { SpawnFailed } from '../../runtime/errors';
@@ -16,9 +17,12 @@ import { startAppServerRun } from './app-server';
 import { withExecutionContract } from '../execution';
 import { codexExecutionCapabilities } from './capabilities';
 import { ensureCodexAppServerDaemon } from './daemon';
+import { prepareManagedCodexConfig } from './managed-config';
+import type { ResolvedModelProvider } from '../../model-provider/types';
 
 export interface CodexAdapterOptions {
   binary: string;
+  startupProvider?: () => Promise<ResolvedModelProvider | undefined> | undefined;
   systemPrompt?: AgentSystemPrompt;
   transport?: 'app-server';
   appServerMode?: CodexAppServerMode;
@@ -47,6 +51,11 @@ export class CodexAdapter implements AgentAdapter {
   private readonly defaultStopGraceMs: number;
   private readonly env: NodeJS.ProcessEnv;
   private readonly daemonSockets = new WeakMap<AgentRunOptions, string>();
+  private readonly startupProvider: CodexAdapterOptions['startupProvider'];
+  private startup?: Promise<{ provider?: ResolvedModelProvider; config: Awaited<ReturnType<typeof prepareManagedCodexConfig>> }>;
+  private fixedProvider?: ResolvedModelProvider;
+  private startupModel?: string;
+  private startupId?: string;
   private botIdentity: AgentBotIdentity | undefined;
   private successfulAvailability: Promise<AgentAvailability> | undefined;
 
@@ -58,11 +67,12 @@ export class CodexAdapter implements AgentAdapter {
       throw new Error('app-server requires ignoreUserConfig=false and ignoreRules=false; exec-only ignore flags are not supported');
     }
     this.binary = opts.binary;
+    this.startupProvider = opts.startupProvider;
     this.systemPrompt = opts.systemPrompt;
     this.appServerMode = opts.appServerMode ?? 'per-run';
     this.profileStateDir = opts.profileStateDir;
     this.codexHome = opts.codexHome;
-    this.inheritCodexHome = opts.inheritCodexHome !== false;
+    this.inheritCodexHome = opts.inheritCodexHome === true;
     this.sandbox = opts.sandbox ?? 'danger-full-access';
     this.defaultStopGraceMs = opts.stopGraceMs ?? 5000;
     this.env = { ...opts.env };
@@ -109,6 +119,7 @@ export class CodexAdapter implements AgentAdapter {
         availability.diagnostic,
       );
     }
+    const startup = await this.initializeProvider();
     if (this.appServerMode === 'daemon') {
       if (!opts) throw new Error('Codex daemon preparation requires run options');
       const status = await ensureCodexAppServerDaemon({
@@ -116,10 +127,13 @@ export class CodexAdapter implements AgentAdapter {
         env: this.runEnvironment(opts),
         cwd: opts.cwd,
         timeoutMs: deadlineTimeout(opts.deadlineAt),
+        restart: startup.config.changed,
       });
       if (!status.socketPath) throw new Error('Codex app-server daemon returned no socket path');
       this.daemonSockets.set(opts, status.socketPath);
+      await startup.config.commit?.();
     }
+    startup.config.changed = false;
   }
 
   run(opts: AgentRunOptions): AgentRun {
@@ -138,7 +152,12 @@ export class CodexAdapter implements AgentAdapter {
     if (opts.forkSession && !opts.threadId) throw new Error('fork requires a parent thread');
     if (opts.model) validateModelId(opts.model);
     if (opts.reasoningEffort) parseEffort(opts.reasoningEffort, 'codex');
-    const provider = opts.modelProvider?.codex;
+    const requested = opts.modelProvider;
+    const rejectedProvider = requested && requested.id !== this.fixedProvider?.id;
+    const effectiveOpts = rejectedProvider
+      ? { ...opts, model: this.startupModel, reasoningEffort: undefined }
+      : opts;
+    const provider = this.fixedProvider?.codex;
     const configOverrides: string[] = [];
     const threadConfig: Record<string, unknown> = this.appServerMode === 'daemon'
       ? { shell_environment_policy: { inherit: 'all', ...(opts.env ? { set: opts.env } : {}) } }
@@ -156,16 +175,6 @@ export class CodexAdapter implements AgentAdapter {
         if (provider.headersEnv) {
           configOverrides.push(`${prefix}.env_http_headers=${quoteToml(provider.headersEnv)}`);
         }
-      } else {
-        const providers = objectValue(threadConfig.model_providers);
-        providers[provider.providerId] = {
-          name: provider.name,
-          base_url: provider.baseUrl,
-          wire_api: provider.wireApi,
-          env_key: provider.apiKeyEnv,
-          ...(provider.headersEnv ? { env_http_headers: provider.headersEnv } : {}),
-        };
-        threadConfig.model_providers = providers;
       }
     }
     if (opts.forkSession && this.appServerMode === 'daemon') {
@@ -177,7 +186,7 @@ export class CodexAdapter implements AgentAdapter {
       throw new Error('Codex daemon run requires a successful prepareRun');
     }
     return startAppServerRun({
-      binary: this.binary, opts,
+      binary: this.binary, opts: effectiveOpts,
       env,
       sandbox,
       appServerMode: this.appServerMode,
@@ -187,9 +196,31 @@ export class CodexAdapter implements AgentAdapter {
         ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity),
       stopGraceMs: opts.stopGraceMs ?? this.defaultStopGraceMs,
       configOverrides,
-      modelProviderId: this.appServerMode === 'daemon' ? provider?.providerId : undefined,
+      modelProviderId: this.startupId,
+      initialNotice: rejectedProvider
+        ? `Provider 未切换：当前继续使用 ${this.fixedProvider?.displayName ?? this.startupId ?? '原生默认'}${this.startupModel ? ` / ${this.startupModel}` : ''}。请修改 bridge 启动配置并重启后使用 ${requested.displayName}。`
+        : undefined,
       threadConfig: this.appServerMode === 'daemon' ? threadConfig : undefined,
     });
+  }
+
+  private initializeProvider() {
+    if (!this.startup) this.startup = (async () => {
+      const provider = await this.startupProvider?.();
+      const home = this.codexHome ?? (this.inheritCodexHome
+        ? this.env.CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), '.codex') : join(this.profileStateDir, 'codex-home'));
+      const config = await prepareManagedCodexConfig(home, provider);
+      this.fixedProvider = provider;
+      this.startupModel = config.model;
+      this.startupId = config.id;
+      return { provider, config };
+    })();
+    return this.startup;
+  }
+
+  async modelProviderState() {
+    const { provider, config } = await this.initializeProvider();
+    return { id: provider?.id ?? config.id, displayName: provider?.displayName ?? config.id, fixedUntilRestart: true, model: config.model };
   }
 
   private runEnvironment(opts: AgentRunOptions): NodeJS.ProcessEnv {
@@ -199,17 +230,11 @@ export class CodexAdapter implements AgentAdapter {
     } else if (!this.inheritCodexHome) {
       envOverrides.CODEX_HOME = join(this.profileStateDir, 'codex-home');
     }
-    if (opts.modelProvider) {
-      Object.assign(envOverrides, opts.modelProvider.env);
+    if (this.fixedProvider) {
+      Object.assign(envOverrides, this.fixedProvider.env);
     }
     return mergeProcessEnv(process.env, envOverrides);
   }
-}
-
-function objectValue(value: unknown): Record<string, unknown> {
-  return value && typeof value === 'object' && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : {};
 }
 
 function deadlineTimeout(deadlineAt: number | undefined): number | undefined {
@@ -218,5 +243,6 @@ function deadlineTimeout(deadlineAt: number | undefined): number | undefined {
 }
 
 function quoteToml(value: string | Record<string, string>): string {
-  return JSON.stringify(value);
+  if (typeof value === 'string') return JSON.stringify(value);
+  return `{ ${Object.entries(value).map(([key, item]) => `${JSON.stringify(key)} = ${JSON.stringify(item)}`).join(', ')} }`;
 }

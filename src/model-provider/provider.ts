@@ -26,7 +26,7 @@ abstract class ModelProvider {
   ) {}
 
   abstract supports(agentKind: AgentKind): boolean;
-  abstract bind(agentKind: AgentKind, model: string): Promise<ResolvedModelProvider>;
+  abstract bind(agentKind: AgentKind, model: string, credentials?: boolean): Promise<ResolvedModelProvider>;
   abstract models(agentKind: AgentKind, refresh: boolean): Promise<ModelOption[]>;
   /** Bare model IDs this provider may resolve when no provider prefix is used. */
   bareModels(_agentKind: AgentKind): readonly string[] { return []; }
@@ -57,15 +57,17 @@ class ConfiguredModelProvider extends ModelProvider {
     return this.binding(agentKind)?.endpoint.model;
   }
 
-  async bind(agentKind: AgentKind, model: string): Promise<ResolvedModelProvider> {
+  async bind(agentKind: AgentKind, model: string, credentials = true): Promise<ResolvedModelProvider> {
     this.assertSupported(agentKind);
     const modelId = validateModelId(model);
     const binding = this.binding(agentKind)!;
-    const service = await loadModelConnection(this.config, binding.protocol, modelId);
+    const service = credentials
+      ? await loadModelConnection(this.config, binding.protocol, modelId)
+      : { baseUrl: binding.endpoint.baseUrl, key: '', contextWindow: binding.endpoint.contextWindow, headers: {} as Record<string, string> };
     const suffix = stableSuffix(`${this.id}\0${modelId}`);
-    const env: NodeJS.ProcessEnv = {
+    const env: NodeJS.ProcessEnv = credentials ? {
       [`LARK_MODEL_PROVIDER_KEY_${suffix}`]: service.key,
-    };
+    } : {};
     const headersEnv: Record<string, string> = {};
     for (const [name, value] of Object.entries(service.headers ?? {})) {
       const envName = `LARK_MODEL_PROVIDER_HEADER_${stableSuffix(`${this.id}\0${name}`)}`;
@@ -131,19 +133,32 @@ export class ModelProviderRegistry {
     return catalogs.flat();
   }
 
-  async resolve(agentKind: AgentKind, selection: string | undefined): Promise<ResolvedModelProvider | undefined> {
+  async resolve(agentKind: AgentKind, selection: string | undefined, credentials = true): Promise<ResolvedModelProvider | undefined> {
     if (!selection || selection === 'default') return undefined;
     const provider = this.providers.find(candidate => selection.startsWith(`${candidate.id}/`));
     if (provider) {
       const model = selection.slice(provider.id.length + 1);
       if (!model) throw new Error(`模型选择 ${selection} 缺少模型 ID`);
-      return provider.bind(agentKind, model);
+      return provider.bind(agentKind, model, credentials);
     }
     const bare = this.providers.filter(candidate => candidate.bareModels(agentKind).includes(selection));
     if (bare.length > 1) {
       throw new Error(`模型 ${selection} 同时由多个 provider 提供，请使用 provider/model 明确选择`);
     }
-    return bare[0]?.bind(agentKind, selection);
+    return bare[0]?.bind(agentKind, selection, credentials);
+  }
+
+  async resolveStartup(agentKind: AgentKind, model?: string, providerId?: string): Promise<ResolvedModelProvider | undefined> {
+    const options = this.options(agentKind);
+    const selected = providerId ? options.find(option => option.id === providerId) : selectedProvider(options, model);
+    if (providerId && !selected) throw new Error(`未知模型 Provider：${providerId}`);
+    const provider = selected ?? (options.length === 1 ? options[0] : undefined);
+    if (!provider && options.length > 1) throw new Error('请在 launch.provider 中选择启动时使用的模型 Provider。');
+    if (!provider) return undefined;
+    const modelProvider = selectedProvider(options, model);
+    const localModel = modelProvider && modelProvider.id !== provider.id ? provider.defaultModel
+      : model?.startsWith(`${provider.id}/`) ? model.slice(provider.id.length + 1) : model;
+    return this.resolve(agentKind, `${provider.id}/${localModel && localModel !== 'default' ? localModel : provider.defaultModel}`);
   }
 }
 

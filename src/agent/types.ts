@@ -119,6 +119,7 @@ export interface AgentBotIdentity {
 }
 
 export interface AgentAdapter {
+  modelProviderState?(): Promise<{ id: string; displayName: string; fixedUntilRestart: boolean; model?: string }>;
   readonly id: string;
   readonly displayName: string;
   readonly capabilities?: AgentExecutionCapabilities;

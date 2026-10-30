@@ -39,7 +39,7 @@ configuration/authentication state. It accepts `binaryPath` and an optional
 
 - Claude: `configDir`, exposed to the child as `CLAUDE_CONFIG_DIR`.
 - Codex: `codexHome`, exposed as `CODEX_HOME`, plus `transport`,
-  `appServerMode`, `inheritCodexHome`, `ignoreUserConfig` and `ignoreRules`.
+  `appServerMode`, `provider`, `inheritCodexHome`, `ignoreUserConfig` and `ignoreRules`.
 - pi: `agentDir`, exposed as `PI_CODING_AGENT_DIR`.
 
 `env` adds environment variables to the selected agent process and its tool
@@ -72,6 +72,12 @@ to pi or a `configDir` to Codex.
 Codex uses `app-server`, enabling input during an active turn. The `exec` backend has been removed: remove an old `transport = "exec"` setting or change it to `"app-server"`. Both ignore flags default to `false`; explicitly setting either to `true` is rejected because app-server loads normal user configuration and execpolicy rules. Launch changes take effect after restarting the profile.
 
 `appServerMode` defaults to `daemon`. Bridge ensures Codex's official app-server daemon is running and attaches each run through a short-lived stdio-to-Unix-WebSocket bridge; the daemon stays alive after a run so native background memory extraction and consolidation can finish. `appServerMode = "per-run"` keeps the app-server scoped to one Bridge run and forces `memories.generate_memories = false`; existing memory reads and Codex's native memory startup path remain available, while the thread is not added as a source for new memory generation.
+
+Codex defaults to an independent `<profile-state-dir>/codex-home`; `codexHome` can select another private directory. `inheritCodexHome = true` is an explicit legacy opt-in. Bridge-managed model services require a private home and never rewrite the personal `~/.codex/config.toml`.
+
+`launch.provider` selects a service from `model_services` at startup. If omitted, Bridge uses the service named by the default model, or the sole compatible service. Multiple services require an explicit selection. Bridge merges the selected provider, default model and environment-backed authentication into the private `config.toml`, preserving native options such as MCP servers, features and verbosity. This file remains the place to configure Codex features that Bridge does not expose; Bridge-owned fields are regenerated from Bridge TOML. Provider IDs are the configured service names, without generated aliases. Changed provider credentials/configuration restart only this private home's daemon during activation.
+
+The running provider stays fixed until restart. Model commands reject attempts to save another provider, and stale conversation overrides continue on the active provider's default model with an explanatory notice. No new provider credentials are loaded for those rejected selections. Model changes within the active provider remain available. A legacy thread bound to another provider is forked with its history into the active provider; the source is retained.
 
 ## Frontend fields
 

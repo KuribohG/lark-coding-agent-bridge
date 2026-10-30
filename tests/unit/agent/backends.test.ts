@@ -42,7 +42,7 @@ describe('agent backend registry', () => {
 
     expect(startAppServerRun).toHaveBeenCalledWith(expect.objectContaining({
       env: expect.objectContaining({
-        CODEX_HOME: inheritCodexHome === false ? join(profileDir, 'codex-home') : nativeHome,
+        CODEX_HOME: inheritCodexHome === true ? nativeHome : join(profileDir, 'codex-home'),
       }),
       sandbox: 'workspace-write',
     }));

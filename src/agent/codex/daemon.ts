@@ -35,6 +35,7 @@ export function ensureCodexAppServerDaemon(input: {
   env: NodeJS.ProcessEnv;
   cwd?: string;
   timeoutMs?: number;
+  restart?: boolean;
 }): Promise<CodexAppServerDaemonStatus> {
   const key = `${input.binary}\0${input.env.CODEX_HOME ?? '<default-codex-home>'}`;
   const existing = inFlight.get(key);
@@ -52,12 +53,17 @@ async function checkOrStart(input: {
   env: NodeJS.ProcessEnv;
   cwd?: string;
   timeoutMs?: number;
+  restart?: boolean;
 }): Promise<CodexAppServerDaemonStatus> {
   const timeoutMs = input.timeoutMs ?? COMMAND_TIMEOUT_MS;
   const current = await runDaemonCommand(input, ['app-server', 'daemon', 'version'], timeoutMs);
   if (current.exitCode === 0) {
     const status = parseDaemonStatus(current.stdout, current.stderr);
-    if (status) return status;
+    if (status && !input.restart) return status;
+    if (status && input.restart) {
+      const stopped = await runDaemonCommand(input, ['app-server', 'daemon', 'stop'], timeoutMs);
+      if (stopped.exitCode !== 0) throw new Error(`Codex app-server daemon failed to stop${formatCommandFailure(stopped)}`);
+    }
   }
 
   const started = await runDaemonCommand(input, ['app-server', 'daemon', 'start'], timeoutMs);

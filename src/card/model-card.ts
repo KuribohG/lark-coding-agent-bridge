@@ -21,6 +21,7 @@ export function modelFormCard(input: {
   resolved: ResolvedModelSettings;
   environment: ModelEnvironment;
   providers: ModelProviderOption[];
+  activeProvider?: { id: string; displayName: string; fixedUntilRestart: boolean };
 }): object {
   const provider = selectedProvider(input.providers, input.resolved.model);
   const selectedModel = provider && input.resolved.model?.startsWith(`${provider.id}/`)
@@ -30,10 +31,10 @@ export function modelFormCard(input: {
     schema: '2.0',
     config: { summary: { content: '模型与思考强度' } },
     body: { elements: [
-      { tag: 'markdown', content: `**${input.scopeLabel}**\n${modelSettingsSummary(input.resolved)}\n\n下一轮新任务生效；/new 保留设置。填写 default 可跟随 bot 默认。` },
+      { tag: 'markdown', content: `**${input.scopeLabel}**\n${input.activeProvider ? `当前 Provider：\`${input.activeProvider.displayName}\`（启动时固定；切换需修改配置并重启）\n` : ''}${modelSettingsSummary(input.resolved)}\n\n下一轮新任务生效；/new 保留设置。填写 default 可跟随 bot 默认。` },
       { tag: 'form', name: 'model_settings', elements: [
         { tag: 'markdown', content: '**模型 Provider**（选择后填写该 Provider 的模型 ID）' },
-        { tag: 'select_static', name: 'provider_pick', initial_option: provider?.id ?? AUTO_MODEL_PROVIDER, options: [
+        { tag: 'select_static', name: 'provider_pick', initial_option: input.activeProvider && input.providers.some(p => p.id === input.activeProvider!.id) ? input.activeProvider.id : provider?.id ?? AUTO_MODEL_PROVIDER, options: [
           { text: { tag: 'plain_text', content: '自动 / 保留当前模型' }, value: AUTO_MODEL_PROVIDER },
           ...input.providers.map(item => ({
             text: { tag: 'plain_text', content: item.label },

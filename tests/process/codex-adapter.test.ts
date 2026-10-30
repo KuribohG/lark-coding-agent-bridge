@@ -21,6 +21,7 @@ async function harness(mode = 'normal', options: Partial<CodexAdapterOptions> = 
   const record = join(dir, 'process.json');
   const requestsFile = join(dir, 'requests.jsonl');
   await writeFile(binary, `#!/usr/bin/env node
+if (process.argv[2] === '--version') { console.log('codex 0.166.0'); process.exit(0); }
 const fs = require('node:fs');
 const rl = require('node:readline').createInterface({ input: process.stdin });
 fs.writeFileSync(${JSON.stringify(record)}, JSON.stringify({argv:process.argv.slice(2),cwd:process.cwd(),env:Object.fromEntries(
@@ -130,7 +131,6 @@ describe('CodexAdapter app-server process contract', () => {
 
   it('applies a Responses provider through app-server config and environment auth', async () => {
     process.env.CODEX_PROVIDER_TEST_KEY = 'private-provider-key';
-    const h = await harness();
     const provider = await new ModelProviderRegistry({
       deepseek: {
         protocol: 'responses',
@@ -139,17 +139,20 @@ describe('CodexAdapter app-server process contract', () => {
         apiKey: { source: 'env', id: 'CODEX_PROVIDER_TEST_KEY' },
       },
     }).resolve('codex', 'deepseek/deepseek-v4-pro');
-    await collect(h.adapter.run({
+    const h = await harness('normal', { startupProvider: async () => provider });
+    const options = {
       runId: 'provider',
       cwd: h.dir,
       prompt: 'provider',
       model: provider!.model,
       modelProvider: provider,
-    }));
+    };
+    await h.adapter.prepareRun(options);
+    await collect(h.adapter.run(options));
 
     const record = await h.record();
     const argv = record.argv.join(' ');
-    expect(argv).toContain('model_provider="lark_deepseek_');
+    expect(argv).toContain('model_provider="deepseek"');
     expect(argv).toContain('https://gateway.example/v1');
     expect(argv).toContain('wire_api="responses"');
     expect(argv).not.toContain('private-provider-key');
@@ -165,7 +168,7 @@ describe('CodexAdapter app-server process contract', () => {
     const h = await harness('normal', {
       env: { ...buildLarkChannelEnv({ profile: 'codex-test', rootDir: '/bridge-root', configPath: '/bridge-root/config.toml',
         larkCliConfigDir: '/bridge-root/lark-cli', larkCliSourceConfigFile: '/bridge-root/source/config.json' }), CODEX_HOME: '/outer/codex-home' },
-      ...(home === 'isolated' ? { inheritCodexHome: false } : {}),
+      inheritCodexHome: home === 'inherited',
       ...(home === 'explicit' ? { codexHome: '/selected/codex-home' } : {}),
     });
     await collect(h.adapter.run({ runId: 'env', cwd: h.dir, prompt: 'home' }));
@@ -176,10 +179,10 @@ describe('CodexAdapter app-server process contract', () => {
     });
   });
 
-  it('leaves CODEX_HOME unset when it is absent from the environment', async () => {
+  it('defaults to an independent Codex home when it is absent from the environment', async () => {
     const h = await harness('normal', { env: { CODEX_HOME: undefined } });
     await collect(h.adapter.run({ runId: 'home', cwd: h.dir, prompt: 'home' }));
-    expect((await h.record()).env.CODEX_HOME).toBeUndefined();
+    expect((await h.record()).env.CODEX_HOME).toBe(join(h.dir, 'codex-home'));
   });
 
   it('uses per-run host instructions without adding Lark instructions', async () => {

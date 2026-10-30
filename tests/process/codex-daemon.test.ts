@@ -75,6 +75,10 @@ if (args[0] === 'app-server' && args[1] === 'daemon') {
     process.stdout.write(JSON.stringify({ status: 'running', apiVersion: 1, socketPath: ${JSON.stringify(socketPath)} }) + '\\n');
     process.exit(0);
   }
+  if (args[2] === 'stop') {
+    fs.rmSync(${JSON.stringify(daemonState)}, { force: true });
+    process.exit(0);
+  }
   if (args[2] === 'start') {
     fs.writeFileSync(${JSON.stringify(daemonState)}, String(process.pid));
     process.stdout.write('{"status":"started","pid":4242,"cliVersion":"0.162.1","appServerVersion":"0.162.1"}\\n');
@@ -88,9 +92,12 @@ process.exit(2);
 `);
   await chmod(binary, 0o700);
 
+  const provider = { id: 'probe', displayName: 'Probe', model: 'probe-model', env: { PROBE_API_KEY: 'must-not-be-serialized' }, codex: { providerId: 'probe', name: 'Probe', baseUrl: 'https://probe.example/v1', wireApi: 'responses' as const, apiKeyEnv: 'PROBE_API_KEY' } };
   return {
     dir,
+    restartAdapter: (key: string) => new CodexAdapter({ binary, profileStateDir: dir, codexHome: dir, appServerMode: 'daemon', startupProvider: async () => ({ ...provider, env: { PROBE_API_KEY: key } }) }),
     adapter: new CodexAdapter({
+      startupProvider: async () => provider,
       binary,
       profileStateDir: dir,
       codexHome: dir,
@@ -102,19 +109,7 @@ process.exit(2);
         cwd: dir,
         prompt: 'use daemon',
         model: 'probe-model',
-        modelProvider: {
-          id: 'probe',
-          displayName: 'Probe',
-          model: 'probe-model',
-          env: { PROBE_API_KEY: 'must-not-be-serialized' },
-          codex: {
-            providerId: 'probe-provider',
-            name: 'Probe Provider',
-            baseUrl: 'https://probe.example/v1',
-            wireApi: 'responses',
-            apiKeyEnv: 'PROBE_API_KEY',
-          },
-        },
+        modelProvider: provider,
       };
     },
     async records(): Promise<Array<{ args: string[]; codexHome?: string }>> {
@@ -144,6 +139,31 @@ describe('Codex persistent app-server mode', () => {
     expect(JSON.stringify(await h.records())).not.toContain('turn-one-token');
     expect(JSON.stringify(await h.records())).not.toContain('turn-two-token');
   });
+  it('keeps the startup provider for a rejected switch and still completes the request', async () => {
+    const h = await harness();
+    const options = h.runOptions();
+    options.modelProvider = { ...options.modelProvider!, id: 'other', displayName: 'Other', model: 'other-only-model', env: { OTHER_SECRET: 'do-not-load' } };
+    options.model = 'other-only-model';
+    await h.adapter.prepareRun(options);
+    const events = await collect(h.adapter.run(options).events);
+    expect(events).toContainEqual({ type: 'final_text', content: 'daemon result' });
+    expect(events).toContainEqual(expect.objectContaining({ type: 'status', code: 'provider-restart-required' }));
+    expect(h.requests.find(r => r.method === 'thread/start')?.params).toMatchObject({ modelProvider: 'probe', model: 'probe-model' });
+    expect(JSON.stringify(h.requests)).not.toContain('do-not-load');
+    expect(await h.adapter.modelProviderState()).toMatchObject({ id: 'probe', displayName: 'Probe', fixedUntilRestart: true });
+  });
+  it('restarts its private daemon only when startup credentials change', async () => {
+    const h = await harness();
+    await h.adapter.prepareRun(h.runOptions());
+    await h.restartAdapter('must-not-be-serialized').prepareRun(h.runOptions());
+    await h.restartAdapter('rotated-private-key').prepareRun(h.runOptions());
+    const records = await h.records();
+    const commands = records.filter(record => record.args[1] === 'daemon');
+    expect(commands.filter(record => record.args[2] === 'start')).toHaveLength(2);
+    expect(commands.filter(record => record.args[2] === 'stop')).toHaveLength(1);
+    expect(commands.every(record => record.codexHome === h.dir)).toBe(true);
+    expect(JSON.stringify(records)).not.toContain('rotated-private-key');
+  });
   it('starts the daemon once for concurrent preparation, then uses a per-run WebSocket connection', async () => {
     const h = await harness();
     const options = h.runOptions();
@@ -168,22 +188,15 @@ describe('Codex persistent app-server mode', () => {
     const threadStart = h.requests.find(request => request.method === 'thread/start');
     expect(threadStart?.params).toMatchObject({
       model: 'probe-model',
-      modelProvider: 'probe-provider',
-      config: {
-        shell_environment_policy: { inherit: 'all' },
-        model_providers: {
-          'probe-provider': {
-            name: 'Probe Provider',
-            base_url: 'https://probe.example/v1',
-            wire_api: 'responses',
-            env_key: 'PROBE_API_KEY',
-          },
-        },
-      },
+      modelProvider: 'probe',
+      config: { shell_environment_policy: { inherit: 'all' } },
       approvalPolicy: 'never',
     });
     expect(JSON.stringify(threadStart?.params.config)).not.toContain('must-not-be-serialized');
     expect(JSON.stringify(threadStart?.params.config)).not.toContain('generate_memories');
-    expect(records.every(record => record.codexHome)).toBe(true);
+    expect(records.filter(record => record.args[0] !== '--version').every(record => record.codexHome)).toBe(true);
+    const config = await readFile(join(h.dir, 'config.toml'), 'utf8');
+    expect(config).toContain('model_provider = \"probe\"');
+    expect(config).not.toContain('must-not-be-serialized');
   });
 });

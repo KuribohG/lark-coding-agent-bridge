@@ -9,7 +9,7 @@ import { supportedModels, validateModelId, type ModelOption } from '../models';
 export async function readCodexModels(profile: ProfileConfig, profileDir: string): Promise<ModelEnvironment> {
   const fallback = { defaults: {}, models: supportedModels('codex') };
   const codex = profile.codex;
-  const codexHome = codex?.codexHome ?? (codex?.inheritCodexHome !== false
+  const codexHome = codex?.codexHome ?? (codex?.inheritCodexHome === true
     ? process.env.CODEX_HOME ?? join(homedir(), '.codex') : join(profileDir, 'codex-home'));
   const configPath = join(codexHome, 'config.toml');
   const text = codex?.ignoreUserConfig ? undefined : await readOptional(configPath);

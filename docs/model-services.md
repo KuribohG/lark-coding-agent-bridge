@@ -43,10 +43,16 @@ registry，并按当前 Agent 的 `supports()` 能力过滤，不需要在卡片
 Bridge 会唯一解析到该服务；多个服务声明相同模型时会明确报歧义，要求改用
 `<provider>/<model>`。
 
-Pi 会在每次运行时通过临时 extension 注册该 provider；Codex 会通过 app-server
-的 `model_providers` 配置注入 endpoint 和 `env_key`。两者都只把凭据放进子进程
+Pi 会在每次运行时通过临时 extension 注册该 provider；Codex 在启动时通过专用目录
+的 `config.toml` 合并 endpoint、`env_key` 和默认模型，保留其他原生配置。两者都只把凭据放进子进程
 环境，不写进命令行参数或生成的 provider 文件。Responses 服务当前支持 Pi 和
 Codex，不兼容 Claude Code 的 Anthropic Messages 协议。
+
+Codex 的 `launch.provider` 指定服务名；只有一个服务时可以省略。Provider 名称直接使用
+`model_services` 中的名称，不另造 ID。运行期间只允许切换当前 Provider 的模型；切换
+Provider 需要修改启动配置并重启 bridge。旧的聊天覆盖不会让普通请求失败，而是提示
+未切换并继续使用当前 Provider。默认 Codex 目录为 profile 下的 `codex-home`，不继承
+命令行的 `~/.codex/config.toml`；其他 Codex 选项可在此专用配置中维护。
 
 OpenAI 官方账号使用 Agent 自身的 OAuth，不进入 Bridge 的 API Key Provider 列表：
 

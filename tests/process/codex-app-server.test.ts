@@ -27,6 +27,9 @@ const reply = (id,result) => send({id,result});
 rl.on('line', line => {
  const m=JSON.parse(line);fs.appendFileSync(${JSON.stringify(record)},line+'\\n');
  if(m.method==='initialize') reply(m.id,{});
+ if(m.method==='thread/resume' && ['provider-mismatch','provider-missing'].includes(mode)) {
+  send({id:m.id,error:{code:-32600,message:'old provider',data:{type:mode==='provider-mismatch'?'modelProviderMismatch':'modelProviderNotConfigured',modelProvider:'legacy'}}});return;
+ }
  if(['thread/start','thread/resume','thread/fork'].includes(m.method)) reply(m.id,{thread:{id:'thread-1'}});
  if(m.method==='turn/start') {
   reply(m.id,{turn:{id:'turn-1'}});
@@ -101,6 +104,24 @@ rl.on('close',()=>process.exit(0));
 async function collect(events: AsyncIterable<AgentEvent>) { const all: AgentEvent[] = []; for await (const e of events) all.push(e); return all; }
 
 describe('Codex native in-flight input', () => {
+  it.each(['provider-mismatch', 'provider-missing'])('preserves legacy history on %s and continues the request', async mode => {
+    const h = await harness(mode);
+    const run = h.adapter.run({ runId: 'migration', cwd: h.dir, prompt: 'continue', threadId: 'old-thread' });
+    const events: AgentEvent[] = [];
+    const output = (async () => { for await (const event of run.events) events.push(event); })();
+    await vi.waitFor(() => expect(events.some(event => event.type === 'tool_use')).toBe(true));
+    await run.steer!('finish', 'next-input');
+    await output;
+    await run.waitForExit(1000);
+    expect(events).toContainEqual({ type: 'done', threadId: 'thread-1', terminationReason: 'normal' });
+    const requests = await h.requests();
+    const forks = requests.filter(request => request.method === 'thread/fork');
+    expect(forks).toHaveLength(1);
+    expect(forks[0].params).toMatchObject({ threadId: 'old-thread', threadSource: 'appServer' });
+    expect(forks[0].params.ephemeral).not.toBe(true);
+    expect(requests.some(request => request.method === 'thread/start')).toBe(false);
+  });
+
   it('delivers native async questions once and keeps working until an answer is steered', async () => {
     const h = await harness('questions');
     const run = h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' });

@@ -195,9 +195,11 @@ export class RunExecutor {
       stopGraceMs: input.stopGraceMs,
     };
     let run: AgentRun;
+    let activeProviderState: { id: string; model?: string } | undefined;
     let handle!: RunHandle;
     try {
       await agent.prepareRun?.(runOptions);
+      activeProviderState = await agent.modelProviderState?.();
       await input.validateBeforeRun?.();
       checkDeadline();
       controller.signal.throwIfAborted();
@@ -248,12 +250,16 @@ export class RunExecutor {
       accessMode: input.policy.accessMode,
       sandbox: input.policy.sandbox,
       permissionMode: input.policy.permissionMode,
-      modelProvider: modelProvider?.id,
+      modelProvider: activeProviderState?.id ?? modelProvider?.id,
+      ...(activeProviderState && modelProvider && activeProviderState.id !== modelProvider.id
+        ? { requestedModelProvider: modelProvider.id } : {}),
     });
 
     try {
       handle = this.activeRuns.register(input.scopeId, run);
-      handle.modelSettings = { model: input.model, reasoningEffort: input.reasoningEffort };
+      handle.modelSettings = activeProviderState && modelProvider && activeProviderState.id !== modelProvider.id
+        ? { model: activeProviderState.model }
+        : { model: input.model, reasoningEffort: input.reasoningEffort };
     } catch (err) {
       releaseScope();
       release();
