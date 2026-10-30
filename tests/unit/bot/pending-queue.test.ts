@@ -6,6 +6,29 @@ import { describe, expect, it, vi } from 'vitest';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
 
 describe('PendingQueue', () => {
+  it('keeps workflow command turns separate from ordinary messages in the same debounce window', async () => {
+    vi.useFakeTimers();
+    try {
+      const flushed: string[][] = [];
+      const queue = new PendingQueue(10, (scope, batch) => {
+        flushed.push(batch.map(message => message.messageId));
+        queue.block(scope);
+      });
+      queue.push('topic', message('ordinary-before'));
+      queue.push('topic', { ...message('workflow'), agentEntry: { kind: 'workflow', trigger: 'command' } });
+      queue.push('topic', message('ordinary-after'));
+      await vi.advanceTimersByTimeAsync(10);
+      expect(flushed).toEqual([['ordinary-before']]);
+      queue.unblock('topic');
+      await vi.advanceTimersByTimeAsync(10);
+      expect(flushed).toEqual([['ordinary-before'], ['workflow']]);
+      queue.unblock('topic');
+      await vi.advanceTimersByTimeAsync(10);
+      expect(flushed).toEqual([['ordinary-before'], ['workflow'], ['ordinary-after']]);
+      queue.unblock('topic');
+    } finally { vi.useRealTimers(); }
+  });
+
   it('reads the configured quiet window for each new debounce timer', async () => {
     vi.useFakeTimers();
     try {
@@ -81,7 +104,7 @@ describe('PendingQueue', () => {
     const path = join(root, 'pending.json');
     try {
       const first = new PendingQueue(20, () => {}, path);
-      expect(first.push('topic', message('persisted'))).toBe(1);
+      expect(first.push('topic', { ...message('persisted'), agentEntry: { kind: 'workflow', trigger: 'command' } })).toBe(1);
       await first.flushPersistence();
       first.suspend();
       expect(JSON.parse(await readFile(path, 'utf8'))).toHaveLength(1);
@@ -89,7 +112,10 @@ describe('PendingQueue', () => {
       const flushed: string[][] = [];
       const restarted = new PendingQueue(
         5,
-        (_scope, batch) => flushed.push(batch.map(message => message.messageId)),
+        (_scope, batch) => {
+          expect(batch[0]?.agentEntry).toEqual({ kind: 'workflow', trigger: 'command' });
+          flushed.push(batch.map(message => message.messageId));
+        },
         path,
       );
       await restarted.load();

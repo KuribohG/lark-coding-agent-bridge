@@ -2,14 +2,18 @@ import type { NormalizedMessage } from '@larksuite/channel';
 import { readFile } from 'node:fs/promises';
 import { log } from '../core/logger';
 import { writeFileAtomic } from '../platform/atomic-write';
+import type { AgentEntry } from '../runtime/agent-entry';
+
+/** Routing metadata is set by the bridge command handler, never parsed from message text. */
+export type PendingMessage = NormalizedMessage & { agentEntry?: AgentEntry };
 
 interface PendingEntry {
-  messages: NormalizedMessage[];
+  messages: PendingMessage[];
   timer?: NodeJS.Timeout;
   queuedAt: number;
 }
 
-export type FlushHandler = (scope: string, batch: NormalizedMessage[]) => void;
+export type FlushHandler = (scope: string, batch: PendingMessage[]) => void;
 
 const MAX_MESSAGES_PER_SCOPE = 100;
 export const MAX_PENDING_CHARS_PER_SCOPE = 200_000;
@@ -18,7 +22,7 @@ const MAX_BATCH_WAIT_MS = 5_000;
 interface PersistedPendingEntry {
   scope: string;
   queuedAt: number;
-  messages: NormalizedMessage[];
+  messages: PendingMessage[];
 }
 
 /**
@@ -121,7 +125,7 @@ export class PendingQueue {
     this.writesHeld = true;
   }
 
-  push(scope: string, msg: NormalizedMessage): number | undefined {
+  push(scope: string, msg: PendingMessage): number | undefined {
     const existing = this.map.get(scope);
     if (existing) {
       if (
@@ -161,7 +165,7 @@ export class PendingQueue {
     return 1;
   }
 
-  cancel(scope: string): NormalizedMessage[] {
+  cancel(scope: string): PendingMessage[] {
     const entry = this.map.get(scope);
     if (!entry) return [];
     if (entry.timer) clearTimeout(entry.timer);
@@ -232,12 +236,22 @@ export class PendingQueue {
   private flushScope(scope: string): void {
     const entry = this.map.get(scope);
     if (!entry) return;
-    this.map.delete(scope);
+    entry.timer = undefined;
+    // Command entries get their own turn, keeping their capabilities out of direct-message batches.
+    const isDirect = (message: PendingMessage) => !message.agentEntry || message.agentEntry.kind === 'direct';
+    const boundary = entry.messages[0] && !isDirect(entry.messages[0]) ? 1
+      : entry.messages.findIndex(message => !isDirect(message));
+    const batch = entry.messages.splice(0, boundary < 0 ? entry.messages.length : boundary);
+    if (entry.messages.length === 0) this.map.delete(scope);
     this.schedulePersist();
     try {
-      this.onFlush(scope, entry.messages);
+      this.onFlush(scope, batch);
     } catch (err) {
-      log.fail('queue', err, { scope, batchSize: entry.messages.length });
+      log.fail('queue', err, { scope, batchSize: batch.length });
+    } finally {
+      if (this.map.get(scope) === entry && !entry.timer && !this.blocked.has(scope) && !this.loadedFromDisk) {
+        entry.timer = this.armTimer(scope, entry);
+      }
     }
   }
 
@@ -278,7 +292,7 @@ function normalizePersistedEntry(value: unknown): PersistedPendingEntry | undefi
   if (typeof raw.scope !== 'string' || raw.scope.length === 0 || !Array.isArray(raw.messages)) {
     return undefined;
   }
-  const messages = raw.messages.filter((message): message is NormalizedMessage => (
+  const messages = raw.messages.filter((message): message is PendingMessage => (
     Boolean(message) &&
     typeof message === 'object' &&
     typeof (message as NormalizedMessage).messageId === 'string' &&

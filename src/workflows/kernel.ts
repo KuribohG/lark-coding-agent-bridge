@@ -66,7 +66,7 @@ export class WorkflowKernel {
     const state = this.state(scopeId);
     return state
       ? `${state.definition.mainInstructions}\n<workflow_context source="bridge">\n${JSON.stringify(this.summary(state))}\n</workflow_context>`
-      : '当前没有绑定工作流。用户要求工作流编排时用 run_script；架构评审也通过脚本完成，可为每个 worker 选择 harness 和模型。普通问答不自动启动。';
+      : '当前没有绑定工作流；仅 /workflow start 或 /workflow script 命令授权的本轮可调用 run_script。';
   }
 
   latest(scopeId: string): WorkflowState | undefined {
@@ -97,8 +97,15 @@ export class WorkflowKernel {
     if (!['status', 'read_artifact', 'run_script', 'replay_script', 'publish_artifact', 'ack_events', 'cancel_task', 'pause', 'resume', 'cancel', 'complete'].includes(method)) {
       throw new Error(`Unsupported workflow operation: ${method}. Use run_script/replay_script.`);
     }
+    if (method === 'run_script' && caller.allowStart !== true) {
+      throw new Error('Workflow start requires an explicit /workflow start or /workflow script command');
+    }
+    if (caller.workflowId && args.workflowId && args.workflowId !== caller.workflowId) {
+      throw new Error('Workflow ID is outside this run binding');
+    }
     const scope = caller.scopeId;
-    let state = this.state(scope, optionalText(args.workflowId));
+    const workflowId = caller.workflowId ?? optionalText(args.workflowId);
+    let state = this.state(scope, workflowId);
     if (method === 'status') return state ? this.summary(state) : { status: 'unbound' };
     if (method === 'read_artifact') return this.artifact(requireState(state), requiredText(args.ref));
 
@@ -119,7 +126,7 @@ export class WorkflowKernel {
       return JSON.parse(committed.response);
     }
     // The root may have changed while awaiting authorization.
-    state = this.state(scope, optionalText(args.workflowId));
+    state = this.state(scope, workflowId);
     if (method === 'run_script') {
       if (state || this.state(scope)) throw new Error('Root already has a workflow; cancel or complete it first');
       const definition = structuredClone(SCRIPT_DEFINITION);

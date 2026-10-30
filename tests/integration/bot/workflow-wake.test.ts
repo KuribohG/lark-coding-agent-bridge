@@ -50,13 +50,14 @@ describe('workflow main-session wake', () => {
     const activeRuns = new ActiveRuns();
     const executor = new RunExecutor({ agent, pool: new ProcessPool(() => 3), activeRuns });
     const release = vi.fn(); const markNotified = vi.fn();
+    const bindMain = vi.fn(() => ({ instructions: 'INTERNAL RESULT EVENT', env: { LARK_WORKFLOW_TOKEN: 'test' }, eventIds: ['event-1'], release }));
     const deps = {
-      executor, activeRuns, sessions, sessionCatalog: catalog, workspaces, scope: scopeId, agentKind: 'codex', mode: 'topic', workflowWake: true,
+      executor, activeRuns, sessions, sessionCatalog: catalog, workspaces, scope: scopeId, agentKind: 'codex', mode: 'topic', entry: { kind: 'workflow', trigger: 'event' },
       channel: { send: vi.fn(), botIdentity: { openId: 'bot' } },
       media: { resolve: vi.fn(async () => []) },
       controls: { profile: 'default', cfg: { accounts: profile.accounts }, profileConfig: profile, botOwnerId: 'user', ownerRefreshState: 'ok' },
-      batch: [{ chatId: 'chat', threadId: 'topic', senderId: 'user', chatType: 'group', messageId: 'original-user-input', content: 'DO NOT REPLAY THIS USER MESSAGE', createTime: 500, resources: [] }],
-      workflows: { bindMain: () => ({ instructions: 'INTERNAL RESULT EVENT', env: { LARK_WORKFLOW_TOKEN: 'test' }, eventIds: ['event-1'], release }), kernel: { markNotified } },
+      batch: [{ chatId: 'chat', threadId: 'topic', senderId: 'user', chatType: 'group', messageId: 'original-user-input', content: 'DO NOT REPLAY THIS USER MESSAGE', createTime: 500, resources: [], agentEntry: { kind: 'workflow', trigger: 'command' } }],
+      workflows: { bindMain, kernel: { markNotified } },
       activePolicyFingerprints: new Map(), lastRunModelByScope: new Map(), userQuestions: { publish: vi.fn() }, cotClient: {},
     } as unknown as Parameters<typeof runAgentBatch>[0];
     if (realFollowup) vi.mocked(presentRunOutput).mockImplementationOnce(async (execution, _output, options) => {
@@ -66,6 +67,7 @@ describe('workflow main-session wake', () => {
     });
     await runAgentBatch(deps);
     expect(agent.runOptions[0]?.threadId).toBe('root-thread');
+    expect(bindMain).toHaveBeenCalledWith(scopeId, 'continue');
     expect(agent.runOptions[0]?.prompt).toContain('<workflow_events source="bridge">');
     expect(agent.runOptions[0]?.prompt).not.toContain('DO NOT REPLAY');
     expect(fetchTopicContext).not.toHaveBeenCalled();

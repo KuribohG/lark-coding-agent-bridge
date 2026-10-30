@@ -40,7 +40,7 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
     } }),
   });
   await runtime.start(); cleanup.push(() => runtime.close());
-  const binding = runtime.bindMain(root.scopeId);
+  const binding = runtime.bindMain(root.scopeId, 'start');
   const state = () => runtime.kernel.state(root.scopeId)!;
   const call = (method: string, args: Record<string, unknown> = {}) => callWorkflow(method,
     { operationId: randomUUID(), workflowId: state()?.workflowId, expectedStateVersion: state()?.stateVersion, ...(method === 'run_script' || method === 'replay_script' ? {plan:'Review the task with the requested harness and model; return a final result.'} : {}), ...args }, binding.env);
@@ -50,6 +50,27 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
 }
 
 describe('script workflow runtime', () => {
+  it('restricts continuation credentials to the original workflow and denies new starts', async () => {
+    const h = await harness();
+    expect(() => h.runtime.bindMain('script-topic', 'continue')).toThrow('No active workflow');
+    await h.call('run_script', { goal: 'first', script: 'return 1;' });
+    await h.until(() => expect(h.state().script?.status).toBe('result_ready'));
+    const original = h.state().workflowId;
+    const continuation = h.runtime.bindMain('script-topic', 'continue');
+    const call = (method: string, args: Record<string, unknown> = {}) => callWorkflow(method,
+      { operationId: randomUUID(), expectedStateVersion: h.state()?.stateVersion, ...args }, continuation.env);
+    await expect(call('status')).resolves.toMatchObject({ workflowId: original });
+    await call('cancel');
+    await expect(call('run_script', { allowStart: true, goal: 'unexpected', plan: 'Return two.', script: 'return 2;' }))
+      .rejects.toThrow('explicit /workflow');
+    expect(h.state()).toBeUndefined();
+    await h.call('run_script', { goal: 'second', script: 'return 2;' });
+    await expect(call('status')).resolves.toMatchObject({ workflowId: original, status: 'cancelled' });
+    await expect(call('cancel', { workflowId: h.state().workflowId })).rejects.toThrow('outside this run binding');
+    expect(h.state().status).toBe('active');
+    continuation.release();
+  });
+
   it('publishes the saved plan before workers start and refuses execution if delivery fails', async () => {
     let deliver: (() => void) | undefined;
     const showPlan=vi.fn(async () => new Promise<void>(resolve => {deliver=resolve;}));

@@ -29,7 +29,7 @@ function harness(path = ':memory:') {
   const close = async () => { if (!closed) { closed = true; await kernel.close(); } };
   cleanups.push(close);
   const state = () => kernel.state('topic-1')!;
-  const call = (method: string, args: Record<string, unknown> = {}) => kernel.call({ kind: 'main', scopeId: 'topic-1' }, method,
+  const call = (method: string, args: Record<string, unknown> = {}) => kernel.call({ kind: 'main', scopeId: 'topic-1', allowStart: true }, method,
     { operationId: randomUUID(), expectedStateVersion: state()?.stateVersion, ...(method === 'run_script' || method === 'replay_script' ? {plan:'Review the task with the requested harness and model; return a final result.'} : {}), ...args });
   return { kernel, state, requests, finishes, wakeMain, call, close,
     changeRoot: () => { root = { ...root, catalogBinding: 'replacement' }; },
@@ -41,16 +41,24 @@ function harness(path = ':memory:') {
 }
 
 describe('workflow kernel contracts', () => {
+  it('requires caller start permission even when request parameters claim authorization', async () => {
+    const h = harness();
+    const args = { operationId: 'start', goal: '/workflow start task', plan: 'Return one.', script: 'return 1;', allowStart: true };
+    await expect(h.kernel.call({ kind: 'main', scopeId: 'topic-1' }, 'run_script', args)).rejects.toThrow('explicit /workflow');
+    expect(h.state()).toBeUndefined();
+    expect(h.requests).toHaveLength(0);
+  });
+
   it('coalesces concurrent identical starts after asynchronous authorization', async () => {
     const h = harness(); const args = { operationId: 'concurrent', goal: 'one workflow', plan:'Return one.', script: 'return 1;' };
-    const invoke = () => h.kernel.call({ kind: 'main', scopeId: 'topic-1' }, 'run_script', args);
+    const invoke = () => h.kernel.call({ kind: 'main', scopeId: 'topic-1', allowStart: true }, 'run_script', args);
     const [a, b] = await Promise.all([invoke(), invoke()]); expect(a).toEqual(b);
   });
   it('deduplicates operation IDs and rejects changed content', async () => {
     const h = harness(); const args = { operationId: 'start-1', goal: 'goal', plan:'Return null.', script: 'return null;' };
-    const first = await h.kernel.call({ kind: 'main', scopeId: 'topic-1' }, 'run_script', args);
-    expect(await h.kernel.call({ kind: 'main', scopeId: 'topic-1' }, 'run_script', args)).toEqual(first);
-    await expect(h.kernel.call({ kind: 'main', scopeId: 'topic-1' }, 'run_script', { ...args, goal: 'changed' })).rejects.toThrow('conflict');
+    const first = await h.kernel.call({ kind: 'main', scopeId: 'topic-1', allowStart: true }, 'run_script', args);
+    expect(await h.kernel.call({ kind: 'main', scopeId: 'topic-1', allowStart: true }, 'run_script', args)).toEqual(first);
+    await expect(h.kernel.call({ kind: 'main', scopeId: 'topic-1', allowStart: true }, 'run_script', { ...args, goal: 'changed' })).rejects.toThrow('conflict');
   });
   it.each(['start', 'delegate', 'send', 'begin_revision_round'])('rejects removed operation %s', async method => {
     const h = harness(); await expect(h.call(method)).rejects.toThrow('Unsupported workflow operation');

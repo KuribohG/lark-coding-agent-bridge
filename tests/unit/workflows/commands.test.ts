@@ -15,7 +15,7 @@ function fixture() {
   cleanup.push(()=>kernel.close());
   const submit = vi.fn<(_: string) => string | undefined>(()=>undefined);
   const command = (args: string) => handleWorkflowCommand(kernel,'topic',args,submit);
-  const start = async () => kernel.call({kind:'main',scopeId:'topic'},'run_script',{operationId:randomUUID(),goal:'review',plan:'Pi with service/worker-model reviews the design and returns findings.',script:'return null;'});
+  const start = async () => kernel.call({kind:'main',scopeId:'topic',allowStart:true},'run_script',{operationId:randomUUID(),goal:'review',plan:'Pi with service/worker-model reviews the design and returns findings.',script:'return null;'});
   return {kernel,root,submit,command,start};
 }
 

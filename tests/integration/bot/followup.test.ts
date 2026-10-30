@@ -7,7 +7,11 @@ import type { Controls } from '../../../src/commands';
 import { createDefaultProfileConfig, type RootConfig } from '../../../src/config/profile-schema';
 import { runtimeProfileConfig } from '../../../src/config/profile-store';
 import { SessionStore } from '../../../src/session/store';
+import { SessionCatalog } from '../../../src/session/catalog';
 import { WorkspaceStore } from '../../../src/workspace/store';
+import { callWorkflow } from '../../../src/workflows/ipc';
+import { CommandRegistry } from '../../../src/commands';
+import { createWorkflowsPlugin } from '../../../src/plugins/workflows/plugin';
 import { createFakeChannel } from '../../helpers/fake-channel';
 import { createTmpProfile } from '../../helpers/tmp-profile';
 
@@ -143,6 +147,37 @@ describe.each(['codex', 'claude'] as const)('in-flight %s IM delivery', agentKin
   });
 });
 
+describe('workflow command routing', () => {
+  it.each(['start', 'script'])('grants workflow access only to /workflow %s, including mixed queued messages', async operation => {
+    const h = await harness('codex', true);
+    await h.message('用 Workflow 分析这个问题', { messageId: 'ordinary-before' });
+    await h.message(`/workflow ${operation} analyze this task`, { messageId: 'command' });
+    await h.message('普通后续问题', { messageId: 'ordinary-after' });
+    await vi.waitFor(() => expect(h.agent.options).toHaveLength(1), { timeout: 2500 });
+    const ordinary = h.agent.options[0]!;
+    expect(ordinary.env?.LARK_WORKFLOW_TOKEN).toBeUndefined();
+    expect(ordinary.prompt).not.toContain('工作流工具通过 shell');
+    expect(ordinary.prompt).not.toContain('analyze this task');
+    await expect(callWorkflow('run_script', { allowStart: true }, ordinary.env ?? {})).rejects.toThrow('bridge-managed workflow');
+    h.agent.finish(0);
+    await vi.waitFor(() => expect(h.agent.options).toHaveLength(2), { timeout: 2500 });
+    const command = h.agent.options[1]!;
+    expect(command.env?.LARK_WORKFLOW_TOKEN).toBeTruthy();
+    expect(command.prompt).toContain('analyze this task');
+    expect(command.prompt).not.toContain('普通后续问题');
+    await expect(callWorkflow('run_script', { operationId: 'explicit-command', goal: 'analyze this task',
+      script: 'return 1;', plan: 'Return one.' }, command.env)).resolves.toMatchObject({ status: 'active' });
+    h.agent.finish(1);
+    await vi.waitFor(() => expect(h.agent.options).toHaveLength(3), { timeout: 2500 });
+    expect(h.agent.options[2]!.prompt).toContain('普通后续问题');
+    expect(h.agent.options[2]!.env?.LARK_WORKFLOW_TOKEN).toBeUndefined();
+    expect(h.agent.options[2]!.prompt).not.toContain('工作流工具通过 shell');
+    await expect(callWorkflow('status', {}, command.env)).rejects.toThrow('revoked');
+    await h.message('/workflow cancel');
+    await h.message('/stop');
+  });
+});
+
 class GateAgent implements AgentAdapter {
   readonly displayName = 'Test Agent';
   constructor(readonly id: 'codex' | 'claude') {}
@@ -175,7 +210,7 @@ class GateAgent implements AgentAdapter {
   }
 }
 
-async function harness(agentKind: 'claude' | 'codex' = 'codex') {
+async function harness(agentKind: 'claude' | 'codex' = 'codex', workflows = false) {
   const tmp = await createTmpProfile('timed-channel-');
   const codexHome = join(tmp.root, 'codex-home');
   await mkdir(codexHome);
@@ -194,6 +229,7 @@ async function harness(agentKind: 'claude' | 'codex' = 'codex') {
   const root: RootConfig = { schemaVersion: 2, activeProfile: 'test', preferences: {}, profiles: { test: profile } };
   const controls: Controls = { profile: 'test', profileConfig: profile, cfg: runtimeProfileConfig(root, 'test'),
     configPath: join(tmp.root, 'config.json'), processId: 'test', botOwnerId: 'owner', ownerRefreshState: 'ok',
+    ...(workflows ? { commands: new CommandRegistry(createWorkflowsPlugin().commands) } : {}),
     async refreshOwner() {}, async restart() {}, async exit() {},
   };
   const handlers: { message?: (msg: NormalizedMessage) => Promise<void>; cardAction?: (evt: CardActionEvent) => Promise<void> } = {};
@@ -207,9 +243,12 @@ async function harness(agentKind: 'claude' | 'codex' = 'codex') {
   sdk.channel = channel;
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
+  const sessionCatalog = workflows ? new SessionCatalog(join(tmp.profile, 'catalog.json')) : undefined;
   const agent = new GateAgent(agentKind);
-  cleanup.push(async () => { await sessions.flush(); await workspaces.flush(); await tmp.cleanup(); });
-  const bridge = await startChannel({ cfg: controls.cfg, agent, sessions, workspaces, controls });
+  cleanup.push(async () => { await sessions.flush(); await workspaces.flush(); await sessionCatalog?.flush(); await tmp.cleanup(); });
+  const bridge = await startChannel({ cfg: controls.cfg, agent, sessions, workspaces, controls, sessionCatalog,
+    ...(workflows ? { appPaths: { mediaDir: join(tmp.profile, 'media'), secretsFile: join(tmp.profile, 'secrets.json'),
+      keystoreSaltFile: join(tmp.profile, 'keystore-salt') } } : {}) });
   cleanup.push(async () => { await bridge.disconnect(); });
   const scope = 'oc_chat:topic';
   return { controls, agent, channel, handlers, scope,

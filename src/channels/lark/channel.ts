@@ -1,4 +1,7 @@
 import { handleWorkflowCommand } from '../../workflows/commands';
+import type { PendingMessage } from '../../bot/pending-queue';
+import type { AgentEntry } from '../../runtime/agent-entry';
+import { bindAgentEntry } from './agent-entry';
 import { WorkflowRuntime } from '../../workflows/runtime';
 import { workflowDigest } from '../../workflows/digest';
 import { resolveWorkerExecution } from '../../workflows/execution';
@@ -343,9 +346,9 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
         await runAgentBatch({ channel, executor, sessions, sessionCatalog, workspaces, media, activeRuns,
           batch: [message], controls, cotClient, callbackAuth, userQuestions, activePolicyFingerprints,
           lastRunModelByScope, scope, agentKind: resolveAgentKind(scope), mode: message.threadId ? 'topic' : await chatModeCache.resolve(channel, message.chatId),
-          signal: controller.signal, workflows, workflowWake: true, workflowOrigins });
+          signal: controller.signal, workflows, entry: { kind: 'workflow', trigger: 'event' }, workflowOrigins });
       } catch (error) {
-        // Failed automatic wakes remain visible to the next user turn, without a retry loop.
+        // Failed automatic wakes remain visible through /workflow status, without a retry loop.
         workflows?.kernel.markNotified(scope, eventIds);
         throw error;
       } finally {
@@ -404,6 +407,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           await runAgentBatch({
             signal: controller.signal,
             workflows, workflowOrigins,
+            entry: firstMsg.agentEntry ?? { kind: 'direct' },
             channel,
             executor,
             sessions,
@@ -457,7 +461,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       invalidate: scope => runtime.kernel.invalidate(scope),
       command: (scope, args, message) => handleWorkflowCommand(runtime.kernel, scope, args, content => {
         if (controls.activeTimedRun?.(scope)) return '请先结束当前限时任务。';
-        const queued = pending.push(scope, { ...message, content });
+        const queued = pending.push(scope, { ...message, content, agentEntry: { kind: 'workflow', trigger: 'command' } });
         if (queued === undefined) return '消息队列已满，请稍后重试。';
         workflowOrigins.set(scope, message);
         return undefined;
@@ -1135,7 +1139,7 @@ async function intakeMessage(deps: IntakeDeps): Promise<void> {
 
 interface RunBatchDeps {
   workflows?: WorkflowRuntime;
-  workflowWake?: boolean;
+  entry?: AgentEntry;
   workflowOrigins?: Map<string, NormalizedMessage>;
   timedJob?: TimedRun;
   signal?: AbortSignal;
@@ -1146,7 +1150,7 @@ interface RunBatchDeps {
   workspaces: WorkspaceStore;
   media: MediaCache;
   activeRuns: ActiveRuns;
-  batch: NormalizedMessage[];
+  batch: PendingMessage[];
   controls: Controls;
   cotClient: CotClient;
   callbackAuth?: CallbackAuth;
@@ -1160,6 +1164,8 @@ interface RunBatchDeps {
 }
 
 export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
+  const entry = deps.entry ?? { kind: 'direct' };
+  const workflowWake = entry.kind === 'workflow' && entry.trigger === 'event';
   const {
     channel,
     executor,
@@ -1188,14 +1194,14 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   const firstMsg = batch[0];
   const lastMsg = batch[batch.length - 1];
   if (!firstMsg || !lastMsg) return;
-  if (!deps.workflowWake) deps.workflowOrigins?.set(scope, firstMsg);
+  if (!workflowWake) deps.workflowOrigins?.set(scope, firstMsg);
 
   const chatId = firstMsg.chatId;
   const threadId = firstMsg.threadId;
   const scopedProfile = profileForAgentKind(controls.profileConfig, agentKind);
   const capability = capabilityForProfile(scopedProfile);
 
-  const resourceItems = (deps.workflowWake ? [] : batch).flatMap((m) =>
+  const resourceItems = (workflowWake ? [] : batch).flatMap((m) =>
     m.resources.map((r) => ({ messageId: m.messageId, resource: r })),
   );
   const attachments = await media.resolve(resourceItems, controls.profileConfig.attachments);
@@ -1216,10 +1222,10 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // Collect any reply-quote targets in the batch. Dedup so the same target
   // quoted by multiple messages in one batch only fetches once. Filter out
   // ids that are themselves in the batch — those are already in the prompt.
-  const batchIds = new Set(deps.workflowWake ? [] : batch.map((m) => m.messageId));
+  const batchIds = new Set(workflowWake ? [] : batch.map((m) => m.messageId));
   const quoteTargets = [
     ...new Set(
-      (deps.workflowWake ? [] : batch)
+      (workflowWake ? [] : batch)
         .map((m) => replyQuoteTargetForMessage(m, mode))
         .filter((id): id is string => Boolean(id) && !batchIds.has(id!)),
     ),
@@ -1271,7 +1277,7 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     const createTime = Number.isFinite(message.createTime) ? message.createTime : undefined;
     return createTime !== undefined && createTime > latest ? createTime : latest;
   }, 0);
-  if (!deps.workflowWake && mode === 'topic' && threadId) {
+  if (!workflowWake && mode === 'topic' && threadId) {
     const context = await resolveRunFlowContext({
       scopeId: scope,
       scope: scopeContext,
@@ -1367,10 +1373,10 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   ];
   if (deps.timedJob) extraInstructions.push(deadlineInstructions(deps.timedJob.stopAt, deps.timedJob.windDownAt));
 
-  const workflowBinding = deps.workflows?.bindMain(scope);
-  if (workflowBinding) extraInstructions.push(workflowBinding.instructions);
-  const prompt = deps.workflowWake
-    ? `<workflow_events source="bridge">子任务通知，请读取产物并确认事件，继续原工作流。这不是用户输入。\n${workflowBinding?.instructions ?? ''}</workflow_events>`
+  const entryBinding = bindAgentEntry(entry, scope, deps.workflows);
+  if (entryBinding) extraInstructions.push(entryBinding.instructions);
+  const prompt = workflowWake
+    ? `<workflow_events source="bridge">子任务通知，请读取产物并确认事件，继续原工作流。这不是用户输入。\n${entryBinding?.instructions ?? ''}</workflow_events>`
     : buildPrompt(
     batch,
     attachments,
@@ -1403,7 +1409,7 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   });
 
   const flow = await startRunFlow({
-    env: workflowBinding?.env,
+    env: entryBinding?.env,
     modelSettings: runArguments,
     deadlineAt: deps.timedJob?.stopAt,
     signal: deps.signal,
@@ -1426,10 +1432,10 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       source: 'im',
       stage: 'submit',
     },
-  }).catch(error => { workflowBinding?.release(); throw error; });
+  }).catch(error => { entryBinding?.release(); throw error; });
   if (!flow.ok) {
-    workflowBinding?.release();
-    if (deps.workflowWake) throw new Error(flow.rejectReason.userVisible);
+    entryBinding?.release();
+    if (workflowWake) throw new Error(flow.rejectReason.userVisible);
     log.info('run-flow', 'rejected', { scope, code: flow.rejectReason.code });
     log.warn('policy', 'denied', {
       scope,
@@ -1444,9 +1450,9 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   }
 
   const { execution, cwdRealpath: cwd } = flow;
-  if (workflowBinding) {
-    void execution.result.finally(workflowBinding.release);
-    deps.workflows?.kernel.markNotified(scope, workflowBinding.eventIds);
+  if (entryBinding) {
+    void execution.result.finally(entryBinding.release);
+    entryBinding.onStarted();
   }
   let timedResult: Promise<void> | undefined;
   if (deps.timedJob) {
@@ -1592,7 +1598,7 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       // must not make the next turn forget that this run actually completed.
       log.fail('stream', err);
     }
-    if (await execution.result === 'completed' && sessionCatalog && !deps.workflowWake) {
+    if (await execution.result === 'completed' && sessionCatalog && !workflowWake) {
       const sourceMessageId = firstMsg.messageId;
       sessionCatalog.markCompleted({
         scopeId: scope,
@@ -1618,7 +1624,7 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
         lastSummary: summarizeRunInput(batch),
       });
     }
-    if (deps.workflowWake && sessionCatalog && handle.inputMessageIds.size > 0 && await execution.result === 'completed') {
+    if (workflowWake && sessionCatalog && handle.inputMessageIds.size > 0 && await execution.result === 'completed') {
       // Real follow-ups received during an internal wake still belong to IM history.
       // The internal event and its original delivery anchor never enter this set.
       sessionCatalog.markCompleted({ scopeId: scope, agentId: capability.agentId, cwdRealpath: sessionCwd,

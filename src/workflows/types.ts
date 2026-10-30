@@ -121,7 +121,7 @@ export interface WorkflowState {
 }
 
 export type WorkflowCaller =
-  | { scopeId: string; kind: 'main' }
+  | { scopeId: string; kind: 'main'; allowStart?: boolean; workflowId?: string }
   | { scopeId: string; kind: 'worker'; workflowId: string; taskId: string; attemptId: string };
 
 export interface WorkflowWorkerRequest {

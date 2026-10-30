@@ -118,9 +118,12 @@ export class WorkflowRuntime {
     });
   }
 
-  bindMain(scopeId: string, deadlineAt = Date.now() + 24 * 60 * 60_000) {
-    const binding = this.ipc.bind({ kind: 'main', scopeId }, deadlineAt);
+  bindMain(scopeId: string, mode: 'start' | 'continue', deadlineAt = Date.now() + 24 * 60 * 60_000) {
     const state = this.kernel.state(scopeId);
+    if (mode === 'start' && state) throw new Error('Root already has a workflow; cancel or complete it first');
+    if (mode === 'continue' && !state) throw new Error('No active workflow to continue');
+    const binding = this.ipc.bind({ kind: 'main', scopeId, allowStart: mode === 'start',
+      ...(state ? { workflowId: state.workflowId } : {}) }, deadlineAt);
     return { ...binding, instructions: `${WORKFLOW_TOOL_INSTRUCTIONS}\n\n${this.kernel.context(scopeId)}`,
       eventIds: state?.events.filter(event => !event.acknowledged).map(event => event.id) ?? [] };
   }
