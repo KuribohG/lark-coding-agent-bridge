@@ -7,7 +7,7 @@ import { WorkflowIpc, WORKFLOW_TOOL_INSTRUCTIONS } from './ipc';
 import { workflowDigest } from './digest';
 import { inheritedWorkerExecution } from './execution';
 import { runScriptProgram } from './script-vm';
-import type { WorkerExecution, WorkerExecutionSelection, WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from './types';
+import type { WorkerExecution, WorkerExecutionSelection, WorkflowRoot, WorkflowState, WorkflowWorkerRequest, WorkflowWorkerResult } from './types';
 
 export interface WorkflowRuntimeDeps {
   path: string;
@@ -16,6 +16,7 @@ export interface WorkflowRuntimeDeps {
   resolveWorker?(root: WorkflowRoot, selection: WorkerExecutionSelection, policy: RunPolicyAllow):
     Promise<{ execution: WorkerExecution; policy: RunPolicyAllow }>;
   wakeMain(scopeId: string): Promise<void>;
+  showPlan?(state: WorkflowState, text: string): Promise<void>;
   /** Source hosts may supply their built CLI; packaged bundles share dist/cli.js. */
   cliPath?: string;
 }
@@ -78,6 +79,8 @@ export class WorkflowRuntime {
       Math.max(0, begun.state.deadlineAt - Date.now()));
     deadline.unref();
     try {
+      await this.deps.showPlan?.(begun.state, this.kernel.plan(scopeId, workflowId));
+      controller.signal.throwIfAborted();
       const text = await runScriptProgram({ source: begun.source, args: begun.state.script!.args, signal: controller.signal,
         agent: async input => {
           controller.signal.throwIfAborted();

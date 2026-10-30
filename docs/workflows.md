@@ -14,9 +14,9 @@ First set the main agent in the target chat/topic:
 /workflow start 架构评审：Pi 使用 <方案模型> 提出方案，Claude 使用 <替代模型> 提出独立方案，Codex 使用 <审查模型> 审查并汇总。需求：……
 ```
 
-Replace bracketed placeholders with models supported by the configured harness/provider. In groups, genuinely mention the bot when required by the chat settings. The bot writes the script and starts it, then returns the reviewed result to the same chat/topic. You do not need to write JavaScript in Lark. Explicit natural-language requests to use a workflow work too; ordinary questions do not start one automatically.
+Replace bracketed placeholders with models supported by the configured harness/provider. In groups, genuinely mention the bot when required by the chat settings. The bot writes a concrete execution plan and script, publishes the plan before starting workers, then returns the reviewed result to the same chat/topic. You do not need to write JavaScript in Lark. Explicit natural-language requests to use a workflow work too; ordinary questions do not start one automatically.
 
-`/workflow script <task>` remains an alias for the same script entry. It is not a separate engine. Use `/workflow status` to see the main and worker harnesses/models, task state and phase, `/workflow pause` and `/workflow resume` to pause/replay, and `/workflow cancel` or `/stop` to cancel. Choose main settings before starting: changing the root session, engine or model invalidates the existing binding.
+`/workflow script <task>` remains an alias for the same script entry. It is not a separate engine. Use `/workflow plan` to see the saved execution plan (stages, assignments, selected models, dependencies and conditional branches; after completion/cancellation it shows the most recent workflow), and `/workflow status` to see the main and worker harnesses/models, task state and phase, `/workflow pause` and `/workflow resume` to pause/replay, and `/workflow cancel` or `/stop` to cancel. Choose main settings before starting: changing the root session, engine or model invalidates the existing binding.
 
 The old `architecture-review` plugin and agent-led `start`, `delegate`, `send`, `begin_revision_round` API operations have been removed. Architecture review is now an ordinary script use case; there is no fixed designer/challenger plugin. On upgrade, unfinished old instances are cancelled and release their topic binding. Their existing artifacts remain readable by workflow ID, but old instances cannot resume. The packaged review example demonstrates independent proposals and a conditional revision through this common API.
 
@@ -52,7 +52,7 @@ Submit a JSON envelope using the existing scope-bound CLI:
 node "$LARK_WORKFLOW_CLI" workflow run_script --input-file workflow.json --json
 ```
 
-The envelope has `operationId`, `goal` (the full authorized task) and `script` (the function body as a string). Optional fields:
+The envelope has `operationId`, `goal` (the full authorized task), `script` (the function body as a string) and `plan` (a human-readable execution plan, up to 12,000 characters). The plan must describe phases, each worker's harness/model/task, dependencies and conditional branches. Lark publishes it before any worker starts; delivery failure stops execution. This is visibility, not a new approval gate. The plan is stored as a versioned `workflow-plan` artifact (`planRef`); the exact script remains available through `sourceRef` and `read_artifact`. A plan describes intended behavior; `/workflow status` shows the actual branches and tasks reached. Optional fields:
 
 | Field | Meaning |
 | --- | --- |
@@ -78,7 +78,7 @@ Only script completion/failure creates a main-agent event, rather than an event 
 
 ### Replay and lifecycle
 
-`replay_script` requires the usual `workflowId`, unique `operationId` and current `expectedStateVersion`. It optionally replaces `script`, `args` or `execution`, and restarts the function from its beginning. Completed calls are reused by a fingerprint of **key, prompt, output mode, resolved worker binding, root binding, goal and workflow definition**. Changing execution order alone does not invalidate unrelated calls. Changing a prompt or harness reruns that call in a fresh worker session; downstream calls rerun when the data in their prompts changes. Failed, cancelled, interrupted or waiting-for-input tasks are never reused. Up to eight replays and 128 total task attempts are retained per workflow.
+`replay_script` requires the usual `workflowId`, unique `operationId` and current `expectedStateVersion`. It optionally replaces `script`, `args` or `execution`; changes to any of these require an updated `plan`. Each replay publishes its plan again and restarts the function from its beginning. Completed calls are reused by a fingerprint of **key, prompt, output mode, resolved worker binding, root binding, goal and workflow definition**. Changing execution order alone does not invalidate unrelated calls. Changing a prompt or harness reruns that call in a fresh worker session; downstream calls rerun when the data in their prompts changes. Failed, cancelled, interrupted or waiting-for-input tasks are never reused. Up to eight replays and 128 total task attempts are retained per workflow.
 
 This is result reuse, not replay of external side effects. File contents, network state, time and other implicit dependencies are not automatically hashed. Include relevant revisions or digests in prompts/keys when fresh execution is required. A task interrupted after a side effect may repeat that effect on replay. Worker tasks that modify shared files need an explicit ownership or serialization strategy; the workflow does not create worktrees or resource leases automatically.
 

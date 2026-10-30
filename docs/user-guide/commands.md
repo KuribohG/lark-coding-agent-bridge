@@ -36,6 +36,7 @@
 | `/btw <问题>` | 基于主会话的旁问 |
 | `/stop` | 停止当前聊天任务、队列和旁问 |
 | `/workflow start <任务及 worker 的 harness/模型要求>` | 启动脚本工作流；架构评审也使用这一入口 |
+| `/workflow plan` | 查看具体执行方案；启动和重放前也会自动展示 |
 | `/workflow status` | 查看主 agent、worker 的 harness、模型和进度 |
 | `/workflow pause`、`/workflow resume`、`/workflow cancel` | 暂停、复用完成结果重放、取消 |
 | `/run` | 创建一次性限时任务，需确认预览 |

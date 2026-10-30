@@ -62,7 +62,7 @@ process.stdin.on('end', () => {
   await runtime.start(); cleanup.push(() => runtime.close());
   const main = runtime.bindMain(root.scopeId);
   const call = (method: string, args: Record<string, unknown> = {}) => callWorkflow(method,
-    { operationId: randomUUID(), expectedStateVersion: runtime.kernel.state(root.scopeId)?.stateVersion, ...args }, main.env);
+    { operationId: randomUUID(), expectedStateVersion: runtime.kernel.state(root.scopeId)?.stateVersion, ...(method === 'run_script' || method === 'replay_script' ? {plan:'Review the task with the requested harness and model; return a final result.'} : {}), ...args }, main.env);
   return { runtime, root, profile, call, main, record, resolveAgent, pool, wakeMain };
 }
 
@@ -70,7 +70,7 @@ describe('Codex-root workflow with Pi process workers', () => {
   it('accepts scripts through the built CLI, cancels a native process on pause, and replays in a fresh session', async () => {
     const f = await fixture();
     const input = join(dirname(f.record), 'script.json');
-    await writeFile(input, JSON.stringify({ operationId: randomUUID(), goal: 'script smoke',
+    await writeFile(input, JSON.stringify({ operationId: randomUUID(), goal: 'script smoke', plan:'Run a Pi worker and collect its final answer.',
       execution: { agentKind: 'pi', model: 'pi-model' }, script: 'return await agent("WAIT_FOR_CANCEL",{key:"a"});' }));
     const cli = await promisify(execFile)(process.execPath, [resolve('dist/cli.js'), 'workflow', 'run-script', '--input-file', input, '--json'],
       { env: { ...process.env, ...f.main.env } });

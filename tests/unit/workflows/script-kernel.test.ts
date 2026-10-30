@@ -31,7 +31,7 @@ function harness(path = ':memory:') {
   cleanup.push(() => kernel.close());
   const state = () => kernel.state(root.scopeId)!;
   const call = (method: string, args: Record<string, unknown> = {}) => kernel.call({kind:'main',scopeId:root.scopeId},method,
-    {operationId:randomUUID(), workflowId:state()?.workflowId, expectedStateVersion:state()?.stateVersion, ...args});
+    {operationId:randomUUID(), workflowId:state()?.workflowId, expectedStateVersion:state()?.stateVersion, ...(method === 'run_script' || method === 'replay_script' ? {plan:'Execute the specified test steps.'} : {}), ...args});
   const agent = (key: string, args: object = {}) => kernel.scriptAgent(root.scopeId, state().workflowId, state().script!.runId, {key, prompt:key, ...args});
   const begin = () => kernel.beginScript(root.scopeId, state().workflowId);
   const result = (taskId: string) => kernel.scriptTaskResult(root.scopeId,state().workflowId,state().script!.runId,taskId);

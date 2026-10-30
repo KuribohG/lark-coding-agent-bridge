@@ -9,12 +9,13 @@ export async function handleWorkflowCommand(kernel: WorkflowKernel, scope: strin
   if (operation === 'start' || operation === 'script') {
     if (!goal) return '用法：/workflow start <任务及各 worker 的 harness、模型要求>';
     if (kernel.state(scope)) return '当前话题已绑定工作流，请先完成或取消。';
-    return submit(`请编写并运行脚本工作流（run_script）完成以下需求。遵守用户指定的各 worker 的 harness、model 和 reasoningEffort；主 agent 沿用当前会话的执行器与模型设置：\n${goal}`);
+    return submit(`请编写并运行脚本工作流（run_script）完成以下需求。先编写具体执行方案（plan），说明阶段、各 worker 的 harness/模型/任务、依赖关系及条件分支；bridge 会在执行前向用户展示。遵守用户指定的各 worker 的 harness、model 和 reasoningEffort；主 agent 沿用当前会话的执行器与模型设置：\n${goal}`);
   }
-  if (!['status', 'pause', 'resume', 'cancel'].includes(operation)) return '支持：start <任务>、status、pause、resume、cancel。';
+  if (!['plan', 'status', 'pause', 'resume', 'cancel'].includes(operation)) return '支持：start <任务>、plan、status、pause、resume、cancel。';
   if (operation === 'cancel') return kernel.cancel(scope) ? '已请求取消当前工作流。' : '当前没有工作流。';
-  const state = kernel.state(scope);
+  const state = kernel.state(scope) ?? (operation === 'plan' ? kernel.latest(scope) : undefined);
   if (!state) return '当前没有工作流。';
+  if (operation === 'plan') return state.script ? kernel.plan(scope, state.workflowId) : '旧版工作流没有保存脚本执行方案。';
   await kernel.call({ kind: 'main', scopeId: scope }, operation,
     { workflowId: state.workflowId, operationId: randomUUID(), expectedStateVersion: state.stateVersion });
   if (operation === 'pause') return '已暂停工作流并请求取消在途任务；恢复时复用已完成结果。';

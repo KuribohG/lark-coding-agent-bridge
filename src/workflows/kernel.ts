@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import { sessionIdFieldForAgent } from '../agent/backend-spec';
 import { log } from '../core/logger';
 import { workflowDigest } from './digest';
+import { renderWorkflowPlan } from './presentation';
 import { inheritedWorkerExecution, workerSelection } from './execution';
 import { boundedInteger, parseScriptAgentCall, scriptArgs, scriptText, SCRIPT_DEFINITION, SCRIPT_MAX_REVISIONS, SCRIPT_MAX_TASKS } from './script-contract';
 import type {
@@ -68,6 +69,12 @@ export class WorkflowKernel {
       : '当前没有绑定工作流。用户要求工作流编排时用 run_script；架构评审也通过脚本完成，可为每个 worker 选择 harness 和模型。普通问答不自动启动。';
   }
 
+  latest(scopeId: string): WorkflowState | undefined {
+    const row = this.db.prepare('SELECT data FROM workflows WHERE scope = ? ORDER BY rowid DESC LIMIT 1')
+      .get(scopeId) as { data: string } | undefined;
+    return row ? JSON.parse(row.data) as WorkflowState : undefined;
+  }
+
   private summary(state: WorkflowState): unknown {
     return {
       workflowId: state.workflowId, plugin: { id: state.definition.id, version: state.definition.version, digest: state.definitionDigest },
@@ -126,7 +133,8 @@ export class WorkflowKernel {
       };
       this.addArtifact(state, 'requirements', goal);
       const source = this.addArtifact(state, 'workflow-script', scriptText(args.script, 'script'));
-      state.script = { name: scriptText(args.name ?? 'Script workflow', 'name', 100), sourceRef: source.ref,
+      const plan = this.addArtifact(state, 'workflow-plan', scriptText(args.plan, 'plan', 12_000));
+      state.script = { name: scriptText(args.name ?? 'Script workflow', 'name', 100), sourceRef: source.ref, planRef: plan.ref,
         args: scriptArgs(args.args), defaults: workerSelection(args.execution, root), runId: randomUUID(), revision: 0,
         status: 'queued', maxCalls: boundedInteger(args.maxAgents, 32, 1, SCRIPT_MAX_TASKS), calls: [], logs: [] };
       return this.commitOperation(state, operationId, digest, () => this.summary(state!));
@@ -313,11 +321,24 @@ export class WorkflowKernel {
     this.save(state);
   }
 
+  plan(scopeId: string, workflowId?: string): string {
+    const state = requireState(this.state(scopeId, workflowId));
+    if (!state.script) throw new Error('Workflow has no script plan');
+    const plan = state.script.planRef
+      ? this.artifact(state, state.script.planRef).text
+      : `旧版实例没有保存文字方案。原始执行脚本：\n\n${this.artifact(state, state.script.sourceRef).text}`;
+    return renderWorkflowPlan(state, plan);
+  }
+
   private replayScript(state: WorkflowState, args: Record<string, unknown>): void {
     const script = state.script;
     if (!script) throw new Error('Not a script workflow');
     if (['queued', 'running'].includes(script.status) || state.tasks.some(task => BUSY.has(task.status))) throw new Error('Stop or pause the script and wait for workers to finish before replay');
     if (script.revision >= SCRIPT_MAX_REVISIONS) throw new Error('Script replay limit reached');
+    if (args.script !== undefined || Object.hasOwn(args, 'args') || args.execution !== undefined || !script.planRef) {
+      scriptText(args.plan, 'updated plan', 12_000);
+    }
+    if (args.plan !== undefined) script.planRef = this.addArtifact(state, 'workflow-plan', scriptText(args.plan, 'plan', 12_000)).ref;
     if (args.script !== undefined) script.sourceRef = this.addArtifact(state, 'workflow-script', scriptText(args.script, 'script')).ref;
     if (Object.hasOwn(args, 'args')) script.args = scriptArgs(args.args);
     if (args.execution !== undefined) script.defaults = workerSelection(args.execution, state.root);

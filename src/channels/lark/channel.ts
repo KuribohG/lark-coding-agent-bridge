@@ -297,6 +297,12 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   let workflows: WorkflowRuntime | undefined;
   const createWorkflows = () => sessionCatalog && deps.appPaths?.mediaDir ? new WorkflowRuntime({
     path: join(dirname(deps.appPaths.mediaDir), 'workflows.sqlite'), executor,
+    showPlan: async (state, text) => {
+      const message = workflowOrigins.get(state.root.scopeId);
+      if (!message) throw new Error('Workflow reply destination unavailable');
+      const receipt = await channel.send(message.chatId, { markdown: text }, { replyTo: message.messageId, replyInThread: Boolean(message.threadId) });
+      if (!receipt.messageId?.trim()) throw new Error('Workflow plan delivery returned no message receipt');
+    },
     resolveWorker: async (root, selection, policy) => {
       const { agentKind, ...overrides } = selection;
       const profile = profileForAgentKind(controls.profileConfig, agentKind);

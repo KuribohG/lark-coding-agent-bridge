@@ -69,6 +69,7 @@ export interface WorkflowTask {
 export interface WorkflowScript {
   name: string;
   sourceRef: string;
+  planRef?: string;
   args: unknown;
   defaults: WorkerExecutionSelection;
   runId: string;

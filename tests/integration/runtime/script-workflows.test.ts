@@ -17,7 +17,7 @@ const output = (text: string, kind: string): AgentEvent[] => [
   { type: 'system', ...(kind === 'codex' ? { threadId: randomUUID() } : { sessionId: randomUUID() }) },
   { type: 'final_text', content: text }, { type: 'done', terminationReason: 'normal' },
 ];
-async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootKind: 'claude' | 'codex' | 'pi' = 'codex') {
+async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootKind: 'claude' | 'codex' | 'pi' = 'codex', showPlan?: ConstructorParameters<typeof WorkflowRuntime>[0]['showPlan']) {
   let root: WorkflowRoot = { scopeId: 'script-topic', profile: 'default', agentKind: rootKind, cwdRealpath: '/workspace',
     policyFingerprint: 'policy', catalogBinding: 'root', modelSettings: { model: 'root-model' } };
   const policy: RunPolicyAllow = { ok: true, prompt: '', requestedCwd: '/workspace', cwdRealpath: '/workspace',
@@ -33,7 +33,7 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
     const state = runtime.kernel.state(root.scopeId)!;
     runtime.kernel.markNotified(root.scopeId, state.events.map(event => event.id));
   });
-  const runtime = new WorkflowRuntime({ path: ':memory:', executor, resolve: async () => ({ root, policy }), wakeMain,
+  const runtime = new WorkflowRuntime({ path: ':memory:', executor, resolve: async () => ({ root, policy }), wakeMain, showPlan,
     resolveWorker: async (current, selection) => ({ policy, execution: {
       agentKind: selection.agentKind, profile: current.profile, configurationFingerprint: selection.agentKind,
       policyFingerprint: policy.policyFingerprint, modelSettings: { ...(selection.agentKind === current.agentKind ? current.modelSettings : {model: selection.agentKind + '-default'}), ...(selection.model ? {model:selection.model} : {}), ...(selection.reasoningEffort ? {reasoningEffort:selection.reasoningEffort} : {}) },
@@ -43,13 +43,48 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
   const binding = runtime.bindMain(root.scopeId);
   const state = () => runtime.kernel.state(root.scopeId)!;
   const call = (method: string, args: Record<string, unknown> = {}) => callWorkflow(method,
-    { operationId: randomUUID(), workflowId: state()?.workflowId, expectedStateVersion: state()?.stateVersion, ...args }, binding.env);
+    { operationId: randomUUID(), workflowId: state()?.workflowId, expectedStateVersion: state()?.stateVersion, ...(method === 'run_script' || method === 'replay_script' ? {plan:'Review the task with the requested harness and model; return a final result.'} : {}), ...args }, binding.env);
   const until = async (check: () => void) => vi.waitFor(async () => { await runtime.tick(); check(); }, { timeout: 5000, interval: 20 });
   return { runtime, adapters, resolveAgent, wakeMain, binding, state, call, until,
     changeRoot: () => { root = { ...root, catalogBinding: 'replacement' }; } };
 }
 
 describe('script workflow runtime', () => {
+  it('publishes the saved plan before workers start and refuses execution if delivery fails', async () => {
+    let deliver: (() => void) | undefined;
+    const showPlan=vi.fn(async () => new Promise<void>(resolve => {deliver=resolve;}));
+    const h=await harness({pi:['result']},'codex',showPlan);
+    await h.call('run_script',{goal:'visible plan',plan:'Pi with pi-model inspects the design, then returns findings.',script:'return await agent("review",{key:"review",harness:"pi",model:"pi-model"});'});
+    await h.until(()=>expect(deliver).toBeTypeOf('function'));
+    expect(h.adapters.pi.runs).toHaveLength(0);
+    expect(h.state().tasks).toHaveLength(0);
+    expect(h.runtime.kernel.plan('script-topic')).toContain('Pi with pi-model');
+    deliver!();
+    await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
+    expect(showPlan).toHaveBeenCalledTimes(1);
+    showPlan.mockRejectedValueOnce(new Error('Plan could not be delivered'));
+    await h.call('replay_script');
+    await h.until(()=>expect(h.state().script?.status).toBe('failed'));
+    expect(h.state().script?.error).toContain('Plan could not be delivered');
+    expect(h.adapters.pi.runs).toHaveLength(1);
+  });
+
+  it('requires a new visible plan when changing script inputs or models', async () => {
+    const h=await harness();
+    await expect(h.call('run_script',{goal:'missing plan',script:'return 1;',plan:undefined})).rejects.toThrow('plan');
+    await h.call('run_script',{goal:'plan revisions',script:'return 1;',plan:'Return one.'});
+    await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
+    const planRef=h.state().script!.planRef;
+    await expect(h.call('replay_script',{script:'return 2;',plan:undefined})).rejects.toThrow('updated plan');
+    expect(h.state().script!.planRef).toBe(planRef);
+    await h.call('replay_script',{script:'return 2;',plan:'Return two instead.'});
+    expect(h.runtime.kernel.plan('script-topic')).toContain('Return two instead.');
+    expect(h.state().script!.planRef).not.toBe(planRef);
+    const old=await h.call('read_artifact',{ref:planRef});
+    expect(old).toMatchObject({text:'Return one.'});
+    await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
+  });
+
   it.each(['claude', 'pi'] as const)('supports a %s main harness and inherits it by default', async rootKind => {
     const h = await harness({ [rootKind]: ['value'] }, rootKind);
     await h.call('run_script', { goal: 'root selection', script: 'return await agent("task",{key:"task"});' });

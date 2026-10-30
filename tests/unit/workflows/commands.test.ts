@@ -15,7 +15,7 @@ function fixture() {
   cleanup.push(()=>kernel.close());
   const submit = vi.fn<(_: string) => string | undefined>(()=>undefined);
   const command = (args: string) => handleWorkflowCommand(kernel,'topic',args,submit);
-  const start = async () => kernel.call({kind:'main',scopeId:'topic'},'run_script',{operationId:randomUUID(),goal:'review',script:'return null;'});
+  const start = async () => kernel.call({kind:'main',scopeId:'topic'},'run_script',{operationId:randomUUID(),goal:'review',plan:'Pi with service/worker-model reviews the design and returns findings.',script:'return null;'});
   return {kernel,root,submit,command,start};
 }
 
@@ -36,11 +36,13 @@ describe('Lark workflow commands', () => {
     const f=fixture(); await f.start(); const state=f.kernel.state('topic')!;
     f.kernel.beginScript('topic',state.workflowId);
     await f.kernel.scriptAgent('topic',state.workflowId,state.script!.runId,{key:'review',prompt:'review',harness:'pi',model:'service/worker-model',reasoningEffort:'minimal'});
+    expect(await f.command('plan')).toContain('Pi with service/worker-model reviews');
     const status=await f.command('status');
     expect(status).toContain('codex，模型：main-model，思考强度：high');
     expect(status).toContain('pi，模型：service/worker-model，思考强度：minimal');
     expect(await f.command('pause')).toContain('取消在途任务'); expect(f.kernel.state('topic')?.script?.status).toBe('paused');
     expect(await f.command('resume')).toContain('重放'); expect(f.kernel.state('topic')?.script?.revision).toBe(1);
     expect(await f.command('cancel')).toContain('已请求取消'); expect(await f.command('status')).toBe('当前没有工作流。');
+    expect(await f.command('plan')).toContain('Pi with service/worker-model reviews');
   });
 });

@@ -43,7 +43,7 @@ describe('workflow IPC and worker execution', () => {
     await runtime.start(); cleanup.push(() => runtime.close());
     const main = runtime.bindMain(root.scopeId);
     const call = (method: string, args: Record<string, unknown> = {}) => callWorkflow(method,
-      { operationId: randomUUID(), expectedStateVersion: runtime.kernel.state(root.scopeId)?.stateVersion, ...args }, main.env);
+      { operationId: randomUUID(), expectedStateVersion: runtime.kernel.state(root.scopeId)?.stateVersion, ...(method === 'run_script' || method === 'replay_script' ? {plan:'Review the task with the requested harness and model; return a final result.'} : {}), ...args }, main.env);
     await call('run_script', { goal: 'test design', script: 'return await agent("design A",{key:"a"});' });
     main.release(); // Child lifetime is independent of the parent CLI turn.
     await runtime.tick();
