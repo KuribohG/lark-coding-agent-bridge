@@ -24,7 +24,7 @@ export interface WorkflowRoot {
   modelSettings: ModelSettings;
 }
 
-export interface WorkerSession {
+export interface SessionBinding {
   sessionRef: string;
   actorId: string;
   actorKey: string;
@@ -35,6 +35,73 @@ export interface WorkerSession {
   nativeSessionId?: string;
   observedModel?: string;
   generation: number;
+}
+
+export type WorkerSession = SessionBinding;
+
+export interface DurableAgent {
+  agentId: string;
+  key: string;
+  sessionRef: string;
+  checkpointVersion: number;
+  checkpointRef?: string;
+  lastTurnId?: string;
+  activeTurnId?: string;
+  wait?: WaitState;
+}
+
+export interface AgentCheckpoint {
+  ref: string;
+  agentId: string;
+  version: number;
+  turnId: string;
+  attemptId?: string;
+  sessionGeneration: number;
+  nativeSessionId?: string;
+  state: unknown;
+  resultRef?: string;
+  createdAt: number;
+}
+
+export interface TurnAttempt {
+  attemptId: string;
+  runId?: string;
+  startedAt: number;
+  endedAt?: number;
+  result?: string;
+  checkpointVersion?: number;
+  sessionGeneration?: number;
+}
+
+export interface WaitState {
+  kind: 'message';
+  receiptId: string;
+}
+
+export interface MailboxMessage {
+  id: string;
+  to: string;
+  from?: string;
+  text: string;
+  createdAt: number;
+  receiptId?: string;
+  consumedByTurnId?: string;
+}
+
+export interface MailboxReceipt {
+  id: string;
+  key: string;
+  digest: string;
+  agentId: string;
+  status: 'waiting' | 'ready' | 'consumed';
+  messageIds: string[];
+  turnId?: string;
+}
+
+export interface AgentMailbox {
+  messages: MailboxMessage[];
+  receipts: MailboxReceipt[];
+  operations: Array<{ key: string; digest: string; response: unknown }>;
 }
 
 export interface WorkerExecutionSelection extends ModelSettings {
@@ -49,7 +116,7 @@ export interface WorkerExecution {
   configurationFingerprint: string;
 }
 
-export interface WorkflowTask {
+export interface AgentTurn {
   taskId: string;
   taskKey: string;
   requestDigest: string;
@@ -57,14 +124,20 @@ export interface WorkflowTask {
   objective: string;
   inputRefs: string[];
   status: 'queued' | 'starting' | 'running' | 'result_ready' | 'waiting_input' | 'failed' | 'cancelling' | 'cancelled' | 'interrupted';
-  attempts: Array<{ attemptId: string; runId?: string; startedAt: number; endedAt?: number; result?: string }>;
+  attempts: TurnAttempt[];
   resultRefs: string[];
   error?: string;
   scriptRunId?: string;
   scriptKey?: string;
   scriptOutput?: 'text' | 'json';
   cacheKey?: string;
+  agentId?: string;
+  previousTurnId?: string;
+  inputCheckpointVersion?: number;
+  inputMessageIds?: string[];
 }
+
+export type WorkflowTask = AgentTurn;
 
 export interface WorkflowScript {
   name: string;
@@ -77,6 +150,7 @@ export interface WorkflowScript {
   status: 'queued' | 'running' | 'paused' | 'result_ready' | 'failed' | 'interrupted' | 'cancelled';
   maxCalls: number;
   calls: Array<{ key: string; taskId: string; cached: boolean }>;
+  mailboxCalls?: string[];
   logs: string[];
   phase?: string;
   resultRef?: string;
@@ -117,6 +191,9 @@ export interface WorkflowState {
   tasks: WorkflowTask[];
   artifacts: WorkflowArtifact[];
   events: WorkflowEvent[];
+  agents?: DurableAgent[];
+  checkpoints?: AgentCheckpoint[];
+  mailbox?: AgentMailbox;
   script?: WorkflowScript;
 }
 

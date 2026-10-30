@@ -6,19 +6,24 @@ export interface ScriptProgramInput {
   args: unknown;
   signal: AbortSignal;
   agent(call: unknown): Promise<unknown>;
+  mailbox?(call: unknown): Promise<unknown>;
   progress(kind: 'phase' | 'log', text: string): void;
 }
 
 const PRELUDE = `(() => {
   'use strict';
   const invoke = __bridgeAgent;
+  const mail = __bridgeMailbox;
   const progress = __bridgeProgress;
   delete globalThis.__bridgeAgent;
+  delete globalThis.__bridgeMailbox;
   delete globalThis.__bridgeProgress;
   globalThis.agent = (prompt, options = {}) => {
     if (typeof prompt !== 'string' || !options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('agent(prompt, options) expected');
     return invoke(JSON.stringify({...options, prompt})).then(JSON.parse);
   };
+  globalThis.send = (member, text, options = {}) => mail(JSON.stringify({...options, kind: 'send', member, text})).then(JSON.parse);
+  globalThis.receive = (member, options = {}) => mail(JSON.stringify({...options, kind: 'receive', member})).then(JSON.parse);
   globalThis.parallel = tasks => {
     if (!Array.isArray(tasks) || tasks.length > ${SCRIPT_MAX_TASKS} || tasks.some(task => typeof task !== 'function')) throw new TypeError('parallel expects a bounded array of functions');
     return Promise.all(tasks.map(task => task()));
@@ -51,6 +56,7 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
   let sliceDeadline = 0;
   let cpuMs = 0;
   let calls = 0;
+  let mailboxCalls = 0;
   let progressCount = 0;
   let pending = 0;
   let hostError: unknown;
@@ -73,8 +79,8 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
     handle.dispose();
   };
   try {
-    install('__bridgeAgent', payload => {
-      if (++calls > SCRIPT_MAX_TASKS) throw new Error('Script agent call limit reached');
+    const installAsync = (name: string, invoke: (call: unknown) => Promise<unknown>) => install(name, payload => {
+      if (name === '__bridgeAgent' ? ++calls > SCRIPT_MAX_TASKS : ++mailboxCalls > SCRIPT_MAX_TASKS) throw new Error('Script call limit reached');
       const text = context.getString(payload);
       if (text.length > SCRIPT_MAX_TEXT + 2000) throw new Error('agent input exceeds size limit');
       const call: unknown = JSON.parse(text);
@@ -95,11 +101,16 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
           finally { handle.dispose(); }
         } finally { wake?.(); }
       };
-      void Promise.resolve().then(() => { input.signal.throwIfAborted(); return input.agent(call); }).then(
+      void Promise.resolve().then(() => { input.signal.throwIfAborted(); return invoke(call); }).then(
         value => settle(value, false),
         error => settle(error instanceof Error ? error.message : String(error), true),
       ).catch(error => { hostError = error; wake?.(); });
       return deferred.handle;
+    });
+    installAsync('__bridgeAgent', input.agent);
+    installAsync('__bridgeMailbox', call => {
+      if (!input.mailbox) throw new Error('Mailbox host is unavailable');
+      return input.mailbox(call);
     });
     install('__bridgeProgress', (kind, value) => {
       if (++progressCount > 100) throw new Error('Script progress limit reached');
@@ -130,7 +141,7 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
       const state = context.getPromiseState(promise);
       if (state.type === 'fulfilled') {
         try {
-          if (pending) throw new Error('Script returned before all agent() calls finished; await every call');
+          if (pending) throw new Error('Script returned before all agent() or mailbox calls finished; await every call');
           if (context.typeof(state.value) !== 'string') throw new Error('Script result is not JSON serializable');
           const result = context.getString(state.value);
           if (!result || result.length > SCRIPT_MAX_TEXT) throw new Error('Script result exceeds size limit or is not JSON serializable');

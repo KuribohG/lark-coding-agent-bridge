@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import type { RunExecutor } from '../runtime/run-executor';
 import { log } from '../core/logger';
 import { WorkflowKernel } from './kernel';
-import { WorkflowIpc, WORKFLOW_TOOL_INSTRUCTIONS } from './ipc';
+import { WorkflowIpc, WORKFLOW_TOOL_INSTRUCTIONS, WORKFLOW_MEMBER_INSTRUCTIONS } from './ipc';
 import { workflowDigest } from './digest';
 import { inheritedWorkerExecution } from './execution';
 import { runScriptProgram } from './script-vm';
@@ -85,10 +85,17 @@ export class WorkflowRuntime {
         agent: async input => {
           controller.signal.throwIfAborted();
           const call = await this.kernel.scriptAgent(scopeId, workflowId, runId, input);
-          const result = await this.waitForScriptTask(scopeId, workflowId, runId, call.taskId, controller.signal);
+          const result = await this.waitForScriptValue(scopeId, controller.signal, () => this.kernel.scriptTaskResult(scopeId, workflowId, runId, call.taskId));
           if (call.output === 'text') return result;
           try { return JSON.parse(result) as unknown; }
           catch { throw new Error('Agent output is not valid JSON'); }
+        },
+        mailbox: async input => {
+          controller.signal.throwIfAborted();
+          const call = await this.kernel.scriptMailbox(scopeId, workflowId, runId, input);
+          return call.receiptId
+            ? this.waitForScriptValue(scopeId, controller.signal, () => this.kernel.scriptMailboxResult(scopeId, workflowId, runId, call.receiptId!))
+            : call.result;
         },
         progress: (kind, text) => this.kernel.scriptProgress(scopeId, workflowId, runId, kind, text),
       });
@@ -102,13 +109,13 @@ export class WorkflowRuntime {
     }
   }
 
-  private waitForScriptTask(scopeId: string, workflowId: string, runId: string, taskId: string, signal: AbortSignal): Promise<string> {
+  private waitForScriptValue<T>(scopeId: string, signal: AbortSignal, read: () => T | undefined): Promise<T> {
     return new Promise((resolve, reject) => {
       const cleanup = () => { stop(); signal.removeEventListener('abort', check); };
       const check = () => {
         try {
           signal.throwIfAborted();
-          const text = this.kernel.scriptTaskResult(scopeId, workflowId, runId, taskId);
+          const text = read();
           if (text !== undefined) { cleanup(); resolve(text); }
         } catch (error) { cleanup(); reject(error); }
       };
@@ -147,7 +154,8 @@ export class WorkflowRuntime {
           if (workflowDigest(admitted.execution) !== workflowDigest(pinned)) throw new Error('Worker binding changed while queued');
         },
         policy: { ...current.policy, prompt: request.prompt },
-        systemPrompt: '你是 bridge 管理的脚本工作流子 agent。只完成指定任务，遵守原始需求的授权范围，不要自行发送消息或派生子 agent。用最终答复返回结果。角色提示不改变实际执行权限。',
+        systemPrompt: task.agentId ? WORKFLOW_MEMBER_INSTRUCTIONS : '你是 bridge 管理的脚本工作流子 agent。只完成指定任务，遵守原始需求的授权范围，不要自行发送消息或派生子 agent。用最终答复返回结果。角色提示不改变实际执行权限。',
+        ...(task.agentId && session.nativeSessionId ? { [session.nativeIdKind]: session.nativeSessionId } : {}),
         ...pinned.modelSettings,
         deadlineAt: workflow.deadlineAt, signal,
         observability: { profile: pinned.profile, agent: pinned.agentKind, source: 'workflow', stage: session.role },
