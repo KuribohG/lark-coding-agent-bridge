@@ -4,6 +4,7 @@ import { setSecret } from '../config/keystore';
 import {
   createRootConfig,
   loadRootConfig,
+  loadLarkNetworkConfig,
   readActiveProfile,
   saveRootConfig,
   withConfigFileLock,
@@ -49,13 +50,15 @@ function readTenant(v: unknown): TenantBrand {
 }
 
 /** Validate app credentials (POST body: {appId, appSecret, tenant}). */
-export async function onboardValidate(body: unknown) {
+export async function onboardValidate(body: unknown, rootDir?: string) {
   const fv = asRecord(body);
   const appId = String(fv.appId ?? '').trim();
   const appSecret = String(fv.appSecret ?? '').trim();
   const tenant = readTenant(fv.tenant);
   if (!appId || !appSecret) throw new HttpError(400, 'appId 和 appSecret 必填');
-  const result = await validateAppCredentials(appId, appSecret, tenant);
+  const network = await loadLarkNetworkConfig(resolveAppPaths({ rootDir }).configFile,
+    typeof fv.profile === 'string' ? fv.profile : undefined);
+  const result = await validateAppCredentials(appId, appSecret, tenant, ...(network ? [network] as const : []));
   if (!result.ok) throw new HttpError(400, `凭据校验失败：${result.reason ?? '未知原因'}`);
   return { ok: true, botName: result.botName, botOpenId: result.botOpenId };
 }
@@ -90,7 +93,8 @@ export async function onboardCreate(body: unknown, rootDir?: string) {
   if (!input.appId || !input.appSecret) throw new HttpError(400, 'appId 和 appSecret 必填');
 
   // Re-validate server-side so a client can't skip the check.
-  const check = await validateAppCredentials(input.appId, input.appSecret, input.tenant);
+  const network = await loadLarkNetworkConfig(resolveAppPaths({ rootDir }).configFile, input.profile);
+  const check = await validateAppCredentials(input.appId, input.appSecret, input.tenant, ...(network ? [network] as const : []));
   if (!check.ok) throw new HttpError(400, `凭据校验失败：${check.reason ?? '未知原因'}`);
 
   const { profile } = await writeNewProfile(input, rootDir);

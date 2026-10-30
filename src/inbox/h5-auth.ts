@@ -1,6 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { TenantTokenProvider } from '../lark-auth/tenant-token';
 import { obj } from './values';
+import { larkFetch } from '../lark-auth/network';
 
 export interface InboxH5AuthOptions {
   appId: string;
@@ -33,7 +34,7 @@ export class InboxH5Auth {
     this.owner = options.ownerOpenId;
     this.publicUrl = options.publicUrl;
     this.brand = options.tenant;
-    this.request = options.request ?? fetch;
+    this.request = options.request ?? larkFetch;
     this.now = options.now ?? Date.now;
     this.tenantTokens = options.tenantTokens ?? new TenantTokenProvider({
       tenant: options.tenant,

@@ -162,7 +162,7 @@ export interface AppPreferences {
   agentStopGraceMs?: number;
 }
 
-/** Frontend presentation carried alongside the resolved runtime configuration. */
+/** Channel presentation and transport settings alongside the resolved runtime configuration. */
 export interface ChannelDisplayConfig {
   lark?: Partial<import('./lark-display').LarkDisplayConfig>;
   web?: Partial<import('../channels/web/config').WebDisplayConfig>;

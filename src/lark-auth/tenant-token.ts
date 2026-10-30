@@ -1,4 +1,5 @@
 import type { TenantBrand } from '../config/schema';
+import { larkFetch } from './network';
 
 const OPEN_API_ORIGINS: Record<TenantBrand, string> = {
   feishu: 'https://open.feishu.cn',
@@ -62,7 +63,7 @@ export class TenantTokenProvider {
 
   constructor(private readonly options: TenantTokenProviderOptions) {
     this.origin = larkOpenApiOrigin(options.tenant);
-    this.request = options.request ?? fetch;
+    this.request = options.request ?? larkFetch;
     this.now = options.now ?? Date.now;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
@@ -107,6 +108,7 @@ export class TenantTokenProvider {
       );
     }
     if (!response.ok) {
+      await response.body?.cancel();
       throw new TenantTokenError(
         'http',
         `tenant token HTTP ${response.status}`,

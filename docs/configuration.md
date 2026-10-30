@@ -14,6 +14,7 @@ Execution and presentation have separate ownership:
 | Agent launch | `agents.<kind>.launch`, `profiles.<name>.launch` | Agent defaults, then profile overrides |
 | Model providers | root `model_services` | Named API services; independent from executable and local state |
 | Feishu/Lark display | `channels.lark`, `channels.lark.profiles.<name>` | Lark defaults, then settings for that bot |
+| Feishu/Lark network | `channels.lark.network`, `channels.lark.profiles.<name>.network` | Common settings, then individual profile fields; reconnect required |
 | Browser display | `channels.web`, `channels.web.profiles.<name>` | Web defaults, then the selected profile |
 | Slack display | `channels.slack`, `channels.slack.profiles.<name>` | Slack defaults, then the selected profile |
 | Accounts, access, permissions, workspace, meetings | `profiles.<name>` | Explicit bot settings; not inherited from another bot or a conversation |
@@ -102,6 +103,26 @@ The Slack channel reads the same execution layers and `channels.slack` display
 settings. Tokens come from `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN`, or from the
 profile keystore entries `slack-bot-token` / `slack-app-token`. See
 [channels.md](channels.md) for Slack app scopes and events.
+
+## Feishu/Lark network
+
+```toml
+[channels.lark.network]
+proxy = "env"
+# no_proxy = "localhost,127.0.0.1,::1,.internal,10.0.0.0/8"
+
+[channels.lark.profiles.work.network]
+proxy = "http://proxy.example:3128"
+# no_proxy = "" # Clear inherited and environment bypass rules.
+```
+
+`proxy` defaults to `"env"`: HTTP uses `HTTP_PROXY`, HTTPS uses `HTTPS_PROXY` with HTTP fallback, and `ALL_PROXY` is a fallback. Nonempty lowercase variables take precedence over uppercase variants. WebSocket `ws`/`wss` follows HTTP/HTTPS respectively. Set `"direct"` to ignore proxy environment variables, or use an explicit HTTP(S) proxy URL. SOCKS and PAC URLs are not supported. For authenticated proxies, keep the credentials in the process environment and use `"env"`; credential-bearing URLs are rejected in TOML.
+
+`no_proxy` overrides `NO_PROXY`/`no_proxy`. Omission inherits the common field or the environment; an empty string clears exclusions. Rules support comma/space-separated exact hosts, optional ports, `.domain`/`*.domain` suffixes, IPv4/IPv6 addresses and CIDR subnets, or `*` for all hosts. IPv6 addresses with ports must use brackets. Fields merge independently across the common and profile tables.
+
+Bridge SDK REST and WebSocket connections, native COT create/update/complete, tenant token requests, credential checks, H5 authentication and keepalive probes use the same policy. Each profile has its own HTTP clients; this does not change the global Node dispatcher, other channels, model-provider traffic, `lark-cli`, or agent subprocesses. No `NODE_OPTIONS` proxy shim is needed. The native request layer reports error codes such as `UND_ERR_CONNECT_TIMEOUT` without including request bodies or proxy credentials.
+
+Network and environment settings are captured when the profile's transport starts. Use `/reconnect` or restart that profile after changing them. Configuration reload applies display/run/access changes but reports `channels.lark.network` as requiring reconnect and retains the active network settings. `config show --sources` displays the source of each network field. A failed COT create is still not blindly retried, because an uncertain response can mean the server already created the bubble.
 
 ## Inspecting and editing
 

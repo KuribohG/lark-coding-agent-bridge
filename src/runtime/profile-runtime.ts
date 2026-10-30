@@ -18,6 +18,7 @@ import {
   readActiveProfile,
   runtimeProfileConfig,
   saveRootConfig,
+  loadLarkNetworkConfig,
   writeActiveProfile,
 } from '../config/profile-store';
 import {
@@ -133,7 +134,7 @@ export async function resolveProfileRuntime(
   }
   const bootstrapAgent = resolveBootstrapAgent(requestedAgent, profile) ?? 'claude';
   const workspace = opts.workspace;
-  const fresh = await resolveBootstrapAppConfig(opts);
+  const fresh = await resolveBootstrapAppConfig(opts, configPath, profile);
   const encrypted = await encryptedConfigForProfile(fresh, appPaths);
   const profileConfig = await createBootstrapProfileConfig({
     agentKind: bootstrapAgent,
@@ -168,7 +169,7 @@ async function bootstrapProfileIntoExistingRoot(args: {
   const { rootConfig, profile, requestedAgent, opts, appPaths, configPath } = args;
   const bootstrapAgent = resolveBootstrapAgent(requestedAgent, profile) ?? 'claude';
   const workspace = opts.workspace;
-  const fresh = await resolveBootstrapAppConfig(opts);
+  const fresh = await resolveBootstrapAppConfig(opts, configPath, profile);
   const encrypted = await encryptedConfigForProfile(fresh, appPaths);
   const profileConfig = await createBootstrapProfileConfig({
     agentKind: bootstrapAgent,
@@ -249,7 +250,7 @@ function resolveBootstrapAgent(
 }
 
 
-async function resolveBootstrapAppConfig(opts: ResolveProfileRuntimeOptions): Promise<AppConfig> {
+async function resolveBootstrapAppConfig(opts: ResolveProfileRuntimeOptions, configPath: string, profile: string): Promise<AppConfig> {
   if (!opts.appId) {
     if (!isInteractiveTerminal()) {
       throw new Error(
@@ -272,7 +273,8 @@ async function resolveBootstrapAppConfig(opts: ResolveProfileRuntimeOptions): Pr
   }
   if (!appSecret) throw new Error('app secret is required');
   const tenant = tenantBrandFromString(opts.tenant);
-  const result = await validateAppCredentials(opts.appId, appSecret, tenant);
+  const network = await loadLarkNetworkConfig(configPath, profile);
+  const result = await validateAppCredentials(opts.appId, appSecret, tenant, ...(network ? [network] as const : []));
   if (!result.ok) {
     throw new Error(`app credentials validation failed: ${result.reason ?? 'unknown'}`);
   }

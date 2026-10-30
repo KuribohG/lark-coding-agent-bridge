@@ -48,6 +48,8 @@ export class InboxManager {
   private control?: InboxControlHandle;
   private unlock?: () => Promise<void>;
   private fingerprint = '';
+  private ownedLarkAuth?: LarkProfileAuth;
+  private releaseNetwork?: () => Promise<void>;
   private chain: Promise<unknown> = Promise.resolve();
   private timer: ReturnType<typeof setInterval>;
   private closed = false;
@@ -220,7 +222,7 @@ export class InboxManager {
     if (root) this.sources.configureConcurrency(root.workItemConcurrency);
     const controls = this.profiles(config.executorProfile);
     const sourceProfile = config.triageService ? undefined : root?.profiles[config.triageProfile || config.executorProfile];
-    const fingerprint = JSON.stringify([connectionConfig(config), controls?.cfg.accounts.app, controls?.botIdentity?.openId, controls?.profileConfig.mode, controls?.profileConfig.agentKind, controls?.profileConfig.codex, controls?.profileConfig.preferences,
+    const fingerprint = JSON.stringify([connectionConfig(config), controls?.cfg.accounts.app, controls?.cfg.channels?.lark?.network, controls?.botIdentity?.openId, controls?.profileConfig.mode, controls?.profileConfig.agentKind, controls?.profileConfig.codex, controls?.profileConfig.preferences,
       sourceProfile?.agentKind, sourceProfile?.mode, sourceProfile?.codex, sourceProfile?.preferences,
       config.triageService ? root?.modelServices?.[config.triageService] : undefined]);
     if (this.service && controls && fingerprint === this.fingerprint) {
@@ -264,7 +266,8 @@ export class InboxManager {
           return await reader.callValue(args);
         } finally { signal.removeEventListener('abort', cancel); reader.close(); }
       }, config.recipientKey);
-      const larkAuth = controls.larkAuth ?? new LarkProfileAuth(controls.cfg, paths);
+      const larkAuth = controls.larkAuth ?? (this.ownedLarkAuth = new LarkProfileAuth(controls.cfg, paths));
+      this.releaseNetwork = larkAuth.retainNetwork();
       const credentials = await larkAuth.credentials();
       const tenantTokens = await larkAuth.tenantTokens();
       const cotClient = new CotClient({
@@ -272,6 +275,7 @@ export class InboxManager {
         appId: credentials.appId,
         appSecret: credentials.appSecret,
         tenantTokens,
+        request: larkAuth.request,
       });
       this.service = new InboxService(new InboxStore(join(folder, 'state.json')), config, larkRuntime(config, {
         selfSenderIds: [controls.cfg.accounts.app.id, controls.botIdentity?.openId].filter((id): id is string => Boolean(id)),
@@ -323,6 +327,7 @@ export class InboxManager {
           publicUrl: config.h5.publicUrl,
           tenant: controls.cfg.accounts.app.tenant,
           tenantTokens,
+          request: larkAuth.request,
         });
         this.h5 = await startInboxH5(this.service, auth);
       }
@@ -343,6 +348,8 @@ export class InboxManager {
     this.lark?.close(); this.lark = undefined;
     await this.nonces?.flush(); this.nonces = undefined;
     await this.h5?.close(); this.h5 = undefined;
+    await this.releaseNetwork?.(); this.releaseNetwork = undefined;
+    await this.ownedLarkAuth?.close(); this.ownedLarkAuth = undefined;
     await this.unlock?.(); this.unlock = undefined;
     this.fingerprint = '';
   }

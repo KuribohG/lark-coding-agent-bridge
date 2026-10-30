@@ -58,6 +58,38 @@ async function file(text = source) {
 }
 
 describe('layered configuration', () => {
+  it('keeps active network settings until reconnect while reloading display settings', async () => {
+    const path = await file(source + `
+[channels.lark.network]
+proxy = "http://proxy.example:3128"
+no_proxy = "localhost"
+`);
+    const root = (await loadRootConfig(path))!;
+    const profile = root.profiles.bot!;
+    const state = { profile: 'bot', configPath: path, profileConfig: profile, cfg: profile };
+    await patchConfig(path, ['channels', 'lark', 'profiles', 'bot', 'network', 'proxy'], 'direct');
+    await patchConfig(path, ['channels', 'lark', 'profiles', 'bot', 'show_tools'], true);
+    const result = await reloadProfile(state);
+    expect(result.restart).toContain('channels.lark.network');
+    expect(result.applied).toContain('channels.display');
+    expect(state.cfg.channels?.lark).toMatchObject({ show_tools: true,
+      network: { proxy: 'http://proxy.example:3128', no_proxy: 'localhost' } });
+    expect((await loadRootConfig(path))!.profiles.bot!.channels?.lark?.network?.proxy).toBe('direct');
+    const inspected = await inspectConfig(path, 'bot');
+    expect(inspected.channels.lark?.['network.proxy']).toEqual({ value: 'direct', source: 'channels.lark.profiles.bot.network.proxy' });
+    expect(inspected.channels.lark?.['network.no_proxy']).toEqual({ value: 'localhost', source: 'channels.lark.network.no_proxy' });
+  });
+
+  it('preserves network settings through unrelated preference saves', async () => {
+    const path = await file(source + '\n[channels.lark.network]\nproxy = "direct"\n');
+    const root = (await loadRootConfig(path))!;
+    root.profiles.bot!.preferences.model = 'new-model';
+    await saveRootConfig(root, path);
+    const saved = (await loadRootConfig(path))!;
+    expect(saved.profiles.bot!.channels?.lark?.network).toEqual({ proxy: 'direct' });
+    expect(saved.profiles.other!.channels?.lark?.network).toEqual({ proxy: 'direct' });
+  });
+
   it('preserves inline concurrency and unrelated comments across configuration saves', async () => {
     const path = await file(source + '\n[monitoring.concurrency]\nanalysis = 7\ntriage = 60\n');
     const root = (await loadRootConfig(path))!;

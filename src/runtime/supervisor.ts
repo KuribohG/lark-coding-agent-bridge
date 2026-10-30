@@ -127,6 +127,7 @@ class ManagedProfile {
   }
 
   async bringUp(nowIso: string): Promise<void> {
+    this.larkAuth.resumeNetwork();
     this.startedAt = nowIso;
     // Acquire sequentially, pushing as we go: if the app lock throws (e.g. the
     // same app is running elsewhere) the already-held profile lock is still in
@@ -167,6 +168,7 @@ class ManagedProfile {
     } catch (err) {
       // Roll back partial bring-up so a failed start doesn't leak locks/entries.
       if (this.entry) unregisterSync(this.entry.id, this.appPaths.userRegistryFile);
+      await this.larkAuth.close();
       await releaseRuntimeLocks(this.locks);
       this.locks = [];
       throw err;
@@ -182,6 +184,7 @@ class ManagedProfile {
     if (this.entry) {
       await unregister(this.entry.id, this.appPaths.userRegistryFile).catch(() => undefined);
     }
+    await this.larkAuth.close();
     await releaseRuntimeLocks(this.locks);
     this.locks = [];
   }
@@ -230,8 +233,13 @@ class ManagedProfile {
         self.onExitCommand(self.profile);
       },
       async restart() {
-        await self.restart();
-        await self.onRuntimeChange();
+        const previousAuth = self.larkAuth;
+        try {
+          await self.restart();
+          await self.onRuntimeChange();
+        } finally {
+          if (previousAuth !== self.larkAuth) await previousAuth.close();
+        }
       },
       async switchAgent() {
         await self.switchAgent();
@@ -248,6 +256,7 @@ class ManagedProfile {
     let nextAppLock: AcquiredRuntimeLock | undefined;
     let pendingPaused = false;
     let switched = false;
+    let candidateAuth: LarkProfileAuth | undefined;
     try {
       this.controls.pausePendingInput?.();
       pendingPaused = true;
@@ -270,7 +279,7 @@ class ManagedProfile {
         configPath: this.configPath,
         modelServices: nextRuntime.modelServices,
       });
-      const nextLarkAuth = new LarkProfileAuth(next, nextRuntime.appPaths);
+      const nextLarkAuth = candidateAuth = new LarkProfileAuth(next, nextRuntime.appPaths);
       const availability = await checkRuntimeAgentAvailability(nextExecution.defaultAgent());
       if (!availability.ok) throw availability.error;
 
@@ -335,6 +344,7 @@ class ManagedProfile {
       pendingPaused = false;
       switched = true;
     } finally {
+      if (candidateAuth && candidateAuth !== this.larkAuth) await candidateAuth.close();
       if (pendingPaused && !switched) this.controls.resumePendingInput?.();
       if (nextAppLock) await nextAppLock.release().catch(() => undefined);
       this.restarting = false;

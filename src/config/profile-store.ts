@@ -1,5 +1,5 @@
 import { isAgentKind } from '../agent/backend-spec';
-import { documentToRoot, parseDocument, rootToDocument, formatDocument, type ConfigDocument } from './document';
+import { documentToRoot, parseDocument, rootToDocument, formatDocument, resolveChannels, type ConfigDocument } from './document';
 import { diffValues, editToml } from './toml-edit';
 import { chmod, mkdir, readFile, rename, rm, rmdir, stat, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
@@ -34,6 +34,11 @@ export async function loadRootConfig(path: string): Promise<RootConfig | undefin
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw err;
   }
+}
+
+export async function loadLarkNetworkConfig(path: string, profile?: string) {
+  const root = await loadRootConfig(path);
+  return root ? resolveChannels(configDocument(root)!.document, profile).lark.network : undefined;
 }
 
 export function normalizeRootConfig(root: RootConfig): RootConfig {

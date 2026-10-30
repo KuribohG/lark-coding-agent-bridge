@@ -13,6 +13,7 @@ import {
   type PermissionConfig,
 } from './permissions';
 import { larkDisplay } from './lark-display';
+import { validateLarkNetwork } from './lark-network';
 import { WEB_DISPLAY_DEFAULTS } from '../channels/web/config';
 import { SLACK_DISPLAY_DEFAULTS } from '../channels/slack/config';
 import { normalizeFileLinks } from './file-links';
@@ -40,7 +41,7 @@ export const RUN_KEYS = {
   idle_timeout_minutes: 'runIdleTimeoutMinutes', stop_grace_ms: 'agentStopGraceMs',
 } as const;
 const PROFILE_KEYS = ['agent', 'run', 'mode', 'accounts', 'secrets', 'access', 'workspaces', 'permissions', 'attachments', 'meeting', 'larkCli', 'launch'];
-const LARK_KEYS = ['reply_mode', 'show_tools', 'progress', 'message_debounce_ms', 'file_links'];
+const LARK_KEYS = ['reply_mode', 'show_tools', 'progress', 'message_debounce_ms', 'file_links', 'network'];
 const WEB_KEYS = ['show_tools', 'show_reasoning'];
 const SLACK_KEYS = ['show_tools', 'show_progress'];
 function object(value: unknown, path: string): Table {
@@ -83,6 +84,7 @@ function checkDisplay(value: unknown, channel: string, path: string): void {
     if (k === 'message_debounce_ms' && (!Number.isSafeInteger(v) || v < 0 || v > 5000)) {
       throw new Error(`${path}.${k}: expected integer 0..5000`);
     }
+    if (k === 'network') validateLarkNetwork(v, `${path}.network`);
     if (k === 'file_links') {
       normalizeFileLinks(v);
       for (const rule of v) keys(rule, ['localRoot', 'fileBaseUrl', 'browseBaseUrl', 'markdownPreviewUrl'], `${path}.file_links`);
@@ -303,7 +305,11 @@ export function resolveExecutionProfile(
 export function resolveChannels(doc: ConfigDocument, profile?: string) {
   const resolve = (channel: string, defaults: Table) => {
     const { profiles, ...common } = doc.channels?.[channel] ?? {};
-    const result = { ...defaults, ...common, ...(profile ? profiles?.[profile] : {}) };
+    const override = profile ? profiles?.[profile] : undefined;
+    const result = { ...defaults, ...common, ...override };
+    if (channel === 'lark' && (common.network || override?.network)) {
+      result.network = { ...common.network, ...override?.network };
+    }
     if (result.file_links !== undefined) result.file_links = normalizeFileLinks(result.file_links);
     return result;
   };

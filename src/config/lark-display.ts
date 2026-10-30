@@ -12,6 +12,7 @@ export interface LarkDisplayPreferences {
 }
 
 export interface LarkDisplayConfig {
+  network?: import('./lark-network').LarkNetworkConfig;
   reply_mode: MessageReplyMode;
   show_tools: boolean;
   progress: CotMessagesMode;

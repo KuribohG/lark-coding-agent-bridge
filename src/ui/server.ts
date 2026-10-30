@@ -220,7 +220,7 @@ async function route(
     return;
   }
   if (path === '/api/profiles/validate' && p) {
-    sendJson(res, 200, await onboardValidate(await readJsonBody(req)));
+    sendJson(res, 200, await onboardValidate(await readJsonBody(req), deps.rootDir));
     return;
   }
   if (path === '/api/profiles/qr/start' && p) {

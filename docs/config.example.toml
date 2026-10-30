@@ -43,6 +43,12 @@ progress = "brief"
 # Quiet-window used to merge adjacent messages before starting an agent turn.
 message_debounce_ms = 600
 
+[channels.lark.network]
+# Shared by Bridge's Lark SDK REST/WebSocket, COT, token and H5 auth requests.
+proxy = "env" # Default: HTTP(S)_PROXY / ALL_PROXY. Also accepts "direct" or an HTTP(S) proxy URL.
+# no_proxy = "localhost,127.0.0.1,::1,.internal,10.0.0.0/8"
+# Reconnect/restart the profile after changing network settings.
+
 [channels.web]
 show_tools = true
 show_reasoning = false
@@ -54,6 +60,9 @@ show_progress = true
 [channels.lark.profiles.codex]
 progress = "detailed"
 # message_debounce_ms = 250
+# [channels.lark.profiles.codex.network]
+# proxy = "http://proxy.example:3128"
+# no_proxy = "" # Clear inherited/environment bypass rules for this profile.
 
 [profiles.codex]
 agent = "codex"

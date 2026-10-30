@@ -1,6 +1,7 @@
 import type { AgentEvent } from '../agent/types';
 import { retryStatus } from '../card/run-state';
 import type { CotMessagesMode, TenantBrand } from '../config/schema';
+import { larkFetch } from '../lark-auth/network';
 import { log } from '../core/logger';
 import { toolHeaderText } from '../card/tool-render';
 import type { RunState } from '../card/run-state';
@@ -22,15 +23,18 @@ const COT_REQUEST_TIMEOUT_MS = 15_000;
 export class CotClient {
   private readonly baseUrl: string;
   private readonly tenantTokens: TenantTokenProvider;
+  private readonly fetch: typeof fetch;
 
   constructor(opts: {
     tenant: TenantBrand;
     appId: string;
     appSecret: string;
     tenantTokens?: TenantTokenProvider;
+    request?: typeof fetch;
   }) {
     this.baseUrl = larkOpenApiOrigin(opts.tenant);
-    this.tenantTokens = opts.tenantTokens ?? new TenantTokenProvider(opts);
+    this.fetch = opts.request ?? larkFetch;
+    this.tenantTokens = opts.tenantTokens ?? new TenantTokenProvider({ ...opts, request: this.fetch });
   }
 
   async tenantToken(): Promise<string> {
@@ -39,7 +43,7 @@ export class CotClient {
 
   async request(path: string, init: RequestInit = {}): Promise<Record<string, unknown>> {
     const token = await this.tenantToken();
-    const resp = await fetch(`${this.baseUrl}${path}`, {
+    const resp = await this.fetch(`${this.baseUrl}${path}`, {
       signal: AbortSignal.timeout(COT_REQUEST_TIMEOUT_MS),
       ...init,
       headers: {
@@ -48,7 +52,10 @@ export class CotClient {
         ...(init.headers ?? {}),
       },
     });
-    if (!resp.ok) throw new Error(`COT HTTP ${resp.status}`);
+    if (!resp.ok) {
+      await resp.body?.cancel();
+      throw new Error(`COT HTTP ${resp.status}`);
+    }
     const text = await resp.text();
     if (!text) return {};
     const data = JSON.parse(text) as { code?: number; msg?: string; data?: Record<string, unknown> } & Record<string, unknown>;

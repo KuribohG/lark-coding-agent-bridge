@@ -232,6 +232,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     appId: cfg.accounts.app.id,
     appSecret,
     tenantTokens,
+    request: larkAuth.request,
   });
   const preparedCots = new Map<string, CotPublisher>();
   const threadModeOverrideWarnedChats = new Set<string>();
@@ -282,8 +283,10 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     // Per-request REST timeout — without a cap a slow API can hang the
     // event-handling thread.
     httpTimeoutMs: 30_000,
-    // Route WS + REST through HTTPS_PROXY / HTTP_PROXY when set (no-op otherwise).
-    respectProxyEnv: true,
+    // Keep SDK REST/WS and native COT/auth requests on the same profile policy.
+    httpInstance: larkAuth.network.httpInstance,
+    agent: larkAuth.network.agent,
+    respectProxyEnv: false,
   };
 
   const channel = createLarkChannel(opts);
@@ -717,6 +720,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   const keepalive = startKeepalive({
     channel,
     domain: probeDomain,
+    request: larkAuth.request,
     forceReconnect: () => controls.restart(),
   });
 
@@ -765,6 +769,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           log.fail('disconnect', result.reason, { step: `flush-${idx}` });
         }
       }
+      if (!deps.larkAuth) await larkAuth.close();
       if (disconnectResult.status === 'rejected') {
         throw disconnectResult.reason;
       }

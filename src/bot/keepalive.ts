@@ -1,5 +1,6 @@
 import type { LarkChannel } from '@larksuite/channel';
 import { log, reportMetric } from '../core/logger';
+import { larkFetch } from '../lark-auth/network';
 
 /**
  * App-level keepalive loop. Defense-in-depth against silent SDK / network
@@ -37,6 +38,7 @@ export interface KeepaliveDeps {
   channel: LarkChannel;
   /** HTTP probe target, typically `https://open.feishu.cn` or lark equivalent. */
   domain: string;
+  request?: typeof fetch;
   /** Force-reconnect callback. Bridge uses `controls.restart`. */
   forceReconnect: () => Promise<void>;
 }
@@ -88,7 +90,7 @@ export function startKeepalive(deps: KeepaliveDeps): KeepaliveHandle {
 
     // (4) Probe whether the network can even reach Feishu. If not, it's not
     //     a WS-level problem and force-reconnect won't help.
-    const reachable = await httpProbe(domain);
+    const reachable = await httpProbe(domain, deps.request ?? larkFetch);
     if (!reachable) {
       networkDownTicks++;
       // Rate-limit log: first hit + every NETWORK_DOWN_LOG_EVERY ticks.
@@ -139,13 +141,13 @@ export function startKeepalive(deps: KeepaliveDeps): KeepaliveHandle {
   };
 }
 
-async function httpProbe(domain: string): Promise<boolean> {
+async function httpProbe(domain: string, request: typeof fetch): Promise<boolean> {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), HTTP_PROBE_TIMEOUT_MS);
     try {
       // HEAD on root is cheap and harmless; any HTTP response counts as "reachable".
-      const res = await fetch(domain, { method: 'HEAD', signal: ctrl.signal });
+      const res = await request(domain, { method: 'HEAD', signal: ctrl.signal });
       // Even a 4xx/5xx means the host answered → reachable.
       return res.status > 0;
     } finally {

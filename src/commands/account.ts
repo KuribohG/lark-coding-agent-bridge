@@ -121,7 +121,8 @@ async function submitAccount(ctx: CommandContext): Promise<void> {
       return;
     }
 
-    const result = await validateAppCredentials(appId, appSecret, tenant);
+    const network = ctx.controls.cfg.channels?.lark?.network;
+    const result = await validateAppCredentials(appId, appSecret, tenant, ...(network ? [network] as const : []));
     if (!result.ok) {
       await finishFailure(result.reason ?? 'unknown');
       return;

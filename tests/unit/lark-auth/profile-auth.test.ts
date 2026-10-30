@@ -5,6 +5,35 @@ import * as secretResolver from '../../../src/config/secret-resolver';
 import { LarkProfileAuth } from '../../../src/lark-auth/profile-auth';
 
 describe('LarkProfileAuth', () => {
+  it('keeps shared transports alive until background users finish', async () => {
+    const auth = new LarkProfileAuth({ accounts: { app: { id: 'app', secret: 'test-secret', tenant: 'feishu' } },
+      channels: { lark: { network: { proxy: 'direct' } } } });
+    const network = auth.network;
+    const close = vi.spyOn(network, 'close');
+    const first = auth.retainNetwork();
+    const second = auth.retainNetwork();
+    await auth.close();
+    await first();
+    await first();
+    expect(close).not.toHaveBeenCalled();
+    await second();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels deferred shutdown when an agent-switch rollback reactivates the profile', async () => {
+    const auth = new LarkProfileAuth({ accounts: { app: { id: 'app', secret: 'test-secret', tenant: 'feishu' } },
+      channels: { lark: { network: { proxy: 'direct' } } } });
+    const network = auth.network;
+    const close = vi.spyOn(network, 'close');
+    const release = auth.retainNetwork();
+    await auth.close();
+    auth.resumeNetwork();
+    await release();
+    expect(close).not.toHaveBeenCalled();
+    await auth.close();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
   it('resolves credentials once and shares token and callback-key state', async () => {
     const profile = createDefaultProfileConfig({
       agentKind: 'codex',

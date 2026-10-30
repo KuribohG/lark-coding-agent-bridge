@@ -39,11 +39,18 @@ export async function inspectConfig(path: string, profile?: string) {
     slack: { ...SLACK_DISPLAY_DEFAULTS, ...p.channels?.slack },
   };
   const display = Object.fromEntries(Object.entries(channels).map(([channel, fields]) => [channel,
-    Object.fromEntries(Object.entries(fields).filter(([key]) => key !== 'file_links').map(([key, value]) => {
+    Object.fromEntries([
+      ...Object.entries(fields).filter(([key]) => key !== 'file_links' && key !== 'network'),
+      ...(channel === 'lark' ? [
+        ['network.proxy', p.channels?.lark?.network?.proxy ?? 'env'],
+        ['network.no_proxy', p.channels?.lark?.network?.no_proxy ?? '(environment)'],
+      ] : []),
+    ].map(([key, value]) => {
+      const parts = String(key).split('.');
       const override = `channels.${channel}.profiles.${name}.${key}`;
       const common = `channels.${channel}.${key}`;
-      return [key, { value, source: getPath(doc, ['channels', channel, 'profiles', name, key]) !== undefined ? override
-        : getPath(doc, ['channels', channel, key]) !== undefined ? common : 'built-in' }];
+      return [key, { value, source: getPath(doc, ['channels', channel, 'profiles', name, ...parts]) !== undefined ? override
+        : getPath(doc, ['channels', channel, ...parts]) !== undefined ? common : 'built-in' }];
     })),
   ]));
   return { file: path, format: 'toml', profile: name, agent: p.agentKind,
@@ -74,10 +81,19 @@ export async function reloadProfile(state: MutableProfileState) {
   if (!root || !next) throw new Error('profile not found');
   const safe = new Set(['preferences', 'channels', 'access']);
   const restart = [...new Set(diffValues(state.profileConfig, next).map(c => c.path[0]!).filter(k => !safe.has(k)))];
+  const previousNetwork = state.profileConfig.channels?.lark?.network;
+  const networkChanged = diffValues(previousNetwork ?? {}, next.channels?.lark?.network ?? {}).length > 0;
+  if (networkChanged) restart.push('channels.lark.network');
   if (restart.includes('agentKind')) return { restart, revision: configDocument(root)?.revision, applied: [] };
-  state.profileConfig = { ...state.profileConfig, preferences: next.preferences, channels: next.channels, access: next.access };
+  let channels = structuredClone(next.channels);
+  if (networkChanged) {
+    const lark = (channels ??= {}).lark ??= {};
+    if (previousNetwork) lark.network = previousNetwork;
+    else delete lark.network;
+  }
+  state.profileConfig = { ...state.profileConfig, preferences: next.preferences, channels, access: next.access };
   state.cfg = { ...state.cfg, ...state.profileConfig };
-  return { restart, revision: configDocument(root)?.revision, applied: ['run', 'channels', 'access'] };
+  return { restart, revision: configDocument(root)?.revision, applied: ['run', networkChanged ? 'channels.display' : 'channels', 'access'] };
 }
 
 /** Produce a candidate file; never edits source, credentials, cursors or live processes. */

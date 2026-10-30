@@ -29,10 +29,14 @@ export function createLarkWorkItemDelivery(options: {
     watchMentions: false,
   });
   const lark = new InboxLark({ profile: options.profile, rootDir: options.rootDir }, config);
+  const activeReleases = new Set<() => Promise<void>>();
   return {
     ownerKey: options.notification.recipientKey,
     target: options.notification.target,
-    close: () => lark.close(),
+    close: async () => {
+      lark.close();
+      await Promise.all([...activeReleases].map(release => release()));
+    },
     deliver: lark.deliver.bind(lark),
     ...(options.sourceNotifications
       ? {
@@ -54,14 +58,31 @@ export function createLarkWorkItemDelivery(options: {
       if (getCotMessages(cfg) === 'off') return;
       const paths = resolveAppPaths({ rootDir: options.rootDir, profile: options.profile });
       const auth = options.larkAuth ?? new LarkProfileAuth(cfg, paths);
-      const credentials = await auth.credentials();
-      const client = new CotClient({
-        tenant: credentials.tenant,
-        appId: credentials.appId,
-        appSecret: credentials.appSecret,
-        tenantTokens: await auth.tenantTokens(),
-      });
-      return startInboxProgress(job, lark, client, getCotMessages(cfg), signal);
+      const releaseLease = auth.retainNetwork();
+      const release = async () => {
+        if (!activeReleases.delete(release)) return;
+        await releaseLease();
+        if (!options.larkAuth) await auth.close();
+      };
+      activeReleases.add(release);
+      try {
+        const credentials = await auth.credentials();
+        const client = new CotClient({
+          tenant: credentials.tenant,
+          appId: credentials.appId,
+          appSecret: credentials.appSecret,
+          tenantTokens: await auth.tenantTokens(),
+          request: auth.request,
+        });
+        const progress = await startInboxProgress(job, lark, client, getCotMessages(cfg), signal);
+        if (!progress) { await release(); return; }
+        return {
+          event: progress.event,
+          finish: async success => {
+            try { await progress.finish(success); } finally { await release(); }
+          },
+        };
+      } catch (error) { await release(); throw error; }
     },
   };
 }
