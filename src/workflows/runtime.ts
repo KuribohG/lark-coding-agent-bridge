@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import type { RunExecutor } from '../runtime/run-executor';
 import { log } from '../core/logger';
 import { WorkflowKernel } from './kernel';
-import { WorkflowIpc, WORKFLOW_TOOL_INSTRUCTIONS, WORKFLOW_MEMBER_INSTRUCTIONS } from './ipc';
+import { WorkflowIpc, WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from './ipc';
 import { workflowDigest } from './digest';
 import { inheritedWorkerExecution } from './execution';
 import { runScriptProgram } from './script-vm';
@@ -27,7 +27,7 @@ export class WorkflowRuntime {
   private timer?: NodeJS.Timeout;
   private closed = false;
   private ticking = false;
-  private readonly scripts = new Map<string, { controller: AbortController; done: Promise<void> }>();
+  private readonly scripts = new Map<string, { controller: AbortController; done: Promise<void>; depth: number }>();
 
   constructor(private readonly deps: WorkflowRuntimeDeps) {
     this.kernel = new WorkflowKernel(deps.path, {
@@ -55,11 +55,13 @@ export class WorkflowRuntime {
       await this.kernel.tick();
       if (this.closed) return;
       for (const state of this.kernel.queuedScripts()) {
-        if (this.scripts.size >= 4) break;
+        const depth=state.parent?.depth ?? 0;
+        // Separate bounded levels let children run while ancestor interpreters await their results.
+        if ([...this.scripts.values()].filter(script=>script.depth===depth).length>=4) continue;
         if (this.scripts.has(state.workflowId)) continue;
         const controller = new AbortController();
         const done = Promise.resolve().then(() => this.runScript(state.root.scopeId, state.workflowId, controller));
-        this.scripts.set(state.workflowId, { controller, done });
+        this.scripts.set(state.workflowId, { controller, done, depth });
         void done.finally(() => this.scripts.delete(state.workflowId))
           .catch(error => log.warn('workflow', 'script-failed', { error: String(error) }));
       }
@@ -79,7 +81,7 @@ export class WorkflowRuntime {
       Math.max(0, begun.state.deadlineAt - Date.now()));
     deadline.unref();
     try {
-      await this.deps.showPlan?.(begun.state, this.kernel.plan(scopeId, workflowId));
+      if (!begun.state.parent) await this.deps.showPlan?.(begun.state, this.kernel.plan(scopeId, workflowId));
       controller.signal.throwIfAborted();
       const text = await runScriptProgram({ source: begun.source, args: begun.state.script!.args, signal: controller.signal,
         agent: async input => {
@@ -161,8 +163,8 @@ export class WorkflowRuntime {
           if (workflowDigest(admitted.execution) !== workflowDigest(pinned)) throw new Error('Worker binding changed while queued');
         },
         policy: { ...current.policy, prompt: request.prompt },
-        systemPrompt: task.agentId ? WORKFLOW_MEMBER_INSTRUCTIONS : '你是 bridge 管理的脚本工作流子 agent。只完成指定任务，遵守原始需求的授权范围，不要自行发送消息或派生子 agent。用最终答复返回结果。角色提示不改变实际执行权限。',
-        ...(task.agentId && session.nativeSessionId ? { [session.nativeIdKind]: session.nativeSessionId } : {}),
+        systemPrompt: workflowWorkerInstructions(task),
+        ...((task.agentId || task.workflowTool) && session.nativeSessionId ? { [session.nativeIdKind]: session.nativeSessionId } : {}),
         ...pinned.modelSettings,
         deadlineAt: workflow.deadlineAt, signal,
         observability: { profile: pinned.profile, agent: pinned.agentKind, source: 'workflow', stage: session.role },
@@ -171,6 +173,15 @@ export class WorkflowRuntime {
       let question: string | undefined;
       let error: string | undefined;
       let normal = false;
+      let yieldTimer: NodeJS.Timeout | undefined;
+      const yieldIfWaiting = () => {
+        if (!yieldTimer && this.kernel.waitingForChild(workflow.root.scopeId,workflow.workflowId,task.taskId,attemptId)) {
+          yieldTimer=setTimeout(()=>{void execution.stop().catch(error=>log.warn('workflow','yield-failed',{error:String(error)}));},30_000);
+          yieldTimer.unref();
+        }
+      };
+      const stopWatching=this.kernel.onChange(workflow.root.scopeId,yieldIfWaiting);
+      yieldIfWaiting();
       try {
         request.onRun(execution.runId);
         for await (const event of execution.subscribe()) {
@@ -190,6 +201,8 @@ export class WorkflowRuntime {
       } catch (cause) {
         await execution.stop();
         throw cause;
+      } finally {
+        stopWatching();if(yieldTimer) clearTimeout(yieldTimer);
       }
       const result = await execution.result;
       return { status: result === 'completed' && normal ? 'completed' : result === 'stopped' ? 'stopped' : 'failed', text, question, error };

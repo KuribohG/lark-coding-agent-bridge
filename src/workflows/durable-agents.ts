@@ -55,7 +55,8 @@ export function scheduleMemberTurn(state: WorkflowState, call: ScriptAgentCall, 
   }
   const previousTurnId = agent ? memberCursor(state, agent) : undefined;
   const digest = workflowDigest({ key: call.key, prompt: call.prompt, output: call.output, execution,
-    member: call.member, previousTurnId, root: state.root, goal: state.goal, definition: state.definitionDigest });
+    member: call.member, previousTurnId, root: state.root, goal: state.goal, definition: state.definitionDigest,
+    ...(call.workflowTool ? {workflowTool:true} : {}) });
   const existing = agent && state.tasks.find(task => task.agentId === agent!.agentId && task.requestDigest === digest);
   if (existing?.status === 'result_ready') return { task: existing, cached: true };
   if (existing) {
@@ -81,6 +82,7 @@ export function scheduleMemberTurn(state: WorkflowState, call: ScriptAgentCall, 
   }
   const receipts = mailbox(state).receipts.filter(receipt => receipt.agentId === agent!.agentId && receipt.status === 'ready' && !receipt.turnId);
   const task: WorkflowTask = { taskId: randomUUID(), taskKey: call.key, sessionRef: agent.sessionRef, objective: call.prompt,
+    ...(call.workflowTool ? {workflowTool:true} : {}),
     requestDigest: digest, cacheKey: digest, status: 'queued', attempts: [], resultRefs: [], inputRefs: [],
     scriptRunId: state.script!.runId, scriptKey: call.key, scriptOutput: call.output, agentId: agent.agentId,
     previousTurnId, inputCheckpointVersion: agent.checkpointVersion, inputMessageIds: receipts.flatMap(receipt => receipt.messageIds) };

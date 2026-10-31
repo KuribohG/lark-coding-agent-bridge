@@ -3,9 +3,9 @@ import type { DurableAgent, WorkflowState, WorkflowTask, WorkflowWorkItem } from
 
 const TASK_STATUS: Record<WorkflowTask['status'], string> = {
   queued: '排队', starting: '启动中', running: '执行中', result_ready: '本轮已完成',
-  waiting_input: '等待输入', failed: '失败', cancelling: '正在取消', cancelled: '已取消', interrupted: '已中断',
+  waiting_input: '等待输入', waiting_workflow:'等待子 workflow', failed: '失败', cancelling: '正在取消', cancelled: '已取消', interrupted: '已中断',
 };
-const ATTENTION = new Set<WorkflowTask['status']>(['failed', 'interrupted', 'waiting_input', 'running', 'starting', 'cancelling', 'queued']);
+const ATTENTION = new Set<WorkflowTask['status']>(['failed', 'interrupted', 'waiting_input', 'waiting_workflow', 'running', 'starting', 'cancelling', 'queued']);
 const compact = (value: string, limit: number) => {
   const text = value.replace(/\s+/g, ' ').trim();
   return text.length > limit ? text.slice(0, limit - 1) + '…' : text;
@@ -48,6 +48,7 @@ function memberLines(state: WorkflowState, member: DurableAgent, detail: boolean
       : task ? TASK_STATUS[task.status] : '尚未开始';
   const lines = [`- 成员 ${compact(member.key, 100)}：${phase}，${execution(state, member.sessionRef)}`];
   if (task) lines.push(`  任务：${compact(task.scriptKey ?? task.taskKey, 100)}，尝试 ${task.attempts.length} 次`);
+  if (task?.waitingWorkflowId) lines.push(`  子 workflow：${task.waitingWorkflowId}（等待结果，不占 worker 进程）`);
   if (receipt && receipt.status !== 'consumed') {
     lines.push(`  收件批次：${compact(receipt.key, 100)}，${receipt.status === 'waiting' ? '等待消息到达' : `${receipt.messageIds.length} 条已保留，下一轮成功后确认消费`}`);
   }
@@ -68,6 +69,7 @@ function memberLines(state: WorkflowState, member: DurableAgent, detail: boolean
 
 function taskLines(state: WorkflowState, task: WorkflowTask): string[] {
   return [`- ${compact(task.scriptKey ?? task.taskKey, 100)}：${TASK_STATUS[task.status]}，尝试 ${task.attempts.length} 次，${execution(state, task.sessionRef)}`,
+    ...(task.workflowTool ? [`  子 workflow 工具：已启用${task.waitingWorkflowId ? `，等待 ${task.waitingWorkflowId}（不占 worker 进程）` : ''}`] : []),
     ...(task.error ? [`  原因：${errorText(task.error)}`] : [])];
 }
 

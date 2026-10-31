@@ -34,7 +34,7 @@ const save = (path: string, data: unknown) => writeFile(path, JSON.stringify(dat
 type Backend = Extract<AgentKind, 'codex' | 'claude' | 'pi'>;
 type Case = {
   id: string;
-  scenario: 'memory' | 'interrupt' | 'discussion' | 'queue' | 'consumers';
+  scenario: 'memory' | 'interrupt' | 'discussion' | 'queue' | 'consumers' | 'nested';
   backend: Backend;
   reviewer?: Backend;
   marker: string;
@@ -143,7 +143,7 @@ async function childPhase(test: Case, phase: string, directory: string) {
     adapters.set(kind, wrap(adapter, kind, phase, test, observations, nativeRuns));
   }
   const activeRuns = new ActiveRuns();
-  const processPool = new ProcessPool(() => test.scenario === 'consumers' ? 4 : 3);
+  const processPool = new ProcessPool(() => test.scenario === 'nested' ? 1 : test.scenario === 'consumers' ? 4 : 3);
   const executor = new RunExecutor({ resolveAgent: (_, kind) => {
     const adapter = adapters.get(kind as Backend); assert(adapter, 'Backend outside this case'); return adapter;
   }, activeRuns, pool: processPool });
@@ -178,6 +178,52 @@ async function childPhase(test: Case, phase: string, directory: string) {
   };
   await runtime.start();
   try {
+    if (test.scenario === 'nested') {
+      const probePath = join(workspace,'probe-disabled.mjs');
+      const proofPath = join(workspace,'disabled-proof.json');
+      await writeFile(probePath, [
+        'import {execFileSync} from "node:child_process";',
+        'import {writeFileSync} from "node:fs";',
+        'let rejected=false;',
+        'try { execFileSync(process.execPath,[process.env.LARK_WORKFLOW_CLI,"workflow","run_workflow","--input","{}","--json"],{stdio:"pipe"}); }',
+        'catch(error) { rejected=/not enabled/.test(String(error.stderr)+String(error.stdout)); }',
+        'if(!rejected) throw new Error("Disabled nested tool was not rejected");',
+        `const result=${JSON.stringify({marker:test.marker,disabled:true})};`,
+        `writeFileSync(${JSON.stringify(proofPath)},JSON.stringify(result));console.log(JSON.stringify(result));`,
+      ].join('\n'));
+      const inputPath = join(workspace,'child-workflow.json');
+      await save(inputPath,{operationId:'delegate',key:'delegate',goal:'Run the isolated disabled-tool probe',
+        plan:'One leaf on the current harness and model, workflowTool false. Return its probe JSON.',
+        script:'return await agent(args.task,{key:"leaf",workflowTool:false,output:"json"});',
+        args:{task:`Run node ${JSON.stringify(probePath)} with your shell tool, then return its JSON stdout exactly. Do not read other files or send messages.`},
+        checkpoint:{stage:'resume-me'}});
+      const prompt = `Nested workflow acceptance. If your injected workflows.call is completed, verify its result.disabled is true and checkpoint.stage is resume-me, then return workflows.call.result exactly as JSON without tools. Otherwise run node "$LARK_WORKFLOW_CLI" workflow run_workflow --input-file ${JSON.stringify(inputPath)} --json using your shell tool. When it returns waiting, end this turn immediately with WAITING. Do not poll, read configuration, or send external messages.`;
+      await call('run_script',{goal:'Verify a native parent delegates, yields its only process slot, and resumes its original conversation',
+        script:'return await agent(args.task,{key:"parent",workflowTool:true,output:"json"});',args:{task:prompt},
+        plan:'Enabled parent delegates one disabled leaf, releases its slot, and resumes with the result.',maxConcurrent:1,maxAgents:2,timeoutMs:240_000});
+      const done = await until(current=>current.script?.status==='result_ready');
+      const result=JSON.parse(done.artifacts.find(artifact=>artifact.ref===done.script!.resultRef)!.text);
+      assert.deepEqual(result,{marker:test.marker,disabled:true});
+      assert.deepEqual(JSON.parse(await readFile(proofPath,'utf8')),result);
+      assert.equal(done.tasks[0]!.attempts.length,2);
+      assert.equal(done.tasks[0]!.attempts[0]!.result,'suspended');
+      assert.equal(observations.length,3);
+      assert.equal(observations[2]!.resumed,observations[0]!.native);
+      assert(nativeRuns[0]!.systemPrompt?.includes('run_workflow'));
+      assert(!nativeRuns[1]!.systemPrompt?.includes('run_workflow'));
+      assert.equal(processPool.snapshot().active,0);
+      assert.equal(done.events.length,1);
+      const summary = await call('status') as {children:Array<{workflowId:string}>};
+      assert.equal(summary.children.length,1);
+      const child=runtime.kernel.state(test.id,summary.children[0]!.workflowId)!;
+      assert.equal(child.status,'completed');assert(child.events.every(event=>event.acknowledged && event.notified));
+      await call('ack_events',{eventIds:done.events.map(event=>event.id)});
+      await call('complete',{reportRef:done.script!.resultRef,openIssues:[],verificationLimits:'Native nested workflow in an isolated runtime with one process slot. Production deployment is a separate step.'});
+      await save(join(directory,'result.json'),{passed:true,scenario:test.scenario,result,attempts:done.tasks[0]!.attempts.length,
+        parentNative:observations[0]!.native,resumedNative:observations[2]!.resumed,childNative:observations[1]!.native,
+        pool:processPool.snapshot(),rootEvents:done.events.length,childStatus:child.status});
+      return;
+    }
     if (test.scenario === 'queue' || test.scenario === 'consumers') {
       const consumers = test.scenario === 'consumers';
       assert.equal(phase, 'prepare');
@@ -372,8 +418,8 @@ if (childDirectory) {
   const backends = option('backends', 'codex,claude,pi')!.split(',') as Backend[];
   assert(backends.length > 0 && backends.every(b => ['codex', 'claude', 'pi'].includes(b)), 'Unsupported backend');
   const scenarios = option('scenarios', 'memory,interrupt,discussion')!.split(',');
-  assert(scenarios.length > 0 && scenarios.every(s => ['memory', 'interrupt', 'discussion', 'queue', 'consumers'].includes(s)), 'Unsupported scenario');
-  const cases: Case[] = backends.flatMap(backend => (['memory', 'interrupt', 'queue', 'consumers'] as const)
+  assert(scenarios.length > 0 && scenarios.every(s => ['memory', 'interrupt', 'discussion', 'queue', 'consumers', 'nested'].includes(s)), 'Unsupported scenario');
+  const cases: Case[] = backends.flatMap(backend => (['memory', 'interrupt', 'queue', 'consumers', 'nested'] as const)
     .filter(s => scenarios.includes(s))
     .map(scenario => ({
       id: backend + '-' + scenario + '-' + randomUUID().slice(0, 8),
@@ -393,7 +439,7 @@ if (childDirectory) {
     try {
       await launch(test, 'prepare', directory);
       assert(!cancelled, 'Acceptance cancelled');
-      if (test.scenario !== 'queue' && test.scenario !== 'consumers') {
+      if (!['queue','consumers','nested'].includes(test.scenario)) {
         console.log(JSON.stringify({ case: test.id, phase: 'recover' }));
         await launch(test, 'recover', directory);
       }

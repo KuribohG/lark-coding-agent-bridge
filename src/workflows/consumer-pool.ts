@@ -5,7 +5,7 @@ import { boundedInteger, parseScriptAgentCall, scriptText } from './script-contr
 import { availableWork, unfinishedWork, workStatus } from './work-queue';
 import type { WorkerExecution, WorkflowState, WorkflowTask } from './types';
 
-const BUSY = new Set<WorkflowTask['status']>(['queued', 'starting', 'running', 'cancelling']);
+const BUSY = new Set<WorkflowTask['status']>(['queued', 'starting', 'running', 'cancelling', 'waiting_workflow']);
 const CONSUMER_PROMPT = '\nUse claim_work to consume authorized work. Read item.progress before acting, save checkpoint_work, renew long-running claims, then complete_work or fail_work. Continue until claim_work returns null. Then return a final answer immediately to release your process; the bridge will schedule a new turn when work becomes available. Do not poll or sleep waiting for work. Follow the original goal and declared resource ownership.';
 
 export function parseConsumerPool(input: Record<string, unknown>, state: WorkflowState) {
@@ -18,7 +18,7 @@ export function parseConsumerPool(input: Record<string, unknown>, state: Workflo
   const members = input.members.map((value: unknown) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid consumer member');
     const { name, ...options } = value as Record<string, unknown>;
-    if (Object.keys(options).some(key => !['harness', 'model', 'reasoningEffort'].includes(key))) throw new Error('Unsupported consumer member option');
+    if (Object.keys(options).some(key => !['harness', 'model', 'reasoningEffort', 'workflowTool'].includes(key))) throw new Error('Unsupported consumer member option');
     return parseScriptAgentCall({ ...options, key, member: scriptText(name, 'consumer name', 100), prompt }, state.script!.defaults, state.root);
   });
   if (new Set(members.map(member => member.member)).size !== members.length) throw new Error('Consumer member names must be unique');
@@ -36,7 +36,7 @@ export function bindConsumerPool(state: WorkflowState, spec: ReturnType<typeof p
     if (state.agents?.some(agent => spec.members.some(member => member.member === agent.key))) throw new Error('Consumer pool requires dedicated member names not already used by agent()');
     pool = state.consumerPool = { id: randomUUID(), key: spec.key, digest, runId: state.script!.runId,
       prompt: spec.prompt, maxTurns: spec.maxTurns, status: 'waiting', turns: [],
-      members: spec.members.map((member, index) => ({ name: member.member!, execution: executions[index]! })) };
+      members: spec.members.map((member, index) => ({ name: member.member!, execution: executions[index]!, ...(member.workflowTool ? {workflowTool:true} : {}) })) };
   }
   // Reconstruct each member's committed predecessor chain without replaying its completed turns.
   const completed = pool.turns.filter(turn => state.tasks.find(task => task.taskId === turn.taskId)?.status === 'result_ready');
@@ -70,7 +70,7 @@ export function consumerResult(state: WorkflowState): unknown | undefined {
 }
 
 /** Synchronous queue reconciliation under the kernel's single-writer state boundary. */
-export function pumpConsumerPool(state: WorkflowState): boolean {
+export function pumpConsumerPool(state: WorkflowState, additionalTurnsAllowed = Infinity): boolean {
   const pool = state.consumerPool;
   if (!pool || pool.runId !== state.script?.runId || state.status !== 'active' || state.script?.status !== 'running'
     || !['waiting', 'running'].includes(pool.status)) return false;
@@ -105,15 +105,16 @@ export function pumpConsumerPool(state: WorkflowState): boolean {
       if (slots <= 0) break;
       const prior = state.tasks.find(task => task.taskId === member.taskId);
       if (member.disabled || prior && BUSY.has(prior.status) || member.lastWake === wake) continue;
-      if (state.script.calls.length >= state.script.maxCalls || (!member.retryPending && pool.turns.length >= pool.maxTurns)) {
+      if (state.script.calls.length >= state.script.maxCalls || (!member.retryPending && (pool.turns.length >= pool.maxTurns || additionalTurnsAllowed <= 0))) {
         if (!tasks().some(task => task && BUSY.has(task.status))) fail('Consumer turn budget reached; review progress and continue in a new workflow');
         break;
       }
       const key = member.retryPending && prior ? prior.scriptKey! : `@consumer/${pool.id}/${pool.turns.length}`;
       const call = {key,member:member.name,prompt:member.retryPending && prior ? prior.objective : pool.prompt,
+        ...(member.workflowTool ? {workflowTool:true} : {}),
         output:'text' as const,selection:{agentKind:member.execution.agentKind,...member.execution.modelSettings}};
       const { task } = scheduleMemberTurn(state, call, member.execution);
-      if (!member.retryPending) pool.turns.push({key,member:member.name,taskId:task.taskId});
+      if (!member.retryPending) { pool.turns.push({key,member:member.name,taskId:task.taskId}); additionalTurnsAllowed--; }
       state.script.calls.push({key,taskId:task.taskId,cached:false});
       member.taskId = task.taskId; member.retryPending = false; member.lastWake = wake;
       slots--;

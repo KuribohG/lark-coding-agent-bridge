@@ -85,7 +85,7 @@ Guest functions:
 
 | API | Behavior |
 | --- | --- |
-| `agent(prompt, {key, member?, harness?, model?, reasoningEffort?, output?})` | Promise of final text, or a parsed JSON value with `output: "json"` |
+| `agent(prompt, {key, member?, harness?, model?, reasoningEffort?, output?, workflowTool?})` | Promise of final text, or a parsed JSON value with `output: "json"` |
 | `send(member, text, {key})` / `receive(member, {key})` | Send a durable message or await a stable inbox batch |
 | `enqueueWork({key, title, input, resources?, maxAttempts?})` | Persist an immutable work item; returns `{itemId, key}` and reuses it on replay |
 | `workStatus({itemId?, offset?, limit?})` | Read one item with its payload, or bounded queue counts and summaries |
@@ -148,7 +148,7 @@ Worker operation IDs are scoped to the logical turn and deduplicated across atte
 
 Checkpoints, waits, message receipts and turn state are committed together in the bridge's SQLite workflow record. A progress checkpoint survives interruption. Recovery continues from the last saved work state and the backend's persisted native conversation, not a process snapshot. Native transcripts and external file changes are not part of the SQLite transaction. Verify uncertain side effects on retry; delivery and retries do not imply exactly-once external execution. A missing or replaced native session fails visibly rather than silently starting an empty conversation. The bridge records native IDs but relies on the backend's transcript storage and retention.
 
-After a restart, the workflow remains `interrupted` until explicit `replay_script`. Replay reconstructs the script from its beginning, reuses completed turns and receive receipts, then continues pending waits or retries the interrupted turn in its original native session. Persistent turn reuse validates the original request and predecessor chain; the stored input fingerprint includes the checkpoint version and message IDs. Rewriting committed history, skipping its predecessor, or changing a member's execution binding requires a new member name. One-shot tasks still retry in fresh sessions.
+After a restart, the workflow remains `interrupted` until explicit `replay_script`. Replay reconstructs the script from its beginning, reuses completed turns and receive receipts, then continues pending waits or retries the interrupted turn in its original native session. Persistent turn reuse validates the original request and predecessor chain; the stored input fingerprint includes the checkpoint version and message IDs. Rewriting committed history, skipping its predecessor, or changing a member's execution binding requires a new member name. One-shot tasks without `workflowTool` still retry in fresh sessions; enabled callers retain their native session for child-result continuation.
 
 Limits per workflow: 32 members, 256 messages, 128 receive receipts, 512 worker/script mailbox operations, and 128 execution attempts including retries. The kernel retains up to 256 recent checkpoints while preserving every member's latest recovery point. Existing workflow call, deadline, replay, output and process-pool limits also apply. Members and the work queue below are scoped to one workflow; they do not create a cross-workflow team.
 
@@ -208,7 +208,7 @@ return await consumeWork({
 });
 ```
 
-A workflow has at most one pool with 1–16 dedicated member names. Each member supports `harness`, `model` and `reasoningEffort`; omitted settings follow the script defaults. The pool key, prompt, membership, turn budget and resolved execution bindings are immutable across replay. Pool members cannot also be scheduled with `agent()` or wait on script `receive()`. They are created lazily when work arrives. Generated turn keys use the reserved `@consumer/` prefix; ordinary script keys cannot use it.
+A workflow has at most one pool with 1–16 dedicated member names. Each member supports `harness`, `model`, `reasoningEffort` and `workflowTool` (default false); omitted settings follow the script defaults. The pool key, prompt, membership, turn budget and resolved execution bindings are immutable across replay. Pool members cannot also be scheduled with `agent()` or wait on script `receive()`. They are created lazily when work arrives. Generated turn keys use the reserved `@consumer/` prefix; ordinary script keys cannot use it.
 
 Members keep using `claim_work`, `checkpoint_work`, `renew_claim` and `complete_work`. When a claim returns `null`, they finish their turn immediately. They must not sleep or poll waiting for more items. The scheduler considers available resource keys and outstanding turns to bound dispatch. A worker racing another consumer may still receive no item; its native process then exits. The scheduler does not repeatedly invoke a no-progress consumer for the same available work. If no consumer can make progress, it fails with an actionable reason instead of spinning. Workers' successful final answers automatically save member checkpoints; item checkpoints remain explicit.
 
@@ -240,6 +240,46 @@ The [packaged consumer example](../workflow-definitions/scripted/examples/consum
 
 Enqueue accepts optional `resources` and `maxAttempts`. These commands never create a workflow; when paused/interrupted they only persist the change. Restart marks the pool suspended, cancels orphaned claims and requires explicit replay before scheduling. `/workflow work` and `/workflow status [member]` display queue closure, pool state, turn budget, idle waits and stopped members, including before a member's first native turn. Ordinary messages do not enter workflow mode.
 
+### Nested workflows as a worker tool
+
+Set `workflowTool: true` on each caller that may delegate. Omitted or false means no tool instructions and server-side rejection of `run_workflow`. Each child script makes this choice independently for its own workers; the flag is never inherited automatically. `consumeWork` accepts the same flag per member. Direct-mode agents receive neither workflow instructions nor a workflow binding, and cannot enable the capability themselves.
+
+```js
+return await agent(args.task, {
+  key: 'designer', member: 'designer', workflowTool: true,
+});
+```
+
+The enabled worker can run the following CLI with a JSON file:
+
+```sh
+node "$LARK_WORKFLOW_CLI" workflow run_workflow --input-file child.json --json
+```
+
+```json
+{
+  "operationId": "design-review-1",
+  "key": "design-review",
+  "goal": "Review the proposed design within the original task",
+  "plan": "One reviewer on the caller's harness/model, without delegation; return its findings.",
+  "script": "return await agent(args.proposal, {key:'review', workflowTool:false});",
+  "args": {"proposal": "Design and review criteria..."},
+  "checkpoint": {"next": "Use the review to finish the design"}
+}
+```
+
+`run_workflow` accepts `operationId`, `key`, `goal`, `script`, `plan`, and optional `args`, `name`, `execution`, `maxAgents`, `maxConcurrent`, `timeoutMs`, `checkpoint`, `parentQueue`. It uses the same script API and harness/model selection as the root. No profile, credential or environment overrides are accepted. The caller must already have a recorded native session. The child goal includes the original authorized goal; delegation does not expand authorization.
+
+**This is a durable asynchronous tool call.** The first response is `{workflowId, key, status: "waiting", action: ...}`. The worker must end its turn immediately; it must not poll or block a shell waiting for the child. The bridge stops a caller that has not yielded after 30 seconds. The yield text is not committed as the parent's final answer. Once its process exits, the child runs, using the released concurrency slot. The parent then resumes its original native conversation with `workflows.call` containing `{ok, result, resultRef}` or `{ok:false, error}`, plus `workflows.checkpoint`. These fields are also available through `read_context`. The parent finishes the original task after consuming them. This works with one worker slot.
+
+Keys identify child calls within the parent task. Repeating the same key/input returns the saved status or terminal result, including failures. Changed input under a key or a reused operation ID with different content conflicts. To intentionally retry a failed child call, use a new key and operation ID. One parent task may have only one outstanding child. The checkpoint accepts at most 16000 JSON characters. Active work claims are released when the parent yields; save item progress first and recheck/reclaim on continuation. An old claim cannot be reused.
+
+Children have their own members, mailboxes and work queues. Explicit `parentQueue: true` grants only `enqueueWork({queue:"parent", key, title, input, ...})` into the immediate parent's queue. It does not grant consumption, closure, arbitrary workflow access or root control. The parent must keep its queue open until its producers finish. Keys in that queue are shared by all its producers; coordinate them to avoid conflicting inputs. See [the nested example](../workflow-definitions/scripted/examples/nested-workflow.js) for independent per-worker flags.
+
+The tree shares root worker concurrency, task-history budget and deadline, and at most 128 native attempts. Child limits can reduce these allowances. There are at most three child levels and 32 child workflows per root. The parent continuation counts as another attempt of its original task. Completed child results and plans remain inspectable artifacts; only the root's plan and final event are sent to the chat.
+
+Pause, cancellation, binding changes and deadlines apply to descendants. After a restart, explicit root replay reconstructs the waiting parents and paused/interrupted child scripts; it does not rerun completed child calls. Recovery retains native sessions, pending child IDs and checkpoints. Root completion requires descendants to be finished. Local state recovery does not guarantee exactly-once external side effects.
+
 ### Discussion example and native acceptance
 
 [The A → B → A example](../workflow-definitions/scripted/examples/discussion.js) creates two persistent members. A proposes a design, B reviews it, and A revises its original proposal using B's mailbox message. It returns all three documents and validates the response fields. Supply these script arguments:
@@ -262,10 +302,11 @@ npm run build
 npm run test:workflow-native -- --output /absolute/path/outside-the-repository/native-acceptance
 ```
 
-Use `--backends codex` to limit the backends, and `--scenarios memory,interrupt,discussion,queue` to select cases. The default scenarios are memory, interrupt and discussion; opt into `--scenarios queue` for the three-consumer queue test or `--scenarios consumers` for queue-driven wakeups. The discussion uses the first selected backend for A and the second for B, or the first for both if only one is selected. The runner uses native configured defaults without injecting a model service override, copying credentials, or switching profiles. The observed model is recorded when the backend reports it. Missing native authentication is a failed acceptance prerequisite, not a passing test.
+Use `--backends codex` to limit the backends, and `--scenarios memory,interrupt,discussion,queue` to select cases. The default scenarios are memory, interrupt and discussion; opt into `--scenarios queue` for the three-consumer queue test or `--scenarios consumers` for queue-driven wakeups, or `--scenarios nested` for nested tool execution with one process slot. The discussion uses the first selected backend for A and the second for B, or the first for both if only one is selected. The runner uses native configured defaults without injecting a model service override, copying credentials, or switching profiles. The observed model is recorded when the backend reports it. Missing native authentication is a failed acceptance prerequisite, not a passing test.
 
 The runner covers:
 
+- **Nested workflow:** an explicitly enabled native parent calls `run_workflow` and ends its turn. Its child runs a leaf without the tool and verifies that the CLI rejects delegation. With a single process slot, the parent must resume the original native session, receive its checkpoint and child result, and produce the final answer. Child events must not wake the main agent.
 - **Native memory:** a member memorizes a random, non-secret marker and replies `READY`. After the controller exits, a fresh process explicitly replays and asks the same native session to recall it. The marker is absent from the recall input and saved checkpoint; neither turn may use tools.
 - **Interrupted work:** a member saves `state.stage = "armed"` through the actual worker CLI, then starts a foreground sleep. The controller pauses that attempt. A fresh controller replays the same logical turn and native session; the saved checkpoint tells it to finish without repeating the checkpoint or sleep.
 - **Discussion:** the packaged example waits with both inboxes persisted. A fresh controller queues B's wakeup and explicitly replays. Completed proposal/bootstrap turns are cached, B reviews, and A consumes the review and revises. Both native IDs must remain unchanged and both receipts must be consumed.
@@ -278,7 +319,7 @@ These tests restart only isolated test controllers and databases. They do not re
 
 ### Replay and lifecycle
 
-`replay_script` requires the usual `workflowId`, unique `operationId` and current `expectedStateVersion`. It optionally replaces `script`, `args` or `execution`; changes to any of these require an updated `plan`. Each replay publishes its plan again and restarts the function from its beginning. Completed calls are reused by a fingerprint of **key, prompt, output mode, resolved worker binding, root binding, goal and workflow definition**. Changing execution order alone does not invalidate unrelated calls. For independent calls, changing a prompt or harness reruns that call in a fresh worker session; downstream calls rerun when the data in their prompts changes. Failed, cancelled, interrupted or waiting-for-input results are never cached. A named member retries the same logical turn in its original session; an independent task retries in a fresh session. Up to eight replays and 128 total task attempts are retained per workflow.
+`replay_script` requires the usual `workflowId`, unique `operationId` and current `expectedStateVersion`. It optionally replaces `script`, `args` or `execution`; changes to any of these require an updated `plan`. Each replay publishes its plan again and restarts the function from its beginning. Completed calls are reused by a fingerprint of **key, prompt, output mode, resolved worker binding, root binding, goal and workflow definition**. Changing execution order alone does not invalidate unrelated calls. For independent calls, changing a prompt or harness reruns that call in a fresh worker session; downstream calls rerun when the data in their prompts changes. Failed, cancelled, interrupted or waiting-for-input results are never cached. A named member retries the same logical turn in its original session; an independent task without `workflowTool` retries in a fresh session. Workflow-enabled tasks retain their native session and child-call history. The tool flag participates in the task fingerprint; it can be set independently on each new member turn. Up to eight replays and 128 total task attempts are retained per workflow.
 
 This is result reuse, not replay of external side effects. File contents, network state, time and other implicit dependencies are not automatically hashed. Include relevant revisions or digests in prompts/keys when fresh execution is required. A task interrupted after a side effect may repeat that effect on replay. Worker tasks that modify shared files need an explicit ownership or serialization strategy. Queue resource keys can serialize claims when supplied; the workflow does not create worktrees or infer which files a task will modify.
 
@@ -286,6 +327,6 @@ For scripts, `/workflow pause` aborts the interpreter and cancels queued/running
 
 ### Interpreter and execution boundaries
 
-QuickJS/WASM runs the script with JSON-only host callbacks, no host objects, process, filesystem, network or module loader. `Date` and `Math.random` are disabled; pass such inputs through `args`. Each interpreter has a 32 MiB guest heap, 512 KiB stack, 100 ms synchronous slices, approximately 2 seconds of guest CPU and 100,000 promise jobs. There are at most four active interpreters per runtime. Source, arguments, worker output and final output have bounded sizes (100,000 characters); status retains at most 50 log entries of 1,000 characters. A deadline/abort signal also terminates scripts awaiting an unresolved promise.
+QuickJS/WASM runs the script with JSON-only host callbacks, no host objects, process, filesystem, network or module loader. `Date` and `Math.random` are disabled; pass such inputs through `args`. Each interpreter has a 32 MiB guest heap, 512 KiB stack, 100 ms synchronous slices, approximately 2 seconds of guest CPU and 100,000 promise jobs. There are at most four active interpreters per nesting depth, with four levels including roots (at most sixteen total). Waiting ancestors cannot exhaust the interpreter capacity needed by their children. Source, arguments, worker output and final output have bounded sizes (100,000 characters); status retains at most 50 log entries of 1,000 characters. A deadline/abort signal also terminates scripts awaiting an unresolved promise.
 
 The interpreter boundary does **not** isolate workers: a worker is a normal configured harness under the original authorized profile, workspace and effective permissions. Scripts cannot select another profile or provide environment variables or credentials. Workers may perform only tasks authorized by the goal, and their final answers do not establish that tests or side effects succeeded. The main agent reviews evidence and reports validation limits.

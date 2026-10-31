@@ -158,6 +158,7 @@ export interface WorkConsumerPool {
   members: Array<{
     name: string;
     execution: WorkerExecution;
+    workflowTool?: boolean;
     taskId?: string;
     lastWake?: string;
     retryPending?: boolean;
@@ -185,7 +186,7 @@ export interface AgentTurn {
   sessionRef: string;
   objective: string;
   inputRefs: string[];
-  status: 'queued' | 'starting' | 'running' | 'result_ready' | 'waiting_input' | 'failed' | 'cancelling' | 'cancelled' | 'interrupted';
+  status: 'queued' | 'starting' | 'running' | 'result_ready' | 'waiting_input' | 'waiting_workflow' | 'failed' | 'cancelling' | 'cancelled' | 'interrupted';
   attempts: TurnAttempt[];
   resultRefs: string[];
   error?: string;
@@ -197,6 +198,22 @@ export interface AgentTurn {
   previousTurnId?: string;
   inputCheckpointVersion?: number;
   inputMessageIds?: string[];
+  workflowTool?: boolean;
+  waitingWorkflowId?: string;
+  resumeWorkflowId?: string;
+  yieldRequestedAt?: number;
+}
+
+export interface WorkflowParent {
+  workflowId: string;
+  taskId: string;
+  rootWorkflowId: string;
+  depth: number;
+  key: string;
+  digest: string;
+  operationId: string;
+  parentQueue: boolean;
+  checkpoint: unknown;
 }
 
 export type WorkflowTask = AgentTurn;
@@ -242,6 +259,7 @@ export interface WorkflowEvent {
 
 export interface WorkflowState {
   workflowId: string;
+  parent?: WorkflowParent;
   root: WorkflowRoot;
   definition: WorkflowDefinition;
   definitionDigest: string;

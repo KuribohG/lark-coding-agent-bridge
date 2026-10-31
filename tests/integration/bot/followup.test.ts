@@ -157,8 +157,11 @@ describe('workflow command routing', () => {
     const ordinary = h.agent.options[0]!;
     expect(ordinary.env?.LARK_WORKFLOW_TOKEN).toBeUndefined();
     expect(ordinary.prompt).not.toContain('工作流工具通过 shell');
+    expect(ordinary.systemPrompt ?? '').not.toContain('run_workflow');
+    expect(ordinary.prompt).not.toContain('run_workflow');
     expect(ordinary.prompt).not.toContain('analyze this task');
     await expect(callWorkflow('run_script', { allowStart: true }, ordinary.env ?? {})).rejects.toThrow('bridge-managed workflow');
+    await expect(callWorkflow('run_workflow', { workflowTool: true }, ordinary.env ?? {})).rejects.toThrow('bridge-managed workflow');
     h.agent.finish(0);
     await vi.waitFor(() => expect(h.agent.options).toHaveLength(2), { timeout: 2500 });
     const command = h.agent.options[1]!;

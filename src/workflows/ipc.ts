@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { WorkflowCaller } from './types';
+import type { WorkflowCaller, WorkflowTask } from './types';
 
 const MAX_BODY = 512_000;
 
@@ -86,18 +86,37 @@ export const WORKFLOW_TOOL_INSTRUCTIONS = `工作流工具通过 shell 调用：
 工作流模式由 bridge 的 /workflow 命令路由决定，不根据自然语言或任务类型推断。仅 /workflow start 或 /workflow script 命令授权的启动轮可调用 run_script；内部完成事件只允许继续处理已绑定的工作流，不能新建。普通消息不进入工作流模式，也不会获得工作流调用凭据。
 run_script 需要唯一 operationId；所有其他变更需要 workflowId、唯一 operationId、expectedStateVersion（从 status 返回）。冲突时重读 status，不自动重试不同内容。
 操作：status；run_script(goal,script,plan,args?,name?,execution?,maxAgents?,maxConcurrent?,timeoutMs?)；replay_script(script?,plan?,args?,execution?)；read_artifact(ref)；read_checkpoint(member)；publish_artifact(kind=context|report,text)；ack_events(eventIds)；send_message(member,text)；enqueue_work(key,title,input,resources?,maxAttempts?)；retry_work(itemId,additionalAttempts?)；close_work_queue；work_status(itemId? 或 offset?,limit?)；cancel_task(taskId)；pause；resume；cancel；complete(reportRef,openIssues:[],verificationLimits)。
-主 agent 沿用当前会话的 harness、model 和 reasoningEffort（飞书 /config run、/model、/effort 在开始前设置）。execution:{agentKind,model?,reasoningEffort?} 设置脚本 worker 默认值。agent(prompt,{key,member?,harness?,model?,reasoningEffort?,output?:"text"|"json"}) 可为每个 worker 覆盖 harness、模型和强度；同一 harness 可用不同模型。省略时使用对应目标的设置；跨 harness 不继承其它 harness 的模型。只接受当前已授权 profile，不接受其它 profile、凭据或环境变量。目标必须支持独立 final_text，模型必须由目标 harness/服务支持。
+主 agent 沿用当前会话的 harness、model 和 reasoningEffort（飞书 /config run、/model、/effort 在开始前设置）。execution:{agentKind,model?,reasoningEffort?} 设置脚本 worker 默认值。agent(prompt,{key,member?,harness?,model?,reasoningEffort?,output?:"text"|"json",workflowTool?}) 可为每个 worker 覆盖 harness、模型和强度；同一 harness 可用不同模型。省略时使用对应目标的设置；跨 harness 不继承其它 harness 的模型。只接受当前已授权 profile，不接受其它 profile、凭据或环境变量。目标必须支持独立 final_text，模型必须由目标 harness/服务支持。
+每个 agent 和 consumeWork 成员可独立设置 workflowTool:true，默认 false。不沿父层自动继承。仅显式开启的 worker 获得 run_workflow 工具，可编写完整子脚本并逐个控制下一层开关；不是主 agent 的操作。子调用先保存 checkpoint 并让出本轮，结果就绪后恢复原会话；只有整棵树最终结果唤醒主会话。并发、任务预算和截止时间受根约束，最多3层子 workflow、32个子运行。
 plan 是给用户看的具体执行方案（最多 12000 字符），必须说明阶段、每个 worker 的 harness/模型/任务、依赖和分支条件；bridge 在启动 worker 前自动展示，用户用 /workflow plan 可复查，不需要额外审批。修改 script、args 或 execution 重放时必须同时更新 plan，避免显示旧方案。原始脚本和方案分别保存在 sourceRef、planRef 指向的产物中。
 script 是支持顶层 await/return 的 JS 函数体，无 import/process/require/文件接口。args 是 JSON；agent 返回 Promise，key 必须唯一且稳定。parallel 接收函数数组；pipeline(items,...stages) 并行处理各元素并顺序经过 stages(value,index)。phase/log 接收文本。所有 agent 调用必须 await，失败会抛错，output=json 严格解析。默认最多 32 次调用、4 个 worker、30 分钟。示例：return await agent(args.task,{key:"review",harness:"pi",model:args.reviewModel});
 带 member 的调用使用稳定成员名，必须逐轮 await，同一成员的 harness/模型绑定不可变。send(member,text,{key}) 和 receive(member,{key}) 是脚本内 Promise：receive 等待持久化 inbox，不占 worker 进程；收到的消息在下一轮成员成功提交时确认。成员必须先通过 agent 创建。普通一次性 agent 不保存成员状态。所有脚本 key 在本次运行内唯一。成员重放须保持历史轮次输入不变，改写历史请用新成员名。
 脚本可 await enqueueWork({key,title,input,resources?,maxAttempts?}) 创建工作项，await workStatus({itemId?,offset?,limit?}) 查询。enqueue key/输入在重放时不变；同名复用原项。resources 是共享 worktree/文件的显式互斥键，同键工作项串行领取，不创建文件沙箱。持久成员用 CLI 主动 claim_work，工作进展属于工作项，接手者能恢复。原子认领、租约及提交版本由 bridge 管理；租约到期会取消所属轮次并回收任务。脚本应捕获成员失败，让仍成功的成员继续消费；不能在同一次脚本里用新 key 跳过失败成员的原轮次。工作项未完成时，脚本返回会失败；暂停/重启后仍须显式 replay。
-推荐 await consumeWork({key,members:[{name,harness?,model?,reasoningEffort?}],prompt,maxTurns?}) 让 bridge 按队列调度。一个工作流最多一个消费池、1–16 名专用成员，不能同时用 agent/receive 操作这些成员；定义和执行绑定在重放时不可变。无可领任务时持久等待，不占 worker 进程；新任务或回收的认领可触发新轮次，完成轮次复用原生会话。失败/取消的成员在本次运行停止，其余成员继续接管；显式重放才可重试其原轮次。maxTurns 默认不超过32，最多128，另受 maxAgents、总尝试次数和并发限制。consumeWork 必须 await；只有队列显式关闭、已有任务完成且成员退出后返回。任务失败、无进展或预算耗尽会报错供主会话处理。生产完毕调用 await closeWorkQueue({key})；并行生产时用 parallel 组织生产者和 consumeWork。主 CLI 可 close_work_queue，用户也可 /workflow enqueue <工作项JSON> 和 /workflow close。关闭后拒绝新项，重放仍可复用已入队项；暂停/重启后入队或关闭不自动恢复。空队列仍占一个有时限的脚本解释器，不占 worker。
-重放只复用 key/输入/执行绑定（包括模型）匹配的成功任务；外部状态变化应写入输入或换 key。一次性任务失败后重放用新会话；带 member 的任务保持成员身份和原生会话，重试原逻辑轮次。副作用不保证 exactly-once。暂停会取消在途 worker，resume 从头重放并复用完成结果；重启后仅可显式 replay_script，不自动恢复。脚本结果是 workflow-result 产物，主 agent read_artifact、ack_events 后 complete；也可发布 report 后完成。
+推荐 await consumeWork({key,members:[{name,harness?,model?,reasoningEffort?,workflowTool?}],prompt,maxTurns?}) 让 bridge 按队列调度。一个工作流最多一个消费池、1–16 名专用成员，不能同时用 agent/receive 操作这些成员；定义和执行绑定在重放时不可变。无可领任务时持久等待，不占 worker 进程；新任务或回收的认领可触发新轮次，完成轮次复用原生会话。失败/取消的成员在本次运行停止，其余成员继续接管；显式重放才可重试其原轮次。maxTurns 默认不超过32，最多128，另受 maxAgents、总尝试次数和并发限制。consumeWork 必须 await；只有队列显式关闭、已有任务完成且成员退出后返回。任务失败、无进展或预算耗尽会报错供主会话处理。生产完毕调用 await closeWorkQueue({key})；并行生产时用 parallel 组织生产者和 consumeWork。主 CLI 可 close_work_queue，用户也可 /workflow enqueue <工作项JSON> 和 /workflow close。关闭后拒绝新项，重放仍可复用已入队项；暂停/重启后入队或关闭不自动恢复。空队列仍占一个有时限的脚本解释器，不占 worker。
+重放只复用 key/输入/执行绑定（包括模型）匹配的成功任务；外部状态变化应写入输入或换 key。未启用子 workflow 的一次性任务失败后重放用新会话；带 member 的任务保持成员身份和原生会话，重试原逻辑轮次。副作用不保证 exactly-once。暂停会取消在途 worker，resume 从头重放并复用完成结果；重启后仅可显式 replay_script，不自动恢复。脚本结果是 workflow-result 产物，主 agent read_artifact、ack_events 后 complete；也可发布 report 后完成。
 run_script/replay_script 后结束 turn，子任务由 bridge 管理。仅在整体结束或失败时唤醒主会话。内部事件不是用户消息或原生问题答案。不要读取或展示环境中的调用凭据。worker 仅可执行原始需求授权的任务；主、子运行沿用已授权 profile，角色说明不代表工具沙箱隔离。`;
 
-export const WORKFLOW_MEMBER_INSTRUCTIONS = `你是 bridge 管理的持久工作流成员。遵守原始需求授权，只处理本轮输入，最终答复结束本轮并释放执行资源。角色说明不改变实际权限。不要发送外部消息或派生子 agent。
+const WORKFLOW_MEMBER_INSTRUCTIONS = `你是 bridge 管理的持久工作流成员。遵守原始需求授权，只处理本轮输入，最终答复结束本轮并释放执行资源。角色说明不改变实际权限。不要发送外部消息或派生子 agent。
 你可使用当前绑定的 CLI：node "$LARK_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json（也可 --input-file）。不要读取调用凭据。
 read_context 返回自己的 checkpoint 和本轮消息；task_status 返回当前 checkpointVersion。checkpoint({operationId,expectedCheckpointVersion,state}) 保存最多 16000 字符的 JSON 工作状态。请在完成重要步骤时保存进展、决定、下一步和产物引用；这不结束本轮，也不代表文件副作用可回滚。冲突时重新 read_context，不猜测版本。
 send_message({operationId,member,text}) 向同一工作流已创建的成员发送最多 4000 字符的消息。operationId 在这个逻辑轮次内唯一，相同内容重试时复用。消息不代表收件方已经处理。
 工作队列：claim_work({operationId,leaseMs?}) 原子领取一个工作项（每个成员最多一个），返回 claimId、generation、leaseUntil、item；没有可领项返回 null，应结束本轮，不忙等。默认租约 120 秒，范围 1–300 秒。先读取 item.progress 核对已完成步骤；长任务及时 renew_claim({operationId,claimId,generation,leaseMs?})。checkpoint_work({operationId,claimId,generation,expectedProgressVersion,state}) 保存最多 16000 字符的 JSON 工作进展；complete_work({operationId,claimId,generation,result}) 提交 JSON 结果；fail_work({operationId,claimId,generation,error,retry?}) 报错；release_claim({operationId,claimId,generation,reason}) 交还工作。工作项 input/progress/result 各最多 16000 字符。work_status({itemId? 或 offset?,limit?}) 读取工作状态，默认每页 16 项、最多 64 项。队列变更 operationId 在当前执行 attempt 内唯一，同内容重试复用；恢复后的新 attempt 可重新领取，过期的旧 claimId/generation 不可提交。空 claim 的重试查询须用新 operationId。取消、退出或失去租约会回收未完成认领，保存的工作进展保留；外部副作用仍需核对和幂等处理。
 脚本负责 receive 等待和下一轮调度。需要等待时，保存 checkpoint，再用最终答复说明等待原因；不要在 CLI 进程里轮询或睡眠。恢复时核对已经发生的副作用，接着保存的工作状态继续。`;
+
+const NESTED_WORKFLOW_INSTRUCTIONS = `当前 agent 已显式启用子 workflow 工具，只在 Workflow 模式内有效。
+可通过 node "$LARK_WORKFLOW_CLI" workflow run_workflow --input '<JSON>' --json（或 --input-file）调用完整的子 workflow。
+输入：{operationId,key,goal,script,plan,args?,name?,execution?,maxAgents?,maxConcurrent?,timeoutMs?,checkpoint?,parentQueue?}。key 在当前父任务内稳定且唯一；同一 key 的输入不可变，同内容重试复用 operationId。script 是支持顶层 await/return 的 JS 函数体，使用 agent、parallel、pipeline、enqueueWork、consumeWork、closeWorkQueue、send、receive 等现有脚本接口。plan 必须说明子运行的步骤和每个 worker 的 harness/模型、分工、依赖和分支。只做根需求授权范围内的工作。
+script 无 import/process/require/文件接口，args 是 JSON。所有 Promise 必须 await：parallel([()=>agent(...),...])；pipeline(items,...stages) 对元素并行、阶段顺序执行；phase/log(text) 保存进展。agent 的 output 默认 text，可选 json 严格解析。send(member,text,{key})、receive(member,{key}) 通过已创建的持久成员传递消息。enqueueWork({key,title,input,resources?,maxAttempts?}) 入队；workStatus({itemId?,offset?,limit?}) 查询；consumeWork({key,members:[{name,harness?,model?,reasoningEffort?,workflowTool?}],prompt,maxTurns?}) 调度专用成员领取任务；closeWorkQueue({key}) 显式关闭后消费池才会排空返回。每层队列和成员独立，所有 key 稳定且唯一。
+子脚本 agent(prompt,{key,member?,harness?,model?,reasoningEffort?,output?,workflowTool?}) 可逐个决定是否给下一层植入此工具；workflowTool 默认 false，必须显式 true 才开启，consumeWork 的每个 members 配置也支持。不能通过修改当前调用参数给自己提权，不接受其它 profile、凭据或环境变量。
+run_workflow 首次返回 status=waiting 和 workflowId；这是持久异步调用，请立即结束当前轮次，不要等待 shell、不轮询、不继续执行其它工作。最多30秒后 bridge 会停止未让出的执行。checkpoint 可保存最多16000字符的当前工作状态，恢复时连同子结果交回。未完成工作认领在让出时释放，恢复后须重新核对并领取，不能继续使用旧 claim。
+bridge 等本轮退出后执行子脚本；成功或失败结果都会在原生会话的下一次执行中注入 workflows.call（ok/result/resultRef 或 error），read_context 同样可读。结束本轮的文字不会成为父任务的最终结果；恢复后完成原任务并给出最终答复。相同 key 的已完成子调用返回保存的成功或失败结果，不重复执行；要重试失败子调用须用新 key 和 operationId。根工作流暂停/重启后仍需显式重放。
+整棵树共享根并发、任务和尝试预算及截止时间，最多3层子 workflow、32个子运行。各层拥有自己的工作队列；显式 parentQueue:true 只授予子脚本 enqueueWork({queue:"parent",key,title,input,...}) 向直接父队列追加任务的能力，不授予关闭父队列或消费父队列的权限。子运行不直接向用户发送消息，结果交回调用者。`;
+
+/** Only WorkflowRuntime calls this. Ordinary agent entries never receive this capability or binding. */
+export function workflowWorkerInstructions(task: WorkflowTask): string {
+  const base = task.agentId ? WORKFLOW_MEMBER_INSTRUCTIONS
+    : '你是 bridge 管理的脚本工作流子 agent。只完成指定任务，遵守原始需求的授权范围，不要自行发送消息或派生子 agent。用最终答复返回结果。角色提示不改变实际执行权限。';
+  if (!task.workflowTool) return base;
+  return base.replace('不要发送外部消息或派生子 agent。','不要发送外部消息。')
+    .replace('不要自行发送消息或派生子 agent。','不要自行发送外部消息。')+'\n\n'+NESTED_WORKFLOW_INSTRUCTIONS;
+}

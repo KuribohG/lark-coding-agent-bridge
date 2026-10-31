@@ -36,11 +36,11 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
   const resolveAgent = vi.fn((_: string, kind?: AgentKind) => adapters[kind as keyof typeof adapters]);
   const pool = new ProcessPool(() => 5);
   const executor = new RunExecutor({ resolveAgent, pool, activeRuns: new ActiveRuns() });
-  const wakeMain = vi.fn(async () => {
-    const state = runtime.kernel.state(root.scopeId)!;
-    runtime.kernel.markNotified(root.scopeId, state.events.map(event => event.id));
+  const wakeMain = vi.fn(async (scopeId: string) => {
+    const state = runtime.kernel.state(scopeId)!;
+    runtime.kernel.markNotified(scopeId, state.events.map(event => event.id));
   });
-  const deps: ConstructorParameters<typeof WorkflowRuntime>[0] = { path, executor, resolve: async () => ({ root, policy }), wakeMain, showPlan,
+  const deps: ConstructorParameters<typeof WorkflowRuntime>[0] = { path, executor, resolve: async scopeId => ({ root: {...root,scopeId}, policy }), wakeMain, showPlan,
     resolveWorker: async (current, selection) => ({ policy, execution: {
       agentKind: selection.agentKind, profile: current.profile, configurationFingerprint: selection.agentKind,
       policyFingerprint: policy.policyFingerprint, modelSettings: { ...(selection.agentKind === current.agentKind ? current.modelSettings : {model: selection.agentKind + '-default'}), ...(selection.model ? {model:selection.model} : {}), ...(selection.reasoningEffort ? {reasoningEffort:selection.reasoningEffort} : {}) },
@@ -59,6 +59,148 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
 }
 
 describe('script workflow runtime', () => {
+  it.each([false, true])('yields a nested caller (member=%s), releases its only slot, and resumes with the child result', async persistent => {
+    const showPlan = vi.fn(async () => {});
+    const h = await harness({}, 'codex', showPlan);
+    const run = h.adapters.codex.run.bind(h.adapters.codex);
+    const childInput = {operationId:'nested-call',key:'nested',goal:'Return a leaf answer',plan:'One leaf without the workflow tool',
+      script:'return await agent("leaf", {key:"leaf"});',checkpoint:{stage:'delegated'}};
+    let childId: string | undefined;
+    h.adapters.codex.run = opts => {
+      const native = run(opts);
+      expect(h.pool.snapshot().active).toBe(1);
+      const events = (async function* (): AsyncGenerator<AgentEvent> {
+        yield {type:'system',threadId:opts.threadId ?? randomUUID()};
+        const context = await callWorkflow('read_context',{},opts.env) as {objective:string;workflows?:{checkpoint:unknown;call?:unknown}};
+        if (context.objective === 'leaf') {
+          expect(opts.systemPrompt).not.toContain('run_workflow');
+          await expect(callWorkflow('run_workflow',childInput,opts.env)).rejects.toThrow('not enabled');
+          yield {type:'final_text',content:'child result'};
+        } else {
+          expect(opts.systemPrompt).toContain('run_workflow');
+          const response = await callWorkflow('run_workflow',childInput,opts.env) as {workflowId:string;status:string};
+          if (!opts.threadId) {
+            childId = response.workflowId;
+            expect(response.status).toBe('waiting');
+            yield {type:'final_text',content:'This yield must not be the parent result'};
+          } else {
+            expect(response).toMatchObject({workflowId:childId,status:'completed',result:'child result'});
+            expect(context.workflows).toMatchObject({checkpoint:{stage:'delegated'},call:{ok:true,result:'child result'}});
+            expect(opts.prompt).toContain('child result');
+            yield {type:'final_text',content:'parent finished'};
+          }
+        }
+        yield {type:'done',terminationReason:'normal'};
+      })();
+      return {runId:native.runId,events,stop:()=>native.stop(),waitForExit:ms=>native.waitForExit(ms)};
+    };
+    await h.call('run_script',{goal:'Delegate and resume',maxConcurrent:1,
+      script:`return await agent("parent", {key:"parent",workflowTool:true${persistent ? ',member:"parent"' : ''}});`});
+    await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
+    expect(h.state().tasks[0]?.attempts).toHaveLength(2);
+    expect(h.state().tasks[0]?.resultRefs).toHaveLength(1);
+    expect(h.state().artifacts.at(-1)?.text).toBe('"parent finished"');
+    expect(h.adapters.codex.runs).toHaveLength(3);
+    expect(h.adapters.codex.runOptions[2]?.threadId).toBe(h.state().sessions[0]?.nativeSessionId);
+    expect(h.pool.snapshot()).toMatchObject({active:0,waiting:0});
+    expect(showPlan).toHaveBeenCalledTimes(1);
+    expect(h.runtime.kernel.state('script-topic',childId)?.events.every(event=>event.acknowledged && event.notified)).toBe(true);
+  });
+
+  it('can start children while all four root interpreter slots wait for nested calls', async () => {
+    let release!: () => void;
+    const ready = new Promise<void>(resolve=>{release=resolve;});
+    let plans = 0;
+    const h = await harness({},'codex',async()=>{if (++plans===4) release();await ready;});
+    cleanup.push(async()=>release());
+    const run = h.adapters.codex.run.bind(h.adapters.codex);
+    h.adapters.codex.run = opts => {
+      const native = run(opts);
+      const events = (async function* (): AsyncGenerator<AgentEvent> {
+        yield {type:'system',threadId:opts.threadId ?? randomUUID()};
+        if (!opts.threadId) await callWorkflow('run_workflow',{operationId:'child',key:'child',goal:'Compute',plan:'Return 42',script:'return 42;'},opts.env);
+        yield {type:'final_text',content:opts.threadId ? 'finished' : 'yield'};
+        yield {type:'done',terminationReason:'normal'};
+      })();
+      return {runId:native.runId,events,stop:()=>native.stop(),waitForExit:ms=>native.waitForExit(ms)};
+    };
+    const scopes = Array.from({length:4},(_,i)=>'scope-'+i);
+    for (const scope of scopes) {
+      const binding = h.runtime.bindMain(scope,'start');cleanup.push(async()=>binding.release());
+      await callWorkflow('run_script',{operationId:'start',goal:'Nested',plan:'Nested parent',maxConcurrent:1,
+        script:'return await agent("parent",{key:"parent",workflowTool:true});'},binding.env);
+    }
+    await h.until(()=>expect(scopes.every(scope=>h.runtime.kernel.state(scope)?.script?.status==='result_ready')).toBe(true));
+    expect(plans).toBe(4);
+    expect(h.adapters.codex.runs).toHaveLength(8);
+    expect(h.pool.snapshot()).toMatchObject({active:0,waiting:0});
+  });
+
+  it('stops a caller that does not yield after requesting a child and still resumes its conversation', async () => {
+    vi.useFakeTimers();
+    const h = await harness();
+    let release!: () => void;
+    const stuck = new Promise<void>(resolve=>{release=resolve;});
+    cleanup.push(async()=>release());
+    const run = h.adapters.codex.run.bind(h.adapters.codex);
+    h.adapters.codex.run = opts => {
+      const native = run(opts);
+      const events = (async function* (): AsyncGenerator<AgentEvent> {
+        yield {type:'system',threadId:opts.threadId ?? 'yield-session'};
+        if (!opts.threadId) {
+          await callWorkflow('run_workflow',{operationId:'child',key:'child',goal:'Compute',plan:'Return 42',script:'return 42;'},opts.env);
+          await stuck;
+          return;
+        }
+        yield {type:'final_text',content:'finished after forced yield'};
+        yield {type:'done',terminationReason:'normal'};
+      })();
+      return {runId:native.runId,events,stop:async()=>{await native.stop();release();},waitForExit:ms=>native.waitForExit(ms)};
+    };
+    await h.call('run_script',{goal:'Forced yield',maxConcurrent:1,script:'return await agent("parent",{key:"parent",workflowTool:true});'});
+    await h.until(()=>expect(h.state().tasks[0]?.waitingWorkflowId).toBeTruthy());
+    await vi.advanceTimersByTimeAsync(31_000);
+    await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
+    expect(h.adapters.codex.runs[0]?.stopped).toBe(true);
+    expect(h.adapters.codex.runOptions[1]?.threadId).toBe('yield-session');
+    expect(h.state().tasks[0]?.attempts[0]?.result).toBe('suspended');
+  });
+
+  it('lets an opted-in consumer delegate and reclaim saved work after its child completes', async () => {
+    const h = await harness();
+    const run = h.adapters.codex.run.bind(h.adapters.codex);
+    h.adapters.codex.run = opts => {
+      const native = run(opts);
+      const events = (async function* (): AsyncGenerator<AgentEvent> {
+        yield {type:'system',threadId:opts.threadId ?? 'consumer'};
+        expect(opts.systemPrompt).toContain('run_workflow');
+        const grant=await callWorkflow('claim_work',{operationId:'claim'},opts.env) as {claimId:string;generation:number;item:WorkflowWorkItem};
+        if (!opts.threadId) {
+          await callWorkflow('checkpoint_work',{operationId:'progress',claimId:grant.claimId,generation:grant.generation,
+            expectedProgressVersion:0,state:{stage:'delegated'}},opts.env);
+          await callWorkflow('run_workflow',{operationId:'child',key:'child',goal:'Compute',plan:'Return 42',script:'return 42;'},opts.env);
+        } else {
+          expect(grant.generation).toBe(2);
+          expect(grant.item.progress.state).toEqual({stage:'delegated'});
+          const context=await callWorkflow('read_context',{},opts.env) as {workflows:{call:{result:unknown}}};
+          await callWorkflow('complete_work',{operationId:'complete',claimId:grant.claimId,generation:grant.generation,result:context.workflows.call.result},opts.env);
+        }
+        yield {type:'final_text',content:'done'};
+        yield {type:'done',terminationReason:'normal'};
+      })();
+      return {runId:native.runId,events,stop:()=>native.stop(),waitForExit:ms=>native.waitForExit(ms)};
+    };
+    await h.call('run_script',{goal:'Delegate work from a consumer',maxConcurrent:1,script:[
+      'await enqueueWork({key:"item",title:"Compute",input:null});',
+      'await closeWorkQueue({key:"close"});',
+      'return await consumeWork({key:"pool",members:[{name:"A",workflowTool:true}],prompt:"Process the item"});',
+    ].join('\n')});
+    await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
+    expect(h.state().workQueue?.items[0]?.result).toBe(42);
+    expect(h.adapters.codex.runs).toHaveLength(2);
+    expect(h.pool.snapshot()).toMatchObject({active:0,waiting:0});
+  });
+
   it('releases the process pool while consumers wait, resumes native sessions for added work, and drains only after close', async () => {
     const h = await harness();
     const run = h.adapters.codex.run.bind(h.adapters.codex);
