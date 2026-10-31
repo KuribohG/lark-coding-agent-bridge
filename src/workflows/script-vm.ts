@@ -32,6 +32,14 @@ const PRELUDE = `(() => {
     return work(JSON.stringify({...item, kind: 'enqueue'})).then(JSON.parse);
   };
   globalThis.workStatus = (options = {}) => work(JSON.stringify({...options, kind: 'status'})).then(JSON.parse);
+  globalThis.consumeWork = (options) => {
+    if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('consumeWork(options) expected');
+    return work(JSON.stringify({...options, kind: 'consume'})).then(JSON.parse);
+  };
+  globalThis.closeWorkQueue = (options) => {
+    if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('closeWorkQueue({key}) expected');
+    return work(JSON.stringify({...options, kind: 'close'})).then(JSON.parse);
+  };
   globalThis.parallel = tasks => {
     if (!Array.isArray(tasks) || tasks.length > ${SCRIPT_MAX_TASKS} || tasks.some(task => typeof task !== 'function')) throw new TypeError('parallel expects a bounded array of functions');
     return Promise.all(tasks.map(task => task()));

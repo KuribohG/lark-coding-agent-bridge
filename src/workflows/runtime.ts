@@ -99,7 +99,10 @@ export class WorkflowRuntime {
         },
         work: async input => {
           controller.signal.throwIfAborted();
-          return this.kernel.scriptWork(scopeId, workflowId, runId, input);
+          const result = await this.kernel.scriptWork(scopeId, workflowId, runId, input);
+          return (input as { kind?: string }).kind === 'consume'
+            ? this.waitForScriptValue(scopeId, controller.signal, () => this.kernel.scriptConsumerResult(scopeId, workflowId, runId))
+            : result;
         },
         progress: (kind, text) => this.kernel.scriptProgress(scopeId, workflowId, runId, kind, text),
       });

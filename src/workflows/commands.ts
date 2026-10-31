@@ -11,6 +11,8 @@ const WORKFLOW_HELP = [
   '- `/workflow plan` — 查看执行方案；结束后可查看最近一次方案。',
   '- `/workflow status [成员名]` 或 `/workflow` — 查看状态、恢复点和失败原因；结束后显示最近一次。',
   '- `/workflow work [工作项 key]` — 查看工作队列、认领、资源归属和进展版本。',
+  '- `/workflow enqueue <工作项 JSON>` — 向当前工作流追加授权范围内的任务；暂停时仅入队。',
+  '- `/workflow close` — 关闭任务入口，消费者处理完已有任务后结束。',
   '- `/workflow pause` — 暂停工作流并取消正在执行的子任务。',
   '- `/workflow resume` — 恢复已暂停的工作流，复用已完成结果。',
   '- `/workflow cancel` — 取消当前工作流。',
@@ -32,7 +34,7 @@ export async function handleWorkflowCommand(kernel: WorkflowKernel, scope: strin
     if (kernel.state(scope)) return '当前话题已绑定工作流，请先完成或取消。';
     return submit(`请编写并运行脚本工作流（run_script）完成以下需求。先编写具体执行方案（plan），说明阶段、各 worker 的 harness/模型/任务、依赖关系及条件分支；bridge 会在执行前向用户展示。遵守用户指定的各 worker 的 harness、model 和 reasoningEffort；主 agent 沿用当前会话的执行器与模型设置：\n${goal}`);
   }
-  if (!['plan', 'status', 'work', 'pause', 'resume', 'cancel'].includes(operation)) return '未知的工作流子命令。发送 /workflow help 查看用法。';
+  if (!['plan', 'status', 'work', 'enqueue', 'close', 'pause', 'resume', 'cancel'].includes(operation)) return '未知的工作流子命令。发送 /workflow help 查看用法。';
   if (operation === 'cancel') return kernel.cancel(scope) ? '已请求取消当前工作流。' : '当前没有工作流。';
   const current = kernel.state(scope);
   const state = current ?? (['plan', 'status', 'work'].includes(operation) ? kernel.latest(scope) : undefined);
@@ -40,8 +42,19 @@ export async function handleWorkflowCommand(kernel: WorkflowKernel, scope: strin
   if (operation === 'plan') return state.script ? kernel.plan(scope, state.workflowId) : '旧版工作流没有保存脚本执行方案。';
   if (operation === 'status') return renderWorkflowStatus(state, goal || undefined, !current);
   if (operation === 'work') return renderWorkStatus(state, goal || undefined);
-  await kernel.call({ kind: 'main', scopeId: scope }, operation,
-    { workflowId: state.workflowId, operationId: randomUUID(), expectedStateVersion: state.stateVersion });
+  let item: Record<string, unknown> = {};
+  if (operation === 'enqueue') {
+    try {
+      item = JSON.parse(goal) as Record<string, unknown>;
+      if (!item || Array.isArray(item) || typeof item !== 'object'
+        || Object.keys(item).some(key => !['key', 'title', 'input', 'resources', 'maxAttempts'].includes(key))) throw new Error('Invalid work item');
+    } catch { return '用法：/workflow enqueue {"key":"唯一名称","title":"任务标题","input":"任务内容"}，可选 resources、maxAttempts。'; }
+  }
+  if (operation === 'close' && goal) return '用法：/workflow close。关闭后不能追加新任务，已有任务继续执行。';
+  await kernel.call({ kind: 'main', scopeId: scope }, operation === 'enqueue' ? 'enqueue_work' : operation === 'close' ? 'close_work_queue' : operation,
+    { ...item, workflowId: state.workflowId, operationId: randomUUID(), expectedStateVersion: state.stateVersion });
+  if (operation === 'enqueue') return '工作项已入队。运行中的消费者会领取；暂停或中断的工作流仍需显式恢复。';
+  if (operation === 'close') return '队列已关闭。已有任务继续处理；全部完成且消费者退出后返回结果。暂停或中断的工作流仍需显式恢复。';
   if (operation === 'pause') return '已暂停工作流并请求取消在途任务；恢复时复用已完成结果。';
   if (operation === 'resume') return '已恢复工作流，正在从已完成结果重放。';
 }

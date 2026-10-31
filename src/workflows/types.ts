@@ -141,6 +141,29 @@ export interface WorkflowWorkQueue {
   items: WorkflowWorkItem[];
   claims: WorkClaim[];
   operations: Array<{ key: string; digest: string; response: unknown }>;
+  closedAt?: number;
+  closeKey?: string;
+}
+
+/** One script-owned consumer pool per workflow; waiting never holds a worker process. */
+export interface WorkConsumerPool {
+  id: string;
+  key: string;
+  digest: string;
+  runId: string;
+  prompt: string;
+  maxTurns: number;
+  status: 'waiting' | 'running' | 'drained' | 'failed' | 'suspended' | 'cancelled';
+  reason?: string;
+  members: Array<{
+    name: string;
+    execution: WorkerExecution;
+    taskId?: string;
+    lastWake?: string;
+    retryPending?: boolean;
+    disabled?: string;
+  }>;
+  turns: Array<{ key: string; member: string; taskId: string }>;
 }
 
 export interface WorkerExecutionSelection extends ModelSettings {
@@ -235,6 +258,7 @@ export interface WorkflowState {
   checkpoints?: AgentCheckpoint[];
   mailbox?: AgentMailbox;
   workQueue?: WorkflowWorkQueue;
+  consumerPool?: WorkConsumerPool;
   script?: WorkflowScript;
 }
 

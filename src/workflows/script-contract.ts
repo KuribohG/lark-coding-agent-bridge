@@ -6,7 +6,7 @@ export const SCRIPT_MAX_TEXT = 100_000;
 export const SCRIPT_MAX_REVISIONS = 8;
 
 export const SCRIPT_DEFINITION: WorkflowDefinition = {
-  apiVersion: 'bridge.workflow/v1', id: 'scripted', version: '0.5.0', kind: 'script-led',
+  apiVersion: 'bridge.workflow/v1', id: 'scripted', version: '0.6.0', kind: 'script-led',
   mainInstructions: '这是脚本驱动的跨 harness 工作流。脚本决定任务依赖，bridge 管理 worker。收到脚本完成事件后 read_artifact 并审查最终结果，再 ack_events 和 complete。失败或暂停后可 replay_script；已完成且输入、执行绑定相同的任务会复用。每个 worker 可独立选择 harness、model 和 reasoningEffort。',
   roles: { worker: { instructions: '完成脚本分配的这一项任务，遵守原始需求的授权范围。最终答复作为脚本返回值，不要只回复完成。', outputKind: 'agent-result' } },
   maxConcurrentWorkers: 4, maxRevisionRounds: SCRIPT_MAX_REVISIONS, maxWallTimeMinutes: 120,
@@ -46,6 +46,7 @@ export function parseScriptAgentCall(value: unknown, defaults: WorkerExecutionSe
     throw new Error('agent() supports key, member, harness, model, reasoningEffort and output only');
   }
   const key = scriptText(input.key, 'agent key', 160);
+  if (key.startsWith('@consumer/')) throw new Error('Agent key uses a reserved consumer prefix');
   if (key.trim() !== key) throw new Error('agent key must not contain surrounding whitespace');
   const output = input.output ?? 'text';
   if (output !== 'text' && output !== 'json') throw new Error('agent output must be text or json');

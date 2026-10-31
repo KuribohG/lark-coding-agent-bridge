@@ -89,6 +89,8 @@ Guest functions:
 | `send(member, text, {key})` / `receive(member, {key})` | Send a durable message or await a stable inbox batch |
 | `enqueueWork({key, title, input, resources?, maxAttempts?})` | Persist an immutable work item; returns `{itemId, key}` and reuses it on replay |
 | `workStatus({itemId?, offset?, limit?})` | Read one item with its payload, or bounded queue counts and summaries |
+| `consumeWork({key, members, prompt, maxTurns?})` | Schedule dedicated persistent consumers and wait until the closed queue drains |
+| `closeWorkQueue({key})` | Persist queue closure; existing items continue, new items are rejected |
 | `parallel([() => ..., () => ...])` | Starts functions and returns results in input order |
 | `pipeline(items, ...stages)` | Processes items concurrently; each item passes through its stages sequentially as `stage(value, index)` |
 | `phase(text)` / `log(text)` | Bounded progress recorded in status; does not wake main |
@@ -191,6 +193,53 @@ Use `/workflow work` for counts and ownership, or `/workflow work <key>` for res
 
 Limits per workflow: 256 items, 512 claim records, 2048 queue mutation records, 16 resource keys per item, and 2 MB serialized queue state. Each input, progress state and result is limited to 16000 JSON characters. Status defaults to 16 items per page (maximum 64); use `nextOffset` for the next page. A script run can make at most 128 queue calls, including status queries, independently of its agent-call budget. The queue is bounded and intended for work within one workflow, not an unbounded service queue.
 
+### Queue-driven consumers
+
+`consumeWork` owns the consumer lifecycle within an explicitly started script workflow. The bridge schedules turns when work becomes claimable, resumes the same native sessions for subsequent turns, and records an idle wait when no work is available. Waiting consumes no worker process or process-pool slot. The bounded script interpreter remains active and the workflow deadline continues to run; this is not an indefinite background service.
+
+```js
+for (const item of args.items) await enqueueWork(item);
+await closeWorkQueue({key: 'production-finished'});
+return await consumeWork({
+  key: 'consumers',
+  members: [{name: 'A', harness: 'codex'}, {name: 'B', harness: 'codex'}],
+  prompt: 'Handle the authorized work, preserve progress and verify the result.',
+  maxTurns: 32,
+});
+```
+
+A workflow has at most one pool with 1–16 dedicated member names. Each member supports `harness`, `model` and `reasoningEffort`; omitted settings follow the script defaults. The pool key, prompt, membership, turn budget and resolved execution bindings are immutable across replay. Pool members cannot also be scheduled with `agent()` or wait on script `receive()`. They are created lazily when work arrives. Generated turn keys use the reserved `@consumer/` prefix; ordinary script keys cannot use it.
+
+Members keep using `claim_work`, `checkpoint_work`, `renew_claim` and `complete_work`. When a claim returns `null`, they finish their turn immediately. They must not sleep or poll waiting for more items. The scheduler considers available resource keys and outstanding turns to bound dispatch. A worker racing another consumer may still receive no item; its native process then exits. The scheduler does not repeatedly invoke a no-progress consumer for the same available work. If no consumer can make progress, it fails with an actionable reason instead of spinning. Workers' successful final answers automatically save member checkpoints; item checkpoints remain explicit.
+
+A failed or interrupted member stops participating for the current script run. Its claim is released and other members can continue. Explicit replay can retry that member's original unfinished turn when work is available. Completed turns are reconstructed as cache hits without rerunning their side effects; subsequent turns preserve their predecessor chain and native session. Failed work items reject the pool after active turns finish. Inspect `/workflow work`, use `retry_work` for recoverable items, then explicitly replay. Native authentication/session failures remain visible; there is no silent replacement with another profile or a fresh conversation.
+
+`maxTurns` bounds the pool's total logical turns, defaulting to the smaller of 32 and the script's `maxAgents` and capped at 128. Every scheduled consumer turn counts against `maxAgents`; restored completed turns count as cache hits. Workflow history/attempt limits, worker concurrency, shared foreground-priority process slots and the original deadline also apply. Exhausted budgets fail visibly; replay does not reset them or extend the deadline.
+
+**Queue closure is explicit and permanent.** An open but empty queue waits for new input. A closed queue stops accepting new items and drains existing ones. `consumeWork` returns `{queue, consumers}` only after there are no pending/claimed items and all its active turns have exited. It rejects on terminal item failures or exhausted/no-progress consumers. Replaying enqueue calls still reuses identical existing items after closure. Explicit retry of an existing failed item is allowed after closure, followed by replay; reopening for new items requires a new workflow. Closing does not cancel running workers.
+
+For concurrent producers, await both producer and consumer branches:
+
+```js
+return await parallel([
+  () => consumeWork({key: 'pool', members: args.members, prompt: args.consumerPrompt}),
+  async () => {
+    const items = await agent(args.planningTask, {key: 'producer', output: 'json'});
+    for (const item of items) await enqueueWork(item);
+    return await closeWorkQueue({key: 'production-finished'});
+  },
+]);
+```
+
+The [packaged consumer example](../workflow-definitions/scripted/examples/consumer-pool.js) accepts `items`, `members`, `consumerPrompt`, optional `maxTurns`, and `keepOpen`. By default it closes the queue after enqueueing the initial batch. With `keepOpen: true`, main must close it after additional authorized work arrives. Main CLI operations use the normal workflow ID, operation ID and expected state version. Chat controls for an existing workflow are:
+
+```text
+/workflow enqueue {"key":"extra-item","title":"Additional task","input":"Task details within the original goal"}
+/workflow close
+```
+
+Enqueue accepts optional `resources` and `maxAttempts`. These commands never create a workflow; when paused/interrupted they only persist the change. Restart marks the pool suspended, cancels orphaned claims and requires explicit replay before scheduling. `/workflow work` and `/workflow status [member]` display queue closure, pool state, turn budget, idle waits and stopped members, including before a member's first native turn. Ordinary messages do not enter workflow mode.
+
 ### Discussion example and native acceptance
 
 [The A → B → A example](../workflow-definitions/scripted/examples/discussion.js) creates two persistent members. A proposes a design, B reviews it, and A revises its original proposal using B's mailbox message. It returns all three documents and validates the response fields. Supply these script arguments:
@@ -213,13 +262,14 @@ npm run build
 npm run test:workflow-native -- --output /absolute/path/outside-the-repository/native-acceptance
 ```
 
-Use `--backends codex` to limit the backends, and `--scenarios memory,interrupt,discussion,queue` to select cases. The default scenarios are memory, interrupt and discussion; opt into `--scenarios queue` for the three-consumer queue test. The discussion uses the first selected backend for A and the second for B, or the first for both if only one is selected. The runner uses native configured defaults without injecting a model service override, copying credentials, or switching profiles. The observed model is recorded when the backend reports it. Missing native authentication is a failed acceptance prerequisite, not a passing test.
+Use `--backends codex` to limit the backends, and `--scenarios memory,interrupt,discussion,queue` to select cases. The default scenarios are memory, interrupt and discussion; opt into `--scenarios queue` for the three-consumer queue test or `--scenarios consumers` for queue-driven wakeups. The discussion uses the first selected backend for A and the second for B, or the first for both if only one is selected. The runner uses native configured defaults without injecting a model service override, copying credentials, or switching profiles. The observed model is recorded when the backend reports it. Missing native authentication is a failed acceptance prerequisite, not a passing test.
 
 The runner covers:
 
 - **Native memory:** a member memorizes a random, non-secret marker and replies `READY`. After the controller exits, a fresh process explicitly replays and asks the same native session to recall it. The marker is absent from the recall input and saved checkpoint; neither turn may use tools.
 - **Interrupted work:** a member saves `state.stage = "armed"` through the actual worker CLI, then starts a foreground sleep. The controller pauses that attempt. A fresh controller replays the same logical turn and native session; the saved checkpoint tells it to finish without repeating the checkpoint or sleep.
 - **Discussion:** the packaged example waits with both inboxes persisted. A fresh controller queues B's wakeup and explicitly replays. Completed proposal/bootstrap turns are cached, B reviews, and A consumes the review and revises. Both native IDs must remain unchanged and both receipts must be consumed.
+- **Consumer scheduling:** three native members consume ten items with one interruption and takeover. The controller verifies zero occupied/queued process-pool slots while the open queue is empty, appends five items and closes it. Newly dispatched turns must resume prior native sessions; all fifteen results must be correct.
 - **Work queue:** the packaged queue example starts three native members for ten arithmetic items. Each runs a local helper through its real shell tool and worker CLI. A saves partial progress and is interrupted; B and C adopt the work and finish all items. Checks require ten completed claims, preserved partial progress, a new generation/owner, and rejection of the revoked worker's late submission. This case uses one isolated controller; kernel and runtime tests cover lease expiry and restart separately.
 
 Artifacts include `summary.json` plus each case's `before.json`, `result.json`, process logs and observations. They record process IDs, native session IDs, checkpoint/attempt state and final outputs. Inspect the actual proposal, review and revision for design quality; the automated checks establish the protocol and required fields. Keep this directory private because logs and model responses may contain local paths and conversation content.

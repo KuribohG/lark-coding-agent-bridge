@@ -34,7 +34,7 @@ const save = (path: string, data: unknown) => writeFile(path, JSON.stringify(dat
 type Backend = Extract<AgentKind, 'codex' | 'claude' | 'pi'>;
 type Case = {
   id: string;
-  scenario: 'memory' | 'interrupt' | 'discussion' | 'queue';
+  scenario: 'memory' | 'interrupt' | 'discussion' | 'queue' | 'consumers';
   backend: Backend;
   reviewer?: Backend;
   marker: string;
@@ -143,9 +143,10 @@ async function childPhase(test: Case, phase: string, directory: string) {
     adapters.set(kind, wrap(adapter, kind, phase, test, observations, nativeRuns));
   }
   const activeRuns = new ActiveRuns();
+  const processPool = new ProcessPool(() => test.scenario === 'consumers' ? 4 : 3);
   const executor = new RunExecutor({ resolveAgent: (_, kind) => {
     const adapter = adapters.get(kind as Backend); assert(adapter, 'Backend outside this case'); return adapter;
-  }, activeRuns, pool: new ProcessPool(() => 3) });
+  }, activeRuns, pool: processPool });
   let wakeCount = 0;
   const runtime = new WorkflowRuntime({ path: join(directory, 'workflow.sqlite'), cliPath: join(project, 'dist/cli.js'), executor,
     resolve: async () => ({ root, policy }),
@@ -177,19 +178,21 @@ async function childPhase(test: Case, phase: string, directory: string) {
   };
   await runtime.start();
   try {
-    if (test.scenario === 'queue') {
+    if (test.scenario === 'queue' || test.scenario === 'consumers') {
+      const consumers = test.scenario === 'consumers';
       assert.equal(phase, 'prepare');
       const consumer = join(workspace, 'consumer.mjs');
       await writeFile(consumer, await readFile(join(project, 'tests/acceptance/workflow-queue-consumer.mjs')), {mode:0o600});
-      const script = await readFile(join(project, 'workflow-definitions/scripted/examples/work-queue.js'), 'utf8');
+      const script = await readFile(join(project, `workflow-definitions/scripted/examples/${consumers ? 'consumer-pool' : 'work-queue'}.js`), 'utf8');
       const command = 'node ' + "'" + consumer.replaceAll("'", "'\\''") + "'";
       await call('run_script', {
-        goal:'Isolated queue acceptance: three native members run only the provided local consumer helper in the foreground. It may use the worker CLI to claim/checkpoint/complete ten arithmetic items, and read/write synchronization markers beside itself. Its bounded wait is intentional for this test. No other file access, external messages, credentials or delegation.',
-        plan:`Run members A, B and C using ${test.backend} and its currently configured native model. A saves partial progress; the test controller interrupts A. B and C then take over and complete all ten items through the actual worker CLI. Verify progress retention, generations and stale-result rejection.`,
+        goal:'Isolated queue acceptance: three native members run only the provided local consumer helper in the foreground. It may use the worker CLI to claim/checkpoint/complete the authorized arithmetic items (ten initially, five later for the consumer-pool case), and read/write synchronization markers beside itself. Its bounded wait is intentional for this test. In a new consumer turn, run the helper once again to handle newly queued work. No other file access, external messages, credentials or delegation.',
+        plan:`Run members A, B and C using ${test.backend} and its currently configured native model. A saves partial progress; the test controller interrupts A. B and C then take over and complete all ten items through the actual worker CLI. Verify progress retention, generations and stale-result rejection.${consumers ? ' Verify zero occupied worker slots while waiting, append five items, resume the same native sessions, then explicitly close and drain the queue.' : ''}`,
         script, timeoutMs:600_000, maxConcurrent:3, args:{
           items:Array.from({length:10},(_,i)=>({key:`square-${i}`,title:`Square ${i}`,input:i})),
           members:['A','B','C'].map(name=>({name,harness:test.backend})),
-          consumerPrompt:`Execute exactly this foreground shell command: ${command} . The trusted test helper implements the entire queue protocol and intentional bounded synchronization; do not replace or repeat it, read other files, or invoke additional tools. Wait for it to finish and return its JSON stdout as your final answer.`,
+          keepOpen:consumers,
+          consumerPrompt:`Execute exactly this foreground shell command once in THIS turn: ${command} . On each new consumer turn, run it again for newly queued work even if an earlier turn finished a batch. The trusted test helper implements the entire queue protocol and intentional bounded synchronization; do not replace it, read other files, or invoke additional tools. Wait for it to finish and return its JSON stdout as your final answer.`,
         },
       });
       await until(current=>current.workQueue?.items.some(item=>(item.progress.state as {stage?:string})?.stage==='armed')===true);
@@ -202,14 +205,27 @@ async function childPhase(test: Case, phase: string, directory: string) {
       await until(current=>current.tasks.find(task=>task.taskId===original.taskId)?.status==='cancelled');
       await assert.rejects(callWorkflow('complete_work', {operationId:randomUUID(),claimId:abandoned.id,generation:abandoned.generation,result:-1}, oldRun.env), /inactive|revoked/);
       await writeFile(join(workspace, 'adopt-ready'), 'ready', {mode:0o600});
+      let idle: {slots:ReturnType<ProcessPool['snapshot']>;nativeRuns:number;nativeIds:Array<string|undefined>} | undefined;
+      if(consumers) {
+        await until(current=>current.consumerPool?.status==='waiting' && current.workQueue?.items.filter(item=>item.status==='completed').length===10);
+        idle={slots:processPool.snapshot(),nativeRuns:observations.length,nativeIds:state().sessions.map(session=>session.nativeSessionId)};
+        assert.equal(idle.slots.active,0);assert.equal(idle.slots.waiting,0);assert.equal(wakeCount,0);
+        await delay(1100);await runtime.tick();assert.equal(observations.length,idle.nativeRuns,'Idle queue started another worker');
+        for(let n=10;n<15;n++) await call('enqueue_work',{key:`square-${n}`,title:`Square ${n}`,input:n});
+        await call('close_work_queue');
+      }
       const done = await until(current=>current.script?.status==='result_ready');
       const work = done.workQueue!;
       assert.equal(done.agents!.length, 3);
-      assert.equal(observations.length, 3);
+      if(idle) {
+        assert(observations.length>idle.nativeRuns,'New work did not wake a consumer');
+        assert(observations.slice(idle.nativeRuns).every(observation=>idle!.nativeIds.includes(observation.resumed)),'A consumer did not resume its original native session');
+        assert.equal(done.consumerPool?.status,'drained');
+      } else assert.equal(observations.length, 3);
       assert(done.sessions.every(session=>session.nativeSessionId));
-      assert.equal(work.items.length, 10);
+      assert.equal(work.items.length, consumers ? 15 : 10);
       assert(work.items.every(item=>item.status==='completed'));
-      assert.equal(work.claims.filter(claim=>claim.status==='completed').length, 10);
+      assert.equal(work.claims.filter(claim=>claim.status==='completed').length, consumers ? 15 : 10);
       assert.equal(work.claims.filter(claim=>claim.status==='cancelled').length, 1);
       for (const item of work.items) assert.equal((item.result as {square:number}).square, (item.input as number)**2);
       const adopted = work.items.find(item=>item.id===armed.id)!;
@@ -218,9 +234,9 @@ async function childPhase(test: Case, phase: string, directory: string) {
       for (const member of ['B', 'C']) assert(work.items.some(item=>(item.result as {member:string}).member===member));
       await call('ack_events', {eventIds:done.events.filter(event=>!event.acknowledged).map(event=>event.id)});
       await call('complete', {reportRef:done.script!.resultRef,openIssues:[],verificationLimits:'Native queue acceptance in an isolated controller; production runtime unchanged. Resource keys do not provide filesystem isolation or exactly-once side effects.'});
-      await save(join(directory, 'result.json'), {passed:true,scenario:'queue',backend:test.backend,
+      await save(join(directory, 'result.json'), {passed:true,scenario:test.scenario,backend:test.backend,idle,
         nativeSessions:done.sessions.map(session=>({member:session.actorKey,nativeId:session.nativeSessionId,model:session.observedModel})),
-        items:work.items,claims:work.claims,staleSubmissionRejected:true,wakeCount});
+        items:work.items,claims:work.claims,staleSubmissionRejected:true,consumers:done.consumerPool,wakeCount});
       return;
     }
     if(phase==='prepare') {
@@ -356,8 +372,8 @@ if (childDirectory) {
   const backends = option('backends', 'codex,claude,pi')!.split(',') as Backend[];
   assert(backends.length > 0 && backends.every(b => ['codex', 'claude', 'pi'].includes(b)), 'Unsupported backend');
   const scenarios = option('scenarios', 'memory,interrupt,discussion')!.split(',');
-  assert(scenarios.length > 0 && scenarios.every(s => ['memory', 'interrupt', 'discussion', 'queue'].includes(s)), 'Unsupported scenario');
-  const cases: Case[] = backends.flatMap(backend => (['memory', 'interrupt', 'queue'] as const)
+  assert(scenarios.length > 0 && scenarios.every(s => ['memory', 'interrupt', 'discussion', 'queue', 'consumers'].includes(s)), 'Unsupported scenario');
+  const cases: Case[] = backends.flatMap(backend => (['memory', 'interrupt', 'queue', 'consumers'] as const)
     .filter(s => scenarios.includes(s))
     .map(scenario => ({
       id: backend + '-' + scenario + '-' + randomUUID().slice(0, 8),
@@ -377,7 +393,7 @@ if (childDirectory) {
     try {
       await launch(test, 'prepare', directory);
       assert(!cancelled, 'Acceptance cancelled');
-      if (test.scenario !== 'queue') {
+      if (test.scenario !== 'queue' && test.scenario !== 'consumers') {
         console.log(JSON.stringify({ case: test.id, phase: 'recover' }));
         await launch(test, 'recover', directory);
       }

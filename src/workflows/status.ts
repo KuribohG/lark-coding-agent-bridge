@@ -41,7 +41,9 @@ function memberLines(state: WorkflowState, member: DurableAgent, detail: boolean
   const task = currentTask(state, member);
   const receipt = state.mailbox?.receipts.find(item => item.id === member.wait?.receiptId);
   const checkpoint = state.checkpoints?.find(item => item.ref === member.checkpointRef);
+  const consumer = state.consumerPool?.members.find(consumer => consumer.name === member.key);
   const phase = member.activeTurnId && task ? TASK_STATUS[task.status]
+    : consumer && state.consumerPool?.status === 'waiting' ? '等待队列任务（不占 worker 进程）'
     : receipt?.status === 'waiting' ? '等待消息' : receipt?.status === 'ready' ? '消息已到，待开始下一轮'
       : task ? TASK_STATUS[task.status] : '尚未开始';
   const lines = [`- 成员 ${compact(member.key, 100)}：${phase}，${execution(state, member.sessionRef)}`];
@@ -82,9 +84,17 @@ function workLines(state: WorkflowState, item: WorkflowWorkItem): string[] {
 
 function queueLines(state: WorkflowState, limit: number, member?: DurableAgent): string[] {
   const items = state.workQueue?.items ?? [];
-  if (!items.length) return [];
+  if (!state.workQueue) return [];
   const counts = (status: WorkflowWorkItem['status']) => items.filter(item => item.status === status).length;
   const lines = [`工作队列：${items.length} 项，待领取 ${counts('pending')}，已认领 ${counts('claimed')}，完成 ${counts('completed')}，失败 ${counts('failed')}，取消 ${counts('cancelled')}`];
+  lines.push(state.workQueue.closedAt === undefined ? '队列开放：可继续追加任务。' : '队列已关闭：不再接收新任务，已有任务继续排空。');
+  const pool = state.consumerPool;
+  if (pool) {
+    const names = {waiting:'等待队列变化（不占 worker 进程）',running:'消费中',drained:'已排空',failed:'需要处理',suspended:'已暂停',cancelled:'已取消'};
+    lines.push(`消费者池 ${compact(pool.key, 100)}：${names[pool.status]}，轮次 ${pool.turns.length}/${pool.maxTurns}`);
+    if (pool.reason) lines.push(`  状态说明：${errorText(pool.reason)}`);
+    lines.push(`  成员：${pool.members.slice(0, 8).map(consumer => compact(consumer.name, 50) + (consumer.disabled ? '（停止，需显式重放）' : consumer.retryPending ? '（待恢复）' : '')).join('、')}`);
+  }
   const order = { claimed: 0, failed: 1, pending: 2, completed: 3, cancelled: 4 };
   const selected = items.filter(item => !member || state.workQueue?.claims.some(claim => claim.id === item.claimId && claim.agentId === member.agentId))
     .sort((a, b) => order[a.status] - order[b.status]);
@@ -95,7 +105,7 @@ function queueLines(state: WorkflowState, limit: number, member?: DurableAgent):
 }
 
 export function renderWorkStatus(state: WorkflowState, key?: string): string {
-  if (!state.workQueue?.items.length) return '这个工作流还没有工作项。';
+  if (!state.workQueue) return '这个工作流还没有工作项。';
   if (!key) return bounded(queueLines(state, 12));
   const item = state.workQueue.items.find(item => item.key === key);
   if (!item) return `未找到工作项：${compact(key, 100)}`;
@@ -121,6 +131,7 @@ export function renderWorkflowStatus(state: WorkflowState, memberKey?: string, l
   }
   if (memberKey) {
     const member = state.agents?.find(item => item.key === memberKey);
+    if (!member && state.consumerPool?.members.some(consumer => consumer.name === memberKey)) return bounded([...lines, ...queueLines(state, 0), `成员 ${compact(memberKey, 100)} 等待首次队列任务，尚未启动 worker。`]);
     if (!member) return bounded([...lines, `未找到成员：${compact(memberKey, 100)}。用 /workflow status 查看成员列表。`]);
     lines.push(...memberLines(state, member, true));
     lines.push(...queueLines(state, 1, member));

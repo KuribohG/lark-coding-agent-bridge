@@ -34,7 +34,8 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
     events: (results[kind as AgentKind] ?? []).map(text => output(text, kind)),
   })])) as Record<'claude' | 'codex' | 'pi', FakeAgentAdapter>;
   const resolveAgent = vi.fn((_: string, kind?: AgentKind) => adapters[kind as keyof typeof adapters]);
-  const executor = new RunExecutor({ resolveAgent, pool: new ProcessPool(() => 5), activeRuns: new ActiveRuns() });
+  const pool = new ProcessPool(() => 5);
+  const executor = new RunExecutor({ resolveAgent, pool, activeRuns: new ActiveRuns() });
   const wakeMain = vi.fn(async () => {
     const state = runtime.kernel.state(root.scopeId)!;
     runtime.kernel.markNotified(root.scopeId, state.events.map(event => event.id));
@@ -52,12 +53,53 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
   const call = (method: string, args: Record<string, unknown> = {}) => callWorkflow(method,
     { operationId: randomUUID(), workflowId: state()?.workflowId, expectedStateVersion: state()?.stateVersion, ...(method === 'run_script' || method === 'replay_script' ? {plan:'Review the task with the requested harness and model; return a final result.'} : {}), ...args }, binding.env);
   const until = async (check: () => void) => vi.waitFor(async () => { await runtime.tick(); check(); }, { timeout: 5000, interval: 20 });
-  return { get runtime() { return runtime; }, adapters, resolveAgent, wakeMain, binding, state, call, until,
+  return { get runtime() { return runtime; }, adapters, resolveAgent, wakeMain, binding, state, call, until, pool,
     restart: async () => { binding.release(); await runtime.close(); runtime = new WorkflowRuntime(deps); await runtime.start(); binding = runtime.bindMain(root.scopeId, 'continue'); },
     changeRoot: () => { root = { ...root, catalogBinding: 'replacement' }; } };
 }
 
 describe('script workflow runtime', () => {
+  it('releases the process pool while consumers wait, resumes native sessions for added work, and drains only after close', async () => {
+    const h = await harness();
+    const run = h.adapters.codex.run.bind(h.adapters.codex);
+    h.adapters.codex.run = opts => {
+      const native = run(opts);
+      const events = (async function* (): AsyncGenerator<AgentEvent> {
+        yield {type:'system',threadId:opts.threadId ?? randomUUID()};
+        for (;;) {
+          const grant = await callWorkflow('claim_work',{operationId:randomUUID()},opts.env) as {claimId:string;generation:number;item:WorkflowWorkItem}|null;
+          if (!grant) break;
+          await callWorkflow('complete_work',{operationId:randomUUID(),claimId:grant.claimId,generation:grant.generation,result:(grant.item.input as number)**2},opts.env);
+        }
+        yield {type:'final_text',content:'Batch consumed'};
+        yield {type:'done',terminationReason:'normal'};
+      })();
+      return {runId:native.runId,events,stop:()=>native.stop(),waitForExit:ms=>native.waitForExit(ms)};
+    };
+    const script = await readFile(new URL('../../../workflow-definitions/scripted/examples/consumer-pool.js', import.meta.url), 'utf8');
+    await h.call('run_script',{goal:'Consume work as it arrives',script,args:{items:[],members:['A','B','C'].map(name=>({name})),consumerPrompt:'Square item.input',keepOpen:true}});
+    await h.until(()=>expect(h.state().consumerPool?.status).toBe('waiting'));
+    expect(h.adapters.codex.runs).toHaveLength(0);
+    expect(h.pool.snapshot()).toMatchObject({active:0,waiting:0});
+    for(let i=0;i<10;i++) await h.call('enqueue_work',{key:'item-'+i,title:'Square '+i,input:i});
+    await h.until(()=>expect(h.state().workQueue?.items.filter(item=>item.status==='completed')).toHaveLength(10));
+    await h.until(()=>expect(h.state().consumerPool?.status).toBe('waiting'));
+    const runs=h.adapters.codex.runs.length;
+    const ids=h.state().sessions.map(session=>session.nativeSessionId);
+    expect(h.state().script?.status).toBe('running');expect(h.wakeMain).not.toHaveBeenCalled();
+    expect(h.pool.snapshot()).toMatchObject({active:0,waiting:0});
+    expect(await h.runtime.kernel.call({kind:'main',scopeId:'script-topic'},'status',{})).toMatchObject({consumers:{status:'waiting'}});
+    await h.runtime.tick();expect(h.adapters.codex.runs).toHaveLength(runs);
+    for(let i=10;i<15;i++) await h.call('enqueue_work',{key:'item-'+i,title:'Square '+i,input:i});
+    await h.call('close_work_queue');
+    await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
+    expect(h.state().workQueue!.items.map(item=>item.result)).toEqual(Array.from({length:15},(_,i)=>i*i));
+    expect(h.adapters.codex.runOptions.slice(runs).every(options=>ids.includes(options.threadId))).toBe(true);
+    expect(h.pool.snapshot()).toMatchObject({active:0,waiting:0});
+    const result=JSON.parse(h.state().artifacts.find(artifact=>artifact.ref===h.state().script!.resultRef)!.text);
+    expect(result).toMatchObject({queue:{completed:15,closed:true},consumers:{status:'drained'}});
+  });
+
   it('runs the queue example through QuickJS and worker IPC, adopts an interrupted claim, and replays without duplicating work', async () => {
     const h = await harness();
     const run = h.adapters.codex.run.bind(h.adapters.codex);

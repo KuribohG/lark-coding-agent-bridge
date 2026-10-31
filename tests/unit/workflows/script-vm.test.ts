@@ -85,4 +85,19 @@ describe('script interpreter', () => {
     await expect(run('enqueueWork({key:"a"}); return 0;', { work: () => new Promise(() => {}) })).rejects.toThrow('await every call');
     await expect(run('await workStatus();', { signal: AbortSignal.timeout(30), work: () => new Promise(() => {}) })).rejects.toThrow();
   });
+
+  it('awaits consumer drain, permits concurrent producers and cancels an idle wait', async () => {
+    let drained!: (value: unknown) => void;
+    const work = vi.fn(async (input: unknown) => {
+      const call = input as {kind:string};
+      if (call.kind === 'consume') return new Promise(resolve => {drained=resolve;});
+      if (call.kind === 'close') drained({completed:15});
+      return {ok:true};
+    });
+    const result = await run('return await parallel([()=>consumeWork({key:"pool"}),async()=>{await enqueueWork({key:"item"});return await closeWorkQueue({key:"closed"});}]);', {work});
+    expect(JSON.parse(result)).toEqual([{completed:15},{ok:true}]);
+    expect(work.mock.calls.map(([call])=>(call as {kind:string}).kind)).toEqual(['consume','enqueue','close']);
+    await expect(run('consumeWork({key:"pool"});return 1;', {work:()=>new Promise(()=>{})})).rejects.toThrow('await every call');
+    await expect(run('await consumeWork({key:"pool"});', {signal:AbortSignal.timeout(30),work:()=>new Promise(()=>{})})).rejects.toThrow();
+  });
 });

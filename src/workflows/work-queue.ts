@@ -51,6 +51,7 @@ export function enqueueWork(state: WorkflowState, args: Record<string, unknown>,
     if (prior.digest !== digest) throw new Error('Work key conflict: input is immutable across replay');
     return { itemId: prior.id, key };
   }
+  if (work.closedAt !== undefined) throw new Error('Work queue is closed; new items cannot be enqueued');
   if (work.items.length >= MAX_ITEMS) throw new Error('Work item limit reached');
   const item: WorkflowWorkItem = { id: randomUUID(), key, title, input, digest, maxAttempts, resources,
     generation: 0, status: 'pending', progress: { version: 0, state: null }, createdAt: now, updatedAt: now };
@@ -109,6 +110,25 @@ export function unfinishedWork(state: WorkflowState): boolean {
   return state.workQueue?.items.some(item => item.status === 'pending' || item.status === 'claimed') ?? false;
 }
 
+export function closeWorkQueue(state: WorkflowState, now: number): unknown {
+  const work = queue(state);
+  work.closedAt ??= now;
+  return { closed: true, closedAt: work.closedAt };
+}
+
+/** A conservative dispatch capacity: occupied keys and overlapping pending work consume one slot. */
+export function availableWork(state: WorkflowState): WorkflowWorkItem[] {
+  const items = state.workQueue?.items ?? [];
+  const occupied = new Set(items.filter(item => item.status === 'claimed').flatMap(item => item.resources));
+  const available: WorkflowWorkItem[] = [];
+  for (const item of items) {
+    if (item.status !== 'pending' || item.generation >= item.maxAttempts || item.resources.some(key => occupied.has(key))) continue;
+    available.push(item);
+    for (const key of item.resources) occupied.add(key);
+  }
+  return available;
+}
+
 export function workStatus(state: WorkflowState, args: Record<string, unknown> = {}): unknown {
   options(args, ['itemId', 'offset', 'limit']);
   if (args.itemId !== undefined) {
@@ -120,7 +140,8 @@ export function workStatus(state: WorkflowState, args: Record<string, unknown> =
   const limit = boundedInteger(args.limit, 16, 1, 64);
   const counts = { pending: 0, claimed: 0, completed: 0, failed: 0, cancelled: 0 };
   for (const item of items) counts[item.status]++;
-  return { total: items.length, ...counts, offset, nextOffset: offset + limit < items.length ? offset + limit : null,
+  return { total: items.length, ...counts, closed: state.workQueue?.closedAt !== undefined, closedAt: state.workQueue?.closedAt,
+    offset, nextOffset: offset + limit < items.length ? offset + limit : null,
     items: items.slice(offset, offset + limit).map(item => ({
     itemId: item.id, key: item.key, title: item.title.slice(0, 120), status: item.status,
     generation: item.generation, maxAttempts: item.maxAttempts, progressVersion: item.progress.version,
