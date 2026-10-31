@@ -222,6 +222,8 @@ export class WorkflowRuntime {
 
   async close(): Promise<void> {
     this.closed = true;
+    // Fence calls before IPC/executor shutdown can turn an accepted child into a cancellation.
+    this.kernel.beginShutdown();
     if (this.timer) clearInterval(this.timer);
     for (const run of this.scripts.values()) run.controller.abort();
     await Promise.allSettled([...this.scripts.values()].map(run => run.done));

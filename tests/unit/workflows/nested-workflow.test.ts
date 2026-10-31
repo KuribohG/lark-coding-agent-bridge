@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import Database from 'better-sqlite3';
 import { WorkflowKernel } from '../../../src/workflows/kernel';
 import { workflowWorkerInstructions } from '../../../src/workflows/ipc';
 import type { WorkflowRoot, WorkflowState, WorkflowWorkerRequest, WorkflowWorkerResult } from '../../../src/workflows/types';
@@ -140,5 +141,72 @@ describe('nested workflow capability',()=>{
     await h.child(h.requests[1]!,{key:'second',operationId:'second'});await h.finish(h.requests[1]!);
     h.changeRoot();await h.kernel.tick();expect(h.state().status).toBe('binding_attention');
     expect(h.kernel.queuedScripts()).toHaveLength(0);expect(h.requests).toHaveLength(2);
+  });
+
+  it.each(['before-yield','result-committed'])('recovers across the %s persistence boundary without duplicating the child',async boundary=>{
+    const dir=await mkdtemp(join(tmpdir(),'nested-boundary-'));cleanup.push(()=>rm(dir,{recursive:true,force:true}));
+    const h=harness(join(dir,'state.db'));await h.start();await h.agent(h.state());await h.run(1);
+    const parent=h.requests[0]!;
+    const child=await h.child(parent,{checkpoint:{boundary}});
+    if(boundary==='result-committed') {
+      await h.finish(parent);h.begin(child.workflowId);h.finishScript(child.workflowId,{text:'42'});
+    }
+    const native=h.state().sessions[0]!.nativeSessionId;
+    await h.restart();await h.replay();await h.agent(h.state());
+    if(boundary==='before-yield') {
+      await h.kernel.tick();expect(h.requests).toHaveLength(1);
+      expect(h.state().tasks[0]?.status).toBe('waiting_workflow');
+      h.begin(child.workflowId);h.finishScript(child.workflowId,{text:'42'});
+    }
+    await h.run(2);
+    expect(h.requests[1]!.session.nativeSessionId).toBe(native);
+    await expect(h.send(h.requests[1]!,'read_context')).resolves.toMatchObject({workflows:{checkpoint:{boundary},call:{result:42}}});
+    const summary=await h.call('status') as {children:unknown[]};
+    expect(summary.children).toHaveLength(1);
+    expect(h.state(child.workflowId).script?.revision).toBe(boundary==='before-yield'?1:0);
+  });
+
+  it('can disable and re-enable delegation on successive turns of the same native member',async()=>{
+    const h=harness();await h.start();
+    const nativeIds=[];
+    for(const [index,enabled] of [true,false,true].entries()) {
+      await h.agent(h.state(),{key:'turn-'+index,member:'M',workflowTool:enabled});await h.run(index+1);
+      const request=h.requests[index]!;nativeIds.push(h.state().sessions[0]?.nativeSessionId);
+      expect(workflowWorkerInstructions(request.task).includes('run_workflow')).toBe(enabled);
+      if(!enabled) await expect(h.child(request)).rejects.toThrow('not enabled');
+      await h.finish(request);
+    }
+    expect(new Set(nativeIds).size).toBe(1);
+    await expect(h.child(h.requests[0]!)).rejects.toThrow('inactive');
+  });
+
+  it('returns a saved child failure under its original key and only retries under a new key',async()=>{
+    const h=harness();await h.start();await h.agent(h.state());await h.run(1);
+    const first=await h.child(h.requests[0]!);await h.finish(h.requests[0]!);h.begin(first.workflowId);
+    h.finishScript(first.workflowId,{error:'intentional child failure'});await h.run(2);
+    const resumed=h.requests[1]!;
+    await expect(h.child(resumed)).resolves.toMatchObject({workflowId:first.workflowId,status:'failed',error:'intentional child failure'});
+    await expect(h.child(resumed,{operationId:'changed',script:'return 43;'})).rejects.toThrow('key conflict');
+    const second=await h.child(resumed,{key:'retry',operationId:'retry'});
+    expect(second.workflowId).not.toBe(first.workflowId);
+    await h.finish(resumed);h.begin(second.workflowId);h.finishScript(second.workflowId,{text:'42'});await h.run(3);
+    await expect(h.send(h.requests[2]!,'read_context')).resolves.toMatchObject({workflows:{call:{workflowId:second.workflowId,result:42}}});
+  });
+
+  it('rolls back every descendant when a later child rejects root replay',async()=>{
+    const dir=await mkdtemp(join(tmpdir(),'nested-atomic-'));cleanup.push(()=>rm(dir,{recursive:true,force:true}));
+    const path=join(dir,'state.db');const h=harness(path);await h.start({maxConcurrent:2});
+    await h.agent(h.state(),{key:'A'});await h.agent(h.state(),{key:'B'});await h.run(2);
+    const children=[];
+    for(const request of h.requests) {children.push(await h.child(request));await h.finish(request);}
+    await h.call('pause');
+    // Force the second branch to hit its existing replay limit after the first is prepared.
+    const second=h.state(children[1]!.workflowId);second.script!.revision=8;
+    const db=new Database(path);
+    db.prepare('UPDATE workflows SET data=? WHERE id=?').run(JSON.stringify(second),second.workflowId);db.close();
+    const before=[h.state(),...children.map(child=>h.state(child.workflowId))];
+    await expect(h.call('replay_script')).rejects.toThrow('replay limit');
+    for(const snapshot of before) expect(h.state(snapshot.workflowId)).toEqual(snapshot);
+    expect(h.kernel.queuedScripts()).toHaveLength(0);
   });
 });

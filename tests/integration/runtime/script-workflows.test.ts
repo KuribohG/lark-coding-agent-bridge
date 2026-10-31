@@ -59,6 +59,41 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
 }
 
 describe('script workflow runtime', () => {
+  it('preserves a committed child when the runtime closes before its caller yields', async () => {
+    const dir=await mkdtemp(join(tmpdir(),'nested-before-yield-'));cleanup.push(()=>rm(dir,{recursive:true,force:true}));
+    const h=await harness({},'codex',undefined,join(dir,'state.db'));
+    let release!:()=>void;
+    const pending=new Promise<void>(resolve=>{release=resolve;});
+    cleanup.push(async()=>release());
+    const run=h.adapters.codex.run.bind(h.adapters.codex);
+    h.adapters.codex.run=opts=>{
+      const native=run(opts);
+      const events=(async function*():AsyncGenerator<AgentEvent>{
+        yield {type:'system',threadId:opts.threadId ?? 'parent-before-yield'};
+        if(!opts.threadId) {
+          await callWorkflow('run_workflow',{operationId:'child',key:'child',goal:'Compute',plan:'Return 42',script:'return 42;'},opts.env);
+          await pending;
+          return;
+        }
+        const context=await callWorkflow('read_context',{},opts.env) as {workflows:{call:{ok:boolean;result:unknown}}};
+        expect(context.workflows.call).toMatchObject({ok:true,result:42});
+        yield {type:'final_text',content:'recovered child result'};
+        yield {type:'done',terminationReason:'normal'};
+      })();
+      return {runId:native.runId,events,stop:async()=>{await native.stop();release();},waitForExit:ms=>native.waitForExit(ms)};
+    };
+    await h.call('run_script',{goal:'Recover a committed child before yield',maxConcurrent:1,script:'return await agent("parent",{key:"parent",workflowTool:true});'});
+    await h.until(()=>expect(h.state().tasks[0]?.waitingWorkflowId).toBeTruthy());
+    const childId=h.state().tasks[0]!.waitingWorkflowId!;
+    await h.restart();
+    expect(h.runtime.kernel.state('script-topic',childId)?.status).toBe('interrupted');
+    await h.call('replay_script');
+    await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
+    expect(h.adapters.codex.runs).toHaveLength(2);
+    expect(h.adapters.codex.runOptions[1]?.threadId).toBe('parent-before-yield');
+    expect(h.pool.snapshot()).toMatchObject({active:0,waiting:0});
+  });
+
   it.each([false, true])('yields a nested caller (member=%s), releases its only slot, and resumes with the child result', async persistent => {
     const showPlan = vi.fn(async () => {});
     const h = await harness({}, 'codex', showPlan);

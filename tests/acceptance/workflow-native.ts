@@ -16,6 +16,7 @@ import { RunExecutor } from '../../src/runtime/run-executor';
 import { ActiveRuns } from '../../src/runtime/active-runs';
 import { ProcessPool } from '../../src/runtime/process-pool';
 import { resolveWorkerExecution } from '../../src/workflows/execution';
+import { runNestedScenario } from './workflow-nested-scenarios';
 import type { AgentAdapter, AgentRun, AgentRunOptions } from '../../src/agent/types';
 import type { AgentKind } from '../../src/config/profile-schema';
 import type { RunPolicyAllow } from '../../src/policy/run-policy';
@@ -34,7 +35,7 @@ const save = (path: string, data: unknown) => writeFile(path, JSON.stringify(dat
 type Backend = Extract<AgentKind, 'codex' | 'claude' | 'pi'>;
 type Case = {
   id: string;
-  scenario: 'memory' | 'interrupt' | 'discussion' | 'queue' | 'consumers' | 'nested';
+  scenario: 'memory' | 'interrupt' | 'discussion' | 'queue' | 'consumers' | 'nested' | 'nested-recovery' | 'nested-cancel' | 'nested-queue' | 'nested-before-yield';
   backend: Backend;
   reviewer?: Backend;
   marker: string;
@@ -143,7 +144,7 @@ async function childPhase(test: Case, phase: string, directory: string) {
     adapters.set(kind, wrap(adapter, kind, phase, test, observations, nativeRuns));
   }
   const activeRuns = new ActiveRuns();
-  const processPool = new ProcessPool(() => test.scenario === 'nested' ? 1 : test.scenario === 'consumers' ? 4 : 3);
+  const processPool = new ProcessPool(() => test.scenario.startsWith('nested') ? 1 : test.scenario === 'consumers' ? 4 : 3);
   const executor = new RunExecutor({ resolveAgent: (_, kind) => {
     const adapter = adapters.get(kind as Backend); assert(adapter, 'Backend outside this case'); return adapter;
   }, activeRuns, pool: processPool });
@@ -178,6 +179,10 @@ async function childPhase(test: Case, phase: string, directory: string) {
   };
   await runtime.start();
   try {
+    if (test.scenario.startsWith('nested-')) {
+      await runNestedScenario({test,phase,directory,project,runtime,processPool,nativeRuns,observations,call,isStopping:()=>stopping});
+      return;
+    }
     if (test.scenario === 'nested') {
       const probePath = join(workspace,'probe-disabled.mjs');
       const proofPath = join(workspace,'disabled-proof.json');
@@ -366,8 +371,8 @@ async function childPhase(test: Case, phase: string, directory: string) {
       });
     }
   } finally {
-    await activeRuns.stopAll();
     await runtime.close();
+    await activeRuns.stopAll();
     await save(join(directory,phase+'-observations.json'),observations);
     process.removeListener('SIGTERM', stop);
     process.removeListener('SIGINT', stop);
@@ -418,8 +423,8 @@ if (childDirectory) {
   const backends = option('backends', 'codex,claude,pi')!.split(',') as Backend[];
   assert(backends.length > 0 && backends.every(b => ['codex', 'claude', 'pi'].includes(b)), 'Unsupported backend');
   const scenarios = option('scenarios', 'memory,interrupt,discussion')!.split(',');
-  assert(scenarios.length > 0 && scenarios.every(s => ['memory', 'interrupt', 'discussion', 'queue', 'consumers', 'nested'].includes(s)), 'Unsupported scenario');
-  const cases: Case[] = backends.flatMap(backend => (['memory', 'interrupt', 'queue', 'consumers', 'nested'] as const)
+  assert(scenarios.length > 0 && scenarios.every(s => ['memory', 'interrupt', 'discussion', 'queue', 'consumers', 'nested', 'nested-recovery', 'nested-cancel', 'nested-queue', 'nested-before-yield'].includes(s)), 'Unsupported scenario');
+  const cases: Case[] = backends.flatMap(backend => (['memory', 'interrupt', 'queue', 'consumers', 'nested', 'nested-recovery', 'nested-cancel', 'nested-queue', 'nested-before-yield'] as const)
     .filter(s => scenarios.includes(s))
     .map(scenario => ({
       id: backend + '-' + scenario + '-' + randomUUID().slice(0, 8),
@@ -439,7 +444,7 @@ if (childDirectory) {
     try {
       await launch(test, 'prepare', directory);
       assert(!cancelled, 'Acceptance cancelled');
-      if (!['queue','consumers','nested'].includes(test.scenario)) {
+      if (!['queue','consumers','nested','nested-cancel','nested-queue'].includes(test.scenario)) {
         console.log(JSON.stringify({ case: test.id, phase: 'recover' }));
         await launch(test, 'recover', directory);
       }

@@ -304,6 +304,15 @@ npm run test:workflow-native -- --output /absolute/path/outside-the-repository/n
 
 Use `--backends codex` to limit the backends, and `--scenarios memory,interrupt,discussion,queue` to select cases. The default scenarios are memory, interrupt and discussion; opt into `--scenarios queue` for the three-consumer queue test or `--scenarios consumers` for queue-driven wakeups, or `--scenarios nested` for nested tool execution with one process slot. The discussion uses the first selected backend for A and the second for B, or the first for both if only one is selected. The runner uses native configured defaults without injecting a model service override, copying credentials, or switching profiles. The observed model is recorded when the backend reports it. Missing native authentication is a failed acceptance prerequisite, not a passing test.
 
+Additional nested lifecycle cases run with `--scenarios nested-recovery,nested-cancel,nested-queue,nested-before-yield`. All use one native worker slot in an isolated controller/database:
+
+- `nested-recovery`: parent, middle caller and persistent leaf are three native sessions. Pause after the leaf checkpoint, exit the controller, explicitly replay in a fresh process, and require all three original sessions and the checkpoint/result to survive.
+- `nested-cancel`: cancel while the leaf is running. Require all three workflows and tasks to stop, zero process slots, rejection of a late checkpoint, and no further dispatch or main-chat wakeup.
+- `nested-queue`: a child planner produces four values and enqueues work into its parent's queue. A persistent consumer completes each item once; explicit closure drains the pool.
+- `nested-before-yield`: close the controller directly after a parent commits its child, before it yields. Explicit replay must execute that same child and return its result to the original parent session. A controller shutdown must not convert the accepted child into a permanent cancellation.
+
+These recovery cases use controlled controller shutdown, not a machine crash. They verify bridge state, process slots and native session continuity; external tool side effects still require idempotency checks.
+
 The runner covers:
 
 - **Nested workflow:** an explicitly enabled native parent calls `run_workflow` and ends its turn. Its child runs a leaf without the tool and verifies that the CLI rejects delegation. With a single process slot, the parent must resume the original native session, receive its checkpoint and child result, and produce the final answer. Child events must not wake the main agent.

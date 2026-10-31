@@ -906,7 +906,8 @@ export class WorkflowKernel {
       task.status = 'failed';
       task.error = result.error ?? 'Worker did not produce a bounded final answer with a normal terminal result';
     }
-    if (task.waitingWorkflowId && ['failed','waiting_input','cancelled'].includes(task.status) && state.status==='active') this.suspendChildren(state,true,taskId);
+    // Shutdown interrupts the caller; its already committed child must remain replayable.
+    if (!this.closed && task.waitingWorkflowId && ['failed','waiting_input','cancelled'].includes(task.status) && state.status==='active') this.suspendChildren(state,true,taskId);
     this.save(state);
   }
 
@@ -918,8 +919,12 @@ export class WorkflowKernel {
     this.save(state);
   }
 
-  async close(): Promise<void> {
+  beginShutdown(): void {
     this.closed = true;
+  }
+
+  async close(): Promise<void> {
+    this.beginShutdown();
     for (const { controller } of this.running.values()) controller.abort();
     await Promise.allSettled([...this.running.values()].map(run => run.done));
     this.db.close();
