@@ -42,17 +42,16 @@ beforeEach(() => {
 });
 
 describe('channel-neutral adapter defaults', () => {
-  it('does not add Lark instructions to Claude without a configured channel', () => {
+  it('does not add Lark instructions to Claude without a configured channel', async () => {
     const child = fakeChild(); spawnMock.spawnProcess.mockReturnValue(child);
-    new ClaudeAdapter().run({ runId: 'r', prompt: 'hello', cwd: '/tmp' });
+    (await new ClaudeAdapter().prepareRun({ runId: 'r', prompt: 'hello', cwd: '/tmp' })).start();
     const args = spawnMock.spawnProcess.mock.calls[0]?.[1] as string[];
     expect(readFileSync(args[args.indexOf('--append-system-prompt-file') + 1]!, 'utf8')).toBe('');
   });
 
-  it('sets the configured Claude directory on the child environment', () => {
+  it('sets the configured Claude directory on the child environment', async () => {
     const child = fakeChild(); spawnMock.spawnProcess.mockReturnValue(child);
-    new ClaudeAdapter({ configDir: '/private/claude-config' })
-      .run({ runId: 'r', prompt: 'hello', cwd: '/tmp' });
+    (await new ClaudeAdapter({ configDir: '/private/claude-config' }).prepareRun({ runId: 'r', prompt: 'hello', cwd: '/tmp' })).start();
     const options = spawnMock.spawnProcess.mock.calls[0]?.[2] as { env?: NodeJS.ProcessEnv };
     expect(options.env?.CLAUDE_CONFIG_DIR).toBe('/private/claude-config');
   });
@@ -65,7 +64,7 @@ describe('ClaudeAdapter system prompt wiring', () => {
     const adapter = new ClaudeAdapter({ systemPrompt: buildBridgeSystemPrompt });
     adapter.setBotIdentity({ openId: 'ou_bot_self', name: 'Bridge' });
 
-    adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
+    (await adapter.prepareRun({ runId: 'r1', prompt: 'hi', cwd: '/tmp' })).start();
 
     // The prompt goes via stdin, never argv (cmd.exe would mangle it on Windows).
     expect(JSON.parse(child.stdin.read().toString()).message.content).toBe('hi');
@@ -80,19 +79,19 @@ describe('ClaudeAdapter system prompt wiring', () => {
     spawnMock.spawnProcess.mockReturnValue(child);
     const adapter = new ClaudeAdapter({ systemPrompt: buildBridgeSystemPrompt });
 
-    adapter.run({ runId: 'r1', prompt: 'hi', cwd: '/tmp' });
+    (await adapter.prepareRun({ runId: 'r1', prompt: 'hi', cwd: '/tmp' })).start();
 
     expect(JSON.parse(child.stdin.read().toString()).message.content).toBe('hi');
     expect(child.stdin.writableEnded).toBe(false);
     expect(systemPromptFileContent()).toBe(buildBridgeSystemPrompt(undefined));
   });
 
-  it('uses host instructions for a non-Lark run', () => {
+  it('uses host instructions for a non-Lark run', async () => {
     const child = fakeChild();
     spawnMock.spawnProcess.mockReturnValue(child);
     const adapter = new ClaudeAdapter({ systemPrompt: buildBridgeSystemPrompt });
     adapter.setBotIdentity({ openId: 'ou_bot_self' });
-    adapter.run({ runId: 'web', prompt: 'hello', cwd: '/tmp', systemPrompt: 'Web instructions' });
+    (await adapter.prepareRun({ runId: 'web', prompt: 'hello', cwd: '/tmp', systemPrompt: 'Web instructions' })).start();
     expect(systemPromptFileContent()).toBe('Web instructions');
   });
 

@@ -42,6 +42,25 @@ function harness(path=':memory:', getTimeoutMinutes?: () => number) {
 }
 
 describe('nested workflow capability',()=>{
+  it('persists shutdown as interruption and preserves a committed child', async () => {
+    const h = harness(); await h.start(); await h.agent(h.state()); await h.run(1);
+    const child = await h.child(h.requests[0]!);
+    h.kernel.beginShutdown();
+    await vi.waitFor(() => expect(h.state().tasks[0]!.status).toBe('interrupted'));
+    expect(h.state().tasks[0]!.attempts.at(-1)!.stopReason).toBe('shutdown');
+    expect(h.state(child.workflowId).status).toBe('active');
+  });
+
+  it('does not turn an earlier user cancellation into shutdown preservation', async () => {
+    const h = harness(); await h.start(); await h.agent(h.state()); await h.run(1);
+    const child = await h.child(h.requests[0]!);
+    const rootId = h.state().workflowId;
+    await h.call('cancel'); h.kernel.beginShutdown();
+    await vi.waitFor(() => expect(h.state(rootId).tasks[0]!.status).toBe('cancelled'));
+    expect(h.state(rootId).tasks[0]!.attempts.at(-1)!.stopReason).toBe('cancelled');
+    expect(h.state(child.workflowId).status).toBe('cancelled');
+  });
+
   it.each([undefined, 480 * 60_000, 20 * 60_000])('inherits the pinned budget and caps a child deadline at its parent: %s', async timeoutMs => {
     let minutes = 480;
     const h = harness(':memory:', () => minutes);

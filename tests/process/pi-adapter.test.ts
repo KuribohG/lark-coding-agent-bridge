@@ -34,7 +34,7 @@ describe('PiAdapter process contract', () => {
 
     const adapter = new PiAdapter({ binary: harness.binary, systemPrompt: buildBridgeSystemPrompt });
     adapter.setBotIdentity({ openId: 'ou_pi_bot', name: 'Pi Bridge' });
-    const run = adapter.run({
+    const run = (await adapter.prepareRun({
       runId: 'pi-resume',
       prompt: 'hello <bridge_context>',
       cwd: harness.dir,
@@ -42,7 +42,7 @@ describe('PiAdapter process contract', () => {
       model: 'anthropic/claude-sonnet-4-6',
       reasoningEffort: 'high',
       sandbox: 'read-only',
-    });
+    })).start();
 
     expect(run.capabilities).toEqual({ finalAnswer: 'separate-event', input: 'unsupported' });
     expect(await collect(run.events)).toEqual([
@@ -79,13 +79,13 @@ describe('PiAdapter process contract', () => {
     dirs.push(harness.dir);
     const adapter = new PiAdapter({ binary: harness.binary });
 
-    expect(await collect(adapter.run({
+    expect(await collect((await adapter.prepareRun({
       runId: 'pi-fork',
       prompt: 'side question',
       cwd: harness.dir,
       sessionId: 'sess-parent',
       forkSession: true,
-    }).events)).toContainEqual({
+    })).start().events)).toContainEqual({
       type: 'done',
       sessionId: 'sess-child',
       terminationReason: 'normal',
@@ -112,13 +112,13 @@ describe('PiAdapter process contract', () => {
       },
     }).resolve('pi', 'deepseek/deepseek-flash');
     const adapter = new PiAdapter({ binary: harness.binary, profileStateDir: harness.dir });
-    await collect(adapter.run({
+    await collect((await adapter.prepareRun({
       runId: 'pi-provider',
       prompt: 'hello',
       cwd: harness.dir,
       model: provider!.model,
       modelProvider: provider,
-    }).events);
+    })).start().events);
 
     const record = await readRecord(harness.recordPath);
     const extensionIndex = record.argv.indexOf('--extension');
@@ -136,26 +136,26 @@ describe('PiAdapter process contract', () => {
       { type: 'agent_settled', aborted: false },
     ]);
     dirs.push(harness.dir);
-    await collect(new PiAdapter({
+    await collect((await new PiAdapter({
       binary: harness.binary,
       agentDir: '/private/pi-agent',
-    }).run({
+    }).prepareRun({
       runId: 'pi-agent-dir',
       prompt: 'hello',
       cwd: harness.dir,
-    }).events);
+    })).start().events);
 
     expect((await readRecord(harness.recordPath)).env.PI_CODING_AGENT_DIR).toBe('/private/pi-agent');
   });
 
-  it('rejects workspace mode instead of claiming filesystem isolation', () => {
+  it('rejects workspace mode instead of claiming filesystem isolation', async () => {
     const adapter = new PiAdapter({ binary: 'pi' });
-    expect(() => adapter.run({
+    await expect(async () => (await adapter.prepareRun({
       runId: 'pi-workspace',
       prompt: 'edit',
       cwd: '/tmp',
       sandbox: 'workspace-write',
-    })).toThrow(/no portable workspace sandbox/i);
+    })).start()).rejects.toThrow(/no portable workspace sandbox/i);
   });
 
   it('reports non-zero process exits as stream errors', async () => {
@@ -164,11 +164,11 @@ describe('PiAdapter process contract', () => {
       { exitCode: 42, stderr: 'provider down\n' },
     );
     dirs.push(harness.dir);
-    const events = await collect(new PiAdapter({ binary: harness.binary }).run({
+    const events = await collect((await new PiAdapter({ binary: harness.binary }).prepareRun({
       runId: 'pi-fail',
       prompt: 'fail',
       cwd: harness.dir,
-    }).events);
+    })).start().events);
 
     expect(events).toEqual([
       { type: 'text', delta: 'partial' },
@@ -188,9 +188,9 @@ describe('PiAdapter process contract', () => {
       { type: 'agent_settled', aborted: false },
     ], { trailingBytes: 256 * 1024 });
     dirs.push(harness.dir);
-    const run = new PiAdapter({ binary: harness.binary }).run({
+    const run = (await new PiAdapter({ binary: harness.binary }).prepareRun({
       runId: 'pi-trailing', prompt: 'hello', cwd: harness.dir,
-    });
+    })).start();
     for await (const event of run.events) {
       if (event.type === 'done') break;
     }
@@ -216,6 +216,7 @@ async function createFakePi(
     '#!/usr/bin/env node',
     'import { readFileSync, writeFileSync } from "node:fs";',
     'const argv = process.argv.slice(2);',
+    'if (argv.includes("--version")) { console.log("pi 999.0.0"); process.exit(0); }',
     'const promptIndex = argv.indexOf("--append-system-prompt");',
     'let stdin = "";',
     'process.stdin.on("data", chunk => { stdin += chunk; });',

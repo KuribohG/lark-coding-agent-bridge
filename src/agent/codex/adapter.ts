@@ -1,14 +1,15 @@
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type { CodexAppServerMode, SandboxMode } from '../../config/profile-schema';
-import { mergeProcessEnv } from '../../platform/spawn';
+import { preparedRun, snapshotRunOptions } from '../prepared-run';
+import { codexExecutionEnvironment } from './environment';
 import { SpawnFailed } from '../../runtime/errors';
 import { resolveSystemPrompt, type AgentSystemPrompt } from '../system-prompt';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
 import type {
   AgentAdapter,
   AgentBotIdentity,
-  AgentRun,
+  PreparedAgentRun,
   AgentRunOptions,
 } from '../types';
 import { parseEffort } from '../model-settings';
@@ -33,6 +34,7 @@ export interface CodexAdapterOptions {
   ignoreRules?: boolean;
   sandbox?: SandboxMode;
   stopGraceMs?: number;
+  /** Trusted profile tool context; provider credentials are resolved separately. */
   env?: NodeJS.ProcessEnv;
 }
 
@@ -49,13 +51,9 @@ export class CodexAdapter implements AgentAdapter {
   private readonly inheritCodexHome: boolean;
   private readonly sandbox: SandboxMode;
   private readonly defaultStopGraceMs: number;
-  private readonly env: NodeJS.ProcessEnv;
-  private readonly daemonSockets = new WeakMap<AgentRunOptions, string>();
+  private readonly profileEnv: Readonly<NodeJS.ProcessEnv>;
   private readonly startupProvider: CodexAdapterOptions['startupProvider'];
   private startup?: Promise<{ provider?: ResolvedModelProvider; config: Awaited<ReturnType<typeof prepareManagedCodexConfig>> }>;
-  private fixedProvider?: ResolvedModelProvider;
-  private startupModel?: string;
-  private startupId?: string;
   private botIdentity: AgentBotIdentity | undefined;
   private successfulAvailability: Promise<AgentAvailability> | undefined;
 
@@ -75,7 +73,7 @@ export class CodexAdapter implements AgentAdapter {
     this.inheritCodexHome = opts.inheritCodexHome === true;
     this.sandbox = opts.sandbox ?? 'danger-full-access';
     this.defaultStopGraceMs = opts.stopGraceMs ?? 5000;
-    this.env = { ...opts.env };
+    this.profileEnv = Object.freeze({ ...opts.env });
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -93,7 +91,7 @@ export class CodexAdapter implements AgentAdapter {
       agentName: 'Codex CLI',
       command: this.binary,
       binaryPath: this.binary,
-      env: this.env,
+      env: this.profileEnv,
     });
     this.successfulAvailability = pending;
     pending.then(
@@ -109,42 +107,9 @@ export class CodexAdapter implements AgentAdapter {
     return pending;
   }
 
-  async prepareRun(opts?: AgentRunOptions): Promise<void> {
-    const availability = await this.checkAvailability();
-    if (!availability.ok) {
-      throw new SpawnFailed(
-        'codex binary check failed',
-        availability.error,
-        availability.diagnostic.code,
-        availability.diagnostic,
-      );
-    }
-    const startup = await this.initializeProvider();
-    if (this.appServerMode === 'daemon') {
-      if (!opts) throw new Error('Codex daemon preparation requires run options');
-      const status = await ensureCodexAppServerDaemon({
-        binary: this.binary,
-        env: this.runEnvironment(opts),
-        cwd: opts.cwd,
-        timeoutMs: deadlineTimeout(opts.deadlineAt),
-        restart: startup.config.changed,
-      });
-      if (!status.socketPath) throw new Error('Codex app-server daemon returned no socket path');
-      this.daemonSockets.set(opts, status.socketPath);
-      await startup.config.commit?.();
-    }
-    startup.config.changed = false;
-  }
-
-  run(opts: AgentRunOptions): AgentRun {
-    return withExecutionContract(this.runNative(opts), this.capabilities);
-  }
-
-  private runNative(opts: AgentRunOptions): AgentRun {
-    if (!opts.cwd) {
-      throw new Error('cwd is required for CodexAdapter.run');
-    }
-
+  async prepareRun(input: AgentRunOptions): Promise<PreparedAgentRun> {
+    const opts = snapshotRunOptions(input);
+    if (!opts.cwd) throw new Error('cwd is required for CodexAdapter.prepareRun');
     const sandbox = opts.sandbox ?? this.sandbox;
     if (!['read-only', 'workspace-write', 'danger-full-access'].includes(sandbox)) {
       throw new Error(`unsafe sandbox mode: ${sandbox}`);
@@ -152,67 +117,76 @@ export class CodexAdapter implements AgentAdapter {
     if (opts.forkSession && !opts.threadId) throw new Error('fork requires a parent thread');
     if (opts.model) validateModelId(opts.model);
     if (opts.reasoningEffort) parseEffort(opts.reasoningEffort, 'codex');
+    const availability = await this.checkAvailability();
+    if (!availability.ok) {
+      throw new SpawnFailed('codex binary check failed', availability.error,
+        availability.diagnostic.code, availability.diagnostic);
+    }
+    const startup = await this.initializeProvider();
     const requested = opts.modelProvider;
-    const rejectedProvider = requested && requested.id !== this.fixedProvider?.id;
-    const effectiveOpts = rejectedProvider
-      ? { ...opts, model: this.startupModel, reasoningEffort: undefined }
-      : opts;
-    const provider = this.fixedProvider?.codex;
-    const configOverrides: string[] = [];
-    const threadConfig: Record<string, unknown> = this.appServerMode === 'daemon'
-      ? { shell_environment_policy: { inherit: 'all', ...(opts.env ? { set: opts.env } : {}) } }
-      : {};
-    if (provider) {
-      const prefix = `model_providers.${provider.providerId}`;
-      if (this.appServerMode === 'per-run') {
-        configOverrides.push(`model_provider=${quoteToml(provider.providerId)}`);
-        configOverrides.push(
-          `${prefix}.name=${quoteToml(provider.name)}`,
-          `${prefix}.base_url=${quoteToml(provider.baseUrl)}`,
-          `${prefix}.wire_api=${quoteToml(provider.wireApi)}`,
-          `${prefix}.env_key=${quoteToml(provider.apiKeyEnv)}`,
-        );
-        if (provider.headersEnv) {
-          configOverrides.push(`${prefix}.env_http_headers=${quoteToml(provider.headersEnv)}`);
-        }
-      }
-    }
-    if (opts.forkSession && this.appServerMode === 'daemon') {
-      threadConfig.features = { goals: false };
-    }
-    const env = this.runEnvironment(opts);
-    const daemonSocketPath = this.appServerMode === 'daemon' ? this.daemonSockets.get(opts) : undefined;
-    if (this.appServerMode === 'daemon' && !daemonSocketPath) {
-      throw new Error('Codex daemon run requires a successful prepareRun');
-    }
-    return startAppServerRun({
-      binary: this.binary, opts: effectiveOpts,
-      env,
-      sandbox,
-      appServerMode: this.appServerMode,
-      daemonSocketPath,
-      prompt: opts.prompt,
-      developerInstructions: opts.systemPrompt
-        ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity),
-      stopGraceMs: opts.stopGraceMs ?? this.defaultStopGraceMs,
-      configOverrides,
-      modelProviderId: this.startupId,
-      initialNotice: rejectedProvider
-        ? `Provider 未切换：当前继续使用 ${this.fixedProvider?.displayName ?? this.startupId ?? '原生默认'}${this.startupModel ? ` / ${this.startupModel}` : ''}。请修改 bridge 启动配置并重启后使用 ${requested.displayName}。`
-        : undefined,
-      threadConfig: this.appServerMode === 'daemon' ? threadConfig : undefined,
+    const rejectedProvider = requested && requested.id !== startup.provider?.id;
+    const effectiveOpts = snapshotRunOptions({
+      ...opts,
+      ...(rejectedProvider ? { model: startup.config.model, reasoningEffort: undefined } : {}),
+      systemPrompt: opts.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity),
     });
+    const home = this.codexHome ?? (this.inheritCodexHome
+      ? this.profileEnv.CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), '.codex')
+      : join(this.profileStateDir, 'codex-home'));
+    const environment = codexExecutionEnvironment({
+      profile: { ...this.profileEnv, CODEX_HOME: home },
+      attempt: effectiveOpts.env,
+      backend: startup.provider?.env ?? {},
+    });
+    let daemonSocketPath: string | undefined;
+    if (this.appServerMode === 'daemon') {
+      const status = await ensureCodexAppServerDaemon({
+        binary: this.binary, env: environment.process, cwd: effectiveOpts.cwd,
+        timeoutMs: deadlineTimeout(effectiveOpts.deadlineAt), restart: startup.config.changed,
+      });
+      if (!status.socketPath) throw new Error('Codex app-server daemon returned no socket path');
+      daemonSocketPath = status.socketPath;
+      await startup.config.commit?.();
+    }
+    startup.config.changed = false;
+
+    const provider = startup.provider?.codex;
+    const configOverrides: string[] = [];
+    if (provider && this.appServerMode === 'per-run') {
+      const prefix = `model_providers.${provider.providerId}`;
+      configOverrides.push(`model_provider=${quoteToml(provider.providerId)}`,
+        `${prefix}.name=${quoteToml(provider.name)}`,
+        `${prefix}.base_url=${quoteToml(provider.baseUrl)}`,
+        `${prefix}.wire_api=${quoteToml(provider.wireApi)}`,
+        `${prefix}.env_key=${quoteToml(provider.apiKeyEnv)}`);
+      if (provider.headersEnv) configOverrides.push(`${prefix}.env_http_headers=${quoteToml(provider.headersEnv)}`);
+    }
+    // Both transports use the same thread tool context. A daemon's inherited
+    // process environment is neither a profile binding nor an attempt binding.
+    const threadConfig = {
+      shell_environment_policy: environment.tools,
+      ...(opts.forkSession ? { features: { goals: false } } : {}),
+    };
+    const modelSettings = { model: effectiveOpts.model, reasoningEffort: effectiveOpts.reasoningEffort };
+    return preparedRun(modelSettings, () => withExecutionContract(startAppServerRun({
+      binary: this.binary, opts: effectiveOpts, env: environment.process, sandbox,
+      appServerMode: this.appServerMode, daemonSocketPath,
+      prompt: effectiveOpts.prompt, developerInstructions: effectiveOpts.systemPrompt,
+      stopGraceMs: effectiveOpts.stopGraceMs ?? this.defaultStopGraceMs,
+      configOverrides, modelProviderId: startup.config.id, threadConfig,
+      initialNotice: rejectedProvider
+        ? `Provider 未切换：当前继续使用 ${startup.provider?.displayName ?? startup.config.id ?? '原生默认'}${startup.config.model ? ` / ${startup.config.model}` : ''}。请修改 bridge 启动配置并重启后使用 ${requested.displayName}。`
+        : undefined,
+    }), this.capabilities), { id: startup.provider?.id ?? startup.config.id,
+      ...(rejectedProvider ? { requestedId: requested.id } : {}) });
   }
 
   private initializeProvider() {
     if (!this.startup) this.startup = (async () => {
       const provider = await this.startupProvider?.();
       const home = this.codexHome ?? (this.inheritCodexHome
-        ? this.env.CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), '.codex') : join(this.profileStateDir, 'codex-home'));
+        ? this.profileEnv.CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), '.codex') : join(this.profileStateDir, 'codex-home'));
       const config = await prepareManagedCodexConfig(home, provider);
-      this.fixedProvider = provider;
-      this.startupModel = config.model;
-      this.startupId = config.id;
       return { provider, config };
     })();
     return this.startup;
@@ -221,19 +195,6 @@ export class CodexAdapter implements AgentAdapter {
   async modelProviderState() {
     const { provider, config } = await this.initializeProvider();
     return { id: provider?.id ?? config.id, displayName: provider?.displayName ?? config.id, fixedUntilRestart: true, model: config.model };
-  }
-
-  private runEnvironment(opts: AgentRunOptions): NodeJS.ProcessEnv {
-    const envOverrides: NodeJS.ProcessEnv = { ...this.env, ...(this.appServerMode === 'per-run' ? opts.env : {}) };
-    if (this.codexHome) {
-      envOverrides.CODEX_HOME = this.codexHome;
-    } else if (!this.inheritCodexHome) {
-      envOverrides.CODEX_HOME = join(this.profileStateDir, 'codex-home');
-    }
-    if (this.fixedProvider) {
-      Object.assign(envOverrides, this.fixedProvider.env);
-    }
-    return mergeProcessEnv(process.env, envOverrides);
   }
 }
 

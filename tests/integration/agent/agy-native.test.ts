@@ -31,7 +31,7 @@ it.skipIf(!binary || !configPath || !workspace || !selection)('runs tools and re
     model: provider!.model, modelProvider: provider, reasoningEffort: 'low' as const,
     prompt: 'Use run_command to execute exactly: printf "bridge-agy-smoke-6241\\n". Then reply with the printed marker. Do not run other commands or read files.' };
   await adapter.prepareRun(options);
-  const first = await collect(adapter.run(options));
+  const first = await collect((await adapter.prepareRun(options)).start());
   if (process.env.LARK_TEST_AGY_OUTPUT) await writeFile(process.env.LARK_TEST_AGY_OUTPUT, JSON.stringify(first, null, 2));
   expect(first.some(event => event.type === 'tool_use' && event.name === 'run_command')).toBe(true);
   expect(first.some(event => event.type === 'tool_result' && !event.isError && event.output.includes('bridge-agy-smoke-6241'))).toBe(true);
@@ -42,8 +42,8 @@ it.skipIf(!binary || !configPath || !workspace || !selection)('runs tools and re
   expect(done).toMatchObject({ terminationReason: 'normal' });
   const sessionId = done?.type === 'done' ? done.sessionId : undefined;
   expect(sessionId).toBeTruthy();
-  const second = await collect(adapter.run({ ...options, runId: 'native-resume', sessionId,
-    prompt: 'What exact marker did the command print in the previous turn? Reply with that marker only. Do not use tools.' }));
+  const second = await collect((await adapter.prepareRun({ ...options, runId: 'native-resume', sessionId,
+    prompt: 'What exact marker did the command print in the previous turn? Reply with that marker only. Do not use tools.' })).start());
   expect(second.filter(event => event.type === 'final_text')).toEqual([
     expect.objectContaining({ content: expect.stringContaining('bridge-agy-smoke-6241') }),
   ]);

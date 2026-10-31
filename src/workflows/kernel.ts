@@ -1,3 +1,4 @@
+import { RunStopped, abortStopReason } from '../runtime/errors';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { chmodSync, mkdirSync } from 'node:fs';
@@ -777,7 +778,7 @@ export class WorkflowKernel {
     releaseWorkClaims(state, this.now(), 'Member execution cancelled', task.taskId);
     const active = this.running.get(task.taskId);
     task.status = active ? 'cancelling' : 'cancelled';
-    active?.controller.abort();
+    active?.controller.abort(new RunStopped('cancelled'));
   }
 
   async tick(): Promise<void> {
@@ -892,7 +893,11 @@ export class WorkflowKernel {
     }
     task.attempts.at(-1)!.endedAt = this.now();
     task.attempts.at(-1)!.result = result.status;
-    if (signal.aborted || task.status === 'cancelling' || state.status === 'cancelled' || state.status === 'binding_attention') {
+    const stopReason = result.stopReason ?? (signal.aborted ? abortStopReason(signal) : undefined);
+    task.attempts.at(-1)!.stopReason = stopReason;
+    if (stopReason === 'shutdown') {
+      task.status = 'interrupted';
+    } else if (signal.aborted || task.status === 'cancelling' || state.status === 'cancelled' || state.status === 'binding_attention') {
       task.status = 'cancelled';
     } else if (task.waitingWorkflowId && !result.question && ['completed','stopped'].includes(result.status)) {
       task.status='waiting_workflow';task.attempts.at(-1)!.result='suspended';
@@ -910,7 +915,7 @@ export class WorkflowKernel {
       task.error = result.error ?? 'Worker did not produce a bounded final answer with a normal terminal result';
     }
     // Shutdown interrupts the caller; its already committed child must remain replayable.
-    if (!this.closed && task.waitingWorkflowId && ['failed','waiting_input','cancelled'].includes(task.status) && state.status==='active') this.suspendChildren(state,true,taskId);
+    if (stopReason !== 'shutdown' && task.waitingWorkflowId && ['failed','waiting_input','cancelled'].includes(task.status) && state.status==='active') this.suspendChildren(state,true,taskId);
     this.save(state);
   }
 
@@ -924,11 +929,11 @@ export class WorkflowKernel {
 
   beginShutdown(): void {
     this.closed = true;
+    for (const { controller } of this.running.values()) controller.abort(new RunStopped('shutdown'));
   }
 
   async close(): Promise<void> {
     this.beginShutdown();
-    for (const { controller } of this.running.values()) controller.abort();
     await Promise.allSettled([...this.running.values()].map(run => run.done));
     this.db.close();
   }

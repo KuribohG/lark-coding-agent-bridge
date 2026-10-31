@@ -6,7 +6,6 @@ import type { RunExecution } from './run-executor';
 
 export interface RunOutputOptions {
   idleTimeoutMs?: number;
-  recordSession(event: AgentEvent): void;
   filterForPrefs(state: RunState): RunState;
 }
 
@@ -38,7 +37,7 @@ export async function presentRunOutput(
     });
   } catch (error) {
     // A broken output must not leave an unobserved agent executing indefinitely.
-    await execution.stop().catch(() => {});
+    await execution.stop('cleanup').catch(() => {});
     throw error;
   }
 }

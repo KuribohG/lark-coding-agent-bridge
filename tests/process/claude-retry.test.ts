@@ -31,7 +31,7 @@ process.stdin.on('end',()=>process.exit(0));
   vi.useFakeTimers();
   const agent = new ClaudeAdapter({ binary });
   const options = { runId: 'retry', cwd: dir, prompt: 'original' };
-  const run = retryingRun({ agent, initialRun: agent.run(options), options, exitGraceMs: 1000, canRetry: () => true });
+  const run = retryingRun({ agent, initialRun: (await agent.prepareRun(options)).start(), options, exitGraceMs: 1000, canRetry: () => true });
   try {
     const iterator = run.events[Symbol.asyncIterator]();
     const events: AgentEvent[] = [];

@@ -48,12 +48,12 @@ describe('Codex startup compatibility with legacy binary metadata', () => {
     );
 
     await expect(
-      agent.prepareRun?.({
+      agent.prepareRun({
         runId: 'run-1',
         prompt: 'hello',
         cwd: h.workspace,
       }),
-    ).resolves.toBeUndefined();
+    ).resolves.toMatchObject({ start: expect.any(Function), modelSettings: expect.any(Object) });
   });
 });
 

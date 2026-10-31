@@ -1,10 +1,11 @@
+import { snapshotRunOptions } from '../agent/prepared-run';
 import { randomUUID } from 'node:crypto';
-import type { AgentAdapter, AgentEvent, AgentRun } from '../agent/types';
-import { ActiveRuns, type RunHandle } from './active-runs';
+import type { AgentAdapter, AgentEvent, AgentRun, PreparedAgentRun, RunStopReason } from '../agent/types';
+import { ActiveRuns, markRunStopped, stopRun, type RunHandle } from './active-runs';
 import { ProcessPool } from './process-pool';
 import type { RunPolicyAllow } from '../policy/run-policy';
 import { log } from '../core/logger';
-import { RunRejected, SpawnFailed } from './errors';
+import { RunRejected, RunStopped, abortStopReason, SpawnFailed } from './errors';
 import { retryingRun } from './retrying-run';
 import { agentFailureKind } from '../agent/execution';
 import type { ResolvedModelProvider } from '../model-provider/types';
@@ -66,7 +67,7 @@ export interface RunExecution {
   run: AgentRun;
   handle: RunHandle;
   subscribe(): AsyncIterable<AgentEvent>;
-  stop(): Promise<void>;
+  stop(reason?: RunStopReason): Promise<void>;
 }
 
 const DEFAULT_POST_DONE_EXIT_GRACE_MS = 2000;
@@ -101,7 +102,7 @@ export class RunExecutor {
       if (input.deadlineAt !== undefined && (!Number.isSafeInteger(input.deadlineAt) || input.deadlineAt <= this.now())) {
         throw new RunRejected('deadline-expired', '任务停止时间已过。');
       }
-      if (input.signal?.aborted) throw new RunRejected('run-cancelled', '任务已取消。');
+      if (input.signal?.aborted) throw new RunStopped(abortStopReason(input.signal));
     };
     checkDeadline();
     if (input.policy.expiresAt <= this.now()) {
@@ -119,11 +120,11 @@ export class RunExecutor {
     }
 
     const controller = new AbortController();
-    const forwardAbort = () => controller.abort(new RunRejected('run-cancelled', '任务已取消。'));
+    const forwardAbort = () => controller.abort(new RunStopped(abortStopReason(input.signal!)));
     input.signal?.addEventListener('abort', forwardAbort, { once: true });
     if (input.signal?.aborted) forwardAbort();
     const deadlineTimer = input.deadlineAt === undefined ? undefined : setTimeout(() => {
-      controller.abort(new RunRejected('deadline-expired', '已到任务停止时间。'));
+      controller.abort(new RunStopped('deadline'));
     }, Math.max(0, input.deadlineAt - this.now()));
     const dispose = () => {
       if (deadlineTimer) clearTimeout(deadlineTimer);
@@ -184,7 +185,7 @@ export class RunExecutor {
       dispose();
       throw new SpawnFailed('model provider resolve failed', err, 'agent-prepare-failed');
     }
-    const runOptions = {
+    const runOptions = snapshotRunOptions({
       env: input.env,
       deadlineAt: input.deadlineAt,
       runId,
@@ -201,13 +202,12 @@ export class RunExecutor {
       sandbox: input.policy.sandbox,
       permissionMode: input.policy.permissionMode,
       stopGraceMs: input.stopGraceMs,
-    };
+    });
     let run: AgentRun;
-    let activeProviderState: { id: string; model?: string } | undefined;
+    let prepared: PreparedAgentRun;
     let handle!: RunHandle;
     try {
-      await agent.prepareRun?.(runOptions);
-      activeProviderState = await agent.modelProviderState?.();
+      prepared = await agent.prepareRun(runOptions);
       await input.validateBeforeRun?.();
       checkDeadline();
       controller.signal.throwIfAborted();
@@ -231,7 +231,7 @@ export class RunExecutor {
     try {
       run = retryingRun({
         agent,
-        initialRun: agent.run(runOptions),
+        initialRun: prepared.start(),
         options: runOptions,
         exitGraceMs: this.postDoneExitGraceMs,
         canRetry: () => !controller.signal.aborted && !handle?.interrupted
@@ -258,30 +258,25 @@ export class RunExecutor {
       accessMode: input.policy.accessMode,
       sandbox: input.policy.sandbox,
       permissionMode: input.policy.permissionMode,
-      modelProvider: activeProviderState?.id ?? modelProvider?.id,
-      ...(activeProviderState && modelProvider && activeProviderState.id !== modelProvider.id
-        ? { requestedModelProvider: modelProvider.id } : {}),
+      modelProvider: prepared.provider?.id ?? modelProvider?.id,
+      ...(prepared.provider?.requestedId ? { requestedModelProvider: prepared.provider.requestedId } : {}),
     });
 
     try {
       handle = this.activeRuns.register(input.scopeId, run);
-      handle.modelSettings = activeProviderState && modelProvider && activeProviderState.id !== modelProvider.id
-        ? { model: activeProviderState.model }
-        : { model: input.model, reasoningEffort: input.reasoningEffort };
+      handle.modelSettings = { ...prepared.modelSettings };
     } catch (err) {
       releaseScope();
       release();
       dispose();
-      await run.stop().catch(() => {});
+      await run.stop('cleanup').catch(() => {});
       throw new RunRejected(
         'run-already-active',
         err instanceof Error ? err.message : 'another run is already active for this scope',
       );
     }
     const stopOnAbort = () => {
-      handle.interrupted = true;
-      handle.stopReason = input.deadlineAt !== undefined && input.deadlineAt <= this.now() ? 'deadline' : 'cancelled';
-      void run.stop().catch((err) => log.warn('run', 'bounded-stop-failed', { runId, err: String(err) }));
+      void stopRun(handle, abortStopReason(controller.signal)).catch((err) => log.warn('run', 'bounded-stop-failed', { runId, err: String(err) }));
     };
     controller.signal.addEventListener('abort', stopOnAbort, { once: true });
     if (controller.signal.aborted) stopOnAbort();
@@ -297,12 +292,12 @@ export class RunExecutor {
       try {
         if (waitForExit && !await run.waitForExit(this.postDoneExitGraceMs)) {
           log.warn('run', 'post-done-exit-timeout', { ...dimensions, graceMs: this.postDoneExitGraceMs });
-          await run.stop();
+          await run.stop('cleanup');
         }
       } catch (err) {
         terminal = 'failed';
         log.warn('run', 'post-done-cleanup-failed', { ...dimensions, err: String(err) });
-        await run.stop().catch(() => {});
+        await run.stop('cleanup').catch(() => {});
       } finally {
         this.activeRuns.unregister(input.scopeId, run);
         release();
@@ -316,11 +311,8 @@ export class RunExecutor {
       onTerminal: (event) => {
         terminal = event.type === 'done' && event.terminationReason === 'normal' ? 'completed' : 'failed';
         if (input.deadlineAt !== undefined && event.type === 'error' && agentFailureKind(event) === 'quota') terminal = 'quota';
-        // The independent watchdog can fire before this event loop's timer.
-        if (input.deadlineAt !== undefined && input.deadlineAt <= this.now() && terminal !== 'completed') {
-          handle.interrupted = true;
-          handle.stopReason = 'deadline';
-        }
+        // Native watchdogs report their cause even if the JS deadline timer has not run.
+        if ((event.type === 'done' || event.type === 'error') && event.terminationReason === 'timeout') markRunStopped(handle, 'deadline');
       },
     }), async () => {
       await cleanup(!handle.interrupted);
@@ -333,11 +325,10 @@ export class RunExecutor {
       run,
       handle,
       subscribe: () => fanout.subscribe(),
-      stop: async () => {
+      stop: async (reason = 'cancelled') => {
         if (cleaned) { await result; return; }
-        handle.interrupted = true;
         try {
-          await run.stop();
+          await stopRun(handle, reason);
           await run.waitForExit(this.postDoneExitGraceMs);
         } finally {
           await cleanup(false);

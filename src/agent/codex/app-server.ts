@@ -153,7 +153,9 @@ export function startAppServerRun(input: {
     exited = true;
     resolveExit();
     failPending(new Error('app-server disconnected; delivery is unknown'));
-    if (!ended) finish(stopping ? translator.finish('interrupted') : translator.fail(`app-server exited before completion${stderr ? `: ${stderr}` : ''}`));
+    if (!ended) finish(stopping ? translator.finish('interrupted')
+      : opts.deadlineAt !== undefined && child.exitCode === 124 ? translator.finish('timeout')
+      : translator.fail(`app-server exited before completion${stderr ? `: ${stderr}` : ''}`));
   };
   child.once('error', (error) => { finish(translator.fail(`app-server spawn failed: ${error.message}`)); onExit(); });
   child.once('close', onExit);

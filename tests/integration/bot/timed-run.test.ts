@@ -1,3 +1,4 @@
+import { preparedRun } from '../../../src/agent/prepared-run';
 import type { CardActionEvent, NormalizedMessage } from '@larksuite/channel';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -221,6 +222,8 @@ class GateAgent implements AgentAdapter {
   private finishes: Array<() => void> = [];
   async isAvailable() { return true; }
   finish(index: number) { this.finishes[index]?.(); }
+  async prepareRun(opts: AgentRunOptions) { return preparedRun({}, () => this.run(opts)); }
+
   run(opts: AgentRunOptions) {
     this.options.push(opts);
     let finish!: () => void;

@@ -1,3 +1,5 @@
+import { preparedRun, snapshotRunOptions } from '../prepared-run';
+import type { PreparedAgentRun } from '../types';
 import { isAbsolute } from 'node:path';
 import { mergeProcessEnv } from '../../platform/spawn';
 import { SpawnFailed } from '../../runtime/errors';
@@ -35,14 +37,15 @@ export class AgyAdapter implements AgentAdapter {
     return checkAgentAvailability({ agentId: 'agy', agentName: this.displayName,
       command: binary, binaryPath: binary, env: this.options.env, minimumVersion: '1.4.10' });
   }
-  async prepareRun(options: AgentRunOptions): Promise<void> {
+  async prepareRun(input: AgentRunOptions): Promise<PreparedAgentRun> {
+    const options = snapshotRunOptions({ ...input, systemPrompt: input.systemPrompt ?? resolveSystemPrompt(this.options.systemPrompt, this.botIdentity) });
     validateRun(options);
     const availability = await this.checkAvailability();
     if (!availability.ok) throw new SpawnFailed('agy binary check failed', availability.error,
       availability.diagnostic.code, availability.diagnostic);
-
+    return preparedRun({ model: options.model, reasoningEffort: options.reasoningEffort }, () => this.runNative(options));
   }
-  run(options: AgentRunOptions): AgentRun {
+  private runNative(options: AgentRunOptions): AgentRun {
     validateRun(options);
     const provider = options.modelProvider ? agyProviderLaunch(options.modelProvider) : undefined;
     const args = ['--input-format', 'stream-json', '--output-format', 'stream-json',

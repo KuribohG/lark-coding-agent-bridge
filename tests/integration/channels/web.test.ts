@@ -1,3 +1,4 @@
+import { preparedRun } from '../../../src/agent/prepared-run';
 import { AGENT_KINDS } from '../../../src/agent/backend-spec';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -166,9 +167,9 @@ describe('channel-independent conversations', () => {
     const stopped = new Promise<void>(resolve => { end = resolve; });
     const sendInput = vi.fn(async (input: { messageId: string }) => ({ status: 'accepted' as const, messageId: input.messageId, scope: 'active-turn' as const }));
     const agent: AgentAdapter = { id: 'claude', displayName: 'controlled', isAvailable: async () => true,
-      run: options => ({ runId: options.runId, capabilities: { input: 'active-turn', finalAnswer: 'stream' }, sendInput,
+      prepareRun: async options => preparedRun({}, () => ({ runId: options.runId, capabilities: { input: 'active-turn', finalAnswer: 'stream' }, sendInput,
         events: (async function* () { yield { type: 'text', delta: 'waiting' } as const; await stopped; })(),
-        stop: async () => end(), waitForExit: async () => true }) };
+        stop: async () => end(), waitForExit: async () => true })) };
     const runtime = await createConversationRuntime({ ...h.options, agent }); cleanups.push(() => runtime.close());
     const received: WebRunEvent[] = [];
     const result = await runtime.start({ ...identity, prompt: 'wait' }, createWebRunOutput(async e => { received.push(e); }));

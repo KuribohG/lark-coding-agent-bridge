@@ -17,6 +17,7 @@ describe.skipIf(process.platform !== 'linux')('independent deadline process guar
       const binary = join(tmp.root, 'fake-agent.mjs');
       const pidFile = join(tmp.root, 'agent.json');
       await writeFile(binary, `#!${process.execPath}\nimport {writeFileSync} from 'node:fs';
+        if(process.argv.includes('--version')){console.log('codex-cli 999.0.0');process.exit(0);}
         let prompt=''; process.stdin.on('data',chunk=>{prompt+=chunk;
           writeFileSync(${JSON.stringify(pidFile)},JSON.stringify({pid:process.pid,prompt,deadline:process.env.LARK_RUN_STOP_AT})); });
         if (${JSON.stringify(kind)} === 'codex') {
@@ -33,15 +34,14 @@ describe.skipIf(process.platform !== 'linux')('independent deadline process guar
       `, { mode: 0o700 });
       const adapter = kind === 'codex' ? new CodexAdapter({ binary, profileStateDir: tmp.profile }) : new ClaudeAdapter({ binary });
       const deadlineAt = Date.now() + 2000;
-      const run = adapter.run({ runId: 'test', prompt: 'deadline <stdin> task', cwd: tmp.workspace, deadlineAt });
+      const run = (await adapter.prepareRun({ runId: 'test', prompt: 'deadline <stdin> task', cwd: tmp.workspace, deadlineAt })).start();
       const events: AgentEvent[] = [];
       try { for await (const event of run.events) events.push(event); }
       finally { await run.stop(); }
       const info = JSON.parse(await readFile(pidFile, 'utf8'));
       expect(info.prompt).toContain('deadline <stdin> task');
       expect(Number(info.deadline)).toBe(deadlineAt);
-      if (kind === 'claude') expect(events).toContainEqual({ type: 'done', terminationReason: 'timeout' });
-      else expect(events).toContainEqual(expect.objectContaining({ type: 'error', message: expect.stringContaining('deadline') }));
+      expect(events).toContainEqual(expect.objectContaining({ type: 'done', terminationReason: 'timeout' }));
       expect(await running(info.pid)).toBe(false);
     } finally { await tmp.cleanup(); }
   }, 8000);
@@ -51,7 +51,7 @@ describe.skipIf(process.platform !== 'linux')('independent deadline process guar
     try {
       const binary = join(tmp.root, 'fake-agent.mjs');
       await writeFile(binary, `#!${process.execPath}\nconsole.log(JSON.stringify({type:'result',subtype:'error_during_execution',is_error:true,errors:['insufficient_quota']}));setInterval(()=>{},1000);`, { mode: 0o700 });
-      const run = new ClaudeAdapter({ binary }).run({ runId: 'quota', prompt: 'test', cwd: tmp.workspace, deadlineAt: Date.now() + 4000 });
+      const run = (await new ClaudeAdapter({ binary }).prepareRun({ runId: 'quota', prompt: 'test', cwd: tmp.workspace, deadlineAt: Date.now() + 4000 })).start();
       const events: AgentEvent[] = [];
       try { for await (const event of run.events) events.push(event); }
       finally { await run.stop(); }

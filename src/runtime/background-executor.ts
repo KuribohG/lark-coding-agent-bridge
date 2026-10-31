@@ -1,7 +1,9 @@
+import { snapshotRunOptions } from '../agent/prepared-run';
 import { mkdir } from 'node:fs/promises';
 import { agentFailureKind, executionCapabilities } from '../agent/execution';
-import type { AgentAdapter, AgentEvent, AgentFailureKind, AgentRunOptions } from '../agent/types';
+import type { AgentAdapter, AgentEvent, AgentFailureKind, AgentRunOptions, RunStopReason } from '../agent/types';
 import { log } from '../core/logger';
+import { abortStopReason } from './errors';
 import { retryingRun } from './retrying-run';
 
 export class BackgroundExecutionError extends Error {
@@ -18,21 +20,22 @@ export async function executeBackgroundRun(agent: AgentAdapter, options: AgentRu
   await mkdir(options.cwd, { recursive: true, mode: 0o700 });
   const deadlineAt = options.deadlineAt ?? Date.now() + 30 * 60_000;
   // Pass the effective deadline to every attempt, including the native watchdog.
-  const runOptions = { ...options, deadlineAt };
+  const runOptions = snapshotRunOptions({ ...options, deadlineAt });
   if (Date.now() >= deadlineAt) throw new BackgroundExecutionError('timeout');
-  await agent.prepareRun?.(runOptions);
+  const prepared = await agent.prepareRun(runOptions);
   signal.throwIfAborted();
   if (Date.now() >= deadlineAt) throw new BackgroundExecutionError('timeout');
-  const run = retryingRun({ agent, initialRun: agent.run(runOptions), options: runOptions, exitGraceMs: 1000,
+  const run = retryingRun({ agent, initialRun: prepared.start(), options: runOptions, exitGraceMs: 1000,
     canRetry: () => !signal.aborted && Date.now() < deadlineAt });
   let stopping: Promise<void> | undefined;
   let timedOut = false;
-  const stop = () => { stopping ??= run.stop(); void stopping.catch(() => {}); };
-  const timer = setTimeout(() => { timedOut = true; stop(); }, Math.max(0, deadlineAt - Date.now()));
-  signal.addEventListener('abort', stop, { once: true });
+  const stop = (reason: RunStopReason) => { stopping ??= run.stop(reason); void stopping.catch(() => {}); };
+  const abort = () => stop(abortStopReason(signal));
+  const timer = setTimeout(() => { timedOut = true; stop('deadline'); }, Math.max(0, deadlineAt - Date.now()));
+  signal.addEventListener('abort', abort, { once: true });
   let text = '', inputTokens = 0, outputTokens = 0, completed = false;
   try {
-    if (signal.aborted) { stop(); signal.throwIfAborted(); }
+    if (signal.aborted) { abort(); signal.throwIfAborted(); }
     if (executionCapabilities(run).finalAnswer !== 'separate-event') throw new BackgroundExecutionError('unsupported');
     for await (const event of run.events) {
       signal.throwIfAborted();
@@ -41,7 +44,7 @@ export async function executeBackgroundRun(agent: AgentAdapter, options: AgentRu
       if (event.type === 'usage') { inputTokens = event.inputTokens ?? inputTokens; outputTokens = event.outputTokens ?? outputTokens; }
       if (event.type === 'retry' && event.delayMs > 0) text = '';
       if (event.type === 'error' || event.type === 'done') {
-        if (timedOut || Date.now() >= deadlineAt || event.terminationReason === 'timeout') throw new BackgroundExecutionError('timeout');
+        if (timedOut || event.terminationReason === 'timeout') throw new BackgroundExecutionError('timeout');
         if (event.terminationReason === 'interrupted') throw new BackgroundExecutionError('cancelled');
         if (event.type === 'error') {
           log.warn('run', 'background-agent-error', { runId: options.runId, error: event.message });
@@ -55,8 +58,8 @@ export async function executeBackgroundRun(agent: AgentAdapter, options: AgentRu
     if (!completed || !text) throw new BackgroundExecutionError('incomplete');
     return { text, inputTokens, outputTokens };
   } finally {
-    clearTimeout(timer); signal.removeEventListener('abort', stop);
-    if (!completed || !await run.waitForExit(1000)) stop();
+    clearTimeout(timer); signal.removeEventListener('abort', abort);
+    if (!completed || !await run.waitForExit(1000)) stop('cleanup');
     await stopping;
   }
 }

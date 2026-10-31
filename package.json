@@ -84,6 +84,7 @@
     "prepare": "npm run build",
     "prepublishOnly": "npm run typecheck && npm run build",
     "typecheck:web": "tsc --noEmit -p web/tsconfig.json",
+    "test:codex-native-env": "vitest run tests/process/codex-native-environment.test.ts",
     "test:workflow-native": "node tests/acceptance/run-workflow-native.mjs"
   },
   "dependencies": {

@@ -1,3 +1,4 @@
+import { preparedRun } from '../../../src/agent/prepared-run';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -45,10 +46,10 @@ it('stops the selected agent through the workbench command and rejects late outp
   const run = { runId: 'stoppable', capabilities: executionCapabilities, events: (async function* (): AsyncGenerator<AgentEvent> {
     await gate; yield { type: 'final_text', content: result.text }; yield { type: 'done', terminationReason: 'normal' };
   })(), stop: vi.fn(async () => { release(); }), waitForExit: vi.fn(async () => true) };
-  const agent = { capabilities: executionCapabilities, run: vi.fn(() => run) } as unknown as AgentAdapter;
+  const agent = { capabilities: executionCapabilities, prepareRun: vi.fn(async () => preparedRun({}, () => run)) } as unknown as AgentAdapter;
   const cwd = await mkdtemp(join(tmpdir(), 'inbox-stop-'));
   const s = await setup({ analyze: (job, signal) => processInbox(job, agent, cwd, '', signal) });
-  await s.service.tick(); await vi.waitFor(() => expect(agent.run).toHaveBeenCalledOnce());
+  await s.service.tick(); await vi.waitFor(() => expect(agent.prepareRun).toHaveBeenCalledOnce());
   const job = s.service.list()[0]!;
   s.store.data.jobs[0]!.replyDraft = '保留已有草稿';
   const stopped = await executeInboxCommand(s.service, {} as InboxLark, {
@@ -254,12 +255,12 @@ it.each([false, true])('runs a fresh Flash agent with final structured output (r
   const events: AgentEvent[] = [{ type: 'thinking', delta: 'private' }, { type: 'text', delta: 'provisional' },
     { type: 'final_text', content: repair ? result.text.replace(/"(replyDraft|analysis|missingInfo)":/g, '$1:') : result.text }, { type: 'usage', inputTokens: 10, outputTokens: 20 }, { type: 'done', terminationReason: 'normal' }];
   const run = { capabilities: executionCapabilities, runId: 'test', events: (async function* () { yield* events; })(), stop: vi.fn(async () => {}), waitForExit: vi.fn(async () => true) };
-  const agent: AgentAdapter = { capabilities: executionCapabilities, id: 'contract-backend', displayName: 'Codex', isAvailable: vi.fn(async () => true), prepareRun: vi.fn(async () => {}), run: vi.fn(() => run) };
+  const agent: AgentAdapter = { capabilities: executionCapabilities, id: 'contract-backend', displayName: 'Codex', isAvailable: vi.fn(async () => true), prepareRun: vi.fn(async () => preparedRun({}, () => run)) };
   const workspace = await mkdtemp(join(tmpdir(), 'inbox-agent-'));
   const onEvent = vi.fn();
   expect(await processInbox(job, agent, workspace, '所属用户背景', new AbortController().signal, undefined, onEvent)).toEqual(result);
   expect(onEvent.mock.calls.map(([event]) => event)).toEqual(events);
-  const opts = vi.mocked(agent.run).mock.calls[0]![0];
+  const opts = vi.mocked(agent.prepareRun).mock.calls[0]![0];
   expect(opts).toMatchObject({ model: 'deepseek-flash', reasoningEffort: 'max', cwd: join(workspace, 'inbox', job.id) });
   expect(opts.threadId).toBeUndefined(); expect(opts.sessionId).toBeUndefined();
   expect(opts.prompt).toContain('不要向任何人发消息'); expect(opts.prompt).toContain('replyDraft');
@@ -272,11 +273,11 @@ it('cancels the processing agent and rejects late final output', async () => {
   const gate = new Promise<void>(resolve => { release = resolve; });
   const run = { capabilities: executionCapabilities, runId: 'test', events: (async function* (): AsyncGenerator<AgentEvent> { await gate; yield { type: 'final_text', content: result.text }; })(),
     stop: vi.fn(async () => { release(); }), waitForExit: vi.fn(async () => true) };
-  const agent: AgentAdapter = { capabilities: executionCapabilities, id: 'contract-backend', displayName: 'Codex', isAvailable: async () => true, run: vi.fn(() => run) };
+  const agent: AgentAdapter = { capabilities: executionCapabilities, id: 'contract-backend', displayName: 'Codex', isAvailable: async () => true, prepareRun: vi.fn(async () => preparedRun({}, () => run)) };
   const onEvent = vi.fn();
   const promise = processInbox(s.service.list()[0]!, agent, await mkdtemp(join(tmpdir(), 'inbox-abort-')), '', controller.signal, undefined, onEvent);
   const rejected = expect(promise).rejects.toThrow();
-  await vi.waitFor(() => expect(agent.run).toHaveBeenCalled()); controller.abort(); await rejected;
+  await vi.waitFor(() => expect(agent.prepareRun).toHaveBeenCalled()); controller.abort(); await rejected;
   expect(run.stop).toHaveBeenCalledTimes(1);
   expect(onEvent).not.toHaveBeenCalled();
 });

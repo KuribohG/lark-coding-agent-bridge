@@ -107,11 +107,11 @@ describe('Claude stream-json reader behavior', () => {
     ], 7, stderr);
     cleanup = binary.cleanup;
 
-    const run = new ClaudeAdapter({ binary: binary.path }).run({
+    const run = (await new ClaudeAdapter({ binary: binary.path }).prepareRun({
       runId: 'run-reader',
       prompt: 'hi',
       cwd: tmpdir(),
-    });
+    })).start();
     const events = await collect(run.events);
 
     expect(events).toEqual([

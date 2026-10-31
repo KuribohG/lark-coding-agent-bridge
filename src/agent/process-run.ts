@@ -100,7 +100,7 @@ export function startProcessRun(input: {
     stderr: stderr.trim(),
     runtimeError,
     interrupted: interrupted || child.signalCode === 'SIGINT' || child.signalCode === 'SIGTERM',
-    timedOut: input.deadlineAt !== undefined && (child.exitCode === 124 || input.deadlineAt <= Date.now()),
+    timedOut: input.deadlineAt !== undefined && child.exitCode === 124,
   });
   async function* events(): AsyncGenerator<AgentEvent> {
     try {

@@ -23,7 +23,7 @@ afterEach(() => {
 });
 
 describe('agent backend registry', () => {
-  it.each([undefined, true, false])('honors Codex home inheritance with inheritCodexHome=%s', (inheritCodexHome) => {
+  it.each([undefined, true, false])('honors Codex home inheritance with inheritCodexHome=%s', async (inheritCodexHome) => {
     const nativeHome = join(process.cwd(), 'native-codex-home');
     const profileDir = join(process.cwd(), 'web-state');
     vi.stubEnv('CODEX_HOME', nativeHome);
@@ -38,7 +38,7 @@ describe('agent backend registry', () => {
       systemPrompt: '',
     });
 
-    adapter.run({ runId: 'test', cwd: process.cwd(), prompt: 'hello' });
+    (await adapter.prepareRun({ runId: 'test', cwd: process.cwd(), prompt: 'hello' })).start();
 
     expect(startAppServerRun).toHaveBeenCalledWith(expect.objectContaining({
       env: expect.objectContaining({

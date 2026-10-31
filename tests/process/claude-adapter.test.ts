@@ -31,12 +31,12 @@ describe('ClaudeAdapter process contract', () => {
     });
     cleanup.push(fake.dir);
 
-    const run = new ClaudeAdapter({ binary: fake.path, systemPrompt: buildBridgeSystemPrompt, env: buildLarkChannelEnv() }).run({
+    const run = (await new ClaudeAdapter({ binary: fake.path, systemPrompt: buildBridgeSystemPrompt, env: buildLarkChannelEnv() }).prepareRun({
       runId: 'run-fresh',
       prompt: 'hello',
       cwd: fake.dir,
       permissionMode: 'acceptEdits',
-    });
+    })).start();
 
     expect(run.runId).toBe('run-fresh');
     expect(run.capabilities).toEqual({ finalAnswer: 'separate-event', input: 'active-session' });
@@ -83,7 +83,7 @@ describe('ClaudeAdapter process contract', () => {
     const larkCliConfigDir = join(rootDir, 'profiles', 'codex-dev', 'lark-cli');
     const larkCliSourceConfigFile = join(rootDir, 'profiles', 'codex-dev', 'lark-cli-source', 'config.json');
 
-    const run = new ClaudeAdapter({
+    const run = (await new ClaudeAdapter({
       binary: fake.path,
       env: buildLarkChannelEnv({
         profile: 'codex-dev',
@@ -92,11 +92,11 @@ describe('ClaudeAdapter process contract', () => {
         larkCliConfigDir,
         larkCliSourceConfigFile,
       }),
-    }).run({
+    }).prepareRun({
       runId: 'run-profile-env',
       prompt: 'profile',
       cwd: fake.dir,
-    });
+    })).start();
 
     await collect(run.events);
     const record = await readRecord(fake.recordPath);
@@ -116,14 +116,14 @@ describe('ClaudeAdapter process contract', () => {
     });
     cleanup.push(fake.dir);
 
-    const run = new ClaudeAdapter({ binary: fake.path }).run({
+    const run = (await new ClaudeAdapter({ binary: fake.path }).prepareRun({
       runId: 'run-resume',
       prompt: 'continue',
       cwd: fake.dir,
       sessionId: 'sess-old',
       model: 'private/sonnet',
       reasoningEffort: 'high',
-    });
+    })).start();
 
     expect(await collect(run.events)).toEqual([
       { type: 'done', sessionId: 'sess-resumed', terminationReason: 'normal' },
@@ -138,13 +138,13 @@ describe('ClaudeAdapter process contract', () => {
     const fake = await createFakeClaude({ lines: [{ type: 'result', session_id: 'sess-ultra' }] });
     cleanup.push(fake.dir);
 
-    const run = new ClaudeAdapter({ binary: fake.path }).run({
+    const run = (await new ClaudeAdapter({ binary: fake.path }).prepareRun({
       runId: 'run-ultra',
       prompt: 'deep task',
       cwd: fake.dir,
       reasoningEffort: 'ultra',
       deadlineAt: Date.now() + 60_000,
-    });
+    })).start();
     try {
       expect(await collect(run.events)).toContainEqual({ type: 'done', sessionId: 'sess-ultra', terminationReason: 'normal' });
     } finally { await run.stop(); }
@@ -164,13 +164,13 @@ describe('ClaudeAdapter process contract', () => {
     ] });
     cleanup.push(fake.dir);
     const adapter = new ClaudeAdapter({ binary: fake.path });
-    const run = adapter.run({ runId: 'side', prompt: 'side question', cwd: fake.dir, sessionId: 'parent', forkSession: true });
+    const run = (await adapter.prepareRun({ runId: 'side', prompt: 'side question', cwd: fake.dir, sessionId: 'parent', forkSession: true })).start();
     expect(await collect(run.events)).toContainEqual({ type: 'final_text', content: 'final answer' });
     const record = await readRecord(fake.recordPath);
     expect(record.argv).toContain('--fork-session');
     expect(record.argv[record.argv.indexOf('--resume') + 1]).toBe('parent');
     expect(JSON.parse(record.stdin).message.content).toBe('side question');
-    expect(() => adapter.run({ runId: 'invalid', prompt: 'no parent', cwd: fake.dir, forkSession: true })).toThrow('parent');
+    await expect(async () => (await adapter.prepareRun({ runId: 'invalid', prompt: 'no parent', cwd: fake.dir, forkSession: true })).start()).rejects.toThrow('parent');
   });
 
   it('skips orphaned task-notification results before the prompt turn', async () => {
@@ -183,7 +183,7 @@ describe('ClaudeAdapter process contract', () => {
       { type: 'result', subtype: 'success', is_error: false, num_turns: 1, result: 'answer', session_id: 'child' },
     ] });
     cleanup.push(fake.dir);
-    const run = new ClaudeAdapter({ binary: fake.path }).run({ runId: 'side', prompt: 'q', cwd: fake.dir, sessionId: 'parent', forkSession: true });
+    const run = (await new ClaudeAdapter({ binary: fake.path }).prepareRun({ runId: 'side', prompt: 'q', cwd: fake.dir, sessionId: 'parent', forkSession: true })).start();
     const events = await collect(run.events);
     expect(events.filter((event) => event.type === 'final_text')).toEqual([{ type: 'final_text', content: 'answer' }]);
     expect(events.filter((event) => event.type === 'done')).toHaveLength(1);
@@ -198,11 +198,11 @@ describe('ClaudeAdapter process contract', () => {
     });
     cleanup.push(fake.dir);
 
-    const run = new ClaudeAdapter({ binary: fake.path }).run({
+    const run = (await new ClaudeAdapter({ binary: fake.path }).prepareRun({
       runId: 'run-fail',
       prompt: 'fail',
       cwd: fake.dir,
-    });
+    })).start();
 
     expect(await collect(run.events)).toEqual([
       { type: 'text', delta: 'before failure' },
@@ -222,7 +222,7 @@ describe('ClaudeAdapter process contract', () => {
       { type: 'result', result: 'duplicate', session_id: 'session' },
     ] });
     cleanup.push(fake.dir);
-    const run = new ClaudeAdapter({ binary: fake.path }).run({ runId: 'terminal', prompt: 'task', cwd: fake.dir });
+    const run = (await new ClaudeAdapter({ binary: fake.path }).prepareRun({ runId: 'terminal', prompt: 'task', cwd: fake.dir })).start();
     expect(await collect(run.events)).toEqual([
       { type: 'final_text', content: 'answer' }, { type: 'done', sessionId: 'session', terminationReason: 'normal' },
     ]);
@@ -251,7 +251,7 @@ describe('ClaudeAdapter process contract', () => {
   });
 
   it('surfaces spawn errors as stream error events', async () => {
-    let run: ReturnType<ClaudeAdapter['run']>;
+    let run: import('../../src/agent/types').AgentRun;
     if (process.platform === 'win32') {
       const fake = await createFakeClaude({
         lines: [],
@@ -259,18 +259,18 @@ describe('ClaudeAdapter process contract', () => {
         exitCode: 1,
       });
       cleanup.push(fake.dir);
-      run = new ClaudeAdapter({ binary: fake.path }).run({
+      run = (await new ClaudeAdapter({ binary: fake.path }).prepareRun({
         runId: 'run-missing',
         prompt: 'hi',
         cwd: fake.dir,
-      });
+      })).start();
     } else {
       const missing = join(tmpdir(), `missing-claude-${Date.now()}`);
-      run = new ClaudeAdapter({ binary: missing }).run({
+      run = (await new ClaudeAdapter({ binary: missing }).prepareRun({
         runId: 'run-missing',
         prompt: 'hi',
         cwd: tmpdir(),
-      });
+      })).start();
     }
 
     const events = await collect(run.events);
@@ -289,11 +289,11 @@ describe('ClaudeAdapter process contract', () => {
     });
     cleanup.push(fake.dir);
 
-    const run = new ClaudeAdapter({ binary: fake.path }).run({
+    const run = (await new ClaudeAdapter({ binary: fake.path }).prepareRun({
       runId: 'run-tail',
       prompt: 'tail',
       cwd: fake.dir,
-    });
+    })).start();
     const iterator = run.events[Symbol.asyncIterator]();
 
     expect(await iterator.next()).toEqual({
@@ -338,7 +338,7 @@ describe('ClaudeAdapter process contract', () => {
       });
       process.stdin.on('end', () => process.exit(0));
     `, { mode: 0o700 });
-    const run = new ClaudeAdapter({ binary }).run({ runId: 'duplex', prompt: 'original', cwd: dir, stopGraceMs: 100 });
+    const run = (await new ClaudeAdapter({ binary }).prepareRun({ runId: 'duplex', prompt: 'original', cwd: dir, stopGraceMs: 100 })).start();
     const events: AgentEvent[] = [];
     let delivery: Promise<string> | undefined;
     try {
@@ -376,10 +376,10 @@ describe('ClaudeAdapter process contract', () => {
     } finally { await run.stop(); }
   });
 
-  it('requires cwd to be resolved by policy before spawning', () => {
-    expect(() =>
-      new ClaudeAdapter({ binary: 'unused' }).run({ runId: 'run-no-cwd', prompt: 'hi' }),
-    ).toThrow(/cwd is required/);
+  it('requires cwd to be resolved by policy before spawning', async () => {
+    await expect(async () =>
+      (await new ClaudeAdapter({ binary: 'unused' }).prepareRun({ runId: 'run-no-cwd', prompt: 'hi' })).start(),
+    ).rejects.toThrow(/cwd is required/);
   });
 });
 

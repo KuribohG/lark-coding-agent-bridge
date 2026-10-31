@@ -14,9 +14,9 @@ describe('CodexAdapter prepareRun', () => {
     { options: { sandbox: 'invalid' as never }, error: 'sandbox' },
     { options: { model: '--invalid' }, error: '模型' },
     { options: { reasoningEffort: 'invalid' as never }, error: '思考强度' },
-  ])('rejects invalid run options before launching: $error', ({ options, error }) => {
+  ])('rejects invalid run options before launching: $error', async ({ options, error }) => {
     const adapter = new CodexAdapter({ binary: 'missing-codex', profileStateDir: '.' });
-    expect(() => adapter.run({ runId: 'invalid', cwd: '.', prompt: 'test', ...options })).toThrow(new RegExp(error, 'i'));
+    await expect(async () => (await adapter.prepareRun({ runId: 'invalid', cwd: '.', prompt: 'test', ...options })).start()).rejects.toThrow(new RegExp(error, 'i'));
   });
 
   afterEach(async () => {
@@ -30,7 +30,7 @@ describe('CodexAdapter prepareRun', () => {
       profileStateDir: join(tmpdir(), 'codex-profile'),
     });
 
-    await expect(adapter.prepareRun()).resolves.toBeUndefined();
+    await expect(adapter.prepareRun({ runId: 'prepared', cwd: '.', prompt: 'test' })).resolves.toMatchObject({ start: expect.any(Function) });
   });
 
   it('reuses a successful availability check instead of spawning codex every run', async () => {
@@ -40,9 +40,9 @@ describe('CodexAdapter prepareRun', () => {
       profileStateDir: join(tmpdir(), 'codex-profile'),
     });
 
-    await adapter.prepareRun();
+    await adapter.prepareRun({ runId: 'prepared', cwd: '.', prompt: 'test' });
     await rm(binary, { force: true });
-    await expect(adapter.prepareRun()).resolves.toBeUndefined();
+    await expect(adapter.prepareRun({ runId: 'prepared', cwd: '.', prompt: 'test' })).resolves.toMatchObject({ start: expect.any(Function) });
   });
 
   it('does not cache a failed availability check', async () => {
@@ -54,9 +54,9 @@ describe('CodexAdapter prepareRun', () => {
       profileStateDir: join(tmpdir(), 'codex-profile'),
     });
 
-    await expect(adapter.prepareRun()).rejects.toMatchObject({ code: 'agent-binary-not-found' });
+    await expect(adapter.prepareRun({ runId: 'prepared', cwd: '.', prompt: 'test' })).rejects.toMatchObject({ code: 'agent-binary-not-found' });
     await writeVersionExecutable(dir, 'codex', 'codex 1.2.3');
-    await expect(adapter.prepareRun()).resolves.toBeUndefined();
+    await expect(adapter.prepareRun({ runId: 'prepared', cwd: '.', prompt: 'test' })).resolves.toMatchObject({ start: expect.any(Function) });
   });
 
   it('reports a preflight diagnostic when the configured Codex binary is missing', async () => {
@@ -65,7 +65,7 @@ describe('CodexAdapter prepareRun', () => {
       profileStateDir: join(tmpdir(), 'codex-profile'),
     });
 
-    await expect(adapter.prepareRun()).rejects.toMatchObject({
+    await expect(adapter.prepareRun({ runId: 'prepared', cwd: '.', prompt: 'test' })).rejects.toMatchObject({
       code: 'agent-binary-not-found',
       diagnostic: {
         code: 'agent-binary-not-found',

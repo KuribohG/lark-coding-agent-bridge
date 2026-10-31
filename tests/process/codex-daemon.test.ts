@@ -140,13 +140,15 @@ describe('Codex persistent app-server mode', () => {
   it('binds workflow credentials per thread and replaces them on resume without placing them in daemon arguments', async () => {
     const h = await harness();
     const first = { ...h.runOptions(), env: { LARK_WORKFLOW_TOKEN: 'turn-one-token', LARK_WORKFLOW_ENDPOINT: 'http://127.0.0.1:1234/workflow' } };
-    await h.adapter.prepareRun(first);
-    await collect(h.adapter.run(first).events);
+    const prepared = await h.adapter.prepareRun(first);
+    const expectedFirstEnv = { ...first.env, CODEX_HOME: h.dir };
+    first.env.LARK_WORKFLOW_TOKEN = 'mutated-after-prepare';
+    await collect(prepared.start().events);
+    expect(() => prepared.start()).toThrow('already been started');
     const second = { ...h.runOptions(), runId: 'resume', threadId: 'thread-1', env: { LARK_WORKFLOW_TOKEN: 'turn-two-token' } };
-    await h.adapter.prepareRun(second);
-    await collect(h.adapter.run(second).events);
-    expect(h.requests.find(request => request.method === 'thread/start')?.params.config.shell_environment_policy.set).toEqual(first.env);
-    expect(h.requests.find(request => request.method === 'thread/resume')?.params.config.shell_environment_policy.set).toEqual(second.env);
+    await collect((await h.adapter.prepareRun(second)).start().events);
+    expect(h.requests.find(request => request.method === 'thread/start')?.params.config.shell_environment_policy.set).toEqual(expectedFirstEnv);
+    expect(h.requests.find(request => request.method === 'thread/resume')?.params.config.shell_environment_policy.set).toEqual({ ...second.env, CODEX_HOME: h.dir });
     expect(JSON.stringify(await h.records())).not.toContain('turn-one-token');
     expect(JSON.stringify(await h.records())).not.toContain('turn-two-token');
   });
@@ -155,8 +157,7 @@ describe('Codex persistent app-server mode', () => {
     const options = h.runOptions();
     options.modelProvider = { ...options.modelProvider!, id: 'other', displayName: 'Other', model: 'other-only-model', env: { OTHER_SECRET: 'do-not-load' } };
     options.model = 'other-only-model';
-    await h.adapter.prepareRun(options);
-    const events = await collect(h.adapter.run(options).events);
+    const events = await collect((await h.adapter.prepareRun(options)).start().events);
     expect(events).toContainEqual({ type: 'final_text', content: 'daemon result' });
     expect(events).toContainEqual(expect.objectContaining({ type: 'status', code: 'provider-restart-required' }));
     expect(h.requests.find(r => r.method === 'thread/start')?.params).toMatchObject({ modelProvider: 'probe', model: 'probe-model' });
@@ -179,9 +180,9 @@ describe('Codex persistent app-server mode', () => {
     const h = await harness();
     const options = h.runOptions();
 
-    await Promise.all([h.adapter.prepareRun(options), h.adapter.prepareRun(options)]);
+    const [prepared] = await Promise.all([h.adapter.prepareRun(options), h.adapter.prepareRun(options)]);
     await h.adapter.prepareRun(options);
-    const run = h.adapter.run(options);
+    const run = prepared.start();
     const events = await collect(run.events);
 
     expect(events).toContainEqual({ type: 'final_text', content: 'daemon result' });

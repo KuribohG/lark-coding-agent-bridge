@@ -83,9 +83,10 @@ class PreparingAgent extends FakeAgentAdapter {
     super({ events: [{ type: 'done', terminationReason: 'normal' }] });
   }
 
-  async prepareRun(opts: AgentRunOptions): Promise<void> {
+  override async prepareRun(opts: AgentRunOptions) {
     this.order.push(`prepare:${opts.runId}`);
     if (this.prepareError) throw this.prepareError;
+    return super.prepareRun(opts);
   }
 
   override run(opts: AgentRunOptions) {

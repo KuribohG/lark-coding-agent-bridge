@@ -17,7 +17,7 @@ export function createWebRunOutput(publish: (event: WebRunEvent) => Promise<void
       const identity = { runId: input.runId, scope: input.scope };
       await publish({ ...identity, type: 'run.started', sequence: sequence++ });
       await processAgentStream(input.handle, input.events, input.scope, input.idleTimeoutMs,
-        input.recordSession, async current => {
+        () => {}, async current => {
           const state = structuredClone(filterWebState(current, display));
           const serialized = JSON.stringify(state);
           if (serialized === previous) return;

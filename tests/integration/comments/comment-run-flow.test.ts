@@ -1,3 +1,4 @@
+import { preparedRun } from '../../../src/agent/prepared-run';
 import { realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -505,6 +506,8 @@ class BlockingAgentAdapter implements AgentAdapter {
   async isAvailable(): Promise<boolean> {
     return true;
   }
+
+  async prepareRun(opts: AgentRunOptions) { return preparedRun({}, () => this.run(opts)); }
 
   run(opts: AgentRunOptions): AgentRun {
     const index = this.runOptions.length;

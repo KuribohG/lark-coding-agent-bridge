@@ -1,9 +1,10 @@
+import { preparedRun } from '../../../src/agent/prepared-run';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { AgentAdapter, AgentRun, AgentRunOptions } from '../../../src/agent/types';
 import { ActiveRuns } from '../../../src/bot/active-runs';
 import { ProcessPool } from '../../../src/bot/process-pool';
 import { RunExecutor } from '../../../src/runtime/run-executor';
-import { RunRejected, SpawnFailed } from '../../../src/runtime/errors';
+import { RunRejected, RunStopped, SpawnFailed } from '../../../src/runtime/errors';
 import type { RunPolicyAllow } from '../../../src/policy/run-policy';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile';
 import {
@@ -18,6 +19,36 @@ afterEach(async () => {
 });
 
 describe('RunExecutor', () => {
+  it('preserves the first stop cause through deadline and cleanup races', async () => {
+    const h = await createHarness({ events: [] });
+    const signal = new AbortController();
+    const execution = await h.executor.submit({ scopeId: 'scope', policy: policy(h.tmp.workspace), signal: signal.signal });
+    signal.abort(new RunStopped('shutdown'));
+    await execution.stop('deadline');
+    await execution.stop('cleanup');
+    expect(await execution.result).toBe('stopped');
+    expect(execution.handle.stopReason).toBe('shutdown');
+  });
+
+  it('honors a native watchdog timeout before the local deadline timer fires', async () => {
+    const h = await createHarness({ events: [{ type: 'done', terminationReason: 'timeout' }] });
+    const execution = await h.executor.submit({ scopeId: 'scope', policy: policy(h.tmp.workspace), deadlineAt: 2000 });
+    await collect(execution.subscribe());
+    expect(await execution.result).toBe('expired');
+    expect(execution.handle.stopReason).toBe('deadline');
+  });
+
+  it('does not relabel a native failure from the wall clock', async () => {
+    const h = await createHarness({ events: [{ type: 'error', terminationReason: 'failed', message: 'native failure' }] });
+    let now = 1000;
+    const executor = new RunExecutor({ agent: h.agent, activeRuns: h.activeRuns, pool: h.pool, now: () => now });
+    const execution = await executor.submit({ scopeId: 'scope', policy: policy(h.tmp.workspace), deadlineAt: 2000 });
+    now = 3000;
+    await collect(execution.subscribe());
+    expect(await execution.result).toBe('failed');
+    expect(execution.handle.stopReason).toBeUndefined();
+  });
+
   it('resolves a different backend for each originating scope', async () => {
     const tmp = await createTmpProfile('run-executor-router-');
     cleanups.push(tmp.cleanup);
@@ -357,6 +388,8 @@ class ThrowingAgent implements AgentAdapter {
     return true;
   }
 
+  async prepareRun(opts: AgentRunOptions) { return preparedRun({}, () => this.run(opts)); }
+
   run(_opts: AgentRunOptions): AgentRun {
     throw new Error('spawn failed');
   }
@@ -374,11 +407,12 @@ class DelayedPrepareAgent extends FakeAgentAdapter {
     });
   }
 
-  async prepareRun(): Promise<void> {
+  override async prepareRun(opts: AgentRunOptions) {
     this.resolvePrepareStarted();
     await new Promise<void>((resolve) => {
       this.resolvePrepare = resolve;
     });
+    return super.prepareRun(opts);
   }
 
   releasePrepare(): void {

@@ -1,5 +1,6 @@
 import type { AgentAdapter, AgentEvent, AgentInput, AgentInputReceipt, AgentRun, AgentRunOptions } from '../agent/types';
 import { agentFailureKind, classifyAgentFailure, sendRunInput, supportsRunInput } from '../agent/execution';
+import { RunStopped, abortStopReason } from './errors';
 import { log } from '../core/logger';
 
 const RETRY_DELAYS_MS = [30_000, 60_000, 120_000] as const;
@@ -81,7 +82,7 @@ export function retryingRun(input: {
         if (!failure) return;
 
         if (!await current.waitForExit(input.exitGraceMs)) {
-          await current.stop();
+          await current.stop('cleanup');
           if (!await current.waitForExit(input.exitGraceMs)) {
             finish();
             yield failure;
@@ -105,9 +106,9 @@ export function retryingRun(input: {
           prompt: madeProgress || steered ? CONTINUE_PROMPT : input.options.prompt,
           images: madeProgress || steered ? undefined : input.options.images,
         };
-        await input.agent.prepareRun?.(options);
+        const prepared = await input.agent.prepareRun(options);
         if (!canRetry()) break;
-        current = input.agent.run(options);
+        current = prepared.start();
         waiting = false;
         log.info('run', `${retryEvent}-started`, { runId: input.options.runId, agent: input.agent.id,
           attempt, maxAttempts: MAX_RETRIES });
@@ -144,10 +145,10 @@ export function retryingRun(input: {
       if (result.status === 'unknown') throw new Error(result.message);
       return result.status === 'accepted' ? 'accepted' as const : 'inactive' as const;
     } } : {}),
-    async stop() {
-      controller.abort();
+    async stop(reason = 'cancelled') {
+      controller.abort(new RunStopped(reason));
       finish();
-      await current.stop();
+      await current.stop(abortStopReason(controller.signal));
     },
     async waitForExit(timeoutMs) {
       const started = Date.now();

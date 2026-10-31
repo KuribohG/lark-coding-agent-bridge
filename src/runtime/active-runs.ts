@@ -1,4 +1,4 @@
-import type { AgentRun } from '../agent/types';
+import type { AgentRun, RunStopReason } from '../agent/types';
 
 export interface ActiveSessionIdentity {
   agentId: string;
@@ -10,14 +10,24 @@ export interface RunHandle {
   run: AgentRun;
   interrupted: boolean;
   modelSettings?: import('../agent/model-settings').ModelSettings;
-  stopReason?: 'deadline' | 'cancelled';
+  stopReason?: RunStopReason;
   sessionIdentity?: ActiveSessionIdentity;
   /** Message IDs already delivered to this native run (initial batch or steer). */
   inputMessageIds: Set<string>;
 }
 
+export function markRunStopped(handle: RunHandle, reason: RunStopReason): RunStopReason {
+  handle.interrupted = true;
+  return handle.stopReason ??= reason;
+}
+
+export function stopRun(handle: RunHandle, reason: RunStopReason): Promise<void> {
+  return handle.run.stop(markRunStopped(handle, reason));
+}
+
 export class ActiveRuns {
   private readonly handles = new Map<string, RunHandle>();
+  private readonly latestRunIds = new Map<string, string>();
   private readonly reservations = new Set<string>();
   private readonly generations = new Map<string, number>();
 
@@ -43,7 +53,13 @@ export class ActiveRuns {
     this.reservations.delete(chatId);
     const handle: RunHandle = { run, interrupted: false, inputMessageIds: new Set() };
     this.handles.set(chatId, handle);
+    this.latestRunIds.set(chatId, run.runId);
     return handle;
+  }
+
+  /** Remains checkable after unregister, without retaining completed runs. */
+  isLatest(scope: string, run: AgentRun): boolean {
+    return this.latestRunIds.get(scope) === run.runId;
   }
 
   identifySession(chatId: string, run: AgentRun, identity: ActiveSessionIdentity): void {
@@ -104,28 +120,26 @@ export class ActiveRuns {
    * interrupt was issued. Fires stop() fire-and-forget — the old run's
    * generator exits on its own as the subprocess dies.
    */
-  interrupt(chatId: string): boolean {
+  interrupt(chatId: string, reason: RunStopReason = 'cancelled'): boolean {
     this.generations.set(chatId, this.generation(chatId) + 1);
     const h = this.handles.get(chatId);
     if (!h) return false;
     this.reservations.delete(chatId);
-    h.interrupted = true;
     this.handles.delete(chatId);
-    void h.run.stop().catch(() => {
+    void stopRun(h, reason).catch(() => {
       /* stop errors are non-fatal */
     });
     return true;
   }
 
-  async stopAll(): Promise<void> {
+  async stopAll(reason: RunStopReason = 'cancelled'): Promise<void> {
     for (const scope of new Set([...this.handles.keys(), ...this.reservations])) {
       this.generations.set(scope, this.generation(scope) + 1);
     }
     const all = [...this.handles.values()];
     this.handles.clear();
     this.reservations.clear();
-    for (const h of all) h.interrupted = true;
-    await Promise.allSettled(all.map((h) => h.run.stop()));
+    await Promise.allSettled(all.map((h) => stopRun(h, reason)));
   }
 
   async waitForAll(timeoutMs = 300_000): Promise<void> {

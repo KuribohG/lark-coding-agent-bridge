@@ -8,7 +8,7 @@ import {
   type RunState,
 } from './run-state';
 import { log, reportMetric } from '../core/logger';
-import type { RunHandle } from './active-runs';
+import { stopRun, type RunHandle } from './active-runs';
 
 /**
  * Drive the agent's event stream into a stateful RunState, calling `flush`
@@ -50,9 +50,8 @@ export async function processAgentStream(
     if (inFlightTools.size > 0) return;
     timer = setTimeout(() => {
       idleFired = true;
-      handle.interrupted = true;
       log.warn('agent', 'idle-timeout', { scope, idleTimeoutMs });
-      void handle.run.stop().catch(() => {
+      void stopRun(handle, 'idle').catch(() => {
         /* stop errors are non-fatal */
       });
     }, idleTimeoutMs + retryDelayMs);
@@ -144,7 +143,7 @@ export async function processAgentStream(
   reportMetric('run_e2e_ms', Date.now() - runStart, { terminal: state.terminal });
   await flush(state);
   if (handle.interrupted) {
-    await handle.run.stop();
+    await handle.run.stop(handle.stopReason ?? 'cleanup');
   }
   return state;
 }

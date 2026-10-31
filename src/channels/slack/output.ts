@@ -36,7 +36,7 @@ async function renderSlackOutput(
     input.events,
     input.scope,
     input.idleTimeoutMs,
-    input.recordSession,
+    () => {},
     async current => {
       if (!options.display.show_progress && current.terminal === 'running') return;
       const text = toSlackMrkdwn(renderSlackState(current, options.display));

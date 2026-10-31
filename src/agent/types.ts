@@ -85,13 +85,16 @@ export interface AgentRunOptions {
   stopGraceMs?: number;
 }
 
+/** The first stop request owns the cause; transport cleanup must not replace it. */
+export type RunStopReason = 'cancelled' | 'deadline' | 'idle' | 'shutdown' | 'yield' | 'input' | 'cleanup';
+
 export interface AgentRun {
   readonly runId: string;
   readonly events: AsyncIterable<AgentEvent>;
   /** Omitted by legacy adapters; consumers must not infer capabilities from the agent name. */
   readonly capabilities?: AgentExecutionCapabilities;
   sendInput?(input: AgentInput): Promise<AgentInputReceipt>;
-  stop(): Promise<void>;
+  stop(reason?: RunStopReason): Promise<void>;
   /** @deprecated Native input hook. Business code uses the execution contract's sendRunInput. */
   steer?(prompt: string, messageId: string): Promise<'accepted' | 'inactive'>;
   /**
@@ -118,6 +121,12 @@ export interface AgentBotIdentity {
   name?: string;
 }
 
+export interface PreparedAgentRun {
+  readonly modelSettings: Readonly<import('./model-settings').ModelSettings>;
+  readonly provider?: Readonly<{ id: string; requestedId?: string }>;
+  start(): AgentRun;
+}
+
 export interface AgentAdapter {
   modelProviderState?(): Promise<{ id: string; displayName: string; fixedUntilRestart: boolean; model?: string }>;
   readonly id: string;
@@ -125,8 +134,8 @@ export interface AgentAdapter {
   readonly capabilities?: AgentExecutionCapabilities;
   isAvailable(): Promise<boolean>;
   checkAvailability?(): Promise<AgentAvailability>;
-  prepareRun?(opts: AgentRunOptions): Promise<void>;
-  run(opts: AgentRunOptions): AgentRun;
+  /** Preparation resolves the effective configuration; only its result can start an attempt. */
+  prepareRun(opts: AgentRunOptions): Promise<PreparedAgentRun>;
   /**
    * Late-bound identity injection: the adapter is constructed before the
    * channel connects, so the channel calls this once botIdentity is known.

@@ -1,3 +1,4 @@
+import { preparedRun } from '../../../src/agent/prepared-run';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CommentEvent, LarkChannel } from '@larksuite/channel';
@@ -283,6 +284,8 @@ class BlockingAgentAdapter implements AgentAdapter {
   get stopped(): boolean {
     return this.wasStopped;
   }
+
+  async prepareRun(opts: AgentRunOptions) { return preparedRun({}, () => this.run(opts)); }
 
   run(opts: AgentRunOptions): AgentRun {
     const runIndex = this.runOptions.length;

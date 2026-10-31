@@ -7,16 +7,93 @@ input requires Claude Code 2.1.302 or later for correlated completion receipts.
 
 ```mermaid
 flowchart TD
-  Chat[Chat and follow-up routing] --> Run[AgentRun and execution contract]
-  Inbox[Inbox report validation] --> Background[Background executor]
-  CI[CI report validation] --> Background
-  Background --> Retry[Retrying run]
-  Run --> Retry
-  Retry --> Adapter[CodexAdapter]
-  Adapter --> Server[Codex app-server]
-  Retry --> Claude[ClaudeAdapter]
-  Claude --> Stream[Claude stream-json]
+  Hosts[Lark / Web / Slack] --> Executor[RunExecutor]
+  Background[Background executor] --> Prepare
+  Executor --> Prepare[Adapter.prepareRun]
+  Prepare --> Prepared[PreparedAgentRun.start - once]
+  Prepared --> Retry[AgentRun / retries]
+  Retry --> Sessions[Session progress and history commit]
+  Retry --> Output[Output rendering]
 ```
+
+## Preparation and ownership
+
+`AgentAdapter.prepareRun(options)` is mandatory and returns a single-use
+`PreparedAgentRun`. Callers cannot invoke `adapter.run()` or depend on the identity
+of the options object. Preparation captures caller-owned options, validates the
+backend settings and resolves effective model/provider selection; `start()` starts the actual agent run; daemon readiness belongs to preparation. Every retry obtains a new prepared handle and checks
+cancellation again before starting. Prepared handles contain effective model
+metadata, not credentials. Startup failure also consumes the handle.
+
+Codex process and tool configuration have different lifetimes:
+
+| Input | Owner and lifetime | Destination |
+| --- | --- | --- |
+| Profile environment | Adapter, for this profile | Process launch and every thread tool policy |
+| Backend credentials/provider | Adapter, fixed until restart | Native process/config only |
+| Attempt bindings | Execution caller, for this attempt | Current thread tool policy only |
+
+`src/agent/codex/environment.ts` assembles these inputs. Both per-run and daemon
+transports send the complete profile plus current attempt via
+`threadConfig.shell_environment_policy`. Reusing an already-running daemon does
+not establish the tool environment: the proxy's environment is not the daemon's
+environment. Start, resume and fork must each carry this policy. Never serialize
+`process.env` or provider credentials into thread overrides. Explicit undefined
+profile values remove inherited keys. The policy replaces the previous thread
+policy, so omitted attempt bindings are not retained on resume/fork.
+
+Backend launch credentials can still be inherited by native processes according
+to Codex's own shell filtering rules; this separation is not a security sandbox.
+Provider configuration remains fixed until adapter restart. A rejected provider
+switch is resolved once by the adapter and reported through prepared metadata.
+The runtime must not reinterpret `modelProviderState()` to choose another model.
+
+## Stop causes and session progress
+
+A stop carries `RunStopReason`: user cancellation, deadline, idle timeout, service
+shutdown, child-workflow yield, user input, or cleanup. `stopRun()` records the
+first cause on the run handle and passes it through retries; later cleanup cannot
+replace it. Abort signals use `RunStopped`. Native watchdogs report `timeout`
+explicitly. Do not infer why a run stopped from the wall clock or a global closed
+flag. Workflow attempts persist the cause: shutdown interrupts the parent while
+preserving a committed child; user cancellation still cancels the child.
+
+`src/runtime/session-progress.ts` consumes execution events independently of the
+renderer. It owns native session tracking, context usage and successful history
+commit. Hosts supply a typed source: a real message with the context actually
+included, or an internal event with no message anchor. Real follow-ups delivered
+during an internal wake may advance history. A partial context fetch must omit
+`completeThrough`; failed/stopped runs cannot advance it. Completed older runs
+are fenced from newer executions and newly selected native sessions.
+
+`presentRunOutput()` only renders; output plugins no longer receive a session
+persistence callback. `ConversationRuntime` and Lark both attach the same session
+observer. Low-level `processAgentStream()` retains its event callback for direct
+consumers. Runtime execution modules cannot import channel hosts or concrete
+adapters; the architecture test enforces this, with explicit composition roots.
+
+Adapter integrations must migrate from `run(options)` to
+`(await prepareRun(options)).start()`. Custom output plugins should remove their
+session callback calls; conversation hosts own persistence.
+
+## Regression checks
+
+The normal suite covers preparation cancellation, immutable options, first-stop
+races, child shutdown recovery, partial history, internal wakes and stale events.
+`tests/process/codex-native-environment.test.ts` additionally drives a real Codex
+runtime and shell with a deterministic local Responses fixture. No external model
+service or account credentials are needed:
+
+```sh
+BRIDGE_CODEX_NATIVE_BINARY=/absolute/path/to/codex npm run test:codex-native-env
+```
+
+It exercises per-run and existing-daemon transports across start, resume and
+fork, including a daemon launched without profile bindings and removal of an old
+attempt endpoint. It uses isolated temporary homes/workspaces and never attaches
+to the user's daemon. Keep the temporary root short for Unix socket paths. This
+optional native fixture currently runs on POSIX; Windows remains covered by the
+ordinary transport tests and platform CI, not this fixture.
 
 ## Capabilities and events
 
@@ -116,7 +193,7 @@ model supported by the destination engine or clear the override.
 
 ## Chat output, commands and preferences
 
-`src/bot/channel.ts` handles message intake and run setup. It passes an event
+`src/channels/lark/channel.ts` handles message intake and run setup. It passes an event
 subscription to `run-output.ts`, which owns progress streams, COT fallback,
 empty-message cleanup and final delivery. Card and Markdown streams share the
 same progress lifecycle. `run-stream.ts` reduces agent events and maintains the

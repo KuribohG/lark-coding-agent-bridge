@@ -271,7 +271,11 @@ describe('rate-limit retries through RunExecutor', () => {
   it('rechecks cancellation after asynchronous retry preparation', async () => {
     const h = harness([[rateLimit], [done]]);
     let releasePrepare!: () => void;
-    const prepare = vi.fn().mockResolvedValueOnce(undefined).mockImplementationOnce(() => new Promise<void>(resolve => { releasePrepare = resolve; }));
+    const prepareNative = h.agent.prepareRun.bind(h.agent);
+    const prepare = vi.fn().mockImplementationOnce(prepareNative).mockImplementationOnce(async options => {
+      await new Promise<void>(resolve => { releasePrepare = resolve; });
+      return prepareNative(options);
+    });
     Object.assign(h.agent, { prepareRun: prepare });
     const run = await h.executor.submit({ scopeId: 's', policy: h.policy });
     const output = collect(run.subscribe());
@@ -286,7 +290,7 @@ describe('rate-limit retries through RunExecutor', () => {
 
   it('reports retry preparation failures and frees the slot', async () => {
     const h = harness([[rateLimit], [done]]);
-    Object.assign(h.agent, { prepareRun: vi.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('binary disappeared')) });
+    Object.assign(h.agent, { prepareRun: vi.fn().mockImplementationOnce(h.agent.prepareRun.bind(h.agent)).mockRejectedValueOnce(new Error('binary disappeared')) });
     const run = await h.executor.submit({ scopeId: 's', policy: h.policy });
     const output = collect(run.subscribe());
     await vi.advanceTimersByTimeAsync(30_000);

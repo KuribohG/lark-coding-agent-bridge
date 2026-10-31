@@ -1,3 +1,5 @@
+import { preparedRun, snapshotRunOptions } from '../prepared-run';
+import type { PreparedAgentRun } from '../types';
 import { startProcessRun } from '../process-run';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -70,10 +72,15 @@ export class PiAdapter implements AgentAdapter {
     });
   }
 
-  async prepareRun(opts: AgentRunOptions): Promise<void> {
+  async prepareRun(input: AgentRunOptions): Promise<PreparedAgentRun> {
+    const opts = snapshotRunOptions({ ...input, systemPrompt: input.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity) });
+    if (!opts.cwd) throw new Error('cwd is required for pi preparation');
+    if (opts.forkSession && !opts.sessionId) throw new Error('fork requires a parent session');
+    if (opts.model) validateModelId(opts.model);
+    if (opts.reasoningEffort) parseEffort(opts.reasoningEffort, 'pi');
     if (opts.sandbox === 'workspace-write') {
       throw new SpawnFailed(
-        'pi workspace sandbox unavailable',
+        'Pi has no portable workspace sandbox; use read-only or full access',
         new Error('Pi has no portable workspace sandbox; use read-only or full access'),
         'agent-prepare-failed',
       );
@@ -87,10 +94,8 @@ export class PiAdapter implements AgentAdapter {
         availability.diagnostic,
       );
     }
-  }
-
-  run(opts: AgentRunOptions): AgentRun {
-    return withExecutionContract(this.runNative(opts), this.capabilities);
+    return preparedRun({ model: opts.model, reasoningEffort: opts.reasoningEffort },
+      () => withExecutionContract(this.runNative(opts), this.capabilities));
   }
 
   private runNative(opts: AgentRunOptions): AgentRun {

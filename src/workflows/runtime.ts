@@ -1,6 +1,7 @@
 import type { RunPolicyAllow } from '../policy/run-policy';
 import { fileURLToPath } from 'node:url';
 import type { RunExecutor } from '../runtime/run-executor';
+import { RunStopped } from '../runtime/errors';
 import { log } from '../core/logger';
 import { WorkflowKernel } from './kernel';
 import { WorkflowIpc, WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from './ipc';
@@ -79,7 +80,7 @@ export class WorkflowRuntime {
       const state = this.kernel.state(scopeId, workflowId);
       if (state?.status !== 'active' || state.script?.status !== 'running' || state.script.runId !== runId) controller.abort();
     });
-    const deadline = setTimeout(() => controller.abort(new Error('Script deadline reached')),
+    const deadline = setTimeout(() => controller.abort(new RunStopped('deadline')),
       Math.max(0, begun.state.deadlineAt - Date.now()));
     deadline.unref();
     try {
@@ -116,7 +117,7 @@ export class WorkflowRuntime {
     } finally {
       clearTimeout(deadline);
       stop();
-      controller.abort();
+      controller.abort(new RunStopped('cleanup'));
     }
   }
 
@@ -178,7 +179,7 @@ export class WorkflowRuntime {
       let yieldTimer: NodeJS.Timeout | undefined;
       const yieldIfWaiting = () => {
         if (!yieldTimer && this.kernel.waitingForChild(workflow.root.scopeId,workflow.workflowId,task.taskId,attemptId)) {
-          yieldTimer=setTimeout(()=>{void execution.stop().catch(error=>log.warn('workflow','yield-failed',{error:String(error)}));},30_000);
+          yieldTimer=setTimeout(()=>{void execution.stop('yield').catch(error=>log.warn('workflow','yield-failed',{error:String(error)}));},30_000);
           yieldTimer.unref();
         }
       };
@@ -196,18 +197,18 @@ export class WorkflowRuntime {
           else if (event.type === 'done') normal = event.terminationReason === 'normal';
           else if (event.type === 'user_input') {
             question = event.questions.map(item => item.title).join('\n');
-            await execution.stop();
+            await execution.stop('input');
             break;
           }
         }
       } catch (cause) {
-        await execution.stop();
+        await execution.stop('cleanup');
         throw cause;
       } finally {
         stopWatching();if(yieldTimer) clearTimeout(yieldTimer);
       }
       const result = await execution.result;
-      return { status: result === 'completed' && normal ? 'completed' : result === 'stopped' ? 'stopped' : 'failed', text, question, error };
+      return { status: result === 'completed' && normal ? 'completed' : result === 'stopped' ? 'stopped' : 'failed', text, question, error, stopReason: execution.handle.stopReason };
     } finally { binding.release(); }
   }
 
@@ -227,7 +228,7 @@ export class WorkflowRuntime {
     // Fence calls before IPC/executor shutdown can turn an accepted child into a cancellation.
     this.kernel.beginShutdown();
     if (this.timer) clearInterval(this.timer);
-    for (const run of this.scripts.values()) run.controller.abort();
+    for (const run of this.scripts.values()) run.controller.abort(new RunStopped('shutdown'));
     await Promise.allSettled([...this.scripts.values()].map(run => run.done));
     await this.ipc.close();
     await this.kernel.close();

@@ -1,3 +1,4 @@
+import { preparedRun } from '../../../src/agent/prepared-run';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { executionCapabilities, sendRunInput, supportsRunInput, withExecutionContract } from '../../../src/agent/execution';
 import type { AgentAdapter, AgentEvent, AgentExecutionCapabilities, AgentRun } from '../../../src/agent/types';
@@ -76,9 +77,9 @@ describe('agent execution contract', () => {
 
   it.each(['quota', 'authentication', 'delivery_unknown', 'runtime'] as const)('honors explicit %s over text suggesting 429', async failureKind => {
     const initialRun = withExecutionContract(native([{ ...failure, failureKind }]), capabilities);
-    const agent: AgentAdapter = { id: 'any-engine', displayName: 'Test', capabilities, isAvailable: async () => true, run: vi.fn() };
+    const agent: AgentAdapter = { id: 'any-engine', displayName: 'Test', capabilities, isAvailable: async () => true, prepareRun: vi.fn() };
     const run = retryingRun({ agent, initialRun, options: { runId: 'r', prompt: 'task' }, exitGraceMs: 10, canRetry: () => true });
-    expect(await collect(run.events)).toEqual([{ ...failure, failureKind }]); expect(agent.run).not.toHaveBeenCalled();
+    expect(await collect(run.events)).toEqual([{ ...failure, failureKind }]); expect(agent.prepareRun).not.toHaveBeenCalled();
   });
 
   it.each(['unknown', 'pending'])('does not restart a failed turn when an input receipt is %s', async state => {
@@ -86,7 +87,7 @@ describe('agent execution contract', () => {
     const transport = native([failure]);
     transport.steer = state === 'unknown' ? async () => { throw new Error('lost receipt'); }
       : () => new Promise(r => { resolve = r; });
-    const agent: AgentAdapter = { id: 'any-engine', displayName: 'Test', isAvailable: async () => true, run: vi.fn() };
+    const agent: AgentAdapter = { id: 'any-engine', displayName: 'Test', isAvailable: async () => true, prepareRun: vi.fn() };
     const run = retryingRun({ agent, initialRun: withExecutionContract(transport, capabilities),
       options: { runId: 'r', prompt: 'task' }, exitGraceMs: 10, canRetry: () => true });
     const receipt = sendRunInput(run, { text: 'supplement', messageId: 'm' });
@@ -95,7 +96,7 @@ describe('agent execution contract', () => {
     expect((await iterator.next()).value).toMatchObject({ type: 'error' });
     if (state === 'pending') { resolve('accepted'); await receipt; }
     await iterator.return?.();
-    expect(agent.run).not.toHaveBeenCalled();
+    expect(agent.prepareRun).not.toHaveBeenCalled();
   });
 
   it('keeps capabilities and routes input to the resumed attempt while retaining its deadline', async () => {
@@ -103,7 +104,7 @@ describe('agent execution contract', () => {
     const first = native([{ type: 'system', threadId: 'thread' }, failure]);
     const second = native([{ type: 'final_text', content: 'answer' }, done]);
     const agent: AgentAdapter = { id: 'any-engine', displayName: 'Test', capabilities, isAvailable: async () => true,
-      run: vi.fn(() => withExecutionContract(second, capabilities)) };
+      prepareRun: vi.fn(async () => preparedRun({}, () => withExecutionContract(second, capabilities))) };
     const options = { runId: 'r', prompt: 'task', deadlineAt: Date.now() + 60_000 };
     const run = retryingRun({ agent, initialRun: withExecutionContract(first, capabilities), options, exitGraceMs: 10, canRetry: () => true });
     expect(await sendRunInput(run, { text: 'first', messageId: '1' })).toMatchObject({ status: 'accepted' });
@@ -115,7 +116,7 @@ describe('agent execution contract', () => {
     expect(run.capabilities).toEqual(capabilities);
     expect(await sendRunInput(run, { text: 'resumed', messageId: '3' })).toMatchObject({ status: 'accepted', scope: 'active-turn' });
     expect(first.steer).toHaveBeenCalledTimes(1); expect(second.steer).toHaveBeenCalledWith('resumed', '3');
-    expect(agent.run).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'thread', deadlineAt: options.deadlineAt, prompt: expect.stringContaining('中途补充') }));
+    expect(agent.prepareRun).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'thread', deadlineAt: options.deadlineAt, prompt: expect.stringContaining('中途补充') }));
     await iterator.return?.(); await run.stop();
   });
 });

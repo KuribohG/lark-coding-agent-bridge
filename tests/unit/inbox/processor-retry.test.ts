@@ -1,3 +1,4 @@
+import { preparedRun } from '../../../src/agent/prepared-run';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -84,7 +85,7 @@ it.each([1, 90])('keeps a run alive until its configured %s-minute deadline and 
     events: (async function* () { await gate; yield done; })(),
     stop: vi.fn(async () => { release(); }), waitForExit: vi.fn(async () => true) };
   const agent: AgentAdapter = { capabilities, id: 'test', displayName: 'test', isAvailable: async () => true,
-    run: vi.fn(() => { started(); return run; }) };
+    prepareRun: vi.fn(async () => preparedRun({}, () => { started(); return run; })) };
   const outcome = processInbox(job, agent, workspace, '', new AbortController().signal, config.analysisTimeoutMinutes * 60_000)
     .then(result => ({ result }), (error: unknown) => ({ error }));
   try {

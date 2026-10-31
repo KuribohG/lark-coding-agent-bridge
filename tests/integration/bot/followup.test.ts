@@ -1,3 +1,4 @@
+import { preparedRun } from '../../../src/agent/prepared-run';
 import type { CardActionEvent, NormalizedMessage } from '@larksuite/channel';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -45,7 +46,7 @@ describe.each(['codex', 'claude'] as const)('in-flight %s IM delivery', agentKin
     const h = await harness(agentKind);
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
-    const prepare = vi.spyOn(h.agent, 'prepareRun').mockImplementationOnce(() => gate);
+    const prepare = vi.spyOn(h.agent, 'prepareRun').mockImplementationOnce(async opts => { await gate; return preparedRun({}, () => h.agent.run(opts)); });
     try {
       await h.message('original task', { messageId: 'original' });
       await vi.waitFor(() => expect(prepare).toHaveBeenCalled(), { timeout: 2500 });
@@ -120,7 +121,7 @@ describe.each(['codex', 'claude'] as const)('in-flight %s IM delivery', agentKin
     const h = await harness(agentKind);
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
-    const prepare = vi.spyOn(h.agent, 'prepareRun').mockImplementation(() => gate);
+    const prepare = vi.spyOn(h.agent, 'prepareRun').mockImplementation(async opts => { await gate; return preparedRun({}, () => h.agent.run(opts)); });
     await h.message('original');
     await vi.waitFor(() => expect(prepare).toHaveBeenCalled(), { timeout: 2500 });
     await h.message('/stop'); release();
@@ -131,7 +132,7 @@ describe.each(['codex', 'claude'] as const)('in-flight %s IM delivery', agentKin
     const h = await harness(agentKind);
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
-    const prepare = vi.spyOn(h.agent, 'prepareRun').mockImplementation(() => gate);
+    const prepare = vi.spyOn(h.agent, 'prepareRun').mockImplementation(async opts => { await gate; return preparedRun({}, () => h.agent.run(opts)); });
     await h.message('original');
     await vi.waitFor(() => expect(prepare).toHaveBeenCalled(), { timeout: 2500 });
     await h.message('/new'); release();
@@ -191,7 +192,7 @@ class GateAgent implements AgentAdapter {
   readonly stops: string[] = [];
   private finishes: Array<() => void> = [];
   async isAvailable() { return true; }
-  async prepareRun(): Promise<void> {}
+  async prepareRun(opts: AgentRunOptions) { return preparedRun({}, () => this.run(opts)); }
   finish(index: number) { this.finishes[index]?.(); }
   run(opts: AgentRunOptions) {
     this.options.push(opts);

@@ -18,6 +18,7 @@ async function harness(mode = 'normal', transport?: 'app-server', failure?: { me
   const binary = join(dir, 'codex');
   const record = join(dir, 'requests.jsonl');
   await writeFile(binary, `#!/usr/bin/env node
+if (process.argv.includes('--version')) { process.stdout.write('codex 1.2.3\\n'); process.exit(0); }
 const fs = require('node:fs');
 const rl = require('node:readline').createInterface({input:process.stdin});
 const mode = ${JSON.stringify(mode)};
@@ -102,7 +103,7 @@ async function collect(events: AsyncIterable<AgentEvent>) { const all: AgentEven
 describe('Codex native in-flight input', () => {
   it.each(['provider-mismatch', 'provider-missing'])('preserves legacy history on %s and continues the request', async mode => {
     const h = await harness(mode);
-    const run = h.adapter.run({ runId: 'migration', cwd: h.dir, prompt: 'continue', threadId: 'old-thread' });
+    const run = (await h.adapter.prepareRun({ runId: 'migration', cwd: h.dir, prompt: 'continue', threadId: 'old-thread' })).start();
     const events: AgentEvent[] = [];
     const output = (async () => { for await (const event of run.events) events.push(event); })();
     await vi.waitFor(() => expect(events.some(event => event.type === 'tool_use')).toBe(true));
@@ -120,7 +121,7 @@ describe('Codex native in-flight input', () => {
 
   it('delivers native async questions once and keeps working until an answer is steered', async () => {
     const h = await harness('questions');
-    const run = h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' });
+    const run = (await h.adapter.prepareRun({ runId: 'r', cwd: h.dir, prompt: 'task' })).start();
     const events: AgentEvent[] = [];
     const output = (async () => { for await (const event of run.events) events.push(event); })();
     await vi.waitFor(() => expect(events.some(e => e.type === 'tool_use')).toBe(true));
@@ -138,7 +139,7 @@ describe('Codex native in-flight input', () => {
   it.each([undefined, 'app-server'] as const)('appends to the same turn with transport=%s without stopping, restarting, or starting a second turn', async transport => {
     const h = await harness('normal', transport);
     const preview = vi.fn();
-    const run = h.adapter.run({ runId: 'r', cwd: h.dir, onMessageDelta: preview, prompt: 'original task', sandbox: 'read-only', reasoningEffort: 'high' });
+    const run = (await h.adapter.prepareRun({ runId: 'r', cwd: h.dir, onMessageDelta: preview, prompt: 'original task', sandbox: 'read-only', reasoningEffort: 'high' })).start();
     const output = collect(run.events);
     expect(run.capabilities).toEqual({ finalAnswer: 'separate-event', input: 'active-turn' });
     expect(h.adapter.capabilities).toEqual(run.capabilities);
@@ -164,7 +165,7 @@ describe('Codex native in-flight input', () => {
       systemPrompt: identity => `trusted instructions for ${identity?.openId ?? 'unknown'}`,
     });
     adapter.setBotIdentity({ openId: 'ou_bot' });
-    const run = adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' });
+    const run = (await adapter.prepareRun({ runId: 'r', cwd: h.dir, prompt: 'task' })).start();
     const output = collect(run.events);
     await run.steer!('finish', 'finish-message');
     await output;
@@ -192,7 +193,7 @@ describe('Codex native in-flight input', () => {
   ] as const)('classifies Codex failure %s with %j as %s', async (message, codexErrorInfo, failureKind) => {
     const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
     const h = await harness('failure', undefined, { message, codexErrorInfo });
-    const events = await collect(h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' }).events);
+    const events = await collect((await h.adapter.prepareRun({ runId: 'r', cwd: h.dir, prompt: 'task' })).start().events);
     expect(events).toContainEqual(expect.objectContaining({
       type: 'error',
       failureKind,
@@ -206,7 +207,7 @@ describe('Codex native in-flight input', () => {
     const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
     const info = vi.spyOn(log, 'info').mockImplementation(() => {});
     const h = await harness('protocol-notifications');
-    const events = await collect(h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' }).events);
+    const events = await collect((await h.adapter.prepareRun({ runId: 'r', cwd: h.dir, prompt: 'task' })).start().events);
 
     expect(events).toContainEqual({
       type: 'status',
@@ -242,7 +243,7 @@ describe('Codex native in-flight input', () => {
   });
   it('reports context compaction and model context occupancy', async () => {
     const h = await harness('compact');
-    const run = h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' });
+    const run = (await h.adapter.prepareRun({ runId: 'r', cwd: h.dir, prompt: 'task' })).start();
     const events = await collect(run.events);
     expect(events).toContainEqual({
       type: 'status',
@@ -260,7 +261,7 @@ describe('Codex native in-flight input', () => {
   });
   it.each([false, true])('preserves resume/fork routing (fork=%s)', async forkSession => {
     const h = await harness();
-    const run = h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'continue', threadId: 'old-thread', forkSession, images: ['/private/image.png'] });
+    const run = (await h.adapter.prepareRun({ runId: 'r', cwd: h.dir, prompt: 'continue', threadId: 'old-thread', forkSession, images: ['/private/image.png'] })).start();
     const output = collect(run.events);
     await run.steer!('more', 'm'); await output; await run.waitForExit(1000);
     const requests = await h.requests();
@@ -269,7 +270,7 @@ describe('Codex native in-flight input', () => {
   });
   it('interrupts through the protocol and finishes the existing process', async () => {
     const h = await harness('keep-running');
-    const run = h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' });
+    const run = (await h.adapter.prepareRun({ runId: 'r', cwd: h.dir, prompt: 'task' })).start();
     const output = collect(run.events);
     await run.steer!('supplement', 'm');
     await run.stop();
@@ -279,21 +280,21 @@ describe('Codex native in-flight input', () => {
   });
   it('only allows a new-turn fallback after explicit inactive rejection', async () => {
     const h = await harness('inactive');
-    const run = h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' });
+    const run = (await h.adapter.prepareRun({ runId: 'r', cwd: h.dir, prompt: 'task' })).start();
     const output = collect(run.events);
     expect(await run.sendInput!({ text: 'late', messageId: 'm' })).toEqual({ status: 'inactive', messageId: 'm' });
     await run.stop(); await output;
   });
   it('treats structured activeTurnNotSteerable rejection as inactive', async () => {
     const h = await harness('not-steerable');
-    const run = h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' });
+    const run = (await h.adapter.prepareRun({ runId: 'r', cwd: h.dir, prompt: 'task' })).start();
     const output = collect(run.events);
     expect(await run.sendInput!({ text: 'late', messageId: 'm' })).toEqual({ status: 'inactive', messageId: 'm' });
     await run.stop(); await output;
   });
   it.each(['reject', 'disconnect'])('does not retry delivery on %s', async mode => {
     const h = await harness(mode);
-    const run = h.adapter.run({ runId: 'r', cwd: h.dir, prompt: 'task' });
+    const run = (await h.adapter.prepareRun({ runId: 'r', cwd: h.dir, prompt: 'task' })).start();
     const output = collect(run.events);
     expect(await run.sendInput!({ text: 'more', messageId: 'm' })).toMatchObject({ status: 'unknown', messageId: 'm' });
     await run.stop(); await output;

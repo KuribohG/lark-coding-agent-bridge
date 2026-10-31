@@ -1,10 +1,12 @@
+import { trackRunSession } from './session-progress';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { sendRunInput } from '../agent/execution';
 import type { AgentAdapter, AgentInput, AgentInputReceipt } from '../agent/types';
-import { ActiveRuns } from './active-runs';
+import { ActiveRuns, stopRun } from './active-runs';
+import { RunStopped } from './errors';
 import { ProcessPool } from './process-pool';
-import { recordRunSessionEvent, startRunFlow } from './run-flow';
+import { startRunFlow } from './run-flow';
 import type { AgentKind, RunProfileConfig } from '../config/profile-schema';
 import type { AgentAttachment } from '../policy/run-policy';
 import { RunExecutor } from './run-executor';
@@ -116,7 +118,7 @@ export class ConversationRuntime {
     const scopeId = await this.authorizedScope(input);
     if (typeof input.prompt !== 'string' || !input.prompt.trim()) throw new Error('prompt is required');
     const controller = new AbortController();
-    const abort = () => controller.abort();
+    const abort = () => controller.abort(input.signal?.reason);
     input.signal?.addEventListener('abort', abort, { once: true });
     if (input.signal?.aborted) abort();
     this.pending.add(controller);
@@ -137,12 +139,16 @@ export class ConversationRuntime {
         workspaces: this.workspaces, executor: this.executor, now: Date.now(),
       });
       if (!flow.ok) { dispose(); return flow; }
-      const done = presentRunOutput(flow.execution, output, {
+      const sessionDone = trackRunSession({ scopeId, sessions: this.sessions, sessionCatalog: this.catalog,
+        capability, policy: flow.policy, execution: flow.execution, activeRuns: this.active, resumeFrom: flow.resumeFrom,
+        source: { kind: 'message', summary: input.prompt.slice(0, 180) } });
+      const rendered = presentRunOutput(flow.execution, output, {
         idleTimeoutMs: config.preferences.runIdleTimeoutMinutes
           ? config.preferences.runIdleTimeoutMinutes * 60_000 : undefined,
         filterForPrefs: state => state,
-        recordSession: event => recordRunSessionEvent({ scopeId, sessions: this.sessions,
-          sessionCatalog: this.catalog, capability, policy: flow.policy, event }),
+      });
+      const done = Promise.allSettled([rendered, sessionDone]).then(results => {
+        for (const result of results) if (result.status === 'rejected') throw result.reason;
       }).finally(dispose);
       this.outputs.add(done);
       // Keep rejection observable on `done`, while close() tracks all active outputs.
@@ -155,8 +161,7 @@ export class ConversationRuntime {
     const scope = await this.authorizedScope(identity);
     const handle = this.active.get(scope);
     if (!handle || handle.run.runId !== runId) return false;
-    handle.interrupted = true;
-    await handle.run.stop();
+    await stopRun(handle, 'cancelled');
     return true;
   }
 
@@ -200,8 +205,8 @@ export class ConversationRuntime {
 
   async close(): Promise<void> {
     this.closed = true;
-    for (const controller of this.pending) controller.abort();
-    await Promise.allSettled(this.active.snapshot().map(handle => handle.run.stop()));
+    for (const controller of this.pending) controller.abort(new RunStopped('shutdown'));
+    await this.active.stopAll('shutdown');
     await Promise.allSettled(this.starts);
     await Promise.allSettled(this.outputs);
     await Promise.all([this.sessions.flush(), this.catalog.flush(), this.workspaces.flush()]);

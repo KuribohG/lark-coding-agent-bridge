@@ -1,3 +1,4 @@
+import { preparedRun } from '../../src/agent/prepared-run';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -73,34 +74,37 @@ async function currentProfile() {
 }
 
 function wrap(adapter: AgentAdapter, kind: Backend, phase: string, test: Case, observations: Observation[], runs: AgentRunOptions[]): AgentAdapter {
-  const runNative = adapter.run.bind(adapter);
-  adapter.run = (opts: AgentRunOptions): AgentRun => {
-    runs.push(opts);
-    const observation: Observation = { backend: kind, phase, resumed: opts.threadId ?? opts.sessionId,
-      markerInPrompt: opts.prompt.includes(test.marker), tools: [], sleep: false };
-    observations.push(observation);
-    if (test.scenario === 'memory' && phase === 'recover') {
-      assert.equal(observation.markerInPrompt, false, 'Recall prompt leaked the hidden marker');
-    }
-    const native = runNative(opts);
-    const events = (async function* () {
-      for await (const event of native.events) {
-        if (event.type === 'system') {
-          observation.native = event.threadId ?? event.sessionId ?? observation.native;
-          observation.model = event.model ?? observation.model;
-        }
-        if (event.type === 'tool_use') {
-          observation.tools.push(event.name);
-          observation.sleep ||= JSON.stringify(event.input).includes('sleep 90');
-        }
-        if (event.type === 'final_text') observation.final = event.content;
-        yield event;
+  const prepareNative = adapter.prepareRun.bind(adapter);
+  adapter.prepareRun = async (opts: AgentRunOptions) => {
+    const prepared = await prepareNative(opts);
+    return preparedRun(prepared.modelSettings, (): AgentRun => {
+      runs.push(opts);
+      const observation: Observation = { backend: kind, phase, resumed: opts.threadId ?? opts.sessionId,
+        markerInPrompt: opts.prompt.includes(test.marker), tools: [], sleep: false };
+      observations.push(observation);
+      if (test.scenario === 'memory' && phase === 'recover') {
+        assert.equal(observation.markerInPrompt, false, 'Recall prompt leaked the hidden marker');
       }
-    })();
-    return { runId: native.runId, events, capabilities: native.capabilities,
-      stop: () => native.stop(), waitForExit: timeout => native.waitForExit(timeout),
-      ...(native.sendInput ? { sendInput: native.sendInput.bind(native) } : {}),
-      ...(native.steer ? { steer: native.steer.bind(native) } : {}) };
+      const native = prepared.start();
+      const events = (async function* () {
+        for await (const event of native.events) {
+          if (event.type === 'system') {
+            observation.native = event.threadId ?? event.sessionId ?? observation.native;
+            observation.model = event.model ?? observation.model;
+          }
+          if (event.type === 'tool_use') {
+            observation.tools.push(event.name);
+            observation.sleep ||= JSON.stringify(event.input).includes('sleep 90');
+          }
+          if (event.type === 'final_text') observation.final = event.content;
+          yield event;
+        }
+      })();
+      return { runId: native.runId, events, capabilities: native.capabilities,
+        stop: reason => native.stop(reason), waitForExit: timeout => native.waitForExit(timeout),
+        ...(native.sendInput ? { sendInput: native.sendInput.bind(native) } : {}),
+        ...(native.steer ? { steer: native.steer.bind(native) } : {}) };
+    }, prepared.provider);
   };
   return adapter;
 }

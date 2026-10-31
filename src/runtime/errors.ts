@@ -1,4 +1,5 @@
 import type { AgentPreflightDiagnostic, AgentPreflightErrorCode } from '../agent/preflight';
+import type { RunStopReason } from '../agent/types';
 
 export type RunRejectedCode =
   | 'deadline-expired'
@@ -20,6 +21,18 @@ export class RunRejected extends Error {
     this.name = 'RunRejected';
     this.code = code;
   }
+}
+
+/** Also a RunRejected so pre-spawn cancellation retains the admission error contract. */
+export class RunStopped extends RunRejected {
+  constructor(readonly reason: RunStopReason) {
+    super(reason === 'deadline' ? 'deadline-expired' : 'run-cancelled', `Run stopped: ${reason}`);
+    this.name = 'RunStopped';
+  }
+}
+
+export function abortStopReason(signal: AbortSignal): RunStopReason {
+  return signal.reason instanceof RunStopped ? signal.reason.reason : 'cancelled';
 }
 
 export class SpawnFailed extends Error {

@@ -1,3 +1,4 @@
+import type { RunStopReason } from '../agent/types';
 import type { AgentKind } from '../config/profile-schema';
 import type { ModelSettings } from '../agent/model-settings';
 
@@ -66,6 +67,7 @@ export interface AgentCheckpoint {
 }
 
 export interface TurnAttempt {
+  stopReason?: RunStopReason;
   attemptId: string;
   runId?: string;
   startedAt: number;
@@ -298,6 +300,7 @@ export interface WorkflowWorkerRequest {
 }
 
 export interface WorkflowWorkerResult {
+  stopReason?: RunStopReason;
   status: 'completed' | 'failed' | 'stopped';
   text?: string;
   question?: string;

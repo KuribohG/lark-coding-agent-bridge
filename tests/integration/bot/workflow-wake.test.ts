@@ -19,8 +19,8 @@ import { createTmpProfile } from '../../helpers/tmp-profile';
 vi.mock('../../../src/runtime/model-settings', () => ({ resolveRunModelSettings: vi.fn(async () => ({})) }));
 vi.mock('../../../src/bot/quote', () => ({ fetchQuotedContext: vi.fn(), fetchTopicContext: vi.fn(), LARK_CONTEXT_MAX_CHARS: 10000 }));
 vi.mock('../../../src/channels/lark/run-output', () => ({ createLarkRunOutput: vi.fn(() => ({ id: 'test', render: async () => {} })) }));
-vi.mock('../../../src/runtime/run-output', () => ({ presentRunOutput: vi.fn(async (execution, _output, options) => {
-  for await (const event of execution.subscribe()) options.recordSession(event);
+vi.mock('../../../src/runtime/run-output', () => ({ presentRunOutput: vi.fn(async (execution) => {
+  for await (const _event of execution.subscribe()) { /* Drain output independently from session tracking. */ }
   await execution.result;
 }) }));
 
@@ -60,9 +60,9 @@ describe('workflow main-session wake', () => {
       workflows: { bindMain, kernel: { markNotified } },
       activePolicyFingerprints: new Map(), lastRunModelByScope: new Map(), userQuestions: { publish: vi.fn() }, cotClient: {},
     } as unknown as Parameters<typeof runAgentBatch>[0];
-    if (realFollowup) vi.mocked(presentRunOutput).mockImplementationOnce(async (execution, _output, options) => {
+    if (realFollowup) vi.mocked(presentRunOutput).mockImplementationOnce(async (execution) => {
       execution.handle.inputMessageIds.add('om_real_followup');
-      for await (const event of execution.subscribe()) options?.recordSession?.(event);
+      for await (const _event of execution.subscribe()) { /* Drain output independently from session tracking. */ }
       await execution.result;
     });
     await runAgentBatch(deps);

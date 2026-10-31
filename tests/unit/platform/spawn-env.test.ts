@@ -23,10 +23,10 @@ describe('platform spawn env', () => {
     ]);
   });
 
-  it('adapters use cross-spawn without shell invocation', async () => {
+  it('profile environment assembly uses the platform merge helper without shell invocation', async () => {
     const [claudeSource, codexSource] = await Promise.all([
       readFile(new URL('../../../src/agent/claude/adapter.ts', import.meta.url), 'utf8'),
-      readFile(new URL('../../../src/agent/codex/adapter.ts', import.meta.url), 'utf8'),
+      readFile(new URL('../../../src/agent/codex/environment.ts', import.meta.url), 'utf8'),
     ]);
 
     expect(claudeSource).toContain("from '../../platform/spawn'");

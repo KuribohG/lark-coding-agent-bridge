@@ -42,8 +42,7 @@ describe('Antigravity process contract', () => {
     const adapter = new AgyAdapter({ binary: h.binary, systemPrompt: identity => 'Host identity: ' + identity?.openId,
       env: { LARK_CHANNEL_PROFILE: 'isolated-profile' } });
     adapter.setBotIdentity({ openId: 'bot-id' });
-    await adapter.prepareRun(h.options);
-    const run = adapter.run({ ...h.options, sessionId: 'parent-id', model: 'gemini-future-high', reasoningEffort: 'high', images: ['/private/image.png'] });
+    const run = (await adapter.prepareRun({ ...h.options, sessionId: 'parent-id', model: 'gemini-future-high', reasoningEffort: 'high', images: ['/private/image.png'] })).start();
     expect(run.capabilities).toEqual({ input: 'unsupported', finalAnswer: 'separate-event' });
     expect(await collect(run.events)).toContainEqual({ type: 'final_text', content: 'answer' });
     expect(await run.waitForExit(1000)).toBe(true);
@@ -60,7 +59,7 @@ describe('Antigravity process contract', () => {
 
   it('stops an active native turn and reports interruption', async () => {
     const h = await fixture(`emit(${JSON.stringify(initial)}); process.on('SIGINT', () => process.exit(0)); setInterval(() => {}, 1000);`);
-    const run = new AgyAdapter({ binary: h.binary }).run(h.options);
+    const run = (await new AgyAdapter({ binary: h.binary }).prepareRun(h.options)).start();
     const events = run.events[Symbol.asyncIterator]();
     expect((await events.next()).value).toMatchObject({ type: 'system' });
     await run.stop();
@@ -72,14 +71,14 @@ describe('Antigravity process contract', () => {
 
   it('enforces the independent deadline on a silent process', async () => {
     const h = await fixture('setInterval(() => {}, 1000);');
-    const run = new AgyAdapter({ binary: h.binary }).run({ ...h.options, deadlineAt: Date.now() + 200 });
+    const run = (await new AgyAdapter({ binary: h.binary }).prepareRun({ ...h.options, deadlineAt: Date.now() + 200 })).start();
     expect(await collect(run.events)).toEqual([{ type: 'done', sessionId: undefined, terminationReason: 'timeout' }]);
     expect(await run.waitForExit(1000)).toBe(true);
   });
 
   it.each([['process.stdout.write("bad-json\\n");', 'invalid JSON'], ['', 'without a result']])('fails closed for broken native output', async (body, message) => {
     const h = await fixture(body);
-    const run = new AgyAdapter({ binary: h.binary }).run(h.options);
+    const run = (await new AgyAdapter({ binary: h.binary }).prepareRun(h.options)).start();
     expect(await collect(run.events)).toEqual([expect.objectContaining({ type: 'error', message: expect.stringContaining(message) })]);
     expect(await run.waitForExit(1000)).toBe(true);
   });
@@ -89,12 +88,12 @@ describe('Antigravity process contract', () => {
     await expect(new AgyAdapter({ binary: h.binary }).prepareRun(h.options)).rejects.toMatchObject({ code: 'agent-version-unsupported' });
   });
 
-  it('rejects unsupported security modes, forks and invalid stored conversation identifiers', () => {
+  it('rejects unsupported security modes, forks and invalid stored conversation identifiers', async () => {
     const adapter = new AgyAdapter();
     const options = { runId: 'run', prompt: 'hello', cwd: '/repo' };
-    expect(() => adapter.run({ ...options, sandbox: 'read-only' })).toThrow('cannot guarantee');
-    expect(() => adapter.run({ ...options, sandbox: 'workspace-write' })).toThrow('cannot guarantee');
-    expect(() => adapter.run({ ...options, forkSession: true })).toThrow('forks');
-    expect(() => adapter.run({ ...options, sessionId: '--invalid' })).toThrow('conversation ID');
+    await expect(async () => (await adapter.prepareRun({ ...options, sandbox: 'read-only' })).start()).rejects.toThrow('cannot guarantee');
+    await expect(async () => (await adapter.prepareRun({ ...options, sandbox: 'workspace-write' })).start()).rejects.toThrow('cannot guarantee');
+    await expect(async () => (await adapter.prepareRun({ ...options, forkSession: true })).start()).rejects.toThrow('forks');
+    await expect(async () => (await adapter.prepareRun({ ...options, sessionId: '--invalid' })).start()).rejects.toThrow('conversation ID');
   });
 });

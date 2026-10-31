@@ -66,7 +66,7 @@ class ProgressOutput {
 
   start(): Promise<RunState> {
     const i = this.input;
-    return this.renderDone = processAgentStream(i.handle, i.events, i.scope, i.idleTimeoutMs, i.recordSession,
+    return this.renderDone = processAgentStream(i.handle, i.events, i.scope, i.idleTimeoutMs, () => {},
       async state => {
         this.state = state;
         if (this.options.openOnContent && shouldOpenProgressStream(i.filterForPrefs(state))) this.progress.ensureOpen();
@@ -101,7 +101,7 @@ async function renderRunOutput(input: RunOutputInput): Promise<void> {
     }
     if (input.replyMode === 'text') {
       const state = await processAgentStream(input.handle, input.events, input.scope, input.idleTimeoutMs,
-        input.recordSession, async () => {});
+        () => {}, async () => {});
       await sendFinalReply({ ...input, state: input.separateFinalAnswer
         ? finalAnswerOnlyState(input.filterForPrefs(state)) : input.filterForPrefs(state) });
       return;

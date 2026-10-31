@@ -1,3 +1,5 @@
+import { RunStopped } from '../../runtime/errors';
+import { trackRunSession } from '../../runtime/session-progress';
 import { handleWorkflowCommand } from '../../workflows/commands';
 import type { PendingMessage } from '../../bot/pending-queue';
 import type { AgentEntry } from '../../runtime/agent-entry';
@@ -23,7 +25,7 @@ import { createLarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
 import { capabilityForProfile } from '../../agent/backends';
 import { profileForAgentKind } from '../../runtime/execution-controller';
-import { modelLabel, normalizeModelSelection, resolveModelArg } from '../../agent/models';
+import { modelLabel, normalizeModelSelection } from '../../agent/models';
 import {
   buildAgentPrompt,
   type BridgePromptInteractiveCard,
@@ -31,7 +33,7 @@ import {
   type BridgePromptQuotedMessage,
   type BridgePromptTopicMessage,
 } from '../../agent/prompt';
-import type { AgentAdapter, AgentEvent } from '../../agent/types';
+import type { AgentAdapter } from '../../agent/types';
 import type { ExecutionController } from '../../runtime/execution-controller';
 import { handleCardAction } from '../../card/dispatcher';
 import { CallbackAuth } from '../../card/callback-auth';
@@ -60,14 +62,13 @@ import { attachMeetingAgent, summarizeEndedMeeting } from '../../meeting/orchest
 import type { ScopeContext } from '../../policy/run-policy';
 import { createOwnerRefreshController } from '../../policy/owner';
 import { RunExecutor } from '../../runtime/run-executor';
-import type { SessionCatalog, SessionContextUsage } from '../../session/catalog';
+import type { SessionCatalog } from '../../session/catalog';
 import type { SessionStore } from '../../session/store';
 import type { WorkspaceStore } from '../../workspace/store';
 import { ActiveRuns } from '../../runtime/active-runs';
 import { ChatModeCache, type ChatMode } from '../../bot/chat-mode-cache';
 import { handleCommentMention } from '../../bot/comments';
 import {
-  recordRunSessionEvent,
   resolveRunFlowContext,
   startRunFlow,
 } from '../../runtime/run-flow';
@@ -732,12 +733,12 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       activeRuns.pauseNewRuns('bridge-disconnect');
       controls.workflow = undefined;
       const workflowsClosed = workflows?.close();
-      for (const controller of batchControllers.values()) controller.abort();
+      for (const controller of batchControllers.values()) controller.abort(new RunStopped('shutdown'));
       batchControllers.clear();
       controls.btw = undefined;
       const btwClosed = btw.close();
       controls.launchTimedRun = undefined;
-      for (const { controller } of timedControllers.values()) controller.abort();
+      for (const { controller } of timedControllers.values()) controller.abort(new RunStopped('shutdown'));
       ownerRefresh.stop();
       knownChatsRefresh.stop();
       keepalive.stop();
@@ -754,7 +755,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       userQuestions.close();
       const [disconnectResult, stopAllResult, ...flushResults] = await Promise.allSettled([
         channel.disconnect(),
-        activeRuns.stopAll(),
+        activeRuns.stopAll('shutdown'),
         pending.flushPersistence(),
         sessions.flush(),
         sessionCatalog?.flush(),
@@ -1348,13 +1349,11 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   // the (now-switched) agent its model changed — otherwise it keeps echoing
   // the previously-announced model. Only fires when a prior model was seen
   // for this scope (never on the first run) and the selection actually
-  // changed. `requestedModel` (the `--model` value, or undefined for default)
-  // is reused below to log requested-vs-actual against the init event.
+  // changed. Observed native models are recorded by session-progress.
   const runModelSettings = await resolveRunModelSettings(controls, scope, undefined, agentKind);
   const runArguments = deps.timedJob?.modelSettings ?? modelRunArguments(runModelSettings);
   const modelPref = runArguments.model;
   const modelSelection = normalizeModelSelection(agentKind, modelPref);
-  const requestedModel = resolveModelArg(agentKind, modelPref);
   const modelStateKey = `${agentKind}\x1f${scope}`;
   const prevModel = lastRunModelByScope.get(modelStateKey);
   const modelSwitched = prevModel !== undefined && prevModel !== modelSelection;
@@ -1465,7 +1464,7 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     try {
       await store.transition(job.id, ['queued'], 'running');
     } catch {
-      await execution.stop();
+      await execution.stop('cleanup');
       await timedResult;
       return;
     }
@@ -1478,61 +1477,19 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   } else {
     log.info('session', 'fresh', { cwd });
   }
-  let sessionCwd = cwd;
-  let contextUsage: SessionContextUsage | undefined;
-  const recordSession = (evt: AgentEvent): void => {
-    if (evt.type === 'system' && evt.cwd) sessionCwd = evt.cwd;
-    recordRunSessionEvent({
-      scopeId: scope,
-      sessions,
-      sessionCatalog,
-      capability,
-      policy: flow.policy,
-      event: evt,
-    });
-    if (evt.type === 'system') {
-      if (capability.sessionIdField === 'sessionId' && evt.sessionId) {
-        activeRuns.identifySession(scope, handle.run, {
-          agentId: capability.agentId,
-          sessionId: evt.sessionId,
-        });
-      } else if (capability.sessionIdField === 'threadId' && evt.threadId) {
-        activeRuns.identifySession(scope, handle.run, {
-          agentId: capability.agentId,
-          threadId: evt.threadId,
-        });
-      }
-    }
-    if (evt.type === 'system' && evt.sessionId) {
-      log.info('session', 'set', { sessionId: evt.sessionId });
-    }
-    // Ground truth for "which model is actually running": claude reports the
-    // model it loaded in its init event. Logging requested-vs-actual reveals
-    // whether the --model pin took effect or claude silently fell back (e.g.
-    // an id this claude build/account doesn't recognize).
-    if (evt.type === 'system' && evt.model) {
-      log.info('session', 'model', {
-        requested: requestedModel ?? 'default',
-        actual: evt.model,
-      });
-    }
-    if (evt.type === 'system' && evt.threadId) {
-      log.info('session', 'set-thread', { threadId: evt.threadId });
-    }
-    if (
-      evt.type === 'usage' &&
-      evt.inputTokens !== undefined &&
-      evt.contextWindowTokens !== undefined &&
-      evt.inputTokens > 0 &&
-      evt.contextWindowTokens > 0
-    ) {
-      contextUsage = {
-        inputTokens: evt.inputTokens,
-        contextWindowTokens: evt.contextWindowTokens,
-        updatedAt: Date.now(),
-      };
-    }
-  };
+  const sessionDone = trackRunSession({
+    scopeId: scope, sessions, sessionCatalog, capability, policy: flow.policy,
+    execution, activeRuns, resumeFrom: flow.resumeFrom,
+    source: workflowWake ? { kind: 'internal' } : {
+      kind: 'message', messageId: firstMsg.messageId, summary: summarizeRunInput(batch),
+      ...(mode === 'topic' ? { history: {
+        completeThrough: topicContextThrough,
+        seenMessageIds: [...topicContextSeenMessageIds, ...topicContext.map(message => message.messageId), ...batchIds, ...fetchedQuoteIds],
+      } } : {}),
+    },
+  });
+  // The observer starts with execution, even if rendering cannot start.
+  void sessionDone.catch(err => log.warn('session', 'tracking-failed', { scope, err: String(err) }));
 
   // Resolve idle-timeout for this run: scope override (on SessionEntry) wins
   // over global default (preferences). 0 / undefined = no watchdog.
@@ -1594,52 +1551,19 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       await presentRunOutput(execution, createLarkRunOutput({
         channel, chatId, replyMode, sendOpts, cardRenderOptions,
         cotMessages, cotClient, preparedCot, originMessageId: lastMsg.messageId, inputPreview: lastMsg.content,
-      }), { idleTimeoutMs, recordSession, filterForPrefs });
+      }), { idleTimeoutMs, filterForPrefs });
     } catch (err) {
       // Rendering is not part of the model transaction. A failed Feishu write
       // must not make the next turn forget that this run actually completed.
       log.fail('stream', err);
     }
-    if (await execution.result === 'completed' && sessionCatalog && !workflowWake) {
-      const sourceMessageId = firstMsg.messageId;
-      sessionCatalog.markCompleted({
-        scopeId: scope,
-        agentId: capability.agentId,
-        cwdRealpath: sessionCwd,
-        policyFingerprint: flow.policy.policyFingerprint,
-        sourceMessageId,
-        ...(mode === 'topic' && topicContextThrough !== undefined
-          ? { topicContextThrough }
-          : {}),
-        ...(mode === 'topic'
-          ? {
-              topicContextSeenMessageIds: [
-                ...topicContextSeenMessageIds,
-                ...topicContext.map((message) => message.messageId),
-                ...batchIds,
-                ...fetchedQuoteIds,
-                ...handle.inputMessageIds,
-              ],
-            }
-          : {}),
-        ...(contextUsage ? { contextUsage } : {}),
-        lastSummary: summarizeRunInput(batch),
-      });
-    }
-    if (workflowWake && sessionCatalog && handle.inputMessageIds.size > 0 && await execution.result === 'completed') {
-      // Real follow-ups received during an internal wake still belong to IM history.
-      // The internal event and its original delivery anchor never enter this set.
-      sessionCatalog.markCompleted({ scopeId: scope, agentId: capability.agentId, cwdRealpath: sessionCwd,
-        policyFingerprint: flow.policy.policyFingerprint,
-        sourceMessageId: [...handle.inputMessageIds].at(-1),
-        topicContextSeenMessageIds: [...handle.inputMessageIds], ...(contextUsage ? { contextUsage } : {}) });
-    }
+    await sessionDone;
   } finally {
     activePolicyFingerprints.delete(scope);
     if (deps.timedJob) {
       // End the supervised process even when card delivery failed before the
       // renderer drained the stream. Never let a rendering error detach work.
-      await execution.stop();
+      await execution.stop('cleanup');
       await timedResult;
     }
     await questionsDone;

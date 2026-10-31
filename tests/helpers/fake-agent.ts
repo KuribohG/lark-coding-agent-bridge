@@ -1,3 +1,4 @@
+import { preparedRun } from '../../src/agent/prepared-run';
 import type {
   AgentAdapter,
   AgentBotIdentity,
@@ -95,6 +96,10 @@ export class FakeAgentAdapter implements AgentAdapter {
 
   setBotIdentity(identity: AgentBotIdentity): void {
     this.botIdentity = identity;
+  }
+
+  async prepareRun(opts: AgentRunOptions) {
+    return preparedRun({ model: opts.model, reasoningEffort: opts.reasoningEffort }, () => this.run(opts));
   }
 
   run(opts: AgentRunOptions): AgentRun {

@@ -1,3 +1,5 @@
+import { preparedRun, snapshotRunOptions } from '../prepared-run';
+import type { PreparedAgentRun } from '../types';
 import { terminateChild } from '../../platform/terminate';
 import { ULTRA_EFFORT, parseEffort } from '../model-settings';
 import { validateModelId } from '../models';
@@ -69,8 +71,14 @@ export class ClaudeAdapter implements AgentAdapter {
     });
   }
 
-  run(opts: AgentRunOptions): AgentRun {
-    return withExecutionContract(this.runNative(opts), this.capabilities);
+  async prepareRun(input: AgentRunOptions): Promise<PreparedAgentRun> {
+    const opts = snapshotRunOptions({ ...input, systemPrompt: input.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity) });
+    if (!opts.cwd) throw new Error('cwd is required for claude preparation');
+    if (opts.forkSession && !opts.sessionId) throw new Error('fork requires a parent session');
+    if (opts.model) validateModelId(opts.model);
+    if (opts.reasoningEffort && opts.reasoningEffort !== ULTRA_EFFORT) parseEffort(opts.reasoningEffort, 'claude');
+    return preparedRun({ model: opts.model, reasoningEffort: opts.reasoningEffort },
+      () => withExecutionContract(this.runNative(opts), this.capabilities));
   }
 
   private runNative(opts: AgentRunOptions): AgentRun {
