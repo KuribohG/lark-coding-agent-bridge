@@ -218,11 +218,14 @@ export class WorkflowKernel {
       if (state || this.state(scope)) throw new Error('Root already has a workflow; cancel or complete it first');
       const definition = structuredClone(SCRIPT_DEFINITION);
       definition.maxConcurrentWorkers = boundedInteger(args.maxConcurrent, 4, 1, 16);
+      definition.maxWallTimeMinutes = this.host.getTimeoutMinutes?.(root) ?? definition.maxWallTimeMinutes;
+      definition.defaultWallTimeMinutes = definition.maxWallTimeMinutes;
+      const timeoutMs = definition.maxWallTimeMinutes * 60_000;
       const goal = requiredText(args.goal);
       state = {
         workflowId: randomUUID(), root, definition, definitionDigest: workflowDigest(definition), goal,
         stateVersion: 0, status: 'active', createdAt: this.now(),
-        deadlineAt: this.now() + boundedInteger(args.timeoutMs, 30 * 60_000, 1000, 120 * 60_000),
+        deadlineAt: this.now() + boundedInteger(args.timeoutMs, timeoutMs, 1000, timeoutMs),
         sessions: [], tasks: [], artifacts: [], events: [],
       };
       this.addArtifact(state, 'requirements', goal);
@@ -325,7 +328,7 @@ export class WorkflowKernel {
     if (state.status !== 'active' || state.script?.status !== 'running' || this.now() >= state.deadlineAt) throw new Error('Workflow is inactive');
     const session = state.sessions.find(session=>session.sessionRef===task.sessionRef)!;
     if (!session.nativeSessionId) throw new Error('Nested workflow requires a resumable native session');
-    const input = nestedInput(args);
+    const input = nestedInput(args, state.definition);
     const { operationId, ...identity } = input;
     const digest = workflowDigest(identity);
     const calls = this.descendants(state,task.taskId).filter(child=>child.parent!.workflowId===state.workflowId);
@@ -341,7 +344,7 @@ export class WorkflowKernel {
     if (depth>MAX_WORKFLOW_DEPTH) throw new Error('Nested workflow depth limit reached');
     if (this.tree(state).filter(child=>child.parent).length>=MAX_CHILD_WORKFLOWS) throw new Error('Child workflow count limit reached');
     const execution = session.execution ?? inheritedWorkerExecution(state.root,{agentKind:state.root.agentKind});
-    const definition = structuredClone(SCRIPT_DEFINITION);
+    const definition = structuredClone(state.definition);
     definition.maxConcurrentWorkers = Math.min(input.maxConcurrent,state.definition.maxConcurrentWorkers);
     const child: WorkflowState = {
       workflowId:randomUUID(),root:state.root,definition,definitionDigest:workflowDigest(definition),

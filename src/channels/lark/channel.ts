@@ -42,6 +42,7 @@ import type { AppConfig } from '../../config/schema';
 import type { AgentKind } from '../../config/profile-schema';
 import {
   getAgentStopGraceMs,
+  getWorkflowTimeoutMinutes,
   getCotMessages,
   getMaxConcurrentRuns,
   getMessageDebounceMs,
@@ -300,6 +301,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   let workflows: WorkflowRuntime | undefined;
   const createWorkflows = () => sessionCatalog && deps.appPaths?.mediaDir ? new WorkflowRuntime({
     path: join(dirname(deps.appPaths.mediaDir), 'workflows.sqlite'), executor,
+    getTimeoutMinutes: root => getWorkflowTimeoutMinutes(profileForAgentKind(controls.profileConfig, root.agentKind)),
     showPlan: async (state, text) => {
       const message = workflowOrigins.get(state.root.scopeId);
       if (!message) throw new Error('Workflow reply destination unavailable');

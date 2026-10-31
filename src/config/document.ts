@@ -17,7 +17,7 @@ import { validateLarkNetwork } from './lark-network';
 import { WEB_DISPLAY_DEFAULTS } from '../channels/web/config';
 import { SLACK_DISPLAY_DEFAULTS } from '../channels/slack/config';
 import { normalizeFileLinks } from './file-links';
-import type { RunPreferences } from './schema';
+import { MAX_WORKFLOW_TIMEOUT_MINUTES, type RunPreferences } from './schema';
 import { parseEffort } from '../agent/model-settings';
 import { parseWorkItemConcurrency } from '../work-items/concurrency';
 import {
@@ -39,6 +39,7 @@ export interface ConfigDocument extends Table {
 export const RUN_KEYS = {
   model: 'model', effort: 'reasoningEffort', max_concurrent_runs: 'maxConcurrentRuns',
   idle_timeout_minutes: 'runIdleTimeoutMinutes', stop_grace_ms: 'agentStopGraceMs',
+  workflow_timeout_minutes: 'workflowTimeoutMinutes',
 } as const;
 const PROFILE_KEYS = ['agent', 'run', 'mode', 'accounts', 'secrets', 'access', 'workspaces', 'permissions', 'attachments', 'meeting', 'larkCli', 'launch'];
 const LARK_KEYS = ['reply_mode', 'show_tools', 'progress', 'message_debounce_ms', 'file_links', 'network'];
@@ -66,7 +67,8 @@ function checkRun(value: unknown, path: string, agent?: AgentKind): void {
       if (!selection(v)) throw new Error(`${path}.${key}: expected a value or { source = "native" }`);
       if (key === 'effort' && typeof v === 'string') parseEffort(v, agent ?? 'codex');
     } else {
-      const [min, max] = key === 'max_concurrent_runs' ? [1, 50] : key === 'idle_timeout_minutes' ? [0, 120] : [100, 30000];
+      const [min, max] = key === 'max_concurrent_runs' ? [1, 50] : key === 'idle_timeout_minutes' ? [0, 120]
+        : key === 'workflow_timeout_minutes' ? [1, MAX_WORKFLOW_TIMEOUT_MINUTES] : [100, 30000];
       if (!Number.isSafeInteger(v) || v < min! || v > max!) throw new Error(`${path}.${key}: expected integer ${min}..${max}`);
     }
   }

@@ -58,6 +58,36 @@ async function file(text = source) {
 }
 
 describe('layered configuration', () => {
+  it('resolves, reports and reloads workflow budgets through all execution layers', async () => {
+    const path = await file();
+    expect((await inspectConfig(path, 'bot')).run.workflow_timeout_minutes).toEqual({ value: 480, source: 'built-in' });
+    for (const [layer, minutes] of [['defaults.run', 600], ['agents.codex.run', 720], ['profiles.bot.run', 960]] as const) {
+      await patchConfig(path, [...layer.split('.'), 'workflow_timeout_minutes'], minutes);
+      expect((await inspectConfig(path, 'bot')).run.workflow_timeout_minutes).toEqual({ value: minutes, source: `${layer}.workflow_timeout_minutes` });
+    }
+    const root = (await loadRootConfig(path))!;
+    expect(root.profiles.other!.preferences.workflowTimeoutMinutes).toBe(600);
+    const roundtrip = documentToRoot(parseDocument(formatDocument(rootToDocument(root))));
+    expect(roundtrip.profiles.bot!.preferences.workflowTimeoutMinutes).toBe(960);
+    const state = { profile: 'bot', configPath: path, profileConfig: root.profiles.bot!, cfg: root.profiles.bot! };
+    await patchConfig(path, ['profiles', 'bot', 'run', 'workflow_timeout_minutes'], undefined);
+    expect((await reloadProfile(state)).restart).toEqual([]);
+    expect(state.profileConfig.preferences.workflowTimeoutMinutes).toBe(720);
+    expect(state.cfg.preferences.workflowTimeoutMinutes).toBe(720);
+  });
+
+  it.each([0, -1, 10081, 1.5, '480'])('rejects an invalid workflow timeout: %s', value => {
+    const doc = parseDocument(source);
+    doc.defaults!.run!.workflow_timeout_minutes = value;
+    expect(() => parseDocument(formatDocument(doc))).toThrow('workflow_timeout_minutes');
+  });
+
+  it.each([1, 10080])('accepts workflow timeout boundary %i', value => {
+    const doc = parseDocument(source);
+    doc.defaults!.run!.workflow_timeout_minutes = value;
+    expect(resolveRun(parseDocument(formatDocument(doc)), 'codex', 'bot').preferences.workflowTimeoutMinutes).toBe(value);
+  });
+
   it('keeps active network settings until reconnect while reloading display settings', async () => {
     const path = await file(source + `
 [channels.lark.network]

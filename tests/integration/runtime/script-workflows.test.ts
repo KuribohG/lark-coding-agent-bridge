@@ -23,7 +23,7 @@ const output = (text: string, kind: string): AgentEvent[] => [
   { type: 'system', ...(kind === 'codex' ? { threadId: randomUUID() } : { sessionId: randomUUID() }) },
   { type: 'final_text', content: text }, { type: 'done', terminationReason: 'normal' },
 ];
-async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootKind: 'claude' | 'codex' | 'pi' = 'codex', showPlan?: ConstructorParameters<typeof WorkflowRuntime>[0]['showPlan'], path = ':memory:') {
+async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootKind: 'claude' | 'codex' | 'pi' = 'codex', showPlan?: ConstructorParameters<typeof WorkflowRuntime>[0]['showPlan'], path = ':memory:', getTimeoutMinutes?: () => number) {
   let root: WorkflowRoot = { scopeId: 'script-topic', profile: 'default', agentKind: rootKind, cwdRealpath: '/workspace',
     policyFingerprint: 'policy', catalogBinding: 'root', modelSettings: { model: 'root-model' } };
   const policy: RunPolicyAllow = { ok: true, prompt: '', requestedCwd: '/workspace', cwdRealpath: '/workspace',
@@ -40,7 +40,7 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
     const state = runtime.kernel.state(scopeId)!;
     runtime.kernel.markNotified(scopeId, state.events.map(event => event.id));
   });
-  const deps: ConstructorParameters<typeof WorkflowRuntime>[0] = { path, executor, resolve: async scopeId => ({ root: {...root,scopeId}, policy }), wakeMain, showPlan,
+  const deps: ConstructorParameters<typeof WorkflowRuntime>[0] = { path, executor, resolve: async scopeId => ({ root: {...root,scopeId}, policy }), wakeMain, showPlan, getTimeoutMinutes,
     resolveWorker: async (current, selection) => ({ policy, execution: {
       agentKind: selection.agentKind, profile: current.profile, configurationFingerprint: selection.agentKind,
       policyFingerprint: policy.policyFingerprint, modelSettings: { ...(selection.agentKind === current.agentKind ? current.modelSettings : {model: selection.agentKind + '-default'}), ...(selection.model ? {model:selection.model} : {}), ...(selection.reasoningEffort ? {reasoningEffort:selection.reasoningEffort} : {}) },
@@ -59,6 +59,19 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
 }
 
 describe('script workflow runtime', () => {
+  it('applies current host timeout settings through the runtime and IPC only to new workflows', async () => {
+    let minutes = 600;
+    const h = await harness({}, 'codex', undefined, ':memory:', () => minutes);
+    await h.call('run_script', { goal: 'configured deadline', script: 'return null;' });
+    let state = h.state();
+    expect(state.deadlineAt - state.createdAt).toBeCloseTo(600 * 60_000, -1);
+    minutes = 720;
+    await h.call('cancel');
+    await h.call('run_script', { goal: 'reloaded deadline', script: 'return null;' });
+    state = h.state();
+    expect(state.deadlineAt - state.createdAt).toBeCloseTo(720 * 60_000, -1);
+  });
+
   it('preserves a committed child when the runtime closes before its caller yields', async () => {
     const dir=await mkdtemp(join(tmpdir(),'nested-before-yield-'));cleanup.push(()=>rm(dir,{recursive:true,force:true}));
     const h=await harness({},'codex',undefined,join(dir,'state.db'));

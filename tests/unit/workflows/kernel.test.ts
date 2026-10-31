@@ -9,14 +9,14 @@ import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '
 
 const cleanups: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
-function harness(path = ':memory:') {
+function harness(path = ':memory:', getTimeoutMinutes?: () => number, now = Date.now) {
   let root: WorkflowRoot = { scopeId: 'topic-1', profile: 'default', agentKind: 'codex', cwdRealpath: '/workspace',
     policyFingerprint: 'policy', catalogBinding: 'root-generation-1', modelSettings: {} };
   const requests: WorkflowWorkerRequest[] = [];
   const finishes: Array<(result: WorkflowWorkerResult) => void> = [];
   const wakeMain = vi.fn(async () => {});
   const kernel = new WorkflowKernel(path, {
-    resolveRoot: async scope => scope === root.scopeId ? root : undefined, wakeMain,
+    resolveRoot: async scope => scope === root.scopeId ? root : undefined, wakeMain, getTimeoutMinutes,
     execute: async request => {
       requests.push(request); request.onRun('run-' + requests.length); request.onSession('thread-' + requests.length);
       return new Promise<WorkflowWorkerResult>(resolve => {
@@ -24,7 +24,7 @@ function harness(path = ':memory:') {
         request.signal.addEventListener('abort', () => resolve({ status: 'completed', text: 'late cancelled answer' }), { once: true });
       });
     },
-  });
+  }, now);
   let closed = false;
   const close = async () => { if (!closed) { closed = true; await kernel.close(); } };
   cleanups.push(close);
@@ -41,6 +41,42 @@ function harness(path = ':memory:') {
 }
 
 describe('workflow kernel contracts', () => {
+  it.each([
+    [undefined, undefined, 480], [720, undefined, 720], [undefined, 480 * 60_000, 480], [720, 30 * 60_000, 30],
+  ])('uses configured/default workflow minutes %s with explicit timeout %s', async (configured, timeoutMs, expected) => {
+    const h = harness(':memory:', configured === undefined ? undefined : () => configured, () => 1000);
+    await h.call('run_script', { goal: 'long task', script: 'return null;', timeoutMs });
+    expect(h.state().deadlineAt).toBe(1000 + expected! * 60_000);
+    expect(h.state().definition.maxWallTimeMinutes).toBe(configured ?? 480);
+  });
+
+  it.each([999, 480 * 60_000 + 1, 1000.5, '1000'])('rejects an out-of-policy task timeout %s', async timeoutMs => {
+    const h = harness();
+    await expect(h.call('run_script', { goal: 'task', script: 'return null;', timeoutMs })).rejects.toThrow('Expected an integer');
+    expect(h.state()).toBeUndefined();
+  });
+
+  it('pins the budget across config changes, restart and replay', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'workflow-deadline-'));
+    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    const path = join(dir, 'state.db');
+    let now = 1000; let minutes = 480;
+    const h = harness(path, () => minutes, () => now);
+    await h.start(); const deadline = h.state().deadlineAt;
+    await h.close(); minutes = 960; now += 180 * 60_000;
+    const recovered = harness(path, () => minutes, () => now);
+    await recovered.call('replay_script');
+    expect(recovered.state().deadlineAt).toBe(deadline);
+    expect(recovered.state().definition.maxWallTimeMinutes).toBe(480);
+    now = deadline;
+    await recovered.kernel.tick();
+    expect(recovered.state().status).toBe('paused');
+    expect(recovered.state().events.at(-1)?.kind).toBe('budget_attention');
+    await expect(recovered.call('replay_script')).rejects.toThrow('Workflow deadline reached');
+    await recovered.call('cancel'); await recovered.start();
+    expect(recovered.state().deadlineAt).toBe(now + 960 * 60_000);
+  });
+
   it('requires caller start permission even when request parameters claim authorization', async () => {
     const h = harness();
     const args = { operationId: 'start', goal: '/workflow start task', plan: 'Return one.', script: 'return 1;', allowStart: true };

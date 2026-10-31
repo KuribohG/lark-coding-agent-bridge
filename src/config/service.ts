@@ -9,7 +9,7 @@ import { writeFileAtomic } from '../platform/atomic-write';
 import { larkDisplay } from './lark-display';
 import { WEB_DISPLAY_DEFAULTS } from '../channels/web/config';
 import { SLACK_DISPLAY_DEFAULTS } from '../channels/slack/config';
-import { getMaxConcurrentRuns, getRunIdleTimeoutMs, getAgentStopGraceMs } from './schema';
+import { getMaxConcurrentRuns, getRunIdleTimeoutMs, getAgentStopGraceMs, getWorkflowTimeoutMinutes } from './schema';
 
 export async function readProfileSnapshot(state: MutableProfileState) {
   const root = await loadRootConfig(state.configPath);
@@ -30,6 +30,7 @@ export async function inspectConfig(path: string, profile?: string) {
   const run = Object.fromEntries(Object.entries(RUN_KEYS).map(([key, internal]) => [key, {
     value: p.preferences[internal] ?? (key === 'max_concurrent_runs' ? getMaxConcurrentRuns(p)
       : key === 'idle_timeout_minutes' ? (getRunIdleTimeoutMs(p) ?? 0) / 60000
+      : key === 'workflow_timeout_minutes' ? getWorkflowTimeoutMinutes(p)
       : key === 'stop_grace_ms' ? getAgentStopGraceMs(p) : 'native'),
     source: sources[key] ?? (key === 'model' || key === 'effort' ? 'native CLI' : 'built-in'),
   }]));

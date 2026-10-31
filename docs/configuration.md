@@ -30,6 +30,7 @@ See [config.example.toml](config.example.toml) for a full layered example. `agen
 - `effort`: agent-supported reasoning effort, or `{ source = "native" }`.
 - `max_concurrent_runs`: integer 1–50, a per-profile concurrency limit; global defaults do not impose a host-wide aggregate limit.
 - `idle_timeout_minutes`: integer 0–120; 0 disables the no-output watchdog.
+- `workflow_timeout_minutes`: integer 1–10080 (7 days), default 480. Sets the default and maximum total duration for a new workflow; its `timeoutMs` may request a shorter duration. Reload affects new workflows only. Existing workflows and their descendants retain the saved budget and deadline, including across replay/restart.
 - `stop_grace_ms`: integer 100–30000 between graceful and forced termination.
 
 Omitting a key inherits its parent. Removing a profile override restores inheritance. Arrays replace their parent's entire value; an empty array explicitly clears the list. False and zero are retained. Native model/effort delegation omits the corresponding CLI override so native project/managed configuration remains authoritative. The bridge does not rewrite native Codex/Claude settings.

@@ -10,12 +10,12 @@ import type { WorkflowRoot, WorkflowState, WorkflowWorkerRequest, WorkflowWorker
 
 const cleanup:Array<()=>Promise<unknown>>=[];
 afterEach(async()=>{for(const close of cleanup.splice(0).reverse()) await close();});
-function harness(path=':memory:') {
+function harness(path=':memory:', getTimeoutMinutes?: () => number) {
   let now=1_000_000;
   let root:WorkflowRoot={scopeId:'nested-test',profile:'default',agentKind:'codex',cwdRealpath:'/workspace',policyFingerprint:'policy',catalogBinding:'root',modelSettings:{}};
   const requests:WorkflowWorkerRequest[]=[];
   const finishers=new Map<string,(result:WorkflowWorkerResult)=>void>();
-  const host={resolveRoot:async()=>root,wakeMain:async()=>{},execute:async(request:WorkflowWorkerRequest)=>{
+  const host={resolveRoot:async()=>root,wakeMain:async()=>{},getTimeoutMinutes,execute:async(request:WorkflowWorkerRequest)=>{
     requests.push(request);request.onRun('run-'+request.attemptId);request.onSession(request.session.nativeSessionId ?? 'native-'+request.session.sessionRef);
     return new Promise<WorkflowWorkerResult>(resolve=>{finishers.set(request.attemptId,resolve);request.signal.addEventListener('abort',()=>resolve({status:'stopped'}),{once:true});});
   }};
@@ -42,6 +42,40 @@ function harness(path=':memory:') {
 }
 
 describe('nested workflow capability',()=>{
+  it.each([undefined, 480 * 60_000, 20 * 60_000])('inherits the pinned budget and caps a child deadline at its parent: %s', async timeoutMs => {
+    let minutes = 480;
+    const h = harness(':memory:', () => minutes);
+    await h.start(); const rootDeadline = h.state().deadlineAt;
+    minutes = 960; h.advance(180 * 60_000);
+    await h.agent(h.state()); await h.run(1);
+    const child = await h.child(h.requests[0]!, { timeoutMs });
+    const state = h.state(child.workflowId);
+    expect(state.definition.maxWallTimeMinutes).toBe(480);
+    expect(state.deadlineAt).toBe(Math.min(rootDeadline, state.createdAt + (timeoutMs ?? 480 * 60_000)));
+    await expect(h.child(h.requests[0]!, { timeoutMs: 480 * 60_000 + 1 })).rejects.toThrow('Expected an integer');
+  });
+
+  it('keeps omitted child timeouts stable when replaying a pre-configuration workflow', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'workflow-legacy-deadline-'));
+    cleanup.push(() => rm(dir, { recursive: true, force: true }));
+    const path = join(dir, 'state.db'); const h = harness(path);
+    await h.start();
+    const root = h.state();
+    delete root.definition.defaultWallTimeMinutes;
+    root.definition.maxWallTimeMinutes = 120;
+    root.deadlineAt = root.createdAt + 120 * 60_000;
+    const db = new Database(path);
+    db.prepare('UPDATE workflows SET data=? WHERE id=?').run(JSON.stringify(root), root.workflowId);
+    db.close();
+    await h.agent(h.state()); await h.run(1);
+    const child = await h.child(h.requests[0]!);
+    expect(h.state(child.workflowId).deadlineAt - h.state(child.workflowId).createdAt).toBe(30 * 60_000);
+    await h.finish(h.requests[0]!); h.begin(child.workflowId); h.finishScript(child.workflowId, { text: '42' });
+    await h.restart(); await h.replay(); await h.agent(h.state()); await h.run(2);
+    expect(await h.child(h.requests[1]!)).toMatchObject({ workflowId: child.workflowId, status: 'completed', result: 42 });
+    expect(h.state().deadlineAt).toBe(root.deadlineAt);
+  });
+
   it('is absent and denied unless explicitly enabled, including independent and persistent agents',async()=>{
     const h=harness();await h.start({maxConcurrent:2});
     await h.agent(h.state(),{key:'plain',workflowTool:false});await h.agent(h.state(),{key:'member',member:'M',workflowTool:false});await h.run(2);

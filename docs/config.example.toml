@@ -7,6 +7,7 @@ active_profile = "codex"
 [defaults.run]
 max_concurrent_runs = 10
 idle_timeout_minutes = 0
+workflow_timeout_minutes = 480 # Total workflow deadline; each workflow may request a shorter timeout.
 
 [agents.codex.run]
 effort = "high"

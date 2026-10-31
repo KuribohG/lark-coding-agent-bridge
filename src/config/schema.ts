@@ -139,6 +139,8 @@ export interface AppPreferences {
    * can hang indefinitely). Per-scope `/timeout` overrides this.
    */
   runIdleTimeoutMinutes?: number;
+  /** Default and maximum total workflow duration, in minutes. Default 480. */
+  workflowTimeoutMinutes?: number;
   /**
    * Whether the bot only responds to messages that @-mention it in groups
    * (regular and topic groups). p2p is always unrestricted. Default true:
@@ -169,7 +171,7 @@ export interface ChannelDisplayConfig {
   slack?: Partial<import('../channels/slack/config').SlackDisplayConfig>;
 }
 
-export type RunPreferences = Pick<AppPreferences, 'model' | 'reasoningEffort' | 'maxConcurrentRuns' | 'runIdleTimeoutMinutes' | 'agentStopGraceMs'>;
+export type RunPreferences = Pick<AppPreferences, 'model' | 'reasoningEffort' | 'maxConcurrentRuns' | 'runIdleTimeoutMinutes' | 'workflowTimeoutMinutes' | 'agentStopGraceMs'>;
 
 /** In-memory account and preference view; the public file format is ConfigDocument. */
 export interface AppConfig {
@@ -283,4 +285,13 @@ export function getRunIdleTimeoutMs(cfg: AppConfig): number | undefined {
   if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return undefined;
   const clamped = Math.min(Math.max(Math.floor(raw), 1), 120);
   return clamped * 60_000;
+}
+
+export const DEFAULT_WORKFLOW_TIMEOUT_MINUTES = 480;
+export const MAX_WORKFLOW_TIMEOUT_MINUTES = 7 * 24 * 60;
+
+export function getWorkflowTimeoutMinutes(cfg: Pick<AppConfig, 'preferences'>): number {
+  const raw = cfg.preferences?.workflowTimeoutMinutes;
+  return typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 1 && raw <= MAX_WORKFLOW_TIMEOUT_MINUTES
+    ? raw : DEFAULT_WORKFLOW_TIMEOUT_MINUTES;
 }

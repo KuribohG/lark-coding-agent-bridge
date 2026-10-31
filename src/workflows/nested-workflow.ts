@@ -1,10 +1,10 @@
 import { boundedInteger, scriptArgs, scriptText } from './script-contract';
-import type { WorkflowState, WorkflowTask } from './types';
+import type { WorkflowDefinition, WorkflowState, WorkflowTask } from './types';
 
 export const MAX_WORKFLOW_DEPTH = 3;
 export const MAX_CHILD_WORKFLOWS = 32;
 
-export function nestedInput(args: Record<string, unknown>) {
+export function nestedInput(args: Record<string, unknown>, definition: WorkflowDefinition) {
   if (Object.keys(args).some(key => !['operationId','key','goal','script','plan','args','name','execution','maxAgents','maxConcurrent','timeoutMs','checkpoint','parentQueue'].includes(key))) {
     throw new Error('Unsupported run_workflow option');
   }
@@ -17,7 +17,7 @@ export function nestedInput(args: Record<string, unknown>) {
     goal:scriptText(args.goal,'goal'),script:scriptText(args.script,'script'),plan:scriptText(args.plan,'plan',12_000),
     args:scriptArgs(args.args),name:scriptText(args.name ?? 'Child workflow','name',100),execution:args.execution,
     maxAgents:boundedInteger(args.maxAgents,32,1,128),maxConcurrent:boundedInteger(args.maxConcurrent,4,1,16),
-    timeoutMs:boundedInteger(args.timeoutMs,30*60_000,1000,120*60_000),checkpoint,parentQueue:args.parentQueue===true};
+    timeoutMs:boundedInteger(args.timeoutMs,(definition.defaultWallTimeMinutes ?? 30)*60_000,1000,definition.maxWallTimeMinutes*60_000),checkpoint,parentQueue:args.parentQueue===true};
 }
 
 export function nestedResponse(child: WorkflowState): unknown {

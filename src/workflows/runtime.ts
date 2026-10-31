@@ -12,6 +12,7 @@ import type { WorkerExecution, WorkerExecutionSelection, WorkflowRoot, WorkflowS
 export interface WorkflowRuntimeDeps {
   path: string;
   executor: RunExecutor;
+  getTimeoutMinutes?(root: WorkflowRoot): number;
   resolve(scopeId: string): Promise<{ root: WorkflowRoot; policy: RunPolicyAllow } | undefined>;
   resolveWorker?(root: WorkflowRoot, selection: WorkerExecutionSelection, policy: RunPolicyAllow):
     Promise<{ execution: WorkerExecution; policy: RunPolicyAllow }>;
@@ -32,6 +33,7 @@ export class WorkflowRuntime {
   constructor(private readonly deps: WorkflowRuntimeDeps) {
     this.kernel = new WorkflowKernel(deps.path, {
       resolveRoot: async scope => (await deps.resolve(scope))?.root,
+      getTimeoutMinutes: deps.getTimeoutMinutes,
       resolveWorker: async (root, selection) => (await this.resolveWorker(root, selection)).execution,
       execute: request => this.execute(request),
       wakeMain: deps.wakeMain,

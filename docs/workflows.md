@@ -67,7 +67,16 @@ The envelope has `operationId`, `goal` (the full authorized task), `script` (the
 | `execution` | Default `{agentKind, model?, reasoningEffort?}`; otherwise root harness/settings |
 | `maxAgents` | Calls per script run, default 32, maximum 128; cache hits count |
 | `maxConcurrent` | Concurrent workers per workflow, default 4, maximum 16; shared process-pool limits also apply |
-| `timeoutMs` | Total workflow deadline, default 30 minutes, range 1 second to 120 minutes; replay does not extend it |
+| `timeoutMs` | Total workflow deadline, defaulting to the configured `workflow_timeout_minutes` (480 minutes); range 1 second to that configured limit. Replay does not extend it |
+
+Set the budget in `config.toml`, globally or under `agents.<kind>.run` / `profiles.<name>.run`:
+
+```toml
+[defaults.run]
+workflow_timeout_minutes = 480
+```
+
+The range is 1–10080 minutes. After changing it, use `/config reload` in each affected bot. New workflows capture the configured budget; existing workflows, replay and child calls keep the saved limits and cannot extend the original deadline.
 
 Workers use the shared executor's automatic retries for HTTP 429 and recognized
 transient connection/server failures, including a stream closing before

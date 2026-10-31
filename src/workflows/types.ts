@@ -11,6 +11,8 @@ export interface WorkflowDefinition {
   maxConcurrentWorkers: number;
   maxRevisionRounds: number;
   maxWallTimeMinutes: number;
+  /** Persisted with the workflow; older workflows used a 30-minute default. */
+  defaultWallTimeMinutes?: number;
 }
 
 /** The root native ID remains owned by SessionCatalog. Only its binding digest is pinned. */
@@ -304,6 +306,7 @@ export interface WorkflowWorkerResult {
 
 export interface WorkflowHost {
   resolveRoot(scopeId: string): Promise<WorkflowRoot | undefined>;
+  getTimeoutMinutes?(root: WorkflowRoot): number;
   resolveWorker?(root: WorkflowRoot, selection: WorkerExecutionSelection): Promise<WorkerExecution>;
   execute(request: WorkflowWorkerRequest): Promise<WorkflowWorkerResult>;
   wakeMain(scopeId: string): Promise<void>;
