@@ -1,7 +1,29 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
 
 describe('ChatModeCache', () => {
+  it('routes a text event and its card carrier to the same converted topic', async () => {
+    const cache = new ChatModeCache();
+    const channel = { getChatMode: vi.fn(async () => 'group' as const),
+      fetchRawMessage: vi.fn(async () => [{ thread_id: 'topic' }]) };
+    const message = { chatId: 'chat', messageId: 'om_message' };
+    const text = await cache.resolveScope(channel as never, { ...message, threadId: 'topic' });
+    expect(channel.getChatMode).not.toHaveBeenCalled();
+    const card = await cache.resolveScope(channel as never, message, 'card');
+    expect(card).toEqual(text);
+    expect(card).toEqual({ scope: 'chat:topic', threadId: 'topic', mode: 'topic' });
+  });
+
+  it('recovers missing topic ids but avoids carrier lookups for ordinary text and DMs', async () => {
+    for (const mode of ['p2p', 'group', 'topic'] as const) {
+      const cache = new ChatModeCache();
+      const channel = { getChatMode: async () => mode, fetchRawMessage: vi.fn(async () => [{ thread_id: 'topic' }]) };
+      const result = await cache.resolveScope(channel as never, { chatId: 'chat', messageId: 'om_message' });
+      expect(result.scope).toBe(mode === 'topic' ? 'chat:topic' : 'chat');
+      expect(channel.fetchRawMessage).toHaveBeenCalledTimes(mode === 'topic' ? 1 : 0);
+    }
+  });
+
   it('caches group mode to avoid a chat.get round-trip per message', async () => {
     const cache = new ChatModeCache();
     const channel = new FakeModeChannel(['group', 'topic']);

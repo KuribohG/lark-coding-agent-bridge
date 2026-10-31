@@ -1,21 +1,20 @@
 import type { CardActionEvent, CardActionResponse, LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import type { AgentAdapter } from '../agent/types';
-import type { AgentKind } from '../config/profile-schema';
 import type { ActiveRuns } from '../bot/active-runs';
 import type { ChatModeCache } from '../bot/chat-mode-cache';
 import type { PendingQueue } from '../bot/pending-queue';
 import type { ProcessPool } from '../bot/process-pool';
-import type { CallbackAuth } from './callback-auth';
+import { commandSessionCatalogIdentity } from '../bot/session-catalog-identity';
+import type { UserQuestions } from '../bot/user-questions';
 import { runCommandHandler, type CommandContext, type Controls } from '../commands';
+import type { AgentKind } from '../config/profile-schema';
 import { log } from '../core/logger';
 import { canUseDm, canUseGroup } from '../policy/access';
 import type { RunExecutor } from '../runtime/run-executor';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
-import { commandSessionCatalogIdentity } from '../bot/session-catalog-identity';
-import { lookupMessageThreadId } from '../bot/thread-id';
-import type { UserQuestions } from '../bot/user-questions';
+import type { CallbackAuth } from './callback-auth';
 import { respondToCardAction } from './response';
 
 /** Marker key on a button's value object that flags the cardAction as
@@ -53,7 +52,7 @@ export function handleCardAction(deps: CardDispatchDeps): Promise<CardActionResp
   return respondToCardAction(
     () => dispatchCardAction(deps),
     async (markdown) => {
-      const { mode } = await resolveScope(deps);
+      const { mode } = await deps.chatModeCache.resolveScope(deps.channel, deps.evt, 'card');
       return deps.channel.send(deps.evt.chatId, { markdown }, {
         replyTo: deps.evt.messageId, ...(mode === 'topic' ? { replyInThread: true } : {}),
       });
@@ -82,7 +81,7 @@ async function dispatchCardAction(deps: CardDispatchDeps): Promise<CardActionRes
   // session — look up the carrier message (the card lives on it) once.
   // Done before the access check so we know the chat mode (p2p vs group)
   // and can skip the chat allowlist for DMs.
-  const { scope, threadId, mode } = await resolveScope(deps);
+  const { scope, threadId, mode } = await deps.chatModeCache.resolveScope(deps.channel, deps.evt, 'card');
   log.info('cardAction', 'scope-resolved', { scope });
   const resolveAgent = deps.resolveAgent
     ?? (deps.agent ? () => deps.agent! : undefined);
@@ -192,27 +191,6 @@ async function dispatchCardAction(deps: CardDispatchDeps): Promise<CardActionRes
   }
 
   return;
-}
-
-async function resolveScope(
-  deps: CardDispatchDeps,
-): Promise<{ scope: string; threadId: string | undefined; mode: 'p2p' | 'group' | 'topic' }> {
-  const chatId = deps.evt.chatId;
-  const mode = await deps.chatModeCache.resolve(deps.channel, chatId);
-  if (mode === 'p2p') {
-    return { scope: chatId, threadId: undefined, mode };
-  }
-  // Converted topic groups may still report 'group'; the carrier message's
-  // thread_id is authoritative, just as it is for incoming text commands.
-  // One API call per click; could cache by messageId if it ever becomes hot.
-  const threadId = await lookupMessageThreadId(deps.channel, deps.evt.messageId);
-  if (!threadId) {
-    // Fall back to plain chatId. Better to land in the chat's "default"
-    // scope than fail the click silently.
-    return { scope: chatId, threadId: undefined, mode };
-  }
-  if (mode !== 'topic') deps.chatModeCache.invalidate(chatId);
-  return { scope: `${chatId}:${threadId}`, threadId, mode: 'topic' };
 }
 
 function forwardToAgent(

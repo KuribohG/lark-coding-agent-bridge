@@ -1,16 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import * as channelModule from '../../../src/bot/channel.js';
+import { shouldSuppressSdkErrorLog } from '../../../src/channels/lark/sdk.js';
 
 describe('Lark SDK logger noise filtering', () => {
   it('suppresses optional wiki-node permission failures that fall back to the original file token', () => {
-    const shouldSuppress = (
-      channelModule as {
-        shouldSuppressSdkErrorLog?: (args: unknown[]) => boolean;
-      }
-    ).shouldSuppressSdkErrorLog;
-
     expect(
-      shouldSuppress?.([
+      shouldSuppressSdkErrorLog([
         [
           {
             message: 'Request failed with status code 400',
@@ -35,14 +29,8 @@ describe('Lark SDK logger noise filtering', () => {
   });
 
   it('keeps unrelated permission failures visible', () => {
-    const shouldSuppress = (
-      channelModule as {
-        shouldSuppressSdkErrorLog?: (args: unknown[]) => boolean;
-      }
-    ).shouldSuppressSdkErrorLog;
-
     expect(
-      shouldSuppress?.([
+      shouldSuppressSdkErrorLog([
         {
           message: 'Request failed with status code 400',
           config: {

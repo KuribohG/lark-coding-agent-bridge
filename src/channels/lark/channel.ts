@@ -1,175 +1,59 @@
-import { RunStopped } from '../../runtime/errors';
-import { trackRunSession } from '../../runtime/session-progress';
-import { handleWorkflowCommand } from '../../workflows/commands';
-import type { PendingMessage } from '../../bot/pending-queue';
-import type { AgentEntry } from '../../runtime/agent-entry';
-import { bindAgentEntry } from './agent-entry';
-import { WorkflowRuntime } from '../../workflows/runtime';
-import { workflowDigest } from '../../workflows/digest';
-import { resolveWorkerExecution } from '../../workflows/execution';
-import { larkDisplay } from './config';
-import { createLarkRunOutput } from './run-output';
-import { presentRunOutput } from '../../runtime/run-output';
-import { findCommand } from '../../commands/catalog';
-import { supportsRunInput } from '../../agent/execution';
-import { modelRunArguments } from '../../agent/model-settings';
-import { deadlineInstructions } from '../../runtime/run-deadline';
-import { timedRuns, type TimedRun } from '../../runtime/timed-runs';
-import { timedRunCard } from '../../card/timed-run-card';
-import { BtwManager } from '../../bot/btw';
-import { BtwStore } from '../../session/btw-store';
-import { sendManagedCard } from '../../card/managed';
-import { resolveRunModelSettings } from '../../runtime/model-settings';
-import type { LarkChannel, LarkChannelOptions, NormalizedMessage } from '@larksuite/channel';
-import { createLarkChannel } from '@larksuite/channel';
+import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
 import { capabilityForProfile } from '../../agent/backends';
-import { profileForAgentKind } from '../../runtime/execution-controller';
-import { modelLabel, normalizeModelSelection } from '../../agent/models';
-import {
-  buildAgentPrompt,
-  type BridgePromptInteractiveCard,
-  type BridgePromptMention,
-  type BridgePromptQuotedMessage,
-  type BridgePromptTopicMessage,
-} from '../../agent/prompt';
-import type { AgentAdapter } from '../../agent/types';
-import type { ExecutionController } from '../../runtime/execution-controller';
-import { handleCardAction } from '../../card/dispatcher';
+import { modelRunArguments } from '../../agent/model-settings';
+import { BtwManager } from '../../bot/btw';
+import { ChatModeCache } from '../../bot/chat-mode-cache';
+import { handleCommentMention } from '../../bot/comments';
+import { CotClient, CotPublisher } from '../../bot/cot';
+import { FollowupRouter } from '../../bot/followup';
+import { startKeepalive } from '../../bot/keepalive';
+import { fetchKnownChats } from '../../bot/lark-info';
+import { PendingQueue, type PendingMessage } from '../../bot/pending-queue';
+import { UserQuestions } from '../../bot/user-questions';
 import { CallbackAuth } from '../../card/callback-auth';
 import { CallbackNonceStore } from '../../card/callback-store';
-import type { RunState } from '../../runtime/run-state';
-import { tryHandleCommand, type Controls } from '../../commands';
-import type { AppConfig } from '../../config/schema';
+import { handleCardAction } from '../../card/dispatcher';
+import { sendManagedCard } from '../../card/managed';
+import { timedRunCard } from '../../card/timed-run-card';
+import type { Controls } from '../../commands';
+import type { AppPaths } from '../../config/app-paths';
 import type { AgentKind } from '../../config/profile-schema';
+import type { AppConfig } from '../../config/schema';
 import {
-  getAgentStopGraceMs,
-  getWorkflowTimeoutMinutes,
-  getCotMessages,
   getMaxConcurrentRuns,
   getMessageDebounceMs,
-  getMessageReplyMode,
-  getRunIdleTimeoutMs,
+  getWorkflowTimeoutMinutes,
 } from '../../config/schema';
-import { LarkProfileAuth } from '../../lark-auth/profile-auth';
 import { log, reportMetric, withTrace } from '../../core/logger';
-import { MediaCache, type LocalAttachment } from '../../media/cache';
-import { toPolicyAttachment, toPromptAttachment } from '../../media/attachment';
-import { canUseDm, canUseGroup, requireMentionForChat } from '../../policy/access';
-import { MeetingManager } from '../../meeting/manager';
+import { LarkProfileAuth } from '../../lark-auth/profile-auth';
+import { MediaCache } from '../../media/cache';
 import type { VcRequestClient } from '../../meeting/api';
+import { MeetingManager } from '../../meeting/manager';
 import { attachMeetingAgent, summarizeEndedMeeting } from '../../meeting/orchestrator';
-import type { ScopeContext } from '../../policy/run-policy';
+import { canUseDm, canUseGroup } from '../../policy/access';
 import { createOwnerRefreshController } from '../../policy/owner';
+import { ActiveRuns } from '../../runtime/active-runs';
+import type { ExecutionController } from '../../runtime/execution-controller';
+import { profileForAgentKind } from '../../runtime/execution-controller';
+import { resolveRunModelSettings } from '../../runtime/model-settings';
+import { ProcessPool } from '../../runtime/process-pool';
 import { RunExecutor } from '../../runtime/run-executor';
+import { resolveRunFlowContext } from '../../runtime/run-flow';
+import { timedRuns } from '../../runtime/timed-runs';
+import { BtwStore } from '../../session/btw-store';
 import type { SessionCatalog } from '../../session/catalog';
 import type { SessionStore } from '../../session/store';
+import { handleWorkflowCommand } from '../../workflows/commands';
+import { workflowDigest } from '../../workflows/digest';
+import { resolveWorkerExecution } from '../../workflows/execution';
+import { WorkflowRuntime } from '../../workflows/runtime';
 import type { WorkspaceStore } from '../../workspace/store';
-import { ActiveRuns } from '../../runtime/active-runs';
-import { ChatModeCache, type ChatMode } from '../../bot/chat-mode-cache';
-import { handleCommentMention } from '../../bot/comments';
-import {
-  resolveRunFlowContext,
-  startRunFlow,
-} from '../../runtime/run-flow';
-import { commandSessionCatalogIdentity } from '../../bot/session-catalog-identity';
-import { startKeepalive } from '../../bot/keepalive';
-import { MAX_PENDING_CHARS_PER_SCOPE, PendingQueue } from '../../bot/pending-queue';
-import { FollowupRouter } from '../../bot/followup';
-import { UserQuestions } from '../../bot/user-questions';
-import { ProcessPool } from '../../runtime/process-pool';
-import {
-  fetchQuotedContext,
-  fetchTopicContext,
-  LARK_CONTEXT_MAX_CHARS,
-  type QuotedContext,
-} from '../../bot/quote';
-import { lookupMessageThreadId } from '../../bot/thread-id';
-import { fetchKnownChats } from '../../bot/lark-info';
-import type { AppPaths } from '../../config/app-paths';
-import { CotClient, CotPublisher } from '../../bot/cot';
 
-const TOPIC_CONTEXT_MAX_MESSAGES = 40;
-
-// Lark SDK logs API errors at error level even when the caller catches them.
-// These specific codes are EXPECTED in our flow (wiki-node lookup that
-// usually misses, fileComment.get that we deliberately let fall back to
-// .list) and the surrounding noise is already covered by our own logs.
-const SUPPRESSED_API_ERROR_CODES = new Set([
-  131005, // wiki.space.getNode "not found" — the doc isn't a wiki node
-  1069307, // drive.fileComment.get "not exist" — fall back to .list
-  1069302, // drive.fileCommentReply.create — whole-doc comments don't accept replies; fall back to fileComment.create
-]);
-
-const SUPPRESSED_ENDPOINT_API_ERRORS = [
-  {
-    code: 99991672,
-    urlPart: '/open-apis/wiki/v2/spaces/get_node',
-  },
-];
-
-function codeFromObj(m: unknown): number | undefined {
-  if (!m || typeof m !== 'object') return undefined;
-  const top = (m as { code?: unknown }).code;
-  if (typeof top === 'number') return top;
-  const nested = (m as { response?: { data?: { code?: unknown } } })?.response?.data?.code;
-  return typeof nested === 'number' ? nested : undefined;
-}
-
-function urlFromObj(m: unknown): string | undefined {
-  if (!m || typeof m !== 'object') return undefined;
-  const configUrl = (m as { config?: { url?: unknown } })?.config?.url;
-  if (typeof configUrl === 'string') return configUrl;
-  const requestPath = (m as { request?: { path?: unknown } })?.request?.path;
-  return typeof requestPath === 'string' ? requestPath : undefined;
-}
-
-function isSuppressedSdkMessage(msg: unknown): boolean {
-  if (Array.isArray(msg)) return msg.some(isSuppressedSdkMessage);
-  const code = codeFromObj(msg);
-  if (code === undefined) return false;
-  if (SUPPRESSED_API_ERROR_CODES.has(code)) return true;
-  const url = urlFromObj(msg);
-  return SUPPRESSED_ENDPOINT_API_ERRORS.some(
-    (rule) => code === rule.code && url?.includes(rule.urlPart),
-  );
-}
-
-export function shouldSuppressSdkErrorLog(args: unknown[]): boolean {
-  return args.some(isSuppressedSdkMessage);
-}
-
-function buildQuietLogger(): {
-  error: (...m: unknown[]) => void;
-  warn: (...m: unknown[]) => void;
-  info: (...m: unknown[]) => void;
-  debug: (...m: unknown[]) => void;
-  trace: (...m: unknown[]) => void;
-} {
-  return {
-    error: (...args: unknown[]) => {
-      if (shouldSuppressSdkErrorLog(args)) return;
-      log.warn('sdk', 'error', { args: stringifyArgs(args) });
-    },
-    warn: (...args: unknown[]) => log.warn('sdk', 'warn', { args: stringifyArgs(args) }),
-    info: (...args: unknown[]) => log.info('sdk', 'info', { args: stringifyArgs(args) }),
-    debug: () => {},
-    trace: () => {},
-  };
-}
-
-function stringifyArgs(args: unknown[]): string {
-  return args
-    .map((a) => {
-      if (typeof a === 'string') return a;
-      try {
-        return JSON.stringify(a);
-      } catch {
-        return String(a);
-      }
-    })
-    .join(' ');
-}
+import { intakeMessage } from './intake';
+import { runAgentBatch, type RunBatchDeps } from './run';
+import { createProfileChannel } from './sdk';
+import { LarkTurns } from './turns';
 
 export interface BridgeChannel {
   channel: LarkChannel;
@@ -196,7 +80,6 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   const setAgentKind = (scope: string, kind: AgentKind) => execution.setScopeKind(scope, kind);
   const activeRuns = new ActiveRuns();
   const followups = new FollowupRouter();
-  const batchControllers = new Map<string, AbortController>();
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
   const chatModeCache = new ChatModeCache();
@@ -241,62 +124,9 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     request: larkAuth.request,
   });
   const preparedCots = new Map<string, CotPublisher>();
-  const threadModeOverrideWarnedChats = new Set<string>();
-  const logThreadModeOverride: LogThreadModeOverride = ({ chatId, resolvedMode, threadId }) => {
-    const fields = { chatId, cachedMode: resolvedMode, threadId };
-    if (threadModeOverrideWarnedChats.has(chatId)) {
-      log.info('chat', 'mode-overridden-by-thread', fields);
-      return;
-    }
-    threadModeOverrideWarnedChats.add(chatId);
-    log.warn('chat', 'mode-overridden-by-thread', fields);
-  };
-
-  const opts: LarkChannelOptions = {
-    appId: cfg.accounts.app.id,
-    appSecret,
-    domain:
-      cfg.accounts.app.tenant === 'lark'
-        ? 'https://open.larksuite.com'
-        : 'https://open.feishu.cn',
-    source: 'lark-channel-bridge',
-    logger: buildQuietLogger(),
-    policy: {
-      dmMode: 'open',
-      requireMention: false,
-      respondToMentionAll: false,
-    },
-    // Disable per-chat serialization so we can implement our own
-    // debounce + run-chain policy (see pending-queue + runChain below).
-    safety: {
-      chatQueue: { enabled: false },
-    },
-    // Attach raw Feishu event body to normalized events so we can read fields
-    // the normalizer drops (e.g. action.form_value on CardKit 2.0 form submits).
-    includeRawEvent: true,
-    outbound: {
-      streamThrottleMs: 400,
-    },
-    // SDK 1.65.0-alpha.3+ knobs.
-    wsConfig: {
-      // 3s liveness watchdog: if no inbound message arrives within 3s after
-      // the last ping, SDK presumes connection dead and forces a reconnect.
-      pingTimeout: 3,
-    },
-    // 8s handshake timeout (replaces hardcoded 15s). Fast-fail + fast-retry
-    // beats slow-fail in unstable networks.
-    handshakeTimeoutMs: 8_000,
-    // Per-request REST timeout — without a cap a slow API can hang the
-    // event-handling thread.
-    httpTimeoutMs: 30_000,
-    // Keep SDK REST/WS and native COT/auth requests on the same profile policy.
-    httpInstance: larkAuth.network.httpInstance,
-    agent: larkAuth.network.agent,
-    respectProxyEnv: false,
-  };
-
-  const channel = createLarkChannel(opts);
+  const channel = createProfileChannel(cfg, larkAuth, appSecret);
   const media = new MediaCache(channel, deps.appPaths?.mediaDir);
+  const conversation = { channel, controls, executor, activeRuns, sessions, sessionCatalog, workspaces };
 
   const workflowOrigins = new Map<string, NormalizedMessage>();
   let workflows: WorkflowRuntime | undefined;
@@ -338,25 +168,15 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     },
     wakeMain: async scope => {
       const message = workflowOrigins.get(scope);
-      if (!message || pending.hasWork(scope) || pending.isBlocked(scope) || activeRuns.get(scope)
-        || batchControllers.has(scope) || controls.activeTimedRun?.(scope) || activeRuns.newRunsPaused()) return;
-      // Claim the same handoff lane as user turns before the first await.
-      pending.block(scope);
-      const controller = new AbortController();
-      batchControllers.set(scope, controller);
+      if (!message || !turns.isIdle(scope)) return;
+      const turn = turns.claim(scope);
       const eventIds = workflows?.kernel.state(scope)?.events.filter(event => !event.acknowledged).map(event => event.id) ?? [];
       try {
-        await runAgentBatch({ channel, executor, sessions, sessionCatalog, workspaces, media, activeRuns,
-          batch: [message], controls, cotClient, callbackAuth, userQuestions, activePolicyFingerprints,
-          lastRunModelByScope, scope, agentKind: resolveAgentKind(scope), mode: message.threadId ? 'topic' : await chatModeCache.resolve(channel, message.chatId),
-          signal: controller.signal, workflows, entry: { kind: 'workflow', trigger: 'event' }, workflowOrigins });
+        await turn.run(signal => dispatch(scope, [message], { signal, entry: { kind: 'workflow', trigger: 'event' } }));
       } catch (error) {
         // Failed automatic wakes remain visible through /workflow status, without a retry loop.
         workflows?.kernel.markNotified(scope, eventIds);
         throw error;
-      } finally {
-        if (batchControllers.get(scope) === controller) batchControllers.delete(scope);
-        pending.unblock(scope);
       }
     },
   }) : undefined;
@@ -379,10 +199,8 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       if (!firstMsg) return;
       const preparedCot = preparedCots.get(scope);
       preparedCots.delete(scope);
-      pending.block(scope);
-      const controller = new AbortController();
-      batchControllers.set(scope, controller);
-      void withTrace({ chatId: firstMsg.chatId }, async () => {
+      const turn = turns.claim(scope);
+      void turn.run(signal => withTrace({ chatId: firstMsg.chatId }, async () => {
         log.info('flush', 'start', {
           scope,
           batchSize: batch.length,
@@ -391,59 +209,20 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           msgId: firstMsg.messageId,
         });
         try {
-          const resolvedMode = firstMsg.threadId
-            ? 'topic'
-            : await chatModeCache.resolve(channel, firstMsg.chatId);
-          // Feishu/Lark converted topic groups may still resolve as `group` from
-          // the chat info API/cache, while message events already carry threadId.
-          // Treat threadId as authoritative for IM messages so scope and replies
-          // stay isolated per topic.
-          const mode = firstMsg.threadId ? 'topic' : resolvedMode;
-          if (firstMsg.threadId && resolvedMode !== 'topic') {
-            chatModeCache.invalidate(firstMsg.chatId);
-            logThreadModeOverride({
-              chatId: firstMsg.chatId,
-              resolvedMode,
-              threadId: firstMsg.threadId,
-            });
-          }
-          await runAgentBatch({
-            signal: controller.signal,
-            workflows, workflowOrigins,
-            entry: firstMsg.agentEntry ?? { kind: 'direct' },
-            channel,
-            executor,
-            sessions,
-            sessionCatalog,
-            workspaces,
-            media,
-            activeRuns,
-            batch,
-            controls,
-            cotClient,
-            callbackAuth,
-            userQuestions,
-            activePolicyFingerprints,
-            lastRunModelByScope,
-            scope,
-            agentKind: resolveAgentKind(scope),
-            mode,
-            preparedCot,
-          });
+          await dispatch(scope, batch, { signal, entry: firstMsg.agentEntry ?? { kind: 'direct' }, preparedCot });
         } catch (err) {
           await preparedCot?.finish('error');
           log.fail('flush', err);
         } finally {
-          if (batchControllers.get(scope) === controller) batchControllers.delete(scope);
-          pending.unblock(scope);
           log.info('flush', 'end');
         }
-      });
+      })).catch(err => log.fail('flush', err));
     },
     deps.appPaths?.mediaDir
       ? join(dirname(deps.appPaths.mediaDir), 'pending-queue.json')
       : undefined,
   );
+  const turns = new LarkTurns(pending, activeRuns);
   if (deps.restorePending === false) {
     pending.suspend();
     pending.holdPersistence();
@@ -452,6 +231,15 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
 
   const userQuestions = new UserQuestions({ channel, auth: callbackAuth, activeRuns, followups,
     pending, catalog: sessionCatalog, isTimed: scope => Boolean(controls.activeTimedRun?.(scope)) });
+
+  const dispatch = async (scope: string, batch: PendingMessage[],
+    options: Pick<RunBatchDeps, 'signal' | 'entry' | 'timedJob' | 'preparedCot'>) => {
+    const first = batch[0];
+    if (!first) return;
+    const mode = first.threadId ? 'topic' : await chatModeCache.resolve(channel, first.chatId);
+    await runAgentBatch({ ...conversation, media, cotClient, callbackAuth, userQuestions, activePolicyFingerprints, lastRunModelByScope,
+      ...(options.timedJob ? {} : { workflows, workflowOrigins }), scope, batch, mode, agentKind: options.timedJob?.agentKind ?? resolveAgentKind(scope), ...options });
+  };
 
   const startWorkflows = async () => {
     if (workflows) return;
@@ -473,7 +261,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   };
 
   controls.cancelPendingInput = (scope) => {
-    batchControllers.get(scope)?.abort();
+    turns.cancel(scope);
     const preparedCot = preparedCots.get(scope);
     preparedCots.delete(scope);
     void preparedCot?.finish('cancelled');
@@ -486,53 +274,33 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   controls.reloadPendingInput = async () => { await pending.reload(); await startWorkflows(); };
 
   const timedStore = await timedRuns(controls);
-  const timedControllers = new Map<string, { id: string; controller: AbortController }>();
-  controls.activeTimedRun = (scope) => timedControllers.get(scope)?.id;
-  controls.cancelTimedRun = (scope, id) => {
-    const active = timedControllers.get(scope);
-    if (active && (!id || active.id === id)) active.controller.abort();
-  };
+  controls.activeTimedRun = scope => turns.timedRunId(scope);
+  controls.cancelTimedRun = (scope, id) => { if (turns.timedRunId(scope)) turns.cancel(scope, id); };
   controls.launchTimedRun = async (job, message) => {
-    if (timedControllers.has(job.scope) || activeRuns.get(job.scope) || pending.hasWork(job.scope)) {
+    if (!turns.isIdle(job.scope)) {
       throw new Error('当前话题/聊天仍有任务或待处理消息，请完成或 /stop 后再启动限时任务。');
     }
-    const controller = new AbortController();
-    timedControllers.set(job.scope, { id: job.id, controller });
-    pending.block(job.scope);
+    const turn = turns.claim(job.scope, job.id);
     try {
       await timedStore.transition(job.id, ['draft'], 'queued');
     } catch (err) {
-      timedControllers.delete(job.scope);
-      pending.unblock(job.scope);
+      turn.release();
       throw err;
     }
     const sendOpts = { replyTo: message.messageId, ...(message.threadId ? { replyInThread: true } : {}) };
-    void withTrace({ chatId: message.chatId }, async () => {
+    void turn.run(signal => withTrace({ chatId: message.chatId }, async () => {
       try {
-        const mode = message.threadId ? 'topic' : await chatModeCache.resolve(channel, message.chatId);
         await sendManagedCard(channel, message.chatId, timedRunCard(timedStore.get(job.id)!), sendOpts);
-        await runAgentBatch({
-          channel, executor, sessions, sessionCatalog, workspaces, media,
-          activeRuns,
-          batch: [{ ...message, content: job.task, resources: [], rawContentType: 'text' }],
-          controls, cotClient, callbackAuth, userQuestions, activePolicyFingerprints, lastRunModelByScope,
-          scope: job.scope, agentKind: job.agentKind ?? resolveAgentKind(job.scope), mode,
-          timedJob: job, signal: controller.signal,
-        });
+        await dispatch(job.scope, [{ ...message, content: job.task, resources: [], rawContentType: 'text' }], { timedJob: job, signal });
       } catch (err) {
         log.fail('timed-run', err, { jobId: job.id });
       } finally {
         // A failure before executor submission must also close the one-shot job.
-        try {
-          await timedStore.finish(job.id, controller.signal.aborted ? 'stopped' : Date.now() >= job.stopAt ? 'expired' : 'failed');
-        } finally {
-          timedControllers.delete(job.scope);
-          pending.unblock(job.scope);
-        }
-        await sendManagedCard(channel, message.chatId, timedRunCard(timedStore.get(job.id)!), sendOpts)
-          .catch((err) => log.warn('timed-run', 'status-send-failed', { err: String(err) }));
+        await timedStore.finish(job.id, signal.aborted ? 'stopped' : Date.now() >= job.stopAt ? 'expired' : 'failed');
       }
-    }).catch((err) => log.fail('timed-run', err, { jobId: job.id }));
+    })).then(() => sendManagedCard(channel, message.chatId, timedRunCard(timedStore.get(job.id)!), sendOpts)
+      .catch(err => log.warn('timed-run', 'status-send-failed', { err: String(err) })))
+      .catch(err => log.fail('timed-run', err, { jobId: job.id }));
   };
 
   // Counter for stdout reconnect escalation; reset on `reconnected`.
@@ -543,20 +311,13 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       await withTrace({ chatId: msg.chatId, msgId: msg.messageId }, () =>
         intakeMessage({
           followups,
-          channel,
+          ...conversation,
           resolveAgent,
           resolveAgentKind,
           setAgentKind,
-          sessions,
-          sessionCatalog,
-          workspaces,
-          activeRuns,
           pending,
           msg,
-          controls,
           chatModeCache,
-          logThreadModeOverride,
-          executor,
           pool,
           cotClient,
           preparedCots,
@@ -569,18 +330,13 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     cardAction: async (evt) => {
       return withTrace({ chatId: evt.chatId, msgId: evt.messageId }, async () => {
         return handleCardAction({
-          channel,
+          ...conversation,
           evt,
-          sessions,
-          sessionCatalog,
-          workspaces,
-          activeRuns,
           resolveAgent,
           resolveAgentKind,
           setAgentKind,
           processPool: pool,
           runExecutor: executor,
-          controls,
           pending,
           chatModeCache,
           callbackAuth,
@@ -592,16 +348,10 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     comment: async (evt) => {
       await withTrace({ chatId: 'comment' }, async () => {
         await handleCommentMention({
-          channel,
+          ...conversation,
           evt,
           resolveAgent,
           resolveAgentKind,
-          sessions,
-          sessionCatalog,
-          workspaces,
-          activeRuns,
-          executor,
-          controls,
         }).catch((err) => log.fail('comment', err));
       }).catch((err) => log.fail('comment', err));
     },
@@ -656,25 +406,13 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       onEnded: (session) =>
         void summarizeEndedMeeting({
           session,
-          channel,
-          controls,
-          executor,
-          activeRuns,
-          sessions,
-          ...(sessionCatalog ? { sessionCatalog } : {}),
-          workspaces,
+          ...conversation,
           resolveAgentKind,
         }).catch((err) => log.warn('meeting', 'summary-failed', { err: String(err) })),
       onSession: (session) =>
         attachMeetingAgent({
           session,
-          channel,
-          controls,
-          executor,
-          activeRuns,
-          sessions,
-          ...(sessionCatalog ? { sessionCatalog } : {}),
-          workspaces,
+          ...conversation,
           resolveAgentKind,
         }),
     });
@@ -733,12 +471,10 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       activeRuns.pauseNewRuns('bridge-disconnect');
       controls.workflow = undefined;
       const workflowsClosed = workflows?.close();
-      for (const controller of batchControllers.values()) controller.abort(new RunStopped('shutdown'));
-      batchControllers.clear();
+      turns.close();
       controls.btw = undefined;
       const btwClosed = btw.close();
       controls.launchTimedRun = undefined;
-      for (const { controller } of timedControllers.values()) controller.abort(new RunStopped('shutdown'));
       ownerRefresh.stop();
       knownChatsRefresh.stop();
       keepalive.stop();
@@ -747,7 +483,6 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       // reconnect would be surprising.
       meetingManager?.dispose();
       controls.meeting = undefined;
-      pending.suspend();
       for (const preparedCot of preparedCots.values()) {
         void preparedCot.finish('cancelled');
       }
@@ -798,955 +533,4 @@ function startKnownChatsRefreshTimer(
       clearInterval(timer);
     },
   };
-}
-
-async function sendNonAllowedGroupHint(
-  channel: LarkChannel,
-  chatId: string,
-  replyToMessageId: string,
-): Promise<void> {
-  const text =
-    '当前群尚未加入响应列表，所以 bot 不会处理消息。\n' +
-    'Bot owner/管理员可在本群发 /invite group 加入白名单。';
-  try {
-    await channel.send(chatId, { text }, { replyTo: replyToMessageId });
-  } catch {
-    await channel.send(chatId, { text });
-  }
-}
-
-/**
- * The SDK (@larksuite/channel >= 0.4.1) normalizes a merge_forward whose
- * sub-messages it could not fetch — after its own retries — to this exact
- * sentinel, rather than the empty `<forwarded_messages/>` it emits for a
- * genuinely empty forward. Distinguishing the two is the whole point of that
- * fix: pre-0.4.1 a transient Feishu 5xx/timeout on `im.v1.message.get` was
- * silently indistinguishable from empty, so the agent saw an empty forward and
- * replied "转发内容是空的，请重新转发一次".
- */
-const FORWARD_FETCH_FAILED_CONTENT = '<forwarded_messages status="fetch_failed"/>';
-
-/** True when a message is a merge_forward the SDK failed to fetch (see above). */
-function isForwardFetchFailed(msg: NormalizedMessage): boolean {
-  return (
-    msg.rawContentType === 'merge_forward' &&
-    msg.content.trim() === FORWARD_FETCH_FAILED_CONTENT
-  );
-}
-
-async function sendForwardFetchFailedHint(
-  channel: LarkChannel,
-  chatId: string,
-  replyToMessageId: string,
-): Promise<void> {
-  const text =
-    '这条合并转发的内容没能从飞书拉取到（上游超时/网络抖动，已自动重试仍失败），' +
-    '所以我没收到里面的消息。麻烦稍后重新转发一次。';
-  try {
-    await channel.send(chatId, { text }, { replyTo: replyToMessageId });
-  } catch {
-    await channel.send(chatId, { text });
-  }
-}
-
-interface IntakeDeps {
-  followups: FollowupRouter;
-  channel: LarkChannel;
-  resolveAgent(scope: string): AgentAdapter;
-  resolveAgentKind(scope: string): AgentKind;
-  setAgentKind?(scope: string, kind: AgentKind): Promise<void>;
-  sessions: SessionStore;
-  sessionCatalog?: SessionCatalog;
-  workspaces: WorkspaceStore;
-  activeRuns: ActiveRuns;
-  pending: PendingQueue;
-  msg: NormalizedMessage;
-  controls: Controls;
-  chatModeCache: ChatModeCache;
-  logThreadModeOverride: LogThreadModeOverride;
-  executor: RunExecutor;
-  pool: ProcessPool;
-  cotClient: CotClient;
-  preparedCots: Map<string, CotPublisher>;
-}
-
-type LogThreadModeOverride = (input: {
-  chatId: string;
-  resolvedMode: ChatMode;
-  threadId: string;
-}) => void;
-
-async function intakeMessage(deps: IntakeDeps): Promise<void> {
-  const {
-    channel,
-    resolveAgent,
-    resolveAgentKind,
-    setAgentKind,
-    sessions,
-    sessionCatalog,
-    workspaces,
-    activeRuns,
-    pending,
-    msg,
-    controls,
-    chatModeCache,
-    logThreadModeOverride,
-    executor,
-    pool,
-    cotClient,
-    preparedCots,
-  } = deps;
-  const preview = msg.content.length > 80 ? `${msg.content.slice(0, 80)}…` : msg.content;
-  // Resolve scope (and underlying chat mode) once at intake — every
-  // downstream consumer keys off these.
-  let resolvedMode: ChatMode;
-  if (msg.threadId) {
-    // A thread id is authoritative for topic routing.
-    resolvedMode = 'topic';
-  } else {
-    resolvedMode = await chatModeCache.resolve(channel, msg.chatId);
-  }
-  // Feishu delivers a sizable fraction of topic-group message events without a
-  // `thread_id` (notably the message that opens a new topic). We route topic
-  // replies (`replyInThread`) and isolate per-topic session scope off it, so a
-  // missing one makes the reply escape into a brand-new topic AND collapses the
-  // scope to the chat level. When getChatMode says this is a topic group but
-  // the event dropped `thread_id`, backfill it from the raw message — the same
-  // recovery the card-click path uses.
-  let threadId = msg.threadId;
-  if (!threadId && resolvedMode === 'topic') {
-    threadId = await lookupMessageThreadId(channel, msg.messageId);
-    if (threadId) {
-      log.info('intake', 'thread-id-backfilled', {
-        chatId: msg.chatId,
-        msgId: msg.messageId,
-        threadId,
-      });
-    }
-  }
-  // Carry the (possibly backfilled) threadId on the message so the batched
-  // flush — which reads `firstMsg.threadId` for reply routing and topic scope —
-  // sees it.
-  const emsg: NormalizedMessage = threadId === msg.threadId ? msg : { ...msg, threadId };
-  // Some groups are converted into topic groups after creation. In that state
-  // getChatMode can lag behind the message event shape, so threadId is the
-  // stronger signal for topic-scoped sessions and reply routing.
-  const chatMode = threadId ? 'topic' : resolvedMode;
-  if (threadId && resolvedMode !== 'topic') {
-    chatModeCache.invalidate(msg.chatId);
-    logThreadModeOverride({
-      chatId: msg.chatId,
-      resolvedMode,
-      threadId,
-    });
-  }
-  const scope = chatMode === 'topic' && threadId
-    ? `${msg.chatId}:${threadId}`
-    : msg.chatId;
-  if (emsg.content.length > MAX_PENDING_CHARS_PER_SCOPE) {
-    log.warn('intake', 'message-too-large', {
-      scope,
-      msgId: emsg.messageId,
-      chars: emsg.content.length,
-    });
-    await channel.send(emsg.chatId, {
-      markdown: `这条消息正文过长（${emsg.content.length} 字符），超过单条约 200k 字符的安全上限，未提交给 Agent。请拆分后重试。`,
-    }, {
-      replyTo: emsg.messageId,
-      ...(chatMode === 'topic' ? { replyInThread: true } : {}),
-    });
-    return;
-  }
-  log.info('intake', 'enter', {
-    scope,
-    chatType: msg.chatType,
-    chatMode,
-    resolvedMode,
-    threadId,
-    msgId: msg.messageId,
-    sender: msg.senderId,
-    preview,
-    resources: msg.resources.length,
-  });
-
-  const accessDecision =
-    msg.chatType === 'p2p'
-      ? canUseDm(controls.profileConfig, controls, msg.senderId)
-      : canUseGroup(controls.profileConfig, controls, msg.chatId, msg.senderId);
-  if (!accessDecision.ok) {
-    log.info('intake', 'skip-not-allowed-user', {
-      scope,
-      sender: msg.senderId.slice(-6),
-      reason: accessDecision.reason,
-    });
-    if (msg.chatType !== 'p2p' && accessDecision.reason === 'denied-chat' && msg.mentionedBot) {
-      void sendNonAllowedGroupHint(channel, msg.chatId, msg.messageId).catch((err) =>
-        log.warn('intake', 'non-allowed-hint-failed', { err: String(err) }),
-      );
-    }
-    return;
-  }
-
-  // Group-mention policy. p2p is always unrestricted; in groups (regular and
-  // topic) we drop messages that don't @bot when the user has opted into the
-  // quiet-by-default behavior. A per-chat override (set from /config's group
-  // picker) takes priority over the global setting, so one group can respond
-  // to everything while others stay @-only (or vice versa). Slash commands are
-  // NOT exempt — the user chose strict mode so the group stays uniformly quiet
-  // unless mentioned. @全员 is already filtered by SDK
-  // (`respondToMentionAll: false`), so any event reaching here is either
-  // targeted or undirected chatter.
-  if (
-    msg.chatType !== 'p2p' &&
-    requireMentionForChat(controls.profileConfig, controls.cfg, msg.chatId) &&
-    !msg.mentionedBot
-  ) {
-    log.info('intake', 'skip-no-mention', { scope, chatType: msg.chatType });
-    return;
-  }
-
-  // A merge_forward whose sub-messages the SDK could not fetch (transient
-  // upstream failure, already retried inside @larksuite/channel) arrives as the
-  // fetch_failed sentinel. Feeding it to the agent would read as an empty
-  // forward, so surface a recoverable hint and skip the run — the user can
-  // resend once the upstream recovers.
-  if (isForwardFetchFailed(emsg)) {
-    log.warn('intake', 'forward-fetch-failed', {
-      scope,
-      msgId: emsg.messageId,
-      chatType: emsg.chatType,
-    });
-    await sendForwardFetchFailedHint(channel, emsg.chatId, emsg.messageId).catch((err) =>
-      log.warn('intake', 'forward-fetch-failed-hint-failed', { err: String(err) }),
-    );
-    return;
-  }
-
-  const scopeAgentKind = resolveAgentKind(scope);
-  const scopeAgent = resolveAgent(scope);
-  const handled = await tryHandleCommand({
-    channel,
-    msg: emsg,
-    scope,
-    chatMode,
-    sessions,
-    workspaces,
-    agent: scopeAgent,
-    agentKind: scopeAgentKind,
-    defaultAgentKind: controls.profileConfig.agentKind,
-    setAgentKind,
-    activeRuns,
-    sessionCatalog,
-    sessionCatalogIdentity: await commandSessionCatalogIdentity({
-      msg: emsg,
-      scope,
-      mode: chatMode,
-      workspaces,
-      controls,
-      access: accessDecision,
-      agentKind: scopeAgentKind,
-    }),
-    runExecutor: executor,
-    processPool: pool,
-    controls,
-  });
-  if (handled) {
-    const name = emsg.content.trim().split(/\s+/)[0];
-    const definition = controls.commands?.find(name ?? '') ?? findCommand(name ?? '');
-    const dropped = definition?.pending === 'preserve' ? [] : pending.cancel(scope);
-    if (dropped.length > 0) {
-      const preparedCot = preparedCots.get(scope);
-      preparedCots.delete(scope);
-      void preparedCot?.finish('cancelled');
-      await pending.flushPersistence();
-    }
-    log.info('intake', 'command', { scope, droppedPending: dropped.length });
-    return;
-  }
-
-  const wasBusy = pending.isBlocked(scope) || Boolean(activeRuns.get(scope));
-  const wasTimed = Boolean(controls.activeTimedRun?.(scope));
-  if (emsg.resources.length === 0 && supportsRunInput(activeRuns.get(scope)?.run)) {
-    const result = await deps.followups.deliver({
-      scope, messageId: emsg.messageId, activeRuns,
-      prepare: async () => {
-        const target = replyQuoteTargetForMessage(emsg, chatMode);
-        const quote = target ? await fetchQuotedContext(channel, target) : undefined;
-        return buildPrompt([emsg], [], quote ? [quote] : [], [], channel.botIdentity,
-          [
-            '这是用户在当前任务执行期间发来的补充消息。请结合原任务处理；消息未明确取消原目标时继续保留原目标。',
-            ...(target && !quote
-              ? ['用户引用的消息未能从飞书读取；不要猜测其内容，如上下文不足请明确说明。']
-              : []),
-          ]);
-      },
-    });
-    if (result !== 'queued') {
-      const markdown = result === 'accepted' ? '已送入当前任务，等待模型处理。'
-        : result === 'cancelled' ? '当前任务已收到停止请求，这条补充不会另起任务执行。'
-        : '未收到当前任务的接收确认，暂时无法确定这条补充是否送达。为避免重复执行，没有自动重发。';
-      await channel.send(emsg.chatId, { markdown }, { replyTo: emsg.messageId,
-        ...(chatMode === 'topic' ? { replyInThread: true } : {}) });
-      return;
-    }
-  }
-  if (wasTimed || controls.activeTimedRun?.(scope)) {
-    await channel.send(emsg.chatId, { markdown: '当前话题/聊天正在执行限时任务。这条消息未排队执行，避免到期后自动续跑；修改任务请先 /stop，再重新提交。' }, {
-      replyTo: emsg.messageId, ...(chatMode === 'topic' ? { replyInThread: true } : {}),
-    });
-    return;
-  }
-  let preparedCot = preparedCots.get(scope);
-  if (!wasBusy && getCotMessages(controls.cfg) !== 'off') {
-    if (!preparedCot) {
-      preparedCot = new CotPublisher({
-        client: cotClient,
-        chatId: emsg.chatId,
-        originMessageId: emsg.messageId,
-      });
-      preparedCots.set(scope, preparedCot);
-      // The native COT bubble is the first visible acknowledgement. Start it
-      // as soon as the message passes access/mention/command gates, in
-      // parallel with the debounce and agent preparation rather than after
-      // the run has already been submitted.
-      void preparedCot.prepare();
-    }
-  }
-  const size = pending.push(scope, emsg);
-  if (size === undefined) {
-    if (preparedCot) {
-      preparedCots.delete(scope);
-      void preparedCot.finish('cancelled');
-    }
-    await channel.send(emsg.chatId, {
-      markdown: '当前话题的待处理队列已满，这条消息没有入队。请等待现有任务结束，或发送 /stop 清空后重试。',
-    }, {
-      replyTo: emsg.messageId,
-      ...(chatMode === 'topic' ? { replyInThread: true } : {}),
-    });
-    return;
-  }
-  if (wasBusy) {
-    await pending.flushPersistence();
-    await channel.send(emsg.chatId, { markdown: '已排队，将在当前任务结束后处理；/stop 会同时取消排队消息。' }, {
-      replyTo: emsg.messageId, ...(chatMode === 'topic' ? { replyInThread: true } : {}),
-    });
-  }
-  log.info('intake', 'queued', {
-    scope,
-    queueSize: size,
-    debounceMs: getMessageDebounceMs(controls.cfg),
-    cotPrepared: Boolean(preparedCot),
-  });
-}
-
-interface RunBatchDeps {
-  workflows?: WorkflowRuntime;
-  entry?: AgentEntry;
-  workflowOrigins?: Map<string, NormalizedMessage>;
-  timedJob?: TimedRun;
-  signal?: AbortSignal;
-  channel: LarkChannel;
-  executor: RunExecutor;
-  sessions: SessionStore;
-  sessionCatalog?: SessionCatalog;
-  workspaces: WorkspaceStore;
-  media: MediaCache;
-  activeRuns: ActiveRuns;
-  batch: PendingMessage[];
-  controls: Controls;
-  cotClient: CotClient;
-  callbackAuth?: CallbackAuth;
-  userQuestions: UserQuestions;
-  activePolicyFingerprints: Map<string, string>;
-  lastRunModelByScope: Map<string, string>;
-  scope: string;
-  agentKind: AgentKind;
-  mode: ChatMode;
-  preparedCot?: CotPublisher;
-}
-
-export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
-  const entry = deps.entry ?? { kind: 'direct' };
-  const workflowWake = entry.kind === 'workflow' && entry.trigger === 'event';
-  const {
-    channel,
-    executor,
-    sessions,
-    sessionCatalog,
-    workspaces,
-    media,
-    activeRuns,
-    batch,
-    controls,
-    cotClient,
-    callbackAuth,
-    activePolicyFingerprints,
-    lastRunModelByScope,
-    scope,
-    agentKind,
-    mode,
-    preparedCot,
-  } = deps;
-  if (batch.length === 0) return;
-  batch.sort((left, right) => {
-    const leftTime = Number.isFinite(left.createTime) ? left.createTime : 0;
-    const rightTime = Number.isFinite(right.createTime) ? right.createTime : 0;
-    return leftTime - rightTime;
-  });
-  const firstMsg = batch[0];
-  const lastMsg = batch[batch.length - 1];
-  if (!firstMsg || !lastMsg) return;
-  if (!workflowWake) deps.workflowOrigins?.set(scope, firstMsg);
-
-  const chatId = firstMsg.chatId;
-  const threadId = firstMsg.threadId;
-  const scopedProfile = profileForAgentKind(controls.profileConfig, agentKind);
-  const capability = capabilityForProfile(scopedProfile);
-
-  const resourceItems = (workflowWake ? [] : batch).flatMap((m) =>
-    m.resources.map((r) => ({ messageId: m.messageId, resource: r })),
-  );
-  const attachments = await media.resolve(resourceItems, controls.profileConfig.attachments);
-  if (attachments.length > 0) {
-    log.info('media', 'resolved', { count: attachments.length });
-    for (const attachment of attachments) {
-      log.info('attachment', 'decision', {
-        decision: attachment.decision,
-        kind: attachment.kind,
-        hash: attachment.hash,
-        size: attachment.size,
-        sourceMessageId: attachment.sourceMessageId,
-        reason: attachment.rejectionReason,
-      });
-    }
-  }
-
-  // Collect any reply-quote targets in the batch. Dedup so the same target
-  // quoted by multiple messages in one batch only fetches once. Filter out
-  // ids that are themselves in the batch — those are already in the prompt.
-  const batchIds = new Set(workflowWake ? [] : batch.map((m) => m.messageId));
-  const quoteTargets = [
-    ...new Set(
-      (workflowWake ? [] : batch)
-        .map((m) => replyQuoteTargetForMessage(m, mode))
-        .filter((id): id is string => Boolean(id) && !batchIds.has(id!)),
-    ),
-  ];
-  const quotes: QuotedContext[] = [];
-  const fetchedQuoteIds = new Set<string>();
-  for (const targetId of quoteTargets) {
-    const q = await fetchQuotedContext(channel, targetId);
-    if (q) {
-      quotes.push(q);
-      fetchedQuoteIds.add(targetId);
-      log.info('quote', 'fetched', {
-        messageId: targetId,
-        type: q.rawContentType,
-        contentChars: q.content.length,
-      });
-    }
-  }
-  const failedQuoteIds = quoteTargets.filter((targetId) => !fetchedQuoteIds.has(targetId));
-  if (failedQuoteIds.length > 0) {
-    log.warn('quote', 'batch-fetch-incomplete', {
-      count: failedQuoteIds.length,
-      messageIds: failedQuoteIds,
-    });
-  }
-
-  const accessDecision =
-    firstMsg.chatType === 'p2p'
-      ? canUseDm(controls.profileConfig, controls, firstMsg.senderId)
-      : canUseGroup(controls.profileConfig, controls, firstMsg.chatId, firstMsg.senderId);
-  const scopeContext: ScopeContext = {
-    source: 'im',
-    chatId,
-    actorId: firstMsg.senderId,
-    ...(threadId ? { threadId } : {}),
-  };
-
-  // Topic upstream context. A resumed native session only contains messages
-  // that actually reached the agent; unmentioned group chatter never does.
-  // Import unseen messages on every topic turn, using the last complete import
-  // as a cursor. Failed/truncated windows remain pending and are retried.
-  let topicContext: QuotedContext[] = [];
-  let topicContextSince: number | undefined;
-  let topicContextThrough: number | undefined;
-  let topicContextComplete = true;
-  let topicContextIncompleteReason: string | undefined;
-  let topicContextSeenMessageIds: string[] = [];
-  const topicContextUntil = batch.reduce((latest, message) => {
-    const createTime = Number.isFinite(message.createTime) ? message.createTime : undefined;
-    return createTime !== undefined && createTime > latest ? createTime : latest;
-  }, 0);
-  if (!workflowWake && mode === 'topic' && threadId) {
-    const context = await resolveRunFlowContext({
-      scopeId: scope,
-      scope: scopeContext,
-      prompt: '',
-      attachments: attachments.map(toPolicyAttachment),
-      access: accessDecision,
-      capability,
-      profileConfig: controls.profileConfig,
-      sessions,
-      sessionCatalog,
-      workspaces,
-      now: Date.now(),
-    });
-    if (context.ok && context.resumeFrom && sessionCatalog) {
-      const entry = sessionCatalog.activeFor({
-        scopeId: scope,
-        agentId: capability.agentId,
-        cwdRealpath: context.workspace.cwdRealpath,
-        policyFingerprint: context.policy.policyFingerprint,
-      });
-      topicContextSince = entry?.topicContextThrough;
-      topicContextSeenMessageIds = entry?.topicContextSeenMessageIds ?? [];
-    }
-
-    const exclude = new Set([...batchIds, ...fetchedQuoteIds, ...topicContextSeenMessageIds]);
-    const fetched = await fetchTopicContext(channel, threadId, {
-      maxMessages: TOPIC_CONTEXT_MAX_MESSAGES,
-      maxChars: LARK_CONTEXT_MAX_CHARS,
-      ...(topicContextSince !== undefined ? { sinceMs: topicContextSince } : {}),
-      ...(topicContextUntil > 0 ? { untilMs: topicContextUntil } : {}),
-      ...(firstMsg.rootId ? { anchorMessageId: firstMsg.rootId } : {}),
-      excludeIds: exclude,
-      ...(channel.botIdentity?.openId ? { selfOpenId: channel.botIdentity.openId } : {}),
-      ...(controls.profileConfig.accounts.app.id
-        ? { selfAppId: controls.profileConfig.accounts.app.id }
-        : {}),
-    });
-    topicContext = fetched.messages;
-    topicContextComplete = fetched.complete;
-    topicContextIncompleteReason = fetched.reason;
-    if (topicContextComplete && topicContextUntil > 0) {
-      topicContextThrough = topicContextUntil;
-    }
-    topicContext = topicContext.filter(message => !controls.btw?.excludes(scope, message));
-    if (topicContext.length > 0) {
-      log.info('topic', 'context-fetched', {
-        scope,
-        threadId,
-        count: topicContext.length,
-        incremental: topicContextSince !== undefined,
-        ...(topicContextSince !== undefined ? { sinceMs: topicContextSince } : {}),
-      });
-    }
-    if (!topicContextComplete) {
-      log.warn('topic', 'context-incomplete', {
-        scope,
-        threadId,
-        reason: topicContextIncompleteReason,
-        count: topicContext.length,
-      });
-    }
-  }
-
-  // Detect a model switch since this scope's last run. When resuming an
-  // existing conversation the transcript still claims the old model, so tell
-  // the (now-switched) agent its model changed — otherwise it keeps echoing
-  // the previously-announced model. Only fires when a prior model was seen
-  // for this scope (never on the first run) and the selection actually
-  // changed. Observed native models are recorded by session-progress.
-  const runModelSettings = await resolveRunModelSettings(controls, scope, undefined, agentKind);
-  const runArguments = deps.timedJob?.modelSettings ?? modelRunArguments(runModelSettings);
-  const modelPref = runArguments.model;
-  const modelSelection = normalizeModelSelection(agentKind, modelPref);
-  const modelStateKey = `${agentKind}\x1f${scope}`;
-  const prevModel = lastRunModelByScope.get(modelStateKey);
-  const modelSwitched = prevModel !== undefined && prevModel !== modelSelection;
-  lastRunModelByScope.set(modelStateKey, modelSelection);
-  const extraInstructions = [
-    ...(!topicContextComplete
-      ? ['本次话题上下文未能完整导入。不要假设你已经看到该话题中所有未直接送达 bot 的消息；涉及缺失上下文时应明确说明。']
-      : []),
-    ...(failedQuoteIds.length > 0
-      ? ['有一条或多条用户引用的消息未能从飞书读取。不要猜测这些引用消息的内容；如无法完成任务请明确说明。']
-      : []),
-    ...(modelSwitched
-      ? [
-        `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
-          '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
-        ]
-      : []),
-  ];
-  if (deps.timedJob) extraInstructions.push(deadlineInstructions(deps.timedJob.stopAt, deps.timedJob.windDownAt));
-
-  const entryBinding = bindAgentEntry(entry, scope, deps.workflows);
-  if (entryBinding) extraInstructions.push(entryBinding.instructions);
-  const prompt = workflowWake
-    ? `<workflow_events source="bridge">子任务通知，请读取产物并确认事件，继续原工作流。这不是用户输入。\n${entryBinding?.instructions ?? ''}</workflow_events>`
-    : buildPrompt(
-    batch,
-    attachments,
-    quotes,
-    topicContext,
-    channel.botIdentity,
-    extraInstructions,
-  );
-  log.info('prompt', 'built', {
-    promptChars: prompt.length,
-    quotes: quotes.length,
-    topicContext: topicContext.length,
-    ...(modelSwitched ? { modelSwitchedTo: modelSelection } : {}),
-  });
-
-  // For topic groups: thread the reply so it lands in the same topic as the
-  // user's message. Otherwise the SDK posts at top level and the user's
-  // topic discussion breaks visually.
-  const sendOpts = {
-    replyTo: lastMsg.messageId,
-    ...(mode === 'topic' && threadId ? { replyInThread: true } : {}),
-  };
-  log.info('flush', 'reply-target', {
-    scope,
-    mode,
-    chatId,
-    threadId,
-    replyTo: sendOpts.replyTo,
-    replyInThread: sendOpts.replyInThread === true,
-  });
-
-  const flow = await startRunFlow({
-    env: entryBinding?.env,
-    modelSettings: runArguments,
-    deadlineAt: deps.timedJob?.stopAt,
-    signal: deps.signal,
-    scopeId: scope,
-    scope: scopeContext,
-    prompt,
-    attachments: attachments.map(toPolicyAttachment),
-    access: accessDecision,
-    capability,
-    profileConfig: controls.profileConfig,
-    sessions,
-    sessionCatalog,
-    workspaces,
-    executor,
-    now: Date.now(),
-    stopGraceMs: getAgentStopGraceMs(controls.cfg),
-    observability: {
-      profile: controls.profile,
-      agent: capability.agentId,
-      source: 'im',
-      stage: 'submit',
-    },
-  }).catch(error => { entryBinding?.release(); throw error; });
-  if (!flow.ok) {
-    entryBinding?.release();
-    if (workflowWake) throw new Error(flow.rejectReason.userVisible);
-    log.info('run-flow', 'rejected', { scope, code: flow.rejectReason.code });
-    log.warn('policy', 'denied', {
-      scope,
-      source: 'im',
-      code: flow.rejectReason.code,
-    });
-    await preparedCot?.finish('error');
-    await channel.send(chatId, { markdown: flow.rejectReason.userVisible }, sendOpts);
-    if (deps.timedJob) await (await timedRuns(controls)).finish(deps.timedJob.id,
-      flow.rejectReason.code === 'deadline-expired' ? 'expired' : flow.rejectReason.code === 'run-cancelled' ? 'stopped' : 'failed');
-    return;
-  }
-
-  const { execution, cwdRealpath: cwd } = flow;
-  if (entryBinding) {
-    void execution.result.finally(entryBinding.release);
-    entryBinding.onStarted();
-  }
-  let timedResult: Promise<void> | undefined;
-  if (deps.timedJob) {
-    const store = await timedRuns(controls);
-    const job = deps.timedJob;
-    timedResult = execution.result.then((state) => store.finish(job.id, state))
-      .catch((err) => log.fail('timed-run', err, { jobId: job.id }));
-    try {
-      await store.transition(job.id, ['queued'], 'running');
-    } catch {
-      await execution.stop('cleanup');
-      await timedResult;
-      return;
-    }
-  }
-  activePolicyFingerprints.set(scope, flow.policy.policyFingerprint);
-  const handle = execution.handle;
-  activeRuns.seedInputMessages(scope, handle.run, batchIds);
-  if (flow.resumeFrom) {
-    log.info('session', 'resume', { sessionId: flow.resumeFrom, cwd });
-  } else {
-    log.info('session', 'fresh', { cwd });
-  }
-  const sessionDone = trackRunSession({
-    scopeId: scope, sessions, sessionCatalog, capability, policy: flow.policy,
-    execution, activeRuns, resumeFrom: flow.resumeFrom,
-    source: workflowWake ? { kind: 'internal' } : {
-      kind: 'message', messageId: firstMsg.messageId, summary: summarizeRunInput(batch),
-      ...(mode === 'topic' ? { history: {
-        completeThrough: topicContextThrough,
-        seenMessageIds: [...topicContextSeenMessageIds, ...topicContext.map(message => message.messageId), ...batchIds, ...fetchedQuoteIds],
-      } } : {}),
-    },
-  });
-  // The observer starts with execution, even if rendering cannot start.
-  void sessionDone.catch(err => log.warn('session', 'tracking-failed', { scope, err: String(err) }));
-
-  // Resolve idle-timeout for this run: scope override (on SessionEntry) wins
-  // over global default (preferences). 0 / undefined = no watchdog.
-  const scopeOverride = sessions.getIdleTimeoutMinutes(scope);
-  const idleTimeoutMs =
-    scopeOverride !== undefined
-      ? scopeOverride > 0
-        ? scopeOverride * 60_000
-        : undefined
-      : getRunIdleTimeoutMs(controls.cfg);
-  if (idleTimeoutMs) {
-    log.info('flush', 'idle-watchdog', { idleTimeoutMs });
-  }
-
-  const replyMode = getMessageReplyMode(controls.cfg);
-  log.info('flush', 'reply-mode', { mode: replyMode });
-  const cotMessages = getCotMessages(controls.cfg);
-
-  const display = larkDisplay(controls.cfg);
-  const filterForPrefs = (state: RunState): RunState => {
-    if (display.show_tools) return state;
-    return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
-  };
-  const cardRenderOptions = {
-    fileLinks: display.file_links,
-    ...(callbackAuth
-      ? {
-          signCallback: (action: string) =>
-            callbackAuth.sign({
-              runId: execution.runId,
-              scope,
-              chatId,
-              operatorOpenId: firstMsg.senderId,
-              action,
-              policyFingerprint: flow.policy.policyFingerprint,
-              ttlMs: 24 * 60 * 60 * 1000,
-            }),
-        }
-      : {}),
-  };
-
-  const questionsDone = (async () => {
-    for await (const event of execution.subscribe()) {
-      if (event.type !== 'user_input') continue;
-      try {
-        await deps.userQuestions.publish(event, {
-          runId: execution.runId,
-          identity: { scopeId: scope, agentId: capability.agentId, cwdRealpath: cwd, policyFingerprint: flow.policy.policyFingerprint },
-          message: firstMsg, replyTo: lastMsg.messageId,
-          mentionUser: firstMsg.chatType !== 'p2p' && senderTypeOf(firstMsg) === 'user',
-          allowQueue: !deps.timedJob, isCancelled: () => handle.interrupted || Boolean(deps.signal?.aborted),
-        });
-      } catch (err) { log.warn('question', 'delivery-failed', { scope, err: String(err) }); }
-    }
-  })();
-
-  try {
-    try {
-      await presentRunOutput(execution, createLarkRunOutput({
-        channel, chatId, replyMode, sendOpts, cardRenderOptions,
-        cotMessages, cotClient, preparedCot, originMessageId: lastMsg.messageId, inputPreview: lastMsg.content,
-      }), { idleTimeoutMs, filterForPrefs });
-    } catch (err) {
-      // Rendering is not part of the model transaction. A failed Feishu write
-      // must not make the next turn forget that this run actually completed.
-      log.fail('stream', err);
-    }
-    await sessionDone;
-  } finally {
-    activePolicyFingerprints.delete(scope);
-    if (deps.timedJob) {
-      // End the supervised process even when card delivery failed before the
-      // renderer drained the stream. Never let a rendering error detach work.
-      await execution.stop('cleanup');
-      await timedResult;
-    }
-    await questionsDone;
-  }
-}
-
-function summarizeRunInput(batch: NormalizedMessage[]): string {
-  return batch
-    .map((message) => message.content.replace(/\s+/g, ' ').trim())
-    .filter(Boolean)
-    .join(' / ')
-    .slice(0, 180);
-}
-
-function buildPrompt(
-  batch: NormalizedMessage[],
-  attachments: LocalAttachment[],
-  quotes: QuotedContext[] = [],
-  topicContext: QuotedContext[] = [],
-  botIdentity?: { openId: string; name?: string },
-  extraInstructions?: string[],
-): string {
-  const first = batch[0];
-  if (!first) return '';
-
-  const fileKeys = batch.flatMap((m) => m.resources.map((r) => r.fileKey));
-  // When the debounce window merged messages (possibly from several senders —
-  // common in bot-at-bot group chats), annotate each segment with its sender
-  // so the agent can tell who said what. Single-message batches stay verbatim.
-  const annotate = batch.length > 1;
-  const texts = batch
-    .map((m) => {
-      const text = stripAttachmentRefs(m.content, fileKeys).trim();
-      if (!text) return '';
-      return annotate ? `${senderAnnotation(m)} ${text}` : text;
-    })
-    .filter(Boolean);
-  const userPart =
-    texts.length > 0
-      ? texts.join('\n\n')
-      : attachments.length > 0
-        ? '请看下面的附件。'
-        : '（对方发来一条没有正文的消息——通常是只 @ 了你的唤醒（ping）。请简短回应。）';
-
-  const senderType = senderTypeOf(first);
-  const mentions = mergeMentions(batch);
-
-  return buildAgentPrompt({
-    context: {
-      chatId: first.chatId,
-      chatType: first.chatType,
-      senderId: first.senderId,
-      ...(first.senderName ? { senderName: first.senderName } : {}),
-      ...(senderType ? { senderType } : {}),
-      ...(botIdentity?.openId ? { botOpenId: botIdentity.openId } : {}),
-      ...(mentions.length > 0 ? { mentions } : {}),
-      ...(first.threadId ? { threadId: first.threadId } : {}),
-      messageIds: batch.map((m) => m.messageId),
-      source: 'im',
-    },
-    instructions: extraInstructions,
-    userInput: userPart,
-    ...(topicContext.length > 0 ? { topicContext: topicContext.map(toPromptTopicMessage) } : {}),
-    quotedMessages: quotes.map(toPromptQuote),
-    interactiveCards: batch.map(toPromptInteractiveCard).filter(isDefined),
-    attachments: attachments.map(toPromptAttachment),
-  });
-}
-
-/**
- * Classify the sender as human or bot from the raw Feishu event
- * (`sender.sender_type`: 'user' = human, 'app' = bot). The normalizer drops
- * this field, so read it off `msg.raw` (`includeRawEvent: true` above).
- * Unknown / missing values return undefined — omit rather than guess.
- */
-function senderTypeOf(msg: NormalizedMessage): 'user' | 'bot' | undefined {
-  const raw = msg.raw as { sender?: { sender_type?: unknown } } | undefined;
-  const senderType = raw?.sender?.sender_type;
-  if (senderType === 'user') return 'user';
-  if (senderType === 'app' || senderType === 'bot') return 'bot';
-  return undefined;
-}
-
-function senderAnnotation(msg: NormalizedMessage): string {
-  const name = msg.senderName ?? msg.senderId;
-  const type = senderTypeOf(msg);
-  return type ? `[${name} (${type})]:` : `[${name}]:`;
-}
-
-function mergeMentions(batch: NormalizedMessage[]): BridgePromptMention[] {
-  const seen = new Set<string>();
-  const out: BridgePromptMention[] = [];
-  for (const msg of batch) {
-    for (const mention of msg.mentions ?? []) {
-      const dedupeKey = mention.openId ?? `${mention.name ?? ''}:${mention.key}`;
-      if (seen.has(dedupeKey)) continue;
-      seen.add(dedupeKey);
-      out.push({
-        ...(mention.openId ? { openId: mention.openId } : {}),
-        ...(mention.name ? { name: mention.name } : {}),
-        ...(mention.isBot !== undefined ? { isBot: mention.isBot } : {}),
-      });
-    }
-  }
-  return out;
-}
-
-function replyQuoteTargetForMessage(
-  msg: NormalizedMessage,
-  mode: ChatMode,
-): string | undefined {
-  const replyTo = msg.replyToMessageId;
-  if (!replyTo) return undefined;
-
-  // Feishu topic messages use root_id/parent_id as the topic root anchor even
-  // for ordinary in-topic messages. Treat that as structure, not a quote.
-  if (mode === 'topic' && msg.threadId && msg.rootId && replyTo === msg.rootId) {
-    return undefined;
-  }
-  return replyTo;
-}
-
-function stripAttachmentRefs(text: string, fileKeys: string[]): string {
-  if (!text || fileKeys.length === 0) return text;
-  let out = text;
-  for (const key of fileKeys) {
-    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    out = out.replace(new RegExp(`!?\\[[^\\]]*\\]\\(${escaped}\\)`, 'g'), '');
-    out = out.replace(
-      new RegExp(
-        `<\\s*(?:file|image|img|audio|video|media|folder)\\b[^>]*\\bkey\\s*=\\s*["']${escaped}["'][^>]*>`,
-        'gi',
-      ),
-      '',
-    );
-  }
-  return out.replace(/\n{3,}/g, '\n\n');
-}
-
-function toPromptQuote(q: QuotedContext): BridgePromptQuotedMessage {
-  return {
-    messageId: q.messageId,
-    senderId: q.senderId,
-    ...(q.openBotId ? { openBotId: q.openBotId } : {}),
-    ...(q.senderName ? { senderName: q.senderName } : {}),
-    ...(q.createdAt ? { createdAt: q.createdAt } : {}),
-    rawContentType: q.rawContentType,
-    content: q.content,
-  };
-}
-
-function toPromptTopicMessage(q: QuotedContext): BridgePromptTopicMessage {
-  return {
-    messageId: q.messageId,
-    senderId: q.senderId,
-    ...(q.openBotId ? { openBotId: q.openBotId } : {}),
-    ...(q.senderName ? { senderName: q.senderName } : {}),
-    ...(q.senderType ? { senderType: q.senderType } : {}),
-    ...(q.createdAt ? { createdAt: q.createdAt } : {}),
-    rawContentType: q.rawContentType,
-    content: q.content,
-  };
-}
-
-function toPromptInteractiveCard(m: NormalizedMessage): BridgePromptInteractiveCard | undefined {
-  if (m.rawContentType !== 'interactive') return undefined;
-  const rawContent = (m.raw as { message?: { content?: unknown } } | undefined)
-    ?.message?.content;
-  if (typeof rawContent !== 'string' || rawContent.length === 0) return undefined;
-  return {
-    messageId: m.messageId,
-    content: parseJsonOrRaw(rawContent),
-  };
-}
-
-function parseJsonOrRaw(input: string): unknown {
-  try {
-    return JSON.parse(input) as unknown;
-  } catch {
-    return input;
-  }
-}
-
-function isDefined<T>(value: T | undefined): value is T {
-  return value !== undefined;
 }

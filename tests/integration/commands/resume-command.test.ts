@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CardActionEvent, NormalizedMessage } from '@larksuite/channel';
 import { claudeCapability, codexCapability } from '../../../src/agent/capability.js';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
-import type { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
+import { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
 import { handleCardAction } from '../../../src/card/dispatcher.js';
 import { tryHandleCommand, type CommandContext, type Controls } from '../../../src/commands/index.js';
@@ -300,9 +300,8 @@ async function createHarness(
     workspaces.setCwd('chat-1', tmp.workspace);
   }
   const identity = await commandIdentity(agentKind, profileConfig, controls, tmp.workspace);
-  const chatModeCache = {
-    resolve: async () => 'p2p',
-  } as unknown as ChatModeCache;
+  const chatModeCache = new ChatModeCache();
+  chatModeCache.resolve = async () => 'p2p';
 
   const run = (
     content: string,

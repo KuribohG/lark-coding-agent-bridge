@@ -22,3 +22,16 @@ it('keeps execution runtime independent of channel hosts and concrete adapters',
   }
   expect(violations).toEqual([]);
 });
+
+it('keeps Lark input, execution, prompt and transport modules independent of the composition root', async () => {
+  for (const name of ['intake', 'run', 'prompt', 'sdk', 'turns']) {
+    const path = new URL(`../../../src/channels/lark/${name}.ts`, import.meta.url);
+    const source = ts.createSourceFile(fileURLToPath(path), await readFile(path, 'utf8'), ts.ScriptTarget.Latest, true);
+    const imports = source.statements.filter(ts.isImportDeclaration).map(node => (node.moduleSpecifier as ts.StringLiteral).text);
+    for (const root of ['./channel', './index', '../../bot/channel']) expect(imports, name).not.toContain(root);
+    if (name === 'intake') expect(imports).not.toContain('./run');
+    if (name === 'prompt' || name === 'sdk' || name === 'turns') {
+      expect(imports.filter(path => /(?:workflows|commands)(?:\/|$)/.test(path)), name).toEqual([]);
+    }
+  }
+});

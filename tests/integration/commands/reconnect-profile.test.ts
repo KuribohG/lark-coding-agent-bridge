@@ -66,7 +66,8 @@ describe('/reconnect profile lifecycle', () => {
     expect(disconnectBlock).toContain('await Promise.allSettled([');
     expect(disconnectBlock).toContain('channel.disconnect()');
     expect(disconnectBlock).toContain("activeRuns.stopAll('shutdown')");
-    expect(source).toContain('sessionCatalogIdentity: await commandSessionCatalogIdentity({');
+    const intake = await readFile(join(process.cwd(), 'src/channels/lark/intake.ts'), 'utf8');
+    expect(intake).toContain('sessionCatalogIdentity: await commandSessionCatalogIdentity({');
   });
 });
 

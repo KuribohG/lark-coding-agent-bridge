@@ -1,7 +1,7 @@
 import type { CardActionEvent } from '@larksuite/channel';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
-import type { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
+import { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
 import { CallbackAuth } from '../../../src/card/callback-auth.js';
 import { CallbackNonceStore } from '../../../src/card/callback-store.js';
@@ -122,9 +122,8 @@ async function createHarness(): Promise<Harness> {
     cfg: profileConfig,
     processId: 'proc-1',
   } satisfies Controls;
-  const chatModeCache = {
-    resolve: async () => 'group',
-  } as unknown as ChatModeCache;
+  const chatModeCache = new ChatModeCache();
+  chatModeCache.resolve = async () => 'group';
 
   const cleanup = async (): Promise<void> => {
     pending.cancelAll();

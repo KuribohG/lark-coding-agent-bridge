@@ -193,8 +193,26 @@ model supported by the destination engine or clear the override.
 
 ## Chat output, commands and preferences
 
-`src/channels/lark/channel.ts` handles message intake and run setup. It passes an event
-subscription to `run-output.ts`, which owns progress streams, COT fallback,
+Lark responsibilities are separated at the transport boundary:
+
+| Module under `src/channels/lark/` | Owns |
+| --- | --- |
+| `channel.ts` | Composition, feature wiring and connection lifetime |
+| `sdk.ts` | SDK configuration and SDK log filtering |
+| `intake.ts` | Access/mention/command gates and follow-up delivery |
+| `turns.ts` | One scope reservation across preparation, execution and cancellation |
+| `run.ts` | Context gathering, policy submission and output/session observers |
+| `prompt.ts` | Pure conversion from Lark messages to agent input |
+
+Queued input, workflow wakes and timed runs share `LarkTurns`. A reservation blocks
+pending delivery before asynchronous preparation, stays owned during cancellation,
+and releases once even on failure. Shutdown aborts reservations and suspends the
+queue before release can rearm it. Feature code does not maintain a second map of
+in-flight preparations. Both text and card callbacks use `ChatModeCache.resolveScope`
+so topic identity follows one rule. The leaf modules must not import the channel
+composition root; dependency checks enforce this direction.
+
+`run.ts` passes an event subscription to `run-output.ts`, which owns progress streams, COT fallback,
 empty-message cleanup and final delivery. Card and Markdown streams share the
 same progress lifecycle. `run-stream.ts` reduces agent events and maintains the
 idle watchdog; rendering keeps the run's execution capabilities and live display

@@ -54,9 +54,10 @@ describe('Claude IM regression boundaries', () => {
   });
 
   it('documents the private intake policy that drops @all and undirected group chatter', async () => {
-    const source = await readFile(join(process.cwd(), 'src/channels/lark/channel.ts'), 'utf8');
+    const source = await readFile(join(process.cwd(), 'src/channels/lark/intake.ts'), 'utf8');
 
-    expect(source).toContain('respondToMentionAll: false');
+    const sdk = await readFile(join(process.cwd(), 'src/channels/lark/sdk.ts'), 'utf8');
+    expect(sdk).toContain('respondToMentionAll: false');
     // The group-mention gate honors a per-chat override first, then the global
     // setting (both resolved by requireMentionForChat).
     expect(source).toContain('requireMentionForChat(controls.profileConfig, controls.cfg, msg.chatId)');

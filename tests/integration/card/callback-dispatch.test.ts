@@ -2,7 +2,7 @@ import type { CardActionEvent, CardActionResponse } from '@larksuite/channel';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { UserQuestions } from '../../../src/bot/user-questions';
 import { ActiveRuns } from '../../../src/bot/active-runs.js';
-import type { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
+import { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
 import { PendingQueue } from '../../../src/bot/pending-queue.js';
 import { CallbackAuth } from '../../../src/card/callback-auth.js';
 import { CallbackNonceStore } from '../../../src/card/callback-store.js';
@@ -261,9 +261,8 @@ async function createHarness(
     now: () => 1000,
     createNonce: () => nonce,
   });
-  const chatModeCache = {
-    resolve: async () => opts.chatMode ?? 'group',
-  } as unknown as ChatModeCache;
+  const chatModeCache = new ChatModeCache();
+  chatModeCache.resolve = async () => opts.chatMode ?? 'group';
   cleanups.push(async () => {
     pending.cancelAll();
     await Promise.all([sessions.flush(), workspaces.flush(), store.flush()]);

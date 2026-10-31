@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { runAgentBatch } from '../../../src/channels/lark/channel';
+import { runAgentBatch } from '../../../src/channels/lark/run';
 import { presentRunOutput } from '../../../src/runtime/run-output';
 import { createLarkRunOutput } from '../../../src/channels/lark/run-output';
 import { fetchTopicContext } from '../../../src/bot/quote';
