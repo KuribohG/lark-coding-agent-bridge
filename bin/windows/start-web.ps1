@@ -1,25 +1,39 @@
 param(
     [string]$Workspace = (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent),
-    [string]$StateDir = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) '.web-local'),
+    [string]$StateDir,
     [ValidateRange(1, 65535)][int]$Port = 8787,
-    [switch]$OpenBrowser
+    [switch]$OpenBrowser,
+    [string]$CodexBinary = $env:CODEX_CLI_PATH
 )
 
 $ErrorActionPreference = 'Stop'
 $repository = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+$node = (Get-Command node.exe -ErrorAction Stop).Source
+if (-not $StateDir) {
+    $StateDir = & $node (Join-Path $PSScriptRoot 'state-dir.mjs') $repository
+    if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the Web state directory.' }
+}
 $StateDir = [IO.Path]::GetFullPath($StateDir)
 $entry = Join-Path $PSScriptRoot 'run-web.mjs'
 $stdout = Join-Path $StateDir 'web.stdout.log'
 $stderr = Join-Path $StateDir 'web.stderr.log'
 $metadata = Join-Path $StateDir 'web-process.json'
-$node = (Get-Command node.exe -ErrorAction Stop).Source
-$codexCommand = Get-Command codex.exe -ErrorAction SilentlyContinue
-$codex = if ($codexCommand) { $codexCommand.Source } else { $env:CODEX_CLI_PATH }
-if (-not $codex -or -not (Test-Path -LiteralPath $codex)) {
+$codex = $CodexBinary
+if ($codex -and -not (Test-Path -LiteralPath $codex -PathType Leaf)) {
+    throw "Configured Codex binary does not exist: $codex"
+}
+if (-not $codex) {
+    foreach ($name in @('codex.cmd', 'codex.exe')) {
+        $command = Get-Command $name -CommandType Application -ErrorAction SilentlyContinue
+        if ($command) { $codex = $command.Source; break }
+    }
+}
+if (-not $codex) {
     $codex = Get-ChildItem -LiteralPath (Join-Path $env:LOCALAPPDATA 'OpenAI\Codex\bin') -Filter codex.exe -Recurse -ErrorAction SilentlyContinue |
         Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
 }
-if (-not $codex) { throw 'Codex CLI not found. Install it or add codex.exe to PATH.' }
+if (-not $codex) { throw 'Codex CLI not found. Install the complete CLI package, or pass -CodexBinary with its .cmd or .exe entry point.' }
+$codex = (Resolve-Path -LiteralPath $codex).Path
 if (-not (Test-Path -LiteralPath (Join-Path $repository 'dist\cli.js'))) {
     throw 'Build missing. Run npx --yes pnpm@10.33.0 install --frozen-lockfile in the repository first.'
 }

@@ -21,7 +21,7 @@ const THREAD_SOURCE = 'appServer';
 const SERVICE_NAME = 'lark-channel-bridge';
 // App-server Unix sockets speak WebSocket, while Bridge's protocol adapter is
 // JSONL over stdio. Keep this translation local so daemon lifecycle stays owned
-// by Codex and does not depend on `app-server proxy` transport behavior.
+// by Codex. On Windows its native byte proxy provides the AF_UNIX connection.
 const WS_PROXY = fileURLToPath(new URL(
   import.meta.url.endsWith('.ts')
     ? '../../../bin/codex-app-server-ws-proxy.mjs'
@@ -76,7 +76,7 @@ export function startAppServerRun(input: {
   const args = appServerMode === 'daemon'
     ? (() => {
         if (!input.daemonSocketPath) throw new Error('daemon app-server socket path is required');
-        return [WS_PROXY, input.daemonSocketPath];
+        return [WS_PROXY, input.daemonSocketPath, ...(process.platform === 'win32' ? [input.binary] : [])];
       })()
     : ['app-server', '--listen', 'stdio://',
         '-c', 'approval_policy="never"', '-c', 'shell_environment_policy.inherit="all"'];

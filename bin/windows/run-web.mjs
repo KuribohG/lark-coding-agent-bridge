@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parse, stringify } from 'smol-toml';
+import { defaultWebStateDir } from './state-dir.mjs';
 
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const nativeHome = process.env.CODEX_HOME || join(homedir(), '.codex');
@@ -15,7 +16,7 @@ if (!provider || provider.wire_api !== 'responses') {
 const credential = provider.experimental_bearer_token || (provider.env_key && process.env[provider.env_key]);
 if (!credential) throw new Error('The configured provider has no readable bearer token or environment credential.');
 
-const privateHome = join(process.env.BRIDGE_WEB_STATE_DIR || join(repository, '.web-local'), 'codex-home');
+const privateHome = join(process.env.BRIDGE_WEB_STATE_DIR || defaultWebStateDir(repository), 'codex-home');
 const headers = { ...provider.env_http_headers };
 for (const [index, [name, value]] of Object.entries(provider.http_headers ?? {}).entries()) {
   const variable = `BRIDGE_CODEX_HEADER_${index}`;

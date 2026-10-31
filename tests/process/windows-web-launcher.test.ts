@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -52,6 +52,27 @@ async function fixture(auth: 'bearer' | 'environment' | 'missing' | 'oauth') {
 }
 
 describe('isolated Windows Web launcher configuration', () => {
+  it('uses a short stable home for new repositories and preserves legacy state', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'web-state-'));
+    directories.push(root);
+    const repository = join(root, 'deep', 'repository');
+    const resolveState = async (path: string) => {
+      const result = await execute(process.execPath, [
+        join(process.cwd(), 'bin/windows/state-dir.mjs'), path,
+      ]);
+      return result.stdout;
+    };
+    const short = await resolveState(repository);
+    expect(short).toMatch(/[\\/]\.lark-web[\\/][a-f0-9]{8}$/);
+    expect(await resolveState(repository)).toBe(short);
+    expect(await resolveState(`${repository}-other`)).not.toBe(short);
+    const legacy = join(repository, '.web-local');
+    await mkdir(legacy, { recursive: true });
+    await writeFile(join(legacy, 'session-marker'), 'preserved');
+    expect(await resolveState(repository)).toBe(legacy);
+    expect(await readFile(join(legacy, 'session-marker'), 'utf8')).toBe('preserved');
+  });
+
   it.each(['bearer', 'environment'] as const)('reuses %s credentials without persisting them or native plugins', async auth => {
     const source = await fixture(auth);
     const result = await execute(process.execPath, [launcher, '--help'], { env: source.env, timeout: 15_000 });

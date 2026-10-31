@@ -72,3 +72,24 @@ post-completion grace period. The existing cleanup logs
 `post-done-exit-timeout` and terminates that run's process. Real replies and
 isolated restart/resume passed; this patch does not hide the warning, expand
 permissions or relax the timeout.
+
+## Daemon compatibility follow-up (2026-10-31)
+
+The later default of `appServerMode = "daemon"` requires a different Windows
+transport from the per-run validation above. Node's Windows pipe connection
+cannot reach Codex's AF_UNIX socket. The WebSocket bridge now uses the configured
+CLI's `app-server proxy --sock` command as its byte transport on Windows; Codex
+continues to own the persistent daemon. Stopping a proxy also cleans up its
+Windows command launcher and native child.
+
+New optional Web launcher installations use a short home under
+`%USERPROFILE%\.lark-web`; existing `.web-local` state and explicit `-StateDir`
+values are retained. The launcher recognizes npm's `codex.cmd` entry point and
+accepts an explicit `-CodexBinary`. See [channels.md](channels.md) for package
+requirements and moving an existing home when its socket path is too long.
+
+This follow-up was checked on Linux: process tests cover WebSocket framing,
+Unicode paths, errors, reconnection, daemon reuse, and state-directory selection.
+A real Codex CLI 0.165.0 app-server completed `initialize` through its native byte
+proxy. This is not a native Windows AF_UNIX or PowerShell end-to-end result;
+the daemon process fixtures also run on Windows using a named-pipe test server.

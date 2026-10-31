@@ -1,8 +1,13 @@
 param(
-    [string]$StateDir = (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) '.web-local')
+    [string]$StateDir
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $StateDir) {
+    $repository = Split-Path (Split-Path $PSScriptRoot -Parent) -Parent
+    $StateDir = & (Get-Command node.exe -ErrorAction Stop).Source (Join-Path $PSScriptRoot 'state-dir.mjs') $repository
+    if ($LASTEXITCODE -ne 0) { throw 'Could not resolve the Web state directory.' }
+}
 $metadata = Join-Path $StateDir 'web-process.json'
 if (-not (Test-Path -LiteralPath $metadata)) {
     Write-Output 'No managed Web app process recorded.'

@@ -1,5 +1,6 @@
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -18,10 +19,11 @@ afterEach(async () => {
 async function harness() {
   const dir = await mkdtemp(join(tmpdir(), 'codex-daemon-'));
   dirs.push(dir);
-  const binary = join(dir, 'codex');
+  const binary = join(dir, process.platform === 'win32' ? 'codex.cmd' : 'codex');
+  const script = process.platform === 'win32' ? join(dir, 'codex.cjs') : binary;
   const daemonState = join(dir, 'daemon-running');
   const lifecycle = join(dir, 'lifecycle.jsonl');
-  const socketPath = join(dir, 'app.sock');
+  const socketPath = process.platform === 'win32' ? `\\\\.\\pipe\\codex-daemon-${randomUUID()}` : join(dir, 'app.sock');
   const requests: Array<{ method: string; params: any }> = [];
 
   const httpServer = createServer();
@@ -55,15 +57,21 @@ async function harness() {
     await new Promise<void>(resolve => httpServer.close(() => resolve()));
   });
 
-  await writeFile(binary, `#!/usr/bin/env node
+  await writeFile(script, `#!${process.execPath}
 const fs = require('node:fs');
-const rl = require('node:readline').createInterface({ input: process.stdin });
 const args = process.argv.slice(2);
 const record = value => fs.appendFileSync(${JSON.stringify(lifecycle)}, JSON.stringify(value) + '\\n');
 record({ args, codexHome: process.env.CODEX_HOME });
 if (args[0] === '--version') {
   process.stdout.write('codex 0.162.1\\n');
   process.exit(0);
+}
+if (args[0] === 'app-server' && args[1] === 'proxy') {
+  const socket = require('node:net').connect(args[3]);
+  process.stdin.pipe(socket).pipe(process.stdout);
+  socket.on('error', () => process.exit(1));
+  socket.on('close', () => process.exit(0));
+  return;
 }
 if (args[0] === 'app-server' && args[1] === 'daemon') {
   if (args[2] === 'version') {
@@ -90,6 +98,9 @@ if (args[0] === 'app-server' && args[1] === 'daemon') {
 process.stderr.write('unexpected command\\n');
 process.exit(2);
 `);
+  if (process.platform === 'win32') {
+    await writeFile(binary, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`);
+  }
   await chmod(binary, 0o700);
 
   const provider = { id: 'probe', displayName: 'Probe', model: 'probe-model', env: { PROBE_API_KEY: 'must-not-be-serialized' }, codex: { providerId: 'probe', name: 'Probe', baseUrl: 'https://probe.example/v1', wireApi: 'responses' as const, apiKeyEnv: 'PROBE_API_KEY' } };
@@ -184,7 +195,7 @@ describe('Codex persistent app-server mode', () => {
     expect(daemonCommands.filter(args => args[2] === 'start')).toHaveLength(1);
     expect(daemonCommands.some(args => args[2] === 'stop')).toBe(false);
 
-    expect(records.some(record => record.args[1] === 'proxy')).toBe(false);
+    expect(records.some(record => record.args[1] === 'proxy')).toBe(process.platform === 'win32');
     const threadStart = h.requests.find(request => request.method === 'thread/start');
     expect(threadStart?.params).toMatchObject({
       model: 'probe-model',

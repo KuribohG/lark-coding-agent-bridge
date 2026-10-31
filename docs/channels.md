@@ -93,10 +93,24 @@ session writers, desktop plugins and notification hooks with a running Codex app
 ```
 
 Both scripts accept `-StateDir`; use the same directory when stopping or restarting.
-The default is the git-ignored `.web-local` directory in the repository. The start
+New installations default to `%USERPROFILE%\.lark-web\<repository-hash>` to
+keep Codex's daemon socket path short. An existing repository `.web-local`
+directory is reused so upgrades retain conversations. The start
 script prints the authenticated URL, binds only localhost, runs the server hidden,
 and waits for an old state lock to expire on immediate restart. The stop script
 checks the recorded process identity before terminating its process tree.
+
+The launcher accepts `-CodexBinary` (or `CODEX_CLI_PATH`) for an explicit CLI
+entry point. Otherwise it checks `codex.cmd`, then `codex.exe` on PATH, then the
+desktop installation. Daemon mode needs a complete Codex installation; a copied
+`codex.exe` alone may lack its daemon package. Install the matching full package
+when Codex reports missing package metadata or companion files.
+
+If Codex reports a socket path length error, stop the Web app and its private
+Codex daemon before moving the **entire** state directory to a shorter location,
+then pass that location as `-StateDir` to both scripts. Keep the directory private
+to your Windows account. A junction to a long path may still resolve to the long
+physical path. Existing state is never moved automatically.
 
 The isolated launcher reads a custom `wire_api = "responses"` provider from the
 native Codex config. Bearer tokens and literal HTTP header values are passed only
