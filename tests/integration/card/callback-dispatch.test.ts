@@ -29,7 +29,56 @@ describe('signed card callback dispatch', () => {
     expect(h.pending.cancel('oc_group:th_topic')).toHaveLength(0);
   });
   afterEach(async () => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
+  });
+
+  it.each(['chat', 'carrier'] as const)('responds before a slow %s lookup and still enforces callback authorization', async lookup => {
+    const h = await createHarness({ chatMode: 'topic' });
+    h.channel.rawThreadIds.set('om_card', 'th_topic');
+    h.activeRuns.register('oc_group:th_topic', h.agent.run({ runId: 'run-active', prompt: 'running' }));
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const spy = lookup === 'chat'
+      ? vi.spyOn(h.chatModeCache, 'resolve').mockImplementation(async () => { await gate; return 'topic'; })
+      : vi.spyOn(h.channel, 'fetchRawMessage').mockImplementation(async () => { await gate; return [{ thread_id: 'th_topic' }]; });
+    vi.useFakeTimers();
+    const response = h.dispatch({
+      __bridge_cb: true,
+      bridge_token: h.token('agent_callback', { nonce: `slow-${lookup}`, scope: 'oc_group:th_topic' }),
+      choice: 'a',
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(await response).toMatchObject({ toast: { type: 'info' } });
+    expect(h.pending.cancel('oc_group:th_topic')).toHaveLength(0);
+    release();
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(h.pending.hasWork('oc_group:th_topic')).toBe(true));
+    expect(h.pending.cancel('oc_group:th_topic')).toHaveLength(1);
+    spy.mockRestore();
+    await h.dispatch({ __bridge_cb: true, bridge_token: 'invalid', choice: 'b' });
+    expect(h.pending.cancel('oc_group:th_topic')).toHaveLength(0);
+  });
+
+  it('reports a question failure after the early response in the original topic', async () => {
+    let fail!: (error: Error) => void;
+    const answer = vi.fn(() => new Promise<void>((_resolve, reject) => { fail = reject; }));
+    const h = await createHarness({ chatMode: 'topic', userQuestions: { answer } as unknown as UserQuestions });
+    h.channel.rawThreadIds.set('om_card', 'th_topic');
+    vi.useFakeTimers();
+    const response = h.dispatch({ cmd: 'question.answer', question_id: 'q', choice: 0 });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(await response).toMatchObject({ toast: { type: 'info' } });
+    // Workspace identity resolution may still be awaiting filesystem IO.
+    vi.useRealTimers();
+    await vi.waitFor(() => expect(answer).toHaveBeenCalledOnce());
+    fail(new Error('input transport failed'));
+    await vi.waitFor(() => expect(h.channel.sent).toHaveLength(1));
+    expect(h.channel.sent[0]).toMatchObject({
+      chatId: 'oc_group', content: { markdown: expect.stringContaining('未能确认完成') },
+      options: { replyTo: 'om_card', replyInThread: true },
+    });
   });
 
   it('dispatches native inbox actions with carrier topic context and no active agent run', async () => {
@@ -164,6 +213,7 @@ type Harness = {
   activeRuns: ActiveRuns;
   agent: FakeAgentAdapter;
   controls: Controls;
+  chatModeCache: ChatModeCache;
   pending: PendingQueue;
   auth: CallbackAuth;
   dispatch(value: Record<string, unknown>, formValue?: Record<string, unknown>): Promise<CardActionResponse | void>;
@@ -228,6 +278,7 @@ async function createHarness(
     activeRuns,
     agent,
     controls,
+    chatModeCache,
     pending,
     auth,
     token: (action, overrides = {}) => {

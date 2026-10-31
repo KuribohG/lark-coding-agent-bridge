@@ -6,12 +6,13 @@ import { PendingQueue } from '../../../src/bot/pending-queue';
 import { UserQuestions } from '../../../src/bot/user-questions';
 import { CallbackAuth } from '../../../src/card/callback-auth';
 import { CallbackNonceStore } from '../../../src/card/callback-store';
+import { respondToCardAction } from '../../../src/card/response';
 import { SessionCatalog } from '../../../src/session/catalog';
 import { createFakeChannel } from '../../helpers/fake-channel';
 import { createTmpProfile } from '../../helpers/tmp-profile';
 
 const cleanups: Array<() => Promise<void>> = [];
-afterEach(async () => { vi.restoreAllMocks(); await Promise.all(cleanups.splice(0).map(fn => fn())); });
+afterEach(async () => { vi.useRealTimers(); vi.restoreAllMocks(); await Promise.all(cleanups.splice(0).map(fn => fn())); });
 
 async function harness(options: { auth?: boolean; timed?: boolean; mention?: boolean } = {}) {
   const tmp = await createTmpProfile('user-questions-');
@@ -55,6 +56,30 @@ async function harness(options: { auth?: boolean; timed?: boolean; mention?: boo
 }
 
 describe('native async question cards', () => {
+  it.each(['delivery', 'update'] as const)('responds while %s is pending, then settles the card without duplicate delivery', async stage => {
+    const h = await harness(); await h.publish();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    if (stage === 'delivery') h.steer.mockImplementationOnce(async () => { await gate; return 'accepted'; });
+    else {
+      const update = h.channel.updateCardById.bind(h.channel);
+      vi.spyOn(h.channel, 'updateCardById').mockImplementationOnce(async (...args) => { await gate; return update(...args); });
+    }
+    const notify = vi.fn();
+    vi.useFakeTimers();
+    const response = respondToCardAction(() => h.click(h.values()[0]!), notify);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(await response).toMatchObject({ toast: { type: 'info' } });
+    expect(h.steer).toHaveBeenCalledOnce();
+    // A different choice must remain locked after the early callback response.
+    await h.click(h.values()[1]!);
+    expect(h.steer).toHaveBeenCalledOnce();
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(JSON.stringify(h.channel.rawClient.requests)).toContain('已送入当前任务');
+    expect(h.pending.cancel(h.identity.scopeId)).toHaveLength(0);
+    expect(notify).not.toHaveBeenCalled();
+  });
   it('sends a standalone topic mention with signed choice buttons and free text', async () => {
     const h = await harness(); await h.publish();
     expect(h.channel.sent).toHaveLength(1);

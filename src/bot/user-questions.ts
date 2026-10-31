@@ -114,6 +114,7 @@ export class UserQuestions {
     entry.status = '正在提交你的回答。';
     const content = `对之前提问的回答：\n问题：${entry.title}\n回答：${answer.trim()}`;
     const messageId = `${entry.messageId}:${entry.id}`;
+    log.info('question', 'delivery-started', { scope: input.scope, runId: entry.runId });
     const result = await this.deps.followups.deliver({
       scope: input.scope, messageId, activeRuns: this.deps.activeRuns,
       prepare: async () => buildAgentPrompt({
@@ -153,6 +154,7 @@ export class UserQuestions {
   private async finish(entry: Entry, status: string): Promise<CardActionResponse> {
     entry.status = status;
     if (!entry.messageId) return this.response(entry);
+    log.info('question', 'update-started', { messageId: entry.messageId });
     try { await updateManagedCard(this.deps.channel, entry.messageId, this.card(entry)); }
     catch (err) {
       log.warn('question', 'update-failed', { messageId: entry.messageId, err: String(err) });
@@ -160,6 +162,7 @@ export class UserQuestions {
         replyTo: entry.messageId, ...(entry.message.threadId ? { replyInThread: true } : {}),
       });
     }
+    log.info('question', 'update-completed', { messageId: entry.messageId });
     return this.response(entry);
   }
 

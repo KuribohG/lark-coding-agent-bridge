@@ -16,6 +16,7 @@ import type { WorkspaceStore } from '../workspace/store';
 import { commandSessionCatalogIdentity } from '../bot/session-catalog-identity';
 import { lookupMessageThreadId } from '../bot/thread-id';
 import type { UserQuestions } from '../bot/user-questions';
+import { respondToCardAction } from './response';
 
 /** Marker key on a button's value object that flags the cardAction as
  * a callback that should be forwarded back to the agent instead
@@ -48,7 +49,19 @@ export interface CardDispatchDeps {
   callbackPolicyFingerprintForScope?: (scope: string) => string | undefined;
 }
 
-export async function handleCardAction(deps: CardDispatchDeps): Promise<CardActionResponse | void> {
+export function handleCardAction(deps: CardDispatchDeps): Promise<CardActionResponse | void> {
+  return respondToCardAction(
+    () => dispatchCardAction(deps),
+    async (markdown) => {
+      const { mode } = await resolveScope(deps);
+      return deps.channel.send(deps.evt.chatId, { markdown }, {
+        replyTo: deps.evt.messageId, ...(mode === 'topic' ? { replyInThread: true } : {}),
+      });
+    },
+  );
+}
+
+async function dispatchCardAction(deps: CardDispatchDeps): Promise<CardActionResponse | void> {
   const value = deps.evt.action.value;
   if (!value || typeof value !== 'object') return;
   const payload = value as Record<string, unknown>;
@@ -70,6 +83,7 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<CardActi
   // Done before the access check so we know the chat mode (p2p vs group)
   // and can skip the chat allowlist for DMs.
   const { scope, threadId, mode } = await resolveScope(deps);
+  log.info('cardAction', 'scope-resolved', { scope });
   const resolveAgent = deps.resolveAgent
     ?? (deps.agent ? () => deps.agent! : undefined);
   if (!resolveAgent) throw new Error('card action requires agent or resolveAgent');
@@ -156,12 +170,8 @@ export async function handleCardAction(deps: CardDispatchDeps): Promise<CardActi
     if (name === 'config') ctx.formValue = { ...ctx.formValue, config_revision: payload.revision, config_section: payload.section };
     const args = composeArgs(sub, payload);
 
-    try {
-      const ok = await runCommandHandler(name ?? '', args, ctx);
-      if (!ok) log.warn('cardAction', 'unknown', { cmd });
-    } catch (err) {
-      log.fail('cardAction', err, { cmd });
-    }
+    const ok = await runCommandHandler(name ?? '', args, ctx);
+    if (!ok) log.warn('cardAction', 'unknown', { cmd });
     return;
   }
 
