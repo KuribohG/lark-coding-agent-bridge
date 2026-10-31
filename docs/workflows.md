@@ -311,7 +311,9 @@ Additional nested lifecycle cases run with `--scenarios nested-recovery,nested-c
 - `nested-queue`: a child planner produces four values and enqueues work into its parent's queue. A persistent consumer completes each item once; explicit closure drains the pool.
 - `nested-before-yield`: close the controller directly after a parent commits its child, before it yields. Explicit replay must execute that same child and return its result to the original parent session. A controller shutdown must not convert the accepted child into a permanent cancellation.
 
-These recovery cases use controlled controller shutdown, not a machine crash. They verify bridge state, process slots and native session continuity; external tool side effects still require idempotency checks.
+These recovery cases use controlled controller shutdown. Opt into `--scenarios nested-crash` on POSIX to SIGKILL the isolated controller immediately after the native parent yields, before its pending child runs. The launcher requires the expected crash signal and saved boundary evidence, then explicitly replays in a fresh process and verifies the original parent session and child result. This case waits for the native turn to exit before killing the controller; it does not kill the shared Codex daemon or test recovery of an active native turn.
+
+`tests/process/workflow-crash-recovery.test.ts` also exercises six deterministic SIGKILL boundaries with real SQLite storage and controlled workers: child-call commit before yield, child-result commit before consumption, uncommitted child insertion, uncommitted child completion, claimed work with saved progress, and completed work. It checks transaction rollback, database integrity, explicit replay, deduplication, progress retention and rejection of stale attempts/claim generations. These are controller-process crashes, not machine power loss; external tool side effects still require idempotency checks.
 
 The runner covers:
 

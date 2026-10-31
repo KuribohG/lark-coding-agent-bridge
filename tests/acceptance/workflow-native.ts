@@ -35,7 +35,7 @@ const save = (path: string, data: unknown) => writeFile(path, JSON.stringify(dat
 type Backend = Extract<AgentKind, 'codex' | 'claude' | 'pi'>;
 type Case = {
   id: string;
-  scenario: 'memory' | 'interrupt' | 'discussion' | 'queue' | 'consumers' | 'nested' | 'nested-recovery' | 'nested-cancel' | 'nested-queue' | 'nested-before-yield';
+  scenario: 'memory' | 'interrupt' | 'discussion' | 'queue' | 'consumers' | 'nested' | 'nested-recovery' | 'nested-cancel' | 'nested-queue' | 'nested-before-yield' | 'nested-crash';
   backend: Backend;
   reviewer?: Backend;
   marker: string;
@@ -405,7 +405,19 @@ async function launch(test: Case, phase: string, directory: string): Promise<voi
       clearTimeout(force);
       process.removeListener('SIGTERM', stop);
       process.removeListener('SIGINT', stop);
-      log.end(() => {
+      log.end(async () => {
+        if (!stopped && phase === 'prepare' && test.scenario === 'nested-crash') {
+          try {
+            assert.equal(signal, 'SIGKILL', 'Crash prepare phase must exit through SIGKILL');
+            const before = JSON.parse(await readFile(join(directory, 'before.json'), 'utf8'));
+            assert.equal(before.pid, child.pid);
+            assert.equal(before.fault, 'SIGKILL-after-yield');
+            assert.equal(before.pool.active, 0);
+            await save(join(directory, 'crash-exit.json'), { pid: child.pid, code, signal });
+            resolve();
+          } catch (error) { reject(error); }
+          return;
+        }
         if (code === 0 && !stopped) resolve();
         else reject(new Error(`${test.id} ${phase} failed (${signal ?? code}); see ${path}`));
       });
@@ -423,8 +435,9 @@ if (childDirectory) {
   const backends = option('backends', 'codex,claude,pi')!.split(',') as Backend[];
   assert(backends.length > 0 && backends.every(b => ['codex', 'claude', 'pi'].includes(b)), 'Unsupported backend');
   const scenarios = option('scenarios', 'memory,interrupt,discussion')!.split(',');
-  assert(scenarios.length > 0 && scenarios.every(s => ['memory', 'interrupt', 'discussion', 'queue', 'consumers', 'nested', 'nested-recovery', 'nested-cancel', 'nested-queue', 'nested-before-yield'].includes(s)), 'Unsupported scenario');
-  const cases: Case[] = backends.flatMap(backend => (['memory', 'interrupt', 'queue', 'consumers', 'nested', 'nested-recovery', 'nested-cancel', 'nested-queue', 'nested-before-yield'] as const)
+  assert(scenarios.length > 0 && scenarios.every(s => ['memory', 'interrupt', 'discussion', 'queue', 'consumers', 'nested', 'nested-recovery', 'nested-cancel', 'nested-queue', 'nested-before-yield', 'nested-crash'].includes(s)), 'Unsupported scenario');
+  assert(process.platform !== 'win32' || !scenarios.includes('nested-crash'), 'nested-crash requires POSIX SIGKILL');
+  const cases: Case[] = backends.flatMap(backend => (['memory', 'interrupt', 'queue', 'consumers', 'nested', 'nested-recovery', 'nested-cancel', 'nested-queue', 'nested-before-yield', 'nested-crash'] as const)
     .filter(s => scenarios.includes(s))
     .map(scenario => ({
       id: backend + '-' + scenario + '-' + randomUUID().slice(0, 8),
