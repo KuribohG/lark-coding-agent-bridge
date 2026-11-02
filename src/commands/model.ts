@@ -1,6 +1,4 @@
 import type { CommandContext } from './types';
-import { canRunAdminCommand } from '../policy/access';
-import { saveModelPreferences } from '../config/config-ops';
 import { validateModelId } from '../agent/models';
 import { parseEffort, resolveModelSettings, type ModelSettings } from '../agent/model-settings';
 import {
@@ -43,7 +41,6 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
       }), replyOptions(ctx));
       return;
     }
-    let target: 'chat' | 'profile' = 'chat';
     const patch: ModelSettings = {};
     if (args === 'submit' && ctx.fromCardAction) {
       const form = ctx.formValue ?? {};
@@ -61,22 +58,17 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
       patch.model = qualified && qualified !== 'default' ? validateModelId(qualified) : undefined;
       patch.reasoningEffort = parseEffort(form.reasoning_effort, agentKind);
     } else {
-      const match = /^(\S+)(?:\s+--scope\s+(chat|profile))?$/.exec(args.trim());
-      if (!match) throw new Error('用法：/model <模型名|default> 或 /effort <强度|default>，可加 --scope profile。');
-      target = match[2] === 'profile' ? 'profile' : 'chat';
+      const match = /^(\S+)$/.exec(args.trim());
+      if (!match) throw new Error('用法：/model <模型名|default> 或 /effort <强度|default>；全局默认请用 /config run。');
       if (field === 'model') patch.model = match[1] === 'default' ? undefined : validateModelId(match[1]!);
       else patch.reasoningEffort = parseEffort(match[1], agentKind);
-    }
-    if (target === 'profile' && !canRunAdminCommand(ctx.controls.profileConfig, ctx.controls, ctx.msg.senderId).ok) {
-      await reply('修改 bot 默认值仅 owner/管理员可用。');
-      return;
     }
     const profileDefaults = agentKind === ctx.controls.profileConfig.agentKind
       ? ctx.controls.profileConfig.preferences
       : { ...ctx.controls.profileConfig.preferences, model: undefined, reasoningEffort: undefined };
     const next = resolveModelSettings(
-      target === 'profile' ? { ...profileDefaults, ...patch } : profileDefaults,
-      target === 'profile' ? {} : { ...overrides, ...patch },
+      profileDefaults,
+      { ...overrides, ...patch },
       environment,
     );
     if (patch.reasoningEffort && next.reasoningEffort !== patch.reasoningEffort) throw new Error(next.notice);
@@ -85,15 +77,9 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
       await reply(`Provider 未切换，设置未保存。当前继续使用 ${activeProvider.displayName}；请修改 bridge 的 launch.provider 配置并重启后使用 ${requestedProvider.label}。普通消息仍可继续发送。`);
       return;
     }
-    if (target === 'profile') {
-      if (agentKind !== ctx.controls.profileConfig.agentKind) {
-        throw new Error('profile 默认模型只能为 profile 默认执行引擎设置；当前上下文使用覆盖引擎，请保存到当前聊天。');
-      }
-      await saveModelPreferences(ctx.controls, patch);
-    }
-    else await store.update(agentKind, ctx.scope, patch);
+    await store.update(agentKind, ctx.scope, patch);
     saved = true;
-    await reply(`已保存到${target === 'profile' ? '此 bot 默认值（已有聊天覆盖保留）' : modelScopeLabel(ctx)}。\n${modelSettingsSummary(next)}\n下一轮新任务生效，当前任务继续原设置。`);
+    await reply(`已保存到${modelScopeLabel(ctx)}。\n${modelSettingsSummary(next)}\n下一轮新任务生效，当前任务继续原设置。全局默认请用 /config run。`);
   } catch (err) {
     await reply(`${saved ? '设置已保存，但发送回执失败' : '设置未保存'}：${err instanceof Error ? err.message : String(err)}`);
   }

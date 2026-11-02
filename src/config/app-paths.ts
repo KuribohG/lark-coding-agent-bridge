@@ -14,7 +14,6 @@ export interface AppPaths {
   configFile: string;
   activeProfileFile: string;
   sessionsFile: string;
-  scopeExecutionFile: string;
   workspacesFile: string;
   secretsFile: string;
   keystoreSaltFile: string;
@@ -58,7 +57,6 @@ export function resolveAppPaths(opts: ResolveAppPathsOptions = {}): AppPaths {
     configFile: join(rootDir, 'config.toml'),
     activeProfileFile: join(rootDir, 'active-profile'),
     sessionsFile: join(profileDir, 'sessions.json'),
-    scopeExecutionFile: join(profileDir, 'scope-execution.json'),
     workspacesFile: join(profileDir, 'workspaces.json'),
     secretsFile: join(profileDir, 'secrets.enc'),
     keystoreSaltFile: join(profileDir, '.keystore.salt'),

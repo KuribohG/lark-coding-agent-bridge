@@ -8,7 +8,7 @@ interface ScopeExecutionFile {
   scopes: Record<string, AgentKind>;
 }
 
-/** Per-chat/topic execution-engine overrides. Profile.agentKind remains the fallback. */
+/** Standalone Web conversation engine choices; Lark always uses the bot default. */
 export class ScopeExecutionStore {
   private data = new Map<string, AgentKind>();
   private saving: Promise<void> = Promise.resolve();
@@ -42,14 +42,6 @@ export class ScopeExecutionStore {
       removed = this.data.delete(scope);
     });
     return removed;
-  }
-
-  async clearAgentKind(agentKind: AgentKind): Promise<void> {
-    await this.update(() => {
-      for (const [scope, value] of this.data) {
-        if (value === agentKind) this.data.delete(scope);
-      }
-    });
   }
 
   entries(): Array<{ scope: string; agentKind: AgentKind }> {

@@ -31,9 +31,6 @@ export interface ConfigFormOpts {
   /** URL of the running local web console (supervisor `--web-ui` mode). Shown
    * at the top of the card when present; omitted when no console is running. */
   consoleUrl?: string;
-  /** The saved run settings also changed the profile's execution backend. */
-  agentSwitched?: boolean;
-  scopeAgentSwitched?: boolean;
 }
 
 /** Form card for `/config`. */
@@ -49,14 +46,14 @@ export function configFormCard(opts: ConfigFormOpts): object {
       options: options.map(([value, content]) => ({ value, text: { tag: 'plain_text', content } })) });
   };
   if (section === 'run') {
-    select('agent_kind', '**执行引擎（当前上下文）**', opts.agentKind,
+    select('agent_kind', '**全局执行引擎**', opts.agentKind,
       AGENT_OPTIONS.map(({ value, label }) => [value, label]));
-    note('仅修改当前聊天/话题；下一条消息使用新引擎。Profile 默认引擎在本地网页配置页修改。');
-    input('model', '**Profile 默认模型**（当前上下文请用 `/model`）', opts.model);
-    select('reasoning_effort', '**思考强度**', opts.reasoningEffort ?? 'default',
+    note('所有私聊和群话题共用。切换引擎时，模型和思考强度恢复新引擎默认；保存后可再次打开调整。');
+    input('model', '**全局默认模型**（局部覆盖请用 `/model`）', opts.model);
+    select('reasoning_effort', '**全局默认思考强度**（局部覆盖请用 `/effort`）', opts.reasoningEffort ?? 'default',
       reasoningEffortOptions(opts.agentKind).map(({ value, label }) => [value, label]));
     input('max_concurrent_runs', '**此 bot 并发上限**（1–50，inherit 恢复继承）', String(opts.maxConcurrentRuns));
-    input('run_idle_timeout_minutes', '**无输出超时**（分钟，0 关闭，inherit 恢复继承）', String(opts.runIdleTimeoutMinutes));
+    input('run_idle_timeout_minutes', '**全局无输出超时**（分钟，局部覆盖请用 `/timeout`；0 关闭，inherit 恢复继承）', String(opts.runIdleTimeoutMinutes));
   } else if (section === 'lark') {
     note('以下设置只影响飞书展示，不影响模型推理和 Web 聊天。');
     select('message_reply', '**回复形式**', opts.messageReply,
@@ -76,6 +73,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
     behaviors: [{ type: 'callback', value: { cmd: 'config.cancel' } }] });
   return { schema: '2.0', config: { summary: { content: '配置' } }, body: { elements: [
     { tag: 'markdown', content: `**${section === 'run' ? '执行配置' : section === 'lark' ? '飞书展示' : '访问与账号'}**` },
+    { tag: 'markdown', content: '作用范围：此 bot 全局。所有私聊和群话题共用，其他 bot 不受影响。' },
     ...(opts.consoleUrl ? [{ tag: 'markdown', content: `[Web 控制台](${opts.consoleUrl})` }] : []),
     { tag: 'form', name: 'config_form', elements },
   ] } };
@@ -89,11 +87,7 @@ export function configSavedCard(opts: ConfigFormOpts): object {
       : [`执行引擎：${AGENT_OPTIONS.find((item) => item.value === opts.agentKind)?.label ?? opts.agentKind}`, `模型：${modelLabel(opts.agentKind, opts.model)}`, `思考强度：${opts.reasoningEffort ?? 'CLI 默认'}`, `并发上限：${opts.maxConcurrentRuns}`, `无输出超时：${opts.runIdleTimeoutMinutes ? `${opts.runIdleTimeoutMinutes} 分钟` : '关闭'}`];
   return { schema: '2.0', config: { summary: { content: '偏好已保存' } }, body: { elements: [
     { tag: 'markdown', content: '✅ **偏好已保存**\n\n' + details.join('\n') + '\n\n' +
-      (opts.scopeAgentSwitched
-        ? '当前聊天/话题的执行引擎已切换；从下一条消息开始使用新引擎，飞书通道无需重连。'
-        : opts.agentSwitched
-          ? '此 profile 正在切换执行引擎并重连飞书通道；稍后直接发送消息即可。'
-        : '下条消息开始生效。完整设置见 /config。') },
+      '已保存为此 bot 全局默认，所有私聊和群话题从下一轮任务采用；当前任务继续原设置。已有 /model、/effort、/timeout 局部覆盖保留，设为 default 可恢复继承。' },
   ] } };
 }
 

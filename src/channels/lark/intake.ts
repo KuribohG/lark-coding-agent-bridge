@@ -79,7 +79,6 @@ interface IntakeDeps {
   channel: LarkChannel;
   resolveAgent(scope: string): AgentAdapter;
   resolveAgentKind(scope: string): AgentKind;
-  setAgentKind?(scope: string, kind: AgentKind): Promise<void>;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
@@ -99,7 +98,6 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
     channel,
     resolveAgent,
     resolveAgentKind,
-    setAgentKind,
     sessions,
     sessionCatalog,
     workspaces,
@@ -205,8 +203,6 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
     workspaces,
     agent: scopeAgent,
     agentKind: scopeAgentKind,
-    defaultAgentKind: controls.profileConfig.agentKind,
-    setAgentKind,
     activeRuns,
     sessionCatalog,
     sessionCatalogIdentity: await commandSessionCatalogIdentity({

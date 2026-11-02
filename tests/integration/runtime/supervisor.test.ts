@@ -15,6 +15,7 @@ const started: string[] = [];
 const disconnected: string[] = [];
 const pendingLifecycle: string[] = [];
 const restorePendingArgs: Array<boolean | undefined> = [];
+const executions = new Map<string, import('../../../src/runtime/execution-controller').ProfileExecutionController>();
 let root: string;
 let sup: Supervisor;
 
@@ -25,6 +26,7 @@ function app(id: string) {
 // Stub startChannel — no network, records lifecycle, returns a minimal bridge.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const stubStartChannel: any = async (deps: any) => {
+  executions.set(deps.appPaths.profile, deps.execution);
   started.push(deps.appPaths.profile);
   restorePendingArgs.push(deps.restorePending);
   deps.controls.pausePendingInput = () => pendingLifecycle.push(`pause:${deps.appPaths.profile}`);
@@ -49,6 +51,7 @@ beforeEach(async () => {
   disconnected.length = 0;
   pendingLifecycle.length = 0;
   restorePendingArgs.length = 0;
+  executions.clear();
   root = await mkdtemp(join(tmpdir(), 'bridge-sup-'));
   roots.push(root);
   const configPath = join(root, 'config.json');
@@ -111,8 +114,16 @@ describe('Supervisor', () => {
     expect(started.filter((p) => p === 'claude')).toHaveLength(1);
   });
 
-  it('switches a running profile backend with a short offline bounce', async () => {
+  it('switches the bot default for DMs and topics without disconnecting or replacing active adapters', async () => {
+    // A retired Lark override file must not influence routing, even if corrupt.
+    await writeFile(join(root, 'profiles', 'claude', 'scope-execution.json'), 'invalid legacy state');
     await sup.startProfile('claude');
+    await sup.startProfile('work');
+    const execution = executions.get('claude')!;
+    const previous = execution.defaultAgent();
+    expect(execution.kindFor('oc_dm')).toBe('claude');
+    await expect(execution.setScopeKind('oc_dm', 'pi')).rejects.toThrow('bot-wide');
+    const controls = sup.controlsFor('claude')!;
     const binDir = join(root, 'bin');
     await mkdir(binDir, { recursive: true });
     const pi = join(binDir, 'pi');
@@ -130,11 +141,16 @@ describe('Supervisor', () => {
 
     await sup.controlsFor('claude')!.switchAgent!();
 
-    expect(disconnected).toContain('claude');
-    expect(started.filter((p) => p === 'claude')).toHaveLength(2);
-    expect(sup.list()).toEqual([
-      expect.objectContaining({ profile: 'claude', agentKind: 'pi', online: true }),
-    ]);
+    expect(disconnected).toEqual([]);
+    expect(started.filter((p) => p === 'claude')).toHaveLength(1);
+    expect(sup.controlsFor('claude')).toBe(controls);
+    expect(controls.profileConfig.agentKind).toBe('pi');
+    expect(execution.kindFor('oc_dm')).toBe('pi');
+    expect(execution.kindFor('oc_group:omt_topic')).toBe('pi');
+    expect(execution.get('oc_dm', 'claude')).toBe(previous);
+    expect(execution.get('oc_dm').id).toBe('pi');
+    expect(executions.get('work')!.defaultAgentKind).toBe('claude');
+    expect(sup.list()).toContainEqual(expect.objectContaining({ profile: 'claude', agentKind: 'pi', online: true }));
   });
 
   it('hands pending input from the old channel to the new channel before resuming it', async () => {

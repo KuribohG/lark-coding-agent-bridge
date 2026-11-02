@@ -58,7 +58,9 @@
 
 访问管理等操作需要 owner / 管理员权限。`/stop`、`/run`、暂停消息采集、关闭 CI 来源分别控制不同任务，见[日常任务](chat-and-tasks.md)和[盯盘](monitoring.md)。
 
-工作流开始前，用 `/config run` 选择主 agent 的执行器，再用 `/model <模型>` 和 `/effort <强度>` 设置主模型。各 worker 的模型写在任务要求里，由脚本逐个指定。调用示例与重放边界见[工作流](../workflows.md)。
+工作流开始前，用 `/config run` 设置此 bot 全局默认执行器（所有私聊和群话题共用），再用 `/model <模型>` 和 `/effort <强度>` 设置主模型。各 worker 的模型写在任务要求里，由脚本逐个指定。调用示例与重放边界见[工作流](../workflows.md)。
+
+`/config` 及其子项统一修改此 bot 的全局默认；`/model`、`/effort`、`/timeout` 只修改当前聊天或话题，`default` 恢复继承全局默认。
 
 ## 在本机终端执行
 

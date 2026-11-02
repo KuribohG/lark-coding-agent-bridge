@@ -1,4 +1,5 @@
 import pkg from '../../package.json';
+import { backendFor } from '../agent/backends';
 import { startChannel as realStartChannel, type BridgeChannel } from '../bot/channel';
 import type { Controls } from '../commands';
 import { CommandRegistry } from '../commands/registry';
@@ -9,7 +10,6 @@ import { log } from '../core/logger';
 import { refreshOwnerControls } from '../policy/owner';
 import { SessionStore } from '../session/store';
 import { SessionCatalog } from '../session/catalog';
-import { ScopeExecutionStore } from '../session/scope-execution';
 import { WorkspaceStore } from '../workspace/store';
 import { preFlightChecks } from '../cli/preflight';
 import { larkAgentHostContext } from '../channels/lark/agent-host';
@@ -47,16 +47,14 @@ type StartChannelFn = typeof realStartChannel;
 
 function createExecutionController(input: {
   profileConfig: ProfileConfig;
-  scopeExecution: ScopeExecutionStore;
   appPaths: AppPaths;
   configPath: string;
   modelServices?: Record<string, import('../model-service/config').ModelServiceConfig>;
 }): ProfileExecutionController {
-  const { profileConfig, scopeExecution, appPaths, configPath, modelServices } = input;
+  const { profileConfig, appPaths, configPath, modelServices } = input;
   const host = larkAgentHostContext(appPaths, configPath);
   return new ProfileExecutionController({
     profileConfig,
-    scopeExecution,
     appPaths: { ...appPaths, configPath },
     systemPrompt: host.systemPrompt,
     env: host.env,
@@ -109,7 +107,6 @@ class ManagedProfile {
     private execution: ProfileExecutionController,
     private sessions: SessionStore,
     private sessionCatalog: SessionCatalog,
-    private scopeExecution: ScopeExecutionStore,
     private workspaces: WorkspaceStore,
     private startChannelFn: StartChannelFn,
     private onExitCommand: (profile: string) => void,
@@ -274,7 +271,6 @@ class ManagedProfile {
       );
       const nextExecution = createExecutionController({
         profileConfig: nextRuntime.profileConfig,
-        scopeExecution: this.scopeExecution,
         appPaths: nextRuntime.appPaths,
         configPath: this.configPath,
         modelServices: nextRuntime.modelServices,
@@ -351,70 +347,28 @@ class ManagedProfile {
     }
   }
 
-  /**
-   * An agent switch cannot use connect-before-disconnect: one Feishu app must
-   * not have two listeners, and the old/new adapters have different runtime
-   * contracts. Persist-then-switch therefore performs a short full profile
-   * bounce and restores the old profile if the selected backend cannot start.
-   */
+  /** Validate and publish the saved engine without stopping existing runs. */
   private async switchAgent(): Promise<void> {
-    if (this.restarting) return;
+    if (this.restarting) throw new Error('profile lifecycle change already in progress');
     this.restarting = true;
-    const previous = {
-      appPaths: this.appPaths,
-      cfg: this.cfg,
-      profileConfig: this.profileConfig,
-      execution: this.execution,
-      larkAuth: this.larkAuth,
-    };
     try {
       const nextRuntime = await resolveProfileRuntime({
         config: this.configPath,
         profile: this.appPaths.profile,
         allowBootstrap: false,
       });
-      if (nextRuntime.profileConfig.agentKind === this.profileConfig.agentKind) return;
-      if (!isComplete(nextRuntime.cfg)) throw new Error('config incomplete after agent switch');
-      const nextExecution = createExecutionController({
-        profileConfig: nextRuntime.profileConfig,
-        scopeExecution: this.scopeExecution,
-        appPaths: nextRuntime.appPaths,
-        configPath: this.configPath,
-        modelServices: nextRuntime.modelServices,
-      });
-      const nextLarkAuth = new LarkProfileAuth(nextRuntime.cfg, nextRuntime.appPaths);
-      const availability = await checkRuntimeAgentAvailability(nextExecution.defaultAgent());
-      if (!availability.ok) throw availability.error;
-
-      await this.stop();
-      this.appPaths = nextRuntime.appPaths;
-      this.cfg = nextRuntime.cfg;
-      this.profileConfig = nextRuntime.profileConfig;
-      this.execution = nextExecution;
-      this.larkAuth = nextLarkAuth;
-      try {
-        await this.bringUp(new Date().toISOString());
-      } catch (error) {
-        this.appPaths = previous.appPaths;
-        this.cfg = previous.cfg;
-        this.profileConfig = previous.profileConfig;
-        this.execution = previous.execution;
-        this.larkAuth = previous.larkAuth;
-        await this.bringUp(new Date().toISOString()).catch((rollbackError) => {
-          log.fail('supervisor', rollbackError, {
-            step: 'restore-after-agent-switch',
-            profile: this.profile,
-          });
-        });
-        throw error;
-      }
-      await this.scopeExecution
-        .clearAgentKind(nextRuntime.profileConfig.agentKind)
-        .catch((err) => log.warn('supervisor', 'scope-engine-cleanup-failed', {
-          profile: this.profile,
-          agentKind: nextRuntime.profileConfig.agentKind,
-          err: String(err),
-        }));
+      if (nextRuntime.profileConfig.agentKind === this.execution.defaultAgentKind) return;
+      const nextProfile = {
+        ...this.controls.profileConfig,
+        agentKind: nextRuntime.profileConfig.agentKind,
+        ...backendFor(nextRuntime.profileConfig.agentKind).existingProfile(nextRuntime.profileConfig),
+        preferences: nextRuntime.profileConfig.preferences,
+      };
+      await this.execution.setDefaultProfile(nextProfile);
+      this.profileConfig = this.controls.profileConfig = nextProfile;
+      this.cfg = this.controls.cfg = { ...this.controls.cfg, ...nextProfile };
+      await updateEntry(this.entry.id, { agentKind: nextProfile.agentKind }, this.appPaths.userRegistryFile)
+        .catch((err) => log.warn('registry', 'update-failed', { step: 'agentKind', err: String(err) }));
     } finally {
       this.restarting = false;
     }
@@ -514,11 +468,8 @@ export class Supervisor {
     await sessions.load();
     const sessionCatalog = new SessionCatalog(`${appPaths.sessionsFile}.catalog.json`);
     await sessionCatalog.load();
-    const scopeExecution = new ScopeExecutionStore(appPaths.scopeExecutionFile);
-    await scopeExecution.load();
     const execution = createExecutionController({
       profileConfig,
-      scopeExecution,
       appPaths,
       configPath,
       modelServices: runtime.modelServices,
@@ -539,7 +490,6 @@ export class Supervisor {
       execution,
       sessions,
       sessionCatalog,
-      scopeExecution,
       workspaces,
       this.startChannelFn,
       (p) => void this.stopProfile(p).catch(() => undefined),

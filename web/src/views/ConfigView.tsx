@@ -88,7 +88,7 @@ export function ConfigView({ profile }: { profile: string }) {
       setCfg(next);
       setDirty([]);
       toast.success(switched
-        ? (next.live ? "已切换执行引擎，profile 正在重连" : "已保存，下次启动该 profile 时使用新引擎")
+        ? (next.live ? "已切换全局执行引擎，下一轮任务生效，当前任务继续运行" : "已保存，下次启动该 profile 时使用新引擎")
         : (next.live ? "已保存，下一轮生效" : "已保存，下次启动该 profile 生效"));
     } catch (e) {
       toast.error(String((e as Error).message ?? e));
@@ -145,7 +145,7 @@ export function ConfigView({ profile }: { profile: string }) {
           <Button variant="outline" disabled={saving} onClick={() => save(["model", "reasoningEffort", "maxConcurrentRuns", "runIdleTimeoutMinutes"])}>恢复继承</Button>
         </CardHeader>
         <CardContent className="space-y-4">
-          <Field label="Profile 默认执行引擎" hint="新聊天默认继承此引擎。飞书 /config run 可为单个聊天或话题覆盖；切换 profile 默认值会重连。">
+          <Field label="此 bot 全局执行引擎" hint="所有私聊和群话题共用，与飞书 /config run 一致。切换从下一轮任务生效，不中断当前任务。">
             <SelectRow value={cfg.agentKind} onChange={(v) => set("agentKind", v as ConfigData["agentKind"])}
               options={cfg.agents.map((agent): [string, string] => [agent.value, agent.label])} />
           </Field>

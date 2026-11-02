@@ -6,8 +6,7 @@ import {
   type PreferencesChange,
 } from '../config/preferences';
 import { modelEnvironment } from '../runtime/model-settings';
-import { capabilityForProfile, isAgentKind } from '../agent/backends';
-import { profileForAgentKind } from '../runtime/execution-controller';
+import { isAgentKind } from '../agent/backends';
 import { normalizeModelSelection } from '../agent/models';
 import {
   configCancelledCard,
@@ -69,9 +68,8 @@ async function showConfigSummary(ctx: CommandContext, path?: string): Promise<vo
   const selected = path === 'run' ? summary('执行', view.run) : path === 'lark' || path === 'web'
     ? summary(path === 'lark' ? '飞书展示' : 'Web 展示', view.channels[path]!)
     : [summary('执行', view.run), summary('飞书展示', view.channels.lark!)].join('\n\n');
-  const activeAgent = ctx.agentKind ?? view.agent;
-  await reply(ctx, `**${view.profile} · 默认 ${view.agent} · 当前上下文 ${activeAgent}**\n配置文件：${view.file}\n\n${selected}\n\n` +
-    '以上为文件中的 profile 默认值；当前会话覆盖用 /model 查看。\n' +
+  await reply(ctx, `**${view.profile} · 全局默认 ${view.agent}**\n配置文件：${view.file}\n\n${selected}\n\n` +
+    '以上为此 bot 的全局默认，所有私聊和群话题共用；局部覆盖用 /model、/effort、/timeout 查看。\n' +
     '修改：/config run · /config lark · /config access\n手工编辑后：/config reload（启动参数变化需重启）。');
 }
 
@@ -94,7 +92,7 @@ async function showConfigForm(ctx: CommandContext, section: 'run' | 'lark' | 'ac
   // alive so we don't advertise a stale address.
   const sidecar = await readUiSidecar(commandProfilePaths(ctx).hostUiFile).catch(() => undefined);
   const consoleUrl = sidecar && isAlive(sidecar.pid) ? sidecar.url : undefined;
-  const agentKind = ctx.agentKind ?? view.profileConfig.agentKind;
+  const agentKind = view.profileConfig.agentKind;
   const environment = section === 'run' ? await modelEnvironment(view, agentKind) : { models: [] };
   const card = configFormCard({
     section,
@@ -185,7 +183,7 @@ function configFormPatch(
 async function submitConfig(ctx: CommandContext): Promise<void> {
   let change: PreferencesChange;
   const requestedAgentKind = String(ctx.formValue?.agent_kind ?? '').trim();
-  const currentAgentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
+  const currentAgentKind = ctx.controls.profileConfig.agentKind;
   if (requestedAgentKind && !isAgentKind(requestedAgentKind)) {
     await reply(ctx, '设置未保存：未知执行引擎。');
     return;
@@ -193,19 +191,15 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
   const nextAgentKind = requestedAgentKind && isAgentKind(requestedAgentKind)
     ? requestedAgentKind
     : currentAgentKind;
-  const scopeAgentChanged = nextAgentKind !== currentAgentKind;
-  const scopedProfile = profileForAgentKind(ctx.controls.profileConfig, nextAgentKind);
-  const capability = capabilityForProfile(scopedProfile);
-  if (
-    scopeAgentChanged &&
-    capability.permissions.supportedAccess &&
-    !capability.permissions.supportedAccess.includes(ctx.controls.profileConfig.permissions.defaultAccess)
-  ) {
-    await reply(ctx, `设置未保存：${nextAgentKind} 不支持当前的 ${ctx.controls.profileConfig.permissions.defaultAccess} 权限。`);
+  const agentChanged = nextAgentKind !== currentAgentKind;
+  if (agentChanged && !ctx.controls.switchAgent) {
+    await reply(ctx, '设置未保存：当前运行入口不支持切换全局执行引擎，请在本地配置后重启此 bot。');
     return;
   }
   const patch = configFormPatch(ctx.formValue ?? {});
-  if (scopeAgentChanged) {
+  if (requestedAgentKind) patch.agentKind = nextAgentKind;
+  if (agentChanged) {
+    // The form still contains the previous engine's model and effort.
     delete patch.model;
     delete patch.reasoningEffort;
   }
@@ -233,10 +227,6 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
 
     try {
       await applyPreferencesChange(ctx.controls, change);
-      if (scopeAgentChanged) {
-        if (!ctx.setAgentKind) throw new Error('当前运行入口不支持按上下文切换执行引擎。');
-        await ctx.setAgentKind(ctx.scope, nextAgentKind);
-      }
     } catch (err) {
       const failureStep = err instanceof PreferencesApplyError ? err.step : 'config.save';
       const rollbackFailed = err instanceof PreferencesApplyError && err.rollbackFailed;
@@ -253,12 +243,22 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
       return;
     }
 
+    if (change.agentSwitch) {
+      try {
+        await ctx.controls.switchAgent!();
+      } catch (err) {
+        log.fail('command', err, { step: 'config.switch-agent' });
+        await waitForSettle();
+        await showResultCardInPlace(ctx, formMsgId, configFailedCard(
+          `全局配置已保存，但执行引擎切换失败：${err instanceof Error ? err.message : String(err)}。请重启此 bot 后重试。`,
+        ));
+        return;
+      }
+    }
     const saved = ctx.controls.profileConfig;
     const agentKind = nextAgentKind;
-    const modelSelection = scopeAgentChanged
-      ? 'default'
-      : normalizeModelSelection(agentKind, saved.preferences.model);
-    const reasoningEffort = scopeAgentChanged ? undefined : saved.preferences.reasoningEffort;
+    const modelSelection = normalizeModelSelection(agentKind, saved.preferences.model);
+    const reasoningEffort = saved.preferences.reasoningEffort;
     const messageReply = getMessageReplyMode(saved);
     const showToolCalls = getShowToolCalls(saved);
     const cotMessages = getCotMessages(saved);
@@ -296,7 +296,6 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
         runIdleTimeoutMinutes,
         requireMentionInGroup,
         larkCliIdentity,
-        scopeAgentSwitched: scopeAgentChanged,
         allowedUsers: access.allowedUsers,
         allowedChats: access.allowedChats,
         admins: access.admins,

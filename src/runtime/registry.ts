@@ -197,7 +197,7 @@ export async function updateEntry(
   id: string,
   patch: Partial<Pick<
     ProcessEntry,
-    'appId' | 'tenant' | 'configPath' | 'botName' | 'startupConfigRevision'
+    'appId' | 'tenant' | 'configPath' | 'botName' | 'startupConfigRevision' | 'agentKind'
   >>,
   registryFile: string = paths.processesFile,
 ): Promise<void> {

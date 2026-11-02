@@ -179,12 +179,8 @@ Codex 报告上下文用量后，`/status` 会显示模型上下文窗口占用�
 
 两个字段分别按 **当前话题/聊天覆盖 → bot profile 默认 → CLI 默认** 继承。话题内设置只影响这个话题，普通群和私聊各自按聊天保存；同一话题/群中的用户共用设置。`default` 清除相应字段的覆盖。`/new`、`/cd` 和 bridge 重启保留模型偏好。
 
-owner/admin 可以在 `/config` 或网页控制台填写默认模型和思考强度，也可发送：
+owner/admin 在 `/config run` 或网页 profile 表单设置此 bot 全局默认。`/model` 和 `/effort` 仅修改当前聊天/话题，不再接受 `--scope profile`。
 
-```text
-/model provider/custom-model --scope profile
-/effort high --scope profile
-```
 
 bot 默认值影响该 profile 下未单独覆盖对应字段的对话，也用于会议和文档评论任务。其他 profile 和独立终端会话不受影响。网页控制台修改离线 profile 时，下次启动该 profile 才生效。
 

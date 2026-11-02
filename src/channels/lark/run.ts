@@ -1,6 +1,7 @@
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { capabilityForProfile } from '../../agent/backends';
 import { modelRunArguments } from '../../agent/model-settings';
+import type { AgentAdapter } from '../../agent/types';
 import { modelLabel, normalizeModelSelection } from '../../agent/models';
 import type { ChatMode } from '../../bot/chat-mode-cache';
 import type { CotClient, CotPublisher } from '../../bot/cot';
@@ -74,6 +75,7 @@ export interface RunBatchDeps {
   lastRunModelByScope: Map<string, string>;
   scope: string;
   agentKind: AgentKind;
+  agent: AgentAdapter;
   mode: ChatMode;
   preparedCot?: CotPublisher;
 }
@@ -97,6 +99,7 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     lastRunModelByScope,
     scope,
     agentKind,
+    agent,
     mode,
     preparedCot,
   } = deps;
@@ -332,7 +335,8 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     attachments: attachments.map(toPolicyAttachment),
     access: accessDecision,
     capability,
-    profileConfig: controls.profileConfig,
+    profileConfig: scopedProfile,
+    agent,
     sessions,
     sessionCatalog,
     workspaces,

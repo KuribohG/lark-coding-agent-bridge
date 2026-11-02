@@ -19,6 +19,28 @@ afterEach(async () => {
 });
 
 describe('IM run flow', () => {
+  it('keeps the selected engine when the default changes during run preparation', async () => {
+    const h = await createHarness({ defaultWorkspace: true });
+    const selected = new FakeAgentAdapter({ id: 'claude' });
+    const nextDefault = new FakeAgentAdapter({ id: 'pi' });
+    const executor = new RunExecutor({
+      resolveAgent: (_scope, kind) => kind === 'claude' ? selected : nextDefault,
+      pool: new ProcessPool(() => 1), activeRuns: new ActiveRuns(),
+    });
+    const result = await startRunFlow({
+      scopeId: 'chat-1', agent: selected,
+      scope: { source: 'im', chatId: 'chat-1', actorId: 'ou_user' },
+      prompt: 'hello', attachments: [], access: { ok: true, reason: 'allowed-user' },
+      capability: claudeCapability(h.profileConfig), profileConfig: h.profileConfig,
+      sessions: h.sessions, workspaces: h.workspaces, executor, now: Date.now(),
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected run');
+    for await (const _event of result.execution.subscribe()) { /* drain */ }
+    expect(selected.runOptions).toHaveLength(1);
+    expect(nextDefault.runOptions).toEqual([]);
+  });
+
   it('rejects missing cwd without falling back to the user home', async () => {
     const h = await createHarness();
 

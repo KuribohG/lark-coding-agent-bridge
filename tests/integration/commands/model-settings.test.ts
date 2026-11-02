@@ -1,7 +1,7 @@
 import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { tryHandleCommand, runCommandHandler, type CommandContext, type Controls } from '../../../src/commands';
 import { createDefaultProfileConfig, type RootConfig } from '../../../src/config/profile-schema';
 import { runtimeProfileConfig } from '../../../src/config/profile-store';
@@ -104,8 +104,10 @@ describe('model and effort scope settings', () => {
   it('updates only the selected profile and respects existing chat overrides', async () => {
     const h = await harness();
     await h.command('/model scoped/model');
-    await h.command('/model global/model --scope profile');
-    await h.command('/effort high --scope profile');
+    await runCommandHandler('config', 'submit', { ...h.ctx, fromCardAction: true,
+      formValue: { model: 'global/model', reasoning_effort: 'high' } });
+    await vi.waitFor(() => expect(h.controls.profileConfig.preferences.model).toBe('global/model'));
+    await vi.waitFor(() => expect(encodeFixture(h.channel.sent)).toContain('全局默认'));
     expect(await resolveRunModelSettings(h.controls, h.ctx.scope)).toMatchObject({ model: 'scoped/model', reasoningEffort: 'high', effortSource: 'profile' });
     expect(await resolveRunModelSettings(h.controls, 'another-chat')).toMatchObject({ model: 'global/model', reasoningEffort: 'high' });
     const root = decodeFixture(await readFile(h.controls.configPath, 'utf8'));
@@ -114,18 +116,18 @@ describe('model and effort scope settings', () => {
     expect((await resolveRunModelSettings(h.controls, h.ctx.scope)).model).toBe('global/model');
   });
 
-  it('checks profile permissions for both text and card-dispatched commands', async () => {
+  it('rejects profile scope for both text and card-dispatched local commands', async () => {
     const h = await harness();
     await h.command('/model unauthorized/model --scope profile', h.ctx.scope, 'reader');
     expect(h.controls.profileConfig.preferences.model).toBeUndefined();
     await runCommandHandler('effort', 'high --scope profile', { ...h.ctx, fromCardAction: true });
     expect(h.controls.profileConfig.preferences.reasoningEffort).toBeUndefined();
-    expect(encodeFixture(h.channel.sent)).toContain('owner/管理员');
+    expect(encodeFixture(h.channel.sent)).toContain('全局默认请用 /config run');
   });
 
   it('validates model/effort combinations and rejects flag-like model input', async () => {
     const h = await harness();
-    await h.command('/effort medium --scope profile');
+    h.controls.profileConfig.preferences.reasoningEffort = 'medium';
     await h.command('/model provider/restricted');
     expect((await resolveRunModelSettings(h.controls, h.ctx.scope)).reasoningEffort).toBe('high');
     await h.command('/effort xhigh');

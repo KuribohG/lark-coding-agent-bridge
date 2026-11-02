@@ -29,7 +29,7 @@ describe('ScopeExecutionStore', () => {
     expect(loaded.get('oc_other')).toBe('claude');
 
     await loaded.clear('oc_chat:omt_topic');
-    await loaded.clearAgentKind('claude');
+    await loaded.clear('oc_other');
     expect(loaded.entries()).toEqual([{ scope: 'oc_chat', agentKind: 'codex' }]);
   });
 });

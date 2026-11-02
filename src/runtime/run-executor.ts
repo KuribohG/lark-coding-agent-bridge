@@ -28,6 +28,8 @@ export interface RunExecutorDeps {
 }
 
 export interface SubmitRunInput {
+  /** Adapter captured with the run's profile and capability snapshot. */
+  agent?: AgentAdapter;
   /** Authorized root used for adapter resolution; scopeId remains the execution mutex. */
   agentScopeId?: string;
   /** Explicit managed-worker backend; authorization remains rooted in agentScopeId. */
@@ -165,7 +167,7 @@ export class RunExecutor {
     let agent: AgentAdapter;
     try {
       const scope = input.agentScopeId ?? input.scopeId;
-      agent = input.agentKind ? this.resolveAgent(scope, input.agentKind) : this.resolveAgent(scope);
+      agent = input.agent ?? (input.agentKind ? this.resolveAgent(scope, input.agentKind) : this.resolveAgent(scope));
       if (input.agentKind && agent.id !== input.agentKind) throw new Error('Resolved worker backend does not match its binding');
       if (input.requireFinalAnswer && agent.capabilities?.finalAnswer !== 'separate-event') {
         throw new Error('Worker backend does not provide authoritative final answers');

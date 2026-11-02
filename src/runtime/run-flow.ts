@@ -1,6 +1,6 @@
 import type { AgentCapability } from '../agent/capability';
 import { resolveModelArg } from '../agent/models';
-import type { AgentEvent } from '../agent/types';
+import type { AgentAdapter, AgentEvent } from '../agent/types';
 import type { RunProfileConfig } from '../config/profile-schema';
 import type { AccessDecision } from '../policy/access';
 import {
@@ -43,6 +43,8 @@ export interface RunFlowContextInput {
 }
 
 export interface StartRunFlowInput extends RunFlowContextInput {
+  /** Snapshot the adapter before asynchronous policy checks and queue waits. */
+  agent?: AgentAdapter;
   env?: Readonly<Record<string, string>>;
   deadlineAt?: number;
   signal?: AbortSignal;
@@ -197,6 +199,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
   let execution: RunExecution;
   try {
     execution = await input.executor.submit({
+      agent: input.agent,
       env: input.env,
       deadlineAt: input.deadlineAt,
       signal: input.signal,

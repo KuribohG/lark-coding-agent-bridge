@@ -16,7 +16,6 @@ export type LegacyLarkStartChannelDeps = Omit<StartChannelDeps, 'execution'> & {
   agent: AgentAdapter;
   resolveAgent?: (scope: string) => AgentAdapter;
   resolveAgentKind?: (scope: string) => AgentKind;
-  setAgentKind?: (scope: string, kind: AgentKind) => Promise<void>;
   setAgentIdentity?: (identity: AgentBotIdentity) => void;
 };
 
@@ -25,7 +24,7 @@ export type LarkStartChannelEntryDeps = StartChannelDeps | LegacyLarkStartChanne
 function normalizeExecutionDeps(deps: LarkStartChannelEntryDeps): StartChannelDeps {
   if ('execution' in deps && deps.execution) return deps;
   if (!('agent' in deps) || !deps.agent) throw new Error('Lark channel requires execution or agent');
-  const { agent, resolveAgent, resolveAgentKind, setAgentKind, setAgentIdentity, ...rest } = deps;
+  const { agent, resolveAgent, resolveAgentKind, setAgentIdentity, ...rest } = deps;
   const kindFor = (scope: string) => resolveAgentKind?.(scope) ?? rest.controls.profileConfig.agentKind;
   const execution: ExecutionController = {
     defaultAgentKind: rest.controls.profileConfig.agentKind,
@@ -39,9 +38,8 @@ function normalizeExecutionDeps(deps: LarkStartChannelEntryDeps): StartChannelDe
       setAgentIdentity?.(identity);
       agent.setBotIdentity?.(identity);
     },
-    async setScopeKind(scope, kind) {
-      if (!setAgentKind) throw new Error('fixed execution controller does not support engine overrides');
-      await setAgentKind(scope, kind);
+    async setScopeKind() {
+      throw new Error('Lark uses a bot-wide execution engine');
     },
   };
   return { ...rest, execution };

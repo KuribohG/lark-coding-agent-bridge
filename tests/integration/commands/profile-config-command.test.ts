@@ -10,7 +10,6 @@ import { resolveAppPaths } from '../../../src/config/app-paths';
 import { getSecret, listSecretIds } from '../../../src/config/keystore';
 import {
   createDefaultProfileConfig,
-  type AgentKind,
   type RootConfig,
 } from '../../../src/config/profile-schema';
 import { runtimeProfileConfig } from '../../../src/config/profile-store';
@@ -178,20 +177,43 @@ describe('profile-aware account and config commands', () => {
     }
   });
 
-  it('stores a /config engine choice as a context override without changing the profile default', async () => {
-    const setAgentKind = vi.fn(async () => {});
-    const h = await createHarness({ agentKind: 'claude', setAgentKind });
+  it('saves the engine globally even when the current topic uses an old override', async () => {
+    const switchAgent = vi.fn(async () => {});
+    const h = await createHarness({ agentKind: 'pi', switchAgent,
+      preferences: { model: 'old-claude-model', reasoningEffort: 'high' } });
+    const binDir = join(h.rootDir, 'bin');
+    await mkdir(binDir);
+    const pi = join(binDir, 'pi');
+    await writeFile(pi, '#!/bin/sh\necho "pi 0.test"\n');
+    await chmod(pi, 0o755);
+    const oldCommand = process.env.LARK_CHANNEL_PI_BIN;
+    process.env.LARK_CHANNEL_PI_BIN = pi;
+    try {
+      await h.command('/config run');
+      const form = JSON.stringify(h.channel.sent.at(-1));
+      expect(form).toContain('全局');
+      expect(form).toContain('"initial_option":"claude"');
+      await h.command('/config submit', {
+        agent_kind: 'pi', model: 'old-claude-model', reasoning_effort: 'high',
+      });
+      await vi.waitFor(() => expect(switchAgent).toHaveBeenCalledOnce());
+      const root = await readRoot(h.rootDir);
+      expect(root.profiles.claude?.agentKind).toBe('pi');
+      expect(root.profiles.claude?.preferences.model).toBeUndefined();
+      expect(root.profiles.claude?.preferences.reasoningEffort).toBeUndefined();
+      expect(root.profiles['codex-dev']?.agentKind).toBe('codex');
+      await vi.waitFor(() => expect(JSON.stringify(h.channel.sent)).toContain('全局默认'));
+    } finally {
+      if (oldCommand === undefined) delete process.env.LARK_CHANNEL_PI_BIN;
+      else process.env.LARK_CHANNEL_PI_BIN = oldCommand;
+    }
+  });
 
-    await h.command('/config submit', {
-      agent_kind: 'pi',
-      model: 'claude-profile-model',
-      reasoning_effort: 'high',
-      message_reply: 'markdown',
-    });
-    await vi.waitFor(() => expect(setAgentKind).toHaveBeenCalledWith('chat-1', 'pi'));
-    const root = await readRoot(h.rootDir);
-    expect(root.profiles.claude?.agentKind).toBe('claude');
-    expect(root.profiles.claude?.preferences.model).toBeUndefined();
+  it('does not save an engine change when the host cannot apply it', async () => {
+    const h = await createHarness();
+    await h.command('/config submit', { agent_kind: 'pi' });
+    expect((await readRoot(h.rootDir)).profiles.claude?.agentKind).toBe('claude');
+    expect(JSON.stringify(h.channel.sent)).toContain('设置未保存');
   });
 
   it('keeps the current message reply mode when the config submit payload omits it', async () => {
@@ -325,7 +347,7 @@ describe('profile-aware account and config commands', () => {
 async function createHarness(options: {
   preferences?: RootConfig['profiles'][string]['preferences'];
   agentKind?: 'claude' | 'codex' | 'pi';
-  setAgentKind?: (scope: string, kind: AgentKind) => Promise<void>;
+  switchAgent?: () => Promise<void>;
 } = {}): Promise<{
   rootDir: string;
   channel: ReturnType<typeof createFakeChannel>;
@@ -348,6 +370,7 @@ async function createHarness(options: {
     ownerRefreshState: 'ok',
     async refreshOwner() {},
     restart: vi.fn(async () => {}),
+    switchAgent: options.switchAgent,
     exit: vi.fn(async () => {}),
     configPath: appPaths.configFile,
     cfg: runtimeProfileConfig(root, 'claude'),
@@ -369,8 +392,6 @@ async function createHarness(options: {
         activeRuns: new ActiveRuns(),
         controls,
         agentKind: options.agentKind ?? 'claude',
-        defaultAgentKind: profileConfig.agentKind,
-        setAgentKind: options.setAgentKind,
         formValue,
         fromCardAction: true,
       }),

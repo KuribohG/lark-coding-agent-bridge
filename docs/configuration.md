@@ -137,7 +137,11 @@ lark-channel-bridge config unset profiles.codex.run.model
 
 `check` validates configuration and monitor references without retrieving secrets or contacting providers. `show` prints execution and frontend settings with their sources; it does not dump credentials or provider definitions. It describes the file, not a running process's loaded settings.
 
-In Lark, `/config` shows a summary. `/config run`, `/config lark` and `/config access` open separate short forms. The execution engine saved by `/config run` is scoped to the current chat or topic; the Web profile form changes the profile default. `/config show web` inspects browser display defaults. `/model`, `/effort` and `/timeout` retain their conversation-specific controls. Profile administrators cannot write global/agent settings through the chat endpoint.
+In Lark, `/config` shows a summary. `/config run`, `/config lark` and `/config access` open separate short forms. All `/config` forms edit the current bot profile globally: its DMs, groups and topics share the same defaults. `/config run` and the Web profile form both change the default execution engine, model and effort. Engine changes apply to future runs without disconnecting Lark or stopping active runs. `/config show web` inspects browser display defaults.
+
+Existing `/model`, `/effort` and `/timeout` overrides remain local; `default` removes a field override and restores inheritance. `/model` and `/effort` reject `--scope profile`; edit global defaults with `/config run`. These commands do not change other bot profiles or installation-wide agent settings.
+
+Lark no longer loads `scope-execution.json`: old per-chat engine settings cannot override the bot default. Standalone Web retains its own explicit conversation engine choices.
 
 The local console separates execution from Lark presentation; editing it does not set browser presentation. Changes use the same persistence service. Forms carry a document revision, reject stale submissions, and store only changed overrides. Use `inherit` in the model/concurrency/timeout form fields, or the inheritance options/buttons, to remove profile overrides. Explicit native delegation is configured in TOML. Programmatic TOML edits preserve unrelated text/comments and use atomic replacement under the configuration lock. External editors do not participate in this lock; detected conflicts are rejected, but it is not a transaction with arbitrary editors.
 

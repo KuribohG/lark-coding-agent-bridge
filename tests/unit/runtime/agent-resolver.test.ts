@@ -87,5 +87,9 @@ describe('ProfileExecutionController', () => {
 
     await expect(resolver.setScopeKind('chat:pi', 'pi')).rejects.toThrow(/does not support workspace access/);
     expect(store.get('chat:pi')).toBeUndefined();
+    const previous = resolver.defaultAgent();
+    await expect(resolver.setDefaultProfile({ ...profile, agentKind: 'pi' })).rejects.toThrow(/does not support workspace access/);
+    expect(resolver.defaultAgentKind).toBe('claude');
+    expect(resolver.defaultAgent()).toBe(previous);
   });
 });

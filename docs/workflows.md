@@ -6,7 +6,7 @@ Workflows are script-driven. The bridge owns scheduling, task state, worker sess
 
 First set the main agent in the target chat/topic:
 
-1. Send `/config run` and choose its execution engine (Codex, Claude or Pi).
+1. Use `/config run` to choose the bot-wide default execution engine (Codex, Claude or Pi); this affects all its DMs, groups and topics.
 2. Send `/model <model ID>` and optionally `/effort <level>` for the main model and reasoning effort. `/model` without arguments opens the selection card. A configured service can be selected with `<provider>/<model>`.
 3. Start the workflow, giving the task and worker selections in natural language:
 
@@ -30,7 +30,7 @@ The old `architecture-review` plugin and agent-led `start`, `delegate`, `send`, 
 
 | Selection | Configuration | Scope |
 | --- | --- | --- |
-| Main agent | `/config run`, `/model`, `/effort` | Current chat/topic, captured at workflow creation |
+| Main agent | `/config run` for bot defaults; `/model`, `/effort` for local overrides | Resolved defaults plus current chat/topic overrides, captured at workflow creation |
 | Worker defaults | `run_script.execution: {agentKind, model?, reasoningEffort?}` | Calls without an explicit override |
 | Individual worker | `agent(..., {harness, model, reasoningEffort, key})` | This call only; each call can select another model |
 

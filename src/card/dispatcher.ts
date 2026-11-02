@@ -36,7 +36,6 @@ export interface CardDispatchDeps {
   agent?: AgentAdapter;
   resolveAgent?(scope: string): AgentAdapter;
   resolveAgentKind?(scope: string): AgentKind;
-  setAgentKind?(scope: string, kind: AgentKind): Promise<void>;
   processPool?: ProcessPool;
   runExecutor?: RunExecutor;
   controls: Controls;
@@ -155,8 +154,6 @@ async function dispatchCardAction(deps: CardDispatchDeps): Promise<CardActionRes
       activeRuns: deps.activeRuns,
       agent: scopeAgent,
       agentKind: scopeAgentKind,
-      defaultAgentKind: deps.controls.profileConfig.agentKind,
-      setAgentKind: deps.setAgentKind,
       processPool: deps.processPool,
       runExecutor: deps.runExecutor,
       controls: deps.controls,

@@ -77,7 +77,6 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   const { cfg, execution, sessions, sessionCatalog, workspaces, controls } = deps;
   const resolveAgent = (scope: string, agentKind?: AgentKind) => execution.get(scope, agentKind);
   const resolveAgentKind = (scope: string) => execution.kindFor(scope);
-  const setAgentKind = (scope: string, kind: AgentKind) => execution.setScopeKind(scope, kind);
   const activeRuns = new ActiveRuns();
   const followups = new FollowupRouter();
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
@@ -237,8 +236,10 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     const first = batch[0];
     if (!first) return;
     const mode = first.threadId ? 'topic' : await chatModeCache.resolve(channel, first.chatId);
+    const agentKind = options.timedJob?.agentKind ?? resolveAgentKind(scope);
+    const agent = resolveAgent(scope, agentKind);
     await runAgentBatch({ ...conversation, media, cotClient, callbackAuth, userQuestions, activePolicyFingerprints, lastRunModelByScope,
-      ...(options.timedJob ? {} : { workflows, workflowOrigins }), scope, batch, mode, agentKind: options.timedJob?.agentKind ?? resolveAgentKind(scope), ...options });
+      ...(options.timedJob ? {} : { workflows, workflowOrigins }), scope, batch, mode, agentKind, agent, ...options });
   };
 
   const startWorkflows = async () => {
@@ -314,7 +315,6 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           ...conversation,
           resolveAgent,
           resolveAgentKind,
-          setAgentKind,
           pending,
           msg,
           chatModeCache,
@@ -334,7 +334,6 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           evt,
           resolveAgent,
           resolveAgentKind,
-          setAgentKind,
           processPool: pool,
           runExecutor: executor,
           pending,

@@ -62,7 +62,7 @@ export interface Controls {
   /** Restart the bridge in-process: disconnect WS, kill claude runs, reload
    * config, reconnect with the new credentials. */
   restart(opts?: { wait?: boolean }): Promise<void>;
-  /** Apply a persisted agentKind change by briefly taking this profile offline. */
+  /** Apply a persisted default engine to future runs without stopping active runs. */
   switchAgent?(): Promise<void>;
   /** Stop this whole process gracefully (disconnect + exit). Used by /exit
    * when the user targets the receiving process itself. */
@@ -104,8 +104,6 @@ export interface CommandContext {
   agent: AgentAdapter;
   /** Effective engine for this scope; legacy tests may omit it. */
   agentKind?: AgentKind;
-  defaultAgentKind?: AgentKind;
-  setAgentKind?(scope: string, kind: AgentKind): Promise<void>;
   activeRuns: ActiveRuns;
   processPool?: ProcessPool;
   runExecutor?: RunExecutor;

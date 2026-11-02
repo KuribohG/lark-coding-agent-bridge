@@ -43,7 +43,8 @@ export function profileForAgentKind<T extends AgentExecutionProfile>(
 
 export interface ProfileExecutionControllerOptions {
   profileConfig: AgentExecutionProfile;
-  scopeExecution: ScopeExecutionStore;
+  /** Only standalone Web supports per-conversation engine choices. */
+  scopeExecution?: ScopeExecutionStore;
   appPaths: Pick<import('../config/app-paths').AppPaths, 'profileDir'> &
     Partial<Pick<
       import('../config/app-paths').AppPaths,
@@ -79,7 +80,7 @@ export class ProfileExecutionController implements ExecutionController {
   }
 
   kindFor(scope: string): AgentKind {
-    return this.options.scopeExecution.get(scope) ?? this.defaultAgentKind;
+    return this.options.scopeExecution?.get(scope) ?? this.defaultAgentKind;
   }
 
   profileFor(scope: string): AgentExecutionProfile {
@@ -102,37 +103,51 @@ export class ProfileExecutionController implements ExecutionController {
     for (const agent of this.agents.values()) agent.setBotIdentity?.(identity);
   }
 
+  /** Publish a default for future runs without replacing active adapters. */
+  async setDefaultProfile(profile: AgentExecutionProfile): Promise<void> {
+    const agent = this.createAgent(profile);
+    await this.checkAvailability(profile, agent);
+    this.agents.set(profile.agentKind, agent);
+    this.profileConfig = profile;
+  }
+
   async setScopeKind(scope: string, kind: AgentKind): Promise<void> {
+    if (!this.options.scopeExecution) throw new Error('This host uses a bot-wide execution engine');
     const target = profileForAgentKind(this.profileConfig, kind);
-    const capability = capabilityForProfile(target);
-    if (
-      capability.permissions.supportedAccess &&
-      !capability.permissions.supportedAccess.includes(target.permissions.defaultAccess)
-    ) {
-      throw new Error(
-        `${capability.agentId} does not support ${target.permissions.defaultAccess} access`,
-      );
-    }
-    const availability = await checkRuntimeAgentAvailability(this.agentForKind(kind));
-    if (!availability.ok) throw availability.error;
+    await this.checkAvailability(target, this.agentForKind(kind));
     if (kind === this.defaultAgentKind) await this.options.scopeExecution.clear(scope);
     else await this.options.scopeExecution.set(scope, kind);
+  }
+
+  private async checkAvailability(profile: AgentExecutionProfile, agent: AgentAdapter): Promise<void> {
+    const capability = capabilityForProfile(profile);
+    if (capability.permissions.supportedAccess &&
+        !capability.permissions.supportedAccess.includes(profile.permissions.defaultAccess)) {
+      throw new Error(`${capability.agentId} does not support ${profile.permissions.defaultAccess} access`);
+    }
+    const availability = await checkRuntimeAgentAvailability(agent);
+    if (!availability.ok) throw availability.error;
   }
 
   private agentForKind(kind: AgentKind): AgentAdapter {
     let agent = this.agents.get(kind);
     if (!agent) {
       const profile = profileForAgentKind(this.profileConfig, kind);
-      agent = createAgentAdapter({
-        modelProviders: this.options.modelProviders,
-        profile,
-        profileDir: this.options.appPaths.profileDir,
-        env: this.options.env ?? {},
-        systemPrompt: this.options.systemPrompt ?? '',
-      });
-      if (this.botIdentity) agent.setBotIdentity?.(this.botIdentity);
+      agent = this.createAgent(profile);
       this.agents.set(kind, agent);
     }
+    return agent;
+  }
+
+  private createAgent(profile: AgentExecutionProfile): AgentAdapter {
+    const agent = createAgentAdapter({
+      modelProviders: this.options.modelProviders,
+      profile,
+      profileDir: this.options.appPaths.profileDir,
+      env: this.options.env ?? {},
+      systemPrompt: this.options.systemPrompt ?? '',
+    });
+    if (this.botIdentity) agent.setBotIdentity?.(this.botIdentity);
     return agent;
   }
 }

@@ -128,6 +128,7 @@ export class ConversationRuntime {
     };
     const config = this.runConfigFor(scopeId);
     const capability = this.execution.capabilityFor(scopeId);
+    const agent = this.execution.get(scopeId);
     try {
       const flow = await startRunFlow({
         scopeId, scope: { source: 'channel', channelId: this.options.channelId,
@@ -135,7 +136,7 @@ export class ConversationRuntime {
         prompt: input.prompt, systemPrompt: this.options.systemPrompt ?? '',
         signal: controller.signal, deadlineAt: input.deadlineAt,
         attachments: input.attachments ?? [], access: { ok: true, reason: 'allowed-user' },
-        capability, profileConfig: config, sessions: this.sessions, sessionCatalog: this.catalog,
+        agent, capability, profileConfig: config, sessions: this.sessions, sessionCatalog: this.catalog,
         workspaces: this.workspaces, executor: this.executor, now: Date.now(),
       });
       if (!flow.ok) { dispose(); return flow; }
