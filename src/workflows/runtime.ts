@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { RunExecutor } from '../runtime/run-executor';
 import { RunStopped } from '../runtime/errors';
 import { log } from '../core/logger';
-import { WorkflowKernel } from './kernel';
+import { RESUME_DEADLINE, RESUME_ROOT_CHANGED, WorkflowKernel } from './kernel';
 import { WorkflowIpc, WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from './ipc';
 import { workflowDigest } from './digest';
 import { inheritedWorkerExecution } from './execution';
@@ -23,8 +23,16 @@ export interface WorkflowRuntimeDeps {
     Promise<{ execution: WorkerExecution; policy: RunPolicyAllow }>;
   wakeMain(scopeId: string): Promise<void>;
   showPlan?(state: WorkflowState, text: string): Promise<void>;
+  /** Tells the workflow's chat what happened to it across a bridge restart. */
+  notify?(state: WorkflowState, text: string): Promise<void>;
   /** Source hosts may supply their built CLI; packaged bundles share dist/cli.js. */
   cliPath?: string;
+}
+
+function resumeFailure(reason: string | undefined): string {
+  if (reason === RESUME_ROOT_CHANGED) return '主会话、模型、工作区或权限已变化';
+  if (reason === RESUME_DEADLINE) return '重启前已到截止时间';
+  return `重放失败（${reason}）`;
 }
 
 export class WorkflowRuntime {
@@ -59,6 +67,15 @@ export class WorkflowRuntime {
 
   async start(): Promise<void> {
     await this.ipc.listen();
+    for (const outcome of await this.kernel.resumeAfterRestart()) {
+      const name = outcome.state.script?.name ?? outcome.state.workflowId;
+      const text = outcome.resumed
+        ? `Bridge 已重启，工作流「${name}」已自动续跑：已完成的调用直接复用，中断的调用重新执行，停机时间不计入截止时间。可用 /workflow status 查看进度。`
+        : `Bridge 已重启，工作流「${name}」未能自动续跑：${resumeFailure(outcome.reason)}。处理后可用 /workflow resume 恢复，或 /workflow cancel 取消。`;
+      log.info('workflow', outcome.resumed ? 'restart-resumed' : 'restart-resume-skipped', { workflowId: outcome.state.workflowId, reason: outcome.reason });
+      await this.deps.notify?.(outcome.state, text)
+        .catch(error => log.warn('workflow', 'restart-notice-failed', { error: String(error) }));
+    }
     this.timer = setInterval(() => {
       void this.tick().catch(error => log.warn('workflow', 'tick-failed', { error: String(error) }));
     }, 500);

@@ -23,12 +23,16 @@ import type {
 
 const BUSY = new Set<WorkflowTask['status']>(['queued', 'starting', 'running', 'cancelling']);
 const MAX_TEXT = 100_000;
+const HEARTBEAT_MS = 5_000;
+export const RESUME_ROOT_CHANGED = 'root_changed';
+export const RESUME_DEADLINE = 'deadline';
 
 /** Bridge-owned state. No model or CLI process opens this database. */
 export class WorkflowKernel {
   private readonly db: Database.Database;
   private readonly running = new Map<string, { controller: AbortController; done: Promise<void> }>();
   private pumping = false;
+  private heartbeatAt = 0;
   private closed = false;
   private readonly waking = new Set<string>();
   private readonly changes = new EventEmitter().setMaxListeners(0);
@@ -43,14 +47,21 @@ export class WorkflowKernel {
       CREATE UNIQUE INDEX IF NOT EXISTS workflow_binding ON workflows(scope) WHERE status NOT IN ('completed', 'cancelled');
       CREATE TABLE IF NOT EXISTS workflow_operations (scope TEXT NOT NULL, id TEXT NOT NULL, digest TEXT NOT NULL,
         response TEXT NOT NULL, PRIMARY KEY(scope, id));
+      CREATE TABLE IF NOT EXISTS workflow_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
     if (!(this.db.prepare('PRAGMA table_info(workflows)').all() as Array<{name:string}>).some(column => column.name === 'root_id')) {
       this.db.exec('ALTER TABLE workflows ADD COLUMN root_id TEXT; UPDATE workflows SET root_id = id;');
     }
     this.db.exec('CREATE INDEX IF NOT EXISTS workflow_root ON workflows(root_id)');
+    // The last heartbeat approximates when the previous process stopped; the outage does not count toward deadlines.
+    const beat = Number((this.db.prepare("SELECT value FROM workflow_meta WHERE key = 'heartbeat'").get() as { value: string } | undefined)?.value);
+    const since = Number.isFinite(beat) && beat > 0 ? Math.min(beat, this.now()) : this.now();
     // Retire old agent-led instances without discarding their evidence or blocking new scripts.
     for (const state of this.list()) {
       if (['completed', 'cancelled'].includes(state.status)) continue;
+      if (state.script && state.status !== 'interrupted') {
+        state.restart = { since, resume: !state.parent && state.status === 'active' && ['queued', 'running'].includes(state.script.status) };
+      }
       state.status = state.script ? 'interrupted' : 'cancelled';
       if (state.script) state.script.status = 'interrupted';
       for (const pool of consumerPools(state)) pool.status = 'suspended';
@@ -254,7 +265,8 @@ export class WorkflowKernel {
       this.cancelState(state);
       return this.commitOperation(state, operationId, digest, () => this.summary(state!));
     }
-    if (!['active', 'paused'].includes(state.status) && !(state.status === 'interrupted' && ['replay_script', 'send_message', 'enqueue_work', 'retry_work', 'close_work_queue'].includes(method))) {
+    if (['replay_script', 'resume'].includes(method)) this.resumeClock(state);
+    if (!['active', 'paused'].includes(state.status) && !(state.status === 'interrupted' && ['replay_script', 'resume', 'send_message', 'enqueue_work', 'retry_work', 'close_work_queue'].includes(method))) {
       throw new Error(`Workflow is ${state.status}; cancel and start a new workflow, or explicitly replay an interrupted script`);
     }
     if (this.now() >= state.deadlineAt && !['ack_events', 'complete', 'cancel_task'].includes(method)) throw new Error('Workflow deadline reached');
@@ -304,7 +316,7 @@ export class WorkflowKernel {
         break;
       case 'resume':
       case 'replay_script':
-        if (method === 'resume' && state.script.status !== 'paused') throw new Error('Use replay_script to relaunch a completed or failed script');
+        if (method === 'resume' && state.script.status !== 'paused' && state.status !== 'interrupted') throw new Error('Use replay_script to relaunch a completed or failed script');
         // Root and descendant replay must commit together.
         return this.db.transaction(() => {
           this.replayScript(state!, args);
@@ -804,9 +816,46 @@ export class WorkflowKernel {
     return renderWorkflowPlan(state, plan);
   }
 
+  /** Interrupted time does not count toward the deadline; restore it once when the workflow is replayed. */
+  private resumeClock(state: WorkflowState): void {
+    if (state.status !== 'interrupted' || !state.restart) return;
+    state.deadlineAt += Math.max(0, this.now() - state.restart.since);
+    state.restart = undefined;
+  }
+
+  /** Replays root scripts that a restart interrupted mid-run; anything else still waits for an explicit replay. */
+  async resumeAfterRestart(): Promise<Array<{ state: WorkflowState; resumed: boolean; reason?: string }>> {
+    const outcomes: Array<{ state: WorkflowState; resumed: boolean; reason?: string }> = [];
+    for (const snapshot of this.list()) {
+      if (snapshot.parent || snapshot.status !== 'interrupted' || !snapshot.restart?.resume) continue;
+      const root = await this.host.resolveRoot(snapshot.root.scopeId);
+      if (this.closed) break;
+      const state = this.state(snapshot.root.scopeId, snapshot.workflowId);
+      if (!state || state.status !== 'interrupted' || !state.restart?.resume) continue;
+      let reason: string | undefined;
+      try {
+        if (!root || !sameRoot(root, state.root)) throw new Error(RESUME_ROOT_CHANGED);
+        this.db.transaction(() => {
+          this.resumeClock(state);
+          if (this.now() >= state.deadlineAt) throw new Error(RESUME_DEADLINE);
+          this.replayScript(state, {});
+          this.save(state);
+        })();
+      } catch (error) { reason = error instanceof Error ? error.message : String(error); }
+      if (reason === undefined) { outcomes.push({ state, resumed: true }); continue; }
+      // Leave it interrupted for an explicit decision; do not retry automatically on every restart.
+      const current = this.state(snapshot.root.scopeId, snapshot.workflowId)!;
+      current.restart = { ...current.restart!, resume: false };
+      this.save(current);
+      outcomes.push({ state: current, resumed: false, reason });
+    }
+    return outcomes;
+  }
+
   private replayScript(state: WorkflowState, args: Record<string, unknown>): void {
     const script = state.script;
     if (!script) throw new Error('Not a script workflow');
+    this.resumeClock(state);
     if (['queued', 'running'].includes(script.status) || state.tasks.some(task => BUSY.has(task.status))) throw new Error('Stop or pause the script and wait for workers to finish before replay');
     const children=this.descendants(state);
     if (children.some(child=>child.tasks.some(task=>BUSY.has(task.status)))) throw new Error('Wait for child workflow workers to stop before replay');
@@ -917,6 +966,11 @@ export class WorkflowKernel {
     if (this.closed || this.pumping) return;
     this.pumping = true;
     try {
+      if (this.now() - this.heartbeatAt >= HEARTBEAT_MS) {
+        this.heartbeatAt = this.now();
+        this.db.prepare("INSERT INTO workflow_meta(key, value) VALUES ('heartbeat', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+          .run(String(this.heartbeatAt));
+      }
       for (const snapshot of this.list().sort((a,b)=>(b.parent?.depth ?? 0)-(a.parent?.depth ?? 0))) {
         if (!['active', 'paused'].includes(snapshot.status)) continue;
         const root = await this.host.resolveRoot(snapshot.root.scopeId);

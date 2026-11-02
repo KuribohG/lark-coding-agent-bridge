@@ -14,7 +14,7 @@ const WORKFLOW_HELP = [
   '- `/workflow enqueue <工作项 JSON>` — 向当前工作流追加授权范围内的任务；暂停时仅入队。',
   '- `/workflow close [queue]` — 关闭任务入口，消费者处理完已有任务后结束。',
   '- `/workflow pause` — 暂停工作流并取消正在执行的子任务。',
-  '- `/workflow resume` — 恢复已暂停的工作流，复用已完成结果。',
+  '- `/workflow resume` — 恢复已暂停或因重启中断的工作流，复用已完成结果；重启时正在运行的工作流会自动续跑。',
   '- `/workflow cancel` — 取消当前工作流。',
   '',
   '示例：`/workflow start 让两个子 agent 分别分析方案 A 和 B，再汇总差异。`',

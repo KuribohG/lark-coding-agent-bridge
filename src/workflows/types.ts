@@ -321,6 +321,8 @@ export interface WorkflowState {
   controlOperations?: Array<{ key: string; digest: string; taskId: string }>;
   workspaceKeys?: string[];
   script?: WorkflowScript;
+  /** Set when a bridge restart interrupted the workflow: when the outage began and whether it was running and may resume automatically. */
+  restart?: { since: number; resume: boolean };
 }
 
 export type WorkflowCaller =

@@ -223,7 +223,7 @@ Worker operation IDs are scoped to the logical turn and deduplicated across atte
 
 Checkpoints, waits, message receipts and turn state are committed together in the bridge's SQLite workflow record. A progress checkpoint survives interruption. Recovery continues from the last saved work state and the backend's persisted native conversation, not a process snapshot. Native transcripts and external file changes are not part of the SQLite transaction. Verify uncertain side effects on retry; delivery and retries do not imply exactly-once external execution. A missing or replaced native session fails visibly rather than silently starting an empty conversation. The bridge records native IDs but relies on the backend's transcript storage and retention.
 
-After a restart, the workflow remains `interrupted` until explicit `replay_script`. Replay reconstructs the script from its beginning, reuses completed turns and receive receipts, then continues pending waits or retries the interrupted turn in its original native session. Persistent turn reuse validates the original request and predecessor chain; the stored input fingerprint includes the checkpoint version and message IDs. Rewriting committed history, skipping its predecessor, or changing a member's execution binding requires a new member name. One-shot tasks without `workflowTool` still retry in fresh sessions; enabled callers retain their native session for child-result continuation.
+After a restart, a workflow that was running is replayed automatically (see [Restart recovery](#restart-recovery)); others remain `interrupted` until explicit `replay_script` or `/workflow resume`. Replay reconstructs the script from its beginning, reuses completed turns and receive receipts, then continues pending waits or retries the interrupted turn in its original native session. Persistent turn reuse validates the original request and predecessor chain; the stored input fingerprint includes the checkpoint version and message IDs. Rewriting committed history, skipping its predecessor, or changing a member's execution binding requires a new member name. One-shot tasks without `workflowTool` still retry in fresh sessions; enabled callers retain their native session for child-result continuation.
 
 Limits per workflow: 32 members, 256 messages, 128 receive receipts, 512 worker/script mailbox operations, and 128 execution attempts including retries. The kernel retains up to 256 recent checkpoints while preserving every member's latest recovery point. Existing workflow call, deadline, replay, output and process-pool limits also apply. Members and the work queue below are scoped to one workflow; they do not create a cross-workflow team.
 
@@ -315,7 +315,7 @@ The [packaged consumer example](../workflow-definitions/scripted/examples/consum
 /workflow close [queue]
 ```
 
-Enqueue accepts optional `resources` and `maxAttempts`. These commands never create a workflow; when paused/interrupted they only persist the change. Restart marks the pool suspended, cancels orphaned claims and requires explicit replay before scheduling. `/workflow work` and `/workflow status [member]` display queue closure, pool state, turn budget, idle waits and stopped members, including before a member's first native turn. Ordinary messages do not enter workflow mode.
+Enqueue accepts optional `resources` and `maxAttempts`. These commands never create a workflow; when paused/interrupted they only persist the change. Restart marks the pool suspended and cancels orphaned claims; scheduling resumes with the automatic or explicit replay. `/workflow work` and `/workflow status [member]` display queue closure, pool state, turn budget, idle waits and stopped members, including before a member's first native turn. Ordinary messages do not enter workflow mode.
 
 ### Nested workflows as a worker tool
 
@@ -355,7 +355,7 @@ Children have their own members, mailboxes and work queues. Explicit `parentQueu
 
 The tree shares root worker concurrency, task-history budget and deadline, and at most 128 native attempts. Child limits can reduce these allowances. There are at most three child levels and 32 child workflows per root. The parent continuation counts as another attempt of its original task. Completed child results and plans remain inspectable artifacts; only the root's plan and final event are sent to the chat.
 
-Pause, cancellation, binding changes and deadlines apply to descendants. After a restart, explicit root replay reconstructs the waiting parents and paused/interrupted child scripts; it does not rerun completed child calls. Recovery retains native sessions, pending child IDs and checkpoints. Root completion requires descendants to be finished. Local state recovery does not guarantee exactly-once external side effects.
+Pause, cancellation, binding changes and deadlines apply to descendants. After a restart, root replay (automatic or explicit) reconstructs the waiting parents and paused/interrupted child scripts; it does not rerun completed child calls. Recovery retains native sessions, pending child IDs and checkpoints. Root completion requires descendants to be finished. Local state recovery does not guarantee exactly-once external side effects.
 
 ### Discussion example and native acceptance
 
@@ -411,7 +411,28 @@ These tests restart only isolated test controllers and databases. They do not re
 
 This is result reuse, not replay of external side effects. File contents, network state, time and other implicit dependencies are not automatically hashed. Include relevant revisions or digests in prompts/keys when fresh execution is required. A task interrupted after a side effect may repeat that effect on replay. Worker tasks that modify shared files need an explicit ownership or serialization strategy. Queue resource keys can serialize claims when supplied; the workflow does not create worktrees or infer which files a task will modify.
 
-For scripts, `/workflow pause` aborts the interpreter and cancels queued/running workers. Wait for worker cancellation to finish before `/workflow resume`; resume replays with cached completed calls. `/workflow cancel` and `/stop` cancel the whole workflow. Root session, workspace, policy or model changes prevent reuse and further dispatch. Target configuration changes invalidate matching worker cache entries. After restart, unfinished scripts are marked `interrupted`; explicit `replay_script` is supported while the original root binding and deadline remain valid. There is no automatic recovery. An expired workflow must be cancelled and a new one started.
+For scripts, `/workflow pause` aborts the interpreter and cancels queued/running workers. Wait for worker cancellation to finish before `/workflow resume`; resume replays with cached completed calls. `/workflow cancel` and `/stop` cancel the whole workflow. Root session, workspace, policy or model changes prevent reuse and further dispatch. Target configuration changes invalidate matching worker cache entries. After restart, unfinished scripts are marked `interrupted`. Running roots resume automatically; the others accept `replay_script` or `/workflow resume` while the original root binding and deadline remain valid. An expired workflow must be cancelled and a new one started.
+
+### Restart recovery
+
+Bridge restarts are safe for running workflows. On startup the bridge:
+
+1. **Marks** every unfinished workflow `interrupted`. It records when the outage began, using a heartbeat the kernel writes every 5 seconds.
+2. **Replays automatically** each root workflow whose script was queued or running, but only when two conditions still hold:
+   - the original root binding (main session, model, workspace and permissions) is unchanged;
+   - the deadline was not already reached before the restart.
+
+   Completed calls are reused. Interrupted turns retry; persistent members retry in their original native session.
+3. **Pauses the clock.** Time spent interrupted, including the outage itself, does not count toward the deadline. The deadline is extended once, when the workflow is replayed, whether automatically or explicitly.
+4. **Reports** each outcome in the workflow's chat or topic: either that the workflow resumed, or why it did not.
+
+A workflow that does not resume automatically stays `interrupted`, and `/workflow resume` replays it. The bridge does not retry it again on later restarts. This includes workflows that were paused, waiting for a binding decision, or had already finished their script before the restart.
+
+**Why the chat is known after a restart.** The bridge persists the latest message per chat or topic in `workflow-origins.json`, next to `workflows.sqlite`. It uses this record to authorize the root session and to address replies.
+
+**Upgrading from an earlier version.** Earlier versions kept this record only in memory and wrote no heartbeat. Their workflows therefore cannot resume automatically on the first restart into this version, until a new message arrives in that chat. Pause or let them finish before upgrading.
+
+Replay repeats interrupted work: side effects in the outside world (files, network) may be repeated, exactly as with an explicit replay.
 
 ### Interpreter and execution boundaries
 

@@ -40,7 +40,8 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
     const state = runtime.kernel.state(scopeId)!;
     runtime.kernel.markNotified(scopeId, state.events.map(event => event.id));
   });
-  const deps: ConstructorParameters<typeof WorkflowRuntime>[0] = { path, executor, resolve: async scopeId => ({ root: {...root,scopeId}, policy }), wakeMain, showPlan, getTimeoutMinutes,
+  const notify = vi.fn(async (_state: unknown, _text: string) => {});
+  const deps: ConstructorParameters<typeof WorkflowRuntime>[0] = { path, executor, resolve: async scopeId => ({ root: {...root,scopeId}, policy }), wakeMain, showPlan, getTimeoutMinutes, notify,
     resolveWorker: async (current, selection) => ({ policy, execution: {
       agentKind: selection.agentKind, profile: current.profile, configurationFingerprint: selection.agentKind,
       policyFingerprint: policy.policyFingerprint, modelSettings: { ...(selection.agentKind === current.agentKind ? current.modelSettings : {model: selection.agentKind + '-default'}), ...(selection.model ? {model:selection.model} : {}), ...(selection.reasoningEffort ? {reasoningEffort:selection.reasoningEffort} : {}) },
@@ -53,7 +54,7 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
   const call = (method: string, args: Record<string, unknown> = {}) => callWorkflow(method,
     { operationId: randomUUID(), workflowId: state()?.workflowId, expectedStateVersion: state()?.stateVersion, ...(method === 'run_script' || method === 'replay_script' ? {plan:'Review the task with the requested harness and model; return a final result.'} : {}), ...args }, binding.env);
   const until = async (check: () => void) => vi.waitFor(async () => { await runtime.tick(); check(); }, { timeout: 5000, interval: 20 });
-  return { get runtime() { return runtime; }, adapters, resolveAgent, wakeMain, binding, state, call, until, pool,
+  return { get runtime() { return runtime; }, adapters, resolveAgent, wakeMain, notify, binding, state, call, until, pool,
     restart: async () => { binding.release(); await runtime.close(); runtime = new WorkflowRuntime(deps); await runtime.start(); binding = runtime.bindMain(root.scopeId, 'continue'); },
     changeRoot: () => { root = { ...root, catalogBinding: 'replacement' }; } };
 }
@@ -170,8 +171,8 @@ describe('script workflow runtime', () => {
     await h.until(()=>expect(h.state().tasks[0]?.waitingWorkflowId).toBeTruthy());
     const childId=h.state().tasks[0]!.waitingWorkflowId!;
     await h.restart();
-    expect(h.runtime.kernel.state('script-topic',childId)?.status).toBe('interrupted');
-    await h.call('replay_script');
+    expect(h.runtime.kernel.state('script-topic',childId)?.status).not.toBe('interrupted');
+    expect(h.notify.mock.calls[0]?.[1]).toContain('已自动续跑');
     await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
     expect(h.adapters.codex.runs).toHaveLength(2);
     expect(h.adapters.codex.runOptions[1]?.threadId).toBe('parent-before-yield');
@@ -475,7 +476,7 @@ describe('script workflow runtime', () => {
     expect(h.runtime.kernel.state('script-topic', workflowId)?.tasks[0]?.status).toBe('cancelled');
   });
 
-  it('replays a persisted mailbox wait after a runtime restart without replaying completed agent turns', async () => {
+  it('resumes a persisted mailbox wait after a runtime restart without replaying completed agent turns', async () => {
     const dir=await mkdtemp(join(tmpdir(),'durable-runtime-')); cleanup.push(()=>rm(dir,{recursive:true,force:true}));
     const h=await harness({},'codex',undefined,join(dir,'state.db'));
     const events=(text:string):AgentEvent[]=>[{type:'system',threadId:'saved-thread'},{type:'final_text',content:text},{type:'done',terminationReason:'normal'}];
@@ -483,17 +484,73 @@ describe('script workflow runtime', () => {
     await h.call('run_script',{goal:'restart recovery',script:'await agent("prepare",{key:"prepare",member:"A"});const m=await receive("A",{key:"inbox"});return await agent(JSON.stringify(m),{key:"resume",member:"A"});'});
     await h.until(()=>expect(h.state().mailbox?.receipts[0]?.status).toBe('waiting'));
     await h.restart();
-    await h.runtime.tick();
-    expect(h.state().status).toBe('interrupted');
+    await h.until(()=>expect(h.state().mailbox?.receipts[0]?.status).toBe('waiting'));
+    expect(h.state().status).toBe('active');
     expect(h.adapters.codex.runs).toHaveLength(1);
-    await h.call('send_message',{member:'A',text:'arrived during restart'});
-    await h.call('replay_script');
+    // The resumed script is live, so retry if its own progress moves the state version first.
+    await vi.waitFor(()=>h.call('send_message',{member:'A',text:'arrived during restart'}),{timeout:5000,interval:20});
     await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
     expect(h.adapters.codex.runs).toHaveLength(2);
     expect(h.adapters.codex.runOptions[1]?.threadId).toBe('saved-thread');
     expect(h.adapters.codex.runOptions[1]?.prompt).toContain('arrived during restart');
     expect(h.state().script?.calls[0]?.cached).toBe(true);
     expect(h.state().mailbox?.receipts[0]?.status).toBe('consumed');
+  });
+
+  describe('restart recovery', () => {
+    const HOUR = 3_600_000;
+    const waiting = async () => {
+      vi.useFakeTimers({toFake:['Date'],now:Date.now()});
+      const dir=await mkdtemp(join(tmpdir(),'restart-recovery-')); cleanup.push(()=>rm(dir,{recursive:true,force:true}));
+      const h=await harness({},'codex',undefined,join(dir,'state.db'));
+      h.adapters.codex.setEvents([[{type:'system',threadId:'saved'},{type:'final_text',content:'prepared'},{type:'done',terminationReason:'normal'}]]);
+      await h.call('run_script',{goal:'outage',script:'await agent("prepare",{key:"prepare",member:"A"});return await receive("A",{key:"inbox"});'});
+      await h.until(()=>expect(h.state().mailbox?.receipts[0]?.status).toBe('waiting'));
+      await h.runtime.tick();
+      return h;
+    };
+
+    it('resumes a running workflow, excludes the outage from its deadline and reports it', async () => {
+      const h=await waiting();
+      const before=h.state().deadlineAt;
+      vi.setSystemTime(Date.now()+HOUR);
+      await h.restart();
+      expect(h.state().status).toBe('active');
+      // The outage is measured from the last heartbeat, at most one interval before the restart.
+      expect(h.state().deadlineAt-before).toBeGreaterThanOrEqual(HOUR);
+      expect(h.state().deadlineAt-before).toBeLessThanOrEqual(HOUR+5000);
+      expect(h.state().restart).toBeUndefined();
+      expect(h.notify).toHaveBeenCalledTimes(1);
+      expect(h.notify.mock.calls[0]![1]).toContain('已自动续跑');
+      await h.until(()=>expect(h.state().mailbox?.receipts[0]?.status).toBe('waiting'));
+      expect(h.adapters.codex.runs).toHaveLength(1);
+    });
+
+    it('keeps a paused workflow interrupted until /workflow resume, which also restores the outage', async () => {
+      const h=await waiting();
+      await h.call('pause');
+      await h.until(()=>expect(h.state().status).toBe('paused'));
+      const before=h.state().deadlineAt;
+      vi.setSystemTime(Date.now()+HOUR);
+      await h.restart();
+      expect(h.state()).toMatchObject({status:'interrupted',restart:{resume:false}});
+      expect(h.notify).not.toHaveBeenCalled();
+      await h.call('resume');
+      expect(h.state().status).toBe('active');
+      expect(h.state().deadlineAt-before).toBeGreaterThanOrEqual(HOUR);
+      expect(h.state().deadlineAt-before).toBeLessThanOrEqual(HOUR+5000);
+      await h.until(()=>expect(h.state().mailbox?.receipts[0]?.status).toBe('waiting'));
+    });
+
+    it('reports why a workflow cannot resume and does not retry it on later restarts', async () => {
+      const h=await waiting();
+      h.changeRoot();
+      await h.restart();
+      expect(h.state()).toMatchObject({status:'interrupted',restart:{resume:false}});
+      expect(h.notify.mock.calls[0]![1]).toContain('未能自动续跑：主会话、模型、工作区或权限已变化');
+      await h.restart();
+      expect(h.notify).toHaveBeenCalledTimes(1);
+    });
   });
 
   it.each(['codex', 'claude', 'pi'] as const)('resumes a persistent %s member after releasing its process to wait for a message', async kind => {

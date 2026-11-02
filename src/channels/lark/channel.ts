@@ -1,4 +1,4 @@
-import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
+import type { LarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
 import { capabilityForProfile } from '../../agent/backends';
 import { modelRunArguments } from '../../agent/model-settings';
@@ -48,6 +48,8 @@ import { handleWorkflowCommand } from '../../workflows/commands';
 import { workflowDigest } from '../../workflows/digest';
 import { resolveWorkerExecution } from '../../workflows/execution';
 import { WorkflowRuntime } from '../../workflows/runtime';
+import type { WorkflowState } from '../../workflows/types';
+import { WorkflowOrigins } from './workflow-origins';
 import type { WorkspaceStore } from '../../workspace/store';
 
 import { intakeMessage } from './intake';
@@ -127,17 +129,20 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   const media = new MediaCache(channel, deps.appPaths?.mediaDir);
   const conversation = { channel, controls, executor, activeRuns, sessions, sessionCatalog, workspaces };
 
-  const workflowOrigins = new Map<string, NormalizedMessage>();
+  const workflowOrigins = new WorkflowOrigins(deps.appPaths?.mediaDir
+    ? join(dirname(deps.appPaths.mediaDir), 'workflow-origins.json') : undefined);
+  const replyToOrigin = async (state: WorkflowState, text: string) => {
+    const message = workflowOrigins.get(state.root.scopeId);
+    if (!message) throw new Error('Workflow reply destination unavailable');
+    const receipt = await channel.send(message.chatId, { markdown: text }, { replyTo: message.messageId, replyInThread: Boolean(message.threadId) });
+    if (!receipt.messageId?.trim()) throw new Error('Workflow message delivery returned no message receipt');
+  };
   let workflows: WorkflowRuntime | undefined;
   const createWorkflows = () => sessionCatalog && deps.appPaths?.mediaDir ? new WorkflowRuntime({
     path: join(dirname(deps.appPaths.mediaDir), 'workflows.sqlite'), executor,
     getTimeoutMinutes: root => getWorkflowTimeoutMinutes(profileForAgentKind(controls.profileConfig, root.agentKind)),
-    showPlan: async (state, text) => {
-      const message = workflowOrigins.get(state.root.scopeId);
-      if (!message) throw new Error('Workflow reply destination unavailable');
-      const receipt = await channel.send(message.chatId, { markdown: text }, { replyTo: message.messageId, replyInThread: Boolean(message.threadId) });
-      if (!receipt.messageId?.trim()) throw new Error('Workflow plan delivery returned no message receipt');
-    },
+    showPlan: replyToOrigin,
+    notify: replyToOrigin,
     resolveWorker: async (root, selection, policy) => {
       const { agentKind, ...overrides } = selection;
       const profile = profileForAgentKind(controls.profileConfig, agentKind);
@@ -244,6 +249,8 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
 
   const startWorkflows = async () => {
     if (workflows) return;
+    // Load after a handoff so origins recorded by the previous process are included.
+    await workflowOrigins.load();
     workflows = createWorkflows();
     if (!workflows) return;
     const runtime = workflows;
