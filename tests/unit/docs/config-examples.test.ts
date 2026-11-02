@@ -19,7 +19,7 @@ describe('copyable configuration examples', () => {
     });
   });
 
-  it.each(['web-native', 'web-responses', 'lark-codex'])('loads %s with the production config loader without resolving credentials', async name => {
+  it.each(['web-native', 'web-responses', 'lark-codex', 'lark-two-frontends'])('loads %s with the production config loader without resolving credentials', async name => {
     await expect(loadRootConfig(fileURLToPath(exampleUrl(name)))).resolves.toBeDefined();
   });
 

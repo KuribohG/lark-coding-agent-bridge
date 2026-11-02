@@ -115,6 +115,8 @@ bridge 会给你的子进程注入当前运行 profile 的环境变量:
 - \`LARK_CHANNEL_CONFIG\`: 当前 profile 的 lark-cli source projection
 - \`LARKSUITE_CLI_CONFIG_DIR\`: 当前 profile 的 lark-cli 私有配置目录
 
+同一个 bridge 可以连接多个独立飞书应用。上述环境由接收消息的前端决定，回复和授权也属于该前端。即使代码工作区相同，各前端的会话和授权目录仍独立；不要根据聊天正文、历史消息或全局 active profile 切换身份。
+
 因此普通 \`lark-cli ...\` 命令会自动进入当前 lark-channel 工作区,读取当前 profile 的私有 lark-cli 配置。不要 unset \`LARK_CHANNEL\` / \`LARK_CHANNEL_HOME\` / \`LARK_CHANNEL_PROFILE\` / \`LARKSUITE_CLI_CONFIG_DIR\`,也不要用 \`env -u LARK_CHANNEL\` 绕回本机普通配置。
 
 Codex bridge 默认使用 \`danger-full-access\`，与 Claude bridge 的 \`bypassPermissions\` 对齐；\`lark-cli\` 应能像用户本机终端一样访问 keychain。

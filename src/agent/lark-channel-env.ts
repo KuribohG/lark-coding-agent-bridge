@@ -1,5 +1,13 @@
 import { join } from 'node:path';
 
+export const LARK_CHANNEL_ENV_KEYS = [
+  'LARK_CHANNEL',
+  'LARK_CHANNEL_PROFILE',
+  'LARK_CHANNEL_HOME',
+  'LARK_CHANNEL_CONFIG',
+  'LARKSUITE_CLI_CONFIG_DIR',
+] as const;
+
 export interface LarkChannelEnvContext {
   profile?: string;
   rootDir?: string;
@@ -11,6 +19,11 @@ export interface LarkChannelEnvContext {
 export function buildLarkChannelEnv(context?: LarkChannelEnvContext): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     LARK_CHANNEL: '1',
+    // Missing bindings must clear a parent process's frontend, not inherit it.
+    LARK_CHANNEL_PROFILE: undefined,
+    LARK_CHANNEL_HOME: undefined,
+    LARK_CHANNEL_CONFIG: undefined,
+    LARKSUITE_CLI_CONFIG_DIR: undefined,
   };
   const profile = nonEmpty(context?.profile);
   if (profile) env.LARK_CHANNEL_PROFILE = profile;

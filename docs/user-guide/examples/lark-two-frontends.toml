@@ -1,0 +1,56 @@
+version = 3
+
+[bridge]
+active_profile = "frontend_a"
+autostart_profiles = ["frontend_a", "frontend_b"]
+
+[agents.codex.launch]
+binaryPath = "codex"
+# The explicit homes below also isolate persistent daemon/MCP environments.
+# Configure the model provider or native login in each home.
+
+[profiles.frontend_a]
+agent = "codex"
+mode = "personal"
+
+[profiles.frontend_a.launch]
+codexHome = "/absolute/private/codex-frontend-a"
+
+[profiles.frontend_a.accounts.app]
+id = "cli_REPLACE_APP_A"
+secret = { source = "env", id = "FEISHU_APP_A_SECRET" }
+tenant = "feishu"
+
+[profiles.frontend_a.access]
+allowedUsers = ["ou_REPLACE_USER_IN_APP_A"]
+requireMentionInGroup = true
+
+[profiles.frontend_a.permissions]
+defaultAccess = "workspace"
+maxAccess = "workspace"
+
+[profiles.frontend_a.workspaces]
+default = "/absolute/shared-project"
+
+[profiles.frontend_b]
+agent = "codex"
+mode = "personal"
+
+[profiles.frontend_b.launch]
+codexHome = "/absolute/private/codex-frontend-b"
+
+[profiles.frontend_b.accounts.app]
+id = "cli_REPLACE_APP_B"
+secret = { source = "env", id = "FEISHU_APP_B_SECRET" }
+tenant = "feishu"
+
+[profiles.frontend_b.access]
+allowedUsers = ["ou_REPLACE_USER_IN_APP_B"]
+requireMentionInGroup = true
+
+[profiles.frontend_b.permissions]
+defaultAccess = "workspace"
+maxAccess = "workspace"
+
+[profiles.frontend_b.workspaces]
+default = "/absolute/shared-project"

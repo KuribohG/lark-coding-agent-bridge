@@ -1,5 +1,6 @@
 import { mergeProcessEnv } from '../platform/spawn';
 import type { AgentLaunchEnvironment } from '../config/profile-schema';
+import { LARK_CHANNEL_ENV_KEYS } from './lark-channel-env';
 
 const REFERENCE = /\$(?:\$|\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g;
 
@@ -14,7 +15,17 @@ export function buildAgentEnvironment(
   inheritedEnv: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
   const source = mergeProcessEnv(inheritedEnv, hostEnv);
-  return mergeProcessEnv(hostEnv, expandLaunchEnvironment(launchEnv, source));
+  const env = mergeProcessEnv(hostEnv, expandLaunchEnvironment(launchEnv, source));
+  // The receiving frontend owns its CLI identity even when agent launch
+  // settings are shared by several profiles. Preserve deletion markers too.
+  for (const key of LARK_CHANNEL_ENV_KEYS) {
+    if (!Object.hasOwn(hostEnv, key)) continue;
+    for (const existing of Object.keys(env)) {
+      if (existing.toLowerCase() === key.toLowerCase()) delete env[existing];
+    }
+    env[key] = hostEnv[key];
+  }
+  return env;
 }
 
 export function expandLaunchEnvironment(

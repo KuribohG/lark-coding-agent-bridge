@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { WebSocketServer } from 'ws';
 import { CodexAdapter } from '../../src/agent/codex/adapter';
+import { buildLarkChannelEnv } from '../../src/agent/lark-channel-env';
 import type { AgentEvent, AgentRunOptions } from '../../src/agent/types';
 
 const dirs: string[] = [];
@@ -106,6 +107,10 @@ process.exit(2);
   const provider = { id: 'probe', displayName: 'Probe', model: 'probe-model', env: { PROBE_API_KEY: 'must-not-be-serialized' }, codex: { providerId: 'probe', name: 'Probe', baseUrl: 'https://probe.example/v1', wireApi: 'responses' as const, apiKeyEnv: 'PROBE_API_KEY' } };
   return {
     dir,
+    frontendAdapter: (profile: string) => new CodexAdapter({
+      binary, profileStateDir: dir, codexHome: dir, appServerMode: 'daemon', startupProvider: async () => provider,
+      env: buildLarkChannelEnv({ profile, rootDir: dir, larkCliConfigDir: join(dir, 'profiles', profile, 'lark-cli') }),
+    }),
     restartAdapter: (key: string) => new CodexAdapter({ binary, profileStateDir: dir, codexHome: dir, appServerMode: 'daemon', startupProvider: async () => ({ ...provider, env: { PROBE_API_KEY: key } }) }),
     adapter: new CodexAdapter({
       startupProvider: async () => provider,
@@ -137,6 +142,27 @@ async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]>
 }
 
 describe('Codex persistent app-server mode', () => {
+  it('binds two Lark frontends independently when their threads share a daemon', async () => {
+    const h = await harness();
+    const a = h.frontendAdapter('frontend-a');
+    const b = h.frontendAdapter('frontend-b');
+    const preparedA = await a.prepareRun({ ...h.runOptions(), runId: 'a' });
+    const preparedB = await b.prepareRun({ ...h.runOptions(), runId: 'b' });
+    const results = await Promise.all([collect(preparedA.start().events), collect(preparedB.start().events)]);
+    for (const events of results) expect(events).toContainEqual({ type: 'final_text', content: 'daemon result' });
+    const bindings = h.requests.filter(request => request.method === 'thread/start')
+      .map(request => request.params.config.shell_environment_policy.set);
+    expect(bindings).toHaveLength(2);
+    for (const profile of ['frontend-a', 'frontend-b']) {
+      expect(bindings).toContainEqual({
+        ...buildLarkChannelEnv({ profile, rootDir: h.dir, larkCliConfigDir: join(h.dir, 'profiles', profile, 'lark-cli') }),
+        CODEX_HOME: h.dir,
+      });
+    }
+    await collect((await a.prepareRun({ ...h.runOptions(), runId: 'resume-a', threadId: 'thread-1' })).start().events);
+    expect(h.requests.find(request => request.method === 'thread/resume')?.params.config.shell_environment_policy.set.LARK_CHANNEL_PROFILE).toBe('frontend-a');
+  });
+
   it('binds workflow credentials per thread and replaces them on resume without placing them in daemon arguments', async () => {
     const h = await harness();
     const first = { ...h.runOptions(), env: { LARK_WORKFLOW_TOKEN: 'turn-one-token', LARK_WORKFLOW_ENDPOINT: 'http://127.0.0.1:1234/workflow' } };

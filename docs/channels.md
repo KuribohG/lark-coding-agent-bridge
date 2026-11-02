@@ -236,6 +236,28 @@ request body.
 
 ## Lark authentication boundaries
 
+One bridge process can connect two independent Lark apps using two profiles:
+
+```sh
+lark-channel-bridge run --config /absolute/private/config.toml --profiles frontend_a frontend_b
+```
+
+See the [two-frontend example](user-guide/examples/lark-two-frontends.toml).
+Both profiles must already exist and use different app IDs. A startup failure
+closes every profile started by this command; Ctrl-C closes both. This headless
+mode does not start a management console and cannot be combined with `--profile`,
+`--web-ui` or bootstrap flags. For console management, configure
+`bridge.autostart_profiles` and use `run --web-ui`.
+
+Each incoming transport selects its profile's reply connection, execution
+controller, session store and CLI environment. Two frontends may share a code
+workspace without sharing conversation or OAuth state. Authorize each app in
+its own bot's DM. Agent homes follow the global `[state]` layout and may be
+shared; Codex shell bindings are supplied per thread. The example selects
+distinct Codex homes to isolate persistent daemon and MCP environments as well.
+Profile separation does not sandbox access
+to the shared filesystem.
+
 Lark credentials and protocol tokens have separate owners:
 
 - A profile's `SecretRef` resolves the long-lived App Secret from the encrypted

@@ -24,7 +24,7 @@ export function larkAgentHostContext(
   };
   return {
     env: buildLarkChannelEnv(larkChannel),
-    systemPrompt: buildBridgeSystemPrompt,
+    systemPrompt: identity => `${buildBridgeSystemPrompt(identity)}\n\n当前消息来自飞书前端 profile ${JSON.stringify(appPaths.profile)}。本次工具环境已绑定该前端；飞书授权和操作使用此绑定。`,
   };
 }
 

@@ -54,6 +54,7 @@ program
   .description('Run the bridge in the foreground (was `start` in older versions)')
   .option('-c, --config <path>', 'path to config file')
   .option('--profile <name>', 'profile name to run')
+  .option('--profiles <names...>', 'run several existing Lark profiles in one headless process')
   .option('--web-ui', 'run the machine-wide supervisor + local web console (hosts all profiles); default is a single-profile headless run')
   .option('--agent <kind>', `agent kind for a new profile (${AGENT_KINDS.join(', ')})`)
   .option('--workspace <path>', 'initial working directory for first-run profile bootstrap')
@@ -64,6 +65,7 @@ program
   .action(async (opts: {
     config?: string;
     profile?: string;
+    profiles?: string[];
     webUi?: boolean;
     agent?: string;
     workspace?: string;

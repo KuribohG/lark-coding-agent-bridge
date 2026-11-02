@@ -98,6 +98,21 @@ Responses 模型服务可供 Codex / Pi 使用，不能把它直接当成 Claude
 
 本示例选择 workspace 权限；新建的普通飞书 profile 可能使用更宽的 full 权限，检查向导结果后再发任务。`allowedUsers` / `allowedChats` 是谁能与机器人聊天，`permissions` 是 Agent 能对本机做什么，不要混用。
 
+### 两个独立飞书应用接入同一个 bridge
+
+参考 [lark-two-frontends.toml](examples/lark-two-frontends.toml)：每个应用对应一个 profile，填写不同的 App ID、密钥引用和该应用下的用户 open_id。两个 profile 可以使用同一 Agent 类型、模型服务和代码工作区。
+
+```sh
+lark-channel-bridge config check --config /absolute/private/config.toml
+lark-channel-bridge run --config /absolute/private/config.toml --profiles frontend_a frontend_b
+```
+
+这会在一个前台进程中连接两个应用，不启动网页。`--profiles` 只选择已有配置，不能同时传 `--profile`、`--web-ui` 或创建 profile 的参数。任一应用启动失败会关闭本次已启动的应用；Ctrl-C 关闭全部。也可以运行 `run --web-ui`，由示例的 `autostart_profiles` 启动两个前端并通过控制台分别管理。
+
+消息通过哪个应用进入，就使用该 profile 的回复连接、会话、App Secret、OAuth 和环境。`LARK_CHANNEL_PROFILE`、`LARK_CHANNEL_HOME`、`LARK_CHANNEL_CONFIG`、`LARKSUITE_CLI_CONFIG_DIR` 由 bridge 绑定，不能通过共享 `launch.env` 改成另一个前端。每个前端的 `lark-cli` 目录位于 `profiles/<名称>/lark-cli`；在两个机器人的私聊里分别完成用户授权，授权链接不要发到群里。
+
+共享代码工作区不会合并会话或飞书授权。Agent home 按全局 `[state]` 规则解析，可能由多个前端共用；Codex 的 shell 工具仍按线程接收当前前端环境。示例显式配置不同的 `codexHome`，同时隔离常驻 daemon 和 MCP 子进程环境。不要把两个前端的 `lark-cli` 目录指向同一处。这个配置不是文件系统安全隔离：两个前端仍可按各自权限访问共用的代码。
+
 ## 5. 常用配置对照
 
 以下均是局部字段说明，需要放进相应完整配置文件：

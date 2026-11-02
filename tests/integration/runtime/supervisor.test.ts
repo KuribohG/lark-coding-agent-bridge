@@ -9,6 +9,8 @@ import {
   saveRootConfig,
 } from '../../../src/config/profile-store';
 import { Supervisor } from '../../../src/runtime/supervisor';
+import { resolveAppPaths } from '../../../src/config/app-paths';
+import { acquireAppRuntimeLock } from '../../../src/runtime/locks';
 
 const roots: string[] = [];
 const started: string[] = [];
@@ -112,6 +114,17 @@ describe('Supervisor', () => {
     await sup.startProfile('claude');
     await sup.startProfile('claude');
     expect(started.filter((p) => p === 'claude')).toHaveLength(1);
+  });
+
+  it('releases a frontend profile lock when its app is already connected elsewhere', async () => {
+    const lock = await acquireAppRuntimeLock(resolveAppPaths({ rootDir: root, profile: 'external' }), 'cli_b', 'claude');
+    try {
+      await expect(sup.startProfile('work')).rejects.toMatchObject({ kind: 'app' });
+    } finally {
+      await lock.release();
+    }
+    await sup.startProfile('work');
+    expect(sup.isOnline('work')).toBe(true);
   });
 
   it('switches the bot default for DMs and topics without disconnecting or replacing active adapters', async () => {

@@ -44,6 +44,7 @@ process.on('uncaughtException', (err) => {
 export interface StartOptions {
   config?: string;
   profile?: string;
+  profiles?: string[];
   agent?: string;
   workspace?: string;
   appId?: string;
@@ -64,13 +65,60 @@ export interface StartOptions {
  *    no web console, headless-safe (works on servers without a browser).
  *  - `run --web-ui` → **supervisor console**: one machine-wide process hosting
  *    all profiles + a local web console to start/stop/configure them.
+ *  - `run --profiles A B` → selected existing profiles in one headless process.
  */
 export async function runStart(opts: StartOptions): Promise<void> {
+  if (opts.profiles !== undefined) {
+    await runSelectedProfiles(opts);
+    return;
+  }
   if (opts.webUi) {
     await runSupervisorConsole(opts);
     return;
   }
   await runClassic(opts);
+}
+
+/** Each frontend retains its own execution controller, auth and session stores. */
+async function runSelectedProfiles(opts: StartOptions): Promise<void> {
+  const profiles = opts.profiles!;
+  if (!profiles.length || profiles.some(profile => !profile.trim())) {
+    throw new Error('--profiles requires at least one profile name');
+  }
+  if (new Set(profiles).size !== profiles.length) throw new Error('--profiles contains duplicate names');
+  if (opts.profile || opts.webUi || opts.agent || opts.workspace || opts.appId || opts.appSecret || opts.tenant) {
+    throw new Error('--profiles selects existing profiles; do not combine it with --profile, --web-ui or bootstrap options');
+  }
+  // Validate the entire selection before connecting any app. Resolve once per
+  // profile so unknown names never fall back to the active profile's identity.
+  const runtimes = [];
+  const appIds = new Set<string>();
+  for (const profile of profiles) {
+    const runtime = await resolveProfileRuntime({ config: opts.config, profile, allowBootstrap: false });
+    if (appIds.has(runtime.cfg.accounts.app.id)) throw new Error('--profiles must use distinct Lark app IDs');
+    appIds.add(runtime.cfg.accounts.app.id);
+    runtimes.push(runtime);
+  }
+  const { appPaths, configPath } = runtimes[0]!;
+  configureLogger({ logsDir: appPaths.hostLogsDir });
+  await gcOldLogs();
+  const supervisor = new Supervisor({
+    configPath,
+    rootDir: appPaths.rootDir,
+    skipCheckLarkCli: opts.skipCheckLarkCli,
+    plugins: createBuiltinPlugins(),
+  });
+  try {
+    for (const runtime of runtimes) {
+      await supervisor.startProfile(runtime.profile);
+      console.log(`✓ profile「${runtime.profile}」已上线`);
+    }
+  } catch (err) {
+    await supervisor.shutdown();
+    throw err;
+  }
+  console.log('飞书前端已上线（前台运行，Ctrl-C 一起退出）');
+  await parkWithShutdown(supervisor, appPaths, undefined, undefined);
 }
 
 
@@ -98,6 +146,7 @@ async function runClassic(opts: StartOptions): Promise<void> {
   const supervisor = new Supervisor({
     configPath,
     rootDir: appPaths.rootDir,
+    skipCheckLarkCli: opts.skipCheckLarkCli,
     plugins: createBuiltinPlugins(),
   });
 
@@ -163,6 +212,7 @@ async function runSupervisorConsole(opts: StartOptions): Promise<void> {
     configPath,
     rootDir: appPaths.rootDir,
     plugins: createBuiltinPlugins(),
+    skipCheckLarkCli: opts.skipCheckLarkCli,
   });
 
   // Single web console (host sidecar), backed by the supervisor.

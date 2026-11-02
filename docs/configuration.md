@@ -60,6 +60,9 @@ NO_PROXY = "localhost,127.0.0.1,.internal"
 
 Per-profile `profiles.<name>.launch.env` entries overlay the matching agent's
 global `env` entries. Launch environment changes require a Bridge restart.
+For Lark runs, `LARK_CHANNEL`, `LARK_CHANNEL_PROFILE`, `LARK_CHANNEL_HOME`,
+`LARK_CHANNEL_CONFIG` and `LARKSUITE_CLI_CONFIG_DIR` remain bound to the receiving
+frontend; these host bindings take precedence over shared launch settings.
 Bridge does not invoke a shell to apply this table. If startup needs arbitrary
 shell initialization, point `binaryPath` at a reviewed wrapper script that
 ends with `exec <real-agent> "$@"`.

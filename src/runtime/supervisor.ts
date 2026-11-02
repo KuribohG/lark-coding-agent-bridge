@@ -71,6 +71,8 @@ export interface SupervisorOptions {
   startChannelFn?: StartChannelFn;
   /** Run lark-cli preflight per profile (default true; tests pass false). */
   runPreflight?: boolean;
+  /** Skip CLI binding only; agent availability checks still run. */
+  skipCheckLarkCli?: boolean;
   /** Explicit feature composition. Core supervision has no concrete plugins. */
   plugins?: BridgePluginFactory;
 }
@@ -131,11 +133,11 @@ class ManagedProfile {
     // this.locks and gets released by the catch — otherwise it would leak and
     // a retry in the same process would fail to re-lock.
     this.locks = [];
-    this.locks.push(await acquireProfileRuntimeLock(this.appPaths, this.execution.defaultAgentKind));
-    this.locks.push(
-      await acquireAppRuntimeLock(this.appPaths, this.appId, this.execution.defaultAgentKind),
-    );
     try {
+      this.locks.push(await acquireProfileRuntimeLock(this.appPaths, this.execution.defaultAgentKind));
+      this.locks.push(
+        await acquireAppRuntimeLock(this.appPaths, this.appId, this.execution.defaultAgentKind),
+      );
       this.entry = await register({
         appId: this.appId,
         tenant: this.cfg.accounts.app.tenant,
@@ -451,6 +453,7 @@ export class Supervisor {
 
     if (this.opts.runPreflight !== false) {
       await preFlightChecks({
+        skipCheckLarkCli: this.opts.skipCheckLarkCli,
         bridgeConfig: cfg,
         profileConfig,
         appPaths,
