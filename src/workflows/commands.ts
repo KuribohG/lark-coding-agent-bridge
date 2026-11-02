@@ -12,7 +12,7 @@ const WORKFLOW_HELP = [
   '- `/workflow status [成员名]` 或 `/workflow` — 查看状态、恢复点和失败原因；结束后显示最近一次。',
   '- `/workflow work [工作项 key]` — 查看工作队列、认领、资源归属和进展版本。',
   '- `/workflow enqueue <工作项 JSON>` — 向当前工作流追加授权范围内的任务；暂停时仅入队。',
-  '- `/workflow close` — 关闭任务入口，消费者处理完已有任务后结束。',
+  '- `/workflow close [queue]` — 关闭任务入口，消费者处理完已有任务后结束。',
   '- `/workflow pause` — 暂停工作流并取消正在执行的子任务。',
   '- `/workflow resume` — 恢复已暂停的工作流，复用已完成结果。',
   '- `/workflow cancel` — 取消当前工作流。',
@@ -47,14 +47,14 @@ export async function handleWorkflowCommand(kernel: WorkflowKernel, scope: strin
     try {
       item = JSON.parse(goal) as Record<string, unknown>;
       if (!item || Array.isArray(item) || typeof item !== 'object'
-        || Object.keys(item).some(key => !['key', 'title', 'input', 'resources', 'maxAttempts'].includes(key))) throw new Error('Invalid work item');
-    } catch { return '用法：/workflow enqueue {"key":"唯一名称","title":"任务标题","input":"任务内容"}，可选 resources、maxAttempts。'; }
+        || Object.keys(item).some(key => !['key', 'title', 'input', 'resources', 'maxAttempts', 'queue', 'priority', 'dependsOn'].includes(key))) throw new Error('Invalid work item');
+    } catch { return '用法：/workflow enqueue {"key":"唯一名称","title":"任务标题","input":"任务内容"}，可选 queue、priority、dependsOn、resources、maxAttempts。'; }
   }
-  if (operation === 'close' && goal) return '用法：/workflow close。关闭后不能追加新任务，已有任务继续执行。';
+  if (operation === 'close' && goal) item = { queue: goal.trim() };
   await kernel.call({ kind: 'main', scopeId: scope }, operation === 'enqueue' ? 'enqueue_work' : operation === 'close' ? 'close_work_queue' : operation,
     { ...item, workflowId: state.workflowId, operationId: randomUUID(), expectedStateVersion: state.stateVersion });
   if (operation === 'enqueue') return '工作项已入队。运行中的消费者会领取；暂停或中断的工作流仍需显式恢复。';
-  if (operation === 'close') return '队列已关闭。已有任务继续处理；全部完成且消费者退出后返回结果。暂停或中断的工作流仍需显式恢复。';
+  if (operation === 'close') return `队列已关闭（${item.queue ?? 'default'}）。该队列已有任务继续处理；全部完成且消费者退出后返回结果。暂停或中断的工作流仍需显式恢复。`;
   if (operation === 'pause') return '已暂停工作流并请求取消在途任务；恢复时复用已完成结果。';
   if (operation === 'resume') return '已恢复工作流，正在从已完成结果重放。';
 }

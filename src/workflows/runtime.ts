@@ -106,8 +106,20 @@ export class WorkflowRuntime {
           controller.signal.throwIfAborted();
           const result = await this.kernel.scriptWork(scopeId, workflowId, runId, input);
           return (input as { kind?: string }).kind === 'consume'
-            ? this.waitForScriptValue(scopeId, controller.signal, () => this.kernel.scriptConsumerResult(scopeId, workflowId, runId))
+            ? this.waitForScriptValue(scopeId, controller.signal, () => this.kernel.scriptConsumerResult(scopeId, workflowId, runId, (result as { consumerPool: string }).consumerPool))
             : result;
+        },
+        control: async input => {
+          controller.signal.throwIfAborted();
+          const call = await this.kernel.scriptControl(scopeId, workflowId, runId, input);
+          if (call.kind === 'start') return { taskId: call.taskId, output: call.output };
+          if (call.kind === 'join') {
+            const result = await this.waitForScriptValue(scopeId, controller.signal, () => this.kernel.scriptTaskResult(scopeId, workflowId, runId, call.taskId!));
+            if (call.output === 'text') return result;
+            try { return JSON.parse(result) as unknown; }
+            catch { throw new Error('Agent output is not valid JSON'); }
+          }
+          return this.waitForScriptValue(scopeId, controller.signal, () => this.kernel.scriptControlResult(scopeId, workflowId, runId, call));
         },
         progress: (kind, text) => this.kernel.scriptProgress(scopeId, workflowId, runId, kind, text),
       });

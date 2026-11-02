@@ -78,7 +78,7 @@ export interface TurnAttempt {
 }
 
 export interface WaitState {
-  kind: 'message';
+  kind: 'message' | 'event';
   receiptId: string;
 }
 
@@ -87,6 +87,8 @@ export interface MailboxMessage {
   to: string;
   from?: string;
   text: string;
+  topic?: string;
+  correlationId?: string;
   createdAt: number;
   receiptId?: string;
   consumedByTurnId?: string;
@@ -100,6 +102,24 @@ export interface MailboxReceipt {
   status: 'waiting' | 'ready' | 'consumed';
   messageIds: string[];
   turnId?: string;
+  match?: { topic?: string; correlationId?: string };
+}
+
+export type WorkflowWaitSelector =
+  | { kind: 'message'; member: string; topic?: string; correlationId?: string }
+  | { kind: 'work'; itemId: string }
+  | { kind: 'task'; taskId: string }
+  | { kind: 'timer'; afterMs: number };
+
+export interface WorkflowWait {
+  id: string;
+  key: string;
+  digest: string;
+  runId: string;
+  any: WorkflowWaitSelector[];
+  createdAt: number;
+  status: 'waiting' | 'ready';
+  result?: { index: number; kind: WorkflowWaitSelector['kind']; value: unknown };
 }
 
 export interface AgentMailbox {
@@ -112,6 +132,9 @@ export interface AgentMailbox {
 export interface WorkflowWorkItem {
   id: string;
   key: string;
+  queue?: string;
+  priority?: number;
+  dependsOn?: string[];
   digest: string;
   title: string;
   input: unknown;
@@ -147,9 +170,10 @@ export interface WorkflowWorkQueue {
   operations: Array<{ key: string; digest: string; response: unknown }>;
   closedAt?: number;
   closeKey?: string;
+  queues?: Record<string, { closedAt?: number; closeKey?: string }>;
 }
 
-/** One script-owned consumer pool per workflow; waiting never holds a worker process. */
+/** Script-owned consumers; waiting never holds a worker process. */
 export interface WorkConsumerPool {
   id: string;
   key: string;
@@ -157,6 +181,8 @@ export interface WorkConsumerPool {
   runId: string;
   prompt: string;
   maxTurns: number;
+  queue?: string;
+  maxConcurrent?: number;
   status: 'waiting' | 'running' | 'drained' | 'failed' | 'suspended' | 'cancelled';
   reason?: string;
   members: Array<{
@@ -206,6 +232,8 @@ export interface AgentTurn {
   waitingWorkflowId?: string;
   resumeWorkflowId?: string;
   yieldRequestedAt?: number;
+  scriptManaged?: boolean;
+  scriptCancelled?: boolean;
 }
 
 export interface WorkflowParent {
@@ -235,6 +263,7 @@ export interface WorkflowScript {
   calls: Array<{ key: string; taskId: string; cached: boolean }>;
   mailboxCalls?: string[];
   workCalls?: string[];
+  controlCalls?: string[];
   logs: string[];
   phase?: string;
   resultRef?: string;
@@ -281,6 +310,10 @@ export interface WorkflowState {
   mailbox?: AgentMailbox;
   workQueue?: WorkflowWorkQueue;
   consumerPool?: WorkConsumerPool;
+  /** Additional pools; the original field keeps persisted single-pool workflows readable. */
+  consumerPools?: WorkConsumerPool[];
+  waits?: WorkflowWait[];
+  controlOperations?: Array<{ key: string; digest: string; taskId: string }>;
   script?: WorkflowScript;
 }
 

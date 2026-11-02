@@ -42,7 +42,7 @@ function harness(path = ':memory:') {
     claim:(request:WorkflowWorkerRequest,args:Record<string,unknown>={})=>send(request,'claim_work',args) as Promise<Grant|null>,
     finish:async(request:WorkflowWorkerRequest)=>{finishers.get(request.attemptId)!({status:'completed',text:'done'});await settle(request);},
     run:async(count:number)=>{await kernel.tick();await vi.waitFor(()=>expect(requests).toHaveLength(count));},
-    result:()=>kernel.scriptConsumerResult(root.scopeId,state().workflowId,state().script!.runId),
+    result:(key?:string)=>kernel.scriptConsumerResult(root.scopeId,state().workflowId,state().script!.runId,key),
     advance:(ms:number)=>{now+=ms;},
     restart:async()=>{await kernel.close();kernel=new WorkflowKernel(path,host,()=>now);},
     replay:async()=>{await call('replay_script');kernel.beginScript(root.scopeId,state().workflowId);},
@@ -63,6 +63,82 @@ async function drain(h:ReturnType<typeof harness>, workers:WorkflowWorkerRequest
 }
 
 describe('queue-driven consumer pool',()=>{
+  it('routes independent pools, honors priority and unlocks cross-queue dependencies', async () => {
+    const h=harness();await h.start({maxConcurrent:2});
+    await h.enqueue(1,{queue:'scan'});
+    await h.enqueue(2,{queue:'scan',priority:10});
+    await h.enqueue(3,{queue:'review',dependsOn:['item-2']});
+    await h.pool({key:'scanners',queue:'scan',maxConcurrent:1,members:[{name:'S'},{name:'S2'}]});
+    await h.pool({key:'reviewers',queue:'review',maxConcurrent:1,members:[{name:'R'}]});
+    await h.work('close',{key:'close-scan',queue:'scan'});
+    await h.work('close',{key:'close-review',queue:'review'});
+    await h.run(1);
+    const scanner=h.requests[0]!;
+    await expect(h.claim(scanner,{queue:'review'})).rejects.toThrow('another pool');
+    const high=(await h.claim(scanner))!;expect(high.item.key).toBe('item-2');
+    await h.send(scanner,'complete_work',{...token(high),result:4});
+    await h.run(2);
+    const reviewer=h.requests[1]!;
+    const review=(await h.claim(reviewer))!;expect(review.item.key).toBe('item-3');
+    const low=(await h.claim(scanner))!;expect(low.item.key).toBe('item-1');
+    await h.send(scanner,'complete_work',{...token(low),result:1});
+    await h.send(reviewer,'complete_work',{...token(review),result:9});
+    await h.finish(scanner);await h.finish(reviewer);await h.kernel.tick();
+    expect(h.result('scanners')).toMatchObject({queue:{completed:2,closed:true}});
+    expect(h.result('reviewers')).toMatchObject({queue:{completed:1,closed:true}});
+    expect(await h.command('work')).toContain('队列 review');
+    await h.call('pause');
+    await h.replay();
+    await h.pool({key:'scanners',queue:'scan',maxConcurrent:1,members:[{name:'S'},{name:'S2'}]});
+    await h.pool({key:'reviewers',queue:'review',maxConcurrent:1,members:[{name:'R'}]});
+    await h.kernel.tick();expect(h.requests).toHaveLength(2);
+    expect(h.result('reviewers')).toMatchObject({queue:{completed:1}});
+  });
+
+  it('keeps resource exclusions global across queues and pool membership immutable', async () => {
+    const h=harness();await h.start({maxConcurrent:2});
+    await h.enqueue(1,{queue:'left',resources:['worktree:shared']});
+    await h.enqueue(2,{queue:'right',resources:['worktree:shared']});
+    await h.pool({key:'left-pool',queue:'left',members:[{name:'L'}]});
+    await expect(h.pool({key:'wrong-pool',queue:'right',members:[{name:'L'}]})).rejects.toThrow('another pool');
+    await h.pool({key:'right-pool',queue:'right',members:[{name:'R'}]});await h.run(2);
+    const first=(await h.claim(h.requests[0]!))!;
+    expect(await h.claim(h.requests[1]!)).toBeNull();
+    // A resource-blocked worker exits; it must wake again when the other queue releases the resource.
+    await h.finish(h.requests[1]!);await h.kernel.tick();
+    expect(h.requests).toHaveLength(2);
+    await h.send(h.requests[0]!,'complete_work',{...token(first),result:1});
+    await h.finish(h.requests[0]!);await h.run(3);
+    const second=(await h.claim(h.requests[2]!))!;
+    expect(second.item.key).toBe('item-2');
+    await h.send(h.requests[2]!,'complete_work',{...token(second),result:4});
+    await h.finish(h.requests[2]!);
+    await h.work('close',{key:'close-left',queue:'left'});
+    await h.work('close',{key:'close-right',queue:'right'});await h.kernel.tick();
+    expect(h.result('left-pool')).toMatchObject({queue:{completed:1},consumers:{status:'drained'}});
+    expect(h.result('right-pool')).toMatchObject({queue:{completed:1},consumers:{status:'drained'}});
+    await expect(h.work('enqueue',{key:'unknown-dependency',title:'invalid',dependsOn:['missing']})).rejects.toThrow('existing work keys');
+    await expect(h.work('enqueue',{key:'cycle',title:'invalid',dependsOn:['cycle']})).rejects.toThrow('existing work keys');
+    await expect(h.work('enqueue',{key:'bad-name',title:'invalid',queue:'constructor'})).rejects.toThrow('queue name');
+  });
+
+  it('persists multiple pool bindings and progress across a controller restart', async () => {
+    const dir=await mkdtemp(join(tmpdir(),'consumer-multi-restart-'));cleanup.push(()=>rm(dir,{recursive:true,force:true}));
+    const h=harness(join(dir,'workflow.db'));await h.start();
+    await h.enqueue(1,{queue:'one'});await h.enqueue(2,{queue:'two'});
+    const pools=[{key:'one',queue:'one',members:[{name:'A'}]},{key:'two',queue:'two',members:[{name:'B'}]}];
+    for(const pool of pools)await h.pool(pool);
+    await h.run(2);
+    const grant=(await h.claim(h.requests[1]!))!;
+    await h.send(h.requests[1]!,'checkpoint_work',{...token(grant),expectedProgressVersion:0,state:{phase:'saved'}});
+    await h.restart();await h.kernel.tick();expect(h.requests).toHaveLength(2);
+    await h.replay();for(const pool of pools)await h.pool(pool);await h.run(4);
+    const restored=(await h.claim(h.requests[3]!))!;
+    expect(restored.item.progress.state).toEqual({phase:'saved'});
+    expect(restored.generation).toBe(2);
+    expect(h.requests[3]!.session.nativeSessionId).toBe(h.requests[1]!.session.nativeSessionId ?? 'native-'+h.requests[1]!.session.actorId);
+  });
+
   it('consumes 10+5 items, adopts an expired claim, releases idle workers and only returns after close',async()=>{
     const h=harness();await h.start();
     for(let i=0;i<10;i++) await h.enqueue(i);

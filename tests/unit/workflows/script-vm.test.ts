@@ -7,6 +7,18 @@ function run(source: string, options: Partial<Parameters<typeof runScriptProgram
 }
 
 describe('script interpreter', () => {
+  it('routes durable control calls through a hidden host and rejects unfinished waits', async () => {
+    const control = vi.fn(async (input: unknown) => {
+      const call = input as {kind:string;taskId?:string};
+      if (call.kind === 'start') return {taskId:'task',output:'text'};
+      if (call.kind === 'wait') return {index:0,kind:'timer',value:{at:10}};
+      if (call.kind === 'join') return 'done';
+      return {taskId:call.taskId,status:'cancelled'};
+    });
+    expect(JSON.parse(await run('const task=await startAgent("work",{key:"start"}); await sleep(10,{key:"delay"}); await cancelTask(task,{key:"stop"}); return typeof __bridgeControl;', {control}))).toBe('undefined');
+    expect(control.mock.calls.map(([call])=>(call as {kind:string}).kind)).toEqual(['start','wait','cancel']);
+    await expect(run('sleep(100,{key:"pending"});return null;', {control:()=>new Promise(()=>{})})).rejects.toThrow('await every call');
+  });
   it('executes data-dependent branches, parallel calls, and pipelines', async () => {
     const agent = vi.fn(async (call: unknown) => (call as { prompt: string }).prompt.toUpperCase());
     const progress = vi.fn();

@@ -50,7 +50,7 @@ export function parseScriptAgentCall(value: unknown, defaults: WorkerExecutionSe
   }
   if (input.workflowTool !== undefined && typeof input.workflowTool !== 'boolean') throw new Error('workflowTool must be boolean');
   const key = scriptText(input.key, 'agent key', 160);
-  if (key.startsWith('@consumer/')) throw new Error('Agent key uses a reserved consumer prefix');
+  if (key.startsWith('@consumer/') || key.startsWith('@wait/')) throw new Error('Agent key uses a reserved consumer or wait prefix');
   if (key.trim() !== key) throw new Error('agent key must not contain surrounding whitespace');
   const output = input.output ?? 'text';
   if (output !== 'text' && output !== 'json') throw new Error('agent output must be text or json');

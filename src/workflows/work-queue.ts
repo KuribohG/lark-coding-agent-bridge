@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { workflowDigest } from './digest';
 import { boundedInteger, scriptText } from './script-contract';
+import { memberPool, queueControl, queueName, queueNames } from './work-routing';
 import type { WorkClaim, WorkflowState, WorkflowTask, WorkflowWorkItem, WorkflowWorkQueue } from './types';
 
 export const WORK_MUTATIONS = ['claim_work', 'renew_claim', 'checkpoint_work', 'complete_work', 'fail_work', 'release_claim'];
@@ -34,7 +35,7 @@ function itemById(state: WorkflowState, value: unknown): WorkflowWorkItem {
 }
 
 export function enqueueWork(state: WorkflowState, args: Record<string, unknown>, now: number): unknown {
-  options(args, ['key', 'title', 'input', 'resources', 'maxAttempts']);
+  options(args, ['key', 'title', 'input', 'resources', 'maxAttempts', 'queue', 'priority', 'dependsOn']);
   const key = scriptText(args.key, 'work key', 160);
   if (key.trim() !== key) throw new Error('Work key must not contain surrounding whitespace');
   const title = scriptText(args.title, 'work title', 500);
@@ -44,16 +45,24 @@ export function enqueueWork(state: WorkflowState, args: Record<string, unknown>,
   if (!Array.isArray(supplied) || supplied.length > 16) throw new Error('Work resources must be an array of at most 16 keys');
   const resources = [...new Set(supplied.map(value => scriptText(value, 'resource key', 200)))].sort();
   if (resources.some(resource => resource.trim() !== resource)) throw new Error('Resource keys must not contain surrounding whitespace');
-  const digest = workflowDigest({ key, title, input, maxAttempts, resources });
+  const name = queueName(args.queue);
+  const priority = boundedInteger(args.priority, 0, -100, 100);
+  const dependencies = args.dependsOn ?? [];
+  if (!Array.isArray(dependencies) || dependencies.length > 32) throw new Error('dependsOn must contain at most 32 existing work keys');
+  const dependsOn = [...new Set(dependencies.map(value => scriptText(value, 'dependency key', 160)))].sort();
+  const routing = { ...(name !== 'default' ? { queue: name } : {}), ...(priority ? { priority } : {}), ...(dependsOn.length ? { dependsOn } : {}) };
+  const digest = workflowDigest({ key, title, input, maxAttempts, resources, ...routing });
   const work = queue(state);
   const prior = work.items.find(item => item.key === key);
   if (prior) {
     if (prior.digest !== digest) throw new Error('Work key conflict: input is immutable across replay');
     return { itemId: prior.id, key };
   }
-  if (work.closedAt !== undefined) throw new Error('Work queue is closed; new items cannot be enqueued');
+  if (dependsOn.some(dependency => !work.items.some(item => item.key === dependency))) throw new Error('Dependencies must reference existing work keys; enqueue prerequisites first');
+  if (queueControl(state, name)?.closedAt !== undefined) throw new Error('Work queue is closed; new items cannot be enqueued');
   if (work.items.length >= MAX_ITEMS) throw new Error('Work item limit reached');
-  const item: WorkflowWorkItem = { id: randomUUID(), key, title, input, digest, maxAttempts, resources,
+  queueControl(state, name, true);
+  const item: WorkflowWorkItem = { id: randomUUID(), key, title, input, digest, maxAttempts, resources, ...routing,
     generation: 0, status: 'pending', progress: { version: 0, state: null }, createdAt: now, updatedAt: now };
   work.items.push(item);
   capacity(work);
@@ -106,22 +115,25 @@ export function cancelWork(state: WorkflowState, now: number): void {
   }
 }
 
-export function unfinishedWork(state: WorkflowState): boolean {
-  return state.workQueue?.items.some(item => item.status === 'pending' || item.status === 'claimed') ?? false;
+export function unfinishedWork(state: WorkflowState, name?: string): boolean {
+  return state.workQueue?.items.some(item => (name === undefined || (item.queue ?? 'default') === name)
+    && (item.status === 'pending' || item.status === 'claimed')) ?? false;
 }
 
-export function closeWorkQueue(state: WorkflowState, now: number): unknown {
-  const work = queue(state);
+export function closeWorkQueue(state: WorkflowState, now: number, name = 'default'): unknown {
+  const work = queueControl(state, name, true)!;
   work.closedAt ??= now;
   return { closed: true, closedAt: work.closedAt };
 }
 
 /** A conservative dispatch capacity: occupied keys and overlapping pending work consume one slot. */
-export function availableWork(state: WorkflowState): WorkflowWorkItem[] {
+export function availableWork(state: WorkflowState, name?: string): WorkflowWorkItem[] {
   const items = state.workQueue?.items ?? [];
   const occupied = new Set(items.filter(item => item.status === 'claimed').flatMap(item => item.resources));
   const available: WorkflowWorkItem[] = [];
-  for (const item of items) {
+  for (const item of [...items].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))) {
+    if (name !== undefined && (item.queue ?? 'default') !== name) continue;
+    if (item.dependsOn?.some(key => !items.some(dependency => dependency.key === key && dependency.status === 'completed'))) continue;
     if (item.status !== 'pending' || item.generation >= item.maxAttempts || item.resources.some(key => occupied.has(key))) continue;
     available.push(item);
     for (const key of item.resources) occupied.add(key);
@@ -130,20 +142,24 @@ export function availableWork(state: WorkflowState): WorkflowWorkItem[] {
 }
 
 export function workStatus(state: WorkflowState, args: Record<string, unknown> = {}): unknown {
-  options(args, ['itemId', 'offset', 'limit']);
+  options(args, ['itemId', 'offset', 'limit', 'queue']);
+  const name = args.queue === undefined ? undefined : queueName(args.queue);
   if (args.itemId !== undefined) {
     const item = itemById(state, args.itemId);
+    if (name !== undefined && (item.queue ?? 'default') !== name) throw new Error('Work item belongs to another queue');
     return { ...item, digest: undefined, claim: state.workQueue?.claims.find(claim => claim.id === item.claimId) };
   }
-  const items = state.workQueue?.items ?? [];
+  const items = (state.workQueue?.items ?? []).filter(item => name === undefined || (item.queue ?? 'default') === name);
   const offset = boundedInteger(args.offset, 0, 0, MAX_ITEMS);
   const limit = boundedInteger(args.limit, 16, 1, 64);
   const counts = { pending: 0, claimed: 0, completed: 0, failed: 0, cancelled: 0 };
   for (const item of items) counts[item.status]++;
-  return { total: items.length, ...counts, closed: state.workQueue?.closedAt !== undefined, closedAt: state.workQueue?.closedAt,
+  const controls = (name === undefined ? queueNames(state) : [name]).map(name => queueControl(state, name));
+  return { total: items.length, ...counts, closed: controls.every(control => control?.closedAt !== undefined),
+    closedAt: name === undefined ? state.workQueue?.closedAt : queueControl(state, name)?.closedAt,
     offset, nextOffset: offset + limit < items.length ? offset + limit : null,
     items: items.slice(offset, offset + limit).map(item => ({
-    itemId: item.id, key: item.key, title: item.title.slice(0, 120), status: item.status,
+    itemId: item.id, key: item.key, queue: item.queue ?? 'default', priority: item.priority ?? 0, dependsOn: item.dependsOn ?? [], title: item.title.slice(0, 120), status: item.status,
     generation: item.generation, maxAttempts: item.maxAttempts, progressVersion: item.progress.version,
     claim: state.workQueue?.claims.find(claim => claim.id === item.claimId),
     error: item.error?.slice(0, 180),
@@ -164,7 +180,8 @@ function ownedClaim(state: WorkflowState, task: WorkflowTask, attemptId: string,
 
 export function workContext(state: WorkflowState, task: WorkflowTask): unknown {
   const claim = state.workQueue?.claims.find(claim => claim.status === 'active' && claim.taskId === task.taskId);
-  return state.workQueue ? { total: state.workQueue.items.length,
+  const pool = memberPool(state, state.agents?.find(agent => agent.agentId === task.agentId)?.key);
+  return state.workQueue ? { total: state.workQueue.items.length, queue: pool?.queue ?? 'default',
     claim: claim ? { ...claim, item: workStatus(state, { itemId: claim.itemId }) } : null } : undefined;
 }
 
@@ -173,7 +190,7 @@ export function mutateWork(state: WorkflowState, task: WorkflowTask, attemptId: 
   method: string, args: Record<string, unknown>, now: number): unknown {
   if (!task.agentId) throw new Error('Work claims require a persistent member');
   const allowed: Record<string, string[]> = {
-    claim_work: ['leaseMs'], renew_claim: ['leaseMs'], checkpoint_work: ['expectedProgressVersion', 'state'],
+    claim_work: ['leaseMs', 'queue'], renew_claim: ['leaseMs'], checkpoint_work: ['expectedProgressVersion', 'state'],
     complete_work: ['result'], fail_work: ['error', 'retry'], release_claim: ['reason'],
   };
   if (!allowed[method]) throw new Error('Unknown work queue mutation');
@@ -197,12 +214,14 @@ export function mutateWork(state: WorkflowState, task: WorkflowTask, attemptId: 
   let response: unknown;
   if (method === 'claim_work') {
     const leaseMs = boundedInteger(args.leaseMs, 120_000, 1000, 300_000);
+    const pool = memberPool(state, state.agents?.find(agent => agent.agentId === task.agentId)?.key);
+    const name = queueName(args.queue ?? pool?.queue);
+    if (pool && name !== (pool.queue ?? 'default')) throw new Error('Consumer cannot claim from another pool queue');
     let claim = work.claims.find(claim => claim.status === 'active' && claim.agentId === task.agentId);
     if (claim && (claim.taskId !== task.taskId || claim.attemptId !== attemptId)) throw new Error('Member has a claim in another attempt');
+    if (claim && (itemById(state, claim.itemId).queue ?? 'default') !== name) throw new Error('Member already has a claim in another queue');
     if (!claim) {
-      const occupied = new Set(work.items.filter(item => item.status === 'claimed').flatMap(item => item.resources));
-      const item = work.items.find(item => item.status === 'pending' && item.generation < item.maxAttempts
-        && !item.resources.some(resource => occupied.has(resource)));
+      const item = availableWork(state, name)[0];
       if (item) {
         if (work.claims.length >= MAX_CLAIMS) throw new Error('Work claim history limit reached');
         claim = { id: randomUUID(), itemId: item.id, agentId: task.agentId, taskId: task.taskId, attemptId,
@@ -212,6 +231,11 @@ export function mutateWork(state: WorkflowState, task: WorkflowTask, attemptId: 
       }
     }
     response = claim ? { claimId: claim.id, generation: claim.generation } : null;
+    if (!claim && pool) {
+      // Another queue may have won the resource after dispatch. An empty claim is not a stalled turn.
+      const consumer = pool.members.find(member => member.taskId === task.taskId);
+      if (consumer) consumer.lastWake = undefined;
+    }
   } else {
     const claim = ownedClaim(state, task, attemptId, args, now);
     const item = itemById(state, claim.itemId);

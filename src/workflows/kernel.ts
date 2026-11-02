@@ -10,6 +10,8 @@ import { workflowDigest } from './digest';
 import { renderWorkflowPlan } from './presentation';
 import { cancelWork, closeWorkQueue, enqueueWork, expireWorkClaims, mutateWork, releaseWorkClaims, retryWork, unfinishedWork, workContext, workStatus, WORK_MUTATIONS } from './work-queue';
 import { bindConsumerPool, consumerResult, consumerSummary, parseConsumerPool, pumpConsumerPool } from './consumer-pool';
+import { consumerPools, memberPool, queueControl, queueName, queueNames } from './work-routing';
+import { beginEventWait, clearEventBindings, settleEventWaits } from './event-waits';
 import { MAX_CHILD_WORKFLOWS, MAX_WORKFLOW_DEPTH, nestedContext, nestedInput, nestedResponse } from './nested-workflow';
 import { checkpoint, completeMemberTurn, mailboxOperation, member, memberContext, receiveMessages, receiptMessages, saveCheckpoint, scheduleMemberTurn, sendMessage, taskAgent } from './durable-agents';
 import { inheritedWorkerExecution, workerSelection } from './execution';
@@ -51,7 +53,7 @@ export class WorkflowKernel {
       if (['completed', 'cancelled'].includes(state.status)) continue;
       state.status = state.script ? 'interrupted' : 'cancelled';
       if (state.script) state.script.status = 'interrupted';
-      if (state.consumerPool) state.consumerPool.status = 'suspended';
+      for (const pool of consumerPools(state)) pool.status = 'suspended';
       releaseWorkClaims(state, this.now(), 'Bridge restarted; explicitly replay to continue');
       for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_workflow' || (!state.script && task.status === 'waiting_input')) {
         task.status = state.script ? 'interrupted' : 'cancelled';
@@ -97,7 +99,7 @@ export class WorkflowKernel {
       if (['completed','cancelled'].includes(child.status)) continue;
       child.status = cancel ? 'cancelled' : 'paused';
       if (child.script) child.script.status = cancel ? 'cancelled' : 'paused';
-      if (child.consumerPool) child.consumerPool.status = cancel ? 'cancelled' : 'suspended';
+      for (const pool of consumerPools(child)) pool.status = cancel ? 'cancelled' : 'suspended';
       if (cancel) cancelWork(child,this.now());
       for (const task of child.tasks) if (BUSY.has(task.status) || task.status === 'waiting_workflow') this.cancelTask(task,child);
       this.save(child);
@@ -142,7 +144,10 @@ export class WorkflowKernel {
       sessions: state.sessions,
       agents: state.agents ?? [],
       workQueue: state.workQueue ? workStatus(state) : undefined,
+      consumerPools: consumerPools(state).map(pool => consumerSummary(state, pool.key)),
       consumers: consumerSummary(state),
+      waits: (state.waits ?? []).map(wait => ({ key: wait.key, status: wait.status, createdAt: wait.createdAt,
+        kinds: wait.any.map(arm => arm.kind), selected: wait.result?.index })),
       parent: state.parent ? {workflowId:state.parent.workflowId,taskId:state.parent.taskId,depth:state.parent.depth,key:state.parent.key} : undefined,
       children: this.descendants(state).map(child=>({workflowId:child.workflowId,parentWorkflowId:child.parent!.workflowId,
         key:child.parent!.key,depth:child.parent!.depth,status:child.status,scriptStatus:child.script?.status,
@@ -256,8 +261,8 @@ export class WorkflowKernel {
     let response: unknown;
     switch (method) {
       case 'close_work_queue':
-        if (Object.keys(args).some(key => !['workflowId', 'operationId', 'expectedStateVersion'].includes(key))) throw new Error('Unsupported close_work_queue option');
-        response = closeWorkQueue(state, this.now());
+        if (Object.keys(args).some(key => !['workflowId', 'operationId', 'expectedStateVersion', 'queue'].includes(key))) throw new Error('Unsupported close_work_queue option');
+        response = closeWorkQueue(state, this.now(), queueName(args.queue));
         break;
       case 'enqueue_work':
         this.checkWorkKey(state, args.key);
@@ -267,7 +272,7 @@ export class WorkflowKernel {
         response = retryWork(state, Object.fromEntries(Object.entries(args).filter(([key]) => !['workflowId', 'operationId', 'expectedStateVersion'].includes(key))), this.now());
         break;
       case 'send_message':
-        response = sendMessage(state, requiredText(args.member, 100), args.text, this.now());
+        response = sendMessage(state, requiredText(args.member, 100), args.text, this.now(), undefined, args);
         break;
       case 'publish_artifact': {
         const kind = requiredText(args.kind, 100);
@@ -294,7 +299,7 @@ export class WorkflowKernel {
         this.suspendChildren(state,false);
         state.status = 'paused';
         state.script.status = 'paused';
-        if (state.consumerPool) state.consumerPool.status = 'suspended';
+        for (const pool of consumerPools(state)) pool.status = 'suspended';
         for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_workflow') this.cancelTask(task, state);
         break;
       case 'resume':
@@ -411,7 +416,7 @@ export class WorkflowKernel {
       if (state.status !== 'active' || state.script?.status !== 'running' || this.now() >= state.deadlineAt) throw new Error('Workflow is inactive');
       const operationId = requiredText(args.operationId, 160);
       const response = mailboxOperation(state, 'worker:' + task.taskId + ':' + operationId, { method, args }, () => {
-        if (method === 'send_message') return sendMessage(state, requiredText(args.member, 100), args.text, this.now(), agent.agentId);
+        if (method === 'send_message') return sendMessage(state, requiredText(args.member, 100), args.text, this.now(), agent.agentId, args);
         if (args.expectedCheckpointVersion !== agent.checkpointVersion) throw new Error('checkpointVersion conflict; read_context before updating');
         const saved = saveCheckpoint(state, task, args.state, this.now());
         return { checkpointRef: saved.ref, checkpointVersion: saved.version };
@@ -438,6 +443,7 @@ export class WorkflowKernel {
   }
 
   private save(state: WorkflowState): void {
+    settleEventWaits(state, this.now());
     state.stateVersion++;
     this.db.prepare('INSERT INTO workflows(id, scope, status, data, root_id) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status=excluded.status, data=excluded.data, root_id=excluded.root_id')
       .run(state.workflowId, state.parent ? `${state.root.scopeId}:child:${state.workflowId}` : state.root.scopeId,
@@ -463,11 +469,12 @@ export class WorkflowKernel {
     return { state, source: this.artifact(state, state.script.sourceRef).text };
   }
 
-  async scriptAgent(scopeId: string, workflowId: string, runId: string, input: unknown): Promise<{ taskId: string; output: 'text' | 'json' }> {
+  async scriptAgent(scopeId: string, workflowId: string, runId: string, input: unknown, managed = false): Promise<{ taskId: string; output: 'text' | 'json' }> {
     if (this.closed) throw new Error('Workflow service is closed');
     const snapshot = requireState(this.state(scopeId, workflowId));
     if (!snapshot.script) throw new Error('Not a script workflow');
     const call = parseScriptAgentCall(input, snapshot.script.defaults, snapshot.root);
+    if (managed && call.member) throw new Error('startAgent creates independent task handles; use agent() for persistent members');
     const root = await this.host.resolveRoot(scopeId);
     if (!root || !sameRoot(root, snapshot.root)) throw new Error('Worker root authorization changed');
     const execution = await (this.host.resolveWorker?.(root, call.selection) ?? inheritedWorkerExecution(root, call.selection));
@@ -477,8 +484,9 @@ export class WorkflowKernel {
     const state = requireState(this.state(scopeId, workflowId));
     const script = state.script!;
     if (state.status !== 'active' || script.runId !== runId || script.status !== 'running' || this.now() >= state.deadlineAt) throw new Error('Script run is inactive');
-    if (state.consumerPool?.members.some(member => member.name === call.member)) throw new Error('Consumer pool members are reserved for consumeWork');
-    if (call.key === state.consumerPool?.key || call.key === state.workQueue?.closeKey) throw new Error('Script key already belongs to a work queue operation');
+    if (state.waits?.some(wait => wait.key === call.key) || state.controlOperations?.some(operation => operation.key === call.key)) throw new Error('Script key already belongs to a control operation');
+    if (memberPool(state, call.member)) throw new Error('Consumer pool members are reserved for consumeWork');
+    if (consumerPools(state).some(pool => call.key === pool.key) || queueNames(state).some(name => call.key === queueControl(state, name)?.closeKey)) throw new Error('Script key already belongs to a work queue operation');
     if (script.calls.some(item => item.key === call.key) || script.mailboxCalls?.includes(call.key) || state.workQueue?.items.some(item => item.key === call.key)) throw new Error(`Duplicate agent key: ${call.key}`);
     if (script.calls.length >= script.maxCalls) throw new Error('Script agent call limit reached');
     if (call.member) {
@@ -490,9 +498,11 @@ export class WorkflowKernel {
       return { taskId: scheduled.task.taskId, output: call.output };
     }
     const cacheKey = workflowDigest({ key: call.key, prompt: call.prompt, output: call.output, execution,
-      root: state.root, goal: state.goal, definition: state.definitionDigest, ...(call.workflowTool ? {workflowTool:true} : {}) });
-    const cached = state.tasks.find(task => task.cacheKey === cacheKey && task.status === 'result_ready');
-    let task = cached ?? (call.workflowTool ? state.tasks.find(task=>task.cacheKey===cacheKey) : undefined);
+      root: state.root, goal: state.goal, definition: state.definitionDigest, ...(call.workflowTool ? {workflowTool:true} : {}), ...(managed ? { managed: true } : {}) });
+    const cached = state.tasks.find(task => task.cacheKey === cacheKey && (task.status === 'result_ready'
+      || managed && (['failed', 'waiting_input'].includes(task.status) || task.scriptCancelled && ['cancelled', 'interrupted'].includes(task.status))));
+    if (cached?.scriptCancelled && cached.status === 'interrupted') cached.status = 'cancelled';
+    let task = cached ?? (call.workflowTool || managed ? state.tasks.find(task=>task.cacheKey===cacheKey) : undefined);
     if (task && !cached) {
       if (BUSY.has(task.status) || task.status==='waiting_workflow') throw new Error('Workflow-enabled agent still has an active turn');
       task.status='queued';task.error=undefined;task.scriptRunId=runId;
@@ -505,6 +515,7 @@ export class WorkflowKernel {
       state.sessions.push({ sessionRef, actorId: randomUUID(), actorKey: taskId, role: 'worker', generation: 1,
         nativeIdKind: sessionIdFieldForAgent(execution.agentKind), execution });
       task = { taskId, taskKey: taskId, requestDigest: cacheKey, sessionRef, objective: call.prompt, inputRefs: [],
+        ...(managed ? { scriptManaged: true } : {}),
         ...(call.workflowTool ? {workflowTool:true} : {}),
         status: 'queued', attempts: [], resultRefs: [], scriptRunId: runId, scriptKey: call.key, scriptOutput: call.output, cacheKey };
       state.tasks.push(task);
@@ -516,12 +527,82 @@ export class WorkflowKernel {
 
   private checkWorkKey(state: WorkflowState, value: unknown, operation: 'enqueue' | 'consume' | 'close' = 'enqueue'): string {
     const key = scriptText(value, 'work key', 160);
-    if (key.startsWith('@consumer/') || operation !== 'consume' && key === state.consumerPool?.key
-      || operation !== 'close' && key === state.workQueue?.closeKey
+    if (key.startsWith('@wait/') || state.waits?.some(wait => wait.key === key) || state.controlOperations?.some(operation => operation.key === key)) throw new Error('Script key already belongs to a control operation');
+    if (key.startsWith('@consumer/') || operation !== 'consume' && consumerPools(state).some(pool => key === pool.key)
+      || operation !== 'close' && queueNames(state).some(name => key === queueControl(state, name)?.closeKey)
       || operation !== 'enqueue' && state.workQueue?.items.some(item => item.key === key)) throw new Error('Script key already belongs to another work queue operation');
     if (state.tasks.some(task => task.scriptKey === key) || state.mailbox?.receipts.some(receipt => receipt.key === key)
       || state.mailbox?.operations.some(operation => operation.key === 'script:' + key)) throw new Error('Script key already belongs to another operation: ' + key);
     return key;
+  }
+
+  async scriptControl(scopeId: string, workflowId: string, runId: string, input: unknown): Promise<{ kind: string; taskId?: string; output?: 'text' | 'json'; waitId?: string }> {
+    if (this.closed) throw new Error('Workflow service is closed');
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid script control call');
+    const { kind, ...args } = input as Record<string, unknown>;
+    if (kind === 'start') return { kind, ...await this.scriptAgent(scopeId, workflowId, runId, args, true) };
+    const root = await this.host.resolveRoot(scopeId);
+    if (this.closed) throw new Error('Workflow service is closed');
+    const state = requireState(this.state(scopeId, workflowId));
+    if (!root || !sameRoot(root, state.root)) throw new Error('Root binding changed');
+    if (state.status !== 'active' || state.script?.runId !== runId || state.script.status !== 'running' || this.now() >= state.deadlineAt) throw new Error('Script run is inactive');
+    if (!['join', 'cancel', 'wait'].includes(String(kind))) throw new Error('Unknown script control operation');
+    if (kind === 'join' || kind === 'cancel') {
+      const allowed = kind === 'join' ? ['taskId'] : ['key', 'taskId'];
+      if (Object.keys(args).some(key => !allowed.includes(key))) throw new Error('Unsupported task handle option');
+      const task = this.task(state, scriptText(args.taskId, 'taskId', 100));
+      if (!task.scriptManaged || !state.script.calls.some(call => call.taskId === task.taskId)) throw new Error('Task handle does not belong to this script run');
+      if (kind === 'join') return { kind, taskId: task.taskId, output: task.scriptOutput ?? 'text' };
+    }
+    const key = scriptText(args.key, 'control key', 160);
+    if (key.trim() !== key || key.startsWith('@')) throw new Error('Invalid control key');
+    if (state.script.controlCalls?.includes(key)) throw new Error('Duplicate script control key');
+    if ((state.script.controlCalls?.length ?? 0) >= 128) throw new Error('Script control call limit reached');
+    if (state.tasks.some(task => task.scriptKey === key) || state.workQueue?.items.some(item => item.key === key)
+      || consumerPools(state).some(pool => pool.key === key) || queueNames(state).some(name => queueControl(state, name)?.closeKey === key)
+      || state.mailbox?.receipts.some(receipt => receipt.key === key) || state.mailbox?.operations.some(operation => operation.key === 'script:' + key)) throw new Error('Script key already belongs to another operation');
+    if (kind === 'wait') {
+      if (state.controlOperations?.some(operation => operation.key === key)) throw new Error('Control key changed operation kind');
+      const wait = beginEventWait(state, args, this.now());
+      (state.script.controlCalls ??= []).push(key);
+      this.save(state);
+      return { kind, waitId: wait.id };
+    }
+    if (state.waits?.some(wait => wait.key === key)) throw new Error('Control key changed operation kind');
+    const task = this.task(state, String(args.taskId));
+    const digest = workflowDigest({ taskId: task.taskId, requestDigest: task.requestDigest });
+    const prior = state.controlOperations?.find(operation => operation.key === key);
+    if (prior && prior.digest !== digest) throw new Error('Cancellation key conflict');
+    if (!prior) {
+      if ((state.controlOperations?.length ?? 0) >= 128) throw new Error('Control operation limit reached');
+      if (BUSY.has(task.status) || task.status === 'waiting_workflow' || task.status === 'interrupted') {
+        task.scriptCancelled = true;
+        this.suspendChildren(state, true, task.taskId);
+        this.cancelTask(task, state);
+      }
+      (state.controlOperations ??= []).push({ key, digest, taskId: task.taskId });
+    }
+    (state.script.controlCalls ??= []).push(key);
+    this.save(state);
+    return { kind: 'cancel', taskId: task.taskId };
+  }
+
+  scriptControlResult(scopeId: string, workflowId: string, runId: string, call: { kind: string; taskId?: string; waitId?: string }): unknown | undefined {
+    const state = requireState(this.state(scopeId, workflowId));
+    if (state.status !== 'active' || state.script?.runId !== runId || state.script.status !== 'running') throw new Error('Script run is inactive');
+    if (call.kind === 'wait') {
+      const wait = state.waits?.find(wait => wait.id === call.waitId && wait.runId === runId);
+      if (!wait) throw new Error('Unknown script wait');
+      return wait.status === 'ready' ? wait.result : undefined;
+    }
+    const task = this.task(state, String(call.taskId));
+    if (BUSY.has(task.status) || task.status === 'waiting_workflow') return undefined;
+    const branch = new Set<string>();
+    for (const child of this.descendants(state).sort((a, b) => a.parent!.depth - b.parent!.depth)) {
+      if (child.parent!.workflowId === workflowId ? child.parent!.taskId === task.taskId : branch.has(child.parent!.workflowId)) branch.add(child.workflowId);
+      if (branch.has(child.workflowId) && child.tasks.some(task => BUSY.has(task.status) || task.status === 'waiting_workflow')) return undefined;
+    }
+    return { taskId: task.taskId, status: task.status };
   }
 
   async scriptWork(scopeId: string, workflowId: string, runId: string, input: unknown): Promise<unknown> {
@@ -532,14 +613,17 @@ export class WorkflowKernel {
     if (!root || !sameRoot(root, state.root)) throw new Error('Root binding changed');
     if (state.status !== 'active' || state.script?.runId !== runId || state.script.status !== 'running' || this.now() >= state.deadlineAt) throw new Error('Script run is inactive');
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid work queue call');
-    const { kind, queue, ...args } = input as Record<string, unknown>;
-    if (queue !== undefined && (queue !== 'parent' || kind !== 'enqueue')) throw new Error('Only enqueueWork supports queue: parent');
+    const { kind, target, ...args } = input as Record<string, unknown>;
+    const parent = target === 'parent' || args.queue === 'parent';
+    if (target !== undefined && target !== 'parent' || parent && kind !== 'enqueue') throw new Error('Only enqueueWork supports queue: parent or target: parent');
+    if (args.queue === 'parent') delete args.queue;
+    const name = queueName(args.queue);
     if (kind === 'status') return workStatus(state, args);
     if (!['enqueue', 'consume', 'close'].includes(String(kind))) throw new Error('Unknown script work operation');
     const key = this.checkWorkKey(state, args.key, kind as 'enqueue' | 'consume' | 'close');
     if (state.script.workCalls?.includes(key)) throw new Error('Duplicate script key: ' + key);
     if ((state.script.workCalls?.length ?? 0) >= 128) throw new Error('Work queue script call limit reached');
-    if (queue === 'parent') {
+    if (parent) {
       if (!state.parent?.parentQueue) throw new Error('Parent queue access was not granted for this child workflow');
       const parent=requireState(this.state(scopeId,state.parent.workflowId));
       if (parent.status!=='active' || parent.script?.status!=='running') throw new Error('Parent workflow is inactive');
@@ -565,10 +649,12 @@ export class WorkflowKernel {
       return { consumerPool: key };
     }
     if (kind === 'close') {
-      if (Object.keys(args).some(key => key !== 'key')) throw new Error('closeWorkQueue supports key only');
-      if (state.workQueue?.closeKey && state.workQueue.closeKey !== key) throw new Error('Queue closure key changed across replay');
-      const result = closeWorkQueue(state, this.now());
-      state.workQueue!.closeKey = key;
+      if (Object.keys(args).some(key => !['key', 'queue'].includes(key))) throw new Error('closeWorkQueue supports key and queue only');
+      const control = queueControl(state, name);
+      if (control?.closeKey && control.closeKey !== key) throw new Error('Queue closure key changed across replay');
+      if (queueNames(state).some(other => other !== name && queueControl(state, other)?.closeKey === key)) throw new Error('Queue closure key belongs to another queue');
+      const result = closeWorkQueue(state, this.now(), name);
+      queueControl(state, name)!.closeKey = key;
       (state.script.workCalls ??= []).push(key);
       this.save(state);
       return result;
@@ -579,11 +665,12 @@ export class WorkflowKernel {
     return response;
   }
 
-  scriptConsumerResult(scopeId: string, workflowId: string, runId: string): unknown | undefined {
+  scriptConsumerResult(scopeId: string, workflowId: string, runId: string, key?: string): unknown | undefined {
     const state = requireState(this.state(scopeId, workflowId));
+    const pool = key === undefined ? state.consumerPool : consumerPools(state).find(pool => pool.key === key);
     if (state.status !== 'active' || state.script?.runId !== runId || state.script.status !== 'running'
-      || state.consumerPool?.runId !== runId) throw new Error('Consumer pool run is inactive');
-    return consumerResult(state);
+      || pool?.runId !== runId) throw new Error('Consumer pool run is inactive');
+    return consumerResult(state, key);
   }
 
   async scriptMailbox(scopeId: string, workflowId: string, runId: string, input: unknown): Promise<{ receiptId?: string; result?: unknown }> {
@@ -594,21 +681,22 @@ export class WorkflowKernel {
     if (state.status !== 'active' || state.script?.runId !== runId || state.script.status !== 'running' || this.now() >= state.deadlineAt) throw new Error('Script run is inactive');
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid mailbox call');
     const args = input as Record<string, unknown>;
-    if (Object.keys(args).some(key => !['kind', 'member', 'text', 'key'].includes(key))) throw new Error('Unsupported mailbox option');
+    if (Object.keys(args).some(key => !['kind', 'member', 'text', 'key', 'topic', 'correlationId'].includes(key))) throw new Error('Unsupported mailbox option');
     if (args.kind !== 'send' && args.kind !== 'receive') throw new Error('Unknown mailbox operation');
     if (args.kind === 'receive' && Object.hasOwn(args, 'text')) throw new Error('receive() does not accept text');
     const key = scriptText(args.key, 'mailbox key', 160);
+    if (key.startsWith('@wait/') || state.waits?.some(wait => wait.key === key) || state.controlOperations?.some(operation => operation.key === key)) throw new Error('Script key already belongs to a control operation');
     const target = scriptText(args.member, 'member name', 100);
-    if (key.startsWith('@consumer/') || key === state.consumerPool?.key || key === state.workQueue?.closeKey) throw new Error('Script key already belongs to a work queue operation');
-    if (args.kind === 'receive' && state.consumerPool?.members.some(member => member.name === target)) throw new Error('Consumer pool members cannot wait on script receive()');
+    if (key.startsWith('@consumer/') || consumerPools(state).some(pool => key === pool.key) || queueNames(state).some(name => key === queueControl(state, name)?.closeKey)) throw new Error('Script key already belongs to a work queue operation');
+    if (args.kind === 'receive' && memberPool(state, target)) throw new Error('Consumer pool members cannot wait on script receive()');
     if (key.trim() !== key) throw new Error('Mailbox key must not contain surrounding whitespace');
     if (state.script.calls.some(call => call.key === key) || state.script.mailboxCalls?.includes(key) || state.workQueue?.items.some(item => item.key === key)) throw new Error('Duplicate script key: ' + key);
     if ((state.script.mailboxCalls?.length ?? 0) >= 128) throw new Error('Mailbox call limit reached');
     if (args.kind === 'receive' ? state.mailbox?.operations.some(item => item.key === 'script:' + key)
       : state.mailbox?.receipts.some(item => item.key === key)) throw new Error('Mailbox key changed operation kind');
     const result = args.kind === 'send'
-      ? { result: mailboxOperation(state, 'script:' + key, args, () => sendMessage(state, target, args.text, this.now())) }
-      : { receiptId: receiveMessages(state, target, key).id };
+      ? { result: mailboxOperation(state, 'script:' + key, args, () => sendMessage(state, target, args.text, this.now(), undefined, args)) }
+      : { receiptId: receiveMessages(state, target, key, args).id };
     (state.script.mailboxCalls ??= []).push(key);
     this.save(state);
     return result;
@@ -640,8 +728,11 @@ export class WorkflowKernel {
   finishScript(scopeId: string, workflowId: string, runId: string, result: { text: string } | { error: string }): void {
     const state = this.state(scopeId, workflowId);
     if (!state?.script || state.script.runId !== runId || state.script.status !== 'running' || state.status !== 'active') return;
-    if ('text' in result && state.consumerPool && ['running', 'waiting'].includes(state.consumerPool.status)) result = { error: 'Consumer pool is unfinished; await consumeWork and close the queue when production is finished' };
+    if ('text' in result && consumerPools(state).some(pool => ['running', 'waiting'].includes(pool.status))) result = { error: 'Consumer pool is unfinished; await consumeWork and close the queue when production is finished' };
     if ('text' in result && unfinishedWork(state)) result = { error: 'Script returned with unfinished work items; continue consumption or explicitly cancel the workflow.' };
+    if ('text' in result && state.tasks.some(task => task.scriptManaged && state.script!.calls.some(call => call.taskId === task.taskId)
+      && (BUSY.has(task.status) || task.status === 'waiting_workflow'))) result = { error: 'Script returned with unfinished task handles; join or cancel every started task' };
+    if ('text' in result && state.waits?.some(wait => wait.runId === runId && wait.status === 'waiting')) result = { error: 'Script returned with unfinished event waits' };
     if ('text' in result && this.descendants(state).some(child=>!['completed','cancelled'].includes(child.status))) result={error:'Script returned with unfinished child workflows'};
     if ('text' in result) {
       scriptText(result.text, 'script result');
@@ -653,8 +744,8 @@ export class WorkflowKernel {
       state.script.status = 'failed';
       this.suspendChildren(state,true);
       state.script.error = result.error.slice(0, 2000);
-      if (state.consumerPool && ['waiting', 'running'].includes(state.consumerPool.status)) {
-        state.consumerPool.status = 'failed'; state.consumerPool.reason = state.script.error;
+      for (const pool of consumerPools(state)) if (['waiting', 'running'].includes(pool.status)) {
+        pool.status = 'failed'; pool.reason = state.script.error;
       }
       for (const task of state.tasks) if (task.scriptRunId === runId && (BUSY.has(task.status) || task.status==='waiting_workflow')) this.cancelTask(task, state);
       this.event(state, { kind: 'script_failed', summary: state.script.error });
@@ -688,7 +779,8 @@ export class WorkflowKernel {
     if (Object.hasOwn(args, 'args')) script.args = scriptArgs(args.args);
     if (args.execution !== undefined) script.defaults = workerSelection(args.execution, state.root);
     script.runId = randomUUID(); script.revision++; script.status = 'queued';
-    script.calls = []; script.mailboxCalls = []; script.workCalls = []; script.logs = []; script.error = undefined; script.resultRef = undefined; script.phase = undefined;
+    clearEventBindings(state);
+    script.calls = []; script.mailboxCalls = []; script.workCalls = []; script.controlCalls = []; script.logs = []; script.error = undefined; script.resultRef = undefined; script.phase = undefined;
     state.status = 'active';
     for (const event of state.events) if (['script_result_ready', 'script_failed'].includes(event.kind)) event.acknowledged = true;
     for (const child of children.filter(child=>child.parent!.workflowId===state.workflowId && ['paused','interrupted'].includes(child.status))) {
@@ -738,7 +830,7 @@ export class WorkflowKernel {
     this.suspendChildren(state,false);
     state.status = 'binding_attention';
     if (state.script) state.script.status = 'interrupted';
-    if (state.consumerPool) state.consumerPool.status = 'suspended';
+    for (const pool of consumerPools(state)) pool.status = 'suspended';
     for (const task of state.tasks) if (BUSY.has(task.status) || task.status==='waiting_workflow') this.cancelTask(task, state);
     this.event(state, { kind: 'binding_attention', summary: 'Root session, model, workspace or policy changed; new delegation stopped.' });
     this.save(state);
@@ -756,7 +848,7 @@ export class WorkflowKernel {
     this.suspendChildren(state,true);
     state.status = 'cancelled';
     if (state.script) state.script.status = 'cancelled';
-    if (state.consumerPool) state.consumerPool.status = 'cancelled';
+    for (const pool of consumerPools(state)) pool.status = 'cancelled';
     cancelWork(state, this.now());
     for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_input' || task.status==='waiting_workflow') this.cancelTask(task, state);
   }
@@ -803,12 +895,13 @@ export class WorkflowKernel {
           this.suspendChildren(state,false);
           state.status = 'paused';
           if (state.script) state.script.status = 'paused';
-          if (state.consumerPool) state.consumerPool.status = 'suspended';
+          for (const pool of consumerPools(state)) pool.status = 'suspended';
           for (const task of state.tasks) if (BUSY.has(task.status) || task.status==='waiting_workflow') this.cancelTask(task, state);
           this.event(state, { kind: 'budget_attention', summary: 'Workflow deadline reached; workers cancelled.' });
           this.save(state);
         }
         if (state.status === 'active') {
+          if (settleEventWaits(state, this.now())) this.save(state);
           if (pumpConsumerPool(state,this.remainingTreeTasks(state))) this.save(state);
           let active = state.tasks.filter(task => this.running.has(task.taskId)).length;
           for (const task of state.tasks) {

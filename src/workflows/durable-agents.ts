@@ -42,7 +42,7 @@ export function saveCheckpoint(state: WorkflowState, task: WorkflowTask, value: 
   return saved;
 }
 
-function memberCursor(state: WorkflowState, agent: DurableAgent): string | undefined {
+export function memberCursor(state: WorkflowState, agent: DurableAgent): string | undefined {
   return state.script!.calls.map(call => state.tasks.find(task => task.taskId === call.taskId))
     .filter(task => task?.agentId === agent.agentId).at(-1)?.taskId;
 }
@@ -68,6 +68,7 @@ export function scheduleMemberTurn(state: WorkflowState, call: ScriptAgentCall, 
     return { task: existing, cached: false };
   }
   if (agent?.activeTurnId) throw new Error('Member has an unfinished turn; replay its original input before adding another turn');
+  if (agent?.wait?.kind === 'event') throw new Error('Member is waiting for an event; await waitFor() before continuing');
   if (agent && agent.lastTurnId !== previousTurnId) throw new Error('Cannot rewrite member history; replay earlier turns unchanged or use a new member name');
   if (agent?.wait && mailbox(state).receipts.find(receipt => receipt.id === agent!.wait!.receiptId)?.status === 'waiting') {
     throw new Error('Member is waiting for a message; await receive() before continuing');
@@ -119,18 +120,29 @@ export function mailboxOperation(state: WorkflowState, key: string, input: unkno
   return response;
 }
 
+export function messageMatch(input: { topic?: unknown; correlationId?: unknown }): { topic?: string; correlationId?: string } {
+  return { ...(input.topic !== undefined ? { topic: scriptText(input.topic, 'message topic', 160) } : {}),
+    ...(input.correlationId !== undefined ? { correlationId: scriptText(input.correlationId, 'message correlationId', 160) } : {}) };
+}
+
+export function availableMessages(state: WorkflowState, agentId: string, match: { topic?: string; correlationId?: string } = {}) {
+  return mailbox(state).messages.filter(message => message.to === agentId && !message.receiptId && !message.consumedByTurnId
+    && (match.topic === undefined || message.topic === match.topic)
+    && (match.correlationId === undefined || message.correlationId === match.correlationId)).slice(0, 16);
+}
+
 function settleReceipt(state: WorkflowState, receipt: MailboxReceipt): void {
   if (receipt.status !== 'waiting') return;
-  const messages = mailbox(state).messages.filter(message => message.to === receipt.agentId && !message.receiptId && !message.consumedByTurnId).slice(0, 16);
+  const messages = availableMessages(state, receipt.agentId, receipt.match);
   if (!messages.length) return;
   for (const message of messages) message.receiptId = receipt.id;
   receipt.messageIds = messages.map(message => message.id);
   receipt.status = 'ready';
 }
 
-export function sendMessage(state: WorkflowState, target: string, text: unknown, now: number, from?: string): unknown {
+export function sendMessage(state: WorkflowState, target: string, text: unknown, now: number, from?: string, metadata: { topic?: unknown; correlationId?: unknown } = {}): unknown {
   const agent = member(state, target);
-  const message = { id: randomUUID(), to: agent.agentId, from, text: scriptText(text, 'message', 4000), createdAt: now };
+  const message = { id: randomUUID(), to: agent.agentId, from, text: scriptText(text, 'message', 4000), createdAt: now, ...messageMatch(metadata) };
   const box = mailbox(state);
   if (box.messages.length >= 256) throw new Error('Mailbox message limit reached');
   box.messages.push(message);
@@ -138,11 +150,13 @@ export function sendMessage(state: WorkflowState, target: string, text: unknown,
   return { messageId: message.id };
 }
 
-export function receiveMessages(state: WorkflowState, target: string, key: string): MailboxReceipt {
+export function receiveMessages(state: WorkflowState, target: string, key: string, metadata: { topic?: unknown; correlationId?: unknown } = {}): MailboxReceipt {
   const agent = member(state, target);
   const box = mailbox(state);
   const previousTurnId = memberCursor(state, agent);
-  const digest = workflowDigest({ target, previousTurnId });
+  const match = messageMatch(metadata);
+  const filter = Object.keys(match).length ? { match } : {};
+  const digest = workflowDigest({ target, previousTurnId, ...filter });
   const prior = box.receipts.find(receipt => receipt.key === key);
   if (prior) {
     if (prior.digest !== digest) throw new Error('Receive key conflict; replay the original member history');
@@ -150,8 +164,10 @@ export function receiveMessages(state: WorkflowState, target: string, key: strin
   }
   if (agent.activeTurnId || agent.lastTurnId !== previousTurnId) throw new Error('Await the member turn before receiving messages');
   if (agent.wait) throw new Error('Member already has a pending receive');
-  if (box.receipts.length >= 128) throw new Error('Mailbox receive limit reached');
-  const receipt: MailboxReceipt = { id: randomUUID(), key, digest, agentId: agent.agentId, status: 'waiting', messageIds: [] };
+  const reserved = (state.waits ?? []).filter(wait => wait.status === 'waiting' && wait.runId === state.script!.runId
+    && !key.startsWith(`@wait/${wait.id}/`) && wait.any.some(arm => arm.kind === 'message')).length;
+  if (box.receipts.length + reserved >= 128) throw new Error('Mailbox receive limit reached');
+  const receipt: MailboxReceipt = { id: randomUUID(), key, digest, agentId: agent.agentId, status: 'waiting', messageIds: [], ...filter };
   box.receipts.push(receipt);
   agent.wait = { kind: 'message', receiptId: receipt.id };
   settleReceipt(state, receipt);
@@ -165,7 +181,7 @@ export function receiptMessages(state: WorkflowState, receiptId: string): unknow
   if (receipt.status === 'waiting') return undefined;
   return receipt.messageIds.map(id => {
     const message = box.messages.find(item => item.id === id)!;
-    return { id, from: state.agents?.find(agent => agent.agentId === message.from)?.key ?? 'main', text: message.text };
+    return { id, from: state.agents?.find(agent => agent.agentId === message.from)?.key ?? 'main', text: message.text, ...messageMatch(message) };
   });
 }
 
@@ -174,5 +190,5 @@ export function memberContext(state: WorkflowState, task: WorkflowTask): unknown
   if (!agent) return undefined;
   return { member: agent.key, turnId: task.taskId, checkpoint: checkpoint(state, agent),
     messages: mailbox(state).messages.filter(message => task.inputMessageIds?.includes(message.id))
-      .map(message => ({ id: message.id, from: state.agents?.find(a => a.agentId === message.from)?.key ?? 'main', text: message.text })) };
+      .map(message => ({ id: message.id, from: state.agents?.find(a => a.agentId === message.from)?.key ?? 'main', text: message.text, ...messageMatch(message) })) };
 }

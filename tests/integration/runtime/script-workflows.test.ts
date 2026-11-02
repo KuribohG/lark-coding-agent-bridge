@@ -59,6 +59,57 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
 }
 
 describe('script workflow runtime', () => {
+  it('runs a task race through the VM, waits for loser cleanup and replays its durable outcome', async () => {
+    const h = await harness();
+    const run = h.adapters.codex.run.bind(h.adapters.codex);
+    h.adapters.codex.run = opts => {
+      const native = run(opts);
+      let release!: () => void;
+      const stopped = new Promise<void>(resolve => { release = resolve; });
+      const events = (async function* (): AsyncGenerator<AgentEvent> {
+        yield { type: 'system', threadId: 'session-' + native.runId };
+        if (opts.prompt.includes('SLOW_CANDIDATE')) { await stopped; return; }
+        yield { type: 'final_text', content: '{"answer":42}' };
+        yield { type: 'done', terminationReason: 'normal' };
+      })();
+      return { runId: native.runId, events, stop: async () => { await native.stop(); release(); }, waitForExit: ms => native.waitForExit(ms) };
+    };
+    await h.call('run_script', { goal: 'Choose a candidate', maxConcurrent: 2, script: [
+      'const slow=await startAgent("SLOW_CANDIDATE",{key:"slow",output:"json"});',
+      'const fast=await startAgent("FAST_CANDIDATE",{key:"fast",output:"json"});',
+      'return await raceTasks([slow,fast],{key:"choose"});',
+    ].join('\n') });
+    await h.until(() => expect(h.state().script!.status).toBe('result_ready'));
+    expect(JSON.parse(h.state().artifacts.at(-1)!.text)).toEqual({ index: 1, value: { answer: 42 } });
+    expect(h.adapters.codex.runs[0]!.stopped).toBe(true);
+    expect(h.state().tasks[0]!.status).toBe('cancelled');
+    expect(h.pool.snapshot()).toMatchObject({ active: 0, waiting: 0 });
+    await h.call('replay_script');
+    await h.until(() => expect(h.state().script!.status).toBe('result_ready'));
+    expect(h.adapters.codex.runs).toHaveLength(2);
+  });
+
+  it('uses a timed selective receive and preserves unrelated messages through the VM', async () => {
+    const h = await harness({ codex: ['ready', 'used evidence'] });
+    h.adapters.codex.setEvents(['ready', 'used evidence'].map((text): AgentEvent[] => [
+      { type: 'system', threadId: 'reviewer-session' }, { type: 'final_text', content: text }, { type: 'done', terminationReason: 'normal' },
+    ]));
+    await h.call('run_script', { goal: 'Wait for matching evidence', script: [
+      'await agent("Initialize",{key:"init",member:"reviewer"});',
+      'await send("reviewer","unrelated",{key:"send-other",topic:"other"});',
+      'const expired=await receive("reviewer",{key:"timeout",topic:"evidence",timeoutMs:1});',
+      'await send("reviewer","matching",{key:"send-match",topic:"evidence",correlationId:"issue-1"});',
+      'const batch=await receive("reviewer",{key:"match",topic:"evidence",correlationId:"issue-1",timeoutMs:1000});',
+      'await agent("Use the evidence",{key:"use",member:"reviewer"});',
+      'return {expired,batch};',
+    ].join('\n') });
+    await h.until(() => expect(h.state().script!.status).toBe('result_ready'));
+    expect(JSON.parse(h.state().artifacts.at(-1)!.text)).toMatchObject({ expired: [], batch: [{ text: 'matching', correlationId: 'issue-1' }] });
+    const messages = h.state().mailbox!.messages;
+    expect(messages.find(message => message.text === 'unrelated')!.receiptId).toBeUndefined();
+    expect(messages.find(message => message.text === 'matching')!.consumedByTurnId).toBeDefined();
+  });
+
   it('applies current host timeout settings through the runtime and IPC only to new workflows', async () => {
     let minutes = 600;
     const h = await harness({}, 'codex', undefined, ':memory:', () => minutes);

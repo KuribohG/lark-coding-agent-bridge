@@ -8,6 +8,7 @@ export interface ScriptProgramInput {
   agent(call: unknown): Promise<unknown>;
   mailbox?(call: unknown): Promise<unknown>;
   work?(call: unknown): Promise<unknown>;
+  control?(call: unknown): Promise<unknown>;
   progress(kind: 'phase' | 'log', text: string): void;
 }
 
@@ -16,17 +17,36 @@ const PRELUDE = `(() => {
   const invoke = __bridgeAgent;
   const mail = __bridgeMailbox;
   const work = __bridgeWork;
+  const control = __bridgeControl;
   const progress = __bridgeProgress;
   delete globalThis.__bridgeAgent;
   delete globalThis.__bridgeMailbox;
   delete globalThis.__bridgeWork;
+  delete globalThis.__bridgeControl;
   delete globalThis.__bridgeProgress;
   globalThis.agent = (prompt, options = {}) => {
     if (typeof prompt !== 'string' || !options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('agent(prompt, options) expected');
     return invoke(JSON.stringify({...options, prompt})).then(JSON.parse);
   };
   globalThis.send = (member, text, options = {}) => mail(JSON.stringify({...options, kind: 'send', member, text})).then(JSON.parse);
-  globalThis.receive = (member, options = {}) => mail(JSON.stringify({...options, kind: 'receive', member})).then(JSON.parse);
+  const controlCall = input => control(JSON.stringify(input)).then(JSON.parse);
+  globalThis.startAgent = (prompt, options = {}) => controlCall({...options, kind:'start', prompt});
+  globalThis.joinTask = task => controlCall({kind:'join', taskId:task.taskId});
+  globalThis.cancelTask = (task, options = {}) => controlCall({...options, kind:'cancel', taskId:task.taskId});
+  globalThis.waitFor = options => controlCall({...options, kind:'wait'});
+  globalThis.waitWork = (itemId, options = {}) => waitFor({...options, any:[{kind:'work',itemId}]}).then(event=>event.value);
+  globalThis.sleep = (afterMs, options = {}) => waitFor({...options, any:[{kind:'timer',afterMs}]}).then(event=>event.value);
+  globalThis.receive = (member, options = {}) => {
+    if (options.timeoutMs === undefined) return mail(JSON.stringify({...options, kind:'receive', member})).then(JSON.parse);
+    const {key, timeoutMs, ...match} = options;
+    return waitFor({key, any:[{...match,kind:'message',member},{kind:'timer',afterMs:timeoutMs}]}).then(event=>event.kind === 'message' ? event.value : []);
+  };
+  globalThis.raceTasks = async (tasks, options = {}) => {
+    if (!Array.isArray(tasks) || !tasks.length || tasks.length > 16) throw new TypeError('raceTasks needs 1–16 task handles');
+    const event = await waitFor({key:options.key,any:tasks.map(task=>({kind:'task',taskId:task.taskId}))});
+    await Promise.all(tasks.map((task,index)=>index === event.index ? null : cancelTask(task,{key:options.key+'/cancel/'+index})));
+    return {index:event.index,value:await joinTask(tasks[event.index])};
+  };
   globalThis.enqueueWork = (item) => {
     if (!item || typeof item !== 'object' || Array.isArray(item)) throw new TypeError('enqueueWork(item) expected');
     return work(JSON.stringify({...item, kind: 'enqueue'})).then(JSON.parse);
@@ -74,6 +94,7 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
   let calls = 0;
   let mailboxCalls = 0;
   let workCalls = 0;
+  let controlCalls = 0;
   let progressCount = 0;
   let pending = 0;
   let hostError: unknown;
@@ -97,7 +118,7 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
   };
   try {
     const installAsync = (name: string, invoke: (call: unknown) => Promise<unknown>) => install(name, payload => {
-      const count = name === '__bridgeAgent' ? ++calls : name === '__bridgeMailbox' ? ++mailboxCalls : ++workCalls;
+      const count = name === '__bridgeAgent' ? ++calls : name === '__bridgeMailbox' ? ++mailboxCalls : name === '__bridgeControl' ? ++controlCalls : ++workCalls;
       if (count > SCRIPT_MAX_TASKS) throw new Error('Script call limit reached');
       const text = context.getString(payload);
       if (text.length > SCRIPT_MAX_TEXT + 2000) throw new Error('agent input exceeds size limit');
@@ -133,6 +154,10 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
     installAsync('__bridgeWork', call => {
       if (!input.work) throw new Error('Work queue host is unavailable');
       return input.work(call);
+    });
+    installAsync('__bridgeControl', call => {
+      if (!input.control) throw new Error('Script control host is unavailable');
+      return input.control(call);
     });
     install('__bridgeProgress', (kind, value) => {
       if (++progressCount > 100) throw new Error('Script progress limit reached');

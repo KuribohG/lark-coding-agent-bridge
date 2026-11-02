@@ -66,6 +66,7 @@
     "docs/configuration.md",
     "docs/config.example.toml",
     "docs/workflows.md",
+    "docs/workflow-scheduling.md",
     "workflow-definitions"
   ],
   "scripts": {

@@ -1,3 +1,4 @@
+import { consumerPools, memberPool, queueControl, queueNames } from './work-routing';
 import { sanitizeLogsForDoctor } from '../core/logger';
 import type { DurableAgent, WorkflowState, WorkflowTask, WorkflowWorkItem } from './types';
 
@@ -41,9 +42,10 @@ function memberLines(state: WorkflowState, member: DurableAgent, detail: boolean
   const task = currentTask(state, member);
   const receipt = state.mailbox?.receipts.find(item => item.id === member.wait?.receiptId);
   const checkpoint = state.checkpoints?.find(item => item.ref === member.checkpointRef);
-  const consumer = state.consumerPool?.members.find(consumer => consumer.name === member.key);
+  const pool = memberPool(state, member.key);
   const phase = member.activeTurnId && task ? TASK_STATUS[task.status]
-    : consumer && state.consumerPool?.status === 'waiting' ? '等待队列任务（不占 worker 进程）'
+    : pool?.status === 'waiting' ? '等待队列任务（不占 worker 进程）'
+    : member.wait?.kind === 'event' ? '等待消息或其它事件（不占 worker 进程）'
     : receipt?.status === 'waiting' ? '等待消息' : receipt?.status === 'ready' ? '消息已到，待开始下一轮'
       : task ? TASK_STATUS[task.status] : '尚未开始';
   const lines = [`- 成员 ${compact(member.key, 100)}：${phase}，${execution(state, member.sessionRef)}`];
@@ -78,6 +80,7 @@ function workLines(state: WorkflowState, item: WorkflowWorkItem): string[] {
   const owner = claim && state.agents?.find(agent => agent.agentId === claim.agentId)?.key;
   return [`- 工作项 ${compact(item.key, 100)}：${item.status}，认领 ${item.generation}/${item.maxAttempts} 次，进展 #${item.progress.version}`,
     `  内容：${compact(item.title, 200)}`,
+    ...(item.queue || item.priority || item.dependsOn?.length ? [`  队列：${compact(item.queue ?? 'default', 64)}，优先级 ${item.priority ?? 0}，依赖 ${compact(item.dependsOn?.join('、') || '无', 240)}`] : []),
     ...(claim ? [`  负责成员：${compact(owner ?? claim.agentId, 100)}，认领版本 ${claim.generation}，租约至 ${time(claim.leaseUntil)}`] : []),
     ...(item.progress.updatedAt ? [`  进展保存于：${time(item.progress.updatedAt)}`] : []),
     ...(item.resources.length ? [`  资源归属：${compact(item.resources.join('、'), 240)}`] : []),
@@ -89,11 +92,13 @@ function queueLines(state: WorkflowState, limit: number, member?: DurableAgent):
   if (!state.workQueue) return [];
   const counts = (status: WorkflowWorkItem['status']) => items.filter(item => item.status === status).length;
   const lines = [`工作队列：${items.length} 项，待领取 ${counts('pending')}，已认领 ${counts('claimed')}，完成 ${counts('completed')}，失败 ${counts('failed')}，取消 ${counts('cancelled')}`];
-  lines.push(state.workQueue.closedAt === undefined ? '队列开放：可继续追加任务。' : '队列已关闭：不再接收新任务，已有任务继续排空。');
-  const pool = state.consumerPool;
-  if (pool) {
+  lines.push(state.workQueue.closedAt === undefined ? '默认队列开放：可继续追加任务。' : '默认队列已关闭：不再接收新任务，已有任务继续排空。');
+  for (const name of queueNames(state).filter(name => name !== 'default')) {
+    lines.push(`队列 ${compact(name, 64)}：${queueControl(state, name)?.closedAt === undefined ? '开放' : '已关闭'}`);
+  }
+  for (const pool of consumerPools(state)) {
     const names = {waiting:'等待队列变化（不占 worker 进程）',running:'消费中',drained:'已排空',failed:'需要处理',suspended:'已暂停',cancelled:'已取消'};
-    lines.push(`消费者池 ${compact(pool.key, 100)}：${names[pool.status]}，轮次 ${pool.turns.length}/${pool.maxTurns}`);
+    lines.push(`消费者池 ${compact(pool.key, 100)}：${names[pool.status]}，队列 ${compact(pool.queue ?? 'default', 64)}，轮次 ${pool.turns.length}/${pool.maxTurns}`);
     if (pool.reason) lines.push(`  状态说明：${errorText(pool.reason)}`);
     lines.push(`  成员：${pool.members.slice(0, 8).map(consumer => compact(consumer.name, 50) + (consumer.disabled ? '（停止，需显式重放）' : consumer.retryPending ? '（待恢复）' : '')).join('、')}`);
   }
@@ -122,6 +127,9 @@ export function renderWorkflowStatus(state: WorkflowState, memberKey?: string, l
     `主 agent：${state.root.agentKind}，模型：${compact(state.root.modelSettings.model ?? '默认', 100)}${state.root.modelSettings.reasoningEffort ? `，思考强度：${state.root.modelSettings.reasoningEffort}` : ''}`];
   if (state.script) {
     lines.push(`脚本：${state.script.status}${state.script.phase ? `，${compact(state.script.phase, 200)}` : ''}，重放 ${state.script.revision} 次`);
+    for (const wait of (state.waits ?? []).filter(wait => wait.runId === state.script!.runId && wait.status === 'waiting').slice(0, 4)) {
+      lines.push(`等待 ${compact(wait.key, 100)}：${wait.any.map(arm => arm.kind).join(' / ')}（不占 worker 进程）`);
+    }
     if (state.script.status === 'failed' && state.script.error) lines.push(`脚本失败：${errorText(state.script.error)}`);
   }
   if (state.status === 'paused' || state.status === 'interrupted') {
@@ -133,7 +141,7 @@ export function renderWorkflowStatus(state: WorkflowState, memberKey?: string, l
   }
   if (memberKey) {
     const member = state.agents?.find(item => item.key === memberKey);
-    if (!member && state.consumerPool?.members.some(consumer => consumer.name === memberKey)) return bounded([...lines, ...queueLines(state, 0), `成员 ${compact(memberKey, 100)} 等待首次队列任务，尚未启动 worker。`]);
+    if (!member && memberPool(state, memberKey)) return bounded([...lines, ...queueLines(state, 0), `成员 ${compact(memberKey, 100)} 等待首次队列任务，尚未启动 worker。`]);
     if (!member) return bounded([...lines, `未找到成员：${compact(memberKey, 100)}。用 /workflow status 查看成员列表。`]);
     lines.push(...memberLines(state, member, true));
     lines.push(...queueLines(state, 1, member));
