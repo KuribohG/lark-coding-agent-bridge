@@ -52,11 +52,12 @@ export function scheduleMemberTurn(state: WorkflowState, call: ScriptAgentCall, 
   if (agent) {
     const session = state.sessions.find(item => item.sessionRef === agent!.sessionRef)!;
     if (workflowDigest(session.execution) !== workflowDigest(execution)) throw new Error('Member execution binding changed; use a new member name');
+    if (session.workspaceId !== call.workspace) throw new Error('Member workspace binding changed; use a new member name');
   }
   const previousTurnId = agent ? memberCursor(state, agent) : undefined;
   const digest = workflowDigest({ key: call.key, prompt: call.prompt, output: call.output, execution,
     member: call.member, previousTurnId, root: state.root, goal: state.goal, definition: state.definitionDigest,
-    ...(call.workflowTool ? {workflowTool:true} : {}) });
+    ...(call.workflowTool ? {workflowTool:true} : {}), ...(call.workspace ? {workspace:call.workspace} : {}) });
   const existing = agent && state.tasks.find(task => task.agentId === agent!.agentId && task.requestDigest === digest);
   if (existing?.status === 'result_ready') return { task: existing, cached: true };
   if (existing) {
@@ -79,10 +80,11 @@ export function scheduleMemberTurn(state: WorkflowState, call: ScriptAgentCall, 
     agent = { agentId: randomUUID(), key: call.member!, sessionRef: randomUUID(), checkpointVersion: 0 };
     (state.agents ??= []).push(agent);
     state.sessions.push({ sessionRef: agent.sessionRef, actorId: agent.agentId, actorKey: agent.key, role: 'worker',
-      nativeIdKind: sessionIdFieldForAgent(execution.agentKind), execution, generation: 1 });
+      nativeIdKind: sessionIdFieldForAgent(execution.agentKind), execution, generation: 1, ...(call.workspace ? {workspaceId:call.workspace} : {}) });
   }
   const receipts = mailbox(state).receipts.filter(receipt => receipt.agentId === agent!.agentId && receipt.status === 'ready' && !receipt.turnId);
   const task: WorkflowTask = { taskId: randomUUID(), taskKey: call.key, sessionRef: agent.sessionRef, objective: call.prompt,
+    ...(call.workspace ? {workspaceId:call.workspace} : {}),
     ...(call.workflowTool ? {workflowTool:true} : {}),
     requestDigest: digest, cacheKey: digest, status: 'queued', attempts: [], resultRefs: [], inputRefs: [],
     scriptRunId: state.script!.runId, scriptKey: call.key, scriptOutput: call.output, agentId: agent.agentId,

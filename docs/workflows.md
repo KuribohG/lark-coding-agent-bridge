@@ -94,7 +94,8 @@ Guest functions:
 
 | API | Behavior |
 | --- | --- |
-| `agent(prompt, {key, member?, harness?, model?, reasoningEffort?, output?, workflowTool?})` | Promise of final text, or a parsed JSON value with `output: "json"` |
+| `agent(prompt, {key, member?, harness?, model?, reasoningEffort?, output?, workflowTool?, workspace?})` | Promise of final text, or a parsed JSON value with `output: "json"` |
+| `createWorkspace` / `freezeWorkspace` / `approveChange` / `integrateChanges` / `checkWorkspace` / `acceptIntegration` / `cleanupWorkspace` | Opt-in isolated coding, snapshot review and checked private integration; see [worktrees](workflow-worktrees.md) |
 | `reviewedAgent(prompt, {key, criteria, worker?, reviewer?, maxRounds?})` | Independent verification and bounded rework; returns only an accepted result; see [collaboration controls](workflow-collaboration.md) |
 | `send(member, text, {key, topic?, correlationId?})` / `receive(member, {key, topic?, correlationId?, timeoutMs?})` | Send a durable message or await a stable inbox batch |
 | `enqueueWork({key, title, input, queue?, priority?, dependsOn?, resources?, maxAttempts?})` | Persist an immutable work item; returns `{itemId, key}` and reuses it on replay |

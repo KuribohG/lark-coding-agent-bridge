@@ -21,6 +21,7 @@ export interface ScriptAgentCall {
   selection: WorkerExecutionSelection;
   output: 'text' | 'json';
   workflowTool?: boolean;
+  workspace?: string;
 }
 
 export function scriptText(value: unknown, name: string, max = SCRIPT_MAX_TEXT): string {
@@ -45,8 +46,8 @@ export function scriptArgs(value: unknown): unknown {
 export function parseScriptAgentCall(value: unknown, defaults: WorkerExecutionSelection, root: WorkflowRoot): ScriptAgentCall {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid agent() call');
   const input = value as Record<string, unknown>;
-  if (Object.keys(input).some(key => !['key', 'member', 'prompt', 'harness', 'model', 'reasoningEffort', 'output', 'workflowTool'].includes(key))) {
-    throw new Error('agent() supports key, member, harness, model, reasoningEffort, output and workflowTool only');
+  if (Object.keys(input).some(key => !['key', 'member', 'prompt', 'harness', 'model', 'reasoningEffort', 'output', 'workflowTool', 'workspace'].includes(key))) {
+    throw new Error('agent() supports key, member, harness, model, reasoningEffort, output, workflowTool and workspace only');
   }
   if (input.workflowTool !== undefined && typeof input.workflowTool !== 'boolean') throw new Error('workflowTool must be boolean');
   const key = scriptText(input.key, 'agent key', 160);
@@ -62,6 +63,8 @@ export function parseScriptAgentCall(value: unknown, defaults: WorkerExecutionSe
   }, root);
   const prompt = scriptText(input.prompt, 'agent prompt');
   const member = input.member === undefined ? undefined : scriptText(input.member, 'member name', 100);
+  const workspace = input.workspace === undefined ? undefined : scriptText(input.workspace, 'workspace ID', 100);
+  if (workspace && input.workflowTool) throw new Error('Workspace v1 does not support nested workflow delegation');
   if (member && member.trim() !== member) throw new Error('member name must not contain surrounding whitespace');
-  return { key, member, output, selection, ...(input.workflowTool ? { workflowTool: true } : {}), prompt: output === 'json' ? `${prompt}\n\nReturn only valid JSON, without markdown fences or explanatory text.` : prompt };
+  return { key, member, output, selection, ...(workspace ? { workspace } : {}), ...(input.workflowTool ? { workflowTool: true } : {}), prompt: output === 'json' ? `${prompt}\n\nReturn only valid JSON, without markdown fences or explanatory text.` : prompt };
 }

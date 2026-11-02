@@ -38,6 +38,7 @@ export interface SessionBinding {
   nativeSessionId?: string;
   observedModel?: string;
   generation: number;
+  workspaceId?: string;
 }
 
 export type WorkerSession = SessionBinding;
@@ -236,6 +237,7 @@ export interface AgentTurn {
   scriptManaged?: boolean;
   scriptCancelled?: boolean;
   consumerMessageTurn?: boolean;
+  workspaceId?: string;
 }
 
 export interface WorkflowParent {
@@ -266,6 +268,7 @@ export interface WorkflowScript {
   mailboxCalls?: string[];
   workCalls?: string[];
   controlCalls?: string[];
+  workspaceCalls?: string[];
   logs: string[];
   phase?: string;
   resultRef?: string;
@@ -316,6 +319,7 @@ export interface WorkflowState {
   consumerPools?: WorkConsumerPool[];
   waits?: WorkflowWait[];
   controlOperations?: Array<{ key: string; digest: string; taskId: string }>;
+  workspaceKeys?: string[];
   script?: WorkflowScript;
 }
 
@@ -346,6 +350,8 @@ export interface WorkflowHost {
   resolveRoot(scopeId: string): Promise<WorkflowRoot | undefined>;
   getTimeoutMinutes?(root: WorkflowRoot): number;
   resolveWorker?(root: WorkflowRoot, selection: WorkerExecutionSelection): Promise<WorkerExecution>;
+  resolveWorkspace?(root: WorkflowRoot, workflowId: string, workspaceId: string): Promise<void>;
+  workspace?(state: WorkflowState, input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
   execute(request: WorkflowWorkerRequest): Promise<WorkflowWorkerResult>;
   wakeMain(scopeId: string): Promise<void>;
 }

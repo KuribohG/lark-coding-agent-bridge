@@ -9,6 +9,7 @@ export interface ScriptProgramInput {
   agent(call: unknown): Promise<unknown>;
   mailbox?(call: unknown): Promise<unknown>;
   work?(call: unknown): Promise<unknown>;
+  workspace?(call: unknown): Promise<unknown>;
   control?(call: unknown): Promise<unknown>;
   progress(kind: 'phase' | 'log', text: string): void;
 }
@@ -18,17 +19,22 @@ const PRELUDE = `(() => {
   const invoke = __bridgeAgent;
   const mail = __bridgeMailbox;
   const work = __bridgeWork;
+  const workspace = __bridgeWorkspace;
   const control = __bridgeControl;
   const progress = __bridgeProgress;
   delete globalThis.__bridgeAgent;
   delete globalThis.__bridgeMailbox;
   delete globalThis.__bridgeWork;
+  delete globalThis.__bridgeWorkspace;
   delete globalThis.__bridgeControl;
   delete globalThis.__bridgeProgress;
   globalThis.agent = (prompt, options = {}) => {
     if (typeof prompt !== 'string' || !options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('agent(prompt, options) expected');
     return invoke(JSON.stringify({...options, prompt})).then(JSON.parse);
   };
+  for (const [name,kind] of Object.entries({createWorkspace:'create',freezeWorkspace:'freeze',approveChange:'approve',integrateChanges:'integrate',checkWorkspace:'check',acceptIntegration:'accept',cleanupWorkspace:'cleanup'})) {
+    globalThis[name] = options => workspace(JSON.stringify({...options,kind})).then(JSON.parse);
+  }
   ${REVIEW_HELPER}
   globalThis.send = (member, text, options = {}) => mail(JSON.stringify({...options, kind: 'send', member, text})).then(JSON.parse);
   const controlCall = input => control(JSON.stringify(input)).then(JSON.parse);
@@ -97,6 +103,7 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
   let mailboxCalls = 0;
   let workCalls = 0;
   let controlCalls = 0;
+  let workspaceCalls = 0;
   let progressCount = 0;
   let pending = 0;
   let hostError: unknown;
@@ -120,7 +127,7 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
   };
   try {
     const installAsync = (name: string, invoke: (call: unknown) => Promise<unknown>) => install(name, payload => {
-      const count = name === '__bridgeAgent' ? ++calls : name === '__bridgeMailbox' ? ++mailboxCalls : name === '__bridgeControl' ? ++controlCalls : ++workCalls;
+      const count = name === '__bridgeAgent' ? ++calls : name === '__bridgeMailbox' ? ++mailboxCalls : name === '__bridgeControl' ? ++controlCalls : name === '__bridgeWorkspace' ? ++workspaceCalls : ++workCalls;
       if (count > SCRIPT_MAX_TASKS) throw new Error('Script call limit reached');
       const text = context.getString(payload);
       if (text.length > SCRIPT_MAX_TEXT + 2000) throw new Error('agent input exceeds size limit');
@@ -160,6 +167,10 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
     installAsync('__bridgeControl', call => {
       if (!input.control) throw new Error('Script control host is unavailable');
       return input.control(call);
+    });
+    installAsync('__bridgeWorkspace', call => {
+      if (!input.workspace) throw new Error('Workspace host is unavailable');
+      return input.workspace(call);
     });
     install('__bridgeProgress', (kind, value) => {
       if (++progressCount > 100) throw new Error('Script progress limit reached');

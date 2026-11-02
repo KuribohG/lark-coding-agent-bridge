@@ -34,11 +34,11 @@ return await reviewedAgent(args.task, {
 });
 ```
 
-`reviewedAgent(prompt,{key,criteria,worker?,reviewer?,maxRounds?})` returns `{value,review,rounds}` only after the independent reviewer accepts the candidate. It composes ordinary authorized `agent()` calls; it does not add shell/file access to the script VM.
+`reviewedAgent(prompt,{key,criteria,worker?,reviewer?,maxRounds?})` returns `{value,review,rounds}` only after the independent reviewer accepts the candidate. Without a workspace it composes ordinary authorized `agent()` calls. With `worker.workspace`, it adds fixed-snapshot review and returns `{change,approval}` as well; see [worktree integration](workflow-worktrees.md).
 
 - `key` is stable, unique and 1–80 characters, without surrounding whitespace or an `@` prefix.
 - `criteria` is a nonempty string of at most 16000 characters. Describe observable acceptance tests, not just "looks good".
-- `worker` accepts `harness`, `model`, `reasoningEffort`, `workflowTool`, `member` and `output`. It uses the persistent member `<key>/worker` unless one is supplied. A rejection goes back to that same member with the review feedback.
+- `worker` accepts `harness`, `model`, `reasoningEffort`, `workflowTool`, `member`, `output` and `workspace`. It uses the persistent member `<key>/worker` unless one is supplied. A rejection goes back to that same member with the review feedback.
 - `reviewer` accepts `harness`, `model`, `reasoningEffort` and `workflowTool`. Every review is an independent task with a fresh context; it cannot share the worker's member history. It receives the task, acceptance criteria and candidate, and is instructed to inspect evidence and perform relevant checks. Its output is forced to JSON.
 - The review contract is `{ok:boolean,reason:string,evidence:string[]}`. The reason must be nonempty (up to 4000 characters); evidence has at most 16 nonempty entries of up to 2000 characters each. Approval requires at least one evidence entry. Malformed decisions and reviewer execution errors fail the helper; they never count as approval.
 - `maxRounds` defaults to 2 and ranges from 1 to 4. Each round uses one worker call and one review call. Exhausting the bound throws with the rejection reason. All calls still consume the original workflow budgets.
@@ -60,6 +60,6 @@ Material checked on 2026-11-02:
 | [TaskCompleted](https://code.claude.com/docs/en/hooks#taskcompleted) / [TeammateIdle](https://code.claude.com/docs/en/hooks#teammateidle) blocking with feedback | The review helper provides an acceptance/rework loop; it is not an implementation of those hook events |
 | [Agent-based hooks](https://code.claude.com/docs/en/hooks#agent-based-hooks) inspect evidence and return a decision | Independent reviewer calls use existing authorized workers; they are not Claude's agent-hook subprocesses |
 | [Competing hypotheses](https://code.claude.com/docs/en/agent-teams#investigate-with-competing-hypotheses) | A recommended task/prompt pattern using independent workers and targeted feedback, not an automatic voting guarantee |
-| [Subagent worktree isolation](https://code.claude.com/docs/en/sub-agents#supported-frontmatter-fields) | Not added in this change; current resource keys serialize declared conflicts but do not create isolated checkouts. A useful next step for concurrent code edits |
+| [Subagent worktree isolation](https://code.claude.com/docs/en/sub-agents#supported-frontmatter-fields) | Opt-in managed worktrees now provide isolated checkouts and retained modified work; snapshot approval and checked integration are bridge-specific extensions |
 
 The checked documentation does not establish generic `firstSuccess`, quorum, producer backpressure or Temporal-style cancellation scopes as Claude Code APIs. Those remain separate design proposals. Plan mode/approval exists, but current documentation describes automatic approval for some teammate spawn paths, so it must not be equated with mandatory independent plan review. No measured correctness or speed improvement is claimed without a representative comparison.

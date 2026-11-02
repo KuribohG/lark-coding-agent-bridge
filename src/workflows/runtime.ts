@@ -1,4 +1,7 @@
 import type { RunPolicyAllow } from '../policy/run-policy';
+import { dirname, join } from 'node:path';
+import { WorkflowWorkspaces } from './workspaces';
+import type { WorkspaceBinding } from './workspace-types';
 import { fileURLToPath } from 'node:url';
 import type { RunExecutor } from '../runtime/run-executor';
 import { RunStopped } from '../runtime/errors';
@@ -12,6 +15,7 @@ import type { WorkerExecution, WorkerExecutionSelection, WorkflowRoot, WorkflowS
 
 export interface WorkflowRuntimeDeps {
   path: string;
+  workspaceRoot?: string;
   executor: RunExecutor;
   getTimeoutMinutes?(root: WorkflowRoot): number;
   resolve(scopeId: string): Promise<{ root: WorkflowRoot; policy: RunPolicyAllow } | undefined>;
@@ -26,6 +30,7 @@ export interface WorkflowRuntimeDeps {
 export class WorkflowRuntime {
   readonly kernel: WorkflowKernel;
   private readonly ipc: WorkflowIpc;
+  private workspaces?: WorkflowWorkspaces;
   private timer?: NodeJS.Timeout;
   private closed = false;
   private ticking = false;
@@ -36,6 +41,15 @@ export class WorkflowRuntime {
       resolveRoot: async scope => (await deps.resolve(scope))?.root,
       getTimeoutMinutes: deps.getTimeoutMinutes,
       resolveWorker: async (root, selection) => (await this.resolveWorker(root, selection)).execution,
+      resolveWorkspace: async (root, workflowId, id) => {
+        await this.workspacePolicy(root);
+        await this.workspaceManager().binding(root, workflowId, id, new AbortController().signal);
+      },
+      workspace: async (state, input, signal) => {
+        await this.workspacePolicy(state.root);
+        signal.throwIfAborted();
+        return this.workspaceManager().perform({ state, signal }, input);
+      },
       execute: request => this.execute(request),
       wakeMain: deps.wakeMain,
     });
@@ -121,6 +135,7 @@ export class WorkflowRuntime {
           }
           return this.waitForScriptValue(scopeId, controller.signal, () => this.kernel.scriptControlResult(scopeId, workflowId, runId, call));
         },
+        workspace: input => this.kernel.scriptWorkspace(scopeId, workflowId, runId, input, controller.signal),
         progress: (kind, text) => this.kernel.scriptProgress(scopeId, workflowId, runId, kind, text),
       });
       this.kernel.finishScript(scopeId, workflowId, runId, { text });
@@ -165,10 +180,23 @@ export class WorkflowRuntime {
     const selection = { agentKind: pinned.agentKind, ...pinned.modelSettings };
     const current = await this.resolveWorker(workflow.root, selection);
     if (workflowDigest(current.execution) !== workflowDigest(pinned)) throw new Error('Worker execution binding changed');
+    if (task.workspaceId !== session.workspaceId) throw new Error('Worker workspace/session binding changed');
+    const manager = task.workspaceId ? this.workspaceManager() : undefined;
+    let workspace: WorkspaceBinding | undefined;
+    if (task.workspaceId) {
+      await this.workspacePolicy(workflow.root, current.policy);
+      workspace = await manager!.binding(workflow.root, workflow.workflowId, task.workspaceId, signal);
+    }
+    let lease: string | undefined;
+    let execution: Awaited<ReturnType<RunExecutor['submit']>> | undefined;
     const binding = this.ipc.bind({ kind: 'worker', scopeId: workflow.root.scopeId, workflowId: workflow.workflowId,
       taskId: task.taskId, attemptId }, workflow.deadlineAt);
     try {
-      const execution = await this.deps.executor.submit({
+      if (workspace) {
+        lease = manager!.begin(workspace, task.taskId);
+        await manager!.verifySnapshot(workspace, signal);
+      }
+      execution = await this.deps.executor.submit({
         scopeId: `workflow:${workflow.workflowId}:${session.sessionRef}`,
         agentScopeId: workflow.root.scopeId,
         agentKind: pinned.agentKind, requireFinalAnswer: true,
@@ -176,9 +204,15 @@ export class WorkflowRuntime {
         validateBeforeRun: async () => {
           const admitted = await this.resolveWorker(workflow.root, selection);
           if (workflowDigest(admitted.execution) !== workflowDigest(pinned)) throw new Error('Worker binding changed while queued');
+          if (workspace) {
+            await this.workspacePolicy(workflow.root, admitted.policy);
+            await manager!.binding(workflow.root, workflow.workflowId, workspace.id, signal);
+            await manager!.verifySnapshot(workspace, signal);
+          }
         },
-        policy: { ...current.policy, prompt: request.prompt },
-        systemPrompt: workflowWorkerInstructions(task),
+        policy: { ...current.policy, ...(workspace ? { requestedCwd: workspace.path, cwdRealpath: workspace.path,
+          policyFingerprint: workflowDigest({ policy: current.policy.policyFingerprint, workspace: workspace.id, root: workspace.rootDigest }) } : {}), prompt: request.prompt },
+        systemPrompt: workflowWorkerInstructions(task) + (workspace ? `\nManaged worktree: ${workspace.path}\nBaseline: ${workspace.baseCommit}\nWork only in this worktree; do not modify the original checkout or other worktrees. ${workspace.kind === 'review' ? 'Review the frozen HEAD; leave all tracked and untracked files unchanged.' : 'Commit intended changes before returning. Leave no untracked files or unfinished Git operations.'}` : ''),
         ...((task.agentId || task.workflowTool) && session.nativeSessionId ? { [session.nativeIdKind]: session.nativeSessionId } : {}),
         ...pinned.modelSettings,
         deadlineAt: workflow.deadlineAt, signal,
@@ -191,7 +225,7 @@ export class WorkflowRuntime {
       let yieldTimer: NodeJS.Timeout | undefined;
       const yieldIfWaiting = () => {
         if (!yieldTimer && this.kernel.waitingForChild(workflow.root.scopeId,workflow.workflowId,task.taskId,attemptId)) {
-          yieldTimer=setTimeout(()=>{void execution.stop('yield').catch(error=>log.warn('workflow','yield-failed',{error:String(error)}));},30_000);
+          yieldTimer=setTimeout(()=>{void execution!.stop('yield').catch(error=>log.warn('workflow','yield-failed',{error:String(error)}));},30_000);
           yieldTimer.unref();
         }
       };
@@ -220,8 +254,35 @@ export class WorkflowRuntime {
         stopWatching();if(yieldTimer) clearTimeout(yieldTimer);
       }
       const result = await execution.result;
+      if (workspace && result === 'completed') {
+        if (!await execution.run.waitForExit(5000)) throw new Error('Workspace worker has not exited');
+        await manager!.verifySnapshot(workspace, signal);
+      }
       return { status: result === 'completed' && normal ? 'completed' : result === 'stopped' ? 'stopped' : 'failed', text, question, error, stopReason: execution.handle.stopReason };
-    } finally { binding.release(); }
+    } finally {
+      binding.release();
+      if (workspace && lease) {
+        // Native termination is authoritative; retain the lease if it is uncertain.
+        if (!execution || await execution.run.waitForExit(5000)) manager!.end(workspace, lease);
+        else throw new Error('Workspace worker termination is uncertain; worktree retained and blocked');
+      }
+    }
+  }
+
+  private workspaceManager(): WorkflowWorkspaces {
+    if (this.closed) throw new Error('Workflow service is closed');
+    if (!this.deps.workspaceRoot && this.deps.path === ':memory:') throw new Error('In-memory workflows require an explicit workspaceRoot');
+    return this.workspaces ??= new WorkflowWorkspaces(this.deps.path === ':memory:' ? ':memory:' : this.deps.path + '.workspaces.sqlite',
+      this.deps.workspaceRoot ?? join(dirname(this.deps.path), 'worktrees'));
+  }
+
+  private async workspacePolicy(root: WorkflowRoot, workerPolicy?: RunPolicyAllow): Promise<void> {
+    const current = await this.deps.resolve(root.scopeId);
+    if (!current || workflowDigest(current.root) !== workflowDigest(root)) throw new Error('Workspace root authorization changed');
+    for (const policy of [current.policy, workerPolicy ?? current.policy]) {
+      if (policy.cwdRealpath !== root.cwdRealpath || policy.accessMode !== 'full'
+        || policy.sandbox !== 'danger-full-access' || policy.permissionMode !== 'bypassPermissions') throw new Error('Workspaces require an already authorized full-access profile');
+    }
   }
 
   private async resolveWorker(root: WorkflowRoot, selection: WorkerExecutionSelection) {
@@ -244,5 +305,6 @@ export class WorkflowRuntime {
     await Promise.allSettled([...this.scripts.values()].map(run => run.done));
     await this.ipc.close();
     await this.kernel.close();
+    await this.workspaces?.close();
   }
 }

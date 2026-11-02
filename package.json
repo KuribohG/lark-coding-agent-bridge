@@ -68,6 +68,7 @@
     "docs/workflows.md",
     "docs/workflow-scheduling.md",
     "docs/workflow-collaboration.md",
+    "docs/workflow-worktrees.md",
     "workflow-definitions"
   ],
   "scripts": {
