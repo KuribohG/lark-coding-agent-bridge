@@ -402,8 +402,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   // botOpenId getter is resolved by then.
   const meetingConfig = () => controls.profileConfig.meeting;
   let meetingManager: MeetingManager | undefined;
-  if (meetingConfig().enabled) {
-    meetingManager = new MeetingManager({
+  const createMeetingManager = () => new MeetingManager({
       client: channel.rawClient as unknown as VcRequestClient,
       config: meetingConfig,
       botOpenId: () => channel.botIdentity?.openId,
@@ -422,11 +421,24 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           resolveAgentKind,
         }),
     });
-    meetingManager.attachPush();
-    controls.meeting = meetingManager;
-  }
+  // `meeting.enabled` is hot: raw-event subscriptions compose with the SDK's
+  // handlers, so the manager can attach to (or leave) a live connection.
+  const reconcileMeeting = async (): Promise<void> => {
+    if (meetingConfig().enabled && !meetingManager) {
+      meetingManager = createMeetingManager();
+      meetingManager.attachPush();
+      controls.meeting = meetingManager;
+    } else if (!meetingConfig().enabled && meetingManager) {
+      meetingManager.dispose();
+      meetingManager = undefined;
+      controls.meeting = undefined;
+    }
+  };
+  await reconcileMeeting();
 
   await channel.connect();
+  controls.reconcileMeeting = reconcileMeeting;
+  controls.onConfigApplied = () => pool.refresh();
   const ownerRefresh = createOwnerRefreshController({
     controls,
     source: channel,
@@ -468,7 +480,8 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     channel,
     domain: probeDomain,
     request: larkAuth.request,
-    forceReconnect: () => controls.restart(),
+    // Recovery reconnects with the running config; file edits apply via reload.
+    forceReconnect: () => controls.restart({ config: 'running' }),
   });
 
   return {
@@ -489,6 +502,8 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       // reconnect would be surprising.
       meetingManager?.dispose();
       controls.meeting = undefined;
+      controls.reconcileMeeting = undefined;
+      controls.onConfigApplied = undefined;
       for (const preparedCot of preparedCots.values()) {
         void preparedCot.finish('cancelled');
       }

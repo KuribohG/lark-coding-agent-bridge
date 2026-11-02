@@ -5,7 +5,7 @@ import * as lockfile from 'proper-lockfile';
 import type { LarkMonitorProfiles } from './host';
 import { resolveAppPaths } from '../../../config/app-paths';
 import { withConfigFileLock } from '../../../config/profile-store';
-import { loadMonitorRoot, saveMonitorRoot, monitorConfigPath, larkConfigRevision, concurrencyConfigRevision } from '../../store';
+import { loadMonitorRoot, saveMonitorRoot, monitorConfigPath, larkConfigRevision, concurrencyConfigRevision, monitorSectionErrors } from '../../store';
 import { parseWorkItemConcurrency } from '../../../work-items/concurrency';
 import { LarkProfileAuth } from '../../../lark-auth/profile-auth';
 import { getCotMessages } from '../../../config/schema';
@@ -54,6 +54,7 @@ export class InboxManager {
   private chain: Promise<unknown> = Promise.resolve();
   private timer: ReturnType<typeof setInterval>;
   private closed = false;
+  private sectionError?: string;
   error?: string;
   constructor(private configPath: string, private profiles: LarkMonitorProfiles, private rootDir?: string, private sharedSources?: InboxTaskSources) {
     this.sources = sharedSources ?? new InboxTaskSources(configPath);
@@ -188,7 +189,10 @@ export class InboxManager {
   }
   reconcile(): Promise<void> {
     if (this.closed) return Promise.resolve();
-    const p = this.chain.then(() => this.reload()).catch(async error => {
+    const p = this.chain.then(() => this.reload()).then(() => {
+      // The section kept its last good config; surface why the edit is not live.
+      if (this.sectionError) this.error = this.sectionError;
+    }).catch(async error => {
       this.error = error instanceof Error ? error.message : '监控配置读取失败';
       const executor = this.service && this.profiles(this.service.config.executorProfile);
       if (this.service && (!executor || !supportsBackgroundProfile(executor.profileConfig))) await this.stop();
@@ -220,6 +224,7 @@ export class InboxManager {
   private async reload(): Promise<void> {
     if (this.closed) return;
     const root = await loadMonitorRoot(this.configPath); const config = normalizeInbox(root?.inbox);
+    this.sectionError = monitorSectionErrors(root).lark;
     if (root) this.sources.configureConcurrency(root.workItemConcurrency);
     const controls = this.profiles(config.executorProfile);
     const sourceProfile = config.triageService ? undefined : root?.profiles[config.triageProfile || config.executorProfile];

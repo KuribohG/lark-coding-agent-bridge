@@ -17,6 +17,8 @@ import type { MeetingManager } from '../meeting/manager';
 import type { LarkProfileAuth } from '../lark-auth/profile-auth';
 import type { QuotedContext } from '../bot/quote';
 import type { CommandDefinition } from './catalog';
+import type { ConfigTrigger } from '../config/config-source';
+import type { ConfigApplyReport } from '../config/apply';
 
 export interface BtwCommandControl {
   enqueue(question: string, ctx: CommandContext): Promise<void>;
@@ -59,9 +61,20 @@ export interface Controls {
   ownerRefreshedAt?: number;
   ownerRefreshError?: string;
   refreshOwner(channel?: LarkChannel): Promise<void>;
-  /** Restart the bridge in-process: disconnect WS, kill claude runs, reload
-   * config, reconnect with the new credentials. */
-  restart(opts?: { wait?: boolean }): Promise<void>;
+  /** Restart the bridge in-process: disconnect WS, kill claude runs and
+   * reconnect. `config: 'reload'` (default) applies the config file, including
+   * reconnect/restart-class settings; `'running'` keeps the running config
+   * (keepalive recovery must not apply unrelated edits). */
+  restart(opts?: { wait?: boolean; config?: 'reload' | 'running' }): Promise<void>;
+  /** Re-read the config file and reconcile this profile; see config/settings.ts
+   * for what applies live. Resolves after the change has been applied. */
+  applyConfig?(trigger: ConfigTrigger, options?: { force?: boolean }): Promise<ConfigApplyReport>;
+  /** Last reconcile result for this profile (applied / pending / failed). */
+  configStatus?: ConfigApplyReport;
+  /** Attach or detach the meeting manager after `meeting.enabled` changed. Late-bound by startChannel. */
+  reconcileMeeting?(): Promise<void>;
+  /** Notify live consumers that cached derived state (e.g. the pool cap) changed. Late-bound by startChannel. */
+  onConfigApplied?(): void;
   /** Apply a persisted default engine to future runs without stopping active runs. */
   switchAgent?(): Promise<void>;
   /** Stop this whole process gracefully (disconnect + exit). Used by /exit

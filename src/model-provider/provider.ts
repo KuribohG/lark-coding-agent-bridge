@@ -108,7 +108,7 @@ class ConfiguredModelProvider extends ModelProvider {
 export class ModelProviderRegistry {
   private readonly providers: ModelProvider[];
 
-  constructor(services: Record<string, ModelServiceConfig> = {}) {
+  constructor(readonly services: Record<string, ModelServiceConfig> = {}) {
     const custom = Object.entries(services).map(([id, config]) => new ConfiguredModelProvider(id, config));
     this.providers = custom
       .sort((left, right) => right.id.length - left.id.length);

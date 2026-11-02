@@ -45,6 +45,12 @@ export interface BridgeStatusProcess {
   startupConfigRevision?: string;
   currentConfigRevision?: string;
   configFileChangedSinceStart: boolean | null;
+  /** Revision the process last reconciled with; hot reload advances it. */
+  appliedConfigRevision?: string;
+  /** True when the file holds a revision the process has not accepted (invalid or not yet seen). */
+  configFileChangedSinceApply: boolean | null;
+  /** Settings waiting for /reconnect or a restart. */
+  configPendingCount?: number;
   matchesStatusBuild: boolean | null;
 }
 
@@ -68,6 +74,8 @@ export interface BridgeStatusReport {
     onlineCount: number;
     serviceManagedCount: number;
     configChangedSinceStartCount: number;
+    configNotAppliedCount: number;
+    configPendingRestartCount: number;
     buildMismatchCount: number;
   };
 }
@@ -137,6 +145,11 @@ export async function collectBridgeStatus(
       configFileChangedSinceStart: entry.startupConfigRevision && currentConfigRevision
         ? entry.startupConfigRevision !== currentConfigRevision
         : null,
+      ...(entry.appliedConfigRevision ? { appliedConfigRevision: entry.appliedConfigRevision } : {}),
+      configFileChangedSinceApply: currentConfigRevision && (entry.appliedConfigRevision ?? entry.startupConfigRevision)
+        ? (entry.appliedConfigRevision ?? entry.startupConfigRevision) !== currentConfigRevision
+        : null,
+      ...(entry.configPendingCount !== undefined ? { configPendingCount: entry.configPendingCount } : {}),
       matchesStatusBuild: build.commit !== 'unknown' && buildCommit !== 'unknown'
         ? build.commit === buildCommit
         : null,
@@ -165,6 +178,8 @@ export async function collectBridgeStatus(
       configChangedSinceStartCount: processes.filter(
         (item) => item.configFileChangedSinceStart === true,
       ).length,
+      configNotAppliedCount: processes.filter((item) => item.configFileChangedSinceApply === true).length,
+      configPendingRestartCount: processes.filter((item) => (item.configPendingCount ?? 0) > 0).length,
       buildMismatchCount: processes.filter((item) => item.matchesStatusBuild === false).length,
     },
   };

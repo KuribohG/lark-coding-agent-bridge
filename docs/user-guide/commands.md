@@ -23,7 +23,7 @@
 | `/help` | 帮助卡片 |
 | `/status` | 当前 profile、Agent、目录、会话和状态 |
 | `/config` | 配置摘要和来源；`run`、`lark`、`access` 分别编辑执行、飞书展示、访问设置 |
-| `/config reload` | 校验并重载，报告仍需重启的设置 |
+| `/config reload` | 立即重载配置文件，报告已生效、已重建和尚未生效（需 `/reconnect` 或重启）的设置；文件修改平时会自动加载 |
 | `/new`、`/reset` | 重置当前会话 |
 | `/cd <绝对路径>` | 切换项目并重置会话 |
 | `/ws list` | 列出命名工作目录 |

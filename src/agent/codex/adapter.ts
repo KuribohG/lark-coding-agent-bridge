@@ -9,6 +9,7 @@ import { checkAgentAvailability, type AgentAvailability } from '../preflight';
 import type {
   AgentAdapter,
   AgentBotIdentity,
+  AgentRun,
   PreparedAgentRun,
   AgentRunOptions,
 } from '../types';
@@ -17,7 +18,7 @@ import { validateModelId } from '../models';
 import { startAppServerRun } from './app-server';
 import { withExecutionContract } from '../execution';
 import { codexExecutionCapabilities } from './capabilities';
-import { ensureCodexAppServerDaemon } from './daemon';
+import { attachedDaemonRuns, daemonEnvironmentFingerprint, ensureCodexAppServerDaemon, trackDaemonRun } from './daemon';
 import { prepareManagedCodexConfig } from './managed-config';
 import type { ResolvedModelProvider } from '../../model-provider/types';
 
@@ -74,6 +75,35 @@ export class CodexAdapter implements AgentAdapter {
     this.sandbox = opts.sandbox ?? 'danger-full-access';
     this.defaultStopGraceMs = opts.stopGraceMs ?? 5000;
     this.profileEnv = Object.freeze({ ...opts.env });
+  }
+
+  /** The daemon is shared by every adapter on this home; restarting it would end attached runs. */
+  async replacementBlocker(next: AgentAdapter, context: { providersChanged: boolean }): Promise<string | undefined> {
+    if (this.appServerMode !== 'daemon' || !(next instanceof CodexAdapter)) return undefined;
+    const busy = attachedDaemonRuns(this.binary, this.home());
+    if (!busy) return undefined;
+    const same = !context.providersChanged && next.daemonIdentity() === this.daemonIdentity()
+      && await next.providerSignature() === await this.providerSignature();
+    if (same) return undefined;
+    return `Codex 后台服务仍有 ${busy} 个任务在运行，新的启动参数需要重启它；任务结束后自动应用`;
+  }
+
+  /** The provider this adapter runs with (memoized) or would start with. */
+  private async providerSignature(): Promise<string> {
+    const provider = await (this.startup ? this.startup.then(startup => startup.provider) : Promise.resolve(this.startupProvider?.()))
+      .catch(() => undefined);
+    return JSON.stringify(provider ? [provider.id, provider.model, provider.codex, Object.keys(provider.env ?? {}).sort()] : null);
+  }
+
+  private home(): string {
+    return this.codexHome ?? (this.inheritCodexHome
+      ? this.profileEnv.CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), '.codex')
+      : join(this.profileStateDir, 'codex-home'));
+  }
+
+  private daemonIdentity(): string {
+    return JSON.stringify([this.binary, this.home(), this.appServerMode,
+      Object.entries(this.profileEnv).sort(([a], [b]) => a.localeCompare(b))]);
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -143,12 +173,18 @@ export class CodexAdapter implements AgentAdapter {
       const status = await ensureCodexAppServerDaemon({
         binary: this.binary, env: environment.process, cwd: effectiveOpts.cwd,
         timeoutMs: deadlineTimeout(effectiveOpts.deadlineAt), restart: startup.config.changed,
+        fingerprint: daemonEnvironmentFingerprint({ ...this.profileEnv, CODEX_HOME: home, ...(startup.provider?.env ?? {}) }),
       });
       if (!status.socketPath) throw new Error('Codex app-server daemon returned no socket path');
       daemonSocketPath = status.socketPath;
-      await startup.config.commit?.();
+      // A deferred restart keeps the change pending so the next run retries it.
+      if (!status.restartDeferred) {
+        await startup.config.commit?.();
+        startup.config.changed = false;
+      }
+    } else {
+      startup.config.changed = false;
     }
-    startup.config.changed = false;
 
     const provider = startup.provider?.codex;
     const configOverrides: string[] = [];
@@ -168,7 +204,9 @@ export class CodexAdapter implements AgentAdapter {
       ...(opts.forkSession ? { features: { goals: false } } : {}),
     };
     const modelSettings = { model: effectiveOpts.model, reasoningEffort: effectiveOpts.reasoningEffort };
-    return preparedRun(modelSettings, () => withExecutionContract(startAppServerRun({
+    const daemon = this.appServerMode === 'daemon' ? { binary: this.binary, env: environment.process } : undefined;
+    const attach = (run: AgentRun) => daemon ? trackDaemonRun(daemon, run) : run;
+    return preparedRun(modelSettings, () => attach(withExecutionContract(startAppServerRun({
       binary: this.binary, opts: effectiveOpts, env: environment.process, sandbox,
       appServerMode: this.appServerMode, daemonSocketPath,
       prompt: effectiveOpts.prompt, developerInstructions: effectiveOpts.systemPrompt,
@@ -177,7 +215,7 @@ export class CodexAdapter implements AgentAdapter {
       initialNotice: rejectedProvider
         ? `Provider 未切换：当前继续使用 ${startup.provider?.displayName ?? startup.config.id ?? '原生默认'}${startup.config.model ? ` / ${startup.config.model}` : ''}。请修改 bridge 启动配置并重启后使用 ${requested.displayName}。`
         : undefined,
-    }), this.capabilities), { id: startup.provider?.id ?? startup.config.id,
+    }), this.capabilities)), { id: startup.provider?.id ?? startup.config.id,
       ...(rejectedProvider ? { requestedId: requested.id } : {}) });
   }
 

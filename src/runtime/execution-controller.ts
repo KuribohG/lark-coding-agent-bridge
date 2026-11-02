@@ -71,9 +71,11 @@ export class ProfileExecutionController implements ExecutionController {
   private readonly agents = new Map<AgentKind, AgentAdapter>();
   private botIdentity: AgentBotIdentity | undefined;
   private profileConfig: AgentExecutionProfile;
+  private modelProviders: ModelProviderRegistry | undefined;
 
   constructor(private readonly options: ProfileExecutionControllerOptions) {
     this.profileConfig = options.profileConfig;
+    this.modelProviders = options.modelProviders;
   }
 
   get defaultAgentKind(): AgentKind {
@@ -104,7 +106,7 @@ export class ProfileExecutionController implements ExecutionController {
     agentKind: AgentKind,
     model?: string,
   ): Promise<ResolvedModelProvider | undefined> {
-    return this.options.modelProviders?.resolve(agentKind, model, backendFor(agentKind).providerSwitching !== 'startup');
+    return this.modelProviders?.resolve(agentKind, model, backendFor(agentKind).providerSwitching !== 'startup');
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -117,6 +119,34 @@ export class ProfileExecutionController implements ExecutionController {
     const agent = this.createAgent(profile);
     await this.checkAvailability(profile, agent);
     this.agents.set(profile.agentKind, agent);
+    this.profileConfig = profile;
+  }
+
+  /**
+   * Make-before-break swap of launch, permission and provider settings: the
+   * new default adapter must pass the availability check before it replaces
+   * anything. Active runs keep the adapter they started with; adapters for
+   * other engines are rebuilt lazily from the new profile.
+   */
+  async reconfigure(profile: AgentExecutionProfile, modelProviders = this.modelProviders): Promise<void> {
+    const agent = this.createAgent(profile, modelProviders);
+    await this.checkAvailability(profile, agent);
+    const providersChanged = JSON.stringify(this.modelProviders?.services ?? {}) !== JSON.stringify(modelProviders?.services ?? {});
+    const blocker = await this.agents.get(profile.agentKind)?.replacementBlocker?.(agent, { providersChanged });
+    if (blocker) throw new ReconfigureDeferred(blocker);
+    // Other engines' adapters survive when nothing they were built from changed.
+    const kept = [...this.agents].filter(([kind]) => kind !== profile.agentKind && sameLaunch(
+      profileForAgentKind(this.profileConfig, kind), profileForAgentKind(profile, kind),
+    ) && !providersChanged);
+    this.agents.clear();
+    for (const [kind, adapter] of kept) this.agents.set(kind, adapter);
+    this.agents.set(profile.agentKind, agent);
+    this.profileConfig = profile;
+    this.modelProviders = modelProviders;
+  }
+
+  /** Refresh per-run settings (model, workspaces) that adapters do not capture. */
+  updateProfile(profile: AgentExecutionProfile): void {
     this.profileConfig = profile;
   }
 
@@ -148,10 +178,11 @@ export class ProfileExecutionController implements ExecutionController {
     return agent;
   }
 
-  private createAgent(profile: AgentExecutionProfile): AgentAdapter {
+  private createAgent(profile: AgentExecutionProfile, modelProviders = this.modelProviders): AgentAdapter {
     const agent = createAgentAdapter({
-      modelProviders: this.options.modelProviders,
+      modelProviders,
       profile,
+      currentModel: () => preferredModel(this.profileConfig.agentKind === profile.agentKind ? this.profileConfig : profile),
       profileDir: this.options.appPaths.profileDir,
       env: this.options.env ?? {},
       systemPrompt: this.options.systemPrompt ?? '',
@@ -159,6 +190,26 @@ export class ProfileExecutionController implements ExecutionController {
     if (this.botIdentity) agent.setBotIdentity?.(this.botIdentity);
     return agent;
   }
+}
+
+/** The new configuration is valid but would disrupt active runs; retry once they finish. */
+export class ReconfigureDeferred extends Error {
+  readonly deferred = true;
+  constructor(message: string) { super(message); this.name = 'ReconfigureDeferred'; }
+}
+
+function sameLaunch(a: AgentExecutionProfile, b: AgentExecutionProfile): boolean {
+  // An absent launch block means the backend's default command.
+  const launch = (p: AgentExecutionProfile) => {
+    const backend = backendFor(p.agentKind);
+    return p[p.agentKind] ?? backend.launchPatch(process.env[backend.commandEnv] ?? backend.defaultCommand)[p.agentKind];
+  };
+  const pick = (p: AgentExecutionProfile) => JSON.stringify([p.agentKind, launch(p), p.permissions, p.sandbox, p.state]);
+  return pick(a) === pick(b);
+}
+
+function preferredModel(profile: AgentExecutionProfile): string | undefined {
+  return (profile as AgentExecutionProfile & { preferences?: { model?: string } }).preferences?.model;
 }
 
 /** Compatibility helper for tests and one-engine hosts. */

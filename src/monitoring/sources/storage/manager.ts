@@ -3,7 +3,8 @@ import { dirname, join } from 'node:path';
 import * as lockfile from 'proper-lockfile';
 import type { ExecutionProfile } from '../../../runtime/execution-provider';
 import type { MonitorHost } from '../../host';
-import { loadMonitorRoot } from '../../store';
+import { loadMonitorRoot, monitorSectionErrors } from '../../store';
+import { log } from '../../../core/logger';
 import { WorkItemSources } from '../../../work-items/registry';
 import { parseStorageConfig } from './config';
 import { GrafanaQueryClient, grafanaCredentials } from './grafana';
@@ -22,19 +23,29 @@ export class StorageMonitorManager {
   private timer: NodeJS.Timeout;
   private closed = false;
   error?: string;
+  private sectionError?: string;
+  private reportedError?: string;
   constructor(private configPath: string, private host: MonitorHost, private sources: WorkItemSources) {
     this.timer = setInterval(() => { void this.reconcile(); }, 15_000); this.timer.unref();
   }
   status() { return { error: this.error ?? this.service?.error, state: this.service?.state }; }
   reconcile(): Promise<void> {
-    return this.chain = this.chain.then(() => this.reload()).catch(async e => {
+    return this.chain = this.chain.then(() => this.reload()).then(() => {
+      if (this.sectionError) this.error = this.sectionError;
+      this.reportedError = undefined;
+    }).catch(async e => {
       this.error = e instanceof Error ? e.message : '存储监控启动失败';
+      if (this.reportedError !== this.error) {
+        this.reportedError = this.error;
+        log.warn('storage-monitor', 'setup-failed', { error: this.error, serviceKept: Boolean(this.service) });
+      }
       if (this.service) await this.refreshExecutor(this.service.config.executorProfile);
     });
   }
   private async reload(): Promise<void> {
     if (this.closed) return;
     const root = await loadMonitorRoot(this.configPath);
+    this.sectionError = monitorSectionErrors(root).storage;
     if (root) this.sources.configureConcurrency(root.workItemConcurrency);
     const config = parseStorageConfig(root?.storageMonitor);
     if (config.enabled) await this.refreshExecutor(config.executorProfile);

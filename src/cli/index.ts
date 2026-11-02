@@ -1,6 +1,6 @@
 import { AGENT_KINDS } from '../agent/backend-spec';
 import { runWorkflow } from './commands/workflow';
-import { checkConfig, showConfig, setConfig, unsetConfig, migrateToToml } from './commands/config';
+import { checkConfig, showConfig, setConfig, unsetConfig, migrateToToml, describeConfig, reloadConfig } from './commands/config';
 import { Command } from 'commander';
 import { dirname } from 'node:path';
 import { useBundledLarkCli } from '../platform/bundled-tools';
@@ -122,6 +122,9 @@ config.command('show').option('-c, --config <path>').option('--profile <name>').
 config.command('set <key> <value>').option('-c, --config <path>').action(setConfig);
 config.command('unset <key>').option('-c, --config <path>').action(unsetConfig);
 config.command('migrate').option('-c, --config <path>').option('--output <path>').option('--dry-run').action(migrateToToml);
+config.command('describe').description('List how each setting takes effect in a running bridge').option('--json').action(describeConfig);
+config.command('reload').description('Ask running bridges to reload the config now (SIGHUP) and report the result')
+  .option('-c, --config <path>').option('--timeout <seconds>', 'wait for the result', '10').action(reloadConfig);
 
 const profile = program
   .command('profile')

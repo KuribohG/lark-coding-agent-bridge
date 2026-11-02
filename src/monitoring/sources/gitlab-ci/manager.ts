@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import * as lockfile from 'proper-lockfile';
 import type { ExecutionProfile } from '../../../runtime/execution-provider';
 import type { MonitorHost } from '../../host';
-import { loadMonitorRoot } from '../../store';
+import { loadMonitorRoot, monitorSectionErrors } from '../../store';
 import { log } from '../../../core/logger';
 import { WorkItemSources } from '../../../work-items/registry';
 import { GitLabClient, loadGitLabToken } from './client';
@@ -23,15 +23,24 @@ export class GitLabCiManager {
   private timer: ReturnType<typeof setInterval>;
   private closed = false;
   error?: string;
+  private sectionError?: string;
+  private reportedError?: string;
   constructor(private configPath: string, private host: MonitorHost, sources?: WorkItemSources) {
     this.sources = sources ?? new WorkItemSources(configPath);
     this.timer = setInterval(() => { void this.reconcile(); }, 15_000);
     this.timer.unref();
   }
   reconcile(): Promise<void> {
-    const next = this.chain.then(() => this.reload()).catch(async error => {
+    const next = this.chain.then(() => this.reload()).then(() => {
+      if (this.sectionError) this.error = this.sectionError;
+      this.reportedError = undefined;
+    }).catch(async error => {
       this.error = error instanceof Error ? error.message : 'GitLab CI setup failed';
-      log.warn('gitlab-ci', 'setup-failed', { error: this.error });
+      // Retried every tick; log each distinct failure once.
+      if (this.reportedError !== this.error) {
+        this.reportedError = this.error;
+        log.warn('gitlab-ci', 'setup-failed', { error: this.error, serviceKept: Boolean(this.service) });
+      }
       if (this.service) await this.refreshExecutor(this.service.config.executorProfile);
     });
     this.chain = next; return next;
@@ -39,6 +48,7 @@ export class GitLabCiManager {
   private async reload(): Promise<void> {
     if (this.closed) return;
     const root = await loadMonitorRoot(this.configPath);
+    this.sectionError = monitorSectionErrors(root).gitlab_ci;
     if (root) this.sources.configureConcurrency(root.workItemConcurrency);
     const config = normalizeGitLabCi(root?.gitlabCi);
     if (config.enabled) await this.refreshExecutor(config.executorProfile);
@@ -47,11 +57,12 @@ export class GitLabCiManager {
     if (this.source && fingerprint === this.fingerprint) {
       this.error = this.executionError; return;
     }
-    await this.stop();
-    if (!config.executorProfile) { this.error = undefined; return; }
+    if (!config.executorProfile) { await this.stop(); this.error = undefined; return; }
+    // Validate and load credentials before replacing the last working instance.
     validateGitLabCi(config);
     const enabled = config.enabled;
     const client = enabled ? new GitLabClient(config.url, await loadGitLabToken(config)) : undefined;
+    await this.stop();
     const folder = join(dirname(this.configPath), 'gitlab-ci');
     await mkdir(folder, { recursive: true, mode: 0o700 });
     const lease = join(folder, 'service');

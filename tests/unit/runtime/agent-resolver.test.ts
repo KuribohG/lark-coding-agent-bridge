@@ -92,4 +92,38 @@ describe('ProfileExecutionController', () => {
     expect(resolver.defaultAgentKind).toBe('claude');
     expect(resolver.defaultAgent()).toBe(previous);
   });
+
+  it('reconfigures launch settings make-before-break and keeps unaffected engines', async () => {
+    const tmp = await createTmpProfile('agent-resolver-reconfigure-');
+    cleanups.push(tmp.cleanup);
+    const binDir = join(tmp.root, 'bin');
+    await mkdir(binDir);
+    const [codexA, codexB, pi] = ['codex-a', 'codex-b', 'pi'].map(name => join(binDir, name));
+    for (const bin of [codexA, codexB, pi]) {
+      await writeFile(bin!, '#!/bin/sh\necho test 0.1\n', 'utf8');
+      await chmod(bin!, 0o755);
+    }
+    const profile = createDefaultProfileConfig({
+      agentKind: 'codex',
+      accounts: { app: { id: 'cli_test', secret: '${APP_SECRET}', tenant: 'feishu' } },
+      codex: { binaryPath: codexA! },
+      pi: { binaryPath: pi! },
+    });
+    const paths = resolveAppPaths({ rootDir: tmp.root, profile: 'codex' });
+    const resolver = new ProfileExecutionController({ profileConfig: profile, appPaths: paths, systemPrompt: '', env: { PATH: process.env.PATH } });
+    const previousCodex = resolver.defaultAgent();
+    const previousPi = resolver.get('chat', 'pi');
+
+    await expect(resolver.reconfigure({ ...profile, codex: { binaryPath: join(binDir, 'missing') } })).rejects.toThrow();
+    expect(resolver.defaultAgent()).toBe(previousCodex);
+    expect(resolver.profileFor('chat').codex?.binaryPath).toBe(codexA);
+
+    await resolver.reconfigure({ ...profile, codex: { binaryPath: codexB! } });
+    expect(resolver.defaultAgent()).not.toBe(previousCodex);
+    expect(resolver.profileFor('chat').codex?.binaryPath).toBe(codexB);
+    expect(resolver.get('chat', 'pi')).toBe(previousPi);
+
+    await resolver.reconfigure({ ...profile, codex: { binaryPath: codexB! }, permissions: { defaultAccess: 'read-only', maxAccess: 'full' } });
+    expect(resolver.get('chat', 'pi')).not.toBe(previousPi);
+  });
 });

@@ -142,4 +142,10 @@ export interface AgentAdapter {
    * Adapters that don't bake identity into their prompts may omit it.
    */
   setBotIdentity?(identity: AgentBotIdentity): void;
+  /**
+   * Why replacing this adapter with `next` right now would disrupt active
+   * runs (e.g. a shared daemon would have to restart), or undefined when the
+   * swap is safe. Hot reload defers the swap until the adapter is idle.
+   */
+  replacementBlocker?(next: AgentAdapter, context: { providersChanged: boolean }): Promise<string | undefined> | string | undefined;
 }

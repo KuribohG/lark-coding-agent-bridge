@@ -18,7 +18,7 @@ export const commandDefinitions = [
   { name: 'cd', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/cd <path>` — 切换工作目录（会重置 session）'] },
   { name: 'ws', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/ws list|save <name>|use <name>|remove <name>` — 工作目录'] },
   { name: 'account', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/account` — 查看当前应用；`/account change` 换 appId/secret 并重连'] },
-  { name: 'config', access: 'admin', pending: 'preserve', arguments: 'words', help: ['`/config run` — 调整此 bot 全局默认执行引擎、模型和运行偏好，所有私聊和群话题共用；`lark-cli 身份策略` 在 `/config access`'] },
+  { name: 'config', access: 'admin', pending: 'preserve', arguments: 'words', help: ['`/config run` — 调整此 bot 全局默认执行引擎、模型和运行偏好，所有私聊和群话题共用；`lark-cli 身份策略` 在 `/config access`', '`/config reload` — 立即重载配置文件并报告生效情况（文件修改平时自动加载）'] },
   { name: 'model', aliases: ['provider'], access: 'user', pending: 'preserve', arguments: 'words', help: [
     '`/model [模型名|default]` — 当前话题/聊天的模型，支持手填',
     '`/provider` — 打开 Provider 与模型切换卡片',

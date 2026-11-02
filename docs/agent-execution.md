@@ -30,7 +30,7 @@ Codex process and tool configuration have different lifetimes:
 | Input | Owner and lifetime | Destination |
 | --- | --- | --- |
 | Profile environment | Adapter, for this profile | Process launch and every thread tool policy |
-| Backend credentials/provider | Adapter, fixed until restart | Native process/config only |
+| Backend credentials/provider | Adapter, fixed for its lifetime (hot reload builds a new adapter for new runs) | Native process/config only |
 | Attempt bindings | Execution caller, for this attempt | Current thread tool policy only |
 
 `src/agent/codex/environment.ts` assembles these inputs. Both per-run and daemon
@@ -44,7 +44,9 @@ policy, so omitted attempt bindings are not retained on resume/fork.
 
 Backend launch credentials can still be inherited by native processes according
 to Codex's own shell filtering rules; this separation is not a security sandbox.
-Provider configuration remains fixed until adapter restart. A rejected provider
+Provider configuration remains fixed for an adapter's lifetime. A daemon whose
+launch environment or provider changed is restarted only when no runs are
+attached (`replacementBlocker`, `.bridge-app-server-env` in the Codex home). A rejected provider
 switch is resolved once by the adapter and reported through prepared metadata.
 The runtime must not reinterpret `modelProviderState()` to choose another model.
 

@@ -1,5 +1,6 @@
 import { resolveAppPaths } from '../../../config/app-paths';
-import { loadRootConfig, runtimeProfileConfig } from '../../../config/profile-store';
+import { runtimeProfileConfig } from '../../../config/profile-store';
+import { configSource } from '../../../config/config-source';
 import { getCotMessages } from '../../../config/schema';
 import { CotClient } from '../../../bot/cot';
 import { LarkProfileAuth } from '../../../lark-auth/profile-auth';
@@ -52,7 +53,7 @@ export function createLarkWorkItemDelivery(options: {
     notifyAttention: lark.notifyAttention.bind(lark),
     progress: async (job, signal) => {
       if (!job.analysisTarget) return;
-      const root = await loadRootConfig(options.configPath);
+      const root = await configSource(options.configPath).current();
       if (!root?.profiles[options.profile]) throw new Error('通知 profile 不存在');
       const cfg = runtimeProfileConfig(root, options.profile);
       if (getCotMessages(cfg) === 'off') return;

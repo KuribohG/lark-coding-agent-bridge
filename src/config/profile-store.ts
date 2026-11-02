@@ -23,13 +23,30 @@ export { configRevision } from './revision';
 interface DocumentSnapshot { text: string; document: ConfigDocument; root: RootConfig; revision: string }
 const documents = new WeakMap<RootConfig, DocumentSnapshot>();
 export const configDocument = (root: RootConfig) => documents.get(root);
+/** Strict parse of one config text; the result carries its document snapshot for {@link saveRootConfig}. */
+export function parseRootConfig(text: string, path: string): RootConfig {
+  const document = parseDocument(text);
+  const root = withBridgeRoot(normalizeRootConfig(documentToRoot(document)), dirname(path));
+  documents.set(root, { text, document, root: structuredClone(root), revision: configRevision(text) });
+  return root;
+}
+
+/** Independent copy that keeps the document snapshot association. */
+export function cloneRootConfig(root: RootConfig): RootConfig {
+  const copy = structuredClone(root);
+  const snapshot = documents.get(root);
+  if (snapshot) documents.set(copy, snapshot);
+  return copy;
+}
+
+/**
+ * Strict read: any syntax or validation error throws. Writers and startup use
+ * this; running readers use {@link ../config-source} which keeps the last good
+ * config when an edit is invalid.
+ */
 export async function loadRootConfig(path: string): Promise<RootConfig | undefined> {
   try {
-    const text = await readFile(path, 'utf8');
-    const document = parseDocument(text);
-    const root = withBridgeRoot(normalizeRootConfig(documentToRoot(document)), dirname(path));
-    documents.set(root, { text, document, root: structuredClone(root), revision: configRevision(text) });
-    return root;
+    return parseRootConfig(await readFile(path, 'utf8'), path);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     throw err;
@@ -70,6 +87,8 @@ export function normalizeRootConfig(root: RootConfig): RootConfig {
     ...(root.monitorConfigFile === undefined && root.workItemConcurrency !== undefined ? { workItemConcurrency: parseWorkItemConcurrency(root.workItemConcurrency) } : {}),
     ...(root.modelServices ? { modelServices: normalizeModelServices(root.modelServices) } : {}),
     ...(root.agentState ? { agentState: root.agentState } : {}),
+    // Raw global launch layers; dropping them would lose [agents.*] on a fallback save.
+    ...(root.agentLaunches ? { agentLaunches: root.agentLaunches } : {}),
     ...(root.secrets ? { secrets: root.secrets } : {}),
     ...(migrations ? { migrations } : {}),
     profiles,

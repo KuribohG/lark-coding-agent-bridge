@@ -150,11 +150,13 @@ node bin/lark-channel-bridge.mjs config show --config /path/to/config.toml --pro
 | --- | --- |
 | 独立 Web 的 TOML 或启动参数 | 停止并按新参数重启，打开新 token URL |
 | Windows 隔离启动器读取的原生模型/provider | 停止脚本实例再启动；每次启动重新生成隔离配置 |
-| 飞书执行/展示设置 | 对每个受影响的在线 bot 执行 `/config reload`，作用于后续任务 |
-| Agent 启动、账号、权限、工作目录等构造设置 | 按 reload 提示重启对应 profile / 服务 |
+| 飞书执行/展示、访问、附件、会议设置 | 保存文件即自动加载，作用于后续消息和任务；`/config reload` 可立即重载并查看结果 |
+| Agent 启动参数、权限、模型服务 | 自动重建执行引擎，新任务生效，运行中的任务不受影响；Codex 后台服务仍有任务时等任务结束后切换 |
+| 账号、密钥、网络代理 | 列为“尚未生效”，执行 `/reconnect` 后生效（会停止运行中的任务） |
+| `bridge.autostart_profiles` 等进程级设置 | 重启 bridge |
 | 助理与监控来源 | 遵循[监控配置](../monitor-config.md)的独立应用规则 |
 
-修改环境变量不会改变已有进程；从哪里启动，就需要在哪个环境提供变量。不要为了“清缓存”删除会话或凭据目录。
+每项配置的生效方式见 `lark-channel-bridge config describe`；文件写错时运行中的 bridge 继续使用上一份有效配置，并在 `/config show` 和日志里报告错误。修改环境变量不会改变已有进程；从哪里启动，就需要在哪个环境提供变量。不要为了“清缓存”删除会话或凭据目录。
 
 ## 7. 之后再配置的功能
 

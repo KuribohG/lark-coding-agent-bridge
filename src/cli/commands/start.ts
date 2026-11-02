@@ -41,6 +41,22 @@ process.on('uncaughtException', (err) => {
   reportError(err, { kind: 'uncaughtException' });
 });
 
+// SIGHUP = reload config (`config reload`) for detached/service processes.
+// Installed before any profile registers, so a signal during startup is never
+// the default "terminate". A process on a terminal keeps the default, so
+// closing that terminal still stops it.
+const reloadTargets = new Set<Supervisor>();
+if (process.platform !== 'win32' && !process.stdout.isTTY) {
+  process.on('SIGHUP', () => {
+    for (const supervisor of reloadTargets) {
+      void supervisor.reloadConfig('sighup').then(
+        (result) => log.info('config', 'sighup', { status: result.status, error: result.error?.message }),
+        (err) => log.warn('config', 'sighup-failed', { err: String(err) }),
+      );
+    }
+  });
+}
+
 export interface StartOptions {
   config?: string;
   profile?: string;
@@ -275,9 +291,14 @@ function parkWithShutdown(
   hostLock: { release(): Promise<void> } | undefined,
 ): Promise<void> {
   let shuttingDown = false;
+  // Config edits apply without a restart: file watch plus SIGHUP (`config reload`).
+  const stopConfigWatch = supervisor.watchConfig();
+  reloadTargets.add(supervisor);
   const shutdown = async (sig: string): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
+    stopConfigWatch();
+    reloadTargets.delete(supervisor);
     console.log(`\n收到 ${sig}，正在关闭...`);
     if (uiServer) {
       await uiServer.close().catch(() => {});

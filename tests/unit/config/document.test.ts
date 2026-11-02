@@ -15,7 +15,9 @@ import {
 } from '../../../src/config/document';
 import { editToml, parseKeyPath } from '../../../src/config/toml-edit';
 import { getAutostartProfiles, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
-import { inspectConfig, migrateConfig, patchConfig, reloadProfile } from '../../../src/config/service';
+import { inspectConfig, migrateConfig, patchConfig } from '../../../src/config/service';
+import { reconcileProfile, type ReconcileTarget } from '../../../src/runtime/config-reconciler';
+import type { ProfileConfig } from '../../../src/config/profile-schema';
 import { larkDisplay } from '../../../src/channels/lark/config';
 import { filterWebState } from '../../../src/channels/web/config';
 import { initialState } from '../../../src/runtime/run-state';
@@ -51,6 +53,12 @@ secret = { source = "env", id = "OTHER_SECRET" }
 tenant = "feishu"
 `;
 const roots: string[] = [];
+async function reload(state: ReconcileTarget['state'], path: string, execution?: ReconcileTarget['execution']) {
+  const root = (await loadRootConfig(path))!;
+  return (await reconcileProfile({ profile: 'bot', state, execution, modelServices: root.modelServices ?? {},
+    applyLarkCliIdentity: async () => true }, root, { trigger: 'test' })).report;
+}
+const view = (profile: ProfileConfig) => ({ profileConfig: profile, cfg: profile });
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 async function file(text = source) {
   const root = await mkdtemp(join(tmpdir(), 'bridge-config-v3-')); roots.push(root);
@@ -69,9 +77,9 @@ describe('layered configuration', () => {
     expect(root.profiles.other!.preferences.workflowTimeoutMinutes).toBe(600);
     const roundtrip = documentToRoot(parseDocument(formatDocument(rootToDocument(root))));
     expect(roundtrip.profiles.bot!.preferences.workflowTimeoutMinutes).toBe(960);
-    const state = { profile: 'bot', configPath: path, profileConfig: root.profiles.bot!, cfg: root.profiles.bot! };
+    const state = view(root.profiles.bot!);
     await patchConfig(path, ['profiles', 'bot', 'run', 'workflow_timeout_minutes'], undefined);
-    expect((await reloadProfile(state)).restart).toEqual([]);
+    expect((await reload(state, path)).pending).toEqual([]);
     expect(state.profileConfig.preferences.workflowTimeoutMinutes).toBe(720);
     expect(state.cfg.preferences.workflowTimeoutMinutes).toBe(720);
   });
@@ -96,12 +104,12 @@ no_proxy = "localhost"
 `);
     const root = (await loadRootConfig(path))!;
     const profile = root.profiles.bot!;
-    const state = { profile: 'bot', configPath: path, profileConfig: profile, cfg: profile };
+    const state = view(profile);
     await patchConfig(path, ['channels', 'lark', 'profiles', 'bot', 'network', 'proxy'], 'direct');
     await patchConfig(path, ['channels', 'lark', 'profiles', 'bot', 'show_tools'], true);
-    const result = await reloadProfile(state);
-    expect(result.restart).toContain('channels.lark.network');
-    expect(result.applied).toContain('channels.display');
+    const result = await reload(state, path);
+    expect(result.pending.map(change => [change.label, change.apply])).toEqual([['channels.lark.network.proxy', 'reconnect']]);
+    expect(result.applied).toEqual(['channels.lark.show_tools']);
     expect(state.cfg.channels?.lark).toMatchObject({ show_tools: true,
       network: { proxy: 'http://proxy.example:3128', no_proxy: 'localhost' } });
     expect((await loadRootConfig(path))!.profiles.bot!.channels?.lark?.network?.proxy).toBe('direct');
@@ -359,15 +367,24 @@ binaryPath = "/opt/pi"
     expect(root.profiles.bot!.preferences.model).toBe('profile-model');
   });
 
-  it('reloads safe settings while reporting reconstruction requirements', async () => {
+  it('rebuilds execution for launch edits and keeps the old adapter when the new one is unavailable', async () => {
     const path = await file(); const root = (await loadRootConfig(path))!;
-    const state = { configPath: path, profile: 'bot', profileConfig: root.profiles.bot!, cfg: root.profiles.bot! };
+    const state = view(root.profiles.bot!);
     await patchConfig(path, ['agents','codex','launch','binaryPath'], '/new/codex');
     await patchConfig(path, ['channels','lark','progress'], 'off');
-    const result = await reloadProfile(state);
-    expect(result.restart).toContain('codex');
+    const broken = { reconfigure: vi.fn(async () => { throw new Error('codex binary check failed'); }), updateProfile: vi.fn() };
+    const failed = await reload(state, path, broken);
+    expect(failed.failed).toEqual([{ component: 'execution', error: 'codex binary check failed', paths: ['codex.binaryPath'] }]);
+    expect(failed.pending.map(change => change.label)).toEqual(['codex.binaryPath']);
     expect(state.profileConfig.codex?.binaryPath).toBe('codex');
     expect(larkDisplay(state.cfg).progress).toBe('off');
+    expect(broken.updateProfile).toHaveBeenCalledWith(state.profileConfig);
+
+    const working = { reconfigure: vi.fn(async (_profile: unknown) => {}), updateProfile: vi.fn() };
+    const applied = await reload(state, path, working);
+    expect(working.reconfigure.mock.calls[0]![0]).toMatchObject({ codex: { binaryPath: '/new/codex' } });
+    expect(applied).toMatchObject({ applied: ['codex.binaryPath'], components: ['execution'], pending: [], failed: [] });
+    expect(state.profileConfig.codex?.binaryPath).toBe('/new/codex');
   });
 
   it('lets a newly added profile inherit global execution and frontend settings', async () => {

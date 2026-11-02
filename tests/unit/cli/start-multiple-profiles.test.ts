@@ -8,6 +8,8 @@ vi.mock('../../../src/runtime/supervisor', () => ({ Supervisor: class {
   constructor(options: unknown) { mocks.constructor(options); }
   startProfile = mocks.start;
   shutdown = mocks.shutdown;
+  watchConfig = () => () => {};
+  reloadConfig = vi.fn();
 } }));
 vi.mock('../../../src/plugins/defaults', () => ({ createBuiltinPlugins: () => undefined }));
 vi.mock('../../../src/core/logger', () => ({ configureLogger: vi.fn(), gcOldLogs: vi.fn(), log: { fail: vi.fn(), warn: vi.fn() }, reportError: vi.fn() }));

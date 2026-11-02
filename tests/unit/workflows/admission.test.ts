@@ -41,4 +41,17 @@ describe('workflow admission', () => {
     expect(pool.tryAcquire()).toBeUndefined();
     (await next)(); expect(pool.snapshot().active).toBe(0);
   });
+
+  it('releases queued runs immediately when the cap is raised', async () => {
+    let cap = 1;
+    const pool = new ProcessPool(() => cap);
+    const first = await pool.acquire();
+    const queued = pool.acquire();
+    expect(pool.snapshot()).toMatchObject({ active: 1, waiting: 1 });
+    cap = 2;
+    pool.refresh();
+    const second = await queued;
+    expect(pool.snapshot()).toMatchObject({ active: 2, waiting: 0 });
+    first(); second();
+  });
 });

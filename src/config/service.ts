@@ -3,7 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { parse } from 'smol-toml';
 import { configDocument, configRevision, loadRootConfig, normalizeRootConfig, runtimeProfileConfig, withConfigFileLock } from './profile-store';
 import { documentToRoot, formatDocument, parseDocument, resolveRun, rootToDocument, RUN_KEYS } from './document';
-import { diffValues, editToml, getPath } from './toml-edit';
+import { editToml, getPath } from './toml-edit';
 import type { MutableProfileState } from './config-ops';
 import { writeFileAtomic } from '../platform/atomic-write';
 import { larkDisplay } from './lark-display';
@@ -73,28 +73,6 @@ export async function patchConfig(path: string, key: string[], value: unknown, r
 
 export function parseSetting(value: string): unknown {
   try { return parse(`value = ${value}`).value; } catch { return value; }
-}
-
-/** Refresh only settings that existing services consult without reconstruction. */
-export async function reloadProfile(state: MutableProfileState) {
-  const root = await loadRootConfig(state.configPath);
-  const next = root?.profiles[state.profile];
-  if (!root || !next) throw new Error('profile not found');
-  const safe = new Set(['preferences', 'channels', 'access']);
-  const restart = [...new Set(diffValues(state.profileConfig, next).map(c => c.path[0]!).filter(k => !safe.has(k)))];
-  const previousNetwork = state.profileConfig.channels?.lark?.network;
-  const networkChanged = diffValues(previousNetwork ?? {}, next.channels?.lark?.network ?? {}).length > 0;
-  if (networkChanged) restart.push('channels.lark.network');
-  if (restart.includes('agentKind')) return { restart, revision: configDocument(root)?.revision, applied: [] };
-  let channels = structuredClone(next.channels);
-  if (networkChanged) {
-    const lark = (channels ??= {}).lark ??= {};
-    if (previousNetwork) lark.network = previousNetwork;
-    else delete lark.network;
-  }
-  state.profileConfig = { ...state.profileConfig, preferences: next.preferences, channels, access: next.access };
-  state.cfg = { ...state.cfg, ...state.profileConfig };
-  return { restart, revision: configDocument(root)?.revision, applied: ['run', networkChanged ? 'channels.display' : 'channels', 'access'] };
 }
 
 /** Produce a candidate file; never edits source, credentials, cursors or live processes. */

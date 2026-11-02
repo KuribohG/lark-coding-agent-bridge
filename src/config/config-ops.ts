@@ -12,24 +12,35 @@ import {
   withConfigFileLock,
 } from './profile-store';
 import { secretKeyForApp, type AppConfig, type AppPreferences } from './schema';
-import type { ProfileAccess, ProfileConfig, ProfileMode } from './profile-schema';
+import type { ProfileAccess, ProfileConfig, ProfileMode, RootConfig } from './profile-schema';
 import { applyLarkCliIdentityPolicy } from '../lark-cli/identity-policy';
 import { log, reportMetric } from '../core/logger';
 
 /**
- * The mutable per-profile runtime state these ops read and keep in sync. The
- * running bridge's `Controls` object structurally satisfies this, so both the
- * chat `/config` handlers and the local web UI's REST layer drive config
- * changes through the exact same disk-write + in-memory-refresh logic (no
- * divergent second implementation). `cfg` / `profileConfig` are reassigned in
- * place after a successful save so the live process picks up changes without a
- * restart — mirroring how the chat form already applies preferences/access.
+ * The per-profile state these ops read and keep in sync. The running bridge's
+ * `Controls` object structurally satisfies this, so the chat `/config`
+ * handlers and the local web UI's REST layer share one write path.
+ *
+ * Writers only write the file. A running profile then reconciles through
+ * `applyConfig` — the same path as file-watch and `/config reload` — so a
+ * save can never half-apply settings that need a component rebuild. Disk-backed
+ * views of offline profiles simply mirror the saved file.
  */
 export interface MutableProfileState {
   configPath: string;
   profile: string;
   cfg: AppConfig;
   profileConfig: ProfileConfig;
+  applyConfig?(trigger: 'save'): Promise<unknown>;
+}
+
+async function publishSaved(state: MutableProfileState, root: RootConfig): Promise<void> {
+  if (state.applyConfig) {
+    await state.applyConfig('save');
+    return;
+  }
+  state.profileConfig = root.profiles[state.profile]!;
+  state.cfg = runtimeProfileConfig(root, state.profile);
 }
 
 /** App paths for a profile, derived from its config path. */
@@ -76,7 +87,7 @@ export async function saveAccessConfig(
   mutate: (access: ProfileAccess) => ProfileAccess,
 ): Promise<ProfileAccess> {
   try {
-    return await withConfigFileLock(state.configPath, async () => {
+    const { root, access } = await withConfigFileLock(state.configPath, async () => {
       const root = await loadRootConfig(state.configPath);
       if (!root) throw new Error('root config not found');
 
@@ -88,15 +99,15 @@ export async function saveAccessConfig(
         access,
       };
       await saveRootConfig(root, state.configPath);
-      state.profileConfig = { ...state.profileConfig, access: root.profiles[state.profile]!.access };
-      state.cfg = { ...state.cfg, ...state.profileConfig };
       log.info('config-ops', 'access-mutated', {
         allowedUsers: access.allowedUsers.length,
         allowedChats: access.allowedChats.length,
         admins: access.admins.length,
       });
-      return access;
+      return { root, access };
     });
+    await publishSaved(state, root);
+    return access;
   } catch (err) {
     reportMetric('command_fail', 1, { step: 'access.save' });
     throw err;
@@ -117,7 +128,7 @@ export async function saveAccountConfig(
   const appPaths = profileAppPaths(state);
   await setSecret(secretKeyForApp(newCfg.accounts.app.id), plaintextSecret, appPaths);
 
-  await withConfigFileLock(state.configPath, async () => {
+  const root = await withConfigFileLock(state.configPath, async () => {
     const root = await loadRootConfig(state.configPath);
     if (!root) throw new Error('root config not found');
 
@@ -129,9 +140,11 @@ export async function saveAccountConfig(
     };
     if (newCfg.secrets) root.secrets = newCfg.secrets;
     await saveRootConfig(root, state.configPath);
-    state.profileConfig = root.profiles[state.profile]!;
-    state.cfg = runtimeProfileConfig(root, state.profile);
+    return root;
   });
+  // Credentials are reconnect-class: a running profile reports them pending
+  // until the caller's reconnect applies them.
+  await publishSaved(state, root);
 }
 
 /**
@@ -163,7 +176,7 @@ export async function savePreferencesConfig(
       reason: larkCliIdentity === 'user-default' ? 'manual-user-default' : 'manual-bot-only',
     },
   };
-  await withConfigFileLock(state.configPath, async () => {
+  const saved = await withConfigFileLock(state.configPath, async () => {
     if (expectedRevision && configRevision(await readFile(state.configPath, 'utf8')) !== expectedRevision) throw new Error('配置已改变，请重新打开设置');
     const root = await loadRootConfig(state.configPath);
     if (!root) throw new Error('root config not found');
@@ -195,16 +208,9 @@ export async function savePreferencesConfig(
       larkCli: profile.larkCli.identityPreset === larkCliIdentity ? profile.larkCli : updatedLarkCli,
     };
     await saveRootConfig(root, state.configPath, resetPaths);
-    const saved = root.profiles[state.profile]!;
-    state.profileConfig = { ...state.profileConfig, ...(agentSwitch ? {} : {
-      agentKind: saved.agentKind,
-      claude: saved.claude,
-      codex: saved.codex,
-      pi: saved.pi,
-      sandbox: saved.sandbox,
-      permissionSource: saved.permissionSource,
-    }), preferences: saved.preferences, channels: saved.channels,
-      access: saved.access, mode: saved.mode, larkCli: saved.larkCli, ...(meeting ? { meeting: saved.meeting } : {}) };
-    state.cfg = { ...state.cfg, ...state.profileConfig };
+    return root;
   });
+  // An engine switch is published by the caller's switchAgent, which reports
+  // availability failures; everything else reconciles here.
+  if (!agentSwitch || !state.applyConfig) await publishSaved(state, saved);
 }

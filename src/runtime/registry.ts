@@ -54,6 +54,12 @@ export interface ProcessEntry {
   releaseId?: string;
   nodeVersion?: string;
   startupConfigRevision?: string;
+  /** Config revision this profile last reconciled with (hot reload). */
+  appliedConfigRevision?: string;
+  /** Settings that differ from the file and still need /reconnect or a restart. */
+  configPendingCount?: number;
+  /** Signal this process handles as "reload config"; absent on versions where SIGHUP would terminate it. */
+  reloadSignal?: 'SIGHUP';
   /** Bot's display name. Filled in by startChannel after the
    * WS handshake — undefined until the connection is up, or on processes
    * registered by older versions of the bridge. */
@@ -86,7 +92,10 @@ function isValidEntry(e: unknown): e is ProcessEntry {
     optionalString(x.releasePath) &&
     optionalString(x.releaseId) &&
     optionalString(x.nodeVersion) &&
-    optionalString(x.startupConfigRevision)
+    optionalString(x.startupConfigRevision) &&
+    optionalString(x.appliedConfigRevision) &&
+    (x.configPendingCount === undefined || typeof x.configPendingCount === 'number') &&
+    (x.reloadSignal === undefined || x.reloadSignal === 'SIGHUP')
   );
 }
 
@@ -170,6 +179,8 @@ export async function register(args: RegisterArgs): Promise<ProcessEntry> {
     ...(build.release ? { releasePath: build.release } : {}),
     ...(build.releaseId ? { releaseId: build.releaseId } : {}),
     ...(startupConfigRevision ? { startupConfigRevision } : {}),
+    // Advertise only once a handler exists: SIGHUP's default action terminates the process.
+    ...(process.platform !== 'win32' && process.listenerCount('SIGHUP') > 0 ? { reloadSignal: 'SIGHUP' as const } : {}),
   };
   await withRegistryFileLock(registryFile, async () => {
     const { entries: live } = await readForWriteState(registryFile);
@@ -198,6 +209,7 @@ export async function updateEntry(
   patch: Partial<Pick<
     ProcessEntry,
     'appId' | 'tenant' | 'configPath' | 'botName' | 'startupConfigRevision' | 'agentKind'
+    | 'appliedConfigRevision' | 'configPendingCount'
   >>,
   registryFile: string = paths.processesFile,
 ): Promise<void> {

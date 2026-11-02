@@ -73,10 +73,11 @@ Scripts and non-interactive callers must provide `--profile <name>` or `--web-ui
 an explicit service target. It reports the executing package version, embedded
 build commit/time, entry file and release directory, OS service state, every
 registered profile/agent/PID/bot, startup and current config revisions, and
-whether each process matches the invoking build. A config hash difference means
-the file changed after that process registered; it does not by itself prove that
-`/config reload` was not applied. `status --json` does not resolve secrets or
-contact agents/providers.
+whether each process matches the invoking build. `appliedConfigRevision` is the
+revision the process last reconciled with; `configFileChangedSinceApply` means the
+file holds a revision it has not accepted (invalid, or not yet seen), and
+`configPendingCount` counts settings waiting for `/reconnect` or a restart.
+`status --json` does not resolve secrets or contact agents/providers.
 
 `start --web-ui` starts the persisted `bridge.autostart_profiles` set. Existing configurations without that field keep the legacy active-profile fallback. The active profile is now only the CLI default and does not implicitly define the supervisor boot set:
 

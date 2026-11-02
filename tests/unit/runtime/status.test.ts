@@ -58,6 +58,7 @@ describe('runtime status report', () => {
       buildCommit: 'old-build',
       currentConfigRevision: configRevision(currentConfig),
       configFileChangedSinceStart: true,
+      configFileChangedSinceApply: true,
       matchesStatusBuild: false,
     });
     expect(report.summary).toEqual({
@@ -65,6 +66,8 @@ describe('runtime status report', () => {
       onlineCount: 1,
       serviceManagedCount: 1,
       configChangedSinceStartCount: 1,
+      configNotAppliedCount: 1,
+      configPendingRestartCount: 0,
       buildMismatchCount: 1,
     });
   });

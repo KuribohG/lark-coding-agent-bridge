@@ -1,7 +1,7 @@
 import { agentLaunches } from '../../agent/launch-config';
 import type { AgentAdapter } from '../../agent/types';
 import type { ProfileConfig, RunProfileConfig } from '../../config/profile-schema';
-import { loadRootConfig } from '../../config/profile-store';
+import { configSource } from '../../config/config-source';
 import { resolveAppPaths, type AppPaths } from '../../config/app-paths';
 import { supportsBackgroundProfile } from '../../runtime/agent-capabilities';
 import { backgroundModelSettings } from '../../runtime/background-model';
@@ -18,7 +18,8 @@ export class ProfileExecutionProvider implements ExecutionProvider {
   async resolve(name: string): Promise<ExecutionProfile | undefined> {
     if (!name) return;
     let profile: ProfileConfig | undefined;
-    try { profile = (await loadRootConfig(this.configPath))?.profiles[name]; }
+    // Last good config: an invalid edit must not revoke in-flight analyses.
+    try { profile = (await configSource(this.configPath).current())?.profiles[name]; }
     catch (error) { this.revoke(name); throw error; }
     if (!profile || !supportsBackgroundProfile(profile)) { this.revoke(name); return; }
     const key = JSON.stringify([profile.agentKind, profile.mode, agentLaunches(profile),

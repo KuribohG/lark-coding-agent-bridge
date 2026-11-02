@@ -166,6 +166,59 @@ describe('Supervisor', () => {
     expect(sup.list()).toContainEqual(expect.objectContaining({ profile: 'claude', agentKind: 'pi', online: true }));
   });
 
+  it('applies hot settings from a hand edit without reconnecting and reports the rest', async () => {
+    await sup.startProfile('claude');
+    const controls = sup.controlsFor('claude')!;
+    const configPath = join(root, 'config.json');
+    const next = (await loadRootConfig(configPath))!;
+    next.profiles.claude = {
+      ...next.profiles.claude!,
+      preferences: { ...next.profiles.claude!.preferences, maxConcurrentRuns: 7 },
+      access: { ...next.profiles.claude!.access, allowedUsers: ['ou_new'] },
+      accounts: { app: app('cli_z') },
+    };
+    await saveRootConfig(next, configPath);
+
+    const report = await controls.applyConfig!('command', { force: true });
+
+    expect(disconnected).toEqual([]);
+    expect(controls.profileConfig.preferences.maxConcurrentRuns).toBe(7);
+    expect(controls.profileConfig.access.allowedUsers).toEqual(['ou_new']);
+    expect(controls.cfg.accounts.app.id).toBe('cli_a');
+    expect(report.applied).toEqual(expect.arrayContaining(['preferences.maxConcurrentRuns', 'access.allowedUsers']));
+    expect(report.pending.map((c) => [c.label, c.apply])).toEqual([['accounts.app.id', 'reconnect']]);
+    expect(controls.configStatus).toBe(report);
+  });
+
+  it('keeps running on the last good config when the file becomes invalid', async () => {
+    await sup.startProfile('claude');
+    const controls = sup.controlsFor('claude')!;
+    const configPath = join(root, 'config.json');
+    await writeFile(configPath, 'version = 3\nnot_a_setting = 1\n');
+    const result = await sup.reloadConfig('command');
+    expect(result.status).toBe('rejected');
+    const report = await controls.applyConfig!('command');
+    expect(report.rejected?.message).toContain('not_a_setting');
+    expect(controls.cfg.accounts.app.id).toBe('cli_a');
+    expect(sup.isOnline('claude')).toBe(true);
+  });
+
+  it('reconnects with the running config for recovery and with the file for /reconnect', async () => {
+    await sup.startProfile('claude');
+    const configPath = join(root, 'config.json');
+    const next = (await loadRootConfig(configPath))!;
+    next.profiles.claude = { ...next.profiles.claude!, accounts: { app: app('cli_z') } };
+    await saveRootConfig(next, configPath);
+
+    await sup.controlsFor('claude')!.restart({ config: 'running' });
+    expect(sup.list()[0]).toMatchObject({ profile: 'claude', appId: 'cli_a' });
+    expect(sup.controlsFor('claude')!.configStatus?.pending.map((c) => c.label)).toEqual(['accounts.app.id']);
+
+    await sup.controlsFor('claude')!.restart();
+    expect(sup.list()[0]).toMatchObject({ profile: 'claude', appId: 'cli_z' });
+    expect(sup.controlsFor('claude')!.configStatus?.pending).toEqual([]);
+  });
+
   it('hands pending input from the old channel to the new channel before resuming it', async () => {
     await sup.startProfile('claude');
     await sup.controlsFor('claude')!.restart();

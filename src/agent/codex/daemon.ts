@@ -1,4 +1,9 @@
 import type { ChildProcess } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import type { AgentRun } from '../types';
+import { writeFileAtomic } from '../../platform/atomic-write';
 import { log } from '../../core/logger';
 import { spawnProcess } from '../../platform/spawn';
 import { terminateChild } from '../../platform/terminate';
@@ -8,6 +13,8 @@ const OUTPUT_LIMIT = 32_000;
 
 export interface CodexAppServerDaemonStatus {
   status: 'running' | 'started';
+  /** A required restart was postponed because runs are still attached. */
+  restartDeferred?: boolean;
   backend?: string;
   pid?: number;
   managedCodexPath?: string;
@@ -25,6 +32,76 @@ interface DaemonCommandResult {
 }
 
 const inFlight = new Map<string, Promise<CodexAppServerDaemonStatus>>();
+/** Runs attached to each daemon in this process; an env change restarts the daemon only at zero. */
+const attached = new Map<string, number>();
+const deferredLogged = new Set<string>();
+const idleListeners = new Set<() => void>();
+
+/** Runs currently attached to the daemon for this binary and Codex home. */
+export function attachedDaemonRuns(binary: string, codexHome: string | undefined): number {
+  return attached.get(daemonKey({ binary, env: { CODEX_HOME: codexHome } })) ?? 0;
+}
+
+/** Notified whenever a daemon's last attached run finishes. */
+export function onDaemonIdle(listener: () => void): () => void {
+  idleListeners.add(listener);
+  return () => { idleListeners.delete(listener); };
+}
+/** Records the launch environment the running daemon was started with. */
+const FINGERPRINT_FILE = '.bridge-app-server-env';
+
+function daemonKey(input: { binary: string; env: NodeJS.ProcessEnv }): string {
+  return `${input.binary}\0${input.env.CODEX_HOME ?? '<default-codex-home>'}`;
+}
+
+/** Stable digest of the environment a config edit can change (launch env, provider env, CODEX_HOME). */
+export function daemonEnvironmentFingerprint(env: Readonly<NodeJS.ProcessEnv>): string {
+  const entries = Object.entries(env).filter(([, value]) => value !== undefined).sort(([a], [b]) => a.localeCompare(b));
+  return createHash('sha256').update(JSON.stringify(entries)).digest('hex');
+}
+
+/**
+ * Count a daemon-attached run until its event stream ends, so an environment
+ * change never restarts the daemon underneath active runs.
+ */
+export function trackDaemonRun(input: { binary: string; env: NodeJS.ProcessEnv }, run: AgentRun): AgentRun {
+  const key = daemonKey(input);
+  attached.set(key, (attached.get(key) ?? 0) + 1);
+  let released = false;
+  // Released when the stream ends, the run is stopped, or the process has exited,
+  // so an unconsumed stream cannot pin the daemon forever.
+  const release = () => {
+    if (released) return;
+    released = true;
+    const left = (attached.get(key) ?? 1) - 1;
+    if (left > 0) { attached.set(key, left); return; }
+    attached.delete(key);
+    for (const listener of [...idleListeners]) {
+      try { listener(); } catch (error) { log.warn('codex', 'daemon-idle-listener-failed', { err: String(error) }); }
+    }
+  };
+  const events = (async function* () {
+    try { for await (const event of run.events) yield event; }
+    finally { release(); }
+  })();
+  const stop: AgentRun['stop'] = async (reason) => {
+    try { await run.stop(reason); } finally { release(); }
+  };
+  const waitForExit: AgentRun['waitForExit'] = async (timeoutMs) => {
+    const exited = await run.waitForExit(timeoutMs);
+    if (exited) release();
+    return exited;
+  };
+  return new Proxy(run, {
+    get(target, property) {
+      if (property === 'events') return events;
+      if (property === 'stop') return stop;
+      if (property === 'waitForExit') return waitForExit;
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
 
 /**
  * Ensure the official Codex app-server daemon is alive. The daemon owns
@@ -36,8 +113,10 @@ export function ensureCodexAppServerDaemon(input: {
   cwd?: string;
   timeoutMs?: number;
   restart?: boolean;
+  /** Digest of the launch environment; see {@link daemonEnvironmentFingerprint}. */
+  fingerprint?: string;
 }): Promise<CodexAppServerDaemonStatus> {
-  const key = `${input.binary}\0${input.env.CODEX_HOME ?? '<default-codex-home>'}`;
+  const key = daemonKey(input);
   const existing = inFlight.get(key);
   if (existing) return existing;
 
@@ -54,13 +133,32 @@ async function checkOrStart(input: {
   cwd?: string;
   timeoutMs?: number;
   restart?: boolean;
+  fingerprint?: string;
 }): Promise<CodexAppServerDaemonStatus> {
   const timeoutMs = input.timeoutMs ?? COMMAND_TIMEOUT_MS;
   const current = await runDaemonCommand(input, ['app-server', 'daemon', 'version'], timeoutMs);
+  const recorded = await readFingerprint(input.env);
   if (current.exitCode === 0) {
     const status = parseDaemonStatus(current.stdout, current.stderr);
-    if (status && !input.restart) return status;
-    if (status && input.restart) {
+    // A daemon started before fingerprints existed is adopted as-is.
+    const stale = Boolean(input.fingerprint && recorded && recorded !== input.fingerprint);
+    const key = daemonKey(input);
+    const busy = (attached.get(key) ?? 0) > 0;
+    // Restarting the shared daemon would end every attached run, whatever the reason.
+    if (status && (stale || input.restart) && busy) {
+      if (!deferredLogged.has(`${key}\0${input.fingerprint}\0${input.restart}`)) {
+        deferredLogged.add(`${key}\0${input.fingerprint}\0${input.restart}`);
+        log.warn('codex', 'app-server-daemon-restart-deferred', { attachedRuns: attached.get(key),
+          reason: input.restart ? 'provider' : 'environment', action: 'restart-when-idle' });
+      }
+      return { ...status, restartDeferred: true };
+    }
+    if (status && !stale && !input.restart) {
+      if (!recorded && input.fingerprint) await writeFingerprint(input.env, input.fingerprint);
+      return status;
+    }
+    if (stale) log.info('codex', 'app-server-daemon-env-changed', { action: 'restart' });
+    if (status && (input.restart || stale)) {
       const stopped = await runDaemonCommand(input, ['app-server', 'daemon', 'stop'], timeoutMs);
       if (stopped.exitCode !== 0) throw new Error(`Codex app-server daemon failed to stop${formatCommandFailure(stopped)}`);
     }
@@ -84,6 +182,7 @@ async function checkOrStart(input: {
     throw new Error('Codex app-server daemon returned no readable running status');
   }
 
+  if (input.fingerprint) await writeFingerprint(input.env, input.fingerprint);
   log.info('codex', 'app-server-daemon-started', {
     pid: status.pid,
     socketPath: status.socketPath,
@@ -92,6 +191,17 @@ async function checkOrStart(input: {
     managedCodexVersion: status.managedCodexVersion,
   });
   return status;
+}
+
+async function readFingerprint(env: NodeJS.ProcessEnv): Promise<string | undefined> {
+  if (!env.CODEX_HOME) return undefined;
+  return (await readFile(join(env.CODEX_HOME, FINGERPRINT_FILE), 'utf8').catch(() => '')).trim() || undefined;
+}
+
+async function writeFingerprint(env: NodeJS.ProcessEnv, fingerprint: string): Promise<void> {
+  if (!env.CODEX_HOME) return;
+  await writeFileAtomic(join(env.CODEX_HOME, FINGERPRINT_FILE), `${fingerprint}\n`, { mode: 0o600 })
+    .catch((error) => log.warn('codex', 'app-server-daemon-fingerprint-write-failed', { err: String(error) }));
 }
 
 function parseDaemonStatus(stdout: string, stderr: string): CodexAppServerDaemonStatus | undefined {

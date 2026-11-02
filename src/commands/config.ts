@@ -1,4 +1,6 @@
-import { inspectConfig, reloadProfile, readProfileSnapshot } from '../config/service';
+import { inspectConfig, readProfileSnapshot } from '../config/service';
+import { formatApplyReport } from '../config/apply';
+import { configSource } from '../config/config-source';
 import {
   applyPreferencesChange,
   preparePreferencesChange,
@@ -48,8 +50,15 @@ export async function handleConfig(args: string, ctx: CommandContext): Promise<v
     case 'access':
       return showConfigForm(ctx, sub);
     case 'reload': {
-      const result = await reloadProfile(ctx.controls);
-      await reply(ctx, `${result.applied.length ? '执行与展示设置已重新加载，下一轮任务采用。' : 'agent 类型已修改，重启后加载。'}${result.restart.length ? `仍需重启的配置：${result.restart.join(', ')}` : ''}`);
+      if (!ctx.controls.applyConfig) {
+        await reply(ctx, '当前运行入口不支持热加载，请重启此 bot。');
+        return;
+      }
+      try {
+        await reply(ctx, formatApplyReport(await ctx.controls.applyConfig('command', { force: true })));
+      } catch (err) {
+        await reply(ctx, `配置未加载：${err instanceof Error ? err.message : String(err)}`);
+      }
       return;
     }
     case 'submit':
@@ -57,7 +66,7 @@ export async function handleConfig(args: string, ctx: CommandContext): Promise<v
     case 'cancel':
       return cancelConfig(ctx);
     default:
-      await reply(ctx, '用法：`/config`、`/config run`、`/config lark`、`/config access`、`/config reload`');
+      await reply(ctx, '用法：`/config`、`/config run`、`/config lark`、`/config access`、`/config reload`（立即重载并报告生效情况）');
   }
 }
 
@@ -69,8 +78,27 @@ async function showConfigSummary(ctx: CommandContext, path?: string): Promise<vo
     ? summary(path === 'lark' ? '飞书展示' : 'Web 展示', view.channels[path]!)
     : [summary('执行', view.run), summary('飞书展示', view.channels.lark!)].join('\n\n');
   await reply(ctx, `**${view.profile} · 全局默认 ${view.agent}**\n配置文件：${view.file}\n\n${selected}\n\n` +
-    '以上为此 bot 的全局默认，所有私聊和群话题共用；局部覆盖用 /model、/effort、/timeout 查看。\n' +
-    '修改：/config run · /config lark · /config access\n手工编辑后：/config reload（启动参数变化需重启）。');
+    `${runtimeConfigStatus(ctx)}\n\n` +
+    '以上为配置文件中的值，所有私聊和群话题共用；局部覆盖用 /model、/effort、/timeout 查看。\n' +
+    '修改：/config run · /config lark · /config access\n' +
+    '文件修改会自动加载；能热更的立即生效，其余项列在「尚未生效」中。手动重载：/config reload。');
+}
+
+/** Running-vs-file state: last reconcile, pending items and a rejected newer revision. */
+function runtimeConfigStatus(ctx: CommandContext): string {
+  const status = ctx.controls.configStatus;
+  const error = configSource(ctx.controls.configPath).error;
+  const lines = ['**运行状态**'];
+  if (error) lines.push(`⚠️ 文件最新修改无效，运行中仍是上一份有效配置：${error.message}`);
+  if (!status) {
+    lines.push('- 尚未执行热加载（运行配置即启动时的配置）');
+    return lines.join('\n');
+  }
+  lines.push(`- 最近加载：${new Date(status.at).toLocaleString('zh-CN', { hour12: false })}（${status.trigger}，revision ${status.revision?.slice(0, 12) ?? '-'}）`);
+  if (!status.pending.length && !status.failed.length) lines.push('- 运行配置与文件一致');
+  else lines.push(formatApplyReport({ ...status, rejected: undefined, applied: [], components: [] }, { title: '与文件的差异' })
+    .split('\n').slice(2).join('\n'));
+  return lines.join('\n');
 }
 
 async function showConfigForm(ctx: CommandContext, section: 'run' | 'lark' | 'access'): Promise<void> {

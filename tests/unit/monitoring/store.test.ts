@@ -9,7 +9,7 @@ import { normalizeInbox } from '../../../src/inbox/config';
 import { parseStorageConfig } from '../../../src/monitoring/sources/storage/config';
 import { normalizeGitLabCi } from '../../../src/monitoring/sources/gitlab-ci/config';
 import { formatMonitorConfig, parseMonitorConfig } from '../../../src/monitoring/config';
-import { loadMonitorRoot, saveMonitorRoot } from '../../../src/monitoring/store';
+import { loadMonitorRoot, monitorSectionErrors, saveMonitorRoot } from '../../../src/monitoring/store';
 import { checkMonitors, configureMonitors, initMonitors, statusMonitors } from '../../../src/cli/commands/monitors';
 import { configureCiWatch } from '../../../src/cli/commands/ci-watch';
 import { validateWorkItemsAction } from '../../../src/plugins/work-items/plugin';
@@ -111,7 +111,11 @@ it('does not accept failed saves or lose the current configuration', async () =>
 it('never falls back to stale JSON when the selected TOML is absent or invalid', async () => {
   const s = await setup(); await initMonitors({ config: s.path });
   await writeFile(s.file, 'version = 1\n[sources.lark]\nenabled = "wrong"');
-  await expect(loadMonitorRoot(s.path)).rejects.toThrow('enabled');
+  // The invalid section is disabled (nothing good to keep); it never falls back to JSON.
+  const partial = (await loadMonitorRoot(s.path))!;
+  expect(partial.inbox).toBeUndefined();
+  expect(monitorSectionErrors(partial).lark).toContain('enabled');
+  await expect(checkMonitors(s.file, { config: s.path })).rejects.toThrow('enabled');
   expect((await loadRootConfig(s.path))!.profiles.codex).toBeDefined();
   await rm(s.file);
   await expect(loadMonitorRoot(s.path)).rejects.toThrow('未回退');
@@ -174,4 +178,41 @@ it('keeps UID subscriptions when another source or profile saves the shared conf
   await saveRootConfig(root, s.path);
   expect(decodeFixture(await readFile(s.path, 'utf8')).storageMonitor).toBeUndefined();
   expect((await loadMonitorRoot(s.path))!.storageMonitor).toEqual(s.root.storageMonitor);
+});
+
+it('keeps each monitor source on its last good config when only that section breaks', async () => {
+  const s = await setup(); await initMonitors({ config: s.path });
+  const good = (await loadMonitorRoot(s.path))!;
+  const text = await readFile(s.file, 'utf8');
+  await writeFile(s.file, text.replace(/\[sources\.gitlab_ci\]\n/, '[sources.gitlab_ci]\nunknownKey = 1\n'));
+  const partial = (await loadMonitorRoot(s.path))!;
+  expect(monitorSectionErrors(partial).gitlab_ci).toContain('unknownKey');
+  expect(monitorSectionErrors(partial).lark).toBeUndefined();
+  expect(partial.gitlabCi).toEqual(good.gitlabCi);
+  expect(partial.inbox).toEqual(good.inbox);
+  partial.inbox!.analysisTimeoutMinutes = 9;
+  await expect(saveMonitorRoot(partial, s.path)).rejects.toThrow('gitlab_ci');
+  await writeFile(s.file, text);
+  expect(monitorSectionErrors(await loadMonitorRoot(s.path))).toEqual({});
+});
+
+it('keeps monitors running on the last good root config when config.toml becomes invalid', async () => {
+  const s = await setup(); await initMonitors({ config: s.path });
+  const before = (await loadMonitorRoot(s.path))!;
+  await writeFile(s.path, `not_a_setting = 1\n${await readFile(s.path, 'utf8')}`);
+  const after = (await loadMonitorRoot(s.path))!;
+  expect(after.gitlabCi).toEqual(before.gitlabCi);
+  await expect(loadRootConfig(s.path)).rejects.toThrow('not_a_setting');
+});
+
+it('disables only the inline monitor source whose executor profile is gone', async () => {
+  const s = await setup();
+  const root = (await loadRootConfig(s.path))!;
+  root.gitlabCi = { ...root.gitlabCi!, executorProfile: 'missing' };
+  await saveRootConfig(root, s.path);
+  const partial = (await loadMonitorRoot(s.path))!;
+  expect(monitorSectionErrors(partial).gitlab_ci).toContain('executorProfile');
+  expect(partial.gitlabCi).toBeUndefined();
+  expect(partial.inbox?.executorProfile).toBe('codex');
+  await expect(saveMonitorRoot(partial, s.path)).rejects.toThrow('gitlab_ci');
 });

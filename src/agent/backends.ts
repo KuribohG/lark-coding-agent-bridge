@@ -40,6 +40,8 @@ export interface AgentBackend extends AgentBackendSpec {
 export interface CreateAgentAdapterInput {
   modelProviders?: ModelProviderRegistry;
   profile: AgentExecutionProfile & { preferences?: { model?: string } };
+  /** Live default model; startup-pinned providers (Codex daemon) resolve with it instead of the build-time snapshot. */
+  currentModel?: () => string | undefined;
   profileDir: string;
   env: NodeJS.ProcessEnv;
   systemPrompt: AgentSystemPrompt;
@@ -66,7 +68,7 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
   },
   codex: {
     executionCapabilities: () => codexExecutionCapabilities(),
-    createAdapter: ({ profile, profileDir, env, systemPrompt, modelProviders }) => {
+    createAdapter: ({ profile, profileDir, env, systemPrompt, modelProviders, currentModel }) => {
       const codex = profile.codex;
       if (!codex?.binaryPath) throw new Error('codex profile requires codex.binaryPath');
       const state = resolveAgentState(profile, 'codex', { profileDir, env });
@@ -75,7 +77,7 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
         systemPrompt,
         transport: codex.transport,
         appServerMode: codex.appServerMode,
-        startupProvider: () => modelProviders?.resolveStartup('codex', profile.preferences?.model, codex.provider),
+        startupProvider: () => modelProviders?.resolveStartup('codex', currentModel ? currentModel() : profile.preferences?.model, codex.provider),
         profileStateDir: profileDir,
         ...(state.exportHome ? { codexHome: state.home } : {}),
         inheritCodexHome: codex.inheritCodexHome === true,

@@ -59,7 +59,10 @@ NO_PROXY = "localhost,127.0.0.1,.internal"
 ```
 
 Per-profile `profiles.<name>.launch.env` entries overlay the matching agent's
-global `env` entries. Launch environment changes require a Bridge restart.
+global `env` entries. Launch environment changes apply on reload: the engine
+adapter is rebuilt for new runs while active runs keep their process. A Codex
+daemon whose launch environment changed restarts only once no runs are attached
+to it (see [Hot reload](#hot-reload)).
 For Lark runs, `LARK_CHANNEL`, `LARK_CHANNEL_PROFILE`, `LARK_CHANNEL_HOME`,
 `LARK_CHANNEL_CONFIG` and `LARKSUITE_CLI_CONFIG_DIR` remain bound to the receiving
 frontend; these host bindings take precedence over shared launch settings.
@@ -84,7 +87,7 @@ Codex defaults to the bridge-wide private home `<agent_home_root>/codex` (see [A
 
 `launch.provider` selects a service from `model_services` at startup. If omitted, Bridge uses the service named by the default model, or the sole compatible service. Multiple services require an explicit selection. Bridge merges the selected provider, default model and environment-backed authentication into the private `config.toml`, preserving native options such as MCP servers, features and verbosity. This file remains the place to configure Codex features that Bridge does not expose; Bridge-owned fields are regenerated from Bridge TOML. Provider IDs are the configured service names, without generated aliases. Changed provider credentials/configuration restart only this private home's daemon during activation.
 
-The running provider stays fixed until restart. Model commands reject attempts to save another provider, and stale conversation overrides continue on the active provider's default model with an explanatory notice. No new provider credentials are loaded for those rejected selections. Model changes within the active provider remain available. A legacy thread bound to another provider is forked with its history into the active provider; the source is retained.
+The provider stays fixed for the lifetime of an engine adapter. Editing `model_services` or `launch.provider` rebuilds the adapter on reload; while runs are still attached to the Codex daemon, the swap is deferred and completes automatically when they finish. Model commands reject attempts to save another provider, and stale conversation overrides continue on the active provider's default model with an explanatory notice. No new provider credentials are loaded for those rejected selections. Model changes within the active provider remain available. A legacy thread bound to another provider is forked with its history into the active provider; the source is retained.
 
 ## Agent state
 
@@ -108,7 +111,7 @@ Resolution for an engine `<kind>`:
 - Memory: `memory = "agent"` (default) pins Claude auto-memory to the project directory of `<workspace_root>/claude/default` through `autoMemoryDirectory`, so `/cd` into a repository keeps one Claude memory. `"workspace"` keeps Claude's per-cwd behaviour. Codex and pi memories are always one per home.
 - Shared assets: links are created when an engine adapter starts, only where nothing exists. Existing files or foreign links are reported in the bridge log and never replaced. Without `[state.shared]` nothing is linked.
 
-`/doctor` prints the resolved workspace, home (with its source) and memory location for the conversation's engine. Changes take effect after restarting the profile.
+`/doctor` prints the resolved workspace, home (with its source) and memory location for the conversation's engine. `[state]` changes rebuild the engine adapter on reload; sessions already bound to a workspace keep it.
 
 ## Frontend fields
 
@@ -152,7 +155,7 @@ proxy = "http://proxy.example:3128"
 
 Bridge SDK REST and WebSocket connections, native COT create/update/complete, tenant token requests, credential checks, H5 authentication and keepalive probes use the same policy. Each profile has its own HTTP clients; this does not change the global Node dispatcher, other channels, model-provider traffic, `lark-cli`, or agent subprocesses. No `NODE_OPTIONS` proxy shim is needed. The native request layer reports error codes such as `UND_ERR_CONNECT_TIMEOUT` without including request bodies or proxy credentials.
 
-Network and environment settings are captured when the profile's transport starts. Use `/reconnect` or restart that profile after changing them. Configuration reload applies display/run/access changes but reports `channels.lark.network` as requiring reconnect and retains the active network settings. `config show --sources` displays the source of each network field. A failed COT create is still not blindly retried, because an uncertain response can mean the server already created the bubble.
+Network settings are captured when the profile's transport starts. They are reconnect-class: reload keeps the active network settings and lists `channels.lark.network` as pending until `/reconnect` (or a profile restart). Automatic keepalive reconnects reuse the running settings and never apply pending edits. `config show --sources` displays the source of each network field. A failed COT create is still not blindly retried, because an uncertain response can mean the server already created the bubble.
 
 ## Inspecting and editing
 
@@ -164,7 +167,7 @@ lark-channel-bridge config set channels.lark.progress brief
 lark-channel-bridge config unset profiles.codex.run.model
 ```
 
-`check` validates configuration and monitor references without retrieving secrets or contacting providers. `show` prints execution and frontend settings with their sources; it does not dump credentials or provider definitions. It describes the file, not a running process's loaded settings.
+`check` validates configuration and monitor references without retrieving secrets or contacting providers. `show` prints execution and frontend settings with their sources; it does not dump credentials or provider definitions. It describes the file, not a running process's loaded settings (use `/config show` in Lark for the running state). `set`/`unset` print how the edited field will take effect; `describe` lists the class of every setting and `reload` asks running bridges to apply the file now.
 
 In Lark, `/config` shows a summary. `/config run`, `/config lark` and `/config access` open separate short forms. All `/config` forms edit the current bot profile globally: its DMs, groups and topics share the same defaults. `/config run` and the Web profile form both change the default execution engine, model and effort. Engine changes apply to future runs without disconnecting Lark or stopping active runs. `/config show web` inspects browser display defaults.
 
@@ -174,11 +177,33 @@ Lark no longer loads `scope-execution.json`: old per-chat engine settings cannot
 
 The local console separates execution from Lark presentation; editing it does not set browser presentation. Changes use the same persistence service. Forms carry a document revision, reject stale submissions, and store only changed overrides. Use `inherit` in the model/concurrency/timeout form fields, or the inheritance options/buttons, to remove profile overrides. Explicit native delegation is configured in TOML. Programmatic TOML edits preserve unrelated text/comments and use atomic replacement under the configuration lock. External editors do not participate in this lock; detected conflicts are rejected, but it is not a transaction with arbitrary editors.
 
-After editing a file, use `/config reload` in each affected bot. Execution/display changes apply to subsequent runs; running output uses its existing display snapshot. Access updates affect new messages. Lowering concurrency does not cancel current tasks. Reload reports remaining changes requiring restart (agent launch, account/identity, permissions, workspace or service reconstruction). Changing agent type requires restart before any new execution/display settings are loaded. Reload never starts or restarts a stopped profile. A malformed file leaves already-loaded settings intact and fails explicitly; startup has no JSON fallback.
+## Hot reload
+
+Every setting declares how it takes effect in a running bridge (`src/config/settings.ts`, listed by `lark-channel-bridge config describe`). Like 3FS `CONFIG_HOT_UPDATED_ITEM` and PostgreSQL `pg_settings.context`, the class is part of the setting's definition, not of the code that happens to read it:
+
+| Class | Settings (examples) | How it applies |
+| --- | --- | --- |
+| `live` | `run.*` (model, effort, concurrency, timeouts), `access.*`, Lark display (`reply_mode`, `progress`, `show_tools`, `file_links`, `message_debounce_ms`), `attachments.*`, `workspaces.*`, `meeting.*` except `enabled` | Next message / run. Raising concurrency releases queued runs immediately; lowering it never cancels running tasks. Meeting fields apply to new meetings. |
+| `execution` | `agent`, `agents.*.launch` / `profiles.*.launch` (binary, env, homes, provider), `permissions`, `[state]`, `model_services` | The default engine adapter is rebuilt and availability-checked before it replaces the old one; active runs keep their adapter. A failed check keeps the old adapter. A busy Codex daemon defers the swap until its runs finish. |
+| `meeting` | `meeting.enabled` | The meeting manager attaches to or leaves the live connection. |
+| `lark-cli` | `mode`, `larkCli.identityPreset` | The lark-cli identity policy is re-applied; on failure the previous mode/identity stays in effect. |
+| `monitoring` | `bridge.monitors_file`, monitor sources, `concurrency` | Picked up by the next monitor reconcile (immediately on a detected change, at most 15 s otherwise). |
+| `reconnect` | `accounts.*`, `secrets`, `channels.lark.network` | Needs a new Lark connection: `/reconnect` applies them (it stops active runs). |
+| `restart` | `bridge.autostart_profiles`, `bridge.active_profile`, adding/removing profiles, `channels.web` / `channels.slack` (standalone hosts) | Read once by the process; restart it. Profiles can still be started or stopped from the local console while it runs. |
+
+Settings without a declaration are treated as `restart`, so a new field is never silently assumed to be hot; a test enforces that every resolved field is declared.
+
+**Triggers.** The running bridge watches `config.toml` and the selected monitors file (inotify plus a 3 s stat poll for network filesystems). `SIGHUP` (service/detached processes; a bridge attached to a terminal keeps the default hang-up behaviour), `lark-channel-bridge config reload` (signals only processes that advertise SIGHUP reload in the registry and reports whether each accepted the revision), `/config reload` and every in-process writer (forms, `/access`, console) use the same path. Applying is idempotent; `/config reload` forces a re-apply, e.g. to retry a failed component.
+
+**Validation.** An edit is validated as a whole before anything is applied (validate-then-swap). An invalid file is reported once per revision (`config.reload-rejected` in the log, `/config show`, `/config reload`) and the process keeps running on the last good configuration; running readers never see a half-valid file. Startup stays strict: an invalid file refuses to start a profile.
+
+**Partial application.** A valid edit applies every hot field even when it also changes reconnect/restart fields; those are listed as pending with their running and file values (credential-like values are never echoed). `/config show` prints the running state, the last reload and the pending list; `status --json` reports `appliedConfigRevision`, `configFileChangedSinceApply` and `configPendingCount` per process.
+
+Running output uses its existing display snapshot. Reload never starts or restarts a stopped profile; startup has no JSON fallback.
 
 Monitor reload still follows [its own contract](monitor-config.md). The default TOML path does not change the per-profile JSON projection required by lark-cli. `LARK_CHANNEL_CONFIG` points to that generated JSON, not the human-maintained TOML. Native agent files, sessions, cursors, work items and encrypted credential stores retain their existing formats.
 
-Standalone Web has no `/config reload` endpoint or file watcher. Restart that server after editing its TOML, and reopen the newly printed token URL. The optional Windows isolated launcher reads the native Codex provider at startup and does not accept Bridge `--config`; use the normal Web CLI for file-based Bridge settings.
+Standalone Web and Slack hosts do not participate in hot reload. Restart that server after editing its TOML, and reopen the newly printed token URL. The optional Windows isolated launcher reads the native Codex provider at startup and does not accept Bridge `--config`; use the normal Web CLI for file-based Bridge settings.
 
 ## One-time conversion of this installation
 

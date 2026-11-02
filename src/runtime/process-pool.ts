@@ -70,6 +70,12 @@ export class ProcessPool {
     };
   }
 
+  /** Re-evaluate waiters after the cap changed (a raised cap releases queued runs now). */
+  refresh(): void {
+    this.drain();
+    this.report();
+  }
+
   private drain(): void {
     while (this.active < this.cap() && this.waiters.length) {
       let index = this.waiters.findIndex(waiter => waiter.priority === 'foreground');

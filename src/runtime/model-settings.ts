@@ -6,7 +6,7 @@ import { resolveModelSettings, type ModelSettings } from '../agent/model-setting
 import { readModelEnvironment } from '../agent/model-environment';
 import type { AgentKind } from '../config/profile-schema';
 import { profileForAgentKind } from './execution-controller';
-import { loadRootConfig } from '../config/profile-store';
+import { configSource } from '../config/config-source';
 import {
   ModelProviderRegistry,
   type ModelProviderOption,
@@ -37,7 +37,7 @@ export async function modelEnvironment(
   const paths = resolveAppPaths({ rootDir: dirname(state.configPath), profile: state.profile });
   const [native, root] = await Promise.all([
     readModelEnvironment(profileForAgentKind(state.profileConfig, agentKind), paths.profileDir),
-    loadRootConfig(state.configPath),
+    configSource(state.configPath).current(),
   ]);
   const models = await new ModelProviderRegistry(root?.modelServices ?? {}).modelOptions(agentKind, discover);
   return { ...native, models: [...native.models, ...models] };
@@ -47,7 +47,7 @@ export async function modelProviderOptions(
   state: MutableProfileState,
   agentKind: AgentKind = state.profileConfig.agentKind,
 ): Promise<ModelProviderOption[]> {
-  const root = await loadRootConfig(state.configPath);
+  const root = await configSource(state.configPath).current();
   return new ModelProviderRegistry(root?.modelServices ?? {}).options(agentKind);
 }
 
