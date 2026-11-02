@@ -1,5 +1,6 @@
 import { getQuickJS, type QuickJSDeferredPromise, type QuickJSHandle } from 'quickjs-emscripten';
 import { SCRIPT_MAX_TASKS, SCRIPT_MAX_TEXT } from './script-contract';
+import { REVIEW_HELPER } from './review-helper';
 
 export interface ScriptProgramInput {
   source: string;
@@ -28,6 +29,7 @@ const PRELUDE = `(() => {
     if (typeof prompt !== 'string' || !options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('agent(prompt, options) expected');
     return invoke(JSON.stringify({...options, prompt})).then(JSON.parse);
   };
+  ${REVIEW_HELPER}
   globalThis.send = (member, text, options = {}) => mail(JSON.stringify({...options, kind: 'send', member, text})).then(JSON.parse);
   const controlCall = input => control(JSON.stringify(input)).then(JSON.parse);
   globalThis.startAgent = (prompt, options = {}) => controlCall({...options, kind:'start', prompt});

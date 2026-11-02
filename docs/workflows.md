@@ -95,10 +95,11 @@ Guest functions:
 | API | Behavior |
 | --- | --- |
 | `agent(prompt, {key, member?, harness?, model?, reasoningEffort?, output?, workflowTool?})` | Promise of final text, or a parsed JSON value with `output: "json"` |
+| `reviewedAgent(prompt, {key, criteria, worker?, reviewer?, maxRounds?})` | Independent verification and bounded rework; returns only an accepted result; see [collaboration controls](workflow-collaboration.md) |
 | `send(member, text, {key, topic?, correlationId?})` / `receive(member, {key, topic?, correlationId?, timeoutMs?})` | Send a durable message or await a stable inbox batch |
 | `enqueueWork({key, title, input, queue?, priority?, dependsOn?, resources?, maxAttempts?})` | Persist an immutable work item; returns `{itemId, key}` and reuses it on replay |
 | `workStatus({itemId?, queue?, offset?, limit?})` | Read one item with its payload, or bounded queue counts and summaries |
-| `consumeWork({key, members, prompt, queue?, maxConcurrent?, maxTurns?})` | Schedule dedicated persistent consumers and wait until the closed queue drains |
+| `consumeWork({key, members, prompt, queue?, maxConcurrent?, maxTurns?, wakeOnMessages?})` | Schedule dedicated persistent consumers, optionally wake on feedback, and wait until the closed queue drains |
 | `closeWorkQueue({key, queue?})` | Persist queue closure; existing items continue, new items are rejected |
 | `parallel([() => ..., () => ...])` | Starts functions and returns results in input order |
 | `pipeline(items, ...stages)` | Processes items concurrently; each item passes through its stages sequentially as `stage(value, index)` |
@@ -224,6 +225,8 @@ return await consumeWork({
 A workflow has at most 16 pools and 16 logical queues (including `default`), with 1–16 dedicated member names per pool and at most 32 members overall. Each pool selects one `queue` (default `default`), has its own `prompt`, and can set `maxConcurrent` within the root concurrency limit. Work keys and resource exclusions remain global within the workflow. Each member supports `harness`, `model`, `reasoningEffort` and `workflowTool` (default false); omitted settings follow the script defaults. The pool key, queue, concurrency, prompt, membership, turn budget and resolved execution bindings are immutable across replay. A member cannot belong to multiple pools. Pool members cannot also be scheduled with `agent()` or wait on script `receive()`. They are created lazily when work arrives. Generated turn keys use the reserved `@consumer/` prefix; ordinary script keys cannot use it.
 
 Members keep using `claim_work`, `checkpoint_work`, `renew_claim` and `complete_work`. When a claim returns `null`, they finish their turn immediately. They must not sleep or poll waiting for more items. The scheduler considers available resource keys and outstanding turns to bound dispatch. A worker racing another consumer may still receive no item; its native process then exits. The scheduler does not repeatedly invoke a no-progress consumer for the same available work. If no consumer can make progress, it fails with an actionable reason instead of spinning. Workers' successful final answers automatically save member checkpoints; item checkpoints remain explicit.
+
+With `wakeOnMessages:true`, existing pool members also receive pending mailbox feedback in their next turn, including when no work is claimable. They process that feedback before consuming work. A busy member is never given a concurrent turn. Pending feedback is handled before the pool drains; late messages do not reopen a drained pool. See [feedback and independent verification](workflow-collaboration.md) for replay, budgets and ownership.
 
 A failed or interrupted member stops participating for the current script run. Its claim is released and other members can continue. Explicit replay can retry that member's original unfinished turn when work is available. Completed turns are reconstructed as cache hits without rerunning their side effects; subsequent turns preserve their predecessor chain and native session. Failed work items reject the pool after active turns finish. Inspect `/workflow work`, use `retry_work` for recoverable items, then explicitly replay. Native authentication/session failures remain visible; there is no silent replacement with another profile or a fresh conversation.
 

@@ -183,6 +183,7 @@ export interface WorkConsumerPool {
   maxTurns: number;
   queue?: string;
   maxConcurrent?: number;
+  wakeOnMessages?: boolean;
   status: 'waiting' | 'running' | 'drained' | 'failed' | 'suspended' | 'cancelled';
   reason?: string;
   members: Array<{
@@ -234,6 +235,7 @@ export interface AgentTurn {
   yieldRequestedAt?: number;
   scriptManaged?: boolean;
   scriptCancelled?: boolean;
+  consumerMessageTurn?: boolean;
 }
 
 export interface WorkflowParent {

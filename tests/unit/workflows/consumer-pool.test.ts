@@ -63,6 +63,80 @@ async function drain(h:ReturnType<typeof harness>, workers:WorkflowWorkerRequest
 }
 
 describe('queue-driven consumer pool',()=>{
+  it('delivers peer feedback to an idle consumer while another consumer is still working', async () => {
+    const h=harness();await h.start({maxConcurrent:2});
+    await h.enqueue(1);await h.enqueue(2);
+    await h.pool({wakeOnMessages:true,members:[{name:'A'},{name:'B'}]});await h.run(2);
+    const [a,b]=h.requests;
+    const ga=(await h.claim(a!))!,gb=(await h.claim(b!))!;
+    await h.send(a!,'complete_work',{...token(ga),result:1});await h.finish(a!);
+    await h.send(b!,'send_message',{member:'A',text:'Independent check found missing evidence',topic:'review'});
+    await h.run(3);
+    const feedback=h.requests[2]!;
+    expect(feedback.task.agentId).toBe(a!.task.agentId);
+    expect(feedback.task.consumerMessageTurn).toBe(true);
+    expect(feedback.task.inputMessageIds).toEqual([h.state().mailbox!.messages[0]!.id]);
+    expect(await h.send(feedback,'read_context')).toMatchObject({member:{messages:[{text:'Independent check found missing evidence',topic:'review'}]}});
+    expect(h.state().mailbox!.messages[0]!.consumedByTurnId).toBeUndefined();
+    expect(h.state().tasks.find(task=>task.taskId===b!.task.taskId)!.status).toBe('running');
+    await h.send(b!,'send_message',{member:'A',text:'A second check is ready'});
+    await h.kernel.tick();expect(h.requests).toHaveLength(3);
+    await h.finish(feedback);await h.run(4);
+    expect(h.state().mailbox!.messages[0]!.consumedByTurnId).toBe(feedback.task.taskId);
+    expect(h.state().mailbox!.messages[1]!.consumedByTurnId).toBeUndefined();
+    expect(h.requests[3]!.task.inputMessageIds).toEqual([h.state().mailbox!.messages[1]!.id]);
+    await h.finish(h.requests[3]!);
+    await h.send(b!,'complete_work',{...token(gb),result:4});await h.finish(b!);
+    await h.call('close_work_queue');await h.kernel.tick();
+    expect(h.result()).toMatchObject({consumers:{status:'drained',wakeOnMessages:true,turns:4}});
+    for(let i=0;i<3;i++)await h.kernel.tick();expect(h.requests).toHaveLength(4);
+  });
+
+  it('recovers an interrupted feedback turn even when its work queue is closed', async () => {
+    const dir=await mkdtemp(join(tmpdir(),'feedback-recovery-'));cleanup.push(()=>rm(dir,{recursive:true,force:true}));
+    const h=harness(join(dir,'state.db'));await h.start();await h.enqueue(1);
+    const pool={wakeOnMessages:true,members:[{name:'A'}]};
+    await h.pool(pool);await h.run(1);await drain(h,[h.requests[0]!]);
+    await h.call('send_message',{member:'A',text:'Verify this new evidence'});await h.run(2);
+    const feedback=h.requests[1]!;
+    await h.call('close_work_queue');await h.restart();
+    expect(h.state().mailbox!.messages[0]!.consumedByTurnId).toBeUndefined();
+    await h.replay();await h.pool(pool);await h.run(3);
+    const restored=h.requests[2]!;
+    expect(restored.task.taskId).toBe(feedback.task.taskId);
+    expect(restored.task.inputMessageIds).toEqual(feedback.task.inputMessageIds);
+    await h.finish(restored);await h.kernel.tick();
+    expect(h.result()).toMatchObject({consumers:{status:'drained',turns:2}});
+    expect(h.state().mailbox!.messages[0]!.consumedByTurnId).toBe(restored.task.taskId);
+    await h.call('pause');await h.replay();await h.pool(pool);await h.kernel.tick();expect(h.requests).toHaveLength(3);
+  });
+
+  it('does not reserve a work slot for a message-only turn or change legacy message behavior', async () => {
+    const h=harness();await h.start({maxConcurrent:2});await h.enqueue(1);
+    await h.pool({wakeOnMessages:true,members:[{name:'A'},{name:'B'}]});await h.run(1);await drain(h,[h.requests[0]!]);
+    await h.call('send_message',{member:'A',text:'Check feedback'});await h.run(2);
+    await h.enqueue(2);await h.run(3);
+    expect(h.requests[2]!.task.agentId).not.toBe(h.requests[1]!.task.agentId);
+    expect((await h.claim(h.requests[2]!))!.item.key).toBe('item-2');
+    const legacy=harness();await legacy.start();await legacy.enqueue(1);
+    await legacy.pool({members:[{name:'A'}]});await legacy.run(1);await drain(legacy,[legacy.requests[0]!]);
+    await legacy.call('send_message',{member:'A',text:'Not opted in'});await legacy.kernel.tick();
+    expect(legacy.requests).toHaveLength(1);
+    expect(legacy.state().mailbox!.messages[0]!.receiptId).toBeUndefined();
+  });
+
+  it('bounds feedback turns and preserves the opt-in binding across replay', async () => {
+    const h=harness();await h.start();await h.enqueue(1);
+    const spec={wakeOnMessages:true,maxTurns:2,members:[{name:'A'}]};
+    await h.pool(spec);await h.run(1);await drain(h,[h.requests[0]!]);
+    await h.call('send_message',{member:'A',text:'One useful followup'});await h.run(2);await h.finish(h.requests[1]!);
+    await h.call('send_message',{member:'A',text:'Over budget'});await h.kernel.tick();
+    expect(()=>h.result()).toThrow('budget reached');expect(h.requests).toHaveLength(2);
+    expect(h.state().mailbox!.messages[1]!.receiptId).toBeUndefined();
+    await h.call('pause');await h.replay();
+    await expect(h.pool({...spec,wakeOnMessages:false})).rejects.toThrow('immutable');
+  });
+
   it('routes independent pools, honors priority and unlocks cross-queue dependencies', async () => {
     const h=harness();await h.start({maxConcurrent:2});
     await h.enqueue(1,{queue:'scan'});

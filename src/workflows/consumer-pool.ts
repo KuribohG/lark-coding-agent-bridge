@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { workflowDigest } from './digest';
-import { scheduleMemberTurn } from './durable-agents';
+import { availableMessages, receiveMessages, scheduleMemberTurn } from './durable-agents';
 import { boundedInteger, parseScriptAgentCall, scriptText } from './script-contract';
 import { availableWork, unfinishedWork, workStatus } from './work-queue';
 import { consumerPools, memberPool, queueControl, queueName } from './work-routing';
@@ -8,12 +8,14 @@ import type { WorkConsumerPool, WorkerExecution, WorkflowState, WorkflowTask } f
 
 const BUSY = new Set<WorkflowTask['status']>(['queued', 'starting', 'running', 'cancelling', 'waiting_workflow']);
 const CONSUMER_PROMPT = '\nUse claim_work to consume authorized work. Read item.progress before acting, save checkpoint_work, renew long-running claims, then complete_work or fail_work. Continue until claim_work returns null. Then return a final answer immediately to release your process; the bridge will schedule a new turn when work becomes available. Do not poll or sleep waiting for work. Follow the original goal and declared resource ownership.';
+const FEEDBACK_PROMPT = '\nFirst read the delivered member-context messages and act on relevant feedback within the original task scope. They may be the only reason for this turn. Then consume any available work. Do not send acknowledgement-only replies that create message loops; send a message only when you have useful new evidence or need a concrete action. Feedback does not authorize editing resources outside a valid work claim.';
 
 export function parseConsumerPool(input: Record<string, unknown>, state: WorkflowState) {
-  if (Object.keys(input).some(key => !['key', 'members', 'prompt', 'maxTurns', 'queue', 'maxConcurrent'].includes(key))) throw new Error('Unsupported consumeWork option');
+  if (Object.keys(input).some(key => !['key', 'members', 'prompt', 'maxTurns', 'queue', 'maxConcurrent', 'wakeOnMessages'].includes(key))) throw new Error('Unsupported consumeWork option');
   const key = scriptText(input.key, 'consumer pool key', 100);
   if (key.trim() !== key) throw new Error('Consumer pool key must not contain surrounding whitespace');
-  const prompt = scriptText(input.prompt, 'consumer prompt', 16_000) + CONSUMER_PROMPT;
+  if (input.wakeOnMessages !== undefined && typeof input.wakeOnMessages !== 'boolean') throw new Error('wakeOnMessages must be boolean');
+  const prompt = scriptText(input.prompt, 'consumer prompt', 16_000) + (input.wakeOnMessages ? FEEDBACK_PROMPT : '') + CONSUMER_PROMPT;
   const maxTurns = boundedInteger(input.maxTurns, Math.min(32, state.script!.maxCalls), 1, 128);
   if (!Array.isArray(input.members) || !input.members.length || input.members.length > 16) throw new Error('Consumer pool needs 1–16 members');
   const members = input.members.map((value: unknown) => {
@@ -25,7 +27,7 @@ export function parseConsumerPool(input: Record<string, unknown>, state: Workflo
   if (new Set(members.map(member => member.member)).size !== members.length) throw new Error('Consumer member names must be unique');
   const name = queueName(input.queue);
   const maxConcurrent = input.maxConcurrent === undefined ? undefined : boundedInteger(input.maxConcurrent, 16, 1, 16);
-  return { key, prompt, maxTurns, members, ...(name !== 'default' ? { queue: name } : {}), ...(maxConcurrent !== undefined ? { maxConcurrent } : {}) };
+  return { key, prompt, maxTurns, members, ...(name !== 'default' ? { queue: name } : {}), ...(maxConcurrent !== undefined ? { maxConcurrent } : {}), ...(input.wakeOnMessages ? { wakeOnMessages: true } : {}) };
 }
 
 /** Called after resolving and validating every member's current authorized execution binding. */
@@ -45,6 +47,7 @@ export function bindConsumerPool(state: WorkflowState, spec: ReturnType<typeof p
     pool = { id: randomUUID(), key: spec.key, digest, runId: state.script!.runId,
       prompt: spec.prompt, maxTurns: spec.maxTurns, status: 'waiting', turns: [],
       ...(spec.queue ? { queue: spec.queue } : {}), ...(spec.maxConcurrent !== undefined ? { maxConcurrent: spec.maxConcurrent } : {}),
+      ...(spec.wakeOnMessages ? { wakeOnMessages: true } : {}),
       members: spec.members.map((member, index) => ({ name: member.member!, execution: executions[index]!, ...(member.workflowTool ? {workflowTool:true} : {}) })) };
     if (!state.consumerPool) state.consumerPool = pool;
     else (state.consumerPools ??= []).push(pool);
@@ -67,7 +70,7 @@ export function bindConsumerPool(state: WorkflowState, spec: ReturnType<typeof p
 export function consumerSummary(state: WorkflowState, key?: string): unknown {
   const pool = key === undefined ? state.consumerPool : consumerPools(state).find(pool => pool.key === key);
   if (!pool) return undefined;
-  return { key: pool.key, queue: pool.queue ?? 'default', maxConcurrent: pool.maxConcurrent, status: pool.status, reason: pool.reason, turns: pool.turns.length, maxTurns: pool.maxTurns,
+  return { key: pool.key, queue: pool.queue ?? 'default', maxConcurrent: pool.maxConcurrent, wakeOnMessages: pool.wakeOnMessages ?? false, status: pool.status, reason: pool.reason, turns: pool.turns.length, maxTurns: pool.maxTurns,
     members: pool.members.map(member => ({ name: member.name, taskId: member.taskId, retryPending: member.retryPending,
       status: member.disabled ? 'disabled' : BUSY.has(state.tasks.find(task => task.taskId === member.taskId)?.status ?? 'result_ready') ? 'running' : pool.status === 'drained' ? 'done' : 'waiting',
       reason: member.disabled })) };
@@ -106,6 +109,12 @@ function pumpPool(state: WorkflowState, pool: WorkConsumerPool, additionalTurnsA
   const active = tasks().filter(task => task && BUSY.has(task.status)).length;
   const fail = (reason: string) => { pool.status = 'failed'; pool.reason = reason; };
   const name = pool.queue ?? 'default';
+  const hasMessages = (name: string) => {
+    const agent = pool.wakeOnMessages && state.agents?.find(agent => agent.key === name);
+    return Boolean(agent && availableMessages(state, agent.agentId).length);
+  };
+  const messagesPending = pool.members.some(member => hasMessages(member.name)
+    || member.retryPending && state.tasks.find(task => task.taskId === member.taskId)?.inputMessageIds?.length);
   const items = (state.workQueue?.items ?? []).filter(item => (item.queue ?? 'default') === name);
   const failedDependency = items.find(item => item.status === 'pending' && item.dependsOn?.some(key =>
     state.workQueue?.items.some(dependency => dependency.key === key && ['failed', 'cancelled'].includes(dependency.status))));
@@ -115,7 +124,7 @@ function pumpPool(state: WorkflowState, pool: WorkConsumerPool, additionalTurnsA
       : 'Work items failed; inspect /workflow work, retry the failed items, then explicitly replay');
     return before !== JSON.stringify(pool);
   }
-  if (!unfinishedWork(state, name) && !active && queueControl(state, name)?.closedAt !== undefined) {
+  if (!unfinishedWork(state, name) && !active && !messagesPending && queueControl(state, name)?.closedAt !== undefined) {
     pool.status = 'drained'; pool.reason = undefined;
     return before !== JSON.stringify(pool);
   }
@@ -123,8 +132,10 @@ function pumpPool(state: WorkflowState, pool: WorkConsumerPool, additionalTurnsA
   // A queued/running turn which has not claimed yet already represents demand for one item.
   const unclaimed = consumerPools(state).filter(other => (other.queue ?? 'default') === name).flatMap(other => other.members)
     .map(member => state.tasks.find(task => task.taskId === member.taskId)).filter(task => task && BUSY.has(task.status)
+    && !task.consumerMessageTurn
     && !state.workQueue?.claims.some(claim => claim.taskId === task.taskId && claim.status === 'active')).length;
-  let slots = Math.min(available.length - unclaimed,
+  let workSlots = available.length - unclaimed;
+  let slots = Math.min(
     (pool.maxConcurrent ?? state.definition.maxConcurrentWorkers) - active,
     state.definition.maxConcurrentWorkers - state.tasks.filter(task => BUSY.has(task.status)).length);
   const wake = workflowDigest(available.map(item => ({id:item.id,generation:item.generation})));
@@ -132,7 +143,10 @@ function pumpPool(state: WorkflowState, pool: WorkConsumerPool, additionalTurnsA
     for (const member of pool.members) {
       if (slots <= 0) break;
       const prior = state.tasks.find(task => task.taskId === member.taskId);
-      if (member.disabled || prior && BUSY.has(prior.status) || member.lastWake === wake) continue;
+      if (member.disabled || prior && BUSY.has(prior.status)) continue;
+      const deliver = hasMessages(member.name);
+      const retry = member.retryPending && prior;
+      if (!deliver && !(retry && prior.inputMessageIds?.length) && (workSlots <= 0 || member.lastWake === wake)) continue;
       if (state.script.calls.length >= state.script.maxCalls || (!member.retryPending && (pool.turns.length >= pool.maxTurns || additionalTurnsAllowed <= 0))) {
         if (!tasks().some(task => task && BUSY.has(task.status))) fail('Consumer turn budget reached; review progress and continue in a new workflow');
         break;
@@ -141,16 +155,18 @@ function pumpPool(state: WorkflowState, pool: WorkConsumerPool, additionalTurnsA
       const call = {key,member:member.name,prompt:member.retryPending && prior ? prior.objective : pool.prompt,
         ...(member.workflowTool ? {workflowTool:true} : {}),
         output:'text' as const,selection:{agentKind:member.execution.agentKind,...member.execution.modelSettings}};
+      if (deliver && !retry) receiveMessages(state, member.name, key + '/inbox');
       const { task } = scheduleMemberTurn(state, call, member.execution);
+      if (!retry && deliver && workSlots <= 0) task.consumerMessageTurn = true;
       if (!member.retryPending) { pool.turns.push({key,member:member.name,taskId:task.taskId}); additionalTurnsAllowed--; }
       state.script.calls.push({key,taskId:task.taskId,cached:false});
       member.taskId = task.taskId; member.retryPending = false; member.lastWake = wake;
-      slots--;
+      slots--; if (!task.consumerMessageTurn) workSlots--;
     }
   } catch (error) { fail(error instanceof Error ? error.message : String(error)); }
   if (pool.status !== 'failed') {
     const busy = tasks().some(task => task && BUSY.has(task.status));
-    if (!busy && available.length && !state.tasks.some(task => BUSY.has(task.status))) fail('No consumer made progress on available work; inspect member failures and explicitly replay');
+    if (!busy && (available.length || messagesPending) && !state.tasks.some(task => BUSY.has(task.status))) fail('No consumer made progress on available work or messages; inspect member failures and explicitly replay');
     else {
       pool.status = busy ? 'running' : 'waiting';
       pool.reason = busy ? undefined : unfinishedWork(state, name) ? 'Waiting for dependencies/claim/resource availability' : 'Waiting for new work or queue closure';

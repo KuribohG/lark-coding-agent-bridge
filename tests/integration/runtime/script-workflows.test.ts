@@ -59,6 +59,26 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
 }
 
 describe('script workflow runtime', () => {
+  it('requires independent review, resumes the worker for rework and replays the accepted outcome', async () => {
+    const h=await harness();
+    const outputs=['candidate-v1',JSON.stringify({ok:false,reason:'Missing boundary test',evidence:['boundary test failed']}),
+      'candidate-v2',JSON.stringify({ok:true,reason:'All criteria verified',evidence:['boundary test passed']})];
+    h.adapters.codex.setEvents(outputs.map((text,index):AgentEvent[]=>[
+      {type:'system',threadId:index%2?'review-'+index:'implementation'},
+      {type:'final_text',content:text},{type:'done',terminationReason:'normal'},
+    ]));
+    await h.call('run_script',{goal:'Implement and independently verify',script:
+      'return await reviewedAgent("Implement the fix",{key:"fix",criteria:"Boundary regression test passes",worker:{harness:"codex",model:"implementation-model"},reviewer:{harness:"codex",model:"verification-model"}});'});
+    await h.until(()=>expect(h.state().script!.status).toBe('result_ready'));
+    expect(JSON.parse(h.state().artifacts.at(-1)!.text)).toMatchObject({value:'candidate-v2',rounds:2,review:{ok:true}});
+    expect(h.state().agents).toHaveLength(1);
+    expect(h.state().sessions).toHaveLength(3);
+    expect(h.state().tasks[2]!.objective).toContain('Missing boundary test');
+    expect(h.pool.snapshot()).toMatchObject({active:0,waiting:0});
+    await h.call('replay_script');await h.until(()=>expect(h.state().script!.status).toBe('result_ready'));
+    expect(h.adapters.codex.runs).toHaveLength(4);
+  });
+
   it('runs a task race through the VM, waits for loser cleanup and replays its durable outcome', async () => {
     const h = await harness();
     const run = h.adapters.codex.run.bind(h.adapters.codex);
