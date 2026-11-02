@@ -1,6 +1,7 @@
 import { getQuickJS, type QuickJSDeferredPromise, type QuickJSHandle } from 'quickjs-emscripten';
 import { SCRIPT_MAX_TASKS, SCRIPT_MAX_TEXT } from './script-contract';
 import { REVIEW_HELPER } from './review-helper';
+import { DISCUSS_HELPER } from './discuss-helper';
 
 export interface ScriptProgramInput {
   source: string;
@@ -36,7 +37,11 @@ const PRELUDE = `(() => {
     globalThis[name] = options => workspace(JSON.stringify({...options,kind})).then(JSON.parse);
   }
   ${REVIEW_HELPER}
-  globalThis.send = (member, text, options = {}) => mail(JSON.stringify({...options, kind: 'send', member, text})).then(JSON.parse);
+  ${DISCUSS_HELPER}
+  globalThis.send = (member, text, options = {}) => {
+    if (options && Object.hasOwn(options, 'relayFrom')) throw new TypeError('send() cannot choose a sender');
+    return mail(JSON.stringify({...options, kind: 'send', member, text})).then(JSON.parse);
+  };
   const controlCall = input => control(JSON.stringify(input)).then(JSON.parse);
   globalThis.startAgent = (prompt, options = {}) => controlCall({...options, kind:'start', prompt});
   globalThis.joinTask = task => controlCall({kind:'join', taskId:task.taskId});

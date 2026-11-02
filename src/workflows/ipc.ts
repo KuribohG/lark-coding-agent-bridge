@@ -82,7 +82,9 @@ export async function callWorkflow(method: string, args: unknown, env = process.
   return body.result;
 }
 
-const WORKFLOW_SCHEDULING_INSTRUCTIONS = `按任务的信息流选择编排：固定独立任务可 parallel/pipeline；动态批量任务用命名队列和 consumeWork；需要反馈的持久成员用 mailbox；局部探索用显式授权的子 workflow。说明生产结束条件、资源归属和失败处理。
+const WORKFLOW_SCHEDULING_INSTRUCTIONS = `先判断任务形态：可拆成证据独立的子任务时分段执行（parallel/pipeline，再独立复核）；方案取舍、互相挑错、需要多方观点交锋才能收敛的问题用 discuss 多 agent 讨论；两者可组合，例如先分段取证再讨论结论。在 plan 中说明选择理由。
+按任务的信息流选择编排：固定独立任务可 parallel/pipeline；动态批量任务用命名队列和 consumeWork；需要反馈的持久成员用 mailbox；局部探索用显式授权的子 workflow。说明生产结束条件、资源归属和失败处理。
+discuss(topic,{key,members:[{name,role?,harness?,model?,reasoningEffort?,workflowTool?}],maxTurns?,summary?}) 让 2–6 名持久成员经 mailbox 讨论：先各自独立给出开场观点，之后每轮有新消息的成员并行发言，回复 JSON {message,to?,agree}，to 由成员决定发给谁（省略为全体，[] 为不发）。全员 agree、无人有新消息或 maxTurns（默认12，最多32，不含开场）用尽时停止；返回 {stop,turns,rounds,transcript,summary}。summary 默认 true，用独立 agent 总结共识与分歧，也可传 {harness,model,reasoningEffort} 或 false。成员名为1–40位字母数字及 _.-，在本 workflow 内专用于该讨论；key 最多80字符、不能以@开头。每次发言计入 maxAgents。成员 × (成员−1) + maxTurns × 成员 不得超过120。成员收到的消息以真实发言成员为发送者；脚本 send 不能指定发送者。
 目标是正确率与有效结果的完成速度：独立子任务可并行，关键结论用独立证据复核；不同假设可定向交流反证，避免重复调查。简单任务无需强制多 agent 或复核；并行写文件须有独立归属或资源认领。
 consumeWork 可显式 wakeOnMessages:true：已创建成员的待收消息自动送到其下一轮；空闲成员可立即处理反馈，活跃成员先结束当前轮，不并发双 turn。消息在成功轮次后确认，失败/中断须重放原轮次。反馈轮次仍受 maxTurns/任务/并发/截止时间限制；不要互发无信息确认形成循环。队列排空前会处理已到消息，但 drain 后的新消息不重启池。反馈不重开已完成工作项，也不授予文件写权限；需要修改时创建有资源归属的新工作。
 reviewedAgent(prompt,{key,criteria,worker?,reviewer?,maxRounds?}) 组合实现→独立复核→反馈返工，只在复核通过后返回 {value,review,rounds}。criteria 必须是具体可验证的标准，最多16000字符；maxRounds 默认2、范围1–4，每轮2次 agent 调用。worker 支持 harness/model/reasoningEffort/workflowTool/member/output/workspace；默认持久成员 <key>/worker。reviewer 支持 harness/model/reasoningEffort/workflowTool，每轮用独立上下文、JSON 输出 {ok:boolean,reason:string,evidence:string[]}；通过必须有具体检查证据，格式错误或执行失败不会放行。达到轮数上限仍不通过会抛错。key 最多80字符、不能以@开头，保留 key/work/轮数 与 key/review/轮数。重放复用既有调用，外部状态变化须更新输入或 key。它只校验 helper 返回值，不拦截任意 complete_work，也不提供 reviewer 文件沙箱；避免在复核通过前发布或提前标记工作已验收。

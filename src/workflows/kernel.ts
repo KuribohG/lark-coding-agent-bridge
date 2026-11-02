@@ -13,7 +13,7 @@ import { bindConsumerPool, consumerResult, consumerSummary, parseConsumerPool, p
 import { consumerPools, memberPool, queueControl, queueName, queueNames } from './work-routing';
 import { beginEventWait, clearEventBindings, settleEventWaits } from './event-waits';
 import { MAX_CHILD_WORKFLOWS, MAX_WORKFLOW_DEPTH, nestedContext, nestedInput, nestedResponse } from './nested-workflow';
-import { checkpoint, completeMemberTurn, mailboxOperation, member, memberContext, receiveMessages, receiptMessages, saveCheckpoint, scheduleMemberTurn, sendMessage, taskAgent } from './durable-agents';
+import { checkpoint, completeMemberTurn, mailboxOperation, member, memberContext, receiveMessages, receiptMessages, relaySender, saveCheckpoint, scheduleMemberTurn, sendMessage, taskAgent } from './durable-agents';
 import { inheritedWorkerExecution, workerSelection } from './execution';
 import { boundedInteger, parseScriptAgentCall, scriptArgs, scriptText, SCRIPT_DEFINITION, SCRIPT_MAX_REVISIONS, SCRIPT_MAX_TASKS } from './script-contract';
 import type {
@@ -719,9 +719,9 @@ export class WorkflowKernel {
     if (state.status !== 'active' || state.script?.runId !== runId || state.script.status !== 'running' || this.now() >= state.deadlineAt) throw new Error('Script run is inactive');
     if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid mailbox call');
     const args = input as Record<string, unknown>;
-    if (Object.keys(args).some(key => !['kind', 'member', 'text', 'key', 'topic', 'correlationId'].includes(key))) throw new Error('Unsupported mailbox option');
+    if (Object.keys(args).some(key => !['kind', 'member', 'text', 'key', 'topic', 'correlationId', 'relayFrom'].includes(key))) throw new Error('Unsupported mailbox option');
     if (args.kind !== 'send' && args.kind !== 'receive') throw new Error('Unknown mailbox operation');
-    if (args.kind === 'receive' && Object.hasOwn(args, 'text')) throw new Error('receive() does not accept text');
+    if (args.kind === 'receive' && (Object.hasOwn(args, 'text') || Object.hasOwn(args, 'relayFrom'))) throw new Error('receive() does not accept text or a sender');
     const key = scriptText(args.key, 'mailbox key', 160);
     if (state.workspaceKeys?.includes(key)) throw new Error('Script key already belongs to a workspace operation');
     if (key.startsWith('@wait/') || state.waits?.some(wait => wait.key === key) || state.controlOperations?.some(operation => operation.key === key)) throw new Error('Script key already belongs to a control operation');
@@ -734,7 +734,8 @@ export class WorkflowKernel {
     if (args.kind === 'receive' ? state.mailbox?.operations.some(item => item.key === 'script:' + key)
       : state.mailbox?.receipts.some(item => item.key === key)) throw new Error('Mailbox key changed operation kind');
     const result = args.kind === 'send'
-      ? { result: mailboxOperation(state, 'script:' + key, args, () => sendMessage(state, target, args.text, this.now(), undefined, args)) }
+      ? { result: mailboxOperation(state, 'script:' + key, args, () => sendMessage(state, target, args.text, this.now(),
+        args.relayFrom === undefined ? undefined : relaySender(state, scriptText(args.relayFrom, 'sender name', 100), args.text), args)) }
       : { receiptId: receiveMessages(state, target, key, args).id };
     (state.script.mailboxCalls ??= []).push(key);
     this.save(state);

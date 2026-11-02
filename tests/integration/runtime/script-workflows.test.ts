@@ -543,6 +543,43 @@ describe('script workflow runtime', () => {
     expect(h.adapters.codex.runOptions[2]?.threadId).toBe('A');
   });
 
+  it('runs a cross-harness discussion where members receive each other as senders and replays without new turns', async () => {
+    const h=await harness();
+    const reply=(kind:'codex'|'claude',id:string,value:unknown):AgentEvent[]=>[{type:'system',...(kind==='codex'?{threadId:id}:{sessionId:id})},
+      {type:'final_text',content:JSON.stringify(value)},{type:'done',terminationReason:'normal'}];
+    const summary={conclusion:'Use LFU',agreements:['LFU'],disagreements:[],openQuestions:[]};
+    h.adapters.codex.setEvents([reply('codex','A',{message:'Use LRU',agree:false}),reply('codex','A',{message:'LFU is fine',agree:true}),reply('codex','S',summary)]);
+    h.adapters.claude.setEvents([reply('claude','B',{message:'Prefer LFU',agree:false}),reply('claude','B',{message:'Agreed',agree:true})]);
+    const script=await readFile(new URL('../../../workflow-definitions/scripted/examples/debate.js', import.meta.url),'utf8');
+    await h.call('run_script',{goal:'discussion',script,args:{question:'cache policy',members:[{name:'A',harness:'codex'},{name:'B',harness:'claude'}]}});
+    await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
+    expect(JSON.parse(h.state().artifacts.at(-1)!.text)).toMatchObject({stop:'consensus',turns:2,rounds:1,summary});
+    expect(h.adapters.codex.runOptions[2]?.prompt).toContain('"text":"Prefer LFU"');
+    expect(h.adapters.codex.runOptions[1]?.threadId).toBe('A');
+    expect(h.adapters.claude.runOptions[1]?.sessionId).toBe('B');
+    expect(h.adapters.codex.runOptions[1]?.prompt).toContain('"from":"B","text":"Prefer LFU"');
+    expect(h.adapters.claude.runOptions[1]?.prompt).toContain('"from":"A","text":"Use LRU"');
+    expect(h.state().mailbox!.messages.every(message=>message.consumedByTurnId)).toBe(true);
+    await h.call('replay_script');
+    await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
+    expect(h.adapters.codex.runs).toHaveLength(3);expect(h.adapters.claude.runs).toHaveLength(2);
+    expect(h.state().mailbox!.messages).toHaveLength(2);
+  });
+
+  it('only relays the latest reply of a member under its name', async () => {
+    const h=await harness({codex:[JSON.stringify({message:'mine'})]});
+    await h.call('run_script',{goal:'relay checks',script:'await agent("speak",{key:"a",member:"A",output:"json"});await receive("A",{key:"wait"});'});
+    await h.until(()=>expect(h.state().mailbox?.receipts[0]?.status).toBe('waiting'));
+    const {workflowId,script}=h.state();
+    const relay=(key:string,text:string,relayFrom='A')=>h.runtime.kernel.scriptMailbox('script-topic',workflowId,script!.runId,{kind:'send',member:'A',key,text,relayFrom});
+    await expect(relay('forged','not what A said')).rejects.toThrow("latest reply");
+    await expect(relay('ghost','mine','ghost')).rejects.toThrow('Unknown member: ghost');
+    await expect(h.runtime.kernel.scriptMailbox('script-topic',workflowId,script!.runId,{kind:'receive',member:'A',key:'r',relayFrom:'A'})).rejects.toThrow('does not accept text or a sender');
+    await relay('genuine','mine');
+    await h.until(()=>expect(h.state().mailbox?.receipts[0]?.status).toBe('ready'));
+    expect(h.state().mailbox!.messages[0]?.from).toBe(h.state().agents![0]!.agentId);
+  });
+
   it('fails a member continuation if the backend silently replaces its native session', async () => {
     const h=await harness({codex:['first','replacement']});
     await h.call('run_script',{goal:'session identity',script:'await agent("first",{key:"first",member:"A"});return await agent("second",{key:"second",member:"A"});'});

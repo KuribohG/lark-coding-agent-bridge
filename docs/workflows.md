@@ -97,6 +97,7 @@ Guest functions:
 | `agent(prompt, {key, member?, harness?, model?, reasoningEffort?, output?, workflowTool?, workspace?})` | Promise of final text, or a parsed JSON value with `output: "json"` |
 | `createWorkspace` / `freezeWorkspace` / `approveChange` / `integrateChanges` / `checkWorkspace` / `acceptIntegration` / `cleanupWorkspace` | Opt-in isolated coding, snapshot review and checked private integration; see [worktrees](workflow-worktrees.md) |
 | `reviewedAgent(prompt, {key, criteria, worker?, reviewer?, maxRounds?})` | Independent verification and bounded rework; returns only an accepted result; see [collaboration controls](workflow-collaboration.md) |
+| `discuss(topic, {key, members, maxTurns?, summary?})` | Multi-agent discussion through the mailbox; members choose recipients each turn; see [multi-agent discussion](#multi-agent-discussion) |
 | `send(member, text, {key, topic?, correlationId?})` / `receive(member, {key, topic?, correlationId?, timeoutMs?})` | Send a durable message or await a stable inbox batch |
 | `enqueueWork({key, title, input, queue?, priority?, dependsOn?, resources?, maxAttempts?})` | Persist an immutable work item; returns `{itemId, key}` and reuses it on replay |
 | `workStatus({itemId?, queue?, offset?, limit?})` | Read one item with its payload, or bounded queue counts and summaries |
@@ -113,6 +114,65 @@ Guest functions:
 `key` is required, stable across replay, and unique within one run. A selected harness uses its configured defaults unless model/effort overrides are supplied. Switching harness does not inherit a different harness's model. All calls must be awaited; the interpreter rejects a result while agent calls are still pending. Failures reject promises, including invalid JSON, missing final answers, native questions and unsupported harnesses. `parallel` and `pipeline` reject on failure; use explicit `try/catch` to implement a fallback. JSON parsing does not validate a schema: check required fields in the script.
 
 Only script completion/failure creates a main-agent event, rather than an event for every worker. Final return values are serialized into a `workflow-result` artifact; no return means JSON `null`. The main agent reads the artifact, acknowledges events, and calls `complete` with that artifact reference, `openIssues` and `verificationLimits`. Persistent members can checkpoint their own work and send internal mailbox messages. Workers cannot send parent answers, manage other members, or recursively delegate through the workflow API. Worker scheduling belongs to the script; explicitly enabled `workflowTool` callers may create child workflows as described below. Named members continue their native sessions; ordinary agent calls remain independent. A main-authored `report` artifact can also be used for completion.
+
+### Choosing the shape of a workflow
+
+The main agent decides how the task should be organized and states the reason in the plan:
+
+- **Segmented work** fits tasks that split into parts with independent evidence, such as scanning modules or checking separate hypotheses. Use `parallel`/`pipeline`, then verify the important conclusions independently.
+- **Discussion** fits questions that converge through argument: choosing between designs, challenging a proposal, or reconciling conflicting findings. Use `discuss`.
+- The two combine. For example, gather evidence in parallel, then have members debate what it shows.
+
+### Multi-agent discussion
+
+`discuss` runs a discussion among 2–6 persistent members. Members address each other; the script does not fix the speaking order.
+
+```js
+const result = await discuss(args.question, {
+  key: 'design',
+  members: [
+    { name: 'proposer', role: 'Defend the simplest viable design', harness: 'codex', model: args.proposerModel },
+    { name: 'critic', role: 'Find failure modes and missing evidence', harness: 'claude' },
+    { name: 'operator', role: 'Judge rollout and operational cost', harness: 'codex', model: args.operatorModel },
+  ],
+  maxTurns: 12,
+});
+return result.summary;
+```
+
+1. **Opening.** Every member first gives an independent opening position in parallel, so nobody anchors on whoever speaks first.
+2. **Replies.** Each reply is JSON `{message, to?, agree}`:
+   - `to` lists the recipients; omitting it addresses everyone and `[]` stays silent;
+   - unknown names and the speaker itself are dropped;
+   - messages over 3,900 characters are truncated.
+3. **Delivery.** The helper relays each message through the mailbox under the speaking member's name, so the recipient's next turn sees the correct `from`. The kernel accepts a relay only when its text repeats that member's latest reply; public `send()` cannot choose a sender.
+4. **Rounds.** In each round, every member with unread messages receives them and replies in parallel. Each member continues its original native session.
+
+The discussion stops on the first of these conditions:
+
+| `stop` | Condition |
+| --- | --- |
+| `consensus` | Every member's latest reply has `agree: true` |
+| `quiet` | No member has unread messages |
+| `max_turns` | `maxTurns` turns after the opening are used (default 12, maximum 32) |
+
+The last round's messages are sent only when another round can read them.
+
+**Return value.** `discuss` returns `{stop, turns, rounds, transcript, summary}`:
+
+- `transcript` lists `{turn, from, to, agree, text}`; openings have turn 0.
+- `summary` comes from an independent agent: `{conclusion, agreements, disagreements, openQuestions}`. Pass `summary: {harness, model, reasoningEffort}` to choose that agent, or `false` to skip it.
+
+**Keys and replay.** Member turns use the keys `<key>/open/<name>` and `<key>/r<round>/<name>`. Replay reuses completed turns and deduplicated messages.
+
+**Constraints.**
+
+- Member names are 1–40 letters, digits, `_`, `.` or `-`. They are dedicated to the discussion: do not also drive them with `agent()` or `receive()`.
+- Every turn counts toward `maxAgents`.
+- members × (members − 1) + `maxTurns` × members must not exceed 120, which keeps one discussion within the per-run mailbox budget.
+- Members should address each other through their reply rather than the `send_message` tool. Messages sent through the tool still arrive in the recipient's next turn but do not wake it on their own.
+
+See [the debate example](../workflow-definitions/scripted/examples/debate.js).
 
 ### Persistent members
 
@@ -149,7 +209,7 @@ The five persisted abstractions are:
 | `AgentCheckpoint` | Versioned JSON work state, native session reference and result reference. Progress can be saved before a turn completes. |
 | `AgentMailbox` / `WaitState` | Durable messages and receive receipts. Waiting releases worker resources; the script interpreter remains bounded by the workflow deadline. |
 
-`send(member, text, {key})` queues up to 4000 characters for an existing member and returns `{messageId}`. `receive(member, {key})` resolves with up to 16 `{id, from, text}` messages, or waits if none are available. Both are JSON-only sandbox calls and must be awaited. Agent and mailbox keys share one per-run namespace. Script sends are deduplicated across replay; reusing a send key with different content fails.
+`send(member, text, {key})` queues up to 4000 characters for an existing member and returns `{messageId}`. Script messages come from `main`; a script cannot choose another sender. `receive(member, {key})` resolves with up to 16 `{id, from, text}` messages, or waits if none are available. Both are JSON-only sandbox calls and must be awaited. Agent and mailbox keys share one per-run namespace. Script sends are deduplicated across replay; reusing a send key with different content fails.
 
 A receive reserves a stable batch. It does not acknowledge the messages. The next turn for that member receives the batch in its context; successful turn completion atomically saves a checkpoint and acknowledges those messages. Failed or cancelled attempts leave them available to that same logical turn. Messages arriving before a wait are delivered immediately; arrivals after a wait wake it. A member can have only one outstanding receive. Follow it with the next member turn to acknowledge the batch. The script controls which event starts each turn; there is no autonomous member loop.
 
@@ -299,7 +359,7 @@ Pause, cancellation, binding changes and deadlines apply to descendants. After a
 
 ### Discussion example and native acceptance
 
-[The A → B → A example](../workflow-definitions/scripted/examples/discussion.js) creates two persistent members. A proposes a design, B reviews it, and A revises its original proposal using B's mailbox message. It returns all three documents and validates the response fields. Supply these script arguments:
+[The A → B → A example](../workflow-definitions/scripted/examples/discussion.js) demonstrates the low-level mailbox protocol with a fixed speaking order; use `discuss` when members should choose whom to address. It creates two persistent members. A proposes a design, B reviews it, and A revises its original proposal using B's mailbox message. It returns all three documents and validates the response fields. Supply these script arguments:
 
 ```json
 {

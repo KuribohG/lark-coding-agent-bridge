@@ -152,6 +152,21 @@ export function sendMessage(state: WorkflowState, target: string, text: unknown,
   return { messageId: message.id };
 }
 
+const RELAY_TRUNCATION = '…[truncated]';
+
+/** A relay may only repeat the member's own latest reply, so recipients can trust the sender. */
+export function relaySender(state: WorkflowState, name: string, text: unknown): string {
+  const agent = member(state, name);
+  const ref = state.tasks.find(task => task.taskId === agent.lastTurnId)?.resultRefs.at(-1);
+  let produced: unknown;
+  try { produced = (JSON.parse(state.artifacts.find(artifact => artifact.ref === ref)?.text ?? '') as { message?: unknown }).message; }
+  catch { produced = undefined; }
+  const reply = typeof produced === 'string' ? produced.trim() : undefined;
+  const truncated = typeof text === 'string' && text.endsWith(RELAY_TRUNCATION) && reply?.startsWith(text.slice(0, -RELAY_TRUNCATION.length));
+  if (reply === undefined || text !== reply && !truncated) throw new Error("A relayed message must repeat the sender's latest reply");
+  return agent.agentId;
+}
+
 export function receiveMessages(state: WorkflowState, target: string, key: string, metadata: { topic?: unknown; correlationId?: unknown } = {}): MailboxReceipt {
   const agent = member(state, target);
   const box = mailbox(state);
