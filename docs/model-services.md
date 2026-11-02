@@ -51,7 +51,7 @@ Codex，不兼容 Claude Code 的 Anthropic Messages 协议。
 Codex 的 `launch.provider` 指定服务名；只有一个服务时可以省略。Provider 名称直接使用
 `model_services` 中的名称，不另造 ID。运行期间只允许切换当前 Provider 的模型；切换
 Provider 需要修改启动配置并重启 bridge。旧的聊天覆盖不会让普通请求失败，而是提示
-未切换并继续使用当前 Provider。默认 Codex 目录为 profile 下的 `codex-home`，不继承
+未切换并继续使用当前 Provider。默认 Codex 目录为 bridge 全局的 `<agent_home_root>/codex`（见 `[state]`），不继承
 命令行的 `~/.codex/config.toml`；其他 Codex 选项可在此专用配置中维护。
 
 OpenAI 官方账号使用 Agent 自身的 OAuth，不进入 Bridge 的 API Key Provider 列表：

@@ -5,10 +5,10 @@ import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { CommentEvent, LarkChannel } from '@larksuite/channel';
 import { capabilityForProfile } from '../agent/backends';
+import { managedWorkspaceFor } from '../agent/state-layout';
 import type { AgentAdapter, AgentEvent } from '../agent/types';
 import { getAgentStopGraceMs } from '../config/schema';
 import type { Controls } from '../commands/types';
-import { resolveAppPaths } from '../config/app-paths';
 import { log } from '../core/logger';
 import { evaluateRunPolicy } from '../policy/run-policy';
 import { resolveWorkingDirectory } from '../policy/workspace';
@@ -158,8 +158,8 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
   const prompt = buildCommentPrompt(target, ctx);
   const workspace = await resolveCommentWorkingDirectory(
     workspaces.cwdFor(docSessionScopeId) ?? workspaces.cwdFor(legacyDocSessionScopeId),
-    controls.profileConfig.workspaces.default,
-    managedDefaultWorkspaceForComments(controls),
+    scopedProfile.workspaces.default,
+    managedWorkspaceFor({ ...scopedProfile.state, bridgeRoot: scopedProfile.state?.bridgeRoot ?? dirname(controls.configPath) }, agentKind)!,
   );
   const requestedCwd = workspace.requestedCwd;
   const cwdRealpath = workspace.cwdRealpath;
@@ -216,8 +216,8 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
       capability,
       profileConfig: scopedProfile,
       now: Date.now(),
-      codexHome: controls.profileConfig.codex?.codexHome,
-      inheritCodexHome: controls.profileConfig.codex?.inheritCodexHome,
+      codexHome: scopedProfile.codex?.codexHome,
+      inheritCodexHome: scopedProfile.codex?.inheritCodexHome,
       ...(typeof commentTimeoutMs === 'number' ? { ttlMs: commentTimeoutMs } : {}),
     });
     if (!policy.ok) {
@@ -685,13 +685,6 @@ async function resolveManagedCommentWorkingDirectory(
     reason: workspace.reason,
     userVisible: [...failures, workspace.userVisible].join('；'),
   };
-}
-
-function managedDefaultWorkspaceForComments(controls: Controls): string {
-  return resolveAppPaths({
-    rootDir: dirname(controls.configPath),
-    profile: controls.profile,
-  }).defaultWorkspaceDir;
 }
 
 function commentReadInstruction(target: ResolvedTarget): string {

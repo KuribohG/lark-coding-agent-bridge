@@ -1,4 +1,5 @@
 import { capabilityForProfile } from '../agent/backends';
+import { resolveAgentState } from '../agent/state-layout';
 import { profileForAgentKind } from '../runtime/execution-controller';
 import { getAgentStopGraceMs } from '../config/schema';
 import { canRunAdminCommand, canUseDm, canUseGroup } from '../policy/access';
@@ -10,8 +11,9 @@ import { evaluateRunPolicy } from '../policy/run-policy';
 import type { RunExecutor } from '../runtime/run-executor';
 import { RunRejected } from '../runtime/errors';
 import type { CommandContext } from './types';
+import type { AgentKind } from '../config/profile-schema';
 import { reply } from './presentation';
-import { effectiveWorkspaceCwd } from './context';
+import { commandProfilePaths, effectiveWorkspaceCwd } from './context';
 import { runtimeAccessStatus, formatOwnerState } from './status';
 
 const DOCTOR_ECHO_PROMPT =
@@ -257,7 +259,7 @@ function buildDoctorReport(
     `profile: ${ctx.controls.profile}`,
     `agent: ${ctx.agent.displayName} (${agentKind})`,
     `workspace: ${cwd ?? '(未设置)'}`,
-    `workspace default: ${ctx.controls.profileConfig.workspaces.default ? 'set' : 'missing'}`,
+    ...agentStateLines(ctx, agentKind),
     `${runtimeAccess.label}: ${runtimeAccess.value}`,
     `access: ${access.ok ? 'ok' : 'denied'} (${access.reason})`,
     `owner API: ${formatOwnerState(ctx)}`,
@@ -267,6 +269,18 @@ function buildDoctorReport(
     ...(opts.policyCheck ? [`policy check: ${opts.policyCheck}`] : []),
     ...(opts.echoCheck ? [`agent echo check: ${opts.echoCheck}`] : []),
   ].join('\n');
+}
+
+/** Where this engine's state, default workspace and memory resolve to (bridge-wide `[state]`). */
+function agentStateLines(ctx: CommandContext, agentKind: AgentKind): string[] {
+  const profile = profileForAgentKind(ctx.controls.profileConfig, agentKind);
+  const state = resolveAgentState(profile, agentKind, { profileDir: commandProfilePaths(ctx).profileDir });
+  return [
+    `workspace default: ${state.defaultWorkspace ?? 'missing'}`,
+    ...(state.home ? [`agent home: ${state.home} (${state.homeSource})`] : []),
+    ...(state.homeSource === 'legacy-profile' ? ['agent home note: legacy per-profile home; see docs/configuration.md#agent-state'] : []),
+    `memory: ${state.memoryDir ?? (agentKind === 'claude' ? 'per workspace (native)' : 'agent home')}`,
+  ];
 }
 
 function withDoctorReport(state: RunState, report: string): RunState {

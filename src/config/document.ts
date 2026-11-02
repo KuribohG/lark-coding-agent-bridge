@@ -1,4 +1,5 @@
 import { resolveAgentLaunches } from '../agent/launch-config';
+import { agentStateTable, parseAgentStateTable } from '../agent/state-layout';
 import { parse, stringify, TomlError } from 'smol-toml';
 import {
   normalizeProfileConfig,
@@ -32,6 +33,7 @@ export interface ConfigDocument extends Table {
   bridge?: Table;
   defaults?: { run?: Table };
   agents?: Partial<Record<AgentKind, { run?: Table; launch?: Table }>>;
+  state?: Table;
   channels?: Table;
   profiles: Record<string, Table>;
 }
@@ -178,7 +180,7 @@ function checkProfile(p: Table, path: string): void {
 }
 
 function validateDocument(input: unknown): ConfigDocument {
-  const doc = keys(input, ['version', 'bridge', 'defaults', 'agents', 'channels', 'profiles', 'secrets', 'migrations', 'model_services', 'monitoring'], 'config');
+  const doc = keys(input, ['version', 'bridge', 'defaults', 'agents', 'state', 'channels', 'profiles', 'secrets', 'migrations', 'model_services', 'monitoring'], 'config');
   if (doc.version !== 3) throw new Error('config.version must be 3');
   if (doc.bridge !== undefined) {
     const bridge = keys(doc.bridge, ['active_profile', 'autostart_profiles', 'monitors_file'], 'bridge');
@@ -220,6 +222,7 @@ function validateDocument(input: unknown): ConfigDocument {
     if (layer.run !== undefined) checkRun(layer.run, `agents.${agent}.run`, agent);
     if (layer.launch !== undefined) checkLaunch(layer.launch, agent, `agents.${agent}.launch`);
   }
+  if (doc.state !== undefined) parseAgentStateTable(doc.state);
   if (doc.channels !== undefined) for (const [channel, value] of Object.entries(keys(doc.channels, ['lark', 'web', 'slack'], 'channels'))) {
     const c = object(value, `channels.${channel}`);
     const { profiles: overrides, ...display } = c;
@@ -301,6 +304,7 @@ export function resolveExecutionProfile(
     permissions,
     sandbox: permissionsToLegacySandbox(permissions),
     ...resolveAgentLaunches(agentKind, launchFor),
+    ...(doc.state ? { state: parseAgentStateTable(doc.state) } : {}),
   };
 }
 
@@ -337,6 +341,7 @@ export function documentToRoot(doc: ConfigDocument): RootConfig {
   return { schemaVersion: 2, activeProfile: doc.bridge?.active_profile ?? Object.keys(profiles)[0] ?? '', preferences: {}, profiles,
     ...(autostartProfiles !== undefined ? { autostartProfiles: [...autostartProfiles] } : {}),
     ...(agentLaunches && Object.keys(agentLaunches).length > 0 ? { agentLaunches } : {}),
+    ...(doc.state ? { agentState: parseAgentStateTable(doc.state) } : {}),
     ...(doc.bridge?.monitors_file ? { monitorConfigFile: doc.bridge.monitors_file } : {}),
     ...(doc.secrets ? { secrets: doc.secrets } : {}), ...(doc.migrations ? { migrations: doc.migrations } : {}),
     ...(doc.model_services ? { modelServices: doc.model_services } : {}),
@@ -361,6 +366,7 @@ export function rootToDocument(root: RootConfig): ConfigDocument {
     ...(root.autostartProfiles !== undefined ? { autostart_profiles: [...root.autostartProfiles] } : {}),
     ...(root.monitorConfigFile ? { monitors_file: root.monitorConfigFile } : {}) }, profiles: {}, channels: { lark: { profiles: {} } } };
   if (root.agentLaunches) doc.agents = structuredClone(root.agentLaunches) as ConfigDocument['agents'];
+  if (root.agentState) doc.state = agentStateTable(root.agentState);
   for (const [name, profile] of Object.entries(root.profiles)) {
     doc.profiles[name] = profileDocument(profile);
     if (profile.channels?.lark || ['messageReply', 'showToolCalls', 'cotMessages', 'fileLinks'].some(key => (profile.preferences as Table)[key] !== undefined)) {

@@ -1,3 +1,4 @@
+import { defaultWorkspaceFor } from '../agent/state-layout';
 import type { NormalizedMessage } from '@larksuite/channel';
 import { capabilityForProfile } from '../agent/backends';
 import type { Controls } from '../commands/types';
@@ -19,15 +20,14 @@ export async function commandSessionCatalogIdentity(input: {
   access: AccessDecision;
   agentKind?: AgentKind;
 }): Promise<SessionCatalogIdentity | undefined> {
-  const requestedCwd =
-    input.workspaces.cwdFor(input.scope) ?? input.controls.profileConfig.workspaces.default;
-  if (!requestedCwd) return undefined;
-  const workspace = await resolveWorkingDirectory(requestedCwd);
-  if (!workspace.ok) return undefined;
   const profile = profileForAgentKind(
     input.controls.profileConfig,
     input.agentKind ?? input.controls.profileConfig.agentKind,
   );
+  const requestedCwd = input.workspaces.cwdFor(input.scope) ?? defaultWorkspaceFor(profile);
+  if (!requestedCwd) return undefined;
+  const workspace = await resolveWorkingDirectory(requestedCwd);
+  if (!workspace.ok) return undefined;
   const capability = capabilityForProfile(profile);
   const policy = evaluateRunPolicy({
     scope: {
@@ -44,8 +44,8 @@ export async function commandSessionCatalogIdentity(input: {
     capability,
     profileConfig: profile,
     now: Date.now(),
-    codexHome: input.controls.profileConfig.codex?.codexHome,
-    inheritCodexHome: input.controls.profileConfig.codex?.inheritCodexHome,
+    codexHome: profile.codex?.codexHome,
+    inheritCodexHome: profile.codex?.inheritCodexHome,
   });
   if (!policy.ok) return undefined;
   return {

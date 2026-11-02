@@ -1,4 +1,5 @@
 import type { AgentLaunchConfig } from '../agent/launch-options';
+import type { AgentStateSettings } from '../agent/state-layout';
 import { normalizeFileLinks } from './file-links';
 import type {
   AppCredentials,
@@ -147,6 +148,8 @@ export interface LarkCliConfig {
 export interface AgentExecutionProfile extends AgentLaunchProfiles {
   /** Default engine for new/unconfigured scopes and background work. */
   agentKind: AgentKind;
+  /** Bridge-wide `[state]` settings, shared by every profile and engine. */
+  state?: AgentStateSettings;
   sandbox?: SandboxConfig;
   permissions: PermissionConfig;
 }
@@ -207,6 +210,8 @@ export interface RootConfig {
   inbox?: import('../inbox/config').InboxConfig;
   gitlabCi?: import('../monitoring/sources/gitlab-ci/config').GitLabCiConfig;
   storageMonitor?: import('../monitoring/sources/storage/config').StorageMonitorConfig;
+  /** Bridge-wide `[state]` table; also copied into every profile as `state`. */
+  agentState?: AgentStateSettings;
   /** Raw global launch layers retained so TOML round trips do not collapse them into profiles. */
   agentLaunches?: Partial<Record<AgentKind, { launch?: AgentLaunchConfig }>>;
   modelServices?: Record<string, import('../model-service/config').ModelServiceConfig>;
@@ -267,6 +272,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     comments?: unknown;
     meeting?: unknown;
     larkCli?: unknown;
+    state?: AgentStateSettings;
   };
 
   if (raw.schemaVersion !== 2) {
@@ -307,6 +313,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     preferences,
     ...(raw.channels ? { channels: raw.channels } : {}),
     ...normalizeAgentLaunches(raw),
+    ...(raw.state ? { state: raw.state } : {}),
     access,
     workspaces,
     sandbox,

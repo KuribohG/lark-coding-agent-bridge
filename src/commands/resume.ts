@@ -1,3 +1,5 @@
+import { resolveAgentState } from '../agent/state-layout';
+import { profileForAgentKind } from '../runtime/execution-controller';
 import { randomUUID } from 'node:crypto';
 import { resumeCard } from '../card/templates';
 import { log } from '../core/logger';
@@ -267,9 +269,10 @@ async function listCodexResumeHistory(
   cwd: string,
   limit: number,
 ): Promise<CodexThreadHistoryEntry[]> {
-  const codex = ctx.controls.profileConfig.codex;
-  const binary = codex?.binaryPath;
+  const profile = profileForAgentKind(ctx.controls.profileConfig, 'codex');
+  const binary = profile.codex?.binaryPath;
   if (!binary) return [];
+  const state = resolveAgentState(profile, 'codex', { profileDir: commandProfilePaths(ctx).profileDir });
 
   const provider = ctx.codexHistoryProvider ?? listCodexThreadHistory;
   try {
@@ -278,10 +281,7 @@ async function listCodexResumeHistory(
       cwd,
       limit,
       profileStateDir: commandProfilePaths(ctx).profileDir,
-      ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
-      ...(codex.inheritCodexHome !== undefined
-        ? { inheritCodexHome: codex.inheritCodexHome }
-        : {}),
+      ...(state.exportHome ? { codexHome: state.home } : { inheritCodexHome: profile.codex?.inheritCodexHome === true }),
     });
   } catch (err) {
     log.warn('session', 'codex-history-failed', {

@@ -9,6 +9,15 @@ max_concurrent_runs = 10
 idle_timeout_minutes = 0
 workflow_timeout_minutes = 480 # Total workflow deadline; each workflow may request a shorter timeout.
 
+# Bridge-wide agent state; every profile and per-chat engine switch resolves the same way.
+[state]
+memory = "agent" # One memory per engine; "workspace" keeps Claude's per-cwd memory.
+# workspace_root = "~/.lark-channel-workspaces"
+# agent_home_root = "~/.lark-channel/agents"
+# [state.shared]
+# instructions = "~/.claude/CLAUDE.md"
+# skills = "~/.claude/skills"
+
 [agents.codex.run]
 effort = "high"
 # model = "provider/model"

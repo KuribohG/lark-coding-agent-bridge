@@ -1,3 +1,4 @@
+import { resolveAgentState } from '../state-layout';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { parse } from 'smol-toml';
@@ -9,8 +10,7 @@ import { supportedModels, validateModelId, type ModelOption } from '../models';
 export async function readCodexModels(profile: ProfileConfig, profileDir: string): Promise<ModelEnvironment> {
   const fallback = { defaults: {}, models: supportedModels('codex') };
   const codex = profile.codex;
-  const codexHome = codex?.codexHome ?? (codex?.inheritCodexHome === true
-    ? process.env.CODEX_HOME ?? join(homedir(), '.codex') : join(profileDir, 'codex-home'));
+  const codexHome = resolveAgentState(profile, 'codex', { profileDir }).home!;
   const configPath = join(codexHome, 'config.toml');
   const text = codex?.ignoreUserConfig ? undefined : await readOptional(configPath);
   let config = (text ? parse(text) : {}) as Record<string, unknown>;

@@ -267,7 +267,7 @@ The default policy is `bot-only`: lark-cli uses the app/bot identity and does no
 
 ## Working directories
 
-Each profile may define a default working directory through `workspaces.default`. New profiles may be created with `--workspace <path>`; if omitted, the bridge creates a profile-managed default working directory.
+Without `/cd`, a run uses `<workspace_root>/<agent>/default` from the bridge-wide [`[state]`](configuration.md#agent-state) layout, keyed by engine rather than by bot. A profile may still override this for its own engine through `workspaces.default`, for example when created with `--workspace <path>`; that override does not apply to another engine switched into the profile's chats.
 
 This is a profile-field snippet. Do not replace the whole `config.toml` with it; edit the matching profile's `workspaces` field.
 

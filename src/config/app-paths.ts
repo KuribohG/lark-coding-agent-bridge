@@ -10,7 +10,6 @@ export interface AppPaths {
   rootDir: string;
   profile: string;
   profileDir: string;
-  defaultWorkspaceDir: string;
   configFile: string;
   activeProfileFile: string;
   sessionsFile: string;
@@ -53,7 +52,6 @@ export function resolveAppPaths(opts: ResolveAppPathsOptions = {}): AppPaths {
     rootDir,
     profile,
     profileDir,
-    defaultWorkspaceDir: join(`${rootDir}-workspaces`, profile, 'default'),
     configFile: join(rootDir, 'config.toml'),
     activeProfileFile: join(rootDir, 'active-profile'),
     sessionsFile: join(profileDir, 'sessions.json'),

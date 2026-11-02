@@ -62,8 +62,9 @@ describe('first-run profile bootstrap', () => {
       defaultWorkspace,
     });
 
-    const defaultWorkspaceRealpath = await realpath(defaultWorkspace);
-    expect(profile.workspaces.default).toBe(defaultWorkspaceRealpath);
+    // The managed workspace is created but stays derived from the bridge layout.
+    await expect(realpath(defaultWorkspace)).resolves.toBeTruthy();
+    expect(profile.workspaces.default).toBeUndefined();
   });
 
   it('reports missing Codex bootstrap binaries as agent preflight diagnostics', async () => {

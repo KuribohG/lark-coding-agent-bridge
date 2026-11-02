@@ -1,4 +1,4 @@
-import { mkdir, realpath } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { AgentPreflightError } from '../agent/preflight';
 import { agentBackendSpec } from '../agent/backend-spec';
 import { agentLaunchPatch } from '../agent/capability';
@@ -20,11 +20,9 @@ export interface BootstrapProfileInput {
 export async function createBootstrapProfileConfig(
   input: BootstrapProfileInput,
 ): Promise<ProfileConfig> {
-  const workspace = input.workspace
-    ? await resolveBootstrapWorkspace(input.workspace)
-    : input.defaultWorkspace
-      ? await ensureManagedDefaultWorkspace(input.defaultWorkspace)
-      : undefined;
+  // The managed default is derived from the bridge-wide layout; only an explicit workspace is persisted.
+  const workspace = input.workspace ? await resolveBootstrapWorkspace(input.workspace) : undefined;
+  if (!workspace && input.defaultWorkspace) await mkdir(input.defaultWorkspace, { recursive: true, mode: 0o700 });
   const spec = agentBackendSpec(input.agentKind);
   const launch = spec.launchRequired
     ? await createBootstrapBinaryConfig({
@@ -55,11 +53,6 @@ async function resolveBootstrapWorkspace(workspace: string): Promise<string> {
   const resolved = await resolveWorkingDirectory(workspace);
   if (!resolved.ok) throw new Error(resolved.userVisible);
   return resolved.cwdRealpath;
-}
-
-async function ensureManagedDefaultWorkspace(path: string): Promise<string> {
-  await mkdir(path, { recursive: true, mode: 0o700 });
-  return realpath(path);
 }
 
 async function createBootstrapBinaryConfig(input: {

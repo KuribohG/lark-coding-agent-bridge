@@ -157,6 +157,23 @@ describe('ClaudeAdapter process contract', () => {
     expect(JSON.parse(record.stdin).message.content).toBe('deep task');
   });
 
+  it('pins auto-memory through flag settings while keeping the requested effort', async () => {
+    const fake = await createFakeClaude({ lines: [{ type: 'result', session_id: 'sess-memory' }] });
+    cleanup.push(fake.dir);
+
+    const run = (await new ClaudeAdapter({ binary: fake.path, autoMemoryDirectory: '/state/claude/memory' }).prepareRun({
+      runId: 'run-memory',
+      prompt: 'remember',
+      cwd: fake.dir,
+      reasoningEffort: 'high',
+    })).start();
+    expect(await collect(run.events)).toContainEqual({ type: 'done', sessionId: 'sess-memory', terminationReason: 'normal' });
+    const record = await readRecord(fake.recordPath);
+
+    expect(JSON.parse(record.settings!)).toEqual({ autoMemoryDirectory: '/state/claude/memory' });
+    expect(record.argv[record.argv.indexOf('--effort') + 1]).toBe('high');
+  });
+
   it('forks a parent for a side answer and exposes the final result', async () => {
     const fake = await createFakeClaude({ lines: [
       { type: 'assistant', message: { content: [{ type: 'text', text: 'intermediate' }] } },

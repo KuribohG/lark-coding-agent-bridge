@@ -1,5 +1,6 @@
 import { AGENT_KINDS } from '../agent/backend-spec';
-import { mkdir, realpath } from 'node:fs/promises';
+import { defaultWorkspaceFor } from '../agent/state-layout';
+import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import * as p from '@clack/prompts';
 import { agentDisplayName } from '../agent/backends';
@@ -30,7 +31,6 @@ import type { AppConfig, SecretInput, TenantBrand } from '../config/schema';
 import { isSecretRef, secretKeyForApp } from '../config/schema';
 import { resolveAppSecret } from '../config/secret-resolver';
 import { buildEncryptedAccountConfig } from '../config/store';
-import { log } from '../core/logger';
 import { validateAppCredentials } from '../utils/feishu-auth';
 
 export interface ResolveProfileRuntimeOptions {
@@ -112,18 +112,7 @@ export async function resolveProfileRuntime(
       throw new Error(`profile not found: ${profile}`);
     }
     assertRequestedAgentMatchesExistingProfile(profile, profileConfig, requestedAgent);
-    const defaultWorkspaceUpgrade = await ensureProfileDefaultWorkspace(rootConfig, profile, appPaths);
-    if (defaultWorkspaceUpgrade.changed) {
-      rootConfig = defaultWorkspaceUpgrade.rootConfig;
-    }
-    if (defaultWorkspaceUpgrade.changed) {
-      await saveRootConfig(rootConfig, configPath);
-      profileConfig = rootConfig.profiles[profile]!;
-      log.info('profile', 'default-workspace-created', {
-        profile,
-        workspace: defaultWorkspaceUpgrade.changed,
-      });
-    }
+    await ensureDefaultWorkspace(profileConfig);
     assertBootstrapAppMatchesExistingProfile(opts, profile, profileConfig);
     const cfg = await maybeMigrateRootPlaintextSecret(rootConfig, profile, appPaths, configPath);
     return { cfg, profileConfig, modelServices: rootConfig.modelServices ?? {}, configPath, appPaths, profile };
@@ -142,7 +131,7 @@ export async function resolveProfileRuntime(
     preferences: encrypted.preferences,
     secrets: encrypted.secrets,
     workspace,
-    defaultWorkspace: appPaths.defaultWorkspaceDir,
+    defaultWorkspace: defaultWorkspaceFor({ agentKind: bootstrapAgent, state: { bridgeRoot: appPaths.rootDir } }),
   });
   const root = createRootConfig(profile, profileConfig, encrypted.secrets);
   await saveRootConfig(root, configPath);
@@ -177,7 +166,7 @@ async function bootstrapProfileIntoExistingRoot(args: {
     preferences: encrypted.preferences,
     secrets: encrypted.secrets,
     workspace,
-    defaultWorkspace: appPaths.defaultWorkspaceDir,
+    defaultWorkspace: defaultWorkspaceFor({ agentKind: bootstrapAgent, state: { bridgeRoot: appPaths.rootDir } }),
   });
   const nextRoot: RootConfig = {
     ...rootConfig,
@@ -205,36 +194,10 @@ async function bootstrapProfileIntoExistingRoot(args: {
 }
 
 
-async function ensureProfileDefaultWorkspace(
-  rootConfig: RootConfig,
-  profile: string,
-  appPaths: AppPaths,
-): Promise<{ rootConfig: RootConfig; changed: boolean }> {
-  const profileConfig = rootConfig.profiles[profile];
-  if (!profileConfig || profileConfig.workspaces.default) {
-    return { rootConfig, changed: false };
-  }
-
-  await mkdir(appPaths.defaultWorkspaceDir, { recursive: true, mode: 0o700 });
-  const defaultWorkspace = await realpath(appPaths.defaultWorkspaceDir);
-  const nextProfile: ProfileConfig = {
-    ...profileConfig,
-    workspaces: {
-      ...profileConfig.workspaces,
-      default: defaultWorkspace,
-    },
-  };
-
-  return {
-    changed: true,
-    rootConfig: {
-      ...rootConfig,
-      profiles: {
-        ...rootConfig.profiles,
-        [profile]: nextProfile,
-      },
-    },
-  };
+/** The layout default is derived, not persisted; only make sure it exists. */
+async function ensureDefaultWorkspace(profileConfig: ProfileConfig): Promise<void> {
+  const workspace = profileConfig.workspaces.default ? undefined : defaultWorkspaceFor(profileConfig);
+  if (workspace) await mkdir(workspace, { recursive: true, mode: 0o700 });
 }
 
 

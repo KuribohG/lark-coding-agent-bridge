@@ -12,12 +12,14 @@ Execution and presentation have separate ownership:
 | --- | --- | --- |
 | Execution defaults | `defaults.run`, `agents.<kind>.run`, `profiles.<name>.run` | Built-in defaults, then global, agent, profile, conversation overrides, explicit task parameters |
 | Agent launch | `agents.<kind>.launch`, `profiles.<name>.launch` | Agent defaults, then profile overrides |
+| Agent state (homes, default workspaces, memory, shared instructions/skills) | root `state` | Bridge-wide; an engine resolves the same way under every profile. See [Agent state](#agent-state) |
 | Model providers | root `model_services` | Named API services; independent from executable and local state |
 | Feishu/Lark display | `channels.lark`, `channels.lark.profiles.<name>` | Lark defaults, then settings for that bot |
 | Feishu/Lark network | `channels.lark.network`, `channels.lark.profiles.<name>.network` | Common settings, then individual profile fields; reconnect required |
 | Browser display | `channels.web`, `channels.web.profiles.<name>` | Web defaults, then the selected profile |
 | Slack display | `channels.slack`, `channels.slack.profiles.<name>` | Slack defaults, then the selected profile |
-| Accounts, access, permissions, workspace, meetings | `profiles.<name>` | Explicit bot settings; not inherited from another bot or a conversation |
+| Accounts, access, permissions, meetings | `profiles.<name>` | Explicit bot settings; not inherited from another bot or a conversation |
+| Workspace override | `profiles.<name>.workspaces.default` | Optional; applies only to the profile's own `agent`, otherwise the `state` layout decides |
 | Monitoring | `bridge.monitors_file` | Existing `monitors.toml`, with its own validation and application rules |
 
 Presentation is never inherited through an agent. The shared runtime produces complete events; the Lark, Slack, and Web output plugins independently select what to display. Hiding reasoning/progress is a display choice and does not change model effort or generation.
@@ -75,11 +77,35 @@ Codex uses `app-server`, enabling input during an active turn. The `exec` backen
 
 `appServerMode` defaults to `daemon`. Bridge ensures Codex's official app-server daemon is running and attaches each run through a short-lived stdio-to-Unix-WebSocket bridge; the daemon stays alive after a run so native background memory extraction and consolidation can finish. On Windows, the bridge uses `codex app-server proxy --sock` as the native AF_UNIX byte transport underneath WebSocket, since Node's pipe API cannot connect to those sockets. `appServerMode = "per-run"` keeps the app-server scoped to one Bridge run and forces `memories.generate_memories = false`; existing memory reads and Codex's native memory startup path remain available, while the thread is not added as a source for new memory generation.
 
-Codex defaults to an independent `<profile-state-dir>/codex-home`; `codexHome` can select another private directory. `inheritCodexHome = true` is an explicit legacy opt-in. Bridge-managed model services require a private home and never rewrite the personal `~/.codex/config.toml`.
+Codex defaults to the bridge-wide private home `<agent_home_root>/codex` (see [Agent state](#agent-state)); `codexHome` can select another private directory. `inheritCodexHome = true` is an explicit legacy opt-in. Bridge-managed model services require a private home and never rewrite the personal `~/.codex/config.toml`.
 
 `launch.provider` selects a service from `model_services` at startup. If omitted, Bridge uses the service named by the default model, or the sole compatible service. Multiple services require an explicit selection. Bridge merges the selected provider, default model and environment-backed authentication into the private `config.toml`, preserving native options such as MCP servers, features and verbosity. This file remains the place to configure Codex features that Bridge does not expose; Bridge-owned fields are regenerated from Bridge TOML. Provider IDs are the configured service names, without generated aliases. Changed provider credentials/configuration restart only this private home's daemon during activation.
 
 The running provider stays fixed until restart. Model commands reject attempts to save another provider, and stale conversation overrides continue on the active provider's default model with an explanatory notice. No new provider credentials are loaded for those rejected selections. Model changes within the active provider remain available. A legacy thread bound to another provider is forked with its history into the active provider; the source is retained.
+
+## Agent state
+
+Each engine keeps native state in its home directory (Claude `CLAUDE_CONFIG_DIR`, Codex `CODEX_HOME`, pi `PI_CODING_AGENT_DIR`), and its memory follows that home (Codex, pi) or the run's working directory (Claude stores auto-memory under `projects/<encoded cwd>/memory`). The root `[state]` table places all of these once for the whole bridge, so a per-chat engine switch, a second bot, or a scheduled job reaches the same state as the engine's own profile:
+
+```toml
+[state]
+# workspace_root = "~/.lark-channel-workspaces" # default: <config dir>-workspaces
+# agent_home_root = "~/.lark-channel/agents"    # default: <config dir>/agents
+memory = "agent"                                # or "workspace"
+
+[state.shared]
+instructions = "~/.claude/CLAUDE.md" # linked as CLAUDE.md / AGENTS.md in each engine home
+skills = "~/.claude/skills"          # each skill directory is linked into <home>/skills
+```
+
+Resolution for an engine `<kind>`:
+
+- Default workspace: `/cd` for the conversation, then `profiles.<name>.workspaces.default` when `<name>` is configured with this `agent`, then `<workspace_root>/<kind>/default`. The derived directory is created on demand and is not written back to the profile. A profile's own workspace never leaks to another engine switched into that bot's chats.
+- Home: `agents.<kind>.launch` state field (`configDir`, `codexHome`, `agentDir`) when set. Otherwise Claude and pi use their native home, and Codex uses `<agent_home_root>/codex` because Bridge-managed model services need a private `config.toml`. Until that directory exists, an existing pre-`[state]` `profiles/<name>/codex-home` is used (the hosting profile's first, else the only one present) and `/doctor` reports `legacy-profile`; move it to `<agent_home_root>/codex` while the bridge is stopped, or pin it with `codexHome`.
+- Memory: `memory = "agent"` (default) pins Claude auto-memory to the project directory of `<workspace_root>/claude/default` through `autoMemoryDirectory`, so `/cd` into a repository keeps one Claude memory. `"workspace"` keeps Claude's per-cwd behaviour. Codex and pi memories are always one per home.
+- Shared assets: links are created when an engine adapter starts, only where nothing exists. Existing files or foreign links are reported in the bridge log and never replaced. Without `[state.shared]` nothing is linked.
+
+`/doctor` prints the resolved workspace, home (with its source) and memory location for the conversation's engine. Changes take effect after restarting the profile.
 
 ## Frontend fields
 

@@ -36,9 +36,18 @@ export function profileForAgentKind<T extends AgentExecutionProfile>(
   if (profileConfig.agentKind === agentKind) return profileConfig;
   const backend = backendFor(agentKind);
   const existing = backend.existingProfile(profileConfig);
-  if (Object.keys(existing).length > 0) return { ...profileConfig, agentKind, ...existing };
+  const switched = withoutProfileWorkspace(profileConfig);
+  if (Object.keys(existing).length > 0) return { ...switched, agentKind, ...existing };
   const command = process.env[backend.commandEnv] ?? backend.defaultCommand;
-  return { ...profileConfig, agentKind, ...backend.launchPatch(command) } as T;
+  return { ...switched, agentKind, ...backend.launchPatch(command) } as T;
+}
+
+/** A profile's own default workspace belongs to its configured engine; a switched engine uses the bridge-wide layout. */
+function withoutProfileWorkspace<T extends AgentExecutionProfile>(profileConfig: T): T {
+  const workspaces = (profileConfig as T & { workspaces?: { default?: string } }).workspaces;
+  if (!workspaces?.default) return profileConfig;
+  const { default: _, ...rest } = workspaces;
+  return { ...profileConfig, workspaces: rest };
 }
 
 export interface ProfileExecutionControllerOptions {

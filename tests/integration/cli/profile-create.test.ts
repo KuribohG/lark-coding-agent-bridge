@@ -168,8 +168,9 @@ describe('profile create command', () => {
     });
 
     const saved = decodeFixture(await readFile(join(root, 'config.toml'), 'utf8')) as RootConfig;
-    const managed = await realpath(resolveAppPaths({ rootDir: root, profile: 'claude-managed' }).defaultWorkspaceDir);
-    expect(saved.profiles['claude-managed']?.workspaces.default).toBe(managed);
+    // Managed workspaces are keyed by engine, not by bot, and are not persisted.
+    expect(saved.profiles['claude-managed']?.workspaces.default).toBeUndefined();
+    await expect(realpath(join(`${root}-workspaces`, 'claude', 'default'))).resolves.toBeTruthy();
   });
 });
 

@@ -27,7 +27,7 @@ export async function loadRootConfig(path: string): Promise<RootConfig | undefin
   try {
     const text = await readFile(path, 'utf8');
     const document = parseDocument(text);
-    const root = normalizeRootConfig(documentToRoot(document));
+    const root = withBridgeRoot(normalizeRootConfig(documentToRoot(document)), dirname(path));
     documents.set(root, { text, document, root: structuredClone(root), revision: configRevision(text) });
     return root;
   } catch (err) {
@@ -39,6 +39,12 @@ export async function loadRootConfig(path: string): Promise<RootConfig | undefin
 export async function loadLarkNetworkConfig(path: string, profile?: string) {
   const root = await loadRootConfig(path);
   return root ? resolveChannels(configDocument(root)!.document, profile).lark.network : undefined;
+}
+
+/** Anchor bridge-wide state defaults to the loaded config's directory. */
+function withBridgeRoot(root: RootConfig, bridgeRoot: string): RootConfig {
+  for (const profile of Object.values(root.profiles)) profile.state = { ...root.agentState, bridgeRoot };
+  return root;
 }
 
 export function normalizeRootConfig(root: RootConfig): RootConfig {
@@ -63,6 +69,7 @@ export function normalizeRootConfig(root: RootConfig): RootConfig {
     ...monitoring,
     ...(root.monitorConfigFile === undefined && root.workItemConcurrency !== undefined ? { workItemConcurrency: parseWorkItemConcurrency(root.workItemConcurrency) } : {}),
     ...(root.modelServices ? { modelServices: normalizeModelServices(root.modelServices) } : {}),
+    ...(root.agentState ? { agentState: root.agentState } : {}),
     ...(root.secrets ? { secrets: root.secrets } : {}),
     ...(migrations ? { migrations } : {}),
     profiles,
@@ -84,7 +91,7 @@ export async function saveRootConfig(root: RootConfig, path: string, resetPaths:
   }
   for (const path of resetPaths) text = editToml(text, path, undefined);
   const document = parseDocument(text);
-  const resolved = normalizeRootConfig(documentToRoot(document));
+  const resolved = withBridgeRoot(normalizeRootConfig(documentToRoot(document)), dirname(path));
   if (text !== snapshot?.text) {
     if (snapshot && await readFile(path, 'utf8') !== snapshot.text) throw new Error('配置文件已改变，请重新读取后保存');
     await writeFileAtomic(path, text, { mode: 0o600 });

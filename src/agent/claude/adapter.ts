@@ -29,6 +29,8 @@ import { CLAUDE_EXECUTION_CAPABILITIES } from './capabilities';
 export interface ClaudeAdapterOptions {
   binary?: string;
   configDir?: string;
+  /** Pins auto-memory to one directory regardless of the run's cwd. */
+  autoMemoryDirectory?: string;
   systemPrompt?: AgentSystemPrompt;
   env?: NodeJS.ProcessEnv;
 }
@@ -42,6 +44,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
   private readonly binary: string;
   private readonly configDir: string | undefined;
+  private readonly autoMemoryDirectory: string | undefined;
   private readonly systemPrompt: AgentSystemPrompt | undefined;
   private readonly env: NodeJS.ProcessEnv;
   private botIdentity: AgentBotIdentity | undefined;
@@ -49,6 +52,7 @@ export class ClaudeAdapter implements AgentAdapter {
   constructor(opts: ClaudeAdapterOptions = {}) {
     this.binary = opts.binary ?? 'claude';
     this.configDir = opts.configDir;
+    this.autoMemoryDirectory = opts.autoMemoryDirectory;
     this.systemPrompt = opts.systemPrompt;
     this.env = { ...opts.env };
   }
@@ -95,8 +99,13 @@ export class ClaudeAdapter implements AgentAdapter {
     // stream-json response. Pass the prompt via stdin and the appended system
     // prompt via a temp file (the same approach the Codex adapter uses) so no
     // special characters ever reach the shell.
+    const ultra = opts.reasoningEffort === ULTRA_EFFORT;
+    const settings = {
+      ...(ultra ? ULTRACODE_SETTINGS : {}),
+      ...(this.autoMemoryDirectory ? { autoMemoryDirectory: this.autoMemoryDirectory } : {}),
+    };
     const runFiles = writeRunFiles(opts.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity),
-      opts.reasoningEffort === ULTRA_EFFORT ? ULTRACODE_SETTINGS : undefined);
+      Object.keys(settings).length > 0 ? settings : undefined);
 
     const args = [
       '-p',
@@ -116,7 +125,7 @@ export class ClaudeAdapter implements AgentAdapter {
     if (opts.model) args.push('--model', validateModelId(opts.model));
     // ultra maps to the ultracode session setting, which also pins effort to xhigh; it has no --effort value.
     if (runFiles.settingsPath) args.push('--settings', runFiles.settingsPath);
-    else if (opts.reasoningEffort) args.push('--effort', parseEffort(opts.reasoningEffort, 'claude')!);
+    if (opts.reasoningEffort && !ultra) args.push('--effort', parseEffort(opts.reasoningEffort, 'claude')!);
     if (opts.deadlineAt !== undefined) args.push('--disallowedTools', DEADLINE_DISALLOWED_TOOLS.join(','));
 
     const child = spawnWithDeadline(this.binary, args, {

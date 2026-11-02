@@ -1,3 +1,5 @@
+import { mkdir } from 'node:fs/promises';
+import { defaultWorkspaceFor } from '../agent/state-layout';
 import type { AgentCapability } from '../agent/capability';
 import { resolveModelArg } from '../agent/models';
 import type { AgentAdapter, AgentEvent } from '../agent/types';
@@ -106,8 +108,10 @@ export interface RecordRunSessionEventInput {
 export async function resolveRunFlowContext(
   input: RunFlowContextInput,
 ): Promise<RunFlowContextResult> {
-  const requestedCwd =
-    input.workspaces.cwdFor(input.scopeId) ?? input.profileConfig.workspaces.default ?? '';
+  const scopedCwd = input.workspaces.cwdFor(input.scopeId);
+  const fallbackCwd = scopedCwd ? undefined : defaultWorkspaceFor(input.profileConfig, input.capability.agentId);
+  if (fallbackCwd) await mkdir(fallbackCwd, { recursive: true, mode: 0o700 }).catch(() => undefined);
+  const requestedCwd = scopedCwd ?? fallbackCwd ?? '';
   const workspace = await resolveWorkingDirectory(requestedCwd);
   if (!workspace.ok) {
     return {

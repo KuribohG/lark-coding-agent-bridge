@@ -1,3 +1,4 @@
+import { defaultWorkspaceFor } from '../agent/state-layout';
 import { detectInstalledAgents } from '../cli/agent-detection';
 import { resolveAppPaths } from '../config/app-paths';
 import { setSecret } from '../config/keystore';
@@ -141,7 +142,7 @@ export async function writeNewProfile(
       preferences: encrypted.preferences,
       secrets: encrypted.secrets,
       ...(input.workspace ? { workspace: input.workspace } : {}),
-      defaultWorkspace: appPaths.defaultWorkspaceDir,
+      defaultWorkspace: defaultWorkspaceFor({ agentKind: input.agentKind, state: { bridgeRoot: appPaths.rootDir } }),
     });
   } catch (err) {
     throw new HttpError(400, err instanceof Error ? err.message : String(err));

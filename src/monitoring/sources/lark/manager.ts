@@ -1,3 +1,4 @@
+import { defaultWorkspaceFor, managedWorkspaceFor } from '../../../agent/state-layout';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import * as lockfile from 'proper-lockfile';
@@ -288,7 +289,7 @@ export class InboxManager {
           const progress = await startInboxProgress(job, lark, cotClient, getCotMessages(controls.cfg), signal);
           let success = false;
           try {
-            const result = await processInbox(job, agent, controls.profileConfig.workspaces.default || paths.defaultWorkspaceDir,
+            const result = await processInbox(job, agent, defaultWorkspaceFor(controls.profileConfig) ?? managedWorkspaceFor({ bridgeRoot: paths.rootDir }, controls.profileConfig.agentKind)!,
               config.attentionProfile, signal, config.analysisTimeoutMinutes * 60_000, event => progress?.event(event),
               await backgroundModelSettings(controls.profileConfig, paths.profileDir, config.analysisModel));
             success = true;

@@ -1,3 +1,5 @@
+import { ensureSharedAgentAssets, resolveAgentState } from './state-layout';
+import { log } from '../core/logger';
 import { AgyAdapter, AGY_EXECUTION_CAPABILITIES } from './agy/adapter';
 import type { AgentLaunchProfiles } from './launch-config';
 import { ClaudeAdapter } from './claude/adapter';
@@ -54,9 +56,10 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
   },
   claude: {
     executionCapabilities: () => CLAUDE_EXECUTION_CAPABILITIES,
-    createAdapter: ({ profile, env, systemPrompt }) => new ClaudeAdapter({
+    createAdapter: ({ profile, profileDir, env, systemPrompt }) => new ClaudeAdapter({
       binary: profile.claude?.binaryPath,
       configDir: profile.claude?.configDir,
+      autoMemoryDirectory: resolveAgentState(profile, 'claude', { profileDir, env }).memoryDir,
       env: buildAgentEnvironment(env, profile.claude?.env),
       systemPrompt,
     }),
@@ -66,6 +69,7 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
     createAdapter: ({ profile, profileDir, env, systemPrompt, modelProviders }) => {
       const codex = profile.codex;
       if (!codex?.binaryPath) throw new Error('codex profile requires codex.binaryPath');
+      const state = resolveAgentState(profile, 'codex', { profileDir, env });
       return new CodexAdapter({
         binary: codex.binaryPath,
         systemPrompt,
@@ -73,7 +77,7 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
         appServerMode: codex.appServerMode,
         startupProvider: () => modelProviders?.resolveStartup('codex', profile.preferences?.model, codex.provider),
         profileStateDir: profileDir,
-        ...(codex.codexHome ? { codexHome: codex.codexHome } : {}),
+        ...(state.exportHome ? { codexHome: state.home } : {}),
         inheritCodexHome: codex.inheritCodexHome === true,
         ignoreUserConfig: codex.ignoreUserConfig === true,
         ignoreRules: codex.ignoreRules,
@@ -144,5 +148,19 @@ export function detectedAgentCandidates(): Array<{
 }
 
 export function createAgentAdapter(input: CreateAgentAdapterInput): AgentAdapter {
+  linkSharedAgentAssets(input);
   return backendFor(input.profile.agentKind).createAdapter(input);
+}
+
+function linkSharedAgentAssets(input: CreateAgentAdapterInput): void {
+  const shared = input.profile.state?.shared;
+  if (!shared) return;
+  try {
+    const layout = resolveAgentState(input.profile, input.profile.agentKind, { profileDir: input.profileDir, env: input.env });
+    const report = ensureSharedAgentAssets(layout, shared);
+    if (report.linked.length > 0) log.info('agent-state', 'shared-linked', { agent: layout.kind, linked: report.linked });
+    if (report.conflicts.length > 0) log.warn('agent-state', 'shared-conflict', { agent: layout.kind, conflicts: report.conflicts });
+  } catch (err) {
+    log.fail('agent-state', err, { step: 'link-shared', agent: input.profile.agentKind });
+  }
 }

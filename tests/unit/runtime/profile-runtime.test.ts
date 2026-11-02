@@ -182,13 +182,13 @@ describe('profile runtime resolver', () => {
       tenant: 'feishu';
     });
 
-    const managed = await realpath(resolveAppPaths({ rootDir: root, profile: 'claude' }).defaultWorkspaceDir);
     const savedText = await readFile(join(root, 'config.toml'), 'utf8');
     const saved = decodeFixture(savedText) as {
       profiles: Record<string, { workspaces?: { default?: string } }>;
     };
-    expect(runtime.profileConfig.workspaces.default).toBe(managed);
-    expect(saved.profiles.claude?.workspaces?.default).toBe(managed);
+    expect(runtime.profileConfig.workspaces.default).toBeUndefined();
+    expect(saved.profiles.claude?.workspaces?.default).toBeUndefined();
+    await expect(realpath(join(`${root}-workspaces`, 'claude', 'default'))).resolves.toBeTruthy();
   });
 
   it('reports detected local agents when first-run agent selection is ambiguous', async () => {
@@ -474,7 +474,7 @@ describe('profile runtime resolver', () => {
     expect(saved.profiles['codex-dev']?.codex?.ignoreUserConfig).toBe(false);
   });
 
-  it('creates a managed default workspace for profiles without a default', async () => {
+  it('creates the layout default workspace without persisting it', async () => {
     const root = await tmpRoot();
     const profile = createDefaultProfileConfig({
       agentKind: 'claude',
@@ -485,8 +485,8 @@ describe('profile runtime resolver', () => {
 
     const runtime = await resolveProfileRuntime({ config: join(root, 'config.toml') });
 
-    const managed = await realpath(resolveAppPaths({ rootDir: root, profile: 'claude' }).defaultWorkspaceDir);
-    expect(runtime.profileConfig.workspaces.default).toBe(managed);
+    expect(runtime.profileConfig.workspaces.default).toBeUndefined();
+    await expect(realpath(join(`${root}-workspaces`, 'claude', 'default'))).resolves.toBeTruthy();
   });
 
   it('lets an explicit profile override active-profile', async () => {

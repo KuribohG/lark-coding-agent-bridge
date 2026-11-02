@@ -251,7 +251,7 @@ bot 默认值存于 `config.toml` 的 `profiles.<profile>.run`；聊天覆盖单
 
 ## 工作目录
 
-每个 profile 都可以有一个默认工作目录：`workspaces.default`。新建 profile 时可以传 `--workspace <path>` 作为初始目录；没传时 bridge 会创建一个 profile 托管的默认工作目录。
+没有 `/cd` 时，run 使用 bridge 全局 [`[state]`](../configuration.md#agent-state) 布局下的 `<workspace_root>/<agent>/default`，按引擎而不是按 bot 区分。profile 仍可用 `workspaces.default` 为自己的引擎指定目录（例如新建时传 `--workspace <path>`）；在该 bot 的会话里切换到其他引擎时，这个目录不会被沿用。
 
 下面只是 profile 里的字段片段，不要整段覆盖 `config.toml`；请改对应 profile 下的 `workspaces` 字段。
 

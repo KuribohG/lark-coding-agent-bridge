@@ -1,5 +1,5 @@
+import { resolveAgentState } from '../state-layout';
 import { readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'smol-toml';
 import type { ProfileConfig } from '../../config/profile-schema';
@@ -10,9 +10,8 @@ const obj = (value: unknown): Record<string, unknown> =>
 
 /** Reuse the selected Codex Responses provider without starting a tool-capable agent. */
 export async function loadCodexModelService(profile: ProfileConfig, modelOverride?: string, profileDir?: string): Promise<ResponsesModelService> {
-  const isolated = profile.codex?.inheritCodexHome === false && !profile.codex.codexHome;
-  if (isolated && !profileDir) throw new Error('独立模型服务需要所选 profile 的配置目录');
-  const home = profile.codex?.codexHome || (isolated ? join(profileDir!, 'codex-home') : process.env.CODEX_HOME || join(homedir(), '.codex'));
+  const home = resolveAgentState(profile, 'codex', { profileDir }).home;
+  if (!home) throw new Error('独立模型服务需要所选 profile 的配置目录');
   let config: Record<string, unknown>;
   try { config = obj(parse(await readFile(join(home, 'config.toml'), 'utf8'))); }
   catch (error) {
