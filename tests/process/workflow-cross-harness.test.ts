@@ -6,14 +6,14 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PiAdapter } from '../../src/agent/pi/adapter';
-import { WorkflowRuntime } from '../../src/workflows/runtime';
-import { callWorkflow } from '../../src/workflows/ipc';
-import { resolveWorkerExecution } from '../../src/workflows/execution';
+import { createBridgeWorkflowRuntime } from '../../src/workflows/bridge/runtime';
+import { callWorkflow } from '../../src/workflows/engine/ipc';
+import { resolveWorkerExecution } from '../../src/workflows/bridge/execution';
 import { createDefaultProfileConfig } from '../../src/config/profile-schema';
 import { RunExecutor } from '../../src/runtime/run-executor';
 import { ProcessPool } from '../../src/runtime/process-pool';
 import { ActiveRuns } from '../../src/runtime/active-runs';
-import type { WorkflowRoot } from '../../src/workflows/types';
+import type { WorkflowRoot } from '../../src/workflows/engine/types';
 import type { RunPolicyAllow } from '../../src/policy/run-policy';
 
 const cleanup: Array<() => Promise<void>> = [];
@@ -62,7 +62,7 @@ process.stdin.on('end', () => {
   const pool = new ProcessPool(() => 3);
   const executor = new RunExecutor({ resolveAgent, pool, activeRuns: new ActiveRuns() });
   const wakeMain = vi.fn(async () => {});
-  const runtime = new WorkflowRuntime({ path: ':memory:', cliPath: resolve('dist/cli.js'), executor, resolve: async () => ({ root, policy }), wakeMain,
+  const runtime = createBridgeWorkflowRuntime({ path: ':memory:', cliPath: resolve('dist/cli.js'), executor, resolve: async () => ({ root, policy }), wakeMain,
     resolveWorker: async (boundRoot, selection, rootPolicy) => resolveWorkerExecution(boundRoot, profile, rootPolicy,
       { model: selection.model, reasoningEffort: selection.reasoningEffort }) });
   await runtime.start(); cleanup.push(() => runtime.close());

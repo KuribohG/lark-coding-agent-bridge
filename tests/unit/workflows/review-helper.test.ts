@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { runScriptProgram } from '../../../src/workflows/script-vm';
+import { runScriptProgram } from '../../../src/workflows/engine/script-vm';
 
 const source = 'return await reviewedAgent("Fix the parser",{key:"parser",criteria:"Regression test passes",worker:{harness:"codex",model:"worker-model"},reviewer:{harness:"codex",model:"review-model"},...args});';
 const run = (agent: (input: unknown) => Promise<unknown>, args: unknown = {}, program = source) => runScriptProgram({

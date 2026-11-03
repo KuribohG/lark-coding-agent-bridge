@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WorkflowRuntime } from '../../../src/workflows/runtime';
-import { callWorkflow, WorkflowIpc } from '../../../src/workflows/ipc';
+import { createBridgeWorkflowRuntime } from '../../../src/workflows/bridge/runtime';
+import { callWorkflow, WorkflowIpc } from '../../../src/workflows/engine/ipc';
 import { RunExecutor } from '../../../src/runtime/run-executor';
 import { ProcessPool } from '../../../src/runtime/process-pool';
 import { ActiveRuns } from '../../../src/runtime/active-runs';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
-import type { WorkflowRoot } from '../../../src/workflows/types';
+import type { WorkflowRoot } from '../../../src/workflows/engine/types';
 import type { RunPolicyAllow } from '../../../src/policy/run-policy';
 
 const cleanup: Array<() => Promise<void>> = [];
@@ -39,7 +39,7 @@ describe('workflow IPC and worker execution', () => {
     const resolveAgent = vi.fn(() => agent);
     const executor = new RunExecutor({ resolveAgent, pool: new ProcessPool(() => 3), activeRuns: new ActiveRuns() });
     const wakeMain = vi.fn(async () => {});
-    const runtime = new WorkflowRuntime({ path: ':memory:', executor, resolve: async () => ({ root, policy }), wakeMain });
+    const runtime = createBridgeWorkflowRuntime({ path: ':memory:', executor, resolve: async () => ({ root, policy }), wakeMain });
     await runtime.start(); cleanup.push(() => runtime.close());
     const main = runtime.bindMain(root.scopeId, 'start');
     const call = (method: string, args: Record<string, unknown> = {}) => callWorkflow(method,

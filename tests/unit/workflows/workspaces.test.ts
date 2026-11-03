@@ -4,10 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WorkflowWorkspaces } from '../../../src/workflows/workspaces';
-import { workspaceCommand } from '../../../src/workflows/workspace-process';
-import { WorkflowKernel } from '../../../src/workflows/kernel';
-import type { WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceIntegration } from '../../../src/workflows/workspace-types';
+import { WorkflowWorkspaces } from '../../../src/workflows/engine/workspaces';
+import { workspaceCommand } from '../../../src/workflows/engine/workspace-process';
+import { WorkflowKernel } from '../../../src/workflows/engine/kernel';
+import type { WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceIntegration } from '../../../src/workflows/engine/workspace-types';
 
 const closes: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); });

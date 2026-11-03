@@ -3,9 +3,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WorkflowKernel } from '../../../src/workflows/kernel';
-import { inheritedWorkerExecution } from '../../../src/workflows/execution';
-import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '../../../src/workflows/types';
+import { WorkflowKernel } from '../../../src/workflows/engine/kernel';
+import { inheritedWorkerExecution } from '../../../src/workflows/engine/execution';
+import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '../../../src/workflows/engine/types';
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });

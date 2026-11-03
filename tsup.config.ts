@@ -34,7 +34,7 @@ export default defineConfig([
   {
     entry: { index: 'src/index.ts', runtime: 'src/runtime/public.ts',
       lark: 'src/channels/lark/index.ts', web: 'src/channels/web/index.ts',
-      slack: 'src/channels/slack/index.ts' },
+      slack: 'src/channels/slack/index.ts', workflows: 'src/workflows/index.ts' },
     outDir: 'dist',
     format: ['esm'],
     target: 'node20',

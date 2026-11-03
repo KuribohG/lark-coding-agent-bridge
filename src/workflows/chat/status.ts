@@ -1,6 +1,5 @@
-import { consumerPools, memberPool, queueControl, queueNames } from './work-routing';
-import { sanitizeLogsForDoctor } from '../core/logger';
-import type { DurableAgent, WorkflowState, WorkflowTask, WorkflowWorkItem } from './types';
+import { consumerPools, memberPool, queueControl, queueNames } from '../engine/work-routing';
+import type { DurableAgent, WorkflowState, WorkflowTask, WorkflowWorkItem } from '../engine/types';
 
 const TASK_STATUS: Record<WorkflowTask['status'], string> = {
   queued: '排队', starting: '启动中', running: '执行中', result_ready: '本轮已完成',
@@ -11,7 +10,7 @@ const compact = (value: string, limit: number) => {
   const text = value.replace(/\s+/g, ' ').trim();
   return text.length > limit ? text.slice(0, limit - 1) + '…' : text;
 };
-const errorText = (error: string) => compact(sanitizeLogsForDoctor(error), 220);
+const errorText = (error: string) => compact(error, 220);
 const time = (timestamp: number) => new Date(timestamp).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
 function bounded(lines: string[]): string {
   const result: string[] = [];

@@ -11,17 +11,17 @@ import { resolveAppPaths } from '../../src/config/app-paths';
 import { profileForAgentKind } from '../../src/runtime/execution-controller';
 import { createAgentAdapter } from '../../src/agent/backends';
 import { larkAgentHostContext } from '../../src/channels/lark/agent-host';
-import { WorkflowRuntime } from '../../src/workflows/runtime';
-import { callWorkflow } from '../../src/workflows/ipc';
+import { createBridgeWorkflowRuntime } from '../../src/workflows/bridge/runtime';
+import { callWorkflow } from '../../src/workflows/engine/ipc';
 import { RunExecutor } from '../../src/runtime/run-executor';
 import { ActiveRuns } from '../../src/runtime/active-runs';
 import { ProcessPool } from '../../src/runtime/process-pool';
-import { resolveWorkerExecution } from '../../src/workflows/execution';
+import { bridgeAgentKind, resolveWorkerExecution } from '../../src/workflows/bridge/execution';
 import { runNestedScenario } from './workflow-nested-scenarios';
 import type { AgentAdapter, AgentRun, AgentRunOptions } from '../../src/agent/types';
 import type { AgentKind } from '../../src/config/profile-schema';
 import type { RunPolicyAllow } from '../../src/policy/run-policy';
-import type { WorkflowRoot, WorkflowState } from '../../src/workflows/types';
+import type { WorkflowRoot, WorkflowState } from '../../src/workflows/engine/types';
 
 const option = (name: string, fallback?: string) => {
   const at = process.argv.indexOf('--' + name);
@@ -153,9 +153,9 @@ async function childPhase(test: Case, phase: string, directory: string) {
     const adapter = adapters.get(kind as Backend); assert(adapter, 'Backend outside this case'); return adapter;
   }, activeRuns, pool: processPool });
   let wakeCount = 0;
-  const runtime = new WorkflowRuntime({ path: join(directory, 'workflow.sqlite'), cliPath: join(project, 'dist/cli.js'), executor,
+  const runtime = createBridgeWorkflowRuntime({ path: join(directory, 'workflow.sqlite'), cliPath: join(project, 'dist/cli.js'), executor,
     resolve: async () => ({ root, policy }),
-    resolveWorker: async (bound, selection, parentPolicy) => resolveWorkerExecution(bound, profileForAgentKind(config, selection.agentKind), parentPolicy,
+    resolveWorker: async (bound, selection, parentPolicy) => resolveWorkerExecution(bound, profileForAgentKind(config, bridgeAgentKind(selection.agentKind)), parentPolicy,
       { ...(selection.model ? {model:selection.model} : {}), ...(selection.reasoningEffort ? {reasoningEffort:selection.reasoningEffort} : {}) }),
     showPlan: async () => {},
     wakeMain: async () => {

@@ -4,9 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { WorkflowKernel } from '../../../src/workflows/kernel';
-import { workflowWorkerInstructions } from '../../../src/workflows/ipc';
-import type { WorkflowRoot, WorkflowState, WorkflowWorkerRequest, WorkflowWorkerResult } from '../../../src/workflows/types';
+import { WorkflowKernel } from '../../../src/workflows/engine/kernel';
+import { workflowWorkerInstructions } from '../../../src/workflows/engine/ipc';
+import type { WorkflowRoot, WorkflowState, WorkflowWorkerRequest, WorkflowWorkerResult } from '../../../src/workflows/engine/types';
 
 const cleanup:Array<()=>Promise<unknown>>=[];
 afterEach(async()=>{for(const close of cleanup.splice(0).reverse()) await close();});

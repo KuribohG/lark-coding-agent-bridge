@@ -8,7 +8,7 @@ import Database from 'better-sqlite3';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { childInput, crashHarness, itemInput } from '../helpers/workflow-crash-controller';
 import type { CrashBarrier } from '../helpers/workflow-crash-controller';
-import type { WorkflowState, WorkflowWorkItem } from '../../src/workflows/types';
+import type { WorkflowState, WorkflowWorkItem } from '../../src/workflows/engine/types';
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });

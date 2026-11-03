@@ -25,7 +25,7 @@ import {
   getMessageDebounceMs,
   getWorkflowTimeoutMinutes,
 } from '../../config/schema';
-import { log, reportMetric, withTrace } from '../../core/logger';
+import { log, reportMetric, sanitizeLogsForDoctor, withTrace } from '../../core/logger';
 import { LarkProfileAuth } from '../../lark-auth/profile-auth';
 import { MediaCache } from '../../media/cache';
 import type { VcRequestClient } from '../../meeting/api';
@@ -37,6 +37,7 @@ import { ActiveRuns } from '../../runtime/active-runs';
 import type { ExecutionController } from '../../runtime/execution-controller';
 import { profileForAgentKind } from '../../runtime/execution-controller';
 import { resolveRunModelSettings } from '../../runtime/model-settings';
+import type { ModelSettings } from '../../agent/model-settings';
 import { ProcessPool } from '../../runtime/process-pool';
 import { RunExecutor } from '../../runtime/run-executor';
 import { resolveRunFlowContext } from '../../runtime/run-flow';
@@ -44,11 +45,12 @@ import { timedRuns } from '../../runtime/timed-runs';
 import { BtwStore } from '../../session/btw-store';
 import type { SessionCatalog } from '../../session/catalog';
 import type { SessionStore } from '../../session/store';
-import { handleWorkflowCommand } from '../../workflows/commands';
-import { workflowDigest } from '../../workflows/digest';
-import { resolveWorkerExecution } from '../../workflows/execution';
-import { WorkflowRuntime } from '../../workflows/runtime';
-import type { WorkflowState } from '../../workflows/types';
+import { handleWorkflowCommand } from '../../workflows/chat/commands';
+import { workflowDigest } from '../../workflows/engine/digest';
+import { bridgeAgentKind, resolveWorkerExecution } from '../../workflows/bridge/execution';
+import { createBridgeWorkflowRuntime } from '../../workflows/bridge/runtime';
+import type { WorkflowRuntime } from '../../workflows/engine/runtime';
+import type { WorkflowState } from '../../workflows/engine/types';
 import { WorkflowOrigins } from './workflow-origins';
 import type { WorkspaceStore } from '../../workspace/store';
 
@@ -138,16 +140,19 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     if (!receipt.messageId?.trim()) throw new Error('Workflow message delivery returned no message receipt');
   };
   let workflows: WorkflowRuntime | undefined;
-  const createWorkflows = () => sessionCatalog && deps.appPaths?.mediaDir ? new WorkflowRuntime({
+  const createWorkflows = () => sessionCatalog && deps.appPaths?.mediaDir ? createBridgeWorkflowRuntime({
     path: join(dirname(deps.appPaths.mediaDir), 'workflows.sqlite'), executor,
-    getTimeoutMinutes: root => getWorkflowTimeoutMinutes(profileForAgentKind(controls.profileConfig, root.agentKind)),
+    getTimeoutMinutes: root => getWorkflowTimeoutMinutes(profileForAgentKind(controls.profileConfig, bridgeAgentKind(root.agentKind))),
     showPlan: replyToOrigin,
     notify: replyToOrigin,
     resolveWorker: async (root, selection, policy) => {
-      const { agentKind, ...overrides } = selection;
+      const { agentKind: kind, ...overrides } = selection;
+      const agentKind = bridgeAgentKind(kind);
       const profile = profileForAgentKind(controls.profileConfig, agentKind);
-      const settings = agentKind === root.agentKind ? { ...root.modelSettings, ...overrides }
-        : await resolveRunModelSettings(controls, root.scopeId, overrides, agentKind);
+      // bridgeWorkerPolicy has already validated the engine's string-typed efforts.
+      const requested = overrides as ModelSettings;
+      const settings = agentKind === root.agentKind ? { ...root.modelSettings as ModelSettings, ...requested }
+        : await resolveRunModelSettings(controls, root.scopeId, requested, agentKind);
       return resolveWorkerExecution(root, profile, policy,
         { model: settings.model, reasoningEffort: settings.reasoningEffort });
     },
@@ -264,7 +269,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
         if (queued === undefined) return '消息队列已满，请稍后重试。';
         workflowOrigins.set(scope, message);
         return undefined;
-      }),
+      }, { sanitize: sanitizeLogsForDoctor }),
     };
   };
 

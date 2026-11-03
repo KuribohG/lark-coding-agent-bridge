@@ -43,7 +43,7 @@ import { trackRunSession } from '../../runtime/session-progress';
 import { timedRuns, type TimedRun } from '../../runtime/timed-runs';
 import type { SessionCatalog } from '../../session/catalog';
 import type { SessionStore } from '../../session/store';
-import type { WorkflowRuntime } from '../../workflows/runtime';
+import type { WorkflowRuntime } from '../../workflows/engine/runtime';
 import type { WorkspaceStore } from '../../workspace/store';
 import { bindAgentEntry } from './agent-entry';
 import { larkDisplay } from './config';

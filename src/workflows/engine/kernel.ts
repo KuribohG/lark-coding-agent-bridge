@@ -1,11 +1,9 @@
-import { RunStopped, abortStopReason } from '../runtime/errors';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
-import { sessionIdFieldForAgent } from '../agent/backend-spec';
-import { log } from '../core/logger';
+import { WorkflowStopped, silentLogger, stopReasonOf } from './ports';
 import { workflowDigest } from './digest';
 import { renderWorkflowPlan } from './presentation';
 import { cancelWork, closeWorkQueue, enqueueWork, expireWorkClaims, mutateWork, releaseWorkClaims, retryWork, unfinishedWork, workContext, workStatus, WORK_MUTATIONS } from './work-queue';
@@ -17,7 +15,7 @@ import { checkpoint, completeMemberTurn, mailboxOperation, member, memberContext
 import { inheritedWorkerExecution, workerSelection } from './execution';
 import { boundedInteger, parseScriptAgentCall, scriptArgs, scriptText, SCRIPT_DEFINITION, SCRIPT_MAX_REVISIONS, SCRIPT_MAX_TASKS } from './script-contract';
 import type {
-  WorkflowArtifact, WorkflowCaller, WorkflowEvent, WorkflowHost, WorkflowRoot,
+  NativeIdKind, WorkflowArtifact, WorkflowCaller, WorkflowEvent, WorkflowHost, WorkflowRoot,
   WorkflowState, WorkflowTask, WorkflowWorkerResult,
 } from './types';
 
@@ -36,6 +34,7 @@ export class WorkflowKernel {
   private closed = false;
   private readonly waking = new Set<string>();
   private readonly changes = new EventEmitter().setMaxListeners(0);
+  private get log() { return this.host.log ?? silentLogger; }
 
   constructor(path: string, private readonly host: WorkflowHost, private readonly now = Date.now) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -72,6 +71,10 @@ export class WorkflowKernel {
       }
       this.save(state);
     }
+  }
+
+  private nativeIdKind(agentKind: string): NativeIdKind {
+    return this.host.nativeIdKind?.(agentKind) ?? 'sessionId';
   }
 
   private list(): WorkflowState[] {
@@ -249,7 +252,7 @@ export class WorkflowKernel {
       const source = this.addArtifact(state, 'workflow-script', scriptText(args.script, 'script'));
       const plan = this.addArtifact(state, 'workflow-plan', scriptText(args.plan, 'plan', 12_000));
       state.script = { name: scriptText(args.name ?? 'Script workflow', 'name', 100), sourceRef: source.ref, planRef: plan.ref,
-        args: scriptArgs(args.args), defaults: workerSelection(args.execution, root), runId: randomUUID(), revision: 0,
+        args: scriptArgs(args.args), defaults: workerSelection(args.execution, root, this.host), runId: randomUUID(), revision: 0,
         status: 'queued', maxCalls: boundedInteger(args.maxAgents, 32, 1, SCRIPT_MAX_TASKS), calls: [], logs: [] };
       return this.commitOperation(state, operationId, digest, () => this.summary(state!));
     }
@@ -376,7 +379,7 @@ export class WorkflowKernel {
     const source = this.addArtifact(child,'workflow-script',input.script);
     const plan = this.addArtifact(child,'workflow-plan',input.plan);
     child.script = {name:input.name,sourceRef:source.ref,planRef:plan.ref,args:input.args,
-      defaults:workerSelection(input.execution,{...state.root,agentKind:execution.agentKind,modelSettings:execution.modelSettings}),
+      defaults:workerSelection(input.execution,{...state.root,agentKind:execution.agentKind,modelSettings:execution.modelSettings},this.host),
       runId:randomUUID(),revision:0,status:'queued',maxCalls:Math.min(input.maxAgents,state.script.maxCalls),calls:[],logs:[]};
     task.waitingWorkflowId=child.workflowId;task.yieldRequestedAt=this.now();
     this.db.transaction(()=>{this.save(child);this.save(state);})();
@@ -485,7 +488,7 @@ export class WorkflowKernel {
     if (this.closed) throw new Error('Workflow service is closed');
     const snapshot = requireState(this.state(scopeId, workflowId));
     if (!snapshot.script) throw new Error('Not a script workflow');
-    const call = parseScriptAgentCall(input, snapshot.script.defaults, snapshot.root);
+    const call = parseScriptAgentCall(input, snapshot.script.defaults, snapshot.root, this.host);
     if (call.workspace) {
       if (snapshot.parent || !this.host.resolveWorkspace) throw new Error('Workspace execution is unavailable in this workflow');
       await this.host.resolveWorkspace(snapshot.root, workflowId, call.workspace);
@@ -509,7 +512,7 @@ export class WorkflowKernel {
     if (script.calls.length >= script.maxCalls) throw new Error('Script agent call limit reached');
     if (call.member) {
       const before=state.tasks.length;
-      const scheduled = scheduleMemberTurn(state, call, execution);
+      const scheduled = scheduleMemberTurn(state, call, execution, this.nativeIdKind(execution.agentKind));
       if (state.tasks.length>before && this.remainingTreeTasks(state)<=0) throw new Error('Workflow tree task budget reached');
       script.calls.push({ key: call.key, taskId: scheduled.task.taskId, cached: scheduled.cached });
       this.save(state);
@@ -531,7 +534,7 @@ export class WorkflowKernel {
       const sessionRef = randomUUID();
       const taskId = randomUUID();
       state.sessions.push({ sessionRef, actorId: randomUUID(), actorKey: taskId, role: 'worker', generation: 1,
-        nativeIdKind: sessionIdFieldForAgent(execution.agentKind), execution, ...(call.workspace ? {workspaceId:call.workspace} : {}) });
+        nativeIdKind: this.nativeIdKind(execution.agentKind), execution, ...(call.workspace ? {workspaceId:call.workspace} : {}) });
       task = { taskId, taskKey: taskId, requestDigest: cacheKey, sessionRef, objective: call.prompt, inputRefs: [],
         ...(call.workspace ? {workspaceId:call.workspace} : {}),
         ...(managed ? { scriptManaged: true } : {}),
@@ -684,7 +687,7 @@ export class WorkflowKernel {
       return response;
     }
     if (kind === 'consume') {
-      const spec = parseConsumerPool(args, state);
+      const spec = parseConsumerPool(args, state, this.host);
       const executions = [];
       for (const member of spec.members) executions.push(await (this.host.resolveWorker?.(root, member.selection) ?? inheritedWorkerExecution(root, member.selection)));
       const currentRoot = await this.host.resolveRoot(scopeId);
@@ -866,7 +869,7 @@ export class WorkflowKernel {
     if (args.plan !== undefined) script.planRef = this.addArtifact(state, 'workflow-plan', scriptText(args.plan, 'plan', 12_000)).ref;
     if (args.script !== undefined) script.sourceRef = this.addArtifact(state, 'workflow-script', scriptText(args.script, 'script')).ref;
     if (Object.hasOwn(args, 'args')) script.args = scriptArgs(args.args);
-    if (args.execution !== undefined) script.defaults = workerSelection(args.execution, state.root);
+    if (args.execution !== undefined) script.defaults = workerSelection(args.execution, state.root, this.host);
     script.runId = randomUUID(); script.revision++; script.status = 'queued';
     clearEventBindings(state);
     script.calls = []; script.mailboxCalls = []; script.workCalls = []; script.controlCalls = []; script.workspaceCalls = []; script.logs = []; script.error = undefined; script.resultRef = undefined; script.phase = undefined;
@@ -959,7 +962,7 @@ export class WorkflowKernel {
     releaseWorkClaims(state, this.now(), 'Member execution cancelled', task.taskId);
     const active = this.running.get(task.taskId);
     task.status = active ? 'cancelling' : 'cancelled';
-    active?.controller.abort(new RunStopped('cancelled'));
+    active?.controller.abort(new WorkflowStopped('cancelled'));
   }
 
   async tick(): Promise<void> {
@@ -996,7 +999,7 @@ export class WorkflowKernel {
         }
         if (state.status === 'active') {
           if (settleEventWaits(state, this.now())) this.save(state);
-          if (pumpConsumerPool(state,this.remainingTreeTasks(state))) this.save(state);
+          if (pumpConsumerPool(state,kind=>this.nativeIdKind(kind),this.remainingTreeTasks(state))) this.save(state);
           let active = state.tasks.filter(task => this.running.has(task.taskId)).length;
           for (const task of state.tasks) {
             if (task.status !== 'queued' || active >= state.definition.maxConcurrentWorkers) continue;
@@ -1023,14 +1026,14 @@ export class WorkflowKernel {
             // Register before asynchronous execution can produce an event or a cancellation.
             const done = Promise.resolve().then(() => this.execute(state.workflowId, state.root.scopeId, task.taskId, attemptId, controller.signal));
             this.running.set(task.taskId, { controller, done });
-            void done.finally(() => this.running.delete(task.taskId)).catch(error => log.warn('workflow', 'worker-failed', { error: String(error) }));
+            void done.finally(() => this.running.delete(task.taskId)).catch(error => this.log.warn('worker-failed', { error: String(error) }));
             active++;
           }
         }
         if (!state.parent && this.hasWake(state.root.scopeId) && !this.waking.has(state.root.scopeId)) {
           const scope = state.root.scopeId;
           this.waking.add(scope);
-          void this.host.wakeMain(scope).catch(error => log.warn('workflow', 'wake-failed', { error: String(error) }))
+          void this.host.wakeMain(scope).catch(error => this.log.warn('wake-failed', { error: String(error) }))
             .finally(() => this.waking.delete(scope));
         }
       }
@@ -1080,7 +1083,7 @@ export class WorkflowKernel {
     }
     task.attempts.at(-1)!.endedAt = this.now();
     task.attempts.at(-1)!.result = result.status;
-    const stopReason = result.stopReason ?? (signal.aborted ? abortStopReason(signal) : undefined);
+    const stopReason = result.stopReason ?? (signal.aborted ? stopReasonOf(signal) : undefined);
     task.attempts.at(-1)!.stopReason = stopReason;
     if (stopReason === 'shutdown') {
       task.status = 'interrupted';
@@ -1116,7 +1119,7 @@ export class WorkflowKernel {
 
   beginShutdown(): void {
     this.closed = true;
-    for (const { controller } of this.running.values()) controller.abort(new RunStopped('shutdown'));
+    for (const { controller } of this.running.values()) controller.abort(new WorkflowStopped('shutdown'));
   }
 
   async close(): Promise<void> {

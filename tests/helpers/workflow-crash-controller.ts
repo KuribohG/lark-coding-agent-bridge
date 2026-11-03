@@ -3,8 +3,8 @@ import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import type Database from 'better-sqlite3';
-import { WorkflowKernel } from '../../src/workflows/kernel';
-import type { WorkflowRoot, WorkflowState, WorkflowWorkerRequest, WorkflowWorkerResult } from '../../src/workflows/types';
+import { WorkflowKernel } from '../../src/workflows/engine/kernel';
+import type { WorkflowRoot, WorkflowState, WorkflowWorkerRequest, WorkflowWorkerResult } from '../../src/workflows/engine/types';
 
 export const childInput = { operationId: 'child', key: 'child', goal: 'Return 42', script: 'return 42;',
   plan: 'Return 42 without native workers', checkpoint: { next: 'consume child result' } };

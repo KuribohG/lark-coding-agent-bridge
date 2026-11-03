@@ -3,9 +3,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WorkflowKernel } from '../../../src/workflows/kernel';
-import { handleWorkflowCommand } from '../../../src/workflows/commands';
-import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult, WorkflowWorkItem } from '../../../src/workflows/types';
+import { WorkflowKernel } from '../../../src/workflows/engine/kernel';
+import { handleWorkflowCommand } from '../../../src/workflows/chat/commands';
+import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult, WorkflowWorkItem } from '../../../src/workflows/engine/types';
 
 type Grant = {claimId:string;generation:number;item:WorkflowWorkItem};
 const cleanup: Array<() => Promise<unknown>> = [];

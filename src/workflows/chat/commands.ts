@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { WorkflowKernel } from './kernel';
+import type { WorkflowKernel } from '../engine/kernel';
 import { renderWorkflowStatus, renderWorkStatus } from './status';
 
 const WORKFLOW_HELP = [
@@ -23,9 +23,15 @@ const WORKFLOW_HELP = [
   '只有 `start` 或 `script` 命令会启动工作流；普通消息不会自动启用。',
 ].join('\n');
 
-/** Lark command presentation; submit schedules a normal main-agent turn. */
+export interface WorkflowCommandOptions {
+  /** Redacts host secrets from worker errors before they are shown in chat. */
+  sanitize?(text: string): string;
+}
+
+/** Chat command presentation; submit schedules a normal main-agent turn. */
 export async function handleWorkflowCommand(kernel: WorkflowKernel, scope: string, args: string,
-  submit: (content: string) => string | undefined): Promise<string | undefined> {
+  submit: (content: string) => string | undefined, options: WorkflowCommandOptions = {}): Promise<string | undefined> {
+  const sanitize = options.sanitize ?? (text => text);
   const operation = args.trim().split(/\s+/)[0] || 'status';
   if (operation === 'help') return WORKFLOW_HELP;
   const goal = args.trim().slice(operation.length).trim();
@@ -40,8 +46,8 @@ export async function handleWorkflowCommand(kernel: WorkflowKernel, scope: strin
   const state = current ?? (['plan', 'status', 'work'].includes(operation) ? kernel.latest(scope) : undefined);
   if (!state) return '当前没有工作流。';
   if (operation === 'plan') return state.script ? kernel.plan(scope, state.workflowId) : '旧版工作流没有保存脚本执行方案。';
-  if (operation === 'status') return renderWorkflowStatus(state, goal || undefined, !current);
-  if (operation === 'work') return renderWorkStatus(state, goal || undefined);
+  if (operation === 'status') return sanitize(renderWorkflowStatus(state, goal || undefined, !current));
+  if (operation === 'work') return sanitize(renderWorkStatus(state, goal || undefined));
   let item: Record<string, unknown> = {};
   if (operation === 'enqueue') {
     try {

@@ -5,7 +5,8 @@ import { access, mkdir, realpath } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { workflowDigest } from './digest';
 import { boundedInteger, scriptText } from './script-contract';
-import { workspaceCommand, type CommandResult } from './workspace-process';
+import { nodeProcesses, workspaceCommand, type CommandResult } from './workspace-process';
+import type { WorkflowProcesses } from './ports';
 import type { WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceContext, WorkspaceIntegration } from './workspace-types';
 import type { WorkflowRoot } from './types';
 
@@ -21,7 +22,7 @@ export class WorkflowWorkspaces {
   private readonly activeKeys = new Set<string>();
   private closed = false;
 
-  constructor(path: string, private readonly directory: string) {
+  constructor(path: string, private readonly directory: string, private readonly processes: WorkflowProcesses = nodeProcesses) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new Database(path);
     if (path !== ':memory:') chmodSync(path, 0o600);
@@ -62,7 +63,7 @@ export class WorkflowWorkspaces {
   private async git(cwd: string, args: string[], signal: AbortSignal, allowFailure = false, env?: NodeJS.ProcessEnv): Promise<CommandResult> {
     const hooks = join(this.directory, 'empty-hooks'); await mkdir(hooks, { recursive: true, mode: 0o700 });
     const result = await workspaceCommand('git', ['-c', `core.hooksPath=${hooks}`, '-c', 'core.fsmonitor=false',
-      '-c', 'gc.auto=0', ...args], cwd, signal, 60_000, { ...gitEnv(), ...env });
+      '-c', 'gc.auto=0', ...args], cwd, signal, 60_000, { ...gitEnv(), ...env }, this.processes);
     if (result.code && !allowFailure) throw new Error(`Git ${args[0]} failed: ${(result.stderr || result.stdout).slice(0, 1600)}`);
     return result;
   }
@@ -346,7 +347,7 @@ export class WorkflowWorkspaces {
     const results: WorkspaceChecks['commands'] = [];
     for (const command of commands) {
       const result = await workspaceCommand(command.argv[0]!, command.argv.slice(1), ws.path, ctx.signal,
-        Math.max(1, Math.min(command.timeoutMs, ctx.state.deadlineAt - Date.now())), gitEnv());
+        Math.max(1, Math.min(command.timeoutMs, ctx.state.deadlineAt - Date.now())), gitEnv(), this.processes);
       results.push({ argv: command.argv, code: result.code, stdout: result.stdout.slice(-16000), stderr: result.stderr.slice(-16000) });
       if (result.code) break;
     }

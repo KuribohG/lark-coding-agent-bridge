@@ -1,8 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { sessionIdFieldForAgent } from '../agent/backend-spec';
 import { workflowDigest } from './digest';
 import { SCRIPT_MAX_TASKS, scriptText, type ScriptAgentCall } from './script-contract';
-import type { AgentCheckpoint, AgentMailbox, DurableAgent, MailboxReceipt, WorkerExecution, WorkflowState, WorkflowTask } from './types';
+import type { AgentCheckpoint, AgentMailbox, DurableAgent, MailboxReceipt, NativeIdKind, WorkerExecution, WorkflowState, WorkflowTask } from './types';
 
 function mailbox(state: WorkflowState): AgentMailbox {
   return state.mailbox ??= { messages: [], receipts: [], operations: [] };
@@ -47,7 +46,7 @@ export function memberCursor(state: WorkflowState, agent: DurableAgent): string 
     .filter(task => task?.agentId === agent.agentId).at(-1)?.taskId;
 }
 
-export function scheduleMemberTurn(state: WorkflowState, call: ScriptAgentCall, execution: WorkerExecution): { task: WorkflowTask; cached: boolean } {
+export function scheduleMemberTurn(state: WorkflowState, call: ScriptAgentCall, execution: WorkerExecution, nativeIdKind: NativeIdKind): { task: WorkflowTask; cached: boolean } {
   let agent = state.agents?.find(item => item.key === call.member);
   if (agent) {
     const session = state.sessions.find(item => item.sessionRef === agent!.sessionRef)!;
@@ -80,7 +79,7 @@ export function scheduleMemberTurn(state: WorkflowState, call: ScriptAgentCall, 
     agent = { agentId: randomUUID(), key: call.member!, sessionRef: randomUUID(), checkpointVersion: 0 };
     (state.agents ??= []).push(agent);
     state.sessions.push({ sessionRef: agent.sessionRef, actorId: agent.agentId, actorKey: agent.key, role: 'worker',
-      nativeIdKind: sessionIdFieldForAgent(execution.agentKind), execution, generation: 1, ...(call.workspace ? {workspaceId:call.workspace} : {}) });
+      nativeIdKind, execution, generation: 1, ...(call.workspace ? {workspaceId:call.workspace} : {}) });
   }
   const receipts = mailbox(state).receipts.filter(receipt => receipt.agentId === agent!.agentId && receipt.status === 'ready' && !receipt.turnId);
   const task: WorkflowTask = { taskId: randomUUID(), taskKey: call.key, sessionRef: agent.sessionRef, objective: call.prompt,

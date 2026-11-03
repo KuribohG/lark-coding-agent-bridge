@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { profileForAgentKind } from '../../../src/runtime/execution-controller';
-import { resolveWorkerExecution, workerSelection } from '../../../src/workflows/execution';
-import type { WorkflowRoot } from '../../../src/workflows/types';
+import { bridgeWorkerPolicy, resolveWorkerExecution } from '../../../src/workflows/bridge/execution';
+import { workerSelection } from '../../../src/workflows/engine/execution';
+import type { WorkflowRoot } from '../../../src/workflows/engine/types';
 import type { RunPolicyAllow } from '../../../src/policy/run-policy';
 
 const root: WorkflowRoot = { scopeId: 'topic', profile: 'codex', agentKind: 'codex', cwdRealpath: '/workspace',
@@ -35,6 +36,11 @@ describe('worker execution binding', () => {
 
   it.each([null, [], 'pi', { agentKind: 'unknown' }, { profile: 'another-profile' }, { env: { KEY: 'value' } },
     { model: '' }, { model: 'default' }, { agentKind: 'pi', reasoningEffort: 'ultra' }])('rejects invalid or out-of-scope selection %j', value => {
-    expect(() => workerSelection(value, root)).toThrow();
+    expect(() => workerSelection(value, root, bridgeWorkerPolicy)).toThrow();
+  });
+
+  it('leaves harness and effort names to the host policy', () => {
+    expect(workerSelection({ agentKind: 'custom', reasoningEffort: 'ultra' }, root)).toEqual({ agentKind: 'custom', reasoningEffort: 'ultra' });
+    expect(() => workerSelection({ agentKind: 'custom' }, root, bridgeWorkerPolicy)).toThrow('Unknown worker agentKind');
   });
 });

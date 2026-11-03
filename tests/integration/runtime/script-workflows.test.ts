@@ -3,13 +3,13 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WorkflowRuntime } from '../../../src/workflows/runtime';
-import { callWorkflow } from '../../../src/workflows/ipc';
+import { createBridgeWorkflowRuntime } from '../../../src/workflows/bridge/runtime';
+import { callWorkflow } from '../../../src/workflows/engine/ipc';
 import { RunExecutor } from '../../../src/runtime/run-executor';
 import { ProcessPool } from '../../../src/runtime/process-pool';
 import { ActiveRuns } from '../../../src/runtime/active-runs';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
-import type { WorkflowRoot, WorkflowWorkItem } from '../../../src/workflows/types';
+import type { WorkflowRoot, WorkflowWorkItem } from '../../../src/workflows/engine/types';
 import type { RunPolicyAllow } from '../../../src/policy/run-policy';
 import type { AgentKind } from '../../../src/config/profile-schema';
 import type { AgentEvent } from '../../../src/agent/types';
@@ -23,7 +23,7 @@ const output = (text: string, kind: string): AgentEvent[] => [
   { type: 'system', ...(kind === 'codex' ? { threadId: randomUUID() } : { sessionId: randomUUID() }) },
   { type: 'final_text', content: text }, { type: 'done', terminationReason: 'normal' },
 ];
-async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootKind: 'claude' | 'codex' | 'pi' = 'codex', showPlan?: ConstructorParameters<typeof WorkflowRuntime>[0]['showPlan'], path = ':memory:', getTimeoutMinutes?: () => number) {
+async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootKind: 'claude' | 'codex' | 'pi' = 'codex', showPlan?: Parameters<typeof createBridgeWorkflowRuntime>[0]['showPlan'], path = ':memory:', getTimeoutMinutes?: () => number) {
   let root: WorkflowRoot = { scopeId: 'script-topic', profile: 'default', agentKind: rootKind, cwdRealpath: '/workspace',
     policyFingerprint: 'policy', catalogBinding: 'root', modelSettings: { model: 'root-model' } };
   const policy: RunPolicyAllow = { ok: true, prompt: '', requestedCwd: '/workspace', cwdRealpath: '/workspace',
@@ -41,13 +41,13 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
     runtime.kernel.markNotified(scopeId, state.events.map(event => event.id));
   });
   const notify = vi.fn(async (_state: unknown, _text: string) => {});
-  const deps: ConstructorParameters<typeof WorkflowRuntime>[0] = { path, executor, resolve: async scopeId => ({ root: {...root,scopeId}, policy }), wakeMain, showPlan, getTimeoutMinutes, notify,
+  const deps: Parameters<typeof createBridgeWorkflowRuntime>[0] = { path, executor, resolve: async scopeId => ({ root: {...root,scopeId}, policy }), wakeMain, showPlan, getTimeoutMinutes, notify,
     resolveWorker: async (current, selection) => ({ policy, execution: {
       agentKind: selection.agentKind, profile: current.profile, configurationFingerprint: selection.agentKind,
       policyFingerprint: policy.policyFingerprint, modelSettings: { ...(selection.agentKind === current.agentKind ? current.modelSettings : {model: selection.agentKind + '-default'}), ...(selection.model ? {model:selection.model} : {}), ...(selection.reasoningEffort ? {reasoningEffort:selection.reasoningEffort} : {}) },
     } }),
   };
-  let runtime = new WorkflowRuntime(deps);
+  let runtime = createBridgeWorkflowRuntime(deps);
   await runtime.start(); cleanup.push(() => runtime.close());
   let binding = runtime.bindMain(root.scopeId, 'start');
   const state = () => runtime.kernel.state(root.scopeId)!;
@@ -55,7 +55,7 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
     { operationId: randomUUID(), workflowId: state()?.workflowId, expectedStateVersion: state()?.stateVersion, ...(method === 'run_script' || method === 'replay_script' ? {plan:'Review the task with the requested harness and model; return a final result.'} : {}), ...args }, binding.env);
   const until = async (check: () => void) => vi.waitFor(async () => { await runtime.tick(); check(); }, { timeout: 5000, interval: 20 });
   return { get runtime() { return runtime; }, adapters, resolveAgent, wakeMain, notify, binding, state, call, until, pool,
-    restart: async () => { binding.release(); await runtime.close(); runtime = new WorkflowRuntime(deps); await runtime.start(); binding = runtime.bindMain(root.scopeId, 'continue'); },
+    restart: async () => { binding.release(); await runtime.close(); runtime = createBridgeWorkflowRuntime(deps); await runtime.start(); binding = runtime.bindMain(root.scopeId, 'continue'); },
     changeRoot: () => { root = { ...root, catalogBinding: 'replacement' }; } };
 }
 

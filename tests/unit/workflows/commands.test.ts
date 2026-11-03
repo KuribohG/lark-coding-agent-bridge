@@ -1,9 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WorkflowKernel } from '../../../src/workflows/kernel';
-import { handleWorkflowCommand } from '../../../src/workflows/commands';
-import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '../../../src/workflows/types';
-import { renderWorkflowStatus } from '../../../src/workflows/status';
+import { WorkflowKernel } from '../../../src/workflows/engine/kernel';
+import { handleWorkflowCommand } from '../../../src/workflows/chat/commands';
+import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '../../../src/workflows/engine/types';
+import { renderWorkflowStatus } from '../../../src/workflows/chat/status';
+import { sanitizeLogsForDoctor } from '../../../src/core/logger';
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0)) await close(); });
@@ -15,7 +16,7 @@ function fixture(execute: (request: WorkflowWorkerRequest) => Promise<WorkflowWo
       modelSettings:{model:selection.model,reasoningEffort:selection.reasoningEffort}})});
   cleanup.push(()=>kernel.close());
   const submit = vi.fn<(_: string) => string | undefined>(()=>undefined);
-  const command = (args: string) => handleWorkflowCommand(kernel,'topic',args,submit);
+  const command = (args: string) => handleWorkflowCommand(kernel,'topic',args,submit,{sanitize:sanitizeLogsForDoctor});
   const start = async () => kernel.call({kind:'main',scopeId:'topic',allowStart:true},'run_script',{operationId:randomUUID(),goal:'review',plan:'Pi with service/worker-model reviews the design and returns findings.',script:'return null;'});
   return {kernel,root,submit,command,start};
 }

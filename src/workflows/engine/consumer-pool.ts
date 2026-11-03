@@ -4,13 +4,13 @@ import { availableMessages, receiveMessages, scheduleMemberTurn } from './durabl
 import { boundedInteger, parseScriptAgentCall, scriptText } from './script-contract';
 import { availableWork, unfinishedWork, workStatus } from './work-queue';
 import { consumerPools, memberPool, queueControl, queueName } from './work-routing';
-import type { WorkConsumerPool, WorkerExecution, WorkflowState, WorkflowTask } from './types';
+import type { NativeIdKind, WorkConsumerPool, WorkerExecution, WorkerExecutionPolicy, WorkflowState, WorkflowTask } from './types';
 
 const BUSY = new Set<WorkflowTask['status']>(['queued', 'starting', 'running', 'cancelling', 'waiting_workflow']);
 const CONSUMER_PROMPT = '\nUse claim_work to consume authorized work. Read item.progress before acting, save checkpoint_work, renew long-running claims, then complete_work or fail_work. Continue until claim_work returns null. Then return a final answer immediately to release your process; the bridge will schedule a new turn when work becomes available. Do not poll or sleep waiting for work. Follow the original goal and declared resource ownership.';
 const FEEDBACK_PROMPT = '\nFirst read the delivered member-context messages and act on relevant feedback within the original task scope. They may be the only reason for this turn. Then consume any available work. Do not send acknowledgement-only replies that create message loops; send a message only when you have useful new evidence or need a concrete action. Feedback does not authorize editing resources outside a valid work claim.';
 
-export function parseConsumerPool(input: Record<string, unknown>, state: WorkflowState) {
+export function parseConsumerPool(input: Record<string, unknown>, state: WorkflowState, policy?: WorkerExecutionPolicy) {
   if (Object.keys(input).some(key => !['key', 'members', 'prompt', 'maxTurns', 'queue', 'maxConcurrent', 'wakeOnMessages'].includes(key))) throw new Error('Unsupported consumeWork option');
   const key = scriptText(input.key, 'consumer pool key', 100);
   if (key.trim() !== key) throw new Error('Consumer pool key must not contain surrounding whitespace');
@@ -22,7 +22,7 @@ export function parseConsumerPool(input: Record<string, unknown>, state: Workflo
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid consumer member');
     const { name, ...options } = value as Record<string, unknown>;
     if (Object.keys(options).some(key => !['harness', 'model', 'reasoningEffort', 'workflowTool'].includes(key))) throw new Error('Unsupported consumer member option');
-    return parseScriptAgentCall({ ...options, key, member: scriptText(name, 'consumer name', 100), prompt }, state.script!.defaults, state.root);
+    return parseScriptAgentCall({ ...options, key, member: scriptText(name, 'consumer name', 100), prompt }, state.script!.defaults, state.root, policy);
   });
   if (new Set(members.map(member => member.member)).size !== members.length) throw new Error('Consumer member names must be unique');
   const name = queueName(input.queue);
@@ -85,17 +85,17 @@ export function consumerResult(state: WorkflowState, key?: string): unknown | un
 }
 
 /** Synchronous queue reconciliation under the kernel's single-writer state boundary. */
-export function pumpConsumerPool(state: WorkflowState, additionalTurnsAllowed = Infinity): boolean {
+export function pumpConsumerPool(state: WorkflowState, nativeIdKind: (agentKind: string) => NativeIdKind, additionalTurnsAllowed = Infinity): boolean {
   let changed = false;
   for (const pool of consumerPools(state).sort((a, b) => a.turns.length - b.turns.length)) {
     const before = pool.turns.length;
-    changed = pumpPool(state, pool, additionalTurnsAllowed) || changed;
+    changed = pumpPool(state, pool, nativeIdKind, additionalTurnsAllowed) || changed;
     additionalTurnsAllowed -= pool.turns.length - before;
   }
   return changed;
 }
 
-function pumpPool(state: WorkflowState, pool: WorkConsumerPool, additionalTurnsAllowed: number): boolean {
+function pumpPool(state: WorkflowState, pool: WorkConsumerPool, nativeIdKind: (agentKind: string) => NativeIdKind, additionalTurnsAllowed: number): boolean {
   if (pool.runId !== state.script?.runId || state.status !== 'active' || state.script?.status !== 'running'
     || !['waiting', 'running'].includes(pool.status)) return false;
   const before = JSON.stringify(pool);
@@ -156,7 +156,7 @@ function pumpPool(state: WorkflowState, pool: WorkConsumerPool, additionalTurnsA
         ...(member.workflowTool ? {workflowTool:true} : {}),
         output:'text' as const,selection:{agentKind:member.execution.agentKind,...member.execution.modelSettings}};
       if (deliver && !retry) receiveMessages(state, member.name, key + '/inbox');
-      const { task } = scheduleMemberTurn(state, call, member.execution);
+      const { task } = scheduleMemberTurn(state, call, member.execution, nativeIdKind(member.execution.agentKind));
       if (!retry && deliver && workSlots <= 0) task.consumerMessageTurn = true;
       if (!member.retryPending) { pool.turns.push({key,member:member.name,taskId:task.taskId}); additionalTurnsAllowed--; }
       state.script.calls.push({key,taskId:task.taskId,cached:false});

@@ -1,6 +1,7 @@
 import { workerSelection } from './execution';
-import { DEFAULT_WORKFLOW_TIMEOUT_MINUTES } from '../config/schema';
-import type { WorkerExecutionSelection, WorkflowDefinition, WorkflowRoot } from './types';
+import type { WorkerExecutionPolicy, WorkerExecutionSelection, WorkflowDefinition, WorkflowRoot } from './types';
+
+export const DEFAULT_WORKFLOW_TIMEOUT_MINUTES = 480;
 
 export const SCRIPT_MAX_TASKS = 128;
 export const SCRIPT_MAX_TEXT = 100_000;
@@ -43,7 +44,7 @@ export function scriptArgs(value: unknown): unknown {
   return JSON.parse(encoded);
 }
 
-export function parseScriptAgentCall(value: unknown, defaults: WorkerExecutionSelection, root: WorkflowRoot): ScriptAgentCall {
+export function parseScriptAgentCall(value: unknown, defaults: WorkerExecutionSelection, root: WorkflowRoot, policy?: WorkerExecutionPolicy): ScriptAgentCall {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid agent() call');
   const input = value as Record<string, unknown>;
   if (Object.keys(input).some(key => !['key', 'member', 'prompt', 'harness', 'model', 'reasoningEffort', 'output', 'workflowTool', 'workspace'].includes(key))) {
@@ -60,7 +61,7 @@ export function parseScriptAgentCall(value: unknown, defaults: WorkerExecutionSe
   const selection = workerSelection({ ...inherited, agentKind: harness,
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.reasoningEffort !== undefined ? { reasoningEffort: input.reasoningEffort } : {}),
-  }, root);
+  }, root, policy);
   const prompt = scriptText(input.prompt, 'agent prompt');
   const member = input.member === undefined ? undefined : scriptText(input.member, 'member name', 100);
   const workspace = input.workspace === undefined ? undefined : scriptText(input.workspace, 'workspace ID', 100);

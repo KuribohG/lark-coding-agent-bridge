@@ -175,6 +175,22 @@ describe('static architecture contracts', () => {
     }
   });
 
+  it('keeps the workflow engine and chat UI free of bridge internals', () => {
+    const allowed: Record<string, RegExp> = {
+      'src/workflows/engine': /^\.\/[\w-]+$/,
+      'src/workflows/chat': /^(?:\.\/[\w-]+|\.\.\/engine\/[\w-]+)$/,
+    };
+    for (const [directory, pattern] of Object.entries(allowed)) {
+      for (const file of collectTsFiles(directory)) {
+        for (const match of read(file).matchAll(/(?:import|export)\s+(?:type\s+)?(?:[^;\n]*?\s+from\s+)?["']([^"']+)["']/g)) {
+          const specifier = match[1]!;
+          if (specifier.startsWith('.')) expect(specifier, file).toMatch(pattern);
+          else expect(specifier, file).toMatch(/^(?:node:|better-sqlite3$|quickjs-emscripten$)/);
+        }
+      }
+    }
+  });
+
   it('contains no internal import cycles', () => {
     expect(internalCycles()).toEqual([]);
   });

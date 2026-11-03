@@ -1,4 +1,5 @@
 import { larkDisplay } from './lark-display';
+import { DEFAULT_WORKFLOW_TIMEOUT_MINUTES } from '../workflows/engine/script-contract';
 export type TenantBrand = 'feishu' | 'lark';
 
 /**
@@ -287,7 +288,6 @@ export function getRunIdleTimeoutMs(cfg: AppConfig): number | undefined {
   return clamped * 60_000;
 }
 
-export const DEFAULT_WORKFLOW_TIMEOUT_MINUTES = 480;
 export const MAX_WORKFLOW_TIMEOUT_MINUTES = 7 * 24 * 60;
 
 export function getWorkflowTimeoutMinutes(cfg: Pick<AppConfig, 'preferences'>): number {

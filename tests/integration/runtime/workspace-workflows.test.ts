@@ -3,12 +3,12 @@ import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WorkflowRuntime } from '../../../src/workflows/runtime';
+import { createBridgeWorkflowRuntime } from '../../../src/workflows/bridge/runtime';
 import { RunExecutor } from '../../../src/runtime/run-executor';
 import { ProcessPool } from '../../../src/runtime/process-pool';
 import { ActiveRuns } from '../../../src/runtime/active-runs';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
-import { workspaceCommand } from '../../../src/workflows/workspace-process';
+import { workspaceCommand } from '../../../src/workflows/engine/workspace-process';
 import type { RunPolicyAllow } from '../../../src/policy/run-policy';
 import type { AgentEvent, AgentRunOptions } from '../../../src/agent/types';
 
@@ -38,7 +38,7 @@ async function harness(perform?: (opts: AgentRunOptions, index: number) => Promi
     })();
     return { runId: native.runId, events, stop: () => native.stop(), waitForExit: ms => native.waitForExit(ms) };
   };
-  const runtime = new WorkflowRuntime({ path: join(dir, 'workflow.sqlite'), workspaceRoot: join(dir, 'worktrees'),
+  const runtime = createBridgeWorkflowRuntime({ path: join(dir, 'workflow.sqlite'), workspaceRoot: join(dir, 'worktrees'),
     executor: new RunExecutor({ resolveAgent: () => adapter, pool: new ProcessPool(() => 4), activeRuns: new ActiveRuns() }),
     resolve: async () => ({ root, policy }), wakeMain: async () => {} });
   await runtime.start();

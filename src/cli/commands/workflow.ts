@@ -1,5 +1,5 @@
 import { readFile } from 'node:fs/promises';
-import { callWorkflow } from '../../workflows/ipc';
+import { callWorkflow } from '../../workflows/engine/ipc';
 
 export async function runWorkflow(method: string, options: { input?: string; inputFile?: string; json?: boolean }): Promise<void> {
   if (options.input !== undefined && options.inputFile !== undefined) throw new Error('Choose --input or --input-file');

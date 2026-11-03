@@ -10,7 +10,7 @@ import { runtimeProfileConfig } from '../../../src/config/profile-store';
 import { SessionStore } from '../../../src/session/store';
 import { SessionCatalog } from '../../../src/session/catalog';
 import { WorkspaceStore } from '../../../src/workspace/store';
-import { callWorkflow } from '../../../src/workflows/ipc';
+import { callWorkflow } from '../../../src/workflows/engine/ipc';
 import { CommandRegistry } from '../../../src/commands';
 import { createWorkflowsPlugin } from '../../../src/plugins/workflows/plugin';
 import { createFakeChannel } from '../../helpers/fake-channel';

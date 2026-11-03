@@ -1,6 +1,26 @@
-import type { RunStopReason } from '../agent/types';
-import type { AgentKind } from '../config/profile-schema';
-import type { ModelSettings } from '../agent/model-settings';
+/** Harness names are host-defined; the engine treats them as opaque strings. */
+export type AgentKind = string;
+
+export interface ModelSettings {
+  model?: string;
+  reasoningEffort?: string;
+}
+
+export type WorkflowStopReason = 'cancelled' | 'deadline' | 'idle' | 'shutdown' | 'yield' | 'input' | 'cleanup';
+
+export type NativeIdKind = 'sessionId' | 'threadId';
+
+export interface WorkflowLogger {
+  info(event: string, fields?: Record<string, unknown>): void;
+  warn(event: string, fields?: Record<string, unknown>): void;
+}
+
+/** Host-specific execution rules layered over the engine's structural checks. */
+export interface WorkerExecutionPolicy {
+  /** Validates harness/model/effort names; throws on unsupported values. */
+  checkSelection?(selection: WorkerExecutionSelection): void;
+  nativeIdKind?(agentKind: AgentKind): NativeIdKind;
+}
 
 export interface WorkflowDefinition {
   apiVersion: 'bridge.workflow/v1';
@@ -34,7 +54,7 @@ export interface SessionBinding {
   role: string;
   /** Absent only on instances persisted by older bridge builds. */
   execution?: WorkerExecution;
-  nativeIdKind: 'sessionId' | 'threadId';
+  nativeIdKind: NativeIdKind;
   nativeSessionId?: string;
   observedModel?: string;
   generation: number;
@@ -68,7 +88,7 @@ export interface AgentCheckpoint {
 }
 
 export interface TurnAttempt {
-  stopReason?: RunStopReason;
+  stopReason?: WorkflowStopReason;
   attemptId: string;
   runId?: string;
   startedAt: number;
@@ -341,14 +361,15 @@ export interface WorkflowWorkerRequest {
 }
 
 export interface WorkflowWorkerResult {
-  stopReason?: RunStopReason;
+  stopReason?: WorkflowStopReason;
   status: 'completed' | 'failed' | 'stopped';
   text?: string;
   question?: string;
   error?: string;
 }
 
-export interface WorkflowHost {
+export interface WorkflowHost extends WorkerExecutionPolicy {
+  log?: WorkflowLogger;
   resolveRoot(scopeId: string): Promise<WorkflowRoot | undefined>;
   getTimeoutMinutes?(root: WorkflowRoot): number;
   resolveWorker?(root: WorkflowRoot, selection: WorkerExecutionSelection): Promise<WorkerExecution>;

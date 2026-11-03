@@ -40,6 +40,10 @@
     "./channels/slack": {
       "types": "./dist/slack.d.ts",
       "import": "./dist/slack.js"
+    },
+    "./workflows": {
+      "types": "./dist/workflows.d.ts",
+      "import": "./dist/workflows.js"
     }
   },
   "files": [
@@ -69,6 +73,7 @@
     "docs/workflow-scheduling.md",
     "docs/workflow-collaboration.md",
     "docs/workflow-worktrees.md",
+    "docs/workflow-engine.md",
     "workflow-definitions"
   ],
   "scripts": {
