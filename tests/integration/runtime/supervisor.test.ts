@@ -1,7 +1,7 @@
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import {
   createRootConfig,
@@ -11,6 +11,12 @@ import {
 import { Supervisor } from '../../../src/runtime/supervisor';
 import { resolveAppPaths } from '../../../src/config/app-paths';
 import { acquireAppRuntimeLock } from '../../../src/runtime/locks';
+
+// CI hosts have no agent CLIs installed; treat every binary as present.
+vi.mock('../../../src/agent/preflight', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../src/agent/preflight')>(),
+  checkAgentAvailability: vi.fn(async () => ({ ok: true as const })),
+}));
 
 const roots: string[] = [];
 const started: string[] = [];

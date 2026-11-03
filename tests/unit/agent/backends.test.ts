@@ -17,6 +17,12 @@ vi.mock('../../../src/agent/codex/app-server', () => ({
   })),
 }));
 
+// CI hosts have no agent CLIs installed; treat every binary as present.
+vi.mock('../../../src/agent/preflight', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../../../src/agent/preflight')>(),
+  checkAgentAvailability: vi.fn(async () => ({ ok: true as const })),
+}));
+
 afterEach(() => {
   vi.clearAllMocks();
   vi.unstubAllEnvs();

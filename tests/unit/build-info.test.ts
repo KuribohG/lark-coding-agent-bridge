@@ -17,7 +17,8 @@ afterEach(async () => {
 
 describe('build information', () => {
   it('uses build metadata from the active release', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'bridge-build-info-'));
+    // macOS tmpdir() is a symlink; build info reports resolved paths.
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'bridge-build-info-')));
     dirs.push(root);
     const release = join(root, 'releases', 'abcdef123456');
     const entrypoint = join(release, 'bin', 'lark-channel-bridge.mjs');
