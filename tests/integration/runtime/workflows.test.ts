@@ -38,7 +38,7 @@ describe('workflow IPC and worker execution', () => {
     const state = runtime.kernel.state(root.scopeId)!;
     expect(resolveAgent).toHaveBeenCalledWith('real-topic', 'codex');
     expect(agent.runOptions[0]?.threadId).toBeUndefined();
-    expect(agent.runOptions[0]?.env?.LARK_WORKFLOW_TOKEN).not.toEqual(main.env.LARK_WORKFLOW_TOKEN);
+    expect(agent.runOptions[0]?.env?.AGENT_WORKFLOW_TOKEN).not.toEqual(main.env.AGENT_WORKFLOW_TOKEN);
     expect(state.sessions[0]?.nativeSessionId).toBe('child-1');
     expect(state.artifacts.find(a => a.taskId)?.text).toBe('proposal');
     await runtime.kernel.tick(); expect(wakeMain).toHaveBeenCalledWith('real-topic');

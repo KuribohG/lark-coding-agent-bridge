@@ -37,7 +37,7 @@ process.stdin.on('end', () => {
   emit({ type: 'session', id: session });
   if (prompt.includes('SAVE_WORK_STATE')) {
     const { execFileSync } = require('node:child_process');
-    const call = (method, args) => JSON.parse(execFileSync(process.execPath, [process.env.LARK_WORKFLOW_CLI, 'workflow', method, '--input', JSON.stringify(args), '--json'], { encoding: 'utf8' }));
+    const call = (method, args) => JSON.parse(execFileSync(process.execPath, [process.env.AGENT_WORKFLOW_CLI, 'workflow', method, '--input', JSON.stringify(args), '--json'], { encoding: 'utf8' }));
     const current = call('task_status', {});
     call('checkpoint', { operationId: 'saved-progress', expectedCheckpointVersion: current.checkpointVersion, state: { decision: 'persist native session', next: 'review' } });
   }

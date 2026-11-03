@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const directory = dirname(fileURLToPath(import.meta.url));
 const call = (method, args = {}, mutation = true) => JSON.parse(execFileSync(process.execPath,
-  [process.env.LARK_WORKFLOW_CLI, 'workflow', method, '--input', JSON.stringify({
+  [process.env.AGENT_WORKFLOW_CLI, 'workflow', method, '--input', JSON.stringify({
     ...(mutation ? {operationId:randomUUID()} : {}), ...args,
   }), '--json'], {encoding:'utf8',timeout:20_000,stdio:['ignore','pipe','pipe']}));
 const context = call('read_context', {}, false);

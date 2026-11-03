@@ -40,7 +40,7 @@ describe('workflow engine without bridge services', () => {
     expect(state.artifacts.find(artifact => artifact.ref === state.script?.resultRef)?.text).toBe(JSON.stringify('answer 1|answer 2'));
     expect(specs.map(spec => spec.resume)).toEqual([undefined, { kind: 'sessionId', id: 'native-1' }]);
     expect(specs[0]).toMatchObject({ prompt: expect.stringContaining('first'), execution: { agentKind: 'custom-agent', modelSettings: { reasoningEffort: 'deep' } } });
-    expect(specs[0]!.env.LARK_WORKFLOW_TOKEN).toBeTruthy();
+    expect(specs[0]!.env.AGENT_WORKFLOW_TOKEN).toBeTruthy();
     await expect(callWorkflow('run_script', { operationId: randomUUID(), goal: 'x', plan: 'x', script: 'return 1;' }, specs[0]!.env)).rejects.toThrow();
     await runtime.kernel.tick(); expect(wakeMain).toHaveBeenCalledWith('chat');
   });

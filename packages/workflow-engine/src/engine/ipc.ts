@@ -56,8 +56,8 @@ export class WorkflowIpc {
     const token = randomBytes(32).toString('hex');
     this.bindings.set(token, { caller, expiresAt });
     return {
-      env: { LARK_WORKFLOW_ENDPOINT: this.endpoint, LARK_WORKFLOW_TOKEN: token,
-        ...(this.cliPath ? { LARK_WORKFLOW_CLI: this.cliPath } : {}) },
+      env: { AGENT_WORKFLOW_ENDPOINT: this.endpoint, AGENT_WORKFLOW_TOKEN: token,
+        ...(this.cliPath ? { AGENT_WORKFLOW_CLI: this.cliPath } : {}) },
       release: () => { this.bindings.delete(token); },
     };
   }
@@ -70,8 +70,8 @@ export class WorkflowIpc {
 }
 
 export async function callWorkflow(method: string, args: unknown, env = process.env): Promise<unknown> {
-  const endpoint = env.LARK_WORKFLOW_ENDPOINT;
-  const token = env.LARK_WORKFLOW_TOKEN;
+  const endpoint = env.AGENT_WORKFLOW_ENDPOINT;
+  const token = env.AGENT_WORKFLOW_TOKEN;
   if (!endpoint || !token) throw new Error('This command requires a bridge-managed workflow run');
   const url = new URL(endpoint);
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.pathname !== '/workflow' || url.username || url.password) throw new Error('Invalid local workflow endpoint');
@@ -95,7 +95,7 @@ startAgent(prompt,{key,harness?,model?,reasoningEffort?,output?,workflowTool?,wo
 手动链路：freezeWorkspace({key,workspace}) 返回固定候选；createWorkspace({key,change:候选id}) 创建复核快照；startAgent 在快照中返回 JSON {ok:true,reason,evidence:[...]} 并 joinTask 后，approveChange({key,change,taskId}) 记录实际任务的通过结果。integrateChanges({key,approvals:[approval.id],base?,target?}) 返回 {workspace,status,headCommit,remaining,...}，只准备私有集成目录。status=conflict 时在该目录修复/提交并独立复核，再用新 key 将修复 approval 与 remaining 集成；不能直接 accept。checkWorkspace({key,workspace,commands:[{argv:[命令,参数],timeoutMs?}]}) 返回检查 id/passed；1–4条前台命令，单条100ms–30min，默认5min且不超过总截止时间。acceptIntegration({key,workspace,checks:检查id}) 仅在检查通过且版本未变时推进 workflow 私有分支；不会更新原 checkout 或远端。合入后由主会话按授权发布返回的 commit。cleanupWorkspace({key,workspace}) 只移除干净且无未集成修改的空闲目录。每 workflow 最多32个目录。重放使用原记录，外部依赖/环境变化须新 key 重检。异常退出后占用无法确认时保留目录并阻止复用，使用新目录从已冻结版本恢复。worktree 共用 Git 元数据，不是权限沙箱。`;
 
 
-export const WORKFLOW_TOOL_INSTRUCTIONS = `工作流工具通过 shell 调用：node "$LARK_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。环境里的 CLI 路径属于当前 bridge 版本。
+export const WORKFLOW_TOOL_INSTRUCTIONS = `工作流工具通过 shell 调用：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。环境里的 CLI 路径属于当前 bridge 版本。
 工作流模式由 bridge 的 /workflow 命令路由决定，不根据自然语言或任务类型推断。仅 /workflow start 或 /workflow script 命令授权的启动轮可调用 run_script；内部完成事件只允许继续处理已绑定的工作流，不能新建。普通消息不进入工作流模式，也不会获得工作流调用凭据。
 run_script 需要唯一 operationId；所有其他变更需要 workflowId、唯一 operationId、expectedStateVersion（从 status 返回）。冲突时重读 status，不自动重试不同内容。
 操作：status；run_script(goal,script,plan,args?,name?,execution?,maxAgents?,maxConcurrent?,timeoutMs?)；replay_script(script?,plan?,args?,execution?)；read_artifact(ref)；read_checkpoint(member)；publish_artifact(kind=context|report,text)；ack_events(eventIds)；send_message(member,text,topic?,correlationId?)；enqueue_work(key,title,input,queue?,priority?,dependsOn?,resources?,maxAttempts?)；retry_work(itemId,additionalAttempts?)；close_work_queue(queue?)；work_status(itemId? 或 queue?,offset?,limit?)；cancel_task(taskId)；pause；resume；cancel；complete(reportRef,openIssues:[],verificationLimits)。
@@ -111,14 +111,14 @@ ${WORKFLOW_SCHEDULING_INSTRUCTIONS}
 run_script/replay_script 后结束 turn，子任务由 bridge 管理。仅在整体结束或失败时唤醒主会话。内部事件不是用户消息或原生问题答案。不要读取或展示环境中的调用凭据。worker 仅可执行原始需求授权的任务；主、子运行沿用已授权 profile，角色说明不代表工具沙箱隔离。`;
 
 const WORKFLOW_MEMBER_INSTRUCTIONS = `你是 bridge 管理的持久工作流成员。遵守原始需求授权，只处理本轮输入，最终答复结束本轮并释放执行资源。角色说明不改变实际权限。不要发送外部消息或派生子 agent。
-你可使用当前绑定的 CLI：node "$LARK_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json（也可 --input-file）。不要读取调用凭据。
+你可使用当前绑定的 CLI：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json（也可 --input-file）。不要读取调用凭据。
 read_context 返回自己的 checkpoint 和本轮消息；task_status 返回当前 checkpointVersion。checkpoint({operationId,expectedCheckpointVersion,state}) 保存最多 16000 字符的 JSON 工作状态。请在完成重要步骤时保存进展、决定、下一步和产物引用；这不结束本轮，也不代表文件副作用可回滚。冲突时重新 read_context，不猜测版本。
 send_message({operationId,member,text,topic?,correlationId?}) 向同一工作流已创建的成员发送最多 4000 字符的消息。operationId 在这个逻辑轮次内唯一，相同内容重试时复用。消息不代表收件方已经处理。
 工作队列：claim_work({operationId,leaseMs?,queue?}) 原子领取一个工作项（每个成员最多一个），返回 claimId、generation、leaseUntil、item；没有可领项返回 null，应结束本轮，不忙等。消费池成员省略 queue 即使用池绑定，不能领取其它队列；手动成员默认领取 default。默认租约 120 秒，范围 1–300 秒。先读取 item.progress 核对已完成步骤；长任务及时 renew_claim({operationId,claimId,generation,leaseMs?})。checkpoint_work({operationId,claimId,generation,expectedProgressVersion,state}) 保存最多 16000 字符的 JSON 工作进展；complete_work({operationId,claimId,generation,result}) 提交 JSON 结果；fail_work({operationId,claimId,generation,error,retry?}) 报错；release_claim({operationId,claimId,generation,reason}) 交还工作。工作项 input/progress/result 各最多 16000 字符。work_status({itemId? 或 offset?,limit?}) 读取工作状态，默认每页 16 项、最多 64 项。队列变更 operationId 在当前执行 attempt 内唯一，同内容重试复用；恢复后的新 attempt 可重新领取，过期的旧 claimId/generation 不可提交。空 claim 的重试查询须用新 operationId。取消、退出或失去租约会回收未完成认领，保存的工作进展保留；外部副作用仍需核对和幂等处理。
 脚本负责 receive 等待和下一轮调度。需要等待时，保存 checkpoint，再用最终答复说明等待原因；不要在 CLI 进程里轮询或睡眠。恢复时核对已经发生的副作用，接着保存的工作状态继续。`;
 
 const NESTED_WORKFLOW_INSTRUCTIONS = `当前 agent 已显式启用子 workflow 工具，只在 Workflow 模式内有效。
-可通过 node "$LARK_WORKFLOW_CLI" workflow run_workflow --input '<JSON>' --json（或 --input-file）调用完整的子 workflow。
+可通过 node "$AGENT_WORKFLOW_CLI" workflow run_workflow --input '<JSON>' --json（或 --input-file）调用完整的子 workflow。
 输入：{operationId,key,goal,script,plan,args?,name?,execution?,maxAgents?,maxConcurrent?,timeoutMs?,checkpoint?,parentQueue?}。key 在当前父任务内稳定且唯一；同一 key 的输入不可变，同内容重试复用 operationId。script 是支持顶层 await/return 的 JS 函数体，使用 agent、parallel、pipeline、enqueueWork、consumeWork、closeWorkQueue、send、receive 等现有脚本接口。plan 必须说明子运行的步骤和每个 worker 的 harness/模型、分工、依赖和分支。只做根需求授权范围内的工作。
 script 无 import/process/require/文件接口，args 是 JSON。所有 Promise 必须 await：parallel([()=>agent(...),...])；pipeline(items,...stages) 对元素并行、阶段顺序执行；phase/log(text) 保存进展。agent 的 output 默认 text，可选 json 严格解析。send(member,text,{key})、receive(member,{key}) 通过已创建的持久成员传递消息。enqueueWork({key,title,input,resources?,maxAttempts?}) 入队；workStatus({itemId?,offset?,limit?}) 查询；consumeWork({key,members:[{name,harness?,model?,reasoningEffort?,workflowTool?}],prompt,maxTurns?}) 调度专用成员领取任务；closeWorkQueue({key}) 显式关闭后消费池才会排空返回。每层队列和成员独立，所有 key 稳定且唯一。
 ${WORKFLOW_SCHEDULING_INSTRUCTIONS}

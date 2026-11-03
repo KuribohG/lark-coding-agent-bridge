@@ -3,7 +3,7 @@ import { callWorkflow } from './ipc';
 
 export interface WorkflowToolOptions { input?: string; inputFile?: string; json?: boolean }
 
-/** `workflow <operation>` as invoked by main agents and workers through $LARK_WORKFLOW_CLI. */
+/** `workflow <operation>` as invoked by main agents and workers through $AGENT_WORKFLOW_CLI. */
 export async function runWorkflowTool(method: string, options: WorkflowToolOptions): Promise<void> {
   if (options.input !== undefined && options.inputFile !== undefined) throw new Error('Choose --input or --input-file');
   const input = options.inputFile ? await readFile(options.inputFile, 'utf8') : options.input ?? '{}';

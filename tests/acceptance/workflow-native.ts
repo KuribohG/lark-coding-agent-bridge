@@ -117,7 +117,7 @@ async function scriptFor(test: Case): Promise<string> {
     return `await ${call(seed, 'remember', 'A')}; await receive('A',{key:'wake'}); return await ${call('Without using any tools, return the exact marker I asked you to memorize in the earlier conversation. Return only JSON with the single field marker.', 'recall', 'A', test.backend, true)};`;
   }
   if (test.scenario === 'interrupt') {
-    const prompt = `Native interruption acceptance test. If the saved checkpoint in your member context has state.stage equal to "armed", use no tools and reply with JSON {"stage":"resumed"}. Otherwise run this exact shell command using your shell tool: node "$LARK_WORKFLOW_CLI" workflow checkpoint --input '{"operationId":"armed","expectedCheckpointVersion":0,"state":{"stage":"armed"}}' --json . Then execute /bin/sleep 90 in your shell tool in the foreground and wait for it. Do not launch background work. The test harness will interrupt that wait. If sleep completes normally, return {"stage":"unexpected-completion"}. Do not read configuration, credentials or other files.`;
+    const prompt = `Native interruption acceptance test. If the saved checkpoint in your member context has state.stage equal to "armed", use no tools and reply with JSON {"stage":"resumed"}. Otherwise run this exact shell command using your shell tool: node "$AGENT_WORKFLOW_CLI" workflow checkpoint --input '{"operationId":"armed","expectedCheckpointVersion":0,"state":{"stage":"armed"}}' --json . Then execute /bin/sleep 90 in your shell tool in the foreground and wait for it. Do not launch background work. The test harness will interrupt that wait. If sleep completes normally, return {"stage":"unexpected-completion"}. Do not read configuration, credentials or other files.`;
     return `return await ${call(prompt, 'interrupted-turn', 'A', test.backend, true)};`;
   }
   return readFile(join(project, 'workflow-definitions/scripted/examples/discussion.js'), 'utf8');
@@ -194,7 +194,7 @@ async function childPhase(test: Case, phase: string, directory: string) {
         'import {execFileSync} from "node:child_process";',
         'import {writeFileSync} from "node:fs";',
         'let rejected=false;',
-        'try { execFileSync(process.execPath,[process.env.LARK_WORKFLOW_CLI,"workflow","run_workflow","--input","{}","--json"],{stdio:"pipe"}); }',
+        'try { execFileSync(process.execPath,[process.env.AGENT_WORKFLOW_CLI,"workflow","run_workflow","--input","{}","--json"],{stdio:"pipe"}); }',
         'catch(error) { rejected=/not enabled/.test(String(error.stderr)+String(error.stdout)); }',
         'if(!rejected) throw new Error("Disabled nested tool was not rejected");',
         `const result=${JSON.stringify({marker:test.marker,disabled:true})};`,
@@ -206,7 +206,7 @@ async function childPhase(test: Case, phase: string, directory: string) {
         script:'return await agent(args.task,{key:"leaf",workflowTool:false,output:"json"});',
         args:{task:`Run node ${JSON.stringify(probePath)} with your shell tool, then return its JSON stdout exactly. Do not read other files or send messages.`},
         checkpoint:{stage:'resume-me'}});
-      const prompt = `Nested workflow acceptance. If your injected workflows.call is completed, verify its result.disabled is true and checkpoint.stage is resume-me, then return workflows.call.result exactly as JSON without tools. Otherwise run node "$LARK_WORKFLOW_CLI" workflow run_workflow --input-file ${JSON.stringify(inputPath)} --json using your shell tool. When it returns waiting, end this turn immediately with WAITING. Do not poll, read configuration, or send external messages.`;
+      const prompt = `Nested workflow acceptance. If your injected workflows.call is completed, verify its result.disabled is true and checkpoint.stage is resume-me, then return workflows.call.result exactly as JSON without tools. Otherwise run node "$AGENT_WORKFLOW_CLI" workflow run_workflow --input-file ${JSON.stringify(inputPath)} --json using your shell tool. When it returns waiting, end this turn immediately with WAITING. Do not poll, read configuration, or send external messages.`;
       await call('run_script',{goal:'Verify a native parent delegates, yields its only process slot, and resumes its original conversation',
         script:'return await agent(args.task,{key:"parent",workflowTool:true,output:"json"});',args:{task:prompt},
         plan:'Enabled parent delegates one disabled leaf, releases its slot, and resumes with the result.',maxConcurrent:1,maxAgents:2,timeoutMs:240_000});

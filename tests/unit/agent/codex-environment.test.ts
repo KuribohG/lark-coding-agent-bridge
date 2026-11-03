@@ -3,11 +3,11 @@ import { codexExecutionEnvironment } from '../../../src/agent/codex/environment'
 
 it('binds the complete profile and attempt to tools without serializing backend credentials', () => {
   const profile = { LARK_CHANNEL: '1', LARK_CHANNEL_PROFILE: 'profile-a', CODEX_HOME: '/isolated' };
-  const env = codexExecutionEnvironment({ profile, attempt: { LARK_WORKFLOW_TOKEN: 'attempt-one' },
+  const env = codexExecutionEnvironment({ profile, attempt: { AGENT_WORKFLOW_TOKEN: 'attempt-one' },
     backend: { PROVIDER_KEY: 'backend-only' }, inherited: { PATH: '/bin', HOST_SECRET: 'host-only' } });
-  expect(env.tools.set).toEqual({ ...profile, LARK_WORKFLOW_TOKEN: 'attempt-one' });
+  expect(env.tools.set).toEqual({ ...profile, AGENT_WORKFLOW_TOKEN: 'attempt-one' });
   expect(env.process).toMatchObject({ ...profile, PROVIDER_KEY: 'backend-only' });
-  expect(env.process).not.toHaveProperty('LARK_WORKFLOW_TOKEN');
+  expect(env.process).not.toHaveProperty('AGENT_WORKFLOW_TOKEN');
   expect(JSON.stringify(env.tools)).not.toContain('backend-only');
   expect(JSON.stringify(env.tools)).not.toContain('host-only');
 });

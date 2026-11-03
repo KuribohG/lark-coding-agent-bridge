@@ -43,7 +43,7 @@ const binding = runtime.bindMain(scopeId, 'start');
 // Call binding.release() when the turn ends.
 ```
 
-The main agent and workers call workflow operations through `node "$LARK_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json`. `binding.env` carries a per-run endpoint and token, plus the CLI path (`cliPath`, defaulting to `cli.js` beside the bundle: this package's worker CLI, or the bridge CLI when bundled into the bridge; both accept the same command). The token is the only credential: each binding is scoped to one caller and is revoked on release.
+The main agent and workers call workflow operations through `node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json`. `binding.env` carries a per-run endpoint and token, plus the CLI path (`cliPath`, defaulting to `cli.js` beside the bundle: this package's worker CLI, or the bridge CLI when bundled into the bridge; both accept the same command). The token is the only credential: each binding is scoped to one caller and is revoked on release.
 
 ## Runner contract
 
@@ -65,5 +65,4 @@ The bridge adapter (`src/workflows/bridge` in the bridge repository) is a comple
 
 ## Current limits
 
-- The worker environment variables still use the `LARK_WORKFLOW_*` names.
-- Command, status and restart texts are in Chinese. Hosts can render their own UI from `runtime.kernel.state()`.
+- Command, status and restart texts are in Chinese, as are the main-agent tool instructions and the role instructions prepended to every worker prompt. Hosts can render their own UI from `runtime.kernel.state()`, but cannot yet replace the text the engine sends to agents.

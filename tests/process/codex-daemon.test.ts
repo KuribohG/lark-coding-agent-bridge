@@ -165,13 +165,13 @@ describe('Codex persistent app-server mode', () => {
 
   it('binds workflow credentials per thread and replaces them on resume without placing them in daemon arguments', async () => {
     const h = await harness();
-    const first = { ...h.runOptions(), env: { LARK_WORKFLOW_TOKEN: 'turn-one-token', LARK_WORKFLOW_ENDPOINT: 'http://127.0.0.1:1234/workflow' } };
+    const first = { ...h.runOptions(), env: { AGENT_WORKFLOW_TOKEN: 'turn-one-token', AGENT_WORKFLOW_ENDPOINT: 'http://127.0.0.1:1234/workflow' } };
     const prepared = await h.adapter.prepareRun(first);
     const expectedFirstEnv = { ...first.env, CODEX_HOME: h.dir };
-    first.env.LARK_WORKFLOW_TOKEN = 'mutated-after-prepare';
+    first.env.AGENT_WORKFLOW_TOKEN = 'mutated-after-prepare';
     await collect(prepared.start().events);
     expect(() => prepared.start()).toThrow('already been started');
-    const second = { ...h.runOptions(), runId: 'resume', threadId: 'thread-1', env: { LARK_WORKFLOW_TOKEN: 'turn-two-token' } };
+    const second = { ...h.runOptions(), runId: 'resume', threadId: 'thread-1', env: { AGENT_WORKFLOW_TOKEN: 'turn-two-token' } };
     await collect((await h.adapter.prepareRun(second)).start().events);
     expect(h.requests.find(request => request.method === 'thread/start')?.params.config.shell_environment_policy.set).toEqual(expectedFirstEnv);
     expect(h.requests.find(request => request.method === 'thread/resume')?.params.config.shell_environment_policy.set).toEqual({ ...second.env, CODEX_HOME: h.dir });

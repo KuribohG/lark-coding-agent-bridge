@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 const directory = dirname(fileURLToPath(import.meta.url));
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 const call = (method, args = {}, mutation = true) => JSON.parse(execFileSync(process.execPath,
-  [process.env.LARK_WORKFLOW_CLI, 'workflow', method, '--input', JSON.stringify({ ...(mutation ? {operationId:randomUUID()} : {}), ...args }), '--json'],
+  [process.env.AGENT_WORKFLOW_CLI, 'workflow', method, '--input', JSON.stringify({ ...(mutation ? {operationId:randomUUID()} : {}), ...args }), '--json'],
   { encoding: 'utf8', timeout: 20_000, stdio: ['ignore', 'pipe', 'pipe'] }));
 const waitFor = async names => {
   const deadline = Date.now() + 120_000;

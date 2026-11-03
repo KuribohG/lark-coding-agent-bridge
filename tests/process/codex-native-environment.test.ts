@@ -18,7 +18,7 @@ it.skipIf(!process.env.BRIDGE_CODEX_NATIVE_BINARY || process.platform === 'win32
   const profile = { LARK_CHANNEL: '1', LARK_CHANNEL_HOME: join(dir, 'channel'), LARK_CHANNEL_PROFILE: 'fixture-profile',
     LARK_CHANNEL_CONFIG: join(dir, 'lark.config'), LARKSUITE_CLI_CONFIG_DIR: join(dir, 'lark-cli') };
   const probe = join(cwd, 'probe.mjs');
-  await writeFile(probe, `console.log(JSON.stringify({...Object.fromEntries(${JSON.stringify(Object.keys(profile))}.map(key=>[key,process.env[key]??null])),token:process.env.LARK_WORKFLOW_TOKEN??null,endpoint:process.env.LARK_WORKFLOW_ENDPOINT??null}));\n`);
+  await writeFile(probe, `console.log(JSON.stringify({...Object.fromEntries(${JSON.stringify(Object.keys(profile))}.map(key=>[key,process.env[key]??null])),token:process.env.AGENT_WORKFLOW_TOKEN??null,endpoint:process.env.AGENT_WORKFLOW_ENDPOINT??null}));\n`);
   const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(probe)}`;
   let calls = 0;
   const outputs: string[] = [];
@@ -87,7 +87,7 @@ it.skipIf(!process.env.BRIDGE_CODEX_NATIVE_BINARY || process.platform === 'win32
     for (const [index, turn] of turns.entries()) {
       run = (await adapter.prepareRun({ runId: `native-env-${index}`, cwd, prompt: `Run environment probe ${index}.`,
         model: provider.model, ...(threadId ? { threadId, forkSession: turn.fork } : {}),
-        env: { LARK_WORKFLOW_TOKEN: turn.token, ...(turn.endpoint ? { LARK_WORKFLOW_ENDPOINT: turn.endpoint } : {}) },
+        env: { AGENT_WORKFLOW_TOKEN: turn.token, ...(turn.endpoint ? { AGENT_WORKFLOW_ENDPOINT: turn.endpoint } : {}) },
         deadlineAt: Date.now() + 20_000 })).start();
       const events: AgentEvent[] = [];
       for await (const event of run.events) {

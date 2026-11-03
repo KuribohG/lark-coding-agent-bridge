@@ -55,7 +55,7 @@ return await agent(JSON.stringify({ proposal, constraints }), {
 Submit a JSON envelope using the existing scope-bound CLI:
 
 ```sh
-node "$LARK_WORKFLOW_CLI" workflow run_script --input-file workflow.json --json
+node "$AGENT_WORKFLOW_CLI" workflow run_script --input-file workflow.json --json
 ```
 
 The envelope has `operationId`, `goal` (the full authorized task), `script` (the function body as a string) and `plan` (a human-readable execution plan, up to 12,000 characters). The plan must describe phases, each worker's harness/model/task, dependencies and conditional branches. Lark publishes it before any worker starts; delivery failure stops execution. This is visibility, not a new approval gate. The plan is stored as a versioned `workflow-plan` artifact (`planRef`); the exact script remains available through `sourceRef` and `read_artifact`. A plan describes intended behavior; `/workflow status` shows the actual branches and tasks reached. Optional fields:
@@ -330,7 +330,7 @@ return await agent(args.task, {
 The enabled worker can run the following CLI with a JSON file:
 
 ```sh
-node "$LARK_WORKFLOW_CLI" workflow run_workflow --input-file child.json --json
+node "$AGENT_WORKFLOW_CLI" workflow run_workflow --input-file child.json --json
 ```
 
 ```json

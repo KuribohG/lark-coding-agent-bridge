@@ -50,7 +50,7 @@ describe('workflow main-session wake', () => {
     const activeRuns = new ActiveRuns();
     const executor = new RunExecutor({ agent, pool: new ProcessPool(() => 3), activeRuns });
     const release = vi.fn(); const markNotified = vi.fn();
-    const bindMain = vi.fn(() => ({ instructions: 'INTERNAL RESULT EVENT', env: { LARK_WORKFLOW_TOKEN: 'test' }, eventIds: ['event-1'], release }));
+    const bindMain = vi.fn(() => ({ instructions: 'INTERNAL RESULT EVENT', env: { AGENT_WORKFLOW_TOKEN: 'test' }, eventIds: ['event-1'], release }));
     const deps = {
       executor, activeRuns, sessions, sessionCatalog: catalog, workspaces, scope: scopeId, agentKind: 'codex', mode: 'topic', entry: { kind: 'workflow', trigger: 'event' },
       channel: { send: vi.fn(), botIdentity: { openId: 'bot' } },

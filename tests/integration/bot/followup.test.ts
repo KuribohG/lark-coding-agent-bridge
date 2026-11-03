@@ -156,7 +156,7 @@ describe('workflow command routing', () => {
     await h.message('普通后续问题', { messageId: 'ordinary-after' });
     await vi.waitFor(() => expect(h.agent.options).toHaveLength(1), { timeout: 2500 });
     const ordinary = h.agent.options[0]!;
-    expect(ordinary.env?.LARK_WORKFLOW_TOKEN).toBeUndefined();
+    expect(ordinary.env?.AGENT_WORKFLOW_TOKEN).toBeUndefined();
     expect(ordinary.prompt).not.toContain('工作流工具通过 shell');
     expect(ordinary.systemPrompt ?? '').not.toContain('run_workflow');
     expect(ordinary.prompt).not.toContain('run_workflow');
@@ -166,7 +166,7 @@ describe('workflow command routing', () => {
     h.agent.finish(0);
     await vi.waitFor(() => expect(h.agent.options).toHaveLength(2), { timeout: 2500 });
     const command = h.agent.options[1]!;
-    expect(command.env?.LARK_WORKFLOW_TOKEN).toBeTruthy();
+    expect(command.env?.AGENT_WORKFLOW_TOKEN).toBeTruthy();
     expect(command.prompt).toContain('analyze this task');
     expect(command.prompt).not.toContain('普通后续问题');
     await expect(callWorkflow('run_script', { operationId: 'explicit-command', goal: 'analyze this task',
@@ -174,7 +174,7 @@ describe('workflow command routing', () => {
     h.agent.finish(1);
     await vi.waitFor(() => expect(h.agent.options).toHaveLength(3), { timeout: 2500 });
     expect(h.agent.options[2]!.prompt).toContain('普通后续问题');
-    expect(h.agent.options[2]!.env?.LARK_WORKFLOW_TOKEN).toBeUndefined();
+    expect(h.agent.options[2]!.env?.AGENT_WORKFLOW_TOKEN).toBeUndefined();
     expect(h.agent.options[2]!.prompt).not.toContain('工作流工具通过 shell');
     await expect(callWorkflow('status', {}, command.env)).rejects.toThrow('revoked');
     await h.message('/workflow cancel');
