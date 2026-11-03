@@ -17,4 +17,18 @@ export default defineConfig({
       },
     },
   ],
+  test: {
+    coverage: {
+      provider: "v8",
+      include: ["src/**/*.ts"],
+      // Re-export barrels have no logic of their own.
+      exclude: ["src/index.ts", "src/runtime/public.ts", "src/channels/*/index.ts"],
+      reporter: ["text-summary", "json-summary", "json", "html"],
+      // CI publishes the report even when a test fails.
+      reportOnFailure: true,
+      // Floor just under the current baseline so coverage cannot silently
+      // regress; raise it as tests are added.
+      thresholds: { lines: 83, statements: 83, branches: 81, functions: 89 },
+    },
+  },
 });

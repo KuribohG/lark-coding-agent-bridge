@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+  # Lets the coverage step comment on pull requests.
+  pull-requests: write
+
 jobs:
   test:
     name: Node 20 on ${{ matrix.os }}
@@ -33,7 +38,24 @@ jobs:
         run: pnpm lint:dead
 
       - name: Test
+        if: matrix.os != 'ubuntu-latest'
         run: pnpm test
+
+      - name: Test with coverage
+        if: matrix.os == 'ubuntu-latest'
+        run: pnpm test:coverage
+
+      - name: Report coverage
+        if: matrix.os == 'ubuntu-latest' && always()
+        uses: davelosert/vitest-coverage-report-action@v2
+
+      - name: Upload coverage report
+        if: matrix.os == 'ubuntu-latest' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-html
+          path: coverage/
+          retention-days: 14
 
       - name: Typecheck
         run: pnpm typecheck
