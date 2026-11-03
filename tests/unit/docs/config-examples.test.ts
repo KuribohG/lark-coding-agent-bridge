@@ -9,7 +9,7 @@ const exampleUrl = (name: string) => new URL(`../../../docs/user-guide/examples/
 describe('copyable configuration examples', () => {
   it('loads the Antigravity provider recipe without guessing protocol paths', async () => {
     const guide = await readFile(new URL('../../../docs/antigravity.md', import.meta.url), 'utf8');
-    const snippet = /```toml\n([\s\S]*?)```/.exec(guide)?.[1];
+    const snippet = /```toml\r?\n([\s\S]*?)```/.exec(guide)?.[1];
     expect(snippet).toBeTruthy();
     const doc = parseDocument(`version = 3\n${snippet}`);
     expect(resolveExecutionProfile(doc, 'agy').agy?.binaryPath).toBe('agy');

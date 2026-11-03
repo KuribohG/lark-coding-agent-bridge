@@ -75,7 +75,7 @@ it('runs Claude analysis while an offline Codex profile supplies only screening 
   expect(args[7]).toEqual({ model: 'sonnet', reasoningEffort: 'high' });
   await screen(io);
   expect(loadProfileModelService).toHaveBeenCalledWith(expect.objectContaining({ agentKind: 'codex',
-    codex: expect.objectContaining({ codexHome: h.codex.codex?.codexHome }) }), 'cheap', expect.stringMatching(/profiles\/codex$/));
+    codex: expect.objectContaining({ codexHome: h.codex.codex?.codexHome }) }), 'cheap', expect.stringMatching(/profiles[\\/]codex$/));
   expect(triageWithChatTools).toHaveBeenCalledWith({ id: 'fixture' }, '', expect.objectContaining({ model: 'cheap' }), expect.anything(), expect.anything(), expect.any(Function),
     undefined, undefined, expect.objectContaining({ triageMessageLimit: 17, triageMessageChars: 1000 }));
   expect(InboxLark).toHaveBeenCalledWith(expect.objectContaining({ profile: 'claude' }), expect.anything());

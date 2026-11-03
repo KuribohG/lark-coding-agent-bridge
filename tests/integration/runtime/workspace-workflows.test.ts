@@ -23,6 +23,7 @@ async function harness(perform?: (opts: AgentRunOptions, index: number) => Promi
   closes.push(() => rm(dir, { recursive: true, force: true }));
   const repo = join(dir, 'repo'); await mkdir(repo); await git(repo, 'init', '-b', 'main');
   await git(repo, 'config', 'user.name', 'Test'); await git(repo, 'config', 'user.email', 'test@localhost');
+  await git(repo, 'config', 'core.autocrlf', 'false');
   await writeFile(join(repo, 'value.txt'), 'original\n'); await git(repo, 'add', '.'); await git(repo, 'commit', '-m', 'base');
   const root = { scopeId: 'test', profile: 'test', agentKind: 'codex' as const, cwdRealpath: repo, policyFingerprint: 'full', catalogBinding: 'root', modelSettings: {} };
   const policy: RunPolicyAllow = { ok: true, prompt: '', requestedCwd: repo, cwdRealpath: repo, accessMode: 'full', sandbox: 'danger-full-access', permissionMode: 'bypassPermissions', access: { ok: true, reason: 'allowed-user' }, attachments: [], policyFingerprint: 'full', expiresAt: Date.now() + 60_000 };

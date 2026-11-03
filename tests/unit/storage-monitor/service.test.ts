@@ -1,7 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { parseStorageConfig } from '../../../src/monitoring/sources/storage/config';
 import { StorageMonitorService } from '../../../src/monitoring/sources/storage/service';
 import type { StorageProvider, TaskRun } from '../../../src/monitoring/sources/storage/provider';
@@ -97,7 +97,7 @@ it('coalesces material changes while analysis is running and submits them after 
 });
 it('does not lose the alert if writing its evidence file fails', async () => {
   const h = await setup(); const write = atomic.writeFileAtomic;
-  const spy = vi.spyOn(atomic, 'writeFileAtomic').mockImplementation((path, data, options) => path.endsWith('/1.json') ? Promise.reject(new Error('disk full')) : write(path, data, options));
+  const spy = vi.spyOn(atomic, 'writeFileAtomic').mockImplementation((path, data, options) => basename(String(path)) === '1.json' ? Promise.reject(new Error('disk full')) : write(path, data, options));
   h.change({ failures: 1 }); await h.tick(); expect(h.events).toHaveLength(0);
   spy.mockRestore(); await h.tick(); expect(h.events[0]?.revision).toBe(1);
 });

@@ -23,6 +23,9 @@ export default defineConfig({
     alias: { "@kuribohg/agent-workflows": fileURLToPath(new URL("packages/workflow-engine/src/index.ts", import.meta.url)) },
   },
   test: {
+    // GitHub's runners are ~3x slower than a dev box, and the heavier
+    // suites drive hundreds of items; vitest's 5s default trips on them.
+    testTimeout: 20_000,
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts", "packages/*/src/**/*.ts"],

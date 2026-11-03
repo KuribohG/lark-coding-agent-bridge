@@ -17,7 +17,7 @@ const result = { text: JSON.stringify({ replyDraft: 'summary', analysis: 'eviden
 const topic = workItemTarget({ chatId: 'oc_out', threadId: 'omt_out', replyTo: 'om_out' });
 const event = { key: 'c', title: 'cluster', reason: 'I/O error', url: '', time: 1000, eventId: '1', revision: 1, data: {}, notice: 'first alert' };
 async function setup(io: Partial<WorkItemRuntime> = {}, queue?: WorkItemScheduler) {
-  const folder = await mkdtemp(join(tmpdir(), 'source-notices-')); cleanups.push(() => rm(folder, { recursive: true, force: true }));
+  const folder = await mkdtemp(join(tmpdir(), 'source-notices-')); cleanups.push(() => rm(folder, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
   const store = new WorkItemStore(join(folder, 'state.json'));
   const runtime: WorkItemRuntime = { source: new EventSource('test', () => true), checkAccess: async () => {},
     investigate: vi.fn(async () => result), deliver: vi.fn(async () => {}), notifyChange: vi.fn(async () => topic), ...io };
@@ -76,7 +76,7 @@ it('resumes interrupted storage work within budget but preserves a manual pause'
   expect(restarted.get(paused.id)).toMatchObject({ analysisPaused: true, replyDraft: 'human draft' });
 });
 it('shares the execution limit across ordinary and storage sources', async () => {
-  const folder = await mkdtemp(join(tmpdir(), 'source-shared-queue-')); cleanups.push(() => rm(folder, { recursive: true, force: true }));
+  const folder = await mkdtemp(join(tmpdir(), 'source-shared-queue-')); cleanups.push(() => rm(folder, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
   const sources = new WorkItemSources(join(folder, 'config.json'), new WorkItemScheduler(1));
   let release!: () => void;
   const blocker = sources.queue.run(new AbortController().signal, () => new Promise(resolve => { release = resolve; }));
