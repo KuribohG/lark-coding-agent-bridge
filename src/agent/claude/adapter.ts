@@ -131,6 +131,7 @@ export class ClaudeAdapter implements AgentAdapter {
     const child = spawnWithDeadline(this.binary, args, {
       cwd: opts.cwd,
       env: mergeProcessEnv(process.env, {
+        ...FOREGROUND_ONLY_ENV,
         ...this.env,
         ...opts.env,
         ...(this.configDir ? { CLAUDE_CONFIG_DIR: this.configDir } : {}),
@@ -351,6 +352,16 @@ async function* createEventStream(
 const ULTRACODE_SETTINGS = { ultracode: true, workflowSizeGuideline: 'large' };
 // Session scheduling tools could fire after the watchdog's deadline.
 const DEADLINE_DISALLOWED_TOOLS = ['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup'];
+
+// A run owns its process: once the turn's final result arrives the bridge stops
+// reading stdout and reclaims the child, so anything still running in the
+// background dies with it and its completion notice reaches nobody — the chat
+// just says the task finished. Claude Code drops `run_in_background` from the
+// Agent and Bash input schemas when this is set, which makes subagents and
+// shell commands foreground-only instead of merely discouraging background
+// work in the prompt. Profile and per-run env still win, so an operator who
+// knows their runs outlive the turn can opt back in.
+const FOREGROUND_ONLY_ENV = { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1' };
 
 /**
  * Persist the appended system prompt (and optional flag settings) to throwaway

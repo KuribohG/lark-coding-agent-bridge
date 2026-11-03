@@ -26,6 +26,12 @@ The bridge acknowledges delivery only after a receipt containing the input ID. I
 
 Older CLIs can complete a single prompt, but supplemental input requires result correlation IDs. Missing fields produce an explicit failure instead of a false completion.
 
+## Foreground-only subagents and shells
+
+A run owns its Claude process. Once the turn's final result arrives the bridge stops reading stdout and reclaims the child, so work still running in the background dies with it and its completion notice reaches nobody — the chat only shows that the task finished. Claude runs therefore start with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, which makes Claude Code drop `run_in_background` from the Agent and Bash input schemas: subagents and shell commands can only run in the foreground, within the turn that launched them. This is an input-schema restriction rather than prompt advice, so it holds for workflow workers too.
+
+Profile and per-run environment entries override it, so setting `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` to an empty value in a profile restores background launches for operators whose runs outlive the turn.
+
 ## Pi Coding Agent backend
 
 Create a Pi profile with `lark-channel-bridge profile create pi --agent pi`, or use `--agent pi` during first-run setup. The adapter invokes `pi --mode json`, translates Pi's JSONL events, persists the returned session ID, and resumes later turns with `--session`. `LARK_CHANNEL_PI_BIN` overrides the `pi` executable used during profile creation.

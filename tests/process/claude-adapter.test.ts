@@ -108,6 +108,30 @@ describe('ClaudeAdapter process contract', () => {
       LARK_CHANNEL_CONFIG: larkCliSourceConfigFile,
       LARKSUITE_CLI_CONFIG_DIR: larkCliConfigDir,
     });
+    // A run's background work would be reclaimed with its process, so Claude
+    // Code is told to keep subagents and shells in the foreground.
+    expect(record.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe('1');
+  });
+
+  it('lets profile env opt back in to background tasks', async () => {
+    const fake = await createFakeClaude({
+      lines: [{ type: 'result', session_id: 'sess-background' }],
+    });
+    cleanup.push(fake.dir);
+
+    const run = (await new ClaudeAdapter({
+      binary: fake.path,
+      env: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '' },
+    }).prepareRun({
+      runId: 'run-background-optin',
+      prompt: 'background',
+      cwd: fake.dir,
+    })).start();
+
+    await collect(run.events);
+    const record = await readRecord(fake.recordPath);
+
+    expect(record.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe('');
   });
 
   it('passes resume and model after the base CLI contract', async () => {
@@ -442,6 +466,7 @@ async function createFakeClaude(options: {
       '      LARK_CHANNEL_HOME: process.env.LARK_CHANNEL_HOME,',
       '      LARK_CHANNEL_CONFIG: process.env.LARK_CHANNEL_CONFIG,',
       '      LARKSUITE_CLI_CONFIG_DIR: process.env.LARKSUITE_CLI_CONFIG_DIR,',
+      '      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS,',
       '    },',
       '  }));',
       `  const lines = ${JSON.stringify(options.lines)};`,
@@ -470,6 +495,7 @@ async function readRecord(path: string): Promise<{
     LARK_CHANNEL_HOME?: string;
     LARK_CHANNEL_CONFIG?: string;
     LARKSUITE_CLI_CONFIG_DIR?: string;
+    CLAUDE_CODE_DISABLE_BACKGROUND_TASKS?: string;
   };
 }> {
   return JSON.parse(await readFile(path, 'utf8')) as {
@@ -484,6 +510,7 @@ async function readRecord(path: string): Promise<{
       LARK_CHANNEL_HOME?: string;
       LARK_CHANNEL_CONFIG?: string;
       LARKSUITE_CLI_CONFIG_DIR?: string;
+      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS?: string;
     };
   };
 }
