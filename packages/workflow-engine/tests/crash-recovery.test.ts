@@ -3,12 +3,15 @@ import { once } from 'node:events';
 import { mkdtemp, readFile, rm, stat, symlink } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
-import { childInput, crashHarness, itemInput } from '../helpers/workflow-crash-controller';
-import type { CrashBarrier } from '../helpers/workflow-crash-controller';
-import type { WorkflowState, WorkflowWorkItem } from '../../src/workflows/engine/types';
+import { childInput, crashHarness, itemInput } from './helpers/crash-controller';
+import type { CrashBarrier } from './helpers/crash-controller';
+import type { WorkflowState, WorkflowWorkItem } from '../src/engine/types';
+
+const packageDir = fileURLToPath(new URL('..', import.meta.url));
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -17,10 +20,10 @@ describe.skipIf(process.platform === 'win32')('workflow recovery after controlle
   let bundleDir: string;
   beforeAll(async () => {
     bundleDir = await mkdtemp(join(tmpdir(), 'workflow-crash-bundle-'));
-    await symlink(resolve('node_modules'), join(bundleDir, 'node_modules'), 'dir');
+    await symlink(join(packageDir, 'node_modules'), join(bundleDir, 'node_modules'), 'dir');
     const require = createRequire(import.meta.url);
     const { build } = createRequire(require.resolve('tsup/package.json'))('esbuild');
-    await build({ entryPoints: [resolve('tests/helpers/workflow-crash-controller.ts')], bundle: true,
+    await build({ entryPoints: [join(packageDir, 'tests/helpers/crash-controller.ts')], bundle: true,
       packages: 'external', platform: 'node', format: 'esm', outfile: join(bundleDir, 'controller.mjs') });
   });
   afterAll(async () => { if (bundleDir) await rm(bundleDir, { recursive: true, force: true }); });

@@ -7,13 +7,13 @@ import { dirname, join, resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PiAdapter } from '../../src/agent/pi/adapter';
 import { createBridgeWorkflowRuntime } from '../../src/workflows/bridge/runtime';
-import { callWorkflow } from '../../src/workflows/engine/ipc';
+import { callWorkflow } from '@kuribohg/agent-workflows';
 import { resolveWorkerExecution } from '../../src/workflows/bridge/execution';
 import { createDefaultProfileConfig } from '../../src/config/profile-schema';
 import { RunExecutor } from '../../src/runtime/run-executor';
 import { ProcessPool } from '../../src/runtime/process-pool';
 import { ActiveRuns } from '../../src/runtime/active-runs';
-import type { WorkflowRoot } from '../../src/workflows/engine/types';
+import type { WorkflowRoot } from '@kuribohg/agent-workflows';
 import type { RunPolicyAllow } from '../../src/policy/run-policy';
 
 const cleanup: Array<() => Promise<void>> = [];

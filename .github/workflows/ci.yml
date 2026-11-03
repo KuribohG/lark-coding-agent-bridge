@@ -68,3 +68,6 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Build packages
+        run: pnpm build:packages

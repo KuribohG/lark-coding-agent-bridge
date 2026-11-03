@@ -6,11 +6,11 @@ import { terminateChild } from '../../platform/terminate';
 import type { RunPolicyAllow } from '../../policy/run-policy';
 import { RunStopped } from '../../runtime/errors';
 import type { RunExecutor } from '../../runtime/run-executor';
-import { workflowDigest } from '../engine/digest';
-import { inheritedWorkerExecution } from '../engine/execution';
-import { stopReasonOf, type WorkerRun, type WorkerRunner, type WorkerRunSpec } from '../engine/ports';
-import { WorkflowRuntime, type WorkflowRuntimeDeps } from '../engine/runtime';
-import type { WorkerExecution, WorkerExecutionSelection, WorkflowRoot, WorkflowStopReason } from '../engine/types';
+import { workflowDigest } from '@kuribohg/agent-workflows';
+import { inheritedWorkerExecution } from '@kuribohg/agent-workflows';
+import { stopReasonOf, type WorkerRun, type WorkerRunner, type WorkerRunSpec } from '@kuribohg/agent-workflows';
+import { WorkflowRuntime, type WorkflowRuntimeDeps } from '@kuribohg/agent-workflows';
+import type { WorkerExecution, WorkerExecutionSelection, WorkflowRoot, WorkflowStopReason } from '@kuribohg/agent-workflows';
 import { bridgeAgentKind, bridgeWorkerPolicy } from './execution';
 
 type BridgeGrant = { execution: WorkerExecution; policy: RunPolicyAllow };

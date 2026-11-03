@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 // Match tsup's `.html` text loader (tsup.config.ts) so `import html from
@@ -17,12 +18,16 @@ export default defineConfig({
       },
     },
   ],
+  resolve: {
+    // The bridge bundles the in-repo engine from source.
+    alias: { "@kuribohg/agent-workflows": fileURLToPath(new URL("packages/workflow-engine/src/index.ts", import.meta.url)) },
+  },
   test: {
     coverage: {
       provider: "v8",
-      include: ["src/**/*.ts"],
+      include: ["src/**/*.ts", "packages/*/src/**/*.ts"],
       // Re-export barrels have no logic of their own.
-      exclude: ["src/index.ts", "src/runtime/public.ts", "src/channels/*/index.ts"],
+      exclude: ["src/index.ts", "src/runtime/public.ts", "src/channels/*/index.ts", "src/workflows/index.ts", "packages/*/src/index.ts", "packages/*/src/cli.ts"],
       reporter: ["text-summary", "json-summary", "json", "html"],
       // CI publishes the report even when a test fails.
       reportOnFailure: true,

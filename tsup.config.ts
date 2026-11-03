@@ -25,6 +25,8 @@ export default defineConfig([
     sourcemap: false,
     splitting: false,
     dts: false,
+    // Bundle the in-repo engine package from source; it is not published separately yet.
+    noExternal: ['@kuribohg/agent-workflows'],
     define,
     // Inline the Vite-built console (src/ui/generated/index.html) as a string.
     esbuildOptions(options) {
@@ -41,7 +43,8 @@ export default defineConfig([
     platform: 'node',
     sourcemap: false,
     splitting: false,
-    dts: true,
+    noExternal: ['@kuribohg/agent-workflows'],
+    dts: { resolve: ['@kuribohg/agent-workflows'] },
     define,
     esbuildOptions(options) { options.loader = { ...options.loader, '.html': 'text' }; },
   },

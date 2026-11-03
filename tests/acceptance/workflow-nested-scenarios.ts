@@ -4,8 +4,8 @@ import { copyFile, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AgentRunOptions } from '../../src/agent/types';
 import type { ProcessPool } from '../../src/runtime/process-pool';
-import type { WorkflowRuntime } from '../../src/workflows/engine/runtime';
-import { callWorkflow } from '../../src/workflows/engine/ipc';
+import type { WorkflowRuntime } from '@kuribohg/agent-workflows';
+import { callWorkflow } from '@kuribohg/agent-workflows';
 
 interface Context {
   test: {id:string;scenario:string;backend:string;marker:string};

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { runScriptProgram } from '../../../src/workflows/engine/script-vm';
+import { runScriptProgram } from '../src/engine/script-vm';
 
 type Call = Record<string, unknown>;
 type Reply = { message: string; to?: unknown; agree?: boolean };

@@ -3,10 +3,9 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WorkflowKernel } from '../../../src/workflows/engine/kernel';
-import { inheritedWorkerExecution } from '../../../src/workflows/engine/execution';
-import { bridgeWorkerPolicy } from '../../../src/workflows/bridge/execution';
-import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '../../../src/workflows/engine/types';
+import { WorkflowKernel } from '../src/engine/kernel';
+import { inheritedWorkerExecution } from '../src/engine/execution';
+import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '../src/engine/types';
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -16,7 +15,7 @@ function harness(path = ':memory:') {
   const requests: WorkflowWorkerRequest[] = [];
   const finishes: Array<(result: WorkflowWorkerResult) => void> = [];
   let configuration = 'initial';
-  const host = { resolveRoot: async () => root, wakeMain: async () => {}, checkSelection: bridgeWorkerPolicy.checkSelection,
+  const host = { resolveRoot: async () => root, wakeMain: async () => {}, checkSelection: (selection: { agentKind: string }) => { if (selection.agentKind !== 'codex') throw new Error('Unknown worker agentKind'); },
     resolveWorker: async (r: WorkflowRoot, selection: Parameters<typeof inheritedWorkerExecution>[1]) => ({ ...inheritedWorkerExecution(r, selection), configurationFingerprint: configuration }),
     execute: async (request: WorkflowWorkerRequest) => {
       requests.push(request);

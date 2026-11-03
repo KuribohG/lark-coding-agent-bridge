@@ -1,31 +1,18 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createBridgeWorkflowRuntime } from '../../../src/workflows/bridge/runtime';
-import { callWorkflow, WorkflowIpc } from '../../../src/workflows/engine/ipc';
+import { callWorkflow } from '@kuribohg/agent-workflows';
 import { RunExecutor } from '../../../src/runtime/run-executor';
 import { ProcessPool } from '../../../src/runtime/process-pool';
 import { ActiveRuns } from '../../../src/runtime/active-runs';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
-import type { WorkflowRoot } from '../../../src/workflows/engine/types';
+import type { WorkflowRoot } from '@kuribohg/agent-workflows';
 import type { RunPolicyAllow } from '../../../src/policy/run-policy';
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0)) await close(); });
 
 describe('workflow IPC and worker execution', () => {
-  it('authenticates from a per-run binding, ignores forged scope args, and revokes at turn end', async () => {
-    const call = vi.fn(async (caller, method, args) => ({ caller, method, args }));
-    const ipc = new WorkflowIpc(call); await ipc.listen(); cleanup.push(() => ipc.close());
-    const binding = ipc.bind({ kind: 'main', scopeId: 'authorized-topic' }, Date.now() + 60_000);
-    const response = await callWorkflow('status', { scopeId: 'other-topic', kind: 'main' }, binding.env);
-    expect(response).toMatchObject({ caller: { kind: 'main', scopeId: 'authorized-topic' } });
-    binding.release();
-    await expect(callWorkflow('status', {}, binding.env)).rejects.toThrow('revoked');
-    expect(call).toHaveBeenCalledTimes(1);
-    const expired = ipc.bind({ kind: 'main', scopeId: 'authorized-topic' }, Date.now() - 1);
-    await expect(callWorkflow('status', {}, expired.env)).rejects.toThrow('expired');
-  });
-
   it('collects final output with native identity after the main binding ends', async () => {
     const root: WorkflowRoot = { scopeId: 'real-topic', profile: 'default', agentKind: 'codex', cwdRealpath: '/workspace',
       policyFingerprint: 'policy', catalogBinding: 'root', modelSettings: { model: 'model' } };

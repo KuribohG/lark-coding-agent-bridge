@@ -2,21 +2,21 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createBridgeWorkflowRuntime } from '../../../src/workflows/bridge/runtime';
 import { RunExecutor } from '../../../src/runtime/run-executor';
 import { ProcessPool } from '../../../src/runtime/process-pool';
 import { ActiveRuns } from '../../../src/runtime/active-runs';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
-import { workspaceCommand } from '../../../src/workflows/engine/workspace-process';
 import type { RunPolicyAllow } from '../../../src/policy/run-policy';
 import type { AgentEvent, AgentRunOptions } from '../../../src/agent/types';
 
 const closes: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); });
 async function git(cwd: string, ...argv: string[]) {
-  const result = await workspaceCommand('git', argv, cwd, new AbortController().signal);
-  if (result.code) throw new Error(result.stderr); return result.stdout.trim();
+  return (await promisify(execFile)('git', argv, { cwd })).stdout.trim();
 }
 async function harness(perform?: (opts: AgentRunOptions, index: number) => Promise<string>) {
   const dir = await mkdtemp(join(tmpdir(), 'workspace-runtime-'));

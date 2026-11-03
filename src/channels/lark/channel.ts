@@ -45,12 +45,12 @@ import { timedRuns } from '../../runtime/timed-runs';
 import { BtwStore } from '../../session/btw-store';
 import type { SessionCatalog } from '../../session/catalog';
 import type { SessionStore } from '../../session/store';
-import { handleWorkflowCommand } from '../../workflows/chat/commands';
-import { workflowDigest } from '../../workflows/engine/digest';
+import { handleWorkflowCommand } from '@kuribohg/agent-workflows';
+import { workflowDigest } from '@kuribohg/agent-workflows';
 import { bridgeAgentKind, resolveWorkerExecution } from '../../workflows/bridge/execution';
 import { createBridgeWorkflowRuntime } from '../../workflows/bridge/runtime';
-import type { WorkflowRuntime } from '../../workflows/engine/runtime';
-import type { WorkflowState } from '../../workflows/engine/types';
+import type { WorkflowRuntime } from '@kuribohg/agent-workflows';
+import type { WorkflowState } from '@kuribohg/agent-workflows';
 import { WorkflowOrigins } from './workflow-origins';
 import type { WorkspaceStore } from '../../workspace/store';
 

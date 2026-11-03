@@ -1,5 +1,5 @@
 import { larkDisplay } from './lark-display';
-import { DEFAULT_WORKFLOW_TIMEOUT_MINUTES } from '../workflows/engine/script-contract';
+import { DEFAULT_WORKFLOW_TIMEOUT_MINUTES } from '@kuribohg/agent-workflows';
 export type TenantBrand = 'feishu' | 'lark';
 
 /**

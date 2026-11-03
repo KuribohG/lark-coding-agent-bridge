@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { profileForAgentKind } from '../../../src/runtime/execution-controller';
 import { bridgeWorkerPolicy, resolveWorkerExecution } from '../../../src/workflows/bridge/execution';
-import { workerSelection } from '../../../src/workflows/engine/execution';
-import type { WorkflowRoot } from '../../../src/workflows/engine/types';
+import { workerSelection } from '@kuribohg/agent-workflows';
+import type { WorkflowRoot } from '@kuribohg/agent-workflows';
 import type { RunPolicyAllow } from '../../../src/policy/run-policy';
 
 const root: WorkflowRoot = { scopeId: 'topic', profile: 'codex', agentKind: 'codex', cwdRealpath: '/workspace',

@@ -1,5 +1,5 @@
 import { AGENT_KINDS } from '../agent/backend-spec';
-import { runWorkflow } from './commands/workflow';
+import { runWorkflowTool } from '@kuribohg/agent-workflows';
 import { checkConfig, showConfig, setConfig, unsetConfig, migrateToToml, describeConfig, reloadConfig } from './commands/config';
 import { Command } from 'commander';
 import { dirname } from 'node:path';
@@ -114,7 +114,7 @@ program.command('workflow <operation>')
   .option('--input <json>', 'structured operation arguments')
   .option('--input-file <path>', 'read structured arguments from a JSON file')
   .option('--json', 'return structured JSON')
-  .action(runWorkflow);
+  .action(runWorkflowTool);
 
 const config = program.command('config').description('Inspect and edit layered execution and channel configuration');
 config.command('check').option('-c, --config <path>').action(checkConfig);

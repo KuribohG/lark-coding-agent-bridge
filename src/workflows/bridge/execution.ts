@@ -5,8 +5,8 @@ import { backendFor, capabilityForProfile } from '../../agent/backends';
 import { accessToClaudePermissionMode, accessToCodexSandbox, clampAccess } from '../../config/permissions';
 import type { AgentExecutionProfile, AgentKind } from '../../config/profile-schema';
 import type { RunPolicyAllow } from '../../policy/run-policy';
-import { workflowDigest } from '../engine/digest';
-import type { ModelSettings, WorkerExecution, WorkerExecutionPolicy, WorkflowRoot } from '../engine/types';
+import { workflowDigest } from '@kuribohg/agent-workflows';
+import type { ModelSettings, WorkerExecution, WorkerExecutionPolicy, WorkflowRoot } from '@kuribohg/agent-workflows';
 
 /** Bridge harness, model-ID and effort rules for workflow workers. */
 export const bridgeWorkerPolicy: Required<WorkerExecutionPolicy> = {

@@ -4,9 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WorkflowKernel } from '../../../src/workflows/engine/kernel';
-import { handleWorkflowCommand } from '../../../src/workflows/chat/commands';
-import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult, WorkflowWorkItem } from '../../../src/workflows/engine/types';
+import { WorkflowKernel } from '../src/engine/kernel';
+import { handleWorkflowCommand } from '../src/chat/commands';
+import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult, WorkflowWorkItem } from '../src/engine/types';
 
 type Grant = { claimId: string; generation: number; leaseUntil: number; item: WorkflowWorkItem };
 const cleanup: Array<() => Promise<unknown>> = [];

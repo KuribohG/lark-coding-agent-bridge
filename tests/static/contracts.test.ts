@@ -21,7 +21,7 @@ const collectTsFiles = (path: string): string[] => {
 };
 
 function internalCycles(): string[][] {
-  const files = collectTsFiles('src');
+  const files = [...collectTsFiles('src'), ...collectTsFiles('packages/workflow-engine/src')];
   const known = new Set(files.map((file) => resolve(root, file)));
   const graph = new Map<string, string[]>();
   for (const file of files) {
@@ -175,19 +175,18 @@ describe('static architecture contracts', () => {
     }
   });
 
-  it('keeps the workflow engine and chat UI free of bridge internals', () => {
-    const allowed: Record<string, RegExp> = {
-      'src/workflows/engine': /^\.\/[\w-]+$/,
-      'src/workflows/chat': /^(?:\.\/[\w-]+|\.\.\/engine\/[\w-]+)$/,
-    };
-    for (const [directory, pattern] of Object.entries(allowed)) {
-      for (const file of collectTsFiles(directory)) {
-        for (const match of read(file).matchAll(/(?:import|export)\s+(?:type\s+)?(?:[^;\n]*?\s+from\s+)?["']([^"']+)["']/g)) {
-          const specifier = match[1]!;
-          if (specifier.startsWith('.')) expect(specifier, file).toMatch(pattern);
-          else expect(specifier, file).toMatch(/^(?:node:|better-sqlite3$|quickjs-emscripten$)/);
-        }
+  it('keeps the workflow engine package self-contained and used only through its entry', () => {
+    const specifiers = (file: string) => [...read(file).matchAll(
+      /(?:import|export)\s+(?:type\s+)?(?:[^;\n]*?\s+from\s+)?["']([^"']+)["']/g)].map((match) => match[1]!);
+    const engineSource = resolve(root, 'packages/workflow-engine/src');
+    for (const file of collectTsFiles('packages/workflow-engine/src')) {
+      for (const specifier of specifiers(file)) {
+        if (specifier.startsWith('.')) expect(resolve(root, dirname(file), specifier).startsWith(engineSource), `${file}: ${specifier}`).toBe(true);
+        else expect(specifier, file).toMatch(/^(?:node:|better-sqlite3$|quickjs-emscripten$)/);
       }
+    }
+    for (const file of [...collectTsFiles('src'), ...collectTsFiles('tests')]) {
+      for (const specifier of specifiers(file)) expect(specifier, file).not.toMatch(/packages\/workflow-engine|@kuribohg\/agent-workflows\//);
     }
   });
 

@@ -1,5 +1,5 @@
 import type { AgentEntry } from '../../runtime/agent-entry';
-import type { WorkflowRuntime } from '../../workflows/engine/runtime';
+import type { WorkflowRuntime } from '@kuribohg/agent-workflows';
 
 /** Entry-specific capabilities are prepared before the shared agent runner. */
 export function bindAgentEntry(entry: AgentEntry, scope: string, workflows?: WorkflowRuntime) {

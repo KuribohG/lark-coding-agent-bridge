@@ -12,7 +12,7 @@ import { profileForAgentKind } from '../../src/runtime/execution-controller';
 import { createAgentAdapter } from '../../src/agent/backends';
 import { larkAgentHostContext } from '../../src/channels/lark/agent-host';
 import { createBridgeWorkflowRuntime } from '../../src/workflows/bridge/runtime';
-import { callWorkflow } from '../../src/workflows/engine/ipc';
+import { callWorkflow } from '@kuribohg/agent-workflows';
 import { RunExecutor } from '../../src/runtime/run-executor';
 import { ActiveRuns } from '../../src/runtime/active-runs';
 import { ProcessPool } from '../../src/runtime/process-pool';
@@ -21,7 +21,7 @@ import { runNestedScenario } from './workflow-nested-scenarios';
 import type { AgentAdapter, AgentRun, AgentRunOptions } from '../../src/agent/types';
 import type { AgentKind } from '../../src/config/profile-schema';
 import type { RunPolicyAllow } from '../../src/policy/run-policy';
-import type { WorkflowRoot, WorkflowState } from '../../src/workflows/engine/types';
+import type { WorkflowRoot, WorkflowState } from '@kuribohg/agent-workflows';
 
 const option = (name: string, fallback?: string) => {
   const at = process.argv.indexOf('--' + name);

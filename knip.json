@@ -1,13 +1,21 @@
 {
   "$schema": "https://unpkg.com/knip@5/schema.json",
-  "entry": [
-    "tests/**/*.test.ts",
-    "tests/acceptance/workflow-native.ts",
-    "web/src/main.tsx"
-  ],
-  "project": [
-    "src/**/*.ts",
-    "tests/**/*.ts",
-    "web/src/**/*.{ts,tsx}"
-  ]
+  "workspaces": {
+    ".": {
+      "entry": [
+        "tests/**/*.test.ts",
+        "tests/acceptance/workflow-native.ts",
+        "web/src/main.tsx"
+      ],
+      "project": [
+        "src/**/*.ts",
+        "tests/**/*.ts",
+        "web/src/**/*.{ts,tsx}"
+      ]
+    },
+    "packages/workflow-engine": {
+      "entry": ["tests/**/*.test.ts"],
+      "project": ["src/**/*.ts", "tests/**/*.ts"]
+    }
+  }
 }

@@ -1,22 +1,24 @@
-# Embedding the workflow engine
+# @kuribohg/agent-workflows
 
-The script-led workflow engine behind `/workflow` is published as `lark-channel-bridge/workflows`. It has no dependency on Lark, the bridge configuration or its agent backends: a host supplies an agent runner and authorization callbacks, and the engine handles scripts, durable state, replay, mailboxes, work queues, nested workflows and managed Git worktrees.
+Durable, script-led multi-agent workflows for coding-agent hosts. This is the engine behind `/workflow` in [lark-channel-bridge](../../README.md). It has no dependency on Lark or on any agent backend. A host supplies an agent runner and authorization callbacks; the engine handles scripts, durable state, replay, mailboxes, work queues, nested workflows and managed Git worktrees.
 
-## Layers
+The package is developed in the bridge repository and is not yet published on its own. Until it is, the bridge bundles it and re-exports the same API as `lark-channel-bridge/workflows`.
 
-| Path | Role | May import |
-| --- | --- | --- |
-| `src/workflows/engine` | Kernel (SQLite state), script VM, runtime, worker IPC, worktrees | Node built-ins, `better-sqlite3`, `quickjs-emscripten` |
-| `src/workflows/chat` | `/workflow` command text and status rendering | `engine` |
-| `src/workflows/bridge` | Bridge adapter: `RunExecutor` runner, run-policy and full-access checks, backend/model/effort validation | Anything |
-| `src/workflows/index.ts` | Public entry (`engine` + `chat`) | `engine`, `chat` |
+## Layout
 
-`tests/static/contracts.test.ts` enforces the engine and chat import rules.
+| Path | Role |
+| --- | --- |
+| `src/engine` | Kernel (SQLite state), script VM, runtime, worker IPC, worktrees |
+| `src/chat` | `/workflow` command text and status rendering |
+| `src/index.ts` | Public API |
+| `src/cli.ts` | Worker CLI (`agent-workflow workflow <operation>`) |
+
+Runtime dependencies are `better-sqlite3` and `quickjs-emscripten` only. The bridge's `tests/static/contracts.test.ts` enforces this and keeps the bridge on the public entry. In this repository, `pnpm --filter @kuribohg/agent-workflows build|test|typecheck` works on the package alone; the bridge's root `test` and `typecheck` include it.
 
 ## Minimal host
 
 ```ts
-import { WorkflowRuntime, type WorkflowRoot } from 'lark-channel-bridge/workflows';
+import { WorkflowRuntime } from '@kuribohg/agent-workflows';
 
 const runtime = new WorkflowRuntime({
   path: '/var/lib/my-host/workflows.sqlite',
@@ -41,7 +43,7 @@ const binding = runtime.bindMain(scopeId, 'start');
 // Call binding.release() when the turn ends.
 ```
 
-The main agent and workers call workflow operations through `node "$LARK_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json`. `binding.env` carries a per-run endpoint and token, plus the CLI path (`cliPath`, defaulting to the packaged `dist/cli.js`). The token is the only credential: each binding is scoped to one caller and is revoked on release.
+The main agent and workers call workflow operations through `node "$LARK_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json`. `binding.env` carries a per-run endpoint and token, plus the CLI path (`cliPath`, defaulting to `cli.js` beside the bundle: this package's worker CLI, or the bridge CLI when bundled into the bridge; both accept the same command). The token is the only credential: each binding is scoped to one caller and is revoked on release.
 
 ## Runner contract
 
@@ -59,9 +61,9 @@ The main agent and workers call workflow operations through `node "$LARK_WORKFLO
 
 The engine pins a `WorkflowRoot` (profile, harness, cwd, policy fingerprint, model settings) when a workflow is created. Before each worker starts and again after admission, it compares `workflowDigest(root)` with `resolveRoot`, and the worker's `WorkerExecution` with `resolveWorker`. Any change stops new work. Hosts decide what is authorized. The engine never chooses credentials, profiles or permissions for a worker.
 
-The bridge adapter (`createBridgeWorkflowRuntime`) shows a complete implementation: it maps workers onto `RunExecutor`, derives worker run policies from the root policy, and allows worktrees only for full-access roots.
+The bridge adapter (`src/workflows/bridge` in the bridge repository) is a complete implementation: it maps workers onto `RunExecutor`, derives worker run policies from the root policy, and allows worktrees only for full-access roots.
 
 ## Current limits
 
-- The worker CLI and its environment variables still use the `LARK_WORKFLOW_*` names, and the shipped CLI is the full bridge CLI.
+- The worker environment variables still use the `LARK_WORKFLOW_*` names.
 - Command, status and restart texts are in Chinese. Hosts can render their own UI from `runtime.kernel.state()`.
