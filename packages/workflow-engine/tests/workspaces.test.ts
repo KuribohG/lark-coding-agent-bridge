@@ -22,6 +22,8 @@ async function fixture() {
   closes.push(() => rm(dir, { recursive: true, force: true }));
   const repo = join(dir, 'repo'); await mkdir(repo);
   await git(repo, 'init', '-b', 'main'); await git(repo, 'config', 'user.name', 'Test'); await git(repo, 'config', 'user.email', 'test@localhost');
+  // Keep committed bytes intact; Windows git checks out CRLF by default.
+  await git(repo, 'config', 'core.autocrlf', 'false');
   await writeFile(join(repo, 'shared.txt'), 'baseline\n'); await git(repo, 'add', '.'); await git(repo, 'commit', '-m', 'base');
   const base = await git(repo, 'rev-parse', 'HEAD');
   const root = { scopeId: 'scope', profile: 'test', agentKind: 'codex' as const, cwdRealpath: repo, policyFingerprint: 'full', catalogBinding: 'root', modelSettings: {} };

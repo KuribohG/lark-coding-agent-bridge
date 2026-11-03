@@ -40,7 +40,10 @@ export class InboxGui {
   async start(): Promise<void> {
     const path = this.service.config.gui.apiKeyFile;
     const metadata = await stat(path);
-    if (!metadata.isFile() || (metadata.mode & 0o077)) throw new Error('工作台凭证文件必须仅本人可读写');
+    // Windows reports a synthetic mode and keeps its ACLs out of stat(), so
+    // group/other exposure can only be ruled out on POSIX hosts.
+    const exposed = process.platform !== 'win32' && (metadata.mode & 0o077) !== 0;
+    if (!metadata.isFile() || exposed) throw new Error('工作台凭证文件必须仅本人可读写');
     this.key = (await readFile(path, 'utf8')).trim();
     if (!this.key || /[\r\n]/.test(this.key)) throw new Error('工作台凭证无效');
     try {

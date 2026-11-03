@@ -11,7 +11,7 @@ const dirs: string[] = [];
 
 afterEach(async () => {
   delete process.env.PI_PROVIDER_TEST_KEY;
-  await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })));
 });
 
 describe('PiAdapter process contract', () => {

@@ -76,7 +76,7 @@ describe('hosted inbox connection', () => {
     await s.worker.close(); const restarted = s.make(); await restarted.start(); await idle(s.request);
     expect(s.service.stopAnalysis).toHaveBeenCalledOnce();
   });
-  it('requires a private credential file before any outbound request', async () => {
+  it.skipIf(process.platform === 'win32')('requires a private credential file before any outbound request', async () => {
     const s = await setup(); await chmod(s.key, 0o644);
     await expect(s.worker.start()).rejects.toThrow('仅本人'); expect(s.request).not.toHaveBeenCalled();
   });

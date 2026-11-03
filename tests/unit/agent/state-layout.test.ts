@@ -1,6 +1,6 @@
 import { lstat, mkdir, mkdtemp, readlink, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   defaultWorkspaceFor,
@@ -37,7 +37,7 @@ describe('agent state layout', () => {
     expect(defaultWorkspaceFor(profile)).toBe('/srv/codex-bot');
     expect(defaultWorkspaceFor(profile, 'claude')).toBe(join(root, '.lark-channel-workspaces', 'claude', 'default'));
     expect(defaultWorkspaceFor({ ...profile, state: { ...profile.state, workspaceRoot: '/data/ws' } }, 'pi'))
-      .toBe(join('/data/ws', 'pi', 'default'));
+      .toBe(join(resolve('/data/ws'), 'pi', 'default'));
   });
 
   it('drops the hosting profile workspace when an engine is switched in', () => {
@@ -46,7 +46,7 @@ describe('agent state layout', () => {
     profile.state = { bridgeRoot: '/home/u/.lark-channel' };
     const claude = profileForAgentKind(profile, 'claude');
     expect(claude.workspaces.default).toBeUndefined();
-    expect(defaultWorkspaceFor(claude)).toBe('/home/u/.lark-channel-workspaces/claude/default');
+    expect(defaultWorkspaceFor(claude)).toBe(join('/home/u/.lark-channel-workspaces', 'claude', 'default'));
     expect(profileForAgentKind(profile, 'codex').workspaces.default).toBe('/srv/codex-bot');
   });
 

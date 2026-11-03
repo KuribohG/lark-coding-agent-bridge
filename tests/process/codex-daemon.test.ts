@@ -14,7 +14,7 @@ const closers: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
   await Promise.all(closers.splice(0).map(close => close()));
-  await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
+  await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })));
 });
 
 async function harness() {

@@ -24,7 +24,7 @@ function launchctlCalls(): string[] {
     .map(([, args]) => args.join(' '));
 }
 
-describe('launchd autostart lifecycle', () => {
+describe.skipIf(process.platform === 'win32')('launchd autostart lifecycle', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.spawnSync.mockReturnValue({ status: 0, stdout: '', stderr: '' });

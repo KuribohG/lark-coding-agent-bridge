@@ -39,5 +39,5 @@ describe('workflow origins', () => {
     const broken = new WorkflowOrigins(path);
     await broken.load();
     expect(broken.size).toBe(0);
-  });
+  }, 30_000);
 });

@@ -9,7 +9,7 @@ import { log } from '../../src/core/logger';
 const dirs: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
-  await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true })));
+  await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })));
 });
 
 async function harness(mode = 'normal', transport?: 'app-server', failure?: { message: string; codexErrorInfo: unknown }) {

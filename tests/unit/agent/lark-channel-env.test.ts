@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { buildLarkChannelEnv, LARK_CHANNEL_ENV_KEYS } from '../../../src/agent/lark-channel-env';
 import { buildAgentEnvironment } from '../../../src/agent/launch-env';
@@ -20,7 +21,8 @@ describe('Lark frontend environment binding', () => {
     const launch = Object.fromEntries(LARK_CHANNEL_ENV_KEYS.map(key => [key.toLowerCase(), 'frontend-a']));
     const env = buildAgentEnvironment(host, { ...launch, FRONTEND_COPY: '$LARK_CHANNEL_PROFILE' }, {});
     expect(env).toEqual({ ...host, FRONTEND_COPY: 'frontend-b' });
-    expect(host.LARK_CHANNEL_CONFIG).toBe('/bridge/profiles/frontend-b/lark-cli-source/config.json');
+    expect(host.LARK_CHANNEL_CONFIG)
+      .toBe(join('/bridge', 'profiles', 'frontend-b', 'lark-cli-source', 'config.json'));
   });
 
   it('keeps concurrent Codex thread bindings independent even with the same daemon home', () => {

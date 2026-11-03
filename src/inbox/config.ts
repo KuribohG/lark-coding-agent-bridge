@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path';
 import { normalizeNotification } from '../monitoring/notification';
 import { validateLarkNotification } from '../monitoring/sources/lark/notification';
 import type { WorkItemConfig } from '../work-items/config';
@@ -104,7 +105,7 @@ export function validateInbox(c: InboxConfig): void {
   }
   if (c.gui.publicUrl) {
     const url = new URL(c.gui.publicUrl);
-    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || !c.gui.apiKeyFile.startsWith('/')) {
+    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || !isAbsolute(c.gui.apiKeyFile)) {
       throw new Error('工作台需要 HTTPS 地址和本地凭证文件的绝对路径');
     }
   }
