@@ -113,7 +113,7 @@ describe('lark-cli preflight', () => {
         const output = mocks.outputs.shift() ?? '';
         queueMicrotask(() => {
           if (output) child.stderr.write(output);
-          child.emit('exit', exitCode);
+          child.emit('close', exitCode);
         });
         return child;
       },

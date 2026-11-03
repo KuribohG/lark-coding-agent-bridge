@@ -153,7 +153,8 @@ export async function checkAgentVersion(input: CheckAgentVersionInput): Promise<
         ),
       );
     });
-    child.once('exit', (exitCode, signal) => {
+    // 'close' waits for the output pipes; 'exit' can fire before they drain.
+    child.once('close', (exitCode, signal) => {
       finish(() => {
         if (signal) {
           reject(

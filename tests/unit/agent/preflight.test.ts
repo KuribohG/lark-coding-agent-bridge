@@ -170,6 +170,6 @@ function fakeSignaledChild() {
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
   child.kill = vi.fn();
-  queueMicrotask(() => child.emit('exit', null, 'SIGTERM'));
+  queueMicrotask(() => child.emit('close', null, 'SIGTERM'));
   return child;
 }

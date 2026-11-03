@@ -751,7 +751,8 @@ async function runCapture(
       clearTimeout(timer);
       resolve(null);
     });
-    child.once('exit', (code) => {
+    // 'close' waits for the output pipes; 'exit' can fire before they drain.
+    child.once('close', (code) => {
       clearTimeout(timer);
       resolve(code);
     });

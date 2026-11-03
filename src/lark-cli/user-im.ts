@@ -94,7 +94,8 @@ const defaultExec: LarkCliExec = (args, env, timeoutMs) =>
       clearTimeout(timer);
       resolve({ code: null, stdout, stderr: stderr || String(err), timedOut });
     });
-    child.once('exit', (code) => {
+    // 'close' waits for the output pipes; 'exit' can fire before they drain.
+    child.once('close', (code) => {
       clearTimeout(timer);
       resolve({ code, stdout, stderr, timedOut });
     });
