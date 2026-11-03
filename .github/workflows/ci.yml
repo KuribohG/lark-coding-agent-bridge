@@ -11,12 +11,18 @@ permissions:
 
 jobs:
   test:
-    name: Node 20 on ${{ matrix.os }}
+    name: Node ${{ matrix.node }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
+        node: [22]
+        # better-sqlite3 ships no Node 20 prebuilds, so Node 20 compiles it
+        # from source; keep it on Linux only to cover the engines range.
+        include:
+          - os: ubuntu-latest
+            node: 20
 
     steps:
       - name: Checkout
@@ -28,7 +34,7 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: ${{ matrix.node }}
           cache: pnpm
 
       - name: Install
@@ -38,19 +44,19 @@ jobs:
         run: pnpm lint:dead
 
       - name: Test
-        if: matrix.os != 'ubuntu-latest'
+        if: ${{ !(matrix.os == 'ubuntu-latest' && matrix.node == 22) }}
         run: pnpm test
 
       - name: Test with coverage
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 22
         run: pnpm test:coverage
 
       - name: Report coverage
-        if: matrix.os == 'ubuntu-latest' && always()
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 22 && always()
         uses: davelosert/vitest-coverage-report-action@v2
 
       - name: Upload coverage report
-        if: matrix.os == 'ubuntu-latest' && always()
+        if: matrix.os == 'ubuntu-latest' && matrix.node == 22 && always()
         uses: actions/upload-artifact@v4
         with:
           name: coverage-html
