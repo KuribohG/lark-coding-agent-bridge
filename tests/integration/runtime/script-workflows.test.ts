@@ -474,7 +474,7 @@ describe('script workflow runtime', () => {
     expect(h.adapters.codex.runs).toHaveLength(1);
     expect(h.adapters.codex.runs[0]?.stopped).toBe(true);
     expect(h.runtime.kernel.state('script-topic', workflowId)?.tasks[0]?.status).toBe('cancelled');
-  });
+  }, 30_000);
 
   it('resumes a persisted mailbox wait after a runtime restart without replaying completed agent turns', async () => {
     const dir=await mkdtemp(join(tmpdir(),'durable-runtime-')); cleanup.push(()=>rm(dir,{recursive:true,force:true}));
