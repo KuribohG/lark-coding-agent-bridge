@@ -130,11 +130,11 @@ try {
 
   Write-Host '==> writing CLI shims'
   function Write-CmdShim([string]$Name, [string]$Entry, [string]$ExtraArgs = '') {
-    $content = @(
-      '@echo off',
-      'setlocal',
-      '"%~dp0..\runtime\node.exe" "%~dp0..\app\bin\' + $Entry + '" ' + $ExtraArgs + '%*'
-    ) -join "`r`n"
+    # Build the command in a separate statement: an unparenthesised
+    # concatenation inside @() is parsed as several array elements, which splits
+    # the command across lines in the generated .cmd and breaks it.
+    $command = '"{0}..\runtime\node.exe" "{0}..\app\bin\{1}" {2}%*' -f '%~dp0', $Entry, $ExtraArgs
+    $content = @('@echo off', 'setlocal', $command) -join "`r`n"
     [System.IO.File]::WriteAllText((Join-Path $shimDir $Name), $content + "`r`n", [System.Text.Encoding]::ASCII)
   }
   Write-CmdShim 'lark-channel-bridge.cmd' 'lark-channel-bridge.mjs'
