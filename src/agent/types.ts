@@ -23,12 +23,40 @@ export type AgentInputReceipt =
   | { status: 'inactive' | 'unsupported'; messageId: string }
   | { status: 'unknown'; messageId: string; message: string };
 
+export interface AgentQuestionOption {
+  label: string;
+  description?: string;
+}
+
+export interface AgentQuestion {
+  question: string;
+  header?: string;
+  options: AgentQuestionOption[];
+  multiSelect?: boolean;
+}
+
+/**
+ * `async`: the run keeps going and an answer is ordinary follow-up input.
+ * `blocking`: the run waits until the host calls answerUserInput for this id.
+ */
+export type AgentQuestionMode = 'async' | 'blocking';
+
+/** One entry per question: the chosen labels or free text. */
+export type AgentQuestionAnswer = { answers: string[][] } | { declined: string };
+
 export type AgentEvent =
   | { type: 'system'; sessionId?: string; threadId?: string; cwd?: string; model?: string }
   | { type: 'text'; delta: string }
   | { type: 'final_text'; content: string }
   | { type: 'thinking'; delta: string }
-  | { type: 'user_input'; id: string; threadId: string; questions: Array<{ title: string; options?: string[] }> }
+  | {
+      type: 'user_input';
+      id: string;
+      mode: AgentQuestionMode;
+      questions: AgentQuestion[];
+      threadId?: string;
+      sessionId?: string;
+    }
   | { type: 'retry'; attempt: number; maxAttempts: number; delayMs: number; failureKind?: 'rate_limit' | 'transient' }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; id: string; output: string; isError: boolean }
@@ -83,6 +111,8 @@ export interface AgentRunOptions {
    * are adapter-specific.
   */
   stopGraceMs?: number;
+  /** The host can present questions to a user and answer them; enables blocking question tools. */
+  userQuestions?: boolean;
 }
 
 /** The first stop request owns the cause; transport cleanup must not replace it. */
@@ -94,6 +124,8 @@ export interface AgentRun {
   /** Omitted by legacy adapters; consumers must not infer capabilities from the agent name. */
   readonly capabilities?: AgentExecutionCapabilities;
   sendInput?(input: AgentInput): Promise<AgentInputReceipt>;
+  /** Resolve a pending blocking user_input request; inactive when it is no longer waiting. */
+  answerUserInput?(id: string, answer: AgentQuestionAnswer): Promise<'accepted' | 'inactive'>;
   stop(reason?: RunStopReason): Promise<void>;
   /** @deprecated Native input hook. Business code uses the execution contract's sendRunInput. */
   steer?(prompt: string, messageId: string): Promise<'accepted' | 'inactive'>;

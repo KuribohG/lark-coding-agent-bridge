@@ -417,6 +417,72 @@ describe('ClaudeAdapter process contract', () => {
     } finally { await run.stop(); }
   });
 
+  it('routes AskUserQuestion through the stdio prompt tool as a blocking question', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'claude-question-test-'));
+    cleanup.push(dir);
+    const binary = join(dir, 'fake-claude.mjs');
+    const recordPath = join(dir, 'inputs.json');
+    await writeFile(binary, `#!/usr/bin/env node
+      import { createInterface } from 'node:readline';
+      import { writeFileSync } from 'node:fs';
+      const inputs = [];
+      const emit = event => console.log(JSON.stringify(event));
+      const questions = [
+        { question: 'Which scope?', header: 'Scope', options: [{ label: 'All', description: 'everything' }, { label: 'New' }], multiSelect: false },
+        { question: 'Which checks?', header: 'Checks', options: [{ label: 'lint' }, { label: 'test' }], multiSelect: true },
+      ];
+      createInterface({ input: process.stdin }).on('line', line => {
+        const input = JSON.parse(line); inputs.push(input);
+        writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({ argv: process.argv.slice(2), inputs }));
+        if (inputs.length === 1) {
+          emit({ type: 'system', subtype: 'init', session_id: 'question-session' });
+          emit({ type: 'control_request', request_id: 'perm-bash', request: { subtype: 'can_use_tool', tool_name: 'Bash', input: { command: 'ls' } } });
+          emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'ask', name: 'AskUserQuestion', input: { questions } }] } });
+          emit({ type: 'control_request', request_id: 'perm-ask', request: { subtype: 'can_use_tool', tool_name: 'AskUserQuestion', input: { questions } } });
+        } else if (input.response?.request_id === 'perm-ask') {
+          emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'ask', content: 'answered' }] } });
+          emit({ type: 'result', session_id: 'question-session', result: 'done', user_message_uuids: [inputs[0].uuid] });
+        }
+      });
+      process.stdin.on('end', () => process.exit(0));
+    `, { mode: 0o700 });
+    const run = (await new ClaudeAdapter({ binary }).prepareRun({ runId: 'question', prompt: 'ask', cwd: dir, userQuestions: true })).start();
+    const events: AgentEvent[] = [];
+    try {
+      for await (const event of run.events) {
+        events.push(event);
+        if (event.type === 'user_input') {
+          expect(await run.answerUserInput!(event.id, { answers: [['All'], ['lint', 'test']] })).toBe('accepted');
+          expect(await run.answerUserInput!(event.id, { answers: [['New'], ['lint']] })).toBe('inactive');
+        }
+      }
+      expect(events.filter(event => event.type === 'user_input')).toEqual([{
+        type: 'user_input', id: 'perm-ask', mode: 'blocking', sessionId: 'question-session', questions: [
+          { question: 'Which scope?', header: 'Scope', options: [{ label: 'All', description: 'everything' }, { label: 'New' }] },
+          { question: 'Which checks?', header: 'Checks', options: [{ label: 'lint' }, { label: 'test' }], multiSelect: true },
+        ],
+      }]);
+      expect(events).toContainEqual({ type: 'final_text', content: 'done' });
+      const record = JSON.parse(await readFile(recordPath, 'utf8'));
+      expect(record.argv.join(' ')).toContain('--permission-prompt-tool stdio');
+      const responses = record.inputs.filter((input: { type: string }) => input.type === 'control_response').map((input: { response: unknown }) => input.response);
+      expect(responses[0]).toMatchObject({ subtype: 'success', request_id: 'perm-bash', response: { behavior: 'deny' } });
+      expect(responses[1]).toMatchObject({ subtype: 'success', request_id: 'perm-ask', response: { behavior: 'allow',
+        updatedInput: { answers: { 'Which scope?': 'All', 'Which checks?': 'lint, test' } } } });
+      expect(responses[1].response.updatedInput.questions).toHaveLength(2);
+      expect(responses).toHaveLength(2);
+    } finally { await run.stop(); }
+  });
+
+  it('keeps AskUserQuestion unavailable when the host cannot answer questions', async () => {
+    const fake = await createFakeClaude({ lines: [{ type: 'result', session_id: 'sess-no-questions' }] });
+    cleanup.push(fake.dir);
+    const run = (await new ClaudeAdapter({ binary: fake.path }).prepareRun({ runId: 'plain', prompt: 'hello', cwd: fake.dir })).start();
+    await collect(run.events);
+    expect((await readRecord(fake.recordPath)).argv).not.toContain('--permission-prompt-tool');
+    expect(run.answerUserInput).toBeUndefined();
+  });
+
   it('requires cwd to be resolved by policy before spawning', async () => {
     await expect(async () =>
       (await new ClaudeAdapter({ binary: 'unused' }).prepareRun({ runId: 'run-no-cwd', prompt: 'hi' })).start(),

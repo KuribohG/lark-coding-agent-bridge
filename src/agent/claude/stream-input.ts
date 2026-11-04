@@ -23,6 +23,24 @@ export class ClaudeStreamInput {
     this.write(prompt, this.initialId);
   }
 
+  get currentSessionId(): string | undefined {
+    return this.sessionId || undefined;
+  }
+
+  /** Write a control-protocol message; false once the input stream is closed. */
+  control(message: object): boolean {
+    if (!this.active || this.stdin.destroyed || this.stdin.writableEnded) return false;
+    try {
+      this.stdin.write(JSON.stringify(message) + '\n', 'utf8', (error) => {
+        if (error) this.close(new Error('Claude stdin write failed; delivery is unknown'));
+      });
+      return true;
+    } catch {
+      this.close(new Error('Claude stdin write failed; delivery is unknown'));
+      return false;
+    }
+  }
+
   errorMessage(message: string): string {
     return [...this.outstanding].some(uuid => uuid !== this.initialId)
       ? `${message}; supplemental input delivery is unknown` : message;

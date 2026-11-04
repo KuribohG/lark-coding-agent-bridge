@@ -12,7 +12,7 @@ import {
   LARK_CONTEXT_MAX_CHARS,
   type QuotedContext,
 } from '../../bot/quote';
-import type { UserQuestions } from '../../bot/user-questions';
+import type { UserQuestions } from './question-cards';
 import type { CallbackAuth } from '../../card/callback-auth';
 import type { Controls } from '../../commands';
 import type { AgentKind } from '../../config/profile-schema';
@@ -343,6 +343,8 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     executor,
     now: Date.now(),
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
+    // A timed run has no one waiting to answer before its deadline.
+    userQuestions: !deps.timedJob,
     observability: {
       profile: controls.profile,
       agent: capability.agentId,

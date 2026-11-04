@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import type { SpawnedProcessByStdio } from '../../platform/spawn';
 import { spawnWithDeadline } from '../deadline';
-import type { AgentEvent, AgentRun, AgentRunOptions } from '../types';
+import type { AgentEvent, AgentQuestion, AgentRun, AgentRunOptions } from '../types';
 import { CodexJsonlTranslator } from './jsonl';
 import { getBuildInfo } from '../../build-info';
 import { log } from '../../core/logger';
@@ -276,7 +276,7 @@ export function startAppServerRun(input: {
           const id = text(item.id);
           if (!questionItems.has(id)) {
             questionItems.add(id);
-            push([{ type: 'user_input', id, threadId: threadId!, questions }]);
+            push([{ type: 'user_input', id, mode: 'async', threadId: threadId!, questions }]);
           }
         } else {
           push(translator.translate({ type: 'item.completed', item: { ...item, type: 'agent_message' } }));
@@ -482,12 +482,12 @@ function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max)}…` : value;
 }
 
-function parseAsyncQuestions(value: unknown): Array<{ title: string; options?: string[] }> {
+function parseAsyncQuestions(value: unknown): AgentQuestion[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap(raw => {
     const q = object(raw);
     if (!text(q.title).trim()) return [];
     const options = Array.isArray(q.options) ? q.options.filter((v): v is string => typeof v === 'string' && Boolean(v.trim())) : [];
-    return [{ title: text(q.title), ...(options.length ? { options } : {}) }];
+    return [{ question: text(q.title), options: options.map(label => ({ label })) }];
   });
 }

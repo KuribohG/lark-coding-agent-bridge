@@ -53,6 +53,7 @@ export interface StartRunFlowInput extends RunFlowContextInput {
   modelSettings?: import('../agent/model-settings').ModelSettings;
   executor: RunExecutor;
   stopGraceMs?: number;
+  userQuestions?: boolean;
   observability?: {
     profile: string;
     agent: string;
@@ -225,6 +226,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
               .filter((path): path is string => Boolean(path))
           : undefined,
       stopGraceMs: input.stopGraceMs,
+      userQuestions: input.userQuestions,
       observability: input.observability,
     });
   } catch (err) {

@@ -10,7 +10,7 @@ import { FollowupRouter } from '../../bot/followup';
 import { startKeepalive } from '../../bot/keepalive';
 import { fetchKnownChats } from '../../bot/lark-info';
 import { PendingQueue, type PendingMessage } from '../../bot/pending-queue';
-import { UserQuestions } from '../../bot/user-questions';
+import { UserQuestions } from './question-cards';
 import { CallbackAuth } from '../../card/callback-auth';
 import { CallbackNonceStore } from '../../card/callback-store';
 import { handleCardAction } from '../../card/dispatcher';
@@ -327,6 +327,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       await withTrace({ chatId: msg.chatId, msgId: msg.messageId }, () =>
         intakeMessage({
           followups,
+          userQuestions,
           ...conversation,
           resolveAgent,
           resolveAgentKind,

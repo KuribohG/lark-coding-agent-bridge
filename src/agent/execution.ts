@@ -68,6 +68,10 @@ export function withExecutionContract(native: AgentRun, capabilities: AgentExecu
     async stop() { active = false; await native.stop(); },
     waitForExit: timeoutMs => native.waitForExit(timeoutMs),
   };
+  if (native.answerUserInput) {
+    const answer = native.answerUserInput.bind(native);
+    run.answerUserInput = async (id, value) => active ? answer(id, value) : 'inactive';
+  }
   const scope = capabilities.input;
   if (scope !== 'unsupported') {
     run.sendInput = async input => {

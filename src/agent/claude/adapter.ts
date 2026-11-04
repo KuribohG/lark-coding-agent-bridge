@@ -17,11 +17,13 @@ import {
   type AgentAdapter,
   type AgentBotIdentity,
   type AgentEvent,
+  type AgentQuestionAnswer,
   type AgentRun,
   type AgentRunOptions,
 } from '../types';
 import { ClaudeRunTranslator, isTaskNotificationResult } from './stream-json';
 import { ClaudeStreamInput } from './stream-input';
+import { ClaudeQuestionControl } from './questions';
 import { spawnWithDeadline } from '../deadline';
 import { withExecutionContract } from '../execution';
 import { CLAUDE_EXECUTION_CAPABILITIES } from './capabilities';
@@ -127,6 +129,8 @@ export class ClaudeAdapter implements AgentAdapter {
     if (runFiles.settingsPath) args.push('--settings', runFiles.settingsPath);
     if (opts.reasoningEffort && !ultra) args.push('--effort', parseEffort(opts.reasoningEffort, 'claude')!);
     if (opts.deadlineAt !== undefined) args.push('--disallowedTools', DEADLINE_DISALLOWED_TOOLS.join(','));
+    // Without a prompt tool, -p mode removes AskUserQuestion; stdio routes it to the host.
+    if (opts.userQuestions) args.push('--permission-prompt-tool', 'stdio');
 
     const child = spawnWithDeadline(this.binary, args, {
       cwd: opts.cwd,
@@ -154,6 +158,7 @@ export class ClaudeAdapter implements AgentAdapter {
     // the void and the generator hangs.
     const stderrChunks: Buffer[] = [];
     const input = new ClaudeStreamInput(child.stdin, opts.sessionId);
+    const questions = new ClaudeQuestionControl(input);
     let runtimeError: Error | null = null;
     let interrupted = false;
     let stderrBuffer = '';
@@ -181,6 +186,7 @@ export class ClaudeAdapter implements AgentAdapter {
     });
     child.on('exit', (code, signal) => {
       input.close();
+      questions.close();
       log.info('agent', 'exit', { pid: child.pid ?? null, code, signal });
       runFiles.cleanup();
     });
@@ -199,8 +205,9 @@ export class ClaudeAdapter implements AgentAdapter {
 
     return {
       runId: opts.runId,
-      events: createEventStream(child, stderrChunks, () => runtimeError, input, () => interrupted, opts.deadlineAt),
+      events: createEventStream(child, stderrChunks, () => runtimeError, input, questions, () => interrupted, opts.deadlineAt),
       steer: (prompt, messageId) => input.steer(prompt, messageId),
+      ...(opts.userQuestions ? { answerUserInput: (id: string, answer: AgentQuestionAnswer) => questions.answer(id, answer) } : {}),
       async stop() {
         interrupted = true;
         input.close();
@@ -250,6 +257,7 @@ async function* createEventStream(
   stderrChunks: Buffer[],
   getError: () => Error | null,
   input: ClaudeStreamInput,
+  questions: ClaudeQuestionControl,
   isInterrupted: () => boolean,
   deadlineAt?: number,
 ): AsyncGenerator<AgentEvent> {
@@ -284,6 +292,11 @@ async function* createEventStream(
       try {
         parsed = JSON.parse(trimmed);
       } catch {
+        continue;
+      }
+      const control = questions.receive(parsed);
+      if (control) {
+        yield* control;
         continue;
       }
       parsed = input.receive(parsed);

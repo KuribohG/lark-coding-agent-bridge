@@ -24,6 +24,7 @@ import type { SessionStore } from '../../session/store';
 import type { WorkspaceStore } from '../../workspace/store';
 
 import { buildPrompt, replyQuoteTargetForMessage } from './prompt';
+import type { UserQuestions } from './question-cards';
 
 async function sendNonAllowedGroupHint(
   channel: LarkChannel,
@@ -76,6 +77,7 @@ async function sendForwardFetchFailedHint(
 
 interface IntakeDeps {
   followups: FollowupRouter;
+  userQuestions?: UserQuestions;
   channel: LarkChannel;
   resolveAgent(scope: string): AgentAdapter;
   resolveAgentKind(scope: string): AgentKind;
@@ -234,6 +236,18 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
 
   const wasBusy = pending.isBlocked(scope) || Boolean(activeRuns.get(scope));
   const wasTimed = Boolean(controls.activeTimedRun?.(scope));
+  if (emsg.resources.length === 0 && deps.userQuestions) {
+    const status = await deps.userQuestions.answerWithText({
+      scope, senderId: emsg.senderId, text: emsg.content,
+      resolveIdentity: () => commandSessionCatalogIdentity({ msg: emsg, scope, mode: chatMode, workspaces, controls,
+        access: accessDecision, agentKind: scopeAgentKind }),
+    });
+    if (status) {
+      await channel.send(emsg.chatId, { markdown: status }, { replyTo: emsg.messageId,
+        ...(chatMode === 'topic' ? { replyInThread: true } : {}) });
+      return;
+    }
+  }
   if (emsg.resources.length === 0 && supportsRunInput(activeRuns.get(scope)?.run)) {
     const result = await deps.followups.deliver({
       scope, messageId: emsg.messageId, activeRuns,

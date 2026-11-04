@@ -91,7 +91,7 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
             else if (event.type === 'final_text') yield { type: 'final_text', text: event.content };
             else if (event.type === 'error') yield { type: 'error', message: event.message };
             else if (event.type === 'done') yield { type: 'done', normal: event.terminationReason === 'normal' };
-            else if (event.type === 'user_input') yield { type: 'user_input', question: event.questions.map(item => item.title).join('\n') };
+            else if (event.type === 'user_input') yield { type: 'user_input', question: event.questions.map(item => item.question).join('\n') };
           }
         },
       };

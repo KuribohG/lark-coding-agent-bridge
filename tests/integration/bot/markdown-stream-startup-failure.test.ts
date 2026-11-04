@@ -7,7 +7,7 @@ import type { FakeAgentEvents } from '../../helpers/fake-agent.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { log } from '../../../src/core/logger.js';
 import { CotClient } from '../../../src/bot/cot.js';
-import { UserQuestions } from '../../../src/bot/user-questions.js';
+import { UserQuestions } from '../../../src/channels/lark/question-cards.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
@@ -216,7 +216,7 @@ describe('markdown stream startup failures', () => {
       return { runId: raw.runId, capabilities: raw.capabilities, waitForExit: raw.waitForExit.bind(raw),
         stop: async () => { finished.resolve(undefined); await raw.stop(); },
         events: { async *[Symbol.asyncIterator](): AsyncGenerator<AgentEvent> {
-          yield { type: 'user_input', id: 'q', threadId: 'codex-thread', questions: [{ title: 'QUESTION_WHILE_RUNNING', options: ['A', 'B'] }] };
+          yield { type: 'user_input', id: 'q', mode: 'async', threadId: 'codex-thread', questions: [{ question: 'QUESTION_WHILE_RUNNING', options: [{ label: 'A' }, { label: 'B' }] }] };
           await finished.promise;
           yield { type: 'final_text', content: 'FINAL_AFTER_QUESTION' };
           yield { type: 'done', terminationReason: 'normal' };

@@ -51,6 +51,8 @@ export interface SubmitRunInput {
   reasoningEffort?: import('../agent/model-settings').ReasoningEffort;
   images?: readonly string[];
   stopGraceMs?: number;
+  /** The caller presents and answers agent questions for this run. */
+  userQuestions?: boolean;
   nowait?: boolean;
   observability?: {
     profile: string;
@@ -204,6 +206,7 @@ export class RunExecutor {
       sandbox: input.policy.sandbox,
       permissionMode: input.policy.permissionMode,
       stopGraceMs: input.stopGraceMs,
+      userQuestions: input.userQuestions,
     });
     let run: AgentRun;
     let prepared: PreparedAgentRun;

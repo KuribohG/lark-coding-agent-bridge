@@ -126,8 +126,8 @@ describe('Codex native in-flight input', () => {
     const output = (async () => { for await (const event of run.events) events.push(event); })();
     await vi.waitFor(() => expect(events.some(e => e.type === 'tool_use')).toBe(true));
     expect(events.filter(e => e.type === 'user_input')).toEqual([{
-      type: 'user_input', id: 'question-1', threadId: 'thread-1',
-      questions: [{ title: '处理范围？', options: ['全部', '仅本次'] }, { title: '补充说明' }],
+      type: 'user_input', id: 'question-1', mode: 'async', threadId: 'thread-1',
+      questions: [{ question: '处理范围？', options: [{ label: '全部' }, { label: '仅本次' }] }, { question: '补充说明', options: [] }],
     }]);
     expect(events.some(e => e.type === 'done')).toBe(false);
     await run.steer!('仅本次', 'answer');

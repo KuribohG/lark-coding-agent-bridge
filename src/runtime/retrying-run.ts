@@ -145,6 +145,11 @@ export function retryingRun(input: {
       if (result.status === 'unknown') throw new Error(result.message);
       return result.status === 'accepted' ? 'accepted' as const : 'inactive' as const;
     } } : {}),
+    // A retry starts a new process, so questions from an earlier attempt resolve as inactive.
+    async answerUserInput(id, answer) {
+      if (waiting || terminal || controller.signal.aborted || !current.answerUserInput) return 'inactive';
+      return current.answerUserInput(id, answer);
+    },
     async stop(reason = 'cancelled') {
       controller.abort(new RunStopped(reason));
       finish();

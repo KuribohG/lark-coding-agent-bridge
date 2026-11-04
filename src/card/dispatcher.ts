@@ -5,7 +5,7 @@ import type { ChatModeCache } from '../bot/chat-mode-cache';
 import type { PendingQueue } from '../bot/pending-queue';
 import type { ProcessPool } from '../bot/process-pool';
 import { commandSessionCatalogIdentity } from '../bot/session-catalog-identity';
-import type { UserQuestions } from '../bot/user-questions';
+import type { UserQuestions } from '../channels/lark/question-cards';
 import { runCommandHandler, type CommandContext, type Controls } from '../commands';
 import type { AgentKind } from '../config/profile-schema';
 import { log } from '../core/logger';
