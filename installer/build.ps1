@@ -13,9 +13,10 @@
     * .cmd shims that invoke the bundled runtime
     * LarkChannelBridgeTray.exe (compiled here from installer/tray/*.cs)
 
-  Requirements: NSIS (makensis) and the .NET Framework 4.x compiler (csc.exe,
-  present on stock Windows 10/11 and on GitHub's windows-latest image).  NSIS
-  locally: https://nsis.sourceforge.io/.
+  Requirements: the .NET Framework 4.x compiler (csc.exe, present on stock
+  Windows 10/11 and on GitHub's windows-latest image).  NSIS is used from PATH
+  or the default install directory when available; otherwise the official
+  portable zip is downloaded into %LOCALAPPDATA%\LarkChannelBridge\build-tools.
 #>
 [CmdletBinding()]
 param(
@@ -170,6 +171,36 @@ try {
       )) {
       if ($candidate -and (Test-Path -LiteralPath $candidate)) { $makensis = $candidate; break }
     }
+  }
+  if (-not $makensis) {
+    # The zip is the official binary distribution and needs no installer or
+    # elevation, which also makes CI (windows-latest has no NSIS) reliable.
+    $nsisVersion = '3.10'
+    $nsisRoot = Join-Path $env:LOCALAPPDATA 'LarkChannelBridge\build-tools'
+    $found = $null
+    if (Test-Path -LiteralPath $nsisRoot) {
+      $found = Get-ChildItem -LiteralPath $nsisRoot -Filter 'makensis.exe' -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.DirectoryName 'Stubs') } |
+        Select-Object -First 1
+    }
+    if (-not $found) {
+      Write-Host "==> downloading NSIS $nsisVersion"
+      $zip = Join-Path $env:TEMP "nsis-$nsisVersion.zip"
+      $url = "https://downloads.sourceforge.net/project/nsis/NSIS%203/$nsisVersion/nsis-$nsisVersion.zip"
+      # SourceForge answers browser-like agents with an HTML interstitial; a
+      # plain tool agent gets the archive itself.
+      Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -UserAgent 'lark-channel-bridge-installer/1.0'
+      $magic = [System.IO.File]::ReadAllBytes($zip)
+      if ($magic.Length -lt 4 -or $magic[0] -ne 0x50 -or $magic[1] -ne 0x4B) {
+        throw 'NSIS download did not return a zip archive; install NSIS manually and add it to PATH'
+      }
+      New-Item -ItemType Directory -Force -Path $nsisRoot | Out-Null
+      Expand-Archive -LiteralPath $zip -DestinationPath $nsisRoot -Force
+      $found = Get-ChildItem -LiteralPath $nsisRoot -Filter 'makensis.exe' -Recurse -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.DirectoryName 'Stubs') } |
+        Select-Object -First 1
+    }
+    if ($found) { $makensis = $found.FullName }
   }
   if (-not $makensis) { throw 'makensis not found; install NSIS or add it to PATH' }
 

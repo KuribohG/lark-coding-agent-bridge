@@ -44,8 +44,8 @@ Windows 上的“后台运行”本身就是登录时触发的计划任务。
 
 ## 构建
 
-本地（Windows x64，需要 Node 22、Git、NSIS 3.x；托盘程序用系统自带的 .NET Framework
-4.x `csc.exe` 编译，无需额外 SDK）：
+本地（Windows x64，需要 Node 22、Git；NSIS 优先使用 PATH 或默认安装目录，找不到时脚本
+会自动下载官方便携版；托盘程序用系统自带的 .NET Framework 4.x `csc.exe` 编译，无需额外 SDK）：
 
 ```powershell
 corepack pnpm install --frozen-lockfile
