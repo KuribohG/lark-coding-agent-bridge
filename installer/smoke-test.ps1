@@ -20,6 +20,14 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# Turn any failure into a GitHub annotation: the step log itself needs an
+# authenticated viewer, the annotation does not.
+trap {
+  $message = ($_.Exception.Message -replace "`r?`n", ' ').Trim()
+  Write-Host ("::error::smoke test failed: {0}" -f $message)
+  exit 1
+}
+
 $installer = (Resolve-Path -LiteralPath $InstallerPath).Path
 $installDir = Join-Path $env:LOCALAPPDATA 'LarkChannelBridge'
 $configDir = Join-Path $env:USERPROFILE '.lark-channel'
