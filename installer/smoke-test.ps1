@@ -59,8 +59,16 @@ $cli = Join-Path $installDir 'bin\lark-channel-bridge.cmd'
 Assert (Test-Path -LiteralPath $cli) "CLI shim missing: $cli"
 
 Write-Host '==> CLI --help'
-& $cli --help | Out-Null
-Assert ($LASTEXITCODE -eq 0) "CLI --help exited with $LASTEXITCODE"
+$helpOut = Join-Path $env:TEMP 'lark-cli-help.out'
+$helpErr = Join-Path $env:TEMP 'lark-cli-help.err'
+Remove-Item -LiteralPath $helpOut, $helpErr -Force -ErrorAction SilentlyContinue
+& $cli --help > $helpOut 2> $helpErr
+$helpCode = $LASTEXITCODE
+if ($helpCode -ne 0) {
+  $helpText = ((Get-Content -LiteralPath $helpOut -Raw -ErrorAction SilentlyContinue) +
+    (Get-Content -LiteralPath $helpErr -Raw -ErrorAction SilentlyContinue))
+  throw "CLI --help exited with $helpCode; output: $helpText"
+}
 Assert (Test-Path -LiteralPath (Join-Path $installDir 'app\node_modules\better-sqlite3')) 'better-sqlite3 is not installed'
 
 Write-Host '==> version reports the built commit'
