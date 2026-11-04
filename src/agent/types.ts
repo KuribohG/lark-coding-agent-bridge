@@ -8,6 +8,22 @@ export type { ClaudePermissionMode } from '../config/permissions';
 export interface AgentExecutionCapabilities {
   readonly finalAnswer: 'separate-event' | 'stream';
   readonly input: 'active-turn' | 'active-session' | 'unsupported';
+  readonly lifecycle?: 'process' | 'session';
+}
+
+export interface StopSettlement {
+  state: 'requested' | 'quiescent' | 'unknown';
+  reason?: string;
+}
+
+/** Trusted host-only turn data. It is never decoded from agent output. */
+export interface NativeTurnBinding {
+  session: any;
+  turnId: string;
+  input: any;
+  invocation: any;
+  signal?: AbortSignal;
+  onEvent(event: any): void;
 }
 
 export type AgentFailureKind = 'rate_limit' | 'transient' | 'quota' | 'authentication' | 'delivery_unknown' | 'runtime';
@@ -53,6 +69,7 @@ export type AgentEvent =
 export const CLAUDE_DEFAULT_PERMISSION_MODE: ClaudePermissionMode = 'bypassPermissions';
 
 export interface AgentRunOptions {
+  nativeTurn?: NativeTurnBinding;
   /** Trusted per-run host bindings, never model-supplied environment overrides. */
   env?: Readonly<Record<string, string>>;
   /** Optional provisional answer deltas, separate from the authoritative final_text event. */
@@ -94,7 +111,9 @@ export interface AgentRun {
   /** Omitted by legacy adapters; consumers must not infer capabilities from the agent name. */
   readonly capabilities?: AgentExecutionCapabilities;
   sendInput?(input: AgentInput): Promise<AgentInputReceipt>;
-  stop(reason?: RunStopReason): Promise<void>;
+  stop(reason?: RunStopReason): Promise<void | StopSettlement>;
+  /** Native turn drain, independent from process exit and session release. */
+  waitForQuiescence?(timeoutMs: number): Promise<StopSettlement>;
   /** @deprecated Native input hook. Business code uses the execution contract's sendRunInput. */
   steer?(prompt: string, messageId: string): Promise<'accepted' | 'inactive'>;
   /**

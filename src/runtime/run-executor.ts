@@ -1,6 +1,6 @@
 import { snapshotRunOptions } from '../agent/prepared-run';
 import { randomUUID } from 'node:crypto';
-import type { AgentAdapter, AgentEvent, AgentRun, PreparedAgentRun, RunStopReason } from '../agent/types';
+import type { AgentAdapter, AgentEvent, AgentRun, NativeTurnBinding, PreparedAgentRun, RunStopReason, StopSettlement } from '../agent/types';
 import { ActiveRuns, markRunStopped, stopRun, type RunHandle } from './active-runs';
 import { ProcessPool } from './process-pool';
 import type { RunPolicyAllow } from '../policy/run-policy';
@@ -28,6 +28,14 @@ export interface RunExecutorDeps {
 }
 
 export interface SubmitRunInput {
+  /** Host-durable logical execution identity, independent of an attempt UUID. */
+  executionId?: string;
+  attemptId?: string;
+  retryPolicy?: 'none' | 'legacy';
+  /** Opt in to host-ledger reconciliation and retained unknown resources. */
+  governed?: boolean;
+  quiescenceTimeoutMs?: number;
+  nativeTurn?: NativeTurnBinding;
   /** Adapter captured with the run's profile and capability snapshot. */
   agent?: AgentAdapter;
   /** Authorized root used for adapter resolution; scopeId remains the execution mutex. */
@@ -60,7 +68,7 @@ export interface SubmitRunInput {
   };
 }
 
-export type RunResult = 'completed' | 'stopped' | 'expired' | 'quota' | 'failed';
+export type RunResult = 'completed' | 'stopped' | 'expired' | 'quota' | 'failed' | 'unknown';
 
 export interface RunExecution {
   result: Promise<RunResult>;
@@ -70,9 +78,13 @@ export interface RunExecution {
   handle: RunHandle;
   subscribe(): AsyncIterable<AgentEvent>;
   stop(reason?: RunStopReason): Promise<void>;
+  /** Explicit host reconciliation may release a proved-drained quarantine. */
+  reconcile(): Promise<StopSettlement>;
 }
 
 const DEFAULT_POST_DONE_EXIT_GRACE_MS = 2000;
+const beforeSubmission = (error: unknown): Error & { confirmedNotSubmitted: true } =>
+  Object.assign(error instanceof Error ? error : new Error(String(error)), { confirmedNotSubmitted: true as const });
 
 export class RunExecutor {
   private readonly resolveAgent: (scopeId: string, agentKind?: AgentKind) => AgentAdapter;
@@ -99,26 +111,29 @@ export class RunExecutor {
   }
 
   async submit(input: SubmitRunInput): Promise<RunExecution> {
+    const governed = input.governed === true || input.retryPolicy === 'none';
     const submittedAt = this.now();
+    const generation = this.activeRuns.generation(input.scopeId);
     const checkDeadline = () => {
+      if (this.activeRuns.generation(input.scopeId) !== generation) throw beforeSubmission(new RunStopped('cancelled'));
       if (input.deadlineAt !== undefined && (!Number.isSafeInteger(input.deadlineAt) || input.deadlineAt <= this.now())) {
-        throw new RunRejected('deadline-expired', '任务停止时间已过。');
+        throw beforeSubmission(new RunRejected('deadline-expired', '任务停止时间已过。'));
       }
-      if (input.signal?.aborted) throw new RunStopped(abortStopReason(input.signal));
+      if (input.signal?.aborted) throw beforeSubmission(new RunStopped(abortStopReason(input.signal)));
     };
     checkDeadline();
     if (input.policy.expiresAt <= this.now()) {
-      throw new RunRejected('policy-expired', 'run policy expired before spawn');
+      throw beforeSubmission(new RunRejected('policy-expired', 'run policy expired before spawn'));
     }
     if (this.activeRuns.newRunsPaused()) {
-      throw new RunRejected(
+      throw beforeSubmission(new RunRejected(
         'reconnect-in-progress',
         this.activeRuns.newRunsPauseReason() ?? 'new runs are temporarily paused',
-      );
+      ));
     }
     const releaseScope = this.activeRuns.reserve(input.scopeId);
     if (!releaseScope) {
-      throw new RunRejected('run-already-active', 'another run is already active for this scope');
+      throw beforeSubmission(new RunRejected('run-already-active', 'another run is already active for this scope'));
     }
 
     const controller = new AbortController();
@@ -144,24 +159,24 @@ export class RunExecutor {
       release?.();
       releaseScope();
       dispose();
-      throw err;
+      throw beforeSubmission(err);
     }
     if (!release) {
       releaseScope();
       dispose();
-      throw new RunRejected('pool-full', 'process pool is full');
+      throw beforeSubmission(new RunRejected('pool-full', 'process pool is full'));
     }
     if (this.activeRuns.newRunsPaused()) {
       release();
       releaseScope();
       dispose();
-      throw new RunRejected(
+      throw beforeSubmission(new RunRejected(
         'reconnect-in-progress',
         this.activeRuns.newRunsPauseReason() ?? 'new runs are temporarily paused',
-      );
+      ));
     }
 
-    const runId = this.createRunId();
+    const runId = input.executionId ?? this.createRunId();
     const startedAt = this.now();
     const queueWaitMs = startedAt - submittedAt;
     let agent: AgentAdapter;
@@ -176,7 +191,7 @@ export class RunExecutor {
       release();
       releaseScope();
       dispose();
-      throw new SpawnFailed('agent resolve failed', err, 'agent-prepare-failed');
+      throw beforeSubmission(new SpawnFailed('agent resolve failed', err, 'agent-prepare-failed'));
     }
     let modelProvider: ResolvedModelProvider | undefined;
     try {
@@ -185,9 +200,10 @@ export class RunExecutor {
       release();
       releaseScope();
       dispose();
-      throw new SpawnFailed('model provider resolve failed', err, 'agent-prepare-failed');
+      throw beforeSubmission(new SpawnFailed('model provider resolve failed', err, 'agent-prepare-failed'));
     }
     const runOptions = snapshotRunOptions({
+      nativeTurn: input.nativeTurn,
       env: input.env,
       deadlineAt: input.deadlineAt,
       runId,
@@ -217,23 +233,24 @@ export class RunExecutor {
       release();
       releaseScope();
       dispose();
-      if (err instanceof RunRejected) throw err;
-      if (err instanceof SpawnFailed) throw err;
-      throw new SpawnFailed('agent prepare failed', err, 'agent-prepare-failed');
+      if (err instanceof RunRejected) throw beforeSubmission(err);
+      if (err instanceof SpawnFailed) throw beforeSubmission(err);
+      throw beforeSubmission(new SpawnFailed('agent prepare failed', err, 'agent-prepare-failed'));
     }
     if (this.activeRuns.newRunsPaused()) {
       release();
       releaseScope();
       dispose();
-      throw new RunRejected(
+      throw beforeSubmission(new RunRejected(
         'reconnect-in-progress',
         this.activeRuns.newRunsPauseReason() ?? 'new runs are temporarily paused',
-      );
+      ));
     }
     try {
-      run = retryingRun({
+      const initialRun = prepared.start();
+      run = input.retryPolicy === 'none' ? initialRun : retryingRun({
         agent,
-        initialRun: prepared.start(),
+        initialRun,
         options: runOptions,
         exitGraceMs: this.postDoneExitGraceMs,
         canRetry: () => !controller.signal.aborted && !handle?.interrupted
@@ -282,36 +299,80 @@ export class RunExecutor {
     };
     controller.signal.addEventListener('abort', stopOnAbort, { once: true });
     if (controller.signal.aborted) stopOnAbort();
-    let terminal: 'completed' | 'quota' | 'failed' = 'failed';
+    let terminal: 'completed' | 'quota' | 'failed' | 'unknown' = 'failed';
+    let terminalObserved = false, nativeInterrupted = false;
     let settleResult!: (state: RunResult) => void;
     const result = new Promise<RunResult>((resolve) => { settleResult = resolve; });
-    let cleaned = false;
-    const cleanup = async (waitForExit: boolean): Promise<void> => {
+    let cleaned = false, resultSettled = false;
+    let cleaning: Promise<void> | undefined;
+    const finish = (state: RunResult) => { if (!resultSettled) { resultSettled = true; settleResult(state); } };
+    const quiescenceTimeoutMs = input.quiescenceTimeoutMs ?? this.postDoneExitGraceMs;
+    const confirmQuiescence = async (): Promise<StopSettlement> => {
+      if (run.waitForQuiescence) return run.waitForQuiescence(quiescenceTimeoutMs);
+      return { state: await run.waitForExit(quiescenceTimeoutMs) ? 'quiescent' : 'unknown' };
+    };
+    const cleanup = async (waitForExit: boolean, reconciled = false): Promise<void> => {
       if (cleaned) return;
-      cleaned = true;
+      if (cleaning) return cleaning;
+      cleaning = (async () => {
       dispose();
       controller.signal.removeEventListener('abort', stopOnAbort);
+      if (!governed) {
+        // Preserve upstream finally cleanup for ordinary hosts that have no
+        // durable ledger/reconciliation API. Do not silently opt them in.
+        cleaned = true;
+        try {
+          if (waitForExit && !await run.waitForExit(this.postDoneExitGraceMs)) {
+            log.warn('run', 'post-done-exit-timeout', { ...dimensions, graceMs: this.postDoneExitGraceMs });
+            await run.stop('cleanup');
+          }
+        } catch (err) {
+          terminal = 'failed';
+          log.warn('run', 'post-done-cleanup-failed', { ...dimensions, err: String(err) });
+          await run.stop('cleanup').catch(error => log.warn('run', 'cleanup-stop-failed', { ...dimensions, err: String(error) }));
+        } finally {
+          this.activeRuns.unregister(input.scopeId, run);
+          release();
+          finish(handle.stopReason === 'deadline' ? 'expired' : handle.interrupted ? 'stopped' : terminal);
+        }
+        return;
+      }
+      let settlement: StopSettlement = { state: 'unknown' };
       try {
-        if (waitForExit && !await run.waitForExit(this.postDoneExitGraceMs)) {
+        settlement = await confirmQuiescence();
+        if (waitForExit && settlement.state !== 'quiescent') {
           log.warn('run', 'post-done-exit-timeout', { ...dimensions, graceMs: this.postDoneExitGraceMs });
           await run.stop('cleanup');
+          settlement = await confirmQuiescence();
         }
       } catch (err) {
-        terminal = 'failed';
         log.warn('run', 'post-done-cleanup-failed', { ...dimensions, err: String(err) });
-        await run.stop('cleanup').catch(() => {});
-      } finally {
-        this.activeRuns.unregister(input.scopeId, run);
-        release();
-        settleResult(handle.stopReason === 'deadline' ? 'expired' : handle.interrupted ? 'stopped' : terminal);
       }
+      handle.quiescence = settlement.state;
+      if (settlement.state !== 'quiescent' || terminal === 'unknown' && !reconciled) {
+        handle.quiescence = 'unknown';
+        finish('unknown');
+        // The live handle, mutex and pool lease remain owned until explicit
+        // host reconciliation. Ending a stream never proves native drain.
+        return;
+      }
+      cleaned = true;
+      this.activeRuns.unregister(input.scopeId, run);
+      release();
+      finish(terminal === 'completed' || terminal === 'quota' || terminal === 'failed' && terminalObserved && !nativeInterrupted ? terminal
+        : handle.stopReason === 'deadline' ? 'expired' : handle.interrupted ? 'stopped' : terminal);
+      })();
+      try { await cleaning; } finally { cleaning = undefined; }
     };
     const fanout = new EventFanout(observeRunEvents(run.events, {
       dimensions,
       startedAt,
       now: this.now,
       onTerminal: (event) => {
+        terminalObserved = true;
+        nativeInterrupted = (event.type === 'done' || event.type === 'error') && event.terminationReason !== 'normal' && event.terminationReason !== 'failed';
         terminal = event.type === 'done' && event.terminationReason === 'normal' ? 'completed' : 'failed';
+        if (governed && event.type === 'error' && agentFailureKind(event) === 'delivery_unknown') terminal = 'unknown';
         if (input.deadlineAt !== undefined && event.type === 'error' && agentFailureKind(event) === 'quota') terminal = 'quota';
         // Native watchdogs report their cause even if the JS deadline timer has not run.
         if ((event.type === 'done' || event.type === 'error') && event.terminationReason === 'timeout') markRunStopped(handle, 'deadline');
@@ -327,11 +388,14 @@ export class RunExecutor {
       run,
       handle,
       subscribe: () => fanout.subscribe(),
+      reconcile: async () => {
+        await cleanup(false, true);
+        return { state: handle.quiescence ?? 'unknown' };
+      },
       stop: async (reason = 'cancelled') => {
         if (cleaned) { await result; return; }
         try {
           await stopRun(handle, reason);
-          await run.waitForExit(this.postDoneExitGraceMs);
         } finally {
           await cleanup(false);
         }
@@ -391,6 +455,7 @@ class EventFanout {
   constructor(source: AsyncIterable<AgentEvent>, onDone: () => Promise<void>) {
     this.source = source;
     this.onDone = onDone;
+    this.start();
   }
 
   subscribe(): AsyncIterable<AgentEvent> {

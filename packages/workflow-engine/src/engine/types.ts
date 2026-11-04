@@ -38,6 +38,7 @@ export interface WorkflowDefinition {
 
 /** The root native ID remains owned by SessionCatalog. Only its binding digest is pinned. */
 export interface WorkflowRoot {
+  authorizationExpiresAt?: number;
   scopeId: string;
   profile: string;
   agentKind: AgentKind;
@@ -88,6 +89,10 @@ export interface AgentCheckpoint {
 }
 
 export interface TurnAttempt {
+  executionId?: string;
+  logicalCallId?: string;
+  completionDigest?: string;
+  completedRevision?: number;
   stopReason?: WorkflowStopReason;
   attemptId: string;
   runId?: string;
@@ -172,6 +177,7 @@ export interface WorkflowWorkItem {
 }
 
 export interface WorkClaim {
+  frozen?: boolean;
   id: string;
   itemId: string;
   agentId: string;
@@ -238,7 +244,8 @@ export interface AgentTurn {
   sessionRef: string;
   objective: string;
   inputRefs: string[];
-  status: 'queued' | 'starting' | 'running' | 'result_ready' | 'waiting_input' | 'waiting_workflow' | 'failed' | 'cancelling' | 'cancelled' | 'interrupted';
+  status: 'queued' | 'starting' | 'running' | 'result_ready' | 'waiting_input' | 'waiting_workflow' | 'failed' | 'cancelling' | 'cancelled' | 'interrupted' | 'unknown';
+  quiescence?: 'requested' | 'quiescent' | 'unknown';
   attempts: TurnAttempt[];
   resultRefs: string[];
   error?: string;
@@ -275,6 +282,8 @@ export interface WorkflowParent {
 export type WorkflowTask = AgentTurn;
 
 export interface WorkflowScript {
+  /** Local engine termination cause; model output never supplies this field. */
+  stopReason?: WorkflowStopReason;
   name: string;
   sourceRef: string;
   planRef?: string;
@@ -323,7 +332,7 @@ export interface WorkflowState {
   definitionDigest: string;
   goal: string;
   stateVersion: number;
-  status: 'active' | 'paused' | 'completed' | 'cancelled' | 'binding_attention' | 'interrupted';
+  status: 'active' | 'paused' | 'completed' | 'cancelled' | 'binding_attention' | 'interrupted' | 'cancelling';
   createdAt: number;
   deadlineAt: number;
   sessions: WorkerSession[];
@@ -350,6 +359,8 @@ export type WorkflowCaller =
   | { scopeId: string; kind: 'worker'; workflowId: string; taskId: string; attemptId: string };
 
 export interface WorkflowWorkerRequest {
+  executionId: string;
+  logicalCallId: string;
   workflow: WorkflowState;
   task: WorkflowTask;
   session: WorkerSession;
@@ -361,14 +372,17 @@ export interface WorkflowWorkerRequest {
 }
 
 export interface WorkflowWorkerResult {
+  confirmedNotSubmitted?: boolean;
   stopReason?: WorkflowStopReason;
-  status: 'completed' | 'failed' | 'stopped';
+  status: 'completed' | 'failed' | 'stopped' | 'unknown';
+  quiescence?: 'requested' | 'quiescent' | 'unknown';
   text?: string;
   question?: string;
   error?: string;
 }
 
 export interface WorkflowHost extends WorkerExecutionPolicy {
+  executionLedger?: ExecutionLedgerPort;
   log?: WorkflowLogger;
   resolveRoot(scopeId: string): Promise<WorkflowRoot | undefined>;
   getTimeoutMinutes?(root: WorkflowRoot): number;
@@ -377,4 +391,12 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
   workspace?(state: WorkflowState, input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
   execute(request: WorkflowWorkerRequest): Promise<WorkflowWorkerResult>;
   wakeMain(scopeId: string): Promise<void>;
+}
+
+export type ExecutionObservation =
+  | { state: 'not-submitted'; proof: string }
+  | { state: 'completed'; result: WorkflowWorkerResult; nativeSessionId?: string }
+  | { state: 'unknown'; reason?: string };
+export interface ExecutionLedgerPort {
+  lookupExecution(executionId: string): Promise<ExecutionObservation>;
 }
