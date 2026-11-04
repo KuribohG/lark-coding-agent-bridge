@@ -143,8 +143,17 @@ export class WorkflowKernel {
     this.ctx.scripts.scriptProgress(scopeId, workflowId, runId, kind, text);
   }
 
-  finishScript(scopeId: string, workflowId: string, runId: string, result: { text: string } | { error: string }): void {
+  finishScript(scopeId: string, workflowId: string, runId: string, result: { text: string } | { error: string; stopReason?: 'deadline' }): void {
     this.ctx.scripts.finishScript(scopeId, workflowId, runId, result);
+  }
+
+  /** Startup and outbox use the same idempotent authoritative host completion. */
+  notifyExecution(scopeId: string, workflowId: string, executionId: string) {
+    return this.ctx.scheduler.notifyExecution(scopeId, workflowId, executionId);
+  }
+
+  reconcileExecutions() {
+    return this.ctx.scheduler.reconcileExecutions();
   }
 
   plan(scopeId: string, workflowId?: string): string {

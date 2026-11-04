@@ -37,6 +37,6 @@ export interface KernelContext {
   };
   readonly scripts: {
     checkWorkKey(state: WorkflowState, value: unknown, operation?: 'enqueue' | 'consume' | 'close'): string;
-    finishScript(scopeId: string, workflowId: string, runId: string, result: { text: string } | { error: string }): void;
+    finishScript(scopeId: string, workflowId: string, runId: string, result: { text: string } | { error: string; stopReason?: 'deadline' }): void;
   };
 }

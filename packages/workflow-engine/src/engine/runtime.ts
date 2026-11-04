@@ -8,14 +8,17 @@ import { RESUME_DEADLINE, RESUME_ROOT_CHANGED, WorkflowKernel } from './kernel';
 import { WorkflowIpc, WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from './ipc';
 import { workflowDigest } from './digest';
 import { inheritedWorkerExecution } from './execution';
+import { workflowToolDefinitions } from './host-tools';
 import { runScriptProgram, WorkflowAgentFailure } from './script-vm';
 import { hostMatch } from './worker-hosts';
-import type { WorkerExecution, WorkerExecutionPolicy, WorkerExecutionSelection, WorkflowLogger, WorkflowRoot, WorkflowState, WorkflowWorkerRequest, WorkflowWorkerResult } from './types';
+import type { ExecutionLedgerPort, WorkerExecution, WorkerExecutionPolicy, WorkerExecutionSelection, WorkflowCaller, WorkflowLogger, WorkflowRoot, WorkflowState, WorkflowWorkerRequest, WorkflowWorkerResult } from './types';
 
 const JSON_FORMAT_RETRIES = 2;
 const jsonFormatRetryPrompt = (problem: string) => `上一条最终答复无法作为脚本结果：${problem.slice(0, 1500)}。不要重新执行任务或任何工具操作；只把上一条答复的内容按任务要求的 JSON 结构（如有 JSON Schema 须完全符合）重新输出，最终答复只包含这一个 JSON 值，不加代码块或其它文字。`;
 
 export interface WorkflowRuntimeDeps extends WorkerExecutionPolicy {
+  hostTools?: boolean;
+  executionLedger?: ExecutionLedgerPort;
   /** SQLite path, or ':memory:' (managed worktrees then need an explicit workspaceRoot). */
   path: string;
   workspaceRoot?: string;
@@ -58,6 +61,7 @@ export class WorkflowRuntime {
     this.log = deps.log ?? silentLogger;
     this.kernel = new WorkflowKernel(deps.path, {
       resolveRoot: deps.resolveRoot,
+      executionLedger: deps.executionLedger,
       getTimeoutMinutes: deps.getTimeoutMinutes,
       checkSelection: deps.checkSelection,
       nativeIdKind: deps.nativeIdKind,
@@ -81,7 +85,8 @@ export class WorkflowRuntime {
   }
 
   async start(): Promise<void> {
-    await this.ipc.listen();
+    if (!this.deps.hostTools) await this.ipc.listen();
+    await this.kernel.reconcileExecutions();
     for (const outcome of await this.kernel.resumeAfterRestart()) {
       const name = outcome.state.script?.name ?? outcome.state.workflowId;
       const text = outcome.resumed
@@ -180,7 +185,8 @@ export class WorkflowRuntime {
       });
       this.kernel.finishScript(scopeId, workflowId, runId, { text });
     } catch (error) {
-      if (!this.closed) this.kernel.finishScript(scopeId, workflowId, runId, { error: error instanceof Error ? error.message : String(error) });
+      if (!this.closed) this.kernel.finishScript(scopeId, workflowId, runId, { error: error instanceof Error ? error.message : String(error),
+        ...(controller.signal.reason instanceof WorkflowStopped && controller.signal.reason.reason === 'deadline' ? { stopReason: 'deadline' as const } : {}) });
     } finally {
       clearTimeout(deadline);
       stop();
@@ -208,14 +214,20 @@ export class WorkflowRuntime {
     const state = this.kernel.state(scopeId);
     if (mode === 'start' && state) throw new Error('Root already has a workflow; cancel or complete it first');
     if (mode === 'continue' && !state) throw new Error('No active workflow to continue');
-    const binding = this.ipc.bind({ kind: 'main', scopeId, allowStart: mode === 'start',
-      ...(state ? { workflowId: state.workflowId } : {}) }, deadlineAt);
+    const caller: WorkflowCaller = { kind: 'main', scopeId, allowStart: mode === 'start', ...(state ? { workflowId: state.workflowId } : {}) };
+    const binding = this.deps.hostTools ? { env: {}, release() {} } : this.ipc.bind(caller, deadlineAt);
     return { ...binding, instructions: `${WORKFLOW_TOOL_INSTRUCTIONS}\n\n${this.kernel.context(scopeId)}`,
+      ...(this.deps.hostTools ? { definitions: workflowToolDefinitions('main'), call: (method: string, args: Record<string, unknown>) => this.call(caller, method, args) } : {}),
       eventIds: state?.events.filter(event => !event.acknowledged).map(event => event.id) ?? [] };
   }
 
+  /** Caller identity comes from an exact host turn, never from model args. */
+  call(caller: WorkflowCaller, method: string, args: Record<string, unknown>) {
+    return this.kernel.call(caller, method, args);
+  }
+
   private async execute(request: WorkflowWorkerRequest): Promise<WorkflowWorkerResult> {
-    const { workflow, task, session, attemptId, signal } = request;
+    const { workflow, task, session, attemptId, executionId, logicalCallId, signal } = request;
     const pinned = session.execution ?? inheritedWorkerExecution(workflow.root, { agentKind: workflow.root.agentKind });
     const selection = { agentKind: pinned.agentKind, ...pinned.modelSettings };
     const current = await this.resolveWorker(workflow.root, selection);
@@ -230,7 +242,8 @@ export class WorkflowRuntime {
     let lease: string | undefined;
     let run: WorkerRun | undefined;
     // Worktree turns are verified against a frozen snapshot, which a process left running mid-change would not match.
-    const hosting = task.workspaceId ? undefined : this.deps.runner.hosting;
+    // Host tools answer through this process, so a worker that uses them cannot outlive it.
+    const hosting = task.workspaceId || this.deps.hostTools ? undefined : this.deps.runner.hosting;
     const match = hostMatch(task);
     let survivor = hosting && this.kernel.workerHost(workflow.workflowId, match);
     if (survivor && (survivor.discard || survivor.agentKind !== pinned.agentKind || !await hosting!.attachable(survivor.hostKey, pinned.agentKind))) {
@@ -241,8 +254,9 @@ export class WorkflowRuntime {
       if (survivor && stopReasonOf(signal) !== 'shutdown') await this.releaseHost(survivor.hostKey);
       signal.throwIfAborted();
     }
-    const binding = this.ipc.bind({ kind: 'worker', scopeId: workflow.root.scopeId, workflowId: workflow.workflowId,
-      taskId: task.taskId, attemptId }, workflow.deadlineAt, survivor?.tokenHash);
+    const caller: WorkflowCaller = { kind: 'worker', scopeId: workflow.root.scopeId, workflowId: workflow.workflowId, taskId: task.taskId, attemptId };
+    const binding: { env: Record<string, string>; tokenHash?: string; release(): void } = this.deps.hostTools
+      ? { env: {}, release() {} } : this.ipc.bind(caller, workflow.deadlineAt, survivor?.tokenHash);
     let hostKey: string | undefined;
     try {
       if (workspace) {
@@ -261,6 +275,9 @@ export class WorkflowRuntime {
           if (attach) this.log.info('worker-reattach', { workflowId: workflow.workflowId, taskId: task.taskId, attemptId, hostKey });
         }
         return this.deps.runner.start({
+          executionId, logicalCallId, attemptId,
+          ...(this.deps.hostTools ? { workflowTools: { definitions: workflowToolDefinitions('worker'),
+            call: (method: string, args: Record<string, unknown>) => this.call(caller, method, args) } } : {}),
           sessionKey: `workflow:${workflow.workflowId}:${session.sessionRef}`,
           root: workflow.root, execution: pinned, role: session.role, prompt, env: binding.env,
           validateBeforeRun: async () => {
@@ -321,7 +338,7 @@ export class WorkflowRuntime {
       let outcome = await turn(run);
       // A malformed or non-conforming JSON answer usually reflects formatting, not the work; ask the same session to restate it.
       for (let retry = 1; retry <= JSON_FORMAT_RETRIES; retry++) {
-        if (task.scriptOutput !== 'json' || outcome.result !== 'completed' || !outcome.normal || outcome.question || !outcome.nativeSessionId || signal.aborted) break;
+        if (this.deps.executionLedger || task.scriptOutput !== 'json' || outcome.result !== 'completed' || !outcome.normal || outcome.question || !outcome.nativeSessionId || signal.aborted) break;
         const checked = checkJsonOutput(outcome.text ?? '', task.scriptSchema, this.deps.repairJson);
         if (!('problem' in checked)) break;
         if (!await run.waitForExit(5000)) throw new Error('Worker has not exited before the JSON format retry');
@@ -331,6 +348,16 @@ export class WorkflowRuntime {
       }
       const { result, text, question, error, normal } = outcome;
       const active = run;
+      if (this.deps.executionLedger) {
+        const receipt = await this.deps.executionLedger.lookupExecution(executionId);
+        if (receipt.state === 'not-submitted' && receipt.proof) return { status: signal.aborted || result === 'stopped' ? 'stopped' : 'failed',
+          quiescence: 'quiescent', confirmedNotSubmitted: true, error: error || 'Host proved native input was not submitted' };
+        const settlement = active.waitForQuiescence ? await active.waitForQuiescence(5000)
+          : { state: await active.waitForExit(5000) ? 'quiescent' : 'unknown' };
+        if (result === 'unknown' || settlement.state !== 'quiescent') return { status: 'unknown', quiescence: 'unknown', error: error || 'Native worker quiescence is unknown' };
+        if (receipt.state !== 'completed') return { status: 'unknown', quiescence: 'unknown', error: 'Host completion receipt is not durable' };
+        return receipt.result;
+      }
       if (workspace && result === 'completed') {
         if (!await active.waitForExit(5000)) throw new Error('Workspace worker has not exited');
         await manager!.verifySnapshot(workspace, signal);
@@ -343,7 +370,7 @@ export class WorkflowRuntime {
       if (hostKey && !shutdown) await this.releaseHost(hostKey);
       if (workspace && lease) {
         // Native termination is authoritative; retain the lease if it is uncertain.
-        if (!run || await run.waitForExit(5000)) manager!.end(workspace, lease);
+        if (!run || (this.deps.executionLedger && run.waitForQuiescence ? (await run.waitForQuiescence(5000)).state === 'quiescent' : await run.waitForExit(5000))) manager!.end(workspace, lease);
         else throw new Error('Workspace worker termination is uncertain; worktree retained and blocked');
       }
     }
@@ -405,7 +432,7 @@ export class WorkflowRuntime {
     if (this.timer) clearInterval(this.timer);
     for (const run of this.scripts.values()) run.controller.abort(new WorkflowStopped('shutdown'));
     await Promise.allSettled([...this.scripts.values()].map(run => run.done));
-    await this.ipc.close();
+    if (!this.deps.hostTools) await this.ipc.close();
     await this.kernel.close();
     await this.workspaces?.close();
   }

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { WorkflowStopped, stopReasonOf } from './ports';
-import { cancelWork, expireWorkClaims, releaseWorkClaims, workContext } from './work-queue';
+import { workflowDigest } from './digest';
+import { cancelWork, expireWorkClaims, freezeWorkClaims, releaseWorkClaims, workContext } from './work-queue';
 import { pumpConsumerPool } from './consumer-pool';
 import { settleEventWaits } from './event-waits';
 import { nestedContext } from './nested-workflow';
@@ -19,8 +20,12 @@ export class WorkflowScheduler {
   private pumping = false;
   private heartbeatAt = 0;
   private readonly waking = new Set<string>();
+  /** A governed host settles the previous process's executions before anything new is admitted. */
+  private reconciling: boolean;
 
-  constructor(private readonly ctx: KernelContext) {}
+  constructor(private readonly ctx: KernelContext) {
+    this.reconciling = Boolean(ctx.host.executionLedger);
+  }
 
   isRunning(taskId: string): boolean {
     return this.running.has(taskId);
@@ -35,6 +40,13 @@ export class WorkflowScheduler {
   }
 
   expireClaims(state: WorkflowState): void {
+    for (const claim of state.workQueue?.claims || []) if (claim.status === 'active' && !claim.frozen && claim.leaseUntil <= this.ctx.now()) {
+      const task = state.tasks.find(task => task.taskId === claim.taskId);
+      if (task && (this.running.has(task.taskId) || task.quiescence === 'unknown')) {
+        freezeWorkClaims(state, 'Lease expired; old native execution has not proved quiescence', task.taskId);
+        this.cancelTask(task, state);
+      }
+    }
     const expired = expireWorkClaims(state, this.ctx.now());
     if (!expired.length) return;
     for (const claim of expired) {
@@ -48,16 +60,20 @@ export class WorkflowScheduler {
   }
 
   cancelTask(task: WorkflowTask, state: WorkflowState): void {
-    releaseWorkClaims(state, this.ctx.now(), 'Member execution cancelled', task.taskId);
     const active = this.running.get(task.taskId);
-    task.status = active ? 'cancelling' : 'cancelled';
+    const uncertain = task.quiescence === 'unknown' || task.status === 'unknown';
+    if (active || uncertain) {
+      freezeWorkClaims(state, 'Cancellation requested; retain claim until native quiescence', task.taskId);
+      task.quiescence = uncertain ? 'unknown' : 'requested';
+    } else releaseWorkClaims(state, this.ctx.now(), 'Member cancelled before submission or after quiescence', task.taskId);
+    task.status = active ? 'cancelling' : uncertain ? 'unknown' : 'cancelled';
     active?.controller.abort(new WorkflowStopped('cancelled'));
   }
 
   async tick(): Promise<void> {
     const { ctx } = this;
     const { store } = ctx;
-    if (ctx.closed || this.pumping) return;
+    if (ctx.closed || this.pumping || this.reconciling) return;
     this.pumping = true;
     try {
       if (ctx.now() - this.heartbeatAt >= HEARTBEAT_MS) {
@@ -82,9 +98,11 @@ export class WorkflowScheduler {
           // The budget cannot be extended, so fail the run instead of pausing it: the main agent can still
           // report partial results via complete, and the topic is not left bound to an unresumable workflow.
           if (state.script && ['queued', 'running'].includes(state.script.status)) {
-            cancelWork(state, ctx.now());
+            const governed = Boolean(ctx.host.executionLedger);
+            if (governed) freezeWorkClaims(state, 'Workflow deadline reached; native quiescence is pending');
+            cancelWork(state, ctx.now(), governed);
             state.script.status = 'running'; store.save(state);
-            ctx.scripts.finishScript(state.root.scopeId, state.workflowId, state.script.runId, { error: 'Workflow deadline reached' });
+            ctx.scripts.finishScript(state.root.scopeId, state.workflowId, state.script.runId, { error: 'Workflow deadline reached', stopReason: 'deadline' });
             continue;
           }
           const busy = state.tasks.filter(task => BUSY.has(task.status) || task.status === 'waiting_workflow');
@@ -109,7 +127,7 @@ export class WorkflowScheduler {
     const { store } = ctx;
     if (settleEventWaits(state, ctx.now())) store.save(state);
     if (pumpConsumerPool(state,kind=>ctx.nativeIdKind(kind),ctx.children.remainingTreeTasks(state))) store.save(state);
-    let active = state.tasks.filter(task => this.running.has(task.taskId)).length;
+    let active = state.tasks.filter(task => this.running.has(task.taskId) || task.status === 'unknown').length;
     for (const task of state.tasks) {
       if (task.status !== 'queued' || active >= state.definition.maxConcurrentWorkers) continue;
       if (task.waitingWorkflowId) {
@@ -121,7 +139,7 @@ export class WorkflowScheduler {
       }
       const tree=store.tree(state);
       const treeRoot=tree.find(item=>!item.parent) ?? state;
-      if (tree.reduce((count,item)=>count+item.tasks.filter(task=>this.running.has(task.taskId)).length,0)>=treeRoot.definition.maxConcurrentWorkers) continue;
+      if (tree.reduce((count,item)=>count+item.tasks.filter(task=>this.running.has(task.taskId) || task.status === 'unknown').length,0)>=treeRoot.definition.maxConcurrentWorkers) continue;
       if (tree.reduce((count, item) => count + item.tasks.reduce((total,task)=>total+task.attempts.length,0), 0) >= SCRIPT_MAX_TASKS) {
         task.status = 'failed'; task.error = 'Workflow attempt limit reached'; store.save(state); continue;
       }
@@ -129,7 +147,9 @@ export class WorkflowScheduler {
       const attemptId = randomUUID();
       const agent = taskAgent(state, task);
       const session = state.sessions.find(item => item.sessionRef === task.sessionRef)!;
-      task.attempts.push({ attemptId, startedAt: ctx.now(), checkpointVersion: agent?.checkpointVersion, sessionGeneration: session.generation });
+      const logicalCallId = `call_${workflowDigest({ workflowId: state.workflowId, taskId: task.taskId, requestDigest: task.requestDigest })}`;
+      const executionId = `execution_${workflowDigest({ logicalCallId })}`;
+      task.attempts.push({ attemptId, executionId, logicalCallId, startedAt: ctx.now(), checkpointVersion: agent?.checkpointVersion, sessionGeneration: session.generation });
       const controller = new AbortController();
       store.save(state);
       // Register before asynchronous execution can produce an event or a cancellation.
@@ -147,6 +167,8 @@ export class WorkflowScheduler {
     try {
       const workflow = requireState(store.state(scopeId, workflowId));
       const task = findTask(workflow, taskId);
+      const attempt = task.attempts.at(-1)!;
+      const executionId = attempt.executionId!, logicalCallId = attempt.logicalCallId!;
       const session = workflow.sessions.find(item => item.sessionRef === task.sessionRef)!;
       const role = workflow.definition.roles[session.role]!;
       const inputs = task.inputRefs.map(ref => readArtifact(workflow, ref));
@@ -158,7 +180,11 @@ export class WorkflowScheduler {
         + JSON.stringify(recovery) + (workflow.workQueue ? '\n\n工作队列：\n' + JSON.stringify(workContext(workflow, task)) : '') : prompt;
       if (task.workflowTool) memberPrompt+='\n\n子 workflow 调用与恢复上下文：\n'+JSON.stringify(nestedContext(store.descendants(workflow,taskId),task));
       signal.throwIfAborted();
-      result = await ctx.host.execute({ workflow, task, session, attemptId, prompt: memberPrompt, signal,
+      const observed = await ctx.host.executionLedger?.lookupExecution(executionId);
+      if (observed?.state === 'completed') {
+        await this.notifyExecution(scopeId, workflowId, executionId); return;
+      } else if (observed?.state === 'unknown') result = { status: 'unknown', quiescence: 'unknown', error: observed.reason || 'Host execution outcome is unknown' };
+      else result = await ctx.host.execute({ workflow, task, session, attemptId, executionId, logicalCallId, prompt: memberPrompt, signal,
         onRun: runId => this.updateAttempt(scopeId, workflowId, taskId, attemptId, state => {
           const current = findTask(state, taskId);
           const attempt = current.attempts.at(-1)!;
@@ -179,11 +205,49 @@ export class WorkflowScheduler {
           findTask(state, taskId).attempts.at(-1)!.sessionAt ??= ctx.now();
         }),
       });
-    } catch (error) { result = { status: 'failed', error: String(error) }; }
+    } catch (error) { result = { status: ctx.host.executionLedger ? 'unknown' : 'failed',
+      ...(ctx.host.executionLedger ? { quiescence: 'unknown' as const } : {}), error: String(error) }; }
+    if (ctx.host.executionLedger && (result.status === 'unknown' || result.quiescence === 'unknown')) {
+      try {
+        const state = requireState(store.state(scopeId, workflowId)), task = findTask(state, taskId);
+        const executionId = task.attempts.at(-1)!.executionId!;
+        const receipt = await ctx.host.executionLedger.lookupExecution(executionId);
+        if (receipt.state === 'completed') { await this.notifyExecution(scopeId, workflowId, executionId); return; }
+        if (receipt.state === 'not-submitted' && receipt.proof) result = {
+          status: signal.aborted || ['cancelling', 'cancelled', 'binding_attention'].includes(state.status) ? 'stopped' : 'failed',
+          quiescence: 'quiescent', confirmedNotSubmitted: true, error: result.error || 'Host proved native input was not submitted',
+        };
+      } catch (error) {
+        ctx.log.warn('execution-reconciliation-pending', { scopeId, workflowId, taskId, error: String(error) });
+      }
+    }
+    this.settleWorker(workflowId, scopeId, taskId, attemptId, result, signal);
+  }
+
+  private settleWorker(workflowId: string, scopeId: string, taskId: string, attemptId: string, result: WorkflowWorkerResult, signal?: AbortSignal): void {
+    const { ctx } = this;
+    const { store } = ctx;
     const state = requireState(store.state(scopeId, workflowId));
     const task = findTask(state, taskId);
     if (task.attempts.at(-1)?.attemptId !== attemptId) return;
+    const attempt = task.attempts.at(-1)!;
+    const completionDigest = workflowDigest(result);
+    if (attempt.completionDigest) {
+      if (attempt.completionDigest !== completionDigest) throw new Error('Host execution completion changed');
+      return;
+    }
+    if (result.status === 'unknown' || result.quiescence === 'unknown' || ctx.host.executionLedger && result.quiescence !== 'quiescent') {
+      task.status = 'unknown'; task.quiescence = 'unknown'; task.error = result.error || 'Native settlement is unknown';
+      freezeWorkClaims(state, task.error, taskId);
+      attempt.result = 'unknown'; store.save(state); return;
+    }
+    task.quiescence = 'quiescent';
+    attempt.completionDigest = completionDigest;
     releaseWorkClaims(state, ctx.now(), 'Member turn ended without completing its claim', taskId, attemptId);
+    // Only this exact positively settled attempt can remove its claim fence.
+    for (const claim of state.workQueue?.claims || []) {
+      if (claim.taskId === taskId && claim.attemptId === attemptId && claim.status !== 'active') delete claim.frozen;
+    }
     if ((task.agentId || task.workflowTool) && result.status === 'completed' && !state.sessions.find(session => session.sessionRef === task.sessionRef)?.nativeSessionId) {
       result = { status: 'failed', error: 'Member completed without a native session ID; cannot safely continue its conversation' };
     }
@@ -193,11 +257,13 @@ export class WorkflowScheduler {
     }
     task.attempts.at(-1)!.endedAt = ctx.now();
     task.attempts.at(-1)!.result = result.status;
-    const stopReason = result.stopReason ?? (signal.aborted ? stopReasonOf(signal) : undefined);
+    const stopReason = result.stopReason ?? (signal?.aborted ? stopReasonOf(signal) : undefined);
     task.attempts.at(-1)!.stopReason = stopReason;
     if (stopReason === 'shutdown') {
       task.status = 'interrupted';
-    } else if (signal.aborted || task.status === 'cancelling' || state.status === 'cancelled' || state.status === 'binding_attention') {
+    } else if (result.status === 'failed') {
+      task.status = 'failed'; task.error = result.error || 'Worker failed';
+    } else if (signal?.aborted || task.status === 'cancelling' || ['cancelled', 'cancelling', 'binding_attention'].includes(state.status)) {
       task.status = 'cancelled';
     } else if (task.waitingWorkflowId && !result.question && ['completed','stopped'].includes(result.status)) {
       task.status='waiting_workflow';task.attempts.at(-1)!.result='suspended';
@@ -216,7 +282,61 @@ export class WorkflowScheduler {
     }
     // Shutdown interrupts the caller; its already committed child must remain replayable.
     if (stopReason !== 'shutdown' && task.waitingWorkflowId && ['failed','waiting_input','cancelled'].includes(task.status) && state.status==='active') ctx.children.suspendChildren(state,true,taskId);
+    if (state.status === 'cancelling' && !state.tasks.some(task => ['cancelling', 'unknown'].includes(task.status))) {
+      state.status = 'cancelled'; cancelWork(state, ctx.now());
+    }
+    attempt.completedRevision = state.stateVersion + 1;
     store.save(state);
+  }
+
+  /** Startup and outbox use the same idempotent authoritative host completion. */
+  async notifyExecution(scopeId: string, workflowId: string, executionId: string) {
+    const { ctx } = this;
+    if (!ctx.host.executionLedger) throw new Error('Host execution ledger is unavailable');
+    const bound = requireState(ctx.store.state(scopeId, workflowId));
+    if (!bound.tasks.some(task => task.attempts.at(-1)?.executionId === executionId)) throw new Error('Execution is outside this workflow binding');
+    const receipt = await ctx.host.executionLedger.lookupExecution(executionId);
+    // Another notification or cancellation may have committed while the host
+    // lookup was pending. Never save a pre-await snapshot over that receipt.
+    const state = requireState(ctx.store.state(scopeId, workflowId));
+    const task = state.tasks.find(task => task.attempts.at(-1)?.executionId === executionId);
+    if (!task) throw new Error('Execution is outside this workflow binding');
+    if (receipt.state !== 'completed') return { executionId, state: receipt.state, accepted: false };
+    const attempt = task.attempts.at(-1)!;
+    if (attempt.completionDigest) {
+      if (attempt.completionDigest !== workflowDigest(receipt.result)) throw new Error('Host execution completion changed');
+      return { executionId, state: 'completed', accepted: true, revision: attempt.completedRevision ?? state.stateVersion };
+    }
+    if (receipt.nativeSessionId) {
+      const session = state.sessions.find(item => item.sessionRef === task.sessionRef)!;
+      if (session.nativeSessionId && session.nativeSessionId !== receipt.nativeSessionId) throw new Error('Native execution identity changed');
+      session.nativeSessionId = receipt.nativeSessionId; ctx.store.save(state);
+    }
+    this.settleWorker(workflowId, scopeId, task.taskId, task.attempts.at(-1)!.attemptId, receipt.result);
+    return { executionId, state: 'completed', accepted: true, revision: ctx.store.state(scopeId, workflowId)!.tasks.find(row => row.taskId === task.taskId)!.attempts.at(-1)!.completedRevision };
+  }
+
+  async reconcileExecutions() {
+    const { ctx } = this;
+    const failures: Array<{ workflowId: string; executionId: string; error: string }> = [];
+    try {
+      if (ctx.host.executionLedger) for (const state of ctx.store.list()) for (const task of state.tasks) if (task.status === 'unknown') {
+        const attempt = task.attempts.at(-1);
+        if (!attempt?.executionId) continue;
+        try {
+          const receipt = await ctx.host.executionLedger.lookupExecution(attempt.executionId);
+          if (receipt.state === 'completed') await this.notifyExecution(state.root.scopeId, state.workflowId, attempt.executionId);
+          else if (receipt.state === 'not-submitted' && receipt.proof) {
+            this.settleWorker(state.workflowId, state.root.scopeId, task.taskId, attempt.attemptId, {
+              status: ['cancelling', 'cancelled'].includes(state.status) ? 'stopped' : 'failed', quiescence: 'quiescent',
+              confirmedNotSubmitted: true, error: 'Host proved native input was not submitted',
+            });
+          }
+        } catch (error) { failures.push({ workflowId: state.workflowId, executionId: attempt.executionId, error: String(error) }); }
+      }
+    } finally { this.reconciling = false; }
+    if (failures.length) ctx.log.warn('execution-reconciliation-pending', { failures });
+    return { failures };
   }
 
   private updateAttempt(scope: string, workflowId: string, taskId: string, attemptId: string, update: (state: WorkflowState) => void): void {

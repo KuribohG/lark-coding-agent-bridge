@@ -1,5 +1,5 @@
 import { consumerPools } from './work-routing';
-import { cancelWork } from './work-queue';
+import { cancelWork, freezeWorkClaims } from './work-queue';
 import { BUSY, pushEvent } from './kernel-state';
 import type { KernelContext } from './kernel-context';
 import type { WorkflowState } from './types';
@@ -42,11 +42,15 @@ export class WorkflowLifecycle {
 
   cancelState(state: WorkflowState): void {
     this.ctx.children.suspendChildren(state,true);
-    state.status = 'cancelled';
+    state.status = 'cancelling';
     if (state.script) state.script.status = 'cancelled';
     for (const pool of consumerPools(state)) pool.status = 'cancelled';
-    cancelWork(state, this.ctx.now());
+    freezeWorkClaims(state, 'Workflow admission revoked; native quiescence is pending');
+    cancelWork(state, this.ctx.now(), true);
     for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_input' || task.status==='waiting_workflow') this.ctx.scheduler.cancelTask(task, state);
+    if (!state.tasks.some(task => ['cancelling', 'unknown'].includes(task.status))) {
+      state.status = 'cancelled'; cancelWork(state, this.ctx.now());
+    }
   }
 
   pause(state: WorkflowState): void {

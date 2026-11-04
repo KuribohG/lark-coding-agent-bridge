@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { releaseWorkClaims } from './work-queue';
+import { freezeWorkClaims, releaseWorkClaims } from './work-queue';
 import { consumerPools } from './work-routing';
 import { clearEventBindings } from './event-waits';
 import { workerSelection } from './execution';
@@ -29,11 +29,17 @@ export class RestartRecovery {
       state.status = state.script ? 'interrupted' : 'cancelled';
       if (state.script) state.script.status = 'interrupted';
       for (const pool of consumerPools(state)) pool.status = 'suspended';
-      // A surviving worker could not submit a released claim; its turn restarts instead.
-      hosts.discardTasks(state.workflowId, (state.workQueue?.claims ?? []).filter(claim => claim.status === 'active').map(claim => claim.taskId));
-      releaseWorkClaims(state, this.ctx.now(), 'Bridge restarted; explicitly replay to continue');
+      const governed = Boolean(this.ctx.host.executionLedger);
+      if (governed) freezeWorkClaims(state, 'Host restart; execution settlement requires reconciliation');
+      else {
+        // A surviving worker could not submit a released claim; its turn restarts instead.
+        hosts.discardTasks(state.workflowId, (state.workQueue?.claims ?? []).filter(claim => claim.status === 'active').map(claim => claim.taskId));
+        releaseWorkClaims(state, this.ctx.now(), 'Bridge restarted; explicitly replay to continue');
+      }
       for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_workflow' || (!state.script && task.status === 'waiting_input')) {
-        task.status = state.script ? 'interrupted' : 'cancelled';
+        const submittedAttempt = Boolean(task.attempts.length);
+        task.status = governed && submittedAttempt ? 'unknown' : state.script ? 'interrupted' : 'cancelled';
+        if (governed) task.quiescence = submittedAttempt ? 'unknown' : 'quiescent';
         task.error = state.script ? 'Bridge restarted; explicitly replay the script to continue.' : 'Agent-led workflows have been retired.';
       }
       store.save(state);
@@ -43,7 +49,7 @@ export class RestartRecovery {
   /** Interrupted time does not count toward the deadline; restore it once when the workflow is replayed. */
   resumeClock(state: WorkflowState): void {
     if (state.status !== 'interrupted' || !state.restart) return;
-    state.deadlineAt += Math.max(0, this.ctx.now() - state.restart.since);
+    if (!this.ctx.host.executionLedger) state.deadlineAt += Math.max(0, this.ctx.now() - state.restart.since);
     state.restart = undefined;
   }
 
@@ -95,7 +101,7 @@ export class RestartRecovery {
     if (args.execution !== undefined) script.defaults = workerSelection(args.execution, state.root, this.ctx.host);
     script.runId = randomUUID(); script.revision++; script.status = 'queued';
     clearEventBindings(state);
-    script.calls = []; script.mailboxCalls = []; script.workCalls = []; script.controlCalls = []; script.workspaceCalls = []; script.logs = []; script.error = undefined; script.resultRef = undefined; script.phase = undefined;
+    script.calls = []; script.mailboxCalls = []; script.workCalls = []; script.controlCalls = []; script.workspaceCalls = []; script.logs = []; script.error = undefined; script.resultRef = undefined; script.phase = undefined; script.stopReason = undefined;
     state.status = 'active';
     for (const event of state.events) if (['script_result_ready', 'script_failed'].includes(event.kind)) acknowledge(event, now());
     for (const child of children.filter(child=>child.parent!.workflowId===state.workflowId && ['paused','interrupted'].includes(child.status))) {

@@ -4,7 +4,7 @@ import type { WorkflowArtifact, WorkflowEvent, WorkflowRoot, WorkflowState, Work
 
 /** Shared state helpers for the kernel's collaborators; none of them touch the database. */
 
-export const BUSY = new Set<WorkflowTask['status']>(['queued', 'starting', 'running', 'cancelling']);
+export const BUSY = new Set<WorkflowTask['status']>(['queued', 'starting', 'running', 'cancelling', 'unknown']);
 export const MAX_TEXT = 100_000;
 
 // The main session's model settings may change mid-run; workers resolve against the pinned start-time root.

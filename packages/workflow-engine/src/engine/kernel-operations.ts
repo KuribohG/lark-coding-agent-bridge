@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { workflowDigest } from './digest';
+import { MAIN_WORKFLOW_METHODS } from './host-tools';
 import { closeWorkQueue, enqueueWork, mutateWork, retryWork, unfinishedWork, workContext, workStatus, WORK_MUTATIONS } from './work-queue';
 import { consumerSummary } from './consumer-pool';
 import { consumerPools, queueName } from './work-routing';
@@ -13,7 +14,7 @@ import {
 import type { KernelContext } from './kernel-context';
 import type { WorkflowCaller, WorkflowState } from './types';
 
-const MAIN_OPERATIONS = ['status', 'read_artifact', 'run_script', 'replay_script', 'publish_artifact', 'ack_events', 'cancel_task', 'pause', 'resume', 'cancel', 'complete', 'send_message', 'read_checkpoint', 'enqueue_work', 'retry_work', 'close_work_queue', 'work_status'];
+const MAIN_OPERATIONS: readonly string[] = MAIN_WORKFLOW_METHODS;
 const CONTROL_ARGS = ['workflowId', 'operationId', 'expectedStateVersion'];
 
 type ScriptState = WorkflowState & { script: NonNullable<WorkflowState['script']> };

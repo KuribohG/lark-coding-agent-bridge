@@ -341,7 +341,7 @@ export class ScriptApi {
     this.ctx.store.save(state);
   }
 
-  finishScript(scopeId: string, workflowId: string, runId: string, result: { text: string } | { error: string }): void {
+  finishScript(scopeId: string, workflowId: string, runId: string, result: { text: string } | { error: string; stopReason?: 'deadline' }): void {
     const { ctx } = this;
     const state = ctx.store.state(scopeId, workflowId);
     if (!state?.script || state.script.runId !== runId || state.script.status !== 'running' || state.status !== 'active') return;
@@ -359,6 +359,7 @@ export class ScriptApi {
       pushEvent(state, { kind: 'script_result_ready', artifactRef: artifact.ref, summary: 'Script result ready for main-agent review.' }, ctx.now);
     } else {
       state.script.status = 'failed';
+      state.script.stopReason = ctx.host.executionLedger ? result.stopReason : undefined;
       ctx.children.suspendChildren(state,true);
       state.script.error = result.error.slice(0, 2000);
       for (const pool of consumerPools(state)) if (['waiting', 'running'].includes(pool.status)) {
