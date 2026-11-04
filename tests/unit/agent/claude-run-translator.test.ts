@@ -9,7 +9,7 @@ describe('Claude final-answer contract', () => {
     const t = new ClaudeRunTranslator();
     expect([...t.translate(assistant('final', 'first '))]).toEqual([]);
     expect([...t.translate({ type: 'assistant', message: { id: 'final', content: [{ type: 'thinking', thinking: 'private' }] } })])
-      .toEqual([{ type: 'thinking', delta: 'private' }]);
+      .toEqual([]);
     expect([...t.translate(assistant('final', 'second'))]).toEqual([]);
     expect([...t.translate({ ...result('first second'), usage: { input_tokens: 2, output_tokens: 3 } })])
       .toEqual([{ type: 'final_text', content: 'first second' },

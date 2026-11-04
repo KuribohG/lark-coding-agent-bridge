@@ -101,10 +101,12 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
 
   if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
     for (const block of evt.message.content) {
+      // Thinking blocks carry the raw chain of thought. Codex only surfaces
+      // provider-supplied reasoning summaries, so drop them here to keep the
+      // two harnesses aligned on what reaches the CoT and other displays.
+      if (block.type === 'thinking') continue;
       if (block.type === 'text' && typeof block.text === 'string' && block.text) {
         yield { type: 'text', delta: block.text };
-      } else if (block.type === 'thinking' && typeof block.thinking === 'string' && block.thinking) {
-        yield { type: 'thinking', delta: block.thinking };
       } else if (block.type === 'tool_use' && block.id && block.name) {
         yield { type: 'tool_use', id: block.id, name: block.name, input: block.input };
       }

@@ -22,7 +22,7 @@ describe('Claude stream-json translator', () => {
     expect([...translateEvent({ type: 'system', subtype: 'init', session_id: 'sess-1' })][0]).not.toHaveProperty('threadId');
   });
 
-  it('translates assistant text, thinking, and tool_use blocks in order', () => {
+  it('translates assistant text and tool_use blocks, dropping raw thinking', () => {
     expect([
       ...translateEvent({
         type: 'assistant',
@@ -36,7 +36,6 @@ describe('Claude stream-json translator', () => {
       }),
     ]).toEqual([
       { type: 'text', delta: 'hello' },
-      { type: 'thinking', delta: 'checking' },
       { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'pwd' } },
     ]);
   });
