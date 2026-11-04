@@ -1,0 +1,104 @@
+name: Windows installer
+
+# Build a self-contained, per-user setup.exe.
+#
+#   * workflow_dispatch: build the selected ref, download the artifact.
+#   * push a v* tag: build and attach the installer to a GitHub Release.
+#
+# Public repositories use standard GitHub-hosted runners for free; the only
+# quota to watch on the Free plan is Actions artifact storage (500 MB), so the
+# build artifact is kept for three days and releases are the durable copy.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to build
+        required: false
+        default: dev
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: windows-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build installer
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build application
+        run: pnpm build
+        env:
+          LARK_BUILD_COMMIT: ${{ github.sha }}
+
+      - name: Build Windows installer
+        run: pwsh -File installer/build.ps1 -SkipBuild
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: dist-installer/*.exe
+          retention-days: 3
+          if-no-files-found: error
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $exe = Get-ChildItem dist-installer/*.exe | Select-Object -First 1
+          if (-not $exe) { throw "installer not found" }
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $exe.FullName --clobber
+          } else {
+            gh release create $tag $exe.FullName --title $tag --generate-notes
+          }
+
+  smoke:
+    name: Install / upgrade / uninstall smoke test
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download installer
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: dist-installer
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem dist-installer/*.exe | Select-Object -First 1
+          ./installer/smoke-test.ps1 -InstallerPath $exe.FullName

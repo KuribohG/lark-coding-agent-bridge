@@ -23,3 +23,7 @@ web/dist/
 scripts/
 CHANGELOG.md
 tests-smoke/
+
+# Windows installer staging
+.installer-stage/
+dist-installer/

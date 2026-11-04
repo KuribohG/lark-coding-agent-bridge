@@ -19,6 +19,8 @@ Talk to local **Codex CLI, Claude Code, Pi Coding Agent, or Antigravity CLI** fr
 
 ## 2. Install once
 
+On Windows you can also run `LarkChannelBridge-Setup-*.exe` (from GitHub Releases or the Actions artifact). It bundles the Node runtime, so Node and Git are not required; after installing, double-click the Start Menu or Desktop icon and the bridge runs in the background with a **notification-area (tray) icon** — right-click it to open the console or exit. An upgrade stops the old services and tray, then recreates them with the new paths while keeping `%USERPROFILE%\.lark-channel` (profiles, secrets, sessions, logs). See [installer/README.md](installer/README.md) for downloads, build and behaviour. Other platforms, or when you want to modify the code, use the source install below.
+
 You need **Git**, **Node.js 22.12+** (or Node 20.19+ within Node 20), and at least one installed, authenticated agent. Check the agent in the same terminal/account that will run Bridge:
 
 ```sh
