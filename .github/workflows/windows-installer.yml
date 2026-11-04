@@ -3,7 +3,12 @@ name: Windows installer
 # Build a self-contained, per-user setup.exe.
 #
 #   * workflow_dispatch: build the selected ref, download the artifact.
+#     (GitHub only offers this button once the workflow exists on the default
+#     branch, so on a fork it is easiest to tag instead.)
+#   * push to dev touching installer/** or this file: build, download the
+#     artifact.  Ordinary app commits do not build an installer here.
 #   * push a v* tag: build and attach the installer to a GitHub Release.
+#     Path filters are not evaluated for tag pushes.
 #
 # Public repositories use standard GitHub-hosted runners for free; the only
 # quota to watch on the Free plan is Actions artifact storage (500 MB), so the
@@ -17,6 +22,11 @@ on:
         required: false
         default: dev
   push:
+    branches:
+      - dev
+    paths:
+      - 'installer/**'
+      - '.github/workflows/windows-installer.yml'
     tags:
       - 'v*'
 
