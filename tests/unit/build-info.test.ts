@@ -44,6 +44,19 @@ describe('build information', () => {
     expect(formatBuildVersion(info)).toBe('0.7.1 (abcdef123456)');
   });
 
+  it('falls back to release metadata when the build baked in an unknown commit', async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'bridge-build-info-')));
+    dirs.push(root);
+    const release = join(root, 'releases', 'abcdef123456');
+    const entrypoint = join(release, 'bin', 'lark-channel-bridge.mjs');
+    await mkdir(join(release, 'bin'), { recursive: true });
+    await writeFile(entrypoint, '');
+    await writeFile(join(release, 'release-info.json'), JSON.stringify({ commit: 'abcdef1234567890' }));
+    vi.stubEnv('LARK_BUILD_COMMIT', 'unknown');
+
+    expect(getBuildInfo(entrypoint).commit).toBe('abcdef1234567890');
+  });
+
   it('gives build-time environment metadata precedence over release metadata', async () => {
     vi.stubEnv('LARK_BUILD_COMMIT', 'fedcba9876543210');
     vi.stubEnv('LARK_BUILD_TIME', '2026-10-28T09:00:00.000Z');

@@ -22,7 +22,8 @@ export function getBuildInfo(entrypoint = process.argv[1]): BuildInfo {
   const resolvedEntrypoint = resolveEntrypoint(entrypoint);
   const release = detectReleasePath(resolvedEntrypoint);
   const releaseInfo = release ? readReleaseInfo(release) : undefined;
-  const commit = clean(process.env.LARK_BUILD_COMMIT)
+  // tsup bakes 'unknown' into builds made without git metadata (e.g. from `git archive`).
+  const commit = known(process.env.LARK_BUILD_COMMIT)
     ?? clean(releaseInfo?.commit)
     ?? 'unknown';
   const builtAt = clean(process.env.LARK_BUILD_TIME)
@@ -74,6 +75,11 @@ function readReleaseInfo(release: string): ReleaseInfo | undefined {
   } catch {
     return undefined;
   }
+}
+
+function known(value: unknown): string | undefined {
+  const text = clean(value);
+  return text === 'unknown' ? undefined : text;
 }
 
 function clean(value: unknown): string | undefined {
