@@ -370,7 +370,7 @@ export class ScriptApi {
       : { type: 'script_logged', text: text.slice(0, 1000) }), 'script:' + runId);
   }
 
-  finishScript(scopeId: string, workflowId: string, runId: string, result: { text: string } | { error: string }): void {
+  finishScript(scopeId: string, workflowId: string, runId: string, result: { text: string } | { error: string; stopReason?: 'deadline' }): void {
     const { ctx } = this;
     const state = ctx.store.state(scopeId, workflowId);
     if (!state?.script || state.script.runId !== runId || state.script.status !== 'running' || state.status !== 'active') return;
@@ -388,7 +388,7 @@ export class ScriptApi {
         pushEvent(state, { kind: 'script_result_ready', artifactRef: artifact.ref, summary: 'Script result ready for main-agent review.' }, ctx.now);
       } else {
         const error = result.error.slice(0, 2000);
-        emit(state, { type: 'script_failed', error });
+        emit(state, { type: 'script_failed', error, ...(ctx.host.executionLedger && result.stopReason ? { stopReason: result.stopReason } : {}) });
         ctx.children.suspendChildren(state,true);
         for (const task of state.tasks) if (task.scriptRunId === runId && (BUSY.has(task.status) || task.status==='waiting_workflow')) ctx.scheduler.cancelTask(task, state);
         pushEvent(state, { kind: 'script_failed', summary: error }, ctx.now);

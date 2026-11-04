@@ -7,7 +7,7 @@ import type { ArtifactView, BoardPost, Immutable, MailboxReceipt, StoredArtifact
 
 /** Shared state helpers for the kernel's collaborators. Changes are recorded as events inside a store transaction. */
 
-export const BUSY = new Set<WorkflowTask['status']>(['queued', 'starting', 'running', 'cancelling']);
+export const BUSY = new Set<WorkflowTask['status']>(['queued', 'starting', 'running', 'cancelling', 'unknown']);
 export const MAX_TEXT = 100_000;
 
 // The main session's model settings may change mid-run; workers resolve against the pinned start-time root.

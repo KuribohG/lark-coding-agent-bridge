@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { WorkflowStopped, stopReasonOf } from './ports';
-import { cancelWork, expireWorkClaims, releaseWorkClaims, workContext } from './work-queue';
+import { workflowDigest } from './digest';
+import { cancelWork, expireWorkClaims, freezeWorkClaims, releaseWorkClaims, workContext } from './work-queue';
 import { pumpSwarms } from './swarm';
 import { settleEventWaits } from './event-waits';
 import { nestedContext } from './nested-workflow';
@@ -49,7 +50,10 @@ export class WorkflowScheduler {
   /** When each workflow's finished tasks were last considered for archiving. */
   private readonly archivedAt = new Map<string, number>();
 
-  constructor(private readonly ctx: KernelContext) {}
+  private reconciling: boolean;
+  constructor(private readonly ctx: KernelContext) {
+    this.reconciling = Boolean(ctx.host.executionLedger);
+  }
 
   isRunning(taskId: string): boolean {
     return this.running.has(taskId);
@@ -64,6 +68,16 @@ export class WorkflowScheduler {
   }
 
   expireClaims(state: WorkflowView): void {
+    if (this.ctx.host.executionLedger) {
+      for (const claim of state.workQueue?.claims ?? []) {
+        if (claim.status !== 'active' || claim.frozen || claim.leaseUntil > this.ctx.now()) continue;
+        const task = taskById(state, claim.taskId);
+        if (task && task.attempts.at(-1)?.attemptId === claim.attemptId && (this.running.has(task.taskId) || task.quiescence === 'unknown')) {
+          freezeWorkClaims(state, 'Lease expired; old native execution has not proved quiescence', task.taskId);
+          this.cancelTask(task, state);
+        }
+      }
+    }
     const attempt = (claim: { taskId: string; attemptId: string }) => {
       const task = taskById(state, claim.taskId);
       return task && task.attempts.at(-1)?.attemptId === claim.attemptId ? task : undefined;
@@ -77,9 +91,18 @@ export class WorkflowScheduler {
   }
 
   cancelTask(task: TaskView, state: WorkflowView, error?: string): void {
-    releaseWorkClaims(state, this.ctx.now(), 'Member execution cancelled', task.taskId);
     const active = this.running.get(task.taskId);
-    emit(state, { type: 'task_cancelled', taskId: task.taskId, ...(active ? { pending: true } : {}), ...(error ? { error } : {}) });
+    const uncertain = task.quiescence === 'unknown' || task.status === 'unknown';
+    if (this.ctx.host.executionLedger && (active || uncertain)) {
+      freezeWorkClaims(state, 'Cancellation requested; retain claim until native quiescence', task.taskId);
+      if (!uncertain) {
+        emit(state, { type: 'execution_stop_requested', taskId: task.taskId });
+        emit(state, { type: 'task_cancelled', taskId: task.taskId, pending: true, ...(error ? { error } : {}) });
+      }
+    } else {
+      releaseWorkClaims(state, this.ctx.now(), 'Member execution cancelled', task.taskId);
+      emit(state, { type: 'task_cancelled', taskId: task.taskId, ...(active ? { pending: true } : {}), ...(error ? { error } : {}) });
+    }
     active?.controller.abort(new WorkflowStopped('cancelled'));
   }
 
@@ -121,6 +144,7 @@ export class WorkflowScheduler {
    * wake the main agent here as well.
    */
   admitReady(): boolean {
+    if (this.reconciling) return false;
     const { ctx } = this;
     if (ctx.closed) return false;
     let stale = false;
@@ -152,7 +176,7 @@ export class WorkflowScheduler {
   async tick(): Promise<void> {
     const { ctx } = this;
     const { store } = ctx;
-    if (ctx.closed || this.pumping) return;
+    if (ctx.closed || this.pumping || this.reconciling) return;
     this.pumping = true;
     try {
       if (ctx.now() - this.heartbeatAt >= HEARTBEAT_MS) {
@@ -174,17 +198,18 @@ export class WorkflowScheduler {
         if (ctx.now() >= state.deadlineAt && state.status === 'active') {
           if (state.parent) {
             if (state.script!.status !== 'running') store.transact(() => emit(state, { type: 'script_started' }), 'scheduler');
-            ctx.scripts.finishScript(scope,workflowId,state.script!.runId,{error:'Child workflow deadline reached'});
+            ctx.scripts.finishScript(scope,workflowId,state.script!.runId,{error:'Child workflow deadline reached', stopReason: 'deadline'});
             continue;
           }
           // The budget cannot be extended, so fail the run instead of pausing it: the main agent can still
           // report partial results via complete, and the topic is not left bound to an unresumable workflow.
           if (state.script && ['queued', 'running'].includes(state.script.status)) {
             store.transact(() => {
-              cancelWork(state, ctx.now());
+              if (ctx.host.executionLedger) freezeWorkClaims(state, 'Workflow deadline reached; native quiescence is pending');
+              cancelWork(state, ctx.now(), Boolean(ctx.host.executionLedger));
               if (state.script!.status !== 'running') emit(state, { type: 'script_started' });
             }, 'scheduler');
-            ctx.scripts.finishScript(scope, workflowId, state.script.runId, { error: 'Workflow deadline reached' });
+            ctx.scripts.finishScript(scope, workflowId, state.script.runId, { error: 'Workflow deadline reached', stopReason: 'deadline' });
             continue;
           }
           const busy = state.tasks.filter(task => BUSY.has(task.status) || task.status === 'waiting_workflow');
@@ -214,10 +239,11 @@ export class WorkflowScheduler {
         // While the script runs, what has long settled leaves the state; once it stops, what remains stays for review.
         if (state.script?.status === 'running' && ctx.now() - (this.archivedAt.get(state.workflowId) ?? 0) >= ARCHIVE_EVERY_MS) {
           this.archivedAt.set(state.workflowId, ctx.now());
-          archiveFinished(state, ctx.now());
+          // The host ledger can still notify a completed attempt by its exact workflow and execution ID.
+          if (!ctx.host.executionLedger) archiveFinished(state, ctx.now());
           archiveRecords(state, ctx.now());
         }
-        let active = state.tasks.filter(task => this.running.has(task.taskId)).length;
+        let active = state.tasks.filter(task => this.running.has(task.taskId) || task.status === 'unknown').length;
         // The tree's totals are counted once per pass and kept current as turns start, not recounted per queued task.
         let tree: { limit: number; running: number } | undefined;
         for (const task of state.tasks) {
@@ -234,17 +260,19 @@ export class WorkflowScheduler {
           if (!tree) {
             const members = store.tree(state);
             tree = { limit: (members.find(item => !item.parent) ?? state).definition.maxConcurrentWorkers, running: 0 };
-            for (const item of members) for (const found of item.tasks) if (this.running.has(found.taskId)) tree.running++;
+            for (const item of members) for (const found of item.tasks) if (this.running.has(found.taskId) || found.status === 'unknown') tree.running++;
           }
           if (tree.running >= tree.limit) continue;
           if (task.attempts.length >= MAX_TASK_ATTEMPTS) {
             emit(state, { type: 'task_failed', taskId: task.taskId, error: 'Task attempt limit reached' }); continue;
           }
           const attemptId = randomUUID();
+          const logicalCallId = 'call_' + workflowDigest({ workflowId: state.workflowId, taskId: task.taskId, requestDigest: task.requestDigest });
+          const executionId = 'execution_' + workflowDigest({ logicalCallId });
           const agent = taskAgent(state, task);
           const session = state.sessions.find(item => item.sessionRef === task.sessionRef)!;
           emit(state, { type: 'attempt_started', taskId: task.taskId,
-            attempt: { attemptId, startedAt: ctx.now(), checkpointVersion: agent?.checkpointVersion, sessionGeneration: session.generation } });
+            attempt: { attemptId, executionId, logicalCallId, startedAt: ctx.now(), checkpointVersion: agent?.checkpointVersion, sessionGeneration: session.generation } });
           const controller = new AbortController();
           const { taskId } = task;
           // Register before asynchronous execution can produce an event or a cancellation. The turn itself starts
@@ -301,7 +329,9 @@ export class WorkflowScheduler {
       }
       if (task.workflowTool) memberPrompt+='\n\n子 workflow 调用与恢复上下文：\n'+JSON.stringify(nestedContext(store.descendants(live,taskId),turn));
       signal.throwIfAborted();
-      result = await ctx.host.execute({ workflow, task, session, attemptId, prompt: memberPrompt, signal,
+      const attempt = turn.attempts.at(-1)!;
+      result = await ctx.host.execute({ workflow, task, session, attemptId, executionId: attempt.executionId!,
+        logicalCallId: attempt.logicalCallId!, prompt: memberPrompt, signal,
         onRun: runId => {
           // The watchdog starts here: queueing in the host's pool is not the agent's silence.
           this.noteActivity(taskId, attemptId, false);
@@ -318,15 +348,51 @@ export class WorkflowScheduler {
           const binding = state.sessions.find(item => item.sessionRef === session.sessionRef)!;
           // Members and nested-workflow callers depend on their conversation; a plain task only needs an answer,
           // so a backend that could not resume its session may carry on in a new one.
-          if (binding.nativeSessionId && binding.nativeSessionId !== nativeId && (task.agentId || task.workflowTool)) throw new Error('Backend replaced the native worker session');
+          if (binding.nativeSessionId && binding.nativeSessionId !== nativeId && (ctx.host.executionLedger || task.agentId || task.workflowTool)) throw new Error('Backend replaced the native worker session');
           emit(state, { type: 'session_bound', sessionRef: binding.sessionRef, taskId, nativeSessionId: nativeId, ...(model ? { model } : {}), at: ctx.now() });
         }),
       });
-    } catch (error) { result = { status: 'failed', error: String(error) }; }
+    } catch (error) { result = { status: ctx.host.executionLedger ? 'unknown' : 'failed',
+      ...(ctx.host.executionLedger ? { quiescence: 'unknown' as const } : {}), error: String(error) }; }
+    if (ctx.host.executionLedger && (result.status === 'unknown' || result.quiescence === 'unknown')) {
+      try {
+        const state = requireState(store.state(scopeId, workflowId)), task = findTask(state, taskId);
+        const executionId = task.attempts.at(-1)!.executionId!;
+        const receipt = await ctx.host.executionLedger.lookupExecution(executionId);
+        if (receipt.state === 'completed') { await this.notifyExecution(scopeId, workflowId, executionId); return; }
+        if (receipt.state === 'not-submitted' && receipt.proof) result = {
+          status: signal.aborted || ['cancelling', 'cancelled', 'binding_attention'].includes(state.status) ? 'stopped' : 'failed',
+          quiescence: 'quiescent', confirmedNotSubmitted: true, error: result.error || 'Host proved native input was not submitted',
+        };
+      } catch (error) {
+        ctx.log.warn('execution-reconciliation-pending', { scopeId, workflowId, taskId, error: String(error) });
+      }
+    }
+    this.settleWorker(workflowId, scopeId, taskId, attemptId, result, signal);
+  }
+
+  private settleWorker(workflowId: string, scopeId: string, taskId: string, attemptId: string, result: WorkflowWorkerResult, signal?: AbortSignal): void {
+    const { ctx } = this;
+    const { store } = ctx;
     const state = requireState(store.state(scopeId, workflowId));
     const task = findTask(state, taskId);
     if (task.attempts.at(-1)?.attemptId !== attemptId) return;
+    const attempt = task.attempts.at(-1)!;
+    const digest = ctx.host.executionLedger ? workflowDigest(result) : undefined;
+    if (digest && attempt.completionDigest) {
+      if (digest !== attempt.completionDigest) throw new Error('Host execution completion changed');
+      return;
+    }
     store.transact(() => {
+      if (ctx.host.executionLedger) {
+        if (result.status === 'unknown' || result.quiescence !== 'quiescent') {
+          const error = result.error || 'Native settlement is unknown';
+          emit(state, { type: 'execution_uncertain', taskId, error });
+          freezeWorkClaims(state, error, taskId);
+          return;
+        }
+        emit(state, { type: 'execution_settled', taskId, digest: digest!, revision: state.stateVersion + 1 });
+      }
       releaseWorkClaims(state, ctx.now(), 'Member turn ended without completing its claim', taskId, attemptId);
       if ((task.agentId || task.workflowTool) && result.status === 'completed' && !state.sessions.find(session => session.sessionRef === task.sessionRef)?.nativeSessionId) {
         result = { status: 'failed', error: 'Member completed without a native session ID; cannot safely continue its conversation' };
@@ -335,9 +401,9 @@ export class WorkflowScheduler {
         const checked = checkJsonOutput(result.text ?? '', task.scriptSchema as Record<string, unknown> | undefined, ctx.host.repairJson?.bind(ctx.host));
         result = 'problem' in checked ? { status: 'failed', error: checked.problem.slice(0, 2000) } : { ...result, text: checked.text };
       }
-      const stopReason = result.stopReason ?? (signal.aborted ? stopReasonOf(signal) : undefined);
+      const stopReason = result.stopReason ?? (signal?.aborted ? stopReasonOf(signal) : undefined);
       const stalled = this.stalledAttempt(taskId, attemptId);
-      const cancelled = task.status === 'cancelling' || state.status === 'cancelled' || state.status === 'binding_attention';
+      const cancelled = task.status === 'cancelling' || ['cancelling', 'cancelled', 'binding_attention'].includes(state.status);
       let outcome: string = result.status;
       let status: StoredTask['status'];
       let error: string | undefined;
@@ -352,7 +418,7 @@ export class WorkflowScheduler {
         outcome = 'stalled';
         status = 'failed';
         error = `Worker produced no output for ${Math.round((ctx.host.stallMs ?? DEFAULT_STALL_MS) / 60_000)} minutes and was stopped`;
-      } else if (signal.aborted) {
+      } else if (signal?.aborted) {
         status = 'cancelled';
       } else if (task.waitingWorkflowId && !result.question && ['completed','stopped'].includes(result.status)) {
         status = 'waiting_workflow'; outcome = 'suspended';
@@ -372,7 +438,9 @@ export class WorkflowScheduler {
         error = result.error ?? 'Worker did not produce a bounded final answer with a normal terminal result';
       }
       const failureKind = status === 'failed' ? classifyFailure(stalled, error, stopReason) : undefined;
-      const retry = failureKind !== undefined && this.retryDue(task, failureKind, state, cancelled);
+      // A governed native turn cannot be submitted again without proof that its first submission never happened.
+      const retry = (!ctx.host.executionLedger || result.confirmedNotSubmitted === true)
+        && failureKind !== undefined && this.retryDue(task, failureKind, state, cancelled);
       emit(state, { type: 'attempt_ended', taskId, at: ctx.now(), result: outcome, ...(stopReason ? { stopReason } : {}), status,
         ...(error !== undefined ? { error } : {}), ...(resultRef ? { resultRef } : {}),
         ...(failureKind ? { failureKind, retryable: retry } : {}) });
@@ -383,9 +451,63 @@ export class WorkflowScheduler {
         ctx.log.warn('worker-retry-scheduled', { workflowId, taskId, attemptId, delayMs, failureKind });
       }
       if (resultRef) completeMemberTurn(state, task, resultRef, ctx.now());
+      if (state.status === 'cancelling' && !state.tasks.some(member => member.status === 'cancelling' || member.status === 'unknown')) {
+        emit(state, { type: 'workflow_cancelled' }); cancelWork(state, ctx.now());
+      }
       // Shutdown interrupts the caller; its already committed child must remain replayable.
       if (stopReason !== 'shutdown' && task.waitingWorkflowId && ['failed','waiting_input','cancelled'].includes(task.status) && state.status==='active') ctx.children.suspendChildren(state,true,taskId);
     }, 'worker:' + taskId);
+  }
+
+  /** Startup and outbox use the same idempotent authoritative host completion. */
+  async notifyExecution(scopeId: string, workflowId: string, executionId: string) {
+    const { ctx } = this;
+    if (!ctx.host.executionLedger) throw new Error('Host execution ledger is unavailable');
+    const bound = requireState(ctx.store.state(scopeId, workflowId));
+    if (!bound.tasks.some(task => task.attempts.at(-1)?.executionId === executionId)) throw new Error('Execution is outside this workflow binding');
+    const receipt = await ctx.host.executionLedger.lookupExecution(executionId);
+    // Another notification or cancellation may have committed while the host
+    // lookup was pending. Never save a pre-await snapshot over that receipt.
+    const state = requireState(ctx.store.state(scopeId, workflowId));
+    const task = state.tasks.find(task => task.attempts.at(-1)?.executionId === executionId);
+    if (!task) throw new Error('Execution is outside this workflow binding');
+    if (receipt.state !== 'completed') return { executionId, state: receipt.state, accepted: false };
+    const attempt = task.attempts.at(-1)!;
+    if (attempt.completionDigest) {
+      if (attempt.completionDigest !== workflowDigest(receipt.result)) throw new Error('Host execution completion changed');
+      return { executionId, state: 'completed', accepted: true, revision: attempt.completedRevision ?? state.stateVersion };
+    }
+    if (receipt.nativeSessionId) {
+      const session = state.sessions.find(item => item.sessionRef === task.sessionRef)!;
+      if (session.nativeSessionId && session.nativeSessionId !== receipt.nativeSessionId) throw new Error('Native execution identity changed');
+      if (!session.nativeSessionId) ctx.store.transact(() =>
+        emit(state, { type: 'session_bound', sessionRef: session.sessionRef, taskId: task.taskId, nativeSessionId: receipt.nativeSessionId!, at: ctx.now() }), 'host:reconcile-execution');
+    }
+    this.settleWorker(workflowId, scopeId, task.taskId, task.attempts.at(-1)!.attemptId, receipt.result);
+    return { executionId, state: 'completed', accepted: true, revision: ctx.store.state(scopeId, workflowId)!.tasks.find(row => row.taskId === task.taskId)!.attempts.at(-1)!.completedRevision };
+  }
+
+  async reconcileExecutions() {
+    const { ctx } = this;
+    const failures: Array<{ workflowId: string; executionId: string; error: string }> = [];
+    try {
+      if (ctx.host.executionLedger) for (const state of ctx.store.list()) for (const task of state.tasks) if (task.status === 'unknown') {
+        const attempt = task.attempts.at(-1);
+        if (!attempt?.executionId) continue;
+        try {
+          const receipt = await ctx.host.executionLedger.lookupExecution(attempt.executionId);
+          if (receipt.state === 'completed') await this.notifyExecution(state.root.scopeId, state.workflowId, attempt.executionId);
+          else if (receipt.state === 'not-submitted' && receipt.proof) {
+            this.settleWorker(state.workflowId, state.root.scopeId, task.taskId, attempt.attemptId, {
+              status: ['cancelling', 'cancelled'].includes(state.status) ? 'stopped' : 'failed', quiescence: 'quiescent',
+              confirmedNotSubmitted: true, error: 'Host proved native input was not submitted',
+            });
+          }
+        } catch (error) { failures.push({ workflowId: state.workflowId, executionId: attempt.executionId, error: String(error) }); }
+      }
+    } finally { this.reconciling = false; }
+    if (failures.length) ctx.log.warn('execution-reconciliation-pending', { failures });
+    return { failures };
   }
 
   private updateAttempt(scope: string, workflowId: string, taskId: string, attemptId: string, update: (state: WorkflowView) => void): void {

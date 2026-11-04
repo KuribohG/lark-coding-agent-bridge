@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { releaseWorkClaims } from './work-queue';
+import { freezeWorkClaims, releaseWorkClaims } from './work-queue';
 import { workerSelection } from './execution';
 import { scriptArgs, scriptText, SCRIPT_MAX_REVISIONS } from './script-contract';
 import { acknowledge, addArtifact, BUSY, sameRoot } from './kernel-state';
@@ -25,11 +25,17 @@ export class RestartRecovery {
         emit(state, { type: 'workflow_interrupted', ...(state.status !== 'interrupted'
           ? { restart: { since, resume: !state.parent && state.status === 'active' && ['queued', 'running'].includes(state.script!.status) } } : {}) });
       }
-      // A surviving worker could not submit a released claim; its turn restarts instead.
-      hosts.discardTasks(state.workflowId, (state.workQueue?.claims ?? []).filter(claim => claim.status === 'active').map(claim => claim.taskId));
-      releaseWorkClaims(state, this.ctx.now(), 'Bridge restarted; explicitly replay to continue');
+      const governed = Boolean(this.ctx.host.executionLedger);
+      if (governed) freezeWorkClaims(state, 'Host restart; execution settlement requires reconciliation');
+      else {
+        // A surviving worker could not submit a released claim; its turn restarts instead.
+        hosts.discardTasks(state.workflowId, (state.workQueue?.claims ?? []).filter(claim => claim.status === 'active').map(claim => claim.taskId));
+        releaseWorkClaims(state, this.ctx.now(), 'Bridge restarted; explicitly replay to continue');
+      }
       for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_workflow') {
-        emit(state, { type: 'task_interrupted', taskId: task.taskId, error: 'Bridge restarted; explicitly replay the script to continue.' });
+        if (governed && task.attempts.length)
+          emit(state, { type: 'execution_uncertain', taskId: task.taskId, error: 'Bridge restarted; native execution requires reconciliation.' });
+        else emit(state, { type: 'task_interrupted', taskId: task.taskId, error: 'Bridge restarted; explicitly replay the script to continue.' });
       }
     }, 'restart');
   }
@@ -37,7 +43,7 @@ export class RestartRecovery {
   /** Interrupted time does not count toward the deadline; restore it once when the workflow is replayed. */
   resumeClock(state: WorkflowView): void {
     if (state.status !== 'interrupted' || !state.restart) return;
-    emit(state, { type: 'clock_resumed', deadlineAt: state.deadlineAt + Math.max(0, this.ctx.now() - state.restart.since) });
+    emit(state, { type: 'clock_resumed', deadlineAt: state.deadlineAt + (this.ctx.host.executionLedger ? 0 : Math.max(0, this.ctx.now() - state.restart.since)) });
   }
 
   /** Replays root scripts that a restart interrupted mid-run; anything else still waits for an explicit replay. */
