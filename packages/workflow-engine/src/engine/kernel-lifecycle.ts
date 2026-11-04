@@ -1,4 +1,4 @@
-import { cancelWork } from './work-queue';
+import { cancelWork, freezeWorkClaims } from './work-queue';
 import { BUSY, pushEvent } from './kernel-state';
 import { emit } from './kernel-store';
 import type { KernelContext } from './kernel-context';
@@ -39,9 +39,14 @@ export class WorkflowLifecycle {
 
   cancelState(state: WorkflowView): void {
     this.ctx.children.suspendChildren(state, true);
-    emit(state, { type: 'workflow_cancelled' });
-    cancelWork(state, this.ctx.now());
+    const governed = Boolean(this.ctx.host.executionLedger);
+    emit(state, { type: governed ? 'workflow_cancel_requested' : 'workflow_cancelled' });
+    if (governed) freezeWorkClaims(state, 'Workflow admission revoked; native quiescence is pending');
+    cancelWork(state, this.ctx.now(), governed);
     for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_input' || task.status === 'waiting_workflow') this.ctx.scheduler.cancelTask(task, state);
+    if (governed && !state.tasks.some(task => task.status === 'cancelling' || task.status === 'unknown')) {
+      emit(state, { type: 'workflow_cancelled' }); cancelWork(state, this.ctx.now());
+    }
   }
 
   pause(state: WorkflowView): void {

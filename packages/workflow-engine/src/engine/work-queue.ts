@@ -135,7 +135,7 @@ const HELD_LEASE_MS = 120_000;
  * renewing in time. The others expire; the kernel cancels what is left of their turns.
  */
 export function expireWorkClaims(state: WorkflowView, now: number, held: (claim: ClaimView) => boolean = () => false): ClaimView[] {
-  const due = state.workQueue?.claims.filter(claim => claim.status === 'active' && claim.leaseUntil <= now) ?? [];
+  const due = state.workQueue?.claims.filter(claim => claim.status === 'active' && !claim.frozen && claim.leaseUntil <= now) ?? [];
   const expired: ClaimView[] = [];
   for (const claim of due) {
     if (now < state.deadlineAt && held(claim)) emit(state, { type: 'claim_renewed', claimId: claim.id, leaseUntil: Math.min(now + HELD_LEASE_MS, state.deadlineAt) });
@@ -146,15 +146,23 @@ export function expireWorkClaims(state: WorkflowView, now: number, held: (claim:
 
 export function releaseWorkClaims(state: WorkflowView, now: number, reason: string, taskId?: string, attemptId?: string): void {
   for (const claim of state.workQueue?.claims ?? []) {
-    if (claim.status === 'active' && (!taskId || claim.taskId === taskId) && (!attemptId || claim.attemptId === attemptId)) {
+    if (claim.status === 'active' && (!claim.frozen || attemptId === claim.attemptId)
+      && (!taskId || claim.taskId === taskId) && (!attemptId || claim.attemptId === attemptId)) {
       endClaim(state, claim, now, 'cancelled', reason, true);
     }
   }
 }
 
-export function cancelWork(state: WorkflowView, now: number): void {
-  const unfinished = state.workQueue?.items.filter(item => item.status === 'pending' || item.status === 'claimed') ?? [];
-  releaseWorkClaims(state, now, 'Workflow cancelled');
+export function freezeWorkClaims(state: WorkflowView, reason: string, taskId?: string): void {
+  for (const claim of state.workQueue?.claims ?? []) {
+    if (claim.status === 'active' && !claim.frozen && (!taskId || claim.taskId === taskId))
+      emit(state, { type: 'claim_frozen', claimId: claim.id, reason });
+  }
+}
+
+export function cancelWork(state: WorkflowView, now: number, preserveClaims = false): void {
+  const unfinished = state.workQueue?.items.filter(item => item.status === 'pending' || !preserveClaims && item.status === 'claimed') ?? [];
+  if (!preserveClaims) releaseWorkClaims(state, now, 'Workflow cancelled');
   if (unfinished.length) emit(state, { type: 'work_cancelled', itemIds: unfinished.map(item => item.id), at: now });
 }
 
@@ -255,7 +263,7 @@ export function searchWork(state: WorkflowView, args: Record<string, unknown> = 
 function ownedClaim(state: WorkflowView, task: TaskView, attemptId: string, args: Record<string, unknown>, now: number): ClaimView {
   const id = scriptText(args.claimId, 'claimId', 100);
   const claim = state.workQueue?.claims.find(claim => claim.id === id);
-  if (!claim || claim.status !== 'active' || claim.leaseUntil <= now || claim.agentId !== task.agentId
+  if (!claim || claim.status !== 'active' || claim.frozen || claim.leaseUntil <= now || claim.agentId !== task.agentId
     || claim.taskId !== task.taskId || claim.attemptId !== attemptId || claim.generation !== args.generation) {
     throw new Error('Claim is stale, expired or belongs to another execution attempt');
   }

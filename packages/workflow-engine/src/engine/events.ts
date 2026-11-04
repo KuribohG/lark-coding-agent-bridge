@@ -20,6 +20,7 @@ export type DomainEvent =
   | { type: 'workflow_replaced'; state: WorkflowData }
   | { type: 'workflow_paused' }
   | { type: 'workflow_cancelled' }
+  | { type: 'workflow_cancel_requested' }
   | { type: 'workflow_completed' }
   | { type: 'binding_invalidated' }
   | { type: 'workflow_interrupted'; restart?: { since: number; resume: boolean } }
@@ -45,7 +46,7 @@ export type DomainEvent =
   | { type: 'script_phase_set'; phase: string }
   | { type: 'script_logged'; text: string }
   | { type: 'script_succeeded'; resultRef: string }
-  | { type: 'script_failed'; error: string }
+  | { type: 'script_failed'; error: string; stopReason?: 'deadline' }
   // Sessions, tasks and their attempts
   | { type: 'session_created'; session: SessionBinding }
   | { type: 'session_bound'; sessionRef: string; taskId: string; nativeSessionId: string; model?: string; at: number }
@@ -65,6 +66,9 @@ export type DomainEvent =
   | { type: 'task_child_awaited'; taskId: string }
   | { type: 'task_child_finished'; taskId: string }
   | { type: 'attempt_started'; taskId: string; attempt: TurnAttempt }
+  | { type: 'execution_stop_requested'; taskId: string }
+  | { type: 'execution_uncertain'; taskId: string; error: string }
+  | { type: 'execution_settled'; taskId: string; digest: string; revision: number }
   | { type: 'attempt_admitted'; taskId: string; at: number }
   | { type: 'attempt_spawned'; taskId: string; runId: string; at: number }
   | { type: 'attempt_ended'; taskId: string; at: number; result: string; stopReason?: WorkflowStopReason; status: StoredTask['status']; error?: string; resultRef?: string; failureKind?: string; retryable?: boolean }
@@ -110,6 +114,7 @@ export type DomainEvent =
   | { type: 'work_retried'; itemId: string; maxAttempts: number; at: number }
   | { type: 'work_cancelled'; itemIds: string[]; at: number }
   | { type: 'work_claimed'; claim: WorkClaim }
+  | { type: 'claim_frozen'; claimId: string; reason: string }
   | { type: 'claim_renewed'; claimId: string; leaseUntil: number }
   /** A claim that ended without completing its item; `retry` returns the item to the queue while attempts remain. */
   | { type: 'claim_ended'; claimId: string; status: 'failed' | 'released' | 'expired' | 'cancelled'; reason: string; retry: boolean; at: number }
@@ -118,7 +123,7 @@ export type DomainEvent =
   | { type: 'work_operation_recorded'; operation: Operation };
 
 /** Events that change a workflow's status or its script's status or run. */
-const LIFECYCLE = new Set<DomainEvent['type']>(['workflow_created', 'workflow_replaced', 'workflow_paused', 'workflow_cancelled', 'workflow_completed',
+const LIFECYCLE = new Set<DomainEvent['type']>(['workflow_created', 'workflow_replaced', 'workflow_paused', 'workflow_cancel_requested', 'workflow_cancelled', 'workflow_completed',
   'workflow_interrupted', 'binding_invalidated', 'script_set', 'script_started', 'script_replayed', 'script_succeeded', 'script_failed']);
 
 /** Subscription topics an event touches (see WorkflowStore.watch). */
