@@ -92,7 +92,7 @@ function endClaim(work: WorkflowWorkQueue, claim: WorkClaim, now: number,
 /** The kernel also cancels these attempt-bound turns before scheduling replacements. */
 export function expireWorkClaims(state: WorkflowState, now: number): WorkClaim[] {
   const work = state.workQueue;
-  const expired = work?.claims.filter(claim => claim.status === 'active' && claim.leaseUntil <= now) ?? [];
+  const expired = work?.claims.filter(claim => claim.status === 'active' && !claim.frozen && claim.leaseUntil <= now) ?? [];
   for (const claim of expired) endClaim(work!, claim, now, 'expired', 'Claim lease expired', true);
   return expired;
 }
@@ -107,10 +107,17 @@ export function releaseWorkClaims(state: WorkflowState, now: number, reason: str
   }
 }
 
-export function cancelWork(state: WorkflowState, now: number): void {
+export function freezeWorkClaims(state: WorkflowState, reason: string, taskId?: string): void {
+  for (const claim of state.workQueue?.claims || []) if (claim.status === 'active' && (!taskId || claim.taskId === taskId)) {
+    claim.frozen = true; claim.reason = reason;
+  }
+}
+
+export function cancelWork(state: WorkflowState, now: number, preserveClaims = false): void {
   const unfinished = state.workQueue?.items.filter(item => item.status === 'pending' || item.status === 'claimed') ?? [];
-  releaseWorkClaims(state, now, 'Workflow cancelled');
+  if (!preserveClaims) releaseWorkClaims(state, now, 'Workflow cancelled');
   for (const item of unfinished) {
+    if (preserveClaims && item.status === 'claimed') continue;
     item.status = 'cancelled'; item.updatedAt = now;
   }
 }
@@ -169,7 +176,7 @@ export function workStatus(state: WorkflowState, args: Record<string, unknown> =
 function ownedClaim(state: WorkflowState, task: WorkflowTask, attemptId: string, args: Record<string, unknown>, now: number): WorkClaim {
   const id = scriptText(args.claimId, 'claimId', 100);
   const claim = state.workQueue?.claims.find(claim => claim.id === id);
-  if (!claim || claim.status !== 'active' || claim.leaseUntil <= now || claim.agentId !== task.agentId
+  if (!claim || claim.status !== 'active' || claim.frozen || claim.leaseUntil <= now || claim.agentId !== task.agentId
     || claim.taskId !== task.taskId || claim.attemptId !== attemptId || claim.generation !== args.generation) {
     throw new Error('Claim is stale, expired or belongs to another execution attempt');
   }

@@ -3,7 +3,9 @@ import type { ModelOption } from './models';
 import { agentBackendSpec } from './backend-spec';
 
 export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
-export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
+// The backend capability is authoritative; native values such as DSH `off`
+// must survive the shared execution boundary without aliases or coercion.
+export type ReasoningEffort = string;
 /** Strongest tier. Claude maps it to ultracode (xhigh + standing workflow orchestration), offered only to deadline-bounded runs. */
 export const ULTRA_EFFORT = 'ultra';
 export interface ReasoningEffortOption {

@@ -25,6 +25,11 @@ export interface WorkflowProcesses {
 }
 
 export interface WorkerRunSpec {
+  executionId: string;
+  logicalCallId: string;
+  attemptId: string;
+  /** Host-bound direct tools; no reusable model-visible IPC credentials. */
+  workflowTools?: { definitions: unknown[]; call(method: string, args: Record<string, unknown>): Promise<unknown> };
   /** Stable for one worker session across its turns. */
   sessionKey: string;
   root: WorkflowRoot;
@@ -53,14 +58,15 @@ export type WorkerRunEvent =
 export interface WorkerRun {
   runId: string;
   events(): AsyncIterable<WorkerRunEvent>;
-  result: Promise<'completed' | 'stopped' | 'failed'>;
+  result: Promise<'completed' | 'stopped' | 'failed' | 'unknown'>;
   stop(reason: WorkflowStopReason): Promise<void>;
   /** Resolves false when native process exit cannot be confirmed in time. */
   waitForExit(timeoutMs: number): Promise<boolean>;
+  waitForQuiescence?(timeoutMs: number): Promise<{ state: 'requested' | 'quiescent' | 'unknown' }>;
   stopReason(): WorkflowStopReason | undefined;
 }
 
-/** Starts one agent turn. Each call is a fresh native process; `resume` continues the native session. */
+/** Starts one native turn. Persistent backends may retain their session while quiescent. */
 export interface WorkerRunner {
   start(spec: WorkerRunSpec): Promise<WorkerRun>;
 }
