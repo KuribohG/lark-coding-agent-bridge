@@ -211,9 +211,9 @@ export class WorkflowWorkspaces {
         const artifact = ctx.state.artifacts.find(artifact => artifact.ref === resultRef);
         let result;
         try { result = JSON.parse(artifact?.text ?? '') as { ok?: unknown; reason?: unknown; evidence?: unknown }; } catch { throw new Error('Review result must be JSON'); }
-        if (result?.ok !== true || typeof result.reason !== 'string' || !result.reason.trim() || result.reason.length > 4000
-          || !Array.isArray(result.evidence) || !result.evidence.length || result.evidence.length > 16
-          || result.evidence.some(entry => typeof entry !== 'string' || !entry.trim() || entry.length > 2000)) throw new Error('Independent review did not approve with evidence');
+        if (result?.ok !== true || typeof result.reason !== 'string' || !result.reason.trim()
+          || !Array.isArray(result.evidence) || !result.evidence.length
+          || result.evidence.some(entry => typeof entry !== 'string' || !entry.trim())) throw new Error('Independent review did not approve with evidence');
         return this.internal<WorkspaceApproval>(op, 'approval', 'approval', id => ({ id, changeId: change.id, taskId: task.taskId, resultRef }));
       } finally { this.end(ws, token); }
     }

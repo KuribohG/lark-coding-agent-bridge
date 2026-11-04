@@ -23,6 +23,8 @@ export interface ScriptAgentCall {
   output: 'text' | 'json';
   workflowTool?: boolean;
   workspace?: string;
+  /** Keys of earlier agent calls in this run whose results the worker reads by reference. */
+  inputs?: string[];
 }
 
 export function scriptText(value: unknown, name: string, max = SCRIPT_MAX_TEXT): string {
@@ -47,8 +49,8 @@ export function scriptArgs(value: unknown): unknown {
 export function parseScriptAgentCall(value: unknown, defaults: WorkerExecutionSelection, root: WorkflowRoot, policy?: WorkerExecutionPolicy): ScriptAgentCall {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid agent() call');
   const input = value as Record<string, unknown>;
-  if (Object.keys(input).some(key => !['key', 'member', 'prompt', 'harness', 'model', 'reasoningEffort', 'output', 'workflowTool', 'workspace'].includes(key))) {
-    throw new Error('agent() supports key, member, harness, model, reasoningEffort, output, workflowTool and workspace only');
+  if (Object.keys(input).some(key => !['key', 'member', 'prompt', 'harness', 'model', 'reasoningEffort', 'output', 'workflowTool', 'workspace', 'inputs'].includes(key))) {
+    throw new Error('agent() supports key, member, harness, model, reasoningEffort, output, workflowTool, workspace and inputs only');
   }
   if (input.workflowTool !== undefined && typeof input.workflowTool !== 'boolean') throw new Error('workflowTool must be boolean');
   const key = scriptText(input.key, 'agent key', 160);
@@ -67,5 +69,11 @@ export function parseScriptAgentCall(value: unknown, defaults: WorkerExecutionSe
   const workspace = input.workspace === undefined ? undefined : scriptText(input.workspace, 'workspace ID', 100);
   if (workspace && input.workflowTool) throw new Error('Workspace v1 does not support nested workflow delegation');
   if (member && member.trim() !== member) throw new Error('member name must not contain surrounding whitespace');
-  return { key, member, output, selection, ...(workspace ? { workspace } : {}), ...(input.workflowTool ? { workflowTool: true } : {}), prompt: output === 'json' ? `${prompt}\n\nReturn only valid JSON, without markdown fences or explanatory text.` : prompt };
+  let inputs: string[] | undefined;
+  if (input.inputs !== undefined) {
+    if (!Array.isArray(input.inputs) || !input.inputs.length || input.inputs.length > 16) throw new Error('agent inputs must list 1–16 earlier agent keys');
+    inputs = input.inputs.map(item => scriptText(item, 'agent input key', 160));
+    if (new Set(inputs).size !== inputs.length || inputs.includes(key)) throw new Error('agent inputs must be distinct earlier agent keys');
+  }
+  return { key, member, output, selection, ...(workspace ? { workspace } : {}), ...(inputs ? { inputs } : {}), ...(input.workflowTool ? { workflowTool: true } : {}), prompt: output === 'json' ? `${prompt}\n\nReturn only valid JSON, without markdown fences or explanatory text.` : prompt };
 }

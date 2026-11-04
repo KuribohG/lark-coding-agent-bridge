@@ -17,11 +17,27 @@ describe('reviewed agent composition', () => {
     expect(calls[0]).toMatchObject({member:'parser/worker',model:'worker-model'});
     expect(calls[2]).toMatchObject({member:'parser/worker',model:'worker-model'});
     expect(String(calls[2]!.prompt)).toContain('Boundary case fails');
+    expect(String(calls[2]!.prompt)).not.toContain('case empty-input failed');
+    expect(calls[0]).not.toHaveProperty('inputs');
+    expect(calls[1]).toMatchObject({inputs:['parser/work/1']});
+    expect(calls[2]).toMatchObject({inputs:['parser/review/1']});
+    expect(calls[3]).toMatchObject({inputs:['parser/work/2']});
+    expect(String(calls[1]!.prompt)).not.toContain('candidate-v1');
     expect(calls[1]).toMatchObject({model:'review-model',output:'json'});
     expect(calls[1]).not.toHaveProperty('member');expect(calls[3]).not.toHaveProperty('member');
   });
 
-  it.each([{ok:true,reason:'Looks fine',evidence:[]},{ok:'yes',reason:'Fine',evidence:['test']},
+  it('accepts reviews with any number of long evidence entries', async () => {
+    const evidence = Array.from({length:18}, (_, index) => 'check '+index+' '+'x'.repeat(2500));
+    const results: unknown[] = ['candidate-v1', {ok:false,reason:'r'.repeat(5000),evidence}, 'candidate-v2', {ok:true,reason:'Verified',evidence}];
+    const agent=vi.fn(async (_:unknown)=>results.shift());
+    expect(JSON.parse(await run(agent))).toMatchObject({value:'candidate-v2',rounds:2});
+    const retry = String((agent.mock.calls[2]![0] as {prompt:string}).prompt);
+    expect(retry).not.toContain('check 0');
+    expect(retry.length).toBeLessThan(2000);
+  });
+
+  it.each([{ok:true,reason:'Looks fine',evidence:[]},{ok:false,reason:'Fails',evidence:['ok',' ']},{ok:'yes',reason:'Fine',evidence:['test']},
     {ok:false,reason:'',evidence:[]},null])('fails closed for an invalid review decision: %j', async decision => {
     let count=0;
     await expect(run(async ()=>++count===1?'candidate':decision)).rejects.toThrow('Invalid independent review decision');

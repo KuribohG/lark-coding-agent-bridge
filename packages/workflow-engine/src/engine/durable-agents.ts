@@ -46,7 +46,7 @@ export function memberCursor(state: WorkflowState, agent: DurableAgent): string 
     .filter(task => task?.agentId === agent.agentId).at(-1)?.taskId;
 }
 
-export function scheduleMemberTurn(state: WorkflowState, call: ScriptAgentCall, execution: WorkerExecution, nativeIdKind: NativeIdKind): { task: WorkflowTask; cached: boolean } {
+export function scheduleMemberTurn(state: WorkflowState, call: ScriptAgentCall, execution: WorkerExecution, nativeIdKind: NativeIdKind, inputRefs: string[] = []): { task: WorkflowTask; cached: boolean } {
   let agent = state.agents?.find(item => item.key === call.member);
   if (agent) {
     const session = state.sessions.find(item => item.sessionRef === agent!.sessionRef)!;
@@ -56,7 +56,8 @@ export function scheduleMemberTurn(state: WorkflowState, call: ScriptAgentCall, 
   const previousTurnId = agent ? memberCursor(state, agent) : undefined;
   const digest = workflowDigest({ key: call.key, prompt: call.prompt, output: call.output, execution,
     member: call.member, previousTurnId, root: state.root, goal: state.goal, definition: state.definitionDigest,
-    ...(call.workflowTool ? {workflowTool:true} : {}), ...(call.workspace ? {workspace:call.workspace} : {}) });
+    ...(call.workflowTool ? {workflowTool:true} : {}), ...(call.workspace ? {workspace:call.workspace} : {}),
+    ...(inputRefs.length ? { inputs: inputRefs.map(ref => state.artifacts.find(artifact => artifact.ref === ref)!.digest) } : {}) });
   const existing = agent && state.tasks.find(task => task.agentId === agent!.agentId && task.requestDigest === digest);
   if (existing?.status === 'result_ready') return { task: existing, cached: true };
   if (existing) {
@@ -85,7 +86,7 @@ export function scheduleMemberTurn(state: WorkflowState, call: ScriptAgentCall, 
   const task: WorkflowTask = { taskId: randomUUID(), taskKey: call.key, sessionRef: agent.sessionRef, objective: call.prompt,
     ...(call.workspace ? {workspaceId:call.workspace} : {}),
     ...(call.workflowTool ? {workflowTool:true} : {}),
-    requestDigest: digest, cacheKey: digest, status: 'queued', attempts: [], resultRefs: [], inputRefs: [],
+    requestDigest: digest, cacheKey: digest, status: 'queued', attempts: [], resultRefs: [], inputRefs,
     scriptRunId: state.script!.runId, scriptKey: call.key, scriptOutput: call.output, agentId: agent.agentId,
     previousTurnId, inputCheckpointVersion: agent.checkpointVersion, inputMessageIds: receipts.flatMap(receipt => receipt.messageIds) };
   task.cacheKey = workflowDigest({ request: digest, checkpointVersion: task.inputCheckpointVersion, messageIds: task.inputMessageIds });

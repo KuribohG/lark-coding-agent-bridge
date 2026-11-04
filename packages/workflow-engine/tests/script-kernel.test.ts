@@ -119,4 +119,30 @@ describe('script kernel lifecycle', () => {
     for (let i=0;i<8;i++) { await h.call('replay_script'); h.begin(); h.finish(); }
     await expect(h.call('replay_script')).rejects.toThrow('replay limit');
   });
+
+  it('passes earlier results by reference and lets only the consuming worker read them', async () => {
+    const h = harness(); await h.start();
+    const first = await h.agent('a'); await h.kernel.tick();
+    await vi.waitFor(() => expect(h.finishes).toHaveLength(1));
+    const long = 'evidence line\n'.repeat(400);
+    h.finishes[0]!({status:'completed',text:long}); await h.settle();
+    expect(h.result(first.taskId)).toBe(long);
+    await expect(h.agent('pending', {inputs:['missing']})).rejects.toThrow('awaited, successful agent call');
+    await expect(h.agent('self', {inputs:['self']})).rejects.toThrow('distinct earlier agent keys');
+    const second = await h.agent('b', {inputs:['a']}); await h.kernel.tick();
+    await vi.waitFor(() => expect(h.requests).toHaveLength(2));
+    const request = h.requests[1]!;
+    const ref = h.state().tasks.find(task => task.taskId === first.taskId)!.resultRefs[0]!;
+    expect(request.task.inputRefs).toEqual([ref]);
+    expect(request.prompt).toContain(ref);
+    expect(request.prompt).toContain('read_artifact');
+    expect(request.prompt).not.toContain(long);
+    const worker = (req: WorkflowWorkerRequest, args: Record<string, unknown>) => h.kernel.call({kind:'worker',scopeId:'script',workflowId:h.state().workflowId,
+      taskId:req.task.taskId,attemptId:req.attemptId},'read_artifact',args);
+    await expect(worker(request, {ref})).resolves.toMatchObject({text:long});
+    h.finishes[1]!({status:'completed',text:'done'}); await h.settle();
+    expect(h.result(second.taskId)).toBe('done');
+    const turn = await h.agent('c', {member:'reviser',inputs:['a','b']});
+    expect(h.state().tasks.find(task => task.taskId === turn.taskId)!.inputRefs).toHaveLength(2);
+  });
 });
