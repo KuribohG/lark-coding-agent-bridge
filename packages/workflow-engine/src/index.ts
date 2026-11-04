@@ -1,6 +1,8 @@
 // Public workflow engine API: script-led multi-agent workflows with durable state.
 // Hosts supply a WorkerRunner and authorization callbacks; see README.md.
 export { WorkflowRuntime } from './engine/runtime';
+export { workflowToolDefinitions, MAIN_WORKFLOW_METHODS, WORKER_WORKFLOW_METHODS } from './engine/host-tools';
+export type { ExecutionLedgerPort, ExecutionObservation } from './engine/types';
 export type { WorkflowRuntimeDeps } from './engine/runtime';
 export type { WorkflowKernel } from './engine/kernel';
 export { WorkflowStopped, silentLogger, stopReasonOf } from './engine/ports';
