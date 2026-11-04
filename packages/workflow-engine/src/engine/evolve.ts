@@ -16,6 +16,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       Object.assign(state, event.state);
       return;
     case 'workflow_paused': return setStatus(state, 'paused', 'paused');
+    case 'workflow_cancel_requested': return setStatus(state, 'cancelling', 'cancelled');
     case 'workflow_cancelled': return setStatus(state, 'cancelled', 'cancelled');
     case 'workflow_completed': state.status = 'completed'; return;
     case 'binding_invalidated': return setStatus(state, 'binding_attention', 'interrupted');
@@ -50,7 +51,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       if (script.archivedCalls) script.archivedCalls = 0;
       // Keyed calls belong to a run; the archived ones of the run that ended stay in the archive under its ID.
       for (const kind of Object.values(CALL_KINDS)) if (state.archivedRecords?.[kind]) state.archivedRecords[kind] = 0;
-      script.logs = []; script.error = undefined; script.resultRef = undefined; script.phase = undefined;
+      script.logs = []; script.error = undefined; script.resultRef = undefined; script.phase = undefined; delete script.stopReason;
       state.status = 'active';
       return;
     }
@@ -62,7 +63,10 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
     case 'script_phase_set': state.script!.phase = event.phase; return;
     case 'script_logged': state.script!.logs = [...state.script!.logs, event.text].slice(-50); return;
     case 'script_succeeded': state.script!.resultRef = event.resultRef; state.script!.status = 'result_ready'; return;
-    case 'script_failed': state.script!.status = 'failed'; state.script!.error = event.error; return;
+    case 'script_failed':
+      state.script!.status = 'failed'; state.script!.error = event.error;
+      if (event.stopReason) state.script!.stopReason = event.stopReason;
+      return;
 
     case 'session_created': state.sessions.push(event.session); return;
     case 'session_bound': {
@@ -144,6 +148,20 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       const found = task(state, event.taskId);
       found.status = 'starting'; found.attempts.push(event.attempt);
       delete found.retryAt;
+      return;
+    }
+    case 'execution_stop_requested': task(state, event.taskId).quiescence = 'requested'; return;
+    case 'execution_uncertain': {
+      const found = task(state, event.taskId);
+      found.status = 'unknown'; found.quiescence = 'unknown'; found.error = event.error;
+      const attempt = found.attempts.at(-1);
+      if (attempt) attempt.result = 'unknown';
+      return;
+    }
+    case 'execution_settled': {
+      const found = task(state, event.taskId);
+      const attempt = found.attempts.at(-1)!;
+      found.quiescence = 'quiescent'; attempt.completionDigest = event.digest; attempt.completedRevision = event.revision;
       return;
     }
     case 'attempt_admitted': task(state, event.taskId).attempts.at(-1)!.admittedAt ??= event.at; return;
@@ -337,10 +355,16 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       found.updatedAt = granted.createdAt; found.error = undefined;
       return;
     }
+    case 'claim_frozen': {
+      const held = claim(state, event.claimId);
+      held.frozen = true; held.reason = event.reason;
+      return;
+    }
     case 'claim_renewed': claim(state, event.claimId).leaseUntil = event.leaseUntil; return;
     case 'claim_ended': {
       const ended = claim(state, event.claimId);
       const found = item(state, ended.itemId);
+      delete ended.frozen;
       ended.status = event.status; ended.endedAt = event.at; ended.reason = event.reason;
       found.claimId = undefined; found.updatedAt = event.at; found.error = ended.reason;
       found.status = event.retry && found.generation < found.maxAttempts ? 'pending' : 'failed';

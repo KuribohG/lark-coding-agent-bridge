@@ -40,6 +40,6 @@ export interface KernelContext {
   };
   readonly scripts: {
     checkWorkKey(state: WorkflowView, value: unknown, operation?: 'enqueue' | 'swarm' | 'close'): string;
-    finishScript(scopeId: string, workflowId: string, runId: string, result: { text: string } | { error: string }): void;
+    finishScript(scopeId: string, workflowId: string, runId: string, result: { text: string } | { error: string; stopReason?: 'deadline' }): void;
   };
 }
