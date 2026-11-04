@@ -65,6 +65,14 @@ jobs:
         env:
           LARK_BUILD_COMMIT: ${{ github.sha }}
 
+      - name: Install NSIS
+        shell: pwsh
+        run: |
+          # windows-latest does not ship makensis; the Chocolatey shim lands on
+          # PATH, which is also how build.ps1 finds it locally.
+          choco install nsis -y --no-progress
+          makensis /VERSION
+
       - name: Build Windows installer
         run: pwsh -File installer/build.ps1 -SkipBuild
 
