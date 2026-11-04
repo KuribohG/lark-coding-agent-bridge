@@ -58,10 +58,13 @@ import { intakeMessage } from './intake';
 import { runAgentBatch, type RunBatchDeps } from './run';
 import { createProfileChannel } from './sdk';
 import { LarkTurns } from './turns';
+import type { RuntimeActivity } from '../../runtime/activity';
 
 export interface BridgeChannel {
   channel: LarkChannel;
   disconnect(): Promise<void>;
+  /** Optional so test doubles and older channel shims need not report it. */
+  activity?(): RuntimeActivity;
 }
 
 export interface StartChannelDeps {
@@ -489,8 +492,29 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     forceReconnect: () => controls.restart({ config: 'running' }),
   });
 
+  const workflowActivity = () => {
+    try {
+      return workflows?.kernel.activity() ?? { scripts: 0, tasks: 0 };
+    } catch {
+      // The kernel database is closed once shutdown starts.
+      return { scripts: 0, tasks: 0 };
+    }
+  };
+
   return {
     channel,
+    activity: () => {
+      const workflow = workflowActivity();
+      return {
+        runs: activeRuns.snapshot().length,
+        turns: turns.activeCount(),
+        queuedMessages: pending.queuedMessageCount(),
+        sideQuestions: btw.activeCount(),
+        workflowScripts: workflow.scripts,
+        workflowTasks: workflow.tasks,
+        newRunsPaused: activeRuns.newRunsPaused(),
+      };
+    },
     disconnect: async () => {
       activeRuns.pauseNewRuns('bridge-disconnect');
       controls.workflow = undefined;

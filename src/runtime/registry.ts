@@ -21,6 +21,7 @@ import { isAgentKind } from '../agent/backend-spec';
 import { getBuildInfo } from '../build-info';
 import { readConfigRevisionSync } from '../config/revision';
 import { writeFileAtomic } from '../platform/atomic-write';
+import { isRuntimeActivity, type RuntimeActivity } from './activity';
 import { checkRuntimeLock } from './locks';
 
 /**
@@ -58,6 +59,9 @@ export interface ProcessEntry {
   appliedConfigRevision?: string;
   /** Settings that differ from the file and still need /reconnect or a restart. */
   configPendingCount?: number;
+  /** Latest work snapshot, refreshed on change and at least every ACTIVITY_HEARTBEAT_MS. */
+  activity?: RuntimeActivity;
+  activityAt?: string;
   /** Signal this process handles as "reload config"; absent on versions where SIGHUP would terminate it. */
   reloadSignal?: 'SIGHUP';
   /** Bot's display name. Filled in by startChannel after the
@@ -95,6 +99,8 @@ function isValidEntry(e: unknown): e is ProcessEntry {
     optionalString(x.startupConfigRevision) &&
     optionalString(x.appliedConfigRevision) &&
     (x.configPendingCount === undefined || typeof x.configPendingCount === 'number') &&
+    (x.activity === undefined || isRuntimeActivity(x.activity)) &&
+    optionalString(x.activityAt) &&
     (x.reloadSignal === undefined || x.reloadSignal === 'SIGHUP')
   );
 }
@@ -209,7 +215,7 @@ export async function updateEntry(
   patch: Partial<Pick<
     ProcessEntry,
     'appId' | 'tenant' | 'configPath' | 'botName' | 'startupConfigRevision' | 'agentKind'
-    | 'appliedConfigRevision' | 'configPendingCount'
+    | 'appliedConfigRevision' | 'configPendingCount' | 'activity' | 'activityAt'
   >>,
   registryFile: string = paths.processesFile,
 ): Promise<void> {

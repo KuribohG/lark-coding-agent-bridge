@@ -48,6 +48,7 @@ import type { RootConfig } from '../config/profile-schema';
 import { applyProfileLarkCliIdentity } from '../config/config-ops';
 import { reconcileProfile } from './config-reconciler';
 import { onDaemonIdle } from '../agent/codex/daemon';
+import { ACTIVITY_HEARTBEAT_MS } from './activity';
 import type { ModelServiceConfig } from '../model-service/config';
 
 type StartChannelFn = typeof realStartChannel;
@@ -99,6 +100,8 @@ export interface ManagedStatus {
  * entry, stores, channel and `controls`. `stop()` tears down ONLY this profile
  * (no process.exit) so the supervisor keeps hosting the others.
  */
+const ACTIVITY_POLL_MS = 2_000;
+
 class ManagedProfile {
   bridge!: BridgeChannel;
   controls!: Controls;
@@ -108,6 +111,9 @@ class ManagedProfile {
   configStatus?: ConfigApplyReport;
   private restarting = false;
   private applying: Promise<unknown> = Promise.resolve();
+  private activityTimer?: NodeJS.Timeout;
+  private publishedActivity?: { key: string; at: number };
+  private publishingActivity = false;
 
   constructor(
     readonly profile: string,
@@ -176,6 +182,9 @@ class ManagedProfile {
           log.warn('registry', 'update-failed', { step: 'botName', err: String(err) }),
         );
       }
+      this.activityTimer = setInterval(() => void this.publishActivity(), ACTIVITY_POLL_MS);
+      this.activityTimer.unref?.();
+      await this.publishActivity();
     } catch (err) {
       // Roll back partial bring-up so a failed start doesn't leak locks/entries.
       if (this.entry) unregisterSync(this.entry.id, this.appPaths.userRegistryFile);
@@ -187,6 +196,8 @@ class ManagedProfile {
   }
 
   async stop(): Promise<void> {
+    clearInterval(this.activityTimer);
+    this.activityTimer = undefined;
     try {
       await this.bridge?.disconnect();
     } catch (err) {
@@ -198,6 +209,25 @@ class ManagedProfile {
     await this.larkAuth.close();
     await releaseRuntimeLocks(this.locks);
     this.locks = [];
+  }
+
+  /** Writes on change, plus a heartbeat so readers can tell a live snapshot from a stale one. */
+  private async publishActivity(): Promise<void> {
+    const activity = this.bridge?.activity?.();
+    if (!activity || !this.entry || this.publishingActivity) return;
+    const key = JSON.stringify(activity);
+    const now = Date.now();
+    if (this.publishedActivity?.key === key && now - this.publishedActivity.at < ACTIVITY_HEARTBEAT_MS) return;
+    this.publishingActivity = true;
+    try {
+      await updateEntry(this.entry.id, { activity, activityAt: new Date(now).toISOString() },
+        this.appPaths.userRegistryFile);
+      this.publishedActivity = { key, at: now };
+    } catch (err) {
+      log.warn('registry', 'update-failed', { step: 'activity', err: String(err) });
+    } finally {
+      this.publishingActivity = false;
+    }
   }
 
   /** Best-effort sync unregister for the process 'exit' hook. */

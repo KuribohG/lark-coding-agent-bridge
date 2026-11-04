@@ -53,6 +53,10 @@ export class BtwManager {
     if (this.tails.get(ctx.scope) === job) this.tails.delete(ctx.scope);
   }
 
+  activeCount(): number {
+    return this.jobs.size;
+  }
+
   cancel(scope: string): void {
     for (const [controller, jobScope] of this.jobs) if (scope === jobScope) controller.abort();
   }

@@ -16,6 +16,8 @@ export class LarkTurns {
       && !this.active.get(scope) && !this.active.newRunsPaused();
   }
 
+  activeCount(): number { return this.running.size; }
+
   timedRunId(scope: string): string | undefined { return this.running.get(scope)?.timedRunId; }
 
   claim(scope: string, timedRunId?: string) {

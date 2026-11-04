@@ -4,6 +4,10 @@ import { readConfigRevision } from '../config/revision';
 import { resolveAppPaths } from '../config/app-paths';
 import { agentDisplayName } from '../agent/backend-spec';
 import { isAlive, readAndPrune, type ProcessEntry } from './registry';
+import { ACTIVITY_HEARTBEAT_MS, isIdleActivity, type RuntimeActivity } from './activity';
+
+// Several missed heartbeats: the publisher is wedged or the process is gone.
+const ACTIVITY_STALE_MS = 3 * ACTIVITY_HEARTBEAT_MS;
 
 export interface BridgeStatusService {
   requested: 'profile' | 'supervisor' | 'unknown';
@@ -52,6 +56,10 @@ export interface BridgeStatusProcess {
   /** Settings waiting for /reconnect or a restart. */
   configPendingCount?: number;
   matchesStatusBuild: boolean | null;
+  activity?: RuntimeActivity;
+  activityAt?: string;
+  /** No unfinished work in a fresh snapshot; null when the process publishes none or it went stale. */
+  idle: boolean | null;
 }
 
 export interface BridgeStatusReport {
@@ -77,6 +85,8 @@ export interface BridgeStatusReport {
     configNotAppliedCount: number;
     configPendingRestartCount: number;
     buildMismatchCount: number;
+    busyCount: number;
+    idleUnknownCount: number;
   };
 }
 
@@ -111,10 +121,11 @@ export async function collectBridgeStatus(
     }
     const startedMs = Date.parse(entry.startedAt);
     const buildCommit = entry.buildCommit ?? 'unknown';
+    const alive = isAlive(entry.pid);
     return {
       id: entry.id,
       pid: entry.pid,
-      alive: isAlive(entry.pid),
+      alive,
       online: Boolean(entry.botName),
       managedByService: options.service
         ? options.service.state === 'running' && options.service.pid === entry.pid
@@ -153,6 +164,9 @@ export async function collectBridgeStatus(
       matchesStatusBuild: build.commit !== 'unknown' && buildCommit !== 'unknown'
         ? build.commit === buildCommit
         : null,
+      ...(entry.activity ? { activity: entry.activity } : {}),
+      ...(entry.activityAt ? { activityAt: entry.activityAt } : {}),
+      idle: alive && entry.activity && isFresh(entry.activityAt) ? isIdleActivity(entry.activity) : null,
     };
   }));
 
@@ -181,8 +195,15 @@ export async function collectBridgeStatus(
       configNotAppliedCount: processes.filter((item) => item.configFileChangedSinceApply === true).length,
       configPendingRestartCount: processes.filter((item) => (item.configPendingCount ?? 0) > 0).length,
       buildMismatchCount: processes.filter((item) => item.matchesStatusBuild === false).length,
+      busyCount: processes.filter((item) => item.idle === false).length,
+      idleUnknownCount: processes.filter((item) => item.idle === null).length,
     },
   };
+}
+
+function isFresh(at: string | undefined): boolean {
+  const ms = at ? Date.parse(at) : NaN;
+  return Number.isFinite(ms) && Date.now() - ms <= ACTIVITY_STALE_MS;
 }
 
 function defaultRegistryPath(): string {

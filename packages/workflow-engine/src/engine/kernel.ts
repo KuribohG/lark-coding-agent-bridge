@@ -471,6 +471,16 @@ export class WorkflowKernel {
     return () => { this.changes.off(scopeId, listener); };
   }
 
+  /** Unfinished work, for host idle checks: scripts queued or running and tasks still executing. */
+  activity(): { scripts: number; tasks: number } {
+    let scripts = 0, tasks = 0;
+    for (const state of this.list()) {
+      if (state.status === 'active' && ['queued', 'running'].includes(state.script?.status ?? '')) scripts++;
+      tasks += state.tasks.filter(task => BUSY.has(task.status)).length;
+    }
+    return { scripts, tasks };
+  }
+
   queuedScripts(): WorkflowState[] {
     return this.list().filter(state => state.status === 'active' && state.script?.status === 'queued' && this.executionAllowed(state))
       .sort((a,b)=>(b.parent?.depth ?? 0)-(a.parent?.depth ?? 0));

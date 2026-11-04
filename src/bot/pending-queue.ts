@@ -174,6 +174,13 @@ export class PendingQueue {
     return entry.messages;
   }
 
+  /** Messages received but not yet handed to a run, across all scopes. */
+  queuedMessageCount(): number {
+    let count = 0;
+    for (const entry of this.map.values()) count += entry.messages.length;
+    return count;
+  }
+
   hasWork(scope: string): boolean {
     return this.blocked.has(scope) || this.map.has(scope);
   }

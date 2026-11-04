@@ -56,6 +56,23 @@ describe('workflow kernel contracts', () => {
     expect(h.state()).toBeUndefined();
   });
 
+  it('reports queued and running scripts and busy tasks as activity', async () => {
+    const h = harness();
+    expect(h.kernel.activity()).toEqual({ scripts: 0, tasks: 0 });
+    await h.call('run_script', { goal: 'task', script: 'return null;' });
+    expect(h.kernel.activity()).toEqual({ scripts: 1, tasks: 0 });
+    h.kernel.beginScript('topic-1', h.state().workflowId);
+    await h.agent('a');
+    expect(h.kernel.activity()).toEqual({ scripts: 1, tasks: 1 });
+    await h.kernel.tick();
+    await vi.waitFor(() => expect(h.finishes).toHaveLength(1));
+    expect(h.kernel.activity()).toEqual({ scripts: 1, tasks: 1 });
+    h.finishes[0]!({ status: 'completed', text: 'done' });
+    await h.settle();
+    h.finish();
+    expect(h.kernel.activity()).toEqual({ scripts: 0, tasks: 0 });
+  });
+
   it('pins the budget across config changes, restart and replay', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'workflow-deadline-'));
     cleanups.push(() => rm(dir, { recursive: true, force: true }));

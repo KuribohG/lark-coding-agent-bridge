@@ -83,6 +83,13 @@ whether each process matches the invoking build. `appliedConfigRevision` is the
 revision the process last reconciled with; `configFileChangedSinceApply` means the
 file holds a revision it has not accepted (invalid, or not yet seen), and
 `configPendingCount` counts settings waiting for `/reconnect` or a restart.
+`activity` is the process's own work snapshot (agent runs, conversation turns
+through reply delivery, queued messages, `/btw` side questions, workflow scripts
+and tasks, and whether new runs are paused), rewritten on change and at least
+every 30 seconds (`activityAt`). `idle` is `true` when a fresh snapshot shows no
+unfinished work, `false` when it shows some, and `null` when the process is gone,
+publishes no snapshot, or the snapshot is older than 90 seconds; wait for `idle`
+before stopping a bridge to avoid cutting off a reply.
 `status --json` does not resolve secrets or contact agents/providers.
 
 `start --web-ui` starts the persisted `bridge.autostart_profiles` set. Existing configurations without that field keep the legacy active-profile fallback. The active profile is now only the CLI default and does not implicitly define the supervisor boot set:

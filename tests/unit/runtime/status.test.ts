@@ -69,7 +69,32 @@ describe('runtime status report', () => {
       configNotAppliedCount: 1,
       configPendingRestartCount: 0,
       buildMismatchCount: 1,
+      busyCount: 0,
+      idleUnknownCount: 1,
     });
+    expect(report.processes[0]!.idle).toBeNull();
+  });
+
+  it('derives idleness from fresh activity snapshots only', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'bridge-status-'));
+    dirs.push(root);
+    const configPath = join(root, 'config.toml');
+    await writeFile(configPath, 'version = 3\n');
+    const registryFile = join(root, 'processes.json');
+    const quiet = { runs: 0, turns: 0, queuedMessages: 0, sideQuestions: 0, workflowScripts: 0, workflowTasks: 0, newRunsPaused: false };
+    const now = new Date().toISOString();
+    await writeFile(registryFile, JSON.stringify({ entries: [
+      registryEntry({ id: 'idle', configPath, activity: quiet, activityAt: now }),
+      registryEntry({ id: 'busy', configPath, activity: { ...quiet, turns: 1 }, activityAt: now }),
+      registryEntry({ id: 'queued', configPath, activity: { ...quiet, queuedMessages: 2 }, activityAt: now }),
+      registryEntry({ id: 'stale', configPath, activity: quiet, activityAt: new Date(Date.now() - 10 * 60_000).toISOString() }),
+    ] }));
+
+    const report = await collectBridgeStatus({ registryFile });
+
+    expect(Object.fromEntries(report.processes.map(item => [item.id, item.idle])))
+      .toEqual({ idle: true, busy: false, queued: false, stale: null });
+    expect(report.summary).toMatchObject({ busyCount: 2, idleUnknownCount: 1 });
   });
 });
 

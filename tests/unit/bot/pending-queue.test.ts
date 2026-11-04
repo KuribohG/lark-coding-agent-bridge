@@ -29,6 +29,19 @@ describe('PendingQueue', () => {
     } finally { vi.useRealTimers(); }
   });
 
+  it('counts messages that have not been handed to a run yet', async () => {
+    vi.useFakeTimers();
+    try {
+      const queue = new PendingQueue(10, scope => queue.block(scope));
+      queue.push('a', message('a1'));
+      queue.push('a', message('a2'));
+      queue.push('b', message('b1'));
+      expect(queue.queuedMessageCount()).toBe(3);
+      await vi.advanceTimersByTimeAsync(10);
+      expect(queue.queuedMessageCount()).toBe(0);
+    } finally { vi.useRealTimers(); }
+  });
+
   it('reads the configured quiet window for each new debounce timer', async () => {
     vi.useFakeTimers();
     try {

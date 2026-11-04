@@ -11,6 +11,7 @@ import {
 import { Supervisor } from '../../../src/runtime/supervisor';
 import { resolveAppPaths } from '../../../src/config/app-paths';
 import { acquireAppRuntimeLock } from '../../../src/runtime/locks';
+import { readAndPrune } from '../../../src/runtime/registry';
 
 // CI hosts have no agent CLIs installed; treat every binary as present.
 vi.mock('../../../src/agent/preflight', async (importOriginal) => ({
@@ -26,6 +27,8 @@ const restorePendingArgs: Array<boolean | undefined> = [];
 const executions = new Map<string, import('../../../src/runtime/execution-controller').ProfileExecutionController>();
 let root: string;
 let sup: Supervisor;
+const quietActivity = { runs: 0, turns: 0, queuedMessages: 0, sideQuestions: 0, workflowScripts: 0, workflowTasks: 0, newRunsPaused: false };
+let activity = { ...quietActivity };
 
 function app(id: string) {
   return { id, secret: '${APP_SECRET}', tenant: 'feishu' as const };
@@ -48,6 +51,7 @@ const stubStartChannel: any = async (deps: any) => {
   deps.controls.resumePendingInput = () => pendingLifecycle.push(`resume:${deps.appPaths.profile}`);
   return {
     channel: { botIdentity: { name: `bot-${deps.appPaths.profile}` } },
+    activity: () => activity,
     disconnect: async () => {
       disconnected.push(deps.appPaths.profile);
     },
@@ -59,6 +63,7 @@ beforeEach(async () => {
   disconnected.length = 0;
   pendingLifecycle.length = 0;
   restorePendingArgs.length = 0;
+  activity = { ...quietActivity };
   executions.clear();
   root = await mkdtemp(join(tmpdir(), 'bridge-sup-'));
   roots.push(root);
@@ -93,6 +98,16 @@ describe('Supervisor', () => {
     const list = sup.list();
     expect(list).toHaveLength(1);
     expect(list[0]).toMatchObject({ profile: 'claude', online: true, pid: process.pid, botName: 'bot-claude' });
+  });
+
+  it('publishes channel activity to the process registry as it changes', async () => {
+    await sup.startProfile('claude');
+    const registryFile = resolveAppPaths({ rootDir: root, profile: 'claude' }).userRegistryFile;
+    const published = () => readAndPrune(registryFile).find(entry => entry.profileName === 'claude');
+    expect(published()).toMatchObject({ activity: quietActivity, activityAt: expect.any(String) });
+
+    activity = { ...quietActivity, turns: 1, queuedMessages: 2 };
+    await vi.waitFor(() => expect(published()?.activity).toEqual(activity), { timeout: 5_000 });
   });
 
   it('hosts multiple profiles at once', async () => {
