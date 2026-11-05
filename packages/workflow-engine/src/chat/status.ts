@@ -163,7 +163,11 @@ export function renderWorkflowStatus(state: WorkflowState, memberKey?: string, l
     }
     if (state.script.status === 'failed' && state.script.error) lines.push(`脚本失败：${errorText(state.script.error)}`);
   }
-  if (state.status === 'paused' || state.status === 'interrupted') {
+  // Interrupted time is credited back on replay, so only paused or failed runs can be stuck past the deadline.
+  const expired = state.status !== 'interrupted' && now >= state.deadlineAt;
+  if (expired && (state.status === 'paused' || (state.status === 'active' && state.script?.status === 'failed'))) {
+    lines.push('已到截止时间，无法恢复或重放；可用 /workflow cancel 释放当前话题后重新 start。');
+  } else if (state.status === 'paused' || state.status === 'interrupted') {
     lines.push('工作流未运行。排查后可用 /workflow resume 显式恢复；排队的消息不会自动恢复工作流。');
   } else if (state.status === 'binding_attention') {
     lines.push('执行绑定已变化，请核对主会话及执行配置；当前绑定不能继续执行。');

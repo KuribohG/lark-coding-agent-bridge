@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkflowKernel } from '../src/engine/kernel';
+import { renderWorkflowStatus } from '../src/chat/status';
 import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '../src/engine/types';
 
 const cleanups: Array<() => Promise<unknown>> = [];
@@ -87,11 +88,30 @@ describe('workflow kernel contracts', () => {
     expect(recovered.state().definition.maxWallTimeMinutes).toBe(480);
     now = deadline;
     await recovered.kernel.tick();
-    expect(recovered.state().status).toBe('paused');
-    expect(recovered.state().events.at(-1)?.kind).toBe('budget_attention');
+    expect(recovered.state().status).toBe('active');
+    expect(recovered.state().script?.status).toBe('failed');
+    expect(recovered.state().events.at(-1)).toMatchObject({ kind: 'script_failed', summary: 'Workflow deadline reached' });
     await expect(recovered.call('replay_script')).rejects.toThrow('Workflow deadline reached');
     await recovered.call('cancel'); await recovered.start();
     expect(recovered.state().deadlineAt).toBe(now + 960 * 60_000);
+  });
+
+  it('fails the script at the deadline so the main agent can report partial results and release the topic', async () => {
+    let now = 1000;
+    const h = harness(':memory:', () => 60, () => now);
+    await h.start(); await h.agent('slow'); await h.kernel.tick();
+    await vi.waitFor(() => expect(h.requests).toHaveLength(1));
+    now = h.state().deadlineAt;
+    await h.kernel.tick(); await h.settle();
+    expect(h.state().status).toBe('active');
+    expect(h.state().script).toMatchObject({ status: 'failed', error: 'Workflow deadline reached' });
+    expect(h.state().tasks[0]?.status).toBe('cancelled');
+    expect(renderWorkflowStatus(h.state(), undefined, false, now)).toContain('/workflow cancel');
+    await expect(h.call('resume')).rejects.toThrow('Workflow deadline reached');
+    await h.call('ack_events', { eventIds: h.state().events.filter(event => !event.acknowledged).map(event => event.id) });
+    const report = await h.call('publish_artifact', { kind: 'report', text: 'partial results' }) as { ref: string };
+    await h.call('complete', { reportRef: report.ref, openIssues: ['slow timed out'], verificationLimits: 'deadline reached' });
+    expect(h.kernel.state('topic-1')).toBeUndefined();
   });
 
   it('requires caller start permission even when request parameters claim authorization', async () => {

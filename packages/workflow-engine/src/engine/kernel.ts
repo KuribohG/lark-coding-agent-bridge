@@ -273,7 +273,7 @@ export class WorkflowKernel {
     if (!['active', 'paused'].includes(state.status) && !(state.status === 'interrupted' && ['replay_script', 'resume', 'send_message', 'enqueue_work', 'retry_work', 'close_work_queue'].includes(method))) {
       throw new Error(`Workflow is ${state.status}; cancel and start a new workflow, or explicitly replay an interrupted script`);
     }
-    if (this.now() >= state.deadlineAt && !['ack_events', 'complete', 'cancel_task'].includes(method)) throw new Error('Workflow deadline reached');
+    if (this.now() >= state.deadlineAt && !['ack_events', 'publish_artifact', 'complete', 'cancel_task'].includes(method)) throw new Error('Workflow deadline reached');
     let response: unknown;
     switch (method) {
       case 'close_work_queue':
@@ -1007,13 +1007,18 @@ export class WorkflowKernel {
             this.finishScript(state.root.scopeId,state.workflowId,state.script!.runId,{error:'Child workflow deadline reached'});
             continue;
           }
-          this.suspendChildren(state,false);
-          state.status = 'paused';
-          if (state.script) state.script.status = 'paused';
-          for (const pool of consumerPools(state)) pool.status = 'suspended';
-          for (const task of state.tasks) if (BUSY.has(task.status) || task.status==='waiting_workflow') this.cancelTask(task, state);
-          this.event(state, { kind: 'budget_attention', summary: 'Workflow deadline reached; workers cancelled.' });
-          this.save(state);
+          // The budget cannot be extended, so fail the run instead of pausing it: the main agent can still
+          // report partial results via complete, and the topic is not left bound to an unresumable workflow.
+          if (state.script && ['queued', 'running'].includes(state.script.status)) {
+            cancelWork(state, this.now());
+            state.script.status = 'running'; this.save(state);
+            this.finishScript(state.root.scopeId, state.workflowId, state.script.runId, { error: 'Workflow deadline reached' });
+            continue;
+          }
+          const busy = state.tasks.filter(task => BUSY.has(task.status) || task.status === 'waiting_workflow');
+          for (const task of busy) this.cancelTask(task, state);
+          if (busy.length) this.save(state);
+          continue;
         }
         if (state.status === 'active') {
           if (settleEventWaits(state, this.now())) this.save(state);
