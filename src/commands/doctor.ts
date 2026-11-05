@@ -278,7 +278,6 @@ function agentStateLines(ctx: CommandContext, agentKind: AgentKind): string[] {
   return [
     `workspace default: ${state.defaultWorkspace ?? 'missing'}`,
     ...(state.home ? [`agent home: ${state.home} (${state.homeSource})`] : []),
-    ...(state.homeSource === 'legacy-profile' ? ['agent home note: legacy per-profile home; see docs/configuration.md#agent-state'] : []),
     `memory: ${state.memoryDir ?? (agentKind === 'claude' ? 'per workspace (native)' : 'agent home')}`,
   ];
 }

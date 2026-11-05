@@ -64,7 +64,7 @@ describe('agent state layout', () => {
     expect(native.memoryDir).toBeUndefined();
   });
 
-  it('places Codex homes bridge-wide and falls back to an existing legacy profile home', async () => {
+  it('places Codex homes bridge-wide, or in the host state directory without a bridge root', async () => {
     const root = await tmpRoot();
     const bridgeRoot = join(root, '.lark-channel');
     const profileDir = join(bridgeRoot, 'profiles', 'claude');
@@ -73,12 +73,13 @@ describe('agent state layout', () => {
       home: join(bridgeRoot, 'agents', 'codex'), homeSource: 'bridge', exportHome: true, homeEnv: 'CODEX_HOME',
     });
 
-    const legacy = join(bridgeRoot, 'profiles', 'codex', 'codex-home');
-    await mkdir(legacy, { recursive: true });
-    expect(resolveAgentState(profile, 'codex', { profileDir })).toMatchObject({ home: legacy, homeSource: 'legacy-profile' });
-
-    await mkdir(join(bridgeRoot, 'agents', 'codex'), { recursive: true });
+    await mkdir(join(bridgeRoot, 'profiles', 'codex', 'codex-home'), { recursive: true });
     expect(resolveAgentState(profile, 'codex', { profileDir }).homeSource).toBe('bridge');
+
+    const standalone = { agentKind: 'codex' as const, codex: { binaryPath: 'codex' } };
+    expect(resolveAgentState(standalone, 'codex', { profileDir })).toMatchObject({
+      home: join(profileDir, 'codex-home'), homeSource: 'profile', exportHome: true,
+    });
 
     const inherited = { ...profile, codex: { binaryPath: 'codex', inheritCodexHome: true } };
     expect(resolveAgentState(inherited, 'codex', { profileDir, env: { CODEX_HOME: '/x/codex' } }))
