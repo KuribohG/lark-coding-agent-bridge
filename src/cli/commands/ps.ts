@@ -83,15 +83,23 @@ export async function runKillCli(target: string | undefined): Promise<void> {
 async function findOwningService(
   entry: ProcessEntry,
 ): Promise<{ platformName: string; stopHint: string; restartHint: string } | undefined> {
+  return findOwningServiceForPid(entry.pid, entry.profileName);
+}
+
+/** Same check for callers that only have a pid (for example the UI console). */
+export async function findOwningServiceForPid(
+  pid: number,
+  profileName?: string,
+): Promise<{ platformName: string; stopHint: string; restartHint: string } | undefined> {
   const candidates = [
     { serviceId: SUPERVISOR_SERVICE_ID, flag: '--web-ui' },
-    { serviceId: entry.profileName, flag: `--profile ${entry.profileName}` },
+    ...(profileName ? [{ serviceId: profileName, flag: `--profile ${profileName}` }] : []),
   ];
   for (const { serviceId, flag } of candidates) {
     const adapter = getServiceAdapter(serviceId);
     if (!adapter?.fileExists()) continue;
     const status = await adapter.status();
-    if (status.state !== 'running' || !status.pid || status.pid !== entry.pid) continue;
+    if (status.state !== 'running' || !status.pid || status.pid !== pid) continue;
     return {
       platformName: adapter.platformName,
       stopHint: `lark-channel-bridge stop ${flag}`,

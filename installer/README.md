@@ -22,11 +22,11 @@ Node 运行时和全部生产依赖，双击即可安装或升级。安装目录
 4. 删除旧的 `app\`、`runtime\`、`bin\` 后写入新版本；
 5. 用新的 `node.exe` 和 CLI 绝对路径重新执行 `start`，重建计划任务和
    `~/.lark-channel/daemon/<id>/launcher.cmd`，然后恢复原来的运行状态；
-6. 如果升级前是 `run-lark-cc` 启动的 GUI supervisor，用同一个 profile 重新拉起；
+6. 如果升级前是托盘启动的 GUI supervisor，用同一个 profile 重新拉起；
 7. 如果托盘程序在运行：先结束旧进程（否则安装目录被占用），安装完成后以 `/quiet`
    模式重新启动托盘（不重复弹浏览器）；托盘会自己把 GUI supervisor 拉起来；
 8. 把 `%LOCALAPPDATA%\LarkChannelBridge\bin` 插到**用户 PATH** 最前面，新的终端里
-   `lark-channel-bridge` / `run-lark-cc` 直接指向新安装。
+   `lark-channel-bridge` 直接指向新安装。
 
 正在进行的 agent 会话、后台任务和工作流会被中断，升级后请重新发起。
 
@@ -96,7 +96,7 @@ Windows 上构建**，否则拿不到 `better-sqlite3` 的 win32 原生模块。
 %LOCALAPPDATA%\LarkChannelBridge\
 ├─ app\        dist/、bin/、生产 node_modules（含 better-sqlite3）
 ├─ runtime\    node.exe（v22.18.0，构建时校验 SHA256）
-├─ bin\        LarkChannelBridgeTray.exe、lark-channel-bridge.cmd、run-lark-cc.cmd 等
+├─ bin\        LarkChannelBridgeTray.exe、lark-channel-bridge.cmd、stop-gui.cmd 等
 └─ uninstall.exe
 %USERPROFILE%\.lark-channel\      配置、密钥、会话、日志（升级/卸载默认保留）
 ```

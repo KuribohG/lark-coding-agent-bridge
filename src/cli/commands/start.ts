@@ -1,6 +1,10 @@
 import dns from 'node:dns';
 import os from 'node:os';
+import { spawn } from 'node:child_process';
+import { mkdir, open } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
+import { setTimeout as delay } from 'node:timers/promises';
 import pkg from '../../../package.json';
 import { resolveAppPaths, type AppPaths } from '../../config/app-paths';
 import { getAutostartProfiles, loadRootConfig } from '../../config/profile-store';
@@ -8,7 +12,7 @@ import type { RootConfig } from '../../config/profile-schema';
 import { configureLogger, gcOldLogs, log, reportError } from '../../core/logger';
 import { loadTelemetryAdapter, telemetry } from '../../core/telemetry';
 import { startUiServer } from '../../ui/server';
-import { readUiSidecar, removeUiSidecar, writeUiSidecar } from '../../ui/sidecar';
+import { liveConsole, readUiSidecar, removeUiSidecar, writeUiSidecar } from '../../ui/sidecar';
 import type { UiServerHandle } from '../../ui/types';
 import { Supervisor } from '../../runtime/supervisor';
 import { acquireHostLock } from '../../runtime/host-lock';
@@ -70,6 +74,9 @@ export interface StartOptions {
   /** Start the machine-wide supervisor + web console instead of a single
    * profile in the foreground. Default false → classic headless run. */
   webUi?: boolean;
+  /** With --web-ui: spawn a detached supervisor, wait until its console is
+   * reachable, and return instead of staying in the foreground. */
+  detach?: boolean;
   confirmStopRuntimeLockProcess?: (err: RuntimeLockConflictError) => boolean | Promise<boolean>;
   stopRuntimeLockProcess?: (meta: RuntimeLockMeta) => StopProcessEntryResult | Promise<StopProcessEntryResult>;
 }
@@ -84,6 +91,11 @@ export interface StartOptions {
  *  - `run --profiles A B` → selected existing profiles in one headless process.
  */
 export async function runStart(opts: StartOptions): Promise<void> {
+  if (opts.detach) {
+    if (!opts.webUi) throw new Error('--detach 需要配合 --web-ui（后台 supervisor + 控制台）');
+    await runDetachedSupervisor(opts);
+    return;
+  }
   if (opts.profiles !== undefined) {
     await runSelectedProfiles(opts);
     return;
@@ -93,6 +105,66 @@ export async function runStart(opts: StartOptions): Promise<void> {
     return;
   }
   await runClassic(opts);
+}
+
+/**
+ * Background (detached) supervisor for desktop launchers: the caller gets its
+ * prompt back once the local console answers, and the supervisor keeps running
+ * after the caller exits. Unlike `start --web-ui`, this registers no OS
+ * service and does not survive a reboot; the tray starts it again at login.
+ */
+async function runDetachedSupervisor(opts: StartOptions): Promise<void> {
+  const appPaths = resolveAppPaths();
+  const existing = await liveConsole(appPaths.hostUiFile);
+  if (existing) {
+    console.log(`✓ 控制台已在运行：${existing.url}`);
+    return;
+  }
+
+  const entry = process.argv[1];
+  if (!entry) throw new Error('无法定位 CLI 入口，不能后台启动 supervisor');
+  await mkdir(appPaths.hostLogsDir, { recursive: true, mode: 0o700 });
+  const logPath = join(appPaths.hostLogsDir, 'launcher.log');
+  const log = await open(logPath, 'a', 0o600);
+  let exited = false;
+  try {
+    const child = spawn(process.execPath, [resolve(entry), 'run', '--web-ui', ...detachArgs(opts)], {
+      detached: true,
+      stdio: ['ignore', log.fd, log.fd],
+    });
+    await new Promise<void>((resolveSpawn, rejectSpawn) => {
+      child.once('spawn', resolveSpawn);
+      child.once('error', rejectSpawn);
+    });
+    child.once('exit', () => { exited = true; });
+    child.unref();
+  } finally {
+    await log.close();
+  }
+
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const live = await liveConsole(appPaths.hostUiFile);
+    if (live) {
+      console.log(`✓ 控制台：${live.url}`);
+      return;
+    }
+    if (exited) break;
+    await delay(500);
+  }
+  throw new Error(`后台 supervisor 未能在 30 秒内启动；查看 ${logPath}，或在终端运行 lark-channel-bridge run --web-ui 排查。`);
+}
+
+function detachArgs(opts: StartOptions): string[] {
+  const args: string[] = [];
+  if (opts.config) args.push('--config', opts.config);
+  if (opts.profile) args.push('--profile', opts.profile);
+  if (opts.agent) args.push('--agent', opts.agent);
+  if (opts.workspace) args.push('--workspace', opts.workspace);
+  if (opts.appId) args.push('--app-id', opts.appId);
+  if (opts.appSecret) args.push('--app-secret', opts.appSecret);
+  if (opts.tenant) args.push('--tenant', opts.tenant);
+  if (opts.skipCheckLarkCli) args.push('--skip-check-lark-cli');
+  return args;
 }
 
 /** Each frontend retains its own execution controller, auth and session stores. */

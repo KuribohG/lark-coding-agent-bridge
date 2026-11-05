@@ -136,15 +136,16 @@ if ($trayWasRunning -and (Test-Path -LiteralPath $trayExe)) {
   Start-Process -FilePath $trayExe -ArgumentList '/quiet' -ErrorAction SilentlyContinue
 }
 
-# Restore a GUI supervisor that was started through run-lark-cc.  --print keeps
-# the browser closed during an upgrade.  It is detached, so the installer does
-# not block on it.  When the tray is restored it starts the supervisor itself.
+# Restore a GUI supervisor that was running before the upgrade.  --detach
+# returns as soon as the local console answers and leaves the supervisor
+# running, so the installer does not block on it.  When the tray is restored it
+# starts the supervisor itself.
 if ($guiWasRunning -and -not $trayWasRunning) {
-  $launcherEntry = Join-Path $InstallDir 'app\bin\run-lark-cc.mjs'
+  $launcherEntry = Join-Path $InstallDir 'app\bin\lark-channel-bridge.mjs'
   if (Test-Path -LiteralPath $launcherEntry) {
-    $guiArgs = '"' + $launcherEntry + '" start --print'
+    $guiArgs = '"' + $launcherEntry + '" run --web-ui --detach'
     if ($guiProfile) { $guiArgs += ' --profile "' + $guiProfile + '"' }
-    Write-Log ("restarting run-lark-cc GUI supervisor: {0}" -f $guiArgs)
+    Write-Log ("restarting GUI supervisor: {0}" -f $guiArgs)
     Start-Process -FilePath $node -ArgumentList $guiArgs `
       -WindowStyle Hidden -ErrorAction SilentlyContinue
   }

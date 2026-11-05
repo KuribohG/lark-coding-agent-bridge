@@ -30,7 +30,7 @@ import {
   runServiceUnregister,
 } from './commands/service';
 import { runStart } from './commands/start';
-import { runUi } from './commands/ui';
+import { runUi, runUiStop } from './commands/ui';
 import { runWeb } from './commands/web';
 import { runSlack } from './commands/slack';
 import { configureCiWatch, statusCiWatch } from './commands/ci-watch';
@@ -56,6 +56,7 @@ program
   .option('--profile <name>', 'profile name to run')
   .option('--profiles <names...>', 'run several existing Lark profiles in one headless process')
   .option('--web-ui', 'run the machine-wide supervisor + local web console (hosts all profiles); default is a single-profile headless run')
+  .option('--detach', 'with --web-ui: start the supervisor in the background, wait for the console, then return')
   .option('--agent <kind>', `agent kind for a new profile (${AGENT_KINDS.join(', ')})`)
   .option('--workspace <path>', 'initial working directory for first-run profile bootstrap')
   .option('--app-id <id>', 'use an existing Lark/Feishu app instead of QR app creation')
@@ -67,6 +68,7 @@ program
     profile?: string;
     profiles?: string[];
     webUi?: boolean;
+    detach?: boolean;
     agent?: string;
     workspace?: string;
     appId?: string;
@@ -236,7 +238,13 @@ program
   .description('Open the local web console (config, profiles, online bots) in your browser')
   .option('--profile <name>', 'profile name (defaults to active profile)')
   .option('--print', 'print the URL instead of opening a browser')
-  .action(async (opts: { profile?: string; print?: boolean }) => {
+  .option('--stop', 'stop the running supervisor behind the console')
+  .action(async (opts: { profile?: string; print?: boolean; stop?: boolean }) => {
+    if (opts.stop) {
+      if (opts.print) throw new Error('--print 不能和 --stop 一起使用');
+      await runUiStop();
+      return;
+    }
     await runUi(opts);
   });
 

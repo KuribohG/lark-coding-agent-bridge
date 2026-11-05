@@ -138,9 +138,7 @@ try {
     [System.IO.File]::WriteAllText((Join-Path $shimDir $Name), $content + "`r`n", [System.Text.Encoding]::ASCII)
   }
   Write-CmdShim 'lark-channel-bridge.cmd' 'lark-channel-bridge.mjs'
-  Write-CmdShim 'run-lark-cc.cmd' 'run-lark-cc.mjs'
-  Write-CmdShim 'run-lark-cc-fg.cmd' 'run-lark-cc.mjs' 'fg '
-  Write-CmdShim 'stop-gui.cmd' 'run-lark-cc.mjs' 'stop '
+  Write-CmdShim 'stop-gui.cmd' 'lark-channel-bridge.mjs' 'ui --stop '
 
   Write-Host '==> building tray launcher'
   # A tiny WinForms tray app.  .NET Framework 4.x ships csc.exe on every

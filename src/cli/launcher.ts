@@ -7,8 +7,12 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as delay } from 'node:timers/promises';
 import { resolveAppPaths } from '../config/app-paths';
-import { readUiSidecar, type UiSidecar } from '../ui/sidecar';
+import { liveConsole } from '../ui/sidecar';
 import { runUi } from './commands/ui';
+
+// Re-exported for the existing launcher tests; new code should import this
+// from ../ui/sidecar directly.
+export { liveConsole };
 
 const actions = ['start', 'fg', 'status', 'stop', 'log', 'ui'] as const;
 type Action = typeof actions[number];
@@ -31,21 +35,6 @@ export function parseLauncherArgs(args: string[]) {
   }
   if (profile) resolveAppPaths({ profile });
   return { action, profile, help, print };
-}
-
-/** Authenticate the actual local listener, never trust a stale PID or send tokens to a saved remote URL. */
-export async function liveConsole(path: string): Promise<UiSidecar | undefined> {
-  const record = await readUiSidecar(path);
-  if (!record || !Number.isSafeInteger(record.pid) || record.pid <= 0) return;
-  try {
-    const url = new URL(record.url);
-    if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.username || url.password || Number(url.port) !== record.port) return;
-    const response = await fetch(new URL('/api/status', url), {
-      headers: { 'x-ui-token': record.token }, redirect: 'error', signal: AbortSignal.timeout(1500),
-    });
-    const status = await response.json() as { pid?: number; hosted?: boolean };
-    if (response.ok && status.hosted && status.pid === record.pid) return record;
-  } catch { /* stale or not yet listening */ }
 }
 
 export async function runLauncher(args: string[]): Promise<void> {

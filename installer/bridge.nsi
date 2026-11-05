@@ -118,7 +118,7 @@ Section "Install"
   CreateDirectory "$SMPROGRAMS\${APP_NAME}"
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME}.lnk" "$INSTDIR\bin\LarkChannelBridgeTray.exe" "" "$INSTDIR\bin\LarkChannelBridgeTray.exe" 0
   CreateShortcut "$DESKTOP\${APP_NAME}.lnk" "$INSTDIR\bin\LarkChannelBridgeTray.exe" "" "$INSTDIR\bin\LarkChannelBridgeTray.exe" 0
-  CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME} (foreground).lnk" "$INSTDIR\bin\run-lark-cc-fg.cmd" "" "$INSTDIR\bin\run-lark-cc-fg.cmd" 0
+  CreateShortcut "$SMPROGRAMS\${APP_NAME}\${APP_NAME} (foreground).lnk" "$INSTDIR\bin\lark-channel-bridge.cmd" "run --web-ui" "$INSTDIR\bin\lark-channel-bridge.cmd" 0
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\Stop GUI supervisor.lnk" "$INSTDIR\bin\stop-gui.cmd" "" "$INSTDIR\bin\stop-gui.cmd" 0
   CreateShortcut "$SMPROGRAMS\${APP_NAME}\Uninstall.lnk" "$INSTDIR\uninstall.exe"
 

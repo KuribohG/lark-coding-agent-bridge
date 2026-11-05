@@ -91,6 +91,8 @@ function Get-BridgeProcesses([string]$RootDir, [string[]]$EntryPaths) {
       # npm-global, npm-link, source-checkout and installer layouts differ; match
       # the entry scripts rather than a fixed parent directory name.
       if ($cmdLower -match '[\\/]bin[\\/]lark-channel-bridge\.mjs') { $match = $true }
+      # Legacy installs (before the tray moved to the main CLI) may still have
+      # a run-lark-cc supervisor running; keep matching it during upgrades.
       if ($cmdLower -match '[\\/]bin[\\/]run-lark-cc\.mjs') { $match = $true }
       if ($cmdLower -match '[\\/]bin[\\/]deadline-guard\.mjs') { $match = $true }
       if ($cmdLower -match '[\\/]bin[\\/]codex-app-server-ws-proxy\.mjs') { $match = $true }
@@ -139,9 +141,10 @@ foreach ($task in $tasks) {
 $processes = @(Get-BridgeProcesses $InstallDir $entryPaths.ToArray())
 Write-Log ("found {0} bridge node process(es)" -f $processes.Count)
 
-# A run-lark-cc GUI supervisor is a detached `run --web-ui` process without a
-# scheduled task.  Restore it only when no service was running (the two are
-# mutually exclusive because they share the host lock).
+# A GUI supervisor (started by the tray, or by the legacy run-lark-cc launcher
+# on an older install) is a detached `run --web-ui` process without a scheduled
+# task.  Restore it only when no service was running (the two are mutually
+# exclusive because they share the host lock).
 $guiProcessFound = $false
 $guiProfile = ''
 foreach ($p in $processes) {

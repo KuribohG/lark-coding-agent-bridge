@@ -77,6 +77,27 @@ Write-Host "version: $version"
 Assert ($LASTEXITCODE -eq 0) "CLI --version exited with $LASTEXITCODE"
 Assert ($version -match '\d+\.\d+\.\d+') "unexpected version output: $version"
 
+Write-Host '==> background supervisor round trip'
+# Exercise the exact path the tray uses for "start / open console / stop".
+# A throwaway LARK_CHANNEL_HOME keeps the runner's real config untouched.
+$probeHome = Join-Path $env:TEMP 'lark-channel-smoke-home'
+Remove-Item -LiteralPath $probeHome -Recurse -Force -ErrorAction SilentlyContinue
+$env:LARK_CHANNEL_HOME = $probeHome
+try {
+  $detachOut = (& $cli run --web-ui --detach 2>&1 | Out-String).Trim()
+  Write-Host $detachOut
+  Assert ($LASTEXITCODE -eq 0) "run --web-ui --detach exited with $LASTEXITCODE"
+  $consoleUrl = (& $cli ui --print | Out-String).Trim()
+  Assert ($consoleUrl -match '^http://127\.0\.0\.1:\d+/\?token=') "ui --print returned: $consoleUrl"
+  & $cli ui --stop | Out-Null
+  Assert ($LASTEXITCODE -eq 0) "ui --stop exited with $LASTEXITCODE"
+} finally {
+  Remove-Item Env:LARK_CHANNEL_HOME -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $probeHome -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Assert (-not (Test-Path -LiteralPath (Join-Path $installDir 'bin\run-lark-cc.cmd'))) 'legacy run-lark-cc shim was still installed'
+
 Write-Host '==> tray launcher self-test'
 $tray = Join-Path $installDir 'bin\LarkChannelBridgeTray.exe'
 Assert (Test-Path -LiteralPath $tray) "tray launcher missing: $tray"
