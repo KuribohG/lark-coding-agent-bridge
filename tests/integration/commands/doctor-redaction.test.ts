@@ -93,6 +93,7 @@ async function createHarness(): Promise<{
         agent,
         activeRuns,
         controls,
+        agentKind: controls.profileConfig.agentKind,
       }),
   };
 }

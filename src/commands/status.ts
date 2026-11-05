@@ -76,7 +76,7 @@ async function larkCliStatus(ctx: CommandContext): Promise<'app' | 'user-ready' 
 export async function handleStatus(_args: string, ctx: CommandContext): Promise<void> {
   const cwd = effectiveWorkspaceCwd(ctx);
   const sess = ctx.sessions.getRaw(ctx.scope);
-  const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
+  const agentKind = ctx.agentKind;
   const spec = agentBackendSpec(agentKind);
   const usesThread = spec.sessionIdField === 'threadId';
   const catalogEntry =

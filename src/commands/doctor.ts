@@ -82,7 +82,7 @@ export async function handleDoctor(args: string, ctx: CommandContext): Promise<v
   }
   doctorLastByOperator.set(rateKey, now);
 
-  const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
+  const agentKind = ctx.agentKind;
   const scopedProfile = profileForAgentKind(ctx.controls.profileConfig, agentKind);
   const capability = capabilityForProfile(scopedProfile);
   const policy = evaluateRunPolicy({
@@ -238,7 +238,7 @@ function buildDoctorReport(
     echoCheck?: string;
   } = {},
 ): string {
-  const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
+  const agentKind = ctx.agentKind;
   const queue = ctx.processPool?.snapshot();
   const queueLine = queue
     ? `${queue.active}/${queue.cap} active, ${queue.waiting} waiting`

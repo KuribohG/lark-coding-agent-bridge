@@ -109,6 +109,7 @@ async function createHarness(): Promise<{
         processPool: pool,
         runExecutor: executor,
         controls,
+        agentKind: controls.profileConfig.agentKind,
       }),
   };
 }

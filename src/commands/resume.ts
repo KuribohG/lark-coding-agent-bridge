@@ -33,7 +33,7 @@ const resumeCandidates = new Map<string, ResumeCandidate>();
 const RESUME_APPLIED_REPLY = '已完成，请继续发送下一条消息。';
 
 export async function handleResume(args: string, ctx: CommandContext): Promise<void> {
-  const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
+  const agentKind = ctx.agentKind;
   const spec = agentBackendSpec(agentKind);
   const parts = args.trim().split(/\s+/).filter(Boolean);
   const sub = parts[0] ?? '';
@@ -130,7 +130,7 @@ export async function handleResume(args: string, ctx: CommandContext): Promise<v
 }
 
 async function applyResume(sessionId: string, ctx: CommandContext): Promise<void> {
-  const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
+  const agentKind = ctx.agentKind;
   const spec = agentBackendSpec(agentKind);
   if (ctx.sessionCatalog && ctx.sessionCatalogIdentity) {
     const identitySpec = agentBackendSpec(ctx.sessionCatalogIdentity.agentId);

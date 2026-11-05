@@ -184,6 +184,7 @@ function commandContext(args: {
     agent: new FakeAgentAdapter({ events: [] }),
     activeRuns: new ActiveRuns(),
     controls: args.controls,
+    agentKind: args.controls.profileConfig.agentKind,
   };
 }
 

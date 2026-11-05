@@ -108,7 +108,7 @@ export class BtwManager {
   private async run(question: string, ctx: CommandContext, signal: AbortSignal): Promise<void> {
     if (!ctx.runExecutor) throw new Error('btw requires a run executor');
     const { profileConfig } = ctx.controls;
-    const agentKind = ctx.agentKind ?? profileConfig.agentKind;
+    const agentKind = ctx.agentKind;
     const scopedProfile = profileForAgentKind(profileConfig, agentKind);
     const capability = capabilityForProfile(scopedProfile);
     const access = ctx.msg.chatType === 'p2p'

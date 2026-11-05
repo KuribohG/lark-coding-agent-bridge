@@ -292,7 +292,7 @@ async function harness(kind: 'claude' | 'codex', events: AgentEvent[][]) {
   const manager = new BtwManager(new BtwStore(path));
   controls.btw = manager;
   const ctx: CommandContext = { channel, scope: 'chat:topic', chatMode: 'topic', agent, sessions,
-    sessionCatalog: catalog, workspaces, activeRuns, runExecutor: executor, controls,
+    sessionCatalog: catalog, workspaces, activeRuns, runExecutor: executor, controls, agentKind: controls.profileConfig.agentKind,
     msg: { chatId: 'chat', chatType: 'group', senderId: 'user', threadId: 'topic', rootId: 'root', messageId: 'q1', content: '', resources: [], mentions: [] } as unknown as NormalizedMessage,
   };
   ctx.sessionCatalogIdentity = await commandSessionCatalogIdentity({ ...ctx, mode: 'topic', access: { ok: true, reason: 'allowed-user' } });

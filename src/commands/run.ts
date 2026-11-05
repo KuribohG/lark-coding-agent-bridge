@@ -38,7 +38,7 @@ export async function handleRun(args: string, ctx: CommandContext): Promise<void
       await ctx.controls.launchTimedRun(job, ctx.msg);
       return;
     }
-    const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
+    const agentKind = ctx.agentKind;
     const defaults = defaultsCommand === 'defaults reset'
       ? builtinRunDefaults()
       : await readRunDefaults(ctx.controls, agentKind);

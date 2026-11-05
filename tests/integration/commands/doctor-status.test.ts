@@ -178,6 +178,7 @@ async function createHarness(options: {
       processPool: pool,
       runExecutor: executor,
       controls,
+      agentKind: controls.profileConfig.agentKind,
     });
 
   cleanups.push(async () => {

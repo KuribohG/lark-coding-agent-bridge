@@ -319,6 +319,7 @@ async function createHarness(
       agent,
       activeRuns,
       controls,
+      agentKind: controls.profileConfig.agentKind,
       claudeHistoryProvider: async () => claudeHistory,
       codexHistoryProvider: async () => codexHistory,
     });
