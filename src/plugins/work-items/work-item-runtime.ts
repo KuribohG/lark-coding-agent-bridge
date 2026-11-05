@@ -25,7 +25,6 @@ export function createWorkItemSource(
     ownerKey,
     target,
     enabled: options.enabled,
-    autoAnalyze: false,
     dailyTriageLimit: 0,
     workbenchUrl: '',
   };

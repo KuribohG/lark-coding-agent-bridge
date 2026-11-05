@@ -93,8 +93,8 @@ it('binds signed choices to their source and configuration; repeated clicks surv
   const h = await setup(); await h.cards.handle('private', context);
   const cmd = command(elements(h.lark.replyTopic.mock.calls[0]![0]).find(e => e.text?.content === '分析此会话')!);
   await expect(h.cards.handle(cmd.replace(Buffer.from('oc_source').toString('base64url'), Buffer.from('oc_other').toString('base64url')), context)).rejects.toThrow('失效');
-  h.service.config.waitMinutes++;
-  await expect(h.cards.handle(cmd, context)).rejects.toThrow('失效'); h.service.config.waitMinutes--;
+  h.service.config.contextMinutes++;
+  await expect(h.cards.handle(cmd, context)).rejects.toThrow('失效'); h.service.config.contextMinutes--;
   await h.cards.handle(cmd, context); expect(h.service.manual).toHaveBeenCalledWith('oc_source');
   await expect((await h.create()).handle(cmd, context)).rejects.toThrow('已经处理');
   expect(h.service.manual).toHaveBeenCalledTimes(1);

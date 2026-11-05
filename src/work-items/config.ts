@@ -7,7 +7,6 @@ export interface WorkItemConfig {
   executorProfile: string;
   ownerKey: string;
   target: WorkItemTarget;
-  autoAnalyze: boolean;
   dailyTriageLimit: number;
   workbenchUrl?: string;
 }

@@ -87,10 +87,10 @@ it('reports syntax locations without echoing the input code block', () => {
   expect(message).toContain('第 2 行'); expect(message).not.toContain('SENSITIVE');
 });
 
-it('preserves legacy model omission and explicit default-model selection across saves', () => {
+it('treats an omitted analysis model as the executor default and round-trips CI model selection', () => {
   const implicit = parseMonitorConfig('version = 1\n[sources.lark]\n[sources.gitlab_ci]');
   const explicit = parseMonitorConfig('version = 1\n[sources.lark]\nanalysisModel = ""\n[sources.gitlab_ci]\nmodel = ""');
-  expect(parseMonitorConfig(formatMonitorConfig(implicit)).inbox?.analysisModel).toBeUndefined();
+  expect(parseMonitorConfig(formatMonitorConfig(implicit)).inbox?.analysisModel).toBe('');
   expect(parseMonitorConfig(formatMonitorConfig(implicit)).gitlabCi?.model).toBeUndefined();
   expect(parseMonitorConfig(formatMonitorConfig(explicit)).inbox?.analysisModel).toBe('');
   expect(parseMonitorConfig(formatMonitorConfig(explicit)).gitlabCi?.model).toBe('');

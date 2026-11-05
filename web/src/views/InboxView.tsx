@@ -4,7 +4,7 @@ import type { DeviceLogin, ProfileInfo, UserAuthStatus } from '@/lib/types';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { INBOX_MIN_POLL_SECONDS, intakeScope, type IntakeScope, type InboxConfig } from '../../../src/inbox/config';
+import { INBOX_MIN_POLL_SECONDS, type IntakeScope, type InboxConfig } from '../../../src/inbox/config';
 import { InboxWorkbench, type WorkbenchView } from './InboxWorkbench';
 import { WorkItemConcurrencyView } from './WorkItemConcurrencyView';
 import type { ModelServiceConfig } from '../../../src/model-service/config';
@@ -52,7 +52,6 @@ export function InboxView({ servicesRevision = 0 }: { servicesRevision?: number 
   if (!config) return <p className="text-sm">{error || '加载会话助理…'}</p>;
   const change = (patch: Partial<InboxConfig>) => { setConfig({ ...config, ...patch }); setChecks(undefined); };
   const executor = profiles.find(p => p.name === config.executorProfile);
-  const separateTriage = config.triageProfile && config.triageProfile !== config.executorProfile;
   const check = async () => {
     const result = await apiPost<SetupCheck>('/api/inbox/check', config);
     setChecks(result);
@@ -110,25 +109,21 @@ export function InboxView({ servicesRevision = 0 }: { servicesRevision?: number 
         </div>}
         <div className="grid gap-3 sm:grid-cols-2">
           {([['containerId', '结果群 ID'], ['threadId', '结果话题 ID'], ['replyTo', '话题内回复消息 ID']] as const).map(([key, label]) => <label key={key}>{label}<Input value={config.target[key] ?? ''} onChange={e => change({ target: { ...config.target, [key]: e.target.value } })} /></label>)}
-          <label>深入分析模型<Input value={config.analysisModel ?? ''} placeholder="留空使用执行 profile 默认模型" onChange={e => change({ analysisModel: e.target.value })} /></label>
-          <label>筛选模型服务<select className="mt-1 w-full rounded border bg-background p-2" value={config.triageService ?? ''} onChange={e => change({ triageService: e.target.value,
-            ...(e.target.value ? { triageProfile: undefined, triageModel: '' } : {}) })}>
-            <option value="">沿用旧版 profile 配置</option>{Object.entries(services).filter(([, service]) => service.protocol === 'responses' || service.endpoints?.responses).map(([name, service]) => <option key={name} value={name}>{name}（{service.model}）</option>)}
+          <label>深入分析模型<Input value={config.analysisModel} placeholder="留空使用执行 profile 默认模型" onChange={e => change({ analysisModel: e.target.value })} /></label>
+          <label>筛选模型服务<select className="mt-1 w-full rounded border bg-background p-2" value={config.triageService ?? ''} onChange={e => change({ triageService: e.target.value, triageModel: '' })}>
+            <option value="">请选择</option>{Object.entries(services).filter(([, service]) => service.protocol === 'responses' || service.endpoints?.responses).map(([name, service]) => <option key={name} value={name}>{name}（{service.model}）</option>)}
             {config.triageService && !services[config.triageService] && <option value={config.triageService}>{config.triageService}（未找到）</option>}
           </select></label>
-          {!config.triageService && <label>旧版筛选 profile<select className="mt-1 w-full rounded border bg-background p-2" value={config.triageProfile ?? ''} onChange={e => change({ triageProfile: e.target.value })}>
-            <option value="">跟随执行 profile</option>{profiles.filter(p => p.capabilities?.modelService).map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
-          </select></label>}
-          <label>筛选模型覆盖<Input value={config.triageModel ?? (config.triageService ? '' : separateTriage ? 'deepseek-flash' : config.analysisModel ?? 'deepseek-flash')}
-            placeholder={config.triageService ? `留空使用 ${services[config.triageService]?.model || '服务默认模型'}` : '留空使用筛选 profile 默认模型'} onChange={e => change({ triageModel: e.target.value })} /></label>
+          <label>筛选模型覆盖<Input value={config.triageModel ?? ''}
+            placeholder={`留空使用 ${(config.triageService && services[config.triageService]?.model) || '服务默认模型'}`} onChange={e => change({ triageModel: e.target.value })} /></label>
         </div>
-        <p className="text-xs text-muted-foreground">可在上方“模型 API 服务”中添加独立筛选服务，无需 Codex profile。选择旧版配置时继续读取对应 Codex 配置；仅有 Codex 网页登录授权不够。读取飞书消息始终使用执行 profile 的用户授权。</p>
+        <p className="text-xs text-muted-foreground">筛选模型服务在上方“模型 API 服务”中添加，需 Responses 协议入口，无需 Codex profile。读取飞书消息始终使用执行 profile 的用户授权。</p>
         <p className="text-xs text-muted-foreground">授权后把机器人加入结果群，在目标话题发送 /inbox setup（按群设置 @ 机器人），然后点击“重新读取设置”即可自动填入三个 ID。</p>
         <Button variant="ghost" disabled={busy} onClick={() => void perform(async () => {
           const saved = await apiGet<WorkbenchView>('/api/inbox'); setConfig(saved.config); setConfigRevision(saved.configRevision); setChecks(undefined);
         })}>重新读取设置</Button>
         <label className="flex gap-2 text-sm"><input type="checkbox" checked={config.deliveryMode === 'new_topic'} onChange={e => change({ deliveryMode: e.target.checked ? 'new_topic' : 'thread' })} />每个事项新开结果话题（需话题群）</label>
-        <fieldset className="flex flex-wrap gap-2"><legend className="mb-2 text-sm">接收范围</legend>{([['private', '私聊'], ['private_mentions', '私聊和 @ 我'], ['all', '全部']] as [IntakeScope, string][]).map(([value, label]) => <Button key={value} variant={intakeScope(config) === value ? 'secondary' : 'outline'} aria-pressed={intakeScope(config) === value} onClick={() => change({ intakeScope: value, watchPrivate: true, watchMentions: value !== 'private' })}>{label}</Button>)}</fieldset>
+        <fieldset className="flex flex-wrap gap-2"><legend className="mb-2 text-sm">接收范围</legend>{([['private', '私聊'], ['private_mentions', '私聊和 @ 我'], ['all', '全部']] as [IntakeScope, string][]).map(([value, label]) => <Button key={value} variant={config.intakeScope === value ? 'secondary' : 'outline'} aria-pressed={config.intakeScope === value} onClick={() => change({ intakeScope: value })}>{label}</Button>)}</fieldset>
         <label className="block text-sm">本人职责与关注范围<textarea className="mt-1 min-h-24 w-full rounded border bg-background p-2" maxLength={3000} value={config.attentionProfile} onChange={e => change({ attentionProfile: e.target.value })} placeholder="填写你的职责、项目和需要关注的事项；留空使用通用筛选规则" /></label>
         <div className="grid gap-3 sm:grid-cols-2 text-sm">
           <label>筛选消息条数上限<Input type="number" min={2} max={100} value={config.triageMessageLimit} onChange={e => change({ triageMessageLimit: Number(e.target.value) })} /></label>

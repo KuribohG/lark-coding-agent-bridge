@@ -1,4 +1,4 @@
-import { intakeScope, type InboxConfig, type IntakeScope } from '../../../inbox/config';
+import { type InboxConfig, type IntakeScope } from '../../../inbox/config';
 import { handlingState } from '../../../inbox/reply';
 import type { InboxIO, InboxJob, InboxMessage } from '../../../inbox/types';
 import type { SourceAdapter, SourceContext } from '../../../work-items/contracts';
@@ -103,9 +103,9 @@ export class LarkSource implements SourceAdapter {
   private acceptsSource(job: InboxJob): boolean {
     if (!this.safeSource(job)) return false;
     if (job.external) return true;
-    return job.sourceRef.kind === 'direct' ? this.config.watchPrivate : this.config.watchMentions &&
-      (intakeScope(this.config) === 'all' || job.intakeTrigger === 'mention' ||
-        job.messages.some(m => mentioned(m, this.config.recipientKey)));
+    return job.sourceRef.kind === 'direct' || (this.config.intakeScope !== 'private' &&
+      (this.config.intakeScope === 'all' || job.intakeTrigger === 'mention' ||
+        job.messages.some(m => mentioned(m, this.config.recipientKey))));
   }
 
   async setScope(scope: IntakeScope, persist?: () => Promise<void>): Promise<void> {
@@ -119,7 +119,6 @@ export class LarkSource implements SourceAdapter {
         if (this.host.closed) throw new Error('助理连接已关闭');
         await persist?.();
         this.config.intakeScope = scope;
-        this.config.watchPrivate = true; this.config.watchMentions = scope !== 'private';
         // New scopes start now; the indexing overlap must not backfill old conversations.
         for (const key of Object.keys(this.host.cursors)) this.host.cursors[key] = this.now();
         this.host.cursors.intakeSince = this.now(); this.lastPoll = 0;
@@ -184,7 +183,7 @@ export class LarkSource implements SourceAdapter {
       await this.io.checkOwner(this.config.recipientKey);
       for (const kind of ['p2p', 'mention', 'group'] as const) {
         if (!current()) return;
-        if (kind === 'p2p' ? !this.config.watchPrivate : kind === 'group' ? intakeScope(this.config) !== 'all' : !this.config.watchMentions || intakeScope(this.config) === 'all') continue;
+        if (kind === 'group' ? this.config.intakeScope !== 'all' : kind === 'mention' && this.config.intakeScope !== 'private_mentions') continue;
         const start = this.host.cursors[kind] ?? now;
         const snapshot = this.intakeSnapshot();
         const messages = await this.io.collect(kind, start - 300_000, now);
@@ -277,7 +276,7 @@ export class LarkSource implements SourceAdapter {
 
   private ingest(m: InboxMessage, earliest: number): void {
     if (m.time < Math.max(earliest, this.host.cursors.intakeSince ?? 0) ||
-      (m.containerKind === 'direct' ? !this.config.watchPrivate : !this.config.watchMentions) || !this.acceptsMessage(m)) return;
+      (m.containerKind !== 'direct' && this.config.intakeScope === 'private') || !this.acceptsMessage(m)) return;
     const known = this.host.items.flatMap(j => j.messages).find(x => x.id === m.id);
     if (known ? known.text === m.text : this.host.seen[m.id]) return;
     this.host.seen[m.id] = this.now();
@@ -302,7 +301,7 @@ export class LarkSource implements SourceAdapter {
     }
     const related = jobs.find(j => j.messages.some(x => x.id === m.id)) ??
       jobs.find(j => (m.threadId && m.threadId === j.sourceRef.threadId) || j.messages.some(x => x.id === m.replyTo));
-    if (m.containerKind !== 'direct' && intakeScope(this.config) !== 'all' && !mentioned(m, this.config.recipientKey) && !related) return;
+    if (m.containerKind !== 'direct' && this.config.intakeScope !== 'all' && !mentioned(m, this.config.recipientKey) && !related) return;
     if (!related && m.senderBot && jobs.some(j => j.messages.at(-1)?.text === m.text && j.sourceRef.threadId === m.threadId)) return;
     const category = classifyMessage(m);
     if (category === 'skip' || (m.containerKind === 'direct' && m.senderBot)) return;

@@ -1,9 +1,8 @@
 import { expect, it } from 'vitest';
 import { normalizeInbox } from '../../../src/inbox/config';
 
-it('uses the provider default for new installs and preserves legacy Flash routing', () => {
+it('follows the executor default model unless one is set', () => {
   expect(normalizeInbox(undefined)).toMatchObject({ enabled: false, analysisModel: '' });
-  expect(normalizeInbox({ enabled: false }).analysisModel).toBeUndefined();
-  expect(normalizeInbox({ analysisModel: '' }).analysisModel).toBe('');
+  expect(normalizeInbox({ enabled: false }).analysisModel).toBe('');
   expect(normalizeInbox({ analysisModel: 'custom/model' }).analysisModel).toBe('custom/model');
 });

@@ -174,7 +174,7 @@ export class WorkItemService {
         if (this.stopped) throw new Error('助理连接已关闭');
         await persist?.();
         const previous = this.config.enabled ? 'on' : 'off';
-        this.config.enabled = mode === 'on'; this.config.autoAnalyze = false;
+        this.config.enabled = mode === 'on';
         this.source.modeChanged?.(previous, mode);
         await this.store.save();
       });

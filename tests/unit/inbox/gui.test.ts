@@ -29,7 +29,7 @@ async function setup(compactSync = false) {
     return Response.json(String(url).endsWith('/sync') ? { commands, compactSync } : { ok: true });
   });
   const ledger = join(dir, 'receipts.json');
-  const changeMode = vi.fn(async (mode: string) => { config.enabled = mode !== 'off'; config.autoAnalyze = mode === 'auto'; });
+  const changeMode = vi.fn(async (mode: string) => { config.enabled = mode !== 'off'; });
   const changeScope = vi.fn(async (scope: IntakeScope) => { service.config.intakeScope = scope; });
   const taskSources = { select: vi.fn(() => undefined), list: vi.fn((_limit = 500): InboxJob[] => []), command: vi.fn(async () => ({ handled: false })) };
   const make = () => { const worker = new InboxGui(service as unknown as InboxService, lark as unknown as InboxLark,
@@ -115,7 +115,7 @@ describe('hosted inbox connection', () => {
     await s.worker.start(); await vi.waitFor(() => expect(s.request).toHaveBeenCalledTimes(3));
     expect(s.changeMode).toHaveBeenCalledWith('on');
     const synced = JSON.parse(String(s.request.mock.calls[1]?.[1]?.body));
-    expect(synced.snapshot).toMatchObject({ enabled: true, autoAnalyze: false, modeControl: true });
+    expect(synced.snapshot).toMatchObject({ enabled: true, modeControl: true });
     const receipt = JSON.parse(String(s.request.mock.calls[2]?.[1]?.body));
     expect(receipt.ok).toBe(true); expect(JSON.parse(receipt.result).mode).toBe('on');
     await s.worker.tick(); expect(s.changeMode).toHaveBeenCalledTimes(1);

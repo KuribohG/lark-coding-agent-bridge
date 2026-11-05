@@ -15,7 +15,7 @@ import type { InboxIO, InboxMessage } from '../../../src/inbox/types';
 import { workItemTarget } from '../../../src/inbox/lark-target';
 
 const config = () => normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner',
-  target: workItemTarget({ chatId: 'oc_target', threadId: 'omt_topic', replyTo: 'om_anchor' }), waitMinutes: 1 });
+  target: workItemTarget({ chatId: 'oc_target', threadId: 'omt_topic', replyTo: 'om_anchor' }) });
 const message = (overrides: Partial<InboxMessage> = {}): InboxMessage => ({
   id: 'om_source', containerId: 'oc_source', containerName: '源会话', containerKind: 'direct',
   senderId: 'ou_sender', senderName: '发送者', senderBot: false, time: 1_000_000,
@@ -238,7 +238,7 @@ describe('durable inbox', () => {
   });
   it('never dispatches legacy queued automatic work after a restart', async () => {
     const { service, io, store } = await setup(); await service.tick();
-    store.data.jobs[0]!.state = 'queued'; service.config.autoAnalyze = false;
+    store.data.jobs[0]!.state = 'queued';
     await service.tick(); expect(io.analyze).not.toHaveBeenCalled();
   });
   it('off gates a collection already in flight, before it can queue or analyze messages', async () => {
@@ -261,8 +261,8 @@ describe('durable inbox', () => {
   });
   it('reports persistence failure without claiming a mode change succeeded', async () => {
     const { service } = await setup();
-    await expect(service.setMode('on', async () => { throw new Error('disk failure'); })).rejects.toThrow('disk failure');
-    expect(service.config.autoAnalyze).toBe(false);
+    await expect(service.setMode('off', async () => { throw new Error('disk failure'); })).rejects.toThrow('disk failure');
+    expect(service.config.enabled).toBe(true);
   });
   it('preserves global inbox settings through root serialization', async () => {
     const path = join(await mkdtemp(join(tmpdir(), 'inbox-config-')), 'config.json');
@@ -587,7 +587,7 @@ describe('intake scopes', () => {
     await expect(service.setScope('all', async () => { throw Error('disk full'); })).rejects.toThrow('disk full');
     expect(service.config.intakeScope).not.toBe('all');
     await service.setScope('all'); await service.tick();
-    expect(service.config).toMatchObject({ enabled: false, autoAnalyze: false, intakeScope: 'all' });
+    expect(service.config).toMatchObject({ enabled: false, intakeScope: 'all' });
     expect(io.collect).not.toHaveBeenCalled(); expect(io.analyze).not.toHaveBeenCalled();
   });
   it('does not backfill the overlap when widening scope', async () => {
@@ -613,11 +613,9 @@ describe('intake scopes', () => {
     const change = service.setScope('private'); release([message()]);
     await Promise.all([poll, change]); expect(service.list()).toEqual([]);
   });
-  it('preserves legacy restricted configurations until a scope is chosen', () => {
-    const old = normalizeInbox({ watchPrivate: false, watchMentions: true });
-    expect(old).toMatchObject({ watchPrivate: false, watchMentions: true });
-    expect(old.intakeScope).toBeUndefined();
-    expect(normalizeInbox({ ...old, intakeScope: 'all' })).toMatchObject({ watchPrivate: true, watchMentions: true });
+  it('defaults to private chats and direct mentions', () => {
+    expect(normalizeInbox({}).intakeScope).toBe('private_mentions');
+    expect(normalizeInbox({ intakeScope: 'unknown' }).intakeScope).toBe('private_mentions');
   });
   it('queries all group messages without the at-me filter', async () => {
     const exec = vi.fn(async (_args: string[]) => ({ code: 0, stdout: JSON.stringify({ ok: true, data: { messages: [] } }), stderr: '', timedOut: false }));

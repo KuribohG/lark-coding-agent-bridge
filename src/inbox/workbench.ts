@@ -2,9 +2,10 @@ import type { WorkItemSources } from '../work-items/registry';
 import type { InboxService } from './service';
 import type { WorkItemService } from '../work-items/service';
 import type { InboxLark } from './lark';
-import { inboxMode, intakeScope, type InboxMode, type IntakeScope } from './config';
+import { INTAKE_SCOPES, inboxMode, type InboxMode, type IntakeScope } from './config';
 import { guiContent, guiSummary } from './presentation';
 import { obj } from './values';
+import type { InboxConfig } from './config';
 
 /** Shared by the bundled console and optional hosted GUI; neither can send replies. */
 export async function executeInboxCommand(service: WorkItemService & { manual?: InboxService['manual'] }, lark: InboxLark | undefined, input: unknown,
@@ -22,9 +23,9 @@ export async function executeInboxCommand(service: WorkItemService & { manual?: 
     await changeMode(command.target as InboxMode); return { mode: inboxMode(service.config) };
   }
   if (command.action === 'scope') {
-    if (!changeScope || !['private', 'private_mentions', 'all'].includes(command.target)) throw new Error('无效接收范围');
+    if (!changeScope || !INTAKE_SCOPES.includes(command.target as IntakeScope)) throw new Error('无效接收范围');
     await changeScope(command.target as IntakeScope);
-    return { intakeScope: intakeScope({ watchPrivate: false, watchMentions: false, ...service.config }) };
+    return { intakeScope: (service.config as Partial<InboxConfig>).intakeScope };
   }
   if (command.action === 'batch') {
     await service.batchReview(JSON.parse(command.target), owner, command.id); return { ok: true };

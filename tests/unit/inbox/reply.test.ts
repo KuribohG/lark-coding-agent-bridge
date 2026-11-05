@@ -49,22 +49,3 @@ describe('reply content and sync', () => {
     expect(Buffer.byteLength(JSON.stringify(synced))).toBeLessThanOrEqual(700000);
   });
 });
-
-import { mkdtemp, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { loadAnalysisProvider, analysisBody } from '../../../src/monitoring/sources/lark/analyzer';
-import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
-
-it('routes clicked analysis to the configured default provider model', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'inbox-provider-'));
-  await writeFile(join(dir, 'config.toml'), 'model = "openai/gpt-6-astra"\nmodel_provider = "third-party"\n[model_providers.third-party]\nbase_url = "https://provider.example/v1"\nwire_api = "responses"\nexperimental_bearer_token = "fixture-token"\n');
-  const profile = createDefaultProfileConfig({ agentKind: 'codex', accounts: { app: { id: 'cli_app', secret: 'fixture', tenant: 'feishu' } }, codex: { binaryPath: 'codex', codexHome: dir } });
-  profile.preferences.model = 'openai/gpt-6-astra';
-  const provider = await loadAnalysisProvider(profile);
-  expect(provider).toMatchObject({ model: 'openai/gpt-6-astra', url: 'https://provider.example/v1/responses', key: 'fixture-token' });
-  expect(analysisBody(job(), await loadAnalysisProvider(profile)).model).toBe('openai/gpt-6-astra');
-  expect((await loadAnalysisProvider(profile, 'another-model')).model).toBe('another-model');
-  profile.preferences.model = '';
-  expect((await loadAnalysisProvider(profile)).model).toBe('openai/gpt-6-astra');
-});

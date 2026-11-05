@@ -18,8 +18,7 @@ import { FakeAgentAdapter } from '../../helpers/fake-agent';
 import type { InboxJob } from '../../../src/inbox/types';
 import { workItemTarget } from '../../../src/inbox/lark-target';
 
-vi.mock('../../../src/agent/model-service', async importOriginal => ({ ...await importOriginal<typeof import('../../../src/agent/model-service')>(), loadProfileModelService: vi.fn(async () => ({ model: 'test' })) }));
-vi.mock('../../../src/monitoring/sources/lark/analyzer', () => ({ INBOX_ANALYSIS_MODEL: 'deepseek-flash', loadAnalysisProvider: vi.fn(async () => ({ model: 'test' })), analyzeInbox: vi.fn() }));
+vi.mock('../../../src/monitoring/sources/lark/analyzer', () => ({ INBOX_ANALYSIS_MODEL: 'deepseek-flash', analyzeInbox: vi.fn() }));
 vi.mock('../../../src/inbox/lark', () => ({ InboxLark: class { checkOwner = vi.fn(async () => {}); close = vi.fn(); cancelPending = vi.fn(); } }));
 vi.mock('../../../src/inbox/gui', () => ({ InboxGui: vi.fn(function (...args: unknown[]) { return { start: vi.fn(async () => {}), close: vi.fn(async () => {}), setMode: args[5], setScope: args[6] }; }) }));
 vi.mock('../../../src/inbox/h5-server', () => ({ startInboxH5: vi.fn(async () => ({ close: async () => {} })) }));
@@ -33,7 +32,8 @@ async function setup() {
   const profile = createDefaultProfileConfig({ agentKind: 'codex', accounts: { app: { id: 'cli_fixture', secret: 'fixture', tenant: 'feishu' } }, codex: { binaryPath: 'codex' } });
   profile.larkCli.identityPreset = 'user-default';
   const root = createRootConfig('codex', profile);
-  root.inbox = normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner',
+  root.modelServices = { screen: { protocol: 'responses', baseUrl: 'https://model.test/v1', model: 'test', apiKey: { source: 'env', id: 'INBOX_MANAGER_TEST_KEY' } } };
+  root.inbox = normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner', triageService: 'screen',
     target: workItemTarget({ chatId: 'oc_group', threadId: 'omt_topic', replyTo: 'om_message' }),
     h5: { publicUrl: 'https://example.com/assistant/', port: 19182 } });
   await saveRootConfig(root, path);
@@ -200,26 +200,26 @@ it('keeps the GUI connected while off, persists mode, and can re-enable after re
   const gui = vi.mocked(InboxGui).mock.results.at(-1)!.value as { setMode(mode: string): Promise<void>; close: ReturnType<typeof vi.fn> };
   expect((await manager.view()).running).toBe(false);
   await gui.setMode('on'); expect((await manager.view()).running).toBe(true);
-  expect((await loadRootConfig(path))!.inbox).toMatchObject({ enabled: true, autoAnalyze: false });
+  expect((await loadRootConfig(path))!.inbox).toMatchObject({ enabled: true });
   await gui.setMode('off'); await manager.reconcile(); expect(gui.close).not.toHaveBeenCalled();
   await manager.close();
   const restarted = create(); await restarted.reconcile();
   const second = vi.mocked(InboxGui).mock.results.at(-1)!.value as typeof gui;
   expect(second).not.toBe(gui); expect((await restarted.view()).running).toBe(false);
   await second.setMode('on'); expect((await restarted.view()).running).toBe(true);
-  expect((await loadRootConfig(path))!.inbox).toMatchObject({ enabled: true, autoAnalyze: false });
+  expect((await loadRootConfig(path))!.inbox).toMatchObject({ enabled: true });
 });
 
 it('persists GUI intake changes while off and retains them after restart', async () => {
   const { create, path, root } = await setup();
   root.inbox!.gui = { publicUrl: 'https://gui.example', apiKeyFile: join(path, '..', 'key') };
-  root.inbox!.enabled = false; root.inbox!.autoAnalyze = false; await saveRootConfig(root, path);
+  root.inbox!.enabled = false; await saveRootConfig(root, path);
   const before = (await loadRootConfig(path))!.profiles;
   const manager = create(); await manager.reconcile();
   const gui = vi.mocked(InboxGui).mock.results.at(-1)!.value as { setScope(scope: string): Promise<void>; close: ReturnType<typeof vi.fn> };
   for (const scope of ['private', 'private_mentions', 'all']) {
     await gui.setScope(scope); await manager.reconcile();
-    expect((await loadRootConfig(path))!.inbox).toMatchObject({ intakeScope: scope, enabled: false, autoAnalyze: false });
+    expect((await loadRootConfig(path))!.inbox).toMatchObject({ intakeScope: scope, enabled: false });
     expect((await manager.view()).running).toBe(false); expect(gui.close).not.toHaveBeenCalled();
   }
   expect((await loadRootConfig(path))!.profiles).toEqual(before);
@@ -278,6 +278,7 @@ it('fills a result topic only for the authorized owner without enabling collecti
 
 it('checks owner, model and destination without exposing provider credentials', async () => {
   const { create, root } = await setup(); const manager = create();
+  vi.stubEnv('INBOX_MANAGER_TEST_KEY', 'private-fixture');
   const result = await manager.checkSetup(root.inbox);
   expect(result.ok).toBe(true); expect(result.ownerOpenId).toBe('ou_owner');
   expect(JSON.stringify(result)).not.toContain('key');

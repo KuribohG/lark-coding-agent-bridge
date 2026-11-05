@@ -24,7 +24,8 @@ async function setup() {
   const path = join(folder, 'config.toml'); const file = join(folder, 'monitors.toml');
   const root = createRootConfig('codex', createDefaultProfileConfig({ agentKind: 'codex', codex: { binaryPath: 'codex' },
     accounts: { app: { id: 'cli_fixture', secret: 'PRIVATE_APP_SECRET', tenant: 'feishu' } } }));
-  root.inbox = normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner',
+  root.modelServices = { screen: { protocol: 'responses', baseUrl: 'https://model.test/v1', model: 'screen', apiKey: { source: 'env', id: 'MONITOR_TEST_KEY' } } };
+  root.inbox = normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner', triageService: 'screen',
     target: workItemTarget({ chatId: 'oc_group', threadId: 'omt_topic', replyTo: 'om_message' }), intakeScope: 'private_mentions' });
   root.gitlabCi = normalizeGitLabCi({ enabled: true, executorProfile: 'codex', url: 'https://gitlab.test', outputDir: folder,
     credentialsFile: join(folder, 'credentials.env'), repositories: [{ project: 'group/repo', refs: ['dev'] }] });

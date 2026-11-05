@@ -19,7 +19,7 @@ async function setup(extra: Partial<WorkItemRuntime> = {}, queue?: WorkItemSched
   const path = join(dir, 'state.json');
   const config: WorkItemConfig = { enabled: true, executorProfile: 'local', ownerKey: 'local:owner',
     target: workItemTarget({ chatId: 'oc_local', threadId: 'omt_local', replyTo: 'om_local' }),
-    autoAnalyze: false, dailyTriageLimit: 0 };
+    dailyTriageLimit: 0 };
   let available = false;
   const investigate = vi.fn(async () => result);
   const create = async () => {

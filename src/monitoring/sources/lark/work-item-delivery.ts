@@ -26,8 +26,6 @@ export function createLarkWorkItemDelivery(options: {
     ...options.notification,
     executorProfile: options.profile,
     enabled: true,
-    watchPrivate: false,
-    watchMentions: false,
   });
   const lark = new InboxLark({ profile: options.profile, rootDir: options.rootDir }, config);
   const activeReleases = new Set<() => Promise<void>>();

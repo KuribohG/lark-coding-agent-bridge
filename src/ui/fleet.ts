@@ -11,7 +11,6 @@ import type { AgentKind } from '../config/profile-schema';
 import { HttpError } from './http';
 import type { UiSupervisor } from './types';
 import { supportsBackgroundProfile } from '../runtime/agent-capabilities';
-import { supportsProfileModelService } from '../agent/model-service';
 
 export interface ProfileSummary {
   name: string;
@@ -21,7 +20,7 @@ export interface ProfileSummary {
   autostart: boolean;
   /** Whether the supervisor currently hosts this profile's channel. */
   running: boolean;
-  capabilities: { backgroundAnalysis: boolean; modelService: boolean };
+  capabilities: { backgroundAnalysis: boolean };
 }
 
 export interface BotSummary {
@@ -67,7 +66,6 @@ export async function listProfiles(
     running: supervisor.isOnline(p.name),
     capabilities: {
       backgroundAnalysis: Boolean(root?.profiles[p.name] && supportsBackgroundProfile(root.profiles[p.name]!)),
-      modelService: Boolean(root?.profiles[p.name] && root.profiles[p.name]!.mode !== 'team' && supportsProfileModelService(root.profiles[p.name]!)),
     },
   }));
 }
