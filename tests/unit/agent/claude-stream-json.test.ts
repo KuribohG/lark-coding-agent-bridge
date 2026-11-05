@@ -88,6 +88,39 @@ describe('Claude stream-json translator', () => {
     expect([...translateEvent({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't' }] } })]).toEqual([]);
     expect([...translateEvent({ type: 'system', subtype: 'other' })]).toEqual([]);
   });
+
+  it('surfaces compaction, model fallback, API retries, and warnings', () => {
+    const notices = (raw: object) => [...translateEvent({ type: 'system', ...raw })];
+    expect(notices({ subtype: 'compact_boundary', compact_metadata: { trigger: 'auto', pre_tokens: 812_345, post_tokens: 40_100 } }))
+      .toEqual([{ type: 'status', code: 'context_compaction', content: '🗜️ 上下文已自动压缩（812K → 40K tokens），任务继续执行。' }]);
+    expect(notices({ subtype: 'compact_boundary', compact_metadata: { trigger: 'manual' } }))
+      .toEqual([{ type: 'status', code: 'context_compaction', content: '🗜️ 上下文已压缩，任务继续执行。' }]);
+    expect(notices({ subtype: 'status', status: null, compact_result: 'failed', compact_error: 'prompt too long' }))
+      .toEqual([{ type: 'status', code: 'context_compaction_failed', content: '⚠️ 上下文压缩失败：prompt too long' }]);
+    expect(notices({ subtype: 'status', status: 'compacting' })).toEqual([]);
+    expect(notices({ subtype: 'status', status: null, compact_result: 'success' })).toEqual([]);
+
+    expect(notices({ subtype: 'model_fallback', trigger: 'overloaded', original_model: 'opus', fallback_model: 'sonnet', content: 'Opus is overloaded; switched to sonnet' }))
+      .toEqual([{ type: 'status', code: 'model_fallback', content: '⚠️ Opus is overloaded; switched to sonnet' }]);
+    expect(notices({ subtype: 'model_fallback', original_model: 'opus', fallback_model: 'sonnet', content: 'Model overloaded' }))
+      .toEqual([{ type: 'status', code: 'model_fallback', content: '⚠️ Model overloaded（opus → sonnet）' }]);
+    expect(notices({ subtype: 'model_refusal_fallback', original_model: 'opus', fallback_model: 'sonnet' }))
+      .toEqual([{ type: 'status', code: 'model_refusal_fallback', content: '⚠️ 模型已切换：opus → sonnet' }]);
+    expect(notices({ subtype: 'model_refusal_no_fallback', original_model: 'opus', content: '' }))
+      .toEqual([{ type: 'status', code: 'model_refusal_no_fallback', content: '⚠️ opus 拒绝了本次请求，且没有可用的降级模型。' }]);
+
+    expect(notices({ subtype: 'api_retry', attempt: 2, max_retries: 10, retry_delay_ms: 4000, error_status: 529, error: 'server_error' }))
+      .toEqual([{ type: 'retry', attempt: 2, maxAttempts: 10, delayMs: 4000, failureKind: 'transient' }]);
+    expect(notices({ subtype: 'api_retry', attempt: 1, max_retries: 10, retry_delay_ms: 1000, error_status: 429, error: 'rate_limit' }))
+      .toEqual([{ type: 'retry', attempt: 1, maxAttempts: 10, delayMs: 1000, failureKind: 'rate_limit' }]);
+    expect(notices({ subtype: 'api_retry' })).toEqual([]);
+
+    expect(notices({ subtype: 'notification', key: 'k', text: 'Credits exhausted', color: 'error' }))
+      .toEqual([{ type: 'status', code: 'notification:k', content: '⚠️ Credits exhausted' }]);
+    expect(notices({ subtype: 'notification', key: 'k', text: 'Tip', priority: 'low' })).toEqual([]);
+    expect(notices({ subtype: 'permission_denied', tool_name: 'Bash', decision_reason: 'blocked by policy' }))
+      .toEqual([{ type: 'status', code: 'tool-permission-denied', content: '⚠️ 工具 Bash 被拒绝执行：blocked by policy' }]);
+  });
 });
 
 describe('Claude stream-json reader behavior', () => {

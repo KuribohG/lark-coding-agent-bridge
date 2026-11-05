@@ -30,6 +30,24 @@ interface ClaudeRawEvent {
   result?: string;
   errors?: string[];
   origin?: { kind?: string };
+  content?: string;
+  status?: string | null;
+  compact_result?: string;
+  compact_error?: string;
+  compact_metadata?: { trigger?: string; pre_tokens?: number; post_tokens?: number };
+  trigger?: string;
+  original_model?: string;
+  fallback_model?: string;
+  attempt?: number;
+  max_retries?: number;
+  retry_delay_ms?: number;
+  error_status?: number | null;
+  error?: string;
+  key?: string;
+  text?: string;
+  color?: string;
+  tool_name?: string;
+  decision_reason?: string;
 }
 
 /** Claude emits content blocks separately, then repeats the final text in result. */
@@ -99,6 +117,11 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
     return;
   }
 
+  if (evt.type === 'system') {
+    yield* translateSystemNotice(evt);
+    return;
+  }
+
   if (evt.type === 'assistant' && Array.isArray(evt.message?.content)) {
     for (const block of evt.message.content) {
       // Thinking blocks carry the raw chain of thought. Codex only surfaces
@@ -146,5 +169,73 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
       };
     }
     yield { type: 'done', sessionId: evt.session_id, terminationReason: 'normal' };
+  }
+}
+
+const noticeLimit = 500;
+
+function truncate(value: string): string {
+  return value.length > noticeLimit ? `${value.slice(0, noticeLimit)}…` : value;
+}
+
+function tokens(value: number | undefined): string | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? `${Math.round(value / 1000)}K` : undefined;
+}
+
+/** Runtime notices Claude shows in its TUI but -p only reports as system events. */
+function* translateSystemNotice(evt: ClaudeRawEvent): Generator<AgentEvent> {
+  switch (evt.subtype) {
+    case 'compact_boundary': {
+      const meta = evt.compact_metadata ?? {};
+      const before = tokens(meta.pre_tokens);
+      const after = tokens(meta.post_tokens);
+      const size = before ? `（${before}${after ? ` → ${after}` : ''} tokens）` : '';
+      const kind = meta.trigger === 'manual' ? '上下文已压缩' : '上下文已自动压缩';
+      yield { type: 'status', code: 'context_compaction', content: `🗜️ ${kind}${size}，任务继续执行。` };
+      return;
+    }
+    case 'status':
+      if (evt.compact_result === 'failed') {
+        const detail = evt.compact_error ? `：${truncate(evt.compact_error)}` : '。';
+        yield { type: 'status', code: 'context_compaction_failed', content: `⚠️ 上下文压缩失败${detail}` };
+      }
+      return;
+    case 'api_retry': {
+      if (typeof evt.attempt !== 'number' || typeof evt.max_retries !== 'number') return;
+      const rateLimited = evt.error_status === 429 || evt.error === 'rate_limit';
+      yield {
+        type: 'retry',
+        attempt: evt.attempt,
+        maxAttempts: evt.max_retries,
+        delayMs: Math.max(0, evt.retry_delay_ms ?? 0),
+        failureKind: rateLimited ? 'rate_limit' : 'transient',
+      };
+      return;
+    }
+    case 'model_fallback':
+    case 'model_refusal_fallback':
+    case 'model_consent_fallback': {
+      const route = evt.original_model && evt.fallback_model ? `${evt.original_model} → ${evt.fallback_model}` : '';
+      const detail = evt.content?.trim();
+      const content = !detail ? `模型已切换${route ? `：${route}` : '。'}`
+        : route && !detail.includes(evt.fallback_model ?? '') ? `${truncate(detail)}（${route}）` : truncate(detail);
+      yield { type: 'status', code: evt.subtype, content: `⚠️ ${content}` };
+      return;
+    }
+    case 'model_refusal_no_fallback': {
+      const detail = evt.content?.trim() || `${evt.original_model ?? '模型'} 拒绝了本次请求，且没有可用的降级模型。`;
+      yield { type: 'status', code: evt.subtype, content: `⚠️ ${truncate(detail)}` };
+      return;
+    }
+    case 'notification':
+      if ((evt.color === 'error' || evt.color === 'warning') && evt.text?.trim()) {
+        yield { type: 'status', code: `notification:${evt.key ?? ''}`, content: `⚠️ ${truncate(evt.text.trim())}` };
+      }
+      return;
+    case 'permission_denied': {
+      const reason = evt.decision_reason ? `：${truncate(evt.decision_reason)}` : '。';
+      yield { type: 'status', code: 'tool-permission-denied', content: `⚠️ 工具 ${evt.tool_name ?? '未知'} 被拒绝执行${reason}` };
+      return;
+    }
   }
 }
