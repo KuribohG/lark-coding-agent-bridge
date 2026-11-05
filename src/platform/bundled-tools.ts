@@ -9,8 +9,13 @@ export function useBundledLarkCli(entryUrl: string, env = process.env): void {
     const bin = join(folder, 'node_modules', '.bin');
     const executable = join(bin, process.platform === 'win32' ? 'lark-cli.cmd' : 'lark-cli');
     if (existsSync(executable)) {
+      // The shim resolves `node` through PATH. The self-contained Windows
+      // install keeps node.exe in runtime/ rather than on PATH, so expose the
+      // running runtime next to the shim or lark-cli cannot start there.
+      const runtime = dirname(process.execPath);
       const parts = (env.PATH ?? '').split(delimiter);
-      env.PATH = [bin, ...parts.filter(p => p !== bin)].join(delimiter);
+      const additions = [...new Set([bin, runtime])];
+      env.PATH = [...additions, ...parts.filter(p => !additions.includes(p))].join(delimiter);
       return;
     }
     folder = dirname(folder);

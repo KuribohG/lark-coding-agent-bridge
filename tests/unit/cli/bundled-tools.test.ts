@@ -1,6 +1,6 @@
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { expect, it } from 'vitest';
 import { useBundledLarkCli } from '../../../src/platform/bundled-tools';
@@ -12,5 +12,10 @@ it('discovers hoisted tool binaries from the package entry without changing brid
   const env = { PATH: 'original', LARK_CHANNEL: '1', LARK_CHANNEL_HOME: '/binding', LARK_CHANNEL_PROFILE: 'my-profile' };
   const entry = pathToFileURL(join(root, 'node_modules', 'lark-channel-bridge', 'dist', 'cli.js')).href;
   useBundledLarkCli(entry, env); useBundledLarkCli(entry, env);
-  expect(env).toEqual({ PATH: `${bin}${delimiter}original`, LARK_CHANNEL: '1', LARK_CHANNEL_HOME: '/binding', LARK_CHANNEL_PROFILE: 'my-profile' });
+  expect(env).toEqual({
+    PATH: [bin, dirname(process.execPath), 'original'].join(delimiter),
+    LARK_CHANNEL: '1',
+    LARK_CHANNEL_HOME: '/binding',
+    LARK_CHANNEL_PROFILE: 'my-profile',
+  });
 });
