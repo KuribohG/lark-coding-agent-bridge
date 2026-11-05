@@ -187,10 +187,10 @@ export async function savePreferencesConfig(
     const display = { ...larkDisplay(profile) };
     if (preferences.messageReply !== undefined) display.reply_mode = preferences.messageReply;
     if (preferences.showToolCalls !== undefined) display.show_tools = preferences.showToolCalls;
-    if (preferences.cotMessages !== undefined) display.progress = preferences.cotMessages === 'on' ? 'detailed' : preferences.cotMessages === 'simple' ? 'brief' : preferences.cotMessages;
+    if (preferences.cotMessages !== undefined) display.progress = preferences.cotMessages;
     if (preferences.fileLinks !== undefined) display.file_links = preferences.fileLinks;
     const channels = { ...profile.channels, lark: display };
-    for (const key of ['messageReply', 'messageReplyMigrated', 'showToolCalls', 'cotMessages', 'fileLinks'] as const) delete profilePreferences[key];
+    for (const key of ['messageReply', 'showToolCalls', 'cotMessages', 'fileLinks'] as const) delete profilePreferences[key];
     root.profiles[state.profile] = {
       ...profile,
       ...(agentSwitch ? { agentKind: agentSwitch.agentKind, ...agentSwitch.launchPatch } : {}),

@@ -227,7 +227,7 @@ async function harness(agentKind: 'claude' | 'codex' = 'codex', workflows = fals
     accounts: { app: { id: 'test', secret: 'test-secret', tenant: 'feishu' } },
     access: { allowedChats: ['oc_chat'], allowedUsers: ['owner', 'reader'], admins: ['owner'] },
     codex: { binaryPath: 'codex', codexHome },
-    preferences: { model: 'custom/day', reasoningEffort: 'high', messageReply: 'text', messageReplyMigrated: true, cotMessages: 'off' },
+    preferences: { model: 'custom/day', reasoningEffort: 'high', messageReply: 'text', cotMessages: 'off' },
   });
   profile.workspaces.default = tmp.workspace;
   const root: RootConfig = { schemaVersion: 2, activeProfile: 'test', preferences: {}, profiles: { test: profile } };

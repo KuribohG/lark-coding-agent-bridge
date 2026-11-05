@@ -722,7 +722,7 @@ async function createHarness(options: {
     },
     preferences: {
       cotMessages: 'off',
-      ...(options.messageReply ? { messageReply: options.messageReply, messageReplyMigrated: true } : {}),
+      ...(options.messageReply ? { messageReply: options.messageReply } : {}),
     },
   });
   const profileConfig = {

@@ -198,7 +198,6 @@ function parsePreferencesChange(state: MutableProfileState, body: unknown): Pref
       model,
       reasoningEffort,
       messageReply,
-      messageReplyMigrated: true,
       showToolCalls,
       cotMessages,
       maxConcurrentRuns,

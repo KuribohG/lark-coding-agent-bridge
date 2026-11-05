@@ -62,7 +62,7 @@ describe('profile-aware account and config commands', () => {
     const web = await createHarness();
     await card.command('/config submit', {
       model_pick: '__manual__', model: 'private/custom-model', reasoning_effort: 'high',
-      message_reply: 'text', show_tool_calls: 'hide', cot_messages: 'on',
+      message_reply: 'text', show_tool_calls: 'hide', cot_messages: 'detailed',
       max_concurrent_runs: '99', run_idle_timeout_minutes: '0', require_mention_in_group: 'no',
       deploy_mode: 'team', lark_cli_identity: 'user-default',
     });
@@ -221,7 +221,6 @@ describe('profile-aware account and config commands', () => {
     const h = await createHarness({
       preferences: {
         messageReply: 'text',
-        messageReplyMigrated: true,
       },
     });
 

@@ -5,8 +5,7 @@ type CotMessagesMode = 'off' | 'brief' | 'detailed';
 
 export interface LarkDisplayPreferences {
   messageReply?: MessageReplyMode;
-  messageReplyMigrated?: boolean;
-  cotMessages?: CotMessagesMode | 'on' | 'simple';
+  cotMessages?: CotMessagesMode;
   showToolCalls?: boolean;
   fileLinks?: FileLinkMapping[];
 }
@@ -25,20 +24,10 @@ export function larkDisplay(config: {
   preferences?: LarkDisplayPreferences;
 }): LarkDisplayConfig {
   const old = config.preferences;
-  const reply = old?.messageReply;
-  const progress = old?.cotMessages;
   return {
-    reply_mode:
-      reply === 'text' && old?.messageReplyMigrated !== true
-        ? 'markdown'
-        : reply ?? 'markdown',
+    reply_mode: old?.messageReply ?? 'markdown',
     show_tools: old?.showToolCalls !== false,
-    progress:
-      progress === 'detailed' || progress === 'on'
-        ? 'detailed'
-        : progress === 'off'
-          ? 'off'
-          : 'brief',
+    progress: old?.cotMessages ?? 'brief',
     message_debounce_ms: 600,
     ...(old?.fileLinks ? { file_links: old.fileLinks } : {}),
     ...config.channels?.lark,

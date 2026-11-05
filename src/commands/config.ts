@@ -192,7 +192,7 @@ function configFormPatch(
   if (fv.reasoning_effort !== undefined) patch.reasoningEffort = fv.reasoning_effort;
   if (fv.message_reply !== undefined) patch.messageReply = text('message_reply');
   if (fv.show_tool_calls !== undefined) patch.showToolCalls = text('show_tool_calls') !== 'hide';
-  if (fv.cot_messages !== undefined) patch.cotMessages = text('cot_messages') === 'on' ? 'detailed' : text('cot_messages');
+  if (fv.cot_messages !== undefined) patch.cotMessages = text('cot_messages');
   if (fv.max_concurrent_runs !== undefined) patch.maxConcurrentRuns = Number.isFinite(maxConcurrentRuns) && maxConcurrentRuns >= 1 ? maxConcurrentRuns : undefined;
   if (fv.run_idle_timeout_minutes !== undefined) patch.runIdleTimeoutMinutes = text('run_idle_timeout_minutes') || undefined;
   if (fv.require_mention_in_group !== undefined) patch.requireMentionInGroup = mention === 'yes' ? true : mention === 'no' ? false : undefined;

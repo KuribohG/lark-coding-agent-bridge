@@ -64,9 +64,6 @@ export interface SecretsConfig {
  *   - `card`: full interactive card (tool panels, ⏹ button, footer status)
  *   - `markdown`: lightweight streaming markdown card (typewriter, no buttons)
  *   - `text`: plain markdown post sent once at run completion (no streaming)
- *
- * Pre-0.1.27 only had `card` and `text`, where `text` meant what's now called
- * `markdown`. See `messageReplyMigrated` for the auto-coercion logic.
  */
 export type MessageReplyMode = 'card' | 'markdown' | 'text';
 export type CotMessagesMode = 'off' | 'brief' | 'detailed';
@@ -97,15 +94,6 @@ export interface AppPreferences {
   /** Reply rendering mode for IM (group/p2p) messages. Default 'card'. */
   messageReply?: MessageReplyMode;
   /**
-   * Internal marker: pre-0.1.27 the value `'text'` meant "lightweight
-   * streaming markdown card" (what's now called `'markdown'`). On upgrade
-   * we'd silently switch those users to true plain-text behavior unless we
-   * coerce; this flag is set the first time the user submits `/config`
-   * after the rename, indicating their `messageReply` value is in the
-   * new semantic.
-   */
-  messageReplyMigrated?: boolean;
-  /**
    * Whether to render tool-call blocks (Bash / Read / Edit / ...) in the
    * output. Default true. Turn off if you only care about Claude's final
    * text answer and want to hide the "工具调用过程".
@@ -124,9 +112,8 @@ export interface AppPreferences {
    * Whether to send a separate Lark COT process message before the final
    * answer. Defaults to `brief` for lightweight progress and tool summaries;
    * `detailed` also includes tool args/output.
-   * Legacy boolean/string `on` is accepted by the resolver for upgrades.
    */
-  cotMessages?: CotMessagesMode | 'on' | 'simple';
+  cotMessages?: CotMessagesMode;
   /**
    * Cap on concurrent claude runs across all chats / topics. Excess runs
    * queue FIFO. Default 10. Mostly relevant for topic groups where each
@@ -206,16 +193,7 @@ export function secretKeyForApp(appId: string): string {
   return `app-${appId}`;
 }
 
-/**
- * Resolve the message-reply preference with default fallback + legacy coerce.
- *
- * Pre-0.1.27 users with `messageReply: 'text'` actually wanted the streaming
- * markdown card (the new `'markdown'`). Until they re-submit `/config`
- * (which sets `messageReplyMigrated: true`), we map their `text` →
- * `markdown` so the behavior stays the same after upgrade.
- *
- * Default for fresh configs (no `messageReply` set) is `'markdown'`.
- */
+/** Resolve the message-reply preference; defaults to `'markdown'`. */
 export function getMessageReplyMode(cfg: AppConfig): MessageReplyMode {
   return larkDisplay(cfg).reply_mode;
 }

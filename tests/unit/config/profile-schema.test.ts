@@ -24,8 +24,7 @@ describe('profile schema', () => {
   });
 
   it.each([
-    ['off', 'off'], ['brief', 'brief'], ['simple', 'brief'],
-    ['detailed', 'detailed'], ['on', 'detailed'],
+    ['off', 'off'], ['brief', 'brief'], ['detailed', 'detailed'],
   ] as const)('preserves the COT preference %s as %s', (cotMessages, expected) => {
     const cfg = createDefaultProfileConfig({ agentKind: 'claude', accounts: { app }, preferences: { cotMessages } });
     expect(getCotMessages(cfg)).toBe(expected);
