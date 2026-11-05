@@ -4,7 +4,7 @@
 
 This is the field and reload reference. For a first setup, choose the native Web, Responses Web or Lark recipe in the tutorial instead of copying the complete example blindly.
 
-Lark and the management console normally use `~/.lark-channel/config.toml` (`version = 3`). The runtime does not read or upgrade old JSON configuration. `--config` selects another TOML file. Lark state and the monitor file are resolved relative to the selected root file's directory. Standalone Web reads Bridge TOML only when `--config` is supplied; its state uses `--state-dir` or `~/.lark-channel/web/default`, not `LARK_CHANNEL_HOME`.
+Lark and the management console normally use `~/.lark-channel/config.toml` (`version = 3`). The runtime does not read old JSON configuration. `--config` selects another TOML file. Lark state and the monitor file are resolved relative to the selected root file's directory. Standalone Web reads Bridge TOML only when `--config` is supplied; its state uses `--state-dir` or `~/.lark-channel/web/default`, not `LARK_CHANNEL_HOME`.
 
 Execution and presentation have separate ownership:
 
@@ -204,14 +204,3 @@ Running output uses its existing display snapshot. Reload never starts or restar
 Monitor reload still follows [its own contract](monitor-config.md). The default TOML path does not change the per-profile JSON projection required by lark-cli. `LARK_CHANNEL_CONFIG` points to that generated JSON, not the human-maintained TOML. Native agent files, sessions, cursors, work items and encrypted credential stores retain their existing formats.
 
 Standalone Web and Slack hosts do not participate in hot reload. Restart that server after editing its TOML, and reopen the newly printed token URL. The optional Windows isolated launcher reads the native Codex provider at startup and does not accept Bridge `--config`; use the normal Web CLI for file-based Bridge settings.
-
-## One-time conversion of this installation
-
-An offline converter can preserve an existing version-2 profile installation:
-
-```sh
-lark-channel-bridge config migrate --config ~/.lark-channel/config.json --dry-run
-lark-channel-bridge config migrate --config ~/.lark-channel/config.json --output ~/.lark-channel/config.toml
-```
-
-The output must be a new file in the same directory, so relative monitor references and profile state stay valid. The converter checks the execution, display, account, access and service settings before writing. Unknown legacy root/profile/preference fields stop conversion for review. It does not print resolved credentials, overwrite its input/output, merge defaults across profiles, rebind lark-cli or restart a process. The old file is an offline backup, never a second runtime source. Older versions that cannot load TOML must be upgraded or stopped before switching the shared configuration. Version-1 automatic migrations and their process-stop prompts have been removed.

@@ -1,8 +1,7 @@
-import { readFile, open, mkdir } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { parse } from 'smol-toml';
 import { configDocument, configRevision, loadRootConfig, normalizeRootConfig, runtimeProfileConfig, withConfigFileLock } from './profile-store';
-import { documentToRoot, formatDocument, parseDocument, resolveRun, rootToDocument, RUN_KEYS } from './document';
+import { documentToRoot, parseDocument, resolveRun, RUN_KEYS } from './document';
 import { editToml, getPath } from './toml-edit';
 import type { MutableProfileState } from './config-ops';
 import { writeFileAtomic } from '../platform/atomic-write';
@@ -73,42 +72,4 @@ export async function patchConfig(path: string, key: string[], value: unknown, r
 
 export function parseSetting(value: string): unknown {
   try { return parse(`value = ${value}`).value; } catch { return value; }
-}
-
-/** Produce a candidate file; never edits source, credentials, cursors or live processes. */
-export async function migrateConfig(path: string, output: string | undefined, dryRun: boolean) {
-  const raw = JSON.parse(await readFile(path, 'utf8'));
-  if (raw.schemaVersion !== 2) throw new Error('offline conversion accepts only version-2 profile JSON');
-  const allowedRoot = ['schemaVersion', 'activeProfile', 'preferences', 'monitorConfigFile', 'inbox', 'gitlabCi', 'storageMonitor', 'modelServices', 'secrets', 'migrations', 'profiles'];
-  for (const key of Object.keys(raw)) if (!allowedRoot.includes(key)) throw new Error(`unknown legacy field: ${key}`);
-  if (Object.keys(raw.preferences ?? {}).length) throw new Error('legacy root preferences is not empty; review before migration');
-  const preferences = [...Object.values(RUN_KEYS), 'messageReply', 'messageReplyMigrated', 'showToolCalls', 'cotMessages', 'fileLinks', 'access', 'requireMentionInGroup'];
-  const profileKeys = ['schemaVersion', 'agentKind', 'mode', 'accounts', 'secrets', 'preferences', 'access', 'workspaces', 'sandbox', 'permissions', 'permissionSource', 'codex', 'claude', 'pi', 'channels', 'attachments', 'comments', 'meeting', 'larkCli'];
-  for (const [name,p] of Object.entries(raw.profiles) as [string, Record<string, any>][]) {
-    for (const key of Object.keys(p)) if (!profileKeys.includes(key)) throw new Error(`unknown legacy field: profiles.${name}.${key}`);
-    for (const key of Object.keys(p.preferences ?? {})) if (!preferences.includes(key)) throw new Error(`unknown legacy preference: profiles.${name}.${key}`);
-  }
-  const root = normalizeRootConfig(raw);
-  if (!root) throw new Error('root config not found');
-  const doc = rootToDocument(root);
-  const text = formatDocument(doc);
-  const migrated = documentToRoot(parseDocument(text));
-  for (const [name, original] of Object.entries(root.profiles)) {
-    const p = migrated.profiles[name]!;
-    for (const key of ['accounts', 'access', 'workspaces', 'permissions', 'attachments', 'meeting', 'larkCli', 'codex', 'claude', 'pi'] as const) {
-      if (JSON.stringify(original[key]) !== JSON.stringify(p[key])) throw new Error(`migration mismatch: ${name}.${key}`);
-    }
-    if (JSON.stringify(larkDisplay(original)) !== JSON.stringify(larkDisplay(p))) throw new Error(`display migration mismatch: ${name}`);
-    for (const key of Object.values(RUN_KEYS)) if (original.preferences[key] !== p.preferences[key]) throw new Error(`run migration mismatch: ${name}.${key}`);
-  }
-  if (!dryRun) {
-    if (!output || !output.endsWith('.toml')) throw new Error('请用 --output 明确指定新的 .toml 文件；不会覆盖原配置');
-    if (resolve(output) === resolve(path)) throw new Error('migration target must differ from source');
-    if (resolve(dirname(output)) !== resolve(dirname(path))) throw new Error('配置须与原文件同目录，以保留监控引用和 profile 状态路径');
-    await mkdir(dirname(output), { recursive: true });
-    const file = await open(output, 'wx', 0o600);
-    try { await file.writeFile(text); await file.sync(); } finally { await file.close(); }
-  }
-  return { profiles: Object.keys(root.profiles), output: dryRun ? undefined : output, dryRun,
-    note: '执行和飞书展示配置已分离；未重启进程，未迁移凭据或会话状态。' };
 }

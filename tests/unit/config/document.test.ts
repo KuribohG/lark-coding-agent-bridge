@@ -15,7 +15,7 @@ import {
 } from '../../../src/config/document';
 import { editToml, parseKeyPath } from '../../../src/config/toml-edit';
 import { getAutostartProfiles, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
-import { inspectConfig, migrateConfig, patchConfig } from '../../../src/config/service';
+import { inspectConfig, patchConfig } from '../../../src/config/service';
 import { reconcileProfile, type ReconcileTarget } from '../../../src/runtime/config-reconciler';
 import type { ProfileConfig } from '../../../src/config/profile-schema';
 import { larkDisplay } from '../../../src/channels/lark/config';
@@ -482,24 +482,5 @@ describe('TOML text editing', () => {
   });
   it('is byte-preserving for no-op saves', () => {
     expect(editToml(source, ['defaults','run','model'], 'global-model')).toBe(source);
-  });
-});
-
-describe('one-time JSON conversion', () => {
-  it('preserves execution, display, credentials and scopes without changing source', async () => {
-    const root = documentToRoot(parseDocument(source));
-    root.profiles.bot!.preferences.messageReply = 'text';
-    delete root.profiles.bot!.channels;
-    const json = JSON.stringify(root);
-    const input = (await file()).replace('config.toml','old.json'); await writeFile(input, json);
-    const output = input.replace('old.json', 'converted.toml');
-    await migrateConfig(input, output, false);
-    expect(await readFile(input,'utf8')).toBe(json);
-    const migrated = (await loadRootConfig(output))!;
-    expect(migrated.profiles.bot!.channels?.lark?.reply_mode).toBe('markdown');
-    expect(migrated.profiles.bot!.accounts).toEqual(root.profiles.bot!.accounts);
-    expect(migrated.profiles.bot!.preferences.model).toBe('profile-model');
-    expect(parseDocument(await readFile(output,'utf8')).profiles.bot).not.toHaveProperty('preferences');
-    await expect(migrateConfig(input, output, false)).rejects.toThrow();
   });
 });

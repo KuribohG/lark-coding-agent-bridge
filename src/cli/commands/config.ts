@@ -1,14 +1,14 @@
 import { parseKeyPath } from '../../config/toml-edit';
 import { resolveAppPaths } from '../../config/app-paths';
 import { loadRootConfig } from '../../config/profile-store';
-import { inspectConfig, migrateConfig, parseSetting, patchConfig } from '../../config/service';
+import { inspectConfig, parseSetting, patchConfig } from '../../config/service';
 import { loadMonitorRoot } from '../../monitoring/store';
 import { readConfigRevision } from '../../config/revision';
 import { isAlive, readAndPrune } from '../../runtime/registry';
 import { APPLY_DESCRIPTIONS, classifyDocumentPath, PROFILE_SETTINGS, ROOT_SETTINGS, type SettingSpec } from '../../config/settings';
 import { dirname, resolve } from 'node:path';
 
-type Options = { config?: string; profile?: string; sources?: boolean; output?: string; dryRun?: boolean; json?: boolean; timeout?: string };
+type Options = { config?: string; profile?: string; sources?: boolean; json?: boolean; timeout?: string };
 const path = (opts: Options) => opts.config ?? resolveAppPaths().configFile;
 export async function checkConfig(opts: Options) {
   const root = await loadRootConfig(path(opts));
@@ -71,4 +71,3 @@ export async function reloadConfig(opts: Options) {
     await new Promise(r => setTimeout(r, 300));
   }
 }
-export async function migrateToToml(opts: Options) { console.log(JSON.stringify(await migrateConfig(path(opts), opts.output, opts.dryRun === true), null, 2)); }
