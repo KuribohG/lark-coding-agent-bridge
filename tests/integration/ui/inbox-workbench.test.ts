@@ -22,7 +22,7 @@ afterEach(async () => { await server?.close(); await service?.close(); });
 
 it('serves local jobs and persists version-checked reviews through authenticated HTTP without a cloud connector', async () => {
   const rootDir = await mkdtemp(join(tmpdir(), 'local-inbox-'));
-  const store = new InboxStore(join(rootDir, 'state.json'));
+  const store = new InboxStore(join(rootDir, 'state.sqlite'));
   const config = normalizeInbox({ enabled: false, executorProfile: 'codex', recipientKey: 'ou_owner',
     target: workItemTarget({ chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_result' }) });
   store.data.jobs = [{ id: randomUUID(), profile: 'codex', ownerKey: 'ou_owner',

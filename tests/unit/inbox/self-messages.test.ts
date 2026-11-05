@@ -30,7 +30,7 @@ async function setup(jobs: InboxJob[] = [], overrides: Partial<InboxIO> = {}) {
     deliver: vi.fn(async () => {}), notifyAttention: vi.fn(async () => {}),
     analyze: vi.fn(async () => ({ text: '分析结果', inputTokens: 1, outputTokens: 1 })),
     triage: vi.fn(async (j: InboxJob) => ({ id: j.id, state: 'quiet' as const, reason: '无需动作' })), ...overrides };
-  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-self-')), 'state.json'));
+  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-self-')), 'state.sqlite'));
   store.data.jobs = structuredClone(jobs);
   if (jobs.length) store.data.notificationOutbox = { id: 'old-outbox', attempts: 0, retryAt: 0,
     jobs: jobs.map(j => ({ id: j.id, signature: createHash('sha256').update(JSON.stringify(j.messages)).digest('hex') })) };

@@ -23,7 +23,7 @@ async function setup() {
   let now = 1_000_000;
   const config = normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner',
     target: workItemTarget({ chatId: 'oc_target', threadId: 'omt_target', replyTo: 'om_target' }) });
-  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-scheduler-')), 'state.json'));
+  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-scheduler-')), 'state.sqlite'));
   const io: InboxIO = {
     checkOwner: vi.fn(async () => {}), collect: vi.fn(async kind => kind === 'p2p' ? [...messages] : []),
     context: vi.fn(async () => []), source: vi.fn(async () => ({ name: '同事', type: 'p2p' as const })),

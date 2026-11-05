@@ -24,7 +24,7 @@ async function setup(overrides: Partial<InboxIO> = {}, enabled = true, queue?: I
   const io: InboxIO = { checkOwner: vi.fn(async () => {}), collect: vi.fn(async () => []), context: vi.fn(async () => []),
     source: vi.fn(async () => ({ name: 'unused', type: 'group' as const })), deliver: vi.fn(async () => {}), analyze: vi.fn(async () => result),
     taskSource: { id: 'gitlab-ci', accepts: () => true }, ...overrides };
-  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-source-')), 'state.json'));
+  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-source-')), 'state.sqlite'));
   const config = normalizeInbox({ enabled, recipientKey: 'ou_owner', executorProfile: 'codex', watchPrivate: false, watchMentions: false });
   const service = new InboxService(store, config, io, () => now, queue); services.push(service); await service.start();
   return { service, store, io, config, advance: () => { now += 300_000; } };

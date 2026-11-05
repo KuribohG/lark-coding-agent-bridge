@@ -27,7 +27,7 @@ async function setup(jobs: InboxJob[] = [], overrides: Partial<InboxIO> = {}) {
     source: vi.fn(async () => ({ name: '项目群', type: 'group' as const })), deliver: vi.fn(async () => {}), beginAnalysis: vi.fn(async () => destination),
     analyze: vi.fn(async () => ({ text: '{"replyDraft":"草稿","analysis":"已核实","missingInfo":""}', inputTokens: 1, outputTokens: 1 })),
     triage: vi.fn<NonNullable<InboxIO['triage']>>(async j => ({ id: j.id, state: 'needed', reason: '同事需要回复' })), ...overrides };
-  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-feedback-')), 'state.json'));
+  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-feedback-')), 'state.sqlite'));
   store.data.jobs = jobs;
   if (jobs.length) store.data.notificationOutbox = { id: 'digest', jobs: jobs.map(j => ({ id: j.id, signature: 'old' })), attempts: 1, retryAt: 0 };
   await store.save();

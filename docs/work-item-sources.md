@@ -56,12 +56,9 @@ To add a built-in source:
    another source's implementation. Add source-specific tests and a disabled TOML
    example; lifecycle and generic TOML parsing do not need new source branches.
 
-Lark, GitLab CI and storage source IDs remain unchanged. Each source now persists
-its generic work-item state as `state.sqlite` beside the former `state.json`.
-The SQLite transaction stores jobs, cursors, dedupe keys, budgets and the
-notification outbox together. A version-2 legacy JSON file is imported once and
-archived; an unsupported version-1 conversation-shaped file is archived without
-being overwritten.
+Each source persists its generic work-item state as `state.sqlite`. The SQLite
+transaction stores jobs, cursors, dedupe keys, budgets and the notification
+outbox together. An unknown schema or state version fails closed.
 
 ## Host and executor lifecycle
 

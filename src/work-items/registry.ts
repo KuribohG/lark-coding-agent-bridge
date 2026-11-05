@@ -48,7 +48,7 @@ export class WorkItemSources {
     const unlock = await lockfile.lock(lease, { stale: 60_000, update: 10_000, retries: 0,
       onCompromised: () => { void service?.close(); } });
     try {
-      service = new WorkItemService(new WorkItemStore(join(folder, 'state.json')), config,
+      service = new WorkItemService(new WorkItemStore(join(folder, 'state.sqlite')), config,
         { ...options.runtime, source: options.source }, Date.now, this.queue, this.triageQueue);
       await service.start();
       const active = service;

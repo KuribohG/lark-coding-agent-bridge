@@ -120,7 +120,7 @@ it('keeps the result receipt when a failed edit rolls back its reservation objec
 
 it('recovers an ambiguous result reservation with its original identity and retry deadline', async () => {
   const folder = await mkdtemp(join(tmpdir(), 'work-item-delivery-'));
-  const store = new WorkItemStore(join(folder, 'state.json'));
+  const store = new WorkItemStore(join(folder, 'state.sqlite'));
   const config = normalizeInbox({ enabled: true, recipientKey: 'owner', executorProfile: 'test',
     target: workItemTarget({ chatId: 'oc_out', threadId: 'omt_out', replyTo: 'om_out' }) });
   const runtime: WorkItemRuntime = { source: new EventSource('test', () => true), checkAccess: async () => {},

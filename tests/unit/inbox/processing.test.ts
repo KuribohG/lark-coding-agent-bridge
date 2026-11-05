@@ -33,7 +33,7 @@ async function setup(overrides: Partial<InboxIO> = {}, queue?: InboxAnalysisQueu
     context: vi.fn(async () => [message]), source: vi.fn(async () => ({ name: '项目群', type: 'p2p' as const })),
     beginAnalysis: vi.fn(async () => topic), deliver: vi.fn(async () => {}), analyze: vi.fn(async () => result),
     notifyAttention: vi.fn(async () => {}), triage: vi.fn<NonNullable<InboxIO['triage']>>(async j => ({ id: j.id, state: 'needed', reason: '需要回复方案' })), ...overrides };
-  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-processing-')), 'state.json'));
+  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-processing-')), 'state.sqlite'));
   const service = new InboxService(store, config(), io, () => now, queue); services.push(service); await service.start();
   await service.tick();
   await vi.waitFor(() => expect(service.list()[0]?.attention?.state).toBe('needed'));

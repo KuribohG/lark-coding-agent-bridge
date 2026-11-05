@@ -29,7 +29,7 @@ async function setup(queue?: InboxAnalysisQueue, triageQueue?: InboxAnalysisQueu
   let now = 1_000_000;
   const config = normalizeInbox({ enabled: true, recipientKey: 'ou_owner', executorProfile: 'codex',
     target: workItemTarget({ chatId: 'oc_target', threadId: 'omt_item', replyTo: 'om_item' }) });
-  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-concurrency-')), 'state.json'));
+  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-concurrency-')), 'state.sqlite'));
   let started!: () => void;
   const analysisStarted = new Promise<void>(resolve => { started = resolve; });
   const analyses: (ReturnType<typeof gate<typeof result>> & { id: string })[] = [];

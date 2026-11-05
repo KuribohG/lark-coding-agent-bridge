@@ -233,7 +233,7 @@ it('uses the shared Codex runtime configuration and quarantines both trusted bot
   controls.botIdentity = { openId: 'ou_self', name: '助理' };
   const spy = vi.spyOn(runtimeAgent, 'createRuntimeAgent');
   const { InboxStore } = await import('../../../src/inbox/store');
-  const store = new InboxStore(join(rootDir, 'inbox', 'state.json'));
+  const store = new InboxStore(join(rootDir, 'inbox', 'state.sqlite'));
   store.data.jobs = ['cli_fixture', 'ou_self'].map((senderId, i) => ({
     id: `self-${i}`, ownerKey: 'ou_owner', profile: 'codex',
     target: workItemTarget({ chatId: 'oc_group', threadId: 'omt_topic', replyTo: 'om_message' }),

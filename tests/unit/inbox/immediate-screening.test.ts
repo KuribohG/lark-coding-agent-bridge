@@ -31,7 +31,7 @@ async function setup(queue?: InboxAnalysisQueue) {
       screens.push({ item: structuredClone(item), resolve, reject });
     })),
   };
-  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-immediate-')), 'state.json'));
+  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-immediate-')), 'state.sqlite'));
   const service = new InboxService(store, config, io, () => now, queue); services.push(service); await service.start();
   const add = (id: string, overrides: Partial<InboxMessage> = {}) => {
     const message: InboxMessage = { id, containerId: 'oc_source', containerName: '同事', containerKind: 'direct',

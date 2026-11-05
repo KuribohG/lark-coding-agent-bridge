@@ -280,7 +280,7 @@ export class InboxManager {
         tenantTokens,
         request: larkAuth.request,
       });
-      this.service = new InboxService(new InboxStore(join(folder, 'state.json')), config, larkRuntime(config, {
+      this.service = new InboxService(new InboxStore(join(folder, 'state.sqlite')), config, larkRuntime(config, {
         selfSenderIds: [controls.cfg.accounts.app.id, controls.botIdentity?.openId].filter((id): id is string => Boolean(id)),
         cancel: () => lark.close(),
         cancelPending: () => lark.cancelPending(),

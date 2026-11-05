@@ -28,7 +28,7 @@ async function setup(overrides: Partial<InboxIO> = {}) {
   const io: InboxIO = { checkOwner: vi.fn(async () => {}), collect: vi.fn(async kind => kind === 'p2p' ? [message()] : []),
     context: vi.fn(async () => [message()]), source: vi.fn(async () => ({ name: '源会话', type: 'p2p' as const })),
     deliver: vi.fn(async () => {}), analyze: vi.fn(async () => ({ text: JSON.stringify({ replyDraft: '建议回复', analysis: '已核实', missingInfo: '' }), inputTokens: 100, outputTokens: 20 })), ...overrides };
-  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-test-')), 'state.json'));
+  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-test-')), 'state.sqlite'));
   const service = new InboxService(store, config(), io, () => now); services.push(service); await service.start();
   const advance = (ms: number) => { now += ms; };
   return { service, store, io, advance };

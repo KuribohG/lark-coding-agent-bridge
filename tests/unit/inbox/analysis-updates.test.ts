@@ -40,7 +40,7 @@ async function setup() {
     analyze: vi.fn((job, signal) => { const run = { ...gate<typeof result>(signal), job }; analyses.push(run); return run.promise; }),
     triage: vi.fn((item, signal) => { const run = { ...gate<TriageDecision>(signal), item }; screens.push(run); return run.promise; }),
   };
-  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-updates-')), 'state.json'));
+  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-updates-')), 'state.sqlite'));
   const service = new InboxService(store, config, io, () => now); services.push(service); await service.start();
   const add = async (text: string, id = `om_${messages.length}`) => {
     now += 1000;
@@ -166,7 +166,7 @@ it('persists the completed result and unreviewed additions across a restart', as
 
 it('requires an explicit retry after loading an interrupted run with new messages', async () => {
   const s = await setup(); await s.add('中断前补充');
-  const recovered = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-recovered-')), 'state.json'));
+  const recovered = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-recovered-')), 'state.sqlite'));
   recovered.data = structuredClone(s.store.data); await recovered.save(); await recovered.load();
   expect(recovered.data.jobs[0]).toMatchObject({ state: 'failed', analysisPaused: true, analysisRequested: false });
   expect(recovered.data.jobs[0]?.messages).toHaveLength(2);
