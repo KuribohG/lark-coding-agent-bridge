@@ -1,13 +1,15 @@
 import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { readJsonBody, sendHtml, sendJson } from '../ui/http';
-import type { InboxService } from './service';
+import type { InboxConfig } from './config';
+import type { WorkItemService } from '../work-items/service';
+import { larkSource } from '../monitoring/sources/lark/source';
 import { InboxH5Auth } from './h5-auth';
 import { obj } from './values';
 import html from './page.html';
 
 /** Only this small owner-authenticated surface is eligible for HTTPS reverse proxying. */
-export async function startInboxH5(service: InboxService, auth: InboxH5Auth) {
+export async function startInboxH5(service: WorkItemService<InboxConfig>, auth: InboxH5Auth) {
   const origin = new URL(auth.publicUrl).origin;
   const server = createServer((req, res) => {
     void (async () => {
@@ -25,7 +27,7 @@ export async function startInboxH5(service: InboxService, auth: InboxH5Auth) {
       if (path === '/api/jobs') {
         sendJson(res, 200, { jobs: service.list().map(({ messages: _, ...job }) => job), error: service.lastError }); return;
       }
-      if (path === '/api/process') { sendJson(res, 200, { jobId: (await service.manual(String(body.chatId || ''))).id }); return; }
+      if (path === '/api/process') { sendJson(res, 200, { jobId: (await larkSource(service).manual(String(body.chatId || ''))).id }); return; }
       if (path === '/api/decide') {
         if (body.action === 'stop') await service.stopAnalysis(body, service.config.ownerKey);
         else await service.decide(String(body.id || ''), String(body.action || ''), service.config.ownerKey);

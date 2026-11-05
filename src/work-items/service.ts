@@ -17,7 +17,7 @@ import { evidenceSignature as signature, observationDigest, recordObservation } 
 const resolved = (job: WorkItem) => handlingState(job) !== 'open';
 interface RunningTask { controller: AbortController; done: Promise<void> }
 /** All state transitions are serialized. Model execution happens outside the lock. */
-export class WorkItemService {
+export class WorkItemService<C extends WorkItemConfig = WorkItemConfig> {
   private chain: Promise<unknown> = Promise.resolve();
   private timer?: NodeJS.Timeout;
   private analyses = new Map<string, RunningTask>();
@@ -39,7 +39,7 @@ export class WorkItemService {
   private get ownerKey(): string { return this.config.ownerKey; }
   private get target() { return this.config.target; }
   lastError?: string;
-  constructor(readonly store: WorkItemStore, readonly config: WorkItemConfig, private io: WorkItemRuntime, private now = Date.now,
+  constructor(readonly store: WorkItemStore, readonly config: C, private io: WorkItemRuntime, private now = Date.now,
     private queue = new WorkItemScheduler(), private triageQueue = new WorkItemScheduler(WORK_ITEM_CONCURRENCY_DEFAULTS.triage)) {
     this.lifecycle = new WorkItemLifecycle(config, now, job => {
       this.analyses.get(job.id)?.controller.abort();

@@ -3,6 +3,7 @@ import { handlingState } from '../../../work-items/result';
 import type { InboxIO, InboxJob, InboxMessage } from '../../../inbox/types';
 import type { SourceAdapter, SourceContext } from '../../../work-items/contracts';
 import type { SourceItem } from '../../../work-items/lifecycle';
+import type { WorkItemService } from '../../../work-items/service';
 import { createLarkAssessment } from './assessment';
 import { analysisChanges, messageBasis } from '../../../inbox/updates';
 import { larkTarget } from '../../../inbox/lark-target';
@@ -33,6 +34,12 @@ export function boundMessages(messages: InboxMessage[], maxChars: number): Inbox
     output.push({ ...m, text }); remaining -= text.length + 200;
   }
   return output.reverse();
+}
+
+/** Conversation commands belong to the Lark source, not to the generic work-item service. */
+export function larkSource(service: Pick<WorkItemService, 'source'>): LarkSource {
+  if (!(service.source instanceof LarkSource)) throw new Error('此来源不支持飞书会话操作');
+  return service.source;
 }
 
 export class LarkSource implements SourceAdapter {
@@ -107,6 +114,8 @@ export class LarkSource implements SourceAdapter {
       (this.config.intakeScope === 'all' || job.intakeTrigger === 'mention' ||
         job.messages.some(m => mentioned(m, this.config.recipientKey))));
   }
+
+  get intakeScope(): IntakeScope { return this.config.intakeScope; }
 
   async setScope(scope: IntakeScope, persist?: () => Promise<void>): Promise<void> {
     if (!['private', 'private_mentions', 'all'].includes(scope)) throw new Error('无效接收范围');

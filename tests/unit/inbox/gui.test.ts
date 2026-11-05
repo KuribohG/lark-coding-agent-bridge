@@ -3,11 +3,12 @@ import { chmod, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { InboxGui } from '../../../src/inbox/gui';
-import { normalizeInbox, type IntakeScope } from '../../../src/inbox/config';
-import type { InboxService } from '../../../src/inbox/service';
+import { normalizeInbox, type InboxConfig, type IntakeScope } from '../../../src/inbox/config';
+import type { WorkItemService } from '../../../src/work-items/service';
+import { stubLarkSource } from '../../helpers/lark-service';
 import type { InboxLark } from '../../../src/inbox/lark';
 import type { InboxJob } from '../../../src/inbox/types';
-import type { InboxTaskSources } from '../../../src/inbox/task-sources';
+import type { WorkItemSources } from '../../../src/work-items/registry';
 import { workItemTarget } from '../../../src/inbox/lark-target';
 
 const workers: InboxGui[] = [];
@@ -19,8 +20,9 @@ async function setup(compactSync = false) {
   const config = normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner',
     target: workItemTarget({ chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_anchor' }),
     gui: { publicUrl: 'https://gui.example', apiKeyFile: key } });
-  const service = { config, list: vi.fn((_limit = 100): InboxJob[] => []), get: vi.fn((): InboxJob | undefined => undefined), manual: vi.fn(async () => ({ id: 'job1' })),
-    decide: vi.fn(async () => {}), stopAnalysis: vi.fn<InboxService['stopAnalysis']>() };
+  const service = { config, list: vi.fn((_limit = 100): InboxJob[] => []), get: vi.fn((): InboxJob | undefined => undefined),
+    source: stubLarkSource(config, { manual: vi.fn(async () => ({ id: 'job1' })) }),
+    decide: vi.fn(async () => {}), stopAnalysis: vi.fn<WorkItemService['stopAnalysis']>() };
   const lark = { call: vi.fn(async () => ({ messages: [] })), checkOwner: vi.fn(async () => {}),
     recent: vi.fn(async () => ({ chats: [], next: '' })) };
   let commands: object[] = []; let failReceipt = false;
@@ -32,8 +34,8 @@ async function setup(compactSync = false) {
   const changeMode = vi.fn(async (mode: string) => { config.enabled = mode !== 'off'; });
   const changeScope = vi.fn(async (scope: IntakeScope) => { service.config.intakeScope = scope; });
   const taskSources = { select: vi.fn(() => undefined), list: vi.fn((_limit = 500): InboxJob[] => []), command: vi.fn(async () => ({ handled: false })) };
-  const make = () => { const worker = new InboxGui(service as unknown as InboxService, lark as unknown as InboxLark,
-    'cli_test', ledger, request, changeMode, changeScope, taskSources as unknown as InboxTaskSources); workers.push(worker); return worker; };
+  const make = () => { const worker = new InboxGui(service as unknown as WorkItemService<InboxConfig>, lark as unknown as InboxLark,
+    'cli_test', ledger, request, changeMode, changeScope, taskSources as unknown as WorkItemSources); workers.push(worker); return worker; };
   const worker = make();
   return { key, ledger, changeMode, changeScope, service, lark, request, worker, make, taskSources,
     commands: (value: object[]) => { commands = value; }, failReceipt: () => { failReceipt = true; } };
@@ -98,17 +100,17 @@ describe('hosted inbox connection', () => {
   it('persists execution before remote acknowledgement and replays the receipt after restart', async () => {
     const s = await setup(); s.commands([command('manual', 'oc_source')]); s.failReceipt();
     await s.worker.start(); await vi.waitFor(() => expect(s.worker.lastError).toContain('503'));
-    expect(s.service.manual).toHaveBeenCalledTimes(1); expect(s.service.manual).toHaveBeenCalledWith('oc_source', id);
+    expect(s.service.source.manual).toHaveBeenCalledTimes(1); expect(s.service.source.manual).toHaveBeenCalledWith('oc_source', id);
     expect(JSON.parse(await readFile(s.ledger, 'utf8')).receipts[id].ok).toBe(true);
     await s.worker.close(); const restarted = s.make(); await restarted.start();
     await vi.waitFor(() => expect(restarted.lastError).toContain('503'));
-    expect(s.service.manual).toHaveBeenCalledTimes(1);
+    expect(s.service.source.manual).toHaveBeenCalledTimes(1);
   });
   it.each([['shell', 'rm anything', 60000], ['manual', 'oc_source', -1000]])('rejects invalid or expired command %s', async (action, target, expiry) => {
     const s = await setup(); s.commands([{ ...command(action, target), expiresAt: Date.now() + expiry }]);
     await s.worker.start(); await vi.waitFor(() => expect(s.request).toHaveBeenCalledTimes(2));
     const body = JSON.parse(String(s.request.mock.calls[1]?.[1]?.body));
-    expect(body.ok).toBe(false); expect(s.service.manual).not.toHaveBeenCalled(); expect(s.service.decide).not.toHaveBeenCalled();
+    expect(body.ok).toBe(false); expect(s.service.source.manual).not.toHaveBeenCalled(); expect(s.service.decide).not.toHaveBeenCalled();
   });
   it('switches modes while off, syncs confirmation before acknowledgement, and does not replay a mode change', async () => {
     const s = await setup(); s.service.config.enabled = false; s.commands([command('mode', 'on')]);
@@ -124,7 +126,7 @@ describe('hosted inbox connection', () => {
     const s = await setup(); s.service.config.enabled = false; s.commands([command(action, 'oc_source')]);
     await s.worker.start(); await vi.waitFor(() => expect(s.request).toHaveBeenCalledTimes(2));
     expect(JSON.parse(String(s.request.mock.calls[1]?.[1]?.body)).ok).toBe(false);
-    expect(s.lark.recent).not.toHaveBeenCalled(); expect(s.service.manual).not.toHaveBeenCalled();
+    expect(s.lark.recent).not.toHaveBeenCalled(); expect(s.service.source.manual).not.toHaveBeenCalled();
     expect(s.service.decide).not.toHaveBeenCalled();
   });
   it('rejects invalid mode values without writing configuration', async () => {
@@ -152,7 +154,7 @@ it('acknowledges a persisted scope while off without starting work', async () =>
   expect(s.changeScope).toHaveBeenCalledWith('all');
   const sync = JSON.parse(String(s.request.mock.calls[1]?.[1]?.body));
   expect(sync.snapshot).toMatchObject({ intakeScope: 'all', scopeControl: true, enabled: false });
-  expect(s.changeMode).not.toHaveBeenCalled(); expect(s.service.manual).not.toHaveBeenCalled();
+  expect(s.changeMode).not.toHaveBeenCalled(); expect(s.service.source.manual).not.toHaveBeenCalled();
   await s.worker.tick(); expect(s.changeScope).toHaveBeenCalledTimes(1);
 });
 it('rejects unknown intake scopes', async () => {

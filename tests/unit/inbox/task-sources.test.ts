@@ -5,28 +5,32 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { normalizeInbox } from '../../../src/inbox/config';
-import { InboxService } from '../../../src/inbox/service';
-import { InboxStore } from '../../../src/inbox/store';
-import { InboxAnalysisQueue, type InboxTaskEvent } from '../../../src/inbox/task-source';
+import { WorkItemService } from '../../../src/work-items/service';
+import { EventSource } from '../../../src/work-items/event-source';
+import { larkRuntime } from '../../../src/monitoring/sources/lark/runtime';
+import { WorkItemStore } from '../../../src/work-items/store';
+import { WorkItemScheduler } from '../../../src/work-items/scheduler';
+import type { WorkItemEvent } from '../../../src/work-items/events';
 import type { InboxIO } from '../../../src/inbox/types';
 import { guiContent, guiSummary } from '../../../src/inbox/presentation';
-import { InboxTaskSources } from '../../../src/inbox/task-sources';
+import { WorkItemSources } from '../../../src/work-items/registry';
 import { workItemTarget } from '../../../src/inbox/lark-target';
 
-const services: InboxService[] = [];
-const sources: InboxTaskSources[] = [];
+const services: WorkItemService[] = [];
+const sources: WorkItemSources[] = [];
 afterEach(async () => { await Promise.all(services.splice(0).map(s => s.close())); await Promise.all(sources.splice(0).map(s => s.close())); });
-const event: InboxTaskEvent = { key: 'pipeline-10-jobs-20', title: 'repo CI #10', reason: 'CI 失败', url: 'https://gitlab.test/ci/10', time: 1,
+const event: WorkItemEvent = { key: 'pipeline-10-jobs-20', title: 'repo CI #10', reason: 'CI 失败', url: 'https://gitlab.test/ci/10', time: 1,
   data: { pipeline: 10 }, evidenceDir: '/private/ci/10' };
 const result = { text: JSON.stringify({ replyDraft: '结论', analysis: '核对过日志', missingInfo: '' }), inputTokens: 1, outputTokens: 2 };
-async function setup(overrides: Partial<InboxIO> = {}, enabled = true, queue?: InboxAnalysisQueue) {
+async function setup(overrides: Partial<InboxIO> = {}, enabled = true, queue?: WorkItemScheduler) {
   let now = 1000;
   const io: InboxIO = { checkOwner: vi.fn(async () => {}), collect: vi.fn(async () => []), context: vi.fn(async () => []),
     source: vi.fn(async () => ({ name: 'unused', type: 'group' as const })), deliver: vi.fn(async () => {}), analyze: vi.fn(async () => result),
-    taskSource: { id: 'gitlab-ci', accepts: () => true }, ...overrides };
-  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-source-')), 'state.sqlite'));
-  const config = normalizeInbox({ enabled, recipientKey: 'ou_owner', executorProfile: 'codex', watchPrivate: false, watchMentions: false });
-  const service = new InboxService(store, config, io, () => now, queue); services.push(service); await service.start();
+    ...overrides };
+  const store = new WorkItemStore(join(await mkdtemp(join(tmpdir(), 'inbox-source-')), 'state.sqlite'));
+  const config = normalizeInbox({ enabled, recipientKey: 'ou_owner', executorProfile: 'codex' });
+  const runtime = { ...larkRuntime(config, io, () => now), source: new EventSource('gitlab-ci', () => true) };
+  const service = new WorkItemService(store, config, runtime, () => now, queue); services.push(service); await service.start();
   return { service, store, io, config, advance: () => { now += 300_000; } };
 }
 
@@ -47,7 +51,7 @@ it('persists before acknowledging an event and does not accept a failed save', a
   const s = await setup(); const save = vi.spyOn(s.store, 'save').mockRejectedValueOnce(Error('disk full'));
   await expect(s.service.submitTask(event)).rejects.toThrow('disk full'); expect(s.service.list()).toHaveLength(0);
   save.mockRestore(); await s.service.submitTask(event);
-  const persisted = new InboxStore(s.store.path); await persisted.load();
+  const persisted = new WorkItemStore(s.store.path); await persisted.load();
   expect(persisted.data.jobs).toHaveLength(1);
 });
 
@@ -68,7 +72,7 @@ it('limits automatic analysis attempts but keeps explicit retries under user con
     await s.service.tick(); await vi.waitFor(() => expect(s.service.get(job.id)?.state).toBe(i === 2 ? 'failed' : 'queued')); s.advance();
   }
   await s.service.tick(); expect(s.io.analyze).toHaveBeenCalledTimes(3);
-  const persisted = new InboxStore(s.store.path); await persisted.load();
+  const persisted = new WorkItemStore(s.store.path); await persisted.load();
   expect(JSON.stringify(persisted.data)).not.toContain('private upstream');
   await s.service.decide(job.id, 'process', 'ou_owner'); await s.service.tick();
   await vi.waitFor(() => expect(s.service.get(job.id)?.state).toBe('failed'));
@@ -103,7 +107,7 @@ it('keeps pending events on source disable', async () => {
 });
 
 it('serializes sources with one shared queue and cancellation cannot hold the next task', async () => {
-  const queue = new InboxAnalysisQueue(1); let finish!: (value: typeof result) => void;
+  const queue = new WorkItemScheduler(1); let finish!: (value: typeof result) => void;
   const first = await setup({ analyze: vi.fn(() => new Promise<typeof result>(resolve => { finish = resolve; })) }, true, queue);
   const second = await setup({}, true, queue); const third = await setup({}, true, queue);
   await first.service.submitTask(event); const b = await second.service.submitTask(event); await third.service.submitTask(event);
@@ -115,7 +119,7 @@ it('serializes sources with one shared queue and cancellation cannot hold the ne
 
 it('lets the workbench inspect disabled source history, rejects mixed batch actions and hides driver payloads', async () => {
   const path = join(await mkdtemp(join(tmpdir(), 'inbox-source-registry-')), 'config.json');
-  const registry = new InboxTaskSources(path); sources.push(registry);
+  const registry = new WorkItemSources(path); sources.push(registry);
   const driver = { accepts: () => true, prepare: vi.fn() };
   const a = await registry.connect(createWorkItemSource({ id: 'gitlab-ci', label: 'CI', profile: 'codex', enabled: false, executor: () => undefined, driver }));
   const b = await registry.connect(createWorkItemSource({ id: 'another-watch', label: 'Other', profile: 'claude', enabled: false, executor: () => undefined, driver }));

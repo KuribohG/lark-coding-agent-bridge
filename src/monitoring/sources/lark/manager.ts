@@ -23,23 +23,24 @@ import { createLarkRuntimeAgent } from '../../../channels/lark/agent-host';
 import { triageWithChatTools } from './codex-triage';
 import { InboxReadTools } from './read-tools';
 import { InboxLark } from '../../../inbox/lark';
-import { InboxService } from '../../../inbox/service';
-import { InboxStore } from '../../../inbox/store';
+import { WorkItemService } from '../../../work-items/service';
+import { WorkItemStore } from '../../../work-items/store';
 import { InboxH5Auth } from '../../../inbox/h5-auth';
 import { startInboxH5 } from '../../../inbox/h5-server';
 import { InboxCards, type InboxCardContext } from '../../../inbox/cards';
 import { CallbackAuth } from '../../../card/callback-auth';
 import { CallbackNonceStore } from '../../../card/callback-store';
 import { InboxGui } from '../../../inbox/gui';
-import { InboxTaskSources } from '../../../inbox/task-sources';
+import { WorkItemSources } from '../../../work-items/registry';
 import { startInboxControl, type InboxControlHandle } from '../../../inbox/control-server';
 import { larkRuntime } from './runtime';
+import { larkSource } from './source';
 
 const connectionConfig = ({ enabled: _, intakeScope: __, analysisTimeoutMinutes: ___, workbenchUrl: ____, ...config }: InboxConfig) => config;
 
 export class InboxManager {
-  readonly sources: InboxTaskSources;
-  private service?: InboxService;
+  readonly sources: WorkItemSources;
+  private service?: WorkItemService<InboxConfig>;
   private cards?: InboxCards;
   private lark?: InboxLark;
   private nonces?: CallbackNonceStore;
@@ -55,8 +56,8 @@ export class InboxManager {
   private closed = false;
   private sectionError?: string;
   error?: string;
-  constructor(private configPath: string, private profiles: LarkMonitorProfiles, private rootDir?: string, private sharedSources?: InboxTaskSources) {
-    this.sources = sharedSources ?? new InboxTaskSources(configPath);
+  constructor(private configPath: string, private profiles: LarkMonitorProfiles, private rootDir?: string, private sharedSources?: WorkItemSources) {
+    this.sources = sharedSources ?? new WorkItemSources(configPath);
     this.timer = setInterval(() => { void this.reconcile(); }, 15_000);
     this.timer.unref();
   }
@@ -197,7 +198,7 @@ export class InboxManager {
       if (this.service && (!executor || !supportsBackgroundProfile(executor.profileConfig))) await this.stop();
     }); this.chain = p.catch(() => {}); return p;
   }
-  private async changeMode(service: InboxService, mode: InboxMode): Promise<void> {
+  private async changeMode(service: WorkItemService<InboxConfig>, mode: InboxMode): Promise<void> {
     // Do not reconcile here: this callback is awaited by the GUI poll itself.
     await withConfigFileLock(this.configPath, async () => {
       const root = await loadMonitorRoot(this.configPath);
@@ -209,7 +210,7 @@ export class InboxManager {
       await service.setMode(mode, async () => { root.inbox = config; await saveMonitorRoot(root, this.configPath); });
     });
   }
-  private async changeScope(service: InboxService, scope: IntakeScope): Promise<void> {
+  private async changeScope(service: WorkItemService<InboxConfig>, scope: IntakeScope): Promise<void> {
     await withConfigFileLock(this.configPath, async () => {
       const root = await loadMonitorRoot(this.configPath);
       const config = normalizeInbox(root?.inbox);
@@ -217,7 +218,7 @@ export class InboxManager {
         throw new Error('助理配置正在更新，请稍后重试');
       }
       const next = normalizeInbox({ ...config, intakeScope: scope });
-      await service.setScope(scope, async () => { root.inbox = next; await saveMonitorRoot(root, this.configPath); });
+      await larkSource(service).setScope(scope, async () => { root.inbox = next; await saveMonitorRoot(root, this.configPath); });
     });
   }
   private async reload(): Promise<void> {
@@ -235,7 +236,7 @@ export class InboxManager {
           this.service.config.analysisTimeoutMinutes = latest.analysisTimeoutMinutes;
           this.service.config.workbenchUrl = latest.workbenchUrl;
         }
-        if (this.service && latest.intakeScope !== this.service.config.intakeScope) await this.service.setScope(latest.intakeScope);
+        if (this.service && latest.intakeScope !== this.service.config.intakeScope) await larkSource(this.service).setScope(latest.intakeScope);
         if (this.service && inboxMode(latest) !== inboxMode(this.service.config)) await this.service.setMode(inboxMode(latest));
       });
       this.error = undefined;
@@ -280,7 +281,7 @@ export class InboxManager {
         tenantTokens,
         request: larkAuth.request,
       });
-      this.service = new InboxService(new InboxStore(join(folder, 'state.sqlite')), config, larkRuntime(config, {
+      this.service = new WorkItemService(new WorkItemStore(join(folder, 'state.sqlite')), config, larkRuntime(config, {
         selfSenderIds: [controls.cfg.accounts.app.id, controls.botIdentity?.openId].filter((id): id is string => Boolean(id)),
         cancel: () => lark.close(),
         cancelPending: () => lark.cancelPending(),

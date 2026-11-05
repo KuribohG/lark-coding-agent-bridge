@@ -1,14 +1,13 @@
 import type { WorkItemSources } from '../work-items/registry';
-import type { InboxService } from './service';
 import type { WorkItemService } from '../work-items/service';
 import type { InboxLark } from './lark';
 import { INTAKE_SCOPES, inboxMode, type InboxMode, type IntakeScope } from './config';
 import { guiContent, guiSummary } from './presentation';
 import { obj } from './values';
-import type { InboxConfig } from './config';
+import { larkSource } from '../monitoring/sources/lark/source';
 
 /** Shared by the bundled console and optional hosted GUI; neither can send replies. */
-export async function executeInboxCommand(service: WorkItemService & { manual?: InboxService['manual'] }, lark: InboxLark | undefined, input: unknown,
+export async function executeInboxCommand(service: WorkItemService, lark: InboxLark | undefined, input: unknown,
   changeMode?: (mode: InboxMode) => Promise<void>, changeScope?: (scope: IntakeScope) => Promise<void>): Promise<unknown> {
   const command = obj(input);
   if (typeof command.id !== 'string' || !/^[\da-f-]{36}$/i.test(command.id) ||
@@ -25,7 +24,7 @@ export async function executeInboxCommand(service: WorkItemService & { manual?: 
   if (command.action === 'scope') {
     if (!changeScope || !INTAKE_SCOPES.includes(command.target as IntakeScope)) throw new Error('无效接收范围');
     await changeScope(command.target as IntakeScope);
-    return { intakeScope: (service.config as Partial<InboxConfig>).intakeScope };
+    return { intakeScope: larkSource(service).intakeScope };
   }
   if (command.action === 'batch') {
     await service.batchReview(JSON.parse(command.target), owner, command.id); return { ok: true };
@@ -42,8 +41,7 @@ export async function executeInboxCommand(service: WorkItemService & { manual?: 
     await lark.checkOwner(owner); return lark.recent(target.type, target.page);
   }
   if (command.action === 'manual') {
-    if (!service.manual) throw new Error('此来源不支持手动选择会话');
-    return { id: (await service.manual(command.target, command.id)).id };
+    return { id: (await larkSource(service).manual(command.target, command.id)).id };
   }
   const job = service.get(command.target);
   if (!job || job.ownerKey !== owner) throw new Error('待办不存在或已归档');

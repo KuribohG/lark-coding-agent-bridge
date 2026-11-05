@@ -5,12 +5,13 @@ import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { AgentAdapter, AgentEvent } from '../../../src/agent/types';
 import { normalizeInbox } from '../../../src/inbox/config';
-import { InboxAnalysisError } from '../../../src/inbox/analysis-error';
+import { WorkItemAnalysisError } from '../../../src/work-items/analysis-error';
 import { InboxLark } from '../../../src/inbox/lark';
 import { processInbox } from '../../../src/monitoring/sources/lark/processor';
-import { InboxService } from '../../../src/inbox/service';
-import { InboxStore } from '../../../src/inbox/store';
-import { InboxAnalysisQueue } from '../../../src/inbox/task-source';
+import { larkService } from '../../helpers/lark-service';
+import type { WorkItemService } from '../../../src/work-items/service';
+import { WorkItemStore } from '../../../src/work-items/store';
+import { WorkItemScheduler } from '../../../src/work-items/scheduler';
 import { executeInboxCommand } from '../../../src/inbox/workbench';
 import type { InboxIO, InboxMessage } from '../../../src/inbox/types';
 import { workItemTarget } from '../../../src/inbox/lark-target';
@@ -24,17 +25,17 @@ const message: InboxMessage = { id: 'om_source', containerId: 'oc_source', conta
   containerKind: 'direct', senderId: 'ou_sender', senderName: '同事', senderBot: false,
   time: 1_000_000, text: '请确认这个问题并回复', mentions: [] };
 const result = { text: JSON.stringify({ replyDraft: '已确认，请按这个方案继续。', analysis: '已核对相关记录。', missingInfo: '' }), inputTokens: 10, outputTokens: 20 };
-const services: InboxService[] = [];
+const services: WorkItemService[] = [];
 afterEach(async () => { await Promise.all(services.splice(0).map(s => s.close())); });
 
-async function setup(overrides: Partial<InboxIO> = {}, queue?: InboxAnalysisQueue) {
+async function setup(overrides: Partial<InboxIO> = {}, queue?: WorkItemScheduler) {
   let now = 1_000_000;
   const io: InboxIO = { checkOwner: vi.fn(async () => {}), collect: vi.fn(async kind => kind === 'p2p' ? [message] : []),
     context: vi.fn(async () => [message]), source: vi.fn(async () => ({ name: '项目群', type: 'p2p' as const })),
     beginAnalysis: vi.fn(async () => topic), deliver: vi.fn(async () => {}), analyze: vi.fn(async () => result),
     notifyAttention: vi.fn(async () => {}), triage: vi.fn<NonNullable<InboxIO['triage']>>(async j => ({ id: j.id, state: 'needed', reason: '需要回复方案' })), ...overrides };
-  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-processing-')), 'state.sqlite'));
-  const service = new InboxService(store, config(), io, () => now, queue); services.push(service); await service.start();
+  const store = new WorkItemStore(join(await mkdtemp(join(tmpdir(), 'inbox-processing-')), 'state.sqlite'));
+  const service = larkService(store, config(), io, () => now, queue); services.push(service); await service.start();
   await service.tick();
   await vi.waitFor(() => expect(service.list()[0]?.attention?.state).toBe('needed'));
   return { service, store, io, advance: (ms: number) => { now += ms; } };
@@ -70,8 +71,8 @@ it('keeps a queued cancellation across restart and new messages until the owner 
   await s.service.stopAnalysis(input, 'ou_owner', 'stop-1');
   await s.service.tick(); expect(s.io.analyze).not.toHaveBeenCalled();
   await s.service.close();
-  const store = new InboxStore(s.store.path);
-  const resumed = new InboxService(store, config(), s.io, () => 2_000_000); services.push(resumed); await resumed.start();
+  const store = new WorkItemStore(s.store.path);
+  const resumed = larkService(store, config(), s.io, () => 2_000_000); services.push(resumed); await resumed.start();
   const newMessage = { ...message, id: 'om_update', replyTo: message.id, time: 2_000_000, text: '再补充一些信息' };
   vi.mocked(s.io.collect).mockResolvedValue([newMessage]); vi.mocked(s.io.context).mockResolvedValue([newMessage]);
   await resumed.tick(); await vi.waitFor(() => expect(resumed.list()[0]?.attention?.state).toBe('needed'));
@@ -116,7 +117,7 @@ it('does not abort another analysis or concurrent screening when removing a queu
   let analysisSignal!: AbortSignal, triageSignal!: AbortSignal;
   const s = await setup({ analyze: vi.fn(async (_job, signal) => {
     analysisSignal = signal; await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true })); return result;
-  }) }, new InboxAnalysisQueue(1));
+  }) }, new WorkItemScheduler(1));
   await s.service.tick(); await vi.waitFor(() => expect(analysisSignal).toBeDefined());
   const job = s.store.data.jobs[0]!;
   s.store.data.jobs.push({ ...structuredClone(job), id: 'queued', state: 'queued' },
@@ -146,7 +147,7 @@ it('announces once before Flash runs, persists its topic and replies there with 
   expect(vi.mocked(s.io.beginAnalysis!).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(s.io.analyze).mock.invocationCallOrder[0]!);
   expect(vi.mocked(s.io.analyze).mock.calls[0]![0].analysisTarget).toEqual(topic);
   expect(s.io.notifyAttention).not.toHaveBeenCalled();
-  const saved = new InboxStore(s.store.path); await saved.load(); expect(saved.data.jobs[0]?.analysisTarget).toEqual(topic);
+  const saved = new WorkItemStore(s.store.path); await saved.load(); expect(saved.data.jobs[0]?.analysisTarget).toEqual(topic);
   await s.service.tick(); await s.service.tick();
   expect(s.io.deliver).toHaveBeenCalledTimes(1);
   expect(vi.mocked(s.io.deliver).mock.calls[0]![0]).toMatchObject({ analysisTarget: topic, replyDraft: '已确认，请按这个方案继续。' });
@@ -160,7 +161,7 @@ it('persists an idempotent announcement before sending and never analyzes when c
   await s.service.tick(); await vi.waitFor(() => expect(s.service.list()[0]?.state).toBe('queued'));
   expect(s.io.analyze).not.toHaveBeenCalled();
   const first = s.service.list()[0]!.startDelivery!;
-  const saved = new InboxStore(s.store.path); await saved.load(); expect(saved.data.jobs[0]?.startDelivery).toEqual(first);
+  const saved = new WorkItemStore(s.store.path); await saved.load(); expect(saved.data.jobs[0]?.startDelivery).toEqual(first);
   await s.service.tick(); expect(beginAnalysis).toHaveBeenCalledTimes(1);
   s.advance(60_000); await s.service.tick(); await vi.waitFor(() => expect(s.service.list()[0]?.state).toBe('ready'));
   expect(beginAnalysis.mock.calls[1]![0].startDelivery?.id).toBe(first.id);
@@ -168,12 +169,12 @@ it('persists an idempotent announcement before sending and never analyzes when c
   expect(s.io.analyze).toHaveBeenCalledTimes(1);
 });
 
-it.each([new InboxAnalysisError('rate_limit'), Error('provider failed with private diagnostic')])(
+it.each([new WorkItemAnalysisError('rate_limit'), Error('provider failed with private diagnostic')])(
   'persists and delivers a safe analysis failure reason (%s)', async error => {
     const s = await setup({ analyze: vi.fn(async () => { throw error; }) });
     await s.service.tick(); await vi.waitFor(() => expect(s.service.list()[0]?.state).toBe('failed'));
-    const expected = error instanceof InboxAnalysisError ? error.message : '分析执行失败，详情已记录；请在工作台重试';
-    const saved = new InboxStore(s.store.path); await saved.load();
+    const expected = error instanceof WorkItemAnalysisError ? error.message : '分析执行失败，详情已记录；请在工作台重试';
+    const saved = new WorkItemStore(s.store.path); await saved.load();
     expect(saved.data.jobs[0]?.error).toBe(expected);
     await s.service.tick();
     expect(s.io.deliver).toHaveBeenCalledTimes(1);
@@ -224,7 +225,7 @@ it.each(['off', 'handled'] as const)('keeps the topic but drops obsolete work wh
 it('recovers a ready result after restart without creating a topic or running Flash again', async () => {
   const s = await setup(); await s.service.tick(); await vi.waitFor(() => expect(s.service.list()[0]?.state).toBe('ready'));
   await s.service.close();
-  const restarted = new InboxService(new InboxStore(s.store.path), config(), s.io, () => 1_061_000); services.push(restarted); await restarted.start();
+  const restarted = larkService(new WorkItemStore(s.store.path), config(), s.io, () => 1_061_000); services.push(restarted); await restarted.start();
   await restarted.tick(); expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1); expect(s.io.analyze).toHaveBeenCalledTimes(1); expect(s.io.deliver).toHaveBeenCalledTimes(1);
 });
 

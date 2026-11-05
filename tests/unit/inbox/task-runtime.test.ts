@@ -9,7 +9,7 @@ import { createRootConfig, saveRootConfig } from '../../../src/config/profile-st
 import { createRuntimeAgent } from '../../../src/runtime/agent-runtime';
 import { createLarkRuntimeAgent } from '../../../src/channels/lark/agent-host';
 import { processAnalysis } from '../../../src/work-items/analysis';
-import { InboxTaskSources } from '../../../src/inbox/task-sources';
+import { WorkItemSources } from '../../../src/work-items/registry';
 
 vi.mock('../../../src/runtime/agent-runtime', async original => ({ ...await original<typeof import('../../../src/runtime/agent-runtime')>(), createRuntimeAgent: vi.fn(() => ({ isAvailable: async () => true })) }));
 vi.mock('../../../src/work-items/analysis', () => ({ processAnalysis: vi.fn(async () => ({
@@ -18,7 +18,7 @@ vi.mock('../../../src/work-items/analysis', () => ({ processAnalysis: vi.fn(asyn
 
 it('executes a registered source through the shared agent path and commits its evidence result', async () => {
   const rootDir = await mkdtemp(join(tmpdir(), 'source-runtime-'));
-  const registry = new InboxTaskSources(join(rootDir, 'config.json'));
+  const registry = new WorkItemSources(join(rootDir, 'config.json'));
   const profile = createDefaultProfileConfig({ agentKind: 'claude', accounts: { app: { id: 'cli_test', secret: 'fixture', tenant: 'feishu' } } });
   const configPath = join(rootDir, 'config.json');
   await saveRootConfig(createRootConfig('claude', profile), configPath);

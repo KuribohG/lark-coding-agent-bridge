@@ -10,13 +10,13 @@ import { normalizeInbox } from '../../../src/inbox/config';
 import type { WorkItemRuntime } from '../../../src/work-items/contracts';
 import { InboxManager } from '../../../src/monitoring/sources/lark/manager';
 import { InboxLark } from '../../../src/inbox/lark';
-import { InboxService } from '../../../src/inbox/service';
+import { WorkItemService } from '../../../src/work-items/service';
 import type { InboxJob } from '../../../src/inbox/types';
 import { processInbox } from '../../../src/monitoring/sources/lark/processor';
 import { triageWithChatTools } from '../../../src/monitoring/sources/lark/codex-triage';
 import { workItemTarget } from '../../../src/inbox/lark-target';
 
-vi.mock('../../../src/inbox/service', () => ({ InboxService: vi.fn(function (_store, config) {
+vi.mock('../../../src/work-items/service', () => ({ WorkItemService: vi.fn(function (_store, config) {
   return { config, start: vi.fn(), close: vi.fn(), list: () => [] };
 }) }));
 vi.mock('../../../src/inbox/lark', () => ({ InboxLark: vi.fn(function () { return { close: vi.fn() }; }) }));
@@ -68,14 +68,14 @@ it('rejects missing screening routing before opening Lark or invoking any model'
 it('uses and reloads an independent service on a Claude-only installation without reading Codex', async () => {
   const h = await setup(); await h.manager.reconcile();
   expect((await h.manager.view()).error).toBeUndefined();
-  const first = vi.mocked(InboxService).mock.calls[0]![2] as WorkItemRuntime;
+  const first = vi.mocked(WorkItemService).mock.calls[0]![2] as WorkItemRuntime;
   await screen(first);
   expect(triageWithChatTools).toHaveBeenLastCalledWith({ id: 'fixture' }, '', expect.objectContaining({ model: 'independent-model', key: 'independent-key', url: 'https://independent.test/v1/responses' }), expect.anything(), expect.anything(), expect.any(Function),
     undefined, undefined, expect.objectContaining({ triageMessageLimit: 17, triageMessageChars: 1000 }));
   await configureModelService(h.configPath, 'screen', { ...h.serviceConfig!, model: 'updated-model' });
   await h.manager.reconcile();
-  expect(InboxService).toHaveBeenCalledTimes(2);
-  const second = vi.mocked(InboxService).mock.calls[1]![2] as WorkItemRuntime;
+  expect(WorkItemService).toHaveBeenCalledTimes(2);
+  const second = vi.mocked(WorkItemService).mock.calls[1]![2] as WorkItemRuntime;
   await screen(second);
   expect(triageWithChatTools).toHaveBeenLastCalledWith({ id: 'fixture' }, '', expect.objectContaining({ model: 'updated-model' }), expect.anything(), expect.anything(), expect.any(Function),
     undefined, undefined, expect.objectContaining({ triageMessageLimit: 17, triageMessageChars: 1000 }));

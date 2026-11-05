@@ -176,10 +176,9 @@ The runtime supplies investigation, readiness and optional delivery hooks; the
 registry does not construct agents, Lark clients, COT or workbench commands.
 `select(ids, scope)` validates source/owner/profile boundaries before returning the
 service for a control operation. `executeSourceCommand` in the workbench adapter
-owns command decoding and presentation. Existing `InboxTaskSources` and
-`InboxTaskDriver` imports remain aliases, with the new internal registration API.
+owns command decoding and presentation.
 
-The Lark manager passes `larkRuntime()` into the same `WorkItemService` through the `InboxService` adapter. Lark source logic lives in `src/monitoring/sources/lark/source.ts`, model-decision interpretation in `src/monitoring/sources/lark/assessment.ts`, and evidence preparation in `larkInvestigationDriver`. Lark-only commands such as selecting a container or changing intake scope remain on that adapter.
+The Lark manager passes `larkRuntime()` into the same `WorkItemService`. Lark source logic lives in `src/monitoring/sources/lark/source.ts`, model-decision interpretation in `src/monitoring/sources/lark/assessment.ts`, and evidence preparation in `larkInvestigationDriver`. Lark-only commands such as selecting a container or changing intake scope are reached through `larkSource(service)`.
 
 GitLab registers `EventSource` with `ciAssessment` and `ciTaskDriver`. Its collector still validates pipeline and job status and supplies a stable failure identity; the common engine owns all subsequent handling.
 

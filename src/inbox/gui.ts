@@ -1,15 +1,15 @@
 import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { writeFileAtomic } from '../platform/atomic-write';
-import type { InboxService } from './service';
+import type { WorkItemService } from '../work-items/service';
 import type { InboxLark } from './lark';
 import { obj } from './values';
 import { guiJobs } from './presentation';
 export { guiContent, guiJobs } from './presentation';
 import { executeInboxCommand, executeSourceCommand } from './workbench';
-import type { InboxTaskSources } from './task-sources';
+import type { WorkItemSources } from '../work-items/registry';
 import { ATTENTION_RULES } from '../monitoring/sources/lark/analyzer';
-import type { IntakeScope, InboxMode } from './config';
+import type { InboxConfig, IntakeScope, InboxMode } from './config';
 import { larkTarget } from './lark-target';
 
 interface Command { id: string; action: string; target: string; expiresAt: number }
@@ -31,10 +31,10 @@ export class InboxGui {
   private ledger: Ledger;
   private abort = new AbortController();
   lastError?: string;
-  constructor(private service: InboxService, private lark: InboxLark, private appId: string,
+  constructor(private service: WorkItemService<InboxConfig>, private lark: InboxLark, private appId: string,
     private ledgerPath: string, private request: typeof fetch = fetch,
     private changeMode?: (mode: InboxMode) => Promise<void>,
-    private changeScope?: (scope: IntakeScope) => Promise<void>, private taskSources?: InboxTaskSources) {
+    private changeScope?: (scope: IntakeScope) => Promise<void>, private taskSources?: WorkItemSources) {
     this.ledger = { ownerKey: `${service.config.executorProfile}:${service.config.ownerKey}`, receipts: {} };
   }
   async start(): Promise<void> {
