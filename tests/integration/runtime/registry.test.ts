@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { configRevision } from '../../../src/config/revision';
 import {
-  readAndPrune,
+  readRegistry,
   register,
   unregister,
   type ProcessEntry,
@@ -38,7 +38,7 @@ describe('process registry', () => {
     await writeJson(registryFile, body);
     const before = await readFile(registryFile, 'utf8');
 
-    const live = readAndPrune(registryFile);
+    const live = readRegistry(registryFile);
 
     expect(live.map((item) => item.id)).toEqual(['dead', 'self']);
     expect(await readFile(registryFile, 'utf8')).toBe(before);

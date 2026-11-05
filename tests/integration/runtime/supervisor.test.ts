@@ -11,7 +11,7 @@ import {
 import { Supervisor } from '../../../src/runtime/supervisor';
 import { resolveAppPaths } from '../../../src/config/app-paths';
 import { acquireAppRuntimeLock } from '../../../src/runtime/locks';
-import { readAndPrune } from '../../../src/runtime/registry';
+import { readRegistry } from '../../../src/runtime/registry';
 
 // CI hosts have no agent CLIs installed; treat every binary as present.
 vi.mock('../../../src/agent/preflight', async (importOriginal) => ({
@@ -103,7 +103,7 @@ describe('Supervisor', () => {
   it('publishes channel activity to the process registry as it changes', async () => {
     await sup.startProfile('claude');
     const registryFile = resolveAppPaths({ rootDir: root, profile: 'claude' }).userRegistryFile;
-    const published = () => readAndPrune(registryFile).find(entry => entry.profileName === 'claude');
+    const published = () => readRegistry(registryFile).find(entry => entry.profileName === 'claude');
     expect(published()).toMatchObject({ activity: quietActivity, activityAt: expect.any(String) });
 
     activity = { ...quietActivity, turns: 1, queuedMessages: 2 };

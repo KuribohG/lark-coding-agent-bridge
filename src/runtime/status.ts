@@ -3,7 +3,7 @@ import { getBuildInfo, type BuildInfo } from '../build-info';
 import { readConfigRevision } from '../config/revision';
 import { resolveAppPaths } from '../config/app-paths';
 import { agentDisplayName } from '../agent/backend-spec';
-import { isAlive, readAndPrune, type ProcessEntry } from './registry';
+import { isAlive, readRegistry, type ProcessEntry } from './registry';
 import { ACTIVITY_HEARTBEAT_MS, isIdleActivity, type RuntimeActivity } from './activity';
 
 // Several missed heartbeats: the publisher is wedged or the process is gone.
@@ -103,7 +103,7 @@ export async function collectBridgeStatus(
   let entries: ProcessEntry[] = [];
   let registryError: string | undefined;
   try {
-    entries = readAndPrune(registryPath);
+    entries = readRegistry(registryPath);
   } catch (error) {
     registryError = error instanceof Error ? error.message : String(error);
   }

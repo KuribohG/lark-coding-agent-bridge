@@ -20,7 +20,7 @@ import type { RootConfig } from '../../config/profile-schema';
 import { resolveAppSecret } from '../../config/secret-resolver';
 import { writeFileAtomic } from '../../platform/atomic-write';
 import { acquireProfileRuntimeLock, checkRuntimeLock } from '../../runtime/locks';
-import { readAndPrune } from '../../runtime/registry';
+import { readRegistry } from '../../runtime/registry';
 import { listAllProfiles } from '../../runtime/profile-discovery';
 import { resolveProfileRuntime } from '../../runtime/profile-runtime';
 
@@ -61,7 +61,7 @@ export async function runProfileList(opts: ProfileCommandOptions = {}): Promise<
   }
 
   const registryFile = resolveAppPaths({ rootDir }).userRegistryFile;
-  const running = readAndPrune(registryFile);
+  const running = readRegistry(registryFile);
   const root = await loadRootConfig(resolveAppPaths({ rootDir }).configFile);
   const autostart = new Set(root ? getAutostartProfiles(root) : []);
   const rows = profiles.map((profile) => {

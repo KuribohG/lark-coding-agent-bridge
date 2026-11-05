@@ -16,7 +16,7 @@ import {
   materializeEnvSecretForService,
   resolveProfileRuntime,
 } from '../../runtime/profile-runtime';
-import { readAndPrune, type ProcessEntry } from '../../runtime/registry';
+import { readRegistry, type ProcessEntry } from '../../runtime/registry';
 import { checkRuntimeLock, type RuntimeLockMeta } from '../../runtime/locks';
 import { agentDisplayName } from '../../agent/backends';
 import { preFlightChecks } from '../preflight';
@@ -128,7 +128,7 @@ async function lookupProfileEntry(profile: string): Promise<ProcessEntry | undef
   const runtime = await maybeResolveProfileRuntime(profile);
   const appId = runtime?.cfg.accounts?.app?.id;
   if (!appId) return undefined;
-  return readAndPrune().find(
+  return readRegistry().find(
     (e) => e.appId === appId && e.profileName === profile && Boolean(e.botName),
   );
 }
@@ -297,7 +297,7 @@ async function waitForServiceConnect(
 ): Promise<ProcessEntry | undefined> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const live = readAndPrune();
+    const live = readRegistry();
     const fresh = live.find(
       (e) =>
         e.appId === appId &&
@@ -325,7 +325,7 @@ async function reportConnectAfter(
   const { cfg } = await resolveProfileRuntime({ profile, allowBootstrap: false });
   const appId = cfg.accounts?.app?.id ?? '';
   const beforePids = new Set(
-    readAndPrune()
+    readRegistry()
       .filter((e) => e.appId === appId && e.profileName === profile)
       .map((e) => e.pid),
   );
@@ -617,7 +617,7 @@ export async function runServiceStatus(opts: ServiceStatusOptions = {}): Promise
 
   if (webUi) {
     console.log('✓ 控制面 supervisor 正在后台运行');
-    const online = readAndPrune().filter((e) => Boolean(e.botName));
+    const online = readRegistry().filter((e) => Boolean(e.botName));
     if (online.length) {
       console.log(`  在线 bot: ${online.map((e) => e.botName).join('、')}`);
     }
@@ -680,7 +680,7 @@ async function resolveStatusTarget(
   if (opts.profile) return { serviceId: opts.profile, profile: opts.profile, webUi: false };
   let live: ProcessEntry[] = [];
   try {
-    live = readAndPrune();
+    live = readRegistry();
   } catch {
     // The runtime report will surface the registry error.
   }
