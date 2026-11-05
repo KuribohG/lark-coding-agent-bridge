@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { tryHandleCommand, runCommandHandler, type CommandContext, type Controls } from '../../../src/commands';
+import { intakeMessage } from '../../../src/channels/lark/intake';
 import { createDefaultProfileConfig, type RootConfig } from '../../../src/config/profile-schema';
 import { runtimeProfileConfig } from '../../../src/config/profile-store';
 import { resolveRunModelSettings, scopePreferences } from '../../../src/runtime/model-settings';
@@ -62,6 +63,74 @@ async function harness() {
 }
 
 describe('model and effort scope settings', () => {
+  it('switches model and effort in one command and runs the trailing prompt', async () => {
+    const h = await harness();
+    await h.command('/model provider/base high');
+    expect(await resolveRunModelSettings(h.controls, h.ctx.scope)).toMatchObject({
+      model: 'provider/base', reasoningEffort: 'high',
+    });
+    expect(h.ctx.followUpPrompt).toBeUndefined();
+
+    await h.command('/model custom/fast high 检查 这个问题');
+    expect(await resolveRunModelSettings(h.controls, h.ctx.scope)).toMatchObject({
+      model: 'custom/fast', reasoningEffort: 'high',
+    });
+    expect(h.ctx.followUpPrompt).toBe('检查 这个问题');
+    expect(encodeFixture(h.channel.sent)).toContain('开始执行');
+
+    await h.command('/model custom/slow not-an-effort 任务');
+    expect((await resolveRunModelSettings(h.controls, h.ctx.scope)).model).toBe('custom/fast');
+    expect(encodeFixture(h.channel.sent)).toContain('设置未保存');
+  });
+
+  it('submits the trailing prompt through intake after the switch', async () => {
+    const h = await harness();
+    h.controls.cfg = {
+      ...h.controls.cfg,
+      channels: { lark: { progress: 'off' } },
+    } as typeof h.controls.cfg;
+    const channel = createFakeChannel();
+    const batches: string[][] = [];
+    const pending = new PendingQueue(0, (_scope, batch) => {
+      batches.push(batch.map(message => message.content));
+    });
+    const msg = {
+      messageId: 'om-model-run',
+      chatId: 'chat-1',
+      chatType: 'p2p' as const,
+      senderId: 'owner',
+      senderName: 'Owner',
+      content: '/model custom/fast high 检查 这个问题',
+      resources: [],
+      mentionedBot: false,
+    };
+    await intakeMessage({
+      followups: {},
+      channel: channel as unknown as CommandContext['channel'],
+      resolveAgent: () => h.ctx.agent,
+      resolveAgentKind: () => 'codex' as const,
+      sessions: h.ctx.sessions,
+      workspaces: h.ctx.workspaces,
+      activeRuns: h.ctx.activeRuns,
+      pending,
+      msg,
+      controls: h.controls,
+      chatModeCache: {
+        resolveScope: async () => ({ scope: 'chat-1', threadId: undefined, mode: 'p2p' }),
+      },
+      executor: {},
+      pool: {},
+      cotClient: {},
+      preparedCots: new Map(),
+    } as unknown as Parameters<typeof intakeMessage>[0]);
+
+    await vi.waitFor(() => expect(batches).toEqual([['检查 这个问题']]));
+    expect(await resolveRunModelSettings(h.controls, 'chat-1')).toMatchObject({
+      model: 'custom/fast', reasoningEffort: 'high',
+    });
+    expect(encodeFixture(channel.sent)).toContain('开始执行');
+  });
+
   it('shows the active startup provider and refuses a provider setting without poisoning later requests', async () => {
     const h = await harness();
     const root = decodeFixture(await readFile(h.controls.configPath, 'utf8'));

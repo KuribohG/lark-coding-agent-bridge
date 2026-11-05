@@ -42,7 +42,7 @@ export const commandDefinitions = [
   { name: 'model', aliases: ['provider'], access: 'user', pending: 'preserve', arguments: 'words', channels: ['lark', 'slack'], channelHelp: {
     slack: ['`/model` — show the current engine'],
   }, help: [
-    '`/model [模型名|default]` — 当前话题/聊天的模型，支持手填',
+    '`/model [模型名|default] [强度] [任务]` — 当前话题/聊天的模型和强度；带任务时切换后立即执行',
     '`/provider` — 打开 Provider 与模型切换卡片',
   ] },
   { name: 'effort', access: 'user', pending: 'preserve', arguments: 'words', help: ['`/effort [强度|default]` — 当前话题/聊天的思考强度；全局默认用 `/config run`'] },

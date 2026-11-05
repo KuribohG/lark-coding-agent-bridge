@@ -7,7 +7,7 @@ import type { FollowupRouter } from '../../bot/followup';
 import { MAX_PENDING_CHARS_PER_SCOPE, type PendingQueue } from '../../bot/pending-queue';
 import { fetchQuotedContext } from '../../bot/quote';
 import { commandSessionCatalogIdentity } from '../../bot/session-catalog-identity';
-import { tryHandleCommand, type Controls } from '../../commands';
+import { tryHandleCommand, type CommandContext, type Controls } from '../../commands';
 import { findCommand } from '../../commands/catalog';
 import type { AgentKind } from '../../config/profile-schema';
 import {
@@ -115,7 +115,7 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
   } = deps;
   const preview = msg.content.length > 80 ? `${msg.content.slice(0, 80)}…` : msg.content;
   const { scope, threadId, mode: chatMode } = await chatModeCache.resolveScope(channel, msg);
-  const emsg: NormalizedMessage = threadId === msg.threadId ? msg : { ...msg, threadId };
+  let emsg: NormalizedMessage = threadId === msg.threadId ? msg : { ...msg, threadId };
   if (emsg.content.length > MAX_PENDING_CHARS_PER_SCOPE) {
     log.warn('intake', 'message-too-large', {
       scope,
@@ -196,7 +196,7 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
 
   const scopeAgentKind = resolveAgentKind(scope);
   const scopeAgent = resolveAgent(scope);
-  const handled = await tryHandleCommand({
+  const commandCtx: CommandContext = {
     channel,
     msg: emsg,
     scope,
@@ -219,7 +219,9 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
     runExecutor: executor,
     processPool: pool,
     controls,
-  });
+  };
+  const handled = await tryHandleCommand(commandCtx);
+  let commandFollowUp = false;
   if (handled) {
     const name = emsg.content.trim().split(/\s+/)[0];
     const definition = controls.commands?.find(name ?? '') ?? findCommand(name ?? '');
@@ -230,13 +232,23 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
       void preparedCot?.finish('cancelled');
       await pending.flushPersistence();
     }
-    log.info('intake', 'command', { scope, droppedPending: dropped.length });
-    return;
+    if (commandCtx.followUpPrompt) {
+      commandFollowUp = true;
+      emsg = { ...emsg, content: commandCtx.followUpPrompt };
+      log.info('intake', 'command-followup', {
+        scope,
+        msgId: emsg.messageId,
+        chars: emsg.content.length,
+      });
+    } else {
+      log.info('intake', 'command', { scope, droppedPending: dropped.length });
+      return;
+    }
   }
 
   const wasBusy = pending.isBlocked(scope) || Boolean(activeRuns.get(scope));
   const wasTimed = Boolean(controls.activeTimedRun?.(scope));
-  if (emsg.resources.length === 0 && deps.userQuestions) {
+  if (!commandFollowUp && emsg.resources.length === 0 && deps.userQuestions) {
     const status = await deps.userQuestions.answerWithText({
       scope, senderId: emsg.senderId, text: emsg.content,
       resolveIdentity: () => commandSessionCatalogIdentity({ msg: emsg, scope, mode: chatMode, workspaces, controls,
@@ -248,7 +260,7 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
       return;
     }
   }
-  if (emsg.resources.length === 0 && supportsRunInput(activeRuns.get(scope)?.run)) {
+  if (!commandFollowUp && emsg.resources.length === 0 && supportsRunInput(activeRuns.get(scope)?.run)) {
     const result = await deps.followups.deliver({
       scope, messageId: emsg.messageId, activeRuns,
       prepare: async () => {

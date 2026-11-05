@@ -1,6 +1,12 @@
+import type { AgentKind } from '../config/profile-schema';
 import type { CommandContext } from './types';
 import { validateModelId } from '../agent/models';
-import { parseEffort, resolveModelSettings, type ModelSettings } from '../agent/model-settings';
+import {
+  availableEfforts,
+  parseEffort,
+  resolveModelSettings,
+  type ModelSettings,
+} from '../agent/model-settings';
 import {
   modelEnvironment,
   modelProviderOptions,
@@ -20,6 +26,36 @@ function modelScopeLabel(ctx: CommandContext): string {
 
 function replyOptions(ctx: CommandContext) {
   return { replyTo: ctx.msg.messageId, ...(ctx.chatMode === 'topic' && ctx.msg.threadId ? { replyInThread: true as const } : {}) };
+}
+
+const MODEL_USAGE =
+  '用法：/model <模型名|default> [强度] [任务]；/effort <强度|default>；全局默认请用 /config run。';
+
+interface ModelCommandArguments {
+  model: string;
+  effort?: string;
+  /** Text after the model and effort, submitted as a normal run. */
+  prompt?: string;
+}
+
+/**
+ * Parse `/model <model> [effort] [prompt...]`. The prompt keeps its original
+ * whitespace; only the first one or two tokens are interpreted.
+ */
+function parseModelCommandArguments(args: string, agentKind: AgentKind): ModelCommandArguments {
+  const trimmed = args.trim();
+  const first = /^\S+/.exec(trimmed);
+  if (!first) throw new Error(MODEL_USAGE);
+  const rest = trimmed.slice(first[0].length).trimStart();
+  if (!rest) return { model: first[0] };
+
+  const second = /^\S+/.exec(rest)!;
+  const effort = second[0];
+  if (effort !== 'default' && !availableEfforts(agentKind).includes(effort)) {
+    throw new Error(MODEL_USAGE);
+  }
+  const prompt = rest.slice(effort.length).trimStart();
+  return { model: first[0], effort, ...(prompt ? { prompt } : {}) };
 }
 
 export async function handleModelCommand(field: 'model' | 'reasoningEffort', args: string, ctx: CommandContext): Promise<void> {
@@ -42,6 +78,7 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
       return;
     }
     const patch: ModelSettings = {};
+    let followUpPrompt: string | undefined;
     if (args === 'submit' && ctx.fromCardAction) {
       const form = ctx.formValue ?? {};
       const picked = form.model_pick;
@@ -57,11 +94,15 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
       );
       patch.model = qualified && qualified !== 'default' ? validateModelId(qualified) : undefined;
       patch.reasoningEffort = parseEffort(form.reasoning_effort, agentKind);
+    } else if (field === 'model') {
+      const parsed = parseModelCommandArguments(args, agentKind);
+      patch.model = parsed.model === 'default' ? undefined : validateModelId(parsed.model);
+      patch.reasoningEffort = parseEffort(parsed.effort, agentKind);
+      followUpPrompt = parsed.prompt;
     } else {
       const match = /^(\S+)$/.exec(args.trim());
-      if (!match) throw new Error('用法：/model <模型名|default> 或 /effort <强度|default>；全局默认请用 /config run。');
-      if (field === 'model') patch.model = match[1] === 'default' ? undefined : validateModelId(match[1]!);
-      else patch.reasoningEffort = parseEffort(match[1], agentKind);
+      if (!match) throw new Error('用法：/effort <强度|default>；全局默认请用 /config run。');
+      patch.reasoningEffort = parseEffort(match[1], agentKind);
     }
     const profileDefaults = agentKind === ctx.controls.profileConfig.agentKind
       ? ctx.controls.profileConfig.preferences
@@ -79,6 +120,11 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
     }
     await store.update(agentKind, ctx.scope, patch);
     saved = true;
+    if (followUpPrompt) {
+      ctx.followUpPrompt = followUpPrompt;
+      await reply(`已保存到${modelScopeLabel(ctx)}，开始执行。\n${modelSettingsSummary(next)}`);
+      return;
+    }
     await reply(`已保存到${modelScopeLabel(ctx)}。\n${modelSettingsSummary(next)}\n下一轮新任务生效，当前任务继续原设置。全局默认请用 /config run。`);
   } catch (err) {
     await reply(`${saved ? '设置已保存，但发送回执失败' : '设置未保存'}：${err instanceof Error ? err.message : String(err)}`);

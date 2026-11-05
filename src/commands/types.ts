@@ -127,6 +127,12 @@ export interface CommandContext {
   claudeHistoryProvider?: (cwd: string, limit: number, configDir?: string) => Promise<SessionSummary[]>;
   /** Set when invoked from a CardKit 2.0 form submit. Keys are input `name`s. */
   formValue?: Record<string, unknown>;
+  /**
+   * Prompt left over after the command consumed a prefix of the message.
+   * Channels that support it submit this text as a normal run once the
+   * command handler returns; other channels ignore it.
+   */
+  followUpPrompt?: string;
   /** True when this invocation came from a card button click rather than a
    * text command. Determines whether to update the existing card vs send a
    * new one. */
