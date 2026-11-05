@@ -156,7 +156,10 @@ it('replaces only the affected parallel investigation and waits for its old atte
   const item = await s.service.observe(event);
   const other = await s.service.observe({ ...event, key: 'unrelated' });
   try {
-    await s.service.tick(); await vi.waitFor(() => expect(runs).toHaveLength(2));
+    // Each dispatched run records its attempt through the serialized store
+    // before calling investigate; a Windows runner can spend most of the
+    // default 1s just opening the per-save SQLite connection.
+    await s.service.tick(); await vi.waitFor(() => expect(runs).toHaveLength(2), { timeout: 5000 });
     await s.service.observe(update(2)); await s.service.tick();
     expect(runs).toHaveLength(2);
     expect(runs[0]!.signal.aborted).toBe(true); expect(runs[1]!.signal.aborted).toBe(false);
