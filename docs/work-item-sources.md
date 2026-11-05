@@ -158,7 +158,6 @@ await source.observe({
 - Replaying the same revision and snapshot is idempotent, including reordered JSON object fields; older revisions are ignored. A conflicting snapshot at the same revision is rejected. Collectors must retain stable event data, including timestamps, during retries.
 - `operation: 'resolve'` records source recovery and suppresses obsolete automatic work. An initial resolve is accepted without running a model. A subsequent upsert can reopen the source state, subject to human controls.
 - Omitting version fields preserves the old create-only `submit` behavior. Re-submitting the same key does not change the existing item. Existing GitLab collectors retain this behavior.
-- `initial` imports an already-known outcome only when an item does not exist. It never overwrites an existing draft or delivery receipt.
 - Update persistence happens before cancelling an obsolete investigation or acknowledging acceptance. A failed save rolls back the in-memory update, allowing replay.
 
 Versioned event updates cancel an obsolete investigation and queue the current version. The old result cannot overwrite the replacement state. Lark preserves its existing incremental behavior: messages arriving during analysis remain attached; the current report is retained with its input version and then screened against the additional messages.

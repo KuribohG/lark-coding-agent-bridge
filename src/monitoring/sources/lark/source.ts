@@ -1,5 +1,5 @@
 import { type InboxConfig, type IntakeScope } from '../../../inbox/config';
-import { handlingState } from '../../../inbox/reply';
+import { handlingState } from '../../../work-items/result';
 import type { InboxIO, InboxJob, InboxMessage } from '../../../inbox/types';
 import type { SourceAdapter, SourceContext } from '../../../work-items/contracts';
 import type { SourceItem } from '../../../work-items/lifecycle';

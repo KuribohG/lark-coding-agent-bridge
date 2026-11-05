@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { replyContent, handlingState } from '../../../src/inbox/reply';
+import { analysisFields, handlingState, resultText } from '../../../src/work-items/result';
 import { guiJobs, guiContent } from '../../../src/inbox/gui';
 import type { InboxJob } from '../../../src/inbox/types';
 
@@ -8,13 +8,13 @@ const job = (id = 'one'): InboxJob => ({ id,
   state: 'done', updatedAt: 1, automatic: true, alert: false, result: '## 分析结论\n事实不足\n\n## 建议回复\n请补充版本。\n\n## 待确认事项\n目标版本' } as unknown as InboxJob);
 
 describe('reply content and sync', () => {
-  it('extracts only a dedicated draft from legacy headings and never copies undifferentiated analysis', () => {
-    expect(replyContent(job().result).replyDraft).toBe('请补充版本。');
-    expect(replyContent('分析：建议回复一些内容').replyDraft).toBe('');
-    expect(replyContent('{"replyDraft":42}').replyDraft).toBe('');
-    expect(replyContent(JSON.stringify({ replyDraft: '', analysis: '无需回复', missingInfo: '' }))).toEqual({ replyDraft: '', analysis: '无需回复', missingInfo: '' });
+  it('renders the structured report and shows only stored draft fields', () => {
+    const fields = analysisFields(JSON.stringify({ replyDraft: '请补充版本。', analysis: '事实不足', missingInfo: '目标版本' }));
+    expect(resultText(fields)).toBe(job().result);
+    expect(resultText({ ...fields, replyDraft: '', missingInfo: '' })).toContain('无需回复或信息不足');
+    expect(guiContent(job())).toMatchObject({ replyDraft: '', analysis: '', missingInfo: '' });
   });
-  it('maps legacy delivery completion to pending and preserves explicit edits including an empty draft', () => {
+  it('maps delivery completion to pending and preserves explicit edits including an empty draft', () => {
     expect(handlingState(job())).toBe('open');
     expect(guiContent({ ...job(), replyDraft: '' }).replyDraft).toBe('');
     expect(handlingState({ ...job(), state: 'claimed' })).toBe('handled');

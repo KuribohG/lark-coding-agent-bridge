@@ -96,12 +96,10 @@ it('retries an analysis after a long attempt without repeating or expiring its c
   expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1); expect(analyze).toHaveBeenCalledTimes(2);
 });
 
-it('keeps pending events on source disable and completed imports never run again', async () => {
+it('keeps pending events on source disable', async () => {
   const s = await setup({}, false); const job = await s.service.submitTask(event); await s.service.tick();
   expect(s.io.analyze).not.toHaveBeenCalled(); expect(s.service.get(job.id)?.state).toBe('queued');
   await s.service.setMode('on'); await s.service.tick(); await vi.waitFor(() => expect(s.io.analyze).toHaveBeenCalledTimes(1));
-  const imported = await s.service.submitTask({ ...event, key: 'historic', initial: { state: 'done', analysis: '旧结论', replyDraft: '旧草稿' } });
-  await s.service.tick(); expect(s.service.get(imported.id)?.analysis).toBe('旧结论'); expect(s.io.analyze).toHaveBeenCalledTimes(1);
 });
 
 it('serializes sources with one shared queue and cancellation cannot hold the next task', async () => {

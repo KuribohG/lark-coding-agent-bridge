@@ -1,5 +1,5 @@
 import type { InboxJob } from './types';
-import { handlingState, replyContent } from './reply';
+import { handlingState } from '../work-items/result';
 
 export const guiSummary = (job: InboxJob) => ({ id: job.id, name: job.sourceRef.name.slice(0, 80),
   sourceKind: job.external?.source ?? 'conversation', executorProfile: job.profile,
@@ -11,12 +11,11 @@ export const guiSummary = (job: InboxJob) => ({ id: job.id, name: job.sourceRef.
   businessState: job.businessState, evidenceVersion: job.evidenceVersion, analyzedVersion: job.analyzedVersion });
 
 export function guiContent(job: InboxJob) {
-  const legacy = replyContent(job.result);
-  const replyDraft = job.replyDraft ?? legacy.replyDraft;
+  const replyDraft = job.replyDraft ?? '';
   const draftStale = Boolean(job.draftStale && replyDraft.trim()) && handlingState(job) === 'open' &&
     job.attention?.state !== 'quiet' && job.businessState !== 'resolved';
-  const content = { replyDraft, analysis: (job.analysis ?? legacy.analysis).slice(0, 8000),
-    missingInfo: job.missingInfo ?? legacy.missingInfo, draftEdited: Boolean(job.draftEdited), draftStale,
+  const content = { replyDraft, analysis: (job.analysis ?? '').slice(0, 8000),
+    missingInfo: job.missingInfo ?? '', draftEdited: Boolean(job.draftEdited), draftStale,
     error: job.error?.slice(0, 1000), evidenceDir: job.external?.evidenceDir,
     sourceUrl: job.external ? (/^https:\/\//.test(job.external.url) ? job.external.url : '') : job.messages.find(m => /^https:\/\/applink\.(feishu\.cn|larksuite\.com)\//.test(m.link || ''))?.link?.slice(0, 1000) ||
       `https://applink.feishu.cn/client/chat/open?openChatId=${job.sourceRef.containerId}`,

@@ -27,7 +27,7 @@ async function setup(overrides: Partial<InboxIO> = {}) {
   let now = 1_000_000;
   const io: InboxIO = { checkOwner: vi.fn(async () => {}), collect: vi.fn(async kind => kind === 'p2p' ? [message()] : []),
     context: vi.fn(async () => [message()]), source: vi.fn(async () => ({ name: '源会话', type: 'p2p' as const })),
-    deliver: vi.fn(async () => {}), analyze: vi.fn(async () => ({ text: '建议回复', inputTokens: 100, outputTokens: 20 })), ...overrides };
+    deliver: vi.fn(async () => {}), analyze: vi.fn(async () => ({ text: JSON.stringify({ replyDraft: '建议回复', analysis: '已核实', missingInfo: '' }), inputTokens: 100, outputTokens: 20 })), ...overrides };
   const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-test-')), 'state.json'));
   const service = new InboxService(store, config(), io, () => now); services.push(service); await service.start();
   const advance = (ms: number) => { now += ms; };
@@ -226,7 +226,7 @@ describe('durable inbox', () => {
     expect(io.analyze).not.toHaveBeenCalled(); // suspended jobs require an explicit click
     await service.decide(job.id, 'process', 'ou_owner'); await service.tick(); await settle(service);
     expect(io.analyze).toHaveBeenCalledTimes(1);
-    expect(store.data.jobs[0]?.result).toBe('建议回复');
+    expect(store.data.jobs[0]?.replyDraft).toBe('建议回复');
   });
   it('enabled mode blocks legacy overdue and already queued automatic work, but accepts explicit processing', async () => {
     const { service, io, store, advance } = await setup(); await service.tick();
@@ -255,7 +255,7 @@ describe('durable inbox', () => {
     await vi.waitFor(() => expect(finish).toBeDefined());
     const signal = vi.mocked(io.analyze).mock.calls[0]![1]; await service.setMode('off');
     expect(signal.aborted).toBe(true);
-    finish({ text: 'obsolete', inputTokens: 1, outputTokens: 1 }); await settle(service); await service.tick();
+    finish({ text: JSON.stringify({ replyDraft: 'obsolete', analysis: 'obsolete', missingInfo: '' }), inputTokens: 1, outputTokens: 1 }); await settle(service); await service.tick();
     expect(service.list()[0]?.state).toBe('waiting'); expect(service.list()[0]?.result).toBeUndefined();
     expect(vi.mocked(io.deliver).mock.calls.some(c => c[1] === 'result')).toBe(false);
   });
@@ -299,7 +299,7 @@ describe('durable inbox', () => {
     const { service, io } = await setup({ analyze: vi.fn(() => new Promise<{ text: string; inputTokens: number; outputTokens: number }>(resolve => { finish = resolve; })) });
     const job = await service.manual('oc_source'); await service.tick();
     for (let i = 0; i < 20 && !finish; i++) await new Promise(r => setTimeout(r, 5));
-    await service.decide(job.id, 'claim', 'ou_owner'); finish({ text: 'obsolete', inputTokens: 1, outputTokens: 1 }); await settle(service); await service.tick();
+    await service.decide(job.id, 'claim', 'ou_owner'); finish({ text: JSON.stringify({ replyDraft: 'obsolete', analysis: 'obsolete', missingInfo: '' }), inputTokens: 1, outputTokens: 1 }); await settle(service); await service.tick();
     expect(service.list()[0]?.state).toBe('claimed'); expect(vi.mocked(io.deliver).mock.calls.some(c => c[1] === 'result')).toBe(false);
   });
 });
@@ -732,20 +732,6 @@ describe('lightweight attention and quiet delivery', () => {
     await vi.waitFor(() => expect(triage).toHaveBeenCalledTimes(3));
     expect(triage.mock.calls[2]![0].id).toBe(retry.id);
     expect(s.io.notifyAttention).not.toHaveBeenCalled();
-  });
-  it('migrates only unresolved legacy execution failures, not genuine uncertainty or handled items', async () => {
-    const s = await setup(); await s.service.tick(); await s.service.close();
-    const base = s.store.data.jobs[0]!;
-    s.store.data.jobs = [
-      { ...base, id: 'failed', attention: { state: 'uncertain', reason: '关注筛选未完成，请人工核对' } },
-      { ...base, id: 'genuine', attention: { state: 'uncertain', reason: '本人相关，但谁负责上线尚未确认' } },
-      { ...base, id: 'handled', handlingState: 'handled', attention: { state: 'uncertain', reason: '关注筛选未完成，请人工核对' } },
-    ];
-    await s.store.save();
-    const service = new InboxService(new InboxStore(s.store.path), s.service.config, s.io, () => 1_001_000); services.push(service); await service.start();
-    expect(service.list().find(j => j.id === 'failed')?.attention).toMatchObject({ state: 'pending', retry: { attempts: 0 } });
-    expect(service.list().find(j => j.id === 'genuine')?.attention?.state).toBe('uncertain');
-    expect(service.list().find(j => j.id === 'handled')?.attention?.state).toBe('uncertain');
   });
   it('treats ignored items as quiet, never retries them, and only rescreens after explicit restore', async () => {
     const s = await setup({ triage: vi.fn(classify) }); await s.service.tick();

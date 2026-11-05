@@ -65,7 +65,7 @@ it('retries durable inbox handoff without losing the event or leaking errors', a
   const s = await setup({ submit: vi.fn(async () => { throw Error('secret upstream diagnostic'); }) });
   for (let i = 0; i < 5; i++) { await s.service.tick(); await s.service.idle(); s.advance(); }
   expect(vi.mocked(s.io.submit).mock.calls.length).toBeGreaterThan(1);
-  expect(s.service.data.runs[0]).toMatchObject({ state: 'queued', attempts: 0 });
+  expect(s.service.data.runs[0]).toMatchObject({ state: 'queued' });
   expect(s.service.data.runs[0]?.inboxJobId).toBeUndefined();
   expect(await readFile(s.service.path, 'utf8')).not.toContain('secret upstream');
 });

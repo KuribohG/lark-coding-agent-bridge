@@ -32,11 +32,16 @@ async function setup(overrides: Partial<WorkItemRuntime> = {}) {
   return { service, store, runtime, save, poll, advance: () => { now += 60_000; } };
 }
 const ready = { state: 'ready' as const, analysisTarget: topic, result: 'old report', replyDraft: 'old draft' };
+async function observeReady(service: WorkItemService, input: typeof event = event) {
+  const job = await service.observe(input);
+  Object.assign(service.store.data.jobs.find(item => item.id === job.id)!, ready);
+  return { ...job, ...ready };
+}
 
 it('keeps collection and human edits responsive during a result send, with one in-flight attempt', async () => {
   const sending = deferred(); const finish = deferred();
   const h = await setup({ deliver: vi.fn(async () => { sending.resolve(); await finish.promise; }) });
-  const job = await h.service.observe({ ...event, initial: ready });
+  const job = await observeReady(h.service);
   const tick = h.service.tick(); await sending.promise;
   try {
     await h.service.review({ id: job.id, revision: job.revision, replyDraft: 'human draft' }, 'owner', 'edit');
@@ -54,7 +59,7 @@ it('keeps collection and human edits responsive during a result send, with one i
 it('does not apply an old result receipt to a replacement observation', async () => {
   const sending = deferred(); const finish = deferred();
   const h = await setup({ deliver: vi.fn(async () => { sending.resolve(); await finish.promise; }) });
-  const job = await h.service.observe({ ...event, initial: ready });
+  const job = await observeReady(h.service);
   const tick = h.service.tick(); await sending.promise;
   try { await h.service.observe({ ...event, revision: 2, eventId: '2', data: { newer: true } }); }
   finally { finish.resolve(); await tick; }
@@ -66,7 +71,7 @@ it('does not apply an old result receipt to a replacement observation', async ()
 it('retains a confirmed receipt after handling and waits for it during shutdown', async () => {
   const sending = deferred(); const finish = deferred();
   const h = await setup({ deliver: vi.fn(async () => { sending.resolve(); await finish.promise; }) });
-  const job = await h.service.observe({ ...event, initial: ready });
+  const job = await observeReady(h.service);
   const tick = h.service.tick(); await sending.promise;
   await h.service.batchReview({ items: [{ id: job.id, revision: job.revision }], handlingState: 'handled' }, 'owner');
   let closed = false; const closing = h.service.close().then(() => { closed = true; });
@@ -76,7 +81,7 @@ it('retains a confirmed receipt after handling and waits for it during shutdown'
 });
 
 it.each(['reservation', 'receipt'])('pauses on %s persistence failure and never starts an unreserved send', async phase => {
-  const h = await setup(); await h.service.observe({ ...event, initial: ready });
+  const h = await setup(); await observeReady(h.service);
   h.save.mockImplementation(async () => {
     const delivery = h.store.data.jobs[0]?.resultDelivery;
     if (delivery && (phase === 'reservation' || delivery.confirmedAt !== undefined)) throw Error('disk failure');
@@ -102,7 +107,7 @@ it('sends a digest snapshot outside the lock and does not notify newer evidence 
 it('keeps the result receipt when a failed edit rolls back its reservation object', async () => {
   const sending = deferred(); const finish = deferred();
   const h = await setup({ deliver: vi.fn(async () => { sending.resolve(); await finish.promise; }) });
-  const job = await h.service.observe({ ...event, initial: ready });
+  const job = await observeReady(h.service);
   const tick = h.service.tick(); await sending.promise;
   try {
     h.save.mockRejectedValueOnce(Error('disk failure'));
@@ -124,7 +129,7 @@ it('recovers an ambiguous result reservation with its original identity and retr
   const first = new WorkItemService(store, config, runtime, () => now); services.push(first);
   let restarted: WorkItemService | undefined;
   try {
-    await first.start(); const job = await first.observe({ ...event, initial: ready }); await first.tick();
+    await first.start(); const job = await observeReady(first); await first.tick();
     const reservation = first.get(job.id)!.resultDelivery!;
     expect(reservation.attempts).toBe(1); expect(reservation.id).toBeDefined();
     await first.close();

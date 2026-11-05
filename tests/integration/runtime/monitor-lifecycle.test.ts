@@ -46,7 +46,7 @@ it('keeps accepting CI observations after stopping the Lark profile, and retains
     expect(GitLabCiService).toHaveBeenCalledTimes(1);
     const run: CiRun = { id: 'a'.repeat(32), url: 'https://gitlab.test', executorProfile: 'local',
       repository: { project: 'a/b', refs: [], sourceDir: '' }, pipeline: { id: 1, status: 'failed', ref: 'main', sha: 'b'.repeat(40), web_url: '', updated_at: new Date().toISOString() },
-      createdAt: Date.now(), updatedAt: Date.now(), retryAt: 0, failures: [], attempts: 0, state: 'queued' };
+      createdAt: Date.now(), updatedAt: Date.now(), retryAt: 0, failures: [], state: 'queued' };
     const id = await collector.io.submit(run, new AbortController().signal);
     const item = supervisor.plugin<WorkItemsPlugin>('work-items')!
       .sources.list().find(job => job.id === id);

@@ -2,11 +2,10 @@ import { join } from 'node:path';
 import type { InvestigationDriver } from '../../../work-items/contracts';
 import type { WorkItemEvent as InboxTaskEvent } from '../../../work-items/events';
 import type { WorkItem as InboxJob } from '../../../work-items/types';
-import { replyContent } from '../../../work-items/result';
 import { writeFileAtomic } from '../../../platform/atomic-write';
 import type { GitLabClient } from './client';
 import type { GitLabCiConfig } from './config';
-import { prepareCi, readCiResult } from './processor';
+import { prepareCi } from './processor';
 import type { CiRun } from './service';
 import type { RuleAssessmentPolicy } from '../../../work-items/contracts';
 
@@ -38,32 +37,11 @@ export function ciTaskDriver(config: GitLabCiConfig, client?: GitLabClient): Inv
   };
 }
 
-/** Import legacy outcomes without sending again or repeating a completed investigation. */
-export async function ciTaskEvent(run: CiRun, config: GitLabCiConfig): Promise<InboxTaskEvent> {
+export function ciTaskEvent(run: CiRun, config: GitLabCiConfig): InboxTaskEvent {
   if (!/^[a-f0-9]{32}$/.test(run.id)) throw new Error('Invalid CI failure ID');
-  const initial: InboxTaskEvent['initial'] = {};
   let url = '';
   try { const parsed = new URL(run.pipeline.web_url); if (parsed.origin === new URL(config.url).origin && !parsed.username && !parsed.password) url = parsed.href; } catch { /* optional source link */ }
-  if (run.topic) initial.analysisTarget = run.topic;
-  if (run.deliveredAt) initial.deliveredAt = run.deliveredAt;
-  if (run.topic) initial.startDelivery = { id: run.id, text: `继续分析 · ${run.repository.project} CI #${run.pipeline.id}`, attempts: 0, startedAt: Date.now(), retryAt: 0, confirmed: true };
-  if (run.resultPath) {
-    try {
-      // The canonical private run path is authoritative, never an arbitrary saved path.
-      const result = await readCiResult(join(config.outputDir, run.id, 'result.json'), run.id);
-      Object.assign(initial, replyContent(result.text), { result: result.text, inputTokens: result.inputTokens, outputTokens: result.outputTokens,
-        state: run.deliveredAt || !config.notification || (run.deliveryAttempts ?? 0) > 0 ? 'done' : 'ready' });
-      if (!run.deliveredAt && (run.deliveryAttempts ?? 0) > 0) initial.error = '旧任务投递未确认，结果已导入工作台，不再自动发送';
-    } catch { initial.state = 'failed'; initial.error = '旧分析结果无法读取，请检查证据目录后手动重试'; }
-  } else if (['running', 'failed', 'ready', 'done'].includes(run.state) || run.attempts >= 3) {
-    initial.state = 'failed'; initial.error = '旧分析未完成或结果缺失，请在工作台手动重试';
-  } else if (run.state === 'obsolete') {
-    initial.businessState = 'resolved';
-    initial.state = 'done'; initial.analysis = '旧盯盘已确认本次失败过期，未重复分析。';
-    initial.replyDraft = '此失败已过期。'; initial.missingInfo = '';
-  }
-  if (initial.state === 'failed' && run.topic) initial.resultDelivery = { attempts: 3, startedAt: Date.now(), retryAt: 0 };
   return { key: run.id, title: `${run.repository.project} · CI #${run.pipeline.id}`,
     reason: `GitLab CI 失败 · ${run.pipeline.ref} · ${run.pipeline.sha.slice(0, 12)}`, url, time: run.createdAt,
-    data: run, evidenceDir: join(config.outputDir, run.id), maxAttempts: Math.max(1, 3 - run.attempts), initial };
+    data: run, evidenceDir: join(config.outputDir, run.id), maxAttempts: 3 };
 }

@@ -80,7 +80,7 @@ export class GitLabCiManager {
         pipelines: (...args) => client.pipelines(...args), failures: (...args) => client.failures(...args),
         submit: async (run, signal) => {
           signal.throwIfAborted();
-          return (await source.submit(await ciTaskEvent(run, config))).id;
+          return (await source.submit(ciTaskEvent(run, config))).id;
         },
       });
       await this.service.start();

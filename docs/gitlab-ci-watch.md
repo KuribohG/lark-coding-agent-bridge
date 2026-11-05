@@ -141,14 +141,9 @@ separate Responses API screening service. Lark notification identity remains the
 configured execution profile. No new monitor is enabled by this adapter change.
 
 
-## Existing installations
+## Handoff and lifecycle
 
-On the first active poll with this version, known legacy runs are imported into
-assistant tasks. Completed results are imported without model execution; known
-delivered results are not sent again. If an old delivery was attempted but never
-confirmed, keep the result in the workbench for review instead of resending with
-a new notification key. Missing or interrupted results require manual retry.
-Submission is acknowledged only after the assistant store is saved, so a restart
+Each new failure is submitted to the assistant as a fresh task. Submission is acknowledged only after the assistant store is saved, so a restart
 between the two stores cannot create a second task.
 
 Disabling CI stops its polling and active work, preserving history. Pausing the

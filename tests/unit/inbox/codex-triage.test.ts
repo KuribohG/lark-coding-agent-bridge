@@ -31,7 +31,7 @@ const run = (tools: InboxReadTools, request: typeof fetch, item = job('a'), sign
 
 const followUpJob = () => {
   const item = job('a');
-  item.result = JSON.stringify({ replyDraft: '原结论', analysis: '已核对原任务', missingInfo: '' });
+  item.result = '## 分析结论\n已核对原任务'; item.replyDraft = '原结论'; item.analysis = '已核对原任务'; item.missingInfo = '';
   item.messages = [{ id: 'old', time: 1000, text: '原任务', senderId: 'ou_sender', senderName: '同事', mentions: [] } as unknown as InboxJob['messages'][number]];
   item.analysisBasis = { messages: messageBasis(item.messages), attention: { state: 'needed', reason: '本人负责' } };
   for (let i = 0; i < 9; i++) item.messages.push({ ...item.messages[0]!, id: `new_${i}`, text: `补充 ${i}` });
