@@ -1,6 +1,11 @@
 import { canRunAdminCommand } from '../policy/access';
 import { log, reportMetric } from '../core/logger';
-import { commandDefinitions, type CommandDefinition } from './catalog';
+import {
+  commandDefinitions,
+  commandHelpLines,
+  parseSlashCommand,
+  type CommandDefinition,
+} from './catalog';
 import { builtinHandlers } from './builtins';
 import { reply } from './presentation';
 import type {
@@ -33,21 +38,13 @@ export class CommandRegistry implements CommandDispatcher {
   }
 
   helpLines(escapedAgentName: string): string[] {
-    return this.definitions.flatMap(definition =>
-      definition.help.map(line => `- ${line.replace('{agent}', () => escapedAgentName)}`));
+    return commandHelpLines(escapedAgentName, this.definitions);
   }
 
   async tryHandle(ctx: CommandContext): Promise<boolean> {
-    const trimmed = ctx.msg.content.trim();
-    if (!trimmed.startsWith('/')) return false;
-    const parts = trimmed.split(/\s+/);
-    const name = parts[0] ?? '';
-    const definition = this.find(name);
-    if (!definition) return false;
-    const args = definition.arguments === 'verbatim'
-      ? trimmed.slice(name.length).trimStart()
-      : parts.slice(1).join(' ');
-    return this.dispatch(definition, name, args, ctx, 'text');
+    const parsed = parseSlashCommand(ctx.msg.content, name => this.find(name));
+    if (!parsed?.definition) return false;
+    return this.dispatch(parsed.definition, `/${parsed.name}`, parsed.args, ctx, 'text');
   }
 
   async run(name: string, args: string, ctx: CommandContext): Promise<boolean> {

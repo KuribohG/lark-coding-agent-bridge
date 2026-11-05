@@ -181,9 +181,13 @@ team is pinned automatically; `--team-id` adds an additional expected-team
 check. Slack users cannot select a local workspace, executable, permission mode,
 or system prompt.
 
-The channel supports `/help`, `/status`, `/stop`, `/new`, and `/model` in text.
-Progress reuses and updates one thread message, then replaces it with the final
-answer. `[channels.slack]` controls `show_tools` and `show_progress`.
+The channel supports `/help [command]`, `/status`, `/stop`, `/new`, and `/model`
+in text. Slash command names, aliases, argument modes and help text come from the
+shared command catalog in `src/commands/catalog.ts`; `src/channels/slack/commands.ts`
+only binds Slack handlers to the commands the catalog exposes for the `slack`
+channel, and startup fails if the two lists drift. Progress reuses and updates one
+thread message, then replaces it with the final answer. `[channels.slack]` controls
+`show_tools` and `show_progress`.
 
 ## Integrate another IM
 

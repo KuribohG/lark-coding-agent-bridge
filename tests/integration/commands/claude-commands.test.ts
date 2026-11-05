@@ -153,6 +153,19 @@ describe('Claude slash command visible behavior', () => {
     expect(help).not.toContain('交给 Claude');
   });
 
+  it('shows one command with /help <command> and reports unknown names', async () => {
+    const h = await createHarness();
+
+    await expect(h.run('/help reset')).resolves.toBe(true);
+    const detail = JSON.stringify(lastContent(h.channel));
+    expect(detail).toContain('💡 /new');
+    expect(detail).toContain('别名：`/reset`');
+    expect(detail).toContain('清空当前 chat 的会话');
+
+    await expect(h.run('/help nope')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('未找到命令 `/nope`');
+  });
+
   it('reports lark-cli user-ready for structured user records', async () => {
     const h = await createHarness();
     await writeLarkCliTarget(h, {

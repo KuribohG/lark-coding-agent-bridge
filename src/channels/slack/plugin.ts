@@ -11,6 +11,7 @@ import {
 import { acquireHostLock } from '../../runtime/host-lock';
 import { createSlackApi, type SlackApi, type SlackAuthIdentity } from './api';
 import { SLACK_DISPLAY_DEFAULTS, SLACK_SYSTEM_PROMPT, type SlackDisplayConfig } from './config';
+import { handleSlackCommand, slackHelpText } from './commands';
 import { normalizeSlackText, toSlackMrkdwn } from './format';
 import { createSlackRunOutput } from './output';
 import { SlackThreadStore } from './thread-store';
@@ -126,17 +127,18 @@ async function startSlackChannel(options: SlackChannelOptions): Promise<SlackCon
 
       const prompt = normalizeSlackText(event.text, identity.userId);
       if (!prompt) {
-        await reply(api, event, helpText(identity));
+        await reply(api, event, slackHelpText(identity.userId));
         return;
       }
 
       if (!isDm) await threads.add(event.channel, rootTs);
 
-      const command = parseCommand(prompt);
-      if (command) {
-        await handleCommand(command, activeRuntime, api, event, identity, botIdentity);
-        return;
-      }
+      if (await handleSlackCommand(prompt, {
+        runtime: activeRuntime,
+        identity: { actorId: event.user, conversationId: conversationId(event.channel, rootTs) },
+        botUserId: identity.userId,
+        reply: text => reply(api, event, text),
+      })) return;
 
       const reactionAdded = await addReaction(api, event, 'eyes');
       try {
@@ -216,89 +218,6 @@ function normalizeEvent(
   if (event.bot_id || event.subtype || !event.user || !event.ts || !event.text) return undefined;
   if (event.user === identity.userId) return undefined;
   return event as MessageEvent;
-}
-
-function parseCommand(input: string): string | undefined {
-  const match = /^\/([a-z][a-z0-9_-]*)\b/i.exec(input);
-  return match?.[1]?.toLowerCase();
-}
-
-async function handleCommand(
-  command: string,
-  runtime: ConversationRuntime,
-  api: SlackApi,
-  event: MessageEvent,
-  identity: SlackAuthIdentity,
-  botIdentity: AgentBotIdentity,
-): Promise<void> {
-  const who = {
-    actorId: event.user,
-    conversationId: conversationId(event.channel, event.thread_ts ?? event.ts),
-  };
-  switch (command) {
-    case 'help':
-      await reply(api, event, helpText(identity));
-      return;
-    case 'new': {
-      try {
-        const reset = await runtime.reset(who);
-        await reply(api, event, reset ? 'Started a new session in this thread.' : 'This thread has no previous session.');
-      } catch (error) {
-        await reply(api, event, errorMessage(error));
-      }
-      return;
-    }
-    case 'status': {
-      try {
-        const status = await runtime.status(who);
-        await reply(
-          api,
-          event,
-          [
-            `*Engine:* ${status.agentKind}`,
-            `*State:* ${status.activeRunId ? 'running' : 'idle'}`,
-            ...(status.activeRunId ? [`*Run:* \`${status.activeRunId}\``] : []),
-          ].join('\n'),
-        );
-      } catch (error) {
-        await reply(api, event, errorMessage(error));
-      }
-      return;
-    }
-    case 'stop': {
-      try {
-        const status = await runtime.status(who);
-        if (!status.activeRunId) {
-          await reply(api, event, 'No active run in this thread.');
-          return;
-        }
-        const stopped = await runtime.stop(who, status.activeRunId);
-        await reply(api, event, stopped ? 'Stopping the active run.' : 'The run is no longer active.');
-      } catch (error) {
-        await reply(api, event, errorMessage(error));
-      }
-      return;
-    }
-    case 'model': {
-      const status = await runtime.status(who);
-      await reply(api, event, `This thread is using *${status.agentKind}*. Engine switching is available through the API in this version.`);
-      return;
-    }
-    default:
-      await reply(api, event, `Unknown command: /${command}\n\n${helpText(identity, botIdentity)}`);
-  }
-}
-
-function helpText(identity: SlackAuthIdentity, botIdentity?: AgentBotIdentity): string {
-  return [
-    '*Bridge commands*',
-    '• `/status` — show engine and run state',
-    '• `/stop` — stop the active run',
-    '• `/new` — forget this thread\'s native session',
-    '• `/model` — show the current engine',
-    '',
-    `Mention <@${botIdentity?.openId ?? identity.userId}> in a channel to start a new thread conversation. DMs do not need a mention.`,
-  ].join('\n');
 }
 
 async function reply(api: SlackApi, event: MessageEvent, text: string): Promise<void> {

@@ -258,6 +258,45 @@ describe('Slack channel plugin', () => {
     expect(h.api.posts.at(-1)?.text).toContain('*State:* idle');
   });
 
+  it('lists commands and explains a single command', async () => {
+    const h = await harness([]);
+    await h.transport.emit(channelEvent({ type: 'app_mention', ts: '600.001', text: '<@UBOT> /help' }));
+
+    const help = h.api.posts.at(-1)?.text ?? '';
+    expect(help).toContain('*Bridge commands*');
+    expect(help).toContain('`/status` — show engine and run state');
+    expect(help).toContain('`/help [command]`');
+    expect(help).not.toContain('/config');
+
+    await h.transport.emit(channelEvent({
+      type: 'message',
+      ts: '600.002',
+      thread_ts: '600.001',
+      text: '/help status',
+    }));
+    expect(h.api.posts.at(-1)?.text).toContain('*status*');
+    expect(h.api.posts.at(-1)?.text).toContain('show engine and run state');
+
+    await h.transport.emit(channelEvent({
+      type: 'message',
+      ts: '600.003',
+      thread_ts: '600.001',
+      text: '/HELP new',
+    }));
+    expect(h.api.posts.at(-1)?.text).toContain('*new*');
+    expect(h.api.posts.at(-1)?.text).toContain("forget this thread's native session");
+    expect(h.agent.runOptions).toHaveLength(0);
+  });
+
+  it('reports unknown slash commands without invoking the agent', async () => {
+    const h = await harness([]);
+    await h.transport.emit(channelEvent({ type: 'app_mention', ts: '610.001', text: '<@UBOT> /nope' }));
+
+    expect(h.api.posts.at(-1)?.text).toContain('Unknown command: /nope');
+    expect(h.api.posts.at(-1)?.text).toContain('*Bridge commands*');
+    expect(h.agent.runOptions).toHaveLength(0);
+  });
+
   it('can suppress intermediate messages while retaining the final answer', async () => {
     const h = await harness([[
       { type: 'text', delta: 'intermediate' },

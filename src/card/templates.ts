@@ -192,6 +192,7 @@ export function helpCard(agentName = 'Agent', helpLines?: readonly string[]): ob
         '',
         ...(helpLines ?? commandHelpLines(escapedAgentName)),
         '',
+        '发送 `/help <命令>` 查看单条命令详情。',
         `其他内容直接交给 ${escapedAgentName}。`,
       ].join('\n'),
     ),
@@ -201,6 +202,24 @@ export function helpCard(agentName = 'Agent', helpLines?: readonly string[]): ob
       { text: '🔁 恢复会话', value: { cmd: 'resume' } },
       { text: '📂 工作目录', value: { cmd: 'ws.list' } },
       { text: '🆕 新会话', value: { cmd: 'new' } },
+    ]),
+  ]);
+}
+
+export function helpDetailCard(
+  name: string,
+  helpLines: readonly string[],
+  aliases?: readonly string[],
+): object {
+  const aliasLine = aliases && aliases.length > 0
+    ? `别名：${aliases.map(alias => `\`/${alias}\``).join('、')}`
+    : undefined;
+  return shell(`💡 /${name}`, [
+    divMd([...(aliasLine ? [aliasLine, ''] : []), ...helpLines].join('\n')),
+    HR,
+    actions([
+      { text: '💡 全部命令', value: { cmd: 'help' }, style: 'primary' },
+      { text: '📊 状态', value: { cmd: 'status' } },
     ]),
   ]);
 }
