@@ -82,11 +82,20 @@ try {
 
   # A minimal package.json: keep runtime dependencies, drop the workspace
   # package (tsup already bundled it into dist/) and all lifecycle scripts so
-  # `npm install` cannot trigger another build.
+  # `npm install` cannot trigger another build. Pin every direct dependency to
+  # the version pnpm installed from the lockfile; npm ignores pnpm-lock.yaml,
+  # and resolving the ranges here would ship a tree the tests never covered
+  # (smol-toml 1.9 changed table prototypes and broke config parsing).
   $dependencies = [ordered]@{}
   foreach ($property in $package.dependencies.PSObject.Properties) {
     if ([string]$property.Value -like 'workspace:*') { continue }
-    $dependencies[$property.Name] = [string]$property.Value
+    $name = [string]$property.Name
+    $installed = Join-Path (Join-Path $repo 'node_modules') (Join-Path $name 'package.json')
+    if (-not (Test-Path -LiteralPath $installed)) {
+      throw "runtime dependency '$name' is not installed; run pnpm install first"
+    }
+    $installedPackage = Get-Content -LiteralPath $installed -Raw | ConvertFrom-Json
+    $dependencies[$name] = [string]$installedPackage.version
   }
   $stagedPackage = [ordered]@{
     name         = [string]$package.name

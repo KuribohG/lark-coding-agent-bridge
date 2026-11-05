@@ -71,6 +71,20 @@ if ($helpCode -ne 0) {
 }
 Assert (Test-Path -LiteralPath (Join-Path $installDir 'app\node_modules\better-sqlite3')) 'better-sqlite3 is not installed'
 
+Write-Host '==> config check parses a TOML document'
+$checkOut = Join-Path $env:TEMP 'lark-cli-config-check.out'
+$checkErr = Join-Path $env:TEMP 'lark-cli-config-check.err'
+Remove-Item -LiteralPath $checkOut, $checkErr -Force -ErrorAction SilentlyContinue
+$configSample = Join-Path $PSScriptRoot '..\docs\config.example.toml'
+Assert (Test-Path -LiteralPath $configSample) "config sample missing: $configSample"
+& $cli config check --config $configSample > $checkOut 2> $checkErr
+$checkCode = $LASTEXITCODE
+if ($checkCode -ne 0) {
+  $checkText = ((Get-Content -LiteralPath $checkOut -Raw -ErrorAction SilentlyContinue) +
+    (Get-Content -LiteralPath $checkErr -Raw -ErrorAction SilentlyContinue))
+  throw "config check exited with $checkCode; output: $checkText"
+}
+
 Write-Host '==> version reports the built commit'
 $version = (& $cli --version | Out-String).Trim()
 Write-Host "version: $version"
