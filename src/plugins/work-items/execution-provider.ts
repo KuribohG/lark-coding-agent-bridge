@@ -23,7 +23,7 @@ export class ProfileExecutionProvider implements ExecutionProvider {
     catch (error) { this.revoke(name); throw error; }
     if (!profile || !supportsBackgroundProfile(profile)) { this.revoke(name); return; }
     const key = JSON.stringify([profile.agentKind, profile.mode, agentLaunches(profile),
-      profile.sandbox, profile.permissions, profile.permissionSource, profile.access, profile.workspaces, profile.larkCli]);
+      profile.permissions, profile.access, profile.workspaces, profile.larkCli]);
     let policy = this.policies.get(name);
     if (!policy || policy.key !== key) {
       this.revoke(name); policy = { key, controller: new AbortController() }; this.policies.set(name, policy);

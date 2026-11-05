@@ -69,7 +69,6 @@ export function normalizeRootConfig(root: RootConfig): RootConfig {
   for (const [name, profile] of Object.entries(root.profiles)) {
     profiles[name] = normalizeProfileConfig(profile);
   }
-  const migrations = normalizeRootMigrations(root.migrations);
   const monitoring = normalizeMonitorRootValues({
     inbox: root.inbox,
     gitlabCi: root.gitlabCi,
@@ -90,7 +89,6 @@ export function normalizeRootConfig(root: RootConfig): RootConfig {
     // Raw global launch layers; dropping them would lose [agents.*] on a fallback save.
     ...(root.agentLaunches ? { agentLaunches: root.agentLaunches } : {}),
     ...(root.secrets ? { secrets: root.secrets } : {}),
-    ...(migrations ? { migrations } : {}),
     profiles,
   };
 }
@@ -169,7 +167,7 @@ export async function writeActiveProfile(rootDir: string, profile: string): Prom
   await writeFileAtomic(activeProfileFile, `${profile}\n`, { mode: 0o600 });
 }
 
-/** Supervisor boot set. Missing config preserves the legacy active-profile behavior. */
+/** Supervisor boot set. Without `autostart_profiles`, only the active profile starts. */
 export function getAutostartProfiles(root: Pick<RootConfig, 'activeProfile' | 'autostartProfiles' | 'profiles'>): string[] {
   const configured = root.autostartProfiles ?? (root.activeProfile ? [root.activeProfile] : []);
   return uniqueSortedStrings(configured).filter(name => Boolean(root.profiles[name]));
@@ -192,7 +190,6 @@ export function createRootConfig(profile: string, cfg: ProfileConfig, secrets = 
     activeProfile: profile,
     preferences: {},
     ...(secrets ? { secrets } : {}),
-    migrations: { permissionDefaultsV1: [profile] },
     profiles: {
       [profile]: {
         ...cfg,
@@ -200,30 +197,6 @@ export function createRootConfig(profile: string, cfg: ProfileConfig, secrets = 
       },
     },
   };
-}
-
-export function hasPermissionDefaultsMigration(root: RootConfig, profile: string): boolean {
-  return root.migrations?.permissionDefaultsV1?.includes(profile) ?? false;
-}
-
-export function markPermissionDefaultsMigration(root: RootConfig, profile: string): RootConfig {
-  const permissionDefaultsV1 = uniqueSortedStrings([
-    ...(root.migrations?.permissionDefaultsV1 ?? []),
-    profile,
-  ]);
-  return {
-    ...root,
-    migrations: {
-      ...root.migrations,
-      permissionDefaultsV1,
-    },
-  };
-}
-
-function normalizeRootMigrations(input: RootConfig['migrations'] | undefined): RootConfig['migrations'] | undefined {
-  if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
-  const permissionDefaultsV1 = uniqueSortedStrings(input.permissionDefaultsV1);
-  return permissionDefaultsV1.length > 0 ? { permissionDefaultsV1 } : undefined;
 }
 
 function uniqueSortedStrings(input: unknown): string[] {

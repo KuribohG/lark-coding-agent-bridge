@@ -43,10 +43,7 @@ describe('first-run profile bootstrap', () => {
     expect(profile.codex?.realpath).toBeUndefined();
     expect(profile.codex?.version).toBeUndefined();
     expect(profile.codex?.sha256).toBeUndefined();
-    expect(profile.sandbox).toMatchObject({
-      defaultMode: 'danger-full-access',
-      maxMode: 'danger-full-access',
-    });
+    expect(profile.permissions).toEqual({ defaultAccess: 'full', maxAccess: 'full' });
     await expect(stat(join(profileDir, 'codex-home'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
 

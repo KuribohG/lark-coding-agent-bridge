@@ -290,8 +290,6 @@ bridge 会检查所选目录存在、是目录，并且不是 `/`、Home 根、�
 | `workspace` | `acceptEdits` | `workspace-write` |
 | `read-only` | `plan` | `read-only` |
 
-旧版 `sandbox` 字段仍可读取。bridge 保存 profile 后，会把该设置迁移为 canonical `permissions`。
-
 Pi 支持 `read-only`（只开放读取/搜索工具）和 `full`。Pi 没有可移植的 workspace-only 沙箱，因此会在选择 `workspace` 引擎时明确拒绝。
 
 ## 数据目录

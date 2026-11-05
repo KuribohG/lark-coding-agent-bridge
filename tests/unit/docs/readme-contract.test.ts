@@ -96,14 +96,12 @@ describe('documentation runtime contract', () => {
     expect(docs).not.toContain('/doc ws bind');
   });
 
-  it('documents canonical permissions instead of recommending legacy sandbox config', async () => {
+  it('documents canonical permissions', async () => {
     const docs = await readDocs();
 
     expect(docs).toContain('"permissions"');
     expect(docs).toContain('"defaultAccess": "full"');
     expect(docs).toContain('"maxAccess": "full"');
-    expect(docs).toContain('legacy `sandbox`');
-    expect(docs).toContain('旧版 `sandbox`');
     expect(docs).not.toContain('"sandbox"');
   });
 });

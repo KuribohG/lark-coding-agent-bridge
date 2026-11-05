@@ -97,10 +97,7 @@ describe('profile create command', () => {
     expect(saved.profiles['codex-dev']?.agentKind).toBe('codex');
 
     const loaded = await loadRootConfig(configPath);
-    expect(loaded?.profiles['codex-dev']?.sandbox).toMatchObject({
-      defaultMode: 'danger-full-access',
-      maxMode: 'danger-full-access',
-    });
+    expect(loaded?.profiles['codex-dev']?.permissions).toEqual({ defaultAccess: 'full', maxAccess: 'full' });
   });
 
   it('refuses to overwrite an existing profile', async () => {

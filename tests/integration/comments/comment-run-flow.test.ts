@@ -566,7 +566,7 @@ function profile(defaultWorkspace: string, agentKind: 'claude' | 'codex' = 'clau
     agentKind,
     accounts: { app: { id: 'cli_test', secret: '${APP_SECRET}', tenant: 'feishu' } },
     access: { allowedUsers: ['ou-user'] },
-    sandbox: { defaultMode: 'read-only', maxMode: 'workspace-write' },
+    permissions: { defaultAccess: 'read-only', maxAccess: 'workspace' },
     ...(agentKind === 'codex' ? { codex: { binaryPath: 'codex' } } : {}),
   });
   config.workspaces.default = defaultWorkspace;

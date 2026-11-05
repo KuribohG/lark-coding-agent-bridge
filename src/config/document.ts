@@ -8,11 +8,7 @@ import {
   type ProfileConfig,
   type RootConfig,
 } from './profile-schema';
-import {
-  normalizePermissions,
-  permissionsToLegacySandbox,
-  type PermissionConfig,
-} from './permissions';
+import { normalizePermissions, type PermissionConfig } from './permissions';
 import { larkDisplay } from './lark-display';
 import { validateLarkNetwork } from './lark-network';
 import { WEB_DISPLAY_DEFAULTS } from '../channels/web/config';
@@ -180,7 +176,7 @@ function checkProfile(p: Table, path: string): void {
 }
 
 function validateDocument(input: unknown): ConfigDocument {
-  const doc = keys(input, ['version', 'bridge', 'defaults', 'agents', 'state', 'channels', 'profiles', 'secrets', 'migrations', 'model_services', 'monitoring'], 'config');
+  const doc = keys(input, ['version', 'bridge', 'defaults', 'agents', 'state', 'channels', 'profiles', 'secrets', 'model_services', 'monitoring'], 'config');
   if (doc.version !== 3) throw new Error('config.version must be 3');
   if (doc.bridge !== undefined) {
     const bridge = keys(doc.bridge, ['active_profile', 'autostart_profiles', 'monitors_file'], 'bridge');
@@ -284,9 +280,8 @@ export function resolveExecutionProfile(
 ): AgentExecutionProfile {
   const profile = options.profile ? doc.profiles[options.profile] : undefined;
   if (options.profile && !profile) throw new Error(`profile not found: ${options.profile}`);
-  const configuredPermissions = profile?.permissions !== undefined || profile?.sandbox !== undefined;
-  const permissions = configuredPermissions
-    ? normalizePermissions({ permissions: profile?.permissions, sandbox: profile?.sandbox }).permissions
+  const permissions = profile?.permissions !== undefined
+    ? normalizePermissions(profile.permissions)
     : options.fallbackPermissions ?? { defaultAccess: 'full', maxAccess: 'full' };
   const launchFor = (kind: AgentKind) => {
     const inherited = doc.agents?.[kind]?.launch ?? {};
@@ -302,7 +297,6 @@ export function resolveExecutionProfile(
   return {
     agentKind,
     permissions,
-    sandbox: permissionsToLegacySandbox(permissions),
     ...resolveAgentLaunches(agentKind, launchFor),
     ...(doc.state ? { state: parseAgentStateTable(doc.state) } : {}),
   };
@@ -343,7 +337,7 @@ export function documentToRoot(doc: ConfigDocument): RootConfig {
     ...(agentLaunches && Object.keys(agentLaunches).length > 0 ? { agentLaunches } : {}),
     ...(doc.state ? { agentState: parseAgentStateTable(doc.state) } : {}),
     ...(doc.bridge?.monitors_file ? { monitorConfigFile: doc.bridge.monitors_file } : {}),
-    ...(doc.secrets ? { secrets: doc.secrets } : {}), ...(doc.migrations ? { migrations: doc.migrations } : {}),
+    ...(doc.secrets ? { secrets: doc.secrets } : {}),
     ...(doc.model_services ? { modelServices: doc.model_services } : {}),
     ...(doc.monitoring?.lark ? { inbox: doc.monitoring.lark } : {}),
     ...(doc.monitoring?.gitlab_ci ? { gitlabCi: doc.monitoring.gitlab_ci } : {}),
@@ -376,7 +370,6 @@ export function rootToDocument(root: RootConfig): ConfigDocument {
     if (profile.channels?.slack) (doc.channels!.slack ??= { profiles: {} }).profiles[name] = profile.channels.slack;
   }
   if (root.secrets) doc.secrets = root.secrets;
-  if (root.migrations) doc.migrations = root.migrations;
   if (root.modelServices) doc.model_services = root.modelServices;
   if (!root.monitorConfigFile && (root.inbox || root.gitlabCi || root.storageMonitor || root.workItemConcurrency !== undefined)) doc.monitoring = {
     ...(root.inbox ? { lark: root.inbox } : {}), ...(root.gitlabCi ? { gitlab_ci: root.gitlabCi } : {}),

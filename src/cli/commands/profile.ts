@@ -7,8 +7,6 @@ import {
   agentKindFromString,
   formatRootConfig,
   getAutostartProfiles,
-  hasPermissionDefaultsMigration,
-  markPermissionDefaultsMigration,
   readActiveProfile,
   removeProfile,
   runtimeProfileConfig,
@@ -273,7 +271,7 @@ export async function runProfileExport(
       resolveAppPaths({ rootDir, profile: name }),
     );
   }
-  const exportedBase: RootConfig = {
+  const exported: RootConfig = {
     schemaVersion: 2,
     activeProfile: name,
     preferences: {},
@@ -282,9 +280,6 @@ export async function runProfileExport(
       [name]: profile,
     },
   };
-  const exported = hasPermissionDefaultsMigration(root, name)
-    ? markPermissionDefaultsMigration(exportedBase, name)
-    : exportedBase;
   if (!opts.includeSecrets) {
     delete profile.secrets;
     profile.accounts.app.secret = '[REDACTED]';

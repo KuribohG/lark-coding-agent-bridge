@@ -53,9 +53,7 @@ export const PROFILE_SETTINGS: readonly SettingSpec[] = [
   { path: 'preferences.**', apply: 'live', toml: 'defaults.run / agents.<a>.run / profiles.<p>.run', note: '下一次任务生效；调大并发会立即放行排队任务' },
   { path: 'access.**', apply: 'live', toml: 'profiles.<p>.access.**' },
   { path: 'workspaces.**', apply: 'live', toml: 'profiles.<p>.workspaces.**', note: '新会话生效；已绑定目录的会话不变' },
-  { path: 'permissionSource', apply: 'execution', toml: '(derived from permissions)', derived: true },
   { path: 'permissions.**', apply: 'execution', toml: 'profiles.<p>.permissions.**' },
-  { path: 'sandbox.**', apply: 'execution', toml: '(derived from permissions)', derived: true },
   { path: 'state.**', apply: 'execution', toml: 'state.**' },
   { path: 'claude.**', apply: 'execution', toml: 'agents.claude.launch / profiles.<p>.launch' },
   { path: 'codex.**', apply: 'execution', toml: 'agents.codex.launch / profiles.<p>.launch', note: 'Codex daemon 环境变化在空闲时重启 daemon' },
@@ -84,7 +82,6 @@ export const ROOT_SETTINGS: readonly SettingSpec[] = [
   { path: 'agentLaunches.**', apply: 'execution', toml: 'agents.<a>.launch', derived: true },
   { path: 'modelServices.**', apply: 'execution', toml: 'model_services.**', note: '模型列表与 provider 解析同时更新' },
   { path: 'secrets.**', apply: 'reconnect', toml: 'secrets.**' },
-  { path: 'migrations.**', apply: 'live', toml: 'migrations.**' },
   { path: 'profiles.*', apply: 'restart', toml: 'profiles.<p>', note: '新增或删除 profile：在控制台启停，或重启 bridge' },
 ];
 
@@ -196,7 +193,6 @@ function resolveDocumentPath(path: readonly string[]): { specs: readonly Setting
     case 'secrets': return { specs: ROOT_SETTINGS, path: ['secrets', ...rest] };
     case 'state': return { specs: PROFILE_SETTINGS, path: ['state', ...rest] };
     case 'monitoring': return { specs: ROOT_SETTINGS, path: ['inbox', ...rest] };
-    case 'migrations': return { specs: ROOT_SETTINGS, path: ['migrations', ...rest] };
     default: return undefined;
   }
 }

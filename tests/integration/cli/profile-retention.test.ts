@@ -1,4 +1,3 @@
-import { parseDocument } from '../../../src/config/document';
 import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -254,23 +253,15 @@ describe('profile retention and export', () => {
     await runProfileExport('claude', { rootDir: root, output, force: true });
   });
 
-  it('exports profile permissions with migration markers and without runtime-only fields', async () => {
+  it('exports profile permissions', async () => {
     const root = await makeRoot();
     await writeProfiles(root, 'claude', ['claude']);
     const rootConfig = await readRoot(root);
-    rootConfig.migrations = { permissionDefaultsV1: ['claude'] };
     const profile = rootConfig.profiles.claude!;
     profile.permissions = {
       defaultAccess: 'workspace',
       maxAccess: 'workspace',
     };
-    profile.sandbox = {
-      default: 'workspace-write',
-      max: 'workspace-write',
-      defaultMode: 'workspace-write',
-      maxMode: 'workspace-write',
-    };
-    (profile as typeof profile & { permissionSource?: string }).permissionSource = 'permissions';
     await writeJson(join(root, 'config.toml'), rootConfig);
     const lines: string[] = [];
     vi.spyOn(console, 'log').mockImplementation((line: string) => lines.push(line));
@@ -281,13 +272,10 @@ describe('profile retention and export', () => {
     const exported = decodeFixture(exportedText) as RootConfig & {
       profiles: Record<string, Record<string, unknown>>;
     };
-    expect(exported.migrations).toEqual({ permissionDefaultsV1: ['claude'] });
     expect(exported.profiles.claude?.permissions).toEqual({
       defaultAccess: 'workspace',
       maxAccess: 'workspace',
     });
-    expect(parseDocument(exportedText).profiles.claude).not.toHaveProperty('sandbox');
-    expect(parseDocument(exportedText).profiles.claude).not.toHaveProperty('permissionSource');
   });
 });
 

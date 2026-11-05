@@ -193,7 +193,7 @@ function appConfig(defaultWorkspace: string | undefined): ProfileConfig {
     agentKind: 'claude',
     accounts: { app: { id: 'app-id', secret: 'secret', tenant: 'feishu' } },
     access: { admins: ['ou-admin'] },
-    sandbox: { defaultMode: 'read-only', maxMode: 'workspace-write' },
+    permissions: { defaultAccess: 'read-only', maxAccess: 'workspace' },
   });
   if (defaultWorkspace) config.workspaces.default = defaultWorkspace;
   return config;

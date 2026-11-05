@@ -337,7 +337,7 @@ function profile(defaultWorkspace: string): ProfileConfig {
     agentKind: 'claude',
     accounts: { app: { id: 'cli_test', secret: '${APP_SECRET}', tenant: 'feishu' } },
     access: { allowedUsers: ['ou-user', 'ou-bot'] },
-    sandbox: { defaultMode: 'read-only', maxMode: 'workspace-write' },
+    permissions: { defaultAccess: 'read-only', maxAccess: 'workspace' },
   });
   config.comments = {};
   config.workspaces.default = defaultWorkspace;

@@ -39,10 +39,6 @@ describe('start runtime agent factory', () => {
       defaultAccess: 'workspace',
       maxAccess: 'workspace',
     });
-    expect(profile.sandbox).toMatchObject({
-      defaultMode: 'workspace-write',
-      maxMode: 'workspace-write',
-    });
   });
 
   it('creates a Codex runtime agent when an older profile has only a binary path', () => {

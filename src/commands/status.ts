@@ -32,12 +32,9 @@ export function runtimeAccessStatus(
         : 'Pi tools (no OS sandbox)',
     };
   }
-  const sandbox = profileConfig.sandbox;
   return {
     label: 'sandbox',
-    value: sandbox
-      ? `${sandbox.defaultMode}/${sandbox.maxMode}`
-      : `${accessToCodexSandbox(profileConfig.permissions.defaultAccess)}/${accessToCodexSandbox(profileConfig.permissions.maxAccess)}`,
+    value: `${accessToCodexSandbox(profileConfig.permissions.defaultAccess)}/${accessToCodexSandbox(profileConfig.permissions.maxAccess)}`,
   };
 }
 

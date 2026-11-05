@@ -281,7 +281,7 @@ async function createCommentHarness(options: {
       },
     },
     access: { allowedUsers: ['ou-user'] },
-    sandbox: { defaultMode: 'read-only', maxMode: 'workspace-write' },
+    permissions: { defaultAccess: 'read-only', maxAccess: 'workspace' },
   });
   profileConfig.workspaces.default = tmp.workspace;
   const activeRuns = new ActiveRuns();

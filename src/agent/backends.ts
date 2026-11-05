@@ -83,7 +83,7 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
         inheritCodexHome: codex.inheritCodexHome === true,
         ignoreUserConfig: codex.ignoreUserConfig === true,
         ignoreRules: codex.ignoreRules,
-        sandbox: profile.sandbox?.defaultMode ?? accessToCodexSandbox(profile.permissions.defaultAccess),
+        sandbox: accessToCodexSandbox(profile.permissions.defaultAccess),
         env: buildAgentEnvironment(env, codex.env),
       });
     },

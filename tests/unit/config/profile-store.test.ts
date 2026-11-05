@@ -8,7 +8,7 @@ import {
   createDefaultProfileConfig,
   type RootConfig,
 } from '../../../src/config/profile-schema';
-import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
+import { loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
 
 const roots: string[] = [];
 
@@ -93,17 +93,6 @@ describe('profile store canonical serialization', () => {
       activeProfile: 'codex',
       preferences: { messageReply: 'text' },
       secrets: rootSecrets,
-      migrations: {
-        permissionDefaultsV1: [
-          'codex',
-          'codex',
-          '  claude  ',
-          'claude',
-          'claude ',
-          '',
-          42 as unknown as string,
-        ],
-      },
       profiles: { codex: profile },
       extra: true,
     } as unknown as RootConfig & { extra?: true; preferences: any }, configPath);
@@ -114,7 +103,6 @@ describe('profile store canonical serialization', () => {
     expect(saved.activeProfile).toBe('codex');
     expect(saved.secrets).toEqual(rootSecrets);
     expect(saved.preferences).toEqual({});
-    expect(saved.migrations).toEqual({ permissionDefaultsV1: ['claude', 'codex'] });
     expect(saved).not.toHaveProperty('extra');
 
     const savedProfile = saved.profiles.codex;
@@ -136,7 +124,7 @@ describe('profile store canonical serialization', () => {
     expect(doc.profiles.codex).not.toHaveProperty('sandbox');
   });
 
-  it('loads canonical-only saved config and re-derives runtime sandbox', async () => {
+  it('loads canonical permissions from saved config', async () => {
     const root = await tmpRoot();
     const configPath = join(root, 'config.toml');
     const profile = createDefaultProfileConfig({
@@ -160,10 +148,6 @@ describe('profile store canonical serialization', () => {
     expect(loaded?.profiles.codex?.permissions).toEqual({
       defaultAccess: 'workspace',
       maxAccess: 'workspace',
-    });
-    expect(loaded?.profiles.codex?.sandbox).toMatchObject({
-      defaultMode: 'workspace-write',
-      maxMode: 'workspace-write',
     });
   });
 
@@ -251,14 +235,4 @@ describe('profile store canonical serialization', () => {
     });
   });
 
-  it('marks newly created roots as already evaluated for permission default migration', () => {
-    const profile = createDefaultProfileConfig({
-      agentKind: 'claude',
-      accounts: { app },
-    });
-
-    const root = createRootConfig('claude', profile);
-
-    expect(root.migrations?.permissionDefaultsV1).toEqual(['claude']);
-  });
 });

@@ -1,5 +1,4 @@
 import { AGENT_KINDS } from '../../../src/agent/backend-spec';
-import { parseDocument } from '../../../src/config/document';
 import { encodeFixture, decodeFixture } from '../../helpers/config-fixture';
 import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -299,38 +298,7 @@ describe('profile runtime resolver', () => {
     expect(runtime.appPaths.profileDir).toBe(join(root, 'profiles', 'codex-dev'));
   });
 
-  it('keeps marked canonical Claude workspace permissions for users who lower access after migration', async () => {
-    const root = await tmpRoot();
-    const claude = createDefaultProfileConfig({
-      agentKind: 'claude',
-      accounts: { app },
-      permissions: {
-        defaultAccess: 'workspace',
-        maxAccess: 'workspace',
-      },
-    });
-    await writeProfileRoot(root, 'claude', { claude }, {
-      migrations: { permissionDefaultsV1: ['claude'] },
-    });
-
-    const runtime = await resolveProfileRuntime({ config: join(root, 'config.toml') });
-    const saved = decodeFixture(await readFile(join(root, 'config.toml'), 'utf8')) as {
-      migrations?: { permissionDefaultsV1?: string[] };
-      profiles: Record<string, { permissions?: unknown; sandbox?: unknown }>;
-    };
-
-    expect(runtime.profileConfig.permissions).toEqual({
-      defaultAccess: 'workspace',
-      maxAccess: 'workspace',
-    });
-    expect(saved.profiles.claude?.permissions).toEqual({
-      defaultAccess: 'workspace',
-      maxAccess: 'workspace',
-    });
-    expect(saved.migrations?.permissionDefaultsV1).toContain('claude');
-  });
-
-  it('keeps unmarked canonical Claude workspace override as explicit lower access', async () => {
+  it('keeps canonical Claude workspace override as explicit lower access', async () => {
     const root = await tmpRoot();
     const claude = createDefaultProfileConfig({
       agentKind: 'claude',
@@ -347,8 +315,7 @@ describe('profile runtime resolver', () => {
 
     const runtime = await resolveProfileRuntime({ config: join(root, 'config.toml') });
     const saved = decodeFixture(await readFile(join(root, 'config.toml'), 'utf8')) as {
-      migrations?: { permissionDefaultsV1?: string[] };
-      profiles: Record<string, { permissions?: unknown; sandbox?: unknown }>;
+      profiles: Record<string, { permissions?: unknown }>;
     };
 
     expect(runtime.profileConfig.permissions).toEqual({
@@ -365,47 +332,6 @@ describe('profile runtime resolver', () => {
         permissionMode: 'acceptEdits',
       },
     });
-    expect(saved.migrations?.permissionDefaultsV1).toBeUndefined();
-  });
-
-  it('keeps legacy Claude mixed lower sandbox permissions when resolving an existing profile', async () => {
-    const root = await tmpRoot();
-    const legacyClaude = createDefaultProfileConfig({
-      agentKind: 'claude',
-      accounts: { app },
-    }) as unknown as Record<string, unknown>;
-    legacyClaude.sandbox = {
-      default: 'read-only',
-      max: 'workspace-write',
-      defaultMode: 'read-only',
-      maxMode: 'workspace-write',
-    };
-    delete legacyClaude.permissions;
-    delete legacyClaude.permissionSource;
-    await writeProfileRoot(root, 'claude', { claude: legacyClaude });
-
-    const runtime = await resolveProfileRuntime({ config: join(root, 'config.toml') });
-    const saved = decodeFixture(await readFile(join(root, 'config.toml'), 'utf8')) as {
-      profiles: Record<string, {
-        permissions?: unknown;
-        sandbox?: unknown;
-        permissionSource?: unknown;
-      }>;
-    };
-
-    expect(runtime.profileConfig.permissions).toEqual({
-      defaultAccess: 'read-only',
-      maxAccess: 'workspace',
-    });
-    expect(runtime.profileConfig.sandbox).toMatchObject({
-      defaultMode: 'read-only',
-      maxMode: 'workspace-write',
-    });
-    expect(saved.profiles.claude?.permissions).toEqual({
-      defaultAccess: 'read-only',
-      maxAccess: 'workspace',
-    });
-    expect(parseDocument(await readFile(join(root, 'config.toml'), 'utf8')).profiles.claude).not.toHaveProperty('permissionSource');
   });
 
   it('keeps explicit canonical lower permissions when resolving an existing profile', async () => {
@@ -422,26 +348,17 @@ describe('profile runtime resolver', () => {
 
     const runtime = await resolveProfileRuntime({ config: join(root, 'config.toml') });
     const saved = decodeFixture(await readFile(join(root, 'config.toml'), 'utf8')) as {
-      profiles: Record<string, {
-        permissions?: unknown;
-        sandbox?: unknown;
-        permissionSource?: unknown;
-      }>;
+      profiles: Record<string, { permissions?: unknown }>;
     };
 
     expect(runtime.profileConfig.permissions).toEqual({
       defaultAccess: 'read-only',
       maxAccess: 'read-only',
     });
-    expect(runtime.profileConfig.sandbox).toMatchObject({
-      defaultMode: 'read-only',
-      maxMode: 'read-only',
-    });
     expect(saved.profiles.claude?.permissions).toEqual({
       defaultAccess: 'read-only',
       maxAccess: 'read-only',
     });
-    expect(parseDocument(await readFile(join(root, 'config.toml'), 'utf8')).profiles.claude).not.toHaveProperty('permissionSource');
   });
 
   it('keeps explicit Codex home isolation with app-server user configuration', async () => {

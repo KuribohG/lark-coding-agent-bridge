@@ -36,7 +36,7 @@ it('executes a registered source through the shared agent path and commits its e
     await source.submit({ key: 'pipeline-1', title: 'CI', reason: 'failed', time: Date.now(), url: '', data: {} });
     await vi.waitFor(() => expect(registry.list()[0]?.replyDraft).toBe('CI draft'), { timeout: 7000 });
     expect(createRuntimeAgent).toHaveBeenCalledWith(
-      expect.objectContaining({ agentKind: 'claude', sandbox: profile.sandbox }),
+      expect.objectContaining({ agentKind: 'claude', permissions: profile.permissions }),
       expect.objectContaining({ rootDir, profile: 'claude' }),
       expect.objectContaining({
         env: expect.objectContaining({

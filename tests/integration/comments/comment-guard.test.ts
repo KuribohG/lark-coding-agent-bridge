@@ -215,7 +215,7 @@ function profile(
     agentKind: 'claude',
     accounts: { app: { id: 'cli_test', secret: '${APP_SECRET}', tenant: 'feishu' } },
     access: { allowedUsers },
-    sandbox: { defaultMode: 'read-only', maxMode: 'workspace-write' },
+    permissions: { defaultAccess: 'read-only', maxAccess: 'workspace' },
   });
   config.comments = comments as ProfileConfig['comments'];
   config.workspaces.default = defaultWorkspace;

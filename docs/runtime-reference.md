@@ -322,8 +322,6 @@ Mode mapping:
 | `workspace` | `acceptEdits` | `workspace-write` |
 | `read-only` | `plan` | `read-only` |
 
-The legacy `sandbox` field is still readable for old configs. After the bridge saves the profile, it migrates that setting to canonical `permissions`.
-
 Pi supports `read-only` (built-in read/search tools only) and `full`. It has no portable workspace-only sandbox, so `workspace` engine selection is rejected.
 
 ## Data directories

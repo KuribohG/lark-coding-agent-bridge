@@ -9,11 +9,9 @@ import type {
 } from './schema';
 import {
   normalizePermissions,
-  permissionsToLegacySandbox,
   type AccessMode,
   type CodexSandboxMode,
   type PermissionConfig,
-  type PermissionSource,
 } from './permissions';
 import {
   AGENT_KINDS,
@@ -24,7 +22,7 @@ import {
 
 export type { AgentKind };
 export type SandboxMode = CodexSandboxMode;
-export type { AccessMode, PermissionConfig, PermissionSource };
+export type { AccessMode, PermissionConfig };
 export type { AgentLaunchEnvironment, AgentLaunchConfig } from '../agent/launch-options';
 export type { CodexConfig, CodexAppServerMode } from '../agent/codex/config';
 export type { ClaudeConfig } from '../agent/claude/config';
@@ -44,13 +42,6 @@ export interface ProfileAccess {
    * priority over `requireMentionInGroup` for the chats it lists.
    */
   chatRequireMention?: Record<string, boolean>;
-}
-
-export interface SandboxConfig {
-  default?: SandboxMode;
-  max?: SandboxMode;
-  defaultMode: SandboxMode;
-  maxMode: SandboxMode;
 }
 
 export interface AttachmentConfig {
@@ -150,7 +141,6 @@ export interface AgentExecutionProfile extends AgentLaunchProfiles {
   agentKind: AgentKind;
   /** Bridge-wide `[state]` settings, shared by every profile and engine. */
   state?: AgentStateSettings;
-  sandbox?: SandboxConfig;
   permissions: PermissionConfig;
 }
 
@@ -168,7 +158,6 @@ export interface ProfileConfig extends AgentExecutionProfile {
   workspaces: {
     default?: string;
   };
-  permissionSource?: PermissionSource;
   attachments: AttachmentConfig;
   comments: CommentConfig;
   /** In-meeting agent settings. See {@link MeetingConfig}. */
@@ -198,10 +187,7 @@ export function effectiveLarkCliIdentity(
 export interface RootConfig {
   schemaVersion: 2;
   activeProfile: string;
-  /**
-   * Profiles the machine-wide supervisor starts automatically. When omitted,
-   * fall back to activeProfile for backwards compatibility.
-   */
+  /** Profiles the machine-wide supervisor starts automatically. When omitted, only activeProfile starts. */
   autostartProfiles?: string[];
   preferences: Record<string, never>;
   /** Relative to the root config directory; monitoring settings then live only in this TOML file. */
@@ -216,9 +202,6 @@ export interface RootConfig {
   agentLaunches?: Partial<Record<AgentKind, { launch?: AgentLaunchConfig }>>;
   modelServices?: Record<string, import('../model-service/config').ModelServiceConfig>;
   secrets?: SecretsConfig;
-  migrations?: {
-    permissionDefaultsV1?: string[];
-  };
   profiles: Record<string, ProfileConfig>;
 }
 
@@ -231,7 +214,6 @@ export interface CreateDefaultProfileConfigInput extends AgentLaunchProfiles {
   };
   preferences?: AppPreferences;
   access?: Partial<ProfileAccess>;
-  sandbox?: Partial<SandboxConfig>;
   permissions?: Partial<PermissionConfig>;
   secrets?: SecretsConfig;
 }
@@ -256,17 +238,9 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     accounts?: unknown;
     secrets?: SecretsConfig;
     channels?: import('./schema').ChannelDisplayConfig;
-        preferences?: (AppPreferences & { access?: Partial<ProfileAccess> }) | undefined;
+    preferences?: AppPreferences;
     access?: Partial<ProfileAccess>;
-    workspaces?: {
-      default?: unknown;
-      // Legacy workspace authorization fields are accepted for config
-      // compatibility only; normalizeWorkspaces drops them.
-      trusted?: unknown;
-      trustedRoots?: unknown;
-      riskFlags?: unknown;
-    };
-    sandbox?: Partial<SandboxConfig>;
+    workspaces?: { default?: unknown };
     permissions?: Partial<PermissionConfig>;
     attachments?: Partial<AttachmentConfig>;
     comments?: unknown;
@@ -290,15 +264,8 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   }
 
   const preferences = normalizePreferences(raw.preferences);
-  const access = normalizeAccess(
-    raw.access ?? raw.preferences?.access,
-    raw.preferences?.requireMentionInGroup,
-  );
-  const { permissions, source: permissionSource } = normalizePermissions({
-    permissions: raw.permissions,
-    sandbox: raw.sandbox,
-  });
-  const sandbox = permissionsToLegacySandbox(permissions);
+  const access = normalizeAccess(raw.access);
+  const permissions = normalizePermissions(raw.permissions);
   const workspaces = normalizeWorkspaces(raw.workspaces);
   const comments = normalizeComments(raw.comments);
   const meeting = normalizeMeeting(raw.meeting);
@@ -316,9 +283,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     ...(raw.state ? { state: raw.state } : {}),
     access,
     workspaces,
-    sandbox,
     permissions,
-    permissionSource,
     attachments: {
       maxCount: numberOr(raw.attachments?.maxCount, 10),
       maxBytes: numberOr(raw.attachments?.maxBytes, 100 * 1024 * 1024),
@@ -376,16 +341,13 @@ function isMessageReply(value: unknown): value is MessageReplyMode {
   return value === 'card' || value === 'markdown' || value === 'text';
 }
 
-function normalizeAccess(
-  access: Partial<ProfileAccess> | undefined,
-  legacyRequireMentionInGroup: boolean | undefined,
-): ProfileAccess {
+function normalizeAccess(access: Partial<ProfileAccess> | undefined): ProfileAccess {
   const chatRequireMention = normalizeChatMentionMap(access?.chatRequireMention);
   return {
     allowedUsers: stringArray(access?.allowedUsers),
     allowedChats: stringArray(access?.allowedChats),
     admins: stringArray(access?.admins),
-    requireMentionInGroup: access?.requireMentionInGroup ?? legacyRequireMentionInGroup ?? true,
+    requireMentionInGroup: access?.requireMentionInGroup ?? true,
     // Omit when empty so configs without per-chat overrides stay clean.
     ...(Object.keys(chatRequireMention).length > 0 ? { chatRequireMention } : {}),
   };
@@ -401,12 +363,7 @@ function normalizeChatMentionMap(input: unknown): Record<string, boolean> {
   return out;
 }
 
-function normalizeWorkspaces(input: {
-  default?: unknown;
-  trusted?: unknown;
-  trustedRoots?: unknown;
-  riskFlags?: unknown;
-} | undefined): ProfileConfig['workspaces'] {
+function normalizeWorkspaces(input: { default?: unknown } | undefined): ProfileConfig['workspaces'] {
   const defaultWorkspace = typeof input?.default === 'string' && input.default.trim()
     ? input.default.trim()
     : undefined;

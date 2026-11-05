@@ -119,7 +119,6 @@ describe('setting registry', () => {
     ['agentKind', 'execution'],
     ['codex.env.A', 'execution'],
     ['permissions.defaultAccess', 'execution'],
-    ['sandbox.defaultMode', 'execution'],
     ['meeting.enabled', 'meeting'],
     ['meeting.pollIntervalMs', 'live'],
     ['mode', 'lark-cli'],

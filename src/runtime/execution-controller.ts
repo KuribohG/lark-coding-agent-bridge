@@ -204,7 +204,7 @@ function sameLaunch(a: AgentExecutionProfile, b: AgentExecutionProfile): boolean
     const backend = backendFor(p.agentKind);
     return p[p.agentKind] ?? backend.launchPatch(process.env[backend.commandEnv] ?? backend.defaultCommand)[p.agentKind];
   };
-  const pick = (p: AgentExecutionProfile) => JSON.stringify([p.agentKind, launch(p), p.permissions, p.sandbox, p.state]);
+  const pick = (p: AgentExecutionProfile) => JSON.stringify([p.agentKind, launch(p), p.permissions, p.state]);
   return pick(a) === pick(b);
 }
 
