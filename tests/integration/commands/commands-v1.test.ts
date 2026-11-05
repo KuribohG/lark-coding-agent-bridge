@@ -79,38 +79,17 @@ describe('Bridge command contracts', () => {
     expect(h.workspaces.cwdFor('chat-b')).toBe(alternate);
   });
 
-  it('continues to support legacy unscoped workspace aliases', async () => {
+  it('ignores workspace aliases saved outside the current scope', async () => {
     const h = await createHarness();
-    const legacy = join(h.tmp.root, 'legacy-alias');
-    await mkdir(legacy, { recursive: true });
-    h.workspaces.saveNamed('legacy', legacy);
-
-    await expect(h.run('/ws')).resolves.toBe(true);
-    expect(JSON.stringify(lastContent(h.channel))).toContain('legacy');
-
-    await expect(h.run('/ws use legacy')).resolves.toBe(true);
-    expect(lastMarkdown(h.channel)).toContain('已切换到 `legacy`');
-    await expect(realpath(legacy)).resolves.toBe(h.workspaces.cwdFor('chat-1'));
-
-    await expect(h.run('/ws remove legacy')).resolves.toBe(true);
-    expect(lastMarkdown(h.channel)).toContain('已删除工作目录别名');
-    expect(h.workspaces.getNamed('legacy')).toBeUndefined();
-  });
-
-  it('removes scoped workspace aliases without deleting same-name legacy aliases', async () => {
-    const h = await createHarness();
-    const legacy = join(h.tmp.root, 'legacy-main');
-    await mkdir(legacy, { recursive: true });
-    h.workspaces.saveNamed('main', legacy);
-
-    await expect(h.run('/ws save main')).resolves.toBe(true);
-    await expect(h.run('/ws remove main')).resolves.toBe(true);
-
-    expect(lastMarkdown(h.channel)).toContain('已删除工作目录别名');
-    expect(h.workspaces.getNamed('main')).toBe(legacy);
+    const unscoped = join(h.tmp.root, 'unscoped-alias');
+    await mkdir(unscoped, { recursive: true });
+    h.workspaces.saveNamed('main', unscoped);
 
     await expect(h.run('/ws use main')).resolves.toBe(true);
-    await expect(realpath(legacy)).resolves.toBe(h.workspaces.cwdFor('chat-1'));
+    expect(lastMarkdown(h.channel)).toContain('未找到工作目录别名');
+    await expect(h.run('/ws remove main')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toContain('未找到工作目录别名');
+    expect(h.workspaces.getNamed('main')).toBe(unscoped);
   });
 
   it('keeps directory commands admin-only', async () => {

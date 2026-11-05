@@ -198,26 +198,12 @@ function scopedWorkspaceName(ctx: CommandContext, name: string): string {
   ].join(WORKSPACE_NAME_SEPARATOR);
 }
 
-function workspaceAliasKeys(ctx: CommandContext, name: string): string[] {
-  return [scopedWorkspaceName(ctx, name), name];
-}
-
 function getWorkspaceAlias(ctx: CommandContext, name: string): string | undefined {
-  for (const key of workspaceAliasKeys(ctx, name)) {
-    const cwd = ctx.workspaces.getNamed(key);
-    if (cwd) return cwd;
-  }
-  return undefined;
+  return ctx.workspaces.getNamed(scopedWorkspaceName(ctx, name));
 }
 
 function removeWorkspaceAlias(ctx: CommandContext, name: string): boolean {
-  const scopedKey = scopedWorkspaceName(ctx, name);
-  if (ctx.workspaces.removeNamed(scopedKey)) return true;
-  return ctx.workspaces.removeNamed(name);
-}
-
-function isLegacyWorkspaceAlias(key: string): boolean {
-  return key !== '' && !key.includes(WORKSPACE_NAME_SEPARATOR);
+  return ctx.workspaces.removeNamed(scopedWorkspaceName(ctx, name));
 }
 
 function listScopedWorkspaces(ctx: CommandContext): Record<string, string> {
@@ -228,9 +214,6 @@ function listScopedWorkspaces(ctx: CommandContext): Record<string, string> {
     if (!key.startsWith(prefix)) continue;
     const displayName = key.slice(prefix.length);
     if (displayName) scoped[displayName] = cwd;
-  }
-  for (const [key, cwd] of Object.entries(named)) {
-    if (isLegacyWorkspaceAlias(key) && scoped[key] === undefined) scoped[key] = cwd;
   }
   return scoped;
 }
