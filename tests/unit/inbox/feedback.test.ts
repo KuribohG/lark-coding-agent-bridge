@@ -4,8 +4,10 @@ import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { normalizeInbox } from '../../../src/inbox/config';
 import { parseMessages } from '../../../src/inbox/lark';
-import { InboxService } from '../../../src/inbox/service';
-import { InboxStore } from '../../../src/inbox/store';
+import { larkService } from '../../helpers/lark-service';
+import type { WorkItemService } from '../../../src/work-items/service';
+import { larkSource } from '../../../src/monitoring/sources/lark/source';
+import { WorkItemStore } from '../../../src/work-items/store';
 import type { InboxIO, InboxJob, InboxMessage } from '../../../src/inbox/types';
 import { workItemTarget } from '../../../src/inbox/lark-target';
 
@@ -19,7 +21,7 @@ const job = (id: string, messages: InboxMessage[], extras: Partial<InboxJob> = {
   sourceRef: { transport: 'lark', containerId: messages[0]!.containerId, name: '项目群', kind: 'group' }, automatic: true, alert: true, state: 'queued', analysisRequested: true,
   createdAt: 900_000, updatedAt: 900_000, revision: 1, attention: { state: 'needed', reason: '旧版误判', retry: { attempts: 6, nextAt: 0, error: '重试' } },
   startDelivery: { id: 'old-start', text: '旧通知', attempts: 1, startedAt: 0, retryAt: 0 }, resultDelivery: { attempts: 1, startedAt: 0, retryAt: 0 }, ...extras });
-const services: InboxService[] = [];
+const services: WorkItemService[] = [];
 afterEach(async () => { await Promise.all(services.splice(0).map(s => s.close())); });
 async function setup(jobs: InboxJob[] = [], overrides: Partial<InboxIO> = {}) {
   let now = 1_000_000;
@@ -27,11 +29,11 @@ async function setup(jobs: InboxJob[] = [], overrides: Partial<InboxIO> = {}) {
     source: vi.fn(async () => ({ name: '项目群', type: 'group' as const })), deliver: vi.fn(async () => {}), beginAnalysis: vi.fn(async () => destination),
     analyze: vi.fn(async () => ({ text: '{"replyDraft":"草稿","analysis":"已核实","missingInfo":""}', inputTokens: 1, outputTokens: 1 })),
     triage: vi.fn<NonNullable<InboxIO['triage']>>(async j => ({ id: j.id, state: 'needed', reason: '同事需要回复' })), ...overrides };
-  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-feedback-')), 'state.json'));
+  const store = new WorkItemStore(join(await mkdtemp(join(tmpdir(), 'inbox-feedback-')), 'state.sqlite'));
   store.data.jobs = jobs;
   if (jobs.length) store.data.notificationOutbox = { id: 'digest', jobs: jobs.map(j => ({ id: j.id, signature: 'old' })), attempts: 1, retryAt: 0 };
   await store.save();
-  const service = new InboxService(store, config(), io, () => now); services.push(service); await service.start();
+  const service = larkService(store, config(), io, () => now); services.push(service); await service.start();
   return { service, store, io, advance: (ms: number) => { now += ms; } };
 }
 
@@ -64,7 +66,7 @@ it('quarantines restored self-only queues, results and delivery retries, includi
   }
   expect(s.store.data.notificationOutbox).toBeUndefined();
   expect(s.io.triage).not.toHaveBeenCalled(); expect(s.io.beginAnalysis).not.toHaveBeenCalled(); expect(s.io.analyze).not.toHaveBeenCalled(); expect(s.io.deliver).not.toHaveBeenCalled();
-  const restored = new InboxStore(s.store.path); await restored.load(); expect(restored.data.jobs.every(j => j.state === 'ignored')).toBe(true);
+  const restored = new WorkItemStore(s.store.path); await restored.load(); expect(restored.data.jobs.every(j => j.state === 'ignored')).toBe(true);
 });
 
 it('rescreens mixed historical jobs without self output and keeps edited drafts stale until reviewed', async () => {
@@ -88,8 +90,8 @@ it('filters self output from refreshed analysis context and never lets it invali
 
 it('blocks manual result-group selection and self-only context, while allowing a genuine mixed conversation', async () => {
   const s = await setup([], { context: vi.fn(async () => [self]) });
-  await expect(s.service.manual(destination.containerId)).rejects.toThrow('结果群');
-  await expect(s.service.manual(human.containerId)).rejects.toThrow('非助理消息');
+  await expect(larkSource(s.service).manual(destination.containerId)).rejects.toThrow('结果群');
+  await expect(larkSource(s.service).manual(human.containerId)).rejects.toThrow('非助理消息');
   vi.mocked(s.io.context).mockResolvedValue([human, self]);
-  const submitted = await s.service.manual(human.containerId); expect(submitted.messages).toEqual([human]);
+  const submitted = await larkSource(s.service).manual(human.containerId); expect(submitted.messages).toEqual([human]);
 });

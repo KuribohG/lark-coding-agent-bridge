@@ -1,5 +1,3 @@
-import type { WorkItem } from './types';
-
 /** Collectors publish full snapshots. Revisions increase within a source/key partition. */
 export interface WorkItemEvent {
   key: string;
@@ -16,7 +14,4 @@ export interface WorkItemEvent {
   maxAttempts?: number;
   /** Source-owned alert/recovery text, delivered independently of analysis slots. */
   notice?: string;
-  /** Used only when importing a previously unseen item. */
-  initial?: Partial<Pick<WorkItem, 'state' | 'replyDraft' | 'analysis' | 'missingInfo' | 'result' | 'error' |
-    'analysisTarget' | 'deliveredAt' | 'startDelivery' | 'resultDelivery' | 'inputTokens' | 'outputTokens' | 'attempt' | 'businessState'>>;
 }

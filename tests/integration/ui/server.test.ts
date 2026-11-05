@@ -15,6 +15,7 @@ import {
 import { startUiServer } from '../../../src/ui/server';
 import type { UiServerHandle, UiSupervisor } from '../../../src/ui/types';
 import { validateWorkItemsAction } from '../../../src/plugins/work-items/plugin';
+import { saveWithMonitors } from '../../helpers/monitors';
 
 const app = { id: 'cli_test', secret: '${APP_SECRET}', tenant: 'feishu' as const };
 
@@ -132,9 +133,9 @@ describe('ui server (supervisor-backed)', () => {
     expect(invalid.status).toBe(400); expect(await invalid.text()).not.toContain('literal-private-key');
     expect(await readFile(configPath, 'utf8')).toBe(before);
     const root = (await loadRootConfig(configPath))!;
-    root.inbox = normalizeInbox({ executorProfile: 'claude', triageService: 'screen', enabled: false }); await saveRootConfig(root, configPath);
+    root.inbox = normalizeInbox({ executorProfile: 'claude', triageService: 'screen', enabled: false }); await saveWithMonitors(root, configPath);
     expect((await post('/api/model-services/remove', handle.token, { name: 'screen' })).status).toBe(400);
-    delete root.inbox.triageService; await saveRootConfig(root, configPath);
+    delete root.inbox.triageService; await saveWithMonitors(root, configPath);
     expect((await post('/api/model-services/remove', handle.token, { name: 'screen' })).status).toBe(200);
     expect(await json(await get('/api/model-services', handle.token))).toEqual({ services: {} });
   });

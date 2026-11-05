@@ -13,8 +13,6 @@ import {
   type RootConfig,
 } from './profile-schema';
 import type { AppConfig } from './schema';
-import { parseWorkItemConcurrency } from '../work-items/concurrency';
-import { normalizeMonitorRootValues } from '../monitoring/sources/configs';
 import { normalizeModelServices } from '../model-service/config';
 import { configRevision } from './revision';
 
@@ -69,11 +67,6 @@ export function normalizeRootConfig(root: RootConfig): RootConfig {
   for (const [name, profile] of Object.entries(root.profiles)) {
     profiles[name] = normalizeProfileConfig(profile);
   }
-  const monitoring = normalizeMonitorRootValues({
-    inbox: root.inbox,
-    gitlabCi: root.gitlabCi,
-    storageMonitor: root.monitorConfigFile === undefined ? root.storageMonitor : undefined,
-  });
   return {
     schemaVersion: 2,
     activeProfile: root.activeProfile,
@@ -82,8 +75,6 @@ export function normalizeRootConfig(root: RootConfig): RootConfig {
       : {}),
     preferences: {},
     ...(root.monitorConfigFile !== undefined ? { monitorConfigFile: root.monitorConfigFile } : {}),
-    ...monitoring,
-    ...(root.monitorConfigFile === undefined && root.workItemConcurrency !== undefined ? { workItemConcurrency: parseWorkItemConcurrency(root.workItemConcurrency) } : {}),
     ...(root.modelServices ? { modelServices: normalizeModelServices(root.modelServices) } : {}),
     ...(root.agentState ? { agentState: root.agentState } : {}),
     // Raw global launch layers; dropping them would lose [agents.*] on a fallback save.

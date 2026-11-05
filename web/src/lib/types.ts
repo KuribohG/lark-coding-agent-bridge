@@ -30,7 +30,7 @@ export interface ProfileInfo {
   active: boolean;
   autostart: boolean;
   running: boolean;
-  capabilities?: { backgroundAnalysis: boolean; modelService: boolean };
+  capabilities?: { backgroundAnalysis: boolean };
 }
 
 export interface ModelOption {

@@ -16,10 +16,10 @@ const result = { text: JSON.stringify({ replyDraft: 'draft', analysis: 'evidence
 const event = { key: 'issue', title: 'issue', reason: 'failure', time: 1000, url: '', eventId: '1', revision: 1, data: {} };
 async function setup(extra: Partial<WorkItemRuntime> = {}, queue?: WorkItemScheduler) {
   const dir = await mkdtemp(join(tmpdir(), 'execution-availability-')); cleanups.push(() => rm(dir, { recursive: true, force: true }));
-  const path = join(dir, 'state.json');
+  const path = join(dir, 'state.sqlite');
   const config: WorkItemConfig = { enabled: true, executorProfile: 'local', ownerKey: 'local:owner',
     target: workItemTarget({ chatId: 'oc_local', threadId: 'omt_local', replyTo: 'om_local' }),
-    autoAnalyze: false, dailyTriageLimit: 0 };
+    dailyTriageLimit: 0 };
   let available = false;
   const investigate = vi.fn(async () => result);
   const create = async () => {

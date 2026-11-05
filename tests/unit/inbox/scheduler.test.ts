@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { normalizeInbox } from '../../../src/inbox/config';
-import { InboxService } from '../../../src/inbox/service';
-import { InboxStore } from '../../../src/inbox/store';
+import { larkService } from '../../helpers/lark-service';
+import type { WorkItemService } from '../../../src/work-items/service';
+import { larkSource } from '../../../src/monitoring/sources/lark/source';
+import { WorkItemStore } from '../../../src/work-items/store';
 import type { InboxIO, InboxJob, InboxMessage } from '../../../src/inbox/types';
 import { workItemTarget } from '../../../src/inbox/lark-target';
 
@@ -14,7 +16,7 @@ function gate<T>() {
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-const services: InboxService[] = [];
+const services: WorkItemService[] = [];
 const messages: InboxMessage[] = [];
 beforeEach(() => { messages.length = 0; vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }); });
 afterEach(async () => { await Promise.all(services.splice(0).map(s => s.close())); vi.useRealTimers(); });
@@ -23,7 +25,7 @@ async function setup() {
   let now = 1_000_000;
   const config = normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner',
     target: workItemTarget({ chatId: 'oc_target', threadId: 'omt_target', replyTo: 'om_target' }) });
-  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-scheduler-')), 'state.json'));
+  const store = new WorkItemStore(join(await mkdtemp(join(tmpdir(), 'inbox-scheduler-')), 'state.sqlite'));
   const io: InboxIO = {
     checkOwner: vi.fn(async () => {}), collect: vi.fn(async kind => kind === 'p2p' ? [...messages] : []),
     context: vi.fn(async () => []), source: vi.fn(async () => ({ name: '同事', type: 'p2p' as const })),
@@ -31,7 +33,7 @@ async function setup() {
     beginAnalysis: vi.fn(async () => config.target), deliver: vi.fn(async () => {}),
     analyze: vi.fn(async () => ({ text: '{"analysis":"已完成","replyDraft":"草稿","missingInfo":""}', inputTokens: 1, outputTokens: 1 })),
   };
-  const service = new InboxService(store, config, io, () => now); services.push(service); await service.start();
+  const service = larkService(store, config, io, () => now); services.push(service); await service.start();
   const message = (id: string, containerId = 'oc_fresh'): InboxMessage => ({ id, containerId, containerName: '同事',
     containerKind: 'direct', senderId: 'ou_sender', senderName: '同事', senderBot: false,
     time: now, text: id, mentions: [] });
@@ -105,7 +107,7 @@ it.each(['off', 'scope', 'close'] as const)('discards late history after %s and 
   await s.service.tick(); await vi.waitFor(() => expect(s.io.context).toHaveBeenCalledTimes(1));
   let closing: Promise<void> | undefined;
   if (action === 'off') await s.service.setMode('off');
-  if (action === 'scope') await s.service.setScope('private');
+  if (action === 'scope') await larkSource(s.service).setScope('private');
   if (action === 'close') closing = s.service.close();
   history.resolve([s.message('om_late', 'oc_old')]);
   await closing;

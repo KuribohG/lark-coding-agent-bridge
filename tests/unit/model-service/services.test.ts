@@ -8,10 +8,11 @@ import { checkModelService, configureModelService, listModelServices, removeMode
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
 import { normalizeInbox } from '../../../src/inbox/config';
-import { inboxTriageSource, loadInboxTriageSource } from '../../../src/inbox/model-routing';
+import { inboxTriageService, loadInboxTriageService } from '../../../src/inbox/model-routing';
 import { triageWithChatTools } from '../../../src/monitoring/sources/lark/codex-triage';
 import type { InboxJob } from '../../../src/inbox/types';
 import { removeService as removeServiceCli } from '../../../src/cli/commands/model-service';
+import { saveWithMonitors } from '../../helpers/monitors';
 
 const service: ModelServiceConfig = { protocol: 'responses', baseUrl: 'https://model.test/v1/', model: 'screen-default', apiKey: { source: 'env', id: 'TEST_MODEL_KEY' } };
 const dirs: string[] = [];
@@ -26,12 +27,12 @@ async function setup() {
 
 it('uses an independent service with no Codex profile and its own model default', async () => {
   const h = await setup(); h.root.modelServices = { screen: service };
-  const config = normalizeInbox({ executorProfile: 'claude', triageService: 'screen', analysisModel: 'sonnet', triageProfile: 'nonexistent' });
-  const source = inboxTriageSource(config, h.root);
-  const provider = await loadInboxTriageSource(config, source, h.dir);
+  const config = normalizeInbox({ executorProfile: 'claude', triageService: 'screen', analysisModel: 'sonnet' });
+  const source = inboxTriageService(config, h.root);
+  const provider = await loadInboxTriageService(config, source);
   expect(provider).toMatchObject({ model: 'screen-default', url: 'https://model.test/v1/responses', key: 'private-fixture' });
-  expect((await loadInboxTriageSource({ ...config, triageModel: 'override' }, source)).model).toBe('override');
-  expect((await loadInboxTriageSource({ ...config, triageModel: '' }, source)).model).toBe('screen-default');
+  expect((await loadInboxTriageService({ ...config, triageModel: 'override' }, source)).model).toBe('override');
+  expect((await loadInboxTriageService({ ...config, triageModel: '' }, source)).model).toBe('screen-default');
   const request = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ status: 'completed', output: [{ type: 'message', content: [{ type: 'output_text', text: JSON.stringify({ id: 'a', state: 'quiet', reason: 'verified', priority: 'normal' }) }] }] }), { headers: { 'content-type': 'application/json' } }));
   const result = await triageWithChatTools({ id: 'a', ownerKey: 'ou_owner',
     sourceRef: { transport: 'lark', containerId: 'oc_test', name: 'test', kind: 'direct' }, messages: [] } as unknown as InboxJob, '', provider,
@@ -46,8 +47,8 @@ it('never falls back to profile or global credentials for a missing service or k
   const h = await setup(); h.root.modelServices = { screen: service };
   vi.stubEnv('OPENAI_API_KEY', 'unrelated-private-key'); vi.stubEnv('TEST_MODEL_KEY', undefined);
   const config = normalizeInbox({ executorProfile: 'claude', triageService: 'missing' });
-  expect(() => inboxTriageSource(config, h.root)).toThrow('找不到所选');
-  await expect(loadInboxTriageSource({ ...config, triageService: 'screen' }, { kind: 'service', config: service })).rejects.toThrow('凭据缺失');
+  expect(() => inboxTriageService(config, h.root)).toThrow('找不到所选');
+  await expect(loadInboxTriageService({ ...config, triageService: 'screen' }, service)).rejects.toThrow('凭据缺失');
 });
 
 it('reads file and header references at request time without serializing their values', async () => {
@@ -69,7 +70,7 @@ it('preserves the registry on profile writes and serializes concurrent service e
   const root = (await loadRootConfig(h.configPath))!;
   root.profiles.claude!.preferences.model = 'sonnet'; await saveRootConfig(root, h.configPath);
   expect(Object.keys(await listModelServices(h.configPath)).sort()).toEqual(['a', 'b']);
-  root.inbox = normalizeInbox({ enabled: false, executorProfile: 'claude', triageService: 'a' }); await saveRootConfig(root, h.configPath);
+  root.inbox = normalizeInbox({ enabled: false, executorProfile: 'claude', triageService: 'a' }); await saveWithMonitors(root, h.configPath);
   await removeModelService(h.configPath, 'a');
   expect(Object.keys(await listModelServices(h.configPath))).toEqual(['b']);
   await configureModelService(h.configPath, 'a', service);
@@ -85,7 +86,7 @@ it('blocks CLI removal while a plugin references the service', async () => {
     executorProfile: 'claude',
     triageService: 'screen',
   });
-  await saveRootConfig(root, h.configPath);
+  await saveWithMonitors(root, h.configPath);
   await expect(removeServiceCli('screen', { config: h.configPath }))
     .rejects.toThrow('仍引用');
   expect((await listModelServices(h.configPath)).screen).toBeDefined();

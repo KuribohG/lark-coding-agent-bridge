@@ -1,11 +1,10 @@
 import type { Attention, InboxJob, TriageDecision } from '../../../inbox/types';
 import { validFollowUp } from '../../../inbox/updates';
 import { obj } from '../../../inbox/values';
-import { parseModelJson } from '../../../inbox/model-json';
+import { parseModelJson } from '../../../utils/model-json';
 import type { ResponsesModelService as AnalysisProvider } from '../../../model-service/service';
 
 export type { ResponsesModelService as AnalysisProvider } from '../../../model-service/service';
-export { loadProfileModelService as loadAnalysisProvider } from '../../../agent/model-service';
 export const INBOX_ANALYSIS_MODEL = 'deepseek-flash';
 
 export function analysisBody(job: InboxJob, provider: Pick<AnalysisProvider, 'model'>) {

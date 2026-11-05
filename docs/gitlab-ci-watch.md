@@ -25,8 +25,8 @@ lark-channel-bridge ci-watch status
 ```
 
 Both commands accept `--config /absolute/path/to/bridge/config.toml`. Settings live
-in `monitors.toml` when selected by `bridge.monitors_file`, or the root TOML's `monitoring.gitlab_ci` table and survive other profile configuration
-changes. A bridge version with this feature reloads settings within 15 seconds;
+in the `monitors.toml` selected by `bridge.monitors_file` (created on the first save)
+and survive other profile configuration changes. A bridge version with this feature reloads settings within 15 seconds;
 builds containing the independent background executor resolve its configuration
 without requiring the Lark profile to be online. Earlier builds require the
 profile online. The supervisor process must keep running in both cases. The status command reports persisted
@@ -141,14 +141,9 @@ separate Responses API screening service. Lark notification identity remains the
 configured execution profile. No new monitor is enabled by this adapter change.
 
 
-## Existing installations
+## Handoff and lifecycle
 
-On the first active poll with this version, known legacy runs are imported into
-assistant tasks. Completed results are imported without model execution; known
-delivered results are not sent again. If an old delivery was attempted but never
-confirmed, keep the result in the workbench for review instead of resending with
-a new notification key. Missing or interrupted results require manual retry.
-Submission is acknowledged only after the assistant store is saved, so a restart
+Each new failure is submitted to the assistant as a fresh task. Submission is acknowledged only after the assistant store is saved, so a restart
 between the two stores cannot create a second task.
 
 Disabling CI stops its polling and active work, preserving history. Pausing the

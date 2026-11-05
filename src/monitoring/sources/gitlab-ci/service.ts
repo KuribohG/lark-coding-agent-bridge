@@ -3,16 +3,13 @@ import { readFile } from 'node:fs/promises';
 import { writeFileAtomic } from '../../../platform/atomic-write';
 import { GitLabError, type FailedJob, type Pipeline } from './client';
 import type { GitLabCiConfig, GitLabRepository } from './config';
-import type { WorkItemTarget } from '../../../work-items/domain';
 
 export interface CiRun {
   id: string; repository: GitLabRepository; pipeline: Pipeline; failures: FailedJob[];
   url: string; executorProfile: string;
-  createdAt: number; updatedAt: number; attempts: number; retryAt: number;
-  state: 'queued' | 'running' | 'ready' | 'done' | 'failed' | 'obsolete' | 'submitted';
-  inboxJobId?: string; submissionAttempts?: number;
-  resultPath?: string; error?: string;
-  topic?: WorkItemTarget; deliveryAttempts?: number; deliveredAt?: number;
+  createdAt: number; updatedAt: number; retryAt: number;
+  state: 'queued' | 'submitted';
+  inboxJobId?: string; submissionAttempts?: number; error?: string;
 }
 interface CiState {
   version: 1;
@@ -87,7 +84,7 @@ export class GitLabCiService {
           if (this.data.runs.some(r => r.id === id)) continue;
           this.data.runs.push({ id, repository: repo, pipeline, failures, url: this.config.url, executorProfile: this.config.executorProfile,
             createdAt: this.now(), updatedAt: this.now(),
-            attempts: 0, retryAt: 0, state: 'queued' });
+            retryAt: 0, state: 'queued' });
           await this.save();
           this.kickWorker();
         }

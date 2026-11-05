@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
 import type { InboxJob, InboxMessage, TriageDecision } from './types';
-import { replyContent } from './reply';
 
 const digest = (message: InboxMessage) => createHash('sha256').update(message.text).digest('hex');
 
@@ -14,9 +13,8 @@ export function analysisChanges(job: InboxJob): InboxMessage[] {
 
 export function previousAnalysis(job: InboxJob) {
   if (!job.result) return undefined;
-  const fields = replyContent(job.result);
-  return { replyDraft: (job.replyDraft ?? fields.replyDraft).slice(0, 6000),
-    analysis: (job.analysis ?? fields.analysis).slice(0, 8000), missingInfo: (job.missingInfo ?? fields.missingInfo).slice(0, 2000),
+  return { replyDraft: (job.replyDraft ?? '').slice(0, 6000),
+    analysis: (job.analysis ?? '').slice(0, 8000), missingInfo: (job.missingInfo ?? '').slice(0, 2000),
     attention: job.analysisBasis?.attention };
 }
 

@@ -5,9 +5,10 @@ import { expect, it, vi } from 'vitest';
 import { CallbackAuth } from '../../../src/card/callback-auth';
 import { CallbackNonceStore } from '../../../src/card/callback-store';
 import { InboxCards, type InboxCardContext } from '../../../src/inbox/cards';
-import { normalizeInbox, validateInbox } from '../../../src/inbox/config';
+import { normalizeInbox, validateInbox, type InboxConfig } from '../../../src/inbox/config';
 import { InboxLark } from '../../../src/inbox/lark';
-import type { InboxService } from '../../../src/inbox/service';
+import type { WorkItemService } from '../../../src/work-items/service';
+import { stubLarkSource } from '../../helpers/lark-service';
 import type { InboxJob } from '../../../src/inbox/types';
 import { workItemTarget } from '../../../src/inbox/lark-target';
 
@@ -25,11 +26,12 @@ function command(element: Element): string {
 async function setup() {
   const path = join(await mkdtemp(join(tmpdir(), 'inbox-cards-')), 'nonces.json');
   let now = 1000;
-  const service = { config: config(), manual: vi.fn(async () => job), decide: vi.fn(async () => {}), list: vi.fn(() => [job]), get: vi.fn(() => job), stopAnalysis: vi.fn(async () => job) };
+  const settings = config();
+  const service = { config: settings, source: stubLarkSource(settings, { manual: vi.fn(async () => job) }), decide: vi.fn(async () => {}), list: vi.fn(() => [job]), get: vi.fn(() => job), stopAnalysis: vi.fn(async () => job) };
   const lark = { replyTopic: vi.fn(async (_body: { card?: object; text?: string }) => {}), replyMenu: vi.fn(async (_card: object, _messageId: string, _threadId: string) => {}), recent: vi.fn(async (_type: string, _page?: string) => ({ chats: [{ id: 'oc_source', name: '<at id=all>name</at>' }], next: 'next1' })) };
   const create = async () => {
     const store = new CallbackNonceStore(path); await store.load();
-    return new InboxCards(service as unknown as InboxService, lark as unknown as InboxLark,
+    return new InboxCards(service as unknown as WorkItemService<InboxConfig>, lark as unknown as InboxLark,
       new CallbackAuth({ keys: [{ version: 1, secret: 'fixture-secret' }], nonceStore: store, now: () => now }), store);
   };
   return { cards: await create(), create, service, lark, advance: (ms: number) => { now += ms; } };
@@ -52,7 +54,7 @@ it('signs a versioned stop button and confirms cancellation in the original topi
 it('browses private and group chats without submitting analysis, retaining names and IDs as plain text', async () => {
   const h = await setup(); await h.cards.handle('private', context); await h.cards.handle('groups', context);
   expect(h.lark.recent.mock.calls.map(c => c[0])).toEqual(['p2p', 'group']);
-  expect(h.service.manual).not.toHaveBeenCalled(); expect(h.service.decide).not.toHaveBeenCalled();
+  expect(h.service.source.manual).not.toHaveBeenCalled(); expect(h.service.decide).not.toHaveBeenCalled();
   const rows = elements(h.lark.replyTopic.mock.calls[0]![0]);
   expect(rows.some(e => e.text?.content.includes('<at id=all>name</at>\n会话 ID：oc_source'))).toBe(true);
   expect(JSON.stringify(rows)).not.toContain('__bridge_cb');
@@ -71,7 +73,7 @@ it('opens and browses in a new topic of the configured group, while submitting r
   const menu = h.lark.replyMenu.mock.calls.at(-1)![0];
   const cmd = command(elements({ card: menu }).find(e => e.text?.content === '分析此会话')!);
   await h.cards.handle(cmd, from);
-  expect(h.service.manual).toHaveBeenCalledWith('oc_source');
+  expect(h.service.source.manual).toHaveBeenCalledWith('oc_source');
   expect(h.lark.replyTopic).toHaveBeenCalledWith({ text: expect.stringContaining('原会话') });
   expect(h.service.config.target).toEqual(config().target);
 });
@@ -93,11 +95,11 @@ it('binds signed choices to their source and configuration; repeated clicks surv
   const h = await setup(); await h.cards.handle('private', context);
   const cmd = command(elements(h.lark.replyTopic.mock.calls[0]![0]).find(e => e.text?.content === '分析此会话')!);
   await expect(h.cards.handle(cmd.replace(Buffer.from('oc_source').toString('base64url'), Buffer.from('oc_other').toString('base64url')), context)).rejects.toThrow('失效');
-  h.service.config.waitMinutes++;
-  await expect(h.cards.handle(cmd, context)).rejects.toThrow('失效'); h.service.config.waitMinutes--;
-  await h.cards.handle(cmd, context); expect(h.service.manual).toHaveBeenCalledWith('oc_source');
+  h.service.config.contextMinutes++;
+  await expect(h.cards.handle(cmd, context)).rejects.toThrow('失效'); h.service.config.contextMinutes--;
+  await h.cards.handle(cmd, context); expect(h.service.source.manual).toHaveBeenCalledWith('oc_source');
   await expect((await h.create()).handle(cmd, context)).rejects.toThrow('已经处理');
-  expect(h.service.manual).toHaveBeenCalledTimes(1);
+  expect(h.service.source.manual).toHaveBeenCalledTimes(1);
 });
 
 it('expires selection cards and preserves unused reminder actions across restart', async () => {
@@ -110,7 +112,7 @@ it('expires selection cards and preserves unused reminder actions across restart
   const ignore = command(elements({ card: reminder }).find(e => e.text?.content === '忽略')!);
   await (await h.create()).handle(ignore, context);
   expect(h.service.decide).toHaveBeenCalledWith('job1', 'ignore', 'ou_owner'); expect(h.service.decide).toHaveBeenCalledTimes(1);
-  expect(h.service.manual).not.toHaveBeenCalled();
+  expect(h.service.source.manual).not.toHaveBeenCalled();
   expect(h.lark.replyTopic).toHaveBeenCalledWith({ text: '待办已更新：原会话\n来源会话 ID：oc_source\n状态：已忽略' });
 });
 
@@ -118,7 +120,7 @@ it('carries a signed opaque pagination cursor without model calls', async () => 
   const h = await setup(); await h.cards.handle('groups', context);
   const cmd = command(elements(h.lark.replyTopic.mock.calls[0]![0]).find(e => e.text?.content === '下一页')!);
   await h.cards.handle(cmd, context);
-  expect(h.lark.recent).toHaveBeenLastCalledWith('group', 'next1'); expect(h.service.manual).not.toHaveBeenCalled();
+  expect(h.lark.recent).toHaveBeenLastCalledWith('group', 'next1'); expect(h.service.source.manual).not.toHaveBeenCalled();
 });
 
 it('continues across an empty chat-list page and keeps the configured output conversation out of choices', async () => {

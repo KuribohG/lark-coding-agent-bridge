@@ -4,13 +4,13 @@ import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { Controls } from '../../../src/commands';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
-import { createRootConfig, loadRootConfig, runtimeProfileConfig, saveRootConfig } from '../../../src/config/profile-store';
+import { createRootConfig, loadRootConfig, runtimeProfileConfig } from '../../../src/config/profile-store';
 import { normalizeInbox } from '../../../src/inbox/config';
 import * as runtimeAgent from '../../../src/runtime/agent-runtime';
 import { InboxManager } from '../../../src/monitoring/sources/lark/manager';
 import { InboxGui } from '../../../src/inbox/gui';
 import { startInboxH5 } from '../../../src/inbox/h5-server';
-import { initMonitors } from '../../../src/cli/commands/monitors';
+import { saveWithMonitors } from '../../helpers/monitors';
 import { loadMonitorRoot } from '../../../src/monitoring/store';
 import { formatMonitorConfig } from '../../../src/monitoring/config';
 import * as larkRuntime from '../../../src/monitoring/sources/lark/runtime';
@@ -18,8 +18,7 @@ import { FakeAgentAdapter } from '../../helpers/fake-agent';
 import type { InboxJob } from '../../../src/inbox/types';
 import { workItemTarget } from '../../../src/inbox/lark-target';
 
-vi.mock('../../../src/agent/model-service', async importOriginal => ({ ...await importOriginal<typeof import('../../../src/agent/model-service')>(), loadProfileModelService: vi.fn(async () => ({ model: 'test' })) }));
-vi.mock('../../../src/monitoring/sources/lark/analyzer', () => ({ INBOX_ANALYSIS_MODEL: 'deepseek-flash', loadAnalysisProvider: vi.fn(async () => ({ model: 'test' })), analyzeInbox: vi.fn() }));
+vi.mock('../../../src/monitoring/sources/lark/analyzer', () => ({ INBOX_ANALYSIS_MODEL: 'deepseek-flash', analyzeInbox: vi.fn() }));
 vi.mock('../../../src/inbox/lark', () => ({ InboxLark: class { checkOwner = vi.fn(async () => {}); close = vi.fn(); cancelPending = vi.fn(); } }));
 vi.mock('../../../src/inbox/gui', () => ({ InboxGui: vi.fn(function (...args: unknown[]) { return { start: vi.fn(async () => {}), close: vi.fn(async () => {}), setMode: args[5], setScope: args[6] }; }) }));
 vi.mock('../../../src/inbox/h5-server', () => ({ startInboxH5: vi.fn(async () => ({ close: async () => {} })) }));
@@ -33,10 +32,11 @@ async function setup() {
   const profile = createDefaultProfileConfig({ agentKind: 'codex', accounts: { app: { id: 'cli_fixture', secret: 'fixture', tenant: 'feishu' } }, codex: { binaryPath: 'codex' } });
   profile.larkCli.identityPreset = 'user-default';
   const root = createRootConfig('codex', profile);
-  root.inbox = normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner',
+  root.modelServices = { screen: { protocol: 'responses', baseUrl: 'https://model.test/v1', model: 'test', apiKey: { source: 'env', id: 'INBOX_MANAGER_TEST_KEY' } } };
+  root.inbox = normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner', triageService: 'screen',
     target: workItemTarget({ chatId: 'oc_group', threadId: 'omt_topic', replyTo: 'om_message' }),
     h5: { publicUrl: 'https://example.com/assistant/', port: 19182 } });
-  await saveRootConfig(root, path);
+  await saveWithMonitors(root, path);
   const controls: Controls = { cfg: runtimeProfileConfig(root, 'codex'), profileConfig: profile, profile: 'codex', configPath: path,
     ownerRefreshState: 'ok', processId: 'test', refreshOwner: async () => {}, restart: async () => {}, exit: async () => {} };
   const create = () => { const m = new InboxManager(path, () => controls, rootDir); managers.push(m); return m; };
@@ -56,13 +56,12 @@ it('persists the global switch without changing profile preferences', async () =
   await manager.configure({ ...root.inbox, enabled: false });
   expect((await manager.view()).running).toBe(false);
   expect((await manager.view()).config.dailyTriageLimit).toBe(1_000_000);
-  expect((await loadRootConfig(path))!.inbox?.dailyTriageLimit).toBe(1_000_000);
+  expect((await loadMonitorRoot(path))!.inbox?.dailyTriageLimit).toBe(1_000_000);
   expect((await loadRootConfig(path))!.profiles.codex).toEqual(before);
 });
 
 it('loads Lark settings from TOML and writes workbench changes back to the same file', async () => {
   const { create, path, root, rootDir } = await setup();
-  await initMonitors({ config: path });
   const manager = create(); await manager.reconcile();
   expect(await manager.view()).toMatchObject({ running: true, configFile: join(rootDir, 'monitors.toml') });
   const original = await manager.view();
@@ -77,7 +76,7 @@ it('loads Lark settings from TOML and writes workbench changes back to the same 
 });
 
 it('retains a running source on invalid TOML and picks up a repaired file without recreating it', async () => {
-  const { create, path, rootDir } = await setup(); await initMonitors({ config: path });
+  const { create, path, rootDir } = await setup();
   const file = join(rootDir, 'monitors.toml'); const valid = await readFile(file, 'utf8');
   const manager = create(); await manager.reconcile();
   await writeFile(file, 'version=1\n[sources.lark]\nenabled="wrong"');
@@ -98,7 +97,7 @@ it('retains a running source on invalid TOML and picks up a repaired file withou
 it('recreates the inbox with changed TOML excerpt limits while preserving its stored jobs', async () => {
   const { create, path, rootDir, root } = await setup();
   root.inbox!.gui = { publicUrl: 'https://gui.example', apiKeyFile: join(rootDir, 'key') };
-  await saveRootConfig(root, path); await initMonitors({ config: path });
+  await saveWithMonitors(root, path);
   const manager = create(); await manager.reconcile();
   const before = vi.mocked(InboxGui).mock.calls.at(-1)![0];
   const jobs = structuredClone(before.store.data.jobs);
@@ -116,7 +115,7 @@ it('saves analysis timeouts without recreating the service and uses the new limi
   const { create, path, rootDir, root, controls } = await setup();
   controls.profileConfig.workspaces.default = join(rootDir, 'workspace');
   root.inbox!.analysisTimeoutMinutes = 90;
-  await saveRootConfig(root, path); await initMonitors({ config: path });
+  await saveWithMonitors(root, path);
   const agent = new FakeAgentAdapter({ capabilities: { finalAnswer: 'separate-event', input: 'unsupported' }, events: Array.from({ length: 2 }, () => [
     { type: 'final_text', content: JSON.stringify({ replyDraft: 'reply', analysis: 'checked', missingInfo: '' }) },
     { type: 'done', terminationReason: 'normal' },
@@ -152,11 +151,10 @@ it('saves analysis timeouts without recreating the service and uses the new limi
   } finally { agentSpy.mockRestore(); ioSpy.mockRestore(); }
 });
 
-it.each(['inline', 'file'])('saves and reloads shared concurrency in %s without recreating the inbox', async format => {
+it('saves and reloads shared concurrency without recreating the inbox', async () => {
   const { create, path, rootDir, root } = await setup();
   root.inbox!.gui = { publicUrl: 'https://gui.example', apiKeyFile: join(rootDir, 'key') };
-  await saveRootConfig(root, path);
-  if (format === 'file') await initMonitors({ config: path });
+  await saveWithMonitors(root, path);
   const manager = create(); await manager.reconcile();
   const service = vi.mocked(InboxGui).mock.calls.at(-1)![0];
   const before = await manager.view();
@@ -170,15 +168,14 @@ it.each(['inline', 'file'])('saves and reloads shared concurrency in %s without 
   await expect(manager.configureConcurrency({ concurrency: { ...settings, triage: 0 } })).rejects.toThrow('triage');
   expect(manager.sources.concurrency).toEqual(settings);
   const changed = (await loadMonitorRoot(path))!; changed.workItemConcurrency = { analysis: 2, triage: 20 };
-  if (format === 'file') await writeFile(join(rootDir, 'monitors.toml'), formatMonitorConfig(changed));
-  else await saveRootConfig(changed, path);
+  await writeFile(join(rootDir, 'monitors.toml'), formatMonitorConfig(changed));
   await manager.reconcile(); expect(manager.sources.concurrency).toEqual(changed.workItemConcurrency);
   expect(vi.mocked(InboxGui).mock.calls.at(-1)![0]).toBe(service);
 });
 
 it('starts without HTTPS and does not open an HTTP listener', async () => {
   const { create, root, path } = await setup();
-  root.inbox!.h5.publicUrl = ''; await saveRootConfig(root, path);
+  root.inbox!.h5.publicUrl = ''; await saveWithMonitors(root, path);
   vi.mocked(startInboxH5).mockClear();
   const manager = create(); await manager.reconcile();
   expect((await manager.view()).running).toBe(true);
@@ -195,31 +192,31 @@ it('keeps the GUI connected while off, persists mode, and can re-enable after re
   const { create, path, root } = await setup();
   const key = join(path, '..', 'key'); await writeFile(key, 'fixture', { mode: 0o600 });
   root.inbox!.gui = { publicUrl: 'https://gui.example', apiKeyFile: key };
-  root.inbox!.enabled = false; await saveRootConfig(root, path);
+  root.inbox!.enabled = false; await saveWithMonitors(root, path);
   const manager = create(); await manager.reconcile();
   const gui = vi.mocked(InboxGui).mock.results.at(-1)!.value as { setMode(mode: string): Promise<void>; close: ReturnType<typeof vi.fn> };
   expect((await manager.view()).running).toBe(false);
   await gui.setMode('on'); expect((await manager.view()).running).toBe(true);
-  expect((await loadRootConfig(path))!.inbox).toMatchObject({ enabled: true, autoAnalyze: false });
+  expect((await loadMonitorRoot(path))!.inbox).toMatchObject({ enabled: true });
   await gui.setMode('off'); await manager.reconcile(); expect(gui.close).not.toHaveBeenCalled();
   await manager.close();
   const restarted = create(); await restarted.reconcile();
   const second = vi.mocked(InboxGui).mock.results.at(-1)!.value as typeof gui;
   expect(second).not.toBe(gui); expect((await restarted.view()).running).toBe(false);
   await second.setMode('on'); expect((await restarted.view()).running).toBe(true);
-  expect((await loadRootConfig(path))!.inbox).toMatchObject({ enabled: true, autoAnalyze: false });
+  expect((await loadMonitorRoot(path))!.inbox).toMatchObject({ enabled: true });
 });
 
 it('persists GUI intake changes while off and retains them after restart', async () => {
   const { create, path, root } = await setup();
   root.inbox!.gui = { publicUrl: 'https://gui.example', apiKeyFile: join(path, '..', 'key') };
-  root.inbox!.enabled = false; root.inbox!.autoAnalyze = false; await saveRootConfig(root, path);
+  root.inbox!.enabled = false; await saveWithMonitors(root, path);
   const before = (await loadRootConfig(path))!.profiles;
   const manager = create(); await manager.reconcile();
   const gui = vi.mocked(InboxGui).mock.results.at(-1)!.value as { setScope(scope: string): Promise<void>; close: ReturnType<typeof vi.fn> };
   for (const scope of ['private', 'private_mentions', 'all']) {
     await gui.setScope(scope); await manager.reconcile();
-    expect((await loadRootConfig(path))!.inbox).toMatchObject({ intakeScope: scope, enabled: false, autoAnalyze: false });
+    expect((await loadMonitorRoot(path))!.inbox).toMatchObject({ intakeScope: scope, enabled: false });
     expect((await manager.view()).running).toBe(false); expect(gui.close).not.toHaveBeenCalled();
   }
   expect((await loadRootConfig(path))!.profiles).toEqual(before);
@@ -232,8 +229,8 @@ it('uses the shared Codex runtime configuration and quarantines both trusted bot
   const { create, controls, rootDir } = await setup();
   controls.botIdentity = { openId: 'ou_self', name: '助理' };
   const spy = vi.spyOn(runtimeAgent, 'createRuntimeAgent');
-  const { InboxStore } = await import('../../../src/inbox/store');
-  const store = new InboxStore(join(rootDir, 'inbox', 'state.json'));
+  const { WorkItemStore } = await import('../../../src/work-items/store');
+  const store = new WorkItemStore(join(rootDir, 'inbox', 'state.sqlite'));
   store.data.jobs = ['cli_fixture', 'ou_self'].map((senderId, i) => ({
     id: `self-${i}`, ownerKey: 'ou_owner', profile: 'codex',
     target: workItemTarget({ chatId: 'oc_group', threadId: 'omt_topic', replyTo: 'om_message' }),
@@ -258,7 +255,7 @@ it('uses the shared Codex runtime configuration and quarantines both trusted bot
         systemPrompt: expect.any(Function),
       }),
     );
-    const saved = new InboxStore(store.path); await saved.load();
+    const saved = new WorkItemStore(store.path); await saved.load();
     expect(saved.data.jobs.map(j => j.state)).toEqual(['ignored', 'ignored']);
   } finally { spy.mockRestore(); }
 });
@@ -266,7 +263,7 @@ it('uses the shared Codex runtime configuration and quarantines both trusted bot
 
 it('fills a result topic only for the authorized owner without enabling collection', async () => {
   const { create, root, path } = await setup();
-  root.inbox = normalizeInbox(undefined); await saveRootConfig(root, path);
+  root.inbox = normalizeInbox(undefined); await saveWithMonitors(root, path);
   const manager = create();
   const ctx = { profile: 'codex', operator: 'ou_other', chatId: 'oc_output', threadId: 'omt_output', messageId: 'om_anchor' };
   expect(await manager.command('setup', ctx)).toContain('授权');
@@ -278,6 +275,7 @@ it('fills a result topic only for the authorized owner without enabling collecti
 
 it('checks owner, model and destination without exposing provider credentials', async () => {
   const { create, root } = await setup(); const manager = create();
+  vi.stubEnv('INBOX_MANAGER_TEST_KEY', 'private-fixture');
   const result = await manager.checkSetup(root.inbox);
   expect(result.ok).toBe(true); expect(result.ownerOpenId).toBe('ou_owner');
   expect(JSON.stringify(result)).not.toContain('key');
@@ -288,7 +286,7 @@ it('checks owner, model and destination without exposing provider credentials', 
 
 it('retains local workbench reviews while paused, without a hosted GUI', async () => {
   const { create, root, path } = await setup();
-  root.inbox!.enabled = false; root.inbox!.h5.publicUrl = ''; await saveRootConfig(root, path);
+  root.inbox!.enabled = false; root.inbox!.h5.publicUrl = ''; await saveWithMonitors(root, path);
   const manager = create(); await manager.reconcile();
   expect(await manager.workbench()).toMatchObject({ running: false, connected: true, jobs: [] });
   await expect(manager.workbenchCommand({ id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', action: 'manual', target: 'oc_source' })).rejects.toThrow('已关闭');

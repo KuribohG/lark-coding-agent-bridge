@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 import type { CallbackAuth } from '../card/callback-auth';
 import type { CallbackNonceStore } from '../card/callback-store';
 import type { InboxLark } from './lark';
-import type { InboxService } from './service';
+import type { InboxConfig } from './config';
+import type { WorkItemService } from '../work-items/service';
+import { larkSource } from '../monitoring/sources/lark/source';
 import type { InboxJob } from './types';
 
 export interface InboxCardContext { profile: string; operator: string; chatId: string; threadId?: string; messageId?: string }
@@ -14,7 +16,7 @@ const navigation = () => [button('最近私聊', 'inbox.private'), button('最�
 
 /** Built-in commands use their own signed actions, independent of an agent run. */
 export class InboxCards {
-  constructor(private service: InboxService, private lark: InboxLark, private auth: CallbackAuth, private nonces: CallbackNonceStore) {}
+  constructor(private service: WorkItemService<InboxConfig>, private lark: InboxLark, private auth: CallbackAuth, private nonces: CallbackNonceStore) {}
 
   accepts(ctx: InboxCardContext): boolean {
     const c = this.service.config;
@@ -64,7 +66,7 @@ export class InboxCards {
       if (!Number.isInteger(offset) || offset < 0 || offset > 500) throw new Error('无效的待办分页');
       await this.pending(offset, ctx);
     } else if (action === 'choose') {
-      const job = await this.service.manual(target);
+      const job = await larkSource(this.service).manual(target);
       await this.lark.replyTopic({ text: `已提交分析：${job.sourceRef.name}\n来源会话 ID：${job.sourceRef.containerId}\n待办：${job.id}\n分析结果会继续发到本话题。` });
     } else if (action === 'stop') {
       const job = await this.service.stopAnalysis(JSON.parse(target), ctx.operator);

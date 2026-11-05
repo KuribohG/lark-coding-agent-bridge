@@ -3,18 +3,19 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { normalizeInbox } from '../../../src/inbox/config';
-import { InboxService } from '../../../src/inbox/service';
-import { InboxStore } from '../../../src/inbox/store';
+import { larkService } from '../../helpers/lark-service';
+import type { WorkItemService } from '../../../src/work-items/service';
+import { WorkItemStore } from '../../../src/work-items/store';
 import type { InboxIO, InboxJob, InboxMessage } from '../../../src/inbox/types';
-import { InboxAnalysisQueue } from '../../../src/inbox/task-source';
+import { WorkItemScheduler } from '../../../src/work-items/scheduler';
 import { workItemTarget } from '../../../src/inbox/lark-target';
 
 type Decision = Awaited<ReturnType<NonNullable<InboxIO['triage']>>>;
-const services: InboxService[] = [];
+const services: WorkItemService[] = [];
 beforeEach(() => { vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }); });
 afterEach(async () => { await Promise.all(services.splice(0).map(s => s.close())); vi.useRealTimers(); });
 
-async function setup(queue?: InboxAnalysisQueue) {
+async function setup(queue?: WorkItemScheduler) {
   let now = 1_000_000;
   const messages: InboxMessage[] = [];
   const screens: { item: InboxJob; resolve: (value: Decision) => void; reject: (error: Error) => void }[] = [];
@@ -31,8 +32,8 @@ async function setup(queue?: InboxAnalysisQueue) {
       screens.push({ item: structuredClone(item), resolve, reject });
     })),
   };
-  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-immediate-')), 'state.json'));
-  const service = new InboxService(store, config, io, () => now, queue); services.push(service); await service.start();
+  const store = new WorkItemStore(join(await mkdtemp(join(tmpdir(), 'inbox-immediate-')), 'state.sqlite'));
+  const service = larkService(store, config, io, () => now, queue); services.push(service); await service.start();
   const add = (id: string, overrides: Partial<InboxMessage> = {}) => {
     const message: InboxMessage = { id, containerId: 'oc_source', containerName: '同事', containerKind: 'direct',
       senderId: 'ou_sender', senderName: '同事', senderBot: false, time: now, sequence: String(messages.length + 1),
@@ -98,7 +99,7 @@ it('keeps different topics separate while combining a burst within each topic', 
 });
 
 it('withdraws a queued stale analysis when the next collection contains more context', async () => {
-  const s = await setup(new InboxAnalysisQueue(1)); let finishBusy!: () => void;
+  const s = await setup(new WorkItemScheduler(1)); let finishBusy!: () => void;
   vi.mocked(s.io.analyze).mockImplementationOnce((_job, signal) => new Promise((resolve, reject) => {
     finishBusy = () => resolve({ text: '{"analysis":"完成"}', inputTokens: 1, outputTokens: 1 });
     signal.addEventListener('abort', () => reject(Error('cancelled')), { once: true });

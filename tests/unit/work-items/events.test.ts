@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -26,7 +26,7 @@ async function setup(options: { runtime?: Partial<WorkItemRuntime>; enabled?: bo
     target: workItemTarget({ chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_result' }) });
   const runtime: WorkItemRuntime = { source: new EventSource('test-source', () => true, options.policy),
     checkAccess: vi.fn(async () => {}), deliver: vi.fn(async () => {}), investigate: vi.fn(async () => report()), ...options.runtime };
-  const store = new WorkItemStore(join(folder, 'state.json'));
+  const store = new WorkItemStore(join(folder, 'state.sqlite'));
   const service = new WorkItemService(store, config, runtime, () => 1000);
   services.push(service); await service.start();
   return { service, store, config, runtime };
@@ -180,17 +180,7 @@ it.each(['open', 'ignored', 'handled'] as const)('updates evidence without reviv
   expect(s.runtime.investigate).not.toHaveBeenCalled();
 });
 
-it('resets unsupported version-1 state instead of migrating removed Lark fields', async () => {
-  const folder = await mkdtemp(join(tmpdir(), 'work-items-v1-'));
-  const path = join(folder, 'state.json');
-  await writeFile(path, JSON.stringify({ version: 1, jobs: [{ id: 'legacy' }], cursors: {}, seen: {}, autoUsage: {} }));
-  const loaded = new WorkItemStore(path); await loaded.load();
-  expect(loaded.data).toMatchObject({ version: 2, jobs: [], cursors: {}, seen: {}, autoUsage: {} });
-  expect(loaded.data.jobs).toEqual([]);
-  await expect(readFile(path, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
-});
-
-it('retains create-only semantics for old collectors and scopes the same key by owner', async () => {
+it('keeps unrevisioned events create-only and scopes the same key by owner', async () => {
   const a = await setup({ enabled: false }); const b = await setup({ enabled: false, owner: 'ou_other' });
   const legacy = { ...event, revision: undefined, eventId: undefined };
   const item = await a.service.observe(legacy);

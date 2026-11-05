@@ -3,37 +3,37 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { normalizeInbox, validateInbox } from '../../../src/inbox/config';
-import { InboxStore } from '../../../src/inbox/store';
-import { InboxService, boundMessages } from '../../../src/inbox/service';
+import { WorkItemStore } from '../../../src/work-items/store';
+import { larkService } from '../../helpers/lark-service';
+import type { WorkItemService } from '../../../src/work-items/service';
+import { boundMessages, larkSource } from '../../../src/monitoring/sources/lark/source';
 import { InboxLark, messageTime, parseMessages } from '../../../src/inbox/lark';
 import { InboxH5Auth } from '../../../src/inbox/h5-auth';
 import { analyzeInbox, analysisBody } from '../../../src/monitoring/sources/lark/analyzer';
 import { startInboxH5 } from '../../../src/inbox/h5-server';
-import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
-import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
 import type { InboxIO, InboxMessage } from '../../../src/inbox/types';
 import { workItemTarget } from '../../../src/inbox/lark-target';
 
 const config = () => normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner',
-  target: workItemTarget({ chatId: 'oc_target', threadId: 'omt_topic', replyTo: 'om_anchor' }), waitMinutes: 1 });
+  target: workItemTarget({ chatId: 'oc_target', threadId: 'omt_topic', replyTo: 'om_anchor' }) });
 const message = (overrides: Partial<InboxMessage> = {}): InboxMessage => ({
   id: 'om_source', containerId: 'oc_source', containerName: '源会话', containerKind: 'direct',
   senderId: 'ou_sender', senderName: '发送者', senderBot: false, time: 1_000_000,
   text: '请帮我确认发布日期', mentions: [], ...overrides,
 });
-const services: InboxService[] = [];
+const services: WorkItemService[] = [];
 afterEach(async () => { await Promise.all(services.splice(0).map(s => s.close())); vi.useRealTimers(); });
 async function setup(overrides: Partial<InboxIO> = {}) {
   let now = 1_000_000;
   const io: InboxIO = { checkOwner: vi.fn(async () => {}), collect: vi.fn(async kind => kind === 'p2p' ? [message()] : []),
     context: vi.fn(async () => [message()]), source: vi.fn(async () => ({ name: '源会话', type: 'p2p' as const })),
-    deliver: vi.fn(async () => {}), analyze: vi.fn(async () => ({ text: '建议回复', inputTokens: 100, outputTokens: 20 })), ...overrides };
-  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-test-')), 'state.json'));
-  const service = new InboxService(store, config(), io, () => now); services.push(service); await service.start();
+    deliver: vi.fn(async () => {}), analyze: vi.fn(async () => ({ text: JSON.stringify({ replyDraft: '建议回复', analysis: '已核实', missingInfo: '' }), inputTokens: 100, outputTokens: 20 })), ...overrides };
+  const store = new WorkItemStore(join(await mkdtemp(join(tmpdir(), 'inbox-test-')), 'state.sqlite'));
+  const service = larkService(store, config(), io, () => now); services.push(service); await service.start();
   const advance = (ms: number) => { now += ms; };
   return { service, store, io, advance };
 }
-async function settle(s: InboxService) { for (let i = 0; i < 10; i++) { await new Promise(r => setTimeout(r, 10)); if (!s.list().some(j => j.state === 'running')) return; } }
+async function settle(s: WorkItemService) { for (let i = 0; i < 10; i++) { await new Promise(r => setTimeout(r, 10)); if (!s.list().some(j => j.state === 'running')) return; } }
 
 it.each([
   [{ code: 1, stdout: '', stderr: 'lark-channel context detected but lark-cli is not bound to it', timedOut: false }, '当前 bridge 未绑定'],
@@ -154,33 +154,33 @@ describe('durable inbox', () => {
   it('deduplicates polls and repeated manual submissions', async () => {
     const { service, io, advance } = await setup(); await service.tick(); advance(61_000); await service.tick();
     expect(service.list()).toHaveLength(1);
-    const a = await service.manual('oc_source'); const b = await service.manual('oc_source'); expect(a.id).toBe(b.id);
+    const a = await larkSource(service).manual('oc_source'); const b = await larkSource(service).manual('oc_source'); expect(a.id).toBe(b.id);
     await service.tick(); await settle(service); expect(io.analyze).toHaveBeenCalledTimes(1);
   });
   it('extends an empty recent window for a manual selection', async () => {
     const context = vi.fn(async () => [message()]); context.mockResolvedValueOnce([]);
-    const { service } = await setup({ context }); const job = await service.manual('oc_source');
+    const { service } = await setup({ context }); const job = await larkSource(service).manual('oc_source');
     expect(job.messages).toHaveLength(1); expect(context).toHaveBeenCalledTimes(2);
   });
   it('replays GUI submissions without re-reading or creating a second job even after new messages arrive', async () => {
     const { service, io, store, advance } = await setup();
-    const first = await service.manual('oc_source', 'request-one');
-    await service.manual('oc_source', 'request-two');
+    const first = await larkSource(service).manual('oc_source', 'request-one');
+    await larkSource(service).manual('oc_source', 'request-two');
     advance(31 * 60_000); store.data.jobs[0]!.state = 'done';
     vi.mocked(io.context).mockResolvedValue([message({ id: 'new' })]); vi.mocked(io.context).mockClear();
-    expect((await service.manual('oc_source', 'request-one')).id).toBe(first.id);
-    expect((await service.manual('oc_source', 'request-two')).id).toBe(first.id);
+    expect((await larkSource(service).manual('oc_source', 'request-one')).id).toBe(first.id);
+    expect((await larkSource(service).manual('oc_source', 'request-two')).id).toBe(first.id);
     expect(io.context).not.toHaveBeenCalled();
-    await expect(service.manual('oc_different', 'request-one')).rejects.toThrow('already used');
-    const recovered = new InboxStore(store.path); await recovered.load();
+    await expect(larkSource(service).manual('oc_different', 'request-one')).rejects.toThrow('already used');
+    const recovered = new WorkItemStore(store.path); await recovered.load();
     expect(recovered.data.jobs[0]!.manualRequestIds).toEqual(['request-one', 'request-two']);
   });
   it('deduplicates a large selection even after worker context expansion', async () => {
     const messages = Array.from({ length: 150 }, (_, i) => message({ id: `om_${i}`, time: 1_000_000 + i }));
     const { service, store } = await setup({ context: vi.fn(async () => messages) });
-    const first = await service.manual('oc_source');
+    const first = await larkSource(service).manual('oc_source');
     store.data.jobs[0]!.state = 'running'; store.data.jobs[0]!.messages.unshift(message({ id: 'om_older', time: 900_000 }));
-    const again = await service.manual('oc_source'); expect(again.id).toBe(first.id); expect(service.list()).toHaveLength(1);
+    const again = await larkSource(service).manual('oc_source'); expect(again.id).toBe(first.id); expect(service.list()).toHaveLength(1);
   });
   it('rejects decisions from other group members', async () => {
     const { service } = await setup(); await service.tick();
@@ -194,17 +194,17 @@ describe('durable inbox', () => {
   it('preserves stored usage across restart without reviving a countdown', async () => {
     const { service, store, advance } = await setup(); await service.tick(); advance(61_000); await service.tick();
     await service.close();
-    store.data.autoUsage['1970-01-01'] = 20; await store.save(); const resumed = new InboxStore(store.path); await resumed.load();
+    store.data.autoUsage['1970-01-01'] = 20; await store.save(); const resumed = new WorkItemStore(store.path); await resumed.load();
     expect(resumed.data.jobs[0]?.dueAt).toBeUndefined(); expect(resumed.data.autoUsage['1970-01-01']).toBe(20);
     advance(61_000); await service.tick(); expect(service.list()[0]?.state).toBe('waiting');
   });
   it('does not turn interrupted runs into duplicate model calls', async () => {
     const { store, service } = await setup(); await service.tick(); store.data.jobs[0]!.state = 'running'; await store.save();
-    const resumed = new InboxStore(store.path); await resumed.load(); expect(resumed.data.jobs[0]?.state).toBe('failed');
+    const resumed = new WorkItemStore(store.path); await resumed.load(); expect(resumed.data.jobs[0]?.state).toBe('failed');
   });
   it('prevents new work after shutdown', async () => {
     const { service, io } = await setup(); await service.close();
-    await expect(service.manual('oc_source')).rejects.toThrow('关闭'); await service.tick(); expect(io.collect).not.toHaveBeenCalled();
+    await expect(larkSource(service).manual('oc_source')).rejects.toThrow('关闭'); await service.tick(); expect(io.collect).not.toHaveBeenCalled();
   });
   it('does not submit after shutdown interrupts a pending collection', async () => {
     let finish!: (messages: InboxMessage[]) => void;
@@ -216,17 +216,17 @@ describe('durable inbox', () => {
   });
   it('turns off collection and queued work while preserving results and allowing re-enable', async () => {
     const { service, io, store } = await setup();
-    const job = await service.manual('oc_source');
+    const job = await larkSource(service).manual('oc_source');
     await service.setMode('off');
     vi.mocked(io.collect).mockClear(); await service.tick();
     expect(io.collect).not.toHaveBeenCalled(); expect(io.analyze).not.toHaveBeenCalled();
     expect(service.list()[0]?.state).toBe('waiting');
-    await expect(service.manual('oc_source')).rejects.toThrow('关闭');
+    await expect(larkSource(service).manual('oc_source')).rejects.toThrow('关闭');
     await service.setMode('on'); await service.tick();
     expect(io.analyze).not.toHaveBeenCalled(); // suspended jobs require an explicit click
     await service.decide(job.id, 'process', 'ou_owner'); await service.tick(); await settle(service);
     expect(io.analyze).toHaveBeenCalledTimes(1);
-    expect(store.data.jobs[0]?.result).toBe('建议回复');
+    expect(store.data.jobs[0]?.replyDraft).toBe('建议回复');
   });
   it('enabled mode blocks legacy overdue and already queued automatic work, but accepts explicit processing', async () => {
     const { service, io, store, advance } = await setup(); await service.tick();
@@ -238,7 +238,7 @@ describe('durable inbox', () => {
   });
   it('never dispatches legacy queued automatic work after a restart', async () => {
     const { service, io, store } = await setup(); await service.tick();
-    store.data.jobs[0]!.state = 'queued'; service.config.autoAnalyze = false;
+    store.data.jobs[0]!.state = 'queued';
     await service.tick(); expect(io.analyze).not.toHaveBeenCalled();
   });
   it('off gates a collection already in flight, before it can queue or analyze messages', async () => {
@@ -251,26 +251,18 @@ describe('durable inbox', () => {
   it('aborts clicked analysis when turned off and discards late output', async () => {
     let finish!: (r: { text: string; inputTokens: number; outputTokens: number }) => void;
     const { service, io } = await setup({ analyze: vi.fn(() => new Promise<{ text: string; inputTokens: number; outputTokens: number }>(r => { finish = r; })) });
-    await service.manual('oc_source'); await service.tick();
+    await larkSource(service).manual('oc_source'); await service.tick();
     await vi.waitFor(() => expect(finish).toBeDefined());
     const signal = vi.mocked(io.analyze).mock.calls[0]![1]; await service.setMode('off');
     expect(signal.aborted).toBe(true);
-    finish({ text: 'obsolete', inputTokens: 1, outputTokens: 1 }); await settle(service); await service.tick();
+    finish({ text: JSON.stringify({ replyDraft: 'obsolete', analysis: 'obsolete', missingInfo: '' }), inputTokens: 1, outputTokens: 1 }); await settle(service); await service.tick();
     expect(service.list()[0]?.state).toBe('waiting'); expect(service.list()[0]?.result).toBeUndefined();
     expect(vi.mocked(io.deliver).mock.calls.some(c => c[1] === 'result')).toBe(false);
   });
   it('reports persistence failure without claiming a mode change succeeded', async () => {
     const { service } = await setup();
-    await expect(service.setMode('on', async () => { throw new Error('disk failure'); })).rejects.toThrow('disk failure');
-    expect(service.config.autoAnalyze).toBe(false);
-  });
-  it('preserves global inbox settings through root serialization', async () => {
-    const path = join(await mkdtemp(join(tmpdir(), 'inbox-config-')), 'config.json');
-    const profile = createDefaultProfileConfig({ agentKind: 'codex', accounts: { app: { id: 'cli_app', secret: 'fixture', tenant: 'feishu' } }, codex: { binaryPath: 'codex' } });
-    const root = createRootConfig('codex', profile); root.inbox = config(); await saveRootConfig(root, path);
-    const loaded = (await loadRootConfig(path))!; expect(loaded.inbox).toEqual(config());
-    loaded.profiles.codex!.preferences.model = 'another'; await saveRootConfig(loaded, path);
-    expect((await loadRootConfig(path))?.inbox).toEqual(config());
+    await expect(service.setMode('off', async () => { throw new Error('disk failure'); })).rejects.toThrow('disk failure');
+    expect(service.config.enabled).toBe(true);
   });
   it('pauses a private pending task when the owner replies', async () => {
     const { service, io, advance } = await setup(); await service.tick();
@@ -297,9 +289,9 @@ describe('durable inbox', () => {
   it('stops an in-flight analysis on claim and never publishes its output', async () => {
     let finish!: (r: { text: string; inputTokens: number; outputTokens: number }) => void;
     const { service, io } = await setup({ analyze: vi.fn(() => new Promise<{ text: string; inputTokens: number; outputTokens: number }>(resolve => { finish = resolve; })) });
-    const job = await service.manual('oc_source'); await service.tick();
+    const job = await larkSource(service).manual('oc_source'); await service.tick();
     for (let i = 0; i < 20 && !finish; i++) await new Promise(r => setTimeout(r, 5));
-    await service.decide(job.id, 'claim', 'ou_owner'); finish({ text: 'obsolete', inputTokens: 1, outputTokens: 1 }); await settle(service); await service.tick();
+    await service.decide(job.id, 'claim', 'ou_owner'); finish({ text: JSON.stringify({ replyDraft: 'obsolete', analysis: 'obsolete', missingInfo: '' }), inputTokens: 1, outputTokens: 1 }); await settle(service); await service.tick();
     expect(service.list()[0]?.state).toBe('claimed'); expect(vi.mocked(io.deliver).mock.calls.some(c => c[1] === 'result')).toBe(false);
   });
 });
@@ -505,12 +497,12 @@ describe('H5 authentication and model capabilities', () => {
 describe('reply workbench', () => {
   it('keeps generated results open and retains them beyond seven days', async () => {
     const s = await setup({ analyze: vi.fn(async () => ({ text: JSON.stringify({ replyDraft: '我先核对版本。', analysis: '尚缺兼容性结论。', missingInfo: '客户端版本' }), inputTokens: 10, outputTokens: 5 })) });
-    await s.service.manual('oc_source'); await s.service.tick(); await settle(s.service); await s.service.tick();
+    await larkSource(s.service).manual('oc_source'); await s.service.tick(); await settle(s.service); await s.service.tick();
     expect(s.service.list()[0]).toMatchObject({ state: 'done', handlingState: 'open', replyDraft: '我先核对版本。', missingInfo: '客户端版本' });
     s.advance(8 * 86400_000); await s.service.tick(); expect(s.service.list()).toHaveLength(1);
   });
   it('persists edits and handling while off without collection, delivery, or model calls', async () => {
-    const s = await setup(); const job = await s.service.manual('oc_source'); await s.service.setMode('off');
+    const s = await setup(); const job = await larkSource(s.service).manual('oc_source'); await s.service.setMode('off');
     vi.mocked(s.io.context).mockClear(); vi.mocked(s.io.checkOwner).mockClear();
     const saved = await s.service.review({ id: job.id, revision: job.revision, replyDraft: '我修改的回复' }, 'ou_owner', 'edit-one');
     expect(saved).toMatchObject({ replyDraft: '我修改的回复', draftEdited: true, handlingState: 'open' });
@@ -519,11 +511,11 @@ describe('reply workbench', () => {
     expect(handled.handlingState).toBe('handled');
     await s.service.tick();
     for (const fn of [s.io.context, s.io.collect, s.io.checkOwner, s.io.analyze, s.io.deliver]) expect(fn).not.toHaveBeenCalled();
-    const loaded = new InboxStore(s.store.path); await loaded.load();
+    const loaded = new WorkItemStore(s.store.path); await loaded.load();
     expect(loaded.data.jobs[0]).toMatchObject({ replyDraft: '我修改的回复', handlingState: 'handled' });
   });
   it('rejects other owners, stale revisions and oversized edits', async () => {
-    const s = await setup(); const job = await s.service.manual('oc_source');
+    const s = await setup(); const job = await larkSource(s.service).manual('oc_source');
     await expect(s.service.review({ id: job.id, revision: job.revision, replyDraft: 'x' }, 'ou_other', 'a')).rejects.toThrow('forbidden');
     await s.service.review({ id: job.id, revision: job.revision, replyDraft: 'new' }, 'ou_owner', 'b');
     await expect(s.service.review({ id: job.id, revision: job.revision, replyDraft: 'old' }, 'ou_owner', 'c')).rejects.toThrow('已更新');
@@ -531,7 +523,7 @@ describe('reply workbench', () => {
     expect(s.service.list()[0]?.replyDraft).toBe('new');
   });
   it('rolls back an edit on persistence failure, allowing a real retry', async () => {
-    const s = await setup(); const job = await s.service.manual('oc_source');
+    const s = await setup(); const job = await larkSource(s.service).manual('oc_source');
     vi.spyOn(s.store, 'save').mockRejectedValueOnce(new Error('disk error'));
     const edit = { id: job.id, revision: job.revision, replyDraft: 'durable' };
     await expect(s.service.review(edit, 'ou_owner', 'edit')).rejects.toThrow('disk error');
@@ -541,7 +533,7 @@ describe('reply workbench', () => {
   it('never overwrites a saved edit with a late model result', async () => {
     let finish!: (r: { text: string; inputTokens: number; outputTokens: number }) => void;
     const s = await setup({ analyze: vi.fn(() => new Promise<{ text: string; inputTokens: number; outputTokens: number }>(resolve => { finish = resolve; })) });
-    await s.service.manual('oc_source'); await s.service.tick(); await vi.waitFor(() => expect(finish).toBeDefined());
+    await larkSource(s.service).manual('oc_source'); await s.service.tick(); await vi.waitFor(() => expect(finish).toBeDefined());
     const job = s.service.list()[0]!;
     await s.service.review({ id: job.id, revision: job.revision, replyDraft: '用户最终修改' }, 'ou_owner', 'save');
     finish({ text: JSON.stringify({ replyDraft: '过期生成内容', analysis: '分析', missingInfo: '' }), inputTokens: 1, outputTokens: 1 });
@@ -550,7 +542,7 @@ describe('reply workbench', () => {
     expect(s.service.list()[0]?.result).toBeUndefined();
   });
   it('marks a prepared draft stale for new messages and closes it only after an owner reply', async () => {
-    const s = await setup(); await s.service.manual('oc_source'); await s.service.tick(); await settle(s.service); await s.service.tick();
+    const s = await setup(); await larkSource(s.service).manual('oc_source'); await s.service.tick(); await settle(s.service); await s.service.tick();
     const job = s.service.list()[0]!;
     await s.service.review({ id: job.id, revision: job.revision, replyDraft: '已有修改' }, 'ou_owner', 'save');
     vi.mocked(s.io.collect).mockResolvedValue([message({ id: 'om_followup', time: 1_061_000, text: '版本改成了 2.0，请重新确认。' })]);
@@ -578,30 +570,30 @@ describe('intake scopes', () => {
       mentions: [{ id: 'ou_owner', name: '本人' }] }), message({ id: 'group', containerId: 'oc_group', containerKind: 'group' })];
     const collect = vi.fn(async (_kind: string) => messages);
     const { service } = await setup({ collect });
-    await service.setScope(scope); await service.tick();
+    await larkSource(service).setScope(scope); await service.tick();
     expect(collect.mock.calls.map(c => c[0])).toEqual(kinds);
     expect(service.list().flatMap(j => j.messages.map(m => m.id)).sort()).toEqual([...ids].sort());
   });
   it('keeps scope changes independent of off mode and persists before applying', async () => {
     const { service, io } = await setup(); await service.setMode('off');
-    await expect(service.setScope('all', async () => { throw Error('disk full'); })).rejects.toThrow('disk full');
+    await expect(larkSource(service).setScope('all', async () => { throw Error('disk full'); })).rejects.toThrow('disk full');
     expect(service.config.intakeScope).not.toBe('all');
-    await service.setScope('all'); await service.tick();
-    expect(service.config).toMatchObject({ enabled: false, autoAnalyze: false, intakeScope: 'all' });
+    await larkSource(service).setScope('all'); await service.tick();
+    expect(service.config).toMatchObject({ enabled: false, intakeScope: 'all' });
     expect(io.collect).not.toHaveBeenCalled(); expect(io.analyze).not.toHaveBeenCalled();
   });
   it('does not backfill the overlap when widening scope', async () => {
     const collect = vi.fn(async () => [message({ id: 'old', containerKind: 'group', time: 1_000_000 }),
       message({ id: 'new', containerKind: 'group', time: 1_061_001 })]);
-    const { service, advance } = await setup({ collect }); advance(61_000); await service.setScope('all');
+    const { service, advance } = await setup({ collect }); advance(61_000); await larkSource(service).setScope('all');
     await service.tick(); expect(service.list().flatMap(j => j.messages.map(m => m.id))).toEqual(['new']);
   });
   it('retains unrelated group jobs but stops background follow-up and automatic execution after narrowing', async () => {
     const group = message({ containerKind: 'group', containerId: 'oc_group' });
     const { service, io, store, advance } = await setup({ collect: vi.fn(async () => [group]) });
-    await service.setScope('all'); await service.tick();
+    await larkSource(service).setScope('all'); await service.tick();
     store.data.jobs[0]!.state = 'queued';
-    await service.setScope('private_mentions'); advance(61_000); await service.tick();
+    await larkSource(service).setScope('private_mentions'); advance(61_000); await service.tick();
     expect(service.list()[0]).toMatchObject({ state: 'waiting', automatic: false });
     expect(io.context).not.toHaveBeenCalled(); expect(io.analyze).not.toHaveBeenCalled();
   });
@@ -610,14 +602,12 @@ describe('intake scopes', () => {
     const collect = vi.fn(() => new Promise<InboxMessage[]>(resolve => { release = resolve; }));
     const { service } = await setup({ collect });
     const poll = service.tick(); await vi.waitFor(() => expect(collect).toHaveBeenCalled());
-    const change = service.setScope('private'); release([message()]);
+    const change = larkSource(service).setScope('private'); release([message()]);
     await Promise.all([poll, change]); expect(service.list()).toEqual([]);
   });
-  it('preserves legacy restricted configurations until a scope is chosen', () => {
-    const old = normalizeInbox({ watchPrivate: false, watchMentions: true });
-    expect(old).toMatchObject({ watchPrivate: false, watchMentions: true });
-    expect(old.intakeScope).toBeUndefined();
-    expect(normalizeInbox({ ...old, intakeScope: 'all' })).toMatchObject({ watchPrivate: true, watchMentions: true });
+  it('defaults to private chats and direct mentions', () => {
+    expect(normalizeInbox({}).intakeScope).toBe('private_mentions');
+    expect(normalizeInbox({ intakeScope: 'unknown' }).intakeScope).toBe('private_mentions');
   });
   it('queries all group messages without the at-me filter', async () => {
     const exec = vi.fn(async (_args: string[]) => ({ code: 0, stdout: JSON.stringify({ ok: true, data: { messages: [] } }), stderr: '', timedOut: false }));
@@ -660,7 +650,7 @@ describe('lightweight attention and quiet delivery', () => {
     const s = await screened({ notifyAttention });
     await vi.waitFor(() => expect(s.service.list()[0]?.attention?.state).toBe('needed')); await s.service.tick();
     const outbox = s.store.data.notificationOutbox!; expect(outbox.attempts).toBe(1);
-    const saved = new InboxStore(s.store.path); await saved.load(); expect(saved.data.notificationOutbox?.id).toBe(outbox.id);
+    const saved = new WorkItemStore(s.store.path); await saved.load(); expect(saved.data.notificationOutbox?.id).toBe(outbox.id);
     s.advance(61_000); await s.service.tick();
     expect(notifyAttention).toHaveBeenCalledTimes(2); expect(notifyAttention.mock.calls[0]![1]).toBe(notifyAttention.mock.calls[1]![1]);
     expect(s.store.data.notificationOutbox).toBeUndefined();
@@ -679,7 +669,7 @@ describe('lightweight attention and quiet delivery', () => {
     expect(s.store.data.jobs[0]?.attention?.progress).toBeUndefined();
     expect(s.service.list()[0]?.revision).toBe(before.revision); expect(save).not.toHaveBeenCalled();
     if (action === 'off') await s.service.setMode('off');
-    if (action === 'scope') await s.service.setScope('private');
+    if (action === 'scope') await larkSource(s.service).setScope('private');
     if (action === 'handled') await s.service.batchReview({ items: [{ id: before.id, revision: before.revision }], handlingState: 'handled' }, 'ou_owner', 'batch1');
     if (action === 'changed') {
       const changed = message({ text: '新问题需要重新筛选' });
@@ -709,9 +699,9 @@ describe('lightweight attention and quiet delivery', () => {
     const first = s.service.list()[0]!.attention!.retry!;
     expect(first.nextAt).toBe(1_030_000); expect(first.error).toBe('模型服务限流');
     await s.service.close();
-    const store = new InboxStore(s.store.path);
+    const store = new WorkItemStore(s.store.path);
     let now = 1_029_999;
-    const service = new InboxService(store, s.service.config, s.io, () => now); services.push(service); await service.start();
+    const service = larkService(store, s.service.config, s.io, () => now); services.push(service); await service.start();
     await service.tick(); expect(triage).toHaveBeenCalledTimes(1);
     now++; await service.tick();
     await vi.waitFor(() => expect(service.list()[0]?.attention?.retry?.attempts).toBe(2));
@@ -735,20 +725,6 @@ describe('lightweight attention and quiet delivery', () => {
     expect(triage.mock.calls[2]![0].id).toBe(retry.id);
     expect(s.io.notifyAttention).not.toHaveBeenCalled();
   });
-  it('migrates only unresolved legacy execution failures, not genuine uncertainty or handled items', async () => {
-    const s = await setup(); await s.service.tick(); await s.service.close();
-    const base = s.store.data.jobs[0]!;
-    s.store.data.jobs = [
-      { ...base, id: 'failed', attention: { state: 'uncertain', reason: '关注筛选未完成，请人工核对' } },
-      { ...base, id: 'genuine', attention: { state: 'uncertain', reason: '本人相关，但谁负责上线尚未确认' } },
-      { ...base, id: 'handled', handlingState: 'handled', attention: { state: 'uncertain', reason: '关注筛选未完成，请人工核对' } },
-    ];
-    await s.store.save();
-    const service = new InboxService(new InboxStore(s.store.path), s.service.config, s.io, () => 1_001_000); services.push(service); await service.start();
-    expect(service.list().find(j => j.id === 'failed')?.attention).toMatchObject({ state: 'pending', retry: { attempts: 0 } });
-    expect(service.list().find(j => j.id === 'genuine')?.attention?.state).toBe('uncertain');
-    expect(service.list().find(j => j.id === 'handled')?.attention?.state).toBe('uncertain');
-  });
   it('treats ignored items as quiet, never retries them, and only rescreens after explicit restore', async () => {
     const s = await setup({ triage: vi.fn(classify) }); await s.service.tick();
     await vi.waitFor(() => expect(s.service.list()[0]?.attention?.state).toBe('needed'));
@@ -760,7 +736,7 @@ describe('lightweight attention and quiet delivery', () => {
     s.advance(120_000); await s.service.tick(); expect(s.io.triage).not.toHaveBeenCalled();
     await s.service.close();
     job.attention = { state: 'uncertain', reason: '关注筛选未完成，请人工核对' }; await s.store.save();
-    const service = new InboxService(new InboxStore(s.store.path), s.service.config, s.io, () => 1_120_000); services.push(service); await service.start();
+    const service = larkService(new WorkItemStore(s.store.path), s.service.config, s.io, () => 1_120_000); services.push(service); await service.start();
     expect(service.list()[0]?.attention?.state).toBe('quiet');
     await service.tick(); expect(s.io.triage).not.toHaveBeenCalled();
     const ignored = service.list()[0]!;
@@ -786,7 +762,7 @@ describe('lightweight attention and quiet delivery', () => {
     await vi.waitFor(() => expect(fail).toBeDefined());
     const before = s.service.list()[0]!;
     if (action === 'off') await s.service.setMode('off');
-    if (action === 'scope') await s.service.setScope('private');
+    if (action === 'scope') await larkSource(s.service).setScope('private');
     if (action === 'handled') await s.service.batchReview({ items: [{ id: before.id, revision: before.revision }], handlingState: 'handled' }, 'ou_owner', 'retry-handled');
     if (action === 'changed') {
       const changed = message({ text: '新消息' });
@@ -819,7 +795,7 @@ describe('lightweight attention and quiet delivery', () => {
     expect(s.service.list().every(j => j.handlingState === 'open')).toBe(true);
     await s.service.batchReview(request, 'ou_owner', 'batch'); await s.service.batchReview(request, 'ou_owner', 'batch');
     expect(s.service.list().every(j => j.handlingState === 'handled' && j.revision === items.find(i => i.id === j.id)!.revision + 1)).toBe(true);
-    const stored = new InboxStore(s.store.path); await stored.load(); expect(stored.data.jobs.every(j => j.handlingState === 'handled')).toBe(true);
+    const stored = new WorkItemStore(s.store.path); await stored.load(); expect(stored.data.jobs.every(j => j.handlingState === 'handled')).toBe(true);
     expect(s.io.analyze).not.toHaveBeenCalled(); expect(s.io.deliver).not.toHaveBeenCalled();
   });
 });

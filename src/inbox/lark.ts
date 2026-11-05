@@ -6,7 +6,7 @@ import { inboxWorkbenchUrl, type InboxConfig } from './config';
 import { larkTarget, workItemTarget, type LarkTarget } from './lark-target';
 import type { InboxJob, InboxMessage } from './types';
 import { obj, type Obj } from './values';
-import { handlingState } from './reply';
+import { handlingState } from '../work-items/result';
 import { sameTarget, type WorkItemTarget } from '../work-items/domain';
 
 const str = (v: unknown) => typeof v === 'string' ? v : '';

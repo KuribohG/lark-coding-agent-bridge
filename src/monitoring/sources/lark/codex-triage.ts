@@ -3,7 +3,7 @@ import { readToolRequest, INBOX_READ_TOOLS, type InboxReadTools } from './read-t
 import { INBOX_DEFAULTS } from '../../../inbox/config';
 import type { InboxIO, InboxJob } from '../../../inbox/types';
 import { InboxToolArgumentsError, obj } from '../../../inbox/values';
-import { parseModelJson } from '../../../inbox/model-json';
+import { parseModelJson } from '../../../utils/model-json';
 import { triageMaterials, type TriageExcerptConfig } from './triage-materials';
 import { INBOX_CHAT_TOOLS } from './chat-tools';
 

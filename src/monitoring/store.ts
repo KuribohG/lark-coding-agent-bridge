@@ -1,5 +1,5 @@
 import { monitorConfigs } from './sources/configs';
-import { readFile } from 'node:fs/promises';
+import { open, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
 import type { RootConfig } from '../config/profile-schema';
@@ -30,10 +30,9 @@ export function concurrencyConfigRevision(root: RootConfig): string {
   return createHash('sha256').update(JSON.stringify([snapshots.get(root)?.path, parseWorkItemConcurrency(root.workItemConcurrency)])).digest('hex');
 }
 
-/** Optimistic-lock token for workbench saves; inline monitoring is versioned by its own content. */
+/** Optimistic-lock token for workbench saves. */
 export function larkConfigRevision(root: RootConfig): string {
-  const snapshot = snapshots.get(root);
-  return createHash('sha256').update(JSON.stringify([snapshot?.path ?? '(inline)', root.inbox])).digest('hex');
+  return createHash('sha256').update(JSON.stringify([snapshots.get(root)?.path, root.inbox])).digest('hex');
 }
 
 export function monitorConfigPath(root: RootConfig, configPath: string): string | undefined {
@@ -48,7 +47,7 @@ export async function readMonitorFile(path: string): Promise<string> {
   try { return await readFile(path, 'utf8'); }
   catch (error) {
     const reason = (error as NodeJS.ErrnoException).code === 'ENOENT' ? '不存在' : '无法读取';
-    throw new Error(`监控配置文件${reason}：${path}；未回退到旧 JSON 配置`);
+    throw new Error(`监控配置文件${reason}：${path}`);
   }
 }
 
@@ -61,12 +60,7 @@ export async function loadMonitorRoot(configPath: string): Promise<RootConfig | 
   const root = await configSource(configPath).current();
   if (!root) return undefined;
   const path = monitorConfigPath(root, configPath);
-  if (!path) {
-    // Legacy inline [monitoring] keeps its lenient shape (it predates the
-    // monitors file); only cross-file references are checked per source.
-    applySections(`${resolve(configPath)}#monitoring`, root, monitorReferenceErrors(root, root));
-    return root;
-  }
+  if (!path) return root;
   const text = await readMonitorFile(path);
   let parsed;
   try { parsed = parseMonitorSections(text); }
@@ -113,7 +107,7 @@ export async function saveMonitorRoot(root: RootConfig, configPath: string): Pro
     throw new Error(`监控配置中有无效配置，请先修复后再保存：${invalid.map(([id, error]) => `${id}（${error}）`).join('；')}`);
   }
   const path = monitorConfigPath(root, configPath);
-  if (!path) { await saveRootConfig(root, configPath); return; }
+  if (!path) { await createMonitorFile(root, configPath); return; }
   const snapshot = snapshots.get(root);
   if (!snapshot || snapshot.path !== path) throw new Error('请重新读取监控配置后再保存');
   if (await readMonitorFile(path) !== snapshot.text) throw new Error('监控配置文件已被修改，请重新读取后再保存；本次未覆盖');
@@ -123,5 +117,22 @@ export async function saveMonitorRoot(root: RootConfig, configPath: string): Pro
   await writeFileAtomic(`${path}.bak`, snapshot.text, { mode: 0o600 });
   if (await readMonitorFile(path) !== snapshot.text) throw new Error('监控配置文件已被修改，请重新读取后再保存；本次未覆盖');
   await writeFileAtomic(path, text, { mode: 0o600 });
+  snapshots.set(root, { path, text });
+}
+
+/** The first save writes monitors.toml beside the root config and points the root at it. */
+async function createMonitorFile(root: RootConfig, configPath: string): Promise<void> {
+  const path = resolve(dirname(configPath), 'monitors.toml');
+  const text = formatMonitorConfig(root);
+  parseMonitorConfig(text);
+  let file;
+  try { file = await open(path, 'wx', 0o600); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new Error(`监控配置文件已存在：${path}；请用 monitors configure 指向它`);
+    throw error;
+  }
+  try { await file.writeFile(text); await file.sync(); } finally { await file.close(); }
+  root.monitorConfigFile = 'monitors.toml';
+  await saveRootConfig(root, configPath);
   snapshots.set(root, { path, text });
 }

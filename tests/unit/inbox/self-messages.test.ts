@@ -5,8 +5,10 @@ import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { normalizeInbox } from '../../../src/inbox/config';
 import { parseMessages } from '../../../src/inbox/lark';
-import { InboxService } from '../../../src/inbox/service';
-import { InboxStore } from '../../../src/inbox/store';
+import { larkService } from '../../helpers/lark-service';
+import type { WorkItemService } from '../../../src/work-items/service';
+import { larkSource } from '../../../src/monitoring/sources/lark/source';
+import { WorkItemStore } from '../../../src/work-items/store';
 import type { InboxIO, InboxJob, InboxMessage } from '../../../src/inbox/types';
 import { workItemTarget } from '../../../src/inbox/lark-target';
 
@@ -21,7 +23,7 @@ const job = (id: string, messages: InboxMessage[], extra: Partial<InboxJob> = {}
   messages, state: 'waiting', handlingState: 'open', createdAt: human.time, updatedAt: human.time, revision: 0,
   automatic: true, alert: true, attention: { state: 'pending', reason: '旧失败', retry: { attempts: 11, nextAt: 0, error: '旧失败' } }, ...extra,
 });
-const services: InboxService[] = [];
+const services: WorkItemService[] = [];
 afterEach(async () => { for (const service of services.splice(0)) await service.close(); });
 async function setup(jobs: InboxJob[] = [], overrides: Partial<InboxIO> = {}) {
   let now = human.time;
@@ -30,12 +32,12 @@ async function setup(jobs: InboxJob[] = [], overrides: Partial<InboxIO> = {}) {
     deliver: vi.fn(async () => {}), notifyAttention: vi.fn(async () => {}),
     analyze: vi.fn(async () => ({ text: '分析结果', inputTokens: 1, outputTokens: 1 })),
     triage: vi.fn(async (j: InboxJob) => ({ id: j.id, state: 'quiet' as const, reason: '无需动作' })), ...overrides };
-  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-self-')), 'state.json'));
+  const store = new WorkItemStore(join(await mkdtemp(join(tmpdir(), 'inbox-self-')), 'state.sqlite'));
   store.data.jobs = structuredClone(jobs);
   if (jobs.length) store.data.notificationOutbox = { id: 'old-outbox', attempts: 0, retryAt: 0,
     jobs: jobs.map(j => ({ id: j.id, signature: createHash('sha256').update(JSON.stringify(j.messages)).digest('hex') })) };
   await store.save();
-  const service = new InboxService(store, normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner', intakeScope: 'all', target: destination }), io, () => now);
+  const service = larkService(store, normalizeInbox({ enabled: true, executorProfile: 'codex', recipientKey: 'ou_owner', intakeScope: 'all', target: destination }), io, () => now);
   services.push(service); await service.start();
   return { io, store, service, advance: (ms: number) => { now += ms; } };
 }
@@ -73,7 +75,7 @@ it('cancels persisted self-only screening, analysis and delivery without any mod
   expect(s.store.data.notificationOutbox).toBeUndefined();
   expect(s.io.triage).not.toHaveBeenCalled(); expect(s.io.analyze).not.toHaveBeenCalled();
   expect(s.io.deliver).not.toHaveBeenCalled(); expect(s.io.notifyAttention).not.toHaveBeenCalled();
-  const restored = new InboxStore(s.store.path); await restored.load();
+  const restored = new WorkItemStore(s.store.path); await restored.load();
   expect(restored.data.jobs.every(j => j.state === 'ignored')).toBe(true);
 });
 
@@ -96,11 +98,11 @@ it('does not let new self output reset a completed human screening decision', as
 
 it('filters manual selection and refreshed analysis context, and blocks self-only manual replay', async () => {
   const s = await setup([], { context: vi.fn(async () => [self]) });
-  await expect(s.service.manual(human.containerId)).rejects.toThrow('非助理消息');
+  await expect(larkSource(s.service).manual(human.containerId)).rejects.toThrow('非助理消息');
   vi.mocked(s.io.context).mockResolvedValue([human, self]);
-  const submitted = await s.service.manual(human.containerId); expect(submitted.messages).toEqual([human]);
+  const submitted = await larkSource(s.service).manual(human.containerId); expect(submitted.messages).toEqual([human]);
   await s.service.tick(); await vi.waitFor(() => expect(s.io.analyze).toHaveBeenCalledTimes(1));
   expect(vi.mocked(s.io.analyze).mock.calls[0]![0].messages).toEqual([human]);
   const replay = await setup([job('old-manual', [self], { manualRequestId: 'old-request' })]);
-  await expect(replay.service.manual(human.containerId, 'old-request')).rejects.toThrow('不可处理');
+  await expect(larkSource(replay.service).manual(human.containerId, 'old-request')).rejects.toThrow('不可处理');
 });

@@ -5,7 +5,7 @@ import type {
 import type { Attention, EvidenceMessage } from './evidence';
 
 export interface WorkItem {
-  /** Source identity and evidence lifecycle; populated when loading legacy records. */
+  /** Source identity and evidence lifecycle. */
   origin?: { sourceId: string; key: string; kind: string; url?: string };
   evidenceVersion?: number;
   businessState?: 'open' | 'resolved';

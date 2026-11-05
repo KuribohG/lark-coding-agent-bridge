@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, writeFile } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -22,9 +22,9 @@ const job: WorkItem = {
   handlingState: 'open',
 };
 
-it('imports legacy JSON once, archives it, and round-trips the full durable state', async () => {
+it('round-trips the full durable state', async () => {
   const folder = await mkdtemp(join(tmpdir(), 'work-item-store-'));
-  const path = join(folder, 'state.json');
+  const path = join(folder, 'state.sqlite');
   const state: WorkItemState = {
     version: 2,
     ownerKey: 'owner',
@@ -42,28 +42,29 @@ it('imports legacy JSON once, archives it, and round-trips the full durable stat
       retryAt: 40,
     },
   };
-  await writeFile(path, JSON.stringify(state));
 
   const store = new WorkItemStore(path);
   await store.load();
-  expect(store.data).toEqual(state);
-  expect(store.databasePath).toBe(join(folder, 'state.sqlite'));
-  expect((await readdir(folder)).some(name => name.startsWith('state.json.imported-'))).toBe(true);
-
-  store.data.jobs[0]!.replyDraft = 'durable draft';
-  store.data.jobs[0]!.updatedAt = 50;
+  store.data = structuredClone(state);
   await store.save();
+  const loaded = new WorkItemStore(path);
+  await loaded.load();
+  expect(loaded.data).toEqual(state);
+
+  loaded.data.jobs[0]!.replyDraft = 'durable draft';
+  loaded.data.jobs[0]!.updatedAt = 50;
+  await loaded.save();
   const restored = new WorkItemStore(path);
   await restored.load();
-  expect(restored.data).toEqual(store.data);
+  expect(restored.data).toEqual(loaded.data);
 });
 
 it('fails closed on an unknown database state version', async () => {
   const folder = await mkdtemp(join(tmpdir(), 'work-item-store-version-'));
-  const path = join(folder, 'state.json');
+  const path = join(folder, 'state.sqlite');
   const seed = new WorkItemStore(path);
   await seed.load();
-  const db = new Database(seed.databasePath);
+  const db = new Database(path);
   try {
     db.prepare("UPDATE metadata SET value = '99' WHERE key = 'state_version'").run();
   } finally {
@@ -74,9 +75,25 @@ it('fails closed on an unknown database state version', async () => {
   );
 });
 
+it('fails closed on an unknown database schema version', async () => {
+  const folder = await mkdtemp(join(tmpdir(), 'work-item-store-schema-'));
+  const path = join(folder, 'state.sqlite');
+  const seed = new WorkItemStore(path);
+  await seed.load();
+  const db = new Database(path);
+  try {
+    db.prepare("UPDATE metadata SET value = '1' WHERE key = 'schema_version'").run();
+  } finally {
+    db.close();
+  }
+  await expect(new WorkItemStore(path).load()).rejects.toThrow(
+    'unsupported work-item database schema version: 1',
+  );
+});
+
 it('preserves scheduler order independently from job updates', async () => {
   const folder = await mkdtemp(join(tmpdir(), 'work-item-store-order-'));
-  const path = join(folder, 'state.json');
+  const path = join(folder, 'state.sqlite');
   const store = new WorkItemStore(path);
   await store.load();
   store.data.jobs = [

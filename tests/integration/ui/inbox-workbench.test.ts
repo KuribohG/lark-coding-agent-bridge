@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { afterEach, expect, it, vi } from 'vitest';
-import { InboxService } from '../../../src/inbox/service';
-import { InboxStore } from '../../../src/inbox/store';
+import { larkService } from '../../helpers/lark-service';
+import type { WorkItemService } from '../../../src/work-items/service';
+import { WorkItemStore } from '../../../src/work-items/store';
 import { normalizeInbox } from '../../../src/inbox/config';
 import { executeInboxCommand } from '../../../src/inbox/workbench';
 import { guiJobs } from '../../../src/inbox/presentation';
@@ -17,12 +18,12 @@ import type { InboxIO, InboxJob } from '../../../src/inbox/types';
 import { workItemTarget } from '../../../src/inbox/lark-target';
 import { createInboxHttpRoutes } from '../../../src/plugins/work-items/plugin';
 
-let server: UiServerHandle | undefined, service: InboxService | undefined;
+let server: UiServerHandle | undefined, service: WorkItemService | undefined;
 afterEach(async () => { await server?.close(); await service?.close(); });
 
 it('serves local jobs and persists version-checked reviews through authenticated HTTP without a cloud connector', async () => {
   const rootDir = await mkdtemp(join(tmpdir(), 'local-inbox-'));
-  const store = new InboxStore(join(rootDir, 'state.json'));
+  const store = new WorkItemStore(join(rootDir, 'state.sqlite'));
   const config = normalizeInbox({ enabled: false, executorProfile: 'codex', recipientKey: 'ou_owner',
     target: workItemTarget({ chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_result' }) });
   store.data.jobs = [{ id: randomUUID(), profile: 'codex', ownerKey: 'ou_owner',
@@ -33,7 +34,7 @@ it('serves local jobs and persists version-checked reviews through authenticated
     createdAt: Date.now(), updatedAt: Date.now(), revision: 1, replyDraft: 'old', analysis: 'evidence' } satisfies InboxJob];
   await store.save();
   const checkOwner = vi.fn();
-  service = new InboxService(store, config, { checkOwner } as unknown as InboxIO);
+  service = larkService(store, config, { checkOwner } as unknown as InboxIO);
   await service.start();
   const manager = { workbench: async () => ({ running: false, jobs: guiJobs(service!.list()), config }),
     workbenchCommand: (input: unknown) => executeInboxCommand(service!, {} as InboxLark, input) } as unknown as InboxManager;
@@ -58,7 +59,7 @@ it('serves local jobs and persists version-checked reviews through authenticated
   expect(store.data.jobs[0]!.replyDraft).toBe('edited by owner');
   expect((await command(patch, server.token, 'send')).status).toBe(400);
   expect(checkOwner).not.toHaveBeenCalled(); // paused: no collection or external calls
-  const reloaded = new InboxStore(store.path); await reloaded.load();
+  const reloaded = new WorkItemStore(store.path); await reloaded.load();
   expect(reloaded.data.jobs[0]!.replyDraft).toBe('edited by owner');
   store.data.jobs[0]!.state = 'queued'; store.data.jobs[0]!.analysisRequested = true;
   const stop = { id: patch.id, revision: store.data.jobs[0]!.revision };
@@ -81,7 +82,9 @@ it('shows and reviews CI source jobs in the same authenticated workbench with ch
     const source = await manager.sources.connect(createWorkItemSource({ id: 'gitlab-ci', label: 'GitLab CI', profile: 'codex', enabled: false,
       executor: () => undefined, driver: { accepts: () => true, prepare: vi.fn() } }));
     const job = await source.submit({ key: 'pipeline-1', title: 'repo CI #1', reason: 'CI failed', url: 'https://gitlab.test/pipelines/1',
-      time: Date.now(), data: {}, initial: { state: 'done', replyDraft: 'CI draft', analysis: 'CI evidence' } });
+      time: Date.now(), data: {} });
+    Object.assign(manager.sources.select([job.id])!.store.data.jobs.find(item => item.id === job.id)!,
+      { state: 'done', replyDraft: 'CI draft', analysis: 'CI evidence' });
     server = await startUiServer({
       rootDir,
       supervisor: {
@@ -96,7 +99,7 @@ it('shows and reviews CI source jobs in the same authenticated workbench with ch
     expect(response.status).toBe(200); const view = await response.text();
     expect(view).toContain('gitlab-ci'); expect(view).toContain('CI draft');
     const queued = await source.submit({ key: 'pipeline-2', title: 'repo CI #2', reason: 'CI failed', url: 'https://gitlab.test/pipelines/2',
-      time: Date.now(), data: {}, initial: { state: 'queued' } });
+      time: Date.now(), data: {} });
     const stop = await fetch(`${url}/api/inbox/command`, { method: 'POST', headers,
       body: JSON.stringify({ id: randomUUID(), action: 'stop', target: JSON.stringify({ id: queued.id, revision: queued.revision }) }) });
     expect(stop.status).toBe(200);

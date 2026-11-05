@@ -18,7 +18,7 @@ const topic = workItemTarget({ chatId: 'oc_out', threadId: 'omt_out', replyTo: '
 const event = { key: 'c', title: 'cluster', reason: 'I/O error', url: '', time: 1000, eventId: '1', revision: 1, data: {}, notice: 'first alert' };
 async function setup(io: Partial<WorkItemRuntime> = {}, queue?: WorkItemScheduler) {
   const folder = await mkdtemp(join(tmpdir(), 'source-notices-')); cleanups.push(() => rm(folder, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
-  const store = new WorkItemStore(join(folder, 'state.json'));
+  const store = new WorkItemStore(join(folder, 'state.sqlite'));
   const runtime: WorkItemRuntime = { source: new EventSource('test', () => true), checkAccess: async () => {},
     investigate: vi.fn(async () => result), deliver: vi.fn(async () => {}), notifyChange: vi.fn(async () => topic), ...io };
   const config = normalizeInbox({ enabled: true, executorProfile: 'p', recipientKey: 'ou_owner', target: topic });

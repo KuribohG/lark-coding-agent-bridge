@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
-import { InboxService } from '../../../src/inbox/service';
-import { InboxStore } from '../../../src/inbox/store';
+import { larkService } from '../../helpers/lark-service';
+import { WorkItemStore } from '../../../src/work-items/store';
 import { normalizeInbox } from '../../../src/inbox/config';
 import { executeInboxCommand } from '../../../src/inbox/workbench';
 import type { InboxLark } from '../../../src/inbox/lark';
@@ -16,11 +16,11 @@ function setup() {
     automatic: false, alert: false, attention: { state: 'needed', reason: '需要处理' }, revision: 0,
     messages: [{ id: 'om_source', containerId: 'oc_source', containerName: '来源会话', containerKind: 'direct',
       senderId: 'ou_sender', senderName: '发送者', senderBot: false, time: 1, text: '请确认', mentions: [] }] };
-  const store = new InboxStore('unused');
+  const store = new WorkItemStore('unused');
   vi.spyOn(store, 'save').mockResolvedValue();
   store.data.jobs = [...Array.from({ length: 500 }, (_, i) => ({ ...structuredClone(job), id: `quiet-${i}`,
     attention: { state: 'quiet' as const, reason: '无需处理' } })), job];
-  const service = new InboxService(store, config, {} as InboxIO);
+  const service = larkService(store, config, {} as InboxIO);
   const execute = (action: string, target: string) => executeInboxCommand(service, {} as InboxLark,
     { id: commandId, action, target });
   return { service, store, job, execute };

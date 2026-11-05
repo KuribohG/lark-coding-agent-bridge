@@ -2,15 +2,17 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { InboxService } from '../../../src/inbox/service';
-import { InboxStore } from '../../../src/inbox/store';
+import { larkService } from '../../helpers/lark-service';
+import type { WorkItemService } from '../../../src/work-items/service';
+import { larkSource } from '../../../src/monitoring/sources/lark/source';
+import { WorkItemStore } from '../../../src/work-items/store';
 import { normalizeInbox } from '../../../src/inbox/config';
 import type { InboxIO, InboxJob } from '../../../src/inbox/types';
-import { InboxAnalysisQueue } from '../../../src/inbox/task-source';
+import { WorkItemScheduler } from '../../../src/work-items/scheduler';
 import { workItemTarget } from '../../../src/inbox/lark-target';
 
 const result = { text: JSON.stringify({ replyDraft: '已核实', analysis: '核查结果', missingInfo: '' }), inputTokens: 1, outputTokens: 1 };
-const services: InboxService[] = [];
+const services: WorkItemService[] = [];
 beforeEach(() => vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }));
 afterEach(async () => { await Promise.all(services.splice(0).map(s => s.close())); vi.useRealTimers(); });
 
@@ -25,11 +27,11 @@ function gate<T>(signal: AbortSignal) {
   return { resolve, reject: fail, promise, signal };
 }
 
-async function setup(queue?: InboxAnalysisQueue, triageQueue?: InboxAnalysisQueue) {
+async function setup(queue?: WorkItemScheduler, triageQueue?: WorkItemScheduler) {
   let now = 1_000_000;
   const config = normalizeInbox({ enabled: true, recipientKey: 'ou_owner', executorProfile: 'codex',
     target: workItemTarget({ chatId: 'oc_target', threadId: 'omt_item', replyTo: 'om_item' }) });
-  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-concurrency-')), 'state.json'));
+  const store = new WorkItemStore(join(await mkdtemp(join(tmpdir(), 'inbox-concurrency-')), 'state.sqlite'));
   let started!: () => void;
   const analysisStarted = new Promise<void>(resolve => { started = resolve; });
   const analyses: (ReturnType<typeof gate<typeof result>> & { id: string })[] = [];
@@ -39,7 +41,7 @@ async function setup(queue?: InboxAnalysisQueue, triageQueue?: InboxAnalysisQueu
     beginAnalysis: vi.fn(async () => config.target),
     analyze: vi.fn((job, signal) => { const run = gate<typeof result>(signal); analyses.push({ ...run, id: job.id }); started(); return run.promise; }),
     triage: vi.fn<NonNullable<InboxIO['triage']>>((job, signal) => { const run = gate<Awaited<ReturnType<NonNullable<InboxIO['triage']>>>>(signal); screenings.push({ ...run, id: job.id }); return run.promise; }) };
-  const service = new InboxService(store, config, io, () => now, queue, triageQueue); services.push(service); await service.start();
+  const service = larkService(store, config, io, () => now, queue, triageQueue); services.push(service); await service.start();
   const add = (id: string, state: 'queued' | 'waiting') => {
     const job: InboxJob = { id, ownerKey: 'ou_owner', profile: 'codex', target: config.target,
       sourceRef: { transport: 'lark', containerId: `oc_${id}`, name: id, kind: 'direct' }, state, automatic: false, alert: false,
@@ -92,7 +94,7 @@ it.each(['off', 'scope', 'close'] as const)('cancels all analyses and screening 
   for (let i = 0; i < 6; i++) s.add(`other-${i}`, 'queued');
   await s.service.tick(); await vi.waitFor(() => expect(s.analyses).toHaveLength(5));
   if (action === 'off') await s.service.setMode('off');
-  if (action === 'scope') await s.service.setScope('private');
+  if (action === 'scope') await larkSource(s.service).setScope('private');
   if (action === 'close') await s.service.close();
   expect(s.analyses.every(run => run.signal.aborted)).toBe(true); expect(s.screenings[0]!.signal.aborted).toBe(true);
   if (action !== 'scope') { await s.service.tick(); expect(s.analyses).toHaveLength(5); }
@@ -124,7 +126,7 @@ it('keeps analysis and unrelated screening running when a message is updated', a
 });
 
 it('shares five execution slots across sources and promptly cancels a queued item', async () => {
-  const queue = new InboxAnalysisQueue(5);
+  const queue = new WorkItemScheduler(5);
   const a = await setup(queue); const b = await setup(queue);
   for (let i = 0; i < 3; i++) a.add(`a-${i}`, 'queued');
   for (let i = 0; i < 5; i++) b.add(`b-${i}`, 'queued');
@@ -178,7 +180,7 @@ it('runs fifty single-item screenings alongside five analyses and refills each p
 });
 
 it('cancels one screening without affecting another and fills only that released slot', async () => {
-  const s = await setup(undefined, new InboxAnalysisQueue(2));
+  const s = await setup(undefined, new WorkItemScheduler(2));
   for (let i = 0; i < 3; i++) s.add(`screen-${i}`, 'waiting');
   await s.service.tick(); await vi.waitFor(() => expect(s.screenings).toHaveLength(2));
   await s.service.decide('screen-0', 'ignore', 'ou_owner');
@@ -189,7 +191,7 @@ it('cancels one screening without affecting another and fills only that released
 });
 
 it('shares the screening limit across sources independently of occupied analysis slots', async () => {
-  const queue = new InboxAnalysisQueue(1), triageQueue = new InboxAnalysisQueue(2);
+  const queue = new WorkItemScheduler(1), triageQueue = new WorkItemScheduler(2);
   const a = await setup(queue, triageQueue), b = await setup(queue, triageQueue);
   a.add('a-0', 'waiting'); a.add('a-1', 'waiting'); a.add('analysis-a', 'queued');
   b.add('b-0', 'waiting'); b.add('b-1', 'waiting'); b.add('analysis-b', 'queued');
@@ -204,7 +206,7 @@ it('shares the screening limit across sources independently of occupied analysis
 });
 
 it('resizes screening independently and drains existing items without cancelling them', async () => {
-  const queue = new InboxAnalysisQueue(1), triageQueue = new InboxAnalysisQueue(1);
+  const queue = new WorkItemScheduler(1), triageQueue = new WorkItemScheduler(1);
   const s = await setup(queue, triageQueue);
   for (let i = 0; i < 4; i++) s.add(`screen-${i}`, 'waiting');
   s.add('analysis-0', 'queued'); s.add('analysis-1', 'queued');

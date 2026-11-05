@@ -74,10 +74,10 @@ export const ROOT_SETTINGS: readonly SettingSpec[] = [
   { path: 'activeProfile', apply: 'restart', toml: 'bridge.active_profile', note: '仅决定命令行默认 profile' },
   { path: 'autostartProfiles.**', apply: 'restart', toml: 'bridge.autostart_profiles', note: '运行中可在控制台启停 profile' },
   { path: 'monitorConfigFile', apply: 'monitoring', toml: 'bridge.monitors_file' },
-  { path: 'workItemConcurrency.**', apply: 'monitoring', toml: 'monitoring.concurrency / monitors.toml concurrency' },
-  { path: 'inbox.**', apply: 'monitoring', toml: 'monitoring.lark / monitors.toml sources.lark' },
-  { path: 'gitlabCi.**', apply: 'monitoring', toml: 'monitoring.gitlab_ci / monitors.toml sources.gitlab_ci' },
-  { path: 'storageMonitor.**', apply: 'monitoring', toml: 'monitoring.storage / monitors.toml sources.storage' },
+  { path: 'workItemConcurrency.**', apply: 'monitoring', toml: 'monitors.toml concurrency' },
+  { path: 'inbox.**', apply: 'monitoring', toml: 'monitors.toml sources.lark' },
+  { path: 'gitlabCi.**', apply: 'monitoring', toml: 'monitors.toml sources.gitlab_ci' },
+  { path: 'storageMonitor.**', apply: 'monitoring', toml: 'monitors.toml sources.storage' },
   { path: 'agentState.**', apply: 'execution', toml: 'state.**', derived: true },
   { path: 'agentLaunches.**', apply: 'execution', toml: 'agents.<a>.launch', derived: true },
   { path: 'modelServices.**', apply: 'execution', toml: 'model_services.**', note: '模型列表与 provider 解析同时更新' },
@@ -192,7 +192,6 @@ function resolveDocumentPath(path: readonly string[]): { specs: readonly Setting
     case 'model_services': return { specs: ROOT_SETTINGS, path: ['modelServices', ...rest] };
     case 'secrets': return { specs: ROOT_SETTINGS, path: ['secrets', ...rest] };
     case 'state': return { specs: PROFILE_SETTINGS, path: ['state', ...rest] };
-    case 'monitoring': return { specs: ROOT_SETTINGS, path: ['inbox', ...rest] };
     default: return undefined;
   }
 }

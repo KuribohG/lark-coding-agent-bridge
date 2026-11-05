@@ -26,8 +26,6 @@ triageService = "screening"
 triageModel = ""
 ```
 
-尚未拆分监控文件时，对应根配置节是 `[monitoring.lark]`。
-
 示例只展示相关字段；保留实际的 profile、授权、目标话题和启用配置。`baseUrl` 是 HTTPS API 根地址，请求时添加 `/responses`，不要填写完整 `/responses` 路径。地址不能包含用户名、密码、查询参数或片段。默认模型必填，服务名称为 1–64 位字母、数字、下划线或横线，并以字母或数字开头。
 
 同一服务可同时供直接 API 和 Agent 使用。Agent 选择带 provider 前缀的模型：
@@ -108,20 +106,14 @@ lark-channel-bridge model-service remove screening
 
 每个子命令支持 `--config /absolute/path/bridge/config.toml`。保存仅校验配置结构；`check` 还检查凭据是否可读取。两者均不请求模型，因此不代表远端模型或授权已经验收。服务配置通过配置锁合并保存，不会覆盖其他服务或 profile。运行新版 supervisor 时，所选服务配置变化会使助理重载，正在进行的旧任务沿用助理现有的取消处理；CLI 写入在下一次配置检查时生效。单 profile 进程的服务配置遵循其原有启动和后台模块行为。
 
-## 模型选择和旧配置迁移
+## 模型选择
 
 | 配置 | 筛选行为 |
 | --- | --- |
 | 设置 `triageService` | 只使用该独立服务；不存在或凭据无效就报错，不回退。 |
 | 独立服务且 `triageModel` 省略或为空 | 使用服务的 `model`，与 `analysisModel` 无关。 |
 | `triageModel` 非空 | 只覆盖筛选模型，endpoint 和凭据仍来自所选服务。 |
-| 没有 `triageService` | 保留旧 `triageProfile` / 执行 profile 的 Codex Responses 配置解析，以及旧模型/成本策略。 |
-
-旧配置不会在升级时自动迁移，也不会复制 Codex 的凭据。迁移步骤：
-
-1. 配置独立服务，填写原 endpoint、所需默认模型和凭据引用；需要时在私有文件中准备密钥。
-2. 运行本地检查。
-3. 在会话助理中选择新服务并保存；确认 `triageModel` 是否应使用服务默认值或保留原覆盖值。界面切换到独立服务会清空旧筛选 profile 和模型覆盖，便于明确采用新默认值。
+| 没有 `triageService` | 开启助理时报错；不读取 Codex profile 的 Responses 配置。 |
 
 `analysisModel` 和 GitLab CI 的执行模型仍属于原生 Agent 任务设置，不读取 `model_services`。飞书授权和通知身份始终属于执行 profile。只安装和配置 Claude 的用户现在也可设置独立筛选服务，无需创建 Codex profile。
 

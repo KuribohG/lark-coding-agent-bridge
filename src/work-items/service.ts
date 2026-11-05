@@ -5,7 +5,7 @@ import { log } from '../core/logger';
 import { analysisFailureReason } from './analysis-error';
 import type { WorkItemConfig, WorkItemMode } from './config';
 import { WorkItemStore } from './store';
-import { handlingState, replyContent, resultText } from './result';
+import { analysisFields, handlingState, resultText } from './result';
 import type { Attention } from './evidence';
 import type { WorkItem } from './types';
 import type { ItemAssessmentPolicy, SourceAdapter, WorkItemRuntime } from './contracts';
@@ -17,7 +17,7 @@ import { evidenceSignature as signature, observationDigest, recordObservation } 
 const resolved = (job: WorkItem) => handlingState(job) !== 'open';
 interface RunningTask { controller: AbortController; done: Promise<void> }
 /** All state transitions are serialized. Model execution happens outside the lock. */
-export class WorkItemService {
+export class WorkItemService<C extends WorkItemConfig = WorkItemConfig> {
   private chain: Promise<unknown> = Promise.resolve();
   private timer?: NodeJS.Timeout;
   private analyses = new Map<string, RunningTask>();
@@ -39,7 +39,7 @@ export class WorkItemService {
   private get ownerKey(): string { return this.config.ownerKey; }
   private get target() { return this.config.target; }
   lastError?: string;
-  constructor(readonly store: WorkItemStore, readonly config: WorkItemConfig, private io: WorkItemRuntime, private now = Date.now,
+  constructor(readonly store: WorkItemStore, readonly config: C, private io: WorkItemRuntime, private now = Date.now,
     private queue = new WorkItemScheduler(), private triageQueue = new WorkItemScheduler(WORK_ITEM_CONCURRENCY_DEFAULTS.triage)) {
     this.lifecycle = new WorkItemLifecycle(config, now, job => {
       this.analyses.get(job.id)?.controller.abort();
@@ -117,11 +117,6 @@ export class WorkItemService {
       if (handlingState(job) === 'ignored' && (job.attention?.state !== 'quiet' || job.attention.retry || job.analysisRequested)) {
         this.ignore(job); this.touch(job);
       }
-      if (!resolved(job) && job.attention?.state === 'uncertain' &&
-        ['关注筛选未完成，请人工核对', '关注筛选结果缺失，请人工核对', '关注筛选暂不可用或今日额度已用完，请人工核对'].includes(job.attention.reason)) {
-        job.attention = { state: 'pending', reason: '上次筛选未完成，等待自动重试', retry: { attempts: 0, nextAt: this.now(), error: '旧版筛选未完成' } };
-        this.touch(job);
-      }
     }
     this.source.initialize?.();
     await this.setMode(this.config.enabled ? 'on' : 'off');
@@ -174,7 +169,7 @@ export class WorkItemService {
         if (this.stopped) throw new Error('助理连接已关闭');
         await persist?.();
         const previous = this.config.enabled ? 'on' : 'off';
-        this.config.enabled = mode === 'on'; this.config.autoAnalyze = false;
+        this.config.enabled = mode === 'on';
         this.source.modeChanged?.(previous, mode);
         await this.store.save();
       });
@@ -202,7 +197,6 @@ export class WorkItemService {
         messages: [],
         createdAt: event.time, updatedAt: this.now(), state: decision.state === 'needed' ? 'queued' : 'waiting', automatic: true, alert: true,
         attention: decision, handlingState: 'open', revision: 1,
-        ...event.initial,
         external: { source, key: event.key, url: event.url, data: structuredClone(event.data),
           analysisAttempts: 0, maxAttempts: Math.max(1, Math.min(3, event.maxAttempts ?? 3)), evidenceDir: event.evidenceDir },
       };
@@ -220,7 +214,7 @@ export class WorkItemService {
     });
   }
   private async updateObservation(job: WorkItem, event: WorkItemEvent): Promise<WorkItem> {
-    // Legacy submit is create-only. A collector must opt into ordered updates explicitly.
+    // Unrevisioned events are create-only. A collector must opt into ordered updates explicitly.
     if (event.revision === undefined || event.revision < (job.observation?.revision ?? 0)) return structuredClone(job);
     const digest = observationDigest(event);
     if (event.revision === job.observation?.revision) {
@@ -554,8 +548,8 @@ export class WorkItemService {
       await this.serial(async () => {
         job.inputTokens = result.inputTokens; job.outputTokens = result.outputTokens;
         if (current()) {
-          const fields = replyContent(result.text);
-          job.result = resultText(result.text); job.analysis = fields.analysis; job.missingInfo = fields.missingInfo;
+          const fields = analysisFields(result.text);
+          job.result = resultText(fields); job.analysis = fields.analysis; job.missingInfo = fields.missingInfo;
           job.analyzedVersion = input.evidenceVersion;
           if (result.businessState) job.businessState = result.businessState;
           if (!job.draftEdited) { job.replyDraft = fields.replyDraft; job.draftStale = false; }

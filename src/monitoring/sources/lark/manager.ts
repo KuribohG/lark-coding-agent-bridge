@@ -10,8 +10,8 @@ import { parseWorkItemConcurrency } from '../../../work-items/concurrency';
 import { LarkProfileAuth } from '../../../lark-auth/profile-auth';
 import { getCotMessages } from '../../../config/schema';
 import { CotClient } from '../../../bot/cot';
-import { inboxMode, inboxWorkbenchUrl, intakeScope, normalizeInbox, validateInbox, type InboxConfig, type InboxMode, type IntakeScope } from '../../../inbox/config';
-import { inboxTriageSource, loadInboxTriageSource } from '../../../inbox/model-routing';
+import { inboxMode, inboxWorkbenchUrl, normalizeInbox, validateInbox, type InboxConfig, type InboxMode, type IntakeScope } from '../../../inbox/config';
+import { inboxTriageService, loadInboxTriageService } from '../../../inbox/model-routing';
 import { backgroundModelSettings } from '../../../runtime/background-model';
 import { supportsBackgroundProfile } from '../../../runtime/agent-capabilities';
 import { getUserAuthStatus } from '../../../lark-cli/user-im';
@@ -23,24 +23,24 @@ import { createLarkRuntimeAgent } from '../../../channels/lark/agent-host';
 import { triageWithChatTools } from './codex-triage';
 import { InboxReadTools } from './read-tools';
 import { InboxLark } from '../../../inbox/lark';
-import { InboxService } from '../../../inbox/service';
-import { InboxStore } from '../../../inbox/store';
+import { WorkItemService } from '../../../work-items/service';
+import { WorkItemStore } from '../../../work-items/store';
 import { InboxH5Auth } from '../../../inbox/h5-auth';
 import { startInboxH5 } from '../../../inbox/h5-server';
 import { InboxCards, type InboxCardContext } from '../../../inbox/cards';
 import { CallbackAuth } from '../../../card/callback-auth';
 import { CallbackNonceStore } from '../../../card/callback-store';
 import { InboxGui } from '../../../inbox/gui';
-import { InboxTaskSources } from '../../../inbox/task-sources';
+import { WorkItemSources } from '../../../work-items/registry';
 import { startInboxControl, type InboxControlHandle } from '../../../inbox/control-server';
 import { larkRuntime } from './runtime';
+import { larkSource } from './source';
 
-const connectionConfig = ({ enabled: _, autoAnalyze: __, intakeScope: ___, analysisTimeoutMinutes: ____, workbenchUrl: _____, watchPrivate, watchMentions, ...config }: InboxConfig) =>
-  ({ ...config, legacyIntake: watchPrivate ? undefined : { watchPrivate, watchMentions } });
+const connectionConfig = ({ enabled: _, intakeScope: __, analysisTimeoutMinutes: ___, workbenchUrl: ____, ...config }: InboxConfig) => config;
 
 export class InboxManager {
-  readonly sources: InboxTaskSources;
-  private service?: InboxService;
+  readonly sources: WorkItemSources;
+  private service?: WorkItemService<InboxConfig>;
   private cards?: InboxCards;
   private lark?: InboxLark;
   private nonces?: CallbackNonceStore;
@@ -56,8 +56,8 @@ export class InboxManager {
   private closed = false;
   private sectionError?: string;
   error?: string;
-  constructor(private configPath: string, private profiles: LarkMonitorProfiles, private rootDir?: string, private sharedSources?: InboxTaskSources) {
-    this.sources = sharedSources ?? new InboxTaskSources(configPath);
+  constructor(private configPath: string, private profiles: LarkMonitorProfiles, private rootDir?: string, private sharedSources?: WorkItemSources) {
+    this.sources = sharedSources ?? new WorkItemSources(configPath);
     this.timer = setInterval(() => { void this.reconcile(); }, 15_000);
     this.timer.unref();
   }
@@ -119,7 +119,7 @@ export class InboxManager {
         return auth.userName || ownerOpenId;
       });
       await check('模型配置', async () => {
-        const provider = await loadInboxTriageSource(config, inboxTriageSource(config, root!), this.rootDir);
+        const provider = await loadInboxTriageService(config, inboxTriageService(config, root!));
         return `${provider.model}（已找到 Responses API 配置与凭据；尚未请求模型）`;
       });
       await check('深入分析模型', async () => {
@@ -168,7 +168,7 @@ export class InboxManager {
       if (expected !== undefined && expected !== larkConfigRevision(root)) throw new Error('飞书监控配置已更新，请重新读取设置后保存；本次未覆盖');
       const p = root.profiles[config.executorProfile];
       if (config.enabled && (!p || !supportsBackgroundProfile(p))) throw new Error('请选择支持后台分析的个人 profile');
-      if (config.enabled || config.triageService) inboxTriageSource(config, root);
+      if (config.enabled || config.triageService) inboxTriageService(config, root);
       root.inbox = config; await saveMonitorRoot(root, this.configPath);
     });
     await this.reconcile(); return this.view();
@@ -198,7 +198,7 @@ export class InboxManager {
       if (this.service && (!executor || !supportsBackgroundProfile(executor.profileConfig))) await this.stop();
     }); this.chain = p.catch(() => {}); return p;
   }
-  private async changeMode(service: InboxService, mode: InboxMode): Promise<void> {
+  private async changeMode(service: WorkItemService<InboxConfig>, mode: InboxMode): Promise<void> {
     // Do not reconcile here: this callback is awaited by the GUI poll itself.
     await withConfigFileLock(this.configPath, async () => {
       const root = await loadMonitorRoot(this.configPath);
@@ -206,11 +206,11 @@ export class InboxManager {
       if (!root || this.service !== service || JSON.stringify(connectionConfig(config)) !== JSON.stringify(connectionConfig(service.config))) {
         throw new Error('助理配置正在更新，请稍后重试');
       }
-      config.enabled = mode !== 'off'; config.autoAnalyze = false; validateInbox(config);
+      config.enabled = mode !== 'off'; validateInbox(config);
       await service.setMode(mode, async () => { root.inbox = config; await saveMonitorRoot(root, this.configPath); });
     });
   }
-  private async changeScope(service: InboxService, scope: IntakeScope): Promise<void> {
+  private async changeScope(service: WorkItemService<InboxConfig>, scope: IntakeScope): Promise<void> {
     await withConfigFileLock(this.configPath, async () => {
       const root = await loadMonitorRoot(this.configPath);
       const config = normalizeInbox(root?.inbox);
@@ -218,7 +218,7 @@ export class InboxManager {
         throw new Error('助理配置正在更新，请稍后重试');
       }
       const next = normalizeInbox({ ...config, intakeScope: scope });
-      await service.setScope(scope, async () => { root.inbox = next; await saveMonitorRoot(root, this.configPath); });
+      await larkSource(service).setScope(scope, async () => { root.inbox = next; await saveMonitorRoot(root, this.configPath); });
     });
   }
   private async reload(): Promise<void> {
@@ -227,9 +227,7 @@ export class InboxManager {
     this.sectionError = monitorSectionErrors(root).lark;
     if (root) this.sources.configureConcurrency(root.workItemConcurrency);
     const controls = this.profiles(config.executorProfile);
-    const sourceProfile = config.triageService ? undefined : root?.profiles[config.triageProfile || config.executorProfile];
     const fingerprint = JSON.stringify([connectionConfig(config), controls?.cfg.accounts.app, controls?.cfg.channels?.lark?.network, controls?.botIdentity?.openId, controls?.profileConfig.mode, controls?.profileConfig.agentKind, controls?.profileConfig.codex, controls?.profileConfig.preferences,
-      sourceProfile?.agentKind, sourceProfile?.mode, sourceProfile?.codex, sourceProfile?.preferences,
       config.triageService ? root?.modelServices?.[config.triageService] : undefined]);
     if (this.service && controls && fingerprint === this.fingerprint) {
       await withConfigFileLock(this.configPath, async () => {
@@ -238,7 +236,7 @@ export class InboxManager {
           this.service.config.analysisTimeoutMinutes = latest.analysisTimeoutMinutes;
           this.service.config.workbenchUrl = latest.workbenchUrl;
         }
-        if (this.service && intakeScope(latest) && intakeScope(latest) !== intakeScope(this.service.config)) await this.service.setScope(intakeScope(latest)!);
+        if (this.service && latest.intakeScope !== this.service.config.intakeScope) await larkSource(this.service).setScope(latest.intakeScope);
         if (this.service && inboxMode(latest) !== inboxMode(this.service.config)) await this.service.setMode(inboxMode(latest));
       });
       this.error = undefined;
@@ -251,7 +249,7 @@ export class InboxManager {
       if (!controls) throw new Error('执行 profile 尚未上线');
       if (controls.profileConfig.mode === 'team') throw new Error('团队模式不允许使用个人收件助理');
       if (!supportsBackgroundProfile(controls.profileConfig)) throw new Error('当前 profile 尚不支持后台分析');
-      const triageSource = inboxTriageSource(config, root!);
+      const triageService = inboxTriageService(config, root!);
       const paths = resolveAppPaths({ rootDir: this.rootDir, profile: config.executorProfile });
       const folder = join(dirname(this.configPath), 'inbox');
       await mkdir(folder, { recursive: true, mode: 0o700 });
@@ -283,7 +281,7 @@ export class InboxManager {
         tenantTokens,
         request: larkAuth.request,
       });
-      this.service = new InboxService(new InboxStore(join(folder, 'state.json')), config, larkRuntime(config, {
+      this.service = new WorkItemService(new WorkItemStore(join(folder, 'state.sqlite')), config, larkRuntime(config, {
         selfSenderIds: [controls.cfg.accounts.app.id, controls.botIdentity?.openId].filter((id): id is string => Boolean(id)),
         cancel: () => lark.close(),
         cancelPending: () => lark.cancelPending(),
@@ -302,7 +300,7 @@ export class InboxManager {
           } finally { await progress?.finish(success); }
         },
         triage: async (job, signal, onProgress) => triageWithChatTools(job, config.attentionProfile,
-          await loadInboxTriageSource(config, triageSource, this.rootDir), readTools, signal, onProgress, undefined, undefined, config),
+          await loadInboxTriageService(config, triageService), readTools, signal, onProgress, undefined, undefined, config),
         notifyAttention: (jobs, id) => lark.notifyAttention(jobs, id),
       }), Date.now, this.sources.queue, this.sources.triageQueue);
       this.nonces = new CallbackNonceStore(join(folder, 'card-nonces.json'));

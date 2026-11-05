@@ -56,12 +56,9 @@ To add a built-in source:
    another source's implementation. Add source-specific tests and a disabled TOML
    example; lifecycle and generic TOML parsing do not need new source branches.
 
-Lark, GitLab CI and storage source IDs remain unchanged. Each source now persists
-its generic work-item state as `state.sqlite` beside the former `state.json`.
-The SQLite transaction stores jobs, cursors, dedupe keys, budgets and the
-notification outbox together. A version-2 legacy JSON file is imported once and
-archived; an unsupported version-1 conversation-shaped file is archived without
-being overwritten.
+Each source persists its generic work-item state as `state.sqlite`. The SQLite
+transaction stores jobs, cursors, dedupe keys, budgets and the notification
+outbox together. An unknown schema or state version fails closed.
 
 ## Host and executor lifecycle
 
@@ -158,7 +155,6 @@ await source.observe({
 - Replaying the same revision and snapshot is idempotent, including reordered JSON object fields; older revisions are ignored. A conflicting snapshot at the same revision is rejected. Collectors must retain stable event data, including timestamps, during retries.
 - `operation: 'resolve'` records source recovery and suppresses obsolete automatic work. An initial resolve is accepted without running a model. A subsequent upsert can reopen the source state, subject to human controls.
 - Omitting version fields preserves the old create-only `submit` behavior. Re-submitting the same key does not change the existing item. Existing GitLab collectors retain this behavior.
-- `initial` imports an already-known outcome only when an item does not exist. It never overwrites an existing draft or delivery receipt.
 - Update persistence happens before cancelling an obsolete investigation or acknowledging acceptance. A failed save rolls back the in-memory update, allowing replay.
 
 Versioned event updates cancel an obsolete investigation and queue the current version. The old result cannot overwrite the replacement state. Lark preserves its existing incremental behavior: messages arriving during analysis remain attached; the current report is retained with its input version and then screened against the additional messages.
@@ -180,10 +176,9 @@ The runtime supplies investigation, readiness and optional delivery hooks; the
 registry does not construct agents, Lark clients, COT or workbench commands.
 `select(ids, scope)` validates source/owner/profile boundaries before returning the
 service for a control operation. `executeSourceCommand` in the workbench adapter
-owns command decoding and presentation. Existing `InboxTaskSources` and
-`InboxTaskDriver` imports remain aliases, with the new internal registration API.
+owns command decoding and presentation.
 
-The Lark manager passes `larkRuntime()` into the same `WorkItemService` through the `InboxService` adapter. Lark source logic lives in `src/monitoring/sources/lark/source.ts`, model-decision interpretation in `src/monitoring/sources/lark/assessment.ts`, and evidence preparation in `larkInvestigationDriver`. Lark-only commands such as selecting a container or changing intake scope remain on that adapter.
+The Lark manager passes `larkRuntime()` into the same `WorkItemService`. Lark source logic lives in `src/monitoring/sources/lark/source.ts`, model-decision interpretation in `src/monitoring/sources/lark/assessment.ts`, and evidence preparation in `larkInvestigationDriver`. Lark-only commands such as selecting a container or changing intake scope are reached through `larkSource(service)`.
 
 GitLab registers `EventSource` with `ciAssessment` and `ciTaskDriver`. Its collector still validates pipeline and job status and supplies a stable failure identity; the common engine owns all subsequent handling.
 

@@ -13,8 +13,6 @@ export type { WorkItem as InboxJob, WorkItemState as InboxState } from '../work-
 import type { WorkItem as InboxJob } from '../work-items/types';
 
 export interface InboxIO {
-  /** A source partition never performs chat intake or personal attention screening. */
-  taskSource?: { id: string; accepts(job: InboxJob): boolean };
   /** Trusted app/open IDs of this bridge bot; never the human owner ID. */
   selfSenderIds?: readonly string[];
   cancel?(): void;

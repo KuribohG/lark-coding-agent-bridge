@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { normalizeInbox } from '../../../src/inbox/config';
-import { InboxService } from '../../../src/inbox/service';
-import { InboxStore } from '../../../src/inbox/store';
+import { larkService } from '../../helpers/lark-service';
+import type { WorkItemService } from '../../../src/work-items/service';
+import { WorkItemStore } from '../../../src/work-items/store';
 import { analysisChanges } from '../../../src/inbox/updates';
 import { guiContent } from '../../../src/inbox/presentation';
 import { processingPrompt } from '../../../src/monitoring/sources/lark/processor';
@@ -12,7 +13,7 @@ import type { InboxIO, InboxJob, InboxMessage, TriageDecision } from '../../../s
 import { workItemTarget } from '../../../src/inbox/lark-target';
 
 const result = { text: JSON.stringify({ replyDraft: '原建议', analysis: '已核实的证据', missingInfo: '' }), inputTokens: 1, outputTokens: 1 };
-const services: InboxService[] = [];
+const services: WorkItemService[] = [];
 beforeEach(() => vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] }));
 afterEach(async () => { await Promise.all(services.splice(0).map(s => s.close())); vi.useRealTimers(); });
 
@@ -40,8 +41,8 @@ async function setup() {
     analyze: vi.fn((job, signal) => { const run = { ...gate<typeof result>(signal), job }; analyses.push(run); return run.promise; }),
     triage: vi.fn((item, signal) => { const run = { ...gate<TriageDecision>(signal), item }; screens.push(run); return run.promise; }),
   };
-  const store = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-updates-')), 'state.json'));
-  const service = new InboxService(store, config, io, () => now); services.push(service); await service.start();
+  const store = new WorkItemStore(join(await mkdtemp(join(tmpdir(), 'inbox-updates-')), 'state.sqlite'));
+  const service = larkService(store, config, io, () => now); services.push(service); await service.start();
   const add = async (text: string, id = `om_${messages.length}`) => {
     now += 1000;
     const m: InboxMessage = { id, containerId: 'oc_source', containerName: '告警', containerKind: 'group',
@@ -155,8 +156,8 @@ it.each(['failure', 'off', 'edit'] as const)('new messages cannot restart an ana
 it('persists the completed result and unreviewed additions across a restart', async () => {
   const s = await setup(); await s.add('待补筛内容'); s.analyses[0]!.resolve(result);
   await waitFor(() => expect(s.screens).toHaveLength(2)); await s.service.close();
-  const store = new InboxStore(s.store.path);
-  const restarted = new InboxService(store, s.config, s.io, s.now); services.push(restarted); await restarted.start(); await restarted.tick();
+  const store = new WorkItemStore(s.store.path);
+  const restarted = larkService(store, s.config, s.io, s.now); services.push(restarted); await restarted.start(); await restarted.tick();
   await waitFor(() => expect(s.screens).toHaveLength(3));
   expect(s.screens[2]!.item?.replyDraft).toBe('原建议');
   expect(analysisChanges(s.screens[2]!.item)[0]?.text).toBe('待补筛内容');
@@ -166,7 +167,7 @@ it('persists the completed result and unreviewed additions across a restart', as
 
 it('requires an explicit retry after loading an interrupted run with new messages', async () => {
   const s = await setup(); await s.add('中断前补充');
-  const recovered = new InboxStore(join(await mkdtemp(join(tmpdir(), 'inbox-recovered-')), 'state.json'));
+  const recovered = new WorkItemStore(join(await mkdtemp(join(tmpdir(), 'inbox-recovered-')), 'state.sqlite'));
   recovered.data = structuredClone(s.store.data); await recovered.save(); await recovered.load();
   expect(recovered.data.jobs[0]).toMatchObject({ state: 'failed', analysisPaused: true, analysisRequested: false });
   expect(recovered.data.jobs[0]?.messages).toHaveLength(2);

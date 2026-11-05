@@ -179,15 +179,12 @@ or empty `triageModel` uses the selected service's model, independent of
 `analysisModel`. The local UI and CLI manage this registry without returning
 resolved credentials. See [model services](model-services.md).
 
-Without `triageService`, the legacy `triageProfile`/executor routing still uses
-`loadProfileModelService()` and `src/agent/codex/model-service.ts`. Its credential
-precedence and model defaults remain compatible. `loadAnalysisProvider` remains
-a legacy alias. No credentials are automatically copied, and Claude's native
-Anthropic configuration is not interpreted as a Responses API service.
+An enabled inbox requires `triageService`; screening never reads profile
+credentials, and Claude's native Anthropic configuration is not interpreted as a
+Responses API service.
 
 `backgroundModelSettings()` resolves native task models without reading direct
-API credentials. An omitted legacy Codex model keeps Flash/max; an empty model
-inherits profile/CLI settings. Claude omitted/empty models inherit Claude's own
+API credentials. An omitted or empty inbox `analysisModel` inherits profile/CLI
 settings. CI continues to request max effort through the existing model resolver.
 Existing explicit model names are preserved; when changing engines, select a
 model supported by the destination engine or clear the override.

@@ -88,10 +88,10 @@ lark-channel-bridge model-service check screening
 | 任务 | 模型来源 |
 | --- | --- |
 | 飞书消息轻量筛选 | 选中的模型 API 服务；筛选模型覆盖非空时使用覆盖值 |
-| 会话待办深入分析 | `inbox.analysisModel`；显式留空跟随执行 profile / CLI |
+| 会话待办深入分析 | `inbox.analysisModel`；省略或留空跟随执行 profile / CLI |
 | GitLab CI 分析 | `gitlabCi.model`；显式留空跟随 CI 执行 profile / CLI |
 
-旧 Codex 配置省略深入分析模型时仍保留 Flash 默认，避免升级改变成本。Claude 省略或留空时使用其默认模型。切换执行器时应检查旧的显式模型覆盖是否仍可用。
+切换执行器时应检查旧的显式模型覆盖是否仍可用。
 
 没有选择独立筛选服务的旧配置仍兼容原来的 Codex profile 路由；升级不会自动复制或迁移凭据。新配置推荐独立服务。完整字段说明见[模型 API 服务参考](../model-services.md)。
 
