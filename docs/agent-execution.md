@@ -153,11 +153,10 @@ has become uncertain. During backoff, after termination, and after stop, input
 returns `inactive`. Follow-up preparation remains serialized per run, and the
 router still checks scope and cancellation generation before and after delivery.
 
-`steer()` is retained as a deprecated compatibility hook for existing adapter
-callers. Its legacy fallback is isolated in `execution.ts`; business modules do
-not call it. Adapters without a capability declaration keep streamed rendering
-and cannot execute background analysis. Their existing `steer()` input continues
-to work through the fallback without claiming new features.
+Every adapter and run declares its execution capabilities. A native run exposes
+`sendInput()` only when its transport can deliver supplemental input;
+`withExecutionContract()` withholds it when the declared input scope is
+`unsupported`.
 
 ## Background tasks and model services
 

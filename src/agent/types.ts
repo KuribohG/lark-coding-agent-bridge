@@ -123,14 +123,12 @@ export type RunStopReason = 'cancelled' | 'deadline' | 'idle' | 'shutdown' | 'yi
 export interface AgentRun {
   readonly runId: string;
   readonly events: AsyncIterable<AgentEvent>;
-  /** Omitted by legacy adapters; consumers must not infer capabilities from the agent name. */
-  readonly capabilities?: AgentExecutionCapabilities;
+  /** Consumers must not infer capabilities from the agent name. */
+  readonly capabilities: AgentExecutionCapabilities;
   sendInput?(input: AgentInput): Promise<AgentInputReceipt>;
   /** Resolve a pending blocking user_input request; inactive when it is no longer waiting. */
   answerUserInput?(id: string, answer: AgentQuestionAnswer): Promise<'accepted' | 'inactive'>;
   stop(reason?: RunStopReason): Promise<void>;
-  /** @deprecated Native input hook. Business code uses the execution contract's sendRunInput. */
-  steer?(prompt: string, messageId: string): Promise<'accepted' | 'inactive'>;
   /**
    * Wait up to `timeoutMs` for the agent process to exit on its own.
    * Resolves true if it exited within the window, false if the timer
@@ -144,6 +142,9 @@ export interface AgentRun {
    */
   waitForExit(timeoutMs: number): Promise<boolean>;
 }
+
+/** Transport run before `withExecutionContract` attaches capabilities and failure kinds. */
+export type NativeAgentRun = Omit<AgentRun, 'capabilities'>;
 
 /**
  * The bridge bot's own IM identity, resolved by the channel after the WS
@@ -165,7 +166,7 @@ export interface AgentAdapter {
   modelProviderState?(): Promise<{ id: string; displayName: string; fixedUntilRestart: boolean; model?: string }>;
   readonly id: string;
   readonly displayName: string;
-  readonly capabilities?: AgentExecutionCapabilities;
+  readonly capabilities: AgentExecutionCapabilities;
   isAvailable(): Promise<boolean>;
   checkAvailability?(): Promise<AgentAvailability>;
   /** Preparation resolves the effective configuration; only its result can start an attempt. */

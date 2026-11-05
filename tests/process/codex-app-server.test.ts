@@ -107,7 +107,7 @@ describe('Codex native in-flight input', () => {
     const events: AgentEvent[] = [];
     const output = (async () => { for await (const event of run.events) events.push(event); })();
     await vi.waitFor(() => expect(events.some(event => event.type === 'tool_use')).toBe(true));
-    await run.steer!('finish', 'next-input');
+    await run.sendInput!({ text: 'finish', messageId: 'next-input' });
     await output;
     await run.waitForExit(1000);
     expect(events).toContainEqual({ type: 'done', threadId: 'thread-1', terminationReason: 'normal' });
@@ -130,7 +130,7 @@ describe('Codex native in-flight input', () => {
       questions: [{ question: '处理范围？', options: [{ label: '全部' }, { label: '仅本次' }] }, { question: '补充说明', options: [] }],
     }]);
     expect(events.some(e => e.type === 'done')).toBe(false);
-    await run.steer!('仅本次', 'answer');
+    await run.sendInput!({ text: '仅本次', messageId: 'answer' });
     await output;
     await run.waitForExit(1000);
     expect(events.filter(e => e.type === 'final_text')).toEqual([{ type: 'final_text', content: 'used additional input' }]);
@@ -167,7 +167,7 @@ describe('Codex native in-flight input', () => {
     adapter.setBotIdentity({ openId: 'ou_bot' });
     const run = (await adapter.prepareRun({ runId: 'r', cwd: h.dir, prompt: 'task' })).start();
     const output = collect(run.events);
-    await run.steer!('finish', 'finish-message');
+    await run.sendInput!({ text: 'finish', messageId: 'finish-message' });
     await output;
     await run.waitForExit(1000);
     const requests = await h.requests();
@@ -263,7 +263,7 @@ describe('Codex native in-flight input', () => {
     const h = await harness();
     const run = (await h.adapter.prepareRun({ runId: 'r', cwd: h.dir, prompt: 'continue', threadId: 'old-thread', forkSession, images: ['/private/image.png'] })).start();
     const output = collect(run.events);
-    await run.steer!('more', 'm'); await output; await run.waitForExit(1000);
+    await run.sendInput!({ text: 'more', messageId: 'm' }); await output; await run.waitForExit(1000);
     const requests = await h.requests();
     expect(requests.find(x => x.method === (forkSession ? 'thread/fork' : 'thread/resume')).params).toMatchObject({ threadId: 'old-thread', ...(forkSession ? { ephemeral: true } : {}) });
     expect(requests.find(x => x.method === 'turn/start').params.input).toContainEqual({ type: 'localImage', path: '/private/image.png' });
@@ -272,10 +272,10 @@ describe('Codex native in-flight input', () => {
     const h = await harness('keep-running');
     const run = (await h.adapter.prepareRun({ runId: 'r', cwd: h.dir, prompt: 'task' })).start();
     const output = collect(run.events);
-    await run.steer!('supplement', 'm');
+    await run.sendInput!({ text: 'supplement', messageId: 'm' });
     await run.stop();
     expect(await output).toContainEqual({ type: 'done', threadId: 'thread-1', terminationReason: 'interrupted' });
-    expect(await run.steer!('late', 'late')).toBe('inactive');
+    expect((await run.sendInput!({ text: 'late', messageId: 'late' })).status).toBe('inactive');
     expect((await h.requests()).filter(x => x.method === 'turn/interrupt')).toHaveLength(1);
   });
   it('only allows a new-turn fallback after explicit inactive rejection', async () => {

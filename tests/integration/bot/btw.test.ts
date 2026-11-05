@@ -14,7 +14,7 @@ import { SessionCatalog } from '../../../src/session/catalog';
 import { SessionStore } from '../../../src/session/store';
 import { WorkspaceStore } from '../../../src/workspace/store';
 import type { AgentEvent, AgentRun } from '../../../src/agent/types';
-import { FakeAgentAdapter } from '../../helpers/fake-agent';
+import { FakeAgentAdapter, STREAMED_EXECUTION } from '../../helpers/fake-agent';
 import { createTmpProfile } from '../../helpers/tmp-profile';
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -90,7 +90,7 @@ describe('/btw', () => {
 
   it('can run while the main scope is active and never interrupts it', async () => {
     const h = await harness('claude', [answer('side answer')]);
-    const main: AgentRun = { runId: 'main', events: (async function* () {})(), stop: vi.fn(async () => {}), waitForExit: async () => true };
+    const main: AgentRun = { runId: 'main', capabilities: STREAMED_EXECUTION, events: (async function* () {})(), stop: vi.fn(async () => {}), waitForExit: async () => true };
     h.ctx.activeRuns.register(h.ctx.scope, main);
     await h.manager.enqueue('while busy', h.ctx);
     expect(h.agent.runOptions).toHaveLength(1);
@@ -220,7 +220,7 @@ describe('/btw', () => {
     const gate = new Promise<void>(resolve => { finish = resolve; });
     const stop = vi.fn(async () => finish());
     vi.spyOn(h.agent, 'run').mockImplementation(opts => ({
-      runId: opts.runId, stop, waitForExit: async () => true,
+      runId: opts.runId, capabilities: STREAMED_EXECUTION, stop, waitForExit: async () => true,
       events: (async function* (): AsyncGenerator<AgentEvent> {
         yield { type: 'system', sessionId: 'side-child' };
         await gate;

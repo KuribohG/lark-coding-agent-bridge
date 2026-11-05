@@ -411,7 +411,7 @@ describe('ClaudeAdapter process contract', () => {
         expect(events.filter(event => event.type === 'final_text')).toEqual([{ type: 'final_text', content: 'supplement processed' }]);
         expect(events.filter(event => event.type === 'text')).toEqual([]);
         expect(events.findIndex(event => event.type === 'done')).toBeGreaterThan(events.findIndex(event => event.type === 'final_text'));
-        expect(await run.steer!('late', 'im-3')).toBe('inactive');
+        expect((await run.sendInput!({ text: 'late', messageId: 'im-3' })).status).toBe('inactive');
       }
       expect(await run.waitForExit(1000)).toBe(true);
     } finally { await run.stop(); }

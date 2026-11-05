@@ -18,7 +18,7 @@ import {
   type AgentBotIdentity,
   type AgentEvent,
   type AgentQuestionAnswer,
-  type AgentRun,
+  type NativeAgentRun,
   type AgentRunOptions,
 } from '../types';
 import { ClaudeRunTranslator, isTaskNotificationResult } from './stream-json';
@@ -87,7 +87,7 @@ export class ClaudeAdapter implements AgentAdapter {
       () => withExecutionContract(this.runNative(opts), this.capabilities));
   }
 
-  private runNative(opts: AgentRunOptions): AgentRun {
+  private runNative(opts: AgentRunOptions): NativeAgentRun {
     if (opts.forkSession && !opts.sessionId) throw new Error('fork requires a parent session');
     if (!opts.cwd) {
       throw new Error('cwd is required for ClaudeAdapter.run');
@@ -206,7 +206,11 @@ export class ClaudeAdapter implements AgentAdapter {
     return {
       runId: opts.runId,
       events: createEventStream(child, stderrChunks, () => runtimeError, input, questions, () => interrupted, opts.deadlineAt, opts.answerIncludesInterimText),
-      steer: (prompt, messageId) => input.steer(prompt, messageId),
+      async sendInput({ text, messageId }) {
+        return await input.steer(text, messageId) === 'accepted'
+          ? { status: 'accepted', messageId, scope: 'active-session' }
+          : { status: 'inactive', messageId };
+      },
       ...(opts.userQuestions ? { answerUserInput: (id: string, answer: AgentQuestionAnswer) => questions.answer(id, answer) } : {}),
       async stop() {
         interrupted = true;

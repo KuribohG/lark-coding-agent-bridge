@@ -4,7 +4,7 @@ import { terminateChild } from '../platform/terminate';
 import type { SpawnedProcessByStdio } from '../platform/spawn';
 import { spawnWithDeadline } from './deadline';
 import { readJsonLines } from './jsonl';
-import type { AgentEvent, AgentRun } from './types';
+import type { AgentEvent, NativeAgentRun } from './types';
 
 export interface ProcessStreamFinish {
   exitCode: number | null;
@@ -36,7 +36,7 @@ export function startProcessRun(input: {
   stopSignal?: NodeJS.Signals;
   strictJson?: boolean;
   cleanup?(): void;
-}): AgentRun {
+}): NativeAgentRun {
   type Child = SpawnedProcessByStdio<Writable, Readable, Readable>;
   let child: Child;
   try {

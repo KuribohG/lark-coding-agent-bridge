@@ -8,6 +8,9 @@ import type {
   AgentRunOptions,
 } from '../../src/agent/types.js';
 
+/** Streams its answer and accepts no input; tests opt into more with `capabilities`. */
+export const STREAMED_EXECUTION: AgentExecutionCapabilities = Object.freeze({ finalAnswer: 'stream', input: 'unsupported' });
+
 export interface FakeAgentRun extends AgentRun {
   readonly opts: AgentRunOptions;
   readonly stopped: boolean;
@@ -26,7 +29,7 @@ class FakeRun implements FakeAgentRun {
     opts: AgentRunOptions,
     events: readonly AgentEvent[],
     waitForExitResult: boolean,
-    readonly capabilities?: AgentExecutionCapabilities,
+    readonly capabilities: AgentExecutionCapabilities,
   ) {
     this.runId = opts.runId;
     this.opts = opts;
@@ -66,7 +69,7 @@ export type FakeAgentEvents =
 export class FakeAgentAdapter implements AgentAdapter {
   readonly id: string;
   readonly displayName: string;
-  readonly capabilities?: AgentExecutionCapabilities;
+  readonly capabilities: AgentExecutionCapabilities;
   readonly runs: FakeAgentRun[] = [];
   readonly runOptions: AgentRunOptions[] = [];
   botIdentity: AgentBotIdentity | undefined;
@@ -84,7 +87,7 @@ export class FakeAgentAdapter implements AgentAdapter {
   } = {}) {
     this.id = options.id ?? 'fake-agent';
     this.displayName = options.displayName ?? 'Fake Agent';
-    this.capabilities = options.capabilities;
+    this.capabilities = options.capabilities ?? STREAMED_EXECUTION;
     this.#available = options.available ?? true;
     this.#eventRuns = normalizeEventRuns(options.events ?? []);
     this.#waitForExitResults = normalizeWaitForExitResults(options.waitForExit);

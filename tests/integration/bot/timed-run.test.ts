@@ -19,6 +19,7 @@ vi.mock('@larksuite/channel', async (original) => ({
   ...await original<typeof import('@larksuite/channel')>(), createLarkChannel: () => sdk.channel,
 }));
 import { startChannel } from '../../../src/bot/channel';
+import { STREAMED_EXECUTION } from '../../helpers/fake-agent';
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -218,6 +219,7 @@ describe('one-shot tasks through Lark commands and cards', () => {
 class GateAgent implements AgentAdapter {
   readonly id = 'codex';
   readonly displayName = 'Test Codex';
+  readonly capabilities = STREAMED_EXECUTION;
   readonly options: AgentRunOptions[] = [];
   private finishes: Array<() => void> = [];
   async isAvailable() { return true; }
@@ -229,7 +231,7 @@ class GateAgent implements AgentAdapter {
     let finish!: () => void;
     const done = new Promise<void>((resolve) => { finish = resolve; });
     this.finishes.push(finish);
-    return { runId: opts.runId,
+    return { runId: opts.runId, capabilities: this.capabilities,
       events: { async *[Symbol.asyncIterator](): AsyncGenerator<AgentEvent> {
         yield { type: 'system', threadId: 'native-thread' };
         yield { type: 'text', delta: 'Working' };

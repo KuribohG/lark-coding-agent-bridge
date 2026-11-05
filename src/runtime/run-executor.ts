@@ -173,7 +173,7 @@ export class RunExecutor {
       const scope = input.agentScopeId ?? input.scopeId;
       agent = input.agent ?? (input.agentKind ? this.resolveAgent(scope, input.agentKind) : this.resolveAgent(scope));
       if (input.agentKind && agent.id !== input.agentKind) throw new Error('Resolved worker backend does not match its binding');
-      if (input.requireFinalAnswer && agent.capabilities?.finalAnswer !== 'separate-event') {
+      if (input.requireFinalAnswer && agent.capabilities.finalAnswer !== 'separate-event') {
         throw new Error('Worker backend does not provide authoritative final answers');
       }
     } catch (err) {

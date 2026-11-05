@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import type { SpawnedProcessByStdio } from '../../platform/spawn';
 import { spawnWithDeadline } from '../deadline';
-import type { AgentEvent, AgentQuestion, AgentRun, AgentRunOptions } from '../types';
+import type { AgentEvent, AgentQuestion, AgentRunOptions, NativeAgentRun } from '../types';
 import { CodexJsonlTranslator } from './jsonl';
 import { getBuildInfo } from '../../build-info';
 import { log } from '../../core/logger';
@@ -69,7 +69,7 @@ export function startAppServerRun(input: {
   threadConfig?: Readonly<Record<string, unknown>>;
   stopGraceMs: number;
   configOverrides?: readonly string[];
-}): AgentRun {
+}): NativeAgentRun {
   const { opts } = input;
   const appServerMode = input.appServerMode ?? 'per-run';
   let command = input.binary;
@@ -400,21 +400,21 @@ export function startAppServerRun(input: {
         else await new Promise<void>(resolve => { wake = resolve; });
       }
     } },
-    async steer(prompt, messageId) {
+    async sendInput({ text, messageId }) {
       await ready;
-      if (ended || stopping || !threadId || !turnId) return 'inactive';
+      if (ended || stopping || !threadId || !turnId) return { status: 'inactive', messageId };
       const expectedTurnId = turnId;
       try {
         const result = await request('turn/steer', { threadId, expectedTurnId, clientUserMessageId: messageId,
-          input: [{ type: 'text', text: prompt, text_elements: [] }] });
+          input: [{ type: 'text', text, text_elements: [] }] });
         if (result.turnId !== expectedTurnId) throw new Error('app-server returned an unexpected steer turn id; delivery is unknown');
-        return 'accepted';
+        return { status: 'accepted', messageId, scope: 'active-turn' };
       } catch (error) {
         if (error instanceof RpcError) {
           if (isActiveTurnNotSteerable(error.codexError.codexErrorInfo)
             || isActiveTurnNotSteerable(error.data)
             || /no active turn|not.*active|turn.*(?:mismatch|does not match)|not steerable|cannot steer.*active turn|active turn.*cannot accept/i.test(error.message)) {
-            return 'inactive';
+            return { status: 'inactive', messageId };
           }
           log.warn('codex', 'turn-steer-failed', rpcErrorFields(error));
         }

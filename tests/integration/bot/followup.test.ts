@@ -3,7 +3,9 @@ import type { CardActionEvent, NormalizedMessage } from '@larksuite/channel';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AgentAdapter, AgentEvent, AgentRunOptions } from '../../../src/agent/types';
+import type {
+  AgentAdapter, AgentEvent, AgentExecutionCapabilities, AgentInput, AgentInputReceipt, AgentRunOptions,
+} from '../../../src/agent/types';
 import type { Controls } from '../../../src/commands';
 import { createDefaultProfileConfig, type RootConfig } from '../../../src/config/profile-schema';
 import { runtimeProfileConfig } from '../../../src/config/profile-store';
@@ -188,6 +190,9 @@ class GateAgent implements AgentAdapter {
   readonly options: AgentRunOptions[] = [];
   readonly supplements: string[] = [];
   supportsSteer = true;
+  get capabilities(): AgentExecutionCapabilities {
+    return { finalAnswer: 'stream', input: this.supportsSteer ? 'active-session' : 'unsupported' };
+  }
   onSteer?: () => Promise<'accepted' | 'inactive'>;
   readonly stops: string[] = [];
   private finishes: Array<() => void> = [];
@@ -200,8 +205,12 @@ class GateAgent implements AgentAdapter {
     const done = new Promise<void>((resolve) => { finish = resolve; });
     this.finishes.push(finish);
     const self = this;
-    return { runId: opts.runId,
-      ...(this.supportsSteer ? { steer: async (prompt: string) => { self.supplements.push(prompt); return self.onSteer ? self.onSteer() : 'accepted' as const; } } : {}),
+    return { runId: opts.runId, capabilities: this.capabilities,
+      ...(this.supportsSteer ? { sendInput: async ({ text, messageId }: AgentInput): Promise<AgentInputReceipt> => {
+        self.supplements.push(text);
+        return await (self.onSteer ? self.onSteer() : 'accepted') === 'accepted'
+          ? { status: 'accepted', messageId, scope: 'active-session' } : { status: 'inactive', messageId };
+      } } : {}),
       events: { async *[Symbol.asyncIterator](): AsyncGenerator<AgentEvent> {
         yield { type: 'system', threadId: 'native-thread' };
         yield { type: 'text', delta: 'Working' };

@@ -9,6 +9,7 @@ import type { RunPolicyAllow } from '../../../src/policy/run-policy';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile';
 import {
   FakeAgentAdapter,
+  STREAMED_EXECUTION,
   type FakeAgentEvents,
 } from '../../helpers/fake-agent';
 
@@ -383,6 +384,7 @@ async function collect(events: AsyncIterable<unknown>): Promise<unknown[]> {
 class ThrowingAgent implements AgentAdapter {
   readonly id = 'throwing';
   readonly displayName = 'Throwing';
+  readonly capabilities = STREAMED_EXECUTION;
 
   async isAvailable(): Promise<boolean> {
     return true;

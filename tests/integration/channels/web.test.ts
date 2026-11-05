@@ -166,7 +166,7 @@ describe('channel-independent conversations', () => {
     let end!: () => void;
     const stopped = new Promise<void>(resolve => { end = resolve; });
     const sendInput = vi.fn(async (input: { messageId: string }) => ({ status: 'accepted' as const, messageId: input.messageId, scope: 'active-turn' as const }));
-    const agent: AgentAdapter = { id: 'claude', displayName: 'controlled', isAvailable: async () => true,
+    const agent: AgentAdapter = { id: 'claude', displayName: 'controlled', capabilities: { input: 'active-turn', finalAnswer: 'stream' }, isAvailable: async () => true,
       prepareRun: async options => preparedRun({}, () => ({ runId: options.runId, capabilities: { input: 'active-turn', finalAnswer: 'stream' }, sendInput,
         events: (async function* () { yield { type: 'text', delta: 'waiting' } as const; await stopped; })(),
         stop: async () => end(), waitForExit: async () => true })) };

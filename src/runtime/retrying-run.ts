@@ -153,11 +153,7 @@ export function retryingRun(input: {
     runId: input.options.runId,
     get capabilities() { return current.capabilities; },
     events: events(),
-    ...(supportsRunInput(current) ? { sendInput, async steer(text: string, messageId: string) {
-      const result = await sendInput({ text, messageId });
-      if (result.status === 'unknown') throw new Error(result.message);
-      return result.status === 'accepted' ? 'accepted' as const : 'inactive' as const;
-    } } : {}),
+    ...(supportsRunInput(current) ? { sendInput } : {}),
     // A retry starts a new process, so questions from an earlier attempt resolve as inactive.
     async answerUserInput(id, answer) {
       if (waiting || terminal || controller.signal.aborted || !current.answerUserInput) return 'inactive';

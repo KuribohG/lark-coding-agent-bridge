@@ -37,7 +37,7 @@ async function harness(perform?: (opts: AgentRunOptions, index: number) => Promi
       const text = await perform?.(opts, ++index) ?? 'done';
       yield { type: 'final_text', content: text }; yield { type: 'done', terminationReason: 'normal' };
     })();
-    return { runId: native.runId, events, stop: () => native.stop(), waitForExit: ms => native.waitForExit(ms) };
+    return { runId: native.runId, capabilities: native.capabilities, events, stop: () => native.stop(), waitForExit: ms => native.waitForExit(ms) };
   };
   const runtime = createBridgeWorkflowRuntime({ path: join(dir, 'workflow.sqlite'), workspaceRoot: join(dir, 'worktrees'),
     executor: new RunExecutor({ resolveAgent: () => adapter, pool: new ProcessPool(() => 4), activeRuns: new ActiveRuns() }),

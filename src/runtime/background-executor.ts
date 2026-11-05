@@ -1,6 +1,6 @@
 import { snapshotRunOptions } from '../agent/prepared-run';
 import { mkdir } from 'node:fs/promises';
-import { agentFailureKind, executionCapabilities } from '../agent/execution';
+import { agentFailureKind } from '../agent/execution';
 import type { AgentAdapter, AgentEvent, AgentFailureKind, AgentRunOptions, RunStopReason } from '../agent/types';
 import { log } from '../core/logger';
 import { abortStopReason } from './errors';
@@ -16,7 +16,7 @@ export class BackgroundExecutionError extends Error {
 export async function executeBackgroundRun(agent: AgentAdapter, options: AgentRunOptions & { cwd: string },
   signal: AbortSignal, onEvent?: (event: AgentEvent) => void) {
   signal.throwIfAborted();
-  if (executionCapabilities(agent).finalAnswer !== 'separate-event') throw new BackgroundExecutionError('unsupported');
+  if (agent.capabilities.finalAnswer !== 'separate-event') throw new BackgroundExecutionError('unsupported');
   await mkdir(options.cwd, { recursive: true, mode: 0o700 });
   const deadlineAt = options.deadlineAt ?? Date.now() + 30 * 60_000;
   // Pass the effective deadline to every attempt, including the native watchdog.
@@ -36,7 +36,7 @@ export async function executeBackgroundRun(agent: AgentAdapter, options: AgentRu
   let text = '', inputTokens = 0, outputTokens = 0, completed = false;
   try {
     if (signal.aborted) { abort(); signal.throwIfAborted(); }
-    if (executionCapabilities(run).finalAnswer !== 'separate-event') throw new BackgroundExecutionError('unsupported');
+    if (run.capabilities.finalAnswer !== 'separate-event') throw new BackgroundExecutionError('unsupported');
     for await (const event of run.events) {
       signal.throwIfAborted();
       onEvent?.(event);

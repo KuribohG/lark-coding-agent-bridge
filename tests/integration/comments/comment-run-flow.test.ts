@@ -15,7 +15,7 @@ import { RunExecutor } from '../../../src/runtime/run-executor.js';
 import { SessionCatalog } from '../../../src/session/catalog.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
-import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
+import { FakeAgentAdapter, STREAMED_EXECUTION } from '../../helpers/fake-agent.js';
 import { makeFakeCommentSurface } from '../../helpers/fake-comment-surface.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
 
@@ -498,6 +498,7 @@ async function seedCodexCatalog(
 class BlockingAgentAdapter implements AgentAdapter {
   readonly id = 'fake-agent';
   readonly displayName = 'Fake Agent';
+  readonly capabilities = STREAMED_EXECUTION;
   readonly runOptions: AgentRunOptions[] = [];
   private readonly finishers: Array<() => void> = [];
 
@@ -520,6 +521,7 @@ class BlockingAgentAdapter implements AgentAdapter {
     this.finishers[index] = finish;
     return {
       runId: opts.runId,
+      capabilities: this.capabilities,
       events: this.events(index, done, () => stopped),
       async stop() {
         stopped = true;
