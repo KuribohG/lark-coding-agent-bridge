@@ -77,7 +77,7 @@ Bridge Chat: http://127.0.0.1:8787/#token=<本次启动生成的令牌> (engine:
 .\bin\windows\stop-web.ps1
 ```
 
-该脚本读取原生 Codex 配置里的 `model_provider`、对应的 Responses 服务和默认模型，在 `.web-local/codex-home` 建立独立状态。密钥只注入子进程环境，不复制登录文件、桌面插件或通知命令。仅 OAuth 登录、不支持的鉴权或缺少凭据时会明确拒绝，**不会自动借用其他账号**。
+该脚本读取原生 Codex 配置里的 `model_provider`、对应的 Responses 服务和默认模型，在 `<StateDir>/codex-home` 建立独立状态。密钥只注入子进程环境，不复制登录文件、桌面插件或通知命令。仅 OAuth 登录、不支持的鉴权或缺少凭据时会明确拒绝，**不会自动借用其他账号**。
 
 脚本接受 `-Workspace`、`-StateDir`、`-Port`、`-OpenBrowser`，不接受 Bridge `--config`。需要 Bridge TOML 时使用上面的标准 CLI。详细数据位置和停止方式见 [Windows 指南](windows.md)。
 

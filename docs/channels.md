@@ -94,8 +94,7 @@ session writers, desktop plugins and notification hooks with a running Codex app
 
 Both scripts accept `-StateDir`; use the same directory when stopping or restarting.
 New installations default to `%USERPROFILE%\.lark-web\<repository-hash>` to
-keep Codex's daemon socket path short. An existing repository `.web-local`
-directory is reused so upgrades retain conversations. The start
+keep Codex's daemon socket path short. The start
 script prints the authenticated URL, binds only localhost, runs the server hidden,
 and waits for an old state lock to expire on immediate restart. The stop script
 checks the recorded process identity before terminating its process tree.

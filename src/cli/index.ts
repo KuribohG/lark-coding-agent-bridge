@@ -236,10 +236,9 @@ profile
 program
   .command('ui')
   .description('Open the local web console (config, profiles, online bots) in your browser')
-  .option('--profile <name>', 'profile name (defaults to active profile)')
   .option('--print', 'print the URL instead of opening a browser')
   .option('--stop', 'stop the running supervisor behind the console')
-  .action(async (opts: { profile?: string; print?: boolean; stop?: boolean }) => {
+  .action(async (opts: { print?: boolean; stop?: boolean }) => {
     if (opts.stop) {
       if (opts.print) throw new Error('--print 不能和 --stop 一起使用');
       await runUiStop();

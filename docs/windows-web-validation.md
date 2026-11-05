@@ -83,8 +83,7 @@ continues to own the persistent daemon. Stopping a proxy also cleans up its
 Windows command launcher and native child.
 
 New optional Web launcher installations use a short home under
-`%USERPROFILE%\.lark-web`; existing `.web-local` state and explicit `-StateDir`
-values are retained. The launcher recognizes npm's `codex.cmd` entry point and
+`%USERPROFILE%\.lark-web`; explicit `-StateDir` values are retained. The launcher recognizes npm's `codex.cmd` entry point and
 accepts an explicit `-CodexBinary`. See [channels.md](channels.md) for package
 requirements and moving an existing home when its socket path is too long.
 
