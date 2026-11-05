@@ -68,3 +68,43 @@ describe('Claude final-answer contract', () => {
     expect([...t.translate({ type: 'result', session_id: 'session' })]).toEqual([{ type: 'done', sessionId: 'session', terminationReason: 'normal' }]);
   });
 });
+
+describe('Claude chat answer with interim text', () => {
+  const tool = (id: string) => ({ type: 'assistant', message: { id, content: [{ type: 'tool_use', id: 'tool', name: 'Write', input: {} }] } });
+
+  it('shows text written before tool calls as progress and also delivers it in the final answer', () => {
+    const t = new ClaudeRunTranslator(true);
+    expect([...t.translate(assistant('body', 'the answer'))]).toEqual([]);
+    expect([...t.translate(tool('body'))]).toEqual([
+      { type: 'text', delta: 'the answer' }, { type: 'tool_use', id: 'tool', name: 'Write', input: {} },
+    ]);
+    expect([...t.translate(assistant('note', 'saved'))]).toEqual([]);
+    expect([...t.translate(result('saved'))]).toEqual([
+      { type: 'final_text', content: 'the answer\n\nsaved' }, { type: 'done', sessionId: 'session', terminationReason: 'normal' },
+    ]);
+  });
+
+  it('keeps text from an event that also calls a tool, and answers with it when the result is empty', () => {
+    const t = new ClaudeRunTranslator(true);
+    const mixed = { type: 'assistant', message: { id: 'm', content: [{ type: 'text', text: 'answer' }, { type: 'tool_use', id: 'tool', name: 'Write', input: {} }] } };
+    expect([...t.translate(mixed)].map(e => e.type)).toEqual(['text', 'tool_use']);
+    expect([...t.translate(result(''))]).toContainEqual({ type: 'final_text', content: 'answer' });
+  });
+
+  it('includes earlier messages released at a message boundary', () => {
+    const t = new ClaudeRunTranslator(true);
+    [...t.translate(assistant('a', 'checking logs'))];
+    expect([...t.translate(assistant('b', 'found it'))]).toEqual([{ type: 'text', delta: 'checking logs' }]);
+    expect([...t.translate(result('found it'))]).toContainEqual({ type: 'final_text', content: 'checking logs\n\nfound it' });
+  });
+
+  it('does not change failed runs: released text stays progress and nothing becomes an answer', () => {
+    const t = new ClaudeRunTranslator(true);
+    [...t.translate(assistant('a', 'first'))];
+    [...t.translate(tool('a'))];
+    [...t.translate(assistant('b', 'partial'))];
+    expect([...t.translate({ ...result('boom'), is_error: true })]).toEqual([
+      { type: 'text', delta: 'partial' }, { type: 'error', message: 'boom', terminationReason: 'failed' },
+    ]);
+  });
+});

@@ -345,6 +345,8 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
     // A timed run has no one waiting to answer before its deadline.
     userQuestions: !deps.timedJob,
+    // Chat replies show the whole answer, including text written before tool calls.
+    answerIncludesInterimText: true,
     observability: {
       profile: controls.profile,
       agent: capability.agentId,

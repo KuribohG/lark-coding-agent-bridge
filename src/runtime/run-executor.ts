@@ -53,6 +53,8 @@ export interface SubmitRunInput {
   stopGraceMs?: number;
   /** The caller presents and answers agent questions for this run. */
   userQuestions?: boolean;
+  /** Text written before tool calls belongs to the delivered answer. */
+  answerIncludesInterimText?: boolean;
   nowait?: boolean;
   observability?: {
     profile: string;
@@ -207,6 +209,7 @@ export class RunExecutor {
       permissionMode: input.policy.permissionMode,
       stopGraceMs: input.stopGraceMs,
       userQuestions: input.userQuestions,
+      answerIncludesInterimText: input.answerIncludesInterimText,
     });
     let run: AgentRun;
     let prepared: PreparedAgentRun;

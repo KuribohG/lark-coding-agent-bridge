@@ -54,6 +54,7 @@ export interface StartRunFlowInput extends RunFlowContextInput {
   executor: RunExecutor;
   stopGraceMs?: number;
   userQuestions?: boolean;
+  answerIncludesInterimText?: boolean;
   observability?: {
     profile: string;
     agent: string;
@@ -227,6 +228,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
           : undefined,
       stopGraceMs: input.stopGraceMs,
       userQuestions: input.userQuestions,
+      answerIncludesInterimText: input.answerIncludesInterimText,
       observability: input.observability,
     });
   } catch (err) {

@@ -50,12 +50,25 @@ interface ClaudeRawEvent {
   decision_reason?: string;
 }
 
-/** Claude emits content blocks separately, then repeats the final text in result. */
+/**
+ * Claude emits content blocks separately, then repeats the final text in result.
+ *
+ * Claude has no separate commentary channel: text written before a tool call may
+ * be the answer itself. With `answerIncludesInterimText`, earlier messages are
+ * still released as progress and are also prepended to the final answer.
+ */
 export class ClaudeRunTranslator {
   private pendingText: string[] = [];
+  private interimText: string[] = [];
   private messageId?: string;
 
+  constructor(private readonly answerIncludesInterimText = false) {}
+
   *flushProgress(): Generator<AgentEvent> {
+    if (this.answerIncludesInterimText) {
+      const text = this.pendingText.join('');
+      if (text.trim()) this.interimText.push(text);
+    }
     for (const delta of this.pendingText) yield { type: 'text', delta };
     this.pendingText = [];
   }
@@ -76,6 +89,10 @@ export class ClaudeRunTranslator {
       const events = [...translateEvent(event)];
       if (events.some(e => e.type === 'tool_use')) {
         yield* this.flushProgress();
+        if (this.answerIncludesInterimText) {
+          const text = events.flatMap(e => e.type === 'text' ? [e.delta] : []).join('');
+          if (text.trim()) this.interimText.push(text);
+        }
         yield* events;
       } else {
         for (const e of events) {
@@ -88,7 +105,9 @@ export class ClaudeRunTranslator {
     if (event.type === 'result') {
       if (!event.is_error && !event.subtype?.startsWith('error') && typeof event.result === 'string') {
         this.pendingText = [];
-        if (event.result) yield { type: 'final_text', content: event.result };
+        const content = [...this.interimText, event.result].filter(text => text.trim()).join('\n\n');
+        this.interimText = [];
+        if (content) yield { type: 'final_text', content };
       } else yield* this.flushProgress();
     }
     yield* translateEvent(event);

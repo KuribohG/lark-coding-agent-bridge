@@ -113,6 +113,8 @@ export interface AgentRunOptions {
   stopGraceMs?: number;
   /** The host can present questions to a user and answer them; enables blocking question tools. */
   userQuestions?: boolean;
+  /** Deliver text written before tool calls as part of the final answer (backends without a commentary channel). */
+  answerIncludesInterimText?: boolean;
 }
 
 /** The first stop request owns the cause; transport cleanup must not replace it. */
