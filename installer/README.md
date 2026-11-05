@@ -64,10 +64,11 @@ pwsh -File installer/build.ps1
 | `-NodeVersion 22.18.0` | 固定内置的 Node 版本 |
 
 构建脚本会：构建前端和 CLI → 生成最小化 `package.json` → 在 `win32-x64` 上下载
-`better-sqlite3` 预编译产物 → 下载 `node.exe` 并按官方 `SHASUMS256.txt` 校验 →
-写入 `bin\*.cmd` shims → 用 `csc.exe` 编译 `tray/LarkChannelBridgeTray.cs`（图标
-`tray/app.ico` 由 `tray/make-icon.py` 生成，已提交）→ 调用 `makensis` 编译。**必须在
-Windows 上构建**，否则拿不到 `better-sqlite3` 的 win32 原生模块。
+`better-sqlite3` 预编译产物和 `@larksuite/cli` 的 `lark-cli.exe` → 下载 `node.exe` 并按
+官方 `SHASUMS256.txt` 校验 → 写入 `bin\*.cmd` shims → 用 `csc.exe` 编译
+`tray/LarkChannelBridgeTray.cs`（图标 `tray/app.ico` 由 `tray/make-icon.py` 生成，已提交）→
+调用 `makensis` 编译。**必须在 Windows 上构建**，否则拿不到 `better-sqlite3` 的 win32
+原生模块，也下载不到 `lark-cli` 的 win32 二进制。
 
 ## CI
 
@@ -94,7 +95,7 @@ Windows 上构建**，否则拿不到 `better-sqlite3` 的 win32 原生模块。
 
 ```
 %LOCALAPPDATA%\LarkChannelBridge\
-├─ app\        dist/、bin/、生产 node_modules（含 better-sqlite3）
+├─ app\        dist/、bin/、生产 node_modules（含 better-sqlite3、@larksuite/cli 及其 lark-cli.exe）
 ├─ runtime\    node.exe（v22.18.0，构建时校验 SHA256）
 ├─ bin\        LarkChannelBridgeTray.exe、lark-channel-bridge.cmd、stop-gui.cmd 等
 └─ uninstall.exe

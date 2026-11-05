@@ -85,6 +85,22 @@ if ($checkCode -ne 0) {
   throw "config check exited with $checkCode; output: $checkText"
 }
 
+Write-Host '==> bundled lark-cli'
+$larkCli = Join-Path $installDir 'app\node_modules\.bin\lark-cli.cmd'
+Assert (Test-Path -LiteralPath $larkCli) "lark-cli shim missing: $larkCli"
+$larkOut = Join-Path $env:TEMP 'lark-cli-version.out'
+$larkErr = Join-Path $env:TEMP 'lark-cli-version.err'
+Remove-Item -LiteralPath $larkOut, $larkErr -Force -ErrorAction SilentlyContinue
+& $larkCli --version > $larkOut 2> $larkErr
+$larkCode = $LASTEXITCODE
+if ($larkCode -ne 0) {
+  $larkText = ((Get-Content -LiteralPath $larkOut -Raw -ErrorAction SilentlyContinue) +
+    (Get-Content -LiteralPath $larkErr -Raw -ErrorAction SilentlyContinue))
+  throw "lark-cli --version exited with $larkCode; output: $larkText"
+}
+$larkVersion = (Get-Content -LiteralPath $larkOut -Raw).Trim()
+Assert ($larkVersion -match '\d+\.\d+\.\d+') "unexpected lark-cli version output: $larkVersion"
+
 Write-Host '==> version reports the built commit'
 $version = (& $cli --version | Out-String).Trim()
 Write-Host "version: $version"

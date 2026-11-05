@@ -97,6 +97,19 @@ try {
     $installedPackage = Get-Content -LiteralPath $installed -Raw | ConvertFrom-Json
     $dependencies[$name] = [string]$installedPackage.version
   }
+  # @larksuite/cli is optional for source/npm installs, but this package is
+  # self-contained: there is no npm on the target machine for preflight's
+  # `npm install -g` fallback. Ship it as a regular dependency; its postinstall
+  # downloads the win32-x64 lark-cli binary during this build.
+  $optional = $package.optionalDependencies
+  if ($optional -and $optional.PSObject.Properties['@larksuite/cli']) {
+    $installed = Join-Path (Join-Path $repo 'node_modules') (Join-Path '@larksuite/cli' 'package.json')
+    if (-not (Test-Path -LiteralPath $installed)) {
+      throw "optional dependency '@larksuite/cli' is not installed; run pnpm install first"
+    }
+    $installedPackage = Get-Content -LiteralPath $installed -Raw | ConvertFrom-Json
+    $dependencies['@larksuite/cli'] = [string]$installedPackage.version
+  }
   $stagedPackage = [ordered]@{
     name         = [string]$package.name
     version      = [string]$package.version
@@ -118,6 +131,11 @@ try {
   $binding = @(Get-ChildItem -Path (Join-Path $app 'node_modules\better-sqlite3\build') -Filter '*.node' -Recurse -ErrorAction SilentlyContinue)
   if ($binding.Count -eq 0) {
     throw 'better-sqlite3 native binding is missing; run this build on Windows with network access'
+  }
+
+  $larkCli = Join-Path $app 'node_modules\@larksuite\cli\bin\lark-cli.exe'
+  if (-not (Test-Path -LiteralPath $larkCli)) {
+    throw 'lark-cli native binary is missing; @larksuite/cli postinstall did not download win32-x64'
   }
 
   Write-Host "==> downloading node.exe v$NodeVersion (win-x64)"
