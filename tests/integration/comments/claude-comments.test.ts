@@ -286,7 +286,7 @@ async function createCommentHarness(options: {
   profileConfig.workspaces.default = tmp.workspace;
   const activeRuns = new ActiveRuns();
   const executor = new RunExecutor({
-    agent,
+    resolveAgent: () => agent,
     pool: new ProcessPool(() => 1),
     activeRuns,
     createRunId: () => `comment-run-${agent.runOptions.length + 1}`,

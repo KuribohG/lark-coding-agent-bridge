@@ -23,6 +23,7 @@ vi.mock('@larksuite/channel', async (original) => ({
   ...await original<typeof import('@larksuite/channel')>(), createLarkChannel: () => sdk.channel,
 }));
 import { startChannel } from '../../../src/bot/channel';
+import { FixedExecutionController } from '../../helpers/fixed-execution';
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -259,7 +260,7 @@ async function harness(agentKind: 'claude' | 'codex' = 'codex', workflows = fals
   const sessionCatalog = workflows ? new SessionCatalog(join(tmp.profile, 'catalog.json')) : undefined;
   const agent = new GateAgent(agentKind);
   cleanup.push(async () => { await sessions.flush(); await workspaces.flush(); await sessionCatalog?.flush(); await tmp.cleanup(); });
-  const bridge = await startChannel({ cfg: controls.cfg, agent, sessions, workspaces, controls, sessionCatalog,
+  const bridge = await startChannel({ cfg: controls.cfg, execution: new FixedExecutionController(agent, controls.profileConfig), sessions, workspaces, controls, sessionCatalog,
     ...(workflows ? { appPaths: { mediaDir: join(tmp.profile, 'media'), secretsFile: join(tmp.profile, 'secrets.json'),
       keystoreSaltFile: join(tmp.profile, 'keystore-salt') } } : {}) });
   cleanup.push(async () => { await bridge.disconnect(); });

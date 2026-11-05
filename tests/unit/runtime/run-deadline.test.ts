@@ -63,7 +63,7 @@ describe('absolute task deadlines', () => {
     const agent = new FakeAgentAdapter({ events: [{ type: 'done', terminationReason: 'normal' }] });
     const pool = new ProcessPool(() => 1);
     const held = await pool.acquire();
-    const executor = new RunExecutor({ agent, pool, activeRuns: new ActiveRuns() });
+    const executor = new RunExecutor({ resolveAgent: () => agent, pool, activeRuns: new ActiveRuns() });
     const pending = executor.submit({ scopeId: 's', policy: policy(), deadlineAt: Date.now() + 1000 });
     const rejected = expect(pending).rejects.toMatchObject({ code: 'deadline-expired' });
     await vi.advanceTimersByTimeAsync(1000);
@@ -81,7 +81,7 @@ describe('absolute task deadlines', () => {
     const agent = new FakeAgentAdapter();
     const pool = new ProcessPool(() => 1);
     const release = await pool.acquire();
-    const executor = new RunExecutor({ agent, pool, activeRuns: new ActiveRuns() });
+    const executor = new RunExecutor({ resolveAgent: () => agent, pool, activeRuns: new ActiveRuns() });
     const controller = new AbortController();
     const pending = executor.submit({ scopeId: 's', policy: policy(), signal: controller.signal });
     controller.abort();
@@ -99,7 +99,7 @@ describe('absolute task deadlines', () => {
       prepareRun: () => new Promise<void>((resolve) => { prepared = resolve; }),
     });
     const pool = new ProcessPool(() => 1);
-    const executor = new RunExecutor({ agent: adapter, pool, activeRuns: new ActiveRuns() });
+    const executor = new RunExecutor({ resolveAgent: () => adapter, pool, activeRuns: new ActiveRuns() });
     const pending = executor.submit({ scopeId: 's', policy: policy(), deadlineAt: Date.now() + 1000 });
     await Promise.resolve();
     const rejected = expect(pending).rejects.toMatchObject({ code: 'deadline-expired' });
@@ -113,7 +113,7 @@ describe('absolute task deadlines', () => {
   it('stops running work despite continuous tool activity and reports deadline termination', async () => {
     vi.useFakeTimers();
     const agent = new FakeAgentAdapter();
-    const executor = new RunExecutor({ agent, pool: new ProcessPool(() => 1), activeRuns: new ActiveRuns() });
+    const executor = new RunExecutor({ resolveAgent: () => agent, pool: new ProcessPool(() => 1), activeRuns: new ActiveRuns() });
     const run = await executor.submit({ scopeId: 's', policy: policy(), deadlineAt: Date.now() + 1000 });
     await vi.advanceTimersByTimeAsync(1000);
     expect(agent.runs[0]?.stopped).toBe(true);
@@ -124,7 +124,7 @@ describe('absolute task deadlines', () => {
 
   it('does not relabel a completed task when final rendering requests cleanup', async () => {
     const agent = new FakeAgentAdapter({ events: [{ type: 'done', terminationReason: 'normal' }] });
-    const executor = new RunExecutor({ agent, pool: new ProcessPool(() => 1), activeRuns: new ActiveRuns() });
+    const executor = new RunExecutor({ resolveAgent: () => agent, pool: new ProcessPool(() => 1), activeRuns: new ActiveRuns() });
     const run = await executor.submit({ scopeId: 's', policy: policy(), deadlineAt: Date.now() + 60_000 });
     for await (const _ of run.subscribe()) { /* drain */ }
     await run.stop();
@@ -135,7 +135,7 @@ describe('absolute task deadlines', () => {
     const agent = new FakeAgentAdapter({ events: [{ type: 'done', terminationReason: 'normal' }] });
     const pool = new ProcessPool(() => 1);
     const activeRuns = new ActiveRuns();
-    const executor = new RunExecutor({ agent, pool, activeRuns });
+    const executor = new RunExecutor({ resolveAgent: () => agent, pool, activeRuns });
     const run = await executor.submit({ scopeId: 's', policy: policy() });
     run.run.waitForExit = async () => { throw new Error('exit check failed'); };
     for await (const _ of run.subscribe()) { /* drain */ }
@@ -147,7 +147,7 @@ describe('absolute task deadlines', () => {
 
   it('classifies explicit quota errors without retrying', async () => {
     const agent = new FakeAgentAdapter({ events: [{ type: 'error', message: 'insufficient_quota', terminationReason: 'failed' }] });
-    const executor = new RunExecutor({ agent, pool: new ProcessPool(() => 1), activeRuns: new ActiveRuns() });
+    const executor = new RunExecutor({ resolveAgent: () => agent, pool: new ProcessPool(() => 1), activeRuns: new ActiveRuns() });
     const run = await executor.submit({ scopeId: 's', policy: policy(), deadlineAt: Date.now() + 60_000 });
     for await (const _ of run.subscribe()) { /* drain */ }
     expect(await run.result).toBe('quota');
@@ -157,7 +157,7 @@ describe('absolute task deadlines', () => {
   it('classifies a gateway budget_exceeded error as quota', async () => {
     const agent = new FakeAgentAdapter({ events: [{ type: 'error', terminationReason: 'failed',
       message: 'API Error: 400 {"error":{"message":"Budget has been exceeded! Current cost: 5","type":"budget_exceeded"}}' }] });
-    const executor = new RunExecutor({ agent, pool: new ProcessPool(() => 1), activeRuns: new ActiveRuns() });
+    const executor = new RunExecutor({ resolveAgent: () => agent, pool: new ProcessPool(() => 1), activeRuns: new ActiveRuns() });
     const run = await executor.submit({ scopeId: 's', policy: policy(), deadlineAt: Date.now() + 60_000 });
     for await (const _ of run.subscribe()) { /* drain */ }
     expect(await run.result).toBe('quota');

@@ -323,7 +323,7 @@ async function createHarness(options: {
   const profileConfig = profile(tmp.workspace, agentKind);
   const activeRuns = new ActiveRuns();
   const executor = new RunExecutor({
-    agent,
+    resolveAgent: () => agent,
     pool: new ProcessPool(() => 1),
     activeRuns,
     createRunId: () => `comment-run-${agent.runOptions.length + 1}`,
@@ -420,7 +420,7 @@ async function createBlockingHarness(options: {
   const profileConfig = profile(tmp.workspace, options.agentKind);
   const activeRuns = new ActiveRuns();
   const executor = new RunExecutor({
-    agent,
+    resolveAgent: () => agent,
     pool: new ProcessPool(() => 2),
     activeRuns,
     createRunId: () => `comment-run-${agent.runOptions.length + 1}`,

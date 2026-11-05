@@ -19,6 +19,7 @@ import {
   profileForAgentKind,
   type ExecutionController,
 } from '../../../src/runtime/execution-controller';
+import { FixedExecutionController } from '../../helpers/fixed-execution';
 
 // Importing or starting the second channel must never initialize the Lark SDK.
 vi.mock('@larksuite/channel', () => { throw new Error('Web imported the Lark SDK'); });
@@ -46,7 +47,7 @@ async function harness() {
   const tmp = await createTmpProfile('bridge-web-'); cleanups.push(tmp.cleanup);
   const agent = new FakeAgentAdapter({ id: 'claude', events });
   const authorize = vi.fn(async () => true);
-  const options = { agent, config: config(tmp.workspace), namespace: 'test', channelId: 'web',
+  const options = { execution: new FixedExecutionController(agent, config(tmp.workspace)), config: config(tmp.workspace), namespace: 'test', channelId: 'web',
     systemPrompt: 'Browser host instructions', stateDir: tmp.profile, authorize };
   const runtime = await createConversationRuntime(options); cleanups.push(() => runtime.close());
   return { tmp, options, runtime, agent, authorize };
@@ -170,7 +171,7 @@ describe('channel-independent conversations', () => {
       prepareRun: async options => preparedRun({}, () => ({ runId: options.runId, capabilities: { input: 'active-turn', finalAnswer: 'stream' }, sendInput,
         events: (async function* () { yield { type: 'text', delta: 'waiting' } as const; await stopped; })(),
         stop: async () => end(), waitForExit: async () => true })) };
-    const runtime = await createConversationRuntime({ ...h.options, agent }); cleanups.push(() => runtime.close());
+    const runtime = await createConversationRuntime({ ...h.options, execution: new FixedExecutionController(agent, h.options.config) }); cleanups.push(() => runtime.close());
     const received: WebRunEvent[] = [];
     const result = await runtime.start({ ...identity, prompt: 'wait' }, createWebRunOutput(async e => { received.push(e); }));
     if (!result.ok) throw Error('expected active run');

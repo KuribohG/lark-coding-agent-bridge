@@ -85,7 +85,7 @@ async function createHarness(): Promise<{
     processId: 'proc-1',
   } satisfies Controls;
   const executor = new RunExecutor({
-    agent,
+    resolveAgent: () => agent,
     pool,
     activeRuns,
     createRunId: () => 'doctor-run-1',

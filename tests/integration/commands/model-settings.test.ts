@@ -247,7 +247,7 @@ describe('model and effort scope settings', () => {
     const h = await harness();
     await h.command('/model private/old');
     await h.command('/effort high');
-    const executor = new RunExecutor({ agent: h.ctx.agent, pool: new ProcessPool(() => 1), activeRuns: h.ctx.activeRuns });
+    const executor = new RunExecutor({ resolveAgent: () => h.ctx.agent, pool: new ProcessPool(() => 1), activeRuns: h.ctx.activeRuns });
     const execution = await executor.submit({
       scopeId: h.ctx.scope,
       ...modelRunArguments(await resolveRunModelSettings(h.controls, h.ctx.scope)),

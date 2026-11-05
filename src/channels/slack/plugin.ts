@@ -88,8 +88,7 @@ async function startSlackChannel(options: SlackChannelOptions): Promise<SlackCon
       openId: identity.userId,
       ...(identity.userName ? { name: identity.userName } : {}),
     };
-    options.execution?.setBotIdentity(botIdentity);
-    options.agent?.setBotIdentity?.(botIdentity);
+    options.execution.setBotIdentity(botIdentity);
 
     runtime = await createConversationRuntime({
       ...options,

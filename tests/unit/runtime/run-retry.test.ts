@@ -20,7 +20,7 @@ function harness(events: FakeAgentEvents) {
   const agent = new FakeAgentAdapter({ events, capabilities: { finalAnswer: 'stream', input: 'active-session' } });
   const activeRuns = new ActiveRuns();
   const pool = new ProcessPool(() => 1);
-  const executor = new RunExecutor({ agent, activeRuns, pool, postDoneExitGraceMs: 10 });
+  const executor = new RunExecutor({ resolveAgent: () => agent, activeRuns, pool, postDoneExitGraceMs: 10 });
   const policy: RunPolicyAllow = { ok: true, prompt: 'original task', requestedCwd: '/repo', cwdRealpath: '/repo',
     accessMode: 'workspace', sandbox: 'workspace-write', permissionMode: 'acceptEdits',
     access: { ok: true, reason: 'allowed-user' }, attachments: [], policyFingerprint: 'fp', expiresAt: Date.now() + 1000 };

@@ -11,7 +11,7 @@ describe('RunExecutor policy runtime options', () => {
       events: [{ type: 'done', terminationReason: 'normal' }],
     });
     const executor = new RunExecutor({
-      agent,
+      resolveAgent: () => agent,
       pool: new ProcessPool(() => 1),
       activeRuns: new ActiveRuns(),
       createRunId: () => 'run-policy',
@@ -64,7 +64,7 @@ describe('RunExecutor policy runtime options', () => {
       },
     };
     const executor = new RunExecutor({
-      agent,
+      resolveAgent: () => agent,
       resolveModelProvider: async (_kind, model) => model === 'deepseek/deepseek-flash' ? provider : undefined,
       pool: new ProcessPool(() => 1),
       activeRuns: new ActiveRuns(),

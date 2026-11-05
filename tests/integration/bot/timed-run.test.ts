@@ -20,6 +20,7 @@ vi.mock('@larksuite/channel', async (original) => ({
 }));
 import { startChannel } from '../../../src/bot/channel';
 import { STREAMED_EXECUTION } from '../../helpers/fake-agent';
+import { FixedExecutionController } from '../../helpers/fixed-execution';
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -278,7 +279,7 @@ async function harness(agentKind: 'claude' | 'codex' = 'codex') {
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
   const agent = new GateAgent();
   cleanup.push(async () => { await sessions.flush(); await workspaces.flush(); await tmp.cleanup(); });
-  const bridge = await startChannel({ cfg: controls.cfg, agent, sessions, workspaces, controls });
+  const bridge = await startChannel({ cfg: controls.cfg, execution: new FixedExecutionController(agent, controls.profileConfig), sessions, workspaces, controls });
   cleanup.push(async () => { await bridge.disconnect(); });
   const scope = 'oc_chat:topic';
   return { controls, agent, channel, handlers, scope,

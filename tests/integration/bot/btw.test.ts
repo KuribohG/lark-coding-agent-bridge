@@ -287,7 +287,7 @@ async function harness(kind: 'claude' | 'codex', events: AgentEvent[][]) {
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
   const activeRuns = new ActiveRuns();
   const pool = new ProcessPool(() => 1);
-  const executor = new RunExecutor({ agent, pool, activeRuns });
+  const executor = new RunExecutor({ resolveAgent: () => agent, pool, activeRuns });
   const path = join(tmp.profile, 'btw.json');
   const manager = new BtwManager(new BtwStore(path));
   controls.btw = manager;

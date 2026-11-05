@@ -34,7 +34,6 @@ export type {
   ConversationStatus,
 } from './conversation';
 export {
-  FixedExecutionController,
   ProfileExecutionController,
   profileForAgentKind,
 } from './execution-controller';

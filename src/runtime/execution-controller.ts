@@ -211,27 +211,3 @@ function sameLaunch(a: AgentExecutionProfile, b: AgentExecutionProfile): boolean
 function preferredModel(profile: AgentExecutionProfile): string | undefined {
   return (profile as AgentExecutionProfile & { preferences?: { model?: string } }).preferences?.model;
 }
-
-/** Compatibility helper for tests and one-engine hosts. */
-export class FixedExecutionController implements ExecutionController {
-  constructor(
-    private readonly agent: AgentAdapter,
-    private readonly profileConfig: AgentExecutionProfile,
-  ) {}
-
-  get defaultAgentKind(): AgentKind { return this.profileConfig.agentKind; }
-
-  defaultAgent(): AgentAdapter { return this.agent; }
-  get(_scope?: string, agentKind?: AgentKind): AgentAdapter {
-    if (agentKind && agentKind !== this.defaultAgentKind) throw new Error('fixed execution controller does not support engine overrides');
-    return this.agent;
-  }
-  kindFor(): AgentKind { return this.defaultAgentKind; }
-  profileFor(): AgentExecutionProfile { return this.profileConfig; }
-  capabilityFor(): AgentCapability { return capabilityForProfile(this.profileConfig); }
-  async resolveModelProvider(): Promise<undefined> { return undefined; }
-  setBotIdentity(identity: AgentBotIdentity): void { this.agent.setBotIdentity?.(identity); }
-  async setScopeKind(): Promise<void> {
-    throw new Error('fixed execution controller does not support engine overrides');
-  }
-}

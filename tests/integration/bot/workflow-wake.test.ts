@@ -48,7 +48,7 @@ describe('workflow main-session wake', () => {
       { type: 'system', threadId: 'root-thread' }, { type: 'final_text', content: 'reviewed' }, { type: 'done', terminationReason: 'normal' },
     ] });
     const activeRuns = new ActiveRuns();
-    const executor = new RunExecutor({ agent, pool: new ProcessPool(() => 3), activeRuns });
+    const executor = new RunExecutor({ resolveAgent: () => agent, pool: new ProcessPool(() => 3), activeRuns });
     const release = vi.fn(); const markNotified = vi.fn();
     const bindMain = vi.fn(() => ({ instructions: 'INTERNAL RESULT EVENT', env: { AGENT_WORKFLOW_TOKEN: 'test' }, eventIds: ['event-1'], release }));
     const deps = {

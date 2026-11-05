@@ -301,10 +301,10 @@ For a source checkout, run `node bin/lark-channel-bridge.mjs run --profile
 codex` after building. Use `lark-channel-bridge run --web-ui --detach` only when
 the local Web management console is wanted.
 
-## Lark compatibility and verification
+## Lark integration and verification
 
-Existing Lark profile launchers continue through a compatibility entry point to
-the Lark plugin and `ChannelHost`. Lark's richer context/access preparation feeds
+Lark profile hosts connect through the Lark plugin and `ChannelHost` with the
+profile's `ExecutionController`. Lark's richer context/access preparation feeds
 the same `startRunFlow`, policy, session catalog and `RunExecutor` used by the
 generic runtime. Its slash commands, management console, monitoring destinations
 and CardKit forms remain Lark features. A new IM does not need to emulate them or
@@ -316,5 +316,5 @@ exercise no-credential startup, HTTP streaming, session persistence, channel and
 user isolation, authorization, input, cancellation and failed output cleanup.
 Slack tests inject fake Socket Mode and Web API adapters, then cover thread
 resumption, deduplication, access checks, command handling, and in-place output.
-Existing Lark flow tests cover its compatibility path. The three working
+Existing Lark flow tests cover its channel path. The three working
 channels exercise the shared boundary rather than only a TypeScript interface.

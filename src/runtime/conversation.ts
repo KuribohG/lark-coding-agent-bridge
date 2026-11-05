@@ -2,7 +2,7 @@ import { trackRunSession } from './session-progress';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { sendRunInput } from '../agent/execution';
-import type { AgentAdapter, AgentInput, AgentInputReceipt } from '../agent/types';
+import type { AgentInput, AgentInputReceipt } from '../agent/types';
 import { ActiveRuns, stopRun } from './active-runs';
 import { RunStopped } from './errors';
 import { ProcessPool } from './process-pool';
@@ -14,11 +14,7 @@ import { presentRunOutput, type RunOutputPlugin } from './run-output';
 import { SessionCatalog } from '../session/catalog';
 import { SessionStore } from '../session/store';
 import { WorkspaceStore } from '../workspace/store';
-import {
-  FixedExecutionController,
-  profileForAgentKind,
-  type ExecutionController,
-} from './execution-controller';
+import { profileForAgentKind, type ExecutionController } from './execution-controller';
 
 export interface ConversationIdentity {
   /** Supplied by the host's authenticated session, never trusted from a request body. */
@@ -27,10 +23,8 @@ export interface ConversationIdentity {
 }
 
 export interface ConversationRuntimeOptions {
-  /** Compatibility path for one-engine hosts. Prefer `execution`. */
-  agent?: AgentAdapter;
-  /** Shared execution controller. Required unless `agent` is provided. */
-  execution?: ExecutionController;
+  /** Shared execution controller. */
+  execution: ExecutionController;
   config: RunProfileConfig;
   /** Resolve engine-specific run settings for the selected backend. */
   configForAgent?: (agentKind: AgentKind) => RunProfileConfig;
@@ -78,16 +72,7 @@ export class ConversationRuntime {
   constructor(private readonly options: ConversationRuntimeOptions) {
     if (!options.channelId.trim()) throw new Error('channelId is required');
     if (!options.namespace.trim()) throw new Error('namespace is required');
-    if (options.execution && options.agent) {
-      throw new Error('provide execution or agent, not both');
-    }
-    const execution = options.execution
-      ?? (options.agent ? new FixedExecutionController(options.agent, options.config) : undefined);
-    if (!execution) throw new Error('execution controller is required');
-    this.execution = execution;
-    if (options.agent?.id !== options.config.agentKind && !options.execution) {
-      throw new Error('agent does not match config.agentKind');
-    }
+    this.execution = options.execution;
     this.sessions = new SessionStore(join(options.stateDir, 'sessions.json'));
     this.catalog = new SessionCatalog(join(options.stateDir, 'sessions.catalog.json'));
     this.workspaces = new WorkspaceStore(join(options.stateDir, 'workspaces.json'));

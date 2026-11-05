@@ -233,7 +233,7 @@ async function createHarness(options: { autoCompleteAgent?: boolean } = {}): Pro
   const activeRuns = new ActiveRuns();
   const agent = new BlockingAgentAdapter(options.autoCompleteAgent === true);
   const executor = new RunExecutor({
-    agent,
+    resolveAgent: () => agent,
     pool: new ProcessPool(() => 2),
     activeRuns,
     createRunId: () => 'comment-run-1',

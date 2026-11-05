@@ -157,7 +157,7 @@ async function createHarness(options: {
     workspaces.setCwd('chat-1', tmp.workspace);
   }
   const executor = new RunExecutor({
-    agent,
+    resolveAgent: () => agent,
     pool,
     activeRuns,
     createRunId: () => 'doctor-run-1',

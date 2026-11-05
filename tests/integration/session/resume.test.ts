@@ -241,7 +241,7 @@ async function createHarness(agentKind: AgentKind): Promise<{
     tmp,
     agent,
     executor: new RunExecutor({
-      agent,
+      resolveAgent: () => agent,
       pool: new ProcessPool(() => 10),
       activeRuns: new ActiveRuns(),
       createRunId: () => `run-${agent.runOptions.length + 1}`,
