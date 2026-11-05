@@ -47,7 +47,7 @@ export class FileSecretStore implements SecretStore {
         { cause: err },
       );
     }
-    if (parsed.version !== 1 && parsed.version !== 2) {
+    if (parsed.version !== 2) {
       throw new KeystoreError(
         'invalid-store',
         `unsupported keystore version: ${String(parsed.version)}`,
@@ -59,7 +59,7 @@ export class FileSecretStore implements SecretStore {
 
     const entries: Record<string, SecretEnvelope> = {};
     for (const [id, raw] of Object.entries(parsed.entries as Record<string, unknown>)) {
-      entries[id] = normalizeEnvelope(raw, parsed.version);
+      entries[id] = normalizeEnvelope(raw);
     }
     return { version: 2, entries };
   }
@@ -71,29 +71,22 @@ export class FileSecretStore implements SecretStore {
   }
 }
 
-function normalizeEnvelope(raw: unknown, version: 1 | 2): SecretEnvelope {
+function normalizeEnvelope(raw: unknown): SecretEnvelope {
   if (!raw || typeof raw !== 'object') throw invalidEnvelope();
   const candidate = raw as RawEnvelope;
   if (
+    !isKeyId(candidate.keyId) ||
     typeof candidate.iv !== 'string' ||
     typeof candidate.data !== 'string' ||
     typeof candidate.tag !== 'string'
   ) {
     throw invalidEnvelope();
   }
+  return { keyId: candidate.keyId, iv: candidate.iv, data: candidate.data, tag: candidate.tag };
+}
 
-  let keyId: KeystoreKeyId = 'legacy-v1';
-  if (version === 2) {
-    if (
-      candidate.keyId !== 'env-v2' &&
-      candidate.keyId !== 'local-v2' &&
-      candidate.keyId !== 'legacy-v1'
-    ) {
-      throw invalidEnvelope();
-    }
-    keyId = candidate.keyId;
-  }
-  return { keyId, iv: candidate.iv, data: candidate.data, tag: candidate.tag };
+function isKeyId(value: unknown): value is KeystoreKeyId {
+  return value === 'env-v2' || value === 'local-v2';
 }
 
 function invalidEnvelope(): KeystoreError {

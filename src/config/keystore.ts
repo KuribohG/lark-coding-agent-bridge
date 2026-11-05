@@ -34,8 +34,8 @@ export async function getSecret(
   const active = await provider.activeKey();
   if (envelope.keyId === active.id) return decryptEnvelope(id, envelope, provider);
 
-  // A successful legacy read is the last safe migration point: the old key is
-  // known to work now, but a future hostname change may remove it.
+  // Re-encrypt under the active key (e.g. after a master key is configured)
+  // while the previous key is known to work.
   const plaintext = await decryptEnvelope(id, envelope, provider);
   await migrateDecryptableEntries(store, provider, active.id, active.key);
   await secrets.write(store);
@@ -94,9 +94,8 @@ async function migrateDecryptableEntries(
       const plaintext = await decryptEnvelope(id, envelope, provider);
       store.entries[id] = encryptSecret(activeKey, plaintext, activeId);
     } catch (err) {
-      // Legacy data encrypted under an unavailable old hostname cannot be
-      // migrated. Leave it intact; reading that secret still fails with a
-      // precise key/decryption error.
+      // Entries under an unavailable key cannot be migrated. Leave them
+      // intact; reading that secret still fails with a precise error.
       if (!(err instanceof KeystoreError)) throw err;
     }
   }

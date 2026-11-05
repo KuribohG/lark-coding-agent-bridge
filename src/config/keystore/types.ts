@@ -2,7 +2,7 @@ import type { AppPaths } from '../app-paths';
 
 export type KeystorePaths = Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile'>;
 
-export type KeystoreKeyId = 'env-v2' | 'local-v2' | 'legacy-v1';
+export type KeystoreKeyId = 'env-v2' | 'local-v2';
 
 export interface SecretEnvelope {
   keyId: KeystoreKeyId;
@@ -36,7 +36,6 @@ export interface SecretKeyProvider {
 
 export interface KeystoreRuntimeOptions {
   env?: NodeJS.ProcessEnv;
-  hostname?: string;
   username?: string;
 }
 

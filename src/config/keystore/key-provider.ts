@@ -1,6 +1,6 @@
 import { createHash, pbkdf2Sync, randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { hostname as osHostname, userInfo } from 'node:os';
+import { userInfo } from 'node:os';
 import { writeFileAtomic } from '../../platform/atomic-write';
 import {
   KeystoreError,
@@ -22,12 +22,11 @@ const derivedKeyCache = new Map<string, Buffer>();
  *
  * Active writes use an externally supplied production key when configured,
  * otherwise a local key derived from the stable username and persisted salt.
- * Hostname is retained only to read legacy v1 envelopes; it is deliberately
- * not part of new keys because container hostnames are ephemeral.
+ * Hostname is deliberately not part of any key because container hostnames
+ * are ephemeral.
  */
 export class KeystoreKeyProvider implements SecretKeyProvider {
   private readonly env: NodeJS.ProcessEnv;
-  private readonly hostname: string;
   private readonly username: string;
   private salt?: Promise<Buffer>;
 
@@ -36,7 +35,6 @@ export class KeystoreKeyProvider implements SecretKeyProvider {
     options: KeystoreRuntimeOptions = {},
   ) {
     this.env = options.env ?? process.env;
-    this.hostname = options.hostname ?? osHostname();
     this.username = options.username ?? userInfo().username;
   }
 
@@ -75,8 +73,6 @@ export class KeystoreKeyProvider implements SecretKeyProvider {
       }
       case 'local-v2':
         return `local-v2\0${this.username}`;
-      case 'legacy-v1':
-        return `${this.hostname}|${this.username}`;
     }
   }
 
