@@ -195,6 +195,7 @@ async function createHarness(): Promise<Harness> {
       agent,
       activeRuns,
       controls,
+      agentKind: controls.profileConfig.agentKind,
     });
 
   cleanups.push(async () => {

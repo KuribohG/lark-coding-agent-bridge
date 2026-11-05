@@ -50,7 +50,7 @@ async function harness() {
   };
   const channel = createFakeChannel();
   const ctx: CommandContext = {
-    controls, channel: channel as unknown as CommandContext['channel'], scope: 'group:topic-a', chatMode: 'topic',
+    controls, agentKind: controls.profileConfig.agentKind, channel: channel as unknown as CommandContext['channel'], scope: 'group:topic-a', chatMode: 'topic',
     msg: { chatId: 'group', messageId: 'msg', senderId: 'owner', threadId: 'topic-a', content: '' } as CommandContext['msg'],
     sessions: new SessionStore(join(tmp.profile, 'sessions.json')), workspaces: new WorkspaceStore(join(tmp.profile, 'workspaces.json')),
     activeRuns: new ActiveRuns(), agent: new FakeAgentAdapter(),
@@ -247,7 +247,7 @@ describe('model and effort scope settings', () => {
     const h = await harness();
     await h.command('/model private/old');
     await h.command('/effort high');
-    const executor = new RunExecutor({ agent: h.ctx.agent, pool: new ProcessPool(() => 1), activeRuns: h.ctx.activeRuns });
+    const executor = new RunExecutor({ resolveAgent: () => h.ctx.agent, pool: new ProcessPool(() => 1), activeRuns: h.ctx.activeRuns });
     const execution = await executor.submit({
       scopeId: h.ctx.scope,
       ...modelRunArguments(await resolveRunModelSettings(h.controls, h.ctx.scope)),

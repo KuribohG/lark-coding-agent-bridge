@@ -42,7 +42,7 @@ node bin/lark-channel-bridge.mjs web --agent codex --workspace "C:\projects\my-a
 | --- | --- |
 | `-Workspace` | 仓库根目录；改为实际项目 |
 | `-Port` | 8787；换端口时使用新输出链接 |
-| `-StateDir` | 仓库下 `.web-local`；指定后，停止时也要传同一个目录 |
+| `-StateDir` | `%USERPROFILE%\.lark-web\<仓库哈希>`；指定后，停止时也要传同一个目录 |
 | `-OpenBrowser` | 启动后打开默认浏览器；不传仍会打印完整 URL |
 
 例如让状态固定到单独的目录：
@@ -73,7 +73,7 @@ PowerShell 若按组织策略阻止 `.ps1`，先检查本地文件来源并按�
 | 模式 | 位置 |
 | --- | --- |
 | 标准 Web | `--state-dir`；不传则 `~/.lark-channel/web/default`，不随 `LARK_CHANNEL_HOME` 改变 |
-| 后台脚本 | `-StateDir`，默认 `.web-local` |
+| 后台脚本 | `-StateDir`，默认 `%USERPROFILE%\.lark-web\<仓库哈希>` |
 | 后台脚本的原生 Codex 状态 | `<StateDir>/codex-home` |
 | 后台脚本的 Web 会话 / 日志 | `<StateDir>/web-state`、`web-state/logs` |
 | 后台脚本的启动输出 | `<StateDir>/web.stdout.log`、`web.stderr.log` |

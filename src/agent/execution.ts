@@ -1,14 +1,8 @@
-import type { AgentEvent, AgentExecutionCapabilities, AgentFailureKind, AgentInput, AgentInputReceipt, AgentRun } from './types';
+import type {
+  AgentEvent, AgentExecutionCapabilities, AgentFailureKind, AgentInput, AgentInputReceipt, AgentRun, NativeAgentRun,
+} from './types';
 
-const LEGACY_EXECUTION_CAPABILITIES: AgentExecutionCapabilities = Object.freeze({
-  finalAnswer: 'stream', input: 'unsupported',
-});
-
-export function executionCapabilities(source: { capabilities?: AgentExecutionCapabilities }): AgentExecutionCapabilities {
-  return source.capabilities ?? LEGACY_EXECUTION_CAPABILITIES;
-}
-
-/** Text classification is confined to the adapter/legacy boundary; explicit kinds take precedence. */
+/** Text classification is confined to the adapter boundary; explicit kinds take precedence. */
 export function classifyAgentFailure(message: string): AgentFailureKind {
   if (/delivery is unknown/i.test(message)) return 'delivery_unknown';
   if (/\[bridge-quota\]|insufficient_quota|quota_exceeded|budget_exceeded|budget has been exceeded|credit balance (?:is )?too low|daily (?:quota|budget) (?:is )?(?:exhausted|exceeded)/i.test(message)) return 'quota';
@@ -25,24 +19,21 @@ export function agentFailureKind(event: Extract<AgentEvent, { type: 'error' }>):
 }
 
 export function supportsRunInput(run: AgentRun | undefined): boolean {
-  if (!run) return false;
-  if (run.capabilities?.input === 'unsupported') return false;
-  return Boolean(run.sendInput || run.steer);
+  return Boolean(run?.sendInput) && run!.capabilities.input !== 'unsupported';
 }
 
-/** Legacy steer is isolated here until its adapter adopts the execution contract. */
 export async function sendRunInput(run: AgentRun, input: AgentInput): Promise<AgentInputReceipt> {
   if (!supportsRunInput(run)) return { status: 'unsupported', messageId: input.messageId };
+  return deliverInput(run.sendInput!.bind(run), input);
+}
+
+async function deliverInput(
+  send: (input: AgentInput) => Promise<AgentInputReceipt>, input: AgentInput,
+): Promise<AgentInputReceipt> {
   try {
-    if (run.sendInput) {
-      const receipt = await run.sendInput(input);
-      return receipt.messageId === input.messageId ? receipt
-        : { status: 'unknown', messageId: input.messageId, message: 'Input receipt mismatch; delivery is unknown' };
-    }
-    const status = await run.steer!(input.text, input.messageId);
-    return status === 'accepted'
-      ? { status, messageId: input.messageId, scope: run.capabilities?.input === 'active-turn' ? 'active-turn' : 'active-session' }
-      : { status, messageId: input.messageId };
+    const receipt = await send(input);
+    return receipt.messageId === input.messageId ? receipt
+      : { status: 'unknown', messageId: input.messageId, message: 'Input receipt mismatch; delivery is unknown' };
   } catch (error) {
     // A lost acknowledgement is not proof of rejection. Never queue/replay this input.
     return { status: 'unknown', messageId: input.messageId, message: String(error) };
@@ -50,7 +41,7 @@ export async function sendRunInput(run: AgentRun, input: AgentInput): Promise<Ag
 }
 
 /** Adapt a native run once, before retrying, rendering, or background execution. */
-export function withExecutionContract(native: AgentRun, capabilities: AgentExecutionCapabilities): AgentRun {
+export function withExecutionContract(native: NativeAgentRun, capabilities: AgentExecutionCapabilities): AgentRun {
   let active = true;
   const run: AgentRun = {
     runId: native.runId,
@@ -75,17 +66,12 @@ export function withExecutionContract(native: AgentRun, capabilities: AgentExecu
     run.answerUserInput = async (id, value) => active ? answer(id, value) : 'inactive';
   }
   const scope = capabilities.input;
-  if (scope !== 'unsupported') {
+  if (scope !== 'unsupported' && native.sendInput) {
+    const send = native.sendInput.bind(native);
     run.sendInput = async input => {
       if (!active) return { status: 'inactive', messageId: input.messageId };
-      const receipt = await sendRunInput(native, input);
+      const receipt = await deliverInput(send, input);
       return receipt.status === 'accepted' ? { ...receipt, scope } : receipt;
-    };
-    // Keep existing adapter callers working during the migration.
-    run.steer = async (text, messageId) => {
-      const receipt = await run.sendInput!({ text, messageId });
-      if (receipt.status === 'unknown') throw new Error(receipt.message);
-      return receipt.status === 'accepted' ? 'accepted' : 'inactive';
     };
   }
   return run;

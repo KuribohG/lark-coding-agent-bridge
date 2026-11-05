@@ -1,7 +1,7 @@
 import { getRunIdleTimeoutMs } from '../config/schema';
 import { canRunAdminCommand } from '../policy/access';
 import { log, reportMetric } from '../core/logger';
-import { isAlive, readAndPrune, resolveTarget } from '../runtime/registry';
+import { isAlive, readRegistry, resolveTarget } from '../runtime/registry';
 import type { CommandContext } from './types';
 import { reply } from './presentation';
 import { cancelPendingInput } from './context';
@@ -120,7 +120,7 @@ function parseTimeoutTarget(input: string, currentScope: string): {
 }
 
 export async function handlePs(_args: string, ctx: CommandContext): Promise<void> {
-  const live = readAndPrune();
+  const live = readRegistry();
   log.info('command', 'ps', { count: live.length });
   if (live.length === 0) {
     await reply(ctx, '当前没有 bot 在运行(理论上不可能,你正在跟其中之一对话…)');

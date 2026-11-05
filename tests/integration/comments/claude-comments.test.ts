@@ -12,6 +12,7 @@ import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
 import { makeFakeCommentSurface } from '../../helpers/fake-comment-surface.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
+import { commentTokenDigest } from '../../../src/bot/comment-resource';
 
 interface RequestRecord {
   method: string;
@@ -269,8 +270,8 @@ async function createCommentHarness(options: {
   const sessions = new SessionStore(`${tmp.profile}/sessions.json`);
   const sessionCatalog = new SessionCatalog(`${tmp.profile}/session-catalog.json`);
   const workspaces = new WorkspaceStore(`${tmp.profile}/workspaces.json`);
-  workspaces.setCwd('doc:doc-token', tmp.workspace);
-  workspaces.setCwd('doc:wiki-token', tmp.workspace);
+  workspaces.setCwd(`doc:${commentTokenDigest('doc-token')}`, tmp.workspace);
+  workspaces.setCwd(`doc:${commentTokenDigest('wiki-token')}`, tmp.workspace);
   const profileConfig = createDefaultProfileConfig({
     agentKind: 'claude',
     accounts: {
@@ -286,7 +287,7 @@ async function createCommentHarness(options: {
   profileConfig.workspaces.default = tmp.workspace;
   const activeRuns = new ActiveRuns();
   const executor = new RunExecutor({
-    agent,
+    resolveAgent: () => agent,
     pool: new ProcessPool(() => 1),
     activeRuns,
     createRunId: () => `comment-run-${agent.runOptions.length + 1}`,

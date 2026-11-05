@@ -51,8 +51,8 @@ export function workspacesCard(current: string | undefined, named: Record<string
       elements.push(divMd(`**${escapeMd(name)}** → \`${escapeCode(path)}\`${marker}`));
       elements.push(
         actions([
-          { text: '切换到此处', value: { cmd: 'ws.use', name }, style: 'primary' },
-          { text: '删除', value: { cmd: 'ws.remove', name }, style: 'danger' },
+          { text: '切换到此处', value: { cmd: 'ws.use', arg: name }, style: 'primary' },
+          { text: '删除', value: { cmd: 'ws.remove', arg: name }, style: 'danger' },
         ]),
       );
       if (i < entries.length - 1) elements.push(HR);

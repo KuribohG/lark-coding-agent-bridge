@@ -102,8 +102,7 @@ function wrap(adapter: AgentAdapter, kind: Backend, phase: string, test: Case, o
       })();
       return { runId: native.runId, events, capabilities: native.capabilities,
         stop: reason => native.stop(reason), waitForExit: timeout => native.waitForExit(timeout),
-        ...(native.sendInput ? { sendInput: native.sendInput.bind(native) } : {}),
-        ...(native.steer ? { steer: native.steer.bind(native) } : {}) };
+        ...(native.sendInput ? { sendInput: native.sendInput.bind(native) } : {}) };
     }, prepared.provider);
   };
   return adapter;

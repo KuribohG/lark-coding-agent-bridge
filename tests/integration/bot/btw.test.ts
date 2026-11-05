@@ -14,7 +14,7 @@ import { SessionCatalog } from '../../../src/session/catalog';
 import { SessionStore } from '../../../src/session/store';
 import { WorkspaceStore } from '../../../src/workspace/store';
 import type { AgentEvent, AgentRun } from '../../../src/agent/types';
-import { FakeAgentAdapter } from '../../helpers/fake-agent';
+import { FakeAgentAdapter, STREAMED_EXECUTION } from '../../helpers/fake-agent';
 import { createTmpProfile } from '../../helpers/tmp-profile';
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -90,7 +90,7 @@ describe('/btw', () => {
 
   it('can run while the main scope is active and never interrupts it', async () => {
     const h = await harness('claude', [answer('side answer')]);
-    const main: AgentRun = { runId: 'main', events: (async function* () {})(), stop: vi.fn(async () => {}), waitForExit: async () => true };
+    const main: AgentRun = { runId: 'main', capabilities: STREAMED_EXECUTION, events: (async function* () {})(), stop: vi.fn(async () => {}), waitForExit: async () => true };
     h.ctx.activeRuns.register(h.ctx.scope, main);
     await h.manager.enqueue('while busy', h.ctx);
     expect(h.agent.runOptions).toHaveLength(1);
@@ -220,7 +220,7 @@ describe('/btw', () => {
     const gate = new Promise<void>(resolve => { finish = resolve; });
     const stop = vi.fn(async () => finish());
     vi.spyOn(h.agent, 'run').mockImplementation(opts => ({
-      runId: opts.runId, stop, waitForExit: async () => true,
+      runId: opts.runId, capabilities: STREAMED_EXECUTION, stop, waitForExit: async () => true,
       events: (async function* (): AsyncGenerator<AgentEvent> {
         yield { type: 'system', sessionId: 'side-child' };
         await gate;
@@ -287,12 +287,12 @@ async function harness(kind: 'claude' | 'codex', events: AgentEvent[][]) {
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
   const activeRuns = new ActiveRuns();
   const pool = new ProcessPool(() => 1);
-  const executor = new RunExecutor({ agent, pool, activeRuns });
+  const executor = new RunExecutor({ resolveAgent: () => agent, pool, activeRuns });
   const path = join(tmp.profile, 'btw.json');
   const manager = new BtwManager(new BtwStore(path));
   controls.btw = manager;
   const ctx: CommandContext = { channel, scope: 'chat:topic', chatMode: 'topic', agent, sessions,
-    sessionCatalog: catalog, workspaces, activeRuns, runExecutor: executor, controls,
+    sessionCatalog: catalog, workspaces, activeRuns, runExecutor: executor, controls, agentKind: controls.profileConfig.agentKind,
     msg: { chatId: 'chat', chatType: 'group', senderId: 'user', threadId: 'topic', rootId: 'root', messageId: 'q1', content: '', resources: [], mentions: [] } as unknown as NormalizedMessage,
   };
   ctx.sessionCatalogIdentity = await commandSessionCatalogIdentity({ ...ctx, mode: 'topic', access: { ok: true, reason: 'allowed-user' } });

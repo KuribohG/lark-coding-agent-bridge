@@ -4,14 +4,14 @@ import type { ProcessEntry } from '../../../src/runtime/registry';
 
 const mocks = vi.hoisted(() => ({
   resolveTarget: vi.fn(),
-  readAndPrune: vi.fn(() => []),
+  readRegistry: vi.fn(() => []),
   isAlive: vi.fn(() => false),
   getServiceAdapter: vi.fn(),
 }));
 
 vi.mock('../../../src/runtime/registry', () => ({
   resolveTarget: mocks.resolveTarget,
-  readAndPrune: mocks.readAndPrune,
+  readRegistry: mocks.readRegistry,
   isAlive: mocks.isAlive,
 }));
 

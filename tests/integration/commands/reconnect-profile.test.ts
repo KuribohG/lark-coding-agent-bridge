@@ -8,7 +8,7 @@ import { tryHandleCommand, type CommandContext, type Controls } from '../../../s
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { SessionStore } from '../../../src/session/store';
 import { WorkspaceStore } from '../../../src/workspace/store';
-import { FakeAgentAdapter } from '../../helpers/fake-agent';
+import { FakeAgentAdapter, STREAMED_EXECUTION } from '../../helpers/fake-agent';
 import { createFakeChannel } from '../../helpers/fake-channel';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile';
 
@@ -117,11 +117,13 @@ async function createHarness(): Promise<{
         agent,
         activeRuns,
         controls,
+        agentKind: controls.profileConfig.agentKind,
       }),
   };
 }
 
 class ManualRun implements AgentRun {
+  readonly capabilities = STREAMED_EXECUTION;
   readonly events: AsyncIterable<never> = {
     async *[Symbol.asyncIterator]() {},
   };

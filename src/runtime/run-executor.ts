@@ -12,10 +12,8 @@ import type { ResolvedModelProvider } from '../model-provider/types';
 import type { AgentKind } from '../config/profile-schema';
 
 export interface RunExecutorDeps {
-  /** Fixed adapter for legacy single-engine runtimes. */
-  agent?: AgentAdapter;
   /** Resolve the adapter from the originating chat/topic scope for each run. */
-  resolveAgent?: (scopeId: string, agentKind?: AgentKind) => AgentAdapter;
+  resolveAgent: (scopeId: string, agentKind?: AgentKind) => AgentAdapter;
   pool: ProcessPool;
   activeRuns: ActiveRuns;
   createRunId?: () => string;
@@ -90,10 +88,7 @@ export class RunExecutor {
     | undefined;
 
   constructor(deps: RunExecutorDeps) {
-    const resolved = deps.resolveAgent
-      ?? (deps.agent ? () => deps.agent! : undefined);
-    if (!resolved) throw new Error('RunExecutor requires agent or resolveAgent');
-    this.resolveAgent = resolved;
+    this.resolveAgent = deps.resolveAgent;
     this.pool = deps.pool;
     this.activeRuns = deps.activeRuns;
     this.createRunId = deps.createRunId ?? randomUUID;
@@ -173,7 +168,7 @@ export class RunExecutor {
       const scope = input.agentScopeId ?? input.scopeId;
       agent = input.agent ?? (input.agentKind ? this.resolveAgent(scope, input.agentKind) : this.resolveAgent(scope));
       if (input.agentKind && agent.id !== input.agentKind) throw new Error('Resolved worker backend does not match its binding');
-      if (input.requireFinalAnswer && agent.capabilities?.finalAnswer !== 'separate-event') {
+      if (input.requireFinalAnswer && agent.capabilities.finalAnswer !== 'separate-event') {
         throw new Error('Worker backend does not provide authoritative final answers');
       }
     } catch (err) {

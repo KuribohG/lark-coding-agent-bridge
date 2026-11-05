@@ -115,8 +115,8 @@ export interface CommandContext {
   sessionCatalogIdentity?: SessionCatalogIdentity;
   workspaces: WorkspaceStore;
   agent: AgentAdapter;
-  /** Effective engine for this scope; legacy tests may omit it. */
-  agentKind?: AgentKind;
+  /** Effective engine for this scope. */
+  agentKind: AgentKind;
   activeRuns: ActiveRuns;
   processPool?: ProcessPool;
   runExecutor?: RunExecutor;

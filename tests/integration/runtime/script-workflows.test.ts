@@ -93,7 +93,7 @@ describe('script workflow runtime', () => {
         yield { type: 'final_text', content: '{"answer":42}' };
         yield { type: 'done', terminationReason: 'normal' };
       })();
-      return { runId: native.runId, events, stop: async () => { await native.stop(); release(); }, waitForExit: ms => native.waitForExit(ms) };
+      return { runId: native.runId, capabilities: native.capabilities, events, stop: async () => { await native.stop(); release(); }, waitForExit: ms => native.waitForExit(ms) };
     };
     await h.call('run_script', { goal: 'Choose a candidate', maxConcurrent: 2, script: [
       'const slow=await startAgent("SLOW_CANDIDATE",{key:"slow",output:"json"});',
@@ -165,7 +165,7 @@ describe('script workflow runtime', () => {
         yield {type:'final_text',content:'recovered child result'};
         yield {type:'done',terminationReason:'normal'};
       })();
-      return {runId:native.runId,events,stop:async()=>{await native.stop();release();},waitForExit:ms=>native.waitForExit(ms)};
+      return {runId:native.runId,capabilities:native.capabilities,events,stop:async()=>{await native.stop();release();},waitForExit:ms=>native.waitForExit(ms)};
     };
     await h.call('run_script',{goal:'Recover a committed child before yield',maxConcurrent:1,script:'return await agent("parent",{key:"parent",workflowTool:true});'});
     await h.until(()=>expect(h.state().tasks[0]?.waitingWorkflowId).toBeTruthy());
@@ -212,7 +212,7 @@ describe('script workflow runtime', () => {
         }
         yield {type:'done',terminationReason:'normal'};
       })();
-      return {runId:native.runId,events,stop:()=>native.stop(),waitForExit:ms=>native.waitForExit(ms)};
+      return {runId:native.runId,capabilities:native.capabilities,events,stop:()=>native.stop(),waitForExit:ms=>native.waitForExit(ms)};
     };
     await h.call('run_script',{goal:'Delegate and resume',maxConcurrent:1,
       script:`return await agent("parent", {key:"parent",workflowTool:true${persistent ? ',member:"parent"' : ''}});`});
@@ -242,7 +242,7 @@ describe('script workflow runtime', () => {
         yield {type:'final_text',content:opts.threadId ? 'finished' : 'yield'};
         yield {type:'done',terminationReason:'normal'};
       })();
-      return {runId:native.runId,events,stop:()=>native.stop(),waitForExit:ms=>native.waitForExit(ms)};
+      return {runId:native.runId,capabilities:native.capabilities,events,stop:()=>native.stop(),waitForExit:ms=>native.waitForExit(ms)};
     };
     const scopes = Array.from({length:4},(_,i)=>'scope-'+i);
     for (const scope of scopes) {
@@ -275,7 +275,7 @@ describe('script workflow runtime', () => {
         yield {type:'final_text',content:'finished after forced yield'};
         yield {type:'done',terminationReason:'normal'};
       })();
-      return {runId:native.runId,events,stop:async()=>{await native.stop();release();},waitForExit:ms=>native.waitForExit(ms)};
+      return {runId:native.runId,capabilities:native.capabilities,events,stop:async()=>{await native.stop();release();},waitForExit:ms=>native.waitForExit(ms)};
     };
     await h.call('run_script',{goal:'Forced yield',maxConcurrent:1,script:'return await agent("parent",{key:"parent",workflowTool:true});'});
     await h.until(()=>expect(h.state().tasks[0]?.waitingWorkflowId).toBeTruthy());
@@ -308,7 +308,7 @@ describe('script workflow runtime', () => {
         yield {type:'final_text',content:'done'};
         yield {type:'done',terminationReason:'normal'};
       })();
-      return {runId:native.runId,events,stop:()=>native.stop(),waitForExit:ms=>native.waitForExit(ms)};
+      return {runId:native.runId,capabilities:native.capabilities,events,stop:()=>native.stop(),waitForExit:ms=>native.waitForExit(ms)};
     };
     await h.call('run_script',{goal:'Delegate work from a consumer',maxConcurrent:1,script:[
       'await enqueueWork({key:"item",title:"Compute",input:null});',
@@ -336,7 +336,7 @@ describe('script workflow runtime', () => {
         yield {type:'final_text',content:'Batch consumed'};
         yield {type:'done',terminationReason:'normal'};
       })();
-      return {runId:native.runId,events,stop:()=>native.stop(),waitForExit:ms=>native.waitForExit(ms)};
+      return {runId:native.runId,capabilities:native.capabilities,events,stop:()=>native.stop(),waitForExit:ms=>native.waitForExit(ms)};
     };
     const script = await readFile(new URL('../../../workflow-definitions/scripted/examples/consumer-pool.js', import.meta.url), 'utf8');
     await h.call('run_script',{goal:'Consume work as it arrives',script,args:{items:[],members:['A','B','C'].map(name=>({name})),consumerPrompt:'Square item.input',keepOpen:true}});
@@ -395,7 +395,7 @@ describe('script workflow runtime', () => {
         yield {type:'final_text',content:'done'};
         yield {type:'done',terminationReason:'normal'};
       })();
-      return {runId:native.runId,events,capabilities:native.capabilities,
+      return {runId:native.runId,capabilities:native.capabilities,events,
         stop:async()=>{ await native.stop(); if(order===0) stopFirst(); },waitForExit:ms=>native.waitForExit(ms)};
     };
     const script = await readFile(new URL('../../../workflow-definitions/scripted/examples/work-queue.js', import.meta.url), 'utf8');

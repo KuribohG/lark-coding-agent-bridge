@@ -5,7 +5,7 @@ import type { CommandContext } from './types';
 
 export function effectiveWorkspaceCwd(ctx: CommandContext): string | undefined {
   return ctx.workspaces.cwdFor(ctx.scope) ??
-    defaultWorkspaceFor(ctx.controls.profileConfig, ctx.agentKind ?? ctx.controls.profileConfig.agentKind);
+    defaultWorkspaceFor(ctx.controls.profileConfig, ctx.agentKind);
 }
 
 export async function cancelPendingInput(

@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, symlinkSync } from 'node:fs';
+import { lstatSync, mkdirSync, readdirSync, readlinkSync, realpathSync, symlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { agentBackendSpec, type AgentKind } from './backend-spec';
@@ -28,7 +28,7 @@ export interface AgentStateSettings {
   };
 }
 
-export type AgentHomeSource = 'launch' | 'native' | 'bridge' | 'legacy-profile';
+export type AgentHomeSource = 'launch' | 'native' | 'bridge' | 'profile';
 
 export interface AgentStateLayout {
   kind: AgentKind;
@@ -50,7 +50,7 @@ interface StateProfile extends AgentLaunchProfiles {
 }
 
 export interface AgentStateContext {
-  /** Profile state directory (`<root>/profiles/<name>`); locates legacy homes. */
+  /** Host state directory; holds the Codex home when no bridge root is configured. */
   profileDir?: string;
   env?: NodeJS.ProcessEnv;
 }
@@ -142,10 +142,8 @@ export function resolveAgentState(profile: StateProfile, kind: AgentKind, contex
   } else if (kind === 'codex' && launch?.inheritCodexHome !== true) {
     // Codex is the only engine whose bridge-managed provider config requires a private home.
     const root = agentHomeRoot(profile.state);
-    const bridgeHome = root ? join(root, kind) : undefined;
-    const legacy = bridgeHome && existsSync(bridgeHome) ? undefined : legacyCodexHome(context.profileDir, !bridgeHome);
-    const home = bridgeHome && !legacy ? bridgeHome : legacy;
-    if (home) Object.assign(layout, { home, homeSource: home === bridgeHome ? 'bridge' : 'legacy-profile', exportHome: true });
+    if (root) Object.assign(layout, { home: join(root, kind), homeSource: 'bridge', exportHome: true });
+    else if (context.profileDir) Object.assign(layout, { home: join(context.profileDir, 'codex-home'), homeSource: 'profile', exportHome: true });
   } else {
     const native = launchEnv[spec.stateDirectory.envName] ?? env[spec.stateDirectory.envName] ?? nativeHome(kind);
     Object.assign(layout, { home: native, homeSource: 'native', exportHome: false });
@@ -161,25 +159,6 @@ function nativeHome(kind: AgentKind): string | undefined {
   if (kind === 'codex') return join(homedir(), '.codex');
   if (kind === 'pi') return join(homedir(), '.pi', 'agent');
   return undefined;
-}
-
-/**
- * Before bridge-wide homes, Codex state lived in `<profile>/codex-home`. Prefer
- * the hosting profile's copy, else the only one present, so a switched engine
- * keeps the memory it already accumulated until the operator migrates.
- */
-function legacyCodexHome(profileDir: string | undefined, required: boolean): string | undefined {
-  if (!profileDir) return undefined;
-  const own = join(profileDir, 'codex-home');
-  if (required || existsSync(own)) return own;
-  const profilesDir = dirname(profileDir);
-  let candidates: string[] = [];
-  try {
-    candidates = readdirSync(profilesDir)
-      .map(name => join(profilesDir, name, 'codex-home'))
-      .filter(path => existsSync(path));
-  } catch { return undefined; }
-  return candidates.length === 1 ? candidates[0] : undefined;
 }
 
 /** Same project-directory encoding Claude Code uses under `projects/`. */

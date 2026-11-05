@@ -1,7 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import {
   closeSync,
-  existsSync,
   fsyncSync,
   mkdirSync,
   openSync,
@@ -11,7 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname } from 'node:path';
 import * as lockfile from 'proper-lockfile';
 import { resolveAppPaths } from '../config/app-paths';
 import { paths } from '../config/paths';
@@ -115,7 +114,7 @@ export function isAlive(pid: number): boolean {
 }
 
 /** Read the registry without pruning or rewriting it. */
-export function readAndPrune(path: string = paths.processesFile): ProcessEntry[] {
+export function readRegistry(path: string = paths.processesFile): ProcessEntry[] {
   return readRaw(path).entries;
 }
 
@@ -271,7 +270,7 @@ function sameAppOthers(
   excludePid = process.pid,
   registryFile: string = paths.processesFile,
 ): ProcessEntry[] {
-  return readAndPrune(registryFile).filter((e) => e.appId === appId && e.pid !== excludePid);
+  return readRegistry(registryFile).filter((e) => e.appId === appId && e.pid !== excludePid);
 }
 
 export async function sameAppLiveOthers(
@@ -291,10 +290,10 @@ export async function sameAppLiveOthers(
 
 /**
  * Resolve `target` (short id OR 1-based index in the current `ps` view) to
- * an entry. Index lookup uses the same read-only order as `readAndPrune()`.
+ * an entry. Index lookup uses the same read-only order as `readRegistry()`.
  */
 export function resolveTarget(target: string): ProcessEntry | undefined {
-  const live = readAndPrune();
+  const live = readRegistry();
   const byId = live.find((e) => e.id === target);
   if (byId) return byId;
   const n = Number.parseInt(target, 10);
@@ -334,10 +333,8 @@ function withRegistryFileLockSync<T>(registryFile: string, fn: () => T): T {
 
 async function ensureRegistryFile(registryFile: string): Promise<void> {
   await mkdir(dirname(registryFile), { recursive: true });
-  const legacy = legacyRegistryFile(registryFile);
-  const initial = legacy ? (readRegistryFile(legacy) ?? EMPTY) : EMPTY;
   try {
-    await writeFile(registryFile, `${JSON.stringify(initial, null, 2)}\n`, {
+    await writeFile(registryFile, `${JSON.stringify(EMPTY, null, 2)}\n`, {
       flag: 'wx',
       mode: 0o600,
     });
@@ -348,10 +345,8 @@ async function ensureRegistryFile(registryFile: string): Promise<void> {
 
 function ensureRegistryFileSync(registryFile: string): void {
   mkdirSync(dirname(registryFile), { recursive: true });
-  const legacy = legacyRegistryFile(registryFile);
-  const initial = legacy ? (readRegistryFile(legacy) ?? EMPTY) : EMPTY;
   try {
-    writeFileSync(registryFile, `${JSON.stringify(initial, null, 2)}\n`, {
+    writeFileSync(registryFile, `${JSON.stringify(EMPTY, null, 2)}\n`, {
       flag: 'wx',
       mode: 0o600,
     });
@@ -409,13 +404,7 @@ function rootDirFromRegistryFile(registryFile: string): string {
 }
 
 function readRaw(path: string): RegistryFile {
-  const preferred = readRegistryFile(path);
-  if (preferred) return preferred;
-  const legacy = legacyRegistryFile(path);
-  if (legacy && legacy !== path) {
-    return readRegistryFile(legacy) ?? { entries: [] };
-  }
-  return { entries: [] };
+  return readRegistryFile(path) ?? { entries: [] };
 }
 
 function readRegistryFile(path: string): RegistryFile | undefined {
@@ -428,14 +417,6 @@ function readRegistryFile(path: string): RegistryFile | undefined {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
     return { entries: [] };
   }
-}
-
-function legacyRegistryFile(path: string): string | undefined {
-  if (basename(path) !== 'processes.json') return undefined;
-  const parent = dirname(path);
-  if (basename(parent) !== 'registry') return undefined;
-  const legacy = join(dirname(parent), 'processes.json');
-  return existsSync(path) ? undefined : legacy;
 }
 
 function fsyncDirSync(path: string): void {

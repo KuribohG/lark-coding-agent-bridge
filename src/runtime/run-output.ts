@@ -1,4 +1,3 @@
-import { executionCapabilities } from '../agent/execution';
 import type { AgentEvent } from '../agent/types';
 import type { RunHandle } from './active-runs';
 import type { RunState } from './run-state';
@@ -33,7 +32,7 @@ export async function presentRunOutput(
     await output.render({
       ...options, runId: execution.runId, scope: execution.scopeId, handle: execution.handle,
       events: execution.subscribe(), subscribe: () => execution.subscribe(),
-      separateFinalAnswer: executionCapabilities(execution.run).finalAnswer === 'separate-event',
+      separateFinalAnswer: execution.run.capabilities.finalAnswer === 'separate-event',
     });
   } catch (error) {
     // A broken output must not leave an unobserved agent executing indefinitely.

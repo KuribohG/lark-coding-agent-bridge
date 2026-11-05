@@ -9,6 +9,7 @@ import type { RunPolicyAllow } from '../../../src/policy/run-policy';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile';
 import {
   FakeAgentAdapter,
+  STREAMED_EXECUTION,
   type FakeAgentEvents,
 } from '../../helpers/fake-agent';
 
@@ -41,7 +42,7 @@ describe('RunExecutor', () => {
   it('does not relabel a native failure from the wall clock', async () => {
     const h = await createHarness({ events: [{ type: 'error', terminationReason: 'failed', message: 'native failure' }] });
     let now = 1000;
-    const executor = new RunExecutor({ agent: h.agent, activeRuns: h.activeRuns, pool: h.pool, now: () => now });
+    const executor = new RunExecutor({ resolveAgent: () => h.agent, activeRuns: h.activeRuns, pool: h.pool, now: () => now });
     const execution = await executor.submit({ scopeId: 'scope', policy: policy(h.tmp.workspace), deadlineAt: 2000 });
     now = 3000;
     await collect(execution.subscribe());
@@ -347,7 +348,7 @@ async function createHarness(options: {
     pool,
     activeRuns,
     executor: new RunExecutor({
-      agent,
+      resolveAgent: () => agent,
       pool,
       activeRuns,
       createRunId: () => `run-${nextRun++}`,
@@ -383,6 +384,7 @@ async function collect(events: AsyncIterable<unknown>): Promise<unknown[]> {
 class ThrowingAgent implements AgentAdapter {
   readonly id = 'throwing';
   readonly displayName = 'Throwing';
+  readonly capabilities = STREAMED_EXECUTION;
 
   async isAvailable(): Promise<boolean> {
     return true;

@@ -105,7 +105,7 @@ describe('unified access gates', () => {
     const agent = new FakeAgentAdapter({ events: [] });
     const activeRuns = new ActiveRuns();
     const executor = new RunExecutor({
-      agent,
+      resolveAgent: () => agent,
       pool: new ProcessPool(() => 1),
       activeRuns,
       createRunId: () => 'comment-run-1',
@@ -184,6 +184,7 @@ function commandContext(args: {
     agent: new FakeAgentAdapter({ events: [] }),
     activeRuns: new ActiveRuns(),
     controls: args.controls,
+    agentKind: args.controls.profileConfig.agentKind,
   };
 }
 

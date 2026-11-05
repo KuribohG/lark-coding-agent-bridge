@@ -4,7 +4,7 @@ import { loadRootConfig } from '../../config/profile-store';
 import { inspectConfig, parseSetting, patchConfig } from '../../config/service';
 import { loadMonitorRoot } from '../../monitoring/store';
 import { readConfigRevision } from '../../config/revision';
-import { isAlive, readAndPrune } from '../../runtime/registry';
+import { isAlive, readRegistry } from '../../runtime/registry';
 import { APPLY_DESCRIPTIONS, classifyDocumentPath, PROFILE_SETTINGS, ROOT_SETTINGS, type SettingSpec } from '../../config/settings';
 import { dirname, resolve } from 'node:path';
 
@@ -44,7 +44,7 @@ export function describeConfig(opts: Options) {
 export async function reloadConfig(opts: Options) {
   const configPath = resolve(path(opts));
   const registry = resolveAppPaths({ rootDir: dirname(configPath) }).userRegistryFile;
-  const live = readAndPrune(registry).filter(entry => resolve(entry.configPath) === configPath && isAlive(entry.pid));
+  const live = readRegistry(registry).filter(entry => resolve(entry.configPath) === configPath && isAlive(entry.pid));
   if (!live.length) { console.log('没有使用该配置的运行中 bridge；下次启动时加载。'); return; }
   if (process.platform === 'win32') throw new Error('Windows 不支持 SIGHUP；运行中的 bridge 会自动监听文件变化，也可在飞书中执行 /config reload。');
   // Older processes would be terminated by SIGHUP; never signal them.
@@ -57,7 +57,7 @@ export async function reloadConfig(opts: Options) {
   for (const pid of pids) process.kill(pid, 'SIGHUP');
   const deadline = Date.now() + Math.max(1, Number(opts.timeout ?? 10)) * 1000;
   for (;;) {
-    const entries = readAndPrune(registry).filter(entry => resolve(entry.configPath) === configPath && pids.includes(entry.pid));
+    const entries = readRegistry(registry).filter(entry => resolve(entry.configPath) === configPath && pids.includes(entry.pid));
     const done = entries.every(entry => entry.appliedConfigRevision === revision);
     if (done || Date.now() > deadline) {
       for (const entry of entries) {

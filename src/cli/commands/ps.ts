@@ -1,17 +1,16 @@
 import { SUPERVISOR_SERVICE_ID } from '../../daemon/paths';
 import { getServiceAdapter } from '../../daemon/service-adapter';
-import { readAndPrune, resolveTarget, isAlive } from '../../runtime/registry';
+import { readRegistry, resolveTarget, isAlive } from '../../runtime/registry';
 import type { ProcessEntry } from '../../runtime/registry';
 
 /**
  * Pretty-print the list of running lark-channel-bridge processes.
  *
- * `readAndPrune` is a legacy name; read-only views never rewrite registry
- * state. Persistence happens on the next `register` / `unregister` /
- * `updateEntry` call.
+ * Read-only views never rewrite registry state. Persistence happens on the
+ * next `register` / `unregister` / `updateEntry` call.
  */
 export function runPs(): void {
-  const live = readAndPrune();
+  const live = readRegistry();
   if (live.length === 0) {
     console.log('当前没有 bot 在运行。');
     return;

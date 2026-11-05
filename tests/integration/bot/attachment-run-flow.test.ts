@@ -78,7 +78,7 @@ async function createHarness(): Promise<{
     events: [{ type: 'done', terminationReason: 'normal' }],
   });
   const executor = new RunExecutor({
-    agent,
+    resolveAgent: () => agent,
     pool: new ProcessPool(() => 1),
     activeRuns: new ActiveRuns(),
     createRunId: () => 'run-1',

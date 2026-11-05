@@ -8,6 +8,7 @@ import type { RunExecution, RunResult } from '../../../src/runtime/run-executor'
 import { SessionCatalog } from '../../../src/session/catalog';
 import { SessionStore } from '../../../src/session/store';
 import { createTmpProfile } from '../../helpers/tmp-profile';
+import { STREAMED_EXECUTION } from '../../helpers/fake-agent';
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0)) await close(); });
@@ -25,7 +26,7 @@ async function harness() {
   const gate = new Promise<void>(resolve => { end = resolve; });
   let result!: (state: RunResult) => void;
   const events: AgentEvent[] = [{ type: 'system', threadId: 'thread-one' }];
-  const run: AgentRun = { runId: 'run-one', events: { async *[Symbol.asyncIterator]() {
+  const run: AgentRun = { runId: 'run-one', capabilities: STREAMED_EXECUTION, events: { async *[Symbol.asyncIterator]() {
     yield events[0]!; await gate;
     for (const event of events.slice(1)) yield event;
   } }, stop: async () => {}, waitForExit: async () => true };

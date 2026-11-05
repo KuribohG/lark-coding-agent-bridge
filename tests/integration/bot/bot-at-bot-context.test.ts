@@ -25,6 +25,7 @@ vi.mock('@larksuite/channel', async (importOriginal) => {
 });
 
 import { startChannel } from '../../../src/bot/channel.js';
+import { FixedExecutionController } from '../../helpers/fixed-execution';
 
 interface MessageHandlerMap {
   message?: (msg: NormalizedMessage) => Promise<void> | void;
@@ -291,7 +292,7 @@ async function startTestBridge(h: {
 }): Promise<void> {
   const bridge = await startChannel({
     cfg: h.profileConfig,
-    agent: h.agent,
+    execution: new FixedExecutionController(h.agent, h.controls.profileConfig),
     sessions: h.sessions,
     workspaces: h.workspaces,
     controls: h.controls,

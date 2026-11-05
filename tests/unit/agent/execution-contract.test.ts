@@ -1,15 +1,16 @@
 import { preparedRun } from '../../../src/agent/prepared-run';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { executionCapabilities, sendRunInput, supportsRunInput, withExecutionContract } from '../../../src/agent/execution';
-import type { AgentAdapter, AgentEvent, AgentExecutionCapabilities, AgentRun } from '../../../src/agent/types';
+import { sendRunInput, supportsRunInput, withExecutionContract } from '../../../src/agent/execution';
+import type { AgentAdapter, AgentEvent, AgentExecutionCapabilities, AgentInput, NativeAgentRun } from '../../../src/agent/types';
 import { retryingRun } from '../../../src/runtime/retrying-run';
 
 const capabilities: AgentExecutionCapabilities = { finalAnswer: 'separate-event', input: 'active-turn' };
 const failure: AgentEvent = { type: 'error', terminationReason: 'failed', message: '429 Too Many Requests' };
 const done: AgentEvent = { type: 'done', terminationReason: 'normal' };
-function native(events: AgentEvent[] = []): AgentRun {
+function native(events: AgentEvent[] = []): NativeAgentRun {
   return { runId: 'r', events: (async function* () { yield* events; })(),
-    steer: vi.fn(async () => 'accepted' as const), stop: vi.fn(async () => {}), waitForExit: vi.fn(async () => true) };
+    sendInput: vi.fn(async ({ messageId }: AgentInput) => ({ status: 'accepted', messageId, scope: 'active-session' } as const)),
+    stop: vi.fn(async () => {}), waitForExit: vi.fn(async () => true) };
 }
 async function collect(events: AsyncIterable<AgentEvent>) { const result: AgentEvent[] = []; for await (const event of events) result.push(event); return result; }
 afterEach(() => vi.useRealTimers());
@@ -23,7 +24,7 @@ describe('agent execution contract', () => {
       .toEqual({ status: 'accepted', messageId: 'm', scope: 'active-turn' });
     expect(await collect(run.events)).toEqual(events);
     expect(await sendRunInput(run, { text: 'late', messageId: 'late' })).toEqual({ status: 'inactive', messageId: 'late' });
-    expect(transport.steer).toHaveBeenCalledTimes(1);
+    expect(transport.sendInput).toHaveBeenCalledTimes(1);
     await run.waitForExit(123); expect(transport.waitForExit).toHaveBeenCalledWith(123);
   });
 
@@ -32,7 +33,7 @@ describe('agent execution contract', () => {
     const run = withExecutionContract(transport, capabilities);
     await run.stop();
     expect(await sendRunInput(run, { text: 'late', messageId: 'm' })).toMatchObject({ status: 'inactive' });
-    expect(transport.steer).not.toHaveBeenCalled(); expect(transport.stop).toHaveBeenCalledTimes(1);
+    expect(transport.sendInput).not.toHaveBeenCalled(); expect(transport.stop).toHaveBeenCalledTimes(1);
     const broken = withExecutionContract({ ...native(), events: (async function* () { throw new Error('401 unauthorized'); })() }, capabilities);
     const iterator = broken.events[Symbol.asyncIterator]();
     expect((await iterator.next()).value).toMatchObject({ type: 'error', failureKind: 'authentication' });
@@ -40,26 +41,25 @@ describe('agent execution contract', () => {
     await iterator.return?.();
   });
 
-  it('keeps legacy adapters conservative without disabling their existing input', async () => {
-    const run = native();
-    expect(executionCapabilities(run).finalAnswer).toBe('stream');
-    expect(supportsRunInput(run)).toBe(true);
-    expect(await sendRunInput(run, { text: 'more', messageId: 'm' })).toMatchObject({ status: 'accepted', scope: 'active-session' });
-    const unsupported = withExecutionContract(run, { finalAnswer: 'separate-event', input: 'unsupported' });
+  it('withholds native input when the declared capability is unsupported', async () => {
+    const transport = native();
+    const unsupported = withExecutionContract(transport, { finalAnswer: 'separate-event', input: 'unsupported' });
     expect(supportsRunInput(unsupported)).toBe(false);
     expect(await sendRunInput(unsupported, { text: 'no', messageId: 'n' })).toEqual({ status: 'unsupported', messageId: 'n' });
-    expect(run.steer).toHaveBeenCalledTimes(1);
+    expect(transport.sendInput).not.toHaveBeenCalled();
   });
 
   it('treats lost or mismatched receipts as unknown without another delivery', async () => {
     const run = native();
-    vi.mocked(run.steer!).mockRejectedValue(new Error('lost receipt'));
+    vi.mocked(run.sendInput!).mockRejectedValue(new Error('lost receipt'));
     expect(await sendRunInput(withExecutionContract(run, capabilities), { text: 'once', messageId: 'm' }))
       .toMatchObject({ status: 'unknown', messageId: 'm' });
-    expect(run.steer).toHaveBeenCalledTimes(1);
-    run.sendInput = vi.fn(async () => ({ status: 'accepted', messageId: 'other', scope: 'active-turn' } as const));
-    expect(await sendRunInput(run, { text: 'once', messageId: 'm' })).toMatchObject({ status: 'unknown', messageId: 'm' });
     expect(run.sendInput).toHaveBeenCalledTimes(1);
+    const mismatched = native();
+    vi.mocked(mismatched.sendInput!).mockResolvedValue({ status: 'accepted', messageId: 'other', scope: 'active-turn' });
+    expect(await sendRunInput(withExecutionContract(mismatched, capabilities), { text: 'once', messageId: 'm' }))
+      .toMatchObject({ status: 'unknown', messageId: 'm' });
+    expect(mismatched.sendInput).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -83,18 +83,18 @@ describe('agent execution contract', () => {
   });
 
   it.each(['unknown', 'pending'])('does not restart a failed turn when an input receipt is %s', async state => {
-    let resolve!: (value: 'accepted') => void;
+    let resolve!: () => void;
     const transport = native([failure]);
-    transport.steer = state === 'unknown' ? async () => { throw new Error('lost receipt'); }
-      : () => new Promise(r => { resolve = r; });
-    const agent: AgentAdapter = { id: 'any-engine', displayName: 'Test', isAvailable: async () => true, prepareRun: vi.fn() };
+    transport.sendInput = state === 'unknown' ? async () => { throw new Error('lost receipt'); }
+      : ({ messageId }) => new Promise(r => { resolve = () => r({ status: 'accepted', messageId, scope: 'active-turn' }); });
+    const agent: AgentAdapter = { id: 'any-engine', displayName: 'Test', capabilities, isAvailable: async () => true, prepareRun: vi.fn() };
     const run = retryingRun({ agent, initialRun: withExecutionContract(transport, capabilities),
       options: { runId: 'r', prompt: 'task' }, exitGraceMs: 10, canRetry: () => true });
     const receipt = sendRunInput(run, { text: 'supplement', messageId: 'm' });
     if (state === 'unknown') expect(await receipt).toMatchObject({ status: 'unknown' });
     const iterator = run.events[Symbol.asyncIterator]();
     expect((await iterator.next()).value).toMatchObject({ type: 'error' });
-    if (state === 'pending') { resolve('accepted'); await receipt; }
+    if (state === 'pending') { resolve(); await receipt; }
     await iterator.return?.();
     expect(agent.prepareRun).not.toHaveBeenCalled();
   });
@@ -115,7 +115,7 @@ describe('agent execution contract', () => {
     const next = iterator.next(); await vi.advanceTimersByTimeAsync(30_000); await next;
     expect(run.capabilities).toEqual(capabilities);
     expect(await sendRunInput(run, { text: 'resumed', messageId: '3' })).toMatchObject({ status: 'accepted', scope: 'active-turn' });
-    expect(first.steer).toHaveBeenCalledTimes(1); expect(second.steer).toHaveBeenCalledWith('resumed', '3');
+    expect(first.sendInput).toHaveBeenCalledTimes(1); expect(second.sendInput).toHaveBeenCalledWith({ text: 'resumed', messageId: '3' });
     expect(agent.prepareRun).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'thread', deadlineAt: options.deadlineAt, prompt: expect.stringContaining('中途补充') }));
     await iterator.return?.(); await run.stop();
   });

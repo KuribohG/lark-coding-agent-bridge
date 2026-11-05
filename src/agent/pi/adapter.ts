@@ -15,7 +15,7 @@ import { resolveSystemPrompt, type AgentSystemPrompt } from '../system-prompt';
 import type {
   AgentAdapter,
   AgentBotIdentity,
-  AgentRun,
+  NativeAgentRun,
   AgentRunOptions,
 } from '../types';
 import { withExecutionContract } from '../execution';
@@ -98,7 +98,7 @@ export class PiAdapter implements AgentAdapter {
       () => withExecutionContract(this.runNative(opts), this.capabilities));
   }
 
-  private runNative(opts: AgentRunOptions): AgentRun {
+  private runNative(opts: AgentRunOptions): NativeAgentRun {
     if (!opts.cwd) throw new Error('cwd is required for PiAdapter.run');
     if (opts.forkSession && !opts.sessionId) throw new Error('fork requires a parent session');
     const sandbox = opts.sandbox ?? 'danger-full-access';

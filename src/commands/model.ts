@@ -62,7 +62,7 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
   const reply = (markdown: string) => ctx.channel.send(ctx.msg.chatId, { markdown }, replyOptions(ctx));
   let saved = false;
   try {
-    const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
+    const agentKind = ctx.agentKind;
     const [store, environment, providers] = await Promise.all([
       scopePreferences(ctx.controls),
       modelEnvironment(ctx.controls, agentKind, !args.trim()),
@@ -132,7 +132,7 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
 }
 
 export async function modelStatus(ctx: CommandContext): Promise<string> {
-  const agentKind = ctx.agentKind ?? ctx.controls.profileConfig.agentKind;
+  const agentKind = ctx.agentKind;
   const next = await resolveRunModelSettings(ctx.controls, ctx.scope, undefined, agentKind);
   const active = ctx.activeRuns.get(ctx.scope)?.modelSettings;
   const provider = await ctx.agent.modelProviderState?.();

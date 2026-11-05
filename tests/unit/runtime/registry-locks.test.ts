@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { resolveAppPaths } from '../../../src/config/app-paths';
 import { runtimeLockMetaFile, withProfileAndAppLocks } from '../../../src/runtime/locks';
 import {
-  readAndPrune,
+  readRegistry,
   register,
   sameAppLiveOthers,
   unregisterSync,
@@ -36,7 +36,7 @@ describe('registry and runtime lock integration', () => {
     });
     const before = await readFile(registryFile, 'utf8');
 
-    expect(readAndPrune(registryFile).map((item) => item.id)).toEqual(['stale-a', 'stale-b']);
+    expect(readRegistry(registryFile).map((item) => item.id)).toEqual(['stale-a', 'stale-b']);
     expect(await readFile(registryFile, 'utf8')).toBe(before);
 
     const registered = await register({
@@ -139,32 +139,6 @@ describe('registry and runtime lock integration', () => {
     await withProfileAndAppLocks(lockedPaths, 'cli_existing', 'claude', async () => {
       await expect(sameAppLiveOthers('cli_existing', process.pid, registryFile)).resolves.toEqual([]);
     });
-  });
-
-  it('reads legacy root processes.json but writes only the registry directory', async () => {
-    const root = await makeRoot();
-    const legacyRegistryFile = join(root, 'processes.json');
-    const registryFile = join(root, 'registry', 'processes.json');
-    await writeJson(legacyRegistryFile, {
-      entries: [entry({ id: 'legacy', pid: 999_999_993, profileName: 'claude' })],
-    });
-    const legacyBefore = await readFile(legacyRegistryFile, 'utf8');
-
-    expect(readAndPrune(registryFile).map((item) => item.id)).toEqual(['legacy']);
-
-    const registered = await register({
-      appId: 'cli_new',
-      tenant: 'feishu',
-      profileName: 'codex-dev',
-      agentKind: 'codex',
-      configPath: join(root, 'config.json'),
-      version: '0.1.32',
-      registryFile,
-    });
-
-    expect(await readFile(legacyRegistryFile, 'utf8')).toBe(legacyBefore);
-    const persisted = JSON.parse(await readFile(registryFile, 'utf8')) as { entries: ProcessEntry[] };
-    expect(persisted.entries.map((item) => item.id)).toEqual([registered.id]);
   });
 
   it('keeps registry locking realpath-safe and separate from PID probing', async () => {

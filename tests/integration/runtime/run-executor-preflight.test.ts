@@ -66,7 +66,7 @@ async function createHarness(options: {
     pool,
     activeRuns,
     executor: new RunExecutor({
-      agent: options.agent,
+      resolveAgent: () => options.agent,
       pool,
       activeRuns,
       createRunId: () => 'run-1',

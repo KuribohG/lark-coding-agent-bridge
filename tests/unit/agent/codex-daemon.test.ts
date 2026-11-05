@@ -11,6 +11,7 @@ import {
 } from '../../../src/agent/codex/daemon';
 import { CodexAdapter } from '../../../src/agent/codex/adapter';
 import type { AgentEvent, AgentRun } from '../../../src/agent/types';
+import { STREAMED_EXECUTION } from '../../helpers/fake-agent';
 
 const dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
@@ -38,7 +39,7 @@ function controllableRun(): { run: AgentRun; finish(): void } {
   let finish!: () => void;
   const done = new Promise<void>(resolve => { finish = resolve; });
   const run = {
-    runId: 'r', stop: async () => {}, waitForExit: async () => true,
+    runId: 'r', capabilities: STREAMED_EXECUTION, stop: async () => {}, waitForExit: async () => true,
     events: (async function* (): AsyncGenerator<AgentEvent> { await done; })(),
   } as AgentRun;
   return { run, finish };

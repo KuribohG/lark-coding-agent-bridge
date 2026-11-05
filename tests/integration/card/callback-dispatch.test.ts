@@ -155,20 +155,6 @@ describe('signed card callback dispatch', () => {
     expect(queued[0]?.chatType).toBe('group');
   });
 
-  it('drops legacy Claude callback markers before command dispatch', async () => {
-    const h = await createHarness();
-    const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
-    h.activeRuns.register('oc_group', activeRun);
-
-    await h.dispatch({
-      __claude_cb: true,
-      cmd: 'stop',
-    });
-
-    expect(activeRun.stopped).toBe(false);
-    expect(h.pending.cancel('oc_group')).toHaveLength(0);
-  });
-
   it('scopes topic-group callbacks by the carrier message thread_id', async () => {
     const h = await createHarness({ chatMode: 'topic' });
     // The dispatcher must read items[0].thread_id from the raw message get to

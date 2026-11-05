@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ActiveRuns } from '../../../src/bot/active-runs';
 import { FollowupRouter } from '../../../src/bot/followup';
 import { PendingQueue } from '../../../src/bot/pending-queue';
-import type { AgentQuestion, AgentQuestionAnswer } from '../../../src/agent/types';
+import type { AgentQuestion, AgentQuestionAnswer, AgentRun } from '../../../src/agent/types';
 import { UserQuestions } from '../../../src/channels/lark/question-cards';
 import { CallbackAuth } from '../../../src/card/callback-auth';
 import { CallbackNonceStore } from '../../../src/card/callback-store';
@@ -31,8 +31,12 @@ async function harness(options: { auth?: boolean; timed?: boolean; mention?: boo
   catalog.upsertActive({ ...claudeIdentity, sessionId: 'claude-session' });
   const steer = vi.fn(async (_prompt: string, _messageId: string): Promise<'accepted' | 'inactive'> => 'accepted');
   const answerUserInput = vi.fn(async (_id: string, _answer: AgentQuestionAnswer): Promise<'accepted' | 'inactive'> => options.native ?? 'accepted');
-  const run = { runId: 'run-1', events: { async *[Symbol.asyncIterator]() {} }, steer, answerUserInput,
-    stop: vi.fn(async () => {}), waitForExit: async () => true };
+  const run: AgentRun = { runId: 'run-1', capabilities: { finalAnswer: 'stream', input: 'active-session' },
+    events: { async *[Symbol.asyncIterator]() {} }, answerUserInput, stop: vi.fn(async () => {}), waitForExit: async () => true,
+    async sendInput({ text, messageId }) {
+      return await steer(text, messageId) === 'accepted'
+        ? { status: 'accepted', messageId, scope: 'active-session' } : { status: 'inactive', messageId };
+    } };
   const handle = activeRuns.register(identity.scopeId, run);
   const message: NormalizedMessage = { messageId: 'om_origin', chatId: 'oc_group', chatType: 'group', threadId: 'omt_topic',
     senderId: 'ou_user', content: 'task', rawContentType: 'text', resources: [], mentions: [], mentionedBot: false, mentionAll: false, createTime: 1 };

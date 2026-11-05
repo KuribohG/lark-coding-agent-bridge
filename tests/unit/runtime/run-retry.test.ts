@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type { AgentEvent } from '../../../src/agent/types';
+import type { AgentEvent, AgentInput } from '../../../src/agent/types';
 import { CodexJsonlTranslator } from '../../../src/agent/codex/jsonl';
 import { ActiveRuns } from '../../../src/bot/active-runs';
 import { ProcessPool } from '../../../src/bot/process-pool';
@@ -17,10 +17,10 @@ afterEach(() => vi.useRealTimers());
 
 function harness(events: FakeAgentEvents) {
   vi.useFakeTimers();
-  const agent = new FakeAgentAdapter({ events });
+  const agent = new FakeAgentAdapter({ events, capabilities: { finalAnswer: 'stream', input: 'active-session' } });
   const activeRuns = new ActiveRuns();
   const pool = new ProcessPool(() => 1);
-  const executor = new RunExecutor({ agent, activeRuns, pool, postDoneExitGraceMs: 10 });
+  const executor = new RunExecutor({ resolveAgent: () => agent, activeRuns, pool, postDoneExitGraceMs: 10 });
   const policy: RunPolicyAllow = { ok: true, prompt: 'original task', requestedCwd: '/repo', cwdRealpath: '/repo',
     accessMode: 'workspace', sandbox: 'workspace-write', permissionMode: 'acceptEdits',
     access: { ok: true, reason: 'allowed-user' }, attachments: [], policyFingerprint: 'fp', expiresAt: Date.now() + 1000 };
@@ -331,15 +331,15 @@ describe('rate-limit retries through RunExecutor', () => {
   it('routes steering and stop to the current attempt, and never delivers steering during backoff', async () => {
     const h = harness([[{ type: 'system', threadId: 'thread' }, rateLimit], []]);
     const spawn = h.agent.run.bind(h.agent);
-    const steers: ReturnType<typeof vi.fn>[] = [];
+    const inputs: ReturnType<typeof vi.fn>[] = [];
     h.agent.run = options => {
       const raw = spawn(options);
-      const steer = vi.fn().mockResolvedValue('accepted');
-      steers.push(steer);
+      const sendInput = vi.fn(async ({ messageId }: AgentInput) => ({ status: 'accepted', messageId, scope: 'active-session' } as const));
+      inputs.push(sendInput);
       if (h.agent.runs.length === 2) {
         let release!: () => void;
         const stopped = new Promise<void>(resolve => { release = resolve; });
-        return { runId: raw.runId, steer, waitForExit: raw.waitForExit.bind(raw),
+        return { runId: raw.runId, capabilities: raw.capabilities, sendInput, waitForExit: raw.waitForExit.bind(raw),
           stop: async () => { await raw.stop(); release(); },
           events: { async *[Symbol.asyncIterator]() {
             yield { type: 'system', threadId: 'thread' };
@@ -347,21 +347,21 @@ describe('rate-limit retries through RunExecutor', () => {
             yield { type: 'done', terminationReason: 'interrupted' };
           } } };
       }
-      return Object.assign(raw, { steer });
+      return Object.assign(raw, { sendInput });
     };
     const run = await h.executor.submit({ scopeId: 's', policy: h.policy });
-    expect(await run.run.steer!('supplement', 'm1')).toBe('accepted');
+    expect((await run.run.sendInput!({ text: 'supplement', messageId: 'm1' })).status).toBe('accepted');
     const events = run.subscribe()[Symbol.asyncIterator]();
     expect((await events.next()).value.type).toBe('system');
     expect((await events.next()).value.type).toBe('retry');
-    expect(await run.run.steer!('later', 'm2')).toBe('inactive');
+    expect((await run.run.sendInput!({ text: 'later', messageId: 'm2' })).status).toBe('inactive');
     const next = events.next();
     await vi.advanceTimersByTimeAsync(30_000);
     expect((await next).value).toMatchObject({ type: 'retry', delayMs: 0 });
     expect(h.agent.runOptions[1]?.prompt).toContain('中途补充');
-    expect(await run.run.steer!('new attempt', 'm3')).toBe('accepted');
-    expect(steers[0]).toHaveBeenCalledTimes(1);
-    expect(steers[1]).toHaveBeenCalledWith('new attempt', 'm3');
+    expect((await run.run.sendInput!({ text: 'new attempt', messageId: 'm3' })).status).toBe('accepted');
+    expect(inputs[0]).toHaveBeenCalledTimes(1);
+    expect(inputs[1]).toHaveBeenCalledWith({ text: 'new attempt', messageId: 'm3' });
     await run.stop();
     expect(h.agent.runs[1]?.stopped).toBe(true);
   });

@@ -7,8 +7,6 @@ import { liveConsole } from '../../ui/sidecar';
 import { findOwningServiceForPid } from './ps';
 
 export interface RunUiOptions {
-  /** Accepted for compatibility; the console is a single machine-wide process. */
-  profile?: string;
   /** Print the URL instead of launching a browser. */
   print?: boolean;
 }

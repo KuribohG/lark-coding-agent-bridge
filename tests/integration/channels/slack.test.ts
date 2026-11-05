@@ -17,6 +17,7 @@ import type {
 } from '../../../src/channels/slack/transport';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
 import { createTmpProfile } from '../../helpers/tmp-profile';
+import { FixedExecutionController } from '../../helpers/fixed-execution';
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -109,7 +110,7 @@ async function harness(events: AgentEvent[][], showProgress = true) {
   const api = new FakeSlackApi();
   const transport = new FakeSlackTransport();
   const plugin = createSlackPlugin({
-    agent,
+    execution: new FixedExecutionController(agent, config(tmp.workspace)),
     config: config(tmp.workspace),
     stateDir: tmp.profile,
     namespace: 'test',
