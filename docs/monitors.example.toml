@@ -1,7 +1,7 @@
 # Copy this file, fill in your own profile/IDs/paths, then run:
 # lark-channel-bridge monitors check /absolute/path/monitors.toml
 # lark-channel-bridge monitors configure /absolute/path/monitors.toml
-# All sources start disabled. For existing installations, prefer monitors init.
+# All sources start disabled.
 version = 1
 
 # Available in versions supporting per-item screening; each limit is 1–100.

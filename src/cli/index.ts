@@ -34,7 +34,7 @@ import { runUi, runUiStop } from './commands/ui';
 import { runWeb } from './commands/web';
 import { runSlack } from './commands/slack';
 import { configureCiWatch, statusCiWatch } from './commands/ci-watch';
-import { checkMonitors, configureMonitors, initMonitors, statusMonitors } from './commands/monitors';
+import { checkMonitors, configureMonitors, statusMonitors } from './commands/monitors';
 import { checkService, configureService, listServices, removeService } from './commands/model-service';
 import { formatBuildVersion } from '../build-info';
 
@@ -138,9 +138,6 @@ ciWatch.command('status').option('-c, --config <path>', 'path to bridge root con
   .description('Show configuration and persisted CI analysis state').action(statusCiWatch);
 
 const monitors = program.command('monitors').description('Manage unified Lark and GitLab monitoring in TOML');
-monitors.command('init').option('-c, --config <path>', 'path to bridge root config')
-  .option('-o, --output <path>', 'new TOML file; defaults to monitors.toml beside the root config')
-  .description('Migrate existing monitor settings without changing source switches').action(initMonitors);
 monitors.command('configure <file>').option('-c, --config <path>', 'path to bridge root config')
   .description('Use an existing validated TOML file as the monitor configuration').action(configureMonitors);
 monitors.command('check [file]').option('-c, --config <path>', 'path to bridge root config')

@@ -4,17 +4,16 @@
 
 ## 统一配置文件
 
-加载支持统一监控配置的新版后，可以把飞书消息检查和 GitLab CI 盯盘都放进一个带注释的 `monitors.toml`：
+飞书消息检查和 GitLab CI 盯盘都放在一个带注释的 `monitors.toml` 里：
 
 ```sh
-lark-channel-bridge monitors init
 lark-channel-bridge monitors check
 lark-channel-bridge monitors status
 ```
 
-`init` 从原配置迁移，保留现有开关、模型、范围和通知目标；不会覆盖已有文件。随后编辑 `[sources.lark]`、`[sources.gitlab_ci]` 和仓库列表即可。账号密钥仍使用原凭据存储，文件里只写引用。
+编辑 `[sources.lark]`、`[sources.gitlab_ci]` 和仓库列表即可。账号密钥仍使用原凭据存储，文件里只写引用。
 
-工作台会显示文件位置，设置保存也更新同一个文件。两个来源每 15 秒检查配置，不依赖页面打开；文件有错时保留上一次有效运行配置并显示错误。未配置监控文件时所有来源保持关闭，工作台或 `ci-watch configure` 首次保存会在 `config.toml` 旁创建 `monitors.toml`。格式示例见[带注释的 TOML](../monitors.example.toml)，迁移、校验和回写细节见[统一监控配置](../monitor-config.md)。
+工作台会显示文件位置，设置保存也更新同一个文件。两个来源每 15 秒检查配置，不依赖页面打开；文件有错时保留上一次有效运行配置并显示错误。未配置监控文件时所有来源保持关闭，工作台或 `ci-watch configure` 首次保存会在 `config.toml` 旁创建 `monitors.toml`。格式示例见[带注释的 TOML](../monitors.example.toml)，校验和回写细节见[统一监控配置](../monitor-config.md)。
 
 ## 与会话助理的关系
 

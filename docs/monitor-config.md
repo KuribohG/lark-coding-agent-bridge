@@ -6,17 +6,10 @@ Without `bridge.monitors_file`, every source stays off. The first workbench or `
 
 ## Command line
 
-Run these commands with the new Bridge version and the intended root configuration:
-
 ```sh
-lark-channel-bridge monitors init --config /path/to/config.toml
 lark-channel-bridge monitors check --config /path/to/config.toml
 lark-channel-bridge monitors status --config /path/to/config.toml
 ```
-
-`init` writes `monitors.toml` beside `config.toml`, preserving existing source switches, scope, model omission/default semantics, credential references and notification targets. It sets `bridge.monitors_file` in the root TOML and removes the inline monitoring configuration. This file migration does not touch profiles, credentials, polling cursors or work-item state. Separately, the transport-neutral WorkItem schema resets a version-1 state file on first load; see [work-item sources](work-item-sources.md). A missing source gets a disabled starter section. Existing target files are never overwritten; use `configure` to select an existing file. Repeating `init` on an already migrated installation is a read-only check.
-
-`--output /path/to/monitors.toml` chooses another new file. The root reference is relative to the root TOML's directory, independent of the process working directory. If creating the file succeeds but saving the root reference fails, the unselected file is retained; check it and use `configure` to complete migration.
 
 ## Editing and applying
 

@@ -9,7 +9,6 @@ import { normalizeGitLabCi } from '../../../src/monitoring/sources/gitlab-ci/con
 import { GitLabCiManager } from '../../../src/monitoring/sources/gitlab-ci/manager';
 import { GitLabCiService } from '../../../src/monitoring/sources/gitlab-ci/service';
 import * as runtime from '../../../src/runtime/agent-runtime';
-import { initMonitors } from '../../../src/cli/commands/monitors';
 import { loadMonitorRoot } from '../../../src/monitoring/store';
 import { formatMonitorConfig } from '../../../src/monitoring/config';
 import { saveWithMonitors } from '../../helpers/monitors';
@@ -60,7 +59,7 @@ it('reloads configuration without restarting an unchanged watcher', async () => 
 });
 
 it('reloads TOML, retains the last valid watcher on errors, and keeps collecting when the executor becomes unavailable', async () => {
-  const s = await setup(); await initMonitors({ config: s.path });
+  const s = await setup();
   const file = join(s.dir, 'monitors.toml'); const valid = await readFile(file, 'utf8');
   const manager = s.create(); await manager.reconcile();
   const instance = vi.mocked(GitLabCiService).mock.results.at(-1)!.value as GitLabCiService;

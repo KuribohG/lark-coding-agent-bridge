@@ -6,7 +6,7 @@ import { GitLabClient, GitLabError } from './client';
 import type { GitLabCiConfig } from './config';
 import { failureId, type CiRun } from './service';
 
-export async function readCiResult(path: string, runId: string): Promise<InboxTaskResult> {
+async function readCiResult(path: string, runId: string): Promise<InboxTaskResult> {
   const result = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
   if (result.runId !== runId) throw new Error('Stored CI result belongs to another failure');
   if (typeof result.replyDraft !== 'string' || typeof result.analysis !== 'string' || !result.analysis.trim() || typeof result.missingInfo !== 'string') {

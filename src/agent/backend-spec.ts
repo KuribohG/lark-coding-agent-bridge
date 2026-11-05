@@ -40,7 +40,6 @@ export interface AgentBackendSpec {
   permissionView: AgentPermissionView;
   providerBindings: Partial<Record<ModelProtocol, AgentProviderBinding>>;
   providerSwitching?: 'startup';
-  supportsProfileResponsesService: boolean;
   modelCatalog: AgentModelCatalog;
   reasoningEfforts: readonly string[];
   timedRunReasoningEfforts?: readonly string[];
@@ -81,7 +80,6 @@ const CLAUDE_SPEC: AgentBackendSpec = Object.freeze({
   historySource: 'claude-jsonl',
   permissionView: 'permission',
   providerBindings: Object.freeze({}),
-  supportsProfileResponsesService: false,
   modelCatalog: 'claude',
   reasoningEfforts: Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']),
   timedRunReasoningEfforts: Object.freeze(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']),
@@ -117,7 +115,6 @@ const CODEX_SPEC: AgentBackendSpec = Object.freeze({
   permissionView: 'sandbox',
   providerBindings: Object.freeze({ responses: 'codex-config' }),
   providerSwitching: 'startup',
-  supportsProfileResponsesService: true,
   modelCatalog: 'codex',
   reasoningEfforts: Object.freeze(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra']),
   webDefaultAccess: 'workspace',
@@ -146,7 +143,6 @@ const PI_SPEC: AgentBackendSpec = Object.freeze({
   historySource: 'catalog',
   permissionView: 'tools',
   providerBindings: Object.freeze({ responses: 'pi-extension' }),
-  supportsProfileResponsesService: false,
   modelCatalog: 'pi',
   reasoningEfforts: Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh']),
   supportedAccess: Object.freeze(['read-only', 'full'] as AgentAccessMode[]),
@@ -171,7 +167,6 @@ const AGY_SPEC: AgentBackendSpec = Object.freeze({
   historySource: 'catalog',
   permissionView: 'tools',
   providerBindings: Object.freeze({ gemini: 'agy-gemini' }),
-  supportsProfileResponsesService: false,
   modelCatalog: 'agy',
   reasoningEfforts: Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']),
   supportedAccess: Object.freeze(['full'] as AgentAccessMode[]),
