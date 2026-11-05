@@ -15,13 +15,13 @@
 在仓库根目录运行：
 
 ```sh
-node bin/run-lark-cc.mjs
+node bin/lark-channel-bridge.mjs run --web-ui --detach
 ```
 
 默认后台启动。打开打印的完整控制台 URL；端口以实际输出为准，不要套用 Web Chat 的 8787。若想前台观察首次启动日志：
 
 ```sh
-node bin/run-lark-cc.mjs fg
+node bin/lark-channel-bridge.mjs run --web-ui
 ```
 
 只选择一种方式，不要同时启动两个进程连接同一个飞书应用。
@@ -43,14 +43,14 @@ node bin/run-lark-cc.mjs fg
 以下均在同一仓库、同一配置环境执行：
 
 ```sh
-node bin/run-lark-cc.mjs ui
-node bin/run-lark-cc.mjs ui --print
-node bin/run-lark-cc.mjs status
-node bin/run-lark-cc.mjs log
-node bin/run-lark-cc.mjs stop
+node bin/lark-channel-bridge.mjs ui
+node bin/lark-channel-bridge.mjs ui --print
+node bin/lark-channel-bridge.mjs ps
+node bin/lark-channel-bridge.mjs logs --web-ui
+node bin/lark-channel-bridge.mjs ui --stop
 ```
 
-这些命令只管理此配置根目录下可验证的 GUI supervisor。前台 `fg` 用 Ctrl+C 停止。便携后台模式不提供登录自启或崩溃重启，系统服务见[运行维护](operations.md)。
+这些命令只管理此配置根目录下可验证的 GUI supervisor。前台 `run --web-ui` 用 Ctrl+C 停止。便携后台模式不提供登录自启或崩溃重启，系统服务见[运行维护](operations.md)。
 
 ## 5. 配置保存在哪里
 
@@ -70,6 +70,6 @@ node bin/lark-channel-bridge.mjs run --profile codex
 
 ## 远程主机与依赖失败
 
-管理页仅监听运行机器的 `127.0.0.1`。在服务器执行 `node bin/run-lark-cc.mjs ui --print`，用 SSH 转发实际端口，保留打印地址中的管理 token。不要把 token 发到飞书群。具体示例见[自包含部署](../self-contained.md)。
+管理页仅监听运行机器的 `127.0.0.1`。在服务器执行 `node bin/lark-channel-bridge.mjs ui --print`，用 SSH 转发实际端口，保留打印地址中的管理 token。不要把 token 发到飞书群。具体示例见[自包含部署](../self-contained.md)。
 
 `@larksuite/cli` 是可选依赖；二进制下载失败时，安装成功不等于用户授权或消息读取可用。独立 Web 不依赖它；飞书相关能力需要修复并重启 profile，详见[自包含部署](../self-contained.md)及控制台诊断。

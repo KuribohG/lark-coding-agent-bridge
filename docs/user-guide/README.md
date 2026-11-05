@@ -22,7 +22,7 @@ Bridge 把本机 Codex、Claude Code、Pi 接到浏览器或飞书。先完成�
 ## 三个容易混淆的入口
 
 - **Bridge Chat**：`web` 命令；直接和 Agent 对话，没有飞书管理表单。
-- **管理控制台**：`run-lark-cc` / `run --web-ui`；管理 profile、模型服务和助理，不是独立聊天页。
+- **管理控制台**：`run --web-ui`（`--detach` 后台运行）/ `ui`；管理 profile、模型服务和助理，不是独立聊天页。
 - **系统服务**：`start --profile ...` / `start --web-ui`；由操作系统维持进程，不等于便携后台启动。
 
 停止时使用与启动方式配套的命令，见 [Windows](windows.md) 和[运行维护](operations.md)。

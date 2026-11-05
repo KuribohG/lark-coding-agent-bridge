@@ -2,7 +2,7 @@
 
 [手册首页](README.md) · [配置教程](configuration.md) · [Windows](windows.md)
 
-这篇只讲 **Bridge Chat 独立聊天页**。它不需要飞书，不包含机器人管理、会话助理或模型服务编辑表单。`run-lark-cc` 打开的是另一套[飞书管理控制台](getting-started.md)。
+这篇只讲 **Bridge Chat 独立聊天页**。它不需要飞书，不包含机器人管理、会话助理或模型服务编辑表单。`lark-channel-bridge ui` 打开的是另一套[飞书管理控制台](getting-started.md)。
 
 ## 第一次启动
 
@@ -84,7 +84,7 @@ Bridge Chat: http://127.0.0.1:8787/#token=<本次启动生成的令牌> (engine:
 ## 停止、重启和续接
 
 1. 先让任务结束，或点击“停止”。
-2. 前台模式按 Ctrl+C；脚本模式执行对应的 `stop-web.ps1`。`run-lark-cc stop` 不会停止独立聊天页。
+2. 前台模式按 Ctrl+C；脚本模式执行对应的 `stop-web.ps1`。`lark-channel-bridge ui --stop` 不会停止独立聊天页。
 3. 使用相同项目、状态目录和端口重新启动。
 4. 打开新的完整 token URL，刷新页面后继续提问。
 

@@ -11,11 +11,11 @@ Talk to local **Codex CLI, Claude Code, Pi Coding Agent, or Antigravity CLI** fr
 | Goal | Entry point | What opens | Lark account? |
 | --- | --- | --- | --- |
 | Chat with an agent in a browser | `web --agent codex` | **Bridge Chat**, normally on port 8787 | No |
-| Set up a Lark bot, profiles or the inbox | `node bin/run-lark-cc.mjs` | **Management console**, at the printed address | Yes, to connect a bot |
+| Set up a Lark bot, profiles or the inbox | `node bin/lark-channel-bridge.mjs run --web-ui --detach` | **Management console**, at the printed address | Yes, to connect a bot |
 | Run an already configured Lark bot without a console | `run --profile <name>` | Terminal logs | Yes |
 | Connect a Slack bot | `slack --workspace /absolute/project/path --allowed-users U... --allowed-channels C...` | Slack threads via Socket Mode; see [setup](docs/channels.md#run-the-bundled-slack-channel) | No |
 
-**Browser chat and the management console are different applications.** `run-lark-cc` and `run --web-ui` do not open standalone chat. For a first local test, choose browser chat.
+**Browser chat and the management console are different applications.** `run --web-ui` does not open standalone chat. For a first local test, choose browser chat.
 
 ## 2. Install once
 
@@ -68,17 +68,17 @@ Full instructions: [Web chat](docs/user-guide/web-chat.md) · [Windows](docs/use
 ## 3B. Connect Feishu / Lark instead
 
 ```sh
-node bin/run-lark-cc.mjs
+node bin/lark-channel-bridge.mjs run --web-ui --detach
 ```
 
-1. Open the **management console** address printed by the launcher.
+1. Open the **management console** address printed by the command.
 2. Complete the QR-code setup, choose an agent and a project, then start the profile.
 3. DM the bot `/status`, then send a small task. In a group, add the bot and use a real @mention.
 
 ```sh
-node bin/run-lark-cc.mjs ui --print
-node bin/run-lark-cc.mjs status
-node bin/run-lark-cc.mjs stop
+node bin/lark-channel-bridge.mjs ui --print
+node bin/lark-channel-bridge.mjs ps
+node bin/lark-channel-bridge.mjs ui --stop
 ```
 
 These commands manage the **console**, not the Web chat process. The inbox and monitoring are optional and initially off; ordinary chat does not require them. See [first Lark setup](docs/user-guide/getting-started.md) and [deployment](docs/self-contained.md). Registering an OS service is a separate step requiring a stable installed CLI path.

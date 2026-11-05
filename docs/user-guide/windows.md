@@ -62,8 +62,8 @@ PowerShell 若按组织策略阻止 `.ps1`，先检查本地文件来源并按�
 | --- | --- |
 | `node ... web ...` 前台聊天 | 该终端 Ctrl+C；页面“停止”只停当前任务 |
 | `start-web.ps1` 后台聊天 | `stop-web.ps1`，同一 `-StateDir` |
-| `node bin/run-lark-cc.mjs` 后台管理控制台 | `node bin/run-lark-cc.mjs stop` |
-| `node bin/run-lark-cc.mjs fg` 前台控制台 | Ctrl+C |
+| `node bin/lark-channel-bridge.mjs run --web-ui --detach` 后台管理控制台 | `node bin/lark-channel-bridge.mjs ui --stop` |
+| `node bin/lark-channel-bridge.mjs run --web-ui` 前台控制台 | Ctrl+C |
 | `lark-channel-bridge start --web-ui` 系统服务 | `lark-channel-bridge stop --web-ui` |
 
 脚本停止前核对 PID、启动时间与入口路径，只终止记录的进程树。Windows 强停使用 `taskkill /T /F`，不是 POSIX 的优雅信号，不保证所有应用层内容已刷盘。重启前最好等待任务结束。状态锁可能需要约 30 秒过期；启动器会等待，不应手动删除状态目录。

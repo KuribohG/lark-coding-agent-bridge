@@ -1,4 +1,4 @@
-> 本地完整工作台已随 Bridge 打包，使用 `run-lark-cc` 启动。新用户安装、模型选择和 `/inbox setup` 见 [自包含部署指南](self-contained.md)。下文中妙搭同步均指可选远程连接器。
+> 本地完整工作台已随 Bridge 打包，用 `lark-channel-bridge ui` 打开。新用户安装、模型选择和 `/inbox setup` 见 [自包含部署指南](self-contained.md)。下文中妙搭同步均指可选远程连接器。
 
 # 会话助理
 

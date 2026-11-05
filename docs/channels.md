@@ -298,8 +298,8 @@ lark-channel-bridge run --profile codex
 ```
 
 For a source checkout, run `node bin/lark-channel-bridge.mjs run --profile
-codex` after building. Use the bundled `run-lark-cc` launcher only when the local
-Web management console is wanted.
+codex` after building. Use `lark-channel-bridge run --web-ui --detach` only when
+the local Web management console is wanted.
 
 ## Lark compatibility and verification
 

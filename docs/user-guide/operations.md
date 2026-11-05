@@ -2,32 +2,32 @@
 
 [手册首页](README.md) · [命令速查](commands.md)
 
-本篇下方的短命令按已全局安装书写。源码用户把 `run-lark-cc` 换为 `node bin/run-lark-cc.mjs`，把 `lark-channel-bridge` 换为 `node bin/lark-channel-bridge.mjs`；系统服务仍需稳定安装路径。
+本篇下方的短命令按已全局安装书写。源码用户把 `lark-channel-bridge` 换为 `node bin/lark-channel-bridge.mjs`；系统服务仍需稳定安装路径。
 
 ## 先确认自己运行的是哪一种
 
 - 独立 Web 前台：终端 Ctrl+C 停服务；页面“停止”只停止当前任务。重启后用新的完整 token URL。
 - Windows 后台聊天：配套 `bin/windows/stop-web.ps1`，与启动时使用同一 `-StateDir`。
-- 管理控制台 / 飞书：使用下方的 launcher 或服务命令。
+- 管理控制台 / 飞书：使用下方的后台/前台命令或服务命令。
 
-这几类进程不共享停止入口。Web 的使用、状态备份和排错见 [Web 聊天](web-chat.md)；不要用 `run-lark-cc stop` 停止独立聊天页。
+这几类进程不共享停止入口。Web 的使用、状态备份和排错见 [Web 聊天](web-chat.md)；不要用 `lark-channel-bridge ui --stop` 停止独立聊天页。
 
 ## 查看和停止
 
 ```bash
-run-lark-cc status
-run-lark-cc log
-run-lark-cc stop
+lark-channel-bridge ps
+lark-channel-bridge logs --web-ui
+lark-channel-bridge ui --stop
 ```
 
-`status` 核对本地控制台和在线 profile，`log` 查看启动日志，`stop` 关闭该配置目录的整个控制台进程及其 profile。只停一个机器人时，在控制台操作对应 profile。
+`ps` 列出运行中的 bot，`logs --web-ui` 查看启动日志，`ui --stop` 关闭该配置目录的整个控制台进程及其 profile；控制台地址用 `ui --print` 查询。只停一个机器人时，在控制台操作对应 profile。
 
 ## 常驻服务和前台模式
 
 | 运行方式 | 启动 | 停止 |
 | --- | --- | --- |
-| 便携后台控制台 | `run-lark-cc` | `run-lark-cc stop` |
-| 前台控制台 | `run-lark-cc fg` | Ctrl-C |
+| 便携后台控制台 | `lark-channel-bridge run --web-ui --detach` | `lark-channel-bridge ui --stop` |
+| 前台控制台 | `lark-channel-bridge run --web-ui` | Ctrl-C |
 | 系统服务控制台 | `lark-channel-bridge start --web-ui` | `lark-channel-bridge stop --web-ui` |
 | 无网页单 profile | `lark-channel-bridge run --profile codex` | Ctrl-C |
 
@@ -51,8 +51,8 @@ lark-channel-bridge profile autostart work off
 ```bash
 git pull --ff-only origin dev
 npx --yes pnpm@10.33.0 install --frozen-lockfile
-run-lark-cc stop
-run-lark-cc
+lark-channel-bridge ui --stop
+lark-channel-bridge run --web-ui --detach
 ```
 
 这组命令适用于 `npm link` 加便携启动器的安装。系统服务用户使用服务命令重启；自定义发布目录的用户需更新实际发布指针。构建成功、推送 dev、安装包更新和运行中的进程加载新代码是不同状态。
@@ -71,7 +71,7 @@ run-lark-cc
 | `inbox/state.sqlite` | 飞书来源事项、草稿、额度、outbox 和处理状态 |
 | `inbox/sources/` | 盯盘事项，按来源与所属身份分区；每个分区使用 `state.sqlite` |
 | `gitlab-ci/state.json` | CI 轮询游标、失败去重和助理任务 ID |
-| `logs/launcher.log` | 启动器日志 |
+| `logs/launcher.log` | 后台 supervisor 日志 |
 
 CI 原始日志和结果在配置的 `sources.gitlab_ci.outputDir`，模型密钥文件则位于自己指定的私有路径。需要完整恢复时，这些位置也应纳入自己的备份方案。SQLite 的 `-wal`/`-shm` 文件和主数据库属于同一状态集；备份状态前停止相关进程，避免复制到互不一致的队列和回执。
 
@@ -95,4 +95,4 @@ CI 原始日志和结果在配置的 `sources.gitlab_ci.outputDir`，模型密�
 | 草稿保存提示已更新 | 保留编辑文本，刷新并核对新结果后重新保存，避免覆盖他人的更新 |
 | lark-cli 提示 bridge context 未绑定 | 用原 profile 重启或做 doctor / preflight，不切换其他账号绕过 |
 
-飞书 `/doctor` 提供低敏诊断，`/status` 显示会话状态。本机 `lark-channel-bridge --help` 和 `run-lark-cc --help` 可核对实际安装版本支持的命令。
+飞书 `/doctor` 提供低敏诊断，`/status` 显示会话状态。本机 `lark-channel-bridge --help` 和各子命令的 `--help` 可核对实际安装版本支持的命令。

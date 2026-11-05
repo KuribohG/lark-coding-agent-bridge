@@ -8,7 +8,7 @@ describe('documentation runtime contract', () => {
     for (const entry of [
       'npx --yes pnpm@10.33.0 install --frozen-lockfile',
       'web --agent codex --workspace . --state-dir .web-local/chat',
-      'node bin/run-lark-cc.mjs',
+      'node bin/lark-channel-bridge.mjs run --web-ui --detach',
       'bin\\windows\\start-web.ps1',
       '#token=',
       'docs/user-guide/configuration.md',

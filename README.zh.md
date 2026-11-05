@@ -11,11 +11,11 @@
 | 你想做什么 | 启动入口 | 打开的是什么 | 需要飞书吗 |
 | --- | --- | --- | --- |
 | 在浏览器里和 Agent 聊天 | `web --agent codex` | **Bridge Chat 聊天页**，默认 8787 端口 | 不需要 |
-| 配飞书机器人、profile、会话助理 | `node bin/run-lark-cc.mjs` | **管理控制台**，地址以终端输出为准 | 接机器人时需要 |
+| 配飞书机器人、profile、会话助理 | `node bin/lark-channel-bridge.mjs run --web-ui --detach` | **管理控制台**，地址以终端输出为准 | 接机器人时需要 |
 | 已有飞书配置，只想无界面运行 | `run --profile <名称>` | 终端日志 | 需要 |
 | 接入 Slack Bot | `slack --workspace /absolute/project/path --allowed-users U... --allowed-channels C...` | Socket Mode，每个 thread 独立会话；见[接入说明](docs/channels.md#run-the-bundled-slack-channel) | 否 |
 
-**聊天页和管理控制台不是同一个页面。** `run-lark-cc`、`run --web-ui` 都不是独立聊天入口。只想先跑起来体验，选 Web 聊天即可。
+**聊天页和管理控制台不是同一个页面。** `run --web-ui` 不是独立聊天入口。只想先跑起来体验，选 Web 聊天即可。
 
 ## 2. 安装一次
 
@@ -68,17 +68,17 @@ node bin/lark-channel-bridge.mjs web --agent codex --workspace . --state-dir .we
 ## 3B. 如果你想接飞书 / Lark
 
 ```sh
-node bin/run-lark-cc.mjs
+node bin/lark-channel-bridge.mjs run --web-ui --detach
 ```
 
-1. 打开启动器打印的**管理控制台**地址。
+1. 打开命令打印的**管理控制台**地址。
 2. 按网页向导扫码连接应用，选择 Agent 和项目，然后启动 profile。
 3. 私聊机器人发送 `/status`，再发一个简单任务；群聊需先拉机器人入群并真正 @机器人。
 
 ```sh
-node bin/run-lark-cc.mjs ui --print
-node bin/run-lark-cc.mjs status
-node bin/run-lark-cc.mjs stop
+node bin/lark-channel-bridge.mjs ui --print
+node bin/lark-channel-bridge.mjs ps
+node bin/lark-channel-bridge.mjs ui --stop
 ```
 
 这组命令管理的是**控制台**，不是 3A 的聊天进程。会话助理和监控是后续可选功能，默认关闭，普通对话不依赖它们。详见[首次飞书接入](docs/user-guide/getting-started.md)；系统服务是另一步，需要稳定的已安装 CLI 路径。

@@ -1,4 +1,5 @@
 import { open, stat } from 'node:fs/promises';
+import { join } from 'node:path';
 import { paths } from '../../config/paths';
 import { loadRootConfig, readActiveProfile } from '../../config/profile-store';
 import { daemonStderrPath, daemonStdoutPath, SUPERVISOR_SERVICE_ID } from '../../daemon/paths';
@@ -78,6 +79,14 @@ export async function runLogs(opts: LogsOptions = {}): Promise<void> {
     { label: 'stdout', path: daemonStdoutPath(serviceId) },
     { label: 'stderr', path: daemonStderrPath(serviceId) },
   ];
+  if (opts.webUi) {
+    // A detached `run --web-ui --detach` supervisor writes to the host
+    // launcher log; stdout/stderr only exist for the OS-managed service.
+    const serviceLogs = await Promise.all(files.map((file) => readTail(file.path)));
+    if (serviceLogs.every((tail) => tail.offset === 0)) {
+      files.push({ label: 'supervisor', path: join(paths.hostLogsDir, 'launcher.log') });
+    }
+  }
   const count = Number.isSafeInteger(opts.lines) && (opts.lines ?? 0) > 0 ? opts.lines! : 100;
   const offsets = new Map<string, number>();
 

@@ -96,8 +96,6 @@ try {
   Remove-Item -LiteralPath $probeHome -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-Assert (-not (Test-Path -LiteralPath (Join-Path $installDir 'bin\run-lark-cc.cmd'))) 'legacy run-lark-cc shim was still installed'
-
 Write-Host '==> tray launcher self-test'
 $tray = Join-Path $installDir 'bin\LarkChannelBridgeTray.exe'
 Assert (Test-Path -LiteralPath $tray) "tray launcher missing: $tray"

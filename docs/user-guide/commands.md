@@ -2,7 +2,7 @@
 
 [手册首页](README.md)
 
-以下 `lark-channel-bridge` / `run-lark-cc` 命令按全局安装书写。源码安装分别使用 `node bin/lark-channel-bridge.mjs` / `node bin/run-lark-cc.mjs`；注册系统服务前仍需稳定的安装路径。
+以下 `lark-channel-bridge` 命令按全局安装书写。源码安装使用 `node bin/lark-channel-bridge.mjs` 前缀；注册系统服务前仍需稳定的安装路径。
 
 ## 先启动正确的页面
 
@@ -10,7 +10,7 @@
 | --- | --- |
 | `node bin/lark-channel-bridge.mjs web --agent codex --workspace . --state-dir .web-local/chat` | 独立聊天；终端 Ctrl+C 停止 |
 | `.\bin\windows\start-web.ps1 -OpenBrowser` | Windows 自定义 Responses provider 的隔离后台聊天；配套 `stop-web.ps1` 停止 |
-| `node bin/run-lark-cc.mjs` | 飞书管理控制台；配套 `node bin/run-lark-cc.mjs stop` 停止 |
+| `node bin/lark-channel-bridge.mjs run --web-ui --detach` | 飞书管理控制台；配套 `node bin/lark-channel-bridge.mjs ui --stop` 停止 |
 
 独立聊天需要打开本次启动的完整 token URL；飞书斜杠命令不在 Web 消息框中解析。更多参数见 [Web 聊天](web-chat.md)。
 
@@ -48,7 +48,7 @@
 | `/run defaults` | 配置以后创建限时任务时使用的默认值 |
 | `/timeout [N 或 off 或 default]` | 当前会话的空闲超时 watchdog |
 | `/inbox setup` | 在目标结果话题中登记会话助理的投递位置 |
-| `/inbox` | 会话助理入口；完整本地工作台用启动器打开 |
+| `/inbox` | 会话助理入口；完整本地工作台用 `lark-channel-bridge ui` 打开 |
 | `/invite user @某人`、`/remove user @某人` | 管理私聊访问 |
 | `/invite admin @某人`、`/remove admin @某人` | 管理管理员 |
 | `/invite group`、`/remove group` | 开放或关闭当前群 |
@@ -66,11 +66,11 @@
 
 | 命令 | 用途 |
 | --- | --- |
-| `run-lark-cc` | 启动控制台 |
-| `run-lark-cc fg` | 前台运行控制台 |
-| `run-lark-cc ui --print` | 获取本地网页地址 |
-| `run-lark-cc status`、`run-lark-cc log` | 查看运行状态和启动日志 |
-| `run-lark-cc stop` | 停止整个便携控制台 |
+| `lark-channel-bridge run --web-ui --detach` | 后台启动控制台 |
+| `lark-channel-bridge run --web-ui` | 前台运行控制台 |
+| `lark-channel-bridge ui`、`lark-channel-bridge ui --print` | 打开本地网页 / 只打印地址 |
+| `lark-channel-bridge ps`、`lark-channel-bridge logs --web-ui` | 查看运行中的 bot 和启动日志 |
+| `lark-channel-bridge ui --stop` | 停止整个便携控制台 |
 | `lark-channel-bridge profile list` | 列出 profile |
 | `lark-channel-bridge profile create <名称> --agent claude` | 创建 Claude profile；Codex/Pi 分别使用 `--agent codex` / `--agent pi` |
 | `lark-channel-bridge profile use <名称>` | 切换默认选择 |

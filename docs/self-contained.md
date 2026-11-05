@@ -4,7 +4,7 @@
 
 本篇是飞书管理控制台/助理的部署参考。仅运行浏览器聊天请看 [Web 聊天指南](user-guide/web-chat.md)，无需完成下方飞书绑定与授权。
 
-本仓库包含 Bridge、`run-lark-cc` 启动器、网页初始化向导、配置页和会话助理工作台。网页构建成单个 HTML 并嵌入 CLI；待办和草稿保存在本地。使用本地工作台不需要单独的前端进程、数据库、妙搭账户或公网入口。
+本仓库包含 Bridge、本地管理控制台（`run --web-ui`）、网页初始化向导、配置页和会话助理工作台。网页构建成单个 HTML 并嵌入 CLI；待办和草稿保存在本地。使用本地工作台不需要单独的前端进程、数据库、妙搭账户或公网入口。
 
 ## 新用户
 
@@ -17,10 +17,10 @@
    cd lark-coding-agent-bridge
    npx --yes pnpm@10.33.0 install --frozen-lockfile
    npm link
-   run-lark-cc
+   lark-channel-bridge run --web-ui --detach
    ```
 
-   固定版本的 pnpm 按锁文件安装并构建网页和 CLI，无需预先全局安装 pnpm。此部署参考使用 `npm link` 注册稳定的短命令；只做源码前台/便携运行时，可跳过 link 并使用 `node bin/run-lark-cc.mjs`。兼容版本的 `@larksuite/cli` 作为可选依赖安装并自动加入 Bridge 的工具路径；原生二进制下载失败时需修复依赖并重启 profile，不能以 npm 安装成功代替飞书能力验收。
+   固定版本的 pnpm 按锁文件安装并构建网页和 CLI，无需预先全局安装 pnpm。此部署参考使用 `npm link` 注册稳定的短命令；只做源码前台/便携运行时，可跳过 link 并使用 `node bin/lark-channel-bridge.mjs run --web-ui --detach`。兼容版本的 `@larksuite/cli` 作为可选依赖安装并自动加入 Bridge 的工具路径；原生二进制下载失败时需修复依赖并重启 profile，不能以 npm 安装成功代替飞书能力验收。
 4. 在打印的本地地址中扫码创建飞书应用，选择 agent 和工作目录。创建后在 profile 列表中启动机器人；页面会显示连接错误。
 5. 按飞书应用的可用范围、权限和事件订阅要求完成配置，将机器人加入需要的群。
 
@@ -30,21 +30,21 @@
 
 | 命令 | 行为 |
 | --- | --- |
-| `run-lark-cc` | 后台启动 GUI supervisor 并沿用当前 active profile 的默认执行引擎 |
-| `run-lark-cc fg` | 前台运行，适合容器，Ctrl-C 退出 |
-| `run-lark-cc --profile work` | 选择其他名称的 profile |
-| `run-lark-cc ui --print` | 只打印当前网页地址 |
-| `run-lark-cc status` | 查询经过 token 验证的本地监听器和在线 profile |
-| `run-lark-cc stop` | 通过本地 API 关闭整个 GUI supervisor，包含其中所有 profile |
-| `run-lark-cc log` | 输出启动日志末尾，路径为配置目录的 `logs/launcher.log` |
+| `lark-channel-bridge run --web-ui --detach` | 后台启动 GUI supervisor 并沿用当前 active profile 的默认执行引擎 |
+| `lark-channel-bridge run --web-ui` | 前台运行，适合容器，Ctrl-C 退出 |
+| `lark-channel-bridge run --web-ui --detach --profile work` | 选择其他名称的 profile |
+| `lark-channel-bridge ui --print` | 只打印当前网页地址 |
+| `lark-channel-bridge ps` | 查看运行中的 bot 进程 |
+| `lark-channel-bridge ui --stop` | 通过本地 API 关闭整个 GUI supervisor，包含其中所有 profile |
+| `lark-channel-bridge logs --web-ui` | 输出启动日志末尾；后台 supervisor 的日志在配置目录的 `logs/launcher.log` |
 
-后台启动不依赖 systemd，也不提供崩溃重启或开机自启。需要系统服务时使用 `lark-channel-bridge start --web-ui`，并通过 `lark-channel-bridge stop --web-ui` 停止服务，避免服务管理器自动拉起。原来的 `lark-channel-bridge run --profile codex` 仍是无 GUI 的单 profile 模式。
+后台启动不依赖 systemd，也不提供崩溃重启或开机自启。需要系统服务时使用 `lark-channel-bridge start --web-ui`，并通过 `lark-channel-bridge stop --web-ui` 停止服务，避免服务管理器自动拉起。`lark-channel-bridge run --profile codex` 仍是无 GUI 的单 profile 模式。
 
 supervisor 的自动启动集合保存在 `bridge.autostart_profiles`，与 CLI 的 active profile 分离。首次迁移不写该字段，继续沿用 active profile；在 Profile 详情页启用“登录后自启”或执行 `lark-channel-bridge profile autostart <name> on|off` 后会写入显式集合。
 
-启动器只管理它能验证身份的 GUI supervisor，不会用进程名称匹配去杀别的用户或其他配置目录的进程。原来的个人版脚本使用无界面模式时，先用旧脚本停止，再使用新版入口启动；不要同时连接同一个飞书应用。
+控制台命令只管理它能验证身份的 GUI supervisor，不会用进程名称匹配去杀别的用户或其他配置目录的进程。原来的个人版脚本使用无界面模式时，先用旧脚本停止，再使用新版入口启动；不要同时连接同一个飞书应用。
 
-`LARK_CHANNEL_HOME` 控制配置目录。启动器继承当前 shell 的环境，不主动 source `.bashrc`，不带固定代理、个人模型服务地址、密钥或发布路径。需要代理时在启动前配置标准代理环境变量；特殊 Node 代理兼容层可自行通过 `NODE_OPTIONS` 注入。
+`LARK_CHANNEL_HOME` 控制配置目录。后台命令继承当前 shell 的环境，不主动 source `.bashrc`，不带固定代理、个人模型服务地址、密钥或发布路径。需要代理时在启动前配置标准代理环境变量；特殊 Node 代理兼容层可自行通过 `NODE_OPTIONS` 注入。
 
 ## 会话助理
 
@@ -61,11 +61,11 @@ supervisor 的自动启动集合保存在 `bridge.autostart_profiles`，与 CLI 
 
 工作台支持待处理、筛选与待核对、历史列表、最近会话选择、分析与重试、详情、草稿编辑和复制、已处理/忽略/恢复及批量标记。草稿保存带版本校验，旧标签页不能覆盖新结果。复制后由用户到原会话核对发送。暂停接收后仍可查看和修改已有草稿；执行 profile 必须在线。
 
-分析进度和结果继续发到指定飞书话题。没有远程工作台时，飞书 `/inbox` 使用卡片入口，本地完整网页用 `run-lark-cc ui` 打开。无需把带管理 token 的本地地址发到飞书。
+分析进度和结果继续发到指定飞书话题。没有远程工作台时，飞书 `/inbox` 使用卡片入口，本地完整网页用 `lark-channel-bridge ui` 打开。无需把带管理 token 的本地地址发到飞书。
 
 ## 远程机器
 
-网页仅监听 `127.0.0.1`，地址包含每次启动生成的管理 token。用 `run-lark-cc ui --print` 得到端口和地址，然后在自己的电脑上建立转发：
+网页仅监听 `127.0.0.1`，地址包含每次启动生成的管理 token。用 `lark-channel-bridge ui --print` 得到端口和地址，然后在自己的电脑上建立转发：
 
 ```bash
 ssh -N -L 19180:127.0.0.1:<网页端口> <你的服务器>
@@ -80,8 +80,8 @@ ssh -N -L 19180:127.0.0.1:<网页端口> <你的服务器>
 ```bash
 git pull --ff-only origin dev
 npx --yes pnpm@10.33.0 install --frozen-lockfile
-run-lark-cc stop
-run-lark-cc
+lark-channel-bridge ui --stop
+lark-channel-bridge run --web-ui --detach
 ```
 
 在源码目录 `npm link` 安装的命令指向该目录，下一次启动使用新构建。自定义发布目录的用户需更新自己的发布指针，不能仅凭 git pull 判断已部署。运行中的进程继续使用已加载代码。
