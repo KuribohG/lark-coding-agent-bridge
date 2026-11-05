@@ -51,7 +51,6 @@ show_tools = true
 show_progress = true
 [secrets.providers.p]
 source = "env"
-[monitoring.concurrency]
 [profiles.bot]
 agent = "codex"
 mode = "personal"
@@ -162,7 +161,6 @@ describe('setting registry', () => {
     ['bridge.monitors_file', 'monitoring'],
     ['model_services.svc.baseUrl', 'execution'],
     ['secrets.providers.p.source', 'reconnect'],
-    ['monitoring.gitlab_ci.enabled', 'monitoring'],
     ['unknown.key', 'restart'],
   ])('maps TOML path %s to %s', (path, apply) => {
     expect(classifyDocumentPath(path.split('.'))).toBe(apply);

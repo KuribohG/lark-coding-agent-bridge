@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
-import { createRootConfig, saveRootConfig } from '../../../src/config/profile-store';
+import { createRootConfig } from '../../../src/config/profile-store';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { normalizeGitLabCi } from '../../../src/monitoring/sources/gitlab-ci/config';
 import { GitLabCiService, type CiRun } from '../../../src/monitoring/sources/gitlab-ci/service';
@@ -10,6 +10,7 @@ import { createMonitorHost } from '../../../src/plugins/work-items/runtime';
 import { Supervisor } from '../../../src/runtime/supervisor';
 import { createBuiltinPlugins } from '../../../src/plugins/defaults';
 import type { WorkItemsPlugin } from '../../../src/plugins/work-items/plugin';
+import { saveWithMonitors } from '../../helpers/monitors';
 
 vi.mock('../../../src/monitoring/sources/gitlab-ci/client', () => ({ GitLabClient: class {}, loadGitLabToken: async () => 'fixture' }));
 vi.mock('../../../src/monitoring/sources/gitlab-ci/service', () => ({ GitLabCiService: vi.fn(function (_path, config, io) {
@@ -22,7 +23,7 @@ it('keeps accepting CI observations after stopping the Lark profile, and retains
   const root = createRootConfig('local', profile);
   root.gitlabCi = normalizeGitLabCi({ enabled: true, executorProfile: 'local', url: 'https://gitlab.test', outputDir: dir,
     repositories: [{ project: 'a/b' }] });
-  await saveRootConfig(root, path);
+  await saveWithMonitors(root, path);
   const host = createMonitorHost(path, dir);
   host.executors = { resolve: vi.fn(async () => undefined) };
   const disconnect = vi.fn(async () => {});

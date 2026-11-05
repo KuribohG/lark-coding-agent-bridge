@@ -26,8 +26,6 @@ triageService = "screening"
 triageModel = ""
 ```
 
-尚未拆分监控文件时，对应根配置节是 `[monitoring.lark]`。
-
 示例只展示相关字段；保留实际的 profile、授权、目标话题和启用配置。`baseUrl` 是 HTTPS API 根地址，请求时添加 `/responses`，不要填写完整 `/responses` 路径。地址不能包含用户名、密码、查询参数或片段。默认模型必填，服务名称为 1–64 位字母、数字、下划线或横线，并以字母或数字开头。
 
 同一服务可同时供直接 API 和 Agent 使用。Agent 选择带 provider 前缀的模型：

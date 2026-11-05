@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import type { Controls } from '../../../src/commands';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
-import { createRootConfig, runtimeProfileConfig, saveRootConfig } from '../../../src/config/profile-store';
+import { createRootConfig, runtimeProfileConfig } from '../../../src/config/profile-store';
 import { configureModelService } from '../../../src/model-service/registry';
 import { normalizeInbox } from '../../../src/inbox/config';
 import type { WorkItemRuntime } from '../../../src/work-items/contracts';
@@ -15,6 +15,7 @@ import type { InboxJob } from '../../../src/inbox/types';
 import { processInbox } from '../../../src/monitoring/sources/lark/processor';
 import { triageWithChatTools } from '../../../src/monitoring/sources/lark/codex-triage';
 import { workItemTarget } from '../../../src/inbox/lark-target';
+import { saveWithMonitors } from '../../helpers/monitors';
 
 vi.mock('../../../src/work-items/service', () => ({ WorkItemService: vi.fn(function (_store, config) {
   return { config, start: vi.fn(), close: vi.fn(), list: () => [] };
@@ -46,7 +47,7 @@ async function setup(standalone = true) {
     root.modelServices = { screen: { protocol: 'responses', baseUrl: 'https://independent.test/v1', model: 'independent-model', apiKey: { source: 'env', id: 'TEST_INBOX_MODEL_KEY' } } };
     root.inbox.triageService = 'screen'; root.inbox.triageModel = undefined;
   }
-  const configPath = join(dir, 'config.json'); await saveRootConfig(root, configPath);
+  const configPath = join(dir, 'config.json'); await saveWithMonitors(root, configPath);
   const controls: Controls = { profile: 'claude', profileConfig: claude, cfg: runtimeProfileConfig(root, 'claude'), configPath,
     ownerRefreshState: 'ok', processId: 'test', refreshOwner: async () => {}, restart: async () => {}, exit: async () => {} };
   const manager = new InboxManager(configPath, profile => profile === 'claude' ? controls : undefined, dir); managers.push(manager);

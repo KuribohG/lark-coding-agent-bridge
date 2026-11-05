@@ -6,6 +6,7 @@ import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
 import { normalizeGitLabCi, validateGitLabCi } from '../../../src/monitoring/sources/gitlab-ci/config';
 import { configureCiWatch } from '../../../src/cli/commands/ci-watch';
+import { loadMonitorRoot } from '../../../src/monitoring/store';
 
 it('keeps CI watch disabled unless explicitly enabled and validates enabled settings', () => {
   expect(normalizeGitLabCi(undefined)).toMatchObject({ enabled: false, pollSeconds: 60 });
@@ -29,11 +30,11 @@ it.each(['codex', 'claude'] as const)('saves %s CI settings without dropping mod
   const input = join(dir, 'ci.json'); await writeFile(input, JSON.stringify(settings));
   const output = vi.spyOn(console, 'log').mockImplementation(() => {});
   try { await configureCiWatch(input, { config: path }); } finally { output.mockRestore(); }
-  const saved = (await loadRootConfig(path))!;
+  const saved = (await loadMonitorRoot(path))!;
   expect(saved.gitlabCi).toEqual(settings);
   expect(saved.profiles).toEqual(before);
   expect(saved.modelServices).toEqual(root.modelServices);
   saved.profiles.executor!.preferences.model = 'another-model';
   await saveRootConfig(saved, path);
-  expect((await loadRootConfig(path))!.gitlabCi).toEqual(settings);
+  expect((await loadMonitorRoot(path))!.gitlabCi).toEqual(settings);
 });

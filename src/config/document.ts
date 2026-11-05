@@ -20,7 +20,6 @@ import { SLACK_DISPLAY_DEFAULTS } from '../channels/slack/config';
 import { normalizeFileLinks } from './file-links';
 import { MAX_WORKFLOW_TIMEOUT_MINUTES, type RunPreferences } from './schema';
 import { parseEffort } from '../agent/model-settings';
-import { parseWorkItemConcurrency } from '../work-items/concurrency';
 import {
   AGENT_KINDS,
   agentBackendSpec,
@@ -180,7 +179,7 @@ function checkProfile(p: Table, path: string): void {
 }
 
 function validateDocument(input: unknown): ConfigDocument {
-  const doc = keys(input, ['version', 'bridge', 'defaults', 'agents', 'state', 'channels', 'profiles', 'secrets', 'migrations', 'model_services', 'monitoring'], 'config');
+  const doc = keys(input, ['version', 'bridge', 'defaults', 'agents', 'state', 'channels', 'profiles', 'secrets', 'migrations', 'model_services'], 'config');
   if (doc.version !== 3) throw new Error('config.version must be 3');
   if (doc.bridge !== undefined) {
     const bridge = keys(doc.bridge, ['active_profile', 'autostart_profiles', 'monitors_file'], 'bridge');
@@ -232,16 +231,11 @@ function validateDocument(input: unknown): ConfigDocument {
       checkDisplay(options, channel, `channels.${channel}.profiles.${profile}`);
     }
   }
-  if (doc.monitoring !== undefined) {
-    keys(doc.monitoring, ['lark', 'gitlab_ci', 'storage', 'concurrency'], 'monitoring');
-    if (doc.monitoring.concurrency !== undefined) parseWorkItemConcurrency(doc.monitoring.concurrency, 'monitoring.concurrency');
-  }
   if (doc.secrets !== undefined) checkSecrets(doc.secrets, 'secrets');
   if (doc.bridge?.active_profile && !Object.hasOwn(profiles, doc.bridge.active_profile)) throw new Error('bridge.active_profile: profile not found');
   for (const profile of doc.bridge?.autostart_profiles ?? []) {
     if (!Object.hasOwn(profiles, profile)) throw new Error(`bridge.autostart_profiles: profile not found: ${profile}`);
   }
-  if (doc.bridge?.monitors_file && doc.monitoring) throw new Error('use bridge.monitors_file or inline monitoring, not both');
   return { ...doc, profiles } as ConfigDocument;
 }
 
@@ -345,10 +339,6 @@ export function documentToRoot(doc: ConfigDocument): RootConfig {
     ...(doc.bridge?.monitors_file ? { monitorConfigFile: doc.bridge.monitors_file } : {}),
     ...(doc.secrets ? { secrets: doc.secrets } : {}), ...(doc.migrations ? { migrations: doc.migrations } : {}),
     ...(doc.model_services ? { modelServices: doc.model_services } : {}),
-    ...(doc.monitoring?.lark ? { inbox: doc.monitoring.lark } : {}),
-    ...(doc.monitoring?.gitlab_ci ? { gitlabCi: doc.monitoring.gitlab_ci } : {}),
-    ...(doc.monitoring?.storage ? { storageMonitor: doc.monitoring.storage } : {}),
-    ...(doc.monitoring?.concurrency !== undefined ? { workItemConcurrency: parseWorkItemConcurrency(doc.monitoring.concurrency) } : {}),
   };
 }
 
@@ -378,11 +368,6 @@ export function rootToDocument(root: RootConfig): ConfigDocument {
   if (root.secrets) doc.secrets = root.secrets;
   if (root.migrations) doc.migrations = root.migrations;
   if (root.modelServices) doc.model_services = root.modelServices;
-  if (!root.monitorConfigFile && (root.inbox || root.gitlabCi || root.storageMonitor || root.workItemConcurrency !== undefined)) doc.monitoring = {
-    ...(root.inbox ? { lark: root.inbox } : {}), ...(root.gitlabCi ? { gitlab_ci: root.gitlabCi } : {}),
-    ...(root.storageMonitor ? { storage: root.storageMonitor } : {}),
-    ...(root.workItemConcurrency !== undefined ? { concurrency: parseWorkItemConcurrency(root.workItemConcurrency) } : {}),
-  };
   return doc;
 }
 

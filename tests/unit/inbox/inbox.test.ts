@@ -11,8 +11,6 @@ import { InboxLark, messageTime, parseMessages } from '../../../src/inbox/lark';
 import { InboxH5Auth } from '../../../src/inbox/h5-auth';
 import { analyzeInbox, analysisBody } from '../../../src/monitoring/sources/lark/analyzer';
 import { startInboxH5 } from '../../../src/inbox/h5-server';
-import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
-import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
 import type { InboxIO, InboxMessage } from '../../../src/inbox/types';
 import { workItemTarget } from '../../../src/inbox/lark-target';
 
@@ -265,14 +263,6 @@ describe('durable inbox', () => {
     const { service } = await setup();
     await expect(service.setMode('off', async () => { throw new Error('disk failure'); })).rejects.toThrow('disk failure');
     expect(service.config.enabled).toBe(true);
-  });
-  it('preserves global inbox settings through root serialization', async () => {
-    const path = join(await mkdtemp(join(tmpdir(), 'inbox-config-')), 'config.json');
-    const profile = createDefaultProfileConfig({ agentKind: 'codex', accounts: { app: { id: 'cli_app', secret: 'fixture', tenant: 'feishu' } }, codex: { binaryPath: 'codex' } });
-    const root = createRootConfig('codex', profile); root.inbox = config(); await saveRootConfig(root, path);
-    const loaded = (await loadRootConfig(path))!; expect(loaded.inbox).toEqual(config());
-    loaded.profiles.codex!.preferences.model = 'another'; await saveRootConfig(loaded, path);
-    expect((await loadRootConfig(path))?.inbox).toEqual(config());
   });
   it('pauses a private pending task when the owner replies', async () => {
     const { service, io, advance } = await setup(); await service.tick();

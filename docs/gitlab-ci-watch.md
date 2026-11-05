@@ -25,8 +25,8 @@ lark-channel-bridge ci-watch status
 ```
 
 Both commands accept `--config /absolute/path/to/bridge/config.toml`. Settings live
-in `monitors.toml` when selected by `bridge.monitors_file`, or the root TOML's `monitoring.gitlab_ci` table and survive other profile configuration
-changes. A bridge version with this feature reloads settings within 15 seconds;
+in the `monitors.toml` selected by `bridge.monitors_file` (created on the first save)
+and survive other profile configuration changes. A bridge version with this feature reloads settings within 15 seconds;
 builds containing the independent background executor resolve its configuration
 without requiring the Lark profile to be online. Earlier builds require the
 profile online. The supervisor process must keep running in both cases. The status command reports persisted

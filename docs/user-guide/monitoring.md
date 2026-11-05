@@ -14,7 +14,7 @@ lark-channel-bridge monitors status
 
 `init` 从原配置迁移，保留现有开关、模型、范围和通知目标；不会覆盖已有文件。随后编辑 `[sources.lark]`、`[sources.gitlab_ci]` 和仓库列表即可。账号密钥仍使用原凭据存储，文件里只写引用。
 
-工作台会显示文件位置，设置保存也更新同一个文件。两个来源每 15 秒检查配置，不依赖页面打开；文件有错时保留上一次有效运行配置并显示错误。未迁移的安装继续使用原 JSON。格式示例见[带注释的 TOML](../monitors.example.toml)，迁移、校验和回写细节见[统一监控配置](../monitor-config.md)。
+工作台会显示文件位置，设置保存也更新同一个文件。两个来源每 15 秒检查配置，不依赖页面打开；文件有错时保留上一次有效运行配置并显示错误。未配置监控文件时所有来源保持关闭，工作台或 `ci-watch configure` 首次保存会在 `config.toml` 旁创建 `monitors.toml`。格式示例见[带注释的 TOML](../monitors.example.toml)，迁移、校验和回写细节见[统一监控配置](../monitor-config.md)。
 
 ## 与会话助理的关系
 
@@ -42,7 +42,7 @@ GitLab 仓库轮询 → 发现新的失败 → 助理待办 → 复查并采集�
 
 保存下面的完整 CI 配置为 `ci-watch.json`，替换地址、profile、仓库和绝对路径：
 
-这是兼容的单来源导入方式；已迁移到 TOML 时，它会更新同一个监控文件中的 GitLab 配置。
+它会更新监控文件中的 GitLab 配置。
 
 ```json
 {
