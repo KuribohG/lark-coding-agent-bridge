@@ -92,7 +92,6 @@ describe('static architecture contracts', () => {
       'src/commands/recent.ts',
       'src/commands/resume.ts',
       'src/commands/status.ts',
-      'src/agent/model-service.ts',
       'src/agent/model-settings.ts',
       'src/agent/model-environment.ts',
       'src/config/document.ts',
