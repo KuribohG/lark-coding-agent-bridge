@@ -53,7 +53,8 @@ corepack pnpm install --frozen-lockfile
 pwsh -File installer/build.ps1
 ```
 
-产物在 `dist-installer\LarkChannelBridge-Setup-<baseVersion>-g<sha>.exe`，约 20–30 MB。
+产物在 `dist-installer\LarkChannelBridge-Setup-<baseVersion>-g<sha>.exe`，约 35–40 MB
+（含约 12 MB 的 `lark-cli` 二进制）。
 常用参数：
 
 | 参数 | 作用 |
