@@ -1,3 +1,5 @@
+import { validateJsonSchema, type JsonSchema } from './json-schema';
+
 /** Host syntax repair for model output; throws when the text cannot be repaired. */
 export type JsonRepair = (text: string) => unknown;
 
@@ -13,4 +15,12 @@ export function normalizeJsonOutput(text: string, repair?: JsonRepair): string |
     }
   }
   return undefined;
+}
+
+/** The canonical answer, or why it cannot become the script value (unparsable or not matching the schema). */
+export function checkJsonOutput(text: string, schema: JsonSchema | undefined, repair?: JsonRepair): { text: string } | { problem: string } {
+  const normalized = normalizeJsonOutput(text, repair);
+  if (normalized === undefined) return { problem: 'Agent output is not valid JSON' };
+  const errors = schema ? validateJsonSchema(schema, JSON.parse(normalized)) : [];
+  return errors.length ? { problem: `Agent output does not match schema: ${errors.join('; ')}` } : { text: normalized };
 }

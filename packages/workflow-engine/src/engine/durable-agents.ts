@@ -87,7 +87,7 @@ export function scheduleMemberTurn(state: WorkflowState, call: ScriptAgentCall, 
     ...(call.workspace ? {workspaceId:call.workspace} : {}),
     ...(call.workflowTool ? {workflowTool:true} : {}),
     requestDigest: digest, cacheKey: digest, status: 'queued', attempts: [], resultRefs: [], inputRefs,
-    scriptRunId: state.script!.runId, scriptKey: call.key, scriptOutput: call.output, agentId: agent.agentId,
+    scriptRunId: state.script!.runId, scriptKey: call.key, scriptOutput: call.output, ...(call.schema ? { scriptSchema: call.schema } : {}), agentId: agent.agentId,
     previousTurnId, inputCheckpointVersion: agent.checkpointVersion, inputMessageIds: receipts.flatMap(receipt => receipt.messageIds) };
   task.cacheKey = workflowDigest({ request: digest, checkpointVersion: task.inputCheckpointVersion, messageIds: task.inputMessageIds });
   for (const receipt of receipts) receipt.turnId = task.taskId;

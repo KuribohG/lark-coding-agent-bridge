@@ -3,15 +3,16 @@ import { WorkflowWorkspaces } from './workspaces';
 import type { WorkspaceBinding } from './workspace-types';
 import { fileURLToPath } from 'node:url';
 import { silentLogger, WorkflowStopped, type WorkerRun, type WorkerRunner, type WorkerRunSpec, type WorkflowProcesses } from './ports';
-import { normalizeJsonOutput } from './json-output';
+import { checkJsonOutput } from './json-output';
 import { RESUME_DEADLINE, RESUME_ROOT_CHANGED, WorkflowKernel } from './kernel';
 import { WorkflowIpc, WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from './ipc';
 import { workflowDigest } from './digest';
 import { inheritedWorkerExecution } from './execution';
-import { runScriptProgram } from './script-vm';
+import { runScriptProgram, WorkflowAgentFailure } from './script-vm';
 import type { WorkerExecution, WorkerExecutionPolicy, WorkerExecutionSelection, WorkflowLogger, WorkflowRoot, WorkflowState, WorkflowWorkerRequest, WorkflowWorkerResult } from './types';
 
-const JSON_FORMAT_RETRY_PROMPT = '上一条最终答复不是合法 JSON，脚本无法解析。不要重新执行任务或任何工具操作；只把上一条答复的内容按任务要求的 JSON 结构重新输出，最终答复只包含这一个 JSON 值，不加代码块或其它文字。';
+const JSON_FORMAT_RETRIES = 2;
+const jsonFormatRetryPrompt = (problem: string) => `上一条最终答复无法作为脚本结果：${problem.slice(0, 1500)}。不要重新执行任务或任何工具操作；只把上一条答复的内容按任务要求的 JSON 结构（如有 JSON Schema 须完全符合）重新输出，最终答复只包含这一个 JSON 值，不加代码块或其它文字。`;
 
 export interface WorkflowRuntimeDeps extends WorkerExecutionPolicy {
   /** SQLite path, or ':memory:' (managed worktrees then need an explicit workspaceRoot). */
@@ -133,10 +134,16 @@ export class WorkflowRuntime {
         agent: async input => {
           controller.signal.throwIfAborted();
           const call = await this.kernel.scriptAgent(scopeId, workflowId, runId, input);
-          const result = await this.waitForScriptValue(scopeId, controller.signal, () => this.kernel.scriptTaskResult(scopeId, workflowId, runId, call.taskId));
+          let result: string;
+          // Only the worker's own failure is soft; invalid calls and stopped runs still reject.
+          try { result = await this.waitForScriptValue(scopeId, controller.signal, () => this.kernel.scriptTaskResult(scopeId, workflowId, runId, call.taskId)); }
+          catch (error) {
+            if (controller.signal.aborted) throw error;
+            throw new WorkflowAgentFailure(error instanceof Error ? error.message : String(error));
+          }
           if (call.output === 'text') return result;
           try { return JSON.parse(result) as unknown; }
-          catch { throw new Error('Agent output is not valid JSON'); }
+          catch { throw new WorkflowAgentFailure('Agent output is not valid JSON'); }
         },
         mailbox: async input => {
           controller.signal.throwIfAborted();
@@ -282,12 +289,14 @@ export class WorkflowRuntime {
       };
       run = await start(request.prompt, (task.agentId || task.workflowTool) && session.nativeSessionId ? { kind: session.nativeIdKind, id: session.nativeSessionId } : undefined);
       let outcome = await turn(run);
-      // A malformed JSON answer usually reflects formatting, not the work; ask the same session to restate it once.
-      if (task.scriptOutput === 'json' && outcome.result === 'completed' && outcome.normal && !outcome.question && outcome.nativeSessionId
-        && !signal.aborted && normalizeJsonOutput(outcome.text ?? '', this.deps.repairJson) === undefined) {
+      // A malformed or non-conforming JSON answer usually reflects formatting, not the work; ask the same session to restate it.
+      for (let retry = 1; retry <= JSON_FORMAT_RETRIES; retry++) {
+        if (task.scriptOutput !== 'json' || outcome.result !== 'completed' || !outcome.normal || outcome.question || !outcome.nativeSessionId || signal.aborted) break;
+        const checked = checkJsonOutput(outcome.text ?? '', task.scriptSchema, this.deps.repairJson);
+        if (!('problem' in checked)) break;
         if (!await run.waitForExit(5000)) throw new Error('Worker has not exited before the JSON format retry');
-        this.log.warn('worker-json-format-retry', { workflowId: workflow.workflowId, taskId: task.taskId, attemptId });
-        run = await start(JSON_FORMAT_RETRY_PROMPT, { kind: session.nativeIdKind, id: outcome.nativeSessionId });
+        this.log.warn('worker-json-format-retry', { workflowId: workflow.workflowId, taskId: task.taskId, attemptId, retry });
+        run = await start(jsonFormatRetryPrompt(checked.problem), { kind: session.nativeIdKind, id: outcome.nativeSessionId });
         outcome = await turn(run);
       }
       const { result, text, question, error, normal } = outcome;

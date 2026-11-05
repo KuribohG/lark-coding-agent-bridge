@@ -14,7 +14,7 @@ for (let round = 0; round < 8; round++) {
           + 'renew the lease before it expires, then complete_work or fail_work. Continue with a new operationId for '
           + 'each claim until claim_work returns null; then finish this turn. Do not poll or sleep waiting for work. '
           + 'Honor the declared resource/worktree ownership. Only the original authorized task may be performed.',
-        { key: `consumer-${member.name}-${round}`, member: member.name, harness: member.harness, model: member.model },
+        { key: `consumer-${member.name}-${round}`, member: member.name, harness: member.harness, model: member.model, onError: 'throw' },
       );
       return { member, answer, ok: true };
     } catch (error) {

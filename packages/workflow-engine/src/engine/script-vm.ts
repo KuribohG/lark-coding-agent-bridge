@@ -3,6 +3,11 @@ import { SCRIPT_MAX_TASKS, SCRIPT_MAX_TEXT } from './script-contract';
 import { REVIEW_HELPER } from './review-helper';
 import { DISCUSS_HELPER } from './discuss-helper';
 
+/** A worker's own failure; agent() resolves it to null unless the call sets onError:'throw'. */
+export class WorkflowAgentFailure extends Error {
+  override name = 'WorkflowAgentFailure';
+}
+
 export interface ScriptProgramInput {
   source: string;
   args: unknown;
@@ -29,9 +34,26 @@ const PRELUDE = `(() => {
   delete globalThis.__bridgeWorkspace;
   delete globalThis.__bridgeControl;
   delete globalThis.__bridgeProgress;
+  const failureMode = options => {
+    const mode = options.onError === undefined ? 'null' : options.onError;
+    if (mode !== 'null' && mode !== 'throw') throw new TypeError("onError must be 'null' or 'throw'");
+    return mode;
+  };
+  // Failures stay visible in status; the log line records why a script value is null.
+  const softFailure = (mode, label, error) => {
+    if (mode === 'throw') throw error;
+    try { progress('log', label + ' failed; returning null: ' + (error && error.message ? error.message : String(error))); } catch {}
+    return null;
+  };
+  const strictParallel = tasks => Promise.all(tasks.map(task => task()));
   globalThis.agent = (prompt, options = {}) => {
     if (typeof prompt !== 'string' || !options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('agent(prompt, options) expected');
-    return invoke(JSON.stringify({...options, prompt})).then(JSON.parse);
+    const { onError, ...call } = options;
+    const mode = failureMode(options);
+    return invoke(JSON.stringify({...call, prompt})).then(JSON.parse, error => {
+      if (error && error.name === 'WorkflowAgentFailure') return softFailure(mode, 'agent ' + call.key, error);
+      throw error;
+    });
   };
   for (const [name,kind] of Object.entries({createWorkspace:'create',freezeWorkspace:'freeze',approveChange:'approve',integrateChanges:'integrate',checkWorkspace:'check',acceptIntegration:'accept',cleanupWorkspace:'cleanup'})) {
     globalThis[name] = options => workspace(JSON.stringify({...options,kind})).then(JSON.parse);
@@ -75,14 +97,17 @@ const PRELUDE = `(() => {
   };
   globalThis.parallel = tasks => {
     if (!Array.isArray(tasks) || tasks.length > ${SCRIPT_MAX_TASKS} || tasks.some(task => typeof task !== 'function')) throw new TypeError('parallel expects a bounded array of functions');
-    return Promise.all(tasks.map(task => task()));
+    return Promise.all(tasks.map((task, index) => Promise.resolve().then(task).catch(error => softFailure('null', 'parallel item ' + index, error))));
   };
   globalThis.pipeline = (items, ...stages) => {
     if (!Array.isArray(items) || items.length > ${SCRIPT_MAX_TASKS} || stages.length === 0 || stages.some(stage => typeof stage !== 'function')) throw new TypeError('pipeline expects items and stage functions');
+    // A failing stage drops its item to null and skips its remaining stages.
     return Promise.all(items.map(async (item, index) => {
-      let value = item;
-      for (const stage of stages) value = await stage(value, index);
-      return value;
+      try {
+        let value = item;
+        for (const stage of stages) value = await stage(value, index);
+        return value;
+      } catch (error) { return softFailure('null', 'pipeline item ' + index, error); }
     }));
   };
   globalThis.phase = text => progress('phase', String(text));
@@ -140,7 +165,7 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
       const deferred = context.newPromise();
       deferreds.add(deferred);
       pending++;
-      const settle = (value: unknown, failed: boolean) => {
+      const settle = (value: unknown, failed: boolean, name?: string) => {
         pending--;
         if (disposed) return;
         let encoded: string;
@@ -149,14 +174,15 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
           if (encoded.length > SCRIPT_MAX_TEXT) throw new Error('Agent output exceeds size limit');
         } catch (error) { failed = true; encoded = String(error); }
         try {
-          const handle = failed ? context.newError(encoded.slice(0, 2000)) : context.newString(encoded);
+          const message = encoded.slice(0, 2000);
+          const handle = failed ? (name ? context.newError({ name, message }) : context.newError(message)) : context.newString(encoded);
           try { if (failed) deferred.reject(handle); else deferred.resolve(handle); }
           finally { handle.dispose(); }
         } finally { wake?.(); }
       };
       void Promise.resolve().then(() => { input.signal.throwIfAborted(); return invoke(call); }).then(
         value => settle(value, false),
-        error => settle(error instanceof Error ? error.message : String(error), true),
+        error => settle(error instanceof Error ? error.message : String(error), true, error instanceof WorkflowAgentFailure ? error.name : undefined),
       ).catch(error => { hostError = error; wake?.(); });
       return deferred.handle;
     });

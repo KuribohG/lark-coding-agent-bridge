@@ -254,6 +254,8 @@ export interface AgentTurn {
   scriptRunId?: string;
   scriptKey?: string;
   scriptOutput?: 'text' | 'json';
+  /** JSON Schema the parsed answer must satisfy. */
+  scriptSchema?: Record<string, unknown>;
   cacheKey?: string;
   agentId?: string;
   previousTurnId?: string;

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { runScriptProgram } from '../src/engine/script-vm';
+import { runScriptProgram, WorkflowAgentFailure } from '../src/engine/script-vm';
 
 function run(source: string, options: Partial<Parameters<typeof runScriptProgram>[0]> = {}) {
   return runScriptProgram({ source, args: null, signal: AbortSignal.timeout(5000),
@@ -43,10 +43,27 @@ describe('script interpreter', () => {
     expect(agent).not.toHaveBeenCalled();
   });
 
-  it('propagates worker failures and permits explicit catch', async () => {
-    const agent = async () => { throw new Error('worker failed'); };
-    await expect(run('return await parallel([() => agent("a", {key:"a"})]);', { agent })).rejects.toThrow('worker failed');
-    expect(await run('try { await agent("a", {key:"a"}); } catch(e) { return e.message; }', { agent })).toBe('"worker failed"');
+  it('resolves worker failures to null unless the call opts into throwing', async () => {
+    const agent = vi.fn(async (_call: unknown) => { throw new WorkflowAgentFailure('worker failed'); });
+    const progress = vi.fn();
+    expect(JSON.parse(await run('return await agent("a", {key:"a"});', { agent, progress }))).toBeNull();
+    expect(progress).toHaveBeenCalledWith('log', 'agent a failed; returning null: worker failed');
+    expect(agent.mock.calls[0]![0]).toEqual({ key: 'a', prompt: 'a' });
+    expect(await run('try { await agent("a", {key:"a", onError:"throw"}); } catch(e) { return [e.name, e.message]; }', { agent }))
+      .toBe('["WorkflowAgentFailure","worker failed"]');
+    await expect(run('return await agent("a", {key:"a", onError:"ignore"});', { agent })).rejects.toThrow("onError must be 'null' or 'throw'");
+  });
+
+  it('keeps invalid calls fatal for agent() but isolates failing parallel and pipeline items', async () => {
+    const agent = vi.fn(async (call: unknown) => {
+      if ((call as { key: string }).key === 'bad') throw new Error('Duplicate agent key: bad');
+      return (call as { prompt: string }).prompt;
+    });
+    await expect(run('return await agent("a", {key:"bad"});', { agent })).rejects.toThrow('Duplicate agent key');
+    expect(JSON.parse(await run('return await parallel([() => agent("a",{key:"bad"}), () => agent("b",{key:"b"}), () => { throw new Error("bug"); }]);', { agent })))
+      .toEqual([null, 'b', null]);
+    expect(JSON.parse(await run('return await pipeline([1, 2], v => { if (v === 1) throw new Error("x"); return v; }, v => v * 10);', { agent })))
+      .toEqual([null, 20]);
   });
 
   it('does not expose host globals or a module loader', async () => {

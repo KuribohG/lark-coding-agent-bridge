@@ -1,4 +1,5 @@
 import { workerSelection } from './execution';
+import { parseJsonSchema, type JsonSchema } from './json-schema';
 import type { WorkerExecutionPolicy, WorkerExecutionSelection, WorkflowDefinition, WorkflowRoot } from './types';
 
 export const DEFAULT_WORKFLOW_TIMEOUT_MINUTES = 480;
@@ -21,6 +22,8 @@ export interface ScriptAgentCall {
   prompt: string;
   selection: WorkerExecutionSelection;
   output: 'text' | 'json';
+  /** Validated against the parsed answer; implies JSON output. */
+  schema?: JsonSchema;
   workflowTool?: boolean;
   workspace?: string;
   /** Keys of earlier agent calls in this run whose results the worker reads by reference. */
@@ -49,15 +52,17 @@ export function scriptArgs(value: unknown): unknown {
 export function parseScriptAgentCall(value: unknown, defaults: WorkerExecutionSelection, root: WorkflowRoot, policy?: WorkerExecutionPolicy): ScriptAgentCall {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid agent() call');
   const input = value as Record<string, unknown>;
-  if (Object.keys(input).some(key => !['key', 'member', 'prompt', 'harness', 'model', 'reasoningEffort', 'output', 'workflowTool', 'workspace', 'inputs'].includes(key))) {
-    throw new Error('agent() supports key, member, harness, model, reasoningEffort, output, workflowTool, workspace and inputs only');
+  if (Object.keys(input).some(key => !['key', 'member', 'prompt', 'harness', 'model', 'reasoningEffort', 'output', 'schema', 'workflowTool', 'workspace', 'inputs'].includes(key))) {
+    throw new Error('agent() supports key, member, harness, model, reasoningEffort, output, schema, workflowTool, workspace and inputs only');
   }
   if (input.workflowTool !== undefined && typeof input.workflowTool !== 'boolean') throw new Error('workflowTool must be boolean');
   const key = scriptText(input.key, 'agent key', 160);
   if (key.startsWith('@consumer/') || key.startsWith('@wait/')) throw new Error('Agent key uses a reserved consumer or wait prefix');
   if (key.trim() !== key) throw new Error('agent key must not contain surrounding whitespace');
-  const output = input.output ?? 'text';
+  const schema = input.schema === undefined ? undefined : parseJsonSchema(input.schema);
+  const output = input.output ?? (schema ? 'json' : 'text');
   if (output !== 'text' && output !== 'json') throw new Error('agent output must be text or json');
+  if (schema && output !== 'json') throw new Error('agent schema requires JSON output');
   const harness = input.harness ?? defaults.agentKind;
   const inherited = harness === defaults.agentKind ? defaults : { agentKind: harness };
   const selection = workerSelection({ ...inherited, agentKind: harness,
@@ -75,5 +80,8 @@ export function parseScriptAgentCall(value: unknown, defaults: WorkerExecutionSe
     inputs = input.inputs.map(item => scriptText(item, 'agent input key', 160));
     if (new Set(inputs).size !== inputs.length || inputs.includes(key)) throw new Error('agent inputs must be distinct earlier agent keys');
   }
-  return { key, member, output, selection, ...(workspace ? { workspace } : {}), ...(inputs ? { inputs } : {}), ...(input.workflowTool ? { workflowTool: true } : {}), prompt: output === 'json' ? `${prompt}\n\nReturn only valid JSON, without markdown fences or explanatory text.` : prompt };
+  // The schema text is part of the prompt, so it also participates in the cache fingerprint.
+  const format = schema ? `\n\nReturn only one JSON value matching this JSON Schema, without markdown fences or explanatory text:\n${JSON.stringify(schema)}`
+    : output === 'json' ? '\n\nReturn only valid JSON, without markdown fences or explanatory text.' : '';
+  return { key, member, output, selection, ...(schema ? { schema } : {}), ...(workspace ? { workspace } : {}), ...(inputs ? { inputs } : {}), ...(input.workflowTool ? { workflowTool: true } : {}), prompt: prompt + format };
 }

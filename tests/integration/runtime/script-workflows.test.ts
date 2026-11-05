@@ -639,7 +639,7 @@ describe('script workflow runtime', () => {
 
   it('fails a member continuation if the backend silently replaces its native session', async () => {
     const h=await harness({codex:['first','replacement']});
-    await h.call('run_script',{goal:'session identity',script:'await agent("first",{key:"first",member:"A"});return await agent("second",{key:"second",member:"A"});'});
+    await h.call('run_script',{goal:'session identity',script:'await agent("first",{key:"first",member:"A"});return await agent("second",{key:"second",member:"A",onError:"throw"});'});
     await h.until(()=>expect(h.state().script?.status).toBe('failed'));
     expect(h.state().tasks[1]?.error).toContain('replaced the native worker session');
     expect(h.state().agents![0]?.lastTurnId).toBe(h.state().tasks[0]?.taskId);
@@ -773,9 +773,9 @@ describe('script workflow runtime', () => {
     const h = await harness();
     const turn = (sessionId: string, text: string): AgentEvent[] => [{ type: 'system', sessionId },
       { type: 'final_text', content: text }, { type: 'done', terminationReason: 'normal' }];
-    // The resumed format retry keeps its native session; the replay starts a fresh one.
-    h.adapters.pi.setEvents([turn('s1', 'no json here'), turn('s1', 'still no json'), turn('s2', '{"ok":true}')]);
-    await h.call('run_script', { goal: 'JSON test', script: 'return await agent("json",{key:"json",harness:"pi",output:"json"});' });
+    // The resumed format retries keep their native session; the replay starts a fresh one.
+    h.adapters.pi.setEvents([turn('s1', 'no json here'), turn('s1', 'still no json'), turn('s1', 'never json'), turn('s2', '{"ok":true}')]);
+    await h.call('run_script', { goal: 'JSON test', script: 'return await agent("json",{key:"json",harness:"pi",output:"json",onError:"throw"});' });
     await h.until(() => expect(h.state().script?.status).toBe('failed'));
     expect(h.state().script?.error).toContain('not valid JSON');
     expect(h.state().tasks[0]?.status).toBe('failed');
@@ -783,8 +783,8 @@ describe('script workflow runtime', () => {
     await h.call('replay_script');
     await h.until(() => expect(h.state().script?.status).toBe('result_ready'));
     expect(h.state().script?.calls[0]?.cached).toBe(false);
-    // The failed attempt resumed its session once for a JSON-only restatement.
-    expect(h.adapters.pi.runs).toHaveLength(3);
+    // The failed attempt resumed its session twice for a JSON-only restatement.
+    expect(h.adapters.pi.runs).toHaveLength(4);
   });
 
   it('aborts suspended guest code on pause, resumes with replay, and forbids stale root replay', async () => {
@@ -806,7 +806,7 @@ describe('script workflow runtime', () => {
     await h.call('run_script', { goal: 'syntax', script: 'agent("never",{key:"a"}); return {' });
     await h.until(() => expect(h.state().script?.status).toBe('failed'));
     expect(h.state().tasks).toHaveLength(0);
-    await h.call('replay_script', { script: 'return await parallel([()=>agent("a",{key:"same"}),()=>agent("b",{key:"same"})]);' });
+    await h.call('replay_script', { script: 'const a=agent("a",{key:"same"}); const b=agent("b",{key:"same"}); return [await b, await a];' });
     await h.until(() => expect(h.state().script?.status).toBe('failed'));
     expect(h.state().script?.error).toContain('Duplicate agent key');
     expect(h.state().tasks).toHaveLength(1);

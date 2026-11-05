@@ -23,7 +23,8 @@ describe('reviewed agent composition', () => {
     expect(calls[2]).toMatchObject({inputs:['parser/review/1']});
     expect(calls[3]).toMatchObject({inputs:['parser/work/2']});
     expect(String(calls[1]!.prompt)).not.toContain('candidate-v1');
-    expect(calls[1]).toMatchObject({model:'review-model',output:'json'});
+    expect(calls[1]).toMatchObject({model:'review-model',schema:{required:['ok','reason','evidence']}});
+    expect(calls.some(call=>'onError' in call)).toBe(false);
     expect(calls[1]).not.toHaveProperty('member');expect(calls[3]).not.toHaveProperty('member');
   });
 
@@ -40,23 +41,33 @@ describe('reviewed agent composition', () => {
   it.each([{ok:true,reason:'Looks fine',evidence:[]},{ok:false,reason:'Fails',evidence:['ok',' ']},{ok:'yes',reason:'Fine',evidence:['test']},
     {ok:false,reason:'',evidence:[]},null])('fails closed for an invalid review decision: %j', async decision => {
     let count=0;
-    await expect(run(async ()=>++count===1?'candidate':decision)).rejects.toThrow('Invalid independent review decision');
+    await expect(run(async ()=>++count===1?'candidate':decision,{onError:'throw'})).rejects.toThrow('Invalid independent review decision');
     expect(count).toBe(2);
   });
 
-  it('bounds rework and propagates reviewer execution failures', async () => {
+  it('bounds rework and propagates reviewer execution failures when asked to throw', async () => {
     let count=0;
-    await expect(run(async ()=>++count%2?'candidate':{ok:false,reason:'Test failed',evidence:['failure']} ,{maxRounds:2}))
+    await expect(run(async ()=>++count%2?'candidate':{ok:false,reason:'Test failed',evidence:['failure']} ,{maxRounds:2,onError:'throw'}))
       .rejects.toThrow('did not pass after 2 rounds');
     expect(count).toBe(4);
     count=0;
-    await expect(run(async ()=>{if(++count===2)throw new Error('Reviewer unavailable');return 'candidate';}))
+    await expect(run(async ()=>{if(++count===2)throw new Error('Reviewer unavailable');return 'candidate';},{onError:'throw'}))
       .rejects.toThrow('Reviewer unavailable');
     expect(count).toBe(2);
   });
 
+  it('returns null by default when review never accepts, but still rejects invalid options', async () => {
+    let count=0;
+    const progress=vi.fn();
+    const result=await runScriptProgram({ source, args:{maxRounds:1}, signal:AbortSignal.timeout(5000), progress,
+      agent:async ()=>++count===1?'candidate':{ok:false,reason:'Test failed',evidence:['failure']} });
+    expect(JSON.parse(result)).toBeNull();
+    expect(progress).toHaveBeenCalledWith('log', expect.stringContaining('reviewedAgent parser failed; returning null: Independent review did not pass after 1 rounds'));
+    await expect(run(async ()=>'candidate',{onError:'skip'})).rejects.toThrow('onError');
+  });
+
   it('rejects invalid policies before creating workers and permits independent pairs in parallel', async () => {
-    const agent=vi.fn(async (input:unknown)=>(input as {output?:string}).output==='json'
+    const agent=vi.fn(async (input:unknown)=>(input as {schema?:unknown}).schema
       ? {ok:true,reason:'Verified',evidence:['test passed']}:'candidate');
     for(const args of [{maxRounds:5},{reviewer:{member:'same-worker'}},{criteria:''}]) await expect(run(agent,args)).rejects.toThrow();
     expect(agent).not.toHaveBeenCalled();

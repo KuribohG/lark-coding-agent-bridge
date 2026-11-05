@@ -53,7 +53,7 @@ async function harness(perform?: (opts: AgentRunOptions, index: number) => Promi
 
 const reviewScript = `
   const ws=await createWorkspace({key:'writer'});
-  const result=await reviewedAgent('Implement value.txt',{key:'task',criteria:'File must contain correct',maxRounds:2,
+  const result=await reviewedAgent('Implement value.txt',{key:'task',criteria:'File must contain correct',maxRounds:2,onError:'throw',
     worker:{harness:'codex',model:'writer',workspace:ws.id},reviewer:{harness:'codex',model:'reviewer'}});
   const merged=await integrateChanges({key:'merge',approvals:[result.approval.id]});
   const checks=await checkWorkspace({key:'checks',workspace:merged.workspace.id,commands:[{argv:[args.node,'-e',"if(require('fs').readFileSync('value.txt','utf8').trim()!=='correct')process.exit(1)"]}]});
@@ -118,7 +118,7 @@ describe('workspace script runtime', () => {
 
   it('retains ownership if the native adapter cannot confirm termination', async () => {
     const h = await harness(); h.adapter.setWaitForExit(false);
-    await h.call('run_script', { script: `const ws=await createWorkspace({key:'a'}); return await agent('task',{key:'first',workspace:ws.id});` });
+    await h.call('run_script', { script: `const ws=await createWorkspace({key:'a'}); return await agent('task',{key:'first',workspace:ws.id,onError:'throw'});` });
     await h.until('failed'); expect(h.state().script!.error).toContain('termination is uncertain');
     await h.call('replay_script', { plan: 'verify owner retention', script: `const ws=await createWorkspace({key:'a'}); return await freezeWorkspace({key:'freeze',workspace:ws.id});` });
     await h.until('failed'); expect(h.state().script!.error).toContain('Wait for every workspace task');

@@ -127,8 +127,49 @@ describe('workflow engine without bridge services', () => {
     expect(state.artifacts.find(artifact => artifact.ref === state.script?.resultRef)?.text).toBe('true');
     expect(specs).toHaveLength(2);
     expect(specs[0]!.resume).toBeUndefined();
-    expect(specs[1]).toMatchObject({ resume: { kind: 'sessionId', id: 'native-1' }, prompt: expect.stringContaining('不是合法 JSON') });
+    expect(specs[1]).toMatchObject({ resume: { kind: 'sessionId', id: 'native-1' }, prompt: expect.stringContaining('Agent output is not valid JSON') });
     expect(state.tasks[0]!.attempts).toHaveLength(1);
+  });
+
+  it('validates schema output, restates mismatches in the same session and resolves exhausted retries to null', async () => {
+    const root: WorkflowRoot = { scopeId: 'chat', profile: 'embedded', agentKind: 'custom-agent', cwdRealpath: '/repo',
+      policyFingerprint: 'policy', catalogBinding: 'main', modelSettings: {} };
+    const specs: WorkerRunSpec[] = [];
+    const answers = ['{"ok":"yes"}', '{"ok":true}', '{"wrong":1}', '{"wrong":2}', '{"wrong":3}'];
+    const runtime = new WorkflowRuntime({
+      path: ':memory:', resolveRoot: async () => root, wakeMain: async () => {},
+      runner: {
+        async start(spec) {
+          specs.push(spec);
+          await spec.validateBeforeRun();
+          const text = answers[specs.length - 1]!;
+          return {
+            runId: `run-${specs.length}`, result: Promise.resolve('completed'),
+            stop: async () => {}, waitForExit: async () => true, stopReason: () => undefined,
+            async *events() {
+              yield { type: 'session', nativeSessionId: `native-${specs.length < 3 ? 1 : 2}` };
+              yield { type: 'final_text', text };
+              yield { type: 'done', normal: true };
+            },
+          };
+        },
+      },
+    });
+    await runtime.start(); cleanup.push(() => runtime.close());
+    const main = runtime.bindMain(root.scopeId, 'start');
+    const schema = { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: false };
+    await callWorkflow('run_script', { operationId: randomUUID(), goal: 'json', plan: 'Two workers return schema-checked JSON.',
+      script: `const s=${JSON.stringify(schema)}; const a=await agent("answer", {key:"a", schema:s}); const b=await agent("again", {key:"b", schema:s}); return [a, b];` }, main.env);
+    main.release();
+    await vi.waitFor(async () => { await runtime.tick(); expect(runtime.kernel.state(root.scopeId)?.script?.status).toBe('result_ready'); });
+    const state = runtime.kernel.state(root.scopeId)!;
+    expect(JSON.parse(state.artifacts.find(artifact => artifact.ref === state.script?.resultRef)!.text)).toEqual([{ ok: true }, null]);
+    expect(specs).toHaveLength(5);
+    expect(specs[0]!.prompt).toContain('matching this JSON Schema');
+    expect(specs[1]).toMatchObject({ resume: { kind: 'sessionId', id: 'native-1' }, prompt: expect.stringContaining('/ok must be boolean') });
+    expect(specs[4]!.prompt).toContain('unexpected property');
+    expect(state.tasks[1]).toMatchObject({ status: 'failed', error: expect.stringContaining('does not match schema') });
+    expect(state.script?.logs?.at(-1)).toContain('agent b failed; returning null');
   });
 
   it('rejects worktrees unless the host authorizes them', async () => {

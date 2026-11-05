@@ -18,7 +18,7 @@ import type {
   NativeIdKind, WorkflowArtifact, WorkflowCaller, WorkflowEvent, WorkflowHost, WorkflowRoot,
   WorkflowState, WorkflowTask, WorkflowWorkerResult,
 } from './types';
-import { normalizeJsonOutput } from './json-output';
+import { checkJsonOutput } from './json-output';
 
 const BUSY = new Set<WorkflowTask['status']>(['queued', 'starting', 'running', 'cancelling']);
 const MAX_TEXT = 100_000;
@@ -557,7 +557,7 @@ export class WorkflowKernel {
         ...(call.workspace ? {workspaceId:call.workspace} : {}),
         ...(managed ? { scriptManaged: true } : {}),
         ...(call.workflowTool ? {workflowTool:true} : {}),
-        status: 'queued', attempts: [], resultRefs: [], scriptRunId: runId, scriptKey: call.key, scriptOutput: call.output, cacheKey };
+        status: 'queued', attempts: [], resultRefs: [], scriptRunId: runId, scriptKey: call.key, scriptOutput: call.output, ...(call.schema ? { scriptSchema: call.schema } : {}), cacheKey };
       state.tasks.push(task);
     }
     script.calls.push({ key: call.key, taskId: task.taskId, cached: Boolean(cached) });
@@ -1109,8 +1109,8 @@ export class WorkflowKernel {
       result = { status: 'failed', error: 'Member completed without a native session ID; cannot safely continue its conversation' };
     }
     if (!task.waitingWorkflowId && task.scriptOutput === 'json' && result.status === 'completed') {
-      const text = normalizeJsonOutput(result.text ?? '', this.host.repairJson?.bind(this.host));
-      result = text === undefined ? { status: 'failed', error: 'Agent output is not valid JSON' } : { ...result, text };
+      const checked = checkJsonOutput(result.text ?? '', task.scriptSchema, this.host.repairJson?.bind(this.host));
+      result = 'problem' in checked ? { status: 'failed', error: checked.problem.slice(0, 2000) } : { ...result, text: checked.text };
     }
     task.attempts.at(-1)!.endedAt = this.now();
     task.attempts.at(-1)!.result = result.status;

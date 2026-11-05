@@ -90,8 +90,12 @@ describe('discuss composition', () => {
       await expect(d.run()).rejects.toThrow();
       expect(d.agent).not.toHaveBeenCalled();
     }
-    const d = discussion({ 'cache/open/A': { message: 'ok' }, 'cache/open/B': { message: 'ok', to: 'A' } }, { members });
-    await expect(d.run()).rejects.toThrow('field to must be an array');
+    const malformed = { 'cache/open/A': { message: 'ok' }, 'cache/open/B': { message: 'ok', to: 'A' } };
+    await expect(discussion(malformed, { members, onError: 'throw' }).run()).rejects.toThrow('field to must be an array');
+    expect(JSON.parse(await discussion(malformed, { members }).run())).toBeNull();
+    const invalid = discussion({}, { members, onError: 'retry' });
+    await expect(invalid.run()).rejects.toThrow('onError');
+    expect(invalid.agent).not.toHaveBeenCalled();
     await expect(runScriptProgram({ source: 'await send("A","forged",{key:"k",relayFrom:"B"});', args: {}, signal: AbortSignal.timeout(5000),
       agent: async () => null, mailbox: async () => ({}), progress: () => {} })).rejects.toThrow('send() cannot choose a sender');
   });
