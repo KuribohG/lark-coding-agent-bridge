@@ -24,7 +24,6 @@ import { respondToCardAction } from './response';
  * fields the agent might set.
  */
 const BRIDGE_CALLBACK_MARKER = '__bridge_cb';
-const LEGACY_CLAUDE_CALLBACK_MARKER = '__claude_cb';
 
 export interface CardDispatchDeps {
   channel: LarkChannel;
@@ -99,11 +98,6 @@ async function dispatchCardAction(deps: CardDispatchDeps): Promise<CardActionRes
       operator: operatorId.slice(-6),
       reason: accessDecision.reason,
     });
-    return;
-  }
-
-  if (LEGACY_CLAUDE_CALLBACK_MARKER in payload) {
-    log.info('cardAction', 'skip-legacy-callback-marker', { scope });
     return;
   }
 
@@ -267,15 +261,11 @@ function isSignedBridgeCallback(payload: Record<string, unknown>): boolean {
   return BRIDGE_CALLBACK_MARKER in payload || typeof payload.bridge_token === 'string';
 }
 
-/** Turn a button payload like {cmd:'ws.use', name:'proj-a'} into the arg
- * string the text-command handler expects: 'use proj-a'. Accepts `arg`
- * (preferred, generic) or `name` (legacy ws cards). */
+/** Turn a button payload like {cmd:'ws.use', arg:'proj-a'} into the arg
+ * string the text-command handler expects: 'use proj-a'. */
 function composeArgs(sub: string, payload: Record<string, unknown>): string {
   if (!sub) return '';
-  const arg =
-    (typeof payload.arg === 'string' && payload.arg) ||
-    (typeof payload.name === 'string' && payload.name) ||
-    '';
+  const arg = typeof payload.arg === 'string' ? payload.arg : '';
   return arg ? `${sub} ${arg}` : sub;
 }
 

@@ -68,7 +68,6 @@ describe('ClaudeAdapter process contract', () => {
     expect(record.systemPrompt).toContain('LARK_CHANNEL_PROFILE');
     expect(record.systemPrompt).toContain('LARKSUITE_CLI_CONFIG_DIR');
     expect(record.systemPrompt).not.toContain('lark-cli config bind --source lark-channel');
-    expect(record.systemPrompt).not.toContain('__claude_cb');
     expect(record.argv).not.toContain('--resume');
     expect(record.argv).not.toContain('--model');
   });

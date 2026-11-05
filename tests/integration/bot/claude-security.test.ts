@@ -36,12 +36,12 @@ describe('Claude shared security regressions', () => {
     await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
   });
 
-  it('rejects legacy card callback marker payloads instead of forwarding them', async () => {
+  it('does not forward card payloads without the bridge callback marker', async () => {
     const h = await createHarness();
 
     await handleCardAction({
       channel: h.channel as unknown as Parameters<typeof handleCardAction>[0]['channel'],
-      evt: cardEvent({ __claude_cb: true, choice: 'legacy' }),
+      evt: cardEvent({ choice: 'unmarked' }),
       sessions: h.sessions,
       workspaces: h.workspaces,
       activeRuns: h.activeRuns,
