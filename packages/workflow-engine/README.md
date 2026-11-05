@@ -50,7 +50,7 @@ The main agent and workers call workflow operations through `node "$AGENT_WORKFL
 `runner.start(spec)` launches one agent turn and resolves after it has been admitted:
 
 - Pass `spec.env` to the agent process and use `spec.systemPrompt` as additional system instructions. If `spec.workspace` is set, use `spec.workspace.path` as the working directory.
-- Call `await spec.validateBeforeRun()` after any queueing and before starting the agent. It throws when the binding or worktree is stale.
+- Call `await spec.validateBeforeRun()` after any queueing and before starting the agent. It throws when the binding or worktree is stale. The engine records the call as the attempt's `admittedAt`, so call it as soon as the host grants an execution slot; without it, slot queueing is indistinguishable from execution time.
 - When `spec.resume` is set, continue that native session (`kind` names the backend's session-ID field).
 - `events()` yields `session` (the native session ID, needed for durable members), `final_text`, `error`, `retry` (discards earlier text), `done` with `normal`, and `user_input` (the engine stops the turn and records the question).
 - `result` resolves to `completed`, `stopped` or `failed`. A turn produces a result only when it completes with `done.normal` and has `final_text`.

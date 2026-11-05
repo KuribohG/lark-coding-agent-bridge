@@ -225,6 +225,7 @@ export class WorkflowRuntime {
         sessionKey: `workflow:${workflow.workflowId}:${session.sessionRef}`,
         root: workflow.root, execution: pinned, role: session.role, prompt: request.prompt, env: binding.env,
         validateBeforeRun: async () => {
+          request.onAdmitted();
           const admitted = await this.resolveWorker(workflow.root, selection);
           if (workflowDigest(admitted) !== workflowDigest(pinned)) throw new Error('Worker binding changed while queued');
           if (workspace) {

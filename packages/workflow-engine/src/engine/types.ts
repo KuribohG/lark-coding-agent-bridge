@@ -91,7 +91,14 @@ export interface TurnAttempt {
   stopReason?: WorkflowStopReason;
   attemptId: string;
   runId?: string;
+  /** Attempt queued by the kernel; host admission may still be pending. */
   startedAt: number;
+  /** Host granted an execution slot; the gap from startedAt is queueing outside the engine. */
+  admittedAt?: number;
+  /** Native worker process started. */
+  spawnedAt?: number;
+  /** Worker reported its native session, the first sign the agent is running. */
+  sessionAt?: number;
   endedAt?: number;
   result?: string;
   checkpointVersion?: number;
@@ -313,6 +320,10 @@ export interface WorkflowEvent {
   summary: string;
   acknowledged: boolean;
   notified: boolean;
+  /** Absent on events recorded before timing was tracked. */
+  createdAt?: number;
+  notifiedAt?: number;
+  acknowledgedAt?: number;
 }
 
 export interface WorkflowState {
@@ -358,6 +369,8 @@ export interface WorkflowWorkerRequest {
   signal: AbortSignal;
   onSession(nativeId: string, model?: string): void;
   onRun(runId: string): void;
+  /** The host granted an execution slot; call before admission checks run. */
+  onAdmitted(): void;
 }
 
 export interface WorkflowWorkerResult {

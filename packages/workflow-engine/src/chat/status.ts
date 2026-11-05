@@ -11,6 +11,17 @@ const compact = (value: string, limit: number) => {
   return text.length > limit ? text.slice(0, limit - 1) + '…' : text;
 };
 const errorText = (error: string) => compact(error, 220);
+const duration = (ms: number) => ms < 60_000 ? `${Math.max(0, Math.round(ms / 1000))} 秒` : ms < 3_600_000 ? `${Math.round(ms / 60_000)} 分钟` : `${(ms / 3_600_000).toFixed(1)} 小时`;
+/** A started attempt without host admission is queued for an execution slot, not starting. */
+const taskStatus = (task: WorkflowTask) => task.status === 'starting' && !task.attempts.at(-1)?.admittedAt ? '等待执行槽位' : TASK_STATUS[task.status];
+function attemptTiming(task: WorkflowTask, now: number): string | undefined {
+  const attempt = task.attempts.at(-1);
+  if (!attempt || !['starting', 'running'].includes(task.status) && attempt.endedAt === undefined) return undefined;
+  const end = attempt.endedAt ?? now;
+  if (!attempt.admittedAt) return attempt.endedAt === undefined ? `  耗时：已等待执行槽位 ${duration(end - attempt.startedAt)}` : undefined;
+  const queued = attempt.admittedAt - attempt.startedAt;
+  return `  耗时：${queued >= 1000 ? `等待执行槽位 ${duration(queued)}，` : ''}${attempt.endedAt === undefined ? '已执行' : '执行'} ${duration(end - attempt.admittedAt)}`;
+}
 const time = (timestamp: number) => new Date(timestamp).toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC');
 function bounded(lines: string[]): string {
   const result: string[] = [];
@@ -37,18 +48,20 @@ function currentTask(state: WorkflowState, member: DurableAgent): WorkflowTask |
   return state.tasks.find(task => task.taskId === (member.activeTurnId ?? member.lastTurnId));
 }
 
-function memberLines(state: WorkflowState, member: DurableAgent, detail: boolean): string[] {
+function memberLines(state: WorkflowState, member: DurableAgent, detail: boolean, now: number): string[] {
   const task = currentTask(state, member);
   const receipt = state.mailbox?.receipts.find(item => item.id === member.wait?.receiptId);
   const checkpoint = state.checkpoints?.find(item => item.ref === member.checkpointRef);
   const pool = memberPool(state, member.key);
-  const phase = member.activeTurnId && task ? TASK_STATUS[task.status]
+  const phase = member.activeTurnId && task ? taskStatus(task)
     : pool?.status === 'waiting' ? '等待队列任务（不占 worker 进程）'
     : member.wait?.kind === 'event' ? '等待消息或其它事件（不占 worker 进程）'
     : receipt?.status === 'waiting' ? '等待消息' : receipt?.status === 'ready' ? '消息已到，待开始下一轮'
-      : task ? TASK_STATUS[task.status] : '尚未开始';
+      : task ? taskStatus(task) : '尚未开始';
   const lines = [`- 成员 ${compact(member.key, 100)}：${phase}，${execution(state, member.sessionRef)}`];
   if (task) lines.push(`  任务：${compact(task.scriptKey ?? task.taskKey, 100)}，尝试 ${task.attempts.length} 次`);
+  const timing = task && member.activeTurnId ? attemptTiming(task, now) : undefined;
+  if (timing) lines.push(timing);
   if (task?.waitingWorkflowId) lines.push(`  子 workflow：${task.waitingWorkflowId}（等待结果，不占 worker 进程）`);
   if (receipt && receipt.status !== 'consumed') {
     lines.push(`  收件批次：${compact(receipt.key, 100)}，${receipt.status === 'waiting' ? '等待消息到达' : `${receipt.messageIds.length} 条已保留，下一轮成功后确认消费`}`);
@@ -63,13 +76,15 @@ function memberLines(state: WorkflowState, member: DurableAgent, detail: boolean
     lines.push(`未确认消费的消息：${pending}`);
     const turns = state.tasks.filter(item => item.agentId === member.agentId);
     lines.push(`最近轮次（${Math.min(turns.length, 6)}/${turns.length}）：`);
-    for (const turn of turns.slice(-6)) lines.push(...taskLines(state, turn));
+    for (const turn of turns.slice(-6)) lines.push(...taskLines(state, turn, now));
   }
   return lines;
 }
 
-function taskLines(state: WorkflowState, task: WorkflowTask): string[] {
-  return [`- ${compact(task.scriptKey ?? task.taskKey, 100)}：${TASK_STATUS[task.status]}，尝试 ${task.attempts.length} 次，${execution(state, task.sessionRef)}`,
+function taskLines(state: WorkflowState, task: WorkflowTask, now: number): string[] {
+  const timing = attemptTiming(task, now);
+  return [`- ${compact(task.scriptKey ?? task.taskKey, 100)}：${taskStatus(task)}，尝试 ${task.attempts.length} 次，${execution(state, task.sessionRef)}`,
+    ...(timing ? [timing] : []),
     ...(task.workflowTool ? [`  子 workflow 工具：已启用${task.waitingWorkflowId ? `，等待 ${task.waitingWorkflowId}（不占 worker 进程）` : ''}`] : []),
     ...(task.error ? [`  原因：${errorText(task.error)}`] : [])];
 }
@@ -110,6 +125,12 @@ function queueLines(state: WorkflowState, limit: number, member?: DurableAgent):
   return lines;
 }
 
+function pendingEvents(state: WorkflowState, now: number): string {
+  const pending = state.events.filter(event => !event.acknowledged);
+  const oldest = Math.min(...pending.map(event => event.createdAt ?? now));
+  return `待处理事件：${pending.length}${pending.length && now - oldest >= 60_000 ? `，最早一条已等待 ${duration(now - oldest)}` : ''}`;
+}
+
 export function renderWorkStatus(state: WorkflowState, key?: string): string {
   if (!state.workQueue) return '这个工作流还没有工作项。';
   if (!key) return bounded(queueLines(state, 12));
@@ -120,7 +141,18 @@ export function renderWorkStatus(state: WorkflowState, key?: string): string {
     `- 版本 ${claim.generation}：${claim.status}，成员 ${compact(state.agents?.find(member => member.agentId === claim.agentId)?.key ?? claim.agentId, 100)}${claim.reason ? `，${errorText(claim.reason)}` : ''}`)]);
 }
 
-export function renderWorkflowStatus(state: WorkflowState, memberKey?: string, latest = false): string {
+/** Slot queueing across all attempts; the wait happens in the host process pool, outside engine concurrency. */
+function slotLines(state: WorkflowState, now: number): string[] {
+  const attempts = state.tasks.flatMap(task => task.attempts.map(attempt => ({ task, attempt })));
+  const waiting = attempts.filter(({ task, attempt }) => task.status === 'starting' && task.attempts.at(-1) === attempt && !attempt.admittedAt);
+  const waits = attempts.map(({ attempt }) => attempt.admittedAt ? attempt.admittedAt - attempt.startedAt : undefined)
+    .filter((wait): wait is number => wait !== undefined);
+  const total = waits.reduce((sum, wait) => sum + wait, 0) + waiting.reduce((sum, { attempt }) => sum + now - attempt.startedAt, 0);
+  if (!waiting.length && total < 60_000) return [];
+  return [`执行槽位：${waiting.length} 个任务等待中，累计等待 ${duration(total)}${waits.length ? `，单次最长 ${duration(Math.max(...waits))}` : ''}`];
+}
+
+export function renderWorkflowStatus(state: WorkflowState, memberKey?: string, latest = false, now = Date.now()): string {
   const lines = [`${compact(state.script?.name ?? state.definition.id, 100)}：${state.status}${latest ? '（最近一次）' : ''}`,
     `需求：${compact(state.goal, 300)}`,
     `主 agent：${state.root.agentKind}，模型：${compact(state.root.modelSettings.model ?? '默认', 100)}${state.root.modelSettings.reasoningEffort ? `，思考强度：${state.root.modelSettings.reasoningEffort}` : ''}`];
@@ -142,20 +174,20 @@ export function renderWorkflowStatus(state: WorkflowState, memberKey?: string, l
     const member = state.agents?.find(item => item.key === memberKey);
     if (!member && memberPool(state, memberKey)) return bounded([...lines, ...queueLines(state, 0), `成员 ${compact(memberKey, 100)} 等待首次队列任务，尚未启动 worker。`]);
     if (!member) return bounded([...lines, `未找到成员：${compact(memberKey, 100)}。用 /workflow status 查看成员列表。`]);
-    lines.push(...memberLines(state, member, true));
+    lines.push(...memberLines(state, member, true, now));
     lines.push(...queueLines(state, 1, member));
   } else {
     lines.push(...queueLines(state, 5));
     const members = [...state.agents ?? []].sort((a, b) =>
       Number(ATTENTION.has(currentTask(state, b)?.status ?? 'result_ready')) - Number(ATTENTION.has(currentTask(state, a)?.status ?? 'result_ready')));
-    for (const member of members.slice(0, 8)) lines.push(...memberLines(state, member, false));
+    for (const member of members.slice(0, 8)) lines.push(...memberLines(state, member, false, now));
     if (members.length > 8) lines.push(`另有 ${members.length - 8} 个成员：${compact(members.slice(8).map(member => member.key).join('、'), 600)}。`);
     if (members.length) lines.push('用 /workflow status <成员名> 查看成员的任务内容、消息数量和最近轮次。');
     const tasks = state.tasks.filter(task => !task.agentId).sort((a, b) => Number(ATTENTION.has(b.status)) - Number(ATTENTION.has(a.status)));
-    for (const task of tasks.slice(0, 12)) lines.push(...taskLines(state, task));
+    for (const task of tasks.slice(0, 12)) lines.push(...taskLines(state, task, now));
     if (tasks.length > 12) lines.push(`另有 ${tasks.length - 12} 个独立任务未展开。`);
   }
   lines.push(`轮次：${state.tasks.length}，已完成 ${state.tasks.filter(task => task.status === 'result_ready').length}，失败 ${state.tasks.filter(task => task.status === 'failed').length}`,
-    `待处理事件：${state.events.filter(event => !event.acknowledged).length}`);
+    ...slotLines(state, now), pendingEvents(state, now));
   return bounded(lines);
 }

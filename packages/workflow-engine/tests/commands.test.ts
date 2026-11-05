@@ -129,6 +129,18 @@ describe('Lark workflow commands', () => {
     const many = { ...stored, goal: 'g'.repeat(12000), tasks: Array.from({ length: 100 }, (_, i) => ({
       ...stored.tasks[0]!, agentId: undefined, taskId: String(i), scriptKey: 'long-task-'.repeat(30),
     })) };
+    const task = { ...stored.tasks[0]!, agentId: undefined, taskId: 'timed', scriptKey: 'timed' };
+    const timed = { ...stored, tasks: [
+      { ...task, status: 'starting' as const, attempts: [{ attemptId: 'q', startedAt: 0 }] },
+      { ...task, taskId: 'done', scriptKey: 'done', status: 'result_ready' as const,
+        attempts: [{ attemptId: 'd', startedAt: 0, admittedAt: 120_000, endedAt: 720_000 }] },
+    ], events: [{ id: 'e', kind: 'script_failed' as const, summary: 'x', acknowledged: false, notified: true, createdAt: 0 }] };
+    const timing = renderWorkflowStatus(timed, undefined, false, 180_000);
+    expect(timing).toContain('timed：等待执行槽位');
+    expect(timing).toContain('已等待执行槽位 3 分钟');
+    expect(timing).toContain('等待执行槽位 2 分钟，执行 10 分钟');
+    expect(timing).toContain('执行槽位：1 个任务等待中，累计等待 5 分钟，单次最长 2 分钟');
+    expect(timing).toContain('待处理事件：1，最早一条已等待 3 分钟');
     const summary = renderWorkflowStatus(many);
     expect(summary.length).toBeLessThan(8000);
     expect(summary).toContain('未展开');
