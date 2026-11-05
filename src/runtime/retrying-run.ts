@@ -5,7 +5,16 @@ import { log } from '../core/logger';
 
 const RETRY_DELAYS_MS = [30_000, 60_000, 120_000] as const;
 const MAX_RETRIES = 100;
+/**
+ * Server errors usually clear within minutes. A failure that repeats without any progress is
+ * likely tied to this request or session, so give up early instead of waiting out the rate-limit budget.
+ */
+const MAX_TRANSIENT_RETRIES = 5;
 const CONTINUE_PROMPT = '上次执行因 API 限流或临时连接/服务错误中断。请从当前会话的已有进度继续完成用户请求，包括中途补充的要求。先检查已完成的操作和工具结果，不要重复执行已完成的操作。';
+
+function retryLimit(event: Extract<AgentEvent, { type: 'error' }>): number {
+  return agentFailureKind(event) === 'transient' ? MAX_TRANSIENT_RETRIES : MAX_RETRIES;
+}
 
 function isRetryableError(event: AgentEvent): boolean {
   return event.type === 'error' && event.terminationReason === 'failed'
@@ -68,7 +77,7 @@ export function retryingRun(input: {
             // Recovery starts a fresh retry budget, but keeps the session's progress.
             attempt = 0;
           }
-          if (event.type === 'error' && isRetryableError(event) && attempt < MAX_RETRIES
+          if (event.type === 'error' && isRetryableError(event) && attempt < retryLimit(event)
             && !uncertainInput && pendingInputs === 0
             && !input.options.forkSession && (!(madeProgress || steered) || sessionId || threadId) && canRetry()) {
             failure = event;
@@ -76,7 +85,10 @@ export function retryingRun(input: {
             break;
           }
           if (event.type === 'done' || event.type === 'error') finish();
-          yield event;
+          // Tell the caller this is a persistent failure rather than a first transient one.
+          yield event.type === 'error' && attempt > 0 && isRetryableError(event) && agentFailureKind(event) === 'transient'
+            ? { ...event, message: `${event.message}\n(transient failure persisted after ${attempt} automatic retries without progress)` }
+            : event;
           if (terminal) return;
         }
         if (!failure) return;
@@ -93,9 +105,10 @@ export function retryingRun(input: {
         const delayMs = RETRY_DELAYS_MS[Math.min(attempt++, RETRY_DELAYS_MS.length - 1)]!;
         const retryEvent = agentFailureKind(failure) === 'rate_limit' ? 'rate-limit-retry' : 'transient-retry';
         const retryDetails = retryEvent === 'transient-retry' ? { failureKind: 'transient' as const } : {};
+        const maxAttempts = retryLimit(failure);
         log.warn('run', retryEvent, { runId: input.options.runId, agent: input.agent.id,
-          attempt, maxAttempts: MAX_RETRIES, delayMs, error: failure.message });
-        yield { type: 'retry', attempt, maxAttempts: MAX_RETRIES, delayMs, ...retryDetails };
+          attempt, maxAttempts, delayMs, error: failure.message });
+        yield { type: 'retry', attempt, maxAttempts, delayMs, ...retryDetails };
         await waitForRetry(delayMs, controller.signal);
         if (!canRetry()) break;
 
@@ -111,8 +124,8 @@ export function retryingRun(input: {
         current = prepared.start();
         waiting = false;
         log.info('run', `${retryEvent}-started`, { runId: input.options.runId, agent: input.agent.id,
-          attempt, maxAttempts: MAX_RETRIES });
-        yield { type: 'retry', attempt, maxAttempts: MAX_RETRIES, delayMs: 0, ...retryDetails };
+          attempt, maxAttempts });
+        yield { type: 'retry', attempt, maxAttempts, delayMs: 0, ...retryDetails };
       }
       finish();
       yield { type: 'done', terminationReason: 'interrupted' };

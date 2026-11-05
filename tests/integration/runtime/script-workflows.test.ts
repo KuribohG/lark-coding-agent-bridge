@@ -770,7 +770,11 @@ describe('script workflow runtime', () => {
   });
 
   it('fails invalid JSON and retries it with a new worker instead of caching the error', async () => {
-    const h = await harness({ pi: ['```json\n{}\n```', '{"ok":true}'] });
+    const h = await harness();
+    const turn = (sessionId: string, text: string): AgentEvent[] => [{ type: 'system', sessionId },
+      { type: 'final_text', content: text }, { type: 'done', terminationReason: 'normal' }];
+    // The resumed format retry keeps its native session; the replay starts a fresh one.
+    h.adapters.pi.setEvents([turn('s1', 'no json here'), turn('s1', 'still no json'), turn('s2', '{"ok":true}')]);
     await h.call('run_script', { goal: 'JSON test', script: 'return await agent("json",{key:"json",harness:"pi",output:"json"});' });
     await h.until(() => expect(h.state().script?.status).toBe('failed'));
     expect(h.state().script?.error).toContain('not valid JSON');
@@ -779,7 +783,8 @@ describe('script workflow runtime', () => {
     await h.call('replay_script');
     await h.until(() => expect(h.state().script?.status).toBe('result_ready'));
     expect(h.state().script?.calls[0]?.cached).toBe(false);
-    expect(h.adapters.pi.runs).toHaveLength(2);
+    // The failed attempt resumed its session once for a JSON-only restatement.
+    expect(h.adapters.pi.runs).toHaveLength(3);
   });
 
   it('aborts suspended guest code on pause, resumes with replay, and forbids stale root replay', async () => {

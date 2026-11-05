@@ -49,6 +49,35 @@ describe('rate-limit retries through RunExecutor', () => {
     expect(await run.result).toBe('completed');
   });
 
+  it('retries Claude API 5xx errors a few times and then reports a persistent failure', async () => {
+    const serverError: AgentEvent = { type: 'error', terminationReason: 'failed',
+      message: 'API Error: 500 upstream returned an error response. This is a server-side issue, usually temporary' };
+    const system: AgentEvent = { type: 'system', sessionId: 'session-1' };
+    const h = harness(Array.from({ length: 7 }, () => [system, serverError]));
+    const run = await h.executor.submit({ scopeId: 's', policy: h.policy });
+    const output = collect(run.subscribe());
+    await vi.advanceTimersByTimeAsync(600_000);
+    const events = await output;
+    expect(events.filter(e => e.type === 'retry' && e.delayMs > 0).map(e => e.type === 'retry' && [e.failureKind, e.maxAttempts, e.delayMs]))
+      .toEqual([['transient', 5, 30_000], ['transient', 5, 60_000], ...Array(3).fill(['transient', 5, 120_000])]);
+    expect(h.agent.runs).toHaveLength(6);
+    const errors = events.filter(e => e.type === 'error');
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ message: expect.stringContaining('persisted after 5 automatic retries') });
+    expect(await run.result).toBe('failed');
+  });
+
+  it('does not retry upstream wrappers that carry a client error status', async () => {
+    const invalid: AgentEvent = { type: 'error', terminationReason: 'failed',
+      message: '{"error":{"origin":"upstream","message":"upstream returned an error response","upstream":{"status":400,"body":{"error":{"code":"invalid_encrypted_content"}}}}}' };
+    const h = harness([[{ type: 'system', threadId: 't' }, invalid], [done]]);
+    const run = await h.executor.submit({ scopeId: 's', policy: h.policy });
+    const events = await collect(run.subscribe());
+    expect(events.some(e => e.type === 'retry')).toBe(false);
+    expect(h.agent.runs).toHaveLength(1);
+    expect(await run.result).toBe('failed');
+  });
+
   it('backs off, retains the scope and options, fans out only one successful result, and releases the slot', async () => {
     const h = harness([[{ type: 'system', threadId: 'thread-1' }, rateLimit], [done]]);
     const run = await h.executor.submit({ scopeId: 's', policy: h.policy, model: 'model', reasoningEffort: 'high',

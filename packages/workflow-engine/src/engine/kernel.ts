@@ -18,6 +18,7 @@ import type {
   NativeIdKind, WorkflowArtifact, WorkflowCaller, WorkflowEvent, WorkflowHost, WorkflowRoot,
   WorkflowState, WorkflowTask, WorkflowWorkerResult,
 } from './types';
+import { normalizeJsonOutput } from './json-output';
 
 const BUSY = new Set<WorkflowTask['status']>(['queued', 'starting', 'running', 'cancelling']);
 const MAX_TEXT = 100_000;
@@ -1078,7 +1079,7 @@ export class WorkflowKernel {
           const current = this.task(state, taskId);
           const attempt = current.attempts.at(-1)!;
           attempt.runId = runId;
-          attempt.spawnedAt = this.now();
+          attempt.spawnedAt ??= this.now();
           current.status = 'running';
         }),
         onAdmitted: () => this.updateAttempt(scopeId, workflowId, taskId, attemptId, state => {
@@ -1103,8 +1104,8 @@ export class WorkflowKernel {
       result = { status: 'failed', error: 'Member completed without a native session ID; cannot safely continue its conversation' };
     }
     if (!task.waitingWorkflowId && task.scriptOutput === 'json' && result.status === 'completed') {
-      try { JSON.parse(result.text ?? ''); }
-      catch { result = { status: 'failed', error: 'Agent output is not valid JSON' }; }
+      const text = normalizeJsonOutput(result.text ?? '', this.host.repairJson?.bind(this.host));
+      result = text === undefined ? { status: 'failed', error: 'Agent output is not valid JSON' } : { ...result, text };
     }
     task.attempts.at(-1)!.endedAt = this.now();
     task.attempts.at(-1)!.result = result.status;

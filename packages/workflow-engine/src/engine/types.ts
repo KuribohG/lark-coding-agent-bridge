@@ -20,6 +20,8 @@ export interface WorkerExecutionPolicy {
   /** Validates harness/model/effort names; throws on unsupported values. */
   checkSelection?(selection: WorkerExecutionSelection): void;
   nativeIdKind?(agentKind: AgentKind): NativeIdKind;
+  /** Repairs JSON syntax in `output: "json"` answers after strict parsing and fence extraction fail; throws when unrepairable. */
+  repairJson?(text: string): unknown;
 }
 
 export interface WorkflowDefinition {

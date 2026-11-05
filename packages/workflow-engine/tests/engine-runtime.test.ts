@@ -93,6 +93,44 @@ describe('workflow engine without bridge services', () => {
     expect(notifiedAt).toBeGreaterThanOrEqual(event.createdAt!);
   });
 
+  it('asks the same native session to restate an unparseable JSON answer once', async () => {
+    const root: WorkflowRoot = { scopeId: 'chat', profile: 'embedded', agentKind: 'custom-agent', cwdRealpath: '/repo',
+      policyFingerprint: 'policy', catalogBinding: 'main', modelSettings: {} };
+    const specs: WorkerRunSpec[] = [];
+    const answers = ['tool-call leaked</parameter>', '已完成。\n```json\n{"ok": true}\n```'];
+    const runtime = new WorkflowRuntime({
+      path: ':memory:', resolveRoot: async () => root, wakeMain: async () => {},
+      runner: {
+        async start(spec) {
+          specs.push(spec);
+          await spec.validateBeforeRun();
+          const text = answers[specs.length - 1]!;
+          return {
+            runId: `run-${specs.length}`, result: Promise.resolve('completed'),
+            stop: async () => {}, waitForExit: async () => true, stopReason: () => undefined,
+            async *events() {
+              yield { type: 'session', nativeSessionId: 'native-1' };
+              yield { type: 'final_text', text };
+              yield { type: 'done', normal: true };
+            },
+          };
+        },
+      },
+    });
+    await runtime.start(); cleanup.push(() => runtime.close());
+    const main = runtime.bindMain(root.scopeId, 'start');
+    await callWorkflow('run_script', { operationId: randomUUID(), goal: 'json', plan: 'One worker returns JSON.',
+      script: 'return (await agent("answer", {key:"a", output:"json"})).ok;' }, main.env);
+    main.release();
+    await vi.waitFor(async () => { await runtime.tick(); expect(runtime.kernel.state(root.scopeId)?.script?.status).toBe('result_ready'); });
+    const state = runtime.kernel.state(root.scopeId)!;
+    expect(state.artifacts.find(artifact => artifact.ref === state.script?.resultRef)?.text).toBe('true');
+    expect(specs).toHaveLength(2);
+    expect(specs[0]!.resume).toBeUndefined();
+    expect(specs[1]).toMatchObject({ resume: { kind: 'sessionId', id: 'native-1' }, prompt: expect.stringContaining('不是合法 JSON') });
+    expect(state.tasks[0]!.attempts).toHaveLength(1);
+  });
+
   it('rejects worktrees unless the host authorizes them', async () => {
     const root: WorkflowRoot = { scopeId: 'chat', profile: 'embedded', agentKind: 'custom-agent', cwdRealpath: '/repo',
       policyFingerprint: 'policy', catalogBinding: 'main', modelSettings: {} };

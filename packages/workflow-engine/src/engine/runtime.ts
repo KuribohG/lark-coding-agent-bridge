@@ -2,13 +2,16 @@ import { dirname, join } from 'node:path';
 import { WorkflowWorkspaces } from './workspaces';
 import type { WorkspaceBinding } from './workspace-types';
 import { fileURLToPath } from 'node:url';
-import { silentLogger, WorkflowStopped, type WorkerRun, type WorkerRunner, type WorkflowProcesses } from './ports';
+import { silentLogger, WorkflowStopped, type WorkerRun, type WorkerRunner, type WorkerRunSpec, type WorkflowProcesses } from './ports';
+import { normalizeJsonOutput } from './json-output';
 import { RESUME_DEADLINE, RESUME_ROOT_CHANGED, WorkflowKernel } from './kernel';
 import { WorkflowIpc, WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from './ipc';
 import { workflowDigest } from './digest';
 import { inheritedWorkerExecution } from './execution';
 import { runScriptProgram } from './script-vm';
 import type { WorkerExecution, WorkerExecutionPolicy, WorkerExecutionSelection, WorkflowLogger, WorkflowRoot, WorkflowState, WorkflowWorkerRequest, WorkflowWorkerResult } from './types';
+
+const JSON_FORMAT_RETRY_PROMPT = '上一条最终答复不是合法 JSON，脚本无法解析。不要重新执行任务或任何工具操作；只把上一条答复的内容按任务要求的 JSON 结构重新输出，最终答复只包含这一个 JSON 值，不加代码块或其它文字。';
 
 export interface WorkflowRuntimeDeps extends WorkerExecutionPolicy {
   /** SQLite path, or ':memory:' (managed worktrees then need an explicit workspaceRoot). */
@@ -55,6 +58,7 @@ export class WorkflowRuntime {
       getTimeoutMinutes: deps.getTimeoutMinutes,
       checkSelection: deps.checkSelection,
       nativeIdKind: deps.nativeIdKind,
+      repairJson: deps.repairJson,
       log: this.log,
       resolveWorker: (root, selection) => this.resolveWorker(root, selection),
       resolveWorkspace: async (root, workflowId, id) => {
@@ -221,9 +225,9 @@ export class WorkflowRuntime {
         lease = manager!.begin(workspace, task.taskId);
         await manager!.verifySnapshot(workspace, signal);
       }
-      run = await this.deps.runner.start({
+      const start = (prompt: string, resume?: WorkerRunSpec['resume']) => this.deps.runner.start({
         sessionKey: `workflow:${workflow.workflowId}:${session.sessionRef}`,
-        root: workflow.root, execution: pinned, role: session.role, prompt: request.prompt, env: binding.env,
+        root: workflow.root, execution: pinned, role: session.role, prompt, env: binding.env,
         validateBeforeRun: async () => {
           request.onAdmitted();
           const admitted = await this.resolveWorker(workflow.root, selection);
@@ -236,44 +240,58 @@ export class WorkflowRuntime {
         },
         ...(workspace ? { workspace: { id: workspace.id, path: workspace.path, rootDigest: workspace.rootDigest } } : {}),
         systemPrompt: workflowWorkerInstructions(task) + (workspace ? `\nManaged worktree: ${workspace.path}\nBaseline: ${workspace.baseCommit}\nWork only in this worktree; do not modify the original checkout or other worktrees. ${workspace.kind === 'review' ? 'Review the frozen HEAD; leave all tracked and untracked files unchanged.' : 'Commit intended changes before returning. Leave no untracked files or unfinished Git operations.'}` : ''),
-        ...((task.agentId || task.workflowTool) && session.nativeSessionId ? { resume: { kind: session.nativeIdKind, id: session.nativeSessionId } } : {}),
+        ...(resume ? { resume } : {}),
         deadlineAt: workflow.deadlineAt, signal,
       });
-      const active = run;
-      let text: string | undefined;
-      let question: string | undefined;
-      let error: string | undefined;
-      let normal = false;
-      let yieldTimer: NodeJS.Timeout | undefined;
-      const yieldIfWaiting = () => {
-        if (!yieldTimer && this.kernel.waitingForChild(workflow.root.scopeId,workflow.workflowId,task.taskId,attemptId)) {
-          yieldTimer=setTimeout(()=>{void active.stop('yield').catch(error=>this.log.warn('yield-failed',{error:String(error)}));},30_000);
-          yieldTimer.unref();
-        }
-      };
-      const stopWatching=this.kernel.onChange(workflow.root.scopeId,yieldIfWaiting);
-      yieldIfWaiting();
-      try {
-        request.onRun(active.runId);
-        for await (const event of active.events()) {
-          if (event.type === 'session') request.onSession(event.nativeSessionId, event.model);
-          else if (event.type === 'retry') { text = undefined; error = undefined; normal = false; }
-          else if (event.type === 'final_text') text = event.text;
-          else if (event.type === 'error') error = event.message;
-          else if (event.type === 'done') normal = event.normal;
-          else if (event.type === 'user_input') {
-            question = event.question;
-            await active.stop('input');
-            break;
+      const turn = async (active: WorkerRun) => {
+        let text: string | undefined;
+        let question: string | undefined;
+        let error: string | undefined;
+        let nativeSessionId: string | undefined;
+        let normal = false;
+        let yieldTimer: NodeJS.Timeout | undefined;
+        const yieldIfWaiting = () => {
+          if (!yieldTimer && this.kernel.waitingForChild(workflow.root.scopeId,workflow.workflowId,task.taskId,attemptId)) {
+            yieldTimer=setTimeout(()=>{void active.stop('yield').catch(error=>this.log.warn('yield-failed',{error:String(error)}));},30_000);
+            yieldTimer.unref();
           }
+        };
+        const stopWatching=this.kernel.onChange(workflow.root.scopeId,yieldIfWaiting);
+        yieldIfWaiting();
+        try {
+          request.onRun(active.runId);
+          for await (const event of active.events()) {
+            if (event.type === 'session') { nativeSessionId = event.nativeSessionId; request.onSession(event.nativeSessionId, event.model); }
+            else if (event.type === 'retry') { text = undefined; error = undefined; normal = false; }
+            else if (event.type === 'final_text') text = event.text;
+            else if (event.type === 'error') error = event.message;
+            else if (event.type === 'done') normal = event.normal;
+            else if (event.type === 'user_input') {
+              question = event.question;
+              await active.stop('input');
+              break;
+            }
+          }
+        } catch (cause) {
+          await active.stop('cleanup');
+          throw cause;
+        } finally {
+          stopWatching();if(yieldTimer) clearTimeout(yieldTimer);
         }
-      } catch (cause) {
-        await active.stop('cleanup');
-        throw cause;
-      } finally {
-        stopWatching();if(yieldTimer) clearTimeout(yieldTimer);
+        return { result: await active.result, text, question, error, normal, nativeSessionId };
+      };
+      run = await start(request.prompt, (task.agentId || task.workflowTool) && session.nativeSessionId ? { kind: session.nativeIdKind, id: session.nativeSessionId } : undefined);
+      let outcome = await turn(run);
+      // A malformed JSON answer usually reflects formatting, not the work; ask the same session to restate it once.
+      if (task.scriptOutput === 'json' && outcome.result === 'completed' && outcome.normal && !outcome.question && outcome.nativeSessionId
+        && !signal.aborted && normalizeJsonOutput(outcome.text ?? '', this.deps.repairJson) === undefined) {
+        if (!await run.waitForExit(5000)) throw new Error('Worker has not exited before the JSON format retry');
+        this.log.warn('worker-json-format-retry', { workflowId: workflow.workflowId, taskId: task.taskId, attemptId });
+        run = await start(JSON_FORMAT_RETRY_PROMPT, { kind: session.nativeIdKind, id: outcome.nativeSessionId });
+        outcome = await turn(run);
       }
-      const result = await active.result;
+      const { result, text, question, error, normal } = outcome;
+      const active = run;
       if (workspace && result === 'completed') {
         if (!await active.waitForExit(5000)) throw new Error('Workspace worker has not exited');
         await manager!.verifySnapshot(workspace, signal);

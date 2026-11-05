@@ -5,6 +5,7 @@ import { backendFor, capabilityForProfile } from '../../agent/backends';
 import { accessToClaudePermissionMode, accessToCodexSandbox, clampAccess } from '../../config/permissions';
 import type { AgentExecutionProfile, AgentKind } from '../../config/profile-schema';
 import type { RunPolicyAllow } from '../../policy/run-policy';
+import { parseModelJson } from '../../utils/model-json';
 import { workflowDigest } from '@kuribohg/agent-workflows';
 import type { ModelSettings, WorkerExecution, WorkerExecutionPolicy, WorkflowRoot } from '@kuribohg/agent-workflows';
 
@@ -16,6 +17,7 @@ export const bridgeWorkerPolicy: Required<WorkerExecutionPolicy> = {
     parseEffort(selection.reasoningEffort, selection.agentKind, { timedRun: true });
   },
   nativeIdKind: agentKind => sessionIdFieldForAgent(bridgeAgentKind(agentKind)),
+  repairJson: parseModelJson,
 };
 
 export function bridgeAgentKind(value: string): AgentKind {
