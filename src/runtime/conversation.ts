@@ -182,11 +182,11 @@ export class ConversationRuntime {
   async reset(identity: ConversationIdentity): Promise<boolean> {
     const scope = await this.authorizedScope(identity);
     if (this.active.get(scope)) throw new Error('cannot reset a conversation while a run is active');
-    const hadLegacySession = this.sessions.getRaw(scope) !== undefined;
+    const hadStoredSession = this.sessions.getRaw(scope) !== undefined;
     this.sessions.clear(scope);
     const archived = this.catalog.archiveScope(scope);
     await Promise.all([this.sessions.flush(), this.catalog.flush()]);
-    return hadLegacySession || archived > 0;
+    return hadStoredSession || archived > 0;
   }
 
   async close(): Promise<void> {
