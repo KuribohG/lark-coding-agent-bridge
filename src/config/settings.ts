@@ -1,3 +1,5 @@
+import { isTable } from './table';
+
 /**
  * How each resolved setting takes effect in a running bridge. This is the
  * single declaration of reload semantics: the reload planner, `/config show`,
@@ -117,7 +119,7 @@ export function settingLabel(path: readonly string[]): string {
   return path.join('.');
 }
 
-const plain = (v: unknown): v is Record<string, unknown> => !!v && Object.getPrototypeOf(v) === Object.prototype;
+const plain = (v: unknown): v is Record<string, unknown> => isTable(v);
 
 /**
  * Changed leaves between two resolved configs. A table appearing or vanishing

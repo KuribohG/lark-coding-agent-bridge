@@ -1,3 +1,5 @@
+import { isTable } from './table';
+
 export interface LarkNetworkConfig {
   /** Environment proxies (default), direct access, or an HTTP(S) proxy URL. */
   proxy?: string;
@@ -6,7 +8,7 @@ export interface LarkNetworkConfig {
 }
 
 export function validateLarkNetwork(value: unknown, path = 'channels.lark.network'): asserts value is LarkNetworkConfig {
-  if (!value || Object.getPrototypeOf(value) !== Object.prototype) {
+  if (!isTable(value)) {
     throw new Error(`${path}: expected a table`);
   }
   for (const [key, setting] of Object.entries(value)) {

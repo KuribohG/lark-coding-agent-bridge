@@ -181,6 +181,13 @@ describe('leaf diff', () => {
     expect(leafChanges({ x: { y: 1 } }, { x: 3 })).toEqual([{ path: ['x'], before: { y: 1 }, after: 3 }]);
   });
 
+  it('descends into null-prototype tables returned by smol-toml 1.9', () => {
+    const table = (value: Record<string, unknown>) => Object.assign(Object.create(null), value);
+    expect(leafChanges(table({ a: table({ b: 1 }) }), table({ a: table({ b: 2 }) }))).toEqual([
+      { path: ['a', 'b'], before: 1, after: 2 },
+    ]);
+  });
+
   it('sets and deletes leaves without sharing references', () => {
     const value = { arr: [1] };
     const target: Record<string, unknown> = {};

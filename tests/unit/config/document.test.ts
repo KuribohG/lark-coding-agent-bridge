@@ -13,7 +13,7 @@ import {
   resolveRun,
   rootToDocument,
 } from '../../../src/config/document';
-import { editToml, parseKeyPath } from '../../../src/config/toml-edit';
+import { diffValues, editToml, parseKeyPath } from '../../../src/config/toml-edit';
 import { getAutostartProfiles, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
 import { inspectConfig, patchConfig } from '../../../src/config/service';
 import { reconcileProfile, type ReconcileTarget } from '../../../src/runtime/config-reconciler';
@@ -468,5 +468,12 @@ describe('TOML text editing', () => {
   });
   it('is byte-preserving for no-op saves', () => {
     expect(editToml(source, ['defaults','run','model'], 'global-model')).toBe(source);
+  });
+  it('diffs nested null-prototype tables leaf by leaf', () => {
+    const table = (value: Record<string, unknown>) => Object.assign(Object.create(null), value);
+    expect(diffValues(
+      table({ launch: table({ env: table({ A: '1' }) }) }),
+      table({ launch: table({ env: table({ A: '2' }) }) }),
+    )).toEqual([{ path: ['launch', 'env', 'A'], value: '2' }]);
   });
 });

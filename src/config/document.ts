@@ -9,6 +9,7 @@ import {
   type RootConfig,
 } from './profile-schema';
 import { normalizePermissions, type PermissionConfig } from './permissions';
+import { isTable } from './table';
 import { larkDisplay } from './lark-display';
 import { validateLarkNetwork } from './lark-network';
 import { WEB_DISPLAY_DEFAULTS } from '../channels/web/config';
@@ -43,7 +44,7 @@ const LARK_KEYS = ['reply_mode', 'show_tools', 'progress', 'message_debounce_ms'
 const WEB_KEYS = ['show_tools', 'show_reasoning'];
 const SLACK_KEYS = ['show_tools', 'show_progress'];
 function object(value: unknown, path: string): Table {
-  if (!value || Object.getPrototypeOf(value) !== Object.prototype) throw new Error(`${path}: expected a table`);
+  if (!isTable(value)) throw new Error(`${path}: expected a table`);
   return value as Table;
 }
 function keys(value: unknown, allowed: readonly string[], path: string): Table {
@@ -122,7 +123,7 @@ function fields(value: unknown, schema: Record<string, string>, path: string): T
   for (const [key, v] of Object.entries(table)) {
     const kind = schema[key];
     const valid = kind === 'strings' ? Array.isArray(v) && v.every(x => typeof x === 'string')
-      : kind === 'table' ? !!v && Object.getPrototypeOf(v) === Object.prototype
+      : kind === 'table' ? isTable(v)
       : kind === 'integer' ? Number.isSafeInteger(v) && v >= 0 : typeof v === kind;
     if (!valid) throw new Error(`${path}.${key}: expected ${kind}`);
   }

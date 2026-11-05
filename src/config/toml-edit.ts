@@ -1,5 +1,6 @@
 import { parseForESLint, type AST } from 'toml-eslint-parser';
 import { parse, TomlError } from 'smol-toml';
+import { isTable } from './table';
 
 export type KeyPath = string[];
 export function getPath(value: any, path: KeyPath): any {
@@ -98,7 +99,7 @@ function editTomlValue(text: string, path: KeyPath, value: any): string {
 
 export function diffValues(before: any, after: any, path: string[] = []): { path: string[]; value: any }[] {
   if (same(before, after)) return [];
-  const table = (v: any) => v && Object.getPrototypeOf(v) === Object.prototype;
+  const table = (v: any) => isTable(v);
   if (table(before) && table(after)) return [...new Set([...Object.keys(before), ...Object.keys(after)])]
     .flatMap(key => diffValues(before[key], after[key], [...path, key]));
   return [{ path, value: after }];
