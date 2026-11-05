@@ -5,8 +5,8 @@
 //   ..\runtime\node.exe  ..\app\bin\run-lark-cc.mjs
 //
 // Double-click (or "启动") starts the GUI supervisor in the background and
-// shows a tray icon; the tray menu can open the console, restart, open the
-// configuration directory, or stop everything and exit.
+// shows a tray icon; the tray menu can open the console, restart, reveal the
+// configuration file in Explorer, or stop everything and exit.
 //
 // Compiled by installer/build.ps1 with the .NET Framework csc.exe; no NuGet
 // packages and no self-contained runtime are required.
@@ -109,13 +109,16 @@ namespace LarkChannelBridge
             if (_anchor.Handle == IntPtr.Zero) throw new InvalidOperationException("cannot create the tray anchor window");
 
             ContextMenuStrip menu = new ContextMenuStrip();
+            menu.ShowItemToolTips = true;
             _statusItem = new ToolStripMenuItem("正在启动…");
             _statusItem.Enabled = false;
             menu.Items.Add(_statusItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("打开控制台", null, delegate { OpenConsole(); }));
             menu.Items.Add(new ToolStripMenuItem("重启 Bridge", null, delegate { RestartBridge(); }));
-            menu.Items.Add(new ToolStripMenuItem("打开配置目录", null, delegate { OpenConfigDir(); }));
+            ToolStripMenuItem configItem = new ToolStripMenuItem("定位配置文件", null, delegate { OpenConfigFile(); });
+            configItem.ToolTipText = "在资源管理器中选中 config.toml";
+            menu.Items.Add(configItem);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("退出", null, delegate { ExitFromMenu(); }));
 
@@ -193,16 +196,31 @@ namespace LarkChannelBridge
             });
         }
 
-        private void OpenConfigDir()
+        /// <summary>
+        /// Reveal config.toml in Explorer.  When the file is missing (for
+        /// example a fresh install that has not run yet) fall back to the
+        /// configuration directory so the menu item still does something
+        /// useful.
+        /// </summary>
+        private void OpenConfigFile()
         {
+            string configFile = Path.Combine(_channelHome, "config.toml");
             try
             {
-                if (Directory.Exists(_channelHome))
+                if (File.Exists(configFile))
+                {
+                    Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + configFile + "\"")
+                    {
+                        UseShellExecute = true
+                    });
+                }
+                else if (Directory.Exists(_channelHome))
                 {
                     Process.Start(new ProcessStartInfo("explorer.exe", "\"" + _channelHome + "\"")
                     {
                         UseShellExecute = true
                     });
+                    Balloon("未找到 config.toml", "已打开配置目录：" + _channelHome, ToolTipIcon.Info);
                 }
                 else
                 {
@@ -211,7 +229,7 @@ namespace LarkChannelBridge
             }
             catch (Exception ex)
             {
-                Balloon("无法打开配置目录", ex.Message);
+                Balloon("无法定位配置文件", ex.Message);
             }
         }
 

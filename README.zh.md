@@ -19,7 +19,7 @@
 
 ## 2. 安装一次
 
-Windows 用户也可以直接运行 `LarkChannelBridge-Setup-*.exe`（GitHub Releases 或 Actions 产物）：包里自带 Node 运行时，无需另装 Node/Git；安装后双击开始菜单或桌面的图标，Bridge 会在后台启动并在**任务栏托盘**出现图标，右键即可打开控制台或退出。升级时会自动停掉旧服务和托盘、用新路径重建，`%USERPROFILE%\.lark-channel` 里的配置、密钥和会话都会保留。下载、构建与行为说明见 [installer/README.md](installer/README.md)。其他平台或需要改代码时，按下面的源码方式安装。
+Windows 用户也可以直接运行 `LarkChannelBridge-Setup-*.exe`（GitHub Releases 或 Actions 产物）：包里自带 Node 运行时，无需另装 Node/Git；安装后双击开始菜单或桌面的图标，Bridge 会在后台启动并在**任务栏托盘**出现图标，右键即可打开控制台、定位配置文件或退出。升级时会自动停掉旧服务和托盘、用新路径重建，`%USERPROFILE%\.lark-channel` 里的配置、密钥和会话都会保留。下载、构建与行为说明见 [installer/README.md](installer/README.md)。其他平台或需要改代码时，按下面的源码方式安装。
 
 准备 **Git**、**Node.js 22.12 或更新版本**（也支持 Node 20 中的 20.19 及更新版本），以及至少一个安装并完成登录 / provider 配置的 Agent。在准备运行 Bridge 的同一终端、同一用户下检查：
 
