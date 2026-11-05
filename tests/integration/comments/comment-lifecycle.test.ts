@@ -224,7 +224,7 @@ async function createHarness(options: { autoCompleteAgent?: boolean } = {}): Pro
   };
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
-  workspaces.setCwd('doc:doc-token', tmp.workspace);
+  workspaces.setCwd(`doc:${commentTokenDigest('doc-token')}`, tmp.workspace);
   cleanups.push(async () => {
     await Promise.all([sessions.flush(), workspaces.flush()]);
     await tmp.cleanup();

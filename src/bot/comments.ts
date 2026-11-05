@@ -133,7 +133,6 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
   const agentKind = deps.resolveAgentKind?.(runScopeId) ?? controls.profileConfig.agentKind;
   const scopedProfile = profileForAgentKind(controls.profileConfig, agentKind);
   const docSessionScopeId = commentDocumentSessionScopeId(target.fileToken);
-  const legacyDocSessionScopeId = legacyCommentDocumentSessionScopeId(target.fileToken);
   const agentSessionScopeId = docSessionScopeId;
 
   const ctx = await fetchCommentContext(channel, target, evt).catch((err) => {
@@ -157,7 +156,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
   });
   const prompt = buildCommentPrompt(target, ctx);
   const workspace = await resolveCommentWorkingDirectory(
-    workspaces.cwdFor(docSessionScopeId) ?? workspaces.cwdFor(legacyDocSessionScopeId),
+    workspaces.cwdFor(docSessionScopeId),
     scopedProfile.workspaces.default,
     managedWorkspaceFor({ ...scopedProfile.state, bridgeRoot: scopedProfile.state?.bridgeRoot ?? dirname(controls.configPath) }, agentKind)!,
   );
@@ -239,18 +238,11 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
             agentId: capability.agentId,
             cwdRealpath,
             policyFingerprint: policy.policyFingerprint,
-          }) ??
-          sessionCatalog?.activeFor({
-            scopeId: legacyDocSessionScopeId,
-            agentId: capability.agentId,
-            cwdRealpath,
-            policyFingerprint: policy.policyFingerprint,
           })
         : undefined;
       const sessionId =
         canResumeAgentSession && capability.legacySessionStore
-          ? sessions.resumeFor(docSessionScopeId, cwdRealpath) ??
-            sessions.resumeFor(legacyDocSessionScopeId, cwdRealpath)
+          ? sessions.resumeFor(docSessionScopeId, cwdRealpath)
           : capability.sessionIdField === 'sessionId'
             ? catalogEntry?.sessionId
             : undefined;
@@ -544,10 +536,6 @@ function commentExecutionScopeId(commentThreadScopeId: string): string {
 
 function commentDocumentSessionScopeId(fileToken: string): string {
   return `doc:${commentTokenDigest(fileToken)}`;
-}
-
-function legacyCommentDocumentSessionScopeId(fileToken: string): string {
-  return `doc:${fileToken}`;
 }
 
 function markCommentAgentSessionRun(scopeId: string): {
