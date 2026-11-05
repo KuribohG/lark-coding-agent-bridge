@@ -6,17 +6,10 @@ import { secretKeyForApp } from './schema';
 import { writeFileAtomic } from '../platform/atomic-write';
 import { batchArgument, batchLiteral, BATCH_PREAMBLE } from '../platform/windows-cmd';
 
-
-/**
- * Atomic write: write to a sibling temp file with 0600 perms, then rename
- * (atomic on POSIX) into place. Avoids the partial-write window where a
- * crash could leave the config truncated, and keeps secret-bearing bytes
- * from ever existing at the final path with looser perms.
- */
 /**
  * Build an AppConfig that points the app's secret at the encrypted local
- * keystore via an exec-provider SecretRef. Used by /account change and the
- * first-run migration path. Preserves the existing `preferences` block so
+ * keystore via an exec-provider SecretRef. Used by /account change and
+ * profile bootstrap. Preserves the existing `preferences` block so
  * users don't lose unrelated settings on credential update.
  *
  * The provider command is a thin shell wrapper bridge writes under

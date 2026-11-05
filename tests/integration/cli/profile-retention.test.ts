@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resolveAppPaths } from '../../../src/config/app-paths';
+import { paths } from '../../../src/config/paths';
 import { clearKeystoreDerivedKeyCache, setSecret } from '../../../src/config/keystore';
 import {
   createDefaultProfileConfig,
@@ -192,8 +193,8 @@ describe('profile retention and export', () => {
       providers: {
         bridge: {
           source: 'exec',
-          command: process.execPath,
-          args: ['secrets', 'get'],
+          command: paths.secretsGetterScript,
+          args: [],
         },
       },
     };

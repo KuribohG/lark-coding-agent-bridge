@@ -114,7 +114,7 @@ export async function resolveProfileRuntime(
     assertRequestedAgentMatchesExistingProfile(profile, profileConfig, requestedAgent);
     await ensureDefaultWorkspace(profileConfig);
     assertBootstrapAppMatchesExistingProfile(opts, profile, profileConfig);
-    const cfg = await maybeMigrateRootPlaintextSecret(rootConfig, profile, appPaths, configPath);
+    const cfg = runtimeProfileConfig(rootConfig, profile);
     return { cfg, profileConfig, modelServices: rootConfig.modelServices ?? {}, configPath, appPaths, profile };
   }
 
@@ -382,30 +382,6 @@ class UserCancelledError extends Error {
 
 function displayAgentKind(kind: AgentKind): string {
   return agentDisplayName(kind);
-}
-
-async function maybeMigrateRootPlaintextSecret(
-  rootConfig: RootConfig,
-  profile: string,
-  appPaths: Pick<AppPaths, 'secretsGetterScript' | 'secretsFile' | 'keystoreSaltFile'>,
-  configPath: string,
-): Promise<AppConfig & { agentKind?: AgentKind }> {
-  const cfg = runtimeProfileConfig(rootConfig, profile);
-  const secret = cfg.accounts.app.secret;
-  if (typeof secret !== 'string' || /^\$\{[A-Z][A-Z0-9_]*\}$/.test(secret)) {
-    return cfg;
-  }
-
-  const encrypted = await encryptedConfigForProfile(cfg, appPaths);
-  const profileConfig = rootConfig.profiles[profile];
-  if (!profileConfig) throw new Error(`profile not found: ${profile}`);
-  rootConfig.profiles[profile] = {
-    ...profileConfig,
-    accounts: encrypted.accounts,
-  };
-  if (encrypted.secrets) rootConfig.secrets = encrypted.secrets;
-  await saveRootConfig(rootConfig, configPath);
-  return runtimeProfileConfig(rootConfig, profile);
 }
 
 async function encryptedConfigForProfile(

@@ -10,7 +10,7 @@ import { isSecretRef, secretKeyForApp } from './schema';
 
 /**
  * Bridge runtime secret resolver. Mirrors the lark-cli `ResolveSecretInput`
- * contract so users can keep their App Secret out of `config.json` via:
+ * contract so users can keep their App Secret out of `config.toml` via:
  *
  *   - plain string                              → as-is
  *   - "${VAR_NAME}" template                    → process.env[VAR_NAME]
@@ -126,7 +126,7 @@ async function resolveExecRef(
     throw new Error('exec provider missing `command`');
   }
 
-  if (isSelfBridgeCommand(pc.command, pc.args)) {
+  if (isSelfBridgeCommand(pc.command)) {
     // Short-circuit: read keystore directly. The expected id under the
     // bridge convention is `app-<appId>`; if the user wired something
     // else, fall back to ref.id verbatim.
@@ -141,21 +141,8 @@ async function resolveExecRef(
   return spawnExecProvider(pc, ref);
 }
 
-function isSelfBridgeCommand(command: string, args: string[] | undefined): boolean {
-  // Canonical form (post-wrapper): command is our own secrets-getter
-  // script and args is empty. Match path exactly.
-  if (command === paths.secretsGetterScript) return true;
-  if (command === `${paths.secretsGetterScript}.cmd`) return true;
-  // Legacy / hand-edited form: command is node and args end with
-  // ['secrets', 'get']. Keep this branch so configs written by older
-  // bridge versions, or by power-users editing config.json directly,
-  // still short-circuit and avoid a re-spawn.
-  if (args && args.length >= 2) {
-    const a = args[args.length - 2];
-    const b = args[args.length - 1];
-    if (a === 'secrets' && b === 'get') return true;
-  }
-  return false;
+function isSelfBridgeCommand(command: string): boolean {
+  return command === paths.secretsGetterScript || command === `${paths.secretsGetterScript}.cmd`;
 }
 
 async function spawnExecProvider(pc: ProviderConfig, ref: SecretRef): Promise<string> {
