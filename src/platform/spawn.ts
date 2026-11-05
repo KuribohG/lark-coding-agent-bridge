@@ -12,7 +12,10 @@ export function spawnProcess(
   args: readonly string[] = [],
   options: SpawnOptions = {},
 ): ChildProcess {
-  return crossSpawn(command, [...args], options);
+  // The tray-launched supervisor has no console. Without this flag every
+  // console child (node.exe, .cmd shims such as claude/codex/lark-cli) opens a
+  // visible window on Windows; callers can still opt out explicitly.
+  return crossSpawn(command, [...args], { windowsHide: true, ...options });
 }
 
 export function spawnProcessSync(
@@ -20,7 +23,7 @@ export function spawnProcessSync(
   args: readonly string[] = [],
   options: SpawnSyncOptions = {},
 ) {
-  return crossSpawn.sync(command, [...args], options);
+  return crossSpawn.sync(command, [...args], { windowsHide: true, ...options });
 }
 
 export function mergeProcessEnv(

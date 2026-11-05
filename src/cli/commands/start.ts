@@ -130,6 +130,7 @@ async function runDetachedSupervisor(opts: StartOptions): Promise<void> {
   try {
     const child = spawn(process.execPath, [resolve(entry), 'run', '--web-ui', ...detachArgs(opts)], {
       detached: true,
+      windowsHide: true,
       stdio: ['ignore', log.fd, log.fd],
     });
     await new Promise<void>((resolveSpawn, rejectSpawn) => {
