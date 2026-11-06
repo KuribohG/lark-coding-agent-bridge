@@ -1,4 +1,10 @@
 // Minimal headless library. No channel, web console, bot, CLI or model loop.
+import { configureLogger } from './core/logger';
+
+// Hosts may speak a protocol on stdout, so log lines only go to a configured file.
+configureLogger({ stdout: false });
+
+export { configureLogger };
 export { RunExecutor } from './runtime/run-executor';
 export { ActiveRuns } from './runtime/active-runs';
 export { ProcessPool } from './runtime/process-pool';
