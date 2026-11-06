@@ -10,6 +10,8 @@ export interface LoggerOptions {
   logsDir?: string;
   retentionDays: number;
   now: () => Date;
+  /** An embedded library leaves the host's stdout and stderr alone. */
+  stdout?: boolean;
 }
 
 const DEFAULT_RETENTION_DAYS = Math.max(
@@ -285,7 +287,7 @@ function emit(level: Level, phase: string, event: string, fields: LogFields = {}
   // detail always lives in the file regardless.
   const showOnStdout =
     level !== 'info' || STDOUT_INFO_ALLOWLIST.has(`${phase}.${event}`);
-  if (!showOnStdout) return;
+  if (!showOnStdout || loggerOptions.stdout === false) return;
 
   const fn = level === 'error' ? console.error : level === 'warn' ? console.warn : console.log;
   fn(formatStdout(level, phase, event, telemetrySafe.ctx, telemetrySafe.fields));
@@ -488,6 +490,7 @@ export function configureLogger(opts: Partial<LoggerOptions>): void {
     ...(opts.logsDir !== undefined ? { logsDir: opts.logsDir } : { logsDir: loggerOptions.logsDir }),
     retentionDays: Math.max(1, opts.retentionDays ?? loggerOptions.retentionDays),
     now: opts.now ?? loggerOptions.now,
+    stdout: opts.stdout ?? loggerOptions.stdout,
   };
 }
 
