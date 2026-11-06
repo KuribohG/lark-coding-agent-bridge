@@ -417,5 +417,6 @@ export type ExecutionObservation =
   | { state: 'completed'; result: WorkflowWorkerResult; nativeSessionId?: string }
   | { state: 'unknown'; reason?: string };
 export interface ExecutionLedgerPort {
-  lookupExecution(executionId: string): Promise<ExecutionObservation>;
+  /** The workflow scope lets a host read only the records that execution can belong to. */
+  lookupExecution(executionId: string, scopeId: string): Promise<ExecutionObservation>;
 }
