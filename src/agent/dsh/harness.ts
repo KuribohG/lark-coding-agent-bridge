@@ -39,6 +39,7 @@ export function createDshHarness(options: any) {
     const listeners = new Set<(event: any) => void>();
     type ExecutionRecord = { execution?: GovernedRunExecution; relay?: Promise<void>; terminal?: any; published?: boolean; admission?: Promise<GovernedRunExecution> };
     const executions = new Map<string, ExecutionRecord>();
+    let fenced: { code: string; message: string; reason?: string } | undefined;
     const publish = (event: any) => { for (const listener of listeners) { try { listener(event); } catch { /* observer isolation */ } } };
     const unsubscribe = session.subscribe((event: any) => {
       const record = executions.get(event.turnId);
@@ -56,13 +57,15 @@ export function createDshHarness(options: any) {
         const signal = request.signal ? AbortSignal.any([request.signal, lifecycle.signal]) : lifecycle.signal;
         if (!turnId) throw new Error('A host-durable turn identity is required');
         if (executions.has(turnId)) return { accepted: true, turnId, duplicate: true };
+        // Foreign storage ends this session for good, so later turns get the same cause without another run.
+        if (fenced) throw Object.assign(new Error(fenced.message), fenced);
         const record: ExecutionRecord = {};
         executions.set(turnId, record);
         try {
           const admission: Promise<GovernedRunExecution> = host.executor.submit({ agent: adapter, executionId: invocation?.executionId || turnId,
             attemptId: invocation?.attemptId, governed: true, quiescenceTimeoutMs: options.stopTimeoutMs || 5000, scopeId: canonicalJson(settings.scope),
             signal, model: settings.model, reasoningEffort: settings.effort,
-            nativeTurn: { session, turnId, input, invocation, signal, onEvent() {} },
+            nativeTurn: { session, turnId, input, invocation, signal, onEvent(event: any) { record.terminal ??= { ...event, scope: settings.scope }; } },
             validateBeforeRun: async () => { signal?.throwIfAborted(); await invocation?.validateLease?.(); },
             // This envelope admits only the already registered host tool set.
             // Every effect still validates its trusted per-turn host lease.
@@ -78,7 +81,9 @@ export function createDshHarness(options: any) {
             for await (const _event of execution.subscribe()) { /* native public facts use the legacy protocol */ }
             const result = await execution.result;
             record.published = true;
-            publish(result === 'unknown' ? { type: 'connection-lost', turnId, scope: settings.scope, error: { code: 'harness-quarantined', reason: 'unknown', message: 'Native settlement is unknown; execution resources remain quarantined.' } }
+            if (record.terminal?.error?.code === 'harness-foreign-modified') fenced = record.terminal.error;
+            // A native failure keeps its own code; only an unexplained uncertainty is a generic quarantine.
+            publish(result === 'unknown' && !record.terminal?.error?.code ? { type: 'connection-lost', turnId, scope: settings.scope, error: { code: 'harness-quarantined', reason: 'unknown', message: 'Native settlement is unknown; execution resources remain quarantined.' } }
               : record.terminal ?? { type: 'failed', turnId, scope: settings.scope, error: { code: 'harness-connection-lost', reason: 'unknown', message: 'Native terminal receipt is missing.' } });
           })().catch((error: any) => publish({ type: 'connection-lost', turnId, scope: settings.scope, error: { code: 'harness-connection-lost', reason: 'unknown', message: String(error.message || error) } }));
           return { accepted: true, turnId };
@@ -107,9 +112,12 @@ export function createDshHarness(options: any) {
       inspect: backend.inspect, reconcile: backend.reconcile, release: (session: any) => session.close() },
     open: (settings: any) => wrap(settings), resume: (handle: any, settings: any) => wrap(settings, handle),
     async close() {
-      const results = await Promise.all([...sessions].map(session => session.close()));
-      if (results.some(result => result?.state === 'unknown')) return { state: 'unknown', hardStop: 'host-lifecycle-required' };
-      return backend.close();
+      const results = await Promise.allSettled([...sessions].map(session => session.close()));
+      if (results.some(result => result.status === 'fulfilled' && result.value?.state === 'unknown')) return { state: 'unknown', hardStop: 'host-lifecycle-required' };
+      // A session that closed with a storage error must not keep the native root lease.
+      const errors: unknown[] = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+      try { await backend.close(); } catch (error) { errors.push(error); }
+      if (errors.length) throw new AggregateError(errors, 'Native sessions were closed with recorded storage errors.');
     },
   };
 }
