@@ -109,6 +109,18 @@ describe('dsh host-supplied backend', () => {
     expect(await run.waitForQuiescence!(1)).toEqual({ state: 'quiescent' });
   });
 
+  it('reports a refused submission to the host with its exact code', async () => {
+    const native = nativeSession();
+    native.session.submit.mockRejectedValueOnce(Object.assign(new Error('Foreign change'), { code: 'harness-foreign-modified', reason: 'unknown' }));
+    const reported: unknown[] = [];
+    const binding: NativeTurnBinding = { session: native.session, turnId: 'turn', input: { text: 'hello' }, invocation: {}, onEvent: event => reported.push(event) };
+    const prepared = await new DshAdapter().prepareRun({ runId: 'run', prompt: 'hello', cwd: '.', nativeTurn: binding } as AgentRunOptions);
+    const events = await collect(prepared.start().events);
+    expect(events).toEqual([expect.objectContaining({ type: 'error', failureKind: 'delivery_unknown' })]);
+    expect(reported).toEqual([{ type: 'connection-lost', turnId: 'turn',
+      error: { code: 'harness-foreign-modified', reason: 'unknown', message: 'Foreign change' } }]);
+  });
+
   it('reports a lost native result as delivery unknown and cancels only its own turn', async () => {
     const native = nativeSession();
     const run = await startTurn(native);
