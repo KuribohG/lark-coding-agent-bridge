@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { createRequire } from 'node:module';
+import { builtinModules, createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
@@ -22,9 +22,11 @@ const sourceDateEpoch = Number(git(['show', '-s', '--format=%ct', sourceCommit])
 fs.rmSync(output, { recursive: true, force: true });
 fs.mkdirSync(output, { recursive: true });
 const result = await esbuild.build({ absWorkingDir: root,
-  entryPoints: { runtime: 'src/runtime/host.ts', workflows: 'packages/workflow-engine/src/index.ts' },
+  entryPoints: { runtime: 'src/host.ts', workflows: 'packages/workflow-engine/src/index.ts' },
   outdir: output, outExtension: { '.js': '.mjs' }, bundle: true, splitting: false, platform: 'node', format: 'esm',
   target: 'node24', sourcemap: false, metafile: true, external: ['better-sqlite3', 'quickjs-emscripten'],
+  // Bundled CommonJS packages call require() for Node builtins, which an ES module has to provide.
+  banner: { js: "import { createRequire as bundleRequire } from 'node:module';\nconst require = bundleRequire(import.meta.url);" },
   define: { 'process.env.LARK_BUILD_COMMIT': JSON.stringify(sourceCommit),
     'process.env.LARK_BUILD_TIME': JSON.stringify(new Date(sourceDateEpoch * 1000).toISOString()),
     'process.env.LARK_BUILD_DIRTY': JSON.stringify(String(sourceDirty)) },
@@ -95,7 +97,7 @@ function copyPackage(name, owner = engineRoot, optional = false) {
 }
 const external = new Set();
 for (const value of Object.values(result.metafile.outputs)) for (const item of value.imports)
-  if (item.external && !item.path.startsWith('node:')) external.add(item.path);
+  if (item.external && !item.path.startsWith('node:') && !builtinModules.includes(item.path)) external.add(item.path);
 for (const name of [...external].sort()) copyPackage(name);
 const files = {};
 const collect = directory => {

@@ -3,6 +3,7 @@ import { normalizeClaude, type ClaudeConfig } from './claude/config';
 import { normalizeCodex, type CodexConfig } from './codex/config';
 import { normalizePi, type PiConfig } from './pi/config';
 import { normalizeAgy, type AgyConfig } from './agy/config';
+import { normalizeDsh, type DshConfig } from './dsh/config';
 import type { AgentLaunchConfig } from './launch-options';
 
 export interface AgentLaunchConfigMap {
@@ -10,6 +11,7 @@ export interface AgentLaunchConfigMap {
   codex: CodexConfig;
   pi: PiConfig;
   agy: AgyConfig;
+  dsh: DshConfig;
 }
 
 export type AgentLaunchProfiles = Partial<AgentLaunchConfigMap>;
@@ -19,6 +21,7 @@ const NORMALIZERS = {
   codex: normalizeCodex,
   pi: normalizePi,
   agy: normalizeAgy,
+  dsh: normalizeDsh,
 } satisfies { [K in AgentKind]: (input: AgentLaunchConfigMap[K]) => AgentLaunchConfigMap[K] };
 
 function normalize<K extends AgentKind>(kind: K, value: AgentLaunchConfigMap[K]): AgentLaunchConfigMap[K] {
