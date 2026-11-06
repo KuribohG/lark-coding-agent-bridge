@@ -1,7 +1,7 @@
 import { BUILTIN_WORKFLOW_TOOLS } from './tools/registry';
 
 /** The engine registry is authoritative for direct and CLI callers. */
-export const MAIN_WORKFLOW_METHODS = BUILTIN_WORKFLOW_TOOLS.mainNames();
+export const MAIN_WORKFLOW_METHODS = [...BUILTIN_WORKFLOW_TOOLS.mainNames(), 'guide'];
 export const WORKER_WORKFLOW_METHODS = BUILTIN_WORKFLOW_TOOLS.workerNames();
 export function workflowToolDefinitions(kind: 'main' | 'worker') {
   return [{ type: 'function', function: { name: 'workflow_call', description: 'Operate only the workflow bound by the current trusted host turn.',
