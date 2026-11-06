@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import type { AgentKind } from '../config/profile-schema';
-import { isAgentKind } from '../agent/backends';
+import { isRegisteredAgentKind } from '../agent/backend-spec';
 import { writeFileAtomic } from '../platform/atomic-write';
 
 interface ScopeExecutionFile {
@@ -21,7 +21,7 @@ export class ScopeExecutionStore {
       if (raw.version !== 1 || !raw.scopes || typeof raw.scopes !== 'object') return;
       this.data.clear();
       for (const [scope, value] of Object.entries(raw.scopes)) {
-        if (scope && typeof value === 'string' && isAgentKind(value)) this.data.set(scope, value);
+        if (scope && typeof value === 'string' && isRegisteredAgentKind(value)) this.data.set(scope, value);
       }
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;

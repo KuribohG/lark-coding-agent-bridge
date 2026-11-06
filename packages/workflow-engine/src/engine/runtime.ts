@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { silentLogger, WorkflowStopped, type WorkerRun, type WorkerRunner, type WorkerRunSpec, type WorkflowProcesses } from './ports';
 import { checkJsonOutput } from './json-output';
 import { RESUME_DEADLINE, RESUME_ROOT_CHANGED, WorkflowKernel } from './kernel';
-import { WorkflowIpc, WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from './ipc';
+import { hostToolInstructions, WorkflowIpc, WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from './ipc';
 import { workflowDigest } from './digest';
 import { inheritedWorkerExecution } from './execution';
 import { workflowToolDefinitions } from './host-tools';
@@ -60,6 +60,7 @@ export class WorkflowRuntime {
     this.kernel = new WorkflowKernel(deps.path, {
       resolveRoot: deps.resolveRoot,
       executionLedger: deps.executionLedger,
+      hostTools: deps.hostTools,
       getTimeoutMinutes: deps.getTimeoutMinutes,
       checkSelection: deps.checkSelection,
       nativeIdKind: deps.nativeIdKind,
@@ -212,7 +213,7 @@ export class WorkflowRuntime {
     if (mode === 'continue' && !state) throw new Error('No active workflow to continue');
     const caller: WorkflowCaller = { kind: 'main', scopeId, allowStart: mode === 'start', ...(state ? { workflowId: state.workflowId } : {}) };
     const binding = this.deps.hostTools ? { env: {}, release() {} } : this.ipc.bind(caller, deadlineAt);
-    return { ...binding, instructions: `${WORKFLOW_TOOL_INSTRUCTIONS}\n\n${this.kernel.context(scopeId)}`,
+    return { ...binding, instructions: `${this.deps.hostTools ? hostToolInstructions(WORKFLOW_TOOL_INSTRUCTIONS) : WORKFLOW_TOOL_INSTRUCTIONS}\n\n${this.kernel.context(scopeId)}`,
       ...(this.deps.hostTools ? { definitions: workflowToolDefinitions('main'), call: (method: string, args: Record<string, unknown>) => this.call(caller, method, args) } : {}),
       eventIds: state?.events.filter(event => !event.acknowledged).map(event => event.id) ?? [] };
   }
@@ -261,7 +262,7 @@ export class WorkflowRuntime {
           }
         },
         ...(workspace ? { workspace: { id: workspace.id, path: workspace.path, rootDigest: workspace.rootDigest } } : {}),
-        systemPrompt: workflowWorkerInstructions(task) + (workspace ? `\nManaged worktree: ${workspace.path}\nBaseline: ${workspace.baseCommit}\nWork only in this worktree; do not modify the original checkout or other worktrees. ${workspace.kind === 'review' ? 'Review the frozen HEAD; leave all tracked and untracked files unchanged.' : 'Commit intended changes before returning. Leave no untracked files or unfinished Git operations.'}` : ''),
+        systemPrompt: (this.deps.hostTools ? hostToolInstructions(workflowWorkerInstructions(task)) : workflowWorkerInstructions(task)) + (workspace ? `\nManaged worktree: ${workspace.path}\nBaseline: ${workspace.baseCommit}\nWork only in this worktree; do not modify the original checkout or other worktrees. ${workspace.kind === 'review' ? 'Review the frozen HEAD; leave all tracked and untracked files unchanged.' : 'Commit intended changes before returning. Leave no untracked files or unfinished Git operations.'}` : ''),
         ...(resume ? { resume } : {}),
         deadlineAt: workflow.deadlineAt, signal,
       });

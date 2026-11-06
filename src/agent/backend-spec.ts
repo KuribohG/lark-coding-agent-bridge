@@ -1,5 +1,5 @@
 import type { ModelProtocol } from '../model-service/config';
-export type AgentKind = 'claude' | 'codex' | 'pi' | 'agy';
+export type AgentKind = 'claude' | 'codex' | 'pi' | 'agy' | 'dsh';
 export type AgentAccessMode = 'read-only' | 'workspace' | 'full';
 export type AgentCapabilityId = AgentKind;
 export type AgentSessionKind = `${AgentKind}-session` | 'codex-thread';
@@ -49,6 +49,8 @@ export interface AgentBackendSpec {
     model: string;
     reasoningEffort: string;
   };
+  /** Only an embedding host can supply this adapter; profiles, flags and channel options never select it. */
+  hostManaged?: boolean;
 }
 
 const COMMON_AGENT_LAUNCH_KEYS = Object.freeze([
@@ -173,21 +175,58 @@ const AGY_SPEC: AgentBackendSpec = Object.freeze({
   webDefaultAccess: 'full',
 });
 
+const DSH_SPEC: AgentBackendSpec = Object.freeze({
+  kind: 'dsh',
+  displayName: 'DeepSeek Harness',
+  shortDisplayName: 'DSH',
+  defaultCommand: 'dsh',
+  commandEnv: 'LARK_CHANNEL_DSH_BIN',
+  launchRequired: false,
+  launchKeys: COMMON_AGENT_LAUNCH_KEYS,
+  includeStateDirectoryInPolicy: false,
+  sessionKind: 'dsh-session',
+  sessionIdField: 'sessionId',
+  imageInput: 'attachments',
+  legacySessionStore: false,
+  promptInjection: 'append-system-prompt',
+  supportsNativeHistory: false,
+  historySource: 'catalog',
+  permissionView: 'tools',
+  providerBindings: Object.freeze({}),
+  modelCatalog: 'dsh',
+  // A fallback only: DSH advertises its levels per model, and `off` is a native value.
+  reasoningEfforts: Object.freeze(['off', 'low', 'medium', 'high', 'xhigh', 'max']),
+  // Host-registered tools, each validating its own lease, are the boundary.
+  supportedAccess: Object.freeze(['full'] as AgentAccessMode[]),
+  webDefaultAccess: 'full',
+  hostManaged: true,
+});
+
 export const AGENT_BACKEND_SPECS: Readonly<Record<AgentKind, AgentBackendSpec>> =
   Object.freeze({
     claude: CLAUDE_SPEC,
     codex: CODEX_SPEC,
     pi: PI_SPEC,
     agy: AGY_SPEC,
+    dsh: DSH_SPEC,
   });
 
-export const AGENT_KINDS = Object.freeze(
+/** Every registered backend, including those only an embedding host can supply. */
+export const REGISTERED_AGENT_KINDS = Object.freeze(
   Object.keys(AGENT_BACKEND_SPECS) as AgentKind[],
 );
 
+/** Backends a profile, CLI flag or channel option can select on its own. */
+export const AGENT_KINDS = Object.freeze(
+  REGISTERED_AGENT_KINDS.filter((kind) => !AGENT_BACKEND_SPECS[kind].hostManaged),
+);
+
 export function isAgentKind(value: unknown): value is AgentKind {
-  return typeof value === 'string' &&
-    Object.prototype.hasOwnProperty.call(AGENT_BACKEND_SPECS, value);
+  return (AGENT_KINDS as readonly unknown[]).includes(value);
+}
+
+export function isRegisteredAgentKind(value: unknown): value is AgentKind {
+  return (REGISTERED_AGENT_KINDS as readonly unknown[]).includes(value);
 }
 
 export function agentBackendSpec(kind: AgentKind): AgentBackendSpec {

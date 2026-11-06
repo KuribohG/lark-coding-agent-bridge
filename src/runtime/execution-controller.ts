@@ -64,6 +64,8 @@ export interface ProfileExecutionControllerOptions {
   systemPrompt?: AgentSystemPrompt;
   env?: NodeJS.ProcessEnv;
   modelProviders?: ModelProviderRegistry;
+  /** Adapters only the embedding host can build, such as those bound to host-owned sessions. */
+  hostAdapters?: Partial<Record<AgentKind, () => AgentAdapter>>;
 }
 
 /** Shared execution routing for Lark and standalone Web conversation channels. */
@@ -179,7 +181,7 @@ export class ProfileExecutionController implements ExecutionController {
   }
 
   private createAgent(profile: AgentExecutionProfile, modelProviders = this.modelProviders): AgentAdapter {
-    const agent = createAgentAdapter({
+    const agent = this.options.hostAdapters?.[profile.agentKind]?.() ?? createAgentAdapter({
       modelProviders,
       profile,
       currentModel: () => preferredModel(this.profileConfig.agentKind === profile.agentKind ? this.profileConfig : profile),

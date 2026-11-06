@@ -11,6 +11,7 @@ const READERS: Record<AgentKind, (profile: ProfileConfig, profileDir: string) =>
   codex: readCodexModels,
   pi: async () => ({ defaults: {}, models: supportedModels('pi') }),
   agy: readAgyModels,
+  dsh: async () => ({ defaults: {}, models: supportedModels('dsh') }),
 };
 
 /** Metadata is advisory; unavailable native catalogs must never block a run. */

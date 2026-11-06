@@ -93,7 +93,7 @@ async function switchableHarness() {
     ...config(tmp.workspace),
     permissions: { defaultAccess: 'full' as const, maxAccess: 'full' as const },
   };
-  const execution = new SwitchableExecutionController(base, { claude, pi, codex: new FakeAgentAdapter({ id: 'codex' }), agy: new FakeAgentAdapter({ id: 'agy' }) });
+  const execution = new SwitchableExecutionController(base, { claude, pi, dsh: new FakeAgentAdapter({ id: 'dsh' }), codex: new FakeAgentAdapter({ id: 'codex' }), agy: new FakeAgentAdapter({ id: 'agy' }) });
   const options = {
     execution,
     config: base,

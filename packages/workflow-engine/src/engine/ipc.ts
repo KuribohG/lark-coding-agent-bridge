@@ -127,6 +127,14 @@ run_workflow 首次返回 status=waiting 和 workflowId；这是持久异步调�
 bridge 等本轮退出后执行子脚本；成功或失败结果都会在原生会话的下一次执行中注入 workflows.call（ok/result/resultRef 或 error），read_context 同样可读。结束本轮的文字不会成为父任务的最终结果；恢复后完成原任务并给出最终答复。相同 key 的已完成子调用返回保存的成功或失败结果，不重复执行；要重试失败子调用须用新 key 和 operationId。根工作流暂停后需显式重放；重启时正在运行的根工作流会自动重放。
 整棵树共享根并发、任务和尝试预算及截止时间，最多3层子 workflow、32个子运行。各层拥有自己的工作队列；显式 parentQueue:true 只授予子脚本 enqueueWork({queue:"parent",key,title,input,...}) 向直接父队列追加任务的能力，也可 enqueueWork({target:"parent",queue:"reviews",...}) 选择父命名队列，不授予关闭父队列或消费父队列的权限。子运行不直接向用户发送消息，结果交回调用者。`;
 
+/** Host-tool turns hold no shell credential: the same operations go through workflow_call. */
+export function hostToolInstructions(text: string): string {
+  return text
+    .replace(/^工作流工具通过 shell 调用：.*$/m, '工作流工具通过宿主工具调用：workflow_call({method:"<operation>",args:{...}})。')
+    .replace(/^你可使用当前绑定的 CLI：.*$/m, '你可使用当前绑定的宿主工具：workflow_call({method:"<operation>",args:{...}})。')
+    .replace(/^可通过 node "\$AGENT_WORKFLOW_CLI" workflow run_workflow .*$/m, '可通过 workflow_call({method:"run_workflow",args:{...}}) 调用完整的子 workflow。');
+}
+
 /** Only WorkflowRuntime calls this. Ordinary agent entries never receive this capability or binding. */
 export function workflowWorkerInstructions(task: WorkflowTask): string {
   const base = task.agentId ? WORKFLOW_MEMBER_INSTRUCTIONS
