@@ -7,7 +7,7 @@ import { silentLogger, stopReasonOf, WorkflowStopped, type WorkerRun, type Worke
 import { checkJsonOutput } from './json-output';
 import { RESUME_DEADLINE, RESUME_ROOT_CHANGED, WorkflowKernel } from './kernel';
 import { WorkflowIpc } from './ipc';
-import { WORKFLOW_MESSAGE_INSTRUCTIONS, WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from './tools/instructions';
+import { hostToolInstructions, WORKFLOW_GUIDE, WORKFLOW_MESSAGE_INSTRUCTIONS, WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from './tools/instructions';
 import { workflowDigest } from './digest';
 import { inheritedWorkerExecution } from './execution';
 import { MAX_RUNNING_SCRIPTS } from './limits';
@@ -82,6 +82,7 @@ export class WorkflowRuntime {
     this.kernel = new WorkflowKernel(deps.path, {
       resolveRoot: deps.resolveRoot,
       executionLedger: deps.executionLedger,
+      hostTools: deps.hostTools,
       getTimeoutMinutes: deps.getTimeoutMinutes,
       ...(deps.stallMs === undefined ? {} : { stallMs: deps.stallMs }),
       ...(deps.retryDelaysMs === undefined ? {} : { retryDelaysMs: deps.retryDelaysMs }),
@@ -287,7 +288,7 @@ export class WorkflowRuntime {
     if (mode === 'continue' && !state) throw new Error('No active workflow to continue');
     const caller: WorkflowCaller = { kind: 'main', scopeId, allowStart: mode === 'start', ...(state ? { workflowId: state.workflowId } : {}) };
     const binding = this.deps.hostTools ? { env: {}, release() {} } : this.ipc.bind(caller, deadlineAt);
-    return { ...binding, instructions: `${WORKFLOW_TOOL_INSTRUCTIONS}\n\n${this.kernel.context(scopeId)}`,
+    return { ...binding, instructions: `${this.deps.hostTools ? hostToolInstructions(WORKFLOW_TOOL_INSTRUCTIONS) : WORKFLOW_TOOL_INSTRUCTIONS}\n\n${this.kernel.context(scopeId)}`,
       ...(this.deps.hostTools ? { definitions: workflowToolDefinitions('main'), call: (method: string, args: Record<string, unknown>) => this.call(caller, method, args) } : {}),
       eventIds: state?.events.filter(event => !event.acknowledged).map(event => event.id) ?? [] };
   }
@@ -299,12 +300,16 @@ export class WorkflowRuntime {
   bindMessage(scopeId: string, deadlineAt = Date.now() + 24 * 60 * 60_000) {
     const state = this.kernel.state(scopeId);
     if (!state) return undefined;
-    const binding = this.ipc.bind({ kind: 'main', scopeId, workflowId: state.workflowId }, deadlineAt);
-    return { ...binding, instructions: `${WORKFLOW_MESSAGE_INSTRUCTIONS}\n<workflow_context source="bridge">\n${this.kernel.brief(scopeId)}\n</workflow_context>` };
+    const caller: WorkflowCaller = { kind: 'main', scopeId, workflowId: state.workflowId };
+    const binding = this.deps.hostTools ? { env: {}, release() {} } : this.ipc.bind(caller, deadlineAt);
+    return { ...binding,
+      ...(this.deps.hostTools ? { definitions: workflowToolDefinitions('main'), call: (method: string, args: Record<string, unknown>) => this.call(caller, method, args) } : {}),
+      instructions: `${this.deps.hostTools ? hostToolInstructions(WORKFLOW_MESSAGE_INSTRUCTIONS) : WORKFLOW_MESSAGE_INSTRUCTIONS}\n<workflow_context source="bridge">\n${this.kernel.brief(scopeId)}\n</workflow_context>` };
   }
 
   /** Caller identity comes from an exact host turn, never from model args. */
   call(caller: WorkflowCaller, method: string, args: Record<string, unknown>) {
+    if (method === 'guide' && this.deps.hostTools && caller.kind === 'main') return Promise.resolve(hostToolInstructions(WORKFLOW_GUIDE));
     return this.kernel.call(caller, method, args);
   }
 
@@ -374,7 +379,7 @@ export class WorkflowRuntime {
             }
           },
           ...(workspace ? { workspace: { id: workspace.id, path: workspace.path, rootDigest: workspace.rootDigest } } : {}),
-          systemPrompt: workflowWorkerInstructions(task) + (workspace ? `\nManaged worktree: ${workspace.path}\nBaseline: ${workspace.baseCommit}\nWork only in this worktree; do not modify the original checkout or other worktrees. ${workspace.kind === 'review' ? 'Review the frozen HEAD; leave all tracked and untracked files unchanged.' : 'Commit intended changes before returning. Leave no untracked files or unfinished Git operations.'}${landing ? `\nLanding branch: ${landing.targetRef.replace('refs/heads/', '')} (created by the first landing). submit_work rebases your commits onto it, has them checked together with other members' waiting work and lands them; a landing moves this worktree to the branch head, with what others landed.` : ''}` : ''),
+          systemPrompt: (this.deps.hostTools ? hostToolInstructions(workflowWorkerInstructions(task)) : workflowWorkerInstructions(task)) + (workspace ? `\nManaged worktree: ${workspace.path}\nBaseline: ${workspace.baseCommit}\nWork only in this worktree; do not modify the original checkout or other worktrees. ${workspace.kind === 'review' ? 'Review the frozen HEAD; leave all tracked and untracked files unchanged.' : 'Commit intended changes before returning. Leave no untracked files or unfinished Git operations.'}${landing ? `\nLanding branch: ${landing.targetRef.replace('refs/heads/', '')} (created by the first landing). submit_work rebases your commits onto it, has them checked together with other members' waiting work and lands them; a landing moves this worktree to the branch head, with what others landed.` : ''}` : ''),
           ...(resume ? { resume } : {}),
           ...(hostKey ? { host: { key: hostKey, attach } } : {}),
           deadlineAt: workflow.deadlineAt, signal,
