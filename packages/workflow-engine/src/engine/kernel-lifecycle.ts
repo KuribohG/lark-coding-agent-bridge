@@ -42,13 +42,15 @@ export class WorkflowLifecycle {
 
   cancelState(state: WorkflowState): void {
     this.ctx.children.suspendChildren(state,true);
-    state.status = 'cancelling';
+    const governed = Boolean(this.ctx.host.executionLedger);
+    state.status = governed ? 'cancelling' : 'cancelled';
     if (state.script) state.script.status = 'cancelled';
     for (const pool of consumerPools(state)) pool.status = 'cancelled';
-    freezeWorkClaims(state, 'Workflow admission revoked; native quiescence is pending');
-    cancelWork(state, this.ctx.now(), true);
+    // With a host ledger the old native turn may outlive admission: its claims stay frozen until quiescence.
+    if (governed) freezeWorkClaims(state, 'Workflow admission revoked; native quiescence is pending');
+    cancelWork(state, this.ctx.now(), governed);
     for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_input' || task.status==='waiting_workflow') this.ctx.scheduler.cancelTask(task, state);
-    if (!state.tasks.some(task => ['cancelling', 'unknown'].includes(task.status))) {
+    if (governed && !state.tasks.some(task => ['cancelling', 'unknown'].includes(task.status))) {
       state.status = 'cancelled'; cancelWork(state, this.ctx.now());
     }
   }

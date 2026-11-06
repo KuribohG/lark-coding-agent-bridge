@@ -12,6 +12,8 @@ export interface RunHandle {
   modelSettings?: import('../agent/model-settings').ModelSettings;
   stopReason?: RunStopReason;
   quiescence?: StopSettlement['state'];
+  /** A governed run keeps its scope across stop until the executor proves native drain. */
+  holdsScopeUntilDrained?: boolean;
   sessionIdentity?: ActiveSessionIdentity;
   /** Message IDs already delivered to this native run (initial batch or steer). */
   inputMessageIds: Set<string>;
@@ -127,6 +129,7 @@ export class ActiveRuns {
     const h = this.handles.get(chatId);
     if (!h) return false;
     this.reservations.delete(chatId);
+    if (!h.holdsScopeUntilDrained) this.handles.delete(chatId);
     void stopRun(h, reason).catch(() => {
       /* stop errors are non-fatal */
     });
@@ -138,6 +141,8 @@ export class ActiveRuns {
       this.generations.set(scope, this.generation(scope) + 1);
     }
     const all = [...this.handles.values()];
+    for (const [scope, handle] of this.handles) if (!handle.holdsScopeUntilDrained) this.handles.delete(scope);
+    this.reservations.clear();
     await Promise.allSettled(all.map((h) => stopRun(h, reason)));
   }
 

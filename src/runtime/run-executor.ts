@@ -31,8 +31,7 @@ export interface SubmitRunInput {
   /** Host-durable logical execution identity, independent of an attempt UUID. */
   executionId?: string;
   attemptId?: string;
-  retryPolicy?: 'none' | 'legacy';
-  /** Opt in to host-ledger reconciliation and retained unknown resources. */
+  /** Opt in to host-ledger reconciliation, one native attempt and retained unknown resources. */
   governed?: boolean;
   quiescenceTimeoutMs?: number;
   nativeTurn?: NativeTurnBinding;
@@ -74,7 +73,7 @@ export interface SubmitRunInput {
   };
 }
 
-export type RunResult = 'completed' | 'stopped' | 'expired' | 'quota' | 'failed' | 'unknown';
+export type RunResult = 'completed' | 'stopped' | 'expired' | 'quota' | 'failed';
 
 export interface RunExecution {
   result: Promise<RunResult>;
@@ -84,6 +83,11 @@ export interface RunExecution {
   handle: RunHandle;
   subscribe(): AsyncIterable<AgentEvent>;
   stop(reason?: RunStopReason): Promise<void>;
+}
+
+/** A host-ledger run: its outcome can stay unknown until the host reconciles it. */
+export interface GovernedRunExecution extends Omit<RunExecution, 'result'> {
+  result: Promise<RunResult | 'unknown'>;
   /** Explicit host reconciliation may release a proved-drained quarantine. */
   reconcile(): Promise<StopSettlement>;
 }
@@ -113,17 +117,19 @@ export class RunExecutor {
     this.resolveModelProvider = deps.resolveModelProvider;
   }
 
-  async submit(input: SubmitRunInput): Promise<RunExecution> {
-    const governed = input.governed === true || input.retryPolicy === 'none';
+  submit(input: SubmitRunInput & { governed: true }): Promise<GovernedRunExecution>;
+  submit(input: SubmitRunInput): Promise<RunExecution>;
+  async submit(input: SubmitRunInput): Promise<RunExecution | GovernedRunExecution> {
+    const governed = input.governed === true;
     const submittedAt = this.now();
     // Admission refusals happen before anything reaches the agent.
-    const slot = await this.admit(input).catch((err: unknown) => { throw beforeSubmission(err); });
+    const slot = await this.admit(input, governed).catch((err: unknown) => { throw beforeSubmission(err); });
     const runId = input.executionId ?? this.createRunId();
     const startedAt = this.now();
     const queueWaitMs = startedAt - submittedAt;
     const { controller } = slot;
     let handle!: RunHandle;
-    const { agent, modelProvider, prepared, run } = await this.launch(input, slot, runId, () => Boolean(handle?.interrupted));
+    const { agent, modelProvider, prepared, run } = await this.launch(input, slot, runId, () => Boolean(handle?.interrupted), governed);
     const dimensions = {
       runId,
       profile: input.observability?.profile ?? 'unknown',
@@ -144,6 +150,7 @@ export class RunExecutor {
 
     try {
       handle = this.activeRuns.register(input.scopeId, run);
+      handle.holdsScopeUntilDrained = governed;
       handle.modelSettings = { ...prepared.modelSettings };
     } catch (err) {
       slot.abandon();
@@ -160,11 +167,11 @@ export class RunExecutor {
     if (controller.signal.aborted) stopOnAbort();
     let terminal: 'completed' | 'quota' | 'failed' | 'unknown' = 'failed';
     let terminalObserved = false, nativeInterrupted = false;
-    let settleResult!: (state: RunResult) => void;
-    const result = new Promise<RunResult>((resolve) => { settleResult = resolve; });
+    let settleResult!: (state: RunResult | 'unknown') => void;
+    const result = new Promise<RunResult | 'unknown'>((resolve) => { settleResult = resolve; });
     let cleaned = false, resultSettled = false;
     let cleaning: Promise<void> | undefined;
-    const finish = (state: RunResult) => { if (!resultSettled) { resultSettled = true; settleResult(state); } };
+    const finish = (state: RunResult | 'unknown') => { if (!resultSettled) { resultSettled = true; settleResult(state); } };
     const quiescenceTimeoutMs = input.quiescenceTimeoutMs ?? this.postDoneExitGraceMs;
     const confirmQuiescence = async (): Promise<StopSettlement> => {
       if (run.waitForQuiescence) return run.waitForQuiescence(quiescenceTimeoutMs);
@@ -238,7 +245,7 @@ export class RunExecutor {
       },
     }), async () => {
       await cleanup(!handle.interrupted);
-    });
+    }, governed);
 
     return {
       result,
@@ -255,6 +262,8 @@ export class RunExecutor {
         if (cleaned) { await result; return; }
         try {
           await stopRun(handle, reason);
+          // A governed run settles through native quiescence in cleanup, not process exit.
+          if (!governed) await run.waitForExit(this.postDoneExitGraceMs);
         } finally {
           await cleanup(false);
         }
@@ -263,10 +272,10 @@ export class RunExecutor {
   }
 
   /** Reserves the scope and a pool slot, honouring the deadline, caller signal and reconnect pause. */
-  private async admit(input: SubmitRunInput): Promise<AdmittedRun> {
+  private async admit(input: SubmitRunInput, governed: boolean): Promise<AdmittedRun> {
     const generation = this.activeRuns.generation(input.scopeId);
     const checkDeadline = () => {
-      if (this.activeRuns.generation(input.scopeId) !== generation) throw new RunStopped('cancelled');
+      if (governed && this.activeRuns.generation(input.scopeId) !== generation) throw new RunStopped('cancelled');
       if (input.deadlineAt !== undefined && (!Number.isSafeInteger(input.deadlineAt) || input.deadlineAt <= this.now())) {
         throw new RunRejected('deadline-expired', '任务停止时间已过。');
       }
@@ -329,7 +338,7 @@ export class RunExecutor {
   }
 
   /** Resolves, prepares and starts the agent; any failure gives the admitted slot back. */
-  private async launch(input: SubmitRunInput, slot: AdmittedRun, runId: string, interrupted: () => boolean) {
+  private async launch(input: SubmitRunInput, slot: AdmittedRun, runId: string, interrupted: () => boolean, governed: boolean) {
     let agent: AgentAdapter;
     try {
       const scope = input.agentScopeId ?? input.scopeId;
@@ -387,7 +396,7 @@ export class RunExecutor {
     let run: AgentRun;
     try {
       const initialRun = prepared.start();
-      run = input.retryPolicy === 'none' ? initialRun : retryingRun({
+      run = governed ? initialRun : retryingRun({
         agent,
         initialRun,
         options: runOptions,
@@ -482,10 +491,11 @@ class EventFanout {
   private done = false;
   private error: unknown;
 
-  constructor(source: AsyncIterable<AgentEvent>, onDone: () => Promise<void>) {
+  /** A governed run settles without waiting for a subscriber. */
+  constructor(source: AsyncIterable<AgentEvent>, onDone: () => Promise<void>, eager: boolean) {
     this.source = source;
     this.onDone = onDone;
-    this.start();
+    if (eager) this.start();
   }
 
   subscribe(): AsyncIterable<AgentEvent> {

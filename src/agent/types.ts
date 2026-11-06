@@ -149,7 +149,7 @@ export interface AgentRun {
   sendInput?(input: AgentInput): Promise<AgentInputReceipt>;
   /** Resolve a pending blocking user_input request; inactive when it is no longer waiting. */
   answerUserInput?(id: string, answer: AgentQuestionAnswer): Promise<'accepted' | 'inactive'>;
-  stop(reason?: RunStopReason): Promise<void | StopSettlement>;
+  stop(reason?: RunStopReason): Promise<void>;
   /** Native turn drain, independent from process exit and session release. */
   waitForQuiescence?(timeoutMs: number): Promise<StopSettlement>;
   /**

@@ -3,9 +3,9 @@ import type { DurableAgent, WorkflowState, WorkflowTask, WorkflowWorkItem } from
 
 const TASK_STATUS: Record<WorkflowTask['status'], string> = {
   queued: '排队', starting: '启动中', running: '执行中', result_ready: '本轮已完成',
-  waiting_input: '等待输入', waiting_workflow:'等待子 workflow', failed: '失败', cancelling: '正在取消', cancelled: '已取消', interrupted: '已中断',
+  waiting_input: '等待输入', waiting_workflow:'等待子 workflow', failed: '失败', cancelling: '正在取消', cancelled: '已取消', unknown: '结果未知', interrupted: '已中断',
 };
-const ATTENTION = new Set<WorkflowTask['status']>(['failed', 'interrupted', 'waiting_input', 'waiting_workflow', 'running', 'starting', 'cancelling', 'queued']);
+const ATTENTION = new Set<WorkflowTask['status']>(['failed', 'unknown', 'interrupted', 'waiting_input', 'waiting_workflow', 'running', 'starting', 'cancelling', 'queued']);
 const compact = (value: string, limit: number) => {
   const text = value.replace(/\s+/g, ' ').trim();
   return text.length > limit ? text.slice(0, limit - 1) + '…' : text;
