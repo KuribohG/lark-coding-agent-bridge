@@ -32,7 +32,8 @@ import type { AgentEntry } from '../../runtime/agent-entry';
 import { profileForAgentKind } from '../../runtime/execution-controller';
 import { resolveRunModelSettings } from '../../runtime/model-settings';
 import { deadlineInstructions } from '../../runtime/run-deadline';
-import type { RunExecutor } from '../../runtime/run-executor';
+import { abortStopReason } from '../../runtime/errors';
+import type { RunExecution, RunExecutor } from '../../runtime/run-executor';
 import {
   resolveRunFlowContext,
   startRunFlow,
@@ -78,9 +79,12 @@ export interface RunBatchDeps {
   agent: AgentAdapter;
   mode: ChatMode;
   preparedCot?: CotPublisher;
+  /** Replay number of input whose earlier run was cut off by a bridge shutdown. */
+  resumeAttempt?: number;
 }
 
-export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
+/** Resolves with the submitted execution once its output has been presented. */
+export async function runAgentBatch(deps: RunBatchDeps): Promise<RunExecution | undefined> {
   const entry = deps.entry ?? { kind: 'direct' };
   const workflowWake = entry.kind === 'workflow' && entry.trigger === 'event';
   const {
@@ -103,7 +107,7 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     mode,
     preparedCot,
   } = deps;
-  if (batch.length === 0) return;
+  if (batch.length === 0) return undefined;
   batch.sort((left, right) => {
     const leftTime = Number.isFinite(left.createTime) ? left.createTime : 0;
     const rightTime = Number.isFinite(right.createTime) ? right.createTime : 0;
@@ -111,7 +115,7 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   });
   const firstMsg = batch[0];
   const lastMsg = batch[batch.length - 1];
-  if (!firstMsg || !lastMsg) return;
+  if (!firstMsg || !lastMsg) return undefined;
   if (!workflowWake) deps.workflowOrigins?.set(scope, firstMsg);
 
   const chatId = firstMsg.chatId;
@@ -288,6 +292,13 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
       : []),
   ];
   if (deps.timedJob) extraInstructions.push(deadlineInstructions(deps.timedJob.stopAt, deps.timedJob.windDownAt));
+  if (deps.resumeAttempt) {
+    extraInstructions.push(
+      `bridge 进程在你处理这批消息期间被终止，现已重启并自动续跑（第 ${deps.resumeAttempt} 次）。` +
+      '如果当前会话里已有这批消息及部分进展，先核对已完成的工作（文件、命令结果、已发出的消息），从中断处继续，' +
+      '不要重复已经生效的操作；如果会话里没有，就按正常流程处理。',
+    );
+  }
 
   const entryBinding = bindAgentEntry(entry, scope, deps.workflows);
   if (entryBinding) extraInstructions.push(entryBinding.instructions);
@@ -366,8 +377,10 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     await preparedCot?.finish('error');
     await channel.send(chatId, { markdown: flow.rejectReason.userVisible }, sendOpts);
     if (deps.timedJob) await (await timedRuns(controls)).finish(deps.timedJob.id,
-      flow.rejectReason.code === 'deadline-expired' ? 'expired' : flow.rejectReason.code === 'run-cancelled' ? 'stopped' : 'failed');
-    return;
+      flow.rejectReason.code === 'deadline-expired' ? 'expired'
+        : flow.rejectReason.code !== 'run-cancelled' ? 'failed'
+        : deps.signal?.aborted && abortStopReason(deps.signal) === 'shutdown' ? 'interrupted' : 'stopped');
+    return undefined;
   }
 
   const { execution, cwdRealpath: cwd } = flow;
@@ -379,14 +392,16 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
   if (deps.timedJob) {
     const store = await timedRuns(controls);
     const job = deps.timedJob;
-    timedResult = execution.result.then((state) => store.finish(job.id, state))
+    // A shutdown leaves the job resumable by the next bridge process.
+    timedResult = execution.result.then((state) => store.finish(job.id,
+      state === 'stopped' && execution.handle.stopReason === 'shutdown' ? 'interrupted' : state))
       .catch((err) => log.fail('timed-run', err, { jobId: job.id }));
     try {
       await store.transition(job.id, ['queued'], 'running');
     } catch {
       await execution.stop('cleanup');
       await timedResult;
-      return;
+      return execution;
     }
   }
   activePolicyFingerprints.set(scope, flow.policy.policyFingerprint);
@@ -488,6 +503,7 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<void> {
     }
     await questionsDone;
   }
+  return execution;
 }
 
 function summarizeRunInput(batch: NormalizedMessage[]): string {

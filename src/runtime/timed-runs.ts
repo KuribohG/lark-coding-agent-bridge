@@ -68,7 +68,10 @@ export class TimedRunStore {
       const job = next.get(id);
       if (!job || !from.includes(job.state)) throw new Error('任务状态已改变，请重新查看 /run status。');
       if (liveStates.has(to) && job.stopAt <= Date.now()) throw new Error('停止时间已过，任务不会启动。');
-      changed = { ...job, state: to, ...(!liveStates.has(to) && to !== 'draft' ? { finishedAt: Date.now() } : {}) };
+      const { finishedAt: _finishedAt, ...unfinished } = job;
+      // Resuming an interrupted job makes it unfinished again.
+      changed = liveStates.has(to) ? { ...unfinished, state: to }
+        : { ...job, state: to, ...(to !== 'draft' ? { finishedAt: Date.now() } : {}) };
       next.set(id, changed);
     });
     return structuredClone(changed);

@@ -1,4 +1,4 @@
-import type { LarkChannel } from '@larksuite/channel';
+import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
 import { capabilityForProfile } from '../../agent/backends';
 import { modelRunArguments } from '../../agent/model-settings';
@@ -39,9 +39,10 @@ import { profileForAgentKind } from '../../runtime/execution-controller';
 import { resolveRunModelSettings } from '../../runtime/model-settings';
 import type { ModelSettings } from '../../agent/model-settings';
 import { ProcessPool } from '../../runtime/process-pool';
-import { RunExecutor } from '../../runtime/run-executor';
+import { abortStopReason } from '../../runtime/errors';
+import { RunExecutor, type RunExecution } from '../../runtime/run-executor';
 import { resolveRunFlowContext } from '../../runtime/run-flow';
-import { timedRuns } from '../../runtime/timed-runs';
+import { timedRuns, type TimedRun, type TimedRunState } from '../../runtime/timed-runs';
 import { BtwStore } from '../../session/btw-store';
 import type { SessionCatalog } from '../../session/catalog';
 import type { SessionStore } from '../../session/store';
@@ -52,6 +53,7 @@ import { createBridgeWorkflowRuntime } from '../../workflows/bridge/runtime';
 import type { WorkflowRuntime } from '@kuribohg/agent-workflows';
 import type { WorkflowState } from '@kuribohg/agent-workflows';
 import { WorkflowOrigins } from './workflow-origins';
+import { InterruptedTurns, MAX_RESUME_AGE_MS, MAX_RESUME_ATTEMPTS, type InterruptedTurn } from './interrupted-turns';
 import type { WorkspaceStore } from '../../workspace/store';
 
 import { intakeMessage } from './intake';
@@ -184,7 +186,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       const turn = turns.claim(scope);
       const eventIds = workflows?.kernel.state(scope)?.events.filter(event => !event.acknowledged).map(event => event.id) ?? [];
       try {
-        await turn.run(signal => dispatch(scope, [message], { signal, entry: { kind: 'workflow', trigger: 'event' } }));
+        await turn.run(async signal => { await dispatch(scope, [message], { signal, entry: { kind: 'workflow', trigger: 'event' } }); });
       } catch (error) {
         // Failed automatic wakes remain visible through /workflow status, without a retry loop.
         workflows?.kernel.markNotified(scope, eventIds);
@@ -212,23 +214,8 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       const preparedCot = preparedCots.get(scope);
       preparedCots.delete(scope);
       const turn = turns.claim(scope);
-      void turn.run(signal => withTrace({ chatId: firstMsg.chatId }, async () => {
-        log.info('flush', 'start', {
-          scope,
-          batchSize: batch.length,
-          chatId: firstMsg.chatId,
-          threadId: firstMsg.threadId,
-          msgId: firstMsg.messageId,
-        });
-        try {
-          await dispatch(scope, batch, { signal, entry: firstMsg.agentEntry ?? { kind: 'direct' }, preparedCot });
-        } catch (err) {
-          await preparedCot?.finish('error');
-          log.fail('flush', err);
-        } finally {
-          log.info('flush', 'end');
-        }
-      })).catch(err => log.fail('flush', err));
+      void turn.run(signal => runConversationTurn(scope, batch, signal, { preparedCot }))
+        .catch(err => log.fail('flush', err));
     },
     deps.appPaths?.mediaDir
       ? join(dirname(deps.appPaths.mediaDir), 'pending-queue.json')
@@ -245,14 +232,56 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     pending, catalog: sessionCatalog, isTimed: scope => Boolean(controls.activeTimedRun?.(scope)) });
 
   const dispatch = async (scope: string, batch: PendingMessage[],
-    options: Pick<RunBatchDeps, 'signal' | 'entry' | 'timedJob' | 'preparedCot'>) => {
+    options: Pick<RunBatchDeps, 'signal' | 'entry' | 'timedJob' | 'preparedCot' | 'resumeAttempt'>) => {
     const first = batch[0];
-    if (!first) return;
+    if (!first) return undefined;
     const mode = first.threadId ? 'topic' : await chatModeCache.resolve(channel, first.chatId);
     const agentKind = options.timedJob?.agentKind ?? resolveAgentKind(scope);
     const agent = resolveAgent(scope, agentKind);
-    await runAgentBatch({ ...conversation, media, cotClient, callbackAuth, userQuestions, activePolicyFingerprints, lastRunModelByScope,
+    return runAgentBatch({ ...conversation, media, cotClient, callbackAuth, userQuestions, activePolicyFingerprints, lastRunModelByScope,
       ...(options.timedJob ? {} : { workflows, workflowOrigins }), scope, batch, mode, agentKind, agent, ...options });
+  };
+
+  // Started turns are journaled until they settle; created when this channel
+  // takes over persisted state, so a connect-before-disconnect restart never
+  // has two writers.
+  let interrupted: InterruptedTurns | undefined;
+  /** Only a bridge shutdown leaves a turn to be replayed; /stop, failures and completions end it. */
+  const cutOffByShutdown = async (signal: AbortSignal, execution: RunExecution | undefined) => {
+    const reason = signal.aborted ? abortStopReason(signal) : execution?.handle.stopReason;
+    return reason === 'shutdown' && (!execution || await execution.result !== 'completed');
+  };
+
+  const runConversationTurn = (scope: string, batch: PendingMessage[], signal: AbortSignal,
+    options: { preparedCot?: CotPublisher; resumeAttempt?: number; startedAt?: number }) => {
+    const firstMsg = batch[0]!;
+    return withTrace({ chatId: firstMsg.chatId }, async () => {
+      log.info('flush', 'start', {
+        scope,
+        batchSize: batch.length,
+        chatId: firstMsg.chatId,
+        threadId: firstMsg.threadId,
+        msgId: firstMsg.messageId,
+        ...(options.resumeAttempt ? { resumeAttempt: options.resumeAttempt } : {}),
+      });
+      const entry = firstMsg.agentEntry ?? { kind: 'direct' };
+      // Workflow turns are recovered by the workflow kernel itself.
+      const journal = entry.kind === 'direct' ? interrupted : undefined;
+      let execution: RunExecution | undefined;
+      try {
+        await journal?.begin({ scope, messages: batch,
+          ...(options.resumeAttempt ? { attempts: options.resumeAttempt } : {}),
+          ...(options.startedAt ? { startedAt: options.startedAt } : {}) });
+        execution = await dispatch(scope, batch, { signal, entry, preparedCot: options.preparedCot,
+          ...(options.resumeAttempt ? { resumeAttempt: options.resumeAttempt } : {}) });
+      } catch (err) {
+        await options.preparedCot?.finish('error');
+        log.fail('flush', err);
+      } finally {
+        if (journal && !await cutOffByShutdown(signal, execution)) journal.end(scope);
+        log.info('flush', 'end');
+      }
+    });
   };
 
   const startWorkflows = async () => {
@@ -287,36 +316,101 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   controls.pausePendingInput = () => pending.suspend();
   controls.resumePendingInput = () => pending.resume();
   controls.detachPendingInput = () => pending.detach();
-  controls.reloadPendingInput = async () => { await pending.reload(); await startWorkflows(); };
+  controls.reloadPendingInput = async () => { await pending.reload(); await startWorkflows(); await resumeInterruptedTurns(); };
 
   const timedStore = await timedRuns(controls);
   controls.activeTimedRun = scope => turns.timedRunId(scope);
   controls.cancelTimedRun = (scope, id) => { if (turns.timedRunId(scope)) turns.cancel(scope, id); };
-  controls.launchTimedRun = async (job, message) => {
-    if (!turns.isIdle(job.scope)) {
-      throw new Error('当前话题/聊天仍有任务或待处理消息，请完成或 /stop 后再启动限时任务。');
-    }
+  const startTimedTurn = async (job: TimedRun, message: NormalizedMessage, from: TimedRunState,
+    resume?: { attempt: number; startedAt: number }) => {
     const turn = turns.claim(job.scope, job.id);
     try {
-      await timedStore.transition(job.id, ['draft'], 'queued');
+      await timedStore.transition(job.id, [from], 'queued');
     } catch (err) {
       turn.release();
       throw err;
     }
     const sendOpts = { replyTo: message.messageId, ...(message.threadId ? { replyInThread: true } : {}) };
+    const journal = interrupted;
     void turn.run(signal => withTrace({ chatId: message.chatId }, async () => {
+      let execution: RunExecution | undefined;
       try {
+        await journal?.begin({ scope: job.scope, messages: [message], timedRunId: job.id,
+          ...(resume ? { attempts: resume.attempt, startedAt: resume.startedAt } : {}) });
         await sendManagedCard(channel, message.chatId, timedRunCard(timedStore.get(job.id)!), sendOpts);
-        await dispatch(job.scope, [{ ...message, content: job.task, resources: [], rawContentType: 'text' }], { timedJob: job, signal });
+        execution = await dispatch(job.scope, [{ ...message, content: job.task, resources: [], rawContentType: 'text' }],
+          { timedJob: job, signal, ...(resume ? { resumeAttempt: resume.attempt } : {}) });
       } catch (err) {
         log.fail('timed-run', err, { jobId: job.id });
       } finally {
+        const cutOff = await cutOffByShutdown(signal, execution);
+        if (!cutOff) journal?.end(job.scope);
         // A failure before executor submission must also close the one-shot job.
-        await timedStore.finish(job.id, signal.aborted ? 'stopped' : Date.now() >= job.stopAt ? 'expired' : 'failed');
+        await timedStore.finish(job.id, cutOff ? 'interrupted'
+          : signal.aborted ? 'stopped' : Date.now() >= job.stopAt ? 'expired' : 'failed');
       }
     })).then(() => sendManagedCard(channel, message.chatId, timedRunCard(timedStore.get(job.id)!), sendOpts)
       .catch(err => log.warn('timed-run', 'status-send-failed', { err: String(err) })))
       .catch(err => log.fail('timed-run', err, { jobId: job.id }));
+  };
+  controls.launchTimedRun = async (job, message) => {
+    if (!turns.isIdle(job.scope)) {
+      throw new Error('当前话题/聊天仍有任务或待处理消息，请完成或 /stop 后再启动限时任务。');
+    }
+    await startTimedTurn(job, message, 'draft');
+  };
+
+  const resumeTurn = async (turn: InterruptedTurn, journal: InterruptedTurns) => {
+    const messages = [...turn.messages].sort((left, right) =>
+      (Number.isFinite(left.createTime) ? left.createTime : 0) - (Number.isFinite(right.createTime) ? right.createTime : 0));
+    const last = messages.at(-1)!;
+    const notify = (markdown: string) => channel.send(last.chatId, { markdown },
+      { replyTo: last.messageId, ...(last.threadId ? { replyInThread: true } : {}) })
+      .catch(err => log.warn('resume', 'notice-failed', { scope: turn.scope, err: String(err) }));
+    const job = turn.timedRunId ? timedStore.get(turn.timedRunId) : undefined;
+    let skip: string | undefined;
+    if (turn.timedRunId && job?.state !== 'interrupted') {
+      // Stopped, expired or otherwise settled while the bridge was down.
+      skip = job?.state === 'expired' ? '限时任务在 bridge 重启期间已到停止时间，未自动续跑。' : '';
+    } else if (turn.attempts >= MAX_RESUME_ATTEMPTS) {
+      skip = `这条消息的任务已在 bridge 重启后自动续跑 ${turn.attempts} 次仍被中断，不再自动续跑。如需继续，请重新发送。`;
+    } else if (Date.now() - turn.startedAt > MAX_RESUME_AGE_MS) {
+      skip = 'bridge 重启前这条消息的任务被中断，且已超过 24 小时，不再自动续跑。如需继续，请重新发送。';
+    }
+    const resume = { attempt: turn.attempts + 1, startedAt: turn.startedAt };
+    log.info('resume', skip === undefined ? 'start' : 'skip', { scope: turn.scope, attempt: resume.attempt,
+      ...(turn.timedRunId ? { jobId: turn.timedRunId } : {}) });
+    if (skip !== undefined) {
+      journal.end(turn.scope);
+      if (skip) await notify(skip);
+      return;
+    }
+    try {
+      if (job) {
+        await startTimedTurn(job, last, 'interrupted', resume);
+      } else {
+        const claimed = turns.claim(turn.scope);
+        void claimed.run(signal => runConversationTurn(turn.scope, messages, signal,
+          { resumeAttempt: resume.attempt, startedAt: resume.startedAt }))
+          .catch(err => log.fail('flush', err));
+      }
+    } catch (err) {
+      log.fail('resume', err, { scope: turn.scope });
+      journal.end(turn.scope);
+      await notify(`bridge 重启前这条消息的任务被中断，自动续跑失败：${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    await notify(`bridge 重启前这条消息的任务被中断，正在自动续跑（第 ${resume.attempt} 次）。发送 /stop 可取消。`);
+  };
+
+  /** Replays turns a previous process left unfinished, before queued input of the same scopes. */
+  const resumeInterruptedTurns = async () => {
+    if (interrupted) return;
+    const journal = new InterruptedTurns(deps.appPaths?.mediaDir
+      ? join(dirname(deps.appPaths.mediaDir), 'interrupted-turns.json') : undefined);
+    const previous = await journal.load();
+    interrupted = journal;
+    for (const turn of previous) await resumeTurn(turn, journal);
   };
 
   // Counter for stdout reconnect escalation; reset on `reconnected`.
@@ -327,6 +421,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       await withTrace({ chatId: msg.chatId, msgId: msg.messageId }, () =>
         intakeMessage({
           followups,
+          recordFollowup: (scope, message) => interrupted?.append(scope, message),
           userQuestions,
           ...conversation,
           resolveAgent,
@@ -467,7 +562,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       ...(identity.name ? { name: identity.name } : {}),
     });
   }
-  if (deps.restorePending !== false) { await startWorkflows(); pending.resume(); }
+  if (deps.restorePending !== false) { await startWorkflows(); await resumeInterruptedTurns(); pending.resume(); }
   const defaultAgent = execution.defaultAgent();
   log.info('ws', 'connected', {
     bot: identity?.name ?? 'unknown',
@@ -539,6 +634,8 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       }
       preparedCots.clear();
       userQuestions.close();
+      const turnsSettled = settleWithin(turns.settled(), TURN_SETTLE_TIMEOUT_MS)
+        .then(async () => { await interrupted?.flush(); interrupted?.detach(); });
       const [disconnectResult, stopAllResult, ...flushResults] = await Promise.allSettled([
         channel.disconnect(),
         activeRuns.stopAll('shutdown'),
@@ -549,6 +646,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
         workspaces.flush(),
         btwClosed,
         workflowsClosed,
+        turnsSettled,
       ]);
       if (stopAllResult.status === 'rejected') {
         log.fail('disconnect', stopAllResult.reason, { step: 'stopAll' });
@@ -564,6 +662,15 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       }
     },
   };
+}
+
+/** Shutdown waits this long for stopped turns to record whether they must be replayed. */
+const TURN_SETTLE_TIMEOUT_MS = 10_000;
+
+function settleWithin(work: Promise<void>, timeoutMs: number): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); });
+  return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
 }
 
 function startKnownChatsRefreshTimer(

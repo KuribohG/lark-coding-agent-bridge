@@ -77,6 +77,8 @@ async function sendForwardFetchFailedHint(
 
 interface IntakeDeps {
   followups: FollowupRouter;
+  /** A follow-up accepted into the active run becomes part of its input. */
+  recordFollowup?(scope: string, message: NormalizedMessage): void;
   userQuestions?: UserQuestions;
   channel: LarkChannel;
   resolveAgent(scope: string): AgentAdapter;
@@ -275,6 +277,7 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
           ]);
       },
     });
+    if (result === 'accepted') deps.recordFollowup?.(scope, emsg);
     if (result !== 'queued') {
       const markdown = result === 'accepted' ? '已送入当前任务，等待模型处理。'
         : result === 'cancelled' ? '当前任务已收到停止请求，这条补充不会另起任务执行。'
