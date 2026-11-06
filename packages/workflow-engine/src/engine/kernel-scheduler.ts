@@ -191,7 +191,7 @@ export class WorkflowScheduler {
         + JSON.stringify(recovery) + (workflow.workQueue ? '\n\n工作队列：\n' + JSON.stringify(workContext(workflow, task)) : '') : prompt;
       if (task.workflowTool) memberPrompt+='\n\n子 workflow 调用与恢复上下文：\n'+JSON.stringify(nestedContext(store.descendants(workflow,taskId),task));
       signal.throwIfAborted();
-      const observed = await ctx.host.executionLedger?.lookupExecution(executionId);
+      const observed = await ctx.host.executionLedger?.lookupExecution(executionId, scopeId);
       if (observed?.state === 'completed') {
         await this.notifyExecution(scopeId, workflowId, executionId); return;
       } else if (observed?.state === 'unknown') result = { status: 'unknown', quiescence: 'unknown', error: observed.reason || 'Host execution outcome is unknown' };
@@ -222,7 +222,7 @@ export class WorkflowScheduler {
       try {
         const state = requireState(store.state(scopeId, workflowId)), task = findTask(state, taskId);
         const executionId = task.attempts.at(-1)!.executionId!;
-        const receipt = await ctx.host.executionLedger.lookupExecution(executionId);
+        const receipt = await ctx.host.executionLedger.lookupExecution(executionId, scopeId);
         if (receipt.state === 'completed') { await this.notifyExecution(scopeId, workflowId, executionId); return; }
         if (receipt.state === 'not-submitted' && receipt.proof) result = {
           status: signal.aborted || ['cancelling', 'cancelled', 'binding_attention'].includes(state.status) ? 'stopped' : 'failed',
@@ -304,7 +304,7 @@ export class WorkflowScheduler {
     if (!ctx.host.executionLedger) throw new Error('Host execution ledger is unavailable');
     const bound = requireState(ctx.store.state(scopeId, workflowId));
     if (!bound.tasks.some(task => task.attempts.at(-1)?.executionId === executionId)) throw new Error('Execution is outside this workflow binding');
-    const receipt = await ctx.host.executionLedger.lookupExecution(executionId);
+    const receipt = await ctx.host.executionLedger.lookupExecution(executionId, scopeId);
     // Another notification or cancellation may have committed while the host
     // lookup was pending. Never save a pre-await snapshot over that receipt.
     const state = requireState(ctx.store.state(scopeId, workflowId));
@@ -333,7 +333,7 @@ export class WorkflowScheduler {
         const attempt = task.attempts.at(-1);
         if (!attempt?.executionId) continue;
         try {
-          const receipt = await ctx.host.executionLedger.lookupExecution(attempt.executionId);
+          const receipt = await ctx.host.executionLedger.lookupExecution(attempt.executionId, state.root.scopeId);
           if (receipt.state === 'completed') await this.notifyExecution(state.root.scopeId, state.workflowId, attempt.executionId);
           else if (receipt.state === 'not-submitted' && receipt.proof) {
             this.settleWorker(state.workflowId, state.root.scopeId, task.taskId, attempt.attemptId, {

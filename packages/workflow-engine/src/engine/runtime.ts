@@ -350,7 +350,7 @@ export class WorkflowRuntime {
       const { result, text, question, error, normal } = outcome;
       const active = run;
       if (this.deps.executionLedger) {
-        const receipt = await this.deps.executionLedger.lookupExecution(executionId);
+        const receipt = await this.deps.executionLedger.lookupExecution(executionId, workflow.root.scopeId);
         if (receipt.state === 'not-submitted' && receipt.proof) return { status: signal.aborted || result === 'stopped' ? 'stopped' : 'failed',
           quiescence: 'quiescent', confirmedNotSubmitted: true, error: error || 'Host proved native input was not submitted' };
         const settlement = active.waitForQuiescence ? await active.waitForQuiescence(5000)
