@@ -58,3 +58,13 @@ export function workflowWorkerInstructions(task: WorkflowTask): string {
   return base.replace('不要发送外部消息或派生子 agent。','不要发送外部消息。')
     .replace('不要自行发送消息或派生子 agent。','不要自行发送外部消息。')+'\n\n'+NESTED_WORKFLOW_INSTRUCTIONS;
 }
+
+/** Direct host turns receive the scoped workflow_call tool in place of the CLI credentials. */
+export function hostToolInstructions(text: string): string {
+  return text
+    .replace(/工作流工具通过 shell 调用：|你可使用当前绑定的 CLI：/g, '请使用当前回合的宿主工具：')
+    .replace(/node "\$AGENT_WORKFLOW_CLI" workflow (<operation>|[a-z_]+)(?: --input '[^']*' --json)?/g,
+      (_, method: string) => 'workflow_call({method:"' + method + '",args:{...}})')
+    .replace(/，也可 --input-file <path>。环境里的 CLI 路径属于当前 bridge 版本。/g, '。')
+    .replace(/，也可 --input-file <path>|（也可 --input-file）|（或 --input-file）/g, '');
+}
