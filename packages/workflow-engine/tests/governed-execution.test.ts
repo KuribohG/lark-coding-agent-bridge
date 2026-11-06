@@ -18,11 +18,14 @@ const root: WorkflowRoot = { scopeId: 'governed', profile: 'default', agentKind:
 async function harness(options: { ledger?: boolean; path?: string } = {}) {
   let now = 1_000_000;
   const receipts = new Map<string, ExecutionObservation>();
+  const lookups = new Set<string>();
   const requests: WorkflowWorkerRequest[] = [];
   const finishers = new Map<string, (result: WorkflowWorkerResult) => void>();
   const host = { resolveRoot: async () => root, wakeMain: async () => {},
-    ...(options.ledger === false ? {} : { executionLedger: { lookupExecution: async (id: string) =>
-      receipts.get(id) ?? { state: 'not-submitted' as const, proof: 'fixture' } } }),
+    ...(options.ledger === false ? {} : { executionLedger: { lookupExecution: async (id: string, scopeId: string) => {
+      lookups.add(scopeId);
+      return receipts.get(id) ?? { state: 'not-submitted' as const, proof: 'fixture' };
+    } } }),
     execute: async (request: WorkflowWorkerRequest) => {
       requests.push(request);
       request.onRun('run-' + request.attemptId);
@@ -67,7 +70,7 @@ async function harness(options: { ledger?: boolean; path?: string } = {}) {
     await vi.waitFor(() => expect(state().tasks[0]!.status).toBe('running'));
     return { request, grant: await worker(request, 'claim_work') as Grant };
   };
-  return { get kernel() { return kernel; }, state, call, worker, requests, receipts, finishers, claimed,
+  return { get kernel() { return kernel; }, state, call, worker, requests, receipts, lookups, finishers, claimed,
     advance: (milliseconds: number) => { now += milliseconds; },
     deadline: () => state().deadlineAt - now,
     restart: async () => { await kernel.close(); kernel = await open(); },
@@ -90,6 +93,7 @@ describe('workflow kernel with a host execution ledger', () => {
     expect(h.state().status).toBe('cancelled');
     expect(h.state().workQueue!.items[0]!.status).toBe('cancelled');
     expect(h.state().workQueue!.claims[0]!.status).not.toBe('active');
+    expect([...h.lookups]).toEqual([root.scopeId]);
   });
 
   it('cancels at once and releases the claim for a host without a ledger', async () => {
