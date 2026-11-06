@@ -52,6 +52,9 @@ export class DshAdapter implements AgentAdapter {
     });
     void session.submit({ turnId: binding.turnId, input: binding.input, invocation: binding.invocation, signal: binding.signal }).catch((error: any) => {
       if (terminal) return;
+      // An agent event only carries a failure class; the host keeps the native refusal's exact code.
+      binding.onEvent({ type: error.reason === 'unknown' ? 'connection-lost' : 'failed', turnId: binding.turnId,
+        error: { code: error.code, reason: error.reason, message: String(error.message || error) } });
       events.push({ type: 'error', message: String(error.message || error), terminationReason: 'failed',
         failureKind: error.reason === 'unknown' ? 'delivery_unknown' : classifyAgentFailure(String(error.message || error)) }); end();
     });
