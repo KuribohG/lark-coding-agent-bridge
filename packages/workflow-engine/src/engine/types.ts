@@ -539,6 +539,8 @@ export interface WorkflowWorkerResult {
 
 export interface WorkflowHost extends WorkerExecutionPolicy {
   executionLedger?: ExecutionLedgerPort;
+  /** Workers call the workflow through a host tool, so prompts must not name the shell CLI. */
+  hostTools?: boolean;
   log?: WorkflowLogger;
   /** Silence after which a running worker with no tool in flight is treated as hung. Defaults to 15 minutes. */
   stallMs?: number;
