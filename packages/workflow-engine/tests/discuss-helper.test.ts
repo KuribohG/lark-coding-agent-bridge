@@ -4,13 +4,13 @@ import { runScriptProgram } from '../src/engine/script-vm';
 type Call = Record<string, unknown>;
 type Reply = { message: string; to?: unknown; agree?: boolean };
 
-function discussion(replies: Record<string, Reply>, options: Record<string, unknown> = {}) {
+function discussion(replies: Record<string, Reply>, options: Record<string, unknown> = {}, result = 'result') {
   const inbox: Record<string, Array<{ from: string; text: string }>> = {};
   const sends: Call[] = [];
   const receives: Call[] = [];
   const agent = vi.fn(async (input: unknown) => {
     const call = input as Call;
-    if (String(call.key).endsWith('/summary')) return { conclusion: 'done', agreements: [], disagreements: [], openQuestions: [] };
+    if (String(call.key).endsWith('/summary')) return { conclusion: 'done', agreements: ['LFU'], disagreements: [], openQuestions: ['Scan ratio?'] };
     const reply = replies[String(call.key)];
     if (!reply) throw new Error('Unexpected turn ' + String(call.key));
     return reply;
@@ -25,7 +25,7 @@ function discussion(replies: Record<string, Reply>, options: Record<string, unkn
     receives.push(call);
     return (inbox[String(call.member)] ?? []).splice(0);
   });
-  const source = 'return await discuss("Pick a cache eviction policy",' + JSON.stringify({ key: 'cache', ...options }) + ');';
+  const source = 'const result = await discuss("Pick a cache eviction policy",' + JSON.stringify({ key: 'cache', ...options }) + '); return ' + result + ';';
   const run = () => runScriptProgram({ source, args: {}, signal: AbortSignal.timeout(5000), agent, mailbox, progress: () => {} });
   return { run, agent, sends, receives };
 }
@@ -66,6 +66,13 @@ describe('discuss composition', () => {
     expect(d.agent).toHaveBeenCalledTimes(5);
   });
 
+  it('renders the summary as text when a script interpolates it', async () => {
+    const d = discussion({
+      'cache/open/A': { message: 'LFU', agree: true }, 'cache/open/B': { message: 'LFU', agree: true },
+    }, { members }, '`${result.summary}`');
+    expect(JSON.parse(await d.run())).toBe('Conclusion: done\n\nAgreements:\n- LFU\n\nOpen questions:\n- Scan ratio?');
+  });
+
   it('bounds total turns and truncates oversized messages before delivery', async () => {
     const long = 'x'.repeat(5000);
     const replies: Record<string, Reply> = {};
@@ -75,7 +82,7 @@ describe('discuss composition', () => {
     expect(result).toMatchObject({ stop: 'max_turns', turns: 3, rounds: 2 });
     expect(d.agent.mock.calls.map(([input]) => (input as Call).key)).toEqual(
       ['cache/open/A', 'cache/open/B', 'cache/r1/A', 'cache/r1/B', 'cache/r2/A', 'cache/summary']);
-    expect(d.agent.mock.calls.at(-1)![0]).toMatchObject({ model: 'summary-model', output: 'json' });
+    expect(d.agent.mock.calls.at(-1)![0]).toMatchObject({ model: 'summary-model', schema: { required: ['conclusion', 'agreements', 'disagreements', 'openQuestions'] } });
     expect(String(d.sends[0]!.text)).toHaveLength(3900 + '…[truncated]'.length);
     expect(d.sends.map(call => call.key)).toEqual(['cache/open/0>1', 'cache/open/1>0', 'cache/r1/0>1', 'cache/r1/1>0']);
     expect(result.transcript.map((entry: Call) => entry.turn)).toEqual([0, 0, 1, 2, 3]);

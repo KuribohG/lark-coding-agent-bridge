@@ -173,7 +173,7 @@ The last round's messages are sent only when another round can read them.
 **Return value.** `discuss` returns `{stop, turns, rounds, transcript, summary}`:
 
 - `transcript` lists `{turn, from, to, agree, text}`; openings have turn 0.
-- `summary` comes from an independent agent: `{conclusion, agreements, disagreements, openQuestions}`. Pass `summary: {harness, model, reasoningEffort}` to choose that agent, or `false` to skip it.
+- `summary` comes from an independent agent and is validated as `{conclusion: string, agreements: string[], disagreements: string[], openQuestions: string[]}`, or is `null` when disabled. Converting it to a string (template literal, `String()`) yields readable text with all four parts; `JSON.stringify` keeps the structured fields. Pass `summary: {harness, model, reasoningEffort}` to choose that agent, or `false` to skip it.
 
 **Keys and replay.** Member turns use the keys `<key>/open/<name>` and `<key>/r<round>/<name>`. Replay reuses completed turns and deduplicated messages.
 

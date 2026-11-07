@@ -2,6 +2,17 @@
  * It runs inside the prelude so it can relay a member's own reply under that member's name, which public send() cannot do. */
 export const DISCUSS_HELPER = `
   const discussKeys = new Set();
+  const DISCUSS_SUMMARY_SCHEMA = { type: 'object', properties: {
+    conclusion: { type: 'string', minLength: 1 },
+    agreements: { type: 'array', items: { type: 'string' } },
+    disagreements: { type: 'array', items: { type: 'string' } },
+    openQuestions: { type: 'array', items: { type: 'string' } },
+  }, required: ['conclusion', 'agreements', 'disagreements', 'openQuestions'] };
+  const discussSummaryText = value => [
+    'Conclusion: ' + value.conclusion,
+    ...[['Agreements', value.agreements], ['Disagreements', value.disagreements], ['Open questions', value.openQuestions]]
+      .filter(([, items]) => items.length).map(([label, items]) => label + ':\\n' + items.map(item => '- ' + item).join('\\n')),
+  ].join('\\n\\n');
   const discussReply = (value, names, self) => {
     if (!value || typeof value !== 'object' || Array.isArray(value) || typeof value.message !== 'string') throw new Error('Discussion reply must be JSON {message,to?,agree}');
     const others = names.filter(name => name !== self);
@@ -105,7 +116,9 @@ export const DISCUSS_HELPER = `
           + 'Return JSON {"conclusion": string, "agreements": string[], "disagreements": string[], "openQuestions": string[]}. '
           + 'Do not invent agreement where members still disagree.\\n'
           + JSON.stringify({ topic, participants: roster, stop, transcript: record }),
-          { ...(typeof summary === 'object' ? summary : {}), key: key + '/summary', output: 'json', onError: 'throw' });
+          { ...(typeof summary === 'object' ? summary : {}), key: key + '/summary', schema: DISCUSS_SUMMARY_SCHEMA, onError: 'throw' });
+        // Scripts often interpolate the summary straight into the next prompt; render it as text instead of [object Object].
+        Object.defineProperty(conclusion, 'toString', { value: () => discussSummaryText(conclusion) });
       }
       return { stop, turns: turn, rounds: round, transcript, summary: conclusion };
     } catch (error) { return softFailure(mode, 'discuss ' + key, error); }
