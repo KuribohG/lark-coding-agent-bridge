@@ -4,11 +4,11 @@ import { ClaudeStreamInput } from '../../../src/agent/claude/stream-input';
 
 afterEach(() => vi.useRealTimers());
 
-function harness() {
+function harness(keepOpen?: () => boolean) {
   const stdin = new PassThrough();
   const messages: Array<{ uuid: string; session_id: string; message: { role: string; content: string } }> = [];
   stdin.on('data', chunk => messages.push(JSON.parse(chunk.toString())));
-  const input = new ClaudeStreamInput(stdin, 'parent', 100);
+  const input = new ClaudeStreamInput(stdin, 'parent', 100, keepOpen);
   input.start('original');
   return { stdin, input, messages,
     result: (...indices: number[]) => ({ type: 'result', user_message_uuids: indices.map(i => messages[i]!.uuid) }),
@@ -70,9 +70,23 @@ describe('Claude streaming input', () => {
   it('ignores task notification results when deciding whether to close stdin', () => {
     const h = harness();
     const notification = { type: 'result', origin: { kind: 'task-notification' } };
-    h.input.receive(notification);
+    expect(h.input.receive(notification)).toBeUndefined();
     expect(h.stdin.writableEnded).toBe(false);
     h.input.receive(h.result(0));
+    expect(h.input.receive(notification)).toEqual(notification);
+  });
+
+  it('keeps stdin open past a covering result while background work continues', async () => {
+    let working = true;
+    const h = harness(() => working);
+    expect(h.input.receive(h.result(0))).toEqual(h.result(0));
+    expect(h.stdin.writableEnded).toBe(false);
+    const receipt = h.input.steer('meanwhile', 'im-1');
+    h.ack(1);
+    expect(await receipt).toBe('accepted');
+    working = false;
+    expect(h.input.receive(h.result(1))).toEqual(h.result(1));
+    expect(h.stdin.writableEnded).toBe(true);
   });
 
   it('times out without replaying, and can still consume a late confirmed result', async () => {

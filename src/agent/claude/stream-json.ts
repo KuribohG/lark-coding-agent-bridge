@@ -76,7 +76,6 @@ export class ClaudeRunTranslator {
   *translate(raw: unknown): Generator<AgentEvent> {
     if (!raw || typeof raw !== 'object') return;
     const event = raw as ClaudeRawEvent;
-    if (isTaskNotificationResult(event)) return;
     // Nested task results cannot finish the parent, nor replace its pending answer.
     if (event.parent_tool_use_id) {
       if (event.type !== 'result') yield* translateEvent(event);
@@ -112,10 +111,21 @@ export class ClaudeRunTranslator {
     }
     yield* translateEvent(event);
   }
+
+  /** Finish on a held result whose text was already released as progress. */
+  *finishHeld(raw: unknown): Generator<AgentEvent> {
+    const event = raw as ClaudeRawEvent;
+    const content = this.answerIncludesInterimText ? this.interimText.join('\n\n') : event.result ?? '';
+    this.pendingText = [];
+    this.interimText = [];
+    if (content.trim()) yield { type: 'final_text', content };
+    yield* translateEvent(event);
+  }
 }
 
-// A resumed session whose earlier background tasks were orphaned emits a
-// synthetic empty result for each notification before the prompt's own turn.
+// Turns Claude starts by itself when a background task finishes. A resumed
+// session also replays one, with an empty result, for each task orphaned by an
+// earlier process before the prompt's own turn.
 export function isTaskNotificationResult(raw: unknown): boolean {
   if (!raw || typeof raw !== 'object') return false;
   const evt = raw as ClaudeRawEvent;
@@ -173,7 +183,6 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
   }
 
   if (evt.type === 'result') {
-    if (isTaskNotificationResult(evt)) return;
     if (evt.is_error || evt.subtype?.startsWith('error')) {
       yield { type: 'error', message: evt.errors?.join('\n') || evt.result || evt.subtype || 'Claude task failed', terminationReason: 'failed' };
       return;

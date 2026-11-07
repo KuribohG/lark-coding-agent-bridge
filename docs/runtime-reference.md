@@ -28,11 +28,15 @@ The bridge acknowledges delivery only after a receipt containing the input ID. I
 
 Older CLIs can complete a single prompt, but supplemental input requires result correlation IDs. Missing fields produce an explicit failure instead of a false completion.
 
-## Foreground-only subagents and shells
+## Background subagents and shells
 
-A run owns its Claude process. Once the turn's final result arrives the bridge stops reading stdout and reclaims the child, so work still running in the background dies with it and its completion notice reaches nobody — the chat only shows that the task finished. Claude runs therefore start with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1`, which makes Claude Code drop `run_in_background` from the Agent and Bash input schemas: subagents and shell commands can only run in the foreground, within the turn that launched them. This is an input-schema restriction rather than prompt advice, so it holds for workflow workers too.
+A run owns its Claude process, and it lasts until the background work it launched is done. Claude runs start with `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=0`, so Bash and Agent accept `run_in_background`, and the model can wait for a build or test run by being notified instead of sleeping in a foreground shell.
 
-Profile and per-run environment entries override it, so setting `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS` to an empty value in a profile restores background launches for operators whose runs outlive the turn.
+When a turn ends while tasks Claude reports in `background_tasks_changed` are still running, the bridge keeps the run open: text written so far appears as progress, followed by a status line listing the tasks, and stdin stays open so messages sent meanwhile still reach the same session. Each finished task makes Claude start a task-notification turn; the run ends with the first turn result that leaves no task running, and that turn's answer becomes the reply. Notification turns replayed for tasks of an earlier process are still ignored. If the tasks end without a notification turn, the bridge closes stdin and answers with the last held result once Claude exits.
+
+A run waits at most 6 hours for its tasks. After that the bridge terminates the process, which also ends the tasks, and answers with the last held result plus a notice. `/stop`, timed-run deadlines, and a configured idle timeout apply to the waiting run as to any other. Shells detached with `&`, `nohup`, or `setsid` are not tracked and are still reclaimed with the run.
+
+Profile and per-run environment entries override the default, so setting `CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` in a profile restores foreground-only subagents and shells.
 
 ## Pi Coding Agent backend
 

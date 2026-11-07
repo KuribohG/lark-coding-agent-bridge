@@ -15,7 +15,13 @@ export class ClaudeStreamInput {
   private readonly deliveries = new Map<string, Promise<Receipt>>();
   private readonly pending = new Map<string, { resolve(value: Receipt): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
 
-  constructor(private readonly stdin: Writable, sessionId?: string, private readonly ackTimeoutMs = 30_000) {
+  constructor(
+    private readonly stdin: Writable,
+    sessionId?: string,
+    private readonly ackTimeoutMs = 30_000,
+    /** Work that outlives a covering result, during which more input may still arrive. */
+    private readonly keepOpen: () => boolean = () => false,
+  ) {
     this.sessionId = sessionId ?? '';
   }
 
@@ -80,7 +86,9 @@ export class ClaudeStreamInput {
       this.acknowledge(event.uuid);
       return undefined;
     }
-    if (event.type !== 'result' || isTaskNotificationResult(event)) return raw;
+    if (event.type !== 'result') return raw;
+    // A notification turn covers no input, so it cannot finish ahead of one still pending.
+    if (isTaskNotificationResult(event)) return this.outstanding.size > 0 ? undefined : raw;
 
     // Replay/queued receipts confirm intake, not which generation consumed it.
     const covered = Array.isArray(event.user_message_uuids) ? event.user_message_uuids
@@ -105,7 +113,7 @@ export class ClaudeStreamInput {
     // Older CLIs can still complete a single prompt without correlation fields.
     if (!covered) this.outstanding.delete(this.initialId);
     if (this.outstanding.size > 0) return undefined;
-    this.close();
+    if (!this.keepOpen()) this.close();
     return raw;
   }
 

@@ -44,13 +44,29 @@ describe('Claude final-answer contract', () => {
     expect([...t.translate(result('answer'))]).toContainEqual({ type: 'final_text', content: 'answer' });
   });
 
-  it('does not let nested or orphaned task results finish the parent or flush its final answer', () => {
+  it('does not let nested task results finish the parent or flush its final answer', () => {
     const t = new ClaudeRunTranslator();
     expect([...t.translate(assistant('parent', 'parent answer'))]).toEqual([]);
     expect([...t.translate({ ...result('child answer'), parent_tool_use_id: 'child' })]).toEqual([]);
-    expect([...t.translate({ ...result(''), origin: { kind: 'task-notification' } })]).toEqual([]);
     expect([...t.translate(result('parent answer'))]).toEqual([
       { type: 'final_text', content: 'parent answer' }, { type: 'done', sessionId: 'session', terminationReason: 'normal' },
+    ]);
+  });
+
+  it('answers with a notification turn like any other turn', () => {
+    const t = new ClaudeRunTranslator();
+    expect([...t.translate(assistant('notified', 'build passed'))]).toEqual([]);
+    expect([...t.translate({ ...result('build passed'), origin: { kind: 'task-notification' } })]).toEqual([
+      { type: 'final_text', content: 'build passed' }, { type: 'done', sessionId: 'session', terminationReason: 'normal' },
+    ]);
+  });
+
+  it('finishes on a held result whose text was already released as progress', () => {
+    const t = new ClaudeRunTranslator();
+    expect([...t.translate(assistant('held', 'build started'))]).toEqual([]);
+    expect([...t.flushProgress()]).toEqual([{ type: 'text', delta: 'build started' }]);
+    expect([...t.finishHeld(result('build started'))]).toEqual([
+      { type: 'final_text', content: 'build started' }, { type: 'done', sessionId: 'session', terminationReason: 'normal' },
     ]);
   });
 
@@ -96,6 +112,15 @@ describe('Claude chat answer with interim text', () => {
     [...t.translate(assistant('a', 'checking logs'))];
     expect([...t.translate(assistant('b', 'found it'))]).toEqual([{ type: 'text', delta: 'checking logs' }]);
     expect([...t.translate(result('found it'))]).toContainEqual({ type: 'final_text', content: 'checking logs\n\nfound it' });
+  });
+
+  it('finishes a held result with the released text once, not repeated by the result', () => {
+    const t = new ClaudeRunTranslator(true);
+    [...t.translate(assistant('a', 'build started'))];
+    [...t.flushProgress()];
+    expect([...t.finishHeld(result('build started'))]).toEqual([
+      { type: 'final_text', content: 'build started' }, { type: 'done', sessionId: 'session', terminationReason: 'normal' },
+    ]);
   });
 
   it('does not change failed runs: released text stays progress and nothing becomes an answer', () => {

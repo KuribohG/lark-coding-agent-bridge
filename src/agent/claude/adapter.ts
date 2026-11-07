@@ -24,6 +24,7 @@ import {
 import { ClaudeRunTranslator, isTaskNotificationResult } from './stream-json';
 import { ClaudeStreamInput } from './stream-input';
 import { ClaudeQuestionControl } from './questions';
+import { ClaudeBackgroundTasks } from './background-tasks';
 import { spawnWithDeadline } from '../deadline';
 import { withExecutionContract } from '../execution';
 import { CLAUDE_EXECUTION_CAPABILITIES } from './capabilities';
@@ -35,6 +36,8 @@ export interface ClaudeAdapterOptions {
   autoMemoryDirectory?: string;
   systemPrompt?: AgentSystemPrompt;
   env?: NodeJS.ProcessEnv;
+  /** How long a run may wait for background tasks after its turn ends. */
+  backgroundWaitMs?: number;
 }
 
 type ClaudeChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
@@ -49,6 +52,7 @@ export class ClaudeAdapter implements AgentAdapter {
   private readonly autoMemoryDirectory: string | undefined;
   private readonly systemPrompt: AgentSystemPrompt | undefined;
   private readonly env: NodeJS.ProcessEnv;
+  private readonly backgroundWaitMs: number;
   private botIdentity: AgentBotIdentity | undefined;
 
   constructor(opts: ClaudeAdapterOptions = {}) {
@@ -57,6 +61,7 @@ export class ClaudeAdapter implements AgentAdapter {
     this.autoMemoryDirectory = opts.autoMemoryDirectory;
     this.systemPrompt = opts.systemPrompt;
     this.env = { ...opts.env };
+    this.backgroundWaitMs = opts.backgroundWaitMs ?? DEFAULT_BACKGROUND_WAIT_MS;
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -135,7 +140,7 @@ export class ClaudeAdapter implements AgentAdapter {
     const child = spawnWithDeadline(this.binary, args, {
       cwd: opts.cwd,
       env: mergeProcessEnv(process.env, {
-        ...FOREGROUND_ONLY_ENV,
+        ...BACKGROUND_TASKS_ENV,
         ...this.env,
         ...opts.env,
         ...(this.configDir ? { CLAUDE_CONFIG_DIR: this.configDir } : {}),
@@ -157,7 +162,8 @@ export class ClaudeAdapter implements AgentAdapter {
     // defer attachment to the async-generator body, those events fire into
     // the void and the generator hangs.
     const stderrChunks: Buffer[] = [];
-    const input = new ClaudeStreamInput(child.stdin, opts.sessionId);
+    const tasks = new ClaudeBackgroundTasks();
+    const input = new ClaudeStreamInput(child.stdin, opts.sessionId, undefined, () => tasks.running > 0);
     const questions = new ClaudeQuestionControl(input);
     let runtimeError: Error | null = null;
     let interrupted = false;
@@ -205,7 +211,8 @@ export class ClaudeAdapter implements AgentAdapter {
 
     return {
       runId: opts.runId,
-      events: createEventStream(child, stderrChunks, () => runtimeError, input, questions, () => interrupted, opts.deadlineAt, opts.answerIncludesInterimText),
+      events: createEventStream(child, stderrChunks, () => runtimeError, input, questions, tasks, this.backgroundWaitMs,
+        () => interrupted, opts.deadlineAt, opts.answerIncludesInterimText),
       async sendInput({ text, messageId }) {
         return await input.steer(text, messageId) === 'accepted'
           ? { status: 'accepted', messageId, scope: 'active-session' }
@@ -262,6 +269,8 @@ async function* createEventStream(
   getError: () => Error | null,
   input: ClaudeStreamInput,
   questions: ClaudeQuestionControl,
+  tasks: ClaudeBackgroundTasks,
+  backgroundWaitMs: number,
   isInterrupted: () => boolean,
   deadlineAt?: number,
   answerIncludesInterimText?: boolean,
@@ -288,6 +297,10 @@ async function* createEventStream(
     }, 50);
   };
   child.once('exit', closeSilentStdout);
+  // The latest turn result that arrived while background tasks were still running.
+  let held: { type?: string; is_error?: boolean; subtype?: string } | undefined;
+  let waitTimer: ReturnType<typeof setTimeout> | undefined;
+  let waitExpired = false;
   try {
     for await (const line of rl) {
       sawStdout = true;
@@ -304,18 +317,34 @@ async function* createEventStream(
         yield* control;
         continue;
       }
+      tasks.receive(parsed);
+      // Once the tasks are gone, closing stdin lets -p run any notification turn and exit.
+      if (held && tasks.running === 0) input.close();
+      if (isTaskNotificationResult(parsed) && !tasks.launchedHere(parsed)) continue;
       parsed = input.receive(parsed);
       if (parsed === undefined) continue;
       let terminal = false;
       if (parsed && typeof parsed === 'object') {
-        const result = parsed as { type?: string; parent_tool_use_id?: string };
-        terminal = result.type === 'result' && !result.parent_tool_use_id && !isTaskNotificationResult(parsed);
+        const result = parsed as { type?: string; parent_tool_use_id?: string; is_error?: boolean; subtype?: string };
+        terminal = result.type === 'result' && !result.parent_tool_use_id;
+        if (terminal && tasks.running > 0 && !result.is_error && !result.subtype?.startsWith('error')) {
+          held = result;
+          yield* translator.flushProgress();
+          yield { type: 'status', code: 'background_tasks', content: tasks.describe() };
+          waitTimer ??= setTimeout(() => {
+            waitExpired = true;
+            log.warn('agent', 'background-wait-expired', { pid: child.pid ?? null, waitMs: backgroundWaitMs });
+            terminateChild(child, 'SIGTERM');
+          }, backgroundWaitMs);
+          continue;
+        }
       }
       yield* translator.translate(parsed);
       if (terminal) return;
     }
   } finally {
     input.close();
+    if (waitTimer) clearTimeout(waitTimer);
     if (silentExitTimer) clearTimeout(silentExitTimer);
     child.removeListener('exit', closeSilentStdout);
     rl.close();
@@ -346,6 +375,12 @@ async function* createEventStream(
   const runtimeError = getError();
   if (deadlineAt !== undefined && exitCode === 124) {
     yield { type: 'done', terminationReason: 'timeout' };
+  } else if (held && !isInterrupted() && (exitCode === 0 || waitExpired)) {
+    if (waitExpired) {
+      const hours = Math.round(backgroundWaitMs / 360_000) / 10;
+      yield { type: 'status', code: 'background_tasks_expired', content: `⚠️ 后台任务 ${hours} 小时内未全部完成，已停止等待并结束这些任务。` };
+    }
+    yield* translator.finishHeld(held);
   } else if (isInterrupted() || child.signalCode === 'SIGTERM' || child.signalCode === 'SIGINT' || exitCode === 130) {
     yield { type: 'done', terminationReason: 'interrupted' };
   } else if (exitCode !== 0 && exitCode !== null) {
@@ -371,15 +406,13 @@ const ULTRACODE_SETTINGS = { ultracode: true, workflowSizeGuideline: 'large' };
 // Session scheduling tools could fire after the watchdog's deadline.
 const DEADLINE_DISALLOWED_TOOLS = ['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup'];
 
-// A run owns its process: once the turn's final result arrives the bridge stops
-// reading stdout and reclaims the child, so anything still running in the
-// background dies with it and its completion notice reaches nobody — the chat
-// just says the task finished. Claude Code drops `run_in_background` from the
-// Agent and Bash input schemas when this is set, which makes subagents and
-// shell commands foreground-only instead of merely discouraging background
-// work in the prompt. Profile and per-run env still win, so an operator who
-// knows their runs outlive the turn can opt back in.
-const FOREGROUND_ONLY_ENV = { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1' };
+// A run owns its process, and it now lasts until the background tasks it
+// launched have finished and Claude has answered their notifications, so the
+// model can wait on a task instead of sleeping in a foreground shell. Set
+// explicitly so an inherited `1` cannot hide `run_in_background`; profile and
+// per-run env still win, and `1` there restores foreground-only runs.
+const BACKGROUND_TASKS_ENV = { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '0' };
+const DEFAULT_BACKGROUND_WAIT_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Persist the appended system prompt (and optional flag settings) to throwaway

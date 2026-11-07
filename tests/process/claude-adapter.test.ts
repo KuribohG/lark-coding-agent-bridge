@@ -107,12 +107,12 @@ describe('ClaudeAdapter process contract', () => {
       LARK_CHANNEL_CONFIG: larkCliSourceConfigFile,
       LARKSUITE_CLI_CONFIG_DIR: larkCliConfigDir,
     });
-    // A run's background work would be reclaimed with its process, so Claude
-    // Code is told to keep subagents and shells in the foreground.
-    expect(record.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe('1');
+    // Runs wait for their background tasks, so Claude Code may launch them
+    // even when the bridge itself inherited the foreground-only switch.
+    expect(record.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe('0');
   });
 
-  it('lets profile env opt back in to background tasks', async () => {
+  it('lets profile env restore foreground-only runs', async () => {
     const fake = await createFakeClaude({
       lines: [{ type: 'result', session_id: 'sess-background' }],
     });
@@ -120,9 +120,9 @@ describe('ClaudeAdapter process contract', () => {
 
     const run = (await new ClaudeAdapter({
       binary: fake.path,
-      env: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '' },
+      env: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1' },
     }).prepareRun({
-      runId: 'run-background-optin',
+      runId: 'run-foreground-only',
       prompt: 'background',
       cwd: fake.dir,
     })).start();
@@ -130,7 +130,7 @@ describe('ClaudeAdapter process contract', () => {
     await collect(run.events);
     const record = await readRecord(fake.recordPath);
 
-    expect(record.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe('');
+    expect(record.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe('1');
   });
 
   it('passes resume and model after the base CLI contract', async () => {
@@ -228,6 +228,72 @@ describe('ClaudeAdapter process contract', () => {
     expect(events.filter((event) => event.type === 'final_text')).toEqual([{ type: 'final_text', content: 'answer' }]);
     expect(events.filter((event) => event.type === 'done')).toHaveLength(1);
     expect(events.findIndex((event) => event.type === 'done')).toBeGreaterThan(events.findIndex((event) => event.type === 'text'));
+  });
+
+  it.each(['notified', 'steered', 'drained', 'expired', 'stopped'] as const)('keeps the run open for background tasks (%s)', async mode => {
+    const dir = await mkdtemp(join(tmpdir(), 'claude-background-test-'));
+    cleanup.push(dir);
+    const binary = join(dir, 'fake-claude.mjs');
+    await writeFile(binary, `#!/usr/bin/env node
+      import { createInterface } from 'node:readline';
+      const mode = ${JSON.stringify(mode)};
+      const emit = event => console.log(JSON.stringify(event));
+      const tasks = list => emit({ type: 'system', subtype: 'background_tasks_changed', tasks: list });
+      const notify = () => {
+        tasks([]);
+        emit({ type: 'system', subtype: 'init', session_id: 'bg-session' });
+        emit({ type: 'assistant', message: { id: 'notified', content: [{ type: 'text', text: 'build passed' }] } });
+        emit({ type: 'result', session_id: 'bg-session', result: 'build passed', origin: { kind: 'task-notification', runId: 'task-run' } });
+      };
+      let inputs = 0;
+      createInterface({ input: process.stdin }).on('line', line => {
+        const input = JSON.parse(line);
+        if (++inputs === 1) {
+          emit({ type: 'system', subtype: 'init', session_id: 'bg-session' });
+          emit({ type: 'assistant', message: { id: 'launch', content: [{ type: 'tool_use', id: 'bash', name: 'Bash', input: { command: 'make', run_in_background: true } }] } });
+          emit({ type: 'system', subtype: 'task_started', task_id: 'bg1', run_id: 'task-run', is_backgrounded: true });
+          tasks([{ task_id: 'bg1', run_id: 'task-run', description: 'make build' }]);
+          emit({ type: 'assistant', message: { id: 'held', content: [{ type: 'text', text: 'build started' }] } });
+          emit({ type: 'result', session_id: 'bg-session', result: 'build started', user_message_uuids: [input.uuid] });
+          if (mode === 'notified') setTimeout(notify, 50);
+          if (mode === 'drained') setTimeout(() => tasks([]), 50);
+        } else {
+          emit({ type: 'command_lifecycle', state: 'queued', command_uuid: input.uuid });
+          emit({ type: 'assistant', message: { id: 'reply', content: [{ type: 'text', text: 'still building' }] } });
+          emit({ type: 'result', session_id: 'bg-session', result: 'still building', user_message_uuids: [input.uuid] });
+          setTimeout(notify, 50);
+        }
+      });
+      process.stdin.on('end', () => process.exit(0));
+    `, { mode: 0o700 });
+    const run = (await new ClaudeAdapter({ binary, backgroundWaitMs: mode === 'expired' ? 100 : 60_000 })
+      .prepareRun({ runId: 'background', prompt: 'build it', cwd: dir, stopGraceMs: 100 })).start();
+    const events: AgentEvent[] = [];
+    let delivery: Promise<unknown> | undefined;
+    try {
+      for await (const event of run.events) {
+        events.push(event);
+        if (event.type !== 'status' || event.code !== 'background_tasks') continue;
+        // Read stdout concurrently with the pending input acknowledgement.
+        if (mode === 'steered') delivery ??= run.sendInput!({ text: 'how is it going?', messageId: 'im-2' });
+        if (mode === 'stopped') await run.stop();
+      }
+      if (mode === 'steered') expect(await delivery).toMatchObject({ status: 'accepted' });
+      expect(events).toContainEqual({ type: 'text', delta: 'build started' });
+      expect(events).toContainEqual({ type: 'status', code: 'background_tasks', content: '⏳ 等待 1 个后台任务完成后继续：make build' });
+      const finals = events.filter(event => event.type === 'final_text');
+      const done = events.filter(event => event.type === 'done');
+      if (mode === 'stopped') {
+        expect(finals).toEqual([]);
+        expect(done).toEqual([{ type: 'done', terminationReason: 'interrupted' }]);
+      } else {
+        expect(finals).toEqual([{ type: 'final_text', content: mode === 'notified' || mode === 'steered' ? 'build passed' : 'build started' }]);
+        expect(done).toEqual([{ type: 'done', sessionId: 'bg-session', terminationReason: 'normal' }]);
+      }
+      if (mode === 'steered') expect(events).toContainEqual({ type: 'text', delta: 'still building' });
+      if (mode === 'expired') expect(events).toContainEqual(expect.objectContaining({ type: 'status', code: 'background_tasks_expired' }));
+      expect(await run.waitForExit(1000)).toBe(true);
+    } finally { await run.stop(); }
   });
 
   it('includes stderr when the process exits non-zero', async () => {
