@@ -49,6 +49,7 @@ export interface StartRunFlowInput extends RunFlowContextInput {
   agent?: AgentAdapter;
   env?: Readonly<Record<string, string>>;
   signal?: AbortSignal;
+  deadlineAt?: number;
   modelSettings?: import('../agent/model-settings').ModelSettings;
   executor: RunExecutor;
   stopGraceMs?: number;
@@ -203,6 +204,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       agent: input.agent,
       env: input.env,
       signal: input.signal,
+      deadlineAt: input.deadlineAt,
       scopeId: input.fork?.executionScopeId ?? input.scopeId,
       policy,
       systemPrompt: input.systemPrompt,

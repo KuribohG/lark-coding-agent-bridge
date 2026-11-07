@@ -58,7 +58,7 @@ export interface WorkflowSettings {
   /** Name recorded with a workflow's root and its runs. */
   profile: string;
   /** Run profile of an engine. */
-  profileFor(agentKind: AgentKind): RunProfileConfig;
+  profileFor(agentKind: AgentKind, scope?: string): RunProfileConfig;
   /** Model and effort a scope runs an engine with, after `patch`. */
   modelSettings(scope: string, agentKind: AgentKind, patch?: Partial<ModelSettings>): Promise<ResolvedModelSettings>;
   /** How long a silent worker is left alone; the engine default when undefined. */
@@ -136,7 +136,7 @@ export class WorkflowHost<M> {
       },
       // Only Claude's prompt cache expires on a timer that a read can push back.
       settings: scope => this.deps.resolveAgentKind(scope) === 'claude'
-        ? getCacheKeepalive(settings.profileFor('claude')) : undefined,
+        ? getCacheKeepalive(settings.profileFor('claude', scope)) : undefined,
       isIdle: scope => turns.isIdle(scope),
       lastActivity: async scope => {
         const root = await this.rootContext(scope, sessionCatalog);
@@ -183,7 +183,7 @@ export class WorkflowHost<M> {
     const { settings, executor, turns } = this.deps;
     return createBridgeWorkflowRuntime({
       path: join(stateDir, 'workflows.sqlite'), executor,
-      getTimeoutMinutes: root => getWorkflowTimeoutMinutes(settings.profileFor(bridgeAgentKind(root.agentKind))),
+      getTimeoutMinutes: root => getWorkflowTimeoutMinutes(settings.profileFor(bridgeAgentKind(root.agentKind), root.scopeId)),
       // A silent worker is stopped and retried; the conversation idle timeout is the natural knob for it.
       stallMs: settings.stallMs() ?? DEFAULT_STALL_MS,
       showPlan: async (state, text) => {
@@ -194,7 +194,7 @@ export class WorkflowHost<M> {
       resolveWorker: async (root, selection, policy) => {
         const { agentKind: kind, ...overrides } = selection;
         const agentKind = bridgeAgentKind(kind);
-        const profile = settings.profileFor(agentKind);
+        const profile = settings.profileFor(agentKind, root.scopeId);
         // bridgeWorkerPolicy has already validated the engine's string-typed efforts.
         const requested = overrides as ModelSettings;
         const chosen = agentKind === root.agentKind ? { ...root.modelSettings as ModelSettings, ...requested }
@@ -225,7 +225,7 @@ export class WorkflowHost<M> {
     if (!message) return undefined;
     const { settings, sessions, workspaces } = this.deps;
     const agentKind = this.deps.resolveAgentKind(scope);
-    const profileConfig = settings.profileFor(agentKind);
+    const profileConfig = settings.profileFor(agentKind, scope);
     const capability = capabilityForProfile(profileConfig);
     const input = { scopeId: scope, ...this.deps.frontend.conversation(message, profileConfig),
       prompt: '', attachments: [],
