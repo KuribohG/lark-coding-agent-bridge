@@ -66,7 +66,7 @@ export interface PreparedMessageTurn {
   details?: Record<string, number>;
   /** Observability source of this frontend. */
   observabilitySource: string;
-  runOptions?: { userQuestions?: boolean; answerIncludesInterimText?: boolean };
+  runOptions?: { deadlineAt?: number; userQuestions?: boolean; answerIncludesInterimText?: boolean };
   /**
    * What a rendering failure means: `fail` rejects the turn (hosts whose
    * output is their event stream), `log` keeps the completed run (channels
@@ -179,6 +179,7 @@ export async function startMessageTurn<M, T extends MessageTurn<M>>(
     ...(deps.runPreferences ? { runPreferences: deps.runPreferences } : {}),
     agent: turn.agent,
     userQuestions: prepared.runOptions?.userQuestions ?? false,
+    ...(prepared.runOptions?.deadlineAt !== undefined ? { deadlineAt: prepared.runOptions.deadlineAt } : {}),
     ...(prepared.runOptions?.answerIncludesInterimText !== undefined
       ? { answerIncludesInterimText: prepared.runOptions.answerIncludesInterimText }
       : {}),
