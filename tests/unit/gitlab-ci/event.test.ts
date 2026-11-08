@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { expect, it } from 'vitest';
 import { normalizeGitLabCi } from '../../../src/monitoring/sources/gitlab-ci/config';
 import { ciFailureEvent, type CiRun } from '../../../src/monitoring/sources/gitlab-ci/service';
@@ -13,7 +14,7 @@ function fixture() {
 it('maps a failed pipeline to a fresh investigation event', () => {
   const { config, run } = fixture();
   expect(ciFailureEvent(run, config)).toMatchObject({ key: run.id, title: 'group/repo · CI #1', url: run.pipeline.web_url,
-    evidenceDir: `/private/ci/${run.id}`, maxAttempts: 3, data: run });
+    evidenceDir: join('/private/ci', run.id), maxAttempts: 3, data: run });
 });
 
 it('rejects invalid IDs and does not expose an off-site pipeline URL', () => {
