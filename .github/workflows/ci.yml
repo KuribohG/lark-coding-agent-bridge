@@ -37,6 +37,16 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: pnpm
 
+      # better-sqlite3 compiles from source when its prebuilt binary download
+      # times out.  The node-gyp bundled with pnpm 10 (11.x) cannot identify
+      # the runner's Visual Studio 2026; 12.1+ can.
+      - name: Use a node-gyp that supports Visual Studio 2026
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          npm install -g node-gyp@12
+          "npm_config_node_gyp=$(npm root -g)\node-gyp\bin\node-gyp.js" >> $env:GITHUB_ENV
+
       - name: Install
         run: pnpm install --frozen-lockfile
 
