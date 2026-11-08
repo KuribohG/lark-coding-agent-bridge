@@ -231,12 +231,14 @@ function* translateSystemNotice(evt: ClaudeRawEvent): Generator<AgentEvent> {
     case 'api_retry': {
       if (typeof evt.attempt !== 'number' || typeof evt.max_retries !== 'number') return;
       const rateLimited = evt.error_status === 429 || evt.error === 'rate_limit';
+      // Claude Code keeps retrying a rejected credential; the host can stop instead of waiting it out.
+      const rejected = evt.error_status === 401 || evt.error_status === 403 || evt.error === 'authentication_failed';
       yield {
         type: 'retry',
         attempt: evt.attempt,
         maxAttempts: evt.max_retries,
         delayMs: Math.max(0, evt.retry_delay_ms ?? 0),
-        failureKind: rateLimited ? 'rate_limit' : 'transient',
+        failureKind: rateLimited ? 'rate_limit' : rejected ? 'authentication' : 'transient',
       };
       return;
     }
