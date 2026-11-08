@@ -4,7 +4,7 @@ export { WorkflowRuntime } from './engine/runtime';
 export type { WorkflowRuntimeDeps } from './engine/runtime';
 export type { WorkflowKernel } from './engine/kernel';
 export { WorkflowStopped, silentLogger, stopReasonOf } from './engine/ports';
-export type { WorkerRun, WorkerRunEvent, WorkerRunner, WorkerRunSpec, WorkflowProcesses } from './engine/ports';
+export type { WorkerHosting, WorkerRun, WorkerRunEvent, WorkerRunner, WorkerRunSpec, WorkflowProcesses } from './engine/ports';
 export { inheritedWorkerExecution, workerSelection } from './engine/execution';
 export { workflowDigest } from './engine/digest';
 export { callWorkflow } from './engine/ipc';

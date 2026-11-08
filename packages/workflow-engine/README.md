@@ -55,6 +55,7 @@ The main agent and workers call workflow operations through `node "$AGENT_WORKFL
 - `events()` yields `session` (the native session ID, needed for durable members), `final_text`, `error`, `retry` (discards earlier text), `done` with `normal`, and `user_input` (the engine stops the turn and records the question).
 - `result` resolves to `completed`, `stopped` or `failed`. A turn produces a result only when it completes with `done.normal` and has `final_text`.
 - `spec.signal` aborts with `WorkflowStopped`; use `stopReasonOf(signal)` to read the reason.
+- Optionally, `runner.hosting` lets workers outlive the host process. The engine then passes `spec.host = { key, attach }`: a run stopped for `shutdown` must keep its process running under that key, and a later `start` with `attach: true` replays its output from the start and continues it instead of spawning. `hosting.attachable` and `hosting.release` probe and end such processes. The engine records hosts in its database and attaches them when a replay reaches the same turn; worktree turns and turns holding a work claim never attach.
 - With worktrees, `waitForExit` must report process exit truthfully. If exit is uncertain, the engine retains the worktree and blocks further use.
 
 ## Authorization model

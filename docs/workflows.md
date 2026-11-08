@@ -437,7 +437,7 @@ Bridge restarts are safe for running workflows. On startup the bridge:
    - the original root binding (main session, model, workspace and permissions) is unchanged;
    - the deadline was not already reached before the restart.
 
-   Completed calls are reused. Interrupted turns retry; persistent members retry in their original native session.
+   Completed calls are reused. A worker that was still running when the bridge stopped keeps running under its run host (Linux and macOS, see [runtime reference](runtime-reference.md)); when the replayed script reaches the same call (same key, prompt, inputs and binding for one-shot calls, the same logical turn for members), the bridge attaches to that process and the turn continues without restarting. Its workflow tool token stays valid, and the worker CLI finds the new controller through `workflows.sqlite.endpoint.json`, so calls a worker makes during the outage fail and calls after it succeed. Turns whose run host is gone retry; persistent members retry in their original native session. Turns in managed worktrees and turns that held a work claim are not kept: the claim is released at restart, so their process is ended and the turn retries. Surviving workers of a workflow that does not resume, or whose call the replay no longer reaches, are ended.
 3. **Pauses the clock.** Time spent interrupted, including the outage itself, does not count toward the deadline. The deadline is extended once, when the workflow is replayed, whether automatically or explicitly.
 4. **Reports** each outcome in the workflow's chat or topic: either that the workflow resumed, or why it did not.
 

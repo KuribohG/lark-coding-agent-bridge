@@ -1,5 +1,6 @@
 import type { ModelSettings } from '../../agent/model-settings';
 import type { RunStopReason } from '../../agent/types';
+import { newRunHostKey, probeRunHost, runHostAgent, runHostsSupported, terminateRunHost } from '../../agent/run-host';
 import { log } from '../../core/logger';
 import { spawnProcess } from '../../platform/spawn';
 import { terminateChild } from '../../platform/terminate';
@@ -8,7 +9,7 @@ import { RunStopped } from '../../runtime/errors';
 import type { RunExecutor } from '../../runtime/run-executor';
 import { workflowDigest } from '@kuribohg/agent-workflows';
 import { inheritedWorkerExecution } from '@kuribohg/agent-workflows';
-import { stopReasonOf, type WorkerRun, type WorkerRunner, type WorkerRunSpec } from '@kuribohg/agent-workflows';
+import { stopReasonOf, type WorkerHosting, type WorkerRun, type WorkerRunner, type WorkerRunSpec } from '@kuribohg/agent-workflows';
 import { WorkflowRuntime, type WorkflowRuntimeDeps } from '@kuribohg/agent-workflows';
 import type { WorkerExecution, WorkerExecutionSelection, WorkflowRoot, WorkflowStopReason } from '@kuribohg/agent-workflows';
 import { bridgeAgentKind, bridgeWorkerPolicy } from './execution';
@@ -25,6 +26,13 @@ export interface BridgeWorkflowRuntimeDeps extends Pick<WorkflowRuntimeDeps,
 // The engine and the bridge share one stop vocabulary; keep them aligned.
 const sameStopReasons: [WorkflowStopReason, RunStopReason] extends [RunStopReason, WorkflowStopReason] ? true : never = true;
 void sameStopReasons;
+
+/** Workers run under bin/run-host.mjs like conversation turns, so a bridge restart reattaches instead of rerunning them. */
+const runHosting: WorkerHosting = {
+  newKey: newRunHostKey,
+  attachable: async (key, agentKind) => runHostAgent(key) === agentKind && await probeRunHost(key) !== 'missing',
+  release: key => terminateRunHost(key),
+};
 
 /** Workflow runtime whose workers run through the bridge executor under the main session's run policy. */
 export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): WorkflowRuntime {
@@ -65,6 +73,7 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
           policy: { ...current.policy, ...(workspace ? { requestedCwd: workspace.path, cwdRealpath: workspace.path,
             policyFingerprint: workflowDigest({ policy: current.policy.policyFingerprint, workspace: workspace.id, root: workspace.rootDigest }) } : {}), prompt: spec.prompt },
           ...(spec.resume ? { [spec.resume.kind]: spec.resume.id } : {}),
+          ...(spec.host ? { host: spec.host } : {}),
           // Efforts were validated by bridgeWorkerPolicy when the selection was parsed.
           ...execution.modelSettings as ModelSettings,
           deadlineAt: spec.deadlineAt, signal: controller.signal,
@@ -96,6 +105,7 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
         },
       };
     },
+    ...(runHostsSupported() ? { hosting: runHosting } : {}),
   };
 
   return new WorkflowRuntime({

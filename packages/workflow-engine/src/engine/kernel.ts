@@ -19,6 +19,7 @@ import type {
   WorkflowState, WorkflowTask, WorkflowWorkerResult,
 } from './types';
 import { checkJsonOutput } from './json-output';
+import { WorkerHosts, type WorkerHostRecord } from './worker-hosts';
 
 const BUSY = new Set<WorkflowTask['status']>(['queued', 'starting', 'running', 'cancelling']);
 const MAX_TEXT = 100_000;
@@ -35,6 +36,7 @@ export class WorkflowKernel {
   private closed = false;
   private readonly waking = new Set<string>();
   private readonly changes = new EventEmitter().setMaxListeners(0);
+  private readonly hosts: WorkerHosts;
   private get log() { return this.host.log ?? silentLogger; }
 
   constructor(path: string, private readonly host: WorkflowHost, private readonly now = Date.now) {
@@ -53,6 +55,7 @@ export class WorkflowKernel {
       this.db.exec('ALTER TABLE workflows ADD COLUMN root_id TEXT; UPDATE workflows SET root_id = id;');
     }
     this.db.exec('CREATE INDEX IF NOT EXISTS workflow_root ON workflows(root_id)');
+    this.hosts = new WorkerHosts(this.db);
     // The last heartbeat approximates when the previous process stopped; the outage does not count toward deadlines.
     const beat = Number((this.db.prepare("SELECT value FROM workflow_meta WHERE key = 'heartbeat'").get() as { value: string } | undefined)?.value);
     const since = Number.isFinite(beat) && beat > 0 ? Math.min(beat, this.now()) : this.now();
@@ -65,6 +68,8 @@ export class WorkflowKernel {
       state.status = state.script ? 'interrupted' : 'cancelled';
       if (state.script) state.script.status = 'interrupted';
       for (const pool of consumerPools(state)) pool.status = 'suspended';
+      // A surviving worker could not submit a released claim; its turn restarts instead.
+      this.hosts.discardTasks(state.workflowId, (state.workQueue?.claims ?? []).filter(claim => claim.status === 'active').map(claim => claim.taskId));
       releaseWorkClaims(state, this.now(), 'Bridge restarted; explicitly replay to continue');
       for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_workflow' || (!state.script && task.status === 'waiting_input')) {
         task.status = state.script ? 'interrupted' : 'cancelled';
@@ -1146,6 +1151,33 @@ export class WorkflowKernel {
     if (!['starting', 'running'].includes(task.status) || task.attempts.at(-1)?.attemptId !== attemptId) return;
     update(state);
     this.save(state);
+  }
+
+  /** A process a previous controller left running for this turn. */
+  workerHost(workflowId: string, match: string): WorkerHostRecord | undefined {
+    return this.hosts.find(workflowId, match);
+  }
+
+  putWorkerHost(record: Omit<WorkerHostRecord, 'discard'>): void {
+    if (this.closed) throw new Error('Workflow service is closed');
+    this.hosts.put(record);
+  }
+
+  removeWorkerHost(hostKey: string): void {
+    if (!this.closed) this.hosts.remove(hostKey);
+  }
+
+  /** Hosted processes no turn of this controller runs or can still continue. */
+  orphanWorkerHosts(): WorkerHostRecord[] {
+    if (this.closed) return [];
+    return this.hosts.list().filter(record => {
+      if (this.running.has(record.taskId)) return false;
+      if (record.discard) return true;
+      const state = (this.db.prepare('SELECT data FROM workflows WHERE id = ?').get(record.workflowId) as { data: string } | undefined);
+      const parsed = state && JSON.parse(state.data) as WorkflowState;
+      // A replay that is still running may yet reach the call; anything else has nobody left to attach.
+      return parsed?.status !== 'active' || !['queued', 'running'].includes(parsed.script?.status ?? '');
+    });
   }
 
   beginShutdown(): void {

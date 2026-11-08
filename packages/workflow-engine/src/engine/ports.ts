@@ -36,6 +36,8 @@ export interface WorkerRunSpec {
   env: Record<string, string>;
   workspace?: { id: string; path: string; rootDigest: string };
   resume?: { kind: NativeIdKind; id: string };
+  /** Run under this host key (see WorkerHosting); with attach, continue the process already running there instead of starting one. */
+  host?: { key: string; attach: boolean };
   deadlineAt: number;
   signal: AbortSignal;
   /** Runs after admission and before the agent starts; throws to reject a stale binding. */
@@ -60,7 +62,21 @@ export interface WorkerRun {
   stopReason(): WorkflowStopReason | undefined;
 }
 
-/** Starts one agent turn. Each call is a fresh native process; `resume` continues the native session. */
+/**
+ * Worker processes that survive the host process. A run started with `host` must
+ * keep running when stopped for 'shutdown'; a later runner.start with the same key
+ * and `attach` replays its output from the beginning and continues it.
+ */
+export interface WorkerHosting {
+  newKey(): string;
+  /** True when `key` holds a process of `agentKind`, running or finished, that can be attached. */
+  attachable(key: string, agentKind: string): Promise<boolean>;
+  /** Ends the process if it still runs and deletes its records. */
+  release(key: string): Promise<void>;
+}
+
+/** Starts one agent turn. Each call is a fresh native process unless it attaches to a host; `resume` continues the native session. */
 export interface WorkerRunner {
   start(spec: WorkerRunSpec): Promise<WorkerRun>;
+  hosting?: WorkerHosting;
 }

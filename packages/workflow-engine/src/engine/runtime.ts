@@ -2,13 +2,14 @@ import { dirname, join } from 'node:path';
 import { WorkflowWorkspaces } from './workspaces';
 import type { WorkspaceBinding } from './workspace-types';
 import { fileURLToPath } from 'node:url';
-import { silentLogger, WorkflowStopped, type WorkerRun, type WorkerRunner, type WorkerRunSpec, type WorkflowProcesses } from './ports';
+import { silentLogger, stopReasonOf, WorkflowStopped, type WorkerRun, type WorkerRunner, type WorkerRunSpec, type WorkflowProcesses } from './ports';
 import { checkJsonOutput } from './json-output';
 import { RESUME_DEADLINE, RESUME_ROOT_CHANGED, WorkflowKernel } from './kernel';
 import { WorkflowIpc, WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from './ipc';
 import { workflowDigest } from './digest';
 import { inheritedWorkerExecution } from './execution';
 import { runScriptProgram, WorkflowAgentFailure } from './script-vm';
+import { hostMatch } from './worker-hosts';
 import type { WorkerExecution, WorkerExecutionPolicy, WorkerExecutionSelection, WorkflowLogger, WorkflowRoot, WorkflowState, WorkflowWorkerRequest, WorkflowWorkerResult } from './types';
 
 const JSON_FORMAT_RETRIES = 2;
@@ -50,6 +51,7 @@ export class WorkflowRuntime {
   private closed = false;
   private ticking = false;
   private readonly scripts = new Map<string, { controller: AbortController; done: Promise<void>; depth: number }>();
+  private readonly releasing = new Set<string>();
   private readonly log: WorkflowLogger;
 
   constructor(private readonly deps: WorkflowRuntimeDeps) {
@@ -75,7 +77,7 @@ export class WorkflowRuntime {
       wakeMain: deps.wakeMain,
     });
     this.ipc = new WorkflowIpc((caller, method, args) => this.kernel.call(caller, method, args),
-      deps.cliPath ?? fileURLToPath(new URL('./cli.js', import.meta.url)));
+      deps.cliPath ?? fileURLToPath(new URL('./cli.js', import.meta.url)), deps.path === ':memory:' ? undefined : deps.path + '.endpoint.json');
   }
 
   async start(): Promise<void> {
@@ -83,12 +85,13 @@ export class WorkflowRuntime {
     for (const outcome of await this.kernel.resumeAfterRestart()) {
       const name = outcome.state.script?.name ?? outcome.state.workflowId;
       const text = outcome.resumed
-        ? `Bridge 已重启，工作流「${name}」已自动续跑：已完成的调用直接复用，中断的调用重新执行，停机时间不计入截止时间。可用 /workflow status 查看进度。`
+        ? `Bridge 已重启，工作流「${name}」已自动续跑：已完成的调用直接复用，${this.deps.runner.hosting ? '重启时仍在运行的调用接回原进程继续（原进程已不在时重新执行），' : ''}中断的调用重新执行，停机时间不计入截止时间。可用 /workflow status 查看进度。`
         : `Bridge 已重启，工作流「${name}」未能自动续跑：${resumeFailure(outcome.reason)}。处理后可用 /workflow resume 恢复，或 /workflow cancel 取消。`;
       this.log.info(outcome.resumed ? 'restart-resumed' : 'restart-resume-skipped', { workflowId: outcome.state.workflowId, reason: outcome.reason });
       await this.deps.notify?.(outcome.state, text)
         .catch(error => this.log.warn('restart-notice-failed', { error: String(error) }));
     }
+    await this.releaseOrphanHosts();
     this.timer = setInterval(() => {
       void this.tick().catch(error => this.log.warn('tick-failed', { error: String(error) }));
     }, 500);
@@ -101,6 +104,7 @@ export class WorkflowRuntime {
     try {
       await this.kernel.tick();
       if (this.closed) return;
+      void this.releaseOrphanHosts();
       for (const state of this.kernel.queuedScripts()) {
         const depth=state.parent?.depth ?? 0;
         // Separate bounded levels let children run while ancestor interpreters await their results.
@@ -225,31 +229,57 @@ export class WorkflowRuntime {
     }
     let lease: string | undefined;
     let run: WorkerRun | undefined;
+    // Worktree turns are verified against a frozen snapshot, which a process left running mid-change would not match.
+    const hosting = task.workspaceId ? undefined : this.deps.runner.hosting;
+    const match = hostMatch(task);
+    let survivor = hosting && this.kernel.workerHost(workflow.workflowId, match);
+    if (survivor && (survivor.discard || survivor.agentKind !== pinned.agentKind || !await hosting!.attachable(survivor.hostKey, pinned.agentKind))) {
+      await this.releaseHost(survivor.hostKey);
+      survivor = undefined;
+    }
+    if (signal.aborted) {
+      if (survivor && stopReasonOf(signal) !== 'shutdown') await this.releaseHost(survivor.hostKey);
+      signal.throwIfAborted();
+    }
     const binding = this.ipc.bind({ kind: 'worker', scopeId: workflow.root.scopeId, workflowId: workflow.workflowId,
-      taskId: task.taskId, attemptId }, workflow.deadlineAt);
+      taskId: task.taskId, attemptId }, workflow.deadlineAt, survivor?.tokenHash);
+    let hostKey: string | undefined;
     try {
       if (workspace) {
         lease = manager!.begin(workspace, task.taskId);
         await manager!.verifySnapshot(workspace, signal);
       }
-      const start = (prompt: string, resume?: WorkerRunSpec['resume']) => this.deps.runner.start({
-        sessionKey: `workflow:${workflow.workflowId}:${session.sessionRef}`,
-        root: workflow.root, execution: pinned, role: session.role, prompt, env: binding.env,
-        validateBeforeRun: async () => {
-          request.onAdmitted();
-          const admitted = await this.resolveWorker(workflow.root, selection);
-          if (workflowDigest(admitted) !== workflowDigest(pinned)) throw new Error('Worker binding changed while queued');
-          if (workspace) {
-            await this.workspacePolicy(workflow.root, pinned);
-            await manager!.binding(workflow.root, workflow.workflowId, workspace.id, signal);
-            await manager!.verifySnapshot(workspace, signal);
-          }
-        },
-        ...(workspace ? { workspace: { id: workspace.id, path: workspace.path, rootDigest: workspace.rootDigest } } : {}),
-        systemPrompt: workflowWorkerInstructions(task) + (workspace ? `\nManaged worktree: ${workspace.path}\nBaseline: ${workspace.baseCommit}\nWork only in this worktree; do not modify the original checkout or other worktrees. ${workspace.kind === 'review' ? 'Review the frozen HEAD; leave all tracked and untracked files unchanged.' : 'Commit intended changes before returning. Leave no untracked files or unfinished Git operations.'}` : ''),
-        ...(resume ? { resume } : {}),
-        deadlineAt: workflow.deadlineAt, signal,
-      });
+      const start = async (prompt: string, resume?: WorkerRunSpec['resume']) => {
+        // A JSON restatement starts another process; the previous one has exited.
+        if (hostKey) await this.releaseHost(hostKey);
+        const attach = Boolean(survivor);
+        hostKey = survivor?.hostKey ?? hosting?.newKey();
+        survivor = undefined;
+        if (hostKey) {
+          this.kernel.putWorkerHost({ hostKey, workflowId: workflow.workflowId, match, taskId: task.taskId,
+            agentKind: pinned.agentKind, tokenHash: binding.tokenHash, createdAt: Date.now() });
+          if (attach) this.log.info('worker-reattach', { workflowId: workflow.workflowId, taskId: task.taskId, attemptId, hostKey });
+        }
+        return this.deps.runner.start({
+          sessionKey: `workflow:${workflow.workflowId}:${session.sessionRef}`,
+          root: workflow.root, execution: pinned, role: session.role, prompt, env: binding.env,
+          validateBeforeRun: async () => {
+            request.onAdmitted();
+            const admitted = await this.resolveWorker(workflow.root, selection);
+            if (workflowDigest(admitted) !== workflowDigest(pinned)) throw new Error('Worker binding changed while queued');
+            if (workspace) {
+              await this.workspacePolicy(workflow.root, pinned);
+              await manager!.binding(workflow.root, workflow.workflowId, workspace.id, signal);
+              await manager!.verifySnapshot(workspace, signal);
+            }
+          },
+          ...(workspace ? { workspace: { id: workspace.id, path: workspace.path, rootDigest: workspace.rootDigest } } : {}),
+          systemPrompt: workflowWorkerInstructions(task) + (workspace ? `\nManaged worktree: ${workspace.path}\nBaseline: ${workspace.baseCommit}\nWork only in this worktree; do not modify the original checkout or other worktrees. ${workspace.kind === 'review' ? 'Review the frozen HEAD; leave all tracked and untracked files unchanged.' : 'Commit intended changes before returning. Leave no untracked files or unfinished Git operations.'}` : ''),
+          ...(resume ? { resume } : {}),
+          ...(hostKey ? { host: { key: hostKey, attach } } : {}),
+          deadlineAt: workflow.deadlineAt, signal,
+        });
+      };
       const turn = async (active: WorkerRun) => {
         let text: string | undefined;
         let question: string | undefined;
@@ -308,11 +338,36 @@ export class WorkflowRuntime {
       return { status: result === 'completed' && normal ? 'completed' : result === 'stopped' ? 'stopped' : 'failed', text, question, error, stopReason: active.stopReason() };
     } finally {
       binding.release();
+      // A shutdown leaves the process running for the next controller's replay to reattach.
+      const shutdown = signal.aborted && stopReasonOf(signal) === 'shutdown' || run?.stopReason() === 'shutdown';
+      if (hostKey && !shutdown) await this.releaseHost(hostKey);
       if (workspace && lease) {
         // Native termination is authoritative; retain the lease if it is uncertain.
         if (!run || await run.waitForExit(5000)) manager!.end(workspace, lease);
         else throw new Error('Workspace worker termination is uncertain; worktree retained and blocked');
       }
+    }
+  }
+
+  private async releaseHost(hostKey: string): Promise<void> {
+    if (this.releasing.has(hostKey)) return;
+    this.releasing.add(hostKey);
+    try {
+      await this.deps.runner.hosting?.release(hostKey);
+    } catch (error) {
+      this.log.warn('worker-host-release-failed', { hostKey, error: String(error) });
+    } finally {
+      this.releasing.delete(hostKey);
+      this.kernel.removeWorkerHost(hostKey);
+    }
+  }
+
+  /** Ends processes left by an earlier controller that no replayed turn can continue. */
+  private async releaseOrphanHosts(): Promise<void> {
+    if (!this.deps.runner.hosting) return;
+    for (const record of this.kernel.orphanWorkerHosts()) {
+      this.log.info('worker-host-orphaned', { workflowId: record.workflowId, taskId: record.taskId, hostKey: record.hostKey, discard: record.discard });
+      await this.releaseHost(record.hostKey);
     }
   }
 
