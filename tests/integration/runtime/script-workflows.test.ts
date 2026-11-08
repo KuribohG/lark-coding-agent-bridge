@@ -110,6 +110,67 @@ describe('script workflow runtime', () => {
     expect(h.adapters.codex.runs).toHaveLength(2);
   });
 
+  /** Gate turns answer by round; the first one is held until released or stopped. */
+  function speculationAgents(h: Awaited<ReturnType<typeof harness>>, work: (round: number) => string) {
+    const run = h.adapters.codex.run.bind(h.adapters.codex);
+    let releaseGate!: () => void;
+    const gateHeld = new Promise<void>(resolve => { releaseGate = resolve; });
+    const started: string[] = [];
+    let gates = 0, works = 0;
+    h.adapters.codex.run = opts => {
+      const native = run(opts);
+      const role = opts.prompt.includes('Independently check whether the premise') ? 'gate' : opts.prompt.includes('REPAIR_SPEC') ? 'repair' : 'work';
+      const round = role === 'gate' ? ++gates : role === 'work' ? ++works : 1;
+      started.push(role + round);
+      let stopped = false;
+      const events = (async function* (): AsyncGenerator<AgentEvent> {
+        yield { type: 'system', threadId: role === 'gate' ? 'gate-' + native.runId : role + '-session' };
+        if (role === 'gate' && round === 1) await gateHeld;
+        if (stopped) return;
+        yield { type: 'final_text', content: role === 'repair' ? 'spec v2' : role === 'work' ? work(round)
+          : JSON.stringify(round === 1 ? { ok: false, reason: 'RLEN violated', evidence: ['FAIL_S counterexample'] } : { ok: true, reason: 'All cases pass', evidence: ['run.sh exited 0'] }) };
+        yield { type: 'done', terminationReason: 'normal' };
+      })();
+      return { runId: native.runId, capabilities: native.capabilities, events, stop: async () => { stopped = true; await native.stop(); releaseGate(); }, waitForExit: ms => native.waitForExit(ms) };
+    };
+    return { started, releaseGate: () => releaseGate() };
+  }
+
+  it('runs speculative work beside a held gate, reworks after the repair and replays the gated result', async () => {
+    const h = await harness();
+    const agents = speculationAgents(h, round => 'impl-v' + round);
+    await h.call('run_script', { goal: 'Implement while the model check runs', script:
+      'return await speculativeAgent("IMPLEMENT the spec",{key:"impl",gate:{prompt:"Full model check passes"},repair:{prompt:"REPAIR_SPEC"}});' });
+    await h.until(() => expect(h.state().tasks.find(task => task.scriptKey === 'impl/work/1')?.status).toBe('result_ready'));
+    expect(agents.started).toEqual(['gate1', 'work1']);
+    expect(h.state().tasks.find(task => task.scriptKey === 'impl/gate/1')?.status).toBe('running');
+    agents.releaseGate();
+    await h.until(() => expect(h.state().script!.status).toBe('result_ready'));
+    expect(JSON.parse(h.state().artifacts.at(-1)!.text)).toMatchObject({ value: 'impl-v2', rounds: 2, gate: { ok: true } });
+    expect(agents.started.slice(0, 3)).toEqual(['gate1', 'work1', 'repair1']);
+    expect([...agents.started.slice(3)].sort()).toEqual(['gate2', 'work2']);
+    const task = (key: string) => h.state().tasks.find(task => task.scriptKey === key)!;
+    expect(task('impl/work/2').objective).toContain('RLEN violated');
+    expect(task('impl/work/2').sessionRef).toBe(task('impl/work/1').sessionRef);
+    expect(task('impl/gate/2').inputRefs).toEqual(task('impl/repair/1').resultRefs.slice(-1));
+    expect(h.pool.snapshot()).toMatchObject({ active: 0, waiting: 0 });
+    await h.call('replay_script');
+    await h.until(() => expect(h.state().script!.status).toBe('result_ready'));
+    expect(h.adapters.codex.runs).toHaveLength(5);
+  });
+
+  it('cancels the held gate when the speculative worker fails', async () => {
+    const h = await harness();
+    const agents = speculationAgents(h, () => 'not json');
+    await h.call('run_script', { goal: 'Implement while the model check runs', script:
+      'return await speculativeAgent("IMPLEMENT the spec",{key:"impl",gate:{prompt:"Full model check passes"},worker:{output:"json"},onError:"throw"});' });
+    await h.until(() => expect(h.state().script!.status).toBe('failed'));
+    expect(h.state().script!.error).toContain('not valid JSON');
+    expect(h.state().tasks.find(task => task.scriptKey === 'impl/gate/1')?.status).toBe('cancelled');
+    expect(agents.started.filter(role => role === 'gate1')).toHaveLength(1);
+    expect(h.pool.snapshot()).toMatchObject({ active: 0, waiting: 0 });
+  });
+
   it('uses a timed selective receive and preserves unrelated messages through the VM', async () => {
     const h = await harness({ codex: ['ready', 'used evidence'] });
     h.adapters.codex.setEvents(['ready', 'used evidence'].map((text): AgentEvent[] => [

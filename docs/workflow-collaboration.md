@@ -49,6 +49,32 @@ The helper gates its returned value. It does not intercept arbitrary `complete_w
 
 Independent tasks can each use this helper inside `parallel`. Give concurrent workers separate file ownership or work claims. Apply review to work where mistakes matter; unnecessary review adds latency. Example: [reviewed implementation](../workflow-definitions/scripted/examples/reviewed-implementation.js).
 
+## Speculate past a long gate
+
+Some checks take hours, such as a full model-checking run or a long test suite, while the next step only depends on the check passing. Waiting serially leaves the downstream worker idle; skipping the check accepts unverified work.
+
+```js
+return await speculativeAgent(args.implementTask, {
+  key: 'impl',
+  gate: { prompt: 'Run spec/run.sh on the current spec and report every case result.' },
+  worker: args.implementer,
+  repair: { prompt: 'Repair the spec for the reported counterexample.', member: 'spec/author' },
+  maxRounds: 3,
+});
+```
+
+`speculativeAgent(prompt,{key,gate,worker?,repair?,maxRounds?,onError?})` starts the gate and the work at the same time. It returns `{value,gate,rounds}` only when the gate of the same round passes, so the returned work was built on a premise that was actually checked. Otherwise it resolves to `null` and logs the reason; with `onError:"throw"` it rejects instead.
+
+- `gate` needs a `prompt` describing the premise and the checks to run, and accepts `harness`, `model`, `reasoningEffort` and `workflowTool`. Each round's gate is an independent task with a fresh context and returns the review contract `{ok:boolean,reason:string,evidence:string[]}`; passing requires evidence. Malformed decisions and gate execution failures fail the helper; they never count as passing.
+- `worker` accepts the same options as in `reviewedAgent` and uses the persistent member `<key>/worker` unless one is supplied. Its prompt states that the work is speculative and must stay local and reversible: no publishing, pushing, merging or external messages before the gate passes.
+- `repair` needs a `prompt` and accepts `member`, `harness`, `model`, `reasoningEffort` and `workflowTool`. When a gate rejects the premise, the repair runs in persistent member `<key>/repairer` (or `member`, which must differ from the worker's) with the gate report as an input artifact. It runs while the worker's current turn is still going; that turn cannot be cancelled, so it finishes on the old premise. The next round then checks the repaired premise with a new gate and sends the worker a rework turn that references the gate report and the repair, with only a short summary inlined.
+- `maxRounds` ranges from 1 to 4. It defaults to 2 with `repair` and 1 without; more than one round needs `repair`. A round uses one gate task and one worker call, plus one repair call before the next round.
+- If the worker fails, the helper cancels a gate that is still running instead of waiting for its verdict.
+
+Keys are `<key>/gate/<round>`, `<key>/work/<round>`, `<key>/repair/<round>` and `<key>/cancel/<round>`; reserve those prefixes for the helper. Every started call is settled before a round ends, including on failure. Completed calls are reused on replay. A cancelled gate stays cancelled on replay, so retry after a worker failure with a new key.
+
+The helper only gates its returned value; it does not sandbox the worker. Keep speculative changes in a separate workspace or otherwise reversible, and publish or integrate only after the helper returns. Speculation trades compute for latency: when the gate fails, the speculative turn's work on the old premise is partly wasted. Use it when the gate is slow and usually passes, for example after quick checks already pass. Example: [speculative implementation](../workflow-definitions/scripted/examples/speculative-implementation.js).
+
 ## Public design references
 
 Material checked on 2026-11-02:

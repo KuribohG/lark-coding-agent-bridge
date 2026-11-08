@@ -2,6 +2,7 @@ import { getQuickJS, type QuickJSDeferredPromise, type QuickJSHandle } from 'qui
 import { SCRIPT_MAX_TASKS, SCRIPT_MAX_TEXT } from './script-contract';
 import { REVIEW_HELPER } from './review-helper';
 import { DISCUSS_HELPER } from './discuss-helper';
+import { SPECULATE_HELPER } from './speculate-helper';
 
 /** A worker's own failure; agent() resolves it to null unless the call sets onError:'throw'. */
 export class WorkflowAgentFailure extends Error {
@@ -60,6 +61,7 @@ const PRELUDE = `(() => {
   }
   ${REVIEW_HELPER}
   ${DISCUSS_HELPER}
+  ${SPECULATE_HELPER}
   globalThis.send = (member, text, options = {}) => {
     if (options && Object.hasOwn(options, 'relayFrom')) throw new TypeError('send() cannot choose a sender');
     return mail(JSON.stringify({...options, kind: 'send', member, text})).then(JSON.parse);
