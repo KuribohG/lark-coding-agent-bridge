@@ -46,6 +46,7 @@ export function withExecutionContract(native: NativeAgentRun, capabilities: Agen
   const run: AgentRun = {
     runId: native.runId,
     capabilities,
+    ...(native.detachOnShutdown ? { detachOnShutdown: true } : {}),
     events: (async function* () {
       try {
         for await (const event of native.events) {
@@ -58,7 +59,7 @@ export function withExecutionContract(native: NativeAgentRun, capabilities: Agen
         yield { type: 'error', message, terminationReason: 'failed', failureKind: classifyAgentFailure(message) } as const;
       } finally { active = false; }
     })(),
-    async stop() { active = false; await native.stop(); },
+    async stop(reason) { active = false; await native.stop(reason); },
     waitForExit: timeoutMs => native.waitForExit(timeoutMs),
   };
   if (native.answerUserInput) {

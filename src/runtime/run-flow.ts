@@ -55,6 +55,7 @@ export interface StartRunFlowInput extends RunFlowContextInput {
   stopGraceMs?: number;
   userQuestions?: boolean;
   answerIncludesInterimText?: boolean;
+  host?: import('../agent/run-host').RunHostBinding;
   observability?: {
     profile: string;
     agent: string;
@@ -229,6 +230,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       stopGraceMs: input.stopGraceMs,
       userQuestions: input.userQuestions,
       answerIncludesInterimText: input.answerIncludesInterimText,
+      host: input.host,
       observability: input.observability,
     });
   } catch (err) {

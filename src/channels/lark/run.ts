@@ -2,6 +2,7 @@ import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { capabilityForProfile } from '../../agent/backends';
 import { modelRunArguments } from '../../agent/model-settings';
 import type { AgentAdapter } from '../../agent/types';
+import type { RunHostBinding } from '../../agent/run-host';
 import { modelLabel, normalizeModelSelection } from '../../agent/models';
 import type { ChatMode } from '../../bot/chat-mode-cache';
 import type { CotClient, CotPublisher } from '../../bot/cot';
@@ -81,6 +82,8 @@ export interface RunBatchDeps {
   preparedCot?: CotPublisher;
   /** Replay number of input whose earlier run was cut off by a bridge shutdown. */
   resumeAttempt?: number;
+  /** Run host that keeps the agent alive across bridge restarts, or the one to reattach to. */
+  host?: RunHostBinding;
 }
 
 /** Resolves with the submitted execution once its output has been presented. */
@@ -358,6 +361,7 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<RunExecution | 
     userQuestions: !deps.timedJob,
     // Chat replies show the whole answer, including text written before tool calls.
     answerIncludesInterimText: true,
+    host: deps.host,
     observability: {
       profile: controls.profile,
       agent: capability.agentId,

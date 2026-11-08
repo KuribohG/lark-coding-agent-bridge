@@ -28,6 +28,8 @@ export interface RunState {
   /** Set when terminal === 'idle_timeout' — how long claude was idle before
    * the watchdog gave up (so the message can say "N 分钟无响应"). */
   idleTimeoutMinutes?: number;
+  /** Interrupted only on this side: a bridge restart detached from a native run that keeps going. */
+  detached?: boolean;
 }
 
 export const initialState: RunState = {
@@ -163,13 +165,17 @@ export function retryStatus(retry: NonNullable<RunState['retry']>): string {
     : `🔄 正在自动重试${progress}`;
 }
 
-export function markInterrupted(state: RunState): RunState {
+/** Shown on output a restarting bridge left behind while the native run continues. */
+export const DETACHED_NOTE = '_↻ bridge 正在重启，任务没有中断；重启后会在新消息里继续显示进度_';
+
+export function markInterrupted(state: RunState, detached = false): RunState {
   return {
     ...state,
     blocks: closeStreamingText(state.blocks),
     reasoning: { ...state.reasoning, active: false },
     terminal: 'interrupted',
     footer: null,
+    ...(detached ? { detached: true } : {}),
   };
 }
 

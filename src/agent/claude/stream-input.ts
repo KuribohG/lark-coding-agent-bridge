@@ -10,7 +10,7 @@ const object = (value: unknown): RawEvent => value !== null && typeof value === 
 export class ClaudeStreamInput {
   private active = true;
   private sessionId: string;
-  private readonly initialId = randomUUID();
+  private initialId: string = randomUUID();
   private readonly outstanding = new Set<string>();
   private readonly deliveries = new Map<string, Promise<Receipt>>();
   private readonly pending = new Map<string, { resolve(value: Receipt): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
@@ -27,6 +27,19 @@ export class ClaudeStreamInput {
 
   start(prompt: string): void {
     this.write(prompt, this.initialId);
+  }
+
+  /** Track the input an earlier bridge process wrote to this agent instead of sending a prompt. */
+  restore(written: readonly string[]): void {
+    let first = true;
+    for (const line of written) {
+      let event: RawEvent;
+      try { event = object(JSON.parse(line)); } catch { continue; }
+      if (event.type !== 'user' || typeof event.uuid !== 'string') continue;
+      if (first) this.initialId = event.uuid;
+      first = false;
+      this.outstanding.add(event.uuid);
+    }
   }
 
   get currentSessionId(): string | undefined {

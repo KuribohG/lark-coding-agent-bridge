@@ -1,7 +1,7 @@
 import { rewriteFileLinks, type FileLinkRenderOptions } from './file-links';
 import { deepMaskEmails } from './mask-email';
 import type { Block, FooterStatus, RunState, ToolEntry } from './run-state';
-import { retryStatus } from './run-state';
+import { DETACHED_NOTE, retryStatus } from './run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 
 const REASONING_MAX = 1500;
@@ -40,7 +40,9 @@ export function renderCard(state: RunState, options: RunCardRenderOptions = {}):
     }
   }
 
-  if (state.terminal === 'interrupted') {
+  if (state.terminal === 'interrupted' && state.detached) {
+    elements.push(noteMd(DETACHED_NOTE));
+  } else if (state.terminal === 'interrupted') {
     elements.push(noteMd('_⏹ 已被中断_'));
   } else if (state.terminal === 'idle_timeout') {
     const mins = state.idleTimeoutMinutes ?? 0;
@@ -210,7 +212,7 @@ function footerStatus(status: Exclude<FooterStatus, null>): object {
 }
 
 function summaryText(state: RunState): string {
-  if (state.terminal === 'interrupted') return '已中断';
+  if (state.terminal === 'interrupted') return state.detached ? '重启中，任务继续' : '已中断';
   if (state.terminal === 'idle_timeout') return '已超时';
   if (state.terminal === 'error') return '出错';
   if (state.terminal === 'done') return '已完成';

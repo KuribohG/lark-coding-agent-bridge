@@ -10,6 +10,7 @@ import { retryingRun } from './retrying-run';
 import { agentFailureKind } from '../agent/execution';
 import type { ResolvedModelProvider } from '../model-provider/types';
 import type { AgentKind } from '../config/profile-schema';
+import type { RunHostBinding } from '../agent/run-host';
 
 export interface RunExecutorDeps {
   /** Resolve the adapter from the originating chat/topic scope for each run. */
@@ -53,6 +54,8 @@ export interface SubmitRunInput {
   userQuestions?: boolean;
   /** Text written before tool calls belongs to the delivered answer. */
   answerIncludesInterimText?: boolean;
+  /** Keep the native process alive across bridge restarts under this run host. */
+  host?: RunHostBinding;
   nowait?: boolean;
   observability?: {
     profile: string;
@@ -205,6 +208,7 @@ export class RunExecutor {
       stopGraceMs: input.stopGraceMs,
       userQuestions: input.userQuestions,
       answerIncludesInterimText: input.answerIncludesInterimText,
+      host: input.host,
     });
     let run: AgentRun;
     let prepared: PreparedAgentRun;

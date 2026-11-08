@@ -15,8 +15,19 @@ const PERMISSION_UNAVAILABLE = 'Interactive permission prompts are not available
  */
 export class ClaudeQuestionControl {
   private readonly pending = new Map<string, RawEvent>();
+  /** Requests an earlier bridge process answered; replaying their output must not answer twice. */
+  private readonly answered = new Set<string>();
 
   constructor(private readonly input: ClaudeStreamInput) {}
+
+  restore(written: readonly string[]): void {
+    for (const line of written) {
+      let event: RawEvent;
+      try { event = object(JSON.parse(line)); } catch { continue; }
+      const id = event.type === 'control_response' ? text(object(event.response).request_id) : '';
+      if (id) this.answered.add(id);
+    }
+  }
 
   /** Undefined when `raw` is not a control message; otherwise the events it produces. */
   receive(raw: unknown): AgentEvent[] | undefined {
@@ -29,7 +40,7 @@ export class ClaudeQuestionControl {
     if (event.type !== 'control_request') return undefined;
     const id = text(event.request_id);
     const request = object(event.request);
-    if (!id) return [];
+    if (!id || this.answered.has(id)) return [];
     if (request.subtype !== 'can_use_tool') {
       this.input.control({ type: 'control_response', response: { subtype: 'error', request_id: id,
         error: `Unsupported control request: ${text(request.subtype) || 'unknown'}` } });

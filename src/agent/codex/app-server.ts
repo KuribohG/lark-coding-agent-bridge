@@ -3,7 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import type { SpawnedProcessByStdio } from '../../platform/spawn';
-import { spawnWithDeadline } from '../deadline';
+import { hostedProcessOf, readRunHostInput, spawnAgentProcess } from '../run-host';
 import type { AgentEvent, AgentQuestion, AgentRunOptions, NativeAgentRun } from '../types';
 import { CodexJsonlTranslator } from './jsonl';
 import { getBuildInfo } from '../../build-info';
@@ -69,14 +69,18 @@ export function startAppServerRun(input: {
   threadConfig?: Readonly<Record<string, unknown>>;
   stopGraceMs: number;
   configOverrides?: readonly string[];
+  /** Groups hosted runs that depend on one shared app-server daemon. */
+  hostTag?: string;
 }): NativeAgentRun {
   const { opts } = input;
   const appServerMode = input.appServerMode ?? 'per-run';
+  const attaching = Boolean(opts.host?.attach);
   let command = input.binary;
   const args = appServerMode === 'daemon'
     ? (() => {
-        if (!input.daemonSocketPath) throw new Error('daemon app-server socket path is required');
-        return [WS_PROXY, input.daemonSocketPath, ...(process.platform === 'win32' ? [input.binary] : [])];
+        // A reattached run keeps the connection its host already holds.
+        if (!input.daemonSocketPath && !attaching) throw new Error('daemon app-server socket path is required');
+        return [WS_PROXY, input.daemonSocketPath ?? '', ...(process.platform === 'win32' ? [input.binary] : [])];
       })()
     : ['app-server', '--listen', 'stdio://',
         '-c', 'approval_policy="never"', '-c', 'shell_environment_policy.inherit="all"'];
@@ -91,9 +95,10 @@ export function startAppServerRun(input: {
     args.push('-c', 'memories.generate_memories=false');
   }
   if (opts.forkSession && appServerMode === 'per-run') args.push('-c', 'features.goals=false');
-  const child = spawnWithDeadline(command, args, {
+  const child = spawnAgentProcess(command, args, {
     cwd: opts.cwd, env: input.env, stdio: ['pipe', 'pipe', 'pipe'],
-  }, opts.deadlineAt) as SpawnedProcessByStdio<Writable, Readable, Readable>;
+  }, { agent: 'codex', deadlineAt: opts.deadlineAt, host: opts.host, tag: input.hostTag }) as SpawnedProcessByStdio<Writable, Readable, Readable>;
+  const hosted = hostedProcessOf(child);
   const translator = new CodexJsonlTranslator();
   const questionItems = new Set<string>();
   const events: AgentEvent[] = [];
@@ -111,9 +116,11 @@ export function startAppServerRun(input: {
   const pending = new Map<number, {
     resolve(value: ObjectValue): void;
     reject(error: Error): void;
-    timer: NodeJS.Timeout;
+    timer?: NodeJS.Timeout;
     method: string;
   }>();
+  /** Server requests an earlier bridge process already answered. */
+  const answeredServerRequests = new Set<unknown>();
   const statuses = new Set<string>();
   const push = (batch: AgentEvent[]) => {
     events.push(...batch);
@@ -185,6 +192,7 @@ export function startAppServerRun(input: {
       return;
     }
     if (message.id !== undefined && message.method) {
+      if (answeredServerRequests.has(message.id)) return;
       // This bridge has no approval/form UI. Never silently grant a server request.
       write({ id: message.id, error: { code: -32601, message: 'Interactive server requests are not supported by this bridge' } });
       return;
@@ -327,7 +335,34 @@ export function startAppServerRun(input: {
     }
   });
 
-  const ready = (async () => {
+  /**
+   * A reattached host replays the run from its start. The answers to requests
+   * the previous bridge process sent restore the thread and turn, so nothing
+   * is sent again.
+   */
+  const restoreHostedRequests = (key: string) => {
+    for (const line of readRunHostInput(key)) {
+      let message: ObjectValue;
+      try { message = object(JSON.parse(line)); } catch { continue; }
+      if (message.method === undefined) {
+        if (message.id !== undefined) answeredServerRequests.add(message.id);
+        continue;
+      }
+      if (typeof message.id !== 'number') continue;
+      const method = text(message.method);
+      nextId = Math.max(nextId, message.id);
+      pending.set(message.id, { method, reject: () => {}, resolve: (result) => {
+        if (method === 'thread/start' || method === 'thread/resume' || method === 'thread/fork') {
+          threadId = text(object(result.thread).id) || threadId;
+          if (threadId) push(translator.translate({ type: 'thread.started', thread_id: threadId }));
+        } else if (method === 'turn/start' && !ended) {
+          turnId = text(object(result.turn).id) || turnId;
+        }
+      } });
+    }
+  };
+
+  const ready = opts.host?.attach ? Promise.resolve(restoreHostedRequests(opts.host.key)) : (async () => {
     await request('initialize', {
       clientInfo: {
         name: 'lark_channel_bridge',
@@ -394,6 +429,7 @@ export function startAppServerRun(input: {
 
   return {
     runId: opts.runId,
+    ...(hosted ? { detachOnShutdown: true } : {}),
     events: { async *[Symbol.asyncIterator]() {
       while (!ended || events.length) {
         if (events.length) yield events.shift()!;
@@ -421,9 +457,15 @@ export function startAppServerRun(input: {
         throw error;
       }
     },
-    stop() {
+    stop(reason) {
       if (stopPromise) return stopPromise;
       stopping = true;
+      if (hosted && reason === 'shutdown') {
+        // The turn keeps running under its host; the next bridge process reattaches.
+        hosted.detach();
+        stopPromise = waitForExit(input.stopGraceMs).then(() => {});
+        return stopPromise;
+      }
       stopPromise = (async () => {
         if (!ended && threadId && turnId) {
           await request('turn/interrupt', { threadId, turnId }, Math.min(input.stopGraceMs, 2000)).catch(() => {});

@@ -14,6 +14,8 @@ export interface InterruptedTurn {
   /** Input delivered to the native run: the flushed batch plus accepted follow-ups. */
   messages: NormalizedMessage[];
   timedRunId?: string;
+  /** Run host keeping the native process alive; a live or finished host is reattached instead of replayed. */
+  hostKey?: string;
   /** When the original input first started running; replays keep it. */
   startedAt: number;
   /** Replays already started for this input. */
@@ -63,8 +65,10 @@ export class InterruptedTurns {
     void this.persist();
   }
 
-  end(scope: string): void {
+  /** False once the file belongs to the next channel, which then also owns the turn's run host. */
+  end(scope: string): boolean {
     if (this.turns.delete(scope)) void this.persist();
+    return !this.detached;
   }
 
   /** Resolves after every write requested so far has finished. */
@@ -99,6 +103,7 @@ function normalizeTurn(value: unknown): InterruptedTurn | undefined {
     scope: raw.scope,
     messages,
     ...(typeof raw.timedRunId === 'string' ? { timedRunId: raw.timedRunId } : {}),
+    ...(typeof raw.hostKey === 'string' && raw.hostKey ? { hostKey: raw.hostKey } : {}),
     startedAt: Number.isFinite(raw.startedAt) ? raw.startedAt! : 0,
     attempts: Number.isInteger(raw.attempts) && raw.attempts! >= 0 ? raw.attempts! : MAX_RESUME_ATTEMPTS,
   };

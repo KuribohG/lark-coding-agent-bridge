@@ -7,6 +7,7 @@ import { writeFileAtomic } from '../../platform/atomic-write';
 import { log } from '../../core/logger';
 import { spawnProcess } from '../../platform/spawn';
 import { terminateChild } from '../../platform/terminate';
+import { liveRunHosts } from '../run-host';
 
 const COMMAND_TIMEOUT_MS = 30_000;
 const OUTPUT_LIMIT = 32_000;
@@ -52,6 +53,11 @@ const FINGERPRINT_FILE = '.bridge-app-server-env';
 
 function daemonKey(input: { binary: string; env: NodeJS.ProcessEnv }): string {
   return `${input.binary}\0${input.env.CODEX_HOME ?? '<default-codex-home>'}`;
+}
+
+/** Tags hosted runs connected to this daemon, which outlive the bridge process that counted them. */
+export function codexDaemonHostTag(input: { binary: string; env: NodeJS.ProcessEnv }): string {
+  return `codex-daemon:${createHash('sha256').update(daemonKey(input)).digest('hex').slice(0, 32)}`;
 }
 
 /** Stable digest of the environment a config edit can change (launch env, provider env, CODEX_HOME). */
@@ -143,7 +149,8 @@ async function checkOrStart(input: {
     // A daemon started before fingerprints existed is adopted as-is.
     const stale = Boolean(input.fingerprint && recorded && recorded !== input.fingerprint);
     const key = daemonKey(input);
-    const busy = (attached.get(key) ?? 0) > 0;
+    const busy = (attached.get(key) ?? 0) > 0
+      || ((stale || Boolean(input.restart)) && await liveRunHosts(codexDaemonHostTag(input)) > 0);
     // Restarting the shared daemon would end every attached run, whatever the reason.
     if (status && (stale || input.restart) && busy) {
       if (!deferredLogged.has(`${key}\0${input.fingerprint}\0${input.restart}`)) {

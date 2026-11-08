@@ -118,6 +118,8 @@ export function retryingRun(input: {
           threadId: threadId ?? input.options.threadId,
           prompt: madeProgress || steered ? CONTINUE_PROMPT : input.options.prompt,
           images: madeProgress || steered ? undefined : input.options.images,
+          // A retry starts a new process, even when the failed one was reattached.
+          host: input.options.host && { key: input.options.host.key },
         };
         const prepared = await input.agent.prepareRun(options);
         if (!canRetry()) break;
@@ -152,6 +154,7 @@ export function retryingRun(input: {
   return {
     runId: input.options.runId,
     get capabilities() { return current.capabilities; },
+    get detachOnShutdown() { return current.detachOnShutdown; },
     events: events(),
     ...(supportsRunInput(current) ? { sendInput } : {}),
     // A retry starts a new process, so questions from an earlier attempt resolve as inactive.

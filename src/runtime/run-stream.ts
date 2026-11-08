@@ -134,7 +134,7 @@ export async function processAgentStream(
     if (idleFired) {
       state = markIdleTimeout(state, Math.round(idleTimeoutMs! / 60_000));
     } else if (handle.interrupted) {
-      state = markInterrupted(state);
+      state = markInterrupted(state, handle.stopReason === 'shutdown' && handle.run.detachOnShutdown === true);
     } else {
       state = finalizeIfRunning(state);
     }

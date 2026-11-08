@@ -25,7 +25,7 @@ import { ClaudeRunTranslator, isTaskNotificationResult } from './stream-json';
 import { ClaudeStreamInput } from './stream-input';
 import { ClaudeQuestionControl } from './questions';
 import { ClaudeBackgroundTasks } from './background-tasks';
-import { spawnWithDeadline } from '../deadline';
+import { hostedProcessOf, readRunHostInput, spawnAgentProcess } from '../run-host';
 import { withExecutionContract } from '../execution';
 import { CLAUDE_EXECUTION_CAPABILITIES } from './capabilities';
 
@@ -137,7 +137,7 @@ export class ClaudeAdapter implements AgentAdapter {
     // Without a prompt tool, -p mode removes AskUserQuestion; stdio routes it to the host.
     if (opts.userQuestions) args.push('--permission-prompt-tool', 'stdio');
 
-    const child = spawnWithDeadline(this.binary, args, {
+    const child = spawnAgentProcess(this.binary, args, {
       cwd: opts.cwd,
       env: mergeProcessEnv(process.env, {
         ...BACKGROUND_TASKS_ENV,
@@ -146,15 +146,17 @@ export class ClaudeAdapter implements AgentAdapter {
         ...(this.configDir ? { CLAUDE_CONFIG_DIR: this.configDir } : {}),
       }),
       stdio: ['pipe', 'pipe', 'pipe'],
-    }, opts.deadlineAt) as ClaudeChild;
+    }, { agent: this.id, deadlineAt: opts.deadlineAt, host: opts.host }) as ClaudeChild;
+    const hosted = hostedProcessOf(child);
 
-    log.info('agent', 'spawn', {
+    log.info('agent', opts.host?.attach ? 'attach' : 'spawn', {
       pid: child.pid ?? null,
       cwd: opts.cwd ?? process.cwd(),
       hasSession: Boolean(opts.sessionId),
       promptChars: opts.prompt.length,
       model: opts.model,
       reasoningEffort: opts.reasoningEffort,
+      ...(opts.host ? { runHost: opts.host.key } : {}),
     });
 
     // Listeners MUST be attached synchronously here, before we return.
@@ -194,13 +196,21 @@ export class ClaudeAdapter implements AgentAdapter {
       input.close();
       questions.close();
       log.info('agent', 'exit', { pid: child.pid ?? null, code, signal });
-      runFiles.cleanup();
+      // A detached agent is still running and may read its settings again.
+      if (!hosted?.detached) runFiles.cleanup();
     });
     child.stdin.on('error', (err) => {
       log.warn('agent', 'stdin-error', { message: err.message });
       input.close();
     });
-    input.start(opts.prompt);
+    if (opts.host?.attach) {
+      // The previous bridge process already sent the prompt and answered some requests.
+      const written = readRunHostInput(opts.host.key);
+      input.restore(written);
+      questions.restore(written);
+    } else {
+      input.start(opts.prompt);
+    }
 
     // Default 5s if caller didn't specify — claude often has live
     // subprocesses (lark-cli waiting for OAuth, long Bash, etc.) and the
@@ -211,6 +221,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
     return {
       runId: opts.runId,
+      ...(hosted ? { detachOnShutdown: true } : {}),
       events: createEventStream(child, stderrChunks, () => runtimeError, input, questions, tasks, this.backgroundWaitMs,
         () => interrupted, opts.deadlineAt, opts.answerIncludesInterimText),
       async sendInput({ text, messageId }) {
@@ -219,8 +230,14 @@ export class ClaudeAdapter implements AgentAdapter {
           : { status: 'inactive', messageId };
       },
       ...(opts.userQuestions ? { answerUserInput: (id: string, answer: AgentQuestionAnswer) => questions.answer(id, answer) } : {}),
-      async stop() {
+      async stop(reason) {
         interrupted = true;
+        if (hosted && reason === 'shutdown') {
+          // Detach before closing input so the agent's stdin stays open for the next bridge.
+          hosted.detach();
+          input.close();
+          return;
+        }
         input.close();
         if (child.exitCode !== null || child.signalCode !== null) return;
         log.info('agent', 'stop-sigterm', { pid: child.pid ?? null, graceMs: stopGraceMs });

@@ -55,6 +55,16 @@ import type { WorkflowState } from '@kuribohg/agent-workflows';
 import { WorkflowOrigins } from './workflow-origins';
 import { WorkflowProgressCards } from './workflow-progress-cards';
 import { InterruptedTurns, MAX_RESUME_AGE_MS, MAX_RESUME_ATTEMPTS, type InterruptedTurn } from './interrupted-turns';
+import {
+  newRunHostKey,
+  probeRunHost,
+  removeRunHost,
+  runHostAgent,
+  runHostsSupported,
+  sweepRunHosts,
+  terminateRunHost,
+  type RunHostBinding,
+} from '../../agent/run-host';
 import type { WorkspaceStore } from '../../workspace/store';
 
 import { intakeMessage } from './intake';
@@ -237,7 +247,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     pending, catalog: sessionCatalog, isTimed: scope => Boolean(controls.activeTimedRun?.(scope)) });
 
   const dispatch = async (scope: string, batch: PendingMessage[],
-    options: Pick<RunBatchDeps, 'signal' | 'entry' | 'timedJob' | 'preparedCot' | 'resumeAttempt'>) => {
+    options: Pick<RunBatchDeps, 'signal' | 'entry' | 'timedJob' | 'preparedCot' | 'resumeAttempt' | 'host'>) => {
     const first = batch[0];
     if (!first) return undefined;
     const mode = first.threadId ? 'topic' : await chatModeCache.resolve(channel, first.chatId);
@@ -256,9 +266,17 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     const reason = signal.aborted ? abortStopReason(signal) : execution?.handle.stopReason;
     return reason === 'shutdown' && (!execution || await execution.result !== 'completed');
   };
+  /** Journaled turns run under a host, so a restart reattaches to them instead of replaying. */
+  const hostFor = (journal: InterruptedTurns | undefined, attachHost?: string): RunHostBinding | undefined => {
+    if (attachHost) return { key: attachHost, attach: true };
+    return journal && runHostsSupported() ? { key: newRunHostKey() } : undefined;
+  };
+  const endJournaled = (journal: InterruptedTurns | undefined, scope: string, host: RunHostBinding | undefined) => {
+    if (journal?.end(scope) && host) removeRunHost(host.key);
+  };
 
   const runConversationTurn = (scope: string, batch: PendingMessage[], signal: AbortSignal,
-    options: { preparedCot?: CotPublisher; resumeAttempt?: number; startedAt?: number }) => {
+    options: { preparedCot?: CotPublisher; resumeAttempt?: number; startedAt?: number; attempts?: number; attachHost?: string }) => {
     const firstMsg = batch[0]!;
     return withTrace({ chatId: firstMsg.chatId }, async () => {
       log.info('flush', 'start', {
@@ -268,22 +286,27 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
         threadId: firstMsg.threadId,
         msgId: firstMsg.messageId,
         ...(options.resumeAttempt ? { resumeAttempt: options.resumeAttempt } : {}),
+        ...(options.attachHost ? { runHost: options.attachHost } : {}),
       });
       const entry = firstMsg.agentEntry ?? { kind: 'direct' };
       // Workflow turns are recovered by the workflow kernel itself.
       const journal = entry.kind === 'direct' ? interrupted : undefined;
+      const host = hostFor(journal, options.attachHost);
+      const attempts = options.resumeAttempt ?? options.attempts;
       let execution: RunExecution | undefined;
       try {
         await journal?.begin({ scope, messages: batch,
-          ...(options.resumeAttempt ? { attempts: options.resumeAttempt } : {}),
+          ...(host ? { hostKey: host.key } : {}),
+          ...(attempts ? { attempts } : {}),
           ...(options.startedAt ? { startedAt: options.startedAt } : {}) });
         execution = await dispatch(scope, batch, { signal, entry, preparedCot: options.preparedCot,
-          ...(options.resumeAttempt ? { resumeAttempt: options.resumeAttempt } : {}) });
+          ...(options.resumeAttempt ? { resumeAttempt: options.resumeAttempt } : {}),
+          ...(host ? { host } : {}) });
       } catch (err) {
         await options.preparedCot?.finish('error');
         log.fail('flush', err);
       } finally {
-        if (journal && !await cutOffByShutdown(signal, execution)) journal.end(scope);
+        if (journal && !await cutOffByShutdown(signal, execution)) endJournaled(journal, scope, host);
         log.info('flush', 'end');
       }
     });
@@ -331,7 +354,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   controls.activeTimedRun = scope => turns.timedRunId(scope);
   controls.cancelTimedRun = (scope, id) => { if (turns.timedRunId(scope)) turns.cancel(scope, id); };
   const startTimedTurn = async (job: TimedRun, message: NormalizedMessage, from: TimedRunState,
-    resume?: { attempt: number; startedAt: number }) => {
+    resume?: { attempt: number; startedAt: number; attachHost?: string }) => {
     const turn = turns.claim(job.scope, job.id);
     try {
       await timedStore.transition(job.id, [from], 'queued');
@@ -341,19 +364,20 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     }
     const sendOpts = { replyTo: message.messageId, ...(message.threadId ? { replyInThread: true } : {}) };
     const journal = interrupted;
+    const host = hostFor(journal, resume?.attachHost);
     void turn.run(signal => withTrace({ chatId: message.chatId }, async () => {
       let execution: RunExecution | undefined;
       try {
-        await journal?.begin({ scope: job.scope, messages: [message], timedRunId: job.id,
+        await journal?.begin({ scope: job.scope, messages: [message], timedRunId: job.id, ...(host ? { hostKey: host.key } : {}),
           ...(resume ? { attempts: resume.attempt, startedAt: resume.startedAt } : {}) });
-        await sendManagedCard(channel, message.chatId, timedRunCard(timedStore.get(job.id)!), sendOpts);
+        if (!resume?.attachHost) await sendManagedCard(channel, message.chatId, timedRunCard(timedStore.get(job.id)!), sendOpts);
         execution = await dispatch(job.scope, [{ ...message, content: job.task, resources: [], rawContentType: 'text' }],
-          { timedJob: job, signal, ...(resume ? { resumeAttempt: resume.attempt } : {}) });
+          { timedJob: job, signal, ...(resume && !resume.attachHost ? { resumeAttempt: resume.attempt } : {}), ...(host ? { host } : {}) });
       } catch (err) {
         log.fail('timed-run', err, { jobId: job.id });
       } finally {
         const cutOff = await cutOffByShutdown(signal, execution);
-        if (!cutOff) journal?.end(job.scope);
+        if (!cutOff) endJournaled(journal, job.scope, host);
         // A failure before executor submission must also close the one-shot job.
         await timedStore.finish(job.id, cutOff ? 'interrupted'
           : signal.aborted ? 'stopped' : Date.now() >= job.stopAt ? 'expired' : 'failed');
@@ -377,18 +401,29 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       { replyTo: last.messageId, ...(last.threadId ? { replyInThread: true } : {}) })
       .catch(err => log.warn('resume', 'notice-failed', { scope: turn.scope, err: String(err) }));
     const job = turn.timedRunId ? timedStore.get(turn.timedRunId) : undefined;
+    // A host that is still running, or finished while no bridge was attached, holds the native
+    // run itself: attach without replaying input or notifying anyone. Another backend cannot
+    // read the host's protocol, e.g. after the scope's agent was switched.
+    const agentKind = job?.agentKind ?? resolveAgentKind(turn.scope);
+    const hostState = turn.hostKey && runHostAgent(turn.hostKey) === agentKind ? await probeRunHost(turn.hostKey) : 'missing';
     let skip: string | undefined;
     if (turn.timedRunId && job?.state !== 'interrupted') {
       // Stopped, expired or otherwise settled while the bridge was down.
       skip = job?.state === 'expired' ? '限时任务在 bridge 重启期间已到停止时间，未自动续跑。' : '';
-    } else if (turn.attempts >= MAX_RESUME_ATTEMPTS) {
+    } else if (hostState === 'missing' && turn.attempts >= MAX_RESUME_ATTEMPTS) {
       skip = `这条消息的任务已在 bridge 重启后自动续跑 ${turn.attempts} 次仍被中断，不再自动续跑。如需继续，请重新发送。`;
-    } else if (Date.now() - turn.startedAt > MAX_RESUME_AGE_MS) {
+    } else if (hostState === 'missing' && Date.now() - turn.startedAt > MAX_RESUME_AGE_MS) {
       skip = 'bridge 重启前这条消息的任务被中断，且已超过 24 小时，不再自动续跑。如需继续，请重新发送。';
     }
-    const resume = { attempt: turn.attempts + 1, startedAt: turn.startedAt };
-    log.info('resume', skip === undefined ? 'start' : 'skip', { scope: turn.scope, attempt: resume.attempt,
+    const reattach = skip === undefined && hostState !== 'missing' ? turn.hostKey : undefined;
+    const resume = reattach
+      ? { attempt: turn.attempts, startedAt: turn.startedAt, attachHost: reattach }
+      : { attempt: turn.attempts + 1, startedAt: turn.startedAt };
+    log.info('resume', skip !== undefined ? 'skip' : reattach ? 'reattach' : 'start', { scope: turn.scope, attempt: resume.attempt,
+      ...(turn.hostKey ? { runHost: turn.hostKey, hostState } : {}),
       ...(turn.timedRunId ? { jobId: turn.timedRunId } : {}) });
+    // A host nobody reattaches to must not keep the native run going.
+    if (turn.hostKey && !reattach) await terminateRunHost(turn.hostKey);
     if (skip !== undefined) {
       journal.end(turn.scope);
       if (skip) await notify(skip);
@@ -399,17 +434,19 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
         await startTimedTurn(job, last, 'interrupted', resume);
       } else {
         const claimed = turns.claim(turn.scope);
-        void claimed.run(signal => runConversationTurn(turn.scope, messages, signal,
-          { resumeAttempt: resume.attempt, startedAt: resume.startedAt }))
+        void claimed.run(signal => runConversationTurn(turn.scope, messages, signal, reattach
+          ? { attachHost: reattach, attempts: resume.attempt, startedAt: resume.startedAt }
+          : { resumeAttempt: resume.attempt, startedAt: resume.startedAt }))
           .catch(err => log.fail('flush', err));
       }
     } catch (err) {
       log.fail('resume', err, { scope: turn.scope });
       journal.end(turn.scope);
+      if (reattach) await terminateRunHost(reattach);
       await notify(`bridge 重启前这条消息的任务被中断，自动续跑失败：${err instanceof Error ? err.message : String(err)}`);
       return;
     }
-    await notify(`bridge 重启前这条消息的任务被中断，正在自动续跑（第 ${resume.attempt} 次）。发送 /stop 可取消。`);
+    if (!reattach) await notify(`bridge 重启前这条消息的任务被中断，正在自动续跑（第 ${resume.attempt} 次）。发送 /stop 可取消。`);
   };
 
   /** Replays turns a previous process left unfinished, before queued input of the same scopes. */
@@ -420,6 +457,8 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     const previous = await journal.load();
     interrupted = journal;
     for (const turn of previous) await resumeTurn(turn, journal);
+    const reattached = new Set(previous.flatMap(turn => turn.hostKey ? [turn.hostKey] : []));
+    void sweepRunHosts(MAX_RESUME_AGE_MS, reattached).catch(err => log.warn('run-host', 'sweep-failed', { err: String(err) }));
   };
 
   // Counter for stdout reconnect escalation; reset on `reconnected`.

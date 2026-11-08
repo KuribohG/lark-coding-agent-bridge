@@ -1,7 +1,7 @@
 import { rewriteFileLinks, type FileLinkRenderOptions } from './file-links';
 import { maskEmails } from './mask-email';
 import type { Block, RunState, ToolEntry } from './run-state';
-import { retryStatus } from './run-state';
+import { DETACHED_NOTE, retryStatus } from './run-state';
 import { toolHeaderText } from './tool-render';
 
 /**
@@ -39,7 +39,9 @@ function renderTextInternal(
     if (piece) parts.push(piece);
   }
 
-  if (state.terminal === 'interrupted') {
+  if (state.terminal === 'interrupted' && state.detached) {
+    parts.push(DETACHED_NOTE);
+  } else if (state.terminal === 'interrupted') {
     parts.push('_⏹ 已被中断_');
   } else if (state.terminal === 'idle_timeout') {
     const mins = state.idleTimeoutMinutes ?? 0;

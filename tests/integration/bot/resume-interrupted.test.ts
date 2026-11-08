@@ -18,6 +18,17 @@ const sdk = vi.hoisted(() => ({ channel: undefined as unknown }));
 vi.mock('@larksuite/channel', async (original) => ({
   ...await original<typeof import('@larksuite/channel')>(), createLarkChannel: () => sdk.channel,
 }));
+// Hosts live only as long as a test says so; nothing here spawns a real run host.
+const hosts = vi.hoisted(() => ({ live: new Set<string>(), removed: [] as string[], terminated: [] as string[] }));
+vi.mock('../../../src/agent/run-host', async (original) => ({
+  ...await original<typeof import('../../../src/agent/run-host')>(),
+  runHostsSupported: () => true,
+  probeRunHost: async (key: string) => hosts.live.has(key) ? 'running' : 'missing',
+  runHostAgent: (key: string) => hosts.live.has(key) ? 'codex' : undefined,
+  terminateRunHost: async (key: string) => { hosts.terminated.push(key); hosts.live.delete(key); },
+  removeRunHost: (key: string) => { hosts.removed.push(key); },
+  sweepRunHosts: async () => {},
+}));
 import { startChannel } from '../../../src/bot/channel';
 import { STREAMED_EXECUTION } from '../../helpers/fake-agent';
 import { FixedExecutionController } from '../../helpers/fixed-execution';
@@ -27,6 +38,9 @@ afterEach(async () => {
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   for (const fn of cleanup.splice(0).reverse()) await fn();
+  hosts.live.clear();
+  hosts.removed.length = 0;
+  hosts.terminated.length = 0;
 });
 
 const RESUME_NOTE = '自动续跑（第 1 次）';
@@ -99,6 +113,73 @@ describe('turns cut off by a bridge shutdown', () => {
     await vi.waitFor(async () => expect(await h.journal()).toEqual([]));
   });
 
+  it('reattaches to a hosted run that kept going, without replaying the input or notifying', async () => {
+    const h = await harness();
+    h.agent.hosted = true;
+    const first = await h.start();
+    await first.message('跨重启的长任务');
+    await vi.waitFor(() => expect(h.agent.options).toHaveLength(1));
+    const key = h.agent.options[0]?.host?.key;
+    expect(key).toBeTruthy();
+    expect(h.agent.options[0]?.host?.attach).toBeUndefined();
+    await first.stop();
+    expect(JSON.stringify(first.channel.sent)).toContain('任务没有中断');
+    expect(await h.journal()).toEqual([expect.objectContaining({ scope: h.scope, hostKey: key, attempts: 0 })]);
+
+    const second = await h.start();
+    await vi.waitFor(() => expect(h.agent.options).toHaveLength(2));
+    expect(h.agent.options[1]?.host).toEqual({ key, attach: true });
+    expect(JSON.stringify(second.channel.sent)).not.toContain('自动续跑');
+    expect(hosts.terminated).toEqual([]);
+    h.agent.finish(1);
+    await vi.waitFor(async () => expect(await h.journal()).toEqual([]));
+    expect(hosts.removed).toContain(key);
+  });
+
+  it('replays the input under a new host when the old host is gone', async () => {
+    const h = await harness();
+    h.agent.hosted = true;
+    const first = await h.start();
+    await first.message('宿主丢失的任务');
+    await vi.waitFor(() => expect(h.agent.options).toHaveLength(1));
+    const key = h.agent.options[0]!.host!.key;
+    await first.stop();
+    hosts.live.delete(key);
+
+    const second = await h.start();
+    await vi.waitFor(() => expect(h.agent.options).toHaveLength(2));
+    expect(h.agent.options[1]?.host?.attach).toBeUndefined();
+    expect(h.agent.options[1]?.host?.key).not.toBe(key);
+    expect(h.agent.options[1]?.prompt).toContain('现已重启并自动续跑（第 1 次）');
+    expect(JSON.stringify(second.channel.sent)).toContain(RESUME_NOTE);
+    expect(hosts.terminated).toContain(key);
+    h.agent.finish(1);
+    await vi.waitFor(async () => expect(await h.journal()).toEqual([]));
+  });
+
+  it('reattaches an interrupted timed run whose host is still running', async () => {
+    const h = await harness();
+    h.agent.hosted = true;
+    const first = await h.start();
+    await first.message('/run --until 2h --tz UTC -- 夜间巡检');
+    const job = (await timedRuns(h.controls)).latest(h.scope)!;
+    await first.click('run.start', job.id);
+    await vi.waitFor(() => expect(h.agent.options).toHaveLength(1));
+    const key = h.agent.options[0]!.host!.key;
+    await first.stop();
+    h.controls = h.freshControls();
+    expect((await timedRuns(h.controls)).get(job.id)?.state).toBe('interrupted');
+
+    await h.start();
+    await vi.waitFor(() => expect(h.agent.options).toHaveLength(2));
+    expect(h.agent.options[1]).toMatchObject({ deadlineAt: job.stopAt, host: { key, attach: true } });
+    const store = await timedRuns(h.controls);
+    await vi.waitFor(() => expect(store.get(job.id)?.state).toBe('running'));
+    h.agent.finish(1);
+    await vi.waitFor(() => expect(store.get(job.id)?.state).toBe('completed'));
+    await vi.waitFor(async () => expect(await h.journal()).toEqual([]));
+  });
+
   it('resumes an interrupted timed run before its stop time', async () => {
     const h = await harness();
     const first = await h.start();
@@ -129,6 +210,8 @@ class GateAgent implements AgentAdapter {
   readonly displayName = 'Test Codex';
   readonly capabilities = STREAMED_EXECUTION;
   readonly options: AgentRunOptions[] = [];
+  /** Runs started under a host keep going when the bridge stops, like a real hosted agent. */
+  hosted = false;
   private finishes: Array<() => void> = [];
   async isAvailable() { return true; }
   finish(index: number) { this.finishes[index]?.(); }
@@ -136,10 +219,11 @@ class GateAgent implements AgentAdapter {
 
   run(opts: AgentRunOptions) {
     this.options.push(opts);
+    if (this.hosted && opts.host && !opts.host.attach) hosts.live.add(opts.host.key);
     let finish!: () => void;
     const done = new Promise<void>((resolve) => { finish = resolve; });
     this.finishes.push(finish);
-    return { runId: opts.runId, capabilities: this.capabilities,
+    return { runId: opts.runId, capabilities: this.capabilities, ...(this.hosted && opts.host ? { detachOnShutdown: true } : {}),
       events: { async *[Symbol.asyncIterator](): AsyncGenerator<AgentEvent> {
         yield { type: 'system', threadId: 'native-thread' };
         yield { type: 'text', delta: 'Working' };

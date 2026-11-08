@@ -18,7 +18,7 @@ import { validateModelId } from '../models';
 import { startAppServerRun } from './app-server';
 import { withExecutionContract } from '../execution';
 import { codexExecutionCapabilities } from './capabilities';
-import { attachedDaemonRuns, daemonEnvironmentFingerprint, ensureCodexAppServerDaemon, trackDaemonRun } from './daemon';
+import { attachedDaemonRuns, codexDaemonHostTag, daemonEnvironmentFingerprint, ensureCodexAppServerDaemon, trackDaemonRun } from './daemon';
 import { prepareManagedCodexConfig } from './managed-config';
 import type { ResolvedModelProvider } from '../../model-provider/types';
 
@@ -169,7 +169,8 @@ export class CodexAdapter implements AgentAdapter {
       backend: startup.provider?.env ?? {},
     });
     let daemonSocketPath: string | undefined;
-    if (this.appServerMode === 'daemon') {
+    // A reattached run is already connected through its host; never restart the daemon for it.
+    if (this.appServerMode === 'daemon' && !effectiveOpts.host?.attach) {
       const status = await ensureCodexAppServerDaemon({
         binary: this.binary, env: environment.process, cwd: effectiveOpts.cwd,
         timeoutMs: deadlineTimeout(effectiveOpts.deadlineAt), restart: startup.config.changed,
@@ -212,6 +213,7 @@ export class CodexAdapter implements AgentAdapter {
       prompt: effectiveOpts.prompt, developerInstructions: effectiveOpts.systemPrompt,
       stopGraceMs: effectiveOpts.stopGraceMs ?? this.defaultStopGraceMs,
       configOverrides, modelProviderId: startup.config.id, threadConfig,
+      ...(daemon ? { hostTag: codexDaemonHostTag(daemon) } : {}),
       initialNotice: rejectedProvider
         ? `Provider 未切换：当前继续使用 ${startup.provider?.displayName ?? startup.config.id ?? '原生默认'}${startup.config.model ? ` / ${startup.config.model}` : ''}。请修改 bridge 启动配置并重启后使用 ${requested.displayName}。`
         : undefined,

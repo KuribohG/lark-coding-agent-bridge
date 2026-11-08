@@ -115,6 +115,8 @@ export interface AgentRunOptions {
   userQuestions?: boolean;
   /** Deliver text written before tool calls as part of the final answer (backends without a commentary channel). */
   answerIncludesInterimText?: boolean;
+  /** Run under a detached run host so a bridge restart can reattach; ignored by adapters without host support. */
+  host?: import('./run-host').RunHostBinding;
 }
 
 /** The first stop request owns the cause; transport cleanup must not replace it. */
@@ -125,6 +127,8 @@ export interface AgentRun {
   readonly events: AsyncIterable<AgentEvent>;
   /** Consumers must not infer capabilities from the agent name. */
   readonly capabilities: AgentExecutionCapabilities;
+  /** stop('shutdown') detaches from the native process, which keeps running for the next bridge process to reattach. */
+  readonly detachOnShutdown?: boolean;
   sendInput?(input: AgentInput): Promise<AgentInputReceipt>;
   /** Resolve a pending blocking user_input request; inactive when it is no longer waiting. */
   answerUserInput?(id: string, answer: AgentQuestionAnswer): Promise<'accepted' | 'inactive'>;
