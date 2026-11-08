@@ -113,6 +113,10 @@ describe('Claude stream-json translator', () => {
       .toEqual([{ type: 'retry', attempt: 2, maxAttempts: 10, delayMs: 4000, failureKind: 'transient' }]);
     expect(notices({ subtype: 'api_retry', attempt: 1, max_retries: 10, retry_delay_ms: 1000, error_status: 429, error: 'rate_limit' }))
       .toEqual([{ type: 'retry', attempt: 1, maxAttempts: 10, delayMs: 1000, failureKind: 'rate_limit' }]);
+    for (const status of [401, 403]) {
+      expect(notices({ subtype: 'api_retry', attempt: 1, max_retries: 10, retry_delay_ms: 600, error_status: status, error: 'authentication_failed' }))
+        .toEqual([{ type: 'retry', attempt: 1, maxAttempts: 10, delayMs: 600, failureKind: 'authentication' }]);
+    }
     expect(notices({ subtype: 'api_retry' })).toEqual([]);
 
     expect(notices({ subtype: 'notification', key: 'k', text: 'Credits exhausted', color: 'error' }))
