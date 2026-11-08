@@ -1,12 +1,12 @@
 import { mkdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { AnalysisResult as InboxTaskResult, PreparedInvestigation as PreparedInboxTask } from '../../../work-items/contracts';
+import type { AnalysisResult, PreparedInvestigation } from '../../../work-items/contracts';
 import { writeFileAtomic } from '../../../platform/atomic-write';
 import { GitLabClient, GitLabError } from './client';
 import type { GitLabCiConfig } from './config';
 import { failureId, type CiRun } from './service';
 
-async function readCiResult(path: string, runId: string): Promise<InboxTaskResult> {
+async function readCiResult(path: string, runId: string): Promise<AnalysisResult> {
   const result = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
   if (result.runId !== runId) throw new Error('Stored CI result belongs to another failure');
   if (typeof result.replyDraft !== 'string' || typeof result.analysis !== 'string' || !result.analysis.trim() || typeof result.missingInfo !== 'string') {
@@ -17,7 +17,7 @@ async function readCiResult(path: string, runId: string): Promise<InboxTaskResul
 }
 
 export async function prepareCi(run: CiRun, config: GitLabCiConfig, client: GitLabClient, signal: AbortSignal,
-  reuse = true): Promise<PreparedInboxTask> {
+  reuse = true): Promise<PreparedInvestigation> {
   if (!/^[a-f0-9]{32}$/.test(run.id)) throw new Error('Invalid CI failure ID');
   const folder = join(config.outputDir, run.id);
   await mkdir(folder, { recursive: true, mode: 0o700 });
@@ -25,7 +25,7 @@ export async function prepareCi(run: CiRun, config: GitLabCiConfig, client: GitL
     try { return { cwd: folder, prompt: '', cached: await readCiResult(join(folder, 'result.json'), run.id) }; }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   }
-  const obsolete = (): PreparedInboxTask => ({ cwd: folder, prompt: '', cached: { inputTokens: 0, outputTokens: 0, businessState: 'resolved',
+  const obsolete = (): PreparedInvestigation => ({ cwd: folder, prompt: '', cached: { inputTokens: 0, outputTokens: 0, businessState: 'resolved',
     text: JSON.stringify({ replyDraft: '已跳过：pipeline 状态或失败 job 已改变。', analysis: '执行前复查发现此失败已过期，未启动模型分析。新的失败由盯盘继续跟踪。', missingInfo: '' }) } });
   const pipeline = await client.pipeline(run.repository.project, run.pipeline.id, signal);
   if (pipeline.status !== 'failed') return obsolete();

@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { normalizeGitLabCi } from '../../../src/monitoring/sources/gitlab-ci/config';
-import { ciTaskEvent, type CiRun } from '../../../src/monitoring/sources/gitlab-ci/service';
+import { ciFailureEvent, type CiRun } from '../../../src/monitoring/sources/gitlab-ci/service';
 
 function fixture() {
   const config = normalizeGitLabCi({ executorProfile: 'codex', url: 'https://gitlab.test', outputDir: '/private/ci' });
@@ -12,15 +12,15 @@ function fixture() {
 
 it('maps a failed pipeline to a fresh investigation event', () => {
   const { config, run } = fixture();
-  expect(ciTaskEvent(run, config)).toMatchObject({ key: run.id, title: 'group/repo · CI #1', url: run.pipeline.web_url,
+  expect(ciFailureEvent(run, config)).toMatchObject({ key: run.id, title: 'group/repo · CI #1', url: run.pipeline.web_url,
     evidenceDir: `/private/ci/${run.id}`, maxAttempts: 3, data: run });
 });
 
 it('rejects invalid IDs and does not expose an off-site pipeline URL', () => {
   const { config, run } = fixture();
   run.pipeline.web_url = 'javascript:alert(1)';
-  expect(ciTaskEvent(run, config).url).toBe('');
+  expect(ciFailureEvent(run, config).url).toBe('');
   run.pipeline.web_url = 'https://other.test/pipelines/1';
-  expect(ciTaskEvent(run, config).url).toBe('');
-  expect(() => ciTaskEvent({ ...run, id: '../x' }, config)).toThrow('Invalid CI failure ID');
+  expect(ciFailureEvent(run, config).url).toBe('');
+  expect(() => ciFailureEvent({ ...run, id: '../x' }, config)).toThrow('Invalid CI failure ID');
 });

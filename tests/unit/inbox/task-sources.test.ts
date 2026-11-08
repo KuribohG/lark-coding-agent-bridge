@@ -35,22 +35,22 @@ async function setup(overrides: Partial<InboxIO> = {}, enabled = true, queue?: W
 }
 
 it('accepts an idempotent watcher event into the ordinary draft lifecycle without chat screening', async () => {
-  const s = await setup(); const job = await s.service.submitTask(event);
-  expect((await s.service.submitTask(event)).id).toBe(job.id);
+  const s = await setup(); const job = await s.service.observe(event);
+  expect((await s.service.observe(event)).id).toBe(job.id);
   await s.service.tick(); await vi.waitFor(() => expect(s.service.get(job.id)?.state).toBe('ready'));
   await s.service.tick();
   expect(s.service.get(job.id)).toMatchObject({ state: 'done', replyDraft: '结论', handlingState: 'open' });
   expect(s.io.collect).not.toHaveBeenCalled(); expect(s.io.context).not.toHaveBeenCalled(); expect(s.io.analyze).toHaveBeenCalledTimes(1);
   expect(s.io.deliver).not.toHaveBeenCalled();
-  expect((await s.service.submitTask(event)).state).toBe('done');
+  expect((await s.service.observe(event)).state).toBe('done');
   expect(guiSummary(s.service.get(job.id)!)).toMatchObject({ sourceKind: 'gitlab-ci', executorProfile: 'codex' });
   expect(guiContent(s.service.get(job.id)!)).toMatchObject({ sourceUrl: event.url, evidenceDir: event.evidenceDir });
 });
 
 it('persists before acknowledging an event and does not accept a failed save', async () => {
   const s = await setup(); const save = vi.spyOn(s.store, 'save').mockRejectedValueOnce(Error('disk full'));
-  await expect(s.service.submitTask(event)).rejects.toThrow('disk full'); expect(s.service.list()).toHaveLength(0);
-  save.mockRestore(); await s.service.submitTask(event);
+  await expect(s.service.observe(event)).rejects.toThrow('disk full'); expect(s.service.list()).toHaveLength(0);
+  save.mockRestore(); await s.service.observe(event);
   const persisted = new WorkItemStore(s.store.path); await persisted.load();
   expect(persisted.data.jobs).toHaveLength(1);
 });
@@ -58,7 +58,7 @@ it('persists before acknowledging an event and does not accept a failed save', a
 it('uses the same bounded notification retries and never reruns a completed analysis', async () => {
   const topic = workItemTarget({ chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_result' });
   const s = await setup({ beginAnalysis: vi.fn(async () => topic), deliver: vi.fn(async () => { throw Error('lost response'); }) });
-  const job = await s.service.submitTask(event); await s.service.tick();
+  const job = await s.service.observe(event); await s.service.tick();
   await vi.waitFor(() => expect(s.service.get(job.id)?.state).toBe('ready'));
   await s.service.tick(); s.advance(); await s.service.tick();
   expect(s.io.analyze).toHaveBeenCalledTimes(1); expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1);
@@ -67,7 +67,7 @@ it('uses the same bounded notification retries and never reruns a completed anal
 
 it('limits automatic analysis attempts but keeps explicit retries under user control', async () => {
   const s = await setup({ analyze: vi.fn(async () => { throw Error('private upstream failure'); }) });
-  const job = await s.service.submitTask(event);
+  const job = await s.service.observe(event);
   for (let i = 0; i < 3; i++) {
     await s.service.tick(); await vi.waitFor(() => expect(s.service.get(job.id)?.state).toBe(i === 2 ? 'failed' : 'queued')); s.advance();
   }
@@ -82,7 +82,7 @@ it('limits automatic analysis attempts but keeps explicit retries under user con
 it('does not overwrite a human draft with a late analysis, and restoring an ignored event does not screen it', async () => {
   let finish!: (value: typeof result) => void;
   const s = await setup({ analyze: vi.fn(() => new Promise<typeof result>(resolve => { finish = resolve; })) });
-  const job = await s.service.submitTask(event); await s.service.tick(); await vi.waitFor(() => expect(finish).toBeDefined());
+  const job = await s.service.observe(event); await s.service.tick(); await vi.waitFor(() => expect(finish).toBeDefined());
   await s.service.review({ id: job.id, revision: s.service.get(job.id)!.revision, replyDraft: '人工草稿', handlingState: 'ignored' }, 'ou_owner', 'edit');
   finish(result); await vi.waitFor(() => expect(s.service.get(job.id)?.replyDraft).toBe('人工草稿'));
   const current = s.service.get(job.id)!;
@@ -94,14 +94,14 @@ it('retries an analysis after a long attempt without repeating or expiring its c
   const topic = workItemTarget({ chatId: 'oc_result', threadId: 'omt_result', replyTo: 'om_result' });
   const analyze = vi.fn<InboxIO['analyze']>().mockRejectedValueOnce(Error('transient')).mockResolvedValue(result);
   const s = await setup({ analyze, beginAnalysis: vi.fn(async () => topic) });
-  const job = await s.service.submitTask(event); await s.service.tick();
+  const job = await s.service.observe(event); await s.service.tick();
   await vi.waitFor(() => expect(s.service.get(job.id)?.state).toBe('queued'));
   s.advance(); await s.service.tick(); await vi.waitFor(() => expect(s.service.get(job.id)?.state).toBe('ready'));
   expect(s.io.beginAnalysis).toHaveBeenCalledTimes(1); expect(analyze).toHaveBeenCalledTimes(2);
 });
 
 it('keeps pending events on source disable', async () => {
-  const s = await setup({}, false); const job = await s.service.submitTask(event); await s.service.tick();
+  const s = await setup({}, false); const job = await s.service.observe(event); await s.service.tick();
   expect(s.io.analyze).not.toHaveBeenCalled(); expect(s.service.get(job.id)?.state).toBe('queued');
   await s.service.setMode('on'); await s.service.tick(); await vi.waitFor(() => expect(s.io.analyze).toHaveBeenCalledTimes(1));
 });
@@ -110,7 +110,7 @@ it('serializes sources with one shared queue and cancellation cannot hold the ne
   const queue = new WorkItemScheduler(1); let finish!: (value: typeof result) => void;
   const first = await setup({ analyze: vi.fn(() => new Promise<typeof result>(resolve => { finish = resolve; })) }, true, queue);
   const second = await setup({}, true, queue); const third = await setup({}, true, queue);
-  await first.service.submitTask(event); const b = await second.service.submitTask(event); await third.service.submitTask(event);
+  await first.service.observe(event); const b = await second.service.observe(event); await third.service.observe(event);
   await first.service.tick(); await vi.waitFor(() => expect(finish).toBeDefined()); await second.service.tick(); await third.service.tick();
   expect(second.io.analyze).not.toHaveBeenCalled(); expect(third.io.analyze).not.toHaveBeenCalled();
   await second.service.decide(b.id, 'ignore', 'ou_owner'); finish(result);

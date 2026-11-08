@@ -26,7 +26,7 @@ export function failureId(url: string, project: string, pipeline: number, failur
     failures.map(j => `${j.kind}:${j.id}`).sort()])).digest('hex').slice(0, 32);
 }
 
-export function ciTaskEvent(run: CiRun, config: GitLabCiConfig): WorkItemEvent {
+export function ciFailureEvent(run: CiRun, config: GitLabCiConfig): WorkItemEvent {
   if (!/^[a-f0-9]{32}$/.test(run.id)) throw new Error('Invalid CI failure ID');
   let url = '';
   try { const parsed = new URL(run.pipeline.web_url); if (parsed.origin === new URL(config.url).origin && !parsed.username && !parsed.password) url = parsed.href; } catch { /* optional source link */ }
@@ -61,7 +61,7 @@ export class GitLabCiService {
     }
     const pending = (legacy?.runs ?? []).filter(run => !run.inboxJobId && this.belongs(run))
       .map(({ id, repository, pipeline, failures, url, executorProfile, createdAt }) =>
-        ciTaskEvent({ id, repository, pipeline, failures, url, executorProfile, createdAt }, this.config));
+        ciFailureEvent({ id, repository, pipeline, failures, url, executorProfile, createdAt }, this.config));
     await this.journal.commit(pending, this.state);
     if (legacy) await rename(this.legacyPath!, `${this.legacyPath}.migrated`);
     if (schedule) {
@@ -107,7 +107,7 @@ export class GitLabCiService {
             (repo.refs.length && !repo.refs.includes(pipeline.ref))) continue;
           const failures = await this.io.failures(repo.project, pipeline.id, this.abort.signal);
           const id = failureId(this.config.url, repo.project, pipeline.id, failures);
-          events.push(ciTaskEvent({ id, repository: repo, pipeline, failures, url: this.config.url,
+          events.push(ciFailureEvent({ id, repository: repo, pipeline, failures, url: this.config.url,
             executorProfile: this.config.executorProfile, createdAt: this.now() }, this.config));
         }
         const next: CiState = { ...this.state, repositories: { ...this.state.repositories, [key]: { ...cursor, cursor: until } } };

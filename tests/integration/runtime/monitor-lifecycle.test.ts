@@ -5,7 +5,7 @@ import { expect, it, vi } from 'vitest';
 import { createRootConfig } from '../../../src/config/profile-store';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { normalizeGitLabCi } from '../../../src/monitoring/sources/gitlab-ci/config';
-import { ciTaskEvent, GitLabCiService, type CiRun, type CiState } from '../../../src/monitoring/sources/gitlab-ci/service';
+import { ciFailureEvent, GitLabCiService, type CiRun, type CiState } from '../../../src/monitoring/sources/gitlab-ci/service';
 import type { ObservationJournal } from '../../../src/work-items/events';
 import { createMonitorHost } from '../../../src/plugins/work-items/runtime';
 import { Supervisor } from '../../../src/runtime/supervisor';
@@ -43,7 +43,7 @@ it('keeps accepting CI observations after stopping the Lark profile, and retains
     await supervisor.startProfile('local');
     const collector = vi.mocked(GitLabCiService).mock.results[0]!.value as {
       close(): Promise<void>;
-      config: Parameters<typeof ciTaskEvent>[1];
+      config: Parameters<typeof ciFailureEvent>[1];
       journal: ObservationJournal<CiState>;
     };
     await supervisor.stopProfile('local');
@@ -53,7 +53,7 @@ it('keeps accepting CI observations after stopping the Lark profile, and retains
     const run: CiRun = { id: 'a'.repeat(32), url: 'https://gitlab.test', executorProfile: 'local',
       repository: { project: 'a/b', refs: [], sourceDir: '' }, pipeline: { id: 1, status: 'failed', ref: 'main', sha: 'b'.repeat(40), web_url: '', updated_at: new Date().toISOString() },
       createdAt: Date.now(), failures: [] };
-    await collector.journal.commit([ciTaskEvent(run, collector.config)], { version: 1, repositories: {} });
+    await collector.journal.commit([ciFailureEvent(run, collector.config)], { version: 1, repositories: {} });
     const item = supervisor.plugin<WorkItemsPlugin>('work-items')!
       .sources.list().find(job => job.external?.key === run.id);
     expect(item).toMatchObject({ state: 'queued', analysisRequested: true, external: { analysisAttempts: 0 } });

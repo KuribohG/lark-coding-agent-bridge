@@ -175,7 +175,6 @@ export class WorkItemService<C extends WorkItemConfig = WorkItemConfig> {
       });
     } finally { this.modeChanges--; }
   }
-  submitTask(event: WorkItemEvent): Promise<WorkItem> { return this.observe(event); }
   async observe(event: WorkItemEvent): Promise<WorkItem> {
     return (await this.record([event]))[0]!;
   }

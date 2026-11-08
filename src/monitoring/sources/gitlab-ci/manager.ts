@@ -4,7 +4,7 @@ import { SourceController, type SourceKind } from '../../source-controller';
 import type { WorkItemSources } from '../../../work-items/registry';
 import { GitLabClient, loadGitLabToken } from './client';
 import { normalizeGitLabCi, validateGitLabCi, type GitLabCiConfig } from './config';
-import { ciAssessment, ciTaskDriver } from './inbox-source';
+import { ciAssessment, ciInvestigator } from './investigation';
 import { GitLabCiService, type CiState } from './service';
 
 const gitlabCiKind: SourceKind<GitLabCiConfig, GitLabCiService> = {
@@ -17,7 +17,7 @@ const gitlabCiKind: SourceKind<GitLabCiConfig, GitLabCiService> = {
     const client = config.enabled ? new GitLabClient(config.url, await loadGitLabToken(config)) : undefined;
     return {
       options: view => ({ notification: config.notification, model: config.model, reasoningEffort: 'max',
-        status: () => ({ error: view.error() }), assessment: ciAssessment, driver: ciTaskDriver(config, client) }),
+        status: () => ({ error: view.error() }), assessment: ciAssessment, driver: ciInvestigator(config, client) }),
       start: client && (async (connection, folder) => {
         const service = new GitLabCiService(config, {
           pipelines: (...args) => client.pipelines(...args), failures: (...args) => client.failures(...args),

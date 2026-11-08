@@ -6,6 +6,22 @@ All built-in sources can be configured in a shared [monitor TOML file](monitor-c
 
 This is an internal TypeScript integration API with statically registered plugins and source modules. It does not load arbitrary code from configuration. Storage and UID monitoring is described in [storage-monitoring.md](storage-monitoring.md); configuring a source does not deploy or activate a newer Bridge binary.
 
+## Source model
+
+Every source is the same four parts around the shared engine:
+
+| Part | Contract | GitLab CI | Storage | Lark conversations |
+| --- | --- | --- | --- | --- |
+| Collection | `SourceKind` collector committing through an `ObservationJournal`, or a `SourceAdapter` with `poll()` | `GitLabCiService` | `StorageMonitorService` | `LarkSource` |
+| Item rules | Event key/revision, or conversation routing | failure ID | incident key + revision | `LarkConversation` |
+| Assessment | `AssessmentPolicy` (`rule` or `item`) | `ciAssessment` | default rule | model triage (`createLarkAssessment`) |
+| Investigation | `InvestigationDriver` | `ciInvestigator` | `storageInvestigator` | `larkInvestigationDriver` |
+
+Event collectors publish snapshots: an item per key, updated only by a higher revision.
+The conversation source publishes messages: its rules decide which item a message
+extends, and every change reaches the item as a typed `SourceTransition`. Neither kind
+writes item fields itself, and neither keeps collection state outside the work-item store.
+
 ## Source modules and dependency boundaries
 
 Each monitoring method has one directory under `src/monitoring/sources/`:
@@ -117,7 +133,7 @@ independent source notices and restart-retry rules are preserved.
 | --- | --- | --- |
 | `SourceAdapter` | Scope checks, initialization, invalidation, collection, context refresh, source-specific preflight | `LarkSource`; `EventSource` for GitLab's durable collector |
 | `AssessmentPolicy` | Decide whether an observation needs attention | Lark per-item model screening; GitLab deterministic failure rule |
-| `InvestigationDriver` | Prepare evidence and prompt; optionally archive a validated result | `larkInvestigationDriver`; `ciTaskDriver` |
+| `InvestigationDriver` | Prepare evidence and prompt; optionally archive a validated result | `larkInvestigationDriver`; `ciInvestigator` |
 
 `WorkItemService` owns serialized changes, user control, screening dispatch, analysis and notification state. `WorkItemStore` preserves the existing partition paths and schema-2 records. In versions supporting per-item screening, `WorkItemScheduler` supplies the same FIFO/resize/cancellation implementation to two independent pools: `[concurrency].triage` defaults to fifty individual screening tasks; `analysis` defaults to five investigations shared by Lark, CI and storage. A common admission loop fills each pool up to its own limit. `ItemAssessmentPolicy` evaluates one item and returns one decision; no batch assembly, size selection or partial-result tracking is required. Both task maps key cancellation and ownership by item ID. Live resizing drains existing tasks when lowering the limit. An aborted task keeps its slot and item reservation until it settles, preventing overlapping retries. Completion immediately requests dispatch, independently of collection. Screening can finish and enqueue investigation while other items are still screening. `createInvestigator` runs the same prepare/execute/complete sequence for existing sources, checking cancellation before each phase.
 
@@ -197,7 +213,7 @@ owns command decoding and presentation.
 
 The Lark manager passes `larkRuntime()` into the same `WorkItemService`. The Lark source is split into collection and rules: `src/monitoring/sources/lark/source.ts` polls messages, refreshes context and runs the conversation commands; `src/monitoring/sources/lark/conversation.ts` (`LarkConversation`) holds the rules, as pure functions of a message and the current items: which messages are evidence, which items are in scope, and whether a new message creates an item, extends one, marks items handled by the owner or closes a recovered incident. Model-decision interpretation lives in `src/monitoring/sources/lark/assessment.ts`, and evidence preparation in `larkInvestigationDriver`. A source reads items as `SourceItem` (read-only) and changes them only through `SourceTransition`s, which carry the new evidence (`evidence`, `feedback`, `manual`) for `WorkItemLifecycle` to apply. Lark-only commands such as selecting a container or changing intake scope are reached through `larkSource(service)`.
 
-GitLab registers `EventSource` with `ciAssessment` and `ciTaskDriver`. Its collector still validates pipeline and job status and supplies a stable failure identity; the common engine owns all subsequent handling.
+GitLab registers `EventSource` with `ciAssessment` and `ciInvestigator`. Its collector still validates pipeline and job status and supplies a stable failure identity; the common engine owns all subsequent handling.
 
 Keep source-specific operations out of the shared engine. New collectors should define their own task/run mapping and recovery evidence, then submit observations; they should not manufacture Lark messages or instantiate another analysis loop.
 

@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import type { InvestigationDriver } from '../../../work-items/contracts';
-import type { WorkItem as InboxJob } from '../../../work-items/types';
+import type { WorkItem } from '../../../work-items/types';
 import { writeFileAtomic } from '../../../platform/atomic-write';
 import type { GitLabClient } from './client';
 import type { GitLabCiConfig } from './config';
@@ -16,7 +16,7 @@ export const ciAssessment: RuleAssessmentPolicy = {
   },
 };
 
-export function ciTaskDriver(config: GitLabCiConfig, client?: GitLabClient): InvestigationDriver & { accepts(item: InboxJob): boolean } {
+export function ciInvestigator(config: GitLabCiConfig, client?: GitLabClient): InvestigationDriver & { accepts(item: WorkItem): boolean } {
   return {
     accepts(job) {
       const run = job.external?.data as CiRun | undefined;
