@@ -1,4 +1,3 @@
-import { join } from 'node:path';
 import type { MonitorHost } from '../../host';
 import { SourceController, type SourceKind } from '../../source-controller';
 import type { WorkItemSources } from '../../../work-items/registry';
@@ -18,10 +17,10 @@ const gitlabCiKind: SourceKind<GitLabCiConfig, GitLabCiService> = {
     return {
       options: view => ({ notification: config.notification, model: config.model, reasoningEffort: 'max',
         status: () => ({ error: view.error() }), assessment: ciAssessment, driver: ciInvestigator(config, client) }),
-      start: client && (async (connection, folder) => {
+      start: client && (async connection => {
         const service = new GitLabCiService(config, {
           pipelines: (...args) => client.pipelines(...args), failures: (...args) => client.failures(...args),
-        }, connection.journal<CiState>(), Date.now, join(folder, 'state.json'));
+        }, connection.journal<CiState>());
         await service.start();
         return service;
       }),

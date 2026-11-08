@@ -1,4 +1,4 @@
-import { access, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -18,10 +18,9 @@ async function setup(overrides: Partial<CiIO> = {}) {
   let now = Date.parse('2026-10-17T10:00:00Z');
   const io: CiIO = { pipelines: vi.fn(async () => [pipeline]), failures: vi.fn(async () => [failure]), ...overrides };
   const journal = memoryJournal<CiState>();
-  const legacy = join(dir, 'state.json');
-  const create = () => { const s = new GitLabCiService(config, io, journal, () => now, legacy); services.push(s); return s; };
+  const create = () => { const s = new GitLabCiService(config, io, journal, () => now); services.push(s); return s; };
   const service = create(); await service.start(false);
-  return { service, config, io, journal, legacy, create, advance: (ms = 180_000) => { now += ms; } };
+  return { service, config, io, journal, create, advance: (ms = 180_000) => { now += ms; } };
 }
 const cursors = (state: CiState | undefined) => Object.values(state?.repositories ?? {});
 
@@ -94,30 +93,4 @@ it('does not commit work that shutdown interrupted', async () => {
   expect(s.journal.commits).toHaveLength(1);
   s.advance(); const restarted = s.create(); await restarted.start(false); await restarted.tick(); await restarted.idle();
   expect(s.journal.events()).toHaveLength(1);
-});
-
-it('imports cursors and unsubmitted failures from the legacy state file once', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'ci-legacy-'));
-  const config = normalizeGitLabCi({ enabled: true, executorProfile: 'codex', url: 'https://gitlab.test', outputDir: dir,
-    repositories: [{ project: 'group/project' }] });
-  const repo = config.repositories[0]!;
-  const key = JSON.stringify([config.url, 'codex', repo.project]);
-  const run = (id: string, extra: object) => ({ id, repository: repo, pipeline, failures: [failure], url: config.url, executorProfile: 'codex',
-    createdAt: 5, updatedAt: 6, retryAt: 0, ...extra });
-  const legacy = join(dir, 'state.json');
-  await writeFile(legacy, JSON.stringify({ version: 1, repositories: { [key]: { since: 1, cursor: 2 } },
-    runs: [run('a'.repeat(32), { state: 'queued' }), run('b'.repeat(32), { state: 'submitted', inboxJobId: 'job' })] }));
-  const journal = memoryJournal<CiState>();
-  const io: CiIO = { pipelines: vi.fn(async () => []), failures: vi.fn(async () => []) };
-  const service = new GitLabCiService(config, io, journal, () => 100, legacy); services.push(service);
-  await service.start(false);
-  expect(journal.state()?.repositories).toEqual({ [key]: { since: 1, cursor: 2 } });
-  expect(journal.events().map(event => event.key)).toEqual(['a'.repeat(32)]);
-  expect(journal.events()[0]!.data).toEqual({ id: 'a'.repeat(32), repository: repo, pipeline, failures: [failure],
-    url: config.url, executorProfile: 'codex', createdAt: 5 });
-  await expect(access(legacy)).rejects.toThrow();
-  expect(JSON.parse(await readFile(`${legacy}.migrated`, 'utf8')).runs).toHaveLength(2);
-  const again = new GitLabCiService(config, io, journal, () => 100, legacy); services.push(again);
-  await again.start(false);
-  expect(journal.events()).toHaveLength(1);
 });

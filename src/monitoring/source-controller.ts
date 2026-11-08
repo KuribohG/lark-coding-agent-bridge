@@ -22,7 +22,7 @@ export interface SourceSetup<T extends SourceCollector> {
   /** Work-item settings besides identity and execution, which the controller supplies. */
   options(view: SourceView<T>): Omit<MonitorSourceOptions, 'id' | 'label' | 'profile' | 'enabled' | 'executor'>;
   /** Starts collection for an enabled source; a disabled source keeps its items accessible without one. */
-  start?(connection: SourceConnection, folder: string): Promise<T>;
+  start?(connection: SourceConnection): Promise<T>;
 }
 
 /** A deterministic collector that publishes observations into the shared work-item engine. */
@@ -84,7 +84,7 @@ export class SourceController<C extends { enabled: boolean; executorProfile: str
       this.profile = config.executorProfile;
       this.fingerprint = fingerprint;
       if (config.enabled && setup.start) {
-        this.collector = await setup.start(this.connection, folder);
+        this.collector = await setup.start(this.connection);
         log.info(this.kind.logTag, 'watch-started', this.kind.describe?.(config) ?? {});
       }
       this.error = this.executionError;

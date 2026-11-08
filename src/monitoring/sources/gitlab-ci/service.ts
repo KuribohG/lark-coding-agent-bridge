@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ObservationJournal, WorkItemEvent } from '../../../work-items/events';
 import { GitLabError, type FailedJob, type Pipeline } from './client';
@@ -15,7 +14,6 @@ export interface CiState {
   version: 1;
   repositories: Record<string, { since: number; cursor: number }>;
 }
-interface LegacyCiState extends CiState { runs?: (CiRun & { inboxJobId?: string })[] }
 export interface CiIO {
   pipelines(project: string, since: number, until: number, signal: AbortSignal): Promise<Pipeline[]>;
   failures(project: string, id: number, signal: AbortSignal): Promise<FailedJob[]>;
@@ -46,46 +44,25 @@ export class GitLabCiService {
   private abort = new AbortController();
   private timer?: ReturnType<typeof setInterval>;
   private polling?: Promise<void>;
-  /** @param legacyPath state file of builds that queued submissions outside the work-item store */
   constructor(readonly config: GitLabCiConfig, private io: CiIO, private journal: ObservationJournal<CiState>,
-    private now = Date.now, private legacyPath?: string) {}
+    private now = Date.now) {}
 
   async start(schedule = true): Promise<void> {
     const saved = this.journal.state();
-    const legacy = saved ? undefined : await this.readLegacy();
     if (saved && (saved.version !== 1 || !saved.repositories)) throw new Error('Invalid GitLab CI state');
-    this.state = saved ?? { version: 1, repositories: legacy?.repositories ?? {} };
+    this.state = saved ?? { version: 1, repositories: {} };
     // Persist the baseline before the first request, including when GitLab is unavailable.
     for (const repo of this.config.repositories) {
       this.state.repositories[this.repoKey(repo)] ??= { since: this.now(), cursor: this.now() };
     }
-    const pending = (legacy?.runs ?? []).filter(run => !run.inboxJobId && this.belongs(run))
-      .map(({ id, repository, pipeline, failures, url, executorProfile, createdAt }) =>
-        ciFailureEvent({ id, repository, pipeline, failures, url, executorProfile, createdAt }, this.config));
-    await this.journal.commit(pending, this.state);
-    if (legacy) await rename(this.legacyPath!, `${this.legacyPath}.migrated`);
+    await this.journal.commit([], this.state);
     if (schedule) {
       this.timer = setInterval(() => { void this.tick(); }, this.config.pollSeconds * 1000);
       this.timer.unref();
       void this.tick();
     }
   }
-  private async readLegacy(): Promise<LegacyCiState | undefined> {
-    if (!this.legacyPath) return undefined;
-    try {
-      const data = JSON.parse(await readFile(this.legacyPath, 'utf8')) as LegacyCiState;
-      if (data.version !== 1 || !data.repositories || !Array.isArray(data.runs)) throw new Error('Invalid GitLab CI state');
-      return data;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-      throw error;
-    }
-  }
   private repoKey(repo: GitLabRepository) { return JSON.stringify([this.config.url, this.config.executorProfile, repo.project]); }
-  private belongs(run: CiRun): boolean {
-    return run.url === this.config.url && run.executorProfile === this.config.executorProfile &&
-      this.config.repositories.some(repo => repo.project === run.repository.project && (!repo.refs.length || repo.refs.includes(run.pipeline.ref)));
-  }
   tick(): Promise<void> {
     if (this.abort.signal.aborted) return Promise.resolve();
     return this.polling ??= this.poll().catch(error => {

@@ -1,9 +1,9 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { parseStorageConfig } from '../../../src/monitoring/sources/storage/config';
-import { StorageMonitorService, storageScope, type StorageState } from '../../../src/monitoring/sources/storage/service';
+import { StorageMonitorService, type StorageState } from '../../../src/monitoring/sources/storage/service';
 import type { StorageProvider, TaskRun } from '../../../src/monitoring/sources/storage/provider';
 import * as atomic from '../../../src/platform/atomic-write';
 import type { WorkItemEvent } from '../../../src/work-items/events';
@@ -92,19 +92,6 @@ it('restarts from the committed state, so a lost observation is decided again wi
   h.change({ failures: 2 }); await h.tick();
   await h.service.close(); const restarted = h.make(); await restarted.start(); await restarted.poll();
   expect(h.events).toHaveLength(1); expect(h.events[0]).toMatchObject({ revision: 1, operation: 'upsert' });
-});
-it('imports the legacy state file once', async () => {
-  const h = await setup(); h.change({ failures: 2 }); await h.tick();
-  const legacy = join(h.folder, 'legacy.json');
-  const state = structuredClone(h.journal.state()!);
-  await writeFile(legacy, JSON.stringify(state));
-  const journal = memoryJournal<StorageState>();
-  const imported = new StorageMonitorService(h.config, h.provider, journal, () => 1_800_000_000_000, () => false, legacy);
-  cleanup.push(() => imported.close()); await imported.start();
-  expect(journal.commits[0]).toEqual({ events: [], state });
-  expect(state.scope).toBe(storageScope(h.config));
-  await expect(access(legacy)).rejects.toThrow();
-  expect(JSON.parse(await readFile(`${legacy}.migrated`, 'utf8'))).toEqual(state);
 });
 it('does not forget a tracked Chain when an incomplete scan returns no runs', async () => {
   const h = await setup({ user: true }); h.change({ runs: [] }); await h.tick();

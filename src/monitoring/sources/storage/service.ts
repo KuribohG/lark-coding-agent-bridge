@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { writeFileAtomic } from '../../../platform/atomic-write';
 import type { ObservationJournal, WorkItemEvent } from '../../../work-items/events';
@@ -45,19 +44,15 @@ export class StorageMonitorService {
   private controller = new AbortController();
   private polling?: Promise<void>;
   error?: string;
-  /** @param legacyPath state file of builds that kept collector state outside the work-item store */
   constructor(readonly config: StorageMonitorConfig, private provider: StorageProvider,
-    private journal: ObservationJournal<StorageState>, private now = Date.now, private analysisBusy = (_key: string) => false,
-    private legacyPath?: string) {
+    private journal: ObservationJournal<StorageState>, private now = Date.now, private analysisBusy = (_key: string) => false) {
     this.state = { version: 1, scope: storageScope(config), statuses: {}, tasks: {}, incidents: {} };
   }
   async start(): Promise<void> {
-    const committed = this.journal.state();
-    const saved = committed ?? await this.readLegacy();
+    const saved = this.journal.state();
     if (saved && (saved.version !== 1 || !saved.incidents || !saved.tasks || !saved.statuses)) throw new Error('存储监控状态无效');
     if (saved?.scope === this.state.scope) this.state = saved;
     await this.commit();
-    if (!committed && saved) await rename(this.legacyPath!, `${this.legacyPath}.migrated`);
     void this.poll();
     this.timer = setInterval(() => { void this.poll(); }, this.config.pollSeconds * 1000);
     this.timer.unref();
@@ -68,11 +63,6 @@ export class StorageMonitorService {
     return this.polling ??= this.collect().catch(error => {
       if (!this.controller.signal.aborted) this.error = error instanceof Error ? error.message : '存储监控采集失败';
     }).finally(() => { this.polling = undefined; });
-  }
-  private async readLegacy(): Promise<StorageState | undefined> {
-    if (!this.legacyPath) return undefined;
-    try { return JSON.parse(await readFile(this.legacyPath, 'utf8')) as StorageState; }
-    catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e; }
   }
   /** Commits pending observations with the current state, then forgets them. */
   private async commit(): Promise<void> {

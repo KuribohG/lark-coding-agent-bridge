@@ -49,6 +49,6 @@ clusters = ["prod"]
 
 通过 Grafana `/api/ds/query` 访问 ClickHouse 和只读 PostgreSQL datasource，不直接保存数据库密码。读取 `grafana.credentialsFile` 的 `GRAFANA_URL`、`GRAFANA_TOKEN`、`GRAFANA_USER`/`GRAFANA_PASSWORD` 或 `GRAFANA_COOKIE`；同名环境变量优先。文件只解析赋值，不执行 shell。不要把原始 token 写进 TOML。PostgreSQL datasource 须有上述表的只读权限和跨用户可见性；验证失败显示未知。
 
-`monitors status` 显示配置和上次持久化快照；快照时间不能替代实时在线证明。工作台的“采集覆盖”显示集群、UID、Chain 的状态、上次成功时间和缺口。采集状态（覆盖、Chain、事件版本）与事项、人工草稿和通知回执一起保存在 `inbox/sources/storage-monitor/` 的 SQLite 中，每轮采集的观测和产生它的状态在同一次写入中提交；写入失败时两者都不保留，下一轮先原样重试未提交的观测。同一状态根目录由进程锁保护。旧版本的 `storage-monitor/<scope>.json` 在首次启动时导入一次并改名为 `.migrated`。
+`monitors status` 显示配置和上次持久化快照；快照时间不能替代实时在线证明。工作台的“采集覆盖”显示集群、UID、Chain 的状态、上次成功时间和缺口。采集状态（覆盖、Chain、事件版本）与事项、人工草稿和通知回执一起保存在 `inbox/sources/storage-monitor/` 的 SQLite 中，每轮采集的观测和产生它的状态在同一次写入中提交；写入失败时两者都不保留，下一轮先原样重试未提交的观测。同一状态根目录由进程锁保护。旧版本的 `storage-monitor/<scope>.json` 不再读取，升级后采集从空状态开始。
 
 每个配置最多 16 个集群、16 个平台和 32 个订阅；每个 UID 最多 `maxTasks` 条 Chain（默认 1000，上限 10000），每集群最多 20000 个 pod 指标聚合。超限不截断后假装覆盖完整。新功能默认关闭，配置热更新约每 15 秒检查一次；采集请求和正在关闭的调查可能延迟切换。

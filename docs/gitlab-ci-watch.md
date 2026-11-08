@@ -94,8 +94,8 @@ structured `result.json`. Trace downloads are capped at 32 MiB per job and expli
 mark truncation. Missing/erased logs are reported as evidence gaps. Watcher cursors and assistant tasks live together in
 `inbox/sources/gitlab-ci/<identity-scope>/state.sqlite`; a repository's cursor
 advances only in the same write as the failures found up to it. A
-`gitlab-ci/state.json` left by an earlier build is imported once (cursors, and
-failures it had not yet handed over) and renamed to `state.json.migrated`. Set `enabled: false` to stop
+`gitlab-ci/state.json` left by an earlier build is not read; after an upgrade the
+watcher starts from a new activation baseline. Set `enabled: false` to stop
 polling and abort active work. With the independent background executor, stopping
 the Lark profile leaves CI collection running; if the executor is unavailable,
 new analyses remain queued. This behavior requires deployment of the refactor.
