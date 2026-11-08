@@ -73,7 +73,7 @@ export type AgentEvent =
       threadId?: string;
       sessionId?: string;
     }
-  | { type: 'retry'; attempt: number; maxAttempts: number; delayMs: number; failureKind?: 'rate_limit' | 'transient' }
+  | { type: 'retry'; attempt: number; maxAttempts: number; delayMs: number; failureKind?: 'rate_limit' | 'transient' | 'authentication' }
   | { type: 'tool_use'; id: string; name: string; input: unknown }
   | { type: 'tool_result'; id: string; output: string; isError: boolean }
   | {
