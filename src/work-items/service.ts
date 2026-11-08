@@ -347,8 +347,9 @@ export class WorkItemService<C extends WorkItemConfig = WorkItemConfig> {
       if (input.replyDraft !== undefined) { job.replyDraft = input.replyDraft as string; job.draftEdited = true; job.draftStale = false; }
       if (input.handlingState !== undefined) job.handlingState = input.handlingState as WorkItem['handlingState'];
       if (input.handlingState === 'ignored') this.ignore(job);
-      if (input.handlingState === 'open' && handlingState(before) === 'ignored') job.attention = job.external
-        ? { state: 'needed', reason: '你已恢复此事项，可手动分析' } : { state: 'pending', reason: '你已恢复此事项，等待重新筛选' };
+      // A source that screens items screens a restored one again; a rule source has nothing to re-decide.
+      if (input.handlingState === 'open' && handlingState(before) === 'ignored') job.attention = this.itemPolicy
+        ? { state: 'pending', reason: '你已恢复此事项，等待重新筛选' } : { state: 'needed', reason: '你已恢复此事项，可手动分析' };
       if (input.handlingState === 'open' && ['claimed', 'ignored'].includes(job.state)) job.state = job.result ? 'done' : 'waiting';
       job.lastReviewRequestId = requestId; this.touch(job);
       try { await this.store.save(); }

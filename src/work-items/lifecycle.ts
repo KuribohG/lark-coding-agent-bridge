@@ -1,21 +1,25 @@
 import type { WorkItemConfig } from './config';
 import type { WorkItem } from './types';
-import type { Attention } from './evidence';
+import type { Attention, EvidenceMessage } from './evidence';
 import { handlingState } from './result';
 import { recordObservation } from './identity';
 
-/** Sources may update evidence; lifecycle fields are read-only through their context. */
-type EvidenceFields = 'messages' | 'sourceRef' | 'alert' | 'intakeTrigger' | 'incidentId' | 'manualSignature' | 'manualRequestIds';
-export type SourceItem = Readonly<Omit<WorkItem, EvidenceFields>> & Pick<WorkItem, EvidenceFields>;
+/** Sources read items; every change, evidence included, is a transition the lifecycle applies. */
+export type SourceItem = Readonly<WorkItem>;
 export type SourceSeed = Pick<WorkItem, 'sourceRef' | 'messages' | 'alert' | 'intakeTrigger' | 'incidentId'>;
 export type SourceTransition =
   | { type: 'mode'; mode: 'on' | 'off' }
   | { type: 'scope' }
-  | { type: 'feedback'; empty: boolean; reason: string }
-  | { type: 'manual'; replay?: boolean }
+  /** Evidence after removing the assistant's own messages; none left ignores the item. */
+  | { type: 'feedback'; messages: EvidenceMessage[]; alert: boolean; reason: string }
+  /** The owner selected the conversation; `signature` identifies the evidence they saw. */
+  | { type: 'manual'; messages: EvidenceMessage[]; signature: string; requestId?: string }
+  /** A repeated selection of evidence already submitted. */
+  | { type: 'manual'; replay: true; requestId?: string }
   | { type: 'handled' }
   | { type: 'recovered' }
-  | { type: 'evidence'; preflight?: boolean };
+  /** New or refreshed evidence; `preflight` is the re-read just before analysis. */
+  | { type: 'evidence'; messages?: EvidenceMessage[]; alert?: boolean; mention?: boolean; preflight?: boolean };
 export interface AssessmentUpdate {
   attention: Attention;
   followUp?: 'unchanged' | 'resolved' | 'reanalyze';
@@ -74,12 +78,14 @@ export class WorkItemLifecycle {
         this.pause(job);
         job.error = '接收范围已更新，已有事项可手动处理';
         break;
-      case 'feedback':
+      case 'feedback': {
+        const empty = !event.messages.length;
+        if (!empty) { job.messages = event.messages; job.alert = event.alert; }
         this.cancel(job);
         job.analysisRequested = false; job.startDelivery = undefined; job.resultDelivery = undefined;
         job.retryAt = undefined; job.dueAt = undefined; job.notificationSuppressed = true;
         job.draftStale = Boolean(job.result || job.replyDraft); job.error = undefined;
-        if (event.empty) { this.ignore(job); job.attention = { state: 'quiet', reason: event.reason }; }
+        if (empty) { this.ignore(job); job.attention = { state: 'quiet', reason: event.reason }; }
         else {
           recordObservation(job);
           if (handlingState(job) === 'open') {
@@ -88,8 +94,11 @@ export class WorkItemLifecycle {
           }
         }
         break;
+      }
       case 'manual':
-        if (event.replay) { if (job.state === 'queued') job.automatic = false; return; }
+        if (event.requestId) job.manualRequestIds = [...(job.manualRequestIds || []), event.requestId].slice(-100);
+        if ('replay' in event) { if (job.state === 'queued') job.automatic = false; return; }
+        job.messages = event.messages; job.sourceRef.threadId = undefined; job.manualSignature = event.signature;
         if (handlingState(job) !== 'open' || job.state === 'running') return;
         recordObservation(job);
         this.request(job);
@@ -101,6 +110,9 @@ export class WorkItemLifecycle {
       case 'handled': this.handle(job); break;
       case 'recovered': job.businessState = 'resolved'; this.ignore(job); break;
       case 'evidence': {
+        if (event.mention) job.intakeTrigger = 'mention';
+        if (event.messages) job.messages = event.messages;
+        if (event.alert) job.alert = true;
         recordObservation(job);
         if (event.preflight) break;
         job.draftStale = Boolean(job.result || job.replyDraft);

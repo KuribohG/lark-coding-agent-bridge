@@ -6,35 +6,9 @@ import type { SourceItem } from '../../../work-items/lifecycle';
 import type { WorkItemService } from '../../../work-items/service';
 import { createLarkAssessment } from './assessment';
 import { analysisChanges, messageBasis } from '../../../inbox/updates';
-import { larkTarget } from '../../../inbox/lark-target';
+import { boundMessages, classifyMessage, compareMessages, incidentId, LarkConversation } from './conversation';
 
 const resolved = (job: InboxJob) => handlingState(job) !== 'open';
-const mentioned = (message: InboxMessage, key: string) => message.mentions.some(mention => mention.id === key);
-const incidentId = (message: InboxMessage) =>
-  typeof message.metadata?.incidentId === 'string' ? message.metadata.incidentId : undefined;
-const recovered = (message: InboxMessage) => message.metadata?.recovered === true;
-function compareMessages(a: InboxMessage, b: InboxMessage): number {
-  if (a.containerId === b.containerId && /^\d+$/.test(a.sequence ?? '') && /^\d+$/.test(b.sequence ?? '')) {
-    return BigInt(a.sequence!) < BigInt(b.sequence!) ? -1 : BigInt(a.sequence!) > BigInt(b.sequence!) ? 1 : 0;
-  }
-  return a.time - b.time;
-}
-function classifyMessage(m: InboxMessage): 'skip' | 'alert' | 'request' {
-  const text = m.text.trim();
-  if (!text || /^(收到|谢谢|好的|好|嗯|OK|ok|Thanks|👍|👌)[。！!\s]*$/i.test(text)) return 'skip';
-  return m.senderBot || /报警|告警|alert|firing|resolved/i.test(text) ? 'alert' : 'request';
-}
-
-export function boundMessages(messages: InboxMessage[], maxChars: number): InboxMessage[] {
-  const output: InboxMessage[] = [];
-  let remaining = maxChars;
-  for (const m of [...messages].sort((a, b) => compareMessages(b, a))) {
-    if (remaining <= 0 || output.length >= 100) break;
-    const text = m.text.slice(0, remaining);
-    output.push({ ...m, text }); remaining -= text.length + 200;
-  }
-  return output.reverse();
-}
 
 /** Conversation commands belong to the Lark source, not to the generic work-item service. */
 export function larkSource(service: Pick<WorkItemService, 'source'>): LarkSource {
@@ -50,9 +24,11 @@ export class LarkSource implements SourceAdapter {
   private contextRetryAt = 0;
   private contextError?: string;
   private intakeGeneration = 0;
+  private conversation: LarkConversation;
   readonly assessment;
   constructor(private config: InboxConfig, private io: InboxIO, private now = Date.now) {
     this.assessment = createLarkAssessment(io);
+    this.conversation = new LarkConversation(config, io.selfSenderIds, now);
   }
   attach(context: SourceContext): void { this.host = context; }
   private get lastError() { return this.host.error; }
@@ -77,19 +53,9 @@ export class LarkSource implements SourceAdapter {
     }
   }
 
-  private outputChat(chatId: string): boolean {
-    return chatId === larkTarget(this.config.target).chatId || this.host.items.some(job =>
-      chatId === job.target.containerId || chatId === job.analysisTarget?.containerId);
-  }
-
-  private acceptsMessage(message: InboxMessage): boolean {
-    return !this.outputChat(message.containerId) && !(this.io.selfSenderIds ?? []).some(id =>
-      Boolean(id) && (message.senderId === id || message.senderAliases?.includes(id)));
-  }
-
-  private safeSource(job: InboxJob): boolean {
-    return !this.outputChat(job.sourceRef.containerId) && job.messages.length > 0 && job.messages.every(m => this.acceptsMessage(m));
-  }
+  private outputChat(chatId: string): boolean { return this.conversation.outputChat(chatId, this.host.items); }
+  private acceptsMessage(message: InboxMessage): boolean { return this.conversation.acceptsMessage(message, this.host.items); }
+  private safeSource(job: InboxJob): boolean { return this.conversation.safe(job, this.host.items); }
 
   private removeFeedback(): void {
     for (const job of this.host.items) {
@@ -99,21 +65,12 @@ export class LarkSource implements SourceAdapter {
       const reason = '助理自身消息或结果群内容，不作为待办处理';
       if (!messages.length && job.handlingState === 'ignored' && job.attention?.state === 'quiet' && job.attention.reason === reason && !job.attention.retry &&
         !job.analysisRequested && !job.startDelivery && !job.resultDelivery && !job.retryAt) continue;
-      if (messages.length) {
-        job.messages = messages; job.alert = messages.some(m => classifyMessage(m) === 'alert');
-      }
       // Keep excluded messages for audit when none remain eligible.
-      this.host.transition(job, { type: 'feedback', empty: !messages.length, reason });
+      this.host.transition(job, { type: 'feedback', messages, alert: messages.some(m => classifyMessage(m) === 'alert'), reason });
     }
   }
 
-  private acceptsSource(job: InboxJob): boolean {
-    if (!this.safeSource(job)) return false;
-    if (job.external) return true;
-    return job.sourceRef.kind === 'direct' || (this.config.intakeScope !== 'private' &&
-      (this.config.intakeScope === 'all' || job.intakeTrigger === 'mention' ||
-        job.messages.some(m => mentioned(m, this.config.recipientKey))));
-  }
+  private acceptsSource(job: InboxJob): boolean { return this.conversation.accepts(job, this.host.items); }
 
   get intakeScope(): IntakeScope { return this.config.intakeScope; }
 
@@ -163,20 +120,13 @@ export class LarkSource implements SourceAdapter {
       const submitted = this.host.items.find(j => j.sourceRef.containerId === chatId && ['running', 'ready', 'done', 'queued'].includes(j.state) &&
         j.manualSignature === ids && this.now() - j.updatedAt < 30 * 60_000);
       if (submitted) {
-        this.host.transition(submitted, { type: 'manual', replay: true });
-        if (requestId) {
-          submitted.manualRequestIds = [...(submitted.manualRequestIds || []), requestId].slice(-100);
-          await this.host.save();
-        }
+        this.host.transition(submitted, { type: 'manual', replay: true, requestId });
+        if (requestId) await this.host.save();
         return structuredClone(submitted);
       }
       const existing = this.host.items.find(j => j.sourceRef.containerId === chatId && !resolved(j) && ['waiting', 'notifying', 'queued'].includes(j.state));
       const job = existing ?? this.create(messages, false, source);
-      job.messages = boundMessages(messages, this.config.maxContextChars);
-      job.sourceRef.threadId = undefined;
-      job.manualSignature = ids;
-      if (requestId) job.manualRequestIds = [...(job.manualRequestIds || []), requestId].slice(-100);
-      this.host.transition(job, { type: 'manual' });
+      this.host.transition(job, { type: 'manual', messages, signature: ids, requestId });
       await this.host.save();
       return structuredClone(job);
     });
@@ -278,7 +228,7 @@ export class LarkSource implements SourceAdapter {
         threadId: m.threadId,
       },
       messages: boundMessages(messages, this.config.maxContextChars),
-      intakeTrigger: m.containerKind === 'direct' ? 'private' : mentioned(m, this.config.recipientKey) ? 'mention' : 'group',
+      intakeTrigger: this.conversation.intakeTrigger(m),
       alert: messages.some(m => classifyMessage(m) === 'alert'), incidentId: incidentId(m),
     }, automatic);
   }
@@ -294,43 +244,24 @@ export class LarkSource implements SourceAdapter {
   }
 
   private ingestNew(m: InboxMessage): void {
-    const jobs = this.host.items.filter(j => j.sourceRef.containerId === m.containerId && !resolved(j) && this.acceptsSource(j));
-    if (m.senderId === this.config.recipientKey) {
-      for (const job of jobs) if (compareMessages(m, job.messages.at(-1)!) > 0 && (m.containerKind === 'direct' ||
-        (m.threadId && m.threadId === job.sourceRef.threadId) || job.messages.some(x => x.id === m.replyTo))) {
-        this.host.transition(job, { type: 'handled' });
+    const route = this.conversation.route(m, this.host.items);
+    switch (route.kind) {
+      case 'handled': for (const job of route.items) this.host.transition(job, { type: 'handled' }); return;
+      case 'recovered': for (const job of route.items) this.host.transition(job, { type: 'recovered' }); return;
+      case 'append': {
+        const messages = boundMessages([...route.item.messages.filter(x => x.id !== m.id), m], this.config.maxContextChars);
+        this.host.transition(route.item, { type: 'evidence', messages, alert: route.alert, mention: route.mention });
+        return;
       }
-      return;
+      case 'create': this.create([m], true); return;
+      case 'ignore': return;
     }
-    if (recovered(m) && incidentId(m) && m.senderBot) {
-      for (const job of jobs) if (job.incidentId === incidentId(m) && job.messages[0]?.senderId === m.senderId) {
-        this.host.transition(job, { type: 'recovered' });
-      }
-      return;
-    }
-    const related = jobs.find(j => j.messages.some(x => x.id === m.id)) ??
-      jobs.find(j => (m.threadId && m.threadId === j.sourceRef.threadId) || j.messages.some(x => x.id === m.replyTo));
-    if (m.containerKind !== 'direct' && this.config.intakeScope !== 'all' && !mentioned(m, this.config.recipientKey) && !related) return;
-    if (!related && m.senderBot && jobs.some(j => j.messages.at(-1)?.text === m.text && j.sourceRef.threadId === m.threadId)) return;
-    const category = classifyMessage(m);
-    if (category === 'skip' || (m.containerKind === 'direct' && m.senderBot)) return;
-    const incident = incidentId(m);
-    const previous = related ?? jobs.find(j => j.sourceRef.threadId === m.threadId &&
-      (incident ? j.incidentId === incident && j.messages[0]?.senderId === m.senderId :
-        !j.incidentId && (Boolean(j.result) || j.state === 'running' || this.now() - j.updatedAt < 5 * 60_000)));
-    if (previous) {
-      if (mentioned(m, this.config.recipientKey)) previous.intakeTrigger = 'mention';
-      previous.messages = boundMessages([...previous.messages.filter(x => x.id !== m.id), m], this.config.maxContextChars);
-      previous.alert ||= category === 'alert';
-      this.host.transition(previous, { type: 'evidence' });
-    } else this.create([m], true);
   }
   async beforeAnalysis(job: SourceItem, signal: AbortSignal, current: () => boolean): Promise<boolean> {
     await this.io.checkOwner(this.config.recipientKey);
     const context = await this.io.context(job.sourceRef.containerId, job.messages[0]!.time - this.config.contextMinutes * 60_000, this.now());
     const relevant = context.filter(m => this.acceptsMessage(m) && (!job.sourceRef.threadId || m.threadId === job.sourceRef.threadId));
-    if (job.automatic && relevant.some(m => m.senderId === this.config.recipientKey && compareMessages(m, job.messages.at(-1)!) > 0 &&
-      (job.sourceRef.kind === 'direct' || Boolean(job.sourceRef.threadId) || job.messages.some(x => x.id === m.replyTo)))) {
+    if (job.automatic && this.conversation.answered(job, relevant)) {
       await this.host.transaction(async () => { if (current()) this.host.transition(job, { type: 'handled' }); await this.host.save(); }); return false;
     }
     if (signal.aborted) throw new Error('分析已取消');
@@ -338,7 +269,7 @@ export class LarkSource implements SourceAdapter {
       if (!current()) throw new Error('分析已取消');
       // Collection may have updated a message while this history request was in flight.
       const messages = boundMessages([...new Map([...relevant, ...job.messages].map(m => [m.id, m])).values()], this.config.maxContextChars);
-      if (JSON.stringify(messages) !== JSON.stringify(job.messages)) { job.messages = messages; this.host.transition(job, { type: 'evidence', preflight: true }); }
+      if (JSON.stringify(messages) !== JSON.stringify(job.messages)) this.host.transition(job, { type: 'evidence', messages, preflight: true });
       await this.host.save();
     });
     return true;
