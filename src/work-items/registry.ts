@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import * as lockfile from 'proper-lockfile';
+import { acquireStateLease } from '../platform/state-lease';
 import type { WorkItemConfig } from './config';
 import type { SourceAdapter, WorkItemRuntime } from './contracts';
 import { WorkItemService } from './service';
@@ -42,11 +41,8 @@ export class WorkItemSources {
     const config = options.config;
     const scope = createHash('sha256').update(JSON.stringify([config.ownerKey, config.executorProfile])).digest('hex').slice(0, 24);
     const folder = join(dirname(this.configPath), 'inbox', 'sources', options.id, scope);
-    await mkdir(folder, { recursive: true, mode: 0o700 });
-    const lease = join(folder, 'service'); await writeFile(lease, '', { flag: 'a', mode: 0o600 });
     let service: WorkItemService | undefined;
-    const unlock = await lockfile.lock(lease, { stale: 60_000, update: 10_000, retries: 0,
-      onCompromised: () => { void service?.close(); } });
+    const unlock = await acquireStateLease(folder, () => { void service?.close(); });
     try {
       service = new WorkItemService(new WorkItemStore(join(folder, 'state.sqlite')), config,
         { ...options.runtime, source: options.source }, Date.now, this.queue, this.triageQueue);

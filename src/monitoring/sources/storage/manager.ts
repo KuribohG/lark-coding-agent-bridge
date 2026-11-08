@@ -1,95 +1,48 @@
-import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import * as lockfile from 'proper-lockfile';
-import type { ExecutionProfile } from '../../../runtime/execution-provider';
+import { join } from 'node:path';
 import type { MonitorHost } from '../../host';
-import { loadMonitorRoot, monitorSectionErrors } from '../../store';
-import { log } from '../../../core/logger';
-import { WorkItemSources } from '../../../work-items/registry';
-import { parseStorageConfig } from './config';
+import { SourceController, type SourceKind } from '../../source-controller';
+import type { WorkItemSources } from '../../../work-items/registry';
+import { parseStorageConfig, type StorageMonitorConfig } from './config';
 import { GrafanaQueryClient, grafanaCredentials } from './grafana';
 import { GrafanaStorageProvider } from './provider';
 import { storageInvestigator } from './investigation';
 import { StorageMonitorService, storageScope } from './service';
 
-export class StorageMonitorManager {
-  private service?: StorageMonitorService;
-  private connection?: Awaited<ReturnType<WorkItemSources['connect']>>;
-  private unlock?: () => Promise<void>;
-  private executor?: ExecutionProfile;
-  private executionError?: string;
-  private fingerprint = '';
-  private chain = Promise.resolve();
-  private timer: NodeJS.Timeout;
-  private closed = false;
-  error?: string;
-  private sectionError?: string;
-  private reportedError?: string;
-  constructor(private configPath: string, private host: MonitorHost, private sources: WorkItemSources) {
-    this.timer = setInterval(() => { void this.reconcile(); }, 15_000); this.timer.unref();
-  }
-  status() { return { error: this.error ?? this.service?.error, state: this.service?.state }; }
-  reconcile(): Promise<void> {
-    return this.chain = this.chain.then(() => this.reload()).then(() => {
-      if (this.sectionError) this.error = this.sectionError;
-      this.reportedError = undefined;
-    }).catch(async e => {
-      this.error = e instanceof Error ? e.message : '存储监控启动失败';
-      if (this.reportedError !== this.error) {
-        this.reportedError = this.error;
-        log.warn('storage-monitor', 'setup-failed', { error: this.error, serviceKept: Boolean(this.service) });
-      }
-      if (this.service) await this.refreshExecutor(this.service.config.executorProfile);
-    });
-  }
-  private async reload(): Promise<void> {
-    if (this.closed) return;
-    const root = await loadMonitorRoot(this.configPath);
-    this.sectionError = monitorSectionErrors(root).storage;
-    if (root) this.sources.configureConcurrency(root.workItemConcurrency);
-    const config = parseStorageConfig(root?.storageMonitor);
-    if (config.enabled) await this.refreshExecutor(config.executorProfile);
-    else { this.executor = undefined; this.executionError = undefined; }
-    const fingerprint = JSON.stringify(config);
-    if (fingerprint === this.fingerprint) { this.error = this.executionError; return; }
-    if (!config.executorProfile) { await this.stop(); this.error = undefined; return; }
-    // Validate source credentials before replacing the last working instance.
-    const enabled = config.enabled;
-    const client = enabled ? new GrafanaQueryClient(await grafanaCredentials(config.grafana)) : { query: async () => { throw new Error('存储监控未启用'); } };
+const storageKind: SourceKind<StorageMonitorConfig, StorageMonitorService> = {
+  id: 'storage-monitor', label: '3FS / 萤火任务', section: 'storage', folder: 'storage-monitor',
+  logTag: 'storage-monitor', setupError: '存储监控启动失败',
+  config: root => parseStorageConfig(root?.storageMonitor),
+  describe: config => ({ clusters: config.clusters.map(c => c.id), model: config.model }),
+  async setup(config, sources) {
+    const client = config.enabled ? new GrafanaQueryClient(await grafanaCredentials(config.grafana))
+      : { query: async () => { throw new Error('存储监控未启用'); } };
     const provider = new GrafanaStorageProvider(config, client);
-    await this.stop();
-    const folder = join(dirname(this.configPath), 'storage-monitor');
-    await mkdir(folder, { recursive: true, mode: 0o700 });
-    const lease = join(folder, 'service'); await writeFile(lease, '', { flag: 'a', mode: 0o600 });
-    this.unlock = await lockfile.lock(lease, { stale: 60_000, update: 10_000, retries: 0, onCompromised: () => { void this.close(); } });
-    try {
-      this.connection = await this.sources.connect(this.host.source({ id: 'storage-monitor', label: '3FS / 萤火任务',
+    return {
+      options: view => ({
         dailyAnalysisLimit: config.dailyAnalysisLimit, resumeInterrupted: true,
-        status: () => ({ error: this.error ?? this.service?.error, health: { checkedAt: this.service?.state.checkedAt,
-          checks: Object.entries(this.service?.state.statuses ?? {}).map(([id, s]) => ({ id, ...s,
-            state: !s.lastSuccessAt || Date.now() - s.lastSuccessAt > config.staleSeconds * 1000 ? 'unknown' : s.state })) } }),
-        profile: config.executorProfile, enabled, executor: () => this.executor, model: config.model, reasoningEffort: 'max', sourceNotifications: true,
+        status: () => {
+          const current = view.collector();
+          return { error: view.error() ?? current?.error, health: { checkedAt: current?.state.checkedAt,
+            checks: Object.entries(current?.state.statuses ?? {}).map(([id, s]) => ({ id, ...s,
+              state: !s.lastSuccessAt || Date.now() - s.lastSuccessAt > config.staleSeconds * 1000 ? 'unknown' : s.state })) } };
+        },
+        model: config.model, reasoningEffort: 'max', sourceNotifications: true,
         notification: config.notification, muted: config.muted,
-        driver: storageInvestigator(config, provider, () => this.service),
-      }));
-      this.fingerprint = fingerprint;
-      if (!enabled) { this.error = this.executionError; return; }
-      this.service = new StorageMonitorService(join(folder, `${storageScope(config)}.json`), config, provider, event => this.connection!.observe(event), Date.now, key => this.sources.isAnalyzing('storage-monitor', key));
-      await this.service.start(); this.fingerprint = fingerprint; this.error = this.executionError;
-    } catch (e) { await this.stop(); throw e; }
+        driver: storageInvestigator(config, provider, view.collector),
+      }),
+      start: config.enabled ? async (connection, folder) => {
+        const service = new StorageMonitorService(join(folder, `${storageScope(config)}.json`), config, provider,
+          event => connection.observe(event), Date.now, key => sources.isAnalyzing('storage-monitor', key));
+        await service.start();
+        return service;
+      } : undefined,
+    };
+  },
+};
+
+export class StorageMonitorManager extends SourceController<StorageMonitorConfig, StorageMonitorService> {
+  constructor(configPath: string, host: MonitorHost, sources: WorkItemSources) {
+    super(storageKind, configPath, host, sources);
   }
-  private async refreshExecutor(profile: string): Promise<void> {
-    try {
-      this.executor = await this.host.executors.resolve(profile);
-      this.executionError = this.executor?.available ? undefined : this.executor?.error ?? '执行器暂不可用，采集继续，分析等待';
-    } catch {
-      this.executor = undefined; this.executionError = '执行器配置不可用，采集继续，分析等待';
-    }
-  }
-  private async stop(): Promise<void> {
-    await this.service?.close(); this.service = undefined;
-    await this.connection?.close(); this.connection = undefined;
-    await this.unlock?.(); this.unlock = undefined; this.fingerprint = '';
-  }
-  async close(): Promise<void> { this.closed = true; clearInterval(this.timer); await this.chain; await this.stop(); }
+  status() { return { error: this.error ?? this.current?.error, state: this.current?.state }; }
 }

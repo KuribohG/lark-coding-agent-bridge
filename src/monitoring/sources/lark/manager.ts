@@ -1,7 +1,5 @@
 import { defaultWorkspaceFor, managedWorkspaceFor } from '../../../agent/state-layout';
-import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import * as lockfile from 'proper-lockfile';
 import type { LarkMonitorProfiles } from './host';
 import { resolveAppPaths } from '../../../config/app-paths';
 import { withConfigFileLock } from '../../../config/profile-store';
@@ -35,10 +33,12 @@ import { WorkItemSources } from '../../../work-items/registry';
 import { startInboxControl, type InboxControlHandle } from '../../../inbox/control-server';
 import { larkRuntime } from './runtime';
 import { larkSource } from './source';
+import { ReconcileLoop } from '../../reconcile-loop';
+import { acquireStateLease } from '../../../platform/state-lease';
 
 const connectionConfig = ({ enabled: _, intakeScope: __, analysisTimeoutMinutes: ___, workbenchUrl: ____, ...config }: InboxConfig) => config;
 
-export class InboxManager {
+export class InboxManager extends ReconcileLoop {
   readonly sources: WorkItemSources;
   private service?: WorkItemService<InboxConfig>;
   private cards?: InboxCards;
@@ -51,15 +51,9 @@ export class InboxManager {
   private fingerprint = '';
   private ownedLarkAuth?: LarkProfileAuth;
   private releaseNetwork?: () => Promise<void>;
-  private chain: Promise<unknown> = Promise.resolve();
-  private timer: ReturnType<typeof setInterval>;
-  private closed = false;
-  private sectionError?: string;
-  error?: string;
   constructor(private configPath: string, private profiles: LarkMonitorProfiles, private rootDir?: string, private sharedSources?: WorkItemSources) {
+    super('inbox', '监控配置读取失败');
     this.sources = sharedSources ?? new WorkItemSources(configPath);
-    this.timer = setInterval(() => { void this.reconcile(); }, 15_000);
-    this.timer.unref();
   }
   async view() {
     let config = this.service?.config ?? normalizeInbox(undefined);
@@ -187,16 +181,9 @@ export class InboxManager {
     });
     return this.view();
   }
-  reconcile(): Promise<void> {
-    if (this.closed) return Promise.resolve();
-    const p = this.chain.then(() => this.reload()).then(() => {
-      // The section kept its last good config; surface why the edit is not live.
-      if (this.sectionError) this.error = this.sectionError;
-    }).catch(async error => {
-      this.error = error instanceof Error ? error.message : '监控配置读取失败';
-      const executor = this.service && this.profiles(this.service.config.executorProfile);
-      if (this.service && (!executor || !supportsBackgroundProfile(executor.profileConfig))) await this.stop();
-    }); this.chain = p.catch(() => {}); return p;
+  protected async recover(): Promise<void> {
+    const executor = this.service && this.profiles(this.service.config.executorProfile);
+    if (this.service && (!executor || !supportsBackgroundProfile(executor.profileConfig))) await this.stop();
   }
   private async changeMode(service: WorkItemService<InboxConfig>, mode: InboxMode): Promise<void> {
     // Do not reconcile here: this callback is awaited by the GUI poll itself.
@@ -221,7 +208,7 @@ export class InboxManager {
       await larkSource(service).setScope(scope, async () => { root.inbox = next; await saveMonitorRoot(root, this.configPath); });
     });
   }
-  private async reload(): Promise<void> {
+  protected async reload(): Promise<void> {
     if (this.closed) return;
     const root = await loadMonitorRoot(this.configPath); const config = normalizeInbox(root?.inbox);
     this.sectionError = monitorSectionErrors(root).lark;
@@ -252,9 +239,7 @@ export class InboxManager {
       const triageService = inboxTriageService(config, root!);
       const paths = resolveAppPaths({ rootDir: this.rootDir, profile: config.executorProfile });
       const folder = join(dirname(this.configPath), 'inbox');
-      await mkdir(folder, { recursive: true, mode: 0o700 });
-      const lease = join(folder, 'service'); await writeFile(lease, '', { flag: 'a', mode: 0o600 });
-      this.unlock = await lockfile.lock(lease, { stale: 60_000, update: 10_000, retries: 0, onCompromised: () => { void this.close(); } });
+      this.unlock = await acquireStateLease(folder, () => { void this.close(); });
       const lark = new InboxLark({ profile: config.executorProfile, rootDir: this.rootDir }, config);
       this.lark = lark;
       const agent = createLarkRuntimeAgent(controls.profileConfig, paths, this.configPath);
@@ -340,7 +325,7 @@ export class InboxManager {
       this.error = e instanceof Error ? e.message : '助理启动失败'; await this.stop();
     }
   }
-  private async stop(): Promise<void> {
+  protected async stop(): Promise<void> {
     // Disable work before closing the listener, so active HTTP requests cannot queue new jobs.
     const service = this.service; this.service = undefined;
     this.cards = undefined;
@@ -357,8 +342,7 @@ export class InboxManager {
     await this.unlock?.(); this.unlock = undefined;
     this.fingerprint = '';
   }
-  async close(): Promise<void> {
-    this.closed = true; clearInterval(this.timer);
-    await this.chain; await this.stop(); if (!this.sharedSources) await this.sources.close();
+  override async close(): Promise<void> {
+    await super.close(); if (!this.sharedSources) await this.sources.close();
   }
 }

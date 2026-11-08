@@ -16,13 +16,15 @@ src/monitoring/
   config.ts          # TOML envelope; delegates each section to its module
   store.ts           # Shared config persistence and conflict checks
   runtime.ts         # Shared engine ownership and module lifecycle
+  reconcile-loop.ts  # Serialized periodic reload shared by every controller
+  source-controller.ts # SourceKind contract and its generic controller
   notification.ts    # Common delivery settings, independent of source rules
   sources/
     configs.ts       # Static configuration registrations; no runtime imports
     index.ts         # Static runtime factories
     lark/            # Collection, model screening, tools, investigation, manager
-    gitlab-ci/       # GitLab client, polling, failure rules, investigation, manager
-    storage/         # Grafana provider, cluster/UID rules, investigation, manager
+    gitlab-ci/       # GitLab client, polling, failure rules, investigation, SourceKind
+    storage/         # Grafana provider, cluster/UID rules, investigation, SourceKind
 src/work-items/      # Persistence, versioning, scheduling, analysis, controls
 src/inbox/           # Lark transport/workbench adapter and hosted UI
 ```
@@ -32,8 +34,14 @@ reference validation and status summary) and a runtime factory. `MonitorContext`
 provides the config path, the shared `WorkItemSources` and a `MonitorHost`. The host
 supplies an `ExecutionProvider` and a factory for source execution/delivery adapters.
 The factory constructs a controller; constructors must not start I/O. Controllers
-implement `reconcile()` and `close()`, own their collector timers/leases, and retain
-last-valid-config and cancellation behavior. `MonitorRuntime` reconciles them
+implement `reconcile()` and `close()` on top of `ReconcileLoop`, which serializes
+reloads every 15 seconds, keeps the running instance when a reload fails and logs each
+distinct failure once. Collectors that publish events (GitLab CI, storage) are a
+`SourceKind` run by `SourceController`: the kind declares its config section, state
+folder and `setup()`, which validates the config and loads credentials before anything
+running is replaced; the controller owns the folder lease, executor resolution,
+fingerprinted reloads and the `WorkItemSources` connection, and starts the collector
+only while the source is enabled. `MonitorRuntime` reconciles them
 independently, closes them in reverse registration order, then closes the shared
 engine. A module never closes an engine supplied by the host.
 
@@ -46,7 +54,7 @@ The existing shared workbench and Lark delivery transport are still reused.
 To add a built-in source:
 
 1. Add `sources/<name>/` with its configuration, collector/provider, investigation
-   driver and controller. Publish versioned observations through `WorkItemSources`;
+   driver and a `SourceKind`, run by `SourceController`. Publish versioned observations through `WorkItemSources`;
    do not create another analysis queue or notification retry loop.
 2. Register its config in `sources/configs.ts` and its factory in `sources/index.ts`.
    A new typed root setting also needs its field in `RootConfig`/`MonitorSettings`.
