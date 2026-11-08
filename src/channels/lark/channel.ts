@@ -53,6 +53,7 @@ import { createBridgeWorkflowRuntime } from '../../workflows/bridge/runtime';
 import type { WorkflowRuntime } from '@kuribohg/agent-workflows';
 import type { WorkflowState } from '@kuribohg/agent-workflows';
 import { WorkflowOrigins } from './workflow-origins';
+import { WorkflowProgressCards } from './workflow-progress-cards';
 import { InterruptedTurns, MAX_RESUME_AGE_MS, MAX_RESUME_ATTEMPTS, type InterruptedTurn } from './interrupted-turns';
 import type { WorkspaceStore } from '../../workspace/store';
 
@@ -145,10 +146,14 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     if (!receipt.messageId?.trim()) throw new Error('Workflow message delivery returned no message receipt');
   };
   let workflows: WorkflowRuntime | undefined;
+  let progressCards: WorkflowProgressCards | undefined;
   const createWorkflows = () => sessionCatalog && deps.appPaths?.mediaDir ? createBridgeWorkflowRuntime({
     path: join(dirname(deps.appPaths.mediaDir), 'workflows.sqlite'), executor,
     getTimeoutMinutes: root => getWorkflowTimeoutMinutes(profileForAgentKind(controls.profileConfig, bridgeAgentKind(root.agentKind))),
-    showPlan: replyToOrigin,
+    showPlan: async (state, text) => {
+      await replyToOrigin(state, text);
+      progressCards?.track(state);
+    },
     notify: replyToOrigin,
     resolveWorker: async (root, selection, policy) => {
       const { agentKind: kind, ...overrides } = selection;
@@ -291,6 +296,10 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     workflows = createWorkflows();
     if (!workflows) return;
     const runtime = workflows;
+    // createWorkflows only succeeds with a media directory, so the card state sits beside the workflow database.
+    progressCards = new WorkflowProgressCards({ channel, kernel: runtime.kernel, origins: workflowOrigins,
+      path: join(dirname(deps.appPaths!.mediaDir!), 'workflow-progress-cards.json') });
+    await progressCards.start();
     await runtime.start();
     controls.workflow = {
       cancel: scope => runtime.kernel.cancel(scope),
@@ -614,6 +623,8 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     disconnect: async () => {
       activeRuns.pauseNewRuns('bridge-disconnect');
       controls.workflow = undefined;
+      // Stop card edits first so shutdown transitions are not published as progress.
+      const progressCardsClosed = progressCards?.close();
       const workflowsClosed = workflows?.close();
       turns.close();
       controls.btw = undefined;
@@ -645,6 +656,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
         callbackNonceStore?.flush(),
         workspaces.flush(),
         btwClosed,
+        progressCardsClosed,
         workflowsClosed,
         turnsSettled,
       ]);

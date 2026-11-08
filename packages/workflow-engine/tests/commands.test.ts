@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkflowKernel } from '../src/engine/kernel';
 import { handleWorkflowCommand } from '../src/chat/commands';
 import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '../src/engine/types';
-import { renderWorkflowStatus } from '../src/chat/status';
+import { renderWorkflowProgress, renderWorkflowStatus } from '../src/chat/status';
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0)) await close(); });
@@ -144,5 +144,36 @@ describe('Lark workflow commands', () => {
     const summary = renderWorkflowStatus(many);
     expect(summary.length).toBeLessThan(8000);
     expect(summary).toContain('未展开');
+  });
+
+  it('summarizes progress for a card that hosts can update in place', async () => {
+    const f = fixture();
+    await f.start();
+    const stored = f.kernel.state('topic')!;
+    const task = { taskKey: 'k', sessionRef: 's', objective: 'o', inputRefs: [], resultRefs: [], requestDigest: 'd', attempts: [] };
+    const running = { ...stored, createdAt: 0, deadlineAt: 7_200_000, script: { ...stored.script!, status: 'running' as const, phase: '评审 <b>', logs: ['a', 'b', 'c', 'd'] },
+      tasks: [
+        { ...task, taskId: '1', scriptKey: 'design', status: 'running' as const, attempts: [{ attemptId: 'a', startedAt: 0, admittedAt: 60_000 }] },
+        { ...task, taskId: '2', scriptKey: 'queued-slot', status: 'starting' as const, attempts: [{ attemptId: 'b', startedAt: 0 }] },
+        { ...task, taskId: '3', scriptKey: 'done', status: 'result_ready' as const },
+        { ...task, taskId: '4', scriptKey: 'broken', status: 'failed' as const, error: 'boom' },
+      ] };
+    const progress = renderWorkflowProgress(running, 600_000);
+    expect(progress).toMatchObject({ status: '运行中', tone: 'running', settled: false });
+    expect(progress.markdown).toContain('**阶段**：评审 &lt;b&gt;');
+    expect(progress.markdown).toContain('共 4，完成 1，执行中 1，等待执行槽位 1，排队 0，失败 1');
+    expect(progress.markdown).toContain('- design：执行中，等待执行槽位 1 分钟，已执行 9 分钟');
+    expect(progress.markdown).toContain('- queued-slot：等待执行槽位 10 分钟');
+    expect(progress.markdown).toContain('- broken：boom');
+    expect(progress.markdown).toContain('已用时**：10 分钟，距截止 1.8 小时');
+    expect(progress.markdown).not.toContain('- a\n');
+    expect(progress.markdown).toContain('- d');
+    // Stopped workflows render no clock, so periodic refreshes leave the card unchanged.
+    const paused = { ...running, status: 'paused' as const };
+    expect(renderWorkflowProgress(paused, 600_000).markdown).toBe(renderWorkflowProgress(paused, 900_000).markdown);
+    expect(renderWorkflowProgress({ ...running, script: { ...running.script, status: 'failed' as const, error: 'script threw' } }, 600_000))
+      .toMatchObject({ status: '脚本失败', tone: 'failed' });
+    expect(renderWorkflowProgress({ ...running, status: 'completed' as const }, 600_000)).toMatchObject({ status: '已完成', tone: 'done', settled: true });
+    expect(renderWorkflowProgress({ ...running, status: 'cancelled' as const }, 600_000)).toMatchObject({ tone: 'cancelled', settled: true });
   });
 });

@@ -28,4 +28,5 @@ export type {
 } from './engine/types';
 export { handleWorkflowCommand } from './chat/commands';
 export type { WorkflowCommandOptions } from './chat/commands';
-export { renderWorkflowStatus, renderWorkStatus } from './chat/status';
+export { renderWorkflowProgress, renderWorkflowStatus, renderWorkStatus } from './chat/status';
+export type { WorkflowProgress } from './chat/status';

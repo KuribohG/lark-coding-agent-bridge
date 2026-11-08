@@ -152,6 +152,70 @@ function slotLines(state: WorkflowState, now: number): string[] {
   return [`执行槽位：${waiting.length} 个任务等待中，累计等待 ${duration(total)}${waits.length ? `，单次最长 ${duration(Math.max(...waits))}` : ''}`];
 }
 
+export interface WorkflowProgress {
+  title: string;
+  status: string;
+  tone: 'running' | 'attention' | 'failed' | 'done' | 'cancelled';
+  /** The workflow can no longer change; hosts stop following it. */
+  settled: boolean;
+  markdown: string;
+}
+
+const ACTIVE_TASKS = new Set<WorkflowTask['status']>(['running', 'starting', 'waiting_input', 'waiting_workflow', 'cancelling', 'queued']);
+/** Progress text is interpolated into host markdown; keep names and logs from opening tags. */
+const plain = (value: string, limit: number) => compact(value, limit).replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+function progressStatus(state: WorkflowState, now: number): Pick<WorkflowProgress, 'status' | 'tone'> {
+  if (state.status === 'completed') return { status: '已完成', tone: 'done' };
+  if (state.status === 'cancelled') return { status: '已取消', tone: 'cancelled' };
+  if (state.status === 'binding_attention') return { status: '执行绑定已变化', tone: 'failed' };
+  if (state.status === 'paused') return { status: '已暂停', tone: 'attention' };
+  if (state.status === 'interrupted') return { status: '已中断', tone: 'attention' };
+  if (state.script?.status === 'failed') return { status: '脚本失败', tone: 'failed' };
+  if (now >= state.deadlineAt) return { status: '已到截止时间', tone: 'attention' };
+  if (state.script?.status === 'result_ready') return { status: '脚本已完成，主 agent 汇总中', tone: 'running' };
+  return { status: state.script?.status === 'queued' ? '等待启动' : '运行中', tone: 'running' };
+}
+
+/** A bounded, self-updating summary for a progress card; /workflow status keeps the full diagnostics. */
+export function renderWorkflowProgress(state: WorkflowState, now = Date.now()): WorkflowProgress {
+  const { status, tone } = progressStatus(state, now);
+  const label = (task: WorkflowTask) => plain(state.agents?.find(member => member.agentId === task.agentId)?.key ?? task.scriptKey ?? task.taskKey, 80);
+  const count = (statuses: Array<WorkflowTask['status']>) => state.tasks.filter(task => statuses.includes(task.status)).length;
+  const slotWaiting = state.tasks.filter(task => task.status === 'starting' && !task.attempts.at(-1)?.admittedAt).length;
+  const settled = state.status === 'completed' || state.status === 'cancelled';
+  // The status itself is a separate field for the host's title.
+  const lines = [...state.script?.phase ? [`**阶段**：${plain(state.script.phase, 200)}`] : [],
+    `**需求**：${plain(state.goal, 200)}`,
+    `**轮次**：共 ${state.tasks.length}，完成 ${count(['result_ready'])}，执行中 ${count(['running', 'starting']) - slotWaiting}`
+      + `${slotWaiting ? `，等待执行槽位 ${slotWaiting}` : ''}，排队 ${count(['queued'])}，失败 ${count(['failed'])}`];
+  // Only running workflows show clocks, so periodic refreshes leave a stopped card unchanged.
+  if (tone === 'running' || settled) lines.push(`**已用时**：${duration(now - state.createdAt)}${tone === 'running' ? `，距截止 ${duration(state.deadlineAt - now)}` : ''}`);
+  const items = state.workQueue?.items;
+  if (items?.length) {
+    const done = items.filter(item => item.status === 'completed').length;
+    lines.push(`**工作队列**：${done}/${items.length} 完成，已认领 ${items.filter(item => item.status === 'claimed').length}，失败 ${items.filter(item => item.status === 'failed').length}`);
+  }
+  const active = state.tasks.filter(task => ACTIVE_TASKS.has(task.status));
+  if (active.length) {
+    lines.push('', '**进行中**');
+    for (const task of active.slice(0, 8)) {
+      const timing = tone === 'running' ? attemptTiming(task, now)?.replace(/^\s*耗时：/, '') : undefined;
+      lines.push(`- ${label(task)}：${timing?.startsWith('已等待执行槽位') ? timing.slice(1) : `${taskStatus(task)}${timing ? `，${timing}` : ''}`}`);
+    }
+    if (active.length > 8) lines.push(`- 另有 ${active.length - 8} 项`);
+  }
+  const failed = state.tasks.filter(task => task.status === 'failed');
+  if (failed.length) {
+    lines.push('', '**失败**');
+    for (const task of failed.slice(-3)) lines.push(`- ${label(task)}${task.error ? `：${plain(task.error, 160)}` : ''}`);
+  }
+  if (state.script?.status === 'failed' && state.script.error) lines.push('', `**脚本错误**：${plain(state.script.error, 300)}`);
+  const logs = state.script?.logs.slice(-3) ?? [];
+  if (logs.length) lines.push('', '**最近日志**', ...logs.map(text => `- ${plain(text, 200)}`));
+  return { title: compact(state.script?.name ?? state.definition.id, 100), status, tone, settled, markdown: lines.join('\n') };
+}
+
 export function renderWorkflowStatus(state: WorkflowState, memberKey?: string, latest = false, now = Date.now()): string {
   const lines = [`${compact(state.script?.name ?? state.definition.id, 100)}：${state.status}${latest ? '（最近一次）' : ''}`,
     `需求：${compact(state.goal, 300)}`,
