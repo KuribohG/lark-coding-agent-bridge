@@ -16,6 +16,7 @@ export { ScopeExecutionStore } from './session/scope-execution';
 export { agentBackendSpec } from './agent/backend-spec';
 export { supportedModels } from './agent/models';
 export { availableEfforts } from './agent/model-settings';
+export { spawnWithDeadline } from './agent/deadline';
 export { ClaudeAdapter } from './agent/claude/adapter';
 export { CodexAdapter } from './agent/codex/adapter';
 export { DshAdapter } from './agent/dsh/adapter';
