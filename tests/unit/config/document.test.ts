@@ -164,6 +164,7 @@ appServerMode = "per-run"
 [agents.claude.launch]
 binaryPath = "/opt/claude"
 configDir = "/state/claude"
+mcpConfig = "/state/claude/mcp.json"
 [agents.pi.launch]
 binaryPath = "/opt/pi"
 agentDir = "/state/pi"
@@ -173,12 +174,12 @@ codexHome = "/state/codex"
 `;
     const root = documentToRoot(parseDocument(text));
     expect(root.profiles.bot).toMatchObject({
-      claude: { binaryPath: '/opt/claude', configDir: '/state/claude' },
+      claude: { binaryPath: '/opt/claude', configDir: '/state/claude', mcpConfig: '/state/claude/mcp.json' },
       pi: { binaryPath: '/opt/pi', agentDir: '/state/pi' },
       codex: { binaryPath: '/opt/codex', codexHome: '/state/codex' },
     });
     expect(documentToRoot(parseDocument(formatDocument(rootToDocument(root)))).profiles.bot).toMatchObject({
-      claude: { binaryPath: '/opt/claude', configDir: '/state/claude' },
+      claude: { binaryPath: '/opt/claude', configDir: '/state/claude', mcpConfig: '/state/claude/mcp.json' },
       pi: { binaryPath: '/opt/pi', agentDir: '/state/pi' },
       codex: { binaryPath: '/opt/codex', codexHome: '/state/codex' },
     });
@@ -187,6 +188,7 @@ codexHome = "/state/codex"
   it('rejects native state-directory fields on the wrong agent', () => {
     expect(() => parseDocument(source + '\n[agents.codex.launch]\nagentDir = "/state/pi"\n')).toThrow(/unknown setting/);
     expect(() => parseDocument(source + '\n[agents.pi.launch]\ncodexHome = "/state/codex"\n')).toThrow(/unknown setting/);
+    expect(() => parseDocument(source + '\n[agents.codex.launch]\nmcpConfig = "/state/mcp.json"\n')).toThrow(/unknown setting/);
   });
 
   it('inherits, merges and round-trips launch environment values', () => {

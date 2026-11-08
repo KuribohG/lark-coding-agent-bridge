@@ -32,6 +32,8 @@ import { CLAUDE_EXECUTION_CAPABILITIES } from './capabilities';
 export interface ClaudeAdapterOptions {
   binary?: string;
   configDir?: string;
+  /** Extra `--mcp-config` file; see ClaudeConfig.mcpConfig. */
+  mcpConfig?: string;
   /** Pins auto-memory to one directory regardless of the run's cwd. */
   autoMemoryDirectory?: string;
   systemPrompt?: AgentSystemPrompt;
@@ -49,6 +51,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
   private readonly binary: string;
   private readonly configDir: string | undefined;
+  private readonly mcpConfig: string | undefined;
   private readonly autoMemoryDirectory: string | undefined;
   private readonly systemPrompt: AgentSystemPrompt | undefined;
   private readonly env: NodeJS.ProcessEnv;
@@ -58,6 +61,7 @@ export class ClaudeAdapter implements AgentAdapter {
   constructor(opts: ClaudeAdapterOptions = {}) {
     this.binary = opts.binary ?? 'claude';
     this.configDir = opts.configDir;
+    this.mcpConfig = opts.mcpConfig;
     this.autoMemoryDirectory = opts.autoMemoryDirectory;
     this.systemPrompt = opts.systemPrompt;
     this.env = { ...opts.env };
@@ -130,6 +134,7 @@ export class ClaudeAdapter implements AgentAdapter {
     if (opts.sessionId) args.push('--resume', opts.sessionId);
     if (opts.forkSession) args.push('--fork-session');
     if (opts.model) args.push('--model', validateModelId(opts.model));
+    if (this.mcpConfig) args.push('--mcp-config', this.mcpConfig);
     // ultra maps to the ultracode session setting, which also pins effort to xhigh; it has no --effort value.
     if (runFiles.settingsPath) args.push('--settings', runFiles.settingsPath);
     if (opts.reasoningEffort && !ultra) args.push('--effort', parseEffort(opts.reasoningEffort, 'claude')!);

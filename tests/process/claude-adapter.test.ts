@@ -197,6 +197,21 @@ describe('ClaudeAdapter process contract', () => {
     expect(record.argv[record.argv.indexOf('--effort') + 1]).toBe('high');
   });
 
+  it('passes the configured MCP file through --mcp-config', async () => {
+    const fake = await createFakeClaude({ lines: [{ type: 'result', session_id: 'sess-mcp' }] });
+    cleanup.push(fake.dir);
+
+    const run = (await new ClaudeAdapter({ binary: fake.path, mcpConfig: '/state/claude/mcp.json' }).prepareRun({
+      runId: 'run-mcp',
+      prompt: 'navigate',
+      cwd: fake.dir,
+    })).start();
+    expect(await collect(run.events)).toContainEqual({ type: 'done', sessionId: 'sess-mcp', terminationReason: 'normal' });
+    const record = await readRecord(fake.recordPath);
+
+    expect(record.argv[record.argv.indexOf('--mcp-config') + 1]).toBe('/state/claude/mcp.json');
+  });
+
   it('forks a parent for a side answer and exposes the final result', async () => {
     const fake = await createFakeClaude({ lines: [
       { type: 'assistant', message: { content: [{ type: 'text', text: 'intermediate' }] } },

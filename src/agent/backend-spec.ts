@@ -68,7 +68,7 @@ const CLAUDE_SPEC: AgentBackendSpec = Object.freeze({
   defaultCommand: 'claude',
   commandEnv: 'LARK_CHANNEL_CLAUDE_BIN',
   launchRequired: false,
-  launchKeys: Object.freeze([...COMMON_AGENT_LAUNCH_KEYS, 'configDir']),
+  launchKeys: Object.freeze([...COMMON_AGENT_LAUNCH_KEYS, 'configDir', 'mcpConfig']),
   stateDirectory: Object.freeze({ field: 'configDir', envName: 'CLAUDE_CONFIG_DIR' }),
   includeStateDirectoryInPolicy: true,
   sessionKind: 'claude-session',

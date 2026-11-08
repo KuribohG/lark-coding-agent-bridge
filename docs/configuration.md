@@ -41,7 +41,10 @@ Omitting a key inherits its parent. Removing a profile override restores inherit
 configuration/authentication state. It accepts `binaryPath` and an optional
 `env` table for all three agents, plus:
 
-- Claude: `configDir`, exposed to the child as `CLAUDE_CONFIG_DIR`.
+- Claude: `configDir`, exposed to the child as `CLAUDE_CONFIG_DIR`, and
+  `mcpConfig`, a file passed as `--mcp-config`. Claude Code honours a server's
+  `alwaysLoad` only for servers given this way (not from `~/.claude.json`): they
+  connect before the first request and their tools are not deferred behind tool search.
 - Codex: `codexHome`, exposed as `CODEX_HOME`, plus `transport`,
   `appServerMode`, `provider`, `inheritCodexHome`, `ignoreUserConfig` and `ignoreRules`.
 - pi: `agentDir`, exposed as `PI_CODING_AGENT_DIR`.

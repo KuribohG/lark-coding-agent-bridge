@@ -61,6 +61,7 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
     createAdapter: ({ profile, profileDir, env, systemPrompt }) => new ClaudeAdapter({
       binary: profile.claude?.binaryPath,
       configDir: profile.claude?.configDir,
+      mcpConfig: profile.claude?.mcpConfig,
       autoMemoryDirectory: resolveAgentState(profile, 'claude', { profileDir, env }).memoryDir,
       env: buildAgentEnvironment(env, profile.claude?.env),
       systemPrompt,
