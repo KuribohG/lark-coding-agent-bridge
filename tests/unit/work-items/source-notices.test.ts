@@ -86,7 +86,7 @@ it('shares the execution limit across ordinary and storage sources', async () =>
       config: normalizeInbox({ enabled: true, executorProfile: 'p', recipientKey: 'local:p', target: topic }),
       source: new EventSource(id, () => true), runtime: { checkAccess: async () => {}, investigate: async () => result } });
     const normal = await connect('ordinary'); const incident = await connect('storage');
-    await normal.observe(event); await incident.observe(event);
+    await normal.submit(event); await incident.submit(event);
     await vi.waitFor(() => expect(sources.list().filter(j => j.state === 'running')).toHaveLength(2), { timeout: 3500 });
     expect(sources.list().every(j => j.external?.analysisAttempts === 0)).toBe(true);
     release(); await blocker;

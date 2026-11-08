@@ -1,13 +1,12 @@
 import { monitorConfigs } from '../../monitoring/sources/configs';
 import { storageScope, type StorageState } from '../../monitoring/sources/storage/service';
-import { join } from 'node:path';
-import { readFile } from 'node:fs/promises';
 import { dirname, relative, resolve } from 'node:path';
 import { resolveAppPaths } from '../../config/app-paths';
 import { loadRootConfig, saveRootConfig, withConfigFileLock } from '../../config/profile-store';
 import { parseMonitorConfig, validateMonitorReferences } from '../../monitoring/config';
 import { loadMonitorRoot, monitorConfigPath, readMonitorFile } from '../../monitoring/store';
 import { parseWorkItemConcurrency } from '../../work-items/concurrency';
+import { collectorStates } from '../../work-items/registry';
 
 type Options = { config?: string };
 const rootPath = (opts: Options) => opts.config ?? resolveAppPaths().configFile;
@@ -40,8 +39,9 @@ export async function statusMonitors(opts: Options): Promise<void> {
   if (!root) throw new Error('Bridge root configuration not found');
   let storageState: StorageState | undefined;
   if (root.storageMonitor) {
-    try { storageState = JSON.parse(await readFile(join(dirname(path), 'storage-monitor', `${storageScope(root.storageMonitor)}.json`), 'utf8')); }
-    catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('存储监控状态文件无法读取'); }
+    const scope = storageScope(root.storageMonitor);
+    storageState = (await collectorStates(path, 'storage-monitor')).map(entry => entry.state as StorageState)
+      .find(state => state.scope === scope);
   }
   console.log(JSON.stringify({ storageState, concurrency: parseWorkItemConcurrency(root.workItemConcurrency), file: monitorConfigPath(root, path) ?? null, mode: root.monitorConfigFile === undefined ? 'legacy-json' : 'toml',
     sources: monitorConfigs.map(source => source.summary(root)), note: '配置状态；enabled 不代表来源或执行器在线。' }, null, 2));

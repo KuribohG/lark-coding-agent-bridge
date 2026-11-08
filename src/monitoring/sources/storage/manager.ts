@@ -6,7 +6,7 @@ import { parseStorageConfig, type StorageMonitorConfig } from './config';
 import { GrafanaQueryClient, grafanaCredentials } from './grafana';
 import { GrafanaStorageProvider } from './provider';
 import { storageInvestigator } from './investigation';
-import { StorageMonitorService, storageScope } from './service';
+import { StorageMonitorService, storageScope, type StorageState } from './service';
 
 const storageKind: SourceKind<StorageMonitorConfig, StorageMonitorService> = {
   id: 'storage-monitor', label: '3FS / 萤火任务', section: 'storage', folder: 'storage-monitor',
@@ -31,8 +31,8 @@ const storageKind: SourceKind<StorageMonitorConfig, StorageMonitorService> = {
         driver: storageInvestigator(config, provider, view.collector),
       }),
       start: config.enabled ? async (connection, folder) => {
-        const service = new StorageMonitorService(join(folder, `${storageScope(config)}.json`), config, provider,
-          event => connection.observe(event), Date.now, key => sources.isAnalyzing('storage-monitor', key));
+        const service = new StorageMonitorService(config, provider, connection.journal<StorageState>(), Date.now,
+          key => sources.isAnalyzing('storage-monitor', key), join(folder, `${storageScope(config)}.json`));
         await service.start();
         return service;
       } : undefined,

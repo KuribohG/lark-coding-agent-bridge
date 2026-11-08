@@ -68,6 +68,15 @@ Each source persists its generic work-item state as `state.sqlite`. The SQLite
 transaction stores jobs, cursors, dedupe keys, budgets and the notification
 outbox together. An unknown schema or state version fails closed.
 
+Event collectors keep no state files of their own. A `SourceKind` collector gets an
+`ObservationJournal` from its connection: `state()` returns what it committed last,
+and `commit(events, state)` records the observations and the collector's read state
+(cursors, tracked runs, decided-but-unsent revisions) in one store write. A failed
+write keeps neither, so a cursor never runs ahead of the events it produced and an
+observation is never applied without the state that numbered it. Re-observing an
+event is idempotent (create-only by key, or by revision), so overlapping polls need
+no submission queue.
+
 ## Host and executor lifecycle
 
 `src/plugins/work-items/runtime.ts` assembles the bridge's monitor modules. GitLab and storage

@@ -4,8 +4,8 @@ import { SourceController, type SourceKind } from '../../source-controller';
 import type { WorkItemSources } from '../../../work-items/registry';
 import { GitLabClient, loadGitLabToken } from './client';
 import { normalizeGitLabCi, validateGitLabCi, type GitLabCiConfig } from './config';
-import { ciAssessment, ciTaskDriver, ciTaskEvent } from './inbox-source';
-import { GitLabCiService } from './service';
+import { ciAssessment, ciTaskDriver } from './inbox-source';
+import { GitLabCiService, type CiState } from './service';
 
 const gitlabCiKind: SourceKind<GitLabCiConfig, GitLabCiService> = {
   id: 'gitlab-ci', label: 'GitLab CI', section: 'gitlab_ci', folder: 'gitlab-ci',
@@ -19,13 +19,9 @@ const gitlabCiKind: SourceKind<GitLabCiConfig, GitLabCiService> = {
       options: view => ({ notification: config.notification, model: config.model, reasoningEffort: 'max',
         status: () => ({ error: view.error() }), assessment: ciAssessment, driver: ciTaskDriver(config, client) }),
       start: client && (async (connection, folder) => {
-        const service = new GitLabCiService(join(folder, 'state.json'), config, {
+        const service = new GitLabCiService(config, {
           pipelines: (...args) => client.pipelines(...args), failures: (...args) => client.failures(...args),
-          submit: async (run, signal) => {
-            signal.throwIfAborted();
-            return (await connection.submit(ciTaskEvent(run, config))).id;
-          },
-        });
+        }, connection.journal<CiState>(), Date.now, join(folder, 'state.json'));
         await service.start();
         return service;
       }),

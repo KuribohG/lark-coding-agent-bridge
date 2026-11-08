@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { expect, it } from 'vitest';
-import { WorkItemStore } from '../../../src/work-items/store';
+import { readCollectorState, WorkItemStore } from '../../../src/work-items/store';
+import { collectorStates } from '../../../src/work-items/registry';
 import type { WorkItem, WorkItemState } from '../../../src/work-items/types';
 
 const job: WorkItem = {
@@ -107,4 +108,19 @@ it('preserves scheduler order independently from job updates', async () => {
   const restored = new WorkItemStore(path);
   await restored.load();
   expect(restored.data.jobs.map(item => item.id)).toEqual(['first', 'second']);
+});
+
+it('persists collector state and reads it back without a lease', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'work-item-collector-'));
+  const path = join(root, 'inbox', 'sources', 'gitlab-ci', 'scope-a', 'state.sqlite');
+  const store = new WorkItemStore(path); await store.load();
+  expect(readCollectorState(path)).toBeUndefined();
+  store.data.collector = { version: 1, repositories: { a: { since: 1, cursor: 2 } } }; await store.save();
+  const reloaded = new WorkItemStore(path); await reloaded.load();
+  expect(reloaded.data.collector).toEqual(store.data.collector);
+  expect(await collectorStates(join(root, 'config.json'), 'gitlab-ci')).toEqual([{ partition: 'scope-a', state: store.data.collector }]);
+  expect(await collectorStates(join(root, 'config.json'), 'storage-monitor')).toEqual([]);
+  expect(readCollectorState(join(root, 'missing.sqlite'))).toBeUndefined();
+  store.data.collector = undefined; await store.save();
+  expect(readCollectorState(path)).toBeUndefined();
 });

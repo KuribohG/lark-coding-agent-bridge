@@ -94,6 +94,8 @@ export class WorkItemStore {
             ? { notificationOutbox: this.data.notificationOutbox }
             : {}),
         }));
+        if (this.data.collector === undefined) db.prepare("DELETE FROM metadata WHERE key = 'collector'").run();
+        else setMeta(db, 'collector', JSON.stringify(this.data.collector));
       });
       write();
       this.persisted = encoded;
@@ -161,6 +163,7 @@ export class WorkItemStore {
       throw new Error(`unsupported work-item database state version: ${version}`);
     }
     const document = parseDocument(meta.get('document'));
+    const collector = meta.get('collector');
     return {
       version: STATE_VERSION,
       ...(document.ownerKey !== undefined ? { ownerKey: document.ownerKey } : {}),
@@ -178,6 +181,7 @@ export class WorkItemStore {
       ...(document.notificationOutbox !== undefined
         ? { notificationOutbox: document.notificationOutbox }
         : {}),
+      ...(collector !== undefined ? { collector: JSON.parse(collector) as unknown } : {}),
     };
   }
 
@@ -191,6 +195,18 @@ export class WorkItemStore {
       job.error = 'Bridge 重启中断了分析，请重新处理';
     }
   }
+}
+
+/** Reads a collector's committed state without loading, repairing or writing the partition. */
+export function readCollectorState(path: string): unknown {
+  let db: Database.Database;
+  try { db = new Database(path, { readonly: true, fileMustExist: true }); }
+  catch { return undefined; }
+  try {
+    const row = db.prepare("SELECT value FROM metadata WHERE key = 'collector'").get() as MetadataRow | undefined;
+    return row ? JSON.parse(row.value) as unknown : undefined;
+  } catch { return undefined; }
+  finally { db.close(); }
 }
 
 function emptyState(): WorkItemState {

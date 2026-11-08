@@ -86,14 +86,16 @@ A retried job with a new failed job ID can trigger another analysis. Conversatio
 process while polling continues. Automatic CI analysis failures retry at most
 three attempts. Explicit user retries do not automatically repeat on failure.
 An analysis interrupted by a Bridge restart requires a manual retry; completed
-results are reused. Deduplication records are kept for 30 days; evidence
-and results remain in `outputDir/<run-id>/` until the owner removes them.
+results are reused. A failure is identified by its work item, so overlapping
+polls cannot create a second task; evidence and results remain in `outputDir/<run-id>/` until the owner removes them.
 
 The run directory contains `evidence.json`, raw `job-<id>.log` files and a
 structured `result.json`. Trace downloads are capped at 32 MiB per job and explicitly
-mark truncation. Missing/erased logs are reported as evidence gaps. Watcher cursors and submission IDs live beside bridge configuration in
-`gitlab-ci/state.json`; assistant tasks live in
-`inbox/sources/gitlab-ci/<identity-scope>/state.sqlite`. Set `enabled: false` to stop
+mark truncation. Missing/erased logs are reported as evidence gaps. Watcher cursors and assistant tasks live together in
+`inbox/sources/gitlab-ci/<identity-scope>/state.sqlite`; a repository's cursor
+advances only in the same write as the failures found up to it. A
+`gitlab-ci/state.json` left by an earlier build is imported once (cursors, and
+failures it had not yet handed over) and renamed to `state.json.migrated`. Set `enabled: false` to stop
 polling and abort active work. With the independent background executor, stopping
 the Lark profile leaves CI collection running; if the executor is unavailable,
 new analyses remain queued. This behavior requires deployment of the refactor.
@@ -143,8 +145,9 @@ configured execution profile. No new monitor is enabled by this adapter change.
 
 ## Handoff and lifecycle
 
-Each new failure is submitted to the assistant as a fresh task. Submission is acknowledged only after the assistant store is saved, so a restart
-between the two stores cannot create a second task.
+Each new failure becomes a fresh assistant task in the same store write that
+advances the repository's cursor, so a restart can neither lose a failure nor
+create a second task.
 
 Disabling CI stops its polling and active work, preserving history. Pausing the
 assistant's Lark message intake does not disable CI. Different owner/profile

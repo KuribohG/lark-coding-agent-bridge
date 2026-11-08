@@ -115,9 +115,7 @@ lark-channel-bridge ci-watch status
 
 把原 CI 配置的 `enabled` 改为 `false`，重新运行 `ci-watch configure`，即可停止轮询并取消 CI 在途分析；已有事项和草稿保留。在包含独立后台执行器的版本中，停止 Lark profile 不会停止来源；执行器暂不可用时，新分析持久排队，恢复后继续。旧版本仍会随 profile 停止来源。聊天 `/stop` 和飞书消息采集开关不负责关闭 CI。
 
-加载新版本并启动盯盘时，旧 `gitlab-ci/state.json` 中的记录会幂等导入助理。已完成结果直接导入，已投递结果不会重发；旧投递曾尝试但未确认时保留结果供核对，不自动重复发送。旧分析中断或结果文件丢失时标记失败，等待手动重试。
-
-GitLab 的轮询游标仍保存在 `gitlab-ci/state.json`；事项、草稿和处理状态进入 `inbox/sources/gitlab-ci/`。更换所属用户或执行 profile 使用独立分区，旧数据保留在原分区，不自动转交给新身份。没有飞书通知的任务使用本机 profile 分区。
+GitLab 的轮询游标与事项、草稿和处理状态一起保存在 `inbox/sources/gitlab-ci/`，游标只随它找到的失败一起提交。旧版本的 `gitlab-ci/state.json` 在首次启动时导入一次：游标沿用，尚未交给助理的失败补交，文件改名为 `state.json.migrated`。更换所属用户或执行 profile 使用独立分区，旧数据保留在原分区，不自动转交给新身份。没有飞书通知的任务使用本机 profile 分区。
 
 CI Agent 的任务要求是只读调查：读取源码、下载日志、提出建议；不自动改仓库、重试 CI、push、合并或部署。这些任务约束仍使用执行 profile 的权限环境。
 

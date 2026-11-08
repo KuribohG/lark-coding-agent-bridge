@@ -1,6 +1,5 @@
 import { join } from 'node:path';
 import type { InvestigationDriver } from '../../../work-items/contracts';
-import type { WorkItemEvent as InboxTaskEvent } from '../../../work-items/events';
 import type { WorkItem as InboxJob } from '../../../work-items/types';
 import { writeFileAtomic } from '../../../platform/atomic-write';
 import type { GitLabClient } from './client';
@@ -35,13 +34,4 @@ export function ciTaskDriver(config: GitLabCiConfig, client?: GitLabClient): Inv
         inputTokens: result.inputTokens, outputTokens: result.outputTokens }, null, 2));
     },
   };
-}
-
-export function ciTaskEvent(run: CiRun, config: GitLabCiConfig): InboxTaskEvent {
-  if (!/^[a-f0-9]{32}$/.test(run.id)) throw new Error('Invalid CI failure ID');
-  let url = '';
-  try { const parsed = new URL(run.pipeline.web_url); if (parsed.origin === new URL(config.url).origin && !parsed.username && !parsed.password) url = parsed.href; } catch { /* optional source link */ }
-  return { key: run.id, title: `${run.repository.project} · CI #${run.pipeline.id}`,
-    reason: `GitLab CI 失败 · ${run.pipeline.ref} · ${run.pipeline.sha.slice(0, 12)}`, url, time: run.createdAt,
-    data: run, evidenceDir: join(config.outputDir, run.id), maxAttempts: 3 };
 }

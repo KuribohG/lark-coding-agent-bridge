@@ -14,7 +14,7 @@ async function setup() {
   const failures: FailedJob[] = [{ id: 20, name: 'test', stage: 'test', status: 'failed', kind: 'job', allow_failure: false, web_url: '' }];
   const run: CiRun = { id: failureId(config.url, 'group/project', 10, failures), url: config.url, executorProfile: 'codex',
     repository: { project: 'group/project', refs: [], sourceDir: '/code/project' }, pipeline, failures,
-    createdAt: 1, updatedAt: 1, state: 'submitted', retryAt: 0 };
+    createdAt: 1 };
   const client = new GitLabClient(config.url, 'fixture', vi.fn());
   vi.spyOn(client, 'pipeline').mockResolvedValue(pipeline);
   vi.spyOn(client, 'failures').mockResolvedValue(failures);

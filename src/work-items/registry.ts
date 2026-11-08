@@ -1,13 +1,14 @@
 import { createHash } from 'node:crypto';
+import { readdir } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { acquireStateLease } from '../platform/state-lease';
 import type { WorkItemConfig } from './config';
 import type { SourceAdapter, WorkItemRuntime } from './contracts';
 import { WorkItemService } from './service';
-import { WorkItemStore } from './store';
+import { readCollectorState, WorkItemStore } from './store';
 import { WorkItemScheduler } from './scheduler';
 import { parseWorkItemConcurrency, WORK_ITEM_CONCURRENCY_DEFAULTS } from './concurrency';
-import type { WorkItemEvent } from './events';
+import type { ObservationJournal, WorkItemEvent } from './events';
 
 export interface WorkItemSourceOptions {
   id: string; label: string;
@@ -17,6 +18,17 @@ export interface WorkItemSourceOptions {
   status?: () => { error?: string; health?: { checkedAt?: number; checks: { id: string; state: string; detail: string; lastSuccessAt?: number }[] } };
 }
 interface Entry { service: WorkItemService; label: string; status?: WorkItemSourceOptions['status']; close(): Promise<void> }
+
+const sourceFolder = (configPath: string, id: string) => join(dirname(configPath), 'inbox', 'sources', id);
+
+/** Committed collector state of each owner/profile partition of a source, read without a lease. */
+export async function collectorStates(configPath: string, id: string): Promise<{ partition: string; state: unknown }[]> {
+  let partitions: string[];
+  try { partitions = await readdir(sourceFolder(configPath, id)); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; }
+  return partitions.sort().map(partition => ({ partition, state: readCollectorState(join(sourceFolder(configPath, id), partition, 'state.sqlite')) }))
+    .filter(entry => entry.state !== undefined);
+}
 
 /** Source/account partitions share lifecycle code, per-kind execution queues and the workbench. */
 export class WorkItemSources {
@@ -40,7 +52,7 @@ export class WorkItemSources {
     if (this.entries.has(options.id)) throw new Error('Inbox task source already connected');
     const config = options.config;
     const scope = createHash('sha256').update(JSON.stringify([config.ownerKey, config.executorProfile])).digest('hex').slice(0, 24);
-    const folder = join(dirname(this.configPath), 'inbox', 'sources', options.id, scope);
+    const folder = join(sourceFolder(this.configPath, options.id), scope);
     let service: WorkItemService | undefined;
     const unlock = await acquireStateLease(folder, () => { void service?.close(); });
     try {
@@ -55,7 +67,13 @@ export class WorkItemSources {
         try { await active.close(); } finally { await unlock(); }
       } };
       this.entries.set(options.id, entry);
-      return { submit: (event: WorkItemEvent) => active.observe(event), observe: (event: WorkItemEvent) => active.observe(event), close: entry.close };
+      return {
+        submit: (event: WorkItemEvent) => active.observe(event),
+        journal<S>(): ObservationJournal<S> {
+          return { state: () => active.collectorState as S | undefined, commit: async (events, state) => { await active.commit(events, state); } };
+        },
+        close: entry.close,
+      };
     } catch (error) { try { await service?.close(); } finally { await unlock(); } throw error; }
   }
   select(ids: readonly string[], scope?: { owner: string; profile: string }): WorkItemService | undefined {

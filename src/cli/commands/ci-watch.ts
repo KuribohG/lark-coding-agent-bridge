@@ -1,10 +1,10 @@
 import { readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
 import { resolveAppPaths } from '../../config/app-paths';
 import { withConfigFileLock } from '../../config/profile-store';
 import { loadMonitorRoot, saveMonitorRoot } from '../../monitoring/store';
 import { normalizeGitLabCi, validateGitLabCi } from '../../monitoring/sources/gitlab-ci/config';
 import { supportsBackgroundProfile } from '../../runtime/agent-capabilities';
+import { collectorStates } from '../../work-items/registry';
 
 export async function configureCiWatch(file: string, opts: { config?: string }): Promise<void> {
   const config = normalizeGitLabCi(JSON.parse(await readFile(file, 'utf8')));
@@ -26,9 +26,7 @@ export async function configureCiWatch(file: string, opts: { config?: string }):
 export async function statusCiWatch(opts: { config?: string }): Promise<void> {
   const path = opts.config ?? resolveAppPaths().configFile;
   const root = await loadMonitorRoot(path);
-  let state: unknown;
-  try { state = JSON.parse(await readFile(join(dirname(path), 'gitlab-ci', 'state.json'), 'utf8')); }
-  catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-  console.log(JSON.stringify({ config: normalizeGitLabCi(root?.gitlabCi), state: state ?? null,
+  const states = await collectorStates(path, 'gitlab-ci');
+  console.log(JSON.stringify({ config: normalizeGitLabCi(root?.gitlabCi), state: states.length ? states : null,
     note: 'Persisted status only; enabled does not prove that the executor is online.' }, null, 2));
 }

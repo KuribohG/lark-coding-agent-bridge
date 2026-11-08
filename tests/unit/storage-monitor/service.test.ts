@@ -1,12 +1,13 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { parseStorageConfig } from '../../../src/monitoring/sources/storage/config';
-import { StorageMonitorService } from '../../../src/monitoring/sources/storage/service';
+import { StorageMonitorService, storageScope, type StorageState } from '../../../src/monitoring/sources/storage/service';
 import type { StorageProvider, TaskRun } from '../../../src/monitoring/sources/storage/provider';
 import * as atomic from '../../../src/platform/atomic-write';
 import type { WorkItemEvent } from '../../../src/work-items/events';
+import { memoryJournal } from '../../helpers/journal';
 
 const cleanup: (() => Promise<unknown>)[] = [];
 afterEach(async () => { vi.restoreAllMocks(); for (const fn of cleanup.splice(0).reverse()) await fn(); });
@@ -24,10 +25,13 @@ async function setup(options: { user?: boolean; declared?: boolean; latency?: bo
       io: chunks || failures ? [{ pod: `alice-${runs[0]?.id ?? '123'}-0`, at: now, failures, chunks, latencyMs }] : [] }; }),
     tasks: vi.fn(async () => { if (platformDown) throw new Error('platform offline'); return structuredClone(runs); }),
   };
-  const events: WorkItemEvent[] = []; const submit = vi.fn(async (e: WorkItemEvent) => { events.push(structuredClone(e)); });
-  const make = () => { const s = new StorageMonitorService(join(folder, 'state.json'), config, provider, submit, () => now, () => busy); cleanup.push(() => s.close()); return s; };
+  const journal = memoryJournal<StorageState>();
+  const events: WorkItemEvent[] = [];
+  const commit = journal.commit;
+  journal.commit = async (batch, state) => { await commit(batch, state); events.push(...structuredClone([...batch])); };
+  const make = () => { const s = new StorageMonitorService(config, provider, journal, () => now, () => busy); cleanup.push(() => s.close()); return s; };
   const service = make(); await service.start(); await service.poll();
-  return { folder, config, provider, events, submit, service, make,
+  return { folder, config, provider, events, journal, service, make,
     tick: async (delta = 30_000) => { now += delta; await service.poll(); },
     change: (v: { failures?: number; chunks?: number; latencyMs?: number; unavailable?: boolean; stale?: boolean; platformDown?: boolean; busy?: boolean; runs?: TaskRun[] }) => {
       failures = v.failures ?? failures; chunks = v.chunks ?? chunks; latencyMs = v.latencyMs ?? latencyMs;
@@ -74,14 +78,33 @@ it('reports undeclared coverage and platform failure without fabricating resolut
   h.change({ failures: 0, platformDown: true }); for (let i = 0; i < 5; i++) await h.tick();
   expect(h.events).toHaveLength(1); expect(h.service.state.statuses['watch:w']?.state).toBe('unknown');
 });
-it('replays a persisted outbox with exactly the same observation after restart', async () => {
-  const h = await setup(); h.submit.mockRejectedValueOnce(new Error('source disconnected'));
+it('retries an uncommitted observation unchanged before deciding anything newer', async () => {
+  const h = await setup(); h.journal.fail(new Error('source disconnected'));
+  h.change({ failures: 2 }); await h.tick(); expect(h.events).toHaveLength(0);
+  const pending = Object.values(h.service.state.incidents).find(i => i.event)?.event;
+  expect(pending?.revision).toBe(1);
+  expect(Object.values(h.journal.state()!.incidents).every(i => i.revision === 0)).toBe(true);
+  await h.tick(); expect(h.events).toEqual([pending]);
+  expect(Object.values(h.journal.state()!.incidents).every(i => !('event' in i))).toBe(true);
+});
+it('restarts from the committed state, so a lost observation is decided again without a revision conflict', async () => {
+  const h = await setup(); h.journal.fail(new Error('source disconnected'));
   h.change({ failures: 2 }); await h.tick();
-  const disk = JSON.parse(await readFile(join(h.folder, 'state.json'), 'utf8'));
-  const pending = Object.values(disk.incidents).find((i: any) => i.event) as any;
-  expect(pending.event.revision).toBe(1);
   await h.service.close(); const restarted = h.make(); await restarted.start(); await restarted.poll();
-  expect(h.events).toHaveLength(1); expect(h.events[0]).toEqual(pending.event);
+  expect(h.events).toHaveLength(1); expect(h.events[0]).toMatchObject({ revision: 1, operation: 'upsert' });
+});
+it('imports the legacy state file once', async () => {
+  const h = await setup(); h.change({ failures: 2 }); await h.tick();
+  const legacy = join(h.folder, 'legacy.json');
+  const state = structuredClone(h.journal.state()!);
+  await writeFile(legacy, JSON.stringify(state));
+  const journal = memoryJournal<StorageState>();
+  const imported = new StorageMonitorService(h.config, h.provider, journal, () => 1_800_000_000_000, () => false, legacy);
+  cleanup.push(() => imported.close()); await imported.start();
+  expect(journal.commits[0]).toEqual({ events: [], state });
+  expect(state.scope).toBe(storageScope(h.config));
+  await expect(access(legacy)).rejects.toThrow();
+  expect(JSON.parse(await readFile(`${legacy}.migrated`, 'utf8'))).toEqual(state);
 });
 it('does not forget a tracked Chain when an incomplete scan returns no runs', async () => {
   const h = await setup({ user: true }); h.change({ runs: [] }); await h.tick();

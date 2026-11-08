@@ -177,54 +177,86 @@ export class WorkItemService<C extends WorkItemConfig = WorkItemConfig> {
   }
   submitTask(event: WorkItemEvent): Promise<WorkItem> { return this.observe(event); }
   async observe(event: WorkItemEvent): Promise<WorkItem> {
-    event = structuredClone(event);
+    return (await this.record([event]))[0]!;
+  }
+  /** State the source's collector committed last with its observations. */
+  get collectorState(): unknown { return structuredClone(this.store.data.collector); }
+  /** Records observations and the collector's read state in one store write; nothing is kept if it fails. */
+  async commit(events: readonly WorkItemEvent[], state: unknown): Promise<WorkItem[]> {
+    return this.record(events, { value: structuredClone(state) });
+  }
+  private record(events: readonly WorkItemEvent[], collector?: { value: unknown }): Promise<WorkItem[]> {
     const source = this.source.acceptsEvents ? this.source.id : undefined;
-    if (!source || !event.key || !event.title || !Number.isFinite(event.time) ||
-      (event.revision !== undefined && (!Number.isSafeInteger(event.revision) || event.revision < 1 || !event.eventId)) ||
-      (event.operation !== undefined && !['upsert', 'resolve'].includes(event.operation)) ||
-      ((event.eventId !== undefined || event.operation !== undefined) && event.revision === undefined)) throw new Error('无效盯盘事项');
+    const valid = events.map(input => {
+      const event = structuredClone(input);
+      if (!source || !event.key || !event.title || !Number.isFinite(event.time) ||
+        (event.revision !== undefined && (!Number.isSafeInteger(event.revision) || event.revision < 1 || !event.eventId)) ||
+        (event.operation !== undefined && !['upsert', 'resolve'].includes(event.operation)) ||
+        ((event.eventId !== undefined || event.operation !== undefined) && event.revision === undefined)) throw new Error('无效盯盘事项');
+      return event;
+    });
     return this.serial(async () => {
       if (this.stopped) throw new Error('事项来源已关闭');
-      const id = createHash('sha256').update(JSON.stringify([source, this.ownerKey, this.config.executorProfile, event.key])).digest('hex');
-      const existing = this.store.data.jobs.find(job => job.id === id);
-      if (existing) return this.updateObservation(existing, event);
-      const digest = observationDigest(event);
-      const decision = this.source.assessment?.kind === 'rule' ? this.source.assessment.evaluate(event) : { state: 'needed' as const, reason: event.reason, priority: event.priority };
-      const job: WorkItem = {
-        id, ownerKey: this.ownerKey, profile: this.config.executorProfile,
-        target: { ...this.target },
-        sourceRef: { transport: 'event', containerId: '', name: event.title, kind: 'external' },
-        messages: [],
-        createdAt: event.time, updatedAt: this.now(), state: decision.state === 'needed' ? 'queued' : 'waiting', automatic: true, alert: true,
-        attention: decision, handlingState: 'open', revision: 1,
-        external: { source, key: event.key, url: event.url, data: structuredClone(event.data),
-          analysisAttempts: 0, maxAttempts: Math.max(1, Math.min(3, event.maxAttempts ?? 3)), evidenceDir: event.evidenceDir },
-      };
-      this.delivery.enqueue(job, event);
-      recordObservation(job);
-      if (event.revision !== undefined) job.observation = { id: event.eventId!, revision: event.revision, time: event.time, digest };
-      if (event.operation === 'resolve') {
-        job.businessState = 'resolved'; job.state = 'done';
-        job.attention = { state: 'quiet', reason: event.reason };
+      const undo: (() => void)[] = [];
+      const committed: (() => void)[] = [];
+      const previous = this.store.data.collector;
+      try {
+        const items = valid.map(event => this.applyObservation(source!, event, undo, committed));
+        if (collector) this.store.data.collector = collector.value;
+        await this.store.save();
+        for (const fn of committed) fn();
+        return items.map(job => structuredClone(job));
+      } catch (error) {
+        for (const fn of undo.reverse()) fn();
+        this.store.data.collector = previous;
+        throw error;
       }
-      job.analysisRequested = job.state === 'queued';
-      this.store.data.jobs.push(job);
-      try { await this.store.save(); } catch (error) { this.store.data.jobs.pop(); throw error; }
-      return structuredClone(job);
     });
   }
-  private async updateObservation(job: WorkItem, event: WorkItemEvent): Promise<WorkItem> {
+  private applyObservation(source: string, event: WorkItemEvent, undo: (() => void)[], committed: (() => void)[]): WorkItem {
+    const id = createHash('sha256').update(JSON.stringify([source, this.ownerKey, this.config.executorProfile, event.key])).digest('hex');
+    const existing = this.store.data.jobs.find(job => job.id === id);
+    if (existing) return this.updateObservation(existing, event, undo, committed);
+    const digest = observationDigest(event);
+    const decision = this.source.assessment?.kind === 'rule' ? this.source.assessment.evaluate(event) : { state: 'needed' as const, reason: event.reason, priority: event.priority };
+    const job: WorkItem = {
+      id, ownerKey: this.ownerKey, profile: this.config.executorProfile,
+      target: { ...this.target },
+      sourceRef: { transport: 'event', containerId: '', name: event.title, kind: 'external' },
+      messages: [],
+      createdAt: event.time, updatedAt: this.now(), state: decision.state === 'needed' ? 'queued' : 'waiting', automatic: true, alert: true,
+      attention: decision, handlingState: 'open', revision: 1,
+      external: { source, key: event.key, url: event.url, data: structuredClone(event.data),
+        analysisAttempts: 0, maxAttempts: Math.max(1, Math.min(3, event.maxAttempts ?? 3)), evidenceDir: event.evidenceDir },
+    };
+    this.delivery.enqueue(job, event);
+    recordObservation(job);
+    if (event.revision !== undefined) job.observation = { id: event.eventId!, revision: event.revision, time: event.time, digest };
+    if (event.operation === 'resolve') {
+      job.businessState = 'resolved'; job.state = 'done';
+      job.attention = { state: 'quiet', reason: event.reason };
+    }
+    job.analysisRequested = job.state === 'queued';
+    this.store.data.jobs.push(job);
+    undo.push(() => { this.store.data.jobs.splice(this.store.data.jobs.indexOf(job), 1); });
+    return job;
+  }
+  private updateObservation(job: WorkItem, event: WorkItemEvent, undo: (() => void)[], committed: (() => void)[]): WorkItem {
     // Unrevisioned events are create-only. A collector must opt into ordered updates explicitly.
-    if (event.revision === undefined || event.revision < (job.observation?.revision ?? 0)) return structuredClone(job);
+    if (event.revision === undefined || event.revision < (job.observation?.revision ?? 0)) return job;
     const digest = observationDigest(event);
     if (event.revision === job.observation?.revision) {
       if (job.observation.id !== event.eventId || job.observation.digest !== digest) throw new Error('事项观测版本冲突');
-      return structuredClone(job);
+      return job;
     }
     if (job.observation?.id === event.eventId) throw new Error('观测 ID 不可复用于新版本');
     const decision = this.source.assessment?.kind === 'rule' ? this.source.assessment.evaluate(event) : { state: 'needed' as const, reason: event.reason, priority: event.priority };
     const before = structuredClone(job);
-    const wasRunning = job.state === 'running';
+    undo.push(() => {
+      for (const key of Object.keys(job)) delete (job as unknown as Record<string, unknown>)[key];
+      Object.assign(job, before);
+    });
+    if (job.state === 'running') committed.push(() => this.analyses.get(job.id)?.controller.abort());
     job.sourceRef.name = event.title;
     job.external!.data = structuredClone(event.data); job.external!.url = event.url;
     job.external!.evidenceDir = event.evidenceDir; job.external!.analysisAttempts = 0;
@@ -246,13 +278,7 @@ export class WorkItemService<C extends WorkItemConfig = WorkItemConfig> {
     }
     this.delivery.enqueue(job, event);
     this.touch(job);
-    try { await this.store.save(); }
-    catch (error) {
-      for (const key of Object.keys(job)) delete (job as unknown as Record<string, unknown>)[key];
-      Object.assign(job, before); throw error;
-    }
-    if (wasRunning) this.analyses.get(job.id)?.controller.abort();
-    return structuredClone(job);
+    return job;
   }
   async decide(id: string, action: string, owner: string): Promise<void> {
     if (owner !== this.ownerKey) throw new Error('forbidden');

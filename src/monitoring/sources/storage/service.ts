@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
+import { readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { writeFileAtomic } from '../../../platform/atomic-write';
-import type { WorkItemEvent } from '../../../work-items/events';
+import type { ObservationJournal, WorkItemEvent } from '../../../work-items/events';
 import type { StorageMonitorConfig, StorageWatch } from './config';
 import type { ClusterSample, IoSample, StorageProvider, TaskRun } from './provider';
 
@@ -23,7 +23,9 @@ export interface IncidentEvidence {
 interface Incident {
   key: string; cluster: string; open: boolean; revision: number; lastEmittedAt: number;
   signature: string; triggerReasons?: string[]; sampleAt: number; suspectSince?: number; healthySince?: number;
-  evidence?: IncidentEvidence; event?: WorkItemEvent;
+  evidence?: IncidentEvidence;
+  /** Observation decided but not committed yet; never part of the committed state. */
+  event?: WorkItemEvent;
 }
 interface Tracked { run: TaskRun; history: string[]; seenAt: number; dependencies?: string[] }
 export interface StorageState {
@@ -33,46 +35,53 @@ export interface StorageState {
   incidents: Record<string, Incident>;
 }
 
-/** Deterministic collector. Persist an observation before submitting it, then replay until acknowledged. */
+/**
+ * Deterministic collector. Each poll commits its incident observations together with the
+ * state that produced them; an uncommitted observation is retried, unchanged, before the next poll.
+ */
 export class StorageMonitorService {
   state: StorageState;
   private timer?: NodeJS.Timeout;
   private controller = new AbortController();
   private polling?: Promise<void>;
-  private halted = false;
   error?: string;
-  constructor(readonly path: string, readonly config: StorageMonitorConfig, private provider: StorageProvider,
-    private submit: (event: WorkItemEvent) => Promise<unknown>, private now = Date.now, private analysisBusy = (_key: string) => false) {
+  /** @param legacyPath state file of builds that kept collector state outside the work-item store */
+  constructor(readonly config: StorageMonitorConfig, private provider: StorageProvider,
+    private journal: ObservationJournal<StorageState>, private now = Date.now, private analysisBusy = (_key: string) => false,
+    private legacyPath?: string) {
     this.state = { version: 1, scope: storageScope(config), statuses: {}, tasks: {}, incidents: {} };
   }
   async start(): Promise<void> {
-    try {
-      const saved = JSON.parse(await readFile(this.path, 'utf8')) as StorageState;
-      if (saved.version !== 1 || !saved.incidents || !saved.tasks || !saved.statuses) throw new Error('存储监控状态无效');
-      if (saved.scope === this.state.scope) this.state = saved;
-    } catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
-    await this.save();
+    const committed = this.journal.state();
+    const saved = committed ?? await this.readLegacy();
+    if (saved && (saved.version !== 1 || !saved.incidents || !saved.tasks || !saved.statuses)) throw new Error('存储监控状态无效');
+    if (saved?.scope === this.state.scope) this.state = saved;
+    await this.commit();
+    if (!committed && saved) await rename(this.legacyPath!, `${this.legacyPath}.migrated`);
     void this.poll();
     this.timer = setInterval(() => { void this.poll(); }, this.config.pollSeconds * 1000);
     this.timer.unref();
   }
   async close(): Promise<void> { clearInterval(this.timer); this.controller.abort(); await this.polling; }
   poll(): Promise<void> {
-    if (this.controller.signal.aborted || this.halted) return Promise.resolve();
+    if (this.controller.signal.aborted) return Promise.resolve();
     return this.polling ??= this.collect().catch(error => {
       if (!this.controller.signal.aborted) this.error = error instanceof Error ? error.message : '存储监控采集失败';
     }).finally(() => { this.polling = undefined; });
   }
-  private async save(): Promise<void> {
-    try { await writeFileAtomic(this.path, JSON.stringify(this.state), { mode: 0o600 }); }
-    catch (error) { this.halted = true; throw error; }
+  private async readLegacy(): Promise<StorageState | undefined> {
+    if (!this.legacyPath) return undefined;
+    try { return JSON.parse(await readFile(this.legacyPath, 'utf8')) as StorageState; }
+    catch (e) { if ((e as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw e; }
   }
-  private async flush(): Promise<void> {
-    for (const incident of Object.values(this.state.incidents)) if (incident.event) {
-      this.controller.signal.throwIfAborted();
-      await this.submit(incident.event);
-      incident.event = undefined; await this.save();
-    }
+  /** Commits pending observations with the current state, then forgets them. */
+  private async commit(): Promise<void> {
+    this.controller.signal.throwIfAborted();
+    const pending = Object.values(this.state.incidents).filter(incident => incident.event);
+    const state: StorageState = { ...this.state, incidents: Object.fromEntries(Object.entries(this.state.incidents)
+      .map(([key, { event: _, ...incident }]) => [key, incident])) };
+    await this.journal.commit(pending.map(incident => incident.event!), state);
+    for (const incident of pending) incident.event = undefined;
   }
   private status(id: string, state: CoverageStatus['state'], detail: string, success = true): void {
     const old = this.state.statuses[id];
@@ -81,7 +90,8 @@ export class StorageMonitorService {
   }
   private fresh(at: number): boolean { return at > 0 && at <= this.now() + 30_000 && this.now() - at <= this.config.staleSeconds * 1000; }
   private async collect(): Promise<void> {
-    await this.flush();
+    // An observation that failed to commit goes out before anything newer is decided.
+    if (Object.values(this.state.incidents).some(incident => incident.event)) await this.commit();
     const signal = this.controller.signal; const watches = this.config.watches.filter(w => w.enabled);
     const samples = new Map<string, ClusterSample>();
     // One failure does not suppress other clusters or platforms. Requests remain bounded.
@@ -192,7 +202,7 @@ export class StorageMonitorService {
     const activeStatusIds = new Set([...this.config.clusters.map(c => `cluster:${c.id}`), ...watches.map(w => `watch:${w.id}`), ...[...tasks.keys()].map(id => `task:${id}`)]);
     for (const id of Object.keys(this.state.statuses)) if (!activeStatusIds.has(id)) delete this.state.statuses[id];
     this.state.checkedAt = this.now(); this.error = undefined;
-    await this.save(); await this.flush();
+    await this.commit();
   }
   private async assess(key: string, evidence: IncidentEvidence, hard: boolean, slow: boolean, complete: boolean): Promise<void> {
     const incident = this.state.incidents[key] ??= { key, cluster: evidence.cluster, open: false, revision: 0,
@@ -228,6 +238,5 @@ export class StorageMonitorService {
         `3FS ${evidence.cluster}：${evidence.reasons.join('；')}。已排队启动分析；受影响的已订阅运行：${evidence.tasks.map(t => t.id).join(', ') || '尚无任务侧关联证据'}。` } : {}),
     };
     this.state.incidents[key] = next;
-    await this.save();
   }
 }

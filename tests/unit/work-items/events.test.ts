@@ -211,3 +211,27 @@ it('runs a new polling source through the same durable observation and investiga
   expect(s.service.list()[0]).toMatchObject({ origin: { sourceId: 'custom-poll' }, replyDraft: 'current' });
   expect(s.runtime.investigate).toHaveBeenCalledTimes(1);
 });
+
+it('commits a batch of observations and the collector state in one write, or keeps neither', async () => {
+  const s = await setup({ enabled: false });
+  const first = await s.service.observe(event);
+  const save = vi.spyOn(s.store, 'save').mockRejectedValueOnce(Error('disk full'));
+  await expect(s.service.commit([update(2), { ...event, key: 'issue-2' }], { cursor: 2 })).rejects.toThrow('disk full');
+  expect(s.service.list()).toHaveLength(1);
+  expect(s.service.get(first.id)).toEqual(first);
+  expect(s.service.collectorState).toBeUndefined();
+  save.mockRestore();
+  const items = await s.service.commit([update(2), { ...event, key: 'issue-2' }], { cursor: 2 });
+  expect(items.map(item => item.observation?.revision)).toEqual([2, 1]);
+  const persisted = new WorkItemStore(s.store.path); await persisted.load();
+  expect(persisted.data.collector).toEqual({ cursor: 2 });
+  expect(persisted.data.jobs).toHaveLength(2);
+});
+
+it('rejects the whole batch when one observation conflicts', async () => {
+  const s = await setup({ enabled: false }); await s.service.commit([event], { cursor: 1 });
+  await expect(s.service.commit([{ ...event, key: 'issue-2' }, update(1, { reason: 'conflicting evidence' })], { cursor: 2 }))
+    .rejects.toThrow('版本冲突');
+  expect(s.service.list()).toHaveLength(1);
+  expect(s.service.collectorState).toEqual({ cursor: 1 });
+});

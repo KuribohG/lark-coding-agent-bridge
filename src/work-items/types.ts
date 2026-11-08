@@ -70,4 +70,6 @@ export interface WorkItemState {
   notificationUsage?: Record<string, number>;
   lastDigestAt?: number;
   notificationOutbox?: { id: string; jobs: { id: string; signature: string }[]; attempts: number; retryAt: number };
+  /** Read state of an event collector, committed together with the observations it produced. */
+  collector?: unknown;
 }

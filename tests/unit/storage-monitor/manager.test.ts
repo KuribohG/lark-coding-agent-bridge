@@ -9,6 +9,7 @@ import { parseStorageConfig } from '../../../src/monitoring/sources/storage/conf
 import { StorageMonitorManager } from '../../../src/monitoring/sources/storage/manager';
 import type { WorkItemSources } from '../../../src/work-items/registry';
 import { createMonitorHost } from '../../../src/plugins/work-items/runtime';
+import { memoryJournal } from '../../helpers/journal';
 
 const mocks = vi.hoisted(() => ({ credentials: vi.fn(async () => ({ url: 'https://grafana.test', headers: {} })) }));
 vi.mock('../../../src/monitoring/sources/storage/grafana', () => ({ grafanaCredentials: mocks.credentials, GrafanaQueryClient: class {} }));
@@ -28,7 +29,7 @@ it('retains the last valid collector on a TOML typo and keeps disabled source it
   const config = parseStorageConfig({ enabled: true, executorProfile: 'p', outputDir: folder,
     clusters: [{ id: 'c', datasource: 'metrics', database: 'db' }], watches: [{ id: 'w', kind: 'cluster', cluster: 'c' }] });
   await writeFile(file, formatMonitorConfig({ storageMonitor: config }));
-  const close = vi.fn(async () => {}); const connect = vi.fn(async (_options: unknown) => ({ close, observe: vi.fn() }));
+  const close = vi.fn(async () => {}); const connect = vi.fn(async (_options: unknown) => ({ close, journal: () => memoryJournal() }));
   const sources = { connect, isAnalyzing: () => false, configureConcurrency: vi.fn() } as unknown as WorkItemSources;
   const host = createMonitorHost(path, folder);
   host.executors = { resolve: async () => undefined };
