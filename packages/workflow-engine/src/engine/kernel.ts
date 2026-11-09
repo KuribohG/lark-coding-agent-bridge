@@ -512,7 +512,7 @@ export class WorkflowKernel {
     if (managed && call.member) throw new Error('startAgent creates independent task handles; use agent() for persistent members');
     const root = await this.host.resolveRoot(scopeId);
     if (!root || !sameRoot(root, snapshot.root)) throw new Error('Worker root authorization changed');
-    const execution = await (this.host.resolveWorker?.(root, call.selection) ?? inheritedWorkerExecution(root, call.selection));
+    const execution = await (this.host.resolveWorker?.(snapshot.root, call.selection) ?? inheritedWorkerExecution(snapshot.root, call.selection));
     const latestRoot = await this.host.resolveRoot(scopeId);
     if (!latestRoot || !sameRoot(root, latestRoot)) throw new Error('Worker root authorization changed');
     if (this.closed) throw new Error('Workflow service is closed');
@@ -712,7 +712,7 @@ export class WorkflowKernel {
     if (kind === 'consume') {
       const spec = parseConsumerPool(args, state, this.host);
       const executions = [];
-      for (const member of spec.members) executions.push(await (this.host.resolveWorker?.(root, member.selection) ?? inheritedWorkerExecution(root, member.selection)));
+      for (const member of spec.members) executions.push(await (this.host.resolveWorker?.(state.root, member.selection) ?? inheritedWorkerExecution(state.root, member.selection)));
       const currentRoot = await this.host.resolveRoot(scopeId);
       if (this.closed || !currentRoot || !sameRoot(root, currentRoot)) throw new Error('Consumer root authorization changed');
       state = requireState(this.state(scopeId, workflowId));
@@ -947,7 +947,7 @@ export class WorkflowKernel {
     if (state.script) state.script.status = 'interrupted';
     for (const pool of consumerPools(state)) pool.status = 'suspended';
     for (const task of state.tasks) if (BUSY.has(task.status) || task.status==='waiting_workflow') this.cancelTask(task, state);
-    this.event(state, { kind: 'binding_attention', summary: 'Root session, model, workspace or policy changed; new delegation stopped.' });
+    this.event(state, { kind: 'binding_attention', summary: 'Root session, engine, workspace or policy changed; new delegation stopped.' });
     this.save(state);
   }
 
@@ -1192,7 +1192,9 @@ export class WorkflowKernel {
   }
 }
 
-function sameRoot(a: WorkflowRoot, b: WorkflowRoot): boolean { return workflowDigest(a) === workflowDigest(b); }
+// The main session's model settings may change mid-run; workers resolve against the pinned start-time root.
+function rootBinding({ modelSettings: _modelSettings, ...binding }: WorkflowRoot): Omit<WorkflowRoot, 'modelSettings'> { return binding; }
+function sameRoot(a: WorkflowRoot, b: WorkflowRoot): boolean { return workflowDigest(rootBinding(a)) === workflowDigest(rootBinding(b)); }
 function requireState(state: WorkflowState | undefined): WorkflowState {
   if (!state) throw new Error('Workflow not found in current root scope');
   return state;

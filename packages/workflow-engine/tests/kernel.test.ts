@@ -34,6 +34,7 @@ function harness(path = ':memory:', getTimeoutMinutes?: () => number, now = Date
     { operationId: randomUUID(), expectedStateVersion: state()?.stateVersion, ...(method === 'run_script' || method === 'replay_script' ? {plan:'Review the task with the requested harness and model; return a final result.'} : {}), ...args });
   return { kernel, state, requests, finishes, wakeMain, call, close,
     changeRoot: () => { root = { ...root, catalogBinding: 'replacement' }; },
+    changeModel: () => { root = { ...root, modelSettings: { model: 'switched-model', reasoningEffort: 'low' } }; },
     start: async () => { await call('run_script', { goal: 'authorized review', script: 'return null;', maxConcurrent: 2 }); kernel.beginScript('topic-1', state().workflowId); },
     agent: (key: string) => kernel.scriptAgent('topic-1', state().workflowId, state().script!.runId, { key, prompt: 'investigate ' + key }),
     settle: async () => vi.waitFor(() => expect(state().tasks.some(t => ['starting', 'running', 'cancelling'].includes(t.status))).toBe(false)),
@@ -154,6 +155,15 @@ describe('workflow kernel contracts', () => {
     const h = harness(); await h.start(); await h.agent('a'); await h.kernel.tick();
     await vi.waitFor(() => expect(h.requests).toHaveLength(1)); h.changeRoot(); await h.kernel.tick(); await h.settle();
     expect(h.state().status).toBe('binding_attention'); expect(h.kernel.hasWake('topic-1')).toBe(false); expect(h.wakeMain).not.toHaveBeenCalled();
+  });
+  it('keeps running on the pinned worker model when only the main model changes', async () => {
+    const h = harness(); await h.start(); await h.agent('a'); await h.kernel.tick();
+    await vi.waitFor(() => expect(h.requests).toHaveLength(1)); h.changeModel(); await h.kernel.tick();
+    expect(h.state().status).toBe('active'); expect(h.state().root.modelSettings).toEqual({});
+    await h.agent('b'); await h.kernel.tick();
+    await vi.waitFor(() => expect(h.requests).toHaveLength(2));
+    expect(h.requests[1]!.session.execution?.modelSettings).toEqual({});
+    expect(h.state().events.some(event => event.kind === 'binding_attention')).toBe(false);
   });
   it('keeps missing and failed final answers out of artifacts', async () => {
     const h = harness(); await h.start(); await h.agent('a'); await h.agent('b'); await h.kernel.tick();
