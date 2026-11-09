@@ -163,6 +163,7 @@ describe('static architecture contracts', () => {
       'src/config/profile-store.ts',
       'src/model-service/registry.ts',
       'src/runtime/supervisor.ts',
+      'src/ui/routes.ts',
       'src/ui/server.ts',
       'src/ui/types.ts',
     ];
