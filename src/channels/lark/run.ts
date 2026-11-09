@@ -1,5 +1,6 @@
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { capabilityForProfile } from '../../agent/backends';
+import type { AgentCapability } from '../../agent/capability';
 import { modelRunArguments } from '../../agent/model-settings';
 import type { AgentAdapter } from '../../agent/types';
 import type { RunHostBinding } from '../../agent/run-host';
@@ -26,7 +27,7 @@ import {
 import { log } from '../../core/logger';
 import { toPolicyAttachment } from '../../media/attachment';
 import type { MediaCache } from '../../media/cache';
-import { canUseDm, canUseGroup } from '../../policy/access';
+import { canUseDm, canUseGroup, type AccessDecision } from '../../policy/access';
 import type { ScopeContext } from '../../policy/run-policy';
 import type { ActiveRuns } from '../../runtime/active-runs';
 import type { AgentEntry } from '../../runtime/agent-entry';
@@ -98,19 +99,7 @@ export async function runAgentBatch(
 ): Promise<RunExecution | undefined> {
   const entry = turn.entry ?? { kind: 'direct' };
   const workflowWake = entry.kind === 'workflow' && entry.trigger === 'event';
-  const {
-    channel,
-    executor,
-    sessions,
-    sessionCatalog,
-    workspaces,
-    media,
-    activeRuns,
-    controls,
-    cotClient,
-    callbackAuth,
-    memory,
-  } = services;
+  const { channel, sessions, sessionCatalog, workspaces, media, controls } = services;
   const { batch, scope, agentKind, agent, mode, preparedCot } = turn;
   if (batch.length === 0) return undefined;
   batch.sort((left, right) => {
@@ -127,57 +116,10 @@ export async function runAgentBatch(
   const threadId = firstMsg.threadId;
   const scopedProfile = profileForAgentKind(controls.profileConfig, agentKind);
   const capability = capabilityForProfile(scopedProfile);
-
-  const resourceItems = (workflowWake ? [] : batch).flatMap((m) =>
-    m.resources.map((r) => ({ messageId: m.messageId, resource: r })),
-  );
-  const attachments = await media.resolve(resourceItems, controls.profileConfig.attachments);
-  if (attachments.length > 0) {
-    log.info('media', 'resolved', { count: attachments.length });
-    for (const attachment of attachments) {
-      log.info('attachment', 'decision', {
-        decision: attachment.decision,
-        kind: attachment.kind,
-        hash: attachment.hash,
-        size: attachment.size,
-        sourceMessageId: attachment.sourceMessageId,
-        reason: attachment.rejectionReason,
-      });
-    }
-  }
-
-  // Collect any reply-quote targets in the batch. Dedup so the same target
-  // quoted by multiple messages in one batch only fetches once. Filter out
-  // ids that are themselves in the batch — those are already in the prompt.
-  const batchIds = new Set(workflowWake ? [] : batch.map((m) => m.messageId));
-  const quoteTargets = [
-    ...new Set(
-      (workflowWake ? [] : batch)
-        .map((m) => replyQuoteTargetForMessage(m, mode))
-        .filter((id): id is string => Boolean(id) && !batchIds.has(id!)),
-    ),
-  ];
-  const quotes: QuotedContext[] = [];
-  const fetchedQuoteIds = new Set<string>();
-  for (const targetId of quoteTargets) {
-    const q = await fetchQuotedContext(channel, targetId);
-    if (q) {
-      quotes.push(q);
-      fetchedQuoteIds.add(targetId);
-      log.info('quote', 'fetched', {
-        messageId: targetId,
-        type: q.rawContentType,
-        contentChars: q.content.length,
-      });
-    }
-  }
-  const failedQuoteIds = quoteTargets.filter((targetId) => !fetchedQuoteIds.has(targetId));
-  if (failedQuoteIds.length > 0) {
-    log.warn('quote', 'batch-fetch-incomplete', {
-      count: failedQuoteIds.length,
-      messageIds: failedQuoteIds,
-    });
-  }
+  // A workflow wake carries no user input: nothing to attach, quote or import.
+  const input = workflowWake ? [] : batch;
+  const attachments = await resolveAttachments(media, controls, input);
+  const quoted = await fetchBatchQuotes(channel, input, mode);
 
   const accessDecision =
     firstMsg.chatType === 'p2p'
@@ -189,119 +131,20 @@ export async function runAgentBatch(
     actorId: firstMsg.senderId,
     ...(threadId ? { threadId } : {}),
   };
+  const topic = !workflowWake && mode === 'topic' && threadId
+    ? await fetchUnseenTopicContext(services, {
+      scope, scopeContext, threadId, batch, firstMsg, attachments, accessDecision, capability, quoted,
+    })
+    : EMPTY_TOPIC_CONTEXT;
 
-  // Topic upstream context. A resumed native session only contains messages
-  // that actually reached the agent; unmentioned group chatter never does.
-  // Import unseen messages on every topic turn, using the last complete import
-  // as a cursor. Failed/truncated windows remain pending and are retried.
-  let topicContext: QuotedContext[] = [];
-  let topicContextSince: number | undefined;
-  let topicContextThrough: number | undefined;
-  let topicContextComplete = true;
-  let topicContextIncompleteReason: string | undefined;
-  let topicContextSeenMessageIds: string[] = [];
-  const topicContextUntil = batch.reduce((latest, message) => {
-    const createTime = Number.isFinite(message.createTime) ? message.createTime : undefined;
-    return createTime !== undefined && createTime > latest ? createTime : latest;
-  }, 0);
-  if (!workflowWake && mode === 'topic' && threadId) {
-    const context = await resolveRunFlowContext({
-      scopeId: scope,
-      scope: scopeContext,
-      prompt: '',
-      attachments: attachments.map(toPolicyAttachment),
-      access: accessDecision,
-      capability,
-      profileConfig: controls.profileConfig,
-      sessions,
-      sessionCatalog,
-      workspaces,
-      now: Date.now(),
-    });
-    if (context.ok && context.resumeFrom && sessionCatalog) {
-      const entry = sessionCatalog.activeFor({
-        scopeId: scope,
-        agentId: capability.agentId,
-        cwdRealpath: context.workspace.cwdRealpath,
-        policyFingerprint: context.policy.policyFingerprint,
-      });
-      topicContextSince = entry?.topicContextThrough;
-      topicContextSeenMessageIds = entry?.topicContextSeenMessageIds ?? [];
-    }
-
-    const exclude = new Set([...batchIds, ...fetchedQuoteIds, ...topicContextSeenMessageIds]);
-    const fetched = await fetchTopicContext(channel, threadId, {
-      maxMessages: TOPIC_CONTEXT_MAX_MESSAGES,
-      maxChars: LARK_CONTEXT_MAX_CHARS,
-      ...(topicContextSince !== undefined ? { sinceMs: topicContextSince } : {}),
-      ...(topicContextUntil > 0 ? { untilMs: topicContextUntil } : {}),
-      ...(firstMsg.rootId ? { anchorMessageId: firstMsg.rootId } : {}),
-      excludeIds: exclude,
-      ...(channel.botIdentity?.openId ? { selfOpenId: channel.botIdentity.openId } : {}),
-      ...(controls.profileConfig.accounts.app.id
-        ? { selfAppId: controls.profileConfig.accounts.app.id }
-        : {}),
-    });
-    topicContext = fetched.messages;
-    topicContextComplete = fetched.complete;
-    topicContextIncompleteReason = fetched.reason;
-    if (topicContextComplete && topicContextUntil > 0) {
-      topicContextThrough = topicContextUntil;
-    }
-    topicContext = topicContext.filter(message => !controls.channel?.btw.excludes(scope, message));
-    if (topicContext.length > 0) {
-      log.info('topic', 'context-fetched', {
-        scope,
-        threadId,
-        count: topicContext.length,
-        incremental: topicContextSince !== undefined,
-        ...(topicContextSince !== undefined ? { sinceMs: topicContextSince } : {}),
-      });
-    }
-    if (!topicContextComplete) {
-      log.warn('topic', 'context-incomplete', {
-        scope,
-        threadId,
-        reason: topicContextIncompleteReason,
-        count: topicContext.length,
-      });
-    }
-  }
-
-  // Detect a model switch since this scope's last run. When resuming an
-  // existing conversation the transcript still claims the old model, so tell
-  // the (now-switched) agent its model changed — otherwise it keeps echoing
-  // the previously-announced model. Only fires when a prior model was seen
-  // for this scope (never on the first run) and the selection actually
-  // changed. Observed native models are recorded by session-progress.
-  const runModelSettings = await resolveRunModelSettings(controls, scope, undefined, agentKind);
-  const runArguments = turn.timedJob?.modelSettings ?? modelRunArguments(runModelSettings);
-  const modelPref = runArguments.model;
-  const modelSelection = normalizeModelSelection(agentKind, modelPref);
-  const modelSwitched = memory.modelSwitched(agentKind, scope, modelSelection);
-  const extraInstructions = [
-    ...(!topicContextComplete
-      ? ['本次话题上下文未能完整导入。不要假设你已经看到该话题中所有未直接送达 bot 的消息；涉及缺失上下文时应明确说明。']
-      : []),
-    ...(failedQuoteIds.length > 0
-      ? ['有一条或多条用户引用的消息未能从飞书读取。不要猜测这些引用消息的内容；如无法完成任务请明确说明。']
-      : []),
-    ...(modelSwitched
-      ? [
-        `用户刚把本会话使用的模型切换为「${modelLabel(agentKind, modelPref)}」。` +
-          '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
-        ]
-      : []),
-  ];
-  if (turn.timedJob) extraInstructions.push(deadlineInstructions(turn.timedJob.stopAt, turn.timedJob.windDownAt));
-  if (turn.resumeAttempt) {
-    extraInstructions.push(
-      `bridge 进程在你处理这批消息期间被终止，现已重启并自动续跑（第 ${turn.resumeAttempt} 次）。` +
-      '如果当前会话里已有这批消息及部分进展，先核对已完成的工作（文件、命令结果、已发出的消息），从中断处继续，' +
-      '不要重复已经生效的操作；如果会话里没有，就按正常流程处理。',
-    );
-  }
-
+  const { runArguments, modelPref, modelSelection, modelSwitched } = await resolveTurnModel(services, turn);
+  const extraInstructions = turnInstructions({
+    topicContextComplete: topic.complete,
+    quotesMissing: quoted.failedIds.length > 0,
+    modelSwitchedTo: modelSwitched ? modelLabel(agentKind, modelPref) : undefined,
+    timedJob: turn.timedJob,
+    resumeAttempt: turn.resumeAttempt,
+  });
   const entryBinding = bindAgentEntry(entry, scope, turn.workflows);
   if (entryBinding) extraInstructions.push(entryBinding.instructions);
   const prompt = workflowWake
@@ -309,15 +152,15 @@ export async function runAgentBatch(
     : buildPrompt(
     batch,
     attachments,
-    quotes,
-    topicContext,
+    quoted.quotes,
+    topic.messages,
     channel.botIdentity,
     extraInstructions,
   );
   log.info('prompt', 'built', {
     promptChars: prompt.length,
-    quotes: quotes.length,
-    topicContext: topicContext.length,
+    quotes: quoted.quotes.length,
+    topicContext: topic.messages.length,
     ...(modelSwitched ? { modelSwitchedTo: modelSelection } : {}),
   });
 
@@ -353,7 +196,7 @@ export async function runAgentBatch(
     sessions,
     sessionCatalog,
     workspaces,
-    executor,
+    executor: services.executor,
     now: Date.now(),
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
     // A timed run has no one waiting to answer before its deadline.
@@ -386,7 +229,7 @@ export async function runAgentBatch(
     return undefined;
   }
 
-  const { execution, cwdRealpath: cwd } = flow;
+  const { execution } = flow;
   if (entryBinding) {
     void execution.result.finally(entryBinding.release);
     entryBinding.onStarted();
@@ -407,27 +250,295 @@ export async function runAgentBatch(
       return execution;
     }
   }
-  memory.runStarted(scope, flow.policy.policyFingerprint);
-  const handle = execution.handle;
-  activeRuns.seedInputMessages(scope, handle.run, batchIds);
+  services.memory.runStarted(scope, flow.policy.policyFingerprint);
+  services.activeRuns.seedInputMessages(scope, execution.handle.run, quoted.batchIds);
   if (flow.resumeFrom) {
-    log.info('session', 'resume', { sessionId: flow.resumeFrom, cwd });
+    log.info('session', 'resume', { sessionId: flow.resumeFrom, cwd: flow.cwdRealpath });
   } else {
-    log.info('session', 'fresh', { cwd });
+    log.info('session', 'fresh', { cwd: flow.cwdRealpath });
   }
   const sessionDone = trackRunSession({
     scopeId: scope, sessions, sessionCatalog, capability, policy: flow.policy,
-    execution, activeRuns, resumeFrom: flow.resumeFrom,
+    execution, activeRuns: services.activeRuns, resumeFrom: flow.resumeFrom,
     source: workflowWake ? { kind: 'internal' } : {
       kind: 'message', messageId: firstMsg.messageId, summary: summarizeRunInput(batch),
       ...(mode === 'topic' ? { history: {
-        completeThrough: topicContextThrough,
-        seenMessageIds: [...topicContextSeenMessageIds, ...topicContext.map(message => message.messageId), ...batchIds, ...fetchedQuoteIds],
+        completeThrough: topic.through,
+        seenMessageIds: [...topic.seenMessageIds, ...topic.messages.map(message => message.messageId), ...quoted.batchIds, ...quoted.fetchedIds],
       } } : {}),
     },
   });
   // The observer starts with execution, even if rendering cannot start.
   void sessionDone.catch(err => log.warn('session', 'tracking-failed', { scope, err: String(err) }));
+
+  const started = { flow, capability, firstMsg, lastMsg, sendOpts };
+  const questionsDone = relayUserQuestions(services, turn, started);
+  try {
+    try {
+      await presentTurn(services, turn, started);
+    } catch (err) {
+      // Rendering is not part of the model transaction. A failed Feishu write
+      // must not make the next turn forget that this run actually completed.
+      log.fail('stream', err);
+    }
+    await sessionDone;
+  } finally {
+    services.memory.runEnded(scope);
+    if (turn.timedJob) {
+      // End the supervised process even when card delivery failed before the
+      // renderer drained the stream. Never let a rendering error detach work.
+      await execution.stop('cleanup');
+      await timedResult;
+    }
+    await questionsDone;
+  }
+  return execution;
+}
+
+async function resolveAttachments(media: MediaCache, controls: Controls, input: PendingMessage[]) {
+  const resourceItems = input.flatMap((m) =>
+    m.resources.map((r) => ({ messageId: m.messageId, resource: r })),
+  );
+  const attachments = await media.resolve(resourceItems, controls.profileConfig.attachments);
+  if (attachments.length > 0) {
+    log.info('media', 'resolved', { count: attachments.length });
+    for (const attachment of attachments) {
+      log.info('attachment', 'decision', {
+        decision: attachment.decision,
+        kind: attachment.kind,
+        hash: attachment.hash,
+        size: attachment.size,
+        sourceMessageId: attachment.sourceMessageId,
+        reason: attachment.rejectionReason,
+      });
+    }
+  }
+  return attachments;
+}
+
+interface BatchQuotes {
+  /** Messages of the batch itself, which the prompt already contains. */
+  batchIds: Set<string>;
+  quotes: QuotedContext[];
+  fetchedIds: Set<string>;
+  failedIds: string[];
+}
+
+/** Fetches reply-quote targets once each, skipping ids that are themselves in the batch. */
+async function fetchBatchQuotes(channel: LarkChannel, input: PendingMessage[], mode: ChatMode): Promise<BatchQuotes> {
+  const batchIds = new Set(input.map((m) => m.messageId));
+  const quoteTargets = [
+    ...new Set(
+      input
+        .map((m) => replyQuoteTargetForMessage(m, mode))
+        .filter((id): id is string => Boolean(id) && !batchIds.has(id!)),
+    ),
+  ];
+  const quotes: QuotedContext[] = [];
+  const fetchedIds = new Set<string>();
+  for (const targetId of quoteTargets) {
+    const q = await fetchQuotedContext(channel, targetId);
+    if (q) {
+      quotes.push(q);
+      fetchedIds.add(targetId);
+      log.info('quote', 'fetched', {
+        messageId: targetId,
+        type: q.rawContentType,
+        contentChars: q.content.length,
+      });
+    }
+  }
+  const failedIds = quoteTargets.filter((targetId) => !fetchedIds.has(targetId));
+  if (failedIds.length > 0) {
+    log.warn('quote', 'batch-fetch-incomplete', {
+      count: failedIds.length,
+      messageIds: failedIds,
+    });
+  }
+  return { batchIds, quotes, fetchedIds, failedIds };
+}
+
+interface TopicContext {
+  messages: QuotedContext[];
+  complete: boolean;
+  /** Newest message time the import fully covers; the next turn starts after it. */
+  through?: number;
+  seenMessageIds: string[];
+}
+
+const EMPTY_TOPIC_CONTEXT: TopicContext = { messages: [], complete: true, seenMessageIds: [] };
+
+/**
+ * Topic upstream context. A resumed native session only contains messages
+ * that actually reached the agent; unmentioned group chatter never does.
+ * Import unseen messages on every topic turn, using the last complete import
+ * as a cursor. Failed/truncated windows remain pending and are retried.
+ */
+async function fetchUnseenTopicContext(services: LarkRunServices, input: {
+  scope: string;
+  scopeContext: ScopeContext;
+  threadId: string;
+  batch: PendingMessage[];
+  firstMsg: PendingMessage;
+  attachments: Awaited<ReturnType<MediaCache['resolve']>>;
+  accessDecision: AccessDecision;
+  capability: AgentCapability;
+  quoted: BatchQuotes;
+}): Promise<TopicContext> {
+  const { channel, controls, sessions, sessionCatalog, workspaces } = services;
+  const { scope, threadId, firstMsg, capability } = input;
+  let since: number | undefined;
+  let seenMessageIds: string[] = [];
+  const until = input.batch.reduce((latest, message) => {
+    const createTime = Number.isFinite(message.createTime) ? message.createTime : undefined;
+    return createTime !== undefined && createTime > latest ? createTime : latest;
+  }, 0);
+  const context = await resolveRunFlowContext({
+    scopeId: scope,
+    scope: input.scopeContext,
+    prompt: '',
+    attachments: input.attachments.map(toPolicyAttachment),
+    access: input.accessDecision,
+    capability,
+    profileConfig: controls.profileConfig,
+    sessions,
+    sessionCatalog,
+    workspaces,
+    now: Date.now(),
+  });
+  if (context.ok && context.resumeFrom && sessionCatalog) {
+    const entry = sessionCatalog.activeFor({
+      scopeId: scope,
+      agentId: capability.agentId,
+      cwdRealpath: context.workspace.cwdRealpath,
+      policyFingerprint: context.policy.policyFingerprint,
+    });
+    since = entry?.topicContextThrough;
+    seenMessageIds = entry?.topicContextSeenMessageIds ?? [];
+  }
+
+  const exclude = new Set([...input.quoted.batchIds, ...input.quoted.fetchedIds, ...seenMessageIds]);
+  const fetched = await fetchTopicContext(channel, threadId, {
+    maxMessages: TOPIC_CONTEXT_MAX_MESSAGES,
+    maxChars: LARK_CONTEXT_MAX_CHARS,
+    ...(since !== undefined ? { sinceMs: since } : {}),
+    ...(until > 0 ? { untilMs: until } : {}),
+    ...(firstMsg.rootId ? { anchorMessageId: firstMsg.rootId } : {}),
+    excludeIds: exclude,
+    ...(channel.botIdentity?.openId ? { selfOpenId: channel.botIdentity.openId } : {}),
+    ...(controls.profileConfig.accounts.app.id
+      ? { selfAppId: controls.profileConfig.accounts.app.id }
+      : {}),
+  });
+  const messages = fetched.messages.filter(message => !controls.channel?.btw.excludes(scope, message));
+  if (messages.length > 0) {
+    log.info('topic', 'context-fetched', {
+      scope,
+      threadId,
+      count: messages.length,
+      incremental: since !== undefined,
+      ...(since !== undefined ? { sinceMs: since } : {}),
+    });
+  }
+  if (!fetched.complete) {
+    log.warn('topic', 'context-incomplete', {
+      scope,
+      threadId,
+      reason: fetched.reason,
+      count: messages.length,
+    });
+  }
+  return {
+    messages,
+    complete: fetched.complete,
+    ...(fetched.complete && until > 0 ? { through: until } : {}),
+    seenMessageIds,
+  };
+}
+
+/**
+ * Detects a model switch since this scope's last run. When resuming an
+ * existing conversation the transcript still claims the old model, so the
+ * (now-switched) agent is told its model changed. Only fires when a prior
+ * model was seen for this scope and the selection actually changed.
+ * Observed native models are recorded by session-progress.
+ */
+async function resolveTurnModel(services: LarkRunServices, turn: LarkTurnRequest) {
+  const { agentKind, scope } = turn;
+  const runModelSettings = await resolveRunModelSettings(services.controls, scope, undefined, agentKind);
+  const runArguments = turn.timedJob?.modelSettings ?? modelRunArguments(runModelSettings);
+  const modelPref = runArguments.model;
+  const modelSelection = normalizeModelSelection(agentKind, modelPref);
+  const modelSwitched = services.memory.modelSwitched(agentKind, scope, modelSelection);
+  return { runArguments, modelPref, modelSelection, modelSwitched };
+}
+
+function turnInstructions(input: {
+  topicContextComplete: boolean;
+  quotesMissing: boolean;
+  modelSwitchedTo?: string;
+  timedJob?: TimedRun;
+  resumeAttempt?: number;
+}): string[] {
+  const instructions = [
+    ...(!input.topicContextComplete
+      ? ['本次话题上下文未能完整导入。不要假设你已经看到该话题中所有未直接送达 bot 的消息；涉及缺失上下文时应明确说明。']
+      : []),
+    ...(input.quotesMissing
+      ? ['有一条或多条用户引用的消息未能从飞书读取。不要猜测这些引用消息的内容；如无法完成任务请明确说明。']
+      : []),
+    ...(input.modelSwitchedTo !== undefined
+      ? [
+        `用户刚把本会话使用的模型切换为「${input.modelSwitchedTo}」。` +
+          '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
+        ]
+      : []),
+  ];
+  if (input.timedJob) instructions.push(deadlineInstructions(input.timedJob.stopAt, input.timedJob.windDownAt));
+  if (input.resumeAttempt) {
+    instructions.push(
+      `bridge 进程在你处理这批消息期间被终止，现已重启并自动续跑（第 ${input.resumeAttempt} 次）。` +
+      '如果当前会话里已有这批消息及部分进展，先核对已完成的工作（文件、命令结果、已发出的消息），从中断处继续，' +
+      '不要重复已经生效的操作；如果会话里没有，就按正常流程处理。',
+    );
+  }
+  return instructions;
+}
+
+interface StartedTurn {
+  flow: Extract<Awaited<ReturnType<typeof startRunFlow>>, { ok: true }>;
+  capability: AgentCapability;
+  firstMsg: PendingMessage;
+  lastMsg: PendingMessage;
+  sendOpts: { replyTo: string; replyInThread?: boolean };
+}
+
+/** Posts the run's questions to the chat until its event stream ends. */
+async function relayUserQuestions(services: LarkRunServices, turn: LarkTurnRequest, started: StartedTurn): Promise<void> {
+  const { flow, capability, firstMsg, lastMsg } = started;
+  const { execution } = flow;
+  const { scope } = turn;
+  for await (const event of execution.subscribe()) {
+    if (event.type !== 'user_input') continue;
+    try {
+      await services.userQuestions.publish(event, {
+        runId: execution.runId,
+        identity: { scopeId: scope, agentId: capability.agentId, cwdRealpath: flow.cwdRealpath, policyFingerprint: flow.policy.policyFingerprint },
+        message: firstMsg, replyTo: lastMsg.messageId,
+        mentionUser: firstMsg.chatType !== 'p2p' && senderTypeOf(firstMsg) === 'user',
+        allowQueue: !turn.timedJob, isCancelled: () => execution.handle.interrupted || Boolean(turn.signal?.aborted),
+      });
+    } catch (err) { log.warn('question', 'delivery-failed', { scope, err: String(err) }); }
+  }
+}
+
+/** Renders the run into the chat with the profile's reply mode and display settings. */
+async function presentTurn(services: LarkRunServices, turn: LarkTurnRequest, started: StartedTurn): Promise<void> {
+  const { channel, sessions, controls, cotClient, callbackAuth } = services;
+  const { scope, preparedCot } = turn;
+  const { flow, firstMsg, lastMsg, sendOpts } = started;
+  const { execution } = flow;
+  const chatId = firstMsg.chatId;
 
   // Resolve idle-timeout for this run: scope override (on SessionEntry) wins
   // over global default (preferences). 0 / undefined = no watchdog.
@@ -468,45 +579,10 @@ export async function runAgentBatch(
         }
       : {}),
   };
-
-  const questionsDone = (async () => {
-    for await (const event of execution.subscribe()) {
-      if (event.type !== 'user_input') continue;
-      try {
-        await services.userQuestions.publish(event, {
-          runId: execution.runId,
-          identity: { scopeId: scope, agentId: capability.agentId, cwdRealpath: cwd, policyFingerprint: flow.policy.policyFingerprint },
-          message: firstMsg, replyTo: lastMsg.messageId,
-          mentionUser: firstMsg.chatType !== 'p2p' && senderTypeOf(firstMsg) === 'user',
-          allowQueue: !turn.timedJob, isCancelled: () => handle.interrupted || Boolean(turn.signal?.aborted),
-        });
-      } catch (err) { log.warn('question', 'delivery-failed', { scope, err: String(err) }); }
-    }
-  })();
-
-  try {
-    try {
-      await presentRunOutput(execution, createLarkRunOutput({
-        channel, chatId, replyMode, sendOpts, cardRenderOptions,
-        cotMessages, cotClient, preparedCot, originMessageId: lastMsg.messageId, inputPreview: lastMsg.content,
-      }), { idleTimeoutMs, filterForPrefs });
-    } catch (err) {
-      // Rendering is not part of the model transaction. A failed Feishu write
-      // must not make the next turn forget that this run actually completed.
-      log.fail('stream', err);
-    }
-    await sessionDone;
-  } finally {
-    memory.runEnded(scope);
-    if (turn.timedJob) {
-      // End the supervised process even when card delivery failed before the
-      // renderer drained the stream. Never let a rendering error detach work.
-      await execution.stop('cleanup');
-      await timedResult;
-    }
-    await questionsDone;
-  }
-  return execution;
+  await presentRunOutput(execution, createLarkRunOutput({
+    channel, chatId, replyMode, sendOpts, cardRenderOptions,
+    cotMessages, cotClient, preparedCot, originMessageId: lastMsg.messageId, inputPreview: lastMsg.content,
+  }), { idleTimeoutMs, filterForPrefs });
 }
 
 function summarizeRunInput(batch: NormalizedMessage[]): string {
