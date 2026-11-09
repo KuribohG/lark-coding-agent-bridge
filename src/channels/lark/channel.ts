@@ -8,6 +8,7 @@ import type { AgentKind } from '../../config/profile-schema';
 import type { AppConfig } from '../../config/schema';
 import { getMaxConcurrentRuns, getMessageDebounceMs } from '../../config/schema';
 import { log, withTrace } from '../../core/logger';
+import { reply } from '../../commands/presentation';
 import { LarkProfileAuth } from '../../lark-auth/profile-auth';
 import { MediaCache } from '../../media/cache';
 import { createOwnerRefreshController } from '../../policy/owner';
@@ -302,7 +303,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     },
     disconnect: async () => {
       activeRuns.pauseNewRuns('bridge-disconnect');
-      if (controls.channel === channelControls) controls.channel = undefined;
+      if (controls.channel === channelControls) controls.channel = closingChannelControls(channelControls);
       const workflowsClosed = workflows.close();
       turns.close();
       const btwClosed = btw.close();
@@ -358,4 +359,26 @@ function settleWithin(work: Promise<void>, timeoutMs: number): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); });
   return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * What a disconnecting channel still offers: timed-run guards and queued
+ * input keep working until it is gone, while workflows, side questions,
+ * meetings and new timed runs are no longer available.
+ */
+function closingChannelControls(live: ChannelControls): ChannelControls {
+  return {
+    ...live,
+    workflow: () => undefined,
+    btw: {
+      enqueue: (_question, ctx) => reply(ctx, '当前入口暂不支持 /btw。'),
+      excludes: () => false,
+      reset: () => {},
+      cancel: () => {},
+    },
+    launchTimedRun: async () => { throw new Error('当前运行环境不支持限时任务。'); },
+    meeting: () => undefined,
+    reconcileMeeting: async () => {},
+    onConfigApplied: () => {},
+  };
 }

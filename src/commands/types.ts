@@ -64,7 +64,7 @@ export interface ChannelControls {
 }
 
 export interface Controls {
-  /** Live services of the connected channel; absent until it starts and after it disconnects. */
+  /** Live services of the connected channel; absent until it starts, reduced once it starts disconnecting. */
   channel?: ChannelControls;
   /** Commands contributed by the active plugin host. */
   commands?: CommandDispatcher;

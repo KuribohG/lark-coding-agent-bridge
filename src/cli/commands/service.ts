@@ -16,6 +16,7 @@ import {
   materializeEnvSecretForService,
   resolveProfileRuntime,
 } from '../../runtime/profile-runtime';
+import { terminalBootstrapPrompts } from '../wizard';
 import { readRegistry, type ProcessEntry } from '../../runtime/registry';
 import { checkRuntimeLock, type RuntimeLockMeta } from '../../runtime/locks';
 import { agentDisplayName } from '../../agent/backends';
@@ -203,7 +204,7 @@ async function ensureBridgeConfigured(
     appSecret: opts.appSecret,
     tenant: opts.tenant,
     allowBootstrap: true,
-
+    prompts: terminalBootstrapPrompts,
   });
   if (!isComplete(cfg)) {
     console.error('bot 还没配置 app 凭据。');
