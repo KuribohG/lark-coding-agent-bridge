@@ -1,4 +1,4 @@
-import type { ChildProcess } from 'node:child_process';
+import { ChildProcess } from 'node:child_process';
 import { spawnProcessSync } from './spawn';
 
 export type ProcessTreeStrategy = 'posix-signals' | 'windows-taskkill';
@@ -23,13 +23,30 @@ export function getProcessTreeController(
   return {
     strategy: 'posix-signals',
     ownsDescendantsAfterBridgeExit: false,
-    terminate: (child, signal = 'SIGTERM') => child.kill(signal),
+    terminate: terminatePosixGroup,
   };
 }
 
 /** On Windows child.kill() can terminate only the cmd shim, leaving its agent alive. */
 export function terminateChild(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'): boolean {
   return getProcessTreeController().terminate(child, signal);
+}
+
+/**
+ * Agents are spawned detached, as process-group leaders, so their MCP servers
+ * and tool processes share the group and go down with them. A child in the
+ * bridge's own group leads no group: kill(-pid) fails with ESRCH (a PID is not
+ * reused while a group of that ID exists) and only the child is signalled.
+ * Run-host proxies are not ChildProcess instances; their pid is the host's.
+ */
+function terminatePosixGroup(child: ChildProcess, signal: NodeJS.Signals = 'SIGTERM'): boolean {
+  if (child instanceof ChildProcess && child.pid && child.exitCode === null && child.signalCode === null) {
+    try {
+      process.kill(-child.pid, signal);
+      return true;
+    } catch { /* not a group leader */ }
+  }
+  return child.kill(signal);
 }
 
 function terminateWindowsTree(child: ChildProcess): boolean {

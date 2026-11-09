@@ -38,8 +38,17 @@ function send(socket, type, payload) {
   if (socket && !socket.destroyed) socket.write(frame(type, payload));
 }
 
-const child = crossSpawn(spec.command, spec.args ?? [], { stdio: ['pipe', 'pipe', 'pipe'] });
+// The agent leads its own process group so its MCP servers and tools are
+// signalled with it; the host itself stays out of reach to record the exit.
+const child = crossSpawn(spec.command, spec.args ?? [], { stdio: ['pipe', 'pipe', 'pipe'], detached: process.platform !== 'win32' });
 writeFileSync(join(dir, 'host.json'), JSON.stringify({ pid: process.pid, childPid: child.pid ?? null, startedAt: Date.now() }));
+
+function signalAgent(signal) {
+  if (process.platform !== 'win32' && child.pid && child.exitCode === null && child.signalCode === null) {
+    try { process.kill(-child.pid, signal); return; } catch { /* group already gone */ }
+  }
+  try { child.kill(signal); } catch {}
+}
 
 function output(type, chunk) {
   if (finished) return;
@@ -78,7 +87,7 @@ function receive(socket, type, payload) {
     stdinClosed = true;
     child.stdin.end();
   } else if (type === 'k') {
-    try { child.kill(payload.toString('utf8') || 'SIGTERM'); } catch {}
+    signalAgent(payload.toString('utf8') || 'SIGTERM');
   }
 }
 
@@ -135,13 +144,13 @@ child.on('close', () => finish());
 
 // Forward termination to the agent and exit with it; SIGHUP must not end the run.
 for (const signal of ['SIGTERM', 'SIGINT']) {
-  process.on(signal, () => { try { child.kill('SIGTERM'); } catch {} });
+  process.on(signal, () => signalAgent('SIGTERM'));
 }
 process.on('SIGHUP', () => {});
 
 // A run nobody reattaches to (bridge removed or down for a day) must not live forever.
 setInterval(() => {
   if (client || exit || Date.now() - detachedSince < orphanMs) return;
-  try { child.kill('SIGTERM'); } catch {}
-  setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 10_000);
+  signalAgent('SIGTERM');
+  setTimeout(() => signalAgent('SIGKILL'), 10_000);
 }, 60_000);

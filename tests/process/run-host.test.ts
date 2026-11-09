@@ -1,5 +1,5 @@
 import { once } from 'node:events';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -51,6 +51,13 @@ const timer = setInterval(() => {
     out({ type: 'result', subtype: 'success', result: 'finished after restart', session_id: 'sess-host', user_message_uuids: uuids });
   }
 }, 20);
+`;
+
+// Appended to FAKE_CLAUDE: a long-lived tool process, like an MCP server.
+const WITH_TOOL = `
+import { spawn } from 'node:child_process';
+const tool = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
+writeFileSync(dir + '/tool.pid', String(tool.pid));
 `;
 
 // A minimal per-run Codex app-server speaking JSON-RPC over stdio.
@@ -140,7 +147,9 @@ describe.skipIf(process.platform === 'win32')('run host', () => {
   }
 
   function alive(pid: number): boolean {
-    try { process.kill(pid, 0); return true; } catch { return false; }
+    try { process.kill(pid, 0); } catch { return false; }
+    // An orphan the container's init has not reaped yet is already dead.
+    try { return readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1]?.[0] !== 'Z'; } catch { return true; }
   }
 
   it('keeps a Claude run alive across a shutdown and replays it to the next bridge process', async () => {
@@ -239,6 +248,22 @@ describe.skipIf(process.platform === 'win32')('run host', () => {
     await run.stop('cancelled');
     await until(() => !alive(pid));
     await until(async () => await probeRunHost(key) === 'exited');
+  }, 20_000);
+
+  it('stops the processes a hosted agent started along with it', async () => {
+    const adapter = claude(await fakeAgent(FAKE_CLAUDE + WITH_TOOL));
+    const key = newRunHostKey();
+    const run = await start(adapter, key);
+    await next(run.events[Symbol.asyncIterator](), 'tool_use');
+    await until(() => existsSync(join(tmp.root, 'tool.pid')));
+    const tool = Number(await readFile(join(tmp.root, 'tool.pid'), 'utf8'));
+    try {
+      expect(alive(tool)).toBe(true);
+      await run.stop('cancelled');
+      await until(() => !alive(tool));
+    } finally {
+      try { process.kill(tool, 'SIGKILL'); } catch { /* already gone */ }
+    }
   }, 20_000);
 
   it('reattaches a Codex app-server turn without repeating its requests', async () => {
