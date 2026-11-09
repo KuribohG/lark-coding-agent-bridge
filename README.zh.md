@@ -83,6 +83,18 @@ node bin/lark-channel-bridge.mjs ui --stop
 
 这组命令管理的是**控制台**，不是 3A 的聊天进程。会话助理和监控是后续可选功能，默认关闭，普通对话不依赖它们。详见[首次飞书接入](docs/user-guide/getting-started.md)；系统服务是另一步，需要稳定的已安装 CLI 路径。
 
+### 服务器 / 容器：一条 `up` 在后台跑起来
+
+没有 systemd、也不想开着终端时，用 `up`。它只读 `~/.lark-channel/config.toml`：
+
+```sh
+node bin/lark-channel-bridge.mjs up        # 首次在终端里会先扫码创建飞书应用，然后后台启动
+node bin/lark-channel-bridge.mjs up        # 再执行一次：已是最新就什么都不做；换了版本或启动参数就平滑替换
+node bin/lark-channel-bridge.mjs down      # 停止
+```
+
+想从 git 拉指定分支构建、指定 node、加环境变量，都写在同一个文件的 `[deploy]` 表里；新版本没能上线会自动回滚到旧进程，`up --rollback` 可以手动退回上一个版本。详见 [docs/deploy.md](docs/deploy.md)。
+
 ## 4. 配置到底改哪里
 
 | 想改什么 | 改哪里 |

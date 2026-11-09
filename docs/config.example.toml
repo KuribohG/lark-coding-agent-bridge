@@ -4,6 +4,13 @@ version = 3
 active_profile = "codex"
 # monitors_file = "monitors.toml" # Keep the existing monitor file if configured.
 
+# Read only by `up` / `down` (see deploy.md); every key is optional.
+# [deploy]
+# git = "https://github.com/KuribohG/lark-coding-agent-bridge.git"
+# ref = "dev"
+# profiles = ["codex"]
+# env = { HTTPS_PROXY = "http://proxy:3128" }
+
 [defaults.run]
 max_concurrent_runs = 10
 idle_timeout_minutes = 0

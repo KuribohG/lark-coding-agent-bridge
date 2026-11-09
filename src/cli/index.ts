@@ -1,7 +1,7 @@
 import { AGENT_KINDS } from '../agent/backend-spec';
 import { runWorkflowTool } from '@kuribohg/agent-workflows';
 import { checkConfig, showConfig, setConfig, unsetConfig, describeConfig, reloadConfig } from './commands/config';
-import { Command } from 'commander';
+import { Command, Option } from 'commander';
 import { dirname } from 'node:path';
 import { useBundledLarkCli } from '../platform/bundled-tools';
 import { formatAgentPreflightDiagnostic, getAgentPreflightDiagnostic } from '../agent/preflight';
@@ -30,6 +30,7 @@ import {
   runServiceUnregister,
 } from './commands/service';
 import { runStart } from './commands/start';
+import { runDown, runUp, type UpOptions } from './commands/up';
 import { runUi, runUiStop } from './commands/ui';
 import { runWeb } from './commands/web';
 import { runSlack } from './commands/slack';
@@ -78,6 +79,20 @@ program
   }) => {
     await runStart(opts);
   });
+
+program.command('up')
+  .description('Bring the bridge described by config.toml up in the background: build [deploy] source, start or hand over, roll back on failure')
+  .option('-c, --config <path>', 'path to config file')
+  .option('--plan', 'show what would change without doing it')
+  .option('--restart', 'replace the running bridge even when nothing changed')
+  .option('--rollback', 'go back to the release that ran before the last successful up')
+  .addOption(new Option('--handover <plan>').hideHelp())
+  .action(async (opts: UpOptions) => { await runUp(opts); });
+
+program.command('down')
+  .description('Stop the background bridge serving this config')
+  .option('-c, --config <path>', 'path to config file')
+  .action(async (opts: { config?: string }) => { await runDown(opts); });
 
 program.command('web')
   .option('-c, --config <path>', 'execution defaults and Web presentation from TOML')

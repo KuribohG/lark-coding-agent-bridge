@@ -32,6 +32,8 @@ export interface ConfigDocument extends Table {
   state?: Table;
   channels?: Table;
   profiles: Record<string, Table>;
+  /** Read only by `up` / `down`; a running bridge ignores it. */
+  deploy?: Table;
 }
 
 export const RUN_KEYS = {
@@ -175,8 +177,27 @@ function checkProfile(p: Table, path: string): void {
   if (p.secrets !== undefined) checkSecrets(p.secrets, `${path}.secrets`);
 }
 
+function checkDeploy(value: unknown, profiles: Table): void {
+  const d = fields(value, { git: 'string', ref: 'string', profiles: 'strings', node: 'string', cwd: 'string', root: 'string',
+    keep: 'integer', env: 'table', ready_timeout_seconds: 'integer' }, 'deploy');
+  for (const k of ['git', 'ref', 'node', 'cwd', 'root']) if (d[k] !== undefined && !d[k].trim()) throw new Error(`deploy.${k}: expected nonempty string`);
+  if (d.ref !== undefined && d.git === undefined) throw new Error('deploy.ref: requires deploy.git');
+  if (d.keep !== undefined && d.keep < 1) throw new Error('deploy.keep: expected integer >= 1');
+  if (d.ready_timeout_seconds !== undefined && (d.ready_timeout_seconds < 10 || d.ready_timeout_seconds > 3600)) {
+    throw new Error('deploy.ready_timeout_seconds: expected integer 10..3600');
+  }
+  for (const [name, v] of Object.entries(d.env ?? {})) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`deploy.env.${name}: invalid environment variable name`);
+    if (typeof v !== 'string') throw new Error(`deploy.env.${name}: expected string`);
+  }
+  if (d.profiles !== undefined) {
+    if (!d.profiles.length || new Set(d.profiles).size !== d.profiles.length) throw new Error('deploy.profiles: expected distinct profile names');
+    for (const profile of d.profiles) if (!Object.hasOwn(profiles, profile)) throw new Error(`deploy.profiles: profile not found: ${profile}`);
+  }
+}
+
 function validateDocument(input: unknown): ConfigDocument {
-  const doc = keys(input, ['version', 'bridge', 'defaults', 'agents', 'state', 'channels', 'profiles', 'secrets', 'model_services'], 'config');
+  const doc = keys(input, ['version', 'bridge', 'defaults', 'agents', 'state', 'channels', 'profiles', 'secrets', 'model_services', 'deploy'], 'config');
   if (doc.version !== 3) throw new Error('config.version must be 3');
   if (doc.bridge !== undefined) {
     const bridge = keys(doc.bridge, ['active_profile', 'autostart_profiles', 'monitors_file'], 'bridge');
@@ -229,6 +250,7 @@ function validateDocument(input: unknown): ConfigDocument {
     }
   }
   if (doc.secrets !== undefined) checkSecrets(doc.secrets, 'secrets');
+  if (doc.deploy !== undefined) checkDeploy(doc.deploy, profiles);
   if (doc.bridge?.active_profile && !Object.hasOwn(profiles, doc.bridge.active_profile)) throw new Error('bridge.active_profile: profile not found');
   for (const profile of doc.bridge?.autostart_profiles ?? []) {
     if (!Object.hasOwn(profiles, profile)) throw new Error(`bridge.autostart_profiles: profile not found: ${profile}`);

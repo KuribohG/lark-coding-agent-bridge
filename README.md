@@ -83,6 +83,18 @@ node bin/lark-channel-bridge.mjs ui --stop
 
 These commands manage the **console**, not the Web chat process. The inbox and monitoring are optional and initially off; ordinary chat does not require them. See [first Lark setup](docs/user-guide/getting-started.md) and [deployment](docs/self-contained.md). Registering an OS service is a separate step requiring a stable installed CLI path.
 
+### Servers and containers: one `up`
+
+Without systemd, or without a terminal to keep open, `up` runs the bridge in the background from `~/.lark-channel/config.toml` alone:
+
+```sh
+node bin/lark-channel-bridge.mjs up     # first time in a terminal: QR setup, then start in the background
+node bin/lark-channel-bridge.mjs up     # again: nothing to do, or a smooth replacement after an upgrade
+node bin/lark-channel-bridge.mjs down   # stop
+```
+
+Building a git branch, choosing a Node binary or adding environment variables all go into the `[deploy]` table of the same file. A new release that does not come online is rolled back automatically, and `up --rollback` returns to the previous one. See [docs/deploy.md](docs/deploy.md).
+
 ## 4. Configure only what you need
 
 | What you want to change | Where to change it |

@@ -10,6 +10,7 @@
 | Use standalone browser chat; fix token/port issues | [Web chat guide](user-guide/web-chat.md) (中文), [CLI/channel reference](channels.md) |
 | Connect a Lark bot for the first time | [Getting started](user-guide/getting-started.md) (中文) |
 | Run on Windows, stop/restart, or set up login autostart | [Windows](user-guide/windows.md) (中文) |
+| Keep a Lark bridge running on a server or container from config.toml alone | [Deploying with `up`](deploy.md) |
 | Pick a config file and follow a complete recipe | [Configuration tutorial](user-guide/configuration.md) (中文) |
 | Look up field precedence, validation and reload rules | [Configuration reference](configuration.md) |
 | Connect Antigravity to Gemini or a provider such as high-five | [Antigravity backend](antigravity.md) |
