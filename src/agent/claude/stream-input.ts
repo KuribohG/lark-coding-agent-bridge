@@ -65,6 +65,15 @@ export class ClaudeStreamInput {
     }
   }
 
+  /**
+   * Ask Claude to end the turn itself: it cancels running tools and records the
+   * interruption in the transcript, which a signal would leave as a failed tool.
+   */
+  interrupt(): boolean {
+    return this.outstanding.size > 0
+      && this.control({ type: 'control_request', request_id: randomUUID(), request: { subtype: 'interrupt' } });
+  }
+
   errorMessage(message: string): string {
     return [...this.outstanding].some(uuid => uuid !== this.initialId)
       ? `${message}; supplemental input delivery is unknown` : message;

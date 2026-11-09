@@ -248,9 +248,14 @@ export class ClaudeAdapter implements AgentAdapter {
           input.close();
           return;
         }
+        // Let Claude end the turn itself so its transcript records an interruption, not a killed tool.
+        // Signalling while it still stops a tool would orphan that tool, which runs in its own group.
+        const settleMs = Math.min(stopGraceMs, INTERRUPT_SETTLE_MS);
+        const turnInterrupted = input.interrupt() && await turnEnded(child, settleMs);
         input.close();
-        if (child.exitCode !== null || child.signalCode !== null) return;
-        log.info('agent', 'stop-sigterm', { pid: child.pid ?? null, graceMs: stopGraceMs });
+        // After an interrupted turn Claude exits on EOF, having stopped its tools, tasks and MCP servers.
+        if (turnInterrupted ? await exitWithin(child, settleMs) : child.exitCode !== null || child.signalCode !== null) return;
+        log.info('agent', 'stop-sigterm', { pid: child.pid ?? null, graceMs: stopGraceMs, turnInterrupted });
         terminateChild(child, 'SIGTERM');
         await new Promise<void>((resolve) => {
           const timer = setTimeout(() => {
@@ -271,20 +276,7 @@ export class ClaudeAdapter implements AgentAdapter {
         });
       },
       waitForExit(timeoutMs: number): Promise<boolean> {
-        if (child.exitCode !== null || child.signalCode !== null) {
-          return Promise.resolve(true);
-        }
-        return new Promise<boolean>((resolve) => {
-          const onExit = (): void => {
-            clearTimeout(timer);
-            resolve(true);
-          };
-          const timer = setTimeout(() => {
-            child.removeListener('exit', onExit);
-            resolve(false);
-          }, timeoutMs);
-          child.once('exit', onExit);
-        });
+        return exitWithin(child, timeoutMs);
       },
     };
   }
@@ -385,6 +377,8 @@ async function* createEventStream(
           continue;
         }
       }
+      // An interrupted turn ends in an error result; the run reports the interruption instead.
+      if (terminal && isInterrupted()) break;
       yield* translator.translate(parsed);
       if (terminal) return;
     }
@@ -449,7 +443,53 @@ async function* createEventStream(
   }
 }
 
+function exitWithin(child: ClaudeChild, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    const onExit = (): void => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    const timer = setTimeout(() => {
+      child.removeListener('exit', onExit);
+      resolve(false);
+    }, timeoutMs);
+    child.once('exit', onExit);
+  });
+}
+
+/** True once the child prints a top-level result; false if it exits or the timeout passes first. */
+function turnEnded(child: ClaudeChild, timeoutMs: number): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    let pending = '';
+    const finish = (ended = false): void => {
+      clearTimeout(timer);
+      child.stdout.removeListener('data', onData);
+      child.removeListener('exit', onExit);
+      resolve(ended);
+    };
+    const onExit = (): void => finish();
+    const onData = (chunk: Buffer | string): void => {
+      pending += chunk.toString();
+      const lines = pending.split('\n');
+      pending = lines.pop() ?? '';
+      for (const line of lines) {
+        try {
+          const event = JSON.parse(line) as { type?: string; parent_tool_use_id?: string | null };
+          if (event?.type === 'result' && !event.parent_tool_use_id) return finish(true);
+        } catch { /* not a protocol line */ }
+      }
+    };
+    const timer = setTimeout(() => finish(), timeoutMs);
+    child.stdout.on('data', onData);
+    child.once('exit', onExit);
+    if (child.exitCode !== null || child.signalCode !== null) finish();
+  });
+}
+
 const ULTRACODE_SETTINGS = { ultracode: true, workflowSizeGuideline: 'large' };
+// Claude Code answers an interrupt and exits within a second; past this the signal path takes over.
+const INTERRUPT_SETTLE_MS = 3_000;
 // Session scheduling tools could fire after the watchdog's deadline.
 const DEADLINE_DISALLOWED_TOOLS = ['CronCreate', 'CronDelete', 'CronList', 'ScheduleWakeup'];
 

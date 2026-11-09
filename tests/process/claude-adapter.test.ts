@@ -535,8 +535,10 @@ describe('ClaudeAdapter process contract', () => {
           }
         }
       }
-      const inputs = JSON.parse(await readFile(recordPath, 'utf8'));
+      const written = JSON.parse(await readFile(recordPath, 'utf8'));
+      const inputs = written.filter((input: { type: string }) => input.type === 'user');
       expect(inputs).toHaveLength(2);
+      if (mode === 'stop') expect(written[2]).toMatchObject({ type: 'control_request', request: { subtype: 'interrupt' } });
       expect(inputs[1]).toMatchObject({ session_id: 'same-session', message: { content: 'supplement' } });
       if (mode === 'crash' || mode === 'stop') {
         expect(await delivery).toContain('delivery is unknown');
@@ -552,6 +554,62 @@ describe('ClaudeAdapter process contract', () => {
       }
       expect(await run.waitForExit(1000)).toBe(true);
     } finally { await run.stop(); }
+  });
+
+  it.each(['honored', 'ignored'] as const)('stops a turn through the interrupt control request when it is %s', async mode => {
+    const dir = await mkdtemp(join(tmpdir(), 'claude-interrupt-test-'));
+    cleanup.push(dir);
+    const binary = join(dir, 'fake-claude.mjs');
+    const recordPath = join(dir, 'record.json');
+    await writeFile(binary, `#!/usr/bin/env node
+      import { createInterface } from 'node:readline';
+      import { writeFileSync } from 'node:fs';
+      const mode = ${JSON.stringify(mode)};
+      const record = { inputs: [], signals: [] };
+      const save = () => writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify(record));
+      const emit = event => console.log(JSON.stringify(event));
+      process.on('SIGTERM', () => { record.signals.push('SIGTERM'); save(); process.exit(143); });
+      let prompt;
+      createInterface({ input: process.stdin }).on('line', line => {
+        const input = JSON.parse(line); record.inputs.push(input); save();
+        if (input.type === 'user') {
+          prompt = input;
+          emit({ type: 'system', subtype: 'init', session_id: 'interrupt-session' });
+          emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tool', name: 'Bash', input: { command: 'sleep 120' } }] } });
+        } else if (mode === 'honored' && input.request?.subtype === 'interrupt') {
+          emit({ type: 'control_response', response: { subtype: 'success', request_id: input.request_id, response: { still_queued: [] } } });
+          emit({ type: 'user', message: { content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] } });
+          emit({ type: 'result', subtype: 'error_during_execution', is_error: true, session_id: 'interrupt-session', user_message_uuids: [prompt.uuid] });
+        }
+      });
+      // An unresponsive CLI keeps running after stdin closes until a signal arrives.
+      process.stdin.on('end', () => { if (mode === 'honored') process.exit(1); else setInterval(() => {}, 1000); });
+    `, { mode: 0o700 });
+    const run = (await new ClaudeAdapter({ binary }).prepareRun({
+      runId: 'interrupt', prompt: 'work', cwd: dir, stopGraceMs: mode === 'honored' ? 5_000 : 100,
+    })).start();
+    const events: AgentEvent[] = [];
+    let stopMs = 0;
+    for await (const event of run.events) {
+      events.push(event);
+      if (event.type === 'tool_use') {
+        const started = Date.now();
+        await run.stop('cancelled');
+        stopMs = Date.now() - started;
+      }
+    }
+    const record = JSON.parse(await readFile(recordPath, 'utf8'));
+    expect(record.inputs.map((input: { type: string }) => input.type)).toEqual(['user', 'control_request']);
+    expect(record.inputs[1]).toMatchObject({ request: { subtype: 'interrupt' } });
+    expect(events.filter(event => event.type === 'error')).toEqual([]);
+    expect(events.filter(event => event.type === 'done')).toEqual([{ type: 'done', terminationReason: 'interrupted' }]);
+    if (mode === 'honored') {
+      // Claude exits by itself after the interrupted turn, without a signal or the settle timeout.
+      expect(record.signals).toEqual([]);
+      expect(stopMs).toBeLessThan(2_000);
+    } else {
+      expect(record.signals).toEqual(['SIGTERM']);
+    }
   });
 
   it('routes AskUserQuestion through the stdio prompt tool as a blocking question', async () => {
