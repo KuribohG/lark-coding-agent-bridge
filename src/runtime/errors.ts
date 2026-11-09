@@ -1,4 +1,3 @@
-import type { AgentPreflightDiagnostic, AgentPreflightErrorCode } from '../agent/preflight';
 import type { RunStopReason } from '../agent/types';
 
 export type RunRejectedCode =
@@ -8,11 +7,6 @@ export type RunRejectedCode =
   | 'policy-expired'
   | 'reconnect-in-progress'
   | 'run-already-active';
-export type SpawnFailedCode =
-  | 'agent-spawn-failed'
-  | 'agent-prepare-failed'
-  | AgentPreflightErrorCode;
-
 export class RunRejected extends Error {
   readonly code: RunRejectedCode;
 
@@ -33,23 +27,4 @@ export class RunStopped extends RunRejected {
 
 export function abortStopReason(signal: AbortSignal): RunStopReason {
   return signal.reason instanceof RunStopped ? signal.reason.reason : 'cancelled';
-}
-
-export class SpawnFailed extends Error {
-  override readonly cause: unknown;
-  readonly code: SpawnFailedCode;
-  readonly diagnostic: AgentPreflightDiagnostic | undefined;
-
-  constructor(
-    message: string,
-    cause: unknown,
-    code: SpawnFailedCode = 'agent-spawn-failed',
-    diagnostic?: AgentPreflightDiagnostic,
-  ) {
-    super(message);
-    this.name = 'SpawnFailed';
-    this.cause = cause;
-    this.code = code;
-    this.diagnostic = diagnostic;
-  }
 }

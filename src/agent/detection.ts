@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import { access } from 'node:fs/promises';
 import { delimiter, extname, isAbsolute, join } from 'node:path';
-import { detectedAgentCandidates } from '../agent/backends';
+import { detectedAgentCandidates } from './backends';
 import type { AgentKind } from '../config/profile-schema';
 
 export type { AgentKind } from '../config/profile-schema';

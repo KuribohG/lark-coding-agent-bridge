@@ -38,9 +38,10 @@ const auth = vi.hoisted(() => {
   };
 });
 
-vi.mock('../../../src/cli/wizard', () => ({
-  runRegistrationWizard: vi.fn(async () => wizard.next),
-}));
+const prompts = {
+  registerApp: vi.fn(async () => wizard.next),
+  appSecret: vi.fn(async () => 'prompted-secret'),
+};
 
 vi.mock('../../../src/utils/feishu-auth', () => ({
   validateAppCredentials: auth.validateAppCredentials,
@@ -63,6 +64,7 @@ describe('profile runtime resolver', () => {
       agent: 'claude',
       workspace,
       allowBootstrap: true,
+      prompts,
       appId: 'cli_existing',
       appSecret: 'manual-secret',
       tenant: 'feishu',
@@ -113,6 +115,7 @@ describe('profile runtime resolver', () => {
         agent: 'claude',
         workspace,
         allowBootstrap: true,
+        prompts,
         appId: 'cli_bad',
         appSecret: 'bad-secret',
         tenant: 'feishu',
@@ -136,6 +139,7 @@ describe('profile runtime resolver', () => {
           config: join(root, 'config.toml'),
           agent: 'claude',
           allowBootstrap: true,
+          prompts,
         }),
       ).rejects.toThrow(/非交互模式无法完成扫码创建应用/);
     });
@@ -154,6 +158,7 @@ describe('profile runtime resolver', () => {
           config: join(root, 'config.toml'),
           agent: 'claude',
           allowBootstrap: true,
+          prompts,
           appId: 'cli_missing_secret',
           tenant: 'feishu',
         }),
@@ -172,6 +177,7 @@ describe('profile runtime resolver', () => {
       config: join(root, 'config.toml'),
       agent: 'claude',
       allowBootstrap: true,
+      prompts,
       appId: 'cli_existing',
       appSecret: 'manual-secret',
       tenant: 'feishu',
@@ -208,6 +214,7 @@ describe('profile runtime resolver', () => {
         await resolveProfileRuntime({
           config: join(root, 'config.toml'),
           allowBootstrap: true,
+          prompts,
           selectAgent: () => undefined,
         });
       } catch (err) {
@@ -255,6 +262,7 @@ describe('profile runtime resolver', () => {
         resolveProfileRuntime({
           config: join(root, 'config.toml'),
           allowBootstrap: true,
+          prompts,
           selectAgent: (detected) => {
             expect(detected.map((agent) => agent.kind)).toEqual(['claude', 'codex']);
             return 'codex';
@@ -439,6 +447,7 @@ describe('profile runtime resolver', () => {
         profile: 'codex',
         agent: 'codex',
         allowBootstrap: true,
+        prompts,
       });
     } catch (err) {
       if (!(err instanceof Error)) throw err;
@@ -494,6 +503,7 @@ describe('profile runtime resolver', () => {
         agent: 'claude',
         workspace,
         allowBootstrap: true,
+        prompts,
       }),
     );
     const saved = decodeFixture(await readFile(join(root, 'config.toml'), 'utf8')) as {

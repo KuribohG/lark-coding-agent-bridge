@@ -1,4 +1,4 @@
-import { WEB_DISPLAY_DEFAULTS, type WebDisplayConfig } from './config';
+import { WEB_DISPLAY_DEFAULTS, type WebDisplayConfig } from '../../config/channel-display';
 import { randomBytes } from 'node:crypto';
 import { join } from 'node:path';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';

@@ -13,7 +13,7 @@ import { PendingQueue, type PendingMessage } from './pending-queue';
 import { UserQuestions } from './question-cards';
 import { CallbackAuth } from '../../card/callback-auth';
 import { CallbackNonceStore } from '../../card/callback-store';
-import { handleCardAction } from '../../card/dispatcher';
+import { handleCardAction } from './card-actions';
 import { sendManagedCard } from '../../card/managed';
 import { timedRunCard } from '../../card/timed-run-card';
 import type { Controls } from '../../commands';

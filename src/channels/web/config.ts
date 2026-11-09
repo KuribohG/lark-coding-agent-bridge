@@ -1,11 +1,5 @@
 import type { RunState } from '../../runtime/run-state';
-
-export interface WebDisplayConfig {
-  show_tools: boolean;
-  show_reasoning: boolean;
-}
-
-export const WEB_DISPLAY_DEFAULTS: WebDisplayConfig = { show_tools: true, show_reasoning: true };
+import type { WebDisplayConfig } from '../../config/channel-display';
 
 export function filterWebState(state: RunState, config: WebDisplayConfig): RunState {
   return {

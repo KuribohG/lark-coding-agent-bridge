@@ -1,4 +1,5 @@
-import { filterWebState, WEB_DISPLAY_DEFAULTS, type WebDisplayConfig } from './config';
+import { WEB_DISPLAY_DEFAULTS, type WebDisplayConfig } from '../../config/channel-display';
+import { filterWebState } from './config';
 import { processAgentStream } from '../../runtime/run-stream';
 import type { RunState } from '../../runtime/run-state';
 import type { RunOutputPlugin } from '../../runtime/run-output';

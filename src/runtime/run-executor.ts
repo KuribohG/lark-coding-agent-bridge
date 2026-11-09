@@ -5,7 +5,8 @@ import { ActiveRuns, markRunStopped, stopRun, type RunHandle } from './active-ru
 import { ProcessPool } from './process-pool';
 import type { RunPolicyAllow } from '../policy/run-policy';
 import { log } from '../core/logger';
-import { RunRejected, RunStopped, abortStopReason, SpawnFailed } from './errors';
+import { SpawnFailed } from '../agent/errors';
+import { RunRejected, RunStopped, abortStopReason } from './errors';
 import { retryingRun } from './retrying-run';
 import { agentFailureKind } from '../agent/execution';
 import type { ResolvedModelProvider } from '../model-provider/types';

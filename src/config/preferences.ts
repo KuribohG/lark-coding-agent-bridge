@@ -9,7 +9,7 @@ import { parseEffort, resolveModelSettings } from '../agent/model-settings';
 import { DEFAULT_MODEL, normalizeModelSelection, validateModelId } from '../agent/models';
 import { modelEnvironment } from '../runtime/model-settings';
 import { applyProfileLarkCliIdentity, savePreferencesConfig, type MutableProfileState } from './config-ops';
-import { resolveExecutablePath } from '../cli/agent-detection';
+import { resolveExecutablePath } from '../agent/detection';
 import {
   effectiveLarkCliIdentity,
   type AgentKind,

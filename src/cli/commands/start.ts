@@ -23,6 +23,7 @@ import {
   type RuntimeLockMeta,
 } from '../../runtime/locks';
 import { resolveProfileRuntime } from '../../runtime/profile-runtime';
+import { terminalBootstrapPrompts } from '../wizard';
 import { createBuiltinPlugins } from '../../plugins/defaults';
 
 // Prefer IPv4 — Node 20+ defaults to "verbatim" which respects whatever
@@ -221,6 +222,7 @@ async function runClassic(opts: StartOptions): Promise<void> {
   const runtime = await resolveProfileRuntime({
     ...opts,
     allowBootstrap: true,
+    prompts: terminalBootstrapPrompts,
   });
   const { cfg, configPath, appPaths } = runtime;
   configureLogger({ logsDir: appPaths.logsDir });
@@ -271,6 +273,7 @@ async function runSupervisorConsole(opts: StartOptions): Promise<void> {
   const runtime = root || opts.appId ? await resolveProfileRuntime({
     ...opts,
     allowBootstrap: true,
+    prompts: terminalBootstrapPrompts,
   }) : undefined;
   const configPath = runtime?.configPath ?? opts.config ?? initialPaths.configFile;
   const appPaths = runtime?.appPaths ?? initialPaths;

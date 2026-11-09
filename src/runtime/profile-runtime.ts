@@ -4,12 +4,10 @@ import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import * as p from '@clack/prompts';
 import { agentDisplayName } from '../agent/backends';
-import { runRegistrationWizard } from '../cli/wizard';
-import { detectInstalledAgents, type DetectedAgent } from '../cli/agent-detection';
+import { detectInstalledAgents, type DetectedAgent } from '../agent/detection';
 import {
   createBootstrapProfileConfig,
 } from '../cli/profile-bootstrap';
-import { promptPassword } from '../cli/prompt';
 import { setSecret } from '../config/keystore';
 import { resolveAppPaths, type AppPaths } from '../config/app-paths';
 import {
@@ -42,7 +40,14 @@ export interface ResolveProfileRuntimeOptions {
   appSecret?: string;
   tenant?: string;
   allowBootstrap?: boolean;
+  /** Interactive steps of a first-run bootstrap; without them bootstrap needs --app-id/--app-secret. */
+  prompts?: ProfileBootstrapPrompts;
   selectAgent?: (detected: DetectedAgent[]) => AgentKind | undefined | Promise<AgentKind | undefined>;
+}
+
+export interface ProfileBootstrapPrompts {
+  registerApp(): Promise<AppConfig>;
+  appSecret(appId: string): Promise<string>;
 }
 
 export interface ProfileRuntime {
@@ -215,24 +220,24 @@ function resolveBootstrapAgent(
 
 async function resolveBootstrapAppConfig(opts: ResolveProfileRuntimeOptions, configPath: string, profile: string): Promise<AppConfig> {
   if (!opts.appId) {
-    if (!isInteractiveTerminal()) {
+    if (!isInteractiveTerminal() || !opts.prompts) {
       throw new Error(
         '当前没有配置，非交互模式无法完成扫码创建应用。' +
           '请先在终端运行 `lark-channel-bridge run` 完成首次初始化，' +
           '或传入 --app-id 和 --app-secret。',
       );
     }
-    return runRegistrationWizard();
+    return opts.prompts.registerApp();
   }
   let appSecret = opts.appSecret;
   if (!appSecret) {
-    if (!isInteractiveTerminal()) {
+    if (!isInteractiveTerminal() || !opts.prompts) {
       throw new Error(
         `非交互模式缺少 App Secret: ${opts.appId}。` +
           '请传入 --app-secret <secret>，或在终端中重新运行命令后按提示输入。',
       );
     }
-    appSecret = await promptPassword(`输入 ${opts.appId} 的 App Secret: `);
+    appSecret = await opts.prompts.appSecret(opts.appId);
   }
   if (!appSecret) throw new Error('app secret is required');
   const tenant = tenantBrandFromString(opts.tenant);

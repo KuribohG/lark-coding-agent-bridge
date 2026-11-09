@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SpawnFailed } from '../../runtime/errors';
+import { SpawnFailed } from '../errors';
 import { mergeProcessEnv } from '../../platform/spawn';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
 import { parseEffort } from '../model-settings';

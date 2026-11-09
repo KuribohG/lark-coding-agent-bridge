@@ -5,7 +5,7 @@ import { ChatModeCache } from '../../../../src/channels/lark/chat-mode-cache.js'
 import { PendingQueue } from '../../../../src/channels/lark/pending-queue.js';
 import { CallbackAuth } from '../../../../src/card/callback-auth.js';
 import { CallbackNonceStore } from '../../../../src/card/callback-store.js';
-import { handleCardAction } from '../../../../src/card/dispatcher.js';
+import { handleCardAction } from '../../../../src/channels/lark/card-actions.js';
 import type { Controls } from '../../../../src/commands/index.js';
 import { createDefaultProfileConfig, type ProfileConfig } from '../../../../src/config/profile-schema.js';
 import { SessionStore } from '../../../../src/session/store.js';

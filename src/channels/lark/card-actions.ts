@@ -1,21 +1,21 @@
 import type { CardActionEvent, CardActionResponse, LarkChannel, NormalizedMessage } from '@larksuite/channel';
-import type { AgentAdapter } from '../agent/types';
-import type { ActiveRuns } from '../runtime/active-runs';
-import type { ChatModeCache } from '../channels/lark/chat-mode-cache';
-import type { PendingQueue } from '../channels/lark/pending-queue';
-import type { ProcessPool } from '../runtime/process-pool';
-import { commandSessionCatalogIdentity } from '../channels/lark/session-catalog-identity';
-import type { UserQuestions } from '../channels/lark/question-cards';
-import { runCommandHandler, type CommandContext, type Controls } from '../commands';
-import type { AgentKind } from '../config/profile-schema';
-import { log } from '../core/logger';
-import { canUseDm, canUseGroup } from '../policy/access';
-import type { RunExecutor } from '../runtime/run-executor';
-import type { SessionCatalog } from '../session/catalog';
-import type { SessionStore } from '../session/store';
-import type { WorkspaceStore } from '../workspace/store';
-import type { CallbackAuth } from './callback-auth';
-import { respondToCardAction } from './response';
+import type { AgentAdapter } from '../../agent/types';
+import type { ActiveRuns } from '../../runtime/active-runs';
+import type { ChatModeCache } from './chat-mode-cache';
+import type { PendingQueue } from './pending-queue';
+import type { ProcessPool } from '../../runtime/process-pool';
+import { commandSessionCatalogIdentity } from './session-catalog-identity';
+import type { UserQuestions } from './question-cards';
+import { runCommandHandler, type CommandContext, type Controls } from '../../commands';
+import type { AgentKind } from '../../config/profile-schema';
+import { log } from '../../core/logger';
+import { canUseDm, canUseGroup } from '../../policy/access';
+import type { RunExecutor } from '../../runtime/run-executor';
+import type { SessionCatalog } from '../../session/catalog';
+import type { SessionStore } from '../../session/store';
+import type { WorkspaceStore } from '../../workspace/store';
+import type { CallbackAuth } from '../../card/callback-auth';
+import { respondToCardAction } from '../../card/response';
 
 /** Marker key on a button's value object that flags the cardAction as
  * a callback that should be forwarded back to the agent instead

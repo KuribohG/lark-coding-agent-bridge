@@ -21,6 +21,7 @@ import { acquireProfileRuntimeLock, checkRuntimeLock } from '../../runtime/locks
 import { readRegistry } from '../../runtime/registry';
 import { listAllProfiles } from '../../runtime/profile-discovery';
 import { resolveProfileRuntime } from '../../runtime/profile-runtime';
+import { terminalBootstrapPrompts } from '../wizard';
 
 export interface ProfileCommandOptions {
   rootDir?: string;
@@ -136,6 +137,7 @@ export async function runProfileCreate(
       appSecret: opts.appSecret,
       tenant: opts.tenant,
       allowBootstrap: true,
+      prompts: terminalBootstrapPrompts,
     });
   });
   console.log(`已创建 profile: ${name}`);

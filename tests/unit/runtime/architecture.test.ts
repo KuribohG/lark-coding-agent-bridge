@@ -1,4 +1,5 @@
 import { readdir, readFile } from 'node:fs/promises';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 import ts from 'typescript';
@@ -34,4 +35,46 @@ it('keeps Lark input, execution, prompt and transport modules independent of the
       expect(imports.filter(path => /(?:workflows|commands)(?:\/|$)/.test(path)), name).toEqual([]);
     }
   }
+});
+
+async function importsUnder(directory: string): Promise<Array<{ file: string; target: string; typeOnly: boolean }>> {
+  const root = fileURLToPath(new URL('../../../src/', import.meta.url));
+  const found: Array<{ file: string; target: string; typeOnly: boolean }> = [];
+  for (const entry of await readdir(join(root, directory), { recursive: true })) {
+    if (!entry.endsWith('.ts')) continue;
+    const file = join(root, directory, entry);
+    const source = ts.createSourceFile(file, await readFile(file, 'utf8'), ts.ScriptTarget.Latest, true);
+    for (const node of source.statements) {
+      if (!(ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) || !node.moduleSpecifier) continue;
+      const specifier = (node.moduleSpecifier as ts.StringLiteral).text;
+      if (!specifier.startsWith('.')) continue;
+      const typeOnly = ts.isImportDeclaration(node) ? Boolean(node.importClause?.isTypeOnly) : node.isTypeOnly;
+      found.push({ file: relative(root, file), target: relative(root, resolve(dirname(file), specifier)), typeOnly });
+    }
+  }
+  return found;
+}
+
+it('keeps lower layers from importing the hosts built on top of them', async () => {
+  const rules: Array<[string, RegExp]> = [
+    ['agent', /^(?:runtime|channels|commands|card|cli)\//],
+    ['config', /^(?:channels|commands|card|cli)\//],
+    ['runtime', /^cli\//],
+  ];
+  const composition = new Set(['runtime/supervisor.ts', 'runtime/profile-runtime.ts', 'runtime/public.ts']);
+  const violations: string[] = [];
+  for (const [directory, forbidden] of rules) {
+    for (const edge of await importsUnder(directory)) {
+      if (composition.has(edge.file) && directory === 'runtime') continue;
+      if (forbidden.test(edge.target)) violations.push(`${edge.file} -> ${edge.target}`);
+    }
+  }
+  expect(violations).toEqual([]);
+});
+
+it('keeps card rendering independent of channel and command implementations', async () => {
+  const violations = (await importsUnder('card'))
+    .filter(edge => !edge.typeOnly && /^(?:channels|commands)\//.test(edge.target) && edge.target !== 'commands/catalog')
+    .map(edge => `${edge.file} -> ${edge.target}`);
+  expect(violations).toEqual([]);
 });

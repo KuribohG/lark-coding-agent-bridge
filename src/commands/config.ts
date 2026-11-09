@@ -19,7 +19,7 @@ import {
   groupMsgScopeGrantedCard,
 } from '../card/config-card';
 import { GROUP_MSG_SCOPE, hasGroupMsgScope } from '../channels/lark/app-scope';
-import { requestScopeGrantLink } from '../cli/wizard';
+import { requestScopeGrantLink } from '../lark-auth/scope-grant';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import {
   getCotMessages,

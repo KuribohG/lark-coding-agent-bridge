@@ -2,7 +2,7 @@ import type { RunOutputPlugin } from '../../runtime/run-output';
 import { processAgentStream } from '../../runtime/run-stream';
 import type { RunState, ToolEntry } from '../../runtime/run-state';
 import type { SlackApi } from './api';
-import type { SlackDisplayConfig } from './config';
+import type { SlackDisplayConfig } from '../../config/channel-display';
 import { boundSlackText, splitSlackText, toSlackMrkdwn } from './format';
 
 export interface SlackRunOutputOptions {

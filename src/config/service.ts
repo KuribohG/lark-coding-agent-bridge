@@ -6,8 +6,7 @@ import { editToml, getPath } from './toml-edit';
 import type { MutableProfileState } from './config-ops';
 import { writeFileAtomic } from '../platform/atomic-write';
 import { larkDisplay } from './lark-display';
-import { WEB_DISPLAY_DEFAULTS } from '../channels/web/config';
-import { SLACK_DISPLAY_DEFAULTS } from '../channels/slack/config';
+import { SLACK_DISPLAY_DEFAULTS, WEB_DISPLAY_DEFAULTS } from './channel-display';
 import { getMaxConcurrentRuns, getRunIdleTimeoutMs, getAgentStopGraceMs, getWorkflowTimeoutMinutes } from './schema';
 
 export async function readProfileSnapshot(state: MutableProfileState) {

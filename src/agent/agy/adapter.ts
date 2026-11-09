@@ -2,7 +2,7 @@ import { preparedRun, snapshotRunOptions } from '../prepared-run';
 import type { PreparedAgentRun } from '../types';
 import { isAbsolute } from 'node:path';
 import { mergeProcessEnv } from '../../platform/spawn';
-import { SpawnFailed } from '../../runtime/errors';
+import { SpawnFailed } from '../errors';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
 import { withExecutionContract } from '../execution';
 import { parseEffort } from '../model-settings';

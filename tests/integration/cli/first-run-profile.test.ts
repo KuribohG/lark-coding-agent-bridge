@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { detectInstalledAgents, resolveExecutablePath } from '../../../src/cli/agent-detection';
+import { detectInstalledAgents, resolveExecutablePath } from '../../../src/agent/detection';
 import { createBootstrapProfileConfig } from '../../../src/cli/profile-bootstrap';
 import { writeVersionExecutable } from '../../helpers/fake-executable';
 

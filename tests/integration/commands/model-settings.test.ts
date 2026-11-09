@@ -11,7 +11,7 @@ import { ActiveRuns } from '../../../src/runtime/active-runs';
 import { ProcessPool } from '../../../src/runtime/process-pool';
 import { RunExecutor } from '../../../src/runtime/run-executor';
 import { modelRunArguments } from '../../../src/agent/model-settings';
-import { handleCardAction } from '../../../src/card/dispatcher';
+import { handleCardAction } from '../../../src/channels/lark/card-actions';
 import { ChatModeCache } from '../../../src/channels/lark/chat-mode-cache';
 import { PendingQueue } from '../../../src/channels/lark/pending-queue';
 import type { CardActionEvent } from '@larksuite/channel';

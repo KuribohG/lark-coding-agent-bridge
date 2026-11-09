@@ -3,7 +3,7 @@ import { homedir } from 'node:os';
 import type { CodexAppServerMode, SandboxMode } from '../../config/profile-schema';
 import { preparedRun, snapshotRunOptions } from '../prepared-run';
 import { codexExecutionEnvironment } from './environment';
-import { SpawnFailed } from '../../runtime/errors';
+import { SpawnFailed } from '../errors';
 import { resolveSystemPrompt, type AgentSystemPrompt } from '../system-prompt';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
 import type {

@@ -155,8 +155,8 @@ export interface AppPreferences {
 /** Channel presentation and transport settings alongside the resolved runtime configuration. */
 export interface ChannelDisplayConfig {
   lark?: Partial<import('./lark-display').LarkDisplayConfig>;
-  web?: Partial<import('../channels/web/config').WebDisplayConfig>;
-  slack?: Partial<import('../channels/slack/config').SlackDisplayConfig>;
+  web?: Partial<import('./channel-display').WebDisplayConfig>;
+  slack?: Partial<import('./channel-display').SlackDisplayConfig>;
 }
 
 export type RunPreferences = Pick<AppPreferences, 'model' | 'reasoningEffort' | 'maxConcurrentRuns' | 'runIdleTimeoutMinutes' | 'workflowTimeoutMinutes' | 'agentStopGraceMs'>;

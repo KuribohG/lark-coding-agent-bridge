@@ -5,7 +5,7 @@ import { agentLaunchPatch } from '../agent/capability';
 import { createDefaultProfileConfig, type AgentKind, type ProfileConfig } from '../config/profile-schema';
 import type { AppConfig } from '../config/schema';
 import { resolveWorkingDirectory } from '../policy/workspace';
-import { resolveExecutablePath } from './agent-detection';
+import { resolveExecutablePath } from '../agent/detection';
 
 export interface BootstrapProfileInput {
   agentKind: AgentKind;

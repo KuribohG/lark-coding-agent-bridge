@@ -5,7 +5,7 @@ import { claudeCapability, codexCapability } from '../../../src/agent/capability
 import { ActiveRuns } from '../../../src/runtime/active-runs.js';
 import { ChatModeCache } from '../../../src/channels/lark/chat-mode-cache.js';
 import { PendingQueue } from '../../../src/channels/lark/pending-queue.js';
-import { handleCardAction } from '../../../src/card/dispatcher.js';
+import { handleCardAction } from '../../../src/channels/lark/card-actions.js';
 import { tryHandleCommand, type CommandContext, type Controls } from '../../../src/commands/index.js';
 import { createDefaultProfileConfig, type AgentKind, type ProfileConfig } from '../../../src/config/profile-schema.js';
 import { canUseDm } from '../../../src/policy/access.js';

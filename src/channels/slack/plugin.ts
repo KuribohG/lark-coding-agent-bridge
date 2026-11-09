@@ -10,7 +10,8 @@ import {
 } from '../../runtime/conversation';
 import { acquireHostLock } from '../../runtime/host-lock';
 import { createSlackApi, type SlackApi, type SlackAuthIdentity } from './api';
-import { SLACK_DISPLAY_DEFAULTS, SLACK_SYSTEM_PROMPT, type SlackDisplayConfig } from './config';
+import { SLACK_DISPLAY_DEFAULTS, type SlackDisplayConfig } from '../../config/channel-display';
+import { SLACK_SYSTEM_PROMPT } from './config';
 import { handleSlackCommand, slackHelpText } from './commands';
 import { normalizeSlackText, toSlackMrkdwn } from './format';
 import { createSlackRunOutput } from './output';

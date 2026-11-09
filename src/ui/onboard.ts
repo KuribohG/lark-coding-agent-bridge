@@ -1,5 +1,5 @@
 import { defaultWorkspaceFor } from '../agent/state-layout';
-import { detectInstalledAgents } from '../cli/agent-detection';
+import { detectInstalledAgents } from '../agent/detection';
 import { resolveAppPaths } from '../config/app-paths';
 import { setSecret } from '../config/keystore';
 import {
