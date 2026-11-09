@@ -229,6 +229,8 @@ describe.skipIf(process.platform === 'win32')('run host', () => {
     expect(await next(replay, 'user_input')).toMatchObject({ id: 'q1' });
     expect(await second.answerUserInput!('q1', { answers: [['A']] })).toBe('accepted');
     await second.stop('shutdown');
+    // The host journals socket input asynchronously; the answer may land after the bridge detaches.
+    await until(async () => readRunHostInput(key).some(line => line.includes('control_response')));
     expect(readRunHostInput(key).filter(line => line.includes('control_response'))).toHaveLength(1);
 
     const third = await start(adapter, key, true, { userQuestions: true });
