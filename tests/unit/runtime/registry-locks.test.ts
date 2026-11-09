@@ -1,14 +1,15 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resolveAppPaths } from '../../../src/config/app-paths';
-import { runtimeLockMetaFile, withProfileAndAppLocks } from '../../../src/runtime/locks';
+import { checkRuntimeLock, runtimeLockMetaFile, withProfileAndAppLocks } from '../../../src/runtime/locks';
 import {
   readRegistry,
   register,
   sameAppLiveOthers,
   unregisterSync,
+  updateEntry,
   type ProcessEntry,
 } from '../../../src/runtime/registry';
 
@@ -194,6 +195,38 @@ describe('registry and runtime lock integration', () => {
 
     const persisted = JSON.parse(await readFile(registryFile, 'utf8')) as { entries: ProcessEntry[] };
     expect(persisted.entries).toEqual([]);
+  });
+
+  it('keeps a live entry whose lock is between refreshes', async () => {
+    const root = await makeRoot();
+    const registryFile = join(root, 'registry', 'processes.json');
+    const lockedPaths = resolveAppPaths({ rootDir: root, profile: 'claude' });
+    await withProfileAndAppLocks(lockedPaths, 'cli_existing', 'claude', async () => {
+      await writeJson(registryFile, { entries: [entry({ id: 'live', appId: 'cli_existing' })] });
+      // Holders refresh every 10s; 12s after the last refresh the holder is late, not gone.
+      vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + 12_000 });
+      try {
+        expect((await checkRuntimeLock(lockedPaths.profileLockFile)).locked).toBe(true);
+        await updateEntry('live', { botName: 'bot' }, registryFile);
+      } finally {
+        vi.useRealTimers();
+      }
+      const persisted = JSON.parse(await readFile(registryFile, 'utf8')) as { entries: ProcessEntry[] };
+      expect(persisted.entries).toEqual([expect.objectContaining({ id: 'live', botName: 'bot' })]);
+    });
+  });
+
+  it('waits for the registry lock instead of failing concurrent writers', async () => {
+    const root = await makeRoot();
+    const registryFile = join(root, 'registry', 'processes.json');
+    const lockedPaths = resolveAppPaths({ rootDir: root, profile: 'claude' });
+    await withProfileAndAppLocks(lockedPaths, 'cli_existing', 'claude', async () => {
+      await writeJson(registryFile, { entries: [entry({ id: 'live', appId: 'cli_existing' })] });
+      await Promise.all(Array.from({ length: 8 }, (_, i) =>
+        updateEntry('live', { botName: `bot-${i}` }, registryFile)));
+      const persisted = JSON.parse(await readFile(registryFile, 'utf8')) as { entries: ProcessEntry[] };
+      expect(persisted.entries).toEqual([expect.objectContaining({ id: 'live', botName: expect.stringMatching(/^bot-/) })]);
+    });
   });
 });
 

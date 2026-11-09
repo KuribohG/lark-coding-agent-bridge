@@ -7,6 +7,10 @@ import { isAgentKind } from '../agent/backend-spec';
 
 export type RuntimeLockKind = 'profile' | 'app';
 
+/** Holders refresh every UPDATE_MS; anyone judging staleness must use the holder's STALE_MS. */
+const RUNTIME_LOCK_STALE_MS = 30_000;
+const RUNTIME_LOCK_UPDATE_MS = 10_000;
+
 export interface AcquiredRuntimeLock {
   kind: RuntimeLockKind;
   target: string;
@@ -116,7 +120,9 @@ export async function checkRuntimeLock(target: string): Promise<{
   error?: string;
 }> {
   try {
-    const locked = await lockfile.check(target, { realpath: false });
+    // check() defaults to a 10s stale window, equal to the refresh interval, so a
+    // live holder would look stale just before each refresh.
+    const locked = await lockfile.check(target, { realpath: false, stale: RUNTIME_LOCK_STALE_MS });
     if (!locked) return { locked: false };
     const meta = await readRuntimeLockMeta(target);
     if (!meta) {
@@ -144,8 +150,8 @@ async function acquireRuntimeLock(
   try {
     release = await lockfile.lock(meta.target, {
       realpath: false,
-      stale: 30_000,
-      update: 10_000,
+      stale: RUNTIME_LOCK_STALE_MS,
+      update: RUNTIME_LOCK_UPDATE_MS,
     });
   } catch (err) {
     throw new RuntimeLockConflictError(meta.kind, meta.target, await readRuntimeLockMeta(meta.target), err);

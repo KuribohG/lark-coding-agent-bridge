@@ -309,6 +309,9 @@ async function withRegistryFileLock<T>(registryFile: string, fn: () => Promise<T
     realpath: false,
     stale: 30_000,
     update: 10_000,
+    // Profiles in one process publish activity on the same timer; wait out the
+    // few milliseconds a peer holds the lock instead of dropping the write.
+    retries: { retries: 10, minTimeout: 20, maxTimeout: 500, randomize: true },
   });
   try {
     return await fn();
