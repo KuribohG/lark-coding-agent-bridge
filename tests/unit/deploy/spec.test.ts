@@ -1,6 +1,6 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { parseDocument } from '../../../src/config/document';
 import { withProfileAndAppLocks } from '../../../src/runtime/locks';
@@ -23,7 +23,7 @@ describe('[deploy] table', () => {
     const spec = resolveDeploySpec(doc('[bridge]\nautostart_profiles = ["beta", "alpha"]'), '/cfg/config.toml');
     expect(spec).toMatchObject({
       source: { kind: 'self' }, profiles: ['beta', 'alpha'], node: process.execPath, cwd: homedir(),
-      root: '/cfg/deploy', keep: 3, env: {}, readyTimeoutMs: 180_000,
+      root: join('/cfg', 'deploy'), keep: 3, env: {}, readyTimeoutMs: 180_000,
     });
     expect(resolveDeploySpec(doc('[bridge]\nactive_profile = "beta"'), '/cfg/config.toml').profiles).toEqual(['beta']);
     expect(resolveDeploySpec(doc(), '/cfg/config.toml').profiles).toEqual(['alpha']);
@@ -44,7 +44,7 @@ env = { HTTPS_PROXY = "http://proxy" }
 `), '/cfg/config.toml');
     expect(spec).toMatchObject({
       source: { kind: 'git', url: 'https://example.com/bridge.git', ref: 'dev' }, profiles: ['alpha'],
-      node: '/cfg/bin/node', cwd: join(homedir(), 'work'), root: '/srv/bridge', keep: 5, readyTimeoutMs: 60_000,
+      node: resolve('/cfg', 'bin/node'), cwd: join(homedir(), 'work'), root: '/srv/bridge', keep: 5, readyTimeoutMs: 60_000,
       env: { HTTPS_PROXY: 'http://proxy' },
     });
   });

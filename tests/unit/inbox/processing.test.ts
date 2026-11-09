@@ -174,9 +174,10 @@ it.each([new WorkItemAnalysisError('rate_limit'), Error('provider failed with pr
     const s = await setup({ analyze: vi.fn(async () => { throw error; }) });
     await s.service.tick(); await vi.waitFor(() => expect(s.service.list()[0]?.state).toBe('failed'));
     const expected = error instanceof WorkItemAnalysisError ? error.message : '分析执行失败，详情已记录；请在工作台重试';
+    // The state flips in memory before the transaction's save finishes; the next tick queues behind it.
+    await s.service.tick();
     const saved = new WorkItemStore(s.store.path); await saved.load();
     expect(saved.data.jobs[0]?.error).toBe(expected);
-    await s.service.tick();
     expect(s.io.deliver).toHaveBeenCalledTimes(1);
     expect(vi.mocked(s.io.deliver).mock.calls[0]![0]).toMatchObject({ error: expected, analysisTarget: topic });
   });

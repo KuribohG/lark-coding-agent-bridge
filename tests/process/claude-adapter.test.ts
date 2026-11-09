@@ -622,7 +622,8 @@ describe('ClaudeAdapter process contract', () => {
       expect(record.signals).toEqual([]);
       expect(stopMs).toBeLessThan(2_000);
     } else {
-      expect(record.signals).toEqual(['SIGTERM']);
+      // Windows terminates without running the child's SIGTERM handler.
+      expect(record.signals).toEqual(process.platform === 'win32' ? [] : ['SIGTERM']);
     }
   });
 
