@@ -103,155 +103,13 @@ export class RunExecutor {
 
   async submit(input: SubmitRunInput): Promise<RunExecution> {
     const submittedAt = this.now();
-    const checkDeadline = () => {
-      if (input.deadlineAt !== undefined && (!Number.isSafeInteger(input.deadlineAt) || input.deadlineAt <= this.now())) {
-        throw new RunRejected('deadline-expired', '任务停止时间已过。');
-      }
-      if (input.signal?.aborted) throw new RunStopped(abortStopReason(input.signal));
-    };
-    checkDeadline();
-    if (input.policy.expiresAt <= this.now()) {
-      throw new RunRejected('policy-expired', 'run policy expired before spawn');
-    }
-    if (this.activeRuns.newRunsPaused()) {
-      throw new RunRejected(
-        'reconnect-in-progress',
-        this.activeRuns.newRunsPauseReason() ?? 'new runs are temporarily paused',
-      );
-    }
-    const releaseScope = this.activeRuns.reserve(input.scopeId);
-    if (!releaseScope) {
-      throw new RunRejected('run-already-active', 'another run is already active for this scope');
-    }
-
-    const controller = new AbortController();
-    const forwardAbort = () => controller.abort(new RunStopped(abortStopReason(input.signal!)));
-    input.signal?.addEventListener('abort', forwardAbort, { once: true });
-    if (input.signal?.aborted) forwardAbort();
-    const deadlineTimer = input.deadlineAt === undefined ? undefined : setTimeout(() => {
-      controller.abort(new RunStopped('deadline'));
-    }, Math.max(0, input.deadlineAt - this.now()));
-    const dispose = () => {
-      if (deadlineTimer) clearTimeout(deadlineTimer);
-      input.signal?.removeEventListener('abort', forwardAbort);
-    };
-    let release: (() => void) | undefined;
-    try {
-      release = input.nowait ? this.pool.tryAcquire(input.priority) : await this.pool.acquire(controller.signal, input.priority);
-      checkDeadline();
-      controller.signal.throwIfAborted();
-      if (release) await input.validateBeforeRun?.();
-      checkDeadline();
-      controller.signal.throwIfAborted();
-    } catch (err) {
-      release?.();
-      releaseScope();
-      dispose();
-      throw err;
-    }
-    if (!release) {
-      releaseScope();
-      dispose();
-      throw new RunRejected('pool-full', 'process pool is full');
-    }
-    if (this.activeRuns.newRunsPaused()) {
-      release();
-      releaseScope();
-      dispose();
-      throw new RunRejected(
-        'reconnect-in-progress',
-        this.activeRuns.newRunsPauseReason() ?? 'new runs are temporarily paused',
-      );
-    }
-
+    const slot = await this.admit(input);
     const runId = this.createRunId();
     const startedAt = this.now();
     const queueWaitMs = startedAt - submittedAt;
-    let agent: AgentAdapter;
-    try {
-      const scope = input.agentScopeId ?? input.scopeId;
-      agent = input.agent ?? (input.agentKind ? this.resolveAgent(scope, input.agentKind) : this.resolveAgent(scope));
-      if (input.agentKind && agent.id !== input.agentKind) throw new Error('Resolved worker backend does not match its binding');
-      if (input.requireFinalAnswer && agent.capabilities.finalAnswer !== 'separate-event') {
-        throw new Error('Worker backend does not provide authoritative final answers');
-      }
-    } catch (err) {
-      release();
-      releaseScope();
-      dispose();
-      throw new SpawnFailed('agent resolve failed', err, 'agent-prepare-failed');
-    }
-    let modelProvider: ResolvedModelProvider | undefined;
-    try {
-      modelProvider = await this.resolveModelProvider?.(agent.id as AgentKind, input.model);
-    } catch (err) {
-      release();
-      releaseScope();
-      dispose();
-      throw new SpawnFailed('model provider resolve failed', err, 'agent-prepare-failed');
-    }
-    const runOptions = snapshotRunOptions({
-      env: input.env,
-      deadlineAt: input.deadlineAt,
-      runId,
-      prompt: input.policy.prompt,
-      systemPrompt: input.systemPrompt,
-      cwd: input.policy.cwdRealpath,
-      sessionId: input.sessionId,
-      threadId: input.threadId,
-      forkSession: input.forkSession,
-      model: modelProvider?.model ?? input.model,
-      modelProvider,
-      reasoningEffort: input.reasoningEffort,
-      images: input.images,
-      sandbox: input.policy.sandbox,
-      permissionMode: input.policy.permissionMode,
-      stopGraceMs: input.stopGraceMs,
-      userQuestions: input.userQuestions,
-      answerIncludesInterimText: input.answerIncludesInterimText,
-      host: input.host,
-    });
-    let run: AgentRun;
-    let prepared: PreparedAgentRun;
+    const { controller } = slot;
     let handle!: RunHandle;
-    try {
-      prepared = await agent.prepareRun(runOptions);
-      await input.validateBeforeRun?.();
-      checkDeadline();
-      controller.signal.throwIfAborted();
-    } catch (err) {
-      release();
-      releaseScope();
-      dispose();
-      if (err instanceof RunRejected) throw err;
-      if (err instanceof SpawnFailed) throw err;
-      throw new SpawnFailed('agent prepare failed', err, 'agent-prepare-failed');
-    }
-    if (this.activeRuns.newRunsPaused()) {
-      release();
-      releaseScope();
-      dispose();
-      throw new RunRejected(
-        'reconnect-in-progress',
-        this.activeRuns.newRunsPauseReason() ?? 'new runs are temporarily paused',
-      );
-    }
-    try {
-      run = retryingRun({
-        agent,
-        initialRun: prepared.start(),
-        options: runOptions,
-        exitGraceMs: this.postDoneExitGraceMs,
-        canRetry: () => !controller.signal.aborted && !handle?.interrupted
-          && !this.activeRuns.newRunsPaused()
-          && (input.deadlineAt === undefined || input.deadlineAt > this.now()),
-      });
-    } catch (err) {
-      release();
-      releaseScope();
-      dispose();
-      throw new SpawnFailed('agent spawn failed', err);
-    }
+    const { agent, modelProvider, prepared, run } = await this.launch(input, slot, runId, () => Boolean(handle?.interrupted));
     const dimensions = {
       runId,
       profile: input.observability?.profile ?? 'unknown',
@@ -274,9 +132,7 @@ export class RunExecutor {
       handle = this.activeRuns.register(input.scopeId, run);
       handle.modelSettings = { ...prepared.modelSettings };
     } catch (err) {
-      releaseScope();
-      release();
-      dispose();
+      slot.abandon();
       await run.stop('cleanup').catch(() => {});
       throw new RunRejected(
         'run-already-active',
@@ -295,7 +151,7 @@ export class RunExecutor {
     const cleanup = async (waitForExit: boolean): Promise<void> => {
       if (cleaned) return;
       cleaned = true;
-      dispose();
+      slot.dispose();
       controller.signal.removeEventListener('abort', stopOnAbort);
       try {
         if (waitForExit && !await run.waitForExit(this.postDoneExitGraceMs)) {
@@ -308,7 +164,7 @@ export class RunExecutor {
         await run.stop('cleanup').catch(() => {});
       } finally {
         this.activeRuns.unregister(input.scopeId, run);
-        release();
+        slot.releasePool();
         settleResult(handle.stopReason === 'deadline' ? 'expired' : handle.interrupted ? 'stopped' : terminal);
       }
     };
@@ -344,6 +200,173 @@ export class RunExecutor {
       },
     };
   }
+
+  /** Reserves the scope and a pool slot, honouring the deadline, caller signal and reconnect pause. */
+  private async admit(input: SubmitRunInput): Promise<AdmittedRun> {
+    const checkDeadline = () => {
+      if (input.deadlineAt !== undefined && (!Number.isSafeInteger(input.deadlineAt) || input.deadlineAt <= this.now())) {
+        throw new RunRejected('deadline-expired', '任务停止时间已过。');
+      }
+      if (input.signal?.aborted) throw new RunStopped(abortStopReason(input.signal));
+    };
+    checkDeadline();
+    if (input.policy.expiresAt <= this.now()) {
+      throw new RunRejected('policy-expired', 'run policy expired before spawn');
+    }
+    this.assertNewRunsAllowed();
+    const releaseScope = this.activeRuns.reserve(input.scopeId);
+    if (!releaseScope) {
+      throw new RunRejected('run-already-active', 'another run is already active for this scope');
+    }
+
+    const controller = new AbortController();
+    const forwardAbort = () => controller.abort(new RunStopped(abortStopReason(input.signal!)));
+    input.signal?.addEventListener('abort', forwardAbort, { once: true });
+    if (input.signal?.aborted) forwardAbort();
+    const deadlineTimer = input.deadlineAt === undefined ? undefined : setTimeout(() => {
+      controller.abort(new RunStopped('deadline'));
+    }, Math.max(0, input.deadlineAt - this.now()));
+    const dispose = () => {
+      if (deadlineTimer) clearTimeout(deadlineTimer);
+      input.signal?.removeEventListener('abort', forwardAbort);
+    };
+    let release: (() => void) | undefined;
+    try {
+      release = input.nowait ? this.pool.tryAcquire(input.priority) : await this.pool.acquire(controller.signal, input.priority);
+      checkDeadline();
+      controller.signal.throwIfAborted();
+      if (release) await input.validateBeforeRun?.();
+      checkDeadline();
+      controller.signal.throwIfAborted();
+    } catch (err) {
+      release?.();
+      releaseScope();
+      dispose();
+      throw err;
+    }
+    if (!release) {
+      releaseScope();
+      dispose();
+      throw new RunRejected('pool-full', 'process pool is full');
+    }
+    const releasePool = release;
+    const slot: AdmittedRun = {
+      controller,
+      checkDeadline,
+      dispose,
+      releasePool,
+      abandon: () => {
+        releasePool();
+        releaseScope();
+        dispose();
+      },
+    };
+    this.abandonIfPaused(slot);
+    return slot;
+  }
+
+  /** Resolves, prepares and starts the agent; any failure gives the admitted slot back. */
+  private async launch(input: SubmitRunInput, slot: AdmittedRun, runId: string, interrupted: () => boolean) {
+    let agent: AgentAdapter;
+    try {
+      const scope = input.agentScopeId ?? input.scopeId;
+      agent = input.agent ?? (input.agentKind ? this.resolveAgent(scope, input.agentKind) : this.resolveAgent(scope));
+      if (input.agentKind && agent.id !== input.agentKind) throw new Error('Resolved worker backend does not match its binding');
+      if (input.requireFinalAnswer && agent.capabilities.finalAnswer !== 'separate-event') {
+        throw new Error('Worker backend does not provide authoritative final answers');
+      }
+    } catch (err) {
+      slot.abandon();
+      throw new SpawnFailed('agent resolve failed', err, 'agent-prepare-failed');
+    }
+    let modelProvider: ResolvedModelProvider | undefined;
+    try {
+      modelProvider = await this.resolveModelProvider?.(agent.id as AgentKind, input.model);
+    } catch (err) {
+      slot.abandon();
+      throw new SpawnFailed('model provider resolve failed', err, 'agent-prepare-failed');
+    }
+    const runOptions = snapshotRunOptions({
+      env: input.env,
+      deadlineAt: input.deadlineAt,
+      runId,
+      prompt: input.policy.prompt,
+      systemPrompt: input.systemPrompt,
+      cwd: input.policy.cwdRealpath,
+      sessionId: input.sessionId,
+      threadId: input.threadId,
+      forkSession: input.forkSession,
+      model: modelProvider?.model ?? input.model,
+      modelProvider,
+      reasoningEffort: input.reasoningEffort,
+      images: input.images,
+      sandbox: input.policy.sandbox,
+      permissionMode: input.policy.permissionMode,
+      stopGraceMs: input.stopGraceMs,
+      userQuestions: input.userQuestions,
+      answerIncludesInterimText: input.answerIncludesInterimText,
+      host: input.host,
+    });
+    let prepared: PreparedAgentRun;
+    try {
+      prepared = await agent.prepareRun(runOptions);
+      await input.validateBeforeRun?.();
+      slot.checkDeadline();
+      slot.controller.signal.throwIfAborted();
+    } catch (err) {
+      slot.abandon();
+      if (err instanceof RunRejected) throw err;
+      if (err instanceof SpawnFailed) throw err;
+      throw new SpawnFailed('agent prepare failed', err, 'agent-prepare-failed');
+    }
+    this.abandonIfPaused(slot);
+    let run: AgentRun;
+    try {
+      run = retryingRun({
+        agent,
+        initialRun: prepared.start(),
+        options: runOptions,
+        exitGraceMs: this.postDoneExitGraceMs,
+        canRetry: () => !slot.controller.signal.aborted && !interrupted()
+          && !this.activeRuns.newRunsPaused()
+          && (input.deadlineAt === undefined || input.deadlineAt > this.now()),
+      });
+    } catch (err) {
+      slot.abandon();
+      throw new SpawnFailed('agent spawn failed', err);
+    }
+    return { agent, modelProvider, prepared, run };
+  }
+
+  private assertNewRunsAllowed(): void {
+    if (this.activeRuns.newRunsPaused()) {
+      throw new RunRejected(
+        'reconnect-in-progress',
+        this.activeRuns.newRunsPauseReason() ?? 'new runs are temporarily paused',
+      );
+    }
+  }
+
+  /** A reconnect can pause new runs while this one waits for the pool or prepares. */
+  private abandonIfPaused(slot: AdmittedRun): void {
+    try {
+      this.assertNewRunsAllowed();
+    } catch (err) {
+      slot.abandon();
+      throw err;
+    }
+  }
+}
+
+/** A run that passed admission: it holds its scope reservation and a pool slot. */
+interface AdmittedRun {
+  controller: AbortController;
+  checkDeadline(): void;
+  /** Stops the deadline timer and caller-signal forwarding. */
+  dispose(): void;
+  releasePool(): void;
+  /** Gives everything back when the run never starts. */
+  abandon(): void;
 }
 
 function observeRunEvents(
