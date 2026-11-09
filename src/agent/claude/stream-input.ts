@@ -46,6 +46,11 @@ export class ClaudeStreamInput {
     return this.sessionId || undefined;
   }
 
+  /** Some input sent to this process has no covering result yet. */
+  get awaitingResult(): boolean {
+    return this.outstanding.size > 0;
+  }
+
   /** Write a control-protocol message; false once the input stream is closed. */
   control(message: object): boolean {
     if (!this.active || this.stdin.destroyed || this.stdin.writableEnded) return false;

@@ -245,7 +245,8 @@ describe('ClaudeAdapter process contract', () => {
     expect(events.findIndex((event) => event.type === 'done')).toBeGreaterThan(events.findIndex((event) => event.type === 'text'));
   });
 
-  it.each(['notified', 'steered', 'drained', 'expired', 'stopped'] as const)('keeps the run open for background tasks (%s)', async mode => {
+  // rewaved: the notification turn launches another task and a supplement arrives during it.
+  it.each(['notified', 'steered', 'rewaved', 'drained', 'expired', 'stopped'] as const)('keeps the run open for background tasks (%s)', async mode => {
     const dir = await mkdtemp(join(tmpdir(), 'claude-background-test-'));
     cleanup.push(dir);
     const binary = join(dir, 'fake-claude.mjs');
@@ -254,9 +255,16 @@ describe('ClaudeAdapter process contract', () => {
       const mode = ${JSON.stringify(mode)};
       const emit = event => console.log(JSON.stringify(event));
       const tasks = list => emit({ type: 'system', subtype: 'background_tasks_changed', tasks: list });
-      const notify = () => {
+      const notify = (relaunch = false) => {
         tasks([]);
         emit({ type: 'system', subtype: 'init', session_id: 'bg-session' });
+        if (relaunch) {
+          emit({ type: 'system', subtype: 'task_started', task_id: 'bg2', run_id: 'task-run-2', is_backgrounded: true });
+          tasks([{ task_id: 'bg2', run_id: 'task-run-2', description: 'make test' }]);
+          emit({ type: 'assistant', message: { id: 'relaunched', content: [{ type: 'text', text: 'tests started' }] } });
+          emit({ type: 'result', session_id: 'bg-session', result: 'tests started', origin: { kind: 'task-notification', runId: 'task-run' } });
+          return;
+        }
         emit({ type: 'assistant', message: { id: 'notified', content: [{ type: 'text', text: 'build passed' }] } });
         emit({ type: 'result', session_id: 'bg-session', result: 'build passed', origin: { kind: 'task-notification', runId: 'task-run' } });
       };
@@ -271,29 +279,34 @@ describe('ClaudeAdapter process contract', () => {
           emit({ type: 'assistant', message: { id: 'held', content: [{ type: 'text', text: 'build started' }] } });
           emit({ type: 'result', session_id: 'bg-session', result: 'build started', user_message_uuids: [input.uuid] });
           if (mode === 'notified') setTimeout(notify, 50);
+          if (mode === 'rewaved') setTimeout(() => notify(true), 50);
           if (mode === 'drained') setTimeout(() => tasks([]), 50);
         } else {
           emit({ type: 'command_lifecycle', state: 'queued', command_uuid: input.uuid });
           emit({ type: 'assistant', message: { id: 'reply', content: [{ type: 'text', text: 'still building' }] } });
           emit({ type: 'result', session_id: 'bg-session', result: 'still building', user_message_uuids: [input.uuid] });
-          setTimeout(notify, 50);
+          setTimeout(() => notify(), 50);
         }
       });
       process.stdin.on('end', () => process.exit(0));
     `, { mode: 0o700 });
-    const run = (await new ClaudeAdapter({ binary, backgroundWaitMs: mode === 'expired' ? 100 : 60_000 })
+    const run = (await new ClaudeAdapter({ binary, backgroundWaitMs: mode === 'expired' ? 100 : 60_000, backgroundDrainGraceMs: 100 })
       .prepareRun({ runId: 'background', prompt: 'build it', cwd: dir, stopGraceMs: 100 })).start();
     const events: AgentEvent[] = [];
     let delivery: Promise<unknown> | undefined;
+    let waits = 0;
     try {
       for await (const event of run.events) {
         events.push(event);
         if (event.type !== 'status' || event.code !== 'background_tasks') continue;
+        waits++;
         // Read stdout concurrently with the pending input acknowledgement.
-        if (mode === 'steered') delivery ??= run.sendInput!({ text: 'how is it going?', messageId: 'im-2' });
+        if (mode === 'steered' || (mode === 'rewaved' && waits === 2)) {
+          delivery ??= run.sendInput!({ text: 'how is it going?', messageId: 'im-2' });
+        }
         if (mode === 'stopped') await run.stop();
       }
-      if (mode === 'steered') expect(await delivery).toMatchObject({ status: 'accepted' });
+      if (mode === 'steered' || mode === 'rewaved') expect(await delivery).toMatchObject({ status: 'accepted' });
       expect(events).toContainEqual({ type: 'text', delta: 'build started' });
       expect(events).toContainEqual({ type: 'status', code: 'background_tasks', content: '⏳ 等待 1 个后台任务完成后继续：make build' });
       const finals = events.filter(event => event.type === 'final_text');
@@ -302,10 +315,14 @@ describe('ClaudeAdapter process contract', () => {
         expect(finals).toEqual([]);
         expect(done).toEqual([{ type: 'done', terminationReason: 'interrupted' }]);
       } else {
-        expect(finals).toEqual([{ type: 'final_text', content: mode === 'notified' || mode === 'steered' ? 'build passed' : 'build started' }]);
+        expect(finals).toEqual([{ type: 'final_text', content: ['notified', 'steered', 'rewaved'].includes(mode) ? 'build passed' : 'build started' }]);
         expect(done).toEqual([{ type: 'done', sessionId: 'bg-session', terminationReason: 'normal' }]);
       }
-      if (mode === 'steered') expect(events).toContainEqual({ type: 'text', delta: 'still building' });
+      if (mode === 'steered' || mode === 'rewaved') expect(events).toContainEqual({ type: 'text', delta: 'still building' });
+      if (mode === 'rewaved') {
+        expect(events).toContainEqual({ type: 'text', delta: 'tests started' });
+        expect(events).toContainEqual({ type: 'status', code: 'background_tasks', content: '⏳ 等待 1 个后台任务完成后继续：make test' });
+      }
       if (mode === 'expired') expect(events).toContainEqual(expect.objectContaining({ type: 'status', code: 'background_tasks_expired' }));
       expect(await run.waitForExit(1000)).toBe(true);
     } finally { await run.stop(); }

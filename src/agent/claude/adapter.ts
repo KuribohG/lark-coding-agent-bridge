@@ -40,6 +40,8 @@ export interface ClaudeAdapterOptions {
   env?: NodeJS.ProcessEnv;
   /** How long a run may wait for background tasks after its turn ends. */
   backgroundWaitMs?: number;
+  /** How long stdin stays open after the tasks drain without starting a notification turn. */
+  backgroundDrainGraceMs?: number;
 }
 
 type ClaudeChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
@@ -56,6 +58,7 @@ export class ClaudeAdapter implements AgentAdapter {
   private readonly systemPrompt: AgentSystemPrompt | undefined;
   private readonly env: NodeJS.ProcessEnv;
   private readonly backgroundWaitMs: number;
+  private readonly backgroundDrainGraceMs: number;
   private botIdentity: AgentBotIdentity | undefined;
 
   constructor(opts: ClaudeAdapterOptions = {}) {
@@ -66,6 +69,7 @@ export class ClaudeAdapter implements AgentAdapter {
     this.systemPrompt = opts.systemPrompt;
     this.env = { ...opts.env };
     this.backgroundWaitMs = opts.backgroundWaitMs ?? DEFAULT_BACKGROUND_WAIT_MS;
+    this.backgroundDrainGraceMs = opts.backgroundDrainGraceMs ?? DEFAULT_BACKGROUND_DRAIN_GRACE_MS;
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -228,7 +232,7 @@ export class ClaudeAdapter implements AgentAdapter {
       runId: opts.runId,
       ...(hosted ? { detachOnShutdown: true } : {}),
       events: createEventStream(child, stderrChunks, () => runtimeError, input, questions, tasks, this.backgroundWaitMs,
-        () => interrupted, opts.deadlineAt, opts.answerIncludesInterimText),
+        this.backgroundDrainGraceMs, () => interrupted, opts.deadlineAt, opts.answerIncludesInterimText),
       async sendInput({ text, messageId }) {
         return await input.steer(text, messageId) === 'accepted'
           ? { status: 'accepted', messageId, scope: 'active-session' }
@@ -293,6 +297,7 @@ async function* createEventStream(
   questions: ClaudeQuestionControl,
   tasks: ClaudeBackgroundTasks,
   backgroundWaitMs: number,
+  backgroundDrainGraceMs: number,
   isInterrupted: () => boolean,
   deadlineAt?: number,
   answerIncludesInterimText?: boolean,
@@ -323,6 +328,9 @@ async function* createEventStream(
   let held: { type?: string; is_error?: boolean; subtype?: string } | undefined;
   let waitTimer: ReturnType<typeof setTimeout> | undefined;
   let waitExpired = false;
+  // Between a top-level init and its result; such a turn's result decides whether the run ends.
+  let turnOpen = false;
+  let drainTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     for await (const line of rl) {
       sawStdout = true;
@@ -340,8 +348,23 @@ async function* createEventStream(
         continue;
       }
       tasks.receive(parsed);
-      // Once the tasks are gone, closing stdin lets -p run any notification turn and exit.
-      if (held && tasks.running === 0) input.close();
+      const event = parsed as { type?: string; subtype?: string; parent_tool_use_id?: string } | null;
+      if (event && typeof event === 'object' && !event.parent_tool_use_id) {
+        if (event.type === 'system' && event.subtype === 'init') turnOpen = true;
+        else if (event.type === 'result') turnOpen = false;
+      }
+      // -p starts a notification turn for each finished task with stdin still open, and that turn
+      // may launch more tasks, so stdin stays open for supplements. Close it only when the tasks
+      // drain and no turn follows, so -p exits and the held result answers.
+      if (held && tasks.running === 0 && !turnOpen) {
+        drainTimer ??= setTimeout(() => {
+          drainTimer = undefined;
+          if (tasks.running === 0 && !turnOpen && !input.awaitingResult) input.close();
+        }, backgroundDrainGraceMs);
+      } else if (drainTimer) {
+        clearTimeout(drainTimer);
+        drainTimer = undefined;
+      }
       if (isTaskNotificationResult(parsed) && !tasks.launchedHere(parsed)) continue;
       parsed = input.receive(parsed);
       if (parsed === undefined) continue;
@@ -367,6 +390,7 @@ async function* createEventStream(
   } finally {
     input.close();
     if (waitTimer) clearTimeout(waitTimer);
+    if (drainTimer) clearTimeout(drainTimer);
     if (silentExitTimer) clearTimeout(silentExitTimer);
     child.removeListener('exit', closeSilentStdout);
     rl.close();
@@ -435,6 +459,8 @@ const DEADLINE_DISALLOWED_TOOLS = ['CronCreate', 'CronDelete', 'CronList', 'Sche
 // per-run env still win, and `1` there restores foreground-only runs.
 const BACKGROUND_TASKS_ENV = { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '0' };
 const DEFAULT_BACKGROUND_WAIT_MS = 6 * 60 * 60 * 1000;
+// Notification turns start within milliseconds of the drain; this only catches tasks that end without one.
+const DEFAULT_BACKGROUND_DRAIN_GRACE_MS = 5_000;
 
 /**
  * Persist the appended system prompt (and optional flag settings) to throwaway
