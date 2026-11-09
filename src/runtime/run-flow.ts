@@ -22,8 +22,6 @@ import { RunRejected, type RunRejectedCode } from '../runtime/errors';
 import type { SessionCatalog } from '../session/catalog';
 import type { SessionStore } from '../session/store';
 import type { WorkspaceStore } from '../workspace/store';
-import { agentBackendSpec } from '../agent/backend-spec';
-import { agentStateDirectory } from '../agent/capability';
 
 export interface RunFlowContextInput {
   scopeId: string;
@@ -138,11 +136,6 @@ export async function resolveRunFlowContext(
     capability: input.capability,
     profileConfig: input.profileConfig,
     now: input.now,
-    agentStateDir: agentBackendSpec(input.profileConfig.agentKind).includeStateDirectoryInPolicy
-      ? agentStateDirectory(input.profileConfig)
-      : undefined,
-    codexHome: input.profileConfig.codex?.codexHome,
-    inheritCodexHome: input.profileConfig.codex?.inheritCodexHome,
   });
   if (!policy.ok) {
     return {

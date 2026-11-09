@@ -399,8 +399,6 @@ async function commandIdentity(
     capability,
     profileConfig,
     now: Date.now(),
-    codexHome: profileConfig.codex?.codexHome,
-    inheritCodexHome: profileConfig.codex?.inheritCodexHome,
   });
   if (!policy.ok) throw new Error(policy.rejectReason.userVisible);
   return {

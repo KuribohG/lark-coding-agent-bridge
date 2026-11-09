@@ -44,8 +44,6 @@ export async function commandSessionCatalogIdentity(input: {
     capability,
     profileConfig: profile,
     now: Date.now(),
-    codexHome: profile.codex?.codexHome,
-    inheritCodexHome: profile.codex?.inheritCodexHome,
   });
   if (!policy.ok) return undefined;
   return {

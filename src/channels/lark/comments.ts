@@ -244,8 +244,6 @@ async function answerComment(deps: CommentDeps, run: CommentRun): Promise<void> 
     capability,
     profileConfig: scopedProfile,
     now: Date.now(),
-    codexHome: scopedProfile.codex?.codexHome,
-    inheritCodexHome: scopedProfile.codex?.inheritCodexHome,
     ...(typeof commentTimeoutMs === 'number' ? { ttlMs: commentTimeoutMs } : {}),
   });
   if (!policy.ok) {

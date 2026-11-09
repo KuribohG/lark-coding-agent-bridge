@@ -151,6 +151,22 @@ describe('run policy', () => {
     expect(stricterPolicy.policyFingerprint).not.toBe(noAttachment.policyFingerprint);
   });
 
+  it('derives the agent state directory from the profile so rebuilt identities match the run', () => {
+    const withConfigDir = (configDir: string) => {
+      const cfg = profile();
+      return { ...cfg, claude: { ...cfg.claude, configDir } } as RunPolicyInput['profileConfig'];
+    };
+    const fingerprint = (profileConfig: RunPolicyInput['profileConfig']) => {
+      const result = evaluateRunPolicy(baseInput({ profileConfig }));
+      if (!result.ok) throw new Error('expected allow');
+      return result.policyFingerprint;
+    };
+
+    expect(fingerprint(withConfigDir('/state/a'))).toBe(fingerprint(withConfigDir('/state/a')));
+    expect(fingerprint(withConfigDir('/state/a'))).not.toBe(fingerprint(withConfigDir('/state/b')));
+    expect(fingerprint(withConfigDir('/state/a'))).not.toBe(fingerprint(profile()));
+  });
+
   it('fails closed for unverified folder resource bindings', () => {
     const result = evaluateRunPolicy({
       ...baseInput(),

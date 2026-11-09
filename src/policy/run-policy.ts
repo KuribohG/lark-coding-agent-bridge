@@ -1,4 +1,5 @@
-import type { AgentCapability } from '../agent/capability';
+import { agentBackendSpec } from '../agent/backend-spec';
+import { agentStateDirectory, type AgentCapability } from '../agent/capability';
 import {
   accessToClaudePermissionMode,
   accessToCodexSandbox,
@@ -56,9 +57,6 @@ export interface RunPolicyInput {
   capability: AgentCapability;
   profileConfig: RunProfileConfig;
   now: number;
-  agentStateDir?: string;
-  codexHome?: string;
-  inheritCodexHome?: boolean;
   ttlMs?: number;
 }
 
@@ -164,9 +162,13 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
       accessPolicyDigest: accessDigest,
       resourceScopeDigest: resourceDigest,
       attachmentPolicyShapeDigest: attachmentDigest,
-      agentStateDir: input.agentStateDir,
-      codexHome: input.codexHome,
-      inheritCodexHome: input.inheritCodexHome ?? false,
+      // Derived here rather than passed in, so every caller that rebuilds a
+      // session identity (commands, card answers) matches the run's fingerprint.
+      agentStateDir: agentBackendSpec(input.profileConfig.agentKind).includeStateDirectoryInPolicy
+        ? agentStateDirectory(input.profileConfig)
+        : undefined,
+      codexHome: input.profileConfig.codex?.codexHome,
+      inheritCodexHome: input.profileConfig.codex?.inheritCodexHome ?? false,
     }),
   };
 }

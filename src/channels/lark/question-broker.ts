@@ -126,7 +126,11 @@ export class QuestionBroker {
     }
     if (request.isCancelled() || !input.identity || sessionCatalogKey(input.identity) !== sessionCatalogKey(request.identity) ||
         this.deps.activeRuns.generation(input.scope) !== request.generation || !this.sameSession(request, input.identity)) {
-      return this.settle(request, '原任务已停止或会话已切换，请在原话题重新说明你的选择。');
+      request.status = '正在处理你的回答。';
+      const released = await this.releaseStale(request);
+      return this.settle(request, released
+        ? '无法确认这个回答属于原会话，未送入任务；任务已按默认假设继续，请在原话题重新说明你的选择。'
+        : '原任务已停止或会话已切换，请在原话题重新说明你的选择。');
     }
     const answers = normalizeAnswers(request, input.answers);
     if (!answers) return { kind: 'rejected', notice: '请先回答每个问题：点击有效选项，或填写自己的答案。' };
@@ -243,6 +247,25 @@ export class QuestionBroker {
     if (await handle.run.answerUserInput(request.nativeId, { declined }) !== 'accepted') return;
     log.info('question', 'timed-out', { scope: request.identity.scopeId, runId: request.runId });
     await this.settle(request, `${minutes} 分钟内未收到回答，任务已按默认假设继续。`);
+  }
+
+  /**
+   * Settling a blocking request also cancels its timeout, so a run still
+   * waiting on it would hang; decline it natively so the agent continues.
+   */
+  private async releaseStale(request: QuestionRequest): Promise<boolean> {
+    if (request.mode !== 'blocking') return false;
+    const handle = this.deps.activeRuns.get(request.identity.scopeId);
+    if (!handle || handle.run.runId !== request.runId || handle.interrupted || !handle.run.answerUserInput) return false;
+    const declined = '用户的回答无法确认属于当前会话，未被采纳。请按最合理的默认假设继续，并在最终答复中说明所作的假设。';
+    try {
+      if (await handle.run.answerUserInput(request.nativeId, { declined }) !== 'accepted') return false;
+    } catch (err) {
+      log.warn('question', 'stale-decline-failed', { scope: request.identity.scopeId, err: String(err) });
+      return false;
+    }
+    log.info('question', 'stale-declined', { scope: request.identity.scopeId, runId: request.runId });
+    return true;
   }
 
   private clearTimeout(id: string): void {
