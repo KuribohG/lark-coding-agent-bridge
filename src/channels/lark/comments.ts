@@ -15,11 +15,11 @@ import { resolveWorkingDirectory } from '../../policy/workspace';
 import { RunRejected } from '../../runtime/errors';
 import type { ActiveRuns } from '../../runtime/active-runs';
 import { recordRunSessionEvent } from '../../runtime/run-flow';
-import type { RunExecutor } from '../../runtime/run-executor';
+import type { RunExecution, RunExecutor } from '../../runtime/run-executor';
 import type { SessionCatalog } from '../../session/catalog';
 import type { SessionStore } from '../../session/store';
 import type { WorkspaceStore } from '../../workspace/store';
-import type { AgentKind } from '../../config/profile-schema';
+import type { AgentKind, RunProfileConfig } from '../../config/profile-schema';
 import { profileForAgentKind } from '../../runtime/execution-controller';
 import {
   commentDocumentScopeId,
@@ -93,47 +93,14 @@ export interface ExtractCommentQuestionResult {
  * a reply in the same comment thread.
  */
 export async function handleCommentMention(deps: CommentDeps): Promise<void> {
-  const { channel, evt, sessions, sessionCatalog, workspaces, controls } = deps;
-  const eventDocScopeId = commentDocumentScopeId(evt.fileToken);
-  const eventCommentScopeId = commentScopeId(evt.fileToken, evt.commentId);
-  // Log every comment event we receive, regardless of whether we'll act on it.
-  // `mentionedBot` and `replyId` here let us tell apart top-level comments
-  // from thread replies (the latter requires SDK ≥ 1.65.0-alpha.0).
-  log.info('comment', 'enter', {
-    docScopeId: eventDocScopeId,
-    fileType: evt.fileType,
-    commentScopeId: eventCommentScopeId,
-    replyDigest: evt.replyId ? commentTokenDigest(evt.replyId) : undefined,
-    mentionedBot: evt.mentionedBot,
-    sender: evt.operator.openId,
-  });
-  if (!evt.mentionedBot) {
-    log.info('comment', 'skip', { reason: 'not-mentioned' });
-    return;
-  }
-  if (!SUPPORTED_FILE_TYPES.has(evt.fileType)) {
-    log.info('comment', 'skip', { reason: 'unsupported-fileType', fileType: evt.fileType });
-    return;
-  }
-  if (isBridgeSelfReply(channel, evt)) {
-    log.info('comment', 'skip', {
-      reason: 'bridge-self-reply',
-      commentScopeId: eventCommentScopeId,
-    });
-    return;
-  }
-  const target = await resolveCommentTarget(channel, evt);
-  if (!target) {
-    log.info('comment', 'skip', { reason: 'unsupported-target', commentScopeId: eventCommentScopeId });
-    return;
-  }
-  const targetDocScopeId = commentDocumentScopeId(target.fileToken);
-  const commentThreadScopeId = eventCommentScopeId;
+  const { channel, evt, workspaces, controls } = deps;
+  const target = await admitCommentEvent(channel, evt);
+  if (!target) return;
+  const commentThreadScopeId = commentScopeId(evt.fileToken, evt.commentId);
   const runScopeId = commentExecutionScopeId(commentThreadScopeId);
   const agentKind = deps.resolveAgentKind?.(runScopeId) ?? controls.profileConfig.agentKind;
   const scopedProfile = profileForAgentKind(controls.profileConfig, agentKind);
   const docSessionScopeId = commentDocumentSessionScopeId(target.fileToken);
-  const agentSessionScopeId = docSessionScopeId;
 
   const ctx = await fetchCommentContext(channel, target, evt).catch((err) => {
     const code = (err as { response?: { data?: { code?: number } } })?.response?.data?.code;
@@ -154,14 +121,15 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
     questionPreview: preview(ctx.question),
     hasQuote: Boolean(ctx.quote),
   });
-  const prompt = buildCommentPrompt(target, ctx);
+  const reply = (text: string, step: string) =>
+    postCommentReply(channel, target, evt, text, { isWhole: ctx.isWhole }).catch((err) => {
+      log.fail('comment', err, { step });
+    });
   const workspace = await resolveCommentWorkingDirectory(
     workspaces.cwdFor(docSessionScopeId),
     scopedProfile.workspaces.default,
     managedWorkspaceFor({ ...scopedProfile.state, bridgeRoot: scopedProfile.state?.bridgeRoot ?? dirname(controls.configPath) }, agentKind)!,
   );
-  const requestedCwd = workspace.requestedCwd;
-  const cwdRealpath = workspace.cwdRealpath;
   if (workspace.ok && workspace.fallback) {
     log.info('comment', 'workspace-fallback', {
       reason: workspace.fallback.reason,
@@ -176,11 +144,7 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
       code: workspace.reason,
       commentScopeId: runScopeId,
     });
-    await postCommentReply(channel, target, evt, `工作目录不可用：${workspace.userVisible}`, {
-      isWhole: ctx.isWhole,
-    }).catch((err) => {
-      log.fail('comment', err, { step: 'postInvalidWorkspaceReply' });
-    });
+    await reply(`工作目录不可用：${workspace.userVisible}`, 'postInvalidWorkspaceReply');
     return;
   }
 
@@ -191,220 +155,272 @@ export async function handleCommentMention(deps: CommentDeps): Promise<void> {
   const reactionAdded = ctx.targetReplyId
     ? await channel.comments.addReaction(target, ctx.targetReplyId)
     : false;
-
   try {
-    const capability = capabilityForProfile(scopedProfile);
-    const runTimeoutMs = commentRunTimeoutMs(sessions, runScopeId);
-    const threadTimeoutMs = commentRunTimeoutMs(sessions, commentThreadScopeId);
-    const commentTimeoutMs = runTimeoutMs !== undefined ? runTimeoutMs : threadTimeoutMs;
-    if (typeof commentTimeoutMs === 'number') {
-      log.info('comment', 'timeout-watchdog', { commentScopeId: runScopeId, timeoutMs: commentTimeoutMs });
-    }
-    const policy = evaluateRunPolicy({
-      scope: {
-        source: 'comment',
-        actorId: evt.operator.openId,
-        commentScopeId: agentSessionScopeId,
-        resourceBindings: [{ kind: 'doc', id: targetDocScopeId, verified: true }],
-      },
-      attachments: [],
-      prompt,
-      requestedCwd,
-      cwdRealpath,
-      access: { ok: true, reason: 'comment-mention' },
-      capability,
-      profileConfig: scopedProfile,
-      now: Date.now(),
-      codexHome: scopedProfile.codex?.codexHome,
-      inheritCodexHome: scopedProfile.codex?.inheritCodexHome,
-      ...(typeof commentTimeoutMs === 'number' ? { ttlMs: commentTimeoutMs } : {}),
+    await answerComment(deps, {
+      target, ctx, agentKind, scopedProfile, runScopeId, commentThreadScopeId, docSessionScopeId,
+      requestedCwd: workspace.requestedCwd, cwdRealpath: workspace.cwdRealpath, reply,
     });
-    if (!policy.ok) {
-      log.warn('policy', 'denied', {
-        scope: runScopeId,
-        source: 'comment',
-        code: policy.rejectReason.code,
-      });
-      return;
-    }
-    const commentExpiresAt = typeof commentTimeoutMs === 'number' ? policy.expiresAt : undefined;
-
-    const agentSessionRun = markCommentAgentSessionRun(agentSessionScopeId);
-    try {
-      const canResumeAgentSession = !agentSessionRun.wasActive;
-      const catalogEntry = canResumeAgentSession
-        ? sessionCatalog?.activeFor({
-            scopeId: agentSessionScopeId,
-            agentId: capability.agentId,
-            cwdRealpath,
-            policyFingerprint: policy.policyFingerprint,
-          })
-        : undefined;
-      const sessionId =
-        canResumeAgentSession && capability.legacySessionStore
-          ? sessions.resumeFor(docSessionScopeId, cwdRealpath)
-          : capability.sessionIdField === 'sessionId'
-            ? catalogEntry?.sessionId
-            : undefined;
-      const threadId = capability.sessionIdField === 'threadId' ? catalogEntry?.threadId : undefined;
-      log.info('comment', 'session', {
-        commentScopeId: runScopeId,
-        sessionScopeId: agentSessionScopeId,
-        resume: Boolean(sessionId ?? threadId),
-        sessionScopeActive: agentSessionRun.wasActive,
-        cwd: cwdRealpath,
-      });
-
-      const execution = await deps.executor.submit({
-        ...modelRunArguments(await resolveRunModelSettings(controls, runScopeId, undefined, agentKind)),
-        scopeId: runScopeId,
-        policy,
-        sessionId,
-        threadId,
-        stopGraceMs: getAgentStopGraceMs(controls.cfg),
-        observability: {
-          profile: controls.profile,
-          agent: capability.agentId,
-          source: 'comment',
-          stage: 'submit',
-        },
-      }).catch(async (err: unknown) => {
-        if (err instanceof RunRejected) {
-          log.info('comment', 'skip', {
-            reason: err.code,
-            commentScopeId: runScopeId,
-          });
-          const reply = commentRunRejectedReply(err.code);
-          if (reply) {
-            await postCommentReply(channel, target, evt, reply, { isWhole: ctx.isWhole }).catch((replyErr) => {
-              log.fail('comment', replyErr, { step: 'postRunRejectedReply' });
-            });
-          }
-          return undefined;
-        }
-        throw err;
-      });
-      if (!execution) return;
-      let answer = '';
-      let errorMsg: string | undefined;
-      let terminal = false;
-      let timedOut = false;
-      const eventStream = execution.subscribe()[Symbol.asyncIterator]();
-      try {
-        while (true) {
-          const next = await nextCommentEvent(eventStream, commentExpiresAt);
-          if (next === 'expired') {
-            await execution.stop().catch((err) => {
-              log.warn('comment', 'expired-stop-failed', {
-                commentScopeId: runScopeId,
-                err: err instanceof Error ? err.message : String(err),
-              });
-            });
-            timedOut = true;
-            terminal = true;
-            break;
-          }
-          if (commentExpiresAt !== undefined && Date.now() > commentExpiresAt) {
-            await execution.stop().catch((err) => {
-              log.warn('comment', 'expired-stop-failed', {
-                commentScopeId: runScopeId,
-                err: err instanceof Error ? err.message : String(err),
-              });
-            });
-            timedOut = true;
-            terminal = true;
-            break;
-          }
-          if (next.done || execution.handle.interrupted) {
-            terminal = true;
-            break;
-          }
-          const e = next.value;
-          recordCommentSessionEvent({
-            scopeId: agentSessionScopeId,
-            sessions,
-            sessionCatalog,
-            capability,
-            policy,
-            event: e,
-          });
-          if (capability.sessionIdField === 'sessionId' && e.type === 'system' && e.sessionId) {
-            sessions.set(docSessionScopeId, e.sessionId, policy.cwdRealpath);
-          }
-          switch (e.type) {
-            case 'text':
-              answer += e.delta;
-              break;
-            case 'final_text':
-              answer = e.content;
-              break;
-            case 'tool_use':
-            case 'tool_result':
-              answer = '';
-              break;
-            case 'system':
-              break;
-            case 'error':
-              errorMsg = e.message;
-              terminal = true;
-              break;
-            case 'usage':
-            case 'status':
-              break;
-            case 'done':
-              terminal = true;
-              break;
-          }
-          // Don't wait for the subprocess to actually close stdout — break as soon
-          // as we have the final result. Some claude versions hang briefly post-
-          // result on telemetry, which would leave the for-await stuck forever.
-          if (terminal) break;
-        }
-      } finally {
-        await eventStream.return?.();
-      }
-
-      if (timedOut) {
-        log.info('comment', 'reply-skip', {
-          reason: 'policy-expired',
-          commentScopeId: runScopeId,
-        });
-        await postCommentReply(channel, target, evt, '本次评论任务已超时，请重新 @ 我。', {
-          isWhole: ctx.isWhole,
-        }).catch((err) => {
-          log.fail('comment', err, { step: 'postTimeoutReply' });
-        });
-        return;
-      }
-
-      if (execution.handle.interrupted) {
-        log.info('comment', 'reply-skip', {
-          reason: 'interrupted',
-          commentScopeId: runScopeId,
-        });
-        return;
-      }
-
-      let reply = stripMarkdown(answer.trim());
-      if (errorMsg) reply = `⚠️ Claude 报错：${errorMsg}`;
-      if (!reply) reply = '（无回复内容）';
-      if (reply.length > REPLY_MAX_CHARS) reply = `${reply.slice(0, REPLY_MAX_CHARS - 1)}…`;
-
-      await postCommentReply(channel, target, evt, reply, { isWhole: ctx.isWhole }).catch((err) => {
-        log.fail('comment', err, { step: 'postCommentReply' });
-        log.warn('comment', 'reply_failed', {
-          commentScopeId: runScopeId,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      });
-    } finally {
-      agentSessionRun.release();
-    }
   } finally {
     if (reactionAdded && ctx.targetReplyId) {
       await channel.comments.removeReaction(target, ctx.targetReplyId);
     }
   }
+}
+
+/** Filters events the bot should not answer; returns the comment's resolved target otherwise. */
+async function admitCommentEvent(channel: LarkChannel, evt: CommentEvent): Promise<ResolvedCommentTarget | undefined> {
+  const eventCommentScopeId = commentScopeId(evt.fileToken, evt.commentId);
+  // Log every comment event we receive, regardless of whether we'll act on it.
+  // `mentionedBot` and `replyId` here let us tell apart top-level comments
+  // from thread replies (the latter requires SDK ≥ 1.65.0-alpha.0).
+  log.info('comment', 'enter', {
+    docScopeId: commentDocumentScopeId(evt.fileToken),
+    fileType: evt.fileType,
+    commentScopeId: eventCommentScopeId,
+    replyDigest: evt.replyId ? commentTokenDigest(evt.replyId) : undefined,
+    mentionedBot: evt.mentionedBot,
+    sender: evt.operator.openId,
+  });
+  if (!evt.mentionedBot) {
+    log.info('comment', 'skip', { reason: 'not-mentioned' });
+    return undefined;
+  }
+  if (!SUPPORTED_FILE_TYPES.has(evt.fileType)) {
+    log.info('comment', 'skip', { reason: 'unsupported-fileType', fileType: evt.fileType });
+    return undefined;
+  }
+  if (isBridgeSelfReply(channel, evt)) {
+    log.info('comment', 'skip', {
+      reason: 'bridge-self-reply',
+      commentScopeId: eventCommentScopeId,
+    });
+    return undefined;
+  }
+  const target = await resolveCommentTarget(channel, evt);
+  if (!target) {
+    log.info('comment', 'skip', { reason: 'unsupported-target', commentScopeId: eventCommentScopeId });
+    return undefined;
+  }
+  return target;
+}
+
+interface CommentRun {
+  target: ResolvedCommentTarget;
+  ctx: CommentContext;
+  agentKind: AgentKind;
+  scopedProfile: RunProfileConfig;
+  runScopeId: string;
+  commentThreadScopeId: string;
+  docSessionScopeId: string;
+  requestedCwd: string;
+  cwdRealpath: string;
+  reply(text: string, step: string): Promise<void>;
+}
+
+async function answerComment(deps: CommentDeps, run: CommentRun): Promise<void> {
+  const { evt, sessions, sessionCatalog, controls } = deps;
+  const { target, ctx, agentKind, scopedProfile, runScopeId, docSessionScopeId, cwdRealpath, reply } = run;
+  // Comments on one document share the document's agent session.
+  const agentSessionScopeId = docSessionScopeId;
+  const capability = capabilityForProfile(scopedProfile);
+  const runTimeoutMs = commentRunTimeoutMs(sessions, runScopeId);
+  const threadTimeoutMs = commentRunTimeoutMs(sessions, run.commentThreadScopeId);
+  const commentTimeoutMs = runTimeoutMs !== undefined ? runTimeoutMs : threadTimeoutMs;
+  if (typeof commentTimeoutMs === 'number') {
+    log.info('comment', 'timeout-watchdog', { commentScopeId: runScopeId, timeoutMs: commentTimeoutMs });
+  }
+  const policy = evaluateRunPolicy({
+    scope: {
+      source: 'comment',
+      actorId: evt.operator.openId,
+      commentScopeId: agentSessionScopeId,
+      resourceBindings: [{ kind: 'doc', id: commentDocumentScopeId(target.fileToken), verified: true }],
+    },
+    attachments: [],
+    prompt: buildCommentPrompt(target, ctx),
+    requestedCwd: run.requestedCwd,
+    cwdRealpath,
+    access: { ok: true, reason: 'comment-mention' },
+    capability,
+    profileConfig: scopedProfile,
+    now: Date.now(),
+    codexHome: scopedProfile.codex?.codexHome,
+    inheritCodexHome: scopedProfile.codex?.inheritCodexHome,
+    ...(typeof commentTimeoutMs === 'number' ? { ttlMs: commentTimeoutMs } : {}),
+  });
+  if (!policy.ok) {
+    log.warn('policy', 'denied', {
+      scope: runScopeId,
+      source: 'comment',
+      code: policy.rejectReason.code,
+    });
+    return;
+  }
+  const commentExpiresAt = typeof commentTimeoutMs === 'number' ? policy.expiresAt : undefined;
+
+  const agentSessionRun = markCommentAgentSessionRun(agentSessionScopeId);
+  try {
+    const canResumeAgentSession = !agentSessionRun.wasActive;
+    const catalogEntry = canResumeAgentSession
+      ? sessionCatalog?.activeFor({
+          scopeId: agentSessionScopeId,
+          agentId: capability.agentId,
+          cwdRealpath,
+          policyFingerprint: policy.policyFingerprint,
+        })
+      : undefined;
+    const sessionId =
+      canResumeAgentSession && capability.legacySessionStore
+        ? sessions.resumeFor(docSessionScopeId, cwdRealpath)
+        : capability.sessionIdField === 'sessionId'
+          ? catalogEntry?.sessionId
+          : undefined;
+    const threadId = capability.sessionIdField === 'threadId' ? catalogEntry?.threadId : undefined;
+    log.info('comment', 'session', {
+      commentScopeId: runScopeId,
+      sessionScopeId: agentSessionScopeId,
+      resume: Boolean(sessionId ?? threadId),
+      sessionScopeActive: agentSessionRun.wasActive,
+      cwd: cwdRealpath,
+    });
+
+    const execution = await deps.executor.submit({
+      ...modelRunArguments(await resolveRunModelSettings(controls, runScopeId, undefined, agentKind)),
+      scopeId: runScopeId,
+      policy,
+      sessionId,
+      threadId,
+      stopGraceMs: getAgentStopGraceMs(controls.cfg),
+      observability: {
+        profile: controls.profile,
+        agent: capability.agentId,
+        source: 'comment',
+        stage: 'submit',
+      },
+    }).catch(async (err: unknown) => {
+      if (err instanceof RunRejected) {
+        log.info('comment', 'skip', {
+          reason: err.code,
+          commentScopeId: runScopeId,
+        });
+        const rejected = commentRunRejectedReply(err.code);
+        if (rejected) await reply(rejected, 'postRunRejectedReply');
+        return undefined;
+      }
+      throw err;
+    });
+    if (!execution) return;
+    const outcome = await collectCommentAnswer(execution, commentExpiresAt, runScopeId, event => {
+      recordCommentSessionEvent({
+        scopeId: agentSessionScopeId,
+        sessions,
+        sessionCatalog,
+        capability,
+        policy,
+        event,
+      });
+      if (capability.sessionIdField === 'sessionId' && event.type === 'system' && event.sessionId) {
+        sessions.set(docSessionScopeId, event.sessionId, policy.cwdRealpath);
+      }
+    });
+
+    if (outcome.timedOut) {
+      log.info('comment', 'reply-skip', {
+        reason: 'policy-expired',
+        commentScopeId: runScopeId,
+      });
+      await reply('本次评论任务已超时，请重新 @ 我。', 'postTimeoutReply');
+      return;
+    }
+
+    if (execution.handle.interrupted) {
+      log.info('comment', 'reply-skip', {
+        reason: 'interrupted',
+        commentScopeId: runScopeId,
+      });
+      return;
+    }
+
+    await postCommentReply(deps.channel, target, evt, commentReplyText(outcome), { isWhole: ctx.isWhole }).catch((err) => {
+      log.fail('comment', err, { step: 'postCommentReply' });
+      log.warn('comment', 'reply_failed', {
+        commentScopeId: runScopeId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
+  } finally {
+    agentSessionRun.release();
+  }
+}
+
+interface CommentAnswer {
+  answer: string;
+  errorMsg?: string;
+  timedOut: boolean;
+}
+
+/** Reads the run until its final answer, an error, interruption or the comment deadline. */
+async function collectCommentAnswer(
+  execution: RunExecution,
+  expiresAt: number | undefined,
+  runScopeId: string,
+  observe: (event: AgentEvent) => void,
+): Promise<CommentAnswer> {
+  const outcome: CommentAnswer = { answer: '', timedOut: false };
+  const eventStream = execution.subscribe()[Symbol.asyncIterator]();
+  try {
+    while (true) {
+      const next = await nextCommentEvent(eventStream, expiresAt);
+      if (next === 'expired' || (expiresAt !== undefined && Date.now() > expiresAt)) {
+        await execution.stop().catch((err) => {
+          log.warn('comment', 'expired-stop-failed', {
+            commentScopeId: runScopeId,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        });
+        outcome.timedOut = true;
+        break;
+      }
+      if (next.done || execution.handle.interrupted) break;
+      const e = next.value;
+      observe(e);
+      let terminal = false;
+      switch (e.type) {
+        case 'text':
+          outcome.answer += e.delta;
+          break;
+        case 'final_text':
+          outcome.answer = e.content;
+          break;
+        case 'tool_use':
+        case 'tool_result':
+          outcome.answer = '';
+          break;
+        case 'error':
+          outcome.errorMsg = e.message;
+          terminal = true;
+          break;
+        case 'done':
+          terminal = true;
+          break;
+      }
+      // Don't wait for the subprocess to actually close stdout — break as soon
+      // as we have the final result. Some claude versions hang briefly post-
+      // result on telemetry, which would leave the for-await stuck forever.
+      if (terminal) break;
+    }
+  } finally {
+    await eventStream.return?.();
+  }
+  return outcome;
+}
+
+function commentReplyText(outcome: CommentAnswer): string {
+  let reply = stripMarkdown(outcome.answer.trim());
+  if (outcome.errorMsg) reply = `⚠️ Claude 报错：${outcome.errorMsg}`;
+  if (!reply) reply = '（无回复内容）';
+  if (reply.length > REPLY_MAX_CHARS) reply = `${reply.slice(0, REPLY_MAX_CHARS - 1)}…`;
+  return reply;
 }
 
 export type ResolvedTarget = ResolvedCommentTarget;
