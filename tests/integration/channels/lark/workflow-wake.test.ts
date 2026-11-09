@@ -1,6 +1,7 @@
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runAgentBatch } from '../../../../src/channels/lark/run';
+import { ScopeRunMemory } from '../../../../src/channels/lark/scope-run-memory';
 import { presentRunOutput } from '../../../../src/runtime/run-output';
 import { createLarkRunOutput } from '../../../../src/channels/lark/run-output';
 import { fetchTopicContext } from '../../../../src/channels/lark/quote';
@@ -51,21 +52,24 @@ describe('workflow main-session wake', () => {
     const executor = new RunExecutor({ resolveAgent: () => agent, pool: new ProcessPool(() => 3), activeRuns });
     const release = vi.fn(); const markNotified = vi.fn();
     const bindMain = vi.fn(() => ({ instructions: 'INTERNAL RESULT EVENT', env: { AGENT_WORKFLOW_TOKEN: 'test' }, eventIds: ['event-1'], release }));
-    const deps = {
-      executor, activeRuns, sessions, sessionCatalog: catalog, workspaces, scope: scopeId, agentKind: 'codex', mode: 'topic', entry: { kind: 'workflow', trigger: 'event' },
+    const services = {
+      executor, activeRuns, sessions, sessionCatalog: catalog, workspaces,
       channel: { send: vi.fn(), botIdentity: { openId: 'bot' } },
       media: { resolve: vi.fn(async () => []) },
       controls: { profile: 'default', cfg: { accounts: profile.accounts }, profileConfig: profile, botOwnerId: 'user', ownerRefreshState: 'ok' },
+      memory: new ScopeRunMemory(), userQuestions: { publish: vi.fn() }, cotClient: {},
+    } as unknown as Parameters<typeof runAgentBatch>[0];
+    const turn = {
+      scope: scopeId, agentKind: 'codex', mode: 'topic', entry: { kind: 'workflow', trigger: 'event' },
       batch: [{ chatId: 'chat', threadId: 'topic', senderId: 'user', chatType: 'group', messageId: 'original-user-input', content: 'DO NOT REPLAY THIS USER MESSAGE', createTime: 500, resources: [], agentEntry: { kind: 'workflow', trigger: 'command' } }],
       workflows: { bindMain, kernel: { markNotified } },
-      activePolicyFingerprints: new Map(), lastRunModelByScope: new Map(), userQuestions: { publish: vi.fn() }, cotClient: {},
-    } as unknown as Parameters<typeof runAgentBatch>[0];
+    } as unknown as Parameters<typeof runAgentBatch>[1];
     if (realFollowup) vi.mocked(presentRunOutput).mockImplementationOnce(async (execution) => {
       execution.handle.inputMessageIds.add('om_real_followup');
       for await (const _event of execution.subscribe()) { /* Drain output independently from session tracking. */ }
       await execution.result;
     });
-    await runAgentBatch(deps);
+    await runAgentBatch(services, turn);
     expect(agent.runOptions[0]?.threadId).toBe('root-thread');
     expect(bindMain).toHaveBeenCalledWith(scopeId, 'continue');
     expect(agent.runOptions[0]?.prompt).toContain('<workflow_events source="bridge">');

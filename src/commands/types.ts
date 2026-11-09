@@ -35,24 +35,39 @@ export interface CommandDispatcher {
   run(name: string, args: string, ctx: CommandContext): Promise<boolean>;
 }
 
+export interface WorkflowControl {
+  command(scope: string, args: string, message: NormalizedMessage): Promise<string | undefined>;
+  cancel(scope: string): boolean;
+  invalidate(scope: string): void;
+}
+
+/** What a connected channel lends to commands and the supervisor, bound as one unit. */
+export interface ChannelControls {
+  /** Present once the workflow runtime has started. */
+  workflow(): WorkflowControl | undefined;
+  btw: BtwCommandControl;
+  cancelPendingInput(scope: string): number;
+  flushPendingInput(): Promise<void>;
+  pausePendingInput(): void;
+  resumePendingInput(): void;
+  detachPendingInput(): void;
+  reloadPendingInput(): Promise<void>;
+  launchTimedRun(job: TimedRun, message: NormalizedMessage): Promise<void>;
+  cancelTimedRun(scope: string, id?: string): void;
+  activeTimedRun(scope: string): string | undefined;
+  /** In-meeting agent manager; present only while `meeting.enabled` is on. */
+  meeting(): MeetingManager | undefined;
+  /** Attach or detach the meeting manager after `meeting.enabled` changed. */
+  reconcileMeeting(): Promise<void>;
+  /** Notify live consumers that cached derived state (e.g. the pool cap) changed. */
+  onConfigApplied(): void;
+}
+
 export interface Controls {
-  workflow?: {
-    command(scope: string, args: string, message: NormalizedMessage): Promise<string | undefined>;
-    cancel(scope: string): boolean;
-    invalidate(scope: string): void;
-  };
+  /** Live services of the connected channel; absent until it starts and after it disconnects. */
+  channel?: ChannelControls;
   /** Commands contributed by the active plugin host. */
   commands?: CommandDispatcher;
-  cancelPendingInput?(scope: string): number;
-  flushPendingInput?(): Promise<void>;
-  pausePendingInput?(): void;
-  resumePendingInput?(): void;
-  detachPendingInput?(): void;
-  reloadPendingInput?(): Promise<void>;
-  btw?: BtwCommandControl;
-  launchTimedRun?(job: TimedRun, message: NormalizedMessage): Promise<void>;
-  cancelTimedRun?(scope: string, id?: string): void;
-  activeTimedRun?(scope: string): string | undefined;
   profile: string;
   profileConfig: ProfileConfig;
   botOwnerId?: string;
@@ -71,10 +86,6 @@ export interface Controls {
   applyConfig?(trigger: ConfigTrigger, options?: { force?: boolean }): Promise<ConfigApplyReport>;
   /** Last reconcile result for this profile (applied / pending / failed). */
   configStatus?: ConfigApplyReport;
-  /** Attach or detach the meeting manager after `meeting.enabled` changed. Late-bound by startChannel. */
-  reconcileMeeting?(): Promise<void>;
-  /** Notify live consumers that cached derived state (e.g. the pool cap) changed. Late-bound by startChannel. */
-  onConfigApplied?(): void;
   /** Apply a persisted default engine to future runs without stopping active runs. */
   switchAgent?(): Promise<void>;
   /** Stop this whole process gracefully (disconnect + exit). Used by /exit
@@ -91,9 +102,6 @@ export interface Controls {
   processId: string;
   /** Groups the bot currently belongs to, used to render and bulk-manage access. */
   knownChats?: KnownChat[];
-  /** In-meeting agent manager; present only while the channel is connected and
-   * `meeting.enabled` is on. Late-bound by startChannel. */
-  meeting?: MeetingManager;
 }
 
 export interface CommandContext {

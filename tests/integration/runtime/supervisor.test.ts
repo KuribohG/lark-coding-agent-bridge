@@ -12,6 +12,7 @@ import { Supervisor } from '../../../src/runtime/supervisor';
 import { resolveAppPaths } from '../../../src/config/app-paths';
 import { acquireAppRuntimeLock } from '../../../src/runtime/locks';
 import { readRegistry } from '../../../src/runtime/registry';
+import { fakeChannelControls } from '../../helpers/channel-controls';
 
 // CI hosts have no agent CLIs installed; treat every binary as present.
 vi.mock('../../../src/agent/preflight', async (importOriginal) => ({
@@ -40,15 +41,17 @@ const stubStartChannel: any = async (deps: any) => {
   executions.set(deps.appPaths.profile, deps.execution);
   started.push(deps.appPaths.profile);
   restorePendingArgs.push(deps.restorePending);
-  deps.controls.pausePendingInput = () => pendingLifecycle.push(`pause:${deps.appPaths.profile}`);
-  deps.controls.flushPendingInput = async () => {
-    pendingLifecycle.push(`flush:${deps.appPaths.profile}`);
-  };
-  deps.controls.detachPendingInput = () => pendingLifecycle.push(`detach:${deps.appPaths.profile}`);
-  deps.controls.reloadPendingInput = async () => {
-    pendingLifecycle.push(`reload:${deps.appPaths.profile}`);
-  };
-  deps.controls.resumePendingInput = () => pendingLifecycle.push(`resume:${deps.appPaths.profile}`);
+  deps.controls.channel = fakeChannelControls({
+    pausePendingInput: () => { pendingLifecycle.push(`pause:${deps.appPaths.profile}`); },
+    flushPendingInput: async () => {
+      pendingLifecycle.push(`flush:${deps.appPaths.profile}`);
+    },
+    detachPendingInput: () => { pendingLifecycle.push(`detach:${deps.appPaths.profile}`); },
+    reloadPendingInput: async () => {
+      pendingLifecycle.push(`reload:${deps.appPaths.profile}`);
+    },
+    resumePendingInput: () => { pendingLifecycle.push(`resume:${deps.appPaths.profile}`); },
+  });
   return {
     channel: { botIdentity: { name: `bot-${deps.appPaths.profile}` } },
     activity: () => activity,

@@ -52,15 +52,12 @@ import { larkDisplay } from './config';
 import { createLarkRunOutput } from './run-output';
 
 import { buildPrompt, replyQuoteTargetForMessage, senderTypeOf } from './prompt';
+import type { ScopeRunMemory } from './scope-run-memory';
 
 const TOPIC_CONTEXT_MAX_MESSAGES = 40;
 
-export interface RunBatchDeps {
-  workflows?: WorkflowRuntime;
-  entry?: AgentEntry;
-  workflowOrigins?: Map<string, NormalizedMessage>;
-  timedJob?: TimedRun;
-  signal?: AbortSignal;
+/** Services shared by every turn of one channel connection. */
+export interface LarkRunServices {
   channel: LarkChannel;
   executor: RunExecutor;
   sessions: SessionStore;
@@ -68,17 +65,25 @@ export interface RunBatchDeps {
   workspaces: WorkspaceStore;
   media: MediaCache;
   activeRuns: ActiveRuns;
-  batch: PendingMessage[];
   controls: Controls;
   cotClient: CotClient;
   callbackAuth?: CallbackAuth;
   userQuestions: UserQuestions;
-  activePolicyFingerprints: Map<string, string>;
-  lastRunModelByScope: Map<string, string>;
+  memory: ScopeRunMemory;
+}
+
+/** One turn: the batch to answer and how it was started. */
+export interface LarkTurnRequest {
   scope: string;
+  batch: PendingMessage[];
   agentKind: AgentKind;
   agent: AgentAdapter;
   mode: ChatMode;
+  entry?: AgentEntry;
+  workflows?: WorkflowRuntime;
+  workflowOrigins?: Map<string, NormalizedMessage>;
+  timedJob?: TimedRun;
+  signal?: AbortSignal;
   preparedCot?: CotPublisher;
   /** Replay number of input whose earlier run was cut off by a bridge shutdown. */
   resumeAttempt?: number;
@@ -87,8 +92,11 @@ export interface RunBatchDeps {
 }
 
 /** Resolves with the submitted execution once its output has been presented. */
-export async function runAgentBatch(deps: RunBatchDeps): Promise<RunExecution | undefined> {
-  const entry = deps.entry ?? { kind: 'direct' };
+export async function runAgentBatch(
+  services: LarkRunServices,
+  turn: LarkTurnRequest,
+): Promise<RunExecution | undefined> {
+  const entry = turn.entry ?? { kind: 'direct' };
   const workflowWake = entry.kind === 'workflow' && entry.trigger === 'event';
   const {
     channel,
@@ -98,18 +106,12 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<RunExecution | 
     workspaces,
     media,
     activeRuns,
-    batch,
     controls,
     cotClient,
     callbackAuth,
-    activePolicyFingerprints,
-    lastRunModelByScope,
-    scope,
-    agentKind,
-    agent,
-    mode,
-    preparedCot,
-  } = deps;
+    memory,
+  } = services;
+  const { batch, scope, agentKind, agent, mode, preparedCot } = turn;
   if (batch.length === 0) return undefined;
   batch.sort((left, right) => {
     const leftTime = Number.isFinite(left.createTime) ? left.createTime : 0;
@@ -119,7 +121,7 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<RunExecution | 
   const firstMsg = batch[0];
   const lastMsg = batch[batch.length - 1];
   if (!firstMsg || !lastMsg) return undefined;
-  if (!workflowWake) deps.workflowOrigins?.set(scope, firstMsg);
+  if (!workflowWake) turn.workflowOrigins?.set(scope, firstMsg);
 
   const chatId = firstMsg.chatId;
   const threadId = firstMsg.threadId;
@@ -246,7 +248,7 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<RunExecution | 
     if (topicContextComplete && topicContextUntil > 0) {
       topicContextThrough = topicContextUntil;
     }
-    topicContext = topicContext.filter(message => !controls.btw?.excludes(scope, message));
+    topicContext = topicContext.filter(message => !controls.channel?.btw.excludes(scope, message));
     if (topicContext.length > 0) {
       log.info('topic', 'context-fetched', {
         scope,
@@ -273,13 +275,10 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<RunExecution | 
   // for this scope (never on the first run) and the selection actually
   // changed. Observed native models are recorded by session-progress.
   const runModelSettings = await resolveRunModelSettings(controls, scope, undefined, agentKind);
-  const runArguments = deps.timedJob?.modelSettings ?? modelRunArguments(runModelSettings);
+  const runArguments = turn.timedJob?.modelSettings ?? modelRunArguments(runModelSettings);
   const modelPref = runArguments.model;
   const modelSelection = normalizeModelSelection(agentKind, modelPref);
-  const modelStateKey = `${agentKind}\x1f${scope}`;
-  const prevModel = lastRunModelByScope.get(modelStateKey);
-  const modelSwitched = prevModel !== undefined && prevModel !== modelSelection;
-  lastRunModelByScope.set(modelStateKey, modelSelection);
+  const modelSwitched = memory.modelSwitched(agentKind, scope, modelSelection);
   const extraInstructions = [
     ...(!topicContextComplete
       ? ['本次话题上下文未能完整导入。不要假设你已经看到该话题中所有未直接送达 bot 的消息；涉及缺失上下文时应明确说明。']
@@ -294,16 +293,16 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<RunExecution | 
         ]
       : []),
   ];
-  if (deps.timedJob) extraInstructions.push(deadlineInstructions(deps.timedJob.stopAt, deps.timedJob.windDownAt));
-  if (deps.resumeAttempt) {
+  if (turn.timedJob) extraInstructions.push(deadlineInstructions(turn.timedJob.stopAt, turn.timedJob.windDownAt));
+  if (turn.resumeAttempt) {
     extraInstructions.push(
-      `bridge 进程在你处理这批消息期间被终止，现已重启并自动续跑（第 ${deps.resumeAttempt} 次）。` +
+      `bridge 进程在你处理这批消息期间被终止，现已重启并自动续跑（第 ${turn.resumeAttempt} 次）。` +
       '如果当前会话里已有这批消息及部分进展，先核对已完成的工作（文件、命令结果、已发出的消息），从中断处继续，' +
       '不要重复已经生效的操作；如果会话里没有，就按正常流程处理。',
     );
   }
 
-  const entryBinding = bindAgentEntry(entry, scope, deps.workflows);
+  const entryBinding = bindAgentEntry(entry, scope, turn.workflows);
   if (entryBinding) extraInstructions.push(entryBinding.instructions);
   const prompt = workflowWake
     ? `<workflow_events source="bridge">子任务通知，请读取产物并确认事件，继续原工作流。这不是用户输入。\n${entryBinding?.instructions ?? ''}</workflow_events>`
@@ -341,8 +340,8 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<RunExecution | 
   const flow = await startRunFlow({
     env: entryBinding?.env,
     modelSettings: runArguments,
-    deadlineAt: deps.timedJob?.stopAt,
-    signal: deps.signal,
+    deadlineAt: turn.timedJob?.stopAt,
+    signal: turn.signal,
     scopeId: scope,
     scope: scopeContext,
     prompt,
@@ -358,10 +357,10 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<RunExecution | 
     now: Date.now(),
     stopGraceMs: getAgentStopGraceMs(controls.cfg),
     // A timed run has no one waiting to answer before its deadline.
-    userQuestions: !deps.timedJob,
+    userQuestions: !turn.timedJob,
     // Chat replies show the whole answer, including text written before tool calls.
     answerIncludesInterimText: true,
-    host: deps.host,
+    host: turn.host,
     observability: {
       profile: controls.profile,
       agent: capability.agentId,
@@ -380,10 +379,10 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<RunExecution | 
     });
     await preparedCot?.finish('error');
     await channel.send(chatId, { markdown: flow.rejectReason.userVisible }, sendOpts);
-    if (deps.timedJob) await (await timedRuns(controls)).finish(deps.timedJob.id,
+    if (turn.timedJob) await (await timedRuns(controls)).finish(turn.timedJob.id,
       flow.rejectReason.code === 'deadline-expired' ? 'expired'
         : flow.rejectReason.code !== 'run-cancelled' ? 'failed'
-        : deps.signal?.aborted && abortStopReason(deps.signal) === 'shutdown' ? 'interrupted' : 'stopped');
+        : turn.signal?.aborted && abortStopReason(turn.signal) === 'shutdown' ? 'interrupted' : 'stopped');
     return undefined;
   }
 
@@ -393,9 +392,9 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<RunExecution | 
     entryBinding.onStarted();
   }
   let timedResult: Promise<void> | undefined;
-  if (deps.timedJob) {
+  if (turn.timedJob) {
     const store = await timedRuns(controls);
-    const job = deps.timedJob;
+    const job = turn.timedJob;
     // A shutdown leaves the job resumable by the next bridge process.
     timedResult = execution.result.then((state) => store.finish(job.id,
       state === 'stopped' && execution.handle.stopReason === 'shutdown' ? 'interrupted' : state))
@@ -408,7 +407,7 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<RunExecution | 
       return execution;
     }
   }
-  activePolicyFingerprints.set(scope, flow.policy.policyFingerprint);
+  memory.runStarted(scope, flow.policy.policyFingerprint);
   const handle = execution.handle;
   activeRuns.seedInputMessages(scope, handle.run, batchIds);
   if (flow.resumeFrom) {
@@ -474,12 +473,12 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<RunExecution | 
     for await (const event of execution.subscribe()) {
       if (event.type !== 'user_input') continue;
       try {
-        await deps.userQuestions.publish(event, {
+        await services.userQuestions.publish(event, {
           runId: execution.runId,
           identity: { scopeId: scope, agentId: capability.agentId, cwdRealpath: cwd, policyFingerprint: flow.policy.policyFingerprint },
           message: firstMsg, replyTo: lastMsg.messageId,
           mentionUser: firstMsg.chatType !== 'p2p' && senderTypeOf(firstMsg) === 'user',
-          allowQueue: !deps.timedJob, isCancelled: () => handle.interrupted || Boolean(deps.signal?.aborted),
+          allowQueue: !turn.timedJob, isCancelled: () => handle.interrupted || Boolean(turn.signal?.aborted),
         });
       } catch (err) { log.warn('question', 'delivery-failed', { scope, err: String(err) }); }
     }
@@ -498,8 +497,8 @@ export async function runAgentBatch(deps: RunBatchDeps): Promise<RunExecution | 
     }
     await sessionDone;
   } finally {
-    activePolicyFingerprints.delete(scope);
-    if (deps.timedJob) {
+    memory.runEnded(scope);
+    if (turn.timedJob) {
       // End the supervised process even when card delivery failed before the
       // renderer drained the stream. Never let a rendering error detach work.
       await execution.stop('cleanup');

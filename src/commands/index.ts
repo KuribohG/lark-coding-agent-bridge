@@ -18,8 +18,10 @@ export async function runCommandHandler(
 
 export { CommandRegistry } from './registry';
 export type {
+  ChannelControls,
   CommandContext,
   Controls,
   Handler,
   FeatureCommandContribution,
+  WorkflowControl,
 } from './types';

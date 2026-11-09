@@ -98,9 +98,9 @@ describe.each(['codex', 'claude'] as const)('in-flight %s IM delivery', agentKin
     const h = await harness(agentKind);
     await h.message('original');
     await vi.waitFor(() => expect(h.agent.options).toHaveLength(1), { timeout: 2500 });
-    h.controls.activeTimedRun = () => 'timed-job';
+    h.controls.channel!.activeTimedRun = () => 'timed-job';
     h.agent.onSteer = async () => {
-      h.controls.activeTimedRun = () => undefined;
+      h.controls.channel!.activeTimedRun = () => undefined;
       h.agent.finish(0);
       return 'inactive';
     };

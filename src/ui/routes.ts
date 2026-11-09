@@ -286,7 +286,7 @@ async function meetings(ctx: RouteContext): Promise<void> {
   const enabled = controls
     ? controls.profileConfig.meeting.enabled
     : (await loadProfileState(profile, ctx.deps.rootDir)).profileConfig.meeting.enabled;
-  sendJson(ctx.res, 200, meetingsView(controls?.meeting, enabled));
+  sendJson(ctx.res, 200, meetingsView(controls?.channel?.meeting(), enabled));
 }
 
 async function preflight(ctx: RouteContext): Promise<void> {
@@ -299,13 +299,13 @@ async function preflight(ctx: RouteContext): Promise<void> {
 async function join({ req, res, deps }: RouteContext): Promise<void> {
   const body = (await readJsonBody(req)) as { profile?: string; meetingNo?: string };
   const profile = await requireBodyProfile(deps, body);
-  sendJson(res, 200, await meetingJoin(deps.supervisor.controlsFor(profile)?.meeting, body));
+  sendJson(res, 200, await meetingJoin(deps.supervisor.controlsFor(profile)?.channel?.meeting(), body));
 }
 
 async function leave({ req, res, deps }: RouteContext): Promise<void> {
   const body = (await readJsonBody(req)) as { profile?: string; meetingId?: string };
   const profile = await requireBodyProfile(deps, body);
-  sendJson(res, 200, await meetingLeave(deps.supervisor.controlsFor(profile)?.meeting, body));
+  sendJson(res, 200, await meetingLeave(deps.supervisor.controlsFor(profile)?.channel?.meeting(), body));
 }
 
 const ROUTES: readonly Route[] = [

@@ -17,7 +17,7 @@ export async function handleRun(args: string, ctx: CommandContext): Promise<void
     const [action, id] = words;
     const defaultsCommand = action === 'defaults' ? words.join(' ') : '';
     if (['status', 'start', 'stop'].includes(action!)) {
-      const activeId = action === 'start' ? undefined : ctx.controls.activeTimedRun?.(ctx.scope);
+      const activeId = action === 'start' ? undefined : ctx.controls.channel?.activeTimedRun(ctx.scope);
       const job = id ? store.get(id) : activeId ? store.get(activeId) : store.latest(ctx.scope);
       if (!job || job.scope !== ctx.scope) throw new Error('当前话题/聊天没有对应的限时任务。');
       if (action === 'status') {
@@ -28,14 +28,15 @@ export async function handleRun(args: string, ctx: CommandContext): Promise<void
         throw new Error('仅任务创建者可启动；创建者或管理员可停止。');
       }
       if (action === 'stop') {
-        ctx.controls.cancelTimedRun?.(ctx.scope, job.id);
+        ctx.controls.channel?.cancelTimedRun(ctx.scope, job.id);
         if (job.state === 'draft') await store.transition(job.id, ['draft'], 'stopped');
         await reply('已请求取消 / 停止限时任务，不会自动续跑。');
         return;
       }
-      if (!ctx.controls.launchTimedRun) throw new Error('当前运行环境不支持限时任务。');
+      const channel = ctx.controls.channel;
+      if (!channel) throw new Error('当前运行环境不支持限时任务。');
       // The launcher atomically reserves the scope before its first await.
-      await ctx.controls.launchTimedRun(job, ctx.msg);
+      await channel.launchTimedRun(job, ctx.msg);
       return;
     }
     const agentKind = ctx.agentKind;

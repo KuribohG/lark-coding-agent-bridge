@@ -13,10 +13,10 @@ export async function handleStop(args: string, ctx: CommandContext): Promise<voi
     return;
   }
   const scope = targetScope || ctx.scope;
-  const workflowCancelled = ctx.controls.workflow?.cancel(scope) ?? false;
+  const workflowCancelled = ctx.controls.channel?.workflow()?.cancel(scope) ?? false;
   const dropped = await cancelPendingInput(ctx, scope);
-  ctx.controls.btw?.cancel(scope);
-  ctx.controls.cancelTimedRun?.(scope);
+  ctx.controls.channel?.btw.cancel(scope);
+  ctx.controls.channel?.cancelTimedRun(scope);
   const ok = ctx.activeRuns.interrupt(scope) || workflowCancelled;
   log.info('command', 'stop', {
     scope,
@@ -214,7 +214,7 @@ export async function handleReconnect(args: string, ctx: CommandContext): Promis
   let pausedPending = false;
   try {
     resumeNewRuns = ctx.activeRuns.pauseNewRuns('reconnect-in-progress');
-    ctx.controls.pausePendingInput?.();
+    ctx.controls.channel?.pausePendingInput();
     pausedPending = true;
     if (wait) {
       await ctx.activeRuns.waitForAll();
@@ -230,7 +230,7 @@ export async function handleReconnect(args: string, ctx: CommandContext): Promis
     reportMetric('command_fail', 1, { step: 'reconnect' });
     await reply(ctx, `❌ 重连失败:${err instanceof Error ? err.message : String(err)}`);
   } finally {
-    if (pausedPending) ctx.controls.resumePendingInput?.();
+    if (pausedPending) ctx.controls.channel?.resumePendingInput();
     resumeNewRuns?.();
   }
 }

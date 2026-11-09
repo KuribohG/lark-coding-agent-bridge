@@ -78,8 +78,8 @@ describe('turns cut off by a bridge shutdown', () => {
     const next = await h.start({ restorePending: false });
     await first.stop();
     expect(h.agent.options).toHaveLength(1);
-    await h.controls.reloadPendingInput?.();
-    h.controls.resumePendingInput?.();
+    await h.controls.channel?.reloadPendingInput();
+    h.controls.channel?.resumePendingInput();
     await vi.waitFor(() => expect(h.agent.options).toHaveLength(2));
     expect(h.agent.options[1]?.prompt).toContain('跨重连的任务');
     expect(JSON.stringify(next.channel.sent)).toContain(RESUME_NOTE);

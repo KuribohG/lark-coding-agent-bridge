@@ -171,7 +171,7 @@ async function dispatchCardAction(deps: CardDispatchDeps): Promise<CardActionRes
   // as a follow-up message, with full context of what it sent.
   if (BRIDGE_CALLBACK_MARKER in payload) {
     if (!verifyBridgeToken(deps, payload, scope, 'agent_callback')) return;
-    if (deps.controls.activeTimedRun?.(scope)) {
+    if (deps.controls.channel?.activeTimedRun(scope)) {
       await deps.channel.send(chatId, { markdown: '限时任务不自动排队回调续跑；请等待任务结束后手动继续。' }, {
         replyTo: deps.evt.messageId, ...(mode === 'topic' ? { replyInThread: true } : {}),
       });

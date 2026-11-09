@@ -14,7 +14,7 @@ import {
 } from '../agent/backend-spec';
 import type { CommandContext } from './types';
 import { reply, commandReplyOptions } from './presentation';
-import { cancelPendingInput, commandProfilePaths, effectiveWorkspaceCwd } from './context';
+import { abandonScopeWork, commandProfilePaths, effectiveWorkspaceCwd } from './context';
 
 interface ResumeCandidate {
   scopeId: string;
@@ -137,11 +137,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     const entry = ctx.sessionCatalog.activeFor(ctx.sessionCatalogIdentity);
     const resolved = consumeResumeCandidate(sessionId, ctx.sessionCatalogIdentity);
     if (resolved) {
-      ctx.controls.btw?.reset(ctx.scope);
-      ctx.controls.workflow?.invalidate(ctx.scope);
-      ctx.controls.cancelTimedRun?.(ctx.scope);
-      await cancelPendingInput(ctx);
-      ctx.activeRuns.interrupt(ctx.scope);
+      await abandonScopeWork(ctx);
       if (identitySpec.sessionIdField === 'threadId') {
         ctx.sessionCatalog.upsertActive({
           scopeId: ctx.sessionCatalogIdentity.scopeId,
@@ -174,11 +170,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
       await reply(ctx, '当前上下文不可恢复这个会话，请重新选择当前工作区和权限策略下的会话。');
       return;
     }
-    ctx.controls.btw?.reset(ctx.scope);
-    ctx.controls.workflow?.invalidate(ctx.scope);
-    ctx.controls.cancelTimedRun?.(ctx.scope);
-    await cancelPendingInput(ctx);
-    ctx.activeRuns.interrupt(ctx.scope);
+    await abandonScopeWork(ctx);
     if (identitySpec.legacySessionStore) {
       ctx.sessions.set(ctx.scope, sessionId, ctx.sessionCatalogIdentity.cwdRealpath);
     }
@@ -200,11 +192,7 @@ async function applyResume(sessionId: string, ctx: CommandContext): Promise<void
     await reply(ctx, '请先使用 /cd <path> 选择工作目录，再查看或恢复会话。');
     return;
   }
-  ctx.controls.btw?.reset(ctx.scope);
-  ctx.controls.workflow?.invalidate(ctx.scope);
-  ctx.controls.cancelTimedRun?.(ctx.scope);
-  await cancelPendingInput(ctx);
-  ctx.activeRuns.interrupt(ctx.scope);
+  await abandonScopeWork(ctx);
   ctx.sessions.set(ctx.scope, sessionId, cwd);
   await reply(ctx, RESUME_APPLIED_REPLY);
 }

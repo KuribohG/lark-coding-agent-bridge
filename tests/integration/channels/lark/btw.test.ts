@@ -16,6 +16,7 @@ import { WorkspaceStore } from '../../../../src/workspace/store';
 import type { AgentEvent, AgentRun } from '../../../../src/agent/types';
 import { FakeAgentAdapter, STREAMED_EXECUTION } from '../../../helpers/fake-agent';
 import { createTmpProfile } from '../../../helpers/tmp-profile';
+import { fakeChannelControls } from '../../../helpers/channel-controls';
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -290,7 +291,7 @@ async function harness(kind: 'claude' | 'codex', events: AgentEvent[][]) {
   const executor = new RunExecutor({ resolveAgent: () => agent, pool, activeRuns });
   const path = join(tmp.profile, 'btw.json');
   const manager = new BtwManager(new BtwStore(path));
-  controls.btw = manager;
+  controls.channel = fakeChannelControls({ btw: manager });
   const ctx: CommandContext = { channel, scope: 'chat:topic', chatMode: 'topic', agent, sessions,
     sessionCatalog: catalog, workspaces, activeRuns, runExecutor: executor, controls, agentKind: controls.profileConfig.agentKind,
     msg: { chatId: 'chat', chatType: 'group', senderId: 'user', threadId: 'topic', rootId: 'root', messageId: 'q1', content: '', resources: [], mentions: [] } as unknown as NormalizedMessage,

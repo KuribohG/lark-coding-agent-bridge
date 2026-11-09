@@ -308,9 +308,9 @@ class ManagedProfile {
     let switched = false;
     let candidateAuth: LarkProfileAuth | undefined;
     try {
-      this.controls.pausePendingInput?.();
+      this.controls.channel?.pausePendingInput();
       pendingPaused = true;
-      await this.controls.flushPendingInput?.();
+      await this.controls.channel?.flushPendingInput();
       const nextRuntime = config === 'running'
         ? { cfg: this.controls.cfg, profileConfig: this.controls.profileConfig, appPaths: this.appPaths, modelServices: this.modelServices }
         : await resolveProfileRuntime({
@@ -363,7 +363,7 @@ class ManagedProfile {
         larkAuth: nextLarkAuth,
         restorePending: false,
       });
-      this.controls.detachPendingInput?.();
+      this.controls.channel?.detachPendingInput();
       try {
         await this.bridge.disconnect();
       } catch (err) {
@@ -396,13 +396,13 @@ class ManagedProfile {
       this.modelServices = nextRuntime.modelServices;
       nextControls.configStatus = this.configStatus;
       this.controls = nextControls;
-      await nextControls.reloadPendingInput?.();
-      nextControls.resumePendingInput?.();
+      await nextControls.channel?.reloadPendingInput();
+      nextControls.channel?.resumePendingInput();
       pendingPaused = false;
       switched = true;
     } finally {
       if (candidateAuth && candidateAuth !== this.larkAuth) await candidateAuth.close();
-      if (pendingPaused && !switched) this.controls.resumePendingInput?.();
+      if (pendingPaused && !switched) this.controls.channel?.resumePendingInput();
       if (nextAppLock) await nextAppLock.release().catch(() => undefined);
       this.restarting = false;
     }
@@ -441,8 +441,8 @@ class ManagedProfile {
       execution: this.execution,
       modelServices: this.modelServices,
       applyLarkCliIdentity: identity => applyProfileLarkCliIdentity(controls, identity),
-      reconcileMeeting: controls.reconcileMeeting ? () => controls.reconcileMeeting!() : undefined,
-      onApplied: () => controls.onConfigApplied?.(),
+      reconcileMeeting: controls.channel ? () => controls.channel!.reconcileMeeting() : undefined,
+      onApplied: () => controls.channel?.onConfigApplied(),
       rootPending: this.rootPending,
     }, snapshot.root, { trigger, revision: snapshot.revision });
     const { report } = result;

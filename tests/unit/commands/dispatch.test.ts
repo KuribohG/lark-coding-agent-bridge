@@ -8,6 +8,7 @@ import {
 import { handleRun } from '../../../src/commands/run';
 import { helpCard } from '../../../src/card/templates';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
+import { fakeChannelControls } from '../../helpers/channel-controls';
 
 vi.mock('../../../src/commands/run', () => ({ handleRun: vi.fn(async () => {}) }));
 
@@ -21,7 +22,7 @@ function context(content: string): CommandContext {
         app: { id: 'test', secret: '${TEST_SECRET}', tenant: 'feishu' },
       } }),
       botOwnerId: 'ou_owner', ownerRefreshState: 'ok',
-      btw: { enqueue: vi.fn(async () => {}) },
+      channel: fakeChannelControls({ btw: { enqueue: vi.fn(async () => {}), excludes: () => false, reset: () => {}, cancel: () => {} } }),
     },
   } as unknown as CommandContext;
 }
@@ -44,7 +45,7 @@ describe('command dispatch contract', () => {
     const task = 'first paragraph\n\n  indented command';
     const ctx = context(`/${name}   ${task}`);
     await expect(tryHandleCommand(ctx)).resolves.toBe(true);
-    const handler = name === 'run' ? handleRun : ctx.controls.btw!.enqueue;
+    const handler = name === 'run' ? handleRun : ctx.controls.channel!.btw.enqueue;
     expect(handler).toHaveBeenCalledWith(task, ctx);
     await runCommandHandler(name, task, ctx);
     expect(handler).toHaveBeenLastCalledWith(task, ctx);
@@ -61,7 +62,7 @@ describe('command dispatch contract', () => {
     const ctx = context('/reset');
     ctx.sessions = { clear: vi.fn() } as unknown as CommandContext['sessions'];
     ctx.activeRuns = { interrupt: vi.fn(() => false) } as unknown as CommandContext['activeRuns'];
-    ctx.controls.btw = undefined;
+    ctx.controls.channel = undefined;
     await expect(tryHandleCommand(ctx)).resolves.toBe(true);
     expect(ctx.sessions.clear).toHaveBeenCalledWith('oc_chat:omt_topic');
     expect(ctx.activeRuns.interrupt).toHaveBeenCalledWith('oc_chat:omt_topic');

@@ -153,7 +153,7 @@ describe('one-shot tasks through Lark commands and cards', () => {
     expect(JSON.stringify(h.channel.sent.at(-1))).toContain('未排队');
     h.agent.finish(0);
     await vi.waitFor(() => expect(store.get(job.id)?.state).toBe('completed'));
-    await vi.waitFor(() => expect(h.controls.activeTimedRun?.(h.scope)).toBeUndefined());
+    await vi.waitFor(() => expect(h.controls.channel?.activeTimedRun(h.scope)).toBeUndefined());
     await h.message('A fresh user task');
     await vi.waitFor(() => expect(h.agent.options).toHaveLength(2), { timeout: 2000 });
     expect(h.agent.options[1]).toMatchObject({ model: 'custom/day', reasoningEffort: 'high', deadlineAt: undefined });
@@ -193,7 +193,7 @@ describe('one-shot tasks through Lark commands and cards', () => {
     expect(h.agent.options[0]).toMatchObject({ deadlineAt: job.stopAt, reasoningEffort: 'ultra' });
     h.agent.finish(0);
     await vi.waitFor(() => expect(store.get(job.id)?.state).toBe('completed'));
-    await vi.waitFor(() => expect(h.controls.activeTimedRun?.(h.scope)).toBeUndefined());
+    await vi.waitFor(() => expect(h.controls.channel?.activeTimedRun(h.scope)).toBeUndefined());
     await h.message('/effort ultra');
     expect(h.controls.profileConfig.preferences).toMatchObject({ reasoningEffort: 'high' });
   });

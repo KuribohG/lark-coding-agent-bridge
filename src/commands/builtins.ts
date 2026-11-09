@@ -27,7 +27,7 @@ export const builtinHandlers = {
   config: handleConfig,
   run: handleRun,
   btw: async (args, ctx) => {
-    if (ctx.controls.btw) await ctx.controls.btw.enqueue(args, ctx);
+    if (ctx.controls.channel) await ctx.controls.channel.btw.enqueue(args, ctx);
     else await reply(ctx, '当前入口暂不支持 /btw。');
   },
   model: (args, ctx) => handleModelCommand('model', args, ctx),

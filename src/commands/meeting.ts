@@ -16,7 +16,7 @@ export async function handleMeeting(args: string, ctx: CommandContext): Promise<
   const parts = args.trim().split(/\s+/).filter(Boolean);
   const sub = parts[0] ?? '';
   const rest = parts.slice(1).join(' ');
-  const manager = ctx.controls.meeting;
+  const manager = ctx.controls.channel?.meeting();
 
   if (!ctx.controls.profileConfig.meeting.enabled) {
     await reply(

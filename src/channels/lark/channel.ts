@@ -1,77 +1,45 @@
-import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
+import type { LarkChannel } from '@larksuite/channel';
 import { dirname, join } from 'node:path';
-import { capabilityForProfile } from '../../agent/backends';
-import { modelRunArguments } from '../../agent/model-settings';
-import { BtwManager } from './btw';
-import { ChatModeCache } from './chat-mode-cache';
-import { handleCommentMention } from './comments';
-import { CotClient, CotPublisher } from './cot';
-import { FollowupRouter } from './followup';
-import { startKeepalive } from './keepalive';
-import { fetchKnownChats } from './lark-info';
-import { PendingQueue, type PendingMessage } from './pending-queue';
-import { UserQuestions } from './question-cards';
 import { CallbackAuth } from '../../card/callback-auth';
 import { CallbackNonceStore } from '../../card/callback-store';
-import { handleCardAction } from './card-actions';
-import { sendManagedCard } from '../../card/managed';
-import { timedRunCard } from '../../card/timed-run-card';
-import type { Controls } from '../../commands';
+import type { ChannelControls, Controls } from '../../commands';
 import type { AppPaths } from '../../config/app-paths';
 import type { AgentKind } from '../../config/profile-schema';
 import type { AppConfig } from '../../config/schema';
-import {
-  getMaxConcurrentRuns,
-  getMessageDebounceMs,
-  getWorkflowTimeoutMinutes,
-} from '../../config/schema';
-import { log, reportMetric, sanitizeLogsForDoctor, withTrace } from '../../core/logger';
+import { getMaxConcurrentRuns, getMessageDebounceMs } from '../../config/schema';
+import { log, withTrace } from '../../core/logger';
 import { LarkProfileAuth } from '../../lark-auth/profile-auth';
 import { MediaCache } from '../../media/cache';
-import type { VcRequestClient } from '../../meeting/api';
-import { MeetingManager } from '../../meeting/manager';
-import { attachMeetingAgent, summarizeEndedMeeting } from '../../meeting/orchestrator';
-import { canUseDm, canUseGroup } from '../../policy/access';
 import { createOwnerRefreshController } from '../../policy/owner';
 import { ActiveRuns } from '../../runtime/active-runs';
+import type { RuntimeActivity } from '../../runtime/activity';
 import type { ExecutionController } from '../../runtime/execution-controller';
-import { profileForAgentKind } from '../../runtime/execution-controller';
-import { resolveRunModelSettings } from '../../runtime/model-settings';
-import type { ModelSettings } from '../../agent/model-settings';
 import { ProcessPool } from '../../runtime/process-pool';
-import { abortStopReason } from '../../runtime/errors';
 import { RunExecutor, type RunExecution } from '../../runtime/run-executor';
-import { resolveRunFlowContext } from '../../runtime/run-flow';
-import { timedRuns, type TimedRun, type TimedRunState } from '../../runtime/timed-runs';
+import { timedRuns } from '../../runtime/timed-runs';
 import { BtwStore } from '../../session/btw-store';
 import type { SessionCatalog } from '../../session/catalog';
 import type { SessionStore } from '../../session/store';
-import { handleWorkflowCommand } from '@kuribohg/agent-workflows';
-import { workflowDigest } from '@kuribohg/agent-workflows';
-import { bridgeAgentKind, resolveWorkerExecution } from '../../workflows/bridge/execution';
-import { createBridgeWorkflowRuntime } from '../../workflows/bridge/runtime';
-import type { WorkflowRuntime } from '@kuribohg/agent-workflows';
-import type { WorkflowState } from '@kuribohg/agent-workflows';
-import { WorkflowOrigins } from './workflow-origins';
-import { WorkflowProgressCards } from './workflow-progress-cards';
-import { InterruptedTurns, MAX_RESUME_AGE_MS, MAX_RESUME_ATTEMPTS, type InterruptedTurn } from './interrupted-turns';
-import {
-  newRunHostKey,
-  probeRunHost,
-  removeRunHost,
-  runHostAgent,
-  runHostsSupported,
-  sweepRunHosts,
-  terminateRunHost,
-  type RunHostBinding,
-} from '../../agent/run-host';
 import type { WorkspaceStore } from '../../workspace/store';
-
+import { BtwManager } from './btw';
+import { handleCardAction } from './card-actions';
+import { ChatModeCache } from './chat-mode-cache';
+import { handleCommentMention } from './comments';
+import { connectionLogHandlers } from './connection-log';
+import { CotClient, type CotPublisher } from './cot';
+import { FollowupRouter } from './followup';
 import { intakeMessage } from './intake';
-import { runAgentBatch, type RunBatchDeps } from './run';
+import { startKeepalive } from './keepalive';
+import { startKnownChatsRefresh } from './lark-info';
+import { LarkMeetingHost } from './meeting-host';
+import { PendingQueue, type PendingMessage } from './pending-queue';
+import { UserQuestions } from './question-cards';
+import { runAgentBatch, type LarkRunServices } from './run';
+import { ScopeRunMemory } from './scope-run-memory';
 import { createProfileChannel } from './sdk';
+import { LarkTurnRunner, type TurnDispatchOptions } from './turn-runner';
 import { LarkTurns } from './turns';
-import type { RuntimeActivity } from '../../runtime/activity';
+import { LarkWorkflowHost } from './workflow-host';
 
 export interface BridgeChannel {
   channel: LarkChannel;
@@ -95,6 +63,8 @@ export interface StartChannelDeps {
 
 export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
   const { cfg, execution, sessions, sessionCatalog, workspaces, controls } = deps;
+  const stateDir = deps.appPaths?.mediaDir ? dirname(deps.appPaths.mediaDir) : undefined;
+  const statePath = (name: string) => stateDir ? join(stateDir, name) : undefined;
   const resolveAgent = (scope: string, agentKind?: AgentKind) => execution.get(scope, agentKind);
   const resolveAgentKind = (scope: string) => execution.kindFor(scope);
   const activeRuns = new ActiveRuns();
@@ -119,9 +89,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   const larkAuth = deps.larkAuth ?? new LarkProfileAuth(cfg, deps.appPaths);
   controls.larkAuth = larkAuth;
   const { appSecret } = await larkAuth.credentials();
-  const callbackNonceStore = deps.appPaths?.mediaDir
-    ? new CallbackNonceStore(join(dirname(deps.appPaths.mediaDir), 'callback-nonces.json'))
-    : undefined;
+  const callbackNonceStore = stateDir ? new CallbackNonceStore(statePath('callback-nonces.json')!) : undefined;
   await callbackNonceStore?.load();
   const callbackAuth = callbackNonceStore
     ? new CallbackAuth({
@@ -129,11 +97,6 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
         nonceStore: callbackNonceStore,
       })
     : undefined;
-  const activePolicyFingerprints = new Map<string, string>();
-  // Per-scope record of the model used on the last run, so a `/config` model
-  // switch can inject a one-time "model changed" note into the next (resumed)
-  // prompt. In-memory only: on restart the first run re-seeds silently.
-  const lastRunModelByScope = new Map<string, string>();
   const tenantTokens = await larkAuth.tenantTokens();
   const cotClient = new CotClient({
     tenant: cfg.accounts.app.tenant,
@@ -147,74 +110,9 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   const media = new MediaCache(channel, deps.appPaths?.mediaDir);
   const conversation = { channel, controls, executor, activeRuns, sessions, sessionCatalog, workspaces };
 
-  const workflowOrigins = new WorkflowOrigins(deps.appPaths?.mediaDir
-    ? join(dirname(deps.appPaths.mediaDir), 'workflow-origins.json') : undefined);
-  const replyToOrigin = async (state: WorkflowState, text: string) => {
-    const message = workflowOrigins.get(state.root.scopeId);
-    if (!message) throw new Error('Workflow reply destination unavailable');
-    const receipt = await channel.send(message.chatId, { markdown: text }, { replyTo: message.messageId, replyInThread: Boolean(message.threadId) });
-    if (!receipt.messageId?.trim()) throw new Error('Workflow message delivery returned no message receipt');
-  };
-  let workflows: WorkflowRuntime | undefined;
-  let progressCards: WorkflowProgressCards | undefined;
-  const createWorkflows = () => sessionCatalog && deps.appPaths?.mediaDir ? createBridgeWorkflowRuntime({
-    path: join(dirname(deps.appPaths.mediaDir), 'workflows.sqlite'), executor,
-    getTimeoutMinutes: root => getWorkflowTimeoutMinutes(profileForAgentKind(controls.profileConfig, bridgeAgentKind(root.agentKind))),
-    showPlan: async (state, text) => {
-      await replyToOrigin(state, text);
-      progressCards?.track(state);
-    },
-    notify: replyToOrigin,
-    resolveWorker: async (root, selection, policy) => {
-      const { agentKind: kind, ...overrides } = selection;
-      const agentKind = bridgeAgentKind(kind);
-      const profile = profileForAgentKind(controls.profileConfig, agentKind);
-      // bridgeWorkerPolicy has already validated the engine's string-typed efforts.
-      const requested = overrides as ModelSettings;
-      const settings = agentKind === root.agentKind ? { ...root.modelSettings as ModelSettings, ...requested }
-        : await resolveRunModelSettings(controls, root.scopeId, requested, agentKind);
-      return resolveWorkerExecution(root, profile, policy,
-        { model: settings.model, reasoningEffort: settings.reasoningEffort });
-    },
-    resolve: async scope => {
-      const message = workflowOrigins.get(scope);
-      if (!message) return undefined;
-      const agentKind = resolveAgentKind(scope);
-      const profileConfig = profileForAgentKind(controls.profileConfig, agentKind);
-      const capability = capabilityForProfile(profileConfig);
-      const context = await resolveRunFlowContext({ scopeId: scope,
-        scope: { source: 'im', chatId: message.chatId, actorId: message.senderId, ...(message.threadId ? { threadId: message.threadId } : {}) },
-        prompt: '', attachments: [],
-        access: message.chatType === 'p2p' ? canUseDm(profileConfig, controls, message.senderId)
-          : canUseGroup(profileConfig, controls, message.chatId, message.senderId),
-        capability, profileConfig, sessions, sessionCatalog, workspaces, now: Date.now(),
-      });
-      if (!context.ok || !context.resumeFrom) return undefined;
-      const modelSettings = modelRunArguments(await resolveRunModelSettings(controls, scope, undefined, agentKind));
-      return { policy: context.policy, root: { scopeId: scope, profile: controls.profile, agentKind,
-        cwdRealpath: context.workspace.cwdRealpath, policyFingerprint: context.policy.policyFingerprint,
-        catalogBinding: workflowDigest({ nativeId: context.resumeFrom, agentKind }), modelSettings } };
-    },
-    wakeMain: async scope => {
-      const message = workflowOrigins.get(scope);
-      if (!message || !turns.isIdle(scope)) return;
-      const turn = turns.claim(scope);
-      const eventIds = workflows?.kernel.state(scope)?.events.filter(event => !event.acknowledged).map(event => event.id) ?? [];
-      try {
-        await turn.run(async signal => { await dispatch(scope, [message], { signal, entry: { kind: 'workflow', trigger: 'event' } }); });
-      } catch (error) {
-        // Failed automatic wakes remain visible through /workflow status, without a retry loop.
-        workflows?.kernel.markNotified(scope, eventIds);
-        throw error;
-      }
-    },
-  }) : undefined;
-
-  const btwStore = new BtwStore(deps.appPaths?.mediaDir
-    ? join(dirname(deps.appPaths.mediaDir), 'btw.json') : undefined);
+  const btwStore = new BtwStore(statePath('btw.json'));
   await btwStore.load();
   const btw = new BtwManager(btwStore);
-  controls.btw = btw;
 
   // Pending → run handoff: while a run is active on a chat, block its pending
   // queue so messages keep accumulating without flushing. When the run ends,
@@ -229,12 +127,10 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       const preparedCot = preparedCots.get(scope);
       preparedCots.delete(scope);
       const turn = turns.claim(scope);
-      void turn.run(signal => runConversationTurn(scope, batch, signal, { preparedCot }))
+      void turn.run(signal => runner.runConversationTurn(scope, batch, signal, { preparedCot }))
         .catch(err => log.fail('flush', err));
     },
-    deps.appPaths?.mediaDir
-      ? join(dirname(deps.appPaths.mediaDir), 'pending-queue.json')
-      : undefined,
+    statePath('pending-queue.json'),
   );
   const turns = new LarkTurns(pending, activeRuns);
   if (deps.restorePending === false) {
@@ -244,232 +140,59 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   await pending.load();
 
   const userQuestions = new UserQuestions({ channel, auth: callbackAuth, activeRuns, followups,
-    pending, catalog: sessionCatalog, isTimed: scope => Boolean(controls.activeTimedRun?.(scope)) });
+    pending, catalog: sessionCatalog, isTimed: scope => Boolean(controls.channel?.activeTimedRun(scope)) });
 
-  const dispatch = async (scope: string, batch: PendingMessage[],
-    options: Pick<RunBatchDeps, 'signal' | 'entry' | 'timedJob' | 'preparedCot' | 'resumeAttempt' | 'host'>) => {
+  const runServices: LarkRunServices = { ...conversation, media, cotClient, callbackAuth, userQuestions,
+    memory: new ScopeRunMemory() };
+  const dispatch = async (scope: string, batch: PendingMessage[], options: TurnDispatchOptions): Promise<RunExecution | undefined> => {
     const first = batch[0];
     if (!first) return undefined;
     const mode = first.threadId ? 'topic' : await chatModeCache.resolve(channel, first.chatId);
     const agentKind = options.timedJob?.agentKind ?? resolveAgentKind(scope);
     const agent = resolveAgent(scope, agentKind);
-    return runAgentBatch({ ...conversation, media, cotClient, callbackAuth, userQuestions, activePolicyFingerprints, lastRunModelByScope,
-      ...(options.timedJob ? {} : { workflows, workflowOrigins }), scope, batch, mode, agentKind, agent, ...options });
+    return runAgentBatch(runServices, {
+      ...(options.timedJob ? {} : { workflows: workflows.current, workflowOrigins: workflows.origins }),
+      scope, batch, mode, agentKind, agent, ...options });
   };
+  const workflows: LarkWorkflowHost = new LarkWorkflowHost({ channel, executor, controls, sessions, sessionCatalog, workspaces,
+    stateDir, turns, pending, resolveAgentKind, dispatch });
+  const runner = new LarkTurnRunner({ channel, turns, timedStore: await timedRuns(controls), stateDir,
+    resolveAgentKind, dispatch });
+  // Created before connect() so the `vc.bot.*` handlers are installed on the
+  // event dispatcher before any push can arrive.
+  const meetings = new LarkMeetingHost({ channel, controls, resolveAgentKind,
+    conversation: { executor, activeRuns, sessions, sessionCatalog, workspaces } });
 
-  // Started turns are journaled until they settle; created when this channel
-  // takes over persisted state, so a connect-before-disconnect restart never
-  // has two writers.
-  let interrupted: InterruptedTurns | undefined;
-  /** Only a bridge shutdown leaves a turn to be replayed; /stop, failures and completions end it. */
-  const cutOffByShutdown = async (signal: AbortSignal, execution: RunExecution | undefined) => {
-    const reason = signal.aborted ? abortStopReason(signal) : execution?.handle.stopReason;
-    return reason === 'shutdown' && (!execution || await execution.result !== 'completed');
+  const channelControls: ChannelControls = {
+    workflow: () => workflows.control(),
+    btw,
+    cancelPendingInput: (scope) => {
+      turns.cancel(scope);
+      const preparedCot = preparedCots.get(scope);
+      preparedCots.delete(scope);
+      void preparedCot?.finish('cancelled');
+      return pending.cancel(scope).length;
+    },
+    flushPendingInput: () => pending.flushPersistence(),
+    pausePendingInput: () => pending.suspend(),
+    resumePendingInput: () => pending.resume(),
+    detachPendingInput: () => pending.detach(),
+    reloadPendingInput: async () => { await pending.reload(); await workflows.start(); await runner.resumeInterrupted(); },
+    launchTimedRun: (job, message) => runner.launchTimedRun(job, message),
+    cancelTimedRun: (scope, id) => runner.cancelTimedRun(scope, id),
+    activeTimedRun: scope => runner.activeTimedRun(scope),
+    meeting: () => meetings.current(),
+    reconcileMeeting: () => meetings.reconcile(),
+    onConfigApplied: () => pool.refresh(),
   };
-  /** Journaled turns run under a host, so a restart reattaches to them instead of replaying. */
-  const hostFor = (journal: InterruptedTurns | undefined, attachHost?: string): RunHostBinding | undefined => {
-    if (attachHost) return { key: attachHost, attach: true };
-    return journal && runHostsSupported() ? { key: newRunHostKey() } : undefined;
-  };
-  const endJournaled = (journal: InterruptedTurns | undefined, scope: string, host: RunHostBinding | undefined) => {
-    if (journal?.end(scope) && host) removeRunHost(host.key);
-  };
-
-  const runConversationTurn = (scope: string, batch: PendingMessage[], signal: AbortSignal,
-    options: { preparedCot?: CotPublisher; resumeAttempt?: number; startedAt?: number; attempts?: number; attachHost?: string }) => {
-    const firstMsg = batch[0]!;
-    return withTrace({ chatId: firstMsg.chatId }, async () => {
-      log.info('flush', 'start', {
-        scope,
-        batchSize: batch.length,
-        chatId: firstMsg.chatId,
-        threadId: firstMsg.threadId,
-        msgId: firstMsg.messageId,
-        ...(options.resumeAttempt ? { resumeAttempt: options.resumeAttempt } : {}),
-        ...(options.attachHost ? { runHost: options.attachHost } : {}),
-      });
-      const entry = firstMsg.agentEntry ?? { kind: 'direct' };
-      // Workflow turns are recovered by the workflow kernel itself.
-      const journal = entry.kind === 'direct' ? interrupted : undefined;
-      const host = hostFor(journal, options.attachHost);
-      const attempts = options.resumeAttempt ?? options.attempts;
-      let execution: RunExecution | undefined;
-      try {
-        await journal?.begin({ scope, messages: batch,
-          ...(host ? { hostKey: host.key } : {}),
-          ...(attempts ? { attempts } : {}),
-          ...(options.startedAt ? { startedAt: options.startedAt } : {}) });
-        execution = await dispatch(scope, batch, { signal, entry, preparedCot: options.preparedCot,
-          ...(options.resumeAttempt ? { resumeAttempt: options.resumeAttempt } : {}),
-          ...(host ? { host } : {}) });
-      } catch (err) {
-        await options.preparedCot?.finish('error');
-        log.fail('flush', err);
-      } finally {
-        if (journal && !await cutOffByShutdown(signal, execution)) endJournaled(journal, scope, host);
-        log.info('flush', 'end');
-      }
-    });
-  };
-
-  const startWorkflows = async () => {
-    if (workflows) return;
-    // Load after a handoff so origins recorded by the previous process are included.
-    await workflowOrigins.load();
-    workflows = createWorkflows();
-    if (!workflows) return;
-    const runtime = workflows;
-    // createWorkflows only succeeds with a media directory, so the card state sits beside the workflow database.
-    progressCards = new WorkflowProgressCards({ channel, kernel: runtime.kernel, origins: workflowOrigins,
-      path: join(dirname(deps.appPaths!.mediaDir!), 'workflow-progress-cards.json') });
-    await progressCards.start();
-    await runtime.start();
-    controls.workflow = {
-      cancel: scope => runtime.kernel.cancel(scope),
-      invalidate: scope => runtime.kernel.invalidate(scope),
-      command: (scope, args, message) => handleWorkflowCommand(runtime.kernel, scope, args, content => {
-        if (controls.activeTimedRun?.(scope)) return '请先结束当前限时任务。';
-        const queued = pending.push(scope, { ...message, content, agentEntry: { kind: 'workflow', trigger: 'command' } });
-        if (queued === undefined) return '消息队列已满，请稍后重试。';
-        workflowOrigins.set(scope, message);
-        return undefined;
-      }, { sanitize: sanitizeLogsForDoctor }),
-    };
-  };
-
-  controls.cancelPendingInput = (scope) => {
-    turns.cancel(scope);
-    const preparedCot = preparedCots.get(scope);
-    preparedCots.delete(scope);
-    void preparedCot?.finish('cancelled');
-    return pending.cancel(scope).length;
-  };
-  controls.flushPendingInput = () => pending.flushPersistence();
-  controls.pausePendingInput = () => pending.suspend();
-  controls.resumePendingInput = () => pending.resume();
-  controls.detachPendingInput = () => pending.detach();
-  controls.reloadPendingInput = async () => { await pending.reload(); await startWorkflows(); await resumeInterruptedTurns(); };
-
-  const timedStore = await timedRuns(controls);
-  controls.activeTimedRun = scope => turns.timedRunId(scope);
-  controls.cancelTimedRun = (scope, id) => { if (turns.timedRunId(scope)) turns.cancel(scope, id); };
-  const startTimedTurn = async (job: TimedRun, message: NormalizedMessage, from: TimedRunState,
-    resume?: { attempt: number; startedAt: number; attachHost?: string }) => {
-    const turn = turns.claim(job.scope, job.id);
-    try {
-      await timedStore.transition(job.id, [from], 'queued');
-    } catch (err) {
-      turn.release();
-      throw err;
-    }
-    const sendOpts = { replyTo: message.messageId, ...(message.threadId ? { replyInThread: true } : {}) };
-    const journal = interrupted;
-    const host = hostFor(journal, resume?.attachHost);
-    void turn.run(signal => withTrace({ chatId: message.chatId }, async () => {
-      let execution: RunExecution | undefined;
-      try {
-        await journal?.begin({ scope: job.scope, messages: [message], timedRunId: job.id, ...(host ? { hostKey: host.key } : {}),
-          ...(resume ? { attempts: resume.attempt, startedAt: resume.startedAt } : {}) });
-        if (!resume?.attachHost) await sendManagedCard(channel, message.chatId, timedRunCard(timedStore.get(job.id)!), sendOpts);
-        execution = await dispatch(job.scope, [{ ...message, content: job.task, resources: [], rawContentType: 'text' }],
-          { timedJob: job, signal, ...(resume && !resume.attachHost ? { resumeAttempt: resume.attempt } : {}), ...(host ? { host } : {}) });
-      } catch (err) {
-        log.fail('timed-run', err, { jobId: job.id });
-      } finally {
-        const cutOff = await cutOffByShutdown(signal, execution);
-        if (!cutOff) endJournaled(journal, job.scope, host);
-        // A failure before executor submission must also close the one-shot job.
-        await timedStore.finish(job.id, cutOff ? 'interrupted'
-          : signal.aborted ? 'stopped' : Date.now() >= job.stopAt ? 'expired' : 'failed');
-      }
-    })).then(() => sendManagedCard(channel, message.chatId, timedRunCard(timedStore.get(job.id)!), sendOpts)
-      .catch(err => log.warn('timed-run', 'status-send-failed', { err: String(err) })))
-      .catch(err => log.fail('timed-run', err, { jobId: job.id }));
-  };
-  controls.launchTimedRun = async (job, message) => {
-    if (!turns.isIdle(job.scope)) {
-      throw new Error('当前话题/聊天仍有任务或待处理消息，请完成或 /stop 后再启动限时任务。');
-    }
-    await startTimedTurn(job, message, 'draft');
-  };
-
-  const resumeTurn = async (turn: InterruptedTurn, journal: InterruptedTurns) => {
-    const messages = [...turn.messages].sort((left, right) =>
-      (Number.isFinite(left.createTime) ? left.createTime : 0) - (Number.isFinite(right.createTime) ? right.createTime : 0));
-    const last = messages.at(-1)!;
-    const notify = (markdown: string) => channel.send(last.chatId, { markdown },
-      { replyTo: last.messageId, ...(last.threadId ? { replyInThread: true } : {}) })
-      .catch(err => log.warn('resume', 'notice-failed', { scope: turn.scope, err: String(err) }));
-    const job = turn.timedRunId ? timedStore.get(turn.timedRunId) : undefined;
-    // A host that is still running, or finished while no bridge was attached, holds the native
-    // run itself: attach without replaying input or notifying anyone. Another backend cannot
-    // read the host's protocol, e.g. after the scope's agent was switched.
-    const agentKind = job?.agentKind ?? resolveAgentKind(turn.scope);
-    const hostState = turn.hostKey && runHostAgent(turn.hostKey) === agentKind ? await probeRunHost(turn.hostKey) : 'missing';
-    let skip: string | undefined;
-    if (turn.timedRunId && job?.state !== 'interrupted') {
-      // Stopped, expired or otherwise settled while the bridge was down.
-      skip = job?.state === 'expired' ? '限时任务在 bridge 重启期间已到停止时间，未自动续跑。' : '';
-    } else if (hostState === 'missing' && turn.attempts >= MAX_RESUME_ATTEMPTS) {
-      skip = `这条消息的任务已在 bridge 重启后自动续跑 ${turn.attempts} 次仍被中断，不再自动续跑。如需继续，请重新发送。`;
-    } else if (hostState === 'missing' && Date.now() - turn.startedAt > MAX_RESUME_AGE_MS) {
-      skip = 'bridge 重启前这条消息的任务被中断，且已超过 24 小时，不再自动续跑。如需继续，请重新发送。';
-    }
-    const reattach = skip === undefined && hostState !== 'missing' ? turn.hostKey : undefined;
-    const resume = reattach
-      ? { attempt: turn.attempts, startedAt: turn.startedAt, attachHost: reattach }
-      : { attempt: turn.attempts + 1, startedAt: turn.startedAt };
-    log.info('resume', skip !== undefined ? 'skip' : reattach ? 'reattach' : 'start', { scope: turn.scope, attempt: resume.attempt,
-      ...(turn.hostKey ? { runHost: turn.hostKey, hostState } : {}),
-      ...(turn.timedRunId ? { jobId: turn.timedRunId } : {}) });
-    // A host nobody reattaches to must not keep the native run going.
-    if (turn.hostKey && !reattach) await terminateRunHost(turn.hostKey);
-    if (skip !== undefined) {
-      journal.end(turn.scope);
-      if (skip) await notify(skip);
-      return;
-    }
-    try {
-      if (job) {
-        await startTimedTurn(job, last, 'interrupted', resume);
-      } else {
-        const claimed = turns.claim(turn.scope);
-        void claimed.run(signal => runConversationTurn(turn.scope, messages, signal, reattach
-          ? { attachHost: reattach, attempts: resume.attempt, startedAt: resume.startedAt }
-          : { resumeAttempt: resume.attempt, startedAt: resume.startedAt }))
-          .catch(err => log.fail('flush', err));
-      }
-    } catch (err) {
-      log.fail('resume', err, { scope: turn.scope });
-      journal.end(turn.scope);
-      if (reattach) await terminateRunHost(reattach);
-      await notify(`bridge 重启前这条消息的任务被中断，自动续跑失败：${err instanceof Error ? err.message : String(err)}`);
-      return;
-    }
-    if (!reattach) await notify(`bridge 重启前这条消息的任务被中断，正在自动续跑（第 ${resume.attempt} 次）。发送 /stop 可取消。`);
-  };
-
-  /** Replays turns a previous process left unfinished, before queued input of the same scopes. */
-  const resumeInterruptedTurns = async () => {
-    if (interrupted) return;
-    const journal = new InterruptedTurns(deps.appPaths?.mediaDir
-      ? join(dirname(deps.appPaths.mediaDir), 'interrupted-turns.json') : undefined);
-    const previous = await journal.load();
-    interrupted = journal;
-    for (const turn of previous) await resumeTurn(turn, journal);
-    const reattached = new Set(previous.flatMap(turn => turn.hostKey ? [turn.hostKey] : []));
-    void sweepRunHosts(MAX_RESUME_AGE_MS, reattached).catch(err => log.warn('run-host', 'sweep-failed', { err: String(err) }));
-  };
-
-  // Counter for stdout reconnect escalation; reset on `reconnected`.
-  let consecutiveReconnects = 0;
+  controls.channel = channelControls;
 
   channel.on({
     message: async (msg) => {
       await withTrace({ chatId: msg.chatId, msgId: msg.messageId }, () =>
         intakeMessage({
           followups,
-          recordFollowup: (scope, message) => interrupted?.append(scope, message),
+          recordFollowup: (scope, message) => runner.recordFollowup(scope, message),
           userQuestions,
           ...conversation,
           resolveAgent,
@@ -499,7 +222,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           chatModeCache,
           callbackAuth,
           userQuestions,
-          callbackPolicyFingerprintForScope: (scope) => activePolicyFingerprints.get(scope),
+          callbackPolicyFingerprintForScope: (scope) => runServices.memory.policyFingerprint(scope),
         });
       }).catch((err) => log.fail('cardAction', err));
     },
@@ -513,91 +236,18 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
         }).catch((err) => log.fail('comment', err));
       }).catch((err) => log.fail('comment', err));
     },
-    reconnecting: () => {
-      consecutiveReconnects++;
-      log.warn('ws', 'reconnecting', { consecutive: consecutiveReconnects });
-      reportMetric('ws_reconnect', 1, { kind: 'ws' });
-      // Stdout escalation — surface jitter that's hidden in the file log.
-      if (consecutiveReconnects === 3) {
-        console.error('⚠️ 已连续重连 3 次,网络可能不稳。');
-      } else if (consecutiveReconnects === 10) {
-        console.error('❌ 已连续重连 10 次,建议在飞书发 /reconnect 或重启 bot。');
-      }
-    },
-    reconnected: () => {
-      if (consecutiveReconnects > 1) {
-        log.info('ws', 'recovered', { afterAttempts: consecutiveReconnects });
-      } else {
-        log.info('ws', 'reconnected');
-      }
-      consecutiveReconnects = 0;
-    },
-    // Classify common WS errors into the `network` phase so /doctor and grep
-    // can find them without scanning generic `ws.fail` entries.
-    error: (err) => {
-      const msg = err?.message ?? String(err);
-      if (/ENOTFOUND|getaddrinfo/.test(msg)) {
-        log.fail('network', err, { kind: 'dns', code: err.code });
-      } else if (/handshake|did not complete/.test(msg)) {
-        log.fail('network', err, { kind: 'handshake-timeout', code: err.code });
-      } else if (/timeout/i.test(msg)) {
-        log.fail('network', err, { kind: 'timeout', code: err.code });
-      } else {
-        log.fail('ws', err, { code: err.code });
-      }
-    },
+    ...connectionLogHandlers(),
   });
 
-  // In-meeting agent. Created before connect() so the `vc.bot.*` handlers are
-  // installed on the event dispatcher before any push can arrive; sessions are
-  // only created later (on /meeting join or an invite), so the late-bound
-  // botOpenId getter is resolved by then.
-  const meetingConfig = () => controls.profileConfig.meeting;
-  let meetingManager: MeetingManager | undefined;
-  const createMeetingManager = () => new MeetingManager({
-      client: channel.rawClient as unknown as VcRequestClient,
-      config: meetingConfig,
-      botOpenId: () => channel.botIdentity?.openId,
-      channel,
-      // Meeting over: optionally summarize to IM (config-gated inside).
-      onEnded: (session) =>
-        void summarizeEndedMeeting({
-          session,
-          ...conversation,
-          resolveAgentKind,
-        }).catch((err) => log.warn('meeting', 'summary-failed', { err: String(err) })),
-      onSession: (session) =>
-        attachMeetingAgent({
-          session,
-          ...conversation,
-          resolveAgentKind,
-        }),
-    });
-  // `meeting.enabled` is hot: raw-event subscriptions compose with the SDK's
-  // handlers, so the manager can attach to (or leave) a live connection.
-  const reconcileMeeting = async (): Promise<void> => {
-    if (meetingConfig().enabled && !meetingManager) {
-      meetingManager = createMeetingManager();
-      meetingManager.attachPush();
-      controls.meeting = meetingManager;
-    } else if (!meetingConfig().enabled && meetingManager) {
-      meetingManager.dispose();
-      meetingManager = undefined;
-      controls.meeting = undefined;
-    }
-  };
-  await reconcileMeeting();
-
+  await meetings.reconcile();
   await channel.connect();
-  controls.reconcileMeeting = reconcileMeeting;
-  controls.onConfigApplied = () => pool.refresh();
   const ownerRefresh = createOwnerRefreshController({
     controls,
     source: channel,
     appId: cfg.accounts.app.id,
   });
   await ownerRefresh.start();
-  const knownChatsRefresh = startKnownChatsRefreshTimer(channel, controls);
+  const knownChatsRefresh = startKnownChatsRefresh(channel, chats => { controls.knownChats = chats; });
 
   const identity = channel.botIdentity;
   controls.botIdentity = identity;
@@ -610,7 +260,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       ...(identity.name ? { name: identity.name } : {}),
     });
   }
-  if (deps.restorePending !== false) { await startWorkflows(); await resumeInterruptedTurns(); pending.resume(); }
+  if (deps.restorePending !== false) { await workflows.start(); await runner.resumeInterrupted(); pending.resume(); }
   const defaultAgent = execution.defaultAgent();
   log.info('ws', 'connected', {
     bot: identity?.name ?? 'unknown',
@@ -636,19 +286,10 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     forceReconnect: () => controls.restart({ config: 'running' }),
   });
 
-  const workflowActivity = () => {
-    try {
-      return workflows?.kernel.activity() ?? { scripts: 0, tasks: 0 };
-    } catch {
-      // The kernel database is closed once shutdown starts.
-      return { scripts: 0, tasks: 0 };
-    }
-  };
-
   return {
     channel,
     activity: () => {
-      const workflow = workflowActivity();
+      const workflow = workflows.activity();
       return {
         runs: activeRuns.snapshot().length,
         turns: turns.activeCount(),
@@ -661,50 +302,45 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     },
     disconnect: async () => {
       activeRuns.pauseNewRuns('bridge-disconnect');
-      controls.workflow = undefined;
-      // Stop card edits first so shutdown transitions are not published as progress.
-      const progressCardsClosed = progressCards?.close();
-      const workflowsClosed = workflows?.close();
+      if (controls.channel === channelControls) controls.channel = undefined;
+      const workflowsClosed = workflows.close();
       turns.close();
-      controls.btw = undefined;
       const btwClosed = btw.close();
-      controls.launchTimedRun = undefined;
       ownerRefresh.stop();
       knownChatsRefresh.stop();
       keepalive.stop();
       // Stop meeting timers but stay in the meetings: /reconnect tears the
       // channel down and rebuilds it, and auto-leaving every meeting on a
       // reconnect would be surprising.
-      meetingManager?.dispose();
-      controls.meeting = undefined;
-      controls.reconcileMeeting = undefined;
-      controls.onConfigApplied = undefined;
+      meetings.dispose();
       for (const preparedCot of preparedCots.values()) {
         void preparedCot.finish('cancelled');
       }
       preparedCots.clear();
       userQuestions.close();
-      const turnsSettled = settleWithin(turns.settled(), TURN_SETTLE_TIMEOUT_MS)
-        .then(async () => { await interrupted?.flush(); interrupted?.detach(); });
+      const turnsSettled = settleWithin(turns.settled(), TURN_SETTLE_TIMEOUT_MS).then(() => runner.closeJournal());
+      const flushes: Array<[string, Promise<unknown> | undefined]> = [
+        ['pending', pending.flushPersistence()],
+        ['sessions', sessions.flush()],
+        ['session-catalog', sessionCatalog?.flush()],
+        ['callback-nonces', callbackNonceStore?.flush()],
+        ['workspaces', workspaces.flush()],
+        ['btw', btwClosed],
+        ['workflow-progress-cards', workflowsClosed.progressCards],
+        ['workflows', workflowsClosed.runtime],
+        ['turns', turnsSettled],
+      ];
       const [disconnectResult, stopAllResult, ...flushResults] = await Promise.allSettled([
         channel.disconnect(),
         activeRuns.stopAll('shutdown'),
-        pending.flushPersistence(),
-        sessions.flush(),
-        sessionCatalog?.flush(),
-        callbackNonceStore?.flush(),
-        workspaces.flush(),
-        btwClosed,
-        progressCardsClosed,
-        workflowsClosed,
-        turnsSettled,
+        ...flushes.map(([, work]) => work),
       ]);
       if (stopAllResult.status === 'rejected') {
         log.fail('disconnect', stopAllResult.reason, { step: 'stopAll' });
       }
       for (const [idx, result] of flushResults.entries()) {
         if (result.status === 'rejected') {
-          log.fail('disconnect', result.reason, { step: `flush-${idx}` });
+          log.fail('disconnect', result.reason, { step: `flush-${flushes[idx]![0]}` });
         }
       }
       if (!deps.larkAuth) await larkAuth.close();
@@ -722,24 +358,4 @@ function settleWithin(work: Promise<void>, timeoutMs: number): Promise<void> {
   let timer: NodeJS.Timeout | undefined;
   const timeout = new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs); });
   return Promise.race([work, timeout]).finally(() => clearTimeout(timer));
-}
-
-function startKnownChatsRefreshTimer(
-  channel: LarkChannel,
-  controls: Controls,
-): { stop(): void } {
-  const intervalMs = 30 * 60 * 1000;
-  const refresh = async (): Promise<void> => {
-    const chats = await fetchKnownChats(channel);
-    if (chats.length > 0) {
-      controls.knownChats = chats;
-    }
-  };
-  void refresh();
-  const timer = setInterval(() => void refresh(), intervalMs);
-  return {
-    stop() {
-      clearInterval(timer);
-    },
-  };
 }

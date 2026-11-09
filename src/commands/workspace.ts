@@ -5,7 +5,7 @@ import { resolveWorkingDirectory } from '../policy/workspace';
 import { createBoundChat, defaultChatName } from '../channels/lark/group';
 import type { CommandContext } from './types';
 import { reply, commandReplyOptions } from './presentation';
-import { cancelPendingInput, effectiveWorkspaceCwd } from './context';
+import { abandonScopeWork, effectiveWorkspaceCwd } from './context';
 
 function expandTilde(p: string): string {
   if (p === '~') return homedir();
@@ -26,17 +26,13 @@ export async function handleNew(args: string, ctx: CommandContext): Promise<void
     return handleNewChat(rawName, ctx);
   }
 
-  ctx.controls.workflow?.invalidate(ctx.scope);
-  ctx.controls.cancelTimedRun?.(ctx.scope);
-  await cancelPendingInput(ctx);
-  const wasRunning = ctx.activeRuns.interrupt(ctx.scope);
+  const wasRunning = await abandonScopeWork(ctx);
   if (ctx.sessionCatalog && ctx.sessionCatalogIdentity) {
     ctx.sessionCatalog.archiveActive({
       ...ctx.sessionCatalogIdentity,
       now: Date.now(),
     });
   }
-  ctx.controls.btw?.reset(ctx.scope);
   ctx.sessions.clear(ctx.scope);
   await reply(ctx, wasRunning ? '已中断当前任务并开始新会话。' : '已开始新会话。');
 }
@@ -96,12 +92,8 @@ export async function handleCd(args: string, ctx: CommandContext): Promise<void>
     await reply(ctx, workspace.userVisible);
     return;
   }
-  ctx.controls.workflow?.invalidate(ctx.scope);
-  ctx.controls.cancelTimedRun?.(ctx.scope);
-  await cancelPendingInput(ctx);
-  ctx.activeRuns.interrupt(ctx.scope);
+  await abandonScopeWork(ctx);
   ctx.workspaces.setCwd(ctx.scope, workspace.cwdRealpath);
-  ctx.controls.btw?.reset(ctx.scope);
   ctx.sessions.clear(ctx.scope);
   await reply(ctx, `✓ 已切换 cwd 到 \`${workspace.cwdRealpath}\`\n（session 已重置）`);
 }
@@ -165,12 +157,8 @@ async function handleWsUse(name: string, ctx: CommandContext): Promise<void> {
     await reply(ctx, workspace.userVisible);
     return;
   }
-  ctx.controls.workflow?.invalidate(ctx.scope);
-  ctx.controls.cancelTimedRun?.(ctx.scope);
-  await cancelPendingInput(ctx);
-  ctx.activeRuns.interrupt(ctx.scope);
+  await abandonScopeWork(ctx);
   ctx.workspaces.setCwd(ctx.scope, workspace.cwdRealpath);
-  ctx.controls.btw?.reset(ctx.scope);
   ctx.sessions.clear(ctx.scope);
   await reply(ctx, `✓ 已切换到 \`${name}\` (${workspace.cwdRealpath})\n（session 已重置）`);
 }
