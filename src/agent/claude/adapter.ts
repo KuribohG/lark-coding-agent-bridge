@@ -149,6 +149,7 @@ export class ClaudeAdapter implements AgentAdapter {
     const child = spawnAgentProcess(this.binary, args, {
       cwd: opts.cwd,
       env: mergeProcessEnv(process.env, {
+        ...PARENT_SESSION_ENV,
         ...BACKGROUND_TASKS_ENV,
         ...this.env,
         ...opts.env,
@@ -458,6 +459,22 @@ const DEADLINE_DISALLOWED_TOOLS = ['CronCreate', 'CronDelete', 'CronList', 'Sche
 // explicitly so an inherited `1` cannot hide `run_in_background`; profile and
 // per-run env still win, and `1` there restores foreground-only runs.
 const BACKGROUND_TASKS_ENV = { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '0' };
+
+// A bridge started from a Claude Code shell inherits that session's markers.
+// Left in place, every run counts as its child session and registers with its
+// messaging socket. Unset them; profile and per-run env can still set any.
+const PARENT_SESSION_ENV: NodeJS.ProcessEnv = Object.fromEntries([
+  'CLAUDECODE',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_SESSION_ID',
+  'CLAUDE_CODE_CHILD_SESSION',
+  'CLAUDE_CODE_SESSION_ATTENDED',
+  'CLAUDE_CODE_MESSAGING_SOCKET',
+  'CLAUDE_CODE_MESSAGING_TOKEN',
+  'CLAUDE_CODE_EXECPATH',
+  'CLAUDE_PID',
+  'CLAUDE_EFFORT',
+].map((key) => [key, undefined]));
 const DEFAULT_BACKGROUND_WAIT_MS = 6 * 60 * 60 * 1000;
 // Notification turns start within milliseconds of the drain; this only catches tasks that end without one.
 const DEFAULT_BACKGROUND_DRAIN_GRACE_MS = 5_000;

@@ -133,6 +133,46 @@ describe('ClaudeAdapter process contract', () => {
     expect(record.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).toBe('1');
   });
 
+  it('drops parent Claude Code session markers inherited by the bridge', async () => {
+    const fake = await createFakeClaude({
+      lines: [{ type: 'result', session_id: 'sess-parent-env' }],
+    });
+    cleanup.push(fake.dir);
+    const inherited = {
+      CLAUDECODE: '1',
+      CLAUDE_CODE_ENTRYPOINT: 'cli',
+      CLAUDE_CODE_CHILD_SESSION: '1',
+      CLAUDE_CODE_MESSAGING_SOCKET: '/tmp/cc-socks/1.sock',
+      KEEP_ME: 'kept',
+    };
+    const saved = Object.fromEntries(Object.keys(inherited).map((key) => [key, process.env[key]]));
+    Object.assign(process.env, inherited);
+    try {
+      const run = (await new ClaudeAdapter({
+        binary: fake.path,
+        env: { CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' },
+      }).prepareRun({
+        runId: 'run-parent-env',
+        prompt: 'parent env',
+        cwd: fake.dir,
+      })).start();
+      await collect(run.events);
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+    const record = await readRecord(fake.recordPath);
+
+    expect(record.env.CLAUDECODE).toBeUndefined();
+    expect(record.env.CLAUDE_CODE_CHILD_SESSION).toBeUndefined();
+    expect(record.env.CLAUDE_CODE_MESSAGING_SOCKET).toBeUndefined();
+    // Explicit profile env still wins over the scrub.
+    expect(record.env.CLAUDE_CODE_ENTRYPOINT).toBe('sdk-cli');
+    expect(record.env.KEEP_ME).toBe('kept');
+  });
+
   it('passes resume and model after the base CLI contract', async () => {
     const fake = await createFakeClaude({
       lines: [{ type: 'result', session_id: 'sess-resumed' }],
@@ -630,6 +670,11 @@ async function createFakeClaude(options: {
       '      LARK_CHANNEL_CONFIG: process.env.LARK_CHANNEL_CONFIG,',
       '      LARKSUITE_CLI_CONFIG_DIR: process.env.LARKSUITE_CLI_CONFIG_DIR,',
       '      CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS,',
+      '      CLAUDECODE: process.env.CLAUDECODE,',
+      '      CLAUDE_CODE_ENTRYPOINT: process.env.CLAUDE_CODE_ENTRYPOINT,',
+      '      CLAUDE_CODE_CHILD_SESSION: process.env.CLAUDE_CODE_CHILD_SESSION,',
+      '      CLAUDE_CODE_MESSAGING_SOCKET: process.env.CLAUDE_CODE_MESSAGING_SOCKET,',
+      '      KEEP_ME: process.env.KEEP_ME,',
       '    },',
       '  }));',
       `  const lines = ${JSON.stringify(options.lines)};`,
@@ -659,6 +704,11 @@ async function readRecord(path: string): Promise<{
     LARK_CHANNEL_CONFIG?: string;
     LARKSUITE_CLI_CONFIG_DIR?: string;
     CLAUDE_CODE_DISABLE_BACKGROUND_TASKS?: string;
+    CLAUDECODE?: string;
+    CLAUDE_CODE_ENTRYPOINT?: string;
+    CLAUDE_CODE_CHILD_SESSION?: string;
+    CLAUDE_CODE_MESSAGING_SOCKET?: string;
+    KEEP_ME?: string;
   };
 }> {
   return JSON.parse(await readFile(path, 'utf8')) as {
@@ -674,6 +724,11 @@ async function readRecord(path: string): Promise<{
       LARK_CHANNEL_CONFIG?: string;
       LARKSUITE_CLI_CONFIG_DIR?: string;
       CLAUDE_CODE_DISABLE_BACKGROUND_TASKS?: string;
+      CLAUDECODE?: string;
+      CLAUDE_CODE_ENTRYPOINT?: string;
+      CLAUDE_CODE_CHILD_SESSION?: string;
+      CLAUDE_CODE_MESSAGING_SOCKET?: string;
+      KEEP_ME?: string;
     };
   };
 }
