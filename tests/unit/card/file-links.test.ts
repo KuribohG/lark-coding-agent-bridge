@@ -6,7 +6,7 @@ import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createRootConfig, formatRootConfig } from '../../../src/config/profile-store';
 import { renderText } from '../../../src/card/text-renderer';
 import { renderCard } from '../../../src/card/run-renderer';
-import type { RunState } from '../../../src/card/run-state';
+import type { RunState } from '../../../src/runtime/run-state';
 
 const rules = [{ localRoot: '/exports', fileBaseUrl: 'https://example.com/files/', browseBaseUrl: 'https://example.com/lab/tree/' }];
 const rewrite = (s: string, streaming = false) => rewriteFileLinks(s, rules, streaming);

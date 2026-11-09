@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { deepMaskEmails, maskEmails } from '../../../src/card/mask-email.js';
 import { renderCard } from '../../../src/card/run-renderer.js';
-import { reduce, initialState, type RunState } from '../../../src/card/run-state.js';
+import { reduce, initialState, type RunState } from '../../../src/runtime/run-state.js';
 import { renderText } from '../../../src/card/text-renderer.js';
 import type { AgentEvent } from '../../../src/agent/types.js';
 

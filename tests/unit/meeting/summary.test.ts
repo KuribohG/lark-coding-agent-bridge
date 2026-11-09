@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({ startRunFlow: vi.fn(), resolveRunModelSettings: vi.fn() }));
 
-vi.mock('../../../src/bot/run-flow', () => ({ startRunFlow: mocks.startRunFlow }));
+vi.mock('../../../src/runtime/run-flow', () => ({ startRunFlow: mocks.startRunFlow }));
 vi.mock('../../../src/runtime/model-settings', () => ({ resolveRunModelSettings: mocks.resolveRunModelSettings }));
 
 const { summarizeEndedMeeting, resolveSummaryTarget } = await import(

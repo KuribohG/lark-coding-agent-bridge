@@ -5,7 +5,7 @@ import { getAgentStopGraceMs } from '../config/schema';
 import { canRunAdminCommand, canUseDm, canUseGroup } from '../policy/access';
 import { log, reportMetric } from '../core/logger';
 import { renderCard } from '../card/run-renderer';
-import { finalizeIfRunning, initialState, markInterrupted, reduce, type RunState } from '../card/run-state';
+import { finalizeIfRunning, initialState, markInterrupted, reduce, type RunState } from '../runtime/run-state';
 import { resolveWorkingDirectory } from '../policy/workspace';
 import { evaluateRunPolicy } from '../policy/run-policy';
 import type { RunExecutor } from '../runtime/run-executor';

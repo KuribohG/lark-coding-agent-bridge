@@ -1,12 +1,12 @@
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { supportsRunInput } from '../../agent/execution';
 import type { AgentAdapter } from '../../agent/types';
-import type { ChatModeCache } from '../../bot/chat-mode-cache';
-import { CotPublisher, type CotClient } from '../../bot/cot';
-import type { FollowupRouter } from '../../bot/followup';
-import { MAX_PENDING_CHARS_PER_SCOPE, type PendingQueue } from '../../bot/pending-queue';
-import { fetchQuotedContext } from '../../bot/quote';
-import { commandSessionCatalogIdentity } from '../../bot/session-catalog-identity';
+import type { ChatModeCache } from './chat-mode-cache';
+import { CotPublisher, type CotClient } from './cot';
+import type { FollowupRouter } from './followup';
+import { MAX_PENDING_CHARS_PER_SCOPE, type PendingQueue } from './pending-queue';
+import { fetchQuotedContext } from './quote';
+import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { tryHandleCommand, type CommandContext, type Controls } from '../../commands';
 import { findCommand } from '../../commands/catalog';
 import type { AgentKind } from '../../config/profile-schema';

@@ -9,7 +9,7 @@ import { AGENT_OPTIONS } from '../agent/backends';
 import { availableEfforts } from '../agent/model-settings';
 import { modelEnvironment } from '../runtime/model-settings';
 import type { LarkChannel } from '@larksuite/channel';
-import { fetchKnownChats } from '../bot/lark-info';
+import { fetchKnownChats } from '../channels/lark/lark-info';
 import {
   ADD_BOT_SCOPES,
   addBotToChat,

@@ -7,7 +7,7 @@ import { loadMonitorRoot, saveMonitorRoot, monitorConfigPath, larkConfigRevision
 import { parseWorkItemConcurrency } from '../../../work-items/concurrency';
 import { LarkProfileAuth } from '../../../lark-auth/profile-auth';
 import { getCotMessages } from '../../../config/schema';
-import { CotClient } from '../../../bot/cot';
+import { CotClient } from '../../../channels/lark/cot';
 import { inboxMode, inboxWorkbenchUrl, normalizeInbox, validateInbox, type InboxConfig, type InboxMode, type IntakeScope } from '../../../inbox/config';
 import { inboxTriageService, loadInboxTriageService } from '../../../inbox/model-routing';
 import { backgroundModelSettings } from '../../../runtime/background-model';

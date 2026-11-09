@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { NormalizedMessage } from '@larksuite/channel';
 import type { AgentRun } from '../../../src/agent/types';
-import { ActiveRuns } from '../../../src/bot/active-runs';
+import { ActiveRuns } from '../../../src/runtime/active-runs';
 import { tryHandleCommand, type CommandContext, type Controls } from '../../../src/commands/index';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { SessionStore } from '../../../src/session/store';

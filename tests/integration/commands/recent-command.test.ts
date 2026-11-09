@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { NormalizedMessage } from '@larksuite/channel';
-import { ActiveRuns } from '../../../src/bot/active-runs.js';
+import { ActiveRuns } from '../../../src/runtime/active-runs.js';
 import {
   tryHandleCommand,
   type CommandContext,

@@ -6,7 +6,7 @@ import {
   markInterrupted,
   reduce,
   type RunState,
-} from '../../../src/card/run-state.js';
+} from '../../../src/runtime/run-state.js';
 import { renderProgressText, renderText } from '../../../src/card/text-renderer.js';
 import type { AgentEvent } from '../../../src/agent/types.js';
 import { normalizeCard } from '../../helpers/card-normalize.js';

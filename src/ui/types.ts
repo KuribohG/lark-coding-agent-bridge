@@ -1,5 +1,5 @@
 import type { LarkChannel } from '@larksuite/channel';
-import type { KnownChat } from '../bot/lark-info';
+import type { KnownChat } from '../channels/lark/lark-info';
 import type { MutableProfileState } from '../config/config-ops';
 import type { Controls } from '../commands';
 import type { ManagedStatus } from '../runtime/supervisor';

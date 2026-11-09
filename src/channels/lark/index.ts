@@ -1,5 +1,5 @@
 import { startLarkChannel, type BridgeChannel, type StartChannelDeps } from './channel';
-import type { ChannelPlugin } from '../plugin';
+import { ChannelHost, type ChannelPlugin } from '../plugin';
 
 export { createLarkRunOutput } from './run-output';
 export type { LarkRunOutputOptions } from './run-output';
@@ -13,4 +13,11 @@ export function createLarkPlugin(deps: StartChannelDeps): ChannelPlugin<LarkConn
       return { ...bridge, close: () => bridge.disconnect() };
     },
   };
+}
+
+/** Connect one Lark profile through its own channel host. */
+export async function startChannel(deps: StartChannelDeps): Promise<BridgeChannel> {
+  const host = new ChannelHost();
+  const bridge = await host.connect(createLarkPlugin(deps));
+  return { ...bridge, disconnect: () => host.close() };
 }

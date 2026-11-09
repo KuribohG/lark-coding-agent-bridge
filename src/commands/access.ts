@@ -1,6 +1,6 @@
 import type { ProfileAccess } from '../config/profile-schema';
 import * as configOps from '../config/config-ops';
-import { fetchKnownChats } from '../bot/lark-info';
+import { fetchKnownChats } from '../channels/lark/lark-info';
 import type { CommandContext } from './types';
 import { reply } from './presentation';
 

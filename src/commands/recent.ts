@@ -6,7 +6,7 @@ import { agentDisplayName } from '../agent/backend-spec';
 import {
   lookupMessageAppLink,
   scopeAppLink,
-} from '../bot/message-links';
+} from '../channels/lark/message-links';
 import type { CommandContext } from './types';
 import { reply } from './presentation';
 

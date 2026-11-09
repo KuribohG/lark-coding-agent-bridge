@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ActiveRuns } from '../../../src/bot/active-runs.js';
-import { ProcessPool } from '../../../src/bot/process-pool.js';
+import { ActiveRuns } from '../../../src/runtime/active-runs.js';
+import { ProcessPool } from '../../../src/runtime/process-pool.js';
 import { closeLogger, configureLogger, flushLogger } from '../../../src/core/logger.js';
 import type { RunPolicyAllow } from '../../../src/policy/run-policy.js';
 import { RunExecutor } from '../../../src/runtime/run-executor.js';

@@ -3,7 +3,7 @@ import {
   buildCommentPrompt,
   extractCommentQuestionFromReplies,
   stripMarkdown,
-} from '../../../src/bot/comments.js';
+} from '../../../src/channels/lark/comments.js';
 
 describe('comment parser', () => {
   it('keeps docs_link text in the question and omits person mentions', () => {

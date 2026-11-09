@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent, AgentInput } from '../../../src/agent/types';
 import { CodexJsonlTranslator } from '../../../src/agent/codex/jsonl';
-import { ActiveRuns } from '../../../src/bot/active-runs';
-import { ProcessPool } from '../../../src/bot/process-pool';
-import { initialState, reduce } from '../../../src/card/run-state';
+import { ActiveRuns } from '../../../src/runtime/active-runs';
+import { ProcessPool } from '../../../src/runtime/process-pool';
+import { initialState, reduce } from '../../../src/runtime/run-state';
 import { renderCard } from '../../../src/card/run-renderer';
 import { renderText } from '../../../src/card/text-renderer';
 import type { RunPolicyAllow } from '../../../src/policy/run-policy';

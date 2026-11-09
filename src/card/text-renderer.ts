@@ -1,7 +1,7 @@
 import { rewriteFileLinks, type FileLinkRenderOptions } from './file-links';
 import { maskEmails } from './mask-email';
-import type { Block, RunState, ToolEntry } from './run-state';
-import { DETACHED_NOTE, retryStatus } from './run-state';
+import type { Block, RunState, ToolEntry } from '../runtime/run-state';
+import { DETACHED_NOTE, retryStatus } from '../runtime/run-state';
 import { toolHeaderText } from './tool-render';
 
 /**

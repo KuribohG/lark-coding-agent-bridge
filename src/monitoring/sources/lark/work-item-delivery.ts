@@ -2,7 +2,7 @@ import { resolveAppPaths } from '../../../config/app-paths';
 import { runtimeProfileConfig } from '../../../config/profile-store';
 import { configSource } from '../../../config/config-source';
 import { getCotMessages } from '../../../config/schema';
-import { CotClient } from '../../../bot/cot';
+import { CotClient } from '../../../channels/lark/cot';
 import { LarkProfileAuth } from '../../../lark-auth/profile-auth';
 import { InboxLark } from '../../../inbox/lark';
 import { startInboxProgress } from '../../../inbox/progress';

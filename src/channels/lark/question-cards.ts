@@ -4,16 +4,16 @@ import type { CallbackAuth } from '../../card/callback-auth';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
 import { log } from '../../core/logger';
 import type { SessionCatalog, SessionCatalogIdentity } from '../../session/catalog';
-import type { ActiveRuns } from '../../bot/active-runs';
-import type { FollowupRouter } from '../../bot/followup';
-import type { PendingQueue } from '../../bot/pending-queue';
+import type { ActiveRuns } from '../../runtime/active-runs';
+import type { FollowupRouter } from './followup';
+import type { PendingQueue } from './pending-queue';
 import {
   QuestionBroker,
   type QuestionContext,
   type QuestionEvent,
   type QuestionPresenter,
   type QuestionRequest,
-} from '../../bot/question-broker';
+} from './question-broker';
 
 /** `choice`: an option index of a single question, `text` for its free answer, `form` for a multi-question form. */
 type Choice = number | 'text' | 'form';

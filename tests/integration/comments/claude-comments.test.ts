@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CommentEvent } from '@larksuite/channel';
 import type { AgentEvent } from '../../../src/agent/types.js';
-import { ActiveRuns } from '../../../src/bot/active-runs.js';
-import { handleCommentMention } from '../../../src/bot/comments.js';
-import { ProcessPool } from '../../../src/bot/process-pool.js';
+import { ActiveRuns } from '../../../src/runtime/active-runs.js';
+import { handleCommentMention } from '../../../src/channels/lark/comments.js';
+import { ProcessPool } from '../../../src/runtime/process-pool.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { RunExecutor } from '../../../src/runtime/run-executor.js';
 import { SessionCatalog } from '../../../src/session/catalog.js';
@@ -12,7 +12,7 @@ import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
 import { makeFakeCommentSurface } from '../../helpers/fake-comment-surface.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
-import { commentTokenDigest } from '../../../src/bot/comment-resource';
+import { commentTokenDigest } from '../../../src/channels/lark/comment-resource';
 
 interface RequestRecord {
   method: string;

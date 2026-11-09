@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import { isAbsolute } from 'node:path';
 import { workspacesCard } from '../card/templates';
 import { resolveWorkingDirectory } from '../policy/workspace';
-import { createBoundChat, defaultChatName } from '../bot/group';
+import { createBoundChat, defaultChatName } from '../channels/lark/group';
 import type { CommandContext } from './types';
 import { reply, commandReplyOptions } from './presentation';
 import { cancelPendingInput, effectiveWorkspaceCwd } from './context';

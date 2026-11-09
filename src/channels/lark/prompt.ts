@@ -6,8 +6,8 @@ import {
   type BridgePromptQuotedMessage,
   type BridgePromptTopicMessage,
 } from '../../agent/prompt';
-import type { ChatMode } from '../../bot/chat-mode-cache';
-import type { QuotedContext } from '../../bot/quote';
+import type { ChatMode } from './chat-mode-cache';
+import type { QuotedContext } from './quote';
 import { toPromptAttachment } from '../../media/attachment';
 import type { LocalAttachment } from '../../media/cache';
 

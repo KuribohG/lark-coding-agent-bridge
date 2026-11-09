@@ -3,7 +3,7 @@ import { mkdir, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { NormalizedMessage } from '@larksuite/channel';
-import { ActiveRuns } from '../../../src/bot/active-runs.js';
+import { ActiveRuns } from '../../../src/runtime/active-runs.js';
 import type { CommandContext, Controls } from '../../../src/commands/index.js';
 import { createDefaultProfileConfig, type ProfileConfig } from '../../../src/config/profile-schema.js';
 import { SessionStore } from '../../../src/session/store.js';

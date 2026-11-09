@@ -1,4 +1,4 @@
-import type { ToolEntry } from './run-state';
+import type { ToolEntry } from '../runtime/run-state';
 
 const HEADER_SUMMARY_MAX = 80;
 const BODY_FIELD_MAX = 600;

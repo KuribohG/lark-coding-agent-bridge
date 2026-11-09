@@ -4,15 +4,15 @@ import { modelRunArguments } from '../../agent/model-settings';
 import type { AgentAdapter } from '../../agent/types';
 import type { RunHostBinding } from '../../agent/run-host';
 import { modelLabel, normalizeModelSelection } from '../../agent/models';
-import type { ChatMode } from '../../bot/chat-mode-cache';
-import type { CotClient, CotPublisher } from '../../bot/cot';
-import type { PendingMessage } from '../../bot/pending-queue';
+import type { ChatMode } from './chat-mode-cache';
+import type { CotClient, CotPublisher } from './cot';
+import type { PendingMessage } from './pending-queue';
 import {
   fetchQuotedContext,
   fetchTopicContext,
   LARK_CONTEXT_MAX_CHARS,
   type QuotedContext,
-} from '../../bot/quote';
+} from './quote';
 import type { UserQuestions } from './question-cards';
 import type { CallbackAuth } from '../../card/callback-auth';
 import type { Controls } from '../../commands';

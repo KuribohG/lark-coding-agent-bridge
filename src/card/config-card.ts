@@ -1,7 +1,7 @@
 import { reasoningEffortOptions } from '../agent/model-settings';
 import { modelLabel, type ModelOption } from '../agent/models';
 import { AGENT_OPTIONS } from '../agent/backends';
-import type { KnownChat } from '../bot/lark-info';
+import type { KnownChat } from '../channels/lark/lark-info';
 import type { AgentKind, LarkCliIdentityPreset, ProfileMode } from '../config/profile-schema';
 import type { CotMessagesMode, MessageReplyMode } from '../config/schema';
 

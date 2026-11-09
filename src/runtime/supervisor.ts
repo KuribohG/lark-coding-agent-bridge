@@ -1,5 +1,6 @@
 import pkg from '../../package.json';
-import { startChannel as realStartChannel, type BridgeChannel } from '../bot/channel';
+import { startChannel as realStartChannel } from '../channels/lark';
+import type { BridgeChannel } from '../channels/lark/channel';
 import type { Controls } from '../commands';
 import { CommandRegistry } from '../commands/registry';
 import type { AppPaths } from '../config/app-paths';

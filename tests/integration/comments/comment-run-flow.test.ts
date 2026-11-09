@@ -4,11 +4,11 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CommentEvent } from '@larksuite/channel';
 import type { AgentAdapter, AgentEvent, AgentRun, AgentRunOptions } from '../../../src/agent/types.js';
-import { ActiveRuns } from '../../../src/bot/active-runs.js';
-import { handleCommentMention } from '../../../src/bot/comments.js';
-import { commentDocumentScopeId, commentTokenDigest } from '../../../src/bot/comment-resource.js';
+import { ActiveRuns } from '../../../src/runtime/active-runs.js';
+import { handleCommentMention } from '../../../src/channels/lark/comments.js';
+import { commentDocumentScopeId, commentTokenDigest } from '../../../src/channels/lark/comment-resource.js';
 import { codexCapability } from '../../../src/agent/capability.js';
-import { ProcessPool } from '../../../src/bot/process-pool.js';
+import { ProcessPool } from '../../../src/runtime/process-pool.js';
 import { createDefaultProfileConfig, type ProfileConfig } from '../../../src/config/profile-schema.js';
 import { evaluateRunPolicy } from '../../../src/policy/run-policy.js';
 import { RunExecutor } from '../../../src/runtime/run-executor.js';
@@ -207,7 +207,7 @@ describe('comment run flow', () => {
 
   it('does not call the agent adapter directly from the comment entrypoint', async () => {
     const source = await import('node:fs/promises').then((fs) =>
-      fs.readFile(new URL('../../../src/bot/comments.ts', import.meta.url), 'utf8'),
+      fs.readFile(new URL('../../../src/channels/lark/comments.ts', import.meta.url), 'utf8'),
     );
 
     expect(source).not.toContain('agent.run(');

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { getGlobalDispatcher } from 'undici';
 import { LarkNetwork, larkProxyResolver } from '../../../src/lark-auth/network';
 import { LarkProfileAuth } from '../../../src/lark-auth/profile-auth';
-import { CotClient } from '../../../src/bot/cot';
+import { CotClient } from '../../../src/channels/lark/cot';
 import { validateAppCredentials } from '../../../src/utils/feishu-auth';
 
 afterEach(() => vi.unstubAllGlobals());

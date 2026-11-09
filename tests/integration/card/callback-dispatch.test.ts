@@ -1,9 +1,9 @@
 import type { CardActionEvent, CardActionResponse } from '@larksuite/channel';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { UserQuestions } from '../../../src/channels/lark/question-cards';
-import { ActiveRuns } from '../../../src/bot/active-runs.js';
-import { ChatModeCache } from '../../../src/bot/chat-mode-cache.js';
-import { PendingQueue } from '../../../src/bot/pending-queue.js';
+import { ActiveRuns } from '../../../src/runtime/active-runs.js';
+import { ChatModeCache } from '../../../src/channels/lark/chat-mode-cache.js';
+import { PendingQueue } from '../../../src/channels/lark/pending-queue.js';
 import { CallbackAuth } from '../../../src/card/callback-auth.js';
 import { CallbackNonceStore } from '../../../src/card/callback-store.js';
 import { handleCardAction } from '../../../src/card/dispatcher.js';

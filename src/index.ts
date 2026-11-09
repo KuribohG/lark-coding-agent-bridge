@@ -6,8 +6,8 @@ export {
   reduce,
   finalizeIfRunning,
   markInterrupted,
-} from './card/run-state';
-export type { RunState, ToolEntry, Block, ToolStatus, Terminal, FooterStatus } from './card/run-state';
+} from './runtime/run-state';
+export type { RunState, ToolEntry, Block, ToolStatus, Terminal, FooterStatus } from './runtime/run-state';
 
 // Optional telemetry hook (see README "Optional telemetry"). Types let an
 // external adapter package implement the interface via `import type`; the

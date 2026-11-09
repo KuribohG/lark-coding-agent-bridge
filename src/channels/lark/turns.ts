@@ -1,4 +1,4 @@
-import type { PendingQueue } from '../../bot/pending-queue';
+import type { PendingQueue } from './pending-queue';
 import type { ActiveRuns } from '../../runtime/active-runs';
 import { RunStopped } from '../../runtime/errors';
 

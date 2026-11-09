@@ -4,7 +4,7 @@ import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import * as p from '@clack/prompts';
 import { agentDisplayName } from '../agent/backends';
-import { runRegistrationWizard } from '../bot/wizard';
+import { runRegistrationWizard } from '../cli/wizard';
 import { detectInstalledAgents, type DetectedAgent } from '../cli/agent-detection';
 import {
   createBootstrapProfileConfig,

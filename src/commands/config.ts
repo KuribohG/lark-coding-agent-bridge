@@ -18,8 +18,8 @@ import {
   groupMsgScopeGrantCard,
   groupMsgScopeGrantedCard,
 } from '../card/config-card';
-import { GROUP_MSG_SCOPE, hasGroupMsgScope } from '../bot/app-scope';
-import { requestScopeGrantLink } from '../bot/wizard';
+import { GROUP_MSG_SCOPE, hasGroupMsgScope } from '../channels/lark/app-scope';
+import { requestScopeGrantLink } from '../cli/wizard';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
 import {
   getCotMessages,
@@ -32,7 +32,7 @@ import {
 import { log, reportMetric } from '../core/logger';
 import { isAlive } from '../runtime/registry';
 import { readUiSidecar } from '../ui/sidecar';
-import { fetchKnownChats } from '../bot/lark-info';
+import { fetchKnownChats } from '../channels/lark/lark-info';
 import type { CommandContext } from './types';
 import { reply, recallMessage, commandReplyOptions, FORM_SETTLE_MS } from './presentation';
 import { commandProfilePaths } from './context';

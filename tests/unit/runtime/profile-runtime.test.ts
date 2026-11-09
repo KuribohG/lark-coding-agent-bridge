@@ -38,7 +38,7 @@ const auth = vi.hoisted(() => {
   };
 });
 
-vi.mock('../../../src/bot/wizard', () => ({
+vi.mock('../../../src/cli/wizard', () => ({
   runRegistrationWizard: vi.fn(async () => wizard.next),
 }));
 

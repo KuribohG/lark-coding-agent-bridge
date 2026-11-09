@@ -1,6 +1,6 @@
 import { Readable } from 'node:stream';
 import type { AgentEvent } from '../agent/types';
-import { consumeCotEvents, CotPublisher, type CotClient } from '../bot/cot';
+import { consumeCotEvents, CotPublisher, type CotClient } from '../channels/lark/cot';
 import type { CotMessagesMode } from '../config/schema';
 import { log } from '../core/logger';
 import type { InboxLark } from './lark';

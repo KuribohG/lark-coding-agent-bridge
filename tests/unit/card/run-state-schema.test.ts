@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { initialState, reduce } from '../../../src/card/run-state';
+import { initialState, reduce } from '../../../src/runtime/run-state';
 
 describe('run state terminal event schema', () => {
   it('maps done termination reasons onto visible terminal states', () => {

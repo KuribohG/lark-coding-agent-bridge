@@ -1,7 +1,7 @@
 import { rewriteFileLinks, type FileLinkRenderOptions } from './file-links';
 import { deepMaskEmails } from './mask-email';
-import type { Block, FooterStatus, RunState, ToolEntry } from './run-state';
-import { DETACHED_NOTE, retryStatus } from './run-state';
+import type { Block, FooterStatus, RunState, ToolEntry } from '../runtime/run-state';
+import { DETACHED_NOTE, retryStatus } from '../runtime/run-state';
 import { toolBodyMd, toolHeaderText } from './tool-render';
 
 const REASONING_MAX = 1500;

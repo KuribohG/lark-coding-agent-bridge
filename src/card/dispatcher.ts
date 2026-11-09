@@ -1,10 +1,10 @@
 import type { CardActionEvent, CardActionResponse, LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import type { AgentAdapter } from '../agent/types';
-import type { ActiveRuns } from '../bot/active-runs';
-import type { ChatModeCache } from '../bot/chat-mode-cache';
-import type { PendingQueue } from '../bot/pending-queue';
-import type { ProcessPool } from '../bot/process-pool';
-import { commandSessionCatalogIdentity } from '../bot/session-catalog-identity';
+import type { ActiveRuns } from '../runtime/active-runs';
+import type { ChatModeCache } from '../channels/lark/chat-mode-cache';
+import type { PendingQueue } from '../channels/lark/pending-queue';
+import type { ProcessPool } from '../runtime/process-pool';
+import { commandSessionCatalogIdentity } from '../channels/lark/session-catalog-identity';
 import type { UserQuestions } from '../channels/lark/question-cards';
 import { runCommandHandler, type CommandContext, type Controls } from '../commands';
 import type { AgentKind } from '../config/profile-schema';

@@ -6,8 +6,8 @@ import { initialState, type RunState } from '../../runtime/run-state';
 import { renderProgressText, renderText } from '../../card/text-renderer';
 import { getMessageReplyMode, type CotMessagesMode } from '../../config/schema';
 import { log } from '../../core/logger';
-import { consumeCotEvents, CotClient, CotPublisher, finalAnswerOnlyState } from '../../bot/cot';
-import { addWorkingReaction, removeReaction } from '../../bot/reaction';
+import { consumeCotEvents, CotClient, CotPublisher, finalAnswerOnlyState } from './cot';
+import { addWorkingReaction, removeReaction } from './reaction';
 import { processAgentStream } from '../../runtime/run-stream';
 import { createProgressMarkdownWriter } from './progress-markdown';
 
