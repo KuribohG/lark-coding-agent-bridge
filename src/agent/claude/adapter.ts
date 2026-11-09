@@ -175,7 +175,7 @@ export class ClaudeAdapter implements AgentAdapter {
     // the void and the generator hangs.
     const stderrChunks: Buffer[] = [];
     const tasks = new ClaudeBackgroundTasks();
-    const input = new ClaudeStreamInput(child.stdin, opts.sessionId, undefined, () => tasks.running > 0);
+    const input = new ClaudeStreamInput(child.stdin, opts.sessionId, undefined, () => tasks.outstanding);
     const questions = new ClaudeQuestionControl(input);
     let runtimeError: Error | null = null;
     let interrupted = false;
@@ -317,13 +317,26 @@ async function* createEventStream(
     }, 50);
   };
   child.once('exit', closeSilentStdout);
-  // The latest turn result that arrived while background tasks were still running.
+  // The latest turn result that arrived while background work was still outstanding.
   let held: { type?: string; is_error?: boolean; subtype?: string } | undefined;
   let waitTimer: ReturnType<typeof setTimeout> | undefined;
   let waitExpired = false;
-  // Between a top-level init and its result; such a turn's result decides whether the run ends.
-  let turnOpen = false;
   let drainTimer: ReturnType<typeof setTimeout> | undefined;
+  // -p starts a notification turn for each finished task with stdin still open, and that turn
+  // may launch more tasks, so stdin stays open for supplements. Close it only once nothing can
+  // start another turn: -p then reports anything still queued, exits, and the held result answers.
+  // A notification that Claude folded into an earlier turn never gets its own; this closes the run.
+  const syncDrain = (): void => {
+    if (held && tasks.idle) {
+      drainTimer ??= setTimeout(() => {
+        drainTimer = undefined;
+        if (tasks.idle && !input.awaitingResult) input.close();
+      }, backgroundDrainGraceMs);
+    } else if (drainTimer) {
+      clearTimeout(drainTimer);
+      drainTimer = undefined;
+    }
+  };
   try {
     for await (const line of rl) {
       sawStdout = true;
@@ -341,23 +354,7 @@ async function* createEventStream(
         continue;
       }
       tasks.receive(parsed);
-      const event = parsed as { type?: string; subtype?: string; parent_tool_use_id?: string } | null;
-      if (event && typeof event === 'object' && !event.parent_tool_use_id) {
-        if (event.type === 'system' && event.subtype === 'init') turnOpen = true;
-        else if (event.type === 'result') turnOpen = false;
-      }
-      // -p starts a notification turn for each finished task with stdin still open, and that turn
-      // may launch more tasks, so stdin stays open for supplements. Close it only when the tasks
-      // drain and no turn follows, so -p exits and the held result answers.
-      if (held && tasks.running === 0 && !turnOpen) {
-        drainTimer ??= setTimeout(() => {
-          drainTimer = undefined;
-          if (tasks.running === 0 && !turnOpen && !input.awaitingResult) input.close();
-        }, backgroundDrainGraceMs);
-      } else if (drainTimer) {
-        clearTimeout(drainTimer);
-        drainTimer = undefined;
-      }
+      syncDrain();
       if (isTaskNotificationResult(parsed) && !tasks.launchedHere(parsed)) continue;
       parsed = input.receive(parsed);
       if (parsed === undefined) continue;
@@ -365,8 +362,9 @@ async function* createEventStream(
       if (parsed && typeof parsed === 'object') {
         const result = parsed as { type?: string; parent_tool_use_id?: string; is_error?: boolean; subtype?: string };
         terminal = result.type === 'result' && !result.parent_tool_use_id;
-        if (terminal && tasks.running > 0 && !result.is_error && !result.subtype?.startsWith('error')) {
+        if (terminal && tasks.outstanding && !result.is_error && !result.subtype?.startsWith('error')) {
           held = result;
+          syncDrain();
           yield* translator.flushProgress();
           yield { type: 'status', code: 'background_tasks', content: tasks.describe() };
           waitTimer ??= setTimeout(() => {

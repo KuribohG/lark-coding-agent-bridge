@@ -286,7 +286,9 @@ describe('ClaudeAdapter process contract', () => {
   });
 
   // rewaved: the notification turn launches another task and a supplement arrives during it.
-  it.each(['notified', 'steered', 'rewaved', 'drained', 'expired', 'stopped'] as const)('keeps the run open for background tasks (%s)', async mode => {
+  // raced: the task finishes before the turn's result and its notification turn follows the result.
+  // folded: the task finishes mid-turn and Claude delivers the notification inside that turn.
+  it.each(['notified', 'steered', 'rewaved', 'drained', 'expired', 'stopped', 'raced', 'folded'] as const)('keeps the run open for background tasks (%s)', async mode => {
     const dir = await mkdtemp(join(tmpdir(), 'claude-background-test-'));
     cleanup.push(dir);
     const binary = join(dir, 'fake-claude.mjs');
@@ -316,9 +318,14 @@ describe('ClaudeAdapter process contract', () => {
           emit({ type: 'assistant', message: { id: 'launch', content: [{ type: 'tool_use', id: 'bash', name: 'Bash', input: { command: 'make', run_in_background: true } }] } });
           emit({ type: 'system', subtype: 'task_started', task_id: 'bg1', run_id: 'task-run', is_backgrounded: true });
           tasks([{ task_id: 'bg1', run_id: 'task-run', description: 'make build' }]);
+          if (mode === 'raced' || mode === 'folded') {
+            emit({ type: 'system', subtype: 'task_notification', task_id: 'bg1', run_id: 'task-run', status: 'completed' });
+            tasks([]);
+          }
+          if (mode === 'folded') emit({ type: 'user', origin: { kind: 'task-notification', runId: 'task-run' }, message: { role: 'user', content: '<task-notification>' } });
           emit({ type: 'assistant', message: { id: 'held', content: [{ type: 'text', text: 'build started' }] } });
           emit({ type: 'result', session_id: 'bg-session', result: 'build started', user_message_uuids: [input.uuid] });
-          if (mode === 'notified') setTimeout(notify, 50);
+          if (mode === 'notified' || mode === 'raced') setTimeout(notify, 50);
           if (mode === 'rewaved') setTimeout(() => notify(true), 50);
           if (mode === 'drained') setTimeout(() => tasks([]), 50);
         } else {
@@ -347,15 +354,22 @@ describe('ClaudeAdapter process contract', () => {
         if (mode === 'stopped') await run.stop();
       }
       if (mode === 'steered' || mode === 'rewaved') expect(await delivery).toMatchObject({ status: 'accepted' });
-      expect(events).toContainEqual({ type: 'text', delta: 'build started' });
-      expect(events).toContainEqual({ type: 'status', code: 'background_tasks', content: '⏳ 等待 1 个后台任务完成后继续：make build' });
+      // A held result is shown as progress; an unheld one is the answer itself.
+      if (mode !== 'folded') expect(events).toContainEqual({ type: 'text', delta: 'build started' });
+      if (mode === 'raced') {
+        expect(events).toContainEqual({ type: 'status', code: 'background_tasks', content: '⏳ 后台任务已完成，等待处理结果后继续' });
+      } else if (mode === 'folded') {
+        expect(events.filter(event => event.type === 'status' && event.code === 'background_tasks')).toEqual([]);
+      } else {
+        expect(events).toContainEqual({ type: 'status', code: 'background_tasks', content: '⏳ 等待 1 个后台任务完成后继续：make build' });
+      }
       const finals = events.filter(event => event.type === 'final_text');
       const done = events.filter(event => event.type === 'done');
       if (mode === 'stopped') {
         expect(finals).toEqual([]);
         expect(done).toEqual([{ type: 'done', terminationReason: 'interrupted' }]);
       } else {
-        expect(finals).toEqual([{ type: 'final_text', content: ['notified', 'steered', 'rewaved'].includes(mode) ? 'build passed' : 'build started' }]);
+        expect(finals).toEqual([{ type: 'final_text', content: ['notified', 'steered', 'rewaved', 'raced'].includes(mode) ? 'build passed' : 'build started' }]);
         expect(done).toEqual([{ type: 'done', sessionId: 'bg-session', terminationReason: 'normal' }]);
       }
       if (mode === 'steered' || mode === 'rewaved') expect(events).toContainEqual({ type: 'text', delta: 'still building' });
