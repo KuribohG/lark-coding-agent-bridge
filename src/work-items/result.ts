@@ -2,6 +2,7 @@ import type { WorkItem } from './types';
 
 export const handlingState = (job: WorkItem): 'open' | 'handled' | 'ignored' =>
   job.handlingState ?? (job.state === 'ignored' ? 'ignored' : job.state === 'claimed' ? 'handled' : 'open');
+export const resolved = (job: WorkItem) => handlingState(job) !== 'open';
 
 export interface AnalysisFields { replyDraft: string; analysis: string; missingInfo: string }
 
