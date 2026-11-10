@@ -125,6 +125,35 @@ describe('Claude stream-json translator', () => {
     expect(notices({ subtype: 'permission_denied', tool_name: 'Bash', decision_reason: 'blocked by policy' }))
       .toEqual([{ type: 'status', code: 'tool-permission-denied', content: '⚠️ 工具 Bash 被拒绝执行：blocked by policy' }]);
   });
+
+  it('reports a native workflow and its agents as partial task events', () => {
+    const task = (raw: object) => [...translateEvent({ type: 'system', ...raw })];
+    // Field names as Claude Code 2.1 writes them to stream-json.
+    expect(task({ subtype: 'task_started', task_id: 'wf1', run_id: 'r1', tool_use_id: 'tu1', description: 'Review the last 10 commits',
+      task_type: 'local_workflow', workflow_name: 'review-recent-commits', is_backgrounded: true, prompt: 'export const meta = {}' }))
+      .toEqual([{ type: 'task', id: 'wf1', state: 'running', kind: 'workflow', nativeType: 'local_workflow', name: 'review-recent-commits',
+        description: 'Review the last 10 commits', background: true }]);
+    expect(task({ subtype: 'task_started', task_id: 'ag1', task_type: 'local_agent', parent_task_id: 'wf1', description: 'review:tooling' }))
+      .toEqual([{ type: 'task', id: 'ag1', state: 'running', kind: 'agent', nativeType: 'local_agent', parentId: 'wf1', description: 'review:tooling' }]);
+    expect(task({ subtype: 'task_progress', task_id: 'wf1', usage: { total_tokens: 1200, tool_uses: 4, duration_ms: 9000 }, last_tool_name: 'Bash',
+      workflow_progress: [
+        { type: 'workflow_agent', index: 0, label: 'review:tooling', phaseIndex: 0, phaseTitle: 'Review', agentId: 'a1', model: 'flash', state: 'start',
+          queuedAt: 10, lastProgressAt: 20, promptPreview: 'Read the diff' },
+        { type: 'workflow_agent', index: 1, label: 'review:ue', phaseIndex: 0, phaseTitle: 'Review', state: 'done', resultPreview: 'No defects', lastProgressAt: 30 },
+        { type: 'workflow_log', text: 'not a member' },
+      ] }))
+      .toEqual([{ type: 'task', id: 'wf1', state: 'running', lastTool: 'Bash', usage: { tokens: 1200, toolUses: 4, durationMs: 9000 }, members: [
+        { index: 0, label: 'review:tooling', phaseIndex: 0, phase: 'Review', state: 'start', agentId: 'a1', model: 'flash', prompt: 'Read the diff', startedAt: 10, updatedAt: 20 },
+        { index: 1, label: 'review:ue', phaseIndex: 0, phase: 'Review', state: 'done', result: 'No defects', updatedAt: 30 },
+      ] }]);
+    expect(task({ subtype: 'task_updated', task_id: 'ag1', patch: { status: 'killed', error: 'Workflow aborted' } }))
+      .toEqual([{ type: 'task', id: 'ag1', state: 'stopped', error: 'Workflow aborted' }]);
+    expect(task({ subtype: 'task_notification', task_id: 'wf1', status: 'completed', summary: '3 findings', output_file: '', workflow_progress: [], workflow_progress_omitted: 2 }))
+      .toEqual([{ type: 'task', id: 'wf1', state: 'completed', summary: '3 findings', members: [], membersOmitted: 2 }]);
+    // Internal tasks and events without an id are not the user's work.
+    expect(task({ subtype: 'task_started', task_id: 'x', task_type: 'local_agent', ambient: true })).toEqual([]);
+    expect(task({ subtype: 'task_progress' })).toEqual([]);
+  });
 });
 
 describe('Claude stream-json reader behavior', () => {
