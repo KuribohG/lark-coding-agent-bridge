@@ -26,6 +26,8 @@ export default defineConfig({
     // GitHub's runners are ~3x slower than a dev box, and the heavier
     // suites drive hundreds of items; vitest's 5s default trips on them.
     testTimeout: 20_000,
+    // The workflow engine checks every commit against a rebuild of the workflow from its journal.
+    env: { WORKFLOW_ENGINE_VERIFY: process.env.WORKFLOW_ENGINE_VERIFY ?? "1" },
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts", "packages/*/src/**/*.ts"],

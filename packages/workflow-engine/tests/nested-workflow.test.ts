@@ -3,8 +3,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import Database from 'better-sqlite3';
 import { WorkflowKernel } from '../src/engine/kernel';
+import { overwriteState } from './helpers/store';
 import { workflowWorkerInstructions } from '../src/engine/tools/instructions';
 import type { WorkflowRoot, WorkflowState, WorkflowWorkerRequest, WorkflowWorkerResult } from '../src/engine/types';
 
@@ -83,9 +83,7 @@ describe('nested workflow capability',()=>{
     delete root.definition.defaultWallTimeMinutes;
     root.definition.maxWallTimeMinutes = 120;
     root.deadlineAt = root.createdAt + 120 * 60_000;
-    const db = new Database(path);
-    db.prepare('UPDATE workflows SET data=? WHERE id=?').run(JSON.stringify(root), root.workflowId);
-    db.close();
+    overwriteState(h.kernel, root);
     await h.agent(h.state()); await h.run(1);
     const child = await h.child(h.requests[0]!);
     expect(h.state(child.workflowId).deadlineAt - h.state(child.workflowId).createdAt).toBe(30 * 60_000);
@@ -255,8 +253,7 @@ describe('nested workflow capability',()=>{
     await h.call('pause');
     // Force the second branch to hit its existing replay limit after the first is prepared.
     const second=h.state(children[1]!.workflowId);second.script!.revision=8;
-    const db=new Database(path);
-    db.prepare('UPDATE workflows SET data=? WHERE id=?').run(JSON.stringify(second),second.workflowId);db.close();
+    overwriteState(h.kernel,second);
     const before=[h.state(),...children.map(child=>h.state(child.workflowId))];
     await expect(h.call('replay_script')).rejects.toThrow('replay limit');
     for(const snapshot of before) expect(h.state(snapshot.workflowId)).toEqual(snapshot);

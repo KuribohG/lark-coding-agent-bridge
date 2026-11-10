@@ -16,8 +16,9 @@ function harness(path = ':memory:', getTimeoutMinutes?: () => number, now = Date
   const requests: WorkflowWorkerRequest[] = [];
   const finishes: Array<(result: WorkflowWorkerResult) => void> = [];
   const wakeMain = vi.fn(async () => {});
+  const resolveRoot = vi.fn(async (scope: string) => scope === root.scopeId ? root : undefined);
   const kernel = new WorkflowKernel(path, {
-    resolveRoot: async scope => scope === root.scopeId ? root : undefined, wakeMain, getTimeoutMinutes,
+    resolveRoot, wakeMain, getTimeoutMinutes,
     execute: async request => {
       requests.push(request); request.onRun('run-' + requests.length); request.onSession('thread-' + requests.length);
       return new Promise<WorkflowWorkerResult>(resolve => {
@@ -32,7 +33,7 @@ function harness(path = ':memory:', getTimeoutMinutes?: () => number, now = Date
   const state = () => kernel.state('topic-1')!;
   const call = (method: string, args: Record<string, unknown> = {}) => kernel.call({ kind: 'main', scopeId: 'topic-1', allowStart: true }, method,
     { operationId: randomUUID(), expectedStateVersion: state()?.stateVersion, ...(method === 'run_script' || method === 'replay_script' ? {plan:'Review the task with the requested harness and model; return a final result.'} : {}), ...args });
-  return { kernel, state, requests, finishes, wakeMain, call, close,
+  return { kernel, state, requests, finishes, wakeMain, resolveRoot, call, close,
     changeRoot: () => { root = { ...root, catalogBinding: 'replacement' }; },
     changeModel: () => { root = { ...root, modelSettings: { model: 'switched-model', reasoningEffort: 'low' } }; },
     start: async () => { await call('run_script', { goal: 'authorized review', script: 'return null;', maxConcurrent: 2 }); kernel.beginScript('topic-1', state().workflowId); },
@@ -182,21 +183,59 @@ describe('workflow kernel contracts', () => {
     await h.call('complete', { reportRef: report.ref, openIssues: ['unverified safety'], verificationLimits: 'not run' });
     expect(h.state()).toBeUndefined();
   });
-  it('retires persisted legacy workflows and frees the scope while retaining readable artifacts', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'workflow-retirement-')); cleanups.push(() => rm(dir, { recursive: true, force: true }));
-    const path = join(dir, 'workflow.sqlite'); const h = harness(path); await h.start(); await h.agent('a');
-    const legacy = h.state(); const oldId = legacy.workflowId; const ref = legacy.artifacts[0]!.ref;
+  it('admits between ticks without asking the host, only while the last root check is fresh', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] }); cleanups.push(async () => { vi.useRealTimers(); });
+    const h = harness();
+    await h.call('run_script', { goal: 'authorized review', script: 'return null;', maxConcurrent: 1 });
+    h.kernel.beginScript('topic-1', h.state().workflowId);
+    await h.agent('a'); await h.agent('b');
+    // No tick has checked this root yet: nothing starts, and the caller is told to tick.
+    expect(h.kernel.admitReady()).toBe(true);
+    expect(h.state().tasks.map(task => task.status)).toEqual(['queued', 'queued']);
+    await h.kernel.tick();
+    await vi.waitFor(() => expect(h.requests).toHaveLength(1));
+    const checks = h.resolveRoot.mock.calls.length;
+    h.finishes[0]!({ status: 'completed', text: 'first' });
+    await vi.waitFor(() => expect(h.state().tasks[0]!.status).toBe('result_ready'));
+    // The freed slot goes to the next task at once, on the strength of the tick's root check.
+    expect(h.kernel.admitReady()).toBe(false);
+    await vi.waitFor(() => expect(h.requests).toHaveLength(2));
+    expect(h.resolveRoot.mock.calls.length).toBe(checks);
+    expect(h.kernel.admitReady()).toBe(false);
+    expect(h.requests).toHaveLength(2);
+    h.finishes[1]!({ status: 'completed', text: 'second' });
+    await vi.waitFor(() => expect(h.state().tasks[1]!.status).toBe('result_ready'));
+    await h.agent('c');
+    vi.setSystemTime(Date.now() + 501);
+    expect(h.kernel.admitReady()).toBe(true);
+    expect(h.state().tasks[2]!.status).toBe('queued');
+    // A changed root is only ever discovered by the tick, which then stops the workflow instead of admitting.
+    h.changeRoot(); await h.kernel.tick();
+    expect(h.state().status).toBe('binding_attention');
+    expect(h.kernel.admitReady()).toBe(false);
+    expect(h.requests).toHaveLength(2);
+  });
+
+  it('ignores workflows of the pre-journal store, reports them and leaves their table untouched', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'workflow-legacy-')); cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    const path = join(dir, 'workflow.sqlite');
+    const legacy = new Database(path);
+    legacy.exec('CREATE TABLE workflows (id TEXT PRIMARY KEY, scope TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL)');
+    const insert = legacy.prepare('INSERT INTO workflows VALUES (?, ?, ?, ?)');
+    insert.run('old-active', 'topic-1', 'active', '{}'); insert.run('old-done', 'topic-2', 'completed', '{}');
+    legacy.close();
+    const warn = vi.fn();
+    const kernel = new WorkflowKernel(path, { resolveRoot: async () => undefined, wakeMain: async () => {},
+      execute: async () => ({ status: 'failed' }), log: { info: () => {}, warn } });
+    expect(warn).toHaveBeenCalledWith('legacy-workflows-ignored', { count: 1 });
+    expect(kernel.state('topic-1')).toBeUndefined();
+    expect(kernel.state('topic-1', 'old-active')).toBeUndefined();
+    await kernel.close();
+    const h = harness(path);
+    await h.start(); expect(h.state().status).toBe('active');
     await h.close();
-    const { script: _script, ...old } = legacy;
-    const db = new Database(path);
-    db.prepare('UPDATE workflows SET data=? WHERE id=?').run(JSON.stringify({ ...old, definition: { ...old.definition, id: 'architecture-review', kind: 'agent-led' } }), oldId);
-    db.close();
-    const recovered = harness(path);
-    expect(recovered.state()).toBeUndefined();
-    expect(recovered.kernel.state('topic-1', oldId)).toMatchObject({ status: 'cancelled', tasks: [{ status: 'cancelled' }] });
-    expect(await recovered.call('read_artifact', { workflowId: oldId, ref })).toMatchObject({ text: 'authorized review' });
-    await expect(recovered.call('replay_script', { workflowId: oldId })).rejects.toThrow('retired');
-    await recovered.start(); expect(recovered.state().workflowId).not.toBe(oldId);
-    expect(recovered.kernel.context('topic-1')).not.toContain('architecture-review');
+    const db = new Database(path, { readonly: true });
+    try { expect(db.prepare('SELECT id, status FROM workflows ORDER BY id').all()).toEqual([{ id: 'old-active', status: 'active' }, { id: 'old-done', status: 'completed' }]); }
+    finally { db.close(); }
   });
 });

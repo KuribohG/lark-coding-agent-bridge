@@ -51,8 +51,17 @@ async function harness(results: Partial<Record<AgentKind, string[]>> = {}, rootK
   await runtime.start(); cleanup.push(() => runtime.close());
   let binding = runtime.bindMain(root.scopeId, 'start');
   const state = () => runtime.kernel.state(root.scopeId)!;
-  const call = (method: string, args: Record<string, unknown> = {}) => callWorkflow(method,
-    { operationId: randomUUID(), workflowId: state()?.workflowId, expectedStateVersion: state()?.stateVersion, ...(method === 'run_script' || method === 'replay_script' ? {plan:'Review the task with the requested harness and model; return a final result.'} : {}), ...args }, binding.env);
+  // The script and its workers commit while the main agent works; like it, read the version again after a conflict.
+  const call = async (method: string, args: Record<string, unknown> = {}): Promise<unknown> => {
+    for (;;) {
+      try {
+        return await callWorkflow(method,
+          { operationId: randomUUID(), workflowId: state()?.workflowId, expectedStateVersion: state()?.stateVersion, ...(method === 'run_script' || method === 'replay_script' ? {plan:'Review the task with the requested harness and model; return a final result.'} : {}), ...args }, binding.env);
+      } catch (error) {
+        if (!(error instanceof Error && error.message.startsWith('stateVersion conflict'))) throw error;
+      }
+    }
+  };
   const until = async (check: () => void) => vi.waitFor(async () => { await runtime.tick(); check(); }, { timeout: 5000, interval: 20 });
   return { get runtime() { return runtime; }, adapters, resolveAgent, wakeMain, notify, binding, state, call, until, pool,
     restart: async () => { binding.release(); await runtime.close(); runtime = createBridgeWorkflowRuntime(deps); await runtime.start(); binding = runtime.bindMain(root.scopeId, 'continue'); },

@@ -1,8 +1,8 @@
-import { consumerPools } from './work-routing';
 import { cancelWork } from './work-queue';
 import { BUSY, pushEvent } from './kernel-state';
+import { emit } from './kernel-store';
 import type { KernelContext } from './kernel-context';
-import type { WorkflowState } from './types';
+import type { WorkflowView } from './types';
 
 /** Whole-workflow transitions the main agent and the scheduler share: wake-ups, invalidation and cancellation. */
 export class WorkflowLifecycle {
@@ -15,45 +15,38 @@ export class WorkflowLifecycle {
 
   markNotified(scopeId: string, ids: string[]): void {
     const state = this.ctx.store.state(scopeId);
-    if (!state) return;
-    for (const event of state.events) if (ids.includes(event.id) && !event.notified) { event.notified = true; event.notifiedAt = this.ctx.now(); }
-    this.ctx.store.save(state);
+    const pending = state?.events.filter(event => ids.includes(event.id) && !event.notified).map(event => event.id);
+    if (state && pending?.length) this.ctx.store.transact(() => emit(state, { type: 'notices_notified', ids: pending, at: this.ctx.now() }), 'host:notified');
   }
 
   invalidate(scopeId: string): void {
     const state = this.ctx.store.state(scopeId);
     if (!state || ['binding_attention', 'interrupted'].includes(state.status)) return;
-    this.ctx.children.suspendChildren(state,false);
-    state.status = 'binding_attention';
-    if (state.script) state.script.status = 'interrupted';
-    for (const pool of consumerPools(state)) pool.status = 'suspended';
-    for (const task of state.tasks) if (BUSY.has(task.status) || task.status==='waiting_workflow') this.ctx.scheduler.cancelTask(task, state);
-    pushEvent(state, { kind: 'binding_attention', summary: 'Root session, engine, workspace or policy changed; new delegation stopped.' }, this.ctx.now);
-    this.ctx.store.save(state);
+    this.ctx.store.transact(() => {
+      this.ctx.children.suspendChildren(state, false);
+      emit(state, { type: 'binding_invalidated' });
+      for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_workflow') this.ctx.scheduler.cancelTask(task, state);
+      pushEvent(state, { kind: 'binding_attention', summary: 'Root session, engine, workspace or policy changed; new delegation stopped.' }, this.ctx.now);
+    }, 'host:invalidate');
   }
 
   cancel(scopeId: string): boolean {
     const state = this.ctx.store.state(scopeId);
     if (!state) return false;
-    this.cancelState(state);
-    this.ctx.store.save(state);
+    this.ctx.store.transact(() => this.cancelState(state), 'host:cancel');
     return true;
   }
 
-  cancelState(state: WorkflowState): void {
-    this.ctx.children.suspendChildren(state,true);
-    state.status = 'cancelled';
-    if (state.script) state.script.status = 'cancelled';
-    for (const pool of consumerPools(state)) pool.status = 'cancelled';
+  cancelState(state: WorkflowView): void {
+    this.ctx.children.suspendChildren(state, true);
+    emit(state, { type: 'workflow_cancelled' });
     cancelWork(state, this.ctx.now());
-    for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_input' || task.status==='waiting_workflow') this.ctx.scheduler.cancelTask(task, state);
+    for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_input' || task.status === 'waiting_workflow') this.ctx.scheduler.cancelTask(task, state);
   }
 
-  pause(state: WorkflowState): void {
-    this.ctx.children.suspendChildren(state,false);
-    state.status = 'paused';
-    state.script!.status = 'paused';
-    for (const pool of consumerPools(state)) pool.status = 'suspended';
+  pause(state: WorkflowView): void {
+    this.ctx.children.suspendChildren(state, false);
+    emit(state, { type: 'workflow_paused' });
     for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_workflow') this.ctx.scheduler.cancelTask(task, state);
   }
 }

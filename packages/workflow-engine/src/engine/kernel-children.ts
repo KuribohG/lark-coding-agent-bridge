@@ -1,27 +1,27 @@
 import { randomUUID } from 'node:crypto';
-import { consumerPools } from './work-routing';
 import { cancelWork } from './work-queue';
 import { workflowDigest } from './digest';
 import { MAX_CHILD_WORKFLOWS, MAX_WORKFLOW_DEPTH, nestedInput, nestedResponse } from './nested-workflow';
 import { inheritedWorkerExecution, workerSelection } from './execution';
 import { SCRIPT_MAX_TASKS } from './script-contract';
-import { acknowledge, addArtifact, BUSY } from './kernel-state';
+import { acknowledge, addArtifact, BUSY, taskById } from './kernel-state';
+import { emit } from './kernel-store';
 import type { KernelContext } from './kernel-context';
-import type { WorkflowState, WorkflowTask } from './types';
+import type { TaskView, WorkflowData, WorkflowView } from './types';
 
 /** Nested workflows: creation from a worker turn, the shared tree budget, and handing results back to the waiting parent turn. */
 export class ChildWorkflows {
   constructor(private readonly ctx: KernelContext) {}
 
-  executionAllowed(state: WorkflowState): boolean {
+  executionAllowed(state: WorkflowView): boolean {
     if (!state.parent) return true;
     const parent = this.ctx.store.state(state.root.scopeId,state.parent.workflowId);
-    const task = parent?.tasks.find(task=>task.taskId===state.parent!.taskId);
+    const task = parent && taskById(parent, state.parent.taskId);
     return Boolean(parent?.status === 'active' && parent.script?.status === 'running' && task?.status === 'waiting_workflow'
       && task.waitingWorkflowId === state.workflowId && this.executionAllowed(parent));
   }
 
-  remainingTreeTasks(state: WorkflowState): number {
+  remainingTreeTasks(state: WorkflowView): number {
     const tree = this.ctx.store.tree(state);
     const root = tree.find(item=>!item.parent) ?? state;
     // Existing non-nested scripts retain their per-run call budget.
@@ -29,19 +29,16 @@ export class ChildWorkflows {
     return root.script!.maxCalls - tree.reduce((total,item)=>total+item.tasks.length,0);
   }
 
-  suspendChildren(state: WorkflowState, cancel: boolean, taskId?: string): void {
+  suspendChildren(state: WorkflowView, cancel: boolean, taskId?: string): void {
     for (const child of this.ctx.store.descendants(state, taskId).reverse()) {
       if (['completed','cancelled'].includes(child.status)) continue;
-      child.status = cancel ? 'cancelled' : 'paused';
-      if (child.script) child.script.status = cancel ? 'cancelled' : 'paused';
-      for (const pool of consumerPools(child)) pool.status = cancel ? 'cancelled' : 'suspended';
+      emit(child, { type: cancel ? 'workflow_cancelled' : 'workflow_paused' });
       if (cancel) cancelWork(child,this.ctx.now());
       for (const task of child.tasks) if (BUSY.has(task.status) || task.status === 'waiting_workflow') this.ctx.scheduler.cancelTask(task,child);
-      this.ctx.store.save(child);
     }
   }
 
-  runChildWorkflow(state: WorkflowState, task: WorkflowTask, args: Record<string, unknown>): unknown {
+  runChildWorkflow(state: WorkflowView, task: TaskView, args: Record<string, unknown>): unknown {
     const { store, host } = this.ctx;
     const now = this.ctx.now;
     if (!task.workflowTool) throw new Error('run_workflow is not enabled for this agent');
@@ -64,46 +61,46 @@ export class ChildWorkflows {
     if (depth>MAX_WORKFLOW_DEPTH) throw new Error('Nested workflow depth limit reached');
     if (store.tree(state).filter(child=>child.parent).length>=MAX_CHILD_WORKFLOWS) throw new Error('Child workflow count limit reached');
     const execution = session.execution ?? inheritedWorkerExecution(state.root,{agentKind:state.root.agentKind});
-    const definition = structuredClone(state.definition);
-    definition.maxConcurrentWorkers = Math.min(input.maxConcurrent,state.definition.maxConcurrentWorkers);
-    const child: WorkflowState = {
-      workflowId:randomUUID(),root:state.root,definition,definitionDigest:workflowDigest(definition),
+    // The store copies the initial state, so sharing the parent's root and definition here is safe.
+    const root = state.root as WorkflowData['root'];
+    const definition = { ...state.definition as WorkflowData['definition'],
+      maxConcurrentWorkers: Math.min(input.maxConcurrent,state.definition.maxConcurrentWorkers) };
+    const child = store.create({
+      workflowId:randomUUID(),root,definition,definitionDigest:workflowDigest(definition),
       parent:{workflowId:state.workflowId,taskId:task.taskId,rootWorkflowId:state.parent?.rootWorkflowId ?? state.workflowId,
         depth,key:input.key,digest,operationId,parentQueue:input.parentQueue,checkpoint:input.checkpoint},
       goal:state.goal+'\n\n子 workflow 目标（必须在原始授权范围内）：\n'+input.goal,
       stateVersion:0,status:'active',createdAt:now(),deadlineAt:Math.min(state.deadlineAt,now()+input.timeoutMs),
       sessions:[],tasks:[],artifacts:[],events:[],
-    };
+    });
     addArtifact(child,'requirements',child.goal,now);
     const source = addArtifact(child,'workflow-script',input.script,now);
     const plan = addArtifact(child,'workflow-plan',input.plan,now);
-    child.script = {name:input.name,sourceRef:source.ref,planRef:plan.ref,args:input.args,
-      defaults:workerSelection(input.execution,{...state.root,agentKind:execution.agentKind,modelSettings:execution.modelSettings},host),
-      runId:randomUUID(),revision:0,status:'queued',maxCalls:Math.min(input.maxAgents,state.script.maxCalls),calls:[],logs:[]};
-    task.waitingWorkflowId=child.workflowId;task.yieldRequestedAt=now();
-    store.transaction(()=>{store.save(child);store.save(state);});
+    emit(child, { type: 'script_set', script: {name:input.name,sourceRef:source.ref,planRef:plan.ref,args:input.args,
+      defaults:workerSelection(input.execution,{...root,agentKind:execution.agentKind,modelSettings:execution.modelSettings},host),
+      runId:randomUUID(),revision:0,status:'queued',maxCalls:Math.min(input.maxAgents,state.script.maxCalls),calls:[],logs:[]} });
+    emit(state, { type: 'task_child_requested', taskId: task.taskId, workflowId: child.workflowId, at: now() });
     return nestedResponse(child);
   }
 
-  finishChild(state: WorkflowState): void {
+  /** The child's result and the parent's continuation commit as one recovery boundary. */
+  finishChild(state: WorkflowView): void {
     const { store } = this.ctx;
     if (!state.parent) return;
-    state.status='completed';
-    for (const event of state.events) {acknowledge(event,this.ctx.now());if(!event.notified){event.notified=true;event.notifiedAt=this.ctx.now();}}
+    emit(state, { type: 'workflow_completed' });
+    acknowledge(state, state.events, this.ctx.now());
+    const unnotified = state.events.filter(event => !event.notified).map(event => event.id);
+    if (unnotified.length) emit(state, { type: 'notices_notified', ids: unnotified, at: this.ctx.now() });
     const parent=store.state(state.root.scopeId,state.parent.workflowId);
-    const task=parent?.tasks.find(task=>task.taskId===state.parent!.taskId);
-    store.transaction(()=>{
-      store.save(state);
-      if (parent?.status==='active' && parent.script?.status==='running' && task?.status==='waiting_workflow' && task.waitingWorkflowId===state.workflowId) {
-        task.status='queued';task.resumeWorkflowId=state.workflowId;task.waitingWorkflowId=undefined;task.yieldRequestedAt=undefined;
-        store.save(parent);
-      }
-    });
+    const task=parent && taskById(parent, state.parent.taskId);
+    if (parent?.status==='active' && parent.script?.status==='running' && task?.status==='waiting_workflow' && task.waitingWorkflowId===state.workflowId) {
+      emit(parent, { type: 'task_child_finished', taskId: task.taskId });
+    }
   }
 
   waitingForChild(scopeId: string, workflowId: string, taskId: string, attemptId: string): boolean {
     const state=this.ctx.store.state(scopeId,workflowId);
-    const task=state?.tasks.find(task=>task.taskId===taskId);
+    const task=state && taskById(state, taskId);
     return Boolean(state?.status==='active' && task?.waitingWorkflowId && task.attempts.at(-1)?.attemptId===attemptId
       && ['starting','running'].includes(task.status));
   }

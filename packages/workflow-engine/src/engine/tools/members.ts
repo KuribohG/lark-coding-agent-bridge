@@ -3,20 +3,19 @@ import { requiredText, requireState } from '../kernel-state';
 import { nestedContext } from '../nested-workflow';
 import { workContext } from '../work-queue';
 import type { KernelContext } from '../kernel-context';
-import type { WorkflowState, WorkflowTask } from '../types';
+import { readText } from '../kernel-store';
+import type { TaskView, WorkflowView } from '../types';
 import type { ToolArgs, WorkflowToolPlugin } from './types';
 import { versioned } from './versioned';
 
 /** An idempotent change by a persistent member's active turn, keyed by its operationId. */
-function memberOperation(ctx: KernelContext, state: WorkflowState, task: WorkflowTask, method: string, args: ToolArgs,
+function memberOperation(ctx: KernelContext, state: WorkflowView, task: TaskView, method: string, args: ToolArgs,
   apply: (agent: NonNullable<ReturnType<typeof taskAgent>>) => unknown): unknown {
   const agent = taskAgent(state, task);
   if (!agent) throw new Error('This operation requires a persistent member');
   if (state.status !== 'active' || state.script?.status !== 'running' || ctx.now() >= state.deadlineAt) throw new Error('Workflow is inactive');
   const operationId = requiredText(args.operationId, 160);
-  const response = mailboxOperation(state, 'worker:' + task.taskId + ':' + operationId, { method, args }, () => apply(agent));
-  ctx.store.save(state);
-  return response;
+  return mailboxOperation(state, 'worker:' + task.taskId + ':' + operationId, { method, args }, () => apply(agent));
 }
 
 /** A worker's own task context and a persistent member's checkpoint. */
@@ -31,7 +30,7 @@ export const memberContextTools: WorkflowToolPlugin = {
     {
       name: 'read_context',
       worker: {
-        call: (ctx, state, task) => ({ goal: state.goal, objective: task.objective, inputRefs: task.inputRefs, member: memberContext(state, task), workQueue: workContext(state, task),
+        call: (ctx, state, task) => ({ goal: state.goal, objective: readText(state, task.objective), inputRefs: task.inputRefs, member: memberContext(state, task), workQueue: workContext(state, task),
           ...(task.workflowTool ? {workflows:nestedContext(ctx.store.descendants(state,task.taskId),task)} : {}) }),
       },
     },

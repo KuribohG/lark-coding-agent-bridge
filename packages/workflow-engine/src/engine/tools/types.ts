@@ -1,20 +1,21 @@
 import type { KernelContext } from '../kernel-context';
-import type { WorkflowCaller, WorkflowRoot, WorkflowState, WorkflowTask } from '../types';
+import type { TaskView, WorkflowCaller, WorkflowRoot, WorkflowView } from '../types';
 
-export type ScriptState = WorkflowState & { script: NonNullable<WorkflowState['script']> };
+export type ScriptState = WorkflowView & { script: NonNullable<WorkflowView['script']> };
 export type ToolArgs = Record<string, unknown>;
 export type WorkerCaller = Extract<WorkflowCaller, { kind: 'worker' }>;
 
-/** Commits the operation with its idempotency record; `response` runs after the state change is final. */
+/** Records the operation's idempotent response; `response` runs once the state version of this change is final. */
 export type CommitOperation = (response: () => unknown) => unknown;
 
 /**
  * A main-agent operation. `read` needs no operationId and may run without a bound workflow; `start` creates the
  * workflow; `mutate` is a versioned, idempotent change that passes the kernel's root, status and deadline checks.
+ * `start`, `mutate` and worker calls run inside one store transaction and change state by emitting events.
  */
 export type MainTool =
-  | { kind: 'read'; read(ctx: KernelContext, state: WorkflowState | undefined, args: ToolArgs): unknown }
-  | { kind: 'start'; start(ctx: KernelContext, root: WorkflowRoot, args: ToolArgs): WorkflowState }
+  | { kind: 'read'; read(ctx: KernelContext, state: WorkflowView | undefined, args: ToolArgs): unknown }
+  | { kind: 'start'; start(ctx: KernelContext, root: WorkflowRoot, args: ToolArgs): WorkflowView }
   | {
     kind: 'mutate';
     /** Skip the root, status and deadline checks; only terminal workflows are refused. */
@@ -31,8 +32,8 @@ export interface WorkerTool {
   /** Re-resolve the root session first; required for operations that change shared state. */
   verifiesRoot?: boolean;
   /** Runs before the attempt binding check, for example to expire stale leases the binding check depends on. */
-  prepare?(ctx: KernelContext, state: WorkflowState): void;
-  call(ctx: KernelContext, state: WorkflowState, task: WorkflowTask, caller: WorkerCaller, args: ToolArgs): unknown;
+  prepare?(ctx: KernelContext, state: WorkflowView): void;
+  call(ctx: KernelContext, state: WorkflowView, task: TaskView, caller: WorkerCaller, args: ToolArgs): unknown;
 }
 
 export interface WorkflowTool {

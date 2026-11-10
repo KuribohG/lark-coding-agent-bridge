@@ -17,9 +17,7 @@ const claimTools: WorkflowTool[] = WORK_MUTATIONS.map(name => ({
     prepare: (ctx, state) => ctx.scheduler.expireClaims(state),
     call: (ctx, state, task, caller, args) => {
       if (state.status !== 'active' || state.script?.status !== 'running' || ctx.now() >= state.deadlineAt) throw new Error('Workflow is inactive');
-      const response = mutateWork(state, task, caller.attemptId, name, args, ctx.now());
-      ctx.store.save(state);
-      return response;
+      return mutateWork(state, task, caller.attemptId, name, args, ctx.now());
     },
   },
 }));

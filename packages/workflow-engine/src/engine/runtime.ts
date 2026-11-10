@@ -51,6 +51,8 @@ export class WorkflowRuntime {
   private timer?: NodeJS.Timeout;
   private closed = false;
   private ticking = false;
+  private admissionRequested = false;
+  private tickAgain = false;
   private readonly scripts = new Map<string, { controller: AbortController; done: Promise<void>; depth: number }>();
   private readonly releasing = new Set<string>();
   private readonly log: WorkflowLogger;
@@ -93,31 +95,60 @@ export class WorkflowRuntime {
         .catch(error => this.log.warn('restart-notice-failed', { error: String(error) }));
     }
     await this.releaseOrphanHosts();
+    // A commit may have made work runnable: admit it at once, without asking the host anything. The interval runs
+    // the full pass, which also covers what only the clock or the host changes: deadlines, leases, wait timers and
+    // the root session's authorization.
+    this.kernel.onCommit(() => this.requestAdmission());
     this.timer = setInterval(() => {
       void this.tick().catch(error => this.log.warn('tick-failed', { error: String(error) }));
     }, 500);
     this.timer.unref();
+    this.requestAdmission();
+  }
+
+  /** Coalesces the commits of one event-loop turn into a single admission pass. */
+  private requestAdmission(): void {
+    if (this.closed || this.admissionRequested) return;
+    this.admissionRequested = true;
+    setImmediate(() => {
+      this.admissionRequested = false;
+      if (this.closed) return;
+      try {
+        // A workflow whose root has not been checked recently waits for a full pass; run one now.
+        if (this.kernel.admitReady()) void this.tick().catch(error => this.log.warn('tick-failed', { error: String(error) }));
+        this.startScripts();
+      } catch (error) { this.log.warn('admission-failed', { error: String(error) }); }
+    });
   }
 
   async tick(): Promise<void> {
-    if (this.closed || this.ticking) return;
+    if (this.closed) return;
+    if (this.ticking) { this.tickAgain = true; return; }
     this.ticking = true;
     try {
       await this.kernel.tick();
       if (this.closed) return;
       void this.releaseOrphanHosts();
-      for (const state of this.kernel.queuedScripts()) {
-        const depth=state.parent?.depth ?? 0;
-        // Separate bounded levels let children run while ancestor interpreters await their results.
-        if ([...this.scripts.values()].filter(script=>script.depth===depth).length>=4) continue;
-        if (this.scripts.has(state.workflowId)) continue;
-        const controller = new AbortController();
-        const done = Promise.resolve().then(() => this.runScript(state.root.scopeId, state.workflowId, controller));
-        this.scripts.set(state.workflowId, { controller, done, depth });
-        void done.finally(() => this.scripts.delete(state.workflowId))
-          .catch(error => this.log.warn('script-failed', { error: String(error) }));
-      }
-    } finally { this.ticking = false; }
+      this.startScripts();
+    } finally {
+      this.ticking = false;
+      // A pass was asked for while this one ran and may have been needed by something this one had already passed.
+      if (this.tickAgain) { this.tickAgain = false; void this.tick().catch(error => this.log.warn('tick-failed', { error: String(error) })); }
+    }
+  }
+
+  private startScripts(): void {
+    for (const state of this.kernel.queuedScripts()) {
+      const depth=state.parent?.depth ?? 0;
+      // Separate bounded levels let children run while ancestor interpreters await their results.
+      if ([...this.scripts.values()].filter(script=>script.depth===depth).length>=4) continue;
+      if (this.scripts.has(state.workflowId)) continue;
+      const controller = new AbortController();
+      const done = Promise.resolve().then(() => this.runScript(state.root.scopeId, state.workflowId, controller));
+      this.scripts.set(state.workflowId, { controller, done, depth });
+      void done.finally(() => this.scripts.delete(state.workflowId))
+        .catch(error => this.log.warn('script-failed', { error: String(error) }));
+    }
   }
 
   private async runScript(scopeId: string, workflowId: string, controller: AbortController): Promise<void> {
@@ -125,10 +156,11 @@ export class WorkflowRuntime {
     const begun = this.kernel.beginScript(scopeId, workflowId);
     if (!begun) return;
     const { runId } = begun.state.script!;
-    const stop = this.kernel.onChange(scopeId, () => {
-      const state = this.kernel.state(scopeId, workflowId);
-      if (state?.status !== 'active' || state.script?.status !== 'running' || state.script.runId !== runId) controller.abort();
+    const stop = this.kernel.watch(workflowId, ['lifecycle'], () => {
+      if (!this.kernel.scriptRunning(scopeId, workflowId, runId)) controller.abort();
     });
+    // Waiters wake on the events that can produce their value, not on every change in the scope.
+    const watching = (...topics: string[]) => (listener: () => void) => this.kernel.watch(workflowId, [...topics, 'lifecycle'], listener);
     const deadline = setTimeout(() => controller.abort(new WorkflowStopped('deadline')),
       Math.max(0, begun.state.deadlineAt - Date.now()));
     deadline.unref();
@@ -141,7 +173,7 @@ export class WorkflowRuntime {
           const call = await this.kernel.scriptAgent(scopeId, workflowId, runId, input);
           let result: string;
           // Only the worker's own failure is soft; invalid calls and stopped runs still reject.
-          try { result = await this.waitForScriptValue(scopeId, controller.signal, () => this.kernel.scriptTaskResult(scopeId, workflowId, runId, call.taskId)); }
+          try { result = await this.waitForScriptValue(watching('task:' + call.taskId), controller.signal, () => this.kernel.scriptTaskResult(scopeId, workflowId, runId, call.taskId)); }
           catch (error) {
             if (controller.signal.aborted) throw error;
             throw new WorkflowAgentFailure(error instanceof Error ? error.message : String(error));
@@ -154,14 +186,14 @@ export class WorkflowRuntime {
           controller.signal.throwIfAborted();
           const call = await this.kernel.scriptMailbox(scopeId, workflowId, runId, input);
           return call.receiptId
-            ? this.waitForScriptValue(scopeId, controller.signal, () => this.kernel.scriptMailboxResult(scopeId, workflowId, runId, call.receiptId!))
+            ? this.waitForScriptValue(watching('mailbox'), controller.signal, () => this.kernel.scriptMailboxResult(scopeId, workflowId, runId, call.receiptId!))
             : call.result;
         },
         work: async input => {
           controller.signal.throwIfAborted();
           const result = await this.kernel.scriptWork(scopeId, workflowId, runId, input);
           return (input as { kind?: string }).kind === 'consume'
-            ? this.waitForScriptValue(scopeId, controller.signal, () => this.kernel.scriptConsumerResult(scopeId, workflowId, runId, (result as { consumerPool: string }).consumerPool))
+            ? this.waitForScriptValue(watching('pool'), controller.signal, () => this.kernel.scriptConsumerResult(scopeId, workflowId, runId, (result as { consumerPool: string }).consumerPool))
             : result;
         },
         control: async input => {
@@ -169,12 +201,14 @@ export class WorkflowRuntime {
           const call = await this.kernel.scriptControl(scopeId, workflowId, runId, input);
           if (call.kind === 'start') return { taskId: call.taskId, output: call.output };
           if (call.kind === 'join') {
-            const result = await this.waitForScriptValue(scopeId, controller.signal, () => this.kernel.scriptTaskResult(scopeId, workflowId, runId, call.taskId!));
+            const result = await this.waitForScriptValue(watching('task:' + call.taskId), controller.signal, () => this.kernel.scriptTaskResult(scopeId, workflowId, runId, call.taskId!));
             if (call.output === 'text') return result;
             try { return JSON.parse(result) as unknown; }
             catch { throw new Error('Agent output is not valid JSON'); }
           }
-          return this.waitForScriptValue(scopeId, controller.signal, () => this.kernel.scriptControlResult(scopeId, workflowId, runId, call));
+          // A cancellation is finished only when the task's child workflows have stopped too, so it follows the whole scope.
+          return this.waitForScriptValue(call.kind === 'wait' ? watching('wait:' + call.waitId) : listener => this.kernel.onChange(scopeId, listener),
+            controller.signal, () => this.kernel.scriptControlResult(scopeId, workflowId, runId, call));
         },
         workspace: input => this.kernel.scriptWorkspace(scopeId, workflowId, runId, input, controller.signal),
         progress: (kind, text) => this.kernel.scriptProgress(scopeId, workflowId, runId, kind, text),
@@ -189,7 +223,7 @@ export class WorkflowRuntime {
     }
   }
 
-  private waitForScriptValue<T>(scopeId: string, signal: AbortSignal, read: () => T | undefined): Promise<T> {
+  private waitForScriptValue<T>(subscribe: (listener: () => void) => () => void, signal: AbortSignal, read: () => T | undefined): Promise<T> {
     return new Promise((resolve, reject) => {
       const cleanup = () => { stop(); signal.removeEventListener('abort', check); };
       const check = () => {
@@ -199,7 +233,7 @@ export class WorkflowRuntime {
           if (text !== undefined) { cleanup(); resolve(text); }
         } catch (error) { cleanup(); reject(error); }
       };
-      const stop = this.kernel.onChange(scopeId, check);
+      const stop = subscribe(check);
       signal.addEventListener('abort', check, { once: true });
       check();
     });
@@ -294,7 +328,7 @@ export class WorkflowRuntime {
             yieldTimer.unref();
           }
         };
-        const stopWatching=this.kernel.onChange(workflow.root.scopeId,yieldIfWaiting);
+        const stopWatching=this.kernel.watch(workflow.workflowId,['task:'+task.taskId],yieldIfWaiting);
         yieldIfWaiting();
         try {
           request.onRun(active.runId);

@@ -1,10 +1,11 @@
+import { readArtifact } from './kernel-state';
 import { boundedInteger, scriptArgs, scriptText } from './script-contract';
-import type { WorkflowDefinition, WorkflowState, WorkflowTask } from './types';
+import type { Immutable, TaskView, WorkflowDefinition, WorkflowView } from './types';
 
 export const MAX_WORKFLOW_DEPTH = 3;
 export const MAX_CHILD_WORKFLOWS = 32;
 
-export function nestedInput(args: Record<string, unknown>, definition: WorkflowDefinition) {
+export function nestedInput(args: Record<string, unknown>, definition: Immutable<WorkflowDefinition>) {
   if (Object.keys(args).some(key => !['operationId','key','goal','script','plan','args','name','execution','maxAgents','maxConcurrent','timeoutMs','checkpoint','parentQueue'].includes(key))) {
     throw new Error('Unsupported run_workflow option');
   }
@@ -20,9 +21,9 @@ export function nestedInput(args: Record<string, unknown>, definition: WorkflowD
     timeoutMs:boundedInteger(args.timeoutMs,(definition.defaultWallTimeMinutes ?? 30)*60_000,1000,definition.maxWallTimeMinutes*60_000),checkpoint,parentQueue:args.parentQueue===true};
 }
 
-export function nestedResponse(child: WorkflowState): unknown {
+export function nestedResponse(child: WorkflowView): unknown {
   if (child.script?.status === 'result_ready') {
-    const result = child.artifacts.find(artifact => artifact.ref === child.script!.resultRef)!;
+    const result = readArtifact(child, child.script.resultRef!);
     return {workflowId:child.workflowId,key:child.parent!.key,status:'completed',ok:true,result:JSON.parse(result.text),resultRef:result.ref};
   }
   if (child.script?.status === 'failed' || child.status === 'cancelled') {
@@ -32,7 +33,7 @@ export function nestedResponse(child: WorkflowState): unknown {
     action:'End this agent turn now. The bridge will run the child and resume this same conversation with its result. Do not poll or block the shell.'};
 }
 
-export function nestedContext(children: WorkflowState[], task: WorkflowTask): unknown {
+export function nestedContext(children: readonly WorkflowView[], task: TaskView): unknown {
   const calls = children.filter(child => child.parent?.taskId === task.taskId);
   const current = calls.find(child => child.workflowId === (task.waitingWorkflowId ?? task.resumeWorkflowId));
   return {calls:calls.map(child=>({workflowId:child.workflowId,key:child.parent!.key,status:child.script?.status,resultRef:child.script?.resultRef})),

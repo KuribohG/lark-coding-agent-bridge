@@ -7,11 +7,14 @@ import { nestedContext } from './nested-workflow';
 import { completeMemberTurn, memberContext, taskAgent } from './durable-agents';
 import { SCRIPT_MAX_TASKS } from './script-contract';
 import { checkJsonOutput } from './json-output';
-import { addArtifact, BUSY, findTask, MAX_TEXT, readArtifact, requireState, sameRoot } from './kernel-state';
+import { addArtifact, BUSY, findTask, MAX_TEXT, readArtifact, requireState, sameRoot, taskById } from './kernel-state';
+import { emit } from './kernel-store';
 import type { KernelContext } from './kernel-context';
-import type { WorkflowArtifact, WorkflowState, WorkflowStopReason, WorkflowTask, WorkflowWorkerResult } from './types';
+import type { StoredTask, TaskView, WorkflowArtifact, WorkflowStopReason, WorkflowView, WorkflowWorkerResult } from './types';
 
 const HEARTBEAT_MS = 5_000;
+/** How long a root check by tick() lets admitReady() start work for that scope; one tick interval. */
+const ROOT_FRESH_MS = 500;
 
 /** Drives worker turns: deadlines, claim leases, admission under concurrency limits, attempt bookkeeping and main-agent wake-ups. */
 export class WorkflowScheduler {
@@ -19,6 +22,8 @@ export class WorkflowScheduler {
   private pumping = false;
   private heartbeatAt = 0;
   private readonly waking = new Set<string>();
+  /** When tick() last found each scope's root authorization unchanged, on the wall clock. */
+  private readonly verified = new Map<string, number>();
 
   constructor(private readonly ctx: KernelContext) {}
 
@@ -34,26 +39,58 @@ export class WorkflowScheduler {
     await Promise.allSettled([...this.running.values()].map(run => run.done));
   }
 
-  expireClaims(state: WorkflowState): void {
-    const expired = expireWorkClaims(state, this.ctx.now());
-    if (!expired.length) return;
-    for (const claim of expired) {
-      const task = state.tasks.find(task => task.taskId === claim.taskId);
+  expireClaims(state: WorkflowView): void {
+    for (const claim of expireWorkClaims(state, this.ctx.now())) {
+      const task = taskById(state, claim.taskId);
       if (task && task.attempts.at(-1)?.attemptId === claim.attemptId && BUSY.has(task.status)) {
-        task.error = 'Work claim lease expired; saved work progress is available to another member';
-        this.cancelTask(task, state);
+        this.cancelTask(task, state, 'Work claim lease expired; saved work progress is available to another member');
       }
     }
-    this.ctx.store.save(state);
   }
 
-  cancelTask(task: WorkflowTask, state: WorkflowState): void {
+  cancelTask(task: TaskView, state: WorkflowView, error?: string): void {
     releaseWorkClaims(state, this.ctx.now(), 'Member execution cancelled', task.taskId);
     const active = this.running.get(task.taskId);
-    task.status = active ? 'cancelling' : 'cancelled';
+    emit(state, { type: 'task_cancelled', taskId: task.taskId, ...(active ? { pending: true } : {}), ...(error ? { error } : {}) });
     active?.controller.abort(new WorkflowStopped('cancelled'));
   }
 
+  /**
+   * Admission between ticks, for the runtime to run after commits: starts what a commit made runnable without asking
+   * the host anything, so a finished turn frees its slot for the next one at once. Authorization stays with tick():
+   * a workflow whose root tick() has not checked within the last tick interval is skipped, and the return value
+   * tells the caller to run a tick now. Deadlines and leases are also left to tick(). Notices raised by the commit
+   * wake the main agent here as well.
+   */
+  admitReady(): boolean {
+    const { ctx } = this;
+    if (ctx.closed) return false;
+    let stale = false;
+    for (const state of ctx.store.list().sort((a,b)=>(b.parent?.depth ?? 0)-(a.parent?.depth ?? 0))) {
+      if (state.status !== 'active' || ctx.now() >= state.deadlineAt) continue;
+      if (state.parent && !ctx.children.executionAllowed(state)) continue;
+      if (Date.now() - (this.verified.get(state.root.scopeId) ?? -Infinity) > ROOT_FRESH_MS) { stale = true; continue; }
+      this.admit(state);
+      this.wake(state);
+    }
+    return stale;
+  }
+
+  /** Hands the main agent the notices it has not been woken for yet. */
+  private wake(state: WorkflowView): void {
+    const { ctx } = this;
+    const scope = state.root.scopeId;
+    if (state.parent || this.waking.has(scope) || !ctx.lifecycle.hasWake(scope)) return;
+    this.waking.add(scope);
+    void ctx.host.wakeMain(scope).catch(error => ctx.log.warn('wake-failed', { error: String(error) }))
+      .finally(() => this.waking.delete(scope));
+  }
+
+  /**
+   * One full scheduling pass over the unfinished workflows, all of which are in memory: root authorization,
+   * time-based transitions (deadlines, claim leases, wait timers) and admission. The runtime runs it on a short
+   * interval; admitReady() covers the time in between.
+   */
   async tick(): Promise<void> {
     const { ctx } = this;
     const { store } = ctx;
@@ -64,79 +101,95 @@ export class WorkflowScheduler {
         this.heartbeatAt = ctx.now();
         store.writeHeartbeat(this.heartbeatAt);
       }
-      for (const snapshot of store.list().sort((a,b)=>(b.parent?.depth ?? 0)-(a.parent?.depth ?? 0))) {
-        if (!['active', 'paused'].includes(snapshot.status)) continue;
-        const root = await ctx.host.resolveRoot(snapshot.root.scopeId);
+      const unfinished = store.list().filter(state => ['active', 'paused'].includes(state.status))
+        .sort((a,b)=>(b.parent?.depth ?? 0)-(a.parent?.depth ?? 0)).map(state => ({ workflowId: state.workflowId, scope: state.root.scopeId }));
+      for (const { workflowId, scope } of unfinished) {
+        const root = await ctx.host.resolveRoot(scope);
         if (ctx.closed) return;
-        const state = store.state(snapshot.root.scopeId, snapshot.workflowId)!;
-        if (!['active', 'paused'].includes(state.status)) continue;
+        const state = store.state(scope, workflowId);
+        if (!state || !['active', 'paused'].includes(state.status)) continue;
         if (state.parent && !ctx.children.executionAllowed(state)) continue;
-        this.expireClaims(state);
-        if (!root || !sameRoot(root, state.root)) { ctx.lifecycle.invalidate(state.root.scopeId); continue; }
+        store.transact(() => this.expireClaims(state), 'scheduler');
+        if (!root || !sameRoot(root, state.root)) { this.verified.delete(scope); ctx.lifecycle.invalidate(scope); continue; }
+        this.verified.set(scope, Date.now());
         if (ctx.now() >= state.deadlineAt && state.status === 'active') {
           if (state.parent) {
-            state.script!.status='running';store.save(state);
-            ctx.scripts.finishScript(state.root.scopeId,state.workflowId,state.script!.runId,{error:'Child workflow deadline reached'});
+            if (state.script!.status !== 'running') store.transact(() => emit(state, { type: 'script_started' }), 'scheduler');
+            ctx.scripts.finishScript(scope,workflowId,state.script!.runId,{error:'Child workflow deadline reached'});
             continue;
           }
           // The budget cannot be extended, so fail the run instead of pausing it: the main agent can still
           // report partial results via complete, and the topic is not left bound to an unresumable workflow.
           if (state.script && ['queued', 'running'].includes(state.script.status)) {
-            cancelWork(state, ctx.now());
-            state.script.status = 'running'; store.save(state);
-            ctx.scripts.finishScript(state.root.scopeId, state.workflowId, state.script.runId, { error: 'Workflow deadline reached' });
+            store.transact(() => {
+              cancelWork(state, ctx.now());
+              if (state.script!.status !== 'running') emit(state, { type: 'script_started' });
+            }, 'scheduler');
+            ctx.scripts.finishScript(scope, workflowId, state.script.runId, { error: 'Workflow deadline reached' });
             continue;
           }
           const busy = state.tasks.filter(task => BUSY.has(task.status) || task.status === 'waiting_workflow');
-          for (const task of busy) this.cancelTask(task, state);
-          if (busy.length) store.save(state);
+          if (busy.length) store.transact(() => { for (const task of busy) this.cancelTask(task, state); }, 'scheduler');
           continue;
         }
         if (state.status === 'active') this.admit(state);
-        if (!state.parent && ctx.lifecycle.hasWake(state.root.scopeId) && !this.waking.has(state.root.scopeId)) {
-          const scope = state.root.scopeId;
-          this.waking.add(scope);
-          void ctx.host.wakeMain(scope).catch(error => ctx.log.warn('wake-failed', { error: String(error) }))
-            .finally(() => this.waking.delete(scope));
-        }
+        this.wake(state);
       }
+      const scopes = new Set(unfinished.map(item => item.scope));
+      for (const scope of this.verified.keys()) if (!scopes.has(scope)) this.verified.delete(scope);
     } finally { this.pumping = false; }
   }
 
   /** Starts queued turns of one active workflow within its own and its tree's limits. */
-  private admit(state: WorkflowState): void {
+  private admit(state: WorkflowView): void {
     const { ctx } = this;
     const { store } = ctx;
-    if (settleEventWaits(state, ctx.now())) store.save(state);
-    if (pumpConsumerPool(state,kind=>ctx.nativeIdKind(kind),ctx.children.remainingTreeTasks(state))) store.save(state);
-    let active = state.tasks.filter(task => this.running.has(task.taskId)).length;
-    for (const task of state.tasks) {
-      if (task.status !== 'queued' || active >= state.definition.maxConcurrentWorkers) continue;
-      if (task.waitingWorkflowId) {
-        const child=store.state(state.root.scopeId,task.waitingWorkflowId);
-        if (child && !['completed','cancelled'].includes(child.status)) {
-          task.status='waiting_workflow';store.save(state);continue;
+    const scope = state.root.scopeId;
+    const started = new Map<string, string>();
+    try {
+      store.transact(() => {
+        settleEventWaits(state, ctx.now());
+        pumpConsumerPool(state,kind=>ctx.nativeIdKind(kind),ctx.children.remainingTreeTasks(state));
+        let active = state.tasks.filter(task => this.running.has(task.taskId)).length;
+        for (const task of state.tasks) {
+          if (task.status !== 'queued' || active >= state.definition.maxConcurrentWorkers) continue;
+          if (task.waitingWorkflowId) {
+            const child=store.state(scope,task.waitingWorkflowId);
+            if (child && !['completed','cancelled'].includes(child.status)) {
+              emit(state, { type: 'task_child_awaited', taskId: task.taskId });continue;
+            }
+            emit(state, { type: 'task_child_finished', taskId: task.taskId });
+          }
+          const tree=store.tree(state);
+          const treeRoot=tree.find(item=>!item.parent) ?? state;
+          if (tree.reduce((count,item)=>count+item.tasks.filter(task=>this.running.has(task.taskId)).length,0)>=treeRoot.definition.maxConcurrentWorkers) continue;
+          if (tree.reduce((count, item) => count + item.tasks.reduce((total,task)=>total+task.attempts.length,0), 0) >= SCRIPT_MAX_TASKS) {
+            emit(state, { type: 'task_failed', taskId: task.taskId, error: 'Workflow attempt limit reached' }); continue;
+          }
+          const attemptId = randomUUID();
+          const agent = taskAgent(state, task);
+          const session = state.sessions.find(item => item.sessionRef === task.sessionRef)!;
+          emit(state, { type: 'attempt_started', taskId: task.taskId,
+            attempt: { attemptId, startedAt: ctx.now(), checkpointVersion: agent?.checkpointVersion, sessionGeneration: session.generation } });
+          const controller = new AbortController();
+          const { taskId } = task;
+          // Register before asynchronous execution can produce an event or a cancellation. The turn itself starts
+          // in a later microtask, after this transaction has committed the attempt.
+          const done = Promise.resolve().then(() => this.execute(state.workflowId, scope, taskId, attemptId, controller.signal));
+          this.running.set(taskId, { controller, done });
+          void done.finally(() => this.running.delete(taskId)).catch(error => ctx.log.warn('worker-failed', { error: String(error) }));
+          started.set(taskId, attemptId);
+          active++;
         }
-        task.resumeWorkflowId=task.waitingWorkflowId;task.waitingWorkflowId=undefined;task.yieldRequestedAt=undefined;
+      }, 'scheduler');
+    } catch (error) {
+      // Unless the commit went through after all, the attempts were not recorded and their turns will find nothing
+      // to run; drop those from the concurrency count now.
+      const current = store.state(scope, state.workflowId);
+      for (const [taskId, attemptId] of started) {
+        if ((current && taskById(current, taskId))?.attempts.at(-1)?.attemptId !== attemptId) this.running.delete(taskId);
       }
-      const tree=store.tree(state);
-      const treeRoot=tree.find(item=>!item.parent) ?? state;
-      if (tree.reduce((count,item)=>count+item.tasks.filter(task=>this.running.has(task.taskId)).length,0)>=treeRoot.definition.maxConcurrentWorkers) continue;
-      if (tree.reduce((count, item) => count + item.tasks.reduce((total,task)=>total+task.attempts.length,0), 0) >= SCRIPT_MAX_TASKS) {
-        task.status = 'failed'; task.error = 'Workflow attempt limit reached'; store.save(state); continue;
-      }
-      task.status = 'starting';
-      const attemptId = randomUUID();
-      const agent = taskAgent(state, task);
-      const session = state.sessions.find(item => item.sessionRef === task.sessionRef)!;
-      task.attempts.push({ attemptId, startedAt: ctx.now(), checkpointVersion: agent?.checkpointVersion, sessionGeneration: session.generation });
-      const controller = new AbortController();
-      store.save(state);
-      // Register before asynchronous execution can produce an event or a cancellation.
-      const done = Promise.resolve().then(() => this.execute(state.workflowId, state.root.scopeId, task.taskId, attemptId, controller.signal));
-      this.running.set(task.taskId, { controller, done });
-      void done.finally(() => this.running.delete(task.taskId)).catch(error => ctx.log.warn('worker-failed', { error: String(error) }));
-      active++;
+      throw error;
     }
   }
 
@@ -145,86 +198,86 @@ export class WorkflowScheduler {
     const { store } = ctx;
     let result: WorkflowWorkerResult;
     try {
-      const workflow = requireState(store.state(scopeId, workflowId));
-      const task = findTask(workflow, taskId);
+      const live = requireState(store.state(scopeId, workflowId));
+      const turn = findTask(live, taskId);
+      if (turn.attempts.at(-1)?.attemptId !== attemptId) return;
+      // The host keeps what it is handed for the whole turn, so it gets a copy rather than the live state.
+      const workflow = store.public(live);
+      const task = workflow.tasks.find(item => item.taskId === taskId)!;
       const session = workflow.sessions.find(item => item.sessionRef === task.sessionRef)!;
       const role = workflow.definition.roles[session.role]!;
-      const inputs = task.inputRefs.map(ref => readArtifact(workflow, ref));
+      const inputs = task.inputRefs.map(ref => readArtifact(live, ref));
       const prompt = [role.instructions,
         task.workflowTool ? '只执行指定任务，遵守原始需求的授权范围。可通过注入的子 workflow 工具委派；不要发外部消息。请求子 workflow 后结束本轮让出执行资源，bridge 会在结果就绪时恢复同一会话。' : task.agentId ? '只执行指定任务，遵守原始需求的授权范围。可保存 checkpoint 或发送工作流内部消息；不要发外部消息或再委派子 agent。结果以最终答复返回脚本。' : '只执行指定任务，遵守原始需求的授权范围。不要自行发消息或再委派子 agent。结果以最终答复返回脚本。',
         `需求：\n${workflow.goal}`, `任务：\n${task.objective}`, ...(inputs.length ? [inputArtifactsPrompt(inputs)] : [])].join('\n\n');
-      const recovery = memberContext(workflow, task);
+      const recovery = memberContext(live, turn);
       let memberPrompt = recovery ? prompt + '\n\n持久成员上下文（只处理本轮输入；检查已发生的副作用，避免重复执行）：\n'
-        + JSON.stringify(recovery) + (workflow.workQueue ? '\n\n工作队列：\n' + JSON.stringify(workContext(workflow, task)) : '') : prompt;
-      if (task.workflowTool) memberPrompt+='\n\n子 workflow 调用与恢复上下文：\n'+JSON.stringify(nestedContext(store.descendants(workflow,taskId),task));
+        + JSON.stringify(recovery) + (live.workQueue ? '\n\n工作队列：\n' + JSON.stringify(workContext(live, turn)) : '') : prompt;
+      if (task.workflowTool) memberPrompt+='\n\n子 workflow 调用与恢复上下文：\n'+JSON.stringify(nestedContext(store.descendants(live,taskId),turn));
       signal.throwIfAborted();
       result = await ctx.host.execute({ workflow, task, session, attemptId, prompt: memberPrompt, signal,
         onRun: runId => this.updateAttempt(scopeId, workflowId, taskId, attemptId, state => {
-          const current = findTask(state, taskId);
-          const attempt = current.attempts.at(-1)!;
-          attempt.runId = runId;
-          attempt.spawnedAt ??= ctx.now();
-          current.status = 'running';
+          emit(state, { type: 'attempt_spawned', taskId, runId, at: ctx.now() });
         }),
         onAdmitted: () => this.updateAttempt(scopeId, workflowId, taskId, attemptId, state => {
           const attempt = findTask(state, taskId).attempts.at(-1)!;
-          attempt.admittedAt ??= ctx.now();
-          ctx.log.info('worker-admitted', { workflowId, taskId, attemptId, queueWaitMs: attempt.admittedAt - attempt.startedAt });
+          if (attempt.admittedAt === undefined) emit(state, { type: 'attempt_admitted', taskId, at: ctx.now() });
+          ctx.log.info('worker-admitted', { workflowId, taskId, attemptId, queueWaitMs: attempt.admittedAt! - attempt.startedAt });
         }),
         onSession: (nativeId, model) => this.updateAttempt(scopeId, workflowId, taskId, attemptId, state => {
           const binding = state.sessions.find(item => item.sessionRef === session.sessionRef)!;
           if (binding.nativeSessionId && binding.nativeSessionId !== nativeId) throw new Error('Backend replaced the native worker session');
-          binding.nativeSessionId = nativeId;
-          if (model) binding.observedModel = model;
-          findTask(state, taskId).attempts.at(-1)!.sessionAt ??= ctx.now();
+          emit(state, { type: 'session_bound', sessionRef: binding.sessionRef, taskId, nativeSessionId: nativeId, ...(model ? { model } : {}), at: ctx.now() });
         }),
       });
     } catch (error) { result = { status: 'failed', error: String(error) }; }
     const state = requireState(store.state(scopeId, workflowId));
     const task = findTask(state, taskId);
     if (task.attempts.at(-1)?.attemptId !== attemptId) return;
-    releaseWorkClaims(state, ctx.now(), 'Member turn ended without completing its claim', taskId, attemptId);
-    if ((task.agentId || task.workflowTool) && result.status === 'completed' && !state.sessions.find(session => session.sessionRef === task.sessionRef)?.nativeSessionId) {
-      result = { status: 'failed', error: 'Member completed without a native session ID; cannot safely continue its conversation' };
-    }
-    if (!task.waitingWorkflowId && task.scriptOutput === 'json' && result.status === 'completed') {
-      const checked = checkJsonOutput(result.text ?? '', task.scriptSchema, ctx.host.repairJson?.bind(ctx.host));
-      result = 'problem' in checked ? { status: 'failed', error: checked.problem.slice(0, 2000) } : { ...result, text: checked.text };
-    }
-    task.attempts.at(-1)!.endedAt = ctx.now();
-    task.attempts.at(-1)!.result = result.status;
-    const stopReason = result.stopReason ?? (signal.aborted ? stopReasonOf(signal) : undefined);
-    task.attempts.at(-1)!.stopReason = stopReason;
-    if (stopReason === 'shutdown') {
-      task.status = 'interrupted';
-    } else if (signal.aborted || task.status === 'cancelling' || state.status === 'cancelled' || state.status === 'binding_attention') {
-      task.status = 'cancelled';
-    } else if (task.waitingWorkflowId && !result.question && ['completed','stopped'].includes(result.status)) {
-      task.status='waiting_workflow';task.attempts.at(-1)!.result='suspended';
-    } else if (result.question) {
-      task.status = 'waiting_input';
-      task.error = `Worker requires input: ${result.question.slice(0, 1800)}`;
-    } else if (result.status === 'completed' && result.text?.trim() && result.text.length <= MAX_TEXT) {
-      const session = state.sessions.find(item => item.sessionRef === task.sessionRef)!;
-      const artifact = addArtifact(state, state.definition.roles[session.role]!.outputKind, result.text, ctx.now, task);
-      task.resultRefs.push(artifact.ref);
-      task.status = 'result_ready';
-      completeMemberTurn(state, task, artifact.ref, ctx.now());
-    } else {
-      task.status = 'failed';
-      task.error = result.error ?? 'Worker did not produce a bounded final answer with a normal terminal result';
-    }
-    // Shutdown interrupts the caller; its already committed child must remain replayable.
-    if (stopReason !== 'shutdown' && task.waitingWorkflowId && ['failed','waiting_input','cancelled'].includes(task.status) && state.status==='active') ctx.children.suspendChildren(state,true,taskId);
-    store.save(state);
+    store.transact(() => {
+      releaseWorkClaims(state, ctx.now(), 'Member turn ended without completing its claim', taskId, attemptId);
+      if ((task.agentId || task.workflowTool) && result.status === 'completed' && !state.sessions.find(session => session.sessionRef === task.sessionRef)?.nativeSessionId) {
+        result = { status: 'failed', error: 'Member completed without a native session ID; cannot safely continue its conversation' };
+      }
+      if (!task.waitingWorkflowId && task.scriptOutput === 'json' && result.status === 'completed') {
+        const checked = checkJsonOutput(result.text ?? '', task.scriptSchema as Record<string, unknown> | undefined, ctx.host.repairJson?.bind(ctx.host));
+        result = 'problem' in checked ? { status: 'failed', error: checked.problem.slice(0, 2000) } : { ...result, text: checked.text };
+      }
+      const stopReason = result.stopReason ?? (signal.aborted ? stopReasonOf(signal) : undefined);
+      let outcome: string = result.status;
+      let status: StoredTask['status'];
+      let error: string | undefined;
+      let resultRef: string | undefined;
+      if (stopReason === 'shutdown') {
+        status = 'interrupted';
+      } else if (signal.aborted || task.status === 'cancelling' || state.status === 'cancelled' || state.status === 'binding_attention') {
+        status = 'cancelled';
+      } else if (task.waitingWorkflowId && !result.question && ['completed','stopped'].includes(result.status)) {
+        status = 'waiting_workflow'; outcome = 'suspended';
+      } else if (result.question) {
+        status = 'waiting_input';
+        error = `Worker requires input: ${result.question.slice(0, 1800)}`;
+      } else if (result.status === 'completed' && result.text?.trim() && result.text.length <= MAX_TEXT) {
+        const session = state.sessions.find(item => item.sessionRef === task.sessionRef)!;
+        resultRef = addArtifact(state, state.definition.roles[session.role]!.outputKind, result.text, ctx.now, task).ref;
+        status = 'result_ready';
+      } else {
+        status = 'failed';
+        error = result.error ?? 'Worker did not produce a bounded final answer with a normal terminal result';
+      }
+      emit(state, { type: 'attempt_ended', taskId, at: ctx.now(), result: outcome, ...(stopReason ? { stopReason } : {}), status,
+        ...(error !== undefined ? { error } : {}), ...(resultRef ? { resultRef } : {}) });
+      if (resultRef) completeMemberTurn(state, task, resultRef, ctx.now());
+      // Shutdown interrupts the caller; its already committed child must remain replayable.
+      if (stopReason !== 'shutdown' && task.waitingWorkflowId && ['failed','waiting_input','cancelled'].includes(task.status) && state.status==='active') ctx.children.suspendChildren(state,true,taskId);
+    }, 'worker:' + taskId);
   }
 
-  private updateAttempt(scope: string, workflowId: string, taskId: string, attemptId: string, update: (state: WorkflowState) => void): void {
+  private updateAttempt(scope: string, workflowId: string, taskId: string, attemptId: string, update: (state: WorkflowView) => void): void {
     const state = requireState(this.ctx.store.state(scope, workflowId));
     const task = findTask(state, taskId);
     if (!['starting', 'running'].includes(task.status) || task.attempts.at(-1)?.attemptId !== attemptId) return;
-    update(state);
-    this.ctx.store.save(state);
+    this.ctx.store.transact(() => update(state), 'worker:' + taskId);
   }
 }
 

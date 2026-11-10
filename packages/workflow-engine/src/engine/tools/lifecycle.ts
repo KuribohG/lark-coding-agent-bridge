@@ -7,12 +7,13 @@ import { boundedInteger, scriptArgs, scriptText, SCRIPT_DEFINITION, SCRIPT_MAX_T
 import { unfinishedWork, workStatus } from '../work-queue';
 import { consumerPools } from '../work-routing';
 import type { KernelContext } from '../kernel-context';
-import type { WorkflowState } from '../types';
+import { emit } from '../kernel-store';
+import type { WorkflowView } from '../types';
 import type { WorkflowToolPlugin } from './types';
 import { versioned } from './versioned';
 
 /** The main agent's view of a workflow, returned by `status` and embedded in its turn context. */
-export function workflowSummary(ctx: KernelContext, state: WorkflowState): unknown {
+export function workflowSummary(ctx: KernelContext, state: WorkflowView): unknown {
   return {
     workflowId: state.workflowId, plugin: { id: state.definition.id, version: state.definition.version, digest: state.definitionDigest },
     stateVersion: state.stateVersion, status: state.status, goalRef: state.artifacts[0]?.ref,
@@ -39,7 +40,7 @@ export function workflowSummary(ctx: KernelContext, state: WorkflowState): unkno
     } : undefined,
     tasks: state.tasks.map(({ taskId, taskKey, sessionRef, status, resultRefs, error, attempts, scriptKey, agentId, previousTurnId, inputCheckpointVersion, inputMessageIds }) =>
       ({ taskId, taskKey, sessionRef, status, resultRefs, error, scriptKey, attempts, agentId, previousTurnId, inputCheckpointVersion, inputMessageIds })),
-    artifacts: state.artifacts.map(({ text: _text, ...artifact }) => artifact),
+    artifacts: state.artifacts.map(({ chars: _chars, ...artifact }) => artifact),
     events: state.events.filter(event => !event.acknowledged),
     ...(state.script ? { script: { ...state.script, args: undefined, argsDigest: workflowDigest(state.script.args) } } : {}),
     executionAccess: 'same authorized profile; worker instructions are not a sandbox',
@@ -65,18 +66,18 @@ export const lifecycleTools: WorkflowToolPlugin = {
           definition.defaultWallTimeMinutes = definition.maxWallTimeMinutes;
           const timeoutMs = definition.maxWallTimeMinutes * 60_000;
           const goal = requiredText(args.goal);
-          const created: WorkflowState = {
+          const created = ctx.store.create({
             workflowId: randomUUID(), root, definition, definitionDigest: workflowDigest(definition), goal,
             stateVersion: 0, status: 'active', createdAt: ctx.now(),
             deadlineAt: ctx.now() + boundedInteger(args.timeoutMs, timeoutMs, 1000, timeoutMs),
             sessions: [], tasks: [], artifacts: [], events: [],
-          };
+          });
           addArtifact(created, 'requirements', goal, ctx.now);
           const source = addArtifact(created, 'workflow-script', scriptText(args.script, 'script'), ctx.now);
           const plan = addArtifact(created, 'workflow-plan', scriptText(args.plan, 'plan', 12_000), ctx.now);
-          created.script = { name: scriptText(args.name ?? 'Script workflow', 'name', 100), sourceRef: source.ref, planRef: plan.ref,
+          emit(created, { type: 'script_set', script: { name: scriptText(args.name ?? 'Script workflow', 'name', 100), sourceRef: source.ref, planRef: plan.ref,
             args: scriptArgs(args.args), defaults: workerSelection(args.execution, root, ctx.host), runId: randomUUID(), revision: 0,
-            status: 'queued', maxCalls: boundedInteger(args.maxAgents, 32, 1, SCRIPT_MAX_TASKS), calls: [], logs: [] };
+            status: 'queued', maxCalls: boundedInteger(args.maxAgents, 32, 1, SCRIPT_MAX_TASKS), calls: [], logs: [] } });
           return created;
         },
       },
@@ -85,11 +86,11 @@ export const lifecycleTools: WorkflowToolPlugin = {
       name: 'replay_script',
       main: {
         kind: 'mutate', doc: 'replay_script(script?,plan?,args?,execution?)', resumesClock: true, allowInterrupted: true,
-        // Root and descendant replay must commit together.
-        apply: (ctx, state, args, commit) => ctx.store.transaction(() => {
+        // Root and descendant replay commit together, in the operation's transaction.
+        apply: (ctx, state, args, commit) => {
           ctx.recovery.replayScript(state, args);
           return commit(() => ({ stateVersion: state.stateVersion, status: state.status }));
-        }),
+        },
       },
     },
     {
@@ -98,7 +99,7 @@ export const lifecycleTools: WorkflowToolPlugin = {
         doc: 'ack_events(eventIds)', ...versioned((ctx, state, args) => {
           const ids = textArray(args.eventIds);
           if (ids.some(id => !state.events.some(event => event.id === id))) throw new Error('Unknown event ID');
-          for (const event of state.events) if (ids.includes(event.id)) acknowledge(event, ctx.now());
+          acknowledge(state, state.events.filter(event => ids.includes(event.id)), ctx.now());
           return { acknowledged: ids };
         }, { allowAfterDeadline: true }),
       },
@@ -127,10 +128,8 @@ export const lifecycleTools: WorkflowToolPlugin = {
         kind: 'mutate', doc: 'resume', resumesClock: true, allowInterrupted: true,
         apply: (ctx, state, args, commit) => {
           if (state.script.status !== 'paused' && state.status !== 'interrupted') throw new Error('Use replay_script to relaunch a completed or failed script');
-          return ctx.store.transaction(() => {
-            ctx.recovery.replayScript(state, args);
-            return commit(() => ({ stateVersion: state.stateVersion, status: state.status }));
-          });
+          ctx.recovery.replayScript(state, args);
+          return commit(() => ({ stateVersion: state.stateVersion, status: state.status }));
         },
       },
     },
@@ -158,7 +157,7 @@ export const lifecycleTools: WorkflowToolPlugin = {
           if (!['report', 'workflow-result'].includes(report.kind)) throw new Error('Completion requires a report or script result artifact');
           // A successful worker answer does not establish verification coverage.
           const response = { reportRef: report.ref, openIssues: textArray(args.openIssues), verificationLimits: requiredText(args.verificationLimits) };
-          state.status = 'completed';
+          emit(state, { type: 'workflow_completed' });
           return response;
         }, { allowAfterDeadline: true }),
       },

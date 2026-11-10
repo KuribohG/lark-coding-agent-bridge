@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkflowKernel } from '../src/engine/kernel';
+import { replaceWorkflowState } from '../src/engine/kernel-store';
 import { handleWorkflowCommand } from '../src/chat/commands';
 import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult, WorkflowWorkItem } from '../src/engine/types';
 
@@ -175,10 +175,8 @@ describe('workflow work queue', () => {
     await h.create('A'); await h.run(1); const grant = (await h.claim(h.requests[0]!))!;
     await h.send(h.requests[0]!, 'checkpoint_work', { ...token(grant), expectedProgressVersion: 0, state: 'durable' });
     const snapshot = h.state();
-    const path = join(directory, 'snapshot.sqlite'); const db = new Database(path);
-    db.exec('CREATE TABLE workflows (id TEXT PRIMARY KEY, scope TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL)');
-    db.prepare('INSERT INTO workflows VALUES (?, ?, ?, ?)').run(snapshot.workflowId, 'queue-test', snapshot.status, JSON.stringify(snapshot));
-    db.close();
+    const path = join(directory, 'snapshot.sqlite');
+    replaceWorkflowState(path, snapshot);
     const restored = harness(path);
     expect(restored.state().status).toBe('interrupted');
     expect(restored.state().workQueue!.items[0]).toMatchObject({ status: 'pending', progress: { version: 1, state: 'durable' } });

@@ -1,16 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import { workflowDigest } from './digest';
 import { availableMessages, receiveMessages, scheduleMemberTurn } from './durable-agents';
+import type { DomainEvent } from './events';
+import { taskById } from './kernel-state';
+import { emit, readText } from './kernel-store';
 import { boundedInteger, parseScriptAgentCall, scriptText } from './script-contract';
-import { availableWork, unfinishedWork, workStatus } from './work-queue';
+import { availableWork, openQueue, unfinishedWork, workStatus } from './work-queue';
 import { consumerPools, memberPool, queueControl, queueName } from './work-routing';
-import type { NativeIdKind, WorkConsumerPool, WorkerExecution, WorkerExecutionPolicy, WorkflowState, WorkflowTask } from './types';
+import type { NativeIdKind, PoolView, WorkConsumerPool, WorkerExecution, WorkerExecutionPolicy, WorkflowTask, WorkflowView } from './types';
 
 const BUSY = new Set<WorkflowTask['status']>(['queued', 'starting', 'running', 'cancelling', 'waiting_workflow']);
 const CONSUMER_PROMPT = '\nUse claim_work to consume authorized work. Read item.progress before acting, save checkpoint_work, renew long-running claims, then complete_work or fail_work. Continue until claim_work returns null. Then return a final answer immediately to release your process; the bridge will schedule a new turn when work becomes available. Do not poll or sleep waiting for work. Follow the original goal and declared resource ownership.';
 const FEEDBACK_PROMPT = '\nFirst read the delivered member-context messages and act on relevant feedback within the original task scope. They may be the only reason for this turn. Then consume any available work. Do not send acknowledgement-only replies that create message loops; send a message only when you have useful new evidence or need a concrete action. Feedback does not authorize editing resources outside a valid work claim.';
 
-export function parseConsumerPool(input: Record<string, unknown>, state: WorkflowState, policy?: WorkerExecutionPolicy) {
+export function parseConsumerPool(input: Record<string, unknown>, state: WorkflowView, policy?: WorkerExecutionPolicy) {
   if (Object.keys(input).some(key => !['key', 'members', 'prompt', 'maxTurns', 'queue', 'maxConcurrent', 'wakeOnMessages'].includes(key))) throw new Error('Unsupported consumeWork option');
   const key = scriptText(input.key, 'consumer pool key', 100);
   if (key.trim() !== key) throw new Error('Consumer pool key must not contain surrounding whitespace');
@@ -31,7 +34,7 @@ export function parseConsumerPool(input: Record<string, unknown>, state: Workflo
 }
 
 /** Called after resolving and validating every member's current authorized execution binding. */
-export function bindConsumerPool(state: WorkflowState, spec: ReturnType<typeof parseConsumerPool>, executions: WorkerExecution[]): void {
+export function bindConsumerPool(state: WorkflowView, spec: ReturnType<typeof parseConsumerPool>, executions: WorkerExecution[]): void {
   const digest = workflowDigest({ spec, executions });
   let pool = consumerPools(state).find(pool => pool.key === spec.key);
   if (pool) {
@@ -43,40 +46,36 @@ export function bindConsumerPool(state: WorkflowState, spec: ReturnType<typeof p
     const names = new Set([...(state.agents ?? []).map(agent => agent.key), ...consumerPools(state).flatMap(pool => pool.members.map(member => member.name))]);
     if (names.size + spec.members.length > 32) throw new Error('Consumer member limit reached');
     if (state.agents?.some(agent => spec.members.some(member => member.member === agent.key))) throw new Error('Consumer pool requires dedicated member names not already used by agent()');
-    queueControl(state, spec.queue ?? 'default', true);
-    pool = { id: randomUUID(), key: spec.key, digest, runId: state.script!.runId,
+    openQueue(state, spec.queue ?? 'default');
+    const created: WorkConsumerPool = { id: randomUUID(), key: spec.key, digest, runId: state.script!.runId,
       prompt: spec.prompt, maxTurns: spec.maxTurns, status: 'waiting', turns: [],
       ...(spec.queue ? { queue: spec.queue } : {}), ...(spec.maxConcurrent !== undefined ? { maxConcurrent: spec.maxConcurrent } : {}),
       ...(spec.wakeOnMessages ? { wakeOnMessages: true } : {}),
       members: spec.members.map((member, index) => ({ name: member.member!, execution: executions[index]!, ...(member.workflowTool ? {workflowTool:true} : {}) })) };
-    if (!state.consumerPool) state.consumerPool = pool;
-    else (state.consumerPools ??= []).push(pool);
+    emit(state, { type: 'pool_created', pool: created });
+    pool = consumerPools(state).find(item => item.id === created.id)!;
   }
   // Reconstruct each member's committed predecessor chain without replaying its completed turns.
-  const completed = pool.turns.filter(turn => state.tasks.find(task => task.taskId === turn.taskId)?.status === 'result_ready');
+  const completed = pool.turns.filter(turn => taskById(state, turn.taskId)?.status === 'result_ready');
   if (state.script!.calls.length + completed.length > state.script!.maxCalls) throw new Error('Script agent call limit reached');
-  for (const turn of completed) state.script!.calls.push({key:turn.key,taskId:turn.taskId,cached:true});
-  for (const member of pool.members) {
-    const task = state.tasks.find(task => task.taskId === member.taskId);
-    member.retryPending = Boolean(task && task.status !== 'result_ready');
-    member.disabled = undefined;
-    member.lastWake = undefined;
-  }
-  pool.runId = state.script!.runId;
-  pool.status = 'waiting'; pool.reason = undefined;
-  state.workQueue ??= {items:[],claims:[],operations:[]};
+  for (const turn of completed) emit(state, { type: 'script_call_recorded', call: { key: turn.key, taskId: turn.taskId, cached: true } });
+  const retryPending = pool.members.filter(member => {
+    const task = taskById(state, member.taskId);
+    return Boolean(task && task.status !== 'result_ready');
+  }).map(member => member.name);
+  emit(state, { type: 'pool_rebound', poolId: pool.id, runId: state.script!.runId, retryPending });
 }
 
-export function consumerSummary(state: WorkflowState, key?: string): unknown {
+export function consumerSummary(state: WorkflowView, key?: string): unknown {
   const pool = key === undefined ? state.consumerPool : consumerPools(state).find(pool => pool.key === key);
   if (!pool) return undefined;
   return { key: pool.key, queue: pool.queue ?? 'default', maxConcurrent: pool.maxConcurrent, wakeOnMessages: pool.wakeOnMessages ?? false, status: pool.status, reason: pool.reason, turns: pool.turns.length, maxTurns: pool.maxTurns,
     members: pool.members.map(member => ({ name: member.name, taskId: member.taskId, retryPending: member.retryPending,
-      status: member.disabled ? 'disabled' : BUSY.has(state.tasks.find(task => task.taskId === member.taskId)?.status ?? 'result_ready') ? 'running' : pool.status === 'drained' ? 'done' : 'waiting',
+      status: member.disabled ? 'disabled' : BUSY.has(taskById(state, member.taskId)?.status ?? 'result_ready') ? 'running' : pool.status === 'drained' ? 'done' : 'waiting',
       reason: member.disabled })) };
 }
 
-export function consumerResult(state: WorkflowState, key?: string): unknown | undefined {
+export function consumerResult(state: WorkflowView, key?: string): unknown | undefined {
   const pool = key === undefined ? state.consumerPool : consumerPools(state).find(pool => pool.key === key);
   if (!pool) throw new Error('Unknown consumer pool');
   if (pool.status === 'failed') throw new Error(pool.reason ?? 'Consumer pool failed');
@@ -84,8 +83,8 @@ export function consumerResult(state: WorkflowState, key?: string): unknown | un
   return undefined;
 }
 
-/** Synchronous queue reconciliation under the kernel's single-writer state boundary. */
-export function pumpConsumerPool(state: WorkflowState, nativeIdKind: (agentKind: string) => NativeIdKind, additionalTurnsAllowed = Infinity): boolean {
+/** Synchronous queue reconciliation under the kernel's single-writer state boundary. Returns whether anything changed. */
+export function pumpConsumerPool(state: WorkflowView, nativeIdKind: (agentKind: string) => NativeIdKind, additionalTurnsAllowed = Infinity): boolean {
   let changed = false;
   for (const pool of consumerPools(state).sort((a, b) => a.turns.length - b.turns.length)) {
     const before = pool.turns.length;
@@ -95,43 +94,49 @@ export function pumpConsumerPool(state: WorkflowState, nativeIdKind: (agentKind:
   return changed;
 }
 
-function pumpPool(state: WorkflowState, pool: WorkConsumerPool, nativeIdKind: (agentKind: string) => NativeIdKind, additionalTurnsAllowed: number): boolean {
+function pumpPool(state: WorkflowView, pool: PoolView, nativeIdKind: (agentKind: string) => NativeIdKind, additionalTurnsAllowed: number): boolean {
   if (pool.runId !== state.script?.runId || state.status !== 'active' || state.script?.status !== 'running'
     || !['waiting', 'running'].includes(pool.status)) return false;
-  const before = JSON.stringify(pool);
-  const tasks = () => pool.members.map(member => state.tasks.find(task => task.taskId === member.taskId));
+  let changed = false;
+  const record = (event: DomainEvent) => { emit(state, event); changed = true; };
+  // Every pump recomputes the pool's status; only a real change becomes an event.
+  const setStatus = (status: WorkConsumerPool['status'], reason: string | undefined) => {
+    if (pool.status !== status || pool.reason !== reason) record({ type: 'pool_status_changed', poolId: pool.id, status, ...(reason !== undefined ? { reason } : {}) });
+  };
+  const tasks = () => pool.members.map(member => taskById(state, member.taskId));
   for (const member of pool.members) {
-    const task = state.tasks.find(task => task.taskId === member.taskId);
+    const task = taskById(state, member.taskId);
     if (task && !BUSY.has(task.status) && task.status !== 'result_ready' && !member.retryPending) {
-      member.disabled = task.error ?? `Consumer turn is ${task.status}; explicitly replay to retry it`;
+      const reason = task.error ?? `Consumer turn is ${task.status}; explicitly replay to retry it`;
+      if (member.disabled !== reason) record({ type: 'pool_member_disabled', poolId: pool.id, member: member.name, reason });
     }
   }
   const active = tasks().filter(task => task && BUSY.has(task.status)).length;
-  const fail = (reason: string) => { pool.status = 'failed'; pool.reason = reason; };
+  const fail = (reason: string) => setStatus('failed', reason);
   const name = pool.queue ?? 'default';
   const hasMessages = (name: string) => {
     const agent = pool.wakeOnMessages && state.agents?.find(agent => agent.key === name);
     return Boolean(agent && availableMessages(state, agent.agentId).length);
   };
   const messagesPending = pool.members.some(member => hasMessages(member.name)
-    || member.retryPending && state.tasks.find(task => task.taskId === member.taskId)?.inputMessageIds?.length);
+    || member.retryPending && taskById(state, member.taskId)?.inputMessageIds?.length);
   const items = (state.workQueue?.items ?? []).filter(item => (item.queue ?? 'default') === name);
   const failedDependency = items.find(item => item.status === 'pending' && item.dependsOn?.some(key =>
     state.workQueue?.items.some(dependency => dependency.key === key && ['failed', 'cancelled'].includes(dependency.status))));
   if (items.some(item => item.status === 'failed') || failedDependency) {
-    if (active) pool.status = 'running';
+    if (active) setStatus('running', pool.reason);
     else fail(failedDependency ? `Work dependency failed for ${failedDependency.key}; repair prerequisites and explicitly replay`
       : 'Work items failed; inspect /workflow work, retry the failed items, then explicitly replay');
-    return before !== JSON.stringify(pool);
+    return changed;
   }
   if (!unfinishedWork(state, name) && !active && !messagesPending && queueControl(state, name)?.closedAt !== undefined) {
-    pool.status = 'drained'; pool.reason = undefined;
-    return before !== JSON.stringify(pool);
+    setStatus('drained', undefined);
+    return changed;
   }
   const available = availableWork(state, name);
   // A queued/running turn which has not claimed yet already represents demand for one item.
   const unclaimed = consumerPools(state).filter(other => (other.queue ?? 'default') === name).flatMap(other => other.members)
-    .map(member => state.tasks.find(task => task.taskId === member.taskId)).filter(task => task && BUSY.has(task.status)
+    .map(member => taskById(state, member.taskId)).filter(task => task && BUSY.has(task.status)
     && !task.consumerMessageTurn
     && !state.workQueue?.claims.some(claim => claim.taskId === task.taskId && claim.status === 'active')).length;
   let workSlots = available.length - unclaimed;
@@ -142,7 +147,7 @@ function pumpPool(state: WorkflowState, pool: WorkConsumerPool, nativeIdKind: (a
   try {
     for (const member of pool.members) {
       if (slots <= 0) break;
-      const prior = state.tasks.find(task => task.taskId === member.taskId);
+      const prior = taskById(state, member.taskId);
       if (member.disabled || prior && BUSY.has(prior.status)) continue;
       const deliver = hasMessages(member.name);
       const retry = member.retryPending && prior;
@@ -152,25 +157,23 @@ function pumpPool(state: WorkflowState, pool: WorkConsumerPool, nativeIdKind: (a
         break;
       }
       const key = member.retryPending && prior ? prior.scriptKey! : `@consumer/${pool.id}/${pool.turns.length}`;
-      const call = {key,member:member.name,prompt:member.retryPending && prior ? prior.objective : pool.prompt,
+      const call = {key,member:member.name,prompt:member.retryPending && prior ? readText(state, prior.objective) : pool.prompt,
         ...(member.workflowTool ? {workflowTool:true} : {}),
         output:'text' as const,selection:{agentKind:member.execution.agentKind,...member.execution.modelSettings}};
       if (deliver && !retry) receiveMessages(state, member.name, key + '/inbox');
       const { task } = scheduleMemberTurn(state, call, member.execution, nativeIdKind(member.execution.agentKind));
-      if (!retry && deliver && workSlots <= 0) task.consumerMessageTurn = true;
-      if (!member.retryPending) { pool.turns.push({key,member:member.name,taskId:task.taskId}); additionalTurnsAllowed--; }
-      state.script.calls.push({key,taskId:task.taskId,cached:false});
-      member.taskId = task.taskId; member.retryPending = false; member.lastWake = wake;
+      if (!retry && deliver && workSlots <= 0 && !task.consumerMessageTurn) record({ type: 'task_message_turn_marked', taskId: task.taskId });
+      const counted = !member.retryPending;
+      record({ type: 'pool_turn_scheduled', poolId: pool.id, member: member.name, key, taskId: task.taskId, retry: !counted, wake });
+      if (counted) additionalTurnsAllowed--;
+      record({ type: 'script_call_recorded', call: { key, taskId: task.taskId, cached: false } });
       slots--; if (!task.consumerMessageTurn) workSlots--;
     }
   } catch (error) { fail(error instanceof Error ? error.message : String(error)); }
   if (pool.status !== 'failed') {
     const busy = tasks().some(task => task && BUSY.has(task.status));
     if (!busy && (available.length || messagesPending) && !state.tasks.some(task => BUSY.has(task.status))) fail('No consumer made progress on available work or messages; inspect member failures and explicitly replay');
-    else {
-      pool.status = busy ? 'running' : 'waiting';
-      pool.reason = busy ? undefined : unfinishedWork(state, name) ? 'Waiting for dependencies/claim/resource availability' : 'Waiting for new work or queue closure';
-    }
+    else setStatus(busy ? 'running' : 'waiting', busy ? undefined : unfinishedWork(state, name) ? 'Waiting for dependencies/claim/resource availability' : 'Waiting for new work or queue closure');
   }
-  return before !== JSON.stringify(pool);
+  return changed;
 }

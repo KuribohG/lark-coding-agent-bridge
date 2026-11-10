@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import type Database from 'better-sqlite3';
 import { WorkflowKernel } from '../../src/engine/kernel';
 import type { WorkflowRoot, WorkflowState, WorkflowWorkerRequest, WorkflowWorkerResult } from '../../src/engine/types';
+import { storeOf } from './store';
 
 export const childInput = { operationId: 'child', key: 'child', goal: 'Return 42', script: 'return 42;',
   plan: 'Return 42 without native workers', checkpoint: { next: 'consume child result' } };
@@ -72,8 +72,9 @@ if (process.argv[2] === '--workflow-crash-child') {
   await h.agent(queue); await h.run(1);
   const request = h.requests[0]!;
   let childId: string | undefined;
+  const store = storeOf(h.kernel);
   const barrier = () => {
-    const db = (h.kernel as unknown as { db: Database.Database }).db;
+    const { db } = store;
     writeFileSync(join(directory, 'barrier.json'), JSON.stringify({ pid: process.pid, boundary,
       inTransaction: db.inTransaction, root: h.state(), child: childId ? h.state(childId) : undefined,
       request: { workflow: request.workflow, task: request.task, attemptId: request.attemptId } }));
@@ -87,17 +88,17 @@ if (process.argv[2] === '--workflow-crash-child') {
     await h.send(request, 'checkpoint_work', { ...token, expectedProgressVersion: 0, state: { next: 'publish', partial: 49 } });
     if (boundary === 'work-completed') await h.send(request, 'complete_work', { ...token, result: 49 });
   } else {
-    if (boundary === 'child-insert-uncommitted') h.kernel.onChange('crash-test', () => {
-      const db = (h.kernel as unknown as { db: Database.Database }).db;
-      const row = db.prepare('SELECT id FROM workflows WHERE id != ?').get(h.state().workflowId) as { id: string } | undefined;
-      if (row) { childId = row.id; barrier(); }
-    });
+    // The hook runs inside the SQLite transaction, after the operation's rows are written and before COMMIT.
+    if (boundary === 'child-insert-uncommitted') store.beforeCommit = events => {
+      const created = events.find(event => event.type === 'workflow_created');
+      if (created) { childId = created.workflowId; barrier(); }
+    };
     childId = (await h.send(request, 'run_workflow', childInput) as { workflowId: string }).workflowId;
     if (boundary !== 'before-yield') {
       await h.finish(request); h.begin(childId);
-      if (boundary === 'child-finish-uncommitted') h.kernel.onChange('crash-test', () => {
+      if (boundary === 'child-finish-uncommitted') store.beforeCommit = () => {
         if (h.state(childId).status === 'completed') barrier();
-      });
+      };
       h.finishScript(childId);
     }
   }

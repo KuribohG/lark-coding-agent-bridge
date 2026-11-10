@@ -9,6 +9,7 @@ import Database from 'better-sqlite3';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { childInput, crashHarness, itemInput } from './helpers/crash-controller';
 import type { CrashBarrier } from './helpers/crash-controller';
+import { readWorkflowStates } from '../src/engine/kernel-store';
 import type { WorkflowState, WorkflowWorkItem } from '../src/engine/types';
 
 const packageDir = fileURLToPath(new URL('..', import.meta.url));
@@ -51,11 +52,11 @@ describe.skipIf(process.platform === 'win32')('workflow recovery after controlle
     expect(await exited).toEqual([null, 'SIGKILL']);
     const path = join(directory, 'state.sqlite');
     const db = new Database(path);
-    let persisted: WorkflowState[];
     try {
       expect(db.pragma('integrity_check', { simple: true })).toBe('ok');
-      persisted = (db.prepare('SELECT data FROM workflows').all() as Array<{ data: string }>).map(row => JSON.parse(row.data));
     } finally { db.close(); }
+    // What the journal alone holds, before any kernel reopens it.
+    const persisted: WorkflowState[] = readWorkflowStates(path);
     const h = crashHarness(path);
     cleanup.push(() => h.kernel.close());
     expect(h.state().status).toBe('interrupted');

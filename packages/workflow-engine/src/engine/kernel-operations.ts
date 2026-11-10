@@ -5,7 +5,7 @@ import type { KernelContext } from './kernel-context';
 import { workflowSummary } from './tools/lifecycle';
 import { BUILTIN_WORKFLOW_TOOLS } from './tools/registry';
 import type { ScriptState, WorkerCaller } from './tools/types';
-import type { WorkflowCaller, WorkflowState } from './types';
+import type { WorkflowCaller, WorkflowView } from './types';
 
 /**
  * Tool-call entry point for the main agent and workers. It owns authorization, idempotency and the shared state
@@ -19,13 +19,16 @@ export class KernelOperations {
     const { store } = ctx;
     if (ctx.closed) throw new Error('Workflow service is closed');
     if (caller.kind === 'worker') {
-      if (this.tools.worker(method)?.verifiesRoot) {
+      const tool = this.tools.worker(method);
+      if (tool?.verifiesRoot) {
         const root = await ctx.host.resolveRoot(caller.scopeId);
         if (ctx.closed) throw new Error('Workflow service is closed');
         const state = requireState(store.state(caller.scopeId, caller.workflowId));
         if (!root || !sameRoot(root, state.root)) throw new Error('Worker root binding changed');
       }
-      return this.workerCall(caller, method, args);
+      // What `prepare` settles (expired leases) stands even when the call itself is then refused.
+      if (tool?.prepare) store.transact(() => tool.prepare!(ctx, requireState(store.state(caller.scopeId, caller.workflowId))), 'worker:' + caller.taskId);
+      return store.transact(() => this.workerCall(caller, method, args), 'worker:' + caller.taskId);
     }
     const tool = this.tools.main(method);
     if (!tool) {
@@ -58,35 +61,40 @@ export class KernelOperations {
     }
     // The root may have changed while awaiting authorization.
     state = store.state(scope, workflowId);
+    const cause = 'main:' + method;
     if (tool.kind === 'start') {
-      if (state || store.state(scope)) throw new Error('Root already has a workflow; cancel or complete it first');
-      const created = tool.start(ctx, root, args);
-      return store.commitOperation(created, operationId, digest, () => this.summary(created));
+      return store.transact(() => {
+        if (state || store.state(scope)) throw new Error('Root already has a workflow; cancel or complete it first');
+        const created = tool.start(ctx, root, args);
+        return store.commitOperation(scope, operationId, digest, () => this.summary(created));
+      }, cause);
     }
     const bound = requireState(state);
-    if (!bound.script) throw new Error('Agent-led workflows have been retired; use run_script.');
+    if (!bound.script) throw new Error('Not a script workflow');
     const current = bound as ScriptState;
     if (!tool.terminalCheckOnly && !sameRoot(root, current.root)) {
       ctx.lifecycle.invalidate(scope);
       throw new Error('Root binding changed; workflow needs attention');
     }
-    if (args.expectedStateVersion !== current.stateVersion) throw new Error(`stateVersion conflict; current=${current.stateVersion}`);
-    if (['completed', 'cancelled'].includes(current.status)) throw new Error('Workflow is terminal');
-    const commit = (response: () => unknown) => store.commitOperation(current, operationId, digest, response);
-    if (tool.terminalCheckOnly) return tool.apply(ctx, current, args, commit);
-    if (tool.resumesClock) ctx.recovery.resumeClock(current);
-    if (!['active', 'paused'].includes(current.status) && !(current.status === 'interrupted' && tool.allowInterrupted)) {
-      throw new Error(`Workflow is ${current.status}; cancel and start a new workflow, or explicitly replay an interrupted script`);
-    }
-    if (ctx.now() >= current.deadlineAt && !tool.allowAfterDeadline) throw new Error('Workflow deadline reached');
-    return tool.apply(ctx, current, args, commit);
+    // One transaction per operation: its events, the new state version and the idempotency record commit together.
+    return store.transact(() => {
+      if (args.expectedStateVersion !== current.stateVersion) throw new Error(`stateVersion conflict; current=${current.stateVersion}`);
+      if (['completed', 'cancelled'].includes(current.status)) throw new Error('Workflow is terminal');
+      const commit = (response: () => unknown) => store.commitOperation(scope, operationId, digest, response);
+      if (tool.terminalCheckOnly) return tool.apply(ctx, current, args, commit);
+      if (tool.resumesClock) ctx.recovery.resumeClock(current);
+      if (!['active', 'paused'].includes(current.status) && !(current.status === 'interrupted' && tool.allowInterrupted)) {
+        throw new Error(`Workflow is ${current.status}; cancel and start a new workflow, or explicitly replay an interrupted script`);
+      }
+      if (ctx.now() >= current.deadlineAt && !tool.allowAfterDeadline) throw new Error('Workflow deadline reached');
+      return tool.apply(ctx, current, args, commit);
+    }, cause);
   }
 
   private workerCall(caller: WorkerCaller, method: string, args: Record<string, unknown>): unknown {
     const { ctx } = this;
     const state = requireState(ctx.store.state(caller.scopeId, caller.workflowId));
     const tool = this.tools.worker(method);
-    tool?.prepare?.(ctx, state);
     const task = findTask(state, caller.taskId);
     if (!['starting', 'running'].includes(task.status) || task.attempts.at(-1)?.attemptId !== caller.attemptId) throw new Error('Worker binding is inactive');
     const agent = taskAgent(state, task);
@@ -95,7 +103,7 @@ export class KernelOperations {
     return tool.call(ctx, state, task, caller, args);
   }
 
-  summary(state: WorkflowState): unknown {
+  summary(state: WorkflowView): unknown {
     return workflowSummary(this.ctx, state);
   }
 }

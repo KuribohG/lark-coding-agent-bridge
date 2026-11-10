@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WorkflowKernel } from '../src/engine/kernel';
+import { replaceWorkflowState } from '../src/engine/kernel-store';
 import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '../src/engine/types';
 
 const cleanup: Array<() => Promise<unknown>> = [];
@@ -171,9 +171,7 @@ describe('durable events and task control', () => {
     const persistedDuringCancellation = h.state();
     expect(persistedDuringCancellation.tasks[0]!.status).toBe('cancelling');
     await h.finish(h.requests[0]!); await h.kernel.close();
-    const db = new Database(path);
-    try { db.prepare('UPDATE workflows SET data=? WHERE id=?').run(JSON.stringify(persistedDuringCancellation), persistedDuringCancellation.workflowId); }
-    finally { db.close(); }
+    replaceWorkflowState(path, persistedDuringCancellation);
     await h.restart(); await h.replay();
     const restored = await h.control('start', { key: 'task', prompt: 'Work' });
     expect(restored.taskId).toBe(task.taskId);

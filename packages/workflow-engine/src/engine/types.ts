@@ -360,6 +360,31 @@ export interface WorkflowState {
   restart?: { since: number; resume: boolean };
 }
 
+/** Large text kept out of the in-memory state: stored once under its digest and read on demand. */
+export interface TextRef {
+  digest: string;
+  chars: number;
+}
+
+/**
+ * The kernel's own shape of a workflow. It differs from the public WorkflowState only in keeping artifact texts and
+ * task prompts by reference; the kernel resolves them when it hands a state to a host.
+ */
+export type StoredArtifact = Omit<WorkflowArtifact, 'text'> & { chars: number };
+export type StoredTask = Omit<AgentTurn, 'objective'> & { objective: TextRef };
+export type WorkflowData = Omit<WorkflowState, 'tasks' | 'artifacts'> & { tasks: StoredTask[]; artifacts: StoredArtifact[] };
+
+export type Immutable<T> = T extends (...args: never[]) => unknown ? T
+  : T extends readonly (infer U)[] ? readonly Immutable<U>[]
+    : T extends object ? { readonly [K in keyof T]: Immutable<T[K]> } : T;
+
+/** Live kernel state as everything but the event reducers sees it: changes go through events (see events.ts). */
+export type WorkflowView = Immutable<WorkflowData>;
+export type TaskView = Immutable<StoredTask>;
+export type ArtifactView = Immutable<StoredArtifact>;
+export type AgentView = Immutable<DurableAgent>;
+export type PoolView = Immutable<WorkConsumerPool>;
+
 export type WorkflowCaller =
   | { scopeId: string; kind: 'main'; allowStart?: boolean; workflowId?: string }
   | { scopeId: string; kind: 'worker'; workflowId: string; taskId: string; attemptId: string };

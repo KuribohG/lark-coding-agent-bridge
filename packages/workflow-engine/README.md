@@ -16,6 +16,36 @@ The package is developed in the bridge repository and is not yet published on it
 
 Each operation the main agent or a worker can call through the workflow CLI is a `WorkflowTool` in one of the plugins under `src/engine/tools` (lifecycle, artifacts, member context, mailbox, work queue, nested workflows). A tool declares which caller may use it and, for main operations, how the kernel guards it (read-only, start, or versioned mutation allowed while interrupted or after the deadline). `KernelOperations` keeps authorization, idempotency and the shared state checks, then dispatches through `WorkflowToolRegistry`. Agents learn tools only from the generated instructions, so a plugin carries its own signatures and member/nested paragraphs, and `tests/workflow-tools.test.ts` checks that every registered tool is documented. The registry is internal; hosts cannot add tools yet.
 
+## State
+
+Workflow state is event-sourced. The journal table `wf_events` is the only source of truth; everything else in the database can be rebuilt from it.
+
+- **Events and the reducer.** Every change is a `DomainEvent` (`src/engine/events.ts`) applied by `evolve()` (`src/engine/evolve.ts`), the only code that changes workflow state. The reducer must stay deterministic: no clocks, generated IDs or I/O. Whatever varies is decided by the caller and carried in the event.
+- **Transactions.** Domain code changes a workflow by calling `emit(state, event)` inside `store.transact()`. One operation is one transaction: its events, the texts it stored, the main agent's idempotency record and the catalog row commit together, and the workflow gets one new `stateVersion`. If the operation throws, nothing is written and the workflows it touched are rebuilt from the journal on their next read, so a state object must not be used again after a failed transaction.
+- **Memory.** Unfinished workflows stay in memory and reads never touch the database. Inside the engine code works on live read-only views (`WorkflowView`). `WorkflowKernel` hands hosts detached copies in the public `WorkflowState` shape.
+- **Texts.** Artifact texts and task prompts are stored once under their digest in `wf_texts` and loaded when read. In memory a task holds `objective: { digest, chars }`; in the copies hosts receive, `artifact.text` and `task.objective` are strings that load on first access.
+- **Snapshots.** `wf_snapshots` bounds what a restart replays. A snapshot is written when a workflow finishes, on a clean close, and once the events since the last one outnumber both `snapshotEvery` (2000) and the entities in the state.
+- **Notifications.** After a commit the store notifies `watch(workflowId, topics)` subscribers of the topics the committed events touch (`task:<id>`, `wait:<id>`, `pool`, `mailbox`, `lifecycle`), then `onChange(scope)` and `onCommit`. A script waiting for one agent wakes for that task's events only.
+- **Scheduling.** After every commit the runtime runs `admitReady()`, which starts what the commit made runnable without calling the host. The 500 ms `tick()` remains for what only the clock or the host changes: deadlines, claim leases, wait timers and the root session's authorization. `admitReady()` acts on a workflow only while the last root check by `tick()` is under one interval old.
+
+The store keeps its tables (`wf_*`) in the same database file as earlier versions and does not read their `workflows` table. Workflows that were unfinished under an earlier version are not carried over; the kernel logs `legacy-workflows-ignored` with their count at startup.
+
+With `WORKFLOW_ENGINE_VERIFY=1`, which the test configuration sets, every commit replays the workflow from its first event and fails if the result differs from the state in memory. `readWorkflowStates(path)` and `replaceWorkflowState(path, state)` in `kernel-store.ts` read and overwrite workflows in a store file that no kernel has open, for tests and repair.
+
+### Load tools
+
+`tests/load` drives fake agents through the store alone (`store-load.ts`, no admission limits) and through the whole runtime (`runtime-load.ts`, real scheduler, script VM and worker IPC). `tests/load.test.ts` runs both small on every test run. For measurements:
+
+```sh
+WORKFLOW_ENGINE_VERIFY=0 WORKFLOW_LOAD='{"store":{"workers":1000,"turns":5,"workflows":1,"thinkMs":20000}}' \
+  WORKFLOW_LOAD_DIR=/path/on/the/target/filesystem WORKFLOW_LOAD_REPORT=/path/report.json \
+  npx vitest run tests/load.test.ts -t "configured load"
+```
+
+`WORKFLOW_LOAD` takes `store` and `runtime` option objects, or arrays of them. The runtime load cannot exceed the engine's current limits: 16 concurrent workers and 128 tasks per workflow, four root scripts at a time.
+
+## Dependencies
+
 Runtime dependencies are `better-sqlite3` and `quickjs-emscripten` only. The bridge's `tests/static/contracts.test.ts` enforces this and keeps the bridge on the public entry. In this repository, `pnpm --filter @kuribohg/agent-workflows build|test|typecheck` works on the package alone; the bridge's root `test` and `typecheck` include it.
 
 ## Minimal host

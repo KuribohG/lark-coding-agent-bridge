@@ -1,4 +1,3 @@
-import type Database from 'better-sqlite3';
 import { silentLogger } from './ports';
 import { ChildWorkflows } from './kernel-children';
 import type { KernelContext } from './kernel-context';
@@ -7,9 +6,10 @@ import { KernelOperations } from './kernel-operations';
 import { RestartRecovery } from './kernel-recovery';
 import { WorkflowScheduler } from './kernel-scheduler';
 import { ScriptApi } from './kernel-script-api';
+import { settleEventWaits } from './event-waits';
 import { BUSY } from './kernel-state';
 import { WorkflowStore } from './kernel-store';
-import type { NativeIdKind, WorkflowCaller, WorkflowHost, WorkflowLogger, WorkflowState } from './types';
+import type { NativeIdKind, WorkflowCaller, WorkflowHost, WorkflowLogger, WorkflowState, WorkflowView } from './types';
 import { WorkerHosts, type WorkerHostRecord } from './worker-hosts';
 
 export { RESUME_DEADLINE, RESUME_ROOT_CHANGED } from './kernel-recovery';
@@ -27,7 +27,12 @@ class KernelParts implements KernelContext {
   readonly operations: KernelOperations;
 
   constructor(path: string, readonly host: WorkflowHost, readonly now: () => number) {
-    this.store = new WorkflowStore(path, now);
+    // Whatever an operation changed, the waits it satisfied settle in the same commit.
+    this.store = new WorkflowStore(path, now, {
+      policy: state => { settleEventWaits(state, now()); },
+      // A host listener that throws must not make a committed operation look failed to its caller.
+      listenerFailed: error => this.log.warn('change-listener-failed', { error: String(error) }),
+    });
     this.hosts = new WorkerHosts(this.store.db);
     this.scheduler = new WorkflowScheduler(this);
     this.children = new ChildWorkflows(this);
@@ -46,31 +51,36 @@ class KernelParts implements KernelContext {
 
 /**
  * Bridge-owned state. No model or CLI process opens this database.
- * The kernel is a facade over the collaborators wired in KernelParts.
+ * The kernel is a facade over the collaborators wired in KernelParts. Workflow states it returns are detached copies
+ * in the public shape; the live in-memory states stay inside the engine.
  */
 export class WorkflowKernel {
   private readonly ctx: KernelParts;
-  private readonly db: Database.Database;
 
   constructor(path: string, host: WorkflowHost, now = Date.now) {
     this.ctx = new KernelParts(path, host, now);
-    this.db = this.ctx.store.db;
+    const legacy = this.ctx.store.legacyUnfinished();
+    if (legacy) this.ctx.log.warn('legacy-workflows-ignored', { count: legacy });
     this.ctx.recovery.retireInterrupted();
   }
 
+  private copy(state: WorkflowView | undefined): WorkflowState | undefined {
+    return state && this.ctx.store.public(state);
+  }
+
   state(scopeId: string, workflowId?: string): WorkflowState | undefined {
-    return this.ctx.store.state(scopeId, workflowId);
+    return this.copy(this.ctx.store.state(scopeId, workflowId));
   }
 
   context(scopeId: string): string {
-    const state = this.state(scopeId);
+    const state = this.ctx.store.state(scopeId);
     return state
       ? `${state.definition.mainInstructions}\n<workflow_context source="bridge">\n${JSON.stringify(this.ctx.operations.summary(state))}\n</workflow_context>`
       : '当前没有绑定工作流；仅 /workflow start 或 /workflow script 命令授权的本轮可调用 run_script。';
   }
 
   latest(scopeId: string): WorkflowState | undefined {
-    return this.ctx.store.latest(scopeId);
+    return this.copy(this.ctx.store.latest(scopeId));
   }
 
   call(caller: WorkflowCaller, method: string, args: Record<string, unknown>): Promise<unknown> {
@@ -81,8 +91,19 @@ export class WorkflowKernel {
     return this.ctx.children.waitingForChild(scopeId, workflowId, taskId, attemptId);
   }
 
+  /** Any committed change to a workflow of this scope. */
   onChange(scopeId: string, listener: () => void): () => void {
     return this.ctx.store.onChange(scopeId, listener);
+  }
+
+  /** Committed changes of one workflow on the given topics: `task:<id>`, `wait:<id>`, `pool`, `mailbox`, `lifecycle`. */
+  watch(workflowId: string, topics: string[], listener: () => void): () => void {
+    return this.ctx.store.watch(workflowId, topics, listener);
+  }
+
+  /** Every commit that changed a workflow. */
+  onCommit(listener: () => void): () => void {
+    return this.ctx.store.onCommit(listener);
   }
 
   /** Unfinished work, for host idle checks: scripts queued or running and tasks still executing. */
@@ -96,11 +117,17 @@ export class WorkflowKernel {
   }
 
   queuedScripts(): WorkflowState[] {
-    return this.ctx.scripts.queuedScripts();
+    return this.ctx.scripts.queuedScripts().map(state => this.ctx.store.public(state));
   }
 
   beginScript(scopeId: string, workflowId: string): { state: WorkflowState; source: string } | undefined {
     return this.ctx.scripts.beginScript(scopeId, workflowId);
+  }
+
+  /** Whether this run of the workflow's script is still the one executing. */
+  scriptRunning(scopeId: string, workflowId: string, runId: string): boolean {
+    const state = this.ctx.store.state(scopeId, workflowId);
+    return state?.status === 'active' && state.script?.status === 'running' && state.script.runId === runId;
   }
 
   scriptAgent(scopeId: string, workflowId: string, runId: string, input: unknown, managed = false): Promise<{ taskId: string; output: 'text' | 'json' }> {
@@ -176,6 +203,11 @@ export class WorkflowKernel {
     return this.ctx.scheduler.tick();
   }
 
+  /** Admission between ticks (see WorkflowScheduler.admitReady). True when a tick is needed first. */
+  admitReady(): boolean {
+    return this.ctx.scheduler.admitReady();
+  }
+
   /** A process a previous controller left running for this turn. */
   workerHost(workflowId: string, match: string): WorkerHostRecord | undefined {
     return this.ctx.hosts.find(workflowId, match);
@@ -210,6 +242,6 @@ export class WorkflowKernel {
   async close(): Promise<void> {
     this.beginShutdown();
     await this.ctx.scheduler.settled();
-    this.db.close();
+    this.ctx.store.close();
   }
 }

@@ -1,6 +1,6 @@
-import type { WorkflowState } from './types';
+import type { WorkflowView } from './types';
 
-export function renderWorkflowPlan(state: WorkflowState, plan: string): string {
+export function renderWorkflowPlan(state: WorkflowView, plan: string): string {
   const main = state.root.modelSettings;
   const defaults = state.script!.defaults;
   return [
