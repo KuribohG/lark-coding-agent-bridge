@@ -4,7 +4,7 @@ import {
   preparePreferencesChange,
   PreferencesApplyError,
   PreferencesValidationError,
-} from '../config/preferences';
+} from '../runtime/preferences';
 import { AGENT_OPTIONS } from '../agent/backends';
 import { availableEfforts } from '../agent/model-settings';
 import { modelEnvironment } from '../runtime/model-settings';

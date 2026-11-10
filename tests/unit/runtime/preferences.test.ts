@@ -2,7 +2,7 @@ import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyPreferencesChange, preparePreferencesChange, PreferencesApplyError } from '../../../src/config/preferences';
+import { applyPreferencesChange, preparePreferencesChange, PreferencesApplyError } from '../../../src/runtime/preferences';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { runtimeProfileConfig } from '../../../src/config/profile-store';
 import * as ops from '../../../src/config/config-ops';

@@ -58,7 +58,7 @@ async function importsUnder(directory: string): Promise<Array<{ file: string; ta
 it('keeps lower layers from importing the hosts built on top of them', async () => {
   const rules: Array<[string, RegExp]> = [
     ['agent', /^(?:runtime|channels|commands|card|cli)\//],
-    ['config', /^(?:channels|commands|card|cli)\//],
+    ['config', /^(?:runtime|channels|commands|card|cli)\//],
     ['runtime', /^cli\//],
   ];
   const composition = new Set(['runtime/supervisor.ts', 'runtime/profile-runtime.ts', 'runtime/public.ts']);
@@ -78,3 +78,4 @@ it('keeps card rendering independent of channel and command implementations', as
     .map(edge => `${edge.file} -> ${edge.target}`);
   expect(violations).toEqual([]);
 });
+

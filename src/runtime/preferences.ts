@@ -1,14 +1,14 @@
 import { AGENT_KINDS } from '../agent/backend-spec';
 import type { AgentLaunchProfiles } from '../agent/launch-config';
-import { readProfileSnapshot } from './service';
-import { configDocument, loadRootConfig } from './profile-store';
-import { documentToRoot } from './document';
-import { setPath } from './toml-edit';
+import { readProfileSnapshot } from '../config/service';
+import { configDocument, loadRootConfig } from '../config/profile-store';
+import { documentToRoot } from '../config/document';
+import { setPath } from '../config/toml-edit';
 import { backendFor, capabilityForProfile, isAgentKind } from '../agent/backends';
 import { parseEffort, resolveModelSettings } from '../agent/model-settings';
 import { DEFAULT_MODEL, normalizeModelSelection, validateModelId } from '../agent/models';
-import { modelEnvironment } from '../runtime/model-settings';
-import { applyProfileLarkCliIdentity, savePreferencesConfig, type MutableProfileState } from './config-ops';
+import { modelEnvironment } from './model-settings';
+import { applyProfileLarkCliIdentity, savePreferencesConfig, type MutableProfileState } from '../config/config-ops';
 import { resolveExecutablePath } from '../agent/detection';
 import {
   effectiveLarkCliIdentity,
@@ -16,7 +16,7 @@ import {
   type MeetingConfig,
   type LarkCliIdentityPreset,
   type ProfileMode,
-} from './profile-schema';
+} from '../config/profile-schema';
 import {
   getCotMessages,
   getMaxConcurrentRuns,
@@ -27,7 +27,7 @@ import {
   type AppPreferences,
   type CotMessagesMode,
   type MessageReplyMode,
-} from './schema';
+} from '../config/schema';
 
 export class PreferencesValidationError extends Error {}
 

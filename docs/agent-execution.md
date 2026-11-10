@@ -229,7 +229,7 @@ agent; active runs are omitted and non-admin callers are limited to their
 current chat/topic scope.
 
 Chat forms translate CardKit string fields before calling the shared preference
-validator in `src/config/preferences.ts`; the web API supplies JSON fields.
+validator in `src/runtime/preferences.ts`; the web API supplies JSON fields.
 Both use the same model validation, bounds and identity/save transaction. A live
 identity change is rolled back on failure, including a partially applied policy;
 offline edits apply identity settings on the profile's next startup. Omitted

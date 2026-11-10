@@ -6,7 +6,7 @@ import {
   preparePreferencesChange,
   PreferencesApplyError,
   type PreferencesChange,
-} from '../config/preferences';
+} from '../runtime/preferences';
 import { modelEnvironment } from '../runtime/model-settings';
 import { isAgentKind } from '../agent/backends';
 import { normalizeModelSelection } from '../agent/models';

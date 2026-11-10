@@ -1,6 +1,6 @@
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applyPreferencesChange, preparePreferencesChange } from '../../../src/config/preferences';
+import { applyPreferencesChange, preparePreferencesChange } from '../../../src/runtime/preferences';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
