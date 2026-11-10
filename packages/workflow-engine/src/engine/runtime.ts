@@ -216,7 +216,7 @@ export class WorkflowRuntime {
     if (mode === 'start' && state) throw new Error('Root already has a workflow; cancel or complete it first');
     if (mode === 'continue' && !state) throw new Error('No active workflow to continue');
     const caller: WorkflowCaller = { kind: 'main', scopeId, allowStart: mode === 'start', ...(state ? { workflowId: state.workflowId } : {}) };
-    const binding = this.deps.hostTools ? { env: {}, release() {} } : this.ipc.bind(caller, deadlineAt);
+    const binding: { env: Record<string, string>; release(): void } = this.deps.hostTools ? { env: {}, release() {} } : this.ipc.bind(caller, deadlineAt);
     return { ...binding, instructions: `${this.deps.hostTools ? hostToolInstructions(WORKFLOW_TOOL_INSTRUCTIONS) : WORKFLOW_TOOL_INSTRUCTIONS}\n\n${this.kernel.context(scopeId)}`,
       ...(this.deps.hostTools ? { definitions: workflowToolDefinitions('main'), call: (method: string, args: Record<string, unknown>) => this.call(caller, method, args) } : {}),
       eventIds: state?.events.filter(event => !event.acknowledged).map(event => event.id) ?? [] };
@@ -271,8 +271,9 @@ export class WorkflowRuntime {
         hostKey = survivor?.hostKey ?? hosting?.newKey();
         survivor = undefined;
         if (hostKey) {
+          // Host-tool turns are never hosted, so a hosted turn always holds an IPC token.
           this.kernel.putWorkerHost({ hostKey, workflowId: workflow.workflowId, match, taskId: task.taskId,
-            agentKind: pinned.agentKind, tokenHash: binding.tokenHash, createdAt: Date.now() });
+            agentKind: pinned.agentKind, tokenHash: binding.tokenHash!, createdAt: Date.now() });
           if (attach) this.log.info('worker-reattach', { workflowId: workflow.workflowId, taskId: task.taskId, attemptId, hostKey });
         }
         return this.deps.runner.start({
