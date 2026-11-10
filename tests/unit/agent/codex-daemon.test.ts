@@ -46,12 +46,19 @@ function controllableRun(): { run: AgentRun; finish(): void } {
 }
 
 describe('codex app-server daemon environment', () => {
-  it('adopts a daemon started before fingerprints existed', async () => {
+  it('restarts a daemon it cannot recognize instead of trusting its environment', async () => {
     const codex = await fakeCodex(true);
     const status = await ensureCodexAppServerDaemon({ binary: codex.binary, env: codex.env, fingerprint: 'a' });
     expect(status.socketPath).toBe('/tmp/codex.sock');
-    expect(await codex.calls()).toEqual(['version']);
+    expect(await codex.calls()).toEqual(['version', 'stop', 'start', 'version']);
     expect((await readFile(join(codex.home, '.bridge-app-server-env'), 'utf8')).trim()).toBe('a');
+  });
+
+  it('adopts a daemon when no fingerprint is expected', async () => {
+    const codex = await fakeCodex(true);
+    const status = await ensureCodexAppServerDaemon({ binary: codex.binary, env: codex.env });
+    expect(status.socketPath).toBe('/tmp/codex.sock');
+    expect(await codex.calls()).toEqual(['version']);
   });
 
   it('restarts an idle daemon whose launch environment changed', async () => {

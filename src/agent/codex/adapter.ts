@@ -169,6 +169,8 @@ export class CodexAdapter implements AgentAdapter {
       backend: startup.provider?.env ?? {},
     });
     let daemonSocketPath: string | undefined;
+    // Routing this run must use; a deferred restart keeps the daemon on its previous one.
+    let deferred = false;
     // A reattached run is already connected through its host; never restart the daemon for it.
     if (this.appServerMode === 'daemon' && !effectiveOpts.host?.attach) {
       const status = await ensureCodexAppServerDaemon({
@@ -178,14 +180,24 @@ export class CodexAdapter implements AgentAdapter {
       });
       if (!status.socketPath) throw new Error('Codex app-server daemon returned no socket path');
       daemonSocketPath = status.socketPath;
-      // A deferred restart keeps the change pending so the next run retries it.
+      // A deferred restart keeps the change pending so the next run retries it; the
+      // file must go back to the routing the still-running daemon was launched with.
       if (!status.restartDeferred) {
         await startup.config.commit?.();
         startup.config.changed = false;
+      } else {
+        deferred = true;
+        await startup.config.revert();
       }
     } else {
       startup.config.changed = false;
     }
+
+    // A daemon that could not restart yet keeps serving its previous provider, and
+    // its environment only carries that provider's credentials.
+    const routing = deferred ? startup.config.previous
+      : { id: startup.config.id, model: startup.config.model };
+    const routingPending = deferred && startup.config.changed;
 
     const provider = startup.provider?.codex;
     const configOverrides: string[] = [];
@@ -204,7 +216,7 @@ export class CodexAdapter implements AgentAdapter {
       shell_environment_policy: environment.tools,
       ...(opts.forkSession ? { features: { goals: false } } : {}),
     };
-    const modelSettings = { model: effectiveOpts.model, reasoningEffort: effectiveOpts.reasoningEffort };
+    const modelSettings = { model: deferred ? routing.model : effectiveOpts.model, reasoningEffort: effectiveOpts.reasoningEffort };
     const daemon = this.appServerMode === 'daemon' ? { binary: this.binary, env: environment.process } : undefined;
     const attach = (run: AgentRun) => daemon ? trackDaemonRun(daemon, run) : run;
     return preparedRun(modelSettings, () => attach(withExecutionContract(startAppServerRun({
@@ -212,12 +224,14 @@ export class CodexAdapter implements AgentAdapter {
       appServerMode: this.appServerMode, daemonSocketPath,
       prompt: effectiveOpts.prompt, developerInstructions: effectiveOpts.systemPrompt,
       stopGraceMs: effectiveOpts.stopGraceMs ?? this.defaultStopGraceMs,
-      configOverrides, modelProviderId: startup.config.id, threadConfig,
+      configOverrides, modelProviderId: routing.id, threadConfig,
       ...(daemon ? { hostTag: codexDaemonHostTag(daemon) } : {}),
-      initialNotice: rejectedProvider
-        ? `Provider 未切换：当前继续使用 ${startup.provider?.displayName ?? startup.config.id ?? '原生默认'}${startup.config.model ? ` / ${startup.config.model}` : ''}。请修改 bridge 启动配置并重启后使用 ${requested.displayName}。`
-        : undefined,
-    }), this.capabilities)), { id: startup.provider?.id ?? startup.config.id,
+      initialNotice: routingPending
+        ? `模型 Provider 切换要等当前任务结束后生效，本轮继续使用 ${routing.id}${routing.model ? ` / ${routing.model}` : ''}。`
+        : rejectedProvider
+          ? `Provider 未切换：当前继续使用 ${startup.provider?.displayName ?? startup.config.id ?? '原生默认'}${startup.config.model ? ` / ${startup.config.model}` : ''}。请修改 bridge 启动配置并重启后使用 ${requested.displayName}。`
+          : undefined,
+    }), this.capabilities)), { id: startup.provider?.id ?? routing.id,
       ...(rejectedProvider ? { requestedId: requested.id } : {}) });
   }
 

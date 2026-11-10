@@ -146,8 +146,9 @@ async function checkOrStart(input: {
   const recorded = await readFingerprint(input.env);
   if (current.exitCode === 0) {
     const status = parseDaemonStatus(current.stdout, current.stderr);
-    // A daemon started before fingerprints existed is adopted as-is.
-    const stale = Boolean(input.fingerprint && recorded && recorded !== input.fingerprint);
+    // A daemon without a recorded fingerprint was launched by something else: its
+    // environment is unknown, so it cannot be trusted to hold this run's credentials.
+    const stale = Boolean(input.fingerprint && recorded !== input.fingerprint);
     const key = daemonKey(input);
     const busy = (attached.get(key) ?? 0) > 0
       || ((stale || Boolean(input.restart)) && await liveRunHosts(codexDaemonHostTag(input)) > 0);
@@ -160,10 +161,9 @@ async function checkOrStart(input: {
       }
       return { ...status, restartDeferred: true };
     }
-    if (status && !stale && !input.restart) {
-      if (!recorded && input.fingerprint) await writeFingerprint(input.env, input.fingerprint);
-      return status;
-    }
+    // Never record a fingerprint for a daemon Bridge did not launch: that would
+    // hide the mismatch forever instead of restarting into a matching environment.
+    if (status && !stale && !input.restart) return status;
     if (stale) log.info('codex', 'app-server-daemon-env-changed', { action: 'restart' });
     if (status && (input.restart || stale)) {
       const stopped = await runDaemonCommand(input, ['app-server', 'daemon', 'stop'], timeoutMs);

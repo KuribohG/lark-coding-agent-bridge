@@ -41,3 +41,38 @@ it('does not overwrite a malformed native configuration', async () => {
   await expect(prepareManagedCodexConfig(dir, provider)).rejects.toThrow();
   expect(await readFile(join(dir, 'config.toml'), 'utf8')).toBe('malformed = [');
 });
+
+it('drops Bridge routing when a launch resolves no provider', async () => {
+  const dir = await directory();
+  await writeFile(join(dir, 'config.toml'), 'model_provider="lark_high-five-ai_abc"\nmodel="model-a"\nmodel_verbosity="low"\n[model_providers.lark_high-five-ai_abc]\nbase_url="https://example.com/v1"\nenv_key="LARK_MODEL_PROVIDER_KEY_ABC"\n[model_providers.native]\nbase_url="https://native.example.com/v1"\n');
+  const prepared = await prepareManagedCodexConfig(dir);
+  expect(prepared.changed).toBe(true);
+  expect(prepared.id).toBe('lark_high-five-ai_abc');
+  expect(prepared.model).toBe('model-a');
+  const text = await readFile(join(dir, 'config.toml'), 'utf8');
+  expect(parse(text)).toMatchObject({ model_verbosity: 'low', model_providers: { native: { base_url: 'https://native.example.com/v1' } } });
+  expect(parse(text)).not.toHaveProperty('model_provider');
+  expect(parse(text)).not.toHaveProperty('model');
+  expect(text).not.toContain('LARK_MODEL_PROVIDER_KEY_');
+  expect((await prepareManagedCodexConfig(dir)).changed).toBe(false);
+});
+
+it('leaves a native configuration alone when no provider is resolved', async () => {
+  const dir = await directory();
+  const native = 'model_provider="native"\nmodel="native-model"\n[model_providers.native]\nbase_url="https://native.example.com/v1"\n';
+  await writeFile(join(dir, 'config.toml'), native);
+  const prepared = await prepareManagedCodexConfig(dir);
+  expect(prepared.changed).toBe(false);
+  expect(prepared.id).toBe('native');
+  expect(await readFile(join(dir, 'config.toml'), 'utf8')).toBe(native);
+});
+
+it('reports the routing it replaced and can restore the previous file', async () => {
+  const dir = await directory();
+  const native = 'model_provider="native"\nmodel="native-model"\n[model_providers.native]\nbase_url="https://native.example.com/v1"\n';
+  await writeFile(join(dir, 'config.toml'), native);
+  const prepared = await prepareManagedCodexConfig(dir, provider);
+  expect(prepared.previous).toEqual({ id: 'native', model: 'native-model' });
+  await prepared.revert();
+  expect(await readFile(join(dir, 'config.toml'), 'utf8')).toBe(native);
+});

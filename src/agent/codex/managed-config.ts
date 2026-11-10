@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, lstat, realpath, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, lstat, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { parse, stringify } from 'smol-toml';
@@ -14,14 +14,96 @@ async function optional(path: string): Promise<string | undefined> {
   catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw error; }
 }
 
+/** Provider ids and key variables Bridge itself writes; never part of a native setup. */
+const MANAGED_PROVIDER_PREFIX = 'lark_';
+const MANAGED_ENV_PREFIX = 'LARK_MODEL_PROVIDER_KEY_';
+
+function isManagedProvider(id: string, value: unknown): boolean {
+  const envKey = object(value).env_key;
+  return id.startsWith(MANAGED_PROVIDER_PREFIX) || (typeof envKey === 'string' && envKey.startsWith(MANAGED_ENV_PREFIX));
+}
+
+function dropRouting(config: Record<string, unknown>, ids: ReadonlySet<string>): boolean {
+  let touched = false;
+  if (typeof config.model_provider === 'string' && ids.has(config.model_provider)) {
+    delete config.model_provider;
+    delete config.model;
+    touched = true;
+  }
+  const profiles = object(config.profiles);
+  for (const [name, value] of Object.entries(profiles)) {
+    const profile = object(value);
+    if (typeof profile.model_provider !== 'string' || !ids.has(profile.model_provider)) continue;
+    delete profile.model_provider;
+    delete profile.model;
+    profiles[name] = profile;
+    touched = true;
+  }
+  return touched;
+}
+
+/**
+ * Drop Bridge's own provider entries and the routing that names them. A launch
+ * without a resolved provider injects no credentials, so a leftover `env_key`
+ * here would make Codex fail with "Missing environment variable".
+ */
+function clearManagedRouting(config: Record<string, unknown>): boolean {
+  const providers = object(config.model_providers);
+  const ids = new Set<string>();
+  for (const [id, value] of Object.entries(providers)) {
+    if (!isManagedProvider(id, value)) continue;
+    delete providers[id];
+    ids.add(id);
+  }
+  if (ids.size === 0) return false;
+  if (Object.keys(providers).length > 0) config.model_providers = providers;
+  else delete config.model_providers;
+  dropRouting(config, ids);
+  return true;
+}
+
+export interface ManagedCodexConfig {
+  /** The daemon has to restart before this routing can be served. */
+  changed: boolean;
+  id: string;
+  model?: string;
+  /** Routing the file carried before this launch; a deferred daemon keeps serving it. */
+  previous: { id: string; model?: string };
+  /** Called once the daemon was activated (or restarted) for this routing. */
+  commit?: () => Promise<void>;
+  /** Restore the pre-launch file when the daemon keeps its previous environment. */
+  revert: () => Promise<void>;
+}
+
 /** Bridge owns provider routing; all other native settings stay editable here. */
-export async function prepareManagedCodexConfig(home: string, provider?: ResolvedModelProvider) {
+export async function prepareManagedCodexConfig(home: string, provider?: ResolvedModelProvider): Promise<ManagedCodexConfig> {
   const path = join(home, 'config.toml');
   const previous = await optional(path);
   const config = object(previous ? parse(previous) : {});
+  const previousRouting = { id: String(config.model_provider ?? 'openai'),
+    ...(typeof config.model === 'string' ? { model: config.model } : {}) };
+  const rewrite = async (next: string) => {
+    const temporary = `${path}.${randomUUID()}.tmp`;
+    await writeFile(temporary, next, { mode: 0o600 });
+    await rename(temporary, path);
+  };
+  // A deferred daemon restart leaves the old environment in place, so the file
+  // has to go back to what that daemon was launched with.
+  const revert = async () => {
+    if (previous === undefined) await rm(path, { force: true });
+    else await rewrite(previous);
+  };
+  const rendered = () => stringify(config as Parameters<typeof stringify>[0]);
+
   if (!provider?.codex) {
-    return { changed: false, id: String(config.model_provider ?? 'openai'), model: typeof config.model === 'string' ? config.model : undefined };
+    if (!clearManagedRouting(config)) {
+      return { changed: false, id: previousRouting.id, model: previousRouting.model, previous: previousRouting, revert };
+    }
+    await mkdir(home, { recursive: true, mode: 0o700 });
+    await rewrite(rendered());
+    return { changed: true, id: previousRouting.id, model: previousRouting.model, previous: previousRouting, revert };
   }
+
   const resolvedHome = await realpath(home).catch(() => resolve(home));
   const personalHome = await realpath(join(homedir(), '.codex')).catch(() => resolve(homedir(), '.codex'));
   if (resolvedHome === personalHome) {
@@ -50,18 +132,14 @@ export async function prepareManagedCodexConfig(home: string, provider?: Resolve
     profiles[config.profile] = { ...object(profiles[config.profile]), model_provider: native.providerId, model: provider.model };
     config.profiles = profiles;
   }
-  const rendered = stringify(config as Parameters<typeof stringify>[0]);
-  if (rendered !== previous) {
-    const temporary = `${path}.${randomUUID()}.tmp`;
-    await writeFile(temporary, rendered, { mode: 0o600 });
-    await rename(temporary, path);
-  }
+  const next = rendered();
+  if (next !== previous) await rewrite(next);
   const signaturePath = join(home, 'bridge-provider.sha256');
   const signature = createHash('sha256').update(JSON.stringify({ native, model: provider.model, env: provider.env })).digest('hex');
   const changed = await optional(signaturePath) !== signature;
   // Written only after a successful daemon check by the caller, so failed
   // activation still retries the required daemon restart next time.
-  return { changed, id: native.providerId, model: provider.model,
+  return { changed, id: native.providerId, model: provider.model, previous: previousRouting, revert,
     commit: () => writeFile(signaturePath, signature, { mode: 0o600 }),
   };
 }
