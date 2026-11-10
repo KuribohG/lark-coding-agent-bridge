@@ -80,6 +80,35 @@ describe('PiRunTranslator', () => {
     expect(translator.terminalEmitted()).toBe(true);
   });
 
+  it('coalesces token-sized text deltas into one event per block', () => {
+    const translator = new PiRunTranslator();
+    const events = [
+      { type: 'message_update', assistantMessageEvent: { type: 'text_start', contentIndex: 0 } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '你' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '好' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '！' } },
+    ].flatMap(record => translator.translate(record));
+
+    expect(events).toEqual([]);
+    expect(translator.translate({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: '你好！' },
+    })).toEqual([{ type: 'text', delta: '你好！' }]);
+  });
+
+  it('releases a long block before it outgrows the COT content limit', () => {
+    const translator = new PiRunTranslator();
+    const chunk = '中'.repeat(50);
+    const events = Array.from({ length: 6 }, () => translator.translate({
+      type: 'message_update',
+      assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: chunk },
+    })).flat();
+
+    // 600 UTF-8 bytes is the flush threshold: 5 chunks (750 bytes) tripped it.
+    expect(events).toHaveLength(1);
+    expect(Buffer.byteLength((events[0] as { delta: string }).delta, 'utf8')).toBeLessThanOrEqual(1000);
+  });
+
   it('drops the raw chain of thought the way the Claude translator does', () => {
     const translator = new PiRunTranslator();
     const events = [

@@ -4,6 +4,17 @@ import type { AgentEvent } from '../types';
 type JsonRecord = Record<string, unknown>;
 
 /**
+ * Pi streams text token by token (measured ~1.7 characters per `text_delta` on
+ * deepseek-flash), while Claude reports whole content blocks. Forwarding every
+ * delta floods every downstream consumer: a single answer becomes thousands of
+ * CoT `TEXT_MESSAGE_CONTENT` events, and a batch large enough to trip the API's
+ * per-request event limit is dropped outright. Buffer a block and release it on
+ * its `text_end`, on a block or tool boundary, or once it grows past this many
+ * UTF-8 bytes — the CoT rejects a content field above 1000 bytes.
+ */
+const TEXT_FLUSH_BYTES = 600;
+
+/**
  * Translate Pi's JSONL session-event stream into the bridge contract.
  *
  * JSON mode has one header plus session events. Pi 0.73 ends at process exit;
@@ -15,6 +26,9 @@ export class PiRunTranslator {
   private lastError: string | undefined;
   private finalText: string | undefined;
   private textBlocksWithDelta = new Set<number>();
+  private pendingText: string[] = [];
+  private pendingTextBytes = 0;
+  private pendingTextIndex: number | undefined;
   private startedTools = new Set<string>();
 
   translate(raw: unknown): AgentEvent[] {
@@ -31,18 +45,19 @@ export class PiRunTranslator {
           ...(stringValue(raw.cwd) ? { cwd: stringValue(raw.cwd) } : {}),
         }];
       }
-      case 'message_start':
-        if (messageRole(raw.message) === 'assistant') {
-          this.lastError = undefined;
-          this.resetAssistantBlocks();
-        }
-        return [];
+      case 'message_start': {
+        if (messageRole(raw.message) !== 'assistant') return [];
+        this.lastError = undefined;
+        const text = this.flushText();
+        this.resetAssistantBlocks();
+        return text;
+      }
       case 'message_update':
         return this.translateAssistantUpdate(raw);
       case 'message_end':
         return this.translateMessageEnd(raw.message);
       case 'tool_execution_start':
-        return this.translateToolStart(raw);
+        return [...this.flushText(), ...this.translateToolStart(raw)];
       case 'tool_execution_end':
         return this.translateToolEnd(raw);
       case 'auto_retry_start':
@@ -56,10 +71,11 @@ export class PiRunTranslator {
         return [];
       case 'agent_settled': {
         this.terminal = true;
+        const text = this.flushText();
         if (this.lastError) {
-          return [this.error(this.lastError)];
+          return [...text, this.error(this.lastError)];
         }
-        return raw.aborted === true ? [this.done('interrupted')] : this.complete();
+        return raw.aborted === true ? [...text, this.done('interrupted')] : [...text, ...this.complete()];
       }
       default:
         return [];
@@ -69,21 +85,22 @@ export class PiRunTranslator {
   finish(input: ProcessStreamFinish): AgentEvent[] {
     if (this.terminal) return [];
     this.terminal = true;
+    const text = this.flushText();
     if (input.interrupted) {
-      return [this.done('interrupted')];
+      return [...text, this.done('interrupted')];
     }
     if (input.timedOut || input.exitCode === 124) {
-      return [this.done('timeout')];
+      return [...text, this.done('timeout')];
     }
     if (input.runtimeError) {
-      return [this.error(`pi runtime error: ${input.runtimeError.message}`)];
+      return [...text, this.error(`pi runtime error: ${input.runtimeError.message}`)];
     }
     if (input.exitCode !== 0) {
       const detail = input.stderr ? `: ${input.stderr.slice(0, 500)}` : '';
-      return [this.error(`pi exited with code ${input.exitCode}${detail}`)];
+      return [...text, this.error(`pi exited with code ${input.exitCode}${detail}`)];
     }
-    if (this.lastError) return [this.error(this.lastError)];
-    return this.complete();
+    if (this.lastError) return [...text, this.error(this.lastError)];
+    return [...text, ...this.complete()];
   }
 
   terminalEmitted(): boolean {
@@ -95,20 +112,37 @@ export class PiRunTranslator {
     if (!update || typeof update.type !== 'string') return [];
     const index = numberValue(update.contentIndex) ?? 0;
     switch (update.type) {
-      case 'start':
+      case 'start': {
+        const text = this.flushText();
         this.resetAssistantBlocks();
-        return [];
+        return text;
+      }
+      case 'text_start':
+        return this.flushText();
       case 'text_delta': {
         const delta = stringValue(update.delta);
         if (!delta) return [];
+        // A previous block that never sent `text_end` still has to reach the
+        // consumer before this one starts accumulating.
+        const text = this.pendingTextIndex !== undefined && this.pendingTextIndex !== index
+          ? this.flushText() : [];
         this.textBlocksWithDelta.add(index);
-        return [{ type: 'text', delta }];
+        this.pendingTextIndex = index;
+        this.pendingText.push(delta);
+        this.pendingTextBytes += Buffer.byteLength(delta, 'utf8');
+        return this.pendingTextBytes >= TEXT_FLUSH_BYTES ? [...text, ...this.flushText()] : text;
       }
       case 'text_end': {
         const content = stringValue(update.content);
-        if (!content || this.textBlocksWithDelta.has(index)) return [];
-        this.textBlocksWithDelta.add(index);
-        return [{ type: 'text', delta: content }];
+        // Deltas are authoritative once seen; only a block that never streamed
+        // them needs its final content released here.
+        if (content && !this.textBlocksWithDelta.has(index)) {
+          this.textBlocksWithDelta.add(index);
+          this.pendingTextIndex = index;
+          this.pendingText.push(content);
+          this.pendingTextBytes += Buffer.byteLength(content, 'utf8');
+        }
+        return this.flushText();
       }
       // Pi streams the provider's raw chain of thought token by token. Claude
       // only surfaces provider-supplied reasoning summaries and drops raw
@@ -132,7 +166,7 @@ export class PiRunTranslator {
   private translateMessageEnd(value: unknown): AgentEvent[] {
     const message = recordValue(value);
     if (!message || message.role !== 'assistant') return [];
-    const events: AgentEvent[] = [];
+    const events: AgentEvent[] = this.flushText();
     if (this.textBlocksWithDelta.size === 0) {
       const text = textContent(message.content);
       if (text) {
@@ -198,6 +232,16 @@ export class PiRunTranslator {
   private resetAssistantBlocks(): void {
     this.finalText = undefined;
     this.textBlocksWithDelta.clear();
+  }
+
+  /** Release whatever text a block accumulated, in one event. */
+  private flushText(): AgentEvent[] {
+    const index = this.pendingTextIndex;
+    const delta = this.pendingText.join('');
+    this.pendingText = [];
+    this.pendingTextBytes = 0;
+    this.pendingTextIndex = undefined;
+    return index !== undefined && delta ? [{ type: 'text', delta }] : [];
   }
 
   private complete(): AgentEvent[] {

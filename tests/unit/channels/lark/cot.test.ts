@@ -285,6 +285,57 @@ describe('COT event mapping', () => {
     }
   });
 
+  it('splits a burst into batches the update endpoint accepts', async () => {
+    const client = new FakeCotClient();
+    const publisher = new CotPublisher({
+      client,
+      chatId: 'oc_chat',
+      originMessageId: 'om_origin',
+      runId: 'run-burst',
+      scope: 'oc_chat',
+      inputPreview: 'run',
+    });
+    await publisher.start();
+    // Token-sized deltas arrive far faster than the 600ms flush throttle, so a
+    // single answer used to build batches the endpoint answered with HTTP 400.
+    for (let i = 0; i < 130; i++) {
+      publisher.enqueue('TEXT_MESSAGE_CONTENT', { messageId: 'burst', delta: String(i) });
+    }
+    await publisher.finish('done');
+
+    expect(client.batchSizes.length).toBeGreaterThan(1);
+    expect(Math.max(...client.batchSizes)).toBeLessThanOrEqual(40);
+    expect(client.batchSizes.reduce((sum, size) => sum + size, 0)).toBe(132);
+    expect(client.events
+      .filter(event => event.event_type === 'TEXT_MESSAGE_CONTENT')
+      .map(event => JSON.parse(event.content).delta))
+      .toEqual(Array.from({ length: 130 }, (_, i) => String(i)));
+    expect(client.completed).toEqual(['done']);
+  });
+
+  it('keeps the batches after the one the endpoint rejects', async () => {
+    const client = new FakeCotClient();
+    client.failUpdateOnce = new Error('COT HTTP 400');
+    const publisher = new CotPublisher({
+      client,
+      chatId: 'oc_chat',
+      originMessageId: 'om_origin',
+      runId: 'run-partial-burst',
+      scope: 'oc_chat',
+      inputPreview: 'run',
+    });
+    await publisher.start();
+    for (let i = 0; i < 100; i++) {
+      publisher.enqueue('TEXT_MESSAGE_CONTENT', { messageId: 'burst', delta: String(i) });
+    }
+    await publisher.finish('done');
+
+    const dropped = client.batchSizes[0] ?? 0;
+    expect(dropped).toBeLessThanOrEqual(40);
+    expect(client.events).toHaveLength(102 - dropped);
+    expect(client.completed).toEqual(['done']);
+  });
+
   it('bounds COT text fields by UTF-8 bytes', async () => {
     const client = new FakeCotClient();
     const query = '中'.repeat(1000);
@@ -317,6 +368,7 @@ class FakeCotClient {
   events: Array<{ event_type: string; content: string; timestamp: number }> = [];
   completed: string[] = [];
   updateCalls = 0;
+  batchSizes: number[] = [];
   createCalls: Array<{ chatId: string; originMessageId?: string }> = [];
   failUpdate: Error | undefined;
   failUpdateOnce: Error | undefined;
@@ -331,6 +383,7 @@ class FakeCotClient {
 
   async update(_ref: unknown, events: readonly { event_type: string; content: string; timestamp: number }[]): Promise<void> {
     this.updateCalls++;
+    this.batchSizes.push(events.length);
     if (this.failUpdateOnce) {
       const error = this.failUpdateOnce;
       this.failUpdateOnce = undefined;

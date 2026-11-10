@@ -11,6 +11,11 @@ import {
 } from '../../lark-auth/tenant-token';
 
 const COT_UPDATE_THROTTLE_MS = 600;
+// The update endpoint rejects an oversized batch with a bare HTTP 400 and the
+// publisher drops whatever it sent, so a burst of token-sized events used to
+// vanish from the bubble. Chunk every flush below the observed failure point
+// (107 events in one PUT failed) and keep the rest buffered for the next call.
+const COT_MAX_EVENTS_PER_UPDATE = 40;
 // COT validates content in UTF-8 bytes, not JavaScript characters. Keeping
 // every individual text field below this conservative bound avoids an
 // otherwise valid Chinese response being rejected as "content too long".
@@ -249,39 +254,42 @@ export class CotPublisher {
   }
 
   private async flush(): Promise<void> {
-    if (this.disabled || !this.ref) return;
+    const ref = this.ref;
+    if (this.disabled || !ref) return;
     if (this.flushing) {
       await this.flushing;
       if (this.buffer.length > 0 && !this.disabled) await this.flush();
       return;
     }
-    const events = this.buffer.splice(0);
-    if (events.length === 0) return;
-    this.flushing = this.client.update(this.ref, events)
-      .then(() => {
-        if (this.updateFailureCount > 0) {
-          log.info('cot', 'update-recovered', { afterFailures: this.updateFailureCount });
+    if (this.buffer.length === 0) return;
+    this.flushing = (async () => {
+      while (this.buffer.length > 0 && !this.disabled) {
+        const events = this.buffer.splice(0, COT_MAX_EVENTS_PER_UPDATE);
+        try {
+          await this.client.update(ref, events);
+          if (this.updateFailureCount > 0) {
+            log.info('cot', 'update-recovered', { afterFailures: this.updateFailureCount });
+          }
+          this.updateFailureCount = 0;
+        } catch (err) {
+          this.updateFailureCount++;
+          // Progress updates are best effort and the API has no replay
+          // idempotency key. Drop this failed batch rather than risk appending
+          // it twice after an ambiguous timeout; future progress can still
+          // update the same COT bubble and finish will still close it.
+          if (this.updateFailureCount === 1 || this.updateFailureCount % 10 === 0) {
+            log.warn('cot', 'update-failed', {
+              err: err instanceof Error ? err.message : String(err),
+              consecutiveFailures: this.updateFailureCount,
+              droppedEvents: events.length,
+            });
+          }
         }
-        this.updateFailureCount = 0;
-      })
-      .catch((err) => {
-        this.updateFailureCount++;
-        // Progress updates are best effort and the API has no replay
-        // idempotency key. Drop this failed batch rather than risk appending
-        // it twice after an ambiguous timeout; future progress can still
-        // update the same COT bubble and finish will still close it.
-        if (this.updateFailureCount === 1 || this.updateFailureCount % 10 === 0) {
-          log.warn('cot', 'update-failed', {
-            err: err instanceof Error ? err.message : String(err),
-            consecutiveFailures: this.updateFailureCount,
-            droppedEvents: events.length,
-          });
-        }
-      })
-      .finally(() => {
-        this.flushing = undefined;
-        if (this.buffer.length > 0 && !this.disabled) this.scheduleFlush();
-      });
+      }
+    })().finally(() => {
+      this.flushing = undefined;
+      if (this.buffer.length > 0 && !this.disabled) this.scheduleFlush();
+    });
     await this.flushing;
   }
 }
