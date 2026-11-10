@@ -1,4 +1,5 @@
 import type { AgentEvent } from '../types';
+import { translateTaskEvent } from './native-tasks';
 
 interface ContentBlock {
   type: string;
@@ -213,6 +214,14 @@ function tokens(value: number | undefined): string | undefined {
 /** Runtime notices Claude shows in its TUI but -p only reports as system events. */
 function* translateSystemNotice(evt: ClaudeRawEvent): Generator<AgentEvent> {
   switch (evt.subtype) {
+    case 'task_started':
+    case 'task_progress':
+    case 'task_updated':
+    case 'task_notification': {
+      const task = translateTaskEvent(evt as unknown as Record<string, unknown>);
+      if (task) yield task;
+      return;
+    }
     case 'compact_boundary': {
       const meta = evt.compact_metadata ?? {};
       const before = tokens(meta.pre_tokens);

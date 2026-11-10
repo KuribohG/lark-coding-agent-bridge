@@ -60,8 +60,51 @@ export type AgentQuestionMode = 'async' | 'blocking';
 /** One entry per question: the chosen labels or free text. */
 export type AgentQuestionAnswer = { answers: string[][] } | { declined: string };
 
+/** What a native background task is: a scripted multi-agent workflow, one subagent, a shell command, or anything else. */
+export type AgentTaskKind = 'workflow' | 'agent' | 'shell' | 'other';
+export type AgentTaskState = 'running' | 'paused' | 'completed' | 'failed' | 'stopped';
+/** One agent of a native workflow, as the harness reports its progress; strings are previews. */
+export interface AgentTaskMember {
+  index: number;
+  label?: string;
+  phaseIndex?: number;
+  phase?: string;
+  /** The harness's own member state, e.g. start, done or error. */
+  state?: string;
+  agentId?: string;
+  model?: string;
+  prompt?: string;
+  result?: string;
+  error?: string;
+  startedAt?: number;
+  updatedAt?: number;
+}
+
 export type AgentEvent =
   | { type: 'system'; sessionId?: string; threadId?: string; cwd?: string; model?: string }
+  /**
+   * Background work the native agent runs on its own, such as a Claude Code workflow and its agents.
+   * Events are partial: a field an event leaves out keeps its last value, so hosts merge them by id.
+   */
+  | {
+      type: 'task';
+      id: string;
+      parentId?: string;
+      kind?: AgentTaskKind;
+      /** The harness's own task type. */
+      nativeType?: string;
+      state?: AgentTaskState;
+      name?: string;
+      description?: string;
+      background?: boolean;
+      summary?: string;
+      error?: string;
+      lastTool?: string;
+      usage?: { tokens?: number; toolUses?: number; durationMs?: number };
+      /** Members reported in this event, merged by index. */
+      members?: AgentTaskMember[];
+      membersOmitted?: number;
+    }
   | { type: 'text'; delta: string }
   | { type: 'final_text'; content: string }
   | { type: 'thinking'; delta: string }

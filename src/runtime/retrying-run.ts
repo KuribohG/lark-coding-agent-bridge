@@ -33,6 +33,8 @@ function isProgressEvent(event: AgentEvent): boolean {
     case 'tool_use':
     case 'tool_result':
     case 'user_input':
+    // A native background task has started work of its own.
+    case 'task':
       return true;
     default:
       return false;
