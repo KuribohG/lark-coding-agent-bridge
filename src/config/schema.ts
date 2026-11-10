@@ -253,13 +253,13 @@ export function getRequireMentionInGroup(cfg: AppConfig): boolean {
  * typo can't either make stop() effectively SIGKILL-immediate or hang for
  * minutes.
  */
-export function getAgentStopGraceMs(cfg: AppConfig): number {
+export function getAgentStopGraceMs(cfg: { preferences?: Pick<AppPreferences, 'agentStopGraceMs'> }): number {
   const raw = cfg.preferences?.agentStopGraceMs;
   if (typeof raw !== 'number' || !Number.isFinite(raw)) return 5000;
   return Math.min(30_000, Math.max(100, Math.floor(raw)));
 }
 
-export function getRunIdleTimeoutMs(cfg: AppConfig): number | undefined {
+export function getRunIdleTimeoutMs(cfg: { preferences?: Pick<AppPreferences, 'runIdleTimeoutMinutes'> }): number | undefined {
   const raw = cfg.preferences?.runIdleTimeoutMinutes;
   if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) return undefined;
   const clamped = Math.min(Math.max(Math.floor(raw), 1), 120);

@@ -304,8 +304,12 @@ the local Web management console is wanted.
 
 Lark profile hosts connect through the Lark plugin and `ChannelHost` with the
 profile's `ExecutionController`. Lark's richer context/access preparation feeds
-the same `startRunFlow`, policy, session catalog and `RunExecutor` used by the
-generic runtime. Its slash commands, management console, monitoring destinations
+the same turn pipeline as the generic runtime: `startTurn()` in
+`src/runtime/turn.ts` owns policy, workspace and session resolution,
+submission, session tracking, idle watchdog and stop grace, and both
+`ConversationRuntime` and the Lark turn call it. Lark adds only its own steps
+around it (quotes, topic context, timed jobs, question cards, CardKit output),
+so a feature of the turn itself is implemented once for every channel. Its slash commands, management console, monitoring destinations
 and CardKit forms remain Lark features. A new IM does not need to emulate them or
 return a fake `LarkChannel`. They are not automatically exposed as generic IM
 commands by this change.

@@ -18,36 +18,23 @@ import type { UserQuestions } from './question-cards';
 import type { CallbackAuth } from '../../card/callback-auth';
 import type { Controls } from '../../commands';
 import type { AgentKind } from '../../config/profile-schema';
-import {
-  getAgentStopGraceMs,
-  getCotMessages,
-  getMessageReplyMode,
-  getRunIdleTimeoutMs,
-} from '../../config/schema';
+import { getCotMessages, getMessageReplyMode } from '../../config/schema';
 import { log } from '../../core/logger';
 import { toPolicyAttachment } from '../../media/attachment';
 import type { MediaCache } from '../../media/cache';
 import { canUseDm, canUseGroup, type AccessDecision } from '../../policy/access';
 import type { ScopeContext } from '../../policy/run-policy';
-import type { ActiveRuns } from '../../runtime/active-runs';
 import type { AgentEntry } from '../../runtime/agent-entry';
 import { profileForAgentKind } from '../../runtime/execution-controller';
 import { resolveRunModelSettings } from '../../runtime/model-settings';
 import { deadlineInstructions } from '../../runtime/run-deadline';
 import { abortStopReason } from '../../runtime/errors';
-import type { RunExecution, RunExecutor } from '../../runtime/run-executor';
-import {
-  resolveRunFlowContext,
-  startRunFlow,
-} from '../../runtime/run-flow';
-import { presentRunOutput } from '../../runtime/run-output';
+import type { RunExecution } from '../../runtime/run-executor';
+import { resolveRunFlowContext } from '../../runtime/run-flow';
 import type { RunState } from '../../runtime/run-state';
-import { trackRunSession } from '../../runtime/session-progress';
+import { startTurn, type StartedTurn, type TurnStores } from '../../runtime/turn';
 import { timedRuns, type TimedRun } from '../../runtime/timed-runs';
-import type { SessionCatalog } from '../../session/catalog';
-import type { SessionStore } from '../../session/store';
 import type { WorkflowRuntime } from '@kuribohg/agent-workflows';
-import type { WorkspaceStore } from '../../workspace/store';
 import { bindAgentEntry } from './agent-entry';
 import { larkDisplay } from './config';
 import { createLarkRunOutput } from './run-output';
@@ -58,14 +45,9 @@ import type { ScopeRunMemory } from './scope-run-memory';
 const TOPIC_CONTEXT_MAX_MESSAGES = 40;
 
 /** Services shared by every turn of one channel connection. */
-export interface LarkRunServices {
+export interface LarkRunServices extends TurnStores {
   channel: LarkChannel;
-  executor: RunExecutor;
-  sessions: SessionStore;
-  sessionCatalog?: SessionCatalog;
-  workspaces: WorkspaceStore;
   media: MediaCache;
-  activeRuns: ActiveRuns;
   controls: Controls;
   cotClient: CotClient;
   callbackAuth?: CallbackAuth;
@@ -99,7 +81,7 @@ export async function runAgentBatch(
 ): Promise<RunExecution | undefined> {
   const entry = turn.entry ?? { kind: 'direct' };
   const workflowWake = entry.kind === 'workflow' && entry.trigger === 'event';
-  const { channel, sessions, sessionCatalog, workspaces, media, controls } = services;
+  const { channel, media, controls } = services;
   const { batch, scope, agentKind, agent, mode, preparedCot } = turn;
   if (batch.length === 0) return undefined;
   batch.sort((left, right) => {
@@ -180,7 +162,7 @@ export async function runAgentBatch(
     replyInThread: sendOpts.replyInThread === true,
   });
 
-  const flow = await startRunFlow({
+  const flow = await startTurn(services, {
     env: entryBinding?.env,
     modelSettings: runArguments,
     deadlineAt: turn.timedJob?.stopAt,
@@ -192,13 +174,8 @@ export async function runAgentBatch(
     access: accessDecision,
     capability,
     profileConfig: scopedProfile,
+    runPreferences: controls.cfg,
     agent,
-    sessions,
-    sessionCatalog,
-    workspaces,
-    executor: services.executor,
-    now: Date.now(),
-    stopGraceMs: getAgentStopGraceMs(controls.cfg),
     // A timed run has no one waiting to answer before its deadline.
     userQuestions: !turn.timedJob,
     // Chat replies show the whole answer, including text written before tool calls.
@@ -257,16 +234,12 @@ export async function runAgentBatch(
   } else {
     log.info('session', 'fresh', { cwd: flow.cwdRealpath });
   }
-  const sessionDone = trackRunSession({
-    scopeId: scope, sessions, sessionCatalog, capability, policy: flow.policy,
-    execution, activeRuns: services.activeRuns, resumeFrom: flow.resumeFrom,
-    source: workflowWake ? { kind: 'internal' } : {
+  const sessionDone = flow.track(workflowWake ? { kind: 'internal' } : {
       kind: 'message', messageId: firstMsg.messageId, summary: summarizeRunInput(batch),
       ...(mode === 'topic' ? { history: {
         completeThrough: topic.through,
         seenMessageIds: [...topic.seenMessageIds, ...topic.messages.map(message => message.messageId), ...quoted.batchIds, ...quoted.fetchedIds],
       } } : {}),
-    },
   });
   // The observer starts with execution, even if rendering cannot start.
   void sessionDone.catch(err => log.warn('session', 'tracking-failed', { scope, err: String(err) }));
@@ -505,8 +478,8 @@ function turnInstructions(input: {
   return instructions;
 }
 
-interface StartedTurn {
-  flow: Extract<Awaited<ReturnType<typeof startRunFlow>>, { ok: true }>;
+interface LarkStartedTurn {
+  flow: StartedTurn;
   capability: AgentCapability;
   firstMsg: PendingMessage;
   lastMsg: PendingMessage;
@@ -514,7 +487,7 @@ interface StartedTurn {
 }
 
 /** Posts the run's questions to the chat until its event stream ends. */
-async function relayUserQuestions(services: LarkRunServices, turn: LarkTurnRequest, started: StartedTurn): Promise<void> {
+async function relayUserQuestions(services: LarkRunServices, turn: LarkTurnRequest, started: LarkStartedTurn): Promise<void> {
   const { flow, capability, firstMsg, lastMsg } = started;
   const { execution } = flow;
   const { scope } = turn;
@@ -533,25 +506,13 @@ async function relayUserQuestions(services: LarkRunServices, turn: LarkTurnReque
 }
 
 /** Renders the run into the chat with the profile's reply mode and display settings. */
-async function presentTurn(services: LarkRunServices, turn: LarkTurnRequest, started: StartedTurn): Promise<void> {
-  const { channel, sessions, controls, cotClient, callbackAuth } = services;
+async function presentTurn(services: LarkRunServices, turn: LarkTurnRequest, started: LarkStartedTurn): Promise<void> {
+  const { channel, controls, cotClient, callbackAuth } = services;
   const { scope, preparedCot } = turn;
   const { flow, firstMsg, lastMsg, sendOpts } = started;
   const { execution } = flow;
   const chatId = firstMsg.chatId;
-
-  // Resolve idle-timeout for this run: scope override (on SessionEntry) wins
-  // over global default (preferences). 0 / undefined = no watchdog.
-  const scopeOverride = sessions.getIdleTimeoutMinutes(scope);
-  const idleTimeoutMs =
-    scopeOverride !== undefined
-      ? scopeOverride > 0
-        ? scopeOverride * 60_000
-        : undefined
-      : getRunIdleTimeoutMs(controls.cfg);
-  if (idleTimeoutMs) {
-    log.info('flush', 'idle-watchdog', { idleTimeoutMs });
-  }
+  if (flow.idleTimeoutMs) log.info('flush', 'idle-watchdog', { idleTimeoutMs: flow.idleTimeoutMs });
 
   const replyMode = getMessageReplyMode(controls.cfg);
   log.info('flush', 'reply-mode', { mode: replyMode });
@@ -579,10 +540,10 @@ async function presentTurn(services: LarkRunServices, turn: LarkTurnRequest, sta
         }
       : {}),
   };
-  await presentRunOutput(execution, createLarkRunOutput({
+  await flow.present(createLarkRunOutput({
     channel, chatId, replyMode, sendOpts, cardRenderOptions,
     cotMessages, cotClient, preparedCot, originMessageId: lastMsg.messageId, inputPreview: lastMsg.content,
-  }), { idleTimeoutMs, filterForPrefs });
+  }), { filterForPrefs });
 }
 
 function summarizeRunInput(batch: NormalizedMessage[]): string {

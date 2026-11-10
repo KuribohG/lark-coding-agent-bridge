@@ -5,7 +5,7 @@ import type { ActiveRuns } from './active-runs';
 import type { RunExecution } from './run-executor';
 import { recordRunSessionEvent, type RecordRunSessionEventInput } from './run-flow';
 
-type SessionInput =
+export type RunSessionSource =
   | { kind: 'message'; messageId?: string; summary?: string;
       history?: { seenMessageIds: readonly string[]; completeThrough?: number } }
   | { kind: 'internal' };
@@ -14,7 +14,7 @@ interface SessionProgressInput extends Omit<RecordRunSessionEventInput, 'event'>
   execution: RunExecution;
   activeRuns: ActiveRuns;
   resumeFrom?: string;
-  source: SessionInput;
+  source: RunSessionSource;
 }
 
 /** Own session persistence independently of output delivery. Source hosts supply

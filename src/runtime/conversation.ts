@@ -1,4 +1,3 @@
-import { trackRunSession } from './session-progress';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { sendRunInput } from '../agent/execution';
@@ -6,11 +5,11 @@ import type { AgentInput, AgentInputReceipt } from '../agent/types';
 import { ActiveRuns, stopRun } from './active-runs';
 import { RunStopped } from './errors';
 import { ProcessPool } from './process-pool';
-import { startRunFlow } from './run-flow';
+import { startTurn, type TurnStores } from './turn';
 import type { AgentKind, RunProfileConfig } from '../config/profile-schema';
 import type { AgentAttachment } from '../policy/run-policy';
 import { RunExecutor } from './run-executor';
-import { presentRunOutput, type RunOutputPlugin } from './run-output';
+import type { RunOutputPlugin } from './run-output';
 import { SessionCatalog } from '../session/catalog';
 import { SessionStore } from '../session/store';
 import { WorkspaceStore } from '../workspace/store';
@@ -63,7 +62,7 @@ export class ConversationRuntime {
   private readonly catalog: SessionCatalog;
   private readonly workspaces: WorkspaceStore;
   private readonly active = new ActiveRuns();
-  private readonly executor: RunExecutor;
+  private readonly stores: TurnStores;
   private readonly pending = new Set<AbortController>();
   private readonly starts = new Set<Promise<unknown>>();
   private readonly outputs = new Set<Promise<void>>();
@@ -76,12 +75,14 @@ export class ConversationRuntime {
     this.sessions = new SessionStore(join(options.stateDir, 'sessions.json'));
     this.catalog = new SessionCatalog(join(options.stateDir, 'sessions.catalog.json'));
     this.workspaces = new WorkspaceStore(join(options.stateDir, 'workspaces.json'));
-    this.executor = new RunExecutor({
+    const executor = new RunExecutor({
       resolveAgent: scope => this.execution.get(scope),
       resolveModelProvider: (agentKind, model) => this.execution.resolveModelProvider(agentKind, model),
       activeRuns: this.active,
       pool: new ProcessPool(() => Math.max(1, options.config.preferences.maxConcurrentRuns ?? 4)),
     });
+    this.stores = { executor, sessions: this.sessions, sessionCatalog: this.catalog,
+      workspaces: this.workspaces, activeRuns: this.active };
   }
 
   async load(): Promise<void> {
@@ -115,24 +116,18 @@ export class ConversationRuntime {
     const capability = this.execution.capabilityFor(scopeId);
     const agent = this.execution.get(scopeId);
     try {
-      const flow = await startRunFlow({
+      const turn = await startTurn(this.stores, {
         scopeId, scope: { source: 'channel', channelId: this.options.channelId,
           actorId: input.actorId, conversationId: input.conversationId },
         prompt: input.prompt, systemPrompt: this.options.systemPrompt ?? '',
         signal: controller.signal, deadlineAt: input.deadlineAt,
         attachments: input.attachments ?? [], access: { ok: true, reason: 'allowed-user' },
-        agent, capability, profileConfig: config, sessions: this.sessions, sessionCatalog: this.catalog,
-        workspaces: this.workspaces, executor: this.executor, now: Date.now(),
+        agent, capability, profileConfig: config,
       });
-      if (!flow.ok) { dispose(); return flow; }
-      const sessionDone = trackRunSession({ scopeId, sessions: this.sessions, sessionCatalog: this.catalog,
-        capability, policy: flow.policy, execution: flow.execution, activeRuns: this.active, resumeFrom: flow.resumeFrom,
-        source: { kind: 'message', summary: input.prompt.slice(0, 180) } });
-      const rendered = presentRunOutput(flow.execution, output, {
-        idleTimeoutMs: config.preferences.runIdleTimeoutMinutes
-          ? config.preferences.runIdleTimeoutMinutes * 60_000 : undefined,
-        filterForPrefs: state => state,
-      });
+      if (!turn.ok) { dispose(); return turn; }
+      const { track, present, ...flow } = turn;
+      const sessionDone = track({ kind: 'message', summary: input.prompt.slice(0, 180) });
+      const rendered = present(output);
       const done = Promise.allSettled([rendered, sessionDone]).then(results => {
         for (const result of results) if (result.status === 'rejected') throw result.reason;
       }).finally(dispose);
