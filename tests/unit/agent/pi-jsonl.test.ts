@@ -64,7 +64,6 @@ describe('PiRunTranslator', () => {
 
     expect(events).toEqual([
       { type: 'system', sessionId: 'sess-1', cwd: '/repo' },
-      { type: 'thinking', delta: 'plan' },
       { type: 'text', delta: 'hello' },
       { type: 'tool_use', id: 'tool-1', name: 'read', input: { path: 'README.md' } },
       { type: 'tool_result', id: 'tool-1', output: 'contents', isError: false },
@@ -79,6 +78,18 @@ describe('PiRunTranslator', () => {
       { type: 'done', sessionId: 'sess-1', terminationReason: 'normal' },
     ]);
     expect(translator.terminalEmitted()).toBe(true);
+  });
+
+  it('drops the raw chain of thought the way the Claude translator does', () => {
+    const translator = new PiRunTranslator();
+    const events = [
+      { type: 'message_update', assistantMessageEvent: { type: 'thinking_start', contentIndex: 0 } },
+      { type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: 'pla' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: 'n' } },
+      { type: 'message_update', assistantMessageEvent: { type: 'thinking_end', contentIndex: 0, content: 'plan' } },
+    ].flatMap(record => translator.translate(record));
+
+    expect(events).toEqual([]);
   });
 
   it('uses authoritative final content when a model emitted no deltas', () => {

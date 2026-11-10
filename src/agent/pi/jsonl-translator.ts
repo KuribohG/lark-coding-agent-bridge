@@ -15,7 +15,6 @@ export class PiRunTranslator {
   private lastError: string | undefined;
   private finalText: string | undefined;
   private textBlocksWithDelta = new Set<number>();
-  private thinkingBlocksWithDelta = new Set<number>();
   private startedTools = new Set<string>();
 
   translate(raw: unknown): AgentEvent[] {
@@ -111,18 +110,15 @@ export class PiRunTranslator {
         this.textBlocksWithDelta.add(index);
         return [{ type: 'text', delta: content }];
       }
-      case 'thinking_delta': {
-        const delta = stringValue(update.delta);
-        if (!delta) return [];
-        this.thinkingBlocksWithDelta.add(index);
-        return [{ type: 'thinking', delta }];
-      }
-      case 'thinking_end': {
-        const content = stringValue(update.content);
-        if (!content || this.thinkingBlocksWithDelta.has(index)) return [];
-        this.thinkingBlocksWithDelta.add(index);
-        return [{ type: 'thinking', delta: content }];
-      }
+      // Pi streams the provider's raw chain of thought token by token. Claude
+      // only surfaces provider-supplied reasoning summaries and drops raw
+      // thinking blocks (see claude/stream-json.ts), so forward nothing here to
+      // keep both harnesses showing the same thing. Passing Pi's deltas through
+      // shreds the Lark CoT bubble into one- to two-character fragments.
+      case 'thinking_start':
+      case 'thinking_delta':
+      case 'thinking_end':
+        return [];
       case 'error': {
         const message = errorMessage(update.error);
         if (message) this.lastError = message;
@@ -202,7 +198,6 @@ export class PiRunTranslator {
   private resetAssistantBlocks(): void {
     this.finalText = undefined;
     this.textBlocksWithDelta.clear();
-    this.thinkingBlocksWithDelta.clear();
   }
 
   private complete(): AgentEvent[] {
