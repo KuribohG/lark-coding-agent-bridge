@@ -55,8 +55,9 @@ export function readArtifact(state: WorkflowView, ref: string): WorkflowArtifact
   return { ...artifact, text };
 }
 
-export function addArtifact(state: WorkflowView, kind: string, text: string, now: () => number, task?: TaskView): StoredArtifact {
+export function addArtifact(state: WorkflowView, kind: string, text: string, now: () => number, task?: TaskView, extra?: { truncated?: boolean }): StoredArtifact {
   const artifact: StoredArtifact = { ref: `artifact:${randomUUID()}`, kind, ...putText(state, text), createdAt: now(),
+    ...(extra?.truncated ? { truncated: true } : {}),
     ...(task ? { taskId: task.taskId, attemptId: task.attempts.at(-1)?.attemptId } : {}) };
   emit(state, { type: 'artifact_added', artifact });
   return artifact;

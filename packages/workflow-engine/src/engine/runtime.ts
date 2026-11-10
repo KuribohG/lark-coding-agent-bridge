@@ -22,6 +22,10 @@ export interface WorkflowRuntimeDeps extends WorkerExecutionPolicy {
   workspaceRoot?: string;
   runner: WorkerRunner;
   getTimeoutMinutes?(root: WorkflowRoot): number;
+  /** Silence after which a running worker with no tool in flight is presumed hung; 0 disables the watchdog. */
+  stallMs?: number;
+  /** Backoff before each retry of a failed attempt, in order (last repeats). */
+  retryDelaysMs?: readonly number[];
   /** Current authorization of a main session; undefined revokes it. Workers stop when the digest changes. */
   resolveRoot(scopeId: string): Promise<WorkflowRoot | undefined>;
   /** Defaults to inheriting the root execution, which rejects cross-harness workers. */
@@ -62,6 +66,8 @@ export class WorkflowRuntime {
     this.kernel = new WorkflowKernel(deps.path, {
       resolveRoot: deps.resolveRoot,
       getTimeoutMinutes: deps.getTimeoutMinutes,
+      ...(deps.stallMs === undefined ? {} : { stallMs: deps.stallMs }),
+      ...(deps.retryDelaysMs === undefined ? {} : { retryDelaysMs: deps.retryDelaysMs }),
       checkSelection: deps.checkSelection,
       nativeIdKind: deps.nativeIdKind,
       repairJson: deps.repairJson,
@@ -334,6 +340,7 @@ export class WorkflowRuntime {
           request.onRun(active.runId);
           for await (const event of active.events()) {
             if (event.type === 'session') { nativeSessionId = event.nativeSessionId; request.onSession(event.nativeSessionId, event.model); }
+            else if (event.type === 'activity') this.kernel.noteWorkerActivity(task.taskId, attemptId, event.busy);
             else if (event.type === 'retry') { text = undefined; error = undefined; normal = false; }
             else if (event.type === 'final_text') text = event.text;
             else if (event.type === 'error') error = event.message;

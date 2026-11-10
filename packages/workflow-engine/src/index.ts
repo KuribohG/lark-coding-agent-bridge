@@ -11,6 +11,7 @@ export { callWorkflow } from './engine/ipc';
 export { runWorkflowTool } from './engine/tool-cli';
 export type { WorkflowToolOptions } from './engine/tool-cli';
 export { DEFAULT_WORKFLOW_TIMEOUT_MINUTES } from './engine/script-contract';
+export { DEFAULT_STALL_MS, MAX_TASK_RETRIES } from './engine/kernel-scheduler';
 export type {
   AgentKind,
   ModelSettings,

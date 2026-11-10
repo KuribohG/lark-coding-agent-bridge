@@ -5,9 +5,9 @@ import type {
 /** Text classification is confined to the adapter boundary; explicit kinds take precedence. */
 export function classifyAgentFailure(message: string): AgentFailureKind {
   if (/delivery is unknown/i.test(message)) return 'delivery_unknown';
-  if (/\[bridge-quota\]|insufficient_quota|quota_exceeded|budget_exceeded|budget has been exceeded|credit balance (?:is )?too low|daily (?:quota|budget) (?:is )?(?:exhausted|exceeded)/i.test(message)) return 'quota';
+  if (/\[bridge-quota\]|insufficient_quota|quota_exceeded|budget_exceeded|budget has been exceeded|credit balance (?:is )?too low|(?:quota group|credit)?\s*balance (?:is )?exhausted|daily (?:quota|budget) (?:is )?(?:exhausted|exceeded)/i.test(message)) return 'quota';
   if (/unauthorized|forbidden|invalid[_ ]api[_ ]key|authentication|\b40[13]\b/i.test(message)) return 'authentication';
-  if (/\b429\b|too many requests|rate[_ -]limit(?:[_ -]exceeded|[_ -]error|ed)?/i.test(message)) return 'rate_limit';
+  if (/\b429\b|too many requests|rate[_ -]?limit(?:[_ -]exceeded|[_ -]error|ed)?|rpm[_ -]?limit|overloaded/i.test(message)) return 'rate_limit';
   if (/stream disconnected before completion|stream closed before response\.completed|\b(?:ECONNRESET|ETIMEDOUT|EAI_AGAIN)\b|\bHTTP(?:\/[\d.]+)?\s+(?:408|500|502|503|504)\b/i.test(message)) return 'transient';
   // Claude Code reports gateway failures as "API Error: <status> ..." after its own retries.
   if (/^API Error:\s*(?:(?:500|502|503|504|529)\b|Upstream request failed\b|upstream stream disconnected\b)/im.test(message)) return 'transient';

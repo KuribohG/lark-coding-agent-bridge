@@ -47,6 +47,8 @@ export interface WorkerRunSpec {
 export type WorkerRunEvent =
   | { type: 'session'; nativeSessionId: string; model?: string }
   | { type: 'retry' }
+  /** The agent produced output; `busy` reports whether a tool call is in flight, when a tool is what keeps it silent. */
+  | { type: 'activity'; busy: boolean }
   | { type: 'final_text'; text: string }
   | { type: 'error'; message: string }
   | { type: 'done'; normal: boolean }

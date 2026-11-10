@@ -93,7 +93,12 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       found.waitingWorkflowId = undefined; found.yieldRequestedAt = undefined;
       return;
     }
-    case 'attempt_started': { const found = task(state, event.taskId); found.status = 'starting'; found.attempts.push(event.attempt); return; }
+    case 'attempt_started': {
+      const found = task(state, event.taskId);
+      found.status = 'starting'; found.attempts.push(event.attempt);
+      delete found.retryAt;
+      return;
+    }
     case 'attempt_admitted': task(state, event.taskId).attempts.at(-1)!.admittedAt ??= event.at; return;
     case 'attempt_spawned': {
       const found = task(state, event.taskId);
@@ -106,9 +111,20 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       const found = task(state, event.taskId);
       const attempt = found.attempts.at(-1)!;
       attempt.endedAt = event.at; attempt.result = event.result; attempt.stopReason = event.stopReason;
+      if (event.failureKind !== undefined) attempt.failureKind = event.failureKind;
       found.status = event.status;
       if (event.error !== undefined) found.error = event.error;
       if (event.resultRef) found.resultRefs.push(event.resultRef);
+      return;
+    }
+
+    case 'attempt_retry_scheduled': {
+      const found = task(state, event.taskId);
+      // The attempt already ended as failed; the task itself is queued again for a later attempt.
+      found.status = 'queued';
+      found.retryAt = event.at;
+      found.retryCount = (found.retryCount ?? 0) + 1;
+      delete found.error;
       return;
     }
 

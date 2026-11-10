@@ -208,6 +208,11 @@ export class WorkflowKernel {
     return this.ctx.scheduler.admitReady();
   }
 
+  /** A running worker produced output; `busy` means a tool is in flight and silence is expected. */
+  noteWorkerActivity(taskId: string, attemptId: string, busy: boolean): void {
+    this.ctx.scheduler.noteActivity(taskId, attemptId, busy);
+  }
+
   /** A process a previous controller left running for this turn. */
   workerHost(workflowId: string, match: string): WorkerHostRecord | undefined {
     return this.ctx.hosts.find(workflowId, match);

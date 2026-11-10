@@ -103,6 +103,8 @@ export interface TurnAttempt {
   sessionAt?: number;
   endedAt?: number;
   result?: string;
+  /** Why the attempt ended, when the reason is one the engine can act on (see `failureKind`). */
+  failureKind?: string;
   checkpointVersion?: number;
   sessionGeneration?: number;
 }
@@ -249,6 +251,10 @@ export interface AgentTurn {
   inputRefs: string[];
   status: 'queued' | 'starting' | 'running' | 'result_ready' | 'waiting_input' | 'waiting_workflow' | 'failed' | 'cancelling' | 'cancelled' | 'interrupted';
   attempts: TurnAttempt[];
+  /** Earliest time the next attempt may start; set when a failed attempt is retried. */
+  retryAt?: number;
+  /** Retries already granted to this task; retries do not consume the task budget. */
+  retryCount?: number;
   resultRefs: string[];
   error?: string;
   scriptRunId?: string;
@@ -311,6 +317,8 @@ export interface WorkflowArtifact {
   kind: string;
   text: string;
   digest: string;
+  /** The worker's answer was longer than the artifact limit and was cut; the tail is lost. */
+  truncated?: boolean;
   taskId?: string;
   attemptId?: string;
   createdAt: number;
@@ -412,6 +420,10 @@ export interface WorkflowWorkerResult {
 
 export interface WorkflowHost extends WorkerExecutionPolicy {
   log?: WorkflowLogger;
+  /** Silence after which a running worker with no tool in flight is treated as hung. Defaults to 15 minutes. */
+  stallMs?: number;
+  /** Backoff before each retry of a failed attempt, in order (last repeats). Defaults to 30 s, 2 min, 5 min. */
+  retryDelaysMs?: readonly number[];
   resolveRoot(scopeId: string): Promise<WorkflowRoot | undefined>;
   getTimeoutMinutes?(root: WorkflowRoot): number;
   resolveWorker?(root: WorkflowRoot, selection: WorkerExecutionSelection): Promise<WorkerExecution>;

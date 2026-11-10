@@ -5,7 +5,8 @@ import { capabilityForProfile } from '../../agent/backends';
 import { modelRunArguments, type ModelSettings } from '../../agent/model-settings';
 import type { Controls, WorkflowControl } from '../../commands';
 import type { AgentKind } from '../../config/profile-schema';
-import { getWorkflowTimeoutMinutes } from '../../config/schema';
+import { getRunIdleTimeoutMs, getWorkflowTimeoutMinutes } from '../../config/schema';
+import { DEFAULT_STALL_MS } from '@kuribohg/agent-workflows';
 import { sanitizeLogsForDoctor } from '../../core/logger';
 import { canUseDm, canUseGroup } from '../../policy/access';
 import type { AgentEntry } from '../../runtime/agent-entry';
@@ -112,6 +113,8 @@ export class LarkWorkflowHost {
     return createBridgeWorkflowRuntime({
       path: join(stateDir, 'workflows.sqlite'), executor,
       getTimeoutMinutes: root => getWorkflowTimeoutMinutes(profileForAgentKind(controls.profileConfig, bridgeAgentKind(root.agentKind))),
+      // A silent worker is stopped and retried; the conversation idle timeout is the natural knob for it.
+      stallMs: getRunIdleTimeoutMs(controls.profileConfig) ?? DEFAULT_STALL_MS,
       showPlan: async (state, text) => {
         await this.replyToOrigin(state, text);
         this.progressCards?.track(state);

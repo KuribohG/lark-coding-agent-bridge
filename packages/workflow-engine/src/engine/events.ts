@@ -58,7 +58,9 @@ export type DomainEvent =
   | { type: 'attempt_started'; taskId: string; attempt: TurnAttempt }
   | { type: 'attempt_admitted'; taskId: string; at: number }
   | { type: 'attempt_spawned'; taskId: string; runId: string; at: number }
-  | { type: 'attempt_ended'; taskId: string; at: number; result: string; stopReason?: WorkflowStopReason; status: StoredTask['status']; error?: string; resultRef?: string }
+  | { type: 'attempt_ended'; taskId: string; at: number; result: string; stopReason?: WorkflowStopReason; status: StoredTask['status']; error?: string; resultRef?: string; failureKind?: string; retryable?: boolean }
+  /** A failed attempt is retried after `at`: the task goes back to the queue without consuming a task slot. */
+  | { type: 'attempt_retry_scheduled'; taskId: string; at: number; delayMs: number; reason: string; failureKind: string }
   // Persistent members, checkpoints and the mailbox
   | { type: 'member_created'; agent: DurableAgent; session: SessionBinding }
   | { type: 'member_turn_scheduled'; task: StoredTask; receiptIds: string[] }

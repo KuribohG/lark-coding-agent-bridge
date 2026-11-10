@@ -17,7 +17,7 @@ import { bridgeAgentKind, bridgeWorkerPolicy } from './execution';
 type BridgeGrant = { execution: WorkerExecution; policy: RunPolicyAllow };
 
 export interface BridgeWorkflowRuntimeDeps extends Pick<WorkflowRuntimeDeps,
-  'path' | 'workspaceRoot' | 'getTimeoutMinutes' | 'wakeMain' | 'showPlan' | 'notify' | 'cliPath'> {
+  'path' | 'workspaceRoot' | 'getTimeoutMinutes' | 'stallMs' | 'wakeMain' | 'showPlan' | 'notify' | 'cliPath'> {
   executor: RunExecutor;
   resolve(scopeId: string): Promise<{ root: WorkflowRoot; policy: RunPolicyAllow } | undefined>;
   resolveWorker?(root: WorkflowRoot, selection: WorkerExecutionSelection, policy: RunPolicyAllow): Promise<BridgeGrant>;
@@ -92,12 +92,26 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
         waitForExit: timeoutMs => submitted.run.waitForExit(timeoutMs),
         stopReason: () => submitted.handle.stopReason,
         async *events() {
+          // Liveness for the kernel's stall watchdog: any output counts, and a tool in flight explains silence.
+          // The engine only needs the transitions, so repeated chatter is coalesced to one event per interval.
+          let busy = false;
+          let sentAt = 0;
+          const activity = (next: boolean) => {
+            const now = Date.now();
+            if (next === busy && now - sentAt < 5_000) return undefined;
+            busy = next; sentAt = now;
+            return { type: 'activity' as const, busy };
+          };
           for await (const event of submitted.subscribe()) {
             if (event.type === 'system') {
               const id = event[idField];
               if (id) yield { type: 'session', nativeSessionId: id, ...(event.model ? { model: event.model } : {}) };
             } else if (event.type === 'retry') yield { type: 'retry' };
-            else if (event.type === 'final_text') yield { type: 'final_text', text: event.content };
+            else if (event.type === 'tool_use') { const signal = activity(true); if (signal) yield signal; }
+            else if (event.type === 'tool_result') { const signal = activity(false); if (signal) yield signal; }
+            else if (event.type === 'text' || event.type === 'thinking' || event.type === 'usage' || event.type === 'status') {
+              const signal = activity(busy); if (signal) yield signal;
+            } else if (event.type === 'final_text') yield { type: 'final_text', text: event.content };
             else if (event.type === 'error') yield { type: 'error', message: event.message };
             else if (event.type === 'done') yield { type: 'done', normal: event.terminationReason === 'normal' };
             else if (event.type === 'user_input') yield { type: 'user_input', question: event.questions.map(item => item.question).join('\n') };
@@ -110,6 +124,7 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
 
   return new WorkflowRuntime({
     path: deps.path, workspaceRoot: deps.workspaceRoot, getTimeoutMinutes: deps.getTimeoutMinutes,
+    ...(deps.stallMs === undefined ? {} : { stallMs: deps.stallMs }),
     wakeMain: deps.wakeMain, showPlan: deps.showPlan, notify: deps.notify, cliPath: deps.cliPath,
     ...bridgeWorkerPolicy,
     runner,
