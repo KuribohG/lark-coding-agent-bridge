@@ -86,6 +86,31 @@ describe('agent model provider registry', () => {
     await expect(registry.resolve('claude', 'deepseek-flash')).resolves.toBeUndefined();
   });
 
+  it('falls back to the sole provider default for a run without a model selection', async () => {
+    process.env.PROVIDER_TEST_KEY = 'private-provider-key';
+    const registry = new ModelProviderRegistry(services);
+    await expect(registry.resolveDefault('pi')).resolves.toMatchObject({
+      id: 'deepseek',
+      env: expect.objectContaining({ LARK_MODEL_PROVIDER_KEY_73395B78866F: 'private-provider-key' }),
+      model: expect.stringMatching(/^lark_deepseek_[a-f0-9]+\/deepseek-flash$/),
+    });
+    await expect(new ModelProviderRegistry().resolveDefault('pi')).resolves.toBeUndefined();
+    await expect(new ModelProviderRegistry({
+      ...services,
+      second: { ...services.deepseek!, baseUrl: 'https://second.example/v1' },
+    }).resolveDefault('pi')).resolves.toBeUndefined();
+  });
+
+  it('resolves a bare model carrying a gateway context suffix', async () => {
+    process.env.PROVIDER_TEST_KEY = 'private-provider-key';
+    const registry = new ModelProviderRegistry(services);
+    await expect(registry.resolve('pi', 'deepseek-flash[1m]')).resolves.toMatchObject({
+      id: 'deepseek',
+      pi: { model: { id: 'deepseek-flash[1m]' } },
+    });
+    await expect(registry.resolve('pi', 'deepseek-flashx[1m]')).resolves.toBeUndefined();
+  });
+
   it('rejects an ambiguous bare model instead of choosing a provider', async () => {
     process.env.PROVIDER_TEST_KEY = 'private-provider-key';
     const registry = new ModelProviderRegistry({

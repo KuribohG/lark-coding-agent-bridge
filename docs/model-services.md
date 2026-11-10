@@ -38,8 +38,13 @@ triageModel = ""
 registry，并按当前 Agent 的 `supports()` 能力过滤，不需要在卡片代码里维护品牌分支。
 
 如果只有一个支持当前 Agent 的服务声明了该默认模型，也可以继续使用裸模型名，
-Bridge 会唯一解析到该服务；多个服务声明相同模型时会明确报歧义，要求改用
+Bridge 会唯一解析到该服务；带上下文后缀的裸模型名（如 `deepseek-flash[1m]`）
+同样解析到该服务并原样传给网关；多个服务声明相同模型时会明确报歧义，要求改用
 `<provider>/<model>`。
+
+未指定模型（`跟随默认`）时，按运行时切换 Provider 的 Agent（如 Pi）会默认绑定
+唯一支持它的服务及其默认模型，避免退回到 Agent 自己未托管的凭据配置；启动时固定
+Provider 的 Codex 不受影响。
 
 Pi 会在每次运行时通过临时 extension 注册该 provider；Codex 在启动时通过专用目录
 的 `config.toml` 合并 endpoint、`env_key` 和默认模型，保留其他原生配置。两者都只把凭据放进子进程

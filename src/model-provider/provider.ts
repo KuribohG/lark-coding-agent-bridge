@@ -141,11 +141,25 @@ export class ModelProviderRegistry {
       if (!model) throw new Error(`模型选择 ${selection} 缺少模型 ID`);
       return provider.bind(agentKind, model, credentials);
     }
-    const bare = this.providers.filter(candidate => candidate.bareModels(agentKind).includes(selection));
+    const bare = this.providers.filter(candidate =>
+      candidate.bareModels(agentKind).some(model => matchesBareModel(selection, model)));
     if (bare.length > 1) {
       throw new Error(`模型 ${selection} 同时由多个 provider 提供，请使用 provider/model 明确选择`);
     }
     return bare[0]?.bind(agentKind, selection, credentials);
+  }
+
+  /**
+   * Runtime fallback for backends that select their provider per run but have
+   * no managed credentials of their own. With no model selection, bind the
+   * sole service that supports the backend so the run still gets its
+   * endpoint and key instead of falling back to the CLI's unmanaged config.
+   */
+  async resolveDefault(agentKind: AgentKind, credentials = true): Promise<ResolvedModelProvider | undefined> {
+    const options = this.options(agentKind).filter(option => option.defaultModel);
+    if (options.length !== 1) return undefined;
+    const option = options[0]!;
+    return this.resolve(agentKind, `${option.id}/${option.defaultModel}`, credentials);
   }
 
   async resolveStartup(agentKind: AgentKind, model?: string, providerId?: string): Promise<ResolvedModelProvider | undefined> {
@@ -189,6 +203,12 @@ export function composeProviderSelection(
   const modelId = existing ? requested.slice(existing.id.length + 1) : requested;
   if (!modelId) throw new Error(`Provider ${option.label} 缺少模型 ID`);
   return `${option.id}/${modelId}`;
+}
+
+/** Bare selections may carry a gateway context suffix such as `[1m]`. */
+function matchesBareModel(selection: string, model: string): boolean {
+  if (selection === model) return true;
+  return selection.startsWith(`${model}[`) && selection.endsWith(']') && selection.length > model.length + 2;
 }
 
 function stableSuffix(value: string): string {

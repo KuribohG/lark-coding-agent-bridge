@@ -1,15 +1,17 @@
 import { chmod, mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ProfileExecutionController } from '../../../src/runtime/execution-controller';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { resolveAppPaths } from '../../../src/config/app-paths';
+import { ModelProviderRegistry } from '../../../src/model-provider/provider';
 import { ScopeExecutionStore } from '../../../src/session/scope-execution';
 import { createTmpProfile } from '../../helpers/tmp-profile';
 
 const cleanups: Array<() => Promise<void>> = [];
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(cleanups.splice(0).map((cleanup) => cleanup()));
 });
 
@@ -91,6 +93,42 @@ describe('ProfileExecutionController', () => {
     await expect(resolver.setDefaultProfile({ ...profile, agentKind: 'pi' })).rejects.toThrow(/does not support workspace access/);
     expect(resolver.defaultAgentKind).toBe('claude');
     expect(resolver.defaultAgent()).toBe(previous);
+  });
+
+  it('binds the sole model service when a per-run engine has no model selection', async () => {
+    const tmp = await createTmpProfile('agent-resolver-provider-');
+    cleanups.push(tmp.cleanup);
+    const profile = createDefaultProfileConfig({
+      agentKind: 'pi',
+      accounts: { app: { id: 'cli_test', secret: '${APP_SECRET}', tenant: 'feishu' } },
+      pi: { binaryPath: '/bin/true' },
+    });
+    const paths = resolveAppPaths({ rootDir: tmp.root, profile: 'pi' });
+    const modelProviders = new ModelProviderRegistry({
+      gateway: {
+        protocol: 'responses',
+        baseUrl: 'https://gateway.example/v1',
+        model: 'deepseek-flash',
+        apiKey: { source: 'env', id: 'PROVIDER_TEST_KEY' },
+      },
+    });
+    vi.stubEnv('PROVIDER_TEST_KEY', 'private-provider-key');
+    const resolver = new ProfileExecutionController({
+      profileConfig: profile,
+      appPaths: paths,
+      systemPrompt: '',
+      modelProviders,
+    });
+
+    await expect(resolver.resolveModelProvider('pi')).resolves.toMatchObject({
+      id: 'gateway',
+      model: expect.stringMatching(/^lark_gateway_[a-f0-9]+\/deepseek-flash$/),
+    });
+    // An explicit native model is not replaced by the service default.
+    await expect(resolver.resolveModelProvider('pi', 'anthropic/claude-opus-5.5')).resolves.toBeUndefined();
+    // Startup-bound Codex and unbound Claude keep their own defaults.
+    await expect(resolver.resolveModelProvider('codex')).resolves.toBeUndefined();
+    await expect(resolver.resolveModelProvider('claude')).resolves.toBeUndefined();
   });
 
   it('reconfigures launch settings make-before-break and keeps unaffected engines', async () => {

@@ -5,6 +5,7 @@ import {
 } from '../agent/backends';
 import type { AgentCapability } from '../agent/capability';
 import type { AgentAdapter, AgentBotIdentity } from '../agent/types';
+import { DEFAULT_MODEL } from '../agent/models';
 import type { AgentSystemPrompt } from '../agent/system-prompt';
 import type {
   AgentExecutionProfile,
@@ -106,7 +107,11 @@ export class ProfileExecutionController implements ExecutionController {
     agentKind: AgentKind,
     model?: string,
   ): Promise<ResolvedModelProvider | undefined> {
-    return this.modelProviders?.resolve(agentKind, model, backendFor(agentKind).providerSwitching !== 'startup');
+    const runtimeSwitchesProvider = backendFor(agentKind).providerSwitching !== 'startup';
+    const selected = model && model !== DEFAULT_MODEL ? model : undefined;
+    if (selected) return this.modelProviders?.resolve(agentKind, selected, runtimeSwitchesProvider);
+    if (!runtimeSwitchesProvider) return undefined;
+    return this.modelProviders?.resolveDefault(agentKind);
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
