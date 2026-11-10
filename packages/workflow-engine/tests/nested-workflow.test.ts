@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { WorkflowKernel } from '../src/engine/kernel';
-import { workflowWorkerInstructions } from '../src/engine/ipc';
+import { workflowWorkerInstructions } from '../src/engine/tools/instructions';
 import type { WorkflowRoot, WorkflowState, WorkflowWorkerRequest, WorkflowWorkerResult } from '../src/engine/types';
 
 const cleanup:Array<()=>Promise<unknown>>=[];

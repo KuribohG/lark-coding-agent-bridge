@@ -9,9 +9,12 @@ The package is developed in the bridge repository and is not yet published on it
 | Path | Role |
 | --- | --- |
 | `src/engine` | Kernel (SQLite state), script VM, runtime, worker IPC, worktrees |
+| `src/engine/tools` | Agent-callable workflow operations as tool plugins, each with the instructions that describe it |
 | `src/chat` | `/workflow` command text and status rendering |
 | `src/index.ts` | Public API |
 | `src/cli.ts` | Worker CLI (`agent-workflow workflow <operation>`) |
+
+Each operation the main agent or a worker can call through the workflow CLI is a `WorkflowTool` in one of the plugins under `src/engine/tools` (lifecycle, artifacts, member context, mailbox, work queue, nested workflows). A tool declares which caller may use it and, for main operations, how the kernel guards it (read-only, start, or versioned mutation allowed while interrupted or after the deadline). `KernelOperations` keeps authorization, idempotency and the shared state checks, then dispatches through `WorkflowToolRegistry`. Agents learn tools only from the generated instructions, so a plugin carries its own signatures and member/nested paragraphs, and `tests/workflow-tools.test.ts` checks that every registered tool is documented. The registry is internal; hosts cannot add tools yet.
 
 Runtime dependencies are `better-sqlite3` and `quickjs-emscripten` only. The bridge's `tests/static/contracts.test.ts` enforces this and keeps the bridge on the public entry. In this repository, `pnpm --filter @kuribohg/agent-workflows build|test|typecheck` works on the package alone; the bridge's root `test` and `typecheck` include it.
 
