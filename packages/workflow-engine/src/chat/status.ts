@@ -131,6 +131,23 @@ function pendingEvents(state: WorkflowState, now: number): string {
   return `待处理事件：${pending.length}${pending.length && now - oldest >= 60_000 ? `，最早一条已等待 ${duration(now - oldest)}` : ''}`;
 }
 
+/** The board feed for chat: the latest posts, a chosen number of them, or those from or to one member. */
+export function renderBoard(state: WorkflowState, filter?: string): string {
+  const posts = state.board?.posts ?? [];
+  if (!posts.length) return '这个工作流的留言板还没有帖子。';
+  const name = (agentId: string) => state.agents?.find(member => member.agentId === agentId)?.key ?? agentId;
+  const member = filter && !/^\d+$/.test(filter) ? state.agents?.find(item => item.key === filter.replace(/^@/, '')) : undefined;
+  if (filter && !/^\d+$/.test(filter) && !member) return `未找到成员：${compact(filter, 100)}。用 /workflow status 查看成员列表。`;
+  const matching = member ? posts.filter(post => post.from === member.agentId || post.to.includes(member.agentId)) : posts;
+  const shown = matching.slice(-(filter && !member ? Math.min(30, Math.max(1, Number(filter))) : 10));
+  const lines = [`留言板：共 ${posts.length} 帖${member ? `，与 ${compact(member.key, 100)} 相关 ${matching.length} 帖` : ''}，显示最近 ${shown.length} 帖。`];
+  for (const post of shown) {
+    const to = post.all ? '全体' : post.to.length ? post.to.map(id => '@' + compact(name(id), 50)).join(' ') : '未点名';
+    lines.push(`#${post.seq} ${post.from ? compact(name(post.from), 50) : post.author === 'script' ? '脚本' : '主会话'} → ${to} · ${time(post.createdAt)}`, '  ' + compact(post.text, 600));
+  }
+  return bounded(lines);
+}
+
 export function renderWorkStatus(state: WorkflowState, key?: string): string {
   if (!state.workQueue) return '这个工作流还没有工作项。';
   if (!key) return bounded(queueLines(state, 12));
@@ -195,6 +212,10 @@ export function renderWorkflowProgress(state: WorkflowState, now = Date.now()): 
   if (items?.length) {
     const done = items.filter(item => item.status === 'completed').length;
     lines.push(`**工作队列**：${done}/${items.length} 完成，已认领 ${items.filter(item => item.status === 'claimed').length}，失败 ${items.filter(item => item.status === 'failed').length}`);
+  }
+  const latest = state.board?.posts.at(-1);
+  if (latest) {
+    lines.push(`**留言板**：${state.board!.posts.length} 帖，最新 #${latest.seq} ${latest.from ? plain(state.agents?.find(member => member.agentId === latest.from)?.key ?? latest.from, 50) : latest.author === 'script' ? '脚本' : '主会话'}：${plain(latest.text.replace(/\s+/g, ' '), 120)}`);
   }
   const active = state.tasks.filter(task => ACTIVE_TASKS.has(task.status));
   if (active.length) {

@@ -5,6 +5,7 @@ import { closeWorkQueue, enqueueWork, unfinishedWork, workStatus } from './work-
 import { bindConsumerPool, consumerResult, parseConsumerPool } from './consumer-pool';
 import { consumerPools, memberPool, queueControl, queueName, queueNames } from './work-routing';
 import { beginEventWait } from './event-waits';
+import { postToBoard, readBoard } from './board';
 import { mailboxOperation, receiveMessages, receiptMessages, relaySender, scheduleMemberTurn, sendMessage } from './durable-agents';
 import { inheritedWorkerExecution } from './execution';
 import { parseScriptAgentCall, scriptText, SCRIPT_MAX_TASKS } from './script-contract';
@@ -307,13 +308,16 @@ export class ScriptApi {
       if (state.status !== 'active' || state.script?.runId !== runId || state.script.status !== 'running' || ctx.now() >= state.deadlineAt) throw new Error('Script run is inactive');
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid mailbox call');
       const args = input as Record<string, unknown>;
-      if (Object.keys(args).some(key => !['kind', 'member', 'text', 'key', 'topic', 'correlationId', 'relayFrom'].includes(key))) throw new Error('Unsupported mailbox option');
-      if (args.kind !== 'send' && args.kind !== 'receive') throw new Error('Unknown mailbox operation');
+      const board = args.kind === 'post' || args.kind === 'board';
+      const allowed = args.kind === 'post' ? ['kind', 'key', 'text', 'to'] : args.kind === 'board' ? ['kind', 'key', 'after', 'limit', 'member']
+        : ['kind', 'member', 'text', 'key', 'topic', 'correlationId', 'relayFrom'];
+      if (Object.keys(args).some(key => !allowed.includes(key))) throw new Error('Unsupported mailbox option');
+      if (args.kind !== 'send' && args.kind !== 'receive' && !board) throw new Error('Unknown mailbox operation');
       if (args.kind === 'receive' && (Object.hasOwn(args, 'text') || Object.hasOwn(args, 'relayFrom'))) throw new Error('receive() does not accept text or a sender');
       const key = scriptText(args.key, 'mailbox key', 160);
       if (state.workspaceKeys?.includes(key)) throw new Error('Script key already belongs to a workspace operation');
       if (key.startsWith('@wait/') || state.waits?.some(wait => wait.key === key) || state.controlOperations?.some(operation => operation.key === key)) throw new Error('Script key already belongs to a control operation');
-      const target = scriptText(args.member, 'member name', 100);
+      const target = board ? '' : scriptText(args.member, 'member name', 100);
       if (key.startsWith('@consumer/') || consumerPools(state).some(pool => key === pool.key) || queueNames(state).some(name => key === queueControl(state, name)?.closeKey)) throw new Error('Script key already belongs to a work queue operation');
       if (args.kind === 'receive' && memberPool(state, target)) throw new Error('Consumer pool members cannot wait on script receive()');
       if (key.trim() !== key) throw new Error('Mailbox key must not contain surrounding whitespace');
@@ -321,7 +325,10 @@ export class ScriptApi {
       if ((state.script.mailboxCalls?.length ?? 0) >= 128) throw new Error('Mailbox call limit reached');
       if (args.kind === 'receive' ? state.mailbox?.operations.some(item => item.key === 'script:' + key)
         : state.mailbox?.receipts.some(item => item.key === key)) throw new Error('Mailbox key changed operation kind');
-      const result = args.kind === 'send'
+      // A board read records how far the feed reached, so a replayed script reads the same posts.
+      const result = args.kind === 'post' ? { result: mailboxOperation(state, 'script:' + key, args, () => postToBoard(state, { author: 'script' }, args, ctx.now())) }
+        : args.kind === 'board' ? { result: readBoard(state, { ...args, upTo: (mailboxOperation(state, 'script:' + key, args, () => ({ lastSeq: state.board?.posts.length ?? 0 })) as { lastSeq: number }).lastSeq }) }
+        : args.kind === 'send'
         ? { result: mailboxOperation(state, 'script:' + key, args, () => sendMessage(state, target, args.text, ctx.now(),
           args.relayFrom === undefined ? undefined : relaySender(state, scriptText(args.relayFrom, 'sender name', 100), args.text), args)) }
         : { receiptId: receiveMessages(state, target, key, args).id };

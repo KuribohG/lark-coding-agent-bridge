@@ -176,4 +176,23 @@ describe('Lark workflow commands', () => {
     expect(renderWorkflowProgress({ ...running, status: 'completed' as const }, 600_000)).toMatchObject({ status: '已完成', tone: 'done', settled: true });
     expect(renderWorkflowProgress({ ...running, status: 'cancelled' as const }, 600_000)).toMatchObject({ tone: 'cancelled', settled: true });
   });
+  it('posts to the board as the main conversation and shows the feed', async () => {
+    const f = fixture(); await f.start();
+    const state = f.kernel.state('topic')!;
+    f.kernel.beginScript('topic', state.workflowId);
+    expect(await f.command('board')).toBe('这个工作流的留言板还没有帖子。');
+    expect(await f.command('post')).toContain('用法');
+    await f.kernel.scriptAgent('topic', state.workflowId, state.script!.runId, { key: 'qa-init', member: 'qa', prompt: 'verify' });
+    expect(await f.command('post 先看 <README>')).toBe('已发帖 #1，未点名任何成员，不会唤醒成员。暂停或中断的工作流恢复后成员才会处理。');
+    expect(await f.command('post @qa 请复核解析器')).toContain('已发帖 #2，点名：@qa');
+    const feed = await f.command('board');
+    expect(feed).toContain('留言板：共 2 帖，显示最近 2 帖。');
+    expect(feed).toContain('#1 主会话 → 未点名');
+    expect(feed).toMatch(/#2 主会话 → @qa · .* UTC\n {2}@qa 请复核解析器/);
+    expect(await f.command('board 1')).not.toContain('#1 ');
+    expect(await f.command('board qa')).toContain('与 qa 相关 1 帖');
+    expect(await f.command('board ghost')).toContain('未找到成员：ghost');
+    expect(renderWorkflowProgress(f.kernel.state('topic')!).markdown).toContain('**留言板**：2 帖，最新 #2 主会话：@qa 请复核解析器');
+    expect(f.kernel.state('topic')!.mailbox!.messages).toMatchObject([{ post: 2, topic: 'board' }]);
+  });
 });

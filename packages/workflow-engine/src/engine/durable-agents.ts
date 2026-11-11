@@ -122,7 +122,8 @@ export function messageMatch(input: { topic?: unknown; correlationId?: unknown }
 export function sendMessage(state: WorkflowView, target: string, text: unknown, now: number, from?: string, metadata: { topic?: unknown; correlationId?: unknown } = {}): unknown {
   const agent = member(state, target);
   const message: MailboxMessage = { id: randomUUID(), to: agent.agentId, from, text: scriptText(text, 'message', 4000), createdAt: now, ...messageMatch(metadata) };
-  if ((state.mailbox?.messages.length ?? 0) >= 256) throw new Error('Mailbox message limit reached');
+  // Board deliveries have their own budget (board.ts).
+  if ((state.mailbox?.messages ?? []).filter(item => item.post === undefined).length >= 256) throw new Error('Mailbox message limit reached');
   emit(state, { type: 'message_sent', message });
   return { messageId: message.id };
 }
@@ -164,20 +165,25 @@ export function receiveMessages(state: WorkflowView, target: string, key: string
   return state.mailbox!.receipts.find(item => item.id === receipt.id)!;
 }
 
+/** A mailbox message as its recipient sees it; the delivery of a board post shows the post it stands for. */
+function messageView(state: WorkflowView, message: Immutable<MailboxMessage>): Record<string, unknown> {
+  const name = (agentId: string) => state.agents?.find(agent => agent.agentId === agentId)?.key ?? agentId;
+  const post = message.post === undefined ? undefined : state.board?.posts[message.post - 1];
+  return { id: message.id, from: post ? post.from ? name(post.from) : post.author ?? 'main' : message.from ? name(message.from) : 'main',
+    text: post ? post.text : message.text, ...messageMatch(message),
+    ...(post ? { post: post.seq, to: post.to.map(name), ...(post.all ? { all: true } : {}) } : {}) };
+}
+
 export function receiptMessages(state: WorkflowView, receiptId: string): unknown[] | undefined {
   const receipt = state.mailbox?.receipts.find(item => item.id === receiptId);
   if (!receipt) throw new Error('Unknown mailbox receipt');
   if (receipt.status === 'waiting') return undefined;
-  return receipt.messageIds.map(id => {
-    const message = state.mailbox!.messages.find(item => item.id === id)!;
-    return { id, from: state.agents?.find(agent => agent.agentId === message.from)?.key ?? 'main', text: message.text, ...messageMatch(message) };
-  });
+  return receipt.messageIds.map(id => messageView(state, state.mailbox!.messages.find(item => item.id === id)!));
 }
 
 export function memberContext(state: WorkflowView, task: TaskView): unknown {
   const agent = taskAgent(state, task);
   if (!agent) return undefined;
   return { member: agent.key, turnId: task.taskId, checkpoint: checkpoint(state, agent),
-    messages: (state.mailbox?.messages ?? []).filter(message => task.inputMessageIds?.includes(message.id))
-      .map(message => ({ id: message.id, from: state.agents?.find(a => a.agentId === message.from)?.key ?? 'main', text: message.text, ...messageMatch(message) })) };
+    messages: (state.mailbox?.messages ?? []).filter(message => task.inputMessageIds?.includes(message.id)).map(message => messageView(state, message)) };
 }

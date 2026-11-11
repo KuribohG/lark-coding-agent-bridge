@@ -103,6 +103,8 @@ Guest functions:
 | `reviewedAgent(prompt, {key, criteria, worker?, reviewer?, maxRounds?, onError?})` | Independent verification and bounded rework; returns only an accepted result, otherwise `null`; see [collaboration controls](workflow-collaboration.md) |
 | `speculativeAgent(prompt, {key, gate, worker?, repair?, maxRounds?, onError?})` | Runs work while an independent gate checks its premise; returns only work built on a premise that passed, otherwise `null`; see [speculation](workflow-collaboration.md#speculate-past-a-long-gate) |
 | `discuss(topic, {key, members, maxTurns?, summary?, onError?})` | Multi-agent discussion through the mailbox; members choose recipients each turn; see [multi-agent discussion](#multi-agent-discussion) |
+| `team(task, {key, members, maxTurns?, onError?})` | A team that coordinates on the shared message board; members sleep until a post names them and the call returns when the board goes quiet; see [message board](#message-board-and-teams) |
+| `post(text, {key, to?})` / `readBoard({key, after?, limit?, member?})` | Post to the workflow's message board as the script, or read the feed; see [message board](#message-board-and-teams) |
 | `send(member, text, {key, topic?, correlationId?})` / `receive(member, {key, topic?, correlationId?, timeoutMs?})` | Send a durable message or await a stable inbox batch |
 | `enqueueWork({key, title, input, queue?, priority?, dependsOn?, resources?, maxAttempts?})` | Persist an immutable work item; returns `{itemId, key}` and reuses it on replay |
 | `workStatus({itemId?, queue?, offset?, limit?})` | Read one item with its payload, or bounded queue counts and summaries |
@@ -188,6 +190,53 @@ The last round's messages are sent only when another round can read them.
 - Members should address each other through their reply rather than the `send_message` tool. Messages sent through the tool still arrive in the recipient's next turn but do not wake it on their own.
 
 See [the debate example](../workflow-definitions/scripted/examples/debate.js).
+
+### Message board and teams
+
+Every workflow has one message board: an ordered, append-only feed that all of its agents can read. A post names the members who must act; naming a member delivers the post to its inbox and wakes it. A post that names nobody stays on the board and wakes no one. Posts are never edited or removed.
+
+| Caller | Post | Read |
+| --- | --- | --- |
+| Persistent member | `post_board` with `{operationId, text, to?}` | `read_board` with `{after?, limit?, member?}` |
+| One-off worker | not allowed | `read_board` |
+| Main agent | `post_board(text, to?)` | `read_board(after?, limit?, member?)` |
+| Script | `post(text, {key, to?})`, as `script` | `readBoard({key, after?, limit?, member?})` |
+| User | `/workflow post <text>`, as the main conversation | `/workflow board [count\|member]` |
+
+- `text` is at most 4000 characters. `to` is an array of member names or `"all"`. `@name` and `@all` in the text count as well, so `'Parser done, @qa please verify'` needs no `to`. Unknown names in `to` are rejected; an `@word` that matches no member is ordinary text. The sender is never its own recipient, and `all` means the members that exist when the post is made.
+- A read returns `{posts: [{seq, from, to, all?, text, at}], lastSeq, hasMore}`. Without `after` it returns the latest `limit` posts (default 20, at most 50); with `after` it returns the posts following that `seq`. `member` keeps the posts that member wrote or received. `from` is a member name, `main` or `script`.
+- Deliveries are ordinary inbox messages with topic `board` and the fields `post`, `to` and `all?` added, so everything that waits for messages works unchanged: `receive`, the `message` arm of `waitFor`, and `consumeWork({wakeOnMessages: true})`. As with direct messages, a member sees them in its next turn's member context and they are acknowledged when that turn succeeds.
+- A workflow holds at most 512 posts and 2048 deliveries. Deliveries reference the post instead of copying its text and do not count toward the 256 direct messages.
+- A script read records how far the feed reached under its `key`; replay reads the same range again.
+
+`team` runs a group of persistent members on the board:
+
+```js
+const result = await team(args.task, {
+  key: 'ship',
+  members: [
+    { name: 'lead', role: 'Split the work so pieces do not collide, assign it on the board, judge results. Do no implementation yourself.' },
+    { name: 'parser', role: 'Own src/parser/**. Hand finished changes to qa.', harness: 'codex', model: args.workerModel },
+    { name: 'docs', role: 'Own docs/**.', harness: 'codex', model: args.workerModel },
+    { name: 'qa', role: 'Read diffs and run the tests when asked; report problems to the author. Wait until asked.', harness: 'claude' },
+  ],
+  maxTurns: 6,
+});
+return result.posts;
+```
+
+1. The script posts the task as the first post, then every member takes a first turn in parallel with the task, its role, the roster and the board rules in its prompt.
+2. After that each member sleeps on its own, without a worker process. A post that names it starts its next turn; members never wait for each other, so a long implementation turn does not delay a question between two other members.
+3. The call returns when every member is asleep and no post is waiting to be read: `{stop, turns, members: [{name, turns, stop, note, error?}], posts, lastSeq, hasMore}`. `posts` holds up to the first 50 posts of the team; read further ones with `readBoard`. `note` is the member's last final answer.
+
+- `members`: 2–12, each `{name, role?, harness?, model?, reasoningEffort?, workflowTool?, workspace?}`. Names use 1–40 letters, digits, `_`, `.` or `-`, cannot be `all`, `main` or `script`, and are dedicated to this team within the workflow.
+- `maxTurns` bounds the turns each member can be woken for after its first: default 6, range 1–24, with `members × (maxTurns + 2) ≤ 120`. A member that has used them stays asleep and its `stop` is `max_turns`.
+- `stop` is `failed` if any member's turn failed, otherwise `max_turns` if any member ran out of turns, otherwise `quiet`. A failed member stops; the others continue and are not kept waiting for it. Any other error (an exhausted call budget, for example) stops the whole team and `team` resolves to `null`, or rejects with `onError: "throw"`.
+- The main agent and the user can steer a running team by posting; `/workflow post @parser also cover CRLF input` wakes `parser`. Posts made after the team went quiet wake nobody.
+- Put ownership in the roles: who assigns, who owns which files, who verifies and how. A coordinator that only assigns and judges, and one verifier for every two to four workers, is a reasonable default. Give members that edit the same repository concurrently their own [workspace](workflow-worktrees.md).
+- Posts cost turns: every post that names a member wakes it. The member prompt tells members not to post acknowledgements; `maxTurns` is the hard bound.
+
+Use `parallel` for a fixed split with no interaction, `discuss` when positions must be argued to a conclusion, `consumeWork` for a dynamic batch of items, and `team` when members need to ask, hand over and verify each other's work as they go.
 
 ### Persistent members
 

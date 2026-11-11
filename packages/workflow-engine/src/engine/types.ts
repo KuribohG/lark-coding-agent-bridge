@@ -124,6 +124,28 @@ export interface MailboxMessage {
   createdAt: number;
   receiptId?: string;
   consumedByTurnId?: string;
+  /** Set on the delivery of a board post to one of its recipients: the post's seq. The text lives on the post. */
+  post?: number;
+}
+/** Who wrote a board post when it was not a member. */
+export type BoardAuthor = 'main' | 'script';
+/** One entry of the workflow's shared, append-only message board. Posts are never edited or removed. */
+export interface BoardPost {
+  /** Position in the feed, starting at 1. */
+  seq: number;
+  id: string;
+  /** The posting member's agentId; absent for the main agent and the script. */
+  from?: string;
+  author?: BoardAuthor;
+  /** agentIds of the members the post was delivered to. */
+  to: string[];
+  /** The post addressed everyone (`all`), whatever the membership was at the time. */
+  all?: boolean;
+  text: string;
+  createdAt: number;
+}
+export interface WorkflowBoard {
+  posts: BoardPost[];
 }
 
 export interface MailboxReceipt {
@@ -141,7 +163,9 @@ export type WorkflowWaitSelector =
   | { kind: 'message'; member: string; topic?: string; correlationId?: string }
   | { kind: 'work'; itemId: string }
   | { kind: 'task'; taskId: string }
-  | { kind: 'timer'; afterMs: number };
+  | { kind: 'timer'; afterMs: number }
+  /** Every listed member is parked in an unsettled wait with no turn running and nothing that wait could receive. */
+  | { kind: 'quiet'; members: string[] };
 
 export interface WorkflowWait {
   id: string;
@@ -356,6 +380,7 @@ export interface WorkflowState {
   agents?: DurableAgent[];
   checkpoints?: AgentCheckpoint[];
   mailbox?: AgentMailbox;
+  board?: WorkflowBoard;
   workQueue?: WorkflowWorkQueue;
   consumerPool?: WorkConsumerPool;
   /** Additional pools; the original field keeps persisted single-pool workflows readable. */

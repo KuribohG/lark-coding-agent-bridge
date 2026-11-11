@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { workflowDigest } from './digest';
+import { parkedMembers } from './board';
 import { availableMessages, member, memberCursor, messageMatch, receiveMessages, receiptMessages } from './durable-agents';
 import { taskById } from './kernel-state';
 import { emit } from './kernel-store';
@@ -12,7 +13,7 @@ function selector(state: WorkflowView, value: unknown): WorkflowWaitSelector {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid waitFor selector');
   const input = value as Record<string, unknown>;
   const keys: Record<string, string[]> = { message: ['kind', 'member', 'topic', 'correlationId'], work: ['kind', 'itemId'],
-    task: ['kind', 'taskId'], timer: ['kind', 'afterMs'] };
+    task: ['kind', 'taskId'], timer: ['kind', 'afterMs'], quiet: ['kind', 'members'] };
   if (!keys[String(input.kind)] || Object.keys(input).some(key => !keys[String(input.kind)]!.includes(key))) throw new Error('Unsupported waitFor selector');
   switch (input.kind) {
     case 'message': {
@@ -30,6 +31,13 @@ function selector(state: WorkflowView, value: unknown): WorkflowWaitSelector {
       const taskId = scriptText(input.taskId, 'taskId', 100);
       if (!state.script!.calls.some(call => call.taskId === taskId) || !taskById(state, taskId)?.scriptManaged) throw new Error('Task handle does not belong to this script run');
       return { kind: 'task', taskId };
+    }
+    case 'quiet': {
+      if (!Array.isArray(input.members) || !input.members.length || input.members.length > 32) throw new Error('quiet needs 1–32 member names');
+      const names = input.members.map(name => scriptText(name, 'member', 100));
+      if (new Set(names).size !== names.length) throw new Error('quiet member names must be unique');
+      for (const name of names) member(state, name);
+      return { kind: 'quiet', members: names };
     }
     default: return { kind: 'timer', afterMs: boundedInteger(input.afterMs, 0, 0, 7 * 24 * 60 * 60_000) };
   }
@@ -74,6 +82,8 @@ export function beginEventWait(state: WorkflowView, input: Record<string, unknow
 export function settleEventWaits(state: WorkflowView, now: number): boolean {
   if (state.status !== 'active' || state.script?.status !== 'running') return false;
   let changed = false;
+  // Taken before any wait settles: settling releases its members, and every wait watching the same quiet group must agree.
+  const parked = (state.waits ?? []).some(wait => wait.status === 'waiting' && wait.any.some(arm => arm.kind === 'quiet')) ? parkedMembers(state) : undefined;
   for (const wait of state.waits ?? []) {
     if (wait.status !== 'waiting' || wait.runId !== state.script.runId) continue;
     const ready: Array<{ index: number; arm: Immutable<WorkflowWaitSelector>; at: number; value: unknown }> = [];
@@ -94,6 +104,10 @@ export function settleEventWaits(state: WorkflowView, now: number): boolean {
         if (!task || !['result_ready', 'failed', 'cancelled', 'waiting_input'].includes(task.status)) continue;
         at = Math.max(wait.createdAt, task.attempts.at(-1)?.endedAt ?? now);
         value = { taskId: task.taskId, status: task.status, error: task.error };
+      } else if (arm.kind === 'quiet') {
+        if (!arm.members.every(name => parked!.has(member(state, name).agentId))) continue;
+        at = now;
+        value = { members: arm.members };
       } else {
         const agent = member(state, arm.member);
         const messages = availableMessages(state, agent.agentId, arm);

@@ -1,0 +1,205 @@
+import { randomUUID } from 'node:crypto';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { callWorkflow, WorkflowRuntime, type WorkerRunSpec } from '../src';
+import { WorkflowKernel } from '../src/engine/kernel';
+import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '../src/engine/types';
+
+const cleanup: Array<() => Promise<unknown>> = [];
+afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
+
+function harness() {
+  const root: WorkflowRoot = { scopeId: 'board', profile: 'default', agentKind: 'codex', cwdRealpath: '/workspace',
+    policyFingerprint: 'policy', catalogBinding: 'root', modelSettings: {} };
+  const requests: WorkflowWorkerRequest[] = [];
+  const finishers = new Map<string, (result: WorkflowWorkerResult) => void>();
+  const host = { resolveRoot: async () => root, wakeMain: async () => {}, execute: async (request: WorkflowWorkerRequest) => {
+    requests.push(request); request.onRun('run-' + request.attemptId);
+    request.onSession(request.session.nativeSessionId ?? 'native-' + request.session.actorId);
+    return new Promise<WorkflowWorkerResult>(resolve => {
+      finishers.set(request.attemptId, resolve);
+      request.signal.addEventListener('abort', () => resolve({ status: 'stopped' }), { once: true });
+    });
+  } };
+  const kernel = new WorkflowKernel(':memory:', host, () => 1_000_000);
+  cleanup.push(async () => { for (const finish of finishers.values()) finish({ status: 'stopped' }); await kernel.close(); });
+  const state = () => kernel.state(root.scopeId)!;
+  const call = (method: string, args: Record<string, unknown> = {}) => kernel.call({ kind: 'main', scopeId: root.scopeId, allowStart: true }, method,
+    { operationId: randomUUID(), workflowId: state()?.workflowId, expectedStateVersion: state()?.stateVersion, ...args });
+  const worker = (request: WorkflowWorkerRequest, method: string, args: Record<string, unknown> = {}) => kernel.call(
+    { kind: 'worker', scopeId: root.scopeId, workflowId: state().workflowId, taskId: request.task.taskId, attemptId: request.attemptId }, method, args);
+  const run = async () => { const count = requests.length; await kernel.tick(); await vi.waitFor(() => expect(requests).toHaveLength(count + 1)); return requests.at(-1)!; };
+  const finish = async (request: WorkflowWorkerRequest, result: WorkflowWorkerResult = { status: 'completed', text: 'ready' }) => {
+    finishers.get(request.attemptId)!(result);
+    await vi.waitFor(() => expect(['starting', 'running', 'cancelling']).not.toContain(state().tasks.find(task => task.taskId === request.task.taskId)!.status));
+  };
+  const agent = (member: string, key: string) => kernel.scriptAgent(root.scopeId, state().workflowId, state().script!.runId, { member, key, prompt: 'Authorized member work' });
+  const mail = (args: Record<string, unknown>) => kernel.scriptMailbox(root.scopeId, state().workflowId, state().script!.runId, args);
+  const wait = (key: string, any: unknown[]) => kernel.scriptControl(root.scopeId, state().workflowId, state().script!.runId, { kind: 'wait', key, any });
+  const result = (pending: { kind: string; taskId?: string; waitId?: string }) => kernel.scriptControlResult(root.scopeId, state().workflowId, state().script!.runId, pending);
+  return { kernel, state, call, worker, run, finish, agent, mail, wait, result, requests,
+    start: async () => { await call('run_script', { goal: 'Coordinate authorized work', plan: 'Members coordinate on the board', script: 'return null;' }); kernel.beginScript(root.scopeId, state().workflowId); },
+    bootstrap: async (name: string) => { await agent(name, name + '-init'); await finish(await run()); },
+  };
+}
+
+describe('workflow message board', () => {
+  it('keeps one ordered feed, delivers posts to the members they name and leaves the rest unwoken', async () => {
+    const h = harness(); await h.start(); await h.bootstrap('lead'); await h.bootstrap('dev'); await h.bootstrap('qa');
+    expect(await h.call('post_board', { text: 'Kickoff: no one needs to act yet' })).toMatchObject({ seq: 1, to: [] });
+    expect(await h.call('post_board', { text: '@dev implement the parser; mail a@qa.example is not a mention', to: ['lead'] })).toMatchObject({ seq: 2, to: ['lead', 'dev'] });
+    expect((await h.mail({ kind: 'post', key: 'announce', text: 'Freeze at noon', to: 'all' })).result).toMatchObject({ seq: 3, to: ['lead', 'dev', 'qa'] });
+    await expect(h.call('post_board', { text: 'hello', to: ['ghost'] })).rejects.toThrow('Unknown member');
+    await expect(h.call('post_board', { text: '   ' })).rejects.toThrow('empty');
+
+    // As with direct messages, a receive hands the batch to the member's next turn.
+    await h.mail({ kind: 'receive', member: 'dev', key: 'dev-inbox' });
+    await h.agent('dev', 'dev-work'); const turn = await h.run();
+    const context = await h.worker(turn, 'read_context') as { member: { messages: Array<Record<string, unknown>> } };
+    expect(context.member.messages).toMatchObject([
+      { from: 'main', post: 2, to: ['lead', 'dev'], topic: 'board', text: expect.stringContaining('implement the parser') },
+      { from: 'script', post: 3, all: true, text: 'Freeze at noon' }]);
+    const posted = await h.worker(turn, 'post_board', { operationId: 'done', text: 'Parser done, @qa please verify' });
+    expect(posted).toMatchObject({ seq: 4, to: ['qa'] });
+    // A retried tool call repeats the recorded answer instead of posting twice; the sender is never its own recipient.
+    expect(await h.worker(turn, 'post_board', { operationId: 'done', text: 'Parser done, @qa please verify' })).toEqual(posted);
+    expect(await h.worker(turn, 'post_board', { operationId: 'self', text: 'note to @dev and @all' })).toMatchObject({ seq: 5, to: ['lead', 'qa'] });
+    await h.finish(turn);
+
+    const feed = await h.call('read_board', { after: 1, limit: 2 }) as { posts: Array<Record<string, unknown>>; lastSeq: number; hasMore: boolean };
+    expect(feed).toMatchObject({ lastSeq: 5, hasMore: true, posts: [{ seq: 2, from: 'main' }, { seq: 3, from: 'script', all: true }] });
+    expect(await h.call('read_board', { member: 'qa', limit: 50 })).toMatchObject({ posts: [{ seq: 3 }, { seq: 4, from: 'dev', to: ['qa'] }, { seq: 5 }] });
+    // Deliveries do not copy the text and do not spend the direct-message budget.
+    const box = h.state().mailbox!;
+    expect(box.messages).toHaveLength(8);
+    expect(box.messages.every(message => message.text === '' && message.post !== undefined)).toBe(true);
+    expect(box.messages.filter(message => message.consumedByTurnId).map(message => message.post)).toEqual([2, 3]);
+  });
+
+  it('lets one-off workers read but not post, and replays a script read against the recorded feed position', async () => {
+    const h = harness(); await h.start(); await h.bootstrap('dev');
+    await h.call('post_board', { text: 'first' });
+    await h.kernel.scriptAgent('board', h.state().workflowId, h.state().script!.runId, { key: 'oneoff', prompt: 'look around' });
+    const oneoff = await h.run();
+    expect(await h.worker(oneoff, 'read_board')).toMatchObject({ posts: [{ seq: 1, text: 'first' }] });
+    await expect(h.worker(oneoff, 'post_board', { operationId: 'x', text: 'hi' })).rejects.toThrow('persistent member');
+    await h.finish(oneoff);
+    expect((await h.mail({ kind: 'board', key: 'snapshot' })).result).toMatchObject({ lastSeq: 1, posts: [{ seq: 1 }] });
+    await h.call('post_board', { text: 'second' });
+    await h.call('pause'); await h.call('replay_script'); h.kernel.beginScript('board', h.state().workflowId);
+    expect((await h.mail({ kind: 'board', key: 'snapshot' })).result).toMatchObject({ lastSeq: 1, posts: [{ seq: 1 }] });
+    expect((await h.mail({ kind: 'board', key: 'later' })).result).toMatchObject({ lastSeq: 2 });
+    await expect(h.mail({ kind: 'post', key: 'bad', text: 'x', member: 'dev' })).rejects.toThrow('Unsupported mailbox option');
+  });
+
+  it('wakes a waiting member on a post and reports quiet only when every member is parked with nothing to read', async () => {
+    const h = harness(); await h.start(); await h.bootstrap('dev'); await h.bootstrap('qa');
+    const quiet = { kind: 'quiet', members: ['dev', 'qa'] };
+    await expect(h.wait('bad', [{ kind: 'quiet', members: ['dev', 'dev'] }])).rejects.toThrow('unique');
+    await expect(h.wait('bad', [{ kind: 'quiet', members: ['ghost'] }])).rejects.toThrow('Unknown member');
+    await h.call('post_board', { text: '@qa review the plan' });
+    const dev = await h.wait('dev/1', [{ kind: 'message', member: 'dev' }, quiet]);
+    // qa is not waiting yet, so dev cannot conclude that the team is done.
+    expect(h.result(dev)).toBeUndefined();
+    const qa = await h.wait('qa/1', [{ kind: 'message', member: 'qa' }, quiet]);
+    expect(h.result(qa)).toMatchObject({ index: 0, kind: 'message', value: [{ from: 'main', post: 1, text: '@qa review the plan' }] });
+    expect(h.result(dev)).toBeUndefined();
+    await h.agent('qa', 'qa/turn1'); const turn = await h.run();
+    await h.worker(turn, 'post_board', { operationId: 'ask', text: 'Plan is fine', to: ['dev'] });
+    expect(h.result(dev)).toMatchObject({ kind: 'message', value: [{ from: 'qa', text: 'Plan is fine' }] });
+    await h.finish(turn);
+    await h.agent('dev', 'dev/turn1'); await h.finish(await h.run());
+    const devAgain = await h.wait('dev/2', [{ kind: 'message', member: 'dev' }, quiet]);
+    expect(h.result(devAgain)).toBeUndefined();
+    const qaAgain = await h.wait('qa/2', [{ kind: 'message', member: 'qa' }, quiet]);
+    // The last member to fall asleep settles every wait watching the group in the same commit.
+    expect(h.result(qaAgain)).toEqual({ index: 1, kind: 'quiet', value: { members: ['dev', 'qa'] } });
+    expect(h.result(devAgain)).toEqual({ index: 1, kind: 'quiet', value: { members: ['dev', 'qa'] } });
+  });
+
+  it('does not wait for a member whose turn failed', async () => {
+    const h = harness(); await h.start(); await h.bootstrap('dev'); await h.bootstrap('qa');
+    await h.agent('qa', 'qa/turn1'); const turn = await h.run();
+    const dev = await h.wait('dev/1', [{ kind: 'message', member: 'dev' }, { kind: 'quiet', members: ['dev', 'qa'] }]);
+    expect(h.result(dev)).toBeUndefined();
+    await h.finish(turn, { status: 'failed', error: 'model refused' });
+    await h.kernel.tick();
+    expect(h.state().tasks.find(task => task.taskId === turn.task.taskId)!.status).toBe('failed');
+    expect(h.result(dev)).toMatchObject({ kind: 'quiet' });
+  });
+});
+
+describe('team composition', () => {
+  it('wakes members as posts name them, runs them independently and stops when the board goes quiet', async () => {
+    const root: WorkflowRoot = { scopeId: 'chat', profile: 'embedded', agentKind: 'custom-agent', cwdRealpath: '/repo',
+      policyFingerprint: 'policy', catalogBinding: 'main', modelSettings: {} };
+    // What each member posts on its nth turn; a member with nothing to say just ends its turn.
+    const plan: Record<string, Array<{ text: string; to?: string[] } | undefined>> = {
+      lead: [{ text: '@dev implement the parser, then hand it to qa' }, undefined],
+      dev: [undefined, { text: 'Parser implemented', to: ['qa'] }, { text: 'Fixed the empty-input case, @qa' }],
+      qa: [undefined, { text: 'Empty input crashes', to: ['dev'] }, { text: 'Verified. @lead the parser is ready' }],
+    };
+    const order: string[] = [];
+    const specs: WorkerRunSpec[] = [];
+    const runtime = new WorkflowRuntime({
+      path: ':memory:', resolveRoot: async () => root, wakeMain: async () => {},
+      runner: {
+        async start(spec) {
+          specs.push(spec);
+          await spec.validateBeforeRun();
+          const name = spec.resume?.id ?? /You are member "([^"]+)"/.exec(spec.prompt)![1]!;
+          const turn = Number(/turn (\d+) of at most/.exec(spec.prompt)?.[1] ?? 0) + 1;
+          order.push(name + turn);
+          return {
+            runId: `run-${specs.length}`, result: Promise.resolve('completed'),
+            stop: async () => {}, waitForExit: async () => true, stopReason: () => undefined,
+            async *events() {
+              yield { type: 'session', nativeSessionId: name };
+              const post = plan[name]![turn - 1];
+              if (post) await callWorkflow('post_board', { operationId: 'post', ...post }, spec.env);
+              yield { type: 'final_text', text: `${name} turn ${turn}` };
+              yield { type: 'done', normal: true };
+            },
+          };
+        },
+      },
+    });
+    await runtime.start(); cleanup.push(() => runtime.close());
+    const main = runtime.bindMain(root.scopeId, 'start');
+    await callWorkflow('run_script', { operationId: randomUUID(), goal: 'ship the parser', plan: 'A lead, a developer and a verifier coordinate on the board.', maxAgents: 32,
+      script: 'return await team("Ship the parser", {key:"ship", maxTurns: 4, members:[{name:"lead", role:"Assign and judge"},{name:"dev", role:"Implement"},{name:"qa", role:"Verify; wait until asked"}]});' }, main.env);
+    main.release();
+    await vi.waitFor(async () => { await runtime.tick(); expect(runtime.kernel.state(root.scopeId)?.script?.status).not.toBe('running'); }, { timeout: 10_000 });
+    const state = runtime.kernel.state(root.scopeId)!;
+    expect(state.script).toMatchObject({ status: 'result_ready' });
+    const result = JSON.parse(state.artifacts.find(artifact => artifact.ref === state.script?.resultRef)!.text);
+    expect(result).toMatchObject({ stop: 'quiet', turns: 5, hasMore: false, members: [
+      { name: 'lead', turns: 1, stop: 'quiet', note: 'lead turn 2' }, { name: 'dev', turns: 2, stop: 'quiet' }, { name: 'qa', turns: 2, stop: 'quiet' }] });
+    expect(result.posts.map((post: { from: string; to: string[] }) => [post.from, post.to])).toEqual([
+      ['script', []], ['lead', ['dev']], ['dev', ['qa']], ['qa', ['dev']], ['dev', ['qa']], ['qa', ['lead']]]);
+    expect(order.slice(3)).toEqual(['dev2', 'qa2', 'dev3', 'qa3', 'lead2']);
+    expect(specs[0]!.prompt).toContain('post_board');
+    expect(state.waits!.every(wait => wait.status === 'ready')).toBe(true);
+
+    // Replaying the finished script walks the same waits and turns from the journal: no member runs again and nothing is posted twice.
+    const again = runtime.bindMain(root.scopeId, 'continue');
+    await callWorkflow('replay_script', { operationId: randomUUID(), workflowId: state.workflowId, expectedStateVersion: state.stateVersion }, again.env);
+    again.release();
+    await vi.waitFor(async () => { await runtime.tick(); expect(runtime.kernel.state(root.scopeId)?.script).toMatchObject({ status: 'result_ready', revision: 1 }); }, { timeout: 10_000 });
+    const replayed = runtime.kernel.state(root.scopeId)!;
+    expect(JSON.parse(replayed.artifacts.find(artifact => artifact.ref === replayed.script?.resultRef)!.text)).toEqual(result);
+    expect(specs).toHaveLength(8);
+    expect(replayed.board!.posts).toHaveLength(6);
+  });
+
+  it('rejects malformed teams before starting any member', async () => {
+    const { runScriptProgram } = await import('../src/engine/script-vm');
+    const agent = vi.fn();
+    const run = (options: unknown) => runScriptProgram({ source: 'return await team("task",' + JSON.stringify(options) + ');', args: {}, signal: AbortSignal.timeout(5000),
+      agent, mailbox: async () => ({ seq: 1 }), control: async () => ({}), progress: () => {} });
+    await expect(run({ key: 't', members: [{ name: 'a' }] })).rejects.toThrow('2–12 members');
+    await expect(run({ key: 't', members: [{ name: 'a' }, { name: 'all' }] })).rejects.toThrow('cannot be all');
+    await expect(run({ key: 't', members: [{ name: 'a' }, { name: 'a' }] })).rejects.toThrow('unique');
+    await expect(run({ key: 't', maxTurns: 24, members: [{ name: 'a' }, { name: 'b' }, { name: 'c' }, { name: 'd' }, { name: 'e' }] })).rejects.toThrow('Too many members or turns');
+    expect(agent).not.toHaveBeenCalled();
+  });
+});

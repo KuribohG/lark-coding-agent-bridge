@@ -1,5 +1,5 @@
 import type {
-  AgentCheckpoint, DurableAgent, MailboxMessage, MailboxReceipt, SessionBinding, StoredArtifact, StoredTask, TurnAttempt, WorkClaim,
+  AgentCheckpoint, BoardPost, DurableAgent, MailboxMessage, MailboxReceipt, SessionBinding, StoredArtifact, StoredTask, TurnAttempt, WorkClaim,
   WorkConsumerPool, WorkerExecutionSelection, WorkflowData, WorkflowEvent, WorkflowScript, WorkflowStopReason, WorkflowWait, WorkflowWorkItem,
 } from './types';
 
@@ -69,6 +69,8 @@ export type DomainEvent =
   | { type: 'mailbox_operation_recorded'; operation: Operation }
   | { type: 'message_sent'; message: MailboxMessage }
   | { type: 'receipt_opened'; receipt: MailboxReceipt }
+  /** A board post together with its deliveries: one mailbox message per recipient, which is what wakes them. */
+  | { type: 'board_posted'; post: BoardPost; deliveries: MailboxMessage[] }
   // Event waits
   | { type: 'wait_opened'; wait: WorkflowWait; agentIds: string[] }
   | { type: 'wait_rebound'; waitId: string; runId: string; agentIds: string[] }
@@ -108,6 +110,7 @@ export function eventTopics(event: DomainEvent): string[] {
   if (event.type === 'wait_opened') topics.push('wait:' + event.wait.id);
   if (event.type.startsWith('pool_')) topics.push('pool');
   if (event.type === 'message_sent' || event.type === 'receipt_opened' || event.type.startsWith('member_turn_')) topics.push('mailbox');
+  if (event.type === 'board_posted') topics.push('board', 'mailbox');
   if (LIFECYCLE.has(event.type)) topics.push('lifecycle');
   return topics;
 }
@@ -126,6 +129,7 @@ export function eventEntity(event: DomainEvent): string | undefined {
     case 'work_claimed': return event.claim.id;
     case 'wait_opened': return event.wait.id;
     case 'message_sent': return event.message.id;
+    case 'board_posted': return event.post.id;
     case 'receipt_opened': return event.receipt.id;
     case 'checkpoint_saved': return event.checkpoint.ref;
     case 'pool_created': return event.pool.id;

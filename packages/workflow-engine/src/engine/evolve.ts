@@ -165,6 +165,15 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       for (const receipt of box.receipts) if (receipt.agentId === event.message.to) settleReceipt(state, receipt);
       return;
     }
+    case 'board_posted': {
+      (state.board ??= { posts: [] }).posts.push(event.post);
+      if (!event.deliveries.length) return;
+      const box = mailbox(state);
+      box.messages.push(...event.deliveries);
+      const recipients = new Set(event.deliveries.map(message => message.to));
+      for (const receipt of box.receipts) if (recipients.has(receipt.agentId)) settleReceipt(state, receipt);
+      return;
+    }
     case 'receipt_opened': {
       mailbox(state).receipts.push(event.receipt);
       state.agents!.find(item => item.agentId === event.receipt.agentId)!.wait = { kind: 'message', receiptId: event.receipt.id };
