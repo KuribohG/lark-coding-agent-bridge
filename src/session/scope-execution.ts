@@ -8,7 +8,7 @@ interface ScopeExecutionFile {
   scopes: Record<string, AgentKind>;
 }
 
-/** Standalone Web conversation engine choices; Lark always uses the bot default. */
+/** Per-conversation engine choices; scopes without an entry use the bot default. */
 export class ScopeExecutionStore {
   private data = new Map<string, AgentKind>();
   private saving: Promise<void> = Promise.resolve();

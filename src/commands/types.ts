@@ -41,11 +41,20 @@ export interface WorkflowControl {
   invalidate(scope: string): void;
 }
 
+/** Engine choice of a single scope; scopes without one follow the bot default. */
+export interface ScopeAgentControl {
+  defaultKind(): AgentKind;
+  adapter(scope: string, kind: AgentKind): AgentAdapter;
+  /** Rejects, leaving the choice unchanged, when the engine cannot run here. */
+  select(scope: string, kind: AgentKind): Promise<void>;
+}
+
 /** What a connected channel lends to commands and the supervisor, bound as one unit. */
 export interface ChannelControls {
   /** Present once the workflow runtime has started. */
   workflow(): WorkflowControl | undefined;
   btw: BtwCommandControl;
+  scopeAgents: ScopeAgentControl;
   cancelPendingInput(scope: string): number;
   flushPendingInput(): Promise<void>;
   pausePendingInput(): void;

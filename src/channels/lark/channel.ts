@@ -167,6 +167,11 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   const channelControls: ChannelControls = {
     workflow: () => workflows.control(),
     btw,
+    scopeAgents: {
+      defaultKind: () => execution.defaultAgentKind,
+      adapter: (scope, kind) => execution.get(scope, kind),
+      select: (scope, kind) => execution.setScopeKind(scope, kind),
+    },
     cancelPendingInput: (scope) => {
       turns.cancel(scope);
       const preparedCot = preparedCots.get(scope);

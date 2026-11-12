@@ -233,7 +233,7 @@ Without arguments, `/model` and `/effort` open a form showing the settings' sour
 
 Each field inherits independently: **topic/chat override → bot profile default → CLI default**. Topic settings affect only that topic; ordinary groups and DMs each use their chat scope. Users in the same topic/group share its settings. `default` removes the corresponding override. Preferences survive `/new`, `/cd`, and bridge restarts.
 
-Owner/admin users edit bot-wide defaults with `/config run` or the web profile form. `/model` and `/effort` only change the current chat/topic; `--scope profile` is rejected.
+Owner/admin users edit bot-wide defaults with `/config run` or the web profile form. `/agent`, `/model` and `/effort` only change the current chat/topic; `--scope profile` is rejected.
 
 
 Profile defaults affect conversations without an override for that field, plus meeting and document-comment tasks. Other profiles and independent terminal sessions are unaffected. Editing an offline profile in the web console takes effect when that profile next starts.
@@ -340,7 +340,7 @@ Pi supports `read-only` (built-in read/search tools only) and `full`. It has no 
 | `~/.lark-channel/active-profile` | Last selected profile |
 | `~/.lark-channel/profiles/<profile>/sessions.json` | Session state |
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | Agent-aware session catalog |
-| `~/.lark-channel/profiles/<profile>/scope-execution.json` | Per-chat/topic execution-engine overrides |
+| `~/.lark-channel/profiles/<profile>/scope-agents.json` | Per-chat/topic execution-engine choices made with `/agent` |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | Current and named workspace bindings |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | Profile-local encrypted secrets |
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | Profile-local lark-cli directory |

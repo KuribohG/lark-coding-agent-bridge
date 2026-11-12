@@ -12,6 +12,11 @@ export function fakeChannelControls(overrides: Partial<ChannelControls> = {}): C
   return {
     workflow: () => undefined,
     btw: noBtw,
+    scopeAgents: {
+      defaultKind: () => 'claude',
+      adapter: () => { throw new Error('no scope agents in this test'); },
+      select: async () => { throw new Error('no scope agents in this test'); },
+    },
     cancelPendingInput: () => 0,
     flushPendingInput: async () => {},
     pausePendingInput: () => {},

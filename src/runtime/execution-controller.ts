@@ -53,7 +53,7 @@ function withoutProfileWorkspace<T extends AgentExecutionProfile>(profileConfig:
 
 export interface ProfileExecutionControllerOptions {
   profileConfig: AgentExecutionProfile;
-  /** Only standalone Web supports per-conversation engine choices. */
+  /** Per-conversation engine choices; without it every scope uses the bot default. */
   scopeExecution?: ScopeExecutionStore;
   appPaths: Pick<import('../config/app-paths').AppPaths, 'profileDir'> &
     Partial<Pick<

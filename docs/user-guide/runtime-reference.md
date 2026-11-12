@@ -304,7 +304,7 @@ Pi 支持 `read-only`（只开放读取/搜索工具）和 `full`。Pi 没有可
 | `~/.lark-channel/active-profile` | 最近选择的 profile |
 | `~/.lark-channel/profiles/<profile>/sessions.json` | 会话状态 |
 | `~/.lark-channel/profiles/<profile>/sessions.json.catalog.json` | agent-aware 会话索引 |
-| `~/.lark-channel/profiles/<profile>/scope-execution.json` | 各聊天 / 话题的执行引擎覆盖 |
+| `~/.lark-channel/profiles/<profile>/scope-agents.json` | 各聊天 / 话题用 `/agent` 选择的执行引擎 |
 | `~/.lark-channel/profiles/<profile>/workspaces.json` | 当前和命名工作空间绑定 |
 | `~/.lark-channel/profiles/<profile>/secrets.enc` | profile 本地加密 secret |
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | 当前 profile 的 lark-cli 目录 |

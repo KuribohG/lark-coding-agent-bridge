@@ -14,6 +14,7 @@ import { handleInvite, handleRemove } from './access';
 import { handleMeeting } from './meeting';
 import { handleRun } from './run';
 import { handleModelCommand } from './model';
+import { handleAgent } from './agent';
 
 export const builtinHandlers = {
   new: handleNew,
@@ -31,6 +32,7 @@ export const builtinHandlers = {
     else await reply(ctx, '当前入口暂不支持 /btw。');
   },
   model: (args, ctx) => handleModelCommand('model', args, ctx),
+  agent: handleAgent,
   effort: (args, ctx) => handleModelCommand('reasoningEffort', args, ctx),
   stop: handleStop,
   timeout: handleTimeout,

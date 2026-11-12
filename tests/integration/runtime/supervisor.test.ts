@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -159,7 +159,6 @@ describe('Supervisor', () => {
     const execution = executions.get('claude')!;
     const previous = execution.defaultAgent();
     expect(execution.kindFor('oc_dm')).toBe('claude');
-    await expect(execution.setScopeKind('oc_dm', 'pi')).rejects.toThrow('bot-wide');
     const controls = sup.controlsFor('claude')!;
     const binDir = join(root, 'bin');
     await mkdir(binDir, { recursive: true });
@@ -183,6 +182,15 @@ describe('Supervisor', () => {
     expect(sup.controlsFor('claude')).toBe(controls);
     expect(controls.profileConfig.agentKind).toBe('pi');
     expect(execution.kindFor('oc_dm')).toBe('pi');
+    expect(execution.kindFor('oc_group:omt_topic')).toBe('pi');
+
+    // /agent pins one scope; the others keep following the bot default.
+    await execution.setScopeKind('oc_group:omt_topic', 'claude');
+    expect(execution.kindFor('oc_group:omt_topic')).toBe('claude');
+    expect(execution.kindFor('oc_dm')).toBe('pi');
+    expect(JSON.parse(await readFile(join(root, 'profiles', 'claude', 'scope-agents.json'), 'utf8')).scopes)
+      .toEqual({ 'oc_group:omt_topic': 'claude' });
+    await execution.setScopeKind('oc_group:omt_topic', 'pi');
     expect(execution.kindFor('oc_group:omt_topic')).toBe('pi');
     expect(execution.get('oc_dm', 'claude')).toBe(previous);
     expect(execution.get('oc_dm').id).toBe('pi');

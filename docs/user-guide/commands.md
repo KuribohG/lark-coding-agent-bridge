@@ -31,6 +31,7 @@
 | `/ws remove <名称>` | 删除命名绑定，保留文件 |
 | `/resume` | 恢复兼容的历史会话 |
 | `/recent [N]` | 列出最近完成的 session，标题可跳到原消息或对应话题；owner/admin 看整个 profile，其他用户只看当前话题 / 聊天 |
+| `/agent [claude、codex 等或 default] [模型名或 default] [强度] [任务]` | 当前话题 / 聊天的执行引擎；各引擎在这里的上下文相互独立，切回时继续原会话；有任务在执行时不能切换 |
 | `/model [模型名或 default] [强度] [任务]` | 当前话题 / 聊天的模型和强度；带任务时切换后立即执行 |
 | `/effort [强度或 default]` | 当前话题 / 聊天的思考强度 |
 | `/btw <问题>` | 基于主会话的旁问 |
@@ -62,7 +63,7 @@
 
 工作流开始前，用 `/config run` 设置此 bot 全局默认执行器（所有私聊和群话题共用），再用 `/model <模型>` 和 `/effort <强度>` 设置主模型。各 worker 的模型写在任务要求里，由脚本逐个指定。调用示例与重放边界见[工作流](../workflows.md)。
 
-`/config` 及其子项统一修改此 bot 的全局默认；`/model`、`/effort`、`/timeout` 只修改当前聊天或话题，`default` 恢复继承全局默认。
+`/config` 及其子项统一修改此 bot 的全局默认；`/agent`、`/model`、`/effort`、`/timeout` 只修改当前聊天或话题，`default` 恢复继承全局默认。
 
 ## 在本机终端执行
 

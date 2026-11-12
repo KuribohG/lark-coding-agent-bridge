@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import pkg from '../../package.json';
 import { startChannel as realStartChannel } from '../channels/lark';
 import type { BridgeChannel } from '../channels/lark/channel';
@@ -9,6 +10,7 @@ import type { AgentKind, ProfileConfig } from '../config/profile-schema';
 import { log } from '../core/logger';
 import { refreshOwnerControls } from '../policy/owner';
 import { SessionStore } from '../session/store';
+import { ScopeExecutionStore } from '../session/scope-execution';
 import { SessionCatalog } from '../session/catalog';
 import { WorkspaceStore } from '../workspace/store';
 import { preFlightChecks } from '../cli/preflight';
@@ -59,11 +61,13 @@ function createExecutionController(input: {
   appPaths: AppPaths;
   configPath: string;
   modelServices?: Record<string, import('../model-service/config').ModelServiceConfig>;
+  scopeExecution: ScopeExecutionStore;
 }): ProfileExecutionController {
-  const { profileConfig, appPaths, configPath, modelServices } = input;
+  const { profileConfig, appPaths, configPath, modelServices, scopeExecution } = input;
   const host = larkAgentHostContext(appPaths, configPath);
   return new ProfileExecutionController({
     profileConfig,
+    scopeExecution,
     appPaths: { ...appPaths, configPath },
     systemPrompt: host.systemPrompt,
     env: host.env,
@@ -123,6 +127,7 @@ class ManagedProfile {
     private cfg: AppConfig,
     private profileConfig: ProfileConfig,
     private execution: ProfileExecutionController,
+    private scopeExecution: ScopeExecutionStore,
     private sessions: SessionStore,
     private sessionCatalog: SessionCatalog,
     private workspaces: WorkspaceStore,
@@ -331,6 +336,7 @@ class ManagedProfile {
         appPaths: nextRuntime.appPaths,
         configPath: this.configPath,
         modelServices: nextRuntime.modelServices,
+        scopeExecution: this.scopeExecution,
       });
       const nextLarkAuth = candidateAuth = new LarkProfileAuth(next, nextRuntime.appPaths);
       if (config === 'reload') {
@@ -623,11 +629,15 @@ export class Supervisor {
     await sessions.load();
     const sessionCatalog = new SessionCatalog(`${appPaths.sessionsFile}.catalog.json`);
     await sessionCatalog.load();
+    // Not `scope-execution.json`: profiles may still hold that file from the retired per-scope overrides.
+    const scopeExecution = new ScopeExecutionStore(join(appPaths.profileDir, 'scope-agents.json'));
+    await scopeExecution.load();
     const execution = createExecutionController({
       profileConfig,
       appPaths,
       configPath,
       modelServices: runtime.modelServices,
+      scopeExecution,
     });
     if (this.opts.runPreflight !== false) {
       const availability = await checkRuntimeAgentAvailability(execution.defaultAgent());
@@ -643,6 +653,7 @@ export class Supervisor {
       cfg,
       profileConfig,
       execution,
+      scopeExecution,
       sessions,
       sessionCatalog,
       workspaces,
