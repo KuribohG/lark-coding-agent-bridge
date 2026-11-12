@@ -5,7 +5,7 @@ import type { WorkflowTask } from '../types';
 const tools = BUILTIN_WORKFLOW_TOOLS;
 
 export const WORKFLOW_TOOL_INSTRUCTIONS = `工作流工具通过 shell 调用：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。环境里的 CLI 路径属于当前 bridge 版本。
-工作流模式由 bridge 的 /workflow 命令路由决定，不根据自然语言或任务类型推断。仅 /workflow start 或 /workflow script 命令授权的启动轮可调用 run_script；内部完成事件只允许继续处理已绑定的工作流，不能新建。普通消息不进入工作流模式，也不会获得工作流调用凭据。
+工作流模式由 bridge 的 /workflow 命令路由决定，不根据自然语言或任务类型推断。仅 /workflow start 或 /workflow script 命令授权的启动轮可调用 run_script；内部完成事件只允许继续处理已绑定的工作流，不能新建。普通消息不能新建工作流；话题里已有工作流时，普通消息轮可以查看和干预它。
 run_script 需要唯一 operationId；所有其他变更需要 workflowId、唯一 operationId、expectedStateVersion（从 status 返回）。冲突时重读 status，不自动重试不同内容。
 操作：${tools.mainOperations()}。
 主 agent 沿用当前会话的 harness、model 和 reasoningEffort（飞书 /config run、/model、/effort 在开始前设置）。execution:{agentKind,model?,reasoningEffort?} 设置脚本 worker 默认值。agent(prompt,{key,member?,harness?,model?,reasoningEffort?,output?:"text"|"json",schema?,onError?:"null"|"throw",workflowTool?}) 可为每个 worker 覆盖 harness、模型和强度；同一 harness 可用不同模型。省略时使用对应目标的设置；跨 harness 不继承其它 harness 的模型。只接受当前已授权 profile，不接受其它 profile、凭据或环境变量。目标必须支持独立 final_text，模型必须由目标 harness/服务支持。
@@ -18,6 +18,15 @@ script 是支持顶层 await/return 的 JS 函数体，无 import/process/requir
 普通 agent() 重放只复用 key/输入/执行绑定（包括模型）匹配的成功任务；外部状态变化应写入输入或换 key。未启用子 workflow 的一次性任务失败后重放用新会话；带 member 的任务保持成员身份和原生会话，重试原逻辑轮次。副作用不保证 exactly-once。暂停会取消在途 worker，resume 从头重放并复用完成结果。Bridge 重启时正在运行的根工作流会自动重放续跑，停机时间不计入截止时间；暂停的或无法自动续跑的保持中断，需 replay_script 或用户 /workflow resume。脚本结果是 workflow-result 产物，主 agent read_artifact、ack_events 后 complete；也可发布 report 后完成。
 ${WORKFLOW_SCHEDULING_INSTRUCTIONS}
 run_script/replay_script 后结束 turn，子任务由 bridge 管理。仅在整体结束或失败时唤醒主会话。内部事件不是用户消息或原生问题答案。不要读取或展示环境中的调用凭据。worker 仅可执行原始需求授权的任务；主、子运行沿用已授权 profile，角色说明不代表工具沙箱隔离。`;
+
+/**
+ * For an ordinary user turn in a scope that has a workflow: enough to inspect it and act on the user's request,
+ * without the script guide, which `workflow guide` prints when a replay needs it.
+ */
+export const WORKFLOW_MESSAGE_INSTRUCTIONS = `本话题有一个 bridge 管理的工作流，本轮已获得它的调用凭据：用户询问进度或要求干预时直接操作，不需要用户再发 /workflow 命令；用户没有提到它时不要动它。
+调用方式：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。status 返回完整状态；变更需要 workflowId、唯一 operationId、expectedStateVersion（取自 status），冲突时重读 status。
+操作：${tools.mainOperations()}。
+本轮不能 run_script 新建工作流。改脚本重放（replay_script，须同时更新 plan）前，用 read_artifact 读取 status 里 script.sourceRef、script.planRef 指向的现行脚本和方案；脚本 API 的完整说明不在上下文里时运行 node "$AGENT_WORKFLOW_CLI" workflow guide。暂停、取消、重放等会中断在途 worker 的操作，只在用户明确要求或同意后执行。不要读取或展示环境中的调用凭据。`;
 
 const MEMBER_PREAMBLE = `你是 bridge 管理的持久工作流成员。遵守原始需求授权，只处理本轮输入，最终答复结束本轮并释放执行资源。角色说明不改变实际权限。不要发送外部消息或派生子 agent。
 你可使用当前绑定的 CLI：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json（也可 --input-file）。不要读取调用凭据。`;

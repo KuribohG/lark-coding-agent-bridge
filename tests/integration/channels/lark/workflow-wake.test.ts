@@ -83,4 +83,55 @@ describe('workflow main-session wake', () => {
     expect(markNotified).toHaveBeenCalledWith(scopeId, ['event-1']);
     expect(release).toHaveBeenCalledOnce();
   });
+  it('gives an ordinary user turn the credentials of the workflow in its scope', async () => {
+    const realFollowup = false;
+    const tmp = await createTmpProfile('workflow-wake-');
+    const profile = createDefaultProfileConfig({ agentKind: 'codex', codex: { binaryPath: 'codex' }, accounts: { app: { id: 'test', secret: 'test', tenant: 'feishu' } } });
+    profile.workspaces.default = tmp.workspace;
+    const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
+    const catalog = new SessionCatalog(join(tmp.profile, 'catalog.json'));
+    const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
+    const scopeId = 'chat:topic';
+    const scope = { source: 'im' as const, chatId: 'chat', threadId: 'topic', actorId: 'user' };
+    const context = await resolveRunFlowContext({ scopeId, scope, prompt: '', attachments: [], access: { ok: true, reason: 'allowed-user' },
+      capability: capabilityForProfile(profile), profileConfig: profile, sessions, sessionCatalog: catalog, workspaces, now: Date.now() });
+    if (!context.ok) throw new Error('fixture context rejected');
+    const identity = { scopeId, agentId: 'codex' as const, cwdRealpath: context.workspace.cwdRealpath, policyFingerprint: context.policy.policyFingerprint };
+    catalog.upsertActive({ ...identity, threadId: 'root-thread' });
+    catalog.markCompleted({ ...identity, topicContextThrough: 100, topicContextSeenMessageIds: ['om_old_input'], sourceMessageId: 'om_old_input' });
+    cleanup.push(async () => { await Promise.all([sessions.flush(), catalog.flush(), workspaces.flush()]); await tmp.cleanup(); });
+    const agent = new FakeAgentAdapter({ id: 'codex', events: [
+      { type: 'system', threadId: 'root-thread' }, { type: 'final_text', content: 'reviewed' }, { type: 'done', terminationReason: 'normal' },
+    ] });
+    const activeRuns = new ActiveRuns();
+    const executor = new RunExecutor({ resolveAgent: () => agent, pool: new ProcessPool(() => 3), activeRuns });
+    const release = vi.fn(); const markNotified = vi.fn();
+    const bindMain = vi.fn(); const bindMessage = vi.fn(() => ({ instructions: 'WORKFLOW IN THIS TOPIC', env: { AGENT_WORKFLOW_TOKEN: 'test' }, release }));
+    const services = {
+      executor, activeRuns, sessions, sessionCatalog: catalog, workspaces,
+      channel: { send: vi.fn(), botIdentity: { openId: 'bot' } },
+      media: { resolve: vi.fn(async () => []) },
+      controls: { profile: 'default', cfg: { accounts: profile.accounts }, profileConfig: profile, botOwnerId: 'user', ownerRefreshState: 'ok' },
+      memory: new ScopeRunMemory(), userQuestions: { publish: vi.fn() }, cotClient: {},
+    } as unknown as Parameters<typeof runAgentBatch>[0];
+    const turn = {
+      scope: scopeId, agentKind: 'codex', mode: 'topic',
+      batch: [{ chatId: 'chat', threadId: 'topic', senderId: 'user', chatType: 'group', messageId: 'original-user-input', content: 'how is the workflow going', createTime: 500, resources: [] }],
+      workflows: { bindMain, bindMessage, kernel: { markNotified } },
+    } as unknown as Parameters<typeof runAgentBatch>[1];
+    if (realFollowup) vi.mocked(presentRunOutput).mockImplementationOnce(async (execution) => {
+      execution.handle.inputMessageIds.add('om_real_followup');
+      for await (const _event of execution.subscribe()) { /* Drain output independently from session tracking. */ }
+      await execution.result;
+    });
+    vi.mocked(fetchTopicContext).mockResolvedValue({ messages: [], complete: true } as never);
+    await runAgentBatch(services, turn);
+    expect(bindMessage).toHaveBeenCalledWith(scopeId);
+    expect(bindMain).not.toHaveBeenCalled();
+    expect(agent.runOptions[0]?.prompt).toContain('WORKFLOW IN THIS TOPIC');
+    expect(agent.runOptions[0]?.prompt).toContain('how is the workflow going');
+    expect(agent.runOptions[0]?.env).toMatchObject({ AGENT_WORKFLOW_TOKEN: 'test' });
+    expect(markNotified).not.toHaveBeenCalled();
+    expect(release).toHaveBeenCalledOnce();
+  });
 });

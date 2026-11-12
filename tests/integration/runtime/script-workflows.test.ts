@@ -715,6 +715,34 @@ describe('script workflow runtime', () => {
     expect(h.state().agents![0]?.lastTurnId).toBe(h.state().tasks[0]?.taskId);
   });
 
+  it('lets an ordinary user turn inspect and steer the workflow of its scope, but not start one', async () => {
+    const h = await harness();
+    expect(h.runtime.bindMessage('script-topic')).toBeUndefined();
+    await h.call('run_script', { goal: 'first', script: 'return 1;' });
+    await h.until(() => expect(h.state().script?.status).toBe('result_ready'));
+    const turn = h.runtime.bindMessage('script-topic')!;
+    cleanup.push(async () => turn.release());
+    // The short form: how to call, what exists and where the workflow stands, without the script guide.
+    expect(turn.instructions).toContain('replay_script');
+    expect(turn.instructions).toContain(`"workflowId":"${h.state().workflowId}"`);
+    expect(turn.instructions).toContain('"scriptStatus":"result_ready"');
+    expect(turn.instructions).not.toContain('createWorkspace');
+    expect(turn.instructions.length).toBeLessThan(4000);
+    const call = (method: string, args: Record<string, unknown> = {}) => callWorkflow(method,
+      { operationId: randomUUID(), expectedStateVersion: h.state()?.stateVersion, ...args }, turn.env);
+    await expect(call('status')).resolves.toMatchObject({ workflowId: h.state().workflowId, script: { status: 'result_ready' } });
+    await expect(call('run_script', { goal: 'another', plan: 'Return two.', script: 'return 2;' })).rejects.toThrow('explicit /workflow');
+    // Its events are left for the wake that delivers them.
+    expect(h.state().events.some(event => !event.acknowledged)).toBe(true);
+    await call('pause');
+    expect(h.state().status).toBe('paused');
+    await call('cancel');
+    expect(h.state()).toBeUndefined();
+    // The credentials stay with that workflow: it can still be read, and nothing new can be started.
+    await expect(call('status')).resolves.toMatchObject({ status: 'cancelled' });
+    await expect(call('run_script', { goal: 'another', plan: 'Return two.', script: 'return 2;' })).rejects.toThrow('explicit /workflow');
+  });
+
   it('restricts continuation credentials to the original workflow and denies new starts', async () => {
     const h = await harness();
     expect(() => h.runtime.bindMain('script-topic', 'continue')).toThrow('No active workflow');

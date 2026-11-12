@@ -6,7 +6,7 @@ import { silentLogger, stopReasonOf, WorkflowStopped, type WorkerRun, type Worke
 import { checkJsonOutput } from './json-output';
 import { RESUME_DEADLINE, RESUME_ROOT_CHANGED, WorkflowKernel } from './kernel';
 import { WorkflowIpc } from './ipc';
-import { WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from './tools/instructions';
+import { WORKFLOW_MESSAGE_INSTRUCTIONS, WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from './tools/instructions';
 import { workflowDigest } from './digest';
 import { inheritedWorkerExecution } from './execution';
 import { MAX_RUNNING_SCRIPTS } from './limits';
@@ -260,6 +260,17 @@ export class WorkflowRuntime {
       ...(state ? { workflowId: state.workflowId } : {}) }, deadlineAt);
     return { ...binding, instructions: `${WORKFLOW_TOOL_INSTRUCTIONS}\n\n${this.kernel.context(scopeId)}`,
       eventIds: state?.events.filter(event => !event.acknowledged).map(event => event.id) ?? [] };
+  }
+
+  /**
+   * Credentials for an ordinary user turn to inspect and steer the scope's workflow, or undefined when it has none.
+   * The turn cannot start a workflow, and pending events stay with the wake that delivers them.
+   */
+  bindMessage(scopeId: string, deadlineAt = Date.now() + 24 * 60 * 60_000) {
+    const state = this.kernel.state(scopeId);
+    if (!state) return undefined;
+    const binding = this.ipc.bind({ kind: 'main', scopeId, workflowId: state.workflowId }, deadlineAt);
+    return { ...binding, instructions: `${WORKFLOW_MESSAGE_INSTRUCTIONS}\n<workflow_context source="bridge">\n${this.kernel.brief(scopeId)}\n</workflow_context>` };
   }
 
   private async execute(request: WorkflowWorkerRequest): Promise<WorkflowWorkerResult> {

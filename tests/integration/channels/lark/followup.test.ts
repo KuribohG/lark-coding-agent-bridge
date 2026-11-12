@@ -152,7 +152,7 @@ describe.each(['codex', 'claude'] as const)('in-flight %s IM delivery', agentKin
 });
 
 describe('workflow command routing', () => {
-  it.each(['start', 'script'])('grants workflow access only to /workflow %s, including mixed queued messages', async operation => {
+  it.each(['start', 'script'])('lets only /workflow %s start a workflow, including mixed queued messages', async operation => {
     const h = await harness('codex', true);
     await h.message('用 Workflow 分析这个问题', { messageId: 'ordinary-before' });
     await h.message(`/workflow ${operation} analyze this task`, { messageId: 'command' });
@@ -177,8 +177,12 @@ describe('workflow command routing', () => {
     h.agent.finish(1);
     await vi.waitFor(() => expect(h.agent.options).toHaveLength(3), { timeout: 2500 });
     expect(h.agent.options[2]!.prompt).toContain('普通后续问题');
-    expect(h.agent.options[2]!.env?.AGENT_WORKFLOW_TOKEN).toBeUndefined();
-    expect(h.agent.options[2]!.prompt).not.toContain('工作流工具通过 shell');
+    // Once the topic has a workflow, an ordinary turn may inspect and steer it, with the short instructions only.
+    const followup = h.agent.options[2]!;
+    expect(followup.prompt).toContain('本话题有一个 bridge 管理的工作流');
+    expect(followup.prompt).not.toContain('工作流工具通过 shell');
+    await expect(callWorkflow('status', {}, followup.env)).resolves.toMatchObject({ status: 'active' });
+    await expect(callWorkflow('run_script', { operationId: 'second', goal: 'another', script: 'return 2;', plan: 'Return two.' }, followup.env)).rejects.toThrow('explicit /workflow');
     await expect(callWorkflow('status', {}, command.env)).rejects.toThrow('revoked');
     await h.message('/workflow cancel');
     await h.message('/stop');

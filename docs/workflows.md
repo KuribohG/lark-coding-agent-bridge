@@ -30,6 +30,10 @@ Each attempt records `startedAt` (queued by the engine), `admittedAt` (the bridg
 
 The old `architecture-review` plugin and agent-led `start`, `delegate`, `send`, `begin_revision_round` API operations have been removed. When explicitly requested, a workflow can perform architecture review as an ordinary script use case; there is no fixed designer/challenger plugin. On upgrade, unfinished old instances are cancelled and release their topic binding. Their existing artifacts remain readable by workflow ID, but old instances cannot resume. The packaged review example demonstrates independent proposals and a conditional revision through this common API.
 
+### Asking the main agent about a running workflow
+
+While a topic has a workflow, every ordinary message in it runs with that workflow's credentials. The main agent can answer "how is it going" from `status`, and act on a request to cancel a stuck worker (`cancel_task`), pause, post to the board, enqueue work or replay an edited script, without a `/workflow` command. Such a turn gets a short description of the operations and a few lines of state; `workflow guide` prints the full script guide when a replay needs it. It cannot start a workflow, and completion events are still delivered by their own wake.
+
 ## Harness and model selection
 
 | Selection | Configuration | Scope |

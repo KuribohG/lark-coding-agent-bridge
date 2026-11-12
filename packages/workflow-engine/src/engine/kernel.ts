@@ -81,6 +81,17 @@ export class WorkflowKernel {
       : '当前没有绑定工作流；仅 /workflow start 或 /workflow script 命令授权的本轮可调用 run_script。';
   }
 
+  /** A few lines on the scope's workflow for a turn that may inspect it; `status` has the rest. */
+  brief(scopeId: string): string | undefined {
+    const state = this.ctx.store.state(scopeId);
+    if (!state) return undefined;
+    const tasks: Record<string, number> = {};
+    for (const task of state.tasks) tasks[task.status] = (tasks[task.status] ?? 0) + 1;
+    return JSON.stringify({ workflowId: state.workflowId, name: state.script?.name, status: state.status, scriptStatus: state.script?.status,
+      stateVersion: state.stateVersion, goalPreview: state.goal.slice(0, 200), deadlineAt: new Date(state.deadlineAt).toISOString(), tasks,
+      scriptLogs: state.script?.logs.slice(-3), unacknowledgedEvents: state.events.filter(event => !event.acknowledged).length });
+  }
+
   latest(scopeId: string): WorkflowState | undefined {
     return this.copy(this.ctx.store.latest(scopeId));
   }
