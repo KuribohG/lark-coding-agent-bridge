@@ -194,6 +194,19 @@ function ownedClaim(state: WorkflowView, task: TaskView, attemptId: string, args
   return claim;
 }
 
+/** The recorded response of a work operation of this attempt, so a repeated call can answer without acting again. */
+export function workOperation(state: WorkflowView, task: TaskView, attemptId: string, operationId: unknown): { response: unknown } | undefined {
+  const key = `${task.taskId}:${attemptId}:${scriptText(operationId, 'operationId', 160)}`;
+  const prior = state.workQueue?.operations.find(operation => operation.key === key);
+  return prior && { response: prior.response };
+}
+
+/** Keeps the caller's claim leased for `leaseMs` more while the engine works on its behalf; throws once the claim is lost. */
+export function holdClaim(state: WorkflowView, task: TaskView, attemptId: string, args: Record<string, unknown>, now: number, leaseMs: number): void {
+  const claim = ownedClaim(state, task, attemptId, args, now);
+  emit(state, { type: 'claim_renewed', claimId: claim.id, leaseUntil: Math.min(Math.max(claim.leaseUntil, now + leaseMs), state.deadlineAt) });
+}
+
 export function workContext(state: WorkflowView, task: TaskView): unknown {
   const claim = state.workQueue?.claims.find(claim => claim.status === 'active' && claim.taskId === task.taskId);
   const subscribed = memberQueue(state, state.agents?.find(agent => agent.agentId === task.agentId)?.key);

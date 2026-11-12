@@ -5,6 +5,11 @@ import type { AddressInfo } from 'node:net';
 import type { WorkflowCaller } from './types';
 
 const MAX_BODY = 512_000;
+/** Operations that answer only after the engine has finished work of its own; the others answer at once. */
+const LONG_CALLS: Record<string, number> = { submit_work: 2 * 3_600_000 };
+const CALL_TIMEOUT_MS = 15_000;
+/** While a long call is pending the response sends whitespace this often, which keeps the client's idle timers from firing. */
+const KEEPALIVE_MS = 20_000;
 
 function workflowTokenHash(token: string): string {
   return createHash('sha256').update(token).digest('hex');
@@ -24,6 +29,7 @@ export class WorkflowIpc {
     private readonly endpointFile?: string) {
     this.server = createServer(async (request, response) => {
       response.setHeader('Content-Type', 'application/json');
+      let keepalive: NodeJS.Timeout | undefined;
       try {
         if (request.method !== 'POST' || request.url !== '/workflow') throw new Error('Invalid workflow endpoint');
         const tokenHash = workflowTokenHash(request.headers.authorization?.replace(/^Bearer /, '') ?? '');
@@ -42,11 +48,17 @@ export class WorkflowIpc {
         if (this.bindings.get(tokenHash) !== binding) throw new Error('Workflow binding revoked');
         const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { method?: unknown; args?: unknown };
         if (typeof body.method !== 'string' || !body.args || typeof body.args !== 'object' || Array.isArray(body.args)) throw new Error('Expected method and args object');
+        if (Object.hasOwn(LONG_CALLS, body.method)) {
+          keepalive = setInterval(() => { response.write(' '); }, KEEPALIVE_MS);
+          keepalive.unref();
+        }
         const result = await call(binding.caller, body.method, body.args as Record<string, unknown>);
         response.end(JSON.stringify({ ok: true, result }));
       } catch (error) {
-        if (response.statusCode === 200) response.statusCode = 400;
+        if (response.statusCode === 200 && !response.headersSent) response.statusCode = 400;
         response.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+      } finally {
+        clearInterval(keepalive);
       }
     });
     this.server.requestTimeout = 15_000;
@@ -106,7 +118,7 @@ export async function callWorkflow(method: string, args: unknown, env = process.
   if (!endpoint || !token) throw new Error('This command requires a bridge-managed workflow run');
   const url = new URL(endpoint);
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.pathname !== '/workflow' || url.username || url.password) throw new Error('Invalid local workflow endpoint');
-  const response = await fetch(url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(15_000),
+  const response = await fetch(url, { method: 'POST', redirect: 'error', signal: AbortSignal.timeout(LONG_CALLS[method] ?? CALL_TIMEOUT_MS),
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ method, args }) });
   const body = await response.json() as { ok: boolean; result?: unknown; error?: string };
   if (!body.ok) throw new Error(body.error ?? 'Workflow request failed');

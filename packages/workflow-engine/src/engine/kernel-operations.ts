@@ -5,7 +5,7 @@ import type { KernelContext } from './kernel-context';
 import { workflowSummary } from './tools/lifecycle';
 import { BUILTIN_WORKFLOW_TOOLS } from './tools/registry';
 import type { ScriptState, WorkerCaller } from './tools/types';
-import type { WorkflowCaller, WorkflowView } from './types';
+import type { TaskView, WorkflowCaller, WorkflowView } from './types';
 
 /**
  * Tool-call entry point for the main agent and workers. It owns authorization, idempotency and the shared state
@@ -28,6 +28,7 @@ export class KernelOperations {
       }
       // What `prepare` settles (expired leases) stands even when the call itself is then refused.
       if (tool?.prepare) store.transact(() => tool.prepare!(ctx, requireState(store.state(caller.scopeId, caller.workflowId))), 'worker:' + caller.taskId);
+      if (tool?.run) return tool.run(ctx, caller, args, change => store.transact(() => change(...this.workerBinding(caller)), 'worker:' + caller.taskId));
       return store.transact(() => this.workerCall(caller, method, args), 'worker:' + caller.taskId);
     }
     const tool = this.tools.main(method);
@@ -91,16 +92,20 @@ export class KernelOperations {
     }, cause);
   }
 
-  private workerCall(caller: WorkerCaller, method: string, args: Record<string, unknown>): unknown {
-    const { ctx } = this;
-    const state = requireState(ctx.store.state(caller.scopeId, caller.workflowId));
-    const tool = this.tools.worker(method);
+  private workerBinding(caller: WorkerCaller): [WorkflowView, TaskView] {
+    const state = requireState(this.ctx.store.state(caller.scopeId, caller.workflowId));
     const task = findTask(state, caller.taskId);
     if (!['starting', 'running'].includes(task.status) || task.attempts.at(-1)?.attemptId !== caller.attemptId) throw new Error('Worker binding is inactive');
     const agent = taskAgent(state, task);
     if (agent && agent.activeTurnId !== task.taskId) throw new Error('Member turn is no longer active');
+    return [state, task];
+  }
+
+  private workerCall(caller: WorkerCaller, method: string, args: Record<string, unknown>): unknown {
+    const [state, task] = this.workerBinding(caller);
+    const tool = this.tools.worker(method);
     if (!tool) throw new Error('Operation not permitted for worker');
-    return tool.call(ctx, state, task, caller, args);
+    return tool.call(this.ctx, state, task, caller, args);
   }
 
   summary(state: WorkflowView): unknown {

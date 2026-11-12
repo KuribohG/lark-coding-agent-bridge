@@ -34,7 +34,15 @@ export interface WorkerTool {
   /** Runs before the attempt binding check, for example to expire stale leases the binding check depends on. */
   prepare?(ctx: KernelContext, state: WorkflowView): void;
   call(ctx: KernelContext, state: WorkflowView, task: TaskView, caller: WorkerCaller, args: ToolArgs): unknown;
+  /**
+   * Replaces `call` for an operation that waits on work outside the store, such as Git commands. It runs outside any
+   * transaction and reads or changes the workflow through `bound`, which opens a transaction after repeating the
+   * check that the caller's attempt and member turn are still active.
+   */
+  run?(ctx: KernelContext, caller: WorkerCaller, args: ToolArgs, bound: BoundCall): Promise<unknown>;
 }
+
+export type BoundCall = <T>(change: (state: WorkflowView, task: TaskView) => T) => T;
 
 export interface WorkflowTool {
   name: string;

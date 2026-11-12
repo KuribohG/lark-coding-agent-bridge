@@ -99,7 +99,7 @@ Guest functions:
 | API | Behavior |
 | --- | --- |
 | `agent(prompt, {key, member?, harness?, model?, reasoningEffort?, output?, schema?, onError?, workflowTool?, workspace?, inputs?})` | Promise of final text, a parsed JSON value with `output: "json"` or `schema`, or `null` when the worker fails (see [Failure handling](#failure-handling)). `inputs` lists 1–16 keys of earlier, awaited agent calls in this run; their results reach the worker by reference (ref plus a 2000-character preview) and it reads the full text with `read_artifact` |
-| `createWorkspace` / `freezeWorkspace` / `approveChange` / `integrateChanges` / `checkWorkspace` / `acceptIntegration` / `cleanupWorkspace` | Opt-in isolated coding, snapshot review and checked private integration; see [worktrees](workflow-worktrees.md) |
+| `createWorkspace` / `freezeWorkspace` / `approveChange` / `integrateChanges` / `checkWorkspace` / `acceptIntegration` / `cleanupWorkspace` / `configureLanding` | Opt-in isolated coding, snapshot review and checked private integration; see [worktrees](workflow-worktrees.md) |
 | `reviewedAgent(prompt, {key, criteria, worker?, reviewer?, maxRounds?, onError?})` | Independent verification and bounded rework; returns only an accepted result, otherwise `null`; see [collaboration controls](workflow-collaboration.md) |
 | `speculativeAgent(prompt, {key, gate, worker?, repair?, maxRounds?, onError?})` | Runs work while an independent gate checks its premise; returns only work built on a premise that passed, otherwise `null`; see [speculation](workflow-collaboration.md#speculate-past-a-long-gate) |
 | `discuss(topic, {key, members, maxTurns?, summary?, onError?})` | Multi-agent discussion through the mailbox; members choose recipients each turn; see [multi-agent discussion](#multi-agent-discussion) |
@@ -394,6 +394,29 @@ The [packaged consumer example](../workflow-definitions/scripted/examples/queue-
 ```
 
 Enqueue accepts optional `resources` and `maxAttempts`. These commands never create a workflow; when paused/interrupted they only persist the change. Restart cancels orphaned claims; scheduling resumes with the automatic or explicit replay. `/workflow work` and `/workflow status [member]` display queue closure, pool state, turn budget, idle waits and stopped members, including before a member's first native turn. Ordinary messages do not enter workflow mode.
+
+### Claim, fix and land
+
+For a batch of independent fixes in one repository, let every member claim an item, work in its own worktree and land the result itself, instead of collecting candidates for one integration at the end.
+
+```js
+const landing = await configureLanding({ key: 'landing', checks: [{ argv: ['npm', 'test'], timeoutMs: 600000 }] });
+const workspaces = await parallel(names.map(name => () => createWorkspace({ key: 'wt-' + name })));
+const fixing = swarm('Claim one bug, fix it, commit, then submit_work.', { key: 'fixers', maxTurns: 16,
+  members: names.map((name, index) => ({ name, queue: 'default', workspace: workspaces[index].id })) });
+for (const bug of bugs) await enqueueWork({ key: bug.key, title: bug.title, input: bug });
+await closeWorkQueue({ key: 'closed' });
+await fixing;
+```
+
+- `configureLanding({key, checks, target?, strict?})` names the private branch `bridge-workflow/<workflowId>/<target>` (default `result`) and the 1–4 commands every landing must pass. Calling it again replaces the configuration.
+- A member with a worktree calls `submit_work({operationId, claimId?, generation?, result?})` after committing. The bridge rebases its commits onto the branch head, runs the checks in that worktree and advances the branch if it has not moved. With a claim, the work item is completed with `result` (by default the landed commit) in the same call.
+- `conflict` and `check_failed` are answers, not failures: the member keeps its claim, repairs the worktree and submits again with a new `operationId`. After a conflict the worktree is exactly as submitted; after failed checks it is left rebased. The claim's lease is renewed while checks run.
+- Checks of different members run side by side; only advancing the branch is serialized. With `strict` (default) the commit that lands is the one that passed the checks, so a member whose base moved during its checks rebases and checks again, and after losing twice takes the queue for its next round. With `strict: false`, passing once and rebasing cleanly is enough: faster when checks are slow and changes rarely interact, but the combination is unchecked, so have the script run `checkWorkspace` on the branch now and then.
+- A call blocks until the checks finish. If the member's shell cuts it off, repeating it with the same `operationId` joins the landing in progress.
+- Nothing is pushed and the original checkout is not touched. Limits: 384 worktrees per workflow.
+
+The [packaged example](../workflow-definitions/scripted/examples/claim-and-land.js) takes `items`, `checks`, and optional `members`, `strict`, `prompt` and `model`.
 
 ### Nested workflows as a worker tool
 

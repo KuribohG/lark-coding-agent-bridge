@@ -26,7 +26,11 @@ export const MAX_NAMED_MEMBERS = 256;
 
 export const MAX_WAITS = 2048;
 export const MAX_CONTROL_OPERATIONS = 2048;
-export const MAX_WORKSPACE_KEYS = 256;
+export const MAX_WORKSPACE_KEYS = 1024;
+/** Managed worktrees of one workflow: one for each swarm member that lands its own work, plus review and integration ones. */
+export const MAX_WORKSPACES = 384;
+/** Workspace records of one workflow: worktrees, frozen changes, approvals, checks and the operations that made them. */
+export const MAX_WORKSPACE_RECORDS = 4096;
 
 export const MAILBOX_MAX_MESSAGES = 4096;
 export const MAILBOX_MAX_OPERATIONS = 8192;

@@ -474,6 +474,8 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
   resolveWorker?(root: WorkflowRoot, selection: WorkerExecutionSelection): Promise<WorkerExecution>;
   resolveWorkspace?(root: WorkflowRoot, workflowId: string, workspaceId: string): Promise<void>;
   workspace?(state: WorkflowState, input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
+  /** Lands the commits of the worktree `taskId` runs in; resolves to a LandReport (workspace-types.ts). */
+  land?(state: WorkflowState, input: { workspace: string; taskId: string }, signal: AbortSignal): Promise<unknown>;
   execute(request: WorkflowWorkerRequest): Promise<WorkflowWorkerResult>;
   wakeMain(scopeId: string): Promise<void>;
 }

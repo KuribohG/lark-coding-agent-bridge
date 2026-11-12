@@ -57,7 +57,7 @@ const PRELUDE = `(() => {
       throw error;
     });
   };
-  for (const [name,kind] of Object.entries({createWorkspace:'create',freezeWorkspace:'freeze',approveChange:'approve',integrateChanges:'integrate',checkWorkspace:'check',acceptIntegration:'accept',cleanupWorkspace:'cleanup'})) {
+  for (const [name,kind] of Object.entries({createWorkspace:'create',freezeWorkspace:'freeze',approveChange:'approve',integrateChanges:'integrate',checkWorkspace:'check',acceptIntegration:'accept',cleanupWorkspace:'cleanup',configureLanding:'landing'})) {
     globalThis[name] = options => workspace(JSON.stringify({...options,kind})).then(JSON.parse);
   }
   ${REVIEW_HELPER}

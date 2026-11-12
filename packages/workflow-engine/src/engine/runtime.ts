@@ -83,6 +83,11 @@ export class WorkflowRuntime {
         signal.throwIfAborted();
         return this.workspaceManager().perform({ state, signal }, input);
       },
+      land: async (state, input, signal) => {
+        await this.workspacePolicy(state.root);
+        signal.throwIfAborted();
+        return this.workspaceManager().land({ state, signal }, input);
+      },
       execute: request => this.execute(request),
       wakeMain: deps.wakeMain,
     });
@@ -270,6 +275,7 @@ export class WorkflowRuntime {
       await this.workspacePolicy(workflow.root, pinned);
       workspace = await manager!.binding(workflow.root, workflow.workflowId, task.workspaceId, signal);
     }
+    const landing = workspace?.kind === 'task' ? manager!.landing(workflow.workflowId) : undefined;
     let lease: string | undefined;
     let run: WorkerRun | undefined;
     // Worktree turns are verified against a frozen snapshot, which a process left running mid-change would not match.
@@ -317,7 +323,7 @@ export class WorkflowRuntime {
             }
           },
           ...(workspace ? { workspace: { id: workspace.id, path: workspace.path, rootDigest: workspace.rootDigest } } : {}),
-          systemPrompt: workflowWorkerInstructions(task) + (workspace ? `\nManaged worktree: ${workspace.path}\nBaseline: ${workspace.baseCommit}\nWork only in this worktree; do not modify the original checkout or other worktrees. ${workspace.kind === 'review' ? 'Review the frozen HEAD; leave all tracked and untracked files unchanged.' : 'Commit intended changes before returning. Leave no untracked files or unfinished Git operations.'}` : ''),
+          systemPrompt: workflowWorkerInstructions(task) + (workspace ? `\nManaged worktree: ${workspace.path}\nBaseline: ${workspace.baseCommit}\nWork only in this worktree; do not modify the original checkout or other worktrees. ${workspace.kind === 'review' ? 'Review the frozen HEAD; leave all tracked and untracked files unchanged.' : 'Commit intended changes before returning. Leave no untracked files or unfinished Git operations.'}${landing ? `\nLanding branch: ${landing.targetRef.replace('refs/heads/', '')} (created by the first landing). submit_work rebases your commits onto it, runs the checks and lands them; rebase onto it yourself to pick up what others landed.` : ''}` : ''),
           ...(resume ? { resume } : {}),
           ...(hostKey ? { host: { key: hostKey, attach } } : {}),
           deadlineAt: workflow.deadlineAt, signal,
