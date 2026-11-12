@@ -3,7 +3,7 @@ import { access, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
 
-export interface LocatedBinary {
+interface LocatedBinary {
   /** Path as found; this is what gets written to the config. */
   path: string;
   /** Symlink-resolved path, used to fold duplicates such as nvm shims. */
@@ -25,7 +25,7 @@ export interface LocateOptions {
  * Directories where agent CLIs usually land on Linux/macOS but that a login shell,
  * service manager or SSH session may leave out of PATH.
  */
-export async function commonAgentBinDirs(opts: LocateOptions = {}): Promise<string[]> {
+async function commonAgentBinDirs(opts: LocateOptions = {}): Promise<string[]> {
   const env = opts.env ?? process.env;
   const home = opts.home ?? homedir();
   const dirs = [

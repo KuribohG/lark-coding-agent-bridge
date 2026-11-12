@@ -16,13 +16,13 @@ import { configureModelService } from '../../model-service/registry';
 import { writeFileAtomic } from '../../platform/atomic-write';
 import { runProfileCreate } from './profile';
 
-export interface GuideOptions {
+interface GuideOptions {
   rootDir?: string;
   /** Print the checklist instead of asking questions. */
   print?: boolean;
 }
 
-export interface AgentCandidate {
+interface AgentCandidate {
   path: string;
   onPath: boolean;
   /** First line of `--version`, when the executable answered. */
@@ -30,7 +30,7 @@ export interface AgentCandidate {
   error?: string;
 }
 
-export interface AgentInspection {
+interface AgentInspection {
   kind: AgentKind;
   displayName: string;
   command: string;
@@ -48,13 +48,13 @@ const INSTALL_HINTS: Partial<Record<AgentKind, string>> = {
   codex: 'npm install -g @openai/codex',
 };
 
-export interface LarkScope { scope: string; purpose: string; optional?: boolean }
+interface LarkScope { scope: string; purpose: string; optional?: boolean }
 
 /**
  * App-identity scopes a chat bot needs. A QR-created app gets its scopes from the registration
  * template; this list is for checking an app that was created by hand.
  */
-export const LARK_BOT_SCOPES: readonly LarkScope[] = [
+const LARK_BOT_SCOPES: readonly LarkScope[] = [
   { scope: 'im:message.p2p_msg:readonly', purpose: '接收用户私聊机器人的消息' },
   { scope: 'im:message.group_at_msg:readonly', purpose: '接收群里 @机器人 的消息' },
   { scope: 'im:message:send_as_bot', purpose: '以机器人身份回复消息和卡片' },
@@ -64,7 +64,7 @@ export const LARK_BOT_SCOPES: readonly LarkScope[] = [
 ];
 
 /** User-identity scopes, only for the inbox assistant reading the user's own messages. */
-export const LARK_ASSISTANT_USER_SCOPES: readonly string[] = [
+const LARK_ASSISTANT_USER_SCOPES: readonly string[] = [
   'search:message', 'im:chat:read', 'im:message.p2p_msg:get_as_user', 'im:message.group_msg:get_as_user',
 ];
 
@@ -89,7 +89,7 @@ export function larkPermissionGuide(appId?: string, tenant?: string): string {
   ].join('\n');
 }
 
-export type ModelCredentialMode = 'env' | 'service' | 'none';
+type ModelCredentialMode = 'env' | 'service' | 'none';
 
 /** How a third-party API endpoint and token reach this agent. */
 export function modelCredentialMode(kind: AgentKind): ModelCredentialMode {
