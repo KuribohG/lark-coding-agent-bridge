@@ -129,7 +129,7 @@ describe('workflow message board', () => {
 });
 
 describe('swarm', () => {
-  type Action = { post?: { text: string; to?: string[] }; call?: [string, Record<string, unknown>]; fail?: boolean };
+  type Action = { post?: { text: string; to?: string[] }; call?: [string, Record<string, unknown>]; fail?: boolean; work?: boolean };
   /** Runs a script whose members act out `plan`: what each does on its nth turn (opening turn first). */
   async function play(script: string, plan: Record<string, Action[]>) {
     const root: WorkflowRoot = { scopeId: 'chat', profile: 'embedded', agentKind: 'custom-agent', cwdRealpath: '/repo',
@@ -154,6 +154,11 @@ describe('swarm', () => {
             async *events() {
               yield { type: 'session', nativeSessionId: name };
               try {
+                for (let n = 0; action.work; n++) {
+                  const grant = await callWorkflow('claim_work', { operationId: 'claim' + n }, spec.env) as { claimId: string; generation: number } | null;
+                  if (!grant) break;
+                  await callWorkflow('complete_work', { operationId: 'done' + n, claimId: grant.claimId, generation: grant.generation, result: name }, spec.env);
+                }
                 if (action.call) await callWorkflow(action.call[0], { operationId: 'call', ...action.call[1] }, spec.env);
                 if (action.post) await callWorkflow('post_board', { operationId: 'post', ...action.post }, spec.env);
               } catch (error) { errors.push(String(error)); }
@@ -250,6 +255,29 @@ describe('swarm', () => {
     expect((await soft.settled()).state.script).toMatchObject({ status: 'failed', error: expect.stringContaining('scheduled by their swarm') });
   });
 
+  it('mixes queue consumers with members that only answer posts', async () => {
+    const h = await play([
+      'await enqueueWork({key:"a",title:"A",input:1}); await enqueueWork({key:"b",title:"B",input:2});',
+      'const out = swarm("Build and verify", {key:"mix", members:[{name:"builder", queue:"default"},{name:"idle", queue:"default"},{name:"qa", role:"Verify when asked"}]});',
+      'await enqueueWork({key:"c",title:"C",input:3}); await closeWorkQueue({key:"closed"});',
+      'return await out;',
+    ].join('\n'), {
+      builder: [{ work: true, post: { text: 'Items built, @qa please verify' } }, { work: true }],
+      idle: [{ work: true }],
+      qa: [{}, { post: { text: 'Verified' } }],
+    });
+    const { state, result } = await h.settled();
+    expect(h.errors).toEqual([]);
+    expect(state.script).toMatchObject({ status: 'result_ready' });
+    expect(result).toMatchObject({ stop: 'quiet', queues: { default: { completed: 3, closed: true } },
+      members: [{ name: 'builder', queue: 'default' }, { name: 'idle', queue: 'default' }, { name: 'qa', turns: 1 }] });
+    expect(state.workQueue!.items.every(item => item.status === 'completed')).toBe(true);
+    // qa answers posts only: it took its opening turn and one wake-up, and never touched the queue.
+    expect(h.order.filter(name => name.startsWith('qa'))).toEqual(['qa1', 'qa2']);
+    expect(h.specs.find(spec => /You are member "builder"/.test(spec.prompt))!.prompt).toContain('claim_work');
+    expect(h.specs.find(spec => /You are member "qa"/.test(spec.prompt))!.prompt).not.toContain('claim_work');
+  });
+
   it('rejects malformed swarms before starting any member', async () => {
     const run = async (options: unknown) => {
       const h = await play('return await swarm("task",' + JSON.stringify({ onError: 'throw', ...(options as object) }) + ');', {});
@@ -257,9 +285,9 @@ describe('swarm', () => {
       expect(h.specs).toHaveLength(0);
       return state.script!.error;
     };
-    expect(await run({ key: 't', members: [{ name: 'a' }] })).toContain('2–12 members');
+    expect(await run({ key: 't', members: [] })).toContain('needs members');
     expect(await run({ key: 't', members: [{ name: 'a' }, { name: 'all' }] })).toContain('cannot be all');
     expect(await run({ key: 't', members: [{ name: 'a' }, { name: 'a' }] })).toContain('unique');
-    expect(await run({ key: 't', maxTurns: 25, members: [{ name: 'a' }, { name: 'b' }] })).toBeDefined();
+    expect(await run({ key: 't', members: [{ name: 'a', queue: 'parent' }, { name: 'b' }] })).toContain('Invalid work queue name');
   });
 });

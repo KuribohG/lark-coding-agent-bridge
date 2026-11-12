@@ -3,7 +3,7 @@ import { workflowDigest } from './digest';
 import { byId } from './evolve';
 import { emit } from './kernel-store';
 import { boundedInteger, scriptText } from './script-contract';
-import { memberPool, queueControl, queueName, queueNames } from './work-routing';
+import { memberQueue, queueControl, queueName, queueNames } from './work-routing';
 import type { Immutable, TaskView, WorkClaim, WorkflowView, WorkflowWorkItem } from './types';
 
 type ItemView = Immutable<WorkflowWorkItem>;
@@ -183,8 +183,8 @@ function ownedClaim(state: WorkflowView, task: TaskView, attemptId: string, args
 
 export function workContext(state: WorkflowView, task: TaskView): unknown {
   const claim = state.workQueue?.claims.find(claim => claim.status === 'active' && claim.taskId === task.taskId);
-  const pool = memberPool(state, state.agents?.find(agent => agent.agentId === task.agentId)?.key);
-  return state.workQueue ? { total: state.workQueue.items.length, queue: pool?.queue ?? 'default',
+  const subscribed = memberQueue(state, state.agents?.find(agent => agent.agentId === task.agentId)?.key);
+  return state.workQueue ? { total: state.workQueue.items.length, queue: subscribed ?? 'default',
     claim: claim ? { ...claim, item: workStatus(state, { itemId: claim.itemId }) } : null } : undefined;
 }
 
@@ -217,9 +217,10 @@ export function mutateWork(state: WorkflowView, task: TaskView, attemptId: strin
   let response: unknown;
   if (method === 'claim_work') {
     const leaseMs = boundedInteger(args.leaseMs, 120_000, 1000, 300_000);
-    const pool = memberPool(state, state.agents?.find(agent => agent.agentId === task.agentId)?.key);
-    const name = queueName(args.queue ?? pool?.queue);
-    if (pool && name !== (pool.queue ?? 'default')) throw new Error('Consumer cannot claim from another pool queue');
+    const member = state.agents?.find(agent => agent.agentId === task.agentId)?.key;
+    const subscribed = memberQueue(state, member);
+    const name = queueName(args.queue ?? subscribed);
+    if (subscribed && name !== subscribed) throw new Error('A member that consumes a queue cannot claim from another queue');
     const claims = state.workQueue?.claims ?? [];
     const held = claims.find(claim => claim.status === 'active' && claim.agentId === task.agentId);
     if (held && (held.taskId !== task.taskId || held.attemptId !== attemptId)) throw new Error('Member has a claim in another attempt');
@@ -236,10 +237,10 @@ export function mutateWork(state: WorkflowView, task: TaskView, attemptId: strin
       }
     }
     response = claim ? { claimId: claim.id, generation: claim.generation } : null;
-    if (!claim && pool) {
+    if (!claim && subscribed) {
       // Another queue may have won the resource after dispatch. An empty claim is not a stalled turn.
-      const consumer = pool.members.find(member => member.taskId === task.taskId);
-      if (consumer?.lastWake !== undefined) emit(state, { type: 'pool_member_wake_cleared', poolId: pool.id, member: consumer.name });
+      const swarm = state.swarms!.find(item => item.members.some(consumer => consumer.name === member))!;
+      if (swarm.members.find(consumer => consumer.name === member)!.lastWake !== undefined) emit(state, { type: 'swarm_member_wake_cleared', swarmId: swarm.id, member: member! });
     }
   } else {
     const claim = ownedClaim(state, task, attemptId, args, now);

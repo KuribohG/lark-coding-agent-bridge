@@ -201,9 +201,7 @@ export class WorkflowRuntime {
           if ((input as { kind?: string }).kind === 'swarm') {
             return this.waitForScriptValue(watching('swarm'), controller.signal, () => this.kernel.scriptSwarmResult(scopeId, workflowId, runId, (result as { swarm: string }).swarm));
           }
-          return (input as { kind?: string }).kind === 'consume'
-            ? this.waitForScriptValue(watching('pool'), controller.signal, () => this.kernel.scriptConsumerResult(scopeId, workflowId, runId, (result as { consumerPool: string }).consumerPool))
-            : result;
+          return result;
         },
         control: async input => {
           controller.signal.throwIfAborted();

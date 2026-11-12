@@ -91,10 +91,6 @@ const PRELUDE = `(() => {
     return work(JSON.stringify({...item, kind: 'enqueue'})).then(JSON.parse);
   };
   globalThis.workStatus = (options = {}) => work(JSON.stringify({...options, kind: 'status'})).then(JSON.parse);
-  globalThis.consumeWork = (options) => {
-    if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('consumeWork(options) expected');
-    return work(JSON.stringify({...options, kind: 'consume'})).then(JSON.parse);
-  };
   globalThis.swarm = (task, options) => {
     if (typeof task !== 'string' || !options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('swarm(task, options) expected');
     const { onError, ...spec } = options;

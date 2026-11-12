@@ -383,7 +383,7 @@ describe('script workflow runtime', () => {
     await h.call('run_script',{goal:'Delegate work from a consumer',maxConcurrent:1,script:[
       'await enqueueWork({key:"item",title:"Compute",input:null});',
       'await closeWorkQueue({key:"close"});',
-      'return await consumeWork({key:"pool",members:[{name:"A",workflowTool:true}],prompt:"Process the item"});',
+      'return await swarm("Process the item",{key:"pool",members:[{name:"A",workflowTool:true,queue:"default"}]});',
     ].join('\n')});
     await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
     expect(h.state().workQueue?.items[0]?.result).toBe(42);
@@ -408,19 +408,19 @@ describe('script workflow runtime', () => {
       })();
       return {runId:native.runId,capabilities:native.capabilities,events,stop:()=>native.stop(),waitForExit:ms=>native.waitForExit(ms)};
     };
-    const script = await readFile(new URL('../../../workflow-definitions/scripted/examples/consumer-pool.js', import.meta.url), 'utf8');
+    const script = await readFile(new URL('../../../workflow-definitions/scripted/examples/queue-swarm.js', import.meta.url), 'utf8');
     await h.call('run_script',{goal:'Consume work as it arrives',script,args:{items:[],members:['A','B','C'].map(name=>({name})),consumerPrompt:'Square item.input',keepOpen:true}});
-    await h.until(()=>expect(h.state().consumerPool?.status).toBe('waiting'));
+    await h.until(()=>expect(h.state().swarms?.[0]?.status).toBe('running'));
     expect(h.adapters.codex.runs).toHaveLength(0);
     expect(h.pool.snapshot()).toMatchObject({active:0,waiting:0});
     for(let i=0;i<10;i++) await h.call('enqueue_work',{key:'item-'+i,title:'Square '+i,input:i});
     await h.until(()=>expect(h.state().workQueue?.items.filter(item=>item.status==='completed')).toHaveLength(10));
-    await h.until(()=>expect(h.state().consumerPool?.status).toBe('waiting'));
+    await h.until(()=>expect(h.state().tasks.every(task=>task.status==='result_ready')).toBe(true));
     const runs=h.adapters.codex.runs.length;
     const ids=h.state().sessions.map(session=>session.nativeSessionId);
     expect(h.state().script?.status).toBe('running');expect(h.wakeMain).not.toHaveBeenCalled();
     expect(h.pool.snapshot()).toMatchObject({active:0,waiting:0});
-    expect(await h.runtime.kernel.call({kind:'main',scopeId:'script-topic'},'status',{})).toMatchObject({consumers:{status:'waiting'}});
+    expect(await h.runtime.kernel.call({kind:'main',scopeId:'script-topic'},'status',{})).toMatchObject({swarms:[{key:'consumers',status:'running'}]});
     await h.runtime.tick();expect(h.adapters.codex.runs).toHaveLength(runs);
     for(let i=10;i<15;i++) await h.call('enqueue_work',{key:'item-'+i,title:'Square '+i,input:i});
     await h.call('close_work_queue');
@@ -429,7 +429,7 @@ describe('script workflow runtime', () => {
     expect(h.adapters.codex.runOptions.slice(runs).every(options=>ids.includes(options.threadId))).toBe(true);
     expect(h.pool.snapshot()).toMatchObject({active:0,waiting:0});
     const result=JSON.parse(h.state().artifacts.find(artifact=>artifact.ref===h.state().script!.resultRef)!.text);
-    expect(result).toMatchObject({queue:{completed:15,closed:true},consumers:{status:'drained'}});
+    expect(result).toMatchObject({stop:'quiet',queues:{default:{completed:15,closed:true}}});
   });
 
   it('runs the queue example through QuickJS and worker IPC, adopts an interrupted claim, and replays without duplicating work', async () => {

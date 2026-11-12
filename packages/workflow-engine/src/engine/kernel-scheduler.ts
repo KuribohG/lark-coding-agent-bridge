@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { WorkflowStopped, stopReasonOf } from './ports';
 import { cancelWork, expireWorkClaims, releaseWorkClaims, workContext } from './work-queue';
-import { pumpConsumerPool } from './consumer-pool';
 import { pumpSwarms } from './swarm';
 import { settleEventWaits } from './event-waits';
 import { nestedContext } from './nested-workflow';
@@ -202,7 +201,6 @@ export class WorkflowScheduler {
     try {
       store.transact(() => {
         settleEventWaits(state, ctx.now());
-        pumpConsumerPool(state,kind=>ctx.nativeIdKind(kind),ctx.children.remainingTreeTasks(state));
         pumpSwarms(state, kind => ctx.nativeIdKind(kind), ctx.now(), ctx.children.remainingTreeTasks(state));
         let active = state.tasks.filter(task => this.running.has(task.taskId)).length;
         for (const task of state.tasks) {

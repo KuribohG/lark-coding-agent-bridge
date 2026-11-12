@@ -1,5 +1,4 @@
 import type { DomainEvent } from './events';
-import { consumerPools } from './work-routing';
 import type { Immutable, MailboxMessage, MailboxReceipt, StoredTask, WorkflowData, WorkflowView, WorkflowWait, WorkflowWorkItem, WorkflowWorkQueue } from './types';
 
 /**
@@ -14,13 +13,13 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       for (const key of Object.keys(state)) delete (state as unknown as Record<string, unknown>)[key];
       Object.assign(state, event.state);
       return;
-    case 'workflow_paused': return setStatus(state, 'paused', 'paused', 'suspended');
-    case 'workflow_cancelled': return setStatus(state, 'cancelled', 'cancelled', 'cancelled');
+    case 'workflow_paused': return setStatus(state, 'paused', 'paused');
+    case 'workflow_cancelled': return setStatus(state, 'cancelled', 'cancelled');
     case 'workflow_completed': state.status = 'completed'; return;
-    case 'binding_invalidated': return setStatus(state, 'binding_attention', 'interrupted', 'suspended');
+    case 'binding_invalidated': return setStatus(state, 'binding_attention', 'interrupted');
     case 'workflow_interrupted':
       if (event.restart) state.restart = event.restart;
-      return setStatus(state, 'interrupted', 'interrupted', 'suspended');
+      return setStatus(state, 'interrupted', 'interrupted');
     case 'restart_resume_disabled': state.restart = { ...state.restart!, resume: false }; return;
     case 'clock_resumed': state.deadlineAt = event.deadlineAt; state.restart = undefined; return;
     case 'artifact_added': state.artifacts.push(event.artifact); return;
@@ -191,13 +190,14 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
     case 'swarm_turn_scheduled': {
       const found = swarm(state, event.swarmId);
       const member = found.members.find(item => item.name === event.member)!;
-      member.taskId = event.taskId; member.retryPending = undefined;
+      member.taskId = event.taskId; member.retryPending = undefined; member.lastWake = event.wake;
       if (!event.retry) {
         found.turns.push({ key: event.key, member: event.member, taskId: event.taskId });
         if (!event.opening) member.turns++;
       }
       return;
     }
+    case 'swarm_member_wake_cleared': swarm(state, event.swarmId).members.find(item => item.name === event.member)!.lastWake = undefined; return;
     case 'swarm_member_added': swarm(state, event.swarmId).members.push(event.member); return;
     case 'swarm_member_stopped': {
       const member = swarm(state, event.swarmId).members.find(item => item.name === event.member)!;
@@ -272,38 +272,12 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       return;
     }
     case 'work_operation_recorded': queue(state).operations.push(event.operation); return;
-
-    case 'pool_created':
-      if (!state.consumerPool) state.consumerPool = event.pool;
-      else (state.consumerPools ??= []).push(event.pool);
-      return;
-    case 'pool_rebound': {
-      const found = pool(state, event.poolId);
-      for (const member of found.members) {
-        member.retryPending = event.retryPending.includes(member.name);
-        member.disabled = undefined; member.lastWake = undefined;
-      }
-      found.runId = event.runId; found.status = 'waiting'; found.reason = undefined;
-      queue(state);
-      return;
-    }
-    case 'pool_member_disabled': poolMember(state, event.poolId, event.member).disabled = event.reason; return;
-    case 'pool_member_wake_cleared': poolMember(state, event.poolId, event.member).lastWake = undefined; return;
-    case 'pool_status_changed': { const found = pool(state, event.poolId); found.status = event.status; found.reason = event.reason; return; }
-    case 'pool_turn_scheduled': {
-      const found = pool(state, event.poolId);
-      const member = poolMember(state, event.poolId, event.member);
-      if (!event.retry) found.turns.push({ key: event.key, member: event.member, taskId: event.taskId });
-      member.taskId = event.taskId; member.retryPending = false; member.lastWake = event.wake;
-      return;
-    }
   }
 }
 
-function setStatus(state: WorkflowData, status: WorkflowData['status'], script: NonNullable<WorkflowData['script']>['status'], pools: 'suspended' | 'cancelled'): void {
+function setStatus(state: WorkflowData, status: WorkflowData['status'], script: NonNullable<WorkflowData['script']>['status']): void {
   state.status = status;
   if (state.script) state.script.status = script;
-  for (const found of consumerPools(state)) found.status = pools;
 }
 
 const indexes = new WeakMap<object, { size: number; ids: Map<string, unknown> }>();
@@ -327,14 +301,6 @@ function wait(state: WorkflowData, id: string): WorkflowWait {
 
 function swarm(state: WorkflowData, id: string) {
   return state.swarms!.find(found => found.id === id)!;
-}
-
-function pool(state: WorkflowData, id: string) {
-  return consumerPools(state).find(found => found.id === id)!;
-}
-
-function poolMember(state: WorkflowData, poolId: string, name: string) {
-  return pool(state, poolId).members.find(member => member.name === name)!;
 }
 
 function queue(state: WorkflowData): WorkflowWorkQueue {

@@ -237,7 +237,7 @@ async function childPhase(test: Case, phase: string, directory: string) {
       assert.equal(phase, 'prepare');
       const consumer = join(workspace, 'consumer.mjs');
       await writeFile(consumer, await readFile(join(project, 'tests/acceptance/workflow-queue-consumer.mjs')), {mode:0o600});
-      const script = await readFile(join(project, `workflow-definitions/scripted/examples/${consumers ? 'consumer-pool' : 'work-queue'}.js`), 'utf8');
+      const script = await readFile(join(project, `workflow-definitions/scripted/examples/${consumers ? 'queue-swarm' : 'work-queue'}.js`), 'utf8');
       const command = 'node ' + "'" + consumer.replaceAll("'", "'\\''") + "'";
       await call('run_script', {
         goal:'Isolated queue acceptance: three native members run only the provided local consumer helper in the foreground. It may use the worker CLI to claim/checkpoint/complete the authorized arithmetic items (ten initially, five later for the consumer-pool case), and read/write synchronization markers beside itself. Its bounded wait is intentional for this test. In a new consumer turn, run the helper once again to handle newly queued work. No other file access, external messages, credentials or delegation.',
@@ -261,7 +261,7 @@ async function childPhase(test: Case, phase: string, directory: string) {
       await writeFile(join(workspace, 'adopt-ready'), 'ready', {mode:0o600});
       let idle: {slots:ReturnType<ProcessPool['snapshot']>;nativeRuns:number;nativeIds:Array<string|undefined>} | undefined;
       if(consumers) {
-        await until(current=>current.consumerPool?.status==='waiting' && current.workQueue?.items.filter(item=>item.status==='completed').length===10);
+        await until(current=>current.swarms?.[0]?.status==='running' && current.tasks.every(task=>!['queued','starting','running','cancelling'].includes(task.status)) && current.workQueue?.items.filter(item=>item.status==='completed').length===10);
         idle={slots:processPool.snapshot(),nativeRuns:observations.length,nativeIds:state().sessions.map(session=>session.nativeSessionId)};
         assert.equal(idle.slots.active,0);assert.equal(idle.slots.waiting,0);assert.equal(wakeCount,0);
         await delay(1100);await runtime.tick();assert.equal(observations.length,idle.nativeRuns,'Idle queue started another worker');
@@ -274,7 +274,7 @@ async function childPhase(test: Case, phase: string, directory: string) {
       if(idle) {
         assert(observations.length>idle.nativeRuns,'New work did not wake a consumer');
         assert(observations.slice(idle.nativeRuns).every(observation=>idle!.nativeIds.includes(observation.resumed)),'A consumer did not resume its original native session');
-        assert.equal(done.consumerPool?.status,'drained');
+        assert.equal(done.swarms?.[0]?.stop,'quiet');
       } else assert.equal(observations.length, 3);
       assert(done.sessions.every(session=>session.nativeSessionId));
       assert.equal(work.items.length, consumers ? 15 : 10);
@@ -290,7 +290,7 @@ async function childPhase(test: Case, phase: string, directory: string) {
       await call('complete', {reportRef:done.script!.resultRef,openIssues:[],verificationLimits:'Native queue acceptance in an isolated controller; production runtime unchanged. Resource keys do not provide filesystem isolation or exactly-once side effects.'});
       await save(join(directory, 'result.json'), {passed:true,scenario:test.scenario,backend:test.backend,idle,
         nativeSessions:done.sessions.map(session=>({member:session.actorKey,nativeId:session.nativeSessionId,model:session.observedModel})),
-        items:work.items,claims:work.claims,staleSubmissionRejected:true,consumers:done.consumerPool,wakeCount});
+        items:work.items,claims:work.claims,staleSubmissionRejected:true,consumers:done.swarms?.[0],wakeCount});
       return;
     }
     if(phase==='prepare') {

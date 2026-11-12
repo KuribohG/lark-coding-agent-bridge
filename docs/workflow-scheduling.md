@@ -1,14 +1,14 @@
 # Workflow scheduling controls
 
-Scripts can route different kinds of work to separate consumer pools, wait for evidence without polling, and stop redundant task branches. These APIs are additive: existing scripts use the `default` queue and keep the existing `agent()` and mailbox behavior.
+Scripts can route different kinds of work to separate groups of consumers, wait for evidence without polling, and stop redundant task branches. These APIs are additive: existing scripts use the `default` queue and keep the existing `agent()` and mailbox behavior.
 
 ## Routed work and dependencies
 
 `enqueueWork` accepts `queue`, `priority` and `dependsOn`. Queue names are case-sensitive identifiers of 1–64 letters, digits, underscores or hyphens, starting with a letter; `parent`, `constructor` and `prototype` are reserved. Work keys remain unique across the entire workflow.
 
-`dependsOn` contains existing work **keys**, not item IDs. Enqueue prerequisites first. Dependencies can cross queues and require successful completion; failed or cancelled prerequisites stop the affected pool with a diagnostic. Repair/retry the prerequisite and explicitly replay. The immutable, backward-only dependency graph cannot contain cycles. Results of dependencies remain available through `work_status({itemId})`; dependency completion does not implicitly copy results into an item's immutable input.
+`dependsOn` contains existing work **keys**, not item IDs. Enqueue prerequisites first. Dependencies can cross queues and require successful completion; failed or cancelled prerequisites leave the dependent item unclaimable, and a swarm that goes idle with such items fails with a diagnostic. Repair/retry the prerequisite and explicitly replay. The immutable, backward-only dependency graph cannot contain cycles. Results of dependencies remain available through `work_status({itemId})`; dependency completion does not implicitly copy results into an item's immutable input.
 
-Each pool has its own prompt, worker bindings and optional `maxConcurrent`. Members belong to exactly one pool, and claims are restricted to that pool's queue. Within a queue, priority ranges from -100 to 100 (default 0); higher values run first, with FIFO ties. Priority does not preempt an active claim or guarantee fairness under a continuing stream of higher-priority arrivals. Resource keys exclude overlapping claims across **all** queues of the workflow.
+Members that consume different queues have their own roles and worker bindings. A member consumes exactly one queue, and its claims are restricted to it. Within a queue, priority ranges from -100 to 100 (default 0); higher values run first, with FIFO ties. Priority does not preempt an active claim.
 
 ```js
 const implementation = await enqueueWork({
@@ -21,12 +21,10 @@ await enqueueWork({
 });
 await closeWorkQueue({key: 'implementation-closed', queue: 'implementation'});
 await closeWorkQueue({key: 'review-closed', queue: 'review'});
-return await parallel([
-  () => consumeWork({key: 'developers', queue: 'implementation', maxConcurrent: 2,
-    members: args.developers, prompt: 'Implement and test each claimed change. Save progress.'}),
-  () => consumeWork({key: 'reviewers', queue: 'review', maxConcurrent: 1,
-    members: args.reviewers, prompt: 'Read the prerequisite result with work_status, then independently verify the change.'}),
-]);
+return await swarm('Implement the queued changes and verify each one independently.', {key: 'delivery', maxTurns: 24, members: [
+  ...args.developers.map(member => ({...member, queue: 'implementation', role: 'Implement and test each claimed change. Save progress.'})),
+  ...args.reviewers.map(member => ({...member, queue: 'review', role: 'Read the prerequisite result with work_status, then independently verify the change.'})),
+]});
 ```
 
 Queue closure is per name. `workStatus({queue:'review'})` selects one queue; omitting `queue` returns the aggregate ledger. Chat accepts `/workflow close review` and `/workflow enqueue` with the new fields. Limits (256 work items, 512 claims, 2 MB queue state, root task/concurrency budgets) are shared, not multiplied per queue. There are at most 16 queues including `default`, 16 pools and 32 distinct members; each pool has 1–16 members. Pool bindings remain immutable on replay, and pool members cannot also receive ordinary script-driven `agent()` or mailbox turns.

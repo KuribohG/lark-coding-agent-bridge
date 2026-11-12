@@ -10,7 +10,7 @@ export interface RuntimeLoadOptions {
   workflows: number;
   /** Workers one workflow runs at once (the engine allows at most 16). */
   concurrency: number;
-  /** `agents`: the script fans out one agent call per task. `queue`: it fills a work queue that a consumer pool claims from. */
+  /** `agents`: the script fans out one agent call per task. `queue`: it fills a work queue that a swarm of consumers claims from. */
   mode: 'agents' | 'queue';
   /** Agent calls (agents mode) or work items (queue mode) per workflow. */
   tasks: number;
@@ -24,8 +24,8 @@ const AGENTS_SCRIPT = `const out = await parallel(Array.from({ length: args.task
 return out.length;`;
 const QUEUE_SCRIPT = `for (let i = 0; i < args.tasks; i++) await enqueueWork({ key: 'item-' + i, title: 'Item ' + i, input: { n: i, payload: args.prompt } });
 await closeWorkQueue({ key: 'queue-closed' });
-const out = await consumeWork({ key: 'consumers', members: args.members, prompt: 'Process each item.', maxTurns: 64 });
-return out.queue.counts ?? out.queue;`;
+const out = await swarm('Process each item.', { key: 'consumers', members: args.members.map(member => ({ ...member, queue: 'default' })), maxTurns: 64, onError: 'throw' });
+return out.queues.default;`;
 
 /**
  * End-to-end load: real runtime, scheduler, script interpreter and worker IPC, with fake agents in place of native

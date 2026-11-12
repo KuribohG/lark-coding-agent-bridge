@@ -2,9 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { workflowDigest } from './digest';
 import { renderWorkflowPlan } from './presentation';
 import { closeWorkQueue, enqueueWork, unfinishedWork, workStatus } from './work-queue';
-import { bindConsumerPool, consumerResult, parseConsumerPool } from './consumer-pool';
 import { bindSwarm, memberSwarm, parseSwarm, swarmResult } from './swarm';
-import { consumerPools, memberPool, queueControl, queueName, queueNames } from './work-routing';
+import { queueControl, queueName, queueNames } from './work-routing';
 import { beginEventWait } from './event-waits';
 import { postToBoard, readBoard } from './board';
 import { mailboxOperation, receiveMessages, receiptMessages, relaySender, scheduleMemberTurn, sendMessage } from './durable-agents';
@@ -58,9 +57,8 @@ export class ScriptApi {
       if (state.workspaceKeys?.includes(call.key)) throw new Error('Script key already belongs to a workspace operation');
       if (call.workspace && state.tasks.some(task => task.workspaceId === call.workspace && (BUSY.has(task.status) || task.status === 'waiting_workflow'))) throw new Error('Workspace has an unfinished task; await it before scheduling another');
       if (state.waits?.some(wait => wait.key === call.key) || state.controlOperations?.some(operation => operation.key === call.key)) throw new Error('Script key already belongs to a control operation');
-      if (memberPool(state, call.member)) throw new Error('Consumer pool members are reserved for consumeWork');
       if (memberSwarm(state, call.member)) throw new Error('Swarm members are scheduled by their swarm; steer them with board posts');
-      if (consumerPools(state).some(pool => call.key === pool.key) || queueNames(state).some(name => call.key === queueControl(state, name)?.closeKey)) throw new Error('Script key already belongs to a work queue operation');
+      if (state.swarms?.some(swarm => call.key === swarm.key) || queueNames(state).some(name => call.key === queueControl(state, name)?.closeKey)) throw new Error('Script key already belongs to a work queue operation');
       if (script.calls.some(item => item.key === call.key) || script.mailboxCalls?.includes(call.key) || state.workQueue?.items.some(item => item.key === call.key)) throw new Error(`Duplicate agent key: ${call.key}`);
       if (script.calls.length >= script.maxCalls) throw new Error('Script agent call limit reached');
       const inputRefs = (call.inputs ?? []).map(key => {
@@ -138,11 +136,11 @@ export class ScriptApi {
     return result;
   }
 
-  checkWorkKey(state: WorkflowView, value: unknown, operation: 'enqueue' | 'consume' | 'close' = 'enqueue'): string {
+  checkWorkKey(state: WorkflowView, value: unknown, operation: 'enqueue' | 'swarm' | 'close' = 'enqueue'): string {
     const key = scriptText(value, 'work key', 160);
     if (state.workspaceKeys?.includes(key)) throw new Error('Script key already belongs to a workspace operation');
     if (key.startsWith('@wait/') || state.waits?.some(wait => wait.key === key) || state.controlOperations?.some(operation => operation.key === key)) throw new Error('Script key already belongs to a control operation');
-    if (key.startsWith('@consumer/') || operation !== 'consume' && consumerPools(state).some(pool => key === pool.key)
+    if (key.startsWith('@swarm/') || operation !== 'swarm' && state.swarms?.some(swarm => key === swarm.key)
       || operation !== 'close' && queueNames(state).some(name => key === queueControl(state, name)?.closeKey)
       || operation !== 'enqueue' && state.workQueue?.items.some(item => item.key === key)) throw new Error('Script key already belongs to another work queue operation');
     if (state.tasks.some(task => task.scriptKey === key) || state.mailbox?.receipts.some(receipt => receipt.key === key)
@@ -177,7 +175,7 @@ export class ScriptApi {
       if (state.script.controlCalls?.includes(key)) throw new Error('Duplicate script control key');
       if ((state.script.controlCalls?.length ?? 0) >= 128) throw new Error('Script control call limit reached');
       if (state.tasks.some(task => task.scriptKey === key) || state.workQueue?.items.some(item => item.key === key)
-        || consumerPools(state).some(pool => pool.key === key) || queueNames(state).some(name => queueControl(state, name)?.closeKey === key)
+        || state.swarms?.some(swarm => swarm.key === key) || queueNames(state).some(name => queueControl(state, name)?.closeKey === key)
         || state.mailbox?.receipts.some(receipt => receipt.key === key) || state.mailbox?.operations.some(operation => operation.key === 'script:' + key)) throw new Error('Script key already belongs to another operation');
       if (kind === 'wait') {
         if (state.controlOperations?.some(operation => operation.key === key)) throw new Error('Control key changed operation kind');
@@ -239,9 +237,9 @@ export class ScriptApi {
     if (args.queue === 'parent') delete args.queue;
     const name = queueName(args.queue);
     if (kind === 'status') return workStatus(snapshot, args);
-    if (!['enqueue', 'consume', 'close', 'swarm'].includes(String(kind))) throw new Error('Unknown script work operation');
+    if (!['enqueue', 'close', 'swarm'].includes(String(kind))) throw new Error('Unknown script work operation');
     const check = (state: WorkflowView) => {
-      const key = this.checkWorkKey(state, args.key, kind === 'swarm' ? 'consume' : kind as 'enqueue' | 'consume' | 'close');
+      const key = this.checkWorkKey(state, args.key, kind as 'enqueue' | 'swarm' | 'close');
       if (state.script!.workCalls?.includes(key)) throw new Error('Duplicate script key: ' + key);
       if ((state.script!.workCalls?.length ?? 0) >= 128) throw new Error('Work queue script call limit reached');
       return key;
@@ -268,24 +266,6 @@ export class ScriptApi {
         bindSwarm(state, spec, executions, ctx.now());
         record(state, key);
         return { swarm: key };
-      }, 'script:' + runId);
-    }
-    if (kind === 'consume') {
-      check(snapshot);
-      const spec = parseConsumerPool(args, snapshot, host);
-      const pinned = snapshot.root;
-      const executions: WorkerExecution[] = [];
-      for (const member of spec.members) executions.push(await (host.resolveWorker?.(pinned, member.selection) ?? inheritedWorkerExecution(pinned, member.selection)));
-      const currentRoot = await host.resolveRoot(scopeId);
-      if (ctx.closed || !currentRoot || !sameRoot(root, currentRoot)) throw new Error('Consumer root authorization changed');
-      return store.transact(() => {
-        const state = requireState(store.state(scopeId, workflowId));
-        if (!active(state)) throw new Error('Script run is inactive');
-        const key = this.checkWorkKey(state, args.key, 'consume');
-        if ((state.script!.workCalls?.length ?? 0) >= 128) throw new Error('Work queue script call limit reached');
-        bindConsumerPool(state, spec, executions);
-        record(state, key);
-        return { consumerPool: key };
       }, 'script:' + runId);
     }
     return store.transact(() => {
@@ -322,14 +302,6 @@ export class ScriptApi {
     return swarmResult(state, key);
   }
 
-  scriptConsumerResult(scopeId: string, workflowId: string, runId: string, key?: string): unknown | undefined {
-    const state = requireState(this.ctx.store.state(scopeId, workflowId));
-    const pool = key === undefined ? state.consumerPool : consumerPools(state).find(pool => pool.key === key);
-    if (state.status !== 'active' || state.script?.runId !== runId || state.script.status !== 'running'
-      || pool?.runId !== runId) throw new Error('Consumer pool run is inactive');
-    return consumerResult(state, key);
-  }
-
   async scriptMailbox(scopeId: string, workflowId: string, runId: string, input: unknown): Promise<{ receiptId?: string; result?: unknown }> {
     const { ctx } = this;
     if (ctx.closed) throw new Error('Workflow service is closed');
@@ -350,8 +322,7 @@ export class ScriptApi {
       if (state.workspaceKeys?.includes(key)) throw new Error('Script key already belongs to a workspace operation');
       if (key.startsWith('@wait/') || state.waits?.some(wait => wait.key === key) || state.controlOperations?.some(operation => operation.key === key)) throw new Error('Script key already belongs to a control operation');
       const target = board ? '' : scriptText(args.member, 'member name', 100);
-      if (key.startsWith('@consumer/') || consumerPools(state).some(pool => key === pool.key) || queueNames(state).some(name => key === queueControl(state, name)?.closeKey)) throw new Error('Script key already belongs to a work queue operation');
-      if (args.kind === 'receive' && memberPool(state, target)) throw new Error('Consumer pool members cannot wait on script receive()');
+      if (key.startsWith('@swarm/') || state.swarms?.some(swarm => key === swarm.key) || queueNames(state).some(name => key === queueControl(state, name)?.closeKey)) throw new Error('Script key already belongs to a work queue operation');
       if (args.kind === 'receive' && memberSwarm(state, target)) throw new Error('Swarm members are woken by the kernel and cannot wait on script receive()');
       if (key.trim() !== key) throw new Error('Mailbox key must not contain surrounding whitespace');
       if (state.script.calls.some(call => call.key === key) || state.script.mailboxCalls?.includes(key) || state.workQueue?.items.some(item => item.key === key)) throw new Error('Duplicate script key: ' + key);
@@ -397,7 +368,6 @@ export class ScriptApi {
     const state = ctx.store.state(scopeId, workflowId);
     if (!state?.script || state.script.runId !== runId || state.script.status !== 'running' || state.status !== 'active') return;
     ctx.store.transact(() => {
-      if ('text' in result && consumerPools(state).some(pool => ['running', 'waiting'].includes(pool.status))) result = { error: 'Consumer pool is unfinished; await consumeWork and close the queue when production is finished' };
       if ('text' in result && state.swarms?.some(swarm => swarm.status === 'running' && swarm.runId === runId)) result = { error: 'Swarm is unfinished; await swarm()' };
       if ('text' in result && unfinishedWork(state)) result = { error: 'Script returned with unfinished work items; continue consumption or explicitly cancel the workflow.' };
       if ('text' in result && state.tasks.some(task => task.scriptManaged && state.script!.calls.some(call => call.taskId === task.taskId)
@@ -413,9 +383,6 @@ export class ScriptApi {
         const error = result.error.slice(0, 2000);
         emit(state, { type: 'script_failed', error });
         ctx.children.suspendChildren(state,true);
-        for (const pool of consumerPools(state)) if (['waiting', 'running'].includes(pool.status)) {
-          emit(state, { type: 'pool_status_changed', poolId: pool.id, status: 'failed', reason: error });
-        }
         for (const task of state.tasks) if (task.scriptRunId === runId && (BUSY.has(task.status) || task.status==='waiting_workflow')) ctx.scheduler.cancelTask(task, state);
         pushEvent(state, { kind: 'script_failed', summary: error }, ctx.now);
       }

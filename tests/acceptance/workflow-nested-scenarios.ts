@@ -73,7 +73,7 @@ export async function runNestedScenario(ctx:Context):Promise<void> {
         script:'const values=await agent("Return only [2,3,5,7] as JSON. Do not use tools.",{key:"plan",output:"json",workflowTool:false}); for(const n of values) await enqueueWork({queue:"parent",key:"item-"+n,title:"Square "+n,input:n});return {enqueued:values.length};',
         checkpoint:{stage:'delegated'},parentQueue:true});
       await call('run_script',{goal:'Native nested producer and parent queue consumption with one worker slot',
-        script:'return await parallel([()=>consumeWork({key:"pool",members:[{name:"consumer",workflowTool:false}],prompt:args.consume}),async()=>{const produced=await agent(args.produce,{key:"producer",workflowTool:true,output:"json"});await closeWorkQueue({key:"close"});return produced;}]);',
+        script:'return await parallel([()=>swarm(args.consume,{key:"pool",maxTurns:24,members:[{name:"consumer",workflowTool:false,queue:"default"}]}),async()=>{const produced=await agent(args.produce,{key:"producer",workflowTool:true,output:"json"});await closeWorkQueue({key:"close"});return produced;}]);',
         args:{produce:instruction('parent producer.json'),consume:instruction('consume')},
         plan:'One enabled producer delegates to a disabled planner. Its child enqueues four parent work items; a disabled persistent consumer completes them. The producer explicitly closes the queue. All use the configured harness/model and share one slot.',
         maxConcurrent:1,maxAgents:8,timeoutMs:600_000});
@@ -113,7 +113,7 @@ export async function runNestedScenario(ctx:Context):Promise<void> {
     await until(()=>state().script?.status==='result_ready');
     assert.deepEqual(state().workQueue!.items.map(item=>item.result),[4,9,25,49]);
     assert(state().workQueue!.items.every(item=>item.status==='completed' && item.generation===1));
-    assert.equal(state().consumerPool!.status,'drained');
+    assert.equal(state().swarms![0]!.stop,'quiet');
     assert.equal(tree().length,2);
     assert(!tree()[1]!.workQueue,'Enqueues must belong to the parent');
     assert.equal(processPool.snapshot().active,0);

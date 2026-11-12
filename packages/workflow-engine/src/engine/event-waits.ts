@@ -5,7 +5,6 @@ import { availableMessages, member, memberCursor, messageMatch, receiveMessages,
 import { taskById } from './kernel-state';
 import { emit } from './kernel-store';
 import { boundedInteger, scriptText } from './script-contract';
-import { memberPool } from './work-routing';
 import { memberSwarm } from './swarm';
 import { workStatus } from './work-queue';
 import type { Immutable, WorkflowView, WorkflowWait, WorkflowWaitSelector } from './types';
@@ -20,7 +19,6 @@ function selector(state: WorkflowView, value: unknown): WorkflowWaitSelector {
     case 'message': {
       const name = scriptText(input.member, 'member', 100);
       member(state, name);
-      if (memberPool(state, name)) throw new Error('Consumer pool members cannot wait on mailbox events');
       if (memberSwarm(state, name)) throw new Error('Swarm members are woken by the kernel and cannot wait on mailbox events');
       return { kind: 'message', member: name, ...messageMatch(input) };
     }

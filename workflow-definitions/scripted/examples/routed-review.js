@@ -6,9 +6,10 @@ for (const item of args.items) {
 }
 await closeWorkQueue({key:'implementation-closed',queue:'implementation'});
 await closeWorkQueue({key:'review-closed',queue:'review'});
-return await parallel([
-  () => consumeWork({key:'developers',queue:'implementation',members:args.developers,maxConcurrent:2,
-    prompt:'Implement the authorized change and test it. Save work progress and complete with evidence and artifact paths.'}),
-  () => consumeWork({key:'reviewers',queue:'review',members:args.reviewers,maxConcurrent:1,
-    prompt:'Read the implementationItemId with work_status. Independently verify the implementation and report evidence and unresolved issues.'}),
-]);
+// One swarm, two kinds of members: each consumes its own queue and can still be named on the board.
+return await swarm('Implement the queued changes and verify each one independently.', {key:'delivery', maxTurns:24, members:[
+  ...args.developers.map(member => ({...member, queue:'implementation',
+    role:'Implement the authorized change and test it. Save work progress and complete with evidence and artifact paths.'})),
+  ...args.reviewers.map(member => ({...member, queue:'review',
+    role:'Read the implementationItemId with work_status. Independently verify the implementation and report evidence and unresolved issues.'})),
+]});

@@ -1,12 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { workflowDigest } from '../digest';
-import { consumerSummary } from '../consumer-pool';
 import { swarmSummary } from '../swarm';
 import { workerSelection } from '../execution';
 import { addArtifact, acknowledge, BUSY, findTask, readArtifact, requiredText, textArray } from '../kernel-state';
 import { boundedInteger, scriptArgs, scriptText, SCRIPT_DEFINITION, SCRIPT_MAX_TASKS } from '../script-contract';
 import { unfinishedWork, workStatus } from '../work-queue';
-import { consumerPools } from '../work-routing';
 import type { KernelContext } from '../kernel-context';
 import { emit } from '../kernel-store';
 import type { WorkflowView } from '../types';
@@ -23,8 +21,6 @@ export function workflowSummary(ctx: KernelContext, state: WorkflowView): unknow
     sessions: state.sessions,
     agents: state.agents ?? [],
     workQueue: state.workQueue ? workStatus(state) : undefined,
-    consumerPools: consumerPools(state).map(pool => consumerSummary(state, pool.key)),
-    consumers: consumerSummary(state),
     swarms: (state.swarms ?? []).map(swarm => swarmSummary(state, swarm)),
     waits: (state.waits ?? []).map(wait => ({ key: wait.key, status: wait.status, createdAt: wait.createdAt,
       kinds: wait.any.map(arm => arm.kind), selected: wait.result?.index })),

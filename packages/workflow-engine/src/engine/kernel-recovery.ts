@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { releaseWorkClaims } from './work-queue';
-import { consumerPools } from './work-routing';
 import { workerSelection } from './execution';
 import { scriptArgs, scriptText, SCRIPT_MAX_REVISIONS } from './script-contract';
 import { acknowledge, addArtifact, BUSY, sameRoot } from './kernel-state';
@@ -22,7 +21,7 @@ export class RestartRecovery {
     const since = Number.isFinite(beat) && beat > 0 ? Math.min(beat, this.ctx.now()) : this.ctx.now();
     for (const state of store.list()) store.transact(() => {
       // Workflows a previous restart already interrupted have nothing left to retire.
-      if (state.status !== 'interrupted' || state.script!.status !== 'interrupted' || consumerPools(state).some(pool => pool.status !== 'suspended')) {
+      if (state.status !== 'interrupted' || state.script!.status !== 'interrupted') {
         emit(state, { type: 'workflow_interrupted', ...(state.status !== 'interrupted'
           ? { restart: { since, resume: !state.parent && state.status === 'active' && ['queued', 'running'].includes(state.script!.status) } } : {}) });
       }

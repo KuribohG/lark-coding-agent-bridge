@@ -154,10 +154,6 @@ export class WorkflowKernel {
     return this.ctx.scripts.scriptSwarmResult(scopeId, workflowId, runId, key);
   }
 
-  scriptConsumerResult(scopeId: string, workflowId: string, runId: string, key?: string): unknown | undefined {
-    return this.ctx.scripts.scriptConsumerResult(scopeId, workflowId, runId, key);
-  }
-
   scriptMailbox(scopeId: string, workflowId: string, runId: string, input: unknown): Promise<{ receiptId?: string; result?: unknown }> {
     return this.ctx.scripts.scriptMailbox(scopeId, workflowId, runId, input);
   }

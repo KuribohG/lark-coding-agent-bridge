@@ -103,12 +103,11 @@ Guest functions:
 | `reviewedAgent(prompt, {key, criteria, worker?, reviewer?, maxRounds?, onError?})` | Independent verification and bounded rework; returns only an accepted result, otherwise `null`; see [collaboration controls](workflow-collaboration.md) |
 | `speculativeAgent(prompt, {key, gate, worker?, repair?, maxRounds?, onError?})` | Runs work while an independent gate checks its premise; returns only work built on a premise that passed, otherwise `null`; see [speculation](workflow-collaboration.md#speculate-past-a-long-gate) |
 | `discuss(topic, {key, members, maxTurns?, summary?, onError?})` | Multi-agent discussion through the mailbox; members choose recipients each turn; see [multi-agent discussion](#multi-agent-discussion) |
-| `swarm(task, {key, lead?, members, maxTurns?, onError?})` | A group of members that coordinate on the shared message board, scheduled by the bridge; an optional lead adds and retires members and decides when to finish; see [message board](#message-board-and-swarms) |
+| `swarm(task, {key, lead?, members, maxTurns?, onError?})` | A group of members scheduled by the bridge: woken by board posts that name them and, with `queue`, by claimable work; an optional lead adds and retires members and decides when to finish; see [message board](#message-board-and-swarms) and [queue consumers](#queue-driven-consumers) |
 | `post(text, {key, to?})` / `readBoard({key, after?, limit?, member?})` | Post to the workflow's message board as the script, or read the feed; see [message board](#message-board-and-swarms) |
 | `send(member, text, {key, topic?, correlationId?})` / `receive(member, {key, topic?, correlationId?, timeoutMs?})` | Send a durable message or await a stable inbox batch |
 | `enqueueWork({key, title, input, queue?, priority?, dependsOn?, resources?, maxAttempts?})` | Persist an immutable work item; returns `{itemId, key}` and reuses it on replay |
 | `workStatus({itemId?, queue?, offset?, limit?})` | Read one item with its payload, or bounded queue counts and summaries |
-| `consumeWork({key, members, prompt, queue?, maxConcurrent?, maxTurns?, wakeOnMessages?})` | Schedule dedicated persistent consumers, optionally wake on feedback, and wait until the closed queue drains |
 | `closeWorkQueue({key, queue?})` | Persist queue closure; existing items continue, new items are rejected |
 | `parallel([() => ..., () => ...])` | Starts functions and returns results in input order; a function that throws yields `null` |
 | `pipeline(items, ...stages)` | Processes items concurrently; each item passes through its stages sequentially as `stage(value, index)`; a throwing stage yields `null` for that item and skips its remaining stages |
@@ -205,7 +204,7 @@ Every workflow has one message board: an ordered, append-only feed that all of i
 
 - `text` is at most 4000 characters. `to` is an array of member names or `"all"`. `@name` and `@all` in the text count as well, so `'Parser done, @qa please verify'` needs no `to`. Unknown names in `to` are rejected; an `@word` that matches no member is ordinary text. The sender is never its own recipient, and `all` means the members that exist when the post is made.
 - A read returns `{posts: [{seq, from, to, all?, text, at}], lastSeq, hasMore}`. Without `after` it returns the latest `limit` posts (default 20, at most 50); with `after` it returns the posts following that `seq`. `member` keeps the posts that member wrote or received. `from` is a member name, `main`, `script` or `system`.
-- Deliveries are ordinary inbox messages with topic `board` and the fields `post`, `to` and `all?` added, so everything that waits for messages works unchanged: `receive`, the `message` arm of `waitFor`, and `consumeWork({wakeOnMessages: true})`. As with direct messages, a member sees them in its next turn's member context and they are acknowledged when that turn succeeds.
+- Deliveries are ordinary inbox messages with topic `board` and the fields `post`, `to` and `all?` added, so everything that waits for messages works unchanged: `receive` and the `message` arm of `waitFor`. Swarm members are woken by them directly. As with direct messages, a member sees them in its next turn's member context and they are acknowledged when that turn succeeds.
 - A workflow holds at most 512 posts and 2048 deliveries. Deliveries reference the post instead of copying its text and do not count toward the 256 direct messages.
 - A script read records how far the feed reached under its `key`; replay reads the same range again.
 
@@ -227,20 +226,20 @@ return outcome.result;
 
 1. The task becomes the swarm's first post, then every member takes a first turn in parallel with the task, its role, the roster and the board rules in its prompt.
 2. After that each member sleeps without a worker process. A post that names it starts its next turn. Members never wait for each other, so a long implementation turn does not delay a question between two other members.
-3. With a `lead`, the swarm ends when the lead calls `swarm_finish`; without one, when every member is asleep and no post is waiting to be read.
+3. With a `lead`, the swarm ends when the lead calls `swarm_finish`; without one, when every member is asleep and no post is waiting to be read. Members with a `queue` add a condition, described under [queue consumers](#queue-driven-consumers).
 
 The lead is an ordinary member with three more operations and two kinds of system posts:
 
 | Operation | Effect |
 | --- | --- |
-| `swarm_add_member` with `{operationId, name, role?, brief?, like?}` | Adds a member while the swarm runs. It uses the harness and model of the existing member `like` (default: the first member other than the lead), so a lead cannot reach anything that was not authorized at the start. Its first turn sees the task, its role and `brief`. Add the member before naming it in a post |
+| `swarm_add_member` with `{operationId, name, role?, brief?, like?, queue?}` | Adds a member while the swarm runs. It uses the harness and model of the existing member `like` (default: the first member other than the lead), so a lead cannot reach anything that was not authorized at the start. Its first turn sees the task, its role and `brief`. Add the member before naming it in a post |
 | `swarm_retire_member` with `{operationId, name}` | The member finishes the turn it is running and is not woken again |
 | `swarm_finish` with `{operationId, result}` | Records the final result (at most 16000 characters). Nobody is woken afterwards; the swarm returns once the turns still running have ended |
 
 - When a member fails, the system posts to the lead with the reason; the member has stopped and the lead decides whether to reassign, replace or drop the work.
 - When everyone is idle and the lead has not finished, the system reminds the lead, at most twice. After that the swarm ends with `stop: "quiet"` and no `result`.
 
-`swarm` resolves to `{stop, result?, turns, members: [{name, lead?, added?, turns, status, error?, note}], posts, lastSeq, hasMore}`. `posts` holds up to the first 50 posts of the swarm; read further ones with `readBoard`. `note` is the member's last final answer.
+`swarm` resolves to `{stop, result?, turns, members: [{name, lead?, added?, queue?, turns, status, error?, note}], queues?, posts, lastSeq, hasMore}`. `queues` maps each consumed queue to its item counts. `posts` holds up to the first 50 posts of the swarm; read further ones with `readBoard`. `note` is the member's last final answer.
 
 | `stop` | Meaning |
 | --- | --- |
@@ -251,14 +250,14 @@ The lead is an ordinary member with three more operations and two kinds of syste
 
 If the lead fails, or the swarm runs out of the workflow's agent-call budget, `swarm` resolves to `null`, or rejects with `onError: "throw"`.
 
-- `members` and `lead` take `{name, role?, harness?, model?, reasoningEffort?, workflowTool?, workspace?}`: 2–12 at the start, the lead included, and up to 16 once the lead has added some. Names use 1–40 letters, digits, `_`, `.` or `-`, cannot be `all`, `main`, `script` or `system`, and are dedicated to this swarm: `agent`, `receive` and `waitFor` reject them.
-- `maxTurns` bounds the wake-ups of each member after its first turn: default 6, range 1–24. Every turn counts toward `maxAgents`; reserve `members × (maxTurns + 1)`.
+- `members` and `lead` take `{name, role?, harness?, model?, reasoningEffort?, workflowTool?, workspace?, queue?}`: 1–12 at the start, the lead included, and up to 16 once the lead has added some. Names use 1–40 letters, digits, `_`, `.` or `-`, cannot be `all`, `main`, `script` or `system`, and are dedicated to this swarm: `agent`, `receive` and `waitFor` reject them.
+- `maxTurns` bounds the wake-ups of each member after its first turn: default 6, range 1–64. Every turn counts toward `maxAgents`; reserve `members × (maxTurns + 1)`.
 - The main agent and the user steer a running swarm by posting: `/workflow post @parser also cover CRLF input` wakes `parser`, and `/workflow post @lead drop the docs work` reaches the lead.
 - On replay the swarm continues from its record: completed turns are not run again, a turn cut short by a pause or restart is retried in the member's own conversation, and members the lead added stay. The definition (key, task and member bindings) cannot change across replay.
 - Put ownership in the roles: who assigns, who owns which files, who verifies and how. A lead that only assigns and judges, and one verifier for every two to four workers, is a reasonable default. Give members that edit the same repository concurrently their own [workspace](workflow-worktrees.md).
 - Posts cost turns: every post that names a member wakes it. The member prompt tells members not to post acknowledgements; `maxTurns` is the hard bound.
 
-Use `parallel` for a fixed split with no interaction, `discuss` when positions must be argued to a conclusion, `consumeWork` for a dynamic batch of items, and `swarm` when the work has to be adjusted as it goes and members need to ask, hand over and verify each other's work.
+Use `parallel` for a fixed split with no interaction, `discuss` when positions must be argued to a conclusion, and `swarm` for a dynamic batch of queued items and for work that has to be adjusted as it goes, where members need to ask, hand over and verify each other's work.
 
 ### Persistent members
 
@@ -342,7 +341,7 @@ Worker operations:
 | `release_claim` | `claimId, generation, reason` | Pending status, or failed when attempts are exhausted |
 | `work_status` | `itemId?` or `queue?, offset?, limit?`; no `operationId` | Item detail or queue summary |
 
-Each member can hold one active claim. Pool members automatically use their pool queue and cannot override it; manually scheduled members may specify a queue and default to `default`. Within a queue, higher `priority` (-100 to 100, default 0) is considered first, with FIFO ties. `dependsOn` names up to 32 already-enqueued work keys, including keys in other queues. All prerequisites must complete successfully before a claim is possible; enqueueing prerequisites first prevents cycles. A failed/cancelled prerequisite produces an actionable pool failure; repair it and explicitly replay. Grants are bound to member, logical turn, execution attempt, claim ID and monotonically increasing item generation. The default lease is 120 seconds, with a 1–300 second range capped by the workflow deadline. Save progress before important boundaries and renew early enough for long tools or model calls. Lease expiry cancels the owning turn and requeues the item, unless its attempt budget is exhausted. Turn exit, pause, cancellation, binding invalidation and controller restart also release unfinished claims; saved item progress remains. Restart/pause never starts consumers automatically: explicit replay is still required. `claim_work: null` means end the current consumer turn; the script decides whether another round is needed.
+Each member can hold one active claim. Swarm members declared with a `queue` use that queue and cannot claim from another; other members may specify a queue and default to `default`. Within a queue, higher `priority` (-100 to 100, default 0) is considered first, with FIFO ties. `dependsOn` names up to 32 already-enqueued work keys, including keys in other queues. All prerequisites must complete successfully before a claim is possible; enqueueing prerequisites first prevents cycles. A failed/cancelled prerequisite produces an actionable pool failure; repair it and explicitly replay. Grants are bound to member, logical turn, execution attempt, claim ID and monotonically increasing item generation. The default lease is 120 seconds, with a 1–300 second range capped by the workflow deadline. Save progress before important boundaries and renew early enough for long tools or model calls. Lease expiry cancels the owning turn and requeues the item, unless its attempt budget is exhausted. Turn exit, pause, cancellation, binding invalidation and controller restart also release unfinished claims; saved item progress remains. Restart/pause never starts consumers automatically: explicit replay is still required. `claim_work: null` means end the current consumer turn; the script decides whether another round is needed.
 
 Queue mutation IDs are scoped to the current execution attempt. Repeating the same operation returns its recorded response; different content under that ID conflicts. Retrying a claim does not revive an expired/completed grant, and repeating a `null` claim returns `null`; use a new operation ID for a later claim query. Repeating an already committed completion with its original ID is harmless. Old attempts, owners and generations cannot make a new submission or overwrite a result. This fences bridge state only: external tool/file side effects are not transactional and are not guaranteed exactly once.
 
@@ -356,52 +355,45 @@ Limits shared by all queues in one workflow: 256 items, 512 claim records, 2048 
 
 ### Queue-driven consumers
 
-`consumeWork` owns the consumer lifecycle within an explicitly started script workflow. The bridge schedules turns when work becomes claimable, resumes the same native sessions for subsequent turns, and records an idle wait when no work is available. Waiting consumes no worker process or process-pool slot. The bounded script interpreter remains active and the workflow deadline continues to run; this is not an indefinite background service.
+A swarm member declared with `queue` consumes that work queue. The bridge starts a turn for it when the queue holds work it can claim, resumes the same native session for later turns, and leaves it asleep when there is none. Waiting uses no worker process or process-pool slot. The bounded script interpreter remains active and the workflow deadline continues to run.
 
 ```js
 for (const item of args.items) await enqueueWork(item);
 await closeWorkQueue({key: 'production-finished'});
-return await consumeWork({
+return await swarm('Handle the authorized work, preserve progress and verify the result.', {
   key: 'consumers',
-  members: [{name: 'A', harness: 'codex'}, {name: 'B', harness: 'codex'}],
-  prompt: 'Handle the authorized work, preserve progress and verify the result.',
-  maxTurns: 32,
+  members: [{name: 'A', harness: 'codex', queue: 'default'}, {name: 'B', harness: 'codex', queue: 'default'}],
+  maxTurns: 24,
 });
 ```
 
-A workflow has at most 16 pools and 16 logical queues (including `default`), with 1–16 dedicated member names per pool and at most 32 members overall. Each pool selects one `queue` (default `default`), has its own `prompt`, and can set `maxConcurrent` within the root concurrency limit. Work keys and resource exclusions remain global within the workflow. Each member supports `harness`, `model`, `reasoningEffort` and `workflowTool` (default false); omitted settings follow the script defaults. The pool key, queue, concurrency, prompt, membership, turn budget and resolved execution bindings are immutable across replay. A member cannot belong to multiple pools. Pool members cannot also be scheduled with `agent()` or wait on script `receive()`. They are created lazily when work arrives. Generated turn keys use the reserved `@consumer/` prefix; ordinary script keys cannot use it.
+- A queue member takes no opening turn: it starts with its first claimable item. Until then it does not exist as a member, so a post cannot name it yet.
+- Its prompt tells it to use `claim_work`, `checkpoint_work`, `renew_claim` and `complete_work`, and to end the turn when a claim returns `null`. It must not sleep or poll. One turn usually claims several items in a row.
+- The scheduler bounds dispatch by the claimable items and the turns that have not claimed yet. A member that raced another may still receive no item; the same set of available work does not wake it twice.
+- A queue member is still woken by posts that name it, and handles them before consuming work. One swarm can mix queue members with members that only answer posts, and members can consume different queues; see [routed work](workflow-scheduling.md#routed-work-and-dependencies).
+- A member whose turn fails, or whose claim lease expires, stops for this script run. Its claim is released and the other members take the work over. Explicit replay retries its unfinished turn.
+- `maxTurns` bounds each member's wake-ups (default 6, up to 64); raise it when work arrives in batches. Every turn counts toward `maxAgents`.
 
-Members keep using `claim_work`, `checkpoint_work`, `renew_claim` and `complete_work`. When a claim returns `null`, they finish their turn immediately. They must not sleep or poll waiting for more items. The scheduler considers available resource keys and outstanding turns to bound dispatch. A worker racing another consumer may still receive no item; its native process then exits. The scheduler does not repeatedly invoke a no-progress consumer for the same available work. If no consumer can make progress, it fails with an actionable reason instead of spinning. Workers' successful final answers automatically save member checkpoints; item checkpoints remain explicit.
+**Closure of each queue is explicit and permanent.** An open but empty queue waits for new input; a closed queue stops accepting items and drains the existing ones. A swarm without a lead ends only when every queue its members consume is closed and holds no unfinished item, and nobody has a post to read. It fails if it goes idle while work is still available that no member can take, or with failed or unclaimable items. A swarm with a lead ends on the lead's `swarm_finish` as usual; the lead is reminded when everyone is idle.
 
-With `wakeOnMessages:true`, existing pool members also receive pending mailbox feedback in their next turn, including when no work is claimable. They process that feedback before consuming work. A busy member is never given a concurrent turn. Pending feedback is handled before the pool drains; late messages do not reopen a drained pool. See [feedback and independent verification](workflow-collaboration.md) for replay, budgets and ownership.
-
-A failed or interrupted member stops participating for the current script run. Its claim is released and other members can continue. Explicit replay can retry that member's original unfinished turn when work is available. Completed turns are reconstructed as cache hits without rerunning their side effects; subsequent turns preserve their predecessor chain and native session. Failed work items reject the pool after active turns finish. Inspect `/workflow work`, use `retry_work` for recoverable items, then explicitly replay. Native authentication/session failures remain visible; there is no silent replacement with another profile or a fresh conversation.
-
-`maxTurns` bounds the pool's total logical turns, defaulting to the smaller of 32 and the script's `maxAgents` and capped at 128. Every scheduled consumer turn counts against `maxAgents`; restored completed turns count as cache hits. Workflow history/attempt limits, worker concurrency, shared foreground-priority process slots and the original deadline also apply. Exhausted budgets fail visibly; replay does not reset them or extend the deadline.
-
-**Closure of each logical queue is explicit and permanent.** An open but empty queue waits for new input. A closed queue stops accepting new items and drains existing ones. `consumeWork` returns `{queue, consumers}` only after there are no pending/claimed items and all its active turns have exited. It rejects on terminal item failures or exhausted/no-progress consumers. Replaying enqueue calls still reuses identical existing items after closure. Explicit retry of an existing failed item is allowed after closure, followed by replay; a closed queue cannot be reopened. A separately named queue may be created within the remaining workflow limits. Closing does not cancel running workers.
-
-For concurrent producers, await both producer and consumer branches:
+For concurrent producers, start the swarm, produce, close the queue, then await the swarm:
 
 ```js
-return await parallel([
-  () => consumeWork({key: 'pool', members: args.members, prompt: args.consumerPrompt}),
-  async () => {
-    const items = await agent(args.planningTask, {key: 'producer', output: 'json'});
-    for (const item of items) await enqueueWork(item);
-    return await closeWorkQueue({key: 'production-finished'});
-  },
-]);
+const consumers = swarm(args.consumerPrompt, {key: 'pool', members: args.members.map(member => ({...member, queue: 'default'}))});
+const items = await agent(args.planningTask, {key: 'producer', output: 'json'});
+for (const item of items) await enqueueWork(item);
+await closeWorkQueue({key: 'production-finished'});
+return await consumers;
 ```
 
-The [packaged consumer example](../workflow-definitions/scripted/examples/consumer-pool.js) accepts `items`, `members`, `consumerPrompt`, optional `maxTurns`, and `keepOpen`. By default it closes the queue after enqueueing the initial batch. With `keepOpen: true`, main must close it after additional authorized work arrives. Main CLI operations use the normal workflow ID, operation ID and expected state version. Chat controls for an existing workflow are:
+The [packaged consumer example](../workflow-definitions/scripted/examples/queue-swarm.js) accepts `items`, `members`, `consumerPrompt`, optional `maxTurns`, and `keepOpen`. By default it closes the queue after enqueueing the initial batch. With `keepOpen: true`, main must close it after additional authorized work arrives. Main CLI operations use the normal workflow ID, operation ID and expected state version. Chat controls for an existing workflow are:
 
 ```text
 /workflow enqueue {"key":"extra-item","title":"Additional task","input":"Task details within the original goal"}
 /workflow close [queue]
 ```
 
-Enqueue accepts optional `resources` and `maxAttempts`. These commands never create a workflow; when paused/interrupted they only persist the change. Restart marks the pool suspended and cancels orphaned claims; scheduling resumes with the automatic or explicit replay. `/workflow work` and `/workflow status [member]` display queue closure, pool state, turn budget, idle waits and stopped members, including before a member's first native turn. Ordinary messages do not enter workflow mode.
+Enqueue accepts optional `resources` and `maxAttempts`. These commands never create a workflow; when paused/interrupted they only persist the change. Restart cancels orphaned claims; scheduling resumes with the automatic or explicit replay. `/workflow work` and `/workflow status [member]` display queue closure, pool state, turn budget, idle waits and stopped members, including before a member's first native turn. Ordinary messages do not enter workflow mode.
 
 ### Nested workflows as a worker tool
 
@@ -471,7 +463,7 @@ Additional nested lifecycle cases run with `--scenarios nested-recovery,nested-c
 
 - `nested-recovery`: parent, middle caller and persistent leaf are three native sessions. Pause after the leaf checkpoint, exit the controller, explicitly replay in a fresh process, and require all three original sessions and the checkpoint/result to survive.
 - `nested-cancel`: cancel while the leaf is running. Require all three workflows and tasks to stop, zero process slots, rejection of a late checkpoint, and no further dispatch or main-chat wakeup.
-- `nested-queue`: a child planner produces four values and enqueues work into its parent's queue. A persistent consumer completes each item once; explicit closure drains the pool.
+- `nested-queue`: a child planner produces four values and enqueues work into its parent's queue. A persistent consumer completes each item once; explicit closure lets the swarm drain and return.
 - `nested-before-yield`: close the controller directly after a parent commits its child, before it yields. Explicit replay must execute that same child and return its result to the original parent session. A controller shutdown must not convert the accepted child into a permanent cancellation.
 
 These recovery cases use controlled controller shutdown. Opt into `--scenarios nested-crash` on POSIX to SIGKILL the isolated controller immediately after the native parent yields, before its pending child runs. The launcher requires the expected crash signal and saved boundary evidence, then explicitly replays in a fresh process and verifies the original parent session and child result. This case waits for the native turn to exit before killing the controller; it does not kill the shared Codex daemon or test recovery of an active native turn.

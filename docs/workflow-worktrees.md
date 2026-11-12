@@ -29,7 +29,7 @@ return await acceptIntegration({
 
 Pass explicit worker `harness`, `model`, and `reasoningEffort` values appropriate to the task. Independent changes can run the create/review sequence inside `parallel`, with unique keys and members. Example: [parallel reviewed changes](../workflow-definitions/scripted/examples/isolated-implementation.js).
 
-The worker must commit intended changes and leave a clean index/worktree. `reviewedAgent` freezes the commit after the worker exits, creates an independent review snapshot, checks that the reviewer left it unchanged, and records approval from the actual task result. Rejection sends feedback to the original member/worktree. With `worker.workspace`, the result adds `{change,approval}` to `{value,review,rounds}`. Without it, existing helper behavior is unchanged. Nested `workflowTool` delegation and consumer-pool workspace switching are not supported in this version.
+The worker must commit intended changes and leave a clean index/worktree. `reviewedAgent` freezes the commit after the worker exits, creates an independent review snapshot, checks that the reviewer left it unchanged, and records approval from the actual task result. Rejection sends feedback to the original member/worktree. With `worker.workspace`, the result adds `{change,approval}` to `{value,review,rounds}`. Without it, existing helper behavior is unchanged. Nested `workflowTool` delegation in a workspace is not supported in this version.
 
 ## APIs
 

@@ -2,23 +2,20 @@
 
 Use collaboration where it can catch mistakes or shorten the path to a valid result. Independent subtasks can still use ordinary `parallel`; small tasks do not need a review loop. This page describes two opt-in additions inspired by public Claude Code behavior, with the bridge's existing budgets and replay rules.
 
-## Feedback wakes queue consumers
+## Feedback wakes swarm members
 
 ```js
-await consumeWork({
-  key: 'investigators', queue: 'investigation', members: args.investigators,
-  prompt: 'Investigate the assigned hypotheses. Challenge unsupported conclusions with concrete evidence.',
-  wakeOnMessages: true,
+await swarm('Investigate the assigned hypotheses. Challenge unsupported conclusions with concrete evidence.', {
+  key: 'investigators', maxTurns: 12,
+  members: args.investigators.map(member => ({...member, queue: 'investigation'})),
 });
 ```
 
-With `wakeOnMessages:true`, messages to an already-created pool member are delivered automatically in its next turn. An idle member can handle feedback while other members are still working, even when there is no claimable work. A busy member finishes its current turn first; feedback never creates two simultaneous turns for the same member. This does not inject messages into an in-progress native request.
+A [swarm](workflows.md#message-board-and-swarms) member is woken by board posts that name it, whether or not it consumes a queue. An idle member can handle feedback while other members are still working, even when there is no claimable work. A busy member finishes its current turn first; feedback never creates two simultaneous turns for the same member, and nothing is injected into an in-progress native request.
 
-The turn receives the same stable inbox batches as ordinary `receive()`, including `topic` and `correlationId`. It acknowledges them only on successful completion. Failure/interruption preserves the input batch for explicit replay. New messages arriving during that turn wait for a later turn. A message-only turn does not reserve work that another idle consumer could claim.
+The turn receives the posts in its member context and acknowledges them only on successful completion. Posts arriving during that turn wait for the next one. A turn started by posts alone does not reserve work that another idle consumer could claim. A queue member exists only after its first item, so it cannot be named before that.
 
-Pool bindings, including this option, remain immutable on replay. The default is false, preserving existing scripts. Members are still created lazily by initial work; sending to an unknown member is rejected. Ordinary `agent()`/`receive()` cannot independently schedule a pool member.
-
-Close the queue after all feedback producers have finished. Before draining, an opted-in pool handles messages already pending, as well as its work. A drained pool is terminal: messages sent after drain do not restart it. Feedback turns use the same concurrency, task, attempt, receipt and deadline budgets; they cannot extend the workflow indefinitely. Send useful evidence or a concrete request rather than acknowledgement-only replies.
+Feedback turns use the same concurrency, task, attempt and deadline budgets and count toward the member's `maxTurns`; they cannot extend the workflow indefinitely. Post useful evidence or a concrete request rather than acknowledgements.
 
 Feedback does not reopen a completed work item or grant ownership of files. If a correction needs writes, arrange a new work claim with the appropriate resource keys. For a task whose result must not be accepted until verification, use the helper below before returning its result.
 
@@ -82,7 +79,7 @@ Material checked on 2026-11-02:
 | Claude Code public behavior | Bridge relationship |
 | --- | --- |
 | [Shared tasks, dependencies and claims](https://code.claude.com/docs/en/agent-teams#assign-and-claim-tasks) | Already provided by work queues, dependencies and leases |
-| [Automatic teammate messaging](https://code.claude.com/docs/en/agent-teams#context-and-communication) | Opt-in pool feedback now starts a subsequent member turn; active-request injection is not implemented |
+| [Automatic teammate messaging](https://code.claude.com/docs/en/agent-teams#context-and-communication) | A board post that names a swarm member starts a subsequent member turn; active-request injection is not implemented |
 | [TaskCompleted](https://code.claude.com/docs/en/hooks#taskcompleted) / [TeammateIdle](https://code.claude.com/docs/en/hooks#teammateidle) blocking with feedback | The review helper provides an acceptance/rework loop; it is not an implementation of those hook events |
 | [Agent-based hooks](https://code.claude.com/docs/en/hooks#agent-based-hooks) inspect evidence and return a decision | Independent reviewer calls use existing authorized workers; they are not Claude's agent-hook subprocesses |
 | [Competing hypotheses](https://code.claude.com/docs/en/agent-teams#investigate-with-competing-hypotheses) | A recommended task/prompt pattern using independent workers and targeted feedback, not an automatic voting guarantee |

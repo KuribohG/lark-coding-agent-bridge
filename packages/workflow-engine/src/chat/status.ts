@@ -1,4 +1,4 @@
-import { consumerPools, memberPool, queueControl, queueNames } from '../engine/work-routing';
+import { queueControl, queueNames } from '../engine/work-routing';
 import type { DurableAgent, WorkflowState, WorkflowTask, WorkflowWorkItem } from '../engine/types';
 
 const TASK_STATUS: Record<WorkflowTask['status'], string> = {
@@ -52,9 +52,11 @@ function memberLines(state: WorkflowState, member: DurableAgent, detail: boolean
   const task = currentTask(state, member);
   const receipt = state.mailbox?.receipts.find(item => item.id === member.wait?.receiptId);
   const checkpoint = state.checkpoints?.find(item => item.ref === member.checkpointRef);
-  const pool = memberPool(state, member.key);
+  const swarm = state.swarms?.find(item => item.members.some(found => found.name === member.key));
+  const seat = swarm?.members.find(found => found.name === member.key);
   const phase = member.activeTurnId && task ? taskStatus(task)
-    : pool?.status === 'waiting' ? '等待队列任务（不占 worker 进程）'
+    : seat?.stopped ? (seat.stopped === 'failed' ? '已失败并停止' : '已退出')
+    : swarm?.status === 'running' ? (seat!.queue ? '等待队列任务或留言板点名（不占 worker 进程）' : '等待留言板点名（不占 worker 进程）')
     : member.wait?.kind === 'event' ? '等待消息或其它事件（不占 worker 进程）'
     : receipt?.status === 'waiting' ? '等待消息' : receipt?.status === 'ready' ? '消息已到，待开始下一轮'
       : task ? taskStatus(task) : '尚未开始';
@@ -110,11 +112,9 @@ function queueLines(state: WorkflowState, limit: number, member?: DurableAgent):
   for (const name of queueNames(state).filter(name => name !== 'default')) {
     lines.push(`队列 ${compact(name, 64)}：${queueControl(state, name)?.closedAt === undefined ? '开放' : '已关闭'}`);
   }
-  for (const pool of consumerPools(state)) {
-    const names = {waiting:'等待队列变化（不占 worker 进程）',running:'消费中',drained:'已排空',failed:'需要处理',suspended:'已暂停',cancelled:'已取消'};
-    lines.push(`消费者池 ${compact(pool.key, 100)}：${names[pool.status]}，队列 ${compact(pool.queue ?? 'default', 64)}，轮次 ${pool.turns.length}/${pool.maxTurns}`);
-    if (pool.reason) lines.push(`  状态说明：${errorText(pool.reason)}`);
-    lines.push(`  成员：${pool.members.slice(0, 8).map(consumer => compact(consumer.name, 50) + (consumer.disabled ? '（停止，需显式重放）' : consumer.retryPending ? '（待恢复）' : '')).join('、')}`);
+  for (const swarm of state.swarms ?? []) {
+    const consumers = swarm.members.filter(found => found.queue);
+    if (consumers.length) lines.push(`Swarm ${compact(swarm.key, 80)} 的队列成员：${consumers.slice(0, 8).map(found => `${compact(found.name, 50)}（${compact(found.queue!, 64)}${found.stopped ? '，已停止' : ''}）`).join('、')}`);
   }
   const order = { claimed: 0, failed: 1, pending: 2, completed: 3, cancelled: 4 };
   const selected = items.filter(item => !member || state.workQueue?.claims.some(claim => claim.id === item.claimId && claim.agentId === member.agentId))
@@ -261,7 +261,7 @@ export function renderWorkflowStatus(state: WorkflowState, memberKey?: string, l
   }
   if (memberKey) {
     const member = state.agents?.find(item => item.key === memberKey);
-    if (!member && memberPool(state, memberKey)) return bounded([...lines, ...queueLines(state, 0), `成员 ${compact(memberKey, 100)} 等待首次队列任务，尚未启动 worker。`]);
+    if (!member && state.swarms?.some(swarm => swarm.members.some(found => found.name === memberKey))) return bounded([...lines, `成员 ${compact(memberKey, 100)} 属于 swarm，尚未开始首轮。`]);
     if (!member) return bounded([...lines, `未找到成员：${compact(memberKey, 100)}。用 /workflow status 查看成员列表。`]);
     lines.push(...memberLines(state, member, true, now));
     lines.push(...queueLines(state, 1, member));

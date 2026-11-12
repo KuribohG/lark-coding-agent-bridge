@@ -1,6 +1,6 @@
 import type {
   AgentCheckpoint, BoardPost, DurableAgent, MailboxMessage, MailboxReceipt, SessionBinding, StoredArtifact, StoredTask, SwarmMember, TurnAttempt, WorkClaim,
-  WorkConsumerPool, WorkerExecutionSelection, WorkflowData, WorkflowEvent, WorkflowScript, WorkflowStopReason, WorkflowSwarm, WorkflowWait, WorkflowWorkItem,
+  WorkerExecutionSelection, WorkflowData, WorkflowEvent, WorkflowScript, WorkflowStopReason, WorkflowSwarm, WorkflowWait, WorkflowWorkItem,
 } from './types';
 
 type Operation = { key: string; digest: string; response: unknown };
@@ -74,7 +74,8 @@ export type DomainEvent =
   // Swarms
   | { type: 'swarm_created'; swarm: WorkflowSwarm }
   | { type: 'swarm_rebound'; swarmId: string; runId: string; retryPending: string[] }
-  | { type: 'swarm_turn_scheduled'; swarmId: string; member: string; key: string; taskId: string; retry: boolean; opening: boolean }
+  | { type: 'swarm_turn_scheduled'; swarmId: string; member: string; key: string; taskId: string; retry: boolean; opening: boolean; wake?: string }
+  | { type: 'swarm_member_wake_cleared'; swarmId: string; member: string }
   | { type: 'swarm_member_added'; swarmId: string; member: SwarmMember }
   | { type: 'swarm_member_stopped'; swarmId: string; member: string; reason: 'failed' | 'retired'; detail?: string }
   | { type: 'swarm_nudged'; swarmId: string }
@@ -97,14 +98,7 @@ export type DomainEvent =
   | { type: 'claim_ended'; claimId: string; status: 'failed' | 'released' | 'expired' | 'cancelled'; reason: string; retry: boolean; at: number }
   | { type: 'work_progress_saved'; itemId: string; state: unknown; at: number }
   | { type: 'work_completed'; claimId: string; result: unknown; at: number }
-  | { type: 'work_operation_recorded'; operation: Operation }
-  // Consumer pools
-  | { type: 'pool_created'; pool: WorkConsumerPool }
-  | { type: 'pool_rebound'; poolId: string; runId: string; retryPending: string[] }
-  | { type: 'pool_member_disabled'; poolId: string; member: string; reason: string }
-  | { type: 'pool_member_wake_cleared'; poolId: string; member: string }
-  | { type: 'pool_status_changed'; poolId: string; status: WorkConsumerPool['status']; reason?: string }
-  | { type: 'pool_turn_scheduled'; poolId: string; member: string; key: string; taskId: string; retry: boolean; wake: string };
+  | { type: 'work_operation_recorded'; operation: Operation };
 
 /** Events that change a workflow's status or its script's status or run. */
 const LIFECYCLE = new Set<DomainEvent['type']>(['workflow_created', 'workflow_replaced', 'workflow_paused', 'workflow_cancelled', 'workflow_completed',
@@ -117,7 +111,6 @@ export function eventTopics(event: DomainEvent): string[] {
   if ('task' in event) topics.push('task:' + event.task.taskId);
   if ('waitId' in event) topics.push('wait:' + event.waitId);
   if (event.type === 'wait_opened') topics.push('wait:' + event.wait.id);
-  if (event.type.startsWith('pool_')) topics.push('pool');
   if (event.type.startsWith('swarm_')) topics.push('swarm');
   if (event.type === 'message_sent' || event.type === 'receipt_opened' || event.type.startsWith('member_turn_')) topics.push('mailbox');
   if (event.type === 'board_posted') topics.push('board', 'mailbox');
@@ -132,7 +125,6 @@ export function eventEntity(event: DomainEvent): string | undefined {
   if ('waitId' in event) return event.waitId;
   if ('claimId' in event) return event.claimId;
   if ('itemId' in event) return event.itemId;
-  if ('poolId' in event) return event.poolId;
   if ('swarmId' in event) return event.swarmId;
   switch (event.type) {
     case 'artifact_added': return event.artifact.ref;
@@ -143,7 +135,6 @@ export function eventEntity(event: DomainEvent): string | undefined {
     case 'board_posted': return event.post.id;
     case 'receipt_opened': return event.receipt.id;
     case 'checkpoint_saved': return event.checkpoint.ref;
-    case 'pool_created': return event.pool.id;
     case 'swarm_created': return event.swarm.id;
     case 'member_created': return event.agent.agentId;
     case 'session_created': return event.session.sessionRef;

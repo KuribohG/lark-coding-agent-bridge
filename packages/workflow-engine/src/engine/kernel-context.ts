@@ -39,7 +39,7 @@ export interface KernelContext {
     replayScript(state: WorkflowView, args: Record<string, unknown>, automatic?: boolean): void;
   };
   readonly scripts: {
-    checkWorkKey(state: WorkflowView, value: unknown, operation?: 'enqueue' | 'consume' | 'close'): string;
+    checkWorkKey(state: WorkflowView, value: unknown, operation?: 'enqueue' | 'swarm' | 'close'): string;
     finishScript(scopeId: string, workflowId: string, runId: string, result: { text: string } | { error: string }): void;
   };
 }

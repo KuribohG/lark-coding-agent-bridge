@@ -1,8 +1,6 @@
 import type { WorkflowView } from './types';
 
-type Pools = Pick<WorkflowView, 'consumerPool' | 'consumerPools'>;
-type Routing = Pools & Pick<WorkflowView, 'workQueue'>;
-type PoolOf<S extends Pools> = NonNullable<S['consumerPool']>;
+type Routing = Pick<WorkflowView, 'workQueue' | 'swarms'>;
 
 export function queueName(value: unknown = 'default'): string {
   if (typeof value !== 'string' || !/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(value)
@@ -10,18 +8,19 @@ export function queueName(value: unknown = 'default'): string {
   return value;
 }
 
-export function consumerPools<S extends Pools>(state: S): Array<PoolOf<S>> {
-  return [...(state.consumerPool ? [state.consumerPool] : []), ...(state.consumerPools ?? [])] as Array<PoolOf<S>>;
-}
-
-export function memberPool<S extends Pools>(state: S, name?: string): PoolOf<S> | undefined {
-  return consumerPools<Pools>(state).find(pool => pool.members.some(member => member.name === name)) as PoolOf<S> | undefined;
+/** The queue a swarm member consumes; such a member claims from that queue only. */
+export function memberQueue(state: Pick<WorkflowView, 'swarms'>, name?: string): string | undefined {
+  for (const swarm of state.swarms ?? []) {
+    const member = swarm.members.find(item => item.name === name);
+    if (member) return member.queue;
+  }
+  return undefined;
 }
 
 export function queueNames(state: Routing): string[] {
   return [...new Set(['default', ...Object.keys(state.workQueue?.queues ?? {}),
     ...(state.workQueue?.items ?? []).map(item => item.queue ?? 'default'),
-    ...consumerPools<Pools>(state).map(pool => pool.queue ?? 'default')])];
+    ...(state.swarms ?? []).flatMap(swarm => swarm.members.flatMap(member => member.queue ? [member.queue] : []))])];
 }
 
 /** Closure state of a queue; undefined while the queue does not exist. Queues are created by openQueue (work-queue.ts). */

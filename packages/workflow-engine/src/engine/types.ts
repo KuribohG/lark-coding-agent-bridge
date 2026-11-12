@@ -155,6 +155,10 @@ export interface SwarmMember {
   brief?: string;
   /** The member's latest turn. */
   taskId?: string;
+  /** The work queue this member consumes: it is also woken whenever that queue has work it could claim. */
+  queue?: string;
+  /** The available work the member was last woken for; the same set does not wake it twice. */
+  lastWake?: string;
   /** Wake-ups used after the opening turn. */
   turns: number;
   /** Its unfinished turn is retried under the same key when the script is replayed. */
@@ -271,30 +275,6 @@ export interface WorkflowWorkQueue {
   queues?: Record<string, { closedAt?: number; closeKey?: string }>;
 }
 
-/** Script-owned consumers; waiting never holds a worker process. */
-export interface WorkConsumerPool {
-  id: string;
-  key: string;
-  digest: string;
-  runId: string;
-  prompt: string;
-  maxTurns: number;
-  queue?: string;
-  maxConcurrent?: number;
-  wakeOnMessages?: boolean;
-  status: 'waiting' | 'running' | 'drained' | 'failed' | 'suspended' | 'cancelled';
-  reason?: string;
-  members: Array<{
-    name: string;
-    execution: WorkerExecution;
-    workflowTool?: boolean;
-    taskId?: string;
-    lastWake?: string;
-    retryPending?: boolean;
-    disabled?: string;
-  }>;
-  turns: Array<{ key: string; member: string; taskId: string }>;
-}
 
 export interface WorkerExecutionSelection extends ModelSettings {
   agentKind: AgentKind;
@@ -425,9 +405,6 @@ export interface WorkflowState {
   board?: WorkflowBoard;
   swarms?: WorkflowSwarm[];
   workQueue?: WorkflowWorkQueue;
-  consumerPool?: WorkConsumerPool;
-  /** Additional pools; the original field keeps persisted single-pool workflows readable. */
-  consumerPools?: WorkConsumerPool[];
   waits?: WorkflowWait[];
   controlOperations?: Array<{ key: string; digest: string; taskId: string }>;
   workspaceKeys?: string[];
@@ -459,7 +436,6 @@ export type WorkflowView = Immutable<WorkflowData>;
 export type TaskView = Immutable<StoredTask>;
 export type ArtifactView = Immutable<StoredArtifact>;
 export type AgentView = Immutable<DurableAgent>;
-export type PoolView = Immutable<WorkConsumerPool>;
 
 export type WorkflowCaller =
   | { scopeId: string; kind: 'main'; allowStart?: boolean; workflowId?: string }

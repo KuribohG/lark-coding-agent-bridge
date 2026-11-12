@@ -6,7 +6,8 @@ import type { DomainEvent } from './events';
 import { readArtifact, taskById } from './kernel-state';
 import { emit, readText } from './kernel-store';
 import { boundedInteger, parseScriptAgentCall, scriptText } from './script-contract';
-import { consumerPools, memberPool } from './work-routing';
+import { availableWork, openQueue, unfinishedWork, workStatus } from './work-queue';
+import { queueControl, queueName } from './work-routing';
 import type { Immutable, NativeIdKind, SwarmMember, WorkerExecution, WorkerExecutionPolicy, WorkflowSwarm, WorkflowTask, WorkflowView } from './types';
 
 const BUSY = new Set<WorkflowTask['status']>(['queued', 'starting', 'running', 'cancelling', 'waiting_workflow']);
@@ -35,16 +36,17 @@ export function parseSwarm(input: Record<string, unknown>, state: WorkflowView, 
   if (key.trim() !== key || key.startsWith('@')) throw new Error('swarm key must not contain surrounding whitespace or start with @');
   const task = scriptText(input.task, 'swarm task', 16_000);
   if (!task.trim()) throw new Error('swarm needs a task');
-  const maxTurns = boundedInteger(input.maxTurns, 6, 1, 24);
+  const maxTurns = boundedInteger(input.maxTurns, 6, 1, 64);
   if (!Array.isArray(input.members) || !input.members.length) throw new Error('swarm needs members');
   const listed = [...(input.lead === undefined ? [] : [input.lead]), ...input.members];
-  if (listed.length < 2 || listed.length > 12) throw new Error('swarm needs 2–12 members, the lead included');
+  if (listed.length > 12) throw new Error('swarm needs 1–12 members, the lead included');
   const members = listed.map((value: unknown) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid swarm member');
     const { name, role: description, ...options } = value as Record<string, unknown>;
-    if (Object.keys(options).some(option => !['harness', 'model', 'reasoningEffort', 'workflowTool', 'workspace'].includes(option))) throw new Error('Unsupported swarm member option');
-    const call = parseScriptAgentCall({ ...options, key, member: memberName(name), prompt: task }, state.script!.defaults, state.root, policy);
-    return { name: call.member!, role: role(description), selection: call.selection, ...(call.workflowTool ? { workflowTool: true } : {}), ...(call.workspace ? { workspace: call.workspace } : {}) };
+    if (Object.keys(options).some(option => !['harness', 'model', 'reasoningEffort', 'workflowTool', 'workspace', 'queue'].includes(option))) throw new Error('Unsupported swarm member option');
+    const { queue, ...execution } = options;
+    const call = parseScriptAgentCall({ ...execution, key, member: memberName(name), prompt: task }, state.script!.defaults, state.root, policy);
+    return { name: call.member!, role: role(description), selection: call.selection, ...(call.workflowTool ? { workflowTool: true } : {}), ...(call.workspace ? { workspace: call.workspace } : {}), ...(queue !== undefined ? { queue: queueName(queue) } : {}) };
   });
   if (new Set(members.map(member => member.name)).size !== members.length) throw new Error('Swarm member names must be unique');
   return { key, task, maxTurns, members, ...(input.lead === undefined ? {} : { lead: members[0]!.name }) };
@@ -58,7 +60,7 @@ function ownerOf(state: WorkflowView, name: string | undefined): SwarmView | und
 export const memberSwarm = ownerOf;
 
 function nameTaken(state: WorkflowView, name: string): boolean {
-  return Boolean(state.agents?.some(agent => agent.key === name) || memberPool(state, name) || ownerOf(state, name));
+  return Boolean(state.agents?.some(agent => agent.key === name) || ownerOf(state, name));
 }
 
 /** Called after resolving every member's authorized execution binding. Creates the swarm, or rejoins it on replay. */
@@ -71,13 +73,13 @@ export function bindSwarm(state: WorkflowView, spec: ReturnType<typeof parseSwar
     if (swarm.runId === runId) throw new Error('Duplicate swarm call');
   } else {
     if ((state.swarms?.length ?? 0) >= 8) throw new Error('Swarm limit reached');
-    if (consumerPools(state).some(pool => pool.key === spec.key)) throw new Error('Swarm key already belongs to a consumer pool');
     if (spec.members.some(member => nameTaken(state, member.name))) throw new Error('Swarm requires dedicated member names not already used in this workflow');
+    for (const member of spec.members) if (member.queue) openQueue(state, member.queue);
     const brief = postToBoard(state, { author: 'script' }, { text: `Swarm "${spec.key}" task:\n` + (spec.task.length > 3800 ? spec.task.slice(0, 3800) + '…[truncated]' : spec.task) }, now);
     const created: WorkflowSwarm = { id: randomUUID(), key: spec.key, digest, runId, task: spec.task, maxTurns: spec.maxTurns, status: 'running',
       firstPost: brief.seq, nudges: 0, turns: [], ...(spec.lead ? { lead: spec.lead } : {}),
       members: spec.members.map((member, index) => ({ name: member.name, execution: executions[index]!, turns: 0,
-        ...(member.role !== undefined ? { role: member.role } : {}), ...(member.workflowTool ? { workflowTool: true } : {}), ...(member.workspace ? { workspace: member.workspace } : {}) })) };
+        ...(member.role !== undefined ? { role: member.role } : {}), ...(member.workflowTool ? { workflowTool: true } : {}), ...(member.workspace ? { workspace: member.workspace } : {}), ...(member.queue ? { queue: member.queue } : {}) })) };
     emit(state, { type: 'swarm_created', swarm: created });
     return;
   }
@@ -97,6 +99,9 @@ function rules(swarm: SwarmView, member: MemberView): string {
     '- Your turn ends with your final answer. You then sleep at no cost and are woken only when a post names you; those posts arrive in read_context (member.messages).',
     '- Post results, questions, hand-offs and blockers that others need, with enough detail to act on. Do not post acknowledgements or thanks: every post that names a member costs that member a turn.',
     `- After this first turn you can be woken at most ${swarm.maxTurns} times. Save a checkpoint of your working state before ending a turn. Your final answer is a short status note for the workflow log; teammates only see board posts.`,
+    ...(member.queue ? [
+      `- You consume work queue "${member.queue}" and are also woken when it has work you can claim. Use claim_work to take an item, read item.progress before acting, save checkpoint_work, renew long-running claims, then complete_work or fail_work. Continue until claim_work returns null, then end the turn; do not poll or sleep waiting for work.`,
+    ] : []),
     ...(lead ? [
       '- You are the lead. You split the work, assign it on the board, judge results and decide when the swarm is done. The system posts to you when a member fails and when everyone has gone idle.',
       '- swarm_add_member adds a member while the swarm runs and swarm_retire_member stops one. Call swarm_finish with the final result once the task is complete or cannot progress; the swarm ends when the turns still running have finished.',
@@ -115,7 +120,8 @@ function openingPrompt(swarm: SwarmView, member: MemberView): string {
 
 function wakePrompt(swarm: SwarmView, member: MemberView): string {
   return `Swarm "${swarm.key}", wake-up ${member.turns + 1} of at most ${swarm.maxTurns}: board posts that name you are in read_context (member.messages). `
-    + 'Act on them, use read_board for wider context, and post what others need. End with a short status note.';
+    + 'Act on them, use read_board for wider context, and post what others need.'
+    + (member.queue ? ` Then consume queue "${member.queue}" with claim_work until it returns null; you may have been woken for new work alone.` : '') + ' End with a short status note.';
 }
 
 /** Schedules the turns of every running swarm and settles the ones with nothing left to do. Returns whether anything changed. */
@@ -155,15 +161,36 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       if (member.name !== swarm.lead && !swarm.finish) notifyLead(`Member "${member.name}" failed and has stopped: ${detail}\nReassign its work, add a replacement with swarm_add_member, or finish.`);
     }
     const lead = swarm.members.find(member => member.name === swarm.lead);
+    // Work a queue member could claim now, less the turns already running that have not claimed yet.
+    const queues = [...new Set(swarm.members.flatMap(member => member.queue && !member.stopped ? [member.queue] : []))];
+    const work = new Map(queues.map(name => {
+      const available = availableWork(state, name);
+      const unclaimed = (state.swarms ?? []).flatMap(other => other.members).filter(member => member.queue === name)
+        .map(member => taskById(state, member.taskId)).filter(task => task && BUSY.has(task.status) && !task.consumerMessageTurn
+          && !state.workQueue?.claims.some(claim => claim.taskId === task.taskId && claim.status === 'active')).length;
+      return [name, { slots: available.length - unclaimed, wake: workflowDigest(available.map(item => ({ id: item.id, generation: item.generation }))) }];
+    }));
+    const hasWork = (member: MemberView) => { const found = member.queue ? work.get(member.queue) : undefined; return Boolean(found && found.slots > 0 && member.lastWake !== found.wake); };
     // Once the lead has finished the swarm, the turns still running end it; nobody is woken again.
     const wakeable = (member: MemberView) => !member.stopped && !busy(member) && !swarm.finish
-      && (!member.taskId || member.retryPending || member.turns < swarm.maxTurns && unread(member));
+      && (member.retryPending || (member.taskId ? member.turns < swarm.maxTurns && (unread(member) || hasWork(member))
+        // A queue consumer starts with its first claimable item instead of an opening turn with nothing to do.
+        : !member.queue || hasWork(member)));
     if (!swarm.members.some(busy) && !swarm.members.some(wakeable)) {
       if (lead?.stopped === 'failed') { end('failed', 'The lead failed: ' + (lead.detail ?? '')); return changed; }
       if (swarm.finish) { end('finished'); return changed; }
       if (lead && !lead.stopped && lead.turns < swarm.maxTurns && swarm.nudges < MAX_NUDGES) {
         record({ type: 'swarm_nudged', swarmId: swarm.id });
         notifyLead('Every member is idle and nothing is waiting to be read. Assign further work on the board, or call swarm_finish with the final result.');
+      } else if (!lead && queues.some(name => availableWork(state, name).length)) {
+        end('failed', 'No member can take the available work: its consumers have stopped or used their wake-ups; inspect member failures and explicitly replay');
+        return changed;
+      } else if (!lead && queues.some(name => queueControl(state, name)?.closedAt === undefined)) {
+        // Without a lead, an open queue means producers may still add work: keep waiting.
+        return changed;
+      } else if (!lead && queues.some(name => unfinishedWork(state, name) || state.workQueue?.items.some(item => (item.queue ?? 'default') === name && item.status === 'failed'))) {
+        end('failed', 'Swarm went idle with failed or unclaimable work items; inspect /workflow work, retry them, then explicitly replay');
+        return changed;
       } else {
         const active = swarm.members.filter(member => !member.stopped || member.stopped === 'failed');
         end(active.some(member => member.stopped === 'failed') ? 'failed' : active.some(member => member.turns >= swarm.maxTurns && unread(member)) ? 'max_turns' : 'quiet');
@@ -186,9 +213,15 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       const call = { key, member: member.name, prompt: retry ? readText(state, prior!.objective) : opening ? openingPrompt(swarm, member) : wakePrompt(swarm, member),
         ...(member.workflowTool ? { workflowTool: true } : {}), ...(member.workspace ? { workspace: member.workspace } : {}),
         output: 'text' as const, selection: { agentKind: member.execution.agentKind, ...member.execution.modelSettings } };
-      if (!retry && !opening) receiveMessages(state, member.name, key + '/inbox');
+      const mail = unread(member);
+      const queued = member.queue ? work.get(member.queue)! : undefined;
+      const forWork = Boolean(queued && queued.slots > 0);
+      if (!retry && !opening && mail) receiveMessages(state, member.name, key + '/inbox');
       const { task } = scheduleMemberTurn(state, call, member.execution, nativeIdKind(member.execution.agentKind));
-      record({ type: 'swarm_turn_scheduled', swarmId: swarm.id, member: member.name, key, taskId: task.taskId, retry, opening });
+      // A turn woken only by posts is not demand for a work item.
+      if (!retry && queued && !forWork && !task.consumerMessageTurn) record({ type: 'task_message_turn_marked', taskId: task.taskId });
+      if (forWork) queued!.slots--;
+      record({ type: 'swarm_turn_scheduled', swarmId: swarm.id, member: member.name, key, taskId: task.taskId, retry, opening, ...(queued ? { wake: queued.wake } : {}) });
       record({ type: 'script_call_recorded', call: { key, taskId: task.taskId, cached: false } });
       if (!retry) additionalTurnsAllowed--;
       slots--;
@@ -216,7 +249,8 @@ export function addSwarmMember(state: WorkflowView, caller: string, input: Recor
   if (!like) throw new Error('like must name an existing member of this swarm');
   const member: SwarmMember = { name, execution: like.execution as WorkerExecution, turns: 0, added: true,
     ...(input.role !== undefined ? { role: role(input.role) } : {}), ...(input.brief !== undefined ? { brief: scriptText(input.brief, 'member brief', 4000) } : {}),
-    ...(like.workflowTool ? { workflowTool: true } : {}) };
+    ...(like.workflowTool ? { workflowTool: true } : {}), ...(input.queue !== undefined ? { queue: queueName(input.queue) } : {}) };
+  if (member.queue) openQueue(state, member.queue);
   emit(state, { type: 'swarm_member_added', swarmId: swarm.id, member });
   return { member: name, like: like.name, harness: like.execution.agentKind, model: like.execution.modelSettings.model };
 }
@@ -240,7 +274,7 @@ export function finishSwarm(state: WorkflowView, caller: string, input: Record<s
 function memberSummary(state: WorkflowView, swarm: SwarmView, member: MemberView) {
   const task = taskById(state, member.taskId);
   const status = member.stopped ?? (task && BUSY.has(task.status) ? 'running' : swarm.status === 'running' ? 'waiting' : member.turns >= swarm.maxTurns ? 'max_turns' : 'idle');
-  return { name: member.name, ...(member.name === swarm.lead ? { lead: true } : {}), ...(member.added ? { added: true } : {}), turns: member.turns, status,
+  return { name: member.name, ...(member.name === swarm.lead ? { lead: true } : {}), ...(member.queue ? { queue: member.queue } : {}), ...(member.added ? { added: true } : {}), turns: member.turns, status,
     ...(member.detail ? { error: member.detail } : {}) };
 }
 
@@ -256,11 +290,13 @@ export function swarmResult(state: WorkflowView, key: string): unknown | undefin
   if (swarm.status === 'running') return undefined;
   if (swarm.stop === 'failed' && swarm.reason) throw new Error(swarm.reason);
   const board = readBoard(state, { after: swarm.firstPost - 1, limit: 50, upTo: swarm.lastPost });
+  const queues = [...new Set(swarm.members.flatMap(member => member.queue ? [member.queue] : []))];
   return { stop: swarm.stop, ...(swarm.finish ? { result: swarm.finish.result } : {}), turns: swarm.turns.length,
     members: swarm.members.map(member => {
       const latest = [...swarm.turns].reverse().map(turn => taskById(state, turn.taskId)).find(task => task?.status === 'result_ready' && state.agents?.find(agent => agent.agentId === task.agentId)?.key === member.name);
       const ref = latest?.resultRefs.at(-1);
       return { ...memberSummary(state, swarm, member), note: ref ? readArtifact(state, ref).text.slice(0, 2000) : null };
     }),
+    ...(queues.length ? { queues: Object.fromEntries(queues.map(name => [name, workStatus(state, { queue: name })])) } : {}),
     posts: board.posts, lastSeq: board.lastSeq, hasMore: board.hasMore };
 }

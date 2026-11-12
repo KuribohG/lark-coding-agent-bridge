@@ -39,7 +39,7 @@ export const boardTools: WorkflowToolPlugin = {
 /** Management of a running swarm by its lead. */
 export const swarmTools: WorkflowToolPlugin = {
   id: 'swarm',
-  memberInstructions: '以下三个操作只有 swarm 的 lead 可用，其他成员调用会被拒绝。swarm_add_member({operationId,name,role?,brief?,like?}) 在运行中增加成员：name 为 1–40 位字母数字及 _.-；新成员沿用 like 指定的现有成员（默认第一个非 lead 成员）的执行器和模型，首轮会看到任务、角色和 brief；先加成员再发帖点名它。swarm_retire_member({operationId,name}) 让成员退出，它正在执行的一轮会跑完，之后不再被唤醒。swarm_finish({operationId,result}) 宣布结束并给出最终结果（最多 16000 字符）；仍在执行的轮次结束后 swarm 返回，之后不再唤醒任何成员。成员失败、全员空闲时系统会发帖点名 lead。',
+  memberInstructions: '以下三个操作只有 swarm 的 lead 可用，其他成员调用会被拒绝。swarm_add_member({operationId,name,role?,brief?,like?,queue?}) 在运行中增加成员（queue 让它消费该工作队列，有可领工作时才启动）：name 为 1–40 位字母数字及 _.-；新成员沿用 like 指定的现有成员（默认第一个非 lead 成员）的执行器和模型，首轮会看到任务、角色和 brief；先加成员再发帖点名它。swarm_retire_member({operationId,name}) 让成员退出，它正在执行的一轮会跑完，之后不再被唤醒。swarm_finish({operationId,result}) 宣布结束并给出最终结果（最多 16000 字符）；仍在执行的轮次结束后 swarm 返回，之后不再唤醒任何成员。成员失败、全员空闲时系统会发帖点名 lead。',
   tools: [
     { name: 'swarm_add_member', worker: { verifiesRoot: true,
       call: (ctx, state, task, _caller, args) => memberOperation(ctx, state, task, 'swarm_add_member', args, agent => addSwarmMember(state, agent.key, args)) } },
