@@ -282,6 +282,11 @@ export class WorkflowScheduler {
       const recovery = memberContext(live, turn);
       let memberPrompt = recovery ? prompt + '\n\n持久成员上下文（只处理本轮输入；检查已发生的副作用，避免重复执行）：\n'
         + JSON.stringify(recovery) + (live.workQueue ? '\n\n工作队列：\n' + JSON.stringify(workContext(live, turn)) : '') : prompt;
+      // A plain task that already has a session is being attempted again in that conversation.
+      if (!task.agentId && !task.workflowTool && session.nativeSessionId) {
+        memberPrompt += '\n\n这是同一任务的再次执行，此前的会话已恢复：上一次执行没有正常结束（' + (turn.attempts.at(-2)?.result ?? 'interrupted')
+          + '）。先核对已完成的工作和已生效的副作用，不要重复；继续完成任务，并给出完整的最终答复。';
+      }
       if (task.workflowTool) memberPrompt+='\n\n子 workflow 调用与恢复上下文：\n'+JSON.stringify(nestedContext(store.descendants(live,taskId),turn));
       signal.throwIfAborted();
       result = await ctx.host.execute({ workflow, task, session, attemptId, prompt: memberPrompt, signal,
@@ -299,7 +304,9 @@ export class WorkflowScheduler {
         }),
         onSession: (nativeId, model) => this.updateAttempt(scopeId, workflowId, taskId, attemptId, state => {
           const binding = state.sessions.find(item => item.sessionRef === session.sessionRef)!;
-          if (binding.nativeSessionId && binding.nativeSessionId !== nativeId) throw new Error('Backend replaced the native worker session');
+          // Members and nested-workflow callers depend on their conversation; a plain task only needs an answer,
+          // so a backend that could not resume its session may carry on in a new one.
+          if (binding.nativeSessionId && binding.nativeSessionId !== nativeId && (task.agentId || task.workflowTool)) throw new Error('Backend replaced the native worker session');
           emit(state, { type: 'session_bound', sessionRef: binding.sessionRef, taskId, nativeSessionId: nativeId, ...(model ? { model } : {}), at: ctx.now() });
         }),
       });

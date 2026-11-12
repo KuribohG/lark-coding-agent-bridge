@@ -361,7 +361,9 @@ export class WorkflowRuntime {
         }
         return { result: await active.result, text, question, error, normal, nativeSessionId };
       };
-      run = await start(request.prompt, (task.agentId || task.workflowTool) && session.nativeSessionId ? { kind: session.nativeIdKind, id: session.nativeSessionId } : undefined);
+      // A session is bound once an attempt has run, so a later attempt of the same task continues that conversation
+      // instead of redoing the work in a new one.
+      run = await start(request.prompt, session.nativeSessionId ? { kind: session.nativeIdKind, id: session.nativeSessionId } : undefined);
       let outcome = await turn(run);
       // A malformed or non-conforming JSON answer usually reflects formatting, not the work; ask the same session to restate it.
       for (let retry = 1; retry <= JSON_FORMAT_RETRIES; retry++) {

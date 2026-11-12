@@ -62,6 +62,35 @@ describe('worker health', () => {
     expect(state.script?.status).toBe('result_ready');
   });
 
+  it('retries in the session the failed attempt left, and accepts a new one from a backend that could not resume', async () => {
+    const specs: WorkerRunSpec[] = [];
+    const runtime = await start('chat-resume', {
+      async start(spec) {
+        specs.push(spec);
+        await spec.validateBeforeRun();
+        const attempt = specs.length;
+        return {
+          runId: `run-${attempt}`, result: Promise.resolve(attempt < 3 ? 'failed' : 'completed'),
+          stop: async () => {}, waitForExit: async () => true, stopReason: () => undefined,
+          async *events() {
+            // The second attempt's backend ignores the resume and opens another conversation.
+            yield { type: 'session', nativeSessionId: attempt === 1 ? 'native-1' : 'native-2' };
+            if (attempt < 3) yield { type: 'error', message: 'API Error: 503 upstream unavailable' };
+            else yield { type: 'final_text', text: 'done' };
+            yield { type: 'done', normal: attempt === 3 };
+          },
+        };
+      },
+    });
+    await until(runtime, () => specs.length === 3 && runtime.kernel.state('chat-resume')?.tasks[0]?.status === 'result_ready');
+    expect(specs[0]!.resume).toBeUndefined();
+    expect(specs[1]!.resume).toEqual({ kind: 'sessionId', id: 'native-1' });
+    expect(specs[2]!.resume).toEqual({ kind: 'sessionId', id: 'native-2' });
+    expect(specs[0]!.prompt).not.toContain('再次执行');
+    expect(specs[1]!.prompt).toContain('再次执行');
+    expect(runtime.kernel.state('chat-resume')!.sessions[0]!.nativeSessionId).toBe('native-2');
+  });
+
   it('stops a silent worker and retries it, then gives up after the retry budget', async () => {
     const specs: WorkerRunSpec[] = [];
     const runtime = await start('chat-stall', {

@@ -94,10 +94,15 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
         async *events() {
           // Liveness for the kernel's stall watchdog: any output counts, and a tool in flight explains silence.
           // The engine only needs the transitions, so repeated chatter is coalesced to one event per interval.
+          let tool = false;
+          // The turn ended with background tasks still running and the run is held for them: silence until one
+          // finishes is expected, exactly as with a tool in flight.
+          let held = false;
           let busy = false;
           let sentAt = 0;
-          const activity = (next: boolean) => {
+          const activity = () => {
             const now = Date.now();
+            const next = tool || held;
             if (next === busy && now - sentAt < 5_000) return undefined;
             busy = next; sentAt = now;
             return { type: 'activity' as const, busy };
@@ -107,10 +112,12 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
               const id = event[idField];
               if (id) yield { type: 'session', nativeSessionId: id, ...(event.model ? { model: event.model } : {}) };
             } else if (event.type === 'retry') yield { type: 'retry' };
-            else if (event.type === 'tool_use') { const signal = activity(true); if (signal) yield signal; }
-            else if (event.type === 'tool_result') { const signal = activity(false); if (signal) yield signal; }
-            else if (event.type === 'text' || event.type === 'thinking' || event.type === 'usage' || event.type === 'status') {
-              const signal = activity(busy); if (signal) yield signal;
+            else if (event.type === 'tool_use' || event.type === 'tool_result' || event.type === 'text'
+              || event.type === 'thinking' || event.type === 'usage' || event.type === 'status') {
+              if (event.type === 'tool_use') tool = true;
+              else if (event.type === 'tool_result') tool = false;
+              held = event.type === 'status' && event.code === 'background_tasks';
+              const signal = activity(); if (signal) yield signal;
             } else if (event.type === 'final_text') yield { type: 'final_text', text: event.content };
             else if (event.type === 'error') yield { type: 'error', message: event.message };
             else if (event.type === 'done') yield { type: 'done', normal: event.terminationReason === 'normal' };
