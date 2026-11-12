@@ -4,6 +4,7 @@ import { parkedMembers } from './board';
 import { availableMessages, member, memberCursor, messageMatch, receiveMessages, receiptMessages } from './durable-agents';
 import { taskById } from './kernel-state';
 import { emit } from './kernel-store';
+import { MAILBOX_MAX_RECEIPTS, MAX_NAMED_MEMBERS, MAX_WAITS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
 import { memberSwarm } from './swarm';
 import { workStatus } from './work-queue';
@@ -33,7 +34,7 @@ function selector(state: WorkflowView, value: unknown): WorkflowWaitSelector {
       return { kind: 'task', taskId };
     }
     case 'quiet': {
-      if (!Array.isArray(input.members) || !input.members.length || input.members.length > 32) throw new Error('quiet needs 1–32 member names');
+      if (!Array.isArray(input.members) || !input.members.length || input.members.length > MAX_NAMED_MEMBERS) throw new Error(`quiet needs 1–${MAX_NAMED_MEMBERS} member names`);
       const names = input.members.map(name => scriptText(name, 'member', 100));
       if (new Set(names).size !== names.length) throw new Error('quiet member names must be unique');
       for (const name of names) member(state, name);
@@ -57,10 +58,10 @@ export function beginEventWait(state: WorkflowView, input: Record<string, unknow
     if (prior.runId !== runId) emit(state, { type: 'wait_rebound', waitId: prior.id, runId, agentIds: [] });
     return prior;
   }
-  if (!prior && (state.waits?.length ?? 0) >= 128) throw new Error('Workflow wait limit reached');
+  if (!prior && (state.waits?.length ?? 0) >= MAX_WAITS) throw new Error('Workflow wait limit reached');
   const reserved = (state.waits ?? []).filter(other => other.id !== prior?.id && other.status === 'waiting'
     && other.runId === runId && other.any.some(arm => arm.kind === 'message')).length;
-  if (cursors.length && (state.mailbox?.receipts.length ?? 0) + reserved >= 128) throw new Error('Mailbox receive limit reached');
+  if (cursors.length && (state.mailbox?.receipts.length ?? 0) + reserved >= MAILBOX_MAX_RECEIPTS) throw new Error('Mailbox receive limit reached');
   const members = [...new Set(cursors.map(cursor => cursor.member))].map(name => member(state, name));
   for (const agent of members) {
     if (agent.activeTurnId || agent.lastTurnId !== memberCursor(state, agent)) throw new Error('Await the member turn before waiting for a message');

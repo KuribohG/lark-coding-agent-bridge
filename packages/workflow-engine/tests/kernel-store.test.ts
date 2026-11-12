@@ -1,3 +1,4 @@
+import { statSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -345,5 +346,31 @@ describe('event-sourced workflow store', () => {
     expect(store.legacyUnfinished()).toBe(1);
     expect(store.list()).toEqual([]);
     expect(open().legacyUnfinished()).toBe(0);
+  });
+});
+
+describe('background WAL checkpoints', () => {
+  it('moves journal pages into the database file from another thread and stops checkpointing inside commits', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'workflow-checkpoint-'));
+    cleanup.push(() => rm(directory, { recursive: true, force: true }));
+    const path = join(directory, 'state.sqlite');
+    const failed = vi.fn();
+    const store = new WorkflowStore(path, Date.now, { backgroundCheckpoint: true, checkpointFailed: failed });
+    cleanup.push(() => store.close());
+    // Nothing has been checkpointed yet: the tables exist only in the WAL.
+    const before = statSync(path).size;
+    await vi.waitFor(() => expect(store.db.pragma('wal_autocheckpoint', { simple: true })).toBe(0), { timeout: 10_000 });
+    store.writeHeartbeat(1);
+    await vi.waitFor(() => expect(statSync(path).size).toBeGreaterThan(before), { timeout: 10_000, interval: 100 });
+    expect(failed).not.toHaveBeenCalled();
+    expect(store.heartbeat()).toBe(1);
+  });
+
+  it('keeps checkpointing inside commits unless asked', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'workflow-checkpoint-'));
+    cleanup.push(() => rm(directory, { recursive: true, force: true }));
+    const store = new WorkflowStore(join(directory, 'state.sqlite'), Date.now);
+    cleanup.push(() => store.close());
+    expect(store.db.pragma('wal_autocheckpoint', { simple: true })).toBe(1000);
   });
 });

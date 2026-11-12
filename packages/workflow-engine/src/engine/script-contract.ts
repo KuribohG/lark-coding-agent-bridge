@@ -4,7 +4,6 @@ import type { WorkerExecutionPolicy, WorkerExecutionSelection, WorkflowDefinitio
 
 export const DEFAULT_WORKFLOW_TIMEOUT_MINUTES = 480;
 
-export const SCRIPT_MAX_TASKS = 128;
 export const SCRIPT_MAX_TEXT = 100_000;
 export const SCRIPT_MAX_REVISIONS = 8;
 

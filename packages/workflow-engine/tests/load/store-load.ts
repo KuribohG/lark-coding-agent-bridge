@@ -10,6 +10,8 @@ import { memory, round, Samples, withLoopDelay } from './measure';
 export interface StoreLoadOptions {
   /** SQLite file; put it on the filesystem whose commit cost is of interest. */
   path: string;
+  /** Checkpoint the WAL on a background thread, as the kernel does. Default true; false measures checkpoints inside commits. */
+  backgroundCheckpoint?: boolean;
   /** Simulated agents, all working at once. */
   workers: number;
   /** Turns each agent runs. */
@@ -29,7 +31,7 @@ export interface StoreLoadOptions {
  * event loop was blocked, what a reader's copy of the largest state costs, and how long a restart takes to rebuild.
  */
 export async function runStoreLoad(options: StoreLoadOptions) {
-  const store = new WorkflowStore(options.path, Date.now);
+  const store = new WorkflowStore(options.path, Date.now, { backgroundCheckpoint: options.backgroundCheckpoint ?? true });
   const commits = new Samples();
   const transact = (fn: () => void) => commits.time(() => store.transact(fn, 'load'));
   const ids = Array.from({ length: options.workflows }, (_, index) => `load-${index}`);

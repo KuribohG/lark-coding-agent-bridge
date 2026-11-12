@@ -2,13 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
 import { callWorkflow, WorkflowRuntime, type WorkerRunSpec, type WorkflowRoot } from '../../src';
+import { MAX_RUNNING_SCRIPTS } from '../../src/engine/limits';
 import { memory, round, Samples, withLoopDelay } from './measure';
 
 export interface RuntimeLoadOptions {
   path: string;
   /** Root workflows, each in its own scope. */
   workflows: number;
-  /** Workers one workflow runs at once (the engine allows at most 16). */
+  /** Workers one workflow runs at once. */
   concurrency: number;
   /** `agents`: the script fans out one agent call per task. `queue`: it fills a work queue that a swarm of consumers claims from. */
   mode: 'agents' | 'queue';
@@ -83,7 +84,7 @@ export async function runRuntimeLoad(options: RuntimeLoadOptions) {
       const done = new Promise<void>(resolve => finished.set(scopeId, resolve));
       const main = runtime.bindMain(scopeId, 'start');
       await callWorkflow('run_script', { operationId: randomUUID(), goal: 'load', plan: 'Fake agents process the load.',
-        script: options.mode === 'queue' ? QUEUE_SCRIPT : AGENTS_SCRIPT, maxConcurrent: options.concurrency, maxAgents: 128,
+        script: options.mode === 'queue' ? QUEUE_SCRIPT : AGENTS_SCRIPT, maxConcurrent: options.concurrency, maxAgents: Math.max(128, options.tasks),
         args: { tasks: options.tasks, prompt: 'p'.repeat(options.promptChars),
           members: Array.from({ length: options.concurrency }, (_, index) => ({ name: 'member-' + index })) } }, main.env);
       main.release();
@@ -92,8 +93,8 @@ export async function runRuntimeLoad(options: RuntimeLoadOptions) {
     const wallMs = performance.now() - started;
     const states = scopes.map(scopeId => runtime.kernel.state(scopeId)!);
     const failed = states.filter(state => state.script?.status !== 'result_ready').map(state => state.script?.error ?? state.script?.status);
-    // Root scripts run four at a time; within a workflow the agents run `concurrency` at a time.
-    const waves = Math.ceil(options.workflows / 4) * Math.ceil(options.tasks / options.concurrency);
+    // Root scripts run MAX_RUNNING_SCRIPTS at a time; within a workflow the agents run `concurrency` at a time.
+    const waves = Math.ceil(options.workflows / MAX_RUNNING_SCRIPTS) * Math.ceil(options.tasks / options.concurrency);
     const idealMs = waves * options.thinkMs;
     return {
       options: { ...options, path: undefined },

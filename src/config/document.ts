@@ -14,7 +14,7 @@ import { larkDisplay } from './lark-display';
 import { validateLarkNetwork } from './lark-network';
 import { SLACK_DISPLAY_DEFAULTS, WEB_DISPLAY_DEFAULTS } from './channel-display';
 import { normalizeFileLinks } from './file-links';
-import { MAX_WORKFLOW_TIMEOUT_MINUTES, type RunPreferences } from './schema';
+import { MAX_CONCURRENT_RUNS, MAX_WORKFLOW_TIMEOUT_MINUTES, type RunPreferences } from './schema';
 import { parseEffort } from '../agent/model-settings';
 import {
   AGENT_KINDS,
@@ -66,7 +66,7 @@ function checkRun(value: unknown, path: string, agent?: AgentKind): void {
       if (!selection(v)) throw new Error(`${path}.${key}: expected a value or { source = "native" }`);
       if (key === 'effort' && typeof v === 'string') parseEffort(v, agent ?? 'codex');
     } else {
-      const [min, max] = key === 'max_concurrent_runs' ? [1, 50] : key === 'idle_timeout_minutes' ? [0, 120]
+      const [min, max] = key === 'max_concurrent_runs' ? [1, MAX_CONCURRENT_RUNS] : key === 'idle_timeout_minutes' ? [0, 120]
         : key === 'workflow_timeout_minutes' ? [1, MAX_WORKFLOW_TIMEOUT_MINUTES] : [100, 30000];
       if (!Number.isSafeInteger(v) || v < min! || v > max!) throw new Error(`${path}.${key}: expected integer ${min}..${max}`);
     }

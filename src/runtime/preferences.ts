@@ -20,6 +20,7 @@ import {
 import {
   getCotMessages,
   getMaxConcurrentRuns,
+  MAX_CONCURRENT_RUNS,
   getMessageReplyMode,
   getRequireMentionInGroup,
   getRunIdleTimeoutMs,
@@ -158,7 +159,7 @@ function parsePreferencesChange(state: MutableProfileState, body: unknown): Pref
   const maxConcurrentRuns =
     fv.maxConcurrentRuns === undefined
       ? getMaxConcurrentRuns(state.cfg)
-      : clampInt(fv.maxConcurrentRuns, 1, 50, getMaxConcurrentRuns(state.cfg));
+      : clampInt(fv.maxConcurrentRuns, 1, MAX_CONCURRENT_RUNS, getMaxConcurrentRuns(state.cfg));
 
   const currentIdleMs = getRunIdleTimeoutMs(state.cfg);
   const currentIdleMinutes = currentIdleMs ? Math.round(currentIdleMs / 60_000) : 0;

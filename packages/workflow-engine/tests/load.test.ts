@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { Session } from 'node:inspector/promises';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -14,6 +15,7 @@ import { runStoreLoad, type StoreLoadOptions } from './load/store-load';
  *
  * WORKFLOW_LOAD takes `store` and/or `runtime` option overrides (see StoreLoadOptions and RuntimeLoadOptions), or
  * arrays of them to run several configurations. WORKFLOW_LOAD_DIR chooses the filesystem the database is on.
+ * WORKFLOW_LOAD_PROFILE names a file to write a CPU profile of the configured load to.
  */
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -44,12 +46,30 @@ describe('workflow load tools', () => {
     else expect(report.turns).toBe(16);
   });
 
+  it.each(['agents', 'queue'] as const)('runs 200 workers of one workflow at once in %s mode', async mode => {
+    // Verification replays the whole journal after every commit, which at this size takes minutes; the smaller runs above keep it on.
+    const verify = process.env.WORKFLOW_ENGINE_VERIFY;
+    process.env.WORKFLOW_ENGINE_VERIFY = '0';
+    cleanup.push(async () => { process.env.WORKFLOW_ENGINE_VERIFY = verify; });
+    const report = await runRuntimeLoad({ ...RUNTIME, workflows: 1, concurrency: 200, tasks: 240, thinkMs: 1_500, mode, path: await database() });
+    expect(report.failed).toEqual([]);
+    expect(report.peakConcurrentAgents).toBe(200);
+    if (mode === 'queue') expect(report).toMatchObject({ items: 240, turns: 200 });
+    else expect(report.turns).toBe(240);
+  }, 60_000);
+
   it.skipIf(!process.env.WORKFLOW_LOAD)('runs the configured load and writes its report', async () => {
     const config = JSON.parse(process.env.WORKFLOW_LOAD!) as { store?: Partial<StoreLoadOptions> | Array<Partial<StoreLoadOptions>>;
       runtime?: Partial<RuntimeLoadOptions> | Array<Partial<RuntimeLoadOptions>> };
     const reports: unknown[] = [];
+    const profiler = process.env.WORKFLOW_LOAD_PROFILE ? new Session() : undefined;
+    if (profiler) { profiler.connect(); await profiler.post('Profiler.enable'); await profiler.post('Profiler.start'); }
     for (const options of [config.store ?? []].flat()) reports.push({ kind: 'store', ...await runStoreLoad({ ...STORE, ...options, path: await database() }) });
     for (const options of [config.runtime ?? []].flat()) reports.push({ kind: 'runtime', ...await runRuntimeLoad({ ...RUNTIME, ...options, path: await database() }) });
+    if (profiler) {
+      writeFileSync(process.env.WORKFLOW_LOAD_PROFILE!, JSON.stringify((await profiler.post('Profiler.stop')).profile));
+      profiler.disconnect();
+    }
     const text = JSON.stringify(reports, null, 2);
     if (process.env.WORKFLOW_LOAD_REPORT) {
       mkdirSync(dirname(process.env.WORKFLOW_LOAD_REPORT), { recursive: true });

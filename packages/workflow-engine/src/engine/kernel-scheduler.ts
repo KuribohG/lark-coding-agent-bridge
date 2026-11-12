@@ -5,12 +5,12 @@ import { pumpSwarms } from './swarm';
 import { settleEventWaits } from './event-waits';
 import { nestedContext } from './nested-workflow';
 import { completeMemberTurn, memberContext, taskAgent } from './durable-agents';
-import { SCRIPT_MAX_TASKS } from './script-contract';
+import { SCRIPT_MAX_TASKS } from './limits';
 import { checkJsonOutput } from './json-output';
 import { addArtifact, BUSY, findTask, MAX_TEXT, readArtifact, requireState, sameRoot, taskById } from './kernel-state';
 import { emit } from './kernel-store';
 import type { KernelContext } from './kernel-context';
-import type { StoredTask, TaskView, WorkflowArtifact, WorkflowStopReason, WorkflowView, WorkflowWorkerResult } from './types';
+import type { StoredTask, TaskView, WorkerSession, WorkflowArtifact, WorkflowRoot, WorkflowStopReason, WorkflowTask, WorkflowView, WorkflowWorkerResult } from './types';
 
 const HEARTBEAT_MS = 5_000;
 /** How long a root check by tick() lets admitReady() start work for that scope; one tick interval. */
@@ -203,6 +203,8 @@ export class WorkflowScheduler {
         settleEventWaits(state, ctx.now());
         pumpSwarms(state, kind => ctx.nativeIdKind(kind), ctx.now(), ctx.children.remainingTreeTasks(state));
         let active = state.tasks.filter(task => this.running.has(task.taskId)).length;
+        // The tree's totals are counted once per pass and kept current as turns start, not recounted per queued task.
+        let tree: { limit: number; running: number; attempts: number } | undefined;
         for (const task of state.tasks) {
           if (task.status !== 'queued' || active >= state.definition.maxConcurrentWorkers) continue;
           // A retried task waits out its backoff; the periodic tick starts it once due.
@@ -214,10 +216,16 @@ export class WorkflowScheduler {
             }
             emit(state, { type: 'task_child_finished', taskId: task.taskId });
           }
-          const tree=store.tree(state);
-          const treeRoot=tree.find(item=>!item.parent) ?? state;
-          if (tree.reduce((count,item)=>count+item.tasks.filter(task=>this.running.has(task.taskId)).length,0)>=treeRoot.definition.maxConcurrentWorkers) continue;
-          if (tree.reduce((count, item) => count + item.tasks.reduce((total,task)=>total+task.attempts.length,0), 0) >= MAX_TREE_ATTEMPTS) {
+          if (!tree) {
+            const members = store.tree(state);
+            tree = { limit: (members.find(item => !item.parent) ?? state).definition.maxConcurrentWorkers, running: 0, attempts: 0 };
+            for (const item of members) for (const found of item.tasks) {
+              if (this.running.has(found.taskId)) tree.running++;
+              tree.attempts += found.attempts.length;
+            }
+          }
+          if (tree.running >= tree.limit) continue;
+          if (tree.attempts >= MAX_TREE_ATTEMPTS) {
             emit(state, { type: 'task_failed', taskId: task.taskId, error: 'Workflow attempt limit reached' }); continue;
           }
           const attemptId = randomUUID();
@@ -237,7 +245,7 @@ export class WorkflowScheduler {
             this.stalled.delete(taskId);
           }).catch(error => ctx.log.warn('worker-failed', { error: String(error) }));
           started.set(taskId, attemptId);
-          active++;
+          active++; tree.running++; tree.attempts++;
         }
       }, 'scheduler');
     } catch (error) {
@@ -259,11 +267,13 @@ export class WorkflowScheduler {
       const live = requireState(store.state(scopeId, workflowId));
       const turn = findTask(live, taskId);
       if (turn.attempts.at(-1)?.attemptId !== attemptId) return;
-      // The host keeps what it is handed for the whole turn, so it gets a copy rather than the live state.
-      const workflow = store.public(live);
-      const task = workflow.tasks.find(item => item.taskId === taskId)!;
-      const session = workflow.sessions.find(item => item.sessionRef === task.sessionRef)!;
-      const role = workflow.definition.roles[session.role]!;
+      // The host keeps what it is handed for the whole turn, so it gets copies rather than live state: this turn's
+      // task and session only, since copying the whole workflow for every turn costs time and memory in its size.
+      const detached = <T>(value: unknown) => JSON.parse(JSON.stringify(value)) as T;
+      const workflow = { workflowId: live.workflowId, root: detached<WorkflowRoot>(live.root), deadlineAt: live.deadlineAt, goal: live.goal };
+      const task: WorkflowTask = { ...detached<StoredTask>(turn), objective: store.text(turn.objective.digest) };
+      const session = detached<WorkerSession>(live.sessions.find(item => item.sessionRef === turn.sessionRef)!);
+      const role = live.definition.roles[session.role]!;
       const inputs = task.inputRefs.map(ref => readArtifact(live, ref));
       const prompt = [role.instructions,
         task.workflowTool ? '只执行指定任务，遵守原始需求的授权范围。可通过注入的子 workflow 工具委派；不要发外部消息。请求子 workflow 后结束本轮让出执行资源，bridge 会在结果就绪时恢复同一会话。' : task.agentId ? '只执行指定任务，遵守原始需求的授权范围。可保存 checkpoint 或发送工作流内部消息；不要发外部消息或再委派子 agent。结果以最终答复返回脚本。' : '只执行指定任务，遵守原始需求的授权范围。不要自行发消息或再委派子 agent。结果以最终答复返回脚本。',

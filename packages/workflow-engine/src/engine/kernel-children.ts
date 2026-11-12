@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { cancelWork } from './work-queue';
 import { workflowDigest } from './digest';
-import { MAX_CHILD_WORKFLOWS, MAX_WORKFLOW_DEPTH, nestedInput, nestedResponse } from './nested-workflow';
+import { MAX_WORKFLOW_DEPTH, nestedInput, nestedResponse } from './nested-workflow';
 import { inheritedWorkerExecution, workerSelection } from './execution';
-import { SCRIPT_MAX_TASKS } from './script-contract';
+import { MAX_CHILD_WORKFLOWS, SCRIPT_MAX_TASKS } from './limits';
 import { acknowledge, addArtifact, BUSY, taskById } from './kernel-state';
 import { emit } from './kernel-store';
 import type { KernelContext } from './kernel-context';

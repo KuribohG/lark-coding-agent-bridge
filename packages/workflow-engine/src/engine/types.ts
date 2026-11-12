@@ -442,7 +442,8 @@ export type WorkflowCaller =
   | { scopeId: string; kind: 'worker'; workflowId: string; taskId: string; attemptId: string };
 
 export interface WorkflowWorkerRequest {
-  workflow: WorkflowState;
+  /** The workflow the turn belongs to. Only what a host needs for the whole turn; read the rest through the kernel. */
+  workflow: Pick<WorkflowState, 'workflowId' | 'root' | 'deadlineAt'>;
   task: WorkflowTask;
   session: WorkerSession;
   attemptId: string;

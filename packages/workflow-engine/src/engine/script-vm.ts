@@ -1,5 +1,6 @@
 import { getQuickJS, type QuickJSDeferredPromise, type QuickJSHandle } from 'quickjs-emscripten';
-import { SCRIPT_MAX_TASKS, SCRIPT_MAX_TEXT } from './script-contract';
+import { SCRIPT_MAX_TASKS, SCRIPT_MEMORY_BYTES } from './limits';
+import { SCRIPT_MAX_TEXT } from './script-contract';
 import { REVIEW_HELPER } from './review-helper';
 import { DISCUSS_HELPER } from './discuss-helper';
 import { SPECULATE_HELPER } from './speculate-helper';
@@ -129,7 +130,7 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
   const quickjs = await getQuickJS();
   input.signal.throwIfAborted();
   const runtime = quickjs.newRuntime();
-  runtime.setMemoryLimit(32 * 1024 * 1024);
+  runtime.setMemoryLimit(SCRIPT_MEMORY_BYTES);
   runtime.setMaxStackSize(512 * 1024);
   const context = runtime.newContext();
   let disposed = false;

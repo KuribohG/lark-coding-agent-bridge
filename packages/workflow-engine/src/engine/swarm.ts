@@ -5,6 +5,7 @@ import { availableMessages, receiveMessages, scheduleMemberTurn } from './durabl
 import type { DomainEvent } from './events';
 import { readArtifact, taskById } from './kernel-state';
 import { emit, readText } from './kernel-store';
+import { SWARM_DECLARED_MEMBERS, SWARM_MAX_MEMBERS } from './limits';
 import { boundedInteger, parseScriptAgentCall, scriptText } from './script-contract';
 import { availableWork, openQueue, unfinishedWork, workStatus } from './work-queue';
 import { queueControl, queueName } from './work-routing';
@@ -13,7 +14,6 @@ import type { Immutable, NativeIdKind, SwarmMember, WorkerExecution, WorkerExecu
 const BUSY = new Set<WorkflowTask['status']>(['queued', 'starting', 'running', 'cancelling', 'waiting_workflow']);
 const NAME = /^[A-Za-z0-9_.-]{1,40}$/;
 const RESERVED = ['all', 'main', 'script', 'system'];
-const MAX_MEMBERS = 16;
 /** How often an idle swarm reminds its lead to finish before it ends without a verdict. */
 const MAX_NUDGES = 2;
 
@@ -39,7 +39,7 @@ export function parseSwarm(input: Record<string, unknown>, state: WorkflowView, 
   const maxTurns = boundedInteger(input.maxTurns, 6, 1, 64);
   if (!Array.isArray(input.members) || !input.members.length) throw new Error('swarm needs members');
   const listed = [...(input.lead === undefined ? [] : [input.lead]), ...input.members];
-  if (listed.length > 12) throw new Error('swarm needs 1–12 members, the lead included');
+  if (listed.length > SWARM_DECLARED_MEMBERS) throw new Error(`swarm needs 1–${SWARM_DECLARED_MEMBERS} members, the lead included`);
   const members = listed.map((value: unknown) => {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid swarm member');
     const { name, role: description, ...options } = value as Record<string, unknown>;
@@ -142,7 +142,9 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
   const end = (stop: NonNullable<WorkflowSwarm['stop']>, reason?: string) => record({ type: 'swarm_ended', swarmId: swarm.id, stop, ...(reason ? { reason } : {}) });
   const taskOf = (member: MemberView) => taskById(state, member.taskId);
   const busy = (member: MemberView) => { const task = taskOf(member); return Boolean(task && BUSY.has(task.status)); };
-  const agentOf = (member: MemberView) => state.agents?.find(agent => agent.key === member.name);
+  // Looked up for every member on every pass, so indexed once rather than searched.
+  const agents = new Map((state.agents ?? []).map(agent => [agent.key, agent]));
+  const agentOf = (member: MemberView) => agents.get(member.name);
   const unread = (member: MemberView) => { const agent = agentOf(member); return Boolean(agent && availableMessages(state, agent.agentId).length); };
   const notifyLead = (text: string) => {
     const lead = swarm.members.find(member => member.name === swarm.lead);
@@ -163,12 +165,16 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
     const lead = swarm.members.find(member => member.name === swarm.lead);
     // Work a queue member could claim now, less the turns already running that have not claimed yet.
     const queues = [...new Set(swarm.members.flatMap(member => member.queue && !member.stopped ? [member.queue] : []))];
+    const claiming = new Set(queues.length ? (state.workQueue?.claims ?? []).flatMap(claim => claim.status === 'active' ? [claim.taskId] : []) : []);
     const work = new Map(queues.map(name => {
       const available = availableWork(state, name);
       const unclaimed = (state.swarms ?? []).flatMap(other => other.members).filter(member => member.queue === name)
         .map(member => taskById(state, member.taskId)).filter(task => task && BUSY.has(task.status) && !task.consumerMessageTurn
-          && !state.workQueue?.claims.some(claim => claim.taskId === task.taskId && claim.status === 'active')).length;
-      return [name, { slots: available.length - unclaimed, wake: workflowDigest(available.map(item => ({ id: item.id, generation: item.generation }))) }];
+          && !claiming.has(task.taskId)).length;
+      let digest: string | undefined;
+      // Identifies the claimable set a member was last woken for; only computed when a member is idle with work to offer.
+      return [name, { slots: available.length - unclaimed,
+        get wake() { return digest ??= workflowDigest(available.map(item => ({ id: item.id, generation: item.generation }))); } }];
     }));
     const hasWork = (member: MemberView) => { const found = member.queue ? work.get(member.queue) : undefined; return Boolean(found && found.slots > 0 && member.lastWake !== found.wake); };
     // Once the lead has finished the swarm, the turns still running end it; nobody is woken again.
@@ -244,7 +250,7 @@ export function addSwarmMember(state: WorkflowView, caller: string, input: Recor
   const swarm = leadSwarm(state, caller);
   const name = memberName(input.name);
   if (nameTaken(state, name)) throw new Error('Member name is already used in this workflow: ' + name);
-  if (swarm.members.length >= MAX_MEMBERS) throw new Error(`A swarm holds at most ${MAX_MEMBERS} members, retired ones included`);
+  if (swarm.members.length >= SWARM_MAX_MEMBERS) throw new Error(`A swarm holds at most ${SWARM_MAX_MEMBERS} members, retired ones included`);
   const like = input.like === undefined ? swarm.members.find(member => member.name !== caller) ?? swarm.members[0]! : swarm.members.find(member => member.name === input.like);
   if (!like) throw new Error('like must name an existing member of this swarm');
   const member: SwarmMember = { name, execution: like.execution as WorkerExecution, turns: 0, added: true,
@@ -291,11 +297,13 @@ export function swarmResult(state: WorkflowView, key: string): unknown | undefin
   if (swarm.stop === 'failed' && swarm.reason) throw new Error(swarm.reason);
   const board = readBoard(state, { after: swarm.firstPost - 1, limit: 50, upTo: swarm.lastPost });
   const queues = [...new Set(swarm.members.flatMap(member => member.queue ? [member.queue] : []))];
+  // The whole result must fit a script value, so a large swarm gets shorter notes.
+  const noteChars = Math.min(2000, Math.floor(40_000 / swarm.members.length));
   return { stop: swarm.stop, ...(swarm.finish ? { result: swarm.finish.result } : {}), turns: swarm.turns.length,
     members: swarm.members.map(member => {
       const latest = [...swarm.turns].reverse().map(turn => taskById(state, turn.taskId)).find(task => task?.status === 'result_ready' && state.agents?.find(agent => agent.agentId === task.agentId)?.key === member.name);
       const ref = latest?.resultRefs.at(-1);
-      return { ...memberSummary(state, swarm, member), note: ref ? readArtifact(state, ref).text.slice(0, 2000) : null };
+      return { ...memberSummary(state, swarm, member), note: ref ? readArtifact(state, ref).text.slice(0, noteChars) : null };
     }),
     ...(queues.length ? { queues: Object.fromEntries(queues.map(name => [name, workStatus(state, { queue: name })])) } : {}),
     posts: board.posts, lastSeq: board.lastSeq, hasMore: board.hasMore };

@@ -1,13 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { availableMessages, member } from './durable-agents';
 import { emit } from './kernel-store';
+import { BOARD_MAX_DELIVERIES, BOARD_MAX_POSTS, MAX_NAMED_MEMBERS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
 import type { AgentView, BoardAuthor, BoardPost, Immutable, MailboxMessage, WorkflowView } from './types';
 
 /** Topic of the mailbox messages that deliver board posts; `receive(member,{topic})` can select or skip them. */
 const BOARD_TOPIC = 'board';
-const BOARD_MAX_POSTS = 512;
-const BOARD_MAX_DELIVERIES = 2048;
 const POST_MAX_TEXT = 4000;
 const NAME_END = '(?![A-Za-z0-9_\\-/]|\\.[A-Za-z0-9])';
 
@@ -23,7 +22,7 @@ function mentioned(text: string, name: string): boolean {
 function recipients(state: WorkflowView, text: string, to: unknown, sender?: string): { agents: AgentView[]; all: boolean } {
   const agents = state.agents ?? [];
   const requested = to === undefined || to === null ? [] : typeof to === 'string' ? [to] : to;
-  if (!Array.isArray(requested) || requested.length > 32 || requested.some(name => typeof name !== 'string')) throw new Error('Post field to must be "all" or an array of at most 32 member names');
+  if (!Array.isArray(requested) || requested.length > MAX_NAMED_MEMBERS || requested.some(name => typeof name !== 'string')) throw new Error(`Post field to must be "all" or an array of at most ${MAX_NAMED_MEMBERS} member names`);
   const names = requested.map(name => scriptText(String(name).replace(/^@/, ''), 'member name', 100));
   const all = names.includes('all') || mentioned(text, 'all');
   const chosen = new Set(all ? agents : names.map(name => member(state, name)));

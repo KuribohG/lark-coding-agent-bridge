@@ -158,8 +158,8 @@ export function ConfigView({ profile }: { profile: string }) {
               options={[["default", "继承上层默认"], ...cfg.reasoningEfforts.map((v): [string, string] => [v, v])]} />
           </Field>
           <div className="grid grid-cols-2 gap-4">
-            <Field label="并发上限（1-50）">
-              <Input type="number" min={1} max={50} value={cfg.maxConcurrentRuns}
+            <Field label="并发上限（1-512）">
+              <Input type="number" min={1} max={512} value={cfg.maxConcurrentRuns}
                 onChange={(e) => set("maxConcurrentRuns", Number(e.target.value))} />
             </Field>
             <Field label="探活分钟（0=关闭）">

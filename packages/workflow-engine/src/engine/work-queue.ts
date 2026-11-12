@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { workflowDigest } from './digest';
 import { byId } from './evolve';
 import { emit } from './kernel-store';
+import { WORK_MAX_BYTES, WORK_MAX_CLAIMS, WORK_MAX_ITEMS, WORK_MAX_OPERATIONS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
 import { memberQueue, queueControl, queueName, queueNames } from './work-routing';
 import type { Immutable, TaskView, WorkClaim, WorkflowView, WorkflowWorkItem } from './types';
@@ -10,9 +11,6 @@ type ItemView = Immutable<WorkflowWorkItem>;
 type ClaimView = Immutable<WorkClaim>;
 
 export const WORK_MUTATIONS = ['claim_work', 'renew_claim', 'checkpoint_work', 'complete_work', 'fail_work', 'release_claim'];
-const MAX_ITEMS = 256;
-const MAX_CLAIMS = 512;
-const MAX_OPERATIONS = 2048;
 
 function json(value: unknown, name: string): unknown {
   const text = JSON.stringify(value ?? null);
@@ -24,8 +22,23 @@ function options(args: Record<string, unknown>, allowed: string[]): void {
   if (Object.keys(args).some(key => !allowed.includes(key))) throw new Error('Unsupported work queue option');
 }
 
-function capacity(state: WorkflowView): void {
-  if (state.workQueue && Buffer.byteLength(JSON.stringify(state.workQueue)) > 2_000_000) throw new Error('Work queue exceeds 2000000 bytes');
+/** Upper estimates of each workflow's serialized queue size, so the exact size is measured only near the limit. */
+const queueBytes = new WeakMap<object, number>();
+
+/**
+ * Enforces WORK_MAX_BYTES after a change that added at most the serialized size of `added`. Serializing the whole
+ * queue on every change costs time in its size; the estimate only grows, and is corrected by an exact measurement
+ * whenever it reaches the limit, so the verdict is always that of the exact size.
+ */
+function capacity(state: WorkflowView, ...added: unknown[]): void {
+  const queue = state.workQueue;
+  if (!queue) return;
+  const exact = () => Buffer.byteLength(JSON.stringify(queue));
+  const prior = queueBytes.get(queue);
+  let bytes = prior === undefined ? exact() : prior + 1024 + added.reduce((total: number, value) => total + 3 * JSON.stringify(value ?? null).length, 0);
+  if (prior !== undefined && bytes > WORK_MAX_BYTES) bytes = exact();
+  queueBytes.set(queue, bytes);
+  if (bytes > WORK_MAX_BYTES) throw new Error(`Work queue exceeds ${WORK_MAX_BYTES} bytes`);
 }
 
 function itemById(state: WorkflowView, value: unknown): ItemView {
@@ -69,12 +82,12 @@ export function enqueueWork(state: WorkflowView, args: Record<string, unknown>, 
   }
   if (dependsOn.some(dependency => !items.some(item => item.key === dependency))) throw new Error('Dependencies must reference existing work keys; enqueue prerequisites first');
   if (queueControl(state, name)?.closedAt !== undefined) throw new Error('Work queue is closed; new items cannot be enqueued');
-  if (items.length >= MAX_ITEMS) throw new Error('Work item limit reached');
+  if (items.length >= WORK_MAX_ITEMS) throw new Error('Work item limit reached');
   openQueue(state, name);
   const item: WorkflowWorkItem = { id: randomUUID(), key, title, input, digest, maxAttempts, resources, ...routing,
     generation: 0, status: 'pending', progress: { version: 0, state: null }, createdAt: now, updatedAt: now };
   emit(state, { type: 'work_enqueued', item });
-  capacity(state);
+  capacity(state, item);
   return { itemId: item.id, key };
 }
 
@@ -153,7 +166,7 @@ export function workStatus(state: WorkflowView, args: Record<string, unknown> = 
     return { ...item, digest: undefined, claim: state.workQueue?.claims.find(claim => claim.id === item.claimId) };
   }
   const items = (state.workQueue?.items ?? []).filter(item => name === undefined || (item.queue ?? 'default') === name);
-  const offset = boundedInteger(args.offset, 0, 0, MAX_ITEMS);
+  const offset = boundedInteger(args.offset, 0, 0, WORK_MAX_ITEMS);
   const limit = boundedInteger(args.limit, 16, 1, 64);
   const counts = { pending: 0, claimed: 0, completed: 0, failed: 0, cancelled: 0 };
   for (const item of items) counts[item.status]++;
@@ -213,7 +226,7 @@ export function mutateWork(state: WorkflowView, task: TaskView, attemptId: strin
     if (prior.digest !== digest) throw new Error('operationId conflict: same ID with different work operation');
     return present(prior.response);
   }
-  if (operations.length >= MAX_OPERATIONS) throw new Error('Work operation limit reached');
+  if (operations.length >= WORK_MAX_OPERATIONS) throw new Error('Work operation limit reached');
   let response: unknown;
   if (method === 'claim_work') {
     const leaseMs = boundedInteger(args.leaseMs, 120_000, 1000, 300_000);
@@ -229,7 +242,7 @@ export function mutateWork(state: WorkflowView, task: TaskView, attemptId: strin
     if (!claim) {
       const item = availableWork(state, name)[0];
       if (item) {
-        if (claims.length >= MAX_CLAIMS) throw new Error('Work claim history limit reached');
+        if (claims.length >= WORK_MAX_CLAIMS) throw new Error('Work claim history limit reached');
         const granted: WorkClaim = { id: randomUUID(), itemId: item.id, agentId: task.agentId, taskId: task.taskId, attemptId,
           generation: item.generation + 1, leaseUntil: Math.min(now + leaseMs, state.deadlineAt), status: 'active', createdAt: now };
         emit(state, { type: 'work_claimed', claim: granted });
@@ -275,6 +288,6 @@ export function mutateWork(state: WorkflowView, task: TaskView, attemptId: strin
     }
   }
   emit(state, { type: 'work_operation_recorded', operation: { key, digest, response } });
-  capacity(state);
+  capacity(state, args, response, key);
   return present(response);
 }

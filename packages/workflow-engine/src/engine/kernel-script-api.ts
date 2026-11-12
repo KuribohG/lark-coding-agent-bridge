@@ -8,7 +8,8 @@ import { beginEventWait } from './event-waits';
 import { postToBoard, readBoard } from './board';
 import { mailboxOperation, receiveMessages, receiptMessages, relaySender, scheduleMemberTurn, sendMessage } from './durable-agents';
 import { inheritedWorkerExecution } from './execution';
-import { parseScriptAgentCall, scriptText, SCRIPT_MAX_TASKS } from './script-contract';
+import { MAX_CONTROL_OPERATIONS, MAX_WORKSPACE_KEYS, SCRIPT_MAX_TASKS } from './limits';
+import { parseScriptAgentCall, scriptText } from './script-contract';
 import { addArtifact, artifactOf, BUSY, findTask, pushEvent, readArtifact, requireState, sameRoot } from './kernel-state';
 import { emit, putText } from './kernel-store';
 import type { KernelContext } from './kernel-context';
@@ -119,12 +120,12 @@ export class ScriptApi {
     const key = scriptText(args.key, 'workspace key', 100);
     if (key.trim() !== key || key.startsWith('@')) throw new Error('Invalid workspace key');
     if (state.script.workspaceCalls?.includes(key)) throw new Error('Duplicate workspace key');
-    if ((state.script.workspaceCalls?.length ?? 0) >= 128) throw new Error('Workspace call limit reached');
+    if ((state.script.workspaceCalls?.length ?? 0) >= SCRIPT_MAX_TASKS) throw new Error('Workspace call limit reached');
     store.transact(() => {
       if (!state.workspaceKeys?.includes(key)) {
         this.checkWorkKey(state, key);
         if (state.workQueue?.items.some(item => item.key === key)) throw new Error('Script key already belongs to a work queue operation');
-        if ((state.workspaceKeys?.length ?? 0) >= 256) throw new Error('Workspace key history limit reached');
+        if ((state.workspaceKeys?.length ?? 0) >= MAX_WORKSPACE_KEYS) throw new Error('Workspace key history limit reached');
         emit(state, { type: 'workspace_key_reserved', key });
       }
       emit(state, { type: 'script_key_recorded', list: 'workspaceCalls', key });
@@ -173,7 +174,7 @@ export class ScriptApi {
       if (state.workspaceKeys?.includes(key)) throw new Error('Script key already belongs to a workspace operation');
       if (key.trim() !== key || key.startsWith('@')) throw new Error('Invalid control key');
       if (state.script.controlCalls?.includes(key)) throw new Error('Duplicate script control key');
-      if ((state.script.controlCalls?.length ?? 0) >= 128) throw new Error('Script control call limit reached');
+      if ((state.script.controlCalls?.length ?? 0) >= SCRIPT_MAX_TASKS) throw new Error('Script control call limit reached');
       if (state.tasks.some(task => task.scriptKey === key) || state.workQueue?.items.some(item => item.key === key)
         || state.swarms?.some(swarm => swarm.key === key) || queueNames(state).some(name => queueControl(state, name)?.closeKey === key)
         || state.mailbox?.receipts.some(receipt => receipt.key === key) || state.mailbox?.operations.some(operation => operation.key === 'script:' + key)) throw new Error('Script key already belongs to another operation');
@@ -189,7 +190,7 @@ export class ScriptApi {
       const prior = state.controlOperations?.find(operation => operation.key === key);
       if (prior && prior.digest !== digest) throw new Error('Cancellation key conflict');
       if (!prior) {
-        if ((state.controlOperations?.length ?? 0) >= 128) throw new Error('Control operation limit reached');
+        if ((state.controlOperations?.length ?? 0) >= MAX_CONTROL_OPERATIONS) throw new Error('Control operation limit reached');
         if (BUSY.has(task.status) || task.status === 'waiting_workflow' || task.status === 'interrupted') {
           emit(state, { type: 'task_script_cancelled', taskId: task.taskId });
           ctx.children.suspendChildren(state, true, task.taskId);
@@ -241,7 +242,7 @@ export class ScriptApi {
     const check = (state: WorkflowView) => {
       const key = this.checkWorkKey(state, args.key, kind as 'enqueue' | 'swarm' | 'close');
       if (state.script!.workCalls?.includes(key)) throw new Error('Duplicate script key: ' + key);
-      if ((state.script!.workCalls?.length ?? 0) >= 128) throw new Error('Work queue script call limit reached');
+      if ((state.script!.workCalls?.length ?? 0) >= SCRIPT_MAX_TASKS) throw new Error('Work queue script call limit reached');
       return key;
     };
     const record = (state: WorkflowView, key: string) => emit(state, { type: 'script_key_recorded', list: 'workCalls', key });
@@ -326,7 +327,7 @@ export class ScriptApi {
       if (args.kind === 'receive' && memberSwarm(state, target)) throw new Error('Swarm members are woken by the kernel and cannot wait on script receive()');
       if (key.trim() !== key) throw new Error('Mailbox key must not contain surrounding whitespace');
       if (state.script.calls.some(call => call.key === key) || state.script.mailboxCalls?.includes(key) || state.workQueue?.items.some(item => item.key === key)) throw new Error('Duplicate script key: ' + key);
-      if ((state.script.mailboxCalls?.length ?? 0) >= 128) throw new Error('Mailbox call limit reached');
+      if ((state.script.mailboxCalls?.length ?? 0) >= SCRIPT_MAX_TASKS) throw new Error('Mailbox call limit reached');
       if (args.kind === 'receive' ? state.mailbox?.operations.some(item => item.key === 'script:' + key)
         : state.mailbox?.receipts.some(item => item.key === key)) throw new Error('Mailbox key changed operation kind');
       // A board read records how far the feed reached, so a replayed script reads the same posts.

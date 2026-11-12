@@ -12,7 +12,7 @@ ${WORKFLOW_SCHEDULING_INSTRUCTIONS}
 子脚本 agent(prompt,{key,member?,harness?,model?,reasoningEffort?,output?,workflowTool?,inputs?}) 可逐个决定是否给下一层植入此工具；workflowTool 默认 false，必须显式 true 才开启，swarm 的每个 members 配置也支持。不能通过修改当前调用参数给自己提权，不接受其它 profile、凭据或环境变量。
 run_workflow 首次返回 status=waiting 和 workflowId；这是持久异步调用，请立即结束当前轮次，不要等待 shell、不轮询、不继续执行其它工作。最多30秒后 bridge 会停止未让出的执行。checkpoint 可保存最多16000字符的当前工作状态，恢复时连同子结果交回。未完成工作认领在让出时释放，恢复后须重新核对并领取，不能继续使用旧 claim。
 bridge 等本轮退出后执行子脚本；成功或失败结果都会在原生会话的下一次执行中注入 workflows.call（ok/result/resultRef 或 error），read_context 同样可读。结束本轮的文字不会成为父任务的最终结果；恢复后完成原任务并给出最终答复。相同 key 的已完成子调用返回保存的成功或失败结果，不重复执行；要重试失败子调用须用新 key 和 operationId。根工作流暂停后需显式重放；重启时正在运行的根工作流会自动重放。
-整棵树共享根并发、任务和尝试预算及截止时间，最多3层子 workflow、32个子运行。各层拥有自己的工作队列；显式 parentQueue:true 只授予子脚本 enqueueWork({queue:"parent",key,title,input,...}) 向直接父队列追加任务的能力，也可 enqueueWork({target:"parent",queue:"reviews",...}) 选择父命名队列，不授予关闭父队列或消费父队列的权限。子运行不直接向用户发送消息，结果交回调用者。`,
+整棵树共享根并发、任务和尝试预算及截止时间，最多3层子 workflow、256个子运行。各层拥有自己的工作队列；显式 parentQueue:true 只授予子脚本 enqueueWork({queue:"parent",key,title,input,...}) 向直接父队列追加任务的能力，也可 enqueueWork({target:"parent",queue:"reviews",...}) 选择父命名队列，不授予关闭父队列或消费父队列的权限。子运行不直接向用户发送消息，结果交回调用者。`,
   tools: [
     { name: 'run_workflow', worker: { verifiesRoot: true, call: (ctx, state, task, _caller, args) => ctx.children.runChildWorkflow(state, task, args) } },
   ],

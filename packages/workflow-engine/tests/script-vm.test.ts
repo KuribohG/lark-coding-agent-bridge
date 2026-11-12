@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { runScriptProgram, WorkflowAgentFailure } from '../src/engine/script-vm';
+import { SCRIPT_MAX_TASKS } from '../src/engine/limits';
 
 function run(source: string, options: Partial<Parameters<typeof runScriptProgram>[0]> = {}) {
   return runScriptProgram({ source, args: null, signal: AbortSignal.timeout(5000),
@@ -106,7 +107,7 @@ describe('script interpreter', () => {
     expect(await run('return typeof __bridgeWork;')).toBe('"undefined"');
     await expect(run('await enqueueWork([]);', { work })).rejects.toThrow('enqueueWork');
     await expect(run('await workStatus();')).rejects.toThrow('host is unavailable');
-    await expect(run('for(let i=0;i<129;i++) await workStatus();', { work })).rejects.toThrow('call limit');
+    await expect(run(`for(let i=0;i<${SCRIPT_MAX_TASKS + 1};i++) await workStatus();`, { work })).rejects.toThrow('call limit');
     await expect(run('await workStatus();', { work: async () => { throw new Error('queue failure'); } })).rejects.toThrow('queue failure');
   });
 

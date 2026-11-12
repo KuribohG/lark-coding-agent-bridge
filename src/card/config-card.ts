@@ -52,7 +52,7 @@ export function configFormCard(opts: ConfigFormOpts): object {
     input('model', '**全局默认模型**（局部覆盖请用 `/model`）', opts.model);
     select('reasoning_effort', '**全局默认思考强度**（局部覆盖请用 `/effort`）', opts.reasoningEffort ?? 'default',
       reasoningEffortOptions(opts.agentKind).map(({ value, label }) => [value, label]));
-    input('max_concurrent_runs', '**此 bot 并发上限**（1–50，inherit 恢复继承）', String(opts.maxConcurrentRuns));
+    input('max_concurrent_runs', '**此 bot 并发上限**（1–512，inherit 恢复继承）', String(opts.maxConcurrentRuns));
     input('run_idle_timeout_minutes', '**全局无输出超时**（分钟，局部覆盖请用 `/timeout`；0 关闭，inherit 恢复继承）', String(opts.runIdleTimeoutMinutes));
   } else if (section === 'lark') {
     note('以下设置只影响飞书展示，不影响模型推理和 Web 聊天。');

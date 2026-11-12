@@ -214,13 +214,19 @@ export function getMessageDebounceMs(cfg: AppConfig): number {
   return Math.min(5_000, Math.max(0, Math.floor(raw)));
 }
 
+/**
+ * Largest accepted `max_concurrent_runs`. Workflow workers take slots from the same pool as conversation turns, so
+ * a workflow that fans out to a few hundred workers needs a cap of that size; each run is a native agent process
+ * of a few hundred MB.
+ */
+export const MAX_CONCURRENT_RUNS = 512;
+
 /** Resolve the max-concurrent-runs preference with default + sanity clamp. */
 export function getMaxConcurrentRuns(cfg: AppConfig): number {
   const raw = cfg.preferences?.maxConcurrentRuns;
   if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 1) return 10;
-  // Reasonable upper bound — at 50+ concurrent claudes the bot box is
-  // probably already RAM-starved. Clamp to keep typos from killing the box.
-  return Math.min(Math.floor(raw), 50);
+  // Clamp to keep typos from killing the box.
+  return Math.min(Math.floor(raw), MAX_CONCURRENT_RUNS);
 }
 
 /**

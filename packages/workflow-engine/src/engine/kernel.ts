@@ -32,6 +32,8 @@ class KernelParts implements KernelContext {
       policy: state => { settleEventWaits(state, now()); },
       // A host listener that throws must not make a committed operation look failed to its caller.
       listenerFailed: error => this.log.warn('change-listener-failed', { error: String(error) }),
+      backgroundCheckpoint: true,
+      checkpointFailed: error => this.log.warn('background-checkpoint-unavailable', { error: String(error) }),
     });
     this.hosts = new WorkerHosts(this.store.db);
     this.scheduler = new WorkflowScheduler(this);

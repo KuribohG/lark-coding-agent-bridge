@@ -9,6 +9,7 @@ import { WorkflowIpc } from './ipc';
 import { WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from './tools/instructions';
 import { workflowDigest } from './digest';
 import { inheritedWorkerExecution } from './execution';
+import { MAX_RUNNING_SCRIPTS } from './limits';
 import { runScriptProgram, WorkflowAgentFailure } from './script-vm';
 import { hostMatch } from './worker-hosts';
 import type { WorkerExecution, WorkerExecutionPolicy, WorkerExecutionSelection, WorkflowLogger, WorkflowRoot, WorkflowState, WorkflowWorkerRequest, WorkflowWorkerResult } from './types';
@@ -147,7 +148,7 @@ export class WorkflowRuntime {
     for (const state of this.kernel.queuedScripts()) {
       const depth=state.parent?.depth ?? 0;
       // Separate bounded levels let children run while ancestor interpreters await their results.
-      if ([...this.scripts.values()].filter(script=>script.depth===depth).length>=4) continue;
+      if ([...this.scripts.values()].filter(script=>script.depth===depth).length>=MAX_RUNNING_SCRIPTS) continue;
       if (this.scripts.has(state.workflowId)) continue;
       const controller = new AbortController();
       const done = Promise.resolve().then(() => this.runScript(state.root.scopeId, state.workflowId, controller));

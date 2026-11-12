@@ -5,6 +5,7 @@ import { workflowDigest } from './digest';
 import { eventEntity, eventTopics, type DomainEvent } from './events';
 import { evolve } from './evolve';
 import type { StoredArtifact, StoredTask, TextRef, WorkflowData, WorkflowState, WorkflowView } from './types';
+import { checkpointInBackground } from './wal-checkpointer';
 
 const TERMINAL = new Set<string>(['completed', 'cancelled']);
 const SNAPSHOT_EVERY = 2000;
@@ -74,6 +75,10 @@ export interface WorkflowStoreOptions {
   snapshotEvery?: number;
   /** Finished workflows kept in memory for status and artifact reads. Default 64. */
   retainFinished?: number;
+  /** Checkpoint the WAL on a background thread instead of inside commits; for a long-lived store on a file. */
+  backgroundCheckpoint?: boolean;
+  /** Receives the reason background checkpointing could not run; the store then checkpoints inside commits. */
+  checkpointFailed?(error: unknown): void;
 }
 
 /**
@@ -103,6 +108,7 @@ export class WorkflowStore {
   private readonly verify = process.env.WORKFLOW_ENGINE_VERIFY === '1';
   private readonly snapshotEvery: number;
   private readonly retainFinished: number;
+  private stopCheckpoints?: () => void;
 
   constructor(path: string, private readonly now: () => number, private readonly options: WorkflowStoreOptions = {}) {
     this.snapshotEvery = options.snapshotEvery ?? SNAPSHOT_EVERY;
@@ -128,6 +134,9 @@ export class WorkflowStore {
           response TEXT NOT NULL, PRIMARY KEY(scope, id));
         CREATE TABLE IF NOT EXISTS workflow_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       `);
+    }
+    if (options.backgroundCheckpoint && !options.readonly && path !== ':memory:') {
+      this.stopCheckpoints = checkpointInBackground(this.db, path, error => options.checkpointFailed?.(error));
     }
     if (!this.hasTable('wf_catalog')) return;
     for (const row of this.db.prepare("SELECT id, scope, parent_id FROM wf_catalog WHERE status NOT IN ('completed', 'cancelled')")
@@ -552,6 +561,7 @@ export class WorkflowStore {
   /** Writes a snapshot of every workflow changed since its last one, so the next start replays little. */
   close(): void {
     if (!this.db.open) return;
+    this.stopCheckpoints?.();
     if (!this.options.readonly) {
       this.db.transaction(() => {
         for (const aggregate of this.aggregates.values()) if (aggregate.sinceSnapshot && !aggregate.stale) this.snapshot(aggregate);

@@ -69,8 +69,8 @@ The envelope has `operationId`, `goal` (the full authorized task), `script` (the
 | `name` | Display name, up to 100 characters |
 | `args` | JSON data exposed as `args` in the interpreter |
 | `execution` | Default `{agentKind, model?, reasoningEffort?}`; otherwise root harness/settings |
-| `maxAgents` | Calls per script run, default 32, maximum 128; cache hits count |
-| `maxConcurrent` | Concurrent workers per workflow, default 4, maximum 16; shared process-pool limits also apply |
+| `maxAgents` | Calls per script run, default 32, maximum 2048; cache hits count |
+| `maxConcurrent` | Concurrent workers per workflow tree, default 4, maximum 256. Workers take slots from the profile's process pool, so `max_concurrent_runs` (at most 512) must be larger than this for the workflow to reach it |
 | `timeoutMs` | Total workflow deadline, defaulting to the configured `workflow_timeout_minutes` (480 minutes); range 1 second to that configured limit. Replay does not extend it |
 
 Set the budget in `config.toml`, globally or under `agents.<kind>.run` / `profiles.<name>.run`:
@@ -205,7 +205,7 @@ Every workflow has one message board: an ordered, append-only feed that all of i
 - `text` is at most 4000 characters. `to` is an array of member names or `"all"`. `@name` and `@all` in the text count as well, so `'Parser done, @qa please verify'` needs no `to`. Unknown names in `to` are rejected; an `@word` that matches no member is ordinary text. The sender is never its own recipient, and `all` means the members that exist when the post is made.
 - A read returns `{posts: [{seq, from, to, all?, text, at}], lastSeq, hasMore}`. Without `after` it returns the latest `limit` posts (default 20, at most 50); with `after` it returns the posts following that `seq`. `member` keeps the posts that member wrote or received. `from` is a member name, `main`, `script` or `system`.
 - Deliveries are ordinary inbox messages with topic `board` and the fields `post`, `to` and `all?` added, so everything that waits for messages works unchanged: `receive` and the `message` arm of `waitFor`. Swarm members are woken by them directly. As with direct messages, a member sees them in its next turn's member context and they are acknowledged when that turn succeeds.
-- A workflow holds at most 512 posts and 2048 deliveries. Deliveries reference the post instead of copying its text and do not count toward the 256 direct messages.
+- A workflow holds at most 8192 posts and 32768 deliveries. Deliveries reference the post instead of copying its text and do not count toward the 4096 direct messages.
 - A script read records how far the feed reached under its `key`; replay reads the same range again.
 
 `swarm` declares a group of persistent members that work on the board. The bridge schedules their turns; the script only awaits the outcome:
@@ -239,7 +239,7 @@ The lead is an ordinary member with three more operations and two kinds of syste
 - When a member fails, the system posts to the lead with the reason; the member has stopped and the lead decides whether to reassign, replace or drop the work.
 - When everyone is idle and the lead has not finished, the system reminds the lead, at most twice. After that the swarm ends with `stop: "quiet"` and no `result`.
 
-`swarm` resolves to `{stop, result?, turns, members: [{name, lead?, added?, queue?, turns, status, error?, note}], queues?, posts, lastSeq, hasMore}`. `queues` maps each consumed queue to its item counts. `posts` holds up to the first 50 posts of the swarm; read further ones with `readBoard`. `note` is the member's last final answer.
+`swarm` resolves to `{stop, result?, turns, members: [{name, lead?, added?, queue?, turns, status, error?, note}], queues?, posts, lastSeq, hasMore}`. `queues` maps each consumed queue to its item counts. `posts` holds up to the first 50 posts of the swarm; read further ones with `readBoard`. `note` is the start of the member's last final answer: up to 2000 characters, fewer in a swarm of more than 20 members so that the whole result still fits a script value (40000 characters shared by all members).
 
 | `stop` | Meaning |
 | --- | --- |
@@ -250,7 +250,7 @@ The lead is an ordinary member with three more operations and two kinds of syste
 
 If the lead fails, or the swarm runs out of the workflow's agent-call budget, `swarm` resolves to `null`, or rejects with `onError: "throw"`.
 
-- `members` and `lead` take `{name, role?, harness?, model?, reasoningEffort?, workflowTool?, workspace?, queue?}`: 1–12 at the start, the lead included, and up to 16 once the lead has added some. Names use 1–40 letters, digits, `_`, `.` or `-`, cannot be `all`, `main`, `script` or `system`, and are dedicated to this swarm: `agent`, `receive` and `waitFor` reject them.
+- `members` and `lead` take `{name, role?, harness?, model?, reasoningEffort?, workflowTool?, workspace?, queue?}`: 1–256 at the start, the lead included, and up to 320 once the lead has added some. Names use 1–40 letters, digits, `_`, `.` or `-`, cannot be `all`, `main`, `script` or `system`, and are dedicated to this swarm: `agent`, `receive` and `waitFor` reject them.
 - `maxTurns` bounds the wake-ups of each member after its first turn: default 6, range 1–64. Every turn counts toward `maxAgents`; reserve `members × (maxTurns + 1)`.
 - The main agent and the user steer a running swarm by posting: `/workflow post @parser also cover CRLF input` wakes `parser`, and `/workflow post @lead drop the docs work` reaches the lead.
 - On replay the swarm continues from its record: completed turns are not run again, a turn cut short by a pause or restart is retried in the member's own conversation, and members the lead added stay. The definition (key, task and member bindings) cannot change across replay.
@@ -310,7 +310,7 @@ Checkpoints, waits, message receipts and turn state are committed together in th
 
 After a restart, a workflow that was running is replayed automatically (see [Restart recovery](#restart-recovery)); others remain `interrupted` until explicit `replay_script` or `/workflow resume`. Replay reconstructs the script from its beginning, reuses completed turns and receive receipts, then continues pending waits or retries the interrupted turn in its original native session. Persistent turn reuse validates the original request and predecessor chain; the stored input fingerprint includes the checkpoint version and message IDs. Rewriting committed history, skipping its predecessor, or changing a member's execution binding requires a new member name. One-shot tasks without `workflowTool` still retry in fresh sessions; enabled callers retain their native session for child-result continuation.
 
-Limits per workflow: 32 members, 256 messages, 128 receive receipts, 512 worker/script mailbox operations, and 128 execution attempts including retries. The kernel retains up to 256 recent checkpoints while preserving every member's latest recovery point. Existing workflow call, deadline, replay, output and process-pool limits also apply. Members and the work queue below are scoped to one workflow; they do not create a cross-workflow team.
+Limits per workflow: 512 members, 4096 messages, 2048 receive receipts, 8192 worker/script mailbox operations, and 8192 execution attempts including retries. The kernel retains up to 256 recent checkpoints while preserving every member's latest recovery point. Existing workflow call, deadline, replay, output and process-pool limits also apply. Members and the work queue below are scoped to one workflow; they do not create a cross-workflow team.
 
 ### Work items and claims
 
@@ -351,7 +351,7 @@ Enqueue keys share the script's key namespace. Replaying the same key/input reus
 
 Use `/workflow work` for counts and ownership, or `/workflow work <key>` for resource keys, saved progress version/time and recent claim history. `/workflow status [member]` also shows queue progress and member ownership. Summary output omits input/progress/result payloads; authorized `work_status({itemId})` returns the full item. Queries are read-only and do not renew leases or restart execution.
 
-Limits shared by all queues in one workflow: 256 items, 512 claim records, 2048 queue mutation records, 16 resource keys per item, and 2 MB serialized queue state. Each input, progress state and result is limited to 16000 JSON characters. Status defaults to 16 items per page (maximum 64); use `nextOffset` for the next page. A script run can make at most 128 queue calls, including status queries, independently of its agent-call budget. The queue is bounded and intended for work within one workflow, not an unbounded service queue.
+Limits shared by all queues in one workflow: 4096 items, 8192 claim records, 32768 queue mutation records, 16 resource keys per item, and 64 MB serialized queue state. Each input, progress state and result is limited to 16000 JSON characters. Status defaults to 16 items per page (maximum 64); use `nextOffset` for the next page. A script run can make at most 128 queue calls, including status queries, independently of its agent-call budget. The queue is bounded and intended for work within one workflow, not an unbounded service queue.
 
 ### Queue-driven consumers
 
@@ -431,7 +431,7 @@ Keys identify child calls within the parent task. Repeating the same key/input r
 
 Children have their own members, mailboxes and work queues. Explicit `parentQueue: true` grants only `enqueueWork({queue:"parent", key, title, input, ...})` into the immediate parent's queue. Use `target:"parent", queue:"reviews"` to select a named parent queue; the existing `queue:"parent"` syntax selects its default queue. This grant does not allow consumption, closure, arbitrary workflow access or root control. The parent must keep its queue open until its producers finish. Keys in that queue are shared by all its producers; coordinate them to avoid conflicting inputs. See [the nested example](../workflow-definitions/scripted/examples/nested-workflow.js) for independent per-worker flags.
 
-The tree shares root worker concurrency, task-history budget and deadline, and at most 128 native attempts. Child limits can reduce these allowances. There are at most three child levels and 32 child workflows per root. The parent continuation counts as another attempt of its original task. Completed child results and plans remain inspectable artifacts; only the root's plan and final event are sent to the chat.
+The tree shares root worker concurrency, task-history budget and deadline, and at most 8192 native attempts. Child limits can reduce these allowances. There are at most three child levels and 256 child workflows per root. The parent continuation counts as another attempt of its original task. Completed child results and plans remain inspectable artifacts; only the root's plan and final event are sent to the chat.
 
 Pause, cancellation, binding changes and deadlines apply to descendants. After a restart, root replay (automatic or explicit) reconstructs the waiting parents and paused/interrupted child scripts; it does not rerun completed child calls. Recovery retains native sessions, pending child IDs and checkpoints. Root completion requires descendants to be finished. Local state recovery does not guarantee exactly-once external side effects.
 
@@ -514,6 +514,6 @@ Replay repeats interrupted work: side effects in the outside world (files, netwo
 
 ### Interpreter and execution boundaries
 
-QuickJS/WASM runs the script with JSON-only host callbacks, no host objects, process, filesystem, network or module loader. `Date` and `Math.random` are disabled; pass such inputs through `args`. Each interpreter has a 32 MiB guest heap, 512 KiB stack, 100 ms synchronous slices, approximately 2 seconds of guest CPU and 100,000 promise jobs. There are at most four active interpreters per nesting depth, with four levels including roots (at most sixteen total). Waiting ancestors cannot exhaust the interpreter capacity needed by their children. Source, arguments, worker output and final output have bounded sizes (100,000 characters); status retains at most 50 log entries of 1,000 characters. A deadline/abort signal also terminates scripts awaiting an unresolved promise.
+QuickJS/WASM runs the script with JSON-only host callbacks, no host objects, process, filesystem, network or module loader. `Date` and `Math.random` are disabled; pass such inputs through `args`. Each interpreter has a 256 MiB guest heap, 512 KiB stack, 100 ms synchronous slices, approximately 2 seconds of guest CPU and 100,000 promise jobs. There are at most four active interpreters per nesting depth, with four levels including roots (at most sixteen total). Waiting ancestors cannot exhaust the interpreter capacity needed by their children. Source, arguments, worker output and final output have bounded sizes (100,000 characters); status retains at most 50 log entries of 1,000 characters. A deadline/abort signal also terminates scripts awaiting an unresolved promise.
 
 The interpreter boundary does **not** isolate workers: a worker is a normal configured harness under the original authorized profile, workspace and effective permissions. Scripts cannot select another profile or provide environment variables or credentials. Workers may perform only tasks authorized by the goal, and their final answers do not establish that tests or side effects succeeded. The main agent reviews evidence and reports validation limits.

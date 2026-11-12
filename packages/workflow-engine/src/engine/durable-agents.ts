@@ -3,7 +3,8 @@ import { workflowDigest } from './digest';
 import { availableMessages } from './evolve';
 import { artifactOf, findTask, readArtifact, taskById } from './kernel-state';
 import { emit, putText } from './kernel-store';
-import { SCRIPT_MAX_TASKS, scriptText, type ScriptAgentCall } from './script-contract';
+import { MAILBOX_MAX_MESSAGES, MAILBOX_MAX_OPERATIONS, MAILBOX_MAX_RECEIPTS, MAX_WORKFLOW_MEMBERS, SCRIPT_MAX_TASKS } from './limits';
+import { scriptText, type ScriptAgentCall } from './script-contract';
 import type { AgentCheckpoint, AgentView, DurableAgent, Immutable, MailboxMessage, MailboxReceipt, NativeIdKind, StoredTask, TaskView, WorkerExecution, WorkflowView } from './types';
 
 export { availableMessages };
@@ -75,7 +76,7 @@ export function scheduleMemberTurn(state: WorkflowView, call: ScriptAgentCall, e
   }
   if (state.tasks.length >= SCRIPT_MAX_TASKS) throw new Error('Script task history limit reached');
   if (!agent) {
-    if ((state.agents?.length ?? 0) >= 32) throw new Error('Workflow member limit reached');
+    if ((state.agents?.length ?? 0) >= MAX_WORKFLOW_MEMBERS) throw new Error('Workflow member limit reached');
     const created: DurableAgent = { agentId: randomUUID(), key: call.member!, sessionRef: randomUUID(), checkpointVersion: 0 };
     emit(state, { type: 'member_created', agent: created, session: { sessionRef: created.sessionRef, actorId: created.agentId, actorKey: created.key, role: 'worker',
       nativeIdKind, execution, generation: 1, ...(call.workspace ? {workspaceId:call.workspace} : {}) } });
@@ -108,7 +109,7 @@ export function mailboxOperation(state: WorkflowView, key: string, input: unknow
     if (prior.digest !== digest) throw new Error('Mailbox operation ID conflict');
     return prior.response;
   }
-  if (operations.length >= 512) throw new Error('Mailbox operation limit reached');
+  if (operations.length >= MAILBOX_MAX_OPERATIONS) throw new Error('Mailbox operation limit reached');
   const response = action();
   emit(state, { type: 'mailbox_operation_recorded', operation: { key, digest, response } });
   return response;
@@ -123,7 +124,7 @@ export function sendMessage(state: WorkflowView, target: string, text: unknown, 
   const agent = member(state, target);
   const message: MailboxMessage = { id: randomUUID(), to: agent.agentId, from, text: scriptText(text, 'message', 4000), createdAt: now, ...messageMatch(metadata) };
   // Board deliveries have their own budget (board.ts).
-  if ((state.mailbox?.messages ?? []).filter(item => item.post === undefined).length >= 256) throw new Error('Mailbox message limit reached');
+  if ((state.mailbox?.messages ?? []).filter(item => item.post === undefined).length >= MAILBOX_MAX_MESSAGES) throw new Error('Mailbox message limit reached');
   emit(state, { type: 'message_sent', message });
   return { messageId: message.id };
 }
@@ -159,7 +160,7 @@ export function receiveMessages(state: WorkflowView, target: string, key: string
   if (agent.wait) throw new Error('Member already has a pending receive');
   const reserved = (state.waits ?? []).filter(wait => wait.status === 'waiting' && wait.runId === state.script!.runId
     && !key.startsWith(`@wait/${wait.id}/`) && wait.any.some(arm => arm.kind === 'message')).length;
-  if (receipts.length + reserved >= 128) throw new Error('Mailbox receive limit reached');
+  if (receipts.length + reserved >= MAILBOX_MAX_RECEIPTS) throw new Error('Mailbox receive limit reached');
   const receipt: MailboxReceipt = { id: randomUUID(), key, digest, agentId: agent.agentId, status: 'waiting', messageIds: [], ...filter };
   emit(state, { type: 'receipt_opened', receipt });
   return state.mailbox!.receipts.find(item => item.id === receipt.id)!;

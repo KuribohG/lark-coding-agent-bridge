@@ -3,7 +3,8 @@ import { workflowDigest } from '../digest';
 import { swarmSummary } from '../swarm';
 import { workerSelection } from '../execution';
 import { addArtifact, acknowledge, BUSY, findTask, readArtifact, requiredText, textArray } from '../kernel-state';
-import { boundedInteger, scriptArgs, scriptText, SCRIPT_DEFINITION, SCRIPT_MAX_TASKS } from '../script-contract';
+import { MAX_CONCURRENT_WORKERS, SCRIPT_MAX_TASKS } from '../limits';
+import { boundedInteger, scriptArgs, scriptText, SCRIPT_DEFINITION } from '../script-contract';
 import { unfinishedWork, workStatus } from '../work-queue';
 import type { KernelContext } from '../kernel-context';
 import { emit } from '../kernel-store';
@@ -59,7 +60,7 @@ export const lifecycleTools: WorkflowToolPlugin = {
         kind: 'start', doc: 'run_script(goal,script,plan,args?,name?,execution?,maxAgents?,maxConcurrent?,timeoutMs?)',
         start: (ctx, root, args) => {
           const definition = structuredClone(SCRIPT_DEFINITION);
-          definition.maxConcurrentWorkers = boundedInteger(args.maxConcurrent, 4, 1, 16);
+          definition.maxConcurrentWorkers = boundedInteger(args.maxConcurrent, 4, 1, MAX_CONCURRENT_WORKERS);
           definition.maxWallTimeMinutes = ctx.host.getTimeoutMinutes?.(root) ?? definition.maxWallTimeMinutes;
           definition.defaultWallTimeMinutes = definition.maxWallTimeMinutes;
           const timeoutMs = definition.maxWallTimeMinutes * 60_000;
