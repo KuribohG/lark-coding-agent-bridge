@@ -8,9 +8,12 @@ import { locateBinaries, type LocateOptions } from '../../agent/locate';
 import { checkAgentVersion } from '../../agent/preflight';
 import { resolveAppPaths } from '../../config/app-paths';
 import { paths } from '../../config/paths';
+import { validateLarkNetwork, type LarkNetworkConfig } from '../../config/lark-network';
 import type { AccessMode } from '../../config/permissions';
 import { loadRootConfig } from '../../config/profile-store';
 import type { RootConfig } from '../../config/profile-schema';
+import { patchConfig } from '../../config/service';
+import { bypassMatcher } from '../../lark-auth/network';
 import { modelServiceName, normalizeModelService } from '../../model-service/config';
 import { configureModelService } from '../../model-service/registry';
 import { writeFileAtomic } from '../../platform/atomic-write';
@@ -113,6 +116,119 @@ export function claudeGatewayEnv(input: { baseUrl: string; token?: string; model
 
 interface ModelServicePlan { name: string; baseUrl: string; model: string; token: string }
 
+interface ProxyVariable { name: string; value: string }
+interface ProxyEnvironment { http?: ProxyVariable; https?: ProxyVariable; all?: ProxyVariable; noProxy?: ProxyVariable }
+
+/** Proxy variables of an environment; a nonempty lowercase name wins, as it does for the Lark transport. */
+export function detectProxyEnv(env: NodeJS.ProcessEnv = process.env): ProxyEnvironment {
+  const pick = (lower: string): ProxyVariable | undefined => {
+    for (const name of [lower, lower.toUpperCase()]) {
+      const value = env[name];
+      if (value) return { name, value };
+    }
+    return undefined;
+  };
+  return { http: pick('http_proxy'), https: pick('https_proxy'), all: pick('all_proxy'), noProxy: pick('no_proxy') };
+}
+
+export type ProxyChoice =
+  | { mode: 'inherit'; detected: ProxyEnvironment; /** Replaces the detected NO_PROXY. */ noProxy?: string }
+  | { mode: 'manual'; proxy: string; noProxy: string }
+  | { mode: 'direct'; detected: ProxyEnvironment };
+
+interface ProxyPlan {
+  /** Proxy variables for the agent process and its tool subprocesses. */
+  launchEnv: Record<string, string>;
+  /** The profile's Feishu/Lark network table, when it has to differ from the default. */
+  network?: LarkNetworkConfig;
+  /** Variables the Bridge must be started with, because the proxy URL carries credentials and is not stored. */
+  envReferences: string[];
+  warnings: string[];
+}
+
+/**
+ * What a proxy choice writes. A service manager starts the Bridge without the shell's proxy
+ * variables, so values are stored rather than referenced, except URLs that carry credentials.
+ */
+export function proxyPlan(choice: ProxyChoice): ProxyPlan {
+  const literal = (value: string) => value.replaceAll('$', '$$$$');
+  const plan: ProxyPlan = { launchEnv: {}, envReferences: [], warnings: [] };
+  if (choice.mode === 'manual') {
+    // The agent environment is merged case-insensitively, so each variable can be set under one
+    // name only; lowercase is the one curl and wget also read.
+    plan.launchEnv = {
+      http_proxy: literal(choice.proxy),
+      https_proxy: literal(choice.proxy),
+      ...(choice.noProxy ? { no_proxy: literal(choice.noProxy) } : {}),
+    };
+    plan.network = { proxy: choice.proxy, ...(choice.noProxy ? { no_proxy: choice.noProxy } : {}) };
+    return plan;
+  }
+  const { detected } = choice;
+  const proxies = [detected.http, detected.https, detected.all].filter((item): item is ProxyVariable => Boolean(item));
+  if (!proxies.length) return plan;
+  if (choice.mode === 'direct') {
+    for (const variable of proxies) plan.launchEnv[variable.name] = '';
+    plan.network = { proxy: 'direct' };
+    return plan;
+  }
+  for (const variable of proxies) {
+    const stored = !hasCredentials(variable.value);
+    plan.launchEnv[variable.name] = stored ? literal(variable.value) : `\${${variable.name}}`;
+    if (!stored) plan.envReferences.push(variable.name);
+  }
+  const noProxy = choice.noProxy ?? detected.noProxy?.value;
+  if (noProxy !== undefined) plan.launchEnv[detected.noProxy?.name ?? 'no_proxy'] = literal(noProxy);
+  const bypass = noProxy !== undefined ? { no_proxy: noProxy } : {};
+  // The Lark transport is HTTPS and WebSocket only; it falls back the same way.
+  const lark = (detected.https ?? detected.http ?? detected.all)!;
+  if (hasCredentials(lark.value)) {
+    // The config refuses proxy credentials; the default `proxy = "env"` keeps reading the variable.
+    plan.network = noProxy !== undefined ? bypass : undefined;
+    plan.warnings.push(`代理地址带账号密码，不写入配置：飞书连接和 Agent 都改为读取环境变量 ${plan.envReferences.join('、')}。`);
+    return plan;
+  }
+  try {
+    validateLarkNetwork({ proxy: lark.value });
+    plan.network = { proxy: lark.value, ...bypass };
+  } catch {
+    plan.network = noProxy !== undefined ? bypass : undefined;
+    plan.warnings.push(`飞书连接只支持 http(s):// 代理，不支持 SOCKS 或 PAC，${lark.name}=${lark.value} 用不了；` +
+      '创建 profile 后请为飞书单独指定代理或直连，否则 Bridge 启动会报错。');
+  }
+  return plan;
+}
+
+/** Whether a request to `url` is proxied under the given NO_PROXY rules. */
+export function goesThroughProxy(url: string, noProxy: string | undefined): boolean {
+  try { return !bypassMatcher(noProxy ?? '')(new URL(url)); } catch { return false; }
+}
+
+function hasCredentials(proxy: string): boolean {
+  try {
+    const url = new URL(proxy);
+    return Boolean(url.username || url.password);
+  } catch {
+    return false;
+  }
+}
+
+function shorten(text: string, max = 48): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/** A proxy URL for display, without its password. */
+function redactProxy(proxy: string): string {
+  try {
+    const url = new URL(proxy);
+    if (!url.password) return proxy;
+    url.password = '***';
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return proxy;
+  }
+}
+
 const ALL_ACCESS: readonly AccessMode[] = ['full', 'workspace', 'read-only'];
 
 /** Access levels a profile of this agent can be created with, widest first. */
@@ -176,14 +292,20 @@ export function guideText(cli = cliCommand()): string {
     '   Codex / Pi 接第三方 Responses 网关：把 token 存成只有自己可读的文件，再登记为模型服务：',
     `   ${cli} model-service configure <服务名> service.json   # {"protocol":"responses","baseUrl":"https://…/v1","model":"…","apiKey":{"source":"file","id":"/绝对路径"}}`,
     '',
-    '4. 配置飞书并创建 profile',
+    '4. 网络代理（机器访问飞书或模型要走代理时；创建 profile 后执行）',
+    '   前台运行时飞书连接读取 shell 里的 HTTPS_PROXY / HTTP_PROXY / NO_PROXY；注册为系统服务后进程不带这些变量，要写进配置：',
+    `   ${cli} config set channels.lark.profiles.<名称>.network.proxy http://proxy:3128    # 只支持 HTTP(S) 代理，地址里不带账号密码`,
+    `   ${cli} config set channels.lark.profiles.<名称>.network.no_proxy localhost,127.0.0.1,.internal`,
+    '   Agent 进程访问模型、安装依赖用的代理写在 profile 的 launch.env（https_proxy、http_proxy、no_proxy）；内网模型网关的主机要放进 no_proxy。',
+    '',
+    '5. 配置飞书并创建 profile',
     `   ${cli} profile create <名称> --agent <claude|codex> --workspace <项目目录>`,
     '   不带 --app-id 时在终端显示二维码，用飞书扫码创建应用；已有应用则加 --app-id cli_xxx（Secret 按提示输入）。',
     '   已有应用在飞书开放平台（open.feishu.cn/app，国际版 open.larksuite.com/app）逐项确认：',
     ...larkPermissionGuide().split('\n').map(line => `   ${line}`),
     `   之后调整：${cli} config set profiles.<名称>.permissions.maxAccess workspace`,
     '',
-    '5. 启动与验收',
+    '6. 启动与验收',
     `   ${cli} run --profile <名称>      # 前台运行，Ctrl+C 停止`,
     `   ${cli} start --profile <名称>    # 注册为系统服务常驻`,
     '   私聊机器人发送 /status，再发一个简单任务；群里需先拉机器人入群并用 @选择器真正提及它。',
@@ -199,7 +321,7 @@ export async function runGuide(opts: GuideOptions = {}): Promise<void> {
   const configFile = resolveAppPaths({ rootDir }).configFile;
   const cli = cliCommand();
 
-  p.intro('Bridge 配置向导：Agent 位置 → 权限 → 模型凭据 → 飞书应用与权限');
+  p.intro('Bridge 配置向导：Agent 位置 → 权限 → 模型凭据 → 网络代理 → 飞书应用与权限');
   const root = await loadRootConfig(configFile);
   p.log.info(`Node ${process.version}，配置文件 ${configFile}${root ? '' : '（尚不存在，完成向导后创建）'}`);
 
@@ -263,9 +385,12 @@ export async function runGuide(opts: GuideOptions = {}): Promise<void> {
   // Step 4: how the agent reaches its model.
   const credentials = await chooseModelCredentials(inspection, root);
 
-  // Step 5: the Lark/Feishu app.
+  // Step 5: how this machine reaches Feishu and the model.
+  const proxy = await chooseProxy(credentials.gatewayUrl);
+
+  // Step 6: the Lark/Feishu app.
   const appMode = ask(await p.select<'qr' | 'existing'>({
-    message: '第 5 步：飞书应用',
+    message: '第 6 步：飞书应用',
     options: [
       { value: 'qr', label: '扫码创建新应用（推荐）', hint: '终端显示二维码，用飞书 App 扫码创建应用' },
       { value: 'existing', label: '使用已有应用', hint: '需要 App ID 和 App Secret' },
@@ -289,6 +414,7 @@ export async function runGuide(opts: GuideOptions = {}): Promise<void> {
     ask(await p.confirm({ message: '以上已配置并发布？（没配完也可以继续，之后补上再重启 profile）', initialValue: true }));
   }
 
+  const envReferences = [...(credentials.envReference ? [credentials.envReference] : []), ...proxy.envReferences];
   p.log.step(`创建 profile ${name}：${inspection.displayName} @ ${binaryPath}，权限 ${access}，目录 ${workspace ?? '默认'}`);
   await runProfileCreate(name, {
     rootDir,
@@ -296,10 +422,13 @@ export async function runGuide(opts: GuideOptions = {}): Promise<void> {
     workspace,
     binaryPath,
     permissions: { defaultAccess: access, maxAccess: access },
-    launchEnv: credentials.launchEnv,
+    launchEnv: { ...credentials.launchEnv, ...proxy.launchEnv },
     appId,
     tenant,
   });
+  if (proxy.network) {
+    await patchConfig(configFile, ['channels', 'lark', 'profiles', name, 'network'], proxy.network);
+  }
   if (credentials.service) {
     const keyFile = await saveModelService(rootDir, configFile, credentials.service);
     p.log.success(`模型服务 ${credentials.service.name} 已登记，token 保存在 ${keyFile}（仅本账号可读）`);
@@ -322,7 +451,8 @@ export async function runGuide(opts: GuideOptions = {}): Promise<void> {
     '开放给他人：聊天默认只对应用 owner 开放，在飞书里发 /invite user @同事 或 /invite group。',
     '应用侧：租户要求时，在飞书开放平台完成可用范围、权限和发布审批。',
     `改权限：${cli} config set profiles.${name}.permissions.maxAccess <full|workspace|read-only>`,
-    ...(credentials.envReference ? [`启动前先在同一个 shell 里 export ${credentials.envReference}=<token>；注册为系统服务时要写进服务的环境。`] : []),
+    `改代理：${cli} config set channels.lark.profiles.${name}.network.proxy <http://主机:端口|env|direct>（飞书连接）；Agent 进程的代理变量在 profile 的 launch.env 里。`,
+    ...(envReferences.length ? [`启动 Bridge 的环境里必须有 ${envReferences.join('、')}：前台运行前先在同一个 shell 里 export；注册为系统服务时要写进服务的环境。`] : []),
   ].join('\n'), '下一步');
   p.outro(`配置已写入 ${configFile}`);
 }
@@ -330,6 +460,8 @@ export async function runGuide(opts: GuideOptions = {}): Promise<void> {
 interface ModelCredentials {
   launchEnv?: Record<string, string>;
   service?: ModelServicePlan;
+  /** Third-party endpoint the agent will call, for the proxy step to route. */
+  gatewayUrl?: string;
   /** Environment variable the Bridge must be started with. */
   envReference?: string;
 }
@@ -371,6 +503,7 @@ async function chooseModelCredentials(inspection: AgentInspection, root: RootCon
     const model = ask(await p.text({ message: '默认模型 ID（留空由 Claude Code 决定，之后可在飞书里 /model 切换）', defaultValue: '' })).trim();
     return {
       launchEnv: claudeGatewayEnv({ baseUrl, token, model: model || undefined }),
+      gatewayUrl: baseUrl,
       ...(storage === 'env' ? { envReference: 'ANTHROPIC_AUTH_TOKEN' } : {}),
     };
   }
@@ -398,7 +531,83 @@ async function chooseModelCredentials(inspection: AgentInspection, root: RootCon
   if (Object.keys(existing).length) {
     p.log.warn('已有其他模型服务：Codex 需要用 launch.provider 指明用哪一个，见 docs/model-services.md。');
   }
-  return { service: { name, baseUrl, model, token } };
+  return { service: { name, baseUrl, model, token }, gatewayUrl: baseUrl };
+}
+
+async function chooseProxy(gatewayUrl: string | undefined): Promise<ProxyPlan> {
+  const detected = detectProxyEnv();
+  const found = [detected.http, detected.https, detected.all, detected.noProxy].filter((item): item is ProxyVariable => Boolean(item));
+  const hasProxy = Boolean(detected.http ?? detected.https ?? detected.all);
+  const mode = ask(await p.select<ProxyChoice['mode']>({
+    message: '第 5 步：网络代理（访问飞书和模型时使用；系统服务不带 shell 里的代理变量，所以选定后写进配置）',
+    options: [
+      ...(hasProxy ? [{
+        value: 'inherit' as const,
+        label: '沿用当前 shell 的代理',
+        hint: found.map(item => `${item.name}=${shorten(redactProxy(item.value))}`).join('  '),
+      }] : []),
+      { value: 'direct' as const, label: '不用代理，直连', hint: hasProxy ? '忽略当前 shell 的代理变量' : '当前 shell 没有设置代理变量' },
+      { value: 'manual' as const, label: '手动填写', hint: 'HTTP(S) 代理地址' },
+    ],
+    initialValue: hasProxy ? 'inherit' : 'direct',
+  }));
+
+  let manualProxy = '';
+  let noProxy = detected.noProxy?.value;
+  if (mode === 'manual') {
+    manualProxy = ask(await p.text({
+      message: '代理地址',
+      placeholder: 'http://proxy.example.com:3128',
+      validate: (value) => {
+        const trimmed = (value ?? '').trim();
+        try {
+          if (trimmed === 'env' || trimmed === 'direct') throw new Error();
+          validateLarkNetwork({ proxy: trimmed });
+          return undefined;
+        } catch {
+          return '需要 http(s)://主机:端口，不带路径和账号密码；带账号密码的代理请先在 shell 里 export，再选"沿用"';
+        }
+      },
+    })).trim();
+    noProxy = (ask(await p.text({
+      message: '不走代理的地址（NO_PROXY，逗号分隔，可清空）',
+      initialValue: detected.noProxy?.value ?? 'localhost,127.0.0.1',
+      defaultValue: '',
+    })) ?? '').trim();
+  }
+  if (mode !== 'direct' && gatewayUrl && goesThroughProxy(gatewayUrl, noProxy)) {
+    const host = new URL(gatewayUrl).hostname;
+    const route = ask(await p.select<'proxy' | 'bypass'>({
+      message: `模型网关 ${host} 怎么访问？`,
+      options: [
+        { value: 'proxy', label: '经代理', hint: '公网网关' },
+        { value: 'bypass', label: '直连（加入 NO_PROXY）', hint: '内网网关通常不能走代理' },
+      ],
+    }));
+    if (route === 'bypass') noProxy = [noProxy, host].filter(Boolean).join(',');
+  }
+
+  const plan = proxyPlan(mode === 'manual' ? { mode, proxy: manualProxy, noProxy: noProxy ?? '' }
+    : mode === 'inherit' ? { mode, detected, ...(noProxy !== detected.noProxy?.value ? { noProxy } : {}) }
+      : { mode, detected });
+  for (const warning of plan.warnings) p.log.warn(warning);
+
+  // The app is registered and checked from this process; give it the network the profile will use.
+  if (mode !== 'inherit') {
+    for (const name of ['http_proxy', 'https_proxy', 'all_proxy']) {
+      delete process.env[name];
+      delete process.env[name.toUpperCase()];
+    }
+  }
+  if (mode === 'manual') {
+    process.env.http_proxy = manualProxy;
+    process.env.https_proxy = manualProxy;
+  }
+  if (mode !== 'direct' && noProxy !== undefined) {
+    delete process.env.NO_PROXY;
+    process.env.no_proxy = noProxy;
+  }
+  return plan;
 }
 
 function serviceError(input: { baseUrl: string; model: string }): string | undefined {

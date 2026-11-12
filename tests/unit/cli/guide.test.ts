@@ -5,10 +5,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { locateBinaries } from '../../../src/agent/locate';
 import { expandLaunchEnvironment } from '../../../src/agent/launch-env';
 import {
-  accessChoices, claudeGatewayEnv, cliCommand, guideText, inspectAgents, larkPermissionGuide,
-  modelCredentialMode, saveModelService, scopeApplyUrl,
+  accessChoices, claudeGatewayEnv, cliCommand, detectProxyEnv, goesThroughProxy, guideText, inspectAgents,
+  larkPermissionGuide, modelCredentialMode, proxyPlan, saveModelService, scopeApplyUrl,
 } from '../../../src/cli/commands/guide';
-import { createRootConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
+import { createRootConfig, loadLarkNetworkConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
+import { patchConfig } from '../../../src/config/service';
 import { createBootstrapProfileConfig } from '../../../src/cli/profile-bootstrap';
 import { writeVersionExecutable } from '../../helpers/fake-executable';
 
@@ -179,6 +180,98 @@ describe('guide model credentials', () => {
     });
     expect(saved?.profiles.claude?.claude?.env?.ANTHROPIC_AUTH_TOKEN).toBe('sk-test');
     expect(await readFile(configFile, 'utf8')).not.toContain('sk-service');
+  });
+});
+
+describe('guide network proxy', () => {
+  it('reads proxy variables the way the Lark transport does: nonempty lowercase first', () => {
+    expect(detectProxyEnv({ HTTPS_PROXY: 'http://upper:1', https_proxy: 'http://lower:2', http_proxy: '', HTTP_PROXY: 'http://upper:3', NO_PROXY: '.corp' }))
+      .toEqual({
+        http: { name: 'HTTP_PROXY', value: 'http://upper:3' },
+        https: { name: 'https_proxy', value: 'http://lower:2' },
+        all: undefined,
+        noProxy: { name: 'NO_PROXY', value: '.corp' },
+      });
+  });
+
+  it('stores the shell proxy for both the agent and the Lark connection, so a service start keeps it', () => {
+    const detected = detectProxyEnv({ HTTPS_PROXY: 'http://proxy.corp:3128', HTTP_PROXY: 'http://proxy.corp:3128', NO_PROXY: 'localhost,.corp' });
+    const plan = proxyPlan({ mode: 'inherit', detected });
+
+    expect(plan.network).toEqual({ proxy: 'http://proxy.corp:3128', no_proxy: 'localhost,.corp' });
+    expect(expandLaunchEnvironment(plan.launchEnv, {})).toEqual({
+      HTTP_PROXY: 'http://proxy.corp:3128', HTTPS_PROXY: 'http://proxy.corp:3128', NO_PROXY: 'localhost,.corp',
+    });
+    expect(plan.envReferences).toEqual([]);
+    expect(plan.warnings).toEqual([]);
+  });
+
+  it('applies an edited NO_PROXY, and uses the HTTP proxy for Lark when no HTTPS one is set', () => {
+    const plan = proxyPlan({ mode: 'inherit', detected: detectProxyEnv({ http_proxy: 'http://proxy.corp:3128' }), noProxy: 'gw.corp' });
+
+    expect(plan.network).toEqual({ proxy: 'http://proxy.corp:3128', no_proxy: 'gw.corp' });
+    expect(plan.launchEnv).toEqual({ http_proxy: 'http://proxy.corp:3128', no_proxy: 'gw.corp' });
+  });
+
+  it('refers to the environment instead of storing a proxy URL that carries credentials', () => {
+    const shell = { https_proxy: 'http://user:pa$$@proxy.corp:3128', no_proxy: '.corp' };
+    const plan = proxyPlan({ mode: 'inherit', detected: detectProxyEnv(shell) });
+
+    expect(JSON.stringify(plan)).not.toContain('pa$$');
+    expect(plan.network).toEqual({ no_proxy: '.corp' });
+    expect(plan.envReferences).toEqual(['https_proxy']);
+    expect(plan.warnings).toHaveLength(1);
+    expect(expandLaunchEnvironment(plan.launchEnv, shell)).toEqual(shell);
+    expect(() => expandLaunchEnvironment(plan.launchEnv, {})).toThrow(/https_proxy/);
+  });
+
+  it('keeps a SOCKS proxy for the agent only and warns that Lark cannot use it', () => {
+    const plan = proxyPlan({ mode: 'inherit', detected: detectProxyEnv({ ALL_PROXY: 'socks5://127.0.0.1:1080' }) });
+
+    expect(plan.launchEnv).toEqual({ ALL_PROXY: 'socks5://127.0.0.1:1080' });
+    expect(plan.network).toBeUndefined();
+    expect(plan.warnings[0]).toContain('SOCKS');
+  });
+
+  it('writes nothing for a direct connection unless the shell has a proxy to override', () => {
+    expect(proxyPlan({ mode: 'direct', detected: detectProxyEnv({}) })).toEqual({ launchEnv: {}, envReferences: [], warnings: [] });
+
+    const plan = proxyPlan({ mode: 'direct', detected: detectProxyEnv({ HTTPS_PROXY: 'http://proxy.corp:3128', NO_PROXY: '.corp' }) });
+    expect(plan.network).toEqual({ proxy: 'direct' });
+    expect(plan.launchEnv).toEqual({ HTTPS_PROXY: '' });
+  });
+
+  it('uses a typed proxy for HTTP and HTTPS alike', () => {
+    const plan = proxyPlan({ mode: 'manual', proxy: 'http://proxy.corp:3128', noProxy: '' });
+
+    expect(plan.network).toEqual({ proxy: 'http://proxy.corp:3128' });
+    expect(plan.launchEnv).toEqual({ http_proxy: 'http://proxy.corp:3128', https_proxy: 'http://proxy.corp:3128' });
+  });
+
+  it('tells whether the model gateway is proxied under the NO_PROXY rules', () => {
+    expect(goesThroughProxy('https://gw.corp/v1', 'localhost,.internal')).toBe(true);
+    expect(goesThroughProxy('https://gw.corp/v1', 'localhost,gw.corp')).toBe(false);
+    expect(goesThroughProxy('https://gw.corp/v1', undefined)).toBe(true);
+  });
+
+  it.skipIf(process.platform === 'win32')('saves the Lark network under the new profile only', async () => {
+    const root = await makeRoot();
+    const claude = await writeVersionExecutable(root, 'claude', '2.1.0 (Claude Code)');
+    const plan = proxyPlan({ mode: 'manual', proxy: 'http://proxy.corp:3128', noProxy: 'localhost,.corp' });
+    const profile = await createBootstrapProfileConfig({
+      agentKind: 'claude',
+      accounts: { app: { id: 'cli_guide', secret: '${APP_SECRET}', tenant: 'feishu' } },
+      binaryPath: claude,
+      launchEnv: { ...claudeGatewayEnv({ baseUrl: 'https://gw.corp' }), ...plan.launchEnv },
+    });
+    const configFile = join(root, 'config.toml');
+    await saveRootConfig(createRootConfig('work', profile, undefined), configFile);
+    await patchConfig(configFile, ['channels', 'lark', 'profiles', 'work', 'network'], plan.network);
+
+    expect(await loadLarkNetworkConfig(configFile, 'work')).toEqual({ proxy: 'http://proxy.corp:3128', no_proxy: 'localhost,.corp' });
+    expect(await loadLarkNetworkConfig(configFile, 'other')).toBeUndefined();
+    const saved = await loadRootConfig(configFile);
+    expect(saved?.profiles.work?.claude?.env).toMatchObject({ ANTHROPIC_BASE_URL: 'https://gw.corp', https_proxy: 'http://proxy.corp:3128', no_proxy: 'localhost,.corp' });
   });
 });
 

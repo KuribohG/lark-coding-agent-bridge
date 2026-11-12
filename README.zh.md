@@ -80,7 +80,8 @@ node bin/lark-channel-bridge.mjs guide
 2. **选权限**：`full`（完整本机权限）、`workspace`（只写项目目录）或 `read-only`。
 3. **项目目录和 profile 名称**：一个机器人对应一个 profile。
 4. **模型凭据**：沿用 Agent 自己的登录，或填第三方 API 网关的地址和 token。
-5. **飞书应用**：用飞书 App 扫终端里的二维码创建应用；已有应用则填 App ID / Secret，向导会列出要开通的权限、事件订阅和发布步骤。
+5. **网络代理**：沿用当前 shell 的 `HTTPS_PROXY` / `NO_PROXY`、直连，或手动填写；选定后写进配置，注册为系统服务后同样生效。
+6. **飞书应用**：用飞书 App 扫终端里的二维码创建应用；已有应用则填 App ID / Secret，向导会列出要开通的权限、事件订阅和发布步骤。
 
 结束时向导会打印启动命令，照着执行即可：
 

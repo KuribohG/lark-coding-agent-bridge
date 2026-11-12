@@ -82,7 +82,7 @@ program
   });
 
 program.command('guide')
-  .description('Step-by-step terminal setup: locate the agent executable, choose its permissions, connect a Feishu/Lark app')
+  .description('Step-by-step terminal setup: locate the agent executable, choose its permissions, set model credentials and the network proxy, connect a Feishu/Lark app')
   .option('--print', 'print the checklist instead of asking questions (default when not a terminal)')
   .action(async (opts: { print?: boolean }) => {
     await runGuide(opts);

@@ -80,7 +80,8 @@ The guide asks one question at a time and writes `~/.lark-channel/config.toml` o
 2. **Pick permissions**: `full` (whole machine), `workspace` (write only inside the project) or `read-only`.
 3. **Project directory and profile name**: one bot per profile.
 4. **Model credentials**: keep the agent's own login, or enter a third-party API gateway address and token.
-5. **Lark app**: scan the QR code in the terminal with the Lark app to create one, or enter an existing App ID / Secret; for an existing app the guide lists the scopes, event subscriptions and publishing steps it needs.
+5. **Network proxy**: keep the current shell's `HTTPS_PROXY` / `NO_PROXY`, connect directly, or type a proxy; the choice is stored in the config so it also applies when the Bridge runs as an OS service.
+6. **Lark app**: scan the QR code in the terminal with the Lark app to create one, or enter an existing App ID / Secret; for an existing app the guide lists the scopes, event subscriptions and publishing steps it needs.
 
 It ends by printing the start commands:
 

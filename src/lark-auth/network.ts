@@ -5,7 +5,8 @@ import { Agent, Pool, ProxyAgent } from 'undici';
 import type { LarkChannelOptions } from '@larksuite/channel';
 import { validateLarkNetwork, type LarkNetworkConfig } from '../config/lark-network';
 
-function bypassMatcher(value: string): (url: URL) => boolean {
+/** Matches URLs that a NO_PROXY-style rule list excludes from proxying. */
+export function bypassMatcher(value: string): (url: URL) => boolean {
   const rules = value.toLowerCase().split(/[,\s]+/).filter(Boolean).map(rule => {
     if (rule === '*') return () => true;
     const cidr = rule.match(/^(.+)\/(\d+)$/);

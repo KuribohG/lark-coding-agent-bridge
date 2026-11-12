@@ -18,13 +18,14 @@
 node bin/lark-channel-bridge.mjs guide
 ```
 
-向导分五步，全部确认后才写入配置，中途 Ctrl+C 不留改动：
+向导分六步，全部确认后才写入配置，中途 Ctrl+C 不留改动：
 
 1. **Agent 位置**：在 PATH 以及 `~/.local/bin`、`~/.npm-global/bin`、nvm / fnm / volta / bun / pnpm 等常见目录里查找 Claude Code、Codex 等，逐个运行 `--version`；找不到时可手动填路径。选中的绝对路径写入 profile，之后用系统服务启动也不依赖 PATH。
 2. **权限**：`full` / `workspace` / `read-only`，即 Agent 能对本机做什么。
 3. **项目目录和 profile 名称**。
 4. **模型凭据**：沿用 Agent 自己的登录，或填第三方 API 网关。Claude Code 写入 `ANTHROPIC_BASE_URL` 和 `ANTHROPIC_AUTH_TOKEN`（token 可以明文存进权限 600 的 `config.toml`，也可以只引用启动 Bridge 时的环境变量）；Codex / Pi 登记为一个 Responses 模型服务，token 存进 `model-keys/<服务名>.key`（权限 600），配置里只有文件引用。
-5. **飞书应用与权限**：扫码创建，或填已有应用的 App ID / Secret。已有应用会列出要开通的应用身份权限、事件订阅和发布步骤，并给出一次申请必需权限的开放平台链接。
+5. **网络代理**：检测当前 shell 的 `HTTPS_PROXY`、`HTTP_PROXY`、`ALL_PROXY`、`NO_PROXY`，可选沿用、直连或手动填写。系统服务启动的 Bridge 不带 shell 里的代理变量，所以选定的地址会写进配置：飞书连接写到 `channels.lark.profiles.<名称>.network`，Agent 进程写到 profile 的 `launch.env`。地址带账号密码时不落盘，改为引用环境变量，启动 Bridge 的环境里必须有它；飞书连接只支持 HTTP(S) 代理。第 4 步填了第三方网关且它会经过代理时，向导会问网关走代理还是直连（加入 `NO_PROXY`）。
+6. **飞书应用与权限**：扫码创建，或填已有应用的 App ID / Secret。已有应用会列出要开通的应用身份权限、事件订阅和发布步骤，并给出一次申请必需权限的开放平台链接。
 
 `guide --print` 或在非终端环境运行时，只打印同样内容的清单，不提问、不改配置。
 
