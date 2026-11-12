@@ -1,5 +1,5 @@
 import type {
-  AgentCheckpoint, BoardPost, DurableAgent, MailboxMessage, MailboxReceipt, SessionBinding, StoredArtifact, StoredTask, SwarmMember, TurnAttempt, WorkClaim,
+  DirectMessage, AgentCheckpoint, BoardPost, DurableAgent, MailboxMessage, MailboxReceipt, SessionBinding, StoredArtifact, StoredTask, SwarmMember, TurnAttempt, WorkClaim,
   WorkerExecutionSelection, WorkflowData, WorkflowEvent, WorkflowScript, WorkflowStopReason, WorkflowSwarm, WorkflowWait, WorkflowWorkItem,
 } from './types';
 
@@ -71,6 +71,7 @@ export type DomainEvent =
   | { type: 'receipt_opened'; receipt: MailboxReceipt }
   /** A board post together with its deliveries: one mailbox message per recipient, which is what wakes them. */
   | { type: 'board_posted'; post: BoardPost; deliveries: MailboxMessage[] }
+  | { type: 'direct_message_recorded'; taskId: string; message: DirectMessage }
   // Swarms
   | { type: 'swarm_created'; swarm: WorkflowSwarm }
   | { type: 'swarm_rebound'; swarmId: string; runId: string; retryPending: string[] }

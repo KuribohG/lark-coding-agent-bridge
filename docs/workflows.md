@@ -34,6 +34,10 @@ The old `architecture-review` plugin and agent-led `start`, `delegate`, `send`, 
 
 While a topic has a workflow, every ordinary message in it runs with that workflow's credentials. The main agent can answer "how is it going" from `status`, and act on a request to cancel a stuck worker (`cancel_task`), pause, post to the board, enqueue work or replay an edited script, without a `/workflow` command. Such a turn gets a short description of the operations and a few lines of state; `workflow guide` prints the full script guide when a replay needs it. It cannot start a workflow, and completion events are still delivered by their own wake.
 
+### Talking to a running worker
+
+`tell_worker(target, text)` puts a message from the main agent into a worker's session while its turn runs, the way a user's follow-up reaches the main agent mid-turn. `target` is a task ID, a member name or the script key of a one-off worker. The result is `accepted` (the transport took it; the model reads it at its next step), `inactive` (no turn is running: name a persistent member on the board instead), `unsupported` (the worker's harness takes no input mid-turn) or `unknown`. The worker may answer each message once with `reply_main({text})`, which raises a `worker_reply` event and wakes the main agent; `worker_messages(target?)` lists the exchange. Use it to correct a worker that is going the wrong way or to ask what it is doing, instead of cancelling it.
+
 ## Harness and model selection
 
 | Selection | Configuration | Scope |

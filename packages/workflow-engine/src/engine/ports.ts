@@ -1,5 +1,5 @@
 import type { ChildProcess, SpawnOptions } from 'node:child_process';
-import type { NativeIdKind, WorkerExecution, WorkflowLogger, WorkflowRoot, WorkflowStopReason } from './types';
+import type { NativeIdKind, WorkerExecution, WorkerInputStatus, WorkflowLogger, WorkflowRoot, WorkflowStopReason } from './types';
 
 /** Contracts a host implements to embed the workflow engine. The engine imports nothing outside this directory. */
 
@@ -58,6 +58,8 @@ export interface WorkerRun {
   runId: string;
   events(): AsyncIterable<WorkerRunEvent>;
   result: Promise<'completed' | 'stopped' | 'failed'>;
+  /** Delivers a user message into the running turn; absent when the harness cannot take one. */
+  send?(text: string, messageId: string): Promise<WorkerInputStatus>;
   stop(reason: WorkflowStopReason): Promise<void>;
   /** Resolves false when native process exit cannot be confirmed in time. */
   waitForExit(timeoutMs: number): Promise<boolean>;

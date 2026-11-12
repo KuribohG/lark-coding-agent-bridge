@@ -1,4 +1,5 @@
 import type { ModelSettings } from '../../agent/model-settings';
+import { sendRunInput } from '../../agent/execution';
 import type { RunStopReason } from '../../agent/types';
 import { newRunHostKey, probeRunHost, runHostAgent, runHostsSupported, terminateRunHost } from '../../agent/run-host';
 import { log } from '../../core/logger';
@@ -88,6 +89,7 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
       return {
         runId: submitted.runId,
         result,
+        send: async (text, messageId) => (await sendRunInput(submitted.run, { text, messageId })).status,
         stop: reason => submitted.stop(reason),
         waitForExit: timeoutMs => submitted.run.waitForExit(timeoutMs),
         stopReason: () => submitted.handle.stopReason,

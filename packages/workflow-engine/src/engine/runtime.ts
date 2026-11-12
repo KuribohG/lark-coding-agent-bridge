@@ -60,6 +60,8 @@ export class WorkflowRuntime {
   private tickAgain = false;
   private readonly scripts = new Map<string, { controller: AbortController; done: Promise<void>; depth: number }>();
   private readonly releasing = new Set<string>();
+  /** The native run of each worker turn in progress, for messages from the main agent. */
+  private readonly runs = new Map<string, WorkerRun>();
   private readonly log: WorkflowLogger;
 
   constructor(private readonly deps: WorkflowRuntimeDeps) {
@@ -82,6 +84,10 @@ export class WorkflowRuntime {
         await this.workspacePolicy(state.root);
         signal.throwIfAborted();
         return this.workspaceManager().perform({ state, signal }, input);
+      },
+      tell: async (_workflowId, taskId, text, messageId) => {
+        const run = this.runs.get(taskId);
+        return !run ? 'inactive' : run.send ? run.send(text, messageId) : 'unsupported';
       },
       land: async (state, input, signal) => {
         await this.workspacePolicy(state.root);
@@ -320,7 +326,7 @@ export class WorkflowRuntime {
             agentKind: pinned.agentKind, tokenHash: binding.tokenHash, createdAt: Date.now() });
           if (attach) this.log.info('worker-reattach', { workflowId: workflow.workflowId, taskId: task.taskId, attemptId, hostKey });
         }
-        return this.deps.runner.start({
+        const started = await this.deps.runner.start({
           sessionKey: `workflow:${workflow.workflowId}:${session.sessionRef}`,
           root: workflow.root, execution: pinned, role: session.role, prompt, env: binding.env,
           validateBeforeRun: async () => {
@@ -339,6 +345,8 @@ export class WorkflowRuntime {
           ...(hostKey ? { host: { key: hostKey, attach } } : {}),
           deadlineAt: workflow.deadlineAt, signal,
         });
+        this.runs.set(task.taskId, started);
+        return started;
       };
       const turn = async (active: WorkerRun) => {
         let text: string | undefined;
@@ -400,6 +408,7 @@ export class WorkflowRuntime {
       }
       return { status: result === 'completed' && normal ? 'completed' : result === 'stopped' ? 'stopped' : 'failed', text, question, error, stopReason: active.stopReason() };
     } finally {
+      this.runs.delete(task.taskId);
       binding.release();
       // A shutdown leaves the process running for the next controller's replay to reattach.
       const shutdown = signal.aborted && stopReasonOf(signal) === 'shutdown' || run?.stopReason() === 'shutdown';

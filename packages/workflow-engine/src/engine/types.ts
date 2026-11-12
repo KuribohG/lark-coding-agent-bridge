@@ -372,7 +372,7 @@ export interface WorkflowArtifact {
 
 export interface WorkflowEvent {
   id: string;
-  kind: 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed';
+  kind: 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed' | 'worker_reply';
   taskId?: string;
   artifactRef?: string;
   summary: string;
@@ -382,6 +382,20 @@ export interface WorkflowEvent {
   createdAt?: number;
   notifiedAt?: number;
   acknowledgedAt?: number;
+}
+
+/** `inactive`: no turn is running; `unsupported`: the worker's harness cannot take input mid-turn; `unknown`: sent, acknowledgement lost. */
+export type WorkerInputStatus = 'accepted' | 'inactive' | 'unsupported' | 'unknown';
+
+/** One message of the conversation between the main agent and a running worker turn. */
+export interface DirectMessage {
+  id: string;
+  taskId: string;
+  from: 'main' | 'worker';
+  text: string;
+  createdAt: number;
+  /** For a message from the main agent: whether the worker's transport acknowledged it. */
+  delivery?: 'accepted' | 'unknown';
 }
 
 export interface WorkflowState {
@@ -403,6 +417,7 @@ export interface WorkflowState {
   checkpoints?: AgentCheckpoint[];
   mailbox?: AgentMailbox;
   board?: WorkflowBoard;
+  direct?: DirectMessage[];
   swarms?: WorkflowSwarm[];
   workQueue?: WorkflowWorkQueue;
   waits?: WorkflowWait[];
@@ -475,6 +490,8 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
   resolveWorkspace?(root: WorkflowRoot, workflowId: string, workspaceId: string): Promise<void>;
   workspace?(state: WorkflowState, input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
   /** Lands the commits of the worktree `taskId` runs in; resolves to a LandReport (workspace-types.ts). */
+  /** Delivers text to the worker turn of `taskId` while it runs, as a user message in its session. */
+  tell?(workflowId: string, taskId: string, text: string, messageId: string): Promise<WorkerInputStatus>;
   land?(state: WorkflowState, input: { workspace: string; taskId: string }, signal: AbortSignal): Promise<unknown>;
   execute(request: WorkflowWorkerRequest): Promise<WorkflowWorkerResult>;
   wakeMain(scopeId: string): Promise<void>;

@@ -16,6 +16,8 @@ export type CommitOperation = (response: () => unknown) => unknown;
 export type MainTool =
   | { kind: 'read'; read(ctx: KernelContext, state: WorkflowView | undefined, args: ToolArgs): unknown }
   | { kind: 'start'; start(ctx: KernelContext, root: WorkflowRoot, args: ToolArgs): WorkflowView }
+  /** Acts on something outside the store, such as a running worker; `change` opens a transaction on the current state. */
+  | { kind: 'direct'; run(ctx: KernelContext, state: WorkflowView, args: ToolArgs, change: <T>(apply: (state: WorkflowView) => T) => T): Promise<unknown> }
   | {
     kind: 'mutate';
     /** Skip the root, status and deadline checks; only terminal workflows are refused. */

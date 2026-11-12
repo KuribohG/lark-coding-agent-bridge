@@ -45,6 +45,12 @@ export class KernelOperations {
     const workflowId = caller.workflowId ?? optionalText(args.workflowId);
     let state = store.state(scope, workflowId);
     if (tool.kind === 'read') return tool.read(ctx, state, args);
+    if (tool.kind === 'direct') {
+      const bound = requireState(state);
+      const root = await ctx.host.resolveRoot(scope);
+      if (!root || !sameRoot(root, bound.root)) throw new Error('Root binding changed; workflow needs attention');
+      return tool.run(ctx, bound, args, change => store.transact(() => change(requireState(store.state(scope, bound.workflowId))), 'main:' + method));
+    }
 
     const operationId = requiredText(args.operationId, 200);
     const digest = workflowDigest({ method, args });

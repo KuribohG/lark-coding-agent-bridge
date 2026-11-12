@@ -164,6 +164,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       for (const receipt of box.receipts) if (receipt.agentId === event.message.to) settleReceipt(state, receipt);
       return;
     }
+    case 'direct_message_recorded': (state.direct ??= []).push(event.message); return;
     case 'board_posted': {
       (state.board ??= { posts: [] }).posts.push(event.post);
       if (!event.deliveries.length) return;
