@@ -11,7 +11,8 @@ Talk to local **Codex CLI, Claude Code, Pi Coding Agent, or Antigravity CLI** fr
 | Goal | Entry point | What opens | Lark account? |
 | --- | --- | --- | --- |
 | Chat with an agent in a browser | `web --agent codex` | **Bridge Chat**, normally on port 8787 | No |
-| Set up a Lark bot, profiles or the inbox | `node bin/lark-channel-bridge.mjs run --web-ui --detach` | **Management console**, at the printed address | Yes, to connect a bot |
+| Set up a Lark bot step by step in a terminal (recommended on Linux servers) | `node bin/lark-channel-bridge.mjs guide` | **Terminal guide**: locate the agent, pick permissions, set a model token, connect a Lark app | Yes |
+| Set up a Lark bot, profiles or the inbox in a browser | `node bin/lark-channel-bridge.mjs run --web-ui --detach` | **Management console**, at the printed address | Yes, to connect a bot |
 | Run an already configured Lark bot without a console | `run --profile <name>` | Terminal logs | Yes |
 | Connect a Slack bot | `slack --workspace /absolute/project/path --allowed-users U... --allowed-channels C...` | Slack threads via Socket Mode; see [setup](docs/channels.md#run-the-bundled-slack-channel) | No |
 
@@ -28,7 +29,7 @@ node --version
 codex --version
 ```
 
-Use `claude --version`, `pi --version`, or `agy --version` if that is your chosen engine. A version check proves the binary exists, not that model authentication works; complete one direct agent conversation first.
+Use `claude --version`, `pi --version`, or `agy --version` if that is your chosen engine. A version check proves the binary exists, not that model authentication works; complete one direct agent conversation first. If the command is not on PATH, or you use a third-party API gateway token instead of a native login, install the repository anyway: the `guide` command in 3B locates the executable and asks for the token.
 
 ```sh
 git clone --branch dev https://github.com/KuribohG/lark-coding-agent-bridge.git
@@ -66,6 +67,31 @@ This starts a hidden process with an isolated Codex home under `.web-local`, reu
 Full instructions: [Web chat](docs/user-guide/web-chat.md) · [Windows](docs/user-guide/windows.md) · [Channel reference](docs/channels.md).
 
 ## 3B. Connect Feishu / Lark instead
+
+After installing the repository (section 2), run the terminal guide from the repository directory. This is the recommended path on a Linux server or any machine without a browser:
+
+```sh
+node bin/lark-channel-bridge.mjs guide
+```
+
+The guide asks one question at a time and writes `~/.lark-channel/config.toml` only after the last answer; Ctrl+C leaves nothing behind:
+
+1. **Locate the agent**: lists Claude Code / Codex and other agent executables with their versions, including installs in `~/.local/bin`, `~/.npm-global/bin`, nvm and similar directories that are not on PATH. Enter a path by hand if none is found.
+2. **Pick permissions**: `full` (whole machine), `workspace` (write only inside the project) or `read-only`.
+3. **Project directory and profile name**: one bot per profile.
+4. **Model credentials**: keep the agent's own login, or enter a third-party API gateway address and token.
+5. **Lark app**: scan the QR code in the terminal with the Lark app to create one, or enter an existing App ID / Secret; for an existing app the guide lists the scopes, event subscriptions and publishing steps it needs.
+
+It ends by printing the start commands:
+
+```sh
+node bin/lark-channel-bridge.mjs run --profile <name>     # foreground, Ctrl+C to stop
+node bin/lark-channel-bridge.mjs start --profile <name>   # register as an OS service
+```
+
+Then DM the bot `/status` and send a small task. In a group, add the bot and use a real @mention. `guide --print` prints the same content as a checklist without asking anything. The guide's prompts are in Chinese.
+
+**Or use the web console** for the same setup:
 
 ```sh
 node bin/lark-channel-bridge.mjs run --web-ui --detach
@@ -124,7 +150,7 @@ Edit a **private copy**, not the shipped example, for real settings. A successfu
 | Page opens, but messages fail with `unauthorized` | Reopen the latest full token URL, then reload |
 | Connection refused | Server is still running, correct port, same machine; remote hosts need SSH forwarding |
 | Command / `dist/cli.js` not found | Run the pinned install from the repository; do not start only the frontend |
-| Codex missing or provider authentication fails | Check the CLI in the same user account; use `--binary` for an explicit path |
+| Codex missing or provider authentication fails | Check the CLI in the same user account; use `--binary` for an explicit path, or rerun `guide` for a Lark profile |
 | `already has an active writer` | Avoid sharing a native Codex home with another app; use the optional isolated launcher when applicable |
 | Editing config appears ineffective | Correct process, explicit Web `--config`, and a restart after saving |
 

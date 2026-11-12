@@ -11,7 +11,8 @@
 | 你想做什么 | 启动入口 | 打开的是什么 | 需要飞书吗 |
 | --- | --- | --- | --- |
 | 在浏览器里和 Agent 聊天 | `web --agent codex` | **Bridge Chat 聊天页**，默认 8787 端口 | 不需要 |
-| 配飞书机器人、profile、会话助理 | `node bin/lark-channel-bridge.mjs run --web-ui --detach` | **管理控制台**，地址以终端输出为准 | 接机器人时需要 |
+| 在终端里一步步配好飞书机器人（Linux 服务器推荐） | `node bin/lark-channel-bridge.mjs guide` | **终端向导**：找 Agent、选权限、配模型 token、接飞书应用 | 需要 |
+| 用网页配飞书机器人、profile、会话助理 | `node bin/lark-channel-bridge.mjs run --web-ui --detach` | **管理控制台**，地址以终端输出为准 | 接机器人时需要 |
 | 已有飞书配置，只想无界面运行 | `run --profile <名称>` | 终端日志 | 需要 |
 | 接入 Slack Bot | `slack --workspace /absolute/project/path --allowed-users U... --allowed-channels C...` | Socket Mode，每个 thread 独立会话；见[接入说明](docs/channels.md#run-the-bundled-slack-channel) | 否 |
 
@@ -28,7 +29,7 @@ node --version
 codex --version
 ```
 
-如果使用 Claude 或 Pi，改为检查 `claude --version` 或 `pi --version`。版本命令只证明程序存在；先直接用 Agent 完成一次简单对话，确认模型账号可用。
+如果使用 Claude 或 Pi，改为检查 `claude --version` 或 `pi --version`。版本命令只证明程序存在；先直接用 Agent 完成一次简单对话，确认模型账号可用。命令不在 PATH 里，或打算用第三方 API 网关的 token 而不是官方登录，也可以先装好仓库，在 3B 的 `guide` 向导里定位可执行文件并填写 token。
 
 ```sh
 git clone --branch dev https://github.com/KuribohG/lark-coding-agent-bridge.git
@@ -67,15 +68,30 @@ node bin/lark-channel-bridge.mjs web --agent codex --workspace . --state-dir .we
 
 ## 3B. 如果你想接飞书 / Lark
 
-Linux 服务器或没有浏览器时，直接在终端里跟着向导走：
+装好仓库后（见第 2 节），在仓库目录运行终端向导，Linux 服务器或没有浏览器时推荐这条路：
 
 ```sh
 node bin/lark-channel-bridge.mjs guide
 ```
 
-它依次找出本机的 Claude Code / Codex 可执行文件（含不在 PATH 里的安装）、让你选 Agent 权限、配置模型凭据（官方登录或第三方 API 网关的地址和 token）、扫码或接入飞书应用并列出需要开通的飞书权限，最后写好配置并给出启动命令。非终端环境或加 `--print` 时只打印同样内容的清单。
+向导一步步提问，全部答完才写入 `~/.lark-channel/config.toml`，中途 Ctrl+C 不留改动：
 
-也可以用网页控制台完成同样的配置：
+1. **找 Agent**：列出本机的 Claude Code / Codex 等可执行文件及版本，包括装在 `~/.local/bin`、`~/.npm-global/bin`、nvm 等目录而不在 PATH 里的；找不到时手动填路径。
+2. **选权限**：`full`（完整本机权限）、`workspace`（只写项目目录）或 `read-only`。
+3. **项目目录和 profile 名称**：一个机器人对应一个 profile。
+4. **模型凭据**：沿用 Agent 自己的登录，或填第三方 API 网关的地址和 token。
+5. **飞书应用**：用飞书 App 扫终端里的二维码创建应用；已有应用则填 App ID / Secret，向导会列出要开通的权限、事件订阅和发布步骤。
+
+结束时向导会打印启动命令，照着执行即可：
+
+```sh
+node bin/lark-channel-bridge.mjs run --profile <名称>     # 前台运行，Ctrl+C 停止
+node bin/lark-channel-bridge.mjs start --profile <名称>   # 注册为系统服务常驻
+```
+
+然后私聊机器人发送 `/status`，再发一个简单任务；群聊需先拉机器人入群并真正 @机器人。只想看清单不想被提问时用 `guide --print`。
+
+**也可以用网页控制台**完成同样的配置：
 
 ```sh
 node bin/lark-channel-bridge.mjs run --web-ui --detach
@@ -134,7 +150,7 @@ node bin/lark-channel-bridge.mjs web --agent codex --workspace . --state-dir .we
 | 页面能开，发消息报 `unauthorized` | 使用最近一次启动的完整 token 地址，然后刷新 |
 | 浏览器提示连接被拒绝 | 服务是否仍在运行、端口是否正确、是否同一台机器；远程服务器需端口转发 |
 | 找不到命令或 `dist/cli.js` | 在仓库根目录执行固定版本的安装命令，不要只启动前端 |
-| 找不到 Codex / 模型鉴权失败 | 同一用户下 CLI 能否正常对话；程序不在 PATH 时用 `--binary` |
+| 找不到 Codex / 模型鉴权失败 | 同一用户下 CLI 能否正常对话；程序不在 PATH 时用 `--binary`，飞书 profile 用 `guide` 重新定位 |
 | `already has an active writer` | 避免与桌面端共享 Codex 会话目录；满足条件时用隔离启动脚本 |
 | 改了配置没生效 | 是否改对文件、Web 是否传入 `--config`、保存后是否重启正确的服务 |
 
