@@ -286,9 +286,11 @@ describe('ClaudeAdapter process contract', () => {
   });
 
   // rewaved: the notification turn launches another task and a supplement arrives during it.
+  // absorbed: a supplement arrives while waiting and Claude answers it inside the notification
+  //   turn, which also launches another task; that task's notification turn then ends the run.
   // raced: the task finishes before the turn's result and its notification turn follows the result.
   // folded: the task finishes mid-turn and Claude delivers the notification inside that turn.
-  it.each(['notified', 'steered', 'rewaved', 'drained', 'expired', 'stopped', 'raced', 'folded'] as const)('keeps the run open for background tasks (%s)', async mode => {
+  it.each(['notified', 'steered', 'rewaved', 'absorbed', 'drained', 'expired', 'stopped', 'raced', 'folded'] as const)('keeps the run open for background tasks (%s)', async mode => {
     const dir = await mkdtemp(join(tmpdir(), 'claude-background-test-'));
     cleanup.push(dir);
     const binary = join(dir, 'fake-claude.mjs');
@@ -328,6 +330,17 @@ describe('ClaudeAdapter process contract', () => {
           if (mode === 'notified' || mode === 'raced') setTimeout(notify, 50);
           if (mode === 'rewaved') setTimeout(() => notify(true), 50);
           if (mode === 'drained') setTimeout(() => tasks([]), 50);
+        } else if (mode === 'absorbed') {
+          emit({ type: 'command_lifecycle', state: 'queued', command_uuid: input.uuid });
+          tasks([]);
+          emit({ type: 'system', subtype: 'init', session_id: 'bg-session' });
+          emit({ type: 'system', subtype: 'task_started', task_id: 'bg2', run_id: 'task-run-2', is_backgrounded: true });
+          tasks([{ task_id: 'bg2', run_id: 'task-run-2', description: 'make test' }]);
+          emit({ type: 'user', uuid: input.uuid, isReplay: true, message: { role: 'user', content: 'how is it going?' } });
+          emit({ type: 'assistant', message: { id: 'reply', content: [{ type: 'text', text: 'still building' }] } });
+          emit({ type: 'result', session_id: 'bg-session', result: 'still building', user_message_uuids: [input.uuid],
+            origin: { kind: 'task-notification', runId: 'task-run' } });
+          setTimeout(() => notify(), 50);
         } else {
           emit({ type: 'command_lifecycle', state: 'queued', command_uuid: input.uuid });
           emit({ type: 'assistant', message: { id: 'reply', content: [{ type: 'text', text: 'still building' }] } });
@@ -348,12 +361,12 @@ describe('ClaudeAdapter process contract', () => {
         if (event.type !== 'status' || event.code !== 'background_tasks') continue;
         waits++;
         // Read stdout concurrently with the pending input acknowledgement.
-        if (mode === 'steered' || (mode === 'rewaved' && waits === 2)) {
+        if (mode === 'steered' || mode === 'absorbed' || (mode === 'rewaved' && waits === 2)) {
           delivery ??= run.sendInput!({ text: 'how is it going?', messageId: 'im-2' });
         }
         if (mode === 'stopped') await run.stop();
       }
-      if (mode === 'steered' || mode === 'rewaved') expect(await delivery).toMatchObject({ status: 'accepted' });
+      if (['steered', 'rewaved', 'absorbed'].includes(mode)) expect(await delivery).toMatchObject({ status: 'accepted' });
       // A held result is shown as progress; an unheld one is the answer itself.
       if (mode !== 'folded') expect(events).toContainEqual({ type: 'text', delta: 'build started' });
       if (mode === 'raced') {
@@ -369,10 +382,10 @@ describe('ClaudeAdapter process contract', () => {
         expect(finals).toEqual([]);
         expect(done).toEqual([{ type: 'done', terminationReason: 'interrupted' }]);
       } else {
-        expect(finals).toEqual([{ type: 'final_text', content: ['notified', 'steered', 'rewaved', 'raced'].includes(mode) ? 'build passed' : 'build started' }]);
+        expect(finals).toEqual([{ type: 'final_text', content: ['notified', 'steered', 'rewaved', 'absorbed', 'raced'].includes(mode) ? 'build passed' : 'build started' }]);
         expect(done).toEqual([{ type: 'done', sessionId: 'bg-session', terminationReason: 'normal' }]);
       }
-      if (mode === 'steered' || mode === 'rewaved') expect(events).toContainEqual({ type: 'text', delta: 'still building' });
+      if (['steered', 'rewaved', 'absorbed'].includes(mode)) expect(events).toContainEqual({ type: 'text', delta: 'still building' });
       if (mode === 'rewaved') {
         expect(events).toContainEqual({ type: 'text', delta: 'tests started' });
         expect(events).toContainEqual({ type: 'status', code: 'background_tasks', content: '⏳ 等待 1 个后台任务完成后继续：make test' });

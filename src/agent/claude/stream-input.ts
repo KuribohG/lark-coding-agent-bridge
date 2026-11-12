@@ -114,8 +114,6 @@ export class ClaudeStreamInput {
       return undefined;
     }
     if (event.type !== 'result') return raw;
-    // A notification turn covers no input, so it cannot finish ahead of one still pending.
-    if (isTaskNotificationResult(event)) return this.outstanding.size > 0 ? undefined : raw;
 
     // Replay/queued receipts confirm intake, not which generation consumed it.
     const covered = Array.isArray(event.user_message_uuids) ? event.user_message_uuids
@@ -124,6 +122,9 @@ export class ClaudeStreamInput {
       this.acknowledge(uuid);
       if (typeof uuid === 'string') this.outstanding.delete(uuid);
     }
+    // A notification turn covers only the input Claude folded into it, so it cannot finish
+    // ahead of one still pending. Its own outcome is the adapter's to judge.
+    if (isTaskNotificationResult(event)) return this.outstanding.size > 0 ? undefined : raw;
     const failed = event.is_error || (typeof event.subtype === 'string' && event.subtype.startsWith('error'));
     const hasSupplements = [...this.outstanding].some(uuid => uuid !== this.initialId);
     if (failed || (!covered && hasSupplements)) {

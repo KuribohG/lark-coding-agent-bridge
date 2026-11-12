@@ -76,6 +76,20 @@ describe('Claude streaming input', () => {
     expect(h.input.receive(notification)).toEqual(notification);
   });
 
+  it('counts a supplement answered inside a task notification turn as covered', async () => {
+    const h = harness(() => true);
+    h.input.receive(h.result(0));
+    const receipt = h.input.steer('meanwhile', 'im-1');
+    h.ack(1);
+    expect(await receipt).toBe('accepted');
+    const folded = { ...h.result(1), origin: { kind: 'task-notification', runId: 'task-run' } };
+    expect(h.input.receive(folded)).toEqual(folded);
+    expect(h.input.awaitingResult).toBe(false);
+    // Later notification turns are no longer hidden behind that supplement.
+    const notification = { type: 'result', origin: { kind: 'task-notification', runId: 'task-run-2' } };
+    expect(h.input.receive(notification)).toEqual(notification);
+  });
+
   it('keeps stdin open past a covering result while background work continues', async () => {
     let working = true;
     const h = harness(() => working);
