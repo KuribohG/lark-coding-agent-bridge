@@ -3,7 +3,7 @@ import { AgentPreflightError } from '../agent/preflight';
 import { agentBackendSpec } from '../agent/backend-spec';
 import { agentLaunchPatch } from '../agent/capability';
 import type { AgentLaunchProfiles } from '../agent/launch-config';
-import { createDefaultProfileConfig, type AgentKind, type ProfileConfig } from '../config/profile-schema';
+import { createDefaultProfileConfig, type AgentKind, type ProfileConfig, type ProfileMode } from '../config/profile-schema';
 import type { PermissionConfig } from '../config/permissions';
 import type { AppConfig } from '../config/schema';
 import { resolveWorkingDirectory } from '../policy/workspace';
@@ -20,6 +20,7 @@ export interface BootstrapProfileInput {
   /** Extra environment for the agent process, e.g. a third-party gateway endpoint and token. */
   launchEnv?: Record<string, string>;
   permissions?: Partial<PermissionConfig>;
+  mode?: ProfileMode;
 }
 
 export async function createBootstrapProfileConfig(
@@ -45,6 +46,7 @@ export async function createBootstrapProfileConfig(
     preferences: input.preferences,
     secrets: input.secrets,
     ...(input.permissions ? { permissions: input.permissions } : {}),
+    ...(input.mode ? { mode: input.mode } : {}),
     ...(launch ? withLaunchEnv(agentLaunchPatch(input.agentKind, launch.binaryPath), input.agentKind, input.launchEnv) : {}),
   });
   if (workspace) {

@@ -74,7 +74,7 @@
 | `lark-channel-bridge ui`、`lark-channel-bridge ui --print` | 打开本地网页 / 只打印地址 |
 | `lark-channel-bridge ps`、`lark-channel-bridge logs --web-ui` | 查看运行中的 bot 和启动日志 |
 | `lark-channel-bridge ui --stop` | 停止整个便携控制台 |
-| `lark-channel-bridge guide` | 终端向导：找 Agent 可执行文件、选权限、配模型凭据（含第三方网关 token）、设网络代理、接飞书应用并列出所需权限；`--print` 只打印清单 |
+| `lark-channel-bridge guide` | 终端向导：找 Agent 可执行文件、选权限和使用范围、配模型凭据（含第三方网关 token）、设网络代理、接飞书应用并列出所需权限；`--print` 只打印清单 |
 | `lark-channel-bridge profile list` | 列出 profile |
 | `lark-channel-bridge profile create <名称> --agent claude` | 创建 Claude profile；Codex/Pi 分别使用 `--agent codex` / `--agent pi` |
 | `lark-channel-bridge profile use <名称>` | 切换默认选择 |

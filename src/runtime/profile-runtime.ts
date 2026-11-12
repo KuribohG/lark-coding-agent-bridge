@@ -25,6 +25,7 @@ import {
   type AgentKind,
   type ProfileConfig,
   type RootConfig,
+  type ProfileMode,
 } from '../config/profile-schema';
 import type { AppConfig, SecretInput, TenantBrand } from '../config/schema';
 import { isSecretRef, secretKeyForApp } from '../config/schema';
@@ -43,6 +44,8 @@ export interface ResolveProfileRuntimeOptions {
   launchEnv?: Record<string, string>;
   /** Permissions for a bootstrapped profile; defaults to the schema default. */
   permissions?: Partial<PermissionConfig>;
+  /** Deployment mode for a bootstrapped profile; defaults to personal. */
+  mode?: ProfileMode;
   appId?: string;
   appSecret?: string;
   tenant?: string;
@@ -146,6 +149,7 @@ export async function resolveProfileRuntime(
     binaryPath: opts.binaryPath,
     launchEnv: opts.launchEnv,
     permissions: opts.permissions,
+    mode: opts.mode,
     defaultWorkspace: defaultWorkspaceFor({ agentKind: bootstrapAgent, state: { bridgeRoot: appPaths.rootDir } }),
   });
   const root = createRootConfig(profile, profileConfig, encrypted.secrets);
@@ -184,6 +188,7 @@ async function bootstrapProfileIntoExistingRoot(args: {
     binaryPath: opts.binaryPath,
     launchEnv: opts.launchEnv,
     permissions: opts.permissions,
+    mode: opts.mode,
     defaultWorkspace: defaultWorkspaceFor({ agentKind: bootstrapAgent, state: { bridgeRoot: appPaths.rootDir } }),
   });
   const nextRoot: RootConfig = {

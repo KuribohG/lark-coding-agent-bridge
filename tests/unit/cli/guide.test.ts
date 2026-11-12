@@ -5,10 +5,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { locateBinaries } from '../../../src/agent/locate';
 import { expandLaunchEnvironment } from '../../../src/agent/launch-env';
 import {
-  accessChoices, claudeGatewayEnv, cliCommand, detectProxyEnv, goesThroughProxy, guideText, inspectAgents,
+  accessChoices, audienceRisk, claudeGatewayEnv, cliCommand, detectProxyEnv, goesThroughProxy, guideText, inspectAgents,
   larkPermissionGuide, modelCredentialMode, proxyPlan, saveModelService, scopeApplyUrl,
 } from '../../../src/cli/commands/guide';
 import { createRootConfig, loadLarkNetworkConfig, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
+import { effectiveLarkCliIdentity } from '../../../src/config/profile-schema';
 import { patchConfig } from '../../../src/config/service';
 import { createBootstrapProfileConfig } from '../../../src/cli/profile-bootstrap';
 import { writeVersionExecutable } from '../../helpers/fake-executable';
@@ -180,6 +181,36 @@ describe('guide model credentials', () => {
     });
     expect(saved?.profiles.claude?.claude?.env?.ANTHROPIC_AUTH_TOKEN).toBe('sk-test');
     expect(await readFile(configFile, 'utf8')).not.toContain('sk-service');
+  });
+});
+
+describe('guide audience', () => {
+  it('asks for confirmation before opening full machine access to everyone, and warns for invited people', () => {
+    expect(audienceRisk('team', 'full')).toBe('confirm');
+    expect(audienceRisk('invited', 'full')).toBe('warn');
+    expect(audienceRisk('owner', 'full')).toBeUndefined();
+    expect(audienceRisk('team', 'workspace')).toBeUndefined();
+    expect(audienceRisk('invited', 'read-only')).toBeUndefined();
+  });
+
+  it.skipIf(process.platform === 'win32')('creates a team profile that never carries the owner\'s Lark authorization', async () => {
+    const root = await makeRoot();
+    const claude = await writeVersionExecutable(root, 'claude', '2.1.0 (Claude Code)');
+    const base = {
+      agentKind: 'claude' as const,
+      accounts: { app: { id: 'cli_guide', secret: '${APP_SECRET}', tenant: 'feishu' as const } },
+      binaryPath: claude,
+    };
+    const team = await createBootstrapProfileConfig({ ...base, mode: 'team', permissions: { defaultAccess: 'workspace', maxAccess: 'workspace' } });
+    const personal = await createBootstrapProfileConfig(base);
+
+    expect(team.mode).toBe('team');
+    expect(effectiveLarkCliIdentity(team)).toBe('bot-only');
+    expect(personal.mode).toBe('personal');
+
+    const configFile = join(root, 'config.toml');
+    await saveRootConfig(createRootConfig('team', team, undefined), configFile);
+    expect((await loadRootConfig(configFile))?.profiles.team?.mode).toBe('team');
   });
 });
 

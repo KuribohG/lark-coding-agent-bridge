@@ -78,10 +78,11 @@ The guide asks one question at a time and writes `~/.lark-channel/config.toml` o
 
 1. **Locate the agent**: lists Claude Code / Codex and other agent executables with their versions, including installs in `~/.local/bin`, `~/.npm-global/bin`, nvm and similar directories that are not on PATH. Enter a path by hand if none is found.
 2. **Pick permissions**: `full` (whole machine), `workspace` (write only inside the project) or `read-only`.
-3. **Project directory and profile name**: one bot per profile.
-4. **Model credentials**: keep the agent's own login, or enter a third-party API gateway address and token.
-5. **Network proxy**: keep the current shell's `HTTPS_PROXY` / `NO_PROXY`, connect directly, or type a proxy; the choice is stored in the config so it also applies when the Bridge runs as an OS service.
-6. **Lark app**: scan the QR code in the terminal with the Lark app to create one, or enter an existing App ID / Secret; for an existing app the guide lists the scopes, event subscriptions and publishing steps it needs.
+3. **Who may use it**: only you (default), you plus colleagues and chats you later `/invite`, or anyone in the tenant; opening it to everyone with `full` access needs an extra confirmation.
+4. **Project directory and profile name**: one bot per profile.
+5. **Model credentials**: keep the agent's own login, or enter a third-party API gateway address and token.
+6. **Network proxy**: keep the current shell's `HTTPS_PROXY` / `NO_PROXY`, connect directly, or type a proxy; the choice is stored in the config so it also applies when the Bridge runs as an OS service.
+7. **Lark app**: scan the QR code in the terminal with the Lark app to create one, or enter an existing App ID / Secret; for an existing app the guide lists the scopes, event subscriptions and publishing steps it needs.
 
 It ends by printing the start commands:
 

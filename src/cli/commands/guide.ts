@@ -92,6 +92,24 @@ export function larkPermissionGuide(appId?: string, tenant?: string): string {
   ].join('\n');
 }
 
+/** Who may talk to the bot: the app owner alone, people and chats the owner invites, or anyone. */
+export type Audience = 'owner' | 'invited' | 'team';
+
+const AUDIENCE_LABELS: Record<Audience, string> = {
+  owner: '只有我自己',
+  invited: '我和我指定的同事、群',
+  team: '团队里任何人',
+};
+
+/**
+ * How dangerous an audience is with full machine access: `confirm` when anyone in the tenant
+ * could run commands as this account, `warn` when invited people could.
+ */
+export function audienceRisk(audience: Audience, access: AccessMode): 'confirm' | 'warn' | undefined {
+  if (access !== 'full' || audience === 'owner') return undefined;
+  return audience === 'team' ? 'confirm' : 'warn';
+}
+
 type ModelCredentialMode = 'env' | 'service' | 'none';
 
 /** How a third-party API endpoint and token reach this agent. */
@@ -284,28 +302,32 @@ export function guideText(cli = cliCommand()): string {
     '   full       完整本机权限，个人自用的默认值',
     '   workspace  只在工作目录内写文件，适合开放给同事或群',
     '   read-only  只读',
-    '   这与"谁能和机器人聊天"无关，后者默认只有应用 owner，在飞书里发 /invite user @同事 或 /invite group 开放。',
     '',
-    '3. 模型凭据（用官方登录可跳过）',
+    '3. 谁能用机器人',
+    '   默认只有应用 owner（创建应用的人）；机器人启动后在飞书里发 /invite user @同事 或 /invite group 逐个开放。',
+    `   团队里任何人 @ 即可用：${cli} config set profiles.<名称>.mode team   # 不设白名单，机器人只用应用身份访问飞书`,
+    '   对所有人开放时权限建议用 workspace：full 意味着任何能找到机器人的人都能在本机以你的账号执行任意命令。',
+    '',
+    '4. 模型凭据（用官方登录可跳过）',
     '   Claude Code 接第三方网关：给 profile 的 launch.env 设 ANTHROPIC_BASE_URL 和 ANTHROPIC_AUTH_TOKEN；',
     '   值写 "${ANTHROPIC_AUTH_TOKEN}" 表示引用启动 Bridge 时的环境变量，token 不进配置文件。',
     '   Codex / Pi 接第三方 Responses 网关：把 token 存成只有自己可读的文件，再登记为模型服务：',
     `   ${cli} model-service configure <服务名> service.json   # {"protocol":"responses","baseUrl":"https://…/v1","model":"…","apiKey":{"source":"file","id":"/绝对路径"}}`,
     '',
-    '4. 网络代理（机器访问飞书或模型要走代理时；创建 profile 后执行）',
+    '5. 网络代理（机器访问飞书或模型要走代理时；创建 profile 后执行）',
     '   前台运行时飞书连接读取 shell 里的 HTTPS_PROXY / HTTP_PROXY / NO_PROXY；注册为系统服务后进程不带这些变量，要写进配置：',
     `   ${cli} config set channels.lark.profiles.<名称>.network.proxy http://proxy:3128    # 只支持 HTTP(S) 代理，地址里不带账号密码`,
     `   ${cli} config set channels.lark.profiles.<名称>.network.no_proxy localhost,127.0.0.1,.internal`,
     '   Agent 进程访问模型、安装依赖用的代理写在 profile 的 launch.env（https_proxy、http_proxy、no_proxy）；内网模型网关的主机要放进 no_proxy。',
     '',
-    '5. 配置飞书并创建 profile',
+    '6. 配置飞书并创建 profile',
     `   ${cli} profile create <名称> --agent <claude|codex> --workspace <项目目录>`,
     '   不带 --app-id 时在终端显示二维码，用飞书扫码创建应用；已有应用则加 --app-id cli_xxx（Secret 按提示输入）。',
     '   已有应用在飞书开放平台（open.feishu.cn/app，国际版 open.larksuite.com/app）逐项确认：',
     ...larkPermissionGuide().split('\n').map(line => `   ${line}`),
     `   之后调整：${cli} config set profiles.<名称>.permissions.maxAccess workspace`,
     '',
-    '6. 启动与验收',
+    '7. 启动与验收',
     `   ${cli} run --profile <名称>      # 前台运行，Ctrl+C 停止`,
     `   ${cli} start --profile <名称>    # 注册为系统服务常驻`,
     '   私聊机器人发送 /status，再发一个简单任务；群里需先拉机器人入群并用 @选择器真正提及它。',
@@ -321,7 +343,7 @@ export async function runGuide(opts: GuideOptions = {}): Promise<void> {
   const configFile = resolveAppPaths({ rootDir }).configFile;
   const cli = cliCommand();
 
-  p.intro('Bridge 配置向导：Agent 位置 → 权限 → 模型凭据 → 网络代理 → 飞书应用与权限');
+  p.intro('Bridge 配置向导：Agent 位置 → 权限 → 使用范围 → 模型凭据 → 网络代理 → 飞书应用与权限');
   const root = await loadRootConfig(configFile);
   p.log.info(`Node ${process.version}，配置文件 ${configFile}${root ? '' : '（尚不存在，完成向导后创建）'}`);
 
@@ -356,16 +378,47 @@ export async function runGuide(opts: GuideOptions = {}): Promise<void> {
 
   // Step 2: what the agent may do on this machine.
   const choices = accessChoices(kind);
-  const access = choices.length === 1 ? choices[0]! : ask(await p.select<AccessMode>({
+  let access = choices.length === 1 ? choices[0]! : ask(await p.select<AccessMode>({
     message: '第 2 步：Agent 能对本机做什么？',
     options: choices.map(value => ({ value, ...ACCESS_LABELS[value] })),
     initialValue: choices[0]!,
   }));
   if (choices.length === 1) p.log.info(`${inspection.displayName} 只支持 ${access} 权限。`);
 
-  // Step 3: where it works, and what the profile is called.
+  // Step 3: who may talk to the bot.
+  let audience = ask(await p.select<Audience>({
+    message: '第 3 步：谁能用这个机器人？',
+    options: [
+      { value: 'owner', label: AUDIENCE_LABELS.owner, hint: '默认；之后可在飞书里发 /invite 逐个开放' },
+      { value: 'invited', label: AUDIENCE_LABELS.invited, hint: '机器人启动后在飞书里发 /invite user @同事 或 /invite group' },
+      { value: 'team', label: `${AUDIENCE_LABELS.team} @ 它都能用`, hint: '不设白名单；机器人只用应用身份访问飞书，不带你的个人授权' },
+    ],
+  }));
+  const risk = audienceRisk(audience, access);
+  if (risk === 'warn') {
+    p.log.warn('你邀请的同事和群也能让 Agent 以完整本机权限执行命令；只需要改项目内文件时，结束后把权限改成 workspace 更稳妥。');
+  } else if (risk === 'confirm' && choices.includes('workspace')) {
+    access = ask(await p.select<AccessMode>({
+      message: '任何能找到机器人的人都能让 Agent 在这台机器上以你的账号执行任意命令。本机权限怎么定？',
+      options: [
+        { value: 'workspace', label: '降为 workspace（推荐）', hint: '只在项目目录内写文件' },
+        { value: 'full', label: '保留 full', hint: '我清楚风险' },
+      ],
+    }));
+  } else if (risk === 'confirm') {
+    const proceed = ask(await p.confirm({
+      message: `${inspection.displayName} 只支持 full 权限：任何能找到机器人的人都能在这台机器上以你的账号执行任意命令。仍然对所有人开放？`,
+      initialValue: false,
+    }));
+    if (!proceed) {
+      audience = 'owner';
+      p.log.info('改为只有你自己能用；之后可在飞书里发 /invite 逐个开放。');
+    }
+  }
+
+  // Step 4: where it works, and what the profile is called.
   const workspaceInput = ask(await p.text({
-    message: '第 3 步：项目目录（留空则使用 Bridge 自动创建的默认目录）',
+    message: '第 4 步：项目目录（留空则使用 Bridge 自动创建的默认目录）',
     placeholder: resolve(homedir(), 'code/my-project'),
     defaultValue: '',
   }));
@@ -382,15 +435,15 @@ export async function runGuide(opts: GuideOptions = {}): Promise<void> {
     },
   })).trim();
 
-  // Step 4: how the agent reaches its model.
+  // Step 5: how the agent reaches its model.
   const credentials = await chooseModelCredentials(inspection, root);
 
-  // Step 5: how this machine reaches Feishu and the model.
+  // Step 6: how this machine reaches Feishu and the model.
   const proxy = await chooseProxy(credentials.gatewayUrl);
 
-  // Step 6: the Lark/Feishu app.
+  // Step 7: the Lark/Feishu app.
   const appMode = ask(await p.select<'qr' | 'existing'>({
-    message: '第 6 步：飞书应用',
+    message: '第 7 步：飞书应用',
     options: [
       { value: 'qr', label: '扫码创建新应用（推荐）', hint: '终端显示二维码，用飞书 App 扫码创建应用' },
       { value: 'existing', label: '使用已有应用', hint: '需要 App ID 和 App Secret' },
@@ -411,17 +464,21 @@ export async function runGuide(opts: GuideOptions = {}): Promise<void> {
     p.note(larkPermissionGuide(), `在开放平台确认应用 ${appId}（App Secret 在"凭证与基础信息"页）`);
     // Printed bare: a link wrapped inside the note box cannot be copied in one piece.
     console.log(`一次申请必需权限：\n${scopeApplyUrl(appId, tenant, LARK_BOT_SCOPES.filter(item => !item.optional).map(item => item.scope))}\n`);
+    if (audience !== 'team') {
+      p.log.warn('聊天默认只对应用的 owner（创建者）开放。应用不是你创建的话，你自己也用不了：让创建者在飞书里发 /invite user @你，或改用扫码新建。');
+    }
     ask(await p.confirm({ message: '以上已配置并发布？（没配完也可以继续，之后补上再重启 profile）', initialValue: true }));
   }
 
   const envReferences = [...(credentials.envReference ? [credentials.envReference] : []), ...proxy.envReferences];
-  p.log.step(`创建 profile ${name}：${inspection.displayName} @ ${binaryPath}，权限 ${access}，目录 ${workspace ?? '默认'}`);
+  p.log.step(`创建 profile ${name}：${inspection.displayName} @ ${binaryPath}，权限 ${access}，使用范围 ${AUDIENCE_LABELS[audience]}，目录 ${workspace ?? '默认'}`);
   await runProfileCreate(name, {
     rootDir,
     agent: kind,
     workspace,
     binaryPath,
     permissions: { defaultAccess: access, maxAccess: access },
+    ...(audience === 'team' ? { mode: 'team' as const } : {}),
     launchEnv: { ...credentials.launchEnv, ...proxy.launchEnv },
     appId,
     tenant,
@@ -448,7 +505,11 @@ export async function runGuide(opts: GuideOptions = {}): Promise<void> {
     '',
     '验收：私聊机器人发送 /status，再发"说明当前项目，先不要修改文件"，收到回复才算打通。',
     '群聊：先把机器人拉进群，用 @选择器真正提及它；纯文本"@机器人"收不到。',
-    '开放给他人：聊天默认只对应用 owner 开放，在飞书里发 /invite user @同事 或 /invite group。',
+    audience === 'team'
+      ? `使用范围：任何人私聊或在群里 @ 机器人即可使用，管理类命令仍只有 owner 和管理员能用；改回仅自己：${cli} config set profiles.${name}.mode personal`
+      : audience === 'invited'
+        ? '开放给同事和群：机器人启动后，由你（应用 owner）在飞书里发 /invite user @同事 或 /invite group；没邀请的人发消息不会有回应。'
+        : '开放给他人：聊天默认只对应用 owner 开放，在飞书里发 /invite user @同事 或 /invite group。',
     '应用侧：租户要求时，在飞书开放平台完成可用范围、权限和发布审批。',
     `改权限：${cli} config set profiles.${name}.permissions.maxAccess <full|workspace|read-only>`,
     `改代理：${cli} config set channels.lark.profiles.${name}.network.proxy <http://主机:端口|env|direct>（飞书连接）；Agent 进程的代理变量在 profile 的 launch.env 里。`,
@@ -469,11 +530,11 @@ interface ModelCredentials {
 async function chooseModelCredentials(inspection: AgentInspection, root: RootConfig | null | undefined): Promise<ModelCredentials> {
   const mode = modelCredentialMode(inspection.kind);
   if (mode === 'none') {
-    p.log.info(`第 4 步：${inspection.displayName} 的模型凭据由它自己的登录或 provider 配置管理，向导不改动（Antigravity 见 docs/antigravity.md）。`);
+    p.log.info(`第 5 步：${inspection.displayName} 的模型凭据由它自己的登录或 provider 配置管理，向导不改动（Antigravity 见 docs/antigravity.md）。`);
     return {};
   }
   const source = ask(await p.select<'native' | 'gateway'>({
-    message: '第 4 步：模型凭据',
+    message: '第 5 步：模型凭据',
     options: [
       { value: 'native', label: `沿用 ${inspection.displayName} 自己的登录或已有配置`, hint: '官方账号登录，或已在它的配置里设好 provider' },
       { value: 'gateway', label: '第三方 API 网关（地址 + token）', hint: mode === 'env' ? 'Anthropic 兼容接口' : 'Responses 兼容接口' },
@@ -539,7 +600,7 @@ async function chooseProxy(gatewayUrl: string | undefined): Promise<ProxyPlan> {
   const found = [detected.http, detected.https, detected.all, detected.noProxy].filter((item): item is ProxyVariable => Boolean(item));
   const hasProxy = Boolean(detected.http ?? detected.https ?? detected.all);
   const mode = ask(await p.select<ProxyChoice['mode']>({
-    message: '第 5 步：网络代理（访问飞书和模型时使用；系统服务不带 shell 里的代理变量，所以选定后写进配置）',
+    message: '第 6 步：网络代理（访问飞书和模型时使用；系统服务不带 shell 里的代理变量，所以选定后写进配置）',
     options: [
       ...(hasProxy ? [{
         value: 'inherit' as const,
