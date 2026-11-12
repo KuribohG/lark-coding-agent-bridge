@@ -128,7 +128,7 @@ export interface MailboxMessage {
   post?: number;
 }
 /** Who wrote a board post when it was not a member. */
-export type BoardAuthor = 'main' | 'script';
+export type BoardAuthor = 'main' | 'script' | 'system';
 /** One entry of the workflow's shared, append-only message board. Posts are never edited or removed. */
 export interface BoardPost {
   /** Position in the feed, starting at 1. */
@@ -143,6 +143,48 @@ export interface BoardPost {
   all?: boolean;
   text: string;
   createdAt: number;
+}
+export interface SwarmMember {
+  name: string;
+  role?: string;
+  execution: WorkerExecution;
+  workflowTool?: boolean;
+  workspace?: string;
+  /** Added by the lead while the swarm was running, with the brief it gave. */
+  added?: boolean;
+  brief?: string;
+  /** The member's latest turn. */
+  taskId?: string;
+  /** Wake-ups used after the opening turn. */
+  turns: number;
+  /** Its unfinished turn is retried under the same key when the script is replayed. */
+  retryPending?: boolean;
+  stopped?: 'failed' | 'retired';
+  detail?: string;
+}
+/**
+ * A group of persistent members that coordinate on the board. The kernel schedules their turns: every member runs
+ * once, then again whenever a post names it. An optional lead may add and retire members and decides when to finish.
+ */
+export interface WorkflowSwarm {
+  id: string;
+  key: string;
+  digest: string;
+  runId: string;
+  task: string;
+  lead?: string;
+  maxTurns: number;
+  status: 'running' | 'done';
+  stop?: 'finished' | 'quiet' | 'max_turns' | 'failed';
+  reason?: string;
+  /** Board seq of the swarm's brief, and of the last post when it ended. */
+  firstPost: number;
+  lastPost?: number;
+  /** Reminders sent to the lead while everyone was idle. */
+  nudges: number;
+  finish?: { result: string };
+  members: SwarmMember[];
+  turns: Array<{ key: string; member: string; taskId: string }>;
 }
 export interface WorkflowBoard {
   posts: BoardPost[];
@@ -381,6 +423,7 @@ export interface WorkflowState {
   checkpoints?: AgentCheckpoint[];
   mailbox?: AgentMailbox;
   board?: WorkflowBoard;
+  swarms?: WorkflowSwarm[];
   workQueue?: WorkflowWorkQueue;
   consumerPool?: WorkConsumerPool;
   /** Additional pools; the original field keeps persisted single-pool workflows readable. */

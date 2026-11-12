@@ -1,6 +1,6 @@
 import type {
-  AgentCheckpoint, BoardPost, DurableAgent, MailboxMessage, MailboxReceipt, SessionBinding, StoredArtifact, StoredTask, TurnAttempt, WorkClaim,
-  WorkConsumerPool, WorkerExecutionSelection, WorkflowData, WorkflowEvent, WorkflowScript, WorkflowStopReason, WorkflowWait, WorkflowWorkItem,
+  AgentCheckpoint, BoardPost, DurableAgent, MailboxMessage, MailboxReceipt, SessionBinding, StoredArtifact, StoredTask, SwarmMember, TurnAttempt, WorkClaim,
+  WorkConsumerPool, WorkerExecutionSelection, WorkflowData, WorkflowEvent, WorkflowScript, WorkflowStopReason, WorkflowSwarm, WorkflowWait, WorkflowWorkItem,
 } from './types';
 
 type Operation = { key: string; digest: string; response: unknown };
@@ -71,6 +71,15 @@ export type DomainEvent =
   | { type: 'receipt_opened'; receipt: MailboxReceipt }
   /** A board post together with its deliveries: one mailbox message per recipient, which is what wakes them. */
   | { type: 'board_posted'; post: BoardPost; deliveries: MailboxMessage[] }
+  // Swarms
+  | { type: 'swarm_created'; swarm: WorkflowSwarm }
+  | { type: 'swarm_rebound'; swarmId: string; runId: string; retryPending: string[] }
+  | { type: 'swarm_turn_scheduled'; swarmId: string; member: string; key: string; taskId: string; retry: boolean; opening: boolean }
+  | { type: 'swarm_member_added'; swarmId: string; member: SwarmMember }
+  | { type: 'swarm_member_stopped'; swarmId: string; member: string; reason: 'failed' | 'retired'; detail?: string }
+  | { type: 'swarm_nudged'; swarmId: string }
+  | { type: 'swarm_finish_requested'; swarmId: string; result: string }
+  | { type: 'swarm_ended'; swarmId: string; stop: NonNullable<WorkflowSwarm['stop']>; reason?: string }
   // Event waits
   | { type: 'wait_opened'; wait: WorkflowWait; agentIds: string[] }
   | { type: 'wait_rebound'; waitId: string; runId: string; agentIds: string[] }
@@ -109,6 +118,7 @@ export function eventTopics(event: DomainEvent): string[] {
   if ('waitId' in event) topics.push('wait:' + event.waitId);
   if (event.type === 'wait_opened') topics.push('wait:' + event.wait.id);
   if (event.type.startsWith('pool_')) topics.push('pool');
+  if (event.type.startsWith('swarm_')) topics.push('swarm');
   if (event.type === 'message_sent' || event.type === 'receipt_opened' || event.type.startsWith('member_turn_')) topics.push('mailbox');
   if (event.type === 'board_posted') topics.push('board', 'mailbox');
   if (LIFECYCLE.has(event.type)) topics.push('lifecycle');
@@ -123,6 +133,7 @@ export function eventEntity(event: DomainEvent): string | undefined {
   if ('claimId' in event) return event.claimId;
   if ('itemId' in event) return event.itemId;
   if ('poolId' in event) return event.poolId;
+  if ('swarmId' in event) return event.swarmId;
   switch (event.type) {
     case 'artifact_added': return event.artifact.ref;
     case 'work_enqueued': return event.item.id;
@@ -133,6 +144,7 @@ export function eventEntity(event: DomainEvent): string | undefined {
     case 'receipt_opened': return event.receipt.id;
     case 'checkpoint_saved': return event.checkpoint.ref;
     case 'pool_created': return event.pool.id;
+    case 'swarm_created': return event.swarm.id;
     case 'member_created': return event.agent.agentId;
     case 'session_created': return event.session.sessionRef;
     default: return undefined;

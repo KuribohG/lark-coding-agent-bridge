@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { workflowDigest } from '../digest';
 import { consumerSummary } from '../consumer-pool';
+import { swarmSummary } from '../swarm';
 import { workerSelection } from '../execution';
 import { addArtifact, acknowledge, BUSY, findTask, readArtifact, requiredText, textArray } from '../kernel-state';
 import { boundedInteger, scriptArgs, scriptText, SCRIPT_DEFINITION, SCRIPT_MAX_TASKS } from '../script-contract';
@@ -24,6 +25,7 @@ export function workflowSummary(ctx: KernelContext, state: WorkflowView): unknow
     workQueue: state.workQueue ? workStatus(state) : undefined,
     consumerPools: consumerPools(state).map(pool => consumerSummary(state, pool.key)),
     consumers: consumerSummary(state),
+    swarms: (state.swarms ?? []).map(swarm => swarmSummary(state, swarm)),
     waits: (state.waits ?? []).map(wait => ({ key: wait.key, status: wait.status, createdAt: wait.createdAt,
       kinds: wait.any.map(arm => arm.kind), selected: wait.result?.index })),
     parent: state.parent ? {workflowId:state.parent.workflowId,taskId:state.parent.taskId,depth:state.parent.depth,key:state.parent.key} : undefined,

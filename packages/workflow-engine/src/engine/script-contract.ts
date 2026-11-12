@@ -57,7 +57,7 @@ export function parseScriptAgentCall(value: unknown, defaults: WorkerExecutionSe
   }
   if (input.workflowTool !== undefined && typeof input.workflowTool !== 'boolean') throw new Error('workflowTool must be boolean');
   const key = scriptText(input.key, 'agent key', 160);
-  if (key.startsWith('@consumer/') || key.startsWith('@wait/')) throw new Error('Agent key uses a reserved consumer or wait prefix');
+  if (key.startsWith('@consumer/') || key.startsWith('@wait/') || key.startsWith('@swarm/')) throw new Error('Agent key uses a reserved consumer, swarm or wait prefix');
   if (key.trim() !== key) throw new Error('agent key must not contain surrounding whitespace');
   const schema = input.schema === undefined ? undefined : parseJsonSchema(input.schema);
   const output = input.output ?? (schema ? 'json' : 'text');

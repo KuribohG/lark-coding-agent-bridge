@@ -143,7 +143,7 @@ export function renderBoard(state: WorkflowState, filter?: string): string {
   const lines = [`留言板：共 ${posts.length} 帖${member ? `，与 ${compact(member.key, 100)} 相关 ${matching.length} 帖` : ''}，显示最近 ${shown.length} 帖。`];
   for (const post of shown) {
     const to = post.all ? '全体' : post.to.length ? post.to.map(id => '@' + compact(name(id), 50)).join(' ') : '未点名';
-    lines.push(`#${post.seq} ${post.from ? compact(name(post.from), 50) : post.author === 'script' ? '脚本' : '主会话'} → ${to} · ${time(post.createdAt)}`, '  ' + compact(post.text, 600));
+    lines.push(`#${post.seq} ${post.from ? compact(name(post.from), 50) : post.author === 'script' ? '脚本' : post.author === 'system' ? '系统' : '主会话'} → ${to} · ${time(post.createdAt)}`, '  ' + compact(post.text, 600));
   }
   return bounded(lines);
 }
@@ -215,7 +215,7 @@ export function renderWorkflowProgress(state: WorkflowState, now = Date.now()): 
   }
   const latest = state.board?.posts.at(-1);
   if (latest) {
-    lines.push(`**留言板**：${state.board!.posts.length} 帖，最新 #${latest.seq} ${latest.from ? plain(state.agents?.find(member => member.agentId === latest.from)?.key ?? latest.from, 50) : latest.author === 'script' ? '脚本' : '主会话'}：${plain(latest.text.replace(/\s+/g, ' '), 120)}`);
+    lines.push(`**留言板**：${state.board!.posts.length} 帖，最新 #${latest.seq} ${latest.from ? plain(state.agents?.find(member => member.agentId === latest.from)?.key ?? latest.from, 50) : latest.author === 'script' ? '脚本' : latest.author === 'system' ? '系统' : '主会话'}：${plain(latest.text.replace(/\s+/g, ' '), 120)}`);
   }
   const active = state.tasks.filter(task => ACTIVE_TASKS.has(task.status));
   if (active.length) {

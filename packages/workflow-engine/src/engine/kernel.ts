@@ -150,6 +150,10 @@ export class WorkflowKernel {
     return this.ctx.scripts.scriptWork(scopeId, workflowId, runId, input);
   }
 
+  scriptSwarmResult(scopeId: string, workflowId: string, runId: string, key: string): unknown | undefined {
+    return this.ctx.scripts.scriptSwarmResult(scopeId, workflowId, runId, key);
+  }
+
   scriptConsumerResult(scopeId: string, workflowId: string, runId: string, key?: string): unknown | undefined {
     return this.ctx.scripts.scriptConsumerResult(scopeId, workflowId, runId, key);
   }

@@ -9,7 +9,7 @@ import type { ToolArgs, WorkflowToolPlugin } from './types';
 import { versioned } from './versioned';
 
 /** An idempotent change by a persistent member's active turn, keyed by its operationId. */
-function memberOperation(ctx: KernelContext, state: WorkflowView, task: TaskView, method: string, args: ToolArgs,
+export function memberOperation(ctx: KernelContext, state: WorkflowView, task: TaskView, method: string, args: ToolArgs,
   apply: (agent: NonNullable<ReturnType<typeof taskAgent>>) => unknown): unknown {
   const agent = taskAgent(state, task);
   if (!agent) throw new Error('This operation requires a persistent member');

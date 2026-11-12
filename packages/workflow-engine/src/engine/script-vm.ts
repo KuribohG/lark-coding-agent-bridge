@@ -3,7 +3,6 @@ import { SCRIPT_MAX_TASKS, SCRIPT_MAX_TEXT } from './script-contract';
 import { REVIEW_HELPER } from './review-helper';
 import { DISCUSS_HELPER } from './discuss-helper';
 import { SPECULATE_HELPER } from './speculate-helper';
-import { TEAM_HELPER } from './team-helper';
 
 /** A worker's own failure; agent() resolves it to null unless the call sets onError:'throw'. */
 export class WorkflowAgentFailure extends Error {
@@ -63,7 +62,6 @@ const PRELUDE = `(() => {
   ${REVIEW_HELPER}
   ${DISCUSS_HELPER}
   ${SPECULATE_HELPER}
-  ${TEAM_HELPER}
   globalThis.post = (text, options = {}) => mail(JSON.stringify({...options, kind: 'post', text})).then(JSON.parse);
   globalThis.readBoard = (options = {}) => mail(JSON.stringify({...options, kind: 'board'})).then(JSON.parse);
   globalThis.send = (member, text, options = {}) => {
@@ -96,6 +94,12 @@ const PRELUDE = `(() => {
   globalThis.consumeWork = (options) => {
     if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('consumeWork(options) expected');
     return work(JSON.stringify({...options, kind: 'consume'})).then(JSON.parse);
+  };
+  globalThis.swarm = (task, options) => {
+    if (typeof task !== 'string' || !options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('swarm(task, options) expected');
+    const { onError, ...spec } = options;
+    const mode = failureMode(options);
+    return work(JSON.stringify({...spec, task, kind: 'swarm'})).then(JSON.parse).catch(error => softFailure(mode, 'swarm ' + spec.key, error));
   };
   globalThis.closeWorkQueue = (options) => {
     if (!options || typeof options !== 'object' || Array.isArray(options)) throw new TypeError('closeWorkQueue({key}) expected');

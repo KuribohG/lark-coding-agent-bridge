@@ -128,18 +128,16 @@ describe('workflow message board', () => {
   });
 });
 
-describe('team composition', () => {
-  it('wakes members as posts name them, runs them independently and stops when the board goes quiet', async () => {
+describe('swarm', () => {
+  type Action = { post?: { text: string; to?: string[] }; call?: [string, Record<string, unknown>]; fail?: boolean };
+  /** Runs a script whose members act out `plan`: what each does on its nth turn (opening turn first). */
+  async function play(script: string, plan: Record<string, Action[]>) {
     const root: WorkflowRoot = { scopeId: 'chat', profile: 'embedded', agentKind: 'custom-agent', cwdRealpath: '/repo',
-      policyFingerprint: 'policy', catalogBinding: 'main', modelSettings: {} };
-    // What each member posts on its nth turn; a member with nothing to say just ends its turn.
-    const plan: Record<string, Array<{ text: string; to?: string[] } | undefined>> = {
-      lead: [{ text: '@dev implement the parser, then hand it to qa' }, undefined],
-      dev: [undefined, { text: 'Parser implemented', to: ['qa'] }, { text: 'Fixed the empty-input case, @qa' }],
-      qa: [undefined, { text: 'Empty input crashes', to: ['dev'] }, { text: 'Verified. @lead the parser is ready' }],
-    };
+      policyFingerprint: 'policy', catalogBinding: 'main', modelSettings: { model: 'm1' } };
     const order: string[] = [];
     const specs: WorkerRunSpec[] = [];
+    const errors: string[] = [];
+    const seen: Record<string, number> = {};
     const runtime = new WorkflowRuntime({
       path: ':memory:', resolveRoot: async () => root, wakeMain: async () => {},
       runner: {
@@ -147,15 +145,19 @@ describe('team composition', () => {
           specs.push(spec);
           await spec.validateBeforeRun();
           const name = spec.resume?.id ?? /You are member "([^"]+)"/.exec(spec.prompt)![1]!;
-          const turn = Number(/turn (\d+) of at most/.exec(spec.prompt)?.[1] ?? 0) + 1;
+          const turn = seen[name] = (seen[name] ?? 0) + 1;
           order.push(name + turn);
+          const action = plan[name]?.[turn - 1] ?? {};
           return {
-            runId: `run-${specs.length}`, result: Promise.resolve('completed'),
+            runId: `run-${specs.length}`, result: Promise.resolve(action.fail ? 'failed' : 'completed'),
             stop: async () => {}, waitForExit: async () => true, stopReason: () => undefined,
             async *events() {
               yield { type: 'session', nativeSessionId: name };
-              const post = plan[name]![turn - 1];
-              if (post) await callWorkflow('post_board', { operationId: 'post', ...post }, spec.env);
+              try {
+                if (action.call) await callWorkflow(action.call[0], { operationId: 'call', ...action.call[1] }, spec.env);
+                if (action.post) await callWorkflow('post_board', { operationId: 'post', ...action.post }, spec.env);
+              } catch (error) { errors.push(String(error)); }
+              if (action.fail) { yield { type: 'error', message: 'model refused' }; yield { type: 'done', normal: false }; return; }
               yield { type: 'final_text', text: `${name} turn ${turn}` };
               yield { type: 'done', normal: true };
             },
@@ -165,41 +167,99 @@ describe('team composition', () => {
     });
     await runtime.start(); cleanup.push(() => runtime.close());
     const main = runtime.bindMain(root.scopeId, 'start');
-    await callWorkflow('run_script', { operationId: randomUUID(), goal: 'ship the parser', plan: 'A lead, a developer and a verifier coordinate on the board.', maxAgents: 32,
-      script: 'return await team("Ship the parser", {key:"ship", maxTurns: 4, members:[{name:"lead", role:"Assign and judge"},{name:"dev", role:"Implement"},{name:"qa", role:"Verify; wait until asked"}]});' }, main.env);
+    await callWorkflow('run_script', { operationId: randomUUID(), goal: 'ship the parser', plan: 'A swarm coordinates on the board.', maxAgents: 40, script }, main.env);
     main.release();
-    await vi.waitFor(async () => { await runtime.tick(); expect(runtime.kernel.state(root.scopeId)?.script?.status).not.toBe('running'); }, { timeout: 10_000 });
-    const state = runtime.kernel.state(root.scopeId)!;
-    expect(state.script).toMatchObject({ status: 'result_ready' });
-    const result = JSON.parse(state.artifacts.find(artifact => artifact.ref === state.script?.resultRef)!.text);
-    expect(result).toMatchObject({ stop: 'quiet', turns: 5, hasMore: false, members: [
-      { name: 'lead', turns: 1, stop: 'quiet', note: 'lead turn 2' }, { name: 'dev', turns: 2, stop: 'quiet' }, { name: 'qa', turns: 2, stop: 'quiet' }] });
-    expect(result.posts.map((post: { from: string; to: string[] }) => [post.from, post.to])).toEqual([
-      ['script', []], ['lead', ['dev']], ['dev', ['qa']], ['qa', ['dev']], ['dev', ['qa']], ['qa', ['lead']]]);
-    expect(order.slice(3)).toEqual(['dev2', 'qa2', 'dev3', 'qa3', 'lead2']);
-    expect(specs[0]!.prompt).toContain('post_board');
-    expect(state.waits!.every(wait => wait.status === 'ready')).toBe(true);
+    const settled = async () => {
+      await vi.waitFor(async () => { await runtime.tick(); expect(runtime.kernel.state(root.scopeId)?.script?.status).not.toMatch(/running|queued/); }, { timeout: 10_000 });
+      const state = runtime.kernel.state(root.scopeId)!;
+      const ref = state.script?.resultRef;
+      return { state, result: ref ? JSON.parse(state.artifacts.find(artifact => artifact.ref === ref)!.text) : undefined };
+    };
+    return { runtime, root, order, specs, errors, settled };
+  }
+  const posts = (result: { posts: Array<{ from: string; to: string[] }> }) => result.posts.map(post => [post.from, post.to]);
 
-    // Replaying the finished script walks the same waits and turns from the journal: no member runs again and nothing is posted twice.
-    const again = runtime.bindMain(root.scopeId, 'continue');
+  it('wakes members as posts name them and ends when a swarm without a lead goes quiet', async () => {
+    const h = await play('return await swarm("Ship the parser", {key:"ship", maxTurns: 4, members:[{name:"dev", role:"Implement"},{name:"qa", role:"Verify; wait until asked"}]});', {
+      dev: [{ post: { text: 'Parser implemented', to: ['qa'] } }, { post: { text: 'Fixed the empty-input case, @qa' } }],
+      qa: [{}, { post: { text: 'Empty input crashes', to: ['dev'] } }, {}],
+    });
+    const { state, result } = await h.settled();
+    expect(state.script).toMatchObject({ status: 'result_ready' });
+    expect(result).toMatchObject({ stop: 'quiet', turns: 5, hasMore: false, members: [
+      { name: 'dev', turns: 1, status: 'idle', note: 'dev turn 2' }, { name: 'qa', turns: 2, status: 'idle', note: 'qa turn 3' }] });
+    expect(result).not.toHaveProperty('result');
+    expect(posts(result)).toEqual([['script', []], ['dev', ['qa']], ['qa', ['dev']], ['dev', ['qa']]]);
+    expect(h.order.slice(2)).toEqual(['qa2', 'dev2', 'qa3']);
+    expect(h.specs[0]!.prompt).toContain('post_board');
+    // No script-side waits: the kernel schedules every turn.
+    expect(state.waits ?? []).toHaveLength(0);
+
+    // Replaying the finished script rejoins the swarm from the journal: no member runs again and nothing is posted twice.
+    const again = h.runtime.bindMain(h.root.scopeId, 'continue');
     await callWorkflow('replay_script', { operationId: randomUUID(), workflowId: state.workflowId, expectedStateVersion: state.stateVersion }, again.env);
     again.release();
-    await vi.waitFor(async () => { await runtime.tick(); expect(runtime.kernel.state(root.scopeId)?.script).toMatchObject({ status: 'result_ready', revision: 1 }); }, { timeout: 10_000 });
-    const replayed = runtime.kernel.state(root.scopeId)!;
-    expect(JSON.parse(replayed.artifacts.find(artifact => artifact.ref === replayed.script?.resultRef)!.text)).toEqual(result);
-    expect(specs).toHaveLength(8);
-    expect(replayed.board!.posts).toHaveLength(6);
+    const replayed = await h.settled();
+    expect(replayed.state.script).toMatchObject({ status: 'result_ready', revision: 1 });
+    expect(replayed.result).toEqual(result);
+    expect(h.specs).toHaveLength(5);
+    expect(replayed.state.board!.posts).toHaveLength(4);
   });
 
-  it('rejects malformed teams before starting any member', async () => {
-    const { runScriptProgram } = await import('../src/engine/script-vm');
-    const agent = vi.fn();
-    const run = (options: unknown) => runScriptProgram({ source: 'return await team("task",' + JSON.stringify(options) + ');', args: {}, signal: AbortSignal.timeout(5000),
-      agent, mailbox: async () => ({ seq: 1 }), control: async () => ({}), progress: () => {} });
-    await expect(run({ key: 't', members: [{ name: 'a' }] })).rejects.toThrow('2–12 members');
-    await expect(run({ key: 't', members: [{ name: 'a' }, { name: 'all' }] })).rejects.toThrow('cannot be all');
-    await expect(run({ key: 't', members: [{ name: 'a' }, { name: 'a' }] })).rejects.toThrow('unique');
-    await expect(run({ key: 't', maxTurns: 24, members: [{ name: 'a' }, { name: 'b' }, { name: 'c' }, { name: 'd' }, { name: 'e' }] })).rejects.toThrow('Too many members or turns');
-    expect(agent).not.toHaveBeenCalled();
+  it('lets the lead add and retire members, tells it about failures and idleness, and ends on its verdict', async () => {
+    const h = await play('return await swarm("Fix three modules", {key:"fix", maxTurns: 6, lead:{name:"lead", role:"Assign and judge"}, members:[{name:"parser", harness:"custom-agent", model:"m2"},{name:"docs"}]});', {
+      lead: [
+        { post: { text: '@parser fix the parser. @docs update the docs.' } },
+        // parser reported a fourth module: add a member for it, then brief it on the board.
+        { call: ['swarm_add_member', { name: 'lexer', role: 'Own src/lexer/**', brief: 'Same empty-input bug as the parser', like: 'parser' }], post: { text: '@lexer go ahead; report to me' } },
+        { call: ['swarm_retire_member', { name: 'docs' }] },  // woken by the system post about the docs failure
+        { call: ['swarm_finish', { result: 'parser and lexer fixed; docs dropped' }], post: { text: '@parser thanks, we are done' } },
+      ],
+      parser: [{}, { post: { text: '@lead the lexer has the same bug' } }],
+      docs: [{}, { fail: true }],
+      lexer: [{}, { post: { text: 'Lexer fixed', to: ['lead'] } }],
+    });
+    const { state, result } = await h.settled();
+    expect(h.errors).toEqual([]);
+    expect(state.script).toMatchObject({ status: 'result_ready' });
+    expect(result).toMatchObject({ stop: 'finished', result: 'parser and lexer fixed; docs dropped', members: [
+      { name: 'lead', lead: true }, { name: 'parser' }, { name: 'docs', status: 'failed', error: 'model refused' }, { name: 'lexer', added: true, turns: 1 }] });
+    const feed = result.posts as Array<{ from: string; to: string[]; text: string }>;
+    expect(feed.find(post => post.from === 'system')).toMatchObject({ to: ['lead'], text: expect.stringContaining('Member "docs" failed') });
+    // The verdict stops all waking: the post that names parser after swarm_finish starts no turn.
+    expect(h.order.filter(name => name.startsWith('parser'))).toEqual(['parser1', 'parser2']);
+    expect(h.specs.find(spec => /You are member "lexer"/.test(spec.prompt))).toMatchObject({
+      prompt: expect.stringContaining('Same empty-input bug as the parser'), execution: { modelSettings: { model: 'm2' } } });
+    expect(h.specs[0]!.prompt).toContain('swarm_finish');
+  });
+
+  it('reminds an idle lead, then ends without a verdict; only the lead may manage', async () => {
+    const h = await play('return await swarm("Idle", {key:"idle", lead:{name:"lead"}, members:[{name:"dev"}]});', {
+      dev: [{ call: ['swarm_finish', { result: 'not mine to call' }] }],
+    });
+    const { result } = await h.settled();
+    expect(h.errors).toEqual([expect.stringContaining('Only the lead of a swarm can manage it')]);
+    expect(result).toMatchObject({ stop: 'quiet', members: [{ name: 'lead', turns: 2 }, { name: 'dev', turns: 0 }] });
+    expect(result.posts.filter((post: { from: string }) => post.from === 'system')).toHaveLength(2);
+  });
+
+  it('fails when the lead fails, and keeps swarm members away from script calls', async () => {
+    const failed = await play('return await swarm("Doomed", {key:"doomed", onError:"throw", lead:{name:"lead"}, members:[{name:"dev"}]});', { lead: [{ fail: true }] });
+    expect((await failed.settled()).state.script).toMatchObject({ status: 'failed', error: expect.stringContaining('The lead failed') });
+    const soft = await play('const a = await swarm("Doomed", {key:"doomed", lead:{name:"lead"}, members:[{name:"dev"}]}); return {a, b: await agent("x", {key:"k", member:"dev"})};', { lead: [{ fail: true }] });
+    expect((await soft.settled()).state.script).toMatchObject({ status: 'failed', error: expect.stringContaining('scheduled by their swarm') });
+  });
+
+  it('rejects malformed swarms before starting any member', async () => {
+    const run = async (options: unknown) => {
+      const h = await play('return await swarm("task",' + JSON.stringify({ onError: 'throw', ...(options as object) }) + ');', {});
+      const { state } = await h.settled();
+      expect(h.specs).toHaveLength(0);
+      return state.script!.error;
+    };
+    expect(await run({ key: 't', members: [{ name: 'a' }] })).toContain('2–12 members');
+    expect(await run({ key: 't', members: [{ name: 'a' }, { name: 'all' }] })).toContain('cannot be all');
+    expect(await run({ key: 't', members: [{ name: 'a' }, { name: 'a' }] })).toContain('unique');
+    expect(await run({ key: 't', maxTurns: 25, members: [{ name: 'a' }, { name: 'b' }] })).toBeDefined();
   });
 });

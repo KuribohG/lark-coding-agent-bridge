@@ -181,6 +181,37 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       return;
     }
 
+    case 'swarm_created': (state.swarms ??= []).push(event.swarm); return;
+    case 'swarm_rebound': {
+      const found = swarm(state, event.swarmId);
+      found.runId = event.runId;
+      for (const member of found.members) member.retryPending = event.retryPending.includes(member.name) || undefined;
+      return;
+    }
+    case 'swarm_turn_scheduled': {
+      const found = swarm(state, event.swarmId);
+      const member = found.members.find(item => item.name === event.member)!;
+      member.taskId = event.taskId; member.retryPending = undefined;
+      if (!event.retry) {
+        found.turns.push({ key: event.key, member: event.member, taskId: event.taskId });
+        if (!event.opening) member.turns++;
+      }
+      return;
+    }
+    case 'swarm_member_added': swarm(state, event.swarmId).members.push(event.member); return;
+    case 'swarm_member_stopped': {
+      const member = swarm(state, event.swarmId).members.find(item => item.name === event.member)!;
+      member.stopped = event.reason; member.detail = event.detail;
+      return;
+    }
+    case 'swarm_nudged': swarm(state, event.swarmId).nudges++; return;
+    case 'swarm_finish_requested': swarm(state, event.swarmId).finish = { result: event.result }; return;
+    case 'swarm_ended': {
+      const found = swarm(state, event.swarmId);
+      found.status = 'done'; found.stop = event.stop; found.reason = event.reason; found.lastPost = state.board?.posts.length ?? 0;
+      return;
+    }
+
     case 'wait_opened':
       (state.waits ??= []).push(event.wait);
       return bindAgents(state, event.wait.id, event.agentIds);
@@ -292,6 +323,10 @@ function task(state: WorkflowData, id: string): StoredTask {
 
 function wait(state: WorkflowData, id: string): WorkflowWait {
   return state.waits!.find(found => found.id === id)!;
+}
+
+function swarm(state: WorkflowData, id: string) {
+  return state.swarms!.find(found => found.id === id)!;
 }
 
 function pool(state: WorkflowData, id: string) {

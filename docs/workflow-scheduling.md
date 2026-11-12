@@ -49,7 +49,7 @@ const event = await waitFor({key: 'evidence-or-deadline', any: [
 | `work` | `{itemId, key, status, generation, result?, error?}` at completion, failure or cancellation |
 | `task` | `{taskId, status, error?}` for a terminal managed task; retrieve its output with `joinTask` |
 | `timer` | `{at}` containing the saved absolute deadline |
-| `quiet` | `{members}`: every member listed in `{kind: "quiet", members: [names]}` is parked in an unsettled wait or receive, has no turn running, and has nothing that wait could receive. A member whose turn failed counts as parked. Every wait watching the same group settles in the same commit. This is how [`team`](workflows.md#message-board-and-teams) detects that nobody has anything left to do |
+| `quiet` | `{members}`: every member listed in `{kind: "quiet", members: [names]}` is parked in an unsettled wait or receive, has no turn running, and has nothing that wait could receive. A member whose turn failed counts as parked. Every wait watching the same group settles in the same commit. Use it to tell that a group of members coordinating through messages has nothing left to do; [`swarm`](workflows.md#message-board-and-swarms) members are scheduled by the bridge and cannot be waited on this way |
 
 The earliest ready event wins; declaration order breaks timestamp ties. Timers retain their original absolute deadline across replay, so a message arriving after an expired timer cannot win merely because the scheduler has not ticked yet. Timer delivery uses the existing scheduler (normally a 500 ms tick), rather than occupying a worker or promising sub-millisecond timing. The root deadline still bounds every wait.
 
