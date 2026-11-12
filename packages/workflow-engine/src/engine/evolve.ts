@@ -22,6 +22,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       return setStatus(state, 'interrupted', 'interrupted');
     case 'restart_resume_disabled': state.restart = { ...state.restart!, resume: false }; return;
     case 'clock_resumed': state.deadlineAt = event.deadlineAt; state.restart = undefined; return;
+    case 'deadline_extended': state.deadlineAt = event.deadlineAt; return;
     case 'artifact_added': state.artifacts.push(event.artifact); return;
     case 'notice_raised': state.events.push(event.notice); return;
     case 'notices_acknowledged':

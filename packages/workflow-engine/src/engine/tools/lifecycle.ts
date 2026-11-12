@@ -12,6 +12,8 @@ import type { WorkflowView } from '../types';
 import type { WorkflowToolPlugin } from './types';
 import { versioned } from './versioned';
 
+const MAX_REMAINING_MS = 14 * 24 * 3_600_000;
+
 /** The main agent's view of a workflow, returned by `status` and embedded in its turn context. */
 export function workflowSummary(ctx: KernelContext, state: WorkflowView): unknown {
   return {
@@ -113,6 +115,17 @@ export const lifecycleTools: WorkflowToolPlugin = {
           return { taskId: task.taskId, status: task.status };
         }, { allowAfterDeadline: true }),
       },
+    },
+    {
+      // The time limit set at the start is an estimate; a workflow that is making progress should not die of it.
+      name: 'extend_deadline',
+      main: { doc: 'extend_deadline(minutes)', ...versioned((ctx, state, args) => {
+        if (state.parent) throw new Error('A child workflow ends with its parent; extend the root workflow');
+        const deadlineAt = state.deadlineAt + boundedInteger(args.minutes, 0, 1, 10_080) * 60_000;
+        if (deadlineAt - ctx.now() > MAX_REMAINING_MS) throw new Error('A workflow may have at most 14 days left');
+        emit(state, { type: 'deadline_extended', deadlineAt });
+        return { deadlineAt };
+      }, { allowInterrupted: true }) },
     },
     {
       name: 'pause',

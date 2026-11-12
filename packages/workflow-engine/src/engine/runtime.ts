@@ -179,9 +179,16 @@ export class WorkflowRuntime {
     });
     // Waiters wake on the events that can produce their value, not on every change in the scope.
     const watching = (...topics: string[]) => (listener: () => void) => this.kernel.watch(workflowId, [...topics, 'lifecycle'], listener);
-    const deadline = setTimeout(() => controller.abort(new WorkflowStopped('deadline')),
-      Math.max(0, begun.state.deadlineAt - Date.now()));
-    deadline.unref();
+    // The deadline may be extended while the script runs, so it is read again when the timer fires.
+    let deadline: NodeJS.Timeout;
+    const arm = (at: number) => {
+      deadline = setTimeout(() => {
+        const current = this.kernel.state(scopeId, workflowId)?.deadlineAt ?? 0;
+        if (current > Date.now()) arm(current); else controller.abort(new WorkflowStopped('deadline'));
+      }, Math.min(Math.max(0, at - Date.now()), 2 ** 31 - 1));
+      deadline.unref();
+    };
+    arm(begun.state.deadlineAt);
     try {
       if (!begun.state.parent) await this.deps.showPlan?.(begun.state, this.kernel.plan(scopeId, workflowId));
       controller.signal.throwIfAborted();
@@ -236,7 +243,7 @@ export class WorkflowRuntime {
     } catch (error) {
       if (!this.closed) this.kernel.finishScript(scopeId, workflowId, runId, { error: error instanceof Error ? error.message : String(error) });
     } finally {
-      clearTimeout(deadline);
+      clearTimeout(deadline!);
       stop();
       controller.abort(new WorkflowStopped('cleanup'));
     }

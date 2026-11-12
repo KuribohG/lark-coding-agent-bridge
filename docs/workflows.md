@@ -38,6 +38,10 @@ The main agent's per-turn instructions cover what most workflows use: `agent`, `
 
 While a topic has a workflow, every ordinary message in it runs with that workflow's credentials. The main agent can answer "how is it going" from `status`, and act on a request to cancel a stuck worker (`cancel_task`), pause, post to the board, enqueue work or replay an edited script, without a `/workflow` command. Such a turn gets a short description of the operations and a few lines of state; `workflow guide` prints the full script guide when a replay needs it. It cannot start a workflow, and completion events are still delivered by their own wake.
 
+### Giving a workflow more time
+
+`extend_deadline(minutes)` moves the deadline of a running or paused workflow later, by up to seven days per call and never to more than fourteen days from now. The time limit chosen at the start is an estimate, and a workflow that is making progress should not be lost to it. Extend before the deadline: once it has passed, the workflow has failed. Worker turns that were already running keep the deadline they started with; turns started afterwards get the new one.
+
 ### Changing the staff of a running swarm
 
 `staff_swarm(swarm?, add?, like?, queue?, role?, brief?, revive?, retire?, maxTurns?)` lets the main agent adjust a running swarm without replaying the script; a swarm's lead has the same operation for its own swarm. `retire` names members that finish their current turn and are not woken again. `add` names new members, bound like an existing one (`like`, by default the first member that is not the lead) and taking its role and queue unless given; `revive` (`"failed"` or member names) puts failed members back to work by running their last turn again in the same native session; `maxTurns` raises the number of wake-ups per member. Use it when members have failed and queued work has nobody left to take it, or when the work has shifted from one queue to another. A swarm that has already ended cannot be staffed: that still takes a replay.

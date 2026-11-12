@@ -24,6 +24,7 @@ export type DomainEvent =
   | { type: 'workflow_interrupted'; restart?: { since: number; resume: boolean } }
   | { type: 'restart_resume_disabled' }
   | { type: 'clock_resumed'; deadlineAt: number }
+  | { type: 'deadline_extended'; deadlineAt: number }
   | { type: 'artifact_added'; artifact: StoredArtifact }
   | { type: 'notice_raised'; notice: WorkflowEvent }
   | { type: 'notices_acknowledged'; ids: string[]; at: number }

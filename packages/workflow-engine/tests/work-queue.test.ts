@@ -127,6 +127,20 @@ describe('workflow work queue', () => {
     expect(h.state().workQueue!.items[0]!.result).toEqual({ answer: 42 });
   });
 
+  it('extends the deadline of a running workflow, within bounds', async () => {
+    const h = harness(); await h.start();
+    const original = h.state().deadlineAt;
+    await expect(h.call('extend_deadline', { minutes: 0 })).rejects.toThrow('integer');
+    await expect(h.call('extend_deadline', { minutes: 10_080 })).resolves.toMatchObject({ deadlineAt: original + 10_080 * 60_000 });
+    await expect(h.call('extend_deadline', { minutes: 10_080 })).rejects.toThrow('14 days');
+    // Past the original deadline the workflow is still running; past the new one it fails.
+    h.advance(original - 1_000_000 + 60_000); await h.kernel.tick();
+    expect(h.state()).toMatchObject({ status: 'active', script: { status: 'running' } });
+    h.advance(10_080 * 60_000); await h.kernel.tick();
+    expect(h.state().script).toMatchObject({ status: 'failed', error: expect.stringContaining('deadline') });
+    await expect(h.call('extend_deadline', { minutes: 60 })).rejects.toThrow('deadline');
+  });
+
   it('serializes shared worktree resources and releases unfinished work when a member exits', async () => {
     const h = harness(); await h.start();
     await h.work('enqueue', { key: 'one', title: 'Edit one', resources: ['worktree:shared'] });
