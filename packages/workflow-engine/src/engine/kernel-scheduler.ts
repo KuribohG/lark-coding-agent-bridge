@@ -61,9 +61,13 @@ export class WorkflowScheduler {
   }
 
   expireClaims(state: WorkflowView): void {
-    for (const claim of expireWorkClaims(state, this.ctx.now())) {
+    const attempt = (claim: { taskId: string; attemptId: string }) => {
       const task = taskById(state, claim.taskId);
-      if (task && task.attempts.at(-1)?.attemptId === claim.attemptId && BUSY.has(task.status)) {
+      return task && task.attempts.at(-1)?.attemptId === claim.attemptId ? task : undefined;
+    };
+    for (const claim of expireWorkClaims(state, this.ctx.now(), claim => ['starting', 'running'].includes(attempt(claim)?.status ?? ''))) {
+      const task = attempt(claim);
+      if (task && BUSY.has(task.status)) {
         this.cancelTask(task, state, 'Work claim lease expired; saved work progress is available to another member');
       }
     }

@@ -205,6 +205,12 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       member.stopped = event.reason; member.detail = event.detail;
       return;
     }
+    case 'swarm_member_revived': {
+      const member = swarm(state, event.swarmId).members.find(item => item.name === event.member)!;
+      member.stopped = undefined; member.detail = undefined; member.lastWake = undefined;
+      return;
+    }
+    case 'swarm_turns_extended': swarm(state, event.swarmId).maxTurns = event.maxTurns; return;
     case 'swarm_nudged': swarm(state, event.swarmId).nudges++; return;
     case 'swarm_finish_requested': swarm(state, event.swarmId).finish = { result: event.result }; return;
     case 'swarm_ended': {

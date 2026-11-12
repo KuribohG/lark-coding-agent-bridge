@@ -79,6 +79,8 @@ export type DomainEvent =
   | { type: 'swarm_member_wake_cleared'; swarmId: string; member: string }
   | { type: 'swarm_member_added'; swarmId: string; member: SwarmMember }
   | { type: 'swarm_member_stopped'; swarmId: string; member: string; reason: 'failed' | 'retired'; detail?: string }
+  | { type: 'swarm_member_revived'; swarmId: string; member: string }
+  | { type: 'swarm_turns_extended'; swarmId: string; maxTurns: number }
   | { type: 'swarm_nudged'; swarmId: string }
   | { type: 'swarm_finish_requested'; swarmId: string; result: string }
   | { type: 'swarm_ended'; swarmId: string; stop: NonNullable<WorkflowSwarm['stop']>; reason?: string }

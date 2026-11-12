@@ -59,7 +59,7 @@ function harness(path = ':memory:') {
 const token = (grant: Grant) => ({ claimId: grant.claimId, generation: grant.generation });
 
 describe('workflow work queue', () => {
-  it('lets three members consume ten items, reclaiming progress after lease expiry and rejecting late results', async () => {
+  it('lets three members consume ten items, keeping the claim of a running member past its lease, reclaiming progress when its turn ends and rejecting late results', async () => {
     const h = harness(); await h.start();
     for (let n = 0; n < 10; n++) await h.work('enqueue', { key: 'item-' + n, title: 'Compute ' + n, input: n });
     for (const member of ['A', 'B', 'C']) await h.create(member);
@@ -69,7 +69,12 @@ describe('workflow work queue', () => {
     expect(new Set(initial.map(grant => grant!.item.id)).size).toBe(3);
     const first = initial[0]!;
     await h.send(a!, 'checkpoint_work', { ...token(first), expectedProgressVersion: 0, state: { prepared: 'partial-work' } });
-    h.advance(1001); await h.kernel.tick(); await h.settle(a!);
+    // The short lease runs out while the member's turn is still running: the engine keeps the claim for it.
+    h.advance(600_000); await h.kernel.tick();
+    expect(h.state().workQueue!.items[0]).toMatchObject({ status: 'claimed' });
+    expect(h.state().tasks.find(task => task.taskId === a!.task.taskId)!.status).toBe('running');
+    // The turn then ends without completing the item: the claim returns to the queue with the saved progress.
+    await h.finish(a!);
     expect(h.state().workQueue!.items[0]).toMatchObject({ status: 'pending', progress: { version: 1, state: { prepared: 'partial-work' } } });
     await h.send(b!, 'complete_work', { ...token(initial[1]!), result: 1 });
     const replacement = (await h.claim(b!))!;
@@ -90,12 +95,13 @@ describe('workflow work queue', () => {
     }
     expect(h.state().workQueue!.items.map(item => item.result)).toEqual(Array.from({ length: 10 }, (_, n) => n * n));
     expect(h.state().workQueue!.claims.filter(claim => claim.status === 'completed')).toHaveLength(10);
-    expect(h.state().workQueue!.claims.filter(claim => claim.status === 'expired')).toHaveLength(1);
+    expect(h.state().workQueue!.claims.filter(claim => claim.status === 'expired')).toHaveLength(0);
+    expect(h.state().workQueue!.claims.filter(claim => claim.status === 'cancelled')).toHaveLength(1);
     await expect(h.call('work_status')).resolves.toMatchObject({ total: 10, completed: 10, pending: 0, claimed: 0 });
     await h.finish(b!); await h.finish(c!);
     h.kernel.finishScript('queue-test', h.state().workflowId, h.state().script!.runId, { text: '{}' });
     expect(h.state().script!.status).toBe('result_ready');
-    expect(await h.command('work item-0')).toContain('版本 1：expired');
+    expect(await h.command('work item-0')).toContain('版本 1：cancelled');
     expect(await h.command('status')).toContain('工作队列：10 项');
   });
 

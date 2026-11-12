@@ -106,10 +106,21 @@ function endClaim(state: WorkflowView, claim: ClaimView, now: number,
   emit(state, { type: 'claim_ended', claimId: claim.id, status, reason: reason.slice(0, 1000), retry, at: now });
 }
 
-/** The kernel also cancels these attempt-bound turns before scheduling replacements. */
-export function expireWorkClaims(state: WorkflowView, now: number): ClaimView[] {
-  const expired = state.workQueue?.claims.filter(claim => claim.status === 'active' && claim.leaseUntil <= now) ?? [];
-  for (const claim of expired) endClaim(state, claim, now, 'expired', 'Claim lease expired', true);
+/** A lease the engine extends on a member's behalf lasts this long, so a turn that has gone is noticed within it. */
+const HELD_LEASE_MS = 120_000;
+
+/**
+ * Settles the claims whose lease has run out. A claim whose turn is still running (`held`) is extended: the member
+ * is at work, and whether it has hung is the stall watchdog's call, not something a member must disprove by
+ * renewing in time. The others expire; the kernel cancels what is left of their turns.
+ */
+export function expireWorkClaims(state: WorkflowView, now: number, held: (claim: ClaimView) => boolean = () => false): ClaimView[] {
+  const due = state.workQueue?.claims.filter(claim => claim.status === 'active' && claim.leaseUntil <= now) ?? [];
+  const expired: ClaimView[] = [];
+  for (const claim of due) {
+    if (now < state.deadlineAt && held(claim)) emit(state, { type: 'claim_renewed', claimId: claim.id, leaseUntil: Math.min(now + HELD_LEASE_MS, state.deadlineAt) });
+    else { endClaim(state, claim, now, 'expired', 'Claim lease expired', true); expired.push(claim); }
+  }
   return expired;
 }
 
