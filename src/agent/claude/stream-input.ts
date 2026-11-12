@@ -1,54 +1,45 @@
 import { randomUUID } from 'node:crypto';
 import type { Writable } from 'node:stream';
-import { isTaskNotificationResult } from './stream-json';
+import { coveredInputs, type ClaudeRunLedger } from './run-ledger';
 
 type Receipt = 'accepted' | 'inactive';
 type RawEvent = Record<string, unknown>;
 const object = (value: unknown): RawEvent => value !== null && typeof value === 'object' ? value as RawEvent : {};
 
-/** Keep stdin open until a result covers every input sent to this process. */
+/**
+ * Claude's stdin: writes inputs and control messages, and confirms that Claude took each
+ * supplement in. Whether an input has been answered is the ledger's business.
+ */
 export class ClaudeStreamInput {
   private active = true;
   private sessionId: string;
-  private initialId: string = randomUUID();
-  private readonly outstanding = new Set<string>();
   private readonly deliveries = new Map<string, Promise<Receipt>>();
   private readonly pending = new Map<string, { resolve(value: Receipt): void; reject(error: Error): void; timer: NodeJS.Timeout }>();
 
   constructor(
     private readonly stdin: Writable,
+    private readonly ledger: Pick<ClaudeRunLedger, 'sent'>,
     sessionId?: string,
     private readonly ackTimeoutMs = 30_000,
-    /** Work that outlives a covering result, during which more input may still arrive. */
-    private readonly keepOpen: () => boolean = () => false,
   ) {
     this.sessionId = sessionId ?? '';
   }
 
   start(prompt: string): void {
-    this.write(prompt, this.initialId);
+    this.write(prompt, randomUUID());
   }
 
   /** Track the input an earlier bridge process wrote to this agent instead of sending a prompt. */
   restore(written: readonly string[]): void {
-    let first = true;
     for (const line of written) {
       let event: RawEvent;
       try { event = object(JSON.parse(line)); } catch { continue; }
-      if (event.type !== 'user' || typeof event.uuid !== 'string') continue;
-      if (first) this.initialId = event.uuid;
-      first = false;
-      this.outstanding.add(event.uuid);
+      if (event.type === 'user' && typeof event.uuid === 'string') this.ledger.sent(event.uuid);
     }
   }
 
   get currentSessionId(): string | undefined {
     return this.sessionId || undefined;
-  }
-
-  /** Some input sent to this process has no covering result yet. */
-  get awaitingResult(): boolean {
-    return this.outstanding.size > 0;
   }
 
   /** Write a control-protocol message; false once the input stream is closed. */
@@ -70,13 +61,7 @@ export class ClaudeStreamInput {
    * interruption in the transcript, which a signal would leave as a failed tool.
    */
   interrupt(): boolean {
-    return this.outstanding.size > 0
-      && this.control({ type: 'control_request', request_id: randomUUID(), request: { subtype: 'interrupt' } });
-  }
-
-  errorMessage(message: string): string {
-    return [...this.outstanding].some(uuid => uuid !== this.initialId)
-      ? `${message}; supplemental input delivery is unknown` : message;
+    return this.control({ type: 'control_request', request_id: randomUUID(), request: { subtype: 'interrupt' } });
   }
 
   steer(prompt: string, messageId: string): Promise<Receipt> {
@@ -98,51 +83,24 @@ export class ClaudeStreamInput {
     return result;
   }
 
-  /** Undefined hides protocol receipts and results preceding a pending input. */
-  receive(raw: unknown): unknown {
+  /** True for protocol receipts, which are not part of the run's output. */
+  receive(raw: unknown): boolean {
     const event = object(raw);
-    if (event.parent_tool_use_id) return raw;
+    if (event.parent_tool_use_id) return false;
     if (event.type === 'system' && event.subtype === 'init' && typeof event.session_id === 'string') {
       this.sessionId = event.session_id;
     }
     if (event.type === 'command_lifecycle') {
       if (event.state === 'queued' || event.state === 'started') this.acknowledge(event.command_uuid);
-      return undefined;
+      return true;
     }
     if (event.type === 'user' && event.isReplay === true) {
       this.acknowledge(event.uuid);
-      return undefined;
+      return true;
     }
-    if (event.type !== 'result') return raw;
-
-    // Replay/queued receipts confirm intake, not which generation consumed it.
-    const covered = Array.isArray(event.user_message_uuids) ? event.user_message_uuids
-      : typeof event.user_message_uuid === 'string' ? [event.user_message_uuid] : undefined;
-    for (const uuid of covered ?? []) {
-      this.acknowledge(uuid);
-      if (typeof uuid === 'string') this.outstanding.delete(uuid);
-    }
-    // A notification turn covers only the input Claude folded into it, so it cannot finish
-    // ahead of one still pending. Its own outcome is the adapter's to judge.
-    if (isTaskNotificationResult(event)) return this.outstanding.size > 0 ? undefined : raw;
-    const failed = event.is_error || (typeof event.subtype === 'string' && event.subtype.startsWith('error'));
-    const hasSupplements = [...this.outstanding].some(uuid => uuid !== this.initialId);
-    if (failed || (!covered && hasSupplements)) {
-      const error = hasSupplements
-        ? 'Claude did not confirm completion of all supplemental inputs; delivery is unknown'
-        : 'Claude task failed';
-      this.close(new Error(error));
-      if (!hasSupplements) return raw;
-      return { ...event, is_error: true, errors: [
-        ...(Array.isArray(event.errors) ? event.errors : [event.result ?? event.subtype ?? 'Claude result lacks input IDs (requires Claude Code 2.1.302+)']),
-        error,
-      ] };
-    }
-    // Older CLIs can still complete a single prompt without correlation fields.
-    if (!covered) this.outstanding.delete(this.initialId);
-    if (this.outstanding.size > 0) return undefined;
-    if (!this.keepOpen()) this.close();
-    return raw;
+    // A result naming an input proves it arrived, even if its receipt never did.
+    if (event.type === 'result') for (const uuid of coveredInputs(event) ?? []) this.acknowledge(uuid);
+    return false;
   }
 
   close(error = new Error('Claude input stream closed; delivery is unknown')): void {
@@ -165,7 +123,7 @@ export class ClaudeStreamInput {
   }
 
   private write(prompt: string, uuid: string, callback?: (error?: Error | null) => void): void {
-    this.outstanding.add(uuid);
+    this.ledger.sent(uuid);
     try {
       this.stdin.write(JSON.stringify({ type: 'user', uuid, session_id: this.sessionId, parent_tool_use_id: null,
         message: { role: 'user', content: prompt } }) + '\n', 'utf8', callback);

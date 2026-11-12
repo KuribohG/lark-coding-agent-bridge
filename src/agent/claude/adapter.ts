@@ -21,10 +21,10 @@ import {
   type NativeAgentRun,
   type AgentRunOptions,
 } from '../types';
-import { ClaudeRunTranslator, isTaskNotificationResult } from './stream-json';
+import { ClaudeRunTranslator } from './stream-json';
 import { ClaudeStreamInput } from './stream-input';
 import { ClaudeQuestionControl } from './questions';
-import { ClaudeBackgroundTasks } from './background-tasks';
+import { ClaudeRunLedger } from './run-ledger';
 import { hostedProcessOf, readRunHostInput, spawnAgentProcess } from '../run-host';
 import { withExecutionContract } from '../execution';
 import { CLAUDE_EXECUTION_CAPABILITIES } from './capabilities';
@@ -174,8 +174,8 @@ export class ClaudeAdapter implements AgentAdapter {
     // defer attachment to the async-generator body, those events fire into
     // the void and the generator hangs.
     const stderrChunks: Buffer[] = [];
-    const tasks = new ClaudeBackgroundTasks();
-    const input = new ClaudeStreamInput(child.stdin, opts.sessionId, undefined, () => tasks.outstanding);
+    const ledger = new ClaudeRunLedger();
+    const input = new ClaudeStreamInput(child.stdin, ledger, opts.sessionId);
     const questions = new ClaudeQuestionControl(input);
     let runtimeError: Error | null = null;
     let interrupted = false;
@@ -232,7 +232,7 @@ export class ClaudeAdapter implements AgentAdapter {
     return {
       runId: opts.runId,
       ...(hosted ? { detachOnShutdown: true } : {}),
-      events: createEventStream(child, stderrChunks, () => runtimeError, input, questions, tasks, this.backgroundWaitMs,
+      events: createEventStream(child, stderrChunks, () => runtimeError, input, questions, ledger, this.backgroundWaitMs,
         this.backgroundDrainGraceMs, () => interrupted, opts.deadlineAt, opts.answerIncludesInterimText),
       async sendInput({ text, messageId }) {
         return await input.steer(text, messageId) === 'accepted'
@@ -251,7 +251,7 @@ export class ClaudeAdapter implements AgentAdapter {
         // Let Claude end the turn itself so its transcript records an interruption, not a killed tool.
         // Signalling while it still stops a tool would orphan that tool, which runs in its own group.
         const settleMs = Math.min(stopGraceMs, INTERRUPT_SETTLE_MS);
-        const turnInterrupted = input.interrupt() && await turnEnded(child, settleMs);
+        const turnInterrupted = ledger.awaitingResult && input.interrupt() && await turnEnded(child, settleMs);
         input.close();
         // After an interrupted turn Claude exits on EOF, having stopped its tools, tasks and MCP servers.
         if (turnInterrupted ? await exitWithin(child, settleMs) : child.exitCode !== null || child.signalCode !== null) return;
@@ -288,7 +288,7 @@ async function* createEventStream(
   getError: () => Error | null,
   input: ClaudeStreamInput,
   questions: ClaudeQuestionControl,
-  tasks: ClaudeBackgroundTasks,
+  ledger: ClaudeRunLedger,
   backgroundWaitMs: number,
   backgroundDrainGraceMs: number,
   isInterrupted: () => boolean,
@@ -327,10 +327,10 @@ async function* createEventStream(
   // start another turn: -p then reports anything still queued, exits, and the held result answers.
   // A notification that Claude folded into an earlier turn never gets its own; this closes the run.
   const syncDrain = (): void => {
-    if (held && tasks.idle) {
+    if (held && ledger.tasks.idle) {
       drainTimer ??= setTimeout(() => {
         drainTimer = undefined;
-        if (tasks.idle && !input.awaitingResult) input.close();
+        if (ledger.quiet) input.close();
       }, backgroundDrainGraceMs);
     } else if (drainTimer) {
       clearTimeout(drainTimer);
@@ -353,32 +353,28 @@ async function* createEventStream(
         yield* control;
         continue;
       }
-      tasks.receive(parsed);
+      // The ledger alone decides what a top-level result means for the run.
+      const verdict = ledger.receive(parsed);
       syncDrain();
-      if (isTaskNotificationResult(parsed) && !tasks.launchedHere(parsed)) continue;
-      parsed = input.receive(parsed);
-      if (parsed === undefined) continue;
-      let terminal = false;
-      if (parsed && typeof parsed === 'object') {
-        const result = parsed as { type?: string; parent_tool_use_id?: string; is_error?: boolean; subtype?: string };
-        terminal = result.type === 'result' && !result.parent_tool_use_id;
-        if (terminal && tasks.outstanding && !result.is_error && !result.subtype?.startsWith('error')) {
-          held = result;
-          syncDrain();
-          yield* translator.flushProgress();
-          yield { type: 'status', code: 'background_tasks', content: tasks.describe() };
-          waitTimer ??= setTimeout(() => {
-            waitExpired = true;
-            log.warn('agent', 'background-wait-expired', { pid: child.pid ?? null, waitMs: backgroundWaitMs });
-            terminateChild(child, 'SIGTERM');
-          }, backgroundWaitMs);
-          continue;
-        }
+      if (input.receive(parsed) || verdict?.kind === 'hidden') continue;
+      if (verdict?.kind === 'held') {
+        held = verdict.result;
+        syncDrain();
+        yield* translator.flushProgress();
+        yield { type: 'status', code: 'background_tasks', content: ledger.tasks.describe() };
+        waitTimer ??= setTimeout(() => {
+          waitExpired = true;
+          log.warn('agent', 'background-wait-expired', { pid: child.pid ?? null, waitMs: backgroundWaitMs });
+          terminateChild(child, 'SIGTERM');
+        }, backgroundWaitMs);
+        continue;
       }
+      // Nothing more will be sent; Claude exits on EOF while the consumer handles the outcome.
+      if (verdict) input.close();
       // An interrupted turn ends in an error result; the run reports the interruption instead.
-      if (terminal && isInterrupted()) break;
-      yield* translator.translate(parsed);
-      if (terminal) return;
+      if (verdict && isInterrupted()) break;
+      yield* translator.translate(verdict?.result ?? parsed);
+      if (verdict) return;
     }
   } finally {
     input.close();
@@ -394,7 +390,7 @@ async function* createEventStream(
   if (earlyRuntimeError && child.exitCode === null && child.signalCode === null) {
     yield {
       type: 'error',
-      message: input.errorMessage(`claude runtime error: ${earlyRuntimeError.message}`),
+      message: ledger.failure(`claude runtime error: ${earlyRuntimeError.message}`),
       terminationReason: 'failed',
     };
     return;
@@ -427,17 +423,17 @@ async function* createEventStream(
     const detail = stderr ? `: ${stderr.slice(0, 500)}` : '';
     yield {
       type: 'error',
-      message: input.errorMessage(`claude exited with code ${exitCode}${detail}`),
+      message: ledger.failure(`claude exited with code ${exitCode}${detail}`),
       terminationReason: 'failed',
     };
   } else if (runtimeError) {
     yield {
       type: 'error',
-      message: input.errorMessage(`claude runtime error: ${runtimeError.message}`),
+      message: ledger.failure(`claude runtime error: ${runtimeError.message}`),
       terminationReason: 'failed',
     };
   } else {
-    yield { type: 'error', message: input.errorMessage('claude exited without a final result'), terminationReason: 'failed' };
+    yield { type: 'error', message: ledger.failure('claude exited without a final result'), terminationReason: 'failed' };
   }
 }
 
