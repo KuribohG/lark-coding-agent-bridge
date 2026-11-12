@@ -32,6 +32,7 @@ import {
 import { runStart } from './commands/start';
 import { runDown, runUp, type UpOptions } from './commands/up';
 import { runUi, runUiStop } from './commands/ui';
+import { runGuide } from './commands/guide';
 import { runWeb } from './commands/web';
 import { runSlack } from './commands/slack';
 import { configureCiWatch, statusCiWatch } from './commands/ci-watch';
@@ -78,6 +79,13 @@ program
     skipCheckLarkCli?: boolean;
   }) => {
     await runStart(opts);
+  });
+
+program.command('guide')
+  .description('Step-by-step terminal setup: locate the agent executable, choose its permissions, connect a Feishu/Lark app')
+  .option('--print', 'print the checklist instead of asking questions (default when not a terminal)')
+  .action(async (opts: { print?: boolean }) => {
+    await runGuide(opts);
   });
 
 program.command('up')

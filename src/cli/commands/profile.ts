@@ -14,6 +14,7 @@ import {
   withConfigFileLock,
   writeActiveProfile,
 } from '../../config/profile-store';
+import type { PermissionConfig } from '../../config/permissions';
 import type { RootConfig } from '../../config/profile-schema';
 import { resolveAppSecret } from '../../config/secret-resolver';
 import { writeFileAtomic } from '../../platform/atomic-write';
@@ -30,6 +31,9 @@ export interface ProfileCommandOptions {
 export interface ProfileCreateOptions extends ProfileCommandOptions {
   agent?: string;
   workspace?: string;
+  binaryPath?: string;
+  launchEnv?: Record<string, string>;
+  permissions?: Partial<PermissionConfig>;
   appId?: string;
   appSecret?: string;
   tenant?: string;
@@ -133,6 +137,9 @@ export async function runProfileCreate(
       profile: name,
       agent: opts.agent,
       workspace: opts.workspace,
+      binaryPath: opts.binaryPath,
+      launchEnv: opts.launchEnv,
+      permissions: opts.permissions,
       appId: opts.appId,
       appSecret: opts.appSecret,
       tenant: opts.tenant,

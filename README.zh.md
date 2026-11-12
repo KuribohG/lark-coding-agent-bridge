@@ -67,6 +67,16 @@ node bin/lark-channel-bridge.mjs web --agent codex --workspace . --state-dir .we
 
 ## 3B. 如果你想接飞书 / Lark
 
+Linux 服务器或没有浏览器时，直接在终端里跟着向导走：
+
+```sh
+node bin/lark-channel-bridge.mjs guide
+```
+
+它依次找出本机的 Claude Code / Codex 可执行文件（含不在 PATH 里的安装）、让你选 Agent 权限、配置模型凭据（官方登录或第三方 API 网关的地址和 token）、扫码或接入飞书应用并列出需要开通的飞书权限，最后写好配置并给出启动命令。非终端环境或加 `--print` 时只打印同样内容的清单。
+
+也可以用网页控制台完成同样的配置：
+
 ```sh
 node bin/lark-channel-bridge.mjs run --web-ui --detach
 ```

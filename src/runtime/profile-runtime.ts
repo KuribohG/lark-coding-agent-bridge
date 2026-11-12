@@ -9,6 +9,7 @@ import {
   createBootstrapProfileConfig,
 } from '../cli/profile-bootstrap';
 import { setSecret } from '../config/keystore';
+import type { PermissionConfig } from '../config/permissions';
 import { resolveAppPaths, type AppPaths } from '../config/app-paths';
 import {
   agentKindFromString,
@@ -36,6 +37,12 @@ export interface ResolveProfileRuntimeOptions {
   profile?: string;
   agent?: string;
   workspace?: string;
+  /** Agent executable for a bootstrapped profile; defaults to the backend's env override or command name. */
+  binaryPath?: string;
+  /** Extra agent process environment for a bootstrapped profile. */
+  launchEnv?: Record<string, string>;
+  /** Permissions for a bootstrapped profile; defaults to the schema default. */
+  permissions?: Partial<PermissionConfig>;
   appId?: string;
   appSecret?: string;
   tenant?: string;
@@ -136,6 +143,9 @@ export async function resolveProfileRuntime(
     preferences: encrypted.preferences,
     secrets: encrypted.secrets,
     workspace,
+    binaryPath: opts.binaryPath,
+    launchEnv: opts.launchEnv,
+    permissions: opts.permissions,
     defaultWorkspace: defaultWorkspaceFor({ agentKind: bootstrapAgent, state: { bridgeRoot: appPaths.rootDir } }),
   });
   const root = createRootConfig(profile, profileConfig, encrypted.secrets);
@@ -171,6 +181,9 @@ async function bootstrapProfileIntoExistingRoot(args: {
     preferences: encrypted.preferences,
     secrets: encrypted.secrets,
     workspace,
+    binaryPath: opts.binaryPath,
+    launchEnv: opts.launchEnv,
+    permissions: opts.permissions,
     defaultWorkspace: defaultWorkspaceFor({ agentKind: bootstrapAgent, state: { bridgeRoot: appPaths.rootDir } }),
   });
   const nextRoot: RootConfig = {

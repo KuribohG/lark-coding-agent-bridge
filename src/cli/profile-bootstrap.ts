@@ -2,7 +2,9 @@ import { mkdir } from 'node:fs/promises';
 import { AgentPreflightError } from '../agent/preflight';
 import { agentBackendSpec } from '../agent/backend-spec';
 import { agentLaunchPatch } from '../agent/capability';
+import type { AgentLaunchProfiles } from '../agent/launch-config';
 import { createDefaultProfileConfig, type AgentKind, type ProfileConfig } from '../config/profile-schema';
+import type { PermissionConfig } from '../config/permissions';
 import type { AppConfig } from '../config/schema';
 import { resolveWorkingDirectory } from '../policy/workspace';
 import { resolveExecutablePath } from '../agent/detection';
@@ -15,6 +17,9 @@ export interface BootstrapProfileInput {
   workspace?: string;
   defaultWorkspace?: string;
   binaryPath?: string;
+  /** Extra environment for the agent process, e.g. a third-party gateway endpoint and token. */
+  launchEnv?: Record<string, string>;
+  permissions?: Partial<PermissionConfig>;
 }
 
 export async function createBootstrapProfileConfig(
@@ -24,7 +29,8 @@ export async function createBootstrapProfileConfig(
   const workspace = input.workspace ? await resolveBootstrapWorkspace(input.workspace) : undefined;
   if (!workspace && input.defaultWorkspace) await mkdir(input.defaultWorkspace, { recursive: true, mode: 0o700 });
   const spec = agentBackendSpec(input.agentKind);
-  const launch = spec.launchRequired
+  // Backends that default to PATH lookup still honour an explicitly chosen executable.
+  const launch = spec.launchRequired || input.binaryPath
     ? await createBootstrapBinaryConfig({
         binaryPath: input.binaryPath,
         envName: spec.commandEnv,
@@ -38,7 +44,8 @@ export async function createBootstrapProfileConfig(
     accounts: input.accounts,
     preferences: input.preferences,
     secrets: input.secrets,
-    ...(launch ? agentLaunchPatch(input.agentKind, launch.binaryPath) : {}),
+    ...(input.permissions ? { permissions: input.permissions } : {}),
+    ...(launch ? withLaunchEnv(agentLaunchPatch(input.agentKind, launch.binaryPath), input.agentKind, input.launchEnv) : {}),
   });
   if (workspace) {
     profile.workspaces = {
@@ -47,6 +54,11 @@ export async function createBootstrapProfileConfig(
     };
   }
   return profile;
+}
+
+function withLaunchEnv(patch: AgentLaunchProfiles, kind: AgentKind, env: Record<string, string> | undefined): AgentLaunchProfiles {
+  if (!env || !Object.keys(env).length) return patch;
+  return { ...patch, [kind]: { ...patch[kind], env } } as AgentLaunchProfiles;
 }
 
 async function resolveBootstrapWorkspace(workspace: string): Promise<string> {
