@@ -216,8 +216,8 @@ describe('swarm', () => {
       lead: [
         { post: { text: '@parser fix the parser. @docs update the docs.' } },
         // parser reported a fourth module: add a member for it, then brief it on the board.
-        { call: ['swarm_add_member', { name: 'lexer', role: 'Own src/lexer/**', brief: 'Same empty-input bug as the parser', like: 'parser' }], post: { text: '@lexer go ahead; report to me' } },
-        { call: ['swarm_retire_member', { name: 'docs' }] },  // woken by the system post about the docs failure
+        { call: ['staff_swarm', { add: ['lexer'], role: 'Own src/lexer/**', brief: 'Same empty-input bug as the parser', like: 'parser' }], post: { text: '@lexer go ahead; report to me' } },
+        { call: ['staff_swarm', { retire: ['docs'] }] },  // woken by the system post about the docs failure
         { call: ['swarm_finish', { result: 'parser and lexer fixed; docs dropped' }], post: { text: '@parser thanks, we are done' } },
       ],
       parser: [{}, { post: { text: '@lead the lexer has the same bug' } }],

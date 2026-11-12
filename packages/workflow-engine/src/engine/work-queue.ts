@@ -10,7 +10,7 @@ import type { Immutable, TaskView, WorkClaim, WorkflowView, WorkflowWorkItem } f
 type ItemView = Immutable<WorkflowWorkItem>;
 type ClaimView = Immutable<WorkClaim>;
 
-export const WORK_MUTATIONS = ['claim_work', 'renew_claim', 'checkpoint_work', 'complete_work', 'fail_work', 'release_claim'];
+export const WORK_MUTATIONS = ['claim_work', 'checkpoint_work', 'complete_work', 'fail_work', 'release_claim'];
 
 function json(value: unknown, name: string): unknown {
   const text = JSON.stringify(value ?? null);
@@ -230,7 +230,7 @@ export function mutateWork(state: WorkflowView, task: TaskView, attemptId: strin
   method: string, args: Record<string, unknown>, now: number): unknown {
   if (!task.agentId) throw new Error('Work claims require a persistent member');
   const allowed: Record<string, string[]> = {
-    claim_work: ['leaseMs', 'queue'], renew_claim: ['leaseMs'], checkpoint_work: ['expectedProgressVersion', 'state'],
+    claim_work: ['leaseMs', 'queue'], checkpoint_work: ['expectedProgressVersion', 'state'],
     complete_work: ['result'], fail_work: ['error', 'retry'], release_claim: ['reason'],
   };
   if (!allowed[method]) throw new Error('Unknown work queue mutation');
@@ -283,11 +283,6 @@ export function mutateWork(state: WorkflowView, task: TaskView, attemptId: strin
     const claim = ownedClaim(state, task, attemptId, args, now);
     const item = itemById(state, claim.itemId);
     switch (method) {
-      case 'renew_claim':
-        emit(state, { type: 'claim_renewed', claimId: claim.id,
-          leaseUntil: Math.min(Math.max(claim.leaseUntil, now + boundedInteger(args.leaseMs, 120_000, 1000, 300_000)), state.deadlineAt) });
-        response = { claimId: claim.id, generation: claim.generation, leaseUntil: claim.leaseUntil };
-        break;
       case 'checkpoint_work':
         if (!Object.hasOwn(args, 'state')) throw new Error('Work progress requires state');
         if (args.expectedProgressVersion !== item.progress.version) throw new Error('progressVersion conflict; read work_status before updating');

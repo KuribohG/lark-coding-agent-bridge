@@ -117,12 +117,8 @@ describe('workflow work queue', () => {
     expect(h.state().workQueue!.items[0]!.progress.version).toBe(1);
     await expect(h.send(request, 'checkpoint_work', { ...progress, state: 'different' })).rejects.toThrow('operationId conflict');
     await expect(h.send(request, 'checkpoint_work', { ...progress, operationId: 'old-version' })).rejects.toThrow('progressVersion conflict');
-    h.advance(1000);
-    const renew = { operationId: 'renew', ...token(grant), leaseMs: 5000 };
-    const extended = await h.send(request, 'renew_claim', renew);
-    h.advance(1000);
-    expect(await h.send(request, 'renew_claim', renew)).toEqual(extended);
-    expect(await h.send(request, 'renew_claim', { ...renew, operationId: 'short-renewal', leaseMs: 1000 })).toEqual(extended);
+    // Leases are the engine's business: members have no renewal to call.
+    await expect(h.send(request, 'renew_claim', { ...token(grant), leaseMs: 5000 })).rejects.toThrow('not permitted');
     const done = { operationId: 'done', ...token(grant), result: { answer: 42 } };
     await h.send(request, 'complete_work', done); await h.send(request, 'complete_work', done);
     expect(h.state().workQueue!.claims).toHaveLength(1);

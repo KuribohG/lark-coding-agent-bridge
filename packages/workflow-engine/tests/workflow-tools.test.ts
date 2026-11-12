@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from '../src/engine/tools/instructions';
+import { WORKFLOW_GUIDE, WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from '../src/engine/tools/instructions';
 import { BUILTIN_WORKFLOW_TOOLS, WorkflowToolRegistry } from '../src/engine/tools/registry';
 import type { WorkflowTask } from '../src/engine/types';
 
@@ -14,6 +14,17 @@ describe('workflow tool plugins', () => {
     // Workers learn read_artifact from the input references in their prompt.
     for (const name of BUILTIN_WORKFLOW_TOOLS.workerNames().filter(name => name !== 'read_artifact')) expect(member, name).toContain(name);
     expect(workflowWorkerInstructions({ agentId: 'member' } as WorkflowTask)).not.toContain('run_workflow');
+  });
+
+  it('keeps the per-turn instructions short and leaves the less common script functions to the guide', () => {
+    for (const name of ['agent(', 'parallel', 'swarm(', 'enqueueWork', 'closeWorkQueue', 'post(', 'staff_swarm', 'workflow guide']) expect(WORKFLOW_TOOL_INSTRUCTIONS, name).toContain(name);
+    const advanced = ['discuss(topic', 'reviewedAgent(prompt', 'speculativeAgent(prompt', 'freezeWorkspace', 'configureLanding(', 'raceTasks(', 'waitFor({'];
+    for (const name of advanced) {
+      expect(WORKFLOW_TOOL_INSTRUCTIONS, name).not.toContain(name);
+      expect(WORKFLOW_GUIDE, name).toContain(name);
+    }
+    expect(WORKFLOW_GUIDE.startsWith(WORKFLOW_TOOL_INSTRUCTIONS)).toBe(true);
+    expect(WORKFLOW_TOOL_INSTRUCTIONS.length).toBeLessThan(8000);
   });
 
   it('rejects ambiguous registrations', () => {

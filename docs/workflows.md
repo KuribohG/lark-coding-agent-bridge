@@ -30,13 +30,17 @@ Each attempt records `startedAt` (queued by the engine), `admittedAt` (the bridg
 
 The old `architecture-review` plugin and agent-led `start`, `delegate`, `send`, `begin_revision_round` API operations have been removed. When explicitly requested, a workflow can perform architecture review as an ordinary script use case; there is no fixed designer/challenger plugin. On upgrade, unfinished old instances are cancelled and release their topic binding. Their existing artifacts remain readable by workflow ID, but old instances cannot resume. The packaged review example demonstrates independent proposals and a conditional revision through this common API.
 
+### What agents are told
+
+The main agent's per-turn instructions cover what most workflows use: `agent`, `parallel`/`pipeline`, work queues, swarms, the board and the operations on a running workflow. The less common script functions (`discuss`, `reviewedAgent`, `speculativeAgent`, mailbox and event waits, task handles, worktrees and landing, nested workflows) are described only in the full guide, which any agent prints with `workflow guide` before using them.
+
 ### Asking the main agent about a running workflow
 
 While a topic has a workflow, every ordinary message in it runs with that workflow's credentials. The main agent can answer "how is it going" from `status`, and act on a request to cancel a stuck worker (`cancel_task`), pause, post to the board, enqueue work or replay an edited script, without a `/workflow` command. Such a turn gets a short description of the operations and a few lines of state; `workflow guide` prints the full script guide when a replay needs it. It cannot start a workflow, and completion events are still delivered by their own wake.
 
 ### Changing the staff of a running swarm
 
-`staff_swarm(swarm?, add?, like?, queue?, role?, revive?, maxTurns?)` lets the main agent adjust a running swarm without replaying the script. `add` names new members, bound like an existing one (`like`, by default the first member that is not the lead) and taking its role and queue unless given; `revive` (`"failed"` or member names) puts failed members back to work by running their last turn again in the same native session; `maxTurns` raises the number of wake-ups per member. Use it when members have failed and queued work has nobody left to take it, or when the work has shifted from one queue to another. A swarm that has already ended cannot be staffed: that still takes a replay.
+`staff_swarm(swarm?, add?, like?, queue?, role?, brief?, revive?, retire?, maxTurns?)` lets the main agent adjust a running swarm without replaying the script; a swarm's lead has the same operation for its own swarm. `retire` names members that finish their current turn and are not woken again. `add` names new members, bound like an existing one (`like`, by default the first member that is not the lead) and taking its role and queue unless given; `revive` (`"failed"` or member names) puts failed members back to work by running their last turn again in the same native session; `maxTurns` raises the number of wake-ups per member. Use it when members have failed and queued work has nobody left to take it, or when the work has shifted from one queue to another. A swarm that has already ended cannot be staffed: that still takes a replay.
 
 Claims no longer depend on members renewing a lease in time. While the turn that holds a claim is running, the engine extends the lease; the claim returns to the queue when the turn ends, is cancelled, or is stopped by the stall watchdog.
 
@@ -246,8 +250,7 @@ The lead is an ordinary member with three more operations and two kinds of syste
 
 | Operation | Effect |
 | --- | --- |
-| `swarm_add_member` with `{operationId, name, role?, brief?, like?, queue?}` | Adds a member while the swarm runs. It uses the harness and model of the existing member `like` (default: the first member other than the lead), so a lead cannot reach anything that was not authorized at the start. Its first turn sees the task, its role and `brief`. Add the member before naming it in a post |
-| `swarm_retire_member` with `{operationId, name}` | The member finishes the turn it is running and is not woken again |
+| `staff_swarm` with `{operationId, add?, like?, queue?, role?, brief?, revive?, retire?, maxTurns?}` | Changes the staff of its swarm while it runs: `add` names new members that use the harness, model, role and queue of the existing member `like` (default: the first member other than the lead) and see `brief` in their first turn; `revive` puts failed members back to work; `retire` lets members finish the turn they are running and never wakes them again; `maxTurns` raises the wake-up limit |
 | `swarm_finish` with `{operationId, result}` | Records the final result (at most 16000 characters). Nobody is woken afterwards; the swarm returns once the turns still running have ended |
 
 - When a member fails, the system posts to the lead with the reason; the member has stopped and the lead decides whether to reassign, replace or drop the work.
@@ -348,7 +351,6 @@ Worker operations:
 | Operation | Arguments beyond `operationId` | Result |
 | --- | --- | --- |
 | `claim_work` | `leaseMs?, queue?` | `{claimId, generation, leaseUntil, item}`, or `null` if nothing is currently claimable |
-| `renew_claim` | `claimId, generation, leaseMs?` | Updated lease, never shorter than the existing lease |
 | `checkpoint_work` | `claimId, generation, expectedProgressVersion, state` | Persisted item progress version |
 | `complete_work` | `claimId, generation, result` | Terminal completed status |
 | `fail_work` | `claimId, generation, error, retry?` | Failed status, or pending when `retry: true` and attempts remain |
@@ -382,7 +384,7 @@ return await swarm('Handle the authorized work, preserve progress and verify the
 ```
 
 - A queue member takes no opening turn: it starts with its first claimable item. Until then it does not exist as a member, so a post cannot name it yet.
-- Its prompt tells it to use `claim_work`, `checkpoint_work`, `renew_claim` and `complete_work`, and to end the turn when a claim returns `null`. It must not sleep or poll. One turn usually claims several items in a row.
+- Its prompt tells it to use `claim_work`, `checkpoint_work` and `complete_work`, and to end the turn when a claim returns `null`. It must not sleep or poll. One turn usually claims several items in a row.
 - The scheduler bounds dispatch by the claimable items and the turns that have not claimed yet. A member that raced another may still receive no item; the same set of available work does not wake it twice.
 - A queue member is still woken by posts that name it, and handles them before consuming work. One swarm can mix queue members with members that only answer posts, and members can consume different queues; see [routed work](workflow-scheduling.md#routed-work-and-dependencies).
 - A member whose turn fails, or whose claim lease expires, stops for this script run. Its claim is released and the other members take the work over. Explicit replay retries its unfinished turn.

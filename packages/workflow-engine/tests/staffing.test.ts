@@ -64,7 +64,8 @@ describe('staffing a running swarm from the main agent', () => {
     await expect(call('staff_swarm', { maxTurns: 0 })).rejects.toThrow();
     await expect(call('staff_swarm', { swarm: 'other', add: ['x'] })).rejects.toThrow('No running swarm');
     await expect(call('staff_swarm', { add: ['w1'] })).rejects.toThrow('already used');
-    await expect(call('staff_swarm', {})).rejects.toThrow('needs add, revive or maxTurns');
+    await expect(call('staff_swarm', {})).rejects.toThrow('needs add, revive, retire or maxTurns');
+    await expect(call('staff_swarm', { retire: ['ghost'] })).rejects.toThrow('Unknown swarm member');
     expect(await call('staff_swarm', { revive: 'failed', add: ['w2'], like: 'w0', maxTurns: 4 })).toMatchObject({ swarm: 'crew', revived: ['w0'], added: ['w2'], maxTurns: 4 });
     expect(member('w0').stopped).toBeUndefined();
     expect(member('w2')).toMatchObject({ queue: 'default', role: 'fixer' });

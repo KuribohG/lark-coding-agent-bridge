@@ -104,7 +104,7 @@ function rules(swarm: SwarmView, member: MemberView): string {
     ] : []),
     ...(lead ? [
       '- You are the lead. You split the work, assign it on the board, judge results and decide when the swarm is done. The system posts to you when a member fails and when everyone has gone idle.',
-      '- swarm_add_member adds a member while the swarm runs and swarm_retire_member stops one. Call swarm_finish with the final result once the task is complete or cannot progress; the swarm ends when the turns still running have finished.',
+      '- staff_swarm adds members while the swarm runs, retires them and revives failed ones. Call swarm_finish with the final result once the task is complete or cannot progress; the swarm ends when the turns still running have finished.',
     ] : swarm.lead ? [`- @${swarm.lead} is the lead: it assigns work and decides when the swarm is done. Report results and blockers to it. When you have nothing to report and need nothing, end the turn without posting.`]
       : ['- When you need nothing from anyone and have nothing to report, end the turn without posting. The swarm finishes when everyone is asleep.']),
   ].join('\n');
@@ -160,7 +160,7 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       const detail = (task.error ?? `turn is ${task.status}`).slice(0, 500);
       record({ type: 'swarm_member_stopped', swarmId: swarm.id, member: member.name, reason: 'failed', detail });
       // Naming the member without @ keeps the notice from being delivered to it.
-      if (member.name !== swarm.lead && !swarm.finish) notifyLead(`Member "${member.name}" failed and has stopped: ${detail}\nReassign its work, add a replacement with swarm_add_member, or finish.`);
+      if (member.name !== swarm.lead && !swarm.finish) notifyLead(`Member "${member.name}" failed and has stopped: ${detail}\nReassign its work, add a replacement or revive it with staff_swarm, or finish.`);
     }
     const lead = swarm.members.find(member => member.name === swarm.lead);
     // Work a queue member could claim now, less the turns already running that have not claimed yet.
@@ -245,22 +245,6 @@ function leadSwarm(state: WorkflowView, caller: string): SwarmView {
   return swarm;
 }
 
-/** A new member runs with the execution binding of an existing one, so a lead cannot reach harnesses or models nobody authorized. */
-export function addSwarmMember(state: WorkflowView, caller: string, input: Record<string, unknown>): unknown {
-  const swarm = leadSwarm(state, caller);
-  const name = memberName(input.name);
-  if (nameTaken(state, name)) throw new Error('Member name is already used in this workflow: ' + name);
-  if (swarm.members.length >= SWARM_MAX_MEMBERS) throw new Error(`A swarm holds at most ${SWARM_MAX_MEMBERS} members, retired ones included`);
-  const like = input.like === undefined ? swarm.members.find(member => member.name !== caller) ?? swarm.members[0]! : swarm.members.find(member => member.name === input.like);
-  if (!like) throw new Error('like must name an existing member of this swarm');
-  const member: SwarmMember = { name, execution: like.execution as WorkerExecution, turns: 0, added: true,
-    ...(input.role !== undefined ? { role: role(input.role) } : {}), ...(input.brief !== undefined ? { brief: scriptText(input.brief, 'member brief', 4000) } : {}),
-    ...(like.workflowTool ? { workflowTool: true } : {}), ...(input.queue !== undefined ? { queue: queueName(input.queue) } : {}) };
-  if (member.queue) openQueue(state, member.queue);
-  emit(state, { type: 'swarm_member_added', swarmId: swarm.id, member });
-  return { member: name, like: like.name, harness: like.execution.agentKind, model: like.execution.modelSettings.model };
-}
-
 function runningSwarm(state: WorkflowView, key: unknown): SwarmView {
   const running = (state.swarms ?? []).filter(swarm => swarm.status === 'running' && swarm.runId === state.script?.runId && !swarm.finish);
   const swarm = key === undefined ? (running.length === 1 ? running[0] : undefined) : running.find(item => item.key === scriptText(key, 'swarm key', 80));
@@ -269,15 +253,16 @@ function runningSwarm(state: WorkflowView, key: unknown): SwarmView {
 }
 
 /**
- * Changes the main agent makes to a running swarm, so that staffing can follow the work without a replay:
- * more members (bound like an existing one, as with a lead's swarm_add_member), more wake-ups, and failed
- * members put back to work.
+ * Changes to the staff of a running swarm, by the main agent or by the swarm's lead, so that staffing can follow
+ * the work without a replay: more members, more wake-ups, failed members put back to work, members retired.
+ * A new member runs with the execution binding of an existing one, so nobody reaches harnesses or models that
+ * were not authorized.
  */
-export function staffSwarm(state: WorkflowView, input: Record<string, unknown>): unknown {
-  if (Object.keys(input).some(key => !['swarm', 'add', 'like', 'queue', 'role', 'revive', 'maxTurns'].includes(key))) throw new Error('staff_swarm supports swarm, add, like, queue, role, revive and maxTurns');
-  const swarm = runningSwarm(state, input.swarm);
-  if (input.add === undefined && input.revive === undefined && input.maxTurns === undefined) throw new Error('staff_swarm needs add, revive or maxTurns');
-  const result: { swarm: string; added?: string[]; revived?: string[]; maxTurns?: number } = { swarm: swarm.key };
+export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, lead?: string): unknown {
+  if (Object.keys(input).some(key => !['swarm', 'add', 'like', 'queue', 'role', 'brief', 'revive', 'retire', 'maxTurns'].includes(key))) throw new Error('staff_swarm supports swarm, add, like, queue, role, brief, revive, retire and maxTurns');
+  const swarm = lead === undefined ? runningSwarm(state, input.swarm) : leadSwarm(state, lead);
+  if (input.add === undefined && input.revive === undefined && input.retire === undefined && input.maxTurns === undefined) throw new Error('staff_swarm needs add, revive, retire or maxTurns');
+  const result: { swarm: string; added?: string[]; revived?: string[]; retired?: string[]; maxTurns?: number } = { swarm: swarm.key };
   if (input.maxTurns !== undefined) {
     const maxTurns = boundedInteger(input.maxTurns, swarm.maxTurns, 1, 64);
     if (maxTurns < swarm.maxTurns) throw new Error(`maxTurns can only be raised; it is ${swarm.maxTurns}`);
@@ -301,6 +286,18 @@ export function staffSwarm(state: WorkflowView, input: Record<string, unknown>):
     }
     result.revived = names;
   }
+  if (input.retire !== undefined) {
+    if (!Array.isArray(input.retire) || !input.retire.length) throw new Error('retire is an array of member names');
+    const names = input.retire.map(name => scriptText(name, 'member name', 100));
+    for (const name of names) {
+      const member = swarm.members.find(item => item.name === name);
+      if (!member) throw new Error('Unknown swarm member: ' + name);
+      if (name === swarm.lead) throw new Error('The lead cannot be retired; it ends the swarm with swarm_finish');
+      // The turn it is running finishes; it is not woken again.
+      if (!member.stopped) emit(state, { type: 'swarm_member_stopped', swarmId: swarm.id, member: name, reason: 'retired' });
+    }
+    result.retired = names;
+  }
   if (input.add !== undefined) {
     if (!Array.isArray(input.add) || !input.add.length || input.add.length > 64) throw new Error('add is an array of 1–64 new member names');
     const names = input.add.map(memberName);
@@ -309,26 +306,17 @@ export function staffSwarm(state: WorkflowView, input: Record<string, unknown>):
     const like = input.like === undefined ? swarm.members.find(member => member.name !== swarm.lead) ?? swarm.members[0]! : swarm.members.find(member => member.name === input.like);
     if (!like) throw new Error('like must name an existing member of this swarm');
     const queue = input.queue === undefined ? like.queue : queueName(input.queue);
+    const brief = input.brief === undefined ? undefined : scriptText(input.brief, 'member brief', 4000);
     const described = input.role === undefined ? like.role : role(input.role);
     if (queue) openQueue(state, queue);
     for (const name of names) {
       if (nameTaken(state, name)) throw new Error('Member name is already used in this workflow: ' + name);
       emit(state, { type: 'swarm_member_added', swarmId: swarm.id, member: { name, execution: like.execution as WorkerExecution, turns: 0, added: true,
-        ...(described !== undefined ? { role: described } : {}), ...(like.workflowTool ? { workflowTool: true } : {}), ...(queue ? { queue } : {}) } });
+        ...(described !== undefined ? { role: described } : {}), ...(brief !== undefined ? { brief } : {}), ...(like.workflowTool ? { workflowTool: true } : {}), ...(queue ? { queue } : {}) } });
     }
     result.added = names;
   }
   return result;
-}
-
-export function retireSwarmMember(state: WorkflowView, caller: string, input: Record<string, unknown>): unknown {
-  const swarm = leadSwarm(state, caller);
-  const name = scriptText(input.name, 'member name', 100);
-  const member = swarm.members.find(item => item.name === name);
-  if (!member) throw new Error('Unknown swarm member: ' + name);
-  if (name === caller) throw new Error('The lead cannot retire itself; call swarm_finish instead');
-  if (!member.stopped) emit(state, { type: 'swarm_member_stopped', swarmId: swarm.id, member: name, reason: 'retired' });
-  return { member: name, stopped: member.stopped ?? 'retired' };
 }
 
 export function finishSwarm(state: WorkflowView, caller: string, input: Record<string, unknown>): unknown {
