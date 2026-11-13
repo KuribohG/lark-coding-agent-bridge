@@ -129,7 +129,7 @@ describe('workflow message board', () => {
 });
 
 describe('swarm', () => {
-  type Action = { post?: { text: string; to?: string[] }; call?: [string, Record<string, unknown>]; calls?: Array<[string, Record<string, unknown>]>; fail?: boolean; work?: boolean };
+  type Action = { post?: { text: string; to?: string[] }; call?: [string, Record<string, unknown>]; calls?: Array<[string, Record<string, unknown>]>; fail?: boolean; work?: boolean; hold?: Promise<void> };
   /** Runs a script whose members act out `plan`: what each does on its nth turn (opening turn first). */
   async function play(script: string, plan: Record<string, Action[]>) {
     const root: WorkflowRoot = { scopeId: 'chat', profile: 'embedded', agentKind: 'custom-agent', cwdRealpath: '/repo',
@@ -165,6 +165,8 @@ describe('swarm', () => {
                   try { results.push(await callWorkflow(method, { operationId: 'calls' + index, ...input }, spec.env)); } catch (error) { errors.push(String(error)); }
                 }
                 if (action.post) await callWorkflow('post_board', { operationId: 'post', ...action.post }, spec.env);
+                // Keeps the turn running until the test lets it end.
+                if (action.hold) await action.hold;
               } catch (error) { errors.push(String(error)); }
               if (action.fail) { yield { type: 'error', message: 'model refused' }; yield { type: 'done', normal: false }; return; }
               yield { type: 'final_text', text: `${name} turn ${turn}` };
@@ -258,6 +260,43 @@ describe('swarm', () => {
     expect(state().board!.posts.filter(post => post.author === 'system')).toHaveLength(3);
     // One event for the stall, however often the idle swarm is looked at again.
     expect(state().events.filter(event => event.kind === 'swarm_stalled')).toMatchObject([{ summary: expect.stringContaining('swarm "idle" 停滞') }]);
+  });
+
+  it('does not bound the lead by maxTurns, and gathers the posts that name it while other members work', async () => {
+    // Read through a spy installed before the runtime exists, so the test can move the kernel's clock.
+    let ahead = 0;
+    const real = Date.now.bind(Date);
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => real() + ahead);
+    cleanup.push(async () => clock.mockRestore());
+    let release!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const h = await play('return await swarm("Coordinate", {key:"long", maxTurns: 1, lead:{name:"lead"}, members:[{name:"dev"},{name:"slow"}]});', {
+      lead: [{}, { post: { text: 'answer one', to: ['dev'] } }, {}, { call: ['swarm_finish', { result: 'done' }] }],
+      dev: [{ post: { text: 'question one', to: ['lead'] } }, { post: { text: 'question two', to: ['lead'] } }],
+      slow: [{ hold }],
+    });
+    const state = () => h.runtime.kernel.state(h.root.scopeId)!;
+    const leadTurns = () => h.order.filter(name => name.startsWith('lead'));
+    const ticks = async (count: number) => { for (let pass = 0; pass < count; pass++) { await h.runtime.tick(); await new Promise(resolve => setTimeout(resolve, 5)); } };
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(h.order).toContain('dev1'); expect(state().board!.posts.some(post => post.text === 'question one')).toBe(true); }, { timeout: 10_000 });
+    // slow is still working, so the post waits for the lead's gap (three members: 90 seconds) instead of waking it at once.
+    await ticks(5);
+    expect(leadTurns()).toEqual(['lead1']);
+    expect(state().swarms![0]).toMatchObject({ status: 'running', nudges: 0 });
+    expect(state().swarms![0]!.stalled).toBeUndefined();
+    ahead += 91_000;
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(h.order).toContain('dev2'); expect(state().board!.posts.some(post => post.text === 'question two')).toBe(true); }, { timeout: 10_000 });
+    // dev has used its one wake-up; its second question is gathered again while slow works.
+    await ticks(5);
+    expect(leadTurns()).toEqual(['lead1', 'lead2']);
+    // With nobody else working the lead is woken at once, beyond maxTurns, and it ends the swarm.
+    release();
+    const { result } = await h.settled();
+    expect(h.errors).toEqual([]);
+    expect(leadTurns()).toEqual(['lead1', 'lead2', 'lead3', 'lead4']);
+    expect(result).toMatchObject({ stop: 'finished', result: 'done', members: [{ name: 'lead', turns: 3, status: 'idle' }, { name: 'dev', turns: 1, status: 'max_turns' }, { name: 'slow', turns: 0 }] });
+    expect(h.specs.find(spec => /You are member "lead"/.test(spec.prompt))!.prompt).toContain('Your wake-ups are not limited');
+    expect(h.specs.find(spec => /You are member "dev"/.test(spec.prompt))!.prompt).toContain('woken at most 1 times');
   });
 
   it('lets members add the work they find, once per key, and ends only on the lead\'s verdict', async () => {

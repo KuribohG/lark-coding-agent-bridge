@@ -16,6 +16,13 @@ const NAME = /^[A-Za-z0-9_.-]{1,40}$/;
 const RESERVED = ['all', 'main', 'script', 'system'];
 /** How often an idle swarm reminds its lead to assign work or finish before the main agent is told that it has stalled. */
 const MAX_NUDGES = 2;
+/**
+ * While other members are working, posts to the lead are gathered and it is woken at most once per this gap after its
+ * last turn: half a minute per member, ten minutes at most. A lead is woken per post otherwise, and in a large swarm
+ * that is one turn of the most expensive member for every question.
+ */
+const LEAD_GAP_PER_MEMBER_MS = 30_000;
+const LEAD_GAP_MAX_MS = 10 * 60_000;
 
 type SwarmView = Immutable<WorkflowSwarm>;
 type MemberView = Immutable<SwarmMember>;
@@ -100,7 +107,9 @@ function rules(swarm: SwarmView, member: MemberView): string {
     '- The board is one ordered feed that every member can read. Post with post_board and name who must act in "to" (member names, or "all"); read with read_board.',
     '- Your turn ends with your final answer. You then sleep at no cost and are woken only when a post names you; those posts arrive in read_context (member.messages).',
     '- Post results, questions, hand-offs and blockers that others need, with enough detail to act on. Do not post acknowledgements or thanks: every post that names a member costs that member a turn.',
-    `- After this first turn you can be woken at most ${swarm.maxTurns} times. Save a checkpoint of your working state before ending a turn. Your final answer is a short status note for the workflow log; teammates only see board posts.`,
+    (lead ? '- Your wake-ups are not limited, but while other members are working the posts that name you are gathered and you are woken for them every few minutes, so handle everything that has arrived in one turn.'
+      : `- After this first turn you can be woken at most ${swarm.maxTurns} times.`)
+      + ' Save a checkpoint of your working state before ending a turn. Your final answer is a short status note for the workflow log; teammates only see board posts.',
     ...(member.queue ? [
       `- You consume work queue "${member.queue}" and are also woken when it has work you can claim. Use claim_work to take an item, read item.progress before acting, save checkpoint_work, renew long-running claims, then complete_work or fail_work. Continue until claim_work returns null, then end the turn; do not poll or sleep waiting for work.`,
     ] : []),
@@ -122,7 +131,7 @@ function openingPrompt(swarm: SwarmView, member: MemberView): string {
 }
 
 function wakePrompt(swarm: SwarmView, member: MemberView): string {
-  return `Swarm "${swarm.key}", wake-up ${member.turns + 1} of at most ${swarm.maxTurns}: board posts that name you are in read_context (member.messages). `
+  return `Swarm "${swarm.key}", wake-up ${member.turns + 1}${swarm.lead === member.name ? '' : ' of at most ' + swarm.maxTurns}: board posts that name you are in read_context (member.messages). `
     + 'Act on them, use read_board for wider context, and post what others need.'
     + (member.queue ? ` Then consume queue "${member.queue}" with claim_work until it returns null; you may have been woken for new work alone.` : '') + ' End with a short status note.';
 }
@@ -185,9 +194,15 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
         get wake() { return digest ??= workflowDigest(available.map(item => ({ id: item.id, generation: item.generation }))); } }];
     }));
     const hasWork = (member: MemberView) => { const found = member.queue ? work.get(member.queue) : undefined; return Boolean(found && found.slots > 0 && member.lastWake !== found.wake); };
+    // The lead coordinates for as long as the swarm runs, so maxTurns bounds the other members only.
+    const turnsLeft = (member: MemberView) => member.name === swarm.lead || member.turns < swarm.maxTurns;
+    const gap = Math.min(LEAD_GAP_MAX_MS, LEAD_GAP_PER_MEMBER_MS * swarm.members.filter(member => !member.stopped).length);
+    // With nobody else working there is nothing to gather for, and the lead is woken at once.
+    const gathering = (member: MemberView) => member.name === swarm.lead && now - (taskOf(member)?.attempts.at(-1)?.endedAt ?? 0) < gap
+      && swarm.members.some(other => other !== member && busy(other));
     // Once the lead has finished the swarm, the turns still running end it; nobody is woken again.
     const wakeable = (member: MemberView) => !member.stopped && !busy(member) && !swarm.finish
-      && (member.retryPending || (member.taskId ? member.turns < swarm.maxTurns && (unread(member) || hasWork(member))
+      && (member.retryPending || (member.taskId ? turnsLeft(member) && !gathering(member) && (unread(member) || hasWork(member))
         // A queue consumer starts with its first claimable item instead of an opening turn with nothing to do.
         : !member.queue || hasWork(member)));
     if (!swarm.members.some(busy) && !swarm.members.some(wakeable)) {
@@ -195,15 +210,14 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       if (swarm.finish) { end('finished'); return changed; }
       if (lead) {
         // Idle members are not a verdict: a swarm with a lead ends only when the lead finishes it.
-        const spent = lead.turns >= swarm.maxTurns;
-        if (!spent && swarm.nudges < MAX_NUDGES) {
+        if (swarm.nudges < MAX_NUDGES) {
           record({ type: 'swarm_nudged', swarmId: swarm.id });
           notifyLead('Every member is idle and nothing is waiting to be read. Check the task\'s goal against evidence. If it is not met, find what is missing and hand it out: '
             + 'name members on the board, or add items with enqueue_work. Call swarm_finish only when the goal is met or cannot progress, and say which.');
         } else if (!swarm.stalled) {
           record({ type: 'swarm_stalled', swarmId: swarm.id });
           pushEvent(state, { kind: 'swarm_stalled', summary: `swarm "${swarm.key}" 停滞：全体成员空闲，`
-            + (spent ? `lead 的 ${swarm.maxTurns} 次唤醒已用完` : `lead 经 ${MAX_NUDGES} 次提醒仍未分派工作，也未调用 swarm_finish`)
+            + `lead 经 ${MAX_NUDGES} 次提醒仍未分派工作，也未调用 swarm_finish`
             + '。swarm 仍在运行并等待：用 post_board 点名成员继续、enqueue_work 补充工作，或 staff_swarm 加人、提高 maxTurns；确认无事可做再取消。' }, () => now);
         }
         return changed;
@@ -346,7 +360,7 @@ export function finishSwarm(state: WorkflowView, caller: string, input: Record<s
 
 function memberSummary(state: WorkflowView, swarm: SwarmView, member: MemberView) {
   const task = taskById(state, member.taskId);
-  const status = member.stopped ?? (task && BUSY.has(task.status) ? 'running' : swarm.status === 'running' ? 'waiting' : member.turns >= swarm.maxTurns ? 'max_turns' : 'idle');
+  const status = member.stopped ?? (task && BUSY.has(task.status) ? 'running' : swarm.status === 'running' ? 'waiting' : member.name !== swarm.lead && member.turns >= swarm.maxTurns ? 'max_turns' : 'idle');
   return { name: member.name, ...(member.name === swarm.lead ? { lead: true } : {}), ...(member.queue ? { queue: member.queue } : {}), ...(member.added ? { added: true } : {}), turns: member.turns, status,
     ...(member.detail ? { error: member.detail } : {}) };
 }
