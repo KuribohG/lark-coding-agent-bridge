@@ -1,4 +1,5 @@
 import { emit } from './kernel-store';
+import { CALL_KINDS, callRecordId, type CallList, type RecordKind } from './records';
 import type { TaskView, WorkflowView } from './types';
 
 /**
@@ -41,4 +42,49 @@ export function archiveFinished(state: WorkflowView, now: number, after = ARCHIV
     sessionRefs: tasks.filter(task => !task.agentId).map(task => task.sessionRef),
     artifactRefs: state.artifacts.filter(artifact => artifact.taskId !== undefined && taskIds.has(artifact.taskId)).map(artifact => artifact.ref) });
   return tasks.length;
+}
+
+/** Entries of an idempotency or feed list that stay in the state; lookups of older ones read the archive. */
+export const KEEP_RECENT = 256;
+
+/**
+ * Moves the settled entries of the workflow's other lists out of the state (see records.ts): old board posts,
+ * consumed messages and receipts, finished work items and claims, settled waits, acknowledged notices, and all but
+ * the latest idempotency records and script keys. What may still change stays: unread messages, open receipts,
+ * pending, claimed and failed work items, items an unfinished item depends on, active claims and open waits.
+ */
+export function archiveRecords(state: WorkflowView, now: number, after = ARCHIVE_AFTER_MS, batch = ARCHIVE_BATCH): number {
+  let moved = 0;
+  const archive = (kind: RecordKind, ids: string[]) => {
+    if (ids.length < batch) return;
+    emit(state, { type: 'records_archived', kind, ids });
+    moved += ids.length;
+  };
+  const old = (at: number | undefined) => (at ?? 0) <= now - after;
+  /** Everything before the latest KEEP_RECENT entries. */
+  const older = <T>(list: ReadonlyArray<T> | undefined, id: (entry: T) => string) => (list ?? []).slice(0, Math.max(0, (list?.length ?? 0) - KEEP_RECENT)).map(id);
+
+  // Posts are archived as a prefix of the feed, so a post's place in the state follows from its seq.
+  archive('post', older(state.board?.posts, post => String(post.seq)));
+  archive('message', (state.mailbox?.messages ?? []).filter(message => message.consumedByTurnId && old(message.createdAt)).map(message => message.id));
+  archive('receipt', (state.mailbox?.receipts ?? []).filter(receipt => receipt.status === 'consumed').map(receipt => receipt.id));
+  archive('mailboxOperation', older(state.mailbox?.operations, operation => operation.key));
+
+  const work = state.workQueue;
+  if (work) {
+    const needed = new Set(work.items.filter(item => item.status !== 'completed' && item.status !== 'cancelled').flatMap(item => item.dependsOn ?? []));
+    archive('workItem', work.items.filter(item => (item.status === 'completed' || item.status === 'cancelled') && !needed.has(item.key) && old(item.updatedAt)).map(item => item.id));
+    archive('claim', work.claims.filter(claim => claim.status !== 'active' && old(claim.endedAt)).map(claim => claim.id));
+    archive('workOperation', older(work.operations, operation => operation.key));
+  }
+
+  const bound = new Set((state.agents ?? []).flatMap(agent => agent.wait?.kind === 'event' ? [agent.wait.receiptId] : []));
+  archive('wait', (state.waits ?? []).filter(wait => wait.status === 'ready' && !bound.has(wait.id) && old(wait.createdAt)).map(wait => wait.id));
+  archive('controlOperation', older(state.controlOperations, operation => operation.key));
+  archive('workspaceKey', older(state.workspaceKeys, key => key));
+  archive('notice', state.events.filter(notice => notice.acknowledged && old(notice.acknowledgedAt)).map(notice => notice.id));
+  archive('direct', older(state.direct, message => message.id));
+  const { script } = state;
+  if (script) for (const list of Object.keys(CALL_KINDS) as CallList[]) archive(CALL_KINDS[list], older(script[list], key => callRecordId(script, key)));
+  return moved;
 }

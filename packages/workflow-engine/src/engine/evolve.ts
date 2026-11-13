@@ -1,4 +1,5 @@
 import type { DomainEvent } from './events';
+import { CALL_KINDS, RECORDS } from './records';
 import type { Immutable, MailboxMessage, MailboxReceipt, StoredTask, WorkflowData, WorkflowView, WorkflowWait, WorkflowWorkItem, WorkflowWorkQueue } from './types';
 
 /**
@@ -45,6 +46,8 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       for (const wait of state.waits ?? []) releaseBindings(state, wait.id);
       script.calls = []; script.mailboxCalls = []; script.workCalls = []; script.controlCalls = []; script.workspaceCalls = [];
       if (script.archivedCalls) script.archivedCalls = 0;
+      // Keyed calls belong to a run; the archived ones of the run that ended stay in the archive under its ID.
+      for (const kind of Object.values(CALL_KINDS)) if (state.archivedRecords?.[kind]) state.archivedRecords[kind] = 0;
       script.logs = []; script.error = undefined; script.resultRef = undefined; script.phase = undefined;
       state.status = 'active';
       return;
@@ -91,6 +94,21 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
         const kept = found.turns.filter(turn => !gone.has(turn.taskId));
         if (kept.length < found.turns.length) { found.archivedTurns = (found.archivedTurns ?? 0) + found.turns.length - kept.length; found.turns = kept; }
       }
+      return;
+    }
+    case 'records_archived': {
+      const spec = RECORDS[event.kind];
+      const gone = new Set(event.ids);
+      const list = spec.list(state) ?? [];
+      // A new array, as for tasks: byId() indexes arrays on the assumption that they only grow.
+      const kept = list.filter(entry => {
+        if (!gone.has(spec.id(entry, state))) return true;
+        spec.left?.(state, entry);
+        return false;
+      });
+      spec.replace(state, kept);
+      const totals = state.archivedRecords ??= {};
+      totals[event.kind] = (totals[event.kind] ?? 0) + list.length - kept.length;
       return;
     }
     case 'task_requeued': {
@@ -252,7 +270,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
     case 'swarm_finish_requested': swarm(state, event.swarmId).finish = { result: event.result }; return;
     case 'swarm_ended': {
       const found = swarm(state, event.swarmId);
-      found.status = 'done'; found.stop = event.stop; found.reason = event.reason; found.lastPost = state.board?.posts.length ?? 0;
+      found.status = 'done'; found.stop = event.stop; found.reason = event.reason; found.lastPost = (state.board?.posts.length ?? 0) + (state.archivedRecords?.post ?? 0);
       return;
     }
 

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { workflowDigest } from './digest';
 import { byId } from './evolve';
+import { archivedRecord, workItemByKey, workOperationByKey } from './kernel-state';
 import { emit } from './kernel-store';
 import { WORK_MAX_BYTES, WORK_MAX_CLAIMS, WORK_MAX_ITEMS, WORK_MAX_OPERATIONS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
@@ -42,7 +43,9 @@ function capacity(state: WorkflowView, ...added: unknown[]): void {
 }
 
 function itemById(state: WorkflowView, value: unknown): ItemView {
-  const item = byId(state.workQueue?.items ?? [], found => found.id, scriptText(value, 'itemId', 100));
+  const id = scriptText(value, 'itemId', 100);
+  // An archived item is completed or cancelled and will not change.
+  const item = byId(state.workQueue?.items ?? [], found => found.id, id) ?? archivedRecord<WorkflowWorkItem>(state, 'workItem', { id });
   if (!item) throw new Error('Unknown work item');
   return item;
 }
@@ -75,12 +78,12 @@ export function enqueueWork(state: WorkflowView, args: Record<string, unknown>, 
   const routing = { ...(name !== 'default' ? { queue: name } : {}), ...(priority ? { priority } : {}), ...(dependsOn.length ? { dependsOn } : {}) };
   const digest = workflowDigest({ key, title, input, maxAttempts, resources, ...routing });
   const items = state.workQueue?.items ?? [];
-  const prior = items.find(item => item.key === key);
+  const prior = workItemByKey(state, key);
   if (prior) {
     if (prior.digest !== digest) throw new Error('Work key conflict: input is immutable across replay');
     return { itemId: prior.id, key };
   }
-  if (dependsOn.some(dependency => !items.some(item => item.key === dependency))) throw new Error('Dependencies must reference existing work keys; enqueue prerequisites first');
+  if (dependsOn.some(dependency => !workItemByKey(state, dependency))) throw new Error('Dependencies must reference existing work keys; enqueue prerequisites first');
   if (queueControl(state, name)?.closedAt !== undefined) throw new Error('Work queue is closed; new items cannot be enqueued');
   if (items.length >= WORK_MAX_ITEMS) throw new Error('Work item limit reached');
   openQueue(state, name);
@@ -100,7 +103,7 @@ export function enqueueFromMember(state: WorkflowView, task: TaskView, args: Rec
   const member = state.agents?.find(agent => agent.agentId === task.agentId)?.key;
   const { operationId: _operationId, ...input } = args;
   const key = scriptText(input.key, 'work key', 160);
-  const prior = state.workQueue?.items.find(item => item.key === key);
+  const prior = workItemByKey(state, key);
   if (prior) return { itemId: prior.id, key, existing: true, status: prior.status, title: prior.title.slice(0, 120) };
   const name = queueName(input.queue ?? memberQueue(state, member));
   if (!queueNames(state).includes(name)) throw new Error(`Unknown work queue; members add to existing queues: ${queueNames(state).join(', ')}`);
@@ -176,7 +179,7 @@ export function availableWork(state: WorkflowView, name?: string): ItemView[] {
   const available: ItemView[] = [];
   for (const item of [...items].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))) {
     if (name !== undefined && (item.queue ?? 'default') !== name) continue;
-    if (item.dependsOn?.some(key => !items.some(dependency => dependency.key === key && dependency.status === 'completed'))) continue;
+    if (item.dependsOn?.some(key => workItemByKey(state, key)?.status !== 'completed')) continue;
     if (item.status !== 'pending' || item.generation >= item.maxAttempts || item.resources.some(key => occupied.has(key))) continue;
     available.push(item);
     for (const key of item.resources) occupied.add(key);
@@ -197,8 +200,14 @@ export function workStatus(state: WorkflowView, args: Record<string, unknown> = 
   const limit = boundedInteger(args.limit, 16, 1, 64);
   const counts = { pending: 0, claimed: 0, completed: 0, failed: 0, cancelled: 0 };
   for (const item of items) counts[item.status]++;
+  // Archived items are counted; the page below lists the ones still in the state.
+  let archived = 0;
+  for (const [queue, totals] of Object.entries(state.workQueue?.archived ?? {})) {
+    if (name !== undefined && queue !== name) continue;
+    for (const [status, count] of Object.entries(totals)) { counts[status as keyof typeof counts] += count; archived += count; }
+  }
   const controls = (name === undefined ? queueNames(state) : [name]).map(name => queueControl(state, name));
-  return { total: items.length, ...counts, closed: controls.every(control => control?.closedAt !== undefined),
+  return { total: items.length + archived, ...(archived ? { archived } : {}), ...counts, closed: controls.every(control => control?.closedAt !== undefined),
     closedAt: name === undefined ? state.workQueue?.closedAt : queueControl(state, name)?.closedAt,
     offset, nextOffset: offset + limit < items.length ? offset + limit : null,
     items: items.slice(offset, offset + limit).map(item => ({
@@ -224,7 +233,7 @@ function ownedClaim(state: WorkflowView, task: TaskView, attemptId: string, args
 /** The recorded response of a work operation of this attempt, so a repeated call can answer without acting again. */
 export function workOperation(state: WorkflowView, task: TaskView, attemptId: string, operationId: unknown): { response: unknown } | undefined {
   const key = `${task.taskId}:${attemptId}:${scriptText(operationId, 'operationId', 160)}`;
-  const prior = state.workQueue?.operations.find(operation => operation.key === key);
+  const prior = workOperationByKey(state, key);
   return prior && { response: prior.response };
 }
 
@@ -237,7 +246,7 @@ export function holdClaim(state: WorkflowView, task: TaskView, attemptId: string
 export function workContext(state: WorkflowView, task: TaskView): unknown {
   const claim = state.workQueue?.claims.find(claim => claim.status === 'active' && claim.taskId === task.taskId);
   const subscribed = memberQueue(state, state.agents?.find(agent => agent.agentId === task.agentId)?.key);
-  return state.workQueue ? { total: state.workQueue.items.length, queue: subscribed ?? 'default',
+  return state.workQueue ? { total: state.workQueue.items.length + (state.archivedRecords?.workItem ?? 0), queue: subscribed ?? 'default',
     claim: claim ? { ...claim, item: workStatus(state, { itemId: claim.itemId }) } : null } : undefined;
 }
 
@@ -255,7 +264,7 @@ export function mutateWork(state: WorkflowView, task: TaskView, attemptId: strin
   const key = `${task.taskId}:${attemptId}:${operationId}`;
   const digest = workflowDigest({ method, args });
   const operations = state.workQueue?.operations ?? [];
-  const prior = operations.find(operation => operation.key === key);
+  const prior = workOperationByKey(state, key);
   const present = (response: unknown) => {
     if (method !== 'claim_work' || response === null) return response;
     const claim = ownedClaim(state, task, attemptId, response as Record<string, unknown>, now);

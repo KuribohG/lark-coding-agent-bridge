@@ -1,3 +1,5 @@
+import type { RecordKind } from './records';
+
 /** Harness names are host-defined; the engine treats them as opaque strings. */
 export type AgentKind = string;
 
@@ -276,6 +278,8 @@ export interface WorkflowWorkQueue {
   items: WorkflowWorkItem[];
   claims: WorkClaim[];
   operations: Array<{ key: string; digest: string; response: unknown }>;
+  /** Archived items of each queue by their final status. */
+  archived?: Record<string, Partial<Record<WorkflowWorkItem['status'], number>>>;
   closedAt?: number;
   closeKey?: string;
   queues?: Record<string, { closedAt?: number; closeKey?: string }>;
@@ -429,6 +433,8 @@ export interface WorkflowState {
   tasks: WorkflowTask[];
   artifacts: WorkflowArtifact[];
   archived?: WorkflowArchiveTotals;
+  /** Entries of each other list that have left the state for the archive (see records.ts). */
+  archivedRecords?: Partial<Record<RecordKind, number>>;
   events: WorkflowEvent[];
   agents?: DurableAgent[];
   checkpoints?: AgentCheckpoint[];

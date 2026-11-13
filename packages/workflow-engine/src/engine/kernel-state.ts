@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { workflowDigest } from './digest';
 import { byId } from './evolve';
-import { archiveOf, emit, putText, readText } from './kernel-store';
-import type { ArtifactView, Immutable, StoredArtifact, TaskView, WorkflowArtifact, WorkflowEvent, WorkflowRoot, WorkflowTask, WorkflowView } from './types';
+import { archiveOf, emit, putText, readText, recordsOf } from './kernel-store';
+import { callRecordId, CALL_KINDS, type CallList, type RecordKind } from './records';
+import type { ArtifactView, BoardPost, Immutable, MailboxReceipt, StoredArtifact, TaskView, WorkflowArtifact, WorkflowEvent, WorkflowRoot, WorkflowTask, WorkflowView, WorkflowWait, WorkflowWorkItem } from './types';
 
 /** Shared state helpers for the kernel's collaborators. Changes are recorded as events inside a store transaction. */
 
@@ -99,4 +100,48 @@ export function addArtifact(state: WorkflowView, kind: string, text: string, now
 
 export function pushEvent(state: WorkflowView, event: Omit<WorkflowEvent, 'id' | 'acknowledged' | 'notified'>, now: () => number): void {
   emit(state, { type: 'notice_raised', notice: { ...event, id: randomUUID(), acknowledged: false, notified: false, createdAt: now() } });
+}
+
+// Other lists whose old entries are archived (records.ts). Each lookup tries the state first.
+
+/** An archived entry by its ID or key; undefined when the workflow has archived none of the kind. */
+export function archivedRecord<T>(state: WorkflowView, kind: RecordKind, by: { id: string } | { key: string }): Immutable<T> | undefined {
+  return state.archivedRecords?.[kind] ? recordsOf(state).record(kind, by) as Immutable<T> | undefined : undefined;
+}
+
+type Operation = { key: string; digest: string; response: unknown };
+
+export function receiptByKey(state: WorkflowView, key: string): Immutable<MailboxReceipt> | undefined {
+  return state.mailbox?.receipts.find(receipt => receipt.key === key) ?? archivedRecord<MailboxReceipt>(state, 'receipt', { key });
+}
+export function mailboxOperationByKey(state: WorkflowView, key: string): Immutable<Operation> | undefined {
+  return state.mailbox?.operations.find(operation => operation.key === key) ?? archivedRecord<Operation>(state, 'mailboxOperation', { id: key });
+}
+export function workOperationByKey(state: WorkflowView, key: string): Immutable<Operation> | undefined {
+  return state.workQueue?.operations.find(operation => operation.key === key) ?? archivedRecord<Operation>(state, 'workOperation', { id: key });
+}
+export function workItemByKey(state: WorkflowView, key: string): Immutable<WorkflowWorkItem> | undefined {
+  return state.workQueue?.items.find(item => item.key === key) ?? archivedRecord<WorkflowWorkItem>(state, 'workItem', { key });
+}
+export function waitByKey(state: WorkflowView, key: string): Immutable<WorkflowWait> | undefined {
+  return state.waits?.find(wait => wait.key === key) ?? archivedRecord<WorkflowWait>(state, 'wait', { key });
+}
+export function controlOperationByKey(state: WorkflowView, key: string): Immutable<{ key: string; digest: string; taskId: string }> | undefined {
+  return state.controlOperations?.find(operation => operation.key === key) ?? archivedRecord(state, 'controlOperation', { id: key });
+}
+export function workspaceKeyUsed(state: WorkflowView, key: string): boolean {
+  return Boolean(state.workspaceKeys?.includes(key)) || archivedRecord(state, 'workspaceKey', { id: key }) !== undefined;
+}
+/** Whether the current script run has made a keyed call of this kind under the key. */
+export function scriptKeyRecorded(state: WorkflowView, list: CallList, key: string): boolean {
+  return Boolean(state.script?.[list]?.includes(key)) || archivedRecord(state, CALL_KINDS[list], { id: callRecordId(state.script!, key) }) !== undefined;
+}
+
+/** Posts ever made to the board; a post's seq is its position among them. */
+export function boardTotal(state: WorkflowView): number {
+  return (state.board?.posts.length ?? 0) + (state.archivedRecords?.post ?? 0);
+}
+export function postBySeq(state: WorkflowView, seq: number): Immutable<BoardPost> | undefined {
+  const archived = state.archivedRecords?.post ?? 0;
+  return seq > archived ? state.board?.posts[seq - archived - 1] : archivedRecord<BoardPost>(state, 'post', { id: String(seq) });
 }

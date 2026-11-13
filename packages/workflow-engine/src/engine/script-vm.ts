@@ -129,6 +129,7 @@ const CPU_MS_PER_CALL = 5;
 const JOBS_BASE = 100_000;
 const JOBS_PER_CALL = 256;
 const PROGRESS_BASE = 100;
+const QUICK_CALLS_PER_CALL = 16;
 
 /** A guest interpreter with JSON-only host calls; no host objects or module loader. */
 export async function runScriptProgram(input: ScriptProgramInput): Promise<string> {
@@ -143,12 +144,11 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
   let sliceDeadline = 0;
   let cpuMs = 0;
   // A script may run for as many agent calls as its workflow allows, so its own budgets grow with the agent calls
-  // that have come back; a script spinning without them still stops at the base budgets.
+  // and waits that have come back; a script spinning without them still stops at the base budgets.
   let answered = 0;
   const cpuBudget = () => CPU_BASE_MS + CPU_MS_PER_CALL * answered;
   let mailboxCalls = 0;
   let workCalls = 0;
-  let controlCalls = 0;
   let workspaceCalls = 0;
   let progressCount = 0;
   let pending = 0;
@@ -174,9 +174,11 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
   try {
     const installAsync = (name: string, invoke: (call: unknown) => Promise<unknown>) => install(name, payload => {
       // Agent calls are bounded by the workflow's own budget (maxAgents), which the kernel enforces.
-      const agentCall = name === '__bridgeAgent';
-      const count = agentCall ? 0 : name === '__bridgeMailbox' ? ++mailboxCalls : name === '__bridgeControl' ? ++controlCalls : name === '__bridgeWorkspace' ? ++workspaceCalls : ++workCalls;
-      if (count > SCRIPT_MAX_KEYED_CALLS) throw new Error('Script call limit reached');
+      // Calls that wait for work to happen: agents and task or event waits. The other calls return at once, so
+      // their number is bounded relative to these, which stops a script that only spins.
+      const waits = name === '__bridgeAgent' || name === '__bridgeControl';
+      const count = waits ? 0 : name === '__bridgeMailbox' ? ++mailboxCalls : name === '__bridgeWorkspace' ? ++workspaceCalls : ++workCalls;
+      if (count > SCRIPT_MAX_KEYED_CALLS + QUICK_CALLS_PER_CALL * answered) throw new Error('Script call limit reached');
       const text = context.getString(payload);
       if (text.length > SCRIPT_MAX_TEXT + 2000) throw new Error('agent input exceeds size limit');
       const call: unknown = JSON.parse(text);
@@ -186,7 +188,7 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
       const settle = (value: unknown, failed: boolean, name?: string) => {
         pending--;
         if (disposed) return;
-        if (agentCall) answered++;
+        if (waits) answered++;
         let encoded: string;
         try {
           encoded = failed ? String(value) : JSON.stringify(value ?? null);

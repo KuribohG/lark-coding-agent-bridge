@@ -2,13 +2,13 @@ import { randomUUID } from 'node:crypto';
 import { workflowDigest } from './digest';
 import { parkedMembers } from './board';
 import { availableMessages, member, memberCursor, messageMatch, receiveMessages, receiptMessages } from './durable-agents';
-import { anyTask, scriptCall } from './kernel-state';
+import { anyTask, archivedRecord, scriptCall } from './kernel-state';
 import { emit } from './kernel-store';
 import { MAILBOX_MAX_RECEIPTS, MAX_NAMED_MEMBERS, MAX_WAITS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
 import { memberSwarm } from './swarm';
 import { workStatus } from './work-queue';
-import type { Immutable, WorkflowView, WorkflowWait, WorkflowWaitSelector } from './types';
+import type { Immutable, WorkflowView, WorkflowWait, WorkflowWaitSelector, WorkflowWorkItem } from './types';
 
 function selector(state: WorkflowView, value: unknown): WorkflowWaitSelector {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid waitFor selector');
@@ -52,10 +52,12 @@ export function beginEventWait(state: WorkflowView, input: Record<string, unknow
   const cursors = any.filter(value => value.kind === 'message').map(value => ({ member: value.member, previousTurnId: memberCursor(state, member(state, value.member)) }));
   const digest = workflowDigest({ any, cursors });
   const runId = state.script!.runId;
-  const prior = state.waits?.find(wait => wait.key === key);
+  const live = state.waits?.find(wait => wait.key === key);
+  // An archived wait has settled; a replayed script reads its result without the wait returning to the state.
+  const prior = live ?? archivedRecord<WorkflowWait>(state, 'wait', { key });
   if (prior && prior.digest !== digest) throw new Error('Wait key conflict; replay the same selectors and member history');
   if (prior?.status === 'ready') {
-    if (prior.runId !== runId) emit(state, { type: 'wait_rebound', waitId: prior.id, runId, agentIds: [] });
+    if (live && prior.runId !== runId) emit(state, { type: 'wait_rebound', waitId: prior.id, runId, agentIds: [] });
     return prior;
   }
   if (!prior && (state.waits?.length ?? 0) >= MAX_WAITS) throw new Error('Workflow wait limit reached');
@@ -96,7 +98,7 @@ export function settleEventWaits(state: WorkflowView, now: number): boolean {
         at = wait.createdAt + arm.afterMs;
         value = { at };
       } else if (arm.kind === 'work') {
-        const item = state.workQueue?.items.find(item => item.id === arm.itemId);
+        const item = state.workQueue?.items.find(item => item.id === arm.itemId) ?? archivedRecord<WorkflowWorkItem>(state, 'workItem', { id: arm.itemId });
         if (!item || !['completed', 'failed', 'cancelled'].includes(item.status)) continue;
         at = Math.max(wait.createdAt, item.updatedAt);
         value = { itemId: item.id, key: item.key, status: item.status, generation: item.generation, result: item.result, error: item.error };

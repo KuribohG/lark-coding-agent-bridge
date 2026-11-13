@@ -6,7 +6,7 @@ import { settleEventWaits } from './event-waits';
 import { nestedContext } from './nested-workflow';
 import { completeMemberTurn, memberContext, taskAgent } from './durable-agents';
 import { MAX_TASK_ATTEMPTS } from './limits';
-import { archiveFinished } from './archive';
+import { archiveFinished, archiveRecords } from './archive';
 import { checkJsonOutput } from './json-output';
 import { addArtifact, BUSY, findTask, MAX_TEXT, readArtifact, requireState, sameRoot, taskById } from './kernel-state';
 import { emit } from './kernel-store';
@@ -211,10 +211,11 @@ export class WorkflowScheduler {
       store.transact(() => {
         settleEventWaits(state, ctx.now());
         pumpSwarms(state, kind => ctx.nativeIdKind(kind), ctx.now(), ctx.children.remainingTreeTasks(state));
-        // While the script runs, long-finished tasks leave the state; once it stops, what remains stays for review.
+        // While the script runs, what has long settled leaves the state; once it stops, what remains stays for review.
         if (state.script?.status === 'running' && ctx.now() - (this.archivedAt.get(state.workflowId) ?? 0) >= ARCHIVE_EVERY_MS) {
           this.archivedAt.set(state.workflowId, ctx.now());
           archiveFinished(state, ctx.now());
+          archiveRecords(state, ctx.now());
         }
         let active = state.tasks.filter(task => this.running.has(task.taskId)).length;
         // The tree's totals are counted once per pass and kept current as turns start, not recounted per queued task.

@@ -3,7 +3,7 @@ import { postToBoard, readBoard } from './board';
 import { workflowDigest } from './digest';
 import { availableMessages, receiveMessages, scheduleMemberTurn } from './durable-agents';
 import type { DomainEvent } from './events';
-import { callCount, pushEvent, readArtifact, taskById } from './kernel-state';
+import { boardTotal, callCount, pushEvent, readArtifact, taskById } from './kernel-state';
 import { emit, readText } from './kernel-store';
 import { SWARM_DECLARED_MEMBERS, SWARM_MAX_MEMBERS } from './limits';
 import { boundedInteger, parseScriptAgentCall, scriptText } from './script-contract';
@@ -353,7 +353,7 @@ function memberSummary(state: WorkflowView, swarm: SwarmView, member: MemberView
 
 export function swarmSummary(state: WorkflowView, swarm: SwarmView): unknown {
   return { key: swarm.key, status: swarm.status, stop: swarm.stop, reason: swarm.reason, lead: swarm.lead, maxTurns: swarm.maxTurns, turns: turnCount(swarm),
-    posts: (state.board?.posts.length ?? 0) - swarm.firstPost + 1, members: swarm.members.map(member => memberSummary(state, swarm, member)) };
+    posts: boardTotal(state) - swarm.firstPost + 1, members: swarm.members.map(member => memberSummary(state, swarm, member)) };
 }
 
 /** What `swarm()` resolves to once the swarm has ended; undefined while it runs. */

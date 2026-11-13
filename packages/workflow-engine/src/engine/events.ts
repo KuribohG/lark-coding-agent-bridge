@@ -2,6 +2,7 @@ import type {
   DirectMessage, AgentCheckpoint, BoardPost, DurableAgent, MailboxMessage, MailboxReceipt, SessionBinding, StoredArtifact, StoredTask, SwarmMember, TurnAttempt, WorkClaim,
   WorkerExecutionSelection, WorkflowData, WorkflowEvent, WorkflowScript, WorkflowStopReason, WorkflowSwarm, WorkflowWait, WorkflowWorkItem,
 } from './types';
+import type { RecordKind } from './records';
 
 type Operation = { key: string; digest: string; response: unknown };
 
@@ -50,6 +51,8 @@ export type DomainEvent =
   | { type: 'task_created'; task: StoredTask }
   /** Finished tasks leave the state with their own sessions and artifacts and the calls and swarm turns that name them. */
   | { type: 'tasks_archived'; taskIds: string[]; sessionRefs: string[]; artifactRefs: string[] }
+  /** Entries of one other list leave the state (see records.ts). */
+  | { type: 'records_archived'; kind: RecordKind; ids: string[] }
   | { type: 'task_requeued'; taskId: string; runId: string }
   | { type: 'task_failed'; taskId: string; error: string }
   /** `pending` while the worker process still has to exit. */

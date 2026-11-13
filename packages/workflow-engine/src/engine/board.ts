@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { availableMessages, member } from './durable-agents';
-import { emit } from './kernel-store';
-import { BOARD_MAX_DELIVERIES, BOARD_MAX_POSTS, MAX_NAMED_MEMBERS } from './limits';
+import { boardTotal } from './kernel-state';
+import { emit, recordsOf } from './kernel-store';
+import { BOARD_MAX_DELIVERIES, MAX_NAMED_MEMBERS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
 import type { AgentView, BoardAuthor, BoardPost, Immutable, MailboxMessage, WorkflowView } from './types';
 
@@ -34,13 +35,11 @@ function recipients(state: WorkflowView, text: string, to: unknown, sender?: str
 export function postToBoard(state: WorkflowView, sender: { agentId: string } | { author: BoardAuthor }, input: { text?: unknown; to?: unknown }, now: number): { seq: number; postId: string; to: string[] } {
   const text = scriptText(input.text, 'post', POST_MAX_TEXT);
   if (!text.trim()) throw new Error('Post text must not be empty');
-  const posts = state.board?.posts ?? [];
-  if (posts.length >= BOARD_MAX_POSTS) throw new Error('Board post limit reached');
   const from = 'agentId' in sender ? sender.agentId : undefined;
   const target = recipients(state, text, input.to, from);
   const delivered = (state.mailbox?.messages ?? []).filter(message => message.post !== undefined).length;
   if (delivered + target.agents.length > BOARD_MAX_DELIVERIES) throw new Error('Board delivery limit reached; address fewer members');
-  const post: BoardPost = { seq: posts.length + 1, id: randomUUID(), ...(from ? { from } : { author: (sender as { author: BoardAuthor }).author }),
+  const post: BoardPost = { seq: boardTotal(state) + 1, id: randomUUID(), ...(from ? { from } : { author: (sender as { author: BoardAuthor }).author }),
     to: target.agents.map(agent => agent.agentId), ...(target.all ? { all: true } : {}), text, createdAt: now };
   const deliveries: MailboxMessage[] = post.to.map(to => ({ id: randomUUID(), to, ...(from ? { from } : {}), text: '', topic: BOARD_TOPIC, createdAt: now, post: post.seq }));
   emit(state, { type: 'board_posted', post, deliveries });
@@ -63,15 +62,37 @@ function postView(state: WorkflowView, post: Immutable<BoardPost>): BoardPostVie
  * read to a seq recorded earlier, so a replayed script sees the board as it was. `member` keeps posts from or to it.
  */
 export function readBoard(state: WorkflowView, input: { after?: unknown; limit?: unknown; member?: unknown; upTo?: number } = {}): { posts: BoardPostView[]; lastSeq: number; hasMore: boolean } {
-  const all = state.board?.posts ?? [];
-  const lastSeq = Math.min(all.length, input.upTo ?? all.length);
+  const total = boardTotal(state);
+  const lastSeq = Math.min(total, input.upTo ?? total);
   const limit = boundedInteger(input.limit, 20, 1, 50);
   const only = input.member === undefined ? undefined : member(state, scriptText(input.member, 'member name', 100)).agentId;
-  const matching = all.slice(0, lastSeq).filter(post => !only || post.from === only || post.to.includes(only));
-  if (input.after === undefined) return { posts: matching.slice(-limit).map(post => postView(state, post)), lastSeq, hasMore: false };
+  const matches = (post: Immutable<BoardPost>) => !only || post.from === only || post.to.includes(only);
+  if (input.after === undefined) {
+    const latest: Array<Immutable<BoardPost>> = [];
+    for (const post of feed(state, 0, lastSeq, true)) if (matches(post) && latest.push(post) === limit) break;
+    return { posts: latest.reverse().map(post => postView(state, post)), lastSeq, hasMore: false };
+  }
   const after = boundedInteger(input.after, 0, 0, Number.MAX_SAFE_INTEGER);
-  const rest = matching.filter(post => post.seq > after);
+  const rest: Array<Immutable<BoardPost>> = [];
+  for (const post of feed(state, after, lastSeq, false)) if (matches(post) && rest.push(post) > limit) break;
   return { posts: rest.slice(0, limit).map(post => postView(state, post)), lastSeq, hasMore: rest.length > limit };
+}
+
+/** Posts with `after < seq <= upTo` in feed order, or newest first; the older ones come from the archive a page at a time. */
+function* feed(state: WorkflowView, after: number, upTo: number, newestFirst: boolean): Generator<Immutable<BoardPost>> {
+  const archived = state.archivedRecords?.post ?? 0;
+  const live = (state.board?.posts ?? []).filter(post => post.seq > after && post.seq <= upTo);
+  function* stored(): Generator<Immutable<BoardPost>> {
+    let from = after, to = Math.min(upTo, archived);
+    while (from < to) {
+      const page = recordsOf(state).range('post', { after: from, upTo: to, limit: 200, desc: newestFirst }) as BoardPost[];
+      if (!page.length) return;
+      yield* page;
+      if (newestFirst) to = page.at(-1)!.seq - 1; else from = page.at(-1)!.seq;
+    }
+  }
+  if (newestFirst) { yield* [...live].reverse(); yield* stored(); }
+  else { yield* stored(); yield* live; }
 }
 
 /** Members parked in an unsettled wait: no turn is running and nothing that wait listens for has arrived. */

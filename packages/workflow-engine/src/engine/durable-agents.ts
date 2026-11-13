@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { workflowDigest } from './digest';
 import { availableMessages } from './evolve';
-import { artifactOf, findTask, readArtifact, taskById } from './kernel-state';
+import { archivedRecord, artifactOf, findTask, mailboxOperationByKey, postBySeq, readArtifact, receiptByKey, taskById } from './kernel-state';
 import { archiveOf, emit, putText } from './kernel-store';
 import { MAILBOX_MAX_MESSAGES, MAILBOX_MAX_OPERATIONS, MAILBOX_MAX_RECEIPTS, MAX_WORKFLOW_MEMBERS } from './limits';
 import { scriptText, type ScriptAgentCall } from './script-contract';
@@ -104,7 +104,7 @@ export function completeMemberTurn(state: WorkflowView, task: TaskView, resultRe
 export function mailboxOperation(state: WorkflowView, key: string, input: unknown, action: () => unknown): unknown {
   const operations = state.mailbox?.operations ?? [];
   const digest = workflowDigest(input);
-  const prior = operations.find(item => item.key === key);
+  const prior = mailboxOperationByKey(state, key);
   if (prior) {
     if (prior.digest !== digest) throw new Error('Mailbox operation ID conflict');
     return prior.response;
@@ -151,7 +151,7 @@ export function receiveMessages(state: WorkflowView, target: string, key: string
   const match = messageMatch(metadata);
   const filter = Object.keys(match).length ? { match } : {};
   const digest = workflowDigest({ target, previousTurnId, ...filter });
-  const prior = receipts.find(receipt => receipt.key === key);
+  const prior = receiptByKey(state, key);
   if (prior) {
     if (prior.digest !== digest) throw new Error('Receive key conflict; replay the original member history');
     return prior;
@@ -169,17 +169,17 @@ export function receiveMessages(state: WorkflowView, target: string, key: string
 /** A mailbox message as its recipient sees it; the delivery of a board post shows the post it stands for. */
 function messageView(state: WorkflowView, message: Immutable<MailboxMessage>): Record<string, unknown> {
   const name = (agentId: string) => state.agents?.find(agent => agent.agentId === agentId)?.key ?? agentId;
-  const post = message.post === undefined ? undefined : state.board?.posts[message.post - 1];
+  const post = message.post === undefined ? undefined : postBySeq(state, message.post);
   return { id: message.id, from: post ? post.from ? name(post.from) : post.author ?? 'main' : message.from ? name(message.from) : 'main',
     text: post ? post.text : message.text, ...messageMatch(message),
     ...(post ? { post: post.seq, to: post.to.map(name), ...(post.all ? { all: true } : {}) } : {}) };
 }
 
 export function receiptMessages(state: WorkflowView, receiptId: string): unknown[] | undefined {
-  const receipt = state.mailbox?.receipts.find(item => item.id === receiptId);
+  const receipt = state.mailbox?.receipts.find(item => item.id === receiptId) ?? archivedRecord<MailboxReceipt>(state, 'receipt', { id: receiptId });
   if (!receipt) throw new Error('Unknown mailbox receipt');
   if (receipt.status === 'waiting') return undefined;
-  return receipt.messageIds.map(id => messageView(state, state.mailbox!.messages.find(item => item.id === id)!));
+  return receipt.messageIds.map(id => messageView(state, (state.mailbox!.messages.find(item => item.id === id) ?? archivedRecord<MailboxMessage>(state, 'message', { id }))!));
 }
 
 export function memberContext(state: WorkflowView, task: TaskView): unknown {

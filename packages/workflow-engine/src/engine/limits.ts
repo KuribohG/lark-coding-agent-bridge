@@ -12,7 +12,10 @@ export const MAX_CONCURRENT_WORKERS = 256;
  * archive (archive.ts), so a workflow's budget is whatever it asks for and gets a small default otherwise.
  */
 export const MAX_AGENT_CALLS = Number.MAX_SAFE_INTEGER;
-/** Keyed calls of each other kind one script run may record: mailbox, work queue, control and workspace. */
+/**
+ * Keyed calls of each other kind one script run holds in the state: mailbox, work queue, control and workspace.
+ * Like the other list ceilings below, this bounds what is live; settled entries move to the archive (records.ts).
+ */
 export const SCRIPT_MAX_KEYED_CALLS = 2048;
 /** Functions one parallel() or items one pipeline() may take. */
 export const SCRIPT_MAX_FANOUT = 16_384;
@@ -46,7 +49,6 @@ export const MAILBOX_MAX_MESSAGES = 4096;
 export const MAILBOX_MAX_OPERATIONS = 8192;
 export const MAILBOX_MAX_RECEIPTS = 2048;
 
-export const BOARD_MAX_POSTS = 8192;
 export const BOARD_MAX_DELIVERIES = 32_768;
 
 export const WORK_MAX_ITEMS = 4096;

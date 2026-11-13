@@ -36,6 +36,7 @@ function fullSummary(ctx: KernelContext, state: WorkflowView): Summary {
     stateVersion: state.stateVersion, status: state.status, goalRef: state.artifacts[0]?.ref,
     goalPreview: state.goal.slice(0, 500),
     deadlineAt: state.deadlineAt, root: state.root, taskCounts,
+    ...(state.archived || state.archivedRecords ? { archived: { tasks: state.archived?.tasks ?? 0, ...state.archivedRecords } } : {}),
     sessions: state.sessions,
     agents: state.agents ?? [],
     workQueue: state.workQueue ? workStatus(state) : undefined,
@@ -49,7 +50,7 @@ function fullSummary(ctx: KernelContext, state: WorkflowView): Summary {
     checkpoints: (state.checkpoints ?? []).filter(item => state.agents?.some(agent => agent.checkpointRef === item.ref))
       .map(({ state: _state, ...item }) => item),
     mailbox: state.mailbox ? {
-      totalMessages: state.mailbox.messages.length,
+      totalMessages: state.mailbox.messages.length + (state.archivedRecords?.message ?? 0),
       unacknowledgedMessages: state.mailbox.messages.filter(item => !item.consumedByTurnId).length,
       recentMessages: state.mailbox.messages.slice(-8).map(({ text, ...item }) => ({ ...item, preview: text.slice(0, 160) })),
       waits: state.mailbox.receipts.filter(item => item.status === 'waiting').map(({ id, agentId }) => ({ id, agentId })),

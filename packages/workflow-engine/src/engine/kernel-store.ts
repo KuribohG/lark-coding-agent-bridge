@@ -4,6 +4,7 @@ import Database from 'better-sqlite3';
 import { workflowDigest } from './digest';
 import { eventEntity, eventTopics, type DomainEvent } from './events';
 import { evolve } from './evolve';
+import { RECORDS, type RecordKind } from './records';
 import type { ArtifactView, StoredArtifact, StoredTask, TaskView, TextRef, WorkflowData, WorkflowState, WorkflowView } from './types';
 import { checkpointInBackground } from './wal-checkpointer';
 
@@ -29,6 +30,7 @@ interface ArchiveRows {
   tasks: Array<{ workflowId: string; task: StoredTask; data: string }>;
   artifacts: Array<{ workflowId: string; artifact: StoredArtifact }>;
   calls: Array<{ workflowId: string; runId: string; key: string; taskId: string; agentId?: string }>;
+  records: Array<{ workflowId: string; kind: RecordKind; id: string; key?: string; num?: number; data: string }>;
 }
 
 /**
@@ -47,6 +49,10 @@ export interface WorkflowArchive {
   call(runId: string, by: { key: string } | { taskId: string }): { key: string; taskId: string } | undefined;
   /** The task of the member's latest archived call in the given script run. */
   lastTurn(runId: string, agentId: string): string | undefined;
+  /** An archived entry of another list (see records.ts) by its ID or key. */
+  record(kind: RecordKind, by: { id: string } | { key: string }): unknown;
+  /** Archived entries in the order of their position, `after < num <= upTo`; `desc` starts from the end. */
+  range(kind: RecordKind, range: { after: number; upTo: number; limit: number; desc?: boolean }): unknown[];
 }
 
 interface PendingEvent { aggregate: Aggregate; type: string; entity?: string; data: string; topics: string[] }
@@ -95,6 +101,11 @@ export function readText(state: WorkflowView, ref: { digest: string }): string {
 /** The workflow's archive, or undefined while nothing of it has been archived. */
 export function archiveOf(state: WorkflowView): WorkflowArchive | undefined {
   return state.archived ? owner(state).store.archive(state.workflowId) : undefined;
+}
+
+/** The archive of the workflow's other lists; callers check `state.archivedRecords` for the kind first. */
+export function recordsOf(state: WorkflowView): WorkflowArchive {
+  return owner(state).store.archive(state.workflowId);
 }
 
 export interface WorkflowStoreOptions {
@@ -181,6 +192,10 @@ export class WorkflowStore {
           run_id TEXT NOT NULL, task_id TEXT NOT NULL, agent_id TEXT, UNIQUE(workflow_id, key));
         CREATE INDEX IF NOT EXISTS wf_archived_calls_task ON wf_archived_calls(workflow_id, task_id);
         CREATE INDEX IF NOT EXISTS wf_archived_calls_member ON wf_archived_calls(workflow_id, agent_id, seq) WHERE agent_id IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS wf_archive (workflow_id TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, key TEXT, num INTEGER,
+          data TEXT NOT NULL, PRIMARY KEY(workflow_id, kind, id));
+        CREATE INDEX IF NOT EXISTS wf_archive_key ON wf_archive(workflow_id, kind, key) WHERE key IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS wf_archive_num ON wf_archive(workflow_id, kind, num) WHERE num IS NOT NULL;
       `);
     }
     if (options.backgroundCheckpoint && !options.readonly && path !== ':memory:') {
@@ -352,12 +367,35 @@ export class WorkflowStore {
         return (this.db.prepare('SELECT task_id FROM wf_archived_calls WHERE workflow_id = ? AND agent_id = ? AND run_id = ? ORDER BY seq DESC LIMIT 1')
           .get(workflowId, agentId, runId) as { task_id: string } | undefined)?.task_id;
       },
+      record: (kind, by) => {
+        const found = last(staged()?.records, row => row.workflowId === workflowId && row.kind === kind && ('id' in by ? row.id === by.id : row.key === by.key));
+        if (found) return JSON.parse(found.data);
+        const row = this.db.prepare(`SELECT data FROM wf_archive WHERE workflow_id = ? AND kind = ? AND ${'id' in by ? 'id' : 'key'} = ? ORDER BY rowid DESC LIMIT 1`)
+          .get(workflowId, kind, 'id' in by ? by.id : by.key) as { data: string } | undefined;
+        return row && JSON.parse(row.data);
+      },
+      range: (kind, { after, upTo, limit, desc }) => {
+        const pending = (staged()?.records ?? []).filter(row => row.workflowId === workflowId && row.kind === kind && row.num !== undefined && row.num > after && row.num <= upTo);
+        const rows = this.db.prepare(`SELECT num, data FROM wf_archive WHERE workflow_id = ? AND kind = ? AND num > ? AND num <= ? ORDER BY num ${desc ? 'DESC' : 'ASC'} LIMIT ?`)
+          .all(workflowId, kind, after, upTo, limit) as Array<{ num: number; data: string }>;
+        const all = [...rows, ...pending.map(row => ({ num: row.num!, data: row.data }))].sort((a, b) => desc ? b.num - a.num : a.num - b.num);
+        return all.slice(0, limit).map(row => JSON.parse(row.data));
+      },
     };
   }
 
   /** Copies what an archive event is about to remove from the state, so the commit can write it to the archive tables. */
-  private stage(rows: ArchiveRows, state: WorkflowData, event: Extract<DomainEvent, { type: 'tasks_archived' | 'script_call_archived' }>): void {
+  private stage(rows: ArchiveRows, state: WorkflowData, event: Extract<DomainEvent, { type: 'tasks_archived' | 'script_call_archived' | 'records_archived' }>): void {
     const { workflowId } = state;
+    if (event.type === 'records_archived') {
+      const spec = RECORDS[event.kind];
+      const wanted = new Set(event.ids);
+      for (const entry of spec.list(state) ?? []) {
+        const id = spec.id(entry, state);
+        if (wanted.has(id)) rows.records.push({ workflowId, kind: event.kind, id, key: spec.key?.(entry), num: spec.num?.(entry), data: JSON.stringify(entry) });
+      }
+      return;
+    }
     if (event.type === 'script_call_archived') {
       rows.calls.push({ workflowId, runId: state.script!.runId, ...event.call });
       return;
@@ -393,7 +431,7 @@ export class WorkflowStore {
    */
   transact<T>(fn: () => T, cause = 'system'): T {
     if (this.tx) return fn();
-    const tx: Transaction = this.tx = { cause, events: [], touched: new Set(), versioned: new Set(), created: new Set(), texts: new Map(), archive: { tasks: [], artifacts: [], calls: [] }, operations: [] };
+    const tx: Transaction = this.tx = { cause, events: [], touched: new Set(), versioned: new Set(), created: new Set(), texts: new Map(), archive: { tasks: [], artifacts: [], calls: [], records: [] }, operations: [] };
     let result: T;
     try {
       result = fn();
@@ -444,7 +482,7 @@ export class WorkflowStore {
     const data = JSON.stringify(event);
     // Touched before the reducer runs: if it throws half-way, the state is discarded with the transaction.
     tx.touched.add(aggregate);
-    if (event.type === 'tasks_archived' || event.type === 'script_call_archived') this.stage(tx.archive, aggregate.state, event);
+    if (event.type === 'tasks_archived' || event.type === 'script_call_archived' || event.type === 'records_archived') this.stage(tx.archive, aggregate.state, event);
     try { evolve(aggregate.state, JSON.parse(data) as DomainEvent); }
     catch (error) { tx.failed ??= { error }; throw error; }
     tx.events.push({ aggregate, type: event.type, entity: eventEntity(event), data, topics: eventTopics(event) });
@@ -500,6 +538,10 @@ export class WorkflowStore {
         // One row for each key: a later run that makes the call again takes the row over.
         const call = this.db.prepare('INSERT OR REPLACE INTO wf_archived_calls(workflow_id, key, run_id, task_id, agent_id) VALUES (?, ?, ?, ?, ?)');
         for (const row of archive.calls) call.run(row.workflowId, row.key, row.runId, row.taskId, row.agentId ?? null);
+      }
+      if (archive.records.length) {
+        const record = this.db.prepare('INSERT OR REPLACE INTO wf_archive(workflow_id, kind, id, key, num, data) VALUES (?, ?, ?, ?, ?, ?)');
+        for (const row of archive.records) record.run(row.workflowId, row.kind, row.id, row.key ?? null, row.num ?? null, row.data);
       }
       const catalog = this.db.prepare('INSERT INTO wf_catalog(id, scope, root_id, parent_id, status) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status');
       for (const aggregate of tx.touched) {

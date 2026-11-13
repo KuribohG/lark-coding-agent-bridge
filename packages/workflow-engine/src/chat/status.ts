@@ -106,8 +106,9 @@ function workLines(state: WorkflowState, item: WorkflowWorkItem): string[] {
 function queueLines(state: WorkflowState, limit: number, member?: DurableAgent): string[] {
   const items = state.workQueue?.items ?? [];
   if (!state.workQueue) return [];
-  const counts = (status: WorkflowWorkItem['status']) => items.filter(item => item.status === status).length;
-  const lines = [`工作队列：${items.length} 项，待领取 ${counts('pending')}，已认领 ${counts('claimed')}，完成 ${counts('completed')}，失败 ${counts('failed')}，取消 ${counts('cancelled')}`];
+  const archived = Object.values(state.workQueue.archived ?? {});
+  const counts = (status: WorkflowWorkItem['status']) => items.filter(item => item.status === status).length + archived.reduce((total, queue) => total + (queue[status] ?? 0), 0);
+  const lines = [`工作队列：${items.length + (state.archivedRecords?.workItem ?? 0)} 项，待领取 ${counts('pending')}，已认领 ${counts('claimed')}，完成 ${counts('completed')}，失败 ${counts('failed')}，取消 ${counts('cancelled')}`];
   lines.push(state.workQueue.closedAt === undefined ? '默认队列开放：可继续追加任务。' : '默认队列已关闭：不再接收新任务，已有任务继续排空。');
   for (const name of queueNames(state).filter(name => name !== 'default')) {
     lines.push(`队列 ${compact(name, 64)}：${queueControl(state, name)?.closedAt === undefined ? '开放' : '已关闭'}`);
@@ -140,7 +141,7 @@ export function renderBoard(state: WorkflowState, filter?: string): string {
   if (filter && !/^\d+$/.test(filter) && !member) return `未找到成员：${compact(filter, 100)}。用 /workflow status 查看成员列表。`;
   const matching = member ? posts.filter(post => post.from === member.agentId || post.to.includes(member.agentId)) : posts;
   const shown = matching.slice(-(filter && !member ? Math.min(30, Math.max(1, Number(filter))) : 10));
-  const lines = [`留言板：共 ${posts.length} 帖${member ? `，与 ${compact(member.key, 100)} 相关 ${matching.length} 帖` : ''}，显示最近 ${shown.length} 帖。`];
+  const lines = [`留言板：共 ${posts.length + (state.archivedRecords?.post ?? 0)} 帖${member ? `，与 ${compact(member.key, 100)} 相关 ${matching.length} 帖` : ''}，显示最近 ${shown.length} 帖。`];
   for (const post of shown) {
     const to = post.all ? '全体' : post.to.length ? post.to.map(id => '@' + compact(name(id), 50)).join(' ') : '未点名';
     lines.push(`#${post.seq} ${post.from ? compact(name(post.from), 50) : post.author === 'script' ? '脚本' : post.author === 'system' ? '系统' : '主会话'} → ${to} · ${time(post.createdAt)}`, '  ' + compact(post.text, 600));
@@ -211,8 +212,9 @@ export function renderWorkflowProgress(state: WorkflowState, now = Date.now()): 
   if (tone === 'running' || settled) lines.push(`**已用时**：${duration(now - state.createdAt)}${tone === 'running' ? `，距截止 ${duration(state.deadlineAt - now)}` : ''}`);
   const items = state.workQueue?.items;
   if (items?.length) {
-    const done = items.filter(item => item.status === 'completed').length;
-    lines.push(`**工作队列**：${done}/${items.length} 完成，已认领 ${items.filter(item => item.status === 'claimed').length}，失败 ${items.filter(item => item.status === 'failed').length}`);
+    const stored = Object.values(state.workQueue?.archived ?? {});
+    const done = items.filter(item => item.status === 'completed').length + stored.reduce((total, queue) => total + (queue.completed ?? 0), 0);
+    lines.push(`**工作队列**：${done}/${items.length + (state.archivedRecords?.workItem ?? 0)} 完成，已认领 ${items.filter(item => item.status === 'claimed').length}，失败 ${items.filter(item => item.status === 'failed').length}`);
   }
   const latest = state.board?.posts.at(-1);
   if (latest) {
