@@ -51,20 +51,34 @@ export interface WorkspaceIntegration {
   conflict?: string;
 }
 
-/** How members land work with submit_work: the private branch that collects it and the checks every landing must pass. */
+export type WorkspaceCommands = Array<{ argv: string[]; timeoutMs: number }>;
+
+/**
+ * How members land work with submit_work: the private branch that collects it and what every landing must pass.
+ * Submissions are landed in batches: a train stacks the waiting ones in its own worktree, checks the stack once and
+ * advances the branch to it, so the commit that lands is always one the checks passed on.
+ */
 export interface WorkspaceLanding {
   targetRef: string;
-  /** Checks must have passed on the exact commit that lands; otherwise a clean rebase after passing checks is enough. */
-  strict: boolean;
-  commands: Array<{ argv: string[]; timeoutMs: number }>;
+  /** Run on each train, in the train's worktree. */
+  commands: WorkspaceCommands;
+  /** Run in the member's worktree before its submission may board a train. */
+  precheck?: WorkspaceCommands;
+  /** Paths a submission may not change, unless it comes from one of the rule's `allow` worktrees. */
+  protect?: Array<{ paths: string[]; allow: string[] }>;
+  /** Submissions one train carries at most. */
+  batch: number;
 }
 
 export type LandReport =
+  /** The branch head now contains the work, and the worktree was moved to it. */
   | { status: 'landed'; targetRef: string; headCommit: string; commits: number }
-  /** The rebase onto `targetCommit` was undone; the worktree holds the member's commits as submitted. */
+  /** The commits do not apply to `targetCommit`; the worktree holds them as submitted. */
   | { status: 'conflict'; targetRef: string; targetCommit: string; detail: string }
-  /** The worktree is left rebased onto `targetCommit`. */
-  | { status: 'check_failed'; targetRef: string; targetCommit: string; headCommit: string; reason?: string; commands: WorkspaceChecks['commands'] };
+  /** The worktree is left with the commits that failed, on top of `targetCommit`. */
+  | { status: 'check_failed'; targetRef: string; targetCommit: string; headCommit: string; reason?: string; commands: WorkspaceChecks['commands'] }
+  /** The commits change protected paths; the worktree is left rebased onto `targetCommit`. */
+  | { status: 'rejected'; targetRef: string; targetCommit: string; files: string[]; reason: string };
 
 export interface WorkspaceContext {
   state: WorkflowState;

@@ -47,7 +47,25 @@ async function fixture() {
   };
   const configure = (checks: object[] = [node('process.exit(0)')], options: object = {}) => op<WorkspaceLanding>('landing', 'landing-' + randomUUID(), { checks, ...options });
   const head = async () => git(repo, 'rev-parse', (await configure()).targetRef);
-  return { dir, repo, base, state, manager, ctx, op, member, configure, head };
+  /** A check that records where it ran and, with a gate, waits until the gate is opened. */
+  const log = join(dir, 'checks.log'), gate = join(dir, 'gate');
+  const logged = (extra = '', gated = false) => node(`const fs=require('fs');fs.appendFileSync(${JSON.stringify(log)},process.cwd()+'\\n');${extra};`
+    + (gated ? `const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(gate)}))clearInterval(t)},10)` : ''));
+  const runs = async () => (await readFile(log, 'utf8').catch(() => '')).split('\n').filter(Boolean);
+  const waiting = () => [...(manager as unknown as { trains: Map<string, { queue: unknown[] }> }).trains.values()].reduce((total, train) => total + train.queue.length, 0);
+  /** Holds the first train at its checks until `count` more submissions wait behind it, so they share the next train. */
+  const together = async (count: number, submit: () => Promise<LandReport>[]) => {
+    const blocker = await member('blocker-' + randomUUID()); await blocker.commit(`blocker-${randomUUID()}.txt`, 'x\n');
+    await rm(gate, { force: true });
+    const before = (await runs()).length, first = blocker.land();
+    await vi.waitFor(async () => expect(await runs()).toHaveLength(before + 1), { timeout: 20_000, interval: 20 });
+    const rest = submit();
+    await vi.waitFor(() => expect(waiting()).toBe(count), { timeout: 20_000, interval: 20 });
+    await writeFile(gate, '');
+    expect(await first).toMatchObject({ status: 'landed' });
+    return Promise.all(rest);
+  };
+  return { dir, repo, base, state, manager, ctx, op, member, configure, head, logged, runs, together };
 }
 
 describe('landing members\' work on a shared branch', () => {
@@ -97,23 +115,120 @@ describe('landing members\' work on a shared branch', () => {
     await git(a.ws.path, 'rm', '-q', 'bad.txt'); await a.commit('good.txt', 'y\n');
     await h.configure([node(`require('fs').writeFileSync('left-behind', '')`)]);
     expect(await a.land()).toMatchObject({ status: 'check_failed', reason: expect.stringContaining('untracked') });
-    await rm(join(a.ws.path, 'left-behind'));
     await h.configure();
     expect(await a.land()).toMatchObject({ status: 'landed', commits: 2 });
   }, 60_000);
 
-  it('strict landings check the commit that lands; relaxed ones accept a clean rebase after passing checks', async () => {
-    for (const strict of [true, false]) {
-      const h = await fixture();
-      // The check passes only while the other member's file is absent, so only a re-check on the new head can notice it.
-      await h.configure([node(`const fs=require('fs');if(fs.existsSync('mine.txt')&&fs.existsSync('theirs.txt'))process.exit(1);setTimeout(()=>{},fs.existsSync('mine.txt')?600:0)`)], { strict });
-      const [slow, fast] = await Promise.all([h.member('slow'), h.member('fast')]);
-      await slow.commit('mine.txt', '1\n'); await fast.commit('theirs.txt', '2\n');
-      const pending = slow.land();
-      await new Promise(resolve => setTimeout(resolve, 150));
-      expect(await fast.land()).toMatchObject({ status: 'landed' });
-      expect((await pending).status).toBe(strict ? 'check_failed' : 'landed');
-    }
+  it('carries the submissions that wait onto one train and checks them once', async () => {
+    const h = await fixture();
+    const landing = await h.configure([h.logged('', true)]);
+    const members = await Promise.all(Array.from({ length: 6 }, (_, index) => h.member('m' + index)));
+    await Promise.all(members.map((member, index) => member.commit(`file-${index}.txt`, `${index}\n`)));
+    const reports = await h.together(6, () => members.map(member => member.land()));
+    expect(reports.map(report => report.status)).toEqual(Array(6).fill('landed'));
+    // One run for the train that was held, one for the six behind it; none of them in a member's worktree.
+    const runs = await h.runs();
+    expect(runs).toHaveLength(2);
+    expect(new Set(runs).size).toBe(1);
+    expect(members.map(member => member.ws.path)).not.toContain(runs[0]);
+    expect(await git(h.repo, 'rev-list', '--count', `${h.base}..${landing.targetRef}`)).toBe('7');
+    expect(await git(h.repo, 'rev-list', '--min-parents=2', landing.targetRef)).toBe('');
+    // Every worktree was moved to the branch head, so the next fix starts from what everyone landed.
+    for (const member of members) expect(await git(member.ws.path, 'rev-parse', 'HEAD')).toBe(await h.head());
+  }, 60_000);
+
+  it('finds the submission that breaks a train, lands the ones before it and carries the rest on the next', async () => {
+    const h = await fixture();
+    // Passes only while mine.txt and theirs.txt are not both there: each passes alone, the two together do not.
+    const landing = await h.configure([h.logged(`if(fs.existsSync('mine.txt')&&fs.existsSync('theirs.txt')){console.error('both present');process.exit(1)}`, true)]);
+    const names = ['mine.txt', 'theirs.txt', 'other-1.txt', 'other-2.txt', 'other-3.txt'];
+    const members = await Promise.all(names.map((_, index) => h.member('m' + index)));
+    await Promise.all(members.map((member, index) => member.commit(names[index]!, 'x\n')));
+    const reports = await h.together(5, () => members.map(member => member.land()));
+    const failed = reports.slice(0, 2).filter(report => report.status === 'check_failed') as Array<Extract<LandReport, { status: 'check_failed' }>>;
+    expect(failed).toHaveLength(1);
+    expect(reports.filter(report => report.status === 'landed')).toHaveLength(4);
+    expect(failed[0]!.commands[0]!.stderr).toContain('both present');
+    const files = (await git(h.repo, 'ls-tree', '--name-only', landing.targetRef)).split('\n');
+    expect(files).toEqual(expect.arrayContaining(names.slice(2)));
+    expect(files.filter(file => file === 'mine.txt' || file === 'theirs.txt')).toHaveLength(1);
+    // The branch only ever pointed at commits the checks passed on, and the loser is left on the commits that failed.
+    const loser = members[reports.indexOf(failed[0]!)]!;
+    expect(await git(loser.ws.path, 'rev-parse', 'HEAD')).toBe(failed[0]!.headCommit);
+    expect(await git(loser.ws.path, 'rev-parse', 'HEAD~1')).toBe(failed[0]!.targetCommit);
+    expect((await git(loser.ws.path, 'ls-files')).split('\n')).toEqual(expect.arrayContaining(['mine.txt', 'theirs.txt']));
+    expect((await h.runs()).length).toBeLessThanOrEqual(1 + 4 + 2);
+  }, 60_000);
+
+  it('reports a clash between two submissions on one train as a conflict with what landed', async () => {
+    const h = await fixture(); await h.configure([h.logged('', true)]);
+    const [a, b] = await Promise.all([h.member('a'), h.member('b')]);
+    await a.commit('shared.txt', 'A\n'); await b.commit('shared.txt', 'B\n');
+    const reports = await h.together(2, () => [a.land(), b.land()]);
+    expect(reports.map(report => report.status).sort()).toEqual(['conflict', 'landed']);
+    const conflict = reports.find(report => report.status === 'conflict') as Extract<LandReport, { status: 'conflict' }>;
+    expect(conflict.targetCommit).toBe(await h.head());
+    expect(conflict.detail).toContain('shared.txt');
+  }, 60_000);
+
+  it('prechecks each submission in its own worktree before it may board', async () => {
+    const h = await fixture();
+    await h.configure([h.logged()], { precheck: [node(`if(require('fs').existsSync('bad.txt')){console.error('precheck: bad.txt');process.exit(2)}`)] });
+    const a = await h.member('a'); await a.commit('bad.txt', 'x\n');
+    const failed = await a.land() as Extract<LandReport, { status: 'check_failed' }>;
+    expect(failed).toMatchObject({ status: 'check_failed', commands: [{ code: 2 }] });
+    expect(failed.commands[0]!.stderr).toContain('precheck: bad.txt');
+    expect(await h.runs()).toEqual([]);
+    await git(a.ws.path, 'rm', '-q', 'bad.txt'); await a.commit('good.txt', 'y\n');
+    expect(await a.land()).toMatchObject({ status: 'landed', commits: 2 });
+    expect(await h.runs()).toHaveLength(1);
+  }, 60_000);
+
+  it('rejects changes to protected paths except from the worktrees a rule allows', async () => {
+    const h = await fixture();
+    const [fixer, keeper] = await Promise.all([h.member('fixer'), h.member('keeper')]);
+    const protect = [{ paths: ['expected', '**/*.golden', 'scope.json'], allow: [keeper.ws.id] }];
+    await h.configure([h.logged()], { protect });
+    await mkdir(join(fixer.ws.path, 'expected')); await mkdir(join(fixer.ws.path, 'src/deep'), { recursive: true });
+    await fixer.commit('expected/case-1.txt', 'x\n'); await fixer.commit('src/deep/out.golden', 'x\n'); await fixer.commit('src/fix.txt', 'x\n');
+    const rejected = await fixer.land() as Extract<LandReport, { status: 'rejected' }>;
+    expect(rejected).toMatchObject({ status: 'rejected', files: ['expected/case-1.txt', 'src/deep/out.golden'] });
+    expect(await h.runs()).toEqual([]);
+    // A path that merely starts with a protected name is not covered, and the allowed worktree may change them all.
+    await git(fixer.ws.path, 'reset', '-q', '--hard', h.base); await fixer.commit('expected-notes.txt', 'x\n'); await fixer.commit('scope.json.bak', 'x\n');
+    expect(await fixer.land()).toMatchObject({ status: 'landed', commits: 2 });
+    await mkdir(join(keeper.ws.path, 'expected')); await keeper.commit('expected/case-1.txt', 'x\n'); await keeper.commit('scope.json', '{}\n');
+    expect(await keeper.land()).toMatchObject({ status: 'landed', commits: 2 });
+    // Deleting or renaming a protected file is a change to it.
+    await git(fixer.ws.path, 'reset', '-q', '--hard', await h.head()); await h.configure([h.logged()], { protect });
+    await git(fixer.ws.path, 'mv', 'scope.json', 'moved.json'); await git(fixer.ws.path, 'commit', '-q', '-m', 'move');
+    expect(await fixer.land()).toMatchObject({ status: 'rejected', files: ['scope.json'] });
+    await expect(h.configure([h.logged()], { protect: [{ paths: ['../outside'] }] })).rejects.toThrow('relative to the repository root');
+    await expect(h.configure([h.logged()], { protect: [{ paths: [] }] })).rejects.toThrow('protect rule');
+    await expect(h.configure([h.logged()], { strict: false })).rejects.toThrow('Unsupported');
+  }, 60_000);
+
+  it('makes worktrees from a repository other than the workflow cwd when the script names it', async () => {
+    const h = await fixture();
+    const other = join(h.dir, 'other'); await mkdir(join(other, 'sub'), { recursive: true });
+    await git(other, 'init', '-b', 'main'); await git(other, 'config', 'user.name', 'Test'); await git(other, 'config', 'user.email', 'test@localhost');
+    await writeFile(join(other, 'sub/readme'), 'other\n'); await git(other, 'add', '.'); await git(other, 'commit', '-m', 'base');
+    await expect(h.op('create', 'relative', { repo: 'other' })).rejects.toThrow('absolute');
+    await expect(h.op('create', 'inside', { repo: join(other, 'sub') })).rejects.toThrow('root of a Git checkout');
+    const landing = await h.configure();
+    const ws = await h.op<WorkspaceBinding>('create', 'elsewhere', { repo: other });
+    expect(ws.repository).toBe(other);
+    h.manager.begin(ws, 'task');
+    await writeFile(join(ws.path, 'fix.txt'), 'x\n'); await git(ws.path, 'add', '.'); await git(ws.path, 'commit', '-m', 'fix');
+    expect(await h.manager.land(h.ctx, { workspace: ws.id, taskId: 'task' })).toMatchObject({ status: 'landed', commits: 1 });
+    expect(await git(other, 'ls-tree', '--name-only', landing.targetRef)).toContain('fix.txt');
+    // The branch is in the repository the worktree came from; the workflow's own checkout has none.
+    expect(await git(h.repo, 'for-each-ref', 'refs/heads/bridge-workflow')).toBe('');
+    // Removing the last member worktree of a repository takes the train's worktree with it.
+    expect(await git(other, 'worktree', 'list', '--porcelain')).toContain('/train-');
+    h.manager.end(ws, (await h.manager.binding(h.state.root, h.state.workflowId, ws.id, signal())).busy!.token);
+    expect(await h.op('cleanup', 'clean', { workspace: ws.id })).toMatchObject({ removed: true });
+    expect(await git(other, 'worktree', 'list', '--porcelain')).not.toContain('/train-');
   }, 60_000);
 
   it('requires the task running in the worktree and a configured landing', async () => {

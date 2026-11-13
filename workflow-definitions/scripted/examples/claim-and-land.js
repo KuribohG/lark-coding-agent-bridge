@@ -1,13 +1,14 @@
 // Members each claim one item, fix it in their own worktree and land it themselves.
-// args: { items: [{key, title, input}], members?: number, checks: [{argv, timeoutMs?}], strict?: boolean, prompt?: string, model?: string }
+// args: { items: [{key, title, input}], members?: number, checks: [{argv, timeoutMs?}], precheck?: [{argv, timeoutMs?}],
+//         protect?: string[], repo?: string, prompt?: string, model?: string }
 const count = Math.min(args.members ?? 8, args.items.length);
-const landing = await configureLanding({ key: 'landing', checks: args.checks, strict: args.strict ?? true });
-const workspaces = await parallel(Array.from({ length: count }, (_, index) => () => createWorkspace({ key: `worktree-${index}` })));
+const landing = await configureLanding({ key: 'landing', checks: args.checks, ...(args.precheck ? { precheck: args.precheck } : {}),
+  ...(args.protect ? { protect: [{ paths: args.protect }] } : {}) });
+const workspaces = await parallel(Array.from({ length: count }, (_, index) => () => createWorkspace({ key: `worktree-${index}`, ...(args.repo ? { repo: args.repo } : {}) })));
 if (workspaces.some(workspace => !workspace)) throw new Error('Could not create every worktree');
 
 const fixing = swarm(args.prompt ?? 'Claim one work item at a time. Fix it in your worktree, commit, then call submit_work with the claim. '
-  + 'If the landing is rejected, repair your worktree and submit again; release the claim if you cannot fix it. '
-  + 'Rebase onto the landing branch before you claim the next item.', {
+  + 'If the landing is rejected, repair your worktree and submit again; release the claim if you cannot fix it.', {
   key: 'fixers', maxTurns: 16,
   members: workspaces.map((workspace, index) => ({ name: `fixer-${index}`, queue: 'default', workspace: workspace.id, ...(args.model ? { model: args.model } : {}) })),
 });

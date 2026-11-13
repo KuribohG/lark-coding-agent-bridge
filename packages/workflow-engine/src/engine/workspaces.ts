@@ -2,13 +2,13 @@ import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { access, mkdir, realpath } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { workflowDigest } from './digest';
 import { MAX_WORKSPACES, MAX_WORKSPACE_RECORDS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
 import { nodeProcesses, workspaceCommand, type CommandResult } from './workspace-process';
 import type { WorkflowProcesses } from './ports';
-import type { LandReport, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
+import type { LandReport, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
 import type { WorkflowRoot } from './types';
 
 interface RecordRow { id: string; workflow: string; key: string; kind: string; digest: string; done: number; data: string; created: number }
@@ -16,13 +16,30 @@ const SHA = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
 const BUSY = new Set(['queued', 'starting', 'running', 'cancelling', 'waiting_workflow']);
 const gitEnv = () => ({ ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))), GIT_TERMINAL_PROMPT: '0', GIT_LFS_SKIP_SMUDGE: '1' });
 
+/** A submission waiting for a train: the member's commits `base..head`, already rebased onto the branch as it was then. */
+interface Candidate { ws: WorkspaceBinding; base: string; head: string; commits: number; ctx: WorkspaceContext; resolve(report: LandReport): void; reject(error: unknown): void }
+type CheckFailure = { commands: WorkspaceChecks['commands']; reason?: string };
+
+/**
+ * A protected path pattern, anchored at the repository root: `*` and `?` stay inside one path segment, `**` crosses
+ * them, and a pattern that names a directory covers everything below it.
+ */
+function pathPattern(glob: string): RegExp {
+  const body = glob.replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*\/|\*\*|\*|\?/g, token => token === '**/' ? '(?:.*/)?' : token === '**' ? '.*' : token === '*' ? '[^/]*' : '[^/]');
+  return new RegExp(`^${body}${glob.endsWith('/') ? '.*' : '(?:/.*)?'}$`);
+}
+const tail = (results: WorkspaceChecks['commands']) => results.map(result => ({ ...result, stdout: result.stdout.slice(-4000), stderr: result.stderr.slice(-4000) }));
+
 /** The journal precedes Git/filesystem operations. Successful results are immutable on replay. */
 export class WorkflowWorkspaces {
   private readonly db: Database.Database;
   private readonly pending = new Set<Promise<unknown>>();
   private readonly activeKeys = new Set<string>();
-  /** Tail of each workflow's serialized landings. */
-  private readonly landings = new Map<string, Promise<unknown>>();
+  /** Submissions waiting to land, for each workflow and repository; one train at a time runs on each. */
+  private readonly trains = new Map<string, { queue: Candidate[]; running: boolean }>();
+  /** Stops the trains when the service closes. */
+  private readonly stopping = new AbortController();
   /** The landing in progress in each worktree; a repeated submission joins it. */
   private readonly inFlight = new Map<string, Promise<LandReport>>();
   private closed = false;
@@ -87,9 +104,12 @@ export class WorkflowWorkspaces {
       if (/\bfilter\s*=/.test(text)) throw new Error('Workspace v1 does not support checkout filters or Git LFS');
     }
   }
-  private async repository(root: WorkflowRoot, signal: AbortSignal): Promise<{ repository: string; commonDir: string }> {
-    const repository = await realpath((await this.git(root.cwdRealpath, ['rev-parse', '--show-toplevel'], signal)).stdout.trim());
-    if (repository !== await realpath(root.cwdRealpath)) throw new Error('Workspace operations require the authorized repository root as cwd');
+  /** The checkout worktrees are made from: the workflow's cwd, or the root of another checkout the script names. */
+  private async repository(root: WorkflowRoot, signal: AbortSignal, repo?: unknown): Promise<{ repository: string; commonDir: string }> {
+    const start = repo === undefined ? root.cwdRealpath : scriptText(repo, 'repository path', 1024);
+    if (!isAbsolute(start)) throw new Error('repo must be an absolute path');
+    const repository = await realpath((await this.git(start, ['rev-parse', '--show-toplevel'], signal)).stdout.trim());
+    if (repository !== await realpath(start)) throw new Error(repo === undefined ? 'Workspace operations require the authorized repository root as cwd, or a repo option' : 'repo must be the root of a Git checkout');
     const commonDir = await realpath(resolve(repository, (await this.git(repository, ['rev-parse', '--git-common-dir'], signal)).stdout.trim()));
     return { repository, commonDir };
   }
@@ -160,8 +180,8 @@ export class WorkflowWorkspaces {
   }
   private async performInner(ctx: WorkspaceContext, input: Record<string, unknown>): Promise<unknown> {
     const { kind, key, ...args } = input;
-    const allowed: Record<string, string[]> = { create: ['base', 'change'], freeze: ['workspace'], approve: ['change', 'taskId'],
-      integrate: ['base', 'approvals', 'target'], landing: ['checks', 'target', 'strict'], check: ['workspace', 'commands'], accept: ['workspace', 'checks'], cleanup: ['workspace'] };
+    const allowed: Record<string, string[]> = { create: ['base', 'change', 'repo'], freeze: ['workspace'], approve: ['change', 'taskId'],
+      integrate: ['base', 'approvals', 'target'], landing: ['checks', 'target', 'precheck', 'protect', 'batch'], check: ['workspace', 'commands'], accept: ['workspace', 'checks'], cleanup: ['workspace'] };
     if (!Object.hasOwn(allowed, String(kind)) || Object.keys(args).some(key => !allowed[String(kind)]!.includes(key))) throw new Error('Unsupported workspace operation or option');
     const name = scriptText(key, 'workspace operation key', 100);
     if (name.startsWith('@') || name.trim() !== name) throw new Error('Invalid workspace operation key');
@@ -184,7 +204,7 @@ export class WorkflowWorkspaces {
   private async apply(ctx: WorkspaceContext, op: RecordRow, kind: string, args: Record<string, unknown>): Promise<unknown> {
     const id = (value: unknown) => scriptText(value, 'artifact ID', 100);
     if (kind === 'create') {
-      if (args.change !== undefined && args.base !== undefined) throw new Error('Choose base or change, not both');
+      if (args.change !== undefined && (args.base !== undefined || args.repo !== undefined)) throw new Error('Choose base and repo, or change');
       if (args.change !== undefined) {
         const change = this.value<WorkspaceChange>(id(args.change), op.workflow, 'change');
         const source = this.value<WorkspaceBinding>(change.workspaceId, op.workflow, 'workspace');
@@ -195,7 +215,7 @@ export class WorkflowWorkspaces {
       let seed;
       if (prior.repository) seed = { repository: prior.repository, commonDir: prior.commonDir, baseCommit: prior.baseCommit };
       else {
-        const repo = await this.repository(ctx.state.root, ctx.signal);
+        const repo = await this.repository(ctx.state.root, ctx.signal, args.repo);
         if ((await this.git(repo.repository, ['status', '--porcelain', '--untracked-files=all'], ctx.signal)).stdout.trim()) throw new Error('Authorized checkout has uncommitted changes; choose a clean committed baseline first');
         seed = { ...repo, baseCommit: await this.revision(repo.repository, args.base, ctx.signal) }; this.save(op, seed);
       }
@@ -204,9 +224,9 @@ export class WorkflowWorkspaces {
     }
     if (kind === 'cleanup') return this.cleanup(ctx, op, id(args.workspace));
     if (kind === 'landing') {
-      if (args.strict !== undefined && typeof args.strict !== 'boolean') throw new Error('strict must be boolean');
-      const landing: WorkspaceLanding = { targetRef: this.targetRef(op.workflow, args.target), strict: args.strict !== false, commands: this.commands(args.checks) };
-      await this.repository(ctx.state.root, ctx.signal);
+      const precheck = args.precheck === undefined ? undefined : this.commands(args.precheck), protect = this.protect(args.protect);
+      const landing: WorkspaceLanding = { targetRef: this.targetRef(op.workflow, args.target), commands: this.commands(args.checks),
+        ...(precheck ? { precheck } : {}), ...(protect ? { protect } : {}), batch: boundedInteger(args.batch, 16, 1, 64) };
       this.db.transaction(() => {
         const row = this.db.prepare('SELECT * FROM workspace_records WHERE workflow=? AND key=?').get(op.workflow, '@landing') as RecordRow | undefined;
         if (row) this.save(row, landing); else this.insert(op.workflow, '@landing', 'landing', landing);
@@ -308,6 +328,7 @@ export class WorkflowWorkspaces {
       if (unlock.code && !unlock.stderr.includes('not locked')) throw new Error('Cannot unlock worktree');
       await this.git(ws.repository, ['worktree', 'remove', ws.path], ctx.signal);
       this.putWorkspace({ ...ws, status: 'removed', busy: { token, ownerPid: process.pid } });
+      if (ws.kind === 'task') await this.retireTrain(ws, ctx.signal);
       return { workspace: ws.id, removed: true };
     } finally { this.end(ws, token); }
   }
@@ -358,7 +379,19 @@ export class WorkflowWorkspaces {
   private async notCheckedOut(repo: string, ref: string, signal: AbortSignal): Promise<void> {
     if ((await this.git(repo, ['worktree', 'list', '--porcelain'], signal)).stdout.split('\n').includes(`branch ${ref}`)) throw new Error('Integration target is checked out; keep the checkout unchanged');
   }
-  private commands(value: unknown): WorkspaceLanding['commands'] {
+  private protect(value: unknown): WorkspaceLanding['protect'] {
+    if (value === undefined) return undefined;
+    if (!Array.isArray(value) || !value.length || value.length > 16) throw new Error('protect takes 1–16 rules');
+    return value.map(raw => {
+      const rule = (raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {}) as Record<string, unknown>;
+      if (Object.keys(rule).some(key => !['paths', 'allow'].includes(key)) || !Array.isArray(rule.paths) || !rule.paths.length || rule.paths.length > 64
+        || rule.allow !== undefined && (!Array.isArray(rule.allow) || rule.allow.length > MAX_WORKSPACES)) throw new Error('A protect rule is {paths:[1–64 patterns], allow?:[workspace IDs]}');
+      const paths = rule.paths.map(path => scriptText(path, 'protected path', 400));
+      if (paths.some(path => path.startsWith('/') || path.split('/').includes('..'))) throw new Error('Protected paths are relative to the repository root');
+      return { paths, allow: ((rule.allow ?? []) as unknown[]).map(id => scriptText(id, 'workspace ID', 100)) };
+    });
+  }
+  private commands(value: unknown): WorkspaceCommands {
     if (!Array.isArray(value) || !value.length || value.length > 4) throw new Error('Checks require 1–4 foreground commands');
     return value.map(raw => {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid check command');
@@ -367,12 +400,12 @@ export class WorkflowWorkspaces {
       return { argv: item.argv.map(arg => scriptText(arg, 'command argument', 4000)), timeoutMs: boundedInteger(item.timeoutMs, 300_000, 100, 1_800_000) };
     });
   }
-  /** Runs the commands in order in the worktree and stops at the first failure. */
-  private async run(ctx: WorkspaceContext, ws: WorkspaceBinding, commands: WorkspaceLanding['commands']): Promise<WorkspaceChecks['commands']> {
+  /** Runs the commands in order in the directory and stops at the first failure. */
+  private async run(path: string, commands: WorkspaceCommands, signal: AbortSignal, deadlineAt: number): Promise<WorkspaceChecks['commands']> {
     const results: WorkspaceChecks['commands'] = [];
     for (const command of commands) {
-      const result = await workspaceCommand(command.argv[0]!, command.argv.slice(1), ws.path, ctx.signal,
-        Math.max(1, Math.min(command.timeoutMs, ctx.state.deadlineAt - Date.now())), gitEnv(), this.processes);
+      const result = await workspaceCommand(command.argv[0]!, command.argv.slice(1), path, signal,
+        Math.max(1, Math.min(command.timeoutMs, deadlineAt - Date.now())), gitEnv(), this.processes);
       results.push({ argv: command.argv, code: result.code, stdout: result.stdout.slice(-16000), stderr: result.stderr.slice(-16000) });
       if (result.code) break;
     }
@@ -388,18 +421,10 @@ export class WorkflowWorkspaces {
     const landing = this.landing(workflow);
     return landing ? this.refHead(repo, landing.targetRef, signal) : null;
   }
-  private serial<T>(workflow: string, run: () => Promise<T>): Promise<T> {
-    const next = (this.landings.get(workflow) ?? Promise.resolve()).then(run, run);
-    this.landings.set(workflow, next);
-    void next.catch(() => {}).finally(() => { if (this.landings.get(workflow) === next) this.landings.delete(workflow); });
-    return next;
-  }
-
   /**
-   * Lands the commits of a member's worktree on the landing branch: rebase onto its head, run the configured checks
-   * in the worktree, then advance the branch if it has not moved. Called by the task running in that worktree, which
-   * waits for the answer. Checks of different worktrees run side by side; only advancing the branch is serialized.
-   * A landing that keeps losing that race takes the lock for its whole next round, so it cannot starve.
+   * Lands the commits of a member's worktree on the landing branch. Called by the task running in that worktree,
+   * which waits for the answer. The worktree is rebased onto the branch, screened for protected paths and prechecked
+   * on its own, side by side with other members; then the submission boards the next train (see `round`).
    */
   land(ctx: WorkspaceContext, input: { workspace: string; taskId: string }): Promise<LandReport> {
     if (this.closed) return Promise.reject(new Error('Workspace service is closed'));
@@ -417,68 +442,186 @@ export class WorkflowWorkspaces {
     const ws = await this.binding(ctx.state.root, workflow, input.workspace, signal);
     if (ws.kind !== 'task') throw new Error('Only task workspaces can be landed');
     if (ws.busy?.taskId !== input.taskId) throw new Error('Landing requires the task that is running in this worktree');
-    {
-      const { targetRef } = landing;
-      const ancestor = async (older: string, newer: string) => !(await this.git(ws.path, ['merge-base', '--is-ancestor', older, newer], signal, true)).code;
-      const identity = (await this.git(ws.path, ['config', 'user.email'], signal, true)).stdout.trim() ? [] : ['-c', 'user.name=Bridge workflow', '-c', 'user.email=workflow@localhost'];
-      /** Brings the worktree onto the branch head and checks it; a report means this submission is settled. */
-      const prepare = async (checks: boolean): Promise<LandReport | { expected: string | null; headCommit: string; commits: number }> => {
-        const before = await this.clean(ws, signal);
-        const expected = await this.refHead(ws.repository, targetRef, signal);
-        const targetCommit = expected ?? ws.baseCommit;
-        if (await ancestor(before.headCommit, targetCommit)) return { status: 'landed', targetRef, headCommit: targetCommit, commits: 0 };
-        if (!await ancestor(targetCommit, before.headCommit)) {
-          const undo = () => this.git(ws.path, ['rebase', '--abort'], new AbortController().signal, true);
-          const rebased = await this.git(ws.path, [...identity, 'rebase', targetCommit], signal, true).catch(async error => { await undo(); throw error; });
-          if (rebased.code) await undo();
-          if (rebased.code) return { status: 'conflict', targetRef, targetCommit, detail: (rebased.stdout + rebased.stderr).slice(-4000) };
-        }
-        const pinned = await this.clean(ws, signal);
-        if (pinned.headCommit === targetCommit) return { status: 'landed', targetRef, headCommit: targetCommit, commits: 0 };
-        if (checks) {
-          const commands = (await this.run(ctx, ws, landing.commands)).map(result => ({ ...result, stdout: result.stdout.slice(-4000), stderr: result.stderr.slice(-4000) }));
-          const failed = { status: 'check_failed' as const, targetRef, targetCommit, headCommit: pinned.headCommit, commands };
-          if (commands.length !== landing.commands.length || commands.some(result => result.code)) return failed;
-          const after = await this.clean(ws, signal).catch((error: Error) => error.message);
-          if (typeof after === 'string') return { ...failed, reason: after };
-          if (after.headCommit !== pinned.headCommit) return { ...failed, reason: 'Checks changed the worktree HEAD' };
-        }
-        const commits = Number((await this.git(ws.path, ['rev-list', '--count', `${targetCommit}..${pinned.headCommit}`], signal)).stdout.trim());
-        return { expected, headCommit: pinned.headCommit, commits };
-      };
-      /** Advances the branch unless it moved since `prepare` read it. */
-      const round = async (checks: boolean, held: boolean): Promise<LandReport | undefined> => {
-        const ready = await prepare(checks);
-        if ('status' in ready) return ready;
-        const advance = async (): Promise<LandReport | undefined> => {
-          if (await this.refHead(ws.repository, targetRef, signal) !== ready.expected) return undefined;
-          await this.notCheckedOut(ws.repository, targetRef, signal);
-          await this.git(ws.repository, ['update-ref', targetRef, ready.headCommit, ready.expected ?? '0'.repeat(ready.headCommit.length)], signal);
-          return { status: 'landed', targetRef, headCommit: ready.headCommit, commits: ready.commits };
-        };
-        return held ? advance() : this.serial(workflow, advance);
-      };
-      for (let optimistic = landing.strict ? 2 : 1; optimistic > 0; optimistic--) {
-        const report = await round(true, false);
-        if (report) return report;
-      }
-      // Without strict, the checks that passed on an older head stand as long as the rebase is clean.
-      const report = await this.serial(workflow, () => round(landing.strict, true));
-      if (!report) throw new Error('Landing branch was moved from outside the landing queue; submit again');
-      return report;
+    const { targetRef } = landing;
+    const ancestor = async (older: string, newer: string) => !(await this.git(ws.path, ['merge-base', '--is-ancestor', older, newer], signal, true)).code;
+    const before = await this.clean(ws, signal);
+    const targetCommit = await this.refHead(ws.repository, targetRef, signal) ?? ws.baseCommit;
+    const nothing = { status: 'landed' as const, targetRef, headCommit: targetCommit, commits: 0 };
+    if (await ancestor(before.headCommit, targetCommit)) return nothing;
+    if (!await ancestor(targetCommit, before.headCommit)) {
+      const undo = () => this.git(ws.path, ['rebase', '--abort'], new AbortController().signal, true);
+      const rebased = await this.git(ws.path, [...await this.identity(ws.path, signal), 'rebase', targetCommit], signal, true).catch(async error => { await undo(); throw error; });
+      if (rebased.code) await undo();
+      if (rebased.code) return { status: 'conflict', targetRef, targetCommit, detail: (rebased.stdout + rebased.stderr).slice(-4000) };
     }
+    const pinned = await this.clean(ws, signal);
+    if (pinned.headCommit === targetCommit) return nothing;
+    if (landing.protect) {
+      const changed = (await this.git(ws.path, ['diff', '--name-only', '--no-renames', '-z', targetCommit, pinned.headCommit], signal)).stdout.split('\0').filter(Boolean);
+      const barred = landing.protect.filter(rule => !rule.allow.includes(ws.id)).flatMap(rule => rule.paths.map(pathPattern));
+      const files = changed.filter(file => barred.some(pattern => pattern.test(file)));
+      if (files.length) return { status: 'rejected', targetRef, targetCommit, files: files.slice(0, 64),
+        reason: `${files.length} changed path(s) are protected from this worktree; resubmit commits that leave them as they are on the landing branch` };
+    }
+    if (landing.precheck) {
+      const commands = tail(await this.run(ws.path, landing.precheck, signal, ctx.state.deadlineAt));
+      const failed = { status: 'check_failed' as const, targetRef, targetCommit, headCommit: pinned.headCommit, commands };
+      if (commands.length !== landing.precheck.length || commands.some(result => result.code)) return failed;
+      const after = await this.clean(ws, signal).catch((error: Error) => error.message);
+      if (typeof after === 'string') return { ...failed, reason: after };
+      if (after.headCommit !== pinned.headCommit) return { ...failed, reason: 'Checks changed the worktree HEAD' };
+    }
+    const commits = Number((await this.git(ws.path, ['rev-list', '--count', `${targetCommit}..${pinned.headCommit}`], signal)).stdout.trim());
+    const report = await this.board({ ws, base: targetCommit, head: pinned.headCommit, commits, ctx });
+    // The train restacked the commits: bring the worktree to where the report says they are, unless the member moved it meanwhile.
+    if ((report.status === 'landed' || report.status === 'check_failed') && report.headCommit !== pinned.headCommit) {
+      const quiet = new AbortController().signal;
+      const now = await this.clean(ws, quiet).catch(() => undefined);
+      if (now?.headCommit === pinned.headCommit) await this.git(ws.path, ['reset', '--hard', '--quiet', report.headCommit], quiet, true);
+    }
+    return report;
+  }
+  private async identity(path: string, signal: AbortSignal): Promise<string[]> {
+    return (await this.git(path, ['config', 'user.email'], signal, true)).stdout.trim() ? [] : ['-c', 'user.name=Bridge workflow', '-c', 'user.email=workflow@localhost'];
+  }
+
+  /** Queues a submission for the next train of its workflow and repository; settles when a train has dealt with it. */
+  private board(change: Omit<Candidate, 'resolve' | 'reject'>): Promise<LandReport> {
+    const key = `${change.ws.workflowId}:${change.ws.commonDir}`, { signal } = change.ctx;
+    const train = this.trains.get(key) ?? { queue: [], running: false }, { queue } = train;
+    this.trains.set(key, train);
+    return new Promise<LandReport>((resolve, reject) => {
+      // A member whose turn ended leaves the queue; once on a train its work lands or fails with the rest.
+      const leave = () => { const at = queue.indexOf(candidate); if (at >= 0) { queue.splice(at, 1); reject(signal.reason); } };
+      const settled = <T>(settle: (value: T) => void) => (value: T) => { signal.removeEventListener('abort', leave); settle(value); };
+      const candidate: Candidate = { ...change, resolve: settled(resolve), reject: settled(reject) };
+      signal.addEventListener('abort', leave, { once: true });
+      queue.push(candidate);
+      if (!train.running) {
+        train.running = true;
+        const driving = this.drive(key, train); this.pending.add(driving);
+        void driving.finally(() => this.pending.delete(driving));
+      }
+    });
+  }
+  private async drive(key: string, train: { queue: Candidate[]; running: boolean }): Promise<void> {
+    while (train.queue.length && !this.closed) {
+      const landing = this.landing(train.queue[0]!.ws.workflowId);
+      const batch = train.queue.splice(0, landing?.batch ?? train.queue.length);
+      try {
+        if (!landing) throw new Error('Landing is not configured; the script calls configureLanding first');
+        train.queue.unshift(...await this.round(landing, batch));
+      } catch (error) { for (const candidate of batch) candidate.reject(error); }
+    }
+    for (const candidate of train.queue.splice(0)) candidate.reject(this.stopping.signal.reason);
+    train.running = false;
+    if (this.trains.get(key) === train) this.trains.delete(key);
+  }
+
+  /**
+   * One train. Stacks the batch on the branch head in the train's worktree, in the order submitted, and runs the
+   * checks on the whole stack. If they pass, the branch advances to the stack and everyone on it has landed. If they
+   * fail, the stack is bisected for the first submission that breaks the checks: the ones before it land, it gets the
+   * failed checks back, and the ones after it ride the next train. A submission that does not apply to the branch
+   * head is a conflict; one that only fails to apply on top of this train's cargo is tried first on the next train.
+   * Returns the submissions to queue again.
+   */
+  private async round(landing: WorkspaceLanding, batch: Candidate[]): Promise<Candidate[]> {
+    const { signal } = this.stopping, { targetRef } = landing, { ws } = batch[0]!;
+    const path = await this.trainWorktree(ws, signal);
+    const expected = await this.refHead(ws.repository, targetRef, signal);
+    const start = expected ?? batch[0]!.base;
+    const deadlineAt = Math.max(...batch.map(candidate => candidate.ctx.state.deadlineAt));
+    const at = async (commit: string) => {
+      await this.git(path, ['reset', '--hard', '--quiet', commit], signal);
+      await this.git(path, ['clean', '-fd', '--quiet'], signal);
+    };
+    await at(start);
+    const identity = await this.identity(path, signal);
+    const stack: Candidate[] = [], heads = [start], again = new Set<Candidate>();
+    for (const candidate of batch) {
+      if (candidate.ctx.signal.aborted) { candidate.reject(candidate.ctx.signal.reason); continue; }
+      const head = heads.at(-1)!;
+      const detail = await this.stack(path, head, candidate, identity, signal);
+      if (detail === undefined) { stack.push(candidate); heads.push(await this.revision(path, undefined, signal)); }
+      else if (head === start) candidate.resolve({ status: 'conflict', targetRef, targetCommit: start, detail });
+      else { again.add(candidate); await at(head); }
+    }
+    const check = async (commit: string): Promise<CheckFailure | undefined> => {
+      await at(commit);
+      const commands = tail(await this.run(path, landing.commands, signal, deadlineAt));
+      if (commands.length !== landing.commands.length || commands.some(result => result.code)) return { commands };
+      if ((await this.git(path, ['status', '--porcelain', '--untracked-files=all'], signal)).stdout.trim()) return { commands, reason: 'Checks left uncommitted or untracked files in the worktree' };
+      if (await this.revision(path, undefined, signal) !== commit) return { commands, reason: 'Checks changed the worktree HEAD' };
+      return undefined;
+    };
+    // heads[n] is the stack after n submissions. The branch head, heads[0], passed when it landed.
+    let good = 0, bad = stack.length + 1, failure: CheckFailure | undefined;
+    for (let probe = stack.length; bad - good > 1; probe = Math.floor((good + bad) / 2)) {
+      const failed = await check(heads[probe]!);
+      if (failed) { bad = probe; failure = failed; } else good = probe;
+    }
+    const head = heads[good]!;
+    if (good) {
+      if (await this.refHead(ws.repository, targetRef, signal) !== expected) throw new Error('Landing branch was moved from outside the landing queue; submit again');
+      await this.notCheckedOut(ws.repository, targetRef, signal);
+      await this.git(ws.repository, ['update-ref', targetRef, head, expected ?? '0'.repeat(head.length)], signal);
+    }
+    for (const candidate of stack.slice(0, good)) candidate.resolve({ status: 'landed', targetRef, headCommit: head, commits: candidate.commits });
+    if (failure) stack[bad - 1]!.resolve({ status: 'check_failed', targetRef, targetCommit: head, headCommit: heads[bad]!, ...failure });
+    for (const candidate of stack.slice(bad)) again.add(candidate);
+    return batch.filter(candidate => again.has(candidate));
+  }
+  /** Puts a submission's commits on top of `head` in the train's worktree; returns Git's complaint when they do not apply. */
+  private async stack(path: string, head: string, candidate: Candidate, identity: string[], signal: AbortSignal): Promise<string | undefined> {
+    // Nothing landed since the member rebased: its commits go on as they are.
+    if (candidate.base === head) { await this.git(path, ['reset', '--hard', '--quiet', candidate.head], signal); return undefined; }
+    let picked = await this.git(path, [...identity, 'cherry-pick', '--allow-empty', `${candidate.base}..${candidate.head}`], signal, true);
+    for (let skipped = 0; picked.code; skipped++) {
+      // A commit the branch already holds stops the pick with nothing to commit: skip it. Anything else is a conflict.
+      const stopped = !(await this.git(path, ['rev-parse', '--verify', '--quiet', 'CHERRY_PICK_HEAD'], signal, true)).code;
+      const dirty = (await this.git(path, ['status', '--porcelain', '--untracked-files=no'], signal)).stdout.trim();
+      if (!stopped || dirty || skipped > candidate.commits) {
+        await this.git(path, ['cherry-pick', '--abort'], signal, true);
+        return (picked.stdout + picked.stderr).slice(-4000);
+      }
+      picked = await this.git(path, [...identity, 'cherry-pick', '--skip'], signal, true);
+    }
+    return undefined;
+  }
+  /** The train's own worktree, one for each workflow and repository; it keeps the checks' build outputs between trains. */
+  private trainPath(ws: WorkspaceBinding): string {
+    return join(resolve(this.directory), ws.workflowId, `train-${workflowDigest(ws.commonDir).slice(0, 16)}`);
+  }
+  private async trainWorktree(ws: WorkspaceBinding, signal: AbortSignal): Promise<string> {
+    const path = this.trainPath(ws);
+    if (await access(join(path, '.git')).then(() => true, () => false)) await this.git(path, ['cherry-pick', '--abort'], signal, true);
+    else {
+      await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+      await this.git(ws.repository, ['worktree', 'add', '--detach', '--lock', '--reason', `bridge-workflow:train:${ws.workflowId}`, path, ws.baseCommit], signal);
+    }
+    return path;
+  }
+  /** Removes the train's worktree once the last member worktree of its repository is gone. */
+  private async retireTrain(ws: WorkspaceBinding, signal: AbortSignal): Promise<void> {
+    const left = this.db.prepare("SELECT COUNT(*) AS n FROM workspace_records WHERE workflow=? AND kind='workspace' AND json_extract(data,'$.kind')='task' AND json_extract(data,'$.status')!='removed' AND json_extract(data,'$.commonDir')=?").get(ws.workflowId, ws.commonDir) as { n: number };
+    const path = this.trainPath(ws);
+    if (left.n || this.trains.has(`${ws.workflowId}:${ws.commonDir}`) || !await access(path).then(() => true, () => false)) return;
+    await this.git(ws.repository, ['worktree', 'unlock', path], signal, true);
+    await this.git(ws.repository, ['worktree', 'remove', '--force', path], signal, true);
   }
 
   private async check(ctx: WorkspaceContext, op: RecordRow, ws: WorkspaceBinding, value: unknown): Promise<WorkspaceChecks> {
     const commands = this.commands(value);
     const pinned = await this.clean(ws, ctx.signal);
-    const results = await this.run(ctx, ws, commands);
+    const results = await this.run(ws.path, commands, ctx.signal, ctx.state.deadlineAt);
     const after = await this.clean(ws, ctx.signal);
     const passed = results.length === commands.length && results.every(result => result.code === 0) && after.headCommit === pinned.headCommit && after.tree === pinned.tree;
     return this.internal<WorkspaceChecks>(op, 'checks', 'checks', id => ({ id, workspaceId: ws.id, ...pinned, passed, commands: results }));
   }
 
   async close(): Promise<void> {
-    this.closed = true; await Promise.allSettled([...this.pending]); this.db.close();
+    this.closed = true; this.stopping.abort(new Error('Workspace service is closed'));
+    await Promise.allSettled([...this.pending]); this.db.close();
   }
 }
