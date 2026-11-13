@@ -18,7 +18,7 @@ import type {
 import { configureLogger, closeLogger } from '../../core/logger';
 import { ProfileExecutionController } from '../../runtime/execution-controller';
 import { checkRuntimeAgentAvailability } from '../../runtime/agent-runtime';
-import { ScopeExecutionStore } from '../../session/scope-execution';
+import { SCOPE_AGENTS_FILE, ScopeExecutionStore } from '../../session/scope-execution';
 import { normalizeModelServices } from '../../model-service/config';
 import { ModelProviderRegistry } from '../../model-provider/provider';
 import {
@@ -54,7 +54,7 @@ export async function runWeb(options: RunWebOptions): Promise<void> {
   const configForAgent = (kind: AgentKind): RunProfileConfig =>
     standaloneProfile(doc, profile, kind, workspace, options, defaultAgentKind);
 
-  const scopeExecution = new ScopeExecutionStore(join(stateDir, 'scope-execution.json'));
+  const scopeExecution = new ScopeExecutionStore(join(stateDir, SCOPE_AGENTS_FILE));
   await scopeExecution.load();
   const execution = new ProfileExecutionController({
     profileConfig,

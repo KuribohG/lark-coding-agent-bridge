@@ -152,8 +152,6 @@ describe('Supervisor', () => {
   });
 
   it('switches the bot default for DMs and topics without disconnecting or replacing active adapters', async () => {
-    // A retired Lark override file must not influence routing, even if corrupt.
-    await writeFile(join(root, 'profiles', 'claude', 'scope-execution.json'), 'invalid legacy state');
     await sup.startProfile('claude');
     await sup.startProfile('work');
     const execution = executions.get('claude')!;

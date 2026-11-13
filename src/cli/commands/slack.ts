@@ -11,7 +11,7 @@ import { ChannelHost } from '../../channels/plugin';
 import { createSlackPlugin } from '../../channels/slack';
 import { SLACK_SYSTEM_PROMPT } from '../../channels/slack/config';
 import { ProfileExecutionController } from '../../runtime/execution-controller';
-import { ScopeExecutionStore } from '../../session/scope-execution';
+import { SCOPE_AGENTS_FILE, ScopeExecutionStore } from '../../session/scope-execution';
 import { normalizeModelServices } from '../../model-service/config';
 import { ModelProviderRegistry } from '../../model-provider/provider';
 import type { AgentKind, RunProfileConfig } from '../../config/profile-schema';
@@ -54,7 +54,7 @@ export async function runSlack(options: RunSlackOptions): Promise<void> {
   const profileConfig = standaloneProfile(doc, profile, defaultAgentKind, workspace, options);
   const configForAgent = (kind: AgentKind): RunProfileConfig =>
     standaloneProfile(doc, profile, kind, workspace, options, defaultAgentKind);
-  const scopeExecution = new ScopeExecutionStore(join(stateDir, 'scope-execution.json'));
+  const scopeExecution = new ScopeExecutionStore(join(stateDir, SCOPE_AGENTS_FILE));
   await scopeExecution.load();
   const execution = new ProfileExecutionController({
     profileConfig,

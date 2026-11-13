@@ -10,7 +10,7 @@ import type { AgentKind, ProfileConfig } from '../config/profile-schema';
 import { log } from '../core/logger';
 import { refreshOwnerControls } from '../policy/owner';
 import { SessionStore } from '../session/store';
-import { ScopeExecutionStore } from '../session/scope-execution';
+import { SCOPE_AGENTS_FILE, ScopeExecutionStore } from '../session/scope-execution';
 import { SessionCatalog } from '../session/catalog';
 import { WorkspaceStore } from '../workspace/store';
 import { preFlightChecks } from '../cli/preflight';
@@ -628,8 +628,7 @@ export class Supervisor {
     await sessions.load();
     const sessionCatalog = new SessionCatalog(`${appPaths.sessionsFile}.catalog.json`);
     await sessionCatalog.load();
-    // Not `scope-execution.json`: profiles may still hold that file from the retired per-scope overrides.
-    const scopeExecution = new ScopeExecutionStore(join(appPaths.profileDir, 'scope-agents.json'));
+    const scopeExecution = new ScopeExecutionStore(join(appPaths.profileDir, SCOPE_AGENTS_FILE));
     await scopeExecution.load();
     const execution = createExecutionController({
       profileConfig,

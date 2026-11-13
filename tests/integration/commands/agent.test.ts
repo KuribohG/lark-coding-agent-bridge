@@ -7,7 +7,7 @@ import { createDefaultProfileConfig, type AgentKind, type RootConfig } from '../
 import { runtimeProfileConfig } from '../../../src/config/profile-store';
 import { resolveRunModelSettings } from '../../../src/runtime/model-settings';
 import { ActiveRuns } from '../../../src/runtime/active-runs';
-import { ScopeExecutionStore } from '../../../src/session/scope-execution';
+import { SCOPE_AGENTS_FILE, ScopeExecutionStore } from '../../../src/session/scope-execution';
 import { SessionStore } from '../../../src/session/store';
 import { WorkspaceStore } from '../../../src/workspace/store';
 import { fakeChannelControls } from '../../helpers/channel-controls';
@@ -33,7 +33,7 @@ async function harness() {
   const configPath = join(tmp.root, 'config.toml');
   await writeFile(configPath, encodeFixture(root));
 
-  const store = new ScopeExecutionStore(join(tmp.profile, 'scope-execution.json'));
+  const store = new ScopeExecutionStore(join(tmp.profile, SCOPE_AGENTS_FILE));
   const unavailable = new Set<AgentKind>();
   const btwResets: string[] = [];
   const controls: Controls = { profile: 'codex', profileConfig: profile, cfg: runtimeProfileConfig(root, 'codex'),

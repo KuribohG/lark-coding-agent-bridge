@@ -346,7 +346,7 @@ Pi supports `read-only` (built-in read/search tools only) and `full`. It has no 
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | Profile-local lark-cli directory |
 | `~/.lark-channel/profiles/<profile>/media/` | Attachment cache |
 | `~/.lark-channel/profiles/<profile>/logs/` | Structured run logs |
-| `~/.lark-channel/web/default/scope-execution.json` | Per-conversation standalone Web engine overrides |
+| `~/.lark-channel/web/default/scope-agents.json` | Per-conversation standalone Web engine overrides |
 | `~/.lark-channel/web/default/sessions.catalog.json` | Agent-aware standalone Web session catalog |
 | `~/.lark-channel/registry/processes.json` | Local process registry |
 | `~/.lark-channel/registry/locks/` | Profile and app locks |

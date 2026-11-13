@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ScopeExecutionStore } from '../../../src/session/scope-execution';
+import { SCOPE_AGENTS_FILE, ScopeExecutionStore } from '../../../src/session/scope-execution';
 
 const dirs: string[] = [];
 
@@ -14,7 +14,7 @@ describe('ScopeExecutionStore', () => {
   it('persists independent engine overrides per chat and topic', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'scope-execution-'));
     dirs.push(dir);
-    const path = join(dir, 'scope-execution.json');
+    const path = join(dir, SCOPE_AGENTS_FILE);
     const store = new ScopeExecutionStore(path);
     await store.load();
 

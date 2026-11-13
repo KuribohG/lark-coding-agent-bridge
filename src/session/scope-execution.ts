@@ -8,6 +8,9 @@ interface ScopeExecutionFile {
   scopes: Record<string, AgentKind>;
 }
 
+/** State file name, inside a profile or standalone channel state directory. */
+export const SCOPE_AGENTS_FILE = 'scope-agents.json';
+
 /** Per-conversation engine choices; scopes without an entry use the bot default. */
 export class ScopeExecutionStore {
   private data = new Map<string, AgentKind>();

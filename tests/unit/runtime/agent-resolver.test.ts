@@ -5,7 +5,7 @@ import { ProfileExecutionController } from '../../../src/runtime/execution-contr
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { resolveAppPaths } from '../../../src/config/app-paths';
 import { ModelProviderRegistry } from '../../../src/model-provider/provider';
-import { ScopeExecutionStore } from '../../../src/session/scope-execution';
+import { SCOPE_AGENTS_FILE, ScopeExecutionStore } from '../../../src/session/scope-execution';
 import { createTmpProfile } from '../../helpers/tmp-profile';
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -34,7 +34,7 @@ describe('ProfileExecutionController', () => {
       pi: { binaryPath: pi },
     });
     const paths = resolveAppPaths({ rootDir: tmp.root, profile: 'codex' });
-    const store = new ScopeExecutionStore(join(paths.profileDir, 'scope-execution.json'));
+    const store = new ScopeExecutionStore(join(paths.profileDir, SCOPE_AGENTS_FILE));
     await store.load();
     await store.set('chat:topic-pi', 'pi');
     const resolver = new ProfileExecutionController({
@@ -78,7 +78,7 @@ describe('ProfileExecutionController', () => {
       pi: { binaryPath: pi },
     });
     const paths = resolveAppPaths({ rootDir: tmp.root, profile: 'claude' });
-    const store = new ScopeExecutionStore(join(paths.profileDir, 'scope-execution.json'));
+    const store = new ScopeExecutionStore(join(paths.profileDir, SCOPE_AGENTS_FILE));
     await store.load();
     const resolver = new ProfileExecutionController({
       profileConfig: profile,

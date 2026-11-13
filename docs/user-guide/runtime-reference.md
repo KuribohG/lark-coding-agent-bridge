@@ -310,7 +310,7 @@ Pi 支持 `read-only`（只开放读取/搜索工具）和 `full`。Pi 没有可
 | `~/.lark-channel/profiles/<profile>/lark-cli/` | 当前 profile 的 lark-cli 目录 |
 | `~/.lark-channel/profiles/<profile>/media/` | 附件缓存 |
 | `~/.lark-channel/profiles/<profile>/logs/` | 结构化运行日志 |
-| `~/.lark-channel/web/default/scope-execution.json` | 独立 Web 各 conversation 的执行引擎覆盖 |
+| `~/.lark-channel/web/default/scope-agents.json` | 独立 Web 各 conversation 的执行引擎覆盖 |
 | `~/.lark-channel/web/default/sessions.catalog.json` | 独立 Web 的 agent-aware 会话索引 |
 | `~/.lark-channel/registry/processes.json` | 本机进程注册表 |
 | `~/.lark-channel/registry/locks/` | profile lock 和 app lock |
