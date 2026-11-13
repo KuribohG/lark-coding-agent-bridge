@@ -281,7 +281,10 @@ Lark credentials and protocol tokens have separate owners:
 The shared execution runtime does not import the Lark SDK or construct agent
 environment/prompts. `channels/lark/agent-host.ts` supplies those values, while
 `ProfileExecutionController` only consumes injected environment and prompt
-objects. Work-item monitoring similarly depends on `WorkItemDeliveryPort`;
+objects. Lark, Slack and standalone Web all obtain their controller from
+`runtime/execution-host.ts` (`openExecution`), which owns the `scope-agents.json`
+store, model services and the availability check; an architecture test rejects
+a controller or store constructed anywhere else. Work-item monitoring similarly depends on `WorkItemDeliveryPort`;
 `monitoring/sources/lark/work-item-delivery.ts` is the Lark implementation.
 
 Agent session and image semantics are declared by each backend capability.

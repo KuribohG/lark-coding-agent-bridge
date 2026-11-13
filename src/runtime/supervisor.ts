@@ -1,4 +1,3 @@
-import { join } from 'node:path';
 import pkg from '../../package.json';
 import { startChannel as realStartChannel } from '../channels/lark';
 import type { BridgeChannel } from '../channels/lark/channel';
@@ -10,7 +9,7 @@ import type { AgentKind, ProfileConfig } from '../config/profile-schema';
 import { log } from '../core/logger';
 import { refreshOwnerControls } from '../policy/owner';
 import { SessionStore } from '../session/store';
-import { SCOPE_AGENTS_FILE, ScopeExecutionStore } from '../session/scope-execution';
+import type { ScopeExecutionStore } from '../session/scope-execution';
 import { SessionCatalog } from '../session/catalog';
 import { WorkspaceStore } from '../workspace/store';
 import { preFlightChecks } from '../cli/preflight';
@@ -20,8 +19,8 @@ import {
   checkRuntimeAgentAvailability,
   releaseRuntimeLocks,
 } from './agent-runtime';
-import { ProfileExecutionController } from './execution-controller';
-import { ModelProviderRegistry } from '../model-provider/provider';
+import type { ProfileExecutionController } from './execution-controller';
+import { openExecution, rebuildExecution, type ExecutionHostOptions } from './execution-host';
 import { LarkProfileAuth } from '../lark-auth/profile-auth';
 import {
   acquireAppRuntimeLock,
@@ -56,23 +55,21 @@ import type { ModelServiceConfig } from '../model-service/config';
 
 type StartChannelFn = typeof realStartChannel;
 
-function createExecutionController(input: {
+function larkExecutionOptions(input: {
   profileConfig: ProfileConfig;
   appPaths: AppPaths;
   configPath: string;
-  modelServices?: Record<string, import('../model-service/config').ModelServiceConfig>;
-  scopeExecution: ScopeExecutionStore;
-}): ProfileExecutionController {
-  const { profileConfig, appPaths, configPath, modelServices, scopeExecution } = input;
+  modelServices?: Record<string, ModelServiceConfig>;
+}): ExecutionHostOptions {
+  const { profileConfig, appPaths, configPath, modelServices } = input;
   const host = larkAgentHostContext(appPaths, configPath);
-  return new ProfileExecutionController({
+  return {
     profileConfig,
-    scopeExecution,
     appPaths: { ...appPaths, configPath },
     systemPrompt: host.systemPrompt,
     env: host.env,
-    modelProviders: new ModelProviderRegistry(modelServices),
-  });
+    modelServices,
+  };
 }
 
 export interface SupervisorOptions {
@@ -331,13 +328,12 @@ class ManagedProfile {
           nextRuntime.profileConfig.agentKind,
         );
       }
-      const nextExecution = config === 'running' ? this.execution : createExecutionController({
+      const nextExecution = config === 'running' ? this.execution : rebuildExecution(larkExecutionOptions({
         profileConfig: nextRuntime.profileConfig,
         appPaths: nextRuntime.appPaths,
         configPath: this.configPath,
         modelServices: nextRuntime.modelServices,
-        scopeExecution: this.scopeExecution,
-      });
+      }), this.scopeExecution);
       const nextLarkAuth = candidateAuth = new LarkProfileAuth(next, nextRuntime.appPaths);
       if (config === 'reload') {
         const availability = await checkRuntimeAgentAvailability(nextExecution.defaultAgent());
@@ -628,19 +624,12 @@ export class Supervisor {
     await sessions.load();
     const sessionCatalog = new SessionCatalog(`${appPaths.sessionsFile}.catalog.json`);
     await sessionCatalog.load();
-    const scopeExecution = new ScopeExecutionStore(join(appPaths.profileDir, SCOPE_AGENTS_FILE));
-    await scopeExecution.load();
-    const execution = createExecutionController({
+    const { execution, scopeExecution } = await openExecution(larkExecutionOptions({
       profileConfig,
       appPaths,
       configPath,
       modelServices: runtime.modelServices,
-      scopeExecution,
-    });
-    if (this.opts.runPreflight !== false) {
-      const availability = await checkRuntimeAgentAvailability(execution.defaultAgent());
-      if (!availability.ok) throw availability.error;
-    }
+    }), { preflight: this.opts.runPreflight !== false });
     const workspaces = new WorkspaceStore(appPaths.workspacesFile);
     await workspaces.load();
 

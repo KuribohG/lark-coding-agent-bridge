@@ -90,3 +90,22 @@ it('runs every channel conversation turn through the shared turn pipeline', asyn
     expect(text, file).not.toMatch(/\b(?:startRunFlow|trackRunSession|presentRunOutput)\(/);
   }
 });
+
+it('assembles every channel host\'s execution controller in one place', async () => {
+  // A front end that built its own controller or engine-choice store could
+  // diverge in state file, model services or availability check.
+  const root = fileURLToPath(new URL('../../../src/', import.meta.url));
+  const offenders: string[] = [];
+  const visit = async (dir: string): Promise<void> => {
+    for (const entry of await readdir(join(root, dir), { withFileTypes: true })) {
+      const file = join(dir, entry.name);
+      if (entry.isDirectory()) await visit(file);
+      else if (entry.name.endsWith('.ts') && file !== join('runtime', 'execution-host.ts')
+        && /\bnew (?:ProfileExecutionController|ScopeExecutionStore)\(/.test(await readFile(join(root, file), 'utf8'))) {
+        offenders.push(file);
+      }
+    }
+  };
+  await visit('.');
+  expect(offenders).toEqual([]);
+});

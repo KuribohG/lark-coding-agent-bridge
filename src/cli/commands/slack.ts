@@ -6,14 +6,11 @@ import { resolveAppPaths } from '../../config/app-paths';
 import { getSecret } from '../../config/keystore';
 import { readActiveProfile } from '../../config/profile-store';
 import { configureLogger, closeLogger } from '../../core/logger';
-import { checkRuntimeAgentAvailability } from '../../runtime/agent-runtime';
 import { ChannelHost } from '../../channels/plugin';
 import { createSlackPlugin } from '../../channels/slack';
 import { SLACK_SYSTEM_PROMPT } from '../../channels/slack/config';
-import { ProfileExecutionController } from '../../runtime/execution-controller';
-import { SCOPE_AGENTS_FILE, ScopeExecutionStore } from '../../session/scope-execution';
+import { openExecution } from '../../runtime/execution-host';
 import { normalizeModelServices } from '../../model-service/config';
-import { ModelProviderRegistry } from '../../model-provider/provider';
 import type { AgentKind, RunProfileConfig } from '../../config/profile-schema';
 import {
   selectStandaloneAgent,
@@ -54,17 +51,12 @@ export async function runSlack(options: RunSlackOptions): Promise<void> {
   const profileConfig = standaloneProfile(doc, profile, defaultAgentKind, workspace, options);
   const configForAgent = (kind: AgentKind): RunProfileConfig =>
     standaloneProfile(doc, profile, kind, workspace, options, defaultAgentKind);
-  const scopeExecution = new ScopeExecutionStore(join(stateDir, SCOPE_AGENTS_FILE));
-  await scopeExecution.load();
-  const execution = new ProfileExecutionController({
+  const { execution } = await openExecution({
     profileConfig,
-    scopeExecution,
     appPaths: { profileDir: stateDir },
     systemPrompt: SLACK_SYSTEM_PROMPT,
-    modelProviders: new ModelProviderRegistry(normalizeModelServices(doc?.model_services)),
+    modelServices: normalizeModelServices(doc?.model_services),
   });
-  const availability = await checkRuntimeAgentAvailability(execution.defaultAgent());
-  if (!availability.ok) throw availability.error;
 
   const secretProfile = options.profile
     ?? profile

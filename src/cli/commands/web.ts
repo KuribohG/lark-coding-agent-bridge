@@ -16,11 +16,8 @@ import type {
   RunProfileConfig,
 } from '../../config/profile-schema';
 import { configureLogger, closeLogger } from '../../core/logger';
-import { ProfileExecutionController } from '../../runtime/execution-controller';
-import { checkRuntimeAgentAvailability } from '../../runtime/agent-runtime';
-import { SCOPE_AGENTS_FILE, ScopeExecutionStore } from '../../session/scope-execution';
+import { openExecution } from '../../runtime/execution-host';
 import { normalizeModelServices } from '../../model-service/config';
-import { ModelProviderRegistry } from '../../model-provider/provider';
 import {
   selectStandaloneAgent,
   selectStandaloneProfile,
@@ -54,18 +51,12 @@ export async function runWeb(options: RunWebOptions): Promise<void> {
   const configForAgent = (kind: AgentKind): RunProfileConfig =>
     standaloneProfile(doc, profile, kind, workspace, options, defaultAgentKind);
 
-  const scopeExecution = new ScopeExecutionStore(join(stateDir, SCOPE_AGENTS_FILE));
-  await scopeExecution.load();
-  const execution = new ProfileExecutionController({
+  const { execution } = await openExecution({
     profileConfig,
-    scopeExecution,
     appPaths: { profileDir: stateDir },
     systemPrompt: WEB_SYSTEM_PROMPT,
-    modelProviders: new ModelProviderRegistry(normalizeModelServices(doc?.model_services)),
+    modelServices: normalizeModelServices(doc?.model_services),
   });
-  const initialAgent = execution.defaultAgent();
-  const availability = await checkRuntimeAgentAvailability(initialAgent);
-  if (!availability.ok) throw availability.error;
 
   const host = new ChannelHost();
   const connection = await host.connect(createWebPlugin({
