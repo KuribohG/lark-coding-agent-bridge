@@ -301,7 +301,7 @@ async function createHarness(
   }
   const identity = await commandIdentity(agentKind, profileConfig, controls, tmp.workspace);
   const chatModeCache = new ChatModeCache();
-  chatModeCache.resolve = async () => 'p2p';
+  chatModeCache.resolveOutcome = async () => ({ mode: 'p2p', failed: false });
 
   const run = (
     content: string,

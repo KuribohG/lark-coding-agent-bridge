@@ -11,7 +11,24 @@ describe('ChatModeCache', () => {
     expect(channel.getChatMode).not.toHaveBeenCalled();
     const card = await cache.resolveScope(channel as never, message, 'card');
     expect(card).toEqual(text);
-    expect(card).toEqual({ scope: 'chat:topic', threadId: 'topic', mode: 'topic' });
+    expect(card).toEqual({ scope: 'chat:topic', threadId: 'topic', mode: 'topic', unverified: false });
+  });
+
+  it('reports an unverified scope when the carrier lookup fails', async () => {
+    const cache = new ChatModeCache();
+    const channel = { getChatMode: vi.fn(async () => 'group' as const),
+      fetchRawMessage: vi.fn(async () => { throw new Error('Request failed with status code 400'); }) };
+    await expect(cache.resolveScope(channel as never, { chatId: 'chat', messageId: 'om_card' }, 'card'))
+      .resolves.toEqual({ scope: 'chat', threadId: undefined, mode: 'group', unverified: true });
+  });
+
+  it('reports an unverified scope when the chat-mode probe fails', async () => {
+    const cache = new ChatModeCache();
+    const channel = { getChatMode: vi.fn(async () => { throw new Error('Request failed with status code 400'); }),
+      fetchRawMessage: vi.fn() };
+    await expect(cache.resolveScope(channel as never, { chatId: 'chat', messageId: 'om_message' }))
+      .resolves.toEqual({ scope: 'chat', threadId: undefined, mode: 'group', unverified: true });
+    expect(channel.fetchRawMessage).not.toHaveBeenCalled();
   });
 
   it('recovers missing topic ids but avoids carrier lookups for ordinary text and DMs', async () => {

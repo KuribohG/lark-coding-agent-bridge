@@ -56,9 +56,30 @@ export interface QuestionAnswerInput {
   verify(request: QuestionRequest): boolean;
 }
 
+/** Why an answer did not reach its question; kept explicit so the notice names the real problem. */
+export type QuestionAnswerRejection =
+  | 'unknown-request'
+  | 'carrier-mismatch'
+  | 'chat-mismatch'
+  | 'operator-mismatch'
+  | 'scope-mismatch'
+  | 'settled'
+  | 'incomplete-answer'
+  | 'verification';
+
 export type QuestionAnswerResult =
-  | { kind: 'rejected'; notice: string; request?: QuestionRequest }
+  | { kind: 'rejected'; reason: QuestionAnswerRejection; notice: string; request?: QuestionRequest }
   | { kind: 'settled'; request: QuestionRequest };
+
+const REJECTION_NOTICE: Record<Exclude<QuestionAnswerRejection, 'settled'>, string> = {
+  'unknown-request': '这个提问已失效，或不是这张卡片发起的；请在原话题直接回复。',
+  'carrier-mismatch': '这个提问不是这张卡片发起的；请在原话题直接回复。',
+  'chat-mismatch': '这个提问不属于当前会话；请在原话题直接回复。',
+  'operator-mismatch': '这个提问不是发给你的；请让提问对象回答，或在原话题直接回复。',
+  'scope-mismatch': '无法确认这张卡片所在的话题，请在原话题直接回复答案。',
+  'incomplete-answer': '请先回答每个问题：点击有效选项，或填写自己的答案。',
+  verification: '按钮校验未通过，请在原话题直接回复答案。',
+};
 
 const TTL_MS = 24 * 60 * 60 * 1000;
 /** A blocking question holds the whole turn; past this the agent continues on its own assumptions. */
@@ -115,11 +136,12 @@ export class QuestionBroker {
   async answer(input: QuestionAnswerInput): Promise<QuestionAnswerResult> {
     this.prune();
     const request = this.requests.get(input.requestId);
-    if (!request || (input.ref !== undefined && request.ref !== input.ref) || request.identity.scopeId !== input.scope ||
-        request.message.chatId !== input.chatId || request.message.senderId !== input.operatorId) {
-      return { kind: 'rejected', notice: '这个提问已失效，或不属于你；请在原话题直接回复。' };
-    }
-    if (request.status) return { kind: 'rejected', notice: request.status, request };
+    if (!request) return this.reject('unknown-request');
+    if (input.ref !== undefined && request.ref !== input.ref) return this.reject('carrier-mismatch', request);
+    if (request.message.chatId !== input.chatId) return this.reject('chat-mismatch', request);
+    if (request.message.senderId !== input.operatorId) return this.reject('operator-mismatch', request);
+    if (request.identity.scopeId !== input.scope) return this.reject('scope-mismatch', request);
+    if (request.status) return { kind: 'rejected', reason: 'settled', notice: request.status, request };
     const active = this.deps.activeRuns.get(input.scope);
     if (active && active.run.runId !== request.runId) {
       return this.settle(request, '当前话题已有新的任务，请直接回复并说明这条答案对应的问题。');
@@ -133,8 +155,8 @@ export class QuestionBroker {
         : '原任务已停止或会话已切换，请在原话题重新说明你的选择。');
     }
     const answers = normalizeAnswers(request, input.answers);
-    if (!answers) return { kind: 'rejected', notice: '请先回答每个问题：点击有效选项，或填写自己的答案。' };
-    if (!input.verify(request)) return { kind: 'rejected', notice: '按钮校验未通过，请在原话题直接回复答案。' };
+    if (!answers) return this.reject('incomplete-answer', request);
+    if (!input.verify(request)) return this.reject('verification', request);
     // Lock every input of this request before any asynchronous delivery.
     request.status = '正在提交你的回答。';
     this.clearTimeout(request.id);
@@ -220,6 +242,12 @@ export class QuestionBroker {
   private sameSession(request: QuestionRequest, identity: SessionCatalogIdentity): boolean {
     const active = this.deps.catalog?.activeFor(identity);
     return request.sessionId ? active?.sessionId === request.sessionId : active?.threadId === request.threadId;
+  }
+
+  private reject(reason: Exclude<QuestionAnswerRejection, 'settled'>, request?: QuestionRequest): QuestionAnswerResult {
+    log.info('question', 'answer-rejected', { reason,
+      ...(request ? { scope: request.identity.scopeId, msgId: request.ref } : {}) });
+    return { kind: 'rejected', reason, notice: REJECTION_NOTICE[reason] };
   }
 
   private async settle(request: QuestionRequest, status: string): Promise<QuestionAnswerResult> {

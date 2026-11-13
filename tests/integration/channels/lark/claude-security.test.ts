@@ -123,7 +123,7 @@ async function createHarness(): Promise<Harness> {
     processId: 'proc-1',
   } satisfies Controls;
   const chatModeCache = new ChatModeCache();
-  chatModeCache.resolve = async () => 'group';
+  chatModeCache.resolveOutcome = async () => ({ mode: 'group', failed: false });
 
   const cleanup = async (): Promise<void> => {
     pending.cancelAll();

@@ -73,14 +73,30 @@ async function dispatchCardAction(deps: CardDispatchDeps): Promise<CardActionRes
     | { action?: { form_value?: Record<string, unknown> } }
     | undefined;
   const formValue = raw?.action?.form_value;
+  const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
 
   // Resolve the click's session scope. For topic groups we need to know
   // the message's thread_id so the action targets the right topic's
   // session — look up the carrier message (the card lives on it) once.
   // Done before the access check so we know the chat mode (p2p vs group)
   // and can skip the chat allowlist for DMs.
-  const { scope, threadId, mode } = await deps.chatModeCache.resolveScope(deps.channel, deps.evt, 'card');
-  log.info('cardAction', 'scope-resolved', { scope });
+  const resolved = await deps.chatModeCache.resolveScope(deps.channel, deps.evt, 'card');
+  let { scope, threadId, mode, unverified } = resolved;
+  // The carrier lookup is an API call that can fail; a pending question knows
+  // the scope it was asked in, so recover it instead of routing the answer to
+  // the chat level (which the broker would reject as a different session).
+  if (unverified && cmd === 'question.answer' && typeof payload.question_id === 'string') {
+    const recovered = deps.userQuestions?.pendingScope({ requestId: payload.question_id, ref: deps.evt.messageId,
+      chatId, operatorId });
+    if (recovered) {
+      scope = recovered.scope;
+      threadId = recovered.threadId;
+      mode = recovered.mode;
+      unverified = false;
+      log.info('cardAction', 'scope-recovered', { scope, source: 'pending-question' });
+    }
+  }
+  log.info('cardAction', 'scope-resolved', { scope, unverified });
   const resolveAgent = deps.resolveAgent
     ?? (deps.agent ? () => deps.agent! : undefined);
   if (!resolveAgent) throw new Error('card action requires agent or resolveAgent');
@@ -101,7 +117,6 @@ async function dispatchCardAction(deps: CardDispatchDeps): Promise<CardActionRes
     return;
   }
 
-  const cmd = typeof payload.cmd === 'string' ? payload.cmd : '';
   if (cmd === 'question.answer') {
     return deps.userQuestions?.answer({
       evt: deps.evt, scope, formValue,

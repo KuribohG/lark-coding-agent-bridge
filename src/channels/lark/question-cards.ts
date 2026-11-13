@@ -5,6 +5,7 @@ import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../car
 import { log } from '../../core/logger';
 import type { SessionCatalog, SessionCatalogIdentity } from '../../session/catalog';
 import type { ActiveRuns } from '../../runtime/active-runs';
+import type { ChatMode } from './chat-mode-cache';
 import type { FollowupRouter } from './followup';
 import type { PendingQueue } from './pending-queue';
 import {
@@ -50,6 +51,21 @@ export class UserQuestions {
   /** A topic reply that answers the only waiting blocking question; undefined leaves it as normal input. */
   answerWithText(input: Parameters<QuestionBroker['answerWithText']>[0]): Promise<string | undefined> {
     return this.broker.answerWithText(input);
+  }
+
+  /**
+   * The session a pending question was asked in, for a click on its own card by
+   * the person it was asked of. Card-action events carry no thread_id and the
+   * carrier lookup can fail; this record is authoritative when it matches.
+   */
+  pendingScope(input: { requestId: string; ref: string; chatId: string; operatorId: string }):
+    { scope: string; threadId?: string; mode: ChatMode } | undefined {
+    const request = this.broker.get(input.requestId);
+    if (!request || request.status || request.ref !== input.ref || request.message.chatId !== input.chatId ||
+        request.message.senderId !== input.operatorId) return undefined;
+    const threadId = request.message.threadId;
+    return { scope: request.identity.scopeId, ...(threadId ? { threadId } : {}),
+      mode: request.message.chatType === 'p2p' ? 'p2p' : threadId ? 'topic' : 'group' };
   }
 
   async answer(input: {

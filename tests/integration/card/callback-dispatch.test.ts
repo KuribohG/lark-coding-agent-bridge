@@ -28,6 +28,18 @@ describe('signed card callback dispatch', () => {
     expect(answer).toHaveBeenCalledWith(expect.objectContaining({ scope: 'oc_group:th_topic', formValue: { answer: 'my answer' } }));
     expect(h.pending.cancel('oc_group:th_topic')).toHaveLength(0);
   });
+
+  it('recovers a pending question scope when the carrier lookup fails', async () => {
+    const response = { card: { type: 'raw', data: { schema: '2.0', body: { elements: [] } } } };
+    const answer = vi.fn(async () => response);
+    const pendingScope = vi.fn(() => ({ scope: 'oc_group:th_topic', threadId: 'th_topic', mode: 'topic' as const }));
+    const h = await createHarness({ chatMode: 'group', userQuestions: { answer, pendingScope } as unknown as UserQuestions });
+    vi.spyOn(h.channel, 'fetchRawMessage').mockRejectedValue(new Error('Request failed with status code 400'));
+    expect(await h.dispatch({ cmd: 'question.answer', question_id: 'q', choice: 'text', bridge_token: 'x' },
+      { answer: 'my answer' })).toEqual(response);
+    expect(pendingScope).toHaveBeenCalledWith({ requestId: 'q', ref: 'om_card', chatId: 'oc_group', operatorId: 'ou_operator' });
+    expect(answer).toHaveBeenCalledWith(expect.objectContaining({ scope: 'oc_group:th_topic' }));
+  });
   afterEach(async () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
@@ -41,7 +53,7 @@ describe('signed card callback dispatch', () => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const spy = lookup === 'chat'
-      ? vi.spyOn(h.chatModeCache, 'resolve').mockImplementation(async () => { await gate; return 'topic'; })
+      ? vi.spyOn(h.chatModeCache, 'resolveOutcome').mockImplementation(async () => { await gate; return { mode: 'topic', failed: false }; })
       : vi.spyOn(h.channel, 'fetchRawMessage').mockImplementation(async () => { await gate; return [{ thread_id: 'th_topic' }]; });
     vi.useFakeTimers();
     const response = h.dispatch({
@@ -248,7 +260,7 @@ async function createHarness(
     createNonce: () => nonce,
   });
   const chatModeCache = new ChatModeCache();
-  chatModeCache.resolve = async () => opts.chatMode ?? 'group';
+  chatModeCache.resolveOutcome = async () => ({ mode: opts.chatMode ?? 'group', failed: false });
   cleanups.push(async () => {
     pending.cancelAll();
     await Promise.all([sessions.flush(), workspaces.flush(), store.flush()]);

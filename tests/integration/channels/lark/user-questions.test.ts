@@ -69,6 +69,16 @@ async function harness(options: { auth?: boolean; timed?: boolean; mention?: boo
 }
 
 describe('native async question cards', () => {
+  it('exposes the scope of a pending question for its own card and asker', async () => {
+    const h = await harness(); await h.publish();
+    const requestId = String(h.values()[0]!.question_id);
+    const input = { requestId, ref: 'om_fake_1', chatId: 'oc_group', operatorId: 'ou_user' };
+    expect(h.manager.pendingScope(input)).toEqual({ scope: 'oc_group:omt_topic', threadId: 'omt_topic', mode: 'topic' });
+    expect(h.manager.pendingScope({ ...input, operatorId: 'ou_other' })).toBeUndefined();
+    expect(h.manager.pendingScope({ ...input, ref: 'om_other' })).toBeUndefined();
+    expect(h.manager.pendingScope({ ...input, chatId: 'oc_other' })).toBeUndefined();
+  });
+
   it.each(['delivery', 'update'] as const)('responds while %s is pending, then settles the card without duplicate delivery', async stage => {
     const h = await harness(); await h.publish();
     let release!: () => void;
