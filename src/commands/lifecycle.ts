@@ -13,11 +13,12 @@ export async function handleStop(args: string, ctx: CommandContext): Promise<voi
     return;
   }
   const scope = targetScope || ctx.scope;
-  const workflowCancelled = ctx.controls.channel?.workflow()?.cancel(scope) ?? false;
+  // The workflow of the scope keeps running; only `/workflow cancel` ends it.
+  const workflowNote = ctx.controls.channel?.workflow()?.active(scope) ? '工作流仍在运行，取消请用 `/workflow cancel`。' : '';
   const dropped = await cancelPendingInput(ctx, scope);
   ctx.controls.channel?.btw.cancel(scope);
   ctx.controls.channel?.cancelTimedRun(scope);
-  const ok = ctx.activeRuns.interrupt(scope) || workflowCancelled;
+  const ok = ctx.activeRuns.interrupt(scope);
   log.info('command', 'stop', {
     scope,
     targeted: Boolean(targetScope),
@@ -27,12 +28,12 @@ export async function handleStop(args: string, ctx: CommandContext): Promise<voi
     await reply(
       ctx,
       ok
-        ? `已请求停止 \`${scope}\`。`
-        : `未找到正在运行的任务：\`${scope}\`。`,
+        ? `已请求停止 \`${scope}\`。${workflowNote}`
+        : `未找到正在运行的任务：\`${scope}\`。${workflowNote}`,
     );
   }
   if (!targetScope) {
-    await reply(ctx, `${ok ? '已请求停止当前任务。' : '当前没有正在执行的任务。'}${dropped ? `已取消 ${dropped} 条排队消息。` : ''}`);
+    await reply(ctx, `${ok ? '已请求停止当前任务。' : '当前没有正在执行的任务。'}${dropped ? `已取消 ${dropped} 条排队消息。` : ''}${workflowNote}`);
   }
 }
 

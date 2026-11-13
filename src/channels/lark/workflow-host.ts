@@ -73,7 +73,7 @@ export class LarkWorkflowHost {
     await runtime.start();
     const { controls, pending } = this.deps;
     this.controlView = {
-      cancel: scope => runtime.kernel.cancel(scope),
+      active: scope => runtime.kernel.state(scope)?.status === 'active',
       invalidate: scope => runtime.kernel.invalidate(scope),
       command: (scope, args, message) => handleWorkflowCommand(runtime.kernel, scope, args, content => {
         if (controls.channel?.activeTimedRun(scope)) return '请先结束当前限时任务。';

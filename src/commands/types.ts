@@ -36,7 +36,8 @@ export interface CommandDispatcher {
 
 export interface WorkflowControl {
   command(scope: string, args: string, message: NormalizedMessage): Promise<string | undefined>;
-  cancel(scope: string): boolean;
+  /** Whether the scope has a workflow that is still running. */
+  active(scope: string): boolean;
   invalidate(scope: string): void;
 }
 

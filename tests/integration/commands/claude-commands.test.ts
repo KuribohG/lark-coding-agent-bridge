@@ -9,6 +9,7 @@ import { createDefaultProfileConfig, type ProfileConfig } from '../../../src/con
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { createFakeAgent, type FakeAgentRun } from '../../helpers/fake-agent.js';
+import { fakeChannelControls } from '../../helpers/channel-controls.js';
 import { createFakeChannel, type FakeChannel } from '../../helpers/fake-channel.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
 
@@ -276,6 +277,25 @@ describe('Claude slash command visible behavior', () => {
 
     expect(lastMarkdown(h.channel)).toContain('已请求停止当前任务');
     expect(activeRun.stopped).toBe(true);
+  });
+
+  it('leaves the workflow of the scope running on /stop', async () => {
+    const h = await createHarness();
+    const workflow = { command: vi.fn(async () => undefined), active: vi.fn(() => true), invalidate: vi.fn() };
+    h.controls.channel = fakeChannelControls({ workflow: () => workflow });
+    const activeRun = h.agent.run({ runId: 'run-active', prompt: 'running' }) as FakeAgentRun;
+    h.activeRuns.register('chat-1', activeRun);
+
+    await expect(h.run('/stop')).resolves.toBe(true);
+
+    expect(activeRun.stopped).toBe(true);
+    expect(workflow.active).toHaveBeenCalledWith('chat-1');
+    expect(workflow.invalidate).not.toHaveBeenCalled();
+    expect(workflow.command).not.toHaveBeenCalled();
+    expect(lastMarkdown(h.channel)).toBe('已请求停止当前任务。工作流仍在运行，取消请用 `/workflow cancel`。');
+
+    await expect(h.run('/stop')).resolves.toBe(true);
+    expect(lastMarkdown(h.channel)).toBe('当前没有正在执行的任务。工作流仍在运行，取消请用 `/workflow cancel`。');
   });
 
   it('lets admins stop and configure comment scopes explicitly', async () => {
