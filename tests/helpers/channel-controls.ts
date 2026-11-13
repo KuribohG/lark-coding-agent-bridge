@@ -26,8 +26,6 @@ export function fakeChannelControls(overrides: Partial<ChannelControls> = {}): C
     launchTimedRun: async () => {},
     cancelTimedRun: () => {},
     activeTimedRun: () => undefined,
-    meeting: () => undefined,
-    reconcileMeeting: async () => {},
     onConfigApplied: () => {},
     ...overrides,
   };

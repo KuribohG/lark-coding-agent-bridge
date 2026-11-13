@@ -14,8 +14,6 @@ export type ApplyClass =
   | 'live'
   /** Default agent adapter is rebuilt for future runs; active runs keep theirs. */
   | 'execution'
-  /** Meeting manager is attached or detached on the live connection. */
-  | 'meeting'
   /** lark-cli identity policy (strict-mode / default-as) is re-applied. */
   | 'lark-cli'
   /** Monitor sources pick it up on their next reconcile; each source keeps its last good config. */
@@ -26,7 +24,7 @@ export type ApplyClass =
   | 'restart';
 
 /** Classes applied automatically when the config file changes. */
-export const AUTO_APPLY: ReadonlySet<ApplyClass> = new Set(['live', 'execution', 'meeting', 'lark-cli', 'monitoring']);
+export const AUTO_APPLY: ReadonlySet<ApplyClass> = new Set(['live', 'execution', 'lark-cli', 'monitoring']);
 
 export interface SettingSpec {
   /** Dotted path pattern. `*` matches one segment; a trailing `**` matches the subtree. */
@@ -63,8 +61,6 @@ export const PROFILE_SETTINGS: readonly SettingSpec[] = [
   { path: 'agy.**', apply: 'execution', toml: 'agents.agy.launch / profiles.<p>.launch' },
   { path: 'attachments.**', apply: 'live', toml: 'profiles.<p>.attachments.**' },
   { path: 'comments.**', apply: 'live', toml: '(reserved)' },
-  { path: 'meeting.enabled', apply: 'meeting', toml: 'profiles.<p>.meeting.enabled' },
-  { path: 'meeting.**', apply: 'live', toml: 'profiles.<p>.meeting.**', note: '新会议生效' },
   { path: 'larkCli.identityPreset', apply: 'lark-cli', toml: 'profiles.<p>.larkCli.identityPreset' },
   { path: 'larkCli.**', apply: 'live', toml: 'profiles.<p>.larkCli.**' },
 ];
@@ -206,7 +202,6 @@ export function classifyDocumentPath(path: readonly string[]): ApplyClass {
 export const APPLY_DESCRIPTIONS: Record<ApplyClass, string> = {
   live: '立即生效（下一条消息 / 下一次任务）',
   execution: '自动重建执行引擎，新任务生效，运行中的任务不受影响',
-  meeting: '自动接入或退出会议能力',
   'lark-cli': '自动重新应用 lark-cli 身份策略',
   monitoring: '监控来源在下一轮协调时生效（最多约 15 秒）',
   reconnect: '需 /reconnect（会停止运行中的任务）',

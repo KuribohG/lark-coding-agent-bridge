@@ -3,10 +3,6 @@ import { readActiveProfile } from '../config/profile-store';
 import type { MutableProfileState } from '../config/config-ops';
 import {
   addBotToChatView,
-  meetingJoin,
-  meetingPreflight,
-  meetingLeave,
-  meetingsView,
   applyConfig,
   applyConfigToDisk,
   buildConfigView,
@@ -276,38 +272,6 @@ async function addBot({ req, res, deps }: RouteContext): Promise<void> {
   sendJson(res, 200, await addBotToChatView(profile, deps.rootDir, body));
 }
 
-// --- in-meeting agent (智能体入会) ---
-
-async function meetings(ctx: RouteContext): Promise<void> {
-  const profile = await requireQueryProfile(ctx);
-  const controls = ctx.deps.supervisor.controlsFor(profile);
-  // Falls back to disk config so a stopped profile still reports why it's
-  // unavailable rather than looking broken.
-  const enabled = controls
-    ? controls.profileConfig.meeting.enabled
-    : (await loadProfileState(profile, ctx.deps.rootDir)).profileConfig.meeting.enabled;
-  sendJson(ctx.res, 200, meetingsView(controls?.channel?.meeting(), enabled));
-}
-
-async function preflight(ctx: RouteContext): Promise<void> {
-  const profile = await requireQueryProfile(ctx);
-  // The probe needs some user open_id; the bot owner is the natural choice.
-  const probeUserId = ctx.deps.supervisor.controlsFor(profile)?.botOwnerId;
-  sendJson(ctx.res, 200, await meetingPreflight(profile, ctx.deps.rootDir, probeUserId));
-}
-
-async function join({ req, res, deps }: RouteContext): Promise<void> {
-  const body = (await readJsonBody(req)) as { profile?: string; meetingNo?: string };
-  const profile = await requireBodyProfile(deps, body);
-  sendJson(res, 200, await meetingJoin(deps.supervisor.controlsFor(profile)?.channel?.meeting(), body));
-}
-
-async function leave({ req, res, deps }: RouteContext): Promise<void> {
-  const body = (await readJsonBody(req)) as { profile?: string; meetingId?: string };
-  const profile = await requireBodyProfile(deps, body);
-  sendJson(res, 200, await meetingLeave(deps.supervisor.controlsFor(profile)?.channel?.meeting(), body));
-}
-
 const ROUTES: readonly Route[] = [
   { method: 'GET', path: '/api/model-services', handle: listModelServicesRoute },
   { method: 'POST', path: '/api/model-services', handle: configureModelServiceRoute },
@@ -336,10 +300,6 @@ const ROUTES: readonly Route[] = [
   { method: 'POST', path: '/api/auth/login/complete', handle: loginComplete },
   { method: 'GET', path: '/api/user-chats', handle: userChats },
   { method: 'POST', path: '/api/chats/add-bot', handle: addBot },
-  { method: 'GET', path: '/api/meetings', handle: meetings },
-  { method: 'GET', path: '/api/meetings/preflight', handle: preflight },
-  { method: 'POST', path: '/api/meetings/join', handle: join },
-  { method: 'POST', path: '/api/meetings/leave', handle: leave },
 ];
 
 /**

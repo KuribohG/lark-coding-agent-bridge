@@ -447,7 +447,6 @@ class ManagedProfile {
       execution: this.execution,
       modelServices: this.modelServices,
       applyLarkCliIdentity: identity => applyProfileLarkCliIdentity(controls, identity),
-      reconcileMeeting: controls.channel ? () => controls.channel!.reconcileMeeting() : undefined,
       onApplied: () => controls.channel?.onConfigApplied(),
       rootPending: this.rootPending,
     }, snapshot.root, { trigger, revision: snapshot.revision });

@@ -222,8 +222,8 @@ requirements, argument parsing, pending-message policy and help text. Intake and
 help rendering read this catalogue without loading command handlers. The typed
 handler table in `commands/index.ts` must cover every catalogue entry. Text and
 card commands use the same authorization and dispatch function; domain handlers
-live in the adjacent workspace, resume, config, account, access, lifecycle,
-doctor and meeting modules. Existing command context type exports remain valid.
+live in the adjacent workspace, resume, config, account, access, lifecycle
+and doctor modules. Existing command context type exports remain valid.
 The `recent` handler reads the profile session catalog without spawning an
 agent; active runs are omitted and non-admin callers are limited to their
 current chat/topic scope.
@@ -232,8 +232,7 @@ Chat forms translate CardKit string fields before calling the shared preference
 validator in `src/runtime/preferences.ts`; the web API supplies JSON fields.
 Both use the same model validation, bounds and identity/save transaction. A live
 identity change is rolled back on failure, including a partially applied policy;
-offline edits apply identity settings on the profile's next startup. Omitted
-meeting settings are not written back from a stale snapshot. Surface-specific
+offline edits apply identity settings on the profile's next startup. Surface-specific
 card delays and HTTP error responses remain at their respective boundaries.
 
 ## Extending the contract

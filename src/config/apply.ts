@@ -89,7 +89,7 @@ function describeChange(change: SettingChange): string {
 }
 
 const COMPONENT_LABELS: Record<ApplyClass, string> = {
-  live: '即时', execution: '执行引擎', meeting: '会议', 'lark-cli': 'lark-cli 身份', monitoring: '监控',
+  live: '即时', execution: '执行引擎', 'lark-cli': 'lark-cli 身份', monitoring: '监控',
   reconnect: '飞书连接', restart: '进程',
 };
 

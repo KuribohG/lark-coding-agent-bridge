@@ -30,7 +30,7 @@ function context(content: string): CommandContext {
 beforeEach(() => vi.clearAllMocks());
 
 describe('command dispatch contract', () => {
-  it.each(['account', 'config', 'ps', 'exit', 'reconnect', 'doctor', 'cd', 'ws', 'invite', 'remove', 'meeting'])(
+  it.each(['account', 'config', 'ps', 'exit', 'reconnect', 'doctor', 'cd', 'ws', 'invite', 'remove'])(
     'denies non-admin %s from both messages and buttons before entering its handler', async name => {
       const ctx = context(`/${name}`);
       await expect(tryHandleCommand(ctx)).resolves.toBe(true);
@@ -68,7 +68,7 @@ describe('command dispatch contract', () => {
     expect(ctx.activeRuns.interrupt).toHaveBeenCalledWith('oc_chat:omt_topic');
   });
 
-  it('includes assistant, meeting and access commands in help', () => {
+  it('includes assistant and access commands in help', () => {
     const commands = new CommandRegistry([{
       pluginId: 'work-items',
       definition: {
@@ -81,6 +81,6 @@ describe('command dispatch contract', () => {
       handler: async () => {},
     }]);
     const text = JSON.stringify(helpCard('Agent', commands.helpLines('Agent')));
-    for (const name of ['inbox', 'meeting', 'invite', 'remove', 'reset']) expect(text).toContain(`/${name}`);
+    for (const name of ['inbox', 'invite', 'remove', 'reset']) expect(text).toContain(`/${name}`);
   });
 });

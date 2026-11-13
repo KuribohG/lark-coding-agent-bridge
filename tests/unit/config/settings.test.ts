@@ -76,15 +76,6 @@ maxFileBytes = 1
 imageMaxBytes = 1
 cacheTtlMs = 1
 cacheMaxBytes = 1
-[profiles.bot.meeting]
-enabled = true
-autoJoinOnInvite = true
-respondIn = "im"
-trigger = "@bot"
-pollIntervalMs = 1000
-summaryOnEnd = true
-summaryTarget = "owner"
-transcript = { keep = 1, stabilizeMs = 1 }
 [profiles.bot.larkCli]
 identityPreset = "bot-only"
 localUserImport = { status = "imported", attemptedAt = "x", importedAt = "y", reason = "z" }
@@ -118,8 +109,6 @@ describe('setting registry', () => {
     ['agentKind', 'execution'],
     ['codex.env.A', 'execution'],
     ['permissions.defaultAccess', 'execution'],
-    ['meeting.enabled', 'meeting'],
-    ['meeting.pollIntervalMs', 'live'],
     ['mode', 'lark-cli'],
     ['larkCli.identityPreset', 'lark-cli'],
     ['larkCli.localUserImport.status', 'live'],
@@ -152,7 +141,6 @@ describe('setting registry', () => {
     ['profiles.bot.launch.env.X', 'execution'],
     ['profiles.bot.agent', 'execution'],
     ['profiles.bot.accounts.app.secret', 'reconnect'],
-    ['profiles.bot.meeting.enabled', 'meeting'],
     ['channels.lark.profiles.bot.network.proxy', 'reconnect'],
     ['channels.lark.profiles.bot.reply_mode', 'live'],
     ['channels.web.show_reasoning', 'restart'],
@@ -172,8 +160,8 @@ describe('leaf diff', () => {
       { path: ['a', 'c', 'd'], before: undefined, after: 2 },
       { path: ['list'], before: [1, 2], after: [2, 1] },
     ]);
-    expect(leafChanges({ meeting: { enabled: true } }, {})).toEqual([
-      { path: ['meeting', 'enabled'], before: true, after: undefined },
+    expect(leafChanges({ table: { enabled: true } }, {})).toEqual([
+      { path: ['table', 'enabled'], before: true, after: undefined },
     ]);
   });
 

@@ -14,7 +14,7 @@ export interface FingerprintInputV2 {
 }
 
 export interface ResourceScopeDigestInput {
-  source: 'im' | 'card' | 'comment' | 'meeting' | 'channel';
+  source: 'im' | 'card' | 'comment' | 'channel';
   conversationId?: string;
   channelId?: string;
   actorId?: string;

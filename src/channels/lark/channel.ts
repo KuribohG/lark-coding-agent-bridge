@@ -32,7 +32,6 @@ import { FollowupRouter } from './followup';
 import { intakeMessage } from './intake';
 import { startKeepalive } from './keepalive';
 import { startKnownChatsRefresh } from './lark-info';
-import { LarkMeetingHost } from './meeting-host';
 import { PendingQueue, type PendingMessage } from './pending-queue';
 import { UserQuestions } from './question-cards';
 import { runAgentBatch, type LarkRunServices } from './run';
@@ -159,10 +158,6 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     stateDir, turns, pending, resolveAgentKind, dispatch });
   const runner = new LarkTurnRunner({ channel, turns, timedStore: await timedRuns(controls), stateDir,
     resolveAgentKind, dispatch });
-  // Created before connect() so the `vc.bot.*` handlers are installed on the
-  // event dispatcher before any push can arrive.
-  const meetings = new LarkMeetingHost({ channel, controls, resolveAgentKind,
-    conversation: { executor, activeRuns, sessions, sessionCatalog, workspaces } });
 
   const channelControls: ChannelControls = {
     workflow: () => workflows.control(),
@@ -187,8 +182,6 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     launchTimedRun: (job, message) => runner.launchTimedRun(job, message),
     cancelTimedRun: (scope, id) => runner.cancelTimedRun(scope, id),
     activeTimedRun: scope => runner.activeTimedRun(scope),
-    meeting: () => meetings.current(),
-    reconcileMeeting: () => meetings.reconcile(),
     onConfigApplied: () => pool.refresh(),
   };
   controls.channel = channelControls;
@@ -245,7 +238,6 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     ...connectionLogHandlers(),
   });
 
-  await meetings.reconcile();
   await channel.connect();
   const ownerRefresh = createOwnerRefreshController({
     controls,
@@ -315,10 +307,6 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       ownerRefresh.stop();
       knownChatsRefresh.stop();
       keepalive.stop();
-      // Stop meeting timers but stay in the meetings: /reconnect tears the
-      // channel down and rebuilds it, and auto-leaving every meeting on a
-      // reconnect would be surprising.
-      meetings.dispose();
       for (const preparedCot of preparedCots.values()) {
         void preparedCot.finish('cancelled');
       }
@@ -368,8 +356,8 @@ function settleWithin(work: Promise<void>, timeoutMs: number): Promise<void> {
 
 /**
  * What a disconnecting channel still offers: timed-run guards and queued
- * input keep working until it is gone, while workflows, side questions,
- * meetings and new timed runs are no longer available.
+ * input keep working until it is gone, while workflows, side questions
+ * and new timed runs are no longer available.
  */
 function closingChannelControls(live: ChannelControls): ChannelControls {
   return {
@@ -382,8 +370,6 @@ function closingChannelControls(live: ChannelControls): ChannelControls {
       cancel: () => {},
     },
     launchTimedRun: async () => { throw new Error('当前运行环境不支持限时任务。'); },
-    meeting: () => undefined,
-    reconcileMeeting: async () => {},
     onConfigApplied: () => {},
   };
 }

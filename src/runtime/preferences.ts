@@ -13,7 +13,6 @@ import { resolveExecutablePath } from '../agent/detection';
 import {
   effectiveLarkCliIdentity,
   type AgentKind,
-  type MeetingConfig,
   type LarkCliIdentityPreset,
   type ProfileMode,
 } from '../config/profile-schema';
@@ -49,43 +48,6 @@ function clampInt(value: unknown, min: number, max: number, fallback: number): n
   return Math.min(max, Math.max(min, Math.floor(n)));
 }
 
-/**
- * Parse the in-meeting agent section. Unspecified fields keep their current
- * value; numbers are clamped to the same bounds the schema normalizer uses.
- */
-function parseMeetingBody(body: unknown, current: MeetingConfig): MeetingConfig {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return current;
-  const fv = body as Record<string, unknown>;
-  const t = (fv.transcript && typeof fv.transcript === 'object' ? fv.transcript : {}) as Record<string, unknown>;
-  const trigger = typeof fv.trigger === 'string' && fv.trigger.trim() ? fv.trigger.trim() : current.trigger;
-  return {
-    enabled: typeof fv.enabled === 'boolean' ? fv.enabled : current.enabled,
-    autoJoinOnInvite:
-      typeof fv.autoJoinOnInvite === 'boolean' ? fv.autoJoinOnInvite : current.autoJoinOnInvite,
-    transcript: {
-      keep: t.keep === undefined ? current.transcript.keep : clampInt(t.keep, 10, 2000, current.transcript.keep),
-      stabilizeMs:
-        t.stabilizeMs === undefined
-          ? current.transcript.stabilizeMs
-          : clampInt(t.stabilizeMs, 0, 30_000, current.transcript.stabilizeMs),
-    },
-    respondIn:
-      fv.respondIn === 'meeting' || fv.respondIn === 'im' || fv.respondIn === 'both'
-        ? fv.respondIn
-        : current.respondIn,
-    trigger,
-    pollIntervalMs:
-      fv.pollIntervalMs === undefined
-        ? current.pollIntervalMs
-        : clampInt(fv.pollIntervalMs, 1000, 60_000, current.pollIntervalMs),
-    summaryOnEnd: typeof fv.summaryOnEnd === 'boolean' ? fv.summaryOnEnd : current.summaryOnEnd,
-    summaryTarget:
-      fv.summaryTarget === 'origin' || fv.summaryTarget === 'owner'
-        ? fv.summaryTarget
-        : current.summaryTarget,
-  };
-}
-
 export interface PreferencesChange {
   configRevision?: string;
   nextAgentKind: AgentKind;
@@ -96,7 +58,6 @@ export interface PreferencesChange {
   preferencePatch: AppPreferences;
   resetPaths: string[][];
   mode: ProfileMode;
-  meeting?: MeetingConfig;
   larkCliIdentity: LarkCliIdentityPreset;
   requireMentionInGroup: boolean;
   nextPreferences: AppPreferences & Required<Pick<AppPreferences,
@@ -177,8 +138,6 @@ function parsePreferencesChange(state: MutableProfileState, body: unknown): Pref
       ? fv.requireMentionInGroup
       : getRequireMentionInGroup(state.cfg);
 
-  const meeting = fv.meeting === undefined ? undefined : parseMeetingBody(fv.meeting, state.profileConfig.meeting);
-
   const nextEffectiveIdentity: LarkCliIdentityPreset = mode === 'team' ? 'bot-only' : larkCliIdentity;
   const previousEffectiveIdentity = effectiveLarkCliIdentity(state.profileConfig);
 
@@ -188,7 +147,6 @@ function parsePreferencesChange(state: MutableProfileState, body: unknown): Pref
     preferencePatch: {},
     resetPaths: [],
     mode,
-    meeting,
     larkCliIdentity,
     requireMentionInGroup,
     nextEffectiveIdentity,
@@ -339,7 +297,7 @@ export async function applyPreferencesChange(
     }
     step = 'config.save';
     await savePreferencesConfig(state, change.preferencePatch, change.requireMentionInGroup,
-      change.larkCliIdentity, change.mode, change.meeting, change.configRevision, change.resetPaths,
+      change.larkCliIdentity, change.mode, change.configRevision, change.resetPaths,
       change.agentSwitch);
   } catch (cause) {
     // A failed policy call may already have applied one of its CLI settings.

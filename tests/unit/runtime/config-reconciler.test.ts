@@ -91,22 +91,6 @@ tenant = "feishu"
     expect(result.modelServices).toHaveProperty('svc');
   });
 
-  it('attaches the meeting manager and reverts the flag when that fails', async () => {
-    const reconcileMeeting = vi.fn(async () => {});
-    const { t, state } = target({ reconcileMeeting });
-    const next = config({ profile: '[profiles.bot.meeting]\nenabled = true' });
-    const ok = (await reconcileProfile(t, next, { trigger: 'test' })).report;
-    expect(ok.components).toEqual(['meeting']);
-    expect(state.profileConfig.meeting.enabled).toBe(true);
-
-    const off = config();
-    reconcileMeeting.mockRejectedValueOnce(new Error('push hook failed'));
-    const failed = (await reconcileProfile(t, off, { trigger: 'test' })).report;
-    expect(failed.failed[0]).toMatchObject({ component: 'meeting', paths: ['meeting.enabled'] });
-    expect(state.profileConfig.meeting.enabled).toBe(true);
-    expect(failed.pending.map(c => c.label)).toEqual(['meeting.enabled']);
-  });
-
   it('re-applies the lark-cli identity for mode changes and keeps the old mode when it fails', async () => {
     const applyLarkCliIdentity = vi.fn(async (_identity: string) => false);
     const { t, state } = target({ applyLarkCliIdentity });

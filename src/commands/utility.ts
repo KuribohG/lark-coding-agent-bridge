@@ -3,11 +3,6 @@ import { commandHelpLines, findCommand } from './catalog';
 import type { CommandContext } from './types';
 import { reply, commandReplyOptions } from './presentation';
 
-export async function handleDoc(args: string, ctx: CommandContext): Promise<void> {
-  void args;
-  await reply(ctx, '云文档评论现在不需要绑定工作区；在支持的文档评论里 @bot 即可触发回复。');
-}
-
 export async function handleHelp(args: string, ctx: CommandContext): Promise<void> {
   const escapedAgentName = ctx.agent.displayName.replace(/([*_`\\])/g, '\\$1');
   const target = args.trim().split(/\s+/)[0]?.replace(/^\//, '') ?? '';

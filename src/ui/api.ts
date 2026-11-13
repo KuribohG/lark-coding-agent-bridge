@@ -21,10 +21,6 @@ import {
   startDeviceLogin,
   type AddBotResult,
 } from '../lark-cli/user-im';
-import { isMeetingNo } from '../meeting/api';
-import { checkMeetingPreflight, type MeetingPreflight } from '../meeting/preflight';
-import { describeMeetingError, type MeetingManager, type MeetingPushHealth } from '../meeting/manager';
-import type { MeetingSessionStatus } from '../meeting/session';
 import { resolveAppPaths } from '../config/app-paths';
 import { loadRootConfig, runtimeProfileConfig } from '../config/profile-store';
 import { saveAccessConfig, type MutableProfileState } from '../config/config-ops';
@@ -40,7 +36,6 @@ import {
 } from '../config/schema';
 import type {
   AgentKind,
-  MeetingConfig,
   LarkCliIdentityPreset,
   ProfileAccess,
   ProfileMode,
@@ -71,7 +66,6 @@ export interface ConfigView {
   runIdleTimeoutMinutes: number;
   requireMentionInGroup: boolean;
   larkCliIdentity: LarkCliIdentityPreset;
-  meeting: MeetingConfig;
   access: {
     allowedUsers: string[];
     allowedChats: string[];
@@ -107,7 +101,6 @@ export async function buildConfigView(state: MutableProfileState, live = false):
     runIdleTimeoutMinutes: ms ? Math.round(ms / 60_000) : 0,
     requireMentionInGroup: getRequireMentionInGroup(state.cfg),
     larkCliIdentity: state.profileConfig.larkCli.identityPreset,
-    meeting: state.profileConfig.meeting,
     access: {
       allowedUsers: state.profileConfig.access.allowedUsers,
       allowedChats: state.profileConfig.access.allowedChats,
@@ -265,86 +258,6 @@ export async function listChats(channel: LarkChannel | undefined) {
   if (!channel) return { chats: [] };
   const chats = await fetchKnownChats(channel).catch(() => []);
   return { chats };
-}
-
-// ── in-meeting agent ─────────────────────────────────────────────────────────
-
-export interface MeetingsView {
-  /** False when the profile is offline or `meeting.enabled` is off. */
-  available: boolean;
-  reason?: string;
-  sessions: MeetingSessionStatus[];
-  push: MeetingPushHealth;
-}
-
-/**
- * Live meeting state for a profile. Needs the running process's manager, so an
- * offline profile reports `available: false` rather than erroring.
- */
-export function meetingsView(manager: MeetingManager | undefined, enabled: boolean): MeetingsView {
-  if (!enabled) {
-    return {
-      available: false,
-      reason: '该 profile 未启用会议智能体',
-      sessions: [],
-      push: { hooked: false, received: 0 },
-    };
-  }
-  if (!manager) {
-    return {
-      available: false,
-      reason: 'profile 未在线（会议能力只在运行中的进程里可用）',
-      sessions: [],
-      push: { hooked: false, received: 0 },
-    };
-  }
-  return { available: true, sessions: manager.list(), push: manager.pushHealth() };
-}
-
-/**
- * Whether the app identity can actually join meetings. Runs a read-only probe;
- * when a scope is missing the result carries Feishu's own scope-apply URL so
- * the console can offer a one-click grant.
- */
-export async function meetingPreflight(
-  profile: string,
-  rootDir: string | undefined,
-  probeUserId?: string,
-): Promise<MeetingPreflight> {
-  return checkMeetingPreflight({
-    profile,
-    ...(rootDir ? { rootDir } : {}),
-    ...(probeUserId ? { probeUserId } : {}),
-  });
-}
-
-/** Join a meeting by 9-digit number from the console. */
-export async function meetingJoin(
-  manager: MeetingManager | undefined,
-  body: unknown,
-): Promise<{ ok: true; session: MeetingSessionStatus }> {
-  if (!manager) throw new ApiError(400, '会议能力不可用：profile 未在线或未启用');
-  const fv = asRecord(body);
-  const meetingNo = typeof fv.meetingNo === 'string' ? fv.meetingNo.replace(/\s/g, '') : '';
-  if (!isMeetingNo(meetingNo)) throw new ApiError(400, '会议号必须是 9 位数字');
-  try {
-    const session = await manager.join(meetingNo);
-    return { ok: true, session: session.status() };
-  } catch (err) {
-    throw new ApiError(400, describeMeetingError(err));
-  }
-}
-
-/** Leave a meeting from the console. */
-export async function meetingLeave(
-  manager: MeetingManager | undefined,
-  body: unknown,
-): Promise<{ ok: boolean }> {
-  if (!manager) throw new ApiError(400, '会议能力不可用：profile 未在线或未启用');
-  const fv = asRecord(body);
-  const meetingId = typeof fv.meetingId === 'string' ? fv.meetingId : '';
-  if (!meetingId) throw new ApiError(400, 'meetingId is required');
-  return { ok: await manager.leave(meetingId) };
 }
 
 // ── user-identity group picker (lark-cli, owner's authorization) ─────────────

@@ -24,13 +24,12 @@ function state() {
 beforeEach(() => { vi.mocked(ops.applyProfileLarkCliIdentity).mockReset().mockResolvedValue(true); vi.mocked(ops.savePreferencesConfig).mockReset().mockResolvedValue(); });
 
 describe('shared preference changes', () => {
-  it('saves offline changes without applying a live identity or unrelated meeting snapshot', async () => {
+  it('saves offline changes without applying a live identity', async () => {
     const s = state();
     const change = await preparePreferencesChange(s, { larkCliIdentity: 'user-default', model: 'default' });
     await applyPreferencesChange(s, change, 'disk');
     expect(ops.applyProfileLarkCliIdentity).not.toHaveBeenCalled();
     expect(ops.savePreferencesConfig).toHaveBeenCalledOnce();
-    expect(vi.mocked(ops.savePreferencesConfig).mock.calls[0]?.[5]).toBeUndefined();
     expect(change.nextPreferences.model).toBeUndefined();
   });
 
@@ -80,7 +79,7 @@ describe('shared preference changes', () => {
       expect(change.nextPreferences.reasoningEffort).toBeUndefined();
 
       await applyPreferencesChange(s, change, 'disk');
-      expect(vi.mocked(ops.savePreferencesConfig).mock.calls[0]?.[8]).toMatchObject({
+      expect(vi.mocked(ops.savePreferencesConfig).mock.calls[0]?.[7]).toMatchObject({
         agentKind: 'pi',
         launchPatch: { pi: { binaryPath: pi } },
       });

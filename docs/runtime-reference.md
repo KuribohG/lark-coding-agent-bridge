@@ -236,7 +236,7 @@ Each field inherits independently: **topic/chat override → bot profile default
 Owner/admin users edit bot-wide defaults with `/config run` or the web profile form. `/agent`, `/model` and `/effort` only change the current chat/topic; `--scope profile` is rejected.
 
 
-Profile defaults affect conversations without an override for that field, plus meeting and document-comment tasks. Other profiles and independent terminal sessions are unaffected. Editing an offline profile in the web console takes effect when that profile next starts.
+Profile defaults affect conversations without an override for that field, plus document-comment tasks. Other profiles and independent terminal sessions are unaffected. Editing an offline profile in the web console takes effect when that profile next starts.
 
 Changes apply when the next task is submitted. Running or already-submitted tasks retain their parameters; messages waiting to be batched remain queued and use the settings at submission. Switching preserves context and the native session ID and requires no bridge restart. `/status` shows both active and next-task settings. Cross-model resume remains subject to CLI/provider compatibility.
 
@@ -484,7 +484,7 @@ Reference-style links are preserved. A streaming bare path is linked after its
 boundary or end of reply arrives.
 
 Configuration is per profile and disabled when omitted. External `lark-cli`
-sends, COT records, meeting replies and document comments have separate output
+sends, COT records and document comments have separate output
 paths and are not rewritten by this feature. No agent skill or memory is needed.
 
 GitLab CI failure monitoring and automatic Flash investigations: [configuration and behavior](gitlab-ci-watch.md).

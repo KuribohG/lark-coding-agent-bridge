@@ -40,7 +40,7 @@ export const RUN_KEYS = {
   idle_timeout_minutes: 'runIdleTimeoutMinutes', stop_grace_ms: 'agentStopGraceMs',
   workflow_timeout_minutes: 'workflowTimeoutMinutes',
 } as const;
-const PROFILE_KEYS = ['agent', 'run', 'mode', 'accounts', 'secrets', 'access', 'workspaces', 'permissions', 'attachments', 'meeting', 'larkCli', 'launch'];
+const PROFILE_KEYS = ['agent', 'run', 'mode', 'accounts', 'secrets', 'access', 'workspaces', 'permissions', 'attachments', 'larkCli', 'launch'];
 const LARK_KEYS = ['reply_mode', 'show_tools', 'progress', 'message_debounce_ms', 'file_links', 'network'];
 const WEB_KEYS = ['show_tools', 'show_reasoning'];
 const SLACK_KEYS = ['show_tools', 'show_progress'];
@@ -161,12 +161,6 @@ function checkProfile(p: Table, path: string): void {
   if (p.attachments !== undefined) {
     const a = fields(p.attachments, { maxCount: 'integer', maxBytes: 'integer', maxFileBytes: 'integer', imageMaxBytes: 'integer', cacheTtlMs: 'integer', cacheMaxBytes: 'integer' }, `${path}.attachments`);
     if (Object.values(a).some(v => v <= 0)) throw new Error(`${path}.attachments: expected positive integers`);
-  }
-  if (p.meeting !== undefined) {
-    const m = fields(p.meeting, { enabled: 'boolean', autoJoinOnInvite: 'boolean', transcript: 'table', respondIn: 'string', trigger: 'string', pollIntervalMs: 'integer', summaryOnEnd: 'boolean', summaryTarget: 'string' }, `${path}.meeting`);
-    if (m.transcript !== undefined) fields(m.transcript, { keep: 'integer', stabilizeMs: 'integer' }, `${path}.meeting.transcript`);
-    if (m.respondIn !== undefined && !['meeting', 'im', 'both'].includes(m.respondIn)) throw new Error(`${path}.meeting.respondIn: invalid destination`);
-    if (m.summaryTarget !== undefined && !['origin', 'owner'].includes(m.summaryTarget)) throw new Error(`${path}.meeting.summaryTarget: invalid target`);
   }
   if (p.larkCli !== undefined) {
     const c = fields(p.larkCli, { identityPreset: 'string', localUserImport: 'table' }, `${path}.larkCli`);

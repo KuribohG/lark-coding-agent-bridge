@@ -13,7 +13,6 @@ import type { ProcessPool } from '../runtime/process-pool';
 import type { RunExecutor } from '../runtime/run-executor';
 import type { WorkspaceStore } from '../workspace/store';
 import type { KnownChat } from '../channels/lark/lark-info';
-import type { MeetingManager } from '../meeting/manager';
 import type { LarkProfileAuth } from '../lark-auth/profile-auth';
 import type { QuotedContext } from '../channels/lark/quote';
 import type { CommandDefinition } from './catalog';
@@ -64,10 +63,6 @@ export interface ChannelControls {
   launchTimedRun(job: TimedRun, message: NormalizedMessage): Promise<void>;
   cancelTimedRun(scope: string, id?: string): void;
   activeTimedRun(scope: string): string | undefined;
-  /** In-meeting agent manager; present only while `meeting.enabled` is on. */
-  meeting(): MeetingManager | undefined;
-  /** Attach or detach the meeting manager after `meeting.enabled` changed. */
-  reconcileMeeting(): Promise<void>;
   /** Notify live consumers that cached derived state (e.g. the pool cap) changed. */
   onConfigApplied(): void;
 }

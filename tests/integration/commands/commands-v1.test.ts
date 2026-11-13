@@ -178,16 +178,6 @@ describe('Bridge command contracts', () => {
     expect(lastMarkdown(h.channel)).toContain(await realpath(file));
   });
 
-  it('treats legacy document workspace commands as informational no-ops', async () => {
-    const h = await createHarness();
-    const target = join(h.tmp.root, 'sensitive-doc-root');
-    await mkdir(target, { recursive: true });
-
-    await expect(h.run(`/doc ws bind doc-token ${target}`, { chatMode: 'group' })).resolves.toBe(true);
-    expect(lastMarkdown(h.channel)).toContain('不需要绑定工作区');
-    expect(lastMarkdown(h.channel)).not.toContain(target);
-  });
-
   it('keeps Claude resume history details out of group chats', async () => {
     const h = await createHarness();
 

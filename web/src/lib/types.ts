@@ -55,7 +55,6 @@ export interface ConfigView {
   runIdleTimeoutMinutes: number;
   requireMentionInGroup: boolean;
   larkCliIdentity: LarkCliIdentity;
-  meeting: MeetingConfig;
   access: {
     allowedUsers: string[];
     allowedChats: string[];
@@ -94,55 +93,6 @@ export interface UserChat {
   id: string;
   name: string;
   botInIt: boolean;
-}
-
-// ── in-meeting agent ──────────────────────────────────────────────────────────
-
-export type MeetingRespondIn = "meeting" | "im" | "both";
-export type MeetingSummaryTarget = "origin" | "owner";
-
-export interface MeetingConfig {
-  enabled: boolean;
-  autoJoinOnInvite: boolean;
-  transcript: { keep: number; stabilizeMs: number };
-  respondIn: MeetingRespondIn;
-  trigger: string;
-  pollIntervalMs: number;
-  summaryOnEnd: boolean;
-  summaryTarget: MeetingSummaryTarget;
-}
-
-export interface MeetingSessionInfo {
-  meetingId: string;
-  meetingNo: string;
-  topic?: string;
-  startedAt: string;
-  source: "push" | "poll";
-  transcriptLines: number;
-  participants: number;
-  ingested: number;
-  /** Raw activity items per event type; `?`-prefixed keys were unparseable. */
-  eventCounts: Record<string, number>;
-  ended: boolean;
-}
-
-export interface MeetingsView {
-  available: boolean;
-  reason?: string;
-  sessions: MeetingSessionInfo[];
-  push: { hooked: boolean; reason?: string; received: number; lastAt?: string };
-}
-
-export interface MeetingPreflight {
-  status: "ok" | "scope-missing" | "not-in-beta" | "unknown";
-  message: string;
-  missingScopes: string[];
-  /** Feishu scope-apply URL — opaque, render as link/QR only. */
-  consoleUrl?: string;
-  requiredEvents: string[];
-  /** Every app scope the feature needs, with what each unlocks. */
-  requiredScopes: { scope: string; purpose: string }[];
-  betaChatUrl?: string;
 }
 
 export interface OnboardState {

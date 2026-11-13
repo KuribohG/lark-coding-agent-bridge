@@ -18,13 +18,13 @@ Execution and presentation have separate ownership:
 | Feishu/Lark network | `channels.lark.network`, `channels.lark.profiles.<name>.network` | Common settings, then individual profile fields; reconnect required |
 | Browser display | `channels.web`, `channels.web.profiles.<name>` | Web defaults, then the selected profile |
 | Slack display | `channels.slack`, `channels.slack.profiles.<name>` | Slack defaults, then the selected profile |
-| Accounts, access, permissions, meetings | `profiles.<name>` | Explicit bot settings; not inherited from another bot or a conversation |
+| Accounts, access, permissions | `profiles.<name>` | Explicit bot settings; not inherited from another bot or a conversation |
 | Workspace override | `profiles.<name>.workspaces.default` | Optional; applies only to the profile's own `agent`, otherwise the `state` layout decides |
 | Monitoring | `bridge.monitors_file` | Existing `monitors.toml`, with its own validation and application rules |
 
 Presentation is never inherited through an agent. The shared runtime produces complete events; the Lark, Slack, and Web output plugins independently select what to display. Hiding reasoning/progress is a display choice and does not change model effort or generation.
 
-See [config.example.toml](config.example.toml) for a full layered example. `agent` is a type (`codex`, `claude`, `pi` or `agy`); a profile name identifies a particular bot. Multiple profiles can use the same agent defaults. Existing domain objects (`accounts`, `access`, `permissions`, `attachments`, `meeting`, `larkCli`, launch metadata and model service definitions) retain their established field names. New execution and channel keys use snake_case.
+See [config.example.toml](config.example.toml) for a full layered example. `agent` is a type (`codex`, `claude`, `pi` or `agy`); a profile name identifies a particular bot. Multiple profiles can use the same agent defaults. Existing domain objects (`accounts`, `access`, `permissions`, `attachments`, `larkCli`, launch metadata and model service definitions) retain their established field names. New execution and channel keys use snake_case.
 
 ## Execution fields
 
@@ -186,9 +186,8 @@ Every setting declares how it takes effect in a running bridge (`src/config/sett
 
 | Class | Settings (examples) | How it applies |
 | --- | --- | --- |
-| `live` | `run.*` (model, effort, concurrency, timeouts), `access.*`, Lark display (`reply_mode`, `progress`, `show_tools`, `file_links`, `message_debounce_ms`), `attachments.*`, `workspaces.*`, `meeting.*` except `enabled` | Next message / run. Raising concurrency releases queued runs immediately; lowering it never cancels running tasks. Meeting fields apply to new meetings. |
+| `live` | `run.*` (model, effort, concurrency, timeouts), `access.*`, Lark display (`reply_mode`, `progress`, `show_tools`, `file_links`, `message_debounce_ms`), `attachments.*`, `workspaces.*` | Next message / run. Raising concurrency releases queued runs immediately; lowering it never cancels running tasks. Meeting fields apply to new meetings. |
 | `execution` | `agent`, `agents.*.launch` / `profiles.*.launch` (binary, env, homes, provider), `permissions`, `[state]`, `model_services` | The default engine adapter is rebuilt and availability-checked before it replaces the old one; active runs keep their adapter. A failed check keeps the old adapter. A busy Codex daemon defers the swap until its runs finish. |
-| `meeting` | `meeting.enabled` | The meeting manager attaches to or leaves the live connection. |
 | `lark-cli` | `mode`, `larkCli.identityPreset` | The lark-cli identity policy is re-applied; on failure the previous mode/identity stays in effect. |
 | `monitoring` | `bridge.monitors_file`, monitor sources, `concurrency` | Picked up by the next monitor reconcile (immediately on a detected change, at most 15 s otherwise). |
 | `reconnect` | `accounts.*`, `secrets`, `channels.lark.network` | Needs a new Lark connection: `/reconnect` applies them (it stops active runs). |

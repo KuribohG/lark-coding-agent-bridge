@@ -159,8 +159,6 @@ export async function savePreferencesConfig(
   requireMentionInGroup: boolean,
   larkCliIdentity: ProfileConfig['larkCli']['identityPreset'],
   mode: ProfileMode,
-  /** In-meeting agent settings; omitted by callers that don't edit them. */
-  meeting?: ProfileConfig['meeting'],
   expectedRevision?: string,
   resetPaths: string[][] = [],
   agentSwitch?: {
@@ -204,7 +202,6 @@ export async function savePreferencesConfig(
         ...profile.access,
         requireMentionInGroup,
       },
-      ...(meeting ? { meeting } : {}),
       larkCli: profile.larkCli.identityPreset === larkCliIdentity ? profile.larkCli : updatedLarkCli,
     };
     await saveRootConfig(root, state.configPath, resetPaths);

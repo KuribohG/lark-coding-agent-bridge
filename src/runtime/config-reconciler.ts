@@ -24,7 +24,6 @@ export interface ReconcileTarget {
   };
   modelServices: Record<string, ModelServiceConfig>;
   applyLarkCliIdentity(identity: LarkCliIdentityPreset): Promise<boolean>;
-  reconcileMeeting?(): Promise<void>;
   onApplied?(): void;
   /** Bridge-wide pending items shown with every profile report. */
   rootPending?(): SettingChange[];
@@ -95,17 +94,6 @@ export async function reconcileProfile(
     cfg = target.state.cfg = nextAppConfig;
   };
   if (auto.length) commit(withChanges(profileConfig, auto), withChanges(cfg, auto));
-  const meeting = auto.filter(change => change.apply === 'meeting');
-  if (meeting.length) {
-    try {
-      await target.reconcileMeeting?.();
-      components.add('meeting');
-    } catch (error) {
-      commit(withChanges(profileConfig, meeting, 'running'), withChanges(cfg, meeting, 'running'));
-      fail('meeting', error, meeting);
-      try { await target.reconcileMeeting?.(); } catch { /* back on the old setting; nothing else to undo */ }
-    }
-  }
   if (auto.some(change => change.apply === 'monitoring')) components.add('monitoring');
   if (auto.length) {
     // The controller keeps the final view, including rollbacks after its rebuild.

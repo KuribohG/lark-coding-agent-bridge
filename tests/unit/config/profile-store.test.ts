@@ -201,38 +201,4 @@ describe('profile store canonical serialization', () => {
       oc_strict: true,
     });
   });
-
-  it('persists the in-meeting agent settings across save→load round-trip', async () => {
-    const root = await tmpRoot();
-    const configPath = join(root, 'config.toml');
-    const profile = createDefaultProfileConfig({ agentKind: 'claude', accounts: { app } });
-    // Defaults keep the capability off until a profile opts in.
-    expect(profile.meeting.enabled).toBe(false);
-    profile.meeting = {
-      ...profile.meeting,
-      enabled: true,
-      respondIn: 'both',
-      trigger: '@小助手',
-      transcript: { keep: 50, stabilizeMs: 800 },
-    };
-
-    await saveRootConfig({
-      schemaVersion: 2,
-      activeProfile: 'claude',
-      preferences: {},
-      profiles: { claude: profile },
-    }, configPath);
-
-    const saved = decodeFixture(await readFile(configPath, 'utf8'));
-    expect(saved.profiles.claude.meeting).toMatchObject({ enabled: true, trigger: '@小助手' });
-
-    const loaded = await loadRootConfig(configPath);
-    expect(loaded?.profiles.claude?.meeting).toMatchObject({
-      enabled: true,
-      respondIn: 'both',
-      trigger: '@小助手',
-      transcript: { keep: 50, stabilizeMs: 800 },
-    });
-  });
-
 });

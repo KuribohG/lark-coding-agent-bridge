@@ -68,8 +68,6 @@ export const commandDefinitions = [
   { name: 'doctor', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/doctor [描述]` — 把日志和描述交给 {agent} 自助诊断'] },
   { name: 'invite', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/invite` — 管理用户、群聊和管理员访问权限'] },
   { name: 'remove', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/remove` — 移除用户、群聊或管理员访问权限'] },
-  { name: 'meeting', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/meeting` — 加入、离开或查看会议，以及向会议智能体提问'] },
-  { name: 'doc', access: 'user', pending: 'cancel', arguments: 'words', help: ['`/doc` — 云文档使用说明'] },
   { name: 'help', access: 'user', pending: 'cancel', arguments: 'words', channels: ['lark', 'slack'], channelHelp: {
     slack: ['`/help [command]` — list commands or show details for one'],
   }, help: ['`/help [命令]` — 本帮助；指定命令查看单条详情'] },

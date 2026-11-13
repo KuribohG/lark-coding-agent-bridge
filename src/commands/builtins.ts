@@ -5,13 +5,12 @@ import { handleNew, handleCd, handleWs } from './workspace';
 import { handleResume } from './resume';
 import { handleRecent } from './recent';
 import { handleStatus } from './status';
-import { handleHelp, handleDoc } from './utility';
+import { handleHelp } from './utility';
 import { handleAccount } from './account';
 import { handleConfig } from './config';
 import { handleStop, handleTimeout, handlePs, handleExit, handleReconnect } from './lifecycle';
 import { handleDoctor } from './doctor';
 import { handleInvite, handleRemove } from './access';
-import { handleMeeting } from './meeting';
 import { handleRun } from './run';
 import { handleModelCommand } from './model';
 import { handleAgent } from './agent';
@@ -40,8 +39,6 @@ export const builtinHandlers = {
   exit: handleExit,
   doctor: handleDoctor,
   reconnect: handleReconnect,
-  doc: handleDoc,
   invite: handleInvite,
   remove: handleRemove,
-  meeting: handleMeeting,
 } satisfies Record<CommandName, Handler>;
