@@ -26,6 +26,8 @@ node bin/lark-channel-bridge.mjs guide
 
 The guide asks, in Chinese, for the agent executable, permissions, who may use the bot, the project directory, model credentials, the network proxy and the Lark app, which you can create by scanning a QR code in the terminal. It writes `~/.lark-channel/config.toml` after the last answer; Ctrl+C before that leaves nothing behind.
 
+Having a coding agent do the setup for you? Point it at the [setup guide for agents](docs/agent-setup.md).
+
 ## Run
 
 ```sh

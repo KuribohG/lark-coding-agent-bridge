@@ -7,6 +7,7 @@
 | Task | Guide |
 | --- | --- |
 | Set up a Lark bot on Linux | [README](../README.md) |
+| Have a coding agent set up the bot without a terminal dialogue | [Setup guide for agents](agent-setup.md) |
 | Choose browser chat, the Lark management console, Windows or Slack | [Full quick start](quick-start.md), [中文](user-guide/quick-start.md) |
 | Use standalone browser chat; fix token/port issues | [Web chat guide](user-guide/web-chat.md) (中文), [CLI/channel reference](channels.md) |
 | Connect a Lark bot for the first time | [Getting started](user-guide/getting-started.md) (中文) |

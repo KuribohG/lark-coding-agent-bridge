@@ -26,6 +26,8 @@ node bin/lark-channel-bridge.mjs guide
 
 向导依次询问 Agent 可执行文件、权限、谁能用、项目目录、模型凭据、网络代理和飞书应用，飞书应用可以在终端里扫码创建。全部答完才写入 `~/.lark-channel/config.toml`，中途 Ctrl+C 不留改动。
 
+想让 coding agent 代你完成配置，把[给 agent 的配置向导](docs/agent-setup.md)交给它即可（英文）。
+
 ## 运行
 
 ```sh
