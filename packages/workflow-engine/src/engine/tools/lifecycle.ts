@@ -14,13 +14,27 @@ import { versioned } from './versioned';
 
 const MAX_REMAINING_MS = 14 * 24 * 3_600_000;
 
-/** The main agent's view of a workflow, returned by `status` and embedded in its turn context. */
-export function workflowSummary(ctx: KernelContext, state: WorkflowView): unknown {
+/**
+ * JSON characters a summary may take. It is embedded in every workflow turn of the main agent, so it must stay a small
+ * part of a context window however many tasks the workflow has run.
+ */
+const SUMMARY_MAX_CHARS = 40_000;
+/** Entries of each growing list a summary shows when the budget allows. */
+const SUMMARY_LIST_ENTRIES = 32;
+
+const FINISHED = new Set<WorkflowView['tasks'][number]['status']>(['result_ready', 'failed', 'cancelled', 'interrupted']);
+
+type Summary = Record<string, unknown>;
+interface SummaryList { path: string; holder: Summary; field: string; items: unknown[] }
+
+function fullSummary(ctx: KernelContext, state: WorkflowView): Summary {
+  const taskCounts: Record<string, number> = {};
+  for (const task of state.tasks) taskCounts[task.status] = (taskCounts[task.status] ?? 0) + 1;
   return {
     workflowId: state.workflowId, plugin: { id: state.definition.id, version: state.definition.version, digest: state.definitionDigest },
     stateVersion: state.stateVersion, status: state.status, goalRef: state.artifacts[0]?.ref,
     goalPreview: state.goal.slice(0, 500),
-    deadlineAt: state.deadlineAt, root: state.root,
+    deadlineAt: state.deadlineAt, root: state.root, taskCounts,
     sessions: state.sessions,
     agents: state.agents ?? [],
     workQueue: state.workQueue ? workStatus(state) : undefined,
@@ -48,13 +62,68 @@ export function workflowSummary(ctx: KernelContext, state: WorkflowView): unknow
   };
 }
 
+/** The lists of a summary that grow with the workflow, named by their path in it. */
+function summaryLists(summary: Summary): SummaryList[] {
+  const lists: SummaryList[] = [];
+  const add = (path: string, holder: unknown, field: string) => {
+    const items = (holder as Summary | undefined)?.[field];
+    if (Array.isArray(items)) lists.push({ path, holder: holder as Summary, field, items });
+  };
+  for (const field of ['tasks', 'artifacts', 'sessions', 'agents', 'checkpoints', 'waits', 'children', 'events']) add(field, summary, field);
+  for (const field of ['calls', 'workCalls', 'controlCalls', 'logs']) add(`script.${field}`, summary.script, field);
+  add('mailbox.waits', summary.mailbox, 'waits');
+  for (const swarm of summary.swarms as Summary[]) add(`swarms.${String(swarm.key)}.members`, swarm, 'members');
+  return lists;
+}
+
+/**
+ * The main agent's view of a workflow, returned by `status` and by every change, and embedded in its turn context.
+ * Each growing list keeps only its latest entries, fewer of them until the whole fits the budget; `omitted` counts the
+ * rest, which `status` pages through.
+ */
+export function workflowSummary(ctx: KernelContext, state: WorkflowView): unknown {
+  const summary = fullSummary(ctx, state);
+  const lists = summaryLists(summary);
+  // Tasks in progress are what the reader acts on, so they are the last to be cut, after queued and then finished ones.
+  const rank = (task: unknown) => { const { status } = task as WorkflowView['tasks'][number]; return FINISHED.has(status) ? 0 : status === 'queued' ? 1 : 2; };
+  const latest = (list: SummaryList, keep: number) => {
+    if (list.items.length <= keep) return list.items;
+    if (list.path !== 'tasks') return list.items.slice(list.items.length - keep);
+    const kept = new Set([0, 1, 2].flatMap(level => list.items.filter(task => rank(task) === level)).slice(list.items.length - keep));
+    return list.items.filter(task => kept.has(task));
+  };
+  for (let keep = SUMMARY_LIST_ENTRIES; ; keep >>= 1) {
+    const omitted: Record<string, number> = {};
+    for (const list of lists) {
+      list.holder[list.field] = latest(list, keep);
+      if (list.items.length > keep) omitted[list.path] = list.items.length - keep;
+    }
+    if (Object.keys(omitted).length) summary.omitted = omitted;
+    if (!keep || JSON.stringify(summary).length <= SUMMARY_MAX_CHARS) return summary;
+  }
+}
+
+/** One page of a list of the summary, in the order the workflow recorded it. */
+function summaryPage(ctx: KernelContext, state: WorkflowView, args: Record<string, unknown>): unknown {
+  const lists = summaryLists(fullSummary(ctx, state));
+  const list = lists.find(item => item.path === args.list);
+  if (!list) throw new Error(`Unknown list; expected one of: ${lists.map(item => item.path).join(', ')}`);
+  const offset = boundedInteger(args.offset, 0, 0, Number.MAX_SAFE_INTEGER);
+  const limit = boundedInteger(args.limit, 16, 1, 64);
+  return { list: list.path, stateVersion: state.stateVersion, total: list.items.length, offset,
+    nextOffset: offset + limit < list.items.length ? offset + limit : null, items: list.items.slice(offset, offset + limit) };
+}
+
 /** Starting, replaying, pausing, finishing and cancelling a script workflow, and handling its events. */
 export const lifecycleTools: WorkflowToolPlugin = {
   id: 'lifecycle',
   tools: [
     {
       name: 'status',
-      main: { kind: 'read', doc: 'status', read: (ctx, state) => state ? workflowSummary(ctx, state) : { status: 'unbound' } },
+      main: {
+        kind: 'read', doc: 'status(list?,offset?,limit?)',
+        read: (ctx, state, args) => !state ? { status: 'unbound' } : args.list === undefined ? workflowSummary(ctx, state) : summaryPage(ctx, state, args),
+      },
     },
     {
       name: 'run_script',

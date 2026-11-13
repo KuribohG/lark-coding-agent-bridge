@@ -7,6 +7,7 @@ const tools = BUILTIN_WORKFLOW_TOOLS;
 export const WORKFLOW_TOOL_INSTRUCTIONS = `工作流工具通过 shell 调用：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。环境里的 CLI 路径属于当前 bridge 版本。
 工作流模式由 bridge 的 /workflow 命令路由决定，不根据自然语言或任务类型推断。仅 /workflow start 或 /workflow script 命令授权的启动轮可调用 run_script；内部完成事件只允许继续处理已绑定的工作流，不能新建。普通消息不能新建工作流；话题里已有工作流时，普通消息轮可以查看和干预它。
 run_script 需要唯一 operationId；所有其他变更需要 workflowId、唯一 operationId、expectedStateVersion（从 status 返回）。冲突时重读 status，不自动重试不同内容。
+status 和各项变更返回的状态、以及每轮附带的 workflow_context 都是有上限的摘要：tasks、artifacts、sessions 等列表只保留最新若干条（任务先保留进行中的，再是排队的），taskCounts 给出各状态的任务数，omitted 给出每个列表略去的条数。要看略去的部分用 status({list:"tasks",offset?,limit?})，list 取 omitted 里的名字，每页最多 64 条，按 nextOffset 翻页。
 操作：${tools.mainOperations()}。
 主 agent 沿用当前会话的 harness、model 和 reasoningEffort（飞书 /config run、/model、/effort 在开始前设置）。execution:{agentKind,model?,reasoningEffort?} 设置脚本 worker 默认值。agent(prompt,{key,member?,harness?,model?,reasoningEffort?,output?:"text"|"json",schema?,onError?:"null"|"throw",workflowTool?}) 可为每个 worker 覆盖 harness、模型和强度；同一 harness 可用不同模型。省略时使用对应目标的设置；跨 harness 不继承其它 harness 的模型。只接受当前已授权 profile，不接受其它 profile、凭据或环境变量。目标必须支持独立 final_text，模型必须由目标 harness/服务支持。
 plan 是给用户看的具体执行方案（最多 12000 字符），必须说明阶段、每个 worker 的 harness/模型/任务、依赖和分支条件；bridge 在启动 worker 前自动展示，用户用 /workflow plan 可复查，不需要额外审批。修改 script、args 或 execution 重放时必须同时更新 plan，避免显示旧方案。原始脚本和方案分别保存在 sourceRef、planRef 指向的产物中。
@@ -32,7 +33,7 @@ ${WORKFLOW_ADVANCED_SCRIPT_GUIDE}`;
  * without the script guide, which `workflow guide` prints when a replay needs it.
  */
 export const WORKFLOW_MESSAGE_INSTRUCTIONS = `本话题有一个 bridge 管理的工作流，本轮已获得它的调用凭据：用户询问进度或要求干预时直接操作，不需要用户再发 /workflow 命令；用户没有提到它时不要动它。
-调用方式：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。status 返回完整状态；变更需要 workflowId、唯一 operationId、expectedStateVersion（取自 status），冲突时重读 status。
+调用方式：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。status 返回有上限的摘要，列表略去的条数见 omitted，用 status({list,offset?,limit?}) 翻页；变更需要 workflowId、唯一 operationId、expectedStateVersion（取自 status），冲突时重读 status。
 操作：${tools.mainOperations()}。
 tell_worker(target,text) 把一段话作为用户消息插进正在运行的 worker 会话（target 为 taskId、成员名或脚本 key），用于中途纠偏或提问；返回 accepted 表示已送达会话，inactive 表示它没有在跑的轮次（持久成员改用 post_board 点名）。worker 用 reply_main 答复时你会被唤醒，worker_messages 读取往来记录。
 staff_swarm 在不重放的情况下调整运行中的 swarm（swarm 为它的 key，只有一个在跑时可省略）：add 为新成员名数组（1–64 个），沿用 like 指定成员（默认第一个非 lead 成员）的执行器、模型、角色和队列，queue/role 可另行指定；revive 为 "failed" 或成员名数组，让失败的成员在原会话里重试上一轮并恢复被唤醒；retire 为成员名数组，让成员跑完当前一轮后不再被唤醒；maxTurns 提高每名成员可被唤醒的次数（只增不减，最多 64）。成员失败后队列里的活没人领、或工作重心变了时用它，而不是重放脚本。
