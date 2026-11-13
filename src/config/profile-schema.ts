@@ -34,6 +34,13 @@ export interface ProfileAccess {
   allowedUsers: string[];
   allowedChats: string[];
   admins: string[];
+  /**
+   * Per-chat sender allowlist, keyed by chat_id. A chat listed here admits
+   * only those open_ids (owner and admins still bypass it); an allowed chat
+   * absent from this map admits every member. Lets one group be limited to
+   * specific people without changing the other lists.
+   */
+  chatUsers?: Record<string, string[]>;
   requireMentionInGroup: boolean;
   /**
    * Per-chat override of {@link requireMentionInGroup}, keyed by chat_id.
@@ -291,6 +298,7 @@ function isMessageReply(value: unknown): value is MessageReplyMode {
 
 function normalizeAccess(access: Partial<ProfileAccess> | undefined): ProfileAccess {
   const chatRequireMention = normalizeChatMentionMap(access?.chatRequireMention);
+  const chatUsers = normalizeChatUsers(access?.chatUsers);
   return {
     allowedUsers: stringArray(access?.allowedUsers),
     allowedChats: stringArray(access?.allowedChats),
@@ -298,7 +306,20 @@ function normalizeAccess(access: Partial<ProfileAccess> | undefined): ProfileAcc
     requireMentionInGroup: access?.requireMentionInGroup ?? true,
     // Omit when empty so configs without per-chat overrides stay clean.
     ...(Object.keys(chatRequireMention).length > 0 ? { chatRequireMention } : {}),
+    ...(Object.keys(chatUsers).length > 0 ? { chatUsers } : {}),
   };
+}
+
+/** Keep only chat_id → string[] entries with at least one sender; drop malformed ones. */
+function normalizeChatUsers(input: unknown): Record<string, string[]> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {};
+  const out: Record<string, string[]> = {};
+  for (const [chatId, value] of Object.entries(input as Record<string, unknown>)) {
+    if (!chatId || !Array.isArray(value)) continue;
+    const senders = value.filter((v): v is string => typeof v === 'string' && v.length > 0);
+    if (senders.length > 0) out[chatId] = senders;
+  }
+  return out;
 }
 
 /** Keep only string→boolean entries; drop anything malformed. */

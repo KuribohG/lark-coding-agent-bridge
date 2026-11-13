@@ -86,6 +86,9 @@ export interface AppAccess {
   /** Per-chat @-mention override (chat_id → bool); overrides the global
    * requireMentionInGroup for the listed chats. */
   chatRequireMention?: Record<string, boolean>;
+  /** Per-chat sender allowlist (chat_id → open_ids). A listed chat admits
+   * only those senders; an allowed chat absent here admits every member. */
+  chatUsers?: Record<string, string[]>;
 }
 
 export interface AppPreferences {

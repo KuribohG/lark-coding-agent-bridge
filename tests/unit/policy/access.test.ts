@@ -83,6 +83,20 @@ describe('access policy', () => {
     expect(canUseGroup(allowed, ownerControls, 'chat_other', 'ou_other').ok).toBe(false);
   });
 
+  it('lets chatUsers narrow an allowed group to specific senders', () => {
+    const narrowed = profileWithAccess({ allowedChats: ['chat_allowed', 'chat_open'],
+      chatUsers: { chat_allowed: ['ou_me'] } });
+
+    expect(canUseGroup(narrowed, ownerControls, 'chat_allowed', 'ou_me')).toEqual({ ok: true, reason: 'allowed-chat' });
+    expect(canUseGroup(narrowed, ownerControls, 'chat_allowed', 'ou_other')).toEqual({ ok: false, reason: 'denied-user' });
+    // A chat without an entry keeps admitting every member.
+    expect(canUseGroup(narrowed, ownerControls, 'chat_open', 'ou_other')).toEqual({ ok: true, reason: 'allowed-chat' });
+    // Owner and admins still bypass the per-chat list.
+    expect(canUseGroup(narrowed, ownerControls, 'chat_allowed', 'ou_owner').ok).toBe(true);
+    expect(canUseGroup(profileWithAccess({ allowedChats: ['chat_allowed'], chatUsers: { chat_allowed: ['ou_me'] },
+      admins: ['ou_admin'] }), ownerControls, 'chat_allowed', 'ou_admin').ok).toBe(true);
+  });
+
   it('lets admins use groups before the chat is allowlisted', () => {
     const profile = profileWithAccess({ admins: ['ou_admin'] });
 

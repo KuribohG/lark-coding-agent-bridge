@@ -100,6 +100,22 @@ describe('profile schema', () => {
     });
   });
 
+  it('normalizes chatUsers to non-empty sender lists and drops malformed entries', () => {
+    const cfg = normalizeProfileConfig({
+      schemaVersion: 2,
+      agentKind: 'claude',
+      accounts: { app },
+      access: {
+        allowedUsers: [],
+        allowedChats: ['oc_keep'],
+        admins: [],
+        chatUsers: { oc_keep: ['ou_a', ''], oc_empty: [], oc_bad: 'ou_x' },
+      },
+    });
+
+    expect(cfg.access.chatUsers).toEqual({ oc_keep: ['ou_a'] });
+  });
+
   it('drops invalid legacy message reply values instead of blocking config load', () => {
     const cfg = normalizeProfileConfig({
       schemaVersion: 2,

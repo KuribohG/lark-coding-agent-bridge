@@ -150,8 +150,9 @@ function checkProfile(p: Table, path: string): void {
     } else if (!app.secret) throw new Error(`${path}.accounts.app.secret: expected nonempty string`);
   }
   if (p.access !== undefined) {
-    const a = fields(p.access, { allowedUsers: 'strings', allowedChats: 'strings', admins: 'strings', requireMentionInGroup: 'boolean', chatRequireMention: 'table' }, `${path}.access`);
+    const a = fields(p.access, { allowedUsers: 'strings', allowedChats: 'strings', admins: 'strings', requireMentionInGroup: 'boolean', chatRequireMention: 'table', chatUsers: 'table' }, `${path}.access`);
     if (a.chatRequireMention && Object.values(a.chatRequireMention).some(v => typeof v !== 'boolean')) throw new Error(`${path}.access.chatRequireMention: expected boolean values`);
+    if (a.chatUsers && Object.values(a.chatUsers).some(v => !Array.isArray(v) || !v.every(x => typeof x === 'string'))) throw new Error(`${path}.access.chatUsers: expected string arrays`);
   }
   if (p.workspaces !== undefined) fields(p.workspaces, { default: 'string' }, `${path}.workspaces`);
   if (p.permissions !== undefined) {

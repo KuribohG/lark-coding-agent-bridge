@@ -352,6 +352,7 @@ secret manager 注入 `LARK_CHANNEL_KEYSTORE_MASTER_KEY`，避免密钥依赖主
 
 - 改完**下一条消息**就生效，不用重启。
 - **群里默认要先 @bot 才会回**（私聊不用 @）。这是另一个独立开关（`/config` →"群里需要 @ bot"），和上面的名单是两回事。
+- **想把某个群限定为只响应几个人**，在配置文件里用 `chatUsers`：按 `chat_id` 列出允许的 `open_id`（创建者和管理员仍然不受限）。没有条目的已开放群照旧允许所有群成员。目前还没有对应的聊天命令。
 - 陌生人发消息一律静默丢弃，不会有任何回复。唯一的例外：有人在一个还没开放的群里 @bot，bot 会回一句友好提示，告诉他可以让管理员发 `/invite group` 开放这个群。
 - 云文档评论按文档权限生效：能在支持的文档里评论并 @bot 的人可以触发回复。
 
@@ -365,6 +366,10 @@ allowedUsers = ["ou_xxxxxxxxxxxxx"]
 allowedChats = ["oc_xxxxxxxxxxxxx"]
 admins = ["ou_xxxxxxxxxxxxx"]
 requireMentionInGroup = true
+
+# 可选：把某个已开放的群限定为只响应列表里的发送者
+[profiles.claude.access.chatUsers]
+oc_xxxxxxxxxxxxx = ["ou_xxxxxxxxxxxxx"]
 ```
 
 `allowedUsers` / `admins` 填用户 `open_id`，`allowedChats` 填群 `chat_id`。手动找 ID 最简单的办法：让对方给 bot 发条消息（群里就 @ 它一下），然后看当前 profile 的日志：

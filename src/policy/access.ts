@@ -53,8 +53,13 @@ export function canUseGroup(
   if (isCreator(controls, senderId)) return allow('owner');
   if (profile.mode === 'team') return allow('allowed-team');
   if (profile.access.admins.includes(senderId)) return allow('allowed-admin');
-  if (profile.access.allowedChats.includes(chatId)) return allow('allowed-chat');
-  return deny('denied-chat');
+  if (!profile.access.allowedChats.includes(chatId)) return deny('denied-chat');
+  // An allowed chat normally admits every member (so a work group can be
+  // opened to everyone at once). `chatUsers[chatId]` narrows that group to
+  // the listed senders; other groups keep the chat-level rule.
+  const senders = profile.access.chatUsers?.[chatId];
+  if (senders && senders.length > 0 && !senders.includes(senderId)) return deny('denied-user');
+  return allow('allowed-chat');
 }
 
 /**

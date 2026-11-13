@@ -390,6 +390,7 @@ To let other people or groups in, add them to one of three lists:
 
 - Changes take effect on the **next message** — no restart needed.
 - **In groups you must `@` the bot first** (DMs don't need it). That's a separate toggle (`/config` → "require @ in groups"), independent of the lists above.
+- **Narrow one group to specific people** with `chatUsers` in the config file: it maps a `chat_id` to the `open_id`s allowed to drive the bot there (owner and admins still bypass). Allowed chats without an entry keep admitting every member. There is no chat command for this yet.
 - Strangers get pure silence — no reply at all. The one exception: if someone `@`-mentions the bot in a group that hasn't been opened up, the bot posts a friendly one-liner telling them an admin can run `/invite group` to enable it.
 - Cloud-doc comments are document-scoped: anyone who can comment in a supported document and mention the bot can trigger a reply.
 
@@ -403,6 +404,10 @@ allowedUsers = ["ou_xxxxxxxxxxxxx"]
 allowedChats = ["oc_xxxxxxxxxxxxx"]
 admins = ["ou_xxxxxxxxxxxxx"]
 requireMentionInGroup = true
+
+# Optional: limit one allowed group to specific senders.
+[profiles.claude.access.chatUsers]
+oc_xxxxxxxxxxxxx = ["ou_xxxxxxxxxxxxx"]
 ```
 
 `allowedUsers` / `admins` take user `open_id`s; `allowedChats` takes group `chat_id`s. The easiest way to find an ID by hand: have the person message the bot (or `@` it in the group), then check the active profile's log:
