@@ -56,7 +56,7 @@ export function openQueue(state: WorkflowView, name: string): void {
   emit(state, { type: 'work_queue_opened', name });
 }
 
-export function enqueueWork(state: WorkflowView, args: Record<string, unknown>, now: number): unknown {
+export function enqueueWork(state: WorkflowView, args: Record<string, unknown>, now: number, by?: string): unknown {
   options(args, ['key', 'title', 'input', 'resources', 'maxAttempts', 'queue', 'priority', 'dependsOn']);
   const key = scriptText(args.key, 'work key', 160);
   if (key.trim() !== key) throw new Error('Work key must not contain surrounding whitespace');
@@ -84,11 +84,27 @@ export function enqueueWork(state: WorkflowView, args: Record<string, unknown>, 
   if (queueControl(state, name)?.closedAt !== undefined) throw new Error('Work queue is closed; new items cannot be enqueued');
   if (items.length >= WORK_MAX_ITEMS) throw new Error('Work item limit reached');
   openQueue(state, name);
-  const item: WorkflowWorkItem = { id: randomUUID(), key, title, input, digest, maxAttempts, resources, ...routing,
+  const item: WorkflowWorkItem = { id: randomUUID(), key, title, ...(by ? { by } : {}), input, digest, maxAttempts, resources, ...routing,
     generation: 0, status: 'pending', progress: { version: 0, state: null }, createdAt: now, updatedAt: now };
   emit(state, { type: 'work_enqueued', item });
   capacity(state, item);
   return { itemId: item.id, key };
+}
+
+/**
+ * A persistent member adds work it found. A key that already exists answers with that item instead of failing, so
+ * members that report the same finding do not duplicate it. Members add to queues that exist, by default their own.
+ */
+export function enqueueFromMember(state: WorkflowView, task: TaskView, args: Record<string, unknown>, now: number): unknown {
+  if (!task.agentId) throw new Error('enqueue_work requires a persistent member');
+  const member = state.agents?.find(agent => agent.agentId === task.agentId)?.key;
+  const { operationId: _operationId, ...input } = args;
+  const key = scriptText(input.key, 'work key', 160);
+  const prior = state.workQueue?.items.find(item => item.key === key);
+  if (prior) return { itemId: prior.id, key, existing: true, status: prior.status, title: prior.title.slice(0, 120) };
+  const name = queueName(input.queue ?? memberQueue(state, member));
+  if (!queueNames(state).includes(name)) throw new Error(`Unknown work queue; members add to existing queues: ${queueNames(state).join(', ')}`);
+  return enqueueWork(state, { ...input, queue: name }, now, member);
 }
 
 export function retryWork(state: WorkflowView, args: Record<string, unknown>, now: number): unknown {
@@ -186,7 +202,7 @@ export function workStatus(state: WorkflowView, args: Record<string, unknown> = 
     closedAt: name === undefined ? state.workQueue?.closedAt : queueControl(state, name)?.closedAt,
     offset, nextOffset: offset + limit < items.length ? offset + limit : null,
     items: items.slice(offset, offset + limit).map(item => ({
-    itemId: item.id, key: item.key, queue: item.queue ?? 'default', priority: item.priority ?? 0, dependsOn: item.dependsOn ?? [], title: item.title.slice(0, 120), status: item.status,
+    itemId: item.id, key: item.key, queue: item.queue ?? 'default', priority: item.priority ?? 0, dependsOn: item.dependsOn ?? [], title: item.title.slice(0, 120), ...(item.by ? { by: item.by } : {}), status: item.status,
     generation: item.generation, maxAttempts: item.maxAttempts, progressVersion: item.progress.version,
     claim: state.workQueue?.claims.find(claim => claim.id === item.claimId),
     error: item.error?.slice(0, 180),

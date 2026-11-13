@@ -184,8 +184,10 @@ export interface WorkflowSwarm {
   /** Board seq of the swarm's brief, and of the last post when it ended. */
   firstPost: number;
   lastPost?: number;
-  /** Reminders sent to the lead while everyone was idle. */
+  /** Reminders sent to the lead while everyone was idle, since a member other than the lead last ran. */
   nudges: number;
+  /** The reminders went unanswered and the main agent has been told; cleared when a turn starts. */
+  stalled?: boolean;
   finish?: { result: string };
   members: SwarmMember[];
   turns: Array<{ key: string; member: string; taskId: string }>;
@@ -239,6 +241,8 @@ export interface WorkflowWorkItem {
   dependsOn?: string[];
   digest: string;
   title: string;
+  /** The member that added the item; absent for items from the script or the main agent. */
+  by?: string;
   input: unknown;
   resources: string[];
   maxAttempts: number;
@@ -372,7 +376,7 @@ export interface WorkflowArtifact {
 
 export interface WorkflowEvent {
   id: string;
-  kind: 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed' | 'worker_reply';
+  kind: 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed' | 'worker_reply' | 'swarm_stalled';
   taskId?: string;
   artifactRef?: string;
   summary: string;

@@ -129,7 +129,7 @@ describe('workflow message board', () => {
 });
 
 describe('swarm', () => {
-  type Action = { post?: { text: string; to?: string[] }; call?: [string, Record<string, unknown>]; fail?: boolean; work?: boolean };
+  type Action = { post?: { text: string; to?: string[] }; call?: [string, Record<string, unknown>]; calls?: Array<[string, Record<string, unknown>]>; fail?: boolean; work?: boolean };
   /** Runs a script whose members act out `plan`: what each does on its nth turn (opening turn first). */
   async function play(script: string, plan: Record<string, Action[]>) {
     const root: WorkflowRoot = { scopeId: 'chat', profile: 'embedded', agentKind: 'custom-agent', cwdRealpath: '/repo',
@@ -137,6 +137,7 @@ describe('swarm', () => {
     const order: string[] = [];
     const specs: WorkerRunSpec[] = [];
     const errors: string[] = [];
+    const results: unknown[] = [];
     const seen: Record<string, number> = {};
     const runtime = new WorkflowRuntime({
       path: ':memory:', resolveRoot: async () => root, wakeMain: async () => {},
@@ -160,6 +161,9 @@ describe('swarm', () => {
                   await callWorkflow('complete_work', { operationId: 'done' + n, claimId: grant.claimId, generation: grant.generation, result: name }, spec.env);
                 }
                 if (action.call) await callWorkflow(action.call[0], { operationId: 'call', ...action.call[1] }, spec.env);
+                for (const [index, [method, input]] of (action.calls ?? []).entries()) {
+                  try { results.push(await callWorkflow(method, { operationId: 'calls' + index, ...input }, spec.env)); } catch (error) { errors.push(String(error)); }
+                }
                 if (action.post) await callWorkflow('post_board', { operationId: 'post', ...action.post }, spec.env);
               } catch (error) { errors.push(String(error)); }
               if (action.fail) { yield { type: 'error', message: 'model refused' }; yield { type: 'done', normal: false }; return; }
@@ -180,7 +184,7 @@ describe('swarm', () => {
       const ref = state.script?.resultRef;
       return { state, result: ref ? JSON.parse(state.artifacts.find(artifact => artifact.ref === ref)!.text) : undefined };
     };
-    return { runtime, root, order, specs, errors, settled };
+    return { runtime, root, order, specs, errors, results, settled };
   }
   const posts = (result: { posts: Array<{ from: string; to: string[] }> }) => result.posts.map(post => [post.from, post.to]);
 
@@ -238,14 +242,37 @@ describe('swarm', () => {
     expect(h.specs[0]!.prompt).toContain('swarm_finish');
   });
 
-  it('reminds an idle lead, then ends without a verdict; only the lead may manage', async () => {
+  it('reminds an idle lead, then reports a stall to the main agent and keeps waiting; only the lead may manage', async () => {
     const h = await play('return await swarm("Idle", {key:"idle", lead:{name:"lead"}, members:[{name:"dev"}]});', {
+      // The lead answers the first reminder by handing out work, which earns it a fresh pair of reminders afterwards.
+      lead: [{}, { post: { text: 'check the parser', to: ['dev'] } }],
       dev: [{ call: ['swarm_finish', { result: 'not mine to call' }] }],
     });
-    const { result } = await h.settled();
+    const state = () => h.runtime.kernel.state(h.root.scopeId)!;
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(state().swarms![0]!.stalled).toBe(true); }, { timeout: 10_000 });
+    for (let pass = 0; pass < 3; pass++) await h.runtime.tick();
     expect(h.errors).toEqual([expect.stringContaining('Only the lead of a swarm can manage it')]);
-    expect(result).toMatchObject({ stop: 'quiet', members: [{ name: 'lead', turns: 2 }, { name: 'dev', turns: 0 }] });
-    expect(result.posts.filter((post: { from: string }) => post.from === 'system')).toHaveLength(2);
+    expect(h.order).toEqual(['lead1', 'dev1', 'lead2', 'dev2', 'lead3', 'lead4']);
+    expect(state().script!.status).toBe('running');
+    expect(state().swarms![0]).toMatchObject({ status: 'running', nudges: 2 });
+    expect(state().board!.posts.filter(post => post.author === 'system')).toHaveLength(3);
+    // One event for the stall, however often the idle swarm is looked at again.
+    expect(state().events.filter(event => event.kind === 'swarm_stalled')).toMatchObject([{ summary: expect.stringContaining('swarm "idle" 停滞') }]);
+  });
+
+  it('lets members add the work they find, once per key, and ends only on the lead\'s verdict', async () => {
+    const found = { key: 'bug-lexer-empty', title: 'Lexer drops the last token', input: { repro: 'lex("")' } };
+    const h = await play('await enqueueWork({key:"seed", title:"Seed", input:{}});'
+      + 'return await swarm("Fix what you find", {key:"hunt", lead:{name:"lead"}, members:[{name:"builder", queue:"default"}, {name:"scout"}]});', {
+      scout: [{ calls: [['enqueue_work', found], ['enqueue_work', { ...found, title: 'Same bug, reported again' }], ['enqueue_work', { ...found, key: 'elsewhere', queue: 'nobody' }]] }],
+      builder: [{ work: true }, { work: true }],
+      lead: [{}, { call: ['swarm_finish', { result: 'seed and the lexer bug are fixed' }] }],
+    });
+    const { state, result } = await h.settled();
+    expect(h.errors).toEqual([expect.stringContaining('Unknown work queue')]);
+    expect(h.results).toMatchObject([{ key: found.key }, { key: found.key, existing: true }]);
+    expect(state.workQueue!.items.map(item => [item.key, item.by, item.status])).toEqual([['seed', undefined, 'completed'], [found.key, 'scout', 'completed']]);
+    expect(result).toMatchObject({ stop: 'finished', result: 'seed and the lexer bug are fixed', queues: { default: { completed: 2, closed: false } } });
   });
 
   it('fails when the lead fails, and keeps swarm members away from script calls', async () => {

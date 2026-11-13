@@ -193,6 +193,9 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       const found = swarm(state, event.swarmId);
       const member = found.members.find(item => item.name === event.member)!;
       member.taskId = event.taskId; member.retryPending = undefined; member.lastWake = event.wake;
+      found.stalled = undefined;
+      // Work resumed, so the next idle spell earns the lead a fresh set of reminders.
+      if (event.member !== found.lead) found.nudges = 0;
       if (!event.retry) {
         found.turns.push({ key: event.key, member: event.member, taskId: event.taskId });
         if (!event.opening) member.turns++;
@@ -211,8 +214,13 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       member.stopped = undefined; member.detail = undefined; member.lastWake = undefined;
       return;
     }
-    case 'swarm_turns_extended': swarm(state, event.swarmId).maxTurns = event.maxTurns; return;
+    case 'swarm_turns_extended': {
+      const found = swarm(state, event.swarmId);
+      found.maxTurns = event.maxTurns; found.nudges = 0; found.stalled = undefined;
+      return;
+    }
     case 'swarm_nudged': swarm(state, event.swarmId).nudges++; return;
+    case 'swarm_stalled': swarm(state, event.swarmId).stalled = true; return;
     case 'swarm_finish_requested': swarm(state, event.swarmId).finish = { result: event.result }; return;
     case 'swarm_ended': {
       const found = swarm(state, event.swarmId);

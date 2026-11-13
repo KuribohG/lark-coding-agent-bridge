@@ -260,14 +260,14 @@ The lead is an ordinary member with three more operations and two kinds of syste
 | `swarm_finish` with `{operationId, result}` | Records the final result (at most 16000 characters). Nobody is woken afterwards; the swarm returns once the turns still running have ended |
 
 - When a member fails, the system posts to the lead with the reason; the member has stopped and the lead decides whether to reassign, replace or drop the work.
-- When everyone is idle and the lead has not finished, the system reminds the lead, at most twice. After that the swarm ends with `stop: "quiet"` and no `result`.
+- Idle members are not a verdict. When everyone is idle and the lead has not finished, the system reminds the lead to check the goal, find what is missing and hand it out. After two reminders with no new work, or once the lead has used its wake-ups, the main agent receives a `swarm_stalled` event. The swarm keeps running: a post that names a member, new work in a consumed queue, or `staff_swarm` (more members, a higher `maxTurns`) sets it going again. Only `swarm_finish` ends it, so state a checkable goal in the task and have the lead finish on evidence.
 
 `swarm` resolves to `{stop, result?, turns, members: [{name, lead?, added?, queue?, turns, status, error?, note}], queues?, posts, lastSeq, hasMore}`. `queues` maps each consumed queue to its item counts. `posts` holds up to the first 50 posts of the swarm; read further ones with `readBoard`. `note` is the start of the member's last final answer: up to 2000 characters, fewer in a swarm of more than 20 members so that the whole result still fits a script value (40000 characters shared by all members).
 
 | `stop` | Meaning |
 | --- | --- |
 | `finished` | The lead called `swarm_finish`; `result` holds its verdict |
-| `quiet` | Everyone went idle without a verdict (or the swarm has no lead) |
+| `quiet` | No lead, and everyone went idle |
 | `max_turns` | No lead, and a member that had used its wake-ups still had posts to read |
 | `failed` | No lead, and a member failed |
 
@@ -397,6 +397,8 @@ return await swarm('Handle the authorized work, preserve progress and verify the
 - `maxTurns` bounds each member's wake-ups (default 6, up to 64); raise it when work arrives in batches. Every turn counts toward `maxAgents`.
 
 **Closure of each queue is explicit and permanent.** An open but empty queue waits for new input; a closed queue stops accepting items and drains the existing ones. A swarm without a lead ends only when every queue its members consume is closed and holds no unfinished item, and nobody has a post to read. It fails if it goes idle while work is still available that no member can take, or with failed or unclaimable items. A swarm with a lead ends on the lead's `swarm_finish` as usual; the lead is reminded when everyone is idle.
+
+Members can add work as well as take it: `enqueue_work({key, title, input, queue?, ...})` puts an item into an existing open queue, by default the member's own. Use it to split an item that is too large, to record a problem found along the way, or to supply the next batch when the queue has run dry and the goal is not met. An existing key returns `{itemId, key, existing: true, status}` instead of a new item, so members that report the same finding under the same key do not duplicate it. Items added by a member carry `by` in `work_status`. Script keys and member keys share one namespace.
 
 For concurrent producers, start the swarm, produce, close the queue, then await the swarm:
 

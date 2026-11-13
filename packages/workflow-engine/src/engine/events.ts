@@ -83,6 +83,7 @@ export type DomainEvent =
   | { type: 'swarm_member_revived'; swarmId: string; member: string }
   | { type: 'swarm_turns_extended'; swarmId: string; maxTurns: number }
   | { type: 'swarm_nudged'; swarmId: string }
+  | { type: 'swarm_stalled'; swarmId: string }
   | { type: 'swarm_finish_requested'; swarmId: string; result: string }
   | { type: 'swarm_ended'; swarmId: string; stop: NonNullable<WorkflowSwarm['stop']>; reason?: string }
   // Event waits

@@ -3,7 +3,7 @@ import { postToBoard, readBoard } from './board';
 import { workflowDigest } from './digest';
 import { availableMessages, receiveMessages, scheduleMemberTurn } from './durable-agents';
 import type { DomainEvent } from './events';
-import { readArtifact, taskById } from './kernel-state';
+import { pushEvent, readArtifact, taskById } from './kernel-state';
 import { emit, readText } from './kernel-store';
 import { SWARM_DECLARED_MEMBERS, SWARM_MAX_MEMBERS } from './limits';
 import { boundedInteger, parseScriptAgentCall, scriptText } from './script-contract';
@@ -14,7 +14,7 @@ import type { Immutable, NativeIdKind, SwarmMember, WorkerExecution, WorkerExecu
 const BUSY = new Set<WorkflowTask['status']>(['queued', 'starting', 'running', 'cancelling', 'waiting_workflow']);
 const NAME = /^[A-Za-z0-9_.-]{1,40}$/;
 const RESERVED = ['all', 'main', 'script', 'system'];
-/** How often an idle swarm reminds its lead to finish before it ends without a verdict. */
+/** How often an idle swarm reminds its lead to assign work or finish before the main agent is told that it has stalled. */
 const MAX_NUDGES = 2;
 
 type SwarmView = Immutable<WorkflowSwarm>;
@@ -104,7 +104,8 @@ function rules(swarm: SwarmView, member: MemberView): string {
     ] : []),
     ...(lead ? [
       '- You are the lead. You split the work, assign it on the board, judge results and decide when the swarm is done. The system posts to you when a member fails and when everyone has gone idle.',
-      '- staff_swarm adds members while the swarm runs, retires them and revives failed ones. Call swarm_finish with the final result once the task is complete or cannot progress; the swarm ends when the turns still running have finished.',
+      '- Idle members and an empty queue do not mean the task is done. The swarm ends only when you call swarm_finish, so judge the goal on evidence (test output, measurements) rather than on reports; while it is not met, have members find what is missing and hand that out.',
+      '- staff_swarm adds members while the swarm runs, retires them and revives failed ones. Call swarm_finish with the final result once the goal is met or cannot progress, stating which and what remains; the swarm ends when the turns still running have finished.',
     ] : swarm.lead ? [`- @${swarm.lead} is the lead: it assigns work and decides when the swarm is done. Report results and blockers to it. When you have nothing to report and need nothing, end the turn without posting.`]
       : ['- When you need nothing from anyone and have nothing to report, end the turn without posting. The swarm finishes when everyone is asleep.']),
   ].join('\n');
@@ -185,16 +186,27 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
     if (!swarm.members.some(busy) && !swarm.members.some(wakeable)) {
       if (lead?.stopped === 'failed') { end('failed', 'The lead failed: ' + (lead.detail ?? '')); return changed; }
       if (swarm.finish) { end('finished'); return changed; }
-      if (lead && !lead.stopped && lead.turns < swarm.maxTurns && swarm.nudges < MAX_NUDGES) {
-        record({ type: 'swarm_nudged', swarmId: swarm.id });
-        notifyLead('Every member is idle and nothing is waiting to be read. Assign further work on the board, or call swarm_finish with the final result.');
-      } else if (!lead && queues.some(name => availableWork(state, name).length)) {
+      if (lead) {
+        // Idle members are not a verdict: a swarm with a lead ends only when the lead finishes it.
+        const spent = lead.turns >= swarm.maxTurns;
+        if (!spent && swarm.nudges < MAX_NUDGES) {
+          record({ type: 'swarm_nudged', swarmId: swarm.id });
+          notifyLead('Every member is idle and nothing is waiting to be read. Check the task\'s goal against evidence. If it is not met, find what is missing and hand it out: '
+            + 'name members on the board, or add items with enqueue_work. Call swarm_finish only when the goal is met or cannot progress, and say which.');
+        } else if (!swarm.stalled) {
+          record({ type: 'swarm_stalled', swarmId: swarm.id });
+          pushEvent(state, { kind: 'swarm_stalled', summary: `swarm "${swarm.key}" 停滞：全体成员空闲，`
+            + (spent ? `lead 的 ${swarm.maxTurns} 次唤醒已用完` : `lead 经 ${MAX_NUDGES} 次提醒仍未分派工作，也未调用 swarm_finish`)
+            + '。swarm 仍在运行并等待：用 post_board 点名成员继续、enqueue_work 补充工作，或 staff_swarm 加人、提高 maxTurns；确认无事可做再取消。' }, () => now);
+        }
+        return changed;
+      } else if (queues.some(name => availableWork(state, name).length)) {
         end('failed', 'No member can take the available work: its consumers have stopped or used their wake-ups; inspect member failures and explicitly replay');
         return changed;
-      } else if (!lead && queues.some(name => queueControl(state, name)?.closedAt === undefined)) {
+      } else if (queues.some(name => queueControl(state, name)?.closedAt === undefined)) {
         // Without a lead, an open queue means producers may still add work: keep waiting.
         return changed;
-      } else if (!lead && queues.some(name => unfinishedWork(state, name) || state.workQueue?.items.some(item => (item.queue ?? 'default') === name && item.status === 'failed'))) {
+      } else if (queues.some(name => unfinishedWork(state, name) || state.workQueue?.items.some(item => (item.queue ?? 'default') === name && item.status === 'failed'))) {
         end('failed', 'Swarm went idle with failed or unclaimable work items; inspect /workflow work, retry them, then explicitly replay');
         return changed;
       } else {
