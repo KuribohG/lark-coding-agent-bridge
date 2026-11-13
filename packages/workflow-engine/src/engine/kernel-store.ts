@@ -53,6 +53,8 @@ export interface WorkflowArchive {
   record(kind: RecordKind, by: { id: string } | { key: string }): unknown;
   /** Archived entries in the order of their position, `after < num <= upTo`; `desc` starts from the end. */
   range(kind: RecordKind, range: { after: number; upTo: number; limit: number; desc?: boolean }): unknown[];
+  /** Archived entries whose stored JSON contains every one of `contains` (lower-case), most recently archived first. */
+  search(kind: RecordKind, contains: readonly string[], limit: number): unknown[];
 }
 
 interface PendingEvent { aggregate: Aggregate; type: string; entity?: string; data: string; topics: string[] }
@@ -380,6 +382,13 @@ export class WorkflowStore {
           .all(workflowId, kind, after, upTo, limit) as Array<{ num: number; data: string }>;
         const all = [...rows, ...pending.map(row => ({ num: row.num!, data: row.data }))].sort((a, b) => desc ? b.num - a.num : a.num - b.num);
         return all.slice(0, limit).map(row => JSON.parse(row.data));
+      },
+      search: (kind, contains, limit) => {
+        const pending = (staged()?.records ?? []).filter(row => row.workflowId === workflowId && row.kind === kind
+          && contains.every(term => row.data.toLowerCase().includes(term))).reverse();
+        const rows = this.db.prepare(`SELECT data FROM wf_archive WHERE workflow_id = ? AND kind = ?${' AND instr(lower(data), ?) > 0'.repeat(contains.length)} ORDER BY rowid DESC LIMIT ?`)
+          .all(workflowId, kind, ...contains, limit) as Array<{ data: string }>;
+        return [...pending, ...rows].slice(0, limit).map(row => JSON.parse(row.data));
       },
     };
   }

@@ -2,9 +2,10 @@ import { randomUUID } from 'node:crypto';
 import { workflowDigest } from './digest';
 import { byId } from './evolve';
 import { archivedRecord, workItemByKey, workOperationByKey } from './kernel-state';
-import { emit } from './kernel-store';
+import { emit, recordsOf } from './kernel-store';
 import { WORK_MAX_BYTES, WORK_MAX_CLAIMS, WORK_MAX_ITEMS, WORK_MAX_OPERATIONS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
+import { matchFields, SEARCH_ARCHIVE_ROWS, searchTerms, searchText, storedTerms } from './search';
 import { memberQueue, queueControl, queueName, queueNames } from './work-routing';
 import type { Immutable, TaskView, WorkClaim, WorkflowView, WorkflowWorkItem } from './types';
 
@@ -216,6 +217,32 @@ export function workStatus(state: WorkflowView, args: Record<string, unknown> = 
     claim: state.workQueue?.claims.find(claim => claim.id === item.claimId),
     error: item.error?.slice(0, 180),
   })) };
+}
+
+const WORK_STATUSES = ['pending', 'claimed', 'completed', 'failed', 'cancelled'];
+
+/**
+ * Finds work items by words in their key, title, input, result or error, including finished items that have left the
+ * state. Items whose key or title match come first, then the most recently changed. A hit carries the text around
+ * the match; work_status({itemId}) returns the whole item.
+ */
+export function searchWork(state: WorkflowView, args: Record<string, unknown> = {}): unknown {
+  options(args, ['query', 'queue', 'status', 'limit']);
+  const terms = searchTerms(args.query);
+  const name = args.queue === undefined ? undefined : queueName(args.queue);
+  if (args.status !== undefined && !WORK_STATUSES.includes(args.status as string)) throw new Error('status must be one of ' + WORK_STATUSES.join(', '));
+  const limit = boundedInteger(args.limit, 10, 1, 30);
+  const archived = state.archivedRecords?.workItem ? recordsOf(state).search('workItem', storedTerms(terms), SEARCH_ARCHIVE_ROWS) as WorkflowWorkItem[] : [];
+  const hits = [];
+  for (const item of [...state.workQueue?.items ?? [], ...archived]) {
+    if (name !== undefined && (item.queue ?? 'default') !== name || args.status !== undefined && item.status !== args.status) continue;
+    const hit = matchFields(terms, [['key', item.key], ['title', item.title], ['input', searchText(item.input)], ['result', searchText(item.result)], ['error', item.error ?? '']], 2);
+    if (hit) hits.push({ item, hit });
+  }
+  hits.sort((a, b) => b.hit.score - a.hit.score || b.item.updatedAt - a.item.updatedAt);
+  return { matches: hits.length, hasMore: hits.length > limit || archived.length === SEARCH_ARCHIVE_ROWS,
+    items: hits.slice(0, limit).map(({ item, hit }) => ({ itemId: item.id, key: item.key, queue: item.queue ?? 'default', status: item.status, title: item.title.slice(0, 120),
+      ...(item.by ? { by: item.by } : {}), updatedAt: item.updatedAt, in: hit.field, snippet: hit.snippet })) };
 }
 
 function ownedClaim(state: WorkflowView, task: TaskView, attemptId: string, args: Record<string, unknown>, now: number): ClaimView {

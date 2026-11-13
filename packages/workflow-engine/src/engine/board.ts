@@ -4,6 +4,7 @@ import { boardTotal } from './kernel-state';
 import { emit, recordsOf } from './kernel-store';
 import { BOARD_MAX_DELIVERIES, MAX_NAMED_MEMBERS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
+import { matchFields, SEARCH_ARCHIVE_ROWS, searchTerms, storedTerms } from './search';
 import type { AgentView, BoardAuthor, BoardPost, Immutable, MailboxMessage, WorkflowView } from './types';
 
 /** Topic of the mailbox messages that deliver board posts; `receive(member,{topic})` can select or skip them. */
@@ -76,6 +77,30 @@ export function readBoard(state: WorkflowView, input: { after?: unknown; limit?:
   const rest: Array<Immutable<BoardPost>> = [];
   for (const post of feed(state, after, lastSeq, false)) if (matches(post) && rest.push(post) > limit) break;
   return { posts: rest.slice(0, limit).map(post => postView(state, post)), lastSeq, hasMore: rest.length > limit };
+}
+
+/**
+ * Finds posts by words in their text, newest first, including posts that have left the state. A hit carries the text
+ * around the match; read_board({after: seq - 1, limit: 1}) returns the whole post. `member` keeps posts from or to it.
+ */
+export function searchBoard(state: WorkflowView, input: { query?: unknown; member?: unknown; limit?: unknown } = {}): unknown {
+  if (Object.keys(input).some(key => !['query', 'member', 'limit'].includes(key))) throw new Error('Unsupported search_board option');
+  const terms = searchTerms(input.query);
+  const limit = boundedInteger(input.limit, 10, 1, 30);
+  const only = input.member === undefined ? undefined : member(state, scriptText(input.member, 'member name', 100)).agentId;
+  const archived = state.archivedRecords?.post ? recordsOf(state).search('post', storedTerms(terms), SEARCH_ARCHIVE_ROWS) as BoardPost[] : [];
+  const hits = [];
+  for (const post of [...state.board?.posts ?? [], ...archived]) {
+    if (only && post.from !== only && !post.to.includes(only)) continue;
+    const hit = matchFields(terms, [['text', post.text]]);
+    if (hit) hits.push({ post, hit });
+  }
+  hits.sort((a, b) => b.post.seq - a.post.seq);
+  return { matches: hits.length, hasMore: hits.length > limit || archived.length === SEARCH_ARCHIVE_ROWS,
+    posts: hits.slice(0, limit).map(({ post, hit }) => {
+      const { text: _text, ...view } = postView(state, post);
+      return { ...view, snippet: hit.snippet };
+    }) };
 }
 
 /** Posts with `after < seq <= upTo` in feed order, or newest first; the older ones come from the archive a page at a time. */

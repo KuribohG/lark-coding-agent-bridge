@@ -1,4 +1,4 @@
-import { postToBoard, readBoard } from '../board';
+import { postToBoard, readBoard, searchBoard } from '../board';
 import { finishSwarm, staffSwarm } from '../swarm';
 import { memberOperation } from './members';
 import { mailboxOperation, taskAgent } from '../durable-agents';
@@ -12,7 +12,7 @@ import { versioned } from './versioned';
 /** The shared message board: one ordered, append-only feed that every agent of the workflow can read. */
 export const boardTools: WorkflowToolPlugin = {
   id: 'board',
-  memberInstructions: '留言板是本工作流全员可见、只追加的有序消息流。post_board({operationId,text,to?}) 发帖：text 最多 4000 字符；to 为成员名数组或 "all"，正文里的 @成员名、@all 同样生效。被点名的成员会被唤醒并在下一轮的 read_context.member.messages 里收到该帖（带 post 序号）；不点名的帖子只留在板上，不唤醒任何人。read_board({after?,limit?,member?}) 读帖：不带 after 返回最新 limit 条（默认 20，最多 50），带 after 返回该序号之后的帖子；member 只看某成员发出或收到的帖子。进展、结论、提问、交接都发到板上，写明谁需要做什么；不要发纯确认或致谢，避免互相唤醒空转。帖子不可修改或撤回，也不代表对方已处理。',
+  memberInstructions: '留言板是本工作流全员可见、只追加的有序消息流。post_board({operationId,text,to?}) 发帖：text 最多 4000 字符；to 为成员名数组或 "all"，正文里的 @成员名、@all 同样生效。被点名的成员会被唤醒并在下一轮的 read_context.member.messages 里收到该帖（带 post 序号）；不点名的帖子只留在板上，不唤醒任何人。read_board({after?,limit?,member?}) 读帖：不带 after 返回最新 limit 条（默认 20，最多 50），带 after 返回该序号之后的帖子；member 只看某成员发出或收到的帖子。search_board({query,member?,limit?}) 按关键词查全部历史帖子：query 为空格分隔的词（最多 8 个），不分大小写、按子串匹配，须全部出现；返回最新的 limit 条（默认 10，最多 30），每条带序号和命中处的片段，全文用 read_board({after:序号-1,limit:1}) 读。板上帖子多时先搜再读，不要整板翻页。进展、结论、提问、交接都发到板上，写明谁需要做什么；不要发纯确认或致谢，避免互相唤醒空转。帖子不可修改或撤回，也不代表对方已处理。',
   tools: [
     {
       name: 'post_board',
@@ -35,6 +35,11 @@ export const boardTools: WorkflowToolPlugin = {
       name: 'read_board',
       main: { kind: 'read', doc: 'read_board(after?,limit?,member?)', read: (_ctx, state, args) => readBoard(requireState(state), args) },
       worker: { call: (_ctx, state, _task, _caller, args) => readBoard(state, args) },
+    },
+    {
+      name: 'search_board',
+      main: { kind: 'read', doc: 'search_board(query,member?,limit?)', read: (_ctx, state, args) => searchBoard(requireState(state), staffing(args)) },
+      worker: { call: (_ctx, state, _task, _caller, args) => searchBoard(state, args) },
     },
   ],
 };

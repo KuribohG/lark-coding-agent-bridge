@@ -97,6 +97,13 @@ describe('archiving the other lists of a workflow', () => {
     const seam = await h.call('read_board', { after: total - KEEP_RECENT - 2, limit: 4 }) as Feed;
     expect(seam.posts.map(post => post.seq)).toEqual([-1, 0, 1, 2].map(offset => total - KEEP_RECENT + offset));
     expect((await h.call('read_board', { limit: 2 }) as Feed).posts.map(post => post.seq)).toEqual([total - 1, total]);
+    // A search covers the archived posts and the ones in the state, newest first, and returns the text around the match.
+    const found = await h.call('search_board', { query: '17 POST', limit: 30 }) as { matches: number; hasMore: boolean; posts: Array<{ seq: number; snippet: string }> };
+    expect(found.posts.map(post => post.seq)).toEqual([617, 517, 417, 317, 217, 179, 178, 177, 176, 175, 174, 173, 172, 171, 170, 117, 17]);
+    expect(found).toMatchObject({ matches: 17, hasMore: false });
+    expect(found.posts[0]).toEqual({ seq: 617, from: 'main', to: ['alice'], all: true, snippet: 'post 617', at: expect.any(Number) });
+    expect(await h.call('search_board', { query: 'post 17', limit: 2 })).toMatchObject({ matches: 17, hasMore: true, posts: [{ seq: 617 }, { seq: 517 }] });
+    expect(await h.call('search_board', { query: 'post absent' })).toMatchObject({ matches: 0, posts: [] });
     expect(await h.call('post_board', { text: 'one more' })).toMatchObject({ seq: total + 1 });
     expect((await h.call('status') as { mailbox: { totalMessages: number } }).mailbox.totalMessages).toBe(total);
 
@@ -142,6 +149,17 @@ describe('archiving the other lists of a workflow', () => {
     await h.work({ kind: 'enqueue', key: 'follow-up', title: 'Follow up', input: null, dependsOn: ['item-0'] });
     const next = await h.turn('worker', 'follow');
     expect(await h.worker(next, 'claim_work', { operationId: 'claim-follow' })).toMatchObject({ item: { key: 'follow-up' } });
+    // A member finds finished work by words of its key, input or result, although none of it is in the state any more.
+    type Hits = { matches: number; items: Array<{ itemId: string; key: string; status: string; in: string; snippet: string }> };
+    const byKey = await h.worker(next, 'search_work', { query: 'ITEM-5', limit: 30 }) as Hits;
+    expect(byKey.items.map(item => item.key).sort()).toEqual(['item-5', ...Array.from({ length: 10 }, (_, index) => 'item-5' + index)]);
+    expect(byKey.items.find(item => item.key === 'item-5')).toMatchObject({ itemId: itemIds[5], status: 'completed' });
+    expect(await h.worker(next, 'search_work', { query: 'ok item-199' })).toMatchObject({ matches: 1, items: [{ key: 'item-199', in: 'result', snippet: '{"ok":"item-199"}' }] });
+    // A word with a quote is not tested in SQL; the match itself still decides.
+    expect(await h.call('search_work', { query: '"index":199' })).toMatchObject({ matches: 1, items: [{ key: 'item-199', in: 'input' }] });
+    expect(await h.call('search_work', { query: 'follow', status: 'claimed' })).toMatchObject({ matches: 1, items: [{ key: 'follow-up', in: 'key' }] });
+    expect(await h.call('search_work', { query: 'item', status: 'pending' })).toMatchObject({ matches: 0 });
+    expect(await h.call('search_work', { query: 'item', queue: 'other' })).toMatchObject({ matches: 0 });
     await h.worker(next, 'release_claim', { operationId: 'release-follow', claimId: (await h.worker(next, 'claim_work', { operationId: 'claim-follow' }) as Grant).claimId, generation: 1, reason: 'later' });
     await h.finish(next);
 
