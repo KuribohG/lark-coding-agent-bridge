@@ -1,0 +1,167 @@
+# Quick start: every entry point
+
+Talk to local **Codex CLI, Claude Code, Pi Coding Agent, or Antigravity CLI** from your browser or Feishu / Lark. The agent runs on your machine and works in the project directory you choose.
+
+[Linux quick start](../README.md) · [中文](user-guide/quick-start.md) · [Documentation](README.md) · [Configuration reference](configuration.md) · [Antigravity and Gemini providers](antigravity.md)
+
+> The repository [README](../README.md) covers only the Linux + Lark path. This page keeps the full quick start: browser chat, Windows, the web console, Slack, configuration and troubleshooting. It describes this repository's **`dev` branch**; the npm package with the same name may not contain these changes. Start from source using the steps below.
+
+## 1. Choose what you want to run
+
+| Goal | Entry point | What opens | Lark account? |
+| --- | --- | --- | --- |
+| Chat with an agent in a browser | `web --agent codex` | **Bridge Chat**, normally on port 8787 | No |
+| Set up a Lark bot step by step in a terminal (recommended on Linux servers) | `node bin/lark-channel-bridge.mjs guide` | **Terminal guide**: locate the agent, pick permissions, set a model token, connect a Lark app | Yes |
+| Set up a Lark bot, profiles or the inbox in a browser | `node bin/lark-channel-bridge.mjs run --web-ui --detach` | **Management console**, at the printed address | Yes, to connect a bot |
+| Run an already configured Lark bot without a console | `run --profile <name>` | Terminal logs | Yes |
+| Connect a Slack bot | `slack --workspace /absolute/project/path --allowed-users U... --allowed-channels C...` | Slack threads via Socket Mode; see [setup](channels.md#run-the-bundled-slack-channel) | No |
+
+**Browser chat and the management console are different applications.** `run --web-ui` does not open standalone chat. For a first local test, choose browser chat.
+
+## 2. Install once
+
+On Windows you can also run `LarkChannelBridge-Setup-*.exe` (from GitHub Releases or the Actions artifact). It bundles the Node runtime, so Node and Git are not required; after installing, double-click the Start Menu or Desktop icon and the bridge runs in the background with a **notification-area (tray) icon** — right-click it to open the console, reveal the configuration file, or exit. An upgrade stops the old services and tray, then recreates them with the new paths while keeping `%USERPROFILE%\.lark-channel` (profiles, secrets, sessions, logs). See [installer/README.md](../installer/README.md) for downloads, build and behaviour. Other platforms, or when you want to modify the code, use the source install below.
+
+You need **Git**, **Node.js 22.12+** (or Node 20.19+ within Node 20), and at least one installed, authenticated agent. Check the agent in the same terminal/account that will run Bridge:
+
+```sh
+node --version
+codex --version
+```
+
+Use `claude --version`, `pi --version`, or `agy --version` if that is your chosen engine. A version check proves the binary exists, not that model authentication works; complete one direct agent conversation first. If the command is not on PATH, or you use a third-party API gateway token instead of a native login, install the repository anyway: the `guide` command in 3B locates the executable and asks for the token.
+
+```sh
+git clone --branch dev https://github.com/KuribohG/lark-coding-agent-bridge.git
+cd lark-coding-agent-bridge
+npx --yes pnpm@10.33.0 install --frozen-lockfile
+```
+
+Run subsequent commands **from this repository directory**. Installation builds the bundled frontend and CLI. No separate Vite server, database, Docker, WSL or global `npm link` is needed for the commands below. Use the pinned pnpm version to avoid install-script policy differences.
+
+## 3A. Start browser chat — no Lark setup
+
+```sh
+node bin/lark-channel-bridge.mjs web --agent codex --workspace . --state-dir .web-local/chat --port 8787
+```
+
+- Replace `.` after `--workspace` with your project path; quote paths containing spaces.
+- Replace `codex` with `claude` or `pi` only if that agent is installed and configured. Omitting `--agent` without a config defaults to Claude, not Codex.
+- Open the **complete URL printed by the command**, including `#token=...`. The server listens only on this machine's `127.0.0.1`.
+- Send “Explain this project without changing files.” Use **Send**, **Stop**, **New conversation**, and the engine selector. Ctrl/⌘+Enter sends a message.
+- Keep the terminal open. **Ctrl+C** stops this foreground server.
+
+**After a restart, use the newly printed URL.** The token changes on each server start. A stale bookmark or bare `http://127.0.0.1:8787/` in a new browser session can show the page but fail authentication. If you replace only the URL fragment in an already open tab, reload it as well.
+
+### Windows: optional background launcher for a custom Responses provider
+
+If your native Codex config already uses a custom Responses provider, run these in PowerShell:
+
+```powershell
+.\bin\windows\start-web.ps1 -Workspace "C:\projects\my-app" -OpenBrowser
+.\bin\windows\stop-web.ps1
+```
+
+This starts a hidden process with an isolated Codex home under `.web-local`, reusing your current provider/model without writing its key to disk or modifying global Codex settings. It avoids sharing desktop-app sessions and plugins. It is **not an OAuth-only launcher** and does not accept a Bridge `--config`; use the foreground command for those cases. Neither launcher enables login autostart.
+
+Full instructions: [Web chat](user-guide/web-chat.md) · [Windows](user-guide/windows.md) · [Channel reference](channels.md).
+
+## 3B. Connect Feishu / Lark instead
+
+After installing the repository (section 2), run the terminal guide from the repository directory. This is the recommended path on a Linux server or any machine without a browser:
+
+```sh
+node bin/lark-channel-bridge.mjs guide
+```
+
+The guide asks one question at a time and writes `~/.lark-channel/config.toml` only after the last answer; Ctrl+C leaves nothing behind:
+
+1. **Locate the agent**: lists Claude Code / Codex and other agent executables with their versions, including installs in `~/.local/bin`, `~/.npm-global/bin`, nvm and similar directories that are not on PATH. Enter a path by hand if none is found.
+2. **Pick permissions**: `full` (whole machine), `workspace` (write only inside the project) or `read-only`.
+3. **Who may use it**: only you (default), you plus colleagues and chats you later `/invite`, or anyone in the tenant; opening it to everyone with `full` access needs an extra confirmation.
+4. **Project directory and profile name**: one bot per profile.
+5. **Model credentials**: keep the agent's own login, or enter a third-party API gateway address and token.
+6. **Network proxy**: keep the current shell's `HTTPS_PROXY` / `NO_PROXY`, connect directly, or type a proxy; the choice is stored in the config so it also applies when the Bridge runs as an OS service.
+7. **Lark app**: scan the QR code in the terminal with the Lark app to create one, or enter an existing App ID / Secret; for an existing app the guide lists the scopes, event subscriptions and publishing steps it needs.
+
+It ends by printing the start commands:
+
+```sh
+node bin/lark-channel-bridge.mjs run --profile <name>     # foreground, Ctrl+C to stop
+node bin/lark-channel-bridge.mjs start --profile <name>   # register as an OS service
+```
+
+Then DM the bot `/status` and send a small task. In a group, add the bot and use a real @mention. `guide --print` prints the same content as a checklist without asking anything. The guide's prompts are in Chinese.
+
+**Or use the web console** for the same setup:
+
+```sh
+node bin/lark-channel-bridge.mjs run --web-ui --detach
+```
+
+1. Open the **management console** address printed by the command.
+2. Complete the QR-code setup, choose an agent and a project, then start the profile.
+3. DM the bot `/status`, then send a small task. In a group, add the bot and use a real @mention.
+
+```sh
+node bin/lark-channel-bridge.mjs ui --print
+node bin/lark-channel-bridge.mjs ps
+node bin/lark-channel-bridge.mjs ui --stop
+```
+
+These commands manage the **console**, not the Web chat process. The inbox and monitoring are optional and initially off; ordinary chat does not require them. See [first Lark setup](user-guide/getting-started.md) and [deployment](self-contained.md). Registering an OS service is a separate step requiring a stable installed CLI path.
+
+### Servers and containers: one `up`
+
+Without systemd, or without a terminal to keep open, `up` runs the bridge in the background from `~/.lark-channel/config.toml` alone:
+
+```sh
+node bin/lark-channel-bridge.mjs up     # first time in a terminal: QR setup, then start in the background
+node bin/lark-channel-bridge.mjs up     # again: nothing to do, or a smooth replacement after an upgrade
+node bin/lark-channel-bridge.mjs down   # stop
+```
+
+Building a git branch, choosing a Node binary or adding environment variables all go into the `[deploy]` table of the same file. A new release that does not come online is rolled back automatically, and `up --rollback` returns to the previous one. See [docs/deploy.md](deploy.md).
+
+## 4. Configure only what you need
+
+| What you want to change | Where to change it |
+| --- | --- |
+| Agent login / native model provider | The chosen agent's own configuration; ordinary Bridge chat can reuse it |
+| Web project and port | `web --workspace ... --port ...` |
+| Web model/effort/display defaults | A TOML file passed explicitly with `web --config ...` |
+| Lark app, profiles, permissions and default project | Console, or `~/.lark-channel/config.toml` |
+| Independent Responses API used by Codex/Pi or screening | `model_services.<name>` in Bridge TOML; secrets are env/file references |
+| Assistant and monitoring | Configure them after basic chat works; [assistant](user-guide/assistant.md), [monitoring](user-guide/monitoring.md) |
+
+**Standalone `web` does not automatically load `~/.lark-channel/config.toml`.** Pass `--config` when you want it to use a file. Bridge loads TOML (`version = 3`), not old JSON configuration.
+
+Start with the [native Web example](user-guide/examples/web-native.toml), or the [custom Responses example](user-guide/examples/web-responses.toml):
+
+```sh
+node bin/lark-channel-bridge.mjs config check --config docs/user-guide/examples/web-native.toml
+node bin/lark-channel-bridge.mjs web --agent codex --workspace . --state-dir .web-local/chat --config docs/user-guide/examples/web-native.toml
+```
+
+Edit a **private copy**, not the shipped example, for real settings. A successful `config check` validates structure; it does not contact the model or prove credentials work. Restart standalone Web after changing its file. Read the [configuration tutorial](user-guide/configuration.md) for complete recipes and the [reference](configuration.md) for precedence and reload behavior.
+
+## 5. Common problems
+
+| Symptom | First check |
+| --- | --- |
+| Page opens, but messages fail with `unauthorized` | Reopen the latest full token URL, then reload |
+| Connection refused | Server is still running, correct port, same machine; remote hosts need SSH forwarding |
+| Command / `dist/cli.js` not found | Run the pinned install from the repository; do not start only the frontend |
+| Codex missing or provider authentication fails | Check the CLI in the same user account; use `--binary` for an explicit path, or rerun `guide` for a Lark profile |
+| `already has an active writer` | Avoid sharing a native Codex home with another app; use the optional isolated launcher when applicable |
+| Editing config appears ineffective | Correct process, explicit Web `--config`, and a restart after saving |
+
+More: [Web troubleshooting](user-guide/web-chat.md#故障排查) · [operations](user-guide/operations.md).
+
+## Safety and project status
+
+These are **local operator interfaces, not public multi-user services**. Do not share token URLs or expose their ports. Agent commands can change files: standalone Codex/Claude default to workspace access, Pi to full access; Lark profiles have their own permission settings. Review permissions before sending tasks. Stop does not undo completed changes.
+
+Native Windows Web/Codex was tested with real replies, tool execution and restart/resume. The full repository test suite is **not yet green**; [validation and remaining findings](windows-web-validation.md) distinguish verified paths from unverified integrations. Existing Lark/advanced CLI behavior is documented in the [runtime reference](runtime-reference.md).
+
+For development, use the pinned pnpm version above, then `pnpm test`, `pnpm typecheck`, `pnpm typecheck:web` and `pnpm build`. Architecture: [channels](channels.md) · [agent execution](agent-execution.md). License: [MIT](../LICENSE).

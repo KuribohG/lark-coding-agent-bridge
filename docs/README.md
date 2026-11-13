@@ -1,12 +1,13 @@
 # Documentation
 
-[English quick start](../README.md) · [中文快速开始](../README.zh.md) · [中文用户手册](user-guide/README.md)
+[Linux quick start](../README.md) · [Full quick start](quick-start.md) · [中文快速开始](user-guide/quick-start.md) · [中文用户手册](user-guide/README.md)
 
 ## Start, use, configure
 
 | Task | Guide |
 | --- | --- |
-| Choose browser chat or the Lark management console | [Quick start](../README.md) |
+| Set up a Lark bot on Linux | [README](../README.md) |
+| Choose browser chat, the Lark management console, Windows or Slack | [Full quick start](quick-start.md), [中文](user-guide/quick-start.md) |
 | Use standalone browser chat; fix token/port issues | [Web chat guide](user-guide/web-chat.md) (中文), [CLI/channel reference](channels.md) |
 | Connect a Lark bot for the first time | [Getting started](user-guide/getting-started.md) (中文) |
 | Run on Windows, stop/restart, or set up login autostart | [Windows](user-guide/windows.md) (中文) |

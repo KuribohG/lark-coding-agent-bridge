@@ -6,7 +6,7 @@
 
 ## 第一次启动
 
-先按[快速开始](../../README.zh.md#2-安装一次)完成安装，并确认本机 Agent 能直接对话。以下命令在仓库根目录执行：
+先按[快速开始](quick-start.md#2-安装一次)完成安装，并确认本机 Agent 能直接对话。以下命令在仓库根目录执行：
 
 ```sh
 node bin/lark-channel-bridge.mjs web --agent codex --workspace . --state-dir .web-local/chat --port 8787

@@ -1,6 +1,6 @@
 # Bridge 中文用户手册
 
-[快速开始](../../README.zh.md) · [English documentation](../README.md)
+[Linux 快速开始](../../README.zh.md) · [完整快速开始](quick-start.md) · [English documentation](../README.md)
 
 Bridge 把本机 Codex、Claude Code、Pi 接到浏览器或飞书。先完成一种基础对话，再选择是否使用会话助理、监控和系统服务。本文档跟随本仓库 `dev` 分支；npm 同名包不一定包含相同代码。
 

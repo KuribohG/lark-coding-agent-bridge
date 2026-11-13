@@ -1,6 +1,6 @@
 # Channel plugins, browser chat, and Slack
 
-[Documentation index](README.md) · [Web startup and usage (中文)](user-guide/web-chat.md) · [Quick start](../README.md)
+[Documentation index](README.md) · [Web startup and usage (中文)](user-guide/web-chat.md) · [Quick start](quick-start.md)
 
 This page describes the CLI and plugin contract. Start with the linked Web guide for page controls, token URLs, configuration and troubleshooting.
 

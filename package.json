@@ -51,6 +51,7 @@
     "README.md",
     "README.zh.md",
     "docs/README.md",
+    "docs/quick-start.md",
     "docs/runtime-reference.md",
     "docs/deploy.md",
     "docs/windows-web-validation.md",

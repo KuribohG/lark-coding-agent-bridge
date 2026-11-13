@@ -2,19 +2,31 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 
 describe('documentation runtime contract', () => {
-  it.each(['README.md', 'README.zh.md'])('keeps %s focused on runnable entry points and configuration', async file => {
+  it.each(['README.md', 'README.zh.md'])('keeps %s to the Linux setup path', async file => {
     const readme = await readFile(new URL(`../../../${file}`, import.meta.url), 'utf8');
-    expect(readme.split('\n').length).toBeLessThan(170);
+    expect(readme.split('\n').length).toBeLessThan(60);
+    for (const entry of [
+      'npx --yes pnpm@10.33.0 install --frozen-lockfile',
+      'node bin/lark-channel-bridge.mjs guide',
+      'node bin/lark-channel-bridge.mjs run --profile',
+      'node bin/lark-channel-bridge.mjs up',
+      'quick-start.md',
+    ]) expect(readme).toContain(entry);
+    for (const moved of ['web --agent', 'start-web.ps1', '--web-ui']) expect(readme).not.toContain(moved);
+  });
+
+  it.each(['docs/quick-start.md', 'docs/user-guide/quick-start.md'])('keeps every runnable entry point in %s', async file => {
+    const guide = await readFile(new URL(`../../../${file}`, import.meta.url), 'utf8');
     for (const entry of [
       'npx --yes pnpm@10.33.0 install --frozen-lockfile',
       'web --agent codex --workspace . --state-dir .web-local/chat',
       'node bin/lark-channel-bridge.mjs run --web-ui --detach',
       'bin\\windows\\start-web.ps1',
       '#token=',
-      'docs/user-guide/configuration.md',
-      'docs/user-guide/examples/web-native.toml',
-      'docs/user-guide/examples/web-responses.toml',
-    ]) expect(readme).toContain(entry);
+      'configuration.md',
+      'examples/web-native.toml',
+      'examples/web-responses.toml',
+    ]) expect(guide).toContain(entry);
   });
 
   it('documents maintained runtime surfaces in user-visible docs', async () => {
@@ -110,6 +122,8 @@ async function readDocs(): Promise<string> {
   const documents = await Promise.all([
     readFile(new URL('../../../README.md', import.meta.url), 'utf8'),
     readFile(new URL('../../../README.zh.md', import.meta.url), 'utf8'),
+    readFile(new URL('../../../docs/quick-start.md', import.meta.url), 'utf8'),
+    readFile(new URL('../../../docs/user-guide/quick-start.md', import.meta.url), 'utf8'),
     readFile(new URL('../../../docs/runtime-reference.md', import.meta.url), 'utf8'),
     readFile(new URL('../../../docs/user-guide/runtime-reference.md', import.meta.url), 'utf8'),
   ]);
