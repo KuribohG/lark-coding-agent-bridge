@@ -2,7 +2,7 @@ import type { CardActionEvent, CardActionResponse, LarkChannel, NormalizedMessag
 import type { AgentAdapter } from '../../agent/types';
 import type { ActiveRuns } from '../../runtime/active-runs';
 import type { ChatModeCache } from './chat-mode-cache';
-import type { PendingQueue } from './pending-queue';
+import { bridgeInput, type PendingQueue } from './pending-queue';
 import type { ProcessPool } from '../../runtime/process-pool';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import type { UserQuestions } from './question-cards';
@@ -203,22 +203,10 @@ function forwardToAgent(
     scope,
     payload: JSON.stringify(merged).slice(0, 200),
   });
-  const synthetic: NormalizedMessage = {
-    messageId: deps.evt.messageId,
-    chatId: deps.evt.chatId,
-    chatType: mode === 'p2p' ? 'p2p' : 'group',
-    threadId,
-    senderId: deps.evt.operator.openId,
-    senderName: deps.evt.operator.name,
-    content: `[card-click] ${JSON.stringify(merged)}`,
-    rawContentType: 'card_action',
-    resources: [],
-    mentions: [],
-    mentionAll: false,
-    mentionedBot: false,
-    createTime: Date.now(),
-  };
-  deps.pending.push(scope, synthetic);
+  deps.pending.push(scope, bridgeInput({
+    messageId: deps.evt.messageId, chatId: deps.evt.chatId, chatType: mode === 'p2p' ? 'p2p' : 'group', threadId,
+    senderId: deps.evt.operator.openId, senderName: deps.evt.operator.name,
+  }, `[card-click] ${JSON.stringify(merged)}`));
 }
 
 function verifyBridgeToken(

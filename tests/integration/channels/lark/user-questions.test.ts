@@ -151,7 +151,8 @@ describe('native async question cards', () => {
     await h.click(h.values()[1]!);
     const queued = h.pending.cancel(h.identity.scopeId);
     expect(queued).toHaveLength(1);
-    expect(queued[0]).toMatchObject({ threadId: 'omt_topic', senderId: 'ou_user' });
+    // The queued turn replies to this id, so it has to be the card's real message.
+    expect(queued[0]).toMatchObject({ messageId: 'om_fake_1', threadId: 'omt_topic', senderId: 'ou_user' });
     expect(queued[0]?.content).toContain('仅本次');
   });
   it.each(['stopped', 'switched', 'archived', 'timed'] as const)('rejects late answers after %s', async kind => {

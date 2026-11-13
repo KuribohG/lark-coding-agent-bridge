@@ -7,6 +7,24 @@ import type { AgentEntry } from '../../runtime/agent-entry';
 /** Routing metadata is set by the bridge command handler, never parsed from message text. */
 export type PendingMessage = NormalizedMessage & { agentEntry?: AgentEntry };
 
+/**
+ * An input the bridge makes itself (card click, late question answer) rather
+ * than receives. `anchor.messageId` is the Lark message it came from: the turn
+ * replies to, reacts on and reports that id, so it must be a real message —
+ * keys that only tell inputs apart belong elsewhere.
+ */
+export function bridgeInput(
+  anchor: Pick<NormalizedMessage, 'messageId' | 'chatId' | 'chatType' | 'threadId' | 'senderId' | 'senderName'>,
+  content: string,
+): PendingMessage {
+  return {
+    messageId: anchor.messageId, chatId: anchor.chatId, chatType: anchor.chatType,
+    threadId: anchor.threadId, senderId: anchor.senderId, senderName: anchor.senderName,
+    content, rawContentType: 'card_action', resources: [], mentions: [], mentionAll: false, mentionedBot: false,
+    createTime: Date.now(),
+  };
+}
+
 interface PendingEntry {
   messages: PendingMessage[];
   timer?: NodeJS.Timeout;

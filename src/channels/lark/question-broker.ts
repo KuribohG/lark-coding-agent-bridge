@@ -6,7 +6,7 @@ import { log } from '../../core/logger';
 import { sessionCatalogKey, type SessionCatalog, type SessionCatalogIdentity } from '../../session/catalog';
 import type { ActiveRuns } from '../../runtime/active-runs';
 import type { FollowupRouter } from './followup';
-import type { PendingQueue } from './pending-queue';
+import { bridgeInput, type PendingQueue } from './pending-queue';
 
 export type QuestionEvent = Extract<AgentEvent, { type: 'user_input' }>;
 
@@ -189,13 +189,15 @@ export class QuestionBroker {
       // The run stopped waiting for this request; continue as ordinary input.
     }
     const content = ['对之前提问的回答：', ...request.questions.flatMap((q, i) => [`问题：${q.question}`, `回答：${answers[i]!.join('、')}`])].join('\n');
-    const messageId = `${request.ref ?? request.message.messageId}:${request.id}`;
+    // The answer came from the question's own message; fall back to the asker's when only text was shown.
+    const anchorId = request.ref ?? request.message.messageId;
+    const inputId = `${anchorId}:${request.id}`;
     const result = await this.deps.followups.deliver({
-      scope, messageId, activeRuns: this.deps.activeRuns,
+      scope, messageId: inputId, activeRuns: this.deps.activeRuns,
       prepare: async () => buildAgentPrompt({
         context: { chatId: request.message.chatId, chatType: request.message.chatType,
           threadId: request.message.threadId, senderId: request.message.senderId, senderType: 'user',
-          botOpenId: this.deps.botOpenId(), messageIds: [request.ref ?? request.message.messageId], source: 'card' },
+          botOpenId: this.deps.botOpenId(), messageIds: [anchorId], source: 'card' },
         instructions: ['这是用户对先前提问的回答。请结合当前任务和已完成进度处理。'], userInput: content,
       }),
     });
@@ -207,9 +209,8 @@ export class QuestionBroker {
     }
     if (!request.allowQueue || this.deps.isTimed(scope)) return '限时任务已结束或无法接收回答，请在原话题手动继续。';
     if (!this.sameSession(request, identity)) return '会话已切换，答案未发送；请在原话题重新说明你的选择。';
-    const size = this.deps.pending.push(scope, { ...request.message, messageId, content,
-      resources: [], mentions: [], mentionedBot: false, mentionAll: false,
-      rawContentType: 'card_action', createTime: Date.now() });
+    // The queued turn replies to this message, so it carries the anchor, not the input key.
+    const size = this.deps.pending.push(scope, bridgeInput({ ...request.message, messageId: anchorId }, content));
     if (size !== undefined) await this.deps.pending.flushPersistence();
     return size === undefined
       ? `已提交：${summary}\n待处理队列已满，回答没有排入后续任务。`
