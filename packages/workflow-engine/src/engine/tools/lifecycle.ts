@@ -3,7 +3,7 @@ import { workflowDigest } from '../digest';
 import { swarmSummary } from '../swarm';
 import { workerSelection } from '../execution';
 import { addArtifact, acknowledge, BUSY, findTask, readArtifact, requiredText, textArray } from '../kernel-state';
-import { MAX_CONCURRENT_WORKERS, SCRIPT_MAX_TASKS } from '../limits';
+import { MAX_AGENT_CALLS, MAX_CONCURRENT_WORKERS } from '../limits';
 import { boundedInteger, scriptArgs, scriptText, SCRIPT_DEFINITION } from '../script-contract';
 import { unfinishedWork, workStatus } from '../work-queue';
 import type { KernelContext } from '../kernel-context';
@@ -28,7 +28,8 @@ type Summary = Record<string, unknown>;
 interface SummaryList { path: string; holder: Summary; field: string; items: unknown[] }
 
 function fullSummary(ctx: KernelContext, state: WorkflowView): Summary {
-  const taskCounts: Record<string, number> = {};
+  // Archived tasks are counted; the lists below hold the ones still in the state.
+  const taskCounts: Record<string, number> = { ...state.archived?.statuses };
   for (const task of state.tasks) taskCounts[task.status] = (taskCounts[task.status] ?? 0) + 1;
   return {
     workflowId: state.workflowId, plugin: { id: state.definition.id, version: state.definition.version, digest: state.definitionDigest },
@@ -147,7 +148,7 @@ export const lifecycleTools: WorkflowToolPlugin = {
           const plan = addArtifact(created, 'workflow-plan', scriptText(args.plan, 'plan', 12_000), ctx.now);
           emit(created, { type: 'script_set', script: { name: scriptText(args.name ?? 'Script workflow', 'name', 100), sourceRef: source.ref, planRef: plan.ref,
             args: scriptArgs(args.args), defaults: workerSelection(args.execution, root, ctx.host), runId: randomUUID(), revision: 0,
-            status: 'queued', maxCalls: boundedInteger(args.maxAgents, 32, 1, SCRIPT_MAX_TASKS), calls: [], logs: [] } });
+            status: 'queued', maxCalls: boundedInteger(args.maxAgents, 32, 1, MAX_AGENT_CALLS), calls: [], logs: [] } });
           return created;
         },
       },

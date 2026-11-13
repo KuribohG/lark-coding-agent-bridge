@@ -85,7 +85,7 @@ export class WorkflowKernel {
   brief(scopeId: string): string | undefined {
     const state = this.ctx.store.state(scopeId);
     if (!state) return undefined;
-    const tasks: Record<string, number> = {};
+    const tasks: Record<string, number> = { ...state.archived?.statuses };
     for (const task of state.tasks) tasks[task.status] = (tasks[task.status] ?? 0) + 1;
     return JSON.stringify({ workflowId: state.workflowId, name: state.script?.name, status: state.status, scriptStatus: state.script?.status,
       stateVersion: state.stateVersion, goalPreview: state.goal.slice(0, 200), deadlineAt: new Date(state.deadlineAt).toISOString(), tasks,

@@ -44,11 +44,13 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       if (event.counted) script.revision++;
       for (const wait of state.waits ?? []) releaseBindings(state, wait.id);
       script.calls = []; script.mailboxCalls = []; script.workCalls = []; script.controlCalls = []; script.workspaceCalls = [];
+      if (script.archivedCalls) script.archivedCalls = 0;
       script.logs = []; script.error = undefined; script.resultRef = undefined; script.phase = undefined;
       state.status = 'active';
       return;
     }
     case 'script_call_recorded': state.script!.calls.push(event.call); return;
+    case 'script_call_archived': state.script!.archivedCalls = (state.script!.archivedCalls ?? 0) + 1; return;
     case 'script_key_recorded': (state.script![event.list] ??= []).push(event.key); return;
     case 'workspace_key_reserved': (state.workspaceKeys ??= []).push(event.key); return;
     case 'control_operation_recorded': (state.controlOperations ??= []).push(event.operation); return;
@@ -66,6 +68,31 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       return;
     }
     case 'task_created': state.tasks.push(event.task); return;
+    case 'tasks_archived': {
+      const gone = new Set(event.taskIds);
+      const totals = state.archived ??= { tasks: 0, attempts: 0, statuses: {} };
+      // New arrays, not splices: byId() indexes each array on the assumption that it only grows.
+      state.tasks = state.tasks.filter(found => {
+        if (!gone.has(found.taskId)) return true;
+        totals.tasks++; totals.attempts += found.attempts.length;
+        totals.statuses[found.status] = (totals.statuses[found.status] ?? 0) + 1;
+        return false;
+      });
+      const sessions = new Set(event.sessionRefs);
+      const artifacts = new Set(event.artifactRefs);
+      state.sessions = state.sessions.filter(found => !sessions.has(found.sessionRef));
+      state.artifacts = state.artifacts.filter(found => !artifacts.has(found.ref));
+      const { script } = state;
+      if (script) {
+        const kept = script.calls.filter(call => !gone.has(call.taskId));
+        if (kept.length < script.calls.length) { script.archivedCalls = (script.archivedCalls ?? 0) + script.calls.length - kept.length; script.calls = kept; }
+      }
+      for (const found of state.swarms ?? []) {
+        const kept = found.turns.filter(turn => !gone.has(turn.taskId));
+        if (kept.length < found.turns.length) { found.archivedTurns = (found.archivedTurns ?? 0) + found.turns.length - kept.length; found.turns = kept; }
+      }
+      return;
+    }
     case 'task_requeued': {
       const found = task(state, event.taskId);
       found.status = 'queued'; found.error = undefined; found.scriptRunId = event.runId;
@@ -186,6 +213,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
     case 'swarm_rebound': {
       const found = swarm(state, event.swarmId);
       found.runId = event.runId;
+      if (event.archivedCalls) state.script!.archivedCalls = (state.script!.archivedCalls ?? 0) + event.archivedCalls;
       for (const member of found.members) member.retryPending = event.retryPending.includes(member.name) || undefined;
       return;
     }
@@ -298,7 +326,10 @@ function setStatus(state: WorkflowData, status: WorkflowData['status'], script: 
 
 const indexes = new WeakMap<object, { size: number; ids: Map<string, unknown> }>();
 
-/** Finds an item by ID in an array that only ever grows, indexing new items instead of scanning on every call. */
+/**
+ * Finds an item by ID, indexing new items instead of scanning on every call. The index assumes the array only grows:
+ * a reducer that removes items must assign a new array.
+ */
 export function byId<T>(items: readonly T[], id: (item: T) => string, wanted: string | undefined): T | undefined {
   if (wanted === undefined) return undefined;
   let index = indexes.get(items);

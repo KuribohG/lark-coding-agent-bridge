@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { workflowDigest } from './digest';
 import { availableMessages } from './evolve';
 import { artifactOf, findTask, readArtifact, taskById } from './kernel-state';
-import { emit, putText } from './kernel-store';
-import { MAILBOX_MAX_MESSAGES, MAILBOX_MAX_OPERATIONS, MAILBOX_MAX_RECEIPTS, MAX_WORKFLOW_MEMBERS, SCRIPT_MAX_TASKS } from './limits';
+import { archiveOf, emit, putText } from './kernel-store';
+import { MAILBOX_MAX_MESSAGES, MAILBOX_MAX_OPERATIONS, MAILBOX_MAX_RECEIPTS, MAX_WORKFLOW_MEMBERS } from './limits';
 import { scriptText, type ScriptAgentCall } from './script-contract';
 import type { AgentCheckpoint, AgentView, DurableAgent, Immutable, MailboxMessage, MailboxReceipt, NativeIdKind, StoredTask, TaskView, WorkerExecution, WorkflowView } from './types';
 
@@ -38,12 +38,13 @@ export function saveCheckpoint(state: WorkflowView, task: TaskView, value: unkno
 
 /** The member's latest turn among the calls the current script run has made. */
 export function memberCursor(state: WorkflowView, agent: AgentView): string | undefined {
-  const { calls } = state.script!;
+  const { calls, archivedCalls, runId } = state.script!;
   for (let index = calls.length - 1; index >= 0; index--) {
     const task = taskById(state, calls[index]!.taskId);
     if (task?.agentId === agent.agentId) return task.taskId;
   }
-  return undefined;
+  // A member's turns run in order and the oldest are archived first, so its archived calls all precede the ones above.
+  return archivedCalls ? archiveOf(state)?.lastTurn(runId, agent.agentId) : undefined;
 }
 
 export function scheduleMemberTurn(state: WorkflowView, call: ScriptAgentCall, execution: WorkerExecution, nativeIdKind: NativeIdKind, inputRefs: readonly string[] = []): { task: TaskView; cached: boolean } {
@@ -58,7 +59,7 @@ export function scheduleMemberTurn(state: WorkflowView, call: ScriptAgentCall, e
     member: call.member, previousTurnId, root: state.root, goal: state.goal, definition: state.definitionDigest,
     ...(call.workflowTool ? {workflowTool:true} : {}), ...(call.workspace ? {workspace:call.workspace} : {}),
     ...(inputRefs.length ? { inputs: inputRefs.map(ref => artifactOf(state, ref).digest) } : {}) });
-  const existing = agent && state.tasks.find(task => task.agentId === agent!.agentId && task.requestDigest === digest);
+  const existing = agent && (state.tasks.find(task => task.agentId === agent!.agentId && task.requestDigest === digest) ?? archiveOf(state)?.turn(agent.agentId, digest));
   if (existing?.status === 'result_ready') return { task: existing, cached: true };
   if (existing) {
     if (agent!.activeTurnId !== existing.taskId || ['queued', 'starting', 'running', 'cancelling'].includes(existing.status)) {
@@ -74,7 +75,6 @@ export function scheduleMemberTurn(state: WorkflowView, call: ScriptAgentCall, e
   if (agent?.wait && state.mailbox?.receipts.find(receipt => receipt.id === agent!.wait!.receiptId)?.status === 'waiting') {
     throw new Error('Member is waiting for a message; await receive() before continuing');
   }
-  if (state.tasks.length >= SCRIPT_MAX_TASKS) throw new Error('Script task history limit reached');
   if (!agent) {
     if ((state.agents?.length ?? 0) >= MAX_WORKFLOW_MEMBERS) throw new Error('Workflow member limit reached');
     const created: DurableAgent = { agentId: randomUUID(), key: call.member!, sessionRef: randomUUID(), checkpointVersion: 0 };

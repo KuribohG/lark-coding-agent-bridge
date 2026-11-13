@@ -1,5 +1,5 @@
 import { readArtifact } from './kernel-state';
-import { MAX_CONCURRENT_WORKERS, SCRIPT_MAX_TASKS } from './limits';
+import { MAX_AGENT_CALLS, MAX_CONCURRENT_WORKERS } from './limits';
 import { boundedInteger, scriptArgs, scriptText } from './script-contract';
 import type { Immutable, TaskView, WorkflowDefinition, WorkflowView } from './types';
 
@@ -17,7 +17,7 @@ export function nestedInput(args: Record<string, unknown>, definition: Immutable
   return {operationId:scriptText(args.operationId,'operationId',160),key,
     goal:scriptText(args.goal,'goal'),script:scriptText(args.script,'script'),plan:scriptText(args.plan,'plan',12_000),
     args:scriptArgs(args.args),name:scriptText(args.name ?? 'Child workflow','name',100),execution:args.execution,
-    maxAgents:boundedInteger(args.maxAgents,32,1,SCRIPT_MAX_TASKS),maxConcurrent:boundedInteger(args.maxConcurrent,4,1,MAX_CONCURRENT_WORKERS),
+    maxAgents:boundedInteger(args.maxAgents,32,1,MAX_AGENT_CALLS),maxConcurrent:boundedInteger(args.maxConcurrent,4,1,MAX_CONCURRENT_WORKERS),
     timeoutMs:boundedInteger(args.timeoutMs,(definition.defaultWallTimeMinutes ?? 30)*60_000,1000,definition.maxWallTimeMinutes*60_000),checkpoint,parentQueue:args.parentQueue===true};
 }
 

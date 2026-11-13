@@ -1,5 +1,5 @@
 import { getQuickJS, type QuickJSDeferredPromise, type QuickJSHandle } from 'quickjs-emscripten';
-import { SCRIPT_MAX_TASKS, SCRIPT_MEMORY_BYTES } from './limits';
+import { SCRIPT_MAX_FANOUT, SCRIPT_MAX_KEYED_CALLS, SCRIPT_MEMORY_BYTES } from './limits';
 import { SCRIPT_MAX_TEXT } from './script-contract';
 import { REVIEW_HELPER } from './review-helper';
 import { DISCUSS_HELPER } from './discuss-helper';
@@ -103,11 +103,11 @@ const PRELUDE = `(() => {
     return work(JSON.stringify({...options, kind: 'close'})).then(JSON.parse);
   };
   globalThis.parallel = tasks => {
-    if (!Array.isArray(tasks) || tasks.length > ${SCRIPT_MAX_TASKS} || tasks.some(task => typeof task !== 'function')) throw new TypeError('parallel expects a bounded array of functions');
+    if (!Array.isArray(tasks) || tasks.length > ${SCRIPT_MAX_FANOUT} || tasks.some(task => typeof task !== 'function')) throw new TypeError('parallel expects a bounded array of functions');
     return Promise.all(tasks.map((task, index) => Promise.resolve().then(task).catch(error => softFailure('null', 'parallel item ' + index, error))));
   };
   globalThis.pipeline = (items, ...stages) => {
-    if (!Array.isArray(items) || items.length > ${SCRIPT_MAX_TASKS} || stages.length === 0 || stages.some(stage => typeof stage !== 'function')) throw new TypeError('pipeline expects items and stage functions');
+    if (!Array.isArray(items) || items.length > ${SCRIPT_MAX_FANOUT} || stages.length === 0 || stages.some(stage => typeof stage !== 'function')) throw new TypeError('pipeline expects items and stage functions');
     // A failing stage drops its item to null and skips its remaining stages.
     return Promise.all(items.map(async (item, index) => {
       try {
@@ -124,6 +124,12 @@ const PRELUDE = `(() => {
   Object.freeze(Math);
 })();`;
 
+const CPU_BASE_MS = 2000;
+const CPU_MS_PER_CALL = 5;
+const JOBS_BASE = 100_000;
+const JOBS_PER_CALL = 256;
+const PROGRESS_BASE = 100;
+
 /** A guest interpreter with JSON-only host calls; no host objects or module loader. */
 export async function runScriptProgram(input: ScriptProgramInput): Promise<string> {
   input.signal.throwIfAborted();
@@ -136,7 +142,10 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
   let disposed = false;
   let sliceDeadline = 0;
   let cpuMs = 0;
-  let calls = 0;
+  // A script may run for as many agent calls as its workflow allows, so its own budgets grow with the agent calls
+  // that have come back; a script spinning without them still stops at the base budgets.
+  let answered = 0;
+  const cpuBudget = () => CPU_BASE_MS + CPU_MS_PER_CALL * answered;
   let mailboxCalls = 0;
   let workCalls = 0;
   let controlCalls = 0;
@@ -148,9 +157,9 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
   let wake: (() => void) | undefined;
   let promise: QuickJSHandle | undefined;
   const deferreds = new Set<QuickJSDeferredPromise>();
-  runtime.setInterruptHandler(() => input.signal.aborted || performance.now() >= sliceDeadline || cpuMs > 2000);
+  runtime.setInterruptHandler(() => input.signal.aborted || performance.now() >= sliceDeadline || cpuMs > cpuBudget());
   const guest = <T>(action: () => T): T => {
-    if (cpuMs > 2000) throw new Error('Script CPU budget reached');
+    if (cpuMs > cpuBudget()) throw new Error('Script CPU budget reached');
     const start = performance.now();
     sliceDeadline = start + 100;
     try { return action(); } finally { cpuMs += performance.now() - start; }
@@ -164,8 +173,10 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
   };
   try {
     const installAsync = (name: string, invoke: (call: unknown) => Promise<unknown>) => install(name, payload => {
-      const count = name === '__bridgeAgent' ? ++calls : name === '__bridgeMailbox' ? ++mailboxCalls : name === '__bridgeControl' ? ++controlCalls : name === '__bridgeWorkspace' ? ++workspaceCalls : ++workCalls;
-      if (count > SCRIPT_MAX_TASKS) throw new Error('Script call limit reached');
+      // Agent calls are bounded by the workflow's own budget (maxAgents), which the kernel enforces.
+      const agentCall = name === '__bridgeAgent';
+      const count = agentCall ? 0 : name === '__bridgeMailbox' ? ++mailboxCalls : name === '__bridgeControl' ? ++controlCalls : name === '__bridgeWorkspace' ? ++workspaceCalls : ++workCalls;
+      if (count > SCRIPT_MAX_KEYED_CALLS) throw new Error('Script call limit reached');
       const text = context.getString(payload);
       if (text.length > SCRIPT_MAX_TEXT + 2000) throw new Error('agent input exceeds size limit');
       const call: unknown = JSON.parse(text);
@@ -175,6 +186,7 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
       const settle = (value: unknown, failed: boolean, name?: string) => {
         pending--;
         if (disposed) return;
+        if (agentCall) answered++;
         let encoded: string;
         try {
           encoded = failed ? String(value) : JSON.stringify(value ?? null);
@@ -184,7 +196,7 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
           const message = encoded.slice(0, 2000);
           const handle = failed ? (name ? context.newError({ name, message }) : context.newError(message)) : context.newString(encoded);
           try { if (failed) deferred.reject(handle); else deferred.resolve(handle); }
-          finally { handle.dispose(); }
+          finally { handle.dispose(); deferreds.delete(deferred); deferred.dispose(); }
         } finally { wake?.(); }
       };
       void Promise.resolve().then(() => { input.signal.throwIfAborted(); return invoke(call); }).then(
@@ -211,7 +223,7 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
       return input.workspace(call);
     });
     install('__bridgeProgress', (kind, value) => {
-      if (++progressCount > 100) throw new Error('Script progress limit reached');
+      if (++progressCount > PROGRESS_BASE + answered) throw new Error('Script progress limit reached');
       const name = context.getString(kind);
       if (name !== 'phase' && name !== 'log') throw new Error('Invalid progress kind');
       input.progress(name, context.getString(value).slice(0, 1000));
@@ -235,7 +247,7 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
       }
       jobCount += jobs.value;
       jobs.dispose();
-      if (jobCount > 100_000) throw new Error('Script job budget reached');
+      if (jobCount > JOBS_BASE + JOBS_PER_CALL * answered) throw new Error('Script job budget reached');
       const state = context.getPromiseState(promise);
       if (state.type === 'fulfilled') {
         try {

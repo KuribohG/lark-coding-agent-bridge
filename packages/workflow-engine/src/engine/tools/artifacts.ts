@@ -1,4 +1,5 @@
 import { addArtifact, readArtifact, requiredText, requireState } from '../kernel-state';
+import { archiveOf } from '../kernel-store';
 import type { WorkflowToolPlugin } from './types';
 import { versioned } from './versioned';
 
@@ -13,8 +14,11 @@ export const artifactTools: WorkflowToolPlugin = {
         read: (ctx, state, args) => {
           const bound = requireState(state);
           const ref = requiredText(args.ref);
-          const owner = [bound, ...ctx.store.descendants(bound)].find(item => item.artifacts.some(artifact => artifact.ref === ref));
-          return readArtifact(owner ?? bound, ref);
+          // The workflow's own artifacts first, archived ones included, then its descendants'.
+          for (const owner of [bound, ...ctx.store.descendants(bound)]) {
+            if (owner.artifacts.some(artifact => artifact.ref === ref) || archiveOf(owner)?.artifact(ref)) return readArtifact(owner, ref);
+          }
+          return readArtifact(bound, ref);
         },
       },
       worker: {

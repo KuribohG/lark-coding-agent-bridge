@@ -3,7 +3,7 @@ import { postToBoard, readBoard } from './board';
 import { workflowDigest } from './digest';
 import { availableMessages, receiveMessages, scheduleMemberTurn } from './durable-agents';
 import type { DomainEvent } from './events';
-import { pushEvent, readArtifact, taskById } from './kernel-state';
+import { callCount, pushEvent, readArtifact, taskById } from './kernel-state';
 import { emit, readText } from './kernel-store';
 import { SWARM_DECLARED_MEMBERS, SWARM_MAX_MEMBERS } from './limits';
 import { boundedInteger, parseScriptAgentCall, scriptText } from './script-contract';
@@ -85,10 +85,12 @@ export function bindSwarm(state: WorkflowView, spec: ReturnType<typeof parseSwar
   }
   // Rebuild each member's committed turn chain without running its completed turns again.
   const completed = swarm.turns.filter(turn => taskById(state, turn.taskId)?.status === 'result_ready');
-  if (state.script!.calls.length + completed.length > state.script!.maxCalls) throw new Error('Script agent call limit reached');
+  // Archived turns all completed; they count as calls of this run without being listed in it.
+  const archivedCalls = swarm.archivedTurns ?? 0;
+  if (callCount(state) + completed.length + archivedCalls > state.script!.maxCalls) throw new Error('Script agent call limit reached');
   for (const turn of completed) emit(state, { type: 'script_call_recorded', call: { key: turn.key, taskId: turn.taskId, cached: true } });
   const retryPending = swarm.members.filter(member => !member.stopped && member.taskId && taskById(state, member.taskId)?.status !== 'result_ready').map(member => member.name);
-  emit(state, { type: 'swarm_rebound', swarmId: swarm.id, runId, retryPending });
+  emit(state, { type: 'swarm_rebound', swarmId: swarm.id, runId, retryPending, ...(archivedCalls ? { archivedCalls } : {}) });
 }
 
 function rules(swarm: SwarmView, member: MemberView): string {
@@ -123,6 +125,11 @@ function wakePrompt(swarm: SwarmView, member: MemberView): string {
   return `Swarm "${swarm.key}", wake-up ${member.turns + 1} of at most ${swarm.maxTurns}: board posts that name you are in read_context (member.messages). `
     + 'Act on them, use read_board for wider context, and post what others need.'
     + (member.queue ? ` Then consume queue "${member.queue}" with claim_work until it returns null; you may have been woken for new work alone.` : '') + ' End with a short status note.';
+}
+
+/** Turns the swarm has scheduled, archived ones included. */
+function turnCount(swarm: SwarmView): number {
+  return swarm.turns.length + (swarm.archivedTurns ?? 0);
 }
 
 /** Schedules the turns of every running swarm and settles the ones with nothing left to do. Returns whether anything changed. */
@@ -222,12 +229,12 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       if (member.workspace && state.tasks.some(task => task.workspaceId === member.workspace && (BUSY.has(task.status) || task.status === 'waiting_workflow'))) continue;
       const prior = taskOf(member);
       const retry = Boolean(member.retryPending && prior);
-      if (state.script.calls.length >= state.script.maxCalls || !retry && additionalTurnsAllowed <= 0) {
+      if (callCount(state) >= state.script.maxCalls || !retry && additionalTurnsAllowed <= 0) {
         if (!swarm.members.some(busy)) end('failed', 'Swarm ran out of the workflow\'s agent call budget; raise maxAgents or reduce members and maxTurns');
         break;
       }
       const opening = !member.taskId;
-      const key = retry ? prior!.scriptKey! : `@swarm/${swarm.id}/${swarm.turns.length}`;
+      const key = retry ? prior!.scriptKey! : `@swarm/${swarm.id}/${turnCount(swarm)}`;
       const call = { key, member: member.name, prompt: retry ? readText(state, prior!.objective) : opening ? openingPrompt(swarm, member) : wakePrompt(swarm, member),
         ...(member.workflowTool ? { workflowTool: true } : {}), ...(member.workspace ? { workspace: member.workspace } : {}),
         output: 'text' as const, selection: { agentKind: member.execution.agentKind, ...member.execution.modelSettings } };
@@ -345,7 +352,7 @@ function memberSummary(state: WorkflowView, swarm: SwarmView, member: MemberView
 }
 
 export function swarmSummary(state: WorkflowView, swarm: SwarmView): unknown {
-  return { key: swarm.key, status: swarm.status, stop: swarm.stop, reason: swarm.reason, lead: swarm.lead, maxTurns: swarm.maxTurns, turns: swarm.turns.length,
+  return { key: swarm.key, status: swarm.status, stop: swarm.stop, reason: swarm.reason, lead: swarm.lead, maxTurns: swarm.maxTurns, turns: turnCount(swarm),
     posts: (state.board?.posts.length ?? 0) - swarm.firstPost + 1, members: swarm.members.map(member => memberSummary(state, swarm, member)) };
 }
 
@@ -359,7 +366,7 @@ export function swarmResult(state: WorkflowView, key: string): unknown | undefin
   const queues = [...new Set(swarm.members.flatMap(member => member.queue ? [member.queue] : []))];
   // The whole result must fit a script value, so a large swarm gets shorter notes.
   const noteChars = Math.min(2000, Math.floor(40_000 / swarm.members.length));
-  return { stop: swarm.stop, ...(swarm.finish ? { result: swarm.finish.result } : {}), turns: swarm.turns.length,
+  return { stop: swarm.stop, ...(swarm.finish ? { result: swarm.finish.result } : {}), turns: turnCount(swarm),
     members: swarm.members.map(member => {
       const latest = [...swarm.turns].reverse().map(turn => taskById(state, turn.taskId)).find(task => task?.status === 'result_ready' && state.agents?.find(agent => agent.agentId === task.agentId)?.key === member.name);
       const ref = latest?.resultRefs.at(-1);

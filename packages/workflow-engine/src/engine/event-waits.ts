@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { workflowDigest } from './digest';
 import { parkedMembers } from './board';
 import { availableMessages, member, memberCursor, messageMatch, receiveMessages, receiptMessages } from './durable-agents';
-import { taskById } from './kernel-state';
+import { anyTask, scriptCall } from './kernel-state';
 import { emit } from './kernel-store';
 import { MAILBOX_MAX_RECEIPTS, MAX_NAMED_MEMBERS, MAX_WAITS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
@@ -30,7 +30,7 @@ function selector(state: WorkflowView, value: unknown): WorkflowWaitSelector {
     }
     case 'task': {
       const taskId = scriptText(input.taskId, 'taskId', 100);
-      if (!state.script!.calls.some(call => call.taskId === taskId) || !taskById(state, taskId)?.scriptManaged) throw new Error('Task handle does not belong to this script run');
+      if (!scriptCall(state, { taskId }) || !anyTask(state, taskId)?.scriptManaged) throw new Error('Task handle does not belong to this script run');
       return { kind: 'task', taskId };
     }
     case 'quiet': {
@@ -101,7 +101,7 @@ export function settleEventWaits(state: WorkflowView, now: number): boolean {
         at = Math.max(wait.createdAt, item.updatedAt);
         value = { itemId: item.id, key: item.key, status: item.status, generation: item.generation, result: item.result, error: item.error };
       } else if (arm.kind === 'task') {
-        const task = taskById(state, arm.taskId);
+        const task = anyTask(state, arm.taskId);
         if (!task || !['result_ready', 'failed', 'cancelled', 'waiting_input'].includes(task.status)) continue;
         at = Math.max(wait.createdAt, task.attempts.at(-1)?.endedAt ?? now);
         value = { taskId: task.taskId, status: task.status, error: task.error };

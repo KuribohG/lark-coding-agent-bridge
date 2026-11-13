@@ -190,7 +190,9 @@ export interface WorkflowSwarm {
   stalled?: boolean;
   finish?: { result: string };
   members: SwarmMember[];
+  /** Turns whose task is still in the state, oldest first; `archivedTurns` counts the completed ones that left it. */
   turns: Array<{ key: string; member: string; taskId: string }>;
+  archivedTurns?: number;
 }
 export interface WorkflowBoard {
   posts: BoardPost[];
@@ -351,7 +353,9 @@ export interface WorkflowScript {
   revision: number;
   status: 'queued' | 'running' | 'paused' | 'result_ready' | 'failed' | 'interrupted' | 'cancelled';
   maxCalls: number;
+  /** Agent calls of this run whose task is still in the state; `archivedCalls` counts the ones whose task was archived. */
   calls: Array<{ key: string; taskId: string; cached: boolean }>;
+  archivedCalls?: number;
   mailboxCalls?: string[];
   workCalls?: string[];
   controlCalls?: string[];
@@ -402,6 +406,13 @@ export interface DirectMessage {
   delivery?: 'accepted' | 'unknown';
 }
 
+/** What has left a workflow's state for the archive (see archive.ts), so that totals stay exact. */
+export interface WorkflowArchiveTotals {
+  tasks: number;
+  attempts: number;
+  statuses: Partial<Record<AgentTurn['status'], number>>;
+}
+
 export interface WorkflowState {
   workflowId: string;
   parent?: WorkflowParent;
@@ -414,8 +425,10 @@ export interface WorkflowState {
   createdAt: number;
   deadlineAt: number;
   sessions: WorkerSession[];
+  /** Unfinished and recently finished tasks; older finished ones are archived and counted in `archived`. */
   tasks: WorkflowTask[];
   artifacts: WorkflowArtifact[];
+  archived?: WorkflowArchiveTotals;
   events: WorkflowEvent[];
   agents?: DurableAgent[];
   checkpoints?: AgentCheckpoint[];

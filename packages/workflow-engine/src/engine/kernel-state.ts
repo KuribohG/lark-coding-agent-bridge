@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { workflowDigest } from './digest';
 import { byId } from './evolve';
-import { emit, putText, readText } from './kernel-store';
+import { archiveOf, emit, putText, readText } from './kernel-store';
 import type { ArtifactView, Immutable, StoredArtifact, TaskView, WorkflowArtifact, WorkflowEvent, WorkflowRoot, WorkflowTask, WorkflowView } from './types';
 
 /** Shared state helpers for the kernel's collaborators. Changes are recorded as events inside a store transaction. */
@@ -30,10 +30,44 @@ export function taskById(state: WorkflowView, id: string | undefined): TaskView 
   return byId(state.tasks, task => task.taskId, id);
 }
 
+/** A task still in the state. Only these can change, so code that goes on to emit events for a task looks it up here. */
 export function findTask(state: WorkflowView, id: string): TaskView {
   const task = taskById(state, id);
   if (!task) throw new Error('Task not found in workflow');
   return task;
+}
+
+/** A task in the state or the archive; an archived task is finished and will not change. */
+export function anyTask(state: WorkflowView, id: string | undefined): TaskView | undefined {
+  return taskById(state, id) ?? (id === undefined ? undefined : archiveOf(state)?.task(id));
+}
+
+/** Agent calls the current script run has made, archived ones included. */
+export function callCount(state: WorkflowView): number {
+  return state.script!.calls.length + (state.script!.archivedCalls ?? 0);
+}
+
+/** A call of the current script run by its key or by the task that answered it. */
+export function scriptCall(state: WorkflowView, by: { key: string } | { taskId: string }): Immutable<{ key: string; taskId: string }> | undefined {
+  const script = state.script!;
+  return script.calls.find(call => 'key' in by ? call.key === by.key : call.taskId === by.taskId)
+    ?? (script.archivedCalls ? archiveOf(state)?.call(script.runId, by) : undefined);
+}
+
+/** Whether any task of the workflow was created under this script key. */
+export function taskKeyUsed(state: WorkflowView, key: string): boolean {
+  return state.tasks.some(task => task.scriptKey === key) || Boolean(archiveOf(state)?.hasKey(key));
+}
+
+/** Records a call of the current run; a call answered by an archived task is counted without entering the state. */
+export function recordCall(state: WorkflowView, key: string, task: TaskView, cached: boolean): void {
+  if (taskById(state, task.taskId)) emit(state, { type: 'script_call_recorded', call: { key, taskId: task.taskId, cached } });
+  else emit(state, { type: 'script_call_archived', call: { key, taskId: task.taskId, ...(task.agentId ? { agentId: task.agentId } : {}) } });
+}
+
+/** Tasks the workflow has created, archived ones included. */
+export function taskCount(state: WorkflowView): number {
+  return state.tasks.length + (state.archived?.tasks ?? 0);
 }
 
 export function acknowledge(state: WorkflowView, events: ReadonlyArray<Immutable<WorkflowEvent>>, now: number): void {
@@ -42,7 +76,7 @@ export function acknowledge(state: WorkflowView, events: ReadonlyArray<Immutable
 }
 
 export function artifactOf(state: WorkflowView, ref: string): ArtifactView {
-  const artifact = byId(state.artifacts, item => item.ref, ref);
+  const artifact = byId(state.artifacts, item => item.ref, ref) ?? archiveOf(state)?.artifact(ref);
   if (!artifact) throw new Error('Artifact not found in workflow');
   return artifact;
 }

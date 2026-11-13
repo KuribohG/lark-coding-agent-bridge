@@ -198,13 +198,14 @@ function progressStatus(state: WorkflowState, now: number): Pick<WorkflowProgres
 export function renderWorkflowProgress(state: WorkflowState, now = Date.now()): WorkflowProgress {
   const { status, tone } = progressStatus(state, now);
   const label = (task: WorkflowTask) => plain(state.agents?.find(member => member.agentId === task.agentId)?.key ?? task.scriptKey ?? task.taskKey, 80);
-  const count = (statuses: Array<WorkflowTask['status']>) => state.tasks.filter(task => statuses.includes(task.status)).length;
+  const count = (statuses: Array<WorkflowTask['status']>) => state.tasks.filter(task => statuses.includes(task.status)).length
+    + statuses.reduce((total, status) => total + (state.archived?.statuses[status] ?? 0), 0);
   const slotWaiting = state.tasks.filter(task => task.status === 'starting' && !task.attempts.at(-1)?.admittedAt).length;
   const settled = state.status === 'completed' || state.status === 'cancelled';
   // The status itself is a separate field for the host's title.
   const lines = [...state.script?.phase ? [`**阶段**：${plain(state.script.phase, 200)}`] : [],
     `**需求**：${plain(state.goal, 200)}`,
-    `**轮次**：共 ${state.tasks.length}，完成 ${count(['result_ready'])}，执行中 ${count(['running', 'starting']) - slotWaiting}`
+    `**轮次**：共 ${state.tasks.length + (state.archived?.tasks ?? 0)}，完成 ${count(['result_ready'])}，执行中 ${count(['running', 'starting']) - slotWaiting}`
       + `${slotWaiting ? `，等待执行槽位 ${slotWaiting}` : ''}，排队 ${count(['queued'])}，失败 ${count(['failed'])}`];
   // Only running workflows show clocks, so periodic refreshes leave a stopped card unchanged.
   if (tone === 'running' || settled) lines.push(`**已用时**：${duration(now - state.createdAt)}${tone === 'running' ? `，距截止 ${duration(state.deadlineAt - now)}` : ''}`);
@@ -276,7 +277,8 @@ export function renderWorkflowStatus(state: WorkflowState, memberKey?: string, l
     for (const task of tasks.slice(0, 12)) lines.push(...taskLines(state, task, now));
     if (tasks.length > 12) lines.push(`另有 ${tasks.length - 12} 个独立任务未展开。`);
   }
-  lines.push(`轮次：${state.tasks.length}，已完成 ${state.tasks.filter(task => task.status === 'result_ready').length}，失败 ${state.tasks.filter(task => task.status === 'failed').length}`,
+  lines.push(`轮次：${state.tasks.length + (state.archived?.tasks ?? 0)}，已完成 ${state.tasks.filter(task => task.status === 'result_ready').length + (state.archived?.statuses.result_ready ?? 0)}，失败 ${state.tasks.filter(task => task.status === 'failed').length + (state.archived?.statuses.failed ?? 0)}`
+      + (state.archived ? `（较早结束的 ${state.archived.tasks} 轮已归档，不在下面的列表中）` : ''),
     ...slotLines(state, now), pendingEvents(state, now));
   return bounded(lines);
 }

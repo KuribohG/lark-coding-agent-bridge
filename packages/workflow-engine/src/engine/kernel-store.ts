@@ -4,7 +4,7 @@ import Database from 'better-sqlite3';
 import { workflowDigest } from './digest';
 import { eventEntity, eventTopics, type DomainEvent } from './events';
 import { evolve } from './evolve';
-import type { StoredArtifact, StoredTask, TextRef, WorkflowData, WorkflowState, WorkflowView } from './types';
+import type { ArtifactView, StoredArtifact, StoredTask, TaskView, TextRef, WorkflowData, WorkflowState, WorkflowView } from './types';
 import { checkpointInBackground } from './wal-checkpointer';
 
 const TERMINAL = new Set<string>(['completed', 'cancelled']);
@@ -24,6 +24,31 @@ interface Aggregate {
   stale: boolean;
 }
 
+/** Rows for the archive tables, staged while their events are applied and written with them. */
+interface ArchiveRows {
+  tasks: Array<{ workflowId: string; task: StoredTask; data: string }>;
+  artifacts: Array<{ workflowId: string; artifact: StoredArtifact }>;
+  calls: Array<{ workflowId: string; runId: string; key: string; taskId: string; agentId?: string }>;
+}
+
+/**
+ * Finished tasks that have left a workflow's state, read back by the few paths that still need one: a replayed
+ * script call looking for its earlier answer, a script reading a result or an artifact by reference, key reuse checks.
+ */
+export interface WorkflowArchive {
+  task(taskId: string): TaskView | undefined;
+  /** The successful task of an agent call with this cache key. */
+  result(cacheKey: string): TaskView | undefined;
+  /** A member's completed turn for this request. */
+  turn(agentId: string, requestDigest: string): TaskView | undefined;
+  hasKey(scriptKey: string): boolean;
+  artifact(ref: string): ArtifactView | undefined;
+  /** A call of the given script run. */
+  call(runId: string, by: { key: string } | { taskId: string }): { key: string; taskId: string } | undefined;
+  /** The task of the member's latest archived call in the given script run. */
+  lastTurn(runId: string, agentId: string): string | undefined;
+}
+
 interface PendingEvent { aggregate: Aggregate; type: string; entity?: string; data: string; topics: string[] }
 
 interface Transaction {
@@ -33,12 +58,18 @@ interface Transaction {
   versioned: Set<Aggregate>;
   created: Set<Aggregate>;
   texts: Map<string, string>;
+  archive: ArchiveRows;
   operations: Array<{ scope: string; id: string; digest: string; response: string }>;
   /** A reducer failed part-way through an event; the transaction cannot commit even if the caller swallowed the error. */
   failed?: { error: unknown };
 }
 
 const owners = new WeakMap<object, Aggregate>();
+
+function last<T>(items: T[] | undefined, test: (item: T) => boolean): T | undefined {
+  for (let index = (items?.length ?? 0) - 1; index >= 0; index--) if (test(items![index]!)) return items![index];
+  return undefined;
+}
 
 function owner(state: WorkflowView): Aggregate {
   const aggregate = owners.get(state);
@@ -59,6 +90,11 @@ export function putText(state: WorkflowView, text: string): TextRef {
 
 export function readText(state: WorkflowView, ref: { digest: string }): string {
   return owner(state).store.text(ref.digest);
+}
+
+/** The workflow's archive, or undefined while nothing of it has been archived. */
+export function archiveOf(state: WorkflowView): WorkflowArchive | undefined {
+  return state.archived ? owner(state).store.archive(state.workflowId) : undefined;
 }
 
 export interface WorkflowStoreOptions {
@@ -85,7 +121,9 @@ export interface WorkflowStoreOptions {
  * Event-sourced persistence for workflows. The journal (wf_events) is the only source of truth; each workflow's
  * state lives in memory and is rebuilt from its latest snapshot plus the events after it. Every change is an event
  * recorded through emit() inside transact(), which commits the events of one operation atomically together with
- * its idempotency record, large texts and catalog row.
+ * its idempotency record, large texts and catalog row. Finished tasks leave the state through an event as well; the
+ * archive tables that then hold them are derived from the journal and keep the state's size independent of how
+ * many tasks a workflow has run.
  *
  * One process owns the database (the bridge holds the profile's runtime lock), so the in-memory state is authoritative.
  */
@@ -133,6 +171,16 @@ export class WorkflowStore {
         CREATE TABLE IF NOT EXISTS workflow_operations (scope TEXT NOT NULL, id TEXT NOT NULL, digest TEXT NOT NULL,
           response TEXT NOT NULL, PRIMARY KEY(scope, id));
         CREATE TABLE IF NOT EXISTS workflow_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS wf_archived_tasks (workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, script_key TEXT, cache_key TEXT,
+          agent_id TEXT, request_digest TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(workflow_id, task_id));
+        CREATE INDEX IF NOT EXISTS wf_archived_tasks_cache ON wf_archived_tasks(workflow_id, cache_key) WHERE cache_key IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS wf_archived_tasks_key ON wf_archived_tasks(workflow_id, script_key) WHERE script_key IS NOT NULL;
+        CREATE INDEX IF NOT EXISTS wf_archived_tasks_turn ON wf_archived_tasks(workflow_id, agent_id, request_digest) WHERE agent_id IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS wf_archived_artifacts (workflow_id TEXT NOT NULL, ref TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(workflow_id, ref));
+        CREATE TABLE IF NOT EXISTS wf_archived_calls (seq INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL, key TEXT NOT NULL,
+          run_id TEXT NOT NULL, task_id TEXT NOT NULL, agent_id TEXT, UNIQUE(workflow_id, key));
+        CREATE INDEX IF NOT EXISTS wf_archived_calls_task ON wf_archived_calls(workflow_id, task_id);
+        CREATE INDEX IF NOT EXISTS wf_archived_calls_member ON wf_archived_calls(workflow_id, agent_id, seq) WHERE agent_id IS NOT NULL;
       `);
     }
     if (options.backgroundCheckpoint && !options.readonly && path !== ':memory:') {
@@ -263,6 +311,74 @@ export class WorkflowStore {
     }
   }
 
+  /**
+   * Reads of one workflow's archive. The archive tables are a projection of the `tasks_archived` and
+   * `script_call_archived` events, written in the commit that records them; rows staged by the open transaction
+   * are visible to it.
+   */
+  archive(workflowId: string): WorkflowArchive {
+    const staged = () => this.tx?.archive;
+    const task = (where: string, values: string[], pending: (task: StoredTask) => boolean): StoredTask | undefined => {
+      const found = last(staged()?.tasks, row => row.workflowId === workflowId && pending(row.task));
+      if (found) return found.task;
+      const row = this.db.prepare(`SELECT data FROM wf_archived_tasks WHERE workflow_id = ? AND ${where} ORDER BY rowid DESC LIMIT 1`)
+        .get(workflowId, ...values) as { data: string } | undefined;
+      return row && JSON.parse(row.data) as StoredTask;
+    };
+    return {
+      task: taskId => task('task_id = ?', [taskId], found => found.taskId === taskId),
+      result: cacheKey => task("cache_key = ? AND status = 'result_ready'", [cacheKey], found => found.cacheKey === cacheKey && found.status === 'result_ready'),
+      turn: (agentId, requestDigest) => task('agent_id = ? AND request_digest = ?', [agentId, requestDigest],
+        found => found.agentId === agentId && found.requestDigest === requestDigest),
+      hasKey: scriptKey => Boolean(task('script_key = ?', [scriptKey], found => found.scriptKey === scriptKey)),
+      artifact: ref => {
+        const found = staged()?.artifacts.find(row => row.workflowId === workflowId && row.artifact.ref === ref);
+        if (found) return found.artifact;
+        const row = this.db.prepare('SELECT data FROM wf_archived_artifacts WHERE workflow_id = ? AND ref = ?').get(workflowId, ref) as { data: string } | undefined;
+        return row && JSON.parse(row.data) as StoredArtifact;
+      },
+      call: (runId, by) => {
+        const wanted = 'key' in by ? by.key : by.taskId;
+        const found = last(staged()?.calls, row => row.workflowId === workflowId && row.runId === runId && ('key' in by ? row.key : row.taskId) === wanted);
+        if (found) return { key: found.key, taskId: found.taskId };
+        // A staged row for the same key replaces the stored one when the transaction commits.
+        const row = this.db.prepare(`SELECT key, task_id FROM wf_archived_calls WHERE workflow_id = ? AND run_id = ? AND ${'key' in by ? 'key' : 'task_id'} = ? ORDER BY seq DESC LIMIT 1`)
+          .get(workflowId, runId, wanted) as { key: string; task_id: string } | undefined;
+        return row && !staged()?.calls.some(pending => pending.workflowId === workflowId && pending.key === row.key) ? { key: row.key, taskId: row.task_id } : undefined;
+      },
+      lastTurn: (runId, agentId) => {
+        const found = last(staged()?.calls, row => row.workflowId === workflowId && row.runId === runId && row.agentId === agentId);
+        if (found) return found.taskId;
+        return (this.db.prepare('SELECT task_id FROM wf_archived_calls WHERE workflow_id = ? AND agent_id = ? AND run_id = ? ORDER BY seq DESC LIMIT 1')
+          .get(workflowId, agentId, runId) as { task_id: string } | undefined)?.task_id;
+      },
+    };
+  }
+
+  /** Copies what an archive event is about to remove from the state, so the commit can write it to the archive tables. */
+  private stage(rows: ArchiveRows, state: WorkflowData, event: Extract<DomainEvent, { type: 'tasks_archived' | 'script_call_archived' }>): void {
+    const { workflowId } = state;
+    if (event.type === 'script_call_archived') {
+      rows.calls.push({ workflowId, runId: state.script!.runId, ...event.call });
+      return;
+    }
+    const tasks = new Map<string, StoredTask>();
+    const wanted = new Set(event.taskIds);
+    for (const task of state.tasks) {
+      if (!wanted.has(task.taskId)) continue;
+      const data = JSON.stringify(task);
+      const copy = JSON.parse(data) as StoredTask;
+      tasks.set(task.taskId, copy);
+      rows.tasks.push({ workflowId, task: copy, data });
+    }
+    const refs = new Set(event.artifactRefs);
+    for (const artifact of state.artifacts) if (refs.has(artifact.ref)) rows.artifacts.push({ workflowId, artifact: { ...artifact } });
+    for (const call of state.script?.calls ?? []) {
+      const task = tasks.get(call.taskId);
+      if (task) rows.calls.push({ workflowId, runId: state.script!.runId, key: call.key, taskId: call.taskId, ...(task.agentId ? { agentId: task.agentId } : {}) });
+    }
+  }
+
   operation(scope: string, id: string): { digest: string; response: string } | undefined {
     return this.db.prepare('SELECT digest, response FROM workflow_operations WHERE scope = ? AND id = ?')
       .get(scope, id) as { digest: string; response: string } | undefined;
@@ -277,7 +393,7 @@ export class WorkflowStore {
    */
   transact<T>(fn: () => T, cause = 'system'): T {
     if (this.tx) return fn();
-    const tx: Transaction = this.tx = { cause, events: [], touched: new Set(), versioned: new Set(), created: new Set(), texts: new Map(), operations: [] };
+    const tx: Transaction = this.tx = { cause, events: [], touched: new Set(), versioned: new Set(), created: new Set(), texts: new Map(), archive: { tasks: [], artifacts: [], calls: [] }, operations: [] };
     let result: T;
     try {
       result = fn();
@@ -328,6 +444,7 @@ export class WorkflowStore {
     const data = JSON.stringify(event);
     // Touched before the reducer runs: if it throws half-way, the state is discarded with the transaction.
     tx.touched.add(aggregate);
+    if (event.type === 'tasks_archived' || event.type === 'script_call_archived') this.stage(tx.archive, aggregate.state, event);
     try { evolve(aggregate.state, JSON.parse(data) as DomainEvent); }
     catch (error) { tx.failed ??= { error }; throw error; }
     tx.events.push({ aggregate, type: event.type, entity: eventEntity(event), data, topics: eventTopics(event) });
@@ -368,6 +485,21 @@ export class WorkflowStore {
           pending.type, pending.entity ?? null, at, tx.cause, pending.data);
         pending.aggregate.seq = Number(info.lastInsertRowid);
         pending.aggregate.sinceSnapshot++;
+      }
+      const { archive } = tx;
+      if (archive.tasks.length) {
+        const task = this.db.prepare('INSERT OR REPLACE INTO wf_archived_tasks(workflow_id, task_id, script_key, cache_key, agent_id, request_digest, status, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+        for (const row of archive.tasks) task.run(row.workflowId, row.task.taskId, row.task.scriptKey ?? null, row.task.cacheKey ?? null, row.task.agentId ?? null,
+          row.task.requestDigest, row.task.status, row.data);
+      }
+      if (archive.artifacts.length) {
+        const artifact = this.db.prepare('INSERT OR REPLACE INTO wf_archived_artifacts(workflow_id, ref, data) VALUES (?, ?, ?)');
+        for (const row of archive.artifacts) artifact.run(row.workflowId, row.artifact.ref, JSON.stringify(row.artifact));
+      }
+      if (archive.calls.length) {
+        // One row for each key: a later run that makes the call again takes the row over.
+        const call = this.db.prepare('INSERT OR REPLACE INTO wf_archived_calls(workflow_id, key, run_id, task_id, agent_id) VALUES (?, ?, ?, ?, ?)');
+        for (const row of archive.calls) call.run(row.workflowId, row.key, row.runId, row.taskId, row.agentId ?? null);
       }
       const catalog = this.db.prepare('INSERT INTO wf_catalog(id, scope, root_id, parent_id, status) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status');
       for (const aggregate of tx.touched) {

@@ -35,6 +35,8 @@ export type DomainEvent =
   /** A new run of the script; `counted` is false for the automatic replay after a restart. */
   | { type: 'script_replayed'; runId: string; counted: boolean; planRef?: string; sourceRef?: string; args?: { value: unknown }; defaults?: WorkerExecutionSelection }
   | { type: 'script_call_recorded'; call: { key: string; taskId: string; cached: boolean } }
+  /** A call answered by an archived task: counted, and recorded in the archive rather than in the state. */
+  | { type: 'script_call_archived'; call: { key: string; taskId: string; agentId?: string } }
   | { type: 'script_key_recorded'; list: 'mailboxCalls' | 'workCalls' | 'controlCalls' | 'workspaceCalls'; key: string }
   | { type: 'workspace_key_reserved'; key: string }
   | { type: 'control_operation_recorded'; operation: { key: string; digest: string; taskId: string } }
@@ -46,6 +48,8 @@ export type DomainEvent =
   | { type: 'session_created'; session: SessionBinding }
   | { type: 'session_bound'; sessionRef: string; taskId: string; nativeSessionId: string; model?: string; at: number }
   | { type: 'task_created'; task: StoredTask }
+  /** Finished tasks leave the state with their own sessions and artifacts and the calls and swarm turns that name them. */
+  | { type: 'tasks_archived'; taskIds: string[]; sessionRefs: string[]; artifactRefs: string[] }
   | { type: 'task_requeued'; taskId: string; runId: string }
   | { type: 'task_failed'; taskId: string; error: string }
   /** `pending` while the worker process still has to exit. */
@@ -75,7 +79,8 @@ export type DomainEvent =
   | { type: 'direct_message_recorded'; taskId: string; message: DirectMessage }
   // Swarms
   | { type: 'swarm_created'; swarm: WorkflowSwarm }
-  | { type: 'swarm_rebound'; swarmId: string; runId: string; retryPending: string[] }
+  /** `archivedCalls`: the swarm's archived turns, which count as calls of the new run like its other completed turns. */
+  | { type: 'swarm_rebound'; swarmId: string; runId: string; retryPending: string[]; archivedCalls?: number }
   | { type: 'swarm_turn_scheduled'; swarmId: string; member: string; key: string; taskId: string; retry: boolean; opening: boolean; wake?: string }
   | { type: 'swarm_member_wake_cleared'; swarmId: string; member: string }
   | { type: 'swarm_member_added'; swarmId: string; member: SwarmMember }

@@ -93,7 +93,7 @@ The envelope has `operationId`, `goal` (the full authorized task), `script` (the
 | `name` | Display name, up to 100 characters |
 | `args` | JSON data exposed as `args` in the interpreter |
 | `execution` | Default `{agentKind, model?, reasoningEffort?}`; otherwise root harness/settings |
-| `maxAgents` | Calls per script run, default 32, maximum 2048; cache hits count |
+| `maxAgents` | Calls per script run, default 32; cache hits count. There is no fixed maximum: ask for what the run needs |
 | `maxConcurrent` | Concurrent workers per workflow tree, default 4, maximum 256. Workers take slots from the profile's process pool, so `max_concurrent_runs` (at most 512) must be larger than this for the workflow to reach it |
 | `timeoutMs` | Total workflow deadline, defaulting to the configured `workflow_timeout_minutes` (480 minutes); range 1 second to that configured limit. Replay does not extend it |
 
@@ -333,7 +333,7 @@ Checkpoints, waits, message receipts and turn state are committed together in th
 
 After a restart, a workflow that was running is replayed automatically (see [Restart recovery](#restart-recovery)); others remain `interrupted` until explicit `replay_script` or `/workflow resume`. Replay reconstructs the script from its beginning, reuses completed turns and receive receipts, then continues pending waits or retries the interrupted turn in its original native session. Persistent turn reuse validates the original request and predecessor chain; the stored input fingerprint includes the checkpoint version and message IDs. Rewriting committed history, skipping its predecessor, or changing a member's execution binding requires a new member name. One-shot tasks without `workflowTool` still retry in fresh sessions; enabled callers retain their native session for child-result continuation.
 
-Limits per workflow: 512 members, 4096 messages, 2048 receive receipts, 8192 worker/script mailbox operations, and 8192 execution attempts including retries. The kernel retains up to 256 recent checkpoints while preserving every member's latest recovery point. Existing workflow call, deadline, replay, output and process-pool limits also apply. Members and the work queue below are scoped to one workflow; they do not create a cross-workflow team.
+Limits per workflow: 512 members, 4096 messages, 2048 receive receipts, 8192 worker/script mailbox operations, and 512 execution attempts per task including retries. The number of tasks is not limited: a task that finished more than ten minutes ago leaves the workflow state for an archive, together with its session and result artifacts. Status counts include archived tasks, task lists show the ones still in the state, and replayed calls, `inputs` and `read_artifact` read the archive. One-shot tasks that ran in a managed workspace are not archived. The kernel retains up to 256 recent checkpoints while preserving every member's latest recovery point. Existing workflow call, deadline, replay, output and process-pool limits also apply. Members and the work queue below are scoped to one workflow; they do not create a cross-workflow team.
 
 ### Work items and claims
 
@@ -483,7 +483,7 @@ Keys identify child calls within the parent task. Repeating the same key/input r
 
 Children have their own members, mailboxes and work queues. Explicit `parentQueue: true` grants only `enqueueWork({queue:"parent", key, title, input, ...})` into the immediate parent's queue. Use `target:"parent", queue:"reviews"` to select a named parent queue; the existing `queue:"parent"` syntax selects its default queue. This grant does not allow consumption, closure, arbitrary workflow access or root control. The parent must keep its queue open until its producers finish. Keys in that queue are shared by all its producers; coordinate them to avoid conflicting inputs. See [the nested example](../workflow-definitions/scripted/examples/nested-workflow.js) for independent per-worker flags.
 
-The tree shares root worker concurrency, task-history budget and deadline, and at most 8192 native attempts. Child limits can reduce these allowances. There are at most three child levels and 256 child workflows per root. The parent continuation counts as another attempt of its original task. Completed child results and plans remain inspectable artifacts; only the root's plan and final event are sent to the chat.
+The tree shares root worker concurrency, task budget and deadline. Child limits can reduce these allowances. There are at most three child levels and 256 child workflows per root. The parent continuation counts as another attempt of its original task. Completed child results and plans remain inspectable artifacts; only the root's plan and final event are sent to the chat.
 
 Pause, cancellation, binding changes and deadlines apply to descendants. After a restart, root replay (automatic or explicit) reconstructs the waiting parents and paused/interrupted child scripts; it does not rerun completed child calls. Recovery retains native sessions, pending child IDs and checkpoints. Root completion requires descendants to be finished. Local state recovery does not guarantee exactly-once external side effects.
 

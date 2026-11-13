@@ -5,7 +5,8 @@ import { pumpSwarms } from './swarm';
 import { settleEventWaits } from './event-waits';
 import { nestedContext } from './nested-workflow';
 import { completeMemberTurn, memberContext, taskAgent } from './durable-agents';
-import { SCRIPT_MAX_TASKS } from './limits';
+import { MAX_TASK_ATTEMPTS } from './limits';
+import { archiveFinished } from './archive';
 import { checkJsonOutput } from './json-output';
 import { addArtifact, BUSY, findTask, MAX_TEXT, readArtifact, requireState, sameRoot, taskById } from './kernel-state';
 import { emit } from './kernel-store';
@@ -21,8 +22,8 @@ export const DEFAULT_STALL_MS = 15 * 60_000;
 export const MAX_TASK_RETRIES = 3;
 /** Backoff before each retry, in order; the last entry repeats. */
 const RETRY_DELAYS_MS = [30_000, 120_000, 300_000] as const;
-/** Attempts one workflow tree may run in total, retries included; separate from the task budget. */
-const MAX_TREE_ATTEMPTS = 4 * SCRIPT_MAX_TASKS;
+/** Shortest time between two archive passes over one workflow. */
+const ARCHIVE_EVERY_MS = 30_000;
 /** Failures worth another attempt: transport and provider throttling, not the agent's own mistakes. */
 const TRANSIENT_FAILURE = /(?<!\d)(?:429|500|502|503|504)(?!\d)|rate[_ -]?limit|rpm[_ -]?limit|too many requests|overloaded|timeout|timed out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|connection reset|temporarily unavailable|upstream (?:error|unavailable)|没有返回|no output/i;
 
@@ -45,6 +46,8 @@ export class WorkflowScheduler {
   private readonly waking = new Set<string>();
   /** When tick() last found each scope's root authorization unchanged, on the wall clock. */
   private readonly verified = new Map<string, number>();
+  /** When each workflow's finished tasks were last considered for archiving. */
+  private readonly archivedAt = new Map<string, number>();
 
   constructor(private readonly ctx: KernelContext) {}
 
@@ -193,6 +196,8 @@ export class WorkflowScheduler {
       }
       const scopes = new Set(unfinished.map(item => item.scope));
       for (const scope of this.verified.keys()) if (!scopes.has(scope)) this.verified.delete(scope);
+      const ids = new Set(unfinished.map(item => item.workflowId));
+      for (const id of this.archivedAt.keys()) if (!ids.has(id)) this.archivedAt.delete(id);
     } finally { this.pumping = false; }
   }
 
@@ -206,9 +211,14 @@ export class WorkflowScheduler {
       store.transact(() => {
         settleEventWaits(state, ctx.now());
         pumpSwarms(state, kind => ctx.nativeIdKind(kind), ctx.now(), ctx.children.remainingTreeTasks(state));
+        // While the script runs, long-finished tasks leave the state; once it stops, what remains stays for review.
+        if (state.script?.status === 'running' && ctx.now() - (this.archivedAt.get(state.workflowId) ?? 0) >= ARCHIVE_EVERY_MS) {
+          this.archivedAt.set(state.workflowId, ctx.now());
+          archiveFinished(state, ctx.now());
+        }
         let active = state.tasks.filter(task => this.running.has(task.taskId)).length;
         // The tree's totals are counted once per pass and kept current as turns start, not recounted per queued task.
-        let tree: { limit: number; running: number; attempts: number } | undefined;
+        let tree: { limit: number; running: number } | undefined;
         for (const task of state.tasks) {
           if (task.status !== 'queued' || active >= state.definition.maxConcurrentWorkers) continue;
           // A retried task waits out its backoff; the periodic tick starts it once due.
@@ -222,15 +232,12 @@ export class WorkflowScheduler {
           }
           if (!tree) {
             const members = store.tree(state);
-            tree = { limit: (members.find(item => !item.parent) ?? state).definition.maxConcurrentWorkers, running: 0, attempts: 0 };
-            for (const item of members) for (const found of item.tasks) {
-              if (this.running.has(found.taskId)) tree.running++;
-              tree.attempts += found.attempts.length;
-            }
+            tree = { limit: (members.find(item => !item.parent) ?? state).definition.maxConcurrentWorkers, running: 0 };
+            for (const item of members) for (const found of item.tasks) if (this.running.has(found.taskId)) tree.running++;
           }
           if (tree.running >= tree.limit) continue;
-          if (tree.attempts >= MAX_TREE_ATTEMPTS) {
-            emit(state, { type: 'task_failed', taskId: task.taskId, error: 'Workflow attempt limit reached' }); continue;
+          if (task.attempts.length >= MAX_TASK_ATTEMPTS) {
+            emit(state, { type: 'task_failed', taskId: task.taskId, error: 'Task attempt limit reached' }); continue;
           }
           const attemptId = randomUUID();
           const agent = taskAgent(state, task);
@@ -249,7 +256,7 @@ export class WorkflowScheduler {
             this.stalled.delete(taskId);
           }).catch(error => ctx.log.warn('worker-failed', { error: String(error) }));
           started.set(taskId, attemptId);
-          active++; tree.running++; tree.attempts++;
+          active++; tree.running++;
         }
       }, 'scheduler');
     } catch (error) {

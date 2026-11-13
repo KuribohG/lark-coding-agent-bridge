@@ -3,8 +3,8 @@ import { cancelWork } from './work-queue';
 import { workflowDigest } from './digest';
 import { MAX_WORKFLOW_DEPTH, nestedInput, nestedResponse } from './nested-workflow';
 import { inheritedWorkerExecution, workerSelection } from './execution';
-import { MAX_CHILD_WORKFLOWS, SCRIPT_MAX_TASKS } from './limits';
-import { acknowledge, addArtifact, BUSY, taskById } from './kernel-state';
+import { MAX_CHILD_WORKFLOWS } from './limits';
+import { acknowledge, addArtifact, BUSY, taskById, taskCount } from './kernel-state';
 import { emit } from './kernel-store';
 import type { KernelContext } from './kernel-context';
 import type { TaskView, WorkflowData, WorkflowView } from './types';
@@ -24,9 +24,9 @@ export class ChildWorkflows {
   remainingTreeTasks(state: WorkflowView): number {
     const tree = this.ctx.store.tree(state);
     const root = tree.find(item=>!item.parent) ?? state;
-    // Existing non-nested scripts retain their per-run call budget.
-    if (!state.parent && !tree.some(item=>item.parent)) return SCRIPT_MAX_TASKS - state.tasks.length;
-    return root.script!.maxCalls - tree.reduce((total,item)=>total+item.tasks.length,0);
+    // A script without nested workflows is bounded by its per-run call budget alone.
+    if (!state.parent && !tree.some(item=>item.parent)) return Infinity;
+    return root.script!.maxCalls - tree.reduce((total,item)=>total+taskCount(item),0);
   }
 
   suspendChildren(state: WorkflowView, cancel: boolean, taskId?: string): void {

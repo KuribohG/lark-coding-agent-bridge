@@ -1,13 +1,23 @@
 /**
  * Ceilings on what one workflow may hold. They bound memory and journal growth and catch runaway scripts; they are
  * not the budget of a run. A workflow asks for the agents and concurrency it needs (`maxAgents`, `maxConcurrent`)
- * and gets small defaults otherwise. Sized for a few hundred workers running at once in one workflow tree.
+ * and gets small defaults otherwise. Sized for a few hundred workers running at once in one workflow tree; how many
+ * tasks a workflow runs over its lifetime is not limited here.
  */
 
 /** Workers one workflow tree may run at once; `maxConcurrent` asks for up to this many. */
 export const MAX_CONCURRENT_WORKERS = 256;
-/** Tasks one workflow may create, which is also the ceiling of `maxAgents` and of each kind of script call. */
-export const SCRIPT_MAX_TASKS = 2048;
+/**
+ * Ceiling of `maxAgents`. The number of agent calls has no fixed limit: finished tasks leave the state for the
+ * archive (archive.ts), so a workflow's budget is whatever it asks for and gets a small default otherwise.
+ */
+export const MAX_AGENT_CALLS = Number.MAX_SAFE_INTEGER;
+/** Keyed calls of each other kind one script run may record: mailbox, work queue, control and workspace. */
+export const SCRIPT_MAX_KEYED_CALLS = 2048;
+/** Functions one parallel() or items one pipeline() may take. */
+export const SCRIPT_MAX_FANOUT = 16_384;
+/** Attempts one task may run, retries and resumptions after child workflows included. */
+export const MAX_TASK_ATTEMPTS = 512;
 /** Script interpreters running at once on one nesting level. */
 export const MAX_RUNNING_SCRIPTS = 32;
 /** Memory one script interpreter may use; it holds every result the script keeps. */
