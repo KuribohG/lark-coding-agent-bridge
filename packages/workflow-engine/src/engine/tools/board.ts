@@ -18,7 +18,7 @@ export const boardTools: WorkflowToolPlugin = {
       name: 'post_board',
       main: {
         doc: 'post_board(text,to?)',
-        ...versioned((ctx, state, args) => postToBoard(state, { author: 'main' }, args, ctx.now()), { allowInterrupted: true }),
+        ...versioned((ctx, state, args) => postToBoard(state, { author: 'main' }, args, ctx.now()), { allowInterrupted: true, appendOnly: true }),
       },
       worker: {
         verifiesRoot: true,

@@ -357,3 +357,29 @@ describe('swarm', () => {
     expect(await run({ key: 't', members: [{ name: 'a', queue: 'parent' }, { name: 'b' }] })).toContain('Invalid work queue name');
   });
 });
+
+describe('append-only main operations', () => {
+  it('land without the workflow state version while other changes still require it', async () => {
+    const h = harness();
+    await h.start();
+    await h.bootstrap('alice');
+    const main = (method: string, args: Record<string, unknown>) => h.kernel.call({ kind: 'main', scopeId: 'board' }, method,
+      { operationId: randomUUID(), workflowId: h.state().workflowId, ...args });
+    const stale = h.state().stateVersion - 1;
+
+    const posted = await main('post_board', { text: 'note for everyone' }) as { seq: number; stateVersion: number };
+    expect(posted.stateVersion).toBe(h.state().stateVersion);
+    await expect(main('post_board', { text: 'sent with an old version', expectedStateVersion: stale })).resolves.toMatchObject({ seq: posted.seq + 1 });
+    await expect(main('send_message', { member: 'alice', text: 'please look' })).resolves.toMatchObject({ stateVersion: expect.any(Number) });
+    await expect(main('enqueue_work', { key: 'item-1', title: 'First item', input: 'do it' })).resolves.toMatchObject({ itemId: expect.any(String) });
+
+    // A repeated operationId returns the recorded response instead of appending twice.
+    const operationId = randomUUID();
+    const first = await main('post_board', { operationId, text: 'once' });
+    expect(await main('post_board', { operationId, text: 'once' })).toEqual(first);
+    await expect(main('post_board', { operationId, text: 'different' })).rejects.toThrow('operationId conflict');
+
+    await expect(main('retry_work', { itemId: 'missing' })).rejects.toThrow('stateVersion conflict');
+    await expect(main('pause', { expectedStateVersion: stale })).rejects.toThrow('stateVersion conflict');
+  });
+});

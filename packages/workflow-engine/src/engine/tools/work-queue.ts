@@ -86,7 +86,7 @@ export const workQueueTools: WorkflowToolPlugin = {
         ...versioned((ctx, state, args) => {
           ctx.scripts.checkWorkKey(state, args.key);
           return enqueueWork(state, operationInput(args), ctx.now());
-        }, { allowInterrupted: true }),
+        }, { allowInterrupted: true, appendOnly: true }),
       },
       worker: {
         verifiesRoot: true,

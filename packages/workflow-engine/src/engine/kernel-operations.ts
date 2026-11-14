@@ -85,7 +85,7 @@ export class KernelOperations {
     }
     // One transaction per operation: its events, the new state version and the idempotency record commit together.
     return store.transact(() => {
-      if (args.expectedStateVersion !== current.stateVersion) throw new Error(`stateVersion conflict; current=${current.stateVersion}`);
+      if (!tool.appendOnly && args.expectedStateVersion !== current.stateVersion) throw new Error(`stateVersion conflict; current=${current.stateVersion}`);
       if (['completed', 'cancelled'].includes(current.status)) throw new Error('Workflow is terminal');
       const commit = (response: () => unknown) => store.commitOperation(scope, operationId, digest, response);
       if (tool.terminalCheckOnly) return tool.apply(ctx, current, args, commit);

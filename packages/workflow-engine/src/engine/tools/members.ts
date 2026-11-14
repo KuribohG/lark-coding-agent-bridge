@@ -61,7 +61,7 @@ export const mailboxTools: WorkflowToolPlugin = {
       name: 'send_message',
       main: {
         doc: 'send_message(member,text,topic?,correlationId?)',
-        ...versioned((ctx, state, args) => sendMessage(state, requiredText(args.member, 100), args.text, ctx.now(), undefined, args), { allowInterrupted: true }),
+        ...versioned((ctx, state, args) => sendMessage(state, requiredText(args.member, 100), args.text, ctx.now(), undefined, args), { allowInterrupted: true, appendOnly: true }),
       },
       worker: {
         verifiesRoot: true,
