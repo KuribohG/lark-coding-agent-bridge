@@ -21,7 +21,7 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'workflow-cross-harness-'));
-  cleanup.push(() => rm(dir, { recursive: true, force: true }));
+  cleanup.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
   const binary = join(dir, 'pi.cjs');
   const record = join(dir, 'runs.jsonl');
   await writeFile(binary, `#!${process.execPath}

@@ -69,7 +69,7 @@ describe('durable events and task control', () => {
   });
 
   it('retains an absolute timer across restart and leaves a late message available', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'workflow-events-')); cleanup.push(() => rm(directory, { recursive: true, force: true }));
+    const directory = await mkdtemp(join(tmpdir(), 'workflow-events-')); cleanup.push(() => rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
     const h = harness(join(directory, 'state.db')); await h.start(); await h.bootstrap('A');
     const spec = { key: 'deadline', any: [{ kind: 'message', member: 'A' }, { kind: 'timer', afterMs: 1000 }] };
     await h.control('wait', spec); h.advance(400); await h.restart();
@@ -163,7 +163,7 @@ describe('durable events and task control', () => {
   });
 
   it('recovers a persisted cancellation intent without launching that task again', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'workflow-cancel-recovery-')); cleanup.push(() => rm(directory, { recursive: true, force: true }));
+    const directory = await mkdtemp(join(tmpdir(), 'workflow-cancel-recovery-')); cleanup.push(() => rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
     const path = join(directory, 'state.db');
     const h = harness(path, true); await h.start();
     const task = await h.control('start', { key: 'task', prompt: 'Work' }); await h.run(1);

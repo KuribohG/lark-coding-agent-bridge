@@ -22,7 +22,7 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 
 async function database(): Promise<string> {
   const directory = await mkdtemp(join(process.env.WORKFLOW_LOAD_DIR ?? tmpdir(), 'workflow-load-'));
-  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  cleanup.push(() => rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
   return join(directory, 'state.sqlite');
 }
 

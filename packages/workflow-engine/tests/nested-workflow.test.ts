@@ -76,7 +76,7 @@ describe('nested workflow capability',()=>{
 
   it('keeps omitted child timeouts stable when replaying a pre-configuration workflow', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'workflow-legacy-deadline-'));
-    cleanup.push(() => rm(dir, { recursive: true, force: true }));
+    cleanup.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
     const path = join(dir, 'state.db'); const h = harness(path);
     await h.start();
     const root = h.state();

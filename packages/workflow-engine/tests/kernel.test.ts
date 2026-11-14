@@ -78,7 +78,7 @@ describe('workflow kernel contracts', () => {
 
   it('pins the budget across config changes, restart and replay', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'workflow-deadline-'));
-    cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    cleanups.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
     const path = join(dir, 'state.db');
     let now = 1000; let minutes = 480;
     const h = harness(path, () => minutes, () => now);
@@ -217,7 +217,7 @@ describe('workflow kernel contracts', () => {
   });
 
   it('ignores workflows of the pre-journal store, reports them and leaves their table untouched', async () => {
-    const dir = await mkdtemp(join(tmpdir(), 'workflow-legacy-')); cleanups.push(() => rm(dir, { recursive: true, force: true }));
+    const dir = await mkdtemp(join(tmpdir(), 'workflow-legacy-')); cleanups.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
     const path = join(dir, 'workflow.sqlite');
     const legacy = new Database(path);
     legacy.exec('CREATE TABLE workflows (id TEXT PRIMARY KEY, scope TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL)');

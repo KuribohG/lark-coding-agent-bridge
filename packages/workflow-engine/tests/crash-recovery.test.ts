@@ -31,7 +31,7 @@ describe.skipIf(process.platform === 'win32')('workflow recovery after controlle
 
   async function crash(boundary: string) {
     const directory = await mkdtemp(join(tmpdir(), 'workflow-crash-'));
-    cleanup.push(() => rm(directory, { recursive: true, force: true }));
+    cleanup.push(() => rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
     const child = spawn(process.execPath, [join(bundleDir, 'controller.mjs'), '--workflow-crash-child', directory, boundary],
       { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';

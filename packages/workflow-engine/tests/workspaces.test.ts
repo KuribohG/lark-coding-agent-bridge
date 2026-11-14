@@ -19,7 +19,7 @@ async function git(cwd: string, ...argv: string[]) {
 }
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'workflow-worktrees-'));
-  closes.push(() => rm(dir, { recursive: true, force: true }));
+  closes.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
   const repo = join(dir, 'repo'); await mkdir(repo);
   await git(repo, 'init', '-b', 'main'); await git(repo, 'config', 'user.name', 'Test'); await git(repo, 'config', 'user.email', 'test@localhost');
   // Keep committed bytes intact; Windows git checks out CRLF by default.

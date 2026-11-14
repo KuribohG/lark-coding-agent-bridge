@@ -162,7 +162,7 @@ describe('workflow work queue', () => {
 
   it('preserves item progress across pause/restart and requires explicit replay before consuming again', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'workflow-queue-'));
-    cleanup.push(() => rm(directory, { recursive: true, force: true }));
+    cleanup.push(() => rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
     const h = harness(join(directory, 'state.sqlite')); await h.start();
     await h.work('enqueue', { key: 'work', title: 'Work', input: { original: true } });
     await h.create('A'); await h.run(1); const old = h.requests[0]!;
@@ -186,7 +186,7 @@ describe('workflow work queue', () => {
 
   it('revokes a persisted orphan claim on startup even when its lease has not expired', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'workflow-orphan-'));
-    cleanup.push(() => rm(directory, { recursive: true, force: true }));
+    cleanup.push(() => rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
     const h = harness(); await h.start(); await h.work('enqueue', { key: 'work', title: 'Work' });
     await h.create('A'); await h.run(1); const grant = (await h.claim(h.requests[0]!))!;
     await h.send(h.requests[0]!, 'checkpoint_work', { ...token(grant), expectedProgressVersion: 0, state: 'durable' });

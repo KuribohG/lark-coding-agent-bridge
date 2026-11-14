@@ -116,7 +116,8 @@ describe('PendingQueue', () => {
     const root = await mkdtemp(join(tmpdir(), 'pending-queue-'));
     const path = join(root, 'pending.json');
     try {
-      const first = new PendingQueue(20, () => {}, path);
+      // A quiet window the test never reaches: a flush before suspend() would empty the file.
+      const first = new PendingQueue(60_000, () => {}, path);
       expect(first.push('topic', { ...message('persisted'), agentEntry: { kind: 'workflow', trigger: 'command' } })).toBe(1);
       await first.flushPersistence();
       first.suspend();

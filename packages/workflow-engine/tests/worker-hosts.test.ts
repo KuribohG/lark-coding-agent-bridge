@@ -54,7 +54,7 @@ function hostedRunner() {
 
 async function harness() {
   const dir = await mkdtemp(join(tmpdir(), 'worker-hosts-'));
-  cleanup.push(() => rm(dir, { recursive: true, force: true }));
+  cleanup.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
   let root: WorkflowRoot = { scopeId: 'chat', profile: 'embedded', agentKind: 'custom-agent', cwdRealpath: '/repo',
     policyFingerprint: 'policy', catalogBinding: 'main', modelSettings: {} };
   const fake = hostedRunner();

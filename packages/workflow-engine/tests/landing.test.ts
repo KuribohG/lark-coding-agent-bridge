@@ -23,7 +23,7 @@ const node = (code: string) => ({ argv: [process.execPath, '-e', code] });
 
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'workflow-landing-'));
-  closes.push(() => rm(dir, { recursive: true, force: true }));
+  closes.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
   const repo = join(dir, 'repo'); await mkdir(repo);
   await git(repo, 'init', '-b', 'main'); await git(repo, 'config', 'user.name', 'Test'); await git(repo, 'config', 'user.email', 'test@localhost');
   await git(repo, 'config', 'core.autocrlf', 'false');
@@ -320,7 +320,7 @@ describe('submit_work', () => {
 describe('claim, fix and land through the runtime', () => {
   it('runs the packaged example: members claim bugs, commit in their worktrees and land them over IPC', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'workflow-claim-land-'));
-    closes.push(() => rm(dir, { recursive: true, force: true }));
+    closes.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
     const repo = join(dir, 'repo'); await mkdir(repo);
     await git(repo, 'init', '-b', 'main'); await git(repo, 'config', 'user.name', 'Test'); await git(repo, 'config', 'user.email', 'test@localhost');
     await writeFile(join(repo, 'README'), 'base\n'); await git(repo, 'add', '.'); await git(repo, 'commit', '-m', 'base');
