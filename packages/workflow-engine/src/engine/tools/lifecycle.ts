@@ -196,7 +196,7 @@ export const lifecycleTools: WorkflowToolPlugin = {
         if (deadlineAt - ctx.now() > MAX_REMAINING_MS) throw new Error('A workflow may have at most 14 days left');
         emit(state, { type: 'deadline_extended', deadlineAt });
         return { deadlineAt };
-      }, { allowInterrupted: true }) },
+      }, { allowInterrupted: true, appendOnly: true }) },
     },
     {
       name: 'pause',

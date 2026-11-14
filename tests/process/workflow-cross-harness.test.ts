@@ -116,6 +116,15 @@ describe('Codex-root workflow with Pi process workers', () => {
     expect(runs.every(run => !run.argv.includes('--session'))).toBe(true);
   });
 
+  it('answers the same operations through the slim worker CLI the bridge ships beside its own', async () => {
+    const f = await fixture();
+    const slim = (...args: string[]) => promisify(execFile)(process.execPath, [resolve('dist/workflow-cli.js'), 'workflow', ...args], { env: { ...process.env, ...f.main.env } });
+    expect(JSON.parse((await slim('status', '--json')).stdout)).toMatchObject({ status: 'unbound' });
+    // The guide is the one text the slim CLI loads the tools for.
+    expect((await slim('guide')).stdout).toContain('run_script');
+    await expect(slim('status', '--input', '{', '--json')).rejects.toThrow();
+  });
+
   it('routes model-pinned Pi steps back to the root with fresh native sessions', async () => {
     const f = await fixture();
     await f.call('run_script', { goal: 'cross-harness review', execution: { agentKind: 'pi', model: 'pi-only-model', reasoningEffort: 'high' },

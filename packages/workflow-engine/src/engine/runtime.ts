@@ -2,6 +2,7 @@ import { dirname, join } from 'node:path';
 import { WorkflowWorkspaces } from './workspaces';
 import type { WorkspaceBinding } from './workspace-types';
 import { fileURLToPath } from 'node:url';
+import { existsSync } from 'node:fs';
 import { silentLogger, stopReasonOf, WorkflowStopped, type WorkerRun, type WorkerRunner, type WorkerRunSpec, type WorkflowProcesses } from './ports';
 import { checkJsonOutput } from './json-output';
 import { RESUME_DEADLINE, RESUME_ROOT_CHANGED, WorkflowKernel } from './kernel';
@@ -49,6 +50,15 @@ function resumeFailure(reason: string | undefined): string {
   return `重放失败（${reason}）`;
 }
 
+
+/**
+ * The CLI that agents call for every workflow operation. A host that bundles the engine into its own CLI ships
+ * `workflow-cli.js` beside it: the same command without the host's program, which is what a call spends its start on.
+ */
+function workerCliPath(): string {
+  const slim = fileURLToPath(new URL('./workflow-cli.js', import.meta.url));
+  return existsSync(slim) ? slim : fileURLToPath(new URL('./cli.js', import.meta.url));
+}
 export class WorkflowRuntime {
   readonly kernel: WorkflowKernel;
   private readonly ipc: WorkflowIpc;
@@ -98,7 +108,7 @@ export class WorkflowRuntime {
       wakeMain: deps.wakeMain,
     });
     this.ipc = new WorkflowIpc((caller, method, args) => this.kernel.call(caller, method, args),
-      deps.cliPath ?? fileURLToPath(new URL('./cli.js', import.meta.url)), deps.path === ':memory:' ? undefined : deps.path + '.endpoint.json');
+      deps.cliPath ?? workerCliPath(), deps.path === ':memory:' ? undefined : deps.path + '.endpoint.json');
   }
 
   async start(): Promise<void> {

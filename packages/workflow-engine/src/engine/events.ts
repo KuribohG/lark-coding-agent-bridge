@@ -26,6 +26,7 @@ export type DomainEvent =
   | { type: 'restart_resume_disabled' }
   | { type: 'clock_resumed'; deadlineAt: number }
   | { type: 'deadline_extended'; deadlineAt: number }
+  | { type: 'concurrency_changed'; maxConcurrentWorkers: number }
   | { type: 'artifact_added'; artifact: StoredArtifact }
   | { type: 'notice_raised'; notice: WorkflowEvent }
   | { type: 'notices_acknowledged'; ids: string[]; at: number }
@@ -88,7 +89,9 @@ export type DomainEvent =
   | { type: 'swarm_member_wake_cleared'; swarmId: string; member: string }
   | { type: 'swarm_member_added'; swarmId: string; member: SwarmMember }
   | { type: 'swarm_member_stopped'; swarmId: string; member: string; reason: 'failed' | 'retired'; detail?: string }
-  | { type: 'swarm_member_revived'; swarmId: string; member: string }
+  | { type: 'swarm_member_revived'; swarmId: string; member: string; auto?: boolean }
+  | { type: 'swarm_queue_starved'; swarmId: string; queue: string; at: number; told?: 'lead' | 'main' }
+  | { type: 'swarm_queue_fed'; swarmId: string; queue: string }
   | { type: 'swarm_turns_extended'; swarmId: string; maxTurns: number }
   | { type: 'swarm_nudged'; swarmId: string }
   | { type: 'swarm_stalled'; swarmId: string }

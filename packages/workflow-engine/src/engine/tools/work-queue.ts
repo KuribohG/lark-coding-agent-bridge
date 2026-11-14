@@ -99,7 +99,8 @@ export const workQueueTools: WorkflowToolPlugin = {
     },
     {
       name: 'retry_work',
-      main: { doc: 'retry_work(itemId,additionalAttempts?)', ...versioned((ctx, state, args) => retryWork(state, operationInput(args), ctx.now()), { allowInterrupted: true }) },
+      // Giving a failed item more attempts conflicts with nothing a worker or the scheduler commits meanwhile.
+      main: { doc: 'retry_work(itemId,additionalAttempts?)', ...versioned((ctx, state, args) => retryWork(state, operationInput(args), ctx.now()), { allowInterrupted: true, appendOnly: true }) },
     },
     {
       name: 'close_work_queue',
@@ -114,7 +115,7 @@ export const workQueueTools: WorkflowToolPlugin = {
     {
       name: 'work_status',
       main: { kind: 'read', doc: 'work_status(itemId? 或 queue?,offset?,limit?)',
-        read: (_ctx, state, args) => workStatus(requireState(state), { itemId: args.itemId, offset: args.offset, limit: args.limit }) },
+        read: (_ctx, state, args) => workStatus(requireState(state), { itemId: args.itemId, offset: args.offset, limit: args.limit, ...(args.queue !== undefined ? { queue: args.queue } : {}) }) },
       worker: { call: (_ctx, state, _task, _caller, args) => workStatus(state, args) },
     },
     {

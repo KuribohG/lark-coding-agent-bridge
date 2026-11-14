@@ -5,7 +5,7 @@ import { availableMessages, receiveMessages, scheduleMemberTurn } from './durabl
 import type { DomainEvent } from './events';
 import { boardTotal, callCount, pushEvent, readArtifact, taskById } from './kernel-state';
 import { emit, readText } from './kernel-store';
-import { SWARM_DECLARED_MEMBERS, SWARM_MAX_MEMBERS, SWARM_MAX_TURNS } from './limits';
+import { MAX_CONCURRENT_WORKERS, SWARM_DECLARED_MEMBERS, SWARM_MAX_MEMBERS, SWARM_MAX_TURNS } from './limits';
 import { workerSelection } from './execution';
 import { boundedInteger, parseScriptAgentCall, scriptText } from './script-contract';
 import { availableWork, openQueue, unfinishedWork, workStatus } from './work-queue';
@@ -24,6 +24,20 @@ const MAX_NUDGES = 2;
  */
 const LEAD_GAP_PER_MEMBER_MS = 30_000;
 const LEAD_GAP_MAX_MS = 10 * 60_000;
+/** Failed turns the engine retries in the member's own session before the member stops and someone has to revive it. */
+const AUTO_REVIVES = 1;
+/**
+ * A queue is starved when this share of its consumers, one at least, is idle while it has nothing to claim. Work in a
+ * large swarm is done faster than a lead that is woken every few minutes hands it out, and the counts of a status
+ * read the same whether the pending items can be claimed or wait on dependencies.
+ */
+const STARVED_SHARE = 0.25;
+/** A starved queue is reported to the lead after this long, and again this often while it stays starved. */
+const STARVED_LEAD_AFTER_MS = 2 * 60_000;
+const STARVED_LEAD_EVERY_MS = 15 * 60_000;
+/** The main agent hears of it when the lead has not fed the queue this long after being told, and again this often. */
+const STARVED_MAIN_AFTER_MS = 20 * 60_000;
+const STARVED_MAIN_EVERY_MS = 60 * 60_000;
 
 type SwarmView = Immutable<WorkflowSwarm>;
 type MemberView = Immutable<SwarmMember>;
@@ -178,9 +192,19 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       const task = taskOf(member);
       if (member.stopped || member.retryPending || !task || BUSY.has(task.status) || task.status === 'result_ready') continue;
       const detail = (task.error ?? `turn is ${task.status}`).slice(0, 500);
+      // A failed turn runs once more in the member's session, as staff_swarm's revive would have it, before the
+      // member stops: nobody watches a large swarm closely enough to revive each member that hit a passing fault.
+      if (task.status === 'failed' && !swarm.finish && (member.autoRevived ?? 0) < AUTO_REVIVES) {
+        record({ type: 'task_requeued', taskId: task.taskId, runId: state.script.runId });
+        record({ type: 'swarm_member_revived', swarmId: swarm.id, member: member.name, auto: true });
+        continue;
+      }
       record({ type: 'swarm_member_stopped', swarmId: swarm.id, member: member.name, reason: 'failed', detail });
+      if (swarm.finish) continue;
       // Naming the member without @ keeps the notice from being delivered to it.
-      if (member.name !== swarm.lead && !swarm.finish) notifyLead(`Member "${member.name}" failed and has stopped: ${detail}\nReassign its work, add a replacement or revive it with staff_swarm, or finish.`);
+      if (member.name !== swarm.lead) notifyLead(`Member "${member.name}" failed and has stopped: ${detail}\nReassign its work, add a replacement or revive it with staff_swarm, or finish.`);
+      pushEvent(state, { kind: 'swarm_attention', summary: `swarm "${swarm.key}" 的成员 ${member.name} 失败并已停止`
+        + `${task.status === 'failed' ? '（已自动重试一次）' : ''}：${detail.slice(0, 200)}。staff_swarm 的 revive 可让它在原会话重试，add 可补人。` }, () => now);
     }
     const lead = swarm.members.find(member => member.name === swarm.lead);
     // Work a queue member could claim now, less the turns already running that have not claimed yet.
@@ -202,7 +226,36 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
     const gap = Math.min(LEAD_GAP_MAX_MS, LEAD_GAP_PER_MEMBER_MS * swarm.members.filter(member => !member.stopped).length);
     // With nobody else working there is nothing to gather for, and the lead is woken at once.
     const gathering = (member: MemberView) => member.name === swarm.lead && now - (taskOf(member)?.attempts.at(-1)?.endedAt ?? 0) < gap
-      && swarm.members.some(other => other !== member && busy(other));
+      && swarm.members.some(other => other !== member && busy(other)) && !toldLately();
+    // Queues whose consumers have run out of work while others are still busy: the lead is told at once, and the
+    // main agent when that did not help. A swarm that is idle altogether is the nudges' and the stall's business.
+    if (lead && !lead.stopped && !swarm.finish && swarm.members.some(member => member !== lead && busy(member))) {
+      for (const name of queues) {
+        const consumers = swarm.members.filter(member => member.queue === name && !member.stopped && turnsLeft(member));
+        const idle = consumers.filter(member => !busy(member)).length;
+        const entry = swarm.starved?.[name];
+        if (work.get(name)!.slots > 0 || idle < Math.max(1, Math.ceil(consumers.length * STARVED_SHARE))) {
+          if (entry) record({ type: 'swarm_queue_fed', swarmId: swarm.id, queue: name });
+          continue;
+        }
+        if (!entry) { record({ type: 'swarm_queue_starved', swarmId: swarm.id, queue: name, at: now }); continue; }
+        const blocked = (state.workQueue?.items ?? []).filter(item => (item.queue ?? 'default') === name && item.status === 'pending').length;
+        const facts = `${idle} of its ${consumers.length} members are idle and it has no item they can claim`
+          + (blocked ? ` (${blocked} pending items wait on dependencies, resources or attempts)` : '');
+        if (now - entry.since >= STARVED_LEAD_AFTER_MS && now - (entry.leadAt ?? -Infinity) >= STARVED_LEAD_EVERY_MS) {
+          record({ type: 'swarm_queue_starved', swarmId: swarm.id, queue: name, at: now, told: 'lead' });
+          notifyLead(`Queue "${name}" has run dry: ${facts}. Add work for it with enqueue_work now; if there is none, say so on the board or retire members.`);
+        } else if (entry.leadAt !== undefined && now - entry.since >= STARVED_MAIN_AFTER_MS && now - (entry.mainAt ?? -Infinity) >= STARVED_MAIN_EVERY_MS) {
+          record({ type: 'swarm_queue_starved', swarmId: swarm.id, queue: name, at: now, told: 'main' });
+          pushEvent(state, { kind: 'swarm_attention', summary: `swarm "${swarm.key}" 的队列 ${name} 已断粮 ${Math.round((now - entry.since) / 60_000)} 分钟：`
+            + `${consumers.length} 名成员中 ${idle} 名空闲，没有可领工作项` + (blocked ? `（${blocked} 项待领但被依赖、资源或尝试次数挡住）` : '')
+            + '，lead 已被提醒但未补充。用 enqueue_work 补充该队列，或 staff_swarm 的 retire 减人。' }, () => now);
+        }
+      }
+    }
+    else for (const name of Object.keys(swarm.starved ?? {})) record({ type: 'swarm_queue_fed', swarmId: swarm.id, queue: name });
+    // A starved queue does not wait for the lead's gathering gap: the notice wakes it for the turn that follows.
+    const toldLately = () => Object.values(swarm.starved ?? {}).some(entry => (entry.leadAt ?? 0) > (lead && taskOf(lead)?.attempts.at(-1)?.startedAt || 0));
     // Once the lead has finished the swarm, the turns still running end it; nobody is woken again.
     const wakeable = (member: MemberView) => !member.stopped && !busy(member) && !swarm.finish
       && (member.retryPending || (member.taskId ? turnsLeft(member) && !gathering(member) && (unread(member) || hasWork(member))
@@ -320,13 +373,21 @@ export function staffSelection(state: WorkflowView, input: Record<string, unknow
  * never reaches harnesses or models beyond those the script and the main agent chose.
  */
 export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, lead?: string, execution?: WorkerExecution): unknown {
-  if (Object.keys(input).some(key => !['swarm', 'add', 'like', 'queue', 'role', 'brief', 'revive', 'retire', 'maxTurns', ...EXECUTION_OPTIONS].includes(key))) throw new Error('staff_swarm supports swarm, add, like, harness, model, reasoningEffort, queue, role, brief, revive, retire and maxTurns');
+  if (Object.keys(input).some(key => !['swarm', 'add', 'like', 'queue', 'role', 'brief', 'revive', 'retire', 'maxTurns', 'maxConcurrent', ...EXECUTION_OPTIONS].includes(key))) throw new Error('staff_swarm supports swarm, add, like, harness, model, reasoningEffort, queue, role, brief, revive, retire, maxTurns and maxConcurrent');
   const chosen = EXECUTION_OPTIONS.some(option => input[option] !== undefined);
   if (chosen && lead !== undefined) throw new Error('Only the main agent can choose the harness or model of new members; a lead adds members like an existing one');
   if (chosen && !execution) throw new Error('The harness and model of the new members were not resolved');
   const swarm = lead === undefined ? runningSwarm(state, input.swarm) : leadSwarm(state, lead);
-  if (input.add === undefined && input.revive === undefined && input.retire === undefined && input.maxTurns === undefined) throw new Error('staff_swarm needs add, revive, retire or maxTurns');
-  const result: { swarm: string; added?: string[]; revived?: string[]; retired?: string[]; maxTurns?: number; execution?: WorkerExecutionSelection } = { swarm: swarm.key };
+  if (input.add === undefined && input.revive === undefined && input.retire === undefined && input.maxTurns === undefined && input.maxConcurrent === undefined) throw new Error('staff_swarm needs add, revive, retire, maxTurns or maxConcurrent');
+  const result: { swarm: string; added?: string[]; revived?: string[]; retired?: string[]; maxTurns?: number; maxConcurrent?: number; execution?: WorkerExecutionSelection } = { swarm: swarm.key };
+  if (input.maxConcurrent !== undefined) {
+    // How many workers run at once is the budget the main agent started the workflow with, so only it changes it.
+    if (lead !== undefined) throw new Error('Only the main agent can change maxConcurrent');
+    if (state.parent) throw new Error('A child workflow runs within its root\'s concurrency; change the root workflow');
+    const maxConcurrent = boundedInteger(input.maxConcurrent, state.definition.maxConcurrentWorkers, 1, MAX_CONCURRENT_WORKERS);
+    if (maxConcurrent !== state.definition.maxConcurrentWorkers) emit(state, { type: 'concurrency_changed', maxConcurrentWorkers: maxConcurrent });
+    result.maxConcurrent = maxConcurrent;
+  }
   if (input.maxTurns !== undefined) {
     const maxTurns = boundedInteger(input.maxTurns, swarm.maxTurns, 1, SWARM_MAX_TURNS);
     if (maxTurns < swarm.maxTurns) throw new Error(`maxTurns can only be raised; it is ${swarm.maxTurns}`);
@@ -402,9 +463,27 @@ function memberSummary(state: WorkflowView, swarm: SwarmView, member: MemberView
     ...(member.detail ? { error: member.detail } : {}) };
 }
 
+/**
+ * Supply and demand of each queue the swarm consumes: how many of its pending items can be claimed now and how many
+ * wait on something, against the members that are working and the ones with nothing to do.
+ */
+function queueSummary(state: WorkflowView, swarm: SwarmView): Record<string, unknown> | undefined {
+  const names = [...new Set(swarm.members.flatMap(member => member.queue && !member.stopped ? [member.queue] : []))];
+  if (!names.length) return undefined;
+  return Object.fromEntries(names.map(name => {
+    const items = (state.workQueue?.items ?? []).filter(item => (item.queue ?? 'default') === name);
+    const claimable = availableWork(state, name).length;
+    const members = swarm.members.filter(member => member.queue === name && !member.stopped);
+    const running = members.filter(member => { const task = taskById(state, member.taskId); return Boolean(task && BUSY.has(task.status)); }).length;
+    return [name, { claimable, blocked: items.filter(item => item.status === 'pending').length - claimable, claimed: items.filter(item => item.status === 'claimed').length,
+      members: members.length, running, idle: members.length - running, ...(swarm.starved?.[name] ? { starvedSince: swarm.starved[name]!.since } : {}) }];
+  }));
+}
+
 export function swarmSummary(state: WorkflowView, swarm: SwarmView): unknown {
+  const queues = swarm.status === 'running' ? queueSummary(state, swarm) : undefined;
   return { key: swarm.key, status: swarm.status, stop: swarm.stop, reason: swarm.reason, lead: swarm.lead, maxTurns: swarm.maxTurns, turns: turnCount(swarm),
-    posts: boardTotal(state) - swarm.firstPost + 1, members: swarm.members.map(member => memberSummary(state, swarm, member)) };
+    posts: boardTotal(state) - swarm.firstPost + 1, ...(queues ? { queues } : {}), members: swarm.members.map(member => memberSummary(state, swarm, member)) };
 }
 
 /** What `swarm()` resolves to once the swarm has ended; undefined while it runs. */

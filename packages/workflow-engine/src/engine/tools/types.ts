@@ -27,8 +27,9 @@ export type MainTool =
     allowInterrupted?: boolean;
     allowAfterDeadline?: boolean;
     /**
-     * The change only adds to the workflow (a work item, a post, a message) and commutes with every concurrent change,
-     * so it is not checked against `expectedStateVersion`. The workflow has one version that every worker and
+     * The change conflicts with nothing a worker or the scheduler commits meanwhile: it only adds to the workflow (a
+     * work item, a post, a message, a member), or it checks what it changes against the state it commits on (staffing,
+     * a deadline, an item's attempts). It is not checked against `expectedStateVersion`. The workflow has one version that every worker and
      * scheduler commit advances; a main agent that had to read it first could not land a change on a busy workflow.
      * The operationId still makes a retry idempotent.
      */

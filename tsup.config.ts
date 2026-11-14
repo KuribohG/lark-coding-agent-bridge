@@ -16,7 +16,10 @@ const define = {
 
 export default defineConfig([
   {
-    entry: { cli: 'src/cli/index.ts' },
+    // `workflow-cli` is what agents run for each workflow operation ($AGENT_WORKFLOW_CLI): the engine's own CLI
+    // without the bridge's program, which the engine picks up when it lies beside the bundle that holds it. It is
+    // built here, with the bundle that cleans the folder, so that the cleaning cannot remove it.
+    entry: { cli: 'src/cli/index.ts', 'workflow-cli': 'packages/workflow-engine/src/cli.ts' },
     outDir: 'dist',
     format: ['esm'],
     target: 'node20',

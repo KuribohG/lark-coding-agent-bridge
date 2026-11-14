@@ -176,6 +176,8 @@ export interface SwarmMember {
   retryPending?: boolean;
   stopped?: 'failed' | 'retired';
   detail?: string;
+  /** Times the engine put the member back to work after a failed turn, without anyone asking. */
+  autoRevived?: number;
 }
 /**
  * A group of persistent members that coordinate on the board. The kernel schedules their turns: every member runs
@@ -200,6 +202,11 @@ export interface WorkflowSwarm {
   /** The reminders went unanswered and the main agent has been told; cleared when a turn starts. */
   stalled?: boolean;
   finish?: { result: string };
+  /**
+   * Queues whose consumers are idle with nothing to claim: since when, and when the lead and the main agent were last
+   * told. An entry leaves when the queue has work to claim again or all its consumers are busy.
+   */
+  starved?: Record<string, { since: number; leadAt?: number; mainAt?: number }>;
   members: SwarmMember[];
   /** Turns whose task is still in the state, oldest first; `archivedTurns` counts the completed ones that left it. */
   turns: Array<{ key: string; member: string; taskId: string }>;
@@ -400,7 +407,7 @@ export interface WorkflowArtifact {
 
 export interface WorkflowEvent {
   id: string;
-  kind: 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed' | 'worker_reply' | 'swarm_stalled';
+  kind: 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed' | 'worker_reply' | 'swarm_stalled' | 'swarm_attention';
   taskId?: string;
   artifactRef?: string;
   summary: string;

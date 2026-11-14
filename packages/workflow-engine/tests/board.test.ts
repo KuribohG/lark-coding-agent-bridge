@@ -267,7 +267,8 @@ describe('swarm', () => {
         { call: ['swarm_finish', { result: 'parser and lexer fixed; docs dropped' }], post: { text: '@parser thanks, we are done' } },
       ],
       parser: [{}, { post: { text: '@lead the lexer has the same bug' } }],
-      docs: [{}, { fail: true }],
+      // A failed turn is retried once in the member's session before the member stops.
+      docs: [{}, { fail: true }, { fail: true }],
       lexer: [{}, { post: { text: 'Lexer fixed', to: ['lead'] } }],
     });
     const { state, result } = await h.settled();
@@ -382,6 +383,59 @@ describe('swarm', () => {
     expect(h.specs.find(spec => /You are member "dev"/.test(spec.prompt))!.prompt).toContain('woken at most 1 times');
   });
 
+  it('tells the lead, then the main agent, when a queue runs dry while other members work', async () => {
+    let ahead = 0;
+    const real = Date.now.bind(Date);
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => real() + ahead);
+    cleanup.push(async () => clock.mockRestore());
+    let release!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    cleanup.push(async () => release());
+    // "b" waits on an item of a queue nobody consumes, so queue "q" has a pending item and nothing to claim.
+    const h = await play([
+      'await enqueueWork({key:"gate", title:"Gate", input:0, queue:"other"});',
+      'await enqueueWork({key:"b", title:"B", input:1, queue:"q", dependsOn:["gate"]});',
+      'return await swarm("Drain q", {key:"dry", lead:{name:"lead"}, members:[{name:"w1", queue:"q"},{name:"w2", queue:"q"},{name:"busy"}]});',
+    ].join('\n'), { busy: [{ hold }], w1: [{ work: true }], w2: [{ work: true }] });
+    const state = () => h.runtime.kernel.state(h.root.scopeId)!;
+    const swarm = () => state().swarms![0]!;
+    const told = () => state().board!.posts.filter(post => post.author === 'system' && post.text.includes('has run dry'));
+    const leadTurns = () => h.order.filter(name => name.startsWith('lead'));
+    const ticks = async (count: number) => { for (let pass = 0; pass < count; pass++) { await h.runtime.tick(); await new Promise(resolve => setTimeout(resolve, 5)); } };
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(h.order).toEqual(expect.arrayContaining(['lead1', 'busy1'])); expect(swarm().starved?.q).toBeDefined(); }, { timeout: 10_000 });
+    // A queue that has only just run dry is not reported: its members may be between two items.
+    await ticks(3);
+    expect(told()).toHaveLength(0);
+    const main = h.runtime.bindMain(h.root.scopeId, 'continue'); cleanup.push(async () => main.release());
+    const status = await callWorkflow('status', { workflowId: state().workflowId }, main.env) as { swarms: Array<{ queues: Record<string, unknown> }>; workQueue: Record<string, unknown> };
+    expect(status.swarms[0]!.queues).toMatchObject({ q: { claimable: 0, blocked: 1, claimed: 0, members: 2, running: 0, idle: 2, starvedSince: expect.any(Number) } });
+    expect(status.workQueue).toMatchObject({ pending: 2, claimable: 1, blocked: 1 });
+    expect(await callWorkflow('work_status', { workflowId: state().workflowId, queue: 'q' }, main.env)).toMatchObject({ total: 1, pending: 1, claimable: 0, blocked: 1 });
+
+    ahead += 121_000;
+    // The notice does not wait for the lead's gathering gap, although "busy" is still working.
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(leadTurns()).toEqual(['lead1', 'lead2']); }, { timeout: 10_000 });
+    expect(told()).toMatchObject([{ text: expect.stringContaining('2 of its 2 members are idle') }]);
+    expect(told()[0]!.text).toContain('1 pending items wait on dependencies');
+    // It is repeated to the lead only after a quarter of an hour, and the main agent hears of it once the lead has had its time.
+    ahead += 5 * 60_000;
+    await ticks(3);
+    expect(told()).toHaveLength(1);
+    expect(state().events.filter(event => event.kind === 'swarm_attention')).toHaveLength(0);
+    ahead += 16 * 60_000;
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(state().events.filter(event => event.kind === 'swarm_attention')).toHaveLength(1); }, { timeout: 10_000 });
+    expect(state().events.find(event => event.kind === 'swarm_attention')).toMatchObject({ summary: expect.stringContaining('队列 q 已断粮') });
+    expect(told()).toHaveLength(2);
+
+    // Work that can be claimed ends the spell. Once a member has done it the queue is dry again, which is a new
+    // spell: nobody has been told of it yet.
+    await callWorkflow('enqueue_work', { operationId: randomUUID(), workflowId: state().workflowId, key: 'c', title: 'C', input: 2, queue: 'q' }, main.env);
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(state().workQueue!.items.find(item => item.key === 'c')).toMatchObject({ status: 'completed' }); expect(swarm().starved?.q).toEqual({ since: expect.any(Number) }); }, { timeout: 10_000 });
+    expect(h.errors).toEqual([]);
+    release();
+    await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
+  }, 30_000);
+
   it('lets members add the work they find, once per key, and ends only on the lead\'s verdict', async () => {
     const found = { key: 'bug-lexer-empty', title: 'Lexer drops the last token', input: { repro: 'lex("")' } };
     const h = await play('await enqueueWork({key:"seed", title:"Seed", input:{}});'
@@ -398,9 +452,9 @@ describe('swarm', () => {
   });
 
   it('fails when the lead fails, and keeps swarm members away from script calls', async () => {
-    const failed = await play('return await swarm("Doomed", {key:"doomed", onError:"throw", lead:{name:"lead"}, members:[{name:"dev"}]});', { lead: [{ fail: true }] });
+    const failed = await play('return await swarm("Doomed", {key:"doomed", onError:"throw", lead:{name:"lead"}, members:[{name:"dev"}]});', { lead: [{ fail: true }, { fail: true }] });
     expect((await failed.settled()).state.script).toMatchObject({ status: 'failed', error: expect.stringContaining('The lead failed') });
-    const soft = await play('const a = await swarm("Doomed", {key:"doomed", lead:{name:"lead"}, members:[{name:"dev"}]}); return {a, b: await agent("x", {key:"k", member:"dev"})};', { lead: [{ fail: true }] });
+    const soft = await play('const a = await swarm("Doomed", {key:"doomed", lead:{name:"lead"}, members:[{name:"dev"}]}); return {a, b: await agent("x", {key:"k", member:"dev"})};', { lead: [{ fail: true }, { fail: true }] });
     expect((await soft.settled()).state.script).toMatchObject({ status: 'failed', error: expect.stringContaining('scheduled by their swarm') });
   });
 
@@ -462,7 +516,10 @@ describe('append-only main operations', () => {
     expect(await main('post_board', { operationId, text: 'once' })).toEqual(first);
     await expect(main('post_board', { operationId, text: 'different' })).rejects.toThrow('operationId conflict');
 
-    await expect(main('retry_work', { itemId: 'missing' })).rejects.toThrow('stateVersion conflict');
+    // Staffing and an item's attempts are checked against the state the change commits on, not against a version.
+    await expect(main('retry_work', { itemId: 'missing' })).rejects.toThrow('Unknown work item');
+    await expect(main('staff_swarm', { add: ['x'] })).rejects.toThrow('none is running');
+    await expect(main('close_work_queue', {})).rejects.toThrow('stateVersion conflict');
     await expect(main('pause', { expectedStateVersion: stale })).rejects.toThrow('stateVersion conflict');
   });
 });

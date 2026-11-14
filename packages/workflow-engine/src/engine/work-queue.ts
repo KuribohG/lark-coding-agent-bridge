@@ -201,6 +201,9 @@ export function workStatus(state: WorkflowView, args: Record<string, unknown> = 
   const limit = boundedInteger(args.limit, 16, 1, 64);
   const counts = { pending: 0, claimed: 0, completed: 0, failed: 0, cancelled: 0 };
   for (const item of items) counts[item.status]++;
+  // Pending items a member could claim now; the rest wait on dependencies, resources held by claimed items or attempts.
+  const claimable = availableWork(state, name).length;
+  const members = new Map((state.agents ?? []).map(agent => [agent.agentId, agent.key]));
   // Archived items are counted; the page below lists the ones still in the state.
   let archived = 0;
   for (const [queue, totals] of Object.entries(state.workQueue?.archived ?? {})) {
@@ -208,15 +211,19 @@ export function workStatus(state: WorkflowView, args: Record<string, unknown> = 
     for (const [status, count] of Object.entries(totals)) { counts[status as keyof typeof counts] += count; archived += count; }
   }
   const controls = (name === undefined ? queueNames(state) : [name]).map(name => queueControl(state, name));
-  return { total: items.length + archived, ...(archived ? { archived } : {}), ...counts, closed: controls.every(control => control?.closedAt !== undefined),
+  return { total: items.length + archived, ...(archived ? { archived } : {}), ...counts, claimable, blocked: items.filter(item => item.status === 'pending').length - claimable, closed: controls.every(control => control?.closedAt !== undefined),
     closedAt: name === undefined ? state.workQueue?.closedAt : queueControl(state, name)?.closedAt,
     offset, nextOffset: offset + limit < items.length ? offset + limit : null,
-    items: items.slice(offset, offset + limit).map(item => ({
+    items: items.slice(offset, offset + limit).map(item => {
+    const claim = state.workQueue?.claims.find(claim => claim.id === item.claimId);
+    // Who holds the item, so that a reader need not match the claim's agent ID against the member list.
+    const member = item.status === 'claimed' && claim ? members.get(claim.agentId) : undefined;
+    return {
     itemId: item.id, key: item.key, queue: item.queue ?? 'default', priority: item.priority ?? 0, dependsOn: item.dependsOn ?? [], title: item.title.slice(0, 120), ...(item.by ? { by: item.by } : {}), status: item.status,
     generation: item.generation, maxAttempts: item.maxAttempts, progressVersion: item.progress.version,
-    claim: state.workQueue?.claims.find(claim => claim.id === item.claimId),
+    claim, ...(member ? { member } : {}),
     error: item.error?.slice(0, 180),
-  })) };
+  }; }) };
 }
 
 const WORK_STATUSES = ['pending', 'claimed', 'completed', 'failed', 'cancelled'];

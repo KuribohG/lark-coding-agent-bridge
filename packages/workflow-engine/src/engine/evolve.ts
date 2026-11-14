@@ -25,6 +25,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
     case 'restart_resume_disabled': state.restart = { ...state.restart!, resume: false }; return;
     case 'clock_resumed': state.deadlineAt = event.deadlineAt; state.restart = undefined; return;
     case 'deadline_extended': state.deadlineAt = event.deadlineAt; return;
+    case 'concurrency_changed': state.definition.maxConcurrentWorkers = event.maxConcurrentWorkers; return;
     case 'artifact_added': state.artifacts.push(event.artifact); return;
     case 'notice_raised': state.events.push(event.notice); return;
     case 'notices_acknowledged':
@@ -265,6 +266,18 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
     case 'swarm_member_revived': {
       const member = swarm(state, event.swarmId).members.find(item => item.name === event.member)!;
       member.stopped = undefined; member.detail = undefined; member.lastWake = undefined;
+      if (event.auto) member.autoRevived = (member.autoRevived ?? 0) + 1;
+      return;
+    }
+    case 'swarm_queue_starved': {
+      const entry = ((swarm(state, event.swarmId).starved ??= {})[event.queue] ??= { since: event.at });
+      if (event.told === 'lead') entry.leadAt = event.at;
+      if (event.told === 'main') entry.mainAt = event.at;
+      return;
+    }
+    case 'swarm_queue_fed': {
+      const found = swarm(state, event.swarmId);
+      if (found.starved) { delete found.starved[event.queue]; if (!Object.keys(found.starved).length) found.starved = undefined; }
       return;
     }
     case 'swarm_turns_extended': {

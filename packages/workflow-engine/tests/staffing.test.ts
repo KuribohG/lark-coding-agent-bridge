@@ -10,7 +10,8 @@ type Behaviour = 'fail-after-claim' | 'hold' | 'drain';
 describe('staffing a running swarm from the main agent', () => {
   it('revives a failed member, adds one and raises the wake-up limit without a replay', async () => {
     const root: WorkflowRoot = { scopeId: 'chat', profile: 'embedded', agentKind: 'custom-agent', cwdRealpath: '/repo', policyFingerprint: 'policy', catalogBinding: 'main', modelSettings: {} };
-    const plan: Record<string, Behaviour[]> = { w0: ['fail-after-claim', 'drain'], w1: ['hold'] };
+    // The engine retries a failed turn once itself, so w0 stops at its second failure.
+    const plan: Record<string, Behaviour[]> = { w0: ['fail-after-claim', 'fail-after-claim', 'drain'], w1: ['hold'] };
     const turns: string[] = [];
     let release!: () => void;
     const held = new Promise<void>(resolve => { release = resolve; });
@@ -51,12 +52,14 @@ describe('staffing a running swarm from the main agent', () => {
         catch (error) { if (!(error instanceof Error && error.message.startsWith('stateVersion conflict'))) throw error; }
       }
     };
-    const member = (name: string) => (state().swarms![0]!.members.find(item => item.name === name) ?? {}) as { stopped?: string; turns?: number; queue?: string };
+    const member = (name: string) => (state().swarms![0]!.members.find(item => item.name === name) ?? {}) as { stopped?: string; turns?: number; queue?: string; autoRevived?: number };
     await call('run_script', { goal: 'Drain a queue', plan: 'Two members consume six items.', maxAgents: 32, maxConcurrent: 4,
       script: 'const s = swarm("Claim and finish the queued work", {key:"crew", maxTurns:1, members:[{name:"w0",queue:"default",role:"fixer"},{name:"w1",queue:"default"}]});'
         + 'for (let i = 0; i < 6; i++) await enqueueWork({key:"item-"+i, title:"Item "+i, input:i});'
         + 'await closeWorkQueue({key:"closed"}); return await s;' });
     await vi.waitFor(async () => { await runtime.tick(); expect(member('w0').stopped).toBe('failed'); });
+    expect(member('w0').autoRevived).toBe(1);
+    expect(state().events.filter(event => event.kind === 'swarm_attention')).toMatchObject([{ summary: expect.stringContaining('成员 w0 失败并已停止（已自动重试一次）') }]);
     // w1 still holds an item, so the swarm is alive with nobody to take the rest.
     expect(state().workQueue!.items.filter(item => item.status === 'completed')).toHaveLength(0);
 
@@ -65,8 +68,12 @@ describe('staffing a running swarm from the main agent', () => {
     await expect(call('staff_swarm', { maxTurns: 4097 })).rejects.toThrow('between 1 and 4096');
     await expect(call('staff_swarm', { swarm: 'other', add: ['x'] })).rejects.toThrow('No running swarm');
     await expect(call('staff_swarm', { add: ['w1'] })).rejects.toThrow('already used');
-    await expect(call('staff_swarm', {})).rejects.toThrow('needs add, revive, retire or maxTurns');
+    await expect(call('staff_swarm', {})).rejects.toThrow('needs add, revive, retire, maxTurns or maxConcurrent');
     await expect(call('staff_swarm', { retire: ['ghost'] })).rejects.toThrow('Unknown swarm member');
+    // The number of workers that run at once follows the staff without a replay, and needs no state version.
+    await expect(call('staff_swarm', { maxConcurrent: 257 })).rejects.toThrow('between 1 and 256');
+    expect(await callWorkflow('staff_swarm', { operationId: randomUUID(), workflowId: state().workflowId, maxConcurrent: 8 }, main.env)).toMatchObject({ swarm: 'crew', maxConcurrent: 8 });
+    expect(state().definition.maxConcurrentWorkers).toBe(8);
     expect(await call('staff_swarm', { revive: 'failed', add: ['w2'], like: 'w0', maxTurns: 4 })).toMatchObject({ swarm: 'crew', revived: ['w0'], added: ['w2'], maxTurns: 4 });
     expect(member('w0').stopped).toBeUndefined();
     expect(member('w2')).toMatchObject({ queue: 'default', role: 'fixer' });
@@ -76,7 +83,7 @@ describe('staffing a running swarm from the main agent', () => {
     await vi.waitFor(async () => { await runtime.tick(); expect(state().script?.status).toBe('result_ready'); }, { timeout: 5000 });
     expect(state().workQueue!.items.every(item => item.status === 'completed')).toBe(true);
     // The revived member retried its failed turn in the same session; the newcomer took part of the queue.
-    expect(turns.filter(turn => turn.startsWith('w0'))).toEqual(['w0:fail-after-claim', 'w0:drain']);
+    expect(turns.filter(turn => turn.startsWith('w0'))).toEqual(['w0:fail-after-claim', 'w0:fail-after-claim', 'w0:drain']);
     expect(turns).toContain('w2:drain');
     expect(state().swarms![0]).toMatchObject({ status: 'done', maxTurns: 4 });
   }, 30_000);
