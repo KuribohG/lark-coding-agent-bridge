@@ -21,7 +21,7 @@ script 是支持顶层 await/return 的 JS 函数体，无 import/process/requir
 ${WORKFLOW_SCHEDULING_INSTRUCTIONS}
 ${STAFF_SWARM}
 run_script/replay_script 后结束 turn，子任务由 bridge 管理。仅在整体结束、失败、worker 回复主 agent（worker_reply 事件）或 swarm 停滞（swarm_stalled：全员空闲、lead 未结束；仍等待，发帖、入队或 staff_swarm 可续跑）时唤醒主会话。tell_worker(target,text) 把一段话作为用户消息插进正在运行的 worker 会话（target 为 taskId、成员名或脚本 key）；worker 可用 reply_main 答复一次，worker_messages 读取往来记录。内部事件不是用户消息或原生问题答案。不要读取或展示环境中的调用凭据。worker 仅可执行原始需求授权的任务；主、子运行沿用已授权 profile，角色说明不代表工具沙箱隔离。
-以上是常用部分。讨论（discuss）、复核与推测执行（reviewedAgent、speculativeAgent）、成员间直接收发消息与事件等待（send、receive、waitFor、waitWork、sleep）、任务句柄（joinTask、cancelTask、raceTasks）、Git 工作树与落地（createWorkspace、configureLanding 等）、子工作流（workflowTool）不在本说明里：脚本要用到其中任何一项之前，先运行 node "$AGENT_WORKFLOW_CLI" workflow guide 读取完整说明，不要凭记忆猜参数。`;
+以上是常用部分。讨论（discuss）、复核（reviewedAgent）、成员间直接收发消息与事件等待（send、receive、waitFor、waitWork、sleep）、任务句柄（joinTask、cancelTask、raceTasks）、Git 工作树与落地（createWorkspace、configureLanding 等）、子工作流（workflowTool）不在本说明里：脚本要用到其中任何一项之前，先运行 node "$AGENT_WORKFLOW_CLI" workflow guide 读取完整说明，不要凭记忆猜参数。`;
 
 /** Everything a script author may need: the per-turn instructions plus the less common script functions. Printed by `workflow guide`. */
 export const WORKFLOW_GUIDE = `${WORKFLOW_TOOL_INSTRUCTIONS}

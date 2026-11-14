@@ -18,7 +18,7 @@ describe('workflow tool plugins', () => {
 
   it('keeps the per-turn instructions short and leaves the less common script functions to the guide', () => {
     for (const name of ['agent(', 'parallel', 'swarm(', 'enqueueWork', 'closeWorkQueue', 'post(', 'staff_swarm', 'workflow guide']) expect(WORKFLOW_TOOL_INSTRUCTIONS, name).toContain(name);
-    const advanced = ['discuss(topic', 'reviewedAgent(prompt', 'speculativeAgent(prompt', 'freezeWorkspace', 'configureLanding(', 'raceTasks(', 'waitFor({'];
+    const advanced = ['discuss(topic', 'reviewedAgent(prompt', 'freezeWorkspace', 'configureLanding(', 'raceTasks(', 'waitFor({'];
     for (const name of advanced) {
       expect(WORKFLOW_TOOL_INSTRUCTIONS, name).not.toContain(name);
       expect(WORKFLOW_GUIDE, name).toContain(name);
