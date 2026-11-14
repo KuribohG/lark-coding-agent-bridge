@@ -319,7 +319,7 @@ export class ScriptApi {
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid mailbox call');
       const args = input as Record<string, unknown>;
       const board = args.kind === 'post' || args.kind === 'board';
-      const allowed = args.kind === 'post' ? ['kind', 'key', 'text', 'to'] : args.kind === 'board' ? ['kind', 'key', 'after', 'limit', 'member']
+      const allowed = args.kind === 'post' ? ['kind', 'key', 'text', 'to', 'topic'] : args.kind === 'board' ? ['kind', 'key', 'after', 'limit', 'member', 'topic']
         : ['kind', 'member', 'text', 'key', 'topic', 'correlationId', 'relayFrom'];
       if (Object.keys(args).some(key => !allowed.includes(key))) throw new Error('Unsupported mailbox option');
       if (args.kind !== 'send' && args.kind !== 'receive' && !board) throw new Error('Unknown mailbox operation');

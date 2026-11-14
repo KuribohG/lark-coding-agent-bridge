@@ -1,4 +1,5 @@
 import type { DomainEvent } from './events';
+import { BOARD_DEFAULT_TOPIC, BOARD_TOPIC_RECENT } from './limits';
 import { CALL_KINDS, RECORDS } from './records';
 import type { Immutable, MailboxMessage, MailboxReceipt, StoredTask, WorkflowData, WorkflowView, WorkflowWait, WorkflowWorkItem, WorkflowWorkQueue } from './types';
 
@@ -179,6 +180,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       for (const receipt of box.receipts) if (event.receiptIds.includes(receipt.id)) receipt.turnId = event.task.taskId;
       const agent = state.agents!.find(item => item.agentId === event.task.agentId)!;
       agent.activeTurnId = event.task.taskId; agent.wait = undefined;
+      agent.boardSeq = (state.board?.posts.length ?? 0) + (state.archivedRecords?.post ?? 0);
       state.tasks.push(event.task);
       return;
     }
@@ -212,7 +214,12 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
     }
     case 'direct_message_recorded': (state.direct ??= []).push(event.message); return;
     case 'board_posted': {
-      (state.board ??= { posts: [] }).posts.push(event.post);
+      const board = state.board ??= { posts: [] };
+      board.posts.push(event.post);
+      const topic = (board.topics ??= {})[event.post.topic ?? BOARD_DEFAULT_TOPIC] ??= { posts: 0, recent: [] };
+      topic.posts++;
+      topic.recent.push(event.post.seq);
+      if (topic.recent.length > BOARD_TOPIC_RECENT) topic.recent.shift();
       if (!event.deliveries.length) return;
       const box = mailbox(state);
       box.messages.push(...event.deliveries);

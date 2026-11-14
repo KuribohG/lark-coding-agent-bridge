@@ -6,10 +6,11 @@ import type { DomainEvent } from './events';
 import { boardTotal, callCount, pushEvent, readArtifact, taskById } from './kernel-state';
 import { emit, readText } from './kernel-store';
 import { SWARM_DECLARED_MEMBERS, SWARM_MAX_MEMBERS, SWARM_MAX_TURNS } from './limits';
+import { workerSelection } from './execution';
 import { boundedInteger, parseScriptAgentCall, scriptText } from './script-contract';
 import { availableWork, openQueue, unfinishedWork, workStatus } from './work-queue';
 import { queueControl, queueName } from './work-routing';
-import type { Immutable, NativeIdKind, SwarmMember, WorkerExecution, WorkerExecutionPolicy, WorkflowSwarm, WorkflowTask, WorkflowView } from './types';
+import type { Immutable, NativeIdKind, SwarmMember, WorkerExecution, WorkerExecutionPolicy, WorkerExecutionSelection, WorkflowSwarm, WorkflowTask, WorkflowView } from './types';
 
 const BUSY = new Set<WorkflowTask['status']>(['queued', 'starting', 'running', 'cancelling', 'waiting_workflow']);
 const NAME = /^[A-Za-z0-9_.-]{1,40}$/;
@@ -105,6 +106,7 @@ function rules(swarm: SwarmView, member: MemberView): string {
   return [
     'How the swarm works:',
     '- The board is one ordered feed that every member can read. Post with post_board and name who must act in "to" (member names, or "all"); read with read_board.',
+    '- Give each post the topic of its workstream and keep that name; read and search one topic at a time instead of the whole feed. Topic "announce" carries rules and rulings from the lead and the main agent: the new ones are in read_context (board.announcements) every turn, and they bind you.',
     '- Your turn ends with your final answer. You then sleep at no cost and are woken only when a post names you; those posts arrive in read_context (member.messages).',
     '- Post results, questions, hand-offs and blockers that others need, with enough detail to act on. Do not post acknowledgements or thanks: every post that names a member costs that member a turn.',
     (lead ? '- Your wake-ups are not limited, but while other members are working the posts that name you are gathered and you are woken for them every few minutes, so handle everything that has arrived in one turn.'
@@ -112,11 +114,12 @@ function rules(swarm: SwarmView, member: MemberView): string {
       + ' Save a checkpoint of your working state before ending a turn. Your final answer is a short status note for the workflow log; teammates only see board posts.',
     ...(member.queue ? [
       `- You consume work queue "${member.queue}" and are also woken when it has work you can claim. Use claim_work to take an item, read item.progress before acting, save checkpoint_work, renew long-running claims, then complete_work or fail_work. Continue until claim_work returns null, then end the turn; do not poll or sleep waiting for work.`,
+      '- Do not post a report when you complete an item: the result you give complete_work is the report, and search_work finds it. Post only what someone else must act on.',
     ] : []),
     ...(lead ? [
       '- You are the lead. You split the work, assign it on the board, judge results and decide when the swarm is done. The system posts to you when a member fails and when everyone has gone idle.',
       '- Idle members and an empty queue do not mean the task is done. The swarm ends only when you call swarm_finish, so judge the goal on evidence (test output, measurements) rather than on reports; while it is not met, have members find what is missing and hand that out.',
-      '- staff_swarm adds members while the swarm runs, retires them and revives failed ones. Call swarm_finish with the final result once the goal is met or cannot progress, stating which and what remains; the swarm ends when the turns still running have finished.',
+      '- Post rules and rulings that every member must follow in topic "announce" instead of naming all: members get them at their next turn without being woken. staff_swarm adds members while the swarm runs, retires them and revives failed ones. Call swarm_finish with the final result once the goal is met or cannot progress, stating which and what remains; the swarm ends when the turns still running have finished.',
     ] : swarm.lead ? [`- @${swarm.lead} is the lead: it assigns work and decides when the swarm is done. Report results and blockers to it. When you have nothing to report and need nothing, end the turn without posting.`]
       : ['- When you need nothing from anyone and have nothing to report, end the turn without posting. The swarm finishes when everyone is asleep.']),
   ].join('\n');
@@ -132,7 +135,7 @@ function openingPrompt(swarm: SwarmView, member: MemberView): string {
 
 function wakePrompt(swarm: SwarmView, member: MemberView): string {
   return `Swarm "${swarm.key}", wake-up ${member.turns + 1}${swarm.lead === member.name ? '' : ' of at most ' + swarm.maxTurns}: board posts that name you are in read_context (member.messages). `
-    + 'Act on them, use read_board for wider context, and post what others need.'
+    + 'Follow the new announcements in read_context (board.announcements). Act on the posts, use read_board for wider context, and post what others need.'
     + (member.queue ? ` Then consume queue "${member.queue}" with claim_work until it returns null; you may have been woken for new work alone.` : '') + ' End with a short status note.';
 }
 
@@ -285,17 +288,45 @@ function runningSwarm(state: WorkflowView, key: unknown): SwarmView {
   return swarm;
 }
 
+const EXECUTION_OPTIONS = ['harness', 'model', 'reasoningEffort'];
+
+/** The member whose binding, role and queue new members take over. */
+function likeMember(swarm: SwarmView, like: unknown): MemberView {
+  const found = like === undefined ? swarm.members.find(member => member.name !== swarm.lead) ?? swarm.members[0]! : swarm.members.find(member => member.name === like);
+  if (!found) throw new Error('like must name an existing member of this swarm');
+  return found;
+}
+
+/**
+ * The harness and model `staff_swarm` asks for when it does not bind its new members like an existing one; undefined
+ * when it does. What is not named comes from the `like` member, except that another harness does not inherit a model.
+ * The host resolves the selection to an execution binding before `staffSwarm` runs.
+ */
+export function staffSelection(state: WorkflowView, input: Record<string, unknown>, policy?: WorkerExecutionPolicy): WorkerExecutionSelection | undefined {
+  if (!EXECUTION_OPTIONS.some(option => input[option] !== undefined)) return undefined;
+  if (input.add === undefined) throw new Error('harness, model and reasoningEffort bind the members that add names');
+  const { execution } = likeMember(runningSwarm(state, input.swarm), input.like);
+  const harness = input.harness ?? execution.agentKind;
+  const { model, reasoningEffort } = harness === execution.agentKind ? execution.modelSettings : {} as WorkerExecution['modelSettings'];
+  return workerSelection({ agentKind: harness, ...(model ? { model } : {}), ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(input.model !== undefined ? { model: input.model } : {}), ...(input.reasoningEffort !== undefined ? { reasoningEffort: input.reasoningEffort } : {}) }, state.root, policy);
+}
+
 /**
  * Changes to the staff of a running swarm, by the main agent or by the swarm's lead, so that staffing can follow
  * the work without a replay: more members, more wake-ups, failed members put back to work, members retired.
- * A new member runs with the execution binding of an existing one, so nobody reaches harnesses or models that
- * were not authorized.
+ * A new member runs with the execution binding of an existing one, or with `execution`: the binding the host resolved
+ * for the harness and model the main agent named (see `staffSelection`). A lead cannot name them, so a member
+ * never reaches harnesses or models beyond those the script and the main agent chose.
  */
-export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, lead?: string): unknown {
-  if (Object.keys(input).some(key => !['swarm', 'add', 'like', 'queue', 'role', 'brief', 'revive', 'retire', 'maxTurns'].includes(key))) throw new Error('staff_swarm supports swarm, add, like, queue, role, brief, revive, retire and maxTurns');
+export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, lead?: string, execution?: WorkerExecution): unknown {
+  if (Object.keys(input).some(key => !['swarm', 'add', 'like', 'queue', 'role', 'brief', 'revive', 'retire', 'maxTurns', ...EXECUTION_OPTIONS].includes(key))) throw new Error('staff_swarm supports swarm, add, like, harness, model, reasoningEffort, queue, role, brief, revive, retire and maxTurns');
+  const chosen = EXECUTION_OPTIONS.some(option => input[option] !== undefined);
+  if (chosen && lead !== undefined) throw new Error('Only the main agent can choose the harness or model of new members; a lead adds members like an existing one');
+  if (chosen && !execution) throw new Error('The harness and model of the new members were not resolved');
   const swarm = lead === undefined ? runningSwarm(state, input.swarm) : leadSwarm(state, lead);
   if (input.add === undefined && input.revive === undefined && input.retire === undefined && input.maxTurns === undefined) throw new Error('staff_swarm needs add, revive, retire or maxTurns');
-  const result: { swarm: string; added?: string[]; revived?: string[]; retired?: string[]; maxTurns?: number } = { swarm: swarm.key };
+  const result: { swarm: string; added?: string[]; revived?: string[]; retired?: string[]; maxTurns?: number; execution?: WorkerExecutionSelection } = { swarm: swarm.key };
   if (input.maxTurns !== undefined) {
     const maxTurns = boundedInteger(input.maxTurns, swarm.maxTurns, 1, SWARM_MAX_TURNS);
     if (maxTurns < swarm.maxTurns) throw new Error(`maxTurns can only be raised; it is ${swarm.maxTurns}`);
@@ -336,18 +367,19 @@ export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, 
     const names = input.add.map(memberName);
     if (new Set(names).size !== names.length) throw new Error('Member names must be unique');
     if (swarm.members.length + names.length > SWARM_MAX_MEMBERS) throw new Error(`A swarm holds at most ${SWARM_MAX_MEMBERS} members, retired ones included`);
-    const like = input.like === undefined ? swarm.members.find(member => member.name !== swarm.lead) ?? swarm.members[0]! : swarm.members.find(member => member.name === input.like);
-    if (!like) throw new Error('like must name an existing member of this swarm');
+    const like = likeMember(swarm, input.like);
+    const binding = chosen ? execution! : like.execution as WorkerExecution;
     const queue = input.queue === undefined ? like.queue : queueName(input.queue);
     const brief = input.brief === undefined ? undefined : scriptText(input.brief, 'member brief', 4000);
     const described = input.role === undefined ? like.role : role(input.role);
     if (queue) openQueue(state, queue);
     for (const name of names) {
       if (nameTaken(state, name)) throw new Error('Member name is already used in this workflow: ' + name);
-      emit(state, { type: 'swarm_member_added', swarmId: swarm.id, member: { name, execution: like.execution as WorkerExecution, turns: 0, added: true,
+      emit(state, { type: 'swarm_member_added', swarmId: swarm.id, member: { name, execution: binding, turns: 0, added: true,
         ...(described !== undefined ? { role: described } : {}), ...(brief !== undefined ? { brief } : {}), ...(like.workflowTool ? { workflowTool: true } : {}), ...(queue ? { queue } : {}) } });
     }
     result.added = names;
+    if (chosen) result.execution = { agentKind: binding.agentKind, ...binding.modelSettings };
   }
   return result;
 }
@@ -361,7 +393,12 @@ export function finishSwarm(state: WorkflowView, caller: string, input: Record<s
 function memberSummary(state: WorkflowView, swarm: SwarmView, member: MemberView) {
   const task = taskById(state, member.taskId);
   const status = member.stopped ?? (task && BUSY.has(task.status) ? 'running' : swarm.status === 'running' ? 'waiting' : member.name !== swarm.lead && member.turns >= swarm.maxTurns ? 'max_turns' : 'idle');
-  return { name: member.name, ...(member.name === swarm.lead ? { lead: true } : {}), ...(member.queue ? { queue: member.queue } : {}), ...(member.added ? { added: true } : {}), turns: member.turns, status,
+  const usual = likeMember(swarm, undefined).execution;
+  const model = member.execution.modelSettings.model;
+  return { name: member.name, ...(member.name === swarm.lead ? { lead: true } : {}), ...(member.queue ? { queue: member.queue } : {}), ...(member.added ? { added: true } : {}),
+    // Only the members bound unlike the rest carry their binding, which keeps a large swarm's summary short.
+    ...(member.execution.agentKind !== usual.agentKind ? { harness: member.execution.agentKind } : {}),
+    ...(model && (model !== usual.modelSettings.model || member.execution.agentKind !== usual.agentKind) ? { model } : {}), turns: member.turns, status,
     ...(member.detail ? { error: member.detail } : {}) };
 }
 

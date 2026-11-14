@@ -1,8 +1,11 @@
+import { SWARM_MAX_TURNS } from '../limits';
 import { BUILTIN_WORKFLOW_TOOLS } from './registry';
 import { WORKFLOW_ADVANCED_SCRIPT_GUIDE, WORKFLOW_SCHEDULING_INSTRUCTIONS } from './script-guide';
 import type { WorkflowTask } from '../types';
 
 const tools = BUILTIN_WORKFLOW_TOOLS;
+
+const STAFF_SWARM = `staff_swarm 不重放即可调整运行中的 swarm（swarm 为其 key，只有一个时可省略）：add 为新成员名数组（1–64 个），沿用 like 成员（默认第一个非 lead 成员）的执行器、模型、角色和队列，harness/model/reasoningEffort、queue、role 可另行指定（换 harness 不沿用模型）；revive 为 "failed" 或成员名数组，让失败成员在原会话重试上一轮；retire 为成员名数组，跑完当前一轮后不再唤醒；maxTurns 提高每名成员的唤醒次数上限（只增不减，最多 ${SWARM_MAX_TURNS}）。成员失败、工作重心变化或需要另一种模型时用它，不要重放脚本。`;
 
 export const WORKFLOW_TOOL_INSTRUCTIONS = `工作流工具通过 shell 调用：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。环境里的 CLI 路径属于当前 bridge 版本。
 工作流模式由 bridge 的 /workflow 命令路由决定，不根据自然语言或任务类型推断。仅 /workflow start 或 /workflow script 命令授权的启动轮可调用 run_script；内部完成事件只允许继续处理已绑定的工作流，不能新建。普通消息不能新建工作流；话题里已有工作流时，普通消息轮可以查看和干预它。
@@ -16,7 +19,7 @@ script 是支持顶层 await/return 的 JS 函数体，无 import/process/requir
 队列由 swarm 成员消费：在 swarm 的成员上写 queue:"队列名"，bridge 在该队列有可领工作时唤醒它。无可领任务时持久等待，不占 worker 进程；新任务或回收的认领可触发新轮次，完成轮次复用原生会话。失败/取消的成员在本次运行停止，其余成员继续接管；显式重放才可重试其原轮次。生产完毕调用 await closeWorkQueue({key})；并行生产时先启动 swarm（不 await），生产并关闭队列后再 await 它。用户也可 /workflow enqueue <工作项JSON> 和 /workflow close。关闭后拒绝新项，重放仍可复用已入队项；暂停后入队或关闭不会自动恢复执行。空队列仍占一个有时限的脚本解释器，不占 worker。
 普通 agent() 重放只复用 key/输入/执行绑定（包括模型）匹配的成功任务；外部状态变化应写入输入或换 key。未启用子 workflow 的一次性任务失败后重放用新会话；带 member 的任务保持成员身份和原生会话，重试原逻辑轮次。副作用不保证 exactly-once。暂停会取消在途 worker，resume 从头重放并复用完成结果。Bridge 重启时正在运行的根工作流会自动重放续跑，停机时间不计入截止时间；暂停的或无法自动续跑的保持中断，需 replay_script 或用户 /workflow resume。脚本结果是 workflow-result 产物，主 agent read_artifact、ack_events 后 complete；也可发布 report 后完成。
 ${WORKFLOW_SCHEDULING_INSTRUCTIONS}
-staff_swarm 在不重放的情况下调整运行中的 swarm（swarm 为它的 key，只有一个在跑时可省略）：add 为新成员名数组（1–64 个），沿用 like 指定成员（默认第一个非 lead 成员）的执行器、模型、角色和队列，queue/role 可另行指定；revive 为 "failed" 或成员名数组，让失败的成员在原会话里重试上一轮并恢复被唤醒；retire 为成员名数组，让成员跑完当前一轮后不再被唤醒；maxTurns 提高每名成员可被唤醒的次数（只增不减，最多 64）。成员失败后队列里的活没人领、或工作重心变了时用它，而不是重放脚本。
+${STAFF_SWARM}
 run_script/replay_script 后结束 turn，子任务由 bridge 管理。仅在整体结束、失败、worker 回复主 agent（worker_reply 事件）或 swarm 停滞（swarm_stalled：全员空闲、lead 未结束；仍等待，发帖、入队或 staff_swarm 可续跑）时唤醒主会话。tell_worker(target,text) 把一段话作为用户消息插进正在运行的 worker 会话（target 为 taskId、成员名或脚本 key）；worker 可用 reply_main 答复一次，worker_messages 读取往来记录。内部事件不是用户消息或原生问题答案。不要读取或展示环境中的调用凭据。worker 仅可执行原始需求授权的任务；主、子运行沿用已授权 profile，角色说明不代表工具沙箱隔离。
 以上是常用部分。讨论（discuss）、复核与推测执行（reviewedAgent、speculativeAgent）、成员间直接收发消息与事件等待（send、receive、waitFor、waitWork、sleep）、任务句柄（joinTask、cancelTask、raceTasks）、Git 工作树与落地（createWorkspace、configureLanding 等）、子工作流（workflowTool）不在本说明里：脚本要用到其中任何一项之前，先运行 node "$AGENT_WORKFLOW_CLI" workflow guide 读取完整说明，不要凭记忆猜参数。`;
 
@@ -36,7 +39,7 @@ export const WORKFLOW_MESSAGE_INSTRUCTIONS = `本话题有一个 bridge 管理�
 调用方式：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。status 返回有上限的摘要，列表略去的条数见 omitted，用 status({list,offset?,limit?}) 翻页；变更需要 workflowId、唯一 operationId、expectedStateVersion（取自 status），冲突时重读 status。
 操作：${tools.mainOperations()}。
 tell_worker(target,text) 把一段话作为用户消息插进正在运行的 worker 会话（target 为 taskId、成员名或脚本 key），用于中途纠偏或提问；返回 accepted 表示已送达会话，inactive 表示它没有在跑的轮次（持久成员改用 post_board 点名）。worker 用 reply_main 答复时你会被唤醒，worker_messages 读取往来记录。
-staff_swarm 在不重放的情况下调整运行中的 swarm（swarm 为它的 key，只有一个在跑时可省略）：add 为新成员名数组（1–64 个），沿用 like 指定成员（默认第一个非 lead 成员）的执行器、模型、角色和队列，queue/role 可另行指定；revive 为 "failed" 或成员名数组，让失败的成员在原会话里重试上一轮并恢复被唤醒；retire 为成员名数组，让成员跑完当前一轮后不再被唤醒；maxTurns 提高每名成员可被唤醒的次数（只增不减，最多 64）。成员失败后队列里的活没人领、或工作重心变了时用它，而不是重放脚本。
+${STAFF_SWARM}
 本轮不能 run_script 新建工作流。改脚本重放（replay_script，须同时更新 plan）前，用 read_artifact 读取 status 里 script.sourceRef、script.planRef 指向的现行脚本和方案；脚本 API 的完整说明不在上下文里时运行 node "$AGENT_WORKFLOW_CLI" workflow guide。暂停、取消、重放等会中断在途 worker 的操作，只在用户明确要求或同意后执行。不要读取或展示环境中的调用凭据。`;
 
 const MEMBER_PREAMBLE = `你是 bridge 管理的持久工作流成员。遵守原始需求授权，只处理本轮输入，最终答复结束本轮并释放执行资源。角色说明不改变实际权限。不要发送外部消息或派生子 agent。

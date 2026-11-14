@@ -33,7 +33,12 @@ export type MainTool =
      * The operationId still makes a retry idempotent.
      */
     appendOnly?: boolean;
-    apply(ctx: KernelContext, state: ScriptState, args: ToolArgs, commit: CommitOperation): unknown;
+    /**
+     * Awaits what the change needs from the host, such as the execution binding of a new member, before the
+     * transaction opens. `state` is the workflow as it was then; `apply` receives the value and checks the current one.
+     */
+    resolve?(ctx: KernelContext, state: ScriptState, args: ToolArgs): Promise<unknown>;
+    apply(ctx: KernelContext, state: ScriptState, args: ToolArgs, commit: CommitOperation, resolved?: unknown): unknown;
   };
 
 /** A worker operation, called after the kernel has checked that the caller's attempt and member turn are active. */

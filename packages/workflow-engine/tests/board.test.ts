@@ -75,6 +75,46 @@ describe('workflow message board', () => {
     expect(box.messages.filter(message => message.consumedByTurnId).map(message => message.post)).toEqual([2, 3]);
   });
 
+  it('files posts under topics, filters reads by them and hands new announcements to a member without waking it', async () => {
+    const h = harness(); await h.start(); await h.bootstrap('dev'); await h.bootstrap('qa');
+    expect(await h.call('post_board', { text: 'Parser plan: split the lexer first', topic: 'Parser' })).toMatchObject({ seq: 1, topic: 'parser', to: [] });
+    expect(await h.call('post_board', { text: 'Rule: land through submit_work only', topic: 'announce' })).toMatchObject({ seq: 2, topic: 'announce', to: [] });
+    expect((await h.mail({ kind: 'post', key: 'note', text: 'Rule drafts live in docs/' })).result).not.toHaveProperty('topic');
+    await expect(h.call('post_board', { text: 'hello', topic: 'two words' })).rejects.toThrow('A board topic is');
+
+    expect(await h.call('read_board', { topic: 'parser' })).toMatchObject({ posts: [{ seq: 1, topic: 'parser' }], lastSeq: 3,
+      topics: expect.arrayContaining([{ topic: 'general', posts: 1, lastSeq: 3 }, { topic: 'parser', posts: 1, lastSeq: 1 }, { topic: 'announce', posts: 1, lastSeq: 2 }]) });
+    expect((await h.call('read_board', { topic: 'general' }) as { posts: unknown[] }).posts).toMatchObject([{ seq: 3, from: 'script' }]);
+    expect(await h.call('search_board', { query: 'rule' })).toMatchObject({ matches: 2 });
+    expect(await h.call('search_board', { query: 'rule', topic: 'announce' })).toMatchObject({ matches: 1, posts: [{ seq: 2, topic: 'announce' }] });
+    // A script read is replayed against a recorded position, so it does not carry the topic list of the moment.
+    expect((await h.mail({ kind: 'board', key: 'read-parser', topic: 'parser' })).result).toEqual({ posts: [expect.objectContaining({ seq: 1 })], lastSeq: 3, hasMore: false });
+
+    type Digest = { board: { since: number; lastSeq: number; topics: Array<Record<string, unknown>>; announcements: Array<Record<string, unknown>>; moreAnnouncements?: number } };
+    // Nobody named dev, yet its next turn is told about the announcement and what each topic gained.
+    await h.agent('dev', 'dev-2'); const second = await h.run();
+    const told = await h.worker(second, 'read_context') as Digest & { member: { messages: unknown[] } };
+    expect(told.member.messages).toEqual([]);
+    expect(told.board).toMatchObject({ since: 0, lastSeq: 3, announcements: [{ seq: 2, from: 'main', topic: 'announce', text: 'Rule: land through submit_work only' }] });
+    expect(told.board.topics).toEqual(expect.arrayContaining([{ topic: 'parser', posts: 1, lastSeq: 1, new: 1 }, { topic: 'general', posts: 1, lastSeq: 3, new: 1 }]));
+    // Rules come from the main agent, the script and a swarm's lead; any member may post in the other topics.
+    await expect(h.worker(second, 'post_board', { operationId: 'rule', text: 'Rule: mine', topic: 'announce' })).rejects.toThrow('Topic "announce" is for rules and rulings');
+    expect(await h.worker(second, 'post_board', { operationId: 'progress', text: 'Lexer split', topic: 'parser' })).toMatchObject({ seq: 4, topic: 'parser' });
+    await h.finish(second);
+
+    for (let n = 0; n < 7; n++) await h.call('post_board', { text: 'Ruling ' + n, topic: 'announce' });
+    await h.agent('dev', 'dev-3'); const third = await h.run();
+    const later = (await h.worker(third, 'read_context') as Digest).board;
+    // Only what came after the previous turn was scheduled is new; the latest five rulings are given in full.
+    expect(later).toMatchObject({ since: 3, lastSeq: 11, moreAnnouncements: 2 });
+    expect(later.announcements.map(post => post.text)).toEqual(['Ruling 2', 'Ruling 3', 'Ruling 4', 'Ruling 5', 'Ruling 6']);
+    expect(later.topics).toEqual(expect.arrayContaining([{ topic: 'announce', posts: 8, lastSeq: 11, new: 7 }, { topic: 'parser', posts: 2, lastSeq: 4, new: 1 }, { topic: 'general', posts: 1, lastSeq: 3, new: 0 }]));
+    await h.finish(third);
+
+    for (let n = 0; n < 64; n++) await h.call('post_board', { text: 'stream ' + n, topic: 'stream-' + n }).catch(error => expect(String(error)).toContain('Board topic limit reached (64)'));
+    expect(Object.keys(h.state().board!.topics!)).toHaveLength(65);
+  });
+
   it('lets one-off workers read but not post, and replays a script read against the recorded feed position', async () => {
     const h = harness(); await h.start(); await h.bootstrap('dev');
     await h.call('post_board', { text: 'first' });
@@ -129,7 +169,7 @@ describe('workflow message board', () => {
 });
 
 describe('swarm', () => {
-  type Action = { post?: { text: string; to?: string[] }; call?: [string, Record<string, unknown>]; calls?: Array<[string, Record<string, unknown>]>; fail?: boolean; work?: boolean; hold?: Promise<void> };
+  type Action = { post?: { text: string; to?: string[]; topic?: string }; call?: [string, Record<string, unknown>]; calls?: Array<[string, Record<string, unknown>]>; fail?: boolean; work?: boolean; hold?: Promise<void> };
   /** Runs a script whose members act out `plan`: what each does on its nth turn (opening turn first). */
   async function play(script: string, plan: Record<string, Action[]>) {
     const root: WorkflowRoot = { scopeId: 'chat', profile: 'embedded', agentKind: 'custom-agent', cwdRealpath: '/repo',
@@ -242,6 +282,49 @@ describe('swarm', () => {
     expect(h.specs.find(spec => /You are member "lexer"/.test(spec.prompt))).toMatchObject({
       prompt: expect.stringContaining('Same empty-input bug as the parser'), execution: { modelSettings: { model: 'm2' } } });
     expect(h.specs[0]!.prompt).toContain('swarm_finish');
+  });
+
+  it('lets the main agent add members on another model, which a lead cannot, and lets the lead announce', async () => {
+    let release!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const h = await play('return await swarm("Prove and build", {key:"crew", lead:{name:"lead"}, members:[{name:"dev", reasoningEffort:"low"}]});', {
+      lead: [{ hold }, { calls: [['staff_swarm', { add: ['thief'], model: 'big' }], ['post_board', { text: 'Ruling: proofs come first', topic: 'announce' }], ['swarm_finish', { result: 'staffed' }]] }],
+      dev: [{ calls: [['post_board', { text: 'Ruling: mine', topic: 'announce' }]] }],
+    });
+    const state = () => h.runtime.kernel.state(h.root.scopeId)!;
+    const staff = async (args: Record<string, unknown>): Promise<unknown> => {
+      for (;;) {
+        try { return await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'staff_swarm', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion, ...args }); }
+        catch (error) { if (!(error instanceof Error && error.message.startsWith('stateVersion conflict'))) throw error; }
+      }
+    };
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(h.order).toEqual(expect.arrayContaining(['lead1', 'dev1'])); });
+
+    await expect(staff({ model: 'big' })).rejects.toThrow('bind the members that add names');
+    await expect(staff({ add: ['x'], model: 'default' })).rejects.toThrow('explicit nonempty model');
+    await expect(staff({ add: ['x'], harness: 'other-agent' })).rejects.toThrow('cross-harness');
+    // What is not named comes from the member the newcomers are bound like: dev runs at low effort.
+    expect(await staff({ add: ['prover'], model: 'big', reasoningEffort: 'high', brief: 'Prove the reduction sound' })).toMatchObject({
+      added: ['prover'], execution: { agentKind: 'custom-agent', model: 'big', reasoningEffort: 'high' } });
+    expect(await staff({ add: ['checker'], model: 'big' })).toMatchObject({ execution: { model: 'big', reasoningEffort: 'low' } });
+    expect(await staff({ add: ['dev2'] })).not.toHaveProperty('execution');
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(h.order).toEqual(expect.arrayContaining(['prover1', 'checker1', 'dev21'])); });
+    release();
+    await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'post_board', { operationId: randomUUID(), workflowId: state().workflowId, text: '@lead wrap up' });
+
+    const { result } = await h.settled();
+    expect(result).toMatchObject({ stop: 'finished', result: 'staffed' });
+    // Only the members bound unlike the usual one show their model.
+    expect(result.members).toMatchObject([{ name: 'lead' }, { name: 'dev' }, { name: 'prover', added: true, model: 'big' }, { name: 'checker', model: 'big' }, { name: 'dev2', added: true }]);
+    expect(result.members[1]).not.toHaveProperty('model');
+    expect(result.members[4]).not.toHaveProperty('model');
+    expect(h.specs.find(spec => /You are member "prover"/.test(spec.prompt))).toMatchObject({
+      prompt: expect.stringContaining('Prove the reduction sound'), execution: { modelSettings: { model: 'big', reasoningEffort: 'high' } } });
+    expect(h.specs.find(spec => /You are member "dev2"/.test(spec.prompt))).toMatchObject({ execution: { modelSettings: { model: 'm1', reasoningEffort: 'low' } } });
+    expect(h.errors).toEqual(expect.arrayContaining([expect.stringContaining('Topic "announce" is for rules and rulings'), expect.stringContaining('Only the main agent can choose the harness or model')]));
+    expect(h.errors).toHaveLength(2);
+    expect(state().swarms![0]!.members.map(member => member.name)).not.toContain('thief');
+    expect(state().board!.posts.find(post => post.topic === 'announce')).toMatchObject({ text: 'Ruling: proofs come first' });
   });
 
   it('reminds an idle lead, then reports a stall to the main agent and keeps waiting; only the lead may manage', async () => {

@@ -46,7 +46,7 @@ While a topic has a workflow, every ordinary message in it runs with that workfl
 
 ### Changing the staff of a running swarm
 
-`staff_swarm(swarm?, add?, like?, queue?, role?, brief?, revive?, retire?, maxTurns?)` lets the main agent adjust a running swarm without replaying the script; a swarm's lead has the same operation for its own swarm. `retire` names members that finish their current turn and are not woken again. `add` names new members, bound like an existing one (`like`, by default the first member that is not the lead) and taking its role and queue unless given; `revive` (`"failed"` or member names) puts failed members back to work by running their last turn again in the same native session; `maxTurns` raises the number of wake-ups per member. Use it when members have failed and queued work has nobody left to take it, or when the work has shifted from one queue to another. A swarm that has already ended cannot be staffed: that still takes a replay.
+`staff_swarm(swarm?, add?, like?, harness?, model?, reasoningEffort?, queue?, role?, brief?, revive?, retire?, maxTurns?)` lets the main agent adjust a running swarm without replaying the script; a swarm's lead has the same operation for its own swarm. `retire` names members that finish their current turn and are not woken again. `add` names new members, bound like an existing one (`like`, by default the first member that is not the lead) and taking its role and queue unless given. The main agent may bind them differently with `harness`, `model` and `reasoningEffort`, for example to add one member on a stronger model to a swarm of cheap ones: what it leaves out comes from `like`, except that another harness does not inherit the model, and the host checks and resolves the choice as it does for a script's members. The result then carries `execution`, and `status` shows `model` (and `harness`) on the members bound unlike the first member that is not the lead. A lead cannot name a harness or model, so members never reach beyond the ones the script and the main agent chose. `revive` (`"failed"` or member names) puts failed members back to work by running their last turn again in the same native session; `maxTurns` raises the number of wake-ups per member. Use it when members have failed and queued work has nobody left to take it, or when the work has shifted from one queue to another. A swarm that has already ended cannot be staffed: that still takes a replay.
 
 Claims no longer depend on members renewing a lease in time. While the turn that holds a claim is running, the engine extends the lease; the claim returns to the queue when the turn ends, is cancelled, or is stopped by the stall watchdog.
 
@@ -220,19 +220,32 @@ Every workflow has one message board: an ordered, append-only feed that all of i
 
 | Caller | Post | Read |
 | --- | --- | --- |
-| Persistent member | `post_board` with `{operationId, text, to?}` | `read_board` with `{after?, limit?, member?}` |
+| Persistent member | `post_board` with `{operationId, text, to?, topic?}` | `read_board` with `{after?, limit?, member?, topic?}` |
 | One-off worker | not allowed | `read_board` |
-| Main agent | `post_board(text, to?)` | `read_board(after?, limit?, member?)` |
-| Script | `post(text, {key, to?})`, as `script` | `readBoard({key, after?, limit?, member?})` |
+| Main agent | `post_board(text, to?, topic?)` | `read_board(after?, limit?, member?, topic?)` |
+| Script | `post(text, {key, to?, topic?})`, as `script` | `readBoard({key, after?, limit?, member?, topic?})` |
 
-A long-running workflow collects hundreds of posts. `search_board` with `{query, member?, limit?}` finds posts by words instead of paging through the feed, for members, one-off workers and the main agent alike: `query` is up to 8 space-separated words, each matched as a case-insensitive substring, and all of them must occur in the post. The result lists the newest matches (10 by default, at most 30) with their `seq` and the text around the match; `read_board({after: seq - 1, limit: 1})` returns a whole post. Posts that have been archived out of the state are searched too.
-| User | `/workflow post <text>`, as the main conversation | `/workflow board [count\|member]` |
+A long-running workflow collects hundreds of posts. `search_board` with `{query, member?, topic?, limit?}` finds posts by words instead of paging through the feed, for members, one-off workers and the main agent alike: `query` is up to 8 space-separated words, each matched as a case-insensitive substring, and all of them must occur in the post. The result lists the newest matches (10 by default, at most 30) with their `seq` and the text around the match; `read_board({after: seq - 1, limit: 1})` returns a whole post. Posts that have been archived out of the state are searched too.
+| User | `/workflow post <text>`, as the main conversation | `/workflow board [count\|member\|#topic]` |
 
 - `text` is at most 4000 characters. `to` is an array of member names or `"all"`. `@name` and `@all` in the text count as well, so `'Parser done, @qa please verify'` needs no `to`. Unknown names in `to` are rejected; an `@word` that matches no member is ordinary text. The sender is never its own recipient, and `all` means the members that exist when the post is made.
-- A read returns `{posts: [{seq, from, to, all?, text, at}], lastSeq, hasMore}`. Without `after` it returns the latest `limit` posts (default 20, at most 50); with `after` it returns the posts following that `seq`. `member` keeps the posts that member wrote or received. `from` is a member name, `main`, `script` or `system`.
+- A read returns `{posts: [{seq, from, to, all?, topic?, text, at}], lastSeq, hasMore, topics?}`. Without `after` it returns the latest `limit` posts (default 20, at most 50); with `after` it returns the posts following that `seq`. `member` keeps the posts that member wrote or received. `from` is a member name, `main`, `script` or `system`.
 - Deliveries are ordinary inbox messages with topic `board` and the fields `post`, `to` and `all?` added, so everything that waits for messages works unchanged: `receive` and the `message` arm of `waitFor`. Swarm members are woken by them directly. As with direct messages, a member sees them in its next turn's member context and they are acknowledged when that turn succeeds.
 - A workflow holds at most 8192 posts and 32768 deliveries. Deliveries reference the post instead of copying its text and do not count toward the 4096 direct messages.
 - A script read records how far the feed reached under its `key`; replay reads the same range again.
+
+#### Topics and announcements
+
+A board that hundreds of members write to mixes rulings everyone must know, coordination inside one workstream and requests for help. A post may carry a `topic` so that readers take one of these at a time:
+
+- `topic` is 1–40 lowercase letters, digits, `_`, `.` or `-` (upper case is folded). A post without one belongs to `general`; its view carries `topic` only when it is another one. A board holds at most 64 topics besides `general`: a topic is a workstream, not a tag for one post.
+- `read_board` and `search_board` take `topic` to keep the posts of one topic. Once the board has more than one topic, a read by a member or the main agent also returns `topics: [{topic, posts, lastSeq}]`, the busiest first; a script read does not, because the list would differ on replay.
+- Topic `announce` is for rules and rulings. Only the main agent, the script and the lead of a swarm may post in it. Announcements need not name anyone: every member receives the ones made since its previous turn in its next turn's context, so a rule change reaches a large swarm without waking it. Name members only when they must act now.
+- A member's `read_context` carries `board: {lastSeq, since, older?, topics: [{topic, posts, lastSeq, new}], announcements, moreAnnouncements?}`. `since` is the board's `lastSeq` when the member's previous turn was scheduled, so a post made during that turn may be reported twice but none is missed. `announcements` holds up to five new ones in full; `moreAnnouncements` counts the rest. `new` counts the new posts of a topic among those still in the state (the latest 256 of the board); `older` is how many new posts have left it.
+- Members are told not to post a report when they complete a work item: the result given to `complete_work` is the report, and `search_work` finds it.
+- `/workflow board #topic` shows one topic in chat.
+
+Not done: members do not subscribe to topics, and nothing assigns a topic from the queue or work item a member holds; the per-turn summary lists every topic.
 
 `swarm` declares a group of persistent members that work on the board. The bridge schedules their turns; the script only awaits the outcome:
 
@@ -258,7 +271,7 @@ The lead is an ordinary member with three more operations and two kinds of syste
 
 | Operation | Effect |
 | --- | --- |
-| `staff_swarm` with `{operationId, add?, like?, queue?, role?, brief?, revive?, retire?, maxTurns?}` | Changes the staff of its swarm while it runs: `add` names new members that use the harness, model, role and queue of the existing member `like` (default: the first member other than the lead) and see `brief` in their first turn; `revive` puts failed members back to work; `retire` lets members finish the turn they are running and never wakes them again; `maxTurns` raises the wake-up limit |
+| `staff_swarm` with `{operationId, add?, like?, queue?, role?, brief?, revive?, retire?, maxTurns?}` | Changes the staff of its swarm while it runs: `add` names new members that use the harness, model, role and queue of the existing member `like` (default: the first member other than the lead) and see `brief` in their first turn; only the main agent can give them another harness or model; `revive` puts failed members back to work; `retire` lets members finish the turn they are running and never wakes them again; `maxTurns` raises the wake-up limit |
 | `swarm_finish` with `{operationId, result}` | Records the final result (at most 16000 characters). Nobody is woken afterwards; the swarm returns once the turns still running have ended |
 
 - When a member fails, the system posts to the lead with the reason; the member has stopped and the lead decides whether to reassign, replace or drop the work.

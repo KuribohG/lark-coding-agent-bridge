@@ -1,4 +1,5 @@
 import { checkpoint, mailboxOperation, member, memberContext, saveCheckpoint, sendMessage, taskAgent } from '../durable-agents';
+import { boardDigest } from '../board';
 import { requiredText, requireState } from '../kernel-state';
 import { nestedContext } from '../nested-workflow';
 import { workContext } from '../work-queue';
@@ -30,7 +31,7 @@ export const memberContextTools: WorkflowToolPlugin = {
     {
       name: 'read_context',
       worker: {
-        call: (ctx, state, task) => ({ goal: state.goal, objective: readText(state, task.objective), inputRefs: task.inputRefs, member: memberContext(state, task), workQueue: workContext(state, task),
+        call: (ctx, state, task) => ({ goal: state.goal, objective: readText(state, task.objective), inputRefs: task.inputRefs, member: memberContext(state, task), board: boardDigest(state, task), workQueue: workContext(state, task),
           ...(task.workflowTool ? {workflows:nestedContext(ctx.store.descendants(state,task.taskId),task)} : {}) }),
       },
     },

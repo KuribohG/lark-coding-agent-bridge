@@ -59,8 +59,18 @@ export class KernelOperations {
       if (prior.digest !== digest) throw new Error('operationId conflict: same ID with different content');
       return JSON.parse(prior.response);
     }
-    const root = await ctx.host.resolveRoot(scope);
+    let root = await ctx.host.resolveRoot(scope);
     if (!root) throw new Error('No authorized active root session');
+    let resolved: unknown;
+    if (tool.kind === 'mutate' && tool.resolve) {
+      const pinned = requireState(store.state(scope, workflowId));
+      if (!pinned.script) throw new Error('Not a script workflow');
+      if (!sameRoot(root, pinned.root)) throw new Error('Root binding changed; workflow needs attention');
+      resolved = await tool.resolve(ctx, pinned as ScriptState, args);
+      // The authorization the binding was resolved under must still hold when the change is applied.
+      root = await ctx.host.resolveRoot(scope);
+      if (ctx.closed || !root) throw new Error('No authorized active root session');
+    }
     const committed = store.operation(scope, operationId);
     if (committed) {
       if (committed.digest !== digest) throw new Error('operationId conflict: same ID with different content');
@@ -88,13 +98,13 @@ export class KernelOperations {
       if (!tool.appendOnly && args.expectedStateVersion !== current.stateVersion) throw new Error(`stateVersion conflict; current=${current.stateVersion}`);
       if (['completed', 'cancelled'].includes(current.status)) throw new Error('Workflow is terminal');
       const commit = (response: () => unknown) => store.commitOperation(scope, operationId, digest, response);
-      if (tool.terminalCheckOnly) return tool.apply(ctx, current, args, commit);
+      if (tool.terminalCheckOnly) return tool.apply(ctx, current, args, commit, resolved);
       if (tool.resumesClock) ctx.recovery.resumeClock(current);
       if (!['active', 'paused'].includes(current.status) && !(current.status === 'interrupted' && tool.allowInterrupted)) {
         throw new Error(`Workflow is ${current.status}; cancel and start a new workflow, or explicitly replay an interrupted script`);
       }
       if (ctx.now() >= current.deadlineAt && !tool.allowAfterDeadline) throw new Error('Workflow deadline reached');
-      return tool.apply(ctx, current, args, commit);
+      return tool.apply(ctx, current, args, commit, resolved);
     }, cause);
   }
 

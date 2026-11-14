@@ -1,16 +1,28 @@
 import { randomUUID } from 'node:crypto';
 import { availableMessages, member } from './durable-agents';
-import { boardTotal } from './kernel-state';
+import { boardTotal, postBySeq } from './kernel-state';
 import { emit, recordsOf } from './kernel-store';
-import { BOARD_MAX_DELIVERIES, MAX_NAMED_MEMBERS } from './limits';
+import { BOARD_ANNOUNCE_TOPIC, BOARD_DEFAULT_TOPIC, BOARD_MAX_DELIVERIES, BOARD_MAX_TOPICS, MAX_NAMED_MEMBERS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
 import { matchFields, SEARCH_ARCHIVE_ROWS, searchTerms, storedTerms } from './search';
-import type { AgentView, BoardAuthor, BoardPost, Immutable, MailboxMessage, WorkflowView } from './types';
+import type { AgentView, BoardAuthor, BoardPost, Immutable, MailboxMessage, TaskView, WorkflowView } from './types';
 
 /** Topic of the mailbox messages that deliver board posts; `receive(member,{topic})` can select or skip them. */
 const BOARD_TOPIC = 'board';
 const POST_MAX_TEXT = 4000;
 const NAME_END = '(?![A-Za-z0-9_\\-/]|\\.[A-Za-z0-9])';
+const TOPIC = /^[a-z0-9][a-z0-9_.-]{0,39}$/;
+/** Announcements a member is handed in one turn; a longer backlog is read with read_board({topic}). */
+const DIGEST_ANNOUNCEMENTS = 5;
+
+/** A topic as given by a caller: case does not distinguish topics. */
+function topicName(value: unknown): string {
+  const name = scriptText(value, 'board topic', 100).toLowerCase();
+  if (!TOPIC.test(name)) throw new Error('A board topic is 1–40 letters, digits, _, . or -, starting with a letter or digit');
+  return name;
+}
+
+const topicOf = (post: Immutable<BoardPost>) => post.topic ?? BOARD_DEFAULT_TOPIC;
 
 function mentioned(text: string, name: string): boolean {
   return new RegExp('(^|[^A-Za-z0-9_.@/-])@' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + NAME_END).test(text);
@@ -33,65 +45,112 @@ function recipients(state: WorkflowView, text: string, to: unknown, sender?: str
 }
 
 /** Appends a post and delivers it to its recipients' inboxes, which wakes the ones waiting for a message. */
-export function postToBoard(state: WorkflowView, sender: { agentId: string } | { author: BoardAuthor }, input: { text?: unknown; to?: unknown }, now: number): { seq: number; postId: string; to: string[] } {
+export function postToBoard(state: WorkflowView, sender: { agentId: string } | { author: BoardAuthor }, input: { text?: unknown; to?: unknown; topic?: unknown }, now: number): { seq: number; postId: string; to: string[]; topic?: string } {
   const text = scriptText(input.text, 'post', POST_MAX_TEXT);
   if (!text.trim()) throw new Error('Post text must not be empty');
   const from = 'agentId' in sender ? sender.agentId : undefined;
+  const topic = input.topic === undefined || input.topic === null ? BOARD_DEFAULT_TOPIC : topicName(input.topic);
+  if (topic === BOARD_ANNOUNCE_TOPIC && from && !state.swarms?.some(swarm => swarm.lead === memberName(state, from))) {
+    throw new Error(`Topic "${BOARD_ANNOUNCE_TOPIC}" is for rules and rulings from the main agent and the lead; post in another topic and name who must act`);
+  }
+  const known = Object.keys(state.board?.topics ?? {});
+  if (topic !== BOARD_DEFAULT_TOPIC && !known.includes(topic) && known.filter(name => name !== BOARD_DEFAULT_TOPIC).length >= BOARD_MAX_TOPICS) {
+    throw new Error(`Board topic limit reached (${BOARD_MAX_TOPICS}); post in an existing topic: ${known.join(', ')}`);
+  }
   const target = recipients(state, text, input.to, from);
   const delivered = (state.mailbox?.messages ?? []).filter(message => message.post !== undefined).length;
   if (delivered + target.agents.length > BOARD_MAX_DELIVERIES) throw new Error('Board delivery limit reached; address fewer members');
   const post: BoardPost = { seq: boardTotal(state) + 1, id: randomUUID(), ...(from ? { from } : { author: (sender as { author: BoardAuthor }).author }),
-    to: target.agents.map(agent => agent.agentId), ...(target.all ? { all: true } : {}), text, createdAt: now };
+    to: target.agents.map(agent => agent.agentId), ...(target.all ? { all: true } : {}), ...(topic === BOARD_DEFAULT_TOPIC ? {} : { topic }), text, createdAt: now };
   const deliveries: MailboxMessage[] = post.to.map(to => ({ id: randomUUID(), to, ...(from ? { from } : {}), text: '', topic: BOARD_TOPIC, createdAt: now, post: post.seq }));
   emit(state, { type: 'board_posted', post, deliveries });
-  return { seq: post.seq, postId: post.id, to: target.agents.map(agent => agent.key) };
+  return { seq: post.seq, postId: post.id, to: target.agents.map(agent => agent.key), ...(post.topic ? { topic: post.topic } : {}) };
 }
 
 function memberName(state: WorkflowView, agentId: string): string {
   return state.agents?.find(agent => agent.agentId === agentId)?.key ?? agentId;
 }
 
-interface BoardPostView { seq: number; from: string; to: string[]; all?: true; text: string; at: number }
+interface BoardPostView { seq: number; from: string; to: string[]; all?: true; topic?: string; text: string; at: number }
 
 function postView(state: WorkflowView, post: Immutable<BoardPost>): BoardPostView {
   return { seq: post.seq, from: post.from ? memberName(state, post.from) : post.author ?? 'main', to: post.to.map(id => memberName(state, id)),
-    ...(post.all ? { all: true as const } : {}), text: post.text, at: post.createdAt };
+    ...(post.all ? { all: true as const } : {}), ...(post.topic ? { topic: post.topic } : {}), text: post.text, at: post.createdAt };
+}
+
+interface BoardTopicView { topic: string; posts: number; lastSeq: number }
+
+/** The board's topics, the busiest first. The default topic also holds the posts made before topics were recorded. */
+export function boardTopics(state: Pick<WorkflowView, 'board' | 'archivedRecords'>): BoardTopicView[] {
+  const topics = state.board?.topics ?? {};
+  const elsewhere = Object.entries(topics).reduce((sum, [name, topic]) => sum + (name === BOARD_DEFAULT_TOPIC ? 0 : topic.posts), 0);
+  const general = (state.board?.posts.length ?? 0) + (state.archivedRecords?.post ?? 0) - elsewhere;
+  return [...(general ? [{ topic: BOARD_DEFAULT_TOPIC, posts: general, lastSeq: topics[BOARD_DEFAULT_TOPIC]?.recent.at(-1) ?? 0 }] : []),
+    ...Object.entries(topics).filter(([name]) => name !== BOARD_DEFAULT_TOPIC).map(([name, topic]) => ({ topic: name, posts: topic.posts, lastSeq: topic.recent.at(-1) ?? 0 }))]
+    .sort((a, b) => b.posts - a.posts);
+}
+
+/**
+ * What a member's turn is told about the board without reading it: the announcements made since its previous turn
+ * was scheduled, in full, and for each topic how many posts it holds and how many of them are new. `new` counts the
+ * posts still in the state; `older` is how many new posts have left it, which the topics' totals still include.
+ */
+export function boardDigest(state: WorkflowView, task: TaskView): unknown {
+  if (!task.agentId) return undefined;
+  const since = task.boardSince ?? 0;
+  const fresh = new Map<string, number>();
+  for (const post of state.board?.posts ?? []) if (post.seq > since) fresh.set(topicOf(post), (fresh.get(topicOf(post)) ?? 0) + 1);
+  const older = (state.archivedRecords?.post ?? 0) - since;
+  const announced = state.board?.topics?.[BOARD_ANNOUNCE_TOPIC];
+  const unseen = (announced?.recent ?? []).filter(seq => seq > since).slice(-DIGEST_ANNOUNCEMENTS);
+  // Only the latest few seqs are kept, so a count beyond them comes from the posts in the state.
+  const missed = Math.max(fresh.get(BOARD_ANNOUNCE_TOPIC) ?? 0, (announced?.recent ?? []).filter(seq => seq > since).length) - unseen.length;
+  return { lastSeq: boardTotal(state), since, ...(older > 0 ? { older } : {}),
+    topics: boardTopics(state).map(topic => ({ ...topic, new: fresh.get(topic.topic) ?? 0 })),
+    announcements: unseen.flatMap(seq => { const post = postBySeq(state, seq); return post ? [postView(state, post)] : []; }),
+    ...(missed > 0 ? { moreAnnouncements: missed } : {}) };
 }
 
 /**
  * Reads the feed in order. With `after`, the posts following that seq; otherwise the latest ones. `upTo` bounds the
- * read to a seq recorded earlier, so a replayed script sees the board as it was. `member` keeps posts from or to it.
+ * read to a seq recorded earlier, so a replayed script sees the board as it was. `member` keeps posts from or to it,
+ * `topic` the posts of one topic. A read that is not bound by `upTo` also lists the board's topics once it has several.
  */
-export function readBoard(state: WorkflowView, input: { after?: unknown; limit?: unknown; member?: unknown; upTo?: number } = {}): { posts: BoardPostView[]; lastSeq: number; hasMore: boolean } {
+export function readBoard(state: WorkflowView, input: { after?: unknown; limit?: unknown; member?: unknown; topic?: unknown; upTo?: number } = {}): { posts: BoardPostView[]; lastSeq: number; hasMore: boolean; topics?: BoardTopicView[] } {
   const total = boardTotal(state);
   const lastSeq = Math.min(total, input.upTo ?? total);
   const limit = boundedInteger(input.limit, 20, 1, 50);
   const only = input.member === undefined ? undefined : member(state, scriptText(input.member, 'member name', 100)).agentId;
-  const matches = (post: Immutable<BoardPost>) => !only || post.from === only || post.to.includes(only);
+  const topic = input.topic === undefined ? undefined : topicName(input.topic);
+  const matches = (post: Immutable<BoardPost>) => (!only || post.from === only || post.to.includes(only)) && (!topic || topicOf(post) === topic);
+  const listed = input.upTo === undefined ? boardTopics(state) : [];
+  const topics = listed.length > 1 ? { topics: listed } : {};
   if (input.after === undefined) {
     const latest: Array<Immutable<BoardPost>> = [];
     for (const post of feed(state, 0, lastSeq, true)) if (matches(post) && latest.push(post) === limit) break;
-    return { posts: latest.reverse().map(post => postView(state, post)), lastSeq, hasMore: false };
+    return { posts: latest.reverse().map(post => postView(state, post)), lastSeq, hasMore: false, ...topics };
   }
   const after = boundedInteger(input.after, 0, 0, Number.MAX_SAFE_INTEGER);
   const rest: Array<Immutable<BoardPost>> = [];
   for (const post of feed(state, after, lastSeq, false)) if (matches(post) && rest.push(post) > limit) break;
-  return { posts: rest.slice(0, limit).map(post => postView(state, post)), lastSeq, hasMore: rest.length > limit };
+  return { posts: rest.slice(0, limit).map(post => postView(state, post)), lastSeq, hasMore: rest.length > limit, ...topics };
 }
 
 /**
  * Finds posts by words in their text, newest first, including posts that have left the state. A hit carries the text
- * around the match; read_board({after: seq - 1, limit: 1}) returns the whole post. `member` keeps posts from or to it.
+ * around the match; read_board({after: seq - 1, limit: 1}) returns the whole post. `member` keeps posts from or to it,
+ * `topic` the posts of one topic.
  */
-export function searchBoard(state: WorkflowView, input: { query?: unknown; member?: unknown; limit?: unknown } = {}): unknown {
-  if (Object.keys(input).some(key => !['query', 'member', 'limit'].includes(key))) throw new Error('Unsupported search_board option');
+export function searchBoard(state: WorkflowView, input: { query?: unknown; member?: unknown; topic?: unknown; limit?: unknown } = {}): unknown {
+  if (Object.keys(input).some(key => !['query', 'member', 'topic', 'limit'].includes(key))) throw new Error('Unsupported search_board option');
   const terms = searchTerms(input.query);
   const limit = boundedInteger(input.limit, 10, 1, 30);
   const only = input.member === undefined ? undefined : member(state, scriptText(input.member, 'member name', 100)).agentId;
+  const topic = input.topic === undefined ? undefined : topicName(input.topic);
   const archived = state.archivedRecords?.post ? recordsOf(state).search('post', storedTerms(terms), SEARCH_ARCHIVE_ROWS) as BoardPost[] : [];
   const hits = [];
   for (const post of [...state.board?.posts ?? [], ...archived]) {
-    if (only && post.from !== only && !post.to.includes(only)) continue;
+    if (only && post.from !== only && !post.to.includes(only) || topic && topicOf(post) !== topic) continue;
     const hit = matchFields(terms, [['text', post.text]]);
     if (hit) hits.push({ post, hit });
   }

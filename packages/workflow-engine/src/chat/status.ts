@@ -1,3 +1,5 @@
+import { boardTopics } from '../engine/board';
+import { BOARD_DEFAULT_TOPIC } from '../engine/limits';
 import { queueControl, queueNames } from '../engine/work-routing';
 import type { DurableAgent, WorkflowState, WorkflowTask, WorkflowWorkItem } from '../engine/types';
 
@@ -132,19 +134,26 @@ function pendingEvents(state: WorkflowState, now: number): string {
   return `待处理事件：${pending.length}${pending.length && now - oldest >= 60_000 ? `，最早一条已等待 ${duration(now - oldest)}` : ''}`;
 }
 
-/** The board feed for chat: the latest posts, a chosen number of them, or those from or to one member. */
+/** The board feed for chat: the latest posts, a chosen number of them, those from or to one member, or those of one topic (`#topic`). */
 export function renderBoard(state: WorkflowState, filter?: string): string {
   const posts = state.board?.posts ?? [];
   if (!posts.length) return '这个工作流的留言板还没有帖子。';
   const name = (agentId: string) => state.agents?.find(member => member.agentId === agentId)?.key ?? agentId;
-  const member = filter && !/^\d+$/.test(filter) ? state.agents?.find(item => item.key === filter.replace(/^@/, '')) : undefined;
-  if (filter && !/^\d+$/.test(filter) && !member) return `未找到成员：${compact(filter, 100)}。用 /workflow status 查看成员列表。`;
-  const matching = member ? posts.filter(post => post.from === member.agentId || post.to.includes(member.agentId)) : posts;
-  const shown = matching.slice(-(filter && !member ? Math.min(30, Math.max(1, Number(filter))) : 10));
-  const lines = [`留言板：共 ${posts.length + (state.archivedRecords?.post ?? 0)} 帖${member ? `，与 ${compact(member.key, 100)} 相关 ${matching.length} 帖` : ''}，显示最近 ${shown.length} 帖。`];
+  const topicOf = (post: { topic?: string }) => post.topic ?? BOARD_DEFAULT_TOPIC;
+  const topics = boardTopics(state);
+  const topic = filter?.startsWith('#') ? filter.slice(1).toLowerCase() : undefined;
+  if (topic !== undefined && !topics.some(item => item.topic === topic)) return `没有主题：${compact(filter!, 100)}。已有主题：${topics.map(item => '#' + item.topic).join(' ')}`;
+  const named = filter && topic === undefined && !/^\d+$/.test(filter);
+  const member = named ? state.agents?.find(item => item.key === filter.replace(/^@/, '')) : undefined;
+  if (named && !member) return `未找到成员：${compact(filter, 100)}。用 /workflow status 查看成员列表；按主题看用 /workflow board #主题。`;
+  const matching = member ? posts.filter(post => post.from === member.agentId || post.to.includes(member.agentId)) : topic ? posts.filter(post => topicOf(post) === topic) : posts;
+  const shown = matching.slice(-(filter && !member && !topic ? Math.min(30, Math.max(1, Number(filter))) : 10));
+  // Only the posts still in the state are listed, while a topic's count covers every post made in it.
+  const lines = [`留言板：共 ${posts.length + (state.archivedRecords?.post ?? 0)} 帖${member ? `，与 ${compact(member.key, 100)} 相关 ${matching.length} 帖` : topic ? `，主题 #${topic} ${topics.find(item => item.topic === topic)!.posts} 帖` : ''}，显示最近 ${shown.length} 帖。`];
+  if (topics.length > 1 && !topic) lines.push('主题：' + topics.map(item => `#${item.topic} ${item.posts}`).join('，'));
   for (const post of shown) {
     const to = post.all ? '全体' : post.to.length ? post.to.map(id => '@' + compact(name(id), 50)).join(' ') : '未点名';
-    lines.push(`#${post.seq} ${post.from ? compact(name(post.from), 50) : post.author === 'script' ? '脚本' : post.author === 'system' ? '系统' : '主会话'} → ${to} · ${time(post.createdAt)}`, '  ' + compact(post.text, 600));
+    lines.push(`#${post.seq} ${post.topic ? `[${post.topic}] ` : ''}${post.from ? compact(name(post.from), 50) : post.author === 'script' ? '脚本' : post.author === 'system' ? '系统' : '主会话'} → ${to} · ${time(post.createdAt)}`, '  ' + compact(post.text, 600));
   }
   return bounded(lines);
 }

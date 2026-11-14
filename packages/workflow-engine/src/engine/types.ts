@@ -81,6 +81,8 @@ export interface DurableAgent {
   lastTurnId?: string;
   activeTurnId?: string;
   wait?: WaitState;
+  /** Posts the board held when the member's latest turn was scheduled. */
+  boardSeq?: number;
 }
 
 export interface AgentCheckpoint {
@@ -148,6 +150,8 @@ export interface BoardPost {
   to: string[];
   /** The post addressed everyone (`all`), whatever the membership was at the time. */
   all?: boolean;
+  /** The workstream the post belongs to; absent for the default topic. */
+  topic?: string;
   text: string;
   createdAt: number;
 }
@@ -203,6 +207,11 @@ export interface WorkflowSwarm {
 }
 export interface WorkflowBoard {
   posts: BoardPost[];
+  /**
+   * By topic: the posts made in it and the seq of its latest few, oldest first. It covers the posts that have left
+   * the state as well. Posts made before topics existed are not counted here; they belong to the default topic.
+   */
+  topics?: Record<string, { posts: number; recent: number[] }>;
 }
 
 export interface MailboxReceipt {
@@ -326,6 +335,8 @@ export interface AgentTurn {
   cacheKey?: string;
   agentId?: string;
   previousTurnId?: string;
+  /** Member turns: posts the board held when the member's previous turn was scheduled; later ones are new to this turn. */
+  boardSince?: number;
   inputCheckpointVersion?: number;
   inputMessageIds?: string[];
   workflowTool?: boolean;

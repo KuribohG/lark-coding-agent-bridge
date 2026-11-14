@@ -11,7 +11,7 @@ const WORKFLOW_HELP = [
   '- `/workflow plan` — 查看执行方案；结束后可查看最近一次方案。',
   '- `/workflow status [成员名]` 或 `/workflow` — 查看状态、恢复点和失败原因；结束后显示最近一次。',
   '- `/workflow work [工作项 key]` — 查看工作队列、认领、资源归属和进展版本。',
-  '- `/workflow board [条数|成员名]` — 查看留言板最近的帖子，或只看某成员发出、收到的帖子。',
+  '- `/workflow board [条数|成员名|#主题]` — 查看留言板最近的帖子，或只看某成员发出、收到的帖子，或只看一个主题。',
   '- `/workflow post <内容>` — 以主会话身份在留言板发帖；正文里的 @成员名、@all 会唤醒对应成员。',
   '- `/workflow enqueue <工作项 JSON>` — 向当前工作流追加授权范围内的任务；暂停时仅入队。',
   '- `/workflow close [queue]` — 关闭任务入口，消费者处理完已有任务后结束。',

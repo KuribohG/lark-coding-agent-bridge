@@ -55,6 +55,14 @@ export const MAILBOX_MAX_OPERATIONS = 8192;
 export const MAILBOX_MAX_RECEIPTS = 2048;
 
 export const BOARD_MAX_DELIVERIES = 32_768;
+/** The topic of a post that names none. */
+export const BOARD_DEFAULT_TOPIC = 'general';
+/** Rules and rulings every member must know: only the main agent, the script and a swarm's lead post in it. */
+export const BOARD_ANNOUNCE_TOPIC = 'announce';
+/** Distinct topics of one board. A topic is a workstream, not a tag for one post. */
+export const BOARD_MAX_TOPICS = 64;
+/** Latest posts of each topic the board keeps the seq of, so they are found without reading the feed. */
+export const BOARD_TOPIC_RECENT = 8;
 
 export const WORK_MAX_ITEMS = 4096;
 export const WORK_MAX_CLAIMS = 8192;

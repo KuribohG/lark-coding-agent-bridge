@@ -194,5 +194,13 @@ describe('Lark workflow commands', () => {
     expect(await f.command('board ghost')).toContain('未找到成员：ghost');
     expect(renderWorkflowProgress(f.kernel.state('topic')!).markdown).toContain('**留言板**：2 帖，最新 #2 主会话：@qa 请复核解析器');
     expect(f.kernel.state('topic')!.mailbox!.messages).toMatchObject([{ post: 2, topic: 'board' }]);
+    const current = f.kernel.state('topic')!;
+    await f.kernel.call({ kind: 'main', scopeId: 'topic' }, 'post_board', { operationId: 'ruling', workflowId: current.workflowId, text: '裁定：先过对拍', topic: 'announce' });
+    expect(await f.command('board')).toContain('主题：#general 2，#announce 1');
+    const rulings = await f.command('board #Announce');
+    expect(rulings).toContain('主题 #announce 1 帖，显示最近 1 帖。');
+    expect(rulings).toMatch(/#3 \[announce\] 主会话 → 未点名/);
+    expect(rulings).not.toContain('#2 ');
+    expect(await f.command('board #nothing')).toBe('没有主题：#nothing。已有主题：#general #announce');
   });
 });
