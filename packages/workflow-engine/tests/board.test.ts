@@ -196,7 +196,7 @@ describe('swarm', () => {
       qa: [{}, { post: { text: 'Empty input crashes', to: ['dev'] } }, {}],
     });
     const { state, result } = await h.settled();
-    expect(state.script).toMatchObject({ status: 'result_ready' });
+    expect(state.script, state.script?.error).toMatchObject({ status: 'result_ready' });
     expect(result).toMatchObject({ stop: 'quiet', turns: 5, hasMore: false, members: [
       { name: 'dev', turns: 1, status: 'idle', note: 'dev turn 2' }, { name: 'qa', turns: 2, status: 'idle', note: 'qa turn 3' }] });
     expect(result).not.toHaveProperty('result');
@@ -211,7 +211,7 @@ describe('swarm', () => {
     await callWorkflow('replay_script', { operationId: randomUUID(), workflowId: state.workflowId, expectedStateVersion: state.stateVersion }, again.env);
     again.release();
     const replayed = await h.settled();
-    expect(replayed.state.script).toMatchObject({ status: 'result_ready', revision: 1 });
+    expect(replayed.state.script, replayed.state.script?.error).toMatchObject({ status: 'result_ready', revision: 1 });
     expect(replayed.result).toEqual(result);
     expect(h.specs).toHaveLength(5);
     expect(replayed.state.board!.posts).toHaveLength(4);

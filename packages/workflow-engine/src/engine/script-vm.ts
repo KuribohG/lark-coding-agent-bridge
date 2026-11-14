@@ -230,7 +230,10 @@ export async function runScriptProgram(input: ScriptProgramInput): Promise<strin
       if (name !== 'phase' && name !== 'log') throw new Error('Invalid progress kind');
       input.progress(name, context.getString(value).slice(0, 1000));
     });
-    const initialized = guest(() => context.evalCode(PRELUDE));
+    // The prelude is the engine's own code: it gets no slice limit and does not count against the script's budget.
+    // On a busy host evaluating it alone can take longer than a slice, which would fail the script as interrupted.
+    sliceDeadline = Infinity;
+    const initialized = context.evalCode(PRELUDE);
     context.unwrapResult(initialized).dispose();
     const args = guest(() => context.evalCode(`JSON.parse(${JSON.stringify(JSON.stringify(input.args ?? null))})`));
     const argsHandle = context.unwrapResult(args);
