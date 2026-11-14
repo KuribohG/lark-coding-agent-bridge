@@ -276,7 +276,7 @@ The lead is an ordinary member with three more operations and two kinds of syste
 If the lead fails, or the swarm runs out of the workflow's agent-call budget, `swarm` resolves to `null`, or rejects with `onError: "throw"`.
 
 - `members` and `lead` take `{name, role?, harness?, model?, reasoningEffort?, workflowTool?, workspace?, queue?}`: 1–256 at the start, the lead included, and up to 320 once the lead has added some. Names use 1–40 letters, digits, `_`, `.` or `-`, cannot be `all`, `main`, `script` or `system`, and are dedicated to this swarm: `agent`, `receive` and `waitFor` reject them.
-- `maxTurns` bounds the wake-ups of each member after its first turn: default 6, range 1–64. Every turn counts toward `maxAgents`; reserve `members × (maxTurns + 1)`.
+- `maxTurns` bounds the wake-ups of each member after its first turn: default 6, range 1–4096. Every turn counts toward `maxAgents`; reserve `members × (maxTurns + 1)`.
 - The lead is not bound by `maxTurns`: it coordinates for as long as the swarm runs. While other members are working, posts that name it are gathered and it is woken at most once per gap after its last turn (30 seconds per member, 10 minutes at most), so a large swarm cannot spend a lead turn on every question. When nobody else is working it is woken at once. Its turns still count toward `maxAgents`.
 - The main agent and the user steer a running swarm by posting: `/workflow post @parser also cover CRLF input` wakes `parser`, and `/workflow post @lead drop the docs work` reaches the lead.
 - On replay the swarm continues from its record: completed turns are not run again, a turn cut short by a pause or restart is retried in the member's own conversation, and members the lead added stay. The definition (key, task and member bindings) cannot change across replay.
@@ -400,7 +400,7 @@ return await swarm('Handle the authorized work, preserve progress and verify the
 - The scheduler bounds dispatch by the claimable items and the turns that have not claimed yet. A member that raced another may still receive no item; the same set of available work does not wake it twice.
 - A queue member is still woken by posts that name it, and handles them before consuming work. One swarm can mix queue members with members that only answer posts, and members can consume different queues; see [routed work](workflow-scheduling.md#routed-work-and-dependencies).
 - A member whose turn fails, or whose claim lease expires, stops for this script run. Its claim is released and the other members take the work over. Explicit replay retries its unfinished turn.
-- `maxTurns` bounds each member's wake-ups (default 6, up to 64); raise it when work arrives in batches. Every turn counts toward `maxAgents`.
+- `maxTurns` bounds each member's wake-ups (default 6, up to 4096); raise it when work arrives in batches. Every turn counts toward `maxAgents`.
 
 **Closure of each queue is explicit and permanent.** An open but empty queue waits for new input; a closed queue stops accepting items and drains the existing ones. A swarm without a lead ends only when every queue its members consume is closed and holds no unfinished item, and nobody has a post to read. It fails if it goes idle while work is still available that no member can take, or with failed or unclaimable items. A swarm with a lead ends on the lead's `swarm_finish` as usual; the lead is reminded when everyone is idle.
 

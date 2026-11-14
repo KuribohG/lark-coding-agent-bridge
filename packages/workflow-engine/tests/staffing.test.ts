@@ -62,6 +62,7 @@ describe('staffing a running swarm from the main agent', () => {
 
     await expect(call('staff_swarm', { revive: ['w1'] })).rejects.toThrow('has not failed');
     await expect(call('staff_swarm', { maxTurns: 0 })).rejects.toThrow();
+    await expect(call('staff_swarm', { maxTurns: 4097 })).rejects.toThrow('between 1 and 4096');
     await expect(call('staff_swarm', { swarm: 'other', add: ['x'] })).rejects.toThrow('No running swarm');
     await expect(call('staff_swarm', { add: ['w1'] })).rejects.toThrow('already used');
     await expect(call('staff_swarm', {})).rejects.toThrow('needs add, revive, retire or maxTurns');

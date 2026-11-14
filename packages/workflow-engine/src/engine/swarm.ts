@@ -5,7 +5,7 @@ import { availableMessages, receiveMessages, scheduleMemberTurn } from './durabl
 import type { DomainEvent } from './events';
 import { boardTotal, callCount, pushEvent, readArtifact, taskById } from './kernel-state';
 import { emit, readText } from './kernel-store';
-import { SWARM_DECLARED_MEMBERS, SWARM_MAX_MEMBERS } from './limits';
+import { SWARM_DECLARED_MEMBERS, SWARM_MAX_MEMBERS, SWARM_MAX_TURNS } from './limits';
 import { boundedInteger, parseScriptAgentCall, scriptText } from './script-contract';
 import { availableWork, openQueue, unfinishedWork, workStatus } from './work-queue';
 import { queueControl, queueName } from './work-routing';
@@ -43,7 +43,7 @@ export function parseSwarm(input: Record<string, unknown>, state: WorkflowView, 
   if (key.trim() !== key || key.startsWith('@')) throw new Error('swarm key must not contain surrounding whitespace or start with @');
   const task = scriptText(input.task, 'swarm task', 16_000);
   if (!task.trim()) throw new Error('swarm needs a task');
-  const maxTurns = boundedInteger(input.maxTurns, 6, 1, 64);
+  const maxTurns = boundedInteger(input.maxTurns, 6, 1, SWARM_MAX_TURNS);
   if (!Array.isArray(input.members) || !input.members.length) throw new Error('swarm needs members');
   const listed = [...(input.lead === undefined ? [] : [input.lead]), ...input.members];
   if (listed.length > SWARM_DECLARED_MEMBERS) throw new Error(`swarm needs 1–${SWARM_DECLARED_MEMBERS} members, the lead included`);
@@ -297,7 +297,7 @@ export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, 
   if (input.add === undefined && input.revive === undefined && input.retire === undefined && input.maxTurns === undefined) throw new Error('staff_swarm needs add, revive, retire or maxTurns');
   const result: { swarm: string; added?: string[]; revived?: string[]; retired?: string[]; maxTurns?: number } = { swarm: swarm.key };
   if (input.maxTurns !== undefined) {
-    const maxTurns = boundedInteger(input.maxTurns, swarm.maxTurns, 1, 64);
+    const maxTurns = boundedInteger(input.maxTurns, swarm.maxTurns, 1, SWARM_MAX_TURNS);
     if (maxTurns < swarm.maxTurns) throw new Error(`maxTurns can only be raised; it is ${swarm.maxTurns}`);
     if (maxTurns > swarm.maxTurns) emit(state, { type: 'swarm_turns_extended', swarmId: swarm.id, maxTurns });
     result.maxTurns = maxTurns;

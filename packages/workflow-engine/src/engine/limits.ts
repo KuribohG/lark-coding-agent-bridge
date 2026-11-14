@@ -34,6 +34,11 @@ export const MAX_WORKFLOW_MEMBERS = 512;
 export const SWARM_DECLARED_MEMBERS = 256;
 /** Members a swarm may ever hold: declared, added by the lead and retired. */
 export const SWARM_MAX_MEMBERS = 320;
+/**
+ * Ceiling of a swarm's `maxTurns`: wake-ups of one member other than the lead. Completed turns are archived, so this
+ * does not bound state; it stops members that keep waking each other.
+ */
+export const SWARM_MAX_TURNS = 4096;
 /** Member names one board post, or one quiet wait, may list. */
 export const MAX_NAMED_MEMBERS = 256;
 
