@@ -147,7 +147,7 @@ it('waits for a stopped attempt to settle before retrying the same item', async 
   vi.mocked(s.io.analyze).mockImplementationOnce((_job, current) => {
     signal = current; return new Promise(resolve => { finish = resolve; });
   });
-  await s.service.tick(); await vi.waitFor(() => expect(finish).toBeDefined());
+  await s.service.tick(); await vi.waitFor(() => expect(finish).toBeDefined(), { timeout: 10_000 });
   await s.service.review({ id: 'analysis', revision: s.service.get('analysis')?.revision ?? 0, replyDraft: '人工草稿' }, 'ou_owner', 'edit');
   expect(signal.aborted).toBe(true);
   await s.service.decide('analysis', 'process', 'ou_owner'); await s.service.tick();

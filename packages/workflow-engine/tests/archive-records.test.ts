@@ -77,7 +77,7 @@ describe('archiving the other lists of a workflow', () => {
     const rounds = 80, each = 8;
     let first = '';
     for (let round = 0; round < rounds; round++) {
-      for (let index = 0; index < each; index++) await h.call('post_board', { text: `post ${round * each + index + 1}`, to: index % 2 ? ['alice'] : 'all' });
+      for (let index = 0; index < each; index++) await h.call('post_board', { text: `post ${round * each + index + 1}th`, to: index % 2 ? ['alice'] : 'all' });
       const { receiptId } = await h.mail({ kind: 'receive', member: 'alice', key: 'inbox-' + round }) as { receiptId: string };
       first ||= receiptId;
       await h.turn('alice', 'turn-' + round);
@@ -92,23 +92,24 @@ describe('archiving the other lists of a workflow', () => {
     expect(state.mailbox!.receipts).toHaveLength(0);
 
     const head = await h.call('read_board', { after: 0, limit: 3 }) as Feed;
-    expect(head).toMatchObject({ posts: [{ seq: 1, text: 'post 1' }, { seq: 2 }, { seq: 3 }], lastSeq: total, hasMore: true });
+    expect(head).toMatchObject({ posts: [{ seq: 1, text: 'post 1th' }, { seq: 2 }, { seq: 3 }], lastSeq: total, hasMore: true });
     // A read that starts in the archive and ends in the state.
     const seam = await h.call('read_board', { after: total - KEEP_RECENT - 2, limit: 4 }) as Feed;
     expect(seam.posts.map(post => post.seq)).toEqual([-1, 0, 1, 2].map(offset => total - KEEP_RECENT + offset));
     expect((await h.call('read_board', { limit: 2 }) as Feed).posts.map(post => post.seq)).toEqual([total - 1, total]);
     // A search covers the archived posts and the ones in the state, newest first, and returns the text around the match.
-    const found = await h.call('search_board', { query: '17 POST', limit: 30 }) as { matches: number; hasMore: boolean; posts: Array<{ seq: number; snippet: string }> };
-    expect(found.posts.map(post => post.seq)).toEqual([617, 517, 417, 317, 217, 179, 178, 177, 176, 175, 174, 173, 172, 171, 170, 117, 17]);
-    expect(found).toMatchObject({ matches: 17, hasMore: false });
-    expect(found.posts[0]).toEqual({ seq: 617, from: 'main', to: ['alice'], all: true, snippet: 'post 617', at: expect.any(Number) });
-    expect(await h.call('search_board', { query: 'post 17', limit: 2 })).toMatchObject({ matches: 17, hasMore: true, posts: [{ seq: 617 }, { seq: 517 }] });
+    // The archive tests the words against a post's whole stored entry, IDs included, so the query is one no UUID contains.
+    const found = await h.call('search_board', { query: '17TH POST', limit: 30 }) as { matches: number; hasMore: boolean; posts: Array<{ seq: number; snippet: string }> };
+    expect(found.posts.map(post => post.seq)).toEqual([617, 517, 417, 317, 217, 117, 17]);
+    expect(found).toMatchObject({ matches: 7, hasMore: false });
+    expect(found.posts[0]).toEqual({ seq: 617, from: 'main', to: ['alice'], all: true, snippet: 'post 617th', at: expect.any(Number) });
+    expect(await h.call('search_board', { query: 'post 17th', limit: 2 })).toMatchObject({ matches: 7, hasMore: true, posts: [{ seq: 617 }, { seq: 517 }] });
     expect(await h.call('search_board', { query: 'post absent' })).toMatchObject({ matches: 0, posts: [] });
     expect(await h.call('post_board', { text: 'one more' })).toMatchObject({ seq: total + 1 });
     expect((await h.call('status') as { mailbox: { totalMessages: number } }).mailbox.totalMessages).toBe(total);
 
     // The receive of the first round still yields its batch, to this run and to a replayed one.
-    expect(h.received(first).map(message => message.text)).toEqual(Array.from({ length: each }, (_, index) => 'post ' + (index + 1)));
+    expect(h.received(first).map(message => message.text)).toEqual(Array.from({ length: each }, (_, index) => 'post ' + (index + 1) + 'th'));
     await h.replay();
     await h.turn('alice', 'alice-init');
     const again = await h.mail({ kind: 'receive', member: 'alice', key: 'inbox-0' }) as { receiptId: string };

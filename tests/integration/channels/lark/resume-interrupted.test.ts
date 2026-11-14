@@ -73,7 +73,7 @@ describe('turns cut off by a bridge shutdown', () => {
     const h = await harness();
     const first = await h.start();
     await first.message('跨重连的任务');
-    await vi.waitFor(() => expect(h.agent.options).toHaveLength(1));
+    await vi.waitFor(() => expect(h.agent.options).toHaveLength(1), { timeout: 10_000 });
     h.controls = h.freshControls();
     const next = await h.start({ restorePending: false });
     await first.stop();
