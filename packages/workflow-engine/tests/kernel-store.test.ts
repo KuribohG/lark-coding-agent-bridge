@@ -374,3 +374,25 @@ describe('background WAL checkpoints', () => {
     expect(store.db.pragma('wal_autocheckpoint', { simple: true })).toBe(1000);
   });
 });
+
+describe('WAL file size', () => {
+  it('cuts the file back after a backlog has been checkpointed', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'workflow-wal-size-'));
+    cleanup.push(() => rm(directory, { recursive: true, force: true }));
+    const path = join(directory, 'state.sqlite');
+    const store = new WorkflowStore(path, Date.now);
+    cleanup.push(() => store.close());
+    const limit = store.db.pragma('journal_size_limit', { simple: true }) as number;
+    expect(limit).toBeGreaterThan(0);
+    // A backlog larger than the limit, as a checkpoint that cannot keep up leaves behind.
+    store.db.pragma('wal_autocheckpoint = 0');
+    store.db.pragma('journal_size_limit = 65536');
+    const insert = store.db.prepare('INSERT OR REPLACE INTO wf_texts (digest, text) VALUES (?, ?)');
+    for (let index = 0; index < 64; index++) insert.run('backlog-' + index, 'x'.repeat(16_000));
+    expect(statSync(path + '-wal').size).toBeGreaterThan(500_000);
+    store.db.pragma('wal_checkpoint(PASSIVE)');
+    store.writeHeartbeat(1);
+    expect(statSync(path + '-wal').size).toBeLessThanOrEqual(65536);
+    expect(store.heartbeat()).toBe(1);
+  });
+});

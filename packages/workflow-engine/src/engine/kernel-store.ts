@@ -11,6 +11,8 @@ import { checkpointInBackground } from './wal-checkpointer';
 const TERMINAL = new Set<string>(['completed', 'cancelled']);
 const SNAPSHOT_EVERY = 2000;
 const RETAIN_FINISHED = 64;
+/** Size the WAL file is cut back to once its content has been checkpointed. */
+const WAL_SIZE_LIMIT = 64 * 1024 * 1024;
 const TEXT_CACHE_CHARS = 16_000_000;
 
 interface Aggregate {
@@ -169,6 +171,9 @@ export class WorkflowStore {
     if (!options.readonly) {
       if (path !== ':memory:') chmodSync(path, 0o600);
       this.db.pragma('journal_mode = WAL');
+      // A WAL file keeps the size of its largest backlog for good. With a limit, the first commit after the log starts
+      // over cuts the file back, so one slow checkpoint does not leave hundreds of megabytes behind.
+      this.db.pragma(`journal_size_limit = ${WAL_SIZE_LIMIT}`);
       // The wf_ tables are new in the event-sourced store. A `workflows` table from earlier versions is left untouched.
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS wf_events (seq INTEGER PRIMARY KEY AUTOINCREMENT, workflow_id TEXT NOT NULL, root_id TEXT NOT NULL,
