@@ -8,7 +8,7 @@ import type { TaskView, WorkflowView } from './types';
  */
 export const ARCHIVE_AFTER_MS = 10 * 60_000;
 /** Fewest tasks one archive pass moves; fewer wait for the next pass. */
-export const ARCHIVE_BATCH = 64;
+const ARCHIVE_BATCH = 64;
 
 /**
  * Whether a task can no longer change. A successful task never runs again. A failed or cancelled one-shot task is

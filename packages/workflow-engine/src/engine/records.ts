@@ -1,11 +1,6 @@
-import type { BoardPost, DirectMessage, MailboxMessage, MailboxReceipt, WorkClaim, WorkflowData, WorkflowEvent, WorkflowScript, WorkflowWait, WorkflowWorkItem } from './types';
+import type { BoardPost, DirectMessage, MailboxMessage, MailboxReceipt, RecordKind, WorkClaim, WorkflowData, WorkflowEvent, WorkflowScript, WorkflowWait, WorkflowWorkItem } from './types';
 
-/**
- * The lists of a workflow's state, other than its tasks, whose old entries move to the archive. An entry is archived
- * only once nothing will change it again; from then on it is read by its ID or key (see archivedRecord).
- */
-export type RecordKind = 'post' | 'message' | 'receipt' | 'mailboxOperation' | 'workItem' | 'claim' | 'workOperation' | 'wait'
-  | 'controlOperation' | 'workspaceKey' | 'notice' | 'direct' | 'mailboxCall' | 'workCall' | 'controlCall' | 'workspaceCall';
+export type { RecordKind };
 
 /** The script's keyed-call lists and the record kind of each. Their entries belong to one run of the script. */
 export const CALL_KINDS = { mailboxCalls: 'mailboxCall', workCalls: 'workCall', controlCalls: 'controlCall', workspaceCalls: 'workspaceCall' } as const;

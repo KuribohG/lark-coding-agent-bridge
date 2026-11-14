@@ -1,4 +1,9 @@
-import type { RecordKind } from './records';
+/**
+ * The lists of a workflow's state, other than its tasks, whose old entries move to the archive. An entry is archived
+ * only once nothing will change it again; from then on it is read by its ID or key (see archivedRecord).
+ */
+export type RecordKind = 'post' | 'message' | 'receipt' | 'mailboxOperation' | 'workItem' | 'claim' | 'workOperation' | 'wait'
+  | 'controlOperation' | 'workspaceKey' | 'notice' | 'direct' | 'mailboxCall' | 'workCall' | 'controlCall' | 'workspaceCall';
 
 /** Harness names are host-defined; the engine treats them as opaque strings. */
 export type AgentKind = string;
