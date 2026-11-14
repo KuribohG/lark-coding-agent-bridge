@@ -360,7 +360,7 @@ async function* createEventStream(
       if (verdict?.kind === 'held') {
         held = verdict.result;
         syncDrain();
-        yield* translator.flushProgress();
+        yield* translator.releaseHeld();
         yield { type: 'status', code: 'background_tasks', content: ledger.tasks.describe() };
         waitTimer ??= setTimeout(() => {
           waitExpired = true;

@@ -112,6 +112,17 @@ export class ClaudeRunTranslator {
     yield* translateEvent(event);
   }
 
+  /**
+   * Release what was written before a wait on background tasks. The wait can
+   * last hours, so the answer so far is handed over now instead of at the end.
+   */
+  *releaseHeld(): Generator<AgentEvent> {
+    yield* this.flushProgress();
+    const content = this.interimText.join('\n\n');
+    this.interimText = [];
+    if (content.trim()) yield { type: 'interim_answer', content };
+  }
+
   /** Finish on a held result whose text was already released as progress. */
   *finishHeld(raw: unknown): Generator<AgentEvent> {
     const event = raw as ClaudeRawEvent;

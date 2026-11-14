@@ -114,6 +114,32 @@ describe('Claude chat answer with interim text', () => {
     expect([...t.translate(result('found it'))]).toContainEqual({ type: 'final_text', content: 'checking logs\n\nfound it' });
   });
 
+  it('hands over the answer so far when a wait on background tasks begins, and never repeats it', () => {
+    const t = new ClaudeRunTranslator(true);
+    [...t.translate(assistant('a', 'checking logs'))];
+    [...t.translate(tool('a'))];
+    [...t.translate(assistant('b', 'build started'))];
+    expect([...t.releaseHeld()]).toEqual([
+      { type: 'text', delta: 'build started' }, { type: 'interim_answer', content: 'checking logs\n\nbuild started' },
+    ]);
+    expect([...t.releaseHeld()]).toEqual([]);
+    [...t.translate(assistant('c', 'build passed'))];
+    expect([...t.translate(result('build passed'))]).toContainEqual({ type: 'final_text', content: 'build passed' });
+  });
+
+  it('ends a wait with no further answer once the held text was handed over', () => {
+    const t = new ClaudeRunTranslator(true);
+    [...t.translate(assistant('a', 'build started'))];
+    [...t.releaseHeld()];
+    expect([...t.finishHeld(result('build started'))]).toEqual([{ type: 'done', sessionId: 'session', terminationReason: 'normal' }]);
+  });
+
+  it('keeps held text as plain progress when the answer excludes interim text', () => {
+    const t = new ClaudeRunTranslator();
+    [...t.translate(assistant('a', 'build started'))];
+    expect([...t.releaseHeld()]).toEqual([{ type: 'text', delta: 'build started' }]);
+  });
+
   it('finishes a held result with the released text once, not repeated by the result', () => {
     const t = new ClaudeRunTranslator(true);
     [...t.translate(assistant('a', 'build started'))];

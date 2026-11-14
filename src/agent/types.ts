@@ -48,6 +48,8 @@ export type AgentEvent =
   | { type: 'system'; sessionId?: string; threadId?: string; cwd?: string; model?: string }
   | { type: 'text'; delta: string }
   | { type: 'final_text'; content: string }
+  /** Answer text ready before the run ends; the eventual final_text does not repeat it. */
+  | { type: 'interim_answer'; content: string }
   | { type: 'thinking'; delta: string }
   | {
       type: 'user_input';

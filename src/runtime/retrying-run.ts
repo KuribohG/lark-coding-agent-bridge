@@ -29,6 +29,7 @@ function isProgressEvent(event: AgentEvent): boolean {
     case 'status':
       return event.content.trim().length > 0;
     case 'final_text':
+    case 'interim_answer':
       return event.content.trim().length > 0;
     case 'tool_use':
     case 'tool_result':

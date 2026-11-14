@@ -143,6 +143,7 @@ async function renderCotOutput(input: RunOutputInput): Promise<boolean> {
     return false;
   }
   const cotDone = consumeCotEvents(input.subscribe(), publisher, { detail: input.cotMessages });
+  const interim = sendInterimAnswers(input);
   const renderDone = output.start();
   const progressDone = output.settle(async () => { output.progress.abandon(); }).catch(err => {
     output.progress.abandon();
@@ -152,8 +153,48 @@ async function renderCotOutput(input: RunOutputInput): Promise<boolean> {
   await cotDone;
   await progressDone;
   await output.recallEmpty();
-  await sendFinalReply({ ...input, state: finalReplyState(output.progress, finalState) });
+  const { sent, unsent } = await interim;
+  let state = finalReplyState(output.progress, finalState);
+  if (unsent.length > 0) {
+    const finalText = [...unsent, finalState.finalText ?? ''].filter(text => text.trim()).join('\n\n');
+    state = { ...state, blocks: [{ kind: 'text', content: finalText, streaming: false }] };
+  } else if (sent && !finalState.finalText) {
+    // The answer already went out; falling back to the run's text blocks would post it again.
+    state = { ...state, blocks: [] };
+  }
+  await sendFinalReply({ ...input, state });
   return true;
+}
+
+/**
+ * The CoT bubble caps every text field, so an answer written before a long
+ * wait on background tasks is posted as a normal reply when the wait begins.
+ * Anything that fails to send is returned for the final reply to carry.
+ */
+async function sendInterimAnswers(input: RunOutputInput): Promise<{ sent: boolean; unsent: string[] }> {
+  let sent = false;
+  const unsent: string[] = [];
+  try {
+    for await (const evt of input.subscribe()) {
+      if (evt.type === 'done' || evt.type === 'error') break;
+      if (evt.type !== 'interim_answer') continue;
+      try {
+        // Keep order: once one answer is left for the final reply, later ones follow it.
+        if (unsent.length > 0) throw new Error('earlier interim answer unsent');
+        await sendFinalReply({ ...input, state: {
+          ...initialState, blocks: [{ kind: 'text', content: evt.content, streaming: false }], footer: null, terminal: 'done',
+        } });
+        sent = true;
+      } catch (err) {
+        unsent.push(evt.content);
+        log.fail('outbound', err, { scope: input.scope, step: 'interim-answer' });
+      }
+    }
+  } catch (err) {
+    // The render loop reads the same events and reports a broken stream.
+    log.fail('outbound', err, { scope: input.scope, step: 'interim-answer-events' });
+  }
+  return { sent, unsent };
 }
 
 interface LazyProgressStream {
