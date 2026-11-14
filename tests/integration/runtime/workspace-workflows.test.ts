@@ -20,7 +20,7 @@ async function git(cwd: string, ...argv: string[]) {
 }
 async function harness(perform?: (opts: AgentRunOptions, index: number) => Promise<string>) {
   const dir = await mkdtemp(join(tmpdir(), 'workspace-runtime-'));
-  closes.push(() => rm(dir, { recursive: true, force: true }));
+  closes.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
   const repo = join(dir, 'repo'); await mkdir(repo); await git(repo, 'init', '-b', 'main');
   await git(repo, 'config', 'user.name', 'Test'); await git(repo, 'config', 'user.email', 'test@localhost');
   await git(repo, 'config', 'core.autocrlf', 'false');

@@ -147,7 +147,7 @@ describe('archiving finished tasks', () => {
 
   it('rebuilds the same state and archive from the journal after a restart', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'wf-archive-'));
-    cleanup.push(() => rmSync(dir, { recursive: true, force: true }));
+    cleanup.push(() => rmSync(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
     const path = join(dir, 'workflows.db');
     const first = harness(path);
     await first.start(1000);

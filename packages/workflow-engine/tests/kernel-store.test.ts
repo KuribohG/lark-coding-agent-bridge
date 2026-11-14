@@ -13,7 +13,7 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 
 async function file(): Promise<string> {
   const directory = await mkdtemp(join(tmpdir(), 'workflow-store-'));
-  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  cleanup.push(() => rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
   return join(directory, 'state.sqlite');
 }
 
@@ -352,7 +352,7 @@ describe('event-sourced workflow store', () => {
 describe('background WAL checkpoints', () => {
   it('moves journal pages into the database file from another thread and stops checkpointing inside commits', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'workflow-checkpoint-'));
-    cleanup.push(() => rm(directory, { recursive: true, force: true }));
+    cleanup.push(() => rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
     const path = join(directory, 'state.sqlite');
     const failed = vi.fn();
     const store = new WorkflowStore(path, Date.now, { backgroundCheckpoint: true, checkpointFailed: failed });
@@ -368,7 +368,7 @@ describe('background WAL checkpoints', () => {
 
   it('keeps checkpointing inside commits unless asked', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'workflow-checkpoint-'));
-    cleanup.push(() => rm(directory, { recursive: true, force: true }));
+    cleanup.push(() => rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
     const store = new WorkflowStore(join(directory, 'state.sqlite'), Date.now);
     cleanup.push(() => store.close());
     expect(store.db.pragma('wal_autocheckpoint', { simple: true })).toBe(1000);
@@ -378,7 +378,7 @@ describe('background WAL checkpoints', () => {
 describe('WAL file size', () => {
   it('cuts the file back after a backlog has been checkpointed', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'workflow-wal-size-'));
-    cleanup.push(() => rm(directory, { recursive: true, force: true }));
+    cleanup.push(() => rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
     const path = join(directory, 'state.sqlite');
     const store = new WorkflowStore(path, Date.now);
     cleanup.push(() => store.close());

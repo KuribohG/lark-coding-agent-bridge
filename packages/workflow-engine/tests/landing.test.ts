@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -217,7 +217,8 @@ describe('landing members\' work on a shared branch', () => {
     await expect(h.op('create', 'inside', { repo: join(other, 'sub') })).rejects.toThrow('root of a Git checkout');
     const landing = await h.configure();
     const ws = await h.op<WorkspaceBinding>('create', 'elsewhere', { repo: other });
-    expect(ws.repository).toBe(other);
+    // The binding names the checkout by its real path; the temporary directory may be reached through a link or a short name.
+    expect(ws.repository).toBe(await realpath(other));
     h.manager.begin(ws, 'task');
     await writeFile(join(ws.path, 'fix.txt'), 'x\n'); await git(ws.path, 'add', '.'); await git(ws.path, 'commit', '-m', 'fix');
     expect(await h.manager.land(h.ctx, { workspace: ws.id, taskId: 'task' })).toMatchObject({ status: 'landed', commits: 1 });
