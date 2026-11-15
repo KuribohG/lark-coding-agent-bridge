@@ -32,7 +32,7 @@ describe('shared slash command parser', () => {
   });
 
   it('preserves indentation and blank lines for verbatim commands', () => {
-    expect(parseSlashCommand('/run   first\n\n  second')?.args).toBe('first\n\n  second');
+    expect(parseSlashCommand('/agent   first\n\n  second')?.args).toBe('first\n\n  second');
     expect(parseSlashCommand('/btw   keep   spacing')?.args).toBe('keep   spacing');
   });
 

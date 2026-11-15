@@ -23,9 +23,6 @@ export function fakeChannelControls(overrides: Partial<ChannelControls> = {}): C
     resumePendingInput: () => {},
     detachPendingInput: () => {},
     reloadPendingInput: async () => {},
-    launchTimedRun: async () => {},
-    cancelTimedRun: () => {},
-    activeTimedRun: () => undefined,
     onConfigApplied: () => {},
     ...overrides,
   };

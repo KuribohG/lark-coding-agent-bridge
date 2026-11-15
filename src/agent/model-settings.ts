@@ -4,7 +4,7 @@ import { agentBackendSpec } from './backend-spec';
 
 export const REASONING_EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
-/** Strongest tier. Claude maps it to ultracode (xhigh + standing workflow orchestration), offered only to deadline-bounded runs. */
+/** Strongest tier. Claude maps it to ultracode (xhigh + standing workflow orchestration), offered only to workflow workers. */
 export const ULTRA_EFFORT = 'ultra';
 export interface ReasoningEffortOption {
   value: string;
@@ -24,9 +24,9 @@ export interface ResolvedModelSettings extends ModelSettings {
   notice?: string;
 }
 
-export function parseEffort(value: unknown, agentKind: AgentKind, opts: { timedRun?: boolean } = {}): ReasoningEffort | undefined {
+export function parseEffort(value: unknown, agentKind: AgentKind, opts: { extended?: boolean } = {}): ReasoningEffort | undefined {
   if (value === undefined || value === '' || value === 'default') return undefined;
-  if (typeof value !== 'string' || !(opts.timedRun ? timedRunEfforts(agentKind) : availableEfforts(agentKind)).includes(value)) {
+  if (typeof value !== 'string' || !(opts.extended ? extendedEfforts(agentKind) : availableEfforts(agentKind)).includes(value)) {
     throw new Error(`不支持的思考强度：${String(value)}。`);
   }
   return value as ReasoningEffort;
@@ -36,10 +36,10 @@ export function availableEfforts(agentKind: AgentKind, model?: ModelOption): str
   return model?.reasoningEfforts ?? [...agentBackendSpec(agentKind).reasoningEfforts];
 }
 
-export function timedRunEfforts(agentKind: AgentKind): string[] {
+export function extendedEfforts(agentKind: AgentKind): string[] {
   const spec = agentBackendSpec(agentKind);
-  return spec.timedRunReasoningEfforts
-    ? [...spec.timedRunReasoningEfforts]
+  return spec.extendedReasoningEfforts
+    ? [...spec.extendedReasoningEfforts]
     : availableEfforts(agentKind);
 }
 

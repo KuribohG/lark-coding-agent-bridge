@@ -17,7 +17,6 @@ export async function handleStop(args: string, ctx: CommandContext): Promise<voi
   const workflowNote = ctx.controls.channel?.workflow()?.active(scope) ? '工作流仍在运行，取消请用 `/workflow cancel`。' : '';
   const dropped = await cancelPendingInput(ctx, scope);
   ctx.controls.channel?.btw.cancel(scope);
-  ctx.controls.channel?.cancelTimedRun(scope);
   const ok = ctx.activeRuns.interrupt(scope);
   log.info('command', 'stop', {
     scope,

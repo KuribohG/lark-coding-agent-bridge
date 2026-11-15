@@ -104,7 +104,7 @@ class ConfiguredModelProvider extends ModelProvider {
   }
 }
 
-/** Provider registry shared by Lark, Web, background and timed runs. */
+/** Provider registry shared by Lark, Web and background runs. */
 export class ModelProviderRegistry {
   private readonly providers: ModelProvider[];
 

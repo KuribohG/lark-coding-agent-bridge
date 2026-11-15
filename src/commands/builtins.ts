@@ -11,7 +11,6 @@ import { handleConfig } from './config';
 import { handleStop, handleTimeout, handlePs, handleExit, handleReconnect } from './lifecycle';
 import { handleDoctor } from './doctor';
 import { handleInvite, handleRemove } from './access';
-import { handleRun } from './run';
 import { handleModelCommand } from './model';
 import { handleAgent } from './agent';
 
@@ -25,7 +24,6 @@ export const builtinHandlers = {
   help: handleHelp,
   account: handleAccount,
   config: handleConfig,
-  run: handleRun,
   btw: async (args, ctx) => {
     if (ctx.controls.channel) await ctx.controls.channel.btw.enqueue(args, ctx);
     else await reply(ctx, '当前入口暂不支持 /btw。');

@@ -94,21 +94,6 @@ describe.each(['codex', 'claude'] as const)('in-flight %s IM delivery', agentKin
     await h.message('unmentioned', { mentionedBot: false });
     expect(h.agent.supplements).toHaveLength(0);
   });
-  it('does not create an unbounded follow-up when a timed turn ends during delivery', async () => {
-    const h = await harness(agentKind);
-    await h.message('original');
-    await vi.waitFor(() => expect(h.agent.options).toHaveLength(1), { timeout: 2500 });
-    h.controls.channel!.activeTimedRun = () => 'timed-job';
-    h.agent.onSteer = async () => {
-      h.controls.channel!.activeTimedRun = () => undefined;
-      h.agent.finish(0);
-      return 'inactive';
-    };
-    await h.message('late supplement');
-    expect(JSON.stringify(h.channel.sent)).toContain('这条消息未排队执行');
-    await new Promise(resolve => setTimeout(resolve, 800));
-    expect(h.agent.options).toHaveLength(1);
-  });
   it('cancels queued text before stop acknowledgement and never auto-resumes it', async () => {
     const h = await harness(agentKind); h.agent.supportsSteer = false;
     await h.message('original');
@@ -229,7 +214,7 @@ class GateAgent implements AgentAdapter {
 }
 
 async function harness(agentKind: 'claude' | 'codex' = 'codex', workflows = false) {
-  const tmp = await createTmpProfile('timed-channel-');
+  const tmp = await createTmpProfile('followup-channel-');
   const codexHome = join(tmp.root, 'codex-home');
   await mkdir(codexHome);
   await writeFile(join(codexHome, 'config.toml'), '');

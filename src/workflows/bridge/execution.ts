@@ -14,7 +14,7 @@ export const bridgeWorkerPolicy: Required<WorkerExecutionPolicy> = {
   checkSelection(selection) {
     if (!isAgentKind(selection.agentKind)) throw new Error('Unknown worker agentKind');
     if (selection.model !== undefined) validateModelId(selection.model);
-    parseEffort(selection.reasoningEffort, selection.agentKind, { timedRun: true });
+    parseEffort(selection.reasoningEffort, selection.agentKind, { extended: true });
   },
   nativeIdKind: agentKind => sessionIdFieldForAgent(bridgeAgentKind(agentKind)),
   repairJson: parseModelJson,

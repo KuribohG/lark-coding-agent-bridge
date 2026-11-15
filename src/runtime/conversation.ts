@@ -63,7 +63,6 @@ export interface ConversationInput extends ConversationIdentity {
   /** Resolved and validated by the host's upload pipeline. */
   attachments?: AgentAttachment[];
   signal?: AbortSignal;
-  deadlineAt?: number;
   /** Where this run's questions are shown. Without it the agent is not offered the question tool. */
   questions?: ConversationQuestionSink;
 }
@@ -138,7 +137,7 @@ export class ConversationRuntime {
         forget: () => {},
       },
       delivery: { prompt: async (_request, content) => content },
-      activeRuns: this.active, followups: new FollowupRouter(), catalog: this.catalog, isTimed: () => false,
+      activeRuns: this.active, followups: new FollowupRouter(), catalog: this.catalog,
     });
     if (!options.workflows) return;
     const queue = this.queue = new PendingQueue<QueuedInput>(0, (scope, batch) => {
@@ -225,7 +224,7 @@ export class ConversationRuntime {
         scopeId, scope: { source: 'channel', channelId: this.options.channelId,
           actorId: input.actorId, conversationId: input.conversationId },
         prompt, systemPrompt: this.options.systemPrompt ?? '', env: binding?.env,
-        signal: controller.signal, deadlineAt: input.deadlineAt,
+        signal: controller.signal,
         attachments: input.attachments ?? [], access: { ok: true, reason: 'allowed-user' },
         agent, capability, profileConfig: config, userQuestions: Boolean(input.questions),
       });

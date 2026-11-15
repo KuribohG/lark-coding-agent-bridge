@@ -202,7 +202,7 @@ Lark responsibilities are separated at the transport boundary:
 | `run.ts` | Context gathering, policy submission and output/session observers |
 | `prompt.ts` | Pure conversion from Lark messages to agent input |
 
-Queued input, workflow wakes and timed runs share `LarkTurns`. A reservation blocks
+Queued input and workflow wakes share `LarkTurns`. A reservation blocks
 pending delivery before asynchronous preparation, stays owned during cancellation,
 and releases once even on failure. Shutdown aborts reservations and suspends the
 queue before release can rearm it. Feature code does not maintain a second map of

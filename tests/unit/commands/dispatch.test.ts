@@ -5,12 +5,9 @@ import {
   CommandRegistry,
   type CommandContext,
 } from '../../../src/commands';
-import { handleRun } from '../../../src/commands/run';
 import { helpCard } from '../../../src/card/templates';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { fakeChannelControls } from '../../helpers/channel-controls';
-
-vi.mock('../../../src/commands/run', () => ({ handleRun: vi.fn(async () => {}) }));
 
 function context(content: string): CommandContext {
   return {
@@ -41,13 +38,13 @@ describe('command dispatch contract', () => {
     },
   );
 
-  it.each(['run', 'btw'])('preserves paragraphs and indentation in /%s', async name => {
+  it('preserves paragraphs and indentation in /btw', async () => {
     const task = 'first paragraph\n\n  indented command';
-    const ctx = context(`/${name}   ${task}`);
+    const ctx = context(`/btw   ${task}`);
     await expect(tryHandleCommand(ctx)).resolves.toBe(true);
-    const handler = name === 'run' ? handleRun : ctx.controls.channel!.btw.enqueue;
+    const handler = ctx.controls.channel!.btw.enqueue;
     expect(handler).toHaveBeenCalledWith(task, ctx);
-    await runCommandHandler(name, task, ctx);
+    await runCommandHandler('btw', task, ctx);
     expect(handler).toHaveBeenLastCalledWith(task, ctx);
   });
 

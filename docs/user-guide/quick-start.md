@@ -162,6 +162,6 @@ node bin/lark-channel-bridge.mjs web --agent codex --workspace . --state-dir .we
 
 这是**本机操作界面，不是公网多用户服务**。不要分享 token 链接或开放端口。Agent 可以修改文件：独立 Web 的 Codex/Claude 默认是 workspace 权限，Pi 默认 full；飞书 profile 有单独的权限配置。发任务前确认范围，停止不会撤销已完成的修改。
 
-原生 Windows Web/Codex 已验证真实对话、工具调用和重启续接，**不代表整个仓库测试全通过**；已知失败与未验收功能见[验证记录](../windows-web-validation.md)。高级命令、权限、旁问、限时任务等已移至[运行行为详细参考](runtime-reference.md)。
+原生 Windows Web/Codex 已验证真实对话、工具调用和重启续接，**不代表整个仓库测试全通过**；已知失败与未验收功能见[验证记录](../windows-web-validation.md)。高级命令、权限、旁问等已移至[运行行为详细参考](runtime-reference.md)。
 
 开发验证：使用上方固定版本 pnpm 安装后运行 `pnpm test`、`pnpm typecheck`、`pnpm typecheck:web`、`pnpm build`。架构：[渠道](../channels.md) · [Agent 执行](../agent-execution.md)。许可证：[MIT](../../LICENSE)。

@@ -42,7 +42,7 @@ export interface AgentBackendSpec {
   providerSwitching?: 'startup';
   modelCatalog: AgentModelCatalog;
   reasoningEfforts: readonly string[];
-  timedRunReasoningEfforts?: readonly string[];
+  extendedReasoningEfforts?: readonly string[];
   supportedAccess?: readonly AgentAccessMode[];
   webDefaultAccess: 'workspace' | 'full';
   backgroundDefaults?: {
@@ -82,7 +82,7 @@ const CLAUDE_SPEC: AgentBackendSpec = Object.freeze({
   providerBindings: Object.freeze({}),
   modelCatalog: 'claude',
   reasoningEfforts: Object.freeze(['low', 'medium', 'high', 'xhigh', 'max']),
-  timedRunReasoningEfforts: Object.freeze(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']),
+  extendedReasoningEfforts: Object.freeze(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']),
   webDefaultAccess: 'workspace',
 });
 

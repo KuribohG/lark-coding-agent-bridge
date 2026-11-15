@@ -9,7 +9,6 @@ import { createDefaultProfileConfig, type RootConfig } from '../../../../src/con
 import { runtimeProfileConfig } from '../../../../src/config/profile-store';
 import { SessionStore } from '../../../../src/session/store';
 import { WorkspaceStore } from '../../../../src/workspace/store';
-import { timedRuns } from '../../../../src/runtime/timed-runs';
 import { MAX_RESUME_ATTEMPTS } from '../../../../src/runtime/interrupted-turns';
 import { createFakeChannel } from '../../../helpers/fake-channel';
 import { createTmpProfile, type TmpProfile } from '../../../helpers/tmp-profile';
@@ -156,53 +155,6 @@ describe('turns cut off by a bridge shutdown', () => {
     h.agent.finish(1);
     await vi.waitFor(async () => expect(await h.journal()).toEqual([]));
   });
-
-  it('reattaches an interrupted timed run whose host is still running', async () => {
-    const h = await harness();
-    h.agent.hosted = true;
-    const first = await h.start();
-    await first.message('/run --until 2h --tz UTC -- 夜间巡检');
-    const job = (await timedRuns(h.controls)).latest(h.scope)!;
-    await first.click('run.start', job.id);
-    await vi.waitFor(() => expect(h.agent.options).toHaveLength(1));
-    const key = h.agent.options[0]!.host!.key;
-    await first.stop();
-    h.controls = h.freshControls();
-    expect((await timedRuns(h.controls)).get(job.id)?.state).toBe('interrupted');
-
-    await h.start();
-    await vi.waitFor(() => expect(h.agent.options).toHaveLength(2));
-    expect(h.agent.options[1]).toMatchObject({ deadlineAt: job.stopAt, host: { key, attach: true } });
-    const store = await timedRuns(h.controls);
-    await vi.waitFor(() => expect(store.get(job.id)?.state).toBe('running'));
-    h.agent.finish(1);
-    await vi.waitFor(() => expect(store.get(job.id)?.state).toBe('completed'));
-    await vi.waitFor(async () => expect(await h.journal()).toEqual([]));
-  });
-
-  it('resumes an interrupted timed run before its stop time', async () => {
-    const h = await harness();
-    const first = await h.start();
-    await first.message('/run --until 2h --tz UTC -- 夜间检查');
-    const job = (await timedRuns(h.controls)).latest(h.scope)!;
-    await first.click('run.start', job.id);
-    await vi.waitFor(() => expect(h.agent.options).toHaveLength(1));
-    await first.stop();
-    h.controls = h.freshControls();
-    expect((await timedRuns(h.controls)).get(job.id)?.state).toBe('interrupted');
-
-    await h.start();
-    await vi.waitFor(() => expect(h.agent.options).toHaveLength(2));
-    expect(h.agent.options[1]).toMatchObject({ deadlineAt: job.stopAt });
-    expect(h.agent.options[1]?.prompt).toContain('夜间检查');
-    expect(h.agent.options[1]?.prompt).toContain('现已重启并自动续跑（第 1 次）');
-    const store = await timedRuns(h.controls);
-    await vi.waitFor(() => expect(store.get(job.id)?.state).toBe('running'));
-    expect(store.get(job.id)?.finishedAt).toBeUndefined();
-    h.agent.finish(1);
-    await vi.waitFor(() => expect(store.get(job.id)?.state).toBe('completed'));
-    await vi.waitFor(async () => expect(await h.journal()).toEqual([]));
-  });
 });
 
 class GateAgent implements AgentAdapter {
@@ -294,10 +246,6 @@ async function harness() {
       return {
         channel, stop,
         message: (content: string) => handlers.message!(input(content, `m-${content}`)),
-        click: (cmd: string, id: string) => handlers.cardAction!({
-          chatId: 'oc_chat', messageId: 'card', operator: { openId: 'owner' },
-          action: { value: { cmd, arg: id, settings_scope: scope } },
-        } as CardActionEvent),
       };
     },
   };

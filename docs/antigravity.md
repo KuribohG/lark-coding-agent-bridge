@@ -83,8 +83,8 @@ reported, not retried with another account.
   `--conversation`. Shared working directories never imply “resume latest.”
 - Text sent during an active task queues for the next turn. The headless input
   protocol does not supply a correlated active-turn acknowledgement.
-- Stop uses SIGINT, followed by bounded process-tree termination. Timed runs use
-  the existing independent deadline supervisor.
+- Stop uses SIGINT, followed by bounded process-tree termination. Runs with a
+  deadline use the existing independent deadline supervisor.
 - Only `full` access is advertised. The CLI can silently ignore an unavailable
   sandbox, so Bridge rejects `read-only` and `workspace` instead of claiming
   those restrictions are enforced.

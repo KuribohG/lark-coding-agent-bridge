@@ -2,11 +2,11 @@ import type { ActiveRuns } from './active-runs';
 import { RunStopped } from './errors';
 import type { PendingQueue } from './pending-queue';
 
-/** One admission/cancellation lane shared by queued messages, wakes and timed
- * tasks. It covers preparation too, before ActiveRuns has a native execution.
+/** One admission/cancellation lane shared by queued messages and workflow
+ * wakes. It covers preparation too, before ActiveRuns has a native execution.
  */
 export class ConversationTurns {
-  private readonly running = new Map<string, { controller: AbortController; timedRunId?: string }>();
+  private readonly running = new Map<string, { controller: AbortController }>();
   private readonly work = new Set<Promise<void>>();
   private closed = false;
 
@@ -22,11 +22,9 @@ export class ConversationTurns {
 
   activeCount(): number { return this.running.size; }
 
-  timedRunId(scope: string): string | undefined { return this.running.get(scope)?.timedRunId; }
-
-  claim(scope: string, timedRunId?: string) {
+  claim(scope: string) {
     if (this.closed || this.running.has(scope)) throw new Error('Conversation turn is already active or closed');
-    const entry = { controller: new AbortController(), timedRunId };
+    const entry = { controller: new AbortController() };
     this.running.set(scope, entry);
     this.pending.block(scope);
     const release = () => {
@@ -48,9 +46,9 @@ export class ConversationTurns {
     };
   }
 
-  cancel(scope: string, timedRunId?: string): void {
+  cancel(scope: string): void {
     const entry = this.running.get(scope);
-    if (entry && (!timedRunId || entry.timedRunId === timedRunId)) entry.controller.abort(new RunStopped('cancelled'));
+    if (entry) entry.controller.abort(new RunStopped('cancelled'));
   }
 
   /** Resolves once every started turn has finished, including its cleanup. */

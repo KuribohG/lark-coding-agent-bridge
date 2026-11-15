@@ -22,7 +22,7 @@ it('keeps started turns with their follow-ups until they end', async () => {
   const journal = new InterruptedTurns(path);
   expect(await journal.load()).toEqual([]);
   await journal.begin({ scope: 'a', messages: [message('m1')] });
-  await journal.begin({ scope: 'b', messages: [message('m2')], timedRunId: 'job', attempts: 1, startedAt: 5 });
+  await journal.begin({ scope: 'b', messages: [message('m2')], attempts: 1, startedAt: 5 });
   journal.append('a', message('m3'));
   journal.append('a', message('m3'));
   journal.append('missing', message('m4'));
@@ -31,7 +31,7 @@ it('keeps started turns with their follow-ups until they end', async () => {
   const reloaded = await new InterruptedTurns(path).load();
   expect(reloaded).toEqual([
     expect.objectContaining({ scope: 'a', attempts: 0, messages: [message('m1'), message('m3')] }),
-    { scope: 'b', messages: [message('m2')], timedRunId: 'job', attempts: 1, startedAt: 5 },
+    { scope: 'b', messages: [message('m2')], attempts: 1, startedAt: 5 },
   ]);
 
   journal.end('a');

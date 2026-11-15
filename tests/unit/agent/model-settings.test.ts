@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { availableEfforts, modelRunArguments, parseEffort, reasoningEffortOptions, REASONING_EFFORTS, resolveModelSettings, timedRunEfforts } from '../../../src/agent/model-settings';
+import { availableEfforts, extendedEfforts, modelRunArguments, parseEffort, reasoningEffortOptions, REASONING_EFFORTS, resolveModelSettings } from '../../../src/agent/model-settings';
 import { readModelEnvironment } from '../../../src/agent/model-environment';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { createTmpProfile } from '../../helpers/tmp-profile';
@@ -34,14 +34,14 @@ describe('model settings resolution', () => {
     expect(resolved.notice).toContain('不支持 medium');
   });
 
-  it('offers Claude ultra only to timed runs and keeps Codex ultra everywhere', () => {
-    expect(timedRunEfforts('claude')).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
+  it('offers Claude ultra only to workflow workers and keeps Codex ultra everywhere', () => {
+    expect(extendedEfforts('claude')).toEqual(['low', 'medium', 'high', 'xhigh', 'max', 'ultra']);
     expect(availableEfforts('claude')).not.toContain('ultra');
-    expect(parseEffort('ultra', 'claude', { timedRun: true })).toBe('ultra');
+    expect(parseEffort('ultra', 'claude', { extended: true })).toBe('ultra');
     expect(() => parseEffort('ultra', 'claude')).toThrow('不支持');
     expect(parseEffort('ultra', 'codex')).toBe('ultra');
-    expect(parseEffort('ultra', 'codex', { timedRun: true })).toBe('ultra');
-    expect(() => parseEffort('ultracode', 'claude', { timedRun: true })).toThrow('不支持');
+    expect(parseEffort('ultra', 'codex', { extended: true })).toBe('ultra');
+    expect(() => parseEffort('ultracode', 'claude', { extended: true })).toThrow('不支持');
   });
 
   it('derives the Codex list and common selector options from one effort enum', () => {

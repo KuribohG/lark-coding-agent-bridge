@@ -43,7 +43,6 @@ export class UserQuestions {
     followups: FollowupRouter;
     pending: PendingQueue;
     catalog?: SessionCatalog;
-    isTimed(scope: string): boolean;
     blockingTimeoutMs?: number;
   }) {
     const presenter: QuestionPresenter<LarkQuestionOrigin> = {
@@ -52,7 +51,7 @@ export class UserQuestions {
       forget: ref => forgetManagedCard(ref),
     };
     this.broker = new QuestionBroker({ presenter, activeRuns: deps.activeRuns, followups: deps.followups,
-      catalog: deps.catalog, isTimed: deps.isTimed, blockingTimeoutMs: deps.blockingTimeoutMs,
+      catalog: deps.catalog, blockingTimeoutMs: deps.blockingTimeoutMs,
       delivery: {
         prompt: async ({ origin: { message } }, content, anchorId) => buildAgentPrompt({
           context: { chatId: message.chatId, chatType: message.chatType, threadId: message.threadId,

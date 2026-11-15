@@ -48,7 +48,6 @@ export interface StartRunFlowInput extends RunFlowContextInput {
   /** Snapshot the adapter before asynchronous policy checks and queue waits. */
   agent?: AgentAdapter;
   env?: Readonly<Record<string, string>>;
-  deadlineAt?: number;
   signal?: AbortSignal;
   modelSettings?: import('../agent/model-settings').ModelSettings;
   executor: RunExecutor;
@@ -203,7 +202,6 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
     execution = await input.executor.submit({
       agent: input.agent,
       env: input.env,
-      deadlineAt: input.deadlineAt,
       signal: input.signal,
       scopeId: input.fork?.executionScopeId ?? input.scopeId,
       policy,
@@ -236,8 +234,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
         rejectReason: {
           code: err.code,
           userVisible:
-            err.code === 'deadline-expired' ? '已到限时任务停止时间，未启动任务。'
-              : err.code === 'run-cancelled' ? '限时任务已取消，未启动任务。'
+            err.code === 'run-cancelled' ? '任务已取消，未启动。'
               : err.code === 'reconnect-in-progress'
               ? '当前 bot 正在重连，稍后会继续处理新消息。'
               : err.code === 'run-already-active'

@@ -18,7 +18,6 @@ export interface InterruptedTurn<M extends TurnInput = TurnInput> {
   scope: string;
   /** Input delivered to the native run: the flushed batch plus accepted follow-ups. */
   messages: M[];
-  timedRunId?: string;
   /** Run host keeping the native process alive; a live or finished host is reattached instead of replayed. */
   hostKey?: string;
   /** When the original input first started running; replays keep it. */
@@ -110,7 +109,6 @@ export class InterruptedTurns<M extends TurnInput = TurnInput> {
     return {
       scope: raw.scope,
       messages,
-      ...(typeof raw.timedRunId === 'string' ? { timedRunId: raw.timedRunId } : {}),
       ...(typeof raw.hostKey === 'string' && raw.hostKey ? { hostKey: raw.hostKey } : {}),
       startedAt: Number.isFinite(raw.startedAt) ? raw.startedAt! : 0,
       attempts: Number.isInteger(raw.attempts) && raw.attempts! >= 0 ? raw.attempts! : MAX_RESUME_ATTEMPTS,

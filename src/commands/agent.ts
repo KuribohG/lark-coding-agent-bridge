@@ -30,7 +30,7 @@ export async function handleAgent(args: string, ctx: CommandContext): Promise<vo
   const kind = name === 'default' ? defaultKind : name.toLowerCase();
   if (!isAgentKind(kind)) return reply(ctx, `未切换：未知执行引擎。\n${AGENT_USAGE}`);
   // A running task keeps its adapter, and its cards and follow-ups resolve the scope's engine.
-  if (ctx.activeRuns.get(ctx.scope) || ctx.controls.channel?.activeTimedRun(ctx.scope)) {
+  if (ctx.activeRuns.get(ctx.scope)) {
     return reply(ctx, '未切换：当前有任务在执行，请等它结束或先 /stop。');
   }
 

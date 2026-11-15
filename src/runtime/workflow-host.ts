@@ -46,8 +46,6 @@ export interface WorkflowFrontend<M> {
    * policy fingerprint, or the workflow cannot find the session it belongs to.
    */
   conversation(origin: M, profileConfig: RunProfileConfig): { scope: ScopeContext; access: AccessDecision; systemPrompt?: string };
-  /** Why a workflow turn may not be queued in this scope right now, as shown to the person. */
-  blocked?(scope: string): string | undefined;
   /** Queues `content` as a workflow turn sent from the origin; false when the queue is full. */
   queue(scope: string, origin: M, content: string, entry: AgentEntry): boolean;
   /** Runs one turn of the main conversation for the given inputs. */
@@ -152,8 +150,6 @@ export class WorkflowHost<M> {
       active: scope => runtime.kernel.state(scope)?.status === 'active',
       invalidate: scope => runtime.kernel.invalidate(scope),
       command: (scope, args, message) => handleWorkflowCommand(runtime.kernel, scope, args, content => {
-        const blocked = frontend.blocked?.(scope);
-        if (blocked) return blocked;
         if (!frontend.queue(scope, message, content, { kind: 'workflow', trigger: 'command' })) return '消息队列已满，请稍后重试。';
         this.origins.set(scope, message);
         return undefined;

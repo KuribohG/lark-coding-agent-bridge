@@ -17,7 +17,6 @@ import type { RuntimeActivity } from '../../runtime/activity';
 import type { ExecutionController } from '../../runtime/execution-controller';
 import { ProcessPool } from '../../runtime/process-pool';
 import { RunExecutor, type RunExecution } from '../../runtime/run-executor';
-import { timedRuns } from '../../runtime/timed-runs';
 import { BtwStore } from '../../session/btw-store';
 import type { SessionCatalog } from '../../session/catalog';
 import type { SessionStore } from '../../session/store';
@@ -140,7 +139,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   await pending.load();
 
   const userQuestions = new UserQuestions({ channel, auth: callbackAuth, activeRuns, followups,
-    pending, catalog: sessionCatalog, isTimed: scope => Boolean(controls.channel?.activeTimedRun(scope)) });
+    pending, catalog: sessionCatalog });
 
   const runServices: LarkRunServices = { ...conversation, media, cotClient, callbackAuth, userQuestions,
     memory: new ScopeRunMemory() };
@@ -148,15 +147,15 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     const first = batch[0];
     if (!first) return undefined;
     const mode = first.threadId ? 'topic' : await chatModeCache.resolve(channel, first.chatId);
-    const agentKind = options.timedJob?.agentKind ?? resolveAgentKind(scope);
+    const agentKind = resolveAgentKind(scope);
     const agent = resolveAgent(scope, agentKind);
     return runAgentBatch(runServices, {
-      ...(options.timedJob ? {} : { workflows: workflows.current, workflowOrigins: workflows.origins }),
+      workflows: workflows.current, workflowOrigins: workflows.origins,
       scope, batch, mode, agentKind, agent, ...options });
   };
   const workflows: LarkWorkflowHost = createLarkWorkflowHost({ channel, executor, controls, sessions, sessionCatalog, workspaces,
     stateDir, turns, pending, resolveAgentKind, dispatch });
-  const runner = new LarkTurnRunner({ channel, turns, timedStore: await timedRuns(controls), stateDir,
+  const runner = new LarkTurnRunner({ channel, turns, stateDir,
     resolveAgentKind, dispatch });
 
   const channelControls: ChannelControls = {
@@ -179,9 +178,6 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     resumePendingInput: () => pending.resume(),
     detachPendingInput: () => pending.detach(),
     reloadPendingInput: async () => { await pending.reload(); await workflows.start(); await runner.resumeInterrupted(); },
-    launchTimedRun: (job, message) => runner.launchTimedRun(job, message),
-    cancelTimedRun: (scope, id) => runner.cancelTimedRun(scope, id),
-    activeTimedRun: scope => runner.activeTimedRun(scope),
     onConfigApplied: () => pool.refresh(),
   };
   controls.channel = channelControls;
@@ -355,9 +351,9 @@ function settleWithin(work: Promise<void>, timeoutMs: number): Promise<void> {
 }
 
 /**
- * What a disconnecting channel still offers: timed-run guards and queued
- * input keep working until it is gone, while workflows, side questions
- * and new timed runs are no longer available.
+ * What a disconnecting channel still offers: queued input keeps working
+ * until it is gone, while workflows and side questions are no longer
+ * available.
  */
 function closingChannelControls(live: ChannelControls): ChannelControls {
   return {
@@ -369,7 +365,6 @@ function closingChannelControls(live: ChannelControls): ChannelControls {
       reset: () => {},
       cancel: () => {},
     },
-    launchTimedRun: async () => { throw new Error('当前运行环境不支持限时任务。'); },
     onConfigApplied: () => {},
   };
 }

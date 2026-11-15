@@ -117,7 +117,6 @@ export class QuestionBroker<O = unknown> {
     activeRuns: ActiveRuns;
     followups: FollowupRouter;
     catalog?: SessionCatalog;
-    isTimed(scope: string): boolean;
     blockingTimeoutMs?: number;
   }) {}
 
@@ -240,7 +239,7 @@ export class QuestionBroker<O = unknown> {
     }
     const queue = this.deps.delivery.queue;
     if (!queue) return '任务已不再等待这个回答，答案没有送入；请把你的选择作为新消息发送。';
-    if (!request.allowQueue || this.deps.isTimed(scope)) return '限时任务已结束或无法接收回答，请在原话题手动继续。';
+    if (!request.allowQueue) return '任务已结束或无法接收回答，请在原话题手动继续。';
     if (!this.sameSession(request, identity)) return '会话已切换，答案未发送；请在原话题重新说明你的选择。';
     // The queued turn replies to this message, so it carries the anchor, not the input key.
     return await queue(request, content, anchorId)

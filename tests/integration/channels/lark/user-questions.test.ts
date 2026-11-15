@@ -15,7 +15,7 @@ import { createTmpProfile } from '../../../helpers/tmp-profile';
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { vi.useRealTimers(); vi.restoreAllMocks(); await Promise.all(cleanups.splice(0).map(fn => fn())); });
 
-async function harness(options: { auth?: boolean; timed?: boolean; mention?: boolean; mode?: 'async' | 'blocking';
+async function harness(options: { auth?: boolean; mention?: boolean; mode?: 'async' | 'blocking';
   questions?: AgentQuestion[]; native?: 'accepted' | 'inactive'; blockingTimeoutMs?: number } = {}) {
   const tmp = await createTmpProfile('user-questions-');
   const channel = createFakeChannel();
@@ -41,14 +41,14 @@ async function harness(options: { auth?: boolean; timed?: boolean; mention?: boo
   const message: NormalizedMessage = { messageId: 'om_origin', chatId: 'oc_group', chatType: 'group', threadId: 'omt_topic',
     senderId: 'ou_user', content: 'task', rawContentType: 'text', resources: [], mentions: [], mentionedBot: false, mentionAll: false, createTime: 1 };
   const manager = new UserQuestions({ channel: channel as unknown as LarkChannel, auth: options.auth === false ? undefined : auth,
-    activeRuns, pending, catalog, followups: new FollowupRouter(), isTimed: () => options.timed === true,
+    activeRuns, pending, catalog, followups: new FollowupRouter(),
     blockingTimeoutMs: options.blockingTimeoutMs });
   const mode = options.mode ?? 'async';
   const publish = () => manager.publish({ type: 'user_input', id: 'question-item', mode,
     ...(mode === 'async' ? { threadId: 'codex-thread' } : { sessionId: 'claude-session' }), questions: options.questions ?? [
     { question: '处理范围？', options: [{ label: '全部' }, { label: '仅本次' }] },
   ] }, { runId: run.runId, identity, message, replyTo: 'om_origin', mentionUser: options.mention !== false,
-    allowQueue: !options.timed, isCancelled: () => handle.interrupted });
+    allowQueue: true, isCancelled: () => handle.interrupted });
   const values = (): Array<Record<string, unknown>> => {
     const result: Array<Record<string, unknown>> = [];
     const walk = (v: unknown) => {
@@ -165,8 +165,8 @@ describe('native async question cards', () => {
     expect(queued[0]).toMatchObject({ messageId: 'om_fake_1', threadId: 'omt_topic', senderId: 'ou_user' });
     expect(queued[0]?.content).toContain('仅本次');
   });
-  it.each(['stopped', 'switched', 'archived', 'timed'] as const)('rejects late answers after %s', async kind => {
-    const h = await harness({ timed: kind === 'timed' }); await h.publish();
+  it.each(['stopped', 'switched', 'archived'] as const)('rejects late answers after %s', async kind => {
+    const h = await harness(); await h.publish();
     h.activeRuns.unregister(h.identity.scopeId, h.run);
     if (kind === 'stopped') h.activeRuns.interrupt(h.identity.scopeId);
     if (kind === 'switched') h.catalog.upsertActive({ ...h.identity, threadId: 'another-thread' });

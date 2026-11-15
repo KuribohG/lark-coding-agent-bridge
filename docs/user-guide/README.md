@@ -12,7 +12,7 @@ Bridge 把本机 Codex、Claude Code、Pi 接到浏览器或飞书。先完成�
 | 1. 启动 | 连接飞书应用并完成第一条机器人回复 | [首次飞书接入](getting-started.md) |
 | 1. 启动 | Windows 前台、后台、登录自启怎么选 | [Windows 指南](windows.md) |
 | 2. 使用 | Web 的新对话、停止、引擎和会话续接 | [Web 聊天](web-chat.md) |
-| 2. 使用 | 飞书切项目、恢复历史、旁问、限时任务 | [日常对话与任务](chat-and-tasks.md) |
+| 2. 使用 | 飞书切项目、恢复历史、旁问 | [日常对话与任务](chat-and-tasks.md) |
 | 3. 配置 | 文件放哪里、模型/密钥怎么填、何时重启 | [配置教程](configuration.md) |
 | 3. 配置 | 模型与 Agent 账号、飞书权限和用户授权 | [模型与账号](models-and-accounts.md) |
 | 4. 扩展 | 消息筛选、待办、草稿和结果话题 | [会话助理](assistant.md) |
@@ -44,4 +44,4 @@ Bridge 把本机 Codex、Claude Code、Pi 接到浏览器或飞书。先完成�
 - [命令速查](commands.md)、[完整运行行为参考](runtime-reference.md)、[字段与优先级](../configuration.md)。
 - [实际验证与已知失败](../windows-web-validation.md)：哪些路径已验收，哪些仍未通过；不把测试矩阵当成实机成功证明。
 
-会话助理和监控默认关闭。普通 Web/飞书对话不自动成为助理待办；飞书 `/run` 也不是每天定时执行。GitLab CI 来源发现的失败进入同一个助理工作台，但与飞书消息来源的开关和配置独立。
+会话助理和监控默认关闭。普通 Web/飞书对话不自动成为助理待办。GitLab CI 来源发现的失败进入同一个助理工作台，但与飞书消息来源的开关和配置独立。

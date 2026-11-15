@@ -1,4 +1,3 @@
-import type { TimedRun } from '../runtime/timed-runs';
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../runtime/active-runs';
@@ -61,9 +60,6 @@ export interface ChannelControls {
   resumePendingInput(): void;
   detachPendingInput(): void;
   reloadPendingInput(): Promise<void>;
-  launchTimedRun(job: TimedRun, message: NormalizedMessage): Promise<void>;
-  cancelTimedRun(scope: string, id?: string): void;
-  activeTimedRun(scope: string): string | undefined;
   /** Notify live consumers that cached derived state (e.g. the pool cap) changed. */
   onConfigApplied(): void;
 }

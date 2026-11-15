@@ -249,7 +249,6 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
   }
 
   const wasBusy = pending.isBlocked(scope) || Boolean(activeRuns.get(scope));
-  const wasTimed = Boolean(controls.channel?.activeTimedRun(scope));
   if (!commandFollowUp && emsg.resources.length === 0 && deps.userQuestions) {
     const status = await deps.userQuestions.answerWithText({
       scope, senderId: emsg.senderId, text: emsg.content,
@@ -286,12 +285,6 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
         ...(chatMode === 'topic' ? { replyInThread: true } : {}) });
       return;
     }
-  }
-  if (wasTimed || controls.channel?.activeTimedRun(scope)) {
-    await channel.send(emsg.chatId, { markdown: '当前话题/聊天正在执行限时任务。这条消息未排队执行，避免到期后自动续跑；修改任务请先 /stop，再重新提交。' }, {
-      replyTo: emsg.messageId, ...(chatMode === 'topic' ? { replyInThread: true } : {}),
-    });
-    return;
   }
   let preparedCot = preparedCots.get(scope);
   if (!wasBusy && getCotMessages(controls.cfg) !== 'off') {

@@ -46,9 +46,6 @@
 | `/workflow enqueue <工作项 JSON>` | 追加当前工作流授权范围内的任务；暂停或中断时只入队 |
 | `/workflow close` | 停止接收新任务，让消费者处理完已有任务后结束 |
 | `/workflow pause`、`/workflow resume`、`/workflow cancel` | 暂停、复用完成结果重放、取消 |
-| `/run` | 创建一次性限时任务，需确认预览 |
-| `/run status`、`/run stop` | 查看或停止限时任务 |
-| `/run defaults` | 配置以后创建限时任务时使用的默认值 |
 | `/timeout [N 或 off 或 default]` | 当前会话的空闲超时 watchdog |
 | `/inbox setup` | 在目标结果话题中登记会话助理的投递位置 |
 | `/inbox` | 会话助理入口；完整本地工作台用 `lark-channel-bridge ui` 打开 |
@@ -59,7 +56,7 @@
 | `/doctor [描述]` | 低敏诊断 |
 | `/reconnect` | 强制重连飞书连接 |
 
-访问管理等操作需要 owner / 管理员权限。`/stop`、`/run`、暂停消息采集、关闭 CI 来源分别控制不同任务，见[日常任务](chat-and-tasks.md)和[盯盘](monitoring.md)。
+访问管理等操作需要 owner / 管理员权限。`/stop`、暂停消息采集、关闭 CI 来源分别控制不同任务，见[日常任务](chat-and-tasks.md)和[盯盘](monitoring.md)。
 
 工作流开始前，用 `/config run` 设置此 bot 全局默认执行器（所有私聊和群话题共用），再用 `/model <模型>` 和 `/effort <强度>` 设置主模型。各 worker 的模型写在任务要求里，由脚本逐个指定。调用示例与重放边界见[工作流](../workflows.md)。
 

@@ -49,7 +49,6 @@ export const commandDefinitions = [
     '`/agent [claude|codex|…|default] [模型名|default] [强度] [任务]` — 当前话题/聊天的执行引擎，各引擎上下文独立；带任务时切换后立即执行',
   ] },
   { name: 'effort', access: 'user', pending: 'preserve', arguments: 'words', help: ['`/effort [强度|default]` — 当前话题/聊天的思考强度；全局默认用 `/config run`'] },
-  { name: 'run', access: 'user', pending: 'preserve', arguments: 'verbatim', help: ['`/run` — 限时任务表单；`/run 任务` 用默认值，`/run defaults` 设置默认值，`/run status` 查看，`/run stop` 取消'] },
   { name: 'status', access: 'user', pending: 'preserve', arguments: 'words', channels: ['lark', 'slack'], channelHelp: {
     slack: ['`/status` — show engine and run state'],
   }, help: ['`/status` — 当前状态'] },

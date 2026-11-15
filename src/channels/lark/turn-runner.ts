@@ -10,14 +10,11 @@ import {
   terminateRunHost,
   type RunHostBinding,
 } from '../../agent/run-host';
-import { sendManagedCard } from '../../card/managed';
-import { timedRunCard } from '../../card/timed-run-card';
 import type { AgentKind } from '../../config/profile-schema';
 import { log, withTrace } from '../../core/logger';
 import type { AgentEntry } from '../../runtime/agent-entry';
 import { abortStopReason } from '../../runtime/errors';
 import type { RunExecution } from '../../runtime/run-executor';
-import type { TimedRun, TimedRunState, TimedRunStore } from '../../runtime/timed-runs';
 import type { CotPublisher } from './cot';
 import {
   InterruptedTurns as TurnJournal,
@@ -34,7 +31,6 @@ type InterruptedTurns = TurnJournal<NormalizedMessage>;
 export interface TurnDispatchOptions {
   signal: AbortSignal;
   entry?: AgentEntry;
-  timedJob?: TimedRun;
   preparedCot?: CotPublisher;
   resumeAttempt?: number;
   host?: RunHostBinding;
@@ -43,7 +39,6 @@ export interface TurnDispatchOptions {
 export interface LarkTurnRunnerDeps {
   channel: LarkChannel;
   turns: ConversationTurns;
-  timedStore: TimedRunStore;
   /** Profile state directory holding the interrupted-turn journal. */
   stateDir?: string;
   resolveAgentKind(scope: string): AgentKind;
@@ -55,12 +50,6 @@ interface ConversationTurnOptions {
   resumeAttempt?: number;
   startedAt?: number;
   attempts?: number;
-  attachHost?: string;
-}
-
-interface TimedResume {
-  attempt: number;
-  startedAt: number;
   attachHost?: string;
 }
 
@@ -79,21 +68,6 @@ export class LarkTurnRunner {
   /** Adds input that arrived during a journaled turn, so a replay includes it. */
   recordFollowup(scope: string, message: NormalizedMessage): void {
     this.journal?.append(scope, message);
-  }
-
-  activeTimedRun(scope: string): string | undefined {
-    return this.deps.turns.timedRunId(scope);
-  }
-
-  cancelTimedRun(scope: string, id?: string): void {
-    if (this.deps.turns.timedRunId(scope)) this.deps.turns.cancel(scope, id);
-  }
-
-  async launchTimedRun(job: TimedRun, message: NormalizedMessage): Promise<void> {
-    if (!this.deps.turns.isIdle(job.scope)) {
-      throw new Error('当前话题/聊天仍有任务或待处理消息，请完成或 /stop 后再启动限时任务。');
-    }
-    await this.startTimedTurn(job, message, 'draft');
   }
 
   runConversationTurn(scope: string, batch: PendingMessage[], signal: AbortSignal, options: ConversationTurnOptions): Promise<void> {
@@ -157,59 +131,21 @@ export class LarkTurnRunner {
     return journal && runHostsSupported() ? { key: newRunHostKey() } : undefined;
   }
 
-  private async startTimedTurn(job: TimedRun, message: NormalizedMessage, from: TimedRunState, resume?: TimedResume): Promise<void> {
-    const { channel, timedStore } = this.deps;
-    const turn = this.deps.turns.claim(job.scope, job.id);
-    try {
-      await timedStore.transition(job.id, [from], 'queued');
-    } catch (err) {
-      turn.release();
-      throw err;
-    }
-    const sendOpts = { replyTo: message.messageId, ...(message.threadId ? { replyInThread: true } : {}) };
-    const journal = this.journal;
-    const host = this.hostFor(journal, resume?.attachHost);
-    void turn.run(signal => withTrace({ chatId: message.chatId }, async () => {
-      let execution: RunExecution | undefined;
-      try {
-        await journal?.begin({ scope: job.scope, messages: [message], timedRunId: job.id, ...(host ? { hostKey: host.key } : {}),
-          ...(resume ? { attempts: resume.attempt, startedAt: resume.startedAt } : {}) });
-        if (!resume?.attachHost) await sendManagedCard(channel, message.chatId, timedRunCard(timedStore.get(job.id)!), sendOpts);
-        execution = await this.deps.dispatch(job.scope, [{ ...message, content: job.task, resources: [], rawContentType: 'text' }],
-          { timedJob: job, signal, ...(resume && !resume.attachHost ? { resumeAttempt: resume.attempt } : {}), ...(host ? { host } : {}) });
-      } catch (err) {
-        log.fail('timed-run', err, { jobId: job.id });
-      } finally {
-        const cutOff = await cutOffByShutdown(signal, execution);
-        if (!cutOff) endJournaled(journal, job.scope, host);
-        // A failure before executor submission must also close the one-shot job.
-        await timedStore.finish(job.id, cutOff ? 'interrupted'
-          : signal.aborted ? 'stopped' : Date.now() >= job.stopAt ? 'expired' : 'failed');
-      }
-    })).then(() => sendManagedCard(channel, message.chatId, timedRunCard(timedStore.get(job.id)!), sendOpts)
-      .catch(err => log.warn('timed-run', 'status-send-failed', { err: String(err) })))
-      .catch(err => log.fail('timed-run', err, { jobId: job.id }));
-  }
-
   private async resumeTurn(turn: InterruptedTurn, journal: InterruptedTurns): Promise<void> {
-    const { channel, timedStore } = this.deps;
+    const { channel } = this.deps;
     const messages = [...turn.messages].sort((left, right) =>
       (Number.isFinite(left.createTime) ? left.createTime : 0) - (Number.isFinite(right.createTime) ? right.createTime : 0));
     const last = messages.at(-1)!;
     const notify = (markdown: string) => channel.send(last.chatId, { markdown },
       { replyTo: last.messageId, ...(last.threadId ? { replyInThread: true } : {}) })
       .catch(err => log.warn('resume', 'notice-failed', { scope: turn.scope, err: String(err) }));
-    const job = turn.timedRunId ? timedStore.get(turn.timedRunId) : undefined;
     // A host that is still running, or finished while no bridge was attached, holds the native
     // run itself: attach without replaying input or notifying anyone. Another backend cannot
     // read the host's protocol, e.g. after the scope's agent was switched.
-    const agentKind = job?.agentKind ?? this.deps.resolveAgentKind(turn.scope);
+    const agentKind = this.deps.resolveAgentKind(turn.scope);
     const hostState = turn.hostKey && runHostAgent(turn.hostKey) === agentKind ? await probeRunHost(turn.hostKey) : 'missing';
     let skip: string | undefined;
-    if (turn.timedRunId && job?.state !== 'interrupted') {
-      // Stopped, expired or otherwise settled while the bridge was down.
-      skip = job?.state === 'expired' ? '限时任务在 bridge 重启期间已到停止时间，未自动续跑。' : '';
-    } else if (hostState === 'missing' && turn.attempts >= MAX_RESUME_ATTEMPTS) {
+    if (hostState === 'missing' && turn.attempts >= MAX_RESUME_ATTEMPTS) {
       skip = `这条消息的任务已在 bridge 重启后自动续跑 ${turn.attempts} 次仍被中断，不再自动续跑。如需继续，请重新发送。`;
     } else if (hostState === 'missing' && Date.now() - turn.startedAt > MAX_RESUME_AGE_MS) {
       skip = 'bridge 重启前这条消息的任务被中断，且已超过 24 小时，不再自动续跑。如需继续，请重新发送。';
@@ -219,8 +155,7 @@ export class LarkTurnRunner {
       ? { attempt: turn.attempts, startedAt: turn.startedAt, attachHost: reattach }
       : { attempt: turn.attempts + 1, startedAt: turn.startedAt };
     log.info('resume', skip !== undefined ? 'skip' : reattach ? 'reattach' : 'start', { scope: turn.scope, attempt: resume.attempt,
-      ...(turn.hostKey ? { runHost: turn.hostKey, hostState } : {}),
-      ...(turn.timedRunId ? { jobId: turn.timedRunId } : {}) });
+      ...(turn.hostKey ? { runHost: turn.hostKey, hostState } : {}) });
     // A host nobody reattaches to must not keep the native run going.
     if (turn.hostKey && !reattach) await terminateRunHost(turn.hostKey);
     if (skip !== undefined) {
@@ -229,15 +164,11 @@ export class LarkTurnRunner {
       return;
     }
     try {
-      if (job) {
-        await this.startTimedTurn(job, last, 'interrupted', resume);
-      } else {
-        const claimed = this.deps.turns.claim(turn.scope);
-        void claimed.run(signal => this.runConversationTurn(turn.scope, messages, signal, reattach
-          ? { attachHost: reattach, attempts: resume.attempt, startedAt: resume.startedAt }
-          : { resumeAttempt: resume.attempt, startedAt: resume.startedAt }))
-          .catch(err => log.fail('flush', err));
-      }
+      const claimed = this.deps.turns.claim(turn.scope);
+      void claimed.run(signal => this.runConversationTurn(turn.scope, messages, signal, reattach
+        ? { attachHost: reattach, attempts: resume.attempt, startedAt: resume.startedAt }
+        : { resumeAttempt: resume.attempt, startedAt: resume.startedAt }))
+        .catch(err => log.fail('flush', err));
     } catch (err) {
       log.fail('resume', err, { scope: turn.scope });
       journal.end(turn.scope);

@@ -43,7 +43,6 @@ export function createLarkWorkflowHost(deps: LarkWorkflowHostDeps): LarkWorkflow
       access: message.chatType === 'p2p' ? canUseDm(profileFor(profileConfig.agentKind), controls, message.senderId)
         : canUseGroup(profileFor(profileConfig.agentKind), controls, message.chatId, message.senderId),
     }),
-    blocked: scope => controls.channel?.activeTimedRun(scope) ? '请先结束当前限时任务。' : undefined,
     queue: (scope, message, content, agentEntry) => pending.push(scope, { ...message, content, agentEntry }) !== undefined,
     dispatch,
     progress: (kernel, origins, stateDir) => new WorkflowProgressCards({ channel, kernel, origins,

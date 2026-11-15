@@ -197,7 +197,7 @@ describe('ClaudeAdapter process contract', () => {
     expect(record.argv[8]).toBe('bypassPermissions');
   });
 
-  it('maps timed-run ultra to the ultracode settings file and blocks scheduling tools before the deadline', async () => {
+  it('maps ultra to the ultracode settings file and blocks scheduling tools before the deadline', async () => {
     const fake = await createFakeClaude({ lines: [{ type: 'result', session_id: 'sess-ultra' }] });
     cleanup.push(fake.dir);
 

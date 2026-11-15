@@ -27,13 +27,10 @@ import type { ScopeContext } from '../../policy/run-policy';
 import { bindAgentEntry, workflowWakePrompt, type AgentEntry } from '../../runtime/agent-entry';
 import { profileForAgentKind } from '../../runtime/execution-controller';
 import { resolveRunModelSettings } from '../../runtime/model-settings';
-import { deadlineInstructions } from '../../runtime/run-deadline';
-import { abortStopReason } from '../../runtime/errors';
 import type { RunExecution } from '../../runtime/run-executor';
 import { resolveRunFlowContext } from '../../runtime/run-flow';
 import type { RunState } from '../../runtime/run-state';
 import { startTurn, type StartedTurn, type TurnStores } from '../../runtime/turn';
-import { timedRuns, type TimedRun } from '../../runtime/timed-runs';
 import type { WorkflowRuntime } from '@kuribohg/agent-workflows';
 import { larkDisplay } from './config';
 import { createLarkRunOutput } from './run-output';
@@ -64,7 +61,6 @@ export interface LarkTurnRequest {
   entry?: AgentEntry;
   workflows?: WorkflowRuntime;
   workflowOrigins?: Map<string, NormalizedMessage>;
-  timedJob?: TimedRun;
   signal?: AbortSignal;
   preparedCot?: CotPublisher;
   /** Replay number of input whose earlier run was cut off by a bridge shutdown. */
@@ -123,7 +119,6 @@ export async function runAgentBatch(
     topicContextComplete: topic.complete,
     quotesMissing: quoted.failedIds.length > 0,
     modelSwitchedTo: modelSwitched ? modelLabel(agentKind, modelPref) : undefined,
-    timedJob: turn.timedJob,
     resumeAttempt: turn.resumeAttempt,
   });
   const entryBinding = bindAgentEntry(entry, scope, turn.workflows);
@@ -164,7 +159,6 @@ export async function runAgentBatch(
   const flow = await startTurn(services, {
     env: entryBinding?.env,
     modelSettings: runArguments,
-    deadlineAt: turn.timedJob?.stopAt,
     signal: turn.signal,
     scopeId: scope,
     scope: scopeContext,
@@ -175,8 +169,8 @@ export async function runAgentBatch(
     profileConfig: scopedProfile,
     runPreferences: controls.cfg,
     agent,
-    // A timed run has no one waiting to answer before its deadline.
-    userQuestions: !turn.timedJob,
+    // Chat turns may wait for the user's answer before continuing.
+    userQuestions: true,
     // Chat replies show the whole answer, including text written before tool calls.
     answerIncludesInterimText: true,
     host: turn.host,
@@ -198,10 +192,6 @@ export async function runAgentBatch(
     });
     await preparedCot?.finish('error');
     await channel.send(chatId, { markdown: flow.rejectReason.userVisible }, sendOpts);
-    if (turn.timedJob) await (await timedRuns(controls)).finish(turn.timedJob.id,
-      flow.rejectReason.code === 'deadline-expired' ? 'expired'
-        : flow.rejectReason.code !== 'run-cancelled' ? 'failed'
-        : turn.signal?.aborted && abortStopReason(turn.signal) === 'shutdown' ? 'interrupted' : 'stopped');
     return undefined;
   }
 
@@ -209,22 +199,6 @@ export async function runAgentBatch(
   if (entryBinding) {
     void execution.result.finally(entryBinding.release);
     entryBinding.onStarted();
-  }
-  let timedResult: Promise<void> | undefined;
-  if (turn.timedJob) {
-    const store = await timedRuns(controls);
-    const job = turn.timedJob;
-    // A shutdown leaves the job resumable by the next bridge process.
-    timedResult = execution.result.then((state) => store.finish(job.id,
-      state === 'stopped' && execution.handle.stopReason === 'shutdown' ? 'interrupted' : state))
-      .catch((err) => log.fail('timed-run', err, { jobId: job.id }));
-    try {
-      await store.transition(job.id, ['queued'], 'running');
-    } catch {
-      await execution.stop('cleanup');
-      await timedResult;
-      return execution;
-    }
   }
   services.memory.runStarted(scope, flow.policy.policyFingerprint);
   services.activeRuns.seedInputMessages(scope, execution.handle.run, quoted.batchIds);
@@ -256,12 +230,6 @@ export async function runAgentBatch(
     await sessionDone;
   } finally {
     services.memory.runEnded(scope);
-    if (turn.timedJob) {
-      // End the supervised process even when card delivery failed before the
-      // renderer drained the stream. Never let a rendering error detach work.
-      await execution.stop('cleanup');
-      await timedResult;
-    }
     await questionsDone;
   }
   return execution;
@@ -438,7 +406,7 @@ async function fetchUnseenTopicContext(services: LarkRunServices, input: {
 async function resolveTurnModel(services: LarkRunServices, turn: LarkTurnRequest) {
   const { agentKind, scope } = turn;
   const runModelSettings = await resolveRunModelSettings(services.controls, scope, undefined, agentKind);
-  const runArguments = turn.timedJob?.modelSettings ?? modelRunArguments(runModelSettings);
+  const runArguments = modelRunArguments(runModelSettings);
   const modelPref = runArguments.model;
   const modelSelection = normalizeModelSelection(agentKind, modelPref);
   const modelSwitched = services.memory.modelSwitched(agentKind, scope, modelSelection);
@@ -449,7 +417,6 @@ function turnInstructions(input: {
   topicContextComplete: boolean;
   quotesMissing: boolean;
   modelSwitchedTo?: string;
-  timedJob?: TimedRun;
   resumeAttempt?: number;
 }): string[] {
   const instructions = [
@@ -466,7 +433,6 @@ function turnInstructions(input: {
         ]
       : []),
   ];
-  if (input.timedJob) instructions.push(deadlineInstructions(input.timedJob.stopAt, input.timedJob.windDownAt));
   if (input.resumeAttempt) {
     instructions.push(
       `bridge 进程在你处理这批消息期间被终止，现已重启并自动续跑（第 ${input.resumeAttempt} 次）。` +
@@ -498,7 +464,7 @@ async function relayUserQuestions(services: LarkRunServices, turn: LarkTurnReque
         identity: { scopeId: scope, agentId: capability.agentId, cwdRealpath: flow.cwdRealpath, policyFingerprint: flow.policy.policyFingerprint },
         message: firstMsg, replyTo: lastMsg.messageId,
         mentionUser: firstMsg.chatType !== 'p2p' && senderTypeOf(firstMsg) === 'user',
-        allowQueue: !turn.timedJob, isCancelled: () => execution.handle.interrupted || Boolean(turn.signal?.aborted),
+        allowQueue: true, isCancelled: () => execution.handle.interrupted || Boolean(turn.signal?.aborted),
       });
     } catch (err) { log.warn('question', 'delivery-failed', { scope, err: String(err) }); }
   }

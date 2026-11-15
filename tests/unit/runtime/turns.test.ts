@@ -8,12 +8,10 @@ afterEach(() => pending.cancelAll());
 
 it('reserves preparation across all entry types and keeps cancellation until it releases', async () => {
   const turns = new ConversationTurns(pending, new ActiveRuns());
-  const turn = turns.claim('topic', 'timed-id');
+  const turn = turns.claim('topic');
   expect(turns.isIdle('topic')).toBe(false);
-  expect(turns.timedRunId('topic')).toBe('timed-id');
   expect(() => turns.claim('topic')).toThrow('active');
-  turns.cancel('topic', 'different-job');
-  turns.cancel('topic', 'timed-id');
+  turns.cancel('topic');
   expect(pending.isBlocked('topic')).toBe(true);
   await turn.run(async signal => {
     expect(signal.aborted).toBe(true);
@@ -39,7 +37,7 @@ it('releases after failure and cannot let an old or reused claim release a new t
 it('shutdown aborts every entry and denies new admission', async () => {
   const turns = new ConversationTurns(pending, new ActiveRuns());
   const first = turns.claim('topic-one');
-  const second = turns.claim('topic-two', 'timed-id');
+  const second = turns.claim('topic-two');
   turns.close();
   await Promise.all([first, second].map(turn => turn.run(async signal => {
     expect(signal.aborted).toBe(true);

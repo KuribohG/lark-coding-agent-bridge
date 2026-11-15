@@ -16,7 +16,6 @@ function setup() {
     delivery: { prompt: async () => '', queue: async () => true },
     followups: {} as never,
     catalog: { activeFor: () => ({ sessionId: 'sess-1' }) } as never,
-    isTimed: () => false,
   });
   return { broker, handle, answerUserInput };
 }

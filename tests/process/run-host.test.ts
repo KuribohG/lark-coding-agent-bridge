@@ -300,7 +300,7 @@ describe.skipIf(process.platform === 'win32')('run host', () => {
     expect(new Set(ids).size).toBe(ids.length);
   }, 20_000);
 
-  it('enforces a timed run deadline inside the host, also while detached', async () => {
+  it('enforces a run deadline inside the host, also while detached', async () => {
     const adapter = claude(await fakeAgent(FAKE_CLAUDE));
     const key = newRunHostKey();
     const deadlineAt = Date.now() + 1500;
