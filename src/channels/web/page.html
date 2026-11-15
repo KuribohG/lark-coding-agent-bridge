@@ -7,7 +7,7 @@
 <body><header><h1>Bridge Chat</h1><span id="status">就绪</span><label class="engine">引擎 <select id="engine" aria-label="执行引擎"></select></label><button id="new">新对话</button></header>
 <main id="messages" aria-live="polite"></main><p id="error" role="alert"></p>
 <form id="form"><textarea id="prompt" aria-label="消息" placeholder="描述你想完成的任务…" required></textarea><div class="actions"><span>运行中可补充消息。Ctrl / ⌘ + Enter 发送。</span><button type="button" id="stop" disabled>停止</button><button class="primary" id="send">发送</button></div></form>
-<footer>此页面连接本机的 agent。关闭运行中的页面会取消当前任务；重新打开后可以继续同一对话。</footer>
+<footer>此页面连接本机的 agent。关闭页面不会中断运行中的任务；重新打开后会接着显示它的进度和结果。</footer>
 <script>
 const $=id=>document.getElementById(id);
 const supplied=new URLSearchParams(location.hash.slice(1)).get('token');
@@ -15,10 +15,14 @@ if(supplied){sessionStorage.setItem('bridge-chat-token',supplied);history.replac
 const token=sessionStorage.getItem('bridge-chat-token')||'';
 const key='bridge-chat:'+location.host;
 let saved;try{saved=JSON.parse(localStorage.getItem(key)||'null');}catch{}
-let conversationId=saved?.id||crypto.randomUUID(), transcript=saved?.messages||[],runId,working=false;
-function persist(){localStorage.setItem(key,JSON.stringify({id:conversationId,messages:transcript}));}
+let conversationId=saved?.id||crypto.randomUUID(),transcript=saved?.messages||[],cursor=saved?.cursor||{},questions=saved?.questions||[],runId,working=false,following,resume=false;
+// Runs are keyed by id, so an event replayed after a reconnect updates its entry instead of adding one.
+const views=new Map(),finished=new Set();
+function persist(){localStorage.setItem(key,JSON.stringify({id:conversationId,messages:transcript,cursor,questions}));}
 function entry(role,text=''){const box=document.createElement('article');box.className=role;const label=document.createElement('strong');label.textContent=role==='user'?'你':'助手';const content=document.createElement('pre');content.textContent=text;box.append(label,content);$('messages').append(box);return content;}
-for(const message of transcript)entry(message.role,message.text);
+function assistant(message){const content=entry('assistant',message.text);const tools=document.createElement('details');const summary=document.createElement('summary');summary.textContent='工具进度';const progress=document.createElement('pre');tools.append(summary,progress);content.parentNode.append(tools);tools.hidden=true;const view={message,content,tools,progress};views.set(message.runId,view);return view;}
+function viewOf(id){const known=views.get(id);if(known)return known;const message={role:'assistant',text:'',runId:id};transcript.push(message);return assistant(message);}
+for(const message of transcript){if(message.role==='assistant'&&message.runId)assistant(message);else entry(message.role,message.text);}
 function busy(value){working=value;$('new').disabled=value;$('stop').disabled=!value;$('engine').disabled=value;$('status').textContent=value?'运行中':'就绪';$('send').textContent=value?'补充':'发送';}
 async function request(path,body){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','x-ui-token':token},body:JSON.stringify(body)});if(!response.ok){const failure=await response.json();throw Error(failure.error||'请求失败');}return response;}
 async function getJson(path){const response=await fetch(path,{headers:{'x-ui-token':token}});if(!response.ok){const failure=await response.json();throw Error(failure.error||'请求失败');}return response.json();}
@@ -26,21 +30,52 @@ function renderEngine(data){const select=$('engine');if(!select.options.length){
 async function refreshEngine(){if(!token)return;try{renderEngine(await getJson('/api/engine?conversationId='+encodeURIComponent(conversationId)));}catch(e){$('error').textContent=e.message;}}
 function stateText(state){const parts=state.blocks.filter(b=>b.kind==='text').map(b=>b.content);if(state.finalText&&!parts.includes(state.finalText))parts.push(state.finalText);if(state.errorMsg)parts.push(state.errorMsg);if(state.terminal==='interrupted')parts.push('已停止');if(state.terminal==='idle_timeout')parts.push('等待超时');return parts.join('\n\n');}
 const asked=new Map();
-function ask(q){const box=document.createElement('article');box.className='assistant';const label=document.createElement('strong');label.textContent=q.mode==='blocking'?'需要你回答（任务在等待）':'需要你回答';box.append(label);
+function ask(q){if(asked.has(q.id))return;const box=document.createElement('article');box.className='assistant';const label=document.createElement('strong');label.textContent=q.mode==='blocking'?'需要你回答（任务在等待）':'需要你回答';box.append(label);
   const fields=q.questions.map((item,index)=>{const group=document.createElement('fieldset');const legend=document.createElement('legend');legend.textContent=(item.header&&item.header!==item.question?item.header+'：':'')+item.question;group.append(legend);const picks=item.options.map(option=>{const row=document.createElement('label');const pick=document.createElement('input');pick.type=item.multiSelect?'checkbox':'radio';pick.name=q.id+'-'+index;pick.value=option.label;row.append(pick,' '+option.label+(option.description?'：'+option.description:''));group.append(row,document.createElement('br'));return pick;});const own=document.createElement('input');own.placeholder=item.options.length?'或填写自己的答案':'填写答案';group.append(own);box.append(group);return {picks,own};});
   const send=document.createElement('button');send.type='button';send.textContent='提交回答';const note=document.createElement('p');box.append(send,note);$('messages').append(box);
   const lock=()=>{send.disabled=true;for(const f of fields){f.own.disabled=true;for(const p of f.picks)p.disabled=true;}};
-  send.onclick=async()=>{const answers=fields.map(f=>f.own.value.trim()?[f.own.value.trim()]:f.picks.filter(p=>p.checked).map(p=>p.value));try{const result=await(await request('/api/answer',{conversationId,requestId:q.id,answers})).json();note.textContent=result.message;if(result.settled)lock();}catch(e){note.textContent=e.message;}};
-  asked.set(q.id,status=>{note.textContent=status;lock();});}
+  send.onclick=async()=>{const answers=fields.map(f=>f.own.value.trim()?[f.own.value.trim()]:f.picks.filter(p=>p.checked).map(p=>p.value));try{const result=await(await request('/api/answer',{conversationId,requestId:q.id,answers})).json();note.textContent=result.message;if(result.settled)asked.get(q.id)(result.message);}catch(e){note.textContent=e.message;}};
+  if(!questions.some(known=>known.id===q.id)){questions.push(q);persist();}
+  asked.set(q.id,status=>{note.textContent=status;lock();questions=questions.filter(known=>known.id!==q.id);persist();});}
+for(const question of [...questions])ask(question);
+function apply(update){
+  if(update.type==='stream.opened'){
+    // Another stream id means the server restarted: its runs are gone and the old cursor means nothing to it.
+    if(cursor.stream!==update.stream){cursor={stream:update.stream,after:0};runId=undefined;busy(false);persist();}
+    resume=true;return;}
+  cursor.after=update.sequence;
+  if(update.type==='run.started'){runId=update.runId;busy(true);viewOf(update.runId);}
+  if(update.type==='run.state'){const view=viewOf(update.runId);view.message.text=stateText(update.state);view.content.textContent=view.message.text;const calls=update.state.blocks.filter(b=>b.kind==='tool');view.tools.hidden=!calls.length;view.progress.textContent=calls.map(b=>b.tool.name+' · '+b.tool.status).join('\n');
+    if(update.state.terminal==='running'&&!finished.has(update.runId)){runId=update.runId;busy(true);}}
+  if(update.type==='run.question')ask(update);
+  if(update.type==='run.question.settled')asked.get(update.id)?.(update.status);
+  if(update.type==='run.finished'||update.type==='run.failed'){finished.add(update.runId);if(update.type==='run.failed')$('error').textContent=update.error;if(!runId||runId===update.runId){runId=undefined;busy(false);}}
+  persist();}
+async function follow(){
+  if(!token)return;following?.abort();const abort=following=new AbortController();const id=conversationId;
+  while(!abort.signal.aborted){
+    try{const query=new URLSearchParams({conversationId:id});// A freshly loaded page takes the whole buffer to learn whether a run is still going; a reconnect only what it missed.
+      if(resume&&cursor.stream){query.set('stream',cursor.stream);query.set('after',String(cursor.after||0));}
+      const response=await fetch('/api/events?'+query,{headers:{'x-ui-token':token},signal:abort.signal});
+      if(response.status===401||response.status===403){$('error').textContent='链接已失效，请通过启动命令输出的链接重新打开。';return;}
+      if(!response.ok)throw Error('连接失败');
+      $('status').textContent=working?'运行中':'就绪';
+      const reader=response.body.getReader(),decoder=new TextDecoder();let pending='';
+      for(;;){const {done,value}=await reader.read();pending+=decoder.decode(value,{stream:!done});const lines=pending.split('\n');pending=lines.pop();for(const line of lines){if(line&&!abort.signal.aborted)apply(JSON.parse(line));}if(done)break;}
+    }catch(e){if(abort.signal.aborted)return;}
+    if(abort.signal.aborted)return;
+    $('status').textContent='连接中断，正在重连…';await new Promise(resolve=>setTimeout(resolve,1000));}}
 $('form').onsubmit=async event=>{event.preventDefault();$('error').textContent='';const text=$('prompt').value.trim();if(!text)return;
   if(working){try{if(!runId)throw Error('任务正在启动，请稍后补充');const receipt=await(await request('/api/input',{conversationId,runId,text,messageId:crypto.randomUUID()})).json();if(receipt.status!=='accepted')throw Error(receipt.status==='unsupported'?'当前 agent 不支持运行中补充，请等待完成。':receipt.status==='unknown'?'补充消息是否收到尚未确认，请勿重复发送。':'当前任务已结束，请稍后重试');transcript.push({role:'user',text});entry('user',text);$('prompt').value='';persist();}catch(e){$('error').textContent=e.message;}return;}
-  busy(true);runId=undefined;$('prompt').value='';transcript.push({role:'user',text});entry('user',text);const reply={role:'assistant',text:''};transcript.push(reply);const display=entry('assistant');const tools=document.createElement('details');const summary=document.createElement('summary');summary.textContent='工具进度';const progress=document.createElement('pre');tools.append(summary,progress);display.parentNode.append(tools);tools.hidden=true;persist();
-  try{const response=await request('/api/chat',{conversationId,text});const reader=response.body.getReader(),decoder=new TextDecoder();let pending='';for(;;){const {done,value}=await reader.read();pending+=decoder.decode(value,{stream:!done});const lines=pending.split('\n');pending=lines.pop();for(const line of lines){if(!line)continue;const update=JSON.parse(line);if(update.type==='run.started')runId=update.runId;if(update.type==='run.state'){reply.text=stateText(update.state);display.textContent=reply.text;const calls=update.state.blocks.filter(b=>b.kind==='tool');tools.hidden=!calls.length;progress.textContent=calls.map(b=>b.tool.name+' · '+b.tool.status).join('\n');$('status').textContent=update.state.terminal==='running'?'运行中':update.state.terminal;persist();}if(update.type==='run.question')ask(update);if(update.type==='run.question.settled')asked.get(update.id)?.(update.status);if(update.type==='run.failed')throw Error(update.error);}if(done)break;}}
-  catch(e){$('error').textContent=e.message;}finally{busy(false);runId=undefined;persist();}};
+  busy(true);$('prompt').value='';transcript.push({role:'user',text});entry('user',text);persist();
+  // The run's own events may arrive before this response does.
+  try{const started=await(await request('/api/send',{conversationId,text})).json();if(finished.has(started.runId)){if(!runId)busy(false);}else runId=started.runId;}
+  catch(e){$('error').textContent=e.message;if(!runId)busy(false);}};
 $('stop').onclick=async()=>{try{if(!runId)return;await request('/api/stop',{conversationId,runId});}catch(e){$('error').textContent=e.message;}};
-$('new').onclick=()=>{conversationId=crypto.randomUUID();transcript=[];$('messages').replaceChildren();$('error').textContent='';persist();void refreshEngine();};
+$('new').onclick=()=>{conversationId=crypto.randomUUID();transcript=[];cursor={};questions=[];resume=false;views.clear();asked.clear();$('messages').replaceChildren();$('error').textContent='';persist();void refreshEngine();void follow();};
 $('engine').onchange=async event=>{const select=event.currentTarget;const wanted=select.value;select.disabled=true;try{const result=await(await request('/api/engine',{conversationId,agent:wanted})).json();renderEngine({...result,options:[]});}catch(e){select.value=select.dataset.current||wanted;$('error').textContent=e.message;}finally{select.disabled=working;}};
 $('prompt').onkeydown=event=>{if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();$('form').requestSubmit();}};
 if(!token)$('error').textContent='请通过启动命令输出的链接打开此页面。';
 void refreshEngine();
+void follow();
 </script></body></html>
