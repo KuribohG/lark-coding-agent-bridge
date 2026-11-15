@@ -27,6 +27,16 @@ describe('worker execution binding', () => {
       .execution.configurationFingerprint).not.toBe(resolved.execution.configurationFingerprint);
   });
 
+  it('keeps the binding when only the launch environment changes', () => {
+    const target = profileForAgentKind(profile, 'pi');
+    target.permissions = { ...target.permissions, maxAccess: 'full' };
+    const withEnv = (env?: Record<string, string>) => resolveWorkerExecution(root,
+      { ...target, pi: { ...target.pi!, ...(env ? { env } : {}) } }, policy, { model: 'pi-model' }).execution;
+    const pinned = withEnv({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '500000' });
+    expect(withEnv({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000' })).toEqual(pinned);
+    expect(withEnv()).toEqual(pinned);
+  });
+
   it('does not widen root access and rejects an unsupported workspace sandbox', () => {
     const target = profileForAgentKind(profile, 'pi');
     expect(resolveWorkerExecution(root, target, { ...policy, accessMode: 'read-only' }, {}).policy)

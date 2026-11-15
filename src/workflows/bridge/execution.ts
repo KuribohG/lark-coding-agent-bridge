@@ -25,6 +25,18 @@ export function bridgeAgentKind(value: string): AgentKind {
   return value;
 }
 
+/**
+ * Launch settings that decide which harness a pinned worker session belongs to. Launch env is left out: it tunes the
+ * process (compaction window, endpoints, proxies) and changing it mid-workflow must not strand the workers already pinned.
+ */
+function launchIdentity(launch: Partial<AgentExecutionProfile>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(launch).map(([kind, value]) => {
+    if (!value || typeof value !== 'object') return [kind, value];
+    const { env: _env, ...identity } = value as Record<string, unknown>;
+    return [kind, identity];
+  }));
+}
+
 export function resolveWorkerExecution(root: WorkflowRoot, profile: AgentExecutionProfile,
   rootPolicy: RunPolicyAllow, modelSettings: ModelSettings): { execution: WorkerExecution; policy: RunPolicyAllow } {
   const backend = backendFor(profile.agentKind);
@@ -37,7 +49,7 @@ export function resolveWorkerExecution(root: WorkflowRoot, profile: AgentExecuti
     throw new Error(`${profile.agentKind} does not support ${accessMode} worker access`);
   }
   const configurationFingerprint = workflowDigest({ profile: root.profile, agentKind: profile.agentKind,
-    launch: backend.existingProfile(profile), permissions: profile.permissions });
+    launch: launchIdentity(backend.existingProfile(profile)), permissions: profile.permissions });
   const policyFingerprint = workflowDigest({ root: rootPolicy.policyFingerprint, configurationFingerprint, accessMode });
   return {
     execution: { agentKind: profile.agentKind, profile: root.profile, modelSettings, configurationFingerprint, policyFingerprint },
