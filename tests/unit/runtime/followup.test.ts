@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ActiveRuns } from '../../../../src/runtime/active-runs';
-import { FollowupRouter } from '../../../../src/channels/lark/followup';
-import type { AgentInput, AgentRun } from '../../../../src/agent/types';
+import { ActiveRuns } from '../../../src/runtime/active-runs';
+import { FollowupRouter } from '../../../src/runtime/followup';
+import type { AgentInput, AgentRun } from '../../../src/agent/types';
 
 function harness() {
   const activeRuns = new ActiveRuns();

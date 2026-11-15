@@ -3,7 +3,7 @@ import { supportsRunInput } from '../../agent/execution';
 import type { AgentAdapter } from '../../agent/types';
 import type { ChatModeCache } from './chat-mode-cache';
 import { CotPublisher, type CotClient } from './cot';
-import type { FollowupRouter } from './followup';
+import type { FollowupRouter } from '../../runtime/followup';
 import { MAX_PENDING_CHARS_PER_SCOPE, type PendingQueue } from './pending-queue';
 import { fetchQuotedContext } from './quote';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';

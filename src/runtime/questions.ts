@@ -1,27 +1,28 @@
 import { randomUUID } from 'node:crypto';
-import type { NormalizedMessage } from '@larksuite/channel';
-import type { AgentEvent, AgentQuestion } from '../../agent/types';
-import { buildAgentPrompt } from '../../agent/prompt';
-import { log } from '../../core/logger';
-import { sessionCatalogKey, type SessionCatalog, type SessionCatalogIdentity } from '../../session/catalog';
-import type { ActiveRuns } from '../../runtime/active-runs';
+import type { AgentEvent, AgentQuestion } from '../agent/types';
+import { log } from '../core/logger';
+import { sessionCatalogKey, type SessionCatalog, type SessionCatalogIdentity } from '../session/catalog';
+import type { ActiveRuns } from './active-runs';
 import type { FollowupRouter } from './followup';
-import { bridgeInput, type PendingQueue } from './pending-queue';
 
 export type QuestionEvent = Extract<AgentEvent, { type: 'user_input' }>;
 
-export interface QuestionContext {
+/** `O` is whatever the channel needs to show the question and route its answer; the broker never reads it. */
+export interface QuestionContext<O = unknown> {
   runId: string;
   identity: SessionCatalogIdentity;
-  message: NormalizedMessage;
-  replyTo: string;
-  mentionUser: boolean;
+  /** The channel conversation the question is asked in, and the person it is asked of. */
+  conversationId: string;
+  actorId: string;
+  /** The channel message that started the run; anchors an answer when the question got no carrier of its own. */
+  messageId: string;
+  origin: O;
   allowQueue: boolean;
   isCancelled(): boolean;
 }
 
 /** One agent request; all of its questions are answered together. */
-export interface QuestionRequest extends QuestionContext {
+export interface QuestionRequest<O = unknown> extends QuestionContext<O> {
   readonly id: string;
   readonly nativeId: string;
   readonly mode: QuestionEvent['mode'];
@@ -30,30 +31,41 @@ export interface QuestionRequest extends QuestionContext {
   readonly sessionId?: string;
   readonly generation: number;
   readonly expiresAt: number;
-  /** IM handle of the presented question, used to match answers to it. */
+  /** Channel handle of the presented question, used to match answers to it. */
   ref?: string;
   /** Set once the request is settled; the presenter shows it in place of the inputs. */
   status?: string;
 }
 
-/** The IM side: render a request, and show its settled status. */
-export interface QuestionPresenter {
-  /** Returns the message ref, or undefined when only a plain-text prompt could be shown. */
-  present(request: QuestionRequest): Promise<string | undefined>;
-  settle(request: QuestionRequest): Promise<void>;
+/** The channel side: render a request, and show its settled status. */
+export interface QuestionPresenter<O = unknown> {
+  /** Returns the carrier ref, or undefined when only a plain-text prompt could be shown. */
+  present(request: QuestionRequest<O>): Promise<string | undefined>;
+  settle(request: QuestionRequest<O>): Promise<void>;
   forget(ref: string): void;
 }
 
-export interface QuestionAnswerInput {
+/**
+ * How the channel takes an answer the waiting run no longer accepts natively.
+ * `anchorId` is the channel message the answer came from.
+ */
+export interface QuestionAnswerDelivery<O = unknown> {
+  /** The prompt that carries the answer into the run as follow-up input. */
+  prompt(request: QuestionRequest<O>, content: string, anchorId: string): Promise<string>;
+  /** Queue the answer as a later turn of the same conversation; false when it could not be queued. */
+  queue(request: QuestionRequest<O>, content: string, anchorId: string): Promise<boolean>;
+}
+
+export interface QuestionAnswerInput<O = unknown> {
   requestId: string;
   ref?: string;
   scope: string;
-  chatId: string;
-  operatorId: string;
+  conversationId: string;
+  actorId: string;
   identity?: SessionCatalogIdentity;
   answers: string[][];
-  /** IM-level authorization, checked after the answer is known to be well-formed. */
-  verify(request: QuestionRequest): boolean;
+  /** Channel-level authorization, checked after the answer is known to be well-formed. */
+  verify(request: QuestionRequest<O>): boolean;
 }
 
 /** Why an answer did not reach its question; kept explicit so the notice names the real problem. */
@@ -67,9 +79,9 @@ export type QuestionAnswerRejection =
   | 'incomplete-answer'
   | 'verification';
 
-export type QuestionAnswerResult =
-  | { kind: 'rejected'; reason: QuestionAnswerRejection; notice: string; request?: QuestionRequest }
-  | { kind: 'settled'; request: QuestionRequest };
+export type QuestionAnswerResult<O = unknown> =
+  | { kind: 'rejected'; reason: QuestionAnswerRejection; notice: string; request?: QuestionRequest<O> }
+  | { kind: 'settled'; request: QuestionRequest<O> };
 
 const REJECTION_NOTICE: Record<Exclude<QuestionAnswerRejection, 'settled'>, string> = {
   'unknown-request': '这个提问已失效，或不是这张卡片发起的；请在原话题直接回复。',
@@ -87,30 +99,29 @@ const BLOCKING_ANSWER_TIMEOUT_MS = 30 * 60 * 1000;
 const MAX_ANSWER_CHARS = 16_000;
 
 /**
- * Routes agent questions between a run and an IM presenter. Blocking answers
+ * Routes agent questions between a run and a channel presenter. Blocking answers
  * resolve the run's pending request; async answers (or blocking ones whose run
  * stopped waiting) become follow-up input or a queued message.
  */
-export class QuestionBroker {
-  private readonly requests = new Map<string, QuestionRequest>();
+export class QuestionBroker<O = unknown> {
+  private readonly requests = new Map<string, QuestionRequest<O>>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private closing = false;
 
   constructor(private readonly deps: {
-    presenter: QuestionPresenter;
+    presenter: QuestionPresenter<O>;
+    delivery: QuestionAnswerDelivery<O>;
     activeRuns: ActiveRuns;
     followups: FollowupRouter;
-    pending: PendingQueue;
     catalog?: SessionCatalog;
     isTimed(scope: string): boolean;
-    botOpenId(): string | undefined;
     blockingTimeoutMs?: number;
   }) {}
 
-  async publish(event: QuestionEvent, context: QuestionContext): Promise<void> {
+  async publish(event: QuestionEvent, context: QuestionContext<O>): Promise<void> {
     this.prune();
     if (this.closing || context.isCancelled() || !event.questions.length) return;
-    const request: QuestionRequest = { ...context, id: randomUUID(), nativeId: event.id, mode: event.mode,
+    const request: QuestionRequest<O> = { ...context, id: randomUUID(), nativeId: event.id, mode: event.mode,
       questions: event.questions, ...(event.threadId ? { threadId: event.threadId } : {}),
       ...(event.sessionId ? { sessionId: event.sessionId } : {}),
       generation: this.deps.activeRuns.generation(context.identity.scopeId), expiresAt: Date.now() + TTL_MS };
@@ -128,18 +139,18 @@ export class QuestionBroker {
     }
   }
 
-  get(requestId: string): QuestionRequest | undefined {
+  get(requestId: string): QuestionRequest<O> | undefined {
     this.prune();
     return this.requests.get(requestId);
   }
 
-  async answer(input: QuestionAnswerInput): Promise<QuestionAnswerResult> {
+  async answer(input: QuestionAnswerInput<O>): Promise<QuestionAnswerResult<O>> {
     this.prune();
     const request = this.requests.get(input.requestId);
     if (!request) return this.reject('unknown-request');
     if (input.ref !== undefined && request.ref !== input.ref) return this.reject('carrier-mismatch', request);
-    if (request.message.chatId !== input.chatId) return this.reject('chat-mismatch', request);
-    if (request.message.senderId !== input.operatorId) return this.reject('operator-mismatch', request);
+    if (request.conversationId !== input.conversationId) return this.reject('chat-mismatch', request);
+    if (request.actorId !== input.actorId) return this.reject('operator-mismatch', request);
     if (request.identity.scopeId !== input.scope) return this.reject('scope-mismatch', request);
     if (request.status) return { kind: 'rejected', reason: 'settled', notice: request.status, request };
     const active = this.deps.activeRuns.get(input.scope);
@@ -171,7 +182,7 @@ export class QuestionBroker {
    */
   async answerWithText(input: {
     scope: string;
-    senderId: string;
+    actorId: string;
     text: string;
     resolveIdentity(): Promise<SessionCatalogIdentity | undefined>;
   }): Promise<string | undefined> {
@@ -181,9 +192,9 @@ export class QuestionBroker {
     const waiting = [...this.requests.values()].filter(request => !request.status && request.mode === 'blocking' &&
       request.identity.scopeId === input.scope && request.runId === active.run.runId);
     const request = waiting.length === 1 ? waiting[0]! : undefined;
-    if (!request || request.questions.length !== 1 || request.message.senderId !== input.senderId) return undefined;
-    const result = await this.answer({ requestId: request.id, scope: input.scope, chatId: request.message.chatId,
-      operatorId: input.senderId, identity: await input.resolveIdentity(), answers: [[input.text]], verify: () => true });
+    if (!request || request.questions.length !== 1 || request.actorId !== input.actorId) return undefined;
+    const result = await this.answer({ requestId: request.id, scope: input.scope, conversationId: request.conversationId,
+      actorId: input.actorId, identity: await input.resolveIdentity(), answers: [[input.text]], verify: () => true });
     return result.kind === 'settled' ? result.request.status : undefined;
   }
 
@@ -192,7 +203,7 @@ export class QuestionBroker {
     for (const request of [...this.requests.values()]) this.drop(request);
   }
 
-  private async deliver(request: QuestionRequest, identity: SessionCatalogIdentity, answers: string[][]): Promise<string> {
+  private async deliver(request: QuestionRequest<O>, identity: SessionCatalogIdentity, answers: string[][]): Promise<string> {
     const summary = answers.map(answer => answer.join('、')).join('；');
     const scope = identity.scopeId;
     if (request.mode === 'blocking') {
@@ -212,16 +223,11 @@ export class QuestionBroker {
     }
     const content = ['对之前提问的回答：', ...request.questions.flatMap((q, i) => [`问题：${q.question}`, `回答：${answers[i]!.join('、')}`])].join('\n');
     // The answer came from the question's own message; fall back to the asker's when only text was shown.
-    const anchorId = request.ref ?? request.message.messageId;
+    const anchorId = request.ref ?? request.messageId;
     const inputId = `${anchorId}:${request.id}`;
     const result = await this.deps.followups.deliver({
       scope, messageId: inputId, activeRuns: this.deps.activeRuns,
-      prepare: async () => buildAgentPrompt({
-        context: { chatId: request.message.chatId, chatType: request.message.chatType,
-          threadId: request.message.threadId, senderId: request.message.senderId, senderType: 'user',
-          botOpenId: this.deps.botOpenId(), messageIds: [anchorId], source: 'card' },
-        instructions: ['这是用户对先前提问的回答。请结合当前任务和已完成进度处理。'], userInput: content,
-      }),
+      prepare: () => this.deps.delivery.prompt(request, content, anchorId),
     });
     log.info('question', 'answered', { scope, runId: request.runId, delivery: result });
     if (result === 'accepted') return `已提交：${summary}\n已送入当前任务，等待模型处理。`;
@@ -232,32 +238,30 @@ export class QuestionBroker {
     if (!request.allowQueue || this.deps.isTimed(scope)) return '限时任务已结束或无法接收回答，请在原话题手动继续。';
     if (!this.sameSession(request, identity)) return '会话已切换，答案未发送；请在原话题重新说明你的选择。';
     // The queued turn replies to this message, so it carries the anchor, not the input key.
-    const size = this.deps.pending.push(scope, bridgeInput({ ...request.message, messageId: anchorId }, content));
-    if (size !== undefined) await this.deps.pending.flushPersistence();
-    return size === undefined
-      ? `已提交：${summary}\n待处理队列已满，回答没有排入后续任务。`
-      : `已提交：${summary}\n已排队，将在原会话继续处理。`;
+    return await this.deps.delivery.queue(request, content, anchorId)
+      ? `已提交：${summary}\n已排队，将在原会话继续处理。`
+      : `已提交：${summary}\n待处理队列已满，回答没有排入后续任务。`;
   }
 
-  private sameSession(request: QuestionRequest, identity: SessionCatalogIdentity): boolean {
+  private sameSession(request: QuestionRequest<O>, identity: SessionCatalogIdentity): boolean {
     const active = this.deps.catalog?.activeFor(identity);
     return request.sessionId ? active?.sessionId === request.sessionId : active?.threadId === request.threadId;
   }
 
-  private reject(reason: Exclude<QuestionAnswerRejection, 'settled'>, request?: QuestionRequest): QuestionAnswerResult {
+  private reject(reason: Exclude<QuestionAnswerRejection, 'settled'>, request?: QuestionRequest<O>): QuestionAnswerResult<O> {
     log.info('question', 'answer-rejected', { reason,
       ...(request ? { scope: request.identity.scopeId, msgId: request.ref } : {}) });
     return { kind: 'rejected', reason, notice: REJECTION_NOTICE[reason] };
   }
 
-  private async settle(request: QuestionRequest, status: string): Promise<QuestionAnswerResult> {
+  private async settle(request: QuestionRequest<O>, status: string): Promise<QuestionAnswerResult<O>> {
     request.status = status;
     this.clearTimeout(request.id);
     await this.deps.presenter.settle(request);
     return { kind: 'settled', request };
   }
 
-  private armTimeout(request: QuestionRequest): void {
+  private armTimeout(request: QuestionRequest<O>): void {
     const timeoutMs = this.deps.blockingTimeoutMs ?? BLOCKING_ANSWER_TIMEOUT_MS;
     const timer = setTimeout(() => {
       this.timers.delete(request.id);
@@ -267,7 +271,7 @@ export class QuestionBroker {
     this.timers.set(request.id, timer);
   }
 
-  private async expire(request: QuestionRequest, timeoutMs: number): Promise<void> {
+  private async expire(request: QuestionRequest<O>, timeoutMs: number): Promise<void> {
     if (request.status) return;
     const handle = this.deps.activeRuns.get(request.identity.scopeId);
     if (!handle || handle.run.runId !== request.runId || !handle.run.answerUserInput) return;
@@ -282,7 +286,7 @@ export class QuestionBroker {
    * Settling a blocking request also cancels its timeout, so a run still
    * waiting on it would hang; decline it natively so the agent continues.
    */
-  private async releaseStale(request: QuestionRequest): Promise<boolean> {
+  private async releaseStale(request: QuestionRequest<O>): Promise<boolean> {
     if (request.mode !== 'blocking') return false;
     const handle = this.deps.activeRuns.get(request.identity.scopeId);
     if (!handle || handle.run.runId !== request.runId || handle.interrupted || !handle.run.answerUserInput) return false;
@@ -303,7 +307,7 @@ export class QuestionBroker {
     this.timers.delete(id);
   }
 
-  private drop(request: QuestionRequest): void {
+  private drop(request: QuestionRequest<O>): void {
     this.clearTimeout(request.id);
     if (request.ref) this.deps.presenter.forget(request.ref);
     this.requests.delete(request.id);

@@ -1,11 +1,9 @@
-import type { NormalizedMessage } from '@larksuite/channel';
 import { describe, expect, it, vi } from 'vitest';
-import { QuestionBroker, type QuestionEvent } from '../../../../src/channels/lark/question-broker';
-import type { SessionCatalogIdentity } from '../../../../src/session/catalog';
+import { QuestionBroker, type QuestionEvent } from '../../../src/runtime/questions';
+import type { SessionCatalogIdentity } from '../../../src/session/catalog';
 
 const scope = 'oc_chat:omt_topic';
 const identity: SessionCatalogIdentity = { scopeId: scope, agentId: 'claude', cwdRealpath: '/repo', policyFingerprint: 'run-fp' };
-const message = { chatId: 'oc_chat', chatType: 'group', threadId: 'omt_topic', senderId: 'ou_user', messageId: 'om_1' } as NormalizedMessage;
 const event: QuestionEvent = { type: 'user_input', id: 'req-1', mode: 'blocking', sessionId: 'sess-1',
   questions: [{ question: 'Where?', options: [{ label: 'A' }, { label: 'B' }] }] };
 
@@ -15,20 +13,19 @@ function setup() {
   const broker = new QuestionBroker({
     presenter: { present: async () => 'om_card', settle: async () => undefined, forget: () => undefined },
     activeRuns: { get: () => handle, generation: () => 0 } as never,
+    delivery: { prompt: async () => '', queue: async () => true },
     followups: {} as never,
-    pending: {} as never,
     catalog: { activeFor: () => ({ sessionId: 'sess-1' }) } as never,
     isTimed: () => false,
-    botOpenId: () => 'ou_bot',
   });
   return { broker, handle, answerUserInput };
 }
 
 async function publishAndAnswer(broker: QuestionBroker, answerIdentity: SessionCatalogIdentity) {
-  await broker.publish(event, { runId: 'run-1', identity, message, replyTo: 'om_1', mentionUser: false,
-    allowQueue: true, isCancelled: () => false });
+  await broker.publish(event, { runId: 'run-1', identity, conversationId: 'oc_chat', actorId: 'ou_user',
+    messageId: 'om_1', origin: undefined, allowQueue: true, isCancelled: () => false });
   const [request] = [...(broker as unknown as { requests: Map<string, { id: string }> }).requests.values()];
-  return broker.answer({ requestId: request!.id, ref: 'om_card', scope, chatId: 'oc_chat', operatorId: 'ou_user',
+  return broker.answer({ requestId: request!.id, ref: 'om_card', scope, conversationId: 'oc_chat', actorId: 'ou_user',
     identity: answerIdentity, answers: [['A']], verify: () => true });
 }
 

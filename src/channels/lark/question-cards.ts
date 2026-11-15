@@ -1,20 +1,32 @@
-import type { CardActionEvent, CardActionResponse, LarkChannel } from '@larksuite/channel';
+import type { CardActionEvent, CardActionResponse, LarkChannel, NormalizedMessage } from '@larksuite/channel';
+import { buildAgentPrompt } from '../../agent/prompt';
 import type { AgentQuestion } from '../../agent/types';
 import type { CallbackAuth } from '../../card/callback-auth';
 import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../../card/managed';
 import { log } from '../../core/logger';
 import type { SessionCatalog, SessionCatalogIdentity } from '../../session/catalog';
 import type { ActiveRuns } from '../../runtime/active-runs';
-import type { ChatMode } from './chat-mode-cache';
-import type { FollowupRouter } from './followup';
-import type { PendingQueue } from './pending-queue';
+import type { FollowupRouter } from '../../runtime/followup';
 import {
   QuestionBroker,
   type QuestionContext,
   type QuestionEvent,
   type QuestionPresenter,
-  type QuestionRequest,
-} from './question-broker';
+  type QuestionRequest as BrokerRequest,
+} from '../../runtime/questions';
+import type { ChatMode } from './chat-mode-cache';
+import { bridgeInput, type PendingQueue } from './pending-queue';
+
+/** What Lark needs to show a question and route its answer. */
+interface LarkQuestionOrigin {
+  message: NormalizedMessage;
+  replyTo: string;
+  mentionUser: boolean;
+}
+type QuestionRequest = BrokerRequest<LarkQuestionOrigin>;
+
+export type LarkQuestionContext =
+  Omit<QuestionContext<LarkQuestionOrigin>, 'conversationId' | 'actorId' | 'messageId' | 'origin'> & LarkQuestionOrigin;
 
 /** `choice`: an option index of a single question, `text` for its free answer, `form` for a multi-question form. */
 type Choice = number | 'text' | 'form';
@@ -22,7 +34,7 @@ const MAX_BUTTONS = 10;
 
 /** Lark rendering of agent questions: choice cards in, card callbacks and topic replies out. */
 export class UserQuestions {
-  private readonly broker: QuestionBroker;
+  private readonly broker: QuestionBroker<LarkQuestionOrigin>;
 
   constructor(private readonly deps: {
     channel: LarkChannel;
@@ -34,23 +46,40 @@ export class UserQuestions {
     isTimed(scope: string): boolean;
     blockingTimeoutMs?: number;
   }) {
-    const presenter: QuestionPresenter = {
+    const presenter: QuestionPresenter<LarkQuestionOrigin> = {
       present: request => this.present(request),
       settle: request => this.settle(request),
       forget: ref => forgetManagedCard(ref),
     };
     this.broker = new QuestionBroker({ presenter, activeRuns: deps.activeRuns, followups: deps.followups,
-      pending: deps.pending, catalog: deps.catalog, isTimed: deps.isTimed,
-      botOpenId: () => deps.channel.botIdentity?.openId, blockingTimeoutMs: deps.blockingTimeoutMs });
+      catalog: deps.catalog, isTimed: deps.isTimed, blockingTimeoutMs: deps.blockingTimeoutMs,
+      delivery: {
+        prompt: async ({ origin: { message } }, content, anchorId) => buildAgentPrompt({
+          context: { chatId: message.chatId, chatType: message.chatType, threadId: message.threadId,
+            senderId: message.senderId, senderType: 'user', botOpenId: deps.channel.botIdentity?.openId,
+            messageIds: [anchorId], source: 'card' },
+          instructions: ['这是用户对先前提问的回答。请结合当前任务和已完成进度处理。'], userInput: content,
+        }),
+        queue: async (request, content, anchorId) => {
+          const size = deps.pending.push(request.identity.scopeId,
+            bridgeInput({ ...request.origin.message, messageId: anchorId }, content));
+          if (size !== undefined) await deps.pending.flushPersistence();
+          return size !== undefined;
+        },
+      } });
   }
 
-  publish(event: QuestionEvent, context: QuestionContext): Promise<void> {
-    return this.broker.publish(event, context);
+  publish(event: QuestionEvent, context: LarkQuestionContext): Promise<void> {
+    const { message, replyTo, mentionUser, ...rest } = context;
+    return this.broker.publish(event, { ...rest, conversationId: message.chatId, actorId: message.senderId,
+      messageId: message.messageId, origin: { message, replyTo, mentionUser } });
   }
 
   /** A topic reply that answers the only waiting blocking question; undefined leaves it as normal input. */
-  answerWithText(input: Parameters<QuestionBroker['answerWithText']>[0]): Promise<string | undefined> {
-    return this.broker.answerWithText(input);
+  answerWithText(input: { scope: string; senderId: string; text: string;
+    resolveIdentity(): Promise<SessionCatalogIdentity | undefined> }): Promise<string | undefined> {
+    const { senderId, ...rest } = input;
+    return this.broker.answerWithText({ ...rest, actorId: senderId });
   }
 
   /**
@@ -61,11 +90,11 @@ export class UserQuestions {
   pendingScope(input: { requestId: string; ref: string; chatId: string; operatorId: string }):
     { scope: string; threadId?: string; mode: ChatMode } | undefined {
     const request = this.broker.get(input.requestId);
-    if (!request || request.status || request.ref !== input.ref || request.message.chatId !== input.chatId ||
-        request.message.senderId !== input.operatorId) return undefined;
-    const threadId = request.message.threadId;
+    if (!request || request.status || request.ref !== input.ref || request.origin.message.chatId !== input.chatId ||
+        request.origin.message.senderId !== input.operatorId) return undefined;
+    const threadId = request.origin.message.threadId;
     return { scope: request.identity.scopeId, ...(threadId ? { threadId } : {}),
-      mode: request.message.chatType === 'p2p' ? 'p2p' : threadId ? 'topic' : 'group' };
+      mode: request.origin.message.chatType === 'p2p' ? 'p2p' : threadId ? 'topic' : 'group' };
   }
 
   async answer(input: {
@@ -80,8 +109,8 @@ export class UserQuestions {
     const request = this.broker.get(requestId);
     const answers = request && choice !== undefined ? readAnswers(request.questions, choice, input.formValue) : undefined;
     const result = await this.broker.answer({
-      requestId, ref: input.evt.messageId, scope: input.scope, chatId: input.evt.chatId,
-      operatorId: input.evt.operator.openId, identity: input.identity, answers: answers ?? [],
+      requestId, ref: input.evt.messageId, scope: input.scope, conversationId: input.evt.chatId,
+      actorId: input.evt.operator.openId, identity: input.identity, answers: answers ?? [],
       verify: target => choice !== undefined && Boolean(this.deps.auth?.verify(String(payload.bridge_token ?? ''), {
         runId: target.runId, scope: input.scope, chatId: input.evt.chatId, operatorOpenId: input.evt.operator.openId,
         action: action(target, choice), policyFingerprint: input.identity!.policyFingerprint,
@@ -100,12 +129,12 @@ export class UserQuestions {
 
   private async present(request: QuestionRequest): Promise<string | undefined> {
     try {
-      const sent = await sendManagedCard(this.deps.channel, request.message.chatId, this.card(request), replyOptions(request));
+      const sent = await sendManagedCard(this.deps.channel, request.origin.message.chatId, this.card(request), replyOptions(request));
       return sent.messageId;
     } catch (err) {
       log.warn('question', 'card-failed', { scope: request.identity.scopeId, err: String(err) });
       // Keep the question visible when CardKit is unavailable; a topic reply can still answer it.
-      await this.deps.channel.send(request.message.chatId, { markdown:
+      await this.deps.channel.send(request.origin.message.chatId, { markdown:
         `${mention(request)}**需要你回复**\n\n${questionsMarkdown(request.questions)}\n\n请直接在本话题回复答案。` }, replyOptions(request));
       return undefined;
     }
@@ -117,8 +146,8 @@ export class UserQuestions {
     try { await updateManagedCard(this.deps.channel, request.ref, this.card(request)); }
     catch (err) {
       log.warn('question', 'update-failed', { messageId: request.ref, err: String(err) });
-      await this.deps.channel.send(request.message.chatId, { markdown: request.status ?? '' }, {
-        replyTo: request.ref, ...(request.message.threadId ? { replyInThread: true } : {}),
+      await this.deps.channel.send(request.origin.message.chatId, { markdown: request.status ?? '' }, {
+        replyTo: request.ref, ...(request.origin.message.threadId ? { replyInThread: true } : {}),
       });
     }
     log.info('question', 'update-completed', { messageId: request.ref });
@@ -189,7 +218,7 @@ export class UserQuestions {
       ...(choice === 'text' || choice === 'form' ? { name: choice === 'form' ? 'submit_answers' : 'submit_answer', form_action_type: 'submit' } : {}),
       behaviors: [{ type: 'callback', value: { cmd: 'question.answer', question_id: request.id, choice,
         bridge_token: this.deps.auth!.sign({ runId: request.runId, scope: request.identity.scopeId,
-          chatId: request.message.chatId, operatorOpenId: request.message.senderId, action: action(request, choice),
+          chatId: request.origin.message.chatId, operatorOpenId: request.origin.message.senderId, action: action(request, choice),
           policyFingerprint: request.identity.policyFingerprint, ttlMs: Math.max(1, request.expiresAt - Date.now()) }) } }],
     };
   }
@@ -240,9 +269,9 @@ function questionsMarkdown(questions: readonly AgentQuestion[]): string {
 }
 
 function replyOptions(request: QuestionRequest) {
-  return { replyTo: request.replyTo, ...(request.message.threadId ? { replyInThread: true } : {}) };
+  return { replyTo: request.origin.replyTo, ...(request.origin.message.threadId ? { replyInThread: true } : {}) };
 }
 
 function mention(request: QuestionRequest): string {
-  return request.mentionUser && /^ou_[a-zA-Z0-9]+$/.test(request.message.senderId) ? `<at id="${request.message.senderId}"></at>` : '';
+  return request.origin.mentionUser && /^ou_[a-zA-Z0-9]+$/.test(request.origin.message.senderId) ? `<at id="${request.origin.message.senderId}"></at>` : '';
 }

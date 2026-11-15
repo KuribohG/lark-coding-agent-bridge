@@ -28,7 +28,7 @@ import { ChatModeCache } from './chat-mode-cache';
 import { handleCommentMention } from './comments';
 import { connectionLogHandlers } from './connection-log';
 import { CotClient, type CotPublisher } from './cot';
-import { FollowupRouter } from './followup';
+import { FollowupRouter } from '../../runtime/followup';
 import { intakeMessage } from './intake';
 import { startKeepalive } from './keepalive';
 import { startKnownChatsRefresh } from './lark-info';

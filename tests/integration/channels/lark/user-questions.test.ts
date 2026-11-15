@@ -1,7 +1,7 @@
 import type { CardActionEvent, LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ActiveRuns } from '../../../../src/runtime/active-runs';
-import { FollowupRouter } from '../../../../src/channels/lark/followup';
+import { FollowupRouter } from '../../../../src/runtime/followup';
 import { PendingQueue } from '../../../../src/channels/lark/pending-queue';
 import type { AgentQuestion, AgentQuestionAnswer, AgentRun } from '../../../../src/agent/types';
 import { UserQuestions } from '../../../../src/channels/lark/question-cards';

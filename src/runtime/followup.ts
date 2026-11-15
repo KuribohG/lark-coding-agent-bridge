@@ -1,6 +1,6 @@
-import type { AgentRun } from '../../agent/types';
-import { sendRunInput, supportsRunInput } from '../../agent/execution';
-import type { ActiveRuns } from '../../runtime/active-runs';
+import type { AgentRun } from '../agent/types';
+import { sendRunInput, supportsRunInput } from '../agent/execution';
+import type { ActiveRuns } from './active-runs';
 
 export type FollowupResult = 'accepted' | 'queued' | 'cancelled' | 'unknown';
 
