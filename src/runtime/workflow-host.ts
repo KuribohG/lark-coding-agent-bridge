@@ -1,0 +1,260 @@
+import { join } from 'node:path';
+import {
+  DEFAULT_STALL_MS, handleWorkflowCommand, workflowDigest,
+  type WorkflowKernel, type WorkflowRuntime, type WorkflowState,
+} from '@kuribohg/agent-workflows';
+import { capabilityForProfile } from '../agent/backends';
+import { modelRunArguments, type ModelSettings } from '../agent/model-settings';
+import type { Controls } from '../commands';
+import type { AgentKind, ProfileConfig } from '../config/profile-schema';
+import { getAgentStopGraceMs, getCacheKeepalive, getRunIdleTimeoutMs, getWorkflowTimeoutMinutes } from '../config/schema';
+import { sanitizeLogsForDoctor } from '../core/logger';
+import type { AccessDecision } from '../policy/access';
+import type { ScopeContext } from '../policy/run-policy';
+import type { SessionCatalog } from '../session/catalog';
+import type { SessionStore } from '../session/store';
+import { bridgeAgentKind, resolveWorkerExecution } from '../workflows/bridge/execution';
+import { createBridgeWorkflowRuntime } from '../workflows/bridge/runtime';
+import type { WorkspaceStore } from '../workspace/store';
+import type { AgentEntry } from './agent-entry';
+import { CacheKeepalive, type CachePing } from './cache-keepalive';
+import { profileForAgentKind } from './execution-controller';
+import { resolveRunModelSettings } from './model-settings';
+import type { RunExecutor } from './run-executor';
+import { resolveRunFlowContext, startRunFlow } from './run-flow';
+import type { ConversationTurns } from './turns';
+import { WorkflowOrigins } from './workflow-origins';
+
+/** A live view of a root workflow's progress in its conversation. */
+export interface WorkflowProgress {
+  start(): Promise<void>;
+  /** Starts following a root workflow; repeated calls keep the existing view. */
+  track(state: WorkflowState): void;
+  close(): Promise<void>;
+}
+
+/**
+ * What a channel does for the workflows of its conversations. `M` is the
+ * channel's message: the latest one of a scope is the workflow's origin, which
+ * addresses its notices and carries the identity its runs are authorized by.
+ */
+export interface WorkflowFrontend<M> {
+  /** Whether a persisted origin still has the channel's shape. */
+  accepts(origin: unknown): boolean;
+  /** Posts to the origin's conversation; rejects unless delivery was confirmed. */
+  reply(origin: M, text: string): Promise<void>;
+  /** The conversation an origin belongs to, and whether its sender may still run there. */
+  conversation(origin: M, profileConfig: ProfileConfig): { scope: ScopeContext; access: AccessDecision };
+  /** Queues `content` as a workflow turn sent from the origin; false when the queue is full. */
+  queue(scope: string, origin: M, content: string, entry: AgentEntry): boolean;
+  /** Runs one turn of the main conversation for the given inputs. */
+  dispatch(scope: string, batch: M[], options: { signal: AbortSignal; entry: AgentEntry }): Promise<unknown>;
+  progress?(kernel: WorkflowKernel, origins: ReadonlyMap<string, M>, stateDir: string): WorkflowProgress;
+}
+
+export interface WorkflowHostDeps<M> {
+  frontend: WorkflowFrontend<M>;
+  executor: RunExecutor;
+  controls: Controls;
+  sessions: SessionStore;
+  sessionCatalog?: SessionCatalog;
+  workspaces: WorkspaceStore;
+  /** Profile state directory; workflows are disabled without one. */
+  stateDir?: string;
+  turns: ConversationTurns;
+  resolveAgentKind(scope: string): AgentKind;
+}
+
+/** The `/workflow` surface of a started host. */
+export interface WorkflowHostControl<M> {
+  command(scope: string, args: string, message: M): Promise<string | undefined>;
+  /** Whether the scope has a workflow that is still running. */
+  active(scope: string): boolean;
+  invalidate(scope: string): void;
+}
+
+// The fork shares the main session's request prefix, so this prompt is all it adds; the answer is discarded.
+const KEEPALIVE_PROMPT = '这是 bridge 发出的缓存保活请求，不是用户输入。只回复 ok，不要调用任何工具，不要继续之前的任务。';
+
+/** The workflow runtime of one channel connection, with its origin messages and progress display. */
+export class WorkflowHost<M> {
+  readonly origins: WorkflowOrigins<M>;
+  private runtime: WorkflowRuntime | undefined;
+  private progress: WorkflowProgress | undefined;
+  private controlView: WorkflowHostControl<M> | undefined;
+  private keepalive: CacheKeepalive | undefined;
+
+  constructor(private readonly deps: WorkflowHostDeps<M>) {
+    this.origins = new WorkflowOrigins(deps.stateDir ? join(deps.stateDir, 'workflow-origins.json') : undefined,
+      origin => deps.frontend.accepts(origin));
+  }
+
+  /** Started runtime, for turns that bind to their workflow. */
+  get current(): WorkflowRuntime | undefined {
+    return this.runtime;
+  }
+
+  /** Command surface, available once the runtime has started. */
+  control(): WorkflowHostControl<M> | undefined {
+    return this.controlView;
+  }
+
+  async start(): Promise<void> {
+    if (this.runtime) return;
+    // Load after a handoff so origins recorded by the previous process are included.
+    await this.origins.load();
+    const stateDir = this.deps.stateDir;
+    if (!this.deps.sessionCatalog || !stateDir) return;
+    const runtime = this.runtime = this.createRuntime(this.deps.sessionCatalog, stateDir);
+    this.progress = this.deps.frontend.progress?.(runtime.kernel, this.origins, stateDir);
+    await this.progress?.start();
+    await runtime.start();
+    const { controls, frontend, turns } = this.deps;
+    const sessionCatalog = this.deps.sessionCatalog;
+    this.keepalive = new CacheKeepalive({
+      scopes: () => {
+        try {
+          return [...this.origins.keys()].filter(scope => runtime.kernel.state(scope)?.status === 'active');
+        } catch {
+          // The kernel database is closed once shutdown starts.
+          return [];
+        }
+      },
+      // Only Claude's prompt cache expires on a timer that a read can push back.
+      settings: scope => this.deps.resolveAgentKind(scope) === 'claude'
+        ? getCacheKeepalive(profileForAgentKind(controls.profileConfig, 'claude')) : undefined,
+      isIdle: scope => turns.isIdle(scope),
+      lastActivity: async scope => {
+        const root = await this.rootContext(scope, sessionCatalog);
+        return root && sessionCatalog.activeFor({ scopeId: scope, agentId: root.capability.agentId,
+          cwdRealpath: root.context.workspace.cwdRealpath, policyFingerprint: root.context.policy.policyFingerprint })?.updatedAt;
+      },
+      ping: (scope, signal) => this.keepalivePing(scope, sessionCatalog, signal),
+    });
+    this.keepalive.start();
+    this.controlView = {
+      active: scope => runtime.kernel.state(scope)?.status === 'active',
+      invalidate: scope => runtime.kernel.invalidate(scope),
+      command: (scope, args, message) => handleWorkflowCommand(runtime.kernel, scope, args, content => {
+        if (controls.channel?.activeTimedRun(scope)) return '请先结束当前限时任务。';
+        if (!frontend.queue(scope, message, content, { kind: 'workflow', trigger: 'command' })) return '消息队列已满，请稍后重试。';
+        this.origins.set(scope, message);
+        return undefined;
+      }, { sanitize: sanitizeLogsForDoctor }),
+    };
+  }
+
+  activity(): { scripts: number; tasks: number } {
+    try {
+      return this.runtime?.kernel.activity() ?? { scripts: 0, tasks: 0 };
+    } catch {
+      // The kernel database is closed once shutdown starts.
+      return { scripts: 0, tasks: 0 };
+    }
+  }
+
+  /** Stops the progress display before the runtime, so shutdown transitions are not published as progress. */
+  close(): { progress: Promise<void> | undefined; runtime: Promise<void> | undefined } {
+    this.controlView = undefined;
+    const keepalive = this.keepalive?.close();
+    return { progress: this.progress?.close(), runtime: Promise.all([keepalive, this.runtime?.close()]).then(() => {}) };
+  }
+
+  private async replyToOrigin(state: WorkflowState, text: string): Promise<void> {
+    const message = this.origins.get(state.root.scopeId);
+    if (!message) throw new Error('Workflow reply destination unavailable');
+    await this.deps.frontend.reply(message, text);
+  }
+
+  private createRuntime(sessionCatalog: SessionCatalog, stateDir: string): WorkflowRuntime {
+    const { controls, executor, turns } = this.deps;
+    return createBridgeWorkflowRuntime({
+      path: join(stateDir, 'workflows.sqlite'), executor,
+      getTimeoutMinutes: root => getWorkflowTimeoutMinutes(profileForAgentKind(controls.profileConfig, bridgeAgentKind(root.agentKind))),
+      // A silent worker is stopped and retried; the conversation idle timeout is the natural knob for it.
+      stallMs: getRunIdleTimeoutMs(controls.profileConfig) ?? DEFAULT_STALL_MS,
+      showPlan: async (state, text) => {
+        await this.replyToOrigin(state, text);
+        this.progress?.track(state);
+      },
+      notify: (state, text) => this.replyToOrigin(state, text),
+      resolveWorker: async (root, selection, policy) => {
+        const { agentKind: kind, ...overrides } = selection;
+        const agentKind = bridgeAgentKind(kind);
+        const profile = profileForAgentKind(controls.profileConfig, agentKind);
+        // bridgeWorkerPolicy has already validated the engine's string-typed efforts.
+        const requested = overrides as ModelSettings;
+        const settings = agentKind === root.agentKind ? { ...root.modelSettings as ModelSettings, ...requested }
+          : await resolveRunModelSettings(controls, root.scopeId, requested, agentKind);
+        return resolveWorkerExecution(root, profile, policy,
+          { model: settings.model, reasoningEffort: settings.reasoningEffort });
+      },
+      resolve: scope => this.resolveRoot(scope, sessionCatalog),
+      wakeMain: async scope => {
+        const message = this.origins.get(scope);
+        if (!message || !turns.isIdle(scope)) return;
+        const turn = turns.claim(scope);
+        const eventIds = this.runtime?.kernel.state(scope)?.events.filter(event => !event.acknowledged).map(event => event.id) ?? [];
+        try {
+          await turn.run(async signal => { await this.deps.frontend.dispatch(scope, [message], { signal, entry: { kind: 'workflow', trigger: 'event' } }); });
+        } catch (error) {
+          // Failed automatic wakes remain visible through /workflow status, without a retry loop.
+          this.runtime?.kernel.markNotified(scope, eventIds);
+          throw error;
+        }
+      },
+    });
+  }
+
+  /** Policy, workspace and resumable session of the conversation that owns a scope's workflow. */
+  private async rootContext(scope: string, sessionCatalog: SessionCatalog) {
+    const message = this.origins.get(scope);
+    if (!message) return undefined;
+    const { controls, sessions, workspaces } = this.deps;
+    const agentKind = this.deps.resolveAgentKind(scope);
+    const profileConfig = profileForAgentKind(controls.profileConfig, agentKind);
+    const capability = capabilityForProfile(profileConfig);
+    const input = { scopeId: scope, ...this.deps.frontend.conversation(message, profileConfig),
+      prompt: '', attachments: [],
+      capability, profileConfig, sessions, sessionCatalog, workspaces, now: Date.now(),
+    };
+    const context = await resolveRunFlowContext(input);
+    if (!context.ok || !context.resumeFrom) return undefined;
+    return { input, context, agentKind, capability };
+  }
+
+  private async resolveRoot(scope: string, sessionCatalog: SessionCatalog) {
+    const resolved = await this.rootContext(scope, sessionCatalog);
+    if (!resolved) return undefined;
+    const { context, agentKind } = resolved;
+    const { controls } = this.deps;
+    const modelSettings = modelRunArguments(await resolveRunModelSettings(controls, scope, undefined, agentKind));
+    return { policy: context.policy, root: { scopeId: scope, profile: controls.profile, agentKind,
+      cwdRealpath: context.workspace.cwdRealpath, policyFingerprint: context.policy.policyFingerprint,
+      catalogBinding: workflowDigest({ nativeId: context.resumeFrom!, agentKind }), modelSettings } };
+  }
+
+  /**
+   * One request from a discarded fork of the main session. It must launch exactly like a conversation turn
+   * (model, effort, question tool): any difference in the request prefix misses the cache it is meant to read.
+   */
+  private async keepalivePing(scope: string, sessionCatalog: SessionCatalog, signal: AbortSignal): Promise<CachePing | undefined> {
+    const resolved = await this.rootContext(scope, sessionCatalog);
+    if (!resolved) return undefined;
+    const { controls, executor } = this.deps;
+    const modelSettings = modelRunArguments(await resolveRunModelSettings(controls, scope, undefined, resolved.agentKind));
+    const started = await startRunFlow({
+      ...resolved.input, prompt: KEEPALIVE_PROMPT, now: Date.now(), executor, signal, modelSettings,
+      stopGraceMs: getAgentStopGraceMs(controls.cfg), userQuestions: true,
+      fork: { executionScopeId: `cache-keepalive:${scope}`, ephemeral: true, prompt: () => KEEPALIVE_PROMPT },
+      observability: { profile: controls.profile, agent: resolved.capability.agentId, source: 'cache-keepalive', stage: 'submit' },
+    });
+    if (!started.ok) return undefined;
+    let usage: { inputTokens?: number; cachedInputTokens?: number; cacheWriteInputTokens?: number; costUsd?: number } | undefined;
+    for await (const event of started.execution.subscribe()) if (event.type === 'usage') usage = event;
+    if (await started.execution.result !== 'completed' || !usage) return undefined;
+    const cachedTokens = usage.cachedInputTokens ?? 0;
+    return { promptTokens: (usage.inputTokens ?? 0) + cachedTokens + (usage.cacheWriteInputTokens ?? 0), cachedTokens,
+      ...(usage.costUsd !== undefined ? { costUsd: usage.costUsd } : {}) };
+  }
+}

@@ -39,7 +39,7 @@ import { ScopeRunMemory } from './scope-run-memory';
 import { createProfileChannel } from './sdk';
 import { LarkTurnRunner, type TurnDispatchOptions } from './turn-runner';
 import { ConversationTurns } from '../../runtime/turns';
-import { LarkWorkflowHost } from './workflow-host';
+import { createLarkWorkflowHost, type LarkWorkflowHost } from './workflow-host';
 
 export interface BridgeChannel {
   channel: LarkChannel;
@@ -154,7 +154,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       ...(options.timedJob ? {} : { workflows: workflows.current, workflowOrigins: workflows.origins }),
       scope, batch, mode, agentKind, agent, ...options });
   };
-  const workflows: LarkWorkflowHost = new LarkWorkflowHost({ channel, executor, controls, sessions, sessionCatalog, workspaces,
+  const workflows: LarkWorkflowHost = createLarkWorkflowHost({ channel, executor, controls, sessions, sessionCatalog, workspaces,
     stateDir, turns, pending, resolveAgentKind, dispatch });
   const runner = new LarkTurnRunner({ channel, turns, timedStore: await timedRuns(controls), stateDir,
     resolveAgentKind, dispatch });
@@ -320,7 +320,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
         ['callback-nonces', callbackNonceStore?.flush()],
         ['workspaces', workspaces.flush()],
         ['btw', btwClosed],
-        ['workflow-progress-cards', workflowsClosed.progressCards],
+        ['workflow-progress-cards', workflowsClosed.progress],
         ['workflows', workflowsClosed.runtime],
         ['turns', turnsSettled],
       ];
