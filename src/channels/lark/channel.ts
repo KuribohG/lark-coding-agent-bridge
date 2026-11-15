@@ -34,7 +34,7 @@ import { startKnownChatsRefresh } from './lark-info';
 import { PendingQueue, type PendingMessage } from './pending-queue';
 import { UserQuestions } from './question-cards';
 import { runAgentBatch, type LarkRunServices } from './run';
-import { ScopeRunMemory } from './scope-run-memory';
+import { ScopeRunMemory } from '../../runtime/scope-run-memory';
 import { createProfileChannel } from './sdk';
 import { LarkTurnRunner, type TurnDispatchOptions } from './turn-runner';
 import { ConversationTurns } from '../../runtime/turns';

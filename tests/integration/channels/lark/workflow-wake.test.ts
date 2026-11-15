@@ -1,7 +1,7 @@
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { runAgentBatch } from '../../../../src/channels/lark/run';
-import { ScopeRunMemory } from '../../../../src/channels/lark/scope-run-memory';
+import { ScopeRunMemory } from '../../../../src/runtime/scope-run-memory';
 import { presentRunOutput } from '../../../../src/runtime/run-output';
 import { createLarkRunOutput } from '../../../../src/channels/lark/run-output';
 import { fetchTopicContext } from '../../../../src/channels/lark/quote';

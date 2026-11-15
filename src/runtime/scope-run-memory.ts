@@ -1,4 +1,4 @@
-import type { AgentKind } from '../../config/profile-schema';
+import type { AgentKind } from '../config/profile-schema';
 
 /** Per-scope facts carried between turns of one channel connection; a restart starts empty. */
 export class ScopeRunMemory {

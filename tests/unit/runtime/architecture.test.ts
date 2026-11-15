@@ -82,12 +82,18 @@ it('keeps card rendering independent of channel and command implementations', as
 it('runs every channel conversation turn through the shared turn pipeline', async () => {
   // Hosts call startTurn so session tracking, idle watchdog and stop grace are
   // implemented once; startRunFlow stays reachable only from the runtime itself.
-  const hosts = ['runtime/conversation.ts', 'channels/lark/run.ts'];
+  const hosts = ['runtime/conversation.ts', 'runtime/message-turn.ts'];
   const root = fileURLToPath(new URL('../../../src/', import.meta.url));
   for (const file of hosts) {
     const text = await readFile(join(root, file), 'utf8');
     expect(text, file).toMatch(/\bstartTurn\(/);
     expect(text, file).not.toMatch(/\b(?:startRunFlow|trackRunSession|presentRunOutput)\(/);
+  }
+  // Channel frontends reach that pipeline only through the shared message turn host.
+  for (const file of ['channels/lark/run.ts']) {
+    const text = await readFile(join(root, file), 'utf8');
+    expect(text, file).toMatch(/\brunMessageTurn\(/);
+    expect(text, file).not.toMatch(/\b(?:startTurn|startRunFlow|trackRunSession)\(/);
   }
 });
 

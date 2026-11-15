@@ -1,10 +1,5 @@
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
-import { capabilityForProfile } from '../../agent/backends';
 import type { AgentCapability } from '../../agent/capability';
-import { modelRunArguments } from '../../agent/model-settings';
-import type { AgentAdapter } from '../../agent/types';
-import type { RunHostBinding } from '../../agent/run-host';
-import { modelLabel, normalizeModelSelection } from '../../agent/models';
 import type { ChatMode } from './chat-mode-cache';
 import type { CotClient, CotPublisher } from './cot';
 import type { PendingMessage } from './pending-queue';
@@ -17,26 +12,28 @@ import {
 import type { UserQuestions } from './question-cards';
 import type { CallbackAuth } from '../../card/callback-auth';
 import type { Controls } from '../../commands';
-import type { AgentKind } from '../../config/profile-schema';
 import { getCotMessages, getMessageReplyMode } from '../../config/schema';
 import { log } from '../../core/logger';
 import { toPolicyAttachment } from '../../media/attachment';
 import type { MediaCache } from '../../media/cache';
 import { canUseDm, canUseGroup, type AccessDecision } from '../../policy/access';
 import type { ScopeContext } from '../../policy/run-policy';
-import { bindAgentEntry, workflowWakePrompt, type AgentEntry } from '../../runtime/agent-entry';
-import { profileForAgentKind } from '../../runtime/execution-controller';
-import { resolveRunModelSettings } from '../../runtime/model-settings';
 import type { RunExecution } from '../../runtime/run-executor';
 import { resolveRunFlowContext } from '../../runtime/run-flow';
 import type { RunState } from '../../runtime/run-state';
-import { startTurn, type StartedTurn, type TurnStores } from '../../runtime/turn';
-import type { WorkflowRuntime } from '@kuribohg/agent-workflows';
+import type { ScopeRunMemory } from '../../runtime/scope-run-memory';
+import {
+  runMessageTurn,
+  type MessageTurn,
+  type MessageTurnContext,
+  type MessageTurnFrontend,
+  type PreparedMessageTurn,
+} from '../../runtime/message-turn';
+import type { StartedTurn, TurnStores } from '../../runtime/turn';
 import { larkDisplay } from './config';
 import { createLarkRunOutput } from './run-output';
 
 import { buildPrompt, replyQuoteTargetForMessage, senderTypeOf } from './prompt';
-import type { ScopeRunMemory } from './scope-run-memory';
 
 const TOPIC_CONTEXT_MAX_MESSAGES = 40;
 
@@ -52,21 +49,9 @@ export interface LarkRunServices extends TurnStores {
 }
 
 /** One turn: the batch to answer and how it was started. */
-export interface LarkTurnRequest {
-  scope: string;
-  batch: PendingMessage[];
-  agentKind: AgentKind;
-  agent: AgentAdapter;
+export interface LarkTurnRequest extends MessageTurn<PendingMessage> {
   mode: ChatMode;
-  entry?: AgentEntry;
-  workflows?: WorkflowRuntime;
-  workflowOrigins?: Map<string, NormalizedMessage>;
-  signal?: AbortSignal;
   preparedCot?: CotPublisher;
-  /** Replay number of input whose earlier run was cut off by a bridge shutdown. */
-  resumeAttempt?: number;
-  /** Run host that keeps the agent alive across bridge restarts, or the one to reattach to. */
-  host?: RunHostBinding;
 }
 
 /** Resolves with the submitted execution once its output has been presented. */
@@ -74,165 +59,188 @@ export async function runAgentBatch(
   services: LarkRunServices,
   turn: LarkTurnRequest,
 ): Promise<RunExecution | undefined> {
-  const entry = turn.entry ?? { kind: 'direct' };
-  const workflowWake = entry.kind === 'workflow' && entry.trigger === 'event';
+  return runMessageTurn(
+    { state: services.controls, stores: services, memory: services.memory },
+    larkMessageTurnFrontend(services),
+    turn,
+  );
+}
+
+/** The Lark half of a message turn: context import, prompt, notices and cards. */
+function larkMessageTurnFrontend(services: LarkRunServices): MessageTurnFrontend<PendingMessage, LarkTurnRequest> {
+  return {
+    order: batch => batch.sort((left, right) => {
+      const leftTime = Number.isFinite(left.createTime) ? left.createTime : 0;
+      const rightTime = Number.isFinite(right.createTime) ? right.createTime : 0;
+      return leftTime - rightTime;
+    }),
+    prepare: context => prepareTurn(services, context),
+    reject: (context, _prepared, reason) => rejectTurn(services, context, reason),
+    questions: (context, _prepared, started) => relayUserQuestions(services, context, started),
+    present: (context, _prepared, started) => presentTurn(services, context, started),
+  };
+}
+
+/** Imported quotes, topic history and the prompt this batch is answered with. */
+async function prepareTurn(
+  services: LarkRunServices,
+  context: MessageTurnContext<PendingMessage, LarkTurnRequest>,
+): Promise<PreparedMessageTurn> {
   const { channel, media, controls } = services;
-  const { batch, scope, agentKind, agent, mode, preparedCot } = turn;
-  if (batch.length === 0) return undefined;
-  batch.sort((left, right) => {
-    const leftTime = Number.isFinite(left.createTime) ? left.createTime : 0;
-    const rightTime = Number.isFinite(right.createTime) ? right.createTime : 0;
-    return leftTime - rightTime;
-  });
-  const firstMsg = batch[0];
-  const lastMsg = batch[batch.length - 1];
-  if (!firstMsg || !lastMsg) return undefined;
-  if (!workflowWake) turn.workflowOrigins?.set(scope, firstMsg);
+  const { turn, input, wake, capability } = context;
+  const { firstMsg, sendOpts } = larkTurnMessages(turn);
 
-  const chatId = firstMsg.chatId;
-  const threadId = firstMsg.threadId;
-  const scopedProfile = profileForAgentKind(controls.profileConfig, agentKind);
-  const capability = capabilityForProfile(scopedProfile);
-  // A workflow wake carries no user input: nothing to attach, quote or import.
-  const input = workflowWake ? [] : batch;
   const attachments = await resolveAttachments(media, controls, input);
-  const quoted = await fetchBatchQuotes(channel, input, mode);
-
+  const quoted = await fetchBatchQuotes(channel, input, turn.mode);
   const accessDecision =
     firstMsg.chatType === 'p2p'
       ? canUseDm(controls.profileConfig, controls, firstMsg.senderId)
       : canUseGroup(controls.profileConfig, controls, firstMsg.chatId, firstMsg.senderId);
   const scopeContext: ScopeContext = {
     source: 'im',
-    chatId,
+    chatId: firstMsg.chatId,
     actorId: firstMsg.senderId,
-    ...(threadId ? { threadId } : {}),
+    ...(firstMsg.threadId ? { threadId: firstMsg.threadId } : {}),
   };
-  const topic = !workflowWake && mode === 'topic' && threadId
+  const topic = !wake && turn.mode === 'topic' && firstMsg.threadId
     ? await fetchUnseenTopicContext(services, {
-      scope, scopeContext, threadId, batch, firstMsg, attachments, accessDecision, capability, quoted,
+      scope: turn.scope, scopeContext, threadId: firstMsg.threadId, batch: turn.batch, firstMsg,
+      attachments, accessDecision, capability, quoted,
     })
     : EMPTY_TOPIC_CONTEXT;
 
-  const { runArguments, modelPref, modelSelection, modelSwitched } = await resolveTurnModel(services, turn);
-  const extraInstructions = turnInstructions({
-    topicContextComplete: topic.complete,
-    quotesMissing: quoted.failedIds.length > 0,
-    modelSwitchedTo: modelSwitched ? modelLabel(agentKind, modelPref) : undefined,
-    resumeAttempt: turn.resumeAttempt,
-  });
-  const entryBinding = bindAgentEntry(entry, scope, turn.workflows);
-  if (entryBinding) extraInstructions.push(entryBinding.instructions);
-  const prompt = workflowWake
-    ? workflowWakePrompt(entryBinding?.instructions)
-    : buildPrompt(
-    batch,
-    attachments,
-    quoted.quotes,
-    topic.messages,
-    channel.botIdentity,
-    extraInstructions,
-  );
-  log.info('prompt', 'built', {
-    promptChars: prompt.length,
-    quotes: quoted.quotes.length,
-    topicContext: topic.messages.length,
-    ...(modelSwitched ? { modelSwitchedTo: modelSelection } : {}),
-  });
-
-  // For topic groups: thread the reply so it lands in the same topic as the
-  // user's message. Otherwise the SDK posts at top level and the user's
-  // topic discussion breaks visually.
-  const sendOpts = {
-    replyTo: lastMsg.messageId,
-    ...(mode === 'topic' && threadId ? { replyInThread: true } : {}),
-  };
   log.info('flush', 'reply-target', {
-    scope,
-    mode,
-    chatId,
-    threadId,
+    scope: turn.scope,
+    mode: turn.mode,
+    chatId: firstMsg.chatId,
+    threadId: firstMsg.threadId,
     replyTo: sendOpts.replyTo,
     replyInThread: sendOpts.replyInThread === true,
   });
 
-  const flow = await startTurn(services, {
-    env: entryBinding?.env,
-    modelSettings: runArguments,
-    signal: turn.signal,
-    scopeId: scope,
+  return {
     scope: scopeContext,
-    prompt,
-    attachments: attachments.map(toPolicyAttachment),
     access: accessDecision,
-    capability,
-    profileConfig: scopedProfile,
-    runPreferences: controls.cfg,
-    agent,
-    // Chat turns may wait for the user's answer before continuing.
-    userQuestions: true,
-    // Chat replies show the whole answer, including text written before tool calls.
-    answerIncludesInterimText: true,
-    host: turn.host,
-    observability: {
-      profile: controls.profile,
-      agent: capability.agentId,
-      source: 'im',
-      stage: 'submit',
-    },
-  }).catch(error => { entryBinding?.release(); throw error; });
-  if (!flow.ok) {
-    entryBinding?.release();
-    if (workflowWake) throw new Error(flow.rejectReason.userVisible);
-    log.info('run-flow', 'rejected', { scope, code: flow.rejectReason.code });
-    log.warn('policy', 'denied', {
-      scope,
-      source: 'im',
-      code: flow.rejectReason.code,
-    });
-    await preparedCot?.finish('error');
-    await channel.send(chatId, { markdown: flow.rejectReason.userVisible }, sendOpts);
-    return undefined;
-  }
-
-  const { execution } = flow;
-  if (entryBinding) {
-    void execution.result.finally(entryBinding.release);
-    entryBinding.onStarted();
-  }
-  services.memory.runStarted(scope, flow.policy.policyFingerprint);
-  services.activeRuns.seedInputMessages(scope, execution.handle.run, quoted.batchIds);
-  if (flow.resumeFrom) {
-    log.info('session', 'resume', { sessionId: flow.resumeFrom, cwd: flow.cwdRealpath });
-  } else {
-    log.info('session', 'fresh', { cwd: flow.cwdRealpath });
-  }
-  const sessionDone = flow.track(workflowWake ? { kind: 'internal' } : {
-      kind: 'message', messageId: firstMsg.messageId, summary: summarizeRunInput(batch),
-      ...(mode === 'topic' ? { history: {
+    attachments,
+    instructions: [
+      ...(!topic.complete
+        ? ['本次话题上下文未能完整导入。不要假设你已经看到该话题中所有未直接送达 bot 的消息；涉及缺失上下文时应明确说明。']
+        : []),
+      ...(quoted.failedIds.length > 0
+        ? ['有一条或多条用户引用的消息未能从飞书读取。不要猜测这些引用消息的内容；如无法完成任务请明确说明。']
+        : []),
+    ],
+    prompt: extraInstructions => buildPrompt(
+      turn.batch,
+      attachments,
+      quoted.quotes,
+      topic.messages,
+      channel.botIdentity,
+      extraInstructions,
+    ),
+    sessionSource: wake ? { kind: 'internal' } : {
+      kind: 'message', messageId: firstMsg.messageId, summary: summarizeRunInput(turn.batch),
+      ...(turn.mode === 'topic' ? { history: {
         completeThrough: topic.through,
         seenMessageIds: [...topic.seenMessageIds, ...topic.messages.map(message => message.messageId), ...quoted.batchIds, ...quoted.fetchedIds],
       } } : {}),
-  });
-  // The observer starts with execution, even if rendering cannot start.
-  void sessionDone.catch(err => log.warn('session', 'tracking-failed', { scope, err: String(err) }));
+    },
+    inputMessageIds: [...quoted.batchIds],
+    details: { quotes: quoted.quotes.length, topicContext: topic.messages.length },
+    observabilitySource: 'im',
+    // Chat turns may wait for the user's answer, and show text written before tool calls.
+    runOptions: { userQuestions: true, answerIncludesInterimText: true },
+  };
+}
 
-  const started = { flow, capability, firstMsg, lastMsg, sendOpts };
-  const questionsDone = relayUserQuestions(services, turn, started);
-  try {
+/** The run never started: close prepared output and tell the topic why. */
+async function rejectTurn(
+  services: LarkRunServices,
+  context: MessageTurnContext<PendingMessage, LarkTurnRequest>,
+  reason: { userVisible: string },
+): Promise<void> {
+  const { firstMsg, sendOpts } = larkTurnMessages(context.turn);
+  await context.turn.preparedCot?.finish('error');
+  await services.channel.send(firstMsg.chatId, { markdown: reason.userVisible }, sendOpts);
+}
+
+/** Posts the run's questions to the chat until its event stream ends. */
+async function relayUserQuestions(
+  services: LarkRunServices,
+  context: MessageTurnContext<PendingMessage, LarkTurnRequest>,
+  started: StartedTurn,
+): Promise<void> {
+  const { execution } = started;
+  const { scope } = context.turn;
+  const { firstMsg, lastMsg } = larkTurnMessages(context.turn);
+  for await (const event of execution.subscribe()) {
+    if (event.type !== 'user_input') continue;
     try {
-      await presentTurn(services, turn, started);
-    } catch (err) {
-      // Rendering is not part of the model transaction. A failed Feishu write
-      // must not make the next turn forget that this run actually completed.
-      log.fail('stream', err);
-    }
-    await sessionDone;
-  } finally {
-    services.memory.runEnded(scope);
-    await questionsDone;
+      await services.userQuestions.publish(event, {
+        runId: execution.runId,
+        identity: { scopeId: scope, agentId: context.capability.agentId, cwdRealpath: started.cwdRealpath, policyFingerprint: started.policy.policyFingerprint },
+        message: firstMsg, replyTo: lastMsg.messageId,
+        mentionUser: firstMsg.chatType !== 'p2p' && senderTypeOf(firstMsg) === 'user',
+        allowQueue: true, isCancelled: () => execution.handle.interrupted || Boolean(context.turn.signal?.aborted),
+      });
+    } catch (err) { log.warn('question', 'delivery-failed', { scope, err: String(err) }); }
   }
-  return execution;
+}
+
+/** Renders the run into the chat with the profile's reply mode and display settings. */
+async function presentTurn(
+  services: LarkRunServices,
+  context: MessageTurnContext<PendingMessage, LarkTurnRequest>,
+  started: StartedTurn,
+): Promise<void> {
+  const { channel, controls, cotClient, callbackAuth } = services;
+  const { scope, preparedCot } = context.turn;
+  const { firstMsg, lastMsg, sendOpts } = larkTurnMessages(context.turn);
+  const { execution } = started;
+  const chatId = firstMsg.chatId;
+  if (started.idleTimeoutMs) log.info('flush', 'idle-watchdog', { idleTimeoutMs: started.idleTimeoutMs });
+
+  const replyMode = getMessageReplyMode(controls.cfg);
+  log.info('flush', 'reply-mode', { mode: replyMode });
+  const cotMessages = getCotMessages(controls.cfg);
+
+  const display = larkDisplay(controls.cfg);
+  const filterForPrefs = (state: RunState): RunState => {
+    if (display.show_tools) return state;
+    return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
+  };
+  const cardRenderOptions = {
+    fileLinks: display.file_links,
+    ...(callbackAuth
+      ? {
+          signCallback: (action: string) =>
+            callbackAuth.sign({
+              runId: execution.runId,
+              scope,
+              chatId,
+              operatorOpenId: firstMsg.senderId,
+              action,
+              policyFingerprint: started.policy.policyFingerprint,
+              ttlMs: 24 * 60 * 60 * 1000,
+            }),
+        }
+      : {}),
+  };
+  await started.present(createLarkRunOutput({
+    channel, chatId, replyMode, sendOpts, cardRenderOptions,
+    cotMessages, cotClient, preparedCot, originMessageId: lastMsg.messageId, inputPreview: lastMsg.content,
+  }), { filterForPrefs });
+}
+
+/** First/last message of the (already ordered) batch and where replies go. */
+function larkTurnMessages(turn: LarkTurnRequest) {
+  const firstMsg = turn.batch[0]!;
+  const lastMsg = turn.batch[turn.batch.length - 1]!;
+  const sendOpts = {
+    replyTo: lastMsg.messageId,
+    ...(turn.mode === 'topic' && lastMsg.threadId ? { replyInThread: true } : {}),
+  };
+  return { firstMsg, lastMsg, sendOpts };
 }
 
 async function resolveAttachments(media: MediaCache, controls: Controls, input: PendingMessage[]) {
@@ -394,121 +402,6 @@ async function fetchUnseenTopicContext(services: LarkRunServices, input: {
     ...(fetched.complete && until > 0 ? { through: until } : {}),
     seenMessageIds,
   };
-}
-
-/**
- * Detects a model switch since this scope's last run. When resuming an
- * existing conversation the transcript still claims the old model, so the
- * (now-switched) agent is told its model changed. Only fires when a prior
- * model was seen for this scope and the selection actually changed.
- * Observed native models are recorded by session-progress.
- */
-async function resolveTurnModel(services: LarkRunServices, turn: LarkTurnRequest) {
-  const { agentKind, scope } = turn;
-  const runModelSettings = await resolveRunModelSettings(services.controls, scope, undefined, agentKind);
-  const runArguments = modelRunArguments(runModelSettings);
-  const modelPref = runArguments.model;
-  const modelSelection = normalizeModelSelection(agentKind, modelPref);
-  const modelSwitched = services.memory.modelSwitched(agentKind, scope, modelSelection);
-  return { runArguments, modelPref, modelSelection, modelSwitched };
-}
-
-function turnInstructions(input: {
-  topicContextComplete: boolean;
-  quotesMissing: boolean;
-  modelSwitchedTo?: string;
-  resumeAttempt?: number;
-}): string[] {
-  const instructions = [
-    ...(!input.topicContextComplete
-      ? ['本次话题上下文未能完整导入。不要假设你已经看到该话题中所有未直接送达 bot 的消息；涉及缺失上下文时应明确说明。']
-      : []),
-    ...(input.quotesMissing
-      ? ['有一条或多条用户引用的消息未能从飞书读取。不要猜测这些引用消息的内容；如无法完成任务请明确说明。']
-      : []),
-    ...(input.modelSwitchedTo !== undefined
-      ? [
-        `用户刚把本会话使用的模型切换为「${input.modelSwitchedTo}」。` +
-          '之前的对话里可能提到别的模型,请以当前模型为准;若被问到你用的是什么模型,据此回答。',
-        ]
-      : []),
-  ];
-  if (input.resumeAttempt) {
-    instructions.push(
-      `bridge 进程在你处理这批消息期间被终止，现已重启并自动续跑（第 ${input.resumeAttempt} 次）。` +
-      '如果当前会话里已有这批消息及部分进展，先核对已完成的工作（文件、命令结果、已发出的消息），从中断处继续，' +
-      '不要重复已经生效的操作；如果会话里没有，就按正常流程处理。',
-    );
-  }
-  return instructions;
-}
-
-interface LarkStartedTurn {
-  flow: StartedTurn;
-  capability: AgentCapability;
-  firstMsg: PendingMessage;
-  lastMsg: PendingMessage;
-  sendOpts: { replyTo: string; replyInThread?: boolean };
-}
-
-/** Posts the run's questions to the chat until its event stream ends. */
-async function relayUserQuestions(services: LarkRunServices, turn: LarkTurnRequest, started: LarkStartedTurn): Promise<void> {
-  const { flow, capability, firstMsg, lastMsg } = started;
-  const { execution } = flow;
-  const { scope } = turn;
-  for await (const event of execution.subscribe()) {
-    if (event.type !== 'user_input') continue;
-    try {
-      await services.userQuestions.publish(event, {
-        runId: execution.runId,
-        identity: { scopeId: scope, agentId: capability.agentId, cwdRealpath: flow.cwdRealpath, policyFingerprint: flow.policy.policyFingerprint },
-        message: firstMsg, replyTo: lastMsg.messageId,
-        mentionUser: firstMsg.chatType !== 'p2p' && senderTypeOf(firstMsg) === 'user',
-        allowQueue: true, isCancelled: () => execution.handle.interrupted || Boolean(turn.signal?.aborted),
-      });
-    } catch (err) { log.warn('question', 'delivery-failed', { scope, err: String(err) }); }
-  }
-}
-
-/** Renders the run into the chat with the profile's reply mode and display settings. */
-async function presentTurn(services: LarkRunServices, turn: LarkTurnRequest, started: LarkStartedTurn): Promise<void> {
-  const { channel, controls, cotClient, callbackAuth } = services;
-  const { scope, preparedCot } = turn;
-  const { flow, firstMsg, lastMsg, sendOpts } = started;
-  const { execution } = flow;
-  const chatId = firstMsg.chatId;
-  if (flow.idleTimeoutMs) log.info('flush', 'idle-watchdog', { idleTimeoutMs: flow.idleTimeoutMs });
-
-  const replyMode = getMessageReplyMode(controls.cfg);
-  log.info('flush', 'reply-mode', { mode: replyMode });
-  const cotMessages = getCotMessages(controls.cfg);
-
-  const display = larkDisplay(controls.cfg);
-  const filterForPrefs = (state: RunState): RunState => {
-    if (display.show_tools) return state;
-    return { ...state, blocks: state.blocks.filter((b) => b.kind !== 'tool') };
-  };
-  const cardRenderOptions = {
-    fileLinks: display.file_links,
-    ...(callbackAuth
-      ? {
-          signCallback: (action: string) =>
-            callbackAuth.sign({
-              runId: execution.runId,
-              scope,
-              chatId,
-              operatorOpenId: firstMsg.senderId,
-              action,
-              policyFingerprint: flow.policy.policyFingerprint,
-              ttlMs: 24 * 60 * 60 * 1000,
-            }),
-        }
-      : {}),
-  };
-  await flow.present(createLarkRunOutput({
-    channel, chatId, replyMode, sendOpts, cardRenderOptions,
-    cotMessages, cotClient, preparedCot, originMessageId: lastMsg.messageId, inputPreview: lastMsg.content,
-  }), { filterForPrefs });
 }
 
 function summarizeRunInput(batch: NormalizedMessage[]): string {
