@@ -167,7 +167,7 @@ export class ConversationRuntime {
         reply: async (origin, text) => { this.events.publish(this.scopeKey(origin), { type: 'notice', text }); },
         // The origin was authorized when it was recorded, and is authorized again by every turn started for it.
         conversation: origin => ({ scope: { source: 'channel', channelId: options.channelId, ...origin },
-          access: { ok: true, reason: 'allowed-user' } }),
+          access: { ok: true, reason: 'allowed-user' }, systemPrompt: options.systemPrompt ?? '' }),
         queue: (scope, origin, content, agentEntry) =>
           queue.push(scope, { ...origin, messageId: randomUUID(), content, agentEntry }) !== undefined,
         dispatch: async (_scope, [origin], { signal, entry }) => {

@@ -288,6 +288,13 @@ describe('channel-independent conversations', () => {
     expect(options.prompt).toContain('<bridge_instructions>');
     expect(Object.keys(options.env ?? {}).length).toBeGreaterThan(0);
 
+    // The workflow tool authorizes its caller by resolving the conversation's session again; that must
+    // find the session the turn just ran in, system prompt included.
+    const host = (runtime as unknown as { workflows: { resolveRoot(scope: string, catalog: unknown): Promise<{ root: { scopeId: string } } | undefined> };
+      catalog: unknown }).workflows;
+    const scope = [...(host as unknown as { origins: Map<string, unknown> }).origins.keys()][0]!;
+    expect(await host.resolveRoot(scope, (runtime as unknown as { catalog: unknown }).catalog)).toMatchObject({ root: { scopeId: scope } });
+
     // An ordinary message of a conversation without a workflow is passed through unchanged.
     h.agent.setEvents(events);
     const run = await runtime.submit({ ...identity, prompt: 'plain question' });

@@ -40,8 +40,12 @@ export interface WorkflowFrontend<M> {
   accepts(origin: unknown): boolean;
   /** Posts to the origin's conversation; rejects unless delivery was confirmed. */
   reply(origin: M, text: string): Promise<void>;
-  /** The conversation an origin belongs to, and whether its sender may still run there. */
-  conversation(origin: M, profileConfig: RunProfileConfig): { scope: ScopeContext; access: AccessDecision };
+  /**
+   * The conversation an origin belongs to, and whether its sender may still run there.
+   * `systemPrompt` must be the one the channel's turns run with when it is part of their
+   * policy fingerprint, or the workflow cannot find the session it belongs to.
+   */
+  conversation(origin: M, profileConfig: RunProfileConfig): { scope: ScopeContext; access: AccessDecision; systemPrompt?: string };
   /** Why a workflow turn may not be queued in this scope right now, as shown to the person. */
   blocked?(scope: string): string | undefined;
   /** Queues `content` as a workflow turn sent from the origin; false when the queue is full. */
