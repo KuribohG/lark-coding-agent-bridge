@@ -1,23 +1,19 @@
 import { capabilityForProfile } from '../agent/backends';
-import { modelRunArguments, type ModelSettings } from '../agent/model-settings';
+import { modelRunArguments, type ModelSettings, type ResolvedModelSettings } from '../agent/model-settings';
 import { modelLabel, normalizeModelSelection } from '../agent/models';
 import type { AgentAdapter } from '../agent/types';
 import type { RunHostBinding } from '../agent/run-host';
 import type { AgentCapability } from '../agent/capability';
-import type { AgentKind } from '../config/profile-schema';
-import type { MutableProfileState } from '../config/config-ops';
+import type { AgentKind, RunProfileConfig } from '../config/profile-schema';
 import { log } from '../core/logger';
-import { toPolicyAttachment, type NormalizedAttachment } from '../media/attachment';
 import type { AccessDecision } from '../policy/access';
-import type { ScopeContext } from '../policy/run-policy';
+import type { AgentAttachment, ScopeContext } from '../policy/run-policy';
 import type { WorkflowRuntime } from '@kuribohg/agent-workflows';
 import { bindAgentEntry, workflowWakePrompt, type AgentEntry } from './agent-entry';
-import { profileForAgentKind } from './execution-controller';
-import { resolveRunModelSettings } from './model-settings';
 import type { RunExecution } from './run-executor';
 import type { RunSessionSource } from './session-progress';
 import type { ScopeRunMemory } from './scope-run-memory';
-import { startTurn, type StartedTurn, type TurnRejected, type TurnStores } from './turn';
+import { startTurn, type StartedTurn, type TurnRejected, type TurnRequest, type TurnStores } from './turn';
 
 /** One inbound batch to answer, plus how it was started. */
 export interface MessageTurn<M> {
@@ -27,7 +23,6 @@ export interface MessageTurn<M> {
   agent: AgentAdapter;
   entry?: AgentEntry;
   workflows?: WorkflowRuntime;
-  workflowOrigins?: Map<string, M>;
   signal?: AbortSignal;
   /** Replay number of input whose earlier run was cut off by a bridge shutdown. */
   resumeAttempt?: number;
@@ -42,10 +37,10 @@ export interface MessageTurnContext<M, T extends MessageTurn<M> = MessageTurn<M>
   input: M[];
   wake: boolean;
   /** Profile configuration scoped to `turn.agentKind`. */
-  profileConfig: ReturnType<typeof profileForAgentKind>;
+  profileConfig: RunProfileConfig;
   capability: AgentCapability;
-  /** Model and effort this turn runs with. */
-  modelSettings: ModelSettings;
+  /** Model and effort this turn runs with; absent when the host keeps profile defaults. */
+  modelSettings?: ModelSettings;
   /** Set when the scope's previous turn used another model. */
   modelSwitchedTo?: string;
   resumeAttempt?: number;
@@ -56,11 +51,13 @@ export interface PreparedMessageTurn {
   /** Conversation scope used for policy, sessions and workspaces. */
   scope: ScopeContext;
   access: AccessDecision;
-  attachments: NormalizedAttachment[];
+  attachments: AgentAttachment[];
   /** Channel instructions, before the model-switch, replay and entry ones. */
   instructions?: string[];
   /** Final prompt once the host appended its own instructions. */
   prompt(instructions: string[]): string;
+  /** System prompt the run's policy fingerprint includes, when the host sets one. */
+  systemPrompt?: string;
   /** What the session record says this turn consumed. */
   sessionSource: RunSessionSource;
   /** Input message ids follow-ups are recorded against while the run is active. */
@@ -70,6 +67,12 @@ export interface PreparedMessageTurn {
   /** Observability source of this frontend. */
   observabilitySource: string;
   runOptions?: { userQuestions?: boolean; answerIncludesInterimText?: boolean };
+  /**
+   * What a rendering failure means: `fail` rejects the turn (hosts whose
+   * output is their event stream), `log` keeps the completed run (channels
+   * whose card write can fail without changing what happened).
+   */
+  presentFailure?: 'fail' | 'log';
 }
 
 export interface MessageTurnFrontend<M, T extends MessageTurn<M> = MessageTurn<M>> {
@@ -77,6 +80,8 @@ export interface MessageTurnFrontend<M, T extends MessageTurn<M> = MessageTurn<M
   order?(batch: M[]): M[];
   /** Gathers channel context and builds the prompt. */
   prepare(context: MessageTurnContext<M, T>): Promise<PreparedMessageTurn>;
+  /** Called once the run was accepted, before its output starts. */
+  started?(context: MessageTurnContext<M, T>, prepared: PreparedMessageTurn, started: StartedTurn): void;
   /** Tells the conversation why the run did not start. */
   reject(context: MessageTurnContext<M, T>, prepared: PreparedMessageTurn, reason: TurnRejected['rejectReason']): Promise<void>;
   /** Publishes questions raised by the run until its event stream ends. */
@@ -86,31 +91,50 @@ export interface MessageTurnFrontend<M, T extends MessageTurn<M> = MessageTurn<M
 }
 
 export interface MessageTurnHostDeps {
-  /** Profile the turn's model, preferences and worktrees come from. */
-  state: MutableProfileState;
   stores: TurnStores;
+  /** Profile configuration for the turn's engine. */
+  profileFor(agentKind: AgentKind): RunProfileConfig;
+  /**
+   * Resolve the turn's model and effort. When absent the host keeps the
+   * startTurn profile defaults and does not track model switches.
+   */
+  resolveModelSettings?(scope: string, agentKind: AgentKind): Promise<ResolvedModelSettings>;
+  /** Preferences the stop grace and idle watchdog read; defaults to the scoped profile. */
+  runPreferences?: TurnRequest['runPreferences'];
+  /** Profile name recorded with the run's observability, when the host has one. */
+  profile?: string;
   /** Per-scope facts shared by turns of one channel connection. */
   memory: ScopeRunMemory;
 }
 
+/** An accepted turn: what started, and when its output, session and questions have all settled. */
+export interface StartedMessageTurn {
+  /** The submitted execution with the policy and workspace it resolved. */
+  flow: Omit<StartedTurn, 'track' | 'present'>;
+  done: Promise<void>;
+}
+
+export type MessageTurnStart = { ok: true; turn: StartedMessageTurn } | { ok: false; reason: TurnRejected['rejectReason'] };
+
 /**
- * One message turn: model resolution, agent entry, policy submission, session
- * tracking and the question/output lifecycle. Channels supply only their
- * context, prompt, notice and presentation through `MessageTurnFrontend`.
+ * Starts one message turn: model resolution, agent entry, policy submission,
+ * session tracking, follow-up seeding and the question/output lifecycle.
+ * Channels supply only their context, prompt, notice and presentation through
+ * `MessageTurnFrontend`. Hosts that must return before rendering finishes use
+ * this; `runMessageTurn` is the same thing awaited to completion.
  */
-export async function runMessageTurn<M, T extends MessageTurn<M>>(
+export async function startMessageTurn<M, T extends MessageTurn<M>>(
   deps: MessageTurnHostDeps,
   frontend: MessageTurnFrontend<M, T>,
   turn: T,
-): Promise<RunExecution | undefined> {
+): Promise<MessageTurnStart> {
   const entry = turn.entry ?? { kind: 'direct' };
   const wake = entry.kind === 'workflow' && entry.trigger === 'event';
   const batch = frontend.order ? frontend.order(turn.batch) : turn.batch;
-  const [first] = batch;
-  if (!first) return undefined;
-  if (!wake) turn.workflowOrigins?.set(turn.scope, first);
+  const first = batch[0];
+  if (!first) throw new Error('a message turn needs at least one input');
 
-  const scopedProfile = profileForAgentKind(deps.state.profileConfig, turn.agentKind);
+  const scopedProfile = deps.profileFor(turn.agentKind);
   const capability = capabilityForProfile(scopedProfile);
   const model = await resolveTurnModel(deps, turn);
   const context: MessageTurnContext<M, T> = {
@@ -119,7 +143,7 @@ export async function runMessageTurn<M, T extends MessageTurn<M>>(
     wake,
     profileConfig: scopedProfile,
     capability,
-    modelSettings: model.runArguments,
+    ...(model.settings ? { modelSettings: model.settings } : {}),
     ...(model.modelSwitched ? { modelSwitchedTo: modelLabel(turn.agentKind, model.modelPref) } : {}),
     ...(turn.resumeAttempt ? { resumeAttempt: turn.resumeAttempt } : {}),
   };
@@ -130,7 +154,10 @@ export async function runMessageTurn<M, T extends MessageTurn<M>>(
   if (context.resumeAttempt) instructions.push(resumeInstruction(context.resumeAttempt));
   const entryBinding = bindAgentEntry(entry, turn.scope, turn.workflows);
   if (entryBinding) instructions.push(entryBinding.instructions);
-  const prompt = wake ? workflowWakePrompt(entryBinding?.instructions) : prepared.prompt(instructions);
+  let prompt: string;
+  try {
+    prompt = wake ? workflowWakePrompt(entryBinding?.instructions) : prepared.prompt(instructions);
+  } catch (error) { entryBinding?.release(); throw error; }
   log.info('prompt', 'built', {
     promptChars: prompt.length,
     ...prepared.details,
@@ -139,28 +166,33 @@ export async function runMessageTurn<M, T extends MessageTurn<M>>(
 
   const flow = await startTurn(deps.stores, {
     env: entryBinding?.env,
-    modelSettings: model.runArguments,
+    ...(model.settings ? { modelSettings: model.settings } : {}),
     signal: turn.signal,
     scopeId: turn.scope,
     scope: prepared.scope,
     prompt,
-    attachments: prepared.attachments.map(toPolicyAttachment),
+    ...(prepared.systemPrompt !== undefined ? { systemPrompt: prepared.systemPrompt } : {}),
+    attachments: prepared.attachments,
     access: prepared.access,
     capability,
     profileConfig: scopedProfile,
-    runPreferences: deps.state.cfg,
+    ...(deps.runPreferences ? { runPreferences: deps.runPreferences } : {}),
     agent: turn.agent,
     userQuestions: prepared.runOptions?.userQuestions ?? false,
     ...(prepared.runOptions?.answerIncludesInterimText !== undefined
       ? { answerIncludesInterimText: prepared.runOptions.answerIncludesInterimText }
       : {}),
     host: turn.host,
-    observability: {
-      profile: deps.state.profile,
-      agent: capability.agentId,
-      source: prepared.observabilitySource,
-      stage: 'submit',
-    },
+    ...(deps.profile
+      ? {
+          observability: {
+            profile: deps.profile,
+            agent: capability.agentId,
+            source: prepared.observabilitySource,
+            stage: 'submit',
+          },
+        }
+      : {}),
   }).catch(error => { entryBinding?.release(); throw error; });
   if (!flow.ok) {
     entryBinding?.release();
@@ -168,49 +200,60 @@ export async function runMessageTurn<M, T extends MessageTurn<M>>(
     log.info('run-flow', 'rejected', { scope: turn.scope, code: flow.rejectReason.code });
     log.warn('policy', 'denied', { scope: turn.scope, source: prepared.observabilitySource, code: flow.rejectReason.code });
     await frontend.reject(context, prepared, flow.rejectReason);
-    return undefined;
+    return { ok: false, reason: flow.rejectReason };
   }
 
-  const { execution } = flow;
   if (entryBinding) {
-    void execution.result.finally(entryBinding.release);
+    void flow.execution.result.finally(entryBinding.release);
     entryBinding.onStarted();
   }
   deps.memory.runStarted(turn.scope, flow.policy.policyFingerprint);
-  deps.stores.activeRuns.seedInputMessages(turn.scope, execution.handle.run, new Set(prepared.inputMessageIds ?? []));
+  deps.stores.activeRuns.seedInputMessages(turn.scope, flow.execution.handle.run, new Set(prepared.inputMessageIds ?? []));
   if (flow.resumeFrom) {
     log.info('session', 'resume', { sessionId: flow.resumeFrom, cwd: flow.cwdRealpath });
   } else {
     log.info('session', 'fresh', { cwd: flow.cwdRealpath });
   }
+  frontend.started?.(context, prepared, flow);
+
   const sessionDone = flow.track(wake ? { kind: 'internal' } : prepared.sessionSource);
   // The observer starts with execution, even if rendering cannot start.
   void sessionDone.catch(err => log.warn('session', 'tracking-failed', { scope: turn.scope, err: String(err) }));
-
   const questionsDone = frontend.questions ? frontend.questions(context, prepared, flow) : Promise.resolve();
-  try {
-    try {
-      await frontend.present(context, prepared, flow);
-    } catch (err) {
-      // Rendering is not part of the model transaction. A failed write must
-      // not make the next turn forget that this run actually completed.
-      log.fail('stream', err);
-    }
-    await sessionDone;
-  } finally {
-    deps.memory.runEnded(turn.scope);
-    await questionsDone;
-  }
-  return execution;
+  const rendered = frontend.present(context, prepared, flow).catch(err => {
+    // A channel's card write can fail without changing what the run did; a
+    // host whose output is its event stream reports the failure instead.
+    if ((prepared.presentFailure ?? 'fail') === 'log') { log.fail('stream', err); return; }
+    throw err;
+  });
+  const done = Promise.allSettled([rendered, sessionDone, questionsDone]).then(results => {
+    for (const result of results) if (result.status === 'rejected') throw result.reason;
+  }).finally(() => deps.memory.runEnded(turn.scope));
+
+  const { track: _track, present: _present, ...started } = flow;
+  return { ok: true, turn: { flow: started, done } };
+}
+
+/** Runs one message turn to completion; returns the execution once its output has been presented. */
+export async function runMessageTurn<M, T extends MessageTurn<M>>(
+  deps: MessageTurnHostDeps,
+  frontend: MessageTurnFrontend<M, T>,
+  turn: T,
+): Promise<RunExecution | undefined> {
+  const started = await startMessageTurn(deps, frontend, turn);
+  if (!started.ok) return undefined;
+  await started.turn.done;
+  return started.turn.flow.execution;
 }
 
 async function resolveTurnModel<M, T extends MessageTurn<M>>(deps: MessageTurnHostDeps, turn: T) {
-  const settings = await resolveRunModelSettings(deps.state, turn.scope, undefined, turn.agentKind);
+  if (!deps.resolveModelSettings) return { modelSwitched: false as const };
+  const settings = await deps.resolveModelSettings(turn.scope, turn.agentKind);
   const runArguments = modelRunArguments(settings);
   const modelPref = runArguments.model;
   const modelSelection = normalizeModelSelection(turn.agentKind, modelPref);
   const modelSwitched = deps.memory.modelSwitched(turn.agentKind, turn.scope, modelSelection);
-  return { runArguments, modelPref, modelSelection, modelSwitched };
+  return { settings: runArguments, modelPref, modelSelection, modelSwitched };
 }
 
 function modelSwitchInstruction(model: string): string {

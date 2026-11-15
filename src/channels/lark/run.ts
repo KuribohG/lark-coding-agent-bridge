@@ -22,6 +22,8 @@ import type { RunExecution } from '../../runtime/run-executor';
 import { resolveRunFlowContext } from '../../runtime/run-flow';
 import type { RunState } from '../../runtime/run-state';
 import type { ScopeRunMemory } from '../../runtime/scope-run-memory';
+import { profileForAgentKind } from '../../runtime/execution-controller';
+import { resolveRunModelSettings } from '../../runtime/model-settings';
 import {
   runMessageTurn,
   type MessageTurn,
@@ -52,6 +54,8 @@ export interface LarkRunServices extends TurnStores {
 export interface LarkTurnRequest extends MessageTurn<PendingMessage> {
   mode: ChatMode;
   preparedCot?: CotPublisher;
+  /** Where a non-wake turn records who the workflows it starts answer to. */
+  workflowOrigins?: Map<string, NormalizedMessage>;
 }
 
 /** Resolves with the submitted execution once its output has been presented. */
@@ -60,7 +64,15 @@ export async function runAgentBatch(
   turn: LarkTurnRequest,
 ): Promise<RunExecution | undefined> {
   return runMessageTurn(
-    { state: services.controls, stores: services, memory: services.memory },
+    {
+      stores: services,
+      profileFor: agentKind => profileForAgentKind(services.controls.profileConfig, agentKind),
+      resolveModelSettings: (scope, agentKind) =>
+        resolveRunModelSettings(services.controls, scope, undefined, agentKind),
+      runPreferences: services.controls.cfg,
+      profile: services.controls.profile,
+      memory: services.memory,
+    },
     larkMessageTurnFrontend(services),
     turn,
   );
@@ -89,6 +101,8 @@ async function prepareTurn(
   const { channel, media, controls } = services;
   const { turn, input, wake, capability } = context;
   const { firstMsg, sendOpts } = larkTurnMessages(turn);
+  // The workflow this turn may start answers to the message that started it.
+  if (!wake) turn.workflowOrigins?.set(turn.scope, firstMsg);
 
   const attachments = await resolveAttachments(media, controls, input);
   const quoted = await fetchBatchQuotes(channel, input, turn.mode);
@@ -121,7 +135,7 @@ async function prepareTurn(
   return {
     scope: scopeContext,
     access: accessDecision,
-    attachments,
+    attachments: attachments.map(toPolicyAttachment),
     instructions: [
       ...(!topic.complete
         ? ['本次话题上下文未能完整导入。不要假设你已经看到该话题中所有未直接送达 bot 的消息；涉及缺失上下文时应明确说明。']
@@ -150,6 +164,8 @@ async function prepareTurn(
     observabilitySource: 'im',
     // Chat turns may wait for the user's answer, and show text written before tool calls.
     runOptions: { userQuestions: true, answerIncludesInterimText: true },
+    // A failed card write must not make the next turn forget the run completed.
+    presentFailure: 'log',
   };
 }
 

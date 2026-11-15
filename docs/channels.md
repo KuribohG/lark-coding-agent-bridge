@@ -369,9 +369,10 @@ the same turn pipeline as the generic runtime: `runMessageTurn()` in
 agent entry, `startTurn()` submission, session tracking and the
 question/output lifecycle, while a channel supplies only a
 `MessageTurnFrontend` (context import and prompt, rejection notice, questions,
-presentation). Lark adds only its own implementation of those hooks (quotes,
-topic context, question cards, CardKit output),
-so a feature of the turn itself is implemented once for every channel. Its slash commands, management console, monitoring destinations
+presentation). Server-side conversations (`ConversationRuntime`) use the same
+host with an event-stream frontend, so a feature of the turn itself is
+implemented once for every channel. Lark adds only its own implementation of
+those hooks (quotes, topic context, question cards, CardKit output). Its slash commands, management console, monitoring destinations
 and CardKit forms remain Lark features. A new IM does not need to emulate them or
 return a fake `LarkChannel`. They are not automatically exposed as generic IM
 commands by this change.

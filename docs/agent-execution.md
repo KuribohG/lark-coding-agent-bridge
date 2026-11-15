@@ -69,9 +69,10 @@ during an internal wake may advance history. A partial context fetch must omit
 are fenced from newer executions and newly selected native sessions.
 
 `presentRunOutput()` only renders; output plugins no longer receive a session
-persistence callback. `ConversationRuntime` and the shared `runMessageTurn()`
-host (`src/runtime/message-turn.ts`, used by the Lark frontend) both start turns
-through `startTurn()`, which attaches the same session observer. Low-level `processAgentStream()` retains its event callback for direct
+persistence callback. Every conversation host — `ConversationRuntime` and the
+Lark frontend alike — starts turns through the shared host in
+`src/runtime/message-turn.ts` (`runMessageTurn()`/`startMessageTurn()`), which
+calls `startTurn()` and attaches the same session observer. Low-level `processAgentStream()` retains its event callback for direct
 consumers. Runtime execution modules cannot import channel hosts or concrete
 adapters; the architecture test enforces this, with explicit composition roots.
 

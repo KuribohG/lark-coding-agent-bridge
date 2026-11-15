@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { sendRunInput } from '../agent/execution';
 import type { AgentInput, AgentInputReceipt, AgentQuestion, AgentQuestionMode } from '../agent/types';
 import { ActiveRuns, stopRun } from './active-runs';
-import { bindAgentEntry, workflowWakePrompt, type AgentEntry } from './agent-entry';
+import type { AgentEntry } from './agent-entry';
 import { ConversationEvents, type ConversationCursor, type ConversationStreamEvent } from './conversation-events';
 import { RunStopped } from './errors';
 import { FollowupRouter } from './followup';
@@ -13,14 +13,16 @@ import { PendingQueue, type PendingItem } from './pending-queue';
 import { ProcessPool } from './process-pool';
 import { ConversationTurns } from './turns';
 import { WorkflowHost } from './workflow-host';
-import { startTurn, type StartedTurn, type TurnStores } from './turn';
+import { startMessageTurn, type MessageTurn, type MessageTurnFrontend } from './message-turn';
+import type { TurnStores } from './turn';
 import type { AgentKind, RunProfileConfig } from '../config/profile-schema';
 import { getAgentStopGraceMs, getRunIdleTimeoutMs } from '../config/schema';
 import type { AgentAttachment } from '../policy/run-policy';
-import { RunExecutor } from './run-executor';
+import { RunExecutor, type RunExecution } from './run-executor';
 import type { RunOutputPlugin } from './run-output';
 import type { RunState } from './run-state';
 import { processAgentStream } from './run-stream';
+import { ScopeRunMemory } from './scope-run-memory';
 import { SessionCatalog, type SessionCatalogIdentity } from '../session/catalog';
 import { log } from '../core/logger';
 import { SessionStore } from '../session/store';
@@ -78,7 +80,7 @@ export interface ConversationStatus {
   activeRunId?: string;
 }
 
-type TurnExecution = StartedTurn['execution'];
+type TurnExecution = RunExecution;
 
 /** How the runtime itself started a turn; absent for a person's message. */
 interface StartedBy {
@@ -86,6 +88,9 @@ interface StartedBy {
   /** The caller holds the conversation's turn lane for this run. */
   claimed?: boolean;
 }
+
+/** One turn of a server-side conversation, run through the shared message-turn host. */
+type ConversationTurn = MessageTurn<ConversationInput>;
 
 export async function createConversationRuntime(options: ConversationRuntimeOptions): Promise<ConversationRuntime> {
   await mkdir(options.stateDir, { recursive: true, mode: 0o700 });
@@ -102,6 +107,7 @@ export class ConversationRuntime {
   private readonly workspaces: WorkspaceStore;
   private readonly active = new ActiveRuns();
   private readonly stores: TurnStores;
+  private readonly turnMemory = new ScopeRunMemory();
   private readonly pending = new Set<AbortController>();
   private readonly starts = new Set<Promise<unknown>>();
   private readonly outputs = new Set<Promise<void>>();
@@ -210,48 +216,74 @@ export class ConversationRuntime {
       this.pending.delete(controller);
       input.signal?.removeEventListener('abort', abort);
     };
-    const config = this.runConfigFor(scopeId);
-    const capability = this.execution.capabilityFor(scopeId);
-    const agent = this.execution.get(scopeId);
-    let binding: ReturnType<typeof bindAgentEntry>;
-    try {
-      // The latest sender of a conversation is who its workflow answers to and is authorized by.
-      if (!wake) this.workflows?.origins.set(scopeId, { actorId: input.actorId, conversationId: input.conversationId });
-      binding = bindAgentEntry(entry, scopeId, this.workflows?.current);
-      const prompt = wake ? workflowWakePrompt(binding?.instructions)
-        : binding ? `<bridge_instructions>\n${binding.instructions}\n</bridge_instructions>\n\n${input.prompt}` : input.prompt;
-      const turn = await startTurn(this.stores, {
-        scopeId, scope: { source: 'channel', channelId: this.options.channelId,
-          actorId: input.actorId, conversationId: input.conversationId },
-        prompt, systemPrompt: this.options.systemPrompt ?? '', env: binding?.env,
-        signal: controller.signal,
-        attachments: input.attachments ?? [], access: { ok: true, reason: 'allowed-user' },
-        agent, capability, profileConfig: config, userQuestions: Boolean(input.questions),
-      });
-      if (!turn.ok) { binding?.release(); dispose(); return turn; }
-      const { track, present, ...flow } = turn;
-      if (binding) {
-        void flow.execution.result.finally(binding.release);
-        binding.onStarted();
-      }
+
+    const frontend: MessageTurnFrontend<ConversationInput, ConversationTurn> = {
+      prepare: async context => {
+        // The latest sender of a conversation is who its workflow answers to and is authorized by.
+        if (!context.wake) this.workflows?.origins.set(context.turn.scope,
+          { actorId: input.actorId, conversationId: input.conversationId });
+        return {
+          scope: { source: 'channel', channelId: this.options.channelId,
+            actorId: input.actorId, conversationId: input.conversationId },
+          access: { ok: true, reason: 'allowed-user' },
+          attachments: input.attachments ?? [],
+          prompt: instructions => instructions.length
+            ? `<bridge_instructions>\n${instructions.join('\n')}\n</bridge_instructions>\n\n${input.prompt}`
+            : input.prompt,
+          systemPrompt: this.options.systemPrompt ?? '',
+          sessionSource: { kind: 'message', summary: input.prompt.slice(0, 180) },
+          observabilitySource: 'channel',
+          runOptions: { userQuestions: Boolean(input.questions) },
+        };
+      },
       // A turn that claimed the conversation's lane already holds its queue.
-      const queue = started.claimed ? undefined : this.queue;
-      queue?.block(scopeId);
-      const sessionDone = track(wake ? { kind: 'internal' } : { kind: 'message', summary: input.prompt.slice(0, 180) });
-      const asked = input.questions ? this.relayQuestions(flow.execution, input.questions, {
-        input, cancelled: () => controller.signal.aborted,
-        identity: { scopeId, agentId: capability.agentId, cwdRealpath: flow.cwdRealpath,
-          policyFingerprint: flow.policy.policyFingerprint },
-      }) : undefined;
-      const rendered = present(output);
-      const done = Promise.allSettled([rendered, sessionDone, asked]).then(results => {
-        for (const result of results) if (result.status === 'rejected') throw result.reason;
-      }).finally(() => { dispose(); queue?.unblock(scopeId); });
-      this.outputs.add(done);
-      // Keep rejection observable on `done`, while close() tracks all active outputs.
-      void done.then(() => this.outputs.delete(done), () => this.outputs.delete(done));
-      return { ...flow, done };
-    } catch (error) { binding?.release(); dispose(); throw error; }
+      started: () => { if (!started.claimed) this.queue?.block(scopeId); },
+      // Slack and Web report the rejection themselves; queued turns publish a notice.
+      reject: async () => {},
+      questions: (context, _prepared, flow) => input.questions
+        ? this.relayQuestions(flow.execution, input.questions, {
+            input, cancelled: () => controller.signal.aborted,
+            identity: { scopeId, agentId: context.capability.agentId, cwdRealpath: flow.cwdRealpath,
+              policyFingerprint: flow.policy.policyFingerprint },
+          })
+        : Promise.resolve(),
+      present: (_context, _prepared, flow) => flow.present(output),
+    };
+
+    const turn: ConversationTurn = {
+      scope: scopeId,
+      batch: [input],
+      agentKind: this.execution.kindFor(scopeId),
+      agent: this.execution.get(scopeId),
+      entry,
+      signal: controller.signal,
+      workflows: this.workflows?.current,
+    };
+
+    let result;
+    try {
+      result = await startMessageTurn(this.turnDeps(), frontend, turn);
+    } catch (error) { dispose(); throw error; }
+    if (!result.ok) { dispose(); return { ok: false as const, rejectReason: result.reason }; }
+    const done = result.turn.done.finally(() => {
+      dispose();
+      if (!started.claimed) this.queue?.unblock(scopeId);
+    });
+    this.outputs.add(done);
+    // Keep rejection observable on `done`, while close() tracks all active outputs.
+    void done.then(() => this.outputs.delete(done), () => this.outputs.delete(done));
+    return { ...result.turn.flow, done };
+  }
+
+  /** The shared message-turn host's view of this runtime. */
+  private turnDeps() {
+    return {
+      stores: this.stores,
+      profileFor: (kind: AgentKind) =>
+        profileForAgentKind(this.options.configForAgent?.(kind) ?? this.options.config, kind),
+      // No per-conversation model store: startTurn applies the profile defaults.
+      memory: this.turnMemory,
+    };
   }
 
   /**
@@ -431,10 +463,5 @@ export class ConversationRuntime {
 
   private scopeKey(identity: ConversationIdentity): string {
     return `channel:${JSON.stringify([this.options.channelId, this.options.namespace, identity.actorId, identity.conversationId])}`;
-  }
-
-  private runConfigFor(scope: string): RunProfileConfig {
-    const base = this.options.configForAgent?.(this.execution.kindFor(scope)) ?? this.options.config;
-    return profileForAgentKind(base, this.execution.kindFor(scope));
   }
 }
