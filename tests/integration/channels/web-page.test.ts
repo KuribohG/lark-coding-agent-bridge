@@ -132,6 +132,14 @@ describe('bundled Web page', () => {
     expect(reloaded.el('send').textContent).toBe('发送');
   });
 
+  it('answers shared slash commands in the transcript without starting a run', async () => {
+    const url = await serve(new FakeAgentAdapter({ id: 'claude', events: [] }));
+    const page = await open(url, { local: new Storage(), session: new Storage() });
+    await page.send('/status');
+    await vi.waitFor(() => expect(page.articles().map(article => [article.role, article.text]))
+      .toEqual([['user', '/status'], ['assistant', 'Engine: claude\nState: idle']]));
+  });
+
   it('shows a run that is still going to a page opened after it started, and its result afterwards', async () => {
     const held = heldAgent(false);
     const url = await serve(held.agent);

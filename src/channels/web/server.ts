@@ -1,5 +1,10 @@
 import { WEB_DISPLAY_DEFAULTS, type WebDisplayConfig } from '../../config/channel-display';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
+import {
+  assertConversationCommandsSupported,
+  handleConversationCommand,
+} from '../../commands/conversation';
+import { createWebCommandChannel } from './command-channel';
 import { join } from 'node:path';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -29,6 +34,7 @@ export function createWebPlugin(options: WebChannelOptions): ChannelPlugin<WebCo
 }
 
 async function startWebChannel(options: WebChannelOptions): Promise<WebConnection> {
+  assertConversationCommandsSupported('web');
   const lock = await acquireHostLock(join(options.stateDir, 'web-host.lock'));
   if (!lock) throw new Error('Web state directory is already in use or cannot be locked');
   let runtime: WebChatRuntime;
@@ -128,9 +134,30 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
     }
     const prompt = required('text');
     if (url.pathname === '/api/command') {
-      const command = /^\/workflow(?:\s+([\s\S]*))?$/.exec(prompt.trim());
-      if (!command) throw new HttpError(400, 'unknown command');
-      const reply = await runtime.workflowCommand(identity, command[1] ?? '');
+      const workflow = /^\/workflow(?:\s+([\s\S]*))?$/.exec(prompt.trim());
+      if (workflow) {
+        const reply = await runtime.workflowCommand(identity, workflow[1] ?? '');
+        sendJson(res, 200, reply === undefined ? {} : { reply });
+        return;
+      }
+      // The other commands are shared with every ConversationRuntime-backed
+      // front end; this channel collects the handler's replies for this response.
+      const web = createWebCommandChannel();
+      const handled = await handleConversationCommand(prompt, {
+        runtime,
+        identity,
+        channel: web.channel,
+        message: {
+          messageId: randomUUID(),
+          chatId: identity.conversationId,
+          chatType: 'p2p',
+          senderId: identity.actorId,
+          content: prompt,
+        },
+        surface: 'web',
+      });
+      if (!handled) throw new HttpError(400, 'unknown command');
+      const reply = web.reply();
       sendJson(res, 200, reply === undefined ? {} : { reply });
       return;
     }

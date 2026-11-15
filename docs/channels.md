@@ -283,6 +283,12 @@ These hosts keep no per-conversation model choice, so a workflow runs with the
 engine profile's model. The `web` command enables this; Web accepts the command
 as `POST /api/command` (`{ conversationId, text: "/workflow …" }`).
 
+Web also takes the shared conversation commands there: `/help`, `/new`,
+`/status`, `/stop` and `/model` run without starting a run, and the reply comes
+back as `{ reply }` text. `src/channels/web/command-channel.ts` collects what
+the shared handler says instead of posting it, so the page shows it in the
+transcript.
+
 Web exposes this as `GET /api/events?conversationId=…[&stream=…&after=…]`
 (NDJSON, open until the client disconnects) and `POST /api/send`
 (`{ conversationId, text }` returning `{ runId }`). Stop, supplemental input,

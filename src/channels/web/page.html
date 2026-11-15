@@ -70,7 +70,7 @@ async function follow(){
     $('status').textContent='连接中断，正在重连…';await new Promise(resolve=>setTimeout(resolve,1000));}}
 $('form').onsubmit=async event=>{event.preventDefault();$('error').textContent='';const text=$('prompt').value.trim();if(!text)return;
   // Commands are answered by the bridge at any time, also while a run is going.
-  if(/^\/workflow(\s|$)/.test(text)){$('prompt').value='';transcript.push({role:'user',text});entry('user',text);
+  if(/^\//.test(text)){$('prompt').value='';transcript.push({role:'user',text});entry('user',text);
     try{const result=await(await request('/api/command',{conversationId,text})).json();if(result.reply){transcript.push({role:'assistant',text:result.reply});entry('assistant',result.reply);}}
     catch(e){$('error').textContent=e.message;}persist();return;}
   if(working){try{if(!runId)throw Error('任务正在启动，请稍后补充');const receipt=await(await request('/api/input',{conversationId,runId,text,messageId:crypto.randomUUID()})).json();if(receipt.status!=='accepted')throw Error(receipt.status==='unsupported'?'当前 agent 不支持运行中补充，请等待完成。':receipt.status==='unknown'?'补充消息是否收到尚未确认，请勿重复发送。':'当前任务已结束，请稍后重试');transcript.push({role:'user',text});entry('user',text);$('prompt').value='';persist();}catch(e){$('error').textContent=e.message;}return;}

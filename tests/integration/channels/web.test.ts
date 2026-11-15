@@ -449,6 +449,13 @@ describe('standalone Web plugin', () => {
     expect((await fetch(`${url.origin}/api/command`, { method: 'POST', headers, body: JSON.stringify({ conversationId: 'browser', text: 'hello' }) })).status).toBe(400);
     const command = await fetch(`${url.origin}/api/command`, { method: 'POST', headers, body: JSON.stringify({ conversationId: 'browser', text: '/workflow status' }) });
     expect(await command.json()).toEqual({ reply: '当前会话未启用工作流。' });
+    const post = (text: string) => fetch(`${url.origin}/api/command`, {
+      method: 'POST', headers, body: JSON.stringify({ conversationId: 'browser', text }),
+    });
+    expect(await (await post('/status')).json()).toEqual({ reply: 'Engine: claude\nState: idle' });
+    expect(await (await post('/model')).json())
+      .toEqual({ reply: 'This thread is using claude. Engine switching is available through the API in this version.' });
+    expect(((await (await post('/help')).json()) as { reply: string }).reply).toContain('Bridge commands');
 
     const again = await follow(`&stream=${first[0]!.stream}&after=${first.at(-1)!.sequence}`, event => event.type === 'stream.opened');
     expect(again).toHaveLength(1);

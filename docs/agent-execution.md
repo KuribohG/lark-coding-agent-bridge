@@ -231,7 +231,7 @@ are named capabilities, and a channel that lacks one omits it so only the
 commands needing it are unavailable there. `channels/lark/command-channel.ts`
 is the Lark implementation; the architecture test keeps `src/commands` free of
 Lark types and of the Lark SDK. Front ends whose conversations are served by
-`ConversationRuntime` (Slack today, Web next) share the other half:
+`ConversationRuntime` (Slack and the Web chat) share the other half:
 `commands/conversation.ts` dispatches the same catalogue with handlers that
 need only the runtime, and each surface supplies a `CommandChannel` bound to the
 conversation it answers in.

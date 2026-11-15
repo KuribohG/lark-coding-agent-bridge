@@ -1,4 +1,4 @@
-export type CommandChannelId = 'lark' | 'slack';
+export type CommandChannelId = 'lark' | 'slack' | 'web';
 
 export interface CommandDefinition {
   name: string;
@@ -24,8 +24,9 @@ export interface ParsedSlashCommand {
 
 /** Data-only command metadata is shared by intake, dispatch and help rendering. */
 export const commandDefinitions = [
-  { name: 'new', aliases: ['reset'], access: 'user', pending: 'cancel', arguments: 'words', channels: ['lark', 'slack'], channelHelp: {
+  { name: 'new', aliases: ['reset'], access: 'user', pending: 'cancel', arguments: 'words', channels: ['lark', 'slack', 'web'], channelHelp: {
     slack: ['`/new` — forget this thread\'s native session'],
+    web: ['`/new` — clear this conversation\'s native session'],
   }, help: [
     '`/new` `/reset` — 清空当前 chat 的会话', '`/new chat [name]` — 新建群+新会话，自动拉你进群',
   ] },
@@ -39,8 +40,9 @@ export const commandDefinitions = [
     '`/config` — 查看配置摘要；`/config run|lark|access` 编辑对应分组（全局默认，所有私聊和群话题共用）；`lark-cli 身份策略` 在 `/config access`',
     '`/config reload` — 立即重载配置文件并报告生效情况（文件修改平时自动加载）',
   ] },
-  { name: 'model', aliases: ['provider'], access: 'user', pending: 'preserve', arguments: 'words', channels: ['lark', 'slack'], channelHelp: {
+  { name: 'model', aliases: ['provider'], access: 'user', pending: 'preserve', arguments: 'words', channels: ['lark', 'slack', 'web'], channelHelp: {
     slack: ['`/model` — show the current engine'],
+    web: ['`/model` — show the current engine'],
   }, help: [
     '`/model [模型名|default] [强度] [任务]` — 当前话题/聊天的模型和强度；带任务时切换后立即执行',
     '`/provider` — 打开 Provider 与模型切换卡片',
@@ -49,12 +51,14 @@ export const commandDefinitions = [
     '`/agent [claude|codex|…|default] [模型名|default] [强度] [任务]` — 当前话题/聊天的执行引擎，各引擎上下文独立；带任务时切换后立即执行',
   ] },
   { name: 'effort', access: 'user', pending: 'preserve', arguments: 'words', help: ['`/effort [强度|default]` — 当前话题/聊天的思考强度；全局默认用 `/config run`'] },
-  { name: 'status', access: 'user', pending: 'preserve', arguments: 'words', channels: ['lark', 'slack'], channelHelp: {
+  { name: 'status', access: 'user', pending: 'preserve', arguments: 'words', channels: ['lark', 'slack', 'web'], channelHelp: {
     slack: ['`/status` — show engine and run state'],
+    web: ['`/status` — show engine and run state'],
   }, help: ['`/status` — 当前状态'] },
   // /stop owns cancellation so it can report how many pending messages it removed.
-  { name: 'stop', access: 'user', pending: 'preserve', arguments: 'words', channels: ['lark', 'slack'], channelHelp: {
+  { name: 'stop', access: 'user', pending: 'preserve', arguments: 'words', channels: ['lark', 'slack', 'web'], channelHelp: {
     slack: ['`/stop` — stop the active run'],
+    web: ['`/stop` — stop the active run'],
   }, help: [
     '`/stop` — 停止当前任务并取消排队消息（也可点卡片底部 ⏹ 终止 按钮）', '`/stop comment:<scopeHash>` — 管理员停止云文档评论任务',
   ] },
@@ -67,8 +71,9 @@ export const commandDefinitions = [
   { name: 'doctor', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/doctor [描述]` — 把日志和描述交给 {agent} 自助诊断'] },
   { name: 'invite', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/invite` — 管理用户、群聊和管理员访问权限'] },
   { name: 'remove', access: 'admin', pending: 'cancel', arguments: 'words', help: ['`/remove` — 移除用户、群聊或管理员访问权限'] },
-  { name: 'help', access: 'user', pending: 'cancel', arguments: 'words', channels: ['lark', 'slack'], channelHelp: {
+  { name: 'help', access: 'user', pending: 'cancel', arguments: 'words', channels: ['lark', 'slack', 'web'], channelHelp: {
     slack: ['`/help [command]` — list commands or show details for one'],
+    web: ['`/help [command]` — list commands or show details for one'],
   }, help: ['`/help [命令]` — 本帮助；指定命令查看单条详情'] },
 ] as const satisfies readonly CommandDefinition[];
 
