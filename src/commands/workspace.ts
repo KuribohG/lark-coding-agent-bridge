@@ -2,10 +2,15 @@ import { homedir } from 'node:os';
 import { isAbsolute } from 'node:path';
 import { workspacesCard } from '../card/templates';
 import { resolveWorkingDirectory } from '../policy/workspace';
-import { createBoundChat, defaultChatName } from '../channels/lark/group';
 import type { CommandContext } from './types';
 import { reply, commandReplyOptions } from './presentation';
 import { abandonScopeWork, effectiveWorkspaceCwd } from './context';
+
+function defaultChatName(agentName = 'Agent'): string {
+  const d = new Date();
+  const pad = (n: number): string => `${n}`.padStart(2, '0');
+  return `${agentName} · ${d.getMonth() + 1}-${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
 
 function expandTilde(p: string): string {
   if (p === '~') return homedir();
@@ -43,14 +48,11 @@ async function handleNewChat(rawName: string, ctx: CommandContext): Promise<void
 
   let created;
   try {
-    created = await createBoundChat({
-      channel: ctx.channel,
-      name,
-      inviteOpenId: ctx.msg.senderId,
-    });
+    if (!ctx.channel.createChat) throw new Error('当前入口不支持创建群聊。');
+    created = await ctx.channel.createChat(name, ctx.msg.senderId);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    await reply(ctx, `❌ 创建群失败：${msg}\n\n确认 bot 已开启 \`im:chat\` 权限。`);
+    await reply(ctx, `❌ 创建群失败：${msg}`);
     return;
   }
 

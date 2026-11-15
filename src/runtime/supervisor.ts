@@ -263,8 +263,8 @@ class ManagedProfile {
       profileConfig: currentProfileConfig,
       ownerRefreshState: 'unknown',
       knownChats: [],
-      async refreshOwner(channelOverride) {
-        const target = channelOverride ?? self.bridge?.channel;
+      async refreshOwner() {
+        const target = self.bridge?.channel;
         if (!target) return;
         await refreshOwnerControls(currentControls, target, currentControls.cfg.accounts.app.id);
       },

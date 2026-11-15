@@ -1,4 +1,3 @@
-import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import type { AgentAdapter } from '../agent/types';
 import type { ActiveRuns } from '../runtime/active-runs';
 import type { AppConfig } from '../config/schema';
@@ -11,18 +10,100 @@ import type { SessionStore } from '../session/store';
 import type { ProcessPool } from '../runtime/process-pool';
 import type { RunExecutor } from '../runtime/run-executor';
 import type { WorkspaceStore } from '../workspace/store';
-import type { KnownChat } from '../channels/lark/lark-info';
 import type { LarkProfileAuth } from '../lark-auth/profile-auth';
-import type { QuotedContext } from '../channels/lark/quote';
 import type { CommandDefinition } from './catalog';
 import type { ConfigTrigger } from '../config/config-source';
 import type { ConfigApplyReport } from '../config/apply';
 
+/** The part of a quoted message side-question filtering needs. */
+export interface CommandQuotedMessage {
+  messageId: string;
+  senderId: string;
+  senderType?: string;
+  content: string;
+}
+
 export interface BtwCommandControl {
   enqueue(question: string, ctx: CommandContext): Promise<void>;
-  excludes(scope: string, msg: QuotedContext): boolean;
+  excludes(scope: string, msg: CommandQuotedMessage): boolean;
   reset(scope: string): void;
   cancel(scope: string): void;
+}
+
+/** A group the bot belongs to, as listed in access management. */
+export interface KnownChat {
+  id: string;
+  name: string;
+}
+
+/** One inbound message as command handlers see it, independent of the channel SDK. */
+export interface CommandMessage {
+  messageId: string;
+  chatId: string;
+  chatType: 'p2p' | 'group';
+  threadId?: string;
+  rootId?: string;
+  senderId: string;
+  senderName?: string;
+  /** Native sender kind (`user`, `bot`, …) when the channel reports one. */
+  senderType?: string;
+  content: string;
+  mentions?: ReadonlyArray<{ openId?: string; name?: string; isBot?: boolean }>;
+}
+
+/** Content a command sends outside the turn pipeline. */
+export type CommandContent = { markdown: string } | { card: object };
+
+export interface CommandSendOptions {
+  replyTo?: string;
+  replyInThread?: boolean;
+}
+
+/** A card a command fills in while its run produces output. */
+export interface CommandCardStream {
+  card: {
+    initial: object;
+    producer(control: { update(next: object): Promise<void> }): Promise<void>;
+  };
+}
+
+/**
+ * What a command handler may ask of the channel its message arrived on.
+ * Lark implements every capability; another channel implements what its
+ * platform has and omits the rest, which only makes the commands that need
+ * those features unusable there.
+ */
+export interface CommandChannel {
+  /** Display name of the bot in this channel, when known. */
+  readonly botName?: string;
+  send(
+    recipientId: string,
+    content: CommandContent,
+    options?: CommandSendOptions,
+  ): Promise<{ messageId: string }>;
+  /** Sends a card that `updateCard` can later replace in place. */
+  sendCard(
+    recipientId: string,
+    card: object,
+    options?: CommandSendOptions,
+  ): Promise<{ messageId: string; cardId?: string }>;
+  updateCard(messageId: string, card: object): Promise<void>;
+  stream?(
+    recipientId: string,
+    content: CommandCardStream,
+    options?: CommandSendOptions,
+  ): Promise<unknown>;
+  recallMessage?(messageId: string): Promise<void>;
+  /** Chats the bot currently belongs to. */
+  knownChats?(): Promise<KnownChat[]>;
+  /** Share link of an existing message, when the platform has one. */
+  messageLink?(messageId: string, timeoutMs?: number): Promise<string | undefined>;
+  /** Share link of a conversation scope, when the platform has one. */
+  conversationLink?(scopeId: string): string | undefined;
+  /** Whether the app may receive group messages without being mentioned. */
+  hasGroupMessageScope?(appId: string): Promise<boolean | null>;
+  /** Creates a group chat with the given user. */
+  createChat?(name: string, inviteOpenId: string): Promise<{ chatId: string; name: string }>;
 }
 
 export interface CommandDispatcher {
@@ -34,7 +115,7 @@ export interface CommandDispatcher {
 }
 
 export interface WorkflowControl {
-  command(scope: string, args: string, message: NormalizedMessage): Promise<string | undefined>;
+  command(scope: string, args: string, message: CommandMessage): Promise<string | undefined>;
   /** Whether the scope has a workflow that is still running. */
   active(scope: string): boolean;
   invalidate(scope: string): void;
@@ -76,7 +157,7 @@ export interface Controls {
   ownerRefreshState: OwnerRefreshState;
   ownerRefreshedAt?: number;
   ownerRefreshError?: string;
-  refreshOwner(channel?: LarkChannel): Promise<void>;
+  refreshOwner(): Promise<void>;
   /** Restart the bridge in-process: disconnect WS, kill claude runs and
    * reconnect. `config: 'reload'` (default) applies the config file, including
    * reconnect/restart-class settings; `'running'` keeps the running config
@@ -106,8 +187,9 @@ export interface Controls {
 }
 
 export interface CommandContext {
-  channel: LarkChannel;
-  msg: NormalizedMessage;
+  /** The channel this command arrived on, reduced to what commands need. */
+  channel: CommandChannel;
+  msg: CommandMessage;
   /**
    * Session scope string. For p2p / regular group it equals `msg.chatId`;
    * for topic groups it's `${chatId}:${threadId}` (so each topic gets its

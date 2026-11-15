@@ -1,4 +1,4 @@
-export type CommandChannel = 'lark' | 'slack';
+export type CommandChannelId = 'lark' | 'slack';
 
 export interface CommandDefinition {
   name: string;
@@ -8,9 +8,9 @@ export interface CommandDefinition {
   arguments: 'words' | 'verbatim';
   help: readonly string[];
   /** Channels that expose this command. Defaults to Lark. */
-  channels?: readonly CommandChannel[];
+  channels?: readonly CommandChannelId[];
   /** Channel-specific help lines, used instead of `help` when present. */
-  channelHelp?: Partial<Record<CommandChannel, readonly string[]>>;
+  channelHelp?: Partial<Record<CommandChannelId, readonly string[]>>;
 }
 
 export interface ParsedSlashCommand {
@@ -88,7 +88,7 @@ export function findCommand(name: string): CommandDefinition | undefined {
 }
 
 /** Commands exposed by a channel. Definitions without `channels` are Lark commands. */
-export function commandDefinitionsFor(channel: CommandChannel): readonly CommandDefinition[] {
+export function commandDefinitionsFor(channel: CommandChannelId): readonly CommandDefinition[] {
   return commandDefinitions.filter(definition =>
     ((definition as CommandDefinition).channels ?? ['lark']).includes(channel));
 }
@@ -119,7 +119,7 @@ export function parseSlashCommand(
 export function commandHelpLines(
   escapedAgentName: string,
   definitions: readonly CommandDefinition[] = commandDefinitions,
-  channel: CommandChannel = 'lark',
+  channel: CommandChannelId = 'lark',
 ): string[] {
   return definitions.flatMap(definition => {
     const lines = (definition as CommandDefinition).channelHelp?.[channel] ?? definition.help;

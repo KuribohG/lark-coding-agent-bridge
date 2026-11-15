@@ -61,7 +61,7 @@ describe('/btw', () => {
     await h.manager.close();
     const store = new BtwStore(h.path);
     await store.load();
-    const manager = new BtwManager(store);
+    const manager = new BtwManager(store, h.channel);
     cleanups.push(() => manager.close());
     await manager.enqueue('later', h.next('q2'));
     expect(h.agent.runOptions[1]?.prompt).toContain('remember me');
@@ -112,7 +112,7 @@ describe('/btw', () => {
       options: { replyTo: 'root', replyInThread: true },
     }]);
     expect(spy).toHaveBeenCalledTimes(1);
-    expect(h.ctx.channel.rawClient.im.v1.message.reply).toHaveBeenCalledWith({
+    expect(h.channel.rawClient.im.v1.message.reply).toHaveBeenCalledWith({
       path: { message_id: 'root' },
       data: {
         msg_type: 'post', reply_in_thread: true,
@@ -159,12 +159,12 @@ describe('/btw', () => {
   it('keeps a failed root fallback inside the topic even when the API resolves with an error code', async () => {
     const h = await harness('claude', [answer('topic answer')]);
     const spy = vi.spyOn(h.ctx.channel, 'send').mockRejectedValue(withdrawnMessage());
-    vi.mocked(h.ctx.channel.rawClient.im.v1.message.reply).mockResolvedValue({ code: 230011, msg: 'The message was withdrawn.' });
+    vi.mocked(h.channel.rawClient.im.v1.message.reply).mockResolvedValue({ code: 230011, msg: 'The message was withdrawn.' });
     await h.manager.enqueue('question', h.ctx);
     expect(h.sent).toHaveLength(0);
-    expect(h.ctx.channel.rawClient.im.v1.message.reply).toHaveBeenCalled();
+    expect(h.channel.rawClient.im.v1.message.reply).toHaveBeenCalled();
     for (const [, , options] of spy.mock.calls) expect(options).toEqual({ replyTo: 'q1', replyInThread: true });
-    expect(h.ctx.channel.rawClient.im.v1.message.create).not.toHaveBeenCalled();
+    expect(h.channel.rawClient.im.v1.message.create).not.toHaveBeenCalled();
   });
 
   it('acknowledges queued questions immediately and cleans up after cancellation', async () => {
@@ -172,13 +172,13 @@ describe('/btw', () => {
     const release = h.pool.tryAcquire()!;
     const first = h.manager.enqueue('waiting', h.ctx);
     const second = h.manager.enqueue('queued', h.next('q2'));
-    await vi.waitFor(() => expect(h.ctx.channel.addReaction).toHaveBeenCalledTimes(2));
-    expect(h.ctx.channel.addReaction).toHaveBeenCalledWith('q1', 'Typing');
-    expect(h.ctx.channel.addReaction).toHaveBeenCalledWith('q2', 'Typing');
+    await vi.waitFor(() => expect(h.channel.addReaction).toHaveBeenCalledTimes(2));
+    expect(h.channel.addReaction).toHaveBeenCalledWith('q1', 'Typing');
+    expect(h.channel.addReaction).toHaveBeenCalledWith('q2', 'Typing');
     h.manager.cancel(h.ctx.scope);
     await Promise.all([first, second]);
     release();
-    await vi.waitFor(() => expect(h.ctx.channel.removeReaction).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(h.channel.removeReaction).toHaveBeenCalledTimes(2));
     expect(h.agent.runOptions).toHaveLength(0);
     expect(h.sent).toHaveLength(0);
   });
@@ -186,17 +186,17 @@ describe('/btw', () => {
   it('does not wait for a slow reaction before answering and removes it when it arrives', async () => {
     const h = await harness('claude', [answer('answer')]);
     let resolve!: (id: string) => void;
-    vi.mocked(h.ctx.channel.addReaction).mockReturnValue(new Promise(r => { resolve = r; }));
+    vi.mocked(h.channel.addReaction).mockReturnValue(new Promise(r => { resolve = r; }));
     await h.manager.enqueue('question', h.ctx);
     expect(h.sent).toHaveLength(1);
     resolve('late-reaction');
-    await vi.waitFor(() => expect(h.ctx.channel.removeReaction).toHaveBeenCalledWith('q1', 'late-reaction'));
+    await vi.waitFor(() => expect(h.channel.removeReaction).toHaveBeenCalledWith('q1', 'late-reaction'));
   });
 
   it('still answers when reaction APIs fail', async () => {
     const h = await harness('claude', [answer('first'), answer('second')]);
-    vi.mocked(h.ctx.channel.addReaction).mockRejectedValueOnce(new Error('reaction unavailable'));
-    vi.mocked(h.ctx.channel.removeReaction).mockRejectedValue(new Error('reaction cleanup unavailable'));
+    vi.mocked(h.channel.addReaction).mockRejectedValueOnce(new Error('reaction unavailable'));
+    vi.mocked(h.channel.removeReaction).mockRejectedValue(new Error('reaction cleanup unavailable'));
     await h.manager.enqueue('question', h.ctx);
     await h.manager.enqueue('followup', h.next('q2'));
     expect(h.sent).toHaveLength(2);
@@ -250,7 +250,7 @@ describe('/btw', () => {
     h.seed('parent');
     await h.manager.enqueue('fresh question', h.next('q3'));
     expect(h.agent.runOptions[1]?.prompt).not.toContain('remember');
-    expect(h.manager.excludes(h.ctx.scope, { messageId: 'q1', senderId: 'user', content: 'old text', createdAt: '', rawContentType: 'text' })).toBe(true);
+    expect(h.manager.excludes(h.ctx.scope, { messageId: 'q1', senderId: 'user', content: 'old text' })).toBe(true);
   });
 });
 
@@ -290,13 +290,14 @@ async function harness(kind: 'claude' | 'codex', events: AgentEvent[][]) {
   const pool = new ProcessPool(() => 1);
   const executor = new RunExecutor({ resolveAgent: () => agent, pool, activeRuns });
   const path = join(tmp.profile, 'btw.json');
-  const manager = new BtwManager(new BtwStore(path));
+  const manager = new BtwManager(new BtwStore(path), channel);
   controls.channel = fakeChannelControls({ btw: manager });
-  const ctx: CommandContext = { channel, scope: 'chat:topic', chatMode: 'topic', agent, sessions,
+  const rawMsg = { chatId: 'chat', chatType: 'group', senderId: 'user', threadId: 'topic', rootId: 'root', messageId: 'q1', content: '', resources: [], mentions: [] } as unknown as NormalizedMessage;
+  const ctx: CommandContext = { channel: channel as unknown as CommandContext['channel'], scope: 'chat:topic', chatMode: 'topic', agent, sessions,
     sessionCatalog: catalog, workspaces, activeRuns, runExecutor: executor, controls, agentKind: controls.profileConfig.agentKind,
-    msg: { chatId: 'chat', chatType: 'group', senderId: 'user', threadId: 'topic', rootId: 'root', messageId: 'q1', content: '', resources: [], mentions: [] } as unknown as NormalizedMessage,
+    msg: rawMsg,
   };
-  ctx.sessionCatalogIdentity = await commandSessionCatalogIdentity({ ...ctx, mode: 'topic', access: { ok: true, reason: 'allowed-user' } });
+  ctx.sessionCatalogIdentity = await commandSessionCatalogIdentity({ ...ctx, msg: rawMsg, mode: 'topic', access: { ok: true, reason: 'allowed-user' } });
   const seed = (id: string) => {
     const identity = ctx.sessionCatalogIdentity!;
     if (kind === 'claude') { catalog.upsertActive({ ...identity, agentId: 'claude', sessionId: id }); sessions.set(ctx.scope, id, identity.cwdRealpath); }
@@ -304,7 +305,7 @@ async function harness(kind: 'claude' | 'codex', events: AgentEvent[][]) {
   };
   seed('parent');
   cleanups.push(async () => { await manager.close(); await Promise.all([sessions.flush(), catalog.flush(), workspaces.flush()]); });
-  return { ctx, agent, sent, manager, path, catalog, pool, seed,
+  return { ctx, channel, agent, sent, manager, path, catalog, pool, seed,
     next: (id: string) => ({ ...ctx, msg: { ...ctx.msg, messageId: id } }),
   };
 }

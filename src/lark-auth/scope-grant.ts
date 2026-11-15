@@ -1,5 +1,12 @@
 import { registerApp } from '@larksuite/channel';
 
+/**
+ * Scope that lets the app receive group messages that DON'T @ the bot.
+ * Without it, Feishu's event gateway only pushes @-bot group messages, so
+ * `requireMentionInGroup: false` silently has no effect.
+ */
+export const GROUP_MSG_SCOPE = 'im:message.group_msg';
+
 export interface ScopeGrantLink {
   /** Authorization URL — opening it lands on the confirm page with the new
    * scopes pre-filled as a diff against the existing app. */

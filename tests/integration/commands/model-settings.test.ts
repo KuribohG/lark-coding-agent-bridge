@@ -21,6 +21,7 @@ import { ScopePreferencesStore } from '../../../src/session/scope-preferences';
 import { createFakeChannel } from '../../helpers/fake-channel';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
 import { createTmpProfile } from '../../helpers/tmp-profile';
+import { fakeCommandChannel } from '../../helpers/fake-command-channel';
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { await Promise.all(cleanups.splice(0).map((f) => f())); });
@@ -50,7 +51,7 @@ async function harness() {
   };
   const channel = createFakeChannel();
   const ctx: CommandContext = {
-    controls, agentKind: controls.profileConfig.agentKind, channel: channel as unknown as CommandContext['channel'], scope: 'group:topic-a', chatMode: 'topic',
+    controls, agentKind: controls.profileConfig.agentKind, channel: fakeCommandChannel(channel), scope: 'group:topic-a', chatMode: 'topic',
     msg: { chatId: 'group', messageId: 'msg', senderId: 'owner', threadId: 'topic-a', content: '' } as CommandContext['msg'],
     sessions: new SessionStore(join(tmp.profile, 'sessions.json')), workspaces: new WorkspaceStore(join(tmp.profile, 'workspaces.json')),
     activeRuns: new ActiveRuns(), agent: new FakeAgentAdapter(),
@@ -106,7 +107,7 @@ describe('model and effort scope settings', () => {
     };
     await intakeMessage({
       followups: {},
-      channel: channel as unknown as CommandContext['channel'],
+      channel: fakeCommandChannel(channel),
       resolveAgent: () => h.ctx.agent,
       resolveAgentKind: () => 'codex' as const,
       sessions: h.ctx.sessions,
@@ -279,7 +280,8 @@ describe('model and effort scope settings', () => {
     h.channel.rawThreadIds.set('card', 'topic-a');
     const pending = new PendingQueue(60_000, () => {});
     const deps = {
-      ...h.ctx, pending, chatModeCache: new ChatModeCache(),
+      ...h.ctx, channel: h.channel as unknown as Parameters<typeof handleCardAction>[0]['channel'],
+      pending, chatModeCache: new ChatModeCache(),
       evt: {
         chatId: 'group', messageId: 'card', operator: { openId: 'owner' },
         action: { value: { cmd: 'model.submit', settings_scope: h.ctx.scope } },

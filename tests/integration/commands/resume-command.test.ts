@@ -6,7 +6,7 @@ import { ActiveRuns } from '../../../src/runtime/active-runs.js';
 import { ChatModeCache } from '../../../src/channels/lark/chat-mode-cache.js';
 import { PendingQueue } from '../../../src/channels/lark/pending-queue.js';
 import { handleCardAction } from '../../../src/channels/lark/card-actions.js';
-import { tryHandleCommand, type CommandContext, type Controls } from '../../../src/commands/index.js';
+import { tryHandleCommand, type Controls } from '../../../src/commands/index.js';
 import { createDefaultProfileConfig, type AgentKind, type ProfileConfig } from '../../../src/config/profile-schema.js';
 import { canUseDm } from '../../../src/policy/access.js';
 import { evaluateRunPolicy } from '../../../src/policy/run-policy.js';
@@ -19,6 +19,7 @@ import type { SessionSummary } from '../../../src/session/history.js';
 import { createFakeAgent } from '../../helpers/fake-agent.js';
 import { createFakeChannel, type FakeChannel } from '../../helpers/fake-channel.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
+import { fakeCommandChannel } from '../../helpers/fake-command-channel';
 
 interface Harness {
   tmp: TmpProfile;
@@ -308,7 +309,7 @@ async function createHarness(
     runOptions: { withCatalogIdentity?: boolean; chatMode?: 'p2p' | 'group' | 'topic' } = {},
   ): Promise<boolean> =>
     tryHandleCommand({
-      channel: channel as unknown as CommandContext['channel'],
+      channel: fakeCommandChannel(channel),
       msg: message(content),
       scope: 'chat-1',
       chatMode: runOptions.chatMode ?? 'p2p',

@@ -4,7 +4,7 @@ import {
   accountFormCard,
   accountSuccessCard,
 } from '../card/account-cards';
-import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
+import { forgetManagedCard } from '../card/managed';
 import type { AppConfig, TenantBrand } from '../config/schema';
 import { buildEncryptedAccountConfig } from '../config/store';
 import * as configOps from '../config/config-ops';
@@ -37,7 +37,7 @@ async function showCurrent(ctx: CommandContext): Promise<void> {
   // never re-touch).
   const card = accountCurrentCard({
     appId: ctx.controls.cfg.accounts.app.id,
-    botName: ctx.channel.botIdentity?.name,
+    botName: ctx.channel.botName,
     tenant: ctx.controls.cfg.accounts.app.tenant,
   });
   await ctx.channel.send(ctx.msg.chatId, { card }, commandReplyOptions(ctx));
@@ -48,7 +48,7 @@ async function showForm(ctx: CommandContext): Promise<void> {
   if (ctx.fromCardAction) {
     await recallMessage(ctx, ctx.msg.messageId);
   }
-  await sendManagedCard(ctx.channel, ctx.msg.chatId, card, commandReplyOptions(ctx));
+  await ctx.channel.sendCard(ctx.msg.chatId, card, commandReplyOptions(ctx));
 }
 
 async function cancelAccount(ctx: CommandContext): Promise<void> {
@@ -72,7 +72,7 @@ async function submitAccount(ctx: CommandContext): Promise<void> {
   // 2s settle window inline, the lock holds, and the moment we return the
   // client snaps the card back to its cached form state (overwriting any
   // update we made). Returning immediately lets the lock release; the
-  // delayed updateManagedCard then sticks.
+  // delayed card update then sticks.
   const chatId = ctx.msg.chatId;
   void (async () => {
     const submittedAt = Date.now();
@@ -87,7 +87,7 @@ async function submitAccount(ctx: CommandContext): Promise<void> {
     // (success card has no form), so this is fine.
     const finishSuccess = async (card: object): Promise<void> => {
       await waitForSettle();
-      await updateManagedCard(channel, formMsgId, card).catch((err) =>
+      await channel.updateCard(formMsgId, card).catch((err) =>
         console.warn('[account] form update failed:', err),
       );
       forgetManagedCard(formMsgId);
@@ -101,7 +101,7 @@ async function submitAccount(ctx: CommandContext): Promise<void> {
     // the same card_id no longer fires cardActions.
     const finishFailure = async (errorMessage: string): Promise<void> => {
       await waitForSettle();
-      await updateManagedCard(channel, formMsgId, accountFailureCard(errorMessage))
+      await channel.updateCard(formMsgId, accountFailureCard(errorMessage))
         .catch((err) => console.warn('[account] mark old form failed:', err));
       forgetManagedCard(formMsgId);
       // Don't prefill the secret on retry — pre-filled secrets can get
@@ -111,7 +111,7 @@ async function submitAccount(ctx: CommandContext): Promise<void> {
         initialTenant: tenant,
         prefillAppId: appId,
       });
-      await sendManagedCard(channel, chatId, retry, retryReplyOptions).catch((err) =>
+      await channel.sendCard(chatId, retry, retryReplyOptions).catch((err) =>
         console.warn('[account] post retry form failed:', err),
       );
     };

@@ -52,7 +52,7 @@ export const FORM_SETTLE_MS = 1000;
 
 export async function recallMessage(ctx: CommandContext, messageId: string): Promise<void> {
   try {
-    await ctx.channel.recallMessage(messageId);
+    await ctx.channel.recallMessage?.(messageId);
   } catch (err) {
     console.warn('[recall failed]', err);
   }

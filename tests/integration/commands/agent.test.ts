@@ -14,6 +14,7 @@ import { fakeChannelControls } from '../../helpers/channel-controls';
 import { createFakeChannel } from '../../helpers/fake-channel';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
 import { createTmpProfile } from '../../helpers/tmp-profile';
+import { fakeCommandChannel } from '../../helpers/fake-command-channel';
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { await Promise.all(cleanups.splice(0).map((f) => f())); });
@@ -54,7 +55,7 @@ async function harness() {
   };
   const channel = createFakeChannel();
   const ctx: CommandContext = {
-    controls, agentKind: 'codex', channel: channel as unknown as CommandContext['channel'], scope: 'group:topic-a', chatMode: 'topic',
+    controls, agentKind: 'codex', channel: fakeCommandChannel(channel), scope: 'group:topic-a', chatMode: 'topic',
     msg: { chatId: 'group', messageId: 'msg', senderId: 'owner', threadId: 'topic-a', content: '' } as CommandContext['msg'],
     sessions: new SessionStore(join(tmp.profile, 'sessions.json')), workspaces: new WorkspaceStore(join(tmp.profile, 'workspaces.json')),
     activeRuns: new ActiveRuns(), agent: new FakeAgentAdapter(),

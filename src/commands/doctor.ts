@@ -159,7 +159,7 @@ export async function handleDoctor(args: string, ctx: CommandContext): Promise<v
   }
 
   try {
-    if (isP2p) {
+    if (isP2p && ctx.channel.stream) {
       // Streaming card path — operator is the only viewer in p2p.
       await ctx.channel.stream(
         ctx.msg.chatId,

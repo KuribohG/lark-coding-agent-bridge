@@ -3,10 +3,6 @@ import type { SessionCatalogEntry } from '../session/catalog';
 import { formatRelTime } from '../session/history';
 import { canRunAdminCommand } from '../policy/access';
 import { agentDisplayName } from '../agent/backend-spec';
-import {
-  lookupMessageAppLink,
-  scopeAppLink,
-} from '../channels/lark/message-links';
 import type { CommandContext } from './types';
 import { reply } from './presentation';
 
@@ -123,10 +119,10 @@ async function resolveRecentLink(
   entry: CompletedSessionCatalogEntry,
 ): Promise<string | undefined> {
   if (entry.sourceMessageId) {
-    const link = await lookupMessageAppLink(ctx.channel, entry.sourceMessageId, 1_500);
+    const link = await ctx.channel.messageLink?.(entry.sourceMessageId, 1_500);
     if (link) return link;
   }
-  return scopeAppLink(entry.scopeId);
+  return ctx.channel.conversationLink?.(entry.scopeId);
 }
 
 function activeSessionFilter(ctx: CommandContext): {

@@ -111,7 +111,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
 
   const btwStore = new BtwStore(statePath('btw.json'));
   await btwStore.load();
-  const btw = new BtwManager(btwStore);
+  const btw = new BtwManager(btwStore, channel);
 
   // Pending → run handoff: while a run is active on a chat, block its pending
   // queue so messages keep accumulating without flushing. When the run ends,

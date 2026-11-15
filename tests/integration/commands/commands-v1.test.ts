@@ -11,6 +11,7 @@ import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { createFakeAgent } from '../../helpers/fake-agent.js';
 import { createFakeChannel, type FakeChannel } from '../../helpers/fake-channel.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
+import { fakeCommandChannel } from '../../helpers/fake-command-channel';
 
 interface RunOverrides {
   scope?: string;
@@ -313,7 +314,7 @@ async function createHarness(): Promise<Harness> {
     const chatId = overrides.chatId ?? 'chat-1';
     const scope = overrides.scope ?? chatId;
     return tryHandleCommand({
-      channel: channel as unknown as CommandContext['channel'],
+      channel: fakeCommandChannel(channel),
       msg: message(content, {
         chatId,
         senderId: overrides.senderId ?? 'ou-admin',

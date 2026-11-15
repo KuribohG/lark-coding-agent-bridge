@@ -6,6 +6,7 @@ import { CotPublisher, type CotClient } from './cot';
 import type { FollowupRouter } from '../../runtime/followup';
 import { MAX_PENDING_CHARS_PER_SCOPE, type PendingQueue } from './pending-queue';
 import { fetchQuotedContext } from './quote';
+import { createLarkCommandChannel } from './command-channel';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { tryHandleCommand, type CommandContext, type Controls } from '../../commands';
 import { findCommand } from '../../commands/catalog';
@@ -199,7 +200,7 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
   const scopeAgentKind = resolveAgentKind(scope);
   const scopeAgent = resolveAgent(scope);
   const commandCtx: CommandContext = {
-    channel,
+    channel: createLarkCommandChannel(channel),
     msg: emsg,
     scope,
     chatMode,

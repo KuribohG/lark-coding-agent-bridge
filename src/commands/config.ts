@@ -18,9 +18,8 @@ import {
   groupMsgScopeGrantCard,
   groupMsgScopeGrantedCard,
 } from '../card/config-card';
-import { GROUP_MSG_SCOPE, hasGroupMsgScope } from '../channels/lark/app-scope';
-import { requestScopeGrantLink } from '../lark-auth/scope-grant';
-import { forgetManagedCard, sendManagedCard, updateManagedCard } from '../card/managed';
+import { GROUP_MSG_SCOPE, requestScopeGrantLink } from '../lark-auth/scope-grant';
+import { forgetManagedCard } from '../card/managed';
 import {
   getCotMessages,
   getMaxConcurrentRuns,
@@ -32,7 +31,6 @@ import {
 import { log, reportMetric } from '../core/logger';
 import { isAlive } from '../runtime/registry';
 import { readUiSidecar } from '../ui/sidecar';
-import { fetchKnownChats } from '../channels/lark/lark-info';
 import type { CommandContext } from './types';
 import { reply, recallMessage, commandReplyOptions, FORM_SETTLE_MS } from './presentation';
 import { commandProfilePaths } from './context';
@@ -103,8 +101,8 @@ function runtimeConfigStatus(ctx: CommandContext): string {
 
 async function showConfigForm(ctx: CommandContext, section: 'run' | 'lark' | 'access'): Promise<void> {
   await Promise.all([
-    ctx.controls.refreshOwner(ctx.channel).catch(() => {}),
-    fetchKnownChats(ctx.channel)
+    ctx.controls.refreshOwner().catch(() => {}),
+    (ctx.channel.knownChats?.() ?? Promise.resolve([]))
       .then((chats) => {
         if (chats.length > 0) ctx.controls.knownChats = chats;
       })
@@ -147,7 +145,7 @@ async function showConfigForm(ctx: CommandContext, section: 'run' | 'lark' | 'ac
     ...(consoleUrl ? { consoleUrl } : {}),
   });
   if (ctx.fromCardAction) await recallMessage(ctx, ctx.msg.messageId);
-  await sendManagedCard(ctx.channel, ctx.msg.chatId, card, commandReplyOptions(ctx));
+  await ctx.channel.sendCard(ctx.msg.chatId, card, commandReplyOptions(ctx));
 }
 
 async function showResultCardInPlace(
@@ -156,10 +154,10 @@ async function showResultCardInPlace(
   card: object,
 ): Promise<void> {
   try {
-    await updateManagedCard(ctx.channel, formMsgId, card);
+    await ctx.channel.updateCard(formMsgId, card);
   } catch (err) {
     log.warn('command', 'config-card-update-fallback', { err: String(err) });
-    await sendManagedCard(ctx.channel, ctx.msg.chatId, card, commandReplyOptions(ctx)).catch((fallbackErr) =>
+    await ctx.channel.sendCard(ctx.msg.chatId, card, commandReplyOptions(ctx)).catch((fallbackErr) =>
       log.warn('command', 'config-card-fallback-send-failed', {
         err: String(fallbackErr),
       }),
@@ -349,7 +347,7 @@ async function submitConfig(ctx: CommandContext): Promise<void> {
 async function promptGroupMsgScopeIfMissing(ctx: CommandContext): Promise<void> {
   const appId = ctx.controls.cfg.accounts.app.id;
   // `false` = confirmed missing; `null` = lookup failed → don't nag.
-  const has = await hasGroupMsgScope(ctx.channel, appId);
+  const has = await ctx.channel.hasGroupMessageScope?.(appId);
   if (has !== false) return;
   log.info('command', 'group-msg-scope-missing', { appId });
 
@@ -364,8 +362,7 @@ async function promptGroupMsgScopeIfMissing(ctx: CommandContext): Promise<void> 
   const expireMins = Math.max(1, Math.round(link.expireIn / 60));
   let sent;
   try {
-    sent = await sendManagedCard(
-      ctx.channel,
+    sent = await ctx.channel.sendCard(
       ctx.msg.chatId,
       groupMsgScopeGrantCard(link.url, expireMins),
     );
@@ -379,7 +376,7 @@ async function promptGroupMsgScopeIfMissing(ctx: CommandContext): Promise<void> 
   void link.completion.then(
     async () => {
       log.info('command', 'group-msg-scope-granted', { appId });
-      await updateManagedCard(ctx.channel, sent.messageId, groupMsgScopeGrantedCard()).catch(
+      await ctx.channel.updateCard(sent.messageId, groupMsgScopeGrantedCard()).catch(
         () => {},
       );
       forgetManagedCard(sent.messageId);

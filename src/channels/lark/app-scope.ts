@@ -1,13 +1,6 @@
 import type { LarkChannel } from '@larksuite/channel';
 import { log } from '../../core/logger';
-
-/**
- * Scope that lets the app receive group messages that DON'T @ the bot.
- * Without it, Feishu's event gateway only pushes @-bot group messages, so
- * `requireMentionInGroup: false` silently has no effect. Kept as a named
- * constant so it's easy to adjust if the platform renames the scope id.
- */
-export const GROUP_MSG_SCOPE = 'im:message.group_msg';
+import { GROUP_MSG_SCOPE } from '../../lark-auth/scope-grant';
 
 /**
  * Fetch the set of scopes currently granted to this app via

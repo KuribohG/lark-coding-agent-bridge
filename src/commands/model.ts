@@ -16,7 +16,6 @@ import {
   scopePreferences,
 } from '../runtime/model-settings';
 import { modelFormCard, modelSettingsSummary } from '../card/model-card';
-import { sendManagedCard } from '../card/managed';
 import {
   AUTO_MODEL_PROVIDER,
   composeProviderSelection,
@@ -131,7 +130,7 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
     const { overrides, environment, providers, activeProvider } = inputs;
     if (!args.trim()) {
       const resolved = resolveModelSettings(profileDefaults(ctx, agentKind), overrides, environment);
-      await sendManagedCard(ctx.channel, ctx.msg.chatId, modelFormCard({
+      await ctx.channel.sendCard(ctx.msg.chatId, modelFormCard({
         agentKind, scope: ctx.scope, scopeLabel: modelScopeLabel(ctx), overrides, resolved, environment, providers, activeProvider,
       }), replyOptions(ctx));
       return;

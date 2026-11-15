@@ -4,6 +4,7 @@ import type { ActiveRuns } from '../../runtime/active-runs';
 import type { ChatModeCache } from './chat-mode-cache';
 import { bridgeInput, type PendingQueue } from './pending-queue';
 import type { ProcessPool } from '../../runtime/process-pool';
+import { createLarkCommandChannel } from './command-channel';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import type { UserQuestions } from './question-cards';
 import { runCommandHandler, type CommandContext, type Controls } from '../../commands';
@@ -144,7 +145,7 @@ async function dispatchCardAction(deps: CardDispatchDeps): Promise<CardActionRes
     const msg = makeFakeMsg(deps.evt, threadId);
 
     const ctx: CommandContext = {
-      channel: deps.channel,
+      channel: createLarkCommandChannel(deps.channel),
       msg,
       scope,
       chatMode: mode,

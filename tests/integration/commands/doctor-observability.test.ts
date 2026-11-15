@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { NormalizedMessage } from '@larksuite/channel';
 import { ActiveRuns } from '../../../src/runtime/active-runs';
 import { ProcessPool } from '../../../src/runtime/process-pool';
-import { tryHandleCommand, type CommandContext, type Controls } from '../../../src/commands/index';
+import { tryHandleCommand, type Controls } from '../../../src/commands/index';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { closeLogger, configureLogger, flushLogger } from '../../../src/core/logger';
 import { RunExecutor } from '../../../src/runtime/run-executor';
@@ -13,6 +13,7 @@ import { WorkspaceStore } from '../../../src/workspace/store';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
 import { createFakeChannel } from '../../helpers/fake-channel';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile';
+import { fakeCommandChannel } from '../../helpers/fake-command-channel';
 
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -98,7 +99,7 @@ async function createHarness(): Promise<{
     logsDir,
     run: (content: string) =>
       tryHandleCommand({
-        channel: channel as unknown as CommandContext['channel'],
+        channel: fakeCommandChannel(channel),
         msg: message(content),
         scope: 'chat-1',
         chatMode: 'p2p',

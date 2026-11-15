@@ -19,9 +19,14 @@ export async function runCommandHandler(
 export { CommandRegistry } from './registry';
 export type {
   ChannelControls,
+  CommandChannel,
+  CommandContent,
   CommandContext,
+  CommandMessage,
+  CommandSendOptions,
   Controls,
   Handler,
   FeatureCommandContribution,
+  KnownChat,
   WorkflowControl,
 } from './types';

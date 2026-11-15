@@ -14,6 +14,7 @@ import { WorkspaceStore } from '../../../../src/workspace/store';
 import { createFakeChannel, type FakeChannel } from '../../../helpers/fake-channel';
 import { FakeAgentAdapter } from '../../../helpers/fake-agent';
 import { makeFakeCommentSurface } from '../../../helpers/fake-comment-surface';
+import { fakeCommandChannel } from '../../../helpers/fake-command-channel';
 
 const roots: string[] = [];
 
@@ -175,7 +176,7 @@ function commandContext(args: {
   content: string;
 }): CommandContext {
   return {
-    channel: args.channel as unknown as CommandContext['channel'],
+    channel: fakeCommandChannel(args.channel),
     msg: message(args.senderId, args.content),
     scope: 'chat-1',
     chatMode: 'p2p',

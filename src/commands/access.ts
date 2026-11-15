@@ -1,6 +1,5 @@
 import type { ProfileAccess } from '../config/profile-schema';
 import * as configOps from '../config/config-ops';
-import { fetchKnownChats } from '../channels/lark/lark-info';
 import type { CommandContext } from './types';
 import { reply } from './presentation';
 
@@ -13,7 +12,7 @@ export async function handleInvite(args: string, ctx: CommandContext): Promise<v
     const list = new Set(ctx.controls.profileConfig.access.allowedChats);
     let knownChats = ctx.controls.knownChats ?? [];
     if (knownChats.length === 0) {
-      knownChats = await fetchKnownChats(ctx.channel);
+      knownChats = await ctx.channel.knownChats?.() ?? [];
       ctx.controls.knownChats = knownChats;
     }
     let added = 0;

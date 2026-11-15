@@ -374,8 +374,11 @@ host with an event-stream frontend, so a feature of the turn itself is
 implemented once for every channel. Lark adds only its own implementation of
 those hooks (quotes, topic context, question cards, CardKit output). Its slash commands, management console, monitoring destinations
 and CardKit forms remain Lark features. A new IM does not need to emulate them or
-return a fake `LarkChannel`. They are not automatically exposed as generic IM
-commands by this change.
+return a fake `LarkChannel`: command handlers address a channel through
+`CommandChannel` (`src/commands/types.ts`), whose optional capabilities
+(`knownChats`, `messageLink`, `hasGroupMessageScope`, `createChat`, `stream`)
+decide which of those Lark commands its catalogue exposes. They are not
+automatically exposed as generic IM commands by this change.
 
 The Web integration tests deliberately throw if the Lark SDK is imported. They
 exercise no-credential startup, HTTP streaming, session persistence, channel and

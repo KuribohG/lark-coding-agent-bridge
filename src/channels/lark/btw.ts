@@ -1,6 +1,7 @@
+import type { LarkChannel } from '@larksuite/channel';
 import { larkDisplay } from './config';
 import { rewriteFileLinks } from '../../card/file-links';
-import type { CommandContext } from '../../commands/types';
+import type { CommandContext, CommandQuotedMessage } from '../../commands/types';
 import { capabilityForProfile } from '../../agent/backends';
 import { profileForAgentKind } from '../../runtime/execution-controller';
 import { modelRunArguments } from '../../agent/model-settings';
@@ -11,7 +12,6 @@ import { canUseDm, canUseGroup } from '../../policy/access';
 import { resolveRunModelSettings } from '../../runtime/model-settings';
 import { BtwStore } from '../../session/btw-store';
 import { startRunFlow } from '../../runtime/run-flow';
-import type { QuotedContext } from './quote';
 import { addWorkingReaction, removeReaction } from './reaction';
 
 const LABEL = '旁问 /btw';
@@ -21,9 +21,12 @@ export class BtwManager {
   private tails = new Map<string, Promise<void>>();
   private jobs = new Map<AbortController, string>();
   private closing = false;
-  constructor(private readonly store: BtwStore) {}
+  constructor(
+    private readonly store: BtwStore,
+    private readonly channel: LarkChannel,
+  ) {}
 
-  excludes(scope: string, msg: QuotedContext): boolean {
+  excludes(scope: string, msg: CommandQuotedMessage): boolean {
     return this.store.hasMessage(scope, msg.messageId) || /^\/btw(?:\s|$)/.test(msg.content.trim()) ||
       (msg.senderType === 'bot' && msg.content.replace(/^\*\*/, '').startsWith(LABEL));
   }
@@ -32,7 +35,7 @@ export class BtwManager {
     if (this.closing || this.store.hasMessage(ctx.scope, ctx.msg.messageId)) return;
     const controller = new AbortController();
     this.jobs.set(controller, ctx.scope);
-    const reaction = addWorkingReaction(ctx.channel, ctx.msg.messageId);
+    const reaction = addWorkingReaction(this.channel, ctx.msg.messageId);
     const persisted = this.store.markMessage(ctx.scope, ctx.msg.messageId);
     const previous = this.tails.get(ctx.scope) ?? Promise.resolve();
     const job = Promise.all([previous, persisted]).then(async () => {
@@ -46,7 +49,7 @@ export class BtwManager {
     }).finally(() => {
       this.jobs.delete(controller);
       // A slow reaction API must not hold up answers, cancellation, or the next question.
-      void reaction.then(id => { if (id) return removeReaction(ctx.channel, ctx.msg.messageId, id); });
+      void reaction.then(id => { if (id) return removeReaction(this.channel, ctx.msg.messageId, id); });
     });
     this.tails.set(ctx.scope, job);
     await job;
@@ -82,13 +85,13 @@ export class BtwManager {
     };
     let sent;
     try {
-      sent = await ctx.channel.send(ctx.msg.chatId, content, options);
+      sent = await this.channel.send(ctx.msg.chatId, content, options);
     } catch (err) {
       if (!isWithdrawnMessage(err) || this.closing) throw err;
       if (ctx.msg.threadId || ctx.chatMode === 'topic') {
         if (!ctx.msg.rootId || ctx.msg.rootId === ctx.msg.messageId) throw err;
         // Use reply directly: channel.send can fall back to creating a message outside the topic.
-        const response = await ctx.channel.rawClient.im.v1.message.reply({
+        const response = await this.channel.rawClient.im.v1.message.reply({
           path: { message_id: ctx.msg.rootId },
           data: {
             msg_type: 'post', reply_in_thread: true,
@@ -98,7 +101,7 @@ export class BtwManager {
         if (response.code || !response.data?.message_id) throw new Error(response.msg || 'missing topic reply message ID');
         sent = { messageId: response.data.message_id };
       } else {
-        sent = await ctx.channel.send(ctx.msg.chatId, content, {});
+        sent = await this.channel.send(ctx.msg.chatId, content, {});
       }
       log.info('btw', 'reply-target-fallback', { scope: ctx.scope, messageId: ctx.msg.messageId });
     }
@@ -133,7 +136,7 @@ export class BtwManager {
             context: {
               chatId: ctx.msg.chatId, chatType: ctx.msg.chatType, senderId: ctx.msg.senderId,
               threadId: ctx.msg.threadId, messageIds: [ctx.msg.messageId], source: 'im',
-              botOpenId: ctx.channel.botIdentity?.openId,
+              botOpenId: this.channel.botIdentity?.openId,
             },
             instructions: [
               '这是 /btw 旁问。父会话仅提供上下文，主任务由原进程继续执行；不要继续父任务、goal、计划或修改工作区。',

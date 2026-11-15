@@ -5,7 +5,7 @@ import { delimiter, dirname, join } from 'node:path';
 import type { NormalizedMessage } from '@larksuite/channel';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActiveRuns } from '../../../src/runtime/active-runs';
-import { tryHandleCommand, type CommandContext, type Controls } from '../../../src/commands/index';
+import { tryHandleCommand, type Controls } from '../../../src/commands/index';
 import { resolveAppPaths } from '../../../src/config/app-paths';
 import { getSecret, listSecretIds } from '../../../src/config/keystore';
 import {
@@ -19,6 +19,7 @@ import { WorkspaceStore } from '../../../src/workspace/store';
 import { applyConfig, loadProfileState } from '../../../src/ui/api';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
 import { createFakeChannel } from '../../helpers/fake-channel';
+import { fakeCommandChannel } from '../../helpers/fake-command-channel';
 
 vi.mock('../../../src/utils/feishu-auth', () => ({
   validateAppCredentials: vi.fn(async () => ({
@@ -382,7 +383,7 @@ async function createHarness(options: {
     channel,
     command: (content: string, formValue?: Record<string, unknown>) =>
       tryHandleCommand({
-        channel: channel as unknown as CommandContext['channel'],
+        channel: fakeCommandChannel(channel),
         msg: message(content),
         scope: 'chat-1',
         chatMode: 'p2p',

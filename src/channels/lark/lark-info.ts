@@ -1,10 +1,6 @@
 import type { LarkChannel } from '@larksuite/channel';
+import type { KnownChat } from '../../commands/types';
 import { log } from '../../core/logger';
-
-export interface KnownChat {
-  id: string;
-  name: string;
-}
 
 export async function fetchKnownChats(channel: LarkChannel): Promise<KnownChat[]> {
   try {

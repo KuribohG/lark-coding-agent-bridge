@@ -72,6 +72,28 @@ it('keeps lower layers from importing the hosts built on top of them', async () 
   expect(violations).toEqual([]);
 });
 
+it('keeps command handlers behind the shared channel transport', async () => {
+  // Commands address their channel through `CommandChannel`; everything that
+  // needs the Lark SDK stays in channels/lark/command-channel.ts so another
+  // front end can reuse the handlers.
+  const offenders = (await importsUnder('commands'))
+    .filter(edge => /^channels\//.test(edge.target))
+    .map(edge => `${edge.file} -> ${edge.target}`);
+  const root = fileURLToPath(new URL('../../../src/', import.meta.url));
+  for (const entry of await readdir(join(root, 'commands'), { recursive: true })) {
+    if (!entry.endsWith('.ts')) continue;
+    const source = ts.createSourceFile(
+      entry, await readFile(join(root, 'commands', entry), 'utf8'), ts.ScriptTarget.Latest, true);
+    for (const node of source.statements) {
+      if (ts.isImportDeclaration(node)
+        && (node.moduleSpecifier as ts.StringLiteral).text === '@larksuite/channel') {
+        offenders.push(`commands/${entry} -> @larksuite/channel`);
+      }
+    }
+  }
+  expect(offenders).toEqual([]);
+});
+
 it('keeps card rendering independent of channel and command implementations', async () => {
   const violations = (await importsUnder('card'))
     .filter(edge => !edge.typeOnly && /^(?:channels|commands)\//.test(edge.target) && edge.target !== 'commands/catalog')

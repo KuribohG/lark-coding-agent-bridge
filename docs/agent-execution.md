@@ -225,7 +225,12 @@ help rendering read this catalogue without loading command handlers. The typed
 handler table in `commands/index.ts` must cover every catalogue entry. Text and
 card commands use the same authorization and dispatch function; domain handlers
 live in the adjacent workspace, resume, config, account, access, lifecycle
-and doctor modules. Existing command context type exports remain valid.
+and doctor modules. Handlers see a channel only through `CommandChannel` in
+`src/commands/types.ts`: sending, managed cards, streams, chat lookup and links
+are named capabilities, and a channel that lacks one omits it so only the
+commands needing it are unavailable there. `channels/lark/command-channel.ts`
+is the Lark implementation; the architecture test keeps `src/commands` free of
+Lark types and of the Lark SDK.
 The `recent` handler reads the profile session catalog without spawning an
 agent; active runs are omitted and non-admin callers are limited to their
 current chat/topic scope.

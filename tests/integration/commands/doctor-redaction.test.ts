@@ -2,13 +2,14 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { NormalizedMessage } from '@larksuite/channel';
 import { ActiveRuns } from '../../../src/runtime/active-runs.js';
-import { tryHandleCommand, type CommandContext, type Controls } from '../../../src/commands/index.js';
+import { tryHandleCommand, type Controls } from '../../../src/commands/index.js';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema.js';
 import { SessionStore } from '../../../src/session/store.js';
 import { WorkspaceStore } from '../../../src/workspace/store.js';
 import { FakeAgentAdapter } from '../../helpers/fake-agent.js';
 import { createFakeChannel, type FakeChannel } from '../../helpers/fake-channel.js';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile.js';
+import { fakeCommandChannel } from '../../helpers/fake-command-channel';
 
 const cleanups: Array<() => Promise<void>> = [];
 
@@ -84,7 +85,7 @@ async function createHarness(): Promise<{
     controls,
     command: (content: string) =>
       tryHandleCommand({
-        channel: channel as unknown as CommandContext['channel'],
+        channel: fakeCommandChannel(channel),
         msg: message(content),
         scope: 'chat-1',
         chatMode: 'group',
