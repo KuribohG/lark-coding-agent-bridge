@@ -15,7 +15,7 @@ if(supplied){sessionStorage.setItem('bridge-chat-token',supplied);history.replac
 const token=sessionStorage.getItem('bridge-chat-token')||'';
 const key='bridge-chat:'+location.host;
 let saved;try{saved=JSON.parse(localStorage.getItem(key)||'null');}catch{}
-let conversationId=saved?.id||crypto.randomUUID(),transcript=saved?.messages||[],cursor=saved?.cursor||{},questions=saved?.questions||[],runId,working=false,following,resume=false;
+let conversationId=saved?.id||crypto.randomUUID(),transcript=saved?.messages||[],cursor=saved?.cursor||{},questions=saved?.questions||[],runId,working=false,following,resume=false,replayedThrough=0;
 // Runs are keyed by id, so an event replayed after a reconnect updates its entry instead of adding one.
 const views=new Map(),finished=new Set();
 function persist(){localStorage.setItem(key,JSON.stringify({id:conversationId,messages:transcript,cursor,questions}));}
@@ -42,11 +42,14 @@ function apply(update){
   if(update.type==='stream.opened'){
     // Another stream id means the server restarted: its runs are gone and the old cursor means nothing to it.
     if(cursor.stream!==update.stream){cursor={stream:update.stream,after:0};runId=undefined;busy(false);persist();}
+    // A freshly loaded page is sent the whole buffer; what it had already shown before must not be added twice.
+    if(!resume)replayedThrough=cursor.after||0;
     resume=true;return;}
   cursor.after=update.sequence;
   if(update.type==='run.started'){runId=update.runId;busy(true);viewOf(update.runId);}
   if(update.type==='run.state'){const view=viewOf(update.runId);view.message.text=stateText(update.state);view.content.textContent=view.message.text;const calls=update.state.blocks.filter(b=>b.kind==='tool');view.tools.hidden=!calls.length;view.progress.textContent=calls.map(b=>b.tool.name+' · '+b.tool.status).join('\n');
     if(update.state.terminal==='running'&&!finished.has(update.runId)){runId=update.runId;busy(true);}}
+  if(update.type==='notice'&&update.sequence>replayedThrough){transcript.push({role:'assistant',text:update.text});entry('assistant',update.text);}
   if(update.type==='run.question')ask(update);
   if(update.type==='run.question.settled')asked.get(update.id)?.(update.status);
   if(update.type==='run.finished'||update.type==='run.failed'){finished.add(update.runId);if(update.type==='run.failed')$('error').textContent=update.error;if(!runId||runId===update.runId){runId=undefined;busy(false);}}
@@ -66,13 +69,17 @@ async function follow(){
     if(abort.signal.aborted)return;
     $('status').textContent='连接中断，正在重连…';await new Promise(resolve=>setTimeout(resolve,1000));}}
 $('form').onsubmit=async event=>{event.preventDefault();$('error').textContent='';const text=$('prompt').value.trim();if(!text)return;
+  // Commands are answered by the bridge at any time, also while a run is going.
+  if(/^\/workflow(\s|$)/.test(text)){$('prompt').value='';transcript.push({role:'user',text});entry('user',text);
+    try{const result=await(await request('/api/command',{conversationId,text})).json();if(result.reply){transcript.push({role:'assistant',text:result.reply});entry('assistant',result.reply);}}
+    catch(e){$('error').textContent=e.message;}persist();return;}
   if(working){try{if(!runId)throw Error('任务正在启动，请稍后补充');const receipt=await(await request('/api/input',{conversationId,runId,text,messageId:crypto.randomUUID()})).json();if(receipt.status!=='accepted')throw Error(receipt.status==='unsupported'?'当前 agent 不支持运行中补充，请等待完成。':receipt.status==='unknown'?'补充消息是否收到尚未确认，请勿重复发送。':'当前任务已结束，请稍后重试');transcript.push({role:'user',text});entry('user',text);$('prompt').value='';persist();}catch(e){$('error').textContent=e.message;}return;}
   busy(true);$('prompt').value='';transcript.push({role:'user',text});entry('user',text);persist();
   // The run's own events may arrive before this response does.
   try{const started=await(await request('/api/send',{conversationId,text})).json();if(finished.has(started.runId)){if(!runId)busy(false);}else runId=started.runId;}
   catch(e){$('error').textContent=e.message;if(!runId)busy(false);}};
 $('stop').onclick=async()=>{try{if(!runId)return;await request('/api/stop',{conversationId,runId});}catch(e){$('error').textContent=e.message;}};
-$('new').onclick=()=>{conversationId=crypto.randomUUID();transcript=[];cursor={};questions=[];resume=false;views.clear();asked.clear();$('messages').replaceChildren();$('error').textContent='';persist();void refreshEngine();void follow();};
+$('new').onclick=()=>{conversationId=crypto.randomUUID();transcript=[];cursor={};questions=[];resume=false;replayedThrough=0;views.clear();asked.clear();$('messages').replaceChildren();$('error').textContent='';persist();void refreshEngine();void follow();};
 $('engine').onchange=async event=>{const select=event.currentTarget;const wanted=select.value;select.disabled=true;try{const result=await(await request('/api/engine',{conversationId,agent:wanted})).json();renderEngine({...result,options:[]});}catch(e){select.value=select.dataset.current||wanted;$('error').textContent=e.message;}finally{select.disabled=working;}};
 $('prompt').onkeydown=event=>{if(event.key==='Enter'&&(event.ctrlKey||event.metaKey)){event.preventDefault();$('form').requestSubmit();}};
 if(!token)$('error').textContent='请通过启动命令输出的链接打开此页面。';

@@ -120,13 +120,15 @@ describe('bundled Web page', () => {
     expect(page.el('status').textContent).toBe('就绪');
     expect(page.articles()[1]!.article.all('details')[0]!.all('pre')[0]!.textContent).toBe('Read · done');
     expect(page.el('error').textContent).toBe('');
+    await page.send('/workflow status');
+    expect(page.articles().slice(2).map(a => [a.role, a.text])).toEqual([['user', '/workflow status'], ['assistant', '当前会话未启用工作流。']]);
     await page.close();
 
     // The reloaded page replays the server's buffer on top of its saved transcript.
     const reloaded = await open(url, browser, false);
     await vi.waitFor(() => expect(reloaded.el('status').textContent).toBe('就绪'));
     await new Promise(resolve => setTimeout(resolve, 100));
-    expect(reloaded.articles().map(a => [a.role, a.text])).toEqual([['user', 'hello'], ['assistant', 'answer']]);
+    expect(reloaded.articles().map(a => a.text)).toEqual(['hello', 'answer', '/workflow status', '当前会话未启用工作流。']);
     expect(reloaded.el('send').textContent).toBe('发送');
   });
 

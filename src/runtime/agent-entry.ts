@@ -5,6 +5,11 @@ export type AgentEntry =
   | { kind: 'direct' }
   | { kind: 'workflow'; trigger: 'command' | 'event' };
 
+/** What a workflow wake sends in place of user input; `instructions` are the entry binding's. */
+export function workflowWakePrompt(instructions = ''): string {
+  return `<workflow_events source="bridge">子任务通知，请读取产物并确认事件，继续原工作流。这不是用户输入。\n${instructions}</workflow_events>`;
+}
+
 /** Entry-specific capabilities are prepared before the shared agent runner. */
 export function bindAgentEntry(entry: AgentEntry, scope: string, workflows?: WorkflowRuntime) {
   switch (entry.kind) {

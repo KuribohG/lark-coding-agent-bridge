@@ -89,7 +89,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
     return;
   }
   if (req.method === 'GET' && url.pathname === '/api/events') { await streamEvents(req, res, url, runtime); return; }
-  if (req.method !== 'POST' || !['/api/chat', '/api/send', '/api/stop', '/api/input', '/api/answer', '/api/engine'].includes(url.pathname)) {
+  if (req.method !== 'POST' || !['/api/chat', '/api/send', '/api/command', '/api/stop', '/api/input', '/api/answer', '/api/engine'].includes(url.pathname)) {
     sendJson(res, 404, { error: 'not found' }); return;
   }
   try {
@@ -127,6 +127,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
       sendJson(res, 200, await runtime.answerQuestion(identity, required('requestId'), answerLists(data.answers))); return;
     }
     const prompt = required('text');
+    if (url.pathname === '/api/command') {
+      const command = /^\/workflow(?:\s+([\s\S]*))?$/.exec(prompt.trim());
+      if (!command) throw new HttpError(400, 'unknown command');
+      const reply = await runtime.workflowCommand(identity, command[1] ?? '');
+      sendJson(res, 200, reply === undefined ? {} : { reply });
+      return;
+    }
     if (url.pathname === '/api/send') {
       const run = await runtime.submit({ ...identity, prompt });
       if (run.ok) sendJson(res, 200, { runId: run.runId });

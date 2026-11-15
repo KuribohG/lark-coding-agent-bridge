@@ -11,7 +11,9 @@ export type ConversationEvent =
   | { type: 'run.question'; runId: string; id: string; mode: AgentQuestionMode; questions: readonly AgentQuestion[] }
   | { type: 'run.question.settled'; runId: string; id: string; status: string }
   | { type: 'run.finished'; runId: string; result: RunResult }
-  | { type: 'run.failed'; runId: string; error: string };
+  | { type: 'run.failed'; runId: string; error: string }
+  /** Something the bridge tells the conversation outside any run, such as a workflow's plan or notice. */
+  | { type: 'notice'; text: string };
 
 export type SequencedConversationEvent = ConversationEvent & { sequence: number };
 
@@ -53,7 +55,8 @@ export class ConversationEvents {
     const stream = this.stream(scope);
     const sequenced = { ...event, sequence: ++this.sequence };
     if (event.type === 'run.state') {
-      const stale = stream.events.findIndex(old => old.type === 'run.state' && old.runId === event.runId);
+      const runId = event.runId;
+      const stale = stream.events.findIndex(old => old.type === 'run.state' && old.runId === runId);
       if (stale >= 0) stream.events.splice(stale, 1);
     }
     stream.events.push(sequenced);

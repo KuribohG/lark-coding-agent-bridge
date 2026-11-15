@@ -66,6 +66,7 @@ export async function runWeb(options: RunWebOptions): Promise<void> {
     stateDir,
     namespace: 'web',
     systemPrompt: WEB_SYSTEM_PROMPT,
+    workflows: true,
     port,
     display: doc ? resolveChannels(doc, profile).web : undefined,
   }));

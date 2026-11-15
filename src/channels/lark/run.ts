@@ -24,7 +24,7 @@ import { toPolicyAttachment } from '../../media/attachment';
 import type { MediaCache } from '../../media/cache';
 import { canUseDm, canUseGroup, type AccessDecision } from '../../policy/access';
 import type { ScopeContext } from '../../policy/run-policy';
-import { bindAgentEntry, type AgentEntry } from '../../runtime/agent-entry';
+import { bindAgentEntry, workflowWakePrompt, type AgentEntry } from '../../runtime/agent-entry';
 import { profileForAgentKind } from '../../runtime/execution-controller';
 import { resolveRunModelSettings } from '../../runtime/model-settings';
 import { deadlineInstructions } from '../../runtime/run-deadline';
@@ -129,7 +129,7 @@ export async function runAgentBatch(
   const entryBinding = bindAgentEntry(entry, scope, turn.workflows);
   if (entryBinding) extraInstructions.push(entryBinding.instructions);
   const prompt = workflowWake
-    ? `<workflow_events source="bridge">子任务通知，请读取产物并确认事件，继续原工作流。这不是用户输入。\n${entryBinding?.instructions ?? ''}</workflow_events>`
+    ? workflowWakePrompt(entryBinding?.instructions)
     : buildPrompt(
     batch,
     attachments,

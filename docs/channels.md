@@ -268,6 +268,19 @@ dense: superseded state snapshots are dropped and the buffer keeps the latest
 it; after a restart the stream id changes and the buffer starts empty, so a
 client keeps its own transcript and treats a new id as a fresh stream.
 
+`{ type: 'notice', text }` is something the bridge tells the conversation
+outside any run, such as a workflow's plan.
+
+With `workflows: true` the runtime hosts workflows for its conversations:
+`runtime.workflowCommand(identity, args)` handles `/workflow <args>` and returns
+the reply to show, or `undefined` when it queued a turn. Workflow turns wait
+behind the conversation's active run, and a worker's report wakes the main
+session on its own; both appear in the event stream like any submitted run.
+Workflow state lives in `workflows.sqlite` in the runtime's state directory.
+These hosts keep no per-conversation model choice, so a workflow runs with the
+engine profile's model. The `web` command enables this; Web accepts the command
+as `POST /api/command` (`{ conversationId, text: "/workflow …" }`).
+
 Web exposes this as `GET /api/events?conversationId=…[&stream=…&after=…]`
 (NDJSON, open until the client disconnects) and `POST /api/send`
 (`{ conversationId, text }` returning `{ runId }`). Stop, supplemental input,

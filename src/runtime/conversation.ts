@@ -1,15 +1,21 @@
+import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { sendRunInput } from '../agent/execution';
 import type { AgentInput, AgentInputReceipt, AgentQuestion, AgentQuestionMode } from '../agent/types';
 import { ActiveRuns, stopRun } from './active-runs';
+import { bindAgentEntry, workflowWakePrompt, type AgentEntry } from './agent-entry';
 import { ConversationEvents, type ConversationCursor, type ConversationStreamEvent } from './conversation-events';
 import { RunStopped } from './errors';
 import { FollowupRouter } from './followup';
 import { QuestionBroker } from './questions';
+import { PendingQueue, type PendingItem } from './pending-queue';
 import { ProcessPool } from './process-pool';
+import { ConversationTurns } from './turns';
+import { WorkflowHost } from './workflow-host';
 import { startTurn, type StartedTurn, type TurnStores } from './turn';
 import type { AgentKind, RunProfileConfig } from '../config/profile-schema';
+import { getAgentStopGraceMs, getRunIdleTimeoutMs } from '../config/schema';
 import type { AgentAttachment } from '../policy/run-policy';
 import { RunExecutor } from './run-executor';
 import type { RunOutputPlugin } from './run-output';
@@ -41,7 +47,16 @@ export interface ConversationRuntimeOptions {
   systemPrompt?: string;
   /** What of a run's state this host shows in its conversation event streams. */
   filterState?: (state: RunState) => RunState;
+  /**
+   * Let conversations run workflows: `workflowCommand`, workflow turns queued
+   * behind the active run, and wakes of the main session when workers report.
+   * Their turns and notices are published to the conversation event streams.
+   */
+  workflows?: boolean;
 }
+
+/** A turn the runtime starts itself, queued until the conversation is free. */
+type QueuedInput = ConversationIdentity & PendingItem;
 
 export interface ConversationInput extends ConversationIdentity {
   prompt: string;
@@ -66,6 +81,13 @@ export interface ConversationStatus {
 
 type TurnExecution = StartedTurn['execution'];
 
+/** How the runtime itself started a turn; absent for a person's message. */
+interface StartedBy {
+  entry?: AgentEntry;
+  /** The caller holds the conversation's turn lane for this run. */
+  claimed?: boolean;
+}
+
 export async function createConversationRuntime(options: ConversationRuntimeOptions): Promise<ConversationRuntime> {
   await mkdir(options.stateDir, { recursive: true, mode: 0o700 });
   const runtime = new ConversationRuntime(options);
@@ -86,6 +108,9 @@ export class ConversationRuntime {
   private readonly outputs = new Set<Promise<void>>();
   private readonly questions: QuestionBroker<ConversationQuestionSink>;
   private readonly events = new ConversationEvents();
+  private readonly queue?: PendingQueue<QueuedInput>;
+  private readonly turns?: ConversationTurns;
+  private readonly workflows?: WorkflowHost<ConversationIdentity>;
   private closed = false;
 
   constructor(private readonly options: ConversationRuntimeOptions) {
@@ -96,7 +121,7 @@ export class ConversationRuntime {
     this.catalog = new SessionCatalog(join(options.stateDir, 'sessions.catalog.json'));
     this.workspaces = new WorkspaceStore(join(options.stateDir, 'workspaces.json'));
     const executor = new RunExecutor({
-      resolveAgent: scope => this.execution.get(scope),
+      resolveAgent: (scope, agentKind) => this.execution.get(scope, agentKind),
       resolveModelProvider: (agentKind, model) => this.execution.resolveModelProvider(agentKind, model),
       activeRuns: this.active,
       pool: new ProcessPool(() => Math.max(1, options.config.preferences.maxConcurrentRuns ?? 4)),
@@ -115,10 +140,49 @@ export class ConversationRuntime {
       delivery: { prompt: async (_request, content) => content },
       activeRuns: this.active, followups: new FollowupRouter(), catalog: this.catalog, isTimed: () => false,
     });
+    if (!options.workflows) return;
+    const queue = this.queue = new PendingQueue<QueuedInput>(0, (scope, batch) => {
+      const turn = turns.claim(scope);
+      void turn.run(signal => this.runQueued(batch, signal)).catch(err => log.fail('conversation', err, { scope, step: 'queued-turn' }));
+    });
+    const turns = this.turns = new ConversationTurns(queue, this.active);
+    const profileFor = (agentKind: AgentKind) =>
+      profileForAgentKind(options.configForAgent?.(agentKind) ?? options.config, agentKind);
+    this.workflows = new WorkflowHost<ConversationIdentity>({
+      executor, sessions: this.sessions, sessionCatalog: this.catalog, workspaces: this.workspaces,
+      stateDir: options.stateDir, turns, resolveAgentKind: scope => this.execution.kindFor(scope),
+      settings: {
+        profile: options.namespace, profileFor,
+        // These hosts keep no per-conversation model choice: a workflow runs with the engine profile's.
+        modelSettings: async (_scope, agentKind, patch) => {
+          const { model, reasoningEffort } = profileFor(agentKind).preferences;
+          return { model, reasoningEffort, ...patch, modelSource: 'profile', effortSource: 'profile' };
+        },
+        stallMs: () => getRunIdleTimeoutMs(options.config),
+        stopGraceMs: () => getAgentStopGraceMs(options.config),
+      },
+      frontend: {
+        accepts: origin => typeof (origin as Partial<ConversationIdentity>).actorId === 'string'
+          && typeof (origin as Partial<ConversationIdentity>).conversationId === 'string',
+        reply: async (origin, text) => { this.events.publish(this.scopeKey(origin), { type: 'notice', text }); },
+        // The origin was authorized when it was recorded, and is authorized again by every turn started for it.
+        conversation: origin => ({ scope: { source: 'channel', channelId: options.channelId, ...origin },
+          access: { ok: true, reason: 'allowed-user' } }),
+        queue: (scope, origin, content, agentEntry) =>
+          queue.push(scope, { ...origin, messageId: randomUUID(), content, agentEntry }) !== undefined,
+        dispatch: async (_scope, [origin], { signal, entry }) => {
+          if (!origin) return;
+          const run = await this.publishRun({ ...origin, prompt: '', signal }, { entry, claimed: true });
+          if (!run.ok) throw new Error(run.rejectReason.userVisible);
+          await run.done;
+        },
+      },
+    });
   }
 
   async load(): Promise<void> {
     await Promise.all([this.sessions.load(), this.catalog.load(), this.workspaces.load()]);
+    await this.workflows?.start();
   }
 
   get defaultAgentKind(): AgentKind {
@@ -132,9 +196,12 @@ export class ConversationRuntime {
     return pending;
   }
 
-  private async startRun(input: ConversationInput, output: RunOutputPlugin) {
+  private async startRun(input: ConversationInput, output: RunOutputPlugin, started: StartedBy = {}) {
     const scopeId = await this.authorizedScope(input);
-    if (typeof input.prompt !== 'string' || !input.prompt.trim()) throw new Error('prompt is required');
+    const entry = started.entry ?? { kind: 'direct' };
+    // A workflow wake carries no user input.
+    const wake = entry.kind === 'workflow' && entry.trigger === 'event';
+    if (!wake && (typeof input.prompt !== 'string' || !input.prompt.trim())) throw new Error('prompt is required');
     const controller = new AbortController();
     const abort = () => controller.abort(input.signal?.reason);
     input.signal?.addEventListener('abort', abort, { once: true });
@@ -147,18 +214,31 @@ export class ConversationRuntime {
     const config = this.runConfigFor(scopeId);
     const capability = this.execution.capabilityFor(scopeId);
     const agent = this.execution.get(scopeId);
+    let binding: ReturnType<typeof bindAgentEntry>;
     try {
+      // The latest sender of a conversation is who its workflow answers to and is authorized by.
+      if (!wake) this.workflows?.origins.set(scopeId, { actorId: input.actorId, conversationId: input.conversationId });
+      binding = bindAgentEntry(entry, scopeId, this.workflows?.current);
+      const prompt = wake ? workflowWakePrompt(binding?.instructions)
+        : binding ? `<bridge_instructions>\n${binding.instructions}\n</bridge_instructions>\n\n${input.prompt}` : input.prompt;
       const turn = await startTurn(this.stores, {
         scopeId, scope: { source: 'channel', channelId: this.options.channelId,
           actorId: input.actorId, conversationId: input.conversationId },
-        prompt: input.prompt, systemPrompt: this.options.systemPrompt ?? '',
+        prompt, systemPrompt: this.options.systemPrompt ?? '', env: binding?.env,
         signal: controller.signal, deadlineAt: input.deadlineAt,
         attachments: input.attachments ?? [], access: { ok: true, reason: 'allowed-user' },
         agent, capability, profileConfig: config, userQuestions: Boolean(input.questions),
       });
-      if (!turn.ok) { dispose(); return turn; }
+      if (!turn.ok) { binding?.release(); dispose(); return turn; }
       const { track, present, ...flow } = turn;
-      const sessionDone = track({ kind: 'message', summary: input.prompt.slice(0, 180) });
+      if (binding) {
+        void flow.execution.result.finally(binding.release);
+        binding.onStarted();
+      }
+      // A turn that claimed the conversation's lane already holds its queue.
+      const queue = started.claimed ? undefined : this.queue;
+      queue?.block(scopeId);
+      const sessionDone = track(wake ? { kind: 'internal' } : { kind: 'message', summary: input.prompt.slice(0, 180) });
       const asked = input.questions ? this.relayQuestions(flow.execution, input.questions, {
         input, cancelled: () => controller.signal.aborted,
         identity: { scopeId, agentId: capability.agentId, cwdRealpath: flow.cwdRealpath,
@@ -167,12 +247,12 @@ export class ConversationRuntime {
       const rendered = present(output);
       const done = Promise.allSettled([rendered, sessionDone, asked]).then(results => {
         for (const result of results) if (result.status === 'rejected') throw result.reason;
-      }).finally(dispose);
+      }).finally(() => { dispose(); queue?.unblock(scopeId); });
       this.outputs.add(done);
       // Keep rejection observable on `done`, while close() tracks all active outputs.
       void done.then(() => this.outputs.delete(done), () => this.outputs.delete(done));
       return { ...flow, done };
-    } catch (error) { dispose(); throw error; }
+    } catch (error) { binding?.release(); dispose(); throw error; }
   }
 
   /**
@@ -181,6 +261,11 @@ export class ConversationRuntime {
    * not depend on any subscriber being connected.
    */
   async submit(input: Omit<ConversationInput, 'questions' | 'signal'>) {
+    const run = await this.publishRun(input);
+    return run.ok ? { ok: true as const, runId: run.runId } : run;
+  }
+
+  private async publishRun(input: Omit<ConversationInput, 'questions'>, started: StartedBy = {}) {
     const scope = await this.authorizedScope(input);
     const publish = this.events.publish.bind(this.events, scope);
     const filter = this.options.filterState ?? (state => state);
@@ -198,16 +283,40 @@ export class ConversationRuntime {
         });
       },
     };
-    const run = await this.start({ ...input, questions: {
+    const pending = this.startRun({ ...input, questions: {
       ask: async question => { publish({ type: 'run.question', ...question }); },
       settled: async question => { publish({ type: 'run.question.settled', ...question }); },
-    } }, output);
+    } }, output, started);
+    this.starts.add(pending);
+    void pending.then(() => this.starts.delete(pending), () => this.starts.delete(pending));
+    const run = await pending;
     if (!run.ok) return run;
     const runId = run.execution.runId;
-    void run.done.then(
+    const done = run.done.then(
       async () => { publish({ type: 'run.finished', runId, result: await run.execution.result }); },
       () => { publish({ type: 'run.failed', runId, error: 'conversation failed' }); });
-    return { ok: true as const, runId };
+    return { ok: true as const, runId, done };
+  }
+
+  /** A queued turn, run while it holds the conversation's lane; a rejection is told to the conversation. */
+  private async runQueued(batch: QueuedInput[], signal: AbortSignal): Promise<void> {
+    for (const item of batch) {
+      const identity = { actorId: item.actorId, conversationId: item.conversationId };
+      const run = await this.publishRun({ ...identity, prompt: item.content, signal }, { entry: item.agentEntry, claimed: true });
+      if (run.ok) await run.done;
+      else this.events.publish(this.scopeKey(identity), { type: 'notice', text: run.rejectReason.userVisible });
+    }
+  }
+
+  /**
+   * `/workflow <args>` for this conversation. Returns what to show the person;
+   * undefined when the command queued a turn whose run will appear in the event stream.
+   */
+  async workflowCommand(identity: ConversationIdentity, args: string): Promise<string | undefined> {
+    const scope = await this.authorizedScope(identity);
+    const control = this.workflows?.control();
+    if (!control) return '当前会话未启用工作流。';
+    return control.command(scope, args, { actorId: identity.actorId, conversationId: identity.conversationId });
   }
 
   /**
@@ -297,10 +406,15 @@ export class ConversationRuntime {
   async close(): Promise<void> {
     this.closed = true;
     this.questions.close();
+    this.turns?.close();
     for (const controller of this.pending) controller.abort(new RunStopped('shutdown'));
     await this.active.stopAll('shutdown');
     await Promise.allSettled(this.starts);
     await Promise.allSettled(this.outputs);
+    await this.turns?.settled();
+    const workflows = this.workflows?.close();
+    await Promise.allSettled([workflows?.progress, workflows?.runtime]);
+    this.queue?.cancelAll();
     await Promise.all([this.sessions.flush(), this.catalog.flush(), this.workspaces.flush()]);
   }
 
@@ -313,6 +427,10 @@ export class ConversationRuntime {
       throw new Error('conversation access denied');
     }
     if (this.closed) throw new Error('runtime is closed');
+    return this.scopeKey(identity);
+  }
+
+  private scopeKey(identity: ConversationIdentity): string {
     return `channel:${JSON.stringify([this.options.channelId, this.options.namespace, identity.actorId, identity.conversationId])}`;
   }
 

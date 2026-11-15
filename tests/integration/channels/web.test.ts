@@ -270,6 +270,55 @@ describe('channel-independent conversations', () => {
     await expect(h.runtime.submit({ ...identity, prompt: 'no' })).rejects.toThrow('denied');
   });
 
+  it('starts a workflow turn from a command, with the workflow tool bound to the conversation', async () => {
+    const h = await harness(); await h.runtime.close();
+    const runtime = await createConversationRuntime({ ...h.options, stateDir: join(h.tmp.root, 'workflows'), workflows: true });
+    cleanups.push(() => runtime.close());
+    expect(await runtime.workflowCommand(identity, 'status')).toBe('当前没有工作流。');
+    expect(await runtime.workflowCommand(identity, 'start')).toContain('用法');
+    h.authorize.mockResolvedValueOnce(false);
+    await expect(runtime.workflowCommand(identity, 'status')).rejects.toThrow('denied');
+
+    const live: ConversationStreamEvent[] = [];
+    (await runtime.subscribe(identity, {}, event => { live.push(event); }));
+    expect(await runtime.workflowCommand(identity, 'start build the thing')).toBeUndefined();
+    await vi.waitFor(() => expect(live.at(-1)).toMatchObject({ type: 'run.finished', result: 'completed' }));
+    const options = h.agent.runOptions[0]!;
+    expect(options.prompt).toContain('build the thing');
+    expect(options.prompt).toContain('<bridge_instructions>');
+    expect(Object.keys(options.env ?? {}).length).toBeGreaterThan(0);
+
+    // An ordinary message of a conversation without a workflow is passed through unchanged.
+    h.agent.setEvents(events);
+    const run = await runtime.submit({ ...identity, prompt: 'plain question' });
+    if (!run.ok) throw Error('expected started');
+    await vi.waitFor(() => expect(live.at(-1)).toMatchObject({ type: 'run.finished', runId: run.runId }));
+    expect(h.agent.runOptions[1]).toMatchObject({ prompt: 'plain question' });
+    expect(h.agent.runOptions[1]!.env).toBeUndefined();
+  });
+
+  it('queues a workflow turn behind the active run and reports workflows as off when not enabled', async () => {
+    const h = await harness();
+    expect(await h.runtime.workflowCommand(identity, 'status')).toBe('当前会话未启用工作流。');
+    await h.runtime.close();
+    const held = askingAgent();
+    const runtime = await createConversationRuntime({ ...h.options, stateDir: join(h.tmp.root, 'queued'), workflows: true,
+      execution: new FixedExecutionController(held.agent, h.options.config) });
+    cleanups.push(() => runtime.close());
+    const live: ConversationStreamEvent[] = [];
+    await runtime.subscribe(identity, {}, event => { live.push(event); });
+    const first = await runtime.submit({ ...identity, prompt: 'first' });
+    if (!first.ok) throw Error('expected started');
+    await vi.waitFor(() => expect(live.some(event => event.type === 'run.question')).toBe(true));
+    expect(await runtime.workflowCommand(identity, 'start later')).toBeUndefined();
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(held.runOptions).toHaveLength(1);
+    const question = live.find(event => event.type === 'run.question') as { id: string };
+    await runtime.answerQuestion(identity, question.id, [['A']]);
+    await vi.waitFor(() => expect(held.runOptions).toHaveLength(2));
+    expect((held.runOptions[1] as { prompt: string }).prompt).toContain('later');
+  });
+
   it('does not offer the question tool to a run whose host cannot show questions', async () => {
     const h = await harness();
     await run(h.runtime);
@@ -389,6 +438,10 @@ describe('standalone Web plugin', () => {
     // The stream carries what this host is configured to show.
     const shown = first.filter(event => event.type === 'run.state').at(-1) as { state: { blocks: Array<{ kind: string }> } };
     expect(shown.state.blocks.every(block => block.kind !== 'tool')).toBe(true);
+
+    expect((await fetch(`${url.origin}/api/command`, { method: 'POST', headers, body: JSON.stringify({ conversationId: 'browser', text: 'hello' }) })).status).toBe(400);
+    const command = await fetch(`${url.origin}/api/command`, { method: 'POST', headers, body: JSON.stringify({ conversationId: 'browser', text: '/workflow status' }) });
+    expect(await command.json()).toEqual({ reply: '当前会话未启用工作流。' });
 
     const again = await follow(`&stream=${first[0]!.stream}&after=${first.at(-1)!.sequence}`, event => event.type === 'stream.opened');
     expect(again).toHaveLength(1);
