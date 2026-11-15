@@ -230,6 +230,16 @@ and supplemental input require the current run ID. Unknown input delivery is
 reported as unknown and must not be automatically replayed. The runtime retains
 the existing concurrency limit, cancellation, deadline and retry machinery.
 
+To let the agent ask the person a question, pass a `questions` sink with the
+input. `ask({ id, mode, questions })` shows the question; `settled({ id, status })`
+replaces its inputs with the outcome. The host returns the reply with
+`runtime.answerQuestion(identity, id, answers)`, one list of answers per
+question, and shows the returned `message` whether or not it was taken. A
+`blocking` question holds the run until it is answered, declined after 30
+minutes, or the run stops; an `async` one arrives as follow-up input. Without a
+sink the agent is not offered the question tool. Web streams these as
+`run.question` and `run.question.settled` and accepts `POST /api/answer`.
+
 Call `runtime.close()` on plugin shutdown. It rejects new work, aborts queued and
 active requests, waits for output consumers, then flushes session state. Each
 runtime needs an exclusively owned state directory. For a multi-user Web host,

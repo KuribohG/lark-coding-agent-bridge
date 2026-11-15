@@ -52,8 +52,11 @@ export interface QuestionPresenter<O = unknown> {
 export interface QuestionAnswerDelivery<O = unknown> {
   /** The prompt that carries the answer into the run as follow-up input. */
   prompt(request: QuestionRequest<O>, content: string, anchorId: string): Promise<string>;
-  /** Queue the answer as a later turn of the same conversation; false when it could not be queued. */
-  queue(request: QuestionRequest<O>, content: string, anchorId: string): Promise<boolean>;
+  /**
+   * Queue the answer as a later turn of the same conversation; false when it
+   * could not be queued. Absent on channels that keep no queue of later turns.
+   */
+  queue?(request: QuestionRequest<O>, content: string, anchorId: string): Promise<boolean>;
 }
 
 export interface QuestionAnswerInput<O = unknown> {
@@ -235,10 +238,12 @@ export class QuestionBroker<O = unknown> {
     if (result === 'cancelled' || this.deps.activeRuns.generation(scope) !== request.generation) {
       return '当前任务已停止，答案未另起任务执行。';
     }
+    const queue = this.deps.delivery.queue;
+    if (!queue) return '任务已不再等待这个回答，答案没有送入；请把你的选择作为新消息发送。';
     if (!request.allowQueue || this.deps.isTimed(scope)) return '限时任务已结束或无法接收回答，请在原话题手动继续。';
     if (!this.sameSession(request, identity)) return '会话已切换，答案未发送；请在原话题重新说明你的选择。';
     // The queued turn replies to this message, so it carries the anchor, not the input key.
-    return await this.deps.delivery.queue(request, content, anchorId)
+    return await queue(request, content, anchorId)
       ? `已提交：${summary}\n已排队，将在原会话继续处理。`
       : `已提交：${summary}\n待处理队列已满，回答没有排入后续任务。`;
   }

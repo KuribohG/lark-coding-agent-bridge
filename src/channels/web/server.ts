@@ -83,7 +83,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
     }
     return;
   }
-  if (req.method !== 'POST' || !['/api/chat', '/api/stop', '/api/input', '/api/engine'].includes(url.pathname)) {
+  if (req.method !== 'POST' || !['/api/chat', '/api/stop', '/api/input', '/api/answer', '/api/engine'].includes(url.pathname)) {
     sendJson(res, 404, { error: 'not found' }); return;
   }
   try {
@@ -117,6 +117,9 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
         text: required('text'), messageId: required('messageId'),
       })); return;
     }
+    if (url.pathname === '/api/answer') {
+      sendJson(res, 200, await runtime.answerQuestion(identity, required('requestId'), answerLists(data.answers))); return;
+    }
     const prompt = required('text');
     const controller = new AbortController();
     const disconnected = () => { if (!res.writableFinished) controller.abort(); };
@@ -128,7 +131,13 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
       if (!res.write(`${JSON.stringify(event)}\n`)) await once(res, 'drain', { signal: controller.signal });
     };
     try {
-      const run = await runtime.start({ ...identity, prompt, signal: controller.signal }, createWebRunOutput(write, display));
+      // A question outlives a client that went away; the answer endpoint then reports it unanswered.
+      const questions = {
+        ask: (question: object) => write({ type: 'run.question', ...question }),
+        settled: (question: object) => write({ type: 'run.question.settled', ...question }).catch(() => {}),
+      };
+      const run = await runtime.start({ ...identity, prompt, signal: controller.signal, questions },
+        createWebRunOutput(write, display));
       if (!run.ok) { sendJson(res, 409, { error: run.rejectReason.userVisible }); return; }
       await run.done;
       await write({ type: 'run.finished', runId: run.execution.runId, result: await run.execution.result });
@@ -143,6 +152,15 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
       { error: error instanceof Error ? error.message : 'invalid request' });
     else throw error;
   }
+}
+
+/** One list of answers per question; the runtime checks that it fits the request. */
+function answerLists(value: unknown): string[][] {
+  if (!Array.isArray(value) || value.length > 32 ||
+      !value.every(item => Array.isArray(item) && item.length <= 64 && item.every(answer => typeof answer === 'string'))) {
+    throw new HttpError(400, 'invalid answers');
+  }
+  return value as string[][];
 }
 
 function boundedValue(value: unknown, key: string): string {

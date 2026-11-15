@@ -11,7 +11,7 @@ import type {
   AgentKind,
   RunProfileConfig,
 } from '../../../src/config/profile-schema';
-import type { AgentAdapter, AgentBotIdentity, AgentEvent } from '../../../src/agent/types';
+import type { AgentAdapter, AgentBotIdentity, AgentEvent, AgentQuestionAnswer } from '../../../src/agent/types';
 import { FakeAgentAdapter } from '../../helpers/fake-agent';
 import { createTmpProfile } from '../../helpers/tmp-profile';
 import { capabilityForProfile } from '../../../src/agent/backends';
@@ -108,6 +108,30 @@ async function switchableHarness() {
   return { tmp, claude, pi, options, runtime };
 }
 
+/** Asks one blocking question after reporting its session, and finishes once it is answered. */
+function askingAgent() {
+  let answered!: (answer: AgentQuestionAnswer) => void;
+  const answer = new Promise<AgentQuestionAnswer>(resolve => { answered = resolve; });
+  const answerUserInput = vi.fn(async (_id: string, value: AgentQuestionAnswer) => { answered(value); return 'accepted' as const; });
+  const runOptions: { userQuestions?: boolean }[] = [];
+  const capabilities = { input: 'active-turn', finalAnswer: 'stream' } as const;
+  const agent: AgentAdapter = { id: 'claude', displayName: 'asking', capabilities, isAvailable: async () => true,
+    prepareRun: async options => {
+      runOptions.push(options);
+      return preparedRun({}, () => ({ runId: options.runId, capabilities, answerUserInput,
+        events: (async function* (): AsyncGenerator<AgentEvent> {
+          yield { type: 'system', sessionId: 'session-ask' };
+          yield { type: 'user_input', id: 'native-1', mode: 'blocking', sessionId: 'session-ask',
+            questions: [{ question: 'Which?', options: [{ label: 'A' }, { label: 'B' }] }] };
+          await answer;
+          yield { type: 'final_text', content: 'done' };
+          yield { type: 'done', terminationReason: 'normal' };
+        })(),
+        stop: async () => answered({ declined: 'stopped' }), waitForExit: async () => true }));
+    } };
+  return { agent, answerUserInput, runOptions };
+}
+
 describe('channel-independent conversations', () => {
   it('streams filtered JSON, final text exactly once, and resumes after reopening without Lark credentials', async () => {
     const h = await harness();
@@ -187,6 +211,37 @@ describe('channel-independent conversations', () => {
     expect(received.at(-1)).toMatchObject({ type: 'run.state', state: { terminal: 'interrupted' } });
   });
 
+  it('shows a run\'s question through its sink and takes the answer only from the person asked', async () => {
+    const h = await harness(); await h.runtime.close();
+    const asking = askingAgent();
+    const runtime = await createConversationRuntime({ ...h.options, execution: new FixedExecutionController(asking.agent, h.options.config) }); cleanups.push(() => runtime.close());
+    const ask = vi.fn(async (_question: { id: string }) => {});
+    const settled = vi.fn(async (_question: { id: string; status: string }) => {});
+    const result = await runtime.start({ ...identity, prompt: 'choose', questions: { ask, settled } }, createWebRunOutput(async () => {}));
+    if (!result.ok) throw Error('expected active run');
+    await vi.waitFor(() => expect(ask).toHaveBeenCalledOnce());
+    expect(asking.runOptions[0]?.userQuestions).toBe(true);
+    expect(ask.mock.calls[0]![0]).toMatchObject({ mode: 'blocking', questions: [{ question: 'Which?' }] });
+    const id = ask.mock.calls[0]![0].id;
+
+    expect(await runtime.answerQuestion({ ...identity, actorId: 'bob' }, id, [['A']])).toMatchObject({ settled: false });
+    expect(await runtime.answerQuestion(identity, id, [])).toMatchObject({ settled: false });
+    expect(asking.answerUserInput).not.toHaveBeenCalled();
+
+    expect(await runtime.answerQuestion(identity, id, [['A']])).toMatchObject({ settled: true, message: expect.stringContaining('A') });
+    expect(asking.answerUserInput).toHaveBeenCalledWith('native-1', { answers: [['A']] });
+    expect(settled).toHaveBeenCalledWith({ id, status: expect.stringContaining('A') });
+    await result.done;
+    expect(await result.execution.result).toBe('completed');
+    expect(await runtime.answerQuestion(identity, id, [['B']])).toMatchObject({ settled: false });
+  });
+
+  it('does not offer the question tool to a run whose host cannot show questions', async () => {
+    const h = await harness();
+    await run(h.runtime);
+    expect(h.agent.runOptions[0]?.userQuestions).toBeFalsy();
+  });
+
   it('stops execution when a transport fails instead of detaching it', async () => {
     const h = await harness();
     const result = await h.runtime.start({ ...identity, prompt: 'hello' }, createWebRunOutput(async () => { throw Error('socket closed'); }));
@@ -231,6 +286,39 @@ describe('standalone Web plugin', () => {
     expect(messages[0].scope).not.toContain('untrusted');
     expect(messages.at(-1)).toMatchObject({ type: 'run.finished', result: 'completed' });
     expect(h.agent.runOptions[0]?.systemPrompt).toBe(h.options.systemPrompt);
+  });
+
+  it('streams a question to the browser and continues the run with the posted answer', async () => {
+    const h = await harness(); await h.runtime.close();
+    const asking = askingAgent();
+    const host = new ChannelHost(); cleanups.push(() => host.close());
+    const web = await host.connect(createWebPlugin({ ...h.options, stateDir: join(h.tmp.root, 'ask'),
+      execution: new FixedExecutionController(asking.agent, h.options.config) }));
+    const url = new URL(web.url);
+    const headers = { 'x-ui-token': new URLSearchParams(url.hash.slice(1)).get('token')! };
+    const post = (path: string, body: object) => fetch(`${url.origin}${path}`, { method: 'POST', headers, body: JSON.stringify(body) });
+    const response = await post('/api/chat', { conversationId: 'browser', text: 'choose' });
+    const reader = response.body!.getReader(); const decoder = new TextDecoder();
+    const messages: Array<Record<string, unknown>> = []; let pending = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      pending += decoder.decode(value, { stream: !done });
+      const lines = pending.split('\n'); pending = lines.pop()!;
+      for (const line of lines.filter(Boolean)) {
+        const message = JSON.parse(line) as Record<string, unknown>;
+        messages.push(message);
+        if (message.type !== 'run.question') continue;
+        expect((await post('/api/answer', { conversationId: 'browser', requestId: message.id, answers: 'A' })).status).toBe(400);
+        expect(await (await post('/api/answer', { conversationId: 'other', requestId: message.id, answers: [['A']] })).json())
+          .toMatchObject({ settled: false });
+        expect(await (await post('/api/answer', { conversationId: 'browser', requestId: message.id, answers: [['B']] })).json())
+          .toMatchObject({ settled: true });
+      }
+      if (done) break;
+    }
+    expect(asking.answerUserInput).toHaveBeenCalledWith('native-1', { answers: [['B']] });
+    expect(messages.map(message => message.type)).toEqual(expect.arrayContaining(['run.question', 'run.question.settled']));
+    expect(messages.at(-1)).toMatchObject({ type: 'run.finished', result: 'completed' });
   });
 
   it('rejects duplicate channels and closes all plugins even if one close fails', async () => {
