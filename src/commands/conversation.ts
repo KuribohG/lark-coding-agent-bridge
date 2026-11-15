@@ -1,0 +1,152 @@
+import type {
+  ConversationIdentity,
+  ConversationRuntime,
+  ConversationStatus,
+} from '../runtime/conversation';
+import {
+  commandDefinitionsFor,
+  commandHelpLines,
+  findCommand,
+  parseSlashCommand,
+  type CommandChannelId,
+  type CommandDefinition,
+} from './catalog';
+import type { CommandChannel, CommandMessage } from './types';
+
+/**
+ * A front end whose conversations are served by `ConversationRuntime` (Slack,
+ * the Web chat, another server-side host). Its command surface is the shared
+ * catalogue; the handlers here need only the runtime, so they are implemented
+ * once instead of per front end.
+ */
+export interface ConversationCommandHost {
+  runtime: ConversationRuntime;
+  /** Authorized by the front end before the command runs. */
+  identity: ConversationIdentity;
+  /** Where replies go; the channel is bound to this conversation already. */
+  channel: CommandChannel;
+  message: CommandMessage;
+  /** Which catalogue entries this front end exposes (`slack`, `web`, …). */
+  surface: CommandChannelId;
+  /** Appended to `/help`, e.g. how to start a conversation on this platform. */
+  helpFooter?: string;
+}
+
+type ConversationCommandHandler = (args: string, host: ConversationCommandHost) => Promise<void>;
+
+const handlers = {
+  help: async (args, host) => {
+    const target = args.trim().split(/\s+/)[0]?.replace(/^\//, '').toLowerCase() ?? '';
+    if (!target) {
+      await reply(host, helpText(host.surface, host.helpFooter));
+      return;
+    }
+    const definition = findCommand(target);
+    if (!definition || !commandDefinitionsFor(host.surface).includes(definition)) {
+      await reply(host, `Unknown command: /${target}\n\n${helpText(host.surface, host.helpFooter)}`);
+      return;
+    }
+    await reply(host, commandSummary(definition, host.surface));
+  },
+  new: async (_args, host) => {
+    const reset = await host.runtime.reset(host.identity);
+    await reply(host, reset ? 'Started a new session in this thread.' : 'This thread has no previous session.');
+  },
+  status: async (_args, host) => {
+    await reply(host, statusText(await host.runtime.status(host.identity)));
+  },
+  stop: async (_args, host) => {
+    const status = await host.runtime.status(host.identity);
+    if (!status.activeRunId) {
+      await reply(host, 'No active run in this thread.');
+      return;
+    }
+    const stopped = await host.runtime.stop(host.identity, status.activeRunId);
+    await reply(host, stopped ? 'Stopping the active run.' : 'The run is no longer active.');
+  },
+  model: async (_args, host) => {
+    const status = await host.runtime.status(host.identity);
+    await reply(
+      host,
+      `This thread is using **${status.agentKind}**. Engine switching is available through the API in this version.`,
+    );
+  },
+} satisfies Record<string, ConversationCommandHandler>;
+
+/**
+ * Fails fast when the shared catalogue and this surface's handlers drift
+ * apart, in either direction.
+ */
+export function assertConversationCommandsSupported(surface: CommandChannelId): void {
+  const names = new Set(commandDefinitionsFor(surface).map(definition => definition.name));
+  for (const name of Object.keys(handlers)) {
+    if (!names.has(name)) throw new Error(`Conversation handler /${name} is not exposed for ${surface}`);
+  }
+  for (const name of names) {
+    if (!(name in handlers)) throw new Error(`Command /${name} has no conversation handler for ${surface}`);
+  }
+}
+
+/**
+ * Dispatches one slash command for a runtime-backed conversation. Returns
+ * false when the text is not a slash command, so the caller passes it to the
+ * agent unchanged.
+ */
+export async function handleConversationCommand(
+  input: string,
+  host: ConversationCommandHost,
+): Promise<boolean> {
+  const parsed = parseSlashCommand(input, findCommand, { caseInsensitive: true });
+  if (!parsed) return false;
+  const name = parsed.definition?.name ?? parsed.name;
+  const handler = (handlers as Record<string, ConversationCommandHandler>)[name];
+  if (!handler) {
+    await reply(host, `Unknown command: /${parsed.name}\n\n${helpText(host.surface, host.helpFooter)}`);
+    return true;
+  }
+  try {
+    await handler(parsed.args, host);
+  } catch (error) {
+    await reply(host, errorMessage(error));
+  }
+  return true;
+}
+
+export function conversationHelpText(surface: CommandChannelId, helpFooter?: string): string {
+  return helpText(surface, helpFooter);
+}
+
+function helpText(surface: CommandChannelId, helpFooter?: string): string {
+  return [
+    '**Bridge commands**',
+    ...commandHelpLines('', commandDefinitionsFor(surface), surface)
+      .map(line => line.replace(/^- /, '• ')),
+    ...(helpFooter ? ['', helpFooter] : []),
+  ].join('\n');
+}
+
+function commandSummary(definition: CommandDefinition, surface: CommandChannelId): string {
+  const aliases = definition.aliases && definition.aliases.length > 0
+    ? `**Aliases:** ${definition.aliases.map(alias => `\`/${alias}\``).join(', ')}`
+    : undefined;
+  return [
+    `**${definition.name}**`,
+    ...(aliases ? [aliases, ''] : []),
+    ...commandHelpLines('', [definition], surface).map(line => line.replace(/^- /, '• ')),
+  ].join('\n');
+}
+
+function statusText(status: ConversationStatus): string {
+  return [`**Engine:** ${status.agentKind}`, `**State:** ${status.activeRunId ? 'running' : 'idle'}`].join('\n');
+}
+
+function reply(host: ConversationCommandHost, markdown: string): Promise<{ messageId: string }> {
+  return host.channel.send(host.message.chatId, { markdown }, {
+    replyTo: host.message.messageId,
+    ...(host.message.threadId ? { replyInThread: true } : {}),
+  });
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

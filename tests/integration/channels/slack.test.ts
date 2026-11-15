@@ -259,6 +259,25 @@ describe('Slack channel plugin', () => {
     expect(h.api.posts.at(-1)?.text).toContain('*State:* idle');
   });
 
+  it('reports the engine and the idle state for /model and /stop', async () => {
+    const h = await harness([[
+      { type: 'system', sessionId: 'session-model' },
+      { type: 'final_text', content: 'answered' },
+      { type: 'done', terminationReason: 'normal' },
+    ]]);
+    await h.transport.emit(channelEvent({ type: 'app_mention', ts: '550.001' }));
+
+    await h.transport.emit(channelEvent({
+      type: 'message', ts: '550.002', thread_ts: '550.001', text: '/model',
+    }));
+    expect(h.api.posts.at(-1)?.text).toContain('using *claude*');
+
+    await h.transport.emit(channelEvent({
+      type: 'message', ts: '550.003', thread_ts: '550.001', text: '/stop',
+    }));
+    expect(h.api.posts.at(-1)?.text).toContain('No active run in this thread.');
+  });
+
   it('lists commands and explains a single command', async () => {
     const h = await harness([]);
     await h.transport.emit(channelEvent({ type: 'app_mention', ts: '600.001', text: '<@UBOT> /help' }));

@@ -11,8 +11,13 @@ import {
 import { acquireHostLock } from '../../runtime/host-lock';
 import { createSlackApi, type SlackApi, type SlackAuthIdentity } from './api';
 import { SLACK_DISPLAY_DEFAULTS, type SlackDisplayConfig } from '../../config/channel-display';
+import {
+  assertConversationCommandsSupported,
+  conversationHelpText,
+  handleConversationCommand,
+} from '../../commands/conversation';
 import { SLACK_SYSTEM_PROMPT } from './config';
-import { handleSlackCommand, slackHelpText } from './commands';
+import { createSlackCommandChannel } from './command-channel';
 import { normalizeSlackText, toSlackMrkdwn } from './format';
 import { createSlackRunOutput } from './output';
 import { SlackThreadStore } from './thread-store';
@@ -60,6 +65,7 @@ export function createSlackPlugin(options: SlackChannelOptions): ChannelPlugin<S
 }
 
 async function startSlackChannel(options: SlackChannelOptions): Promise<SlackConnection> {
+  assertConversationCommandsSupported('slack');
   const lock = await acquireHostLock(join(options.stateDir, 'slack-host.lock'));
   if (!lock) throw new Error('Slack state directory is already in use or cannot be locked');
 
@@ -126,18 +132,33 @@ async function startSlackChannel(options: SlackChannelOptions): Promise<SlackCon
       }
 
       const prompt = normalizeSlackText(event.text, identity.userId);
+      const helpFooter = `Mention <@${identity.userId}> in a channel to start a new thread conversation. DMs do not need a mention.`;
       if (!prompt) {
-        await reply(api, event, slackHelpText(identity.userId));
+        await reply(api, event, conversationHelpText('slack', helpFooter));
         return;
       }
 
       if (!isDm) await threads.add(event.channel, rootTs);
 
-      if (await handleSlackCommand(prompt, {
+      if (await handleConversationCommand(prompt, {
         runtime: activeRuntime,
         identity: { actorId: event.user, conversationId: conversationId(event.channel, rootTs) },
-        botUserId: identity.userId,
-        reply: text => reply(api, event, text),
+        channel: createSlackCommandChannel({
+          api,
+          channel: event.channel,
+          threadTs: rootTs,
+          ...(identity.userName ? { botName: identity.userName } : {}),
+        }),
+        message: {
+          messageId: event.ts,
+          chatId: event.channel,
+          chatType: isDm ? 'p2p' : 'group',
+          threadId: rootTs,
+          senderId: event.user,
+          content: prompt,
+        },
+        surface: 'slack',
+        helpFooter,
       })) return;
 
       const reactionAdded = await addReaction(api, event, 'eyes');
