@@ -54,6 +54,7 @@ export const PROFILE_SETTINGS: readonly SettingSpec[] = [
   { path: 'access.**', apply: 'live', toml: 'profiles.<p>.access.**' },
   { path: 'workspaces.**', apply: 'live', toml: 'profiles.<p>.workspaces.**', note: '新会话生效；已绑定目录的会话不变' },
   { path: 'permissions.**', apply: 'execution', toml: 'profiles.<p>.permissions.**' },
+  { path: 'execSandbox.**', apply: 'execution', toml: 'profiles.<p>.exec_sandbox.**', note: '新任务使用新的沙箱规则；运行中的任务保持原规则' },
   { path: 'state.**', apply: 'execution', toml: 'state.**' },
   { path: 'claude.**', apply: 'execution', toml: 'agents.claude.launch / profiles.<p>.launch' },
   { path: 'codex.**', apply: 'execution', toml: 'agents.codex.launch / profiles.<p>.launch', note: 'Codex daemon 环境变化在空闲时重启 daemon' },

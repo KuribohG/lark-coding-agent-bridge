@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { PassThrough, Writable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { log } from '../core/logger';
+import { buildExecSandboxCommand, type ExecSandboxSettings } from '../platform/exec-sandbox';
 import { spawnProcess } from '../platform/spawn';
 import { deadlineGuardCommand, spawnWithDeadline } from './deadline';
 
@@ -155,14 +156,25 @@ export function spawnAgentProcess(command: string, args: string[], options: Spaw
   host?: RunHostBinding;
   /** Groups hosts that share a resource, see liveRunHosts. */
   tag?: string;
+  /** Landlock allowlist for this run; hosted runs bake it into the spec. */
+  execSandbox?: ExecSandboxSettings;
 }): ChildProcess {
-  if (!run.host || !runHostsSupported()) return spawnWithDeadline(command, args, options, run.deadlineAt);
+  if (!run.host || !runHostsSupported()) {
+    return spawnWithDeadline(command, args, options, run.deadlineAt, { settings: run.execSandbox, agent: run.agent });
+  }
   if (run.host.attach) {
     const agent = runHostAgent(run.host.key);
     if (agent !== run.agent) throw new Error(`run host ${run.host.key} belongs to ${agent ?? 'an unknown agent'}, not ${run.agent}`);
     return attachHostedProcess(run.host.key) as unknown as ChildProcess;
   }
-  return startHostedProcess({ key: run.host.key, command, args, cwd: options.cwd, env: options.env,
+  // The host process itself stays outside the sandbox; the agent it starts inherits it.
+  const target = buildExecSandboxCommand(command, args, {
+    settings: run.execSandbox,
+    agent: run.agent,
+    cwd: options.cwd,
+    env: options.env ?? process.env,
+  });
+  return startHostedProcess({ key: run.host.key, command: target.command, args: target.args, cwd: options.cwd, env: options.env,
     deadlineAt: run.deadlineAt, agent: run.agent, tag: run.tag }) as unknown as ChildProcess;
 }
 

@@ -1,6 +1,7 @@
 import type { Readable, Writable } from 'node:stream';
 import { log } from '../core/logger';
 import { terminateChild } from '../platform/terminate';
+import type { ExecSandboxSettings } from '../platform/exec-sandbox';
 import type { SpawnedProcessByStdio } from '../platform/spawn';
 import { spawnWithDeadline } from './deadline';
 import { readJsonLines } from './jsonl';
@@ -32,6 +33,8 @@ export function startProcessRun(input: {
   stdin: string;
   translator: ProcessEventTranslator;
   deadlineAt?: number;
+  /** Landlock allowlist for this run; the whole process tree inherits it. */
+  execSandbox?: ExecSandboxSettings;
   stopGraceMs: number;
   stopSignal?: NodeJS.Signals;
   strictJson?: boolean;
@@ -42,7 +45,7 @@ export function startProcessRun(input: {
   try {
     child = spawnWithDeadline(input.command, input.args, {
       cwd: input.cwd, env: input.env, stdio: ['pipe', 'pipe', 'pipe'],
-    }, input.deadlineAt) as Child;
+    }, input.deadlineAt, { settings: input.execSandbox, agent: input.agent }) as Child;
   } catch (error) {
     input.cleanup?.();
     throw error;

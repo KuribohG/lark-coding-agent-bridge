@@ -63,7 +63,7 @@ export class AgyAdapter implements AgentAdapter {
       cwd: options.cwd!, env: mergeProcessEnv(mergeProcessEnv(mergeProcessEnv(process.env, this.options.env), provider?.env), options.env),
       stdin: `${JSON.stringify({ event: 'user', message: { content } })}\n`,
       translator: new AgyStreamTranslator(), strictJson: true,
-      deadlineAt: options.deadlineAt, stopGraceMs: options.stopGraceMs ?? 1000, stopSignal: 'SIGINT',
+      deadlineAt: options.deadlineAt, execSandbox: options.execSandbox, stopGraceMs: options.stopGraceMs ?? 1000, stopSignal: 'SIGINT',
     }), this.capabilities);
   }
 }

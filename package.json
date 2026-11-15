@@ -59,6 +59,7 @@
     "docs/inbox-assistant.md",
     "docs/gitlab-ci-watch.md",
     "docs/agent-execution.md",
+    "docs/exec-sandbox.md",
     "docs/antigravity.md",
     "docs/model-services.md",
     "docs/work-item-sources.md",
@@ -80,7 +81,8 @@
   "scripts": {
     "dev": "tsup --watch",
     "build:web": "vite build web",
-    "build": "npm run build:web && tsup",
+    "build:native": "node native/build.mjs",
+    "build": "npm run build:web && tsup && npm run build:native",
     "build:packages": "npm run build --prefix packages/workflow-engine",
     "typecheck": "tsc --noEmit",
     "pretest": "npm run build:web",

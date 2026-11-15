@@ -142,6 +142,7 @@ export class PiAdapter implements AgentAdapter {
         PI_TELEMETRY: '0',
       }),
       stdin: opts.prompt,
+      execSandbox: opts.execSandbox,
       translator: new PiRunTranslator(),
       strictJson: true,
       deadlineAt: opts.deadlineAt,

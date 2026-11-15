@@ -157,7 +157,7 @@ export class ClaudeAdapter implements AgentAdapter {
         ...(this.configDir ? { CLAUDE_CONFIG_DIR: this.configDir } : {}),
       }),
       stdio: ['pipe', 'pipe', 'pipe'],
-    }, { agent: this.id, deadlineAt: opts.deadlineAt, host: opts.host }) as ClaudeChild;
+    }, { agent: this.id, deadlineAt: opts.deadlineAt, host: opts.host, execSandbox: opts.execSandbox }) as ClaudeChild;
     const hosted = hostedProcessOf(child);
 
     log.info('agent', opts.host?.attach ? 'attach' : 'spawn', {

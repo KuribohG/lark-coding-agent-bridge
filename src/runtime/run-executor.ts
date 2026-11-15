@@ -125,6 +125,7 @@ export class RunExecutor {
       accessMode: input.policy.accessMode,
       sandbox: input.policy.sandbox,
       permissionMode: input.policy.permissionMode,
+      execSandbox: input.policy.execSandbox?.enabled === true,
       modelProvider: prepared.provider?.id ?? modelProvider?.id,
       ...(prepared.provider?.requestedId ? { requestedModelProvider: prepared.provider.requestedId } : {}),
     });
@@ -304,6 +305,7 @@ export class RunExecutor {
       images: input.images,
       sandbox: input.policy.sandbox,
       permissionMode: input.policy.permissionMode,
+      execSandbox: input.policy.execSandbox,
       stopGraceMs: input.stopGraceMs,
       userQuestions: input.userQuestions,
       answerIncludesInterimText: input.answerIncludesInterimText,

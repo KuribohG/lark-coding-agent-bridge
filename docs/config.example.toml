@@ -101,6 +101,15 @@ allowedChats = []
 admins = []
 requireMentionInGroup = true
 
+# Kernel-level (Landlock) write allowlist for agent runs; off by default.
+# `allow_tcp = false` denies every TCP bind/connect. See docs/exec-sandbox.md.
+[profiles.codex.exec_sandbox]
+enabled = false
+require_landlock = false
+allow_tcp = true
+read_write = []
+read_only = []
+
 [profiles.claude]
 agent = "claude"
 mode = "personal"

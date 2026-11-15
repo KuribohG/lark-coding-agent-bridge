@@ -35,6 +35,7 @@ Examples contain placeholders, never usable credentials. Copy to a private file 
 - [Assistant](user-guide/assistant.md), [monitoring](user-guide/monitoring.md), [operations](user-guide/operations.md) — 中文.
 - [Self-contained deployment](self-contained.md), [Inbox configuration](inbox-assistant.md), [GitLab CI](gitlab-ci-watch.md), [storage monitoring](storage-monitoring.md).
 - [Monitor configuration](monitor-config.md), [task sources](work-item-sources.md), [agent execution contract](agent-execution.md), [channel integration](channels.md).
+- [Exec sandbox](exec-sandbox.md): a Landlock write allowlist for agent runs, and what it does not cover.
 - [Windows validation and known failures](windows-web-validation.md): what was actually tested, not a guarantee that the full suite is green.
 
 The documentation follows this repository's `dev` implementation. A matching npm version number is not evidence that another package has the same code.

@@ -9,6 +9,7 @@ import {
   type RootConfig,
 } from './profile-schema';
 import { normalizePermissions, type PermissionConfig } from './permissions';
+import { normalizeExecSandbox } from '../platform/exec-sandbox';
 import { isTable } from './table';
 import { larkDisplay } from './lark-display';
 import { validateLarkNetwork } from './lark-network';
@@ -51,7 +52,7 @@ const RUN_RANGES: Record<string, readonly [number, number]> = {
   cache_keepalive_interval_minutes: [0, MAX_CACHE_KEEPALIVE_INTERVAL_MINUTES], cache_keepalive_max_pings: [1, MAX_CACHE_KEEPALIVE_PINGS],
   cache_keepalive_min_context_tokens: [0, MAX_CACHE_KEEPALIVE_MIN_CONTEXT_TOKENS],
 };
-const PROFILE_KEYS = ['agent', 'run', 'mode', 'accounts', 'secrets', 'access', 'workspaces', 'permissions', 'attachments', 'larkCli', 'launch'];
+const PROFILE_KEYS = ['agent', 'run', 'mode', 'accounts', 'secrets', 'access', 'workspaces', 'permissions', 'attachments', 'larkCli', 'launch', 'exec_sandbox'];
 const LARK_KEYS = ['reply_mode', 'show_tools', 'progress', 'message_debounce_ms', 'file_links', 'network'];
 const WEB_KEYS = ['show_tools', 'show_reasoning'];
 const SLACK_KEYS = ['show_tools', 'show_progress'];
@@ -179,6 +180,10 @@ function checkProfile(p: Table, path: string): void {
     if (c.localUserImport !== undefined) fields(c.localUserImport, { status: 'string', attemptedAt: 'string', importedAt: 'string', reason: 'string' }, `${path}.larkCli.localUserImport`);
   }
   if (p.secrets !== undefined) checkSecrets(p.secrets, `${path}.secrets`);
+  if (p.exec_sandbox !== undefined) {
+    keys(p.exec_sandbox, ['enabled', 'require_landlock', 'allow_tcp', 'read_write', 'read_only'], `${path}.exec_sandbox`);
+    normalizeExecSandbox(p.exec_sandbox);
+  }
 }
 
 function checkDeploy(value: unknown, profiles: Table): void {
@@ -320,6 +325,7 @@ export function resolveExecutionProfile(
     permissions,
     ...resolveAgentLaunches(agentKind, launchFor),
     ...(doc.state ? { state: parseAgentStateTable(doc.state) } : {}),
+    ...(profile?.exec_sandbox !== undefined ? { execSandbox: normalizeExecSandbox(profile.exec_sandbox) } : {}),
   };
 }
 
@@ -367,6 +373,14 @@ function profileDocument(p: ProfileConfig): Table {
   const out: Table = { agent: p.agentKind, run: {} };
   for (const [key, internal] of Object.entries(RUN_KEYS)) if (p.preferences[internal as keyof RunPreferences] !== undefined) out.run[key] = p.preferences[internal as keyof RunPreferences];
   for (const key of PROFILE_KEYS) if (!['agent', 'run', 'launch'].includes(key) && (p as unknown as Table)[key] !== undefined) out[key] = (p as unknown as Table)[key];
+  // Internal camelCase field, snake_case table (see docs/configuration.md).
+  if (p.execSandbox) {
+    const { enabled, requireLandlock, allowTcp, readWrite, readOnly } = p.execSandbox;
+    out.exec_sandbox = {
+      enabled, require_landlock: requireLandlock, allow_tcp: allowTcp,
+      read_write: [...readWrite], read_only: [...readOnly],
+    };
+  }
   const launch = p[p.agentKind];
   if (launch) out.launch = launch;
   return out;

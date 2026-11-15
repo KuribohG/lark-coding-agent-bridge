@@ -1,5 +1,6 @@
 import type { AgentLaunchConfig } from '../agent/launch-options';
 import type { AgentStateSettings } from '../agent/state-layout';
+import { normalizeExecSandbox, type ExecSandboxSettings } from '../platform/exec-sandbox';
 import { normalizeFileLinks } from './file-links';
 import type {
   AppCredentials,
@@ -102,6 +103,8 @@ export interface AgentExecutionProfile extends AgentLaunchProfiles {
   /** Bridge-wide `[state]` settings, shared by every profile and engine. */
   state?: AgentStateSettings;
   permissions: PermissionConfig;
+  /** Kernel-level (Landlock) exec sandbox; absent means disabled. */
+  execSandbox?: ExecSandboxSettings;
 }
 
 export interface ProfileConfig extends AgentExecutionProfile {
@@ -204,6 +207,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     comments?: unknown;
     larkCli?: unknown;
     state?: AgentStateSettings;
+    exec_sandbox?: unknown;
   };
 
   if (raw.schemaVersion !== 2) {
@@ -226,6 +230,9 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   const workspaces = normalizeWorkspaces(raw.workspaces);
   const comments = normalizeComments(raw.comments);
   const larkCli = normalizeLarkCli(raw.larkCli);
+  // Absent (not disabled) so an unrelated config save does not write the table
+  // into every profile; readers treat missing as "disabled".
+  const execSandbox = raw.exec_sandbox === undefined ? {} : { execSandbox: normalizeExecSandbox(raw.exec_sandbox) };
 
   return {
     schemaVersion: 2,
@@ -250,6 +257,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     },
     comments,
     larkCli,
+    ...execSandbox,
   };
 }
 

@@ -67,6 +67,26 @@ async function file(text = source) {
 }
 
 describe('layered configuration', () => {
+  it('round-trips the exec sandbox table without leaking internal field names', () => {
+    const doc = parseDocument(source);
+    doc.profiles.bot!.exec_sandbox = {
+      enabled: true, require_landlock: true, allow_tcp: false, read_write: ['/data'], read_only: [],
+    };
+    const root = documentToRoot(doc);
+    const expected = { enabled: true, requireLandlock: true, allowTcp: false, readWrite: ['/data'], readOnly: [] };
+    expect(root.profiles.bot!.execSandbox).toEqual(expected);
+    const text = formatDocument(rootToDocument(root));
+    expect(text).toContain('require_landlock');
+    expect(text).not.toContain('requireLandlock');
+    expect(documentToRoot(parseDocument(text)).profiles.bot!.execSandbox).toEqual(expected);
+  });
+
+  it('rejects unknown or camelCase exec_sandbox keys', () => {
+    const doc = parseDocument(source);
+    (doc.profiles.bot as Record<string, unknown>).exec_sandbox = { enabled: true, readWrite: ['/data'] };
+    expect(() => parseDocument(formatDocument(doc))).toThrow('exec_sandbox.readWrite');
+  });
+
   it('resolves, reports and reloads workflow budgets through all execution layers', async () => {
     const path = await file();
     expect((await inspectConfig(path, 'bot')).run.workflow_timeout_minutes).toEqual({ value: 480, source: 'built-in' });

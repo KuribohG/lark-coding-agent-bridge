@@ -9,6 +9,7 @@ import {
   type CodexSandboxMode,
 } from '../config/permissions';
 import type { RunProfileConfig } from '../config/profile-schema';
+import type { ExecSandboxSettings } from '../platform/exec-sandbox';
 import type { AccessDecision } from './access';
 import {
   accessPolicyDigest,
@@ -68,6 +69,8 @@ export interface RunPolicyAllow {
   accessMode: AccessMode;
   sandbox: CodexSandboxMode;
   permissionMode: ClaudePermissionMode;
+  /** Kernel-level write allowlist inherited by the run's whole process tree. */
+  execSandbox?: ExecSandboxSettings;
   access: AccessDecision;
   attachments: AgentAttachment[];
   policyFingerprint: string;
@@ -153,6 +156,7 @@ export function evaluateRunPolicy(input: RunPolicyInput): RunPolicyResult {
     accessMode,
     sandbox,
     permissionMode,
+    execSandbox: input.profileConfig.execSandbox,
     access: input.access,
     attachments: input.attachments,
     expiresAt: input.now + (input.ttlMs ?? DEFAULT_TTL_MS),
