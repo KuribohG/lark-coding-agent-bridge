@@ -1,19 +1,23 @@
-import type { NormalizedMessage } from '@larksuite/channel';
 import { mkdir, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
-import { log } from '../../core/logger';
-import { writeFileAtomic } from '../../platform/atomic-write';
+import { log } from '../core/logger';
+import { writeFileAtomic } from '../platform/atomic-write';
 
 const MAX_ORIGINS = 512;
 
 /**
- * Latest message per scope, used to authorize and address a workflow's chat. Persisted so a
- * restarted bridge can resume workflows and deliver their notices before anyone writes again.
+ * Latest channel message per scope, used to authorize and address a workflow's conversation.
+ * Persisted so a restarted bridge can resume workflows and deliver their notices before anyone
+ * writes again.
  */
-export class WorkflowOrigins extends Map<string, NormalizedMessage> {
+export class WorkflowOrigins<M> extends Map<string, M> {
   private writes: Promise<void> = Promise.resolve();
 
-  constructor(private readonly path?: string) { super(); }
+  constructor(
+    private readonly path?: string,
+    /** Whether a persisted origin still has the channel's shape; others are dropped on load. */
+    private readonly accepts: (origin: unknown) => boolean = () => true,
+  ) { super(); }
 
   async load(): Promise<void> {
     if (!this.path) return;
@@ -21,14 +25,14 @@ export class WorkflowOrigins extends Map<string, NormalizedMessage> {
       const raw = JSON.parse(await readFile(this.path, 'utf8')) as { version?: unknown; origins?: unknown };
       if (raw.version !== 1 || !Array.isArray(raw.origins)) return;
       for (const entry of raw.origins.slice(-MAX_ORIGINS)) {
-        if (Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1].chatId === 'string') super.set(entry[0], entry[1] as NormalizedMessage);
+        if (Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object' && this.accepts(entry[1])) super.set(entry[0], entry[1] as M);
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
     }
   }
 
-  override set(scope: string, message: NormalizedMessage): this {
+  override set(scope: string, message: M): this {
     // Re-insert so the most recent scopes survive pruning.
     super.delete(scope);
     super.set(scope, message);

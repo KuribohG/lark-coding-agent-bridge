@@ -1,16 +1,19 @@
+import type { ActiveRuns } from './active-runs';
+import { RunStopped } from './errors';
 import type { PendingQueue } from './pending-queue';
-import type { ActiveRuns } from '../../runtime/active-runs';
-import { RunStopped } from '../../runtime/errors';
 
 /** One admission/cancellation lane shared by queued messages, wakes and timed
  * tasks. It covers preparation too, before ActiveRuns has a native execution.
  */
-export class LarkTurns {
+export class ConversationTurns {
   private readonly running = new Map<string, { controller: AbortController; timedRunId?: string }>();
   private readonly work = new Set<Promise<void>>();
   private closed = false;
 
-  constructor(private readonly pending: PendingQueue, private readonly active: ActiveRuns) {}
+  constructor(
+    private readonly pending: Pick<PendingQueue, 'hasWork' | 'block' | 'unblock' | 'suspend'>,
+    private readonly active: ActiveRuns,
+  ) {}
 
   isIdle(scope: string): boolean {
     return !this.closed && !this.running.has(scope) && !this.pending.hasWork(scope)

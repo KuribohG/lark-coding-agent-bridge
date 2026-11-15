@@ -1,6 +1,6 @@
 import { expect, it, vi } from 'vitest';
-import { CacheKeepalive, type CachePing } from '../../../../src/channels/lark/cache-keepalive';
-import type { CacheKeepaliveSettings } from '../../../../src/config/schema';
+import { CacheKeepalive, type CachePing } from '../../../src/runtime/cache-keepalive';
+import type { CacheKeepaliveSettings } from '../../../src/config/schema';
 
 const MIN = 60_000;
 const T0 = 1_000_000_000_000;

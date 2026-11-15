@@ -19,10 +19,10 @@ import type { SessionStore } from '../../session/store';
 import { bridgeAgentKind, resolveWorkerExecution } from '../../workflows/bridge/execution';
 import { createBridgeWorkflowRuntime } from '../../workflows/bridge/runtime';
 import type { WorkspaceStore } from '../../workspace/store';
-import { CacheKeepalive, type CachePing } from './cache-keepalive';
+import { CacheKeepalive, type CachePing } from '../../runtime/cache-keepalive';
 import type { PendingMessage, PendingQueue } from './pending-queue';
-import type { LarkTurns } from './turns';
-import { WorkflowOrigins } from './workflow-origins';
+import type { ConversationTurns } from '../../runtime/turns';
+import { WorkflowOrigins } from '../../runtime/workflow-origins';
 import { WorkflowProgressCards } from './workflow-progress-cards';
 
 export interface LarkWorkflowHostDeps {
@@ -34,7 +34,7 @@ export interface LarkWorkflowHostDeps {
   workspaces: WorkspaceStore;
   /** Profile state directory; workflows are disabled without one. */
   stateDir?: string;
-  turns: LarkTurns;
+  turns: ConversationTurns;
   pending: PendingQueue;
   resolveAgentKind(scope: string): AgentKind;
   dispatch(scope: string, batch: PendingMessage[], options: { signal: AbortSignal; entry: AgentEntry }): Promise<unknown>;
@@ -45,14 +45,15 @@ const KEEPALIVE_PROMPT = '这是 bridge 发出的缓存保活请求，不是用�
 
 /** The workflow runtime of one Lark connection, with its origin messages and progress cards. */
 export class LarkWorkflowHost {
-  readonly origins: WorkflowOrigins;
+  readonly origins: WorkflowOrigins<NormalizedMessage>;
   private runtime: WorkflowRuntime | undefined;
   private progressCards: WorkflowProgressCards | undefined;
   private controlView: WorkflowControl | undefined;
   private keepalive: CacheKeepalive | undefined;
 
   constructor(private readonly deps: LarkWorkflowHostDeps) {
-    this.origins = new WorkflowOrigins(deps.stateDir ? join(deps.stateDir, 'workflow-origins.json') : undefined);
+    this.origins = new WorkflowOrigins(deps.stateDir ? join(deps.stateDir, 'workflow-origins.json') : undefined,
+      origin => typeof (origin as Partial<NormalizedMessage>).chatId === 'string');
   }
 
   /** Started runtime, for turns that bind to their workflow. */

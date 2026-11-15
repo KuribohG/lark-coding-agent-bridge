@@ -1,13 +1,13 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { PendingQueue } from '../../../../src/channels/lark/pending-queue';
-import { LarkTurns } from '../../../../src/channels/lark/turns';
-import { ActiveRuns } from '../../../../src/runtime/active-runs';
+import { ActiveRuns } from '../../../src/runtime/active-runs';
+import { PendingQueue } from '../../../src/runtime/pending-queue';
+import { ConversationTurns } from '../../../src/runtime/turns';
 
 const pending = new PendingQueue(60_000, () => {});
 afterEach(() => pending.cancelAll());
 
 it('reserves preparation across all entry types and keeps cancellation until it releases', async () => {
-  const turns = new LarkTurns(pending, new ActiveRuns());
+  const turns = new ConversationTurns(pending, new ActiveRuns());
   const turn = turns.claim('topic', 'timed-id');
   expect(turns.isIdle('topic')).toBe(false);
   expect(turns.timedRunId('topic')).toBe('timed-id');
@@ -23,7 +23,7 @@ it('reserves preparation across all entry types and keeps cancellation until it 
 });
 
 it('releases after failure and cannot let an old or reused claim release a new turn', async () => {
-  const turns = new LarkTurns(pending, new ActiveRuns());
+  const turns = new ConversationTurns(pending, new ActiveRuns());
   const first = turns.claim('topic');
   await expect(first.run(async () => { throw new Error('prepare failed'); })).rejects.toThrow('prepare failed');
   const next = turns.claim('topic');
@@ -37,7 +37,7 @@ it('releases after failure and cannot let an old or reused claim release a new t
 });
 
 it('shutdown aborts every entry and denies new admission', async () => {
-  const turns = new LarkTurns(pending, new ActiveRuns());
+  const turns = new ConversationTurns(pending, new ActiveRuns());
   const first = turns.claim('topic-one');
   const second = turns.claim('topic-two', 'timed-id');
   turns.close();

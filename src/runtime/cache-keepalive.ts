@@ -1,5 +1,5 @@
-import type { CacheKeepaliveSettings } from '../../config/schema';
-import { log } from '../../core/logger';
+import type { CacheKeepaliveSettings } from '../config/schema';
+import { log } from '../core/logger';
 
 /** What one keep-alive request read from and wrote to the provider's prompt cache. */
 export interface CachePing {

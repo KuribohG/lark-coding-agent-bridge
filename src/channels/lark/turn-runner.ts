@@ -26,7 +26,7 @@ import {
   type InterruptedTurn as JournaledTurn,
 } from '../../runtime/interrupted-turns';
 import type { PendingMessage } from './pending-queue';
-import type { LarkTurns } from './turns';
+import type { ConversationTurns } from '../../runtime/turns';
 
 type InterruptedTurn = JournaledTurn<NormalizedMessage>;
 type InterruptedTurns = TurnJournal<NormalizedMessage>;
@@ -42,7 +42,7 @@ export interface TurnDispatchOptions {
 
 export interface LarkTurnRunnerDeps {
   channel: LarkChannel;
-  turns: LarkTurns;
+  turns: ConversationTurns;
   timedStore: TimedRunStore;
   /** Profile state directory holding the interrupted-turn journal. */
   stateDir?: string;

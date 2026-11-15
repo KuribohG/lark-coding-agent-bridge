@@ -38,7 +38,7 @@ import { runAgentBatch, type LarkRunServices } from './run';
 import { ScopeRunMemory } from './scope-run-memory';
 import { createProfileChannel } from './sdk';
 import { LarkTurnRunner, type TurnDispatchOptions } from './turn-runner';
-import { LarkTurns } from './turns';
+import { ConversationTurns } from '../../runtime/turns';
 import { LarkWorkflowHost } from './workflow-host';
 
 export interface BridgeChannel {
@@ -132,7 +132,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     },
     statePath('pending-queue.json'),
   );
-  const turns = new LarkTurns(pending, activeRuns);
+  const turns = new ConversationTurns(pending, activeRuns);
   if (deps.restorePending === false) {
     pending.suspend();
     pending.holdPersistence();
