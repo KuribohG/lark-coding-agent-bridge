@@ -24,7 +24,7 @@ import { toPolicyAttachment } from '../../media/attachment';
 import type { MediaCache } from '../../media/cache';
 import { canUseDm, canUseGroup, type AccessDecision } from '../../policy/access';
 import type { ScopeContext } from '../../policy/run-policy';
-import type { AgentEntry } from '../../runtime/agent-entry';
+import { bindAgentEntry, type AgentEntry } from '../../runtime/agent-entry';
 import { profileForAgentKind } from '../../runtime/execution-controller';
 import { resolveRunModelSettings } from '../../runtime/model-settings';
 import { deadlineInstructions } from '../../runtime/run-deadline';
@@ -35,7 +35,6 @@ import type { RunState } from '../../runtime/run-state';
 import { startTurn, type StartedTurn, type TurnStores } from '../../runtime/turn';
 import { timedRuns, type TimedRun } from '../../runtime/timed-runs';
 import type { WorkflowRuntime } from '@kuribohg/agent-workflows';
-import { bindAgentEntry } from './agent-entry';
 import { larkDisplay } from './config';
 import { createLarkRunOutput } from './run-output';
 
