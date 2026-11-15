@@ -3,6 +3,7 @@ import { AGENT_KINDS } from '../../../src/agent/backend-spec';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createConversationRuntime, type ConversationRuntime } from '../../../src/runtime/conversation';
+import type { ConversationStreamEvent } from '../../../src/runtime/conversation-events';
 import { createWebRunOutput, type WebRunEvent } from '../../../src/channels/web/output';
 import { createWebPlugin } from '../../../src/channels/web/server';
 import { ChannelHost } from '../../../src/channels/plugin';
@@ -216,7 +217,7 @@ describe('channel-independent conversations', () => {
     const asking = askingAgent();
     const runtime = await createConversationRuntime({ ...h.options, execution: new FixedExecutionController(asking.agent, h.options.config) }); cleanups.push(() => runtime.close());
     const ask = vi.fn(async (_question: { id: string }) => {});
-    const settled = vi.fn(async (_question: { id: string; status: string }) => {});
+    const settled = vi.fn(async (_question: { id: string; runId: string; status: string }) => {});
     const result = await runtime.start({ ...identity, prompt: 'choose', questions: { ask, settled } }, createWebRunOutput(async () => {}));
     if (!result.ok) throw Error('expected active run');
     await vi.waitFor(() => expect(ask).toHaveBeenCalledOnce());
@@ -230,10 +231,43 @@ describe('channel-independent conversations', () => {
 
     expect(await runtime.answerQuestion(identity, id, [['A']])).toMatchObject({ settled: true, message: expect.stringContaining('A') });
     expect(asking.answerUserInput).toHaveBeenCalledWith('native-1', { answers: [['A']] });
-    expect(settled).toHaveBeenCalledWith({ id, status: expect.stringContaining('A') });
+    expect(settled).toHaveBeenCalledWith({ id, runId: result.execution.runId, status: expect.stringContaining('A') });
     await result.done;
     expect(await result.execution.result).toBe('completed');
     expect(await runtime.answerQuestion(identity, id, [['B']])).toMatchObject({ settled: false });
+  });
+
+  it('publishes a submitted run to the conversation stream, with or without a subscriber', async () => {
+    const h = await harness();
+    const live: ConversationStreamEvent[] = [];
+    const stop = await h.runtime.subscribe(identity, {}, event => { live.push(event); });
+    const run = await h.runtime.submit({ ...identity, prompt: 'hello' });
+    if (!run.ok) throw Error('expected started');
+    await vi.waitFor(() => expect(live.at(-1)).toMatchObject({ type: 'run.finished', runId: run.runId, result: 'completed' }));
+    expect(live[0]).toMatchObject({ type: 'stream.opened', sequence: 0 });
+    expect(live.map(event => event.type)).toEqual(expect.arrayContaining(['run.started', 'run.state']));
+    expect(live.filter(event => event.type === 'run.state').at(-1)).toMatchObject({ state: { finalText: 'answer', terminal: 'done' } });
+    stop();
+
+    h.agent.setEvents(events);
+    const unseen = await h.runtime.submit({ ...identity, prompt: 'again' });
+    if (!unseen.ok) throw Error('expected started');
+    const opened = live[0] as { stream: string };
+    const cursor = { stream: opened.stream, after: (live.at(-1) as { sequence: number }).sequence };
+    const later: ConversationStreamEvent[] = [];
+    await vi.waitFor(async () => {
+      later.length = 0;
+      (await h.runtime.subscribe(identity, cursor, event => { later.push(event); }))();
+      expect(later.at(-1)).toMatchObject({ type: 'run.finished', runId: unseen.runId });
+    });
+    expect(later.slice(1).every(event => 'runId' in event && event.runId === unseen.runId)).toBe(true);
+
+    const other: ConversationStreamEvent[] = [];
+    (await h.runtime.subscribe({ ...identity, conversationId: 'two' }, {}, event => { other.push(event); }))();
+    expect(other).toHaveLength(1);
+    h.authorize.mockResolvedValue(false);
+    await expect(h.runtime.subscribe(identity, {}, () => {})).rejects.toThrow('denied');
+    await expect(h.runtime.submit({ ...identity, prompt: 'no' })).rejects.toThrow('denied');
   });
 
   it('does not offer the question tool to a run whose host cannot show questions', async () => {
@@ -319,6 +353,47 @@ describe('standalone Web plugin', () => {
     expect(asking.answerUserInput).toHaveBeenCalledWith('native-1', { answers: [['B']] });
     expect(messages.map(message => message.type)).toEqual(expect.arrayContaining(['run.question', 'run.question.settled']));
     expect(messages.at(-1)).toMatchObject({ type: 'run.finished', result: 'completed' });
+  });
+
+  it('follows a conversation over a long-lived stream that a client can resume', async () => {
+    const h = await harness(); await h.runtime.close();
+    const host = new ChannelHost(); cleanups.push(() => host.close());
+    const web = await host.connect(createWebPlugin({ ...h.options, stateDir: join(h.tmp.root, 'events'), display: { show_tools: false } }));
+    const url = new URL(web.url);
+    const headers = { 'x-ui-token': new URLSearchParams(url.hash.slice(1)).get('token')! };
+    const follow = async (query: string, until: (event: Record<string, unknown>) => boolean) => {
+      const abort = new AbortController();
+      const response = await fetch(`${url.origin}/api/events?conversationId=browser${query}`, { headers, signal: abort.signal });
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader(); const decoder = new TextDecoder();
+      const received: Array<Record<string, unknown>> = []; let pending = '';
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          pending += decoder.decode(value, { stream: !done });
+          const lines = pending.split('\n'); pending = lines.pop()!;
+          for (const line of lines.filter(Boolean)) received.push(JSON.parse(line));
+          if (done || received.some(until)) return received;
+        }
+      } finally { abort.abort(); }
+    };
+    expect((await fetch(`${url.origin}/api/events?conversationId=browser`)).status).toBe(401);
+    expect((await fetch(`${url.origin}/api/events?conversationId=browser&after=x`, { headers })).status).toBe(400);
+
+    const following = follow('', event => event.type === 'run.finished');
+    const sent = await fetch(`${url.origin}/api/send`, { method: 'POST', headers, body: JSON.stringify({ conversationId: 'browser', text: 'hello' }) });
+    const { runId } = await sent.json() as { runId: string };
+    const first = await following;
+    expect(first[0]).toMatchObject({ type: 'stream.opened' });
+    expect(first.at(-1)).toMatchObject({ type: 'run.finished', runId, result: 'completed' });
+    // The stream carries what this host is configured to show.
+    const shown = first.filter(event => event.type === 'run.state').at(-1) as { state: { blocks: Array<{ kind: string }> } };
+    expect(shown.state.blocks.every(block => block.kind !== 'tool')).toBe(true);
+
+    const again = await follow(`&stream=${first[0]!.stream}&after=${first.at(-1)!.sequence}`, event => event.type === 'stream.opened');
+    expect(again).toHaveLength(1);
+    const replayed = await follow('', event => event.type === 'run.finished');
+    expect(replayed.at(-1)).toMatchObject({ type: 'run.finished', runId });
   });
 
   it('rejects duplicate channels and closes all plugins even if one close fails', async () => {

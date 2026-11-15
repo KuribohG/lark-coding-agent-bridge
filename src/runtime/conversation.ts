@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { sendRunInput } from '../agent/execution';
 import type { AgentInput, AgentInputReceipt, AgentQuestion, AgentQuestionMode } from '../agent/types';
 import { ActiveRuns, stopRun } from './active-runs';
+import { ConversationEvents, type ConversationCursor, type ConversationStreamEvent } from './conversation-events';
 import { RunStopped } from './errors';
 import { FollowupRouter } from './followup';
 import { QuestionBroker } from './questions';
@@ -12,6 +13,8 @@ import type { AgentKind, RunProfileConfig } from '../config/profile-schema';
 import type { AgentAttachment } from '../policy/run-policy';
 import { RunExecutor } from './run-executor';
 import type { RunOutputPlugin } from './run-output';
+import type { RunState } from './run-state';
+import { processAgentStream } from './run-stream';
 import { SessionCatalog, type SessionCatalogIdentity } from '../session/catalog';
 import { log } from '../core/logger';
 import { SessionStore } from '../session/store';
@@ -36,6 +39,8 @@ export interface ConversationRuntimeOptions {
   channelId: string;
   authorize(identity: ConversationIdentity): Promise<boolean>;
   systemPrompt?: string;
+  /** What of a run's state this host shows in its conversation event streams. */
+  filterState?: (state: RunState) => RunState;
 }
 
 export interface ConversationInput extends ConversationIdentity {
@@ -50,8 +55,8 @@ export interface ConversationInput extends ConversationIdentity {
 
 /** One run's questions, as the host shows them; answers come back through `answerQuestion`. */
 export interface ConversationQuestionSink {
-  ask(question: { id: string; mode: AgentQuestionMode; questions: readonly AgentQuestion[] }): Promise<void>;
-  settled(question: { id: string; status: string }): Promise<void>;
+  ask(question: { id: string; runId: string; mode: AgentQuestionMode; questions: readonly AgentQuestion[] }): Promise<void>;
+  settled(question: { id: string; runId: string; status: string }): Promise<void>;
 }
 
 export interface ConversationStatus {
@@ -80,6 +85,7 @@ export class ConversationRuntime {
   private readonly starts = new Set<Promise<unknown>>();
   private readonly outputs = new Set<Promise<void>>();
   private readonly questions: QuestionBroker<ConversationQuestionSink>;
+  private readonly events = new ConversationEvents();
   private closed = false;
 
   constructor(private readonly options: ConversationRuntimeOptions) {
@@ -100,10 +106,10 @@ export class ConversationRuntime {
     this.questions = new QuestionBroker({
       presenter: {
         present: async request => {
-          await request.origin.ask({ id: request.id, mode: request.mode, questions: request.questions });
+          await request.origin.ask({ id: request.id, runId: request.runId, mode: request.mode, questions: request.questions });
           return request.id;
         },
-        settle: request => request.origin.settled({ id: request.id, status: request.status ?? '' }),
+        settle: request => request.origin.settled({ id: request.id, runId: request.runId, status: request.status ?? '' }),
         forget: () => {},
       },
       delivery: { prompt: async (_request, content) => content },
@@ -167,6 +173,50 @@ export class ConversationRuntime {
       void done.then(() => this.outputs.delete(done), () => this.outputs.delete(done));
       return { ...flow, done };
     } catch (error) { dispose(); throw error; }
+  }
+
+  /**
+   * Starts a run whose progress, questions and outcome are published to the
+   * conversation's event stream instead of one caller's output. The run does
+   * not depend on any subscriber being connected.
+   */
+  async submit(input: Omit<ConversationInput, 'questions' | 'signal'>) {
+    const scope = await this.authorizedScope(input);
+    const publish = this.events.publish.bind(this.events, scope);
+    const filter = this.options.filterState ?? (state => state);
+    const output: RunOutputPlugin = {
+      id: 'conversation-events',
+      render: async context => {
+        publish({ type: 'run.started', runId: context.runId });
+        let previous: string | undefined;
+        await processAgentStream(context.handle, context.events, context.scope, context.idleTimeoutMs, () => {}, async current => {
+          const state = structuredClone(filter(current));
+          const serialized = JSON.stringify(state);
+          if (serialized === previous) return;
+          previous = serialized;
+          publish({ type: 'run.state', runId: context.runId, state });
+        });
+      },
+    };
+    const run = await this.start({ ...input, questions: {
+      ask: async question => { publish({ type: 'run.question', ...question }); },
+      settled: async question => { publish({ type: 'run.question.settled', ...question }); },
+    } }, output);
+    if (!run.ok) return run;
+    const runId = run.execution.runId;
+    void run.done.then(
+      async () => { publish({ type: 'run.finished', runId, result: await run.execution.result }); },
+      () => { publish({ type: 'run.failed', runId, error: 'conversation failed' }); });
+    return { ok: true as const, runId };
+  }
+
+  /**
+   * Follows a conversation: first `stream.opened`, then the buffered events
+   * after the cursor, then live ones. Returns the unsubscribe function.
+   */
+  async subscribe(identity: ConversationIdentity, cursor: ConversationCursor,
+    listener: (event: ConversationStreamEvent) => void): Promise<() => void> {
+    return this.events.subscribe(await this.authorizedScope(identity), cursor, listener);
   }
 
   async stop(identity: ConversationIdentity, runId: string): Promise<boolean> {

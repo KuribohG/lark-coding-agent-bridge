@@ -8,6 +8,7 @@ import type { ChannelPlugin } from '../plugin';
 import { checkToken, HttpError, isLocalRequest, readJsonBody, sendHtml, sendJson } from '../../ui/http';
 import { createWebChatRuntime, type WebChatRuntimeOptions, type WebChatRuntime } from './runtime';
 import { createWebRunOutput } from './output';
+import { filterWebState } from './config';
 import html from './page.html';
 import { acquireHostLock } from '../../runtime/host-lock';
 import { AGENT_OPTIONS, isAgentKind } from '../../agent/backends';
@@ -31,12 +32,16 @@ async function startWebChannel(options: WebChannelOptions): Promise<WebConnectio
   const lock = await acquireHostLock(join(options.stateDir, 'web-host.lock'));
   if (!lock) throw new Error('Web state directory is already in use or cannot be locked');
   let runtime: WebChatRuntime;
-  try { runtime = await createWebChatRuntime({ ...options, authorize: async identity => identity.actorId === 'local' }); }
+  const shown = { ...WEB_DISPLAY_DEFAULTS, ...options.display };
+  try {
+    runtime = await createWebChatRuntime({ ...options, authorize: async identity => identity.actorId === 'local',
+      filterState: state => filterWebState(state, shown) });
+  }
   catch (error) { await lock.release(); throw error; }
   const token = randomBytes(32).toString('hex');
   let closing = false;
   const server = createServer((req, res) => {
-    handle(req, res, runtime, token, closing, { ...WEB_DISPLAY_DEFAULTS, ...options.display }).catch(() => {
+    handle(req, res, runtime, token, closing, shown).catch(() => {
       if (!res.headersSent) sendJson(res, 500, { error: 'request failed' });
       else res.end();
     });
@@ -83,7 +88,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
     }
     return;
   }
-  if (req.method !== 'POST' || !['/api/chat', '/api/stop', '/api/input', '/api/answer', '/api/engine'].includes(url.pathname)) {
+  if (req.method === 'GET' && url.pathname === '/api/events') { await streamEvents(req, res, url, runtime); return; }
+  if (req.method !== 'POST' || !['/api/chat', '/api/send', '/api/stop', '/api/input', '/api/answer', '/api/engine'].includes(url.pathname)) {
     sendJson(res, 404, { error: 'not found' }); return;
   }
   try {
@@ -121,6 +127,12 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
       sendJson(res, 200, await runtime.answerQuestion(identity, required('requestId'), answerLists(data.answers))); return;
     }
     const prompt = required('text');
+    if (url.pathname === '/api/send') {
+      const run = await runtime.submit({ ...identity, prompt });
+      if (run.ok) sendJson(res, 200, { runId: run.runId });
+      else sendJson(res, 409, { error: run.rejectReason.userVisible });
+      return;
+    }
     const controller = new AbortController();
     const disconnected = () => { if (!res.writableFinished) controller.abort(); };
     res.on('close', disconnected);
@@ -152,6 +164,38 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
       { error: error instanceof Error ? error.message : 'invalid request' });
     else throw error;
   }
+}
+
+/** A slow reader is disconnected rather than buffered without bound; it reconnects with its cursor. */
+const MAX_UNSENT_EVENTS = 1_000;
+
+/** The conversation's events as NDJSON until the client goes away; `stream` and `after` resume a previous connection. */
+async function streamEvents(req: IncomingMessage, res: ServerResponse, url: URL, runtime: WebChatRuntime): Promise<void> {
+  let identity: { actorId: string; conversationId: string };
+  let after: number | undefined;
+  try {
+    identity = { actorId: 'local', conversationId: boundedValue(url.searchParams.get('conversationId'), 'conversationId') };
+    const raw = url.searchParams.get('after');
+    after = raw === null ? undefined : Number(raw);
+    if (after !== undefined && (!Number.isSafeInteger(after) || after < 0)) throw new HttpError(400, 'invalid after');
+  } catch (error) {
+    sendJson(res, error instanceof HttpError ? error.status : 400, { error: error instanceof Error ? error.message : 'invalid request' });
+    return;
+  }
+  res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8',
+    'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'X-Accel-Buffering': 'no' });
+  let unsent = 0;
+  let writes: Promise<void> = Promise.resolve();
+  const unsubscribe = await runtime.subscribe(identity, { stream: url.searchParams.get('stream') ?? undefined, after }, event => {
+    if (res.destroyed) return;
+    if (++unsent > MAX_UNSENT_EVENTS) { res.destroy(); return; }
+    writes = writes.then(async () => {
+      if (!res.destroyed && !res.write(`${JSON.stringify(event)}\n`)) await once(res, 'drain');
+    }).catch(() => { res.destroy(); }).finally(() => { unsent--; });
+  });
+  req.on('close', unsubscribe);
+  res.on('close', unsubscribe);
+  if (res.destroyed) unsubscribe();
 }
 
 /** One list of answers per question; the runtime checks that it fits the request. */

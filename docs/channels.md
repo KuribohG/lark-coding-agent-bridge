@@ -240,6 +240,40 @@ minutes, or the run stops; an `async` one arrives as follow-up input. Without a
 sink the agent is not offered the question tool. Web streams these as
 `run.question` and `run.question.settled` and accepts `POST /api/answer`.
 
+### Conversation event streams
+
+`runtime.start()` ties a run to the output its caller passed. A front end that
+connects and disconnects on its own schedule, or runs in another process, uses
+the conversation's event stream instead:
+
+```ts
+const stop = await runtime.subscribe(identity, { stream, after }, event => send(event));
+const run = await runtime.submit({ ...identity, prompt });   // { ok: true, runId } or a rejection
+```
+
+A submitted run does not depend on any subscriber being connected. Every
+subscription starts with `{ type: 'stream.opened', stream, sequence }`, then
+replays the buffered events after the cursor, then delivers live ones:
+
+| Event | Meaning |
+|---|---|
+| `run.started` | A run began; `runId` addresses stop, supplemental input and its questions |
+| `run.state` | Full `RunState` snapshot, filtered by the host's `filterState`; replaces earlier states of the run |
+| `run.question` / `run.question.settled` | A question to answer with `answerQuestion`, and its outcome |
+| `run.finished` / `run.failed` | The run's result, or that its output failed |
+
+Each event carries a `sequence` that increases within the stream but is not
+dense: superseded state snapshots are dropped and the buffer keeps the latest
+256 events per conversation. A cursor is valid only for the `stream` that issued
+it; after a restart the stream id changes and the buffer starts empty, so a
+client keeps its own transcript and treats a new id as a fresh stream.
+
+Web exposes this as `GET /api/events?conversationId=…[&stream=…&after=…]`
+(NDJSON, open until the client disconnects) and `POST /api/send`
+(`{ conversationId, text }` returning `{ runId }`). Stop, supplemental input,
+answers and engine selection use the existing `POST` endpoints. `POST /api/chat`
+remains as the single-request form of the same run.
+
 Call `runtime.close()` on plugin shutdown. It rejects new work, aborts queued and
 active requests, waits for output consumers, then flushes session state. Each
 runtime needs an exclusively owned state directory. For a multi-user Web host,

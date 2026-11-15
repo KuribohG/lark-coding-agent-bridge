@@ -32,7 +32,15 @@ export type {
   ConversationIdentity,
   ConversationInput,
   ConversationStatus,
+  ConversationQuestionSink,
 } from './conversation';
+export type {
+  ConversationCursor,
+  ConversationEvent,
+  ConversationStreamEvent,
+  ConversationStreamOpened,
+  SequencedConversationEvent,
+} from './conversation-events';
 export {
   ProfileExecutionController,
   profileForAgentKind,
