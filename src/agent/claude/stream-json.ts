@@ -24,6 +24,7 @@ interface ClaudeRawEvent {
     input_tokens?: number;
     output_tokens?: number;
     cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
   };
   total_cost_usd?: number;
   is_error?: boolean;
@@ -204,6 +205,7 @@ export function* translateEvent(raw: unknown): Generator<AgentEvent> {
         inputTokens: evt.usage.input_tokens,
         outputTokens: evt.usage.output_tokens,
         cachedInputTokens: evt.usage.cache_read_input_tokens,
+        cacheWriteInputTokens: evt.usage.cache_creation_input_tokens,
         costUsd: evt.total_cost_usd,
       };
     }

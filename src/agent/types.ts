@@ -67,6 +67,8 @@ export type AgentEvent =
       inputTokens?: number;
       outputTokens?: number;
       cachedInputTokens?: number;
+      /** Prompt tokens written to the provider cache by this run. */
+      cacheWriteInputTokens?: number;
       reasoningOutputTokens?: number;
       contextWindowTokens?: number;
       costUsd?: number;
@@ -98,6 +100,8 @@ export interface AgentRunOptions {
   threadId?: string;
   /** Run a side question from a snapshot; never append to the parent session. */
   forkSession?: boolean;
+  /** Leave no resumable session behind; for forks whose answer is all that matters. */
+  ephemeralSession?: boolean;
   model?: string;
   /** Backend-specific routing for a provider-qualified model selection. */
   modelProvider?: ResolvedModelProvider;

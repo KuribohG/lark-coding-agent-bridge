@@ -7,7 +7,10 @@ import type { MutableProfileState } from './config-ops';
 import { writeFileAtomic } from '../platform/atomic-write';
 import { larkDisplay } from './lark-display';
 import { SLACK_DISPLAY_DEFAULTS, WEB_DISPLAY_DEFAULTS } from './channel-display';
-import { getMaxConcurrentRuns, getRunIdleTimeoutMs, getAgentStopGraceMs, getWorkflowTimeoutMinutes } from './schema';
+import {
+  DEFAULT_CACHE_KEEPALIVE_MIN_CONTEXT_TOKENS, DEFAULT_CACHE_KEEPALIVE_PINGS,
+  getMaxConcurrentRuns, getRunIdleTimeoutMs, getAgentStopGraceMs, getWorkflowTimeoutMinutes,
+} from './schema';
 
 export async function readProfileSnapshot(state: MutableProfileState) {
   const root = await loadRootConfig(state.configPath);
@@ -29,7 +32,10 @@ export async function inspectConfig(path: string, profile?: string) {
     value: p.preferences[internal] ?? (key === 'max_concurrent_runs' ? getMaxConcurrentRuns(p)
       : key === 'idle_timeout_minutes' ? (getRunIdleTimeoutMs(p) ?? 0) / 60000
       : key === 'workflow_timeout_minutes' ? getWorkflowTimeoutMinutes(p)
-      : key === 'stop_grace_ms' ? getAgentStopGraceMs(p) : 'native'),
+      : key === 'stop_grace_ms' ? getAgentStopGraceMs(p)
+      : key === 'cache_keepalive_interval_minutes' ? 0
+      : key === 'cache_keepalive_max_pings' ? DEFAULT_CACHE_KEEPALIVE_PINGS
+      : key === 'cache_keepalive_min_context_tokens' ? DEFAULT_CACHE_KEEPALIVE_MIN_CONTEXT_TOKENS : 'native'),
     source: sources[key] ?? (key === 'model' || key === 'effort' ? 'native CLI' : 'built-in'),
   }]));
   const channels = {

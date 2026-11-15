@@ -133,6 +133,16 @@ export interface AppPreferences {
   /** Default and maximum total workflow duration, in minutes. Default 480. */
   workflowTimeoutMinutes?: number;
   /**
+   * Prompt-cache keep-alive for a conversation waiting on its workflow: while the main session is idle, a
+   * throwaway fork re-reads its cached prompt every this many minutes so the cache outlives the wait.
+   * 0 / undefined = off (the default). Keep it a few minutes under the provider's cache lifetime.
+   */
+  cacheKeepaliveIntervalMinutes?: number;
+  /** Keep-alive requests per idle period before the cache is left to expire. Default 6. */
+  cacheKeepaliveMaxPings?: number;
+  /** Sessions whose prompt is smaller than this are not kept alive; rebuilding them is cheap. Default 100000. */
+  cacheKeepaliveMinContextTokens?: number;
+  /**
    * Whether the bot only responds to messages that @-mention it in groups
    * (regular and topic groups). p2p is always unrestricted. Default true:
    * groups are quiet unless the user @bot. Set false to let any group
@@ -162,7 +172,8 @@ export interface ChannelDisplayConfig {
   slack?: Partial<import('./channel-display').SlackDisplayConfig>;
 }
 
-export type RunPreferences = Pick<AppPreferences, 'model' | 'reasoningEffort' | 'maxConcurrentRuns' | 'runIdleTimeoutMinutes' | 'workflowTimeoutMinutes' | 'agentStopGraceMs'>;
+export type RunPreferences = Pick<AppPreferences, 'model' | 'reasoningEffort' | 'maxConcurrentRuns' | 'runIdleTimeoutMinutes' | 'workflowTimeoutMinutes' | 'agentStopGraceMs'
+  | 'cacheKeepaliveIntervalMinutes' | 'cacheKeepaliveMaxPings' | 'cacheKeepaliveMinContextTokens'>;
 
 /** In-memory account and preference view; the public file format is ConfigDocument. */
 export interface AppConfig {
@@ -281,4 +292,31 @@ export function getWorkflowTimeoutMinutes(cfg: Pick<AppConfig, 'preferences'>): 
   const raw = cfg.preferences?.workflowTimeoutMinutes;
   return typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= 1 && raw <= MAX_WORKFLOW_TIMEOUT_MINUTES
     ? raw : DEFAULT_WORKFLOW_TIMEOUT_MINUTES;
+}
+
+export const MAX_CACHE_KEEPALIVE_INTERVAL_MINUTES = 24 * 60;
+export const MAX_CACHE_KEEPALIVE_PINGS = 100;
+export const MAX_CACHE_KEEPALIVE_MIN_CONTEXT_TOKENS = 10_000_000;
+export const DEFAULT_CACHE_KEEPALIVE_PINGS = 6;
+export const DEFAULT_CACHE_KEEPALIVE_MIN_CONTEXT_TOKENS = 100_000;
+
+export interface CacheKeepaliveSettings {
+  intervalMs: number;
+  maxPings: number;
+  minContextTokens: number;
+}
+
+/** Resolved keep-alive settings, or undefined while the feature is off. */
+export function getCacheKeepalive(cfg: { preferences?: Pick<AppPreferences,
+  'cacheKeepaliveIntervalMinutes' | 'cacheKeepaliveMaxPings' | 'cacheKeepaliveMinContextTokens'> }): CacheKeepaliveSettings | undefined {
+  const within = (raw: unknown, min: number, max: number): number | undefined =>
+    typeof raw === 'number' && Number.isSafeInteger(raw) && raw >= min && raw <= max ? raw : undefined;
+  const minutes = within(cfg.preferences?.cacheKeepaliveIntervalMinutes, 1, MAX_CACHE_KEEPALIVE_INTERVAL_MINUTES);
+  if (minutes === undefined) return undefined;
+  return {
+    intervalMs: minutes * 60_000,
+    maxPings: within(cfg.preferences?.cacheKeepaliveMaxPings, 1, MAX_CACHE_KEEPALIVE_PINGS) ?? DEFAULT_CACHE_KEEPALIVE_PINGS,
+    minContextTokens: within(cfg.preferences?.cacheKeepaliveMinContextTokens, 0, MAX_CACHE_KEEPALIVE_MIN_CONTEXT_TOKENS)
+      ?? DEFAULT_CACHE_KEEPALIVE_MIN_CONTEXT_TOKENS,
+  };
 }

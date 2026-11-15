@@ -157,6 +157,8 @@ const BRIDGE_KEYS: Record<string, string> = {
 const RUN_INTERNAL: Record<string, string> = {
   model: 'model', effort: 'reasoningEffort', max_concurrent_runs: 'maxConcurrentRuns',
   idle_timeout_minutes: 'runIdleTimeoutMinutes', stop_grace_ms: 'agentStopGraceMs', workflow_timeout_minutes: 'workflowTimeoutMinutes',
+  cache_keepalive_interval_minutes: 'cacheKeepaliveIntervalMinutes', cache_keepalive_max_pings: 'cacheKeepaliveMaxPings',
+  cache_keepalive_min_context_tokens: 'cacheKeepaliveMinContextTokens',
 };
 
 /**

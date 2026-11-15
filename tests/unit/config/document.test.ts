@@ -16,6 +16,7 @@ import {
 import { diffValues, editToml, parseKeyPath } from '../../../src/config/toml-edit';
 import { getAutostartProfiles, loadRootConfig, saveRootConfig } from '../../../src/config/profile-store';
 import { inspectConfig, patchConfig } from '../../../src/config/service';
+import { getCacheKeepalive } from '../../../src/config/schema';
 import { reconcileProfile, type ReconcileTarget } from '../../../src/runtime/config-reconciler';
 import type { ProfileConfig } from '../../../src/config/profile-schema';
 import { larkDisplay } from '../../../src/channels/lark/config';
@@ -89,6 +90,29 @@ describe('layered configuration', () => {
     doc.defaults!.run!.workflow_timeout_minutes = value;
     expect(() => parseDocument(formatDocument(doc))).toThrow('workflow_timeout_minutes');
   });
+
+  it('resolves cache keep-alive settings, which stay off until an interval is configured', async () => {
+    const path = await file();
+    const run = (await inspectConfig(path, 'bot')).run;
+    expect([run.cache_keepalive_interval_minutes, run.cache_keepalive_max_pings, run.cache_keepalive_min_context_tokens].map(item => item!.value))
+      .toEqual([0, 6, 100000]);
+    expect(getCacheKeepalive((await loadRootConfig(path))!.profiles.bot!)).toBeUndefined();
+    await patchConfig(path, ['profiles', 'bot', 'run', 'cache_keepalive_interval_minutes'], 50);
+    expect(getCacheKeepalive((await loadRootConfig(path))!.profiles.bot!)).toEqual({ intervalMs: 3_000_000, maxPings: 6, minContextTokens: 100000 });
+    await patchConfig(path, ['defaults', 'run', 'cache_keepalive_max_pings'], 4);
+    await patchConfig(path, ['profiles', 'bot', 'run', 'cache_keepalive_min_context_tokens'], 0);
+    expect(getCacheKeepalive((await loadRootConfig(path))!.profiles.bot!)).toEqual({ intervalMs: 3_000_000, maxPings: 4, minContextTokens: 0 });
+    await patchConfig(path, ['profiles', 'bot', 'run', 'cache_keepalive_interval_minutes'], 0);
+    expect(getCacheKeepalive((await loadRootConfig(path))!.profiles.bot!)).toBeUndefined();
+  });
+
+  it.each([['cache_keepalive_interval_minutes', -1], ['cache_keepalive_interval_minutes', 1441], ['cache_keepalive_max_pings', 0],
+    ['cache_keepalive_max_pings', 101], ['cache_keepalive_min_context_tokens', -1], ['cache_keepalive_min_context_tokens', 1.5]])(
+    'rejects an out-of-range %s: %s', (key, value) => {
+      const doc = parseDocument(source);
+      doc.defaults!.run![key] = value;
+      expect(() => parseDocument(formatDocument(doc))).toThrow(key);
+    });
 
   it.each([1, 10080])('accepts workflow timeout boundary %i', value => {
     const doc = parseDocument(source);

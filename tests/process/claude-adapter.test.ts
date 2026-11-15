@@ -263,9 +263,19 @@ describe('ClaudeAdapter process contract', () => {
     expect(await collect(run.events)).toContainEqual({ type: 'final_text', content: 'final answer' });
     const record = await readRecord(fake.recordPath);
     expect(record.argv).toContain('--fork-session');
+    expect(record.argv).not.toContain('--no-session-persistence');
     expect(record.argv[record.argv.indexOf('--resume') + 1]).toBe('parent');
     expect(JSON.parse(record.stdin).message.content).toBe('side question');
     await expect(async () => (await adapter.prepareRun({ runId: 'invalid', prompt: 'no parent', cwd: fake.dir, forkSession: true })).start()).rejects.toThrow('parent');
+  });
+
+  it('leaves no session behind for an ephemeral fork', async () => {
+    const fake = await createFakeClaude({ lines: [{ type: 'result', result: 'ok', session_id: 'child' }] });
+    cleanup.push(fake.dir);
+    const adapter = new ClaudeAdapter({ binary: fake.path });
+    const run = (await adapter.prepareRun({ runId: 'ping', prompt: 'ping', cwd: fake.dir, sessionId: 'parent', forkSession: true, ephemeralSession: true })).start();
+    await collect(run.events);
+    expect((await readRecord(fake.recordPath)).argv).toEqual(expect.arrayContaining(['--fork-session', '--no-session-persistence']));
   });
 
   it('skips orphaned task-notification results before the prompt turn', async () => {

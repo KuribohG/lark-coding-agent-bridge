@@ -34,6 +34,11 @@ See [config.example.toml](config.example.toml) for a full layered example. `agen
 - `idle_timeout_minutes`: integer 0–120; 0 disables the no-output watchdog.
 - `workflow_timeout_minutes`: integer 1–10080 (7 days), default 480. Sets the default and maximum total duration for a new workflow; its `timeoutMs` may request a shorter duration. Reload affects new workflows only. Existing workflows and their descendants retain the saved budget and deadline, including across replay/restart.
 - `stop_grace_ms`: integer 100–30000 between graceful and forced termination.
+- `cache_keepalive_interval_minutes`: integer 0–1440, default 0 (off). While a Claude conversation is idle waiting on its workflow, the bridge re-reads the session's cached prompt this often from a throwaway fork, so the next wake does not pay to write the whole context to the cache again. Set it a few minutes under the cache lifetime in use (for example 50 with a 1-hour cache); a request more than 5 minutes overdue is skipped, because the cache has probably expired already.
+- `cache_keepalive_max_pings`: integer 1–100, default 6. Keep-alive requests per idle period; after that the cache is left to expire. Each request costs one cache read of the full context, a rebuild costs a cache write of it.
+- `cache_keepalive_min_context_tokens`: integer 0–10000000, default 100000. A session whose prompt is smaller than this gets one request and no more.
+
+Keep-alive applies only while the scope's workflow is active and its conversation has no turn running. It starts a new count after every turn, and stops for the rest of an idle period as soon as a request reads less than 90% of its prompt from the cache. Each request is logged as `cache-keepalive ping` with its prompt and cached token counts.
 
 Omitting a key inherits its parent. Removing a profile override restores inheritance. Arrays replace their parent's entire value; an empty array explicitly clears the list. False and zero are retained. Native model/effort delegation omits the corresponding CLI override so native project/managed configuration remains authoritative. The bridge does not rewrite native Codex/Claude settings.
 

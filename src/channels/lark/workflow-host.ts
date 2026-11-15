@@ -5,7 +5,7 @@ import { capabilityForProfile } from '../../agent/backends';
 import { modelRunArguments, type ModelSettings } from '../../agent/model-settings';
 import type { Controls, WorkflowControl } from '../../commands';
 import type { AgentKind } from '../../config/profile-schema';
-import { getRunIdleTimeoutMs, getWorkflowTimeoutMinutes } from '../../config/schema';
+import { getAgentStopGraceMs, getCacheKeepalive, getRunIdleTimeoutMs, getWorkflowTimeoutMinutes } from '../../config/schema';
 import { DEFAULT_STALL_MS } from '@kuribohg/agent-workflows';
 import { sanitizeLogsForDoctor } from '../../core/logger';
 import { canUseDm, canUseGroup } from '../../policy/access';
@@ -13,12 +13,13 @@ import type { AgentEntry } from '../../runtime/agent-entry';
 import { profileForAgentKind } from '../../runtime/execution-controller';
 import { resolveRunModelSettings } from '../../runtime/model-settings';
 import type { RunExecutor } from '../../runtime/run-executor';
-import { resolveRunFlowContext } from '../../runtime/run-flow';
+import { resolveRunFlowContext, startRunFlow } from '../../runtime/run-flow';
 import type { SessionCatalog } from '../../session/catalog';
 import type { SessionStore } from '../../session/store';
 import { bridgeAgentKind, resolveWorkerExecution } from '../../workflows/bridge/execution';
 import { createBridgeWorkflowRuntime } from '../../workflows/bridge/runtime';
 import type { WorkspaceStore } from '../../workspace/store';
+import { CacheKeepalive, type CachePing } from './cache-keepalive';
 import type { PendingMessage, PendingQueue } from './pending-queue';
 import type { LarkTurns } from './turns';
 import { WorkflowOrigins } from './workflow-origins';
@@ -39,12 +40,16 @@ export interface LarkWorkflowHostDeps {
   dispatch(scope: string, batch: PendingMessage[], options: { signal: AbortSignal; entry: AgentEntry }): Promise<unknown>;
 }
 
+// The fork shares the main session's request prefix, so this prompt is all it adds; the answer is discarded.
+const KEEPALIVE_PROMPT = '这是 bridge 发出的缓存保活请求，不是用户输入。只回复 ok，不要调用任何工具，不要继续之前的任务。';
+
 /** The workflow runtime of one Lark connection, with its origin messages and progress cards. */
 export class LarkWorkflowHost {
   readonly origins: WorkflowOrigins;
   private runtime: WorkflowRuntime | undefined;
   private progressCards: WorkflowProgressCards | undefined;
   private controlView: WorkflowControl | undefined;
+  private keepalive: CacheKeepalive | undefined;
 
   constructor(private readonly deps: LarkWorkflowHostDeps) {
     this.origins = new WorkflowOrigins(deps.stateDir ? join(deps.stateDir, 'workflow-origins.json') : undefined);
@@ -71,7 +76,29 @@ export class LarkWorkflowHost {
       origins: this.origins, path: join(stateDir, 'workflow-progress-cards.json') });
     await this.progressCards.start();
     await runtime.start();
-    const { controls, pending } = this.deps;
+    const { controls, pending, turns } = this.deps;
+    const sessionCatalog = this.deps.sessionCatalog;
+    this.keepalive = new CacheKeepalive({
+      scopes: () => {
+        try {
+          return [...this.origins.keys()].filter(scope => runtime.kernel.state(scope)?.status === 'active');
+        } catch {
+          // The kernel database is closed once shutdown starts.
+          return [];
+        }
+      },
+      // Only Claude's prompt cache expires on a timer that a read can push back.
+      settings: scope => this.deps.resolveAgentKind(scope) === 'claude'
+        ? getCacheKeepalive(profileForAgentKind(controls.profileConfig, 'claude')) : undefined,
+      isIdle: scope => turns.isIdle(scope),
+      lastActivity: async scope => {
+        const root = await this.rootContext(scope, sessionCatalog);
+        return root && sessionCatalog.activeFor({ scopeId: scope, agentId: root.capability.agentId,
+          cwdRealpath: root.context.workspace.cwdRealpath, policyFingerprint: root.context.policy.policyFingerprint })?.updatedAt;
+      },
+      ping: (scope, signal) => this.keepalivePing(scope, sessionCatalog, signal),
+    });
+    this.keepalive.start();
     this.controlView = {
       active: scope => runtime.kernel.state(scope)?.status === 'active',
       invalidate: scope => runtime.kernel.invalidate(scope),
@@ -97,7 +124,8 @@ export class LarkWorkflowHost {
   /** Stops card edits before the runtime, so shutdown transitions are not published as progress. */
   close(): { progressCards: Promise<void> | undefined; runtime: Promise<void> | undefined } {
     this.controlView = undefined;
-    return { progressCards: this.progressCards?.close(), runtime: this.runtime?.close() };
+    const keepalive = this.keepalive?.close();
+    return { progressCards: this.progressCards?.close(), runtime: Promise.all([keepalive, this.runtime?.close()]).then(() => {}) };
   }
 
   private async replyToOrigin(state: WorkflowState, text: string): Promise<void> {
@@ -148,24 +176,58 @@ export class LarkWorkflowHost {
     });
   }
 
-  private async resolveRoot(scope: string, sessionCatalog: SessionCatalog) {
+  /** Policy, workspace and resumable session of the conversation that owns a scope's workflow. */
+  private async rootContext(scope: string, sessionCatalog: SessionCatalog) {
     const message: NormalizedMessage | undefined = this.origins.get(scope);
     if (!message) return undefined;
     const { controls, sessions, workspaces } = this.deps;
     const agentKind = this.deps.resolveAgentKind(scope);
     const profileConfig = profileForAgentKind(controls.profileConfig, agentKind);
     const capability = capabilityForProfile(profileConfig);
-    const context = await resolveRunFlowContext({ scopeId: scope,
-      scope: { source: 'im', chatId: message.chatId, actorId: message.senderId, ...(message.threadId ? { threadId: message.threadId } : {}) },
+    const input = { scopeId: scope,
+      scope: { source: 'im' as const, chatId: message.chatId, actorId: message.senderId, ...(message.threadId ? { threadId: message.threadId } : {}) },
       prompt: '', attachments: [],
       access: message.chatType === 'p2p' ? canUseDm(profileConfig, controls, message.senderId)
         : canUseGroup(profileConfig, controls, message.chatId, message.senderId),
       capability, profileConfig, sessions, sessionCatalog, workspaces, now: Date.now(),
-    });
+    };
+    const context = await resolveRunFlowContext(input);
     if (!context.ok || !context.resumeFrom) return undefined;
+    return { input, context, agentKind, capability };
+  }
+
+  private async resolveRoot(scope: string, sessionCatalog: SessionCatalog) {
+    const resolved = await this.rootContext(scope, sessionCatalog);
+    if (!resolved) return undefined;
+    const { context, agentKind } = resolved;
+    const { controls } = this.deps;
     const modelSettings = modelRunArguments(await resolveRunModelSettings(controls, scope, undefined, agentKind));
     return { policy: context.policy, root: { scopeId: scope, profile: controls.profile, agentKind,
       cwdRealpath: context.workspace.cwdRealpath, policyFingerprint: context.policy.policyFingerprint,
-      catalogBinding: workflowDigest({ nativeId: context.resumeFrom, agentKind }), modelSettings } };
+      catalogBinding: workflowDigest({ nativeId: context.resumeFrom!, agentKind }), modelSettings } };
+  }
+
+  /**
+   * One request from a discarded fork of the main session. It must launch exactly like a conversation turn
+   * (model, effort, question tool): any difference in the request prefix misses the cache it is meant to read.
+   */
+  private async keepalivePing(scope: string, sessionCatalog: SessionCatalog, signal: AbortSignal): Promise<CachePing | undefined> {
+    const resolved = await this.rootContext(scope, sessionCatalog);
+    if (!resolved) return undefined;
+    const { controls, executor } = this.deps;
+    const modelSettings = modelRunArguments(await resolveRunModelSettings(controls, scope, undefined, resolved.agentKind));
+    const started = await startRunFlow({
+      ...resolved.input, prompt: KEEPALIVE_PROMPT, now: Date.now(), executor, signal, modelSettings,
+      stopGraceMs: getAgentStopGraceMs(controls.cfg), userQuestions: true,
+      fork: { executionScopeId: `cache-keepalive:${scope}`, ephemeral: true, prompt: () => KEEPALIVE_PROMPT },
+      observability: { profile: controls.profile, agent: resolved.capability.agentId, source: 'cache-keepalive', stage: 'submit' },
+    });
+    if (!started.ok) return undefined;
+    let usage: { inputTokens?: number; cachedInputTokens?: number; cacheWriteInputTokens?: number; costUsd?: number } | undefined;
+    for await (const event of started.execution.subscribe()) if (event.type === 'usage') usage = event;
+    if (await started.execution.result !== 'completed' || !usage) return undefined;
+    const cachedTokens = usage.cachedInputTokens ?? 0;
+    return { promptTokens: (usage.inputTokens ?? 0) + cachedTokens + (usage.cacheWriteInputTokens ?? 0), cachedTokens,
+      ...(usage.costUsd !== undefined ? { costUsd: usage.costUsd } : {}) };
   }
 }

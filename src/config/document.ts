@@ -14,7 +14,10 @@ import { larkDisplay } from './lark-display';
 import { validateLarkNetwork } from './lark-network';
 import { SLACK_DISPLAY_DEFAULTS, WEB_DISPLAY_DEFAULTS } from './channel-display';
 import { normalizeFileLinks } from './file-links';
-import { MAX_CONCURRENT_RUNS, MAX_WORKFLOW_TIMEOUT_MINUTES, type RunPreferences } from './schema';
+import {
+  MAX_CACHE_KEEPALIVE_INTERVAL_MINUTES, MAX_CACHE_KEEPALIVE_MIN_CONTEXT_TOKENS, MAX_CACHE_KEEPALIVE_PINGS,
+  MAX_CONCURRENT_RUNS, MAX_WORKFLOW_TIMEOUT_MINUTES, type RunPreferences,
+} from './schema';
 import { parseEffort } from '../agent/model-settings';
 import {
   AGENT_KINDS,
@@ -39,7 +42,15 @@ export const RUN_KEYS = {
   model: 'model', effort: 'reasoningEffort', max_concurrent_runs: 'maxConcurrentRuns',
   idle_timeout_minutes: 'runIdleTimeoutMinutes', stop_grace_ms: 'agentStopGraceMs',
   workflow_timeout_minutes: 'workflowTimeoutMinutes',
+  cache_keepalive_interval_minutes: 'cacheKeepaliveIntervalMinutes', cache_keepalive_max_pings: 'cacheKeepaliveMaxPings',
+  cache_keepalive_min_context_tokens: 'cacheKeepaliveMinContextTokens',
 } as const;
+const RUN_RANGES: Record<string, readonly [number, number]> = {
+  max_concurrent_runs: [1, MAX_CONCURRENT_RUNS], idle_timeout_minutes: [0, 120], stop_grace_ms: [100, 30000],
+  workflow_timeout_minutes: [1, MAX_WORKFLOW_TIMEOUT_MINUTES],
+  cache_keepalive_interval_minutes: [0, MAX_CACHE_KEEPALIVE_INTERVAL_MINUTES], cache_keepalive_max_pings: [1, MAX_CACHE_KEEPALIVE_PINGS],
+  cache_keepalive_min_context_tokens: [0, MAX_CACHE_KEEPALIVE_MIN_CONTEXT_TOKENS],
+};
 const PROFILE_KEYS = ['agent', 'run', 'mode', 'accounts', 'secrets', 'access', 'workspaces', 'permissions', 'attachments', 'larkCli', 'launch'];
 const LARK_KEYS = ['reply_mode', 'show_tools', 'progress', 'message_debounce_ms', 'file_links', 'network'];
 const WEB_KEYS = ['show_tools', 'show_reasoning'];
@@ -66,9 +77,8 @@ function checkRun(value: unknown, path: string, agent?: AgentKind): void {
       if (!selection(v)) throw new Error(`${path}.${key}: expected a value or { source = "native" }`);
       if (key === 'effort' && typeof v === 'string') parseEffort(v, agent ?? 'codex');
     } else {
-      const [min, max] = key === 'max_concurrent_runs' ? [1, MAX_CONCURRENT_RUNS] : key === 'idle_timeout_minutes' ? [0, 120]
-        : key === 'workflow_timeout_minutes' ? [1, MAX_WORKFLOW_TIMEOUT_MINUTES] : [100, 30000];
-      if (!Number.isSafeInteger(v) || v < min! || v > max!) throw new Error(`${path}.${key}: expected integer ${min}..${max}`);
+      const [min, max] = RUN_RANGES[key]!;
+      if (!Number.isSafeInteger(v) || v < min || v > max) throw new Error(`${path}.${key}: expected integer ${min}..${max}`);
     }
   }
 }

@@ -72,11 +72,11 @@ describe('Claude stream-json translator', () => {
       ...translateEvent({
         type: 'result',
         session_id: 'sess-2',
-        usage: { input_tokens: 12, output_tokens: 34, cache_read_input_tokens: 5 },
+        usage: { input_tokens: 12, output_tokens: 34, cache_read_input_tokens: 5, cache_creation_input_tokens: 7 },
         total_cost_usd: 0.1234,
       }),
     ]).toEqual([
-      { type: 'usage', inputTokens: 12, outputTokens: 34, cachedInputTokens: 5, costUsd: 0.1234 },
+      { type: 'usage', inputTokens: 12, outputTokens: 34, cachedInputTokens: 5, cacheWriteInputTokens: 7, costUsd: 0.1234 },
       { type: 'done', sessionId: 'sess-2', terminationReason: 'normal' },
     ]);
     expect([...translateEvent({ type: 'result', session_id: 'sess-2' })][0]).not.toHaveProperty('threadId');

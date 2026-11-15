@@ -28,6 +28,8 @@ export interface RunFlowContextInput {
   fork?: {
     executionScopeId: string;
     prompt(parentId: string, policy: RunPolicyAllow): string;
+    /** Do not keep the forked session on disk. */
+    ephemeral?: boolean;
   };
   scope: ScopeContext;
   prompt: string;
@@ -207,6 +209,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       policy,
       systemPrompt: input.systemPrompt,
       forkSession: Boolean(input.fork),
+      ephemeralSession: input.fork?.ephemeral,
       sessionId,
       threadId,
       ...(input.modelSettings ?? {

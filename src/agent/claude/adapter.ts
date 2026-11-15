@@ -137,6 +137,7 @@ export class ClaudeAdapter implements AgentAdapter {
     ];
     if (opts.sessionId) args.push('--resume', opts.sessionId);
     if (opts.forkSession) args.push('--fork-session');
+    if (opts.ephemeralSession) args.push('--no-session-persistence');
     if (opts.model) args.push('--model', validateModelId(opts.model));
     if (this.mcpConfig) args.push('--mcp-config', this.mcpConfig);
     // ultra maps to the ultracode session setting, which also pins effort to xhigh; it has no --effort value.

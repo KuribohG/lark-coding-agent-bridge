@@ -47,6 +47,7 @@ export interface SubmitRunInput {
   sessionId?: string;
   threadId?: string;
   forkSession?: boolean;
+  ephemeralSession?: boolean;
   model?: string;
   reasoningEffort?: import('../agent/model-settings').ReasoningEffort;
   images?: readonly string[];
@@ -296,6 +297,7 @@ export class RunExecutor {
       sessionId: input.sessionId,
       threadId: input.threadId,
       forkSession: input.forkSession,
+      ephemeralSession: input.ephemeralSession,
       model: modelProvider?.model ?? input.model,
       modelProvider,
       reasoningEffort: input.reasoningEffort,
