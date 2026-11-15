@@ -4,10 +4,9 @@ import {
   type WorkflowKernel, type WorkflowRuntime, type WorkflowState,
 } from '@kuribohg/agent-workflows';
 import { capabilityForProfile } from '../agent/backends';
-import { modelRunArguments, type ModelSettings } from '../agent/model-settings';
-import type { MutableProfileState } from '../config/config-ops';
-import type { AgentKind, ProfileConfig } from '../config/profile-schema';
-import { getAgentStopGraceMs, getCacheKeepalive, getRunIdleTimeoutMs, getWorkflowTimeoutMinutes } from '../config/schema';
+import { modelRunArguments, type ModelSettings, type ResolvedModelSettings } from '../agent/model-settings';
+import type { AgentKind, RunProfileConfig } from '../config/profile-schema';
+import { getCacheKeepalive, getWorkflowTimeoutMinutes } from '../config/schema';
 import { sanitizeLogsForDoctor } from '../core/logger';
 import type { AccessDecision } from '../policy/access';
 import type { ScopeContext } from '../policy/run-policy';
@@ -18,8 +17,6 @@ import { createBridgeWorkflowRuntime } from '../workflows/bridge/runtime';
 import type { WorkspaceStore } from '../workspace/store';
 import type { AgentEntry } from './agent-entry';
 import { CacheKeepalive, type CachePing } from './cache-keepalive';
-import { profileForAgentKind } from './execution-controller';
-import { resolveRunModelSettings } from './model-settings';
 import type { RunExecutor } from './run-executor';
 import { resolveRunFlowContext, startRunFlow } from './run-flow';
 import type { ConversationTurns } from './turns';
@@ -44,7 +41,7 @@ export interface WorkflowFrontend<M> {
   /** Posts to the origin's conversation; rejects unless delivery was confirmed. */
   reply(origin: M, text: string): Promise<void>;
   /** The conversation an origin belongs to, and whether its sender may still run there. */
-  conversation(origin: M, profileConfig: ProfileConfig): { scope: ScopeContext; access: AccessDecision };
+  conversation(origin: M, profileConfig: RunProfileConfig): { scope: ScopeContext; access: AccessDecision };
   /** Why a workflow turn may not be queued in this scope right now, as shown to the person. */
   blocked?(scope: string): string | undefined;
   /** Queues `content` as a workflow turn sent from the origin; false when the queue is full. */
@@ -54,11 +51,23 @@ export interface WorkflowFrontend<M> {
   progress?(kernel: WorkflowKernel, origins: ReadonlyMap<string, M>, stateDir: string): WorkflowProgress;
 }
 
+/** The host's run settings, read on every use so configuration changes apply to running workflows. */
+export interface WorkflowSettings {
+  /** Name recorded with a workflow's root and its runs. */
+  profile: string;
+  /** Run profile of an engine. */
+  profileFor(agentKind: AgentKind): RunProfileConfig;
+  /** Model and effort a scope runs an engine with, after `patch`. */
+  modelSettings(scope: string, agentKind: AgentKind, patch?: Partial<ModelSettings>): Promise<ResolvedModelSettings>;
+  /** How long a silent worker is left alone; the engine default when undefined. */
+  stallMs(): number | undefined;
+  stopGraceMs(): number;
+}
+
 export interface WorkflowHostDeps<M> {
   frontend: WorkflowFrontend<M>;
   executor: RunExecutor;
-  /** The live profile state: engines, model choices and timeouts are read from it on every use. */
-  profile: MutableProfileState;
+  settings: WorkflowSettings;
   sessions: SessionStore;
   sessionCatalog?: SessionCatalog;
   workspaces: WorkspaceStore;
@@ -112,7 +121,7 @@ export class WorkflowHost<M> {
     this.progress = this.deps.frontend.progress?.(runtime.kernel, this.origins, stateDir);
     await this.progress?.start();
     await runtime.start();
-    const { profile: controls, frontend, turns } = this.deps;
+    const { settings, frontend, turns } = this.deps;
     const sessionCatalog = this.deps.sessionCatalog;
     this.keepalive = new CacheKeepalive({
       scopes: () => {
@@ -125,7 +134,7 @@ export class WorkflowHost<M> {
       },
       // Only Claude's prompt cache expires on a timer that a read can push back.
       settings: scope => this.deps.resolveAgentKind(scope) === 'claude'
-        ? getCacheKeepalive(profileForAgentKind(controls.profileConfig, 'claude')) : undefined,
+        ? getCacheKeepalive(settings.profileFor('claude')) : undefined,
       isIdle: scope => turns.isIdle(scope),
       lastActivity: async scope => {
         const root = await this.rootContext(scope, sessionCatalog);
@@ -171,12 +180,12 @@ export class WorkflowHost<M> {
   }
 
   private createRuntime(sessionCatalog: SessionCatalog, stateDir: string): WorkflowRuntime {
-    const { profile: controls, executor, turns } = this.deps;
+    const { settings, executor, turns } = this.deps;
     return createBridgeWorkflowRuntime({
       path: join(stateDir, 'workflows.sqlite'), executor,
-      getTimeoutMinutes: root => getWorkflowTimeoutMinutes(profileForAgentKind(controls.profileConfig, bridgeAgentKind(root.agentKind))),
+      getTimeoutMinutes: root => getWorkflowTimeoutMinutes(settings.profileFor(bridgeAgentKind(root.agentKind))),
       // A silent worker is stopped and retried; the conversation idle timeout is the natural knob for it.
-      stallMs: getRunIdleTimeoutMs(controls.profileConfig) ?? DEFAULT_STALL_MS,
+      stallMs: settings.stallMs() ?? DEFAULT_STALL_MS,
       showPlan: async (state, text) => {
         await this.replyToOrigin(state, text);
         this.progress?.track(state);
@@ -185,13 +194,13 @@ export class WorkflowHost<M> {
       resolveWorker: async (root, selection, policy) => {
         const { agentKind: kind, ...overrides } = selection;
         const agentKind = bridgeAgentKind(kind);
-        const profile = profileForAgentKind(controls.profileConfig, agentKind);
+        const profile = settings.profileFor(agentKind);
         // bridgeWorkerPolicy has already validated the engine's string-typed efforts.
         const requested = overrides as ModelSettings;
-        const settings = agentKind === root.agentKind ? { ...root.modelSettings as ModelSettings, ...requested }
-          : await resolveRunModelSettings(controls, root.scopeId, requested, agentKind);
+        const chosen = agentKind === root.agentKind ? { ...root.modelSettings as ModelSettings, ...requested }
+          : await settings.modelSettings(root.scopeId, agentKind, requested);
         return resolveWorkerExecution(root, profile, policy,
-          { model: settings.model, reasoningEffort: settings.reasoningEffort });
+          { model: chosen.model, reasoningEffort: chosen.reasoningEffort });
       },
       resolve: scope => this.resolveRoot(scope, sessionCatalog),
       wakeMain: async scope => {
@@ -214,9 +223,9 @@ export class WorkflowHost<M> {
   private async rootContext(scope: string, sessionCatalog: SessionCatalog) {
     const message = this.origins.get(scope);
     if (!message) return undefined;
-    const { profile: controls, sessions, workspaces } = this.deps;
+    const { settings, sessions, workspaces } = this.deps;
     const agentKind = this.deps.resolveAgentKind(scope);
-    const profileConfig = profileForAgentKind(controls.profileConfig, agentKind);
+    const profileConfig = settings.profileFor(agentKind);
     const capability = capabilityForProfile(profileConfig);
     const input = { scopeId: scope, ...this.deps.frontend.conversation(message, profileConfig),
       prompt: '', attachments: [],
@@ -231,9 +240,9 @@ export class WorkflowHost<M> {
     const resolved = await this.rootContext(scope, sessionCatalog);
     if (!resolved) return undefined;
     const { context, agentKind } = resolved;
-    const { profile: controls } = this.deps;
-    const modelSettings = modelRunArguments(await resolveRunModelSettings(controls, scope, undefined, agentKind));
-    return { policy: context.policy, root: { scopeId: scope, profile: controls.profile, agentKind,
+    const { settings } = this.deps;
+    const modelSettings = modelRunArguments(await settings.modelSettings(scope, agentKind));
+    return { policy: context.policy, root: { scopeId: scope, profile: settings.profile, agentKind,
       cwdRealpath: context.workspace.cwdRealpath, policyFingerprint: context.policy.policyFingerprint,
       catalogBinding: workflowDigest({ nativeId: context.resumeFrom!, agentKind }), modelSettings } };
   }
@@ -245,13 +254,13 @@ export class WorkflowHost<M> {
   private async keepalivePing(scope: string, sessionCatalog: SessionCatalog, signal: AbortSignal): Promise<CachePing | undefined> {
     const resolved = await this.rootContext(scope, sessionCatalog);
     if (!resolved) return undefined;
-    const { profile: controls, executor } = this.deps;
-    const modelSettings = modelRunArguments(await resolveRunModelSettings(controls, scope, undefined, resolved.agentKind));
+    const { settings, executor } = this.deps;
+    const modelSettings = modelRunArguments(await settings.modelSettings(scope, resolved.agentKind));
     const started = await startRunFlow({
       ...resolved.input, prompt: KEEPALIVE_PROMPT, now: Date.now(), executor, signal, modelSettings,
-      stopGraceMs: getAgentStopGraceMs(controls.cfg), userQuestions: true,
+      stopGraceMs: settings.stopGraceMs(), userQuestions: true,
       fork: { executionScopeId: `cache-keepalive:${scope}`, ephemeral: true, prompt: () => KEEPALIVE_PROMPT },
-      observability: { profile: controls.profile, agent: resolved.capability.agentId, source: 'cache-keepalive', stage: 'submit' },
+      observability: { profile: settings.profile, agent: resolved.capability.agentId, source: 'cache-keepalive', stage: 'submit' },
     });
     if (!started.ok) return undefined;
     let usage: { inputTokens?: number; cachedInputTokens?: number; cacheWriteInputTokens?: number; costUsd?: number } | undefined;
