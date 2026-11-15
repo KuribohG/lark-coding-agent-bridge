@@ -120,7 +120,8 @@ describe('profile-aware account and config commands', () => {
   });
 
   it('persists a hand-written model and effort, and clears both when default is chosen', async () => {
-    vi.useFakeTimers();
+    // Real timers: the atomic write backs off in real time when Windows briefly locks the config file,
+    // and a faked clock runs through every retry before the lock is released.
     const h = await createHarness();
 
     await h.command('/config submit', {
