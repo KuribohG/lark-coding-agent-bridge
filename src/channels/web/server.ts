@@ -134,14 +134,8 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
     }
     const prompt = required('text');
     if (url.pathname === '/api/command') {
-      const workflow = /^\/workflow(?:\s+([\s\S]*))?$/.exec(prompt.trim());
-      if (workflow) {
-        const reply = await runtime.workflowCommand(identity, workflow[1] ?? '');
-        sendJson(res, 200, reply === undefined ? {} : { reply });
-        return;
-      }
-      // The other commands are shared with every ConversationRuntime-backed
-      // front end; this channel collects the handler's replies for this response.
+      // The commands are shared with every ConversationRuntime-backed front
+      // end; this channel collects the handler's replies for this response.
       const web = createWebCommandChannel();
       const handled = await handleConversationCommand(prompt, {
         runtime,
@@ -155,6 +149,10 @@ async function handle(req: IncomingMessage, res: ServerResponse, runtime: WebCha
           content: prompt,
         },
         surface: 'web',
+        // `/workflow` is not in the catalogue; the runtime owns it.
+        command: (name, args, host) => name === 'workflow'
+          ? host.runtime.workflowCommand(host.identity, args).then(reply => reply ?? null)
+          : Promise.resolve(undefined),
       });
       if (!handled) throw new HttpError(400, 'unknown command');
       const reply = web.reply();

@@ -91,6 +91,7 @@ export async function runSlack(options: RunSlackOptions): Promise<void> {
     stateDir,
     namespace,
     systemPrompt: SLACK_SYSTEM_PROMPT,
+    workflows: true,
     botToken,
     appToken,
     teamId: options.teamId,

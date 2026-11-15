@@ -18,6 +18,8 @@ import {
 } from '../../commands/conversation';
 import { SLACK_SYSTEM_PROMPT } from './config';
 import { createSlackCommandChannel } from './command-channel';
+import { parseSlackConversationId, slackConversationId } from './conversation-id';
+import { SlackEventMirror } from './events';
 import { normalizeSlackText, toSlackMrkdwn } from './format';
 import { createSlackRunOutput } from './output';
 import { SlackThreadStore } from './thread-store';
@@ -100,6 +102,9 @@ async function startSlackChannel(options: SlackChannelOptions): Promise<SlackCon
     runtime = await createConversationRuntime({
       ...options,
       channelId: 'slack',
+      // Slack shows no answer UI, so runs the runtime starts itself (workflow
+      // turns, worker wakes) must not block on a question nobody can answer.
+      questionSinks: false,
       systemPrompt: options.systemPrompt ?? SLACK_SYSTEM_PROMPT,
       authorize: async input => authorizeSlackIdentity(
         input,
@@ -109,6 +114,7 @@ async function startSlackChannel(options: SlackChannelOptions): Promise<SlackCon
       ),
     });
     const activeRuntime = runtime;
+    const eventMirror = new SlackEventMirror({ api, display, progressIntervalMs: options.progressIntervalMs });
     const seenEvents = new SeenEvents();
 
     const handle = async (incoming: SlackEventEnvelope): Promise<void> => {
@@ -140,9 +146,17 @@ async function startSlackChannel(options: SlackChannelOptions): Promise<SlackCon
 
       if (!isDm) await threads.add(event.channel, rootTs);
 
+      const conversation = {
+        actorId: event.user,
+        conversationId: slackConversationId(event.channel, rootTs),
+      };
+      // Workflow turns and worker wakes are rendered from the conversation's
+      // event stream; watch before the command so none of them are missed.
+      if (/^\/workflow(?:\s|$)/i.test(prompt)) await eventMirror.watch(activeRuntime, conversation);
+
       if (await handleConversationCommand(prompt, {
         runtime: activeRuntime,
-        identity: { actorId: event.user, conversationId: conversationId(event.channel, rootTs) },
+        identity: conversation,
         channel: createSlackCommandChannel({
           api,
           channel: event.channel,
@@ -159,6 +173,10 @@ async function startSlackChannel(options: SlackChannelOptions): Promise<SlackCon
         },
         surface: 'slack',
         helpFooter,
+        // `/workflow` is not in the catalogue; the runtime owns it.
+        command: (name, args, host) => name === 'workflow'
+          ? host.runtime.workflowCommand(host.identity, args).then(reply => reply ?? null)
+          : Promise.resolve(undefined),
       })) return;
 
       const reactionAdded = await addReaction(api, event, 'eyes');
@@ -166,7 +184,7 @@ async function startSlackChannel(options: SlackChannelOptions): Promise<SlackCon
         const result = await activeRuntime.start(
           {
             actorId: event.user,
-            conversationId: conversationId(event.channel, rootTs),
+            conversationId: slackConversationId(event.channel, rootTs),
             prompt,
           },
           createSlackRunOutput({
@@ -203,6 +221,7 @@ async function startSlackChannel(options: SlackChannelOptions): Promise<SlackCon
         if (closed) return;
         closed = true;
         try {
+          eventMirror.close();
           await transport.close();
           await activeRuntime.close();
         } finally {
@@ -225,7 +244,7 @@ function authorizeSlackIdentity(
   allowedChannels: Set<string>,
   allowAllUsers: boolean,
 ): boolean {
-  const parsed = parseConversationId(input.conversationId);
+  const parsed = parseSlackConversationId(input.conversationId);
   if (!parsed) return false;
   if (!allowAllUsers && !allowedUsers.has(input.actorId)) return false;
   if (parsed.channel.startsWith('D')) return true;
@@ -275,16 +294,6 @@ function reactionErrorCode(error: unknown): string | undefined {
 function isIgnorableReactionError(error: unknown): boolean {
   const code = reactionErrorCode(error);
   return code === 'already_reacted' || code === 'no_reaction';
-}
-
-function conversationId(channel: string, threadTs: string): string {
-  return `${channel}/${threadTs}`;
-}
-
-function parseConversationId(value: string): { channel: string; threadTs: string } | undefined {
-  const separator = value.indexOf('/');
-  if (separator <= 0 || separator === value.length - 1) return undefined;
-  return { channel: value.slice(0, separator), threadTs: value.slice(separator + 1) };
 }
 
 function requireValue(value: string | undefined, name: string): string {

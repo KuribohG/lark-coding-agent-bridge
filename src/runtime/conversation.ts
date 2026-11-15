@@ -55,6 +55,12 @@ export interface ConversationRuntimeOptions {
    * Their turns and notices are published to the conversation event streams.
    */
   workflows?: boolean;
+  /**
+   * Offer the question tool to runs this host starts itself (`submit` and
+   * workflow turns). A front end without an answer UI sets false, so those
+   * runs never block on a question nobody can answer.
+   */
+  questionSinks?: boolean;
 }
 
 /** A turn the runtime starts itself, queued until the conversation is free. */
@@ -314,10 +320,15 @@ export class ConversationRuntime {
         });
       },
     };
-    const pending = this.startRun({ ...input, questions: {
-      ask: async question => { publish({ type: 'run.question', ...question }); },
-      settled: async question => { publish({ type: 'run.question.settled', ...question }); },
-    } }, output, started);
+    const questions = this.options.questionSinks === false ? undefined : {
+      ask: async (question: { id: string; runId: string; mode: AgentQuestionMode; questions: readonly AgentQuestion[] }) => {
+        publish({ type: 'run.question', ...question });
+      },
+      settled: async (question: { id: string; runId: string; status: string }) => {
+        publish({ type: 'run.question.settled', ...question });
+      },
+    };
+    const pending = this.startRun({ ...input, ...(questions ? { questions } : {}) }, output, started);
     this.starts.add(pending);
     void pending.then(() => this.starts.delete(pending), () => this.starts.delete(pending));
     const run = await pending;

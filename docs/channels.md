@@ -186,9 +186,18 @@ shared command catalog in `src/commands/catalog.ts`, and the handlers in
 `src/commands/conversation.ts` need only a `ConversationRuntime`, so any
 runtime-backed front end exposes them; Slack supplies the reply surface through
 `src/channels/slack/command-channel.ts`. Startup fails if a catalogue command for
-the `slack` channel has no handler, or a handler is no longer in the catalogue. Progress reuses and updates one
-thread message, then replaces it with the final answer. `[channels.slack]` controls
-`show_tools` and `show_progress`.
+the `slack` channel has no handler, or a handler is no longer in the catalogue.
+
+Slack also runs workflows (`workflows: true`, set by the `slack` command):
+`/workflow …` in a thread is handled by the conversation runtime, and
+`src/channels/slack/events.ts` subscribes that conversation's event stream so
+workflow turns, notices and worker-report wakes appear in the same thread. Those
+runs have no answer UI, so Slack disables the question sink for runs the runtime
+starts itself.
+
+Progress for ordinary messages reuses and updates one thread message, then
+replaces it with the final answer. `[channels.slack]` controls `show_tools` and
+`show_progress`.
 
 ## Integrate another IM
 
@@ -240,7 +249,10 @@ question, and shows the returned `message` whether or not it was taken. A
 `blocking` question holds the run until it is answered, declined after 30
 minutes, or the run stops; an `async` one arrives as follow-up input. Without a
 sink the agent is not offered the question tool. Web streams these as
-`run.question` and `run.question.settled` and accepts `POST /api/answer`.
+`run.question` and `run.question.settled` and accepts `POST /api/answer`. Runs
+the runtime starts itself (`submit` and workflow turns) publish questions to the
+event stream by default; a host with no answer UI sets `questionSinks: false`
+when creating the runtime, and those runs are then never offered the tool.
 
 ### Conversation event streams
 

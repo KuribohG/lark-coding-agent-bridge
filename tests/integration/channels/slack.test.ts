@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentEvent } from '../../../src/agent/types';
 import type { RunProfileConfig } from '../../../src/config/profile-schema';
 import { createSlackPlugin } from '../../../src/channels/slack/plugin';
@@ -103,7 +103,7 @@ function config(workspace: string): RunProfileConfig {
   };
 }
 
-async function harness(events: AgentEvent[][], showProgress = true) {
+async function harness(events: AgentEvent[][], showProgress = true, workflows = false) {
   const tmp = await createTmpProfile('bridge-slack-');
   cleanups.push(tmp.cleanup);
   const agent = new FakeAgentAdapter({ id: 'claude', events });
@@ -118,6 +118,7 @@ async function harness(events: AgentEvent[][], showProgress = true) {
     allowedUsers: ['U1'],
     allowedChannels: ['C1'],
     display: { show_progress: showProgress },
+    ...(workflows ? { workflows: true } : {}),
     api,
     transport,
     progressIntervalMs: 0,
@@ -276,6 +277,23 @@ describe('Slack channel plugin', () => {
       type: 'message', ts: '550.003', thread_ts: '550.001', text: '/stop',
     }));
     expect(h.api.posts.at(-1)?.text).toContain('No active run in this thread.');
+  });
+
+  it('runs /workflow in a thread and mirrors its turn into the thread', async () => {
+    const h = await harness([[
+      { type: 'system', sessionId: 'workflow-session' },
+      { type: 'final_text', content: 'workflow report' },
+      { type: 'done', terminationReason: 'normal' },
+    ]], true, true);
+    await h.transport.emit(channelEvent({ type: 'app_mention', ts: '800.001', text: '<@UBOT> /workflow status' }));
+    expect(h.api.posts.at(-1)?.text).toContain('当前没有工作流。');
+
+    await h.transport.emit(channelEvent({
+      type: 'message', ts: '800.002', thread_ts: '800.001', text: '/workflow start build the thing',
+    }));
+    await vi.waitFor(() => expect(h.api.posts.some(post => post.text.includes('workflow report'))).toBe(true));
+    expect(h.agent.runOptions[0]?.prompt).toContain('build the thing');
+    expect(h.agent.runOptions[0]?.userQuestions).toBeFalsy();
   });
 
   it('lists commands and explains a single command', async () => {

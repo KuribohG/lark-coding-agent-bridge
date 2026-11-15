@@ -30,6 +30,12 @@ export interface ConversationCommandHost {
   surface: CommandChannelId;
   /** Appended to `/help`, e.g. how to start a conversation on this platform. */
   helpFooter?: string;
+  /**
+   * A command the front end adds outside the catalogue, such as `/workflow`.
+   * Returns the text to show, `null` when it was handled without a reply
+   * (a queued turn), or `undefined` when this host does not own the name.
+   */
+  command?(name: string, args: string, host: ConversationCommandHost): Promise<string | null | undefined>;
 }
 
 type ConversationCommandHandler = (args: string, host: ConversationCommandHost) => Promise<void>;
@@ -99,13 +105,18 @@ export async function handleConversationCommand(
   const parsed = parseSlashCommand(input, findCommand, { caseInsensitive: true });
   if (!parsed) return false;
   const name = parsed.definition?.name ?? parsed.name;
-  const handler = (handlers as Record<string, ConversationCommandHandler>)[name];
-  if (!handler) {
-    await reply(host, `Unknown command: /${parsed.name}\n\n${helpText(host.surface, host.helpFooter)}`);
-    return true;
-  }
   try {
-    await handler(parsed.args, host);
+    const handler = (handlers as Record<string, ConversationCommandHandler>)[name];
+    if (handler) {
+      await handler(parsed.args, host);
+      return true;
+    }
+    const extra = await host.command?.(parsed.name, parsed.args, host);
+    if (extra !== undefined) {
+      if (extra !== null) await reply(host, extra);
+      return true;
+    }
+    await reply(host, `Unknown command: /${parsed.name}\n\n${helpText(host.surface, host.helpFooter)}`);
   } catch (error) {
     await reply(host, errorMessage(error));
   }
