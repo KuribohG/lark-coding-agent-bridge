@@ -84,7 +84,7 @@ export type DomainEvent =
   // Swarms
   | { type: 'swarm_created'; swarm: WorkflowSwarm }
   /** `archivedCalls`: the swarm's archived turns, which count as calls of the new run like its other completed turns. */
-  | { type: 'swarm_rebound'; swarmId: string; runId: string; retryPending: string[]; archivedCalls?: number }
+  | { type: 'swarm_rebound'; swarmId: string; runId: string; retryPending: string[]; archivedCalls?: number; reopened?: boolean }
   | { type: 'swarm_turn_scheduled'; swarmId: string; member: string; key: string; taskId: string; retry: boolean; opening: boolean; wake?: string }
   | { type: 'swarm_member_wake_cleared'; swarmId: string; member: string }
   | { type: 'swarm_member_added'; swarmId: string; member: SwarmMember }
@@ -105,6 +105,7 @@ export type DomainEvent =
   // Work queues and claims
   | { type: 'work_queue_opened'; name: string }
   | { type: 'work_queue_closed'; name: string; at: number; closeKey?: string }
+  | { type: 'work_queue_reopened'; name: string }
   | { type: 'work_enqueued'; item: WorkflowWorkItem }
   | { type: 'work_retried'; itemId: string; maxAttempts: number; at: number }
   | { type: 'work_cancelled'; itemIds: string[]; at: number }

@@ -111,8 +111,18 @@ export function bindSwarm(state: WorkflowView, spec: ReturnType<typeof parseSwar
   const archivedCalls = swarm.archivedTurns ?? 0;
   if (callCount(state) + completed.length + archivedCalls > state.script!.maxCalls) throw new Error('Script agent call limit reached');
   for (const turn of completed) emit(state, { type: 'script_call_recorded', call: { key: turn.key, taskId: turn.taskId, cached: true } });
+  // A swarm that failed is what an explicit replay is for: it runs again from its records. Its failed members
+  // retry their turn like the ones a pause cut short, and the queues the script closed once the swarm had returned
+  // take new work again. A swarm that finished or went quiet keeps its result.
+  const reopened = swarm.status === 'done' && swarm.stop === 'failed' && !swarm.finish;
+  if (reopened) {
+    for (const member of swarm.members) if (member.stopped === 'failed') emit(state, { type: 'swarm_member_revived', swarmId: swarm.id, member: member.name });
+    for (const name of new Set(swarm.members.flatMap(member => member.queue ? [member.queue] : []))) {
+      if (queueControl(state, name)?.closedAt !== undefined) emit(state, { type: 'work_queue_reopened', name });
+    }
+  }
   const retryPending = swarm.members.filter(member => !member.stopped && member.taskId && taskById(state, member.taskId)?.status !== 'result_ready').map(member => member.name);
-  emit(state, { type: 'swarm_rebound', swarmId: swarm.id, runId, retryPending, ...(archivedCalls ? { archivedCalls } : {}) });
+  emit(state, { type: 'swarm_rebound', swarmId: swarm.id, runId, retryPending, ...(archivedCalls ? { archivedCalls } : {}), ...(reopened ? { reopened } : {}) });
 }
 
 function rules(swarm: SwarmView, member: MemberView): string {
@@ -311,8 +321,18 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       const mail = unread(member);
       const queued = member.queue ? work.get(member.queue)! : undefined;
       const forWork = Boolean(queued && queued.slots > 0);
-      if (!retry && !opening && mail) receiveMessages(state, member.name, key + '/inbox');
-      const { task } = scheduleMemberTurn(state, call, member.execution, nativeIdKind(member.execution.agentKind));
+      let task;
+      try {
+        if (!retry && !opening && mail) receiveMessages(state, member.name, key + '/inbox');
+        ({ task } = scheduleMemberTurn(state, call, member.execution, nativeIdKind(member.execution.agentKind)));
+      } catch (error) {
+        // One member whose records do not let it take a turn stops like a member whose turn failed; the others go on.
+        const detail = ('cannot be scheduled: ' + (error instanceof Error ? error.message : String(error))).slice(0, 500);
+        record({ type: 'swarm_member_stopped', swarmId: swarm.id, member: member.name, reason: 'failed', detail });
+        if (member.name !== swarm.lead) notifyLead(`Member "${member.name}" could not be woken and has stopped: ${detail}\nReassign its work or add a replacement with staff_swarm.`);
+        pushEvent(state, { kind: 'swarm_attention', summary: `swarm "${swarm.key}" 的成员 ${member.name} 无法被唤醒并已停止：${detail.slice(0, 200)}。staff_swarm 的 add 可补人。` }, () => now);
+        continue;
+      }
       // A turn woken only by posts is not demand for a work item.
       if (!retry && queued && !forWork && !task.consumerMessageTurn) record({ type: 'task_message_turn_marked', taskId: task.taskId });
       if (forWork) queued!.slots--;
@@ -406,7 +426,12 @@ export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, 
       const task = taskById(state, member.taskId);
       if (task && BUSY.has(task.status)) throw new Error(`Member ${name} is still stopping; try again shortly`);
       // Its last turn runs again in the same native session, as it would after a replay.
-      if (task && task.status !== 'result_ready') emit(state, { type: 'task_requeued', taskId: task.taskId, runId: state.script!.runId });
+      if (task && task.status !== 'result_ready') {
+        emit(state, { type: 'task_requeued', taskId: task.taskId, runId: state.script!.runId });
+        // A turn that failed before a replay is not among the calls the swarm carried into this run. Left out, the
+        // member's history would end one turn short of the turn it finishes, and it could not be woken again.
+        if (!state.script!.calls.some(call => call.taskId === task.taskId)) emit(state, { type: 'script_call_recorded', call: { key: task.scriptKey!, taskId: task.taskId, cached: false } });
+      }
       emit(state, { type: 'swarm_member_revived', swarmId: swarm.id, member: name });
     }
     result.revived = names;

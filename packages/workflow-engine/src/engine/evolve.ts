@@ -241,6 +241,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       found.runId = event.runId;
       if (event.archivedCalls) state.script!.archivedCalls = (state.script!.archivedCalls ?? 0) + event.archivedCalls;
       for (const member of found.members) member.retryPending = event.retryPending.includes(member.name) || undefined;
+      if (event.reopened) { found.status = 'running'; found.stop = undefined; found.reason = undefined; found.lastPost = undefined; found.nudges = 0; found.stalled = undefined; }
       return;
     }
     case 'swarm_turn_scheduled': {
@@ -311,6 +312,12 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       const control = event.name === 'default' ? work : (work.queues ??= {})[event.name] ??= {};
       control.closedAt ??= event.at;
       if (event.closeKey) control.closeKey = event.closeKey;
+      return;
+    }
+    case 'work_queue_reopened': {
+      const work = queue(state);
+      const control = event.name === 'default' ? work : work.queues?.[event.name];
+      if (control) { control.closedAt = undefined; control.closeKey = undefined; }
       return;
     }
     case 'work_enqueued': queue(state).items.push(event.item); return;
