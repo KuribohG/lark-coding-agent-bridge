@@ -19,9 +19,17 @@ import { abortStopReason } from '../../runtime/errors';
 import type { RunExecution } from '../../runtime/run-executor';
 import type { TimedRun, TimedRunState, TimedRunStore } from '../../runtime/timed-runs';
 import type { CotPublisher } from './cot';
-import { InterruptedTurns, MAX_RESUME_AGE_MS, MAX_RESUME_ATTEMPTS, type InterruptedTurn } from './interrupted-turns';
+import {
+  InterruptedTurns as TurnJournal,
+  MAX_RESUME_AGE_MS,
+  MAX_RESUME_ATTEMPTS,
+  type InterruptedTurn as JournaledTurn,
+} from '../../runtime/interrupted-turns';
 import type { PendingMessage } from './pending-queue';
 import type { LarkTurns } from './turns';
+
+type InterruptedTurn = JournaledTurn<NormalizedMessage>;
+type InterruptedTurns = TurnJournal<NormalizedMessage>;
 
 export interface TurnDispatchOptions {
   signal: AbortSignal;
@@ -127,7 +135,9 @@ export class LarkTurnRunner {
   /** Replays turns a previous process left unfinished, before queued input of the same scopes. */
   async resumeInterrupted(): Promise<void> {
     if (this.journal) return;
-    const journal = new InterruptedTurns(this.deps.stateDir ? join(this.deps.stateDir, 'interrupted-turns.json') : undefined);
+    const journal: InterruptedTurns = new TurnJournal(
+      this.deps.stateDir ? join(this.deps.stateDir, 'interrupted-turns.json') : undefined,
+      input => typeof (input as Partial<NormalizedMessage>).chatId === 'string');
     const previous = await journal.load();
     this.journal = journal;
     for (const turn of previous) await this.resumeTurn(turn, journal);

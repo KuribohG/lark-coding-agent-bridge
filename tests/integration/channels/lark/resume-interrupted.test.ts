@@ -10,7 +10,7 @@ import { runtimeProfileConfig } from '../../../../src/config/profile-store';
 import { SessionStore } from '../../../../src/session/store';
 import { WorkspaceStore } from '../../../../src/workspace/store';
 import { timedRuns } from '../../../../src/runtime/timed-runs';
-import { MAX_RESUME_ATTEMPTS } from '../../../../src/channels/lark/interrupted-turns';
+import { MAX_RESUME_ATTEMPTS } from '../../../../src/runtime/interrupted-turns';
 import { createFakeChannel } from '../../../helpers/fake-channel';
 import { createTmpProfile, type TmpProfile } from '../../../helpers/tmp-profile';
 

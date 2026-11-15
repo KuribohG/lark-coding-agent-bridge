@@ -1,8 +1,7 @@
-import type { NormalizedMessage } from '@larksuite/channel';
 import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, expect, it } from 'vitest';
-import { InterruptedTurns, MAX_RESUME_ATTEMPTS } from '../../../src/channels/lark/interrupted-turns';
+import { InterruptedTurns, MAX_RESUME_ATTEMPTS } from '../../../src/runtime/interrupted-turns';
 import { createTmpProfile, type TmpProfile } from '../../helpers/tmp-profile';
 
 let tmp: TmpProfile | undefined;
@@ -11,7 +10,7 @@ afterEach(async () => { await tmp?.cleanup(); tmp = undefined; });
 const message = (messageId: string, content = messageId) => ({
   chatId: 'oc_chat', messageId, chatType: 'p2p', senderId: 'owner', content, rawContentType: 'text',
   resources: [], mentions: [], mentionedBot: false, mentionAll: false, createTime: 1,
-}) as unknown as NormalizedMessage;
+});
 
 async function journalPath(): Promise<string> {
   tmp = await createTmpProfile('interrupted-turns-');
