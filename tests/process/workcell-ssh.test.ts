@@ -81,7 +81,8 @@ describe('ssh workcell provider', () => {
     const ran = await h.provider.request<{ code: number; stdout: string }>('exec', {
       workcell: cell.workcell,
       script: 'cat probe.txt',
-      cwd: '/work',
+      // Relative to the unit root; the pool normally passes the unit's absolute root.
+      cwd: 'work',
       env: { MARKER: 'from-env' },
     });
     expect(ran.code).toBe(0);
@@ -113,6 +114,18 @@ describe('ssh workcell provider', () => {
     await h.provider.request('stop', { workcell: cell.workcell });
     expect(await waitFor(async () => !existsSync(h.onDisk(cell.root)), 5000)).toBe(true);
   }, 60_000);
+
+  it('treats an absolute cwd as a real path inside the unit', async () => {
+    const h = await harness();
+    const cell = await h.provider.request<{ workcell: string; root: string }>('create', { spec: {} });
+    // The pool starts the host with the root `create` reported; prefixing the
+    // canonical root again used to send the host to a directory that does not exist.
+    const ran = await h.provider.request<{ code: number; stdout: string }>('exec', {
+      workcell: cell.workcell, script: 'pwd', cwd: cell.root,
+    });
+    expect(ran.code).toBe(0);
+    expect(ran.stdout.trim()).toBe(cell.root);
+  });
 
   it('reaches a port inside the unit through the forwarded local port', async () => {
     const h = await harness();

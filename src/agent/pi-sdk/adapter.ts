@@ -353,6 +353,15 @@ export class PiSdkAdapter implements AgentAdapter {
       config,
       layout: this.workcellLayout,
       canEvict: (key) => !this.workcellBusy.has(key),
+      // A torn-down unit leaves its host client pointing at a closed port; drop
+      // it so the member's next turn rents (and reconnects to) a fresh unit.
+      onRelease: async (key) => {
+        const opening = this.workcellClients.get(key);
+        if (!opening) return;
+        this.workcellClients.delete(key);
+        const client = await opening.catch(() => undefined);
+        await client?.dispose().catch(() => undefined);
+      },
       agentFiles: piAgentFiles(resolvePiAgentDir(this.config)),
       ...(this.workcellSessions ? { sessionDir: this.workcellSessions } : {}),
       env: this.env,
@@ -627,13 +636,15 @@ export class PiSdkAdapter implements AgentAdapter {
     this.activeRuns.add(state.runId);
     try {
       let client: PiHostClient;
+      // Busy from before the unit is acquired: an eviction that lands while the
+      // host is still starting would kill the cell this run is waiting for.
+      if (opts.host?.key && this.config.workcell) {
+        state.cellKey = opts.host.key;
+        this.workcellBusy.add(opts.host.key);
+      }
       try {
         client = await this.ensureRunClient(opts);
         state.client = client;
-        if (opts.host?.key && this.config.workcell) {
-          state.cellKey = opts.host.key;
-          this.workcellBusy.add(opts.host.key);
-        }
       } catch (error) {
         yield errorEvent(`failed to start pi sdk host: ${errorMessage(error)}`);
         return;
@@ -771,7 +782,13 @@ export class PiSdkAdapter implements AgentAdapter {
       state.ended = true;
       if (state.deadlineTimer) clearTimeout(state.deadlineTimer);
       state.resolveEnd();
-      if (state.cellKey) this.workcellBusy.delete(state.cellKey);
+      if (state.cellKey) {
+        this.workcellBusy.delete(state.cellKey);
+        // The member's unit stays warm for its next turn, but only until the idle
+        // release fires; a unit nobody comes back to is torn down and its
+        // sessions are pulled out for the next one.
+        this.workcell?.markIdle(state.cellKey);
+      }
       this.runFinished(state.runId);
     }
   }

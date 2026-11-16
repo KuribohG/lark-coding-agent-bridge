@@ -41,13 +41,20 @@ export interface WorkcellConfig {
    */
   maxCells?: number;
   /**
+   * How long a unit may sit idle before it is released. Members keep their unit
+   * between turns, so the default is generous: the shortest of half the rented
+   * TTL and 30 minutes. Sessions are pulled out on release and pushed back into
+   * the member's next unit, so a released unit resumes its conversation.
+   */
+  idleReleaseSeconds?: number;
+  /**
    * How many units may be prepared at once. Transfers scale with the number of
    * streams, so a batch of workers provisions in parallel instead of in turn.
    */
   parallelism?: number;
 }
 
-const POSITIVE_INTS = ['cpu', 'memoryGb', 'ttlSeconds'] as const;
+const POSITIVE_INTS = ['cpu', 'memoryGb', 'ttlSeconds', 'idleReleaseSeconds'] as const;
 
 /** Validate the TOML `[agents.pi.workcell]` table. */
 export function normalizeWorkcell(input: unknown): WorkcellConfig | undefined {
@@ -57,7 +64,7 @@ export function normalizeWorkcell(input: unknown): WorkcellConfig | undefined {
   }
   const raw = input as Record<string, unknown>;
   for (const key of Object.keys(raw)) {
-    if (!['provider', 'image', 'cpu', 'memoryGb', 'ttlSeconds', 'network', 'parallelism', 'layer', 'maxCells'].includes(key)) {
+    if (!['provider', 'image', 'cpu', 'memoryGb', 'ttlSeconds', 'network', 'parallelism', 'layer', 'maxCells', 'idleReleaseSeconds'].includes(key)) {
       throw new Error(`pi.workcell.${key}: unknown setting`);
     }
   }
@@ -99,6 +106,7 @@ export function normalizeWorkcell(input: unknown): WorkcellConfig | undefined {
     ...(typeof raw.cpu === 'number' ? { cpu: raw.cpu } : {}),
     ...(typeof raw.memoryGb === 'number' ? { memoryGb: raw.memoryGb } : {}),
     ...(typeof raw.ttlSeconds === 'number' ? { ttlSeconds: raw.ttlSeconds } : {}),
+    ...(typeof raw.idleReleaseSeconds === 'number' ? { idleReleaseSeconds: raw.idleReleaseSeconds } : {}),
   };
 }
 
@@ -305,6 +313,12 @@ export interface WorkcellPoolOptions {
   sessionDir?: string;
   /** Whether a unit may be evicted right now (no run in flight for that member). */
   canEvict?: (key: string) => boolean;
+  /**
+   * Called when a unit is torn down, before the provider stops it. The adapter
+   * drops the host client that points into this unit here, so a later run does
+   * not reuse a closed port.
+   */
+  onRelease?: (key: string) => void | Promise<void>;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -316,20 +330,33 @@ export class WorkcellPool {
   private provider: WorkcellProvider | undefined;
   private readonly cells = new Map<string, Pooled>();
   private readonly provisioning = new Map<string, Promise<WorkcellHandle>>();
+  /** Idle units waiting for their release timer; a new run for the key cancels it. */
+  private readonly idleTimers = new Map<string, NodeJS.Timeout>();
   private closing = false;
   private active = 0;
+  /** Capacity checks run one at a time so two provisions cannot both pass the last free slot. */
+  private capacity: Promise<void> = Promise.resolve();
+  /** Units this pool has been allowed to create but that are not in `cells` yet. */
+  private reserved = 0;
   private readonly waiters: Array<() => void> = [];
   private readonly limit: number;
   private readonly maxCells: number;
+  private readonly idleReleaseMs: number;
 
   constructor(private readonly options: WorkcellPoolOptions) {
     this.limit = Math.max(1, options.config.parallelism ?? 8);
     this.maxCells = Math.max(1, options.config.maxCells ?? 32);
+    // Keep units for reuse between turns, but not forever: release before the
+    // provider's own TTL so sessions are pulled out cleanly.
+    const ttl = options.config.ttlSeconds;
+    const seconds = options.config.idleReleaseSeconds ?? (ttl ? Math.max(60, Math.floor(ttl * 0.8)) : 1800);
+    this.idleReleaseMs = seconds * 1000;
   }
 
   async acquire(key: string): Promise<WorkcellHandle> {
     const existing = this.cells.get(key);
     if (existing) {
+      this.cancelIdle(key);
       existing.lastUsed = Date.now();
       await this.renew(existing, false);
       return existing;
@@ -355,8 +382,14 @@ export class WorkcellPool {
         ...(this.options.config.network ? { network: this.options.config.network } : {}),
         labels: { key },
       };
-      await this.evictForCapacity();
-      const created = await provider.request<{ workcell: string; root?: string }>('create', { spec });
+      await this.reserveCapacity();
+      let created: { workcell: string; root?: string };
+      try {
+        created = await provider.request<{ workcell: string; root?: string }>('create', { spec });
+      } catch (error) {
+        this.releaseReservation();
+        throw error;
+      }
       const id = created.workcell;
       // A provider may place the unit's root somewhere else (an ssh unit lives
       // under its directory on that host), so the layout follows what it says.
@@ -403,10 +436,12 @@ export class WorkcellPool {
         const pooled: Pooled = { id, key, hostPort: forward.port, root, lastUsed: Date.now() };
         pooled.renew = this.renewalTimer(pooled);
         this.cells.set(key, pooled);
+        this.releaseReservation();
         log.info('agent', 'pi-workcell-forward', { key, workcell: id, hostPort: forward.port });
         return pooled;
       } catch (error) {
         // A half-provisioned cell is useless; drop it before surfacing the error.
+        this.releaseReservation();
         await provider.request('stop', { workcell: id }).catch(() => undefined);
         throw error;
       }
@@ -415,20 +450,94 @@ export class WorkcellPool {
   }
 
   /**
-   * Keep the number of live units bounded: evict the least recently used idle
-   * one, and refuse rather than kill a member that is mid-run.
+   * Claim one of the `maxCells` slots. The check and the eviction happen under a
+   * lock, so concurrent provisions cannot both take the last slot; a busy pool
+   * refuses rather than killing a member that is mid-run.
    */
-  private async evictForCapacity(): Promise<void> {
-    if (this.cells.size < this.maxCells) return;
-    const idle = [...this.cells.values()]
-      .filter((cell) => this.options.canEvict?.(cell.key) !== false)
-      .sort((left, right) => (left.lastUsed ?? 0) - (right.lastUsed ?? 0));
-    const victim = idle[0];
-    if (!victim) {
-      throw new Error(`workcell capacity reached (${this.maxCells}) and every unit is busy`);
+  private reserveCapacity(): Promise<void> {
+    return this.withCapacityLock(async () => {
+      if (this.cells.size + this.reserved < this.maxCells) {
+        this.reserved += 1;
+        return;
+      }
+      const victim = [...this.cells.values()]
+        .filter((cell) => this.options.canEvict?.(cell.key) !== false)
+        .sort((left, right) => (left.lastUsed ?? 0) - (right.lastUsed ?? 0))[0];
+      if (!victim) {
+        throw new Error(`workcell capacity reached (${this.maxCells}) and every unit is busy`);
+      }
+      // Take the unit out of the pool now; tearing it down can take minutes and
+      // must not hold up other provisions.
+      this.cells.delete(victim.key);
+      this.cancelIdle(victim.key);
+      this.reserved += 1;
+      log.info('agent', 'pi-workcell-evict', { workcell: victim.id, key: victim.key, maxCells: this.maxCells });
+      void this.teardown(victim).catch((error: unknown) => {
+        log.warn('agent', 'pi-workcell-evict-failed', { workcell: victim.id, error: String(error) });
+      });
+    });
+  }
+
+  private releaseReservation(): void {
+    this.reserved = Math.max(0, this.reserved - 1);
+  }
+
+  private withCapacityLock<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.capacity.then(work, work);
+    this.capacity = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  /** The key's run ended: release the unit if it stays idle for `idleReleaseMs`. */
+  markIdle(key: string): void {
+    const cell = this.cells.get(key);
+    if (!cell) return;
+    this.cancelIdle(key);
+    cell.lastUsed = Date.now();
+    const timer = setTimeout(() => {
+      this.idleTimers.delete(key);
+      if (this.options.canEvict?.(key) === false) {
+        // A run started in the meantime; its own end schedules the next check.
+        return;
+      }
+      log.info('agent', 'pi-workcell-idle-release', { workcell: cell.id, key, idleMs: this.idleReleaseMs });
+      void this.release(key).catch((error: unknown) => {
+        log.warn('agent', 'pi-workcell-idle-release-failed', { workcell: cell.id, error: String(error) });
+      });
+    }, this.idleReleaseMs);
+    timer.unref?.();
+    this.idleTimers.set(key, timer);
+  }
+
+  private cancelIdle(key: string): void {
+    const timer = this.idleTimers.get(key);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.idleTimers.delete(key);
+  }
+
+  private async teardown(cell: Pooled): Promise<void> {
+    if (cell.renew) clearInterval(cell.renew);
+    // Let the owner drop its client first: a host whose unit is going away must
+    // not stay cached for the next run of this key.
+    await this.options.onRelease?.(cell.key);
+    const provider = this.provider;
+    if (!provider || provider.isClosed) return;
+    // Keep the member's sessions for the next unit before the unit goes away.
+    const sessions = this.sessionArchive(cell.key);
+    if (sessions) {
+      await provider.request('pull', {
+        workcell: cell.id,
+        remote: posix.join(cell.root, 'agent', 'sessions'),
+        local: sessions,
+      }).catch((error: unknown) => {
+        log.warn('agent', 'pi-workcell-session-pull-failed', { workcell: cell.id, error: String(error) });
+      });
     }
-    log.info('agent', 'pi-workcell-evict', { workcell: victim.id, key: victim.key, maxCells: this.maxCells });
-    await this.release(victim.key);
+    await provider.request('stop', { workcell: cell.id }).catch((error: unknown) => {
+      log.warn('agent', 'pi-workcell-stop-failed', { workcell: cell.id, error: String(error) });
+    });
+    log.info('agent', 'pi-workcell-teardown', { workcell: cell.id, key: cell.key });
   }
 
   /**
@@ -470,30 +579,21 @@ export class WorkcellPool {
   async release(key: string): Promise<void> {
     const cell = this.cells.get(key);
     if (!cell) return;
-    this.cells.delete(key);
-    if (cell.renew) clearInterval(cell.renew);
-    const provider = this.provider;
-    if (!provider || provider.isClosed) return;
-    // Keep the member's sessions for the next unit before the unit goes away.
-    const sessions = this.sessionArchive(key);
-    if (sessions) {
-      await provider.request('pull', {
-        workcell: cell.id,
-        remote: posix.join(cell.root, 'agent', 'sessions'),
-        local: sessions,
-      }).catch((error: unknown) => {
-        log.warn('agent', 'pi-workcell-session-pull-failed', { workcell: cell.id, error: String(error) });
-      });
+    // A run owns the unit; its end schedules the next idle check.
+    if (this.options.canEvict?.(key) === false) {
+      this.markIdle(key);
+      return;
     }
-    await provider.request('stop', { workcell: cell.id }).catch((error: unknown) => {
-      log.warn('agent', 'pi-workcell-stop-failed', { workcell: cell.id, error: String(error) });
-    });
-    log.info('agent', 'pi-workcell-teardown', { workcell: cell.id, key });
+    this.cells.delete(key);
+    this.cancelIdle(key);
+    await this.teardown(cell);
   }
 
   async close(): Promise<void> {
     if (this.closing) return;
     this.closing = true;
+    for (const timer of this.idleTimers.values()) clearTimeout(timer);
+    this.idleTimers.clear();
     for (const key of [...this.cells.keys()]) await this.release(key);
     const provider = this.provider;
     this.provider = undefined;

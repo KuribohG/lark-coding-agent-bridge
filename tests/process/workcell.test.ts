@@ -66,6 +66,8 @@ describe('workcell configuration', () => {
   it('accepts a provider and the optional sizing fields', () => {
     expect(normalizeWorkcell({ provider: '/bin/provider', image: 'img', cpu: 4, memoryGb: 8, ttlSeconds: 3600 }))
       .toEqual({ provider: '/bin/provider', image: 'img', cpu: 4, memoryGb: 8, ttlSeconds: 3600 });
+    expect(normalizeWorkcell({ provider: '/bin/provider', idleReleaseSeconds: 900 }))
+      .toEqual({ provider: '/bin/provider', idleReleaseSeconds: 900 });
   });
 
   it.each([
@@ -78,6 +80,7 @@ describe('workcell configuration', () => {
     [{ provider: '/bin/provider', parallelism: 65 }, /parallelism/],
     [{ provider: '/bin/provider', layer: 'relative/path.erofs' }, /layer/],
     [{ provider: '/bin/provider', maxCells: 0 }, /maxCells/],
+    [{ provider: '/bin/provider', idleReleaseSeconds: 0 }, /idleReleaseSeconds/],
   ])('rejects %j', (input, message) => {
     expect(() => normalizeWorkcell(input)).toThrow(message);
   });

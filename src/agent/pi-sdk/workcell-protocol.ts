@@ -52,6 +52,7 @@ export interface WorkcellExecParams {
   script: string;
   env?: Readonly<Record<string, string>>;
   detach?: boolean;
+  /** Real path inside the unit, as `create` reported its root; a relative one is taken from that root. */
   cwd?: string;
   /** Seconds for a non-detached command; providers apply their own default. */
   timeout?: number;

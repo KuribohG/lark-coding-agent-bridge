@@ -44,6 +44,7 @@ afterEach(async () => {
   delete process.env.FAKE_WORKCELL_HOST_PORT;
   delete process.env.FAKE_TCP_RECORD;
   delete process.env.FAKE_TCP_IPC;
+  delete process.env.FAKE_TCP_KEEP_AFTER_SHUTDOWN;
   delete process.env.FAKE_HOST_EVENTS;
   delete process.env.FAKE_HOST_RECORD;
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })));
@@ -74,7 +75,7 @@ async function startTcpHost(): Promise<number> {
   return port;
 }
 
-async function harness(options: { workflowEndpoint?: string; tcpIpc?: boolean; local?: boolean; root?: string } = {}) {
+async function harness(options: { workflowEndpoint?: string; tcpIpc?: boolean; local?: boolean; root?: string; idleReleaseSeconds?: number } = {}) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'pi-workcell-')));
   dirs.push(dir);
   const record = join(dir, 'provider-record.json');
@@ -112,7 +113,8 @@ async function harness(options: { workflowEndpoint?: string; tcpIpc?: boolean; l
     nodePath: options.local ? process.execPath : nodePath,
     hostScript: options.local ? fakeHost : hostScript,
     agentDir,
-    workcell: { provider, cpu: 4, memoryGb: 8, ttlSeconds: 600 },
+    workcell: { provider, cpu: 4, memoryGb: 8, ttlSeconds: 600,
+      ...(options.idleReleaseSeconds !== undefined ? { idleReleaseSeconds: options.idleReleaseSeconds } : {}) },
   };
   const adapter = new PiSdkAdapter({ config, systemPrompt: 'WORKCELL', profileStateDir: dir, stopGraceMs: 1000 });
   adapters.push(adapter);
@@ -284,6 +286,36 @@ describe('pi SDK host inside a workcell', () => {
     expect(opens.map((call) => call.params.cwd)).toEqual([h.dir, h.dir]);
     expect(await h.calls()).toEqual([]);
   }, 30_000);
+
+  it('releases an idle member unit, keeps its sessions, and rents a fresh unit next turn', async () => {
+    process.env.FAKE_TCP_KEEP_AFTER_SHUTDOWN = '1';
+    const h = await harness({ idleReleaseSeconds: 1 });
+    const host = { key: 'member-cccccccc' };
+    const first = await collect((await h.adapter.prepareRun({
+      runId: 'run-1', prompt: 'go', cwd: h.dir, host,
+    })).start().events);
+    expect(first.at(-1)).toMatchObject({ type: 'done' });
+
+    // The member is done for now: the unit is torn down after the idle window,
+    // and its sessions are pulled out first so the next unit can resume them.
+    await vi.waitFor(async () => {
+      expect((await h.calls()).filter((call) => call.op === 'stop')).toHaveLength(1);
+    }, { timeout: 10_000, interval: 100 });
+    const calls = await h.calls();
+    expect(calls.find((call) => call.op === 'pull')).toMatchObject({
+      remote: '/opt/lark-workcell/agent/sessions',
+      local: join(h.dir, 'workcell-sessions', host.key),
+    });
+    const pulledAt = calls.findIndex((call) => call.op === 'pull');
+    expect(pulledAt).toBeLessThan(calls.findIndex((call) => call.op === 'stop'));
+
+    // A later turn rents a new unit instead of reusing one that no longer exists.
+    const second = await collect((await h.adapter.prepareRun({
+      runId: 'run-2', prompt: 'again', cwd: h.dir, host, sessionId: 'tcp-session',
+    })).start().events);
+    expect(second.at(-1)).toMatchObject({ type: 'done' });
+    expect((await h.calls()).filter((call) => call.op === 'create')).toHaveLength(2);
+  }, 60_000);
 
   it('fails the profile preflight when the provider executable is missing', async () => {
     const dir = await realpath(await mkdtemp(join(tmpdir(), 'pi-workcell-')));

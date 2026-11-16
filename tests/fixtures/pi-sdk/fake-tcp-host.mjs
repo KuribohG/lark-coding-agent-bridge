@@ -70,8 +70,12 @@ const server = createServer((socket) => {
         case 'shutdown':
           send(socket, { id: request.id, ok: true, data: {} });
           socket.end();
-          server.close();
-          setTimeout(() => process.exit(0), 10);
+          // A test that models a unit being replaced keeps this stand-in alive:
+          // the next unit has the same fixed port and expects a listening host.
+          if (process.env.FAKE_TCP_KEEP_AFTER_SHUTDOWN !== '1') {
+            server.close();
+            setTimeout(() => process.exit(0), 10);
+          }
           break;
         default:
           send(socket, { id: request.id, ok: false, error: `unknown command: ${request.cmd}` });
