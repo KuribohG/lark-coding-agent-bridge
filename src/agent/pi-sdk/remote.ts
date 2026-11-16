@@ -1,6 +1,6 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ChildProcess } from 'node:child_process';
+import { execFileSync, type ChildProcess } from 'node:child_process';
 import { log } from '../../core/logger';
 import { spawnProcess } from '../../platform/spawn';
 import { terminateChild } from '../../platform/terminate';
@@ -48,6 +48,26 @@ export interface RemoteEnvFile {
   cleanup(): void;
 }
 
+// Node's POSIX mode does not set an NTFS DACL. Protect the new, empty file before writing any values.
+function writePrivateFile(path: string, text: string): void {
+  const fd = openSync(path, 'wx', 0o600);
+  let written = false;
+  try {
+    if (process.platform === 'win32') {
+      const system = join(process.env.SystemRoot || 'C:\\Windows', 'System32');
+      const identity = execFileSync(join(system, 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true });
+      const sid = identity.match(/"((?:S-1-)[0-9-]+)"\s*$/i)?.[1];
+      if (!sid) throw new Error('Cannot determine the current Windows user for the remote environment file');
+      execFileSync(join(system, 'icacls.exe'), [path, '/inheritance:r', '/grant:r', '*' + sid + ':F'], { windowsHide: true });
+    }
+    writeFileSync(fd, text);
+    written = true;
+  } finally {
+    closeSync(fd);
+    if (!written) rmSync(path, { force: true });
+  }
+}
+
 /**
  * Write the host environment where both machines can read it. Values keep
  * exact bytes (quoted for the shell); the file is private to the bridge user.
@@ -61,8 +81,7 @@ function writeRemoteEnvFile(stateDir: string, env: NodeJS.ProcessEnv, tag = 'hos
     if (value === undefined || !ENV_NAME.test(name)) continue;
     lines.push(`export ${name}=${shellQuote(value)}`);
   }
-  writeFileSync(path, `${lines.join('\n')}\n`, { mode: 0o600 });
-  chmodSync(path, 0o600);
+  writePrivateFile(path, lines.join('\n') + '\n');
   return {
     path,
     cleanup: () => {

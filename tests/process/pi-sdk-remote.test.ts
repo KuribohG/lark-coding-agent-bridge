@@ -1,9 +1,10 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, sep } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PiSdkAdapter } from '../../src/agent/pi-sdk/adapter';
 import { localWorkflowEndpoint, remoteHostSpawn, remoteRunEnv } from '../../src/agent/pi-sdk/remote';
 import type { AgentEvent } from '../../src/agent/types';
@@ -22,20 +23,15 @@ const fakeHost = fileURLToPath(new URL('../fixtures/pi-sdk/fake-host.mjs', impor
 const fakeSsh = fileURLToPath(new URL('../fixtures/pi-sdk/fake-ssh.mjs', import.meta.url));
 const adapters: PiSdkAdapter[] = [];
 const dirs: string[] = [];
-let sshBinDir: string;
-
-beforeEach(async () => {
-  // The adapter resolves `ssh` from PATH like any other spawn.
-  sshBinDir = await realpath(await mkdtemp(join(tmpdir(), 'fake-ssh-bin-')));
-  const shim = join(sshBinDir, 'ssh');
-  await writeFile(shim, `#!/bin/sh\nexec '${process.execPath}' '${fakeSsh}' "$@"\n`);
-  chmodSync(shim, 0o755);
-  vi.stubEnv('PATH', `${sshBinDir}:${process.env.PATH ?? ''}`);
+// Keep the SSH executable local and deterministic on every host. The real pipes, command and protocol are exercised.
+vi.mock('../../src/platform/spawn', async importOriginal => {
+  const actual = await importOriginal<typeof import('../../src/platform/spawn')>();
+  return { ...actual, spawnProcess: (...input: Parameters<typeof actual.spawnProcess>) =>
+    input[0] === 'ssh' ? actual.spawnProcess(process.execPath, [fakeSsh, ...(input[1] ?? [])], input[2]) : actual.spawnProcess(...input) };
 });
 
 afterEach(async () => {
   for (const adapter of adapters.splice(0)) await adapter.shutdown();
-  vi.unstubAllEnvs();
   delete process.env.FAKE_HOST_RECORD;
   delete process.env.FAKE_SSH_RECORD;
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })));
@@ -99,7 +95,7 @@ describe('pi SDK remote host', () => {
     expect(exec?.destination).toBe('fake-node');
     expect(exec?.argv).toEqual(expect.arrayContaining(['-o', 'BatchMode=yes']));
     // The remote script sources the env file, then execs the host directly.
-    expect(exec?.script).toContain(`. '${join(h.dir, 'remote-env')}/`);
+    expect(exec?.script).toContain(`. '${join(h.dir, 'remote-env')}${sep}`);
     expect(exec?.script).toContain('rm -f');
     expect(exec?.script).toContain(`exec '${process.execPath}' '${fakeHost}'`);
     expect(exec?.script).toContain('--agent-dir');
@@ -169,7 +165,21 @@ describe('remote host command line', () => {
 
     const env = readFileSync(spawn.envFile, 'utf8');
     expect(env).toContain(`export TOKEN='it'\\''s secret'`);
-    expect(statSync(spawn.envFile).mode & 0o777).toBe(0o600);
+    if (process.platform === 'win32') {
+      const script = [
+        '$ErrorActionPreference = "Stop"',
+        '$acl = Get-Acl -LiteralPath $env:TEST_PRIVATE_FILE',
+        '$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
+        '$rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])',
+        '[bool]($acl.AreAccessRulesProtected -and $rules.Count -eq 1 -and $rules[0].IdentityReference.Value -eq $sid -and $rules[0].AccessControlType -eq "Allow")',
+      ].join('; ');
+      const verified = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+        env: { ...process.env, TEST_PRIVATE_FILE: spawn.envFile }, encoding: 'utf8', windowsHide: true,
+      });
+      expect(verified.trim()).toBe('True');
+    } else {
+      expect(statSync(spawn.envFile).mode & 0o777).toBe(0o600);
+    }
     spawn.cleanup();
     expect(existsSync(spawn.envFile)).toBe(false);
   });
