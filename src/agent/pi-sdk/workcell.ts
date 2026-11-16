@@ -25,6 +25,14 @@ export interface WorkcellConfig {
    */
   network?: readonly ('lan' | 'www')[];
   /**
+   * Cloud path of a runtime layer built ahead of time (an EROFS mounted into
+   * every unit). When set, units start with the runtime already in place and the
+   * bridge only pushes the workspace, the small `bin/` and the agent files.
+   * Rebuild it in place; packing to the same path overwrites the old layer, so
+   * nothing accumulates.
+   */
+  layer?: string;
+  /**
    * How many units may be prepared at once. Transfers scale with the number of
    * streams, so a batch of workers provisions in parallel instead of in turn.
    */
@@ -41,7 +49,7 @@ export function normalizeWorkcell(input: unknown): WorkcellConfig | undefined {
   }
   const raw = input as Record<string, unknown>;
   for (const key of Object.keys(raw)) {
-    if (!['provider', 'image', 'cpu', 'memoryGb', 'ttlSeconds', 'network', 'parallelism'].includes(key)) {
+    if (!['provider', 'image', 'cpu', 'memoryGb', 'ttlSeconds', 'network', 'parallelism', 'layer'].includes(key)) {
       throw new Error(`pi.workcell.${key}: unknown setting`);
     }
   }
@@ -62,6 +70,9 @@ export function normalizeWorkcell(input: unknown): WorkcellConfig | undefined {
     && (!Array.isArray(network) || network.some((item) => item !== 'lan' && item !== 'www'))) {
     throw new Error("pi.workcell.network: expected an array of \"lan\" and/or \"www\"");
   }
+  if (raw.layer !== undefined && (typeof raw.layer !== 'string' || !raw.layer.startsWith('/'))) {
+    throw new Error('pi.workcell.layer: expected an absolute cloud path such as /artifacts/<user>/runtime.erofs');
+  }
   const parallelism = raw.parallelism;
   if (parallelism !== undefined && (typeof parallelism !== 'number' || !Number.isSafeInteger(parallelism) || parallelism < 1 || parallelism > 64)) {
     throw new Error('pi.workcell.parallelism: expected an integer between 1 and 64');
@@ -69,6 +80,7 @@ export function normalizeWorkcell(input: unknown): WorkcellConfig | undefined {
   return {
     provider: raw.provider.trim(),
     ...(typeof parallelism === 'number' ? { parallelism } : {}),
+    ...(typeof raw.layer === 'string' ? { layer: raw.layer.trim() } : {}),
     ...(Array.isArray(network) && network.length > 0 ? { network: [...network] as ('lan' | 'www')[] } : {}),
     ...(typeof raw.image === 'string' ? { image: raw.image.trim() } : {}),
     ...(typeof raw.cpu === 'number' ? { cpu: raw.cpu } : {}),
@@ -310,8 +322,10 @@ export class WorkcellPool {
   private async provision(key: string): Promise<WorkcellHandle> {
     const provider = this.ensureProvider();
     const cell = await this.withSlot(async () => {
+      const layer = this.options.config.layer;
       const spec: WorkcellCreateParams = {
         ...(this.options.config.image ? { image: this.options.config.image } : {}),
+        ...(layer ? { layers: [layer] } : {}),
         ...(this.options.config.cpu !== undefined ? { cpu: this.options.config.cpu } : {}),
         ...(this.options.config.memoryGb !== undefined ? { memoryGb: this.options.config.memoryGb } : {}),
         ...(this.options.config.ttlSeconds !== undefined ? { ttlSeconds: this.options.config.ttlSeconds } : {}),
@@ -325,7 +339,7 @@ export class WorkcellPool {
       try {
         // Small pushes and the port request do not depend on the runtime, so
         // they travel while the heavy archive is on the wire.
-        const archive = runtime.archive ? await ensureRuntimeArchive(runtime.archive) : undefined;
+        const archive = !layer && runtime.archive ? await ensureRuntimeArchive(runtime.archive) : undefined;
         const uploads: Array<Promise<unknown>> = runtime.pushes.map(push =>
           provider.request('push', { workcell: id, local: push.local, remote: push.remote }));
         for (const file of this.options.agentFiles ?? []) {
@@ -340,14 +354,18 @@ export class WorkcellPool {
           }));
         }
         uploads.push(provider.request('forward', { workcell: id, remotePort: WORKCELL_HOST_PORT }));
-        const heavy = archive && runtime.archive
-          ? provider.request('push', { workcell: id, local: archive.path, remote: runtime.archive.remote })
-          : runtime.modules
-            ? provider.request('push', { workcell: id, local: runtime.modules.local, remote: runtime.modules.remote })
-            : Promise.resolve(undefined);
+        // A layer already carries the runtime; only then does the unit need
+        // nothing but the workspace, `bin/` and the agent files.
+        const heavy = layer
+          ? Promise.resolve(undefined)
+          : archive && runtime.archive
+            ? provider.request('push', { workcell: id, local: archive.path, remote: runtime.archive.remote })
+            : runtime.modules
+              ? provider.request('push', { workcell: id, local: runtime.modules.local, remote: runtime.modules.remote })
+              : Promise.resolve(undefined);
         const results = await Promise.all([heavy, ...uploads]);
         const forward = results[results.length - 1] as { port: number };
-        if (archive && runtime.archive) {
+        if (!layer && archive && runtime.archive) {
           // Unpack once, then drop the archive: the unit keeps only the tree.
           await provider.request('exec', {
             workcell: id,

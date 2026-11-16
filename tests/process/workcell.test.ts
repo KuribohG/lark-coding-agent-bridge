@@ -25,7 +25,7 @@ function fixtureProvider(dir: string): string {
   return path;
 }
 
-async function harness(options: { pushFailure?: string; archive?: boolean; parallelism?: number } = {}) {
+async function harness(options: { pushFailure?: string; archive?: boolean; parallelism?: number; layer?: string } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'workcell-'));
   dirs.push(dir);
   const record = join(dir, 'provider-record.json');
@@ -36,7 +36,7 @@ async function harness(options: { pushFailure?: string; archive?: boolean; paral
   writeFileSync(join(modulesDir, 'node', 'bin', 'node'), '');
   writeFileSync(join(dir, 'rt', 'sdk.js'), '');
   const pool = new WorkcellPool({
-    config: { provider: fixtureProvider(dir), cpu: 4, memoryGb: 8, ttlSeconds: 600, image: 'image:tag', ...(options.parallelism ? { parallelism: options.parallelism } : {}) },
+    config: { provider: fixtureProvider(dir), cpu: 4, memoryGb: 8, ttlSeconds: 600, image: 'image:tag', ...(options.parallelism ? { parallelism: options.parallelism } : {}), ...(options.layer ? { layer: options.layer } : {}) },
     runtime: workcellRuntimeLayout({
       nodePath: join(modulesDir, 'node', 'bin', 'node'),
       sdkPath: join(dir, 'rt', 'sdk.js'),
@@ -74,6 +74,7 @@ describe('workcell configuration', () => {
     [{ provider: '/bin/provider', unknownKey: 1 }, /unknownKey/],
     [{ provider: '/bin/provider', parallelism: 0 }, /parallelism/],
     [{ provider: '/bin/provider', parallelism: 65 }, /parallelism/],
+    [{ provider: '/bin/provider', layer: 'relative/path.erofs' }, /layer/],
   ])('rejects %j', (input, message) => {
     expect(() => normalizeWorkcell(input)).toThrow(message);
   });
@@ -192,6 +193,24 @@ describe('workcell pool', () => {
       local: archive,
       remote: '/opt/lark-workcell/agent/sessions',
     }));
+  });
+
+  it('mounts a prebuilt runtime layer instead of transferring the runtime', async () => {
+    const h = await harness({ layer: '/artifacts/u/larkcell/runtime.erofs' });
+    const cell = await h.pool.acquire('member-a');
+
+    const calls = await h.calls();
+    expect(calls.find((call) => call.op === 'create')?.spec).toMatchObject({
+      layers: ['/artifacts/u/larkcell/runtime.erofs'],
+    });
+    const pushes = calls.filter((call) => call.op === 'push').map((call) => call.remote);
+    expect(pushes).toContain('/opt/lark-workcell/bin');
+    expect(pushes).toContain('/opt/lark-workcell/agent/auth.json');
+    // Nothing of the runtime travels, and nothing is unpacked.
+    expect(pushes).not.toContain('/opt/lark-workcell/node_modules');
+    expect(pushes.some((remote) => String(remote).endsWith('.tar.gz'))).toBe(false);
+    expect(calls.some((call) => String(call.script ?? '').startsWith('tar -xzf'))).toBe(false);
+    expect(cell.hostPort).toBeGreaterThan(0);
   });
 
   it('prepares several units at once, bounded by parallelism', async () => {

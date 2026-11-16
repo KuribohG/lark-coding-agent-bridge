@@ -89,7 +89,12 @@ describe.skipIf(!live)('pi SDK host inside a real workcell', () => {
       nodePath: nodePath!,
       hostScript: join(process.cwd(), 'bin', 'pi-host.mjs'),
       agentDir,
-      workcell: { provider: provider!, cpu: 4, memoryGb: 8, ttlSeconds: 900, network: ['lan'] },
+      workcell: {
+        provider: provider!, cpu: 4, memoryGb: 8, ttlSeconds: 900, network: ['lan'],
+        // Build one with private/tools/workcell-runtime/build.py to skip the
+        // per-unit runtime upload entirely.
+        ...(process.env.PI_WORKCELL_LIVE_LAYER ? { layer: process.env.PI_WORKCELL_LIVE_LAYER } : {}),
+      },
     };
     const adapter = new PiSdkAdapter({ config, systemPrompt: '只回复用户要求的内容，尽量短。', profileStateDir: dir, stopGraceMs: 2000 });
     adapters.push(adapter);
