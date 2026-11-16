@@ -170,6 +170,7 @@ describe('PiSdkAdapter process contract', () => {
     const iterator = run.events[Symbol.asyncIterator]();
     expect((await iterator.next()).value).toMatchObject({ type: 'system' });
 
+    expect((await iterator.next()).value).toEqual({ type: 'text', delta: 'started' });
     const rest: AgentEvent[] = [];
     const drain = (async () => {
       for (;;) {
@@ -178,7 +179,6 @@ describe('PiSdkAdapter process contract', () => {
         rest.push(next.value);
       }
     })();
-    await waitUntil(async () => rest.some((event) => event.type === 'text'), 10_000);
 
     await run.stop('cancelled');
     await drain;
