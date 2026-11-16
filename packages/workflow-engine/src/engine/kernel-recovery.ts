@@ -32,7 +32,7 @@ export class RestartRecovery {
         hosts.discardTasks(state.workflowId, (state.workQueue?.claims ?? []).filter(claim => claim.status === 'active').map(claim => claim.taskId));
         releaseWorkClaims(state, this.ctx.now(), 'Bridge restarted; explicitly replay to continue');
       }
-      for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_workflow') {
+      for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_workflow' || task.status === 'waiting_input') {
         if (governed && task.attempts.length)
           emit(state, { type: 'execution_uncertain', taskId: task.taskId, error: 'Bridge restarted; native execution requires reconciliation.' });
         else emit(state, { type: 'task_interrupted', taskId: task.taskId, error: 'Bridge restarted; explicitly replay the script to continue.' });

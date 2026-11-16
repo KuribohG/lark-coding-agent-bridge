@@ -9,7 +9,7 @@ import { completeMemberTurn, memberContext, taskAgent } from './durable-agents';
 import { MAX_TASK_ATTEMPTS } from './limits';
 import { archiveFinished, archiveRecords } from './archive';
 import { checkJsonOutput } from './json-output';
-import { addArtifact, BUSY, findTask, MAX_TEXT, readArtifact, requireState, sameRoot, taskById } from './kernel-state';
+import { addArtifact, BUSY, findTask, MAX_TEXT, pushEvent, readArtifact, requireState, sameRoot, taskById } from './kernel-state';
 import { emit } from './kernel-store';
 import type { KernelContext } from './kernel-context';
 import type { StoredTask, TaskView, WorkerSession, WorkflowArtifact, WorkflowRoot, WorkflowStopReason, WorkflowTask, WorkflowView, WorkflowWorkerResult } from './types';
@@ -458,6 +458,13 @@ export class WorkflowScheduler {
       if (state.status === 'cancelling' && !state.tasks.some(member => member.status === 'cancelling' || member.status === 'unknown')) {
         emit(state, { type: 'workflow_cancelled' }); cancelWork(state, ctx.now());
       }
+      // A script-owned task observes the question as its result (`agent()` returns null), so waking the main agent
+      // per worker question would only be noise. A member turn has no such caller: without a notice the member
+      // stalls silently until someone reads the status.
+      if (status === 'waiting_input' && task.agentId) {
+        pushEvent(state, { kind: 'worker_input_required', taskId,
+          summary: `${taskLabel(state, task)} 需要输入：${(result.question ?? '').slice(0, 1800)}` }, ctx.now);
+      }
       // Shutdown interrupts the caller; its already committed child must remain replayable.
       if (stopReason !== 'shutdown' && task.waitingWorkflowId && ['failed','waiting_input','cancelled'].includes(task.status) && state.status==='active') ctx.children.suspendChildren(state,true,taskId);
     }, 'worker:' + taskId);
@@ -529,6 +536,11 @@ export class WorkflowScheduler {
     if (failureKind !== 'stall' && failureKind !== 'transient') return false;
     return (task.retryCount ?? 0) < MAX_TASK_RETRIES;
   }
+}
+
+/** How a notice names a task: its member key, its script key, or its id. */
+function taskLabel(state: WorkflowView, task: TaskView): string {
+  return taskAgent(state, task)?.key ?? task.scriptKey ?? task.taskId;
 }
 
 /** Tells a worker when its turn must be over, so it can save progress instead of being stopped mid-step. */

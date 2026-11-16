@@ -19,7 +19,10 @@ const ARCHIVE_BATCH = 64;
 function settled(task: TaskView): boolean {
   if (task.workspaceId && !task.agentId) return false;
   if (task.status === 'result_ready') return true;
-  return (task.status === 'failed' || task.status === 'cancelled') && !task.agentId && !task.scriptManaged && !task.workflowTool;
+  // A worker waiting for input will not continue on its own; like a failed one-shot task it is archived once
+  // nobody refers to it, so an abandoned question does not keep its session in the state forever.
+  return (task.status === 'failed' || task.status === 'cancelled' || task.status === 'waiting_input')
+    && !task.agentId && !task.scriptManaged && !task.workflowTool;
 }
 
 /**
