@@ -25,7 +25,7 @@ function fixtureProvider(dir: string): string {
   return path;
 }
 
-async function harness(options: { pushFailure?: string; archive?: boolean } = {}) {
+async function harness(options: { pushFailure?: string; archive?: boolean; parallelism?: number } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'workcell-'));
   dirs.push(dir);
   const record = join(dir, 'provider-record.json');
@@ -36,7 +36,7 @@ async function harness(options: { pushFailure?: string; archive?: boolean } = {}
   writeFileSync(join(modulesDir, 'node', 'bin', 'node'), '');
   writeFileSync(join(dir, 'rt', 'sdk.js'), '');
   const pool = new WorkcellPool({
-    config: { provider: fixtureProvider(dir), cpu: 4, memoryGb: 8, ttlSeconds: 600, image: 'image:tag' },
+    config: { provider: fixtureProvider(dir), cpu: 4, memoryGb: 8, ttlSeconds: 600, image: 'image:tag', ...(options.parallelism ? { parallelism: options.parallelism } : {}) },
     runtime: workcellRuntimeLayout({
       nodePath: join(modulesDir, 'node', 'bin', 'node'),
       sdkPath: join(dir, 'rt', 'sdk.js'),
@@ -72,6 +72,8 @@ describe('workcell configuration', () => {
     [{ provider: '/bin/provider', memoryGb: '8' }, /memoryGb/],
     [{ provider: '/bin/provider', image: '' }, /image/],
     [{ provider: '/bin/provider', unknownKey: 1 }, /unknownKey/],
+    [{ provider: '/bin/provider', parallelism: 0 }, /parallelism/],
+    [{ provider: '/bin/provider', parallelism: 65 }, /parallelism/],
   ])('rejects %j', (input, message) => {
     expect(() => normalizeWorkcell(input)).toThrow(message);
   });
@@ -142,13 +144,14 @@ describe('workcell pool', () => {
     const ops = calls.map((call) => call.op);
     expect(ops.filter((op) => op === 'create')).toHaveLength(2);
     // Runtime directories plus the agent file, per workcell.
-    expect(calls.filter((call) => call.op === 'push').map((call) => call.remote)).toEqual([
-      '/opt/lark-workcell/node_modules',
-      '/opt/lark-workcell/bin',
+    // Uploads for one unit run together, so compare the set rather than the order.
+    expect(calls.filter((call) => call.op === 'push').map((call) => call.remote).sort()).toEqual([
       '/opt/lark-workcell/agent/auth.json',
-      '/opt/lark-workcell/node_modules',
-      '/opt/lark-workcell/bin',
       '/opt/lark-workcell/agent/auth.json',
+      '/opt/lark-workcell/bin',
+      '/opt/lark-workcell/bin',
+      '/opt/lark-workcell/node_modules',
+      '/opt/lark-workcell/node_modules',
     ]);
     expect(calls.find((call) => call.op === 'create')?.spec).toEqual({
       cpu: 4, memoryGb: 8, ttlSeconds: 600, image: 'image:tag', labels: { key: 'member-a' },
@@ -191,11 +194,36 @@ describe('workcell pool', () => {
     }));
   });
 
+  it('prepares several units at once, bounded by parallelism', async () => {
+    const h = await harness({ parallelism: 2 });
+    const cells = await Promise.all(['m1', 'm2', 'm3', 'm4'].map((key) => h.pool.acquire(key)));
+    expect(cells.map((cell) => cell.id)).toEqual(['cell-1', 'cell-2', 'cell-3', 'cell-4']);
+
+    const calls = await h.calls();
+    // Two slots: the first two requests are creates, not create-then-finish.
+    expect(calls.slice(0, 2).map((call) => call.op)).toEqual(['create', 'create']);
+    // Each unit's small pushes and port request travel together.
+    const firstCellPushes = calls.filter((call) => call.workcell === 'cell-1' && call.op === 'push');
+    expect(firstCellPushes.length).toBeGreaterThan(0);
+    const forwardIndex = calls.findIndex((call) => call.op === 'forward' && call.workcell === 'cell-1');
+    const lastPushIndex = Math.max(...calls.map((call, index) => (call.workcell === 'cell-1' && call.op === 'push' ? index : -1)));
+    expect(forwardIndex).toBeLessThan(lastPushIndex);
+  });
+
+  it('provisions a key once even when it is requested concurrently', async () => {
+    const h = await harness();
+    const [first, second] = await Promise.all([h.pool.acquire('same'), h.pool.acquire('same')]);
+    expect(first).toBe(second);
+    expect((await h.calls()).filter((call) => call.op === 'create')).toHaveLength(1);
+  });
+
   it('drops a half-provisioned workcell when a push fails', async () => {
     const h = await harness({ pushFailure: '/opt/lark-workcell/bin' });
     await expect(h.pool.acquire('member-a')).rejects.toThrow(/cannot push/);
     const calls = await h.calls();
     expect(calls.filter((call) => call.op === 'stop')).toHaveLength(1);
-    expect(calls.some((call) => call.op === 'forward')).toBe(false);
+    // The port request travels with the uploads, so it may already be recorded;
+    // what matters is that the failed unit is dropped and never handed out.
+    expect(h.pool['cells'].size).toBe(0);
   });
 });

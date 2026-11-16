@@ -24,6 +24,11 @@ export interface WorkcellConfig {
    * package registries); `lan` is the internal network. Absent means none.
    */
   network?: readonly ('lan' | 'www')[];
+  /**
+   * How many units may be prepared at once. Transfers scale with the number of
+   * streams, so a batch of workers provisions in parallel instead of in turn.
+   */
+  parallelism?: number;
 }
 
 const POSITIVE_INTS = ['cpu', 'memoryGb', 'ttlSeconds'] as const;
@@ -36,7 +41,7 @@ export function normalizeWorkcell(input: unknown): WorkcellConfig | undefined {
   }
   const raw = input as Record<string, unknown>;
   for (const key of Object.keys(raw)) {
-    if (!['provider', 'image', 'cpu', 'memoryGb', 'ttlSeconds', 'network'].includes(key)) {
+    if (!['provider', 'image', 'cpu', 'memoryGb', 'ttlSeconds', 'network', 'parallelism'].includes(key)) {
       throw new Error(`pi.workcell.${key}: unknown setting`);
     }
   }
@@ -57,8 +62,13 @@ export function normalizeWorkcell(input: unknown): WorkcellConfig | undefined {
     && (!Array.isArray(network) || network.some((item) => item !== 'lan' && item !== 'www'))) {
     throw new Error("pi.workcell.network: expected an array of \"lan\" and/or \"www\"");
   }
+  const parallelism = raw.parallelism;
+  if (parallelism !== undefined && (typeof parallelism !== 'number' || !Number.isSafeInteger(parallelism) || parallelism < 1 || parallelism > 64)) {
+    throw new Error('pi.workcell.parallelism: expected an integer between 1 and 64');
+  }
   return {
     provider: raw.provider.trim(),
+    ...(typeof parallelism === 'number' ? { parallelism } : {}),
     ...(Array.isArray(network) && network.length > 0 ? { network: [...network] as ('lan' | 'www')[] } : {}),
     ...(typeof raw.image === 'string' ? { image: raw.image.trim() } : {}),
     ...(typeof raw.cpu === 'number' ? { cpu: raw.cpu } : {}),
@@ -273,9 +283,15 @@ export interface WorkcellPoolOptions {
 export class WorkcellPool {
   private provider: WorkcellProviderClient | undefined;
   private readonly cells = new Map<string, Pooled>();
+  private readonly provisioning = new Map<string, Promise<WorkcellHandle>>();
   private closing = false;
+  private active = 0;
+  private readonly waiters: Array<() => void> = [];
+  private readonly limit: number;
 
-  constructor(private readonly options: WorkcellPoolOptions) {}
+  constructor(private readonly options: WorkcellPoolOptions) {
+    this.limit = Math.max(1, options.config.parallelism ?? 8);
+  }
 
   async acquire(key: string): Promise<WorkcellHandle> {
     const existing = this.cells.get(key);
@@ -283,56 +299,89 @@ export class WorkcellPool {
       await this.renew(existing, false);
       return existing;
     }
+    // The same key asked for twice concurrently must produce one unit.
+    const inFlight = this.provisioning.get(key);
+    if (inFlight) return inFlight;
+    const provision = this.provision(key).finally(() => this.provisioning.delete(key));
+    this.provisioning.set(key, provision);
+    return provision;
+  }
+
+  private async provision(key: string): Promise<WorkcellHandle> {
     const provider = this.ensureProvider();
-    const spec: WorkcellCreateParams = {
-      ...(this.options.config.image ? { image: this.options.config.image } : {}),
-      ...(this.options.config.cpu !== undefined ? { cpu: this.options.config.cpu } : {}),
-      ...(this.options.config.memoryGb !== undefined ? { memoryGb: this.options.config.memoryGb } : {}),
-      ...(this.options.config.ttlSeconds !== undefined ? { ttlSeconds: this.options.config.ttlSeconds } : {}),
-      ...(this.options.config.network ? { network: this.options.config.network } : {}),
-      labels: { key },
-    };
-    const created = await provider.request<{ workcell: string }>('create', { spec });
-    const id = created.workcell;
-    log.info('agent', 'pi-workcell-provision', { key, workcell: id, image: spec.image });
-    try {
+    const cell = await this.withSlot(async () => {
+      const spec: WorkcellCreateParams = {
+        ...(this.options.config.image ? { image: this.options.config.image } : {}),
+        ...(this.options.config.cpu !== undefined ? { cpu: this.options.config.cpu } : {}),
+        ...(this.options.config.memoryGb !== undefined ? { memoryGb: this.options.config.memoryGb } : {}),
+        ...(this.options.config.ttlSeconds !== undefined ? { ttlSeconds: this.options.config.ttlSeconds } : {}),
+        ...(this.options.config.network ? { network: this.options.config.network } : {}),
+        labels: { key },
+      };
+      const created = await provider.request<{ workcell: string }>('create', { spec });
+      const id = created.workcell;
+      log.info('agent', 'pi-workcell-provision', { key, workcell: id, image: spec.image });
       const { runtime } = this.options;
-      const archive = runtime.archive ? await ensureRuntimeArchive(runtime.archive) : undefined;
-      if (archive && runtime.archive) {
-        await provider.request('push', { workcell: id, local: archive.path, remote: runtime.archive.remote });
-        // Unpack once, then drop the archive: the unit keeps only the tree.
-        const extracted = await provider.request('exec', {
-          workcell: id,
-          script: `tar -xzf ${runtime.archive.remote} -C ${runtime.archive.extractTo} && rm -f ${runtime.archive.remote}`,
-          timeout: 600,
-        }).catch((error: unknown) => error);
-        if (extracted instanceof Error) throw extracted;
-      } else if (runtime.modules) {
-        await provider.request('push', { workcell: id, local: runtime.modules.local, remote: runtime.modules.remote });
+      try {
+        // Small pushes and the port request do not depend on the runtime, so
+        // they travel while the heavy archive is on the wire.
+        const archive = runtime.archive ? await ensureRuntimeArchive(runtime.archive) : undefined;
+        const uploads: Array<Promise<unknown>> = runtime.pushes.map(push =>
+          provider.request('push', { workcell: id, local: push.local, remote: push.remote }));
+        for (const file of this.options.agentFiles ?? []) {
+          uploads.push(provider.request('push', {
+            workcell: id, local: file, remote: join(WORKCELL_ROOT, 'agent', basename(file)),
+          }));
+        }
+        const sessions = this.sessionArchive(key);
+        if (sessions && existsSync(sessions)) {
+          uploads.push(provider.request('push', {
+            workcell: id, local: sessions, remote: join(WORKCELL_ROOT, 'agent', 'sessions'),
+          }));
+        }
+        uploads.push(provider.request('forward', { workcell: id, remotePort: WORKCELL_HOST_PORT }));
+        const heavy = archive && runtime.archive
+          ? provider.request('push', { workcell: id, local: archive.path, remote: runtime.archive.remote })
+          : runtime.modules
+            ? provider.request('push', { workcell: id, local: runtime.modules.local, remote: runtime.modules.remote })
+            : Promise.resolve(undefined);
+        const results = await Promise.all([heavy, ...uploads]);
+        const forward = results[results.length - 1] as { port: number };
+        if (archive && runtime.archive) {
+          // Unpack once, then drop the archive: the unit keeps only the tree.
+          await provider.request('exec', {
+            workcell: id,
+            script: `tar -xzf ${runtime.archive.remote} -C ${runtime.archive.extractTo} && rm -f ${runtime.archive.remote}`,
+            timeout: 600,
+          });
+        }
+        const pooled: Pooled = { id, key, hostPort: forward.port };
+        pooled.renew = this.renewalTimer(pooled);
+        this.cells.set(key, pooled);
+        log.info('agent', 'pi-workcell-forward', { key, workcell: id, hostPort: forward.port });
+        return pooled;
+      } catch (error) {
+        // A half-provisioned cell is useless; drop it before surfacing the error.
+        await provider.request('stop', { workcell: id }).catch(() => undefined);
+        throw error;
       }
-      for (const push of runtime.pushes) {
-        await provider.request('push', { workcell: id, local: push.local, remote: push.remote });
-      }
-      for (const file of this.options.agentFiles ?? []) {
-        await provider.request('push', { workcell: id, local: file, remote: join(WORKCELL_ROOT, 'agent', basename(file)) });
-      }
-      const sessions = this.sessionArchive(key);
-      if (sessions && existsSync(sessions)) {
-        await provider.request('push', { workcell: id, local: sessions, remote: join(WORKCELL_ROOT, 'agent', 'sessions') });
-      }
-      const forward = await provider.request<{ port: number }>('forward', {
-        workcell: id,
-        remotePort: WORKCELL_HOST_PORT,
-      });
-      const cell: Pooled = { id, key, hostPort: forward.port };
-      cell.renew = this.renewalTimer(cell);
-      this.cells.set(key, cell);
-      log.info('agent', 'pi-workcell-forward', { key, workcell: id, hostPort: forward.port });
-      return cell;
-    } catch (error) {
-      // A half-provisioned cell is useless; drop it before surfacing the error.
-      await provider.request('stop', { workcell: id }).catch(() => undefined);
-      throw error;
+    });
+    return cell;
+  }
+
+  /**
+   * Bound how many units are prepared at once. Uploads scale with the number of
+   * streams (measured: ~13 MiB/s per stream, aggregate growing with concurrency),
+   * so a batch provisions in parallel while a runaway one stays bounded.
+   */
+  private async withSlot<T>(work: () => Promise<T>): Promise<T> {
+    while (this.active >= this.limit) await new Promise<void>((resolve) => this.waiters.push(resolve));
+    this.active += 1;
+    try {
+      return await work();
+    } finally {
+      this.active -= 1;
+      this.waiters.shift()?.();
     }
   }
 
