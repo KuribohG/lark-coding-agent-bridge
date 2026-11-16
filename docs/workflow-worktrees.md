@@ -39,6 +39,8 @@ Declared swarm members take the `workspace` ID of a worktree the script created.
 
 A member added without `workspace` runs in the workflow's own checkout: it cannot `submit_work`, and editing code there races the main agent and every other member. Worktrees made this way follow the same retention, cleanup, budget and landing rules as script-made ones.
 
+`staff_swarm({cleanup:'retired'})` (or a list of member names) releases those worktrees once their members are retired, so a long-running swarm does not hold a directory for every member it ever had against the workflow's workspace budget. It is the same host operation as the script's `cleanupWorkspace`: an idle worktree with no unintegrated changes is removed, one with uncommitted work or a running task is kept with an error, and a worktree the script already removed reports as removed rather than failing. Failed members are not cleaned: `revive` runs their turn in the same worktree, so retire them first if the directory is no longer wanted; a cleaned member keeps its name but cannot be revived or given another worktree.
+
 ## APIs
 
 Every operation requires an immutable, unique `key` (1–100 characters, no surrounding whitespace or `@` prefix). Keys share the agent/queue/mailbox/control namespace. Each script execution allows 128 workspace calls; each workflow retains at most 256 workspace keys, 32 workspaces and 512 workspace journal records, including internal artifacts.

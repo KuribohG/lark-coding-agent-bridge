@@ -428,6 +428,52 @@ export async function staffWorkspaces(ctx: KernelContext, state: WorkflowView, i
   return Object.fromEntries(made);
 }
 
+/** The members a cleanup names: those it lists, or every retired member that still holds a worktree. */
+function cleanupNames(swarm: SwarmView, value: unknown): string[] {
+  const names = value === 'retired'
+    ? swarm.members.filter(member => member.stopped === 'retired' && member.workspace && !member.cleaned).map(member => member.name)
+    : Array.isArray(value) ? value.map(name => scriptText(name, 'member name', 100)) : undefined;
+  if (!names) throw new Error('cleanup is "retired" or an array of member names');
+  if (names.length > 64) throw new Error('cleanup names at most 64 members');
+  if (new Set(names).size !== names.length) throw new Error('Member names must be unique');
+  return names;
+}
+
+/** The members whose worktrees a cleanup may release; already-cleaned ones are left out. */
+function pendingCleanup(swarm: SwarmView, names: string[]): Array<{ name: string; workspace: string }> {
+  return names.flatMap(name => {
+    const member = swarm.members.find(item => item.name === name);
+    if (!member) throw new Error('Unknown swarm member: ' + name);
+    if (member.cleaned) return [];
+    if (member.stopped !== 'retired') throw new Error(`Member ${name} is still running or failed; retire it before cleaning its worktree`);
+    if (!member.workspace) throw new Error(`Member ${name} has no managed worktree`);
+    return [{ name, workspace: member.workspace }];
+  });
+}
+
+/**
+ * Releases the worktrees of retired members, one per name, so a long-running swarm does not keep every directory it
+ * ever made against the workflow's workspace budget. Cleanup is the host operation behind the script's
+ * `cleanupWorkspace`, and like it, it only removes a worktree that is idle and holds no unintegrated changes; the
+ * members the script removed with its own key are reported as removed again rather than failing. `staffSwarm`
+ * records the release in the change that marks the members cleaned. A failed member is not cleaned: reviving it runs
+ * its turn in the same worktree, so retire it first if its worktree is no longer wanted.
+ */
+export async function staffCleanups(ctx: KernelContext, state: WorkflowView, input: Record<string, unknown>): Promise<Array<{ name: string; workspace: string }> | undefined> {
+  if (input.cleanup === undefined) return undefined;
+  if (!ctx.host.workspace) throw new Error('Workspace cleanup is unavailable in this workflow');
+  if (state.parent) throw new Error('Workspace operations are unavailable in this workflow');
+  if (state.status !== 'active' || state.script?.status !== 'running') throw new Error('Workflow is inactive');
+  const latest = ctx.store.state(state.root.scopeId, state.workflowId) ?? state;
+  const swarm = runningSwarm(latest, input.swarm);
+  const pending = pendingCleanup(swarm, cleanupNames(swarm, input.cleanup));
+  if (!pending.length) return [];
+  const signal = new AbortController().signal;
+  await Promise.all(pending.map(item => ctx.host.workspace!(ctx.store.public(latest),
+    { kind: 'cleanup', key: `staff/cleanup/${swarm.id}/${item.name}`, workspace: item.workspace }, signal)));
+  return pending;
+}
+
 /**
  * Changes to the staff of a running swarm, by the main agent or by the swarm's lead, so that staffing can follow
  * the work without a replay: more members, more wake-ups, failed members put back to work, members retired.
@@ -436,16 +482,16 @@ export async function staffWorkspaces(ctx: KernelContext, state: WorkflowView, i
  * (see `staffWorkspaces`), so code written in parallel stays isolated. A lead cannot name harnesses or models, so a
  * member never reaches those beyond what the script and the main agent chose.
  */
-export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, lead?: string, execution?: WorkerExecution, workspaces?: Record<string, string>): unknown {
-  if (Object.keys(input).some(key => !['swarm', 'add', 'like', 'workspace', 'queue', 'role', 'brief', 'revive', 'retire', 'maxTurns', 'maxConcurrent', ...EXECUTION_OPTIONS].includes(key))) throw new Error('staff_swarm supports swarm, add, like, workspace, harness, model, reasoningEffort, queue, role, brief, revive, retire, maxTurns and maxConcurrent');
+export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, lead?: string, execution?: WorkerExecution, workspaces?: Record<string, string>, cleanedUp?: Array<{ name: string; workspace: string }>): unknown {
+  if (Object.keys(input).some(key => !['swarm', 'add', 'like', 'workspace', 'queue', 'role', 'brief', 'revive', 'retire', 'cleanup', 'maxTurns', 'maxConcurrent', ...EXECUTION_OPTIONS].includes(key))) throw new Error('staff_swarm supports swarm, add, like, workspace, harness, model, reasoningEffort, queue, role, brief, revive, retire, cleanup, maxTurns and maxConcurrent');
   const workspaceWanted = input.workspace !== undefined && input.workspace !== false;
   if (workspaceWanted && input.add === undefined) throw new Error('workspace binds the members that add names');
   const chosen = EXECUTION_OPTIONS.some(option => input[option] !== undefined);
   if (chosen && lead !== undefined) throw new Error('Only the main agent can choose the harness or model of new members; a lead adds members like an existing one');
   if (chosen && !execution) throw new Error('The harness and model of the new members were not resolved');
   const swarm = lead === undefined ? runningSwarm(state, input.swarm) : leadSwarm(state, lead);
-  if (input.add === undefined && input.revive === undefined && input.retire === undefined && input.maxTurns === undefined && input.maxConcurrent === undefined) throw new Error('staff_swarm needs add, revive, retire, maxTurns or maxConcurrent');
-  const result: { swarm: string; added?: string[]; revived?: string[]; retired?: string[]; maxTurns?: number; maxConcurrent?: number; execution?: WorkerExecutionSelection; workspaces?: Array<{ name: string; workspace: string }> } = { swarm: swarm.key };
+  if (input.add === undefined && input.revive === undefined && input.retire === undefined && input.cleanup === undefined && input.maxTurns === undefined && input.maxConcurrent === undefined) throw new Error('staff_swarm needs add, revive, retire, cleanup, maxTurns or maxConcurrent');
+  const result: { swarm: string; added?: string[]; revived?: string[]; retired?: string[]; cleaned?: string[]; maxTurns?: number; maxConcurrent?: number; execution?: WorkerExecutionSelection; workspaces?: Array<{ name: string; workspace: string }> } = { swarm: swarm.key };
   if (input.maxConcurrent !== undefined) {
     // How many workers run at once is the budget the main agent started the workflow with, so only it changes it.
     if (lead !== undefined) throw new Error('Only the main agent can change maxConcurrent');
@@ -494,6 +540,17 @@ export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, 
     }
     result.retired = names;
   }
+  if (input.cleanup !== undefined) {
+    const pending = pendingCleanup(swarm, cleanupNames(swarm, input.cleanup));
+    const done = new Set(cleanedUp?.map(item => item.name) ?? []);
+    const cleaned: string[] = [];
+    for (const item of pending) {
+      if (!done.has(item.name)) throw new Error('The worktrees of the named members were not cleaned up');
+      emit(state, { type: 'swarm_member_workspace_cleaned', swarmId: swarm.id, member: item.name });
+      cleaned.push(item.name);
+    }
+    result.cleaned = cleaned;
+  }
   if (input.add !== undefined) {
     if (!Array.isArray(input.add) || !input.add.length || input.add.length > 64) throw new Error('add is an array of 1–64 new member names');
     const names = input.add.map(memberName);
@@ -532,7 +589,7 @@ function memberSummary(state: WorkflowView, swarm: SwarmView, member: MemberView
   const status = member.stopped ?? (task && BUSY.has(task.status) ? 'running' : swarm.status === 'running' ? 'waiting' : member.name !== swarm.lead && member.turns >= swarm.maxTurns ? 'max_turns' : 'idle');
   const usual = likeMember(swarm, undefined).execution;
   const model = member.execution.modelSettings.model;
-  return { name: member.name, ...(member.name === swarm.lead ? { lead: true } : {}), ...(member.queue ? { queue: member.queue } : {}), ...(member.added ? { added: true } : {}),
+  return { name: member.name, ...(member.name === swarm.lead ? { lead: true } : {}), ...(member.queue ? { queue: member.queue } : {}), ...(member.added ? { added: true } : {}), ...(member.cleaned ? { cleaned: true } : {}),
     // Only the members bound unlike the rest carry their binding, which keeps a large swarm's summary short.
     ...(member.execution.agentKind !== usual.agentKind ? { harness: member.execution.agentKind } : {}),
     ...(model && (model !== usual.modelSettings.model || member.execution.agentKind !== usual.agentKind) ? { model } : {}), turns: member.turns, status,

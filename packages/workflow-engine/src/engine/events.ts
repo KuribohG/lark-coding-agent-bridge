@@ -93,6 +93,7 @@ export type DomainEvent =
   | { type: 'swarm_member_wake_cleared'; swarmId: string; member: string }
   | { type: 'swarm_member_added'; swarmId: string; member: SwarmMember }
   | { type: 'swarm_member_stopped'; swarmId: string; member: string; reason: 'failed' | 'retired'; detail?: string }
+  | { type: 'swarm_member_workspace_cleaned'; swarmId: string; member: string }
   | { type: 'swarm_member_revived'; swarmId: string; member: string; auto?: boolean }
   | { type: 'swarm_queue_starved'; swarmId: string; queue: string; at: number; told?: 'lead' | 'main' }
   | { type: 'swarm_queue_fed'; swarmId: string; queue: string }

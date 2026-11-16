@@ -282,6 +282,11 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       member.stopped = event.reason; member.detail = event.detail;
       return;
     }
+    case 'swarm_member_workspace_cleaned': {
+      const member = swarm(state, event.swarmId).members.find(item => item.name === event.member)!;
+      delete member.workspace; member.cleaned = true;
+      return;
+    }
     case 'swarm_member_revived': {
       const member = swarm(state, event.swarmId).members.find(item => item.name === event.member)!;
       member.stopped = undefined; member.detail = undefined; member.lastWake = undefined;

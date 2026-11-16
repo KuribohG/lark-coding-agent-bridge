@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
@@ -173,6 +173,39 @@ describe('workspace script runtime', () => {
       // The operation is idempotent: the same ID returns the recorded result without making more worktrees.
       const again = await staff(operationId);
       expect(again.workspaces).toEqual(added.workspaces);
+    } finally { release(); }
+  }, 60_000);
+
+  it('releases a retired member worktree and leaves running or failed ones alone', async () => {
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    let runs = 0;
+    // w0 holds the swarm open; the member added later finishes its opening turn so it can be retired.
+    const h = await harness(async () => { if (++runs === 1) await gate; return 'done'; });
+    try {
+      await h.call('run_script', { script: `return await swarm('Write in parallel',{key:'crew',members:[{name:'w0',harness:'codex',model:'worker'}]});` });
+      await vi.waitFor(async () => { await h.runtime.tick(); expect(h.adapter.runs).toHaveLength(1); }, { timeout: 20_000, interval: 30 });
+      const main = { kind: 'main' as const, scopeId: 'test', workflowId: h.state().workflowId };
+      const added = await h.runtime.kernel.call(main, 'staff_swarm', { operationId: randomUUID(), add: ['w1'], workspace: true }) as { workspaces: Array<{ name: string; workspace: string }> };
+      const id = added.workspaces[0]!.workspace;
+      const path = join(h.dir, 'worktrees', h.state().workflowId, id);
+      await expect(access(path)).resolves.toBeUndefined();
+      await vi.waitFor(async () => {
+        await h.runtime.tick();
+        const taskId = h.state().swarms![0]!.members.find(member => member.name === 'w1')!.taskId;
+        expect(h.state().tasks.find(task => task.taskId === taskId)?.status).toBe('result_ready');
+      }, { timeout: 20_000, interval: 30 });
+      await expect(h.call('staff_swarm', { cleanup: ['w1'] })).rejects.toThrow('retire it before cleaning');
+      expect(h.state().swarms![0]!.members.find(member => member.name === 'w1')!.workspace).toBe(id);
+      await h.call('staff_swarm', { retire: ['w1'] });
+      expect(h.state().swarms![0]!.members.find(member => member.name === 'w1')!.stopped).toBe('retired');
+      const cleaned = await h.call('staff_swarm', { cleanup: ['w1'] }) as { cleaned: string[] };
+      expect(cleaned.cleaned).toEqual(['w1']);
+      const member = h.state().swarms![0]!.members.find(item => item.name === 'w1')!;
+      expect(member.workspace).toBeUndefined();
+      expect(member.cleaned).toBe(true);
+      await expect(access(path)).rejects.toBeTruthy();
+      // A second cleanup names nothing rather than failing.
+      expect((await h.call('staff_swarm', { cleanup: 'retired' }) as { cleaned: string[] }).cleaned).toEqual([]);
     } finally { release(); }
   }, 60_000);
 });

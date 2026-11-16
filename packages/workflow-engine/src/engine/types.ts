@@ -166,6 +166,8 @@ export interface SwarmMember {
   execution: WorkerExecution;
   workflowTool?: boolean;
   workspace?: string;
+  /** Its managed worktree was cleaned up after the member was retired; it cannot be revived. */
+  cleaned?: boolean;
   /** Added by the lead while the swarm was running, with the brief it gave. */
   added?: boolean;
   brief?: string;
