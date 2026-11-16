@@ -160,6 +160,14 @@ const ID_KEYS = new Set([
 ]);
 
 const MAX_LOG_STRING_CHARS = 4096;
+// Payloads handed to the logger are arbitrary (SDK errors carry sockets,
+// streams and request agents). Traversal has to be bounded on every axis:
+// without these caps a single cyclic object graph — e.g. the response stream
+// an Axios error carries for `responseType: 'stream'` endpoints — recurses
+// until the stack blows, and the throw escapes the logging call site.
+const MAX_LOG_DEPTH = 8;
+const MAX_LOG_ARRAY_ITEMS = 50;
+const MAX_LOG_OBJECT_KEYS = 100;
 const CREDENTIAL_JSON_FIELD_RE =
   /("(?:secret|app_secret|appSecret|token|access_token|tenant_access_token|app_access_token|authorization)"\s*:\s*")[^"]*(")/gi;
 const ESCAPED_CREDENTIAL_JSON_FIELD_RE =
@@ -176,13 +184,42 @@ interface SanitizeOptions {
 const LOCAL_LOG_SANITIZE: SanitizeOptions = { redactIds: false };
 const EXTERNAL_SANITIZE: SanitizeOptions = { redactIds: true };
 
+/** Traversal cursor for one log value: recursion depth + objects on the path. */
+interface SanitizeState {
+  seen: WeakSet<object>;
+  depth: number;
+}
+
+function newSanitizeState(): SanitizeState {
+  return { seen: new WeakSet(), depth: 0 };
+}
+
+/**
+ * Sanitize one value, never throwing. Logging is the last thing that should
+ * take the bot down, so a payload the traversal cannot handle becomes a
+ * placeholder instead of an exception at the call site.
+ */
+function safeSanitizeValue(
+  key: string,
+  value: unknown,
+  options: SanitizeOptions,
+  state: SanitizeState = newSanitizeState(),
+): unknown {
+  try {
+    return sanitizeLogValue(key, value, options, state);
+  } catch {
+    return '[UNSANITIZABLE]';
+  }
+}
+
 function sanitizeLogEntry(
   entry: Record<string, unknown>,
   options: SanitizeOptions = EXTERNAL_SANITIZE,
 ): Record<string, unknown> {
+  const state = newSanitizeState();
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(entry)) {
-    out[key] = sanitizeLogValue(key, value, options);
+    out[key] = safeSanitizeValue(key, value, options, state);
   }
   return out;
 }
@@ -191,6 +228,7 @@ function sanitizeLogValue(
   key: string,
   value: unknown,
   options: SanitizeOptions = EXTERNAL_SANITIZE,
+  state: SanitizeState = newSanitizeState(),
 ): unknown {
   const normalizedKey = key.startsWith('_') ? key.slice(1) : key;
   if (value === undefined) return undefined;
@@ -202,14 +240,51 @@ function sanitizeLogValue(
   if (RESOURCE_ID_KEYS.has(normalizedKey)) return '[REDACTED_RESOURCE]';
   if (options.redactIds && ID_KEYS.has(normalizedKey)) return redactId(value);
   if (Array.isArray(value)) {
-    return value.map((item) => sanitizeLogValue(key, item, options));
+    if (state.depth >= MAX_LOG_DEPTH) return '[TRUNCATED_DEPTH]';
+    if (state.seen.has(value)) return '[CIRCULAR]';
+    const child = { seen: state.seen, depth: state.depth + 1 };
+    state.seen.add(value);
+    try {
+      const items = value
+        .slice(0, MAX_LOG_ARRAY_ITEMS)
+        .map((item) => sanitizeLogValue(key, item, options, child));
+      if (value.length > MAX_LOG_ARRAY_ITEMS) {
+        items.push(`[...${value.length - MAX_LOG_ARRAY_ITEMS} more]`);
+      }
+      return items;
+    } finally {
+      // Only the current path counts as "seen": the same object may appear at
+      // several sibling positions without being a cycle.
+      state.seen.delete(value);
+    }
   }
   if (value && typeof value === 'object') {
-    const nested: Record<string, unknown> = {};
-    for (const [nestedKey, nestedValue] of Object.entries(value)) {
-      nested[nestedKey] = sanitizeLogValue(nestedKey, nestedValue, options);
+    const binary = describeBinary(value);
+    if (binary) return binary;
+    const stream = describeStream(value);
+    if (stream) return stream;
+    if (state.depth >= MAX_LOG_DEPTH) return '[TRUNCATED_DEPTH]';
+    if (state.seen.has(value)) return '[CIRCULAR]';
+    const child = { seen: state.seen, depth: state.depth + 1 };
+    let entries: [string, unknown][];
+    try {
+      entries = Object.entries(value);
+    } catch {
+      return '[UNREADABLE]';
     }
-    return nested;
+    state.seen.add(value);
+    try {
+      const nested: Record<string, unknown> = {};
+      for (const [nestedKey, nestedValue] of entries.slice(0, MAX_LOG_OBJECT_KEYS)) {
+        nested[nestedKey] = sanitizeLogValue(nestedKey, nestedValue, options, child);
+      }
+      if (entries.length > MAX_LOG_OBJECT_KEYS) {
+        nested['...'] = `[${entries.length - MAX_LOG_OBJECT_KEYS} more]`;
+      }
+      return nested;
+    } finally {
+      state.seen.delete(value);
+    }
   }
   if (typeof value === 'string') {
     const redacted = redactDiagnosticText(value);
@@ -221,6 +296,25 @@ function sanitizeLogValue(
   return value;
 }
 
+function describeBinary(value: object): string | undefined {
+  if (Buffer.isBuffer(value)) return `<binary ${value.byteLength}b>`;
+  if (value instanceof ArrayBuffer) return `<binary ${value.byteLength}b>`;
+  if (ArrayBuffer.isView(value)) return `<binary ${value.byteLength}b>`;
+  return undefined;
+}
+
+/**
+ * Sockets, requests and response streams all expose `on`/`pipe`; walking them
+ * reaches live TLS state that would never serialize usefully anyway.
+ */
+function describeStream(value: object): string | undefined {
+  const candidate = value as { on?: unknown; pipe?: unknown };
+  if (typeof candidate.on === 'function' && typeof candidate.pipe === 'function') {
+    return '[STREAM]';
+  }
+  return undefined;
+}
+
 function redactId(value: unknown): unknown {
   if (typeof value !== 'string') return value;
   if (value.length <= 6) return value;
@@ -228,7 +322,34 @@ function redactId(value: unknown): unknown {
 }
 
 function emit(level: Level, phase: string, event: string, fields: LogFields = {}): void {
+  try {
+    emitEntry(level, phase, event, fields);
+  } catch (err) {
+    reportEmitFailure(level, phase, event, err);
+  }
+}
+
+/**
+ * A logger that throws takes down whatever was being logged (the run, the
+ * flush, the whole chat). One line on stderr per process is enough to notice
+ * a logging bug; it must never be the reason a message goes unanswered.
+ */
+let emitFailureReported = false;
+
+function reportEmitFailure(level: Level, phase: string, event: string, err: unknown): void {
+  if (emitFailureReported) return;
+  emitFailureReported = true;
+  try {
+    const reason = err instanceof Error ? err.message : String(err);
+    console.error(`[logger] dropped ${level} ${phase}.${event}: ${reason}`);
+  } catch {
+    /* stderr is broken too — nothing sensible left to do */
+  }
+}
+
+function emitEntry(level: Level, phase: string, event: string, fields: LogFields = {}): void {
   const ctx = als.getStore() ?? {};
+  const entryState = newSanitizeState();
   const entry = sanitizeLogEntry({
     ts: formatLocalTimestamp(loggerOptions.now()),
     level,
@@ -238,9 +359,9 @@ function emit(level: Level, phase: string, event: string, fields: LogFields = {}
   }, LOCAL_LOG_SANITIZE);
   for (const [k, v] of Object.entries(fields)) {
     if (RESERVED_KEYS.has(k)) {
-      entry[`_${k}`] = sanitizeLogValue(`_${k}`, v, LOCAL_LOG_SANITIZE);
+      entry[`_${k}`] = safeSanitizeValue(`_${k}`, v, LOCAL_LOG_SANITIZE, entryState);
     } else {
-      entry[k] = sanitizeLogValue(k, v, LOCAL_LOG_SANITIZE);
+      entry[k] = safeSanitizeValue(k, v, LOCAL_LOG_SANITIZE, entryState);
     }
   }
 
@@ -592,6 +713,13 @@ function redactDiagnosticText(text: string): string {
     /\b(access_token|tenant_access_token|app_access_token|app_secret|appSecret|secret|token|doc_token|file_token|authorization)=([^&\s"',}]+)/gi,
     '$1=[REDACTED]',
   );
+  // Credentials embedded in a URL's userinfo, e.g. a proxy like
+  // `http://user:password@proxy.example:3128` (axios request configs carry
+  // these, and they end up inside stringified SDK errors).
+  out = out.replace(
+    /\b([a-z][a-z0-9+.-]*:\/\/[^\s/:@"']+):([^\s/@:"']+)@/gi,
+    '$1:[REDACTED]@',
+  );
   out = out.replace(
     /(^|[\s"'=])((?:\/(?:Users|home|tmp|var|private|Volumes|opt|workspace|workspaces|mnt|app|srv|root|data)\/[^\s"',)]+))/g,
     '$1[REDACTED_PATH]',
@@ -679,7 +807,7 @@ function sanitizeMetricTags(tags?: Record<string, string>): Record<string, strin
   if (!tags) return undefined;
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(tags)) {
-    const sanitized = sanitizeLogValue(key, value);
+    const sanitized = safeSanitizeValue(key, value, EXTERNAL_SANITIZE);
     out[key] = typeof sanitized === 'string' ? sanitized : JSON.stringify(sanitized);
   }
   return out;
@@ -691,7 +819,7 @@ function sanitizeTelemetryContext(
   if (!ctx) return undefined;
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(ctx)) {
-    out[key] = sanitizeLogValue(key, value);
+    out[key] = safeSanitizeValue(key, value, EXTERNAL_SANITIZE);
   }
   return out;
 }
@@ -700,9 +828,11 @@ function sanitizeTelemetryError(err: unknown): unknown {
   if (err instanceof Error) {
     return {
       name: err.name,
-      message: sanitizeLogValue('err', err.message),
-      ...(err.stack ? { stack: sanitizeLogValue('stack', err.stack) } : {}),
+      message: safeSanitizeValue('err', err.message, EXTERNAL_SANITIZE),
+      ...(err.stack
+        ? { stack: safeSanitizeValue('stack', err.stack, EXTERNAL_SANITIZE) }
+        : {}),
     };
   }
-  return sanitizeLogValue('err', err);
+  return safeSanitizeValue('err', err, EXTERNAL_SANITIZE);
 }
