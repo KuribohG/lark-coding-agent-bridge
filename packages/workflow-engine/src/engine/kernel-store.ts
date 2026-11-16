@@ -167,13 +167,30 @@ export interface WorkflowStoreOptions {
   retainFinished?: number;
   /** Checkpoint the WAL on a background thread instead of inside commits; for a long-lived store on a file. */
   backgroundCheckpoint?: boolean;
-  /** Receives the reason background checkpointing could not run; the store then checkpoints inside commits. */
+  /** Received when background checkpointing could not run; the store then checkpoints inside commits. */
   checkpointFailed?(error: unknown): void;
+  /**
+   * Receives a workflow whose journal cannot be replayed (an event this build does not understand, or a corrupt
+   * entry). Such a workflow is left out of scheduling instead of failing the whole store; reading it directly throws
+   * the same error, and repair tooling can still replace it.
+   */
+  loadFailed?(workflowId: string, error: Error): void;
   /**
    * How long a finished workflow tree is kept before maintenance deletes it, journal and archive included.
    * Default 30 days; `WORKFLOW_JOURNAL_RETENTION_DAYS` overrides it.
    */
   retentionMs?: number;
+}
+
+/** A workflow whose journal this build cannot replay. Reading it, or any state derived from it, throws this. */
+export class WorkflowJournalError extends Error {
+  constructor(readonly workflowId: string, readonly seq: number, readonly eventType: string, cause: unknown) {
+    super(`工作流 ${workflowId} 的日志无法重放（seq ${seq}，事件 ${eventType}）：`
+      + (cause instanceof Error ? cause.message : String(cause))
+      + '。旧版本读到新版本写入的事件时会这样；升级 bridge，或用修复工具替换该工作流。');
+    this.name = 'WorkflowJournalError';
+    if (cause instanceof Error) this.cause = cause;
+  }
 }
 
 /**
@@ -186,14 +203,17 @@ export interface WorkflowStoreOptions {
  *
  * One process owns the database (the bridge holds the profile's runtime lock), so the in-memory state is authoritative.
  */
-export class WorkflowStore {
-  readonly db: Database.Database;
+export class WorkflowStore {  readonly db: Database.Database;
   /** Test and diagnostics hook: runs inside the SQLite transaction after everything is written, before COMMIT. */
   beforeCommit?: (events: ReadonlyArray<{ workflowId: string; type: string }>) => void;
   private readonly changes = new Map<string, Set<() => void>>();
   private readonly watchers = new Map<string, Map<string, Set<() => void>>>();
   private readonly commits = new Set<() => void>();
   private readonly aggregates = new Map<string, Aggregate>();
+  /** Workflows whose journal failed to replay; the error is kept so every read reports the same cause. */
+  private readonly unreadable = new Map<string, WorkflowJournalError>();
+  /** Unreadable workflows already reported to `loadFailed`; scheduling lists them every tick. */
+  private readonly reportedUnreadable = new Set<string>();
   /** Workflows that are not completed or cancelled. */
   private readonly open = new Set<string>();
   private readonly roots = new Map<string, string>();
@@ -305,7 +325,19 @@ export class WorkflowStore {
 
   /** Unfinished workflows. */
   list(): WorkflowView[] {
-    return [...this.open].flatMap(id => this.byId(id) ?? []);
+    return [...this.open].flatMap(id => {
+      try {
+        return this.byId(id) ?? [];
+      } catch (error) {
+        if (!(error instanceof WorkflowJournalError)) throw error;
+        // One unreadable workflow must not stop the rest from running or the bridge from starting.
+        if (!this.reportedUnreadable.has(id)) {
+          this.reportedUnreadable.add(id);
+          this.options.loadFailed?.(id, error);
+        }
+        return [];
+      }
+    });
   }
 
   state(scopeId: string, workflowId?: string): WorkflowView | undefined {
@@ -753,9 +785,18 @@ export class WorkflowStore {
   }
 
   private aggregate(workflowId: string): Aggregate | undefined {
+    const unreadable = this.unreadable.get(workflowId);
+    if (unreadable) throw unreadable;
     let aggregate = this.aggregates.get(workflowId);
     if (!aggregate) {
-      const loaded = this.load(workflowId);
+      let loaded: ReturnType<WorkflowStore['load']>;
+      try {
+        loaded = this.load(workflowId);
+      } catch (error) {
+        // Replaying again would fail identically; keep the error and report it on every read.
+        if (error instanceof WorkflowJournalError) this.unreadable.set(workflowId, error);
+        throw error;
+      }
       if (!loaded) return undefined;
       aggregate = { store: this, ...loaded, cataloged: loaded.state.status, stale: false };
       owners.set(aggregate.state, aggregate);
@@ -774,9 +815,16 @@ export class WorkflowStore {
     const rows = this.db.prepare('SELECT seq, version, data FROM wf_events WHERE workflow_id = ? AND seq > ? ORDER BY seq')
       .all(workflowId, seq) as Array<{ seq: number; version: number; data: string }>;
     for (const row of rows) {
-      const event = JSON.parse(row.data) as DomainEvent;
-      if (event.type === 'workflow_created') state = event.state;
-      else evolve(state!, event);
+      // A journal written by another build is validated here rather than silently skipped: an event this reducer
+      // does not know cannot be ignored without the rest of the state drifting away from what its writer meant.
+      let event: DomainEvent | undefined;
+      try {
+        event = JSON.parse(row.data) as DomainEvent;
+        if (event.type === 'workflow_created') state = event.state;
+        else evolve(state!, event);
+      } catch (error) {
+        throw new WorkflowJournalError(workflowId, row.seq, event?.type ?? 'unparseable', error);
+      }
       state!.stateVersion = row.version;
       seq = row.seq;
     }
@@ -797,10 +845,32 @@ export class WorkflowStore {
   /** Repair and test tooling: makes a workflow's state exactly `replacement`, creating the workflow if it is unknown. */
   replace(replacement: WorkflowState): void {
     this.transaction();
+    // Repair tooling may be the way out of an unreadable journal: the replacement makes it readable again.
+    this.unreadable.delete(replacement.workflowId);
+    this.reportedUnreadable.delete(replacement.workflowId);
     const artifacts: StoredArtifact[] = replacement.artifacts.map(({ text, ...artifact }) => ({ ...artifact, ...this.putText(text, replacement.workflowId) }));
     const tasks: StoredTask[] = replacement.tasks.map(task => ({ ...task, objective: this.putText(task.objective, replacement.workflowId) }));
     const state: WorkflowData = { ...replacement, artifacts, tasks };
-    const aggregate = this.aggregate(state.workflowId);
+    let aggregate: Aggregate | undefined;
+    try {
+      aggregate = this.aggregate(state.workflowId);
+    } catch (error) {
+      if (!(error instanceof WorkflowJournalError)) throw error;
+      // Repairing an unreadable journal means replacing exactly that journal: drop what this build cannot replay
+      // before the replacement is appended, or the next load would fail on the same old event.
+      for (const table of ['wf_events', 'wf_snapshots', 'wf_archived_tasks', 'wf_archived_artifacts', 'wf_archived_calls', 'wf_archive', 'wf_text_refs']) {
+        this.db.prepare(`DELETE FROM ${table} WHERE workflow_id = ?`).run(state.workflowId);
+      }
+      this.db.prepare('DELETE FROM wf_catalog WHERE id = ?').run(state.workflowId);
+      // The indexes were built from the journal being dropped; without this the create below would report the scope
+      // as already having an unfinished workflow.
+      this.open.delete(state.workflowId);
+      this.cold.delete(state.workflowId);
+      this.trees.delete(state.workflowId);
+      this.aggregates.delete(state.workflowId);
+      if (!state.parent && this.roots.get(state.root.scopeId) === state.workflowId) this.roots.delete(state.root.scopeId);
+      aggregate = undefined;
+    }
     // The commit adds one to the version; start one below so the workflow ends up with the replacement's own.
     const versioned = { ...state, stateVersion: state.stateVersion - 1 };
     if (aggregate) this.append(aggregate, { type: 'workflow_replaced', state: versioned });
@@ -941,6 +1011,7 @@ export class WorkflowStore {
       })();
       this.cold.delete(root.id);
       this.evictTree(root.id, ids);
+      for (const id of ids) { this.unreadable.delete(id); this.reportedUnreadable.delete(id); }
       removed += ids.length;
       if (index > 0 && index % batch === 0) await yieldToLoop();
     }

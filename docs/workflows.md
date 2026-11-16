@@ -585,6 +585,8 @@ A workflow that does not resume automatically stays `interrupted`, and `/workflo
 
 **Upgrading from an earlier version.** Earlier versions kept this record only in memory and wrote no heartbeat. Their workflows therefore cannot resume automatically on the first restart into this version, until a new message arrives in that chat. Pause or let them finish before upgrading.
 
+**Reading a journal written by another version.** Each event is applied by an exhaustive reducer; an event type this build does not know is never skipped. The affected workflow is reported once as `workflow-unreadable` in the bridge log, left out of scheduling, and any read of it fails with the journal position and event type. After a downgrade, workflows written by the newer build stay unreadable until you upgrade again; `replaceWorkflowState` (repair tooling) can overwrite such a workflow when dropping its journal is acceptable. Other workflows keep running.
+
 Replay repeats interrupted work: side effects in the outside world (files, network) may be repeated, exactly as with an explicit replay.
 
 ### Interpreter and execution boundaries

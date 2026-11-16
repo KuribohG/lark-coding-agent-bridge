@@ -385,7 +385,16 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       return;
     }
     case 'work_operation_recorded': queue(state).operations.push(event.operation); return;
+    // A new event must get a case here: the `never` parameter makes that a compile error, and a journal written by
+    // another build meets this branch at runtime instead of being silently skipped.
+    default: assertNever(event);
   }
+}
+
+/** Exhaustiveness check for a closed union. */
+function assertNever(value: never): never {
+  const type = (value as { type?: unknown } | undefined)?.type;
+  throw new Error(`Unhandled workflow event${type === undefined ? '' : `: ${String(type)}`}`);
 }
 
 function setStatus(state: WorkflowData, status: WorkflowData['status'], script: NonNullable<WorkflowData['script']>['status']): void {

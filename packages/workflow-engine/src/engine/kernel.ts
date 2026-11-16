@@ -34,6 +34,7 @@ class KernelParts implements KernelContext {
       listenerFailed: error => this.log.warn('change-listener-failed', { error: String(error) }),
       backgroundCheckpoint: true,
       checkpointFailed: error => this.log.warn('background-checkpoint-unavailable', { error: String(error) }),
+      loadFailed: (workflowId, error) => this.log.warn('workflow-unreadable', { workflowId, error: error.message }),
     });
     this.hosts = new WorkerHosts(this.store.db);
     this.scheduler = new WorkflowScheduler(this);
