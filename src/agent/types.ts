@@ -196,4 +196,11 @@ export interface AgentAdapter {
    * swap is safe. Hot reload defers the swap until the adapter is idle.
    */
   replacementBlocker?(next: AgentAdapter, context: { providersChanged: boolean }): Promise<string | undefined> | string | undefined;
+  /**
+   * Release long-lived transport resources (shared daemons, host processes).
+   * Called when the bridge drops this adapter; an adapter that keeps serving
+   * active runs waits for them instead of cutting them off. `waitMs` bounds
+   * that drain, so a stopping process can ask for a short one.
+   */
+  shutdown?(waitMs?: number): Promise<void>;
 }

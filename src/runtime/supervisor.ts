@@ -103,6 +103,8 @@ export interface ManagedStatus {
  * (no process.exit) so the supervisor keeps hosting the others.
  */
 const ACTIVITY_POLL_MS = 2_000;
+/** How long a stopping profile waits for adapters to drain their runs. */
+const DISPOSE_ON_STOP_MS = 10_000;
 
 class ManagedProfile {
   bridge!: BridgeChannel;
@@ -206,6 +208,12 @@ class ManagedProfile {
     } catch (err) {
       log.warn('supervisor', 'disconnect-failed', { profile: this.profile, err: String(err) });
     }
+    // Bridge adapters hold long-lived agent transports (shared daemons, SDK
+    // hosts); releasing them here keeps a stopped profile from holding one.
+    // Bounded: an offline profile must not wait on a wedged run.
+    await this.execution.dispose(DISPOSE_ON_STOP_MS).catch((err) => {
+      log.warn('supervisor', 'execution-dispose-failed', { profile: this.profile, err: String(err) });
+    });
     if (this.entry) {
       await unregister(this.entry.id, this.appPaths.userRegistryFile).catch(() => undefined);
     }
@@ -393,7 +401,13 @@ class ManagedProfile {
       }
       this.cfg = next;
       this.profileConfig = nextRuntime.profileConfig;
+      const previousExecution = this.execution;
       this.execution = nextExecution;
+      // In-flight runs keep the adapters they started with, so the release is
+      // deferred inside the adapter instead of cutting them off.
+      void previousExecution.dispose().catch((err) => {
+        log.warn('supervisor', 'execution-dispose-failed', { profile: this.profile, err: String(err) });
+      });
       this.larkAuth = nextLarkAuth;
       this.modelServices = nextRuntime.modelServices;
       nextControls.configStatus = this.configStatus;

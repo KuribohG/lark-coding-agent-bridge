@@ -28,6 +28,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { mergeSpawnEnv, resolveProviderValue, runEnvSnapshot } from './pi-host-protocol.mjs';
 
 const realStdoutWrite = process.stdout.write.bind(process.stdout);
 process.stdout.write = function redirectedWrite(chunk, encoding, callback) {
@@ -154,14 +155,49 @@ const startedAt = Date.now();
 let lastActivityAt = startedAt;
 
 class SessionEntry {
-  constructor(session, cwd) {
+  constructor(session, cwd, loader, state) {
     this.session = session;
     this.cwd = cwd;
+    this.loader = loader;
+    /** `{ appendPrompt, env }` shared with this session's tool definitions. */
+    this.state = state;
     this.lastUsed = Date.now();
+    this.lastEventAt = undefined;
     this.run = undefined;
-    this.appendPrompt = '';
     this.unsubscribe = () => {};
   }
+}
+
+/**
+ * Shell tools spawn one process per call, so a run's trusted bindings
+ * (`AGENT_WORKFLOW_TOKEN` and friends) must reach that process without landing
+ * in the host's process.env: every other session would inherit them. The tool
+ * definition captures this session's mutable state instead, and a spawn reads
+ * the bindings of the run that owns the current turn. Sessions run one turn at
+ * a time, so the snapshot cannot change under a spawn.
+ */
+function createSessionTools(cwd, settings, state) {
+  const spawnHook = (context) => ({
+    ...context,
+    env: mergeSpawnEnv(context.env ?? process.env, state.env),
+  });
+  const options = {
+    commandPrefix: settings.getShellCommandPrefix(),
+    shellPath: settings.getShellPath(),
+    spawnHook,
+  };
+  const tools = [];
+  for (const [name, build] of [
+    ['bash', pi.createBashToolDefinition],
+    ['powershell', pi.createPowerShellToolDefinition],
+  ]) {
+    try {
+      tools.push(build(cwd, options));
+    } catch (error) {
+      log('shell tool unavailable', { tool: name, error: errorText(error) });
+    }
+  }
+  return tools;
 }
 
 function createSessionManager(cwd, params) {
@@ -194,20 +230,20 @@ function resolveModel(modelId) {
   throw new Error(`unknown pi model: ${modelId}`);
 }
 
+/**
+ * Credentials reach the provider as literals taken from the run's bindings: see
+ * `pi-host-protocol.mjs` for why they must never be written into process.env.
+ */
 function registerProvider(registration, providerEnv) {
-  if (providerEnv) {
-    for (const [name, value] of Object.entries(providerEnv)) {
-      if (value !== undefined && value !== null) process.env[name] = String(value);
-    }
-  }
   runtime.registerProvider(registration.providerId, {
     name: registration.name,
     baseUrl: registration.baseUrl,
     api: registration.api,
-    apiKey: `$${registration.apiKeyEnv}`,
+    apiKey: resolveProviderValue(`$${registration.apiKeyEnv}`, providerEnv),
     authHeader: true,
     ...(registration.headers
-      ? { headers: Object.fromEntries(Object.entries(registration.headers).map(([name, env]) => [name, `$${env}`])) }
+      ? { headers: Object.fromEntries(Object.entries(registration.headers)
+        .map(([name, env]) => [name, resolveProviderValue(`$${env}`, providerEnv)])) }
       : {}),
     models: [registration.model],
   });
@@ -223,16 +259,13 @@ function resolveRunModel(params) {
   return resolveModel(params.model);
 }
 
-function applyRunEnv(params) {
-  if (!params.runEnv || typeof params.runEnv !== 'object') return;
-  for (const [name, value] of Object.entries(params.runEnv)) {
-    if (typeof value === 'string') process.env[name] = value;
-  }
+/** Replace (never merge) the session's run bindings so a finished run leaves nothing behind. */
+function setRunEnv(state, runEnv) {
+  state.env = runEnvSnapshot(runEnv);
 }
 
 async function openSession(params) {
   if (!params.cwd) throw new Error('session.open requires cwd');
-  applyRunEnv(params);
   const existing = params.sessionId ? sessions.get(params.sessionId) : undefined;
   if (existing) {
     existing.lastUsed = Date.now();
@@ -243,13 +276,17 @@ async function openSession(params) {
   const cwd = params.cwd;
   const manager = createSessionManager(cwd, params);
   const settings = pi.SettingsManager.create(cwd, agentDir);
-  const appendPrompt = typeof params.systemPrompt === 'string' ? params.systemPrompt : '';
+  const state = {
+    appendPrompt: typeof params.systemPrompt === 'string' ? params.systemPrompt : '',
+    env: {},
+  };
+  setRunEnv(state, params.runEnv);
   const loader = new pi.DefaultResourceLoader({
     cwd,
     agentDir,
     settingsManager: settings,
     ...(params.noExtensions === true ? { noExtensions: true } : {}),
-    appendSystemPromptOverride: (base) => (appendPrompt ? [...base, appendPrompt] : base),
+    appendSystemPromptOverride: (base) => (state.appendPrompt ? [...base, state.appendPrompt] : base),
   });
   await loader.reload();
 
@@ -265,10 +302,10 @@ async function openSession(params) {
     resourceLoader: loader,
     ...(Array.isArray(params.tools) && params.tools.length > 0 ? { tools: params.tools } : {}),
     ...(params.noTools === 'all' || params.noTools === 'builtin' ? { noTools: params.noTools } : {}),
+    customTools: createSessionTools(cwd, settings, state),
   });
 
-  const entry = new SessionEntry(session, cwd);
-  entry.appendPrompt = appendPrompt;
+  const entry = new SessionEntry(session, cwd, loader, state);
   if (modelFallbackMessage) log('model fallback', { message: modelFallbackMessage });
   entry.unsubscribe = session.subscribe((event) => forwardEvent(entry, event));
   sessions.set(session.sessionId, entry);
@@ -285,6 +322,7 @@ async function openSession(params) {
 function forwardEvent(entry, event) {
   const run = entry.run;
   if (!run || run.ended) return;
+  entry.lastEventAt = Date.now();
   const payload = slimEvent(event);
   if (payload) {
     send({
@@ -381,17 +419,20 @@ function finishRun(entry, run, outcome, error) {
 function prepareRun(params) {
   const entry = sessions.get(params.sessionId);
   if (!entry) throw new Error(`unknown pi session: ${params.sessionId}`);
-  if (entry.run) throw new Error('pi session is already running');
+  if (entry.run) throw new Error(`pi session is already running (${entry.run.runId})`);
   if (typeof params.text !== 'string' || !params.text) throw new Error('run.prompt requires text');
   return entry;
 }
 
 async function applyRunSettings(entry, params) {
-  applyRunEnv(params);
-  if (typeof params.systemPrompt === 'string' && params.systemPrompt !== entry.appendPrompt) {
-    entry.appendPrompt = params.systemPrompt;
-    // DefaultResourceLoader rebuilds the system prompt only when the tool set
-    // changes; re-applying the current set is the public way to force it.
+  setRunEnv(entry.state, params.runEnv);
+  if (typeof params.systemPrompt === 'string' && params.systemPrompt !== entry.state.appendPrompt) {
+    entry.state.appendPrompt = params.systemPrompt;
+    // The loader caches the append prompt when it reloads, and a rebuild reads
+    // that cache; rewrite it so the forced rebuild below sees the new text.
+    entry.loader.appendSystemPrompt = params.systemPrompt ? [params.systemPrompt] : [];
+    // The system prompt is rebuilt only when the tool set changes; re-applying
+    // the current set is the public way to force that rebuild.
     entry.session.setActiveToolsByName(entry.session.getActiveToolNames());
   }
   const model = resolveRunModel(params);
@@ -454,13 +495,26 @@ function evictIdleSession(required) {
 }
 
 function health() {
+  const now = Date.now();
   let activeRuns = 0;
-  for (const entry of sessions.values()) if (entry.run) activeRuns += 1;
+  const details = [];
+  for (const entry of sessions.values()) {
+    if (entry.run) activeRuns += 1;
+    details.push({
+      sessionId: entry.session.sessionId,
+      cwd: entry.cwd,
+      running: Boolean(entry.run),
+      ...(entry.run ? { runId: entry.run.runId, runAgeMs: now - entry.run.startedAt } : {}),
+      ...(entry.lastEventAt ? { lastEventAgeMs: now - entry.lastEventAt } : {}),
+      runEnvKeys: Object.keys(entry.state.env).length,
+    });
+  }
   return {
     pid: process.pid,
-    uptimeMs: Date.now() - startedAt,
+    uptimeMs: now - startedAt,
     sessions: sessions.size,
     activeRuns,
+    sessionDetails: details,
     rssBytes: process.memoryUsage.rss(),
     nodeVersion: process.versions.node,
     piVersion: pi.VERSION,
@@ -496,7 +550,7 @@ async function handleRequest(request) {
     }
     case 'run.prompt': {
       const entry = prepareRun(params);
-      const run = { runId: params.runId, ended: false, aborted: false };
+      const run = { runId: params.runId, ended: false, aborted: false, startedAt: Date.now() };
       entry.run = run;
       entry.lastUsed = Date.now();
       reply(request.id, true, { sessionId: entry.session.sessionId, runId: run.runId });
@@ -607,6 +661,11 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
 }
 process.on('uncaughtException', (error) => {
   log('uncaught exception', { error: errorText(error), stack: error?.stack });
+  // A shared host that keeps serving after an uncaught exception can answer
+  // every session from a corrupted state. Fail loudly instead: the bridge fails
+  // the in-flight runs and starts a fresh host for the next one.
+  send({ type: 'host.fatal', error: `pi host crashed: ${errorText(error)}` });
+  setTimeout(() => void shutdown('uncaught exception'), 25);
 });
 process.on('unhandledRejection', (error) => {
   log('unhandled rejection', { error: errorText(error) });

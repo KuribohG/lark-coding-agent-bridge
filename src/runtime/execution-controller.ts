@@ -11,6 +11,7 @@ import type {
   AgentExecutionProfile,
   AgentKind,
 } from '../config/profile-schema';
+import { log } from '../core/logger';
 import type { ScopeExecutionStore } from '../session/scope-execution';
 import { checkRuntimeAgentAvailability } from './agent-runtime';
 import {
@@ -28,6 +29,8 @@ export interface ExecutionController {
   resolveModelProvider(agentKind: AgentKind, model?: string): Promise<ResolvedModelProvider | undefined>;
   setBotIdentity(identity: AgentBotIdentity): void;
   setScopeKind(scope: string, kind: AgentKind): Promise<void>;
+  /** Release adapters' long-lived transports; optional so test doubles need no stub. */
+  dispose?(waitMs?: number): Promise<void>;
 }
 
 export function profileForAgentKind<T extends AgentExecutionProfile>(
@@ -143,8 +146,10 @@ export class ProfileExecutionController implements ExecutionController {
     const kept = [...this.agents].filter(([kind]) => kind !== profile.agentKind && sameLaunch(
       profileForAgentKind(this.profileConfig, kind), profileForAgentKind(profile, kind),
     ) && !providersChanged);
+    const dropped = [...this.agents.values()].filter((adapter) => !kept.some(([, keptAdapter]) => keptAdapter === adapter));
     this.agents.clear();
     for (const [kind, adapter] of kept) this.agents.set(kind, adapter);
+    for (const adapter of dropped) releaseAdapter(adapter);
     this.agents.set(profile.agentKind, agent);
     this.profileConfig = profile;
     this.modelProviders = modelProviders;
@@ -153,6 +158,13 @@ export class ProfileExecutionController implements ExecutionController {
   /** Refresh per-run settings (model, workspaces) that adapters do not capture. */
   updateProfile(profile: AgentExecutionProfile): void {
     this.profileConfig = profile;
+  }
+
+  /** Release every adapter's transport; active runs keep their host until they finish. */
+  async dispose(waitMs?: number): Promise<void> {
+    const agents = [...this.agents.values()];
+    this.agents.clear();
+    await Promise.allSettled(agents.map((adapter) => adapter.shutdown?.(waitMs)));
   }
 
   async setScopeKind(scope: string, kind: AgentKind): Promise<void> {
@@ -195,6 +207,13 @@ export class ProfileExecutionController implements ExecutionController {
     if (this.botIdentity) agent.setBotIdentity?.(this.botIdentity);
     return agent;
   }
+}
+
+/** Release an adapter the controller no longer owns, without blocking the swap. */
+function releaseAdapter(adapter: AgentAdapter): void {
+  void adapter.shutdown?.().catch((error: unknown) => {
+    log.warn('agent', 'adapter-shutdown-failed', { agent: adapter.id, err: String(error) });
+  });
 }
 
 /** The new configuration is valid but would disrupt active runs; retry once they finish. */

@@ -65,10 +65,14 @@ export class PiSdkAdapter implements AgentAdapter {
   private readonly systemPrompt: AgentSystemPrompt | undefined;
   private readonly env: NodeJS.ProcessEnv;
   private readonly defaultStopGraceMs: number;
-  private botIdentity: AgentBotIdentity | undefined;
   private client: PiHostClient | undefined;
   private starting: Promise<PiHostClient> | undefined;
   private paths: PiSdkPaths | undefined;
+  private botIdentity: AgentBotIdentity | undefined;
+  /** Run ids whose event streams have not finished; shutdown waits for them. */
+  private readonly activeRuns = new Set<string>();
+  private idleWaiters = new Set<() => void>();
+  private shuttingDown = false;
 
   constructor(opts: PiSdkAdapterOptions) {
     this.config = opts.config;
@@ -81,13 +85,66 @@ export class PiSdkAdapter implements AgentAdapter {
     this.botIdentity = identity;
   }
 
-  /** Stop the shared host; the next run starts a fresh one. */
-  async shutdown(): Promise<void> {
+  /**
+   * Stop the shared host; the next run starts a fresh one. Active runs keep
+   * their host until they finish (the bridge keeps them alive across a config
+   * swap), so the caller never has to sequence a restart behind a drain.
+   */
+  async shutdown(waitMs = 30 * 60_000): Promise<void> {
+    if (this.shuttingDown) return;
+    this.shuttingDown = true;
+    await this.waitForIdle(waitMs);
+    if (this.activeRuns.size > 0) {
+      // A run started while the drain was in progress; disposing now would cut
+      // it off, so leave the host to the next shutdown request.
+      log.warn('agent', 'pi-sdk-shutdown-raced', { activeRuns: this.activeRuns.size });
+      this.shuttingDown = false;
+      return;
+    }
     const client = this.client;
     this.client = undefined;
     this.starting = undefined;
     this.paths = undefined;
     await client?.dispose();
+  }
+
+  private waitForIdle(timeoutMs: number): Promise<void> {
+    if (this.activeRuns.size === 0) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = (): void => {
+        clearTimeout(timer);
+        this.idleWaiters.delete(done);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        log.warn('agent', 'pi-sdk-shutdown-timeout', { activeRuns: this.activeRuns.size });
+        // Dispose anyway, but leave the reason in the log: the host's per-session
+        // view (run age, last event) is the only way to see a wedged session.
+        void this.logHealth('shutdown-timeout');
+        done();
+      }, timeoutMs);
+      timer.unref?.();
+      this.idleWaiters.add(done);
+    });
+  }
+
+  private async logHealth(context: string): Promise<void> {
+    const client = this.client;
+    if (!client || client.isClosed) return;
+    try {
+      const health = await client.request<Record<string, unknown>>('health', {}, 2_000);
+      log.info('agent', 'pi-sdk-host-health', { context, ...health });
+    } catch (error) {
+      log.warn('agent', 'pi-sdk-host-health-failed', { context, message: errorMessage(error) });
+    }
+  }
+
+  private runFinished(runId: string): void {
+    this.activeRuns.delete(runId);
+    if (this.activeRuns.size > 0) return;
+    const waiters = [...this.idleWaiters];
+    this.idleWaiters.clear();
+    for (const resolve of waiters) resolve();
   }
 
   async isAvailable(): Promise<boolean> {
@@ -234,6 +291,7 @@ export class PiSdkAdapter implements AgentAdapter {
     const translator = new PiRunTranslator();
     let offFrame: (() => void) | undefined;
     let queue: AsyncEventQueue<AgentEvent> | undefined;
+    this.activeRuns.add(state.runId);
     try {
       let client: PiHostClient;
       try {
@@ -373,6 +431,7 @@ export class PiSdkAdapter implements AgentAdapter {
       state.ended = true;
       if (state.deadlineTimer) clearTimeout(state.deadlineTimer);
       state.resolveEnd();
+      this.runFinished(state.runId);
     }
   }
 

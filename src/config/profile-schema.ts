@@ -233,6 +233,14 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   // Absent (not disabled) so an unrelated config save does not write the table
   // into every profile; readers treat missing as "disabled".
   const execSandbox = raw.exec_sandbox === undefined ? {} : { execSandbox: normalizeExecSandbox(raw.exec_sandbox) };
+  const launches = normalizeAgentLaunches(raw);
+  // A shared Pi SDK host cannot carry a per-run Landlock domain, so the pair is
+  // invalid: fail at config load instead of failing the profile's first run.
+  if (execSandbox.execSandbox?.enabled && raw.agentKind === 'pi' && launches.pi?.transport === 'sdk') {
+    throw new Error(
+      'pi.transport = "sdk" cannot enforce exec_sandbox; use transport = "cli" or disable exec_sandbox',
+    );
+  }
 
   return {
     schemaVersion: 2,
@@ -242,7 +250,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     ...(raw.secrets ? { secrets: raw.secrets } : {}),
     preferences,
     ...(raw.channels ? { channels: raw.channels } : {}),
-    ...normalizeAgentLaunches(raw),
+    ...launches,
     ...(raw.state ? { state: raw.state } : {}),
     access,
     workspaces,

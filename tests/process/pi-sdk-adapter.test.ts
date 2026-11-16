@@ -227,6 +227,38 @@ describe('PiSdkAdapter process contract', () => {
     expect(events[0]).toMatchObject({ type: 'system' });
     expect(events.at(-1)).toMatchObject({ type: 'error', terminationReason: 'failed', failureKind: 'runtime' });
   });
+
+  it('keeps the shared host alive until the active run finishes, then disposes it', async () => {
+    const harness = await createAdapter({
+      FAKE_HOST_EVENTS: JSON.stringify([
+        { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'OK' } },
+        {
+          type: 'message_end',
+          message: { role: 'assistant', content: [{ type: 'text', text: 'OK' }], stopReason: 'stop', usage: { input: 1, output: 1, cacheRead: 0, cost: { total: 0 } } },
+        },
+      ]),
+      FAKE_HOST_EVENT_DELAY_MS: '10',
+      FAKE_HOST_HOLD_MS: '400',
+    });
+
+    const run = (await harness.adapter.prepareRun({ runId: 'run-draining', prompt: 'go', cwd: harness.dir })).start();
+    const rest: AgentEvent[] = [];
+    const drain = (async () => {
+      for await (const event of run.events) rest.push(event);
+    })();
+    await waitUntil(async () => rest.some((event) => event.type === 'text'));
+
+    let disposed = false;
+    const shutdown = harness.adapter.shutdown().then(() => { disposed = true; });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(disposed).toBe(false);
+
+    await drain;
+    await shutdown;
+    expect(disposed).toBe(true);
+    expect(rest.at(-1)).toMatchObject({ type: 'done', terminationReason: 'normal' });
+    expect((await harness.calls()).map((call) => call.cmd)).toContain('shutdown');
+  });
 });
 
 interface Harness {

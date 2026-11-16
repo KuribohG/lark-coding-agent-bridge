@@ -465,3 +465,25 @@ describe('profile schema', () => {
     });
   });
 });
+
+describe('pi SDK transport configuration', () => {
+  const launch = (agentKind: 'pi' | 'codex', transport: 'cli' | 'sdk') => ({
+    schemaVersion: 2,
+    agentKind,
+    accounts: { app },
+    codex: { binaryPath: 'codex' },
+    pi: { binaryPath: 'pi', transport },
+  });
+
+  it('rejects the shared SDK host when the profile runs under the exec sandbox', () => {
+    expect(() => normalizeProfileConfig({ ...launch('pi', 'sdk'), exec_sandbox: { enabled: true } }))
+      .toThrow(/exec_sandbox/);
+  });
+
+  it('keeps the sandboxed CLI transport, and pi launch fields on a non-pi profile, valid', () => {
+    expect(normalizeProfileConfig({ ...launch('pi', 'cli'), exec_sandbox: { enabled: true } }).pi)
+      .toMatchObject({ transport: 'cli' });
+    expect(normalizeProfileConfig({ ...launch('codex', 'sdk'), exec_sandbox: { enabled: true } }).agentKind)
+      .toBe('codex');
+  });
+});
