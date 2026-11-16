@@ -25,7 +25,14 @@ function fixtureProvider(dir: string): string {
   return path;
 }
 
-async function harness(options: { pushFailure?: string; archive?: boolean; parallelism?: number; layer?: string } = {}) {
+async function harness(options: {
+  pushFailure?: string;
+  archive?: boolean;
+  parallelism?: number;
+  layer?: string;
+  maxCells?: number;
+  canEvict?: (key: string) => boolean;
+} = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'workcell-'));
   dirs.push(dir);
   const record = join(dir, 'provider-record.json');
@@ -36,7 +43,8 @@ async function harness(options: { pushFailure?: string; archive?: boolean; paral
   writeFileSync(join(modulesDir, 'node', 'bin', 'node'), '');
   writeFileSync(join(dir, 'rt', 'sdk.js'), '');
   const pool = new WorkcellPool({
-    config: { provider: fixtureProvider(dir), cpu: 4, memoryGb: 8, ttlSeconds: 600, image: 'image:tag', ...(options.parallelism ? { parallelism: options.parallelism } : {}), ...(options.layer ? { layer: options.layer } : {}) },
+    config: { provider: fixtureProvider(dir), cpu: 4, memoryGb: 8, ttlSeconds: 600, image: 'image:tag', ...(options.parallelism ? { parallelism: options.parallelism } : {}), ...(options.layer ? { layer: options.layer } : {}), ...(options.maxCells ? { maxCells: options.maxCells } : {}) },
+    ...(options.canEvict ? { canEvict: options.canEvict } : {}),
     runtime: workcellRuntimeLayout({
       nodePath: join(modulesDir, 'node', 'bin', 'node'),
       sdkPath: join(dir, 'rt', 'sdk.js'),
@@ -75,6 +83,7 @@ describe('workcell configuration', () => {
     [{ provider: '/bin/provider', parallelism: 0 }, /parallelism/],
     [{ provider: '/bin/provider', parallelism: 65 }, /parallelism/],
     [{ provider: '/bin/provider', layer: 'relative/path.erofs' }, /layer/],
+    [{ provider: '/bin/provider', maxCells: 0 }, /maxCells/],
   ])('rejects %j', (input, message) => {
     expect(() => normalizeWorkcell(input)).toThrow(message);
   });
@@ -211,6 +220,48 @@ describe('workcell pool', () => {
     expect(pushes.some((remote) => String(remote).endsWith('.tar.gz'))).toBe(false);
     expect(calls.some((call) => String(call.script ?? '').startsWith('tar -xzf'))).toBe(false);
     expect(cell.hostPort).toBeGreaterThan(0);
+  });
+
+  it('evicts the least recently used idle unit when maxCells is reached', async () => {
+    const h = await harness({ maxCells: 2 });
+    const first = await h.pool.acquire('m1');
+    const second = await h.pool.acquire('m2');
+    // A third member must not exceed the cap: m1 is idle and goes.
+    const third = await h.pool.acquire('m3');
+
+    const calls = await h.calls();
+    expect(calls.filter((call) => call.op === 'create')).toHaveLength(3);
+    expect(calls.filter((call) => call.op === 'stop')).toEqual([
+      expect.objectContaining({ workcell: first.id }),
+    ]);
+    expect(second.id).not.toBe(first.id);
+    expect(third.id).not.toBe(first.id);
+
+    // Evicting frees the key: asking again provisions a new unit.
+    const again = await h.pool.acquire('m1');
+    expect(again.id).not.toBe(first.id);
+  });
+
+  it('refuses to evict a unit whose member is mid-run', async () => {
+    const h = await harness({ maxCells: 1, canEvict: () => false });
+    await h.pool.acquire('m1');
+    await expect(h.pool.acquire('m2')).rejects.toThrow(/capacity reached/);
+  });
+
+  it('replaces a dead provider process instead of failing forever', async () => {
+    const h = await harness();
+    await h.pool.acquire('m1');
+    // Simulate the provider dying: the next request must get a fresh process.
+    const holder = h.pool as unknown as { provider?: { dispose(): Promise<void> } };
+    const dead = holder.provider!;
+    await dead.dispose();
+    // The dead provider's units are gone with it, so the pool forgets them.
+    const cell = await h.pool.acquire('m2');
+    expect(cell.hostPort).toBeGreaterThan(0);
+    expect(holder.provider).not.toBe(dead);
+    // The fresh provider has its own record, so it shows the one create it served.
+    expect((await h.calls()).filter((call) => call.op === 'create')).toHaveLength(1);
+    expect(h.pool['cells'].size).toBe(1);
   });
 
   it('prepares several units at once, bounded by parallelism', async () => {

@@ -40,6 +40,8 @@ afterEach(async () => {
   delete process.env.FAKE_WORKCELL_HOST_PORT;
   delete process.env.FAKE_TCP_RECORD;
   delete process.env.FAKE_TCP_IPC;
+  delete process.env.FAKE_HOST_EVENTS;
+  delete process.env.FAKE_HOST_RECORD;
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })));
 });
 
@@ -68,7 +70,7 @@ async function startTcpHost(): Promise<number> {
   return port;
 }
 
-async function harness(options: { workflowEndpoint?: string; tcpIpc?: boolean } = {}) {
+async function harness(options: { workflowEndpoint?: string; tcpIpc?: boolean; local?: boolean } = {}) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'pi-workcell-')));
   dirs.push(dir);
   const record = join(dir, 'provider-record.json');
@@ -98,12 +100,14 @@ async function harness(options: { workflowEndpoint?: string; tcpIpc?: boolean } 
     await mkdir(dirname(file), { recursive: true });
     writeFileSync(file, '');
   }
+  // The local path executes these, so a test that never provisions a unit needs
+  // a runnable pair.
   const config: PiConfig = {
     binaryPath: join(dir, 'pi'),
     transport: 'sdk',
-    sdkPath,
-    nodePath,
-    hostScript,
+    sdkPath: options.local ? fakeHost : sdkPath,
+    nodePath: options.local ? process.execPath : nodePath,
+    hostScript: options.local ? fakeHost : hostScript,
     agentDir,
     workcell: { provider, cpu: 4, memoryGb: 8, ttlSeconds: 600 },
   };
@@ -250,6 +254,25 @@ describe('pi SDK host inside a workcell', () => {
     });
     await new Promise<void>((resolve) => engine.close(() => resolve()));
   }, 60_000);
+
+  it('keeps ordinary turns and workspace members on the bridge machine', async () => {
+    const h = await harness({ local: true });
+    // The local path spawns the stdio host fixture, which needs its own events.
+    Object.assign(process.env, {
+      FAKE_HOST_EVENTS: JSON.stringify([{ type: 'agent_settled', aborted: false }]),
+      FAKE_HOST_RECORD: join(h.dir, 'local-host.json'),
+    });
+    // No host key means "not a workflow member": chats stay local, and the
+    // engine leaves workspace members without a host key so they never enter a
+    // cell (a cell copy has no .git and cannot commit).
+    for (const run of [{ runId: 'chat-1' }, { runId: 'member-with-workspace', sessionId: 'sess-ws' }]) {
+      const events = await collect((await h.adapter.prepareRun({
+        ...run, prompt: 'go', cwd: h.dir,
+      })).start().events);
+      expect(events.at(-1)).toMatchObject({ type: 'done' });
+    }
+    expect(await h.calls()).toEqual([]);
+  }, 30_000);
 
   it('fails the profile preflight when the provider executable is missing', async () => {
     const dir = await realpath(await mkdtemp(join(tmpdir(), 'pi-workcell-')));

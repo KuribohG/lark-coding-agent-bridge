@@ -33,6 +33,12 @@ export interface WorkcellConfig {
    */
   layer?: string;
   /**
+   * How many units may be alive at once. A new member evicts the least recently
+   * used idle unit; when every unit is busy the request fails instead of
+   * silently killing a member's host.
+   */
+  maxCells?: number;
+  /**
    * How many units may be prepared at once. Transfers scale with the number of
    * streams, so a batch of workers provisions in parallel instead of in turn.
    */
@@ -49,7 +55,7 @@ export function normalizeWorkcell(input: unknown): WorkcellConfig | undefined {
   }
   const raw = input as Record<string, unknown>;
   for (const key of Object.keys(raw)) {
-    if (!['provider', 'image', 'cpu', 'memoryGb', 'ttlSeconds', 'network', 'parallelism', 'layer'].includes(key)) {
+    if (!['provider', 'image', 'cpu', 'memoryGb', 'ttlSeconds', 'network', 'parallelism', 'layer', 'maxCells'].includes(key)) {
       throw new Error(`pi.workcell.${key}: unknown setting`);
     }
   }
@@ -73,6 +79,10 @@ export function normalizeWorkcell(input: unknown): WorkcellConfig | undefined {
   if (raw.layer !== undefined && (typeof raw.layer !== 'string' || !raw.layer.startsWith('/'))) {
     throw new Error('pi.workcell.layer: expected an absolute cloud path such as /artifacts/<user>/runtime.erofs');
   }
+  const maxCells = raw.maxCells;
+  if (maxCells !== undefined && (typeof maxCells !== 'number' || !Number.isSafeInteger(maxCells) || maxCells < 1 || maxCells > 512)) {
+    throw new Error('pi.workcell.maxCells: expected an integer between 1 and 512');
+  }
   const parallelism = raw.parallelism;
   if (parallelism !== undefined && (typeof parallelism !== 'number' || !Number.isSafeInteger(parallelism) || parallelism < 1 || parallelism > 64)) {
     throw new Error('pi.workcell.parallelism: expected an integer between 1 and 64');
@@ -81,6 +91,7 @@ export function normalizeWorkcell(input: unknown): WorkcellConfig | undefined {
     provider: raw.provider.trim(),
     ...(typeof parallelism === 'number' ? { parallelism } : {}),
     ...(typeof raw.layer === 'string' ? { layer: raw.layer.trim() } : {}),
+    ...(typeof maxCells === 'number' ? { maxCells } : {}),
     ...(Array.isArray(network) && network.length > 0 ? { network: [...network] as ('lan' | 'www')[] } : {}),
     ...(typeof raw.image === 'string' ? { image: raw.image.trim() } : {}),
     ...(typeof raw.cpu === 'number' ? { cpu: raw.cpu } : {}),
@@ -272,6 +283,8 @@ export interface WorkcellHandle {
 
 interface Pooled extends WorkcellHandle {
   renew?: NodeJS.Timeout;
+  /** Last time a run asked for this unit; eviction takes the oldest. */
+  lastUsed?: number;
 }
 
 export interface WorkcellPoolOptions {
@@ -285,6 +298,8 @@ export interface WorkcellPoolOptions {
    * release, pushed back on the next unit, so a replaced unit still resumes.
    */
   sessionDir?: string;
+  /** Whether a unit may be evicted right now (no run in flight for that member). */
+  canEvict?: (key: string) => boolean;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -300,14 +315,17 @@ export class WorkcellPool {
   private active = 0;
   private readonly waiters: Array<() => void> = [];
   private readonly limit: number;
+  private readonly maxCells: number;
 
   constructor(private readonly options: WorkcellPoolOptions) {
     this.limit = Math.max(1, options.config.parallelism ?? 8);
+    this.maxCells = Math.max(1, options.config.maxCells ?? 32);
   }
 
   async acquire(key: string): Promise<WorkcellHandle> {
     const existing = this.cells.get(key);
     if (existing) {
+      existing.lastUsed = Date.now();
       await this.renew(existing, false);
       return existing;
     }
@@ -332,6 +350,7 @@ export class WorkcellPool {
         ...(this.options.config.network ? { network: this.options.config.network } : {}),
         labels: { key },
       };
+      await this.evictForCapacity();
       const created = await provider.request<{ workcell: string }>('create', { spec });
       const id = created.workcell;
       log.info('agent', 'pi-workcell-provision', { key, workcell: id, image: spec.image });
@@ -373,7 +392,7 @@ export class WorkcellPool {
             timeout: 600,
           });
         }
-        const pooled: Pooled = { id, key, hostPort: forward.port };
+        const pooled: Pooled = { id, key, hostPort: forward.port, lastUsed: Date.now() };
         pooled.renew = this.renewalTimer(pooled);
         this.cells.set(key, pooled);
         log.info('agent', 'pi-workcell-forward', { key, workcell: id, hostPort: forward.port });
@@ -385,6 +404,23 @@ export class WorkcellPool {
       }
     });
     return cell;
+  }
+
+  /**
+   * Keep the number of live units bounded: evict the least recently used idle
+   * one, and refuse rather than kill a member that is mid-run.
+   */
+  private async evictForCapacity(): Promise<void> {
+    if (this.cells.size < this.maxCells) return;
+    const idle = [...this.cells.values()]
+      .filter((cell) => this.options.canEvict?.(cell.key) !== false)
+      .sort((left, right) => (left.lastUsed ?? 0) - (right.lastUsed ?? 0));
+    const victim = idle[0];
+    if (!victim) {
+      throw new Error(`workcell capacity reached (${this.maxCells}) and every unit is busy`);
+    }
+    log.info('agent', 'pi-workcell-evict', { workcell: victim.id, key: victim.key, maxCells: this.maxCells });
+    await this.release(victim.key);
   }
 
   /**
@@ -464,6 +500,19 @@ export class WorkcellPool {
 
   private ensureProvider(): WorkcellProviderClient {
     if (this.closing) throw new Error('workcell pool is closed');
+    if (this.provider?.isClosed) {
+      // A dead provider must not poison the pool: its units are gone with it,
+      // so forget them and start a fresh process for the next request.
+      log.warn('agent', 'pi-workcell-provider-restart', {
+        reason: 'closed',
+        cells: this.cells.size,
+      });
+      for (const [key, cell] of this.cells) {
+        if (cell.renew) clearInterval(cell.renew);
+        this.cells.delete(key);
+      }
+      this.provider = undefined;
+    }
     this.provider ??= new WorkcellProviderClient({
       command: this.options.config.provider,
       ...(this.options.env ? { env: this.options.env } : {}),

@@ -54,6 +54,8 @@ interface RunState {
   runId: string;
   /** Host that serves this run; a workcell profile has one per member. */
   client?: PiHostClient;
+  /** Member key, when this run owns a rented unit. */
+  cellKey?: string;
   sessionId?: string;
   promptDispatched: boolean;
   ended: boolean;
@@ -90,6 +92,8 @@ export class PiSdkAdapter implements AgentAdapter {
   private workcell: WorkcellPool | undefined;
   private workcellLayout: WorkcellRuntimeLayout | undefined;
   private readonly workcellClients = new Map<string, Promise<PiHostClient>>();
+  /** Members with a run in flight; their cell must not be evicted. */
+  private readonly workcellBusy = new Set<string>();
   /** Local workflow endpoint each workcell host's calls are proxied to. */
   private readonly workcellEndpoints = new WeakMap<PiHostClient, string>();
   private readonly workcellSessions: string | undefined;
@@ -275,13 +279,13 @@ export class PiSdkAdapter implements AgentAdapter {
    * lives in that unit, so reuse is what makes a multi-turn member cheap, and
    * releasing the key is what ends it.
    */
-  private workcellKey(opts: AgentRunOptions): string {
-    return opts.host?.key ?? opts.sessionId ?? opts.runId;
-  }
-
   private async ensureRunClient(opts: AgentRunOptions): Promise<PiHostClient> {
-    if (!this.config.workcell) return this.ensureClient();
-    const key = this.workcellKey(opts);
+    // Only a workflow member carries a host key. An ordinary turn, and a member
+    // that owns a git workspace (the engine disables its run host for those),
+    // stay on the bridge machine: a cell cannot commit, and a per-conversation
+    // unit would cost far more than it saves.
+    const key = opts.host?.key;
+    if (!this.config.workcell || !key) return this.ensureClient();
     const existing = this.workcellClients.get(key);
     if (existing) {
       const client = await existing.catch(() => undefined);
@@ -345,6 +349,7 @@ export class PiSdkAdapter implements AgentAdapter {
     this.workcell = new WorkcellPool({
       config,
       runtime: this.workcellLayout,
+      canEvict: (key) => !this.workcellBusy.has(key),
       agentFiles: piAgentFiles(resolvePiAgentDir(this.config)),
       ...(this.workcellSessions ? { sessionDir: this.workcellSessions } : {}),
       env: this.env,
@@ -628,6 +633,10 @@ export class PiSdkAdapter implements AgentAdapter {
       try {
         client = await this.ensureRunClient(opts);
         state.client = client;
+        if (opts.host?.key && this.config.workcell) {
+          state.cellKey = opts.host.key;
+          this.workcellBusy.add(opts.host.key);
+        }
       } catch (error) {
         yield errorEvent(`failed to start pi sdk host: ${errorMessage(error)}`);
         return;
@@ -763,6 +772,7 @@ export class PiSdkAdapter implements AgentAdapter {
       state.ended = true;
       if (state.deadlineTimer) clearTimeout(state.deadlineTimer);
       state.resolveEnd();
+      if (state.cellKey) this.workcellBusy.delete(state.cellKey);
       this.runFinished(state.runId);
     }
   }
