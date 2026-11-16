@@ -25,6 +25,8 @@ export const MAX_TASK_RETRIES = 3;
 const RETRY_DELAYS_MS = [30_000, 120_000, 300_000] as const;
 /** Shortest time between two archive passes over one workflow. */
 const ARCHIVE_EVERY_MS = 30_000;
+/** Shortest time between two journal maintenance passes (compaction, retention, orphaned texts). */
+const MAINTENANCE_EVERY_MS = 30 * 60_000;
 /** Failures worth another attempt: transport and provider throttling, not the agent's own mistakes. */
 const TRANSIENT_FAILURE = /(?<!\d)(?:429|500|502|503|504)(?!\d)|rate[_ -]?limit|rpm[_ -]?limit|too many requests|overloaded|timeout|timed out|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up|connection reset|temporarily unavailable|upstream (?:error|unavailable)|没有返回|no output/i;
 
@@ -49,6 +51,9 @@ export class WorkflowScheduler {
   private readonly verified = new Map<string, number>();
   /** When each workflow's finished tasks were last considered for archiving. */
   private readonly archivedAt = new Map<string, number>();
+  /** When the journal was last compacted and pruned. */
+  private maintainedAt = 0;
+  private maintaining = false;
 
   private reconciling: boolean;
   constructor(private readonly ctx: KernelContext) {
@@ -223,7 +228,20 @@ export class WorkflowScheduler {
       for (const scope of this.verified.keys()) if (!scopes.has(scope)) this.verified.delete(scope);
       const ids = new Set(unfinished.map(item => item.workflowId));
       for (const id of this.archivedAt.keys()) if (!ids.has(id)) this.archivedAt.delete(id);
+      this.maintain();
     } finally { this.pumping = false; }
+  }
+
+  /** Compacts each workflow's journal and drops trees past their retention window; never on the scheduling path. */
+  private maintain(): void {
+    const { ctx } = this;
+    if (this.maintaining || ctx.closed || ctx.now() - this.maintainedAt < MAINTENANCE_EVERY_MS) return;
+    this.maintainedAt = ctx.now();
+    this.maintaining = true;
+    void ctx.store.maintenance()
+      .then(result => { if (result.events || result.workflows || result.texts) ctx.log.info('journal-maintained', { ...result }); })
+      .catch(error => ctx.log.warn('maintenance-failed', { error: String(error) }))
+      .finally(() => { this.maintaining = false; });
   }
 
   /** Starts queued turns of one active workflow within its own and its tree's limits. */

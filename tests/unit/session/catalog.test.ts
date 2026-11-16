@@ -261,6 +261,21 @@ describe('agent-aware session catalog', () => {
     expect(catalog.entries()).toHaveLength(1000);
     await catalog.flush();
   });
+
+  it('trims entries past the archive age when the file is loaded', async () => {
+    const file = await path();
+    const first = new SessionCatalog(file);
+    await first.replaceForTest([
+      { ...entry('chat-old', 'old', 1), status: 'archived' },
+      entry('chat-1', 'current', Date.now()),
+    ]);
+
+    const second = new SessionCatalog(file);
+    await second.load();
+    expect(second.entries().some((item) => item.sessionId === 'old')).toBe(false);
+    expect(second.entries().some((item) => item.sessionId === 'current')).toBe(true);
+    await second.flush();
+  });
 });
 
 async function path(): Promise<string> {

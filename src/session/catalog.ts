@@ -71,9 +71,14 @@ export interface SessionCatalogGcOptions {
 
 const DEFAULT_MAX_ARCHIVED_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const DEFAULT_MAX_ENTRIES_PER_SCOPE = 20;
-const DEFAULT_MAX_ENTRIES_PER_PROFILE = 1000;
+/** Entries are small and an idle conversation keeps its entry until it comes back; a profile holds many scopes. */
+const DEFAULT_MAX_ENTRIES_PER_PROFILE = 5_000;
 const MAX_SEEN_TOPIC_MESSAGE_IDS = 256;
 const KEY_SEPARATOR = '\x1f';
+/** Writes are coalesced: one turn touches several entries and the whole file is rewritten each time. */
+const PERSIST_DELAY_MS = 200;
+/** How often entries past the archive age or the per-scope/per-profile caps are dropped. */
+const GC_EVERY_MS = 24 * 60 * 60 * 1000;
 
 export function sessionCatalogKey(input: SessionCatalogIdentity): string {
   return [
@@ -87,6 +92,9 @@ export function sessionCatalogKey(input: SessionCatalogIdentity): string {
 export class SessionCatalog {
   private data = new Map<string, SessionCatalogEntry>();
   private saving: Promise<void> = Promise.resolve();
+  private persistTimer?: NodeJS.Timeout;
+  private dirty = false;
+  private gcTimer?: NodeJS.Timeout;
   private readonly path: string;
 
   constructor(path = `${paths.sessionsFile}.catalog.json`) {
@@ -110,6 +118,12 @@ export class SessionCatalog {
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
       log.fail('session-catalog', err, { step: 'load' });
       this.data.clear();
+    }
+    // Nothing else trims the file: entries archived long ago, or over the per-scope cap, would live forever.
+    this.gc();
+    if (!this.gcTimer) {
+      this.gcTimer = setInterval(() => this.gc(), GC_EVERY_MS);
+      this.gcTimer.unref();
     }
   }
 
@@ -233,6 +247,7 @@ export class SessionCatalog {
     const maxEntriesPerScope = options.maxEntriesPerScope ?? DEFAULT_MAX_ENTRIES_PER_SCOPE;
     const maxEntriesPerProfile =
       options.maxEntriesPerProfile ?? DEFAULT_MAX_ENTRIES_PER_PROFILE;
+    const before = this.data.size;
 
     for (const [key, entry] of this.data.entries()) {
       if (entry.status === 'archived' && now - entry.updatedAt > maxArchivedAgeMs) {
@@ -253,10 +268,12 @@ export class SessionCatalog {
     for (const entry of all.slice(maxEntriesPerProfile)) {
       this.data.delete(entry.key);
     }
-    this.schedulePersist();
+    if (this.data.size !== before) this.schedulePersist();
   }
 
   async flush(): Promise<void> {
+    if (this.persistTimer) { clearTimeout(this.persistTimer); this.persistTimer = undefined; }
+    this.scheduleWrite();
     await this.saving;
   }
 
@@ -267,8 +284,21 @@ export class SessionCatalog {
   }
 
   private schedulePersist(): void {
+    this.dirty = true;
+    if (this.persistTimer) return;
+    this.persistTimer = setTimeout(() => { this.persistTimer = undefined; this.scheduleWrite(); }, PERSIST_DELAY_MS);
+    this.persistTimer.unref();
+  }
+
+  private scheduleWrite(): void {
+    if (!this.dirty) return;
     this.saving = this.saving
-      .then(() => this.persist())
+      .then(async () => {
+        while (this.dirty) {
+          this.dirty = false;
+          await this.persist();
+        }
+      })
       .catch((err: unknown) => {
         log.fail('session-catalog', err, { step: 'persist' });
       });
