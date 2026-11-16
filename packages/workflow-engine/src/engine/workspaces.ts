@@ -4,7 +4,7 @@ import { chmodSync, mkdirSync } from 'node:fs';
 import { access, mkdir, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { workflowDigest } from './digest';
-import { MAX_WORKSPACES, MAX_WORKSPACE_RECORDS } from './limits';
+import { MAX_WORKSPACES, MAX_WORKSPACE_RECORDS, WORKSPACE_CHECKOUT_SLOTS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
 import { nodeProcesses, workspaceCommand, type CommandResult } from './workspace-process';
 import type { WorkflowProcesses } from './ports';
@@ -17,6 +17,35 @@ const BUSY = new Set(['queued', 'starting', 'running', 'cancelling', 'waiting_wo
 // Git registers a new worktree in several steps. Concurrent commands can observe a partial entry.
 const worktreeCommands = new Map<string, Promise<CommandResult>>();
 const gitEnv = () => ({ ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))), GIT_TERMINAL_PROMPT: '0', GIT_LFS_SKIP_SMUDGE: '1' });
+
+/** A counting semaphore: callers beyond the bound wait for a free slot instead of all running at once. */
+class Slots {
+  private free: number;
+  private readonly waiting: Array<{ grant: () => void; cancel: () => void }> = [];
+  constructor(size: number) { this.free = size; }
+  async acquire(signal: AbortSignal): Promise<() => void> {
+    signal.throwIfAborted();
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      const next = this.waiting.shift();
+      if (next) next.grant(); else this.free++;
+    };
+    if (this.free > 0) { this.free--; return release; }
+    return new Promise<() => void>((resolve, reject) => {
+      const waiter = {
+        grant: () => { signal.removeEventListener('abort', abort); resolve(release); },
+        cancel: () => { const at = this.waiting.indexOf(waiter); if (at >= 0) this.waiting.splice(at, 1); reject(signal.reason); },
+      };
+      const abort = () => waiter.cancel();
+      signal.addEventListener('abort', abort, { once: true });
+      this.waiting.push(waiter);
+    });
+  }
+}
+/** Writing a fresh worktree touches every file in the checkout, so it runs in a bounded pool shared by all workflows. */
+const checkoutSlots = new Slots(WORKSPACE_CHECKOUT_SLOTS);
 
 /** A submission waiting for a train: the member's commits `base..head`, already rebased onto the branch as it was then. */
 interface Candidate { ws: WorkspaceBinding; base: string; head: string; commits: number; ctx: WorkspaceContext; resolve(report: LandReport): void; reject(error: unknown): void }
@@ -44,6 +73,8 @@ export class WorkflowWorkspaces {
   private readonly stopping = new AbortController();
   /** The landing in progress in each worktree; a repeated submission joins it. */
   private readonly inFlight = new Map<string, Promise<LandReport>>();
+  /** Commits whose tree this service already screened for submodules and checkout filters, one check per commit. */
+  private readonly supported = new Map<string, Promise<void>>();
   private closed = false;
 
   constructor(path: string, private readonly directory: string, private readonly processes: WorkflowProcesses = nodeProcesses) {
@@ -110,7 +141,18 @@ export class WorkflowWorkspaces {
     if (!SHA.test(head)) throw new Error('Invalid repository revision');
     return head;
   }
+  /** The tree at `head` does not change, so a commit is screened once however many worktrees are made from it. */
   private async supportedTree(repo: string, head: string, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    const key = `${repo}\0${head}`;
+    const known = this.supported.get(key);
+    if (known) return known;
+    const screen = this.screenTree(repo, head, signal).catch(error => { this.supported.delete(key); throw error; });
+    this.supported.set(key, screen);
+    if (this.supported.size > 512) this.supported.delete(this.supported.keys().next().value!);
+    return screen;
+  }
+  private async screenTree(repo: string, head: string, signal: AbortSignal): Promise<void> {
     const tree = (await this.git(repo, ['ls-tree', '-r', '-z', head], signal)).stdout;
     if (tree.split('\0').some(entry => entry.startsWith('160000 '))) throw new Error('Workspace v1 does not support submodules');
     const attributes = tree.split('\0').map(line => line.slice(line.indexOf('\t') + 1)).filter(path => path === '.gitattributes' || path.endsWith('/.gitattributes'));
@@ -180,11 +222,22 @@ export class WorkflowWorkspaces {
     }
     await mkdir(dirname(ws.path), { recursive: true, mode: 0o700 });
     const exists = await access(join(ws.path, '.git')).then(() => true, () => false);
-    if (!exists) await this.worktree(ws, ['add', '--detach', '--lock', '--reason', `bridge-workflow:${ws.id}`, ws.path, checkout], ctx.signal);
+    // Only registration races with other Git commands; leave `worktree add` cheap and write the files separately.
+    if (!exists) await this.worktree(ws, ['add', '--no-checkout', '--detach', '--lock', '--reason', `bridge-workflow:${ws.id}`, ws.path, checkout], ctx.signal);
+    await this.writeTree(ws.path, checkout, ctx.signal);
     ws = { ...ws, status: 'ready' }; this.putWorkspace(ws);
     await this.binding(ctx.state.root, op.workflow, ws.id, ctx.signal);
     if ((await this.clean(ws, ctx.signal)).headCommit !== checkout) throw new Error('Recovered worktree does not match its planned revision');
     return ws;
+  }
+
+  /**
+   * Writes a registered worktree's files. `read-tree --reset -u` uses the same checkout machinery as `worktree add`,
+   * so filters and modes match, and repeating it on a worktree whose files are already there changes nothing.
+   */
+  private async writeTree(path: string, commit: string, signal: AbortSignal): Promise<void> {
+    const release = await checkoutSlots.acquire(signal);
+    try { await this.git(path, ['read-tree', '--reset', '-u', commit], signal); } finally { release(); }
   }
 
   perform(ctx: WorkspaceContext, input: Record<string, unknown>): Promise<unknown> {

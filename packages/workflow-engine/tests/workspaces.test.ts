@@ -87,6 +87,33 @@ describe('managed workflow worktrees with real Git', () => {
     expect(await git(ws.path,'rev-parse','HEAD')).toBe(h.base);
   }, 30_000);
 
+  it('creates a batch of worktrees at once, each at its baseline and clean', async () => {
+    const h = await fixture();
+    const made = await Promise.all(Array.from({ length: 12 }, (_, i) => h.create('batch/' + i)));
+    expect(new Set(made.map(ws => ws.id)).size).toBe(12);
+    for (const ws of made) {
+      expect(await git(ws.path, 'rev-parse', 'HEAD')).toBe(h.base);
+      expect(await git(ws.path, 'status', '--porcelain', '--untracked-files=all')).toBe('');
+      expect(await readFile(join(ws.path, 'shared.txt'), 'utf8')).toBe('baseline\n');
+    }
+  }, 60_000);
+
+  it('writes the files of a worktree registered before an interrupted create', async () => {
+    const h = await fixture(), ws = await h.create('a');
+    const db = new Database(h.path);
+    db.prepare("UPDATE workspace_records SET done=0 WHERE key='a'").run();
+    const row = db.prepare("SELECT id,data FROM workspace_records WHERE kind='workspace'").get() as { id: string; data: string };
+    db.prepare('UPDATE workspace_records SET data=? WHERE id=?').run(JSON.stringify({ ...JSON.parse(row.data), status: 'preparing' }), row.id);
+    db.close();
+    // A create that died after `git worktree add --no-checkout` leaves the directory registered but empty.
+    await rm(join(ws.path, 'shared.txt'));
+    await h.restart();
+    const again = await h.create('a');
+    expect(again.id).toBe(ws.id);
+    expect(await readFile(join(again.path, 'shared.txt'), 'utf8')).toBe('baseline\n');
+    expect(await git(again.path, 'status', '--porcelain', '--untracked-files=all')).toBe('');
+  }, 30_000);
+
   it('merges independently approved changes, checks the combination, and accepts only a private branch', async () => {
     const h = await fixture(); const a = await h.candidate('a', 'a.txt', 'A\n'), b = await h.candidate('b', 'b.txt', 'B\n');
     const input = { approvals: [a.approval.id, b.approval.id] };
