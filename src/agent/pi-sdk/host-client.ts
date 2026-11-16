@@ -1,3 +1,4 @@
+import { connect as connectSocket, type Socket } from 'node:net';
 import type { Readable, Writable } from 'node:stream';
 import { log } from '../../core/logger';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
@@ -22,6 +23,11 @@ export interface PiHostLaunch {
   sandbox?: PiHostSandbox;
   /** Run the host on another machine over ssh instead of locally. */
   remote?: PiRemoteTarget;
+  /**
+   * Reach an already-running host over a forwarded TCP port instead of
+   * spawning one. The host serves the same frames on the socket.
+   */
+  connection?: { kind: 'tcp'; host: string; port: number };
   /** Milliseconds to wait for the host ready frame. */
   readyTimeoutMs?: number;
 }
@@ -59,15 +65,25 @@ type PendingRequest = {
   command: string;
 };
 
+/** How the bridge reaches a host: a child's stdio or a forwarded TCP socket. */
+interface HostChannel {
+  readonly pid: number | undefined;
+  readonly closed: boolean;
+  write(line: string, callback?: (error?: Error | null) => void): void;
+  lines(): AsyncIterable<Buffer | string>;
+  close(): Promise<void>;
+}
+
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 /**
- * Bridge side of the pi-host transport: one long-lived child process speaking
- * newline-delimited JSON over stdio. Requests are correlated by numeric id;
- * everything without an id is a stream frame delivered to subscribers.
+ * Bridge side of the pi-host transport: one long-lived host speaking
+ * newline-delimited JSON, over a child's stdio or a forwarded TCP socket.
+ * Requests are correlated by numeric id; everything without an id is a stream
+ * frame delivered to subscribers.
  */
 export class PiHostClient {
-  private child: PiHostChild | undefined;
+  private channel: HostChannel | undefined;
   private nextId = 1;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly listeners = new Set<(frame: PiHostFrame) => void>();
@@ -106,8 +122,7 @@ export class PiHostClient {
     params: Record<string, unknown> = {},
     timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
   ): Promise<T> {
-    const child = await this.ensureChild();
-    if (!child.stdin.writable) throw new Error('pi sdk host stdin is closed');
+    const channel = await this.ensureChannel();
     const id = this.nextId++;
     const frame = JSON.stringify({ id, cmd, params });
     return new Promise<T>((resolve, reject) => {
@@ -122,7 +137,7 @@ export class PiHostClient {
         timer,
         command: cmd,
       });
-      child.stdin.write(`${frame}\n`, (error) => {
+      channel.write(`${frame}\n`, (error) => {
         if (!error) return;
         this.settle(id, undefined, error instanceof Error ? error : new Error(String(error)));
       });
@@ -132,28 +147,92 @@ export class PiHostClient {
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
-    const child = this.child;
-    if (!child) return;
+    const channel = this.channel;
+    if (!channel) return;
     try {
       await this.request('shutdown', {}, 2000);
     } catch {
-      // Host already gone or not responding; fall through to signals.
+      // Host already gone or not responding; fall through to teardown.
     }
-    if (child.exitCode === null && child.signalCode === null) {
-      terminateChild(child, 'SIGTERM');
-      const exited = await waitForExit(child, 2000);
-      if (!exited) terminateChild(child, 'SIGKILL');
-    }
+    await channel.close();
     this.fail(new Error('pi sdk host disposed'));
   }
 
-  private async ensureChild(): Promise<PiHostChild> {
+  private async ensureChannel(): Promise<HostChannel> {
     await this.start();
-    if (!this.child) throw this.closed ?? new Error('pi sdk host is not running');
-    return this.child;
+    if (!this.channel) throw this.closed ?? new Error('pi sdk host is not running');
+    if (this.channel.closed) throw new Error('pi sdk host channel is closed');
+    return this.channel;
   }
 
   private async spawn(): Promise<PiHostReady> {
+    // The channel first: a connection failure must reject this call, not a
+    // promise nobody awaits.
+    this.channel = this.launch.connection
+      ? await this.connectTcp(this.launch.connection)
+      : this.spawnStdio();
+    const readyPromise = this.readySignal();
+    void this.readFrames(this.channel);
+    return readyPromise;
+  }
+
+  /** The host announces itself on every new connection, so reconnects reuse this. */
+  private readySignal(): Promise<PiHostReady> {
+    const launch = this.launch;
+    return new Promise<PiHostReady>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`pi sdk host did not become ready within ${launch.readyTimeoutMs ?? 30_000}ms`));
+      }, launch.readyTimeoutMs ?? 30_000);
+      timer.unref?.();
+      this.readyResolve = (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      };
+      this.readyReject = (error) => {
+        clearTimeout(timer);
+        reject(error);
+      };
+    });
+  }
+
+  private async connectTcp(connection: { host: string; port: number }): Promise<HostChannel> {
+    const socket: Socket = await new Promise((resolve, reject) => {
+      const attempt = connectSocket({ host: connection.host, port: connection.port });
+      const timer = setTimeout(() => {
+        attempt.destroy();
+        reject(new Error(`pi sdk host did not accept a connection at ${connection.host}:${connection.port}`));
+      }, this.launch.readyTimeoutMs ?? 30_000);
+      timer.unref?.();
+      attempt.once('connect', () => {
+        clearTimeout(timer);
+        resolve(attempt);
+      });
+      attempt.once('error', (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
+    socket.setEncoding('utf8');
+    log.info('agent', 'pi-sdk-host-tcp-connect', { host: connection.host, port: connection.port });
+    // A dropped connection is not a dead host: the sessions stay and the next
+    // connection resumes them, so only report it as an error to in-flight work.
+    socket.on('close', () => this.fail(new Error('pi sdk host connection closed')));
+    return {
+      pid: undefined,
+      closed: false,
+      write(line, callback) {
+        if (socket.destroyed) { callback?.(new Error('pi sdk host connection is closed')); return; }
+        socket.write(line, (error) => callback?.(error ?? undefined));
+      },
+      lines: () => socket,
+      close: async () => {
+        socket.end();
+        socket.destroy();
+      },
+    };
+  }
+
+  private spawnStdio(): HostChannel {
     const { launch } = this;
     const args = [
       launch.hostScript,
@@ -193,7 +272,6 @@ export class PiHostClient {
       remote?.cleanup();
       throw error;
     }
-    this.child = child;
     child.once('exit', () => remote?.cleanup());
     child.once('error', () => remote?.cleanup());
     log.info('agent', 'pi-sdk-host-spawn', {
@@ -229,31 +307,31 @@ export class PiHostClient {
       this.fail(error);
     });
 
-    const readyPromise = new Promise<PiHostReady>((resolve, reject) => {
-      const timer = setTimeout(() => {
-        reject(new Error(`pi sdk host did not become ready within ${launch.readyTimeoutMs ?? 30_000}ms`));
-      }, launch.readyTimeoutMs ?? 30_000);
-      timer.unref?.();
-      this.readyResolve = (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      };
-      this.readyReject = (error) => {
-        clearTimeout(timer);
-        reject(error);
-      };
-    });
-
-    void this.readFrames(child);
-    return readyPromise;
+    let closed = false;
+    child.once('exit', () => { closed = true; });
+    return {
+      pid: child.pid,
+      get closed() { return closed; },
+      write(line, callback) {
+        if (!child.stdin.writable) { callback?.(new Error('pi sdk host stdin is closed')); return; }
+        child.stdin.write(line, (error) => callback?.(error ?? undefined));
+      },
+      lines: () => child.stdout,
+      close: async () => {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        terminateChild(child, 'SIGTERM');
+        const exited = await waitForExit(child, 2000);
+        if (!exited) terminateChild(child, 'SIGKILL');
+      },
+    };
   }
 
   private readyResolve: ((value: PiHostReady) => void) | undefined;
   private readyReject: ((error: Error) => void) | undefined;
 
-  private async readFrames(child: PiHostChild): Promise<void> {
+  private async readFrames(channel: HostChannel): Promise<void> {
     try {
-      for await (const line of readJsonLines(child.stdout)) {
+      for await (const line of readJsonLines(channel.lines())) {
         const trimmed = line.trim();
         if (!trimmed) continue;
         let frame: unknown;

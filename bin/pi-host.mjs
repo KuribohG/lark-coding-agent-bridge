@@ -23,8 +23,15 @@
  * stdout is reserved for protocol frames. Pi extensions may write to stdout or
  * console.log; those writes are redirected to stderr before the SDK loads so
  * they cannot corrupt the stream.
+ *
+ * `--tcp host:port` serves the same frames over a listening socket instead of
+ * stdio. That is how a host runs somewhere the bridge cannot spawn a process:
+ * the bridge reaches the socket through a forwarded channel. Every accepted
+ * connection gets `host.ready` and can then drive the host; a dropped
+ * connection leaves the sessions running, so a reconnecting bridge finds them.
  */
 import { existsSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -35,6 +42,12 @@ process.stdout.write = function redirectedWrite(chunk, encoding, callback) {
   return process.stderr.write(chunk, encoding, callback);
 };
 
+/**
+ * Where frames go: stdout by default, or the connected client in `--tcp` mode.
+ * The mode is chosen once at startup, before any frame is sent.
+ */
+let writeFrame = (line) => realStdoutWrite(line);
+
 function send(message) {
   let line;
   try {
@@ -42,7 +55,7 @@ function send(message) {
   } catch {
     line = JSON.stringify(sanitize(message));
   }
-  realStdoutWrite(`${line}\n`);
+  writeFrame(`${line}\n`);
 }
 
 function reply(id, ok, payload) {
@@ -515,6 +528,7 @@ function health() {
     sessions: sessions.size,
     activeRuns,
     sessionDetails: details,
+    transport: options.tcp ? 'tcp' : 'stdio',
     rssBytes: process.memoryUsage.rss(),
     nodeVersion: process.versions.node,
     piVersion: pi.VERSION,
@@ -633,28 +647,89 @@ const reaper = setInterval(() => {
 }, Math.min(60_000, Math.max(1_000, Math.floor(Math.min(idleTtlMs, emptyExitMs) / 2))));
 reaper.unref?.();
 
-// stdin closing means the bridge exited; the host must not outlive it.
 // Frames dispatch concurrently: a stalled abort or a slow session.open on one
 // session must not block prompts for the others. Same-session ordering is the
 // bridge's responsibility (it never opens or prompts one session twice).
-process.stdin.setEncoding('utf8');
-let buffer = '';
-process.stdin.on('data', (chunk) => {
-  buffer += chunk;
-  for (;;) {
-    const newline = buffer.indexOf('\n');
-    if (newline === -1) break;
-    const line = buffer.slice(0, newline);
-    buffer = buffer.slice(newline + 1);
-    void handleLine(line).catch((error) => log('frame failed', { error: errorText(error) }));
+function dispatchLines(source) {
+  let buffer = '';
+  return {
+    push(chunk) {
+      buffer += chunk;
+      for (;;) {
+        const newline = buffer.indexOf('\n');
+        if (newline === -1) break;
+        const line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        if (line.trim()) void handleLine(line).catch((error) => log('frame failed', { error: errorText(error) }));
+      }
+    },
+    flush() {
+      const rest = buffer;
+      buffer = '';
+      if (rest.trim()) void handleLine(rest).catch(() => {});
+    },
+  };
+}
+
+/** One connected bridge; a reconnect replaces it and keeps the sessions. */
+function serveTcp(options) {
+  const match = /^(.+):(\d+)$/.exec(options.tcp ?? '');
+  if (!match) throw new Error('--tcp expects host:port');
+  const [, host, port] = match;
+  const server = createServer((socket) => {
+    log('client connected', { remote: `${socket.remoteAddress}:${socket.remotePort}` });
+    writeFrame = (line) => {
+      if (!socket.destroyed) socket.write(line);
+    };
+    const lines = dispatchLines();
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk) => lines.push(chunk));
+    socket.on('error', (error) => log('client error', { error: errorText(error) }));
+    socket.on('close', () => {
+      lines.flush();
+      writeFrame = (line) => realStdoutWrite(line);
+      log('client disconnected; sessions stay alive', { sessions: sessions.size });
+    });
+    send({
+      type: 'host.ready',
+      data: {
+        pid: process.pid,
+        nodeVersion: process.versions.node,
+        piVersion: pi.VERSION,
+        agentDir,
+        idleTtlMs,
+        maxSessions,
+        sessionPersistence,
+        transport: 'tcp',
+      },
+    });
+  });
+  // The listener is what keeps this process alive between connections; the
+  // reaper (and an explicit `shutdown`) decides when an idle host goes away.
+  server.listen(Number(port), host, () => log('listening', { host, port }));
+  return server;
+}
+
+const tcp = Boolean(options.tcp);
+if (tcp) {
+  try {
+    serveTcp(options);
+  } catch (error) {
+    send({ type: 'host.fatal', error: errorText(error) });
+    process.exit(2);
   }
-});
-process.stdin.on('end', () => {
-  if (buffer.trim()) void handleLine(buffer).catch(() => {});
-  // The bridge is gone; finish promptly rather than waiting for stuck runs.
-  setTimeout(() => void shutdown('stdin closed'), 100);
-});
-process.stdin.on('error', () => void shutdown('stdin error'));
+} else {
+  // stdin closing means the bridge exited; the host must not outlive it.
+  const lines = dispatchLines();
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => lines.push(chunk));
+  process.stdin.on('end', () => {
+    lines.flush();
+    // The bridge is gone; finish promptly rather than waiting for stuck runs.
+    setTimeout(() => void shutdown('stdin closed'), 100);
+  });
+  process.stdin.on('error', () => void shutdown('stdin error'));
+}
 
 for (const signal of ['SIGTERM', 'SIGINT']) {
   process.on(signal, () => void shutdown(signal));
@@ -671,18 +746,21 @@ process.on('unhandledRejection', (error) => {
   log('unhandled rejection', { error: errorText(error) });
 });
 
-send({
-  type: 'host.ready',
-  data: {
-    pid: process.pid,
-    nodeVersion: process.versions.node,
-    piVersion: pi.VERSION,
-    agentDir,
-    idleTtlMs,
-    maxSessions,
-    sessionPersistence,
-  },
-});
+if (!tcp) {
+  send({
+    type: 'host.ready',
+    data: {
+      pid: process.pid,
+      nodeVersion: process.versions.node,
+      piVersion: pi.VERSION,
+      agentDir,
+      idleTtlMs,
+      maxSessions,
+      sessionPersistence,
+      transport: 'stdio',
+    },
+  });
+}
 
 function positiveInteger(value, fallback) {
   const parsed = Number(value);
