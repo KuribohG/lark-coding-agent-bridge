@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
-import { basename, dirname, join, relative } from 'node:path';
+import { basename, dirname, join, posix, relative, sep } from 'node:path';
 import { log } from '../../core/logger';
 import { spawnProcess } from '../../platform/spawn';
 import { WorkcellProviderClient, type WorkcellCreateParams } from './workcell-provider';
@@ -170,13 +170,13 @@ export function workcellRuntimeLayout(paths: {
   // friends), so the whole tree travels instead of picking packages by hand.
   const modulesDir = dirname(nodeDir);
   const packageDir = packageRoot(paths.sdkPath);
-  const nodeModules = join(root, 'node_modules');
-  const packageRemote = join(nodeModules, relative(modulesDir, packageDir));
+  const nodeModules = posix.join(root, 'node_modules');
+  const packageRemote = posix.join(nodeModules, relative(modulesDir, packageDir).split(sep).join('/'));
   return {
     pushes: [
-      { local: dirname(paths.hostScript), remote: join(root, 'bin') },
+      { local: dirname(paths.hostScript), remote: posix.join(root, 'bin') },
       ...(paths.workflowCli && existsSync(paths.workflowCli)
-        ? [{ local: paths.workflowCli, remote: join(root, 'bin', 'workflow-cli.js') }]
+        ? [{ local: paths.workflowCli, remote: posix.join(root, 'bin', 'workflow-cli.js') }]
         : []),
     ],
     modules: { local: modulesDir, remote: nodeModules },
@@ -186,15 +186,15 @@ export function workcellRuntimeLayout(paths: {
           cacheDir: paths.archiveCacheDir,
           key: runtimeKey(modulesDir, paths.sdkPath, paths.nodePath),
           modulesDir,
-          remote: join(root, 'runtime.tar.gz'),
+          remote: posix.join(root, 'runtime.tar.gz'),
           extractTo: root,
         },
       }
       : {}),
-    nodePath: join(nodeModules, basename(nodeDir), relative(nodeDir, paths.nodePath)),
-    hostScript: join(root, 'bin', basename(paths.hostScript)),
-    sdkPath: join(packageRemote, relative(packageDir, paths.sdkPath)),
-    agentDir: join(root, 'agent'),
+    nodePath: posix.join(nodeModules, basename(nodeDir), relative(nodeDir, paths.nodePath).split(sep).join('/')),
+    hostScript: posix.join(root, 'bin', basename(paths.hostScript)),
+    sdkPath: posix.join(packageRemote, relative(packageDir, paths.sdkPath).split(sep).join('/')),
+    agentDir: posix.join(root, 'agent'),
   };
 }
 
@@ -363,13 +363,13 @@ export class WorkcellPool {
           provider.request('push', { workcell: id, local: push.local, remote: push.remote }));
         for (const file of this.options.agentFiles ?? []) {
           uploads.push(provider.request('push', {
-            workcell: id, local: file, remote: join(WORKCELL_ROOT, 'agent', basename(file)),
+            workcell: id, local: file, remote: posix.join(WORKCELL_ROOT, 'agent', basename(file)),
           }));
         }
         const sessions = this.sessionArchive(key);
         if (sessions && existsSync(sessions)) {
           uploads.push(provider.request('push', {
-            workcell: id, local: sessions, remote: join(WORKCELL_ROOT, 'agent', 'sessions'),
+            workcell: id, local: sessions, remote: posix.join(WORKCELL_ROOT, 'agent', 'sessions'),
           }));
         }
         uploads.push(provider.request('forward', { workcell: id, remotePort: WORKCELL_HOST_PORT }));
@@ -471,7 +471,7 @@ export class WorkcellPool {
     if (sessions) {
       await provider.request('pull', {
         workcell: cell.id,
-        remote: join(WORKCELL_ROOT, 'agent', 'sessions'),
+        remote: posix.join(WORKCELL_ROOT, 'agent', 'sessions'),
         local: sessions,
       }).catch((error: unknown) => {
         log.warn('agent', 'pi-workcell-session-pull-failed', { workcell: cell.id, error: String(error) });

@@ -178,7 +178,7 @@ export async function startMessageTurn<M, T extends MessageTurn<M>>(
     profileConfig: scopedProfile,
     ...(deps.runPreferences ? { runPreferences: deps.runPreferences } : {}),
     agent: turn.agent,
-    userQuestions: prepared.runOptions?.userQuestions ?? false,
+    userQuestions: prepared.runOptions?.userQuestions,
     ...(prepared.runOptions?.deadlineAt !== undefined ? { deadlineAt: prepared.runOptions.deadlineAt } : {}),
     ...(prepared.runOptions?.answerIncludesInterimText !== undefined
       ? { answerIncludesInterimText: prepared.runOptions.answerIncludesInterimText }
