@@ -233,13 +233,6 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   // Absent (not disabled) so an unrelated config save does not write the table
   // into every profile; readers treat missing as "disabled".
   const execSandbox = raw.exec_sandbox === undefined ? {} : { execSandbox: normalizeExecSandbox(raw.exec_sandbox) };
-  const launches = normalizeAgentLaunches(raw);
-  // A launch that shares one process across runs cannot carry a per-run Landlock
-  // domain, so the pair is invalid: fail at config load instead of on the first run.
-  if (execSandbox.execSandbox?.enabled) {
-    const conflict = agentBackendSpec(raw.agentKind).execSandboxConflict?.(launches[raw.agentKind]);
-    if (conflict) throw new Error(conflict);
-  }
 
   return {
     schemaVersion: 2,
@@ -249,7 +242,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     ...(raw.secrets ? { secrets: raw.secrets } : {}),
     preferences,
     ...(raw.channels ? { channels: raw.channels } : {}),
-    ...launches,
+    ...normalizeAgentLaunches(raw),
     ...(raw.state ? { state: raw.state } : {}),
     access,
     workspaces,

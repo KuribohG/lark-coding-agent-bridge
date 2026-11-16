@@ -90,6 +90,20 @@ describe('sandbox path resolution', () => {
       .toEqual(expect.arrayContaining(['/home/u/.claude']));
   });
 
+  it('adds shared-runtime roots in place of a per-run cwd', () => {
+    const paths = execSandboxWritePaths({
+      settings: settings({ readWrite: ['~/artifacts'] }),
+      roots: ['/weka/workspaces', '/weka/agents'],
+      home: '/home/u',
+      tempDir: '/tmp',
+      agent: 'pi',
+      env: { PI_CODING_AGENT_DIR: '/state/pi' },
+    });
+    expect(paths).toEqual(expect.arrayContaining([
+      '/weka/workspaces', '/weka/agents', '/state/pi', '/tmp', '/home/u/artifacts',
+    ]));
+  });
+
   it('always reads / and appends configured read-only roots', () => {
     expect(execSandboxReadOnlyPaths({ settings: settings({ readOnly: ['/srv'] }), home: '/home/u' }))
       .toEqual(['/', '/srv']);

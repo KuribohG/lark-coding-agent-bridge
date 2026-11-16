@@ -45,11 +45,6 @@ export interface AgentBackendSpec {
   extendedReasoningEfforts?: readonly string[];
   supportedAccess?: readonly AgentAccessMode[];
   webDefaultAccess: 'workspace' | 'full';
-  /**
-   * Why this launch cannot give every run its own kernel sandbox domain, if it
-   * cannot; configuration rejects that launch together with the exec sandbox.
-   */
-  execSandboxConflict?(launch: unknown): string | undefined;
   backgroundDefaults?: {
     model: string;
     reasoningEffort: string;
@@ -162,13 +157,6 @@ const PI_SPEC: AgentBackendSpec = Object.freeze({
   reasoningEfforts: Object.freeze(['minimal', 'low', 'medium', 'high', 'xhigh']),
   supportedAccess: Object.freeze(['read-only', 'full'] as AgentAccessMode[]),
   webDefaultAccess: 'full',
-  execSandboxConflict: (launch: unknown) => (
-    // The SDK transport serves every session from one long-lived process, so a
-    // per-run Landlock domain has nowhere to apply.
-    typeof launch === 'object' && launch !== null && (launch as { transport?: unknown }).transport === 'sdk'
-      ? 'pi.transport = "sdk" cannot enforce exec_sandbox; use transport = "cli" or disable exec_sandbox'
-      : undefined
-  ),
 });
 
 const AGY_SPEC: AgentBackendSpec = Object.freeze({

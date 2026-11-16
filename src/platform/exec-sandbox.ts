@@ -36,6 +36,12 @@ export interface ExecSandboxInput {
   settings: ExecSandboxSettings | undefined;
   /** The run's working directory; always writable. */
   cwd?: string | undefined;
+  /**
+   * Writable roots for a domain shared by a whole runtime instead of one run
+   * (a long-lived agent host): the roots its sessions may write under, in
+   * place of the per-run `cwd`.
+   */
+  roots?: readonly string[];
   /** The env the agent will run with; state directories are derived from it. */
   env?: NodeJS.ProcessEnv | undefined;
   /** Backend id, used to pick the harness state directory. */
@@ -140,6 +146,7 @@ export function execSandboxWritePaths(input: ExecSandboxInput): string[] {
   const tempDir = input.tempDir ?? env.TMPDIR ?? env.TMP ?? env.TEMP ?? tmpdir();
   const paths = [
     ...(input.cwd ? [input.cwd] : []),
+    ...(input.roots ?? []).map(path => expandSandboxPath(path, home)),
     tempDir,
     '/dev',
     ...SHARED_WRITE_DIRS.map(dir => join(home, dir)),

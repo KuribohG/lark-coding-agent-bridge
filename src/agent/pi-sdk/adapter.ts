@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { log } from '../../core/logger';
 import { SpawnFailed } from '../errors';
 import { parseEffort } from '../model-settings';
@@ -19,6 +19,7 @@ import type {
   RunStopReason,
 } from '../types';
 import { withExecutionContract } from '../execution';
+import { execSandboxWritePaths } from '../../platform/exec-sandbox';
 import type { PiConfig } from '../pi/config';
 import { PiRunTranslator } from '../pi/jsonl-translator';
 import { piThinkingLevel } from '../pi/thinking';
@@ -26,6 +27,7 @@ import { PI_SDK_EXECUTION_CAPABILITIES } from './capabilities';
 import { AsyncEventQueue } from './event-queue';
 import { PiHostClient, type PiHostLaunch, type PiHostRunAck, type PiHostSessionInfo } from './host-client';
 import { PI_SDK_MIN_NODE, resolvePiAgentDir, resolvePiSdkPaths, type PiSdkPaths } from './paths';
+import { piHostSpawnCommand, type PiHostSandbox } from './sandbox';
 
 export interface PiSdkAdapterOptions {
   config: PiConfig;
@@ -33,6 +35,11 @@ export interface PiSdkAdapterOptions {
   env?: NodeJS.ProcessEnv;
   stopGraceMs?: number;
   profileStateDir?: string;
+  /**
+   * Profile-scoped Landlock domain for the shared host. Applied once when the
+   * host starts; a run's own cwd is not part of it.
+   */
+  sandbox?: PiHostSandbox;
 }
 
 const OPEN_TIMEOUT_MS = 60_000;
@@ -69,6 +76,9 @@ export class PiSdkAdapter implements AgentAdapter {
   private starting: Promise<PiHostClient> | undefined;
   private paths: PiSdkPaths | undefined;
   private botIdentity: AgentBotIdentity | undefined;
+  private readonly sandbox: PiHostSandbox | undefined;
+  /** cwds already reported as outside the profile-scoped sandbox. */
+  private readonly unwritableCwds = new Set<string>();
   /** Run ids whose event streams have not finished; shutdown waits for them. */
   private readonly activeRuns = new Set<string>();
   private idleWaiters = new Set<() => void>();
@@ -79,6 +89,7 @@ export class PiSdkAdapter implements AgentAdapter {
     this.systemPrompt = opts.systemPrompt;
     this.env = { ...opts.env };
     this.defaultStopGraceMs = opts.stopGraceMs ?? 5000;
+    this.sandbox = opts.sandbox?.settings.enabled ? opts.sandbox : undefined;
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -128,6 +139,33 @@ export class PiSdkAdapter implements AgentAdapter {
     });
   }
 
+  /**
+   * A profile-scoped domain cannot add a run's cwd after the fact, so a run
+   * whose working directory is not under a writable root will fail with EACCES
+   * on its first write. Say so once per cwd instead of leaving the failure bare.
+   */
+  private warnOnUnwritableCwd(opts: AgentRunOptions): void {
+    const sandbox = this.sandbox;
+    const cwd = opts.cwd;
+    if (!sandbox || !cwd || this.unwritableCwds.has(cwd)) return;
+    const writable = execSandboxWritePaths({
+      settings: sandbox.settings,
+      env: this.env,
+      agent: 'pi',
+      roots: [...sandbox.roots, resolvePiAgentDir(this.config)],
+    });
+    // Compare resolved paths: the home directory is usually a symlink, and the
+    // launcher resolves its rules while this check only has strings.
+    const target = canonicalPath(cwd);
+    const covered = writable.some((root) => {
+      const resolved = canonicalPath(root);
+      return target === resolved || target.startsWith(resolved.endsWith('/') ? resolved : `${resolved}/`);
+    });
+    this.unwritableCwds.add(cwd);
+    if (covered) return;
+    log.warn('agent', 'pi-sdk-sandbox-cwd-read-only', { cwd, writable });
+  }
+
   private async logHealth(context: string): Promise<void> {
     const client = this.client;
     if (!client || client.isClosed) return;
@@ -166,6 +204,25 @@ export class PiSdkAdapter implements AgentAdapter {
         ...(error instanceof Error ? { stderrExcerpt: error.message.slice(0, 500) } : {}),
       });
       return { ok: false, error: failure, diagnostic: failure.diagnostic };
+    }
+
+    if (this.sandbox) {
+      // The domain is applied when the host starts, so `require_landlock` has
+      // to fail here — otherwise the profile looks healthy and every run fails.
+      try {
+        piHostSpawnCommand(paths.nodePath, [], this.sandbox, this.env);
+      } catch (error) {
+        const failure = new AgentPreflightError({
+          code: 'agent-binary-not-found',
+          agentId: 'pi',
+          agentName: this.displayName,
+          command: paths.nodePath,
+          binaryPath: paths.nodePath,
+          field: 'sandbox',
+          ...(error instanceof Error ? { stderrExcerpt: error.message.slice(0, 500) } : {}),
+        });
+        return { ok: false, error: failure, diagnostic: failure.diagnostic };
+      }
     }
 
     const node = await checkAgentAvailability({
@@ -215,13 +272,16 @@ export class PiSdkAdapter implements AgentAdapter {
         'agent-prepare-failed',
       );
     }
-    if (opts.execSandbox?.enabled) {
+    if (opts.execSandbox?.enabled && !this.sandbox) {
+      // Only reachable when a run carries sandbox settings the adapter was not
+      // built with. Refuse instead of running unsandboxed behind the caller's back.
       throw new SpawnFailed(
-        'pi sdk cannot enforce the Landlock exec sandbox',
-        new Error('The Pi SDK host is shared across runs and cannot apply a per-run Landlock domain; use pi.transport=cli for sandboxed profiles'),
+        'pi sdk host has no exec sandbox',
+        new Error('The Pi SDK host was started without the profile exec sandbox; rebuild the adapter from the current profile'),
         'agent-prepare-failed',
       );
     }
+    this.warnOnUnwritableCwd(opts);
     const availability = await this.checkAvailability();
     if (!availability.ok) {
       throw new SpawnFailed(
@@ -515,11 +575,15 @@ export class PiSdkAdapter implements AgentAdapter {
     if (this.client && !this.client.isClosed) return this.client;
     if (this.starting) return this.starting;
     const paths = this.resolvePaths();
+    const agentDir = resolvePiAgentDir(this.config);
     const launch: PiHostLaunch = {
       nodePath: paths.nodePath,
       hostScript: paths.hostScript,
       sdkPath: paths.sdkPath,
-      agentDir: resolvePiAgentDir(this.config),
+      agentDir,
+      ...(this.sandbox
+        ? { sandbox: { ...this.sandbox, roots: [...this.sandbox.roots, agentDir] } }
+        : {}),
       env: this.env,
       ...(this.config.idleTtlMs !== undefined ? { idleTtlMs: this.config.idleTtlMs } : {}),
       ...(this.config.maxSessions !== undefined ? { maxSessions: this.config.maxSessions } : {}),
@@ -599,6 +663,14 @@ function doneEvent(
 
 function errorEvent(message: string): AgentEvent {
   return { type: 'error', message: message.slice(0, 4096), terminationReason: 'failed' };
+}
+
+function canonicalPath(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
 }
 
 function errorMessage(error: unknown): string {

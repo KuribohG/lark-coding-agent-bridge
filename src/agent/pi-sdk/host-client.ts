@@ -3,6 +3,7 @@ import { log } from '../../core/logger';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
 import { terminateChild } from '../../platform/terminate';
 import { readJsonLines } from '../jsonl';
+import { piHostSpawnCommand, type PiHostSandbox } from './sandbox';
 
 export type PiHostChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
 
@@ -16,6 +17,8 @@ export interface PiHostLaunch {
   idleTtlMs?: number;
   maxSessions?: number;
   sessionPersistence?: 'file' | 'memory';
+  /** Profile-scoped Landlock domain applied to this long-lived host. */
+  sandbox?: PiHostSandbox;
   /** Milliseconds to wait for the host ready frame. */
   readyTimeoutMs?: number;
 }
@@ -162,7 +165,8 @@ export class PiHostClient {
       PI_SKIP_VERSION_CHECK: '1',
       PI_TELEMETRY: '0',
     });
-    const child = spawnProcess(launch.nodePath, args, {
+    const command = piHostSpawnCommand(launch.nodePath, args, launch.sandbox, env);
+    const child = spawnProcess(command.command, command.args, {
       cwd: launch.cwd,
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -173,6 +177,8 @@ export class PiHostClient {
       nodePath: launch.nodePath,
       sdkPath: launch.sdkPath,
       agentDir: launch.agentDir,
+      sandboxed: command.sandboxed,
+      ...(command.sandboxed && launch.sandbox ? { sandboxRoots: launch.sandbox.roots } : {}),
     });
 
     let stderrBuffer = '';

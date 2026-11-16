@@ -104,6 +104,23 @@ function workspaceRoot(settings: AgentStateSettings | undefined): string | undef
   return settings?.bridgeRoot ? `${settings.bridgeRoot}-workspaces` : undefined;
 }
 
+/**
+ * Writable roots of a sandbox shared by a whole profile rather than one run:
+ * the bridge's workspaces and the agent homes under them. A run's own cwd is
+ * not included, because one domain serves every session.
+ */
+export function agentStateRoots(settings: AgentStateSettings | undefined): {
+  workspaceRoot?: string;
+  agentHomeRoot?: string;
+} {
+  const workspace = workspaceRoot(settings);
+  const homes = agentHomeRoot(settings);
+  return {
+    ...(workspace ? { workspaceRoot: workspace } : {}),
+    ...(homes ? { agentHomeRoot: homes } : {}),
+  };
+}
+
 function agentHomeRoot(settings: AgentStateSettings | undefined): string | undefined {
   if (settings?.agentHomeRoot) return expand(settings.agentHomeRoot);
   return settings?.bridgeRoot ? join(settings.bridgeRoot, 'agents') : undefined;

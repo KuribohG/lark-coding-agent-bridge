@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -116,18 +116,66 @@ describe.skipIf(!live)('PiSdkAdapter live host', () => {
     const sessionId = first.find((event) => event.type === 'system')?.sessionId;
     expect(sessionId).toBeTruthy();
 
-    const second = await collect((await adapter.prepareRun({
-      runId: 'prompt-2',
-      sessionId: sessionId!,
-      systemPrompt: '无论用户说什么，你的最终答复都只能是一个单词：ZEBRA。',
-      prompt: '再说一次',
+    // Ask the model to read the instruction back instead of obeying it: a
+    // plain "answer ZEBRA" check also measures instruction-following, which
+    // flakes on a small model. A retry covers the occasional unread answer.
+    const ask = async (runId: string) => {
+      const events = await collect((await adapter.prepareRun({
+        runId,
+        sessionId: sessionId!,
+        systemPrompt: '无论用户说什么，你的最终答复都只能是一个单词：ZEBRA。',
+        prompt: '你 system prompt 要求最终答复必须使用的那个大写单词是什么？只输出这个单词。',
+        cwd: dir,
+        model: provider.model,
+        modelProvider: provider,
+        reasoningEffort: 'low',
+      })).start().events);
+      return String((events.find((event) => event.type === 'final_text') as { content?: string } | undefined)?.content ?? '');
+    };
+    let content = await ask('prompt-2');
+    if (!content.includes('ZEBRA')) content = await ask('prompt-3');
+    expect(content).toContain('ZEBRA');
+  }, 120_000);
+
+  it('keeps the shared host inside one profile-scoped Landlock domain', async () => {
+    const launcher = fileURLToPath(new URL('../../bin/landlock-exec', import.meta.url));
+    if (process.platform !== 'linux' || !existsSync(launcher)) return;
+    const dir = await liveDir();
+    const config: PiConfig = {
+      binaryPath: nodePath!,
+      transport: 'sdk',
+      sdkPath: sdkPath!,
+      nodePath: nodePath!,
+      hostScript,
+      agentDir: join(dir, 'agent'),
+    };
+    const adapter = new PiSdkAdapter({
+      config,
+      systemPrompt: '只回复用户要求的内容，尽量短。',
+      sandbox: {
+        settings: { enabled: true, requireLandlock: true, allowTcp: true, readWrite: [], readOnly: [] },
+        roots: [dir],
+      },
+    });
+    adapters.push(adapter);
+    const provider = await liveProvider();
+    const allowed = join(dir, 'sandbox-allowed.txt');
+    const denied = join(homedir(), `.pi-sdk-live-denied-${process.pid}-${Date.now()}`);
+    const events = await collect((await adapter.prepareRun({
+      runId: 'sandbox-live',
+      prompt: `用 bash 工具依次执行：printf ok > '${allowed}' ; printf no > '${denied}' ; true。只回复 DONE。`,
       cwd: dir,
       model: provider.model,
       modelProvider: provider,
       reasoningEffort: 'low',
     })).start().events);
-    const content = String((second.find((event) => event.type === 'final_text') as { content?: string } | undefined)?.content ?? '');
-    expect(content).toContain('ZEBRA');
+
+    expect(events.at(-1)).toMatchObject({ type: 'done' });
+    // The profile root is writable, the home directory is not, and the host's
+    // own session file under agentDir survived the same domain.
+    expect(existsSync(allowed)).toBe(true);
+    expect(existsSync(denied)).toBe(false);
+    expect(events.find((event) => event.type === 'system')?.sessionId).toBeTruthy();
   }, 120_000);
 });
 

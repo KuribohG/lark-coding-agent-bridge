@@ -57,6 +57,28 @@ Reads are not restricted at all — `/` is granted read and execute. Secrets are
 still readable by any agent that can read them today; the sandbox only stops
 writes.
 
+## Shared runtimes: pi with `transport = "sdk"`
+
+`pi.transport = "sdk"` serves every session of a profile from one long-lived
+host process, and a Landlock domain cannot be widened or lifted once applied, so
+there is no per-run domain to apply. Instead the bridge puts **the host itself**
+under one static, profile-scoped domain when it starts:
+
+- writable roots are the defaults above (without a run's `cwd`), plus the
+  profile's bridge workspaces (`workspace_root`, by default
+  `<config dir>-workspaces`), the agent home root (`<config dir>/agents`), the
+  Pi `agentDir`, and `exec_sandbox.read_write`;
+- every session of that profile shares it, so one run's domain can never be
+  narrowed for the next;
+- `require_landlock = true` makes a missing launcher or kernel support a host
+  start failure instead of an unsandboxed fallback.
+
+The consequence to plan for: **a run's `cwd` is not added automatically**. If a
+conversation or worker works in a repository outside the workspace roots, add
+that path to `read_write`, or its writes fail with `EACCES` (the bridge logs
+`pi-sdk-sandbox-cwd-read-only` once per such cwd). The sandbox also cannot
+separate two workspaces from each other — it is one domain for the profile.
+
 ## How a run is wrapped
 
 `src/platform/exec-sandbox.ts` turns the profile settings into a launcher

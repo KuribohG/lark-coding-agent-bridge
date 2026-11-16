@@ -475,9 +475,10 @@ describe('pi SDK transport configuration', () => {
     pi: { binaryPath: 'pi', transport },
   });
 
-  it('rejects the shared SDK host when the profile runs under the exec sandbox', () => {
-    expect(() => normalizeProfileConfig({ ...launch('pi', 'sdk'), exec_sandbox: { enabled: true } }))
-      .toThrow(/exec_sandbox/);
+  it('accepts the exec sandbox on a shared SDK host: it becomes one profile-scoped domain', () => {
+    const cfg = normalizeProfileConfig({ ...launch('pi', 'sdk'), exec_sandbox: { enabled: true, read_write: ['/srv'] } });
+    expect(cfg.pi).toMatchObject({ transport: 'sdk' });
+    expect(cfg.execSandbox).toMatchObject({ enabled: true, readWrite: ['/srv'] });
   });
 
   it('keeps the sandboxed CLI transport, and pi launch fields on a non-pi profile, valid', () => {

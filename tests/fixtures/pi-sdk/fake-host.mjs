@@ -122,6 +122,19 @@ process.stdin.on('end', () => {
   process.exit(0);
 });
 
+// Sandbox probe: the test compares this under a Landlock domain with the same
+// probe without one, so "blocked" cannot come from ordinary permissions.
+const probeTarget = process.env.FAKE_HOST_PROBE_UNWRITABLE;
+if (probeTarget) {
+  try {
+    writeFileSync(probeTarget, 'probe\n');
+    record.probe = { blocked: false };
+  } catch (error) {
+    record.probe = { blocked: true, code: error.code };
+  }
+  save();
+}
+
 send({
   type: 'host.ready',
   data: {

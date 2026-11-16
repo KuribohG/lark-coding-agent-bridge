@@ -9,6 +9,7 @@ import { codexExecutionCapabilities } from './codex/capabilities';
 import { PiAdapter } from './pi/adapter';
 import { PI_EXECUTION_CAPABILITIES } from './pi/capabilities';
 import { PiSdkAdapter } from './pi-sdk/adapter';
+import { piSdkSandbox } from './pi-sdk/sandbox';
 import { PI_SDK_EXECUTION_CAPABILITIES } from './pi-sdk/capabilities';
 import {
   agentLaunchPatch,
@@ -104,6 +105,7 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
           profileStateDir: profileDir,
           env: buildAgentEnvironment(env, pi.env),
           systemPrompt,
+          ...(profile.execSandbox?.enabled ? { sandbox: piSdkSandbox(profile, { profileDir, env }) } : {}),
         });
       }
       return new PiAdapter({
