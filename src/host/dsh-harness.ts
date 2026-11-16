@@ -1,9 +1,9 @@
 import { createRequire } from 'node:module';
-import type { StopSettlement } from '../types';
-import { RunExecutor, type GovernedRunExecution } from '../../runtime/run-executor';
-import { ActiveRuns } from '../../runtime/active-runs';
-import { ProcessPool } from '../../runtime/process-pool';
-import { DshAdapter } from './adapter';
+import type { StopSettlement } from '../agent/types';
+import { RunExecutor, type GovernedRunExecution } from '../runtime/run-executor';
+import { ActiveRuns } from '../runtime/active-runs';
+import { ProcessPool } from '../runtime/process-pool';
+import { DshAdapter } from '../agent/dsh/adapter';
 
 // Built as an ESM library once. The native assets are copied verbatim beside
 // this entry, retaining __dirname and the existing DSH profile/handle identity.
