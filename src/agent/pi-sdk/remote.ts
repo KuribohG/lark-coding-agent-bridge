@@ -55,10 +55,24 @@ function writePrivateFile(path: string, text: string): void {
   try {
     if (process.platform === 'win32') {
       const system = join(process.env.SystemRoot || 'C:\\Windows', 'System32');
-      const identity = execFileSync(join(system, 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'], { encoding: 'utf8', windowsHide: true });
-      const sid = identity.match(/"((?:S-1-)[0-9-]+)"\s*$/i)?.[1];
-      if (!sid) throw new Error('Cannot determine the current Windows user for the remote environment file');
-      execFileSync(join(system, 'icacls.exe'), [path, '/inheritance:r', '/grant:r', '*' + sid + ':F'], { windowsHide: true });
+      const powershell = join(system, 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      const protectFile = [
+        "$ErrorActionPreference = 'Stop'",
+        '$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User',
+        '$rights = [System.Security.AccessControl.FileSystemRights]::FullControl',
+        '$allow = [System.Security.AccessControl.AccessControlType]::Allow',
+        '$acl = [System.Security.AccessControl.FileSecurity]::new()',
+        '$acl.SetAccessRuleProtection($true, $false)',
+        '$acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid, $rights, $allow))',
+        '[IO.File]::SetAccessControl($env:BRIDGE_PRIVATE_ENV_FILE, $acl)',
+        '$actual = [IO.File]::GetAccessControl($env:BRIDGE_PRIVATE_ENV_FILE)',
+        '$rules = $actual.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])',
+        'if (!$actual.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference -ne $sid' +
+          " -or $rules[0].AccessControlType -ne $allow -or $rules[0].FileSystemRights -ne $rights) { throw 'Private file access check failed' }",
+      ].join('; ');
+      execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', protectFile], {
+        env: { ...process.env, BRIDGE_PRIVATE_ENV_FILE: path }, windowsHide: true,
+      });
     }
     writeFileSync(fd, text);
     written = true;

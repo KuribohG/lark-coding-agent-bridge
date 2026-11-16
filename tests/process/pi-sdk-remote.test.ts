@@ -169,11 +169,13 @@ describe('remote host command line', () => {
     expect(env).toContain(`export TOKEN='it'\\''s secret'`);
     if (process.platform === 'win32') {
       const script = [
-        '$ErrorActionPreference = "Stop"',
+        "$ErrorActionPreference = 'Stop'",
         '$acl = [IO.File]::GetAccessControl($env:TEST_PRIVATE_FILE)',
         '$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
         '$rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])',
-        '[bool]($acl.AreAccessRulesProtected -and $rules.Count -eq 1 -and $rules[0].IdentityReference.Value -eq $sid -and $rules[0].AccessControlType -eq "Allow")',
+        '[bool]($acl.AreAccessRulesProtected -and $rules.Count -eq 1 -and !$rules[0].IsInherited' +
+          ' -and $rules[0].IdentityReference.Value -eq $sid -and $rules[0].AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow' +
+          ' -and $rules[0].FileSystemRights -eq [System.Security.AccessControl.FileSystemRights]::FullControl)',
       ].join('; ');
       const verified = execFileSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
         env: { ...process.env, TEST_PRIVATE_FILE: spawn.envFile }, encoding: 'utf8', windowsHide: true,
