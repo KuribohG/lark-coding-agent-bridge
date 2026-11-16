@@ -3,7 +3,8 @@ import { existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative } from 'node:path';
 import { log } from '../../core/logger';
 import { spawnProcess } from '../../platform/spawn';
-import { createWorkcellProvider, type WorkcellProvider, type WorkcellCreateParams } from './workcell-provider';
+import { createWorkcellProvider } from './workcell-provider';
+import type { WorkcellCreateParams, WorkcellProvider } from './workcell-protocol';
 
 /**
  * A workcell is an isolated execution unit rented for one workflow member: the

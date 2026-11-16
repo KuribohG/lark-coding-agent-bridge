@@ -1,6 +1,6 @@
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import type { AgentCapability } from '../../agent/capability';
-import type { ChatMode } from './chat-mode-cache';
+import type { ChatMode } from './scope-types';
 import type { CotClient, CotPublisher } from './cot';
 import type { PendingMessage } from './pending-queue';
 import {

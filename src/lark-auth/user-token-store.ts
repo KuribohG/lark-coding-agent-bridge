@@ -3,7 +3,7 @@ import type { KeystorePaths } from '../config/keystore';
 import type { StoredUserToken, UserTokenStore } from './user-token';
 
 /** Keystore entry holding a profile's user-identity OAuth grant. */
-export function userTokenSecretId(appId: string): string {
+function userTokenSecretId(appId: string): string {
   return `user-oauth-${appId}`;
 }
 

@@ -14,7 +14,7 @@ import {
   type QuestionPresenter,
   type QuestionRequest as BrokerRequest,
 } from '../../runtime/questions';
-import type { ChatMode } from './chat-mode-cache';
+import type { ChatMode } from './scope-types';
 import { bridgeInput, type PendingQueue } from './pending-queue';
 
 /** What Lark needs to show a question and route its answer. */

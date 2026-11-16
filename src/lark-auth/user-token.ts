@@ -60,7 +60,11 @@ export interface UserTokenProviderOptions {
 
 export type UserTokenErrorKind = 'network' | 'http' | 'api' | 'invalid-json';
 
-export class UserTokenError extends Error {
+/**
+ * Raised for every failed grant operation; callers act on `kind`, and the class
+ * itself stays module-internal until someone needs to branch on it.
+ */
+class UserTokenError extends Error {
   constructor(
     readonly kind: UserTokenErrorKind,
     message: string,

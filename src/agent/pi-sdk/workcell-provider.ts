@@ -4,75 +4,12 @@ import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../..
 import { terminateChild } from '../../platform/terminate';
 import { readJsonLines } from '../jsonl';
 import { parseSshWorkcell, SshWorkcellProvider } from './workcell-ssh';
+import type { WorkcellOp, WorkcellProvider, WorkcellProviderFrame } from './workcell-protocol';
 
 /**
- * Bridge side of the workcell provider protocol.
- *
- * A provider is an executable that rents isolated execution units: the bridge
- * starts it once per pool and drives it with newline-delimited JSON. The
- * repository defines only this protocol; which infrastructure fulfils it is the
- * provider's business.
- *
- *   bridge -> provider  { id, op, ...params }
- *   provider -> bridge  { id, ok: true, data } | { id, ok: false, error }
- *                       { type: 'log', workcell?, line }
- *                       { type: 'exit', workcell?, code }
+ * Client for an external provider: one long-lived executable driven with
+ * newline-delimited JSON. The protocol itself lives in workcell-protocol.ts.
  */
-
-export type WorkcellOp =
-  | 'create'
-  | 'push'
-  | 'pull'
-  | 'exec'
-  | 'forward'
-  | 'ttl'
-  | 'stop';
-
-export interface WorkcellCreateParams {
-  image?: string;
-  cpu?: number;
-  memoryGb?: number;
-  ttlSeconds?: number;
-  network?: readonly ('lan' | 'www')[];
-  /** Free-form labels the provider may use for naming or accounting. */
-  labels?: Record<string, string>;
-}
-
-export interface WorkcellPushParams {
-  workcell: string;
-  local: string;
-  remote: string;
-  exclude?: readonly string[];
-}
-
-export interface WorkcellPullParams {
-  workcell: string;
-  remote: string;
-  local: string;
-}
-
-export interface WorkcellExecParams {
-  workcell: string;
-  /** Shell script; providers run it through `bash` unless documented otherwise. */
-  script: string;
-  env?: Readonly<Record<string, string>>;
-  detach?: boolean;
-  cwd?: string;
-  /** Seconds for a non-detached command; providers apply their own default. */
-  timeout?: number;
-}
-
-export interface WorkcellForwardParams {
-  workcell: string;
-  /** Port the bridge wants to reach inside the workcell. */
-  remotePort: number;
-}
-
-export interface WorkcellProviderFrame {
-  type: string;
-  workcell?: string;
-  [key: string]: unknown;
-}
 
 type Pending = {
   resolve: (value: unknown) => void;
@@ -93,16 +30,6 @@ const DEFAULT_TIMEOUT_MS: Partial<Record<WorkcellOp, number>> = {
   ttl: 60_000,
   stop: 180_000,
 };
-
-/**
- * What the pool needs from a provider, whether it is an external program or a
- * builtin (`ssh://`, `local://`). Ops and params are the protocol above.
- */
-export interface WorkcellProvider {
-  readonly isClosed: boolean;
-  request<T = unknown>(op: WorkcellOp, params?: Record<string, unknown>, timeoutMs?: number): Promise<T>;
-  close(): Promise<void>;
-}
 
 class WorkcellProviderClient implements WorkcellProvider {
   private child: SpawnedProcessByStdio<Writable, Readable, Readable> | undefined;

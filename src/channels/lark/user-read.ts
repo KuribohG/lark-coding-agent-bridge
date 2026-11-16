@@ -6,7 +6,7 @@ import type { TenantBrand } from '../../config/schema';
 import { log } from '../../core/logger';
 import { larkFetch } from '../../lark-auth/network';
 import type { UserTokenProvider } from '../../lark-auth/user-token';
-import type { ChatMode } from './chat-mode-cache';
+import type { ChatMode } from './scope-types';
 
 /**
  * Read-only IM calls made with the operator's *user* identity.

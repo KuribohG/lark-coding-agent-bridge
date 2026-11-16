@@ -9,7 +9,7 @@ import { terminateChild } from '../../platform/terminate';
 import type {
   WorkcellCreateParams, WorkcellExecParams, WorkcellForwardParams, WorkcellOp,
   WorkcellProvider, WorkcellPullParams, WorkcellPushParams,
-} from './workcell-provider';
+} from './workcell-protocol';
 
 /**
  * Builtin `ssh://[user@]host[:port]/base` workcell provider.

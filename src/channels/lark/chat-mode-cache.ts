@@ -2,8 +2,7 @@ import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { log } from '../../core/logger';
 import { lookupMessageThreadId } from './thread-id';
 import { userFirst, type LarkUserReads } from './user-read';
-
-export type ChatMode = 'p2p' | 'group' | 'topic';
+import type { ChatMode } from './scope-types';
 
 export interface ResolvedScope {
   scope: string;
