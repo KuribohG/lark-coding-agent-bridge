@@ -245,7 +245,7 @@ export class ClaudeAdapter implements AgentAdapter {
         interrupted = true;
         if (hosted && reason === 'shutdown') {
           // Detach before closing input so the agent's stdin stays open for the next bridge.
-          hosted.detach();
+          await hosted.detach();
           input.close();
           return;
         }

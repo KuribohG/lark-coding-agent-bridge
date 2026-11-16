@@ -215,6 +215,19 @@ describe.skipIf(process.platform === 'win32')('run host', () => {
     expect(await drain(third)).toContainEqual({ type: 'final_text', content: 'finished after restart' });
   }, 20_000);
 
+  it('preserves input queued before the first connection when shutdown starts immediately', async () => {
+    const adapter = claude(await fakeAgent(FAKE_CLAUDE));
+    const key = newRunHostKey();
+    const first = await start(adapter, key);
+    await first.stop('shutdown');
+    expect(readRunHostInput(key).filter(line => line.includes('hosted prompt'))).toHaveLength(1);
+
+    const second = await start(adapter, key, true);
+    await writeFile(join(tmp.root, 'release'), '');
+    expect((await drain(second)).at(-1)).toMatchObject({ type: 'done', terminationReason: 'normal' });
+    expect(readRunHostInput(key).filter(line => line.includes('hosted prompt'))).toHaveLength(1);
+  }, 20_000);
+
   it('asks an unanswered question again after reattaching, but never an answered one', async () => {
     const adapter = claude(await fakeAgent(FAKE_CLAUDE));
     const key = newRunHostKey();
@@ -229,8 +242,7 @@ describe.skipIf(process.platform === 'win32')('run host', () => {
     expect(await next(replay, 'user_input')).toMatchObject({ id: 'q1' });
     expect(await second.answerUserInput!('q1', { answers: [['A']] })).toBe('accepted');
     await second.stop('shutdown');
-    // The host journals socket input asynchronously; the answer may land after the bridge detaches.
-    await until(async () => readRunHostInput(key).some(line => line.includes('control_response')));
+    // After shutdown resolves, a new bridge can use the journal immediately.
     expect(readRunHostInput(key).filter(line => line.includes('control_response'))).toHaveLength(1);
 
     const third = await start(adapter, key, true, { userQuestions: true });
