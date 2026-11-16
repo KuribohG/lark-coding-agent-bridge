@@ -195,6 +195,31 @@ describe('PiRunTranslator', () => {
     expect(translator.finish({ exitCode: 0, stderr: '', interrupted: false, timedOut: false })).toEqual([]);
   });
 
+  it('keeps text written before tool calls in the answer for a steered turn', () => {
+    const translator = new PiRunTranslator(true);
+    translator.translate({ type: 'message_end', message: { role: 'assistant', stopReason: 'toolUse',
+      content: [{ type: 'text', text: '先回答你的问题：可以复用到 claude/codex。' }, { type: 'toolCall', id: 't', name: 'read' }] } });
+    translator.translate({ type: 'tool_execution_start', toolCallId: 't', toolName: 'read' });
+    translator.translate({ type: 'tool_execution_end', toolCallId: 't', result: 'ok' });
+    translator.translate({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop',
+      content: [{ type: 'text', text: '冒烟完成。' }] } });
+    const events = translator.translate({ type: 'agent_settled', aborted: false });
+    expect(events).toContainEqual({
+      type: 'final_text',
+      content: '先回答你的问题：可以复用到 claude/codex。\n\n冒烟完成。',
+    });
+  });
+
+  it('still answers when every message called tools', () => {
+    const translator = new PiRunTranslator(true);
+    translator.translate({ type: 'message_end', message: { role: 'assistant', stopReason: 'toolUse',
+      content: [{ type: 'text', text: '正在检查。' }, { type: 'toolCall', id: 't', name: 'read' }] } });
+    translator.translate({ type: 'tool_execution_start', toolCallId: 't', toolName: 'read' });
+    translator.translate({ type: 'tool_execution_end', toolCallId: 't', result: 'ok' });
+    const events = translator.translate({ type: 'agent_settled', aborted: false });
+    expect(events).toContainEqual({ type: 'final_text', content: '正在检查。' });
+  });
+
   it.each(['aborted', 'error', 'retry', 'new-message', 'tool', 'timeout', 'exit-error', 'signal'])('does not promote stale output after %s', reason => {
     const translator = new PiRunTranslator();
     translator.translate({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: 'stale' } });

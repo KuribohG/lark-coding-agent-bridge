@@ -144,7 +144,7 @@ export class PiAdapter implements AgentAdapter {
       }),
       stdin: opts.prompt,
       execSandbox: opts.execSandbox,
-      translator: new PiRunTranslator(),
+      translator: new PiRunTranslator(opts.answerIncludesInterimText === true),
       strictJson: true,
       deadlineAt: opts.deadlineAt,
       stopGraceMs: opts.deadlineAt

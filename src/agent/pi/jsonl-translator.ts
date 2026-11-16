@@ -22,6 +22,14 @@ const TEXT_FLUSH_BYTES = 600;
  */
 export class PiRunTranslator {
   private sessionId: string | undefined;
+  /**
+   * Pi has no commentary channel either: text written before a tool call is
+   * streamed as progress, and without this it never reaches the final reply.
+   * Kept here so a run that was steered mid-turn still answers in its answer.
+   */
+  private readonly interimText: string[] = [];
+
+  constructor(private readonly answerIncludesInterimText = false) {}
   private terminal = false;
   private lastError: string | undefined;
   private finalText: string | undefined;
@@ -186,6 +194,11 @@ export class PiRunTranslator {
       });
     }
     const stopReason = stringValue(message.stopReason);
+    const callsTools = Array.isArray(message.content) && message.content.some(block => recordValue(block)?.type === 'toolCall');
+    if (this.answerIncludesInterimText && callsTools) {
+      const interim = textContent(message.content);
+      if (interim.trim()) this.interimText.push(interim);
+    }
     this.finalText = stopReason === 'stop' && !this.startedTools.size
       && !(Array.isArray(message.content) && message.content.some(block => recordValue(block)?.type === 'toolCall'))
       ? textContent(message.content) || undefined : undefined;
@@ -245,8 +258,13 @@ export class PiRunTranslator {
   }
 
   private complete(): AgentEvent[] {
+    // The last message is the answer when it did not call tools; earlier text
+    // joins it only for backends without a commentary channel.
+    const answer = this.finalText && !this.startedTools.size
+      ? [...this.interimText, this.finalText].join('\n\n')
+      : this.interimText.join('\n\n');
     return [
-      ...(this.finalText && !this.startedTools.size ? [{ type: 'final_text' as const, content: this.finalText }] : []),
+      ...(answer.trim() ? [{ type: 'final_text' as const, content: answer }] : []),
       this.done('normal'),
     ];
   }

@@ -612,7 +612,7 @@ export class PiSdkAdapter implements AgentAdapter {
     state: RunState,
     sandbox: string,
   ): AsyncGenerator<AgentEvent> {
-    const translator = new PiRunTranslator();
+    const translator = new PiRunTranslator(opts.answerIncludesInterimText === true);
     let offFrame: (() => void) | undefined;
     let queue: AsyncEventQueue<AgentEvent> | undefined;
     this.activeRuns.add(state.runId);
