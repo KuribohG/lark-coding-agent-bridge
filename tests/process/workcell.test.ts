@@ -45,10 +45,11 @@ async function harness(options: {
   const pool = new WorkcellPool({
     config: { provider: fixtureProvider(dir), cpu: 4, memoryGb: 8, ttlSeconds: 600, image: 'image:tag', ...(options.parallelism ? { parallelism: options.parallelism } : {}), ...(options.layer ? { layer: options.layer } : {}), ...(options.maxCells ? { maxCells: options.maxCells } : {}) },
     ...(options.canEvict ? { canEvict: options.canEvict } : {}),
-    runtime: workcellRuntimeLayout({
+    layout: (root: string) => workcellRuntimeLayout({
       nodePath: join(modulesDir, 'node', 'bin', 'node'),
       sdkPath: join(dir, 'rt', 'sdk.js'),
       hostScript: '/bridge/bin/pi-host.mjs',
+      root,
       ...(options.archive ? { archiveCacheDir: join(dir, 'archive-cache') } : {}),
     }),
     agentFiles: [join(dir, 'auth.json')],

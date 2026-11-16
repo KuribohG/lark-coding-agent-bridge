@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative } from 'node:path';
 import { log } from '../../core/logger';
 import { spawnProcess } from '../../platform/spawn';
-import { WorkcellProviderClient, type WorkcellCreateParams } from './workcell-provider';
+import { createWorkcellProvider, type WorkcellProvider, type WorkcellCreateParams } from './workcell-provider';
 
 /**
  * A workcell is an isolated execution unit rented for one workflow member: the
@@ -277,6 +277,11 @@ export interface WorkcellHandle {
   key: string;
   /** Local port that forwards to the host inside the workcell. */
   hostPort: number;
+  /**
+   * Filesystem root of this unit as the provider reported it. A container gets
+   * `/opt/lark-workcell`; an ssh unit gets a directory on that host.
+   */
+  root: string;
   /** Local directories already copied into the unit. */
   workspaces?: Set<string>;
 }
@@ -289,8 +294,8 @@ interface Pooled extends WorkcellHandle {
 
 export interface WorkcellPoolOptions {
   config: WorkcellConfig;
-  /** Local directories and files pushed once per workcell (runtime, CLI, host). */
-  runtime: WorkcellRuntimeLayout;
+  /** Layout for one unit: a provider may place the root somewhere else. */
+  layout(root: string): WorkcellRuntimeLayout;
   /** Files copied into `<root>/agent` before the host starts. */
   agentFiles?: readonly string[];
   /**
@@ -308,7 +313,7 @@ export interface WorkcellPoolOptions {
  * (the workflow member) and torn down when the pool closes or the member ends.
  */
 export class WorkcellPool {
-  private provider: WorkcellProviderClient | undefined;
+  private provider: WorkcellProvider | undefined;
   private readonly cells = new Map<string, Pooled>();
   private readonly provisioning = new Map<string, Promise<WorkcellHandle>>();
   private closing = false;
@@ -351,10 +356,13 @@ export class WorkcellPool {
         labels: { key },
       };
       await this.evictForCapacity();
-      const created = await provider.request<{ workcell: string }>('create', { spec });
+      const created = await provider.request<{ workcell: string; root?: string }>('create', { spec });
       const id = created.workcell;
-      log.info('agent', 'pi-workcell-provision', { key, workcell: id, image: spec.image });
-      const { runtime } = this.options;
+      // A provider may place the unit's root somewhere else (an ssh unit lives
+      // under its directory on that host), so the layout follows what it says.
+      const root = typeof created.root === 'string' && created.root ? created.root : WORKCELL_ROOT;
+      const runtime = this.options.layout(root);
+      log.info('agent', 'pi-workcell-provision', { key, workcell: id, image: spec.image, root });
       try {
         // Small pushes and the port request do not depend on the runtime, so
         // they travel while the heavy archive is on the wire.
@@ -363,13 +371,13 @@ export class WorkcellPool {
           provider.request('push', { workcell: id, local: push.local, remote: push.remote }));
         for (const file of this.options.agentFiles ?? []) {
           uploads.push(provider.request('push', {
-            workcell: id, local: file, remote: join(WORKCELL_ROOT, 'agent', basename(file)),
+            workcell: id, local: file, remote: join(root, 'agent', basename(file)),
           }));
         }
         const sessions = this.sessionArchive(key);
         if (sessions && existsSync(sessions)) {
           uploads.push(provider.request('push', {
-            workcell: id, local: sessions, remote: join(WORKCELL_ROOT, 'agent', 'sessions'),
+            workcell: id, local: sessions, remote: join(root, 'agent', 'sessions'),
           }));
         }
         uploads.push(provider.request('forward', { workcell: id, remotePort: WORKCELL_HOST_PORT }));
@@ -392,7 +400,7 @@ export class WorkcellPool {
             timeout: 600,
           });
         }
-        const pooled: Pooled = { id, key, hostPort: forward.port, lastUsed: Date.now() };
+        const pooled: Pooled = { id, key, hostPort: forward.port, root, lastUsed: Date.now() };
         pooled.renew = this.renewalTimer(pooled);
         this.cells.set(key, pooled);
         log.info('agent', 'pi-workcell-forward', { key, workcell: id, hostPort: forward.port });
@@ -440,7 +448,7 @@ export class WorkcellPool {
   }
 
   /** Copy a directory into the unit once; later turns of the same cell reuse it. */
-  async ensureWorkspace(cell: WorkcellHandle, local: string, remote = WORKCELL_WORK_DIR): Promise<void> {
+  async ensureWorkspace(cell: WorkcellHandle, local: string, remote = `${cell.root}/work`): Promise<void> {
     cell.workspaces ??= new Set();
     if (cell.workspaces.has(local)) return;
     await this.ensureProvider().request('push', {
@@ -489,7 +497,7 @@ export class WorkcellPool {
     for (const key of [...this.cells.keys()]) await this.release(key);
     const provider = this.provider;
     this.provider = undefined;
-    await provider?.dispose();
+    await provider?.close();
   }
 
   private sessionArchive(key: string): string | undefined {
@@ -498,7 +506,7 @@ export class WorkcellPool {
     return join(base, key);
   }
 
-  private ensureProvider(): WorkcellProviderClient {
+  private ensureProvider(): WorkcellProvider {
     if (this.closing) throw new Error('workcell pool is closed');
     if (this.provider?.isClosed) {
       // A dead provider must not poison the pool: its units are gone with it,
@@ -513,10 +521,7 @@ export class WorkcellPool {
       }
       this.provider = undefined;
     }
-    this.provider ??= new WorkcellProviderClient({
-      command: this.options.config.provider,
-      ...(this.options.env ? { env: this.options.env } : {}),
-    });
+    this.provider ??= createWorkcellProvider(this.options.config.provider, this.options.env);
     return this.provider;
   }
 

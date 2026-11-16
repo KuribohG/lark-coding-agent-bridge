@@ -90,7 +90,7 @@ export class PiSdkAdapter implements AgentAdapter {
   private remoteNodeCheck: Promise<AgentAvailability> | undefined;
   /** Rented units and the host clients that serve them, keyed by workflow member. */
   private workcell: WorkcellPool | undefined;
-  private workcellLayout: WorkcellRuntimeLayout | undefined;
+  private workcellLayout: ((root: string) => WorkcellRuntimeLayout) | undefined;
   private readonly workcellClients = new Map<string, Promise<PiHostClient>>();
   /** Members with a run in flight; their cell must not be evicted. */
   private readonly workcellBusy = new Set<string>();
@@ -304,11 +304,13 @@ export class PiSdkAdapter implements AgentAdapter {
 
   private async openWorkcellClient(key: string, workspace: string | undefined, endpoint: string | undefined): Promise<PiHostClient> {
     const pool = this.ensureWorkcellPool();
-    const layout = this.workcellLayout!;
     const cell = await pool.acquire(key);
+    // The unit's root is the provider's answer, so the host command uses the
+    // paths that exist inside this particular unit.
+    const layout = this.workcellLayout!(cell.root);
     // The host needs its agent directory and the workspace before it starts.
     if (workspace) await pool.ensureWorkspace(cell, workspace);
-    await pool.startHost(cell, this.workcellHostScript(layout), this.workcellHostEnv());
+    await pool.startHost(cell, this.workcellHostScript(layout), this.workcellHostEnv(layout));
     const client = new PiHostClient({
       nodePath: layout.nodePath,
       hostScript: layout.hostScript,
@@ -339,16 +341,18 @@ export class PiSdkAdapter implements AgentAdapter {
     const config = this.config.workcell;
     if (!config) throw new Error('pi.workcell is not configured');
     const paths = this.resolvePaths();
-    this.workcellLayout = workcellRuntimeLayout({
+    const layoutFor = (root: string) => workcellRuntimeLayout({
+      root,
       nodePath: paths.nodePath,
       sdkPath: paths.sdkPath,
       hostScript: paths.hostScript,
       workflowCli: bundledWorkflowCli(),
       ...(this.workcellSessions ? { archiveCacheDir: join(dirname(this.workcellSessions), 'workcell-runtime') } : {}),
     });
+    this.workcellLayout = layoutFor;
     this.workcell = new WorkcellPool({
       config,
-      runtime: this.workcellLayout,
+      layout: this.workcellLayout,
       canEvict: (key) => !this.workcellBusy.has(key),
       agentFiles: piAgentFiles(resolvePiAgentDir(this.config)),
       ...(this.workcellSessions ? { sessionDir: this.workcellSessions } : {}),
@@ -374,15 +378,14 @@ export class PiSdkAdapter implements AgentAdapter {
     return `exec ${args.map(shellQuote).join(' ')}`;
   }
 
-  private workcellHostEnv(): Record<string, string> {
-    const nodeBin = `${WORKCELL_ROOT}/node_modules/node/bin`;
+  private workcellHostEnv(layout: WorkcellRuntimeLayout): Record<string, string> {
     return {
       PI_TELEMETRY: '0',
       PI_SKIP_VERSION_CHECK: '1',
-      PI_CODING_AGENT_DIR: this.workcellLayout!.agentDir,
+      PI_CODING_AGENT_DIR: layout.agentDir,
       // Tools inherit this, so `node "$AGENT_WORKFLOW_CLI"` works inside the unit.
-      PATH: `${nodeBin}:/usr/local/bin:/usr/bin:/bin`,
-      AGENT_WORKFLOW_CLI: `${WORKCELL_ROOT}/bin/workflow-cli.js`,
+      PATH: `${layout.nodePath.slice(0, layout.nodePath.lastIndexOf('/bin/'))}/bin:/usr/local/bin:/usr/bin:/bin`,
+      AGENT_WORKFLOW_CLI: `${layout.hostScript.slice(0, layout.hostScript.lastIndexOf('/'))}/workflow-cli.js`,
     };
   }
 
