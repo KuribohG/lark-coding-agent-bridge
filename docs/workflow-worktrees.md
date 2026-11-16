@@ -33,6 +33,12 @@ Create worktrees in batches, not one awaited call after another. Registration is
 
 The worker must commit intended changes and leave a clean index/worktree. `reviewedAgent` freezes the commit after the worker exits, creates an independent review snapshot, checks that the reviewer left it unchanged, and records approval from the actual task result. Rejection sends feedback to the original member/worktree. With `worker.workspace`, the result adds `{change,approval}` to `{value,review,rounds}`. Without it, existing helper behavior is unchanged. Nested `workflowTool` delegation in a workspace is not supported in this version.
 
+## Staffing a running swarm
+
+Declared swarm members take the `workspace` ID of a worktree the script created. Members added while the swarm runs take one too: `staff_swarm({add:['w1','w2'], workspace:true})` creates one worktree per new member, from the workflow's checkout at its current HEAD, and binds it in the same change that adds the member. Pass `{base?,repo?}` to choose another commit or repository root, exactly as `createWorkspace` does. The main agent and the swarm's lead can both staff; a new member inherits the `like` member's role, queue and execution, and a lead may not choose harness or model. The worktree key is derived from the swarm and member name, so a retried call reuses it instead of making another.
+
+A member added without `workspace` runs in the workflow's own checkout: it cannot `submit_work`, and editing code there races the main agent and every other member. Worktrees made this way follow the same retention, cleanup, budget and landing rules as script-made ones.
+
 ## APIs
 
 Every operation requires an immutable, unique `key` (1–100 characters, no surrounding whitespace or `@` prefix). Keys share the agent/queue/mailbox/control namespace. Each script execution allows 128 workspace calls; each workflow retains at most 256 workspace keys, 32 workspaces and 512 workspace journal records, including internal artifacts.

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { callWorkflow } from '@kuribohg/agent-workflows';
 import { createBridgeWorkflowRuntime } from '../../../src/workflows/bridge/runtime';
 import { RunExecutor } from '../../../src/runtime/run-executor';
 import { ProcessPool } from '../../../src/runtime/process-pool';
@@ -123,4 +124,55 @@ describe('workspace script runtime', () => {
     await h.call('replay_script', { plan: 'verify owner retention', script: `const ws=await createWorkspace({key:'a'}); return await freezeWorkspace({key:'freeze',workspace:ws.id});` });
     await h.until('failed'); expect(h.state().script!.error).toContain('Wait for every workspace task');
   }, 30_000);
+
+  it('makes a worktree for each member a running swarm adds, from the main agent or its lead', async () => {
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    const seen: Array<{ model?: string; cwd?: string }> = [];
+    let staffed: { workspaces?: Array<{ name: string; workspace: string }> } | undefined;
+    const h = await harness(async opts => {
+      seen.push({ model: opts.model, cwd: opts.cwd });
+      if (opts.model === 'lead') {
+        staffed = await callWorkflow('staff_swarm', { operationId: randomUUID(), add: ['w1'], workspace: true }, { ...opts.env }) as typeof staffed;
+        return 'staffed the swarm';
+      }
+      await gate; return 'done';
+    });
+    try {
+      await h.call('run_script', { script: `return await swarm('Write in parallel',{key:'crew',
+        lead:{name:'boss',harness:'codex',model:'lead'},members:[{name:'w0',harness:'codex',model:'worker'}]});` });
+      await vi.waitFor(async () => { await h.runtime.tick(); expect(staffed?.workspaces).toHaveLength(1); }, { timeout: 20_000, interval: 30 });
+      const id = staffed!.workspaces![0]!.workspace;
+      expect(staffed!.workspaces![0]!.name).toBe('w1');
+      expect(h.state().swarms![0]!.members.find(member => member.name === 'w1')!.workspace).toBe(id);
+      // The worktree is a checkout of the workflow's repository at its committed baseline, not the root itself.
+      expect(await readFile(join(h.dir, 'worktrees', h.state().workflowId, id, 'value.txt'), 'utf8')).toBe('original\n');
+      await vi.waitFor(async () => { await h.runtime.tick(); expect(seen.filter(run => run.model === 'worker').length).toBe(2); }, { timeout: 20_000, interval: 30 });
+      // w0 keeps the root checkout; w1 runs inside the worktree made for it.
+      expect(seen.filter(run => run.model === 'worker' && run.cwd === h.repo)).toHaveLength(1);
+      expect(seen.filter(run => run.model === 'worker' && run.cwd?.includes(id))).toHaveLength(1);
+    } finally { release(); }
+  }, 60_000);
+
+  it('adds members with worktrees from the main agent too, and reuses them when the call is retried', async () => {
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    const h = await harness(async () => { await gate; return 'done'; });
+    try {
+      await h.call('run_script', { script: `return await swarm('Write in parallel',{key:'crew',members:[{name:'w0',harness:'codex',model:'worker'}]});` });
+      await vi.waitFor(async () => { await h.runtime.tick(); expect(h.adapter.runs).toHaveLength(1); }, { timeout: 20_000, interval: 30 });
+      const operationId = randomUUID();
+      const staff = (id: string) => h.runtime.kernel.call({ kind: 'main', scopeId: 'test', workflowId: h.state().workflowId }, 'staff_swarm',
+        { operationId: id, add: ['w1', 'w2'], workspace: true }) as Promise<{ workspaces: Array<{ name: string; workspace: string }> }>;
+      const added = await staff(operationId);
+      expect(added.workspaces).toHaveLength(2);
+      const ids = added.workspaces.map(entry => entry.workspace);
+      expect(new Set(ids).size).toBe(2);
+      for (const [index, id] of ids.entries()) {
+        expect(h.state().swarms![0]!.members.find(member => member.name === `w${index + 1}`)!.workspace).toBe(id);
+        expect(await readFile(join(h.dir, 'worktrees', h.state().workflowId, id, 'value.txt'), 'utf8')).toBe('original\n');
+      }
+      // The operation is idempotent: the same ID returns the recorded result without making more worktrees.
+      const again = await staff(operationId);
+      expect(again.workspaces).toEqual(added.workspaces);
+    } finally { release(); }
+  }, 60_000);
 });

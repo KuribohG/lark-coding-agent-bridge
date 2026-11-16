@@ -5,6 +5,7 @@ import { availableMessages, receiveMessages, scheduleMemberTurn } from './durabl
 import type { DomainEvent } from './events';
 import { boardTotal, callCount, pushEvent, readArtifact, taskById } from './kernel-state';
 import { emit, readText } from './kernel-store';
+import type { KernelContext } from './kernel-context';
 import { MAX_CONCURRENT_WORKERS, SWARM_DECLARED_MEMBERS, SWARM_MAX_MEMBERS, SWARM_MAX_TURNS } from './limits';
 import { workerSelection } from './execution';
 import { boundedInteger, parseScriptAgentCall, scriptText } from './script-contract';
@@ -386,20 +387,65 @@ export function staffSelection(state: WorkflowView, input: Record<string, unknow
 }
 
 /**
+ * The worktrees `staff_swarm` makes for the members it adds, one per name; undefined when it asks for none. A member
+ * that is added without one runs in the workflow's own checkout, where editing code races the main agent and the
+ * other members, and cannot submit work through a landing branch. Creation is the host operation behind the script's
+ * `createWorkspace`, keyed by swarm and member, so a retried call reuses the worktree it already made; `staffSwarm`
+ * binds the IDs in the change that adds the members.
+ */
+export async function staffWorkspaces(ctx: KernelContext, state: WorkflowView, input: Record<string, unknown>): Promise<Record<string, string> | undefined> {
+  if (input.workspace === undefined || input.workspace === false) return undefined;
+  if (input.add === undefined) throw new Error('workspace binds the members that add names');
+  if (!ctx.host.workspace) throw new Error('Workspace creation is unavailable in this workflow');
+  if (state.parent) throw new Error('Workspace operations are unavailable in this workflow');
+  if (state.status !== 'active' || state.script?.status !== 'running') throw new Error('Workflow is inactive');
+  const options = input.workspace === true ? {} : input.workspace;
+  if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some(key => !['base', 'repo'].includes(key))) throw new Error('workspace is true or an object with base and repo');
+  const swarm = runningSwarm(state, input.swarm);
+  const like = likeMember(swarm, input.like);
+  if (like.workflowTool) throw new Error('Workspace v1 does not support nested workflow delegation');
+  if (!Array.isArray(input.add) || !input.add.length || input.add.length > 64) throw new Error('add is an array of 1–64 new member names');
+  const names = input.add.map(memberName);
+  if (new Set(names).size !== names.length) throw new Error('Member names must be unique');
+  if (swarm.members.length + names.length > SWARM_MAX_MEMBERS) throw new Error(`A swarm holds at most ${SWARM_MAX_MEMBERS} members, retired ones included`);
+  const taken = names.find(name => nameTaken(state, name));
+  if (taken) throw new Error('Member name is already used in this workflow: ' + taken);
+  // Validate what the change will re-check, so a rejected staffing call does not leave worktrees behind.
+  if (input.queue !== undefined) queueName(input.queue);
+  if (input.role !== undefined) role(input.role);
+  if (input.brief !== undefined) scriptText(input.brief, 'member brief', 4000);
+  if (input.maxTurns !== undefined) {
+    const maxTurns = boundedInteger(input.maxTurns, swarm.maxTurns, 1, SWARM_MAX_TURNS);
+    if (maxTurns < swarm.maxTurns) throw new Error(`maxTurns can only be raised; it is ${swarm.maxTurns}`);
+  }
+  if (input.maxConcurrent !== undefined) boundedInteger(input.maxConcurrent, state.definition.maxConcurrentWorkers, 1, MAX_CONCURRENT_WORKERS);
+  const signal = new AbortController().signal;
+  const made = await Promise.all(names.map(async name => {
+    const created = await ctx.host.workspace!(ctx.store.public(state), { kind: 'create', key: `staff/${swarm.id}/${name}`, ...options }, signal) as { id?: unknown };
+    if (typeof created?.id !== 'string') throw new Error('Workspace creation did not return an ID');
+    return [name, created.id] as const;
+  }));
+  return Object.fromEntries(made);
+}
+
+/**
  * Changes to the staff of a running swarm, by the main agent or by the swarm's lead, so that staffing can follow
  * the work without a replay: more members, more wake-ups, failed members put back to work, members retired.
  * A new member runs with the execution binding of an existing one, or with `execution`: the binding the host resolved
- * for the harness and model the main agent named (see `staffSelection`). A lead cannot name them, so a member
- * never reaches harnesses or models beyond those the script and the main agent chose.
+ * for the harness and model the main agent named (see `staffSelection`), and in a worktree the host made for it
+ * (see `staffWorkspaces`), so code written in parallel stays isolated. A lead cannot name harnesses or models, so a
+ * member never reaches those beyond what the script and the main agent chose.
  */
-export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, lead?: string, execution?: WorkerExecution): unknown {
-  if (Object.keys(input).some(key => !['swarm', 'add', 'like', 'queue', 'role', 'brief', 'revive', 'retire', 'maxTurns', 'maxConcurrent', ...EXECUTION_OPTIONS].includes(key))) throw new Error('staff_swarm supports swarm, add, like, harness, model, reasoningEffort, queue, role, brief, revive, retire, maxTurns and maxConcurrent');
+export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, lead?: string, execution?: WorkerExecution, workspaces?: Record<string, string>): unknown {
+  if (Object.keys(input).some(key => !['swarm', 'add', 'like', 'workspace', 'queue', 'role', 'brief', 'revive', 'retire', 'maxTurns', 'maxConcurrent', ...EXECUTION_OPTIONS].includes(key))) throw new Error('staff_swarm supports swarm, add, like, workspace, harness, model, reasoningEffort, queue, role, brief, revive, retire, maxTurns and maxConcurrent');
+  const workspaceWanted = input.workspace !== undefined && input.workspace !== false;
+  if (workspaceWanted && input.add === undefined) throw new Error('workspace binds the members that add names');
   const chosen = EXECUTION_OPTIONS.some(option => input[option] !== undefined);
   if (chosen && lead !== undefined) throw new Error('Only the main agent can choose the harness or model of new members; a lead adds members like an existing one');
   if (chosen && !execution) throw new Error('The harness and model of the new members were not resolved');
   const swarm = lead === undefined ? runningSwarm(state, input.swarm) : leadSwarm(state, lead);
   if (input.add === undefined && input.revive === undefined && input.retire === undefined && input.maxTurns === undefined && input.maxConcurrent === undefined) throw new Error('staff_swarm needs add, revive, retire, maxTurns or maxConcurrent');
-  const result: { swarm: string; added?: string[]; revived?: string[]; retired?: string[]; maxTurns?: number; maxConcurrent?: number; execution?: WorkerExecutionSelection } = { swarm: swarm.key };
+  const result: { swarm: string; added?: string[]; revived?: string[]; retired?: string[]; maxTurns?: number; maxConcurrent?: number; execution?: WorkerExecutionSelection; workspaces?: Array<{ name: string; workspace: string }> } = { swarm: swarm.key };
   if (input.maxConcurrent !== undefined) {
     // How many workers run at once is the budget the main agent started the workflow with, so only it changes it.
     if (lead !== undefined) throw new Error('Only the main agent can change maxConcurrent');
@@ -458,13 +504,18 @@ export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, 
     const queue = input.queue === undefined ? like.queue : queueName(input.queue);
     const brief = input.brief === undefined ? undefined : scriptText(input.brief, 'member brief', 4000);
     const described = input.role === undefined ? like.role : role(input.role);
+    if (workspaceWanted && like.workflowTool) throw new Error('Workspace v1 does not support nested workflow delegation');
+    if (workspaceWanted && names.some(name => !workspaces?.[name])) throw new Error('The worktrees of the new members were not resolved');
     if (queue) openQueue(state, queue);
     for (const name of names) {
       if (nameTaken(state, name)) throw new Error('Member name is already used in this workflow: ' + name);
+      const workspace = workspaceWanted ? workspaces![name] : undefined;
       emit(state, { type: 'swarm_member_added', swarmId: swarm.id, member: { name, execution: binding, turns: 0, added: true,
+        ...(workspace ? { workspace } : {}),
         ...(described !== undefined ? { role: described } : {}), ...(brief !== undefined ? { brief } : {}), ...(like.workflowTool ? { workflowTool: true } : {}), ...(queue ? { queue } : {}) } });
     }
     result.added = names;
+    if (workspaceWanted) result.workspaces = names.map(name => ({ name, workspace: workspaces![name]! }));
     if (chosen) result.execution = { agentKind: binding.agentKind, ...binding.modelSettings };
   }
   return result;

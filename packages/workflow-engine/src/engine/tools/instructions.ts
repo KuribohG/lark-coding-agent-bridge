@@ -5,7 +5,7 @@ import type { WorkflowTask } from '../types';
 
 const tools = BUILTIN_WORKFLOW_TOOLS;
 
-const STAFF_SWARM = `staff_swarm 不重放即可调整运行中的 swarm（swarm 为其 key，只有一个时可省略）：add 为新成员名数组（1–64 个），沿用 like 成员（默认第一个非 lead 成员）的执行器、模型、角色和队列，harness/model/reasoningEffort、queue、role 可另行指定（换 harness 不沿用模型）；revive 为 "failed" 或成员名数组，让失败成员在原会话重试上一轮；retire 为成员名数组，跑完当前一轮后不再唤醒；maxTurns 提高每名成员的唤醒次数上限（只增不减，最多 ${SWARM_MAX_TURNS}）；maxConcurrent 改整个工作流同时运行的 worker 数（1–256）。成员失败、工作重心变化或需要另一种模型时用它，不要重放脚本。`;
+const STAFF_SWARM = `staff_swarm 不重放即可调整运行中的 swarm：add 为新成员名数组（≤64），沿用 like 成员（默认首个非 lead）的执行器、模型、角色和队列，harness/model/reasoningEffort、queue、role 可另行指定；workspace:true/{base?,repo?} 给新人各建独立 worktree（见 guide）；revive 为 "failed" 或成员名，让失败成员重试；retire 为成员名，跑完当前轮后不再唤醒；maxTurns 提高成员唤醒上限（只增不减，最多 ${SWARM_MAX_TURNS}）；maxConcurrent 改工作流并发数（1–256）。失败、重心变化或换模型时用它，不重放脚本。`;
 
 export const WORKFLOW_TOOL_INSTRUCTIONS = `工作流工具通过 shell 调用：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。环境里的 CLI 路径属于当前 bridge 版本。
 仅 /workflow start 或 /workflow script 命令授权的启动轮可调用 run_script，不根据自然语言或任务类型推断；内部完成事件和普通消息不能新建工作流，但可查看和干预话题里已有的工作流。
