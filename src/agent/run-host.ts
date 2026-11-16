@@ -107,7 +107,7 @@ export async function terminateRunHost(key: string, graceMs = 5_000): Promise<vo
     proc.kill('SIGTERM');
     if (!await within(graceMs)) {
       proc.kill('SIGKILL');
-      if (!await within(graceMs)) proc.detach();
+      if (!await within(graceMs)) await proc.detach();
     }
     log.info('run-host', 'terminated', { key });
   }
@@ -246,6 +246,7 @@ class HostedProcess extends EventEmitter {
   private queued: Buffer[] = [];
   private ended = false;
   private detachedFromHost = false;
+  private detachPromise?: Promise<void>;
   private readonly connectBy = Date.now() + CONNECT_TIMEOUT_MS;
 
   constructor(readonly key: string, private readonly dir: string, private readonly host?: ChildProcess) {
@@ -270,18 +271,23 @@ class HostedProcess extends EventEmitter {
     return true;
   }
 
-  /** Leave the agent running for the next bridge process; this side reports it as ended. */
-  detach(): void {
-    if (this.ended) return;
+  /** Half-close after queued input. The host reads it into the journal before closing its end. */
+  detach(): Promise<void> {
+    if (this.detachPromise) return this.detachPromise;
+    if (this.ended) return Promise.resolve();
     this.detachedFromHost = true;
-    this.socket?.destroy();
-    log.info('run-host', 'detached', { key: this.key, pid: this.pid ?? null });
-    // Reported like a terminated child, so adapters settle the run as interrupted.
-    this.finish({ code: null, signal: 'SIGTERM' });
+    const timeout = setTimeout(() => {
+      this.socket?.destroy();
+      this.finish({ code: null, signal: 'SIGTERM', error: 'Run host detach timed out; input delivery is unknown' });
+    }, CONNECT_TIMEOUT_MS).unref();
+    this.detachPromise = once(this, 'exit').then(() => undefined).finally(() => clearTimeout(timeout));
+    // A new host may still be starting. In that case connect() flushes the queue before sending FIN.
+    this.socket?.end();
+    return this.detachPromise;
   }
 
   private send(type: string, payload: Buffer = Buffer.alloc(0)): void {
-    if (this.ended) return;
+    if (this.ended || this.detachedFromHost) return;
     const message = frame(type, payload);
     if (this.socket) this.socket.write(message);
     else this.queued.push(message);
@@ -299,6 +305,7 @@ class HostedProcess extends EventEmitter {
       socket.write(frame('a', Buffer.from(JSON.stringify({ o: 0, e: 0 }))));
       for (const message of this.queued) socket.write(message);
       this.queued = [];
+      if (this.detachedFromHost) socket.end();
     });
     socket.on('data', (chunk: Buffer) => {
       pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
@@ -310,8 +317,13 @@ class HostedProcess extends EventEmitter {
       }
     });
     socket.on('error', () => {});
-    socket.on('close', () => {
+    socket.on('close', (hadError) => {
       if (this.ended) return;
+      if (connected && this.detachedFromHost && !hadError) {
+        log.info('run-host', 'detached', { key: this.key, pid: this.pid ?? null });
+        this.finish({ code: null, signal: 'SIGTERM' });
+        return;
+      }
       if (connected) {
         // The host always sends its exit before closing; anything else means it died.
         this.finish(this.readExit() ?? { code: null, signal: 'SIGKILL', error: 'run host connection lost' });
@@ -325,6 +337,7 @@ class HostedProcess extends EventEmitter {
   }
 
   private receive(type: string, payload: Buffer): void {
+    if (this.ended) return;
     if (type === 'o') this.stdout.write(payload);
     else if (type === 'e') this.stderr.write(payload);
     else if (type === 'x') this.finish(JSON.parse(payload.toString('utf8')) as HostExit);

@@ -139,8 +139,7 @@ export function startAppServerRun(input: AppServerRunInput): NativeAgentRun {
       stopping = true;
       if (hosted && reason === 'shutdown') {
         // The turn keeps running under its host; the next bridge process reattaches.
-        hosted.detach();
-        stopPromise = waitForExit(input.stopGraceMs).then(() => {});
+        stopPromise = hosted.detach().then(() => waitForExit(input.stopGraceMs)).then(() => {});
         return stopPromise;
       }
       stopPromise = (async () => {
