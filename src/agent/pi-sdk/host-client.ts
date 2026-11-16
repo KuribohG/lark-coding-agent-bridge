@@ -112,6 +112,13 @@ export class PiHostClient {
     return this.ready;
   }
 
+  /** Write one frame without a request id (answers to `ipc.request`, for example). */
+  send(frame: Record<string, unknown>): void {
+    const channel = this.channel;
+    if (!channel || channel.closed) return;
+    channel.write(`${JSON.stringify(frame)}\n`);
+  }
+
   onFrame(listener: (frame: PiHostFrame) => void): () => void {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);

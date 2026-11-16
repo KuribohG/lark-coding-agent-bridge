@@ -1,4 +1,4 @@
-import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,6 +39,7 @@ async function harness(options: { pushFailure?: string } = {}) {
       hostScript: '/bridge/bin/pi-host.mjs',
     }),
     agentFiles: [join(dir, 'auth.json')],
+    sessionDir: join(dir, 'sessions'),
   });
   pools.push(pool);
   return {
@@ -139,6 +140,21 @@ describe('workcell pool', () => {
     // A released key provisions a fresh workcell rather than reusing a dead one.
     const next = await h.pool.acquire('member-a');
     expect(next.id).not.toBe(cell.id);
+  });
+
+  it('restores archived sessions into a new unit for the same key', async () => {
+    const h = await harness();
+    const archive = join(h.dir, 'sessions', 'member-a');
+    mkdirSync(archive, { recursive: true });
+    writeFileSync(join(archive, 'session.jsonl'), '{}');
+
+    await h.pool.acquire('member-a');
+    const pushes = (await h.calls()).filter((call) => call.op === 'push');
+    expect(pushes).toContainEqual(expect.objectContaining({
+      workcell: 'cell-1',
+      local: archive,
+      remote: '/opt/lark-workcell/agent/sessions',
+    }));
   });
 
   it('drops a half-provisioned workcell when a push fails', async () => {

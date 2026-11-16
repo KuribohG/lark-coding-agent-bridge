@@ -24,6 +24,10 @@
  * console.log; those writes are redirected to stderr before the SDK loads so
  * they cannot corrupt the stream.
  *
+ * `--ipc-port <port>` adds a loopback HTTP endpoint inside the workcell that
+ * forwards workflow CLI calls to the bridge over the frame channel: the worker
+ * runs the CLI as usual, but the bridge executes the operation.
+ *
  * `--tcp host:port` serves the same frames over a listening socket instead of
  * stdio. That is how a host runs somewhere the bridge cannot spawn a process:
  * the bridge reaches the socket through a forwarded channel. Every accepted
@@ -529,6 +533,7 @@ function health() {
     activeRuns,
     sessionDetails: details,
     transport: options.tcp ? 'tcp' : 'stdio',
+    ...(options['ipc-port'] ? { ipcPort: Number(options['ipc-port']) } : {}),
     rssBytes: process.memoryUsage.rss(),
     nodeVersion: process.versions.node,
     piVersion: pi.VERSION,
@@ -608,6 +613,10 @@ async function handleLine(line) {
     send({ type: 'host.notice', level: 'warn', message: 'ignored malformed JSON frame' });
     return;
   }
+  if (request && typeof request === 'object' && request.type === 'ipc.response') {
+    settleIpc(request);
+    return;
+  }
   if (!request || typeof request !== 'object' || typeof request.cmd !== 'string' || request.id === undefined) {
     send({ type: 'host.notice', level: 'warn', message: 'ignored frame without id/cmd' });
     return;
@@ -646,6 +655,70 @@ const reaper = setInterval(() => {
   }
 }, Math.min(60_000, Math.max(1_000, Math.floor(Math.min(idleTtlMs, emptyExitMs) / 2))));
 reaper.unref?.();
+
+/** Workflow calls a worker makes inside the workcell, waiting on the bridge. */
+const pendingIpc = new Map();
+let ipcSeq = 1;
+
+function requestBridge(payload, timeoutMs = 20_000) {
+  return new Promise((resolve, reject) => {
+    const id = ipcSeq++;
+    const timer = setTimeout(() => {
+      pendingIpc.delete(id);
+      reject(new Error('the bridge did not answer the workflow call in time'));
+    }, timeoutMs);
+    pendingIpc.set(id, (answer) => {
+      clearTimeout(timer);
+      resolve(answer);
+    });
+    send({ type: 'ipc.request', requestId: id, ...payload });
+  });
+}
+
+function settleIpc(request) {
+  const resolve = pendingIpc.get(request.requestId);
+  pendingIpc.delete(request.requestId);
+  resolve?.(request);
+}
+
+/**
+ * The worker's `$AGENT_WORKFLOW_ENDPOINT` points here: same POST shape and
+ * bearer token as the bridge's own endpoint, forwarded over the frame channel.
+ */
+function serveIpc(port) {
+  const server = createServer(async (request, response) => {
+    if (request.method !== 'POST' || request.url !== '/workflow') {
+      response.statusCode = 404;
+      response.end('{}');
+      return;
+    }
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    let body;
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    } catch {
+      response.statusCode = 400;
+      response.end(JSON.stringify({ ok: false, error: 'expected a JSON body' }));
+      return;
+    }
+    try {
+      const answer = await requestBridge({
+        token: (request.headers.authorization ?? '').replace(/^Bearer /, ''),
+        method: body.method,
+        args: body.args,
+      });
+      response.statusCode = Number.isInteger(answer.status) ? answer.status : 200;
+      response.setHeader('Content-Type', 'application/json');
+      response.end(typeof answer.body === 'string' && answer.body ? answer.body : JSON.stringify({ ok: false, error: 'empty answer from the bridge' }));
+    } catch (error) {
+      response.statusCode = 502;
+      response.end(JSON.stringify({ ok: false, error: errorText(error) }));
+    }
+  });
+  server.listen(Number(port), '127.0.0.1', () => log('ipc proxy listening', { port }));
+  return server;
+}
 
 // Frames dispatch concurrently: a stalled abort or a slow session.open on one
 // session must not block prompts for the others. Same-session ordering is the
@@ -708,6 +781,15 @@ function serveTcp(options) {
   // reaper (and an explicit `shutdown`) decides when an idle host goes away.
   server.listen(Number(port), host, () => log('listening', { host, port }));
   return server;
+}
+
+if (options['ipc-port']) {
+  try {
+    serveIpc(options['ipc-port']);
+  } catch (error) {
+    send({ type: 'host.fatal', error: errorText(error) });
+    process.exit(2);
+  }
 }
 
 const tcp = Boolean(options.tcp);

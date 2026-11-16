@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { createServer } from 'node:net';
+import { createServer } from 'node:http';
+import { createServer as createNetServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PiSdkAdapter } from '../../src/agent/pi-sdk/adapter';
@@ -37,11 +38,13 @@ afterEach(async () => {
   }
   delete process.env.FAKE_WORKCELL_RECORD;
   delete process.env.FAKE_WORKCELL_HOST_PORT;
+  delete process.env.FAKE_TCP_RECORD;
+  delete process.env.FAKE_TCP_IPC;
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })));
 });
 
 async function freePort(): Promise<number> {
-  const server = createServer();
+  const server = createNetServer();
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const port = (server.address() as { port: number }).port;
@@ -65,18 +68,25 @@ async function startTcpHost(): Promise<number> {
   return port;
 }
 
-async function harness() {
+async function harness(options: { workflowEndpoint?: string; tcpIpc?: boolean } = {}) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'pi-workcell-')));
   dirs.push(dir);
-  const hostPort = await startTcpHost();
   const record = join(dir, 'provider-record.json');
+  const tcpRecord = join(dir, 'tcp-host-record.json');
+  // The host fixture reads its mode from the environment at startup.
+  Object.assign(process.env, {
+    FAKE_WORKCELL_RECORD: record,
+    FAKE_TCP_RECORD: tcpRecord,
+    ...(options.tcpIpc ? { FAKE_TCP_IPC: '1' } : { FAKE_TCP_IPC: '0' }),
+  });
+  const hostPort = await startTcpHost();
   const agentDir = join(dir, 'agent');
   await mkdir(agentDir, { recursive: true });
   writeFileSync(join(agentDir, 'auth.json'), '{"token":"t"}');
   const provider = join(dir, 'provider.sh');
   writeFileSync(provider, `#!/bin/sh\nexec '${process.execPath}' '${providerFixture}' "$@"\n`, { mode: 0o700 });
   chmodSync(provider, 0o700);
-  Object.assign(process.env, { FAKE_WORKCELL_RECORD: record, FAKE_WORKCELL_HOST_PORT: String(hostPort) });
+  process.env.FAKE_WORKCELL_HOST_PORT = String(hostPort);
 
   // A realistic launcher layout: only the basenames are assumed by the layout.
   const runtime = join(dir, 'rt');
@@ -103,6 +113,9 @@ async function harness() {
     dir,
     adapter,
     hostPort,
+    async tcpRecord(): Promise<{ requests: Array<{ cmd: string; params: any }>; ipcResponse?: Record<string, unknown> }> {
+      return JSON.parse(await readFile(tcpRecord, 'utf8'));
+    },
     async calls(): Promise<Array<Record<string, unknown>>> {
       try {
         return JSON.parse(await readFile(record, 'utf8'));
@@ -144,7 +157,7 @@ describe('pi SDK host inside a workcell', () => {
     const exec = calls.find((call) => call.op === 'exec') as { script: string; env: Record<string, string> } | undefined;
     expect(exec?.script).toBe(
       "exec '/opt/lark-workcell/node_modules/node/bin/node' '/opt/lark-workcell/bin/pi-host.mjs' " +
-      "'--tcp' '127.0.0.1:47811' " +
+      "'--tcp' '127.0.0.1:47811' '--ipc-port' '47812' " +
       "'--sdk' '/opt/lark-workcell/node_modules/@earendil-works/pi-coding-agent/dist/index.js' " +
       "'--agent-dir' '/opt/lark-workcell/agent'",
     );
@@ -162,6 +175,74 @@ describe('pi SDK host inside a workcell', () => {
 
     await h.adapter.shutdown();
     expect((await h.calls()).filter((call) => call.op === 'stop')).toHaveLength(1);
+  }, 60_000);
+
+  it('proxies workflow calls from the unit to the bridge endpoint and keeps sessions out of the unit', async () => {
+    // A stand-in for the bridge's own workflow endpoint.
+    const engine = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk) => chunks.push(chunk));
+      request.on('end', () => {
+        engineCalls.push({
+          url: request.url,
+          authorization: request.headers.authorization,
+          body: JSON.parse(Buffer.concat(chunks).toString('utf8')),
+        });
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify({ ok: true, result: { taskCounts: { running: 1 } } }));
+      });
+    });
+    const engineCalls: Array<{ url?: string; authorization?: string; body: unknown }> = [];
+    engine.listen(0, '127.0.0.1');
+    await once(engine, 'listening');
+    const enginePort = (engine.address() as { port: number }).port;
+
+    const h = await harness({ tcpIpc: true, workflowEndpoint: `http://127.0.0.1:${enginePort}/workflow` });
+    const host = { key: 'member-bbbbbbbb' };
+    const events = await collect((await h.adapter.prepareRun({
+      runId: 'run-1',
+      prompt: 'go',
+      cwd: h.dir,
+      host,
+      env: {
+        AGENT_WORKFLOW_TOKEN: 'token-abc',
+        AGENT_WORKFLOW_ENDPOINT: `http://127.0.0.1:${enginePort}/workflow`,
+        AGENT_WORKFLOW_CLI: '/bridge/dist/workflow-cli.js',
+        AGENT_WORKFLOW_ENDPOINT_FILE: '/bridge/workflows.sqlite.endpoint.json',
+      },
+    })).start().events);
+    expect(events.at(-1)).toMatchObject({ type: 'done' });
+    await vi.waitFor(() => expect(engineCalls).toHaveLength(1));
+
+    // The bridge performed the call itself, with the worker's token.
+    expect(engineCalls[0]).toMatchObject({
+      url: '/workflow',
+      authorization: 'Bearer token-abc',
+      body: { method: 'status', args: { list: 'all' } },
+    });
+
+    // The host answered the HTTP caller with the engine's body.
+    const record = await h.tcpRecord();
+    expect(record.ipcResponse).toMatchObject({ type: 'ipc.response', requestId: 99, status: 200 });
+    expect(JSON.parse(String((record.ipcResponse as { body: string }).body))).toEqual({ ok: true, result: { taskCounts: { running: 1 } } });
+
+    // Inside the unit the run points at the cell-local endpoint and pushed CLI.
+    const prompt = record.requests.find((call) => call.cmd === 'run.prompt');
+    expect(prompt?.params.runEnv).toMatchObject({
+      AGENT_WORKFLOW_ENDPOINT: 'http://127.0.0.1:47812/workflow',
+      AGENT_WORKFLOW_CLI: '/opt/lark-workcell/bin/workflow-cli.js',
+      AGENT_WORKFLOW_TOKEN: 'token-abc',
+    });
+    expect(prompt?.params.runEnv.AGENT_WORKFLOW_ENDPOINT_FILE).toBeUndefined();
+
+    // Sessions are archived outside the unit before it is torn down.
+    await h.adapter.shutdown();
+    const calls = await h.calls();
+    expect(calls.find((call) => call.op === 'pull')).toMatchObject({
+      remote: '/opt/lark-workcell/agent/sessions',
+      local: join(h.dir, 'workcell-sessions', 'member-bbbbbbbb'),
+    });
+    await new Promise<void>((resolve) => engine.close(() => resolve()));
   }, 60_000);
 
   it('fails the profile preflight when the provider executable is missing', async () => {

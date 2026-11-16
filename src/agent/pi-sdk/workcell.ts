@@ -55,9 +55,15 @@ export function normalizeWorkcell(input: unknown): WorkcellConfig | undefined {
 }
 
 /** Where the bridge stages the runtime and payloads inside every workcell. */
-const WORKCELL_ROOT = '/opt/lark-workcell';
+export const WORKCELL_ROOT = '/opt/lark-workcell';
 /** Port the host listens on inside the workcell; the provider forwards it. */
 export const WORKCELL_HOST_PORT = 47_811;
+/**
+ * Loopback endpoint inside the unit that the host forwards to the bridge, so a
+ * worker's workflow CLI call is executed by the bridge rather than dialing a
+ * port that does not exist there.
+ */
+export const WORKCELL_IPC_PORT = 47_812;
 /** Where a pushed workspace lands inside the unit. */
 export const WORKCELL_WORK_DIR = `${WORKCELL_ROOT}/work`;
 /**
@@ -86,6 +92,8 @@ export function workcellRuntimeLayout(paths: {
   nodePath: string;
   sdkPath: string;
   hostScript: string;
+  /** This bridge build's bundled workflow CLI, pushed so workers can call it. */
+  workflowCli?: string;
   root?: string;
 }): WorkcellRuntimeLayout {
   const root = paths.root ?? WORKCELL_ROOT;
@@ -99,6 +107,9 @@ export function workcellRuntimeLayout(paths: {
       { local: nodeDir, remote: join(nodeModules, basename(nodeDir)) },
       { local: scopeDir, remote: join(nodeModules, basename(scopeDir)) },
       { local: dirname(paths.hostScript), remote: join(root, 'bin') },
+      ...(paths.workflowCli && existsSync(paths.workflowCli)
+        ? [{ local: paths.workflowCli, remote: join(root, 'bin', 'workflow-cli.js') }]
+        : []),
     ],
     nodePath: join(nodeModules, basename(nodeDir), relative(nodeDir, paths.nodePath)),
     hostScript: join(root, 'bin', basename(paths.hostScript)),
@@ -136,10 +147,15 @@ interface Pooled extends WorkcellHandle {
 
 export interface WorkcellPoolOptions {
   config: WorkcellConfig;
-  /** Local directories pushed once per workcell (runtime, agent files). */
+  /** Local directories and files pushed once per workcell (runtime, CLI, host). */
   runtime: WorkcellRuntimeLayout;
   /** Files copied into `<root>/agent` before the host starts. */
   agentFiles?: readonly string[];
+  /**
+   * Local directory that keeps each key's sessions across units: pulled out on
+   * release, pushed back on the next unit, so a replaced unit still resumes.
+   */
+  sessionDir?: string;
   env?: NodeJS.ProcessEnv;
 }
 
@@ -177,6 +193,10 @@ export class WorkcellPool {
       }
       for (const file of this.options.agentFiles ?? []) {
         await provider.request('push', { workcell: id, local: file, remote: join(WORKCELL_ROOT, 'agent', basename(file)) });
+      }
+      const sessions = this.sessionArchive(key);
+      if (sessions && existsSync(sessions)) {
+        await provider.request('push', { workcell: id, local: sessions, remote: join(WORKCELL_ROOT, 'agent', 'sessions') });
       }
       const forward = await provider.request<{ port: number }>('forward', {
         workcell: id,
@@ -221,6 +241,17 @@ export class WorkcellPool {
     if (cell.renew) clearInterval(cell.renew);
     const provider = this.provider;
     if (!provider || provider.isClosed) return;
+    // Keep the member's sessions for the next unit before the unit goes away.
+    const sessions = this.sessionArchive(key);
+    if (sessions) {
+      await provider.request('pull', {
+        workcell: cell.id,
+        remote: join(WORKCELL_ROOT, 'agent', 'sessions'),
+        local: sessions,
+      }).catch((error: unknown) => {
+        log.warn('agent', 'pi-workcell-session-pull-failed', { workcell: cell.id, error: String(error) });
+      });
+    }
     await provider.request('stop', { workcell: cell.id }).catch((error: unknown) => {
       log.warn('agent', 'pi-workcell-stop-failed', { workcell: cell.id, error: String(error) });
     });
@@ -234,6 +265,12 @@ export class WorkcellPool {
     const provider = this.provider;
     this.provider = undefined;
     await provider?.dispose();
+  }
+
+  private sessionArchive(key: string): string | undefined {
+    const base = this.options.sessionDir;
+    if (!base) return undefined;
+    return join(base, key);
   }
 
   private ensureProvider(): WorkcellProviderClient {

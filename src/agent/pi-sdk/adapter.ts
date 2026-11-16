@@ -1,5 +1,6 @@
 import { existsSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { log } from '../../core/logger';
 import { SpawnFailed } from '../errors';
 import { parseEffort } from '../model-settings';
@@ -29,7 +30,7 @@ import { AsyncEventQueue } from './event-queue';
 import { PiHostClient, type PiHostLaunch, type PiHostRunAck, type PiHostSessionInfo } from './host-client';
 import { PI_SDK_MIN_NODE, resolvePiAgentDir, resolvePiSdkPaths, type PiSdkPaths } from './paths';
 import { localWorkflowEndpoint, openWorkflowTunnel, remoteRunEnv, shellQuote, type PiRemoteTarget, type WorkflowTunnel } from './remote';
-import { WorkcellPool, workcellRuntimeLayout, WORKCELL_HOST_PORT, WORKCELL_WORK_DIR, type WorkcellRuntimeLayout } from './workcell';
+import { WorkcellPool, workcellRuntimeLayout, WORKCELL_HOST_PORT, WORKCELL_IPC_PORT, WORKCELL_WORK_DIR, WORKCELL_ROOT, type WorkcellRuntimeLayout } from './workcell';
 import { piHostSpawnCommand, type PiHostSandbox } from './sandbox';
 
 export interface PiSdkAdapterOptions {
@@ -89,6 +90,9 @@ export class PiSdkAdapter implements AgentAdapter {
   private workcell: WorkcellPool | undefined;
   private workcellLayout: WorkcellRuntimeLayout | undefined;
   private readonly workcellClients = new Map<string, Promise<PiHostClient>>();
+  /** Local workflow endpoint each workcell host's calls are proxied to. */
+  private readonly workcellEndpoints = new WeakMap<PiHostClient, string>();
+  private readonly workcellSessions: string | undefined;
   private tunnelEndpoint: string | undefined;
   /** cwds already reported as outside the profile-scoped sandbox. */
   private readonly unwritableCwds = new Set<string>();
@@ -109,6 +113,9 @@ export class PiSdkAdapter implements AgentAdapter {
         stateDir: opts.profileStateDir,
         ...(opts.config.sshOptions ? { sshOptions: opts.config.sshOptions } : {}),
       }
+      : undefined;
+    this.workcellSessions = opts.profileStateDir && opts.config.workcell
+      ? join(opts.profileStateDir, 'workcell-sessions')
       : undefined;
     if (opts.config.remote && !opts.profileStateDir) {
       throw new Error('pi.remote needs a profile state directory for the environment file');
@@ -281,7 +288,7 @@ export class PiSdkAdapter implements AgentAdapter {
       if (client && !client.isClosed) return client;
       this.workcellClients.delete(key);
     }
-    const opening = this.openWorkcellClient(key, opts.cwd);
+    const opening = this.openWorkcellClient(key, opts.cwd, opts.env ? localWorkflowEndpoint(opts.env) : undefined);
     this.workcellClients.set(key, opening);
     try {
       return await opening;
@@ -291,7 +298,7 @@ export class PiSdkAdapter implements AgentAdapter {
     }
   }
 
-  private async openWorkcellClient(key: string, workspace: string | undefined): Promise<PiHostClient> {
+  private async openWorkcellClient(key: string, workspace: string | undefined, endpoint: string | undefined): Promise<PiHostClient> {
     const pool = this.ensureWorkcellPool();
     const layout = this.workcellLayout!;
     const cell = await pool.acquire(key);
@@ -308,6 +315,10 @@ export class PiSdkAdapter implements AgentAdapter {
       ...(this.config.idleTtlMs !== undefined ? { idleTtlMs: this.config.idleTtlMs } : {}),
       ...(this.config.maxSessions !== undefined ? { maxSessions: this.config.maxSessions } : {}),
     });
+    if (endpoint) this.workcellEndpoints.set(client, endpoint);
+    client.onFrame((frame) => {
+      if (frame.type === 'ipc.request') void this.answerWorkflowCall(client, frame);
+    });
     await client.start();
     log.info('agent', 'pi-workcell-host-connected', { key, workcell: cell.id, hostPort: cell.hostPort });
     return client;
@@ -322,11 +333,13 @@ export class PiSdkAdapter implements AgentAdapter {
       nodePath: paths.nodePath,
       sdkPath: paths.sdkPath,
       hostScript: paths.hostScript,
+      workflowCli: bundledWorkflowCli(),
     });
     this.workcell = new WorkcellPool({
       config,
       runtime: this.workcellLayout,
       agentFiles: piAgentFiles(resolvePiAgentDir(this.config)),
+      ...(this.workcellSessions ? { sessionDir: this.workcellSessions } : {}),
       env: this.env,
     });
     return this.workcell;
@@ -337,6 +350,7 @@ export class PiSdkAdapter implements AgentAdapter {
       layout.nodePath,
       layout.hostScript,
       '--tcp', `127.0.0.1:${WORKCELL_HOST_PORT}`,
+      '--ipc-port', String(WORKCELL_IPC_PORT),
       '--sdk', layout.sdkPath,
       '--agent-dir', layout.agentDir,
       ...(this.config.idleTtlMs !== undefined ? ['--idle-ttl-ms', String(this.config.idleTtlMs)] : []),
@@ -347,11 +361,62 @@ export class PiSdkAdapter implements AgentAdapter {
   }
 
   private workcellHostEnv(): Record<string, string> {
+    const nodeBin = `${WORKCELL_ROOT}/node_modules/node/bin`;
     return {
       PI_TELEMETRY: '0',
       PI_SKIP_VERSION_CHECK: '1',
       PI_CODING_AGENT_DIR: this.workcellLayout!.agentDir,
+      // Tools inherit this, so `node "$AGENT_WORKFLOW_CLI"` works inside the unit.
+      PATH: `${nodeBin}:/usr/local/bin:/usr/bin:/bin`,
+      AGENT_WORKFLOW_CLI: `${WORKCELL_ROOT}/bin/workflow-cli.js`,
     };
+  }
+
+  /**
+   * A worker inside a unit cannot reach the bridge, so its workflow CLI calls
+   * arrive as frames; the bridge performs the call against its own local-only
+   * endpoint with the same bearer token the worker was given.
+   */
+  private async answerWorkflowCall(client: PiHostClient, frame: Record<string, unknown>): Promise<void> {
+    const requestId = frame.requestId;
+    const endpoint = this.workcellEndpoints.get(client);
+    if (!endpoint) {
+      client.send({ type: 'ipc.response', requestId, status: 503, body: JSON.stringify({ ok: false, error: 'this run has no workflow endpoint' }) });
+      return;
+    }
+    try {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${String(frame.token ?? '')}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ method: frame.method, args: frame.args }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      client.send({ type: 'ipc.response', requestId, status: response.status, body: await response.text() });
+    } catch (error) {
+      client.send({
+        type: 'ipc.response',
+        requestId,
+        status: 502,
+        body: JSON.stringify({ ok: false, error: `the bridge could not reach its workflow endpoint: ${errorMessage(error)}` }),
+      });
+    }
+  }
+
+  /**
+   * Inside a unit the run's own environment has to point at the cell-local
+   * workflow endpoint and the pushed CLI; the bridge-side paths mean nothing
+   * there.
+   */
+  private withWorkcellEnv(opts: AgentRunOptions): AgentRunOptions {
+    const env = opts.env;
+    if (!env) return opts;
+    const next: Record<string, string> = { ...env };
+    delete next.AGENT_WORKFLOW_ENDPOINT_FILE;
+    if (next.AGENT_WORKFLOW_ENDPOINT || next.AGENT_WORKFLOW_CLI) {
+      next.AGENT_WORKFLOW_ENDPOINT = `http://127.0.0.1:${WORKCELL_IPC_PORT}/workflow`;
+      next.AGENT_WORKFLOW_CLI = `${WORKCELL_ROOT}/bin/workflow-cli.js`;
+    }
+    return Object.freeze({ ...opts, env: Object.freeze(next) });
   }
 
   private async logHealth(context: string): Promise<void> {
@@ -547,7 +612,9 @@ export class PiSdkAdapter implements AgentAdapter {
       // Inside a rented unit the bridge's paths do not exist: the host opens the
       // session in the copy of the workspace that was pushed there. The bridge
       // keeps reporting the conversation's own cwd.
-      const hostOpts = this.config.workcell && opts.cwd ? { ...opts, cwd: WORKCELL_WORK_DIR } : opts;
+      const hostOpts = this.config.workcell
+        ? this.withWorkcellEnv(opts.cwd ? { ...opts, cwd: WORKCELL_WORK_DIR } : opts)
+        : opts;
       let client: PiHostClient;
       try {
         client = await this.ensureRunClient(opts);
@@ -862,7 +929,13 @@ function errorEvent(message: string): AgentEvent {
   return { type: 'error', message: message.slice(0, 4096), terminationReason: 'failed' };
 }
 
-/** Credentials and catalog files the host needs; sessions stay inside the unit. */
+/** The workflow CLI bundled with this build, pushed so workers can call it. */
+function bundledWorkflowCli(): string | undefined {
+  const candidate = new URL('./workflow-cli.js', import.meta.url);
+  return candidate.protocol === 'file:' && existsSync(fileURLToPath(candidate)) ? fileURLToPath(candidate) : undefined;
+}
+
+/** Credentials and catalog files the host needs; sessions are archived outside the unit. */
 function piAgentFiles(agentDir: string): string[] {
   return ['auth.json', 'models.json', 'settings.json']
     .map((name) => join(agentDir, name))

@@ -2,6 +2,7 @@
 // Stand-in for `pi-host --tcp`, used by tests/process/pi-sdk-tcp.test.ts.
 // It speaks the same newline-delimited frames as the real host and echoes a
 // single text delta per prompt.
+import { writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 
 const port = Number(process.env.FAKE_TCP_HOST_PORT);
@@ -11,6 +12,15 @@ if (!port) {
 }
 
 const send = (socket, message) => socket.write(`${JSON.stringify(message)}\n`);
+
+// Optional record so a test can assert what the host was told and what came
+// back for a workflow call it proxied.
+const recordPath = process.env.FAKE_TCP_RECORD;
+const state = { requests: [], ipcResponse: undefined };
+function save() {
+  if (recordPath) writeFileSync(recordPath, JSON.stringify(state, null, 2));
+}
+save();
 
 const server = createServer((socket) => {
   send(socket, {
@@ -28,6 +38,15 @@ const server = createServer((socket) => {
       buffer = buffer.slice(newline + 1);
       if (!line.trim()) continue;
       const request = JSON.parse(line);
+      if (request.type === 'ipc.response') {
+        state.ipcResponse = request;
+        save();
+        continue;
+      }
+      if (request.cmd) {
+        state.requests.push({ cmd: request.cmd, params: request.params ?? null });
+        save();
+      }
       switch (request.cmd) {
         case 'health':
           send(socket, { id: request.id, ok: true, data: { sessions: 0, transport: 'tcp' } });
@@ -44,6 +63,9 @@ const server = createServer((socket) => {
           send(socket, { type: 'run.event', sessionId: 'tcp-session', runId: request.params.runId,
             event: { type: 'agent_settled', aborted: false } });
           send(socket, { type: 'run.end', sessionId: 'tcp-session', runId: request.params.runId, outcome: 'settled' });
+          if (process.env.FAKE_TCP_IPC === '1') {
+            send(socket, { type: 'ipc.request', requestId: 99, token: request.params.runEnv?.AGENT_WORKFLOW_TOKEN ?? '', method: 'status', args: { list: 'all' } });
+          }
           break;
         case 'shutdown':
           send(socket, { id: request.id, ok: true, data: {} });
