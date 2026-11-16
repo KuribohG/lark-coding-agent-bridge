@@ -1,7 +1,8 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { writeNodeFixtureLauncher } from '../helpers/fake-executable';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ensureRuntimeArchive, normalizeWorkcell, WorkcellPool, workcellRuntimeLayout } from '../../src/agent/pi-sdk/workcell';
@@ -16,14 +17,6 @@ afterEach(async () => {
   delete process.env.FAKE_WORKCELL_PUSH_FAILURE;
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })));
 });
-
-function fixtureProvider(dir: string): string {
-  // A shell wrapper keeps the fixture's node path independent of PATH.
-  const path = join(dir, 'provider.sh');
-  writeFileSync(path, `#!/bin/sh\nexec '${process.execPath}' '${providerFixture}' "$@"\n`, { mode: 0o700 });
-  chmodSync(path, 0o700);
-  return path;
-}
 
 async function harness(options: {
   pushFailure?: string;
@@ -43,7 +36,7 @@ async function harness(options: {
   writeFileSync(join(modulesDir, 'node', 'bin', 'node'), '');
   writeFileSync(join(dir, 'rt', 'sdk.js'), '');
   const pool = new WorkcellPool({
-    config: { provider: fixtureProvider(dir), cpu: 4, memoryGb: 8, ttlSeconds: 600, image: 'image:tag', ...(options.parallelism ? { parallelism: options.parallelism } : {}), ...(options.layer ? { layer: options.layer } : {}), ...(options.maxCells ? { maxCells: options.maxCells } : {}) },
+    config: { provider: await writeNodeFixtureLauncher(dir, 'provider', providerFixture), cpu: 4, memoryGb: 8, ttlSeconds: 600, image: 'image:tag', ...(options.parallelism ? { parallelism: options.parallelism } : {}), ...(options.layer ? { layer: options.layer } : {}), ...(options.maxCells ? { maxCells: options.maxCells } : {}) },
     ...(options.canEvict ? { canEvict: options.canEvict } : {}),
     runtime: workcellRuntimeLayout({
       nodePath: join(modulesDir, 'node', 'bin', 'node'),

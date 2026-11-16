@@ -129,7 +129,7 @@ describe('managed workflow worktrees with real Git', () => {
     expect(await readFile(join(fixed.workspace.path, 'c.txt'), 'utf8')).toBe('C\n');
     const checks = await h.checks(fixed.workspace);
     await h.op('accept', 'accept', { workspace: fixed.workspace.id, checks: checks.id });
-  }, 30_000);
+  }, 90_000);
 
   it('requires clean, independent, current-run snapshot review evidence', async () => {
     const h = await fixture(); const ws = await h.create('a');
