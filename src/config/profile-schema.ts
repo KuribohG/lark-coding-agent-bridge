@@ -234,12 +234,11 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   // into every profile; readers treat missing as "disabled".
   const execSandbox = raw.exec_sandbox === undefined ? {} : { execSandbox: normalizeExecSandbox(raw.exec_sandbox) };
   const launches = normalizeAgentLaunches(raw);
-  // A shared Pi SDK host cannot carry a per-run Landlock domain, so the pair is
-  // invalid: fail at config load instead of failing the profile's first run.
-  if (execSandbox.execSandbox?.enabled && raw.agentKind === 'pi' && launches.pi?.transport === 'sdk') {
-    throw new Error(
-      'pi.transport = "sdk" cannot enforce exec_sandbox; use transport = "cli" or disable exec_sandbox',
-    );
+  // A launch that shares one process across runs cannot carry a per-run Landlock
+  // domain, so the pair is invalid: fail at config load instead of on the first run.
+  if (execSandbox.execSandbox?.enabled) {
+    const conflict = agentBackendSpec(raw.agentKind).execSandboxConflict?.(launches[raw.agentKind]);
+    if (conflict) throw new Error(conflict);
   }
 
   return {

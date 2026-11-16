@@ -23,6 +23,9 @@ export default defineConfig({
     alias: { "@kuribohg/agent-workflows": fileURLToPath(new URL("packages/workflow-engine/src/index.ts", import.meta.url)) },
   },
   test: {
+    // Drop the credentials and private state directories the bridge injects
+    // into agents, so a suite run from inside the bridge matches CI.
+    setupFiles: ["tests/setup/agent-env.ts"],
     // GitHub's runners are ~3x slower than a dev box, and the heavier
     // suites drive hundreds of items; vitest's 5s default trips on them.
     testTimeout: 20_000,

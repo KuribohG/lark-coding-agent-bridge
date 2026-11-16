@@ -80,9 +80,12 @@ describe.skipIf(!live)('PiSdkAdapter live host', () => {
     const provider = await liveProvider();
     const turn = async (runId: string, token: string) => collect((await adapter.prepareRun({
       runId,
-      prompt: '用 bash 工具执行 printf %s "$AGENT_WORKFLOW_TOKEN"，只回复这条命令的输出原文，不要加引号、说明或其它内容。',
+      // A neutral probe name: the workflow credential itself is the same
+      // per-run binding path, but a model asked to print `$AGENT_WORKFLOW_TOKEN`
+      // refuses half the time as credential disclosure.
+      prompt: '用 bash 工具执行 printf %s "$BRIDGE_RUN_PROBE"，只回复这条命令的输出原文，不要加引号、说明或其它内容。',
       cwd: dir,
-      env: { AGENT_WORKFLOW_TOKEN: token },
+      env: { BRIDGE_RUN_PROBE: token },
       model: provider.model,
       modelProvider: provider,
       reasoningEffort: 'low',

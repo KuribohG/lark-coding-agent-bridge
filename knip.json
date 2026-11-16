@@ -5,6 +5,7 @@
       "entry": [
         "tests/**/*.test.ts",
         "tests/acceptance/workflow-native.ts",
+        "tests/setup/*.ts",
         "web/src/main.tsx"
       ],
       "project": [
