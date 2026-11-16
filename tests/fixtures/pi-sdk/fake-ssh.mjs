@@ -2,7 +2,7 @@
 // Stand-in for `ssh`, used by tests/process/pi-sdk-remote.test.ts. It records
 // what the bridge asked for, then either keeps the reverse tunnel open or runs
 // the remote script on this machine (which is all a shared filesystem needs).
-import { appendFileSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 
 const recordPath = process.env.FAKE_SSH_RECORD;
 const argv = process.argv.slice(2);
@@ -22,6 +22,6 @@ if (tunnel) {
   const destination = argv.at(-2);
   record({ argv, mode: 'exec', destination, script });
   const { spawnSync } = await import('node:child_process');
-  const result = spawnSync('/bin/bash', ['-c', script], { stdio: 'inherit' });
+  const result = spawnSync('sh', ['-c', script], { stdio: 'inherit' });
   process.exit(result.status ?? 1);
 }
