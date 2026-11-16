@@ -40,6 +40,7 @@ afterEach(async () => {
     await exited;
   }
   delete process.env.FAKE_WORKCELL_RECORD;
+  delete process.env.FAKE_WORKCELL_ROOT;
   delete process.env.FAKE_WORKCELL_HOST_PORT;
   delete process.env.FAKE_TCP_RECORD;
   delete process.env.FAKE_TCP_IPC;
@@ -73,7 +74,7 @@ async function startTcpHost(): Promise<number> {
   return port;
 }
 
-async function harness(options: { workflowEndpoint?: string; tcpIpc?: boolean; local?: boolean } = {}) {
+async function harness(options: { workflowEndpoint?: string; tcpIpc?: boolean; local?: boolean; root?: string } = {}) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'pi-workcell-')));
   dirs.push(dir);
   const record = join(dir, 'provider-record.json');
@@ -81,6 +82,7 @@ async function harness(options: { workflowEndpoint?: string; tcpIpc?: boolean; l
   // The host fixture reads its mode from the environment at startup.
   Object.assign(process.env, {
     FAKE_WORKCELL_RECORD: record,
+    ...(options.root ? { FAKE_WORKCELL_ROOT: options.root } : {}),
     FAKE_TCP_RECORD: tcpRecord,
     ...(options.tcpIpc ? { FAKE_TCP_IPC: '1' } : { FAKE_TCP_IPC: '0' }),
   });
@@ -208,7 +210,8 @@ describe('pi SDK host inside a workcell', () => {
     await once(engine, 'listening');
     const enginePort = (engine.address() as { port: number }).port;
 
-    const h = await harness({ tcpIpc: true, workflowEndpoint: `http://127.0.0.1:${enginePort}/workflow` });
+    const root = '/remote volumes/member-b';
+    const h = await harness({ root, tcpIpc: true, workflowEndpoint: `http://127.0.0.1:${enginePort}/workflow` });
     const host = { key: 'member-bbbbbbbb' };
     const events = await collect((await h.adapter.prepareRun({
       runId: 'run-1',
@@ -234,6 +237,7 @@ describe('pi SDK host inside a workcell', () => {
 
     // The host answered the HTTP caller with the engine's body.
     const record = await h.tcpRecord();
+    expect(record.requests.find((call) => call.cmd === 'session.open')?.params.cwd).toBe(root + '/work');
     expect(record.ipcResponse).toMatchObject({ type: 'ipc.response', requestId: 99, status: 200 });
     expect(JSON.parse(String((record.ipcResponse as { body: string }).body))).toEqual({ ok: true, result: { taskCounts: { running: 1 } } });
 
@@ -241,7 +245,7 @@ describe('pi SDK host inside a workcell', () => {
     const prompt = record.requests.find((call) => call.cmd === 'run.prompt');
     expect(prompt?.params.runEnv).toMatchObject({
       AGENT_WORKFLOW_ENDPOINT: 'http://127.0.0.1:47812/workflow',
-      AGENT_WORKFLOW_CLI: '/opt/lark-workcell/bin/workflow-cli.js',
+      AGENT_WORKFLOW_CLI: root + '/bin/workflow-cli.js',
       AGENT_WORKFLOW_TOKEN: 'token-abc',
     });
     expect(prompt?.params.runEnv.AGENT_WORKFLOW_ENDPOINT_FILE).toBeUndefined();
@@ -249,8 +253,9 @@ describe('pi SDK host inside a workcell', () => {
     // Sessions are archived outside the unit before it is torn down.
     await h.adapter.shutdown();
     const calls = await h.calls();
+    expect(calls.find((call) => call.op === 'exec' && call.detach)).toMatchObject({ cwd: root });
     expect(calls.find((call) => call.op === 'pull')).toMatchObject({
-      remote: '/opt/lark-workcell/agent/sessions',
+      remote: root + '/agent/sessions',
       local: join(h.dir, 'workcell-sessions', 'member-bbbbbbbb'),
     });
     await new Promise<void>((resolve) => engine.close(() => resolve()));
@@ -272,6 +277,11 @@ describe('pi SDK host inside a workcell', () => {
       })).start().events);
       expect(events.at(-1)).toMatchObject({ type: 'done' });
     }
+    const record = JSON.parse(await readFile(join(h.dir, 'local-host.json'), 'utf8')) as {
+      calls: Array<{ cmd: string; params: { cwd?: string } }>;
+    };
+    const opens = record.calls.filter((call) => call.cmd === 'session.open');
+    expect(opens.map((call) => call.params.cwd)).toEqual([h.dir, h.dir]);
     expect(await h.calls()).toEqual([]);
   }, 30_000);
 

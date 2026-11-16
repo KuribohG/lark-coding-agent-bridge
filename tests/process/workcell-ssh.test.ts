@@ -1,12 +1,12 @@
-import { chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { connect, createServer } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, posix, resolve } from 'node:path';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { parseSshWorkcell, SshWorkcellProvider } from '../../src/agent/pi-sdk/workcell-ssh';
 
 // An ssh unit is a directory on another machine. The fake ssh runs the "remote"
@@ -16,14 +16,23 @@ import { parseSshWorkcell, SshWorkcellProvider } from '../../src/agent/pi-sdk/wo
 const fakeSsh = fileURLToPath(new URL('../fixtures/pi-sdk/fake-ssh-forward.mjs', import.meta.url));
 const dirs: string[] = [];
 const providers: SshWorkcellProvider[] = [];
-let sshBin: string;
+const gitTools = process.platform === 'win32'
+  ? resolve(execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim(), '../../../usr/bin')
+  : undefined;
 
-beforeEach(async () => {
-  const bin = await realpath(await mkdtemp(join(tmpdir(), 'fake-ssh-')));
-  dirs.push(bin);
-  sshBin = join(bin, 'ssh');
-  writeFileSync(sshBin, `#!/bin/sh\nexec '${process.execPath}' '${fakeSsh}' "$@"\n`, { mode: 0o700 });
-  chmodSync(sshBin, 0o700);
+vi.mock('../../src/platform/spawn', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/platform/spawn')>();
+  return {
+    ...actual,
+    spawnProcess: (...args: Parameters<typeof actual.spawnProcess>) => {
+      if (args[0] !== 'ssh') return actual.spawnProcess(...args);
+      const options = args[2];
+      return actual.spawnProcess(process.execPath, [fakeSsh, ...(args[1] ?? [])], {
+        ...options,
+        env: { ...(options?.env ?? process.env), FAKE_WORKCELL_BASH: gitTools ? join(gitTools, 'bash.exe') : '/bin/bash' },
+      });
+    },
+  };
 });
 
 afterEach(async () => {
@@ -32,11 +41,12 @@ afterEach(async () => {
 });
 
 async function harness() {
-  const base = await realpath(await mkdtemp(join(tmpdir(), 'ssh-cell-')));
-  dirs.push(base);
-  const provider = new SshWorkcellProvider({ destination: 'fake-node', base, ssh: sshBin });
+  const dir = await realpath(await mkdtemp(join(tmpdir(), 'ssh cell-')));
+  dirs.push(dir);
+  const base = gitTools ? execFileSync(join(gitTools, 'cygpath.exe'), ['-u', dir], { encoding: 'utf8' }).trim() : dir;
+  const provider = new SshWorkcellProvider({ destination: 'fake-node', base });
   providers.push(provider);
-  return { base, provider };
+  return { base, provider, onDisk: (remote: string) => join(dir, posix.relative(base, remote)) };
 }
 
 describe('ssh workcell provider', () => {
@@ -61,12 +71,12 @@ describe('ssh workcell provider', () => {
       spec: { labels: { key: 'member-a' } },
     });
     expect(cell.root.startsWith(`${h.base}/`)).toBe(true);
-    expect(existsSync(cell.root)).toBe(true);
+    expect(existsSync(h.onDisk(cell.root))).toBe(true);
 
     await h.provider.request('push', { workcell: cell.workcell, local, remote: `${cell.root}/work`, exclude: ['sub'] });
     // `sub` was excluded, the rest arrived.
-    expect(readFileSync(join(cell.root, 'work', 'probe.txt'), 'utf8')).toBe('hello\n');
-    expect(existsSync(join(cell.root, 'work', 'sub'))).toBe(false);
+    expect(readFileSync(join(h.onDisk(cell.root), 'work', 'probe.txt'), 'utf8')).toBe('hello\n');
+    expect(existsSync(join(h.onDisk(cell.root), 'work', 'sub'))).toBe(false);
 
     const ran = await h.provider.request<{ code: number; stdout: string }>('exec', {
       workcell: cell.workcell,
@@ -77,13 +87,18 @@ describe('ssh workcell provider', () => {
     expect(ran.code).toBe(0);
     expect(ran.stdout.trim()).toBe('hello');
 
+    const absolute = await h.provider.request<{ code: number; stdout: string }>('exec', {
+      workcell: cell.workcell, script: 'pwd', cwd: cell.root,
+    });
+    expect(absolute).toMatchObject({ code: 0 });
+    expect(absolute.stdout.trim()).toBe(cell.root);
     const failed = await h.provider.request<{ code: number }>('exec', {
       workcell: cell.workcell, script: 'exit 3',
     });
     expect(failed.code).toBe(3);
 
     // Sessions come back after a run.
-    await writeFile(join(cell.root, 'agent', 'session.jsonl'), '{"a":1}\n');
+    await writeFile(join(h.onDisk(cell.root), 'agent', 'session.jsonl'), '{"a":1}\n');
     const pulled = await realpath(await mkdtemp(join(tmpdir(), 'ssh-out-')));
     dirs.push(pulled);
     await h.provider.request('pull', { workcell: cell.workcell, remote: `${cell.root}/agent`, local: pulled });
@@ -96,7 +111,7 @@ describe('ssh workcell provider', () => {
     expect(empty.skipped).toBe(true);
 
     await h.provider.request('stop', { workcell: cell.workcell });
-    expect(await waitFor(async () => !existsSync(cell.root), 5000)).toBe(true);
+    expect(await waitFor(async () => !existsSync(h.onDisk(cell.root)), 5000)).toBe(true);
   }, 60_000);
 
   it('reaches a port inside the unit through the forwarded local port', async () => {
@@ -128,7 +143,8 @@ describe('ssh workcell provider', () => {
     }
   }, 60_000);
 
-  it('ends a detached host when the unit is stopped', async () => {
+  // The stand-in executes the remote Linux process group on the runner itself.
+  it.runIf(process.platform === 'linux')('ends a detached host when the unit is stopped', async () => {
     const h = await harness();
     const cell = await h.provider.request<{ workcell: string; root: string }>('create', { spec: {} });
     const marker = `larkcell-sleep-${Date.now()}`;

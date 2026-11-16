@@ -1,7 +1,7 @@
 import type { ChildProcess } from 'node:child_process';
 import { createReadStream, createWriteStream, mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { join, posix } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { log } from '../../core/logger';
 import { spawnProcess } from '../../platform/spawn';
@@ -121,7 +121,7 @@ export class SshWorkcellProvider implements WorkcellProvider {
           TRANSFER_TIMEOUT_MS,
         );
       } else {
-        await this.must(`mkdir -p ${shellQuote(dirname(params.remote))}`, 60_000);
+        await this.must(`mkdir -p ${shellQuote(posix.dirname(params.remote))}`, 60_000);
         await this.upload(params.remote, params.local);
       }
       return { remote: params.remote };
@@ -169,7 +169,8 @@ export class SshWorkcellProvider implements WorkcellProvider {
     const exports = Object.entries(params.env ?? {})
       .map(([name, value]) => `export ${name}=${shellQuote(String(value))}`)
       .join('; ');
-    const cwd = params.cwd ? `${root}${params.cwd.startsWith('/') ? '' : '/'}${params.cwd}` : root;
+    const requested = params.cwd ?? '';
+    const cwd = requested === root || requested.startsWith(root + '/') ? requested : posix.join(root, requested);
     const inner = [exports, `cd ${shellQuote(cwd)}`, params.script].filter(Boolean).join('; ');
     if (params.detach) {
       const job = `host-${Math.random().toString(36).slice(2, 10)}`;

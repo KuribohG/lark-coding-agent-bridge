@@ -42,7 +42,9 @@ if (options.includes('-N')) {
   tunnel(spec);
 } else {
   // A remote command: run it here with the caller's stdin/stdout.
-  const child = spawn('/bin/bash', ['-c', script], { stdio: 'inherit' });
+  const shell = process.env.FAKE_WORKCELL_BASH ?? '/bin/bash';
+  const command = process.platform === 'win32' ? 'export PATH=/usr/bin:$PATH; ' + script : script;
+  const child = spawn(shell, ['-c', command], { stdio: 'inherit' });
   child.on('exit', (code) => process.exit(code ?? 1));
   process.on('SIGTERM', () => child.kill('SIGTERM'));
   void destination;

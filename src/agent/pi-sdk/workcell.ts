@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, join, posix, relative, sep } from 'node:path';
 import { log } from '../../core/logger';
 import { spawnProcess } from '../../platform/spawn';
+import { shellQuote } from './remote';
 import { createWorkcellProvider } from './workcell-provider';
 import type { WorkcellCreateParams, WorkcellProvider } from './workcell-protocol';
 
@@ -102,7 +103,7 @@ export function normalizeWorkcell(input: unknown): WorkcellConfig | undefined {
 }
 
 /** Where the bridge stages the runtime and payloads inside every workcell. */
-export const WORKCELL_ROOT = '/opt/lark-workcell';
+const WORKCELL_ROOT = '/opt/lark-workcell';
 /** Port the host listens on inside the workcell; the provider forwards it. */
 export const WORKCELL_HOST_PORT = 47_811;
 /**
@@ -111,8 +112,6 @@ export const WORKCELL_HOST_PORT = 47_811;
  * port that does not exist there.
  */
 export const WORKCELL_IPC_PORT = 47_812;
-/** Where a pushed workspace lands inside the unit. */
-export const WORKCELL_WORK_DIR = `${WORKCELL_ROOT}/work`;
 /**
  * Build outputs and histories a worker does not need and that would dominate the
  * transfer. Anything a member must see has to be part of the source tree.
@@ -397,7 +396,7 @@ export class WorkcellPool {
           // Unpack once, then drop the archive: the unit keeps only the tree.
           await provider.request('exec', {
             workcell: id,
-            script: `tar -xzf ${runtime.archive.remote} -C ${runtime.archive.extractTo} && rm -f ${runtime.archive.remote}`,
+            script: `tar -xzf ${shellQuote(runtime.archive.remote)} -C ${shellQuote(runtime.archive.extractTo)} && rm -f ${shellQuote(runtime.archive.remote)}`,
             timeout: 600,
           });
         }
@@ -464,7 +463,7 @@ export class WorkcellPool {
 
   /** Start the host inside the workcell; `args` are the provider's exec arguments. */
   async startHost(cell: WorkcellHandle, script: string, env: Readonly<Record<string, string>>): Promise<void> {
-    await this.ensureProvider().request('exec', { workcell: cell.id, script, env, detach: true, cwd: WORKCELL_ROOT });
+    await this.ensureProvider().request('exec', { workcell: cell.id, script, env, detach: true, cwd: cell.root });
     log.info('agent', 'pi-workcell-host-start', { workcell: cell.id, key: cell.key });
   }
 
@@ -480,7 +479,7 @@ export class WorkcellPool {
     if (sessions) {
       await provider.request('pull', {
         workcell: cell.id,
-        remote: posix.join(WORKCELL_ROOT, 'agent', 'sessions'),
+        remote: posix.join(cell.root, 'agent', 'sessions'),
         local: sessions,
       }).catch((error: unknown) => {
         log.warn('agent', 'pi-workcell-session-pull-failed', { workcell: cell.id, error: String(error) });
