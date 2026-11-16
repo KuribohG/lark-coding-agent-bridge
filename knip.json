@@ -3,6 +3,7 @@
   "workspaces": {
     ".": {
       "entry": [
+        "src/host.ts",
         "tests/**/*.test.ts",
         "tests/acceptance/workflow-native.ts",
         "tests/setup/*.ts",
