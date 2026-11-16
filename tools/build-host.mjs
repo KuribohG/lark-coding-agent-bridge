@@ -31,16 +31,22 @@ const result = await esbuild.build({ absWorkingDir: root,
     'process.env.LARK_BUILD_TIME': JSON.stringify(new Date(sourceDateEpoch * 1000).toISOString()),
     'process.env.LARK_BUILD_DIRTY': JSON.stringify(String(sourceDirty)) },
 });
-// Bounded agent runs start this guard as a separate Node process, so it ships
-// bundled beside the runtime instead of relying on the repository's bin/.
-const guard = await esbuild.build({ absWorkingDir: root, entryPoints: ['bin/deadline-guard.mjs'],
-  outfile: path.join(output, 'bin/deadline-guard.mjs'), bundle: true, platform: 'node', format: 'esm',
-  target: 'node24', sourcemap: false, metafile: true,
+// The host spawns these helpers as separate programs. The workflow client only
+// calls the authorized workflow endpoint; the standalone bridge CLI stays out.
+const helpers = await esbuild.build({ absWorkingDir: root,
+  entryPoints: { 'bin/deadline-guard': 'bin/deadline-guard.mjs', 'bin/pi-host': 'bin/pi-host.mjs' },
+  outdir: output, outExtension: { '.js': '.mjs' }, bundle: true, platform: 'node', format: 'esm',
+  target: 'node22', sourcemap: false, metafile: true,
+  banner: { js: "import { createRequire as bundleRequire } from 'node:module';\nconst require = bundleRequire(import.meta.url);" },
+});
+const workflowClient = await esbuild.build({ absWorkingDir: root, entryPoints: ['packages/workflow-engine/src/cli.ts'],
+  outfile: path.join(output, 'workflow-cli.js'), bundle: true, platform: 'node', format: 'esm', target: 'node22',
+  sourcemap: false, metafile: true, external: ['better-sqlite3', 'quickjs-emscripten'],
   banner: { js: "import { createRequire as bundleRequire } from 'node:module';\nconst require = bundleRequire(import.meta.url);" },
 });
 const inputs = {};
 const remember = relative => { inputs[relative] = sha(fs.readFileSync(path.join(root, relative))); };
-for (const name of [...Object.keys(result.metafile.inputs), ...Object.keys(guard.metafile.inputs)]) remember(name.replaceAll('\\', '/'));
+for (const name of [...Object.keys(result.metafile.inputs), ...Object.keys(helpers.metafile.inputs), ...Object.keys(workflowClient.metafile.inputs)]) remember(name.replaceAll('\\', '/'));
 for (const name of ['package.json', 'packages/workflow-engine/package.json', 'pnpm-lock.yaml', 'tools/build-host.mjs']) remember(name);
 const nativeSource = path.join(root, 'src/agent/dsh/native');
 const nativeOutput = path.join(output, 'dsh');
@@ -122,7 +128,7 @@ const manifest = { schemaVersion: 1, upstreamBaseCommit, resolvedSourceCommit: s
   nodeAbi: process.versions.modules, platform: process.platform, arch: process.arch,
   esbuildVersion: esbuild.version, inputs: sortedInputs, files, packages: [...packages.values()],
   nativeAddons: Object.keys(files).filter(name => name.endsWith('.node')), wasm: Object.keys(files).filter(name => name.endsWith('.wasm')),
-  entries: ['runtime.mjs', 'workflows.mjs'], channelsBundled: false, cliBundled: false };
+  entries: ['runtime.mjs', 'workflows.mjs'], channelsBundled: false, cliBundled: false, workflowClientBundled: true };
 fs.writeFileSync(path.join(output, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
 console.log(JSON.stringify({ ok: true, output, sourceCommit, sourceDirty, sourceFingerprint: manifest.sourceFingerprint,
   files: Object.keys(files).length, packages: packages.size, nativeAddons: manifest.nativeAddons, wasm: manifest.wasm }));
