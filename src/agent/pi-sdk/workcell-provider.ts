@@ -32,6 +32,7 @@ export interface WorkcellCreateParams {
   cpu?: number;
   memoryGb?: number;
   ttlSeconds?: number;
+  network?: readonly ('lan' | 'www')[];
   /** Free-form labels the provider may use for naming or accounting. */
   labels?: Record<string, string>;
 }
@@ -81,7 +82,7 @@ const DEFAULT_TIMEOUT_MS: Partial<Record<WorkcellOp, number>> = {
   exec: 5 * 60_000,
   forward: CONNECT_TIMEOUT_MS,
   ttl: 60_000,
-  stop: 60_000,
+  stop: 180_000,
 };
 
 export class WorkcellProviderClient {

@@ -157,7 +157,7 @@ describe('pi SDK host inside a workcell', () => {
     const exec = calls.find((call) => call.op === 'exec') as { script: string; env: Record<string, string> } | undefined;
     expect(exec?.script).toBe(
       "exec '/opt/lark-workcell/node_modules/node/bin/node' '/opt/lark-workcell/bin/pi-host.mjs' " +
-      "'--tcp' '127.0.0.1:47811' '--ipc-port' '47812' " +
+      "'--tcp' ':47811' '--ipc-port' '47812' " +
       "'--sdk' '/opt/lark-workcell/node_modules/@earendil-works/pi-coding-agent/dist/index.js' " +
       "'--agent-dir' '/opt/lark-workcell/agent'",
     );

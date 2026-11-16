@@ -319,7 +319,13 @@ export class PiSdkAdapter implements AgentAdapter {
     client.onFrame((frame) => {
       if (frame.type === 'ipc.request') void this.answerWorkflowCall(client, frame);
     });
-    await client.start();
+    try {
+      await client.start();
+    } catch (error) {
+      // The unit is useless without a reachable host; do not leave it running.
+      await pool.release(key);
+      throw error;
+    }
     log.info('agent', 'pi-workcell-host-connected', { key, workcell: cell.id, hostPort: cell.hostPort });
     return client;
   }
@@ -349,7 +355,9 @@ export class PiSdkAdapter implements AgentAdapter {
     const args = [
       layout.nodePath,
       layout.hostScript,
-      '--tcp', `127.0.0.1:${WORKCELL_HOST_PORT}`,
+      // The forwarded connection arrives on the unit's interface (which may be
+      // IPv6 only), so the host listens on every interface there.
+      '--tcp', `:${WORKCELL_HOST_PORT}`,
       '--ipc-port', String(WORKCELL_IPC_PORT),
       '--sdk', layout.sdkPath,
       '--agent-dir', layout.agentDir,

@@ -17,6 +17,11 @@ export interface WorkcellConfig {
   cpu?: number;
   memoryGb?: number;
   ttlSeconds?: number;
+  /**
+   * Networks the unit may reach. `www` is public internet (a model endpoint,
+   * package registries); `lan` is the internal network. Absent means none.
+   */
+  network?: readonly ('lan' | 'www')[];
 }
 
 const POSITIVE_INTS = ['cpu', 'memoryGb', 'ttlSeconds'] as const;
@@ -29,7 +34,7 @@ export function normalizeWorkcell(input: unknown): WorkcellConfig | undefined {
   }
   const raw = input as Record<string, unknown>;
   for (const key of Object.keys(raw)) {
-    if (!['provider', 'image', 'cpu', 'memoryGb', 'ttlSeconds'].includes(key)) {
+    if (!['provider', 'image', 'cpu', 'memoryGb', 'ttlSeconds', 'network'].includes(key)) {
       throw new Error(`pi.workcell.${key}: unknown setting`);
     }
   }
@@ -45,8 +50,14 @@ export function normalizeWorkcell(input: unknown): WorkcellConfig | undefined {
       throw new Error(`pi.workcell.${key}: expected a positive integer`);
     }
   }
+  const network = raw.network;
+  if (network !== undefined
+    && (!Array.isArray(network) || network.some((item) => item !== 'lan' && item !== 'www'))) {
+    throw new Error("pi.workcell.network: expected an array of \"lan\" and/or \"www\"");
+  }
   return {
     provider: raw.provider.trim(),
+    ...(Array.isArray(network) && network.length > 0 ? { network: [...network] as ('lan' | 'www')[] } : {}),
     ...(typeof raw.image === 'string' ? { image: raw.image.trim() } : {}),
     ...(typeof raw.cpu === 'number' ? { cpu: raw.cpu } : {}),
     ...(typeof raw.memoryGb === 'number' ? { memoryGb: raw.memoryGb } : {}),
@@ -98,14 +109,15 @@ export function workcellRuntimeLayout(paths: {
 }): WorkcellRuntimeLayout {
   const root = paths.root ?? WORKCELL_ROOT;
   const nodeDir = dirname(dirname(paths.nodePath));
+  // The SDK imports packages that the runtime keeps beside `node` (chalk and
+  // friends), so the whole tree travels instead of picking packages by hand.
+  const modulesDir = dirname(nodeDir);
   const packageDir = packageRoot(paths.sdkPath);
-  const scopeDir = dirname(packageDir);
   const nodeModules = join(root, 'node_modules');
-  const packageRemote = join(nodeModules, basename(scopeDir), basename(packageDir));
+  const packageRemote = join(nodeModules, relative(modulesDir, packageDir));
   return {
     pushes: [
-      { local: nodeDir, remote: join(nodeModules, basename(nodeDir)) },
-      { local: scopeDir, remote: join(nodeModules, basename(scopeDir)) },
+      { local: modulesDir, remote: nodeModules },
       { local: dirname(paths.hostScript), remote: join(root, 'bin') },
       ...(paths.workflowCli && existsSync(paths.workflowCli)
         ? [{ local: paths.workflowCli, remote: join(root, 'bin', 'workflow-cli.js') }]
@@ -182,6 +194,7 @@ export class WorkcellPool {
       ...(this.options.config.cpu !== undefined ? { cpu: this.options.config.cpu } : {}),
       ...(this.options.config.memoryGb !== undefined ? { memoryGb: this.options.config.memoryGb } : {}),
       ...(this.options.config.ttlSeconds !== undefined ? { ttlSeconds: this.options.config.ttlSeconds } : {}),
+      ...(this.options.config.network ? { network: this.options.config.network } : {}),
       labels: { key },
     };
     const created = await provider.request<{ workcell: string }>('create', { spec });

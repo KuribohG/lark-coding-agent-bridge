@@ -80,8 +80,7 @@ describe('workcell runtime layout', () => {
       hostScript: '/bridge/bin/pi-host.mjs',
     });
     expect(layout.pushes).toEqual([
-      { local: '/rt/node_modules/node', remote: '/opt/lark-workcell/node_modules/node' },
-      { local: '/rt/node_modules/@earendil-works', remote: '/opt/lark-workcell/node_modules/@earendil-works' },
+      { local: '/rt/node_modules', remote: '/opt/lark-workcell/node_modules' },
       { local: '/bridge/bin', remote: '/opt/lark-workcell/bin' },
     ]);
     expect(layout.nodePath).toBe('/opt/lark-workcell/node_modules/node/bin/node');
@@ -107,12 +106,10 @@ describe('workcell pool', () => {
     expect(ops.filter((op) => op === 'create')).toHaveLength(2);
     // Runtime directories plus the agent file, per workcell.
     expect(calls.filter((call) => call.op === 'push').map((call) => call.remote)).toEqual([
-      '/opt/lark-workcell/node_modules/node',
-      '/opt/lark-workcell/node_modules/@earendil-works',
+      '/opt/lark-workcell/node_modules',
       '/opt/lark-workcell/bin',
       '/opt/lark-workcell/agent/auth.json',
-      '/opt/lark-workcell/node_modules/node',
-      '/opt/lark-workcell/node_modules/@earendil-works',
+      '/opt/lark-workcell/node_modules',
       '/opt/lark-workcell/bin',
       '/opt/lark-workcell/agent/auth.json',
     ]);

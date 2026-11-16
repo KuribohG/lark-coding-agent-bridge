@@ -175,12 +175,30 @@ export class PiHostClient {
   private async spawn(): Promise<PiHostReady> {
     // The channel first: a connection failure must reject this call, not a
     // promise nobody awaits.
-    this.channel = this.launch.connection
-      ? await this.connectTcp(this.launch.connection)
-      : this.spawnStdio();
-    const readyPromise = this.readySignal();
-    void this.readFrames(this.channel);
-    return readyPromise;
+    if (!this.launch.connection) {
+      this.channel = this.spawnStdio();
+      const ready = this.readySignal();
+      void this.readFrames(this.channel);
+      return ready;
+    }
+    // A forwarded port accepts a connection before the host inside is
+    // listening, and a slow unit may need a few seconds of retries.
+    const attempts = 6;
+    let lastError: Error = new Error('pi sdk host did not accept a connection');
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        this.channel = await this.connectTcp(this.launch.connection);
+        const ready = this.readySignal();
+        void this.readFrames(this.channel);
+        return await ready;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        this.readyResolve = undefined;
+        this.readyReject = undefined;
+        if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+      }
+    }
+    throw new Error(`pi sdk host is unreachable at ${this.launch.connection.host}:${this.launch.connection.port} after ${attempts} attempts: ${lastError.message}`);
   }
 
   /** The host announces itself on every new connection, so reconnects reuse this. */

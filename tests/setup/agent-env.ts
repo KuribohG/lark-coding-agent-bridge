@@ -9,7 +9,7 @@
  */
 const INJECTED = /^(AGENT_WORKFLOW_|LARK_CHANNEL|LARKSUITE_CLI_|CLAUDE|PI_|CODEX_)/;
 /** Opt-in live tests are configured through the environment and keep theirs. */
-const OPT_IN = /^PI_SDK_LIVE_/;
+const OPT_IN = /^PI_(SDK|WORKCELL)_LIVE_/;
 
 for (const key of Object.keys(process.env)) {
   if (INJECTED.test(key) && !OPT_IN.test(key)) delete process.env[key];

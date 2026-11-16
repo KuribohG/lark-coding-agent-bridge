@@ -746,8 +746,10 @@ function dispatchLines(source) {
 
 /** One connected bridge; a reconnect replaces it and keeps the sessions. */
 function serveTcp(options) {
-  const match = /^(.+):(\d+)$/.exec(options.tcp ?? '');
-  if (!match) throw new Error('--tcp expects host:port');
+  // `:port` (empty host) listens on every interface, dual stack: a forwarded
+  // connection arrives on the unit's address, which may only be IPv6.
+  const match = /^(.*):(\d+)$/.exec(options.tcp ?? '');
+  if (!match) throw new Error('--tcp expects [host]:port');
   const [, host, port] = match;
   const server = createServer((socket) => {
     log('client connected', { remote: `${socket.remoteAddress}:${socket.remotePort}` });
@@ -779,7 +781,9 @@ function serveTcp(options) {
   });
   // The listener is what keeps this process alive between connections; the
   // reaper (and an explicit `shutdown`) decides when an idle host goes away.
-  server.listen(Number(port), host, () => log('listening', { host, port }));
+  const onListening = () => log('listening', { host: host || '*', port });
+  if (host) server.listen(Number(port), host, onListening);
+  else server.listen(Number(port), onListening);
   return server;
 }
 
