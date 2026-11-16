@@ -92,12 +92,6 @@ export class WorkflowScheduler {
 
   cancelTask(task: TaskView, state: WorkflowView, error?: string): void {
     const active = this.running.get(task.taskId);
-    if (!this.ctx.host.executionLedger) {
-      releaseWorkClaims(state, this.ctx.now(), 'Member execution cancelled', task.taskId);
-      task.status = active ? 'cancelling' : 'cancelled';
-      active?.controller.abort(new WorkflowStopped('cancelled'));
-      return;
-    }
     const uncertain = task.quiescence === 'unknown' || task.status === 'unknown';
     if (this.ctx.host.executionLedger && (active || uncertain)) {
       freezeWorkClaims(state, 'Cancellation requested; retain claim until native quiescence', task.taskId);
