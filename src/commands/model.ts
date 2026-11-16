@@ -5,6 +5,7 @@ import { validateModelId } from '../agent/models';
 import {
   availableEfforts,
   parseEffort,
+  REASONING_EFFORTS,
   resolveModelSettings,
   type ModelSettings,
   type ResolvedModelSettings,
@@ -52,6 +53,9 @@ function parseModelCommandArguments(args: string, agentKind: AgentKind, usage = 
 
   const second = /^\S+/.exec(rest)!;
   const effort = second[0];
+  if (effort !== 'default' && !(REASONING_EFFORTS as readonly string[]).includes(effort)) {
+    return { model: first[0], prompt: rest };
+  }
   if (effort !== 'default' && !availableEfforts(agentKind).includes(effort)) {
     throw new Error(usage);
   }

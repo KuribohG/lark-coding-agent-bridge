@@ -40,7 +40,7 @@ export const commandDefinitions = [
     '`/config` — 查看配置摘要；`/config run|lark|access` 编辑对应分组（全局默认，所有私聊和群话题共用）；`lark-cli 身份策略` 在 `/config access`',
     '`/config reload` — 立即重载配置文件并报告生效情况（文件修改平时自动加载）',
   ] },
-  { name: 'model', aliases: ['provider'], access: 'user', pending: 'preserve', arguments: 'words', channels: ['lark', 'slack', 'web'], channelHelp: {
+  { name: 'model', aliases: ['provider'], access: 'user', pending: 'preserve', arguments: 'verbatim', channels: ['lark', 'slack', 'web'], channelHelp: {
     slack: ['`/model` — show the current engine'],
     web: ['`/model` — show the current engine'],
   }, help: [

@@ -27,6 +27,25 @@ import type { WorkspaceStore } from '../../workspace/store';
 import { buildPrompt, replyQuoteTargetForMessage } from './prompt';
 import type { UserQuestions } from './question-cards';
 
+/** Rich-text normalization can leave a displayed @name before a command. */
+function commandContent(msg: NormalizedMessage, botOpenId: string | undefined): string {
+  if (!botOpenId) return msg.content;
+  const prefixes = (msg.mentions ?? []).filter(mention => mention.openId === botOpenId)
+    .flatMap(mention => [mention.key, ...(mention.name ? [`@${mention.name}`] : [])])
+    .filter(Boolean).sort((a, b) => b.length - a.length);
+  let content = msg.content.trimStart();
+  let removed = false;
+  for (;;) {
+    const prefix = prefixes.find(value => content.startsWith(value) && /^(?:\s|\/|$)/.test(content.slice(value.length)));
+    if (!prefix) break;
+    content = content.slice(prefix.length).trimStart();
+    removed = true;
+  }
+  // Only a real mention of this bot can expose a leading slash command.
+  // Ordinary prompts and mentions of other people/bots keep their content.
+  return removed && content.startsWith('/') ? content : msg.content;
+}
+
 async function sendNonAllowedGroupHint(
   channel: LarkChannel,
   chatId: string,
@@ -199,9 +218,10 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
 
   const scopeAgentKind = resolveAgentKind(scope);
   const scopeAgent = resolveAgent(scope);
+  const commandText = commandContent(emsg, channel.botIdentity?.openId);
   const commandCtx: CommandContext = {
     channel: createLarkCommandChannel(channel),
-    msg: emsg,
+    msg: { ...emsg, content: commandText },
     scope,
     chatMode,
     sessions,
@@ -226,7 +246,7 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
   const handled = await tryHandleCommand(commandCtx);
   let commandFollowUp = false;
   if (handled) {
-    const name = emsg.content.trim().split(/\s+/)[0];
+    const name = commandText.trim().split(/\s+/)[0];
     const definition = controls.commands?.find(name ?? '') ?? findCommand(name ?? '');
     const dropped = definition?.pending === 'preserve' ? [] : pending.cancel(scope);
     if (dropped.length > 0) {

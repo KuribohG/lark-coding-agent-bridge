@@ -14,7 +14,7 @@ import { modelRunArguments } from '../../../src/agent/model-settings';
 import { handleCardAction } from '../../../src/channels/lark/card-actions';
 import { ChatModeCache } from '../../../src/channels/lark/chat-mode-cache';
 import { PendingQueue } from '../../../src/channels/lark/pending-queue';
-import type { CardActionEvent } from '@larksuite/channel';
+import type { CardActionEvent, NormalizedMessage } from '@larksuite/channel';
 import { SessionStore } from '../../../src/session/store';
 import { WorkspaceStore } from '../../../src/workspace/store';
 import { ScopePreferencesStore } from '../../../src/session/scope-preferences';
@@ -63,7 +63,106 @@ async function harness() {
   } };
 }
 
+async function larkHarness() {
+  const h = await harness();
+  Object.assign(h.channel, { botIdentity: { openId: 'ou_self', name: 'Test Bot' } });
+  h.controls.cfg = { ...h.controls.cfg, channels: { lark: { progress: 'off' } } } as typeof h.controls.cfg;
+  const pending = new PendingQueue(60_000, () => {});
+  cleanups.push(async () => { pending.cancel(h.ctx.scope); await pending.flushPersistence(); });
+  const message = (patch: Partial<NormalizedMessage>): NormalizedMessage => ({
+    ...h.ctx.msg, chatType: 'group', senderType: 'user', createTime: Date.now(), rawContentType: 'post',
+    resources: [], mentionAll: false, mentionedBot: true,
+    mentions: [{ key: '@_user_1', openId: 'ou_self', name: 'Test Bot', isBot: true }],
+    ...patch,
+  });
+  return { ...h, pending, message, intake: async (patch: Partial<NormalizedMessage>) => {
+    await intakeMessage({
+      followups: {}, channel: h.channel,
+      resolveAgent: () => h.ctx.agent, resolveAgentKind: () => 'codex',
+      sessions: h.ctx.sessions, workspaces: h.ctx.workspaces, activeRuns: h.ctx.activeRuns,
+      pending, msg: message(patch), controls: h.controls,
+      chatModeCache: { resolveScope: async () => ({ scope: h.ctx.scope, threadId: 'topic-a', mode: 'topic' }) },
+      executor: {}, pool: {}, cotClient: {}, preparedCots: new Map(),
+    } as unknown as Parameters<typeof intakeMessage>[0]);
+  } };
+}
+
+describe('Lark mention-prefixed commands', () => {
+  it.each([
+    { prefix: '@Test Bot ', rawContentType: 'post' },
+    { prefix: '@_user_1 ', rawContentType: 'text' },
+    { prefix: '@_user_1', rawContentType: 'text' },
+    { prefix: ' \n@Test Bot\t@_user_1 ', rawContentType: 'post' },
+  ])('dispatches a command after the receiving bot mention: $prefix', async ({ prefix, rawContentType }) => {
+    const h = await larkHarness();
+    const prompt = '检查  这个问题\n\t第二行';
+    await h.intake({ content: `${prefix}/model custom/fast high ${prompt}`, rawContentType });
+    expect(await resolveRunModelSettings(h.controls, h.ctx.scope)).toMatchObject({
+      model: 'custom/fast', reasoningEffort: 'high',
+    });
+    expect(h.pending.cancel(h.ctx.scope).map(message => message.content)).toEqual([prompt]);
+  });
+
+  it('submits the task after a model name when effort is omitted', async () => {
+    const h = await larkHarness();
+    const prompt = '检查  这个问题\n\t第二行';
+    await h.intake({ content: `@Test Bot /model custom/fast ${prompt}` });
+    expect((await resolveRunModelSettings(h.controls, h.ctx.scope)).model).toBe('custom/fast');
+    expect(h.pending.cancel(h.ctx.scope).map(message => message.content)).toEqual([prompt]);
+  });
+
+  it.each(['/model custom/fast', '/provider custom/fast', '/effort high'])(
+    'preserves queued work for %s after a mention', async command => {
+      const h = await larkHarness();
+      const queued = h.message({ content: 'already queued', messageId: 'queued' });
+      h.pending.push(h.ctx.scope, queued);
+      await h.intake({ content: `@Test Bot ${command}` });
+      expect(h.pending.cancel(h.ctx.scope)).toEqual([queued]);
+      expect(encodeFixture(h.channel.sent)).toContain('已保存');
+    },
+  );
+
+  it('still clears queued work for a reset command after a mention', async () => {
+    const h = await larkHarness();
+    h.pending.push(h.ctx.scope, h.message({ content: 'already queued', messageId: 'queued' }));
+    await h.intake({ content: '@Test Bot /new' });
+    expect(h.pending.cancel(h.ctx.scope)).toEqual([]);
+    expect(h.channel.sent.length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    { content: '@Test Bot /model custom/fast', mentions: [] },
+    { content: '@Test Bot /model custom/fast', mentions: [{ key: '@_user_1', openId: 'ou_other', name: 'Test Bot', isBot: true }] },
+    { content: '@_user_2 /model custom/fast' },
+    { content: '@Test BotExtra /model custom/fast' },
+    { content: '@Test Bot 请解释 /model custom/fast' },
+    { content: '@Someone @Test Bot /model custom/fast' },
+  ])('preserves ordinary text and mentions of others: $content', async patch => {
+    const h = await larkHarness();
+    await h.intake(patch);
+    expect((await resolveRunModelSettings(h.controls, h.ctx.scope)).model).toBe('provider/base');
+    expect(h.pending.cancel(h.ctx.scope).map(message => message.content)).toEqual([patch.content]);
+  });
+
+  it('keeps the original input when the bot identity is unavailable', async () => {
+    const h = await larkHarness();
+    Object.assign(h.channel, { botIdentity: undefined });
+    const content = '@Test Bot /model custom/fast';
+    await h.intake({ content });
+    expect((await resolveRunModelSettings(h.controls, h.ctx.scope)).model).toBe('provider/base');
+    expect(h.pending.cancel(h.ctx.scope).map(message => message.content)).toEqual([content]);
+  });
+});
+
 describe('model and effort scope settings', () => {
+  it.each(['/model', '/provider'])('preserves a task without an effort argument through %s', async command => {
+    const h = await harness();
+    const prompt = '检查  这个问题\n\t第二行';
+    await h.command(`${command} custom/fast ${prompt}`);
+    expect((await resolveRunModelSettings(h.controls, h.ctx.scope)).model).toBe('custom/fast');
+    expect(h.ctx.followUpPrompt).toBe(prompt);
+  });
+
   it('switches model and effort in one command and runs the trailing prompt', async () => {
     const h = await harness();
     await h.command('/model provider/base high');
@@ -79,7 +178,7 @@ describe('model and effort scope settings', () => {
     expect(h.ctx.followUpPrompt).toBe('检查 这个问题');
     expect(encodeFixture(h.channel.sent)).toContain('开始执行');
 
-    await h.command('/model custom/slow not-an-effort 任务');
+    await h.command('/model provider/restricted ultra 任务');
     expect((await resolveRunModelSettings(h.controls, h.ctx.scope)).model).toBe('custom/fast');
     expect(encodeFixture(h.channel.sent)).toContain('设置未保存');
   });
