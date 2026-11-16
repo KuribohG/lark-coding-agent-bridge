@@ -1,5 +1,5 @@
 import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -38,7 +38,7 @@ describe('resolvePiSdkPaths', () => {
     const paths = resolvePiSdkPaths({ binaryPath: launcher });
     expect(paths.sdkPath).toBe(join(runtime, '@earendil-works', 'pi-coding-agent', 'dist', 'index.js'));
     expect(paths.nodePath).toBe(node);
-    expect(paths.hostScript.endsWith('bin/pi-host.mjs')).toBe(true);
+    expect(paths.hostScript.endsWith(join('bin', 'pi-host.mjs'))).toBe(true);
   });
 
   it('prefers explicit sdkPath/nodePath over launcher derivation', async () => {
@@ -66,7 +66,7 @@ describe('resolvePiAgentDir', () => {
     expect(resolvePiAgentDir({ agentDir: '/config/pi-agent' })).toBe('/config/pi-agent');
     expect(resolvePiAgentDir({})).toBe('/env/pi-agent');
     delete process.env.PI_CODING_AGENT_DIR;
-    expect(resolvePiAgentDir({})).toMatch(/\.pi\/agent$/);
+    expect(resolvePiAgentDir({})).toBe(join(homedir(), '.pi', 'agent'));
   });
 });
 
