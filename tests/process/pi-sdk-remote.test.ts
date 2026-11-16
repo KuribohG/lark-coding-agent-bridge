@@ -88,6 +88,7 @@ describe('pi SDK remote host', () => {
       env: { PI_REMOTE_MARKER: 'from-env-file' },
     })).start().events);
 
+    expect(events.filter((event) => event.type === 'error')).toEqual([]);
     expect(events.find((event) => event.type === 'final_text')).toEqual({ type: 'final_text', content: 'OK' });
     expect(events.at(-1)).toMatchObject({ type: 'done', terminationReason: 'normal' });
 
@@ -112,13 +113,14 @@ describe('pi SDK remote host', () => {
   it('publishes the workflow endpoint through a reverse tunnel for the remote run', async () => {
     const h = await harness();
     const localEndpoint = 'http://127.0.0.1:43210/workflow';
-    await collect((await h.adapter.prepareRun({
+    const events = await collect((await h.adapter.prepareRun({
       runId: 'remote-workflow',
       prompt: 'go',
       cwd: h.dir,
       env: { AGENT_WORKFLOW_TOKEN: 'token', AGENT_WORKFLOW_ENDPOINT: localEndpoint, AGENT_WORKFLOW_CLI: '/pkg/dist/workflow-cli.js' },
     })).start().events);
 
+    expect(events.filter((event) => event.type === 'error')).toEqual([]);
     const records = await h.sshRecords();
     const tunnel = records.find((record) => record.mode === 'tunnel');
     expect(tunnel?.argv).toEqual(expect.arrayContaining(['-N', '-o', 'ExitOnForwardFailure=yes']));
@@ -168,7 +170,7 @@ describe('remote host command line', () => {
     if (process.platform === 'win32') {
       const script = [
         '$ErrorActionPreference = "Stop"',
-        '$acl = Get-Acl -LiteralPath $env:TEST_PRIVATE_FILE',
+        '$acl = [IO.File]::GetAccessControl($env:TEST_PRIVATE_FILE)',
         '$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
         '$rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])',
         '[bool]($acl.AreAccessRulesProtected -and $rules.Count -eq 1 -and $rules[0].IdentityReference.Value -eq $sid -and $rules[0].AccessControlType -eq "Allow")',
