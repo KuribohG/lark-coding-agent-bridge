@@ -308,8 +308,8 @@ describe('profile-aware account and config commands', () => {
   });
 
   it('saves /account submit into the active v2 profile and profile-local keystore', async () => {
-    vi.useFakeTimers();
-    const h = await createHarness();
+    const restart = vi.fn(async () => {});
+    const h = await createHarness({ restart });
 
     await h.command('/account submit', {
       app_id: 'cli_new',
@@ -317,9 +317,8 @@ describe('profile-aware account and config commands', () => {
       tenant: 'lark',
     });
 
-    const root = await waitForRoot(h.rootDir, (candidate) =>
-      candidate.profiles.claude?.accounts.app.id === 'cli_new',
-    );
+    await vi.waitFor(() => expect(restart).toHaveBeenCalledOnce(), { timeout: 15_000 });
+    const root = await readRoot(h.rootDir);
     expect(root.schemaVersion).toBe(2);
     expect(root.profiles['codex-dev']).toBeDefined();
     expect(root.profiles.claude?.accounts.app).toMatchObject({
@@ -349,6 +348,7 @@ async function createHarness(options: {
   preferences?: RootConfig['profiles'][string]['preferences'];
   agentKind?: 'claude' | 'codex' | 'pi';
   switchAgent?: () => Promise<void>;
+  restart?: () => Promise<void>;
 } = {}): Promise<{
   rootDir: string;
   channel: ReturnType<typeof createFakeChannel>;
@@ -370,7 +370,7 @@ async function createHarness(options: {
     botOwnerId: 'ou-admin',
     ownerRefreshState: 'ok',
     async refreshOwner() {},
-    restart: vi.fn(async () => {}),
+    restart: options.restart ?? vi.fn(async () => {}),
     switchAgent: options.switchAgent,
     exit: vi.fn(async () => {}),
     configPath: appPaths.configFile,
