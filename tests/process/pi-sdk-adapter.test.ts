@@ -162,6 +162,7 @@ describe('PiSdkAdapter process contract', () => {
     const harness = await createAdapter({
       FAKE_HOST_EVENTS: JSON.stringify([
         { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'started' } },
+        { type: 'message_update', assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: 'started' } },
       ]),
       FAKE_HOST_HOLD_MS: '15000',
     });
