@@ -65,6 +65,9 @@ binaryPath = "pi"
 # idleTtlMs = 900000
 # maxSessions = 256
 # sessionPersistence = "file"
+# Run the host on another machine over ssh (same absolute paths there).
+# remote = "user@worker-node"
+# sshOptions = ["-i", "/keys/id_worker"]
 
 [channels.lark]
 reply_mode = "markdown"

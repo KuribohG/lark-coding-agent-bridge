@@ -27,6 +27,7 @@ import { PI_SDK_EXECUTION_CAPABILITIES } from './capabilities';
 import { AsyncEventQueue } from './event-queue';
 import { PiHostClient, type PiHostLaunch, type PiHostRunAck, type PiHostSessionInfo } from './host-client';
 import { PI_SDK_MIN_NODE, resolvePiAgentDir, resolvePiSdkPaths, type PiSdkPaths } from './paths';
+import { localWorkflowEndpoint, openWorkflowTunnel, remoteRunEnv, shellQuote, type PiRemoteTarget, type WorkflowTunnel } from './remote';
 import { piHostSpawnCommand, type PiHostSandbox } from './sandbox';
 
 export interface PiSdkAdapterOptions {
@@ -77,6 +78,10 @@ export class PiSdkAdapter implements AgentAdapter {
   private paths: PiSdkPaths | undefined;
   private botIdentity: AgentBotIdentity | undefined;
   private readonly sandbox: PiHostSandbox | undefined;
+  private readonly remote: PiRemoteTarget | undefined;
+  private tunnel: WorkflowTunnel | undefined;
+  private remoteNodeCheck: Promise<AgentAvailability> | undefined;
+  private tunnelEndpoint: string | undefined;
   /** cwds already reported as outside the profile-scoped sandbox. */
   private readonly unwritableCwds = new Set<string>();
   /** Run ids whose event streams have not finished; shutdown waits for them. */
@@ -90,6 +95,16 @@ export class PiSdkAdapter implements AgentAdapter {
     this.env = { ...opts.env };
     this.defaultStopGraceMs = opts.stopGraceMs ?? 5000;
     this.sandbox = opts.sandbox?.settings.enabled ? opts.sandbox : undefined;
+    this.remote = opts.config.remote && opts.profileStateDir
+      ? {
+        destination: opts.config.remote,
+        stateDir: opts.profileStateDir,
+        ...(opts.config.sshOptions ? { sshOptions: opts.config.sshOptions } : {}),
+      }
+      : undefined;
+    if (opts.config.remote && !opts.profileStateDir) {
+      throw new Error('pi.remote needs a profile state directory for the environment file');
+    }
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -105,6 +120,7 @@ export class PiSdkAdapter implements AgentAdapter {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
     await this.waitForIdle(waitMs);
+    await this.closeTunnel();
     if (this.activeRuns.size > 0) {
       // A run started while the drain was in progress; disposing now would cut
       // it off, so leave the host to the next shutdown request.
@@ -166,6 +182,73 @@ export class PiSdkAdapter implements AgentAdapter {
     log.warn('agent', 'pi-sdk-sandbox-cwd-read-only', { cwd, writable });
   }
 
+  /**
+   * The workflow endpoint listens on the bridge's loopback only. A remote host
+   * reaches it through a reverse tunnel, so the run environment it receives
+   * names the tunnel; the local-only endpoint file is dropped.
+   */
+  private async withRemoteEndpoint(opts: AgentRunOptions): Promise<AgentRunOptions> {
+    const env = opts.env;
+    const local = env ? localWorkflowEndpoint(env) : undefined;
+    if (!env || !local) return opts;
+    const endpoint = await this.remoteEndpoint(local);
+    return Object.freeze({ ...opts, env: Object.freeze(remoteRunEnv(env, endpoint)) });
+  }
+
+  private async remoteEndpoint(localEndpoint: string): Promise<string> {
+    const target = this.remote;
+    if (!target) return localEndpoint;
+    if (this.tunnel && this.tunnelEndpoint === localEndpoint) return this.tunnel.endpoint;
+    await this.closeTunnel();
+    const tunnel = await openWorkflowTunnel(target, localEndpoint);
+    this.tunnel = tunnel;
+    this.tunnelEndpoint = localEndpoint;
+    return tunnel.endpoint;
+  }
+
+  private async closeTunnel(): Promise<void> {
+    const tunnel = this.tunnel;
+    this.tunnel = undefined;
+    this.tunnelEndpoint = undefined;
+    await tunnel?.close();
+  }
+
+  /**
+   * The runtime that matters is the one on the target machine, so a remote
+   * profile asks the node itself. One ssh round trip per adapter, not per run:
+   * a bridge restart or a config reload builds a new adapter.
+   */
+  private checkNode(paths: PiSdkPaths): Promise<AgentAvailability> {
+    const remote = this.remote;
+    if (!remote) {
+      return checkAgentAvailability({
+        agentId: 'pi',
+        agentName: this.displayName,
+        command: paths.nodePath,
+        binaryPath: paths.nodePath,
+        // `node --version` prints `v22.23.3`; the shared version matcher expects
+        // a plain `\d+.\d+.\d+` token, so ask Node for the bare version.
+        args: ['-p', 'process.versions.node'],
+        env: this.env,
+        minimumVersion: PI_SDK_MIN_NODE.join('.'),
+      });
+    }
+    this.remoteNodeCheck ??= checkAgentAvailability({
+      agentId: 'pi',
+      agentName: this.displayName,
+      command: remote.ssh ?? 'ssh',
+      binaryPath: paths.nodePath,
+      args: [
+        ...(remote.sshOptions ?? []),
+        remote.destination,
+        `${shellQuote(paths.nodePath)} -p process.versions.node`,
+      ],
+      env: this.env,
+      minimumVersion: PI_SDK_MIN_NODE.join('.'),
+    });
+    return this.remoteNodeCheck;
+  }
+
   private async logHealth(context: string): Promise<void> {
     const client = this.client;
     if (!client || client.isClosed) return;
@@ -225,17 +308,7 @@ export class PiSdkAdapter implements AgentAdapter {
       }
     }
 
-    const node = await checkAgentAvailability({
-      agentId: 'pi',
-      agentName: this.displayName,
-      command: paths.nodePath,
-      binaryPath: paths.nodePath,
-      // `node --version` prints `v22.23.3`; the shared version matcher expects
-      // a plain `\d+.\d+.\d+` token, so ask Node for the bare version.
-      args: ['-p', 'process.versions.node'],
-      env: this.env,
-      minimumVersion: PI_SDK_MIN_NODE.join('.'),
-    });
+    const node = await this.checkNode(paths);
     if (!node.ok) return node;
 
     for (const [file, field] of [
@@ -257,10 +330,11 @@ export class PiSdkAdapter implements AgentAdapter {
   }
 
   async prepareRun(input: AgentRunOptions): Promise<PreparedAgentRun> {
-    const opts = snapshotRunOptions({
+    const snapshot = snapshotRunOptions({
       ...input,
       systemPrompt: input.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity),
     });
+    const opts = this.remote ? await this.withRemoteEndpoint(snapshot) : snapshot;
     if (!opts.cwd) throw new Error('cwd is required for pi sdk preparation');
     if (opts.forkSession && !opts.sessionId) throw new Error('fork requires a parent session');
     if (opts.model) validateModelId(opts.model);
@@ -584,6 +658,7 @@ export class PiSdkAdapter implements AgentAdapter {
       ...(this.sandbox
         ? { sandbox: { ...this.sandbox, roots: [...this.sandbox.roots, agentDir] } }
         : {}),
+      ...(this.remote ? { remote: this.remote } : {}),
       env: this.env,
       ...(this.config.idleTtlMs !== undefined ? { idleTtlMs: this.config.idleTtlMs } : {}),
       ...(this.config.maxSessions !== undefined ? { maxSessions: this.config.maxSessions } : {}),

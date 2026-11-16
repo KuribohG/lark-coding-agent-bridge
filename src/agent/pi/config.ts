@@ -21,6 +21,14 @@ export interface PiConfig extends ExecutableLaunchConfig {
   maxSessions?: number;
   /** Persist SDK sessions as JSONL (default) or keep them in memory only. */
   sessionPersistence?: 'file' | 'memory';
+  /**
+   * Run the SDK host on this ssh destination instead of the bridge machine.
+   * `nodePath`, `sdkPath`, `hostScript` and `agentDir` must resolve to the same
+   * paths there (a shared filesystem mount).
+   */
+  remote?: string;
+  /** Extra ssh options, appended before the destination. */
+  sshOptions?: string[];
 }
 
 export function normalizePi(input: PiConfig): PiConfig {
@@ -36,6 +44,14 @@ export function normalizePi(input: PiConfig): PiConfig {
       throw new Error(`pi.${key} must be a positive integer`);
     }
   }
+  if (input.remote !== undefined) {
+    if (typeof input.remote !== 'string' || !input.remote.trim() || input.remote.startsWith('-') || /\s/.test(input.remote)) {
+      throw new Error('pi.remote: expected an ssh destination such as "host" or "user@host"');
+    }
+  }
+  if (input.sshOptions !== undefined && (!Array.isArray(input.sshOptions) || input.sshOptions.some(option => typeof option !== 'string'))) {
+    throw new Error('pi.sshOptions: expected an array of strings');
+  }
   return {
     ...normalizeExecutableLaunch(input, 'pi'),
     ...(typeof input.agentDir === 'string' && input.agentDir ? { agentDir: input.agentDir } : {}),
@@ -46,5 +62,7 @@ export function normalizePi(input: PiConfig): PiConfig {
     ...(typeof input.idleTtlMs === 'number' ? { idleTtlMs: input.idleTtlMs } : {}),
     ...(typeof input.maxSessions === 'number' ? { maxSessions: input.maxSessions } : {}),
     ...(input.sessionPersistence ? { sessionPersistence: input.sessionPersistence } : {}),
+    ...(input.remote ? { remote: input.remote.trim() } : {}),
+    ...(input.sshOptions && input.sshOptions.length > 0 ? { sshOptions: [...input.sshOptions] } : {}),
   };
 }

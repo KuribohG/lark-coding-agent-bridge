@@ -3,6 +3,7 @@ import { log } from '../../core/logger';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
 import { terminateChild } from '../../platform/terminate';
 import { readJsonLines } from '../jsonl';
+import { remoteHostSpawn, sweepRemoteEnvFiles, type PiRemoteTarget } from './remote';
 import { piHostSpawnCommand, type PiHostSandbox } from './sandbox';
 
 export type PiHostChild = SpawnedProcessByStdio<Writable, Readable, Readable>;
@@ -19,6 +20,8 @@ export interface PiHostLaunch {
   sessionPersistence?: 'file' | 'memory';
   /** Profile-scoped Landlock domain applied to this long-lived host. */
   sandbox?: PiHostSandbox;
+  /** Run the host on another machine over ssh instead of locally. */
+  remote?: PiRemoteTarget;
   /** Milliseconds to wait for the host ready frame. */
   readyTimeoutMs?: number;
 }
@@ -165,20 +168,42 @@ export class PiHostClient {
       PI_SKIP_VERSION_CHECK: '1',
       PI_TELEMETRY: '0',
     });
-    const command = piHostSpawnCommand(launch.nodePath, args, launch.sandbox, env);
-    const child = spawnProcess(command.command, command.args, {
-      cwd: launch.cwd,
-      env,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    }) as PiHostChild;
+    const local = launch.remote
+      ? undefined
+      : piHostSpawnCommand(launch.nodePath, args, launch.sandbox, env);
+    const remote = launch.remote
+      ? remoteHostSpawn(launch.remote, {
+        nodePath: launch.nodePath,
+        hostScript: launch.hostScript,
+        args,
+        ...(launch.cwd ? { cwd: launch.cwd } : {}),
+        env,
+      })
+      : undefined;
+    if (remote) sweepRemoteEnvFiles(launch.remote!.stateDir);
+    let child: PiHostChild;
+    try {
+      child = spawnProcess(local?.command ?? remote!.command, local?.args ?? remote!.args, {
+        // The remote shell does the cd; a local cwd on ssh would be meaningless.
+        ...(local ? { cwd: launch.cwd } : {}),
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }) as PiHostChild;
+    } catch (error) {
+      remote?.cleanup();
+      throw error;
+    }
     this.child = child;
+    child.once('exit', () => remote?.cleanup());
+    child.once('error', () => remote?.cleanup());
     log.info('agent', 'pi-sdk-host-spawn', {
       pid: child.pid ?? null,
       nodePath: launch.nodePath,
       sdkPath: launch.sdkPath,
       agentDir: launch.agentDir,
-      sandboxed: command.sandboxed,
-      ...(command.sandboxed && launch.sandbox ? { sandboxRoots: launch.sandbox.roots } : {}),
+      sandboxed: local?.sandboxed ?? false,
+      ...(local?.sandboxed && launch.sandbox ? { sandboxRoots: launch.sandbox.roots } : {}),
+      ...(launch.remote ? { remote: launch.remote.destination, envFile: remote?.envFile } : {}),
     });
 
     let stderrBuffer = '';

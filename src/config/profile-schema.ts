@@ -233,6 +233,17 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
   // Absent (not disabled) so an unrelated config save does not write the table
   // into every profile; readers treat missing as "disabled".
   const execSandbox = raw.exec_sandbox === undefined ? {} : { execSandbox: normalizeExecSandbox(raw.exec_sandbox) };
+  const launches = normalizeAgentLaunches(raw);
+  // A remote Pi host is spawned over ssh, so the local launcher cannot wrap it,
+  // and only the SDK transport keeps every artifact on the shared filesystem.
+  if (launches.pi?.remote) {
+    if (launches.pi.transport !== 'sdk') {
+      throw new Error('pi.remote requires pi.transport = "sdk"; the CLI transport writes per-run files to the bridge machine');
+    }
+    if (execSandbox.execSandbox?.enabled) {
+      throw new Error('pi.remote cannot take the local exec sandbox; the remote node enforces its own isolation');
+    }
+  }
 
   return {
     schemaVersion: 2,
@@ -242,7 +253,7 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     ...(raw.secrets ? { secrets: raw.secrets } : {}),
     preferences,
     ...(raw.channels ? { channels: raw.channels } : {}),
-    ...normalizeAgentLaunches(raw),
+    ...launches,
     ...(raw.state ? { state: raw.state } : {}),
     access,
     workspaces,

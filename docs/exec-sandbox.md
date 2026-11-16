@@ -73,6 +73,10 @@ under one static, profile-scoped domain when it starts:
 - `require_landlock = true` makes a missing launcher or kernel support a host
   start failure instead of an unsandboxed fallback.
 
+A host that runs on another machine (`pi.remote`) cannot take this domain at
+all — the launcher is a binary on the bridge machine — and the configuration
+rejects the pair; isolation there is whatever the remote node enforces.
+
 The consequence to plan for: **a run's `cwd` is not added automatically**. If a
 conversation or worker works in a repository outside the workspace roots, add
 that path to `read_write`, or its writes fail with `EACCES` (the bridge logs

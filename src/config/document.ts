@@ -120,6 +120,12 @@ function checkLaunch(value: unknown, agent: string, path: string): void {
       }
       continue;
     }
+    if (k === 'sshOptions') {
+      if (!Array.isArray(v) || v.some((item) => typeof item !== 'string')) {
+        throw new Error(`${path}.sshOptions: expected an array of strings`);
+      }
+      continue;
+    }
     const kind = ['inheritCodexHome', 'ignoreUserConfig', 'ignoreRules'].includes(k) ? 'boolean'
       : ['mode', 'owner', 'idleTtlMs', 'maxSessions'].includes(k) ? 'number'
       : 'string';
