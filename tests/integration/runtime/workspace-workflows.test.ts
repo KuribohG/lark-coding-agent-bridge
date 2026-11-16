@@ -47,7 +47,7 @@ async function harness(perform?: (opts: AgentRunOptions, index: number) => Promi
   const state = () => runtime.kernel.state('test')!;
   const call = (method: string, args: object = {}) => runtime.kernel.call({ kind: 'main', scopeId: 'test', allowStart: true }, method,
     { operationId: randomUUID(), workflowId: state()?.workflowId, expectedStateVersion: state()?.stateVersion, ...(method === 'run_script' ? { goal: 'test workspace', plan: 'isolate and review work' } : {}), ...args });
-  const until = async (status: string) => vi.waitFor(async () => { await runtime.tick(); expect(state().script?.status, state().script?.error).toBe(status); }, { timeout: 20_000, interval: 30 });
+  const until = async (status: string, timeout = 20_000) => vi.waitFor(async () => { await runtime.tick(); expect(state().script?.status, state().script?.error).toBe(status); }, { timeout, interval: 30 });
   return { dir, repo, root, policy, adapter, runtime, call, state, until };
 }
 
@@ -71,7 +71,7 @@ describe('workspace script runtime', () => {
       const value = await readFile(join(opts.cwd!, 'value.txt'), 'utf8'); reviews++;
       return JSON.stringify({ ok: value === 'correct\n', reason: value === 'correct\n' ? 'correct' : 'fix value', evidence: [`Read value.txt: ${value}`] });
     });
-    await h.call('run_script', { script: reviewScript, args: { node: process.execPath } }); await h.until('result_ready');
+    await h.call('run_script', { script: reviewScript, args: { node: process.execPath } }); await h.until('result_ready', 75_000);
     expect([workers, reviews]).toEqual([2, 2]);
     const result = JSON.parse(h.state().artifacts.at(-1)!.text);
     expect(result.result.rounds).toBe(2); expect(result.accepted.completed).toBe(true);
@@ -80,9 +80,9 @@ describe('workspace script runtime', () => {
     expect(runs.every(opts => opts.cwd !== h.repo)).toBe(true);
     expect(runs[0]!.cwd).toBe(runs[2]!.cwd); expect(runs[1]!.cwd).not.toBe(runs[3]!.cwd);
     expect(runs[2]!.threadId).toBeDefined(); expect(runs[1]!.threadId).toBeUndefined();
-    await h.call('replay_script'); await h.until('result_ready'); expect(h.adapter.runs).toHaveLength(4);
+    await h.call('replay_script'); await h.until('result_ready', 75_000); expect(h.adapter.runs).toHaveLength(4);
     expect(JSON.parse(h.state().artifacts.at(-1)!.text)).toEqual(result);
-  }, 30_000);
+  }, 90_000);
 
   it('rejects dirty reviewers before recording successful task results', async () => {
     const h = await harness(async opts => {

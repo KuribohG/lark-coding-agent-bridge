@@ -31,6 +31,17 @@ async function writeVersionExecutableFile(
   await chmod(file, 0o755);
 }
 
+export async function writeNodeFixtureLauncher(root: string, name: string, script: string): Promise<string> {
+  const windows = process.platform === 'win32';
+  const file = join(root, name + (windows ? '.cmd' : ''));
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\\''") + "'";
+  const command = windows
+    ? '@echo off\r\n"' + process.execPath.replaceAll('%', '%%') + '" "' + script.replaceAll('%', '%%') + '" %*\r\n'
+    : '#!/bin/sh\nexec ' + quote(process.execPath) + ' ' + quote(script) + ' "$@"\n';
+  await writeFile(file, command, { mode: 0o700 });
+  return file;
+}
+
 function isCmd(path: string): boolean {
   return path.toLowerCase().endsWith('.cmd');
 }

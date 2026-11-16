@@ -160,9 +160,10 @@ describe('PiSdkAdapter process contract', () => {
 
   it('aborts a run on stop and reports interruption', async () => {
     const harness = await createAdapter({
-      FAKE_HOST_EVENTS: JSON.stringify([{ type: 'agent_settled', aborted: true }]),
-      FAKE_HOST_EVENT_DELAY_MS: '5000',
-      FAKE_HOST_HOLD_MS: '5000',
+      FAKE_HOST_EVENTS: JSON.stringify([
+        { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'started' } },
+      ]),
+      FAKE_HOST_HOLD_MS: '15000',
     });
 
     const run = (await harness.adapter.prepareRun({ runId: 'run-stop', prompt: 'go', cwd: harness.dir })).start();
@@ -177,7 +178,7 @@ describe('PiSdkAdapter process contract', () => {
         rest.push(next.value);
       }
     })();
-    await waitUntil(async () => (await harness.calls()).some((call) => call.cmd === 'run.prompt'));
+    await waitUntil(async () => rest.some((event) => event.type === 'text'), 10_000);
 
     await run.stop('cancelled');
     await drain;

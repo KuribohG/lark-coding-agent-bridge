@@ -1,4 +1,4 @@
-import { chmodSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
+import { writeNodeFixtureLauncher } from '../helpers/fake-executable';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PiSdkAdapter } from '../../src/agent/pi-sdk/adapter';
@@ -33,8 +34,10 @@ const hosts: Array<import('node:child_process').ChildProcess> = [];
 afterEach(async () => {
   for (const adapter of adapters.splice(0)) await adapter.shutdown();
   for (const host of hosts.splice(0)) {
-    if (host.exitCode === null) host.kill('SIGKILL');
-    await once(host, 'exit').catch(() => {});
+    if (host.exitCode !== null || host.signalCode !== null) continue;
+    const exited = once(host, 'exit');
+    host.kill('SIGKILL');
+    await exited;
   }
   delete process.env.FAKE_WORKCELL_RECORD;
   delete process.env.FAKE_WORKCELL_HOST_PORT;
@@ -85,9 +88,7 @@ async function harness(options: { workflowEndpoint?: string; tcpIpc?: boolean; l
   const agentDir = join(dir, 'agent');
   await mkdir(agentDir, { recursive: true });
   writeFileSync(join(agentDir, 'auth.json'), '{"token":"t"}');
-  const provider = join(dir, 'provider.sh');
-  writeFileSync(provider, `#!/bin/sh\nexec '${process.execPath}' '${providerFixture}' "$@"\n`, { mode: 0o700 });
-  chmodSync(provider, 0o700);
+  const provider = await writeNodeFixtureLauncher(dir, 'provider', providerFixture);
   process.env.FAKE_WORKCELL_HOST_PORT = String(hostPort);
 
   // A realistic launcher layout: only the basenames are assumed by the layout.
