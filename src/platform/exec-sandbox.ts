@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { isAbsolute, join } from 'node:path';
+import { isAbsolute } from 'node:path';
+import { join } from 'node:path/posix';
 import { fileURLToPath } from 'node:url';
 
 /**

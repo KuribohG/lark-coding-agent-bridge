@@ -274,7 +274,7 @@ export class ConversationRuntime {
           systemPrompt: this.options.systemPrompt ?? '',
           sessionSource: { kind: 'message', summary: input.prompt.slice(0, 180) },
           observabilitySource: 'channel',
-          runOptions: { userQuestions: Boolean(input.questions || this.options.userQuestions), deadlineAt: input.deadlineAt },
+          runOptions: { userQuestions: input.questions ? true : this.options.userQuestions, deadlineAt: input.deadlineAt },
         };
       },
       // A turn that claimed the conversation's lane already holds its queue.
@@ -317,11 +317,11 @@ export class ConversationRuntime {
   }
 
   /** The shared message-turn host's view of this runtime. */
-  private turnDeps(identity: ConversationIdentity) {
+  private turnDeps({ actorId, conversationId }: ConversationIdentity) {
     return {
       stores: this.stores,
       profileFor: (kind: AgentKind) =>
-        profileForAgentKind(this.options.configForAgent?.(kind, identity) ?? this.options.config, kind),
+        profileForAgentKind(this.options.configForAgent?.(kind, { actorId, conversationId }) ?? this.options.config, kind),
       // No per-conversation model store: startTurn applies the profile defaults.
       memory: this.turnMemory,
     };

@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 // Scriptable stand-in for bin/pi-host.mjs used by tests/process/pi-sdk-adapter.test.ts.
 // It speaks the same newline-delimited JSON protocol and records every request.
-import { writeFileSync } from 'node:fs';
+import { renameSync, writeFileSync } from 'node:fs';
 
 const recordPath = process.env.FAKE_HOST_RECORD;
 const record = { calls: [], argv: process.argv.slice(2) };
 function save() {
-  if (recordPath) writeFileSync(recordPath, JSON.stringify(record, null, 2));
+  if (!recordPath) return;
+  const next = recordPath + '.tmp';
+  writeFileSync(next, JSON.stringify(record, null, 2));
+  renameSync(next, recordPath);
 }
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
