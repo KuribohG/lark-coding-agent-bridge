@@ -34,7 +34,8 @@ const result = await esbuild.build({ absWorkingDir: root,
 // The host spawns these helpers as separate programs. The workflow client only
 // calls the authorized workflow endpoint; the standalone bridge CLI stays out.
 const helpers = await esbuild.build({ absWorkingDir: root,
-  entryPoints: { 'bin/deadline-guard': 'bin/deadline-guard.mjs', 'bin/pi-host': 'bin/pi-host.mjs' },
+  entryPoints: ['bin/deadline-guard.mjs', 'bin/pi-host.mjs', 'bin/cell-host.mjs', 'bin/run-host.mjs'],
+  outbase: '.',
   outdir: output, outExtension: { '.js': '.mjs' }, bundle: true, platform: 'node', format: 'esm',
   target: 'node22', sourcemap: false, metafile: true,
   banner: { js: "import { createRequire as bundleRequire } from 'node:module';\nconst require = bundleRequire(import.meta.url);" },
