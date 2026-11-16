@@ -10,6 +10,7 @@ import {
   type QuotedContext,
 } from './quote';
 import type { UserQuestions } from './question-cards';
+import type { LarkUserReads } from './user-read';
 import type { CallbackAuth } from '../../card/callback-auth';
 import type { Controls } from '../../commands';
 import { getCotMessages, getMessageReplyMode } from '../../config/schema';
@@ -48,6 +49,8 @@ export interface LarkRunServices extends TurnStores {
   callbackAuth?: CallbackAuth;
   userQuestions: UserQuestions;
   memory: ScopeRunMemory;
+  /** User-identity fallback for read-only IM calls (see `user-read.ts`). */
+  userReads?: LarkUserReads;
 }
 
 /** One turn: the batch to answer and how it was started. */
@@ -105,7 +108,7 @@ async function prepareTurn(
   if (!wake) turn.workflowOrigins?.set(turn.scope, firstMsg);
 
   const attachments = await resolveAttachments(media, controls, input);
-  const quoted = await fetchBatchQuotes(channel, input, turn.mode);
+  const quoted = await fetchBatchQuotes(channel, input, turn.mode, services.userReads);
   const accessDecision =
     firstMsg.chatType === 'p2p'
       ? canUseDm(controls.profileConfig, controls, firstMsg.senderId)
@@ -289,7 +292,12 @@ interface BatchQuotes {
 }
 
 /** Fetches reply-quote targets once each, skipping ids that are themselves in the batch. */
-async function fetchBatchQuotes(channel: LarkChannel, input: PendingMessage[], mode: ChatMode): Promise<BatchQuotes> {
+async function fetchBatchQuotes(
+  channel: LarkChannel,
+  input: PendingMessage[],
+  mode: ChatMode,
+  reads?: LarkUserReads,
+): Promise<BatchQuotes> {
   const batchIds = new Set(input.map((m) => m.messageId));
   const quoteTargets = [
     ...new Set(
@@ -301,7 +309,7 @@ async function fetchBatchQuotes(channel: LarkChannel, input: PendingMessage[], m
   const quotes: QuotedContext[] = [];
   const fetchedIds = new Set<string>();
   for (const targetId of quoteTargets) {
-    const q = await fetchQuotedContext(channel, targetId);
+    const q = await fetchQuotedContext(channel, targetId, { reads });
     if (q) {
       quotes.push(q);
       fetchedIds.add(targetId);
@@ -393,6 +401,7 @@ async function fetchUnseenTopicContext(services: LarkRunServices, input: {
     ...(controls.profileConfig.accounts.app.id
       ? { selfAppId: controls.profileConfig.accounts.app.id }
       : {}),
+    reads: services.userReads,
   });
   const messages = fetched.messages.filter(message => !controls.channel?.btw.excludes(scope, message));
   if (messages.length > 0) {

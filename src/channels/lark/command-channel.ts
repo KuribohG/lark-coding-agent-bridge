@@ -5,12 +5,16 @@ import { hasGroupMsgScope } from './app-scope';
 import { createBoundChat } from './group';
 import { fetchKnownChats } from './lark-info';
 import { lookupMessageAppLink, scopeAppLink } from './message-links';
+import type { LarkUserReads } from './user-read';
 
 /**
  * Lark's `CommandChannel`: commands reach the SDK only through this, so their
  * handlers do not depend on Lark types or on a connected SDK client.
  */
-export function createLarkCommandChannel(channel: LarkChannel): CommandChannel {
+export function createLarkCommandChannel(
+  channel: LarkChannel,
+  reads?: LarkUserReads,
+): CommandChannel {
   return {
     botName: channel.botIdentity?.name,
     send: (recipientId, content, options) => channel.send(recipientId, content, options),
@@ -18,7 +22,7 @@ export function createLarkCommandChannel(channel: LarkChannel): CommandChannel {
     updateCard: (messageId, card) => updateManagedCard(channel, messageId, card),
     stream: (recipientId, content, options) => channel.stream(recipientId, content, options),
     recallMessage: messageId => channel.recallMessage(messageId),
-    knownChats: () => fetchKnownChats(channel),
+    knownChats: () => fetchKnownChats(channel, reads),
     messageLink: (messageId, timeoutMs) => lookupMessageAppLink(channel, messageId, timeoutMs),
     conversationLink: scopeId => scopeAppLink(scopeId),
     hasGroupMessageScope: appId => hasGroupMsgScope(channel, appId),

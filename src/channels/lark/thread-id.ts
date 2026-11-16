@@ -1,5 +1,6 @@
 import type { LarkChannel } from '@larksuite/channel';
 import { log } from '../../core/logger';
+import { userFirst, type LarkUserReads } from './user-read';
 
 /**
  * Recover a message's topic `thread_id` (omt_*) via the raw `im.v1.message.get`
@@ -28,9 +29,13 @@ export interface MessageThreadIdLookup {
 export async function lookupMessageThreadId(
   channel: LarkChannel,
   messageId: string,
+  reads?: LarkUserReads,
 ): Promise<MessageThreadIdLookup> {
   try {
-    const [parent] = await channel.fetchRawMessage(messageId);
+    const [parent] = await userFirst(reads, 'thread',
+      () => reads!.messageItems(messageId),
+      () => channel.fetchRawMessage(messageId),
+    );
     // ApiMessageItem's SDK type omits thread_id even though the API returns it.
     return { threadId: (parent as { thread_id?: string } | undefined)?.thread_id, failed: false };
   } catch (err) {

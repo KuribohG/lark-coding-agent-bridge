@@ -5,6 +5,7 @@ import type { ChatModeCache } from './chat-mode-cache';
 import { bridgeInput, type PendingQueue } from './pending-queue';
 import type { ProcessPool } from '../../runtime/process-pool';
 import { createLarkCommandChannel } from './command-channel';
+import type { LarkUserReads } from './user-read';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import type { UserQuestions } from './question-cards';
 import { runCommandHandler, type CommandContext, type Controls } from '../../commands';
@@ -45,6 +46,8 @@ export interface CardDispatchDeps {
   userQuestions?: UserQuestions;
   callbackPolicyFingerprint?: string;
   callbackPolicyFingerprintForScope?: (scope: string) => string | undefined;
+  /** User-identity fallback for read-only IM calls (see `user-read.ts`). */
+  userReads?: LarkUserReads;
 }
 
 export function handleCardAction(deps: CardDispatchDeps): Promise<CardActionResponse | void> {
@@ -145,7 +148,7 @@ async function dispatchCardAction(deps: CardDispatchDeps): Promise<CardActionRes
     const msg = makeFakeMsg(deps.evt, threadId);
 
     const ctx: CommandContext = {
-      channel: createLarkCommandChannel(deps.channel),
+      channel: createLarkCommandChannel(deps.channel, deps.userReads),
       msg,
       scope,
       chatMode: mode,

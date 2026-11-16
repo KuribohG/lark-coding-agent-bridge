@@ -1,10 +1,17 @@
 import type { LarkChannel } from '@larksuite/channel';
 import type { KnownChat } from '../../commands/types';
 import { log } from '../../core/logger';
+import { userFirst, type LarkUserReads } from './user-read';
 
-export async function fetchKnownChats(channel: LarkChannel): Promise<KnownChat[]> {
+export async function fetchKnownChats(
+  channel: LarkChannel,
+  reads?: LarkUserReads,
+): Promise<KnownChat[]> {
   try {
-    const summaries = await channel.listChats({ pageSize: 100, maxPages: 5 });
+    const summaries = await userFirst(reads, 'lark-info',
+      () => reads!.listChats({ pageSize: 100, maxPages: 5 }),
+      () => channel.listChats({ pageSize: 100, maxPages: 5 }),
+    );
     const chats: KnownChat[] = summaries.map((c) => ({
       id: c.id,
       name: c.name || '(无名)',
@@ -20,9 +27,13 @@ export async function fetchKnownChats(channel: LarkChannel): Promise<KnownChat[]
 }
 
 /** Refreshes the bot's group list every 30 minutes, publishing only non-empty results. */
-export function startKnownChatsRefresh(channel: LarkChannel, publish: (chats: KnownChat[]) => void): { stop(): void } {
+export function startKnownChatsRefresh(
+  channel: LarkChannel,
+  publish: (chats: KnownChat[]) => void,
+  reads?: LarkUserReads,
+): { stop(): void } {
   const refresh = async (): Promise<void> => {
-    const chats = await fetchKnownChats(channel);
+    const chats = await fetchKnownChats(channel, reads);
     if (chats.length > 0) publish(chats);
   };
   void refresh();

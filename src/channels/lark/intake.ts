@@ -7,6 +7,7 @@ import type { FollowupRouter } from '../../runtime/followup';
 import { MAX_PENDING_CHARS_PER_SCOPE, type PendingQueue } from './pending-queue';
 import { fetchQuotedContext } from './quote';
 import { createLarkCommandChannel } from './command-channel';
+import type { LarkUserReads } from './user-read';
 import { commandSessionCatalogIdentity } from './session-catalog-identity';
 import { tryHandleCommand, type CommandContext, type Controls } from '../../commands';
 import { findCommand } from '../../commands/catalog';
@@ -96,6 +97,8 @@ interface IntakeDeps {
   pool: ProcessPool;
   cotClient: CotClient;
   preparedCots: Map<string, CotPublisher>;
+  /** User-identity fallback for read-only IM calls (see `user-read.ts`). */
+  userReads?: LarkUserReads;
 }
 
 export async function intakeMessage(deps: IntakeDeps): Promise<void> {
@@ -115,6 +118,7 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
     pool,
     cotClient,
     preparedCots,
+    userReads,
   } = deps;
   const preview = msg.content.length > 80 ? `${msg.content.slice(0, 80)}…` : msg.content;
   const { scope, threadId, mode: chatMode } = await chatModeCache.resolveScope(channel, msg);
@@ -200,7 +204,7 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
   const scopeAgentKind = resolveAgentKind(scope);
   const scopeAgent = resolveAgent(scope);
   const commandCtx: CommandContext = {
-    channel: createLarkCommandChannel(channel),
+    channel: createLarkCommandChannel(channel, userReads),
     msg: emsg,
     scope,
     chatMode,
@@ -267,7 +271,7 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
       scope, messageId: emsg.messageId, activeRuns,
       prepare: async () => {
         const target = replyQuoteTargetForMessage(emsg, chatMode);
-        const quote = target ? await fetchQuotedContext(channel, target) : undefined;
+        const quote = target ? await fetchQuotedContext(channel, target, { reads: userReads }) : undefined;
         return buildPrompt([emsg], [], quote ? [quote] : [], [], channel.botIdentity,
           [
             '这是用户在当前任务执行期间发来的补充消息。请结合原任务处理；消息未明确取消原目标时继续保留原目标。',

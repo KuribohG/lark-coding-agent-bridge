@@ -1,6 +1,7 @@
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import { log } from '../../core/logger';
 import { lookupMessageThreadId } from './thread-id';
+import { userFirst, type LarkUserReads } from './user-read';
 
 export type ChatMode = 'p2p' | 'group' | 'topic';
 
@@ -37,6 +38,11 @@ export interface ResolvedScope {
  */
 export class ChatModeCache {
   private readonly cache = new Map<string, ChatMode>();
+  private readonly reads?: LarkUserReads;
+
+  constructor(reads?: LarkUserReads) {
+    this.reads = reads;
+  }
 
   /** Text and card commands must address the same native conversation. Cards
    * lack threadId, so their carrier is checked even when chat metadata says group.
@@ -54,7 +60,7 @@ export class ChatModeCache {
       unverified = resolved.failed;
     }
     if (!threadId && (mode === 'topic' || (source === 'card' && mode === 'group'))) {
-      const lookup = await lookupMessageThreadId(channel, messageId);
+      const lookup = await lookupMessageThreadId(channel, messageId, this.reads);
       if (lookup.threadId) {
         threadId = lookup.threadId;
         if (this.cache.get(chatId) !== 'topic') this.invalidate(chatId);
@@ -74,7 +80,10 @@ export class ChatModeCache {
     const hit = this.cache.get(chatId);
     if (hit) return { mode: hit, failed: false };
     try {
-      const mode = await channel.getChatMode(chatId);
+      const mode = await userFirst(this.reads, 'chat',
+        () => this.reads!.chatMode(chatId),
+        () => channel.getChatMode(chatId),
+      );
       this.cache.set(chatId, mode);
       log.info('chat', 'mode-resolved', { chatId, mode });
       return { mode, failed: false };

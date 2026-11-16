@@ -25,13 +25,28 @@ export interface ResourceRequest {
   resource: ResourceDescriptor;
 }
 
+/**
+ * User-identity downloader (see `channels/lark/user-read.ts`). Structural so
+ * the media layer doesn't depend on the Lark channel layer.
+ */
+export interface MediaUserReads {
+  downloadResource(
+    messageId: string,
+    fileKey: string,
+    type: 'image' | 'file',
+    destPath: string,
+  ): Promise<{ contentType?: string }>;
+}
+
 export class MediaCache {
   private readonly channel: LarkChannel;
   private readonly rootDir: string;
+  private readonly userReads?: MediaUserReads;
 
-  constructor(channel: LarkChannel, rootDir: string = paths.mediaDir) {
+  constructor(channel: LarkChannel, rootDir: string = paths.mediaDir, userReads?: MediaUserReads) {
     this.channel = channel;
     this.rootDir = rootDir;
+    this.userReads = userReads;
   }
 
   async resolve(
@@ -66,6 +81,32 @@ export class MediaCache {
     return normalized;
   }
 
+  /**
+   * User identity first (it carries the IM read scopes the app may have lost),
+   * then the app identity. A user-token failure of any kind is non-fatal: the
+   * attachment is still attempted the old way.
+   */
+  private async downloadResource(
+    messageId: string,
+    fileKey: string,
+    type: 'image' | 'file',
+    destPath: string,
+  ): Promise<{ contentType?: string }> {
+    if (this.userReads) {
+      try {
+        return await this.userReads.downloadResource(messageId, fileKey, type, destPath);
+      } catch (err) {
+        log.warn('media', 'user-download-failed', {
+          fileKey,
+          err: err instanceof Error ? err.message : String(err),
+        });
+        // A half-written file must not be mistaken for the tenant-identity one.
+        await rm(destPath, { force: true }).catch(() => undefined);
+      }
+    }
+    return this.channel.downloadResourceToFile(messageId, fileKey, type, destPath);
+  }
+
   private async resolveOne(item: ResourceRequest): Promise<AttachmentCandidate | null> {
     const { messageId, resource: r } = item;
     if (r.type === 'sticker') {
@@ -86,12 +127,8 @@ export class MediaCache {
     // otherwise sit entirely in the JS heap before being rejected. It returns
     // the server content-type so we can pick an accurate extension, falling
     // back to defaultMime(kind) when absent.
-    const { contentType } = await this.channel.downloadResourceToFile(
-      messageId,
-      r.fileKey,
-      r.type === 'image' ? 'image' : 'file',
-      tmpPath,
-    );
+    const resourceType = r.type === 'image' ? 'image' : 'file';
+    const { contentType } = await this.downloadResource(messageId, r.fileKey, resourceType, tmpPath);
 
     const tmpStat = await stat(tmpPath);
     const hash = await hashFile(tmpPath);

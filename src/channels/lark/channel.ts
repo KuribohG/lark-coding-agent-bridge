@@ -10,6 +10,8 @@ import { getMaxConcurrentRuns, getMessageDebounceMs } from '../../config/schema'
 import { log, withTrace } from '../../core/logger';
 import { reply } from '../../commands/presentation';
 import { LarkProfileAuth } from '../../lark-auth/profile-auth';
+import { UserTokenProvider } from '../../lark-auth/user-token';
+import { keystoreUserTokenStore } from '../../lark-auth/user-token-store';
 import { MediaCache } from '../../media/cache';
 import { createOwnerRefreshController } from '../../policy/owner';
 import { ActiveRuns } from '../../runtime/active-runs';
@@ -38,6 +40,7 @@ import { ScopeRunMemory } from '../../runtime/scope-run-memory';
 import { createProfileChannel } from './sdk';
 import { LarkTurnRunner, type TurnDispatchOptions } from './turn-runner';
 import { ConversationTurns } from '../../runtime/turns';
+import { LarkUserReads } from './user-read';
 import { createLarkWorkflowHost, type LarkWorkflowHost } from './workflow-host';
 
 export interface BridgeChannel {
@@ -68,9 +71,6 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   const resolveAgentKind = (scope: string) => execution.kindFor(scope);
   const activeRuns = new ActiveRuns();
   const followups = new FollowupRouter();
-  // ChatModeCache stays per-bridge-instance — invalidated on restart along
-  // with everything else. Topic-mode chats only need one chat.get() call ever.
-  const chatModeCache = new ChatModeCache();
   // Concurrency cap — reads `preferences.maxConcurrentRuns` on each acquire,
   // so /config bumps take effect for the next run.
   const pool = new ProcessPool(() => getMaxConcurrentRuns(controls.cfg));
@@ -88,6 +88,13 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   const larkAuth = deps.larkAuth ?? new LarkProfileAuth(cfg, deps.appPaths);
   controls.larkAuth = larkAuth;
   const { appSecret } = await larkAuth.credentials();
+  // Read-path fallback on the operator's user identity: only active when a
+  // grant is stored (see `lark-channel-bridge auth user-login`). Writes always
+  // stay on the app identity.
+  const userReads = await createUserReads(cfg, appSecret, deps.appPaths);
+  // ChatModeCache stays per-bridge-instance — invalidated on restart along
+  // with everything else. Topic-mode chats only need one chat.get() call ever.
+  const chatModeCache = new ChatModeCache(userReads);
   const callbackNonceStore = stateDir ? new CallbackNonceStore(statePath('callback-nonces.json')!) : undefined;
   await callbackNonceStore?.load();
   const callbackAuth = callbackNonceStore
@@ -106,8 +113,8 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   });
   const preparedCots = new Map<string, CotPublisher>();
   const channel = createProfileChannel(cfg, larkAuth, appSecret);
-  const media = new MediaCache(channel, deps.appPaths?.mediaDir);
-  const conversation = { channel, controls, executor, activeRuns, sessions, sessionCatalog, workspaces };
+  const media = new MediaCache(channel, deps.appPaths?.mediaDir, userReads);
+  const conversation = { channel, controls, executor, activeRuns, sessions, sessionCatalog, workspaces, userReads };
 
   const btwStore = new BtwStore(statePath('btw.json'));
   await btwStore.load();
@@ -241,7 +248,11 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
     appId: cfg.accounts.app.id,
   });
   await ownerRefresh.start();
-  const knownChatsRefresh = startKnownChatsRefresh(channel, chats => { controls.knownChats = chats; });
+  const knownChatsRefresh = startKnownChatsRefresh(
+    channel,
+    chats => { controls.knownChats = chats; },
+    userReads,
+  );
 
   const identity = channel.botIdentity;
   controls.botIdentity = identity;
@@ -367,4 +378,26 @@ function closingChannelControls(live: ChannelControls): ChannelControls {
     },
     onConfigApplied: () => {},
   };
+}
+
+async function createUserReads(
+  cfg: AppConfig,
+  appSecret: string,
+  appPaths: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile'> | undefined,
+): Promise<LarkUserReads | undefined> {
+  const { app } = cfg.accounts;
+  const store = keystoreUserTokenStore(app.id, appPaths);
+  // Only a local keystore read here: refreshing at startup would put a network
+  // round-trip (and its timeout) on the connection path. The first read that
+  // needs the token refreshes it, and failures degrade to the app identity.
+  const stored = await store.load().catch(() => undefined);
+  log.info('lark-auth', 'user-reads', { enabled: Boolean(stored), appId: app.id });
+  if (!stored) return undefined;
+  const tokens = new UserTokenProvider({
+    tenant: app.tenant,
+    appId: app.id,
+    appSecret,
+    store,
+  });
+  return new LarkUserReads({ tenant: app.tenant, tokens });
 }
