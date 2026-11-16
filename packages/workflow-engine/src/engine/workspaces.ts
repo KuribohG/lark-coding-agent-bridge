@@ -14,6 +14,8 @@ import type { WorkflowRoot } from './types';
 interface RecordRow { id: string; workflow: string; key: string; kind: string; digest: string; done: number; data: string; created: number }
 const SHA = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
 const BUSY = new Set(['queued', 'starting', 'running', 'cancelling', 'waiting_workflow']);
+// Git registers a new worktree in several steps. Concurrent commands can observe a partial entry.
+const worktreeCommands = new Map<string, Promise<CommandResult>>();
 const gitEnv = () => ({ ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))), GIT_TERMINAL_PROMPT: '0', GIT_LFS_SKIP_SMUDGE: '1' });
 
 /** A submission waiting for a train: the member's commits `base..head`, already rebased onto the branch as it was then. */
@@ -88,6 +90,19 @@ export class WorkflowWorkspaces {
       '-c', 'gc.auto=0', ...args], cwd, signal, 60_000, { ...gitEnv(), ...env }, this.processes);
     if (result.code && !allowFailure) throw new Error(`Git ${args[0]} failed: ${(result.stderr || result.stdout).slice(0, 1600)}`);
     return result;
+  }
+  private async worktree(ws: Pick<WorkspaceBinding, 'repository' | 'commonDir'>, args: string[], signal: AbortSignal, allowFailure = false): Promise<CommandResult> {
+    const previous = worktreeCommands.get(ws.commonDir) ?? Promise.resolve();
+    const pending = previous.catch(() => undefined).then(() => {
+      signal.throwIfAborted();
+      return this.git(ws.repository, ['worktree', ...args], signal, allowFailure);
+    });
+    worktreeCommands.set(ws.commonDir, pending);
+    try {
+      return await pending;
+    } finally {
+      if (worktreeCommands.get(ws.commonDir) === pending) worktreeCommands.delete(ws.commonDir);
+    }
   }
   private async revision(repo: string, value: unknown, signal: AbortSignal): Promise<string> {
     if (value !== undefined && (typeof value !== 'string' || !SHA.test(value))) throw new Error('Workspace base must be a full commit ID');
@@ -165,7 +180,7 @@ export class WorkflowWorkspaces {
     }
     await mkdir(dirname(ws.path), { recursive: true, mode: 0o700 });
     const exists = await access(join(ws.path, '.git')).then(() => true, () => false);
-    if (!exists) await this.git(ws.repository, ['worktree', 'add', '--detach', '--lock', '--reason', `bridge-workflow:${ws.id}`, ws.path, checkout], ctx.signal);
+    if (!exists) await this.worktree(ws, ['add', '--detach', '--lock', '--reason', `bridge-workflow:${ws.id}`, ws.path, checkout], ctx.signal);
     ws = { ...ws, status: 'ready' }; this.putWorkspace(ws);
     await this.binding(ctx.state.root, op.workflow, ws.id, ctx.signal);
     if ((await this.clean(ws, ctx.signal)).headCommit !== checkout) throw new Error('Recovered worktree does not match its planned revision');
@@ -285,7 +300,7 @@ export class WorkflowWorkspaces {
         const current = await this.refHead(ws.repository, integration.targetRef, ctx.signal);
         if (current !== integration.expectedHead && current !== pinned.headCommit) throw new Error('Integration target advanced; prepare and validate a new integration');
         if (current !== pinned.headCommit) {
-          await this.notCheckedOut(ws.repository, integration.targetRef, ctx.signal);
+          await this.notCheckedOut(ws, integration.targetRef, ctx.signal);
           await this.git(ws.repository, ['update-ref', integration.targetRef, pinned.headCommit, current ?? '0'.repeat(pinned.headCommit.length)], ctx.signal);
         }
         accepted.completed = true;
@@ -309,7 +324,7 @@ export class WorkflowWorkspaces {
     if (ws.status === 'removed') return { workspace: ws.id, removed: true };
     if (intent.removing && !await access(ws.path).then(() => true, () => false)) {
       if (ws.busy && ws.busy.token !== intent.token) throw new Error('Workspace execution ownership changed');
-      const listed = (await this.git(ws.repository, ['worktree', 'list', '--porcelain'], ctx.signal)).stdout;
+      const listed = (await this.worktree(ws, ['list', '--porcelain'], ctx.signal)).stdout;
       if (listed.split('\n').includes(`worktree ${ws.path}`)) throw new Error('Missing worktree is still registered; preserve for recovery');
       this.putWorkspace({ ...ws, status: 'removed', busy: undefined });
       return { workspace: ws.id, removed: true };
@@ -324,9 +339,9 @@ export class WorkflowWorkspaces {
       const landed = target && !(await this.git(ws.path, ['merge-base', '--is-ancestor', pinned.headCommit, target], ctx.signal, true)).code;
       if (pinned.headCommit !== ws.baseCommit && !accepted && !landed) throw new Error('Keep workspaces with unintegrated changes');
       this.save(op, { removing: true, token });
-      const unlock = await this.git(ws.repository, ['worktree', 'unlock', ws.path], ctx.signal, true);
+      const unlock = await this.worktree(ws, ['unlock', ws.path], ctx.signal, true);
       if (unlock.code && !unlock.stderr.includes('not locked')) throw new Error('Cannot unlock worktree');
-      await this.git(ws.repository, ['worktree', 'remove', ws.path], ctx.signal);
+      await this.worktree(ws, ['remove', ws.path], ctx.signal);
       this.putWorkspace({ ...ws, status: 'removed', busy: { token, ownerPid: process.pid } });
       if (ws.kind === 'task') await this.retireTrain(ws, ctx.signal);
       return { workspace: ws.id, removed: true };
@@ -376,8 +391,8 @@ export class WorkflowWorkspaces {
     if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(target)) throw new Error('Integration target must be a simple private branch name');
     return `refs/heads/bridge-workflow/${workflow}/${target}`;
   }
-  private async notCheckedOut(repo: string, ref: string, signal: AbortSignal): Promise<void> {
-    if ((await this.git(repo, ['worktree', 'list', '--porcelain'], signal)).stdout.split('\n').includes(`branch ${ref}`)) throw new Error('Integration target is checked out; keep the checkout unchanged');
+  private async notCheckedOut(ws: WorkspaceBinding, ref: string, signal: AbortSignal): Promise<void> {
+    if ((await this.worktree(ws, ['list', '--porcelain'], signal)).stdout.split('\n').includes(`branch ${ref}`)) throw new Error('Integration target is checked out; keep the checkout unchanged');
   }
   private protect(value: unknown): WorkspaceLanding['protect'] {
     if (value === undefined) return undefined;
@@ -564,7 +579,7 @@ export class WorkflowWorkspaces {
     const head = heads[good]!;
     if (good) {
       if (await this.refHead(ws.repository, targetRef, signal) !== expected) throw new Error('Landing branch was moved from outside the landing queue; submit again');
-      await this.notCheckedOut(ws.repository, targetRef, signal);
+      await this.notCheckedOut(ws, targetRef, signal);
       await this.git(ws.repository, ['update-ref', targetRef, head, expected ?? '0'.repeat(head.length)], signal);
     }
     for (const candidate of stack.slice(0, good)) candidate.resolve({ status: 'landed', targetRef, headCommit: head, commits: candidate.commits });
@@ -598,7 +613,7 @@ export class WorkflowWorkspaces {
     if (await access(join(path, '.git')).then(() => true, () => false)) await this.git(path, ['cherry-pick', '--abort'], signal, true);
     else {
       await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-      await this.git(ws.repository, ['worktree', 'add', '--detach', '--lock', '--reason', `bridge-workflow:train:${ws.workflowId}`, path, ws.baseCommit], signal);
+      await this.worktree(ws, ['add', '--detach', '--lock', '--reason', `bridge-workflow:train:${ws.workflowId}`, path, ws.baseCommit], signal);
     }
     return path;
   }
@@ -607,8 +622,8 @@ export class WorkflowWorkspaces {
     const left = this.db.prepare("SELECT COUNT(*) AS n FROM workspace_records WHERE workflow=? AND kind='workspace' AND json_extract(data,'$.kind')='task' AND json_extract(data,'$.status')!='removed' AND json_extract(data,'$.commonDir')=?").get(ws.workflowId, ws.commonDir) as { n: number };
     const path = this.trainPath(ws);
     if (left.n || this.trains.has(`${ws.workflowId}:${ws.commonDir}`) || !await access(path).then(() => true, () => false)) return;
-    await this.git(ws.repository, ['worktree', 'unlock', path], signal, true);
-    await this.git(ws.repository, ['worktree', 'remove', '--force', path], signal, true);
+    await this.worktree(ws, ['unlock', path], signal, true);
+    await this.worktree(ws, ['remove', '--force', path], signal, true);
   }
 
   private async check(ctx: WorkspaceContext, op: RecordRow, ws: WorkspaceBinding, value: unknown): Promise<WorkspaceChecks> {
