@@ -1,5 +1,5 @@
 import { readdir, readFile } from 'node:fs/promises';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 import ts from 'typescript';
@@ -49,7 +49,11 @@ async function importsUnder(directory: string): Promise<Array<{ file: string; ta
       const specifier = (node.moduleSpecifier as ts.StringLiteral).text;
       if (!specifier.startsWith('.')) continue;
       const typeOnly = ts.isImportDeclaration(node) ? Boolean(node.importClause?.isTypeOnly) : node.isTypeOnly;
-      found.push({ file: relative(root, file), target: relative(root, resolve(dirname(file), specifier)), typeOnly });
+      found.push({
+        file: relative(root, file).split(sep).join('/'),
+        target: relative(root, resolve(dirname(file), specifier)).split(sep).join('/'),
+        typeOnly,
+      });
     }
   }
   return found;

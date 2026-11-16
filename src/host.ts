@@ -25,7 +25,7 @@ export { PiSdkAdapter } from './agent/pi-sdk/adapter';
 export { resolvePiSdkPaths } from './agent/pi-sdk/paths';
 export { DshAdapter } from './agent/dsh/adapter';
 export { createDshHarness, createExecutionHost, dshProfile, dshLease, dshStorageChecks,
-  dshRecovery, dshEventDigest, nativeSession, publicText, usageOf } from './agent/dsh/harness';
+  dshRecovery, dshEventDigest, nativeSession, publicText, usageOf } from './host/dsh-harness';
 export type { AgentRun, AgentRunOptions, AgentEvent, StopSettlement, NativeTurnBinding,
   AgentQuestion, AgentQuestionAnswer } from './agent/types';
 export type { SubmitRunInput, RunExecution, GovernedRunExecution, RunResult } from './runtime/run-executor';
