@@ -65,6 +65,7 @@ export function createDshHarness(options: any) {
           const admission: Promise<GovernedRunExecution> = host.executor.submit({ agent: adapter, executionId: invocation?.executionId || turnId,
             attemptId: invocation?.attemptId, governed: true, quiescenceTimeoutMs: options.stopTimeoutMs || 5000, scopeId: canonicalJson(settings.scope),
             signal, model: settings.model, reasoningEffort: settings.effort,
+            priority: invocation?.priority === 'background' ? 'background' : 'foreground',
             nativeTurn: { session, turnId, input, invocation, signal, onEvent(event: any) { record.terminal ??= { ...event, scope: settings.scope }; } },
             validateBeforeRun: async () => { signal?.throwIfAborted(); await invocation?.validateLease?.(); },
             // This envelope admits only the already registered host tool set.
