@@ -57,7 +57,14 @@ export function normalizeWorkcell(input: unknown): WorkcellConfig | undefined {
 /** Where the bridge stages the runtime and payloads inside every workcell. */
 const WORKCELL_ROOT = '/opt/lark-workcell';
 /** Port the host listens on inside the workcell; the provider forwards it. */
-const WORKCELL_HOST_PORT = 47_811;
+export const WORKCELL_HOST_PORT = 47_811;
+/** Where a pushed workspace lands inside the unit. */
+export const WORKCELL_WORK_DIR = `${WORKCELL_ROOT}/work`;
+/**
+ * Build outputs and histories a worker does not need and that would dominate the
+ * transfer. Anything a member must see has to be part of the source tree.
+ */
+const WORKSPACE_EXCLUDES = ['.git', 'node_modules', 'target', 'build', '.venv', '__pycache__'];
 
 export interface WorkcellRuntimeLayout {
   /** Local directories to push and where they belong inside the workcell. */
@@ -66,6 +73,8 @@ export interface WorkcellRuntimeLayout {
   nodePath: string;
   hostScript: string;
   sdkPath: string;
+  /** Pi agent directory inside the workcell (auth, models and sessions). */
+  agentDir: string;
 }
 
 /**
@@ -94,6 +103,7 @@ export function workcellRuntimeLayout(paths: {
     nodePath: join(nodeModules, basename(nodeDir), relative(nodeDir, paths.nodePath)),
     hostScript: join(root, 'bin', basename(paths.hostScript)),
     sdkPath: join(packageRemote, relative(packageDir, paths.sdkPath)),
+    agentDir: join(root, 'agent'),
   };
 }
 
@@ -116,6 +126,8 @@ export interface WorkcellHandle {
   key: string;
   /** Local port that forwards to the host inside the workcell. */
   hostPort: number;
+  /** Local directories already copied into the unit. */
+  workspaces?: Set<string>;
 }
 
 interface Pooled extends WorkcellHandle {
@@ -180,6 +192,20 @@ export class WorkcellPool {
       await provider.request('stop', { workcell: id }).catch(() => undefined);
       throw error;
     }
+  }
+
+  /** Copy a directory into the unit once; later turns of the same cell reuse it. */
+  async ensureWorkspace(cell: WorkcellHandle, local: string, remote = WORKCELL_WORK_DIR): Promise<void> {
+    cell.workspaces ??= new Set();
+    if (cell.workspaces.has(local)) return;
+    await this.ensureProvider().request('push', {
+      workcell: cell.id,
+      local,
+      remote,
+      exclude: WORKSPACE_EXCLUDES,
+    });
+    cell.workspaces.add(local);
+    log.info('agent', 'pi-workcell-workspace', { workcell: cell.id, local, remote });
   }
 
   /** Start the host inside the workcell; `args` are the provider's exec arguments. */

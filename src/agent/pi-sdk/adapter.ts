@@ -1,4 +1,5 @@
 import { existsSync, realpathSync } from 'node:fs';
+import { join } from 'node:path';
 import { log } from '../../core/logger';
 import { SpawnFailed } from '../errors';
 import { parseEffort } from '../model-settings';
@@ -28,6 +29,7 @@ import { AsyncEventQueue } from './event-queue';
 import { PiHostClient, type PiHostLaunch, type PiHostRunAck, type PiHostSessionInfo } from './host-client';
 import { PI_SDK_MIN_NODE, resolvePiAgentDir, resolvePiSdkPaths, type PiSdkPaths } from './paths';
 import { localWorkflowEndpoint, openWorkflowTunnel, remoteRunEnv, shellQuote, type PiRemoteTarget, type WorkflowTunnel } from './remote';
+import { WorkcellPool, workcellRuntimeLayout, WORKCELL_HOST_PORT, WORKCELL_WORK_DIR, type WorkcellRuntimeLayout } from './workcell';
 import { piHostSpawnCommand, type PiHostSandbox } from './sandbox';
 
 export interface PiSdkAdapterOptions {
@@ -49,6 +51,8 @@ const READ_ONLY_TOOLS = ['read', 'grep', 'find', 'ls'] as const;
 
 interface RunState {
   runId: string;
+  /** Host that serves this run; a workcell profile has one per member. */
+  client?: PiHostClient;
   sessionId?: string;
   promptDispatched: boolean;
   ended: boolean;
@@ -81,6 +85,10 @@ export class PiSdkAdapter implements AgentAdapter {
   private readonly remote: PiRemoteTarget | undefined;
   private tunnel: WorkflowTunnel | undefined;
   private remoteNodeCheck: Promise<AgentAvailability> | undefined;
+  /** Rented units and the host clients that serve them, keyed by workflow member. */
+  private workcell: WorkcellPool | undefined;
+  private workcellLayout: WorkcellRuntimeLayout | undefined;
+  private readonly workcellClients = new Map<string, Promise<PiHostClient>>();
   private tunnelEndpoint: string | undefined;
   /** cwds already reported as outside the profile-scoped sandbox. */
   private readonly unwritableCwds = new Set<string>();
@@ -133,6 +141,12 @@ export class PiSdkAdapter implements AgentAdapter {
     this.starting = undefined;
     this.paths = undefined;
     await client?.dispose();
+    const workcellClients = [...this.workcellClients.values()];
+    this.workcellClients.clear();
+    await Promise.allSettled(workcellClients.map(async (opening) => (await opening.catch(() => undefined))?.dispose()));
+    const pool = this.workcell;
+    this.workcell = undefined;
+    await pool?.close();
   }
 
   private waitForIdle(timeoutMs: number): Promise<void> {
@@ -249,6 +263,97 @@ export class PiSdkAdapter implements AgentAdapter {
     return this.remoteNodeCheck;
   }
 
+  /**
+   * A workcell profile keeps one host per workflow member: the member's session
+   * lives in that unit, so reuse is what makes a multi-turn member cheap, and
+   * releasing the key is what ends it.
+   */
+  private workcellKey(opts: AgentRunOptions): string {
+    return opts.host?.key ?? opts.sessionId ?? opts.runId;
+  }
+
+  private async ensureRunClient(opts: AgentRunOptions): Promise<PiHostClient> {
+    if (!this.config.workcell) return this.ensureClient();
+    const key = this.workcellKey(opts);
+    const existing = this.workcellClients.get(key);
+    if (existing) {
+      const client = await existing.catch(() => undefined);
+      if (client && !client.isClosed) return client;
+      this.workcellClients.delete(key);
+    }
+    const opening = this.openWorkcellClient(key, opts.cwd);
+    this.workcellClients.set(key, opening);
+    try {
+      return await opening;
+    } catch (error) {
+      if (this.workcellClients.get(key) === opening) this.workcellClients.delete(key);
+      throw error;
+    }
+  }
+
+  private async openWorkcellClient(key: string, workspace: string | undefined): Promise<PiHostClient> {
+    const pool = this.ensureWorkcellPool();
+    const layout = this.workcellLayout!;
+    const cell = await pool.acquire(key);
+    // The host needs its agent directory and the workspace before it starts.
+    if (workspace) await pool.ensureWorkspace(cell, workspace);
+    await pool.startHost(cell, this.workcellHostScript(layout), this.workcellHostEnv());
+    const client = new PiHostClient({
+      nodePath: layout.nodePath,
+      hostScript: layout.hostScript,
+      sdkPath: layout.sdkPath,
+      agentDir: layout.agentDir,
+      env: this.env,
+      connection: { kind: 'tcp', host: '127.0.0.1', port: cell.hostPort },
+      ...(this.config.idleTtlMs !== undefined ? { idleTtlMs: this.config.idleTtlMs } : {}),
+      ...(this.config.maxSessions !== undefined ? { maxSessions: this.config.maxSessions } : {}),
+    });
+    await client.start();
+    log.info('agent', 'pi-workcell-host-connected', { key, workcell: cell.id, hostPort: cell.hostPort });
+    return client;
+  }
+
+  private ensureWorkcellPool(): WorkcellPool {
+    if (this.workcell) return this.workcell;
+    const config = this.config.workcell;
+    if (!config) throw new Error('pi.workcell is not configured');
+    const paths = this.resolvePaths();
+    this.workcellLayout = workcellRuntimeLayout({
+      nodePath: paths.nodePath,
+      sdkPath: paths.sdkPath,
+      hostScript: paths.hostScript,
+    });
+    this.workcell = new WorkcellPool({
+      config,
+      runtime: this.workcellLayout,
+      agentFiles: piAgentFiles(resolvePiAgentDir(this.config)),
+      env: this.env,
+    });
+    return this.workcell;
+  }
+
+  private workcellHostScript(layout: WorkcellRuntimeLayout): string {
+    const args = [
+      layout.nodePath,
+      layout.hostScript,
+      '--tcp', `127.0.0.1:${WORKCELL_HOST_PORT}`,
+      '--sdk', layout.sdkPath,
+      '--agent-dir', layout.agentDir,
+      ...(this.config.idleTtlMs !== undefined ? ['--idle-ttl-ms', String(this.config.idleTtlMs)] : []),
+      ...(this.config.maxSessions !== undefined ? ['--max-sessions', String(this.config.maxSessions)] : []),
+      ...(this.config.sessionPersistence ? ['--session-persistence', this.config.sessionPersistence] : []),
+    ];
+    return `exec ${args.map(shellQuote).join(' ')}`;
+  }
+
+  private workcellHostEnv(): Record<string, string> {
+    return {
+      PI_TELEMETRY: '0',
+      PI_SKIP_VERSION_CHECK: '1',
+      PI_CODING_AGENT_DIR: this.workcellLayout!.agentDir,
+    };
+  }
+
   private async logHealth(context: string): Promise<void> {
     const client = this.client;
     if (!client || client.isClosed) return;
@@ -285,6 +390,18 @@ export class PiSdkAdapter implements AgentAdapter {
         binaryPath: this.config.binaryPath,
         field: 'sdkPath',
         ...(error instanceof Error ? { stderrExcerpt: error.message.slice(0, 500) } : {}),
+      });
+      return { ok: false, error: failure, diagnostic: failure.diagnostic };
+    }
+
+    if (this.config.workcell && !existsSync(this.config.workcell.provider)) {
+      const failure = new AgentPreflightError({
+        code: 'agent-binary-not-found',
+        agentId: 'pi',
+        agentName: this.displayName,
+        command: this.config.workcell.provider,
+        binaryPath: this.config.workcell.provider,
+        field: 'workcell.provider',
       });
       return { ok: false, error: failure, diagnostic: failure.diagnostic };
     }
@@ -400,7 +517,7 @@ export class PiSdkAdapter implements AgentAdapter {
     if (state.ended || !state.sessionId) {
       return { status: 'inactive', messageId: input.messageId };
     }
-    const client = this.client;
+    const client = state.client ?? this.client;
     if (!client || client.isClosed) {
       return { status: 'inactive', messageId: input.messageId };
     }
@@ -427,9 +544,14 @@ export class PiSdkAdapter implements AgentAdapter {
     let queue: AsyncEventQueue<AgentEvent> | undefined;
     this.activeRuns.add(state.runId);
     try {
+      // Inside a rented unit the bridge's paths do not exist: the host opens the
+      // session in the copy of the workspace that was pushed there. The bridge
+      // keeps reporting the conversation's own cwd.
+      const hostOpts = this.config.workcell && opts.cwd ? { ...opts, cwd: WORKCELL_WORK_DIR } : opts;
       let client: PiHostClient;
       try {
-        client = await this.ensureClient();
+        client = await this.ensureRunClient(opts);
+        state.client = client;
       } catch (error) {
         yield errorEvent(`failed to start pi sdk host: ${errorMessage(error)}`);
         return;
@@ -442,7 +564,7 @@ export class PiSdkAdapter implements AgentAdapter {
       let opened: PiHostSessionInfo | undefined;
       try {
         opened = await untilDeadline(
-          client.request<PiHostSessionInfo>('session.open', this.openParams(opts, sandbox), OPEN_TIMEOUT_MS),
+          client.request<PiHostSessionInfo>('session.open', this.openParams(hostOpts, sandbox), OPEN_TIMEOUT_MS),
           state,
         );
       } catch (error) {
@@ -513,7 +635,7 @@ export class PiSdkAdapter implements AgentAdapter {
         }
         state.promptDispatched = true;
         const ack = await untilDeadline(
-          client.request<PiHostRunAck>('run.prompt', this.promptParams(opts, state), PROMPT_ACK_TIMEOUT_MS),
+          client.request<PiHostRunAck>('run.prompt', this.promptParams(hostOpts, state), PROMPT_ACK_TIMEOUT_MS),
           state,
         );
         if (!ack) throw new Error('pi sdk host did not acknowledge the prompt before the deadline');
@@ -615,7 +737,7 @@ export class PiSdkAdapter implements AgentAdapter {
     state.stopped = !state.timedOut;
     if (state.ended || state.stopping) return;
     state.stopping = true;
-    const client = this.client;
+    const client = state.client ?? this.client;
     if (!client || client.isClosed || !state.sessionId) {
       state.forceEnd?.();
       if (!state.sessionId) {
@@ -738,6 +860,13 @@ function doneEvent(
 
 function errorEvent(message: string): AgentEvent {
   return { type: 'error', message: message.slice(0, 4096), terminationReason: 'failed' };
+}
+
+/** Credentials and catalog files the host needs; sessions stay inside the unit. */
+function piAgentFiles(agentDir: string): string[] {
+  return ['auth.json', 'models.json', 'settings.json']
+    .map((name) => join(agentDir, name))
+    .filter((path) => existsSync(path));
 }
 
 function canonicalPath(path: string): string {

@@ -45,7 +45,7 @@ process.stdin.on('data', (chunk) => {
         send({ id: request.id, ok: true, data: {} });
         break;
       case 'forward':
-        send({ id: request.id, ok: true, data: { port: 40000 + seq } });
+        send({ id: request.id, ok: true, data: { port: Number(process.env.FAKE_WORKCELL_HOST_PORT ?? 40000 + seq) } });
         break;
       case 'exec':
         send({ id: request.id, ok: true, data: { pid: 1000 + seq } });
