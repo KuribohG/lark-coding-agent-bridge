@@ -1,6 +1,8 @@
-import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { basename, dirname, join, relative } from 'node:path';
 import { log } from '../../core/logger';
+import { spawnProcess } from '../../platform/spawn';
 import { WorkcellProviderClient, type WorkcellCreateParams } from './workcell-provider';
 
 /**
@@ -83,9 +85,29 @@ export const WORKCELL_WORK_DIR = `${WORKCELL_ROOT}/work`;
  */
 const WORKSPACE_EXCLUDES = ['.git', 'node_modules', 'target', 'build', '.venv', '__pycache__'];
 
+/**
+ * The heavy runtime as one prebuilt archive: building it once per bridge build
+ * beats re-tarring 268 MB for every unit.
+ */
+export interface WorkcellRuntimeArchive {
+  /** Directory holding the cached archives. */
+  cacheDir: string;
+  /** Cache identity: same key, same archive. */
+  key: string;
+  /** Directory whose contents the archive carries (`node_modules`). */
+  modulesDir: string;
+  /** Where the archive lands inside the unit, and the directory it unpacks to. */
+  remote: string;
+  extractTo: string;
+}
+
 export interface WorkcellRuntimeLayout {
   /** Local directories to push and where they belong inside the workcell. */
   pushes: Array<{ local: string; remote: string }>;
+  /** Prebuilt runtime archive; when absent the runtime directory is pushed. */
+  archive?: WorkcellRuntimeArchive;
+  /** Fallback for a host without `tar`: the runtime tree pushed as a directory. */
+  modules?: { local: string; remote: string };
   /** Host entry points as seen from inside the workcell. */
   nodePath: string;
   hostScript: string;
@@ -105,6 +127,8 @@ export function workcellRuntimeLayout(paths: {
   hostScript: string;
   /** This bridge build's bundled workflow CLI, pushed so workers can call it. */
   workflowCli?: string;
+  /** Cache directory for the prebuilt runtime archive; absent means push the tree. */
+  archiveCacheDir?: string;
   root?: string;
 }): WorkcellRuntimeLayout {
   const root = paths.root ?? WORKCELL_ROOT;
@@ -117,17 +141,88 @@ export function workcellRuntimeLayout(paths: {
   const packageRemote = join(nodeModules, relative(modulesDir, packageDir));
   return {
     pushes: [
-      { local: modulesDir, remote: nodeModules },
       { local: dirname(paths.hostScript), remote: join(root, 'bin') },
       ...(paths.workflowCli && existsSync(paths.workflowCli)
         ? [{ local: paths.workflowCli, remote: join(root, 'bin', 'workflow-cli.js') }]
         : []),
     ],
+    modules: { local: modulesDir, remote: nodeModules },
+    ...(paths.archiveCacheDir
+      ? {
+        archive: {
+          cacheDir: paths.archiveCacheDir,
+          key: runtimeKey(modulesDir, paths.sdkPath, paths.nodePath),
+          modulesDir,
+          remote: join(root, 'runtime.tar.gz'),
+          extractTo: root,
+        },
+      }
+      : {}),
     nodePath: join(nodeModules, basename(nodeDir), relative(nodeDir, paths.nodePath)),
     hostScript: join(root, 'bin', basename(paths.hostScript)),
     sdkPath: join(packageRemote, relative(packageDir, paths.sdkPath)),
     agentDir: join(root, 'agent'),
   };
+}
+
+/** Identity of the runtime contents: the launcher, the SDK entry and their sizes. */
+function runtimeKey(modulesDir: string, sdkPath: string, nodePath: string): string {
+  const hash = createHash('sha256').update(modulesDir);
+  for (const file of [sdkPath, nodePath]) {
+    try {
+      const stat = statSync(file);
+      hash.update(`${file}:${stat.size}:${stat.mtimeMs}`);
+    } catch {
+      hash.update(`${file}:missing`);
+    }
+  }
+  return hash.digest('hex').slice(0, 16);
+}
+
+export interface RuntimeArchive {
+  path: string;
+  bytes: number;
+}
+
+/**
+ * Build (or reuse) the runtime archive. `tar` does the packing so the archive
+ * matches what the unit unpacks; a failed build simply leaves the caller on the
+ * directory push.
+ */
+export async function ensureRuntimeArchive(archive: WorkcellRuntimeArchive): Promise<RuntimeArchive | undefined> {
+  const path = join(archive.cacheDir, `runtime-${archive.key}.tar.gz`);
+  if (existsSync(path)) {
+    try {
+      return { path, bytes: statSync(path).size };
+    } catch {
+      // Fall through and rebuild.
+    }
+  }
+  mkdirSync(archive.cacheDir, { recursive: true, mode: 0o700 });
+  const temporary = `${path}.${process.pid}.tmp`;
+  const startedAt = Date.now();
+  try {
+    const child = spawnProcess('tar', ['-czf', temporary, '-C', dirname(archive.modulesDir), basename(archive.modulesDir)], {
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr?.setEncoding('utf8');
+    child.stderr?.on('data', (chunk: string) => { stderr = `${stderr}${chunk}`.slice(-2000); });
+    const code = await new Promise<number | null>((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', resolve);
+    });
+    if (code !== 0) throw new Error(`tar exited with ${String(code)}: ${stderr.trim()}`);
+    // Another bridge may have built the same key meanwhile; either file is fine.
+    renameSync(temporary, path);
+    const bytes = statSync(path).size;
+    log.info('agent', 'pi-workcell-runtime-archived', { path, bytes, ms: Date.now() - startedAt });
+    return { path, bytes };
+  } catch (error) {
+    rmSync(temporary, { force: true });
+    log.warn('agent', 'pi-workcell-runtime-archive-failed', { error: String(error) });
+    return undefined;
+  }
 }
 
 /** The package that owns `sdkPath`, found by walking up to its `package.json`. */
@@ -201,7 +296,21 @@ export class WorkcellPool {
     const id = created.workcell;
     log.info('agent', 'pi-workcell-provision', { key, workcell: id, image: spec.image });
     try {
-      for (const push of this.options.runtime.pushes) {
+      const { runtime } = this.options;
+      const archive = runtime.archive ? await ensureRuntimeArchive(runtime.archive) : undefined;
+      if (archive && runtime.archive) {
+        await provider.request('push', { workcell: id, local: archive.path, remote: runtime.archive.remote });
+        // Unpack once, then drop the archive: the unit keeps only the tree.
+        const extracted = await provider.request('exec', {
+          workcell: id,
+          script: `tar -xzf ${runtime.archive.remote} -C ${runtime.archive.extractTo} && rm -f ${runtime.archive.remote}`,
+          timeout: 600,
+        }).catch((error: unknown) => error);
+        if (extracted instanceof Error) throw extracted;
+      } else if (runtime.modules) {
+        await provider.request('push', { workcell: id, local: runtime.modules.local, remote: runtime.modules.remote });
+      }
+      for (const push of runtime.pushes) {
         await provider.request('push', { workcell: id, local: push.local, remote: push.remote });
       }
       for (const file of this.options.agentFiles ?? []) {

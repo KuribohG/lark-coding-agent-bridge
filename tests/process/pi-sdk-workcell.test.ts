@@ -152,9 +152,15 @@ describe('pi SDK host inside a workcell', () => {
 
     const calls = await h.calls();
     expect(calls.filter((call) => call.op === 'create')).toHaveLength(1);
-    expect(calls.filter((call) => call.op === 'exec')).toHaveLength(1);
+    // One exec unpacks the runtime archive, one starts the host.
+    expect(calls.filter((call) => call.op === 'exec')).toHaveLength(2);
+    const extraction = calls.find((call) => String(call.script ?? '').startsWith('tar -xzf')) as { script: string } | undefined;
+    expect(extraction?.script).toContain('/opt/lark-workcell/runtime.tar.gz');
+    // The heavy runtime travels as one archive, not as a directory push.
+    expect(calls.filter((call) => call.op === 'push').map((call) => call.remote)).toContain('/opt/lark-workcell/runtime.tar.gz');
+    expect(calls.filter((call) => call.op === 'push').map((call) => call.remote)).not.toContain('/opt/lark-workcell/node_modules');
     // The host is started inside the unit with the cell-local paths and a TCP listener.
-    const exec = calls.find((call) => call.op === 'exec') as { script: string; env: Record<string, string> } | undefined;
+    const exec = calls.find((call) => call.op === 'exec' && String(call.script ?? '').includes('--tcp')) as { script: string; env: Record<string, string> } | undefined;
     expect(exec?.script).toBe(
       "exec '/opt/lark-workcell/node_modules/node/bin/node' '/opt/lark-workcell/bin/pi-host.mjs' " +
       "'--tcp' ':47811' '--ipc-port' '47812' " +

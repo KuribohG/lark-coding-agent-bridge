@@ -1,5 +1,5 @@
 import { existsSync, realpathSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { log } from '../../core/logger';
 import { SpawnFailed } from '../errors';
@@ -340,6 +340,7 @@ export class PiSdkAdapter implements AgentAdapter {
       sdkPath: paths.sdkPath,
       hostScript: paths.hostScript,
       workflowCli: bundledWorkflowCli(),
+      ...(this.workcellSessions ? { archiveCacheDir: join(dirname(this.workcellSessions), 'workcell-runtime') } : {}),
     });
     this.workcell = new WorkcellPool({
       config,

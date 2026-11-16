@@ -1,10 +1,10 @@
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
-import { normalizeWorkcell, WorkcellPool, workcellRuntimeLayout } from '../../src/agent/pi-sdk/workcell';
+import { ensureRuntimeArchive, normalizeWorkcell, WorkcellPool, workcellRuntimeLayout } from '../../src/agent/pi-sdk/workcell';
 
 const providerFixture = fileURLToPath(new URL('../fixtures/pi-sdk/fake-workcell-provider.mjs', import.meta.url));
 const dirs: string[] = [];
@@ -25,18 +25,23 @@ function fixtureProvider(dir: string): string {
   return path;
 }
 
-async function harness(options: { pushFailure?: string } = {}) {
+async function harness(options: { pushFailure?: string; archive?: boolean } = {}) {
   const dir = await mkdtemp(join(tmpdir(), 'workcell-'));
   dirs.push(dir);
   const record = join(dir, 'provider-record.json');
   process.env.FAKE_WORKCELL_RECORD = record;
   if (options.pushFailure) process.env.FAKE_WORKCELL_PUSH_FAILURE = options.pushFailure;
+  const modulesDir = join(dir, 'rt', 'node_modules');
+  mkdirSync(join(modulesDir, 'node', 'bin'), { recursive: true });
+  writeFileSync(join(modulesDir, 'node', 'bin', 'node'), '');
+  writeFileSync(join(dir, 'rt', 'sdk.js'), '');
   const pool = new WorkcellPool({
     config: { provider: fixtureProvider(dir), cpu: 4, memoryGb: 8, ttlSeconds: 600, image: 'image:tag' },
     runtime: workcellRuntimeLayout({
-      nodePath: '/rt/node_modules/node/bin/node',
-      sdkPath: '/rt/node_modules/@earendil-works/pi-coding-agent/dist/index.js',
+      nodePath: join(modulesDir, 'node', 'bin', 'node'),
+      sdkPath: join(dir, 'rt', 'sdk.js'),
       hostScript: '/bridge/bin/pi-host.mjs',
+      ...(options.archive ? { archiveCacheDir: join(dir, 'archive-cache') } : {}),
     }),
     agentFiles: [join(dir, 'auth.json')],
     sessionDir: join(dir, 'sessions'),
@@ -79,13 +84,45 @@ describe('workcell runtime layout', () => {
       sdkPath: '/rt/node_modules/@earendil-works/pi-coding-agent/dist/index.js',
       hostScript: '/bridge/bin/pi-host.mjs',
     });
-    expect(layout.pushes).toEqual([
-      { local: '/rt/node_modules', remote: '/opt/lark-workcell/node_modules' },
-      { local: '/bridge/bin', remote: '/opt/lark-workcell/bin' },
-    ]);
+    expect(layout.pushes).toEqual([{ local: '/bridge/bin', remote: '/opt/lark-workcell/bin' }]);
+    expect(layout.modules).toEqual({ local: '/rt/node_modules', remote: '/opt/lark-workcell/node_modules' });
+    expect(layout.archive).toBeUndefined();
     expect(layout.nodePath).toBe('/opt/lark-workcell/node_modules/node/bin/node');
     expect(layout.sdkPath).toBe('/opt/lark-workcell/node_modules/@earendil-works/pi-coding-agent/dist/index.js');
     expect(layout.hostScript).toBe('/opt/lark-workcell/bin/pi-host.mjs');
+  });
+});
+
+describe('workcell runtime archive', () => {
+  it('describes a cached archive when a cache directory is given', () => {
+    const layout = workcellRuntimeLayout({
+      nodePath: '/rt/node_modules/node/bin/node',
+      sdkPath: '/rt/node_modules/@earendil-works/pi-coding-agent/dist/index.js',
+      hostScript: '/bridge/bin/pi-host.mjs',
+      archiveCacheDir: '/state/workcell-runtime',
+    });
+    expect(layout.archive).toMatchObject({
+      cacheDir: '/state/workcell-runtime',
+      modulesDir: '/rt/node_modules',
+      remote: '/opt/lark-workcell/runtime.tar.gz',
+      extractTo: '/opt/lark-workcell',
+    });
+    expect(layout.archive?.key).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it('packs the runtime once and reuses the archive', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'workcell-archive-'));
+    dirs.push(dir);
+    const modulesDir = join(dir, 'node_modules');
+    mkdirSync(join(modulesDir, 'pkg'), { recursive: true });
+    writeFileSync(join(modulesDir, 'pkg', 'index.js'), 'module.exports = 1;\n');
+    const archive = { cacheDir: join(dir, 'cache'), key: 'testkey', modulesDir, remote: '/opt/lark-workcell/runtime.tar.gz', extractTo: '/opt/lark-workcell' };
+
+    const first = await ensureRuntimeArchive(archive);
+    const second = await ensureRuntimeArchive(archive);
+    expect(first?.bytes).toBeGreaterThan(0);
+    expect(second).toEqual(first);
+    expect(existsSync(join(archive.cacheDir, 'runtime-testkey.tar.gz'))).toBe(true);
   });
 });
 
