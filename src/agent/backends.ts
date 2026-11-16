@@ -8,6 +8,8 @@ import { CodexAdapter } from './codex/adapter';
 import { codexExecutionCapabilities } from './codex/capabilities';
 import { PiAdapter } from './pi/adapter';
 import { PI_EXECUTION_CAPABILITIES } from './pi/capabilities';
+import { PiSdkAdapter } from './pi-sdk/adapter';
+import { PI_SDK_EXECUTION_CAPABILITIES } from './pi-sdk/capabilities';
 import {
   agentLaunchPatch,
   capabilityForBackend,
@@ -30,7 +32,7 @@ import type { ModelProviderRegistry } from '../model-provider/provider';
 export interface AgentBackend extends AgentBackendSpec {
   capability(profile: Pick<AgentExecutionProfile, 'agentKind' | 'permissions'>): AgentCapability;
   executionCapabilities(
-    profile: Pick<AgentExecutionProfile, 'agentKind' | 'permissions'>,
+    profile: Pick<AgentExecutionProfile, 'agentKind' | 'permissions' | 'pi'>,
   ): AgentExecutionCapabilities;
   existingProfile(profile: AgentExecutionProfile): Partial<AgentExecutionProfile>;
   launchPatch(binaryPath: string): AgentLaunchProfiles;
@@ -90,10 +92,20 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
     },
   },
   pi: {
-    executionCapabilities: () => PI_EXECUTION_CAPABILITIES,
+    executionCapabilities: (profile) => (
+      profile.pi?.transport === 'sdk' ? PI_SDK_EXECUTION_CAPABILITIES : PI_EXECUTION_CAPABILITIES
+    ),
     createAdapter: ({ profile, profileDir, env, systemPrompt }) => {
       const pi = profile.pi;
       if (!pi?.binaryPath) throw new Error('pi profile requires pi.binaryPath');
+      if (pi.transport === 'sdk') {
+        return new PiSdkAdapter({
+          config: pi,
+          profileStateDir: profileDir,
+          env: buildAgentEnvironment(env, pi.env),
+          systemPrompt,
+        });
+      }
       return new PiAdapter({
         binary: pi.binaryPath,
         agentDir: pi.agentDir,
@@ -132,7 +144,7 @@ export function capabilityForProfile(
 }
 
 export function executionCapabilitiesForProfile(
-  profile: Pick<AgentExecutionProfile, 'agentKind' | 'permissions'>,
+  profile: Pick<AgentExecutionProfile, 'agentKind' | 'permissions' | 'pi'>,
 ): AgentExecutionCapabilities {
   return backendFor(profile.agentKind).executionCapabilities(profile);
 }

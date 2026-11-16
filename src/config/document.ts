@@ -120,9 +120,13 @@ function checkLaunch(value: unknown, agent: string, path: string): void {
       }
       continue;
     }
-    const kind = ['inheritCodexHome', 'ignoreUserConfig', 'ignoreRules'].includes(k) ? 'boolean' : ['mode', 'owner'].includes(k) ? 'number' : 'string';
+    const kind = ['inheritCodexHome', 'ignoreUserConfig', 'ignoreRules'].includes(k) ? 'boolean'
+      : ['mode', 'owner', 'idleTtlMs', 'maxSessions'].includes(k) ? 'number'
+      : 'string';
     if (typeof v !== kind) throw new Error(`${path}.${k}: expected ${kind}`);
-    if (k === 'transport' && v !== 'app-server') throw new Error(`${path}.transport: Codex exec transport has been removed; use app-server`);
+    if (k === 'transport' && agent === 'codex' && v !== 'app-server') throw new Error(`${path}.transport: Codex exec transport has been removed; use app-server`);
+    if (k === 'transport' && agent === 'pi' && v !== 'cli' && v !== 'sdk') throw new Error(`${path}.transport: expected cli or sdk`);
+    if (k === 'sessionPersistence' && v !== 'file' && v !== 'memory') throw new Error(`${path}.sessionPersistence: expected file or memory`);
     if (k === 'appServerMode' && !['daemon', 'per-run'].includes(v)) {
       throw new Error(`${path}.${k}: expected daemon or per-run`);
     }

@@ -21,6 +21,7 @@ import type {
 import { withExecutionContract } from '../execution';
 import { PI_EXECUTION_CAPABILITIES } from './capabilities';
 import { PiRunTranslator } from './jsonl-translator';
+import { piThinkingLevel } from './thinking';
 
 export interface PiAdapterOptions {
   binary?: string;
@@ -196,10 +197,4 @@ function writeSystemPrompt(systemPrompt: string): {
       }
     },
   };
-}
-
-function piThinkingLevel(effort: string): string {
-  if (effort === 'max') return 'xhigh';
-  if (effort === 'none') return 'off';
-  return effort;
 }

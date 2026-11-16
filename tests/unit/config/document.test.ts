@@ -235,6 +235,41 @@ codexHome = "/state/codex"
     expect(() => parseDocument(source + '\n[agents.codex.launch]\nmcpConfig = "/state/mcp.json"\n')).toThrow(/unknown setting/);
   });
 
+  it('preserves pi SDK transport launch fields across round trips', () => {
+    const text = source + `
+[agents.pi.launch]
+binaryPath = "/opt/pi"
+agentDir = "/state/pi"
+transport = "sdk"
+sdkPath = "/opt/pi/dist/index.js"
+nodePath = "/opt/node/bin/node"
+idleTtlMs = 60000
+maxSessions = 32
+sessionPersistence = "memory"
+`;
+    const expected = {
+      binaryPath: '/opt/pi',
+      agentDir: '/state/pi',
+      transport: 'sdk',
+      sdkPath: '/opt/pi/dist/index.js',
+      nodePath: '/opt/node/bin/node',
+      idleTtlMs: 60000,
+      maxSessions: 32,
+      sessionPersistence: 'memory',
+    };
+    const root = documentToRoot(parseDocument(text));
+    expect(root.profiles.bot!.pi).toMatchObject(expected);
+    expect(documentToRoot(parseDocument(formatDocument(rootToDocument(root)))).profiles.bot!.pi).toMatchObject(expected);
+  });
+
+  it.each([
+    '[agents.pi.launch]\ntransport = "exec"',
+    '[agents.pi.launch]\nsessionPersistence = "disk"',
+    '[agents.pi.launch]\nidleTtlMs = "60000"',
+  ])('rejects invalid pi SDK launch settings: %s', fragment => {
+    expect(() => parseDocument(source + '\n' + fragment)).toThrow();
+  });
+
   it('inherits, merges and round-trips launch environment values', () => {
     const text = source + `
 [agents.codex.launch.env]

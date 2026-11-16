@@ -57,6 +57,14 @@ binaryPath = "claude"
 binaryPath = "pi"
 # agentDir = "/absolute/private/pi-agent"
 # env = { HTTPS_PROXY = "$HTTPS_PROXY", NO_PROXY = "localhost,127.0.0.1" }
+# Embed the Pi SDK in one long-lived host (steering, many sessions) instead of
+# one CLI process per run. nodePath/sdkPath are derived from the launcher.
+# transport = "sdk"
+# sdkPath = "/absolute/pi/dist/index.js"
+# nodePath = "/absolute/node/bin/node"
+# idleTtlMs = 900000
+# maxSessions = 256
+# sessionPersistence = "file"
 
 [channels.lark]
 reply_mode = "markdown"

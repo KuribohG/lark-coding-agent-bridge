@@ -1,0 +1,631 @@
+#!/usr/bin/env node
+/**
+ * pi-host: a long-lived process that embeds Pi's SDK and hosts many agent
+ * sessions behind a newline-delimited JSON protocol.
+ *
+ * The bridge normally runs Node 20/22.18 and cannot import Pi's SDK in-process
+ * (Pi requires Node >= 22.19), so `src/agent/pi-sdk/adapter.ts` spawns this
+ * script with Pi's bundled Node and talks to it over stdin/stdout. One host per
+ * bridge process: sessions are created, prompted, steered and disposed here;
+ * the bridge keeps only the transport and event mapping.
+ *
+ * Protocol (one JSON object per line):
+ *   bridge -> host  { id, cmd, params? }
+ *   host -> bridge  { id, ok, data? } | { id, ok: false, error }
+ *                   { type: "host.ready", data }
+ *                   { type: "host.fatal", error }
+ *                   { type: "run.event", sessionId, runId, event }
+ *                   { type: "run.end", sessionId, runId, outcome, error? }
+ *
+ * The host owns Pi session files: a session created here can be reopened by
+ * the `pi` CLI with the same agentDir (`pi --session <id>`), and vice versa.
+ *
+ * stdout is reserved for protocol frames. Pi extensions may write to stdout or
+ * console.log; those writes are redirected to stderr before the SDK loads so
+ * they cannot corrupt the stream.
+ */
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+const realStdoutWrite = process.stdout.write.bind(process.stdout);
+process.stdout.write = function redirectedWrite(chunk, encoding, callback) {
+  return process.stderr.write(chunk, encoding, callback);
+};
+
+function send(message) {
+  let line;
+  try {
+    line = JSON.stringify(message);
+  } catch {
+    line = JSON.stringify(sanitize(message));
+  }
+  realStdoutWrite(`${line}\n`);
+}
+
+function reply(id, ok, payload) {
+  if (ok) send({ id, ok: true, ...(payload === undefined ? {} : { data: payload }) });
+  else send({ id, ok: false, error: errorText(payload) });
+}
+
+function errorText(error) {
+  if (error instanceof Error) return error.message || error.name;
+  return typeof error === 'string' ? error : String(error);
+}
+
+function log(message, fields) {
+  const suffix = fields ? ` ${JSON.stringify(sanitize(fields))}` : '';
+  process.stderr.write(`[pi-host] ${message}${suffix}\n`);
+}
+
+/** JSON-safe copy for protocol frames: drop functions, break cycles. */
+function sanitize(value, seen = new WeakSet()) {
+  if (value === null || typeof value !== 'object') {
+    return typeof value === 'function' ? undefined : value;
+  }
+  if (seen.has(value)) return '[Circular]';
+  seen.add(value);
+  if (Array.isArray(value)) return value.map((item) => sanitize(item, seen));
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item === 'function') continue;
+    out[key] = sanitize(item, seen);
+  }
+  return out;
+}
+
+function parseArguments(argv) {
+  const options = {};
+  for (let index = 0; index < argv.length; index += 2) {
+    const flag = argv[index];
+    const value = argv[index + 1];
+    if (!flag?.startsWith('--') || value === undefined) {
+      throw new Error(`invalid pi-host argument: ${flag ?? '(empty)'}`);
+    }
+    options[flag.slice(2)] = value;
+  }
+  return options;
+}
+
+const MIN_NODE = [22, 19, 0];
+
+function nodeVersionAtLeast(version, minimum) {
+  const parts = String(version).replace(/^v/, '').split('.').map((part) => Number(part) || 0);
+  for (let index = 0; index < minimum.length; index += 1) {
+    if ((parts[index] ?? 0) > minimum[index]) return true;
+    if ((parts[index] ?? 0) < minimum[index]) return false;
+  }
+  return true;
+}
+
+let options;
+try {
+  options = parseArguments(process.argv.slice(2));
+} catch (error) {
+  send({ type: 'host.fatal', error: errorText(error) });
+  process.exit(2);
+}
+
+if (!nodeVersionAtLeast(process.versions.node, MIN_NODE)) {
+  send({
+    type: 'host.fatal',
+    error: `pi-host requires Node >= ${MIN_NODE.join('.')}; started with ${process.versions.node}. ` +
+      'Configure pi.nodePath (or fix the pi launcher) to a compatible runtime.',
+  });
+  process.exit(2);
+}
+
+const sdkPath = options.sdk;
+if (!sdkPath || !existsSync(sdkPath)) {
+  send({ type: 'host.fatal', error: `pi SDK entry not found: ${sdkPath ?? '(missing --sdk)'}` });
+  process.exit(2);
+}
+
+const agentDir = options['agent-dir'] || process.env.PI_CODING_AGENT_DIR || join(homedir(), '.pi', 'agent');
+// Session files, settings.json, auth.json and models.json all resolve through
+// this directory; set it before touching the SDK.
+process.env.PI_CODING_AGENT_DIR = agentDir;
+
+const idleTtlMs = positiveInteger(options['idle-ttl-ms'], 15 * 60 * 1000);
+const maxSessions = positiveInteger(options['max-sessions'], 256);
+// A host with no sessions is useless to the bridge after a config reload or a
+// crash of the owning adapter; exit so it cannot linger forever.
+const emptyExitMs = positiveInteger(options['empty-exit-ms'], 10 * 60 * 1000);
+const sessionPersistence = options['session-persistence'] === 'memory' ? 'memory' : 'file';
+
+let pi;
+let runtime;
+try {
+  pi = await import(pathToFileURL(sdkPath).href);
+  runtime = await pi.ModelRuntime.create({
+    authPath: join(agentDir, 'auth.json'),
+    modelsPath: join(agentDir, 'models.json'),
+    refreshOnCreate: false,
+  });
+} catch (error) {
+  send({ type: 'host.fatal', error: `failed to load pi SDK: ${errorText(error)}` });
+  process.exit(2);
+}
+
+/** @type {Map<string, SessionEntry>} */
+const sessions = new Map();
+const startedAt = Date.now();
+let lastActivityAt = startedAt;
+
+class SessionEntry {
+  constructor(session, cwd) {
+    this.session = session;
+    this.cwd = cwd;
+    this.lastUsed = Date.now();
+    this.run = undefined;
+    this.appendPrompt = '';
+    this.unsubscribe = () => {};
+  }
+}
+
+function createSessionManager(cwd, params) {
+  if (params.forkFrom) {
+    const source = pi.SessionManager.findById(cwd, params.forkFrom);
+    if (!source) throw new Error(`pi session not found for fork: ${params.forkFrom}`);
+    return pi.SessionManager.forkFrom(source, cwd);
+  }
+  if (params.sessionId) {
+    const file = pi.SessionManager.findById(cwd, params.sessionId);
+    if (file) return pi.SessionManager.open(file);
+  }
+  return sessionPersistence === 'memory'
+    ? pi.SessionManager.inMemory(cwd)
+    : pi.SessionManager.create(cwd);
+}
+
+function resolveModel(modelId) {
+  if (!modelId || modelId === 'default') return undefined;
+  const slash = modelId.indexOf('/');
+  if (slash > 0) {
+    const model = runtime.getModel(modelId.slice(0, slash), modelId.slice(slash + 1));
+    if (model) return model;
+  }
+  for (const provider of runtime.getProviders()) {
+    for (const model of runtime.getModels(provider.id)) {
+      if (model.id === modelId) return model;
+    }
+  }
+  throw new Error(`unknown pi model: ${modelId}`);
+}
+
+function registerProvider(registration, providerEnv) {
+  if (providerEnv) {
+    for (const [name, value] of Object.entries(providerEnv)) {
+      if (value !== undefined && value !== null) process.env[name] = String(value);
+    }
+  }
+  runtime.registerProvider(registration.providerId, {
+    name: registration.name,
+    baseUrl: registration.baseUrl,
+    api: registration.api,
+    apiKey: `$${registration.apiKeyEnv}`,
+    authHeader: true,
+    ...(registration.headers
+      ? { headers: Object.fromEntries(Object.entries(registration.headers).map(([name, env]) => [name, `$${env}`])) }
+      : {}),
+    models: [registration.model],
+  });
+  const model = runtime.getModel(registration.providerId, registration.model.id);
+  if (!model) throw new Error(`registered pi provider ${registration.providerId} has no model ${registration.model.id}`);
+  return model;
+}
+
+function resolveRunModel(params) {
+  if (params.modelProvider?.providerId) {
+    return registerProvider(params.modelProvider, params.providerEnv);
+  }
+  return resolveModel(params.model);
+}
+
+function applyRunEnv(params) {
+  if (!params.runEnv || typeof params.runEnv !== 'object') return;
+  for (const [name, value] of Object.entries(params.runEnv)) {
+    if (typeof value === 'string') process.env[name] = value;
+  }
+}
+
+async function openSession(params) {
+  if (!params.cwd) throw new Error('session.open requires cwd');
+  applyRunEnv(params);
+  const existing = params.sessionId ? sessions.get(params.sessionId) : undefined;
+  if (existing) {
+    existing.lastUsed = Date.now();
+    return existing;
+  }
+  if (sessions.size >= maxSessions) evictIdleSession(true);
+
+  const cwd = params.cwd;
+  const manager = createSessionManager(cwd, params);
+  const settings = pi.SettingsManager.create(cwd, agentDir);
+  const appendPrompt = typeof params.systemPrompt === 'string' ? params.systemPrompt : '';
+  const loader = new pi.DefaultResourceLoader({
+    cwd,
+    agentDir,
+    settingsManager: settings,
+    ...(params.noExtensions === true ? { noExtensions: true } : {}),
+    appendSystemPromptOverride: (base) => (appendPrompt ? [...base, appendPrompt] : base),
+  });
+  await loader.reload();
+
+  const model = resolveRunModel(params);
+  const { session, modelFallbackMessage } = await pi.createAgentSession({
+    cwd,
+    agentDir,
+    modelRuntime: runtime,
+    ...(model ? { model } : {}),
+    ...(params.thinkingLevel ? { thinkingLevel: params.thinkingLevel } : {}),
+    sessionManager: manager,
+    settingsManager: settings,
+    resourceLoader: loader,
+    ...(Array.isArray(params.tools) && params.tools.length > 0 ? { tools: params.tools } : {}),
+    ...(params.noTools === 'all' || params.noTools === 'builtin' ? { noTools: params.noTools } : {}),
+  });
+
+  const entry = new SessionEntry(session, cwd);
+  entry.appendPrompt = appendPrompt;
+  if (modelFallbackMessage) log('model fallback', { message: modelFallbackMessage });
+  entry.unsubscribe = session.subscribe((event) => forwardEvent(entry, event));
+  sessions.set(session.sessionId, entry);
+  log('session opened', {
+    sessionId: session.sessionId,
+    cwd,
+    persistent: session.sessionFile !== undefined,
+    model: session.model ? `${session.model.provider}/${session.model.id}` : undefined,
+    provider: params.modelProvider?.providerId,
+  });
+  return entry;
+}
+
+function forwardEvent(entry, event) {
+  const run = entry.run;
+  if (!run || run.ended) return;
+  const payload = slimEvent(event);
+  if (payload) {
+    send({
+      type: 'run.event',
+      sessionId: entry.session.sessionId,
+      runId: run.runId,
+      event: payload,
+    });
+  }
+  if (event.type === 'agent_settled') {
+    finishRun(entry, run, event.aborted === true ? 'aborted' : 'settled');
+  }
+}
+
+/**
+ * Trim events to what PiRunTranslator consumes. message_update would otherwise
+ * carry the full growing assistant message on every delta.
+ */
+function slimEvent(event) {
+  switch (event.type) {
+    case 'message_start':
+      return { type: 'message_start', message: { role: event.message?.role } };
+    case 'message_update':
+      return { type: 'message_update', assistantMessageEvent: event.assistantMessageEvent };
+    case 'message_end':
+      return {
+        type: 'message_end',
+        message: {
+          role: event.message?.role,
+          content: event.message?.content,
+          usage: event.message?.usage,
+          stopReason: event.message?.stopReason,
+          errorMessage: event.message?.errorMessage,
+        },
+      };
+    case 'tool_execution_start':
+      return {
+        type: 'tool_execution_start',
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+        args: event.args,
+      };
+    case 'tool_execution_end':
+      return {
+        type: 'tool_execution_end',
+        toolCallId: event.toolCallId,
+        toolName: event.toolName,
+        result: event.result,
+        isError: event.isError === true,
+      };
+    case 'auto_retry_start':
+      return {
+        type: 'auto_retry_start',
+        attempt: event.attempt,
+        maxAttempts: event.maxAttempts,
+        delayMs: event.delayMs,
+        errorMessage: event.errorMessage,
+      };
+    case 'auto_retry_end':
+      return {
+        type: 'auto_retry_end',
+        success: event.success,
+        attempt: event.attempt,
+        finalError: event.finalError,
+      };
+    case 'summarization_retry_scheduled':
+      return {
+        type: 'summarization_retry_scheduled',
+        attempt: event.attempt,
+        maxAttempts: event.maxAttempts,
+        delayMs: event.delayMs,
+      };
+    case 'agent_settled':
+      return { type: 'agent_settled', aborted: event.aborted === true };
+    default:
+      return undefined;
+  }
+}
+
+function finishRun(entry, run, outcome, error) {
+  if (run.ended) return;
+  run.ended = true;
+  if (entry.run === run) entry.run = undefined;
+  entry.lastUsed = Date.now();
+  send({
+    type: 'run.end',
+    sessionId: entry.session.sessionId,
+    runId: run.runId,
+    outcome,
+    ...(error ? { error } : {}),
+  });
+}
+
+function prepareRun(params) {
+  const entry = sessions.get(params.sessionId);
+  if (!entry) throw new Error(`unknown pi session: ${params.sessionId}`);
+  if (entry.run) throw new Error('pi session is already running');
+  if (typeof params.text !== 'string' || !params.text) throw new Error('run.prompt requires text');
+  return entry;
+}
+
+async function applyRunSettings(entry, params) {
+  applyRunEnv(params);
+  if (typeof params.systemPrompt === 'string' && params.systemPrompt !== entry.appendPrompt) {
+    entry.appendPrompt = params.systemPrompt;
+    // DefaultResourceLoader rebuilds the system prompt only when the tool set
+    // changes; re-applying the current set is the public way to force it.
+    entry.session.setActiveToolsByName(entry.session.getActiveToolNames());
+  }
+  const model = resolveRunModel(params);
+  if (model) {
+    const current = entry.session.model;
+    if (!current || current.provider !== model.provider || current.id !== model.id) {
+      await entry.session.setModel(model);
+    }
+  }
+  if (params.thinkingLevel) entry.session.setThinkingLevel(params.thinkingLevel);
+}
+
+async function executePrompt(entry, run, params) {
+  try {
+    await applyRunSettings(entry, params);
+  } catch (error) {
+    finishRun(entry, run, 'error', errorText(error));
+    return;
+  }
+  try {
+    await entry.session.prompt(params.text);
+  } catch (error) {
+    if (run.aborted) finishRun(entry, run, 'aborted');
+    else finishRun(entry, run, 'error', errorText(error));
+    return;
+  }
+  if (!run.ended) finishRun(entry, run, run.aborted ? 'aborted' : 'settled');
+}
+
+function disposeSession(entry) {
+  const run = entry.run;
+  if (run) {
+    run.ended = true;
+    entry.run = undefined;
+    send({ type: 'run.end', sessionId: entry.session.sessionId, runId: run.runId, outcome: 'aborted' });
+  }
+  entry.unsubscribe();
+  try {
+    entry.session.dispose();
+  } catch (error) {
+    log('dispose failed', { sessionId: entry.session.sessionId, error: errorText(error) });
+  }
+}
+
+function evictIdleSession(required) {
+  let oldest;
+  for (const entry of sessions.values()) {
+    if (entry.run) continue;
+    if (!oldest || entry.lastUsed < oldest.lastUsed) oldest = entry;
+  }
+  if (!oldest) {
+    if (required) throw new Error(`pi host reached max sessions (${maxSessions}) with no idle session to evict`);
+    return false;
+  }
+  log('evicting idle session', { sessionId: oldest.session.sessionId, idleMs: Date.now() - oldest.lastUsed });
+  const id = oldest.session.sessionId;
+  disposeSession(oldest);
+  sessions.delete(id);
+  return true;
+}
+
+function health() {
+  let activeRuns = 0;
+  for (const entry of sessions.values()) if (entry.run) activeRuns += 1;
+  return {
+    pid: process.pid,
+    uptimeMs: Date.now() - startedAt,
+    sessions: sessions.size,
+    activeRuns,
+    rssBytes: process.memoryUsage.rss(),
+    nodeVersion: process.versions.node,
+    piVersion: pi.VERSION,
+  };
+}
+
+async function handleRequest(request) {
+  const params = request.params ?? {};
+  switch (request.cmd) {
+    case 'ping':
+      reply(request.id, true, health());
+      return;
+    case 'health':
+      reply(request.id, true, health());
+      return;
+    case 'session.open': {
+      const entry = await openSession(params);
+      reply(request.id, true, {
+        sessionId: entry.session.sessionId,
+        sessionFile: entry.session.sessionFile ?? null,
+        model: entry.session.model ? `${entry.session.model.provider}/${entry.session.model.id}` : null,
+      });
+      return;
+    }
+    case 'session.dispose': {
+      const entry = sessions.get(params.sessionId);
+      if (entry) {
+        disposeSession(entry);
+        sessions.delete(params.sessionId);
+      }
+      reply(request.id, true, { disposed: Boolean(entry) });
+      return;
+    }
+    case 'run.prompt': {
+      const entry = prepareRun(params);
+      const run = { runId: params.runId, ended: false, aborted: false };
+      entry.run = run;
+      entry.lastUsed = Date.now();
+      reply(request.id, true, { sessionId: entry.session.sessionId, runId: run.runId });
+      void executePrompt(entry, run, params);
+      return;
+    }
+    case 'run.steer': {
+      const entry = sessions.get(params.sessionId);
+      if (!entry) throw new Error(`unknown pi session: ${params.sessionId}`);
+      if (!entry.run || entry.run.runId !== params.runId) throw new Error('pi run is not active');
+      if (typeof params.text !== 'string' || !params.text) throw new Error('run.steer requires text');
+      const disposition = await entry.session.steer(params.text);
+      reply(request.id, true, { disposition });
+      return;
+    }
+    case 'run.abort': {
+      const entry = sessions.get(params.sessionId);
+      if (!entry) throw new Error(`unknown pi session: ${params.sessionId}`);
+      if (entry.run) entry.run.aborted = true;
+      await entry.session.abort();
+      reply(request.id, true, {});
+      return;
+    }
+    case 'shutdown':
+      reply(request.id, true, {});
+      setTimeout(() => void shutdown('shutdown'), 25);
+      return;
+    default:
+      throw new Error(`unknown pi-host command: ${request.cmd}`);
+  }
+}
+
+async function handleLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed) return;
+  lastActivityAt = Date.now();
+  let request;
+  try {
+    request = JSON.parse(trimmed);
+  } catch {
+    send({ type: 'host.notice', level: 'warn', message: 'ignored malformed JSON frame' });
+    return;
+  }
+  if (!request || typeof request !== 'object' || typeof request.cmd !== 'string' || request.id === undefined) {
+    send({ type: 'host.notice', level: 'warn', message: 'ignored frame without id/cmd' });
+    return;
+  }
+  try {
+    await handleRequest(request);
+  } catch (error) {
+    reply(request.id, false, error);
+  }
+}
+
+let shuttingDown = false;
+async function shutdown(reason) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log('shutting down', { reason });
+  clearInterval(reaper);
+  for (const [id, entry] of sessions) {
+    disposeSession(entry);
+    sessions.delete(id);
+  }
+  process.exit(0);
+}
+
+const reaper = setInterval(() => {
+  const now = Date.now();
+  for (const [id, entry] of sessions) {
+    if (entry.run) continue;
+    if (now - entry.lastUsed < idleTtlMs) continue;
+    log('idle session expired', { sessionId: id, idleMs: now - entry.lastUsed });
+    disposeSession(entry);
+    sessions.delete(id);
+  }
+  if (sessions.size === 0 && now - lastActivityAt > emptyExitMs) {
+    void shutdown('idle-empty');
+  }
+}, Math.min(60_000, Math.max(1_000, Math.floor(Math.min(idleTtlMs, emptyExitMs) / 2))));
+reaper.unref?.();
+
+// stdin closing means the bridge exited; the host must not outlive it.
+// Frames dispatch concurrently: a stalled abort or a slow session.open on one
+// session must not block prompts for the others. Same-session ordering is the
+// bridge's responsibility (it never opens or prompts one session twice).
+process.stdin.setEncoding('utf8');
+let buffer = '';
+process.stdin.on('data', (chunk) => {
+  buffer += chunk;
+  for (;;) {
+    const newline = buffer.indexOf('\n');
+    if (newline === -1) break;
+    const line = buffer.slice(0, newline);
+    buffer = buffer.slice(newline + 1);
+    void handleLine(line).catch((error) => log('frame failed', { error: errorText(error) }));
+  }
+});
+process.stdin.on('end', () => {
+  if (buffer.trim()) void handleLine(buffer).catch(() => {});
+  // The bridge is gone; finish promptly rather than waiting for stuck runs.
+  setTimeout(() => void shutdown('stdin closed'), 100);
+});
+process.stdin.on('error', () => void shutdown('stdin error'));
+
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => void shutdown(signal));
+}
+process.on('uncaughtException', (error) => {
+  log('uncaught exception', { error: errorText(error), stack: error?.stack });
+});
+process.on('unhandledRejection', (error) => {
+  log('unhandled rejection', { error: errorText(error) });
+});
+
+send({
+  type: 'host.ready',
+  data: {
+    pid: process.pid,
+    nodeVersion: process.versions.node,
+    piVersion: pi.VERSION,
+    agentDir,
+    idleTtlMs,
+    maxSessions,
+    sessionPersistence,
+  },
+});
+
+function positiveInteger(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}

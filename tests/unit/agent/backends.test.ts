@@ -4,7 +4,10 @@ import {
   AGENT_KINDS,
   backendFor,
   capabilityForProfile,
+  executionCapabilitiesForProfile,
 } from '../../../src/agent/backends';
+import { PiAdapter } from '../../../src/agent/pi/adapter';
+import { PiSdkAdapter } from '../../../src/agent/pi-sdk/adapter';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { startAppServerRun } from '../../../src/agent/codex/app-server';
 
@@ -84,5 +87,39 @@ describe('agent backend registry', () => {
       sessionIdField: 'sessionId',
       sessionKind: 'pi-session',
     });
+  });
+
+  it('selects the pi SDK transport and its steering capability from launch config', () => {
+    const profile = createDefaultProfileConfig({
+      agentKind: 'pi',
+      accounts: {
+        app: { id: 'cli_test', secret: '${APP_SECRET}', tenant: 'feishu' },
+      },
+      pi: {
+        binaryPath: '/usr/local/bin/pi',
+        transport: 'sdk',
+        sdkPath: '/opt/pi/dist/index.js',
+        nodePath: '/opt/node/bin/node',
+      },
+    });
+
+    expect(executionCapabilitiesForProfile(profile)).toEqual({ finalAnswer: 'separate-event', input: 'active-turn' });
+    const adapter = backendFor('pi').createAdapter({ profile, profileDir: '/tmp/profile', env: {}, systemPrompt: '' });
+    expect(adapter).toBeInstanceOf(PiSdkAdapter);
+    expect(adapter.capabilities).toEqual({ finalAnswer: 'separate-event', input: 'active-turn' });
+  });
+
+  it('keeps the pi CLI transport when transport is absent', () => {
+    const profile = createDefaultProfileConfig({
+      agentKind: 'pi',
+      accounts: {
+        app: { id: 'cli_test', secret: '${APP_SECRET}', tenant: 'feishu' },
+      },
+      pi: { binaryPath: '/usr/local/bin/pi' },
+    });
+
+    expect(executionCapabilitiesForProfile(profile)).toEqual({ finalAnswer: 'separate-event', input: 'unsupported' });
+    const adapter = backendFor('pi').createAdapter({ profile, profileDir: '/tmp/profile', env: {}, systemPrompt: '' });
+    expect(adapter).toBeInstanceOf(PiAdapter);
   });
 });

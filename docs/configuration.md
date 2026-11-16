@@ -52,7 +52,8 @@ configuration/authentication state. It accepts `binaryPath` and an optional
   connect before the first request and their tools are not deferred behind tool search.
 - Codex: `codexHome`, exposed as `CODEX_HOME`, plus `transport`,
   `appServerMode`, `provider`, `inheritCodexHome`, `ignoreUserConfig` and `ignoreRules`.
-- pi: `agentDir`, exposed as `PI_CODING_AGENT_DIR`.
+- pi: `agentDir`, exposed as `PI_CODING_AGENT_DIR`, plus `transport`, `sdkPath`,
+  `nodePath`, `hostScript`, `idleTtlMs`, `maxSessions` and `sessionPersistence`.
 
 `env` adds environment variables to the selected agent process and its tool
 subprocesses. `$NAME` and `${NAME}` references are resolved from the Bridge
@@ -88,6 +89,8 @@ agent-specific fields are rejected, so a `codexHome` cannot silently be applied
 to pi or a `configDir` to Codex.
 
 Codex uses `app-server`, enabling input during an active turn. The `exec` backend has been removed: remove an old `transport = "exec"` setting or change it to `"app-server"`. Both ignore flags default to `false`; explicitly setting either to `true` is rejected because app-server loads normal user configuration and execpolicy rules. Launch changes take effect after restarting the profile.
+
+pi runs through the `pi` CLI by default. `transport = "sdk"` embeds the Pi SDK in a long-lived host process instead: one host serves every session of the profile, text streams through the same translator, and follow-up input can steer the active turn. The host needs Node >= 22.19, normally Pi's own bundled runtime; Bridge derives `nodePath` and `sdkPath` from the configured `pi` launcher, so only `binaryPath` is required. Set them explicitly when the launcher is not a wrapper (or on Windows). `agentDir` defaults to `$PI_CODING_AGENT_DIR` or `~/.pi/agent`; SDK session files are ordinary Pi JSONL and can be reopened with `pi --session <id>`. `sessionPersistence = "memory"` keeps worker sessions off disk, and `idleTtlMs`/`maxSessions` bound the host's memory. The SDK host is shared across working directories, so a profile that enables the Landlock exec sandbox must keep `transport = "cli"`.
 
 `appServerMode` defaults to `daemon`. Bridge ensures Codex's official app-server daemon is running and attaches each run through a short-lived stdio-to-Unix-WebSocket bridge; the daemon stays alive after a run so native background memory extraction and consolidation can finish. On Windows, the bridge uses `codex app-server proxy --sock` as the native AF_UNIX byte transport underneath WebSocket, since Node's pipe API cannot connect to those sockets. `appServerMode = "per-run"` keeps the app-server scoped to one Bridge run and forces `memories.generate_memories = false`; existing memory reads and Codex's native memory startup path remain available, while the thread is not added as a source for new memory generation.
 
