@@ -143,6 +143,7 @@ const PI_SPEC: AgentBackendSpec = Object.freeze({
     'sessionPersistence',
     'remote',
     'sshOptions',
+    'workcell',
   ]),
   stateDirectory: Object.freeze({ field: 'agentDir', envName: 'PI_CODING_AGENT_DIR' }),
   includeStateDirectoryInPolicy: true,

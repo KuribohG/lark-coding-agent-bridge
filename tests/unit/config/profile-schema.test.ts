@@ -481,6 +481,21 @@ describe('pi SDK transport configuration', () => {
     expect(cfg.execSandbox).toMatchObject({ enabled: true, readWrite: ['/srv'] });
   });
 
+  it('accepts a workcell provider for the SDK transport and rejects impossible pairs', () => {
+    const workcell = { provider: '/bin/provider', cpu: 4 };
+    expect(normalizeProfileConfig({ ...launch('pi', 'sdk'), pi: { binaryPath: 'pi', transport: 'sdk', workcell } }).pi)
+      .toMatchObject({ workcell });
+
+    expect(() => normalizeProfileConfig({ ...launch('pi', 'cli'), pi: { binaryPath: 'pi', workcell } }))
+      .toThrow(/workcell requires pi.transport = "sdk"/);
+    expect(() => normalizeProfileConfig({ ...launch('pi', 'sdk'), pi: { binaryPath: 'pi', transport: 'sdk', workcell }, exec_sandbox: { enabled: true } }))
+      .toThrow(/workcell cannot take the local exec sandbox/);
+    expect(() => normalizeProfileConfig({
+      ...launch('pi', 'sdk'),
+      pi: { binaryPath: 'pi', transport: 'sdk', workcell, remote: 'node01' },
+    })).toThrow(/workcell and pi.remote are alternatives/);
+  });
+
   it('keeps the sandboxed CLI transport, and pi launch fields on a non-pi profile, valid', () => {
     expect(normalizeProfileConfig({ ...launch('pi', 'cli'), exec_sandbox: { enabled: true } }).pi)
       .toMatchObject({ transport: 'cli' });

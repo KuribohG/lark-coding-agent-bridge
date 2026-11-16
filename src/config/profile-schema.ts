@@ -243,6 +243,17 @@ export function normalizeProfileConfig(input: unknown): ProfileConfig {
     if (execSandbox.execSandbox?.enabled) {
       throw new Error('pi.remote cannot take the local exec sandbox; the remote node enforces its own isolation');
     }
+    if (launches.pi.workcell) {
+      throw new Error('pi.workcell and pi.remote are alternatives; configure one of them');
+    }
+  }
+  if (launches.pi?.workcell) {
+    if (launches.pi.transport !== 'sdk') {
+      throw new Error('pi.workcell requires pi.transport = "sdk"; only the host protocol can run across a forwarded channel');
+    }
+    if (execSandbox.execSandbox?.enabled) {
+      throw new Error('pi.workcell cannot take the local exec sandbox; the workcell is its own boundary');
+    }
   }
 
   return {

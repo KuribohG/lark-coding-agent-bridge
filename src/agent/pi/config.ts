@@ -1,4 +1,5 @@
 import { normalizeExecutableLaunch, type ExecutableLaunchConfig } from '../launch-options';
+import { normalizeWorkcell, type WorkcellConfig } from '../pi-sdk/workcell';
 
 export interface PiConfig extends ExecutableLaunchConfig {
   /** Directory containing Pi settings, sessions, auth.json, and model catalogs. */
@@ -29,6 +30,11 @@ export interface PiConfig extends ExecutableLaunchConfig {
   remote?: string;
   /** Extra ssh options, appended before the destination. */
   sshOptions?: string[];
+  /**
+   * Rent an isolated unit for this profile's host instead of running it on the
+   * bridge machine. The provider is an executable; see workcell.ts.
+   */
+  workcell?: WorkcellConfig;
 }
 
 export function normalizePi(input: PiConfig): PiConfig {
@@ -64,5 +70,6 @@ export function normalizePi(input: PiConfig): PiConfig {
     ...(input.sessionPersistence ? { sessionPersistence: input.sessionPersistence } : {}),
     ...(input.remote ? { remote: input.remote.trim() } : {}),
     ...(input.sshOptions && input.sshOptions.length > 0 ? { sshOptions: [...input.sshOptions] } : {}),
+    ...(input.workcell ? { workcell: normalizeWorkcell(input.workcell) } : {}),
   };
 }

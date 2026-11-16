@@ -68,6 +68,14 @@ binaryPath = "pi"
 # Run the host on another machine over ssh (same absolute paths there).
 # remote = "user@worker-node"
 # sshOptions = ["-i", "/keys/id_worker"]
+# Or rent an isolated unit per workflow member; the provider is an executable
+# speaking the workcell protocol (see docs/configuration.md).
+# [agents.pi.workcell]
+# provider = "/absolute/path/to/workcell-provider"
+# image = "registry/image:tag"
+# cpu = 4
+# memoryGb = 8
+# ttlSeconds = 3600
 
 [channels.lark]
 reply_mode = "markdown"
