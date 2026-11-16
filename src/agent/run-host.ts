@@ -26,9 +26,11 @@ export interface RunHostBinding {
 
 export type RunHostState = 'running' | 'exited' | 'missing';
 
-const HOST_SCRIPT = fileURLToPath(new URL(
-  import.meta.url.endsWith('.ts') ? '../../bin/run-host.mjs' : '../bin/run-host.mjs', import.meta.url,
-));
+function hostScript(): string {
+  if (import.meta.url.endsWith('.ts')) return fileURLToPath(new URL('../../bin/run-host.mjs', import.meta.url));
+  const bundled = fileURLToPath(new URL('./bin/run-host.mjs', import.meta.url));
+  return existsSync(bundled) ? bundled : fileURLToPath(new URL('../bin/run-host.mjs', import.meta.url));
+}
 const KEY_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
 const CONNECT_TIMEOUT_MS = 10_000;
 const PROBE_TIMEOUT_MS = 2_000;
@@ -206,7 +208,7 @@ function startHostedProcess(input: {
   const hostLog = openSync(join(dir, 'host.log'), 'a', 0o600);
   let host: ChildProcess;
   try {
-    host = spawnProcess(process.execPath, [HOST_SCRIPT, dir], {
+    host = spawnProcess(process.execPath, [hostScript(), dir], {
       cwd: input.cwd, env: input.env, detached: true, stdio: ['ignore', 'ignore', hostLog],
     });
   } finally {

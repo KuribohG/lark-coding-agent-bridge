@@ -19,6 +19,8 @@ export { availableEfforts } from './agent/model-settings';
 export { spawnWithDeadline } from './agent/deadline';
 export { ClaudeAdapter } from './agent/claude/adapter';
 export { CodexAdapter } from './agent/codex/adapter';
+export { CellChild, CellConnection } from './agent/cell/client';
+export type { CellTarget } from './agent/cell/client';
 export { PiSdkAdapter } from './agent/pi-sdk/adapter';
 export { resolvePiSdkPaths } from './agent/pi-sdk/paths';
 export { DshAdapter } from './agent/dsh/adapter';
