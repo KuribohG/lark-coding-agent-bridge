@@ -1,6 +1,7 @@
 import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import Database from 'better-sqlite3';
+import { createRequire } from 'node:module';
+import type Database from 'better-sqlite3';
 import { workflowDigest } from './digest';
 import { eventEntity, eventTopics, type DomainEvent } from './events';
 import { evolve } from './evolve';
@@ -167,7 +168,9 @@ export class WorkflowStore {
     this.snapshotEvery = options.snapshotEvery ?? SNAPSHOT_EVERY;
     this.retainFinished = options.retainFinished ?? RETAIN_FINISHED;
     if (path !== ':memory:' && !options.readonly) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    this.db = new Database(path, options.readonly ? { readonly: true, fileMustExist: true } : {});
+    // Workers use the tool guide and IPC without a database or native modules on their machine.
+    const Sqlite = createRequire(import.meta.url)('better-sqlite3') as typeof Database;
+    this.db = new Sqlite(path, options.readonly ? { readonly: true, fileMustExist: true } : {});
     if (!options.readonly) {
       if (path !== ':memory:') chmodSync(path, 0o600);
       this.db.pragma('journal_mode = WAL');

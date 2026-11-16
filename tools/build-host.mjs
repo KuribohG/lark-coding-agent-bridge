@@ -44,6 +44,13 @@ const workflowClient = await esbuild.build({ absWorkingDir: root, entryPoints: [
   sourcemap: false, metafile: true, external: ['better-sqlite3', 'quickjs-emscripten'],
   banner: { js: "import { createRequire as bundleRequire } from 'node:module';\nconst require = bundleRequire(import.meta.url);" },
 });
+for (const file of Object.values(workflowClient.metafile.outputs)) {
+  for (const dep of file.imports) {
+    if (dep.external && !dep.path.startsWith('node:') && !builtinModules.includes(dep.path)) {
+      throw new Error('The standalone workflow client requires an unshipped package: ' + dep.path);
+    }
+  }
+}
 const inputs = {};
 const remember = relative => { inputs[relative] = sha(fs.readFileSync(path.join(root, relative))); };
 for (const name of [...Object.keys(result.metafile.inputs), ...Object.keys(helpers.metafile.inputs), ...Object.keys(workflowClient.metafile.inputs)]) remember(name.replaceAll('\\', '/'));
