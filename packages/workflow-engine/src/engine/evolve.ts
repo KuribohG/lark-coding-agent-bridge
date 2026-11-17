@@ -270,10 +270,12 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       const member = found.members.find(item => item.name === event.member)!;
       member.taskId = event.taskId; member.retryPending = undefined; member.lastWake = event.wake;
       if (event.timer) { member.wakeAt = undefined; member.wakeNote = undefined; }
-      // The lead looking in on its own timer is not work resuming: an idle swarm already reported stays reported.
-      if (!(event.timer && event.member === found.lead)) found.stalled = undefined;
+      // A lead, of the swarm or of a queue, plans the work: its turns are not the work resuming.
+      const plans = event.member === found.lead || Boolean(member.leads?.length);
+      // A lead looking in on its own timer leaves an idle swarm that was already reported as it is.
+      if (!(event.timer && plans)) found.stalled = undefined;
       // Work resumed, so the next idle spell earns the lead a fresh set of reminders.
-      if (event.member !== found.lead) found.nudges = 0;
+      if (!plans) found.nudges = 0;
       if (!event.retry) {
         found.turns.push({ key: event.key, member: event.member, taskId: event.taskId });
         if (!event.opening) member.turns++;

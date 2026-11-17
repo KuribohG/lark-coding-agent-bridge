@@ -64,6 +64,8 @@ export const BOARD_MAX_DELIVERIES = 32_768;
 export const BOARD_DEFAULT_TOPIC = 'general';
 /** Rules and rulings every member must know: only the main agent, the script and a swarm's lead post in it. */
 export const BOARD_ANNOUNCE_TOPIC = 'announce';
+/** The outcome of a work item, posted by the system to the lead that planned it when a member completes or gives it up. */
+export const BOARD_HANDOFF_TOPIC = 'handoff';
 /** Distinct topics of one board. A topic is a workstream, not a tag for one post. */
 export const BOARD_MAX_TOPICS = 64;
 /** Latest posts of each topic the board keeps the seq of, so they are found without reading the feed. */

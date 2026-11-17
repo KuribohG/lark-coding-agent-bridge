@@ -31,21 +31,24 @@ function mentioned(text: string, name: string): boolean {
 /**
  * The members a post is delivered to: the explicit `to` list plus every `@name` in the text, without the sender.
  * `all` (in `to`, or `@all` in the text) addresses every member that exists when the post is made. Unknown names in
- * `to` are rejected; an `@word` that names no member is ordinary text.
+ * `to` are rejected; an `@word` that names no member is ordinary text. A `literal` post goes to its `to` list only.
  */
-function recipients(state: WorkflowView, text: string, to: unknown, sender?: string): { agents: AgentView[]; all: boolean } {
+function recipients(state: WorkflowView, text: string, to: unknown, sender?: string, literal = false): { agents: AgentView[]; all: boolean } {
   const agents = state.agents ?? [];
   const requested = to === undefined || to === null ? [] : typeof to === 'string' ? [to] : to;
   if (!Array.isArray(requested) || requested.length > MAX_NAMED_MEMBERS || requested.some(name => typeof name !== 'string')) throw new Error(`Post field to must be "all" or an array of at most ${MAX_NAMED_MEMBERS} member names`);
   const names = requested.map(name => scriptText(String(name).replace(/^@/, ''), 'member name', 100));
-  const all = names.includes('all') || mentioned(text, 'all');
+  const all = names.includes('all') || !literal && mentioned(text, 'all');
   const chosen = new Set(all ? agents : names.map(name => member(state, name)));
-  for (const agent of agents) if (mentioned(text, agent.key)) chosen.add(agent);
+  if (!literal) for (const agent of agents) if (mentioned(text, agent.key)) chosen.add(agent);
   return { agents: agents.filter(agent => chosen.has(agent) && agent.agentId !== sender), all };
 }
 
-/** Appends a post and delivers it to its recipients' inboxes, which wakes the ones waiting for a message. */
-export function postToBoard(state: WorkflowView, sender: { agentId: string } | { author: BoardAuthor }, input: { text?: unknown; to?: unknown; topic?: unknown }, now: number): { seq: number; postId: string; to: string[]; topic?: string } {
+/**
+ * Appends a post and delivers it to its recipients' inboxes, which wakes the ones waiting for a message. `literal`
+ * is for posts that quote text the sender did not write: an `@name` in it names nobody.
+ */
+export function postToBoard(state: WorkflowView, sender: { agentId: string } | { author: BoardAuthor }, input: { text?: unknown; to?: unknown; topic?: unknown }, now: number, options: { literal?: boolean } = {}): { seq: number; postId: string; to: string[]; topic?: string } {
   const text = scriptText(input.text, 'post', POST_MAX_TEXT);
   if (!text.trim()) throw new Error('Post text must not be empty');
   const from = 'agentId' in sender ? sender.agentId : undefined;
@@ -57,7 +60,7 @@ export function postToBoard(state: WorkflowView, sender: { agentId: string } | {
   if (topic !== BOARD_DEFAULT_TOPIC && !known.includes(topic) && known.filter(name => name !== BOARD_DEFAULT_TOPIC).length >= BOARD_MAX_TOPICS) {
     throw new Error(`Board topic limit reached (${BOARD_MAX_TOPICS}); post in an existing topic: ${known.join(', ')}`);
   }
-  const target = recipients(state, text, input.to, from);
+  const target = recipients(state, text, input.to, from, options.literal);
   const delivered = (state.mailbox?.messages ?? []).filter(message => message.post !== undefined).length;
   if (delivered + target.agents.length > BOARD_MAX_DELIVERIES) throw new Error('Board delivery limit reached; address fewer members');
   const post: BoardPost = { seq: boardTotal(state) + 1, id: randomUUID(), ...(from ? { from } : { author: (sender as { author: BoardAuthor }).author }),

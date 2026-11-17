@@ -177,6 +177,11 @@ export interface SwarmMember {
   taskId?: string;
   /** The work queue this member consumes: it is also woken whenever that queue has work it could claim. */
   queue?: string;
+  /**
+   * The work queues this member leads under the swarm's lead: it plans their part of the task instead of consuming
+   * them, is handed the results of their items, and is told when one runs dry or one of its members fails.
+   */
+  leads?: string[];
   /** The available work the member was last woken for; the same set does not wake it twice. */
   lastWake?: string;
   /** Wake-ups used after the opening turn. */
@@ -193,7 +198,8 @@ export interface SwarmMember {
 }
 /**
  * A group of persistent members that coordinate on the board. The kernel schedules their turns: every member runs
- * once, then again whenever a post names it. An optional lead may add and retire members and decides when to finish.
+ * once, then again whenever a post names it. An optional lead may add and retire members and decides when to finish;
+ * under it, members that lead queues plan those parts of the work.
  */
 export interface WorkflowSwarm {
   id: string;

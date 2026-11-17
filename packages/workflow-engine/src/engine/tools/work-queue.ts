@@ -3,12 +3,25 @@ import { requireState } from '../kernel-state';
 import { closeWorkQueue, enqueueFromMember, enqueueWork, holdClaim, mutateWork, retryWork, searchWork, workOperation, workStatus, WORK_MUTATIONS } from '../work-queue';
 import { queueName } from '../work-routing';
 import { scriptText } from '../script-contract';
+import { taskAgent } from '../durable-agents';
+import { handOffWork } from '../swarm';
 import type { ToolArgs, WorkflowTool, WorkflowToolPlugin } from './types';
-import type { WorkflowView } from '../types';
+import type { TaskView, WorkflowView } from '../types';
 import { versioned } from './versioned';
 
 function operationInput(args: ToolArgs): ToolArgs {
   return Object.fromEntries(Object.entries(args).filter(([key]) => !CONTROL_ARGS.includes(key)));
+}
+
+/**
+ * A work mutation of a member. One that settles the item the member held (completed, or given up for good) also
+ * hands the outcome to the lead that planned the item; a repeated call finds the claim settled and hands over nothing.
+ */
+function memberWork(state: WorkflowView, task: TaskView, attemptId: string, name: string, args: ToolArgs, now: number): unknown {
+  const held = name === 'complete_work' || name === 'fail_work' ? state.workQueue?.claims.find(claim => claim.id === args.claimId && claim.status === 'active') : undefined;
+  const response = mutateWork(state, task, attemptId, name, args, now);
+  if (held) handOffWork(state, taskAgent(state, task)?.key, held.itemId, now);
+  return response;
 }
 
 /** Claims, leases and progress of a persistent member's work item. */
@@ -19,7 +32,7 @@ const claimTools: WorkflowTool[] = WORK_MUTATIONS.map(name => ({
     prepare: (ctx, state) => ctx.scheduler.expireClaims(state),
     call: (ctx, state, task, caller, args) => {
       active(ctx, state);
-      return mutateWork(state, task, caller.attemptId, name, args, ctx.now());
+      return memberWork(state, task, caller.attemptId, name, args, ctx.now());
     },
   },
 }));
@@ -67,7 +80,7 @@ const submitWork: WorkflowTool = {
       try { report = await ctx.host.land!(start.state, { workspace: start.workspace, taskId: caller.taskId }, controller.signal) as { status: string; headCommit?: string; commits?: number }; }
       finally { clearInterval(timer); }
       if (report.status !== 'landed' || !claim) return report;
-      const item = bound((state, task) => mutateWork(state, task, caller.attemptId, 'complete_work',
+      const item = bound((state, task) => memberWork(state, task, caller.attemptId, 'complete_work',
         { operationId, ...claim, result: args.result ?? { headCommit: report.headCommit, commits: report.commits } }, ctx.now()));
       return { ...report, item };
     },

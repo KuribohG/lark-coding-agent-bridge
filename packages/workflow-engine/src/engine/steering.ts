@@ -27,13 +27,17 @@ export function setCharter(state: WorkflowView, input: { text?: unknown }, by: s
   const version = state.charter!.version;
   const notified: string[] = [];
   for (const swarm of state.swarms ?? []) {
-    const lead = swarm.lead;
-    if (!lead || lead === by || !runningLead(state, lead) || !state.agents?.some(agent => agent.key === lead)) continue;
-    // Naming nobody with @ keeps the notice from being delivered to anyone but the lead.
-    postToBoard(state, { author: 'system' }, { to: [lead], text: `The charter was replaced (version ${version}, set by ${by === 'main' ? 'the main agent' : 'lead ' + by}). `
-      + 'It overrides the task where they differ, and every turn of every member is given it. Re-plan against it now: stop handing out work that no longer serves it, '
-      + 'enqueue or assign what it newly requires, and name the members whose work in flight it changes.' }, now);
-    notified.push(lead);
+    if (!swarm.lead || !runningLead(state, swarm.lead)) continue;
+    // Every member that plans work re-plans: the swarm's lead and, under it, the leads of queues.
+    for (const member of swarm.members) {
+      const lead = member.name;
+      if (member.stopped || lead === by || !(lead === swarm.lead || member.leads?.length) || !state.agents?.some(agent => agent.key === lead)) continue;
+      // Naming nobody with @ keeps the notice from being delivered to anyone but the lead.
+      postToBoard(state, { author: 'system' }, { to: [lead], text: `The charter was replaced (version ${version}, set by ${by === 'main' ? 'the main agent' : 'lead ' + by}). `
+        + 'It overrides the task where they differ, and every turn of every member is given it. Re-plan against it now: stop handing out work that no longer serves it, '
+        + 'enqueue or assign what it newly requires, and name the members whose work in flight it changes.' }, now);
+      notified.push(lead);
+    }
   }
   return { charterVersion: version, notified };
 }
