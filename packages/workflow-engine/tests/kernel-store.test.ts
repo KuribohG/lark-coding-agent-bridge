@@ -396,3 +396,48 @@ describe('WAL file size', () => {
     expect(store.heartbeat()).toBe(1);
   });
 });
+
+describe('commit durability', () => {
+  it('syncs the commit that creates a workflow', async () => {
+    const store = open(await file());
+    const modes: unknown[] = [];
+    store.beforeCommit = () => modes.push(store.db.pragma('synchronous', { simple: true }));
+    start(store, 'wf');
+    expect(modes).toEqual([2]);
+  });
+
+  it('syncs only the commits whose loss replaying cannot cheaply reproduce', async () => {
+    const store = open(await file());
+    const state = start(store, 'wf');
+    const modes: unknown[] = [];
+    // Read from inside the commit: the setting is already raised for a durable transaction, and not for others.
+    store.beforeCommit = () => modes.push(store.db.pragma('synchronous', { simple: true }));
+    expect(store.db.pragma('synchronous', { simple: true })).toBe(1);
+    store.transact(() => emit(state, { type: 'script_phase_set', phase: 'working' }));
+    store.transact(() => emit(state, { type: 'workflow_completed' }));
+    expect(modes).toEqual([1, 2]);
+    // Back to NORMAL once the commit is over.
+    expect(store.db.pragma('synchronous', { simple: true })).toBe(1);
+  });
+
+  it('syncs a transaction that mixes a durable event with bookkeeping ones', async () => {
+    const store = open(await file());
+    const state = start(store, 'wf');
+    const modes: unknown[] = [];
+    store.beforeCommit = () => modes.push(store.db.pragma('synchronous', { simple: true }));
+    store.transact(() => emit(state, { type: 'script_phase_set', phase: 'preparing' }));
+    store.transact(() => {
+      emit(state, { type: 'script_phase_set', phase: 'verifying' });
+      emit(state, { type: 'workflow_completed' });
+    });
+    expect(modes).toEqual([1, 2]);
+  });
+
+  it('lowers the setting again when a durable commit fails', async () => {
+    const store = open(await file());
+    const state = start(store, 'wf');
+    store.beforeCommit = () => { throw new Error('boom'); };
+    expect(() => store.transact(() => emit(state, { type: 'workflow_completed' }))).toThrow('boom');
+    expect(store.db.pragma('synchronous', { simple: true })).toBe(1);
+  });
+});

@@ -3,7 +3,7 @@ import { dirname } from 'node:path';
 import { createRequire } from 'node:module';
 import type Database from 'better-sqlite3';
 import { workflowDigest } from './digest';
-import { eventEntity, eventTopics, type DomainEvent } from './events';
+import { durableEvent, eventEntity, eventTopics, type DomainEvent } from './events';
 import { evolve } from './evolve';
 import { RECORDS, type RecordKind } from './records';
 import type { ArtifactView, StoredArtifact, StoredTask, TaskView, TextRef, WorkflowData, WorkflowState, WorkflowView } from './types';
@@ -239,6 +239,10 @@ export class WorkflowStore {  readonly db: Database.Database;
     if (!options.readonly) {
       if (path !== ':memory:') chmodSync(path, 0o600);
       this.db.pragma('journal_mode = WAL');
+      // Commits are not synced one by one: a commit must survive a process crash, and this journal is not worth an
+      // fsync for every heartbeat. The commits that carry an event replaying cannot cheaply reproduce switch to FULL
+      // for that commit only (see persist).
+      this.db.pragma('synchronous = NORMAL');
       // A WAL file keeps the size of its largest backlog for good. With a limit, the first commit after the log starts
       // over cuts the file back, so one slow checkpoint does not leave hundreds of megabytes behind.
       this.db.pragma(`journal_size_limit = ${WAL_SIZE_LIMIT}`);
@@ -633,6 +637,20 @@ export class WorkflowStore {  readonly db: Database.Database;
   private persist(tx: Transaction): void {
     if (!tx.events.length && !tx.operations.length) return;
     const at = this.now();
+    // A transaction that carries an event replaying cannot cheaply reproduce is synced to disk; the others stay on
+    // NORMAL. `synchronous` is a connection setting and not transactional, so it is raised before the transaction
+    // starts and lowered after it ends, whether or not it committed.
+    const durable = tx.events.some(pending => durableEvent(pending.type));
+    if (durable) this.db.pragma('synchronous = FULL');
+    try {
+      this.writeTransaction(tx, at);
+    } finally {
+      if (durable && this.db.open) this.db.pragma('synchronous = NORMAL');
+    }
+  }
+
+  /** Writes one transaction's rows; persist() has already chosen its durability. */
+  private writeTransaction(tx: Transaction, at: number): void {
     this.db.transaction(() => {
       const text = this.db.prepare('INSERT OR IGNORE INTO wf_texts(digest, text) VALUES (?, ?)');
       for (const [digest, value] of tx.texts) text.run(digest, value);

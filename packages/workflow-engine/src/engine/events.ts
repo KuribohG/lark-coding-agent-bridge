@@ -127,6 +127,37 @@ export type DomainEvent =
 const LIFECYCLE = new Set<DomainEvent['type']>(['workflow_created', 'workflow_replaced', 'workflow_paused', 'workflow_cancel_requested', 'workflow_cancelled', 'workflow_completed',
   'workflow_interrupted', 'binding_invalidated', 'script_set', 'script_started', 'script_replayed', 'script_succeeded', 'script_failed']);
 
+/**
+ * Events whose loss is expensive, so the commit carrying them is synced to disk.
+ *
+ * The store commits with `synchronous = NORMAL` in WAL mode: a committed transaction survives a process crash, but a
+ * power loss may drop the last commits. For the events below that loss is not recoverable by replaying cheaply — the
+ * model call behind them would run again (its result is the only thing that lets a replay reuse it), or an external
+ * side effect already happened (a message was delivered) — so their transactions switch to `synchronous = FULL` for
+ * that commit only. Everything else (heartbeats, bookkeeping, scheduling, logs) is cheap to recompute.
+ *
+ * The check is per transaction: if any event in it is here, the whole commit is synced, so a durable event never
+ * commits without the state it produced, its idempotency record and its archived result.
+ */
+const DURABLE = new Set<DomainEvent['type']>([
+  // One worker turn's outcome, the native session it ran in, and the agent state it accumulated.
+  'attempt_ended', 'artifact_added', 'session_bound', 'checkpoint_saved', 'work_progress_saved',
+  'work_completed', 'member_created', 'member_turn_completed',
+  // Already delivered: replaying these would send it again.
+  'board_posted', 'message_sent', 'receipt_opened', 'direct_message_recorded',
+  // Native execution receipts, which restart reconciliation reads back.
+  'execution_settled', 'execution_uncertain',
+  // Terminal outcomes: losing one makes a restart treat the workflow as still active.
+  'script_succeeded', 'script_failed', 'workflow_created',
+  'workflow_completed', 'workflow_cancelled', 'workflow_paused', 'workflow_interrupted',
+  'swarm_ended', 'swarm_finish_requested',
+]);
+
+/** Whether a commit carrying this event must be synced to disk (see DURABLE). */
+export function durableEvent(type: string): boolean {
+  return (DURABLE as ReadonlySet<string>).has(type);
+}
+
 /** Subscription topics an event touches (see WorkflowStore.watch). */
 export function eventTopics(event: DomainEvent): string[] {
   const topics: string[] = [];
