@@ -466,6 +466,7 @@ await fixing;
 - A submission that applies to the branch head but not on top of the others on its train is tried first on the next train; only a clash with landed work is reported as `conflict`.
 - A call blocks until its train has finished. If the member's shell cuts it off, repeating it with the same `operationId` joins the landing in progress.
 - `createWorkspace({key, repo})` makes the worktree from another checkout than the workflow's cwd: `repo` is the absolute path of its root. The landing branch is created in that repository.
+- `createWorkspace({key, isolation: 'clone'})` gives the member a repository of its own instead of a worktree, so its Git commands cannot reach other members' refs, stash or locks; see [worktree or clone](workflow-worktrees.md#worktree-or-clone).
 - Nothing is pushed and the original checkout is not touched. Limits: 384 worktrees per workflow, plus one train worktree per repository, removed with the last member worktree.
 
 The [packaged example](../workflow-definitions/scripted/examples/claim-and-land.js) takes `items`, `checks`, and optional `members`, `precheck`, `protect`, `repo`, `prompt` and `model`.

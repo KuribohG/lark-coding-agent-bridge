@@ -9,6 +9,12 @@ export interface WorkspaceBinding {
   path: string;
   baseCommit: string;
   kind: 'task' | 'review' | 'integration';
+  /**
+   * Absent for a worktree of `repository`, which shares its refs, stash and Git metadata with every other worktree.
+   * A clone is a repository of its own at `path` that borrows the objects of `repository`; `repository` and
+   * `commonDir` still name the checkout it was made from, where its work is reviewed and landed.
+   */
+  isolation?: 'clone';
   changeId?: string;
   status: 'preparing' | 'ready' | 'removed';
   busy?: { token: string; taskId?: string; ownerPid: number };

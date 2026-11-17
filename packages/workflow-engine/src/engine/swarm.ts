@@ -400,7 +400,7 @@ export async function staffWorkspaces(ctx: KernelContext, state: WorkflowView, i
   if (state.parent) throw new Error('Workspace operations are unavailable in this workflow');
   if (state.status !== 'active' || state.script?.status !== 'running') throw new Error('Workflow is inactive');
   const options = input.workspace === true ? {} : input.workspace;
-  if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some(key => !['base', 'repo'].includes(key))) throw new Error('workspace is true or an object with base and repo');
+  if (!options || typeof options !== 'object' || Array.isArray(options) || Object.keys(options).some(key => !['base', 'repo', 'isolation'].includes(key))) throw new Error('workspace is true or an object with base, repo and isolation');
   const swarm = runningSwarm(state, input.swarm);
   const like = likeMember(swarm, input.like);
   if (like.workflowTool) throw new Error('Workspace v1 does not support nested workflow delegation');

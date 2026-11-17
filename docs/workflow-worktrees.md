@@ -33,9 +33,24 @@ Create worktrees in batches, not one awaited call after another. Registration is
 
 The worker must commit intended changes and leave a clean index/worktree. `reviewedAgent` freezes the commit after the worker exits, creates an independent review snapshot, checks that the reviewer left it unchanged, and records approval from the actual task result. Rejection sends feedback to the original member/worktree. With `worker.workspace`, the result adds `{change,approval}` to `{value,review,rounds}`. Without it, existing helper behavior is unchanged. Nested `workflowTool` delegation in a workspace is not supported in this version.
 
+## Worktree or clone
+
+`createWorkspace({key, isolation})` chooses how far a workspace is separated from the others.
+
+| `isolation` | What the member gets | What it still shares |
+| --- | --- | --- |
+| `"worktree"` (default) | Its own directory, index and `HEAD`. | The repository's `.git`: branches and other refs, the stash, hooks, config, and Git's maintenance. One member's `git stash pop`, `git gc`, `git worktree prune` or branch update acts on everyone's. |
+| `"clone"` | A repository of its own: refs, index, stash, locks and config. | Only objects, which the clone reads from the source checkout through alternates. Nothing is copied, so a clone costs about what a worktree does. |
+
+Use a clone when many members work at once or run Git commands beyond add and commit. Everything else is the same: the clone starts detached at the baseline, freezing, review, `submit_work` and cleanup work as they do for a worktree, and the landing branch is still in the source checkout. The bridge copies a clone's commits to the source when a change is frozen or submitted, and resets the clone to the landed head afterwards.
+
+Inside a clone the source checkout is the remote `bridge-source`, so `git fetch bridge-source` shows its branches (and the landing branch) as `bridge-source/<branch>`. The source's own remotes and their remote-tracking refs are carried over under their names. Members should not push to `bridge-source`.
+
+Limits: the source keeps a ref `refs/bridge-workflow/<workflow-id>/clones/<workspace-id>` on what each clone depends on, removed with the clone; do not delete the source checkout or prune those refs while clones exist. Repositories that are themselves partial clones are refused. Cleanup deletes the clone's directory, subject to the same conditions as a worktree.
+
 ## Staffing a running swarm
 
-Declared swarm members take the `workspace` ID of a worktree the script created. Members added while the swarm runs take one too: `staff_swarm({add:['w1','w2'], workspace:true})` creates one worktree per new member, from the workflow's checkout at its current HEAD, and binds it in the same change that adds the member. Pass `{base?,repo?}` to choose another commit or repository root, exactly as `createWorkspace` does. The main agent and the swarm's lead can both staff; a new member inherits the `like` member's role, queue and execution, and a lead may not choose harness or model. The worktree key is derived from the swarm and member name, so a retried call reuses it instead of making another.
+Declared swarm members take the `workspace` ID of a worktree the script created. Members added while the swarm runs take one too: `staff_swarm({add:['w1','w2'], workspace:true})` creates one worktree per new member, from the workflow's checkout at its current HEAD, and binds it in the same change that adds the member. Pass `{base?,repo?,isolation?}` to choose another commit, repository root or a clone instead of a worktree, exactly as `createWorkspace` does. The main agent and the swarm's lead can both staff; a new member inherits the `like` member's role, queue and execution, and a lead may not choose harness or model. The worktree key is derived from the swarm and member name, so a retried call reuses it instead of making another.
 
 A member added without `workspace` runs in the workflow's own checkout: it cannot `submit_work`, and editing code there races the main agent and every other member. Worktrees made this way follow the same retention, cleanup, budget and landing rules as script-made ones.
 
@@ -47,8 +62,8 @@ Every operation requires an immutable, unique `key` (1–100 characters, no surr
 
 | API | Result and requirements |
 | --- | --- |
-| `createWorkspace({key,base?})` | Workspace `{id,path,baseCommit,...}`. `base` is a full commit ID; omitted means resolve the authorized checkout's HEAD once and persist it. Requires a clean repository-root cwd. |
-| `createWorkspace({key,change})` | A separate reviewer worktree pinned to a frozen change ID. Mutually exclusive with `base`. |
+| `createWorkspace({key,base?,repo?,isolation?})` | Workspace `{id,path,baseCommit,...}`. `base` is a full commit ID; omitted means resolve the authorized checkout's HEAD once and persist it. Requires a clean repository-root cwd, or `repo`. `isolation` is `"worktree"` (default) or `"clone"`, see above. |
+| `createWorkspace({key,change})` | A separate reviewer worktree pinned to a frozen change ID. Mutually exclusive with `base`, `repo` and `isolation`. |
 | `agent(prompt,{key,workspace,...})` / `startAgent(prompt,{key,workspace,...})` | Run in the managed workspace ID. A persistent member cannot change workspace. Only one active task/check/inspection owns a worktree at a time. |
 | `freezeWorkspace({key,workspace})` | Immutable `{id,workspaceId,baseCommit,headCommit,tree,diffDigest,files}`. Rejects dirty/untracked files, unfinished Git operations, non-descendant or nonlinear candidate history, and whitespace/conflict-marker errors. Supervisor-prepared commits can also be frozen. |
 | `approveChange({key,change,taskId})` | Approval ID from a successful independent review task in the matching snapshot, reconstructed in the current script run. Requires JSON `{ok:true,reason,evidence:[...]}` from its recorded artifact. |

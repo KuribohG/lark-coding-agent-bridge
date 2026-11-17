@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises';
 import { callWorkflow, WorkflowRuntime } from '../src';
 import { WorkflowKernel } from '../src/engine/kernel';
 import { workspaceCommand } from '../src/engine/workspace-process';
-import { WorkflowWorkspaces } from '../src/engine/workspaces';
+import { CLONE_REMOTE, WorkflowWorkspaces } from '../src/engine/workspaces';
 import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '../src/engine/types';
 import type { LandReport, WorkspaceBinding, WorkspaceLanding } from '../src/engine/workspace-types';
 
@@ -318,7 +318,7 @@ describe('submit_work', () => {
 });
 
 describe('claim, fix and land through the runtime', () => {
-  it('runs the packaged example: members claim bugs, commit in their worktrees and land them over IPC', async () => {
+  it.each(['worktree', 'clone'] as const)('runs the packaged example: members claim bugs, commit in their %ss and land them over IPC', async isolation => {
     const dir = await mkdtemp(join(tmpdir(), 'workflow-claim-land-'));
     closes.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
     const repo = join(dir, 'repo'); await mkdir(repo);
@@ -331,13 +331,17 @@ describe('claim, fix and land through the runtime', () => {
         await spec.validateBeforeRun();
         const cwd = spec.workspace!.path;
         expect(spec.systemPrompt).toContain('Landing branch: bridge-workflow/');
+        expect(spec.systemPrompt).toContain(`Managed ${isolation}: ${cwd}`);
+        // A clone sees the landing branch through its remote; a worktree shares the checkout's refs.
+        const refs = isolation === 'clone' ? `refs/remotes/${CLONE_REMOTE}/bridge-workflow` : 'refs/heads/bridge-workflow';
         /** One turn of a fixer: claim until the queue is empty. */
         const work = (async () => {
           for (;;) {
             const grant = await callWorkflow('claim_work', { operationId: randomUUID() }, spec.env) as { claimId: string; generation: number; item: { key: string } } | null;
             if (!grant) return;
             const claim = { claimId: grant.claimId, generation: grant.generation };
-            const branch = (await git(cwd, 'for-each-ref', '--format=%(refname)', 'refs/heads/bridge-workflow')).split('\n')[0];
+            if (isolation === 'clone') await git(cwd, 'fetch', '--quiet', CLONE_REMOTE);
+            const branch = (await git(cwd, 'for-each-ref', '--format=%(refname)', refs)).split('\n')[0];
             if (branch) await git(cwd, 'rebase', branch);
             // Every fixer appends to the same file, so concurrent fixes conflict and must be redone on the new head.
             for (;;) {
@@ -363,7 +367,7 @@ describe('claim, fix and land through the runtime', () => {
     const keys = Array.from({ length: 12 }, (_, index) => `bug-${index}`);
     await callWorkflow('run_script', { operationId: randomUUID(), goal: 'Fix bugs', plan: 'Four fixers claim twelve bugs and land each fix.', maxConcurrent: 4, maxAgents: 64,
       script: await readFile(new URL('../../../workflow-definitions/scripted/examples/claim-and-land.js', import.meta.url), 'utf8'),
-      args: { members: 4, items: keys.map(key => ({ key, title: key })), checks: [{ argv: [process.execPath, '-e', `if(!require('fs').existsSync('fixed.txt'))process.exit(1)`] }] } }, main.env);
+      args: { members: 4, isolation, items: keys.map(key => ({ key, title: key })), checks: [{ argv: [process.execPath, '-e', `if(!require('fs').existsSync('fixed.txt'))process.exit(1)`] }] } }, main.env);
     main.release();
     await vi.waitFor(async () => { await runtime.tick(); expect(runtime.kernel.state(root.scopeId)?.script?.status).not.toBe('running'); }, { timeout: 100_000, interval: 100 });
     const state = runtime.kernel.state(root.scopeId)!;

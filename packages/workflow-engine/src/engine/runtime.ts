@@ -1,5 +1,5 @@
 import { dirname, join } from 'node:path';
-import { WorkflowWorkspaces } from './workspaces';
+import { CLONE_REMOTE, WorkflowWorkspaces } from './workspaces';
 import type { WorkspaceBinding } from './workspace-types';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
@@ -18,6 +18,19 @@ import { hostMatch } from './worker-hosts';
 import type { ExecutionLedgerPort, WorkerExecution, WorkerExecutionPolicy, WorkerExecutionSelection, WorkflowCaller, WorkflowLogger, WorkflowRoot, WorkflowState, WorkflowWorkerRequest, WorkflowWorkerResult } from './types';
 
 const JSON_FORMAT_RETRIES = 2;
+
+/** What a worker is told about the managed checkout it runs in. */
+function workspaceInstructions(workspace: WorkspaceBinding, landingRef: string | undefined): string {
+  const clone = workspace.isolation === 'clone';
+  const place = clone ? 'clone' : 'worktree';
+  const branch = landingRef?.replace('refs/heads/', '');
+  return `\nManaged ${place}: ${workspace.path}\nBaseline: ${workspace.baseCommit}\n`
+    + (clone
+      ? `This is a Git repository of your own: its branches, index, stash and locks are separate from the original checkout and from other members. The original checkout is the remote ${CLONE_REMOTE}; do not push to it. Work only in this clone. `
+      : 'Work only in this worktree; do not modify the original checkout or other worktrees. ')
+    + (workspace.kind === 'review' ? 'Review the frozen HEAD; leave all tracked and untracked files unchanged.' : 'Commit intended changes before returning. Leave no untracked files or unfinished Git operations.')
+    + (branch ? `\nLanding branch: ${branch} (created by the first landing)${clone ? `, in the original checkout; \`git fetch ${CLONE_REMOTE}\` brings it here as ${CLONE_REMOTE}/${branch}` : ''}. submit_work rebases your commits onto it, has them checked together with other members' waiting work and lands them; a landing moves this ${place} to the branch head, with what others landed.` : '');
+}
 const jsonFormatRetryPrompt = (problem: string) => `上一条最终答复无法作为脚本结果：${problem.slice(0, 1500)}。不要重新执行任务或任何工具操作；只把上一条答复的内容按任务要求的 JSON 结构（如有 JSON Schema 须完全符合）重新输出，最终答复只包含这一个 JSON 值，不加代码块或其它文字。`;
 
 export interface WorkflowRuntimeDeps extends WorkerExecutionPolicy {
@@ -381,7 +394,8 @@ export class WorkflowRuntime {
             }
           },
           ...(workspace ? { workspace: { id: workspace.id, path: workspace.path, rootDigest: workspace.rootDigest } } : {}),
-          systemPrompt: (this.deps.hostTools ? hostToolInstructions(workflowWorkerInstructions(task)) : workflowWorkerInstructions(task)) + (workspace ? `\nManaged worktree: ${workspace.path}\nBaseline: ${workspace.baseCommit}\nWork only in this worktree; do not modify the original checkout or other worktrees. ${workspace.kind === 'review' ? 'Review the frozen HEAD; leave all tracked and untracked files unchanged.' : 'Commit intended changes before returning. Leave no untracked files or unfinished Git operations.'}${landing ? `\nLanding branch: ${landing.targetRef.replace('refs/heads/', '')} (created by the first landing). submit_work rebases your commits onto it, has them checked together with other members' waiting work and lands them; a landing moves this worktree to the branch head, with what others landed.` : ''}` : ''),
+          systemPrompt: (this.deps.hostTools ? hostToolInstructions(workflowWorkerInstructions(task)) : workflowWorkerInstructions(task))
+            + (workspace ? workspaceInstructions(workspace, landing?.targetRef) : ''),
           ...(resume ? { resume } : {}),
           ...(hostKey ? { host: { key: hostKey, attach } } : {}),
           deadlineAt: workflow.deadlineAt, signal,
