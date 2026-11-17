@@ -88,9 +88,10 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
   const larkAuth = deps.larkAuth ?? new LarkProfileAuth(cfg, deps.appPaths);
   controls.larkAuth = larkAuth;
   const { appSecret } = await larkAuth.credentials();
-  // Read-path fallback on the operator's user identity: only active when a
-  // grant is stored (see `lark-channel-bridge auth user-login`). Writes always
-  // stay on the app identity.
+  // Read-path fallback on the operator's user identity (see
+  // `lark-channel-bridge auth user-login`). The provider checks the keystore
+  // lazily, so a grant stored later takes effect without restarting the
+  // channel. Writes always stay on the app identity.
   const userReads = await createUserReads(cfg, appSecret, deps.appPaths);
   // ChatModeCache stays per-bridge-instance — invalidated on restart along
   // with everything else. Topic-mode chats only need one chat.get() call ever.
@@ -384,15 +385,16 @@ async function createUserReads(
   cfg: AppConfig,
   appSecret: string,
   appPaths: Pick<AppPaths, 'secretsFile' | 'keystoreSaltFile'> | undefined,
-): Promise<LarkUserReads | undefined> {
+): Promise<LarkUserReads> {
   const { app } = cfg.accounts;
   const store = keystoreUserTokenStore(app.id, appPaths);
-  // Only a local keystore read here: refreshing at startup would put a network
-  // round-trip (and its timeout) on the connection path. The first read that
-  // needs the token refreshes it, and failures degrade to the app identity.
+  // Only a local keystore read here, for the startup log line. Refreshing at
+  // startup would put a network round-trip (and its timeout) on the connection
+  // path; the first read that needs the token refreshes it, and failures
+  // degrade to the app identity. Returning the reader even without a grant is
+  // what makes a later `auth user-login` take effect without a restart.
   const stored = await store.load().catch(() => undefined);
-  log.info('lark-auth', 'user-reads', { enabled: Boolean(stored), appId: app.id });
-  if (!stored) return undefined;
+  log.info('lark-auth', 'user-reads', { enabled: Boolean(stored), hot: true, appId: app.id });
   const tokens = new UserTokenProvider({
     tenant: app.tenant,
     appId: app.id,

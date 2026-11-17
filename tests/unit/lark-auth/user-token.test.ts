@@ -130,6 +130,37 @@ describe('UserTokenProvider', () => {
     });
     await expect(provider.status()).resolves.toEqual({ configured: false });
   });
+
+  it('picks up a grant stored after startup without a restart', async () => {
+    const store = memoryStore();
+    const { fetch: fetchImpl, calls } = fakeFetch([
+      () => json({
+        access_token: 'at-1',
+        expires_in: 7_200,
+        refresh_token: 'rt-1',
+        refresh_token_expires_in: 2_592_000,
+      }),
+    ]);
+    let now = 1_000_000;
+    const provider = new UserTokenProvider({
+      tenant: 'feishu',
+      appId: 'cli_x',
+      appSecret: 'secret',
+      store,
+      request: fetchImpl,
+      now: () => now,
+    });
+
+    await expect(provider.getAccessToken()).resolves.toBeUndefined();
+    // A miss is trusted briefly so reads don't decrypt the keystore every time.
+    await store.save({ refreshToken: 'rt-1' });
+    await expect(provider.getAccessToken()).resolves.toBeUndefined();
+    expect(calls).toHaveLength(0);
+
+    now += 10_000;
+    await expect(provider.getAccessToken()).resolves.toMatchObject({ accessToken: 'at-1' });
+    expect(calls).toHaveLength(1);
+  });
 });
 
 describe('user device flow', () => {

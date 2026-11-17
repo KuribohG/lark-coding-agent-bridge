@@ -1,4 +1,5 @@
 import type { TenantBrand } from '../config/schema';
+import { log } from '../core/logger';
 import { larkFetch } from './network';
 
 /**
@@ -25,6 +26,13 @@ const ACCOUNTS_ORIGIN: Record<TenantBrand, string> = {
 const DEFAULT_TIMEOUT_MS = 15_000;
 /** Refresh this long before the access token actually expires. */
 const ACCESS_REFRESH_SKEW_MS = 60_000;
+/**
+ * A "no grant stored" answer is trusted for this long before the keystore is
+ * read again. Reads run on every message, and the grant usually arrives from
+ * another process (`auth user-login`), so a short recheck interval is what
+ * makes a runtime login take effect without restarting the channel.
+ */
+const MISSING_GRANT_RECHECK_MS = 10_000;
 const DEVICE_CODE_GRANT_TYPE = 'urn:ietf:params:oauth:grant-type:device_code';
 const REFRESH_TOKEN_GRANT_TYPE = 'refresh_token';
 
@@ -104,6 +112,10 @@ export class UserTokenProvider {
   private readonly timeoutMs: number;
   private cached?: UserAccessToken;
   private pending?: Promise<UserAccessToken | undefined>;
+  /** Epoch ms until which a missing grant is not re-read from the store. */
+  private missingUntil = 0;
+  /** Set while the store had no grant; used to log the runtime pickup once. */
+  private grantMissing = false;
 
   constructor(options: UserTokenProviderOptions) {
     this.tenant = options.tenant;
@@ -123,6 +135,7 @@ export class UserTokenProvider {
   async getAccessToken(): Promise<UserAccessToken | undefined> {
     const cached = this.cached;
     if (cached && cached.expiresAt - ACCESS_REFRESH_SKEW_MS > this.now()) return cached;
+    if (this.missingUntil > this.now()) return undefined;
     // Collapse concurrent refreshes: one train of token requests per bridge.
     this.pending ??= this.refresh().catch(() => undefined).finally(() => {
       this.pending = undefined;
@@ -137,9 +150,13 @@ export class UserTokenProvider {
    */
   async refresh(): Promise<UserAccessToken> {
     const stored = await this.store.load();
-    if (!stored) throw new UserTokenError('api', 'no user grant stored');
+    if (!stored) {
+      this.noteMissingGrant();
+      throw new UserTokenError('api', 'no user grant stored');
+    }
     if (stored.refreshExpiresAt !== undefined && stored.refreshExpiresAt <= this.now()) {
       await this.store.clear();
+      this.noteMissingGrant();
       throw new UserTokenError('api', 'stored user grant has expired');
     }
     const response = await this.postToken({
@@ -150,6 +167,13 @@ export class UserTokenProvider {
     });
     const access: UserAccessToken = { accessToken: response.accessToken, expiresAt: response.expiresAt };
     this.cached = access;
+    if (this.grantMissing) {
+      // The grant landed while the bridge was running (usually `auth
+      // user-login` in another process): reads pick it up without a restart.
+      this.grantMissing = false;
+      this.missingUntil = 0;
+      log.info('lark-auth', 'user-grant-active', { appId: this.appId });
+    }
     if (response.refreshToken && response.refreshToken !== stored.refreshToken) {
       await this.store.save({
         refreshToken: response.refreshToken,
@@ -158,6 +182,12 @@ export class UserTokenProvider {
       });
     }
     return access;
+  }
+
+  /** Remember the miss so reads stay on the app identity for a short while. */
+  private noteMissingGrant(): void {
+    this.grantMissing = true;
+    this.missingUntil = this.now() + MISSING_GRANT_RECHECK_MS;
   }
 
   async status(): Promise<UserTokenStatus> {
