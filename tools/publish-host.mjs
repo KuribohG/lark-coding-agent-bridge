@@ -21,13 +21,20 @@ const put = (relative, bytes) => {
 try {
   for (const relative of [...changed, 'manifest.json']) {
     const target = path.join(destination, relative);
-    prior.set(relative, fs.existsSync(target) ? fs.readFileSync(target) : null);
+    const before = fs.existsSync(target) ? fs.readFileSync(target) : null;
     put(relative, fs.readFileSync(path.join(output, relative)));
+    prior.set(relative, before);
   }
 } catch (error) {
+  const rollbackFailures = [];
   for (const [relative, bytes] of [...prior].reverse()) {
-    if (bytes === null) fs.rmSync(path.join(destination, relative), { force: true }); else put(relative, bytes);
+    try {
+      if (bytes === null) fs.rmSync(path.join(destination, relative), { force: true }); else put(relative, bytes);
+    } catch (failure) { rollbackFailures.push({ relative, error: failure }); }
   }
+  if (rollbackFailures.length) throw new AggregateError([error, ...rollbackFailures.map(item => item.error)],
+    `Host publication failed: ${error instanceof Error ? error.message : String(error)}; rollback failed for ${rollbackFailures.map(item => item.relative).join(', ')}`,
+    { cause: error });
   throw error;
 }
 }

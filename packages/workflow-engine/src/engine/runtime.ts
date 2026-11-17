@@ -118,6 +118,7 @@ export class WorkflowRuntime {
       resolveRoot: deps.resolveRoot,
       executionLedger: deps.executionLedger,
       hostTools: deps.hostTools,
+      workerHostTools: deps.workerTools ? (session, root) => deps.workerTools!(session.execution ?? inheritedWorkerExecution(root, { agentKind: root.agentKind })) === 'host' : undefined,
       getTimeoutMinutes: deps.getTimeoutMinutes,
       ...(deps.stallMs === undefined ? {} : { stallMs: deps.stallMs }),
       ...(deps.toolStallMs === undefined ? {} : { toolStallMs: deps.toolStallMs }),
@@ -382,7 +383,7 @@ export class WorkflowRuntime {
     let lease: string | undefined;
     let run: WorkerRun | undefined;
     // Host tools answer through this process, so a worker that uses them cannot outlive it.
-    const hostTools = this.deps.workerTools ? this.deps.workerTools(pinned) === 'host' : this.deps.hostTools;
+    const hostTools = request.hostTools ?? (this.deps.workerTools ? this.deps.workerTools(pinned) === 'host' : this.deps.hostTools);
     const hosting = hostTools ? undefined : this.deps.runner.hosting;
     const match = hostMatch(task);
     let survivor = hosting && this.kernel.workerHost(workflow.workflowId, match);

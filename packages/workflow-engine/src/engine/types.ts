@@ -630,6 +630,8 @@ export interface WorkflowWorkerRequest {
   session: WorkerSession;
   attemptId: string;
   prompt: string;
+  /** Resolved once for both artifact guidance and this worker turn tool binding. */
+  hostTools?: boolean;
   signal: AbortSignal;
   onSession(nativeId: string, model?: string): void;
   onRun(runId: string): void;
@@ -681,6 +683,8 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
   executionLedger?: ExecutionLedgerPort;
   /** Workers call the workflow through a host tool, so prompts must not name the shell CLI. */
   hostTools?: boolean;
+  /** Per-worker override of the default transport, resolved before handing off the turn. */
+  workerHostTools?(session: WorkerSession, root: WorkflowRoot): boolean;
   log?: WorkflowLogger;
   /** Silence after which a running worker with no tool in flight is treated as hung. Defaults to 15 minutes. */
   stallMs?: number;

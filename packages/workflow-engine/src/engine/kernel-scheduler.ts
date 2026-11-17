@@ -371,10 +371,11 @@ export class WorkflowScheduler {
       const role = live.definition.roles[session.role]!;
       const inputs = task.inputRefs.map(ref => readArtifact(live, ref));
       const charter = charterPrompt(live, turn);
+      const hostTools = ctx.host.workerHostTools?.(session, workflow.root) ?? Boolean(ctx.host.hostTools);
       const prompt = [role.instructions,
         task.workflowTool ? 'Do only the task you are given, within what the original request authorizes. You may delegate through the child workflow tool you were given; do not send messages outside the workflow. After you request a child workflow, end the turn to release its resources: the bridge resumes the same session when the result is ready.' : task.agentId ? 'Do only the task you are given, within what the original request authorizes. You may save a checkpoint and post on the board of the workflow; do not send messages outside the workflow or delegate to sub-agents. Your final answer returns the result to the script.' : 'Do only the task you are given, within what the original request authorizes. Do not send messages on your own or delegate to sub-agents. Your final answer returns the result to the script.',
         deadlinePrompt(workflow.deadlineAt, ctx.now()),
-        `Request:\n${workflow.goal}`, ...(charter ? [charter] : []), `Task:\n${task.objective}`, ...(inputs.length ? [inputArtifactsPrompt(inputs, ctx.host.hostTools)] : [])].join('\n\n');
+        `Request:\n${workflow.goal}`, ...(charter ? [charter] : []), `Task:\n${task.objective}`, ...(inputs.length ? [inputArtifactsPrompt(inputs, hostTools)] : [])].join('\n\n');
       const recovery = memberContext(live, turn);
       let memberPrompt = recovery ? prompt + '\n\nPersistent member context (handle only the input of this turn; check which side effects have already happened and do not repeat them):\n'
         + JSON.stringify(recovery) + (live.workQueue ? '\n\nWork queue:\n' + JSON.stringify(workContext(live, turn)) : '') : prompt;
@@ -392,7 +393,7 @@ export class WorkflowScheduler {
       const plans = plansWork(live, live.agents?.find(agent => agent.agentId === turn.agentId)?.key);
       if (observed && (observed.state !== 'not-submitted' || !observed.proof))
         result = { status: 'unknown', quiescence: 'unknown', error: 'Host execution outcome is not proven' };
-      else result = await ctx.host.execute({ workflow, task, ...(plans ? { plans } : {}), session, attemptId, executionId, logicalCallId, prompt: memberPrompt, signal,
+      else result = await ctx.host.execute({ workflow, task, ...(plans ? { plans } : {}), session, attemptId, executionId, logicalCallId, prompt: memberPrompt, hostTools, signal,
         onRun: runId => {
           // The watchdog starts here: queueing in the host's pool is not the agent's silence.
           this.noteActivity(taskId, attemptId, false);
@@ -647,7 +648,7 @@ function retryDelay(retryCount: number, delays: readonly number[]): number {
 
 const INPUT_PREVIEW_CHARS = 2_000;
 
-/** Inputs travel by reference: the prompt carries a bounded preview and the worker reads the full text through the CLI. */
+/** Inputs travel by reference: the prompt carries a bounded preview and the worker reads the full text through its resolved transport. */
 function inputArtifactsPrompt(inputs: WorkflowArtifact[], hostTools?: boolean): string {
   const listed = inputs.map(({ ref, kind, text }) => text.length <= INPUT_PREVIEW_CHARS
     ? { ref, kind, chars: text.length, text }

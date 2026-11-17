@@ -36,3 +36,29 @@ it('a physically loaded native addon is reused unchanged; changed native bytes r
   console.log(JSON.stringify({nativeLockFixture:{pid:child.pid,module:path.join(output,name),source}}));
  }finally{const exited=new Promise(resolve=>child.once('exit',resolve));child.kill();await exited;}
 });
+
+function twoFiles(dir,value){
+ const files=generation(dir,value),bytes=Buffer.from(`export default ${JSON.stringify(value+'-workflow')};`);
+ fs.writeFileSync(path.join(dir,'workflows.mjs'),bytes);files['workflows.mjs']={size:bytes.length,sha256:sha(bytes)};
+ fs.writeFileSync(path.join(dir,'manifest.json'),JSON.stringify({files}));return files;
+}
+it('a persistent second-file rename EPERM leaves that file untouched and restores earlier successful writes',()=>{
+ const {stage,output}=fixture();twoFiles(output,'previous');const files=twoFiles(stage,'replacement');
+ const oldSecond=fs.readFileSync(path.join(output,'workflows.mjs')),oldManifest=fs.readFileSync(path.join(output,'manifest.json'));
+ const failure=Object.assign(Error('persistent second-file EPERM'),{code:'EPERM'}),targets=[];let thrown;
+ try{publishHost(stage,output,files,{rename:(from,to)=>{targets.push(path.basename(to));if(path.basename(to)==='workflows.mjs')throw failure;fs.renameSync(from,to);}});}catch(error){thrown=error;}
+ expect(thrown).toBe(failure);expect(fs.readFileSync(path.join(output,'workflows.mjs'))).toEqual(oldSecond);
+ expect(fs.readFileSync(path.join(output,'manifest.json'))).toEqual(oldManifest);expect(fresh(output)).toBe('previous');
+ expect(targets.filter(name=>name==='workflows.mjs')).toHaveLength(1);
+ expect(fs.readdirSync(output).some(name=>name.endsWith('.build-tmp'))).toBe(false);
+});
+it('a rollback failure is reported with the publication error and does not prevent restoring earlier files',()=>{
+ const {stage,output}=fixture();twoFiles(output,'previous');const files=twoFiles(stage,'replacement');
+ const oldRuntime=fs.readFileSync(path.join(output,'runtime.mjs')),oldManifest=fs.readFileSync(path.join(output,'manifest.json'));
+ const failure=Object.assign(Error('manifest is persistently locked'),{code:'EPERM'}),rollback=Object.assign(Error('workflow rollback is persistently locked'),{code:'EPERM'});let workflowWrites=0,thrown;
+ try{publishHost(stage,output,files,{rename:(from,to)=>{const name=path.basename(to);if(name==='manifest.json')throw failure;if(name==='workflows.mjs'&&++workflowWrites===2)throw rollback;fs.renameSync(from,to);}});}catch(error){thrown=error;}
+ expect(thrown).toBeInstanceOf(AggregateError);expect(thrown.cause).toBe(failure);expect(thrown.errors).toEqual([failure,rollback]);
+ expect(thrown.message).toContain('workflows.mjs');expect(fs.readFileSync(path.join(output,'runtime.mjs'))).toEqual(oldRuntime);
+ expect(fs.readFileSync(path.join(output,'manifest.json'))).toEqual(oldManifest);expect(fs.readFileSync(path.join(output,'workflows.mjs'))).toEqual(fs.readFileSync(path.join(stage,'workflows.mjs')));
+ expect(workflowWrites).toBe(2);expect(fs.readdirSync(output).some(name=>name.endsWith('.build-tmp'))).toBe(false);
+});
