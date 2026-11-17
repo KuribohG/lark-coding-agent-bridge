@@ -99,6 +99,8 @@ type QueuedInput = ConversationIdentity & PendingItem;
 
 export interface ConversationInput extends ConversationIdentity {
   prompt: string;
+  /** Trusted host environment for this turn only; never persisted as conversation settings. */
+  env?: Readonly<Record<string, string>>;
   /** Resolved and validated by the host's upload pipeline. */
   attachments?: AgentAttachment[];
   signal?: AbortSignal;
@@ -274,7 +276,7 @@ export class ConversationRuntime {
           systemPrompt: this.options.systemPrompt ?? '',
           sessionSource: { kind: 'message', summary: input.prompt.slice(0, 180) },
           observabilitySource: 'channel',
-          runOptions: { userQuestions: input.questions ? true : this.options.userQuestions, deadlineAt: input.deadlineAt },
+          runOptions: { env: input.env, userQuestions: input.questions ? true : this.options.userQuestions, deadlineAt: input.deadlineAt },
         };
       },
       // A turn that claimed the conversation's lane already holds its queue.

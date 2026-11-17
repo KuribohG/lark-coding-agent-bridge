@@ -21,6 +21,8 @@ const jsonFormatRetryPrompt = (problem: string) => `上一条最终答复无法�
 
 export interface WorkflowRuntimeDeps extends WorkerExecutionPolicy {
   hostTools?: boolean;
+  /** Per-worker transport; defaults to hostTools. CLI callers retain the same task/attempt authority. */
+  workerTools?: (execution: WorkerExecution) => 'host' | 'cli';
   executionLedger?: ExecutionLedgerPort;
   /** SQLite path, or ':memory:' (managed worktrees then need an explicit workspaceRoot). */
   path: string;
@@ -117,7 +119,7 @@ export class WorkflowRuntime {
   }
 
   async start(): Promise<void> {
-    if (!this.deps.hostTools) await this.ipc.listen();
+    if (!this.deps.hostTools || this.deps.workerTools) await this.ipc.listen();
     await this.kernel.reconcileExecutions();
     for (const outcome of await this.kernel.resumeAfterRestart()) {
       const name = outcome.state.script?.name ?? outcome.state.workflowId;
@@ -331,7 +333,8 @@ export class WorkflowRuntime {
     let run: WorkerRun | undefined;
     // Worktree turns are verified against a frozen snapshot, which a process left running mid-change would not match.
     // Host tools answer through this process, so a worker that uses them cannot outlive it.
-    const hosting = task.workspaceId || this.deps.hostTools ? undefined : this.deps.runner.hosting;
+    const hostTools = this.deps.workerTools ? this.deps.workerTools(pinned) === 'host' : this.deps.hostTools;
+    const hosting = task.workspaceId || hostTools ? undefined : this.deps.runner.hosting;
     const match = hostMatch(task);
     let survivor = hosting && this.kernel.workerHost(workflow.workflowId, match);
     if (survivor && (survivor.discard || survivor.agentKind !== pinned.agentKind || !await hosting!.attachable(survivor.hostKey, pinned.agentKind))) {
@@ -343,7 +346,7 @@ export class WorkflowRuntime {
       signal.throwIfAborted();
     }
     const caller: WorkflowCaller = { kind: 'worker', scopeId: workflow.root.scopeId, workflowId: workflow.workflowId, taskId: task.taskId, attemptId };
-    const binding: { env: Record<string, string>; tokenHash?: string; release(): void } = this.deps.hostTools
+    const binding: { env: Record<string, string>; tokenHash?: string; release(): void } = hostTools
       ? { env: {}, release() {} } : this.ipc.bind(caller, workflow.deadlineAt, survivor?.tokenHash);
     let hostKey: string | undefined;
     try {
@@ -365,7 +368,7 @@ export class WorkflowRuntime {
         }
         const started = await this.deps.runner.start({
           executionId, logicalCallId, attemptId,
-          ...(this.deps.hostTools ? { workflowTools: { definitions: workflowToolDefinitions('worker'),
+          ...(hostTools ? { workflowTools: { definitions: workflowToolDefinitions('worker'),
             call: (method: string, args: Record<string, unknown>) => this.call(caller, method, args) } } : {}),
           sessionKey: `workflow:${workflow.workflowId}:${session.sessionRef}`,
           root: workflow.root, execution: pinned, role: session.role, prompt, env: binding.env,
@@ -380,7 +383,7 @@ export class WorkflowRuntime {
             }
           },
           ...(workspace ? { workspace: { id: workspace.id, path: workspace.path, rootDigest: workspace.rootDigest } } : {}),
-          systemPrompt: (this.deps.hostTools ? hostToolInstructions(workflowWorkerInstructions(task)) : workflowWorkerInstructions(task)) + (workspace ? `\nManaged worktree: ${workspace.path}\nBaseline: ${workspace.baseCommit}\nWork only in this worktree; do not modify the original checkout or other worktrees. ${workspace.kind === 'review' ? 'Review the frozen HEAD; leave all tracked and untracked files unchanged.' : 'Commit intended changes before returning. Leave no untracked files or unfinished Git operations.'}${landing ? `\nLanding branch: ${landing.targetRef.replace('refs/heads/', '')} (created by the first landing). submit_work rebases your commits onto it, has them checked together with other members' waiting work and lands them; a landing moves this worktree to the branch head, with what others landed.` : ''}` : ''),
+          systemPrompt: (hostTools ? hostToolInstructions(workflowWorkerInstructions(task)) : workflowWorkerInstructions(task)) + (workspace ? `\nManaged worktree: ${workspace.path}\nBaseline: ${workspace.baseCommit}\nWork only in this worktree; do not modify the original checkout or other worktrees. ${workspace.kind === 'review' ? 'Review the frozen HEAD; leave all tracked and untracked files unchanged.' : 'Commit intended changes before returning. Leave no untracked files or unfinished Git operations.'}${landing ? `\nLanding branch: ${landing.targetRef.replace('refs/heads/', '')} (created by the first landing). submit_work rebases your commits onto it, has them checked together with other members' waiting work and lands them; a landing moves this worktree to the branch head, with what others landed.` : ''}` : ''),
           ...(resume ? { resume } : {}),
           ...(hostKey ? { host: { key: hostKey, attach } } : {}),
           deadlineAt: workflow.deadlineAt, signal,
@@ -527,7 +530,7 @@ export class WorkflowRuntime {
     if (this.timer) clearInterval(this.timer);
     for (const run of this.scripts.values()) run.controller.abort(new WorkflowStopped('shutdown'));
     await Promise.allSettled([...this.scripts.values()].map(run => run.done));
-    if (!this.deps.hostTools) await this.ipc.close();
+    if (!this.deps.hostTools || this.deps.workerTools) await this.ipc.close();
     await this.kernel.close();
     await this.workspaces?.close();
   }

@@ -96,6 +96,34 @@ describe('workflow kernel with a host execution ledger', () => {
     expect([...h.lookups]).toEqual([root.scopeId]);
   });
 
+  it('resumes a quiescent paused turn as a new execution in the same native conversation', async () => {
+    const h = await harness();
+    const { request } = await h.claimed();
+    await h.call('pause');
+    const stopped: WorkflowWorkerResult = { status: 'stopped', quiescence: 'quiescent' };
+    h.receipts.set(request.executionId, { state: 'completed', result: stopped });
+    h.finishers.get(request.attemptId)!(stopped);
+    await h.settle('cancelled');
+    const nativeSessionId = h.state().sessions[0]!.nativeSessionId;
+    await h.call('resume');
+    h.kernel.beginScript(root.scopeId, h.state().workflowId);
+    await h.kernel.scriptAgent(root.scopeId, h.state().workflowId, h.state().script!.runId,
+      { key: 'member', member: 'A', prompt: 'Consume the queue' });
+    await h.kernel.tick();
+    await vi.waitFor(() => expect(h.requests).toHaveLength(2));
+    const resumed = h.requests[1]!;
+    expect(resumed.executionId).not.toBe(request.executionId);
+    expect(resumed.logicalCallId).toBe(request.logicalCallId);
+    expect(resumed.session.nativeSessionId).toBe(nativeSessionId);
+    expect(resumed.session.sessionRef).toBe(request.session.sessionRef);
+    const complete: WorkflowWorkerResult = { status: 'completed', quiescence: 'quiescent', text: 'continued' };
+    h.receipts.set(resumed.executionId, { state: 'completed', result: complete });
+    h.finishers.get(resumed.attemptId)!(complete);
+    await h.settle('result_ready');
+    expect(h.state().tasks[0]!.attempts).toHaveLength(2);
+    expect(h.state().tasks[0]!.resultRefs).toHaveLength(1);
+  });
+
   it('cancels at once and releases the claim for a host without a ledger', async () => {
     const h = await harness({ ledger: false });
     const { request } = await h.claimed();

@@ -66,7 +66,7 @@ export interface PreparedMessageTurn {
   details?: Record<string, number>;
   /** Observability source of this frontend. */
   observabilitySource: string;
-  runOptions?: { deadlineAt?: number; userQuestions?: boolean; answerIncludesInterimText?: boolean };
+  runOptions?: { env?: Readonly<Record<string, string>>; deadlineAt?: number; userQuestions?: boolean; answerIncludesInterimText?: boolean };
   /**
    * What a rendering failure means: `fail` rejects the turn (hosts whose
    * output is their event stream), `log` keeps the completed run (channels
@@ -165,7 +165,7 @@ export async function startMessageTurn<M, T extends MessageTurn<M>>(
   });
 
   const flow = await startTurn(deps.stores, {
-    env: entryBinding?.env,
+    env: prepared.runOptions?.env ? { ...prepared.runOptions.env, ...entryBinding?.env } : entryBinding?.env,
     ...(model.settings ? { modelSettings: model.settings } : {}),
     signal: turn.signal,
     scopeId: turn.scope,

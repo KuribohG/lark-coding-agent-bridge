@@ -10,6 +10,7 @@ const binary = process.env.LARK_TEST_AGY_BINARY;
 const configPath = process.env.LARK_TEST_AGY_PROVIDERS;
 const workspace = process.env.LARK_TEST_AGY_WORKSPACE;
 const selection = process.env.LARK_TEST_AGY_MODEL;
+const oauth = process.env.LARK_TEST_AGY_AUTH === 'oauth';
 const rawEvents: unknown[] = [];
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -17,18 +18,18 @@ afterEach(async () => {
 });
 
 /** Opt-in: credentials are references in a private JSON file, never test data. */
-it.skipIf(!binary || !configPath || !workspace || !selection)('runs tools and resumes a real Antigravity conversation through the selected provider', async () => {
+it.skipIf(!binary || (!oauth && !configPath) || !workspace || !selection)('runs tools and resumes a real Antigravity conversation through the selected provider', async () => {
   const translate = AgyStreamTranslator.prototype.translate;
   vi.spyOn(AgyStreamTranslator.prototype, 'translate').mockImplementation(function (this: AgyStreamTranslator, value: unknown) {
     rawEvents.push(value); return translate.call(this, value);
   });
-  const services = normalizeModelServices(JSON.parse(await readFile(configPath!, 'utf8')));
-  const provider = await new ModelProviderRegistry(services).resolve('agy', selection);
-  expect(provider?.agy).toBeDefined();
+  const provider = oauth ? undefined : await new ModelProviderRegistry(normalizeModelServices(JSON.parse(await readFile(configPath!, 'utf8')))).resolve('agy', selection);
+  if (!oauth) expect(provider?.agy).toBeDefined();
   await mkdir(workspace!, { recursive: true });
-  const adapter = new AgyAdapter({ binary, systemPrompt: 'Follow the test instructions exactly. Do not contact messaging services or modify files.' });
+  const env = oauth ? Object.fromEntries(['GEMINI_API_KEY','GOOGLE_API_KEY','GOOGLE_GEMINI_BASE_URL','GOOGLE_VERTEX_BASE_URL','GOOGLE_GENAI_USE_VERTEXAI','GOOGLE_GENAI_USE_GCA','AGY_ADC_AUTH','GEMINI_CLI_AUTH_OVERRIDE'].map(key => [key, ''])) : undefined;
+  const adapter = new AgyAdapter({ binary, env, systemPrompt: 'Follow the test instructions exactly. Do not contact messaging services or modify files.' });
   const options = { runId: 'native-smoke', cwd: workspace!, sandbox: 'danger-full-access' as const,
-    model: provider!.model, modelProvider: provider, reasoningEffort: 'low' as const,
+    model: provider?.model || selection, modelProvider: provider, reasoningEffort: 'medium' as const,
     prompt: 'Use run_command to execute exactly: printf "bridge-agy-smoke-6241\\n". Then reply with the printed marker. Do not run other commands or read files.' };
   await adapter.prepareRun(options);
   const first = await collect((await adapter.prepareRun(options)).start());
