@@ -52,7 +52,8 @@ function summarizeInput(name: string, input: unknown): string {
   };
   switch (name) {
     case 'Bash':
-      return pick('command');
+    case 'run_command':
+      return pick('command') || pick('CommandLine');
     case 'Read':
     case 'Edit':
     case 'Write':
@@ -84,8 +85,9 @@ function renderInput(tool: ToolEntry): string {
   const str = (k: string): string => (typeof rec[k] === 'string' ? rec[k] as string : '');
 
   switch (tool.name) {
-    case 'Bash': {
-      const cmd = str('command');
+    case 'Bash':
+    case 'run_command': {
+      const cmd = str('command') || str('CommandLine');
       return cmd ? `**Command**\n\`\`\`bash\n${truncate(cmd, BODY_FIELD_MAX)}\n\`\`\`` : '';
     }
     case 'Read':

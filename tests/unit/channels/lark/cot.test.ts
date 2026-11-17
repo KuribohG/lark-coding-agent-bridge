@@ -44,7 +44,11 @@ describe('COT event mapping', () => {
     expect(client.completed).toEqual(['done']);
   });
 
-  it('publishes assistant progress text and brief tool summaries', async () => {
+  it.each([
+    { name: 'command_execution', input: { command: 'echo bear' } },
+    { name: 'run_command', input: { CommandLine: 'echo bear' } },
+    { name: 'run_command', input: { command: 'echo bear' } },
+  ])('publishes assistant progress text and brief $name summaries for $input', async ({ name, input }) => {
     const client = new FakeCotClient();
     const publisher = new CotPublisher({
       client,
@@ -58,7 +62,7 @@ describe('COT event mapping', () => {
 
     await consumeCotEvents(iterate([
       { type: 'text', delta: '我会先生成图片。' },
-      { type: 'tool_use', id: 'tool-1', name: 'command_execution', input: { command: 'echo bear' } },
+      { type: 'tool_use', id: 'tool-1', name, input },
       { type: 'tool_result', id: 'tool-1', output: 'ok', isError: false },
       { type: 'text', delta: '图片已经生成。' },
       { type: 'done', terminationReason: 'normal' },
@@ -77,8 +81,10 @@ describe('COT event mapping', () => {
       .map((event) => JSON.parse(event.content).delta);
     expect(textDeltas).toEqual(['我会先生成图片。', '图片已经生成。']);
 
+    const toolStart = client.events.find((event) => event.event_type === 'TOOL_CALL_START');
+    expect(JSON.parse(toolStart?.content ?? '{}').title).toBe(`⏳ ${name} — echo bear`);
     const toolResult = client.events.find((event) => event.event_type === 'TOOL_CALL_RESULT');
-    expect(JSON.parse(toolResult?.content ?? '{}').content).toContain('command_execution');
+    expect(JSON.parse(toolResult?.content ?? '{}').content).toBe(`✅ ${name} — echo bear`);
     expect(client.completed).toEqual(['done']);
   });
 

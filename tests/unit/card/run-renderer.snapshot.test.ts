@@ -43,6 +43,33 @@ describe('run card renderer snapshots', () => {
     ])).toMatchSnapshot();
   });
 
+  it('renders Antigravity commands in card headers, bodies, and progress text', () => {
+    const command = 'printf "hello"\nprintf "world"';
+    const state = stateFrom([
+      { type: 'tool_use', id: 'agy-tool', name: 'run_command', input: { CommandLine: command } },
+    ]);
+
+    expect(renderCard(state)).toMatchObject({
+      body: {
+        elements: expect.arrayContaining([
+          expect.objectContaining({
+            tag: 'collapsible_panel',
+            header: expect.objectContaining({
+              title: { tag: 'markdown', content: '⏳ **run_command** — printf "hello" printf "world"' },
+            }),
+            elements: [
+              expect.objectContaining({
+                tag: 'markdown',
+                content: `**Command**\n\`\`\`bash\n${command}\n\`\`\`\n\n_运行中…_`,
+              }),
+            ],
+          }),
+        ]),
+      },
+    });
+    expect(renderProgressText(state)).toContain('**run_command** — printf "hello" printf "world"');
+  });
+
   it('collapses consecutive tools while preserving the latest running tool', () => {
     expectCard(stateFrom([
       { type: 'tool_use', id: 'tool-1', name: 'Bash', input: { command: 'pwd' } },
