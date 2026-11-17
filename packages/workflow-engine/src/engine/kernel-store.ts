@@ -83,6 +83,11 @@ interface PendingEvent { aggregate: Aggregate; type: string; entity?: string; da
 interface Transaction {
   cause: string;
   events: PendingEvent[];
+  /**
+   * Lease renewals of the transaction. They are metadata rather than workflow state: they go to `wf_leases`, not to
+   * the journal, so a replay never has to read a heartbeat (see append).
+   */
+  leases: Array<{ workflowId: string; claimId: string; leaseUntil: number }>;
   touched: Set<Aggregate>;
   versioned: Set<Aggregate>;
   created: Set<Aggregate>;
@@ -257,6 +262,8 @@ export class WorkflowStore {  readonly db: Database.Database;
         CREATE TABLE IF NOT EXISTS wf_text_refs (workflow_id TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(workflow_id, digest));
         CREATE INDEX IF NOT EXISTS wf_text_refs_digest ON wf_text_refs(digest);
         CREATE TABLE IF NOT EXISTS wf_snapshots (workflow_id TEXT PRIMARY KEY, seq INTEGER NOT NULL, data TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS wf_leases (workflow_id TEXT NOT NULL, claim_id TEXT NOT NULL, lease_until INTEGER NOT NULL,
+          PRIMARY KEY(workflow_id, claim_id));
         CREATE TABLE IF NOT EXISTS wf_catalog (id TEXT PRIMARY KEY, scope TEXT NOT NULL, root_id TEXT NOT NULL, parent_id TEXT, status TEXT NOT NULL,
           updated_at INTEGER NOT NULL DEFAULT 0);
         CREATE UNIQUE INDEX IF NOT EXISTS wf_catalog_binding ON wf_catalog(scope) WHERE parent_id IS NULL AND status NOT IN ('completed', 'cancelled');
@@ -555,7 +562,7 @@ export class WorkflowStore {  readonly db: Database.Database;
    */
   transact<T>(fn: () => T, cause = 'system'): T {
     if (this.tx) return fn();
-    const tx: Transaction = this.tx = { cause, events: [], touched: new Set(), versioned: new Set(), created: new Set(), texts: new Map(), textRefs: new Map(), archive: { tasks: [], artifacts: [], calls: [], records: [] }, operations: [] };
+    const tx: Transaction = this.tx = { cause, events: [], leases: [], touched: new Set(), versioned: new Set(), created: new Set(), texts: new Map(), textRefs: new Map(), archive: { tasks: [], artifacts: [], calls: [], records: [] }, operations: [] };
     let result: T;
     try {
       result = fn();
@@ -602,6 +609,15 @@ export class WorkflowStore {  readonly db: Database.Database;
   append(aggregate: Aggregate, event: DomainEvent): void {
     const tx = this.transaction();
     if (aggregate.stale) throw new Error('Workflow state is no longer live; read it again');
+    // A lease heartbeat is metadata, not workflow state: it updates the claim in memory and one row of wf_leases, and
+    // stays out of the journal, which a replay would otherwise have to carry. It is not a state version either: the
+    // version marks changes a caller could conflict with, and a lease is not one.
+    if (event.type === 'claim_renewed') {
+      try { evolve(aggregate.state, event); }
+      catch (error) { tx.failed ??= { error }; throw error; }
+      tx.leases.push({ workflowId: aggregate.state.workflowId, claimId: event.claimId, leaseUntil: event.leaseUntil });
+      return;
+    }
     // Apply what the journal will hold, so a replay sees exactly the values applied now.
     const data = JSON.stringify(event);
     // Touched before the reducer runs: if it throws half-way, the state is discarded with the transaction.
@@ -635,7 +651,7 @@ export class WorkflowStore {  readonly db: Database.Database;
   }
 
   private persist(tx: Transaction): void {
-    if (!tx.events.length && !tx.operations.length) return;
+    if (!tx.events.length && !tx.operations.length && !tx.leases.length) return;
     const at = this.now();
     // A transaction that carries an event replaying cannot cheaply reproduce is synced to disk; the others stay on
     // NORMAL. `synchronous` is a connection setting and not transactional, so it is raised before the transaction
@@ -695,6 +711,9 @@ export class WorkflowStore {  readonly db: Database.Database;
       const operation = this.db.prepare(`INSERT INTO workflow_operations(scope, id, digest, response, workflow_id) VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(scope, id) DO UPDATE SET digest = excluded.digest, response = excluded.response, workflow_id = excluded.workflow_id`);
       for (const item of tx.operations) operation.run(item.scope, item.id, item.digest, item.response, item.workflowId ?? null);
+      const lease = this.db.prepare(`INSERT INTO wf_leases(workflow_id, claim_id, lease_until) VALUES (?, ?, ?)
+        ON CONFLICT(workflow_id, claim_id) DO UPDATE SET lease_until = excluded.lease_until`);
+      for (const item of tx.leases) lease.run(item.workflowId, item.claimId, item.leaseUntil);
       this.beforeCommit?.(tx.events.map(pending => ({ workflowId: pending.aggregate.state.workflowId, type: pending.type })));
     })();
   }
@@ -849,6 +868,16 @@ export class WorkflowStore {  readonly db: Database.Database;
       state!.stateVersion = row.version;
       seq = row.seq;
     }
+    // A lease renewal never reaches the journal (see append), so the last one for each claim is replayed on top. A
+    // claim's row lives as long as the workflow, so a claim that ended replays the lease it ended with too.
+    if (state) {
+      const leases = this.db.prepare('SELECT claim_id AS claimId, lease_until AS leaseUntil FROM wf_leases WHERE workflow_id = ?')
+        .all(workflowId) as Array<{ claimId: string; leaseUntil: number }>;
+      for (const lease of leases) {
+        const claim = state.workQueue?.claims.find(candidate => candidate.id === lease.claimId);
+        if (claim) claim.leaseUntil = lease.leaseUntil;
+      }
+    }
     return state && { state, seq, sinceSnapshot: rows.length };
   }
 
@@ -879,7 +908,7 @@ export class WorkflowStore {  readonly db: Database.Database;
       if (!(error instanceof WorkflowJournalError)) throw error;
       // Repairing an unreadable journal means replacing exactly that journal: drop what this build cannot replay
       // before the replacement is appended, or the next load would fail on the same old event.
-      for (const table of ['wf_events', 'wf_snapshots', 'wf_archived_tasks', 'wf_archived_artifacts', 'wf_archived_calls', 'wf_archive', 'wf_text_refs']) {
+      for (const table of ['wf_events', 'wf_snapshots', 'wf_leases', 'wf_archived_tasks', 'wf_archived_artifacts', 'wf_archived_calls', 'wf_archive', 'wf_text_refs']) {
         this.db.prepare(`DELETE FROM ${table} WHERE workflow_id = ?`).run(state.workflowId);
       }
       this.db.prepare('DELETE FROM wf_catalog WHERE id = ?').run(state.workflowId);
@@ -1023,7 +1052,7 @@ export class WorkflowStore {  readonly db: Database.Database;
       const ids = tree.map(member => member.id);
       this.db.transaction(() => {
         for (const id of ids) {
-          for (const table of ['wf_events', 'wf_snapshots', 'wf_archived_tasks', 'wf_archived_artifacts', 'wf_archived_calls', 'wf_archive', 'wf_text_refs']) {
+          for (const table of ['wf_events', 'wf_snapshots', 'wf_leases', 'wf_archived_tasks', 'wf_archived_artifacts', 'wf_archived_calls', 'wf_archive', 'wf_text_refs']) {
             this.db.prepare(`DELETE FROM ${table} WHERE workflow_id = ?`).run(id);
           }
           this.db.prepare('DELETE FROM wf_catalog WHERE id = ?').run(id);

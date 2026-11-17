@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { emit, putText, readText, readWorkflowStates, replaceWorkflowState, WorkflowStore, type WorkflowStoreOptions } from '../src/engine/kernel-store';
 import { SCRIPT_DEFINITION } from '../src/engine/script-contract';
-import type { StoredTask, WorkflowData, WorkflowView } from '../src/engine/types';
+import type { StoredTask, WorkClaim, WorkflowData, WorkflowView, WorkflowWorkItem } from '../src/engine/types';
 
 const cleanup: Array<() => unknown> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -439,5 +439,57 @@ describe('commit durability', () => {
     store.beforeCommit = () => { throw new Error('boom'); };
     expect(() => store.transact(() => emit(state, { type: 'workflow_completed' }))).toThrow('boom');
     expect(store.db.pragma('synchronous', { simple: true })).toBe(1);
+  });
+});
+
+describe('claim lease heartbeats', () => {
+  const item = (id: string): WorkflowWorkItem => ({ id, key: id, digest: 'd', title: 'item', input: null, resources: [], maxAttempts: 3,
+    generation: 0, status: 'pending', progress: { version: 0, state: null }, createdAt: 1, updatedAt: 1 });
+  const claim = (itemId: string): WorkClaim => ({ id: 'claim-1', itemId, agentId: 'agent-1', taskId: 'task-1', attemptId: 'attempt-1',
+    generation: 1, leaseUntil: 5_000, status: 'active', createdAt: 1 });
+
+  function queued(store: WorkflowStore, id = 'wf'): WorkflowView {
+    const state = start(store, id);
+    store.transact(() => {
+      emit(state, { type: 'work_queue_opened', name: 'default' });
+      emit(state, { type: 'work_enqueued', item: item('item-1') });
+      emit(state, { type: 'work_claimed', claim: claim('item-1') });
+    });
+    return state;
+  }
+
+  it('keeps a renewal out of the journal and out of the state version', async () => {
+    const store = open(await file());
+    const state = queued(store);
+    const version = state.stateVersion;
+    store.transact(() => emit(state, { type: 'claim_renewed', claimId: 'claim-1', leaseUntil: 9_000 }));
+    expect(state.workQueue!.claims[0]!.leaseUntil).toBe(9_000);
+    expect(state.stateVersion).toBe(version);
+    expect(store.db.prepare("SELECT count(*) AS n FROM wf_events WHERE type = 'claim_renewed'").get()).toEqual({ n: 0 });
+    expect(store.db.prepare('SELECT workflow_id, claim_id, lease_until FROM wf_leases').all())
+      .toEqual([{ workflow_id: 'wf', claim_id: 'claim-1', lease_until: 9_000 }]);
+    // The next journaled change still passes verification: the rebuilt state carries the same lease.
+    store.transact(() => emit(state, { type: 'script_phase_set', phase: 'after-renewal' }));
+    expect(state.stateVersion).toBe(version + 1);
+  });
+
+  it('replays the renewed lease over the journal after reopening', async () => {
+    const path = await file();
+    const first = new WorkflowStore(path, () => 1_000);
+    const state = queued(first);
+    first.transact(() => emit(state, { type: 'claim_renewed', claimId: 'claim-1', leaseUntil: 9_000 }));
+    first.close();
+    const db = new Database(path); db.exec('DELETE FROM wf_snapshots'); db.close();
+    const second = open(path);
+    expect(second.state('scope-wf')!.workQueue!.claims[0]!.leaseUntil).toBe(9_000);
+  });
+
+  it('keeps the row after the claim ends, so the end of the claim still verifies', async () => {
+    const store = open(await file());
+    const state = queued(store);
+    store.transact(() => emit(state, { type: 'claim_renewed', claimId: 'claim-1', leaseUntil: 9_000 }));
+    // Ending the claim is journaled; verification replays the journal and must see the renewed lease still.
+    store.transact(() => emit(state, { type: 'claim_ended', claimId: 'claim-1', status: 'cancelled', reason: 'done', retry: false, at: 2 }));
+    expect(store.db.prepare('SELECT count(*) AS n FROM wf_leases').get()).toEqual({ n: 1 });
   });
 });
