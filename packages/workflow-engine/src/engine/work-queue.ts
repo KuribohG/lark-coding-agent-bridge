@@ -3,7 +3,7 @@ import { workflowDigest } from './digest';
 import { byId } from './evolve';
 import { archivedRecord, workItemByKey, workOperationByKey } from './kernel-state';
 import { emit, recordsOf } from './kernel-store';
-import { WORK_MAX_BYTES, WORK_MAX_CLAIMS, WORK_MAX_ITEMS, WORK_MAX_OPERATIONS } from './limits';
+import { WORK_FLOW_SLOT_MS, WORK_FLOW_SLOTS, WORK_MAX_BYTES, WORK_MAX_CLAIMS, WORK_MAX_ITEMS, WORK_MAX_OPERATIONS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
 import { matchFields, SEARCH_ARCHIVE_ROWS, searchTerms, searchText, storedTerms } from './search';
 import { memberQueue, queueControl, queueName, queueNames } from './work-routing';
@@ -50,6 +50,26 @@ function itemById(state: WorkflowView, value: unknown): ItemView {
   if (!item) throw new Error('Unknown work item');
   return item;
 }
+
+/** An item by its ID, whether it is still in the state or archived. */
+export function workItem(state: WorkflowView, id: string): ItemView | undefined {
+  return byId(state.workQueue?.items ?? [], found => found.id, id) ?? archivedRecord<WorkflowWorkItem>(state, 'workItem', { id });
+}
+
+/** The item a request names, by its ID or by its key. */
+function itemOf(state: WorkflowView, args: Record<string, unknown>): ItemView {
+  if ((args.itemId === undefined) === (args.key === undefined)) throw new Error('Name the work item by itemId or by key');
+  if (args.itemId !== undefined) return itemById(state, args.itemId);
+  const item = workItemByKey(state, scriptText(args.key, 'work key', 160));
+  if (!item) throw new Error('Unknown work item');
+  return item;
+}
+
+/**
+ * What a caller may do to an item: `plans` for whoever plans its queue (the main agent, the swarm's lead, the lead of
+ * the queue), `added` for the member that added it, which may only withdraw it.
+ */
+export type WorkAuthority = (item: ItemView) => 'plans' | 'added' | undefined;
 
 /** Creates the named queue (and the queue state itself) when it does not exist yet. */
 export function openQueue(state: WorkflowView, name: string): void {
@@ -111,14 +131,56 @@ export function enqueueFromMember(state: WorkflowView, task: TaskView, args: Rec
   return enqueueWork(state, { ...input, queue: name }, now, member);
 }
 
-export function retryWork(state: WorkflowView, args: Record<string, unknown>, now: number): unknown {
-  options(args, ['itemId', 'additionalAttempts']);
-  const item = itemById(state, args.itemId);
+export function retryWork(state: WorkflowView, args: Record<string, unknown>, now: number, authority: WorkAuthority = () => 'plans'): unknown {
+  options(args, ['itemId', 'key', 'additionalAttempts']);
+  const item = itemOf(state, args);
+  if (authority(item) !== 'plans') throw new Error('Only the main agent, the swarm lead or the lead of its queue can retry a work item');
   if (item.status !== 'failed') throw new Error('Only failed work items can be retried');
   const attempts = boundedInteger(args.additionalAttempts, 1, 1, 8);
   if (item.generation + attempts > 32) throw new Error('Work item attempt limit reached');
   emit(state, { type: 'work_retried', itemId: item.id, maxAttempts: Math.max(item.maxAttempts, item.generation + attempts), at: now });
   return { itemId: item.id, status: item.status, maxAttempts: item.maxAttempts };
+}
+
+/**
+ * Changes an item that is not finished, for whoever plans its queue: `priority` moves it in the order items are handed
+ * out, `hold` sets it aside (true) or returns it (false), `cancel` withdraws it. Work that has become pointless
+ * otherwise stays in the queue until a member claims it and gives it up. A claimed item is not cancelled here: its
+ * member is at work on it and is the one to stop.
+ */
+export function updateWork(state: WorkflowView, args: Record<string, unknown>, now: number, authority: WorkAuthority = () => 'plans', by = 'main'): unknown {
+  options(args, ['itemId', 'key', 'priority', 'hold', 'cancel', 'reason']);
+  const item = itemOf(state, args);
+  const may = authority(item);
+  if (args.cancel !== undefined && args.cancel !== true) throw new Error('cancel must be true');
+  if (args.hold !== undefined && typeof args.hold !== 'boolean') throw new Error('hold must be boolean');
+  const changes = args.priority !== undefined || args.hold !== undefined;
+  if (!changes && !args.cancel) throw new Error('Give priority, hold or cancel');
+  if (changes && args.cancel) throw new Error('cancel withdraws the item; do not combine it with priority or hold');
+  if (args.reason !== undefined && !args.cancel) throw new Error('reason belongs to cancel');
+  if (!may || may === 'added' && changes) throw new Error(may ? 'A member can only withdraw (cancel) an item it added; its priority and hold are for the lead that plans the queue'
+    : 'Only the main agent, the swarm lead, the lead of its queue or, to cancel it, the member that added it can change a work item');
+  const view = (found: ItemView) => ({ itemId: found.id, key: found.key, queue: found.queue ?? 'default', status: found.status, priority: found.priority ?? 0, ...(found.hold ? { hold: true } : {}) });
+  if (args.cancel) {
+    const reason = args.reason === undefined ? undefined : scriptText(args.reason, 'reason', 500).trim() || undefined;
+    if (item.status === 'cancelled') return view(item);
+    if (item.status === 'completed') throw new Error('Work item is already completed');
+    if (item.status === 'claimed') {
+      const claim = state.workQueue?.claims.find(found => found.id === item.claimId);
+      const member = state.agents?.find(agent => agent.agentId === claim?.agentId)?.key;
+      throw new Error(`Work item is claimed${member ? ' by ' + member : ''}; tell that member to stop on the board, and cancel the item once it has returned to the queue`);
+    }
+    emit(state, { type: 'work_cancelled', itemIds: [item.id], at: now, reason: `Cancelled by ${by}` + (reason ? ': ' + reason : '') });
+    // What waited on the item can no longer be claimed; whoever cancelled it decides what becomes of that work.
+    const blocks = (state.workQueue?.items ?? []).filter(other => (other.status === 'pending' || other.status === 'failed') && other.dependsOn?.includes(item.key)).map(other => other.key);
+    return { ...view(item), ...(blocks.length ? { blocks: blocks.slice(0, 16), ...(blocks.length > 16 ? { moreBlocked: blocks.length - 16 } : {}) } : {}) };
+  }
+  if (item.status === 'completed' || item.status === 'cancelled') throw new Error(`Work item is already ${item.status}`);
+  const priority = args.priority === undefined ? undefined : boundedInteger(args.priority, 0, -100, 100);
+  const hold = args.hold as boolean | undefined;
+  const changed = { ...(priority !== undefined && priority !== (item.priority ?? 0) ? { priority } : {}), ...(hold !== undefined && hold !== Boolean(item.hold) ? { hold } : {}) };
+  if (Object.keys(changed).length) emit(state, { type: 'work_updated', itemId: item.id, ...changed, at: now });
+  return view(item);
 }
 
 function endClaim(state: WorkflowView, claim: ClaimView, now: number,
@@ -222,18 +284,43 @@ export function availableWork(state: WorkflowView, name?: string): ItemView[] {
   for (const item of [...items].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))) {
     if (name !== undefined && (item.queue ?? 'default') !== name) continue;
     if (item.dependsOn?.some(key => workItemByKey(state, key)?.status !== 'completed')) continue;
-    if (item.status !== 'pending' || item.generation >= item.maxAttempts || item.resources.some(key => occupied.has(key))) continue;
+    if (item.status !== 'pending' || item.hold || item.generation >= item.maxAttempts || item.resources.some(key => occupied.has(key))) continue;
     available.push(item);
     for (const key of item.resources) occupied.add(key);
   }
   return available;
 }
 
-export function workStatus(state: WorkflowView, args: Record<string, unknown> = {}): unknown {
-  options(args, ['itemId', 'offset', 'limit', 'queue']);
+/**
+ * How much work entered and left a queue, or all queues, in each of the last hours, oldest first: the last figure of
+ * each list is the hour that ends now. A count of what is pending says how a queue stands; whether its work is being
+ * planned and done at the rate it was an hour ago is in these.
+ */
+export function workFlow(state: WorkflowView, name: string | undefined, now: number): { enqueued: number[]; completed: number[]; failed?: number[] } | undefined {
+  const perHour = 3_600_000 / WORK_FLOW_SLOT_MS;
+  const hours = WORK_FLOW_SLOTS / perHour;
+  const current = Math.floor(now / WORK_FLOW_SLOT_MS);
+  const totals = { enqueued: new Array<number>(hours).fill(0), completed: new Array<number>(hours).fill(0), failed: new Array<number>(hours).fill(0) };
+  let any = false;
+  for (const [queue, slots] of Object.entries(state.workQueue?.flow ?? {})) {
+    if (name !== undefined && queue !== name) continue;
+    for (const slot of slots) {
+      const age = current - slot.slot;
+      if (age < 0 || age >= WORK_FLOW_SLOTS) continue;
+      const hour = hours - 1 - Math.floor(age / perHour);
+      totals.enqueued[hour]! += slot.enqueued ?? 0; totals.completed[hour]! += slot.completed ?? 0; totals.failed[hour]! += slot.failed ?? 0;
+      any = true;
+    }
+  }
+  if (!any) return undefined;
+  return { enqueued: totals.enqueued, completed: totals.completed, ...(totals.failed.some(Boolean) ? { failed: totals.failed } : {}) };
+}
+
+export function workStatus(state: WorkflowView, args: Record<string, unknown> = {}, now?: number): unknown {
+  options(args, ['itemId', 'key', 'offset', 'limit', 'queue']);
   const name = args.queue === undefined ? undefined : queueName(args.queue);
-  if (args.itemId !== undefined) {
-    const item = itemById(state, args.itemId);
+  if (args.itemId !== undefined || args.key !== undefined) {
+    const item = itemOf(state, args);
     if (name !== undefined && (item.queue ?? 'default') !== name) throw new Error('Work item belongs to another queue');
     return { ...item, digest: undefined, claim: state.workQueue?.claims.find(claim => claim.id === item.claimId) };
   }
@@ -242,6 +329,8 @@ export function workStatus(state: WorkflowView, args: Record<string, unknown> = 
   const limit = boundedInteger(args.limit, 16, 1, 64);
   const counts = { pending: 0, claimed: 0, completed: 0, failed: 0, cancelled: 0 };
   for (const item of items) counts[item.status]++;
+  const onHold = items.filter(item => item.status === 'pending' && item.hold).length;
+  const flow = now === undefined ? undefined : workFlow(state, name, now);
   // Pending items a member could claim now; the rest wait on dependencies, resources held by claimed items or attempts.
   const claimable = availableWork(state, name).length;
   const members = new Map((state.agents ?? []).map(agent => [agent.agentId, agent.key]));
@@ -252,7 +341,8 @@ export function workStatus(state: WorkflowView, args: Record<string, unknown> = 
     for (const [status, count] of Object.entries(totals)) { counts[status as keyof typeof counts] += count; archived += count; }
   }
   const controls = (name === undefined ? queueNames(state) : [name]).map(name => queueControl(state, name));
-  return { total: items.length + archived, ...(archived ? { archived } : {}), ...counts, claimable, blocked: items.filter(item => item.status === 'pending').length - claimable, closed: controls.every(control => control?.closedAt !== undefined),
+  return { total: items.length + archived, ...(archived ? { archived } : {}), ...counts, claimable, blocked: items.filter(item => item.status === 'pending').length - claimable, ...(onHold ? { onHold } : {}),
+    ...(flow ? { flow } : {}), closed: controls.every(control => control?.closedAt !== undefined),
     closedAt: name === undefined ? state.workQueue?.closedAt : queueControl(state, name)?.closedAt,
     offset, nextOffset: offset + limit < items.length ? offset + limit : null,
     items: items.slice(offset, offset + limit).map(item => {
@@ -261,7 +351,7 @@ export function workStatus(state: WorkflowView, args: Record<string, unknown> = 
     const member = item.status === 'claimed' && claim ? members.get(claim.agentId) : undefined;
     return {
     itemId: item.id, key: item.key, queue: item.queue ?? 'default', priority: item.priority ?? 0, dependsOn: item.dependsOn ?? [], title: item.title.slice(0, 120), ...(item.by ? { by: item.by } : {}), status: item.status,
-    generation: item.generation, maxAttempts: item.maxAttempts, progressVersion: item.progress.version,
+    generation: item.generation, maxAttempts: item.maxAttempts, progressVersion: item.progress.version, ...(item.hold ? { hold: true } : {}),
     claim, ...(member ? { member } : {}),
     error: item.error?.slice(0, 180),
   }; }) };

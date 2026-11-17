@@ -101,7 +101,10 @@ export type DomainEvent =
   | { type: 'swarm_member_workspace_cleaned'; swarmId: string; member: string }
   | { type: 'swarm_member_revived'; swarmId: string; member: string; auto?: boolean }
   | { type: 'swarm_queue_starved'; swarmId: string; queue: string; at: number; told?: 'lead' | 'main' }
-  | { type: 'swarm_queue_fed'; swarmId: string; queue: string }
+  /** `at` closes the starved spell for the queue's record of them; journals of earlier builds carry none. */
+  | { type: 'swarm_queue_fed'; swarmId: string; queue: string; at?: number }
+  /** These items' outcomes were posted to their lead, or have no lead left to go to. */
+  | { type: 'swarm_handoffs_delivered'; swarmId: string; items: string[] }
   | { type: 'swarm_turns_extended'; swarmId: string; maxTurns: number }
   | { type: 'swarm_nudged'; swarmId: string }
   | { type: 'swarm_stalled'; swarmId: string }
@@ -118,7 +121,9 @@ export type DomainEvent =
   | { type: 'work_queue_reopened'; name: string }
   | { type: 'work_enqueued'; item: WorkflowWorkItem }
   | { type: 'work_retried'; itemId: string; maxAttempts: number; at: number }
-  | { type: 'work_cancelled'; itemIds: string[]; at: number }
+  | { type: 'work_cancelled'; itemIds: string[]; at: number; reason?: string }
+  /** A change to an item by whoever plans its queue: a new priority, a hold placed (`true`) or lifted (`false`). */
+  | { type: 'work_updated'; itemId: string; priority?: number; hold?: boolean; at: number }
   | { type: 'work_claimed'; claim: WorkClaim }
   | { type: 'claim_frozen'; claimId: string; reason: string }
   | { type: 'claim_renewed'; claimId: string; leaseUntil: number }

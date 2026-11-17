@@ -1,7 +1,7 @@
 import type { DomainEvent } from './events';
-import { BOARD_DEFAULT_TOPIC, BOARD_TOPIC_RECENT } from './limits';
+import { BOARD_DEFAULT_TOPIC, BOARD_TOPIC_RECENT, SWARM_MAX_HANDOFFS, WORK_FLOW_SLOT_MS, WORK_FLOW_SLOTS } from './limits';
 import { CALL_KINDS, RECORDS } from './records';
-import type { Immutable, MailboxMessage, MailboxReceipt, StoredTask, WorkflowData, WorkflowView, WorkflowWait, WorkflowWorkItem, WorkflowWorkQueue } from './types';
+import type { Immutable, MailboxMessage, MailboxReceipt, StoredTask, WorkFlowSlot, WorkflowData, WorkflowView, WorkflowWait, WorkflowWorkItem, WorkflowWorkQueue } from './types';
 
 /**
  * Applies one event to a workflow's state. This is the only code that changes workflow state, and it must stay a
@@ -313,7 +313,19 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
     }
     case 'swarm_queue_fed': {
       const found = swarm(state, event.swarmId);
+      const spell = found.starved?.[event.queue];
+      if (spell && event.at !== undefined) {
+        const dry = (found.dry ??= {})[event.queue] ??= { spells: 0, ms: 0, longest: 0 };
+        const lasted = Math.max(0, event.at - spell.since);
+        dry.spells++; dry.ms += lasted; dry.longest = Math.max(dry.longest, lasted);
+      }
       if (found.starved) { delete found.starved[event.queue]; if (!Object.keys(found.starved).length) found.starved = undefined; }
+      return;
+    }
+    case 'swarm_handoffs_delivered': {
+      const found = swarm(state, event.swarmId);
+      const left = (found.handoffs ?? []).filter(entry => !event.items.includes(entry.item));
+      found.handoffs = left.length ? left : undefined;
       return;
     }
     case 'swarm_turns_extended': {
@@ -355,15 +367,26 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       if (control) { control.closedAt = undefined; control.closeKey = undefined; }
       return;
     }
-    case 'work_enqueued': queue(state).items.push(event.item); return;
+    case 'work_enqueued': queue(state).items.push(event.item); flowed(state, event.item, event.item.createdAt, 'enqueued'); return;
     case 'work_retried': {
       const found = item(state, event.itemId);
       found.maxAttempts = event.maxAttempts; found.status = 'pending'; found.error = undefined; found.updatedAt = event.at;
       return;
     }
     case 'work_cancelled':
-      for (const found of queue(state).items) if (event.itemIds.includes(found.id)) { found.status = 'cancelled'; found.updatedAt = event.at; }
+      for (const found of queue(state).items) {
+        if (!event.itemIds.includes(found.id)) continue;
+        found.status = 'cancelled'; found.updatedAt = event.at;
+        if (event.reason !== undefined) found.error = event.reason;
+      }
       return;
+    case 'work_updated': {
+      const found = item(state, event.itemId);
+      if (event.priority !== undefined) found.priority = event.priority || undefined;
+      if (event.hold !== undefined) found.hold = event.hold || undefined;
+      found.updatedAt = event.at;
+      return;
+    }
     case 'work_claimed': {
       const { claim: granted } = event;
       const found = item(state, granted.itemId);
@@ -393,6 +416,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       found.claimId = undefined; found.updatedAt = event.at; found.error = ended.reason;
       found.status = event.retry && found.generation < found.maxAttempts ? 'pending' : 'failed';
       if (event.retry && found.status === 'failed') found.error = 'Attempt budget exhausted: ' + ended.reason;
+      if (found.status === 'failed') settled(state, found, ended.agentId, event.at, 'failed');
       return;
     }
     case 'work_progress_saved': {
@@ -406,6 +430,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       const found = item(state, completed.itemId);
       found.result = event.result; found.status = 'completed'; found.updatedAt = event.at; found.claimId = undefined; found.error = undefined;
       completed.status = 'completed'; completed.endedAt = event.at;
+      settled(state, found, completed.agentId, event.at, 'completed');
       return;
     }
     case 'work_operation_recorded': queue(state).operations.push(event.operation); return;
@@ -462,6 +487,39 @@ function item(state: WorkflowData, id: string): WorkflowWorkItem {
 
 function claim(state: WorkflowData, id: string) {
   return byId(queue(state).claims, found => found.id, id)!;
+}
+
+/**
+ * Counts an item entering or leaving its queue in the ten-minute slot of `at`. Only the latest slots are kept, so the
+ * record stays the same size however long the workflow runs.
+ */
+function flowed(state: WorkflowData, found: WorkflowWorkItem, at: number, what: Exclude<keyof WorkFlowSlot, 'slot'>): void {
+  const slots = (queue(state).flow ??= {})[found.queue ?? 'default'] ??= [];
+  // A clock that stepped back counts into the latest slot, which keeps the slots in order.
+  const slot = Math.max(Math.floor(at / WORK_FLOW_SLOT_MS), slots.at(-1)?.slot ?? 0);
+  let last = slots.at(-1);
+  if (last?.slot !== slot) {
+    slots.push(last = { slot });
+    while (slots[0]!.slot <= slot - WORK_FLOW_SLOTS) slots.shift();
+  }
+  last[what] = (last[what] ?? 0) + 1;
+}
+
+/**
+ * An item was completed, or failed for good, under the claim of `agentId`. Whatever ended the claim (the member's own
+ * call, a lease that ran out, a turn that stopped), the item counts in its queue's flow and for the swarm member
+ * that held it, and in a swarm with a lead the outcome is owed to the lead that planned the item (see `handoffs`).
+ */
+function settled(state: WorkflowData, found: WorkflowWorkItem, agentId: string, at: number, how: 'completed' | 'failed'): void {
+  flowed(state, found, at, how);
+  const name = state.agents?.find(agent => agent.agentId === agentId)?.key;
+  for (const owner of state.swarms ?? []) {
+    const member = owner.members.find(candidate => candidate.name === name);
+    if (!member) continue;
+    if (how === 'completed') member.itemsDone = (member.itemsDone ?? 0) + 1; else member.itemsFailed = (member.itemsFailed ?? 0) + 1;
+    if (owner.lead && owner.status === 'running' && !owner.finish && (owner.handoffs?.length ?? 0) < SWARM_MAX_HANDOFFS) (owner.handoffs ??= []).push({ item: found.id, worker: member.name });
+    return;
+  }
 }
 
 function mailbox(state: WorkflowData) {

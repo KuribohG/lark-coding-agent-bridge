@@ -1,27 +1,16 @@
 import { CONTROL_ARGS } from './control-args';
 import { requireState } from '../kernel-state';
-import { closeWorkQueue, enqueueFromMember, enqueueWork, holdClaim, mutateWork, retryWork, searchWork, workOperation, workStatus, WORK_MUTATIONS } from '../work-queue';
+import { closeWorkQueue, enqueueFromMember, enqueueWork, holdClaim, mutateWork, retryWork, searchWork, updateWork, workOperation, workStatus, WORK_MUTATIONS } from '../work-queue';
 import { queueName } from '../work-routing';
 import { scriptText } from '../script-contract';
-import { taskAgent } from '../durable-agents';
-import { handOffWork } from '../swarm';
+import { workAuthority } from '../swarm';
+import { memberOperation } from './members';
 import type { ToolArgs, WorkflowTool, WorkflowToolPlugin } from './types';
-import type { TaskView, WorkflowView } from '../types';
+import type { WorkflowView } from '../types';
 import { versioned } from './versioned';
 
 function operationInput(args: ToolArgs): ToolArgs {
   return Object.fromEntries(Object.entries(args).filter(([key]) => !CONTROL_ARGS.includes(key)));
-}
-
-/**
- * A work mutation of a member. One that settles the item the member held (completed, or given up for good) also
- * hands the outcome to the lead that planned the item; a repeated call finds the claim settled and hands over nothing.
- */
-function memberWork(state: WorkflowView, task: TaskView, attemptId: string, name: string, args: ToolArgs, now: number): unknown {
-  const held = name === 'complete_work' || name === 'fail_work' ? state.workQueue?.claims.find(claim => claim.id === args.claimId && claim.status === 'active') : undefined;
-  const response = mutateWork(state, task, attemptId, name, args, now);
-  if (held) handOffWork(state, taskAgent(state, task)?.key, held.itemId, now);
-  return response;
 }
 
 /** Claims, leases and progress of a persistent member's work item. */
@@ -32,7 +21,7 @@ const claimTools: WorkflowTool[] = WORK_MUTATIONS.map(name => ({
     prepare: (ctx, state) => ctx.scheduler.expireClaims(state),
     call: (ctx, state, task, caller, args) => {
       active(ctx, state);
-      return memberWork(state, task, caller.attemptId, name, args, ctx.now());
+      return mutateWork(state, task, caller.attemptId, name, args, ctx.now());
     },
   },
 }));
@@ -80,7 +69,7 @@ const submitWork: WorkflowTool = {
       try { report = await ctx.host.land!(start.state, { workspace: start.workspace, taskId: caller.taskId }, controller.signal) as { status: string; headCommit?: string; commits?: number }; }
       finally { clearInterval(timer); }
       if (report.status !== 'landed' || !claim) return report;
-      const item = bound((state, task) => memberWork(state, task, caller.attemptId, 'complete_work',
+      const item = bound((state, task) => mutateWork(state, task, caller.attemptId, 'complete_work',
         { operationId, ...claim, result: args.result ?? { headCommit: report.headCommit, commits: report.commits } }, ctx.now()));
       return { ...report, item };
     },
@@ -90,7 +79,7 @@ const submitWork: WorkflowTool = {
 /** Durable work queues: the main agent produces and inspects items; persistent members claim and finish them. */
 export const workQueueTools: WorkflowToolPlugin = {
   id: 'work-queue',
-  memberInstructions: '工作队列：claim_work({operationId,leaseMs?,queue?}) 原子领取一个工作项（每个成员最多一个），返回 claimId、generation、leaseUntil、item；没有可领项返回 null，应结束本轮，不忙等。在 swarm 里声明了 queue 的成员省略 queue 即使用该队列，不能领取其它队列；其他成员默认领取 default。认领在你这一轮运行期间由 bridge 自动续期，不需要也不能自己续租；本轮结束、被取消或因长时间无输出被停止时，未完成的认领会被收回给别人。先读取 item.progress 核对已完成步骤。checkpoint_work({operationId,claimId,generation,expectedProgressVersion,state}) 保存最多 16000 字符的 JSON 工作进展；complete_work({operationId,claimId,generation,result}) 提交 JSON 结果；fail_work({operationId,claimId,generation,error,retry?}) 报错；release_claim({operationId,claimId,generation,reason}) 交还工作。工作项 input/progress/result 各最多 16000 字符。work_status({itemId? 或 offset?,limit?}) 读取工作状态，默认每页 16 项、最多 64 项。search_work({query,queue?,status?,limit?}) 按关键词查全部工作项（含已完成的）：query 为空格分隔的词（最多 8 个），不分大小写、按子串匹配 key、title、input、result、error，须全部出现；key 或 title 命中的排前，其次按最近更新，返回 limit 条（默认 10，最多 30），每条带 itemId、status 和命中处的片段，全文用 work_status({itemId}) 读。队列变更 operationId 在当前执行 attempt 内唯一，同内容重试复用；恢复后的新 attempt 可重新领取，过期的旧 claimId/generation 不可提交；但 bridge 重启打断的一轮，认领会保留给你，恢复后继续用原 claimId/generation（工作队列上下文的 claim 即是），不要重新领取。空 claim 的重试查询须用新 operationId。取消、退出或失去租约会回收未完成认领，保存的工作进展保留；外部副作用仍需核对和幂等处理。在托管 worktree 中运行且脚本已配置落地（系统提示里有 Landing branch）时，用 submit_work({operationId,claimId?,generation?,result?}) 提交代码：先把修改提交成 commit，它把你的 commit rebase 到落地分支最新位置，与其他成员同时等待的提交合成一批统一检查，通过后推进落地分支，并在带 claimId 时以 result（省略则为落地 commit）完成该工作项，返回 {status:"landed",headCommit,commits,item}；此时你的 worktree 已移到落地分支最新位置（含别人已落地的修改），直接在其上做下一项。返回 {status:"conflict",targetCommit,detail} 表示与已落地的修改冲突，worktree 保持提交时的样子；自行 git rebase 到 targetCommit 解决冲突后再提交。返回 {status:"check_failed",targetCommit,commands,reason?} 表示检查未过，worktree 停在你的 commit 叠在 targetCommit 之上的位置（即检查失败的那个版本）；修复并提交后再提交。返回 {status:"rejected",files,reason} 表示改动了本工作流不允许你修改的路径；去掉对这些文件的修改（含删除、改名）后再提交，不要绕过。三种情况认领仍归你，租约在等待期间自动续期；确实做不了就 release_claim 或 fail_work。调用会阻塞到这一批检查跑完：命令超时被打断时用相同 operationId 重试会接回同一次落地，被拒后再次提交用新 operationId。enqueue_work({key,title,input,queue?,priority?,dependsOn?,resources?,maxAttempts?}) 把你发现的、需要有人去做的工作加入队列，消费该队列的成员随即可以领取：用于拆分过大的工作项、登记排查中发现的新问题，或在队列变空而目标未达成时补充下一批工作。queue 省略为你消费的队列（没有则 default），只能加入已存在且未关闭的队列。key 取能标识问题本身的稳定名字（如 bug-<模块>-<现象>）：key 已存在时不新建，返回 {itemId,key,existing:true,status}。别人可能用了不同的 key 报同一件事：入队前、以及着手排查一个问题前，先用 search_work 以现象、模块、用例名等关键词查有没有人报过或做过，查到就沿用其结论或在其基础上继续，不重复入队。title 一句话说明，input 写清现象、复现方法和已知线索，让领取者不必重查。',
+  memberInstructions: '工作队列：claim_work({operationId,leaseMs?,queue?}) 原子领取一个工作项（每个成员最多一个），返回 claimId、generation、leaseUntil、item；没有可领项返回 null，应结束本轮，不忙等。在 swarm 里声明了 queue 的成员省略 queue 即使用该队列，不能领取其它队列；其他成员默认领取 default。认领在你这一轮运行期间由 bridge 自动续期，不需要也不能自己续租；本轮结束、被取消或因长时间无输出被停止时，未完成的认领会被收回给别人。先读取 item.progress 核对已完成步骤。checkpoint_work({operationId,claimId,generation,expectedProgressVersion,state}) 保存最多 16000 字符的 JSON 工作进展；complete_work({operationId,claimId,generation,result}) 提交 JSON 结果；fail_work({operationId,claimId,generation,error,retry?}) 报错；release_claim({operationId,claimId,generation,reason}) 交还工作。工作项 input/progress/result 各最多 16000 字符。work_status({itemId 或 key? 或 offset?,limit?}) 读取工作状态，默认每页 16 项、最多 64 项。search_work({query,queue?,status?,limit?}) 按关键词查全部工作项（含已完成的）：query 为空格分隔的词（最多 8 个），不分大小写、按子串匹配 key、title、input、result、error，须全部出现；key 或 title 命中的排前，其次按最近更新，返回 limit 条（默认 10，最多 30），每条带 itemId、status 和命中处的片段，全文用 work_status({itemId}) 读。队列变更 operationId 在当前执行 attempt 内唯一，同内容重试复用；恢复后的新 attempt 可重新领取，过期的旧 claimId/generation 不可提交；但 bridge 重启打断的一轮，认领会保留给你，恢复后继续用原 claimId/generation（工作队列上下文的 claim 即是），不要重新领取。空 claim 的重试查询须用新 operationId。取消、退出或失去租约会回收未完成认领，保存的工作进展保留；外部副作用仍需核对和幂等处理。在托管 worktree 中运行且脚本已配置落地（系统提示里有 Landing branch）时，用 submit_work({operationId,claimId?,generation?,result?}) 提交代码：先把修改提交成 commit，它把你的 commit rebase 到落地分支最新位置，与其他成员同时等待的提交合成一批统一检查，通过后推进落地分支，并在带 claimId 时以 result（省略则为落地 commit）完成该工作项，返回 {status:"landed",headCommit,commits,item}；此时你的 worktree 已移到落地分支最新位置（含别人已落地的修改），直接在其上做下一项。返回 {status:"conflict",targetCommit,detail} 表示与已落地的修改冲突，worktree 保持提交时的样子；自行 git rebase 到 targetCommit 解决冲突后再提交。返回 {status:"check_failed",targetCommit,commands,reason?} 表示检查未过，worktree 停在你的 commit 叠在 targetCommit 之上的位置（即检查失败的那个版本）；修复并提交后再提交。返回 {status:"rejected",files,reason} 表示改动了本工作流不允许你修改的路径；去掉对这些文件的修改（含删除、改名）后再提交，不要绕过。三种情况认领仍归你，租约在等待期间自动续期；确实做不了就 release_claim 或 fail_work。调用会阻塞到这一批检查跑完：命令超时被打断时用相同 operationId 重试会接回同一次落地，被拒后再次提交用新 operationId。enqueue_work({key,title,input,queue?,priority?,dependsOn?,resources?,maxAttempts?}) 把你发现的、需要有人去做的工作加入队列，消费该队列的成员随即可以领取：用于拆分过大的工作项、登记排查中发现的新问题，或在队列变空而目标未达成时补充下一批工作。queue 省略为你消费的队列（没有则 default），只能加入已存在且未关闭的队列。key 取能标识问题本身的稳定名字（如 bug-<模块>-<现象>）：key 已存在时不新建，返回 {itemId,key,existing:true,status}。别人可能用了不同的 key 报同一件事：入队前、以及着手排查一个问题前，先用 search_work 以现象、模块、用例名等关键词查有没有人报过或做过，查到就沿用其结论或在其基础上继续，不重复入队。title 一句话说明，input 写清现象、复现方法和已知线索，让领取者不必重查。update_work({operationId,key 或 itemId,priority? 或 hold? 或 cancel?,reason?}) 修改尚未完成的工作项：priority（-100..100，越大越先被领）调整顺序；hold:true 挂起，项留在队列里但不会被领取，false 放回；cancel:true 撤销，reason 写原因，返回的 blocks 是依赖它、因此再也领不了的项。已被领取的项不能撤销：先发帖让领取者停下并用 release_claim 或 fail_work 交还，回到队列后再撤。retry_work({operationId,key 或 itemId,additionalAttempts?}) 给失败的工作项追加尝试次数（默认 1，最多 8）并放回队列。这两个操作归规划队列的人：swarm 的 lead 可用于任何队列，队列的 lead 可用于自己的队列；其他成员只能用 update_work 的 cancel 撤销自己加入、还没被领取的项。',
   tools: [
     {
       name: 'enqueue_work',
@@ -113,7 +102,16 @@ export const workQueueTools: WorkflowToolPlugin = {
     {
       name: 'retry_work',
       // Giving a failed item more attempts conflicts with nothing a worker or the scheduler commits meanwhile.
-      main: { doc: 'retry_work(itemId,additionalAttempts?)', ...versioned((ctx, state, args) => retryWork(state, operationInput(args), ctx.now()), { allowInterrupted: true, appendOnly: true }) },
+      main: { doc: 'retry_work(itemId 或 key,additionalAttempts?)', ...versioned((ctx, state, args) => retryWork(state, operationInput(args), ctx.now()), { allowInterrupted: true, appendOnly: true }) },
+      worker: { verifiesRoot: true,
+        call: (ctx, state, task, _caller, args) => memberOperation(ctx, state, task, 'retry_work', args, agent => retryWork(state, operationInput(args), ctx.now(), workAuthority(state, agent.key))) },
+    },
+    {
+      name: 'update_work',
+      // A new priority, a hold or a withdrawal changes one item; whichever of two such changes commits last stands.
+      main: { doc: 'update_work(itemId 或 key,priority?,hold?,cancel?,reason?)', ...versioned((ctx, state, args) => updateWork(state, operationInput(args), ctx.now()), { allowInterrupted: true, appendOnly: true }) },
+      worker: { verifiesRoot: true,
+        call: (ctx, state, task, _caller, args) => memberOperation(ctx, state, task, 'update_work', args, agent => updateWork(state, operationInput(args), ctx.now(), workAuthority(state, agent.key), agent.key)) },
     },
     {
       name: 'close_work_queue',
@@ -127,9 +125,9 @@ export const workQueueTools: WorkflowToolPlugin = {
     },
     {
       name: 'work_status',
-      main: { kind: 'read', doc: 'work_status(itemId? 或 queue?,offset?,limit?)',
-        read: (_ctx, state, args) => workStatus(requireState(state), { itemId: args.itemId, offset: args.offset, limit: args.limit, ...(args.queue !== undefined ? { queue: args.queue } : {}) }) },
-      worker: { call: (_ctx, state, _task, _caller, args) => workStatus(state, args) },
+      main: { kind: 'read', doc: 'work_status(itemId? 或 key? 或 queue?,offset?,limit?)',
+        read: (ctx, state, args) => workStatus(requireState(state), { itemId: args.itemId, offset: args.offset, limit: args.limit, ...(args.key !== undefined ? { key: args.key } : {}), ...(args.queue !== undefined ? { queue: args.queue } : {}) }, ctx.now()) },
+      worker: { call: (ctx, state, _task, _caller, args) => workStatus(state, args, ctx.now()) },
     },
     {
       name: 'search_work',

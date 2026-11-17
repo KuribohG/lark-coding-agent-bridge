@@ -195,6 +195,9 @@ export interface SwarmMember {
   /** A wake-up the member asked for with wake_me: when it is due and what it is for. Cleared by the turn it starts. */
   wakeAt?: number;
   wakeNote?: string;
+  /** Work items the member completed, and the ones its claim left failed for good. */
+  itemsDone?: number;
+  itemsFailed?: number;
 }
 /**
  * A group of persistent members that coordinate on the board. The kernel schedules their turns: every member runs
@@ -225,6 +228,14 @@ export interface WorkflowSwarm {
    * told. An entry leaves when the queue has work to claim again or all its consumers are busy.
    */
   starved?: Record<string, { since: number; leadAt?: number; mainAt?: number }>;
+  /** What the starved spells of each queue that are over add up to: how many there were, and how long they lasted. */
+  dry?: Record<string, { spells: number; ms: number; longest: number }>;
+  /**
+   * Work items that were completed or failed for good under a member's claim and whose outcome no lead has been given
+   * yet, oldest first; a swarm without a lead keeps none. They are gathered and handed to the lead that planned each
+   * of them when its next turn is scheduled.
+   */
+  handoffs?: Array<{ item: string; worker: string }>;
   members: SwarmMember[];
   /** Turns whose task is still in the state, oldest first; `archivedTurns` counts the completed ones that left it. */
   turns: Array<{ key: string; member: string; taskId: string }>;
@@ -308,6 +319,8 @@ export interface WorkflowWorkItem {
   maxAttempts: number;
   generation: number;
   status: 'pending' | 'claimed' | 'completed' | 'failed' | 'cancelled';
+  /** Set aside by whoever plans the queue: the item keeps its place but is not handed out until the hold is lifted. */
+  hold?: boolean;
   claimId?: string;
   progress: { version: number; state: unknown; updatedAt?: number };
   result?: unknown;
@@ -345,6 +358,18 @@ export interface WorkflowWorkQueue {
   closedAt?: number;
   closeKey?: string;
   queues?: Record<string, { closedAt?: number; closeKey?: string }>;
+  /**
+   * What entered and left each queue in every ten-minute slot of the last hours, oldest first: items added, completed
+   * and failed for good. `slot` counts ten-minute spans since the epoch.
+   */
+  flow?: Record<string, WorkFlowSlot[]>;
+}
+
+export interface WorkFlowSlot {
+  slot: number;
+  enqueued?: number;
+  completed?: number;
+  failed?: number;
 }
 
 

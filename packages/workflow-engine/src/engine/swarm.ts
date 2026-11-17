@@ -10,9 +10,9 @@ import { BOARD_ANNOUNCE_TOPIC, BOARD_HANDOFF_TOPIC, MAX_CONCURRENT_WORKERS, SWAR
 import { workerSelection } from './execution';
 import { boundedInteger, parseScriptAgentCall, scriptText } from './script-contract';
 import { WAKE_MAX_MINUTES } from './steering';
-import { availableWork, openQueue, unfinishedWork, workStatus } from './work-queue';
+import { availableWork, openQueue, unfinishedWork, workFlow, workItem, workStatus, type WorkAuthority } from './work-queue';
 import { queueControl, queueName } from './work-routing';
-import type { Immutable, NativeIdKind, SwarmMember, WorkerExecution, WorkerExecutionPolicy, WorkerExecutionSelection, WorkflowSwarm, WorkflowTask, WorkflowView } from './types';
+import type { Immutable, NativeIdKind, SwarmMember, WorkerExecution, WorkerExecutionPolicy, WorkerExecutionSelection, WorkflowSwarm, WorkflowTask, WorkflowView, WorkflowWorkItem } from './types';
 
 const BUSY = new Set<WorkflowTask['status']>(['queued', 'starting', 'running', 'cancelling', 'waiting_workflow']);
 const NAME = /^[A-Za-z0-9_.-]{1,40}$/;
@@ -42,9 +42,18 @@ const STARVED_MAIN_AFTER_MS = 20 * 60_000;
 const STARVED_MAIN_EVERY_MS = 60 * 60_000;
 /** The most of an item's result a handoff quotes; the item holds the rest. */
 const HANDOFF_RESULT_CHARS = 1500;
+/**
+ * The outcomes a lead is owed are gathered into posts when its turn is scheduled: this many items share a post and
+ * its room, so one item is quoted at length and a dozen get a line or two each. A turn takes this many posts; what
+ * is left over waits for the lead's next turn, which it also wakes.
+ */
+const HANDOFF_ITEMS_PER_POST = 12;
+const HANDOFF_POSTS_PER_TURN = 4;
+const HANDOFF_POST_ROOM = 3600;
 
 type SwarmView = Immutable<WorkflowSwarm>;
 type MemberView = Immutable<SwarmMember>;
+type ItemView = Immutable<WorkflowWorkItem>;
 
 /**
  * A member that plans and judges instead of taking the work: the swarm's lead, and a member that leads queues under
@@ -178,6 +187,13 @@ const ITEM_RULES = 'An item is one result that a single member can finish and ch
   + 'Split what is larger, and what two members could not do at once without touching the same files. Members finish items faster than you are woken, so plan ahead of them: '
   + 'when you end a turn, each queue should hold at least one claimable item for every member that consumes it. Where a part has no more useful work, say so instead of inventing items';
 
+/** How the outcomes of items reach the lead that planned them. */
+const HANDED_BACK = 'at your next turn the system posts the outcomes in topic "handoff", gathered, with a line or two for each item when many came back (work_status({key}) has an item in full). '
+  + 'Read them before you hand out more, and judge them on evidence (test output, measurements) rather than on reports';
+/** What a lead can do to the items of a queue it plans once they are in it. */
+const ITEM_CHANGES = 'Items stay yours to change until they are done. update_work({key, ...}) moves one ahead or back (priority), sets it aside and returns it (hold: true, false) or withdraws it (cancel: true; '
+  + 'an item a member has claimed must come back from that member first), and retry_work({key}) gives a failed one more attempts. When the direction changes, cancel or hold what no longer serves it instead of leaving it for members to claim.';
+
 /**
  * What a member is told once, in its first turn. Its own part comes first: what it is there to do, who plans its
  * work and who gets its results. How turns and the board work is the same for everyone and follows.
@@ -192,8 +208,9 @@ function rules(swarm: SwarmView, member: MemberView): string {
     '- You are the lead. You turn the task into work for the members, judge what comes back and decide when the swarm is done.',
     `- ${PLAN_ONLY}: every piece of work goes to a member or into a queue.`,
     `- Hand out work as queue items with enqueue_work wherever a queue has members, and by naming members on the board where no queue fits. ${ITEM_RULES}, and retire the members it no longer needs.`,
-    '- When a member completes or gives up a queue item, the system posts the outcome to you in topic "handoff"' + (delegates.length ? ', or to the lead of its queue when you did not add the item yourself' : '')
-      + '. Read what has come back before you hand out more, and judge it on evidence (test output, measurements) rather than on reports. The system also posts to you when a member fails, when a queue runs dry (with the number of items it lacks) and when everyone has gone idle.',
+    '- Queue items come back to you when a member completes them or they fail for good' + (delegates.length ? ', or to the lead of their queue when you did not add them yourself' : '')
+      + `: ${HANDED_BACK}. The system also posts to you when a member fails, when a queue runs dry (with the number of items it lacks) and when everyone has gone idle.`,
+    `- ${ITEM_CHANGES}`,
     ...(delegates.length ? [`- These members lead parts of the work under you: ${delegates.map(item => `${item.name} (${item.leads!.length > 1 ? 'queues' : 'queue'} ${quoted(item.leads!)})`).join(', ')}. `
       + 'Give each the goal of its part on the board and let it split that into items for its queues; it reports to you. Add an item to such a queue yourself only when its result should come back to you.'] : []),
     '- Idle members and an empty queue do not mean the task is done. The swarm ends only when you call swarm_finish: do so once the goal is met or cannot progress, with the final result, stating which it is and what remains. The turns still running then finish and nobody is woken again.',
@@ -204,15 +221,17 @@ function rules(swarm: SwarmView, member: MemberView): string {
     `- You lead ${led.length > 1 ? 'queues' : 'queue'} ${quoted(led)} under @${swarm.lead}: that part of the task is yours to plan, and its results are yours to judge.`,
     `- ${PLAN_ONLY}: every piece of work goes into a queue.`,
     `- Hand out work with enqueue_work, naming the queue. ${ITEM_RULES}, and tell @${swarm.lead}.`,
-    '- When a member completes or gives up an item of your queues, or one you added to another queue, the system posts the outcome to you in topic "handoff". Read what has come back before you add more, and judge it on evidence (test output, measurements) rather than on reports. '
+    `- The items of your queues, and the ones you added to another queue, come back to you when a member completes them or they fail for good: ${HANDED_BACK}. `
       + 'The system also posts to you when a member of your queues fails and when one of them runs dry, with the number of items it lacks.',
+    `- ${ITEM_CHANGES}`,
     `- Report to @${swarm.lead} what your part has achieved, what blocks it and what it needs from other parts. @${swarm.lead} decides when the swarm is done; staff_swarm, swarm_finish, set_charter and topic "announce" are its to use.`,
     '- Before you end a turn while work of your queues is in flight, set wake_me so that you come back to check its results even if nobody names you. When you have nothing to report and need nothing, end the turn without posting.',
   ] : [
     ...(member.queue ? [
       `- You consume work queue "${member.queue}". Use claim_work to take an item, read item.progress before acting, save checkpoint_work as you go, then complete_work or fail_work. Continue until claim_work returns null, then end the turn; do not poll or sleep waiting for work.`,
       '- Do what the item asks and check it the way the item says before complete_work. Work that is not finished is not complete: when you cannot finish, fail_work with what blocks you (retry: true only when another attempt could succeed), or save checkpoint_work and go on in your next turn.',
-      '- Stay inside your item. A problem you find outside it is new work: look for it with search_work, and if nobody has reported it add it with enqueue_work, instead of fixing it yourself or leaving it unsaid.',
+      '- Stay inside your item. A problem you find outside it is new work: look for it with search_work, and if nobody has reported it add it with enqueue_work, instead of fixing it yourself or leaving it unsaid. '
+        + 'An item you added and no longer want done you withdraw with update_work({key, cancel: true}) while nobody has claimed it.',
       '- Do not post a report when you complete an item: the result you give complete_work is the report, and search_work finds it.'
         + (swarm.lead ? ' The system hands it to the lead that planned the item, so say in it what you did, what you found, where you departed from the item and what still worries you.' : '')
         + ' Post only what someone else must act on.',
@@ -367,13 +386,13 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       const entry = swarm.starved?.[name];
       if (!answers || answers.stopped || swarm.finish || !swarm.members.some(member => member !== answers && busy(member))
         || (work.get(name)?.slots ?? 1) > 0 || idle < Math.max(1, Math.ceil(consumers.length * STARVED_SHARE))) {
-        if (entry) record({ type: 'swarm_queue_fed', swarmId: swarm.id, queue: name });
+        if (entry) record({ type: 'swarm_queue_fed', swarmId: swarm.id, queue: name, at: now });
         continue;
       }
       if (!entry) { record({ type: 'swarm_queue_starved', swarmId: swarm.id, queue: name, at: now }); continue; }
       const blocked = (state.workQueue?.items ?? []).filter(item => (item.queue ?? 'default') === name && item.status === 'pending').length;
       const facts = `${idle} of its ${consumers.length} members are idle and it has no item they can claim`
-        + (blocked ? ` (${blocked} pending items wait on dependencies, resources or attempts)` : '');
+        + (blocked ? ` (${blocked} pending items wait on dependencies, resources or attempts, or are on hold)` : '');
       if (now - entry.since >= STARVED_LEAD_AFTER_MS && now - (entry.leadAt ?? -Infinity) >= STARVED_LEAD_EVERY_MS) {
         record({ type: 'swarm_queue_starved', swarmId: swarm.id, queue: name, at: now, told: 'lead' });
         notify(answers, `Queue "${name}" has run dry: ${facts}. Add at least ${idle} items for it with enqueue_work now; if there is no more work for it, `
@@ -381,7 +400,7 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       } else if (entry.leadAt !== undefined && now - entry.since >= STARVED_MAIN_AFTER_MS && now - (entry.mainAt ?? -Infinity) >= STARVED_MAIN_EVERY_MS) {
         record({ type: 'swarm_queue_starved', swarmId: swarm.id, queue: name, at: now, told: 'main' });
         pushEvent(state, { kind: 'swarm_attention', summary: `swarm "${swarm.key}" 的队列 ${name} 已断粮 ${Math.round((now - entry.since) / 60_000)} 分钟：`
-          + `${consumers.length} 名成员中 ${idle} 名空闲，没有可领工作项` + (blocked ? `（${blocked} 项待领但被依赖、资源或尝试次数挡住）` : '')
+          + `${consumers.length} 名成员中 ${idle} 名空闲，没有可领工作项` + (blocked ? `（${blocked} 项待领但被依赖、资源、尝试次数或挂起挡住）` : '')
           + '，lead 已被提醒但未补充。用 enqueue_work 补充该队列，或 staff_swarm 的 retire 减人。' }, () => now);
       }
     }
@@ -389,8 +408,45 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
     const standing = (member: MemberView) => !coordinates(swarm, member) ? undefined : queues.filter(name => member.name === swarm.lead || member.leads?.includes(name)).map(name => {
       const consumers = swarm.members.filter(other => other.queue === name && !other.stopped);
       const own = member.name === swarm.lead ? queueLead(swarm, name) : undefined;
-      return `"${name}" ${Math.max(0, work.get(name)!.slots)} claimable, ${consumers.filter(other => !busy(other)).length} of ${consumers.length} members idle` + (own ? ` (lead ${own.name})` : '');
+      return `"${name}" ${Math.max(0, work.get(name)!.slots)} claimable, ${consumers.filter(other => !busy(other)).length} of ${consumers.length} members idle, `
+        + `${workFlow(state, name, now)?.completed.at(-1) ?? 0} items completed in the last hour` + (own ? ` (lead ${own.name})` : '');
     }).join('; ') || undefined;
+    // The outcomes each lead is owed, by whoever plans the item now. One that has nobody to go to (its lead settled the
+    // item itself, or has stopped), or whose item is back in the queue, is dropped: the item still holds it.
+    const owed = new Map<string, Array<{ item: ItemView; worker: string }>>();
+    const dropped: string[] = [];
+    // The same few leads plan every item, so each is looked up once.
+    const planners = new Map<string, MemberView | undefined>();
+    // An item that failed, was retried and settled again is owed once, as it stands now.
+    const seen = new Set<string>();
+    for (const entry of swarm.handoffs ?? []) {
+      if (seen.has(entry.item)) continue;
+      seen.add(entry.item);
+      const item = workItem(state, entry.item);
+      const settled = item && (item.status === 'completed' || item.status === 'failed') ? item : undefined;
+      const planner = settled && `${settled.by ?? ''}\n${settled.queue ?? 'default'}`;
+      if (planner !== undefined && !planners.has(planner)) planners.set(planner, plannedBy(swarm, settled!));
+      const to = planner === undefined ? undefined : planners.get(planner);
+      if (!settled || !to || to.stopped || to.name === entry.worker) { dropped.push(entry.item); continue; }
+      // A lead that has not had its first turn yet is handed what came back once it has.
+      if (!agentOf(to)) continue;
+      const list = owed.get(to.name);
+      if (list) list.push({ item: settled, worker: entry.worker }); else owed.set(to.name, [{ item: settled, worker: entry.worker }]);
+    }
+    if (dropped.length) record({ type: 'swarm_handoffs_delivered', swarmId: swarm.id, items: dropped });
+    /** Posts to a lead, as its turn is scheduled, what has come back for it since its last one. */
+    const handOver = (member: MemberView) => {
+      const all = owed.get(member.name) ?? [];
+      const batch = all.slice(0, HANDOFF_ITEMS_PER_POST * HANDOFF_POSTS_PER_TURN);
+      if (!batch.length) return;
+      for (let at = 0; at < batch.length; at += HANDOFF_ITEMS_PER_POST) {
+        const last = at + HANDOFF_ITEMS_PER_POST >= batch.length;
+        // Lost to a full board, an outcome is still in its item, where work_status and search_work find it.
+        systemPost(state, { text: handoffPost(batch.slice(at, at + HANDOFF_ITEMS_PER_POST), batch.length, last ? all.length - batch.length : 0), to: [member.name], topic: BOARD_HANDOFF_TOPIC }, now);
+      }
+      record({ type: 'swarm_handoffs_delivered', swarmId: swarm.id, items: batch.map(entry => entry.item.id) });
+      owed.delete(member.name);
+    };
     // A starved queue does not wait for its lead's gathering gap: the notice wakes it for the turn that follows.
     const toldLately = (member: MemberView) => Object.entries(swarm.starved ?? {}).some(([name, entry]) => answersFor(swarm, name) === member
       && (entry.leadAt ?? 0) > (taskOf(member)?.attempts.at(-1)?.startedAt || 0));
@@ -398,7 +454,7 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
     // A wake-up the member set for itself is due; unlike posts it is not gathered, since the member chose the time.
     const due = (member: MemberView) => member.wakeAt !== undefined && member.wakeAt <= now;
     const wakeable = (member: MemberView) => !member.stopped && !busy(member) && !swarm.finish
-      && (member.retryPending || (member.taskId ? turnsLeft(member) && (due(member) || !gathering(member) && (unread(member) || hasWork(member)))
+      && (member.retryPending || (member.taskId ? turnsLeft(member) && (due(member) || !gathering(member) && (unread(member) || hasWork(member) || owed.has(member.name)))
         // A queue consumer starts with its first claimable item instead of an opening turn with nothing to do.
         : !member.queue || hasWork(member)));
     if (!swarm.members.some(busy) && !swarm.members.some(wakeable)) {
@@ -452,6 +508,7 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       const call = { key, member: member.name, prompt: retry ? readText(state, prior!.objective) : opening ? openingPrompt(swarm, member) : wakePrompt(swarm, member, timed, standing(member)),
         ...(member.workflowTool ? { workflowTool: true } : {}), ...(member.workspace ? { workspace: member.workspace } : {}),
         output: 'text' as const, selection: { agentKind: member.execution.agentKind, ...member.execution.modelSettings } };
+      if (!retry && !opening) handOver(member);
       const mail = unread(member);
       const queued = member.queue ? work.get(member.queue)! : undefined;
       const forWork = Boolean(queued && queued.slots > 0);
@@ -758,27 +815,52 @@ export function setMemberTimer(state: WorkflowView, caller: string, input: Recor
 }
 
 /**
- * Hands the outcome of a work item a member has just completed or given up to the lead that planned it: the lead
- * that added the item, else the lead of the item's queue, else the swarm's lead. A lead otherwise hears only of what
- * goes wrong (a failed member, a dry queue, an idle swarm) and learns what its members produced by asking, so it
- * plans the next work without the results of the last. The outcome goes out as a post in topic "handoff": it wakes
- * the lead like any post that names it, gathered with the others while members work. A swarm without a lead hands
- * nothing over, and neither does an item that returns to its queue for another attempt.
+ * The lead that planned an item, which is who its outcome goes to: the lead that added it, else the lead of its queue,
+ * else the swarm's lead. A lead otherwise hears only of what goes wrong (a failed member, a dry queue, an idle
+ * swarm) and learns what its members produced by asking, so it plans the next work without the results of the last.
+ * The outcomes a lead is owed (`handoffs`) wake it like a post that names it, gathered while members work, and reach
+ * it as posts in topic "handoff" made when that turn is scheduled (see `handoffPost`): a post per item would give a
+ * lead that is woken every ten minutes dozens of full results to read at once.
  */
-export function handOffWork(state: WorkflowView, worker: string | undefined, itemId: string, now: number): void {
-  const item = state.workQueue?.items.find(found => found.id === itemId);
-  const swarm = ownerOf(state, worker);
-  if (!item || !swarm?.lead || swarm.status !== 'running' || swarm.runId !== state.script?.runId || swarm.finish || !['completed', 'failed'].includes(item.status)) return;
-  const running = (name: string | undefined) => swarm.members.find(member => member.name === name && !member.stopped);
-  const author = running(item.by);
-  const lead = (author && coordinates(swarm, author) ? author : undefined) ?? answersFor(swarm, item.queue ?? 'default');
-  if (!lead || lead.stopped || lead.name === worker || !state.agents?.some(agent => agent.key === lead.name)) return;
-  const done = item.status === 'completed';
-  const outcome = done ? (typeof item.result === 'string' ? item.result : JSON.stringify(item.result) ?? '') : item.error ?? '';
-  const text = `${worker} ${done ? 'completed' : 'gave up'} item "${item.key}" of queue "${item.queue ?? 'default'}": ${item.title.slice(0, 200)}\n${done ? 'Result' : 'Error'}: `
-    + (outcome.length > HANDOFF_RESULT_CHARS ? outcome.slice(0, HANDOFF_RESULT_CHARS) + `…[truncated; work_status({itemId:"${item.id}"}) has all of it]` : outcome);
-  // Lost to a full board, the outcome is still in the item, where work_status and search_work find it.
-  systemPost(state, { text, to: [lead.name], topic: BOARD_HANDOFF_TOPIC }, now);
+function plannedBy(swarm: SwarmView, item: ItemView): MemberView | undefined {
+  const author = swarm.members.find(member => member.name === item.by && !member.stopped);
+  return (author && coordinates(swarm, author) ? author : undefined) ?? answersFor(swarm, item.queue ?? 'default');
+}
+
+/**
+ * One post of the outcomes a lead is handed: by queue, what failed before what was completed. The items share
+ * the room of the post, so the result of a single item is quoted at length and each of a dozen in a line.
+ */
+function handoffPost(entries: ReadonlyArray<{ item: ItemView; worker: string }>, total: number, later: number): string {
+  const share = Math.floor(HANDOFF_POST_ROOM / entries.length);
+  const queues = new Map<string, Array<{ item: ItemView; worker: string }>>();
+  for (const entry of entries) { const name = entry.item.queue ?? 'default'; queues.set(name, [...queues.get(name) ?? [], entry]); }
+  const lines = [`Outcomes of ${total === 1 ? 'a work item' : `${total} work items`} that came back since your last turn${total > entries.length ? `, ${entries.length} of them here` : ''}`
+    + `${later ? `; ${later} more follow at your next turn` : ''}. work_status({key}) has an item in full.`];
+  for (const [name, listed] of queues) {
+    lines.push(`Queue "${name}":`);
+    for (const { item, worker } of [...listed].sort((a, b) => Number(a.item.status === 'completed') - Number(b.item.status === 'completed'))) {
+      const done = item.status === 'completed';
+      const head = `- ${done ? 'completed' : 'failed'} "${item.key}" (${worker}): ${item.title.slice(0, entries.length > 4 ? 60 : 200)}`;
+      const room = Math.min(HANDOFF_RESULT_CHARS, share - head.length - 12);
+      const outcome = (done ? (typeof item.result === 'string' ? item.result : JSON.stringify(item.result) ?? '') : item.error ?? '').trim();
+      // A short quote is one line; a long one keeps the member's own line breaks.
+      const quote = room < 400 ? outcome.replace(/\s+/g, ' ') : outcome;
+      lines.push(head, ...(room >= 30 && quote ? [`  ${done ? 'Result' : 'Error'}: ` + (quote.length > room ? quote.slice(0, room) + '…[truncated]' : quote)] : []));
+    }
+  }
+  return lines.join('\n').slice(0, 3990);
+}
+
+/**
+ * What a member may do to work items: the swarm's lead plans every queue, the lead of a queue its own, and any member
+ * may withdraw an item it added.
+ */
+export function workAuthority(state: WorkflowView, caller: string): WorkAuthority {
+  const swarm = ownerOf(state, caller);
+  const member = swarm?.members.find(item => item.name === caller);
+  const runs = Boolean(swarm && member && !member.stopped && swarm.status === 'running' && swarm.runId === state.script?.runId);
+  return item => runs && (swarm!.lead === caller || member!.leads?.includes(item.queue ?? 'default')) ? 'plans' : item.by === caller ? 'added' : undefined;
 }
 
 export function finishSwarm(state: WorkflowView, caller: string, input: Record<string, unknown>): unknown {
@@ -796,14 +878,17 @@ function memberSummary(state: WorkflowView, swarm: SwarmView, member: MemberView
     // Only the members bound unlike the rest carry their binding, which keeps a large swarm's summary short.
     ...(member.execution.agentKind !== usual.agentKind ? { harness: member.execution.agentKind } : {}),
     ...(model && (model !== usual.modelSettings.model || member.execution.agentKind !== usual.agentKind) ? { model } : {}), turns: member.turns, status,
+    ...(member.itemsDone ? { itemsDone: member.itemsDone } : {}), ...(member.itemsFailed ? { itemsFailed: member.itemsFailed } : {}),
     ...(member.wakeAt !== undefined ? { wakeAt: member.wakeAt } : {}), ...(member.detail ? { error: member.detail } : {}) };
 }
 
 /**
  * Supply and demand of each queue the swarm consumes: how many of its pending items can be claimed now and how many
- * wait on something, against the members that are working and the ones with nothing to do.
+ * wait on something, against the members that are working and the ones with nothing to do. With the time, also how
+ * the queue has moved: what entered and left it in each of the last hours (`flow`), and how often and for how long
+ * its members sat idle with nothing to claim (`dry`).
  */
-function queueSummary(state: WorkflowView, swarm: SwarmView): Record<string, unknown> | undefined {
+function queueSummary(state: WorkflowView, swarm: SwarmView, now?: number): Record<string, unknown> | undefined {
   const names = [...new Set(swarm.members.flatMap(member => member.queue && !member.stopped ? [member.queue] : []))];
   if (!names.length) return undefined;
   return Object.fromEntries(names.map(name => {
@@ -812,13 +897,18 @@ function queueSummary(state: WorkflowView, swarm: SwarmView): Record<string, unk
     const members = swarm.members.filter(member => member.queue === name && !member.stopped);
     const running = members.filter(member => { const task = taskById(state, member.taskId); return Boolean(task && BUSY.has(task.status)); }).length;
     const own = queueLead(swarm, name);
-    return [name, { ...(own ? { lead: own.name } : {}), claimable, blocked: items.filter(item => item.status === 'pending').length - claimable, claimed: items.filter(item => item.status === 'claimed').length,
-      members: members.length, running, idle: members.length - running, ...(swarm.starved?.[name] ? { starvedSince: swarm.starved[name]!.since } : {}) }];
+    const onHold = items.filter(item => item.status === 'pending' && item.hold).length;
+    const flow = now === undefined ? undefined : workFlow(state, name, now);
+    const dry = swarm.dry?.[name];
+    const minutes = (ms: number) => Math.round(ms / 6000) / 10;
+    return [name, { ...(own ? { lead: own.name } : {}), claimable, blocked: items.filter(item => item.status === 'pending').length - claimable, ...(onHold ? { onHold } : {}), claimed: items.filter(item => item.status === 'claimed').length,
+      members: members.length, running, idle: members.length - running, ...(swarm.starved?.[name] ? { starvedSince: swarm.starved[name]!.since } : {}),
+      ...(flow ? { flow } : {}), ...(dry ? { dry: { spells: dry.spells, minutes: minutes(dry.ms), longestMinutes: minutes(dry.longest) } } : {}) }];
   }));
 }
 
-export function swarmSummary(state: WorkflowView, swarm: SwarmView): unknown {
-  const queues = swarm.status === 'running' ? queueSummary(state, swarm) : undefined;
+export function swarmSummary(state: WorkflowView, swarm: SwarmView, now?: number): unknown {
+  const queues = swarm.status === 'running' ? queueSummary(state, swarm, now) : undefined;
   return { key: swarm.key, status: swarm.status, stop: swarm.stop, reason: swarm.reason, lead: swarm.lead, maxTurns: swarm.maxTurns, turns: turnCount(swarm),
     posts: boardTotal(state) - swarm.firstPost + 1, ...(queues ? { queues } : {}), members: swarm.members.map(member => memberSummary(state, swarm, member)) };
 }

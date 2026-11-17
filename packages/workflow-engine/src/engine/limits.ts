@@ -64,8 +64,10 @@ export const BOARD_MAX_DELIVERIES = 32_768;
 export const BOARD_DEFAULT_TOPIC = 'general';
 /** Rules and rulings every member must know: only the main agent, the script and a swarm's lead post in it. */
 export const BOARD_ANNOUNCE_TOPIC = 'announce';
-/** The outcome of a work item, posted by the system to the lead that planned it when a member completes or gives it up. */
+/** The outcomes of the work items members completed or gave up, posted by the system to the lead that planned them when its next turn starts. */
 export const BOARD_HANDOFF_TOPIC = 'handoff';
+/** Outcomes of work items a swarm keeps for its leads' next turns; past this many the newest are not handed over. */
+export const SWARM_MAX_HANDOFFS = 1024;
 /** Distinct topics of one board. A topic is a workstream, not a tag for one post. */
 export const BOARD_MAX_TOPICS = 64;
 /** Latest posts of each topic the board keeps the seq of, so they are found without reading the feed. */
@@ -76,3 +78,6 @@ export const WORK_MAX_CLAIMS = 8192;
 export const WORK_MAX_OPERATIONS = 32_768;
 /** Serialized size of all queues of one workflow: items with their inputs, progress and results, claims and operation records. */
 export const WORK_MAX_BYTES = 64_000_000;
+/** The flow of a work queue is kept in slots this long, for this many of them (six hours). */
+export const WORK_FLOW_SLOT_MS = 10 * 60_000;
+export const WORK_FLOW_SLOTS = 36;
