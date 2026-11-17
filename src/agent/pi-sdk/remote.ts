@@ -255,8 +255,18 @@ export function localWorkflowEndpoint(env: Readonly<Record<string, string>>): st
 
 /** Rewrite a run environment for a remote host: the endpoint becomes the tunnel and the local-only file goes away. */
 export function remoteRunEnv(env: Readonly<Record<string, string>>, endpoint: string): Record<string, string> {
-  const { AGENT_WORKFLOW_ENDPOINT_FILE: _file, ...rest } = env;
+  const { AGENT_WORKFLOW_ENDPOINT_FILE: _file, ...rest } = withoutLocalScratch(env);
   return { ...rest, AGENT_WORKFLOW_ENDPOINT: endpoint };
+}
+
+/**
+ * A workflow worker's scratch directory is on the bridge machine. On another machine the path does not exist, and a
+ * TMPDIR that names it breaks every tool that makes a temporary file, so the worker keeps that machine's own.
+ */
+export function withoutLocalScratch(env: Readonly<Record<string, string>>): Record<string, string> {
+  const { AGENT_WORKFLOW_SCRATCH: scratch, ...rest } = env;
+  if (scratch === undefined) return rest;
+  return Object.fromEntries(Object.entries(rest).filter(([name, value]) => !(['TMPDIR', 'TMP', 'TEMP'].includes(name) && value === scratch)));
 }
 
 /** Sweep environment files whose host died before it could clean up. */

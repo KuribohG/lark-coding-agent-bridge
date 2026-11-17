@@ -590,6 +590,19 @@ A workflow that does not resume automatically stays `interrupted`, and `/workflo
 
 Replay repeats interrupted work: side effects in the outside world (files, network) may be repeated, exactly as with an explicit replay.
 
+### Scratch directories
+
+Every worker runs with a temporary directory of its own instead of the machine's shared one. The bridge creates it, sets `TMPDIR`, `TMP`, `TEMP` and `AGENT_WORKFLOW_SCRATCH` to it, tells the worker where it is, and deletes it when its owner is gone:
+
+| Owner | Kept | Deleted |
+| --- | --- | --- |
+| A member (swarm or `member:` session) | Across its turns, so builds and caches carry over. | When the member is retired, or the workflow ends. |
+| A one-shot `agent()` / `startAgent()` worker | Across retries of the same task. | When its turn completes; otherwise when the task is cancelled or archived, or the workflow ends. |
+
+Directories live under `<root>/<store>/<workflow>/<member>-<id>`, so a listing shows whose space is whose; `<root>` is `$TMPDIR/lark-wf-scratch` of the bridge process, or `LARK_WORKFLOW_SCRATCH_DIR`. Keep it on a local disk. A pass every minute, and one at startup, removes what belongs to finished workflows, retired members and workflows this bridge no longer knows, including what a crash left behind.
+
+A scratch directory is private and temporary: a worker must put anything another worker or the main agent reads somewhere else, and a process it leaves running in the background loses the directory at the same moment. This directs well-behaved tools and attributes disk use; it does not stop a worker from writing to `/tmp/…` by name. With the [exec sandbox](exec-sandbox.md) enabled, the sandbox's writable temp directory follows the worker's `TMPDIR`, so the shared temp directory is no longer writable. Pi workers on a remote host or in a workcell keep that machine's own temp directory.
+
 ### Interpreter and execution boundaries
 
 QuickJS/WASM runs the script with JSON-only host callbacks, no host objects, process, filesystem, network or module loader. `Date` and `Math.random` are disabled; pass such inputs through `args`. Each interpreter has a 256 MiB guest heap, 512 KiB stack, 100 ms synchronous slices, approximately 2 seconds of guest CPU and 100,000 promise jobs. There are at most four active interpreters per nesting depth, with four levels including roots (at most sixteen total). Waiting ancestors cannot exhaust the interpreter capacity needed by their children. Source, arguments, worker output and final output have bounded sizes (100,000 characters); status retains at most 50 log entries of 1,000 characters. A deadline/abort signal also terminates scripts awaiting an unresolved promise.

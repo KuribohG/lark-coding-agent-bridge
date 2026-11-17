@@ -8,6 +8,7 @@ import { WorkflowScheduler } from './kernel-scheduler';
 import { ScriptApi } from './kernel-script-api';
 import { settleEventWaits } from './event-waits';
 import { BUSY } from './kernel-state';
+import { scratchSlots } from './scratch';
 import { WorkflowStore } from './kernel-store';
 import type { NativeIdKind, WorkflowCaller, WorkflowHost, WorkflowLogger, WorkflowState, WorkflowView } from './types';
 import { WorkerHosts, type WorkerHostRecord } from './worker-hosts';
@@ -128,6 +129,16 @@ export class WorkflowKernel {
       tasks += state.tasks.filter(task => BUSY.has(task.status)).length;
     }
     return { scripts, tasks };
+  }
+
+  /**
+   * Who still owns a scratch directory: for each unfinished workflow, the slots in use (see scratchSlots), or
+   * undefined for a workflow whose journal cannot be read, so nothing of it is taken for abandoned.
+   */
+  scratchOwners(): Map<string, Set<string> | undefined> {
+    const owners = new Map<string, Set<string> | undefined>(this.ctx.store.openIds().map(id => [id, undefined]));
+    for (const state of this.ctx.store.list()) owners.set(state.workflowId, scratchSlots(state));
+    return owners;
   }
 
   queuedScripts(): WorkflowState[] {

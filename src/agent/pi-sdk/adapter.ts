@@ -29,7 +29,7 @@ import { PI_SDK_EXECUTION_CAPABILITIES } from './capabilities';
 import { AsyncEventQueue } from './event-queue';
 import { PiHostClient, type PiHostLaunch, type PiHostRunAck, type PiHostSessionInfo } from './host-client';
 import { PI_SDK_MIN_NODE, resolvePiAgentDir, resolvePiSdkPaths, type PiSdkPaths } from './paths';
-import { localWorkflowEndpoint, openWorkflowTunnel, remoteRunEnv, shellQuote, type PiRemoteTarget, type WorkflowTunnel } from './remote';
+import { localWorkflowEndpoint, openWorkflowTunnel, remoteRunEnv, shellQuote, withoutLocalScratch, type PiRemoteTarget, type WorkflowTunnel } from './remote';
 import { WorkcellPool, workcellRuntimeLayout, WORKCELL_HOST_PORT, WORKCELL_IPC_PORT, type WorkcellRuntimeLayout } from './workcell';
 import { piHostSpawnCommand, type PiHostSandbox } from './sandbox';
 
@@ -214,7 +214,8 @@ export class PiSdkAdapter implements AgentAdapter {
   private async withRemoteEndpoint(opts: AgentRunOptions): Promise<AgentRunOptions> {
     const env = opts.env;
     const local = env ? localWorkflowEndpoint(env) : undefined;
-    if (!env || !local) return opts;
+    if (!env) return opts;
+    if (!local) return Object.freeze({ ...opts, env: Object.freeze(withoutLocalScratch(env)) });
     const endpoint = await this.remoteEndpoint(local);
     return Object.freeze({ ...opts, env: Object.freeze(remoteRunEnv(env, endpoint)) });
   }
@@ -436,7 +437,7 @@ export class PiSdkAdapter implements AgentAdapter {
     const cwd = opts.cwd ? posix.join(root, 'work') : opts.cwd;
     const env = opts.env;
     if (!env) return { ...opts, cwd };
-    const next: Record<string, string> = { ...env };
+    const next: Record<string, string> = withoutLocalScratch(env);
     delete next.AGENT_WORKFLOW_ENDPOINT_FILE;
     if (next.AGENT_WORKFLOW_ENDPOINT || next.AGENT_WORKFLOW_CLI) {
       next.AGENT_WORKFLOW_ENDPOINT = `http://127.0.0.1:${WORKCELL_IPC_PORT}/workflow`;

@@ -1,5 +1,6 @@
 import { dirname, join } from 'node:path';
 import { CLONE_REMOTE, WorkflowWorkspaces } from './workspaces';
+import { scratchSlot, WorkflowScratch, type ScratchLease } from './scratch';
 import type { WorkspaceBinding } from './workspace-types';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
@@ -18,6 +19,8 @@ import { hostMatch } from './worker-hosts';
 import type { ExecutionLedgerPort, WorkerExecution, WorkerExecutionPolicy, WorkerExecutionSelection, WorkflowCaller, WorkflowLogger, WorkflowRoot, WorkflowState, WorkflowWorkerRequest, WorkflowWorkerResult } from './types';
 
 const JSON_FORMAT_RETRIES = 2;
+/** How often scratch directories nobody owns any more are looked for. */
+const SCRATCH_RECLAIM_MS = 60_000;
 
 /** What a worker is told about the managed checkout it runs in. */
 function workspaceInstructions(workspace: WorkspaceBinding, landingRef: string | undefined): string {
@@ -39,6 +42,11 @@ export interface WorkflowRuntimeDeps extends WorkerExecutionPolicy {
   /** SQLite path, or ':memory:' (managed worktrees then need an explicit workspaceRoot). */
   path: string;
   workspaceRoot?: string;
+  /**
+   * Where workers get a private temporary directory each (see WorkflowScratch): a directory on a local disk that
+   * may be shared with other runtimes. Absent leaves workers on the machine's shared temporary directory.
+   */
+  scratchRoot?: string;
   runner: WorkerRunner;
   getTimeoutMinutes?(root: WorkflowRoot): number;
   /** Silence after which a running worker with no tool in flight is presumed hung; 0 disables the watchdog. */
@@ -80,6 +88,8 @@ export class WorkflowRuntime {
   readonly kernel: WorkflowKernel;
   private readonly ipc: WorkflowIpc;
   private workspaces?: WorkflowWorkspaces;
+  private readonly scratch?: WorkflowScratch;
+  private scratchReclaimedAt = 0;
   private timer?: NodeJS.Timeout;
   private closed = false;
   private ticking = false;
@@ -93,6 +103,7 @@ export class WorkflowRuntime {
 
   constructor(private readonly deps: WorkflowRuntimeDeps) {
     this.log = deps.log ?? silentLogger;
+    if (deps.scratchRoot) this.scratch = new WorkflowScratch(deps.scratchRoot, deps.path, this.log);
     this.kernel = new WorkflowKernel(deps.path, {
       resolveRoot: deps.resolveRoot,
       executionLedger: deps.executionLedger,
@@ -143,6 +154,7 @@ export class WorkflowRuntime {
         .catch(error => this.log.warn('restart-notice-failed', { error: String(error) }));
     }
     await this.releaseOrphanHosts();
+    this.reclaimScratch();
     // A commit may have made work runnable: admit it at once, without asking the host anything. The interval runs
     // the full pass, which also covers what only the clock or the host changes: deadlines, leases, wait timers and
     // the root session's authorization.
@@ -177,12 +189,20 @@ export class WorkflowRuntime {
       await this.kernel.tick();
       if (this.closed) return;
       void this.releaseOrphanHosts();
+      this.reclaimScratch();
       this.startScripts();
     } finally {
       this.ticking = false;
       // A pass was asked for while this one ran and may have been needed by something this one had already passed.
       if (this.tickAgain) { this.tickAgain = false; void this.tick().catch(error => this.log.warn('tick-failed', { error: String(error) })); }
     }
+  }
+
+  /** Deletes the scratch directories of finished workflows, retired members and finished one-shot workers. */
+  private reclaimScratch(): void {
+    if (!this.scratch || this.closed || Date.now() - this.scratchReclaimedAt < SCRATCH_RECLAIM_MS) return;
+    this.scratchReclaimedAt = Date.now();
+    void this.scratch.reclaim(this.kernel.scratchOwners()).catch(error => this.log.warn('scratch-reclaim-failed', { error: String(error) }));
   }
 
   private startScripts(): void {
@@ -360,11 +380,16 @@ export class WorkflowRuntime {
     const binding: { env: Record<string, string>; tokenHash?: string; release(): void } = this.deps.hostTools
       ? { env: {}, release() {} } : this.ipc.bind(caller, workflow.deadlineAt, survivor?.tokenHash);
     let hostKey: string | undefined;
+    let scratch: ScratchLease | undefined;
+    // A one-shot worker that answered will not run again; its scratch directory goes with the turn.
+    let finished = false;
     try {
       if (workspace) {
         lease = manager!.begin(workspace, task.taskId);
         await manager!.verifySnapshot(workspace, signal);
       }
+      scratch = await this.scratch?.acquire(workflow.workflowId, scratchSlot(session.sessionRef, task.agentId ? session.actorKey : undefined));
+      const scratchPath = scratch?.path;
       const start = async (prompt: string, resume?: WorkerRunSpec['resume']) => {
         // A JSON restatement starts another process; the previous one has exited.
         if (hostKey) await this.releaseHost(hostKey);
@@ -382,7 +407,7 @@ export class WorkflowRuntime {
           ...(this.deps.hostTools ? { workflowTools: { definitions: workflowToolDefinitions('worker'),
             call: (method: string, args: Record<string, unknown>) => this.call(caller, method, args) } } : {}),
           sessionKey: `workflow:${workflow.workflowId}:${session.sessionRef}`,
-          root: workflow.root, execution: pinned, role: session.role, prompt, env: binding.env,
+          root: workflow.root, execution: pinned, role: session.role, prompt, env: scratch ? { ...binding.env, ...scratch.env } : binding.env,
           validateBeforeRun: async () => {
             request.onAdmitted();
             const admitted = await this.resolveWorker(workflow.root, selection);
@@ -395,7 +420,8 @@ export class WorkflowRuntime {
           },
           ...(workspace ? { workspace: { id: workspace.id, path: workspace.path, rootDigest: workspace.rootDigest } } : {}),
           systemPrompt: (this.deps.hostTools ? hostToolInstructions(workflowWorkerInstructions(task)) : workflowWorkerInstructions(task))
-            + (workspace ? workspaceInstructions(workspace, landing?.targetRef) : ''),
+            + (workspace ? workspaceInstructions(workspace, landing?.targetRef) : '')
+            + (scratchPath ? `\nScratch directory: ${scratchPath} (your TMPDIR). It is yours alone and is deleted when your work in this workflow ends: keep temporary files, build outputs and caches there instead of /tmp or other shared locations, and put anything others must read somewhere else.` : ''),
           ...(resume ? { resume } : {}),
           ...(hostKey ? { host: { key: hostKey, attach } } : {}),
           deadlineAt: workflow.deadlineAt, signal,
@@ -471,13 +497,16 @@ export class WorkflowRuntime {
         if (!await active.waitForExit(5000)) throw new Error('Workspace worker has not exited');
         await manager!.verifySnapshot(workspace, signal);
       }
-      return { status: result === 'completed' && normal ? 'completed' : result === 'stopped' ? 'stopped' : 'failed', text, question, error, stopReason: active.stopReason() };
+      const status = result === 'completed' && normal ? 'completed' : result === 'stopped' ? 'stopped' : 'failed';
+      finished = status === 'completed' && !question && !task.agentId && !task.workflowTool;
+      return { status, text, question, error, stopReason: active.stopReason() };
     } finally {
       this.runs.delete(task.taskId);
       binding.release();
       // A shutdown leaves the process running for the next controller's replay to reattach.
       const shutdown = signal.aborted && stopReasonOf(signal) === 'shutdown' || run?.stopReason() === 'shutdown';
       if (hostKey && !shutdown) await this.releaseHost(hostKey);
+      scratch?.release({ remove: finished, running: Boolean(hostKey && shutdown) });
       if (workspace && lease) {
         // Native termination is authoritative; retain the lease if it is uncertain.
         if (!run || (this.deps.executionLedger && run.waitForQuiescence ? (await run.waitForQuiescence(5000)).state === 'quiescent' : await run.waitForExit(5000))) manager!.end(workspace, lease);

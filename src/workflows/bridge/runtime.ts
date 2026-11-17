@@ -18,7 +18,7 @@ import { bridgeAgentKind, bridgeWorkerPolicy } from './execution';
 type BridgeGrant = { execution: WorkerExecution; policy: RunPolicyAllow };
 
 export interface BridgeWorkflowRuntimeDeps extends Pick<WorkflowRuntimeDeps,
-  'path' | 'workspaceRoot' | 'getTimeoutMinutes' | 'stallMs' | 'wakeMain' | 'showPlan' | 'notify' | 'cliPath'> {
+  'path' | 'workspaceRoot' | 'scratchRoot' | 'getTimeoutMinutes' | 'stallMs' | 'wakeMain' | 'showPlan' | 'notify' | 'cliPath'> {
   executor: RunExecutor;
   resolve(scopeId: string): Promise<{ root: WorkflowRoot; policy: RunPolicyAllow } | undefined>;
   resolveWorker?(root: WorkflowRoot, selection: WorkerExecutionSelection, policy: RunPolicyAllow): Promise<BridgeGrant>;
@@ -133,7 +133,7 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
   };
 
   return new WorkflowRuntime({
-    path: deps.path, workspaceRoot: deps.workspaceRoot, getTimeoutMinutes: deps.getTimeoutMinutes,
+    path: deps.path, workspaceRoot: deps.workspaceRoot, scratchRoot: deps.scratchRoot, getTimeoutMinutes: deps.getTimeoutMinutes,
     ...(deps.stallMs === undefined ? {} : { stallMs: deps.stallMs }),
     wakeMain: deps.wakeMain, showPlan: deps.showPlan, notify: deps.notify, cliPath: deps.cliPath,
     ...bridgeWorkerPolicy,

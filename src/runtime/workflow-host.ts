@@ -1,3 +1,4 @@
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   DEFAULT_STALL_MS, handleWorkflowCommand, workflowDigest,
@@ -183,6 +184,8 @@ export class WorkflowHost<M> {
     const { settings, executor, turns } = this.deps;
     return createBridgeWorkflowRuntime({
       path: join(stateDir, 'workflows.sqlite'), executor,
+      // On the local disk: the state directory may be on a network filesystem, where builds and caches do not belong.
+      scratchRoot: process.env.LARK_WORKFLOW_SCRATCH_DIR || join(tmpdir(), 'lark-wf-scratch'),
       getTimeoutMinutes: root => getWorkflowTimeoutMinutes(settings.profileFor(bridgeAgentKind(root.agentKind), root.scopeId)),
       // A silent worker is stopped and retried; the conversation idle timeout is the natural knob for it.
       stallMs: settings.stallMs() ?? DEFAULT_STALL_MS,

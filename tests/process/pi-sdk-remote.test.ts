@@ -6,7 +6,7 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PiSdkAdapter } from '../../src/agent/pi-sdk/adapter';
-import { localWorkflowEndpoint, remoteHostSpawn, remoteRunEnv } from '../../src/agent/pi-sdk/remote';
+import { localWorkflowEndpoint, remoteHostSpawn, remoteRunEnv, withoutLocalScratch } from '../../src/agent/pi-sdk/remote';
 import type { AgentEvent } from '../../src/agent/types';
 import type { PiConfig } from '../../src/agent/pi/config';
 
@@ -208,6 +208,15 @@ describe('remote host command line', () => {
 
     expect(remoteRunEnv({ AGENT_WORKFLOW_ENDPOINT_FILE: file, AGENT_WORKFLOW_TOKEN: 't' }, 'http://127.0.0.1:9/workflow'))
       .toEqual({ AGENT_WORKFLOW_TOKEN: 't', AGENT_WORKFLOW_ENDPOINT: 'http://127.0.0.1:9/workflow' });
+  });
+
+  it('leaves a remote worker on its own temporary directory instead of the bridge machine\'s scratch path', () => {
+    const scratch = '/tmp/lark-wf-scratch/ab12cd34/0123456789ab/builder-01234567';
+    expect(remoteRunEnv({ AGENT_WORKFLOW_SCRATCH: scratch, TMPDIR: scratch, TMP: scratch, TEMP: scratch, AGENT_WORKFLOW_TOKEN: 't' }, 'http://127.0.0.1:9/workflow'))
+      .toEqual({ AGENT_WORKFLOW_TOKEN: 't', AGENT_WORKFLOW_ENDPOINT: 'http://127.0.0.1:9/workflow' });
+    // A temporary directory the profile chose itself is not the scratch path and stays.
+    expect(withoutLocalScratch({ AGENT_WORKFLOW_SCRATCH: scratch, TMPDIR: '/data/tmp', TMP: scratch })).toEqual({ TMPDIR: '/data/tmp' });
+    expect(withoutLocalScratch({ TMPDIR: '/data/tmp' })).toEqual({ TMPDIR: '/data/tmp' });
   });
 });
 

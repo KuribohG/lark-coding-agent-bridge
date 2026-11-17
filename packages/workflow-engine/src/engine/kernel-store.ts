@@ -323,6 +323,9 @@ export class WorkflowStore {  readonly db: Database.Database;
 
   // Reads. The returned states are live: they change as events are applied, and must only be changed through emit().
 
+  /** IDs of the unfinished workflows, including any whose journal cannot be read. */
+  openIds(): string[] { return [...this.open]; }
+
   /** Unfinished workflows. */
   list(): WorkflowView[] {
     return [...this.open].flatMap(id => {
