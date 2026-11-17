@@ -43,10 +43,22 @@ describe('run card renderer snapshots', () => {
     ])).toMatchSnapshot();
   });
 
-  it('renders Antigravity commands in card headers, bodies, and progress text', () => {
-    const command = 'printf "hello"\nprintf "world"';
+  it.each([
+    {
+      name: 'run_command',
+      input: { CommandLine: 'printf "hello"\nprintf "world"' },
+      summary: 'printf "hello" printf "world"',
+      body: '**Command**\n```bash\nprintf "hello"\nprintf "world"\n```',
+    },
+    {
+      name: 'read_file',
+      input: { Path: '/repo/a.ts', StartLine: 1, EndLine: 10 },
+      summary: '/repo/a.ts',
+      body: '**File** `/repo/a.ts`',
+    },
+  ])('renders Antigravity $name inputs in card headers, bodies, and progress text', ({ name, input, summary, body }) => {
     const state = stateFrom([
-      { type: 'tool_use', id: 'agy-tool', name: 'run_command', input: { CommandLine: command } },
+      { type: 'tool_use', id: 'agy-tool', name, input },
     ]);
 
     expect(renderCard(state)).toMatchObject({
@@ -55,19 +67,19 @@ describe('run card renderer snapshots', () => {
           expect.objectContaining({
             tag: 'collapsible_panel',
             header: expect.objectContaining({
-              title: { tag: 'markdown', content: '⏳ **run_command** — printf "hello" printf "world"' },
+              title: { tag: 'markdown', content: `⏳ **${name}** — ${summary}` },
             }),
             elements: [
               expect.objectContaining({
                 tag: 'markdown',
-                content: `**Command**\n\`\`\`bash\n${command}\n\`\`\`\n\n_运行中…_`,
+                content: `${body}\n\n_运行中…_`,
               }),
             ],
           }),
         ]),
       },
     });
-    expect(renderProgressText(state)).toContain('**run_command** — printf "hello" printf "world"');
+    expect(renderProgressText(state)).toContain(`**${name}** — ${summary}`);
   });
 
   it('collapses consecutive tools while preserving the latest running tool', () => {

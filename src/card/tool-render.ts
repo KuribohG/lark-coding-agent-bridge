@@ -54,6 +54,8 @@ function summarizeInput(name: string, input: unknown): string {
     case 'Bash':
     case 'run_command':
       return pick('command') || pick('CommandLine');
+    case 'read_file':
+      return shortenPath(pick('file_path') || pick('path') || pick('Path'));
     case 'Read':
     case 'Edit':
     case 'Write':
@@ -89,6 +91,10 @@ function renderInput(tool: ToolEntry): string {
     case 'run_command': {
       const cmd = str('command') || str('CommandLine');
       return cmd ? `**Command**\n\`\`\`bash\n${truncate(cmd, BODY_FIELD_MAX)}\n\`\`\`` : '';
+    }
+    case 'read_file': {
+      const fp = str('file_path') || str('path') || str('Path');
+      return fp ? `**File** \`${fp}\`` : '';
     }
     case 'Read':
     case 'Edit':
