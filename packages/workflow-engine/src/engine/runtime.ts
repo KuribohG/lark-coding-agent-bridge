@@ -147,7 +147,7 @@ export class WorkflowRuntime {
     for (const outcome of await this.kernel.resumeAfterRestart()) {
       const name = outcome.state.script?.name ?? outcome.state.workflowId;
       const text = outcome.resumed
-        ? `Bridge 已重启，工作流「${name}」已自动续跑：已完成的调用直接复用，${this.deps.runner.hosting ? '重启时仍在运行的调用接回原进程继续（原进程已不在时重新执行），' : ''}中断的调用重新执行，停机时间不计入截止时间。可用 /workflow status 查看进度。`
+        ? `Bridge 已重启，工作流「${name}」已自动续跑：已完成的调用直接复用，${this.deps.runner.hosting ? '重启时仍在运行的调用接回原进程继续（原进程已不在时重新执行），' : ''}中断的调用重新执行，成员持有的工作项认领保留给原成员，停机时间不计入截止时间。可用 /workflow status 查看进度。`
         : `Bridge 已重启，工作流「${name}」未能自动续跑：${resumeFailure(outcome.reason)}。处理后可用 /workflow resume 恢复，或 /workflow cancel 取消。`;
       this.log.info(outcome.resumed ? 'restart-resumed' : 'restart-resume-skipped', { workflowId: outcome.state.workflowId, reason: outcome.reason });
       await this.deps.notify?.(outcome.state, text)

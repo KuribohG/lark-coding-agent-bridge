@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { WorkflowStopped, stopReasonOf } from './ports';
 import { workflowDigest } from './digest';
-import { cancelWork, expireWorkClaims, freezeWorkClaims, releaseWorkClaims, workContext } from './work-queue';
+import { abandonHeldClaims, adoptWorkClaims, cancelWork, expireWorkClaims, freezeWorkClaims, releaseWorkClaims, workContext } from './work-queue';
 import { charterPrompt, pumpMainWake } from './steering';
 import { pumpSwarms } from './swarm';
 import { settleEventWaits } from './event-waits';
@@ -74,6 +74,9 @@ export class WorkflowScheduler {
   }
 
   expireClaims(state: WorkflowView): void {
+    // A process that outlived the restart must not go on with a claim that is no longer its member's.
+    const abandoned = abandonHeldClaims(state, this.ctx.now());
+    if (abandoned.length) this.ctx.hosts.discardTasks(state.workflowId, abandoned.map(claim => claim.taskId));
     if (this.ctx.host.executionLedger) {
       for (const claim of state.workQueue?.claims ?? []) {
         if (claim.status !== 'active' || claim.frozen || claim.leaseUntil > this.ctx.now()) continue;
@@ -293,6 +296,8 @@ export class WorkflowScheduler {
           const session = state.sessions.find(item => item.sessionRef === task.sessionRef)!;
           emit(state, { type: 'attempt_started', taskId: task.taskId,
             attempt: { attemptId, executionId, logicalCallId, startedAt: ctx.now(), checkpointVersion: agent?.checkpointVersion, sessionGeneration: session.generation } });
+          // The member is back after a restart: the claim kept for it is this attempt's from here on.
+          if (!ctx.host.executionLedger) adoptWorkClaims(state, task, attemptId, ctx.now());
           const controller = new AbortController();
           const { taskId } = task;
           // Register before asynchronous execution can produce an event or a cancellation. The turn itself starts
@@ -418,7 +423,11 @@ export class WorkflowScheduler {
         }
         emit(state, { type: 'execution_settled', taskId, digest: digest!, revision: state.stateVersion + 1 });
       }
-      releaseWorkClaims(state, ctx.now(), 'Member turn ended without completing its claim', taskId, attemptId);
+      const stopped = () => result.stopReason ?? (signal?.aborted ? stopReasonOf(signal) : undefined);
+      // A host shutdown ends the turn, not the member's work: the next host decides whether the claim waits for it.
+      if (ctx.host.executionLedger || stopped() !== 'shutdown') {
+        releaseWorkClaims(state, ctx.now(), 'Member turn ended without completing its claim', taskId, attemptId);
+      }
       if ((task.agentId || task.workflowTool) && result.status === 'completed' && !state.sessions.find(session => session.sessionRef === task.sessionRef)?.nativeSessionId) {
         result = { status: 'failed', error: 'Member completed without a native session ID; cannot safely continue its conversation' };
       }
@@ -426,7 +435,7 @@ export class WorkflowScheduler {
         const checked = checkJsonOutput(result.text ?? '', task.scriptSchema as Record<string, unknown> | undefined, ctx.host.repairJson?.bind(ctx.host));
         result = 'problem' in checked ? { status: 'failed', error: checked.problem.slice(0, 2000) } : { ...result, text: checked.text };
       }
-      const stopReason = result.stopReason ?? (signal?.aborted ? stopReasonOf(signal) : undefined);
+      const stopReason = stopped();
       const stalled = this.stalledAttempt(taskId, attemptId);
       const cancelled = task.status === 'cancelling' || ['cancelling', 'cancelled', 'binding_attention'].includes(state.status);
       let outcome: string = result.status;

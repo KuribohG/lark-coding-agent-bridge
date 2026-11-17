@@ -376,10 +376,17 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       return;
     }
     case 'claim_renewed': claim(state, event.claimId).leaseUntil = event.leaseUntil; return;
+    case 'claim_held': claim(state, event.claimId).heldUntil = event.until; return;
+    case 'claim_adopted': {
+      const adopted = claim(state, event.claimId);
+      adopted.taskId = event.by.taskId; adopted.attemptId = event.by.attemptId;
+      delete adopted.heldUntil;
+      return;
+    }
     case 'claim_ended': {
       const ended = claim(state, event.claimId);
       const found = item(state, ended.itemId);
-      delete ended.frozen;
+      delete ended.frozen; delete ended.heldUntil;
       ended.status = event.status; ended.endedAt = event.at; ended.reason = event.reason;
       found.claimId = undefined; found.updatedAt = event.at; found.error = ended.reason;
       found.status = event.retry && found.generation < found.maxAttempts ? 'pending' : 'failed';

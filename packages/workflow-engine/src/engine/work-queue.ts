@@ -135,7 +135,7 @@ const HELD_LEASE_MS = 120_000;
  * renewing in time. The others expire; the kernel cancels what is left of their turns.
  */
 export function expireWorkClaims(state: WorkflowView, now: number, held: (claim: ClaimView) => boolean = () => false): ClaimView[] {
-  const due = state.workQueue?.claims.filter(claim => claim.status === 'active' && !claim.frozen && claim.leaseUntil <= now) ?? [];
+  const due = state.workQueue?.claims.filter(claim => claim.status === 'active' && !claim.frozen && claim.heldUntil === undefined && claim.leaseUntil <= now) ?? [];
   const expired: ClaimView[] = [];
   for (const claim of due) {
     if (now < state.deadlineAt && held(claim)) emit(state, { type: 'claim_renewed', claimId: claim.id, leaseUntil: Math.min(now + HELD_LEASE_MS, state.deadlineAt) });
@@ -157,6 +157,39 @@ export function freezeWorkClaims(state: WorkflowView, reason: string, taskId?: s
   for (const claim of state.workQueue?.claims ?? []) {
     if (claim.status === 'active' && !claim.frozen && (!taskId || claim.taskId === taskId))
       emit(state, { type: 'claim_frozen', claimId: claim.id, reason });
+  }
+}
+
+/**
+ * A host restart cut short the turns that hold these claims. Each claim stays with its member, which still has the
+ * conversation (and often the process) that was doing the work, until that member's next attempt adopts it. A
+ * claim nobody adopts by `until` is released like any other abandoned claim.
+ */
+export function holdWorkClaims(state: WorkflowView, until: number): void {
+  for (const claim of state.workQueue?.claims ?? []) {
+    if (claim.status === 'active' && !claim.frozen) emit(state, { type: 'claim_held', claimId: claim.id, until });
+  }
+}
+
+/**
+ * Ends the claims a restart left held whose member did not come back in time, and returns them. A held claim has
+ * no turn to renew it, so its lease does not count; a member whose next turn is queued is coming back.
+ */
+export function abandonHeldClaims(state: WorkflowView, now: number): ClaimView[] {
+  const abandoned = state.workQueue?.claims.filter(claim => claim.status === 'active' && claim.heldUntil !== undefined && claim.heldUntil <= now
+    && !state.tasks.some(task => task.agentId === claim.agentId && task.status === 'queued')) ?? [];
+  for (const claim of abandoned) endClaim(state, claim, now, 'cancelled', 'Bridge restarted and the member did not resume its turn', true);
+  return abandoned;
+}
+
+/** A member's attempt takes over the claim a restart left held for it, with the claim ID and generation it had. */
+export function adoptWorkClaims(state: WorkflowView, task: TaskView, attemptId: string, now: number): void {
+  if (!task.agentId) return;
+  for (const claim of state.workQueue?.claims ?? []) {
+    if (claim.status !== 'active' || claim.heldUntil === undefined || claim.agentId !== task.agentId) continue;
+    emit(state, { type: 'claim_adopted', claimId: claim.id, by: { taskId: task.taskId, attemptId } });
+    // The lease lapsed while no host ran; a renewal, unlike the adoption, is what a replay reads the lease from.
+    emit(state, { type: 'claim_renewed', claimId: claim.id, leaseUntil: Math.min(now + HELD_LEASE_MS, state.deadlineAt) });
   }
 }
 
@@ -263,13 +296,24 @@ export function searchWork(state: WorkflowView, args: Record<string, unknown> = 
 function ownedClaim(state: WorkflowView, task: TaskView, attemptId: string, args: Record<string, unknown>, now: number): ClaimView {
   const id = scriptText(args.claimId, 'claimId', 100);
   const claim = state.workQueue?.claims.find(claim => claim.id === id);
-  if (!claim || claim.status !== 'active' || claim.frozen || claim.leaseUntil <= now || claim.agentId !== task.agentId
+  if (!claim || claim.status !== 'active' || claim.frozen || claim.heldUntil !== undefined || claim.leaseUntil <= now || claim.agentId !== task.agentId
     || claim.taskId !== task.taskId || claim.attemptId !== attemptId || claim.generation !== args.generation) {
     throw new Error('Claim is stale, expired or belongs to another execution attempt');
   }
   const item = itemById(state, claim.itemId);
   if (item.claimId !== claim.id || item.generation !== claim.generation || item.status !== 'claimed') throw new Error('Claim no longer owns this work item');
   return claim;
+}
+
+/**
+ * The record the previous attempt of this turn left for the very same request. An attempt that follows a host
+ * restart continues that turn, in the same conversation and often the same process, and repeats a call whose answer
+ * was lost with the old host; the claim ID and generation in the request make it the same operation.
+ */
+function repeatedOperation(state: WorkflowView, task: TaskView, attemptId: string, operationId: string, digest: string) {
+  const index = task.attempts.findIndex(attempt => attempt.attemptId === attemptId);
+  const earlier = index > 0 ? workOperationByKey(state, `${task.taskId}:${task.attempts[index - 1]!.attemptId}:${operationId}`) : undefined;
+  return earlier?.digest === digest ? earlier : undefined;
 }
 
 /** The recorded response of a work operation of this attempt, so a repeated call can answer without acting again. */
@@ -306,7 +350,7 @@ export function mutateWork(state: WorkflowView, task: TaskView, attemptId: strin
   const key = `${task.taskId}:${attemptId}:${operationId}`;
   const digest = workflowDigest({ method, args });
   const operations = state.workQueue?.operations ?? [];
-  const prior = workOperationByKey(state, key);
+  const prior = workOperationByKey(state, key) ?? (method === 'claim_work' ? undefined : repeatedOperation(state, task, attemptId, operationId, digest));
   const present = (response: unknown) => {
     if (method !== 'claim_work' || response === null) return response;
     const claim = ownedClaim(state, task, attemptId, response as Record<string, unknown>, now);

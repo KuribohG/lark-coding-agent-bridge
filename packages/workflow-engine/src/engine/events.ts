@@ -122,6 +122,10 @@ export type DomainEvent =
   | { type: 'work_claimed'; claim: WorkClaim }
   | { type: 'claim_frozen'; claimId: string; reason: string }
   | { type: 'claim_renewed'; claimId: string; leaseUntil: number }
+  /** A host restart interrupted the claim's turn: the claim waits until `until` for its member's next attempt. */
+  | { type: 'claim_held'; claimId: string; until: number }
+  /** The member's next attempt took over the claim a restart had left held. */
+  | { type: 'claim_adopted'; claimId: string; by: { taskId: string; attemptId: string } }
   /** A claim that ended without completing its item; `retry` returns the item to the queue while attempts remain. */
   | { type: 'claim_ended'; claimId: string; status: 'failed' | 'released' | 'expired' | 'cancelled'; reason: string; retry: boolean; at: number }
   | { type: 'work_progress_saved'; itemId: string; state: unknown; at: number }

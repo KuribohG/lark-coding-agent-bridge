@@ -312,6 +312,11 @@ export interface WorkflowWorkItem {
 
 export interface WorkClaim {
   frozen?: boolean;
+  /**
+   * A host restart cut short the turn that holds this claim. Until its member's next attempt adopts the claim, or
+   * this time passes, the claim keeps its item, cannot be used, and does not expire by lease.
+   */
+  heldUntil?: number;
   id: string;
   itemId: string;
   agentId: string;

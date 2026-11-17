@@ -184,19 +184,112 @@ describe('workflow work queue', () => {
     await expect(h.send(old, 'complete_work', { ...token(grant), result: 'late' })).rejects.toThrow('inactive');
   });
 
-  it('revokes a persisted orphan claim on startup even when its lease has not expired', async () => {
-    const directory = await mkdtemp(join(tmpdir(), 'workflow-orphan-'));
+  /** A workflow whose member A holds a claim with saved progress, restored into a new controller as after a crash. */
+  async function crashed(before?: (h: ReturnType<typeof harness>, grant: Grant) => Promise<unknown>) {
+    const directory = await mkdtemp(join(tmpdir(), 'workflow-held-'));
     cleanup.push(() => rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
     const h = harness(); await h.start(); await h.work('enqueue', { key: 'work', title: 'Work' });
-    await h.create('A'); await h.run(1); const grant = (await h.claim(h.requests[0]!))!;
-    await h.send(h.requests[0]!, 'checkpoint_work', { ...token(grant), expectedProgressVersion: 0, state: 'durable' });
-    const snapshot = h.state();
+    await h.create('A'); await h.run(1); const old = h.requests[0]!; const grant = (await h.claim(old))!;
+    await h.send(old, 'checkpoint_work', { ...token(grant), operationId: 'save-1', expectedProgressVersion: 0, state: 'durable' });
+    await before?.(h, grant);
     const path = join(directory, 'snapshot.sqlite');
-    replaceWorkflowState(path, snapshot);
-    const restored = harness(path);
+    replaceWorkflowState(path, h.state());
+    return { restored: harness(path), old, grant };
+  }
+  const resume = async (h: ReturnType<typeof harness>) => { expect(await h.kernel.resumeAfterRestart()).toMatchObject([{ resumed: true }]); h.begin(); };
+
+  it('keeps a claim for its member across a restart and hands it to the member\'s next attempt', async () => {
+    const { restored, old, grant } = await crashed();
     expect(restored.state().status).toBe('interrupted');
+    expect(restored.state().workQueue!.items[0]).toMatchObject({ status: 'claimed', generation: 1, progress: { version: 1, state: 'durable' } });
+    expect(restored.state().workQueue!.claims[0]).toMatchObject({ id: grant.claimId, status: 'active', heldUntil: 1_000_000 + 10 * 60_000 });
+    // The lease lapses while nothing runs; a held claim does not expire by it.
+    restored.advance(5 * 60_000);
+    await resume(restored); await restored.kernel.tick();
+    expect(restored.state().workQueue!.claims[0]).toMatchObject({ status: 'active', attemptId: old.attemptId });
+    await restored.create('A'); await restored.run(1);
+    const next = restored.requests[0]!;
+    expect(next.task.taskId).toBe(old.task.taskId);
+    expect(next.attemptId).not.toBe(old.attemptId);
+    const claim = restored.state().workQueue!.claims[0]!;
+    expect(claim).toMatchObject({ id: grant.claimId, generation: 1, status: 'active', taskId: next.task.taskId, attemptId: next.attemptId, leaseUntil: 1_000_000 + 5 * 60_000 + 120_000 });
+    expect(claim.heldUntil).toBeUndefined();
+    expect(next.prompt).toContain(grant.claimId);
+    // The member goes on with the claim ID and generation it had; claiming again answers with the same claim.
+    expect(await restored.claim(next)).toMatchObject({ claimId: grant.claimId, generation: 1 });
+    // A call whose answer was lost with the old controller is answered from its record, not applied again.
+    await expect(restored.send(next, 'checkpoint_work', { ...token(grant), operationId: 'save-1', expectedProgressVersion: 0, state: 'durable' }))
+      .resolves.toMatchObject({ progressVersion: 1 });
+    await restored.send(next, 'complete_work', { ...token(grant), result: 'done' });
+    expect(restored.state().workQueue!.items[0]).toMatchObject({ status: 'completed', result: 'done', generation: 1 });
+    expect(restored.state().workQueue!.claims).toHaveLength(1);
+  });
+
+  it('keeps the claim of a turn that a controller shutdown ended', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'workflow-shutdown-'));
+    cleanup.push(() => rm(directory, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
+    const h = harness(join(directory, 'state.sqlite')); await h.start(); await h.work('enqueue', { key: 'work', title: 'Work' });
+    await h.create('A'); await h.run(1); const grant = (await h.claim(h.requests[0]!))!;
+    await h.restart();
+    expect(h.state().tasks[0]!.status).toBe('interrupted');
+    expect(h.state().workQueue!.claims[0]).toMatchObject({ id: grant.claimId, status: 'active', heldUntil: expect.any(Number) });
+    await resume(h); await h.create('A'); await h.run(2);
+    await h.send(h.requests[1]!, 'complete_work', { ...token(grant), result: 'done' });
+    expect(h.state().workQueue!.items[0]).toMatchObject({ status: 'completed', generation: 1 });
+  });
+
+  it('returns a held claim to the queue when its member does not resume in time', async () => {
+    const { restored, old, grant } = await crashed();
+    const { workflowId } = restored.state();
+    // The member's process outlived the old controller.
+    restored.kernel.putWorkerHost({ hostKey: 'survivor', workflowId, match: 'turn', taskId: old.task.taskId, agentKind: 'codex', tokenHash: 'token', createdAt: 0 });
+    await resume(restored);
+    restored.advance(10 * 60_000 - 1); await restored.kernel.tick();
+    expect(restored.state().workQueue!.claims[0]!.status).toBe('active');
+    expect(restored.kernel.workerHost(workflowId, 'turn')!.discard).toBe(false);
+    restored.advance(1); await restored.kernel.tick();
+    // It must not go on with a claim that went back to the queue.
+    expect(restored.kernel.workerHost(workflowId, 'turn')!.discard).toBe(true);
+    expect(restored.state().workQueue!.claims[0]).toMatchObject({ status: 'cancelled', reason: expect.stringContaining('did not resume') });
+    expect(restored.state().workQueue!.claims[0]!.heldUntil).toBeUndefined();
     expect(restored.state().workQueue!.items[0]).toMatchObject({ status: 'pending', progress: { version: 1, state: 'durable' } });
+    await restored.create('B'); await restored.run(1);
+    const taken = (await restored.claim(restored.requests[0]!))!;
+    expect(taken.claimId).not.toBe(grant.claimId);
+    expect(taken.generation).toBe(2);
+  });
+
+  it('keeps waiting for a member whose next turn is queued behind the worker limit', async () => {
+    const { restored, grant } = await crashed();
+    await resume(restored);
+    for (const member of ['B', 'C', 'D', 'E']) await restored.create(member);
+    await restored.run(4); await restored.create('A');
+    restored.advance(10 * 60_000 + 1); await restored.kernel.tick();
+    expect(restored.requests).toHaveLength(4);
+    expect(restored.state().workQueue!.claims[0]).toMatchObject({ status: 'active', heldUntil: expect.any(Number) });
+    await restored.finish(restored.requests[0]!); await restored.run(5);
+    await restored.send(restored.requests[4]!, 'complete_work', { ...token(grant), result: 'done' });
+    expect(restored.state().workQueue!.items[0]).toMatchObject({ status: 'completed', generation: 1 });
+  });
+
+  it('cancels held claims when the interrupted workflow cannot resume on its own', async () => {
+    const { restored } = await crashed();
+    restored.changeRoot();
+    expect(await restored.kernel.resumeAfterRestart()).toMatchObject([{ resumed: false }]);
     expect(restored.state().workQueue!.claims[0]).toMatchObject({ status: 'cancelled', reason: expect.stringContaining('restarted') });
+    expect(restored.state().workQueue!.items[0]).toMatchObject({ status: 'pending', progress: { version: 1, state: 'durable' } });
+  });
+
+  it('answers a completion repeated after a restart from its record and still fences other late calls', async () => {
+    const done = { operationId: 'finish-1', result: 'done' };
+    const { restored, grant } = await crashed((h, held) => h.send(h.requests[0]!, 'complete_work', { ...token(held), ...done }));
+    expect(restored.state().workQueue!.claims[0]!.status).toBe('completed');
+    await resume(restored); await restored.create('A'); await restored.run(1);
+    const next = restored.requests[0]!;
+    await expect(restored.send(next, 'complete_work', { ...token(grant), ...done })).resolves.toMatchObject({ status: 'completed', generation: 1 });
+    await expect(restored.send(next, 'complete_work', { ...token(grant), operationId: 'finish-1', result: 'other' })).rejects.toThrow('stale');
+    await expect(restored.send(next, 'complete_work', { ...token(grant), result: 'done' })).rejects.toThrow('stale');
+    expect(restored.state().workQueue!.items[0]).toMatchObject({ status: 'completed', result: 'done' });
   });
 
   it('bounds retries, retains progress and requires explicit retry for terminal failures', async () => {
