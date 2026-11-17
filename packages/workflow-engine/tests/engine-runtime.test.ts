@@ -46,6 +46,43 @@ describe('workflow engine without bridge services', () => {
     await runtime.kernel.tick(); expect(wakeMain).toHaveBeenCalledWith('chat');
   });
 
+  it('starts workers after only the main session model or effort changes', async () => {
+    let root: WorkflowRoot = { scopeId: 'chat', profile: 'embedded', agentKind: 'custom-agent', cwdRealpath: '/repo',
+      policyFingerprint: 'policy', catalogBinding: 'main', modelSettings: { model: 'm1', reasoningEffort: 'deep' } };
+    const specs: WorkerRunSpec[] = [];
+    const runtime = new WorkflowRuntime({
+      path: ':memory:', resolveRoot: async () => root, wakeMain: async () => {},
+      runner: {
+        async start(spec) {
+          specs.push(spec);
+          await spec.validateBeforeRun();
+          return {
+            runId: `run-${specs.length}`, result: Promise.resolve('completed'),
+            stop: async () => {}, waitForExit: async () => true, stopReason: () => undefined,
+            async *events() {
+              yield { type: 'session', nativeSessionId: 'native-1' };
+              yield { type: 'final_text', text: 'answer' };
+              yield { type: 'done', normal: true };
+            },
+          };
+        },
+      },
+    });
+    await runtime.start(); cleanup.push(() => runtime.close());
+    const main = runtime.bindMain(root.scopeId, 'start');
+    await callWorkflow('run_script', { operationId: randomUUID(), goal: 'model change', plan: 'One worker answers; the main model changes before it starts.',
+      script: 'return await agent("answer", {key:"a"});' }, main.env);
+    main.release();
+    // The workflow pinned m1 at start; /model or /effort now changes only the main session.
+    root = { ...root, modelSettings: { model: 'm2', reasoningEffort: 'low' } };
+    await vi.waitFor(async () => { await runtime.tick(); expect(runtime.kernel.state(root.scopeId)?.script?.status).toBe('result_ready'); });
+    const state = runtime.kernel.state(root.scopeId)!;
+    expect(state.status).not.toBe('binding_attention');
+    expect(state.events.some(event => event.kind === 'binding_attention')).toBe(false);
+    expect(specs).toHaveLength(1);
+    expect(specs[0]!.execution.modelSettings).toEqual({ model: 'm1', reasoningEffort: 'deep' });
+  });
+
   it('separates host slot queueing from execution and times event handling', async () => {
     const root: WorkflowRoot = { scopeId: 'chat', profile: 'embedded', agentKind: 'custom-agent', cwdRealpath: '/repo',
       policyFingerprint: 'policy', catalogBinding: 'main', modelSettings: {} };

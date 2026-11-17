@@ -9,6 +9,7 @@ import { RESUME_DEADLINE, RESUME_ROOT_CHANGED, WorkflowKernel } from './kernel';
 import { WorkflowIpc } from './ipc';
 import { hostToolInstructions, WORKFLOW_GUIDE, WORKFLOW_MESSAGE_INSTRUCTIONS, WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from './tools/instructions';
 import { workflowDigest } from './digest';
+import { sameRoot } from './kernel-state';
 import { inheritedWorkerExecution } from './execution';
 import { MAX_RUNNING_SCRIPTS } from './limits';
 import { workflowToolDefinitions } from './host-tools';
@@ -508,7 +509,8 @@ export class WorkflowRuntime {
 
   private async checkRoot(root: WorkflowRoot, message: string): Promise<void> {
     const current = await this.deps.resolveRoot(root.scopeId);
-    if (!current || workflowDigest(current) !== workflowDigest(root)) throw new Error(message);
+    // The main session may change /model or /effort mid-run; the pinned root keeps the worker settings.
+    if (!current || !sameRoot(current, root)) throw new Error(message);
   }
 
   private async resolveWorker(root: WorkflowRoot, selection: WorkerExecutionSelection): Promise<WorkerExecution> {

@@ -8,7 +8,7 @@ import { terminateChild } from '../../platform/terminate';
 import type { RunPolicyAllow } from '../../policy/run-policy';
 import { RunStopped } from '../../runtime/errors';
 import type { RunExecutor } from '../../runtime/run-executor';
-import { workflowDigest } from '@kuribohg/agent-workflows';
+import { sameRoot, workflowDigest } from '@kuribohg/agent-workflows';
 import { inheritedWorkerExecution } from '@kuribohg/agent-workflows';
 import { stopReasonOf, type WorkerHosting, type WorkerRun, type WorkerRunner, type WorkerRunSpec } from '@kuribohg/agent-workflows';
 import { WorkflowRuntime, type WorkflowRuntimeDeps } from '@kuribohg/agent-workflows';
@@ -39,7 +39,8 @@ const runHosting: WorkerHosting = {
 export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): WorkflowRuntime {
   const grant = async (root: WorkflowRoot, selection: WorkerExecutionSelection): Promise<BridgeGrant> => {
     const current = await deps.resolve(root.scopeId);
-    if (!current || workflowDigest(current.root) !== workflowDigest(root)) throw new Error('Worker root authorization changed');
+    // A /model or /effort change only alters the main session's settings, not the worker's pinned root.
+    if (!current || !sameRoot(current.root, root)) throw new Error('Worker root authorization changed');
     const resolved = deps.resolveWorker
       ? await deps.resolveWorker(root, selection, current.policy)
       : { execution: inheritedWorkerExecution(root, selection), policy: current.policy };

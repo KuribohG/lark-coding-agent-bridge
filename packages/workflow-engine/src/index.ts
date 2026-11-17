@@ -9,6 +9,7 @@ export { WorkflowStopped, silentLogger, stopReasonOf } from './engine/ports';
 export type { WorkerHosting, WorkerRun, WorkerRunEvent, WorkerRunner, WorkerRunSpec, WorkflowProcesses } from './engine/ports';
 export { inheritedWorkerExecution, workerSelection } from './engine/execution';
 export { workflowDigest } from './engine/digest';
+export { sameRoot } from './engine/kernel-state';
 export { callWorkflow } from './engine/ipc';
 export { runWorkflowTool } from './engine/tool-cli';
 export type { WorkflowToolOptions } from './engine/tool-cli';
