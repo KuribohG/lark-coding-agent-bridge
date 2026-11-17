@@ -162,6 +162,8 @@ export interface RootConfig {
   /** Raw global launch layers retained so TOML round trips do not collapse them into profiles. */
   agentLaunches?: Partial<Record<AgentKind, { launch?: AgentLaunchConfig }>>;
   modelServices?: Record<string, import('../model-service/config').ModelServiceConfig>;
+  /** Bridge-wide model-provider limits; one bucket per provider across all profiles. */
+  modelGate?: import('../model-gate/config').ModelGateConfig;
   secrets?: SecretsConfig;
   profiles: Record<string, ProfileConfig>;
 }

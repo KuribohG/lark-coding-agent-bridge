@@ -19,7 +19,13 @@ export default defineConfig([
     // `workflow-cli` is what agents run for each workflow operation ($AGENT_WORKFLOW_CLI): the engine's own CLI
     // without the bridge's program, which the engine picks up when it lies beside the bundle that holds it. It is
     // built here, with the bundle that cleans the folder, so that the cleaning cannot remove it.
-    entry: { cli: 'src/cli/index.ts', 'workflow-cli': 'packages/workflow-engine/src/cli.ts' },
+    entry: {
+      cli: 'src/cli/index.ts',
+      'workflow-cli': 'packages/workflow-engine/src/cli.ts',
+      // Loaded by Pi CLI processes with `--extension`; it must stand alone
+      // (node built-ins only) because it runs in Pi's own runtime.
+      'pi-model-gate': 'src/model-gate/pi-gate-extension.ts',
+    },
     outDir: 'dist',
     format: ['esm'],
     target: 'node20',

@@ -6,6 +6,7 @@ import { PiAdapter } from '../../src/agent/pi/adapter';
 import { buildBridgeSystemPrompt } from '../../src/channels/lark/system-prompt';
 import type { AgentEvent } from '../../src/agent/types';
 import { ModelProviderRegistry } from '../../src/model-provider/provider';
+import { setModelGateTarget } from '../../src/model-gate/location';
 
 const dirs: string[] = [];
 
@@ -199,6 +200,67 @@ describe('PiAdapter process contract', () => {
   });
 });
 
+describe('PiAdapter model gate wiring', () => {
+  afterEach(() => setModelGateTarget(undefined));
+
+  it('loads the gate extension and passes the socket when the bridge runs one', async () => {
+    const harness = await createFakePi([{ type: 'system', id: 'sess-gate', cwd: '/repo' }, { type: 'agent_settled', aborted: false }]);
+    dirs.push(harness.dir);
+    setModelGateTarget({ socketPath: '/tmp/model-gate.sock' });
+
+    const run = (await new PiAdapter({ binary: harness.binary }).prepareRun({
+      runId: 'pi-gate', prompt: 'hello', cwd: harness.dir,
+    })).start();
+    for await (const event of run.events) {
+      if (event.type === 'done') break;
+    }
+    await run.waitForExit(2000);
+
+    const record = await readRecord(harness.recordPath);
+    const extensionIndex = record.argv.indexOf('--extension');
+    expect(extensionIndex).toBeGreaterThanOrEqual(0);
+    expect(record.argv[extensionIndex + 1]).toMatch(/pi-gate-extension/);
+    expect(record.env.LARK_MODEL_GATE_SOCKET).toBe('/tmp/model-gate.sock');
+    // No deadline: an interactive run, first in the queue.
+    expect(record.env.LARK_MODEL_GATE_PRIORITY).toBe('0');
+  });
+
+  it('queues a workflow worker behind interactive runs', async () => {
+    const harness = await createFakePi([{ type: 'system', id: 'sess-gate', cwd: '/repo' }, { type: 'agent_settled', aborted: false }]);
+    dirs.push(harness.dir);
+    setModelGateTarget({ socketPath: '/tmp/model-gate.sock' });
+
+    const run = (await new PiAdapter({ binary: harness.binary }).prepareRun({
+      runId: 'pi-gate-worker', prompt: 'hello', cwd: harness.dir, deadlineAt: Date.now() + 60_000,
+    })).start();
+    for await (const event of run.events) {
+      if (event.type === 'done') break;
+    }
+    await run.waitForExit(2000);
+
+    const record = await readRecord(harness.recordPath);
+    expect(record.env.LARK_MODEL_GATE_PRIORITY).toBe('1');
+  });
+
+  it('leaves argv alone when no gate is running', async () => {
+    const harness = await createFakePi([{ type: 'system', id: 'sess-gate', cwd: '/repo' }, { type: 'agent_settled', aborted: false }]);
+    dirs.push(harness.dir);
+    setModelGateTarget(undefined);
+
+    const run = (await new PiAdapter({ binary: harness.binary }).prepareRun({
+      runId: 'pi-no-gate', prompt: 'hello', cwd: harness.dir,
+    })).start();
+    for await (const event of run.events) {
+      if (event.type === 'done') break;
+    }
+    await run.waitForExit(2000);
+
+    const record = await readRecord(harness.recordPath);
+    expect(record.argv).not.toContain('--extension');
+    expect(record.env.LARK_MODEL_GATE_SOCKET).toBeUndefined();
+  });
+});
+
 async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
   const all: AgentEvent[] = [];
   for await (const event of events) all.push(event);
@@ -224,7 +286,7 @@ async function createFakePi(
     `  writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({`,
     '    argv, stdin, cwd: process.cwd(),',
     '    systemPrompt: promptIndex >= 0 ? readFileSync(argv[promptIndex + 1], "utf8") : "",',
-    '    env: { PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK, PI_TELEMETRY: process.env.PI_TELEMETRY },',
+    '    env: { PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK, PI_TELEMETRY: process.env.PI_TELEMETRY, LARK_MODEL_GATE_SOCKET: process.env.LARK_MODEL_GATE_SOCKET, LARK_MODEL_GATE_PRIORITY: process.env.LARK_MODEL_GATE_PRIORITY },',
     '    providerEnv: Object.entries(process.env).filter(([key]) => key.startsWith("LARK_MODEL_PROVIDER_")),',
     '  }));',
     `  for (const line of ${JSON.stringify(lines)}) process.stdout.write(JSON.stringify(line) + "\\n");`,
@@ -249,7 +311,8 @@ async function readRecord(path: string): Promise<{
   stdin: string;
   cwd: string;
   systemPrompt: string;
-  env: { PI_CODING_AGENT_DIR?: string; PI_SKIP_VERSION_CHECK?: string; PI_TELEMETRY?: string };
+  env: { PI_CODING_AGENT_DIR?: string; PI_SKIP_VERSION_CHECK?: string; PI_TELEMETRY?: string;
+    LARK_MODEL_GATE_SOCKET?: string; LARK_MODEL_GATE_PRIORITY?: string };
   providerEnv: Array<[string, string]>;
 }> {
   return JSON.parse(await readFile(path, 'utf8')) as {
@@ -257,7 +320,8 @@ async function readRecord(path: string): Promise<{
     stdin: string;
     cwd: string;
     systemPrompt: string;
-    env: { PI_CODING_AGENT_DIR?: string; PI_SKIP_VERSION_CHECK?: string; PI_TELEMETRY?: string };
+    env: { PI_CODING_AGENT_DIR?: string; PI_SKIP_VERSION_CHECK?: string; PI_TELEMETRY?: string;
+    LARK_MODEL_GATE_SOCKET?: string; LARK_MODEL_GATE_PRIORITY?: string };
     providerEnv: Array<[string, string]>;
   };
 }

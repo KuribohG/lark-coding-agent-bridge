@@ -80,6 +80,7 @@ export const ROOT_SETTINGS: readonly SettingSpec[] = [
   { path: 'agentState.**', apply: 'execution', toml: 'state.**', derived: true },
   { path: 'agentLaunches.**', apply: 'execution', toml: 'agents.<a>.launch', derived: true },
   { path: 'modelServices.**', apply: 'execution', toml: 'model_services.**', note: '模型列表与 provider 解析同时更新' },
+  { path: 'modelGate.**', apply: 'live', toml: 'gate.**', note: '进行中的请求保留旧限制，下一次申请用新限制' },
   { path: 'secrets.**', apply: 'reconnect', toml: 'secrets.**' },
   { path: 'profiles.*', apply: 'restart', toml: 'profiles.<p>', note: '新增或删除 profile：在控制台启停，或重启 bridge' },
 ];
@@ -191,6 +192,7 @@ function resolveDocumentPath(path: readonly string[]): { specs: readonly Setting
     }
     case 'bridge': return rest[0] ? { specs: ROOT_SETTINGS, path: [BRIDGE_KEYS[rest[0]] ?? rest[0]] } : undefined;
     case 'model_services': return { specs: ROOT_SETTINGS, path: ['modelServices', ...rest] };
+    case 'gate': return { specs: ROOT_SETTINGS, path: ['modelGate', ...rest] };
     case 'secrets': return { specs: ROOT_SETTINGS, path: ['secrets', ...rest] };
     case 'state': return { specs: PROFILE_SETTINGS, path: ['state', ...rest] };
     default: return undefined;

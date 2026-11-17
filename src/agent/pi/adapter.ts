@@ -22,6 +22,7 @@ import { withExecutionContract } from '../execution';
 import { PI_EXECUTION_CAPABILITIES } from './capabilities';
 import { PiRunTranslator } from './jsonl-translator';
 import { piThinkingLevel } from './thinking';
+import { currentModelGate, modelGateExtensionPath } from '../../model-gate/location';
 
 export interface PiAdapterOptions {
   binary?: string;
@@ -120,6 +121,11 @@ export class PiAdapter implements AgentAdapter {
     if (opts.modelProvider?.pi) {
       args.push('--extension', writePiProviderExtension(this.profileStateDir, opts.modelProvider));
     }
+    // The gate is a bridge-wide service; asked per provider request, not per
+    // run, so a run executing tools holds no concurrency slot. `--no-extensions`
+    // below does not disable an explicit `--extension` path.
+    const gate = currentModelGate();
+    if (gate) args.push('--extension', modelGateExtensionPath());
     if (sandbox === 'read-only') {
       args.push('--no-extensions', '--tools', 'read,grep,find,ls');
     } else if (opts.deadlineAt !== undefined) {
@@ -139,6 +145,11 @@ export class PiAdapter implements AgentAdapter {
         ...opts.env,
         ...opts.modelProvider?.env,
         ...(this.agentDir ? { PI_CODING_AGENT_DIR: this.agentDir } : {}),
+        ...(gate ? {
+          LARK_MODEL_GATE_SOCKET: gate.socketPath,
+          // Interactive runs (no deadline) go first; workflow workers queue behind them.
+          LARK_MODEL_GATE_PRIORITY: String(opts.deadlineAt !== undefined ? 1 : 0),
+        } : {}),
         PI_SKIP_VERSION_CHECK: '1',
         PI_TELEMETRY: '0',
       }),

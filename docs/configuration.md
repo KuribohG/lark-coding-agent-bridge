@@ -178,6 +178,34 @@ Bridge SDK REST and WebSocket connections, native COT create/update/complete, te
 
 Network settings are captured when the profile's transport starts. They are reconnect-class: reload keeps the active network settings and lists `channels.lark.network` as pending until `/reconnect` (or a profile restart). Automatic keepalive reconnects reuse the running settings and never apply pending edits. `config show --sources` displays the source of each network field. A failed COT create is still not blindly retried, because an uncertain response can mean the server already created the bubble.
 
+## Model gate
+
+```toml
+[gate]
+enabled = true
+fail_open = true
+lease_seconds = 600
+
+[gate.defaults]
+rpm = 1000
+burst = 100
+concurrency = 100
+
+[gate.providers.deepseek]
+concurrency = 100
+```
+
+A bridge-wide limit on model requests, one bucket per model provider. `rpm` and
+`concurrency` apply together: a request needs a rate token and a free slot. The
+gate is shared by every profile in the process; a Pi run holds a permit only
+while the provider answers, so tools never occupy a slot.
+
+Only Pi CLI runs are gated in this phase. `[gate]` is bridge-wide: it is not a
+profile field and does not resolve through `defaults.run` / `agents.*.run`.
+Edits are picked up on reload; in-flight permits keep their old limits. See
+[Model gate](model-gate.md) for the permit lifecycle, failure behaviour and the
+`/status` endpoint.
+
 ## Inspecting and editing
 
 ```sh

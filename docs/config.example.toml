@@ -20,6 +20,19 @@ workflow_timeout_minutes = 480 # Total workflow deadline; each workflow may requ
 # cache_keepalive_max_pings = 6
 # cache_keepalive_min_context_tokens = 100000
 
+# Bridge-wide per-provider limits on model requests (Pi CLI runs in this phase).
+# A permit is held only while the provider answers, so tool execution frees it.
+# [gate]
+# enabled = true
+# fail_open = true
+# lease_seconds = 600
+# [gate.defaults]
+# rpm = 1000
+# burst = 100
+# concurrency = 100
+# [gate.providers.deepseek]
+# concurrency = 100
+
 # Bridge-wide agent state; every profile and per-chat engine switch resolves the same way.
 [state]
 memory = "agent" # One memory per engine; "workspace" keeps Claude's per-cwd memory.
