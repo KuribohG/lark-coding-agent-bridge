@@ -88,6 +88,8 @@ interface Transaction {
    * the journal, so a replay never has to read a heartbeat (see append).
    */
   leases: Array<{ workflowId: string; claimId: string; leaseUntil: number }>;
+  /** Workflows whose snapshot this transaction owes; written after it commits (see persist). */
+  snapshots: Aggregate[];
   touched: Set<Aggregate>;
   versioned: Set<Aggregate>;
   created: Set<Aggregate>;
@@ -174,6 +176,8 @@ export interface WorkflowStoreOptions {
   backgroundCheckpoint?: boolean;
   /** Received when background checkpointing could not run; the store then checkpoints inside commits. */
   checkpointFailed?(error: unknown): void;
+  /** Received when a snapshot could not be written; its events are committed and the next commit tries again. */
+  snapshotFailed?(error: unknown): void;
   /**
    * Receives a workflow whose journal cannot be replayed (an event this build does not understand, or a corrupt
    * entry). Such a workflow is left out of scheduling instead of failing the whole store; reading it directly throws
@@ -562,7 +566,7 @@ export class WorkflowStore {  readonly db: Database.Database;
    */
   transact<T>(fn: () => T, cause = 'system'): T {
     if (this.tx) return fn();
-    const tx: Transaction = this.tx = { cause, events: [], leases: [], touched: new Set(), versioned: new Set(), created: new Set(), texts: new Map(), textRefs: new Map(), archive: { tasks: [], artifacts: [], calls: [], records: [] }, operations: [] };
+    const tx: Transaction = this.tx = { cause, events: [], leases: [], snapshots: [], touched: new Set(), versioned: new Set(), created: new Set(), texts: new Map(), textRefs: new Map(), archive: { tasks: [], artifacts: [], calls: [], records: [] }, operations: [] };
     let result: T;
     try {
       result = fn();
@@ -663,6 +667,35 @@ export class WorkflowStore {  readonly db: Database.Database;
     } finally {
       if (durable && this.db.open) this.db.pragma('synchronous = NORMAL');
     }
+    this.writeSnapshots(tx.snapshots);
+  }
+
+  /**
+   * Writes the snapshots a transaction owes, in a transaction of their own.
+   *
+   * A snapshot is a cache of the journal, so it may land after the events it covers and be lost without losing them.
+   * Keeping it out of the event transaction means a durable commit fsyncs its own events rather than a whole state,
+   * and a snapshot that cannot be written no longer rolls the operation back; `sinceSnapshot` stays put so the next
+   * commit tries again.
+   */
+  private writeSnapshots(aggregates: readonly Aggregate[]): void {
+    if (!aggregates.length || !this.db.open) return;
+    // Serialized before the transaction opens: this is the expensive half for a large workflow.
+    const rows = aggregates.map(aggregate => {
+      const { state } = aggregate;
+      return { workflowId: state.workflowId, seq: aggregate.seq, data: JSON.stringify(state) };
+    });
+    try {
+      const write = this.db.transaction(() => {
+        const insert = this.db.prepare('INSERT INTO wf_snapshots(workflow_id, seq, data) VALUES (?, ?, ?) ON CONFLICT(workflow_id) DO UPDATE SET seq = excluded.seq, data = excluded.data');
+        for (const row of rows) insert.run(row.workflowId, row.seq, row.data);
+      });
+      write();
+    } catch (error) {
+      this.options.snapshotFailed?.(error);
+      return;
+    }
+    for (const aggregate of aggregates) aggregate.sinceSnapshot = 0;
   }
 
   /** Writes one transaction's rows; persist() has already chosen its durability. */
@@ -706,7 +739,7 @@ export class WorkflowStore {  readonly db: Database.Database;
         if (aggregate.cataloged !== state.status) {
           catalog.run(state.workflowId, state.root.scopeId, state.parent?.rootWorkflowId ?? state.workflowId, state.parent?.workflowId ?? null, state.status, at);
         }
-        if (this.snapshotDue(aggregate) || TERMINAL.has(state.status) && aggregate.sinceSnapshot) this.snapshot(aggregate);
+        if (this.snapshotDue(aggregate) || TERMINAL.has(state.status) && aggregate.sinceSnapshot) tx.snapshots.push(aggregate);
       }
       const operation = this.db.prepare(`INSERT INTO workflow_operations(scope, id, digest, response, workflow_id) VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(scope, id) DO UPDATE SET digest = excluded.digest, response = excluded.response, workflow_id = excluded.workflow_id`);
@@ -727,12 +760,6 @@ export class WorkflowStore {  readonly db: Database.Database;
     const { state } = aggregate;
     return aggregate.sinceSnapshot >= this.snapshotEvery
       && aggregate.sinceSnapshot >= state.tasks.length + state.artifacts.length + (state.workQueue?.items.length ?? 0);
-  }
-
-  private snapshot(aggregate: Aggregate): void {
-    this.db.prepare('INSERT INTO wf_snapshots(workflow_id, seq, data) VALUES (?, ?, ?) ON CONFLICT(workflow_id) DO UPDATE SET seq = excluded.seq, data = excluded.data')
-      .run(aggregate.state.workflowId, aggregate.seq, JSON.stringify(aggregate.state));
-    aggregate.sinceSnapshot = 0;
   }
 
   /** After a successful commit: index bookkeeping, then notifications. */
@@ -970,9 +997,8 @@ export class WorkflowStore {  readonly db: Database.Database;
     if (!this.db.open) return;
     this.stopCheckpoints?.();
     if (!this.options.readonly) {
-      this.db.transaction(() => {
-        for (const aggregate of this.aggregates.values()) if (aggregate.sinceSnapshot && !aggregate.stale) this.snapshot(aggregate);
-      })();
+      // A snapshot is a cache: a shutdown that cannot write one still closes, and the journal stays enough.
+      this.writeSnapshots([...this.aggregates.values()].filter(aggregate => aggregate.sinceSnapshot && !aggregate.stale));
     }
     this.db.close();
   }

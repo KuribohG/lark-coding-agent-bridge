@@ -493,3 +493,24 @@ describe('claim lease heartbeats', () => {
     expect(store.db.prepare('SELECT count(*) AS n FROM wf_leases').get()).toEqual({ n: 1 });
   });
 });
+
+describe('snapshot writes', () => {
+  it('keeps the events and the snapshot due when a snapshot cannot be written', async () => {
+    const failed = vi.fn();
+    const store = open(await file(), { snapshotEvery: 1, snapshotFailed: failed });
+    const state = start(store, 'wf');
+    store.db.exec("CREATE TRIGGER no_snapshot BEFORE INSERT ON wf_snapshots BEGIN SELECT RAISE(ABORT, 'no snapshot'); END");
+    const seq = () => (store.db.prepare('SELECT seq FROM wf_snapshots').get() as { seq: number }).seq;
+    const before = seq();
+    store.transact(() => emit(state, { type: 'script_logged', text: 'one' }));
+    expect(failed).toHaveBeenCalled();
+    // The operation stands: its events are committed and readable, and the snapshot simply did not advance.
+    expect(store.state('scope-wf')!.script!.logs).toEqual(['one']);
+    expect(store.db.prepare("SELECT count(*) AS n FROM wf_events WHERE type = 'script_logged'").get()).toEqual({ n: 1 });
+    expect(seq()).toBe(before);
+    // Once the cause is gone the next commit writes the snapshot it still owes.
+    store.db.exec('DROP TRIGGER no_snapshot');
+    store.transact(() => emit(state, { type: 'script_logged', text: 'two' }));
+    expect(seq()).toBeGreaterThan(before);
+  });
+});
