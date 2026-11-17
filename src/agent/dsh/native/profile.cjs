@@ -23,6 +23,17 @@ const pluginPackages = Object.freeze({
   'session-checkpoint-policy': '@deepseek-ai/dsh-session-checkpoint-policy',
   tools: '@deepseek-ai/dsh-tools', 'system-prompt': '@deepseek-ai/dsh-system-prompt', 'agent-loop': '@deepseek-ai/dsh-agent-loop',
 });
+// Optional native development tools. The assistant's registered-only profile is unchanged.
+const fullPluginPackages = Object.freeze({
+  jobs: '@deepseek-ai/dsh-jobs-local', subprocess: '@deepseek-ai/dsh-subprocess-local',
+  sandbox: '@deepseek-ai/dsh-sandbox-local', 'sandbox-policy': '@deepseek-ai/dsh-sandbox-policy',
+  'shell-native': process.platform === 'win32' ? '@deepseek-ai/dsh-pwsh-sandbox' : '@deepseek-ai/dsh-bash-sandbox',
+  approval: '@deepseek-ai/dsh-user-approval', 'shell-env': '@deepseek-ai/dsh-shell-env',
+  'working-directory': '@deepseek-ai/dsh-working-directory', fs: '@deepseek-ai/dsh-fs-sandbox',
+  'tool-shell': process.platform === 'win32' ? '@deepseek-ai/dsh-tool-pwsh' : '@deepseek-ai/dsh-tool-bash',
+  'tool-jobs': '@deepseek-ai/dsh-tool-jobs', 'tool-fs': '@deepseek-ai/dsh-tool-fs',
+  'tool-fs-search': '@deepseek-ai/dsh-tool-fs-search',
+});
 function dshLoader(packageRoot) {
   let manifest;
   try { manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, 'package.json'), 'utf8')); }
@@ -35,9 +46,9 @@ function dshLoader(packageRoot) {
   load.manifest = name => JSON.parse(fs.readFileSync(requireDsh.resolve(`${name}/package.json`), 'utf8'));
   return load;
 }
-function profileIdentity() {
+function profileIdentity(options = {}) {
   return `warp-assistant-${createHash('sha256').update(JSON.stringify({ schema: 3, runtime: lock, pluginPackages,
-    adapterProtocol: ADAPTER_PROTOCOL })).digest('hex').slice(0, 24)}`;
+    adapterProtocol: ADAPTER_PROTOCOL, ...(options.nativeTools ? { nativeTools: fullPluginPackages } : {}) })).digest('hex').slice(0, 24)}`;
 }
 async function atomicJson(filename, value) {
   const temporary = `${filename}.${randomUUID()}.tmp`;
@@ -69,13 +80,17 @@ async function bootProfile(options) {
       'session-persistence-jsonl': { root: path.join(lease.root, 'sessions'), compression: 'none' },
       'system-prompt': { personaPrefix: '', includeHarnessIdentity: false, includeRuntimeContext: false },
       'agent-loop': { agents: [] },
+      ...(options.nativeTools ? { 'sandbox-policy': { mode: 'danger-full-access', workspaceRoot: options.workspace },
+        approval: { policy: 'never' }, 'working-directory': { defaultDirectory: options.workspace },
+        'shell-native': { cwd: options.workspace }, 'shell-env': { dshHome: lease.root },
+        'tool-fs-search': { sampleOverCapGlobResults: false } } : {}),
       'llm-pi-ai': { providers: { 'warp-assistant-gateway': { api: 'openai-completions', baseURL: endpoint,
         apiKeyEnv: 'WARP_ASSISTANT_API_KEY', displayName: 'Application Gateway',
         models: models.map(({ defaultEffort: _default, ...model }) => model),
         reasoning: defaultEffort || models[0].defaultEffort || 'off', retryPolicy: { mode: 'normal', maxRetries: 0 } } } },
     };
     const versions = {};
-    const entries = Object.entries(pluginPackages).map(([id, name]) => {
+    const entries = Object.entries({ ...pluginPackages, ...(options.nativeTools ? fullPluginPackages : {}) }).map(([id, name]) => {
       const manifest = load.manifest(name); versions[name] = manifest.version;
       if (name.startsWith('@deepseek-ai/dsh-') && manifest.version !== lock.dshVersion) throw new Error(`Unpinned profile dependency: ${name}.`);
       return { id, name: load.resolve(name), ...(configs[id] ? { config: configs[id] } : {}) };
@@ -114,6 +129,16 @@ async function bootProfile(options) {
         || entry.disabled || entry.fiber?.state !== 2))
       throw Object.assign(new Error('Loaded native profile differs from the pinned allowlist.'), { code: 'harness-profile-mismatch' });
     const owned = await plugin.profileReady(token);
+    if (options.nativeTools) {
+      // Use the pinned native shell's per-request environment seam. Never mutate process.env across Agents.
+      const shell = owned.get('shell');
+      const resolve = shell.resolve.bind(shell);
+      const identityEnv = Object.fromEntries(['CODEX_THREAD_ID', 'CODEX_SESSION_ID', 'CODEX_PARENT_THREAD_ID',
+        'CLAUDE_SESSION_ID', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_CHILD_SESSION', 'DSH_SESSION_ID',
+        'WARP_KIMI_SESSION_ID', 'WARP_ANTIGRAVITY_SESSION_FILE', 'WARP_GEMINI_SESSION_FILE',
+        'PASEO_AGENT_ID', 'PASEO_AGENT_PROVIDER'].map(key => [key, undefined]));
+      shell.resolve = request => resolve({ ...request, env: { ...request.env, ...identityEnv, WARP_AGENT_PROVIDER: 'dsh' } });
+    }
     return { ctx: owned, load, profileId, lease, manifest: { profileId, configuration, adapterProtocol: ADAPTER_PROTOCOL, adapterBuildIdentity: adapterIdentity,
       plugins: versions, entries: entries.map(({ id, name }) => ({ id, name })) },
       async close() { try { await ctx.fiber.dispose(); } finally { await lease.close(); } } };

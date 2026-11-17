@@ -42,6 +42,8 @@ const jsonFormatRetryPrompt = (problem: string) => `Your last final answer canno
 
 export interface WorkflowRuntimeDeps extends WorkerExecutionPolicy {
   hostTools?: boolean;
+  /** Per-worker transport; defaults to hostTools. CLI callers retain the same task/attempt authority. */
+  workerTools?: (execution: WorkerExecution) => 'host' | 'cli';
   executionLedger?: ExecutionLedgerPort;
   /** SQLite path, or ':memory:' (managed worktrees then need an explicit workspaceRoot). */
   path: string;
@@ -156,7 +158,7 @@ export class WorkflowRuntime {
   }
 
   async start(): Promise<void> {
-    if (!this.deps.hostTools) await this.ipc.listen();
+    if (!this.deps.hostTools || this.deps.workerTools) await this.ipc.listen();
     await this.kernel.reconcileExecutions();
     for (const outcome of await this.kernel.resumeAfterRestart()) {
       const name = outcome.state.script?.name ?? outcome.state.workflowId;
@@ -380,7 +382,8 @@ export class WorkflowRuntime {
     let lease: string | undefined;
     let run: WorkerRun | undefined;
     // Host tools answer through this process, so a worker that uses them cannot outlive it.
-    const hosting = this.deps.hostTools ? undefined : this.deps.runner.hosting;
+    const hostTools = this.deps.workerTools ? this.deps.workerTools(pinned) === 'host' : this.deps.hostTools;
+    const hosting = hostTools ? undefined : this.deps.runner.hosting;
     const match = hostMatch(task);
     let survivor = hosting && this.kernel.workerHost(workflow.workflowId, match);
     // A process that was left working in a worktree kept its lease; one that does not hold it is not continued.
@@ -400,7 +403,7 @@ export class WorkflowRuntime {
     const holder = workspace && hosting && !survivor ? manager!.holder(workspace) : undefined;
     if (holder && holder !== dropped && !this.kernel.runsWorkerHost(holder)) await this.abandonHost({ hostKey: holder, workflowId: workflow.workflowId });
     const caller: WorkflowCaller = { kind: 'worker', scopeId: workflow.root.scopeId, workflowId: workflow.workflowId, taskId: task.taskId, attemptId };
-    const binding: { env: Record<string, string>; tokenHash?: string; release(): void } = this.deps.hostTools
+    const binding: { env: Record<string, string>; tokenHash?: string; release(): void } = hostTools
       ? { env: {}, release() {} } : this.ipc.bind(caller, workflow.deadlineAt, survivor?.tokenHash);
     let hostKey: string | undefined;
     let scratch: ScratchLease | undefined;
@@ -428,7 +431,7 @@ export class WorkflowRuntime {
         }
         const started = await this.deps.runner.start({
           executionId, logicalCallId, attemptId,
-          ...(this.deps.hostTools ? { workflowTools: { definitions: workflowToolDefinitions('worker'),
+          ...(hostTools ? { workflowTools: { definitions: workflowToolDefinitions('worker'),
             call: (method: string, args: Record<string, unknown>) => this.call(caller, method, args) } } : {}),
           sessionKey: `workflow:${workflow.workflowId}:${session.sessionRef}`,
           root: workflow.root, execution: pinned, role: session.role, prompt, env: scratch ? { ...binding.env, ...scratch.env } : binding.env,
@@ -443,7 +446,7 @@ export class WorkflowRuntime {
             }
           },
           ...(workspace ? { workspace: { id: workspace.id, path: workspace.path, rootDigest: workspace.rootDigest } } : {}),
-          systemPrompt: (this.deps.hostTools ? hostToolInstructions(workflowWorkerInstructions(task, request.plans)) : workflowWorkerInstructions(task, request.plans))
+          systemPrompt: (hostTools ? hostToolInstructions(workflowWorkerInstructions(task, request.plans)) : workflowWorkerInstructions(task, request.plans))
             + (workspace ? workspaceInstructions(workspace, landing?.targetRef) : '')
             + (scratchPath ? `\nScratch directory: ${scratchPath} (your TMPDIR). It is yours alone and is deleted when your work in this workflow ends: keep temporary files, build outputs and caches there instead of /tmp or other shared locations, and put anything others must read somewhere else.` : ''),
           ...(resume ? { resume } : {}),
@@ -649,7 +652,7 @@ export class WorkflowRuntime {
     if (this.timer) clearInterval(this.timer);
     for (const run of this.scripts.values()) run.controller.abort(new WorkflowStopped('shutdown'));
     await Promise.allSettled([...this.scripts.values()].map(run => run.done));
-    if (!this.deps.hostTools) await this.ipc.close();
+    if (!this.deps.hostTools || this.deps.workerTools) await this.ipc.close();
     await this.kernel.close();
     await this.workspaces?.close();
   }

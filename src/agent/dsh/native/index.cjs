@@ -79,7 +79,7 @@ function createDshHarness(options) {
   function allocate({ scope, model, effort, instructions, tools = [] }) {
     return { harness: 'dsh', version: lock.dshVersion, adapterProtocol: ADAPTER_PROTOCOL, model, effort, nativeSessionId: randomUUID(), scope, materialized: false,
       namespace: canonicalRoot(options.home), workspace: canonicalRoot(options.workspace), profileId: profileIdentity(options),
-      configurationHash: digest({ model, effort, instructions, tools: tools.map(tool => tool.definition) }) };
+      configurationHash: digest({ model, effort, instructions, ...(options.nativeTools ? { nativeTools: true } : {}), tools: tools.map(tool => tool.definition) }) };
   }
   async function openNative({ scope, model, effort, instructions, tools = [], signal, creationHandle }, persisted, attempt) {
     if (persisted && (persisted.version !== lock.dshVersion || persisted.adapterProtocol !== ADAPTER_PROTOCOL))
@@ -101,7 +101,7 @@ function createDshHarness(options) {
     if (identity.harness !== 'dsh' || identity.version !== lock.dshVersion || !sameOwner
         || identity.namespace !== runtime.lease.root || identity.workspace !== canonicalRoot(options.workspace) || identity.profileId !== runtime.profileId
         || persisted && (!persisted.materialized || !persisted.highWater)
-        || identity.configurationHash !== digest({ model, effort, instructions, tools: tools.map(tool => tool.definition) }))
+        || identity.configurationHash !== digest({ model, effort, instructions, ...(options.nativeTools ? { nativeTools: true } : {}), tools: tools.map(tool => tool.definition) }))
       throw Object.assign(new Error('Native DSH handle belongs to another scope or runtime.'), { code: 'harness-handle-scope' });
     const allowed = new Set(tools.map(tool => tool.definition.function.name));
     let reconciled = false, checkpoint, foreignModified = false;
@@ -123,9 +123,20 @@ function createDshHarness(options) {
           if (!reconciled || !turn || turn.signal.aborted || messages.some(message => message.id !== turn.turnId)) return { kind: 'reject' };
           return next();
         });
-        agentCtx.tools.restrict({ allow: [] });
-        agentCtx.tools.guard(exec => { const turn = running.get(nativeId); return foreignModified || !reconciled || !allowed.has(exec.name)
-          || !turn || turn.signal.aborted || turn.invocation && !turn.invocation.allowedTools.includes(exec.name) ? 'Tool is outside this turn authority.' : undefined; });
+        if (!options.nativeTools) agentCtx.tools.restrict({ allow: [] });
+        agentCtx.tools.guard(exec => { const turn = running.get(nativeId); return foreignModified || !reconciled || (!options.nativeTools && !allowed.has(exec.name))
+          || !turn || turn.signal.aborted || turn.invocation && !turn.invocation.nativeTools && !turn.invocation.allowedTools.includes(exec.name) ? 'Tool is outside this turn authority.' : undefined; });
+        if (options.nativeTools) agentCtx.on('tools/execute', async (exec, next) => {
+          if (allowed.has(exec.name)) return next();
+          const turn = running.get(nativeId);
+          if (!turn || turn.signal.aborted || !turn.invocation?.nativeTools) throw new Error('Native tool authority was revoked.');
+          await turn.invocation.validateLease?.(exec.name);
+          const call = { id: exec.callId, function: { name: exec.name, arguments: JSON.stringify(exec.arguments) } };
+          turn.publish('tool-request', { call });
+          const work = Promise.resolve().then(next); inFlight.add(work);
+          try { const result = await work; turn.publish('tool-result', { call, result }); return result; }
+          finally { inFlight.delete(work); }
+        });
         agentCtx.systemPrompt.section({ name: 'warp-assistant-agent', order: 0, text: instructions || '', complete: true, interpolate: false });
         for (const tool of tools) agentCtx.tools.register({ ...tool.definition.function,
           output: { schema: {}, render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }] },
@@ -200,6 +211,7 @@ function createDshHarness(options) {
           await handle.agent.whenIdle();
           trace.mark('native.idle', { turnId });
           await Promise.allSettled([...inFlight]);
+          if (options.nativeTools) await ctx.get('jobs').disposeOwned(nativeId);
           const flushStarted = trace.begin();
           await ctx.sessions.flush(handle.agent.session);
           trace.end('native.explicit-flush', flushStarted, { turnId });
@@ -245,7 +257,7 @@ function createDshHarness(options) {
   return {
     workflowRoot: () => ({ cwdRealpath: canonicalRoot(options.workspace) }),
     describe: () => ({ id: 'dsh', version: lock.dshVersion, nodeVersion: lock.nodeVersion, streaming: true, cancellation: 'quiescence',
-      resume: true, isolation: true, concurrency: true, tools: { registeredOnly: true, builtin: false },
+      resume: true, isolation: true, concurrency: true, tools: { registeredOnly: !options.nativeTools, builtin: Boolean(options.nativeTools) },
       profile: verifiedManifest || { profileId: profileIdentity(options), verified: false }, readonlyNativeWeb: 'unsupported', hardStop: 'host-lifecycle-required',
       writerExclusion: { applicationOwners: 'physical-root-lock', canonicalNativeSameLogon: 'native-session-lock',
         rawNativeAliasesOrOtherLogons: 'detect-and-fence', checkpointSource: 'own-live-events', detectionBoundary: 'native-admission-and-release',

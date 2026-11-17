@@ -314,7 +314,14 @@ export class WorkflowScheduler {
           }
           const attemptId = randomUUID();
           const logicalCallId = 'call_' + workflowDigest({ workflowId: state.workflowId, taskId: task.taskId, requestDigest: task.requestDigest });
-          const executionId = 'execution_' + workflowDigest({ logicalCallId });
+          const previous = task.attempts.at(-1);
+          // Explicit replay after a settled stop starts another turn in the same conversation.
+          // All other retries retain their receipt identity, including uncertain submissions.
+          const continued = previous?.executionId && previous.completionDigest
+            && previous.result === 'stopped' && task.quiescence === 'quiescent';
+          const executionId = continued
+            ? 'execution_' + workflowDigest({ logicalCallId, continuedAfter: previous.executionId })
+            : previous?.executionId ?? 'execution_' + workflowDigest({ logicalCallId });
           const agent = taskAgent(state, task);
           const session = state.sessions.find(item => item.sessionRef === task.sessionRef)!;
           emit(state, { type: 'attempt_started', taskId: task.taskId,

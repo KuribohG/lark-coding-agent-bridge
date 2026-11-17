@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { publishHost } from './publish-host.mjs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { builtinModules, createRequire } from 'node:module';
@@ -6,8 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const output = path.join(root, 'dist/host');
-if (path.relative(root, output) !== path.join('dist', 'host')) throw new Error('Unsafe library output');
+const destination = path.join(root, 'dist/host');
+if (path.relative(root, destination) !== path.join('dist', 'host')) throw new Error('Unsafe library output');
+fs.mkdirSync(path.dirname(destination), { recursive: true });
+const output = fs.mkdtempSync(path.join(path.dirname(destination), 'host.build-'));
 const engineRoot = path.join(root, 'packages/workflow-engine');
 const engineRequire = createRequire(path.join(engineRoot, 'package.json'));
 const esbuild = createRequire(engineRequire.resolve('tsup/package.json'))('esbuild');
@@ -19,8 +22,7 @@ const sourceCommit = git(['rev-parse', 'HEAD']);
 git(['merge-base', '--is-ancestor', upstreamBaseCommit, sourceCommit]);
 const sourceDirty = Boolean(git(['status', '--porcelain', '--untracked-files=all']));
 const sourceDateEpoch = Number(git(['show', '-s', '--format=%ct', sourceCommit]));
-fs.rmSync(output, { recursive: true, force: true });
-fs.mkdirSync(output, { recursive: true });
+// Build completely before publishing. A loaded Windows native addon cannot be deleted or overwritten.
 const result = await esbuild.build({ absWorkingDir: root,
   entryPoints: { runtime: 'src/host.ts', workflows: 'packages/workflow-engine/src/index.ts' },
   outdir: output, outExtension: { '.js': '.mjs' }, bundle: true, splitting: false, platform: 'node', format: 'esm',
@@ -55,7 +57,7 @@ for (const file of Object.values(workflowClient.metafile.outputs)) {
 const inputs = {};
 const remember = relative => { inputs[relative] = sha(fs.readFileSync(path.join(root, relative))); };
 for (const name of [...Object.keys(result.metafile.inputs), ...Object.keys(helpers.metafile.inputs), ...Object.keys(workflowClient.metafile.inputs)]) remember(name.replaceAll('\\', '/'));
-for (const name of ['package.json', 'packages/workflow-engine/package.json', 'pnpm-lock.yaml', 'tools/build-host.mjs']) remember(name);
+for (const name of ['package.json', 'packages/workflow-engine/package.json', 'pnpm-lock.yaml', 'tools/build-host.mjs', 'tools/publish-host.mjs']) remember(name);
 const nativeSource = path.join(root, 'src/agent/dsh/native');
 const nativeOutput = path.join(output, 'dsh');
 fs.mkdirSync(nativeOutput);
@@ -138,5 +140,8 @@ const manifest = { schemaVersion: 1, upstreamBaseCommit, resolvedSourceCommit: s
   nativeAddons: Object.keys(files).filter(name => name.endsWith('.node')), wasm: Object.keys(files).filter(name => name.endsWith('.wasm')),
   entries: ['runtime.mjs', 'workflows.mjs'], channelsBundled: false, cliBundled: false, workflowClientBundled: true };
 fs.writeFileSync(path.join(output, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
-console.log(JSON.stringify({ ok: true, output, sourceCommit, sourceDirty, sourceFingerprint: manifest.sourceFingerprint,
+publishHost(output, destination, files);
+if (path.dirname(output) !== path.dirname(destination) || !path.basename(output).startsWith('host.build-')) throw new Error('Unsafe build staging cleanup');
+fs.rmSync(output, { recursive: true, force: true });
+console.log(JSON.stringify({ ok: true, output: destination, sourceCommit, sourceDirty, sourceFingerprint: manifest.sourceFingerprint,
   files: Object.keys(files).length, packages: packages.size, nativeAddons: manifest.nativeAddons, wasm: manifest.wasm }));

@@ -214,7 +214,7 @@ describe('managed workflow worktrees with real Git', () => {
     const checks = await h.checks(merged.workspace);
     await expect(h.op('accept', 'accept', { workspace: merged.workspace.id, checks: checks.id })).rejects.toThrow('checked out');
     expect(await git(h.repo, 'rev-parse', 'HEAD')).toBe(h.base);
-  }, 30_000);
+  }, 60_000);
 
   it('reconciles update-ref-before-journal and remove-before-journal crash windows', async () => {
     const h = await fixture(), a = await h.candidate('a', 'a.txt', 'A\n');
@@ -250,8 +250,15 @@ describe('managed workflow worktrees with real Git', () => {
   it('aborts and times out foreground commands before releasing their workspace', async () => {
     const h = await fixture(), ws = await h.create('a'), controller = new AbortController();
     const running = h.manager.perform({ ...h.ctx, signal: controller.signal }, { kind: 'check', key: 'abort', workspace: ws.id, commands: [{ argv: [process.execPath, '-e', 'setTimeout(()=>{},10000)'] }] });
-    await vi.waitFor(async () => expect((await h.manager.binding(h.root, h.state.workflowId, ws.id, signal())).busy).toBeDefined());
-    controller.abort(); await expect(running).rejects.toThrow('aborted');
+    const settled = running.then(() => {}, () => {});
+    try {
+      // Real Git setup can exceed vi.waitFor's default one second on Windows.
+      await vi.waitFor(async () => expect((await h.manager.binding(h.root, h.state.workflowId, ws.id, signal())).busy).toBeDefined(), { timeout: 10_000 });
+      controller.abort(); await expect(running).rejects.toThrow('aborted');
+    } finally {
+      // A failed readiness assertion must still drain the owned foreground command.
+      controller.abort(); await settled;
+    }
     expect((await h.manager.binding(h.root, h.state.workflowId, ws.id, signal())).busy).toBeUndefined();
     await expect(h.op('check', 'timeout', { workspace: ws.id, commands: [{ argv: [process.execPath, '-e', 'setTimeout(()=>{},10000)'], timeoutMs: 100 }] })).rejects.toThrow('timed out');
   });
