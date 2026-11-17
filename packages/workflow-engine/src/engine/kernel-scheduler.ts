@@ -340,10 +340,11 @@ export class WorkflowScheduler {
       const session = detached<WorkerSession>(live.sessions.find(item => item.sessionRef === turn.sessionRef)!);
       const role = live.definition.roles[session.role]!;
       const inputs = task.inputRefs.map(ref => readArtifact(live, ref));
+      const hostTools = ctx.host.workerHostTools?.(session, workflow.root) ?? Boolean(ctx.host.hostTools);
       const prompt = [role.instructions,
         task.workflowTool ? '只执行指定任务，遵守原始需求的授权范围。可通过注入的子 workflow 工具委派；不要发外部消息。请求子 workflow 后结束本轮让出执行资源，bridge 会在结果就绪时恢复同一会话。' : task.agentId ? '只执行指定任务，遵守原始需求的授权范围。可保存 checkpoint 或发送工作流内部消息；不要发外部消息或再委派子 agent。结果以最终答复返回脚本。' : '只执行指定任务，遵守原始需求的授权范围。不要自行发消息或再委派子 agent。结果以最终答复返回脚本。',
         deadlinePrompt(workflow.deadlineAt, ctx.now()),
-        `需求：\n${workflow.goal}`, `任务：\n${task.objective}`, ...(inputs.length ? [inputArtifactsPrompt(inputs, ctx.host.hostTools)] : [])].join('\n\n');
+        `需求：\n${workflow.goal}`, `任务：\n${task.objective}`, ...(inputs.length ? [inputArtifactsPrompt(inputs, hostTools)] : [])].join('\n\n');
       const recovery = memberContext(live, turn);
       let memberPrompt = recovery ? prompt + '\n\n持久成员上下文（只处理本轮输入；检查已发生的副作用，避免重复执行）：\n'
         + JSON.stringify(recovery) + (live.workQueue ? '\n\n工作队列：\n' + JSON.stringify(workContext(live, turn)) : '') : prompt;
@@ -360,7 +361,7 @@ export class WorkflowScheduler {
       if (observed?.state === 'completed') { await this.notifyExecution(scopeId, workflowId, executionId); return; }
       if (observed && (observed.state !== 'not-submitted' || !observed.proof))
         result = { status: 'unknown', quiescence: 'unknown', error: 'Host execution outcome is not proven' };
-      else result = await ctx.host.execute({ workflow, task, session, attemptId, executionId, logicalCallId, prompt: memberPrompt, signal,
+      else result = await ctx.host.execute({ workflow, task, session, attemptId, executionId, logicalCallId, prompt: memberPrompt, hostTools, signal,
         onRun: runId => {
           // The watchdog starts here: queueing in the host's pool is not the agent's silence.
           this.noteActivity(taskId, attemptId, false);
@@ -611,7 +612,7 @@ function retryDelay(retryCount: number, delays: readonly number[]): number {
 
 const INPUT_PREVIEW_CHARS = 2_000;
 
-/** Inputs travel by reference: the prompt carries a bounded preview and the worker reads the full text through the CLI. */
+/** Inputs travel by reference: the prompt carries a bounded preview and the worker reads the full text through its resolved transport. */
 function inputArtifactsPrompt(inputs: WorkflowArtifact[], hostTools?: boolean): string {
   const listed = inputs.map(({ ref, kind, text }) => text.length <= INPUT_PREVIEW_CHARS
     ? { ref, kind, chars: text.length, text }
