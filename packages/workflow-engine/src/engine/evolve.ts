@@ -27,6 +27,8 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
     case 'clock_resumed': state.deadlineAt = event.deadlineAt; state.restart = undefined; return;
     case 'deadline_extended': state.deadlineAt = event.deadlineAt; return;
     case 'concurrency_changed': state.definition.maxConcurrentWorkers = event.maxConcurrentWorkers; return;
+    case 'charter_set': state.charter = { version: (state.charter?.version ?? 0) + 1, text: event.text, by: event.by, at: event.at }; return;
+    case 'main_wake_set': state.mainWake = event.wake; return;
     case 'artifact_added': state.artifacts.push(event.artifact); return;
     case 'notice_raised': state.events.push(event.notice); return;
     case 'notices_acknowledged':
@@ -200,6 +202,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       const agent = state.agents!.find(item => item.agentId === event.task.agentId)!;
       agent.activeTurnId = event.task.taskId; agent.wait = undefined;
       agent.boardSeq = (state.board?.posts.length ?? 0) + (state.archivedRecords?.post ?? 0);
+      if (state.charter) agent.charterSeen = state.charter.version;
       state.tasks.push(event.task);
       return;
     }
@@ -266,7 +269,9 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       const found = swarm(state, event.swarmId);
       const member = found.members.find(item => item.name === event.member)!;
       member.taskId = event.taskId; member.retryPending = undefined; member.lastWake = event.wake;
-      found.stalled = undefined;
+      if (event.timer) { member.wakeAt = undefined; member.wakeNote = undefined; }
+      // The lead looking in on its own timer is not work resuming: an idle swarm already reported stays reported.
+      if (!(event.timer && event.member === found.lead)) found.stalled = undefined;
       // Work resumed, so the next idle spell earns the lead a fresh set of reminders.
       if (event.member !== found.lead) found.nudges = 0;
       if (!event.retry) {
@@ -277,6 +282,11 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
     }
     case 'swarm_member_wake_cleared': swarm(state, event.swarmId).members.find(item => item.name === event.member)!.lastWake = undefined; return;
     case 'swarm_member_added': swarm(state, event.swarmId).members.push(event.member); return;
+    case 'swarm_member_timer_set': {
+      const member = swarm(state, event.swarmId).members.find(item => item.name === event.member)!;
+      member.wakeAt = event.at; member.wakeNote = event.at === undefined ? undefined : event.note;
+      return;
+    }
     case 'swarm_member_stopped': {
       const member = swarm(state, event.swarmId).members.find(item => item.name === event.member)!;
       member.stopped = event.reason; member.detail = event.detail;

@@ -28,6 +28,15 @@ describe('Lark workflow commands', () => {
     expect(text).toContain('run_script'); expect(text).toContain('service/model-a'); expect(text).toContain('model-b');
     expect(text).toContain('主 agent 沿用当前会话'); expect(text).not.toContain('architecture-review');
   });
+  it('shows and replaces the charter', async () => {
+    const f=fixture(); expect(await f.command('charter')).toContain('当前没有工作流');
+    await f.start(); expect(await f.command('charter')).toContain('尚未设置目标单');
+    expect(await f.command('charter 与参考实现同约束点持平；报告不超过一页')).toContain('已更新为第 1 版');
+    expect(await f.command('charter')).toContain('与参考实现同约束点持平；报告不超过一页');
+    expect(await f.command('status')).toContain('目标单：第 1 版，主 agent 设定');
+    expect(f.kernel.state('topic')!.charter).toMatchObject({version:1,by:'main'});
+    expect(await f.command('help')).toContain('/workflow charter');
+  });
   it('shows usage, prevents duplicate starts and propagates queue rejection', async () => {
     const f=fixture(); expect(await f.command('start')).toContain('用法'); expect(f.submit).not.toHaveBeenCalled();
     f.submit.mockReturnValueOnce('消息队列已满'); expect(await f.command('start task')).toBe('消息队列已满');

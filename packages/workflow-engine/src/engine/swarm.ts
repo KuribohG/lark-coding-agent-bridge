@@ -9,6 +9,7 @@ import type { KernelContext } from './kernel-context';
 import { MAX_CONCURRENT_WORKERS, SWARM_DECLARED_MEMBERS, SWARM_MAX_MEMBERS, SWARM_MAX_TURNS } from './limits';
 import { workerSelection } from './execution';
 import { boundedInteger, parseScriptAgentCall, scriptText } from './script-contract';
+import { WAKE_MAX_MINUTES } from './steering';
 import { availableWork, openQueue, unfinishedWork, workStatus } from './work-queue';
 import { queueControl, queueName } from './work-routing';
 import type { Immutable, NativeIdKind, SwarmMember, WorkerExecution, WorkerExecutionPolicy, WorkerExecutionSelection, WorkflowSwarm, WorkflowTask, WorkflowView } from './types';
@@ -137,6 +138,10 @@ function rules(swarm: SwarmView, member: MemberView): string {
     (lead ? '- Your wake-ups are not limited, but while other members are working the posts that name you are gathered and you are woken for them every few minutes, so handle everything that has arrived in one turn.'
       : `- After this first turn you can be woken at most ${swarm.maxTurns} times.`)
       + ' Save a checkpoint of your working state before ending a turn. Your final answer is a short status note for the workflow log; teammates only see board posts.',
+    '- wake_me wakes you after a delay without anyone naming you. To wait for a long build, test or queue, or to check on something later, save a checkpoint, set it and end the turn; do not hold the turn polling or sleeping.',
+    (lead ? '- The charter is the goal as it stands now, and every member is given it at every turn. When the direction, the priorities or the way results are measured change, replace it with set_charter instead of adding another announcement, and keep it short and current.'
+      + ' Before you end a turn while work is in flight, set wake_me so that you come back to check results against the charter even if nobody names you.'
+      : '- When your prompt carries a charter, it is the goal as it stands now: where it differs from the task or from earlier posts, the charter wins.'),
     ...(member.queue ? [
       `- You consume work queue "${member.queue}" and are also woken when it has work you can claim. Use claim_work to take an item, read item.progress before acting, save checkpoint_work, renew long-running claims, then complete_work or fail_work. Continue until claim_work returns null, then end the turn; do not poll or sleep waiting for work.`,
       '- Do not post a report when you complete an item: the result you give complete_work is the report, and search_work finds it. Post only what someone else must act on.',
@@ -158,8 +163,9 @@ function openingPrompt(swarm: SwarmView, member: MemberView): string {
     + '\nThis is your first turn. Start on your part of the task now; if your role only reacts to others, end the turn with a one-line note.';
 }
 
-function wakePrompt(swarm: SwarmView, member: MemberView): string {
+function wakePrompt(swarm: SwarmView, member: MemberView, timed: boolean): string {
   return `Swarm "${swarm.key}", wake-up ${member.turns + 1}${swarm.lead === member.name ? '' : ' of at most ' + swarm.maxTurns}: board posts that name you are in read_context (member.messages). `
+    + (timed ? `The wake-up you set with wake_me is due${member.wakeNote ? ': ' + member.wakeNote : ''}. ` : '')
     + 'Follow the new announcements in read_context (board.announcements). Act on the posts, use read_board for wider context, and post what others need.'
     + (member.queue ? ` Then consume queue "${member.queue}" with claim_work until it returns null; you may have been woken for new work alone.` : '') + ' End with a short status note.';
 }
@@ -268,13 +274,18 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
     // A starved queue does not wait for the lead's gathering gap: the notice wakes it for the turn that follows.
     const toldLately = () => Object.values(swarm.starved ?? {}).some(entry => (entry.leadAt ?? 0) > (lead && taskOf(lead)?.attempts.at(-1)?.startedAt || 0));
     // Once the lead has finished the swarm, the turns still running end it; nobody is woken again.
+    // A wake-up the member set for itself is due; unlike posts it is not gathered, since the member chose the time.
+    const due = (member: MemberView) => member.wakeAt !== undefined && member.wakeAt <= now;
     const wakeable = (member: MemberView) => !member.stopped && !busy(member) && !swarm.finish
-      && (member.retryPending || (member.taskId ? turnsLeft(member) && !gathering(member) && (unread(member) || hasWork(member))
+      && (member.retryPending || (member.taskId ? turnsLeft(member) && (due(member) || !gathering(member) && (unread(member) || hasWork(member)))
         // A queue consumer starts with its first claimable item instead of an opening turn with nothing to do.
         : !member.queue || hasWork(member)));
     if (!swarm.members.some(busy) && !swarm.members.some(wakeable)) {
       if (lead?.stopped === 'failed') { end('failed', 'The lead failed: ' + (lead.detail ?? '')); return changed; }
       if (swarm.finish) { end('finished'); return changed; }
+      // A member waiting for its own wake-up has work in flight, so the swarm is neither idle nor done. The lead's
+      // wake-up is not work: a lead that only keeps coming back to an idle swarm is still reminded, and then reported.
+      if (swarm.members.some(member => member.name !== swarm.lead && !member.stopped && member.wakeAt !== undefined && turnsLeft(member))) return changed;
       if (lead) {
         // Idle members are not a verdict: a swarm with a lead ends only when the lead finishes it.
         if (swarm.nudges < MAX_NUDGES) {
@@ -315,8 +326,9 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
         break;
       }
       const opening = !member.taskId;
+      const timed = !retry && !opening && due(member);
       const key = retry ? prior!.scriptKey! : `@swarm/${swarm.id}/${turnCount(swarm)}`;
-      const call = { key, member: member.name, prompt: retry ? readText(state, prior!.objective) : opening ? openingPrompt(swarm, member) : wakePrompt(swarm, member),
+      const call = { key, member: member.name, prompt: retry ? readText(state, prior!.objective) : opening ? openingPrompt(swarm, member) : wakePrompt(swarm, member, timed),
         ...(member.workflowTool ? { workflowTool: true } : {}), ...(member.workspace ? { workspace: member.workspace } : {}),
         output: 'text' as const, selection: { agentKind: member.execution.agentKind, ...member.execution.modelSettings } };
       const mail = unread(member);
@@ -337,7 +349,7 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       // A turn woken only by posts is not demand for a work item.
       if (!retry && queued && !forWork && !task.consumerMessageTurn) record({ type: 'task_message_turn_marked', taskId: task.taskId });
       if (forWork) queued!.slots--;
-      record({ type: 'swarm_turn_scheduled', swarmId: swarm.id, member: member.name, key, taskId: task.taskId, retry, opening, ...(queued ? { wake: queued.wake } : {}) });
+      record({ type: 'swarm_turn_scheduled', swarmId: swarm.id, member: member.name, key, taskId: task.taskId, retry, opening, ...(queued ? { wake: queued.wake } : {}), ...(timed ? { timer: true } : {}) });
       record({ type: 'script_call_recorded', call: { key, taskId: task.taskId, cached: false } });
       if (!retry) additionalTurnsAllowed--;
       slots--;
@@ -578,6 +590,28 @@ export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, 
   return result;
 }
 
+/**
+ * A member's request to be woken after a delay. Members otherwise run only when a post names them or their queue has
+ * work, so one that waits for a long job, or wants to look at something again later, had to hold its turn open.
+ */
+export function setMemberTimer(state: WorkflowView, caller: string, input: Record<string, unknown>, now: number): unknown {
+  const swarm = ownerOf(state, caller);
+  if (!swarm || swarm.status !== 'running' || swarm.runId !== state.script?.runId) throw new Error('wake_me is for the members of a running swarm');
+  if (swarm.finish) throw new Error('Swarm is already finishing');
+  const member = swarm.members.find(item => item.name === caller)!;
+  if (input.afterMinutes === undefined) throw new Error('Give afterMinutes; 0 cancels the wake-up');
+  const minutes = boundedInteger(input.afterMinutes, 0, 0, WAKE_MAX_MINUTES);
+  if (!minutes) {
+    if (member.wakeAt !== undefined) emit(state, { type: 'swarm_member_timer_set', swarmId: swarm.id, member: caller });
+    return { wakeAt: null };
+  }
+  if (caller !== swarm.lead && member.turns >= swarm.maxTurns) throw new Error('You have no wake-ups left; report what remains on the board instead');
+  const note = input.note === undefined ? undefined : scriptText(input.note, 'note', 500).trim() || undefined;
+  const at = now + minutes * 60_000;
+  emit(state, { type: 'swarm_member_timer_set', swarmId: swarm.id, member: caller, at, ...(note ? { note } : {}) });
+  return { wakeAt: new Date(at).toISOString() };
+}
+
 export function finishSwarm(state: WorkflowView, caller: string, input: Record<string, unknown>): unknown {
   const swarm = leadSwarm(state, caller);
   emit(state, { type: 'swarm_finish_requested', swarmId: swarm.id, result: scriptText(input.result, 'swarm result', 16_000) });
@@ -593,7 +627,7 @@ function memberSummary(state: WorkflowView, swarm: SwarmView, member: MemberView
     // Only the members bound unlike the rest carry their binding, which keeps a large swarm's summary short.
     ...(member.execution.agentKind !== usual.agentKind ? { harness: member.execution.agentKind } : {}),
     ...(model && (model !== usual.modelSettings.model || member.execution.agentKind !== usual.agentKind) ? { model } : {}), turns: member.turns, status,
-    ...(member.detail ? { error: member.detail } : {}) };
+    ...(member.wakeAt !== undefined ? { wakeAt: member.wakeAt } : {}), ...(member.detail ? { error: member.detail } : {}) };
 }
 
 /**

@@ -215,6 +215,7 @@ export function renderWorkflowProgress(state: WorkflowState, now = Date.now()): 
   // The status itself is a separate field for the host's title.
   const lines = [...state.script?.phase ? [`**阶段**：${plain(state.script.phase, 200)}`] : [],
     `**需求**：${plain(state.goal, 200)}`,
+    ...state.charter ? [`**目标单**（第 ${state.charter.version} 版）：${plain(state.charter.text, 200)}`] : [],
     `**轮次**：共 ${state.tasks.length + (state.archived?.tasks ?? 0)}，完成 ${count(['result_ready'])}，执行中 ${count(['running', 'starting']) - slotWaiting}`
       + `${slotWaiting ? `，等待执行槽位 ${slotWaiting}` : ''}，排队 ${count(['queued'])}，失败 ${count(['failed'])}`];
   // Only running workflows show clocks, so periodic refreshes leave a stopped card unchanged.
@@ -252,6 +253,7 @@ export function renderWorkflowProgress(state: WorkflowState, now = Date.now()): 
 export function renderWorkflowStatus(state: WorkflowState, memberKey?: string, latest = false, now = Date.now()): string {
   const lines = [`${compact(state.script?.name ?? state.definition.id, 100)}：${state.status}${latest ? '（最近一次）' : ''}`,
     `需求：${compact(state.goal, 300)}`,
+    ...state.charter ? [`目标单：第 ${state.charter.version} 版，${state.charter.by === 'main' ? '主 agent' : compact(state.charter.by, 50)} 设定；/workflow charter 查看全文`] : [],
     `主 agent：${state.root.agentKind}，模型：${compact(state.root.modelSettings.model ?? '默认', 100)}${state.root.modelSettings.reasoningEffort ? `，思考强度：${state.root.modelSettings.reasoningEffort}` : ''}`];
   if (state.script) {
     lines.push(`脚本：${state.script.status}${state.script.phase ? `，${compact(state.script.phase, 200)}` : ''}，重放 ${state.script.revision} 次`);

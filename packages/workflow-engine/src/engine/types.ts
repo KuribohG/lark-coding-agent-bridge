@@ -84,6 +84,8 @@ export interface DurableAgent {
   wait?: WaitState;
   /** Posts the board held when the member's latest turn was scheduled. */
   boardSeq?: number;
+  /** The charter version in force when the member's latest turn was scheduled. */
+  charterSeen?: number;
 }
 
 export interface AgentCheckpoint {
@@ -185,6 +187,9 @@ export interface SwarmMember {
   detail?: string;
   /** Times the engine put the member back to work after a failed turn, without anyone asking. */
   autoRevived?: number;
+  /** A wake-up the member asked for with wake_me: when it is due and what it is for. Cleared by the turn it starts. */
+  wakeAt?: number;
+  wakeNote?: string;
 }
 /**
  * A group of persistent members that coordinate on the board. The kernel schedules their turns: every member runs
@@ -218,6 +223,23 @@ export interface WorkflowSwarm {
   /** Turns whose task is still in the state, oldest first; `archivedTurns` counts the completed ones that left it. */
   turns: Array<{ key: string; member: string; taskId: string }>;
   archivedTurns?: number;
+}
+/**
+ * The goal as it stands now. The workflow's goal and a swarm's task are fixed when they start; the charter is what the
+ * main agent or a lead replaces when the direction changes, and every worker turn is given the version in force.
+ */
+export interface WorkflowCharter {
+  version: number;
+  text: string;
+  /** `main`, or the name of the lead that set it. */
+  by: string;
+  at: number;
+}
+/** A wake-up of the main agent it asked for with wake_me: due at `at`, and again every `every` ms when recurring. */
+export interface MainWake {
+  at: number;
+  every?: number;
+  note?: string;
 }
 export interface WorkflowBoard {
   posts: BoardPost[];
@@ -353,6 +375,8 @@ export interface AgentTurn {
   previousTurnId?: string;
   /** Member turns: posts the board held when the member's previous turn was scheduled; later ones are new to this turn. */
   boardSince?: number;
+  /** Member turns: the charter version in force when the member's previous turn was scheduled; a later one is new to this turn. */
+  charterSince?: number;
   inputCheckpointVersion?: number;
   inputMessageIds?: string[];
   workflowTool?: boolean;
@@ -418,7 +442,7 @@ export interface WorkflowArtifact {
 
 export interface WorkflowEvent {
   id: string;
-  kind: 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed' | 'worker_reply' | 'worker_input_required' | 'swarm_stalled' | 'swarm_attention';
+  kind: 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed' | 'worker_reply' | 'worker_input_required' | 'swarm_stalled' | 'swarm_attention' | 'review_due';
   taskId?: string;
   artifactRef?: string;
   summary: string;
@@ -474,6 +498,8 @@ export interface WorkflowState {
   checkpoints?: AgentCheckpoint[];
   mailbox?: AgentMailbox;
   board?: WorkflowBoard;
+  charter?: WorkflowCharter;
+  mainWake?: MainWake;
   direct?: DirectMessage[];
   swarms?: WorkflowSwarm[];
   workQueue?: WorkflowWorkQueue;

@@ -83,7 +83,7 @@ describe('Codex-root workflow with Pi process workers', () => {
     await vi.waitFor(()=>expect(f.runtime.kernel.state(f.root.scopeId)?.mailbox?.receipts[0]?.status).toBe('waiting'),{timeout:10000});
     const saved=await f.call('read_checkpoint',{member:'designer'});
     expect(saved).toMatchObject({version:2,state:{decision:'persist native session',next:'review'},nativeSessionId:'pi-child'});
-    await f.call('send_message',{member:'designer',text:'approved'});
+    await f.call('post_board',{to:['designer'],text:'approved'});
     await vi.waitFor(()=>expect(f.runtime.kernel.state(f.root.scopeId)?.script?.status).toBe('result_ready'),{timeout:5000});
     const runs=(await readFile(f.record,'utf8')).trim().split('\n').map(line=>JSON.parse(line));
     expect(runs).toHaveLength(2);

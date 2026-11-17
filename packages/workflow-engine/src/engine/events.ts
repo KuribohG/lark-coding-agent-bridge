@@ -1,5 +1,5 @@
 import type {
-  DirectMessage, AgentCheckpoint, BoardPost, DurableAgent, MailboxMessage, MailboxReceipt, SessionBinding, StoredArtifact, StoredTask, SwarmMember, TurnAttempt, WorkClaim,
+  DirectMessage, AgentCheckpoint, BoardPost, DurableAgent, MailboxMessage, MainWake, MailboxReceipt, SessionBinding, StoredArtifact, StoredTask, SwarmMember, TurnAttempt, WorkClaim,
   WorkerExecutionSelection, WorkflowData, WorkflowEvent, WorkflowScript, WorkflowStopReason, WorkflowSwarm, WorkflowWait, WorkflowWorkItem,
 } from './types';
 import type { RecordKind } from './records';
@@ -28,6 +28,9 @@ export type DomainEvent =
   | { type: 'clock_resumed'; deadlineAt: number }
   | { type: 'deadline_extended'; deadlineAt: number }
   | { type: 'concurrency_changed'; maxConcurrentWorkers: number }
+  | { type: 'charter_set'; text: string; by: string; at: number }
+  /** The main agent's wake-up as it stands after being set, rearmed or cancelled. */
+  | { type: 'main_wake_set'; wake?: MainWake }
   | { type: 'artifact_added'; artifact: StoredArtifact }
   | { type: 'notice_raised'; notice: WorkflowEvent }
   | { type: 'notices_acknowledged'; ids: string[]; at: number }
@@ -89,7 +92,9 @@ export type DomainEvent =
   | { type: 'swarm_created'; swarm: WorkflowSwarm }
   /** `archivedCalls`: the swarm's archived turns, which count as calls of the new run like its other completed turns. */
   | { type: 'swarm_rebound'; swarmId: string; runId: string; retryPending: string[]; archivedCalls?: number; reopened?: boolean }
-  | { type: 'swarm_turn_scheduled'; swarmId: string; member: string; key: string; taskId: string; retry: boolean; opening: boolean; wake?: string }
+  | { type: 'swarm_turn_scheduled'; swarmId: string; member: string; key: string; taskId: string; retry: boolean; opening: boolean; wake?: string; timer?: boolean }
+  /** A member's own wake-up; without `at` it is cancelled. */
+  | { type: 'swarm_member_timer_set'; swarmId: string; member: string; at?: number; note?: string }
   | { type: 'swarm_member_wake_cleared'; swarmId: string; member: string }
   | { type: 'swarm_member_added'; swarmId: string; member: SwarmMember }
   | { type: 'swarm_member_stopped'; swarmId: string; member: string; reason: 'failed' | 'retired'; detail?: string }
@@ -151,6 +156,8 @@ const DURABLE = new Set<DomainEvent['type']>([
   'script_succeeded', 'script_failed', 'workflow_created',
   'workflow_completed', 'workflow_cancelled', 'workflow_paused', 'workflow_interrupted',
   'swarm_ended', 'swarm_finish_requested',
+  // A change of direction: a worker that never hears of it keeps working toward the old one.
+  'charter_set',
 ]);
 
 /** Whether a commit carrying this event must be synced to disk (see DURABLE). */

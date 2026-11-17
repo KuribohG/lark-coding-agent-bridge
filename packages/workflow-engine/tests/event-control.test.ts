@@ -54,10 +54,10 @@ describe('durable events and task control', () => {
       { kind: 'message', member: 'A', topic: 'evidence', correlationId: 'issue-1' },
       { kind: 'message', member: 'B', topic: 'review' },
     ] });
-    await h.call('send_message', { member: 'A', text: 'unrelated', topic: 'evidence', correlationId: 'issue-2' });
+    await h.mail({ kind: 'send', key: 'send-unrelated', member: 'A', text: 'unrelated', topic: 'evidence', correlationId: 'issue-2' });
     expect(h.result(pending)).toBeUndefined();
     await expect(h.agent('A', 'too-early')).rejects.toThrow('waiting for an event');
-    await h.call('send_message', { member: 'B', text: 'verified', topic: 'review' });
+    await h.mail({ kind: 'send', key: 'send-verified', member: 'B', text: 'verified', topic: 'review' });
     expect(h.result(pending)).toMatchObject({ index: 1, kind: 'message', value: [{ text: 'verified', topic: 'review' }] });
     const box = h.state().mailbox!;
     expect(box.messages.find(message => message.text === 'unrelated')!.receiptId).toBeUndefined();
@@ -78,7 +78,7 @@ describe('durable events and task control', () => {
     h.advance(599); await h.kernel.tick(); expect(h.result(pending)).toBeUndefined();
     h.advance(1); await h.kernel.tick(); expect(h.result(pending)).toEqual({ index: 1, kind: 'timer', value: { at: 1_001_000 } });
     expect(h.state().agents![0]!.wait).toBeUndefined();
-    await h.call('send_message', { member: 'A', text: 'late' });
+    await h.call('post_board', { to: ['A'], text: 'late' });
     expect(h.state().mailbox!.messages[0]!.receiptId).toBeUndefined();
     await h.replay(); await h.agent('A');
     expect(h.result(await h.control('wait', spec))).toEqual({ index: 1, kind: 'timer', value: { at: 1_001_000 } });
@@ -104,7 +104,7 @@ describe('durable events and task control', () => {
     const h = harness(); await h.start(); await h.bootstrap('A');
     const wait = await h.control('wait', { key: 'deadline', any: [{ kind: 'message', member: 'A' }, { kind: 'timer', afterMs: 10 }] });
     h.advance(11);
-    await h.call('send_message', { member: 'A', text: 'after deadline' });
+    await h.call('post_board', { to: ['A'], text: 'after deadline' });
     expect(h.result(wait)).toMatchObject({ kind: 'timer' });
     expect(h.state().mailbox!.messages[0]!.receiptId).toBeUndefined();
   });

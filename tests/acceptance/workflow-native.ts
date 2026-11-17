@@ -330,7 +330,7 @@ async function childPhase(test: Case, phase: string, directory: string) {
       const before=JSON.parse(await readFile(join(directory,'before.json'),'utf8'));
       assert.notEqual(process.pid,before.pid,'Recovery must run in a fresh OS process');
       if (test.scenario !== 'interrupt') {
-        await call('send_message', { member: test.scenario === 'discussion' ? 'B' : 'A', text: 'Continue the agreed test now.' });
+        await call('post_board', { to: [test.scenario === 'discussion' ? 'B' : 'A'], text: 'Continue the agreed test now.' });
       }
       assert.equal(observations.length,0,'Queued messages must not implicitly resume an interrupted workflow');
       await call('replay_script');

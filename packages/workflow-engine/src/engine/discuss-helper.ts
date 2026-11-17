@@ -54,7 +54,7 @@ export const DISCUSS_HELPER = `
       const roster = members.map(member => member.name + (member.role ? ' — ' + member.role : '')).join('\\n');
       const format = 'Reply with JSON only: {"message": string (at most 3500 characters), "to": [member names] (omit to address everyone; [] to stay silent), "agree": boolean}. '
         + 'Set agree to true only when you accept the current position and have nothing material to add. '
-        + 'Address other members through this reply rather than the send_message tool.';
+        + 'Address other members through this reply.';
       const transcript = [];
       const pending = Object.fromEntries(names.map(name => [name, 0]));
       const agreed = Object.fromEntries(names.map(name => [name, false]));

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { WorkflowStopped, stopReasonOf } from './ports';
 import { workflowDigest } from './digest';
 import { cancelWork, expireWorkClaims, freezeWorkClaims, releaseWorkClaims, workContext } from './work-queue';
+import { charterPrompt, pumpMainWake } from './steering';
 import { pumpSwarms } from './swarm';
 import { settleEventWaits } from './event-waits';
 import { nestedContext } from './nested-workflow';
@@ -254,6 +255,7 @@ export class WorkflowScheduler {
       store.transact(() => {
         settleEventWaits(state, ctx.now());
         pumpSwarms(state, kind => ctx.nativeIdKind(kind), ctx.now(), ctx.children.remainingTreeTasks(state));
+        pumpMainWake(state, ctx.now());
         // While the script runs, what has long settled leaves the state; once it stops, what remains stays for review.
         if (state.script?.status === 'running' && ctx.now() - (this.archivedAt.get(state.workflowId) ?? 0) >= ARCHIVE_EVERY_MS) {
           this.archivedAt.set(state.workflowId, ctx.now());
@@ -333,10 +335,11 @@ export class WorkflowScheduler {
       const session = detached<WorkerSession>(live.sessions.find(item => item.sessionRef === turn.sessionRef)!);
       const role = live.definition.roles[session.role]!;
       const inputs = task.inputRefs.map(ref => readArtifact(live, ref));
+      const charter = charterPrompt(live, turn);
       const prompt = [role.instructions,
-        task.workflowTool ? '只执行指定任务，遵守原始需求的授权范围。可通过注入的子 workflow 工具委派；不要发外部消息。请求子 workflow 后结束本轮让出执行资源，bridge 会在结果就绪时恢复同一会话。' : task.agentId ? '只执行指定任务，遵守原始需求的授权范围。可保存 checkpoint 或发送工作流内部消息；不要发外部消息或再委派子 agent。结果以最终答复返回脚本。' : '只执行指定任务，遵守原始需求的授权范围。不要自行发消息或再委派子 agent。结果以最终答复返回脚本。',
+        task.workflowTool ? '只执行指定任务，遵守原始需求的授权范围。可通过注入的子 workflow 工具委派；不要发外部消息。请求子 workflow 后结束本轮让出执行资源，bridge 会在结果就绪时恢复同一会话。' : task.agentId ? '只执行指定任务，遵守原始需求的授权范围。可保存 checkpoint 或在工作流留言板发帖；不要发外部消息或再委派子 agent。结果以最终答复返回脚本。' : '只执行指定任务，遵守原始需求的授权范围。不要自行发消息或再委派子 agent。结果以最终答复返回脚本。',
         deadlinePrompt(workflow.deadlineAt, ctx.now()),
-        `需求：\n${workflow.goal}`, `任务：\n${task.objective}`, ...(inputs.length ? [inputArtifactsPrompt(inputs, ctx.host.hostTools)] : [])].join('\n\n');
+        `需求：\n${workflow.goal}`, ...(charter ? [charter] : []), `任务：\n${task.objective}`, ...(inputs.length ? [inputArtifactsPrompt(inputs, ctx.host.hostTools)] : [])].join('\n\n');
       const recovery = memberContext(live, turn);
       let memberPrompt = recovery ? prompt + '\n\n持久成员上下文（只处理本轮输入；检查已发生的副作用，避免重复执行）：\n'
         + JSON.stringify(recovery) + (live.workQueue ? '\n\n工作队列：\n' + JSON.stringify(workContext(live, turn)) : '') : prompt;

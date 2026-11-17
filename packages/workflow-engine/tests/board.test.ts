@@ -481,6 +481,114 @@ describe('swarm', () => {
     expect(h.specs.find(spec => /You are member "qa"/.test(spec.prompt))!.prompt).not.toContain('claim_work');
   });
 
+  it('gives every turn the charter in force, tells the lead when the main agent replaces it, and lets only them set it', async () => {
+    let release!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    cleanup.push(async () => release());
+    const h = await play('return await swarm("Build the parser", {key:"crew", lead:{name:"lead"}, members:[{name:"dev"}]});', {
+      lead: [{ hold }, { calls: [['read_context', {}], ['set_charter', { text: 'Parser first; no reports.' }]] }, { call: ['swarm_finish', { result: 'done' }] }],
+      dev: [{ calls: [['set_charter', { text: 'not mine to set' }]] }],
+    });
+    const state = () => h.runtime.kernel.state(h.root.scopeId)!;
+    const main = (method: string, args: Record<string, unknown>) => h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, method,
+      { operationId: randomUUID(), workflowId: state().workflowId, ...args });
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(h.order).toContain('lead1'); expect(h.errors).toHaveLength(1); }, { timeout: 10_000 });
+    expect(h.errors).toEqual([expect.stringContaining('Only the main agent and the lead of a running swarm can set the charter')]);
+    await expect(main('set_charter', { text: '   ' })).rejects.toThrow('empty');
+    await expect(main('set_charter', { text: 'x'.repeat(6001) })).rejects.toThrow('at most 6000 characters');
+    // The main agent needs no state version, and the lead is told on the board, which wakes it once its turn ends.
+    expect(await main('set_charter', { text: 'Match the reference at the same constraints; 1.10x is a floor, not the goal.' })).toMatchObject({ charterVersion: 1, notified: ['lead'] });
+    expect(state().board!.posts.at(-1)).toMatchObject({ author: 'system', text: expect.stringContaining('The charter was replaced (version 1, set by the main agent)') });
+    release();
+    const { result } = await h.settled();
+    expect(result).toMatchObject({ stop: 'finished', result: 'done' });
+    const prompt = (turn: string) => h.specs[h.order.indexOf(turn)]!.prompt;
+    expect(prompt('lead1')).not.toContain('现行目标单');
+    expect(prompt('lead2')).toContain('现行目标单（第 1 版，由主 agent设定；自你上一轮以来已更新');
+    expect(prompt('lead2')).toContain('1.10x is a floor, not the goal.');
+    expect(h.results[0]).toMatchObject({ charter: { version: 1, by: 'main', changed: true } });
+    // The lead's own revision names no one: it is the only lead, and members read it at their next turn.
+    expect(h.results[1]).toMatchObject({ charterVersion: 2, notified: [] });
+    expect(prompt('lead3')).toContain('现行目标单（第 2 版，由 lead lead 设定');
+    expect(prompt('lead3')).toContain('Parser first; no reports.');
+    expect(state().charter).toMatchObject({ version: 2, by: 'lead', text: 'Parser first; no reports.' });
+    expect(prompt('lead1')).toContain('replace it with set_charter instead of adding another announcement');
+  });
+
+  it('wakes a member when the wake-up it set is due, and keeps the swarm open until then', async () => {
+    let ahead = 0;
+    const real = Date.now.bind(Date);
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => real() + ahead);
+    cleanup.push(async () => clock.mockRestore());
+    const h = await play('return await swarm("Wait for the build", {key:"timed", maxTurns: 3, members:[{name:"dev"},{name:"qa"}]});', {
+      dev: [{ calls: [['wake_me', { afterMinutes: 30, note: 'check the build' }]] }, { calls: [['wake_me', { afterMinutes: 5 }], ['wake_me', { afterMinutes: 0 }]] }],
+      qa: [{ calls: [['wake_me', { afterMinutes: 0 }], ['wake_me', { afterMinutes: 1441 }], ['wake_me', {}]] }],
+    });
+    const state = () => h.runtime.kernel.state(h.root.scopeId)!;
+    const dev = () => state().swarms![0]!.members.find(member => member.name === 'dev')!;
+    const ticks = async (count: number) => { for (let pass = 0; pass < count; pass++) { await h.runtime.tick(); await new Promise(resolve => setTimeout(resolve, 5)); } };
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(dev().wakeAt).toBeDefined(); expect(state().tasks.every(task => task.status === 'result_ready')).toBe(true); }, { timeout: 10_000 });
+    // Nobody is named and nobody is working, yet a swarm without a lead does not end while a wake-up is pending.
+    await ticks(5);
+    expect([...h.order].sort()).toEqual(['dev1', 'qa1']);
+    expect(state().swarms![0]).toMatchObject({ status: 'running' });
+    expect(dev()).toMatchObject({ wakeNote: 'check the build' });
+    ahead += 29 * 60_000;
+    await ticks(5);
+    expect(h.order).toHaveLength(2);
+    ahead += 61_000;
+    const { result } = await h.settled();
+    expect(h.order).toEqual(expect.arrayContaining(['dev2']));
+    expect(h.specs[h.order.indexOf('dev2')]!.prompt).toContain('The wake-up you set with wake_me is due: check the build.');
+    // Its second turn set a wake-up and cancelled it, so the swarm went quiet.
+    expect(result).toMatchObject({ stop: 'quiet', members: [{ name: 'dev', turns: 1 }, { name: 'qa', turns: 0 }] });
+    expect(dev().wakeAt).toBeUndefined();
+    expect(h.results.filter(item => (item as { wakeAt: string | null }).wakeAt === null)).toHaveLength(2);
+    expect(h.results).toHaveLength(4);
+    expect(h.errors.sort()).toEqual([expect.stringContaining('between 0 and 1440'), expect.stringContaining('Give afterMinutes')].sort());
+    expect(h.specs[0]!.prompt).toContain('wake_me wakes you after a delay');
+  });
+
+  it('wakes the main agent for a review on the schedule it set, one pending review at a time', async () => {
+    let ahead = 0;
+    const real = Date.now.bind(Date);
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => real() + ahead);
+    cleanup.push(async () => clock.mockRestore());
+    // An idle swarm with a lead keeps the script running with no turn in flight, which the moving clock could stall.
+    const h = await play('return await swarm("Long work", {key:"long", lead:{name:"lead"}, members:[{name:"dev"}]});', {});
+    const state = () => h.runtime.kernel.state(h.root.scopeId)!;
+    const main = (method: string, args: Record<string, unknown>) => h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, method,
+      { operationId: randomUUID(), workflowId: state().workflowId, ...args });
+    const reviews = () => state().events.filter(event => event.kind === 'review_due');
+    const ticks = async (count: number) => { for (let pass = 0; pass < count; pass++) { await h.runtime.tick(); await new Promise(resolve => setTimeout(resolve, 5)); } };
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(state().swarms![0]!.stalled).toBe(true); }, { timeout: 10_000 });
+    await expect(main('wake_me', {})).rejects.toThrow('Give afterMinutes, everyMinutes or both');
+    await expect(main('wake_me', { everyMinutes: 5 })).rejects.toThrow('between 10 and 1440');
+    expect(await main('wake_me', { everyMinutes: 30, note: 'parity first' })).toMatchObject({ everyMinutes: 30, wakeAt: expect.any(String) });
+    await ticks(3);
+    expect(reviews()).toHaveLength(0);
+    ahead += 31 * 60_000;
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(reviews()).toHaveLength(1); }, { timeout: 10_000 });
+    expect(reviews()[0]).toMatchObject({ acknowledged: false, summary: expect.stringContaining('定时复盘（parity first）') });
+    expect(reviews()[0]!.summary).toContain('尚未设置目标单');
+    // The next one is due while the first still waits for the main agent: it is rearmed but not raised again.
+    ahead += 31 * 60_000;
+    await ticks(3);
+    expect(reviews()).toHaveLength(1);
+    expect(state().mainWake!.at).toBeGreaterThan(Date.now());
+    await vi.waitFor(() => main('ack_events', { eventIds: [reviews()[0]!.id], expectedStateVersion: state().stateVersion }), { timeout: 5000 });
+    ahead += 31 * 60_000;
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(reviews()).toHaveLength(2); }, { timeout: 10_000 });
+    // A single wake-up replaces the recurring one and leaves nothing behind once it has fired.
+    expect(await main('wake_me', { afterMinutes: 10 })).not.toHaveProperty('everyMinutes');
+    ahead += 11 * 60_000;
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(state().mainWake).toBeUndefined(); }, { timeout: 10_000 });
+    expect(await main('wake_me', { everyMinutes: 60 })).toMatchObject({ everyMinutes: 60 });
+    expect(await main('wake_me', { everyMinutes: 0 })).toMatchObject({ wakeAt: null });
+    expect(state().mainWake).toBeUndefined();
+    expect(state().script!.status).toBe('running');
+  }, 30_000);
+
   it('rejects malformed swarms before starting any member', async () => {
     const run = async (options: unknown) => {
       const h = await play('return await swarm("task",' + JSON.stringify({ onError: 'throw', ...(options as object) }) + ');', {});
@@ -507,7 +615,7 @@ describe('append-only main operations', () => {
     const posted = await main('post_board', { text: 'note for everyone' }) as { seq: number; stateVersion: number };
     expect(posted.stateVersion).toBe(h.state().stateVersion);
     await expect(main('post_board', { text: 'sent with an old version', expectedStateVersion: stale })).resolves.toMatchObject({ seq: posted.seq + 1 });
-    await expect(main('send_message', { member: 'alice', text: 'please look' })).resolves.toMatchObject({ stateVersion: expect.any(Number) });
+    await expect(main('set_charter', { text: 'Ship the fix; tests must pass.' })).resolves.toMatchObject({ stateVersion: expect.any(Number), charterVersion: 1 });
     await expect(main('enqueue_work', { key: 'item-1', title: 'First item', input: 'do it' })).resolves.toMatchObject({ itemId: expect.any(String) });
 
     // A repeated operationId returns the recorded response instead of appending twice.

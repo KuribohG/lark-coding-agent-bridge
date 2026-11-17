@@ -497,7 +497,7 @@ describe('script workflow runtime', () => {
     expect(h.state().status).toBe('active');
     expect(h.adapters.codex.runs).toHaveLength(1);
     // The resumed script is live, so retry if its own progress moves the state version first.
-    await vi.waitFor(()=>h.call('send_message',{member:'A',text:'arrived during restart'}),{timeout:5000,interval:20});
+    await vi.waitFor(()=>h.call('post_board',{to:['A'],text:'arrived during restart'}),{timeout:5000,interval:20});
     await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
     expect(h.adapters.codex.runs).toHaveLength(2);
     expect(h.adapters.codex.runOptions[1]?.threadId).toBe('saved-thread');
@@ -580,7 +580,7 @@ describe('script workflow runtime', () => {
     expect(h.adapters[kind].runs[0]?.waitForExitCalls).toBeGreaterThan(0);
     expect(h.state().tasks[0]?.status).toBe('result_ready');
     expect(h.wakeMain).not.toHaveBeenCalled();
-    await h.call('send_message',{member:'designer',text:'review approved'});
+    await h.call('post_board',{to:['designer'],text:'review approved'});
     await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
     const opts=h.adapters[kind].runOptions[1]!;
     expect(kind==='codex'?opts.threadId:opts.sessionId).toBe(id);

@@ -35,6 +35,7 @@ function fullSummary(ctx: KernelContext, state: WorkflowView): Summary {
     workflowId: state.workflowId, plugin: { id: state.definition.id, version: state.definition.version, digest: state.definitionDigest },
     stateVersion: state.stateVersion, status: state.status, goalRef: state.artifacts[0]?.ref,
     goalPreview: state.goal.slice(0, 500),
+    ...(state.charter ? { charter: state.charter } : {}), ...(state.mainWake ? { mainWake: state.mainWake } : {}),
     deadlineAt: state.deadlineAt, root: state.root, taskCounts,
     ...(state.archived || state.archivedRecords ? { archived: { tasks: state.archived?.tasks ?? 0, ...state.archivedRecords } } : {}),
     sessions: state.sessions,

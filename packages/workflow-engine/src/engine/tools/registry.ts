@@ -2,8 +2,9 @@ import { artifactTools } from './artifacts';
 import { boardTools, swarmTools } from './board';
 import { directTools } from './direct';
 import { lifecycleTools } from './lifecycle';
-import { mailboxTools, memberContextTools } from './members';
+import { memberContextTools } from './members';
 import { nestedWorkflowTools } from './nested-workflow';
+import { steeringTools } from './steering';
 import type { MainTool, WorkerTool, WorkflowToolPlugin } from './types';
 import { workQueueTools } from './work-queue';
 
@@ -48,5 +49,5 @@ export class WorkflowToolRegistry {
 }
 
 export const BUILTIN_WORKFLOW_TOOLS = new WorkflowToolRegistry([
-  lifecycleTools, artifactTools, memberContextTools, mailboxTools, boardTools, directTools, swarmTools, workQueueTools, nestedWorkflowTools,
+  lifecycleTools, artifactTools, steeringTools, memberContextTools, boardTools, directTools, swarmTools, workQueueTools, nestedWorkflowTools,
 ]);
