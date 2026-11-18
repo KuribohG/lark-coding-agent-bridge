@@ -45,6 +45,9 @@ concurrency = 100
 start, the second bounds how many are unanswered. A request needs both a token
 and a free slot.
 
+`concurrency = 0` means the provider imposes no in-flight limit: only the rate
+bucket applies. Use it for an endpoint that queues or throttles on its own.
+
 `burst` cannot exceed `rpm`: a burst larger than a minute of refill would make
 the first second of a minute indistinguishable from an outage.
 

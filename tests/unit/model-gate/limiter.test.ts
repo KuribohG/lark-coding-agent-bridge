@@ -161,6 +161,27 @@ describe('GateBucket', () => {
     expect(queued.outcome).toBe('granted');
   });
 
+  it('treats concurrency = 0 as no in-flight limit, still charging a token per request', async () => {
+    const h = harness({ rpm: 6000, burst: 100, concurrency: 0 });
+    for (let i = 0; i < 60; i++) void acquire(h.bucket);
+    await settle();
+
+    // Well past any default slot count: every request starts while tokens last.
+    expect(h.bucket.stats()).toMatchObject({ inflight: 60, queued: 0, concurrency: 0 });
+  });
+
+  it('does not start more requests than the rate bucket has tokens even when unlimited', async () => {
+    const h = harness({ rpm: 60, burst: 2, concurrency: 0 });
+    for (let i = 0; i < 4; i++) void acquire(h.bucket);
+    await settle();
+    expect(h.bucket.stats()).toMatchObject({ inflight: 2, queued: 2 });
+
+    // 60 rpm = one token a second, exactly like the bounded case.
+    h.advance(1000);
+    await settle();
+    expect(h.bucket.stats()).toMatchObject({ inflight: 3, queued: 1 });
+  });
+
   it('rejects queued waiters when the gate shuts down', async () => {
     const h = harness({ rpm: 60, burst: 1, concurrency: 1 });
     await acquire(h.bucket);

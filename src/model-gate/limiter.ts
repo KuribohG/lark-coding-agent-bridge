@@ -130,7 +130,9 @@ export class GateBucket {
   pump(): void {
     if (this.closed) return;
     this.refill();
-    while (this.inflight.size < this.config.concurrency && this.waiters.length > 0) {
+    while (this.waiters.length > 0) {
+      // concurrency = 0 means the provider has no in-flight limit.
+      if (this.config.concurrency !== 0 && this.inflight.size >= this.config.concurrency) break;
       // Refill is fractional; a token reached to within rounding error is a token.
       if (this.tokens < 1 - 1e-9) break;
       const waiter = this.takeNext();

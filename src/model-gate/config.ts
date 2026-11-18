@@ -12,7 +12,11 @@ export interface ModelGateBucketConfig {
   rpm: number;
   /** Requests that may start back to back after an idle period; ≤ the provider's bucket capacity. */
   burst: number;
-  /** Model requests in flight at once. A request holds a slot only while the provider is answering. */
+  /**
+   * Model requests in flight at once. A request holds a slot only while the
+   * provider is answering. `0` means the provider imposes no such limit: only
+   * the rate bucket applies.
+   */
   concurrency: number;
 }
 
@@ -60,8 +64,9 @@ function bucket(value: unknown, path: string, base: ModelGateBucketConfig): Mode
   const rpm = table.rpm === undefined ? base.rpm : integer(table.rpm, `${path}.rpm`, 1, 1_000_000);
   const burst = table.burst === undefined
     ? base.burst : integer(table.burst, `${path}.burst`, 1, 1_000_000);
+  // 0 is "no in-flight limit"; it is a deliberate choice, not a missing value.
   const concurrency = table.concurrency === undefined
-    ? base.concurrency : integer(table.concurrency, `${path}.concurrency`, 1, 4096);
+    ? base.concurrency : integer(table.concurrency, `${path}.concurrency`, 0, 4096);
   // More burst than a whole minute of refill is never useful and only makes the
   // first second of a minute indistinguishable from an outage.
   return { rpm, burst: Math.min(burst, rpm), concurrency };

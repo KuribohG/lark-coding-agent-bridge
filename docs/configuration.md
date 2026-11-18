@@ -196,9 +196,11 @@ concurrency = 100
 ```
 
 A bridge-wide limit on model requests, one bucket per model provider. `rpm` and
-`concurrency` apply together: a request needs a rate token and a free slot. The
-gate is shared by every profile in the process; a Pi run holds a permit only
-while the provider answers, so tools never occupy a slot.
+`concurrency` apply together: a request needs a rate token and a free slot.
+`concurrency = 0` turns the slot limit off for a provider that has none of its
+own; the rate bucket still applies. The gate is shared by every profile in the
+process; a Pi run holds a permit only while the provider answers, so tools never
+occupy a slot.
 
 Only Pi CLI runs are gated in this phase. `[gate]` is bridge-wide: it is not a
 profile field and does not resolve through `defaults.run` / `agents.*.run`.

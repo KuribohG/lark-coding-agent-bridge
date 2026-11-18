@@ -41,8 +41,16 @@ describe('normalizeModelGate', () => {
 
   it('rejects out-of-range values', () => {
     expect(() => normalizeModelGate({ defaults: { rpm: 0 } })).toThrow(/expected integer 1/);
-    expect(() => normalizeModelGate({ defaults: { concurrency: 100_000 } })).toThrow(/expected integer 1\.\.4096/);
+    expect(() => normalizeModelGate({ defaults: { concurrency: 100_000 } })).toThrow(/expected integer 0\.\.4096/);
+    expect(() => normalizeModelGate({ defaults: { concurrency: -1 } })).toThrow(/expected integer 0\.\.4096/);
     expect(() => normalizeModelGate({ lease_seconds: 5 })).toThrow(/expected integer 10/);
+  });
+
+  it('reads concurrency 0 as "this provider has no in-flight limit"', () => {
+    const config = normalizeModelGate({ providers: { deepseek: { concurrency: 0 } } })!;
+    expect(config.providers.deepseek.concurrency).toBe(0);
+    // The other dimensions still come from the defaults.
+    expect(config.providers.deepseek).toMatchObject({ rpm: 1000, burst: 100 });
   });
 });
 
