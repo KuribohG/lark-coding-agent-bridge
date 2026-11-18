@@ -48,7 +48,7 @@ describe('normalizeModelGate', () => {
 
   it('reads concurrency 0 as "this provider has no in-flight limit"', () => {
     const config = normalizeModelGate({ providers: { deepseek: { concurrency: 0 } } })!;
-    expect(config.providers.deepseek.concurrency).toBe(0);
+    expect(config.providers.deepseek?.concurrency).toBe(0);
     // The other dimensions still come from the defaults.
     expect(config.providers.deepseek).toMatchObject({ rpm: 1000, burst: 100 });
   });
