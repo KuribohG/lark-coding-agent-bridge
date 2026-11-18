@@ -14,10 +14,12 @@ import type { TaskView, WorkflowCaller, WorkflowView } from './types';
 export class KernelOperations {
   constructor(private readonly ctx: KernelContext, private readonly tools = BUILTIN_WORKFLOW_TOOLS) {}
 
-  async call(caller: WorkflowCaller, method: string, args: Record<string, unknown>): Promise<unknown> {
+  async call(caller: WorkflowCaller, name: string, args: Record<string, unknown>): Promise<unknown> {
     const { ctx } = this;
     const { store } = ctx;
     if (ctx.closed) throw new Error('Workflow service is closed');
+    // An operation is recorded under its current name, whichever name the caller used.
+    const method = this.tools.canonical(name);
     if (caller.kind === 'worker') {
       const tool = this.tools.worker(method);
       if (tool?.verifiesRoot) {
@@ -33,7 +35,8 @@ export class KernelOperations {
     }
     const tool = this.tools.main(method);
     if (!tool) {
-      throw new Error(`Unsupported workflow operation: ${method}. Use run_script/replay_script.`);
+      // An agent that guessed a name corrects itself from the operations it does have.
+      throw new Error(`Unsupported workflow operation: ${method}${this.tools.worker(method) ? ' (a worker operation)' : ''}. Main agent operations: ${this.tools.mainNames().join(', ')}`);
     }
     if (tool.kind === 'start' && caller.allowStart !== true) {
       throw new Error('Workflow start requires an explicit /workflow start or /workflow script command');
@@ -133,7 +136,7 @@ export class KernelOperations {
   private workerCall(caller: WorkerCaller, method: string, args: Record<string, unknown>): unknown {
     const [state, task] = this.workerBinding(caller);
     const tool = this.tools.worker(method);
-    if (!tool) throw new Error('Operation not permitted for worker');
+    if (!tool) throw new Error(`Operation not permitted for worker: ${method}${this.tools.main(method) ? ' (a main agent operation)' : ''}. Worker operations: ${this.tools.workerNames().join(', ')}`);
     return tool.call(this.ctx, state, task, caller, args);
   }
 

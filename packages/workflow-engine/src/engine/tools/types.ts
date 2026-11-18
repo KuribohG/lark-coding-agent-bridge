@@ -61,6 +61,8 @@ export type BoundCall = <T>(change: (state: WorkflowView, task: TaskView) => T) 
 
 export interface WorkflowTool {
   name: string;
+  /** Earlier names that callers may still use; instructions and operation lists show only `name`. */
+  aliases?: readonly string[];
   main?: MainTool & { doc: string };
   worker?: WorkerTool;
 }

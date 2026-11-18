@@ -218,9 +218,10 @@ export const lifecycleTools: WorkflowToolPlugin = {
       },
     },
     {
-      name: 'cancel',
+      // Named for what it ends: next to cancel_task, a bare `cancel` did not say that it stops the whole workflow.
+      name: 'cancel_workflow', aliases: ['cancel'],
       main: {
-        kind: 'mutate', doc: 'cancel', terminalCheckOnly: true,
+        kind: 'mutate', doc: 'cancel_workflow', terminalCheckOnly: true,
         apply: (ctx, state, _args, commit) => {
           ctx.lifecycle.cancelState(state);
           return commit(() => workflowSummary(ctx, state));

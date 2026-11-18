@@ -147,7 +147,7 @@ describe('Codex-root workflow with Pi process workers', () => {
     await f.call('run_script', { goal: 'cancel', script: 'return await agent("WAIT_FOR_CANCEL",{key:"a",harness:"pi"});' });
     await vi.waitFor(() => expect(f.runtime.kernel.state(f.root.scopeId)?.sessions[0]?.nativeSessionId).toBe('pi-child'), {timeout:5000});
     const workflowId = f.runtime.kernel.state(f.root.scopeId)!.workflowId;
-    await f.call('cancel');
+    await f.call('cancel_workflow');
     await vi.waitFor(() => expect(f.runtime.kernel.state(f.root.scopeId, workflowId)?.tasks[0]?.status).toBe('cancelled'));
     expect(f.runtime.kernel.state(f.root.scopeId, workflowId)?.tasks[0]?.resultRefs).toEqual([]);
     expect(f.runtime.kernel.state(f.root.scopeId)).toBeUndefined();

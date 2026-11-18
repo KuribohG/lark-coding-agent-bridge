@@ -94,7 +94,7 @@ describe('workflow kernel contracts', () => {
     expect(recovered.state().script?.status).toBe('failed');
     expect(recovered.state().events.at(-1)).toMatchObject({ kind: 'script_failed', summary: 'Workflow deadline reached' });
     await expect(recovered.call('replay_script')).rejects.toThrow('Workflow deadline reached');
-    await recovered.call('cancel'); await recovered.start();
+    await recovered.call('cancel_workflow'); await recovered.start();
     expect(recovered.state().deadlineAt).toBe(now + 960 * 60_000);
   });
 
@@ -138,6 +138,17 @@ describe('workflow kernel contracts', () => {
   it.each(['start', 'delegate', 'send', 'begin_revision_round'])('rejects removed operation %s', async method => {
     const h = harness(); await expect(h.call(method)).rejects.toThrow('Unsupported workflow operation');
     expect(h.state()).toBeUndefined();
+  });
+  it('names the operations a caller has when it asks for one it does not have', async () => {
+    const h = harness();
+    await expect(h.call('workflow_status')).rejects.toThrow(/Unsupported workflow operation: workflow_status\. Main agent operations: status, run_script, .*\bcancel_workflow\b/);
+    await expect(h.call('claim_work')).rejects.toThrow('Unsupported workflow operation: claim_work (a worker operation). Main agent operations: ');
+    await h.start(); await h.agent('a'); await h.kernel.tick();
+    await vi.waitFor(() => expect(h.requests).toHaveLength(1));
+    const caller = { kind: 'worker' as const, scopeId: 'topic-1', workflowId: h.state().workflowId,
+      taskId: h.requests[0]!.task.taskId, attemptId: h.requests[0]!.attemptId };
+    await expect(h.kernel.call(caller, 'list_work', {})).rejects.toThrow(/not permitted for worker: list_work\. Worker operations: .*\bwork_status\b/);
+    await expect(h.kernel.call(caller, 'status', {})).rejects.toThrow('not permitted for worker: status (a main agent operation). Worker operations: ');
   });
   it('rejects cross-scope reads and worker privilege escalation', async () => {
     const h = harness(); await h.start(); await h.agent('a'); await h.kernel.tick();

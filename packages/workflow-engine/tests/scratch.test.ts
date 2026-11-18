@@ -165,7 +165,7 @@ describe('workers run in their scratch directory', () => {
     expect(readdirSync(first.scratch).sort()).toEqual(['out-2', 'out-3']);
     // When the workflow is over, so is everything it held.
     const state = runtime.kernel.state(root.scopeId)!;
-    await runtime.kernel.call({ kind: 'main', scopeId: root.scopeId }, 'cancel', { operationId: randomUUID(), workflowId: state.workflowId, expectedStateVersion: state.stateVersion });
+    await runtime.kernel.call({ kind: 'main', scopeId: root.scopeId }, 'cancel_workflow', { operationId: randomUUID(), workflowId: state.workflowId, expectedStateVersion: state.stateVersion });
     await vi.waitFor(async () => { await sweep(); expect(existsSync(first.scratch)).toBe(false); }, { timeout: 10_000, interval: 20 });
     await vi.waitFor(async () => expect(await readdir(dir)).toEqual([]), { timeout: 10_000, interval: 20 });
   }, 30_000);

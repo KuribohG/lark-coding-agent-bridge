@@ -55,7 +55,7 @@ describe('nested workflow capability',()=>{
     const h = harness(); await h.start(); await h.agent(h.state()); await h.run(1);
     const child = await h.child(h.requests[0]!);
     const rootId = h.state().workflowId;
-    await h.call('cancel'); h.kernel.beginShutdown();
+    await h.call('cancel_workflow'); h.kernel.beginShutdown();
     await vi.waitFor(() => expect(h.state(rootId).tasks[0]!.status).toBe('cancelled'));
     expect(h.state(rootId).tasks[0]!.attempts.at(-1)!.stopReason).toBe('cancelled');
     expect(h.state(child.workflowId).status).toBe('cancelled');
@@ -148,7 +148,7 @@ describe('nested workflow capability',()=>{
       await h.agent(h.state(child.workflowId),{key:'enabled'});await h.run(h.requests.length+1);parent=h.requests.at(-1)!;
     }
     await expect(h.child(parent)).rejects.toThrow('depth limit');
-    await h.call('cancel');
+    await h.call('cancel_workflow');
     for(const request of h.requests) expect(h.state(request.workflow.workflowId).status).toBe('cancelled');
   });
 

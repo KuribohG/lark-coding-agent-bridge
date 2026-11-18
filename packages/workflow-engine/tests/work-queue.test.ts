@@ -312,7 +312,7 @@ describe('workflow work queue', () => {
     h.kernel.finishScript('queue-test', h.state().workflowId, h.state().script!.runId, { text: '{}' });
     expect(h.state().script).toMatchObject({ status: 'failed', error: expect.stringContaining('unfinished work') });
     await expect(h.call('complete', { reportRef: 'unused', openIssues: [], verificationLimits: 'test' })).rejects.toThrow('unfinished');
-    await h.call('cancel');
+    await h.call('cancel_workflow');
     const last = h.kernel.latest('queue-test')!;
     expect(last.workQueue!.items[0]!.status).toBe('cancelled');
     expect(await h.command('work work')).toContain('cancelled');
@@ -323,7 +323,7 @@ describe('workflow work queue', () => {
     await h.work('enqueue', { key: 'last', title: 'Last attempt', maxAttempts: 1 });
     await h.create('A'); await h.run(1); await h.claim(h.requests[0]!);
     const id = h.state().workflowId;
-    await h.call('cancel');
+    await h.call('cancel_workflow');
     const last = h.kernel.state('queue-test', id)!;
     expect(last.workQueue!.items[0]!.status).toBe('cancelled');
     expect(last.workQueue!.claims[0]!.status).toBe('cancelled');

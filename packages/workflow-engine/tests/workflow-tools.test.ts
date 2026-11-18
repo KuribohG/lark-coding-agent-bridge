@@ -36,4 +36,13 @@ describe('workflow tool plugins', () => {
     expect(BUILTIN_WORKFLOW_TOOLS.main('read_artifact')).toBeDefined();
     expect(BUILTIN_WORKFLOW_TOOLS.worker('read_artifact')).toBeDefined();
   });
+
+  it('keeps the earlier name of a renamed tool callable without listing it', () => {
+    expect(BUILTIN_WORKFLOW_TOOLS.canonical('cancel')).toBe('cancel_workflow');
+    expect(BUILTIN_WORKFLOW_TOOLS.canonical('cancel_task')).toBe('cancel_task');
+    expect(BUILTIN_WORKFLOW_TOOLS.mainNames()).not.toContain('cancel');
+    const tool = { name: 'x', worker: { call: () => null } };
+    expect(() => new WorkflowToolRegistry([{ id: 'a', tools: [tool, { ...tool, name: 'y', aliases: ['x'] }] }])).toThrow('Duplicate workflow tool: x');
+    expect(() => new WorkflowToolRegistry([{ id: 'a', tools: [{ ...tool, aliases: ['w'] }, { ...tool, name: 'y', aliases: ['w'] }] }])).toThrow('Duplicate workflow tool: w');
+  });
 });

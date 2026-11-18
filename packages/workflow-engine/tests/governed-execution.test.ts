@@ -81,7 +81,7 @@ describe('workflow kernel with a host execution ledger', () => {
   it('freezes a claim on cancel until the old native turn proves quiescence', async () => {
     const h = await harness();
     const { request, grant } = await h.claimed();
-    await h.call('cancel');
+    await h.call('cancel_workflow');
     expect(h.state()).toMatchObject({ status: 'cancelling' });
     expect(h.state().tasks[0]!.status).toBe('cancelling');
     expect(h.state().workQueue!.claims[0]).toMatchObject({ status: 'active', frozen: true });
@@ -99,7 +99,7 @@ describe('workflow kernel with a host execution ledger', () => {
   it('cancels at once and releases the claim for a host without a ledger', async () => {
     const h = await harness({ ledger: false });
     const { request } = await h.claimed();
-    await h.call('cancel');
+    await h.call('cancel_workflow');
     expect(h.state().status).toBe('cancelled');
     expect(h.state().workQueue!.claims[0]!.status).toBe('cancelled');
     expect(h.state().workQueue!.items[0]!.status).toBe('cancelled');
@@ -111,7 +111,7 @@ describe('workflow kernel with a host execution ledger', () => {
     const h = await harness();
     const { request } = await h.claimed();
     const executionId = h.state().tasks[0]!.attempts[0]!.executionId!;
-    await h.call('cancel');
+    await h.call('cancel_workflow');
     h.receipts.set(executionId, { state: 'unknown', reason: 'native settlement lost' });
     h.finishers.get(request.attemptId)!({ status: 'stopped', quiescence: 'unknown', error: 'native settlement lost' });
     await h.settle('unknown');

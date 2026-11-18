@@ -20,6 +20,18 @@ function harness(): WorkflowKernel {
 }
 
 describe('operation identity', () => {
+  it('treats the earlier name of an operation as the same operation', async () => {
+    const kernel = harness();
+    const caller = { kind: 'main' as const, scopeId: 'operation-scope', allowStart: true };
+    await kernel.call(caller, 'run_script', { operationId: 'start', goal: 'goal', plan: 'plan', script: 'return 1;', maxConcurrent: 1 });
+    const { workflowId, stateVersion } = kernel.state('operation-scope')!;
+    const args = { operationId: 'stop', workflowId, expectedStateVersion: stateVersion };
+    const cancelled = await kernel.call(caller, 'cancel', { ...args });
+    expect(cancelled).toMatchObject({ status: 'cancelled' });
+    expect(kernel.state('operation-scope')).toBeUndefined();
+    // A retry under the current name finds the recorded operation and is not a conflicting one.
+    expect(await kernel.call(caller, 'cancel_workflow', { ...args })).toEqual(cancelled);
+  });
   it('lets a reused operationId start the next workflow once the previous one finished', async () => {
     const kernel = harness();
     const caller = { kind: 'main' as const, scopeId: 'operation-scope', allowStart: true };
@@ -27,7 +39,7 @@ describe('operation identity', () => {
     await kernel.call(caller, 'run_script', { ...start });
     const first = kernel.state('operation-scope')!.workflowId;
     const version = kernel.state('operation-scope')!.stateVersion;
-    await kernel.call(caller, 'cancel', { operationId: 'cancel-first', workflowId: first, expectedStateVersion: version });
+    await kernel.call(caller, 'cancel_workflow', { operationId: 'cancel-first', workflowId: first, expectedStateVersion: version });
     expect(kernel.state('operation-scope')).toBeUndefined();
 
     await kernel.call(caller, 'run_script', { ...start });

@@ -446,7 +446,7 @@ describe('swarm', () => {
     expect(later.workQueue).toMatchObject({ flow: { enqueued: [0, 0, 0, 0, 0, 3], completed: [0, 0, 0, 0, 0, 1] } });
     expect(later.swarms[0]!.members).toEqual(expect.arrayContaining([expect.objectContaining({ itemsDone: 1 })]));
     release();
-    await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
+    await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel_workflow', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
   }, 30_000);
 
   it('lets members add the work they find, once per key, and ends only on the lead\'s verdict', async () => {
@@ -699,7 +699,7 @@ describe('swarm', () => {
     expect(h.order.filter(turn => turn.startsWith('lead'))).toEqual(['lead1']);
     expect(h.errors).toEqual([]);
     release();
-    await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
+    await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel_workflow', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
   }, 30_000);
 
   it('lets the main agent, and only it, give a queue a lead of its own while the swarm runs', async () => {
@@ -741,7 +741,7 @@ describe('swarm', () => {
     await vi.waitFor(async () => { await h.runtime.tick(); expect(state().board!.posts.filter(post => post.topic === 'handoff')).toHaveLength(1); }, { timeout: 10_000 });
     expect(state().board!.posts.filter(post => post.topic === 'handoff').map(post => [post.text.split('\n').slice(1).join('|'), post.to.map(name)])).toEqual([['Queue "q":|- completed "i1" (w1): I1|  Result: w1', ['ql']]]);
     release();
-    await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
+    await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel_workflow', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
   }, 30_000);
 
   it('gathers the outcomes a lead is owed into posts when its turn starts: a dozen items to a post, a few posts to a turn', async () => {
@@ -791,7 +791,7 @@ describe('swarm', () => {
     expect(status.swarms[0]!.members).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'w1', itemsDone: 50 }), expect.objectContaining({ name: 'w2', itemsDone: 1, itemsFailed: 1 })]));
     expect(status.swarms[0]!.queues).toMatchObject({ a: { flow: { enqueued: [0, 0, 0, 0, 0, 50], completed: [0, 0, 0, 0, 0, 50] } },
       b: { flow: { enqueued: [0, 0, 0, 0, 0, 2], completed: [0, 0, 0, 0, 0, 1], failed: [0, 0, 0, 0, 0, 1] } } });
-    await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
+    await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel_workflow', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
   }, 60_000);
 
   it('hands a lead the item that failed for good because its member lost the claim, not only what a member settled itself', async () => {
@@ -873,7 +873,7 @@ describe('swarm', () => {
     await expect(op('update_work', { key: 'nope', hold: true })).rejects.toThrow('Unknown work item');
     await expect(op('retry_work', { key: 'b' })).rejects.toThrow('Only failed work items can be retried');
     release();
-    await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
+    await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel_workflow', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
   }, 30_000);
 
   it('rejects malformed swarms before starting any member', async () => {

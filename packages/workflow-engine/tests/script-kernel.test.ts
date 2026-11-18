@@ -67,7 +67,7 @@ describe('script kernel lifecycle', () => {
     await h.kernel.tick(); await vi.waitFor(() => expect(h.requests).toHaveLength(2));
     expect(h.requests[1]?.session.nativeSessionId).toBeUndefined();
     const id = h.state().workflowId;
-    await h.call('cancel');
+    await h.call('cancel_workflow');
     await vi.waitFor(()=>expect(h.kernel.state('script',id)?.tasks.at(-1)?.status).toBe('cancelled'));
     expect(h.kernel.state('script',id)?.script?.status).toBe('cancelled');
     expect(h.kernel.state('script',id)?.artifacts.filter(a=>a.taskId)).toHaveLength(0);

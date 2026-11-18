@@ -142,7 +142,7 @@ export async function runNestedScenario(ctx:Context):Promise<void> {
     const before={pid:process.pid,workflows:tree().map(node=>({workflowId:node.workflowId,sessions:node.sessions.map(session=>session.nativeSessionId)}))};
     assert(tree().slice(0,2).every(node=>node.tasks[0]?.status==='waiting_workflow'));
     const leafRun=nativeRuns.at(-1)!;
-    await call(test.scenario==='nested-cancel'?'cancel':'pause');
+    await call(test.scenario==='nested-cancel'?'cancel_workflow':'pause');
     await until(()=>processPool.snapshot().active===0 && tree().every(node=>node.tasks.every(task=>task.status==='cancelled')));
     await assert.rejects(callWorkflow('checkpoint',{operationId:'late',expectedCheckpointVersion:1,state:{late:true}},leafRun.env),/revoked|inactive/);
     assert.equal(processPool.snapshot().waiting,0);
