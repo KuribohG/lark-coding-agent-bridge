@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { hostToolInstructions, WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from '../src/engine/tools/instructions';
+import { hostToolInstructions, WORKFLOW_GUIDE, WORKFLOW_MESSAGE_INSTRUCTIONS, WORKFLOW_TOOL_INSTRUCTIONS, WORKFLOW_WAKE_INSTRUCTIONS, workflowWorkerInstructions } from '../src/engine/tools/instructions';
 import { WorkflowKernel } from '../src/engine/kernel';
 import { stopReasonOf, WorkflowRuntime, type WorkerRunSpec, type WorkflowRoot } from '../src';
 import type { ExecutionObservation, WorkflowTask, WorkflowWorkerRequest, WorkflowWorkerResult } from '../src/engine/types';
@@ -174,7 +174,7 @@ describe('workflow runtime with host tools', () => {
   it('names no shell CLI in any instruction', () => {
     const member = { agentId: 'member', workflowTool: true } as WorkflowTask;
     const oneShot = {} as WorkflowTask;
-    for (const text of [WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions(member), workflowWorkerInstructions(oneShot)]) {
+    for (const text of [WORKFLOW_TOOL_INSTRUCTIONS, WORKFLOW_WAKE_INSTRUCTIONS, WORKFLOW_MESSAGE_INSTRUCTIONS, WORKFLOW_GUIDE, workflowWorkerInstructions(member), workflowWorkerInstructions(oneShot)]) {
       expect(hostToolInstructions(text)).not.toContain('AGENT_WORKFLOW_CLI');
     }
     expect(hostToolInstructions(WORKFLOW_TOOL_INSTRUCTIONS)).toContain('workflow_call');

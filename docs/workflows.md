@@ -32,7 +32,15 @@ The old `architecture-review` plugin and agent-led `start`, `delegate`, `send`, 
 
 ### What agents are told
 
-The main agent's per-turn instructions cover what most workflows use: `agent`, `parallel`/`pipeline`, work queues, swarms, the board and the operations on a running workflow. The less common script functions (`discuss`, `reviewedAgent`, mailbox and event waits, task handles, worktrees and landing, nested workflows) are described only in the full guide, which any agent prints with `workflow guide` before using them.
+What the main agent is told depends on what the turn is for, because the text of every turn stays in its session:
+
+| Turn | Told | Size |
+| --- | --- | --- |
+| Starts a workflow (`/workflow start`, `/workflow script`) | How to call the tools, the operations, and how to write a script: `agent`, `parallel`/`pipeline`, work queues, swarms, the board, the charter | about 7400 characters, once per workflow |
+| Woken by the workflow's events | How to call the tools, the operations, and how to run what exists: what each event asks for, taking the result, `staff_swarm`, `tell_worker`, the board, adding work, the charter. No script API | about 3700 characters, at every wake |
+| An ordinary user message in a topic that has a workflow | How to call the tools, the operations and how to steer | about 2500 characters |
+
+A long-running swarm wakes the main agent dozens of times, so a wake does not repeat the script API; a wake that has to change the script reads the current one and prints the guide first. The less common script functions (`discuss`, `reviewedAgent`, mailbox and event waits, task handles, worktrees and landing, nested workflows) are described only in the full guide, which any agent prints with `workflow guide` before using them.
 
 ### Asking the main agent about a running workflow
 

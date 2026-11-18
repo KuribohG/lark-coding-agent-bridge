@@ -33,6 +33,9 @@ describe('workflow engine without bridge services', () => {
     });
     await runtime.start(); cleanup.push(() => runtime.close());
     const main = runtime.bindMain(root.scopeId, 'start');
+    // The turn that starts a workflow is told how to write its script.
+    expect(main.instructions).toContain('agent(prompt,{key,');
+    expect(main.instructions).not.toContain('staff_swarm 不重放调整');
     await callWorkflow('run_script', { operationId: randomUUID(), goal: 'embed', plan: 'One member answers twice; return both answers.',
       script: 'const a = await agent("first", {key:"a", member:"m"}); const b = await agent("second", {key:"b", member:"m"}); return a + "|" + b;' }, main.env);
     main.release();
@@ -44,6 +47,14 @@ describe('workflow engine without bridge services', () => {
     expect(specs[0]!.env.AGENT_WORKFLOW_TOKEN).toBeTruthy();
     await expect(callWorkflow('run_script', { operationId: randomUUID(), goal: 'x', plan: 'x', script: 'return 1;' }, specs[0]!.env)).rejects.toThrow();
     await runtime.kernel.tick(); expect(wakeMain).toHaveBeenCalledWith('chat');
+    // The wake that follows is told how to take the result and run what exists, not the script API again.
+    const wake = runtime.bindMain(root.scopeId, 'continue');
+    cleanup.push(async () => wake.release());
+    expect(wake.eventIds).toHaveLength(1);
+    expect(wake.instructions).toContain('ack_events 后 complete');
+    expect(wake.instructions).toContain('staff_swarm 不重放调整');
+    expect(wake.instructions).toContain(`"workflowId":"${state.workflowId}"`);
+    expect(wake.instructions).not.toContain('agent(prompt,{key,');
   });
 
   it('starts workers after only the main session model or effort changes', async () => {

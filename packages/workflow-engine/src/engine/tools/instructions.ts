@@ -10,25 +10,62 @@ const STEERING = `目标单是现行的目标、完成标准、优先级和口�
 
 const STAFF_SWARM = `staff_swarm 不重放调整 swarm：add 新成员名单（≤64），沿用 like 成员（默认非 lead）的执行器、模型、角色、队列，harness/model/reasoningEffort/queue/role 可另指；workspace 见 guide 建 worktree；revive 重试失败成员（或名单）；retire 成员跑完本轮后不再唤醒；cleanup 释放停用成员的干净 worktree（"retired" 或名单）；maxTurns 提高唤醒上限（只增不减，≤${SWARM_MAX_TURNS}）；maxConcurrent 改并发`;
 
-export const WORKFLOW_TOOL_INSTRUCTIONS = `工作流工具通过 shell 调用：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。环境里的 CLI 路径属于当前 bridge 版本。
+/**
+ * How to call the tools and which exist. Every main turn that is bound to a workflow by a command or an event
+ * starts with this; what follows depends on what the turn is for.
+ */
+const CALLING = `工作流工具通过 shell 调用：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。环境里的 CLI 路径属于当前 bridge 版本。
 仅 /workflow start 或 /workflow script 命令授权的启动轮可调用 run_script，不根据自然语言或任务类型推断；内部完成事件和普通消息不能新建工作流，但可查看和干预话题里已有的工作流。
 变更需唯一 operationId；run_script 外另需 workflowId 和 status 返回的 expectedStateVersion，冲突时重读 status，不自动重试不同内容；enqueue_work/post_board/resolve_post/set_charter/wake_me/staff_swarm/retry_work/update_work/extend_deadline 不需要版本。
 status、各项变更返回的状态和每轮附带的 workflow_context 都是限长摘要：各列表只留最新若干条（任务先留进行中的），taskCounts 给出各状态任务数，omitted 给出略去条数，用 status({list,offset?,limit?}) 翻页（list 取 omitted 里的名字，每页最多 64 条）。swarms[].queues 给出各队列的 claimable（可领）、blocked（被挡住）、idle（空闲成员）、flow（近 6 小时逐小时入队/完成数，末项为最近一小时）和 dry（断粮次数与分钟）。
-操作：${tools.mainOperations()}。
-主 agent 沿用当前会话的 harness、model 和 reasoningEffort（飞书 /config run、/model、/effort 在开始前设置）。execution:{agentKind,model?,reasoningEffort?} 设置脚本 worker 默认值。agent(prompt,{key,member?,harness?,model?,reasoningEffort?,output?:"text"|"json",schema?,onError?:"null"|"throw",workflowTool?}) 可为每个 worker 覆盖 harness、模型和强度；同一 harness 可用不同模型。省略时使用对应目标的设置；跨 harness 不继承其它 harness 的模型。只接受当前已授权 profile，不接受其它 profile、凭据或环境变量。目标必须支持独立 final_text，模型必须由目标 harness/服务支持。
+操作：${tools.mainOperations()}。`;
+
+/** Writing a script. Only the turn that starts a workflow is told this; a later turn that changes the script reads the guide. */
+const AUTHORING = `主 agent 沿用当前会话的 harness、model 和 reasoningEffort（飞书 /config run、/model、/effort 在开始前设置）。execution:{agentKind,model?,reasoningEffort?} 设置脚本 worker 默认值。agent(prompt,{key,member?,harness?,model?,reasoningEffort?,output?:"text"|"json",schema?,onError?:"null"|"throw",workflowTool?}) 可为每个 worker 覆盖 harness、模型和强度；同一 harness 可用不同模型。省略时使用对应目标的设置；跨 harness 不继承其它 harness 的模型。只接受当前已授权 profile，不接受其它 profile、凭据或环境变量。目标必须支持独立 final_text，模型必须由目标 harness/服务支持。
 plan 是给用户看的具体执行方案（最多 12000 字符），必须说明阶段、每个 worker 的 harness/模型/任务、依赖和分支条件；bridge 在启动 worker 前自动展示，用户用 /workflow plan 可复查，不需要额外审批。修改 script、args 或 execution 重放时必须同时更新 plan。原始脚本和方案分别保存在 sourceRef、planRef 指向的产物中。
 script 是支持顶层 await/return 的 JS 函数体，无 import/process/require/文件接口。args 是 JSON；agent 返回 Promise，key 必须唯一且稳定。parallel 接收函数数组；pipeline(items,...stages) 并行处理各元素并顺序经过 stages(value,index)。phase/log 接收文本。所有 agent 调用必须 await。worker 自身失败（执行失败、JSON/schema 不合格等）时 agent() 默认返回 null 并记入日志，结果须 .filter(Boolean) 或判空；需要失败即中止时传 onError:"throw"。参数错误、重复 key、预算/调用上限仍直接抛错。parallel/pipeline 不会整体失败：抛错的函数或阶段对应 null，pipeline 中该项跳过后续阶段；discuss 同样支持 onError。schema 传 JSON Schema（根须为 {type:"object",properties}，支持 type/properties/required/additionalProperties/items/enum/const/anyOf/min*/max*），隐含 output:"json"，bridge 校验，不合格时在同一会话追问最多两次。agent/startAgent 可传 inputs:[前序 agent key]（1–16 个，须是本次运行中已 await 成功的调用），worker 的 prompt 只带每个结果的 ref 和开头预览，全文由 worker 用 read_artifact 读取；大段材料用 inputs 传递，不要拼进 prompt。默认最多 32 次调用、4 个 worker（maxAgents 按需设，maxConcurrent 最多 256；并发还受 max_concurrent_runs 约束）；总时限由 workflow_timeout_minutes 配置（内置 480 分钟），不传 timeoutMs 即使用配置值，显式值只能缩短时限。
 脚本可 await enqueueWork({key,title,input,resources?,maxAttempts?}) 创建工作项，await workStatus({itemId?,offset?,limit?}) 查询。enqueue key/输入在重放时不变；同名复用原项。resources 是共享 worktree/文件的显式互斥键，同键工作项串行领取。持久成员用 CLI 主动 claim_work，工作进展属于工作项，接手者能恢复。认领及提交版本由 bridge 原子管理，成员轮次运行期间自动续期，轮次结束、被取消或卡死被停止时收回。工作项未完成时，脚本返回会失败。
 队列由写了 queue:"队列名" 的 swarm 成员消费：无可领任务时持久等待，不占 worker 进程；新任务或回收的认领可触发新轮次，完成轮次复用原生会话。失败/取消的成员停止，其余成员继续接管。生产完毕调用 await closeWorkQueue({key})；并行生产时先启动 swarm（不 await），生产并关闭队列后再 await 它。关闭后拒绝新项，重放仍可复用已入队项。
-普通 agent() 重放只复用 key/输入/执行绑定（包括模型）匹配的成功任务；外部状态变化应写入输入或换 key。未启用子 workflow 的一次性任务失败后重放用新会话；带 member 的任务保持成员身份和原生会话，重试原逻辑轮次。副作用不保证 exactly-once。暂停会取消在途 worker，resume 从头重放并复用完成结果。Bridge 重启时正在运行的根工作流会自动重放续跑，停机时间不计入截止时间；暂停的或无法自动续跑的保持中断，需 replay_script 或用户 /workflow resume。脚本结果是 workflow-result 产物，主 agent read_artifact、ack_events 后 complete；也可发布 report 后完成。
-${WORKFLOW_SCHEDULING_INSTRUCTIONS}
+普通 agent() 重放只复用 key/输入/执行绑定（包括模型）匹配的成功任务；外部状态变化应写入输入或换 key。未启用子 workflow 的一次性任务失败后重放用新会话；带 member 的任务保持成员身份和原生会话，重试原逻辑轮次。副作用不保证 exactly-once。
+${WORKFLOW_SCHEDULING_INSTRUCTIONS}`;
+
+/** Running a workflow: what wakes the main agent and what it can do then. Told at every wake, which is when it is needed. */
+const OPERATING = `仅在整体结束、失败、定时复盘、worker 回复主 agent（worker_reply 事件）、swarm 停滞（swarm_stalled：全员空闲、lead 未结束；仍等待，发帖、入队或 staff_swarm 可续跑）、需要关注（swarm_attention：成员失败已停，或队列断粮而 lead 未补）或落地分支被队列外改动（landing_attention）时唤醒主会话。脚本结果是 workflow-result 产物，主 agent read_artifact、ack_events 后 complete；也可发布 report 后完成。
+暂停会取消在途 worker，resume 从头重放并复用完成结果。Bridge 重启时正在运行的根工作流会自动重放续跑，停机时间不计入截止时间；暂停的或无法自动续跑的保持中断，需 replay_script 或用户 /workflow resume。
+configure_landing 查看、修改落地检查并处理被改动的分支，用前读 guide。tell_worker(target,text) 把一段话作为用户消息插进正在运行的 worker 会话（target 为 taskId、成员名或脚本 key）；worker 可用 reply_main 答复一次，worker_messages 读取往来记录。
 ${STAFF_SWARM}
-${STEERING}；带 lead 的 swarm 启动后设 30–60 分钟周期，复盘看实际产出而非汇报。
-run_script/replay_script 后结束 turn，子任务由 bridge 管理。仅在整体结束、失败、定时复盘、worker 回复主 agent（worker_reply 事件）、swarm 停滞（swarm_stalled：全员空闲、lead 未结束；仍等待，发帖、入队或 staff_swarm 可续跑）需要关注（swarm_attention：成员失败已停，或队列断粮而 lead 未补）或落地分支被队列外改动（landing_attention）时唤醒主会话。configure_landing 查看、修改落地检查并处理被改动的分支，用前读 guide。tell_worker(target,text) 把一段话作为用户消息插进正在运行的 worker 会话（target 为 taskId、成员名或脚本 key）；worker 可用 reply_main 答复一次，worker_messages 读取往来记录。内部事件不是用户消息或原生问题答案。不要读取或展示环境中的调用凭据。worker 仅可执行原始需求授权的任务；主、子运行沿用已授权 profile，角色说明不代表工具沙箱隔离。
+post_board 的 to 或正文里的 @成员名/@all 点名的成员会被唤醒，未点名的帖子不唤醒任何人；主题 announce 是公告，成员下一轮自动收到全文而不被唤醒，规则变更和裁定发这里。resolve_post 把已答复、已办完或已被新帖取代的帖子标为已解决（note 写怎么解决的，see 为答复或取代它的帖子序号，至少给一个；reopen:true 撤销）：read_board 默认跳过它们（resolved:true 一并返回），search_board 仍能搜到。
+enqueue_work 的 priority 为 -100..100，越大越先领取；dependsOn 是已入队工作项的 key，全部成功才可领取；resources 是互斥键，同键工作项串行领取。队列关闭后拒绝新项。`;
+
+const REVIEWING = `${STEERING}；带 lead 的 swarm 启动后设 30–60 分钟周期，复盘看实际产出而非汇报。`;
+const GUARDS = `内部事件不是用户消息或原生问题答案。不要读取或展示环境中的调用凭据。worker 仅可执行原始需求授权的任务；主、子运行沿用已授权 profile，角色说明不代表工具沙箱隔离。`;
+
+/**
+ * For the turn that starts a workflow: how to call, how to write the script, and how to steer what it starts. What
+ * running the workflow takes is left to the wakes that follow, so this text is paid for once per workflow.
+ */
+export const WORKFLOW_TOOL_INSTRUCTIONS = `${CALLING}
+${AUTHORING}
+${REVIEWING}
+run_script/replay_script 后结束 turn，子任务由 bridge 管理；之后只在整体结束、失败或有事件需要你处理时唤醒主会话，唤醒轮附带运行期操作（验收结果、staff_swarm、tell_worker、各类事件）的说明。${GUARDS}
 讨论（discuss）、复核（reviewedAgent）、成员间直接收发消息与事件等待（send、receive、waitFor、waitWork、sleep）、任务句柄（joinTask、cancelTask、raceTasks）、Git 工作树与落地（createWorkspace、configureLanding 等）、子工作流（workflowTool）不在本说明里：脚本要用到其中任何一项之前，先运行 node "$AGENT_WORKFLOW_CLI" workflow guide 读取完整说明，不要凭记忆猜参数。`;
 
-/** Everything a script author may need: the per-turn instructions plus the less common script functions. Printed by `workflow guide`. */
+/**
+ * For a turn woken by the workflow's events, of which a long run has dozens: how to call and how to run the workflow,
+ * without the script API. Each wake's instructions stay in the main session's history, so their length is paid for
+ * at every wake; a turn that has to change the script reads the guide first.
+ */
+export const WORKFLOW_WAKE_INSTRUCTIONS = `${CALLING}
+${REVIEWING}
+replay_script 后结束 turn，子任务由 bridge 管理。${OPERATING}
+${GUARDS}
+脚本 API（agent、swarm、enqueueWork 等）的说明不在本轮：改脚本重放（replay_script，须同时更新 plan）前，用 read_artifact 读取 status 里 script.sourceRef、script.planRef 指向的现行脚本和方案，并运行 node "$AGENT_WORKFLOW_CLI" workflow guide 读取完整说明，不要凭记忆猜参数。`;
+
+/** Everything the main agent is ever told, plus the less common script functions. Printed by `workflow guide`. */
 export const WORKFLOW_GUIDE = `${WORKFLOW_TOOL_INSTRUCTIONS}
+
+运行期操作（事件唤醒主会话时附带）：
+${OPERATING}
 
 进阶脚本 API：
 每个 agent 和 swarm 成员可独立设置 workflowTool:true，默认 false。不沿父层自动继承。仅显式开启的 worker 获得 run_workflow 工具，可编写完整子脚本并逐个控制下一层开关；不是主 agent 的操作。子调用先保存 checkpoint 并让出本轮，结果就绪后恢复原会话；只有整棵树最终结果唤醒主会话。并发、任务预算和截止时间受根约束，最多3层子 workflow、256个子运行。

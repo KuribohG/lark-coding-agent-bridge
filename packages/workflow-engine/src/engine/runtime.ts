@@ -8,7 +8,7 @@ import { silentLogger, stopReasonOf, WorkflowStopped, type WorkerRun, type Worke
 import { checkJsonOutput } from './json-output';
 import { RESUME_DEADLINE, RESUME_ROOT_CHANGED, WorkflowKernel } from './kernel';
 import { WorkflowIpc } from './ipc';
-import { hostToolInstructions, WORKFLOW_GUIDE, WORKFLOW_MESSAGE_INSTRUCTIONS, WORKFLOW_TOOL_INSTRUCTIONS, workflowWorkerInstructions } from './tools/instructions';
+import { hostToolInstructions, WORKFLOW_GUIDE, WORKFLOW_MESSAGE_INSTRUCTIONS, WORKFLOW_TOOL_INSTRUCTIONS, WORKFLOW_WAKE_INSTRUCTIONS, workflowWorkerInstructions } from './tools/instructions';
 import { workflowDigest } from './digest';
 import { sameRoot } from './kernel-state';
 import { inheritedWorkerExecution } from './execution';
@@ -326,7 +326,9 @@ export class WorkflowRuntime {
     if (mode === 'continue' && !state) throw new Error('No active workflow to continue');
     const caller: WorkflowCaller = { kind: 'main', scopeId, allowStart: mode === 'start', ...(state ? { workflowId: state.workflowId } : {}) };
     const binding: { env: Record<string, string>; release(): void } = this.deps.hostTools ? { env: {}, release() {} } : this.ipc.bind(caller, deadlineAt);
-    return { ...binding, instructions: `${this.deps.hostTools ? hostToolInstructions(WORKFLOW_TOOL_INSTRUCTIONS) : WORKFLOW_TOOL_INSTRUCTIONS}\n\n${this.kernel.context(scopeId)}`,
+    // The turn that starts a workflow writes its script; a wake only runs what exists, and is told no script API.
+    const instructions = mode === 'start' ? WORKFLOW_TOOL_INSTRUCTIONS : WORKFLOW_WAKE_INSTRUCTIONS;
+    return { ...binding, instructions: `${this.deps.hostTools ? hostToolInstructions(instructions) : instructions}\n\n${this.kernel.context(scopeId)}`,
       ...(this.deps.hostTools ? { definitions: workflowToolDefinitions('main'), call: (method: string, args: Record<string, unknown>) => this.call(caller, method, args) } : {}),
       eventIds: state?.events.filter(event => !event.acknowledged).map(event => event.id) ?? [] };
   }
