@@ -365,3 +365,63 @@ describe('workflow work queue', () => {
     await expect(h.call('work_status', { itemId: h.state().workQueue!.items[0]!.id })).resolves.toMatchObject({ input: 'private-input' });
   });
 });
+
+describe('the paths work items expect to change', () => {
+  it('reports the unfinished items whose paths overlap and that nothing orders, without locking anything', async () => {
+    const h = harness(); await h.start();
+    const add = (key: string, writes?: string[], more: Record<string, unknown> = {}) => h.call('enqueue_work',
+      { key, title: 'Change ' + key, input: key, ...(writes ? { writes } : {}), ...more }) as Promise<Record<string, unknown>>;
+    const overlapping = (response: unknown) => (((response as Record<string, unknown>).writeOverlaps ?? []) as Array<{ key: string }>).map(entry => entry.key).sort();
+    // Paths are compared as they are written down: without ./, repeated or trailing slashes.
+    expect(await add('parser', ['./src/parser/', 'docs//parser.md'])).not.toHaveProperty('writeOverlaps');
+    expect(h.state().workQueue!.items[0]!.writes).toEqual(['docs/parser.md', 'src/parser']);
+    // A file under a directory that another item names overlaps it; a sibling whose name only starts the same does not.
+    expect(await add('lexer', ['src/parser/lexer.ts'])).toMatchObject({ writeOverlaps: [{ key: 'parser', queue: 'default', status: 'pending', title: 'Change parser', paths: ['src/parser'] }] });
+    expect(overlapping(await add('sibling', ['src/parser-tests']))).toEqual([]);
+    expect(overlapping(await add('unrelated'))).toEqual([]);
+    expect(h.state().workQueue!.items.at(-1)).not.toHaveProperty('writes');
+    // What a dependency orders, directly or through another item, and what a shared resource key serializes is not reported.
+    expect(overlapping(await add('after', ['src/parser'], { dependsOn: ['parser'] }))).toEqual(['lexer']);
+    expect(overlapping(await add('later', ['docs/parser.md'], { dependsOn: ['after'] }))).toEqual([]);
+    expect(overlapping(await add('locked', ['src/parser/ast.ts'], { resources: ['worktree:parser'] }))).toEqual(['after', 'parser']);
+    expect(overlapping(await add('locked-too', ['src/parser/ast.ts'], { resources: ['worktree:parser'] }))).toEqual(['after', 'parser']);
+    // The whole tree overlaps every relative path and no absolute one.
+    await add('data', ['/data/corpus']);
+    expect(overlapping(await add('sweep', ['.']))).toEqual(['after', 'later', 'lexer', 'locked', 'locked-too', 'parser', 'sibling']);
+
+    // Nothing is locked: two members take overlapping items at once, and each is told who else is in its files, the ones at work first.
+    await add('urgent', ['src/parser/lexer.ts'], { priority: 10 });
+    for (const member of ['A', 'B']) await h.create(member);
+    await h.run(2);
+    const [a, b] = h.requests;
+    const first = (await h.claim(a!))!;
+    expect(first.item.key).toBe('urgent');
+    expect(overlapping(first.item)).toEqual(['after', 'lexer', 'parser', 'sweep']);
+    const second = (await h.claim(b!))!;
+    expect(second.item.key).toBe('parser');
+    expect((second.item as unknown as { writeOverlaps: unknown[] }).writeOverlaps[0]).toMatchObject({ key: 'urgent', status: 'claimed', member: 'A', paths: ['src/parser/lexer.ts'] });
+    expect(overlapping(second.item)).toEqual(['lexer', 'locked', 'locked-too', 'sweep', 'urgent']);
+    // An item that is done is in nobody's way.
+    await h.send(a!, 'complete_work', { ...token(first), result: 'done' });
+    expect(overlapping(await h.call('work_status', { key: 'lexer' }))).toEqual(['after', 'parser', 'sweep']);
+    expect(await h.call('work_status', { key: 'urgent' })).not.toHaveProperty('writeOverlaps');
+
+    // A long list is cut, with the number left out.
+    for (let n = 0; n < 9; n++) await add('big-' + n, ['/big/' + n]);
+    const big = await add('big', ['/big']);
+    expect(big.writeOverlaps).toHaveLength(8);
+    expect(big.moreWriteOverlaps).toBe(1);
+    // The script's own call answers with the item alone, so that a replay reads what the first run read.
+    expect(await h.work('enqueue', { key: 'scripted', title: 'Scripted', input: 0, writes: ['src/parser'] })).toEqual({ itemId: expect.any(String), key: 'scripted' });
+    expect(overlapping(await h.call('work_status', { key: 'scripted' }))).toContain('lexer');
+
+    const before = h.state().stateVersion;
+    await expect(add('escape', ['../other'])).rejects.toThrow('must not contain ..');
+    await expect(add('blank', [' src'])).rejects.toThrow('surrounding whitespace');
+    await expect(add('many', Array.from({ length: 17 }, (_, n) => 'dir' + n))).rejects.toThrow('at most 16 paths');
+    await expect(add('scalar', [], { writes: 'src' })).rejects.toThrow('at most 16 paths');
+    // Like the rest of an item, its paths cannot change under the same key.
+    await expect(add('parser', ['src/other'])).rejects.toThrow('Work key conflict');
+    expect(h.state().stateVersion).toBe(before);
+  });
+});

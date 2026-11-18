@@ -32,10 +32,10 @@ ${WORKFLOW_SCHEDULING_INSTRUCTIONS}`;
 /** Running a workflow: what wakes the main agent and what it can do then. Told at every wake, which is when it is needed. */
 const OPERATING = `仅在整体结束、失败、定时复盘、worker 回复主 agent（worker_reply 事件）、swarm 停滞（swarm_stalled：全员空闲、lead 未结束；仍等待，发帖、入队或 staff_swarm 可续跑）、需要关注（swarm_attention：成员失败已停，或队列断粮而 lead 未补）或落地分支被队列外改动（landing_attention）时唤醒主会话。脚本结果是 workflow-result 产物，主 agent read_artifact、ack_events 后 complete；也可发布 report 后完成。
 暂停会取消在途 worker，resume 从头重放并复用完成结果。Bridge 重启时正在运行的根工作流会自动重放续跑，停机时间不计入截止时间；暂停的或无法自动续跑的保持中断，需 replay_script 或用户 /workflow resume。
-configure_landing 查看、修改落地检查并处理被改动的分支，用前读 guide。tell_worker(target,text) 把一段话作为用户消息插进正在运行的 worker 会话（target 为 taskId、成员名或脚本 key）；worker 可用 reply_main 答复一次，worker_messages 读取往来记录。
+configure_landing 查看、修改落地检查并处理被改动的分支，用前读 guide。tell_worker(target,text) 把一段话作为用户消息插进正在运行的 worker 会话（target 为 taskId、成员名或脚本 key）；持久成员不在轮次中或不能中途收消息时，自动改成点名它的留言板帖（返回 posted）。worker 可用 reply_main 答复一次，worker_messages 读取往来记录，含 lead 用它发给成员的。
 ${STAFF_SWARM}
 post_board 的 to 或正文里的 @成员名/@all 点名的成员会被唤醒，未点名的帖子不唤醒任何人；主题 announce 是公告，成员下一轮自动收到全文而不被唤醒，规则变更和裁定发这里。resolve_post 把已答复、已办完或已被新帖取代的帖子标为已解决（note 写怎么解决的，see 为答复或取代它的帖子序号，至少给一个；reopen:true 撤销）：read_board 默认跳过它们（resolved:true 一并返回），search_board 仍能搜到。
-enqueue_work 的 priority 为 -100..100，越大越先领取；dependsOn 是已入队工作项的 key，全部成功才可领取；resources 是互斥键，同键工作项串行领取。队列关闭后拒绝新项。`;
+enqueue_work 的 priority 为 -100..100，越大越先领取；dependsOn 是已入队工作项的 key，全部成功才可领取；resources 是互斥键，同键工作项串行领取；writes 是预计改动的路径，只提示不加锁，返回的 writeOverlaps 是路径重叠、又无先后或互斥约束的未完成项，据此加 dependsOn 或 resources。队列关闭后拒绝新项。`;
 
 const REVIEWING = `${STEERING}；带 lead 的 swarm 启动后设 30–60 分钟周期，复盘看实际产出而非汇报。`;
 const GUARDS = `内部事件不是用户消息或原生问题答案。不要读取或展示环境中的调用凭据。worker 仅可执行原始需求授权的任务；主、子运行沿用已授权 profile，角色说明不代表工具沙箱隔离。`;
@@ -79,7 +79,7 @@ ${WORKFLOW_ADVANCED_SCRIPT_GUIDE}`;
 export const WORKFLOW_MESSAGE_INSTRUCTIONS = `本话题有一个 bridge 管理的工作流，本轮已获得它的调用凭据：用户询问进度或要求干预时直接操作，不需要用户再发 /workflow 命令；用户没有提到它时不要动它。
 调用方式：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。status 返回有上限的摘要，列表略去的条数见 omitted，用 status({list,offset?,limit?}) 翻页；变更需要 workflowId、唯一 operationId、expectedStateVersion（取自 status），冲突时重读 status；enqueue_work、post_board、resolve_post、set_charter、wake_me、staff_swarm、retry_work、update_work、extend_deadline 不需要版本。
 操作：${tools.mainOperations()}。
-tell_worker(target,text) 把一段话作为用户消息插进正在运行的 worker 会话（target 为 taskId、成员名或脚本 key），用于中途纠偏或提问；返回 accepted 表示已送达会话，inactive 表示它没有在跑的轮次（持久成员改用 post_board 点名）。worker 用 reply_main 答复时你会被唤醒，worker_messages 读取往来记录。
+tell_worker(target,text) 把一段话作为用户消息插进正在运行的 worker 会话（target 为 taskId、成员名或脚本 key），用于中途纠偏或提问；返回 accepted 表示已送达会话；持久成员不在轮次中或不能中途收消息时自动改成点名它的留言板帖，返回 posted，它下一轮读到；inactive 表示送不到（一次性 worker 已结束，或成员已停止）。worker 用 reply_main 答复时你会被唤醒，worker_messages 读取往来记录。
 ${STAFF_SWARM}
 ${STEERING}。
 本轮不能 run_script 新建工作流。改脚本重放（replay_script，须同时更新 plan）前，用 read_artifact 读取 status 里 script.sourceRef、script.planRef 指向的现行脚本和方案；脚本 API 的完整说明不在上下文里时运行 node "$AGENT_WORKFLOW_CLI" workflow guide。暂停、取消、重放等会中断在途 worker 的操作，只在用户明确要求或同意后执行。不要读取或展示环境中的调用凭据。`;

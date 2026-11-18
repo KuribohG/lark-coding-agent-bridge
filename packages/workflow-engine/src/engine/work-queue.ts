@@ -80,8 +80,59 @@ export function openQueue(state: WorkflowView, name: string): void {
   emit(state, { type: 'work_queue_opened', name });
 }
 
+/** A path as items are compared by it: no `.` segments, repeated or trailing slashes; `.` is the whole tree. */
+function writePath(value: unknown): string {
+  const text = scriptText(value, 'write path', 200);
+  if (!text || text.trim() !== text) throw new Error('Write paths must not be empty or contain surrounding whitespace');
+  const parts = text.split('/').filter(part => part && part !== '.');
+  if (parts.includes('..')) throw new Error('Write paths must not contain ..');
+  return text.startsWith('/') ? '/' + parts.join('/') : parts.join('/') || '.';
+}
+
+/** Whether `path` is `tree` or lies under it. Relative and absolute paths never meet. */
+const under = (path: string, tree: string) => tree === '.' ? !path.startsWith('/') : tree === '/' ? path.startsWith('/') : path === tree || path.startsWith(tree + '/');
+
+/** The keys an item waits for, directly or through the items it depends on. */
+function prerequisites(state: WorkflowView, item: ItemView): Set<string> {
+  const found = new Set<string>();
+  const open = [...item.dependsOn ?? []];
+  while (open.length) {
+    const key = open.pop()!;
+    if (found.has(key)) continue;
+    found.add(key);
+    open.push(...workItemByKey(state, key)?.dependsOn ?? []);
+  }
+  return found;
+}
+
+const WRITE_OVERLAPS_SHOWN = 8;
+
+/**
+ * The unfinished items that expect to change the same paths as `item` while nothing keeps the two apart: neither
+ * waits for the other, and they share no resource key. `writes` is a statement of intent, not a lock. A conflict
+ * between two members is otherwise found when the second one lands; reported here, whoever plans the queue can order
+ * the items, and whoever claims one knows who else is in those files.
+ */
+export function writeOverlaps(state: WorkflowView, item: ItemView): { writeOverlaps: unknown[]; moreWriteOverlaps?: number } | undefined {
+  if (!item.writes?.length || item.status !== 'pending' && item.status !== 'claimed') return undefined;
+  const before = prerequisites(state, item);
+  const overlaps = [];
+  for (const other of state.workQueue?.items ?? []) {
+    if (other.id === item.id || !other.writes?.length || other.status !== 'pending' && other.status !== 'claimed') continue;
+    const paths = other.writes.filter(theirs => item.writes!.some(ours => under(theirs, ours) || under(ours, theirs)));
+    if (!paths.length || other.resources.some(key => item.resources.includes(key)) || before.has(other.key) || prerequisites(state, other).has(item.key)) continue;
+    const claim = other.status === 'claimed' ? state.workQueue!.claims.find(claim => claim.id === other.claimId) : undefined;
+    const member = claim && state.agents?.find(agent => agent.agentId === claim.agentId)?.key;
+    overlaps.push({ key: other.key, queue: other.queue ?? 'default', status: other.status, ...(member ? { member } : {}), title: other.title.slice(0, 80), paths: paths.slice(0, 4) });
+  }
+  if (!overlaps.length) return undefined;
+  // The ones a member is working on now come first: they are the conflicts that have already begun.
+  overlaps.sort((a, b) => Number(b.status === 'claimed') - Number(a.status === 'claimed'));
+  return { writeOverlaps: overlaps.slice(0, WRITE_OVERLAPS_SHOWN), ...(overlaps.length > WRITE_OVERLAPS_SHOWN ? { moreWriteOverlaps: overlaps.length - WRITE_OVERLAPS_SHOWN } : {}) };
+}
+
 export function enqueueWork(state: WorkflowView, args: Record<string, unknown>, now: number, by?: string): unknown {
-  options(args, ['key', 'title', 'input', 'resources', 'maxAttempts', 'queue', 'priority', 'dependsOn']);
+  options(args, ['key', 'title', 'input', 'resources', 'writes', 'maxAttempts', 'queue', 'priority', 'dependsOn']);
   const key = scriptText(args.key, 'work key', 160);
   if (key.trim() !== key) throw new Error('Work key must not contain surrounding whitespace');
   const title = scriptText(args.title, 'work title', 500);
@@ -91,12 +142,16 @@ export function enqueueWork(state: WorkflowView, args: Record<string, unknown>, 
   if (!Array.isArray(supplied) || supplied.length > 16) throw new Error('Work resources must be an array of at most 16 keys');
   const resources = [...new Set(supplied.map(value => scriptText(value, 'resource key', 200)))].sort();
   if (resources.some(resource => resource.trim() !== resource)) throw new Error('Resource keys must not contain surrounding whitespace');
+  const written = args.writes ?? [];
+  if (!Array.isArray(written) || written.length > 16) throw new Error('Work writes must be an array of at most 16 paths');
+  const writes = [...new Set(written.map(writePath))].sort();
   const name = queueName(args.queue);
   const priority = boundedInteger(args.priority, 0, -100, 100);
   const dependencies = args.dependsOn ?? [];
   if (!Array.isArray(dependencies) || dependencies.length > 32) throw new Error('dependsOn must contain at most 32 existing work keys');
   const dependsOn = [...new Set(dependencies.map(value => scriptText(value, 'dependency key', 160)))].sort();
-  const routing = { ...(name !== 'default' ? { queue: name } : {}), ...(priority ? { priority } : {}), ...(dependsOn.length ? { dependsOn } : {}) };
+  // Absent when empty, like the others, so that the digest of an item that names none is what it was before items could.
+  const routing = { ...(name !== 'default' ? { queue: name } : {}), ...(priority ? { priority } : {}), ...(dependsOn.length ? { dependsOn } : {}), ...(writes.length ? { writes } : {}) };
   const digest = workflowDigest({ key, title, input, maxAttempts, resources, ...routing });
   const items = state.workQueue?.items ?? [];
   const prior = workItemByKey(state, key);
@@ -322,7 +377,7 @@ export function workStatus(state: WorkflowView, args: Record<string, unknown> = 
   if (args.itemId !== undefined || args.key !== undefined) {
     const item = itemOf(state, args);
     if (name !== undefined && (item.queue ?? 'default') !== name) throw new Error('Work item belongs to another queue');
-    return { ...item, digest: undefined, claim: state.workQueue?.claims.find(claim => claim.id === item.claimId) };
+    return { ...item, digest: undefined, claim: state.workQueue?.claims.find(claim => claim.id === item.claimId), ...writeOverlaps(state, item) };
   }
   const items = (state.workQueue?.items ?? []).filter(item => name === undefined || (item.queue ?? 'default') === name);
   const offset = boundedInteger(args.offset, 0, 0, WORK_MAX_ITEMS);

@@ -334,6 +334,11 @@ export interface WorkflowWorkItem {
   by?: string;
   input: unknown;
   resources: string[];
+  /**
+   * The paths the item expects to change. Unlike `resources` they lock nothing: unfinished items whose paths overlap
+   * and that nothing orders are reported to whoever adds, reads or claims one of them.
+   */
+  writes?: string[];
   maxAttempts: number;
   generation: number;
   status: 'pending' | 'claimed' | 'completed' | 'failed' | 'cancelled';
@@ -515,10 +520,12 @@ export type WorkerInputStatus = 'accepted' | 'inactive' | 'unsupported' | 'unkno
 export interface DirectMessage {
   id: string;
   taskId: string;
-  from: 'main' | 'worker';
+  from: 'main' | 'worker' | 'lead';
+  /** The lead that sent it, for a message from a lead. */
+  by?: string;
   text: string;
   createdAt: number;
-  /** For a message from the main agent: whether the worker's transport acknowledged it. */
+  /** For a message into the worker's turn: whether its transport acknowledged it. */
   delivery?: 'accepted' | 'unknown';
 }
 

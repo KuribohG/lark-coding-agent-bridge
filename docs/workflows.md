@@ -36,9 +36,9 @@ What the main agent is told depends on what the turn is for, because the text of
 
 | Turn | Told | Size |
 | --- | --- | --- |
-| Starts a workflow (`/workflow start`, `/workflow script`) | How to call the tools, the operations, and how to write a script: `agent`, `parallel`/`pipeline`, work queues, swarms, the board, the charter | about 7400 characters, once per workflow |
-| Woken by the workflow's events | How to call the tools, the operations, and how to run what exists: what each event asks for, taking the result, `staff_swarm`, `tell_worker`, the board, adding work, the charter. No script API | about 3700 characters, at every wake |
-| An ordinary user message in a topic that has a workflow | How to call the tools, the operations and how to steer | about 2500 characters |
+| Starts a workflow (`/workflow start`, `/workflow script`) | How to call the tools, the operations, and how to write a script: `agent`, `parallel`/`pipeline`, work queues, swarms, the board, the charter | about 7500 characters, once per workflow |
+| Woken by the workflow's events | How to call the tools, the operations, and how to run what exists: what each event asks for, taking the result, `staff_swarm`, `tell_worker`, the board, adding work, the charter. No script API | about 3900 characters, at every wake |
+| An ordinary user message in a topic that has a workflow | How to call the tools, the operations and how to steer | about 2600 characters |
 
 A long-running swarm wakes the main agent dozens of times, so a wake does not repeat the script API; a wake that has to change the script reads the current one and prints the guide first. The less common script functions (`discuss`, `reviewedAgent`, mailbox and event waits, task handles, worktrees and landing, nested workflows) are described only in the full guide, which any agent prints with `workflow guide` before using them.
 
@@ -79,7 +79,19 @@ Claims no longer depend on members renewing a lease in time. While the turn that
 
 ### Talking to a running worker
 
-`tell_worker(target, text)` puts a message from the main agent into a worker's session while its turn runs, the way a user's follow-up reaches the main agent mid-turn. `target` is a task ID, a member name or the script key of a one-off worker. The result is `accepted` (the transport took it; the model reads it at its next step), `inactive` (no turn is running: name a persistent member on the board instead), `unsupported` (the worker's harness takes no input mid-turn) or `unknown`. The worker may answer each message once with `reply_main({text})`, which raises a `worker_reply` event and wakes the main agent; `worker_messages(target?)` lists the exchange. Use it to correct a worker that is going the wrong way or to ask what it is doing, instead of cancelling it.
+`tell_worker(target, text)` puts a message from the main agent into a worker's session while its turn runs, the way a user's follow-up reaches the main agent mid-turn. `target` is a task ID, a member name or the script key of a one-off worker. The worker may answer each message once with `reply_main({text})`, which raises a `worker_reply` event and wakes the main agent; `worker_messages(target?)` lists the exchange. Use it to correct a worker that is going the wrong way or to ask what it is doing, instead of cancelling it.
+
+The sender does not have to know whether the worker is in a turn. The result is one of:
+
+| `status` | Meaning |
+| --- | --- |
+| `accepted` | The transport took the message; the model reads it at its next step |
+| `unknown` | The transport did not confirm it; the message is recorded as sent |
+| `posted` | The message could not enter a turn (the member is between turns, or its harness takes no input mid-turn), so it became a board post that names the member, with its `seq`. The member reads it at its next turn, and a swarm member is woken for it. An `@name` in the text names nobody else |
+| `inactive` | No turn is running and none will come to read a post: a one-off worker that has ended, or a member that has stopped |
+| `unsupported` | A one-off worker whose harness takes no input mid-turn |
+
+A swarm's lead and the leads of its queues have the same operation as a worker tool, `tell_worker({operationId, target, text})`, so that a lead that sees a member heading the wrong way does not have to wait for that member's turn to end. The swarm's lead may speak to any member of its swarm, the lead of a queue to the members that consume its queues; other members are refused and use the board. The member sees the message as coming from that lead and answers on the board, not with `reply_main`. What leads say this way is in `worker_messages` with `from: "lead"` and the lead's name in `by`. Repeating a call with the same `operationId` and input returns the first result without speaking twice.
 
 ## Harness and model selection
 
@@ -156,7 +168,7 @@ Guest functions:
 | `swarm(task, {key, lead?, members, maxTurns?, onError?})` | A group of members scheduled by the bridge: woken by board posts that name them and, with `queue`, by claimable work; an optional lead adds and retires members and decides when to finish; see [message board](#message-board-and-swarms) and [queue consumers](#queue-driven-consumers) |
 | `post(text, {key, to?})` / `readBoard({key, after?, limit?, member?})` | Post to the workflow's message board as the script, or read the feed; see [message board](#message-board-and-swarms) |
 | `send(member, text, {key, topic?, correlationId?})` / `receive(member, {key, topic?, correlationId?, timeoutMs?})` | Send a durable message or await a stable inbox batch |
-| `enqueueWork({key, title, input, queue?, priority?, dependsOn?, resources?, maxAttempts?})` | Persist an immutable work item; returns `{itemId, key}` and reuses it on replay |
+| `enqueueWork({key, title, input, queue?, priority?, dependsOn?, resources?, writes?, maxAttempts?})` | Persist an immutable work item; returns `{itemId, key}` and reuses it on replay |
 | `workStatus({itemId?, queue?, offset?, limit?})` | Read one item with its payload, or bounded queue counts and summaries |
 | `closeWorkQueue({key, queue?})` | Persist queue closure; existing items continue, new items are rejected |
 | `parallel([() => ..., () => ...])` | Starts functions and returns results in input order; a function that throws yields `null` |
@@ -443,6 +455,10 @@ Queue mutation IDs are scoped to the current execution attempt. Repeating the sa
 
 `resources` contains explicit exclusion keys shared across all logical queues in this workflow. Items sharing a key cannot hold active claims simultaneously; for example, use one canonical `worktree:<path>` key for all items that edit that worktree. Keys are opaque, matched exactly and local to this workflow. The bridge neither creates worktrees nor enforces filesystem access. A stale external process may still produce side effects after lease loss; verify those effects before resuming uncertain work.
 
+`writes` names up to 16 paths (directories or files) that the item expects to change. It locks nothing. Members that each work in a worktree of their own do not need a lock, yet two items that change the same files conflict when the second one lands, and a `resources` key would serialize them even where they do not. Instead, the unfinished items whose paths overlap are reported as `writeOverlaps` wherever one of them is looked at: in the answer of `enqueue_work`, in `work_status({key})`, and in the item a member is given by `claim_work`. Each entry has the other item's `key`, `queue`, `status`, `title`, the overlapping `paths` and, when it is claimed, the `member` at work on it; claimed items come first, at most 8 are listed and `moreWriteOverlaps` counts the rest. Whoever plans the queue orders the two with `dependsOn` or splits them; a member that is given such an item settles with the other member who changes what.
+
+Paths are compared as written, after dropping `./`, repeated and trailing slashes: a path overlaps itself and everything under it (`src/parser` overlaps `src/parser/lexer.ts`, not `src/parser-tests`), `.` is the whole tree, and relative and absolute paths never meet. `..` is refused. Two items are not reported when something already keeps them apart: one depends on the other, directly or through other items, or they share a `resources` key. Like the rest of an item's input, `writes` cannot change under the same key. The script's `enqueueWork` accepts `writes` and answers with `{itemId, key}` alone, so that a replay reads what the first run read.
+
 Enqueue keys share the script's key namespace. Replaying the same key/input reuses its existing item and does not reset its result or progress; changing immutable input under that key fails. `maxAttempts` defaults to 3. Every new grant consumes an attempt, including voluntarily released and expired grants. Main can use `enqueue_work` or `retry_work({itemId, additionalAttempts?})` with the usual workflow ID, operation ID and state version. Retry applies only to failed items, adds a default allowance of one (1–8 per request, at most 32 cumulative generations), and never resets the generation. Resolve the failure and explicitly replay as needed. Retry does not cause previously successful, cached consumer turns to run again: add a new round/member when all original consumer calls were already successful. Pending or claimed work prevents script success and main completion. Failed items remain visible for main review; the packaged example treats them as an error.
 
 The main agent's `enqueue_work`, `post_board`, `resolve_post`, `set_charter` and `wake_me` only add to or replace one part of the workflow, and `staff_swarm`, `retry_work`, `update_work` and `extend_deadline` check what they change against the state they commit on, so none of them takes `expectedStateVersion`: a workflow with many members commits several times a second, and a change that had to quote the current version would rarely land. They still need `workflowId` and a unique `operationId`; repeating a call with the same `operationId` and input returns the first result.
@@ -497,7 +513,7 @@ The [packaged consumer example](../workflow-definitions/scripted/examples/queue-
 /workflow close [queue]
 ```
 
-Enqueue accepts optional `resources` and `maxAttempts`. These commands never create a workflow; when paused/interrupted they only persist the change. A restart keeps each claim for its member when the workflow resumes on its own: the member's next attempt continues the claim with the same `claimId` and `generation`, and a claim no member resumes within ten minutes returns to the queue. Workflows that wait for an explicit replay have their claims cancelled at restart; scheduling resumes with the automatic or explicit replay. `/workflow work` and `/workflow status [member]` display queue closure, pool state, turn budget, idle waits and stopped members, including before a member's first native turn. Ordinary messages do not enter workflow mode.
+Enqueue accepts optional `resources`, `writes` and `maxAttempts`. These commands never create a workflow; when paused/interrupted they only persist the change. A restart keeps each claim for its member when the workflow resumes on its own: the member's next attempt continues the claim with the same `claimId` and `generation`, and a claim no member resumes within ten minutes returns to the queue. Workflows that wait for an explicit replay have their claims cancelled at restart; scheduling resumes with the automatic or explicit replay. `/workflow work` and `/workflow status [member]` display queue closure, pool state, turn budget, idle waits and stopped members, including before a member's first native turn. Ordinary messages do not enter workflow mode.
 
 ### Claim, fix and land
 

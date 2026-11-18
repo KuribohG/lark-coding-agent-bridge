@@ -71,8 +71,8 @@ export async function handleWorkflowCommand(kernel: WorkflowKernel, scope: strin
     try {
       item = JSON.parse(goal) as Record<string, unknown>;
       if (!item || Array.isArray(item) || typeof item !== 'object'
-        || Object.keys(item).some(key => !['key', 'title', 'input', 'resources', 'maxAttempts', 'queue', 'priority', 'dependsOn'].includes(key))) throw new Error('Invalid work item');
-    } catch { return '用法：/workflow enqueue {"key":"唯一名称","title":"任务标题","input":"任务内容"}，可选 queue、priority、dependsOn、resources、maxAttempts。'; }
+        || Object.keys(item).some(key => !['key', 'title', 'input', 'resources', 'writes', 'maxAttempts', 'queue', 'priority', 'dependsOn'].includes(key))) throw new Error('Invalid work item');
+    } catch { return '用法：/workflow enqueue {"key":"唯一名称","title":"任务标题","input":"任务内容"}，可选 queue、priority、dependsOn、resources、writes、maxAttempts。'; }
   }
   if (operation === 'close' && goal) item = { queue: goal.trim() };
   await kernel.call({ kind: 'main', scopeId: scope }, operation === 'enqueue' ? 'enqueue_work' : operation === 'close' ? 'close_work_queue' : operation,
