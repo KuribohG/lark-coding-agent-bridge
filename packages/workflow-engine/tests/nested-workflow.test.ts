@@ -161,6 +161,20 @@ describe('nested workflow capability',()=>{
     expect(h.state().events).toHaveLength(0);
   });
 
+  it('lets a persistent member take the last task of the tree budget and refuses the one after it',async()=>{
+    const h=harness();await h.start({maxAgents:2});await h.agent(h.state());await h.run(1);
+    const child=await h.child(h.requests[0]!);await h.finish(h.requests[0]!);h.begin(child.workflowId);
+    // The caller and this member are the two tasks the tree may run.
+    await h.agent(h.state(child.workflowId),{key:'leaf',member:'leaf',workflowTool:false});
+    await h.run(2);
+    expect(h.requests[1]!.workflow.workflowId).toBe(child.workflowId);
+    await expect(h.agent(h.state(child.workflowId),{key:'extra',member:'extra',workflowTool:false})).rejects.toThrow('tree task budget');
+    await expect(h.agent(h.state(child.workflowId),{key:'one-off',workflowTool:false})).rejects.toThrow('tree task budget');
+    // The refused member left nothing behind.
+    expect(h.state(child.workflowId).tasks).toHaveLength(1);
+    expect(h.state(child.workflowId).agents?.map(agent=>agent.key)).toEqual(['leaf']);
+  });
+
   it.each([false,true])('requires explicit permission to enqueue into the parent queue: %s',async granted=>{
     const h=harness();await h.start();await h.agent(h.state());await h.run(1);
     const child=await h.child(h.requests[0]!,{parentQueue:granted});await h.finish(h.requests[0]!);h.begin(child.workflowId);

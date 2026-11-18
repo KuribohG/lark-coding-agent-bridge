@@ -71,7 +71,8 @@ export class ScriptApi {
       if (call.member) {
         const before=state.tasks.length;
         const scheduled = scheduleMemberTurn(state, call, execution, ctx.nativeIdKind(execution.agentKind), inputRefs);
-        if (state.tasks.length>before && ctx.children.remainingTreeTasks(state)<=0) throw new Error('Workflow tree task budget reached');
+        // The turn just scheduled is already counted, so the tree is over its budget only when less than nothing remains.
+        if (state.tasks.length>before && ctx.children.remainingTreeTasks(state)<0) throw new Error('Workflow tree task budget reached');
         recordCall(state, call.key, scheduled.task, scheduled.cached);
         return { taskId: scheduled.task.taskId, output: call.output };
       }

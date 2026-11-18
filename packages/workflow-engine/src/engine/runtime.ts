@@ -480,6 +480,8 @@ export class WorkflowRuntime {
       // A malformed or non-conforming JSON answer usually reflects formatting, not the work; ask the same session to restate it.
       for (let retry = 1; retry <= JSON_FORMAT_RETRIES; retry++) {
         if (this.deps.executionLedger || task.scriptOutput !== 'json' || outcome.result !== 'completed' || !outcome.normal || outcome.question || !outcome.nativeSessionId || signal.aborted) break;
+        // A turn that ended to wait for the child workflow it started has not answered yet: its answer follows the child's result.
+        if (this.kernel.waitingForChild(workflow.root.scopeId, workflow.workflowId, task.taskId, attemptId)) break;
         const checked = checkJsonOutput(outcome.text ?? '', task.scriptSchema, this.deps.repairJson);
         if (!('problem' in checked)) break;
         if (!await run.waitForExit(5000)) throw new Error('Worker has not exited before the JSON format retry');

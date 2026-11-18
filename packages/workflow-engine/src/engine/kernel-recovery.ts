@@ -37,6 +37,10 @@ export class RestartRecovery {
       if (governed) freezeWorkClaims(state, 'Host restart; execution settlement requires reconciliation');
       else if (keep) holdWorkClaims(state, this.ctx.now() + CLAIM_ADOPTION_MS);
       else this.dropClaims(state);
+      // A caller that had started a child workflow had nothing left to do in that turn but to end it, and what it says
+      // then is not its answer. A process that survived is not continued: the caller resumes in its session with the
+      // child's result. A shutdown has already marked such a turn interrupted, a crash has left it running.
+      if (!governed) this.ctx.hosts.discardTasks(state.workflowId, state.tasks.filter(task => task.waitingWorkflowId).map(task => task.taskId));
       for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_workflow' || task.status === 'waiting_input') {
         if (governed && task.attempts.length)
           emit(state, { type: 'execution_uncertain', taskId: task.taskId, error: 'Bridge restarted; native execution requires reconciliation.' });

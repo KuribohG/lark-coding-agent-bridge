@@ -41,6 +41,8 @@ type Case = {
   reviewer?: Backend;
   marker: string;
   profile: string;
+  /** Runs every worker of the case on this model unless the script names another; absent, each harness uses its own default. */
+  model?: string;
 };
 type Observation = {
   backend: Backend;
@@ -155,7 +157,7 @@ async function childPhase(test: Case, phase: string, directory: string) {
   const runtime = createBridgeWorkflowRuntime({ path: join(directory, 'workflow.sqlite'), cliPath: join(project, 'dist/cli.js'), executor,
     resolve: async () => ({ root, policy }),
     resolveWorker: async (bound, selection, parentPolicy) => resolveWorkerExecution(bound, profileForAgentKind(config, bridgeAgentKind(selection.agentKind)), parentPolicy,
-      { ...(selection.model ? {model:selection.model} : {}), ...(selection.reasoningEffort ? {reasoningEffort:selection.reasoningEffort} : {}) }),
+      { ...(selection.model ?? test.model ? {model:selection.model ?? test.model} : {}), ...(selection.reasoningEffort ? {reasoningEffort:selection.reasoningEffort} : {}) }),
     showPlan: async () => {},
     wakeMain: async () => {
       wakeCount++;
@@ -440,15 +442,17 @@ if (childDirectory) {
   const scenarios = option('scenarios', 'memory,interrupt,discussion')!.split(',');
   assert(scenarios.length > 0 && scenarios.every(s => ['memory', 'interrupt', 'discussion', 'queue', 'consumers', 'nested', 'nested-recovery', 'nested-cancel', 'nested-queue', 'nested-before-yield', 'nested-crash'].includes(s)), 'Unsupported scenario');
   assert(process.platform !== 'win32' || !scenarios.includes('nested-crash'), 'nested-crash requires POSIX SIGKILL');
+  const model = option('model');
+  assert(model === undefined || model.trim() && !model.startsWith('--'), '--model needs a model ID');
   const cases: Case[] = backends.flatMap(backend => (['memory', 'interrupt', 'queue', 'consumers', 'nested', 'nested-recovery', 'nested-cancel', 'nested-queue', 'nested-before-yield', 'nested-crash'] as const)
     .filter(s => scenarios.includes(s))
     .map(scenario => ({
       id: backend + '-' + scenario + '-' + randomUUID().slice(0, 8),
-      scenario, backend, marker: randomUUID(), profile: paths.profile,
+      scenario, backend, marker: randomUUID(), profile: paths.profile, ...(model ? { model } : {}),
     })));
   if (scenarios.includes('discussion')) cases.push({
     id: 'discussion-' + randomUUID().slice(0, 8), scenario: 'discussion',
-    backend: backends[0]!, reviewer: backends[1] ?? backends[0]!, marker: randomUUID(), profile: paths.profile,
+    backend: backends[0]!, reviewer: backends[1] ?? backends[0]!, marker: randomUUID(), profile: paths.profile, ...(model ? { model } : {}),
   });
   const results: Array<{ id: string; passed: boolean; error?: string }> = [];
   for (const test of cases) {

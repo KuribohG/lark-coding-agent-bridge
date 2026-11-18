@@ -40,7 +40,8 @@ function hostedRunner() {
         runId: randomUUID(), result: outcome.then(text => text === undefined ? 'stopped' : 'completed'),
         stop: async reason => { stopped ??= reason; wake(); }, waitForExit: async () => true, stopReason: () => stopped,
         async *events() {
-          yield { type: 'session', nativeSessionId: `native-${key}` };
+          // A process that resumes a session reports that session.
+          yield { type: 'session', nativeSessionId: spec.resume?.id ?? `native-${key}` };
           const text = await outcome;
           if (text === undefined) return;
           yield { type: 'final_text', text };
@@ -156,6 +157,31 @@ describe('hosted workflow workers', () => {
     }
     expect(h.state().workQueue!.items.map(item => [item.status, item.generation, item.result])).toEqual([['completed', 1, 'item-0'], ['completed', 1, 'item-1']]);
     expect(h.state().workQueue!.claims).toHaveLength(2);
+  });
+
+  it('does not continue the turn of a caller that had started a child workflow, and resumes the caller with the child\'s result', async () => {
+    const h = await harness();
+    await h.run('return await agent("delegate", {key:"parent", workflowTool:true});');
+    await h.until(() => expect(h.state().tasks[0]?.status).toBe('running'));
+    const first = h.specs[0]!;
+    // The caller has committed its child and not yet ended its turn when the controller goes away.
+    await expect(callWorkflow('run_workflow', { operationId: 'delegate', key: 'delegate', goal: 'Return the answer',
+      plan: 'Return 42 without workers.', script: 'return 42;' }, first.env)).resolves.toMatchObject({ status: 'waiting' });
+
+    await h.restart();
+    await h.until(() => expect(h.specs).toHaveLength(2));
+    // All that turn had left to do was to end, and what it says then is not the caller's answer: its process is ended,
+    // and the caller resumes in its session with the result of the child, which ran meanwhile.
+    expect(h.released).toEqual([first.host!.key]);
+    const resumed = h.specs[1]!;
+    expect(resumed.host!.attach).toBe(false);
+    expect(resumed.resume).toEqual({ kind: 'sessionId', id: `native-${first.host!.key}` });
+    await expect(callWorkflow('read_context', {}, resumed.env)).resolves.toMatchObject({ workflows: { call: { ok: true, result: 42 } } });
+    await expect(callWorkflow('task_status', {}, first.env)).rejects.toThrow();
+    h.hosts.get(resumed.host!.key)!.finish('the answer is 42');
+    await h.until(() => expect(h.state().script?.status).toBe('result_ready'));
+    expect(JSON.parse(h.state().artifacts.find(artifact => artifact.ref === h.state().script!.resultRef)!.text)).toBe('the answer is 42');
+    expect(h.state().tasks[0]!.attempts).toHaveLength(2);
   });
 
   it('starts a fresh process when the host did not survive', async () => {
