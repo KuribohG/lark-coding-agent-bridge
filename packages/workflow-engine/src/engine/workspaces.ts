@@ -8,7 +8,7 @@ import { MAX_WORKSPACES, MAX_WORKSPACE_RECORDS, WORKSPACE_CHECKOUT_SLOTS } from 
 import { boundedInteger, scriptText } from './script-contract';
 import { nodeProcesses, workspaceCommand, type CommandResult } from './workspace-process';
 import type { WorkflowProcesses } from './ports';
-import type { LandReport, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
+import type { LandingChange, LandingHead, LandingOverride, LandingRefusal, LandingView, LandReport, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
 import type { WorkflowRoot } from './types';
 
 interface RecordRow { id: string; workflow: string; key: string; kind: string; digest: string; done: number; data: string; created: number }
@@ -65,6 +65,9 @@ function pathPattern(glob: string): RegExp {
   return new RegExp(`^${body}${glob.endsWith('/') ? '.*' : '(?:/.*)?'}$`);
 }
 const tail = (results: WorkspaceChecks['commands']) => results.map(result => ({ ...result, stdout: result.stdout.slice(-4000), stderr: result.stderr.slice(-4000) }));
+/** The main agent's changes to the landing, kept apart from the script's configuration in `@landing`. */
+const LANDING_OVERRIDE = '@landing-override';
+const short = (commit: string | null) => commit ? commit.slice(0, 10) : 'no commit';
 
 /** The journal precedes Git/filesystem operations. Successful results are immutable on replay. */
 export class WorkflowWorkspaces {
@@ -75,6 +78,10 @@ export class WorkflowWorkspaces {
   private readonly trains = new Map<string, { queue: Candidate[]; running: boolean }>();
   /** Stops the trains when the service closes. */
   private readonly stopping = new AbortController();
+  /** The last piece of work that uses each train's worktree; a train and a trial of new checks take turns there. */
+  private readonly tracks = new Map<string, Promise<unknown>>();
+  /** What the main agent has yet to hear about each train's branch; it travels with the next reports. */
+  private readonly unsaid = new Map<string, string>();
   /** The landing in progress in each worktree; a repeated submission joins it. */
   private readonly inFlight = new Map<string, Promise<LandReport>>();
   /** Commits whose tree this service already screened for submodules and checkout filters, one check per commit. */
@@ -115,6 +122,17 @@ export class WorkflowWorkspaces {
       if (row) return JSON.parse(row.data) as T;
       row = this.insert(op.workflow, key, kind, null);
       const value = make(row.id); this.save(row, value); return value;
+    })();
+  }
+  /** A record the service keeps under a reserved key of its own, such as the landing configuration. */
+  private record<T>(workflow: string, key: string): T | undefined {
+    const row = this.db.prepare('SELECT * FROM workspace_records WHERE workflow=? AND key=?').get(workflow, key) as RecordRow | undefined;
+    return row && JSON.parse(row.data) as T;
+  }
+  private put(workflow: string, key: string, kind: string, value: unknown): void {
+    this.db.transaction(() => {
+      const row = this.db.prepare('SELECT * FROM workspace_records WHERE workflow=? AND key=?').get(workflow, key) as RecordRow | undefined;
+      if (row) this.save(row, value); else this.insert(workflow, key, kind, value);
     })();
   }
   private putWorkspace(workspace: WorkspaceBinding): void { this.save(this.row(workspace.id, workspace.workflowId, 'workspace'), workspace); }
@@ -347,10 +365,7 @@ export class WorkflowWorkspaces {
       const precheck = args.precheck === undefined ? undefined : this.commands(args.precheck), protect = this.protect(args.protect);
       const landing: WorkspaceLanding = { targetRef: this.targetRef(op.workflow, args.target), commands: this.commands(args.checks),
         ...(precheck ? { precheck } : {}), ...(protect ? { protect } : {}), batch: boundedInteger(args.batch, 16, 1, 64) };
-      this.db.transaction(() => {
-        const row = this.db.prepare('SELECT * FROM workspace_records WHERE workflow=? AND key=?').get(op.workflow, '@landing') as RecordRow | undefined;
-        if (row) this.save(row, landing); else this.insert(op.workflow, '@landing', 'landing', landing);
-      })();
+      this.put(op.workflow, '@landing', 'landing', landing);
       return landing;
     }
     if (kind === 'approve') {
@@ -407,7 +422,9 @@ export class WorkflowWorkspaces {
         if (current !== integration.expectedHead && current !== pinned.headCommit) throw new Error('Integration target advanced; prepare and validate a new integration');
         if (current !== pinned.headCommit) {
           await this.notCheckedOut(ws, integration.targetRef, ctx.signal);
-          await this.git(ws.repository, ['update-ref', integration.targetRef, pinned.headCommit, current ?? '0'.repeat(pinned.headCommit.length)], ctx.signal);
+          await this.git(ws.repository, ['update-ref', '-m', `bridge-workflow: accepted integration ${accepted.id}`, integration.targetRef, pinned.headCommit, current ?? '0'.repeat(pinned.headCommit.length)], ctx.signal);
+          // A script may integrate onto the branch that members also land on: the queue vouches for this commit too.
+          if (this.record<LandingHead>(op.workflow, this.headKey(ws.commonDir))?.targetRef === integration.targetRef) this.putHead(ws, { targetRef: integration.targetRef, head: pinned.headCommit });
         }
         accepted.completed = true;
         this.save(this.row(accepted.id, op.workflow, 'accepted'), accepted);
@@ -546,10 +563,16 @@ export class WorkflowWorkspaces {
     return results;
   }
 
-  /** How members land their work, once the script has called configureLanding. */
+  /** How members land their work, once the script has called configureLanding: its configuration with the main agent's changes. */
   landing(workflow: string): WorkspaceLanding | undefined {
-    const row = this.db.prepare("SELECT * FROM workspace_records WHERE workflow=? AND key='@landing'").get(workflow) as RecordRow | undefined;
-    return row && JSON.parse(row.data) as WorkspaceLanding;
+    const base = this.record<WorkspaceLanding>(workflow, '@landing');
+    return base && this.effective(base, this.record<LandingOverride>(workflow, LANDING_OVERRIDE) ?? {});
+  }
+  private effective(base: WorkspaceLanding, over: LandingOverride): WorkspaceLanding {
+    const precheck = over.precheck ? over.precheck.length ? over.precheck : undefined : base.precheck;
+    const protect = [...base.protect ?? [], ...over.protect ?? []];
+    return { targetRef: base.targetRef, commands: over.commands ?? base.commands, ...(precheck ? { precheck } : {}),
+      ...(protect.length ? { protect } : {}), batch: over.batch ?? base.batch };
   }
   private async landedHead(workflow: string, repo: string, signal: AbortSignal): Promise<string | null> {
     const landing = this.landing(workflow);
@@ -579,7 +602,14 @@ export class WorkflowWorkspaces {
     const { targetRef } = landing;
     const ancestor = async (older: string, newer: string) => !(await this.git(ws.path, ['merge-base', '--is-ancestor', older, newer], signal, true)).code;
     const before = await this.clean(ws, signal);
-    const targetCommit = await this.refHead(ws.repository, targetRef, signal) ?? ws.baseCommit;
+    let branch = await this.refHead(ws.repository, targetRef, signal);
+    // A branch the queue does not vouch for is looked at before the member's commits are rebased onto it.
+    if ((this.vouched(ws, targetRef, branch)?.head ?? branch) !== branch) {
+      const verdict = await this.exclusive(this.trainKey(ws), () => this.inspect(landing, ws, ctx.state.deadlineAt));
+      if (verdict.halt) return this.halted(targetRef, verdict);
+      branch = verdict.head;
+    }
+    const targetCommit = branch ?? ws.baseCommit;
     const nothing = { status: 'landed' as const, targetRef, headCommit: targetCommit, commits: 0 };
     if (await ancestor(before.headCommit, targetCommit)) return nothing;
     if (!await ancestor(targetCommit, before.headCommit)) {
@@ -641,16 +671,103 @@ export class WorkflowWorkspaces {
   }
   private async drive(key: string, train: { queue: Candidate[]; running: boolean }): Promise<void> {
     while (train.queue.length && !this.closed) {
-      const landing = this.landing(train.queue[0]!.ws.workflowId);
-      const batch = train.queue.splice(0, landing?.batch ?? train.queue.length);
-      try {
-        if (!landing) throw new Error('Landing is not configured; the script calls configureLanding first');
-        train.queue.unshift(...await this.round(landing, batch));
-      } catch (error) { for (const candidate of batch) candidate.reject(error); }
+      // The landing is read once the worktree is free: a change the main agent made meanwhile applies to this train.
+      await this.exclusive(key, async () => {
+        if (!train.queue.length) return;
+        const landing = this.landing(train.queue[0]!.ws.workflowId);
+        const batch = train.queue.splice(0, landing?.batch ?? train.queue.length);
+        try {
+          if (!landing) throw new Error('Landing is not configured; the script calls configureLanding first');
+          train.queue.unshift(...await this.round(landing, batch));
+        } catch (error) { for (const candidate of batch) candidate.reject(error); }
+      });
     }
     for (const candidate of train.queue.splice(0)) candidate.reject(this.stopping.signal.reason);
     train.running = false;
     if (this.trains.get(key) === train) this.trains.delete(key);
+  }
+
+  /** Runs `work` once everything queued before it for the same train's worktree has finished. */
+  private exclusive<T>(key: string, work: () => Promise<T>): Promise<T> {
+    const turn = (this.tracks.get(key) ?? Promise.resolve()).catch(() => undefined).then(work);
+    this.tracks.set(key, turn);
+    void turn.catch(() => undefined).finally(() => { if (this.tracks.get(key) === turn) this.tracks.delete(key); });
+    return turn;
+  }
+  private trainKey(ws: Pick<WorkspaceBinding, 'workflowId' | 'commonDir'>): string { return `${ws.workflowId}:${ws.commonDir}`; }
+  private headKey(commonDir: string): string { return `@landing-head/${workflowDigest(commonDir).slice(0, 16)}`; }
+  private putHead(ws: Pick<WorkspaceBinding, 'workflowId' | 'commonDir'>, head: LandingHead): void {
+    this.put(ws.workflowId, this.headKey(ws.commonDir), 'landing-head', head);
+  }
+  /** The commit the queue vouches for on a repository's landing branch, once it has landed or adopted one. */
+  private vouched(ws: Pick<WorkspaceBinding, 'workflowId' | 'commonDir'>, targetRef: string, current: string | null): LandingHead | undefined {
+    const known = this.record<LandingHead>(ws.workflowId, this.headKey(ws.commonDir));
+    if (!known || known.targetRef !== targetRef) return undefined;
+    // The move this record announced was made; the service stopped before it could say so.
+    if (known.next && known.next === current) { const settled = { targetRef, head: current }; this.putHead(ws, settled); return settled; }
+    return known;
+  }
+  /** Moves the landing branch from `expected` to `head`, with a reflog entry that names the queue, and vouches for `head`. */
+  private async advance(ws: WorkspaceBinding, targetRef: string, head: string, expected: string | null, message: string, signal: AbortSignal): Promise<void> {
+    const known = this.record<LandingHead>(ws.workflowId, this.headKey(ws.commonDir));
+    if (expected) this.putHead(ws, { targetRef, head: expected, next: head });
+    try {
+      await this.git(ws.repository, ['update-ref', '-m', message, targetRef, head, expected ?? '0'.repeat(head.length)], signal);
+    } catch (error) {
+      if (expected && known) this.putHead(ws, known);
+      throw error;
+    }
+    this.putHead(ws, { targetRef, head });
+  }
+  private async park(path: string, commit: string, signal: AbortSignal): Promise<void> {
+    await this.git(path, ['reset', '--hard', '--quiet', commit], signal);
+    await this.git(path, ['clean', '-fd', '--quiet'], signal);
+  }
+  /**
+   * Where the landing branch is, once the queue vouches for it or has halted on it. Runs with the train's worktree to
+   * itself. A branch the queue has no record of is taken as it is.
+   */
+  private async inspect(landing: WorkspaceLanding, ws: WorkspaceBinding, deadlineAt: number): Promise<{ head: string | null; halt?: string; notice?: string }> {
+    const { signal } = this.stopping, { targetRef } = landing;
+    const head = await this.refHead(ws.repository, targetRef, signal);
+    const known = this.vouched(ws, targetRef, head);
+    if (!known) { if (head) this.putHead(ws, { targetRef, head }); return { head }; }
+    if (known.head === head) { if (known.halt) this.putHead(ws, { targetRef, head }); return { head }; }
+    const verdict = await this.vet(landing, ws, await this.trainWorktree(ws, signal), known, head, deadlineAt, signal);
+    if (!verdict.halt) this.unsaid.set(this.trainKey(ws), verdict.notice);
+    return { head, ...verdict };
+  }
+  private halted(targetRef: string, verdict: { head: string | null; halt?: string; notice?: string }): LandReport {
+    return { status: 'halted', targetRef, targetCommit: verdict.head, ...(verdict.notice ? { notice: verdict.notice } : {}),
+      reason: `The landing branch was moved from outside the landing queue and ${verdict.halt}. Nothing lands until the main agent settles it, and it has been told: keep your commits, do not submit again in this turn and do not move the branch yourself.` };
+  }
+  /**
+   * The branch is not where the queue left it. Commits that were added on top of it, leave every protected path
+   * alone and pass the precheck and the checks are as good as landed ones, and the queue vouches for them from here
+   * on. Anything else halts the landing until the main agent restores or adopts the branch (configure_landing).
+   */
+  private async vet(landing: WorkspaceLanding, ws: WorkspaceBinding, path: string, known: LandingHead, current: string | null, deadlineAt: number, signal: AbortSignal): Promise<{ halt?: string; notice: string }> {
+    const { targetRef } = landing;
+    const stopped = (reason: string) => ({ halt: reason, notice: `落地已停止：落地分支 ${targetRef} 被队列外改动（队列上次落地在 ${short(known.head)}，现在是 ${short(current)}），不能自动接纳：${reason}。`
+      + '在主 agent 处理之前成员的 submit_work 都返回 halted。configure_landing 的 branch:"restore" 把分支恢复到队列上次落地的位置（外来提交保存在返回的 kept 引用下），branch:"adopt" 按现状接纳；查明来源，成员只应通过 submit_work 落地。' });
+    if (known.halt && known.halt.head === current) return stopped(known.halt.reason);
+    const halt = (reason: string) => { this.putHead(ws, { targetRef, head: known.head, halt: { head: current, reason } }); return stopped(reason); };
+    if (!current) return halt('the landing branch was deleted');
+    if ((await this.git(ws.repository, ['merge-base', '--is-ancestor', known.head, current], signal, true)).code) return halt(`the branch no longer contains ${short(known.head)}, so landed work is missing from it`);
+    const changed = (await this.git(ws.repository, ['diff', '--name-only', '--no-renames', '-z', known.head, current], signal)).stdout.split('\0').filter(Boolean);
+    const barred = (landing.protect ?? []).flatMap(rule => rule.paths.map(pathPattern));
+    const files = changed.filter(file => barred.some(pattern => pattern.test(file)));
+    if (files.length) return halt(`the outside commits change protected paths (${files.slice(0, 8).join(', ')}${files.length > 8 ? ', …' : ''})`);
+    await this.park(path, current, signal);
+    const commands = [...landing.precheck ?? [], ...landing.commands];
+    const results = await this.run(path, commands, signal, deadlineAt);
+    const failed = results.find(result => result.code);
+    if (failed || results.length !== commands.length) {
+      return halt(`the outside commits fail the landing checks (${failed ? `${failed.argv.join(' ').slice(0, 200)} exited ${failed.code}: ${(failed.stderr || failed.stdout).trim().slice(-600)}` : 'the checks did not finish'})`);
+    }
+    const count = (await this.git(ws.repository, ['rev-list', '--count', `${known.head}..${current}`], signal)).stdout.trim();
+    this.putHead(ws, { targetRef, head: current });
+    return { notice: `落地分支 ${targetRef} 有 ${count} 个提交未经 submit_work 进入（${short(known.head)}..${short(current)}）。它们接在队列上次落地的位置之后、没有改动受保护路径，并通过了落地检查，队列已接纳并继续落地。查明来源，成员只应通过 submit_work 落地。` };
   }
 
   /**
@@ -664,13 +781,16 @@ export class WorkflowWorkspaces {
   private async round(landing: WorkspaceLanding, batch: Candidate[]): Promise<Candidate[]> {
     const { signal } = this.stopping, { targetRef } = landing, { ws } = batch[0]!;
     const path = await this.trainWorktree(ws, signal);
-    const expected = await this.refHead(ws.repository, targetRef, signal);
-    const start = expected ?? batch[0]!.base;
     const deadlineAt = Math.max(...batch.map(candidate => candidate.ctx.state.deadlineAt));
-    const at = async (commit: string) => {
-      await this.git(path, ['reset', '--hard', '--quiet', commit], signal);
-      await this.git(path, ['clean', '-fd', '--quiet'], signal);
-    };
+    // The branch may have been moved since the members rebased onto it.
+    const verdict = await this.inspect(landing, ws, deadlineAt);
+    if (verdict.halt) { for (const candidate of batch) candidate.resolve(this.halted(targetRef, verdict)); return []; }
+    const expected = verdict.head, key = this.trainKey(ws);
+    const notice = this.unsaid.get(key);
+    let said = false;
+    const told = <T extends LandReport>(report: T): T => { if (!notice) return report; said = true; return { ...report, notice }; };
+    const start = expected ?? batch[0]!.base;
+    const at = (commit: string) => this.park(path, commit, signal);
     await at(start);
     const identity = await this.identity(path, signal);
     const stack: Candidate[] = [], heads = [start], again = new Set<Candidate>();
@@ -679,7 +799,7 @@ export class WorkflowWorkspaces {
       const head = heads.at(-1)!;
       const detail = await this.stack(path, head, candidate, identity, signal);
       if (detail === undefined) { stack.push(candidate); heads.push(await this.revision(path, undefined, signal)); }
-      else if (head === start) candidate.resolve({ status: 'conflict', targetRef, targetCommit: start, detail });
+      else if (head === start) candidate.resolve(told({ status: 'conflict', targetRef, targetCommit: start, detail }));
       else { again.add(candidate); await at(head); }
     }
     const check = async (commit: string): Promise<CheckFailure | undefined> => {
@@ -700,11 +820,14 @@ export class WorkflowWorkspaces {
     if (good) {
       if (await this.refHead(ws.repository, targetRef, signal) !== expected) throw new Error('Landing branch was moved from outside the landing queue; submit again');
       await this.notCheckedOut(ws, targetRef, signal);
-      await this.git(ws.repository, ['update-ref', targetRef, head, expected ?? '0'.repeat(head.length)], signal);
+      const landed = stack.slice(0, good), from = landed.slice(0, 16).map(candidate => candidate.ws.id.slice(0, 8)).join(',');
+      await this.advance(ws, targetRef, head, expected, `bridge-workflow: landed ${good} submission(s), ${landed.reduce((total, candidate) => total + candidate.commits, 0)} commit(s) from ${from}${good > 16 ? ',…' : ''}`, signal);
     }
-    for (const candidate of stack.slice(0, good)) candidate.resolve({ status: 'landed', targetRef, headCommit: head, commits: candidate.commits });
-    if (failure) stack[bad - 1]!.resolve({ status: 'check_failed', targetRef, targetCommit: head, headCommit: heads[bad]!, ...failure });
+    for (const candidate of stack.slice(0, good)) candidate.resolve(told({ status: 'landed', targetRef, headCommit: head, commits: candidate.commits }));
+    if (failure) stack[bad - 1]!.resolve(told({ status: 'check_failed', targetRef, targetCommit: head, headCommit: heads[bad]!, ...failure }));
     for (const candidate of stack.slice(bad)) again.add(candidate);
+    // Said once a report carried it; a train that only requeues its submissions says it on the next.
+    if (said) this.unsaid.delete(key);
     return batch.filter(candidate => again.has(candidate));
   }
   /** Puts a submission's commits on top of `head` in the train's worktree; returns Git's complaint when they do not apply. */
@@ -744,6 +867,109 @@ export class WorkflowWorkspaces {
     if (left.n || this.trains.has(`${ws.workflowId}:${ws.commonDir}`) || !await access(path).then(() => true, () => false)) return;
     await this.worktree(ws, ['unlock', path], signal, true);
     await this.worktree(ws, ['remove', '--force', path], signal, true);
+  }
+
+  /**
+   * The main agent's view of the landing and its changes to it while the workflow runs; without options it only
+   * reports. `checks`, `precheck` (empty for none) and `batch` replace the script's settings, `protect` adds rules to
+   * the script's (empty for none added), and `reset` drops every earlier change first. New commands are first run on
+   * the landing branch as it is: on a branch that fails them every submission would be blamed for it, so the change
+   * is refused and the branch has to be repaired under the current checks first. `branch` settles a branch the queue
+   * does not vouch for: "restore" puts it back where the queue left it and keeps the outside commits under a ref,
+   * "adopt" has the queue vouch for it as it is.
+   */
+  configure(ctx: WorkspaceContext, input: Record<string, unknown>): Promise<LandingChange> {
+    if (this.closed) return Promise.reject(new Error('Workspace service is closed'));
+    const pending = this.configureInner(ctx, input); this.pending.add(pending);
+    void pending.finally(() => this.pending.delete(pending)).catch(() => {});
+    return pending;
+  }
+  private async configureInner(ctx: WorkspaceContext, input: Record<string, unknown>): Promise<LandingChange> {
+    const workflow = ctx.state.workflowId, { signal } = this.stopping;
+    if (Object.keys(input).some(key => !['checks', 'precheck', 'protect', 'batch', 'reset', 'branch'].includes(key))) throw new Error('Unsupported configure_landing option');
+    if (input.reset !== undefined && input.reset !== true) throw new Error('reset is true or left out');
+    if (input.branch !== undefined && input.branch !== 'restore' && input.branch !== 'adopt') throw new Error('branch is "restore" or "adopt"');
+    const base = this.record<WorkspaceLanding>(workflow, '@landing');
+    if (!base) throw new Error('Landing is not configured; the script calls configureLanding first');
+    const empty = (value: unknown) => Array.isArray(value) && !value.length;
+    const stored = this.record<LandingOverride>(workflow, LANDING_OVERRIDE) ?? {};
+    const next: LandingOverride = { ...(input.reset ? {} : stored),
+      ...(input.checks === undefined ? {} : { commands: this.commands(input.checks) }),
+      ...(input.precheck === undefined ? {} : { precheck: empty(input.precheck) ? [] : this.commands(input.precheck) }),
+      ...(input.protect === undefined ? {} : { protect: empty(input.protect) ? [] : this.protect(input.protect)! }),
+      ...(input.batch === undefined ? {} : { batch: boundedInteger(input.batch, 16, 1, 64) }) };
+    if (!next.protect?.length) delete next.protect;
+    const repos = this.landingRepositories(workflow, ctx.state.root);
+    const settled: NonNullable<LandingChange['settled']> = [];
+    if (input.branch) for (const ws of repos) {
+      const outcome = await this.exclusive(this.trainKey(ws), () => this.settle(ws, base.targetRef, input.branch as 'restore' | 'adopt', signal));
+      if (outcome) settled.push(outcome);
+    }
+    const current = this.effective(base, stored), wanted = this.effective(base, next);
+    const differs = (a: unknown, b: unknown) => workflowDigest(a ?? null) !== workflowDigest(b ?? null);
+    const changed = differs(current, wanted) || differs(stored, next);
+    // Only commands the branch has not been held to are tried on it.
+    const fresh = [...(wanted.precheck && differs(wanted.precheck, current.precheck) ? wanted.precheck : []), ...(differs(wanted.commands, current.commands) ? wanted.commands : [])];
+    // Every train of the workflow waits while the commands are tried, so none lands under the old ones meanwhile.
+    const apply = (index: number): Promise<LandingRefusal | undefined> => {
+      if (index === repos.length) { if (changed) this.put(workflow, LANDING_OVERRIDE, 'landing-override', next); return Promise.resolve(undefined); }
+      if (!fresh.length) return apply(index + 1);
+      return this.exclusive(this.trainKey(repos[index]!), async () => await this.tryOn(repos[index]!, base.targetRef, fresh, ctx.state.deadlineAt, signal) ?? apply(index + 1));
+    };
+    const refused = changed ? await apply(0) : undefined;
+    return { changed: changed && !refused, ...(refused ? { refused } : {}), ...(settled.length ? { settled } : {}),
+      landing: await this.view(base, refused ? stored : next, repos, signal) };
+  }
+  /** One ready member worktree for each repository the workflow lands in, in a fixed order. */
+  private landingRepositories(workflow: string, root: WorkflowRoot): WorkspaceBinding[] {
+    const rows = this.db.prepare("SELECT data FROM workspace_records WHERE workflow=? AND kind='workspace' AND json_extract(data,'$.kind')='task' AND json_extract(data,'$.status')='ready'").all(workflow) as Array<{ data: string }>;
+    const repos = new Map<string, WorkspaceBinding>();
+    for (const row of rows) {
+      const ws = JSON.parse(row.data) as WorkspaceBinding;
+      if (ws.rootDigest !== workflowDigest(root)) throw new Error('Workspace authorization changed');
+      if (!repos.has(ws.commonDir)) repos.set(ws.commonDir, ws);
+    }
+    return [...repos.values()].sort((a, b) => a.commonDir < b.commonDir ? -1 : 1);
+  }
+  /** Runs commands on the landing branch as it is, in the train's worktree; tells why the branch does not pass them. */
+  private async tryOn(ws: WorkspaceBinding, targetRef: string, commands: WorkspaceCommands, deadlineAt: number, signal: AbortSignal): Promise<LandingRefusal | undefined> {
+    const head = await this.refHead(ws.repository, targetRef, signal);
+    if (!head) return undefined;
+    const path = await this.trainWorktree(ws, signal);
+    await this.park(path, head, signal);
+    const results = tail(await this.run(path, commands, signal, deadlineAt));
+    const refusal = (reason: string) => ({ repository: ws.repository, headCommit: head, reason, commands: results });
+    if (results.length !== commands.length || results.some(result => result.code)) return refusal('The landing branch fails these commands as it is, so every submission would be blamed for it. Nothing was changed: land the repair under the current checks first, then change them.');
+    if ((await this.git(path, ['status', '--porcelain', '--untracked-files=all'], signal)).stdout.trim()) return refusal('The commands left uncommitted or untracked files in the worktree; every landing would fail for that. Nothing was changed.');
+    return undefined;
+  }
+  private async settle(ws: WorkspaceBinding, targetRef: string, action: 'restore' | 'adopt', signal: AbortSignal): Promise<NonNullable<LandingChange['settled']>[number] | undefined> {
+    const current = await this.refHead(ws.repository, targetRef, signal);
+    const known = this.vouched(ws, targetRef, current);
+    if (!known || known.head === current) return undefined;
+    if (action === 'adopt') {
+      if (!current) throw new Error('The landing branch was deleted; restore it');
+      this.putHead(ws, { targetRef, head: current });
+      return { repository: ws.repository, branch: 'adopted', head: current };
+    }
+    await this.notCheckedOut(ws, targetRef, signal);
+    const kept = current ? `refs/bridge-workflow/${ws.workflowId}/outside/${current}` : undefined;
+    if (kept) await this.git(ws.repository, ['update-ref', kept, current!], signal);
+    await this.git(ws.repository, ['update-ref', '-m', 'bridge-workflow: restored after a move from outside the landing queue', targetRef, known.head, current ?? '0'.repeat(known.head.length)], signal);
+    this.putHead(ws, { targetRef, head: known.head });
+    return { repository: ws.repository, branch: 'restored', head: known.head, ...(kept ? { kept } : {}) };
+  }
+  private async view(base: WorkspaceLanding, over: LandingOverride, repos: WorkspaceBinding[], signal: AbortSignal): Promise<LandingView> {
+    const landing = this.effective(base, over), branches: LandingView['branches'] = [];
+    for (const ws of repos) {
+      const head = await this.refHead(ws.repository, landing.targetRef, signal);
+      const known = this.vouched(ws, landing.targetRef, head);
+      branches.push({ repository: ws.repository, head, ...(known ? { landed: known.head } : {}), waiting: this.trains.get(this.trainKey(ws))?.queue.length ?? 0,
+        ...(known?.halt && known.halt.head === head ? { halted: known.halt.reason } : {}) });
+    }
+    const names: Record<keyof LandingOverride, string> = { commands: 'checks', precheck: 'precheck', protect: 'protect', batch: 'batch' };
+    return { targetRef: landing.targetRef, checks: landing.commands, ...(landing.precheck ? { precheck: landing.precheck } : {}), ...(landing.protect ? { protect: landing.protect } : {}),
+      batch: landing.batch, overridden: (Object.keys(names) as Array<keyof LandingOverride>).filter(key => over[key] !== undefined).map(key => names[key]), branches };
   }
 
   private async check(ctx: WorkspaceContext, op: RecordRow, ws: WorkspaceBinding, value: unknown): Promise<WorkspaceChecks> {

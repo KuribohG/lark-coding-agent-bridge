@@ -6,7 +6,7 @@ import type { WorkflowCaller } from './types';
 
 const MAX_BODY = 512_000;
 /** Operations that answer only after the engine has finished work of its own; the others answer at once. */
-const LONG_CALLS: Record<string, number> = { submit_work: 2 * 3_600_000 };
+const LONG_CALLS: Record<string, number> = { submit_work: 2 * 3_600_000, configure_landing: 2 * 3_600_000 };
 const CALL_TIMEOUT_MS = 15_000;
 /** While a long call is pending the response sends whitespace this often, which keeps the client's idle timers from firing. */
 const KEEPALIVE_MS = 20_000;

@@ -478,7 +478,7 @@ export interface WorkflowArtifact {
 
 export interface WorkflowEvent {
   id: string;
-  kind: 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed' | 'worker_reply' | 'worker_input_required' | 'swarm_stalled' | 'swarm_attention' | 'review_due';
+  kind: 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed' | 'worker_reply' | 'worker_input_required' | 'swarm_stalled' | 'swarm_attention' | 'landing_attention' | 'review_due';
   taskId?: string;
   artifactRef?: string;
   summary: string;
@@ -619,6 +619,8 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
   /** Delivers text to the worker turn of `taskId` while it runs, as a user message in its session. */
   tell?(workflowId: string, taskId: string, text: string, messageId: string): Promise<WorkerInputStatus>;
   land?(state: WorkflowState, input: { workspace: string; taskId: string }, signal: AbortSignal): Promise<unknown>;
+  /** Reports the landing and applies the main agent's changes to it; resolves to a LandingChange (workspace-types.ts). */
+  landing?(state: WorkflowState, input: Record<string, unknown>): Promise<unknown>;
   execute(request: WorkflowWorkerRequest): Promise<WorkflowWorkerResult>;
   wakeMain(scopeId: string): Promise<void>;
 }

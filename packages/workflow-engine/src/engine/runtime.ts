@@ -134,6 +134,10 @@ export class WorkflowRuntime {
         signal.throwIfAborted();
         return this.workspaceManager().land({ state, signal }, input);
       },
+      landing: async (state, input) => {
+        await this.workspacePolicy(state.root);
+        return this.workspaceManager().configure({ state, signal: new AbortController().signal }, input);
+      },
       execute: request => this.execute(request),
       wakeMain: deps.wakeMain,
     });

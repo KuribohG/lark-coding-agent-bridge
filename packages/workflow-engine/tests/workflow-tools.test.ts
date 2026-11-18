@@ -24,7 +24,7 @@ describe('workflow tool plugins', () => {
       expect(WORKFLOW_GUIDE, name).toContain(name);
     }
     expect(WORKFLOW_GUIDE.startsWith(WORKFLOW_TOOL_INSTRUCTIONS)).toBe(true);
-    expect(WORKFLOW_TOOL_INSTRUCTIONS.length).toBeLessThan(8000);
+    expect(WORKFLOW_TOOL_INSTRUCTIONS.length).toBeLessThan(8200);
   });
 
   it('rejects ambiguous registrations', () => {

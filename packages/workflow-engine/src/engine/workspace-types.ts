@@ -76,7 +76,64 @@ export interface WorkspaceLanding {
   batch: number;
 }
 
-export type LandReport =
+/**
+ * What the main agent changed about the landing while the workflow runs (configure_landing). It is kept apart from
+ * the script's configuration, so a script that configures the landing again does not undo it: `commands`, `precheck`
+ * (empty for none) and `batch` replace the script's, and the `protect` rules are added to the script's.
+ */
+export interface LandingOverride {
+  commands?: WorkspaceCommands;
+  precheck?: WorkspaceCommands;
+  protect?: NonNullable<WorkspaceLanding['protect']>;
+  batch?: number;
+}
+
+/**
+ * The commit of one repository's landing branch that the landing queue vouches for: the one it last advanced the
+ * branch to, or a commit that came from elsewhere and passed the checks afterwards. A branch found anywhere else was
+ * moved from outside the queue.
+ */
+export interface LandingHead {
+  targetRef: string;
+  head: string;
+  /** Where the queue is about to move the branch; a crash between the move and this record leaves the branch here. */
+  next?: string;
+  /** The outside commit the branch was found at and why the queue does not vouch for it; nothing lands meanwhile. */
+  halt?: { head: string | null; reason: string };
+}
+
+/** The landing as the main agent sees it. */
+export interface LandingView {
+  targetRef: string;
+  checks: WorkspaceCommands;
+  precheck?: WorkspaceCommands;
+  protect?: WorkspaceLanding['protect'];
+  batch: number;
+  /** The settings that come from configure_landing rather than the script. */
+  overridden: string[];
+  branches: Array<{ repository: string; head: string | null; landed?: string; waiting: number; halted?: string }>;
+}
+
+/** A change configure_landing did not make, and why. */
+export interface LandingRefusal {
+  repository: string;
+  headCommit?: string;
+  reason: string;
+  commands?: WorkspaceChecks['commands'];
+}
+
+/** What a configure_landing call did. */
+export interface LandingChange {
+  /** The landing settings are now different from before the call. */
+  changed: boolean;
+  /** New commands failed on the landing branch as it is, so the settings were left alone. */
+  refused?: LandingRefusal;
+  /** What `branch` did in each repository whose branch the queue did not vouch for. */
+  settled?: Array<{ repository: string; branch: 'restored' | 'adopted'; head: string; kept?: string }>;
+  landing: LandingView;
+}
+
+export type LandReport = (
   /** The branch head now contains the work, and the worktree was moved to it. */
   | { status: 'landed'; targetRef: string; headCommit: string; commits: number }
   /** The commits do not apply to `targetCommit`; the worktree holds them as submitted. */
@@ -84,7 +141,11 @@ export type LandReport =
   /** The worktree is left with the commits that failed, on top of `targetCommit`. */
   | { status: 'check_failed'; targetRef: string; targetCommit: string; headCommit: string; reason?: string; commands: WorkspaceChecks['commands'] }
   /** The commits change protected paths; the worktree is left rebased onto `targetCommit`. */
-  | { status: 'rejected'; targetRef: string; targetCommit: string; files: string[]; reason: string };
+  | { status: 'rejected'; targetRef: string; targetCommit: string; files: string[]; reason: string }
+  /** The branch was moved from outside the queue to a commit it does not vouch for; nothing lands until the main agent settles it. */
+  | { status: 'halted'; targetRef: string; targetCommit: string | null; reason: string }
+  /** Something the main agent should hear about the branch; submit_work raises it as an event and keeps it from the member. */
+) & { notice?: string };
 
 export interface WorkspaceContext {
   state: WorkflowState;
