@@ -6,7 +6,7 @@ import { workflowDigest } from './digest';
 import { durableEvent, eventEntity, eventTopics, type DomainEvent } from './events';
 import { evolve } from './evolve';
 import { RECORDS, type RecordKind } from './records';
-import type { ArtifactView, StoredArtifact, StoredTask, TaskView, TextRef, WorkflowData, WorkflowState, WorkflowView } from './types';
+import type { ArtifactView, BoardPost, StoredArtifact, StoredTask, TaskView, TextRef, WorkflowData, WorkflowState, WorkflowView } from './types';
 import { checkpointInBackground } from './wal-checkpointer';
 
 const TERMINAL = new Set<string>(['completed', 'cancelled']);
@@ -51,7 +51,8 @@ interface ArchiveRows {
   tasks: Array<{ workflowId: string; task: StoredTask; data: string }>;
   artifacts: Array<{ workflowId: string; artifact: StoredArtifact }>;
   calls: Array<{ workflowId: string; runId: string; key: string; taskId: string; agentId?: string }>;
-  records: Array<{ workflowId: string; kind: RecordKind; id: string; key?: string; num?: number; data: string }>;
+  /** `amend` rows replace the data of an entry that is already archived; the others add one. */
+  records: Array<{ workflowId: string; kind: RecordKind; id: string; key?: string; num?: number; data: string; amend?: boolean }>;
 }
 
 /**
@@ -467,6 +468,8 @@ export class WorkflowStore {  readonly db: Database.Database;
         .get(workflowId, ...values) as { data: string } | undefined;
       return row && JSON.parse(row.data) as StoredTask;
     };
+    /** The open transaction's rows of one kind by ID, each entry as last staged: an amended entry stands for the stored one. */
+    const latest = (kind: RecordKind) => new Map((staged()?.records ?? []).filter(row => row.workflowId === workflowId && row.kind === kind).map(row => [row.id, row]));
     return {
       task: taskId => task('task_id = ?', [taskId], found => found.taskId === taskId),
       result: cacheKey => task("cache_key = ? AND status = 'result_ready'", [cacheKey], found => found.cacheKey === cacheKey && found.status === 'result_ready'),
@@ -502,20 +505,35 @@ export class WorkflowStore {  readonly db: Database.Database;
         return row && JSON.parse(row.data);
       },
       range: (kind, { after, upTo, limit, desc }) => {
-        const pending = (staged()?.records ?? []).filter(row => row.workflowId === workflowId && row.kind === kind && row.num !== undefined && row.num > after && row.num <= upTo);
-        const rows = this.db.prepare(`SELECT num, data FROM wf_archive WHERE workflow_id = ? AND kind = ? AND num > ? AND num <= ? ORDER BY num ${desc ? 'DESC' : 'ASC'} LIMIT ?`)
-          .all(workflowId, kind, after, upTo, limit) as Array<{ num: number; data: string }>;
+        const open = latest(kind);
+        const pending = [...open.values()].filter(row => row.num !== undefined && row.num > after && row.num <= upTo);
+        const rows = (this.db.prepare(`SELECT id, num, data FROM wf_archive WHERE workflow_id = ? AND kind = ? AND num > ? AND num <= ? ORDER BY num ${desc ? 'DESC' : 'ASC'} LIMIT ?`)
+          .all(workflowId, kind, after, upTo, limit) as Array<{ id: string; num: number; data: string }>).filter(row => !open.has(row.id));
         const all = [...rows, ...pending.map(row => ({ num: row.num!, data: row.data }))].sort((a, b) => desc ? b.num - a.num : a.num - b.num);
         return all.slice(0, limit).map(row => JSON.parse(row.data));
       },
       search: (kind, contains, limit) => {
-        const pending = (staged()?.records ?? []).filter(row => row.workflowId === workflowId && row.kind === kind
-          && contains.every(term => row.data.toLowerCase().includes(term))).reverse();
-        const rows = this.db.prepare(`SELECT data FROM wf_archive WHERE workflow_id = ? AND kind = ?${' AND instr(lower(data), ?) > 0'.repeat(contains.length)} ORDER BY rowid DESC LIMIT ?`)
-          .all(workflowId, kind, ...contains, limit) as Array<{ data: string }>;
+        const open = latest(kind);
+        const pending = [...open.values()].filter(row => contains.every(term => row.data.toLowerCase().includes(term))).reverse();
+        const rows = (this.db.prepare(`SELECT id, data FROM wf_archive WHERE workflow_id = ? AND kind = ?${' AND instr(lower(data), ?) > 0'.repeat(contains.length)} ORDER BY rowid DESC LIMIT ?`)
+          .all(workflowId, kind, ...contains, limit) as Array<{ id: string; data: string }>).filter(row => !open.has(row.id));
         return [...pending, ...rows].slice(0, limit).map(row => JSON.parse(row.data));
       },
     };
+  }
+
+  /**
+   * Resolving or reopening a post that has left the state changes its archived entry: the mark belongs to the post,
+   * so a reader gets it wherever the post is kept. Nothing else in the archive is ever rewritten.
+   */
+  private amendPost(rows: ArchiveRows, state: WorkflowData, event: Extract<DomainEvent, { type: 'board_post_resolved' }>): void {
+    if (event.seq > (state.archivedRecords?.post ?? 0)) return;
+    const id = String(event.seq);
+    const post = this.archive(state.workflowId).record('post', { id }) as BoardPost | undefined;
+    if (!post) throw new Error('Unknown board post');
+    const { resolved: _resolved, ...rest } = post;
+    rows.records.push({ workflowId: state.workflowId, kind: 'post', id, num: event.seq, amend: true,
+      data: JSON.stringify(event.resolved ? { ...rest, resolved: event.resolved } : rest) });
   }
 
   /** Copies what an archive event is about to remove from the state, so the commit can write it to the archive tables. */
@@ -627,6 +645,7 @@ export class WorkflowStore {  readonly db: Database.Database;
     // Touched before the reducer runs: if it throws half-way, the state is discarded with the transaction.
     tx.touched.add(aggregate);
     if (event.type === 'tasks_archived' || event.type === 'script_call_archived' || event.type === 'records_archived') this.stage(tx.archive, aggregate.state, event);
+    if (event.type === 'board_post_resolved') this.amendPost(tx.archive, aggregate.state, event);
     try { evolve(aggregate.state, JSON.parse(data) as DomainEvent); }
     catch (error) { tx.failed ??= { error }; throw error; }
     tx.events.push({ aggregate, type: event.type, entity: eventEntity(event), data, topics: eventTopics(event) });
@@ -730,7 +749,12 @@ export class WorkflowStore {  readonly db: Database.Database;
       }
       if (archive.records.length) {
         const record = this.db.prepare('INSERT OR REPLACE INTO wf_archive(workflow_id, kind, id, key, num, data) VALUES (?, ?, ?, ?, ?, ?)');
-        for (const row of archive.records) record.run(row.workflowId, row.kind, row.id, row.key ?? null, row.num ?? null, row.data);
+        // In place, so an amended entry keeps the position searches read the archive in.
+        const amend = this.db.prepare('UPDATE wf_archive SET data = ? WHERE workflow_id = ? AND kind = ? AND id = ?');
+        for (const row of archive.records) {
+          if (row.amend) amend.run(row.data, row.workflowId, row.kind, row.id);
+          else record.run(row.workflowId, row.kind, row.id, row.key ?? null, row.num ?? null, row.data);
+        }
       }
       const catalog = this.db.prepare(`INSERT INTO wf_catalog(id, scope, root_id, parent_id, status, updated_at) VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at`);

@@ -131,6 +131,92 @@ describe('workflow message board', () => {
     await expect(h.mail({ kind: 'post', key: 'bad', text: 'x', member: 'dev' })).rejects.toThrow('Unsupported mailbox option');
   });
 
+  it('marks posts resolved: reads skip them, searches still find them, and only those concerned may mark one', async () => {
+    const h = harness(); await h.start(); await h.bootstrap('dev'); await h.bootstrap('qa'); await h.bootstrap('ops');
+    await h.call('post_board', { text: 'Kickoff' });
+    await h.call('post_board', { text: '@dev which parser do we keep?', topic: 'parser' });
+    await h.call('post_board', { text: 'Rule: land through submit_work only', topic: 'announce' });
+    await h.call('post_board', { text: 'Freeze at noon', to: 'all' });
+
+    await h.agent('dev', 'dev-1'); const dev = await h.run();
+    expect(await h.worker(dev, 'post_board', { operationId: 'answer', text: 'Keep the recursive descent parser', topic: 'parser' })).toMatchObject({ seq: 5 });
+    expect(await h.worker(dev, 'post_board', { operationId: 'ask', text: '@qa is the fuzz corpus ready?', topic: 'parser' })).toMatchObject({ seq: 6, to: ['qa'] });
+    // A resolution says how the post ended, and names posts that exist.
+    await expect(h.worker(dev, 'resolve_post', { operationId: 'bare', seq: 2 })).rejects.toThrow('Say how the post was resolved');
+    await expect(h.worker(dev, 'resolve_post', { operationId: 'self', seq: 2, see: 2 })).rejects.toThrow('not the post itself');
+    await expect(h.worker(dev, 'resolve_post', { operationId: 'ghost', seq: 7, note: 'done' })).rejects.toThrow('Unknown board post: 7; the board has 6 posts');
+    await expect(h.worker(dev, 'resolve_post', { operationId: 'none', seq: [], note: 'done' })).rejects.toThrow('seq must be');
+    // A member resolves what it wrote and what names it: not a post for nobody, not one for everybody, not a rule.
+    await expect(h.worker(dev, 'resolve_post', { operationId: 'other', seq: 1, note: 'done' })).rejects.toThrow('neither yours nor addressed to you by name');
+    await expect(h.worker(dev, 'resolve_post', { operationId: 'all', seq: [2, 4], note: 'done' })).rejects.toThrow('Post 4 is neither yours');
+    await expect(h.worker(dev, 'resolve_post', { operationId: 'rule', seq: 3, note: 'done' })).rejects.toThrow('Post 3 is an announcement');
+    expect(h.state().board!.posts.some(post => post.resolved)).toBe(false);
+    const resolved = await h.worker(dev, 'resolve_post', { operationId: 'answered', seq: 2, see: 5, note: 'Recursive descent stays' });
+    expect(resolved).toEqual({ resolved: [2] });
+    // A retried tool call repeats the recorded answer; resolving again leaves the first resolution in place.
+    expect(await h.worker(dev, 'resolve_post', { operationId: 'answered', seq: 2, see: 5, note: 'Recursive descent stays' })).toEqual(resolved);
+    expect(await h.worker(dev, 'resolve_post', { operationId: 'more', seq: [2, 6, 6], note: 'Found it myself' })).toEqual({ resolved: [6], unchanged: [2] });
+    expect(h.state().board).toMatchObject({ posts: { 1: { resolved: { from: h.state().agents!.find(agent => agent.key === 'dev')!.agentId, at: 1_000_000, note: 'Recursive descent stays', see: 5 } } },
+      topics: { parser: { posts: 3, resolved: 2 } } });
+    await h.finish(dev);
+
+    // A read returns what is open and says how much it passed over; resolved posts come on request, with their resolution.
+    type Read = { posts: Array<Record<string, unknown>>; hasMore: boolean; resolvedSkipped?: number; topics: Array<Record<string, unknown>> };
+    const open = await h.call('read_board', { topic: 'parser' }) as Read;
+    expect(open).toMatchObject({ posts: [{ seq: 5 }], resolvedSkipped: 2 });
+    expect(open.posts).toHaveLength(1);
+    expect(open.topics).toEqual(expect.arrayContaining([{ topic: 'parser', posts: 3, lastSeq: 6, resolved: 2 }, { topic: 'general', posts: 2, lastSeq: 4 }]));
+    const every = await h.call('read_board', { topic: 'parser', resolved: true }) as Read;
+    expect(every.posts).toMatchObject([{ seq: 2, resolved: { by: 'dev', at: 1_000_000, note: 'Recursive descent stays', see: 5 } }, { seq: 5 }, { seq: 6, resolved: { by: 'dev', note: 'Found it myself' } }]);
+    expect(every).not.toHaveProperty('resolvedSkipped');
+    expect(every.posts[1]).not.toHaveProperty('resolved');
+    expect(await h.call('read_board', { after: 0, limit: 2 })).toMatchObject({ posts: [{ seq: 1 }, { seq: 3 }], hasMore: true, resolvedSkipped: 1 });
+    expect(await h.call('read_board', { after: 3, limit: 2 })).toMatchObject({ posts: [{ seq: 4 }, { seq: 5 }], hasMore: false, resolvedSkipped: 1 });
+    await expect(h.call('read_board', { resolved: 'yes' })).rejects.toThrow('resolved must be a boolean');
+    // A script read is replayed, so it returns the range as posted whatever was resolved since.
+    const scripted = (await h.mail({ kind: 'board', key: 'parser-feed', topic: 'parser' })).result as Read;
+    expect(scripted).toEqual({ posts: [2, 5, 6].map(seq => expect.objectContaining({ seq })), lastSeq: 6, hasMore: false });
+    expect(scripted.posts.some(post => 'resolved' in post)).toBe(false);
+    // A search finds resolved posts too, after the open ones, and by the words of their resolution.
+    const found = await h.call('search_board', { query: 'parser' }) as { posts: Array<Record<string, unknown>> };
+    expect(found).toMatchObject({ matches: 2, posts: [{ seq: 5 }, { seq: 2, resolved: { by: 'dev', see: 5 } }] });
+    expect(found.posts[0]).not.toHaveProperty('resolved');
+    expect(await h.call('search_board', { query: 'descent STAYS' })).toMatchObject({ matches: 1, posts: [{ seq: 2, snippet: 'Recursive descent stays' }] });
+
+    // qa was named by a post that its author has since resolved: the delivery says so. Its digest counts what is open.
+    type Context = { member: { messages: Array<Record<string, unknown>> }; board: { topics: Array<Record<string, unknown>>; announcements: Array<Record<string, unknown>> } };
+    await h.mail({ kind: 'receive', member: 'qa', key: 'qa-inbox' });
+    await h.agent('qa', 'qa-1'); const qa = await h.run();
+    const told = await h.worker(qa, 'read_context') as Context;
+    expect(told.member.messages).toMatchObject([{ post: 4, all: true }, { post: 6, text: '@qa is the fuzz corpus ready?', resolved: { by: 'dev', note: 'Found it myself' } }]);
+    expect(told.member.messages[0]).not.toHaveProperty('resolved');
+    expect(told.board.topics).toEqual(expect.arrayContaining([{ topic: 'parser', posts: 3, lastSeq: 6, resolved: 2, new: 1 }, { topic: 'general', posts: 2, lastSeq: 4, new: 2 }]));
+    expect(told.board.announcements).toMatchObject([{ seq: 3 }]);
+    // Being named is enough to reopen, as it is to resolve; a reopened post is read again.
+    await expect(h.worker(qa, 'resolve_post', { operationId: 'why', seq: 6, reopen: true, note: 'still open' })).rejects.toThrow('reopen takes neither note nor see');
+    await expect(h.worker(qa, 'resolve_post', { operationId: 'not-mine', seq: 2, reopen: true })).rejects.toThrow('Post 2 is neither yours');
+    expect(await h.worker(qa, 'resolve_post', { operationId: 'reopen', seq: 6, reopen: true })).toEqual({ reopened: [6] });
+    expect(await h.worker(qa, 'resolve_post', { operationId: 'reopen-again', seq: 6, reopen: true })).toEqual({ unchanged: [6] });
+    expect((await h.worker(qa, 'read_board', { topic: 'parser' }) as Read).posts).toMatchObject([{ seq: 5 }, { seq: 6 }]);
+    expect(h.state().board!.posts[5]).not.toHaveProperty('resolved');
+    await h.finish(qa);
+
+    // The main agent resolves any post, a rule included; a member that has not seen the rule yet is not handed it.
+    expect(await h.call('resolve_post', { seq: [1, 3], note: 'Replaced by the landing queue' })).toMatchObject({ resolved: [1, 3], stateVersion: expect.any(Number) });
+    expect(h.state().board!.posts[2]!.resolved).toEqual({ at: 1_000_000, note: 'Replaced by the landing queue' });
+    await h.agent('ops', 'ops-1'); const ops = await h.run();
+    const late = (await h.worker(ops, 'read_context') as Context).board;
+    expect(late.announcements).toEqual([]);
+    expect(late.topics).toEqual(expect.arrayContaining([{ topic: 'announce', posts: 1, lastSeq: 3, resolved: 1, new: 0 }, { topic: 'general', posts: 2, lastSeq: 4, resolved: 1, new: 1 }]));
+    await h.finish(ops);
+    // A one-off worker reads the board and changes nothing on it.
+    await h.kernel.scriptAgent('board', h.state().workflowId, h.state().script!.runId, { key: 'oneoff', prompt: 'look around' });
+    const oneoff = await h.run();
+    await expect(h.worker(oneoff, 'resolve_post', { operationId: 'x', seq: 4, note: 'done' })).rejects.toThrow('persistent member');
+    expect(await h.worker(oneoff, 'read_board', { resolved: true })).toMatchObject({ posts: [{ seq: 1, resolved: { by: 'main' } }, { seq: 2 }, { seq: 3 }, { seq: 4 }, { seq: 5 }, { seq: 6 }] });
+    await h.finish(oneoff);
+  });
+
   it('wakes a waiting member on a post and reports quiet only when every member is parked with nothing to read', async () => {
     const h = harness(); await h.start(); await h.bootstrap('dev'); await h.bootstrap('qa');
     const quiet = { kind: 'quiet', members: ['dev', 'qa'] };
@@ -331,6 +417,23 @@ describe('swarm', () => {
     expect(h.errors).toHaveLength(2);
     expect(state().swarms![0]!.members.map(member => member.name)).not.toContain('thief');
     expect(state().board!.posts.find(post => post.topic === 'announce')).toMatchObject({ text: 'Ruling: proofs come first' });
+  });
+
+  it('lets the lead resolve any post and its own rulings, which another member cannot', async () => {
+    const h = await play('return await swarm("Ship the lexer", {key:"crew", lead:{name:"lead"}, members:[{name:"dev"}]});', {
+      lead: [{}, { calls: [['post_board', { text: 'Ruling: proofs come first', topic: 'announce' }], ['resolve_post', { seq: [1, 2, 3], note: 'Lexer fixed; the ruling is withdrawn' }], ['swarm_finish', { result: 'done' }]] }],
+      dev: [{ calls: [['post_board', { text: 'The lexer is stuck, @lead' }], ['resolve_post', { seq: 1, note: 'read it' }]] }],
+    });
+    const { state, result } = await h.settled();
+    expect(result, state.script?.error).toMatchObject({ stop: 'finished', result: 'done' });
+    expect(h.errors).toEqual([expect.stringContaining('Post 1 is neither yours nor addressed to you by name')]);
+    expect(h.results).toEqual(expect.arrayContaining([{ resolved: [1, 2, 3] }]));
+    const lead = state.agents!.find(agent => agent.key === 'lead')!.agentId;
+    expect(state.board!.posts.slice(0, 3).map(post => post.resolved)).toEqual([1, 2, 3].map(() => ({ from: lead, at: expect.any(Number), note: 'Lexer fixed; the ruling is withdrawn' })));
+    expect(state.board!.topics).toMatchObject({ general: { resolved: 2 }, announce: { resolved: 1 } });
+    // What the script gets is the feed as posted: a replay must return the same.
+    expect(posts(result).slice(0, 3)).toEqual([['script', []], ['dev', ['lead']], ['lead', []]]);
+    expect(result.posts.some((post: object) => 'resolved' in post)).toBe(false);
   });
 
   it('reminds an idle lead, then reports a stall to the main agent and keeps waiting; only the lead may manage', async () => {

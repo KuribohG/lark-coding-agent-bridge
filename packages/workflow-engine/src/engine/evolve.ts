@@ -249,6 +249,16 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       for (const receipt of box.receipts) if (recipients.has(receipt.agentId)) settleReceipt(state, receipt);
       return;
     }
+    case 'board_post_resolved': {
+      const board = state.board ??= { posts: [] };
+      // A post that has left the state carries the mark in its archived entry, which the store amends.
+      const post = board.posts[event.seq - (state.archivedRecords?.post ?? 0) - 1];
+      if (post && event.resolved) post.resolved = event.resolved; else if (post) delete post.resolved;
+      const topic = (board.topics ??= {})[event.topic] ??= { posts: 0, recent: [] };
+      const resolved = (topic.resolved ?? 0) + (event.resolved ? 1 : -1);
+      if (resolved > 0) topic.resolved = resolved; else delete topic.resolved;
+      return;
+    }
     case 'receipt_opened': {
       mailbox(state).receipts.push(event.receipt);
       state.agents!.find(item => item.agentId === event.receipt.agentId)!.wait = { kind: 'message', receiptId: event.receipt.id };

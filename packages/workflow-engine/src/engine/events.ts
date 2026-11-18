@@ -1,5 +1,5 @@
 import type {
-  DirectMessage, AgentCheckpoint, BoardPost, DurableAgent, MailboxMessage, MainWake, MailboxReceipt, SessionBinding, StoredArtifact, StoredTask, SwarmMember, TurnAttempt, WorkClaim,
+  DirectMessage, AgentCheckpoint, BoardPost, DurableAgent, MailboxMessage, MainWake, MailboxReceipt, PostResolution, SessionBinding, StoredArtifact, StoredTask, SwarmMember, TurnAttempt, WorkClaim,
   WorkerExecutionSelection, WorkflowData, WorkflowEvent, WorkflowScript, WorkflowStopReason, WorkflowSwarm, WorkflowWait, WorkflowWorkItem,
 } from './types';
 import type { RecordKind } from './records';
@@ -87,6 +87,11 @@ export type DomainEvent =
   | { type: 'receipt_opened'; receipt: MailboxReceipt }
   /** A board post together with its deliveries: one mailbox message per recipient, which is what wakes them. */
   | { type: 'board_posted'; post: BoardPost; deliveries: MailboxMessage[] }
+  /**
+   * A post was marked resolved, or reopened when `resolved` is absent. The post may have left the state; then the store
+   * writes the mark to its archived entry (kernel-store.ts), and `topic` is what the reducer counts it under.
+   */
+  | { type: 'board_post_resolved'; seq: number; postId: string; topic: string; resolved?: PostResolution }
   | { type: 'direct_message_recorded'; taskId: string; message: DirectMessage }
   // Swarms
   | { type: 'swarm_created'; swarm: WorkflowSwarm }
@@ -184,6 +189,7 @@ export function eventTopics(event: DomainEvent): string[] {
   if (event.type.startsWith('swarm_')) topics.push('swarm');
   if (event.type === 'message_sent' || event.type === 'receipt_opened' || event.type.startsWith('member_turn_')) topics.push('mailbox');
   if (event.type === 'board_posted') topics.push('board', 'mailbox');
+  if (event.type === 'board_post_resolved') topics.push('board');
   if (LIFECYCLE.has(event.type)) topics.push('lifecycle');
   return topics;
 }
@@ -203,6 +209,7 @@ export function eventEntity(event: DomainEvent): string | undefined {
     case 'wait_opened': return event.wait.id;
     case 'message_sent': return event.message.id;
     case 'board_posted': return event.post.id;
+    case 'board_post_resolved': return event.postId;
     case 'receipt_opened': return event.receipt.id;
     case 'checkpoint_saved': return event.checkpoint.ref;
     case 'swarm_created': return event.swarm.id;

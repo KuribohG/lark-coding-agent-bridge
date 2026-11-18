@@ -148,12 +148,16 @@ export function renderBoard(state: WorkflowState, filter?: string): string {
   if (named && !member) return `未找到成员：${compact(filter, 100)}。用 /workflow status 查看成员列表；按主题看用 /workflow board #主题。`;
   const matching = member ? posts.filter(post => post.from === member.agentId || post.to.includes(member.agentId)) : topic ? posts.filter(post => topicOf(post) === topic) : posts;
   const shown = matching.slice(-(filter && !member && !topic ? Math.min(30, Math.max(1, Number(filter))) : 10));
+  const resolved = topics.reduce((sum, item) => sum + (item.resolved ?? 0), 0);
   // Only the posts still in the state are listed, while a topic's count covers every post made in it.
-  const lines = [`留言板：共 ${posts.length + (state.archivedRecords?.post ?? 0)} 帖${member ? `，与 ${compact(member.key, 100)} 相关 ${matching.length} 帖` : topic ? `，主题 #${topic} ${topics.find(item => item.topic === topic)!.posts} 帖` : ''}，显示最近 ${shown.length} 帖。`];
-  if (topics.length > 1 && !topic) lines.push('主题：' + topics.map(item => `#${item.topic} ${item.posts}`).join('，'));
+  const lines = [`留言板：共 ${posts.length + (state.archivedRecords?.post ?? 0)} 帖${resolved ? `（已解决 ${resolved}）` : ''}${member ? `，与 ${compact(member.key, 100)} 相关 ${matching.length} 帖` : topic ? `，主题 #${topic} ${topics.find(item => item.topic === topic)!.posts} 帖` : ''}，显示最近 ${shown.length} 帖。`];
+  if (topics.length > 1 && !topic) lines.push('主题：' + topics.map(item => `#${item.topic} ${item.posts}${item.resolved ? `（已解决 ${item.resolved}）` : ''}`).join('，'));
   for (const post of shown) {
     const to = post.all ? '全体' : post.to.length ? post.to.map(id => '@' + compact(name(id), 50)).join(' ') : '未点名';
-    lines.push(`#${post.seq} ${post.topic ? `[${post.topic}] ` : ''}${post.from ? compact(name(post.from), 50) : post.author === 'script' ? '脚本' : post.author === 'system' ? '系统' : '主会话'} → ${to} · ${time(post.createdAt)}`, '  ' + compact(post.text, 600));
+    // A resolved post is shown, as the feed is what happened, but cut short: its resolution is what matters now.
+    const done = post.resolved && `  ✓ 已解决（${post.resolved.from ? compact(name(post.resolved.from), 50) : '主会话'}）${post.resolved.note ? '：' + compact(post.resolved.note, 300) : ''}${post.resolved.see ? ` 见 #${post.resolved.see}` : ''}`;
+    lines.push(`#${post.seq} ${post.topic ? `[${post.topic}] ` : ''}${post.from ? compact(name(post.from), 50) : post.author === 'script' ? '脚本' : post.author === 'system' ? '系统' : '主会话'} → ${to} · ${time(post.createdAt)}`,
+      '  ' + compact(post.text, done ? 160 : 600), ...(done ? [done] : []));
   }
   return bounded(lines);
 }

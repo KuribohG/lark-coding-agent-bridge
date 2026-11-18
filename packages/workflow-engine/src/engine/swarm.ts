@@ -254,6 +254,7 @@ function rules(swarm: SwarmView, member: MemberView): string {
     '- The board is one ordered feed that every member can read. Post with post_board and name who must act in "to" (member names, or "all"); read with read_board.',
     '- Every post that names a member costs that member a turn. Post results, questions, hand-offs and blockers that someone must act on, with enough detail to act without asking back; do not post acknowledgements or thanks.',
     '- Give each post the topic of its workstream and keep that name; read and search one topic at a time instead of the whole feed. Topic "announce" carries rules and rulings from the lead and the main agent: the new ones are in read_context (board.announcements) every turn, and they bind you.',
+    '- When a post needs nobody any more (your question was answered, what a post asked of you is done, a newer post replaces your conclusion), mark it with resolve_post and say how it ended. Reads skip resolved posts, so the board shows what is still open; searches still find them, so search before you ask or report something.',
   ].join('\n');
 }
 

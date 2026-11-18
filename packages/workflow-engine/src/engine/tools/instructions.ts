@@ -12,7 +12,7 @@ const STAFF_SWARM = `staff_swarm 不重放调整 swarm：add 新成员名单（�
 
 export const WORKFLOW_TOOL_INSTRUCTIONS = `工作流工具通过 shell 调用：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。环境里的 CLI 路径属于当前 bridge 版本。
 仅 /workflow start 或 /workflow script 命令授权的启动轮可调用 run_script，不根据自然语言或任务类型推断；内部完成事件和普通消息不能新建工作流，但可查看和干预话题里已有的工作流。
-变更需唯一 operationId；run_script 外另需 workflowId 和 status 返回的 expectedStateVersion，冲突时重读 status，不自动重试不同内容；enqueue_work/post_board/set_charter/wake_me/staff_swarm/retry_work/update_work/extend_deadline 不需要版本。
+变更需唯一 operationId；run_script 外另需 workflowId 和 status 返回的 expectedStateVersion，冲突时重读 status，不自动重试不同内容；enqueue_work/post_board/resolve_post/set_charter/wake_me/staff_swarm/retry_work/update_work/extend_deadline 不需要版本。
 status、各项变更返回的状态和每轮附带的 workflow_context 都是限长摘要：各列表只留最新若干条（任务先留进行中的），taskCounts 给出各状态任务数，omitted 给出略去条数，用 status({list,offset?,limit?}) 翻页（list 取 omitted 里的名字，每页最多 64 条）。swarms[].queues 给出各队列的 claimable（可领）、blocked（被挡住）、idle（空闲成员）、flow（近 6 小时逐小时入队/完成数，末项为最近一小时）和 dry（断粮次数与分钟）。
 操作：${tools.mainOperations()}。
 主 agent 沿用当前会话的 harness、model 和 reasoningEffort（飞书 /config run、/model、/effort 在开始前设置）。execution:{agentKind,model?,reasoningEffort?} 设置脚本 worker 默认值。agent(prompt,{key,member?,harness?,model?,reasoningEffort?,output?:"text"|"json",schema?,onError?:"null"|"throw",workflowTool?}) 可为每个 worker 覆盖 harness、模型和强度；同一 harness 可用不同模型。省略时使用对应目标的设置；跨 harness 不继承其它 harness 的模型。只接受当前已授权 profile，不接受其它 profile、凭据或环境变量。目标必须支持独立 final_text，模型必须由目标 harness/服务支持。
@@ -40,7 +40,7 @@ ${WORKFLOW_ADVANCED_SCRIPT_GUIDE}`;
  * without the script guide, which `workflow guide` prints when a replay needs it.
  */
 export const WORKFLOW_MESSAGE_INSTRUCTIONS = `本话题有一个 bridge 管理的工作流，本轮已获得它的调用凭据：用户询问进度或要求干预时直接操作，不需要用户再发 /workflow 命令；用户没有提到它时不要动它。
-调用方式：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。status 返回有上限的摘要，列表略去的条数见 omitted，用 status({list,offset?,limit?}) 翻页；变更需要 workflowId、唯一 operationId、expectedStateVersion（取自 status），冲突时重读 status；enqueue_work、post_board、set_charter、wake_me、staff_swarm、retry_work、update_work、extend_deadline 不需要版本。
+调用方式：node "$AGENT_WORKFLOW_CLI" workflow <operation> --input '<JSON>' --json，也可 --input-file <path>。status 返回有上限的摘要，列表略去的条数见 omitted，用 status({list,offset?,limit?}) 翻页；变更需要 workflowId、唯一 operationId、expectedStateVersion（取自 status），冲突时重读 status；enqueue_work、post_board、resolve_post、set_charter、wake_me、staff_swarm、retry_work、update_work、extend_deadline 不需要版本。
 操作：${tools.mainOperations()}。
 tell_worker(target,text) 把一段话作为用户消息插进正在运行的 worker 会话（target 为 taskId、成员名或脚本 key），用于中途纠偏或提问；返回 accepted 表示已送达会话，inactive 表示它没有在跑的轮次（持久成员改用 post_board 点名）。worker 用 reply_main 答复时你会被唤醒，worker_messages 读取往来记录。
 ${STAFF_SWARM}

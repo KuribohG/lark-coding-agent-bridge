@@ -211,5 +211,12 @@ describe('Lark workflow commands', () => {
     expect(rulings).toMatch(/#3 \[announce\] 主会话 → 未点名/);
     expect(rulings).not.toContain('#2 ');
     expect(await f.command('board #nothing')).toBe('没有主题：#nothing。已有主题：#general #announce');
+    // A resolved post stays in the feed the user sees, with how it ended.
+    await f.kernel.call({ kind: 'main', scopeId: 'topic' }, 'resolve_post', { operationId: 'settled', workflowId: current.workflowId, seq: 1, note: '已并入 <README>', see: 2 });
+    const marked = await f.command('board');
+    expect(marked).toContain('留言板：共 3 帖（已解决 1），显示最近 3 帖。');
+    expect(marked).toContain('主题：#general 2（已解决 1），#announce 1');
+    expect(marked).toMatch(/#1 主会话 → 未点名 · .* UTC\n {2}先看 .*\n {2}✓ 已解决（主会话）：已并入 .* 见 #2\n#2 /);
+    expect(marked).not.toMatch(/#2 [^\n]*\n[^\n]*\n {2}✓/);
   });
 });

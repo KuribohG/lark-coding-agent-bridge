@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { emit, putText, readText, readWorkflowStates, replaceWorkflowState, WorkflowStore, type WorkflowStoreOptions } from '../src/engine/kernel-store';
 import { SCRIPT_DEFINITION } from '../src/engine/script-contract';
-import type { StoredTask, WorkClaim, WorkflowData, WorkflowView, WorkflowWorkItem } from '../src/engine/types';
+import type { BoardPost, StoredTask, WorkClaim, WorkflowData, WorkflowView, WorkflowWorkItem } from '../src/engine/types';
 
 const cleanup: Array<() => unknown> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -294,6 +294,50 @@ describe('event-sourced workflow store', () => {
     // Identical texts are stored once.
     store.transact(() => task(state, 't2', 'the full prompt'));
     expect(store.db.prepare('SELECT count(*) AS count FROM wf_texts').get()).toEqual({ count: 2 });
+  });
+
+  it('amends the archived entry of a post that is resolved after it left the state', async () => {
+    const path = await file();
+    const first = new WorkflowStore(path, () => 1_000);
+    const state = start(first, 'board');
+    const post = (seq: number): BoardPost => ({ seq, id: 'post-' + seq, author: 'main', to: [], text: 'finding ' + seq, createdAt: seq });
+    const resolved = { at: 9, note: 'settled by the third', see: 3 };
+    const seqs = (posts: unknown[]) => (posts as BoardPost[]).map(found => found.seq);
+    first.transact(() => { for (const seq of [1, 2, 3]) emit(state, { type: 'board_posted', post: post(seq), deliveries: [] }); });
+    // Archived and resolved in one transaction: its reads see each entry once, as last staged.
+    first.transact(() => {
+      emit(state, { type: 'records_archived', kind: 'post', ids: ['1', '2'] });
+      emit(state, { type: 'board_post_resolved', seq: 1, postId: 'post-1', topic: 'general', resolved });
+      const archive = first.archive('board');
+      expect(archive.range('post', { after: 0, upTo: 2, limit: 10 })).toEqual([{ ...post(1), resolved }, post(2)]);
+      expect(seqs(archive.search('post', ['finding'], 10))).toEqual([2, 1]);
+      expect(archive.record('post', { id: '1' })).toEqual({ ...post(1), resolved });
+    });
+    expect(state.board).toMatchObject({ posts: [post(3)], topics: { general: { posts: 3, resolved: 1 } } });
+    expect(state.archivedRecords).toEqual({ post: 2 });
+    // A stored entry is replaced by its amendment for the transaction that makes it, and in place for later ones.
+    first.transact(() => {
+      emit(state, { type: 'board_post_resolved', seq: 2, postId: 'post-2', topic: 'general', resolved });
+      expect(first.archive('board').range('post', { after: 0, upTo: 2, limit: 10, desc: true })).toEqual([{ ...post(2), resolved }, { ...post(1), resolved }]);
+      expect(seqs(first.archive('board').search('post', ['settled'], 10))).toEqual([2, 1]);
+    });
+    expect(seqs(first.archive('board').search('post', ['settled'], 10))).toEqual([2, 1]);
+    // Reopening a post takes the mark off its entry; one that is still in the state carries it there.
+    first.transact(() => {
+      emit(state, { type: 'board_post_resolved', seq: 1, postId: 'post-1', topic: 'general' });
+      emit(state, { type: 'board_post_resolved', seq: 3, postId: 'post-3', topic: 'general', resolved: { at: 10, from: 'agent-1' } });
+    });
+    const before = JSON.parse(JSON.stringify(first.public(first.state('scope-board')!)));
+    expect(before.board).toEqual({ posts: [{ ...post(3), resolved: { at: 10, from: 'agent-1' } }], topics: { general: { posts: 3, recent: [1, 2, 3], resolved: 2 } } });
+    first.close();
+
+    // The journal rebuilds the state; the archive holds the entries as last amended.
+    const db = new Database(path); db.exec('DELETE FROM wf_snapshots');
+    expect(db.prepare("SELECT count(*) AS rows FROM wf_archive WHERE kind = 'post'").get()).toEqual({ rows: 2 });
+    db.close();
+    const second = open(path);
+    expect(JSON.parse(JSON.stringify(second.public(second.state('scope-board')!)))).toEqual(before);
+    expect(second.archive('board').range('post', { after: 0, upTo: 2, limit: 10 })).toEqual([post(1), { ...post(2), resolved }]);
   });
 
   it('detects a state change that bypassed the journal', () => {

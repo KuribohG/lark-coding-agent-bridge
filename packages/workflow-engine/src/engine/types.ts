@@ -145,7 +145,23 @@ export interface MailboxMessage {
 }
 /** Who wrote a board post when it was not a member. */
 export type BoardAuthor = 'main' | 'script' | 'system';
-/** One entry of the workflow's shared, append-only message board. Posts are never edited or removed. */
+/**
+ * Why a post no longer needs anybody's attention: its question was answered, its request done, its conclusion
+ * replaced. The post stays in the feed as written; readers skip it unless they ask for resolved posts.
+ */
+export interface PostResolution {
+  /** The agentId of the member that resolved it; absent for the main agent. */
+  from?: string;
+  at: number;
+  /** What settled it, in a sentence. */
+  note?: string;
+  /** The seq of the post that answers or replaces this one. */
+  see?: number;
+}
+/**
+ * One entry of the workflow's shared, append-only message board. Posts are never edited or removed; the only thing
+ * that changes about one is whether it is resolved.
+ */
 export interface BoardPost {
   /** Position in the feed, starting at 1. */
   seq: number;
@@ -161,6 +177,7 @@ export interface BoardPost {
   topic?: string;
   text: string;
   createdAt: number;
+  resolved?: PostResolution;
 }
 export interface SwarmMember {
   name: string;
@@ -263,8 +280,9 @@ export interface WorkflowBoard {
   /**
    * By topic: the posts made in it and the seq of its latest few, oldest first. It covers the posts that have left
    * the state as well. Posts made before topics existed are not counted here; they belong to the default topic.
+   * `resolved` is how many of the topic's posts are resolved now.
    */
-  topics?: Record<string, { posts: number; recent: number[] }>;
+  topics?: Record<string, { posts: number; recent: number[]; resolved?: number }>;
 }
 
 export interface MailboxReceipt {

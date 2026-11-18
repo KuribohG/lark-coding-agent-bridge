@@ -3,7 +3,7 @@ import { workflowDigest } from './digest';
 import { byId } from './evolve';
 import { archiveOf, emit, putText, readText, recordsOf } from './kernel-store';
 import { callRecordId, CALL_KINDS, type CallList, type RecordKind } from './records';
-import type { ArtifactView, BoardPost, Immutable, MailboxReceipt, StoredArtifact, TaskView, WorkflowArtifact, WorkflowEvent, WorkflowRoot, WorkflowTask, WorkflowView, WorkflowWait, WorkflowWorkItem } from './types';
+import type { ArtifactView, BoardPost, Immutable, MailboxReceipt, PostResolution, StoredArtifact, TaskView, WorkflowArtifact, WorkflowEvent, WorkflowRoot, WorkflowTask, WorkflowView, WorkflowWait, WorkflowWorkItem } from './types';
 
 /** Shared state helpers for the kernel's collaborators. Changes are recorded as events inside a store transaction. */
 
@@ -144,4 +144,9 @@ export function boardTotal(state: WorkflowView): number {
 export function postBySeq(state: WorkflowView, seq: number): Immutable<BoardPost> | undefined {
   const archived = state.archivedRecords?.post ?? 0;
   return seq > archived ? state.board?.posts[seq - archived - 1] : archivedRecord<BoardPost>(state, 'post', { id: String(seq) });
+}
+/** A post's resolution as its readers see it: who resolved it, how, and the post to read instead. */
+export function resolutionView(state: WorkflowView, resolved: Immutable<PostResolution>): { by: string; at: number; note?: string; see?: number } {
+  return { by: resolved.from ? state.agents?.find(agent => agent.agentId === resolved.from)?.key ?? resolved.from : 'main', at: resolved.at,
+    ...(resolved.note ? { note: resolved.note } : {}), ...(resolved.see ? { see: resolved.see } : {}) };
 }

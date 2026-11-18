@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { workflowDigest } from './digest';
 import { availableMessages } from './evolve';
-import { archivedRecord, artifactOf, findTask, mailboxOperationByKey, postBySeq, readArtifact, receiptByKey, taskById } from './kernel-state';
+import { archivedRecord, artifactOf, findTask, mailboxOperationByKey, postBySeq, readArtifact, receiptByKey, resolutionView, taskById } from './kernel-state';
 import { archiveOf, emit, putText } from './kernel-store';
 import { MAILBOX_MAX_MESSAGES, MAILBOX_MAX_OPERATIONS, MAILBOX_MAX_RECEIPTS, MAX_WORKFLOW_MEMBERS } from './limits';
 import { scriptText, type ScriptAgentCall } from './script-contract';
@@ -166,13 +166,18 @@ export function receiveMessages(state: WorkflowView, target: string, key: string
   return state.mailbox!.receipts.find(item => item.id === receipt.id)!;
 }
 
-/** A mailbox message as its recipient sees it; the delivery of a board post shows the post it stands for. */
-function messageView(state: WorkflowView, message: Immutable<MailboxMessage>): Record<string, unknown> {
+/**
+ * A mailbox message as its recipient sees it; the delivery of a board post shows the post it stands for. `marks`
+ * adds whether that post has been resolved since: a member need not act on it then. A script's receive leaves the
+ * mark out, because a replay must return what the first run did.
+ */
+function messageView(state: WorkflowView, message: Immutable<MailboxMessage>, marks = false): Record<string, unknown> {
   const name = (agentId: string) => state.agents?.find(agent => agent.agentId === agentId)?.key ?? agentId;
   const post = message.post === undefined ? undefined : postBySeq(state, message.post);
   return { id: message.id, from: post ? post.from ? name(post.from) : post.author ?? 'main' : message.from ? name(message.from) : 'main',
     text: post ? post.text : message.text, ...messageMatch(message),
-    ...(post ? { post: post.seq, to: post.to.map(name), ...(post.all ? { all: true } : {}) } : {}) };
+    ...(post ? { post: post.seq, to: post.to.map(name), ...(post.all ? { all: true } : {}),
+      ...(marks && post.resolved ? { resolved: resolutionView(state, post.resolved) } : {}) } : {}) };
 }
 
 export function receiptMessages(state: WorkflowView, receiptId: string): unknown[] | undefined {
@@ -186,5 +191,5 @@ export function memberContext(state: WorkflowView, task: TaskView): unknown {
   const agent = taskAgent(state, task);
   if (!agent) return undefined;
   return { member: agent.key, turnId: task.taskId, checkpoint: checkpoint(state, agent),
-    messages: (state.mailbox?.messages ?? []).filter(message => task.inputMessageIds?.includes(message.id)).map(message => messageView(state, message)) };
+    messages: (state.mailbox?.messages ?? []).filter(message => task.inputMessageIds?.includes(message.id)).map(message => messageView(state, message, true)) };
 }

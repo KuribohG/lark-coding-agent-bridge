@@ -234,34 +234,47 @@ See [the debate example](../workflow-definitions/scripted/examples/debate.js).
 
 ### Message board and swarms
 
-Every workflow has one message board: an ordered, append-only feed that all of its agents can read. A post names the members who must act; naming a member delivers the post to its inbox and wakes it. A post that names nobody stays on the board and wakes no one. Posts are never edited or removed.
+Every workflow has one message board: an ordered, append-only feed that all of its agents can read. A post names the members who must act; naming a member delivers the post to its inbox and wakes it. A post that names nobody stays on the board and wakes no one. Posts are never edited or removed; a post that needs nobody any more is [marked resolved](#resolved-posts), which takes it out of the default reads.
 
-| Caller | Post | Read |
-| --- | --- | --- |
-| Persistent member | `post_board` with `{operationId, text, to?, topic?}` | `read_board` with `{after?, limit?, member?, topic?}` |
-| One-off worker | not allowed | `read_board` |
-| Main agent | `post_board(text, to?, topic?)` | `read_board(after?, limit?, member?, topic?)` |
-| Script | `post(text, {key, to?, topic?})`, as `script` | `readBoard({key, after?, limit?, member?, topic?})` |
+| Caller | Post | Read | Resolve |
+| --- | --- | --- | --- |
+| Persistent member | `post_board` with `{operationId, text, to?, topic?}` | `read_board` with `{after?, limit?, member?, topic?, resolved?}` | `resolve_post` with `{operationId, seq, note?, see?, reopen?}` |
+| One-off worker | not allowed | `read_board` | not allowed |
+| Main agent | `post_board(text, to?, topic?)` | `read_board(after?, limit?, member?, topic?, resolved?)` | `resolve_post(seq, note?, see?, reopen?)` |
+| Script | `post(text, {key, to?, topic?})`, as `script` | `readBoard({key, after?, limit?, member?, topic?})` | none |
+| User | `/workflow post <text>`, as the main conversation | `/workflow board [count\|member\|#topic]` | through the main agent |
 
-A long-running workflow collects hundreds of posts. `search_board` with `{query, member?, topic?, limit?}` finds posts by words instead of paging through the feed, for members, one-off workers and the main agent alike: `query` is up to 8 space-separated words, each matched as a case-insensitive substring, and all of them must occur in the post. The result lists the newest matches (10 by default, at most 30) with their `seq` and the text around the match; `read_board({after: seq - 1, limit: 1})` returns a whole post. Posts that have been archived out of the state are searched too.
-| User | `/workflow post <text>`, as the main conversation | `/workflow board [count\|member\|#topic]` |
+A long-running workflow collects hundreds of posts. `search_board` with `{query, member?, topic?, limit?}` finds posts by words instead of paging through the feed, for members, one-off workers and the main agent alike: `query` is up to 8 space-separated words, each matched as a case-insensitive substring, and all of them must occur in the post. The result lists the newest matches (10 by default, at most 30) with their `seq` and the text around the match; `read_board({after: seq - 1, limit: 1, resolved: true})` returns a whole post. Posts that have been archived out of the state are searched too.
 
 - `text` is at most 4000 characters. `to` is an array of member names or `"all"`. `@name` and `@all` in the text count as well, so `'Parser done, @qa please verify'` needs no `to`. Unknown names in `to` are rejected; an `@word` that matches no member is ordinary text. The sender is never its own recipient, and `all` means the members that exist when the post is made.
-- A read returns `{posts: [{seq, from, to, all?, topic?, text, at}], lastSeq, hasMore, topics?}`. Without `after` it returns the latest `limit` posts (default 20, at most 50); with `after` it returns the posts following that `seq`. `member` keeps the posts that member wrote or received. `from` is a member name, `main`, `script` or `system`.
+- A read returns `{posts: [{seq, from, to, all?, topic?, text, at, resolved?}], lastSeq, hasMore, resolvedSkipped?, topics?}`. Without `after` it returns the latest `limit` posts (default 20, at most 50); with `after` it returns the posts following that `seq`. `member` keeps the posts that member wrote or received. `from` is a member name, `main`, `script` or `system`.
 - Deliveries are ordinary inbox messages with topic `board` and the fields `post`, `to` and `all?` added, so everything that waits for messages works unchanged: `receive` and the `message` arm of `waitFor`. Swarm members are woken by them directly. As with direct messages, a member sees them in its next turn's member context and they are acknowledged when that turn succeeds.
-- A workflow holds at most 8192 posts and 32768 deliveries. Deliveries reference the post instead of copying its text and do not count toward the 4096 direct messages.
-- A script read records how far the feed reached under its `key`; replay reads the same range again.
+- The number of posts is not limited. The state keeps the latest 256; older ones move to the workflow's archive, where reads and searches find them as before, and are deleted with the workflow once its retention has passed. At most 32768 deliveries are held at once. Deliveries reference the post instead of copying its text and do not count toward the 4096 direct messages.
+- A script read records how far the feed reached under its `key`; replay reads the same range again. It returns every post of that range as posted: resolutions are made later and would change what a replay reads, so a script read neither skips resolved posts nor reports them.
 
 #### Topics and announcements
 
 A board that hundreds of members write to mixes rulings everyone must know, coordination inside one workstream and requests for help. A post may carry a `topic` so that readers take one of these at a time:
 
 - `topic` is 1–40 lowercase letters, digits, `_`, `.` or `-` (upper case is folded). A post without one belongs to `general`; its view carries `topic` only when it is another one. A board holds at most 64 topics besides `general`: a topic is a workstream, not a tag for one post.
-- `read_board` and `search_board` take `topic` to keep the posts of one topic. Once the board has more than one topic, a read by a member or the main agent also returns `topics: [{topic, posts, lastSeq}]`, the busiest first; a script read does not, because the list would differ on replay.
+- `read_board` and `search_board` take `topic` to keep the posts of one topic. Once the board has more than one topic, a read by a member or the main agent also returns `topics: [{topic, posts, lastSeq, resolved?}]`, the busiest first; a script read does not, because the list would differ on replay.
 - Topic `announce` is for rules and rulings. Only the main agent, the script and the lead of a swarm may post in it. Announcements need not name anyone: every member receives the ones made since its previous turn in its next turn's context, so a rule change reaches a large swarm without waking it. Name members only when they must act now.
-- A member's `read_context` carries `board: {lastSeq, since, older?, topics: [{topic, posts, lastSeq, new}], announcements, moreAnnouncements?}`. `since` is the board's `lastSeq` when the member's previous turn was scheduled, so a post made during that turn may be reported twice but none is missed. `announcements` holds up to five new ones in full; `moreAnnouncements` counts the rest. `new` counts the new posts of a topic among those still in the state (the latest 256 of the board); `older` is how many new posts have left it.
+- A member's `read_context` carries `board: {lastSeq, since, older?, topics: [{topic, posts, lastSeq, resolved?, new}], announcements, moreAnnouncements?}`. `since` is the board's `lastSeq` when the member's previous turn was scheduled, so a post made during that turn may be reported twice but none is missed. `announcements` holds up to five new ones in full; `moreAnnouncements` counts the rest. `new` counts the new posts of a topic among those still in the state (the latest 256 of the board); `older` is how many new posts have left it.
 - Members are told not to post a report when they complete a work item: the result given to `complete_work` is the report, and `search_work` finds it.
 - `/workflow board #topic` shows one topic in chat.
+
+#### Resolved posts
+
+The board is append-only, so without anything else every question that was answered and every conclusion that was later overturned stays in front of the readers for as long as the workflow runs. Deleting such posts would lose what they are good for: a later member who is about to ask the same question, or to try what already failed, finds out by searching. A post is therefore marked instead:
+
+- `resolve_post` with `{seq, note?, see?}` marks a post that needs nobody any more: its question was answered, its request done, its conclusion replaced. `seq` is one post or an array of up to 32. `note` (at most 500 characters) says in a sentence how it was settled, `see` is the `seq` of the post that answers or replaces it; at least one of them is required, so that a reader who finds the post learns how it ended.
+- The author of a post, a member the post names (not through `all`), a lead of a swarm or of a queue, and the main agent may resolve it. An announcement is resolved by those who may announce: the main agent and the lead of a swarm. One-off workers and scripts cannot resolve.
+- `resolve_post` with `{seq, reopen: true}` removes the mark, under the same rule. Resolving a post that is resolved, or reopening one that is not, changes nothing and lists it under `unchanged`; the first resolution stays. The result is `{resolved?: [seq], reopened?: [seq], unchanged?: [seq]}`.
+- `read_board` skips resolved posts and reports how many it passed over as `resolvedSkipped`; `resolved: true` returns them as well, each with `resolved: {by, at, note?, see?}`. A member's `board` digest counts only unresolved posts as `new` and does not hand over an announcement that was resolved in the meantime. A topic's `resolved` is how many of its `posts` are resolved.
+- `search_board` finds resolved posts too, after the unresolved ones and with their `resolved` field; the note is searched like the text.
+- A delivery of a post that has been resolved by the time its recipient reads it carries `resolved` as well: somebody already dealt with it.
+- The mark is part of the post wherever the post is kept: resolving one that has left the state changes its archived entry, the only kind of archived entry that is ever rewritten.
+- `/workflow board` lists resolved posts with their resolution and a shortened text, and gives the number of resolved posts beside each total.
 
 Not done: members do not subscribe to topics, and nothing assigns a topic from the queue or work item a member holds; the per-turn summary lists every topic.
 
@@ -375,6 +388,7 @@ Members can use their scoped CLI to call:
 - `read_context` / `task_status`: inspect their own checkpoint, fixed input batch and current checkpoint version.
 - `checkpoint` with `{operationId, expectedCheckpointVersion, state}`: save up to 16000 characters of JSON work state. Record progress, decisions, next steps and artifact paths. This does not finish the turn or acknowledge input messages.
 - `post_board` with `{operationId, text, to?}`: post to the workflow's board; a post that names a member is delivered to its inbox. There is no private member-to-member message: what members tell each other is on the board for the rest to read.
+- `resolve_post` with `{operationId, seq, note?, see?, reopen?}`: mark its own posts and the posts that name it as [resolved](#resolved-posts) once they need nobody any more.
 
 Worker operation IDs are scoped to the logical turn and deduplicated across attempts. Stale attempt credentials cannot update checkpoints or send messages. The main agent can inspect the latest work state with `read_checkpoint({member})`, and can reach a member's inbox with `post_board` and `to`, including while paused or interrupted; queuing a message does not resume a paused workflow. Members cannot change their execution binding, mutate another member's checkpoint, or create more workers.
 
@@ -423,7 +437,7 @@ Queue mutation IDs are scoped to the current execution attempt. Repeating the sa
 
 Enqueue keys share the script's key namespace. Replaying the same key/input reuses its existing item and does not reset its result or progress; changing immutable input under that key fails. `maxAttempts` defaults to 3. Every new grant consumes an attempt, including voluntarily released and expired grants. Main can use `enqueue_work` or `retry_work({itemId, additionalAttempts?})` with the usual workflow ID, operation ID and state version. Retry applies only to failed items, adds a default allowance of one (1–8 per request, at most 32 cumulative generations), and never resets the generation. Resolve the failure and explicitly replay as needed. Retry does not cause previously successful, cached consumer turns to run again: add a new round/member when all original consumer calls were already successful. Pending or claimed work prevents script success and main completion. Failed items remain visible for main review; the packaged example treats them as an error.
 
-The main agent's `enqueue_work`, `post_board`, `set_charter` and `wake_me` only add to or replace one part of the workflow, and `staff_swarm`, `retry_work`, `update_work` and `extend_deadline` check what they change against the state they commit on, so none of them takes `expectedStateVersion`: a workflow with many members commits several times a second, and a change that had to quote the current version would rarely land. They still need `workflowId` and a unique `operationId`; repeating a call with the same `operationId` and input returns the first result.
+The main agent's `enqueue_work`, `post_board`, `resolve_post`, `set_charter` and `wake_me` only add to or replace one part of the workflow, and `staff_swarm`, `retry_work`, `update_work` and `extend_deadline` check what they change against the state they commit on, so none of them takes `expectedStateVersion`: a workflow with many members commits several times a second, and a change that had to quote the current version would rarely land. They still need `workflowId` and a unique `operationId`; repeating a call with the same `operationId` and input returns the first result.
 
 Use `/workflow work` for counts and ownership, or `/workflow work <key>` for resource keys, saved progress version/time and recent claim history. `/workflow status [member]` also shows queue progress and member ownership. Summary output omits input/progress/result payloads; authorized `work_status({itemId})` returns the full item. Queries are read-only and do not renew leases or restart execution.
 
