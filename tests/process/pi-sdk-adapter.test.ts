@@ -141,7 +141,7 @@ describe('PiSdkAdapter process contract', () => {
     expect((await iterator.next()).value).toMatchObject({ type: 'system' });
     expect((await iterator.next()).value).toEqual({ type: 'text', delta: 'A' });
 
-    const receipt = await run.sendInput!({ text: 'also do this', messageId: 'm-1' });
+    const receipt = await run.sendInput!({ text: 'also do this', messageId: 'm-1', images: ['/tmp/a.png'] });
     expect(receipt).toEqual({ status: 'accepted', messageId: 'm-1', scope: 'active-turn' });
 
     const rest: AgentEvent[] = [];
@@ -155,6 +155,7 @@ describe('PiSdkAdapter process contract', () => {
       sessionId: 'sess-1',
       runId: 'run-steer',
       text: 'also do this',
+      images: ['/tmp/a.png'],
     });
   });
 

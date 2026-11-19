@@ -35,6 +35,7 @@
  * connection leaves the sessions running, so a reconnecting bridge finds them.
  */
 import { existsSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -462,6 +463,38 @@ async function applyRunSettings(entry, params) {
   if (params.thinkingLevel) entry.session.setThinkingLevel(params.thinkingLevel);
 }
 
+const IMAGE_MIME_BY_EXT = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+  gif: 'image/gif',
+};
+
+/**
+ * Read the bridge's cached image files into Pi's ImageContent. An unreadable
+ * or unsupported file is skipped, not fatal: the supplement text still lists
+ * the path, so Pi's own read tool can pick it up.
+ */
+async function readInputImages(paths) {
+  if (!Array.isArray(paths)) return [];
+  const images = [];
+  for (const path of paths) {
+    if (typeof path !== 'string') continue;
+    const mimeType = IMAGE_MIME_BY_EXT[path.split('.').pop()?.toLowerCase() ?? ''];
+    if (!mimeType) {
+      log('steer image skipped', { path, reason: 'unsupported-extension' });
+      continue;
+    }
+    try {
+      images.push({ type: 'image', data: (await readFile(path)).toString('base64'), mimeType });
+    } catch (error) {
+      log('steer image skipped', { path, error: errorText(error) });
+    }
+  }
+  return images;
+}
+
 async function executePrompt(entry, run, params) {
   try {
     await applyRunSettings(entry, params);
@@ -580,8 +613,11 @@ async function handleRequest(request) {
       const entry = sessions.get(params.sessionId);
       if (!entry) throw new Error(`unknown pi session: ${params.sessionId}`);
       if (!entry.run || entry.run.runId !== params.runId) throw new Error('pi run is not active');
-      if (typeof params.text !== 'string' || !params.text) throw new Error('run.steer requires text');
-      const disposition = await entry.session.steer(params.text);
+      const images = await readInputImages(params.images);
+      if (typeof params.text !== 'string' || (!params.text && images.length === 0)) {
+        throw new Error('run.steer requires text or images');
+      }
+      const disposition = await entry.session.steer(params.text, images.length > 0 ? images : undefined);
       reply(request.id, true, { disposition });
       return;
     }

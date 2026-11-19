@@ -198,6 +198,7 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
           recordFollowup: (scope, message) => runner.recordFollowup(scope, message),
           userQuestions,
           ...conversation,
+          media,
           resolveAgent,
           resolveAgentKind,
           pending,

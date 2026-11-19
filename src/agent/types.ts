@@ -32,6 +32,12 @@ export type AgentFailureKind = 'rate_limit' | 'transient' | 'quota' | 'authentic
 export interface AgentInput {
   text: string;
   messageId: string;
+  /**
+   * Absolute paths of local images to attach natively to this input. The text
+   * still lists every attachment, so a transport that cannot carry images
+   * degrades to the agent's own file-reading tools instead of losing them.
+   */
+  images?: readonly string[];
 }
 
 /** Accepted means acknowledged by the transport, not yet processed by the model. */

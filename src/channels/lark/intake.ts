@@ -1,5 +1,6 @@
-import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
+import type { LarkChannel, NormalizedMessage, ResourceDescriptor } from '@larksuite/channel';
 import { supportsRunInput } from '../../agent/execution';
+import type { MediaCache } from '../../media/cache';
 import type { AgentAdapter } from '../../agent/types';
 import type { ChatModeCache } from './chat-mode-cache';
 import { CotPublisher, type CotClient } from './cot';
@@ -62,6 +63,30 @@ function isForwardFetchFailed(msg: NormalizedMessage): boolean {
   );
 }
 
+/**
+ * A supplement may ride the active turn when it carries no resources, or only
+ * images: Codex attaches them to the turn natively, and every other agent can
+ * read the cached path listed in the prompt. Files, audio, video and stickers
+ * keep their place in the queue.
+ */
+function isSteerableSupplement(resources: readonly ResourceDescriptor[]): boolean {
+  return resources.every((resource) => resource.type === 'image');
+}
+
+async function resolveSteerAttachments(
+  media: MediaCache,
+  controls: Controls,
+  msg: NormalizedMessage,
+) {
+  if (msg.resources.length === 0) return [];
+  const attachments = await media.resolve(
+    msg.resources.map((resource) => ({ messageId: msg.messageId, resource })),
+    controls.profileConfig.attachments,
+  );
+  if (attachments.length > 0) log.info('media', 'resolved-followup', { count: attachments.length });
+  return attachments;
+}
+
 async function sendForwardFetchFailedHint(
   channel: LarkChannel,
   chatId: string,
@@ -83,6 +108,7 @@ interface IntakeDeps {
   recordFollowup?(scope: string, message: NormalizedMessage): void;
   userQuestions?: UserQuestions;
   channel: LarkChannel;
+  media: MediaCache;
   resolveAgent(scope: string): AgentAdapter;
   resolveAgentKind(scope: string): AgentKind;
   sessions: SessionStore;
@@ -104,6 +130,7 @@ interface IntakeDeps {
 export async function intakeMessage(deps: IntakeDeps): Promise<void> {
   const {
     channel,
+    media,
     resolveAgent,
     resolveAgentKind,
     sessions,
@@ -266,19 +293,26 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
       return;
     }
   }
-  if (!commandFollowUp && emsg.resources.length === 0 && supportsRunInput(activeRuns.get(scope)?.run)) {
+  if (!commandFollowUp && isSteerableSupplement(emsg.resources) && supportsRunInput(activeRuns.get(scope)?.run)) {
     const result = await deps.followups.deliver({
       scope, messageId: emsg.messageId, activeRuns,
       prepare: async () => {
+        const attachments = await resolveSteerAttachments(media, controls, emsg);
+        const images = attachments
+          .filter((attachment) => attachment.kind === 'image' && attachment.decision === 'accepted')
+          .map((attachment) => attachment.absPath);
         const target = replyQuoteTargetForMessage(emsg, chatMode);
         const quote = target ? await fetchQuotedContext(channel, target, { reads: userReads }) : undefined;
-        return buildPrompt([emsg], [], quote ? [quote] : [], [], channel.botIdentity,
-          [
-            '这是用户在当前任务执行期间发来的补充消息。请结合原任务处理；消息未明确取消原目标时继续保留原目标。',
-            ...(target && !quote
-              ? ['用户引用的消息未能从飞书读取；不要猜测其内容，如上下文不足请明确说明。']
-              : []),
-          ]);
+        return {
+          text: buildPrompt([emsg], attachments, quote ? [quote] : [], [], channel.botIdentity,
+            [
+              '这是用户在当前任务执行期间发来的补充消息。请结合原任务处理；消息未明确取消原目标时继续保留原目标。',
+              ...(target && !quote
+                ? ['用户引用的消息未能从飞书读取；不要猜测其内容，如上下文不足请明确说明。']
+                : []),
+            ]),
+          ...(images.length > 0 ? { images } : {}),
+        };
       },
     });
     if (result === 'accepted') deps.recordFollowup?.(scope, emsg);

@@ -155,6 +155,11 @@ has become uncertain. During backoff, after termination, and after stop, input
 returns `inactive`. Follow-up preparation remains serialized per run, and the
 router still checks scope and cancellation generation before and after delivery.
 
+`AgentInput` may also carry absolute image paths. The prompt always lists the
+attachment, so the input degrades to the agent's own file tools when a transport
+cannot attach images: Codex sends them as `localImage` input items, the Pi host
+loads them into image content blocks, and Claude reads the cached path.
+
 Every adapter and run declares its execution capabilities. A native run exposes
 `sendInput()` only when its transport can deliver supplemental input;
 `withExecutionContract()` withholds it when the declared input scope is

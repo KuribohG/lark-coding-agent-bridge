@@ -16,7 +16,7 @@ Native async questions (`request_user_input_async`, delivered as `agentMessage.q
 
 Agent adapters emit a harness-neutral `user_input` event (`mode: 'async' | 'blocking'`) and blocking runs expose `answerUserInput`; `QuestionBroker` (`src/channels/lark/question-broker.ts`) owns routing and lifecycle, and an IM presenter (`src/channels/lark/question-cards.ts` for Lark) only renders requests and reads answers.
 
-Send additional text normally: `turn/steer` appends it to the same process, thread, and turn. The acknowledgement means Codex accepted the input, not that the model has acted on it. Quoted context is included; attachments and agent-created card callbacks still use the queue. Input explicitly rejected because the turn ended falls back to the next turn. Ambiguous delivery failures are reported without automatic replay.
+Send additional text normally: `turn/steer` appends it to the same process, thread, and turn. The acknowledgement means Codex accepted the input, not that the model has acted on it. Quoted context is included; images ride along with the supplement (Codex receives them as native input, other agents read the cached path). Files, audio, video and agent-created card callbacks still use the queue. Input explicitly rejected because the turn ended falls back to the next turn. Ambiguous delivery failures are reported without automatic replay.
 
 `/stop` cancels queued messages and input preparation before interrupting the active run, and sends a receipt. It does not undo completed actions. Existing topic isolation, access checks, and mention requirements still apply.
 

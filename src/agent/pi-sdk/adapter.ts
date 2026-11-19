@@ -630,6 +630,7 @@ export class PiSdkAdapter implements AgentAdapter {
         sessionId: state.sessionId,
         runId: state.runId,
         text: input.text,
+        ...(input.images && input.images.length > 0 ? { images: input.images } : {}),
       }, 10_000);
       return { status: 'accepted', messageId: input.messageId, scope: 'active-turn' };
     } catch (error) {
