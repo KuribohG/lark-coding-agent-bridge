@@ -66,7 +66,13 @@ export interface PreparedMessageTurn {
   details?: Record<string, number>;
   /** Observability source of this frontend. */
   observabilitySource: string;
-  runOptions?: { deadlineAt?: number; userQuestions?: boolean; answerIncludesInterimText?: boolean };
+  runOptions?: {
+    deadlineAt?: number;
+    userQuestions?: boolean;
+    answerIncludesInterimText?: boolean;
+    /** Trusted per-run bindings (e.g. the conversation this turn belongs to). */
+    env?: Readonly<Record<string, string>>;
+  };
   /**
    * What a rendering failure means: `fail` rejects the turn (hosts whose
    * output is their event stream), `log` keeps the completed run (channels
@@ -165,7 +171,7 @@ export async function startMessageTurn<M, T extends MessageTurn<M>>(
   });
 
   const flow = await startTurn(deps.stores, {
-    env: entryBinding?.env,
+    env: mergeRunEnv(entryBinding?.env, prepared.runOptions?.env),
     ...(model.settings ? { modelSettings: model.settings } : {}),
     signal: turn.signal,
     scopeId: turn.scope,
@@ -266,4 +272,14 @@ function resumeInstruction(attempt: number): string {
   return `bridge 进程在你处理这批消息期间被终止，现已重启并自动续跑（第 ${attempt} 次）。` +
     '如果当前会话里已有这批消息及部分进展，先核对已完成的工作（文件、命令结果、已发出的消息），从中断处继续，' +
     '不要重复已经生效的操作；如果会话里没有，就按正常流程处理。';
+}
+
+/** Entry bindings stay authoritative for their own keys; turn bindings fill the rest. */
+function mergeRunEnv(
+  entry: Readonly<Record<string, string>> | undefined,
+  turn: Readonly<Record<string, string>> | undefined,
+): Readonly<Record<string, string>> | undefined {
+  if (!entry) return turn;
+  if (!turn) return entry;
+  return { ...turn, ...entry };
 }

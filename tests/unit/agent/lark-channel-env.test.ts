@@ -1,9 +1,31 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { buildLarkChannelEnv, LARK_CHANNEL_ENV_KEYS } from '../../../src/agent/lark-channel-env';
+import {
+  buildLarkChannelEnv,
+  buildLarkChatEnv,
+  LARK_CHANNEL_CHAT_ENV_KEYS,
+  LARK_CHANNEL_ENV_KEYS,
+} from '../../../src/agent/lark-channel-env';
 import { buildAgentEnvironment } from '../../../src/agent/launch-env';
 import { codexExecutionEnvironment } from '../../../src/agent/codex/environment';
 import { mergeProcessEnv } from '../../../src/platform/spawn';
+
+describe('per-turn chat binding', () => {
+  it('publishes only the parts the turn has', () => {
+    expect(buildLarkChatEnv({ chatId: 'oc_chat', chatType: 'group' })).toEqual({
+      LARK_CHANNEL_CHAT_ID: 'oc_chat',
+      LARK_CHANNEL_CHAT_TYPE: 'group',
+    });
+    expect(buildLarkChatEnv({ chatId: 'oc_chat', chatType: 'group', threadId: 'omt_1' }))
+      .toHaveProperty('LARK_CHANNEL_THREAD_ID', 'omt_1');
+    expect(buildLarkChatEnv()).toEqual({});
+    expect(LARK_CHANNEL_CHAT_ENV_KEYS).toHaveLength(3);
+  });
+
+  it('keeps chat keys out of the frontend binding that other backends filter on', () => {
+    expect(LARK_CHANNEL_ENV_KEYS).not.toContain('LARK_CHANNEL_CHAT_ID');
+  });
+});
 
 describe('Lark frontend environment binding', () => {
   it('clears missing bindings instead of inheriting another frontend', () => {

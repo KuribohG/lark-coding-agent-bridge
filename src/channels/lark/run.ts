@@ -1,5 +1,6 @@
 import type { LarkChannel, NormalizedMessage } from '@larksuite/channel';
 import type { AgentCapability } from '../../agent/capability';
+import { buildLarkChatEnv } from '../../agent/lark-channel-env';
 import type { ChatMode } from './scope-types';
 import type { CotClient, CotPublisher } from './cot';
 import type { PendingMessage } from './pending-queue';
@@ -152,7 +153,6 @@ async function prepareTurn(
       attachments,
       quoted.quotes,
       topic.messages,
-      channel.botIdentity,
       extraInstructions,
     ),
     sessionSource: wake ? { kind: 'internal' } : {
@@ -166,7 +166,17 @@ async function prepareTurn(
     details: { quotes: quoted.quotes.length, topicContext: topic.messages.length },
     observabilitySource: 'im',
     // Chat turns may wait for the user's answer, and show text written before tool calls.
-    runOptions: { userQuestions: true, answerIncludesInterimText: true },
+    // The conversation itself travels in the environment: the prompt only says
+    // who spoke, not which ids to reuse.
+    runOptions: {
+      userQuestions: true,
+      answerIncludesInterimText: true,
+      env: buildLarkChatEnv({
+        chatId: firstMsg.chatId,
+        chatType: firstMsg.chatType,
+        threadId: firstMsg.threadId,
+      }),
+    },
     // A failed card write must not make the next turn forget the run completed.
     presentFailure: 'log',
   };

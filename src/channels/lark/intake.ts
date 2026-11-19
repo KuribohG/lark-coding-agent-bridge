@@ -304,7 +304,7 @@ export async function intakeMessage(deps: IntakeDeps): Promise<void> {
         const target = replyQuoteTargetForMessage(emsg, chatMode);
         const quote = target ? await fetchQuotedContext(channel, target, { reads: userReads }) : undefined;
         return {
-          text: buildPrompt([emsg], attachments, quote ? [quote] : [], [], channel.botIdentity,
+          text: buildPrompt([emsg], attachments, quote ? [quote] : [], [],
             [
               '这是用户在当前任务执行期间发来的补充消息。请结合原任务处理；消息未明确取消原目标时继续保留原目标。',
               ...(target && !quote

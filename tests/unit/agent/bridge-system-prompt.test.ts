@@ -23,8 +23,9 @@ describe('bridge system prompt bot collaboration rules', () => {
     expect(BRIDGE_SYSTEM_PROMPT).toContain('用户明确要求');
   });
 
-  it('points self-identification at the bridge_context botOpenId field', () => {
-    expect(BRIDGE_SYSTEM_PROMPT).toContain('botOpenId');
+  it('points self-identification at the identity line and the mentions list', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('你的 open_id 是');
+    expect(BRIDGE_SYSTEM_PROMPT).not.toContain('botOpenId');
   });
 
   it('documents the senderType and mentions context fields', () => {
@@ -33,13 +34,20 @@ describe('bridge system prompt bot collaboration rules', () => {
   });
 
   it('matches the JSON field and section names emitted by the prompt builder', () => {
-    expect(BRIDGE_SYSTEM_PROMPT).toContain('bridge_context.chatId');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('bridge_context');
     expect(BRIDGE_SYSTEM_PROMPT).toContain('<topic_context>');
     expect(BRIDGE_SYSTEM_PROMPT).toContain('<quoted_messages>');
     expect(BRIDGE_SYSTEM_PROMPT).toContain('<interactive_cards>');
     expect(BRIDGE_SYSTEM_PROMPT).not.toContain('bridge_context.chat_id');
+    expect(BRIDGE_SYSTEM_PROMPT).not.toContain('bridge_context.chatId');
     expect(BRIDGE_SYSTEM_PROMPT).not.toContain('<quoted_message>');
     expect(BRIDGE_SYSTEM_PROMPT).not.toContain('<interactive_card>');
+  });
+
+  it('sends the agent to the environment for conversation ids', () => {
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('$LARK_CHANNEL_CHAT_ID');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('$LARK_CHANNEL_CHAT_TYPE');
+    expect(BRIDGE_SYSTEM_PROMPT).toContain('$LARK_CHANNEL_THREAD_ID');
   });
 
   it('tells the agent not to mimic the batch sender annotation format', () => {

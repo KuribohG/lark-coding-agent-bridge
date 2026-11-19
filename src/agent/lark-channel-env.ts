@@ -8,12 +8,25 @@ export const LARK_CHANNEL_ENV_KEYS = [
   'LARKSUITE_CLI_CONFIG_DIR',
 ] as const;
 
+/** Per-turn chat bindings: which conversation the agent may act on, when it must act on it. */
+export const LARK_CHANNEL_CHAT_ENV_KEYS = [
+  'LARK_CHANNEL_CHAT_ID',
+  'LARK_CHANNEL_CHAT_TYPE',
+  'LARK_CHANNEL_THREAD_ID',
+] as const;
+
 export interface LarkChannelEnvContext {
   profile?: string;
   rootDir?: string;
   configPath?: string;
   larkCliConfigDir?: string;
   larkCliSourceConfigFile?: string;
+}
+
+export interface LarkChatEnvContext {
+  chatId?: string;
+  chatType?: string;
+  threadId?: string;
 }
 
 export function buildLarkChannelEnv(context?: LarkChannelEnvContext): NodeJS.ProcessEnv {
@@ -39,6 +52,22 @@ export function buildLarkChannelEnv(context?: LarkChannelEnvContext): NodeJS.Pro
   const larkCliConfigDir = nonEmpty(context?.larkCliConfigDir);
   if (larkCliConfigDir) env.LARKSUITE_CLI_CONFIG_DIR = larkCliConfigDir;
 
+  return env;
+}
+
+/**
+ * The conversation of this turn. Kept out of the prompt (the agent reads it
+ * only when it has to send something); absent keys mean the turn has no
+ * conversation of that kind, e.g. a run without a thread.
+ */
+export function buildLarkChatEnv(context: LarkChatEnvContext = {}): Record<string, string> {
+  const env: Record<string, string> = {};
+  const chatId = nonEmpty(context.chatId);
+  if (chatId) env.LARK_CHANNEL_CHAT_ID = chatId;
+  const chatType = nonEmpty(context.chatType);
+  if (chatType) env.LARK_CHANNEL_CHAT_TYPE = chatType;
+  const threadId = nonEmpty(context.threadId);
+  if (threadId) env.LARK_CHANNEL_THREAD_ID = threadId;
   return env;
 }
 

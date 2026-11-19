@@ -80,7 +80,7 @@ describe.each(['codex', 'claude'] as const)('in-flight %s IM delivery', agentKin
     expect(h.agent.stops).toHaveLength(0);
     expect(h.agent.supplements).toHaveLength(1);
     expect(h.agent.supplements[0]).toContain('focus on hg02');
-    expect(h.agent.supplements[0]).toContain('supplement');
+    expect(h.agent.supplements[0]).toContain('补充消息');
     expect(h.channel.sent.at(-1)).toMatchObject({ content: { markdown: '已送入当前任务，等待模型处理。' }, options: { replyTo: 'supplement', replyInThread: true } });
     await h.message('/stop');
     expect(h.agent.stops.length).toBeGreaterThan(0);
