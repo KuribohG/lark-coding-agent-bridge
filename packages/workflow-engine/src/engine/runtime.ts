@@ -35,7 +35,8 @@ function workspaceInstructions(workspace: WorkspaceBinding, landingRef: string |
       ? `This is a Git repository of your own: its branches, index, stash and locks are separate from the original checkout and from other members. The original checkout is the remote ${CLONE_REMOTE}; do not push to it. Work only in this clone. `
       : 'Work only in this worktree; do not modify the original checkout or other worktrees. ')
     + (workspace.kind === 'review' ? 'Review the frozen HEAD; leave all tracked and untracked files unchanged.' : 'Commit intended changes before returning. Leave no untracked files or unfinished Git operations.')
-    + (branch ? `\nLanding branch: ${branch} (created by the first landing)${clone ? `, in the original checkout; \`git fetch ${CLONE_REMOTE}\` brings it here as ${CLONE_REMOTE}/${branch}` : ''}. submit_work rebases your commits onto it, has them checked together with other members' waiting work and lands them; a landing moves this ${place} to the branch head, with what others landed.` : '');
+    + (branch ? `\nLanding branch: ${branch} (created by the first landing)${clone ? `, in the original checkout; \`git fetch ${CLONE_REMOTE}\` brings it here as ${CLONE_REMOTE}/${branch}` : ''}. submit_work rebases your commits onto it, has them checked together with other members' waiting work and lands them; a landing moves this ${place} to the branch head, with what others landed. `
+      + 'Submit each item as soon as its own check passes, in small commits: work that waits drifts from the branch and conflicts more.' : '');
 }
 const jsonFormatRetryPrompt = (problem: string) => `上一条最终答复无法作为脚本结果：${problem.slice(0, 1500)}。不要重新执行任务或任何工具操作；只把上一条答复的内容按任务要求的 JSON 结构（如有 JSON Schema 须完全符合）重新输出，最终答复只包含这一个 JSON 值，不加代码块或其它文字。`;
 

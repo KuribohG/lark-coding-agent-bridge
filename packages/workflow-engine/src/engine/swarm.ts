@@ -211,6 +211,14 @@ const TELL = 'A post reaches a member at its next turn. When work in flight must
 /** What a lead can do to the items of a queue it plans once they are in it. */
 const ITEM_CHANGES = 'Items stay yours to change until they are done. update_work({key, ...}) moves one ahead or back (priority), sets it aside and returns it (hold: true, false) or withdraws it (cancel: true; '
   + 'an item a member has claimed must come back from that member first), and retry_work({key}) gives a failed one more attempts. When the direction changes, cancel or hold what no longer serves it instead of leaving it for members to claim.';
+/** Delivery does not wait for a review of each result: finding what is wrong with delivered work is planned work of its own, and only what would spread is checked first. */
+const QUALITY = 'Work is delivered as soon as the check its item names passes; do not make each result wait for a reviewer. Finding what is wrong with delivered work is work you plan like the rest: '
+  + 'items that hunt for bugs in it, read it, and use it the way its users would, for members that did not produce it. What they find comes back as new items for the members that do the work. '
+  + 'Only where a mistake would spread before anyone finds it (a default or a switch that changes, a number or a conclusion that other work will build on, the checks and expected outputs themselves) '
+  + 'have the result checked independently before it is delivered';
+/** One repair of what everyone stands on, instead of one from every member that trips over it. */
+const SHARED_BREAK = 'When something every member depends on breaks (the shared branch, a build, a tool), give the repair to one member and say in topic "announce" who has it, '
+  + 'so that the others wait for it instead of each repairing it';
 
 /**
  * What a member is told once, in its first turn. Its own part comes first: what it is there to do, who plans its
@@ -222,14 +230,18 @@ function rules(swarm: SwarmView, member: MemberView): string {
   const coordinator = coordinates(swarm, member);
   const own = member.queue ? queueLead(swarm, member.queue) : undefined;
   const delegates = swarm.members.filter(item => !item.stopped && item.leads?.length);
+  // Delivery by item only means something where work comes as items.
+  const queued = swarm.members.some(item => !item.stopped && item.queue);
   const part = lead ? [
     '- You are the lead. You turn the task into work for the members, judge what comes back and decide when the swarm is done.',
     `- ${PLAN_ONLY}: every piece of work goes to a member or into a queue.`,
     `- Hand out work as queue items with enqueue_work wherever a queue has members, and by naming members on the board where no queue fits. ${ITEM_RULES}, and retire the members it no longer needs.`,
     '- Queue items come back to you when a member completes them or they fail for good' + (delegates.length ? ', or to the lead of their queue when you did not add them yourself' : '')
       + `: ${HANDED_BACK}. The system also posts to you when a member fails, when a queue runs dry (with the number of items it lacks) and when everyone has gone idle.`,
+    ...(queued ? [`- ${QUALITY}.`] : []),
     `- ${ITEM_CHANGES}`,
     `- ${TELL}.`,
+    `- ${SHARED_BREAK}.`,
     ...(delegates.length ? [`- These members lead parts of the work under you: ${delegates.map(item => `${item.name} (${item.leads!.length > 1 ? 'queues' : 'queue'} ${quoted(item.leads!)})`).join(', ')}. `
       + 'Give each the goal of its part on the board and let it split that into items for its queues; it reports to you. Add an item to such a queue yourself only when its result should come back to you.'] : []),
     '- Idle members and an empty queue do not mean the task is done. The swarm ends only when you call swarm_finish: do so once the goal is met or cannot progress, with the final result, stating which it is and what remains. The turns still running then finish and nobody is woken again.',
@@ -250,7 +262,11 @@ function rules(swarm: SwarmView, member: MemberView): string {
     ...(member.queue ? [
       `- You consume work queue "${member.queue}". Use claim_work to take an item, read item.progress before acting, save checkpoint_work as you go, then complete_work or fail_work. Continue until claim_work returns null, then end the turn; do not poll or sleep waiting for work.`,
       '- Do what the item asks and check it the way the item says before complete_work. Work that is not finished is not complete: when you cannot finish, fail_work with what blocks you (retry: true only when another attempt could succeed), or save checkpoint_work and go on in your next turn.',
+      '- Deliver as soon as that check passes: nobody reviews each item before it counts, and what others later find wrong with it comes back as new work. Do not hold a finished item back to polish it. '
+        + 'Do not weaken a test, special-case an input or change an expected output to make a check pass: a check you cannot pass honestly is a blocker, so fail_work and say why.',
       '- Stay inside your item. A problem you find outside it is new work: look for it with search_work, and if nobody has reported it add it with enqueue_work, instead of fixing it yourself or leaving it unsaid. '
+        + 'Name the queue of the members that do such work when it is not your own (the members list shows who consumes which), and say which item or commit the problem came from. '
+        + 'That holds most of all for what every member depends on (the shared branch, a build, a tool): when it breaks and your item did not break it, report it once and leave the repair to the member that is given it. '
         + 'An item you added and no longer want done you withdraw with update_work({key, cancel: true}) while nobody has claimed it.',
       '- Do not post a report when you complete an item: the result you give complete_work is the report, and search_work finds it.'
         + (swarm.lead ? ' The system hands it to the lead that planned the item, so say in it what you did, what you found, where you departed from the item and what still worries you.' : '')

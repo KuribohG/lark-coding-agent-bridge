@@ -16,6 +16,8 @@ describe('workflow tool plugins', () => {
     // Workers learn read_artifact from the input references in their prompt.
     for (const name of BUILTIN_WORKFLOW_TOOLS.workerNames().filter(name => name !== 'read_artifact')) expect(member, name).toContain(name);
     expect(workflowWorkerInstructions({ agentId: 'member' } as WorkflowTask)).not.toContain('run_workflow');
+    // A member is told what to do when a landing fails for a reason that is not its own.
+    for (const text of ['不要手工合并', 'targetCommit 自己也失败说明落地分支坏了', '不要去修别人的改动']) expect(member, text).toContain(text);
   });
 
   it('tells the starting turn how to write a script and leaves the less common script functions to the guide', () => {
@@ -26,6 +28,13 @@ describe('workflow tool plugins', () => {
       expect(WORKFLOW_GUIDE, name).toContain(name);
     }
     expect(WORKFLOW_GUIDE.startsWith(WORKFLOW_TOOL_INSTRUCTIONS)).toBe(true);
+    // How a batch is staffed is told at the start; how the landing is configured for it, in the guide.
+    for (const name of ['乐观交付', '质量队列', '不让成员直接改']) expect(WORKFLOW_TOOL_INSTRUCTIONS, name).toContain(name);
+    expect(WORKFLOW_TOOL_INSTRUCTIONS).not.toContain('独立验证者');
+    for (const name of ['乐观落地', '热点文件', '落地后的质量团队', 'git bisect']) {
+      expect(WORKFLOW_TOOL_INSTRUCTIONS, name).not.toContain(name);
+      expect(WORKFLOW_GUIDE, name).toContain(name);
+    }
     // Paid for once per workflow. What running one takes is told at the wakes, so it is not counted here.
     expect(WORKFLOW_TOOL_INSTRUCTIONS).not.toContain('staff_swarm 不重放调整');
     expect(WORKFLOW_TOOL_INSTRUCTIONS.length).toBeLessThan(8200);

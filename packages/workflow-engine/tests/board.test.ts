@@ -374,6 +374,9 @@ describe('swarm', () => {
     expect(h.specs.find(spec => /You are member "lexer"/.test(spec.prompt))).toMatchObject({
       prompt: expect.stringContaining('Same empty-input bug as the parser'), execution: { modelSettings: { model: 'm2' } } });
     expect(h.specs[0]!.prompt).toContain('swarm_finish');
+    // One member repairs what everyone depends on. Delivery by item is not told to a lead whose swarm has no queue.
+    expect(h.specs[0]!.prompt).toContain('give the repair to one member and say in topic "announce" who has it');
+    expect(h.specs[0]!.prompt).not.toContain('wait for a reviewer');
   });
 
   it('lets the main agent add members on another model, which a lead cannot, and lets the lead announce', async () => {
@@ -750,6 +753,13 @@ describe('swarm', () => {
     expect(prompt('lead')).toContain('each queue should hold at least one claimable item for every member that consumes it');
     expect(prompt('w1')).toContain('Stay inside your item');
     expect(prompt('w1')).toContain('you withdraw with update_work({key, cancel: true})');
+    // Work is delivered on its own check and looked at afterwards: the lead plans that looking, and what it finds goes to the queue of those who do the work.
+    expect(prompt('lead')).toContain('do not make each result wait for a reviewer');
+    expect(prompt('lead')).toContain('Only where a mistake would spread before anyone finds it');
+    expect(prompt('w1')).toContain('Deliver as soon as that check passes');
+    expect(prompt('w1')).toContain('Do not weaken a test, special-case an input or change an expected output');
+    expect(prompt('w1')).toContain('Name the queue of the members that do such work when it is not your own');
+    expect(prompt('w1')).toContain('report it once and leave the repair to the member that is given it');
     for (const member of ['lead', 'ql']) expect(prompt(member)).toContain('update_work({key, ...}) moves one ahead or back (priority)');
     expect(prompt('lead')).toContain('at your next turn the system posts the outcomes in topic "handoff", gathered');
     // The rules of a first turn do not last a long run: every later turn of a lead restates its part and shows how its queues stand.

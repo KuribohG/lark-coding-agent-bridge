@@ -556,6 +556,7 @@ describe('claim, fix and land through the runtime', () => {
         await spec.validateBeforeRun();
         const cwd = spec.workspace!.path;
         expect(spec.systemPrompt).toContain('Landing branch: bridge-workflow/');
+        expect(spec.systemPrompt).toContain('Submit each item as soon as its own check passes');
         expect(spec.systemPrompt).toContain(`Managed ${isolation}: ${cwd}`);
         // A clone sees the landing branch through its remote; a worktree shares the checkout's refs.
         const refs = isolation === 'clone' ? `refs/remotes/${CLONE_REMOTE}/bridge-workflow` : 'refs/heads/bridge-workflow';
