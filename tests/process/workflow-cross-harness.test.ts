@@ -15,6 +15,7 @@ import { ProcessPool } from '../../src/runtime/process-pool';
 import { ActiveRuns } from '../../src/runtime/active-runs';
 import type { WorkflowRoot } from '@kuribohg/agent-workflows';
 import type { RunPolicyAllow } from '../../src/policy/run-policy';
+import { isolateRunHosts } from '../helpers/run-hosts';
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -22,6 +23,8 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'workflow-cross-harness-'));
   cleanup.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
+  // Pi workers run under run hosts, and a worker still running when the runtime closes is left there.
+  cleanup.push(isolateRunHosts(join(dir, 'hosts')));
   const binary = join(dir, 'pi.cjs');
   const record = join(dir, 'runs.jsonl');
   await writeFile(binary, `#!${process.execPath}

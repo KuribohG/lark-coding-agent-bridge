@@ -74,9 +74,26 @@ export async function probeRunHost(key: string): Promise<RunHostState> {
   return existsSync(join(dir, 'exit.json')) ? 'exited' : 'missing';
 }
 
+/**
+ * A directory for the files an agent under this host is started with and may read while it runs. It is removed
+ * with the host, so a bridge process that ends a run it did not start leaves none of them behind.
+ */
+export function runHostFilesDir(key: string): string {
+  const dir = filesDir(key);
+  ensurePrivateRoot();
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
+// Not a key, so listings of hosts pass it over.
+function filesDir(key: string): string {
+  return `${hostDir(key)}.files`;
+}
+
 export function removeRunHost(key: string): void {
   try {
     rmSync(hostDir(key), { recursive: true, force: true });
+    rmSync(filesDir(key), { recursive: true, force: true });
   } catch (error) {
     log.warn('run-host', 'remove-failed', { key, err: String(error) });
   }

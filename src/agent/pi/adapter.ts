@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { SpawnFailed } from '../errors';
 import { mergeProcessEnv } from '../../platform/spawn';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
+import { runHostFilesDir, runHostsSupported, type RunHostBinding } from '../run-host';
 import { parseEffort } from '../model-settings';
 import { validateModelId } from '../models';
 import type { ResolvedModelProvider } from '../../model-provider/types';
@@ -117,7 +118,7 @@ export class PiAdapter implements AgentAdapter {
     // A read-only run has no shell tool to bound.
     const shellLimits = sandbox === 'read-only' ? undefined : bashTimeoutInstructions(this.bashTimeouts);
     const systemPrompt = opts.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity);
-    const runFiles = writeSystemPrompt(shellLimits ? `${systemPrompt}\n\n${shellLimits}` : systemPrompt);
+    const runFiles = writeSystemPrompt(shellLimits ? `${systemPrompt}\n\n${shellLimits}` : systemPrompt, opts.host);
     const args = ['--mode', 'json', '--append-system-prompt', runFiles.systemPromptPath];
     if (opts.forkSession) args.push('--fork', opts.sessionId!);
     else if (opts.sessionId) args.push('--session', opts.sessionId);
@@ -169,6 +170,7 @@ export class PiAdapter implements AgentAdapter {
       }),
       stdin: opts.prompt,
       execSandbox: opts.execSandbox,
+      host: opts.host,
       translator: new PiRunTranslator(opts.answerIncludesInterimText === true, this.bashTimeouts),
       strictJson: true,
       deadlineAt: opts.deadlineAt,
@@ -214,13 +216,18 @@ function writePiProviderExtension(
   return file;
 }
 
-function writeSystemPrompt(systemPrompt: string): {
+/**
+ * A run under a run host can outlive this process. Its file is kept with the host: the bridge process that
+ * continues the run finds the file the agent was started with, and whoever ends the host removes it.
+ */
+function writeSystemPrompt(systemPrompt: string, host?: RunHostBinding): {
   systemPromptPath: string;
   cleanup: () => void;
 } {
-  const dir = mkdtempSync(join(tmpdir(), 'lark-pi-'));
+  const hosted = host && runHostsSupported();
+  const dir = hosted ? runHostFilesDir(host.key) : mkdtempSync(join(tmpdir(), 'lark-pi-'));
   const systemPromptPath = join(dir, 'append-system-prompt.md');
-  writeFileSync(systemPromptPath, systemPrompt, 'utf8');
+  if (!(hosted && host.attach)) writeFileSync(systemPromptPath, systemPrompt, { encoding: 'utf8', mode: 0o600 });
   return {
     systemPromptPath,
     cleanup: () => {

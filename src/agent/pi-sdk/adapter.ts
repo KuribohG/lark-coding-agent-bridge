@@ -7,6 +7,7 @@ import { parseEffort } from '../model-settings';
 import { validateModelId } from '../models';
 import { checkAgentAvailability, AgentPreflightError, type AgentAvailability } from '../preflight';
 import { preparedRun, snapshotRunOptions } from '../prepared-run';
+import { terminateRunHost } from '../run-host';
 import { resolveSystemPrompt, type AgentSystemPrompt } from '../system-prompt';
 import type {
   AgentAdapter,
@@ -544,6 +545,16 @@ export class PiSdkAdapter implements AgentAdapter {
       ...input,
       systemPrompt: input.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity),
     });
+    if (input.host?.attach) {
+      // Only the Pi CLI runs under a run host. The process it left there is not this transport's to continue, and
+      // must not go on working beside the run that takes its place.
+      await terminateRunHost(input.host.key);
+      throw new SpawnFailed(
+        'pi sdk cannot continue a pi cli run',
+        new Error('This run was left running by the Pi CLI transport, which the Pi SDK transport cannot continue; its process was ended'),
+        'agent-prepare-failed',
+      );
+    }
     const opts = this.remote ? await this.withRemoteEndpoint(snapshot) : snapshot;
     if (!opts.cwd) throw new Error('cwd is required for pi sdk preparation');
     if (opts.forkSession && !opts.sessionId) throw new Error('fork requires a parent session');

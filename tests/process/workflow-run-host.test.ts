@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { callWorkflow, type WorkflowRoot } from '@kuribohg/agent-workflows';
 import { ClaudeAdapter } from '../../src/agent/claude/adapter';
+import { PiAdapter } from '../../src/agent/pi/adapter';
 import type { RunPolicyAllow } from '../../src/policy/run-policy';
 import { ActiveRuns } from '../../src/runtime/active-runs';
 import { ProcessPool } from '../../src/runtime/process-pool';
@@ -38,6 +39,25 @@ const timer = setInterval(() => {
   if (!existsSync(dir + '/release')) return;
   clearInterval(timer);
   out({ type: 'result', subtype: 'success', result: 'worker finished after restart', session_id: 'worker-session', user_message_uuids: uuids });
+}, 20);
+`;
+
+// The same worker as a Pi CLI in JSON mode: it takes its prompt from stdin and has nothing more to read.
+const FAKE_PI = `
+import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+if (process.argv.includes('--version')) { console.log('pi 999.0.0'); process.exit(0); }
+const dir = process.env.FAKE_DIR;
+const out = (value, done) => process.stdout.write(JSON.stringify(value) + '\\n', done);
+appendFileSync(dir + '/pids.log', process.pid + '\\n');
+appendFileSync(dir + '/cwd.log', process.cwd() + '\\n');
+writeFileSync(dir + '/env.json', JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([name]) => name.startsWith('AGENT_WORKFLOW_')))));
+process.stdin.resume();
+out({ type: 'session', id: 'worker-session', cwd: process.cwd() });
+const timer = setInterval(() => {
+  if (!existsSync(dir + '/release')) return;
+  clearInterval(timer);
+  out({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: 'worker finished after restart' }] } });
+  out({ type: 'agent_settled', aborted: false }, () => process.exit(0));
 }, 20);
 `;
 
@@ -112,16 +132,16 @@ describe.skipIf(process.platform === 'win32')('workflow workers under run hosts'
     await until(() => expect(readdirSync(process.env.LARK_RUN_HOST_DIR!)).toEqual([]));
   }, 40_000);
 
-  it('keeps a worker running in its managed worktree across a bridge restart, and holds the worktree for it meanwhile', async () => {
+  it.each(['claude', 'pi'] as const)('keeps a %s worker running in its managed worktree across a bridge restart, and holds the worktree for it meanwhile', async kind => {
     const git = async (cwd: string, ...argv: string[]) => (await promisify(execFile)('git', argv, { cwd })).stdout.trim();
     const repo = join(await realpath(tmp.root), 'repo');
     await mkdir(repo);
     await git(repo, 'init', '-b', 'main'); await git(repo, 'config', 'user.name', 'Test'); await git(repo, 'config', 'user.email', 'test@localhost');
     await writeFile(join(repo, 'README'), 'base\n'); await git(repo, 'add', '.'); await git(repo, 'commit', '-m', 'base');
-    const binary = join(tmp.root, 'fake-claude.mjs');
-    await writeFile(binary, `#!${process.execPath}\n${FAKE_CLAUDE}`, { mode: 0o700 });
-    const adapter = new ClaudeAdapter({ binary, env: { FAKE_DIR: tmp.root } });
-    const root: WorkflowRoot = { scopeId: 'topic', profile: 'default', agentKind: 'claude', cwdRealpath: repo,
+    const binary = join(tmp.root, `fake-${kind}.mjs`);
+    await writeFile(binary, `#!${process.execPath}\n${kind === 'pi' ? FAKE_PI : FAKE_CLAUDE}`, { mode: 0o700 });
+    const adapter = kind === 'pi' ? new PiAdapter({ binary, env: { FAKE_DIR: tmp.root } }) : new ClaudeAdapter({ binary, env: { FAKE_DIR: tmp.root } });
+    const root: WorkflowRoot = { scopeId: 'topic', profile: 'default', agentKind: kind, cwdRealpath: repo,
       policyFingerprint: 'policy', catalogBinding: 'root', modelSettings: {} };
     const policy: RunPolicyAllow = { ok: true, prompt: '', requestedCwd: repo, cwdRealpath: repo,
       accessMode: 'full', sandbox: 'danger-full-access', permissionMode: 'bypassPermissions',
@@ -132,7 +152,7 @@ describe.skipIf(process.platform === 'win32')('workflow workers under run hosts'
       executor: new RunExecutor({ resolveAgent: () => adapter, pool: new ProcessPool(() => 4), activeRuns: new ActiveRuns() }),
       resolve: async () => ({ root, policy }),
       resolveWorker: async (current, selection) => ({ policy, execution: { agentKind: selection.agentKind, profile: current.profile,
-        configurationFingerprint: 'claude', policyFingerprint: 'policy', modelSettings: {} } }),
+        configurationFingerprint: kind, policyFingerprint: 'policy', modelSettings: {} } }),
     });
     let runtime = create();
     await runtime.start();
@@ -158,7 +178,8 @@ describe.skipIf(process.platform === 'win32')('workflow workers under run hosts'
     await until(() => expect(state().tasks[0]?.status).toBe('running'));
     const worktree = (await lines('cwd.log'))[0]!;
     expect(worktree.startsWith(join(repo, '..', 'worktrees'))).toBe(true);
-    const hosts = readdirSync(process.env.LARK_RUN_HOST_DIR!);
+    // Beside the host of a Pi run lies the directory of the files it was started with.
+    const hosts = readdirSync(process.env.LARK_RUN_HOST_DIR!).filter(name => !name.includes('.'));
     expect(hosts).toHaveLength(1);
     await until(() => expect(holder()).toMatchObject({ hostKey: hosts[0] }));
     const workerEnv = JSON.parse(await readFile(join(tmp.root, 'env.json'), 'utf8')) as Record<string, string>;

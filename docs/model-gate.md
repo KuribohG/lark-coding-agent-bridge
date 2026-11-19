@@ -105,6 +105,10 @@ the gate reclaims it.
   line is written to stderr. The provider's own rate limit stays the backstop.
   Set `fail_open = false` only if the limit is a hard requirement and you accept
   that an unreachable gate stalls runs.
+- The bridge restarts while Pi runs go on under their run hosts: until the next
+  bridge has started the gate, those runs reach none and their requests proceed
+  as above. From then on they ask the new gate, which listens on the same socket
+  and starts with full buckets.
 
 ## Observability
 

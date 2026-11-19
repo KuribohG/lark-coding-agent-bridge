@@ -3,8 +3,8 @@ import { log } from '../core/logger';
 import { terminateChild } from '../platform/terminate';
 import type { ExecSandboxSettings } from '../platform/exec-sandbox';
 import type { SpawnedProcessByStdio } from '../platform/spawn';
-import { spawnWithDeadline } from './deadline';
 import { readJsonLines } from './jsonl';
+import { hostedProcessOf, spawnAgentProcess, type RunHostBinding } from './run-host';
 import type { AgentEvent, NativeAgentRun } from './types';
 
 export interface ProcessStreamFinish {
@@ -35,6 +35,11 @@ export function startProcessRun(input: {
   deadlineAt?: number;
   /** Landlock allowlist for this run; the whole process tree inherits it. */
   execSandbox?: ExecSandboxSettings;
+  /**
+   * Run under a detached run host, or attach to the process already running under it. Only for an agent that takes
+   * its whole input at the start: a reattached run replays the output and has nothing left to send.
+   */
+  host?: RunHostBinding;
   stopGraceMs: number;
   stopSignal?: NodeJS.Signals;
   strictJson?: boolean;
@@ -43,13 +48,16 @@ export function startProcessRun(input: {
   type Child = SpawnedProcessByStdio<Writable, Readable, Readable>;
   let child: Child;
   try {
-    child = spawnWithDeadline(input.command, input.args, {
+    child = spawnAgentProcess(input.command, input.args, {
       cwd: input.cwd, env: input.env, stdio: ['pipe', 'pipe', 'pipe'],
-    }, input.deadlineAt, { settings: input.execSandbox, agent: input.agent }) as Child;
+    }, { agent: input.agent, deadlineAt: input.deadlineAt, host: input.host, execSandbox: input.execSandbox }) as Child;
   } catch (error) {
     input.cleanup?.();
     throw error;
   }
+  const hosted = hostedProcessOf(child);
+  // The process an earlier bridge started has its input already.
+  const attached = Boolean(hosted && input.host?.attach);
   let runtimeError: Error | undefined;
   let interrupted = false;
   let stderr = '';
@@ -60,7 +68,8 @@ export function startProcessRun(input: {
   const exited = new Promise<void>(resolve => { resolveExit = resolve; });
   let cleaned = false;
   const cleanup = () => {
-    if (cleaned) return;
+    // A detached agent is still running and may read its files again.
+    if (cleaned || hosted?.detached) return;
     cleaned = true;
     input.cleanup?.();
   };
@@ -95,8 +104,9 @@ export function startProcessRun(input: {
   child.stdin.on('error', error => {
     if ((error as NodeJS.ErrnoException).code !== 'EPIPE') runtimeError = error;
   });
-  child.stdin.end(input.stdin, 'utf8');
-  log.info('agent', 'spawn', { agent: input.agent, pid: child.pid, cwd: input.cwd });
+  if (!attached) child.stdin.end(input.stdin, 'utf8');
+  log.info('agent', attached ? 'attach' : 'spawn', { agent: input.agent, pid: child.pid, cwd: input.cwd,
+    ...(hosted ? { runHost: hosted.key } : {}) });
 
   const finishState = (): ProcessStreamFinish => ({
     exitCode: child.exitCode,
@@ -137,12 +147,15 @@ export function startProcessRun(input: {
   }
   return {
     runId: input.runId,
+    ...(hosted ? { detachOnShutdown: true } : {}),
     events: events(),
-    stop() {
+    stop(reason) {
       interrupted = true;
       if (stop) return stop;
       stop = (async () => {
         if (closed) return;
+        // The agent keeps running under its host for the next bridge process to reattach.
+        if (hosted && reason === 'shutdown') { await hosted.detach(); return; }
         terminateChild(child, input.stopSignal ?? 'SIGTERM');
         const exitedInTime = await waitForExit(input.stopGraceMs);
         if (!exitedInTime) terminateChild(child, 'SIGKILL');

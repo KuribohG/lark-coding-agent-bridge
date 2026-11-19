@@ -1,8 +1,12 @@
+import { existsSync, readFileSync } from 'node:fs';
 import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { PiAdapter } from '../../src/agent/pi/adapter';
+import { PiSdkAdapter } from '../../src/agent/pi-sdk/adapter';
+import { newRunHostKey, probeRunHost, readRunHostInput } from '../../src/agent/run-host';
+import { isolateRunHosts } from '../helpers/run-hosts';
 import { buildBridgeSystemPrompt } from '../../src/channels/lark/system-prompt';
 import type { AgentEvent } from '../../src/agent/types';
 import { ModelProviderRegistry } from '../../src/model-provider/provider';
@@ -331,6 +335,171 @@ describe('PiAdapter shell time limits', () => {
     expect(readOnly.argv).not.toContain('--extension');
     expect(readOnly.systemPrompt).toBe('base prompt');
   });
+});
+
+describe.skipIf(process.platform === 'win32')('PiAdapter under a run host', () => {
+  let dir: string;
+  let restoreHosts: () => Promise<void>;
+
+  beforeEach(async () => {
+    dir = await realpath(await mkdtemp(join(tmpdir(), 'pi-hosted-')));
+    dirs.push(dir);
+    restoreHosts = isolateRunHosts(join(dir, 'hosts'));
+  });
+  afterEach(() => restoreHosts());
+
+  /** A Pi that reports its session, says it is working, and answers only once the test lets it. */
+  async function hostedPi(): Promise<{ adapter: PiAdapter; binary: string; record(): Promise<{ stdin: string; promptPath: string; systemPrompt: string }>; pids(): Promise<number[]> }> {
+    const binary = join(dir, 'pi');
+    await writeFile(binary, [
+      '#!/usr/bin/env node',
+      'import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";',
+      'const argv = process.argv.slice(2);',
+      'if (argv.includes("--version")) { console.log("pi 999.0.0"); process.exit(0); }',
+      `const dir = ${JSON.stringify(dir)};`,
+      'const out = (value, done) => process.stdout.write(JSON.stringify(value) + "\\n", done);',
+      'const promptPath = argv[argv.indexOf("--append-system-prompt") + 1];',
+      'appendFileSync(dir + "/pids.log", process.pid + "\\n");',
+      'let stdin = "";',
+      'process.stdin.on("data", chunk => { stdin += chunk; });',
+      'process.stdin.on("end", () => {',
+      '  writeFileSync(dir + "/record.json", JSON.stringify({ stdin, promptPath, systemPrompt: readFileSync(promptPath, "utf8") }));',
+      '  out({ type: "session", id: "sess-hosted", cwd: "/repo" });',
+      '  out({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "working" } });',
+      '  const timer = setInterval(() => {',
+      '    if (!existsSync(dir + "/release")) return;',
+      '    clearInterval(timer);',
+      '    out({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "finished after restart" }], stopReason: "stop",',
+      '      usage: { input: 2, output: 1, cacheRead: 0, cost: { total: 0 } } } });',
+      '    out({ type: "agent_settled", aborted: false }, () => process.exit(0));',
+      '  }, 20);',
+      '});',
+    ].join('\n'), 'utf8');
+    await chmod(binary, 0o755);
+    return {
+      adapter: new PiAdapter({ binary, systemPrompt: 'HOSTED SYSTEM PROMPT', stopGraceMs: 1000 }), binary,
+      record: async () => JSON.parse(await readFile(join(dir, 'record.json'), 'utf8')) as { stdin: string; promptPath: string; systemPrompt: string },
+      pids: async () => (await readFile(join(dir, 'pids.log'), 'utf8')).trim().split('\n').map(Number),
+    };
+  }
+
+  async function next(iterator: AsyncIterator<AgentEvent>, type: AgentEvent['type']): Promise<AgentEvent> {
+    for (;;) {
+      const result = await iterator.next();
+      if (result.done) throw new Error(`stream ended before ${type}`);
+      if (result.value.type === type) return result.value;
+    }
+  }
+
+  async function until(predicate: () => boolean | Promise<boolean>, timeoutMs = 5000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (!await predicate()) {
+      if (Date.now() > deadline) throw new Error('condition not reached');
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  }
+
+  function alive(pid: number): boolean {
+    try { process.kill(pid, 0); } catch { return false; }
+    // An orphan the container's init has not reaped yet is already dead.
+    try { return readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1]?.[0] !== 'Z'; } catch { return true; }
+  }
+
+  it('keeps a run alive across a shutdown and replays it to the next bridge process', async () => {
+    const pi = await hostedPi();
+    const key = newRunHostKey();
+    const options = { runId: 'pi-hosted', prompt: 'hosted prompt', cwd: dir };
+    const first = (await pi.adapter.prepareRun({ ...options, host: { key } })).start();
+    expect(first.detachOnShutdown).toBe(true);
+    const stream = first.events[Symbol.asyncIterator]();
+    // The session is reported at once; what the agent says is held back until its message is complete.
+    expect(await next(stream, 'system')).toMatchObject({ sessionId: 'sess-hosted' });
+    const record = await pi.record();
+    expect(record.stdin).toBe('hosted prompt');
+    expect(record.systemPrompt).toContain('HOSTED SYSTEM PROMPT');
+
+    await first.stop('shutdown');
+    while (!(await stream.next()).done) { /* the stream of this bridge process ends */ }
+    // The agent runs on, with the file it was started with.
+    const [pid] = await pi.pids();
+    expect(alive(pid!)).toBe(true);
+    expect(await probeRunHost(key)).toBe('running');
+    expect(existsSync(record.promptPath)).toBe(true);
+
+    const second = (await pi.adapter.prepareRun({ ...options, host: { key, attach: true } })).start();
+    const replayed = collect(second.events);
+    await writeFile(join(dir, 'release'), '');
+    expect(await replayed).toEqual([
+      { type: 'system', sessionId: 'sess-hosted', cwd: '/repo' },
+      { type: 'text', delta: 'working' },
+      { type: 'usage', inputTokens: 2, outputTokens: 1, cachedInputTokens: 0, costUsd: 0 },
+      { type: 'final_text', content: 'finished after restart' },
+      { type: 'done', sessionId: 'sess-hosted', terminationReason: 'normal' },
+    ]);
+    expect(await second.waitForExit(3000)).toBe(true);
+    // One process did all of it, and was given its prompt once.
+    expect(await pi.pids()).toEqual([pid]);
+    expect(readRunHostInput(key)).toEqual(['hosted prompt']);
+    expect(existsSync(record.promptPath)).toBe(false);
+  }, 20_000);
+
+  it('delivers a run that finished while no bridge was attached', async () => {
+    const pi = await hostedPi();
+    const key = newRunHostKey();
+    const options = { runId: 'pi-hosted', prompt: 'hosted prompt', cwd: dir };
+    const first = (await pi.adapter.prepareRun({ ...options, host: { key } })).start();
+    const stream = first.events[Symbol.asyncIterator]();
+    await next(stream, 'system');
+    await first.stop('shutdown');
+    while (!(await stream.next()).done) { /* drained */ }
+    await writeFile(join(dir, 'release'), '');
+    await until(async () => await probeRunHost(key) === 'exited');
+
+    const second = (await pi.adapter.prepareRun({ ...options, host: { key, attach: true } })).start();
+    const events = await collect(second.events);
+    expect(events.at(-2)).toEqual({ type: 'final_text', content: 'finished after restart' });
+    expect(events.at(-1)).toMatchObject({ type: 'done', terminationReason: 'normal' });
+  }, 20_000);
+
+  it('ends the agent and removes its file when the run is stopped for any other reason', async () => {
+    const pi = await hostedPi();
+    const key = newRunHostKey();
+    const run = (await pi.adapter.prepareRun({ runId: 'pi-hosted', prompt: 'hosted prompt', cwd: dir, host: { key } })).start();
+    const stream = run.events[Symbol.asyncIterator]();
+    await next(stream, 'system');
+    const record = await pi.record();
+    const [pid] = await pi.pids();
+    await run.stop('cancelled');
+    while (!(await stream.next()).done) { /* drained */ }
+    expect(await run.waitForExit(3000)).toBe(true);
+    await until(() => !alive(pid!));
+    expect(existsSync(record.promptPath)).toBe(false);
+  }, 20_000);
+
+  it('is not continued by the SDK transport, which ends it instead of running beside it', async () => {
+    const pi = await hostedPi();
+    const key = newRunHostKey();
+    const options = { runId: 'pi-hosted', prompt: 'hosted prompt', cwd: dir };
+    const first = (await pi.adapter.prepareRun({ ...options, host: { key } })).start();
+    const stream = first.events[Symbol.asyncIterator]();
+    await next(stream, 'system');
+    await first.stop('shutdown');
+    while (!(await stream.next()).done) { /* drained */ }
+    const [pid] = await pi.pids();
+    expect(alive(pid!)).toBe(true);
+    const { promptPath } = await pi.record();
+    expect(existsSync(promptPath)).toBe(true);
+
+    const sdk = new PiSdkAdapter({ config: { binaryPath: pi.binary, transport: 'sdk', sdkPath: pi.binary, nodePath: process.execPath,
+      hostScript: pi.binary, agentDir: join(dir, 'agent') } });
+    await expect(sdk.prepareRun({ ...options, host: { key, attach: true } })).rejects.toThrow('cannot continue a pi cli run');
+    await until(() => !alive(pid!));
+    expect(await probeRunHost(key)).toBe('missing');
+    expect(existsSync(join(dir, 'hosts', key))).toBe(false);
+    // Whoever ends the host removes the file the agent was started with.
+    expect(existsSync(promptPath)).toBe(false);
+    await sdk.shutdown(0);
+  }, 20_000);
 });
 
 async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]> {
