@@ -730,6 +730,8 @@ export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, 
       const member = swarm.members.find(item => item.name === name);
       if (!member) throw new Error('Unknown swarm member: ' + name);
       if (member.stopped !== 'failed') throw new Error(`Member ${name} has not failed`);
+      // Cleaning a member gives up its worktree for good; a replacement starts from the workflow's checkout.
+      if (member.cleaned) throw new Error(`Member ${name}'s worktree was cleaned; add a replacement instead`);
       const task = taskById(state, member.taskId);
       if (task && BUSY.has(task.status)) throw new Error(`Member ${name} is still stopping; try again shortly`);
       // Its last turn runs again in the same native session, as it would after a replay.
