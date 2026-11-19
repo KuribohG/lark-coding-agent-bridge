@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  boundShellTool,
   mergeSpawnEnv,
   resolveProviderValue,
   runEnvSnapshot,
@@ -49,5 +50,42 @@ describe('pi host protocol', () => {
     expect(resolveProviderValue('sk-literal-value', {}, {})).toBe('sk-literal-value');
     expect(resolveProviderValue('Bearer $KEY', { KEY: 'run-key' }, {})).toBe('Bearer $KEY');
     expect(resolveProviderValue(undefined, {}, {})).toBeUndefined();
+  });
+});
+
+describe('pi host shell time limits', () => {
+  const limits = { defaultSeconds: 600, maxSeconds: 14_400, defaultHint: 'default hint', cappedHint: 'capped hint' };
+  /** A shell tool that records the parameters it ran with and stops the way Pi's does at its timeout. */
+  const tool = (stop = false) => {
+    const seen: Array<{ command: string; timeout?: number }> = [];
+    return { seen, definition: { name: 'bash', async execute(_id: string, params: { command: string; timeout?: number }) {
+      seen.push(params);
+      if (stop) throw new Error(`partial\n\nCommand timed out after ${params.timeout} seconds`);
+      return 'ok';
+    } } };
+  };
+
+  it('returns the definition untouched when the session has no limits', () => {
+    const { definition } = tool();
+    expect(boundShellTool(definition, undefined)).toBe(definition);
+    expect(boundShellTool(definition, { defaultSeconds: 0, maxSeconds: 0 })).toBe(definition);
+  });
+
+  it('fills in the default, caps an excessive timeout and passes a chosen one through', async () => {
+    const { seen, definition } = tool();
+    const bound = boundShellTool(definition, limits);
+    expect(bound.name).toBe('bash');
+    await bound.execute('a', { command: 'ls' });
+    await bound.execute('b', { command: 'make', timeout: 3600 });
+    await bound.execute('c', { command: 'sleep 1d', timeout: 86_400 });
+    expect(seen.map(params => params.timeout)).toEqual([600, 3600, 14_400]);
+  });
+
+  it('explains a stop by a limit the model did not choose and leaves other failures as they are', async () => {
+    const bound = boundShellTool(tool(true).definition, limits);
+    await expect(bound.execute('a', { command: 'find /' })).rejects.toThrow(/Command timed out after 600 seconds\n\ndefault hint$/);
+    await expect(bound.execute('b', { command: 'sleep 1d', timeout: 86_400 })).rejects.toThrow(/capped hint$/);
+    const own = bound.execute('c', { command: 'make', timeout: 60 });
+    await expect(own).rejects.toThrow(/Command timed out after 60 seconds$/);
   });
 });

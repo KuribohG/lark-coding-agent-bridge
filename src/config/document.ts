@@ -134,7 +134,7 @@ function checkLaunch(value: unknown, agent: string, path: string): void {
       continue;
     }
     const kind = ['inheritCodexHome', 'ignoreUserConfig', 'ignoreRules'].includes(k) ? 'boolean'
-      : ['mode', 'owner', 'idleTtlMs', 'maxSessions'].includes(k) ? 'number'
+      : ['mode', 'owner', 'idleTtlMs', 'maxSessions', 'bashDefaultTimeoutSeconds', 'bashMaxTimeoutSeconds'].includes(k) ? 'number'
       : 'string';
     if (typeof v !== kind) throw new Error(`${path}.${k}: expected ${kind}`);
     if (k === 'transport' && agent === 'codex' && v !== 'app-server') throw new Error(`${path}.transport: Codex exec transport has been removed; use app-server`);

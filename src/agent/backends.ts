@@ -9,6 +9,7 @@ import { codexExecutionCapabilities } from './codex/capabilities';
 import { DshAdapter } from './dsh/adapter';
 import { DSH_EXECUTION_CAPABILITIES } from './dsh/capabilities';
 import { PiAdapter } from './pi/adapter';
+import { piBashTimeouts } from './pi/bash-timeout';
 import { PI_EXECUTION_CAPABILITIES } from './pi/capabilities';
 import { PiSdkAdapter } from './pi-sdk/adapter';
 import { piSdkSandbox } from './pi-sdk/sandbox';
@@ -122,6 +123,7 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
         profileStateDir: profileDir,
         env: buildAgentEnvironment(env, pi.env),
         systemPrompt,
+        bashTimeouts: piBashTimeouts(pi),
       });
     },
   },

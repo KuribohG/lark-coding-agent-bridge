@@ -246,6 +246,8 @@ nodePath = "/opt/node/bin/node"
 idleTtlMs = 60000
 maxSessions = 32
 sessionPersistence = "memory"
+bashDefaultTimeoutSeconds = 300
+bashMaxTimeoutSeconds = 7200
 `;
     const expected = {
       binaryPath: '/opt/pi',
@@ -256,6 +258,8 @@ sessionPersistence = "memory"
       idleTtlMs: 60000,
       maxSessions: 32,
       sessionPersistence: 'memory',
+      bashDefaultTimeoutSeconds: 300,
+      bashMaxTimeoutSeconds: 7200,
     };
     const root = documentToRoot(parseDocument(text));
     expect(root.profiles.bot!.pi).toMatchObject(expected);
@@ -266,6 +270,7 @@ sessionPersistence = "memory"
     '[agents.pi.launch]\ntransport = "exec"',
     '[agents.pi.launch]\nsessionPersistence = "disk"',
     '[agents.pi.launch]\nidleTtlMs = "60000"',
+    '[agents.pi.launch]\nbashDefaultTimeoutSeconds = "600"',
   ])('rejects invalid pi SDK launch settings: %s', fragment => {
     expect(() => parseDocument(source + '\n' + fragment)).toThrow();
   });

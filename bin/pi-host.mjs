@@ -39,7 +39,7 @@ import { createServer } from 'node:net';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { mergeSpawnEnv, resolveProviderValue, runEnvSnapshot } from './pi-host-protocol.mjs';
+import { boundShellTool, mergeSpawnEnv, resolveProviderValue, runEnvSnapshot } from './pi-host-protocol.mjs';
 
 const realStdoutWrite = process.stdout.write.bind(process.stdout);
 process.stdout.write = function redirectedWrite(chunk, encoding, callback) {
@@ -193,7 +193,7 @@ class SessionEntry {
  * the bindings of the run that owns the current turn. Sessions run one turn at
  * a time, so the snapshot cannot change under a spawn.
  */
-function createSessionTools(cwd, settings, state) {
+function createSessionTools(cwd, settings, state, shellTimeouts) {
   const spawnHook = (context) => ({
     ...context,
     env: mergeSpawnEnv(context.env ?? process.env, state.env),
@@ -209,7 +209,7 @@ function createSessionTools(cwd, settings, state) {
     ['powershell', pi.createPowerShellToolDefinition],
   ]) {
     try {
-      tools.push(build(cwd, options));
+      tools.push(boundShellTool(build(cwd, options), shellTimeouts));
     } catch (error) {
       log('shell tool unavailable', { tool: name, error: errorText(error) });
     }
@@ -319,7 +319,7 @@ async function openSession(params) {
     resourceLoader: loader,
     ...(Array.isArray(params.tools) && params.tools.length > 0 ? { tools: params.tools } : {}),
     ...(params.noTools === 'all' || params.noTools === 'builtin' ? { noTools: params.noTools } : {}),
-    customTools: createSessionTools(cwd, settings, state),
+    customTools: createSessionTools(cwd, settings, state, params.shellTimeouts),
   });
 
   const entry = new SessionEntry(session, cwd, loader, state);

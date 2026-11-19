@@ -37,3 +37,44 @@ export function resolveProviderValue(reference, providerEnv, hostEnv = process.e
   const fromHost = hostEnv?.[name];
   return typeof fromHost === 'string' && fromHost ? fromHost : reference;
 }
+
+/**
+ * Pi's shell tools wait for ever on a call without `timeout`. The bridge gives
+ * such a call a default and caps an explicit one; src/agent/pi/bash-timeout.ts
+ * has the reasoning, and the CLI transport does the same in an extension. The
+ * numbers and the hints come from the bridge with the session.
+ */
+export function boundShellTool(definition, limits) {
+  const positive = (value) => (typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined);
+  const defaultSeconds = positive(limits?.defaultSeconds);
+  const maxSeconds = positive(limits?.maxSeconds);
+  if (defaultSeconds === undefined && maxSeconds === undefined) return definition;
+  const execute = definition.execute;
+  return {
+    ...definition,
+    async execute(toolCallId, params, ...rest) {
+      const asked = params?.timeout;
+      let bounded = params;
+      let hint;
+      if (asked === undefined || asked === null) {
+        if (defaultSeconds !== undefined) {
+          bounded = { ...params, timeout: defaultSeconds };
+          hint = limits.defaultHint;
+        }
+      } else if (maxSeconds !== undefined && typeof asked === 'number' && asked > maxSeconds) {
+        bounded = { ...params, timeout: maxSeconds };
+        hint = limits.cappedHint;
+      }
+      try {
+        return await execute(toolCallId, bounded, ...rest);
+      } catch (error) {
+        // Tell the model the limit that stopped the call was not its own.
+        if (typeof hint === 'string' && error instanceof Error
+          && error.message.includes(`Command timed out after ${bounded.timeout} seconds`)) {
+          throw new Error(`${error.message}\n\n${hint}`);
+        }
+        throw error;
+      }
+    },
+  };
+}

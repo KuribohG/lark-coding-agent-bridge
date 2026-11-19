@@ -256,8 +256,49 @@ describe('PiAdapter model gate wiring', () => {
     await run.waitForExit(2000);
 
     const record = await readRecord(harness.recordPath);
-    expect(record.argv).not.toContain('--extension');
+    expect(record.argv.some(arg => /pi-gate-extension/.test(arg))).toBe(false);
     expect(record.env.LARK_MODEL_GATE_SOCKET).toBeUndefined();
+  });
+});
+
+describe('PiAdapter shell time limits', () => {
+  async function record(adapter: (binary: string) => PiAdapter, options: Partial<Parameters<PiAdapter['prepareRun']>[0]> = {}) {
+    const harness = await createFakePi([{ type: 'system', id: 'sess-limits', cwd: '/repo' }, { type: 'agent_settled', aborted: false }]);
+    dirs.push(harness.dir);
+    const run = (await adapter(harness.binary).prepareRun({ runId: 'pi-limits', prompt: 'hello', cwd: harness.dir, ...options })).start();
+    for await (const event of run.events) {
+      if (event.type === 'done') break;
+    }
+    await run.waitForExit(2000);
+    return readRecord(harness.recordPath);
+  }
+
+  it('bounds the shell tool by default, for a workflow worker too, and tells the model', async () => {
+    const run = await record(binary => new PiAdapter({ binary }), { deadlineAt: Date.now() + 60_000, systemPrompt: 'base prompt' });
+    // `--no-extensions` keeps discovered extensions out of a worker; the explicit path still loads.
+    expect(run.argv).toContain('--no-extensions');
+    expect(run.argv[run.argv.indexOf('--extension') + 1]).toMatch(/bash-timeout/);
+    expect(run.env.LARK_PI_BASH_DEFAULT_TIMEOUT).toBe('600');
+    expect(run.env.LARK_PI_BASH_MAX_TIMEOUT).toBe('14400');
+    expect(run.systemPrompt.startsWith('base prompt\n\n')).toBe(true);
+    expect(run.systemPrompt).toContain('stopped after 600 seconds');
+  });
+
+  it('uses the limits of the profile', async () => {
+    const run = await record(binary => new PiAdapter({ binary, bashTimeouts: { defaultSeconds: 120 } }));
+    expect(run.env.LARK_PI_BASH_DEFAULT_TIMEOUT).toBe('120');
+    expect(run.env.LARK_PI_BASH_MAX_TIMEOUT).toBeUndefined();
+    expect(run.systemPrompt).toContain('stopped after 120 seconds');
+  });
+
+  it('leaves Pi as it is when both limits are off or the run has no shell', async () => {
+    const off = await record(binary => new PiAdapter({ binary, bashTimeouts: {} }), { systemPrompt: 'base prompt' });
+    expect(off.argv).not.toContain('--extension');
+    expect(off.env.LARK_PI_BASH_DEFAULT_TIMEOUT).toBeUndefined();
+    expect(off.systemPrompt).toBe('base prompt');
+    const readOnly = await record(binary => new PiAdapter({ binary }), { sandbox: 'read-only', systemPrompt: 'base prompt' });
+    expect(readOnly.argv).not.toContain('--extension');
+    expect(readOnly.systemPrompt).toBe('base prompt');
   });
 });
 
@@ -286,7 +327,7 @@ async function createFakePi(
     `  writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({`,
     '    argv, stdin, cwd: process.cwd(),',
     '    systemPrompt: promptIndex >= 0 ? readFileSync(argv[promptIndex + 1], "utf8") : "",',
-    '    env: { PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK, PI_TELEMETRY: process.env.PI_TELEMETRY, LARK_MODEL_GATE_SOCKET: process.env.LARK_MODEL_GATE_SOCKET, LARK_MODEL_GATE_PRIORITY: process.env.LARK_MODEL_GATE_PRIORITY },',
+    '    env: { PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK, PI_TELEMETRY: process.env.PI_TELEMETRY, LARK_MODEL_GATE_SOCKET: process.env.LARK_MODEL_GATE_SOCKET, LARK_MODEL_GATE_PRIORITY: process.env.LARK_MODEL_GATE_PRIORITY, LARK_PI_BASH_DEFAULT_TIMEOUT: process.env.LARK_PI_BASH_DEFAULT_TIMEOUT, LARK_PI_BASH_MAX_TIMEOUT: process.env.LARK_PI_BASH_MAX_TIMEOUT },',
     '    providerEnv: Object.entries(process.env).filter(([key]) => key.startsWith("LARK_MODEL_PROVIDER_")),',
     '  }));',
     `  for (const line of ${JSON.stringify(lines)}) process.stdout.write(JSON.stringify(line) + "\\n");`,
@@ -312,7 +353,8 @@ async function readRecord(path: string): Promise<{
   cwd: string;
   systemPrompt: string;
   env: { PI_CODING_AGENT_DIR?: string; PI_SKIP_VERSION_CHECK?: string; PI_TELEMETRY?: string;
-    LARK_MODEL_GATE_SOCKET?: string; LARK_MODEL_GATE_PRIORITY?: string };
+    LARK_MODEL_GATE_SOCKET?: string; LARK_MODEL_GATE_PRIORITY?: string;
+    LARK_PI_BASH_DEFAULT_TIMEOUT?: string; LARK_PI_BASH_MAX_TIMEOUT?: string };
   providerEnv: Array<[string, string]>;
 }> {
   return JSON.parse(await readFile(path, 'utf8')) as {
@@ -321,7 +363,8 @@ async function readRecord(path: string): Promise<{
     cwd: string;
     systemPrompt: string;
     env: { PI_CODING_AGENT_DIR?: string; PI_SKIP_VERSION_CHECK?: string; PI_TELEMETRY?: string;
-    LARK_MODEL_GATE_SOCKET?: string; LARK_MODEL_GATE_PRIORITY?: string };
+    LARK_MODEL_GATE_SOCKET?: string; LARK_MODEL_GATE_PRIORITY?: string;
+    LARK_PI_BASH_DEFAULT_TIMEOUT?: string; LARK_PI_BASH_MAX_TIMEOUT?: string };
     providerEnv: Array<[string, string]>;
   };
 }

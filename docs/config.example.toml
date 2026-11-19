@@ -78,6 +78,10 @@ binaryPath = "pi"
 # idleTtlMs = 900000
 # maxSessions = 256
 # sessionPersistence = "file"
+# Seconds a shell call without `timeout` may run, and the largest `timeout` a
+# call may ask for (defaults shown; 0 switches a limit off).
+# bashDefaultTimeoutSeconds = 600
+# bashMaxTimeoutSeconds = 14400
 # Run the host on another machine over ssh (same absolute paths there).
 # remote = "user@worker-node"
 # sshOptions = ["-i", "/keys/id_worker"]

@@ -157,6 +157,16 @@ toward `timeoutMs`. Policy refusals, authentication/quota errors and invalid
 requests are not retried. A failed worker rejects `agent()` after recovery is
 exhausted or unavailable.
 
+A worker that goes silent is stopped and its attempt retried, up to three times.
+Silent means no output for the profile's idle timeout (15 minutes by default)
+while no tool call is out. A call that is out explains the silence only for as
+long as the agent lets the call run: where Bridge knows that limit (Pi's shell
+and file tools, see [configuration](configuration.md)), the worker is stopped
+two minutes after the limit has passed without a result; otherwise after seven
+hours of silence. Long commands are therefore safe as long as the worker names
+a timeout that covers them, and a call that never returns no longer holds its
+slot until the workflow ends.
+
 Guest functions:
 
 | API | Behavior |

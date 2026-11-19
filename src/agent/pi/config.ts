@@ -35,6 +35,13 @@ export interface PiConfig extends ExecutableLaunchConfig {
    * bridge machine. The provider is an executable; see workcell.ts.
    */
   workcell?: WorkcellConfig;
+  /**
+   * Seconds a shell call without `timeout` may run before Pi stops it (default
+   * 600); 0 leaves such calls unbounded, as Pi does on its own.
+   */
+  bashDefaultTimeoutSeconds?: number;
+  /** Largest `timeout`, in seconds, a shell call may ask for (default 14400); 0 removes the cap. */
+  bashMaxTimeoutSeconds?: number;
 }
 
 export function normalizePi(input: PiConfig): PiConfig {
@@ -48,6 +55,12 @@ export function normalizePi(input: PiConfig): PiConfig {
     const value = input[key];
     if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
       throw new Error(`pi.${key} must be a positive integer`);
+    }
+  }
+  for (const key of ['bashDefaultTimeoutSeconds', 'bashMaxTimeoutSeconds'] as const) {
+    const value = input[key];
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
+      throw new Error(`pi.${key} must be a non-negative integer`);
     }
   }
   if (input.remote !== undefined) {
@@ -71,5 +84,7 @@ export function normalizePi(input: PiConfig): PiConfig {
     ...(input.remote ? { remote: input.remote.trim() } : {}),
     ...(input.sshOptions && input.sshOptions.length > 0 ? { sshOptions: [...input.sshOptions] } : {}),
     ...(input.workcell ? { workcell: normalizeWorkcell(input.workcell) } : {}),
+    ...(typeof input.bashDefaultTimeoutSeconds === 'number' ? { bashDefaultTimeoutSeconds: input.bashDefaultTimeoutSeconds } : {}),
+    ...(typeof input.bashMaxTimeoutSeconds === 'number' ? { bashMaxTimeoutSeconds: input.bashMaxTimeoutSeconds } : {}),
   };
 }

@@ -24,6 +24,7 @@ import { withExecutionContract } from '../execution';
 import { execSandboxWritePaths } from '../../platform/exec-sandbox';
 import type { PiConfig } from '../pi/config';
 import { PiRunTranslator } from '../pi/jsonl-translator';
+import { bashTimeoutHint, bashTimeoutInstructions, piBashTimeouts } from '../pi/bash-timeout';
 import { piThinkingLevel } from '../pi/thinking';
 import { PI_SDK_EXECUTION_CAPABILITIES } from './capabilities';
 import { AsyncEventQueue } from './event-queue';
@@ -631,7 +632,7 @@ export class PiSdkAdapter implements AgentAdapter {
     state: RunState,
     sandbox: string,
   ): AsyncGenerator<AgentEvent> {
-    const translator = new PiRunTranslator(opts.answerIncludesInterimText === true);
+    const translator = new PiRunTranslator(opts.answerIncludesInterimText === true, piBashTimeouts(this.config));
     let offFrame: (() => void) | undefined;
     let queue: AsyncEventQueue<AgentEvent> | undefined;
     this.activeRuns.add(state.runId);
@@ -795,9 +796,13 @@ export class PiSdkAdapter implements AgentAdapter {
   }
 
   private openParams(opts: AgentRunOptions, sandbox: string): Record<string, unknown> {
-    const systemPrompt = opts.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity);
+    const basePrompt = opts.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity);
     const thinkingLevel = this.thinkingLevel(opts);
     const readOnly = sandbox === 'read-only';
+    // A read-only session has no shell tool to bound.
+    const limits = readOnly ? {} : piBashTimeouts(this.config);
+    const shellLimits = bashTimeoutInstructions(limits);
+    const systemPrompt = shellLimits ? `${basePrompt}\n\n${shellLimits}` : basePrompt;
     return {
       ...(opts.sessionId && !opts.forkSession ? { sessionId: opts.sessionId } : {}),
       ...(opts.forkSession ? { forkFrom: opts.sessionId } : {}),
@@ -810,6 +815,12 @@ export class PiSdkAdapter implements AgentAdapter {
       ...(thinkingLevel ? { thinkingLevel } : {}),
       ...(readOnly ? { tools: [...READ_ONLY_TOOLS] } : {}),
       noExtensions: readOnly || opts.deadlineAt !== undefined,
+      // The host wraps its shell tools with these; the hints are worded here so the two transports read alike.
+      ...(shellLimits ? { shellTimeouts: {
+        ...limits,
+        ...(limits.defaultSeconds === undefined ? {} : { defaultHint: bashTimeoutHint('default', limits.defaultSeconds, limits) }),
+        ...(limits.maxSeconds === undefined ? {} : { cappedHint: bashTimeoutHint('capped', limits.maxSeconds, limits) }),
+      } } : {}),
       ...(this.config.sessionPersistence ? { sessionPersistence: this.config.sessionPersistence } : {}),
     };
   }

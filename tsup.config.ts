@@ -22,9 +22,10 @@ export default defineConfig([
     entry: {
       cli: 'src/cli/index.ts',
       'workflow-cli': 'packages/workflow-engine/src/cli.ts',
-      // Loaded by Pi CLI processes with `--extension`; it must stand alone
+      // Loaded by Pi CLI processes with `--extension`; each must stand alone
       // (node built-ins only) because it runs in Pi's own runtime.
       'pi-model-gate': 'src/model-gate/pi-gate-extension.ts',
+      'pi-bash-timeout': 'src/agent/pi/bash-timeout-extension.ts',
     },
     outDir: 'dist',
     format: ['esm'],

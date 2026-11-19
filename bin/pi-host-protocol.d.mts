@@ -12,3 +12,9 @@ export function resolveProviderValue(
   providerEnv?: Record<string, string | undefined> | undefined,
   hostEnv?: NodeJS.ProcessEnv,
 ): unknown;
+
+/** A shell tool definition whose calls run under the bridge's time limits; the definition itself when there are none. */
+export function boundShellTool<T extends { execute(toolCallId: string, params: any, ...rest: any[]): Promise<unknown> }>(
+  definition: T,
+  limits?: { defaultSeconds?: number; maxSeconds?: number; defaultHint?: string; cappedHint?: string } | null,
+): T;
