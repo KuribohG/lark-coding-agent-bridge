@@ -394,6 +394,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       const found = item(state, event.itemId);
       if (event.priority !== undefined) found.priority = event.priority || undefined;
       if (event.hold !== undefined) found.hold = event.hold || undefined;
+      if (event.assignee !== undefined) found.assignee = event.assignee ?? undefined;
       found.updatedAt = event.at;
       return;
     }
@@ -440,6 +441,9 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       const found = item(state, completed.itemId);
       found.result = event.result; found.status = 'completed'; found.updatedAt = event.at; found.claimId = undefined; found.error = undefined;
       completed.status = 'completed'; completed.endedAt = event.at;
+      // Kept on the item, which outlives its claims: what is later found wrong with the result goes back to this member.
+      const by = state.agents?.find(agent => agent.agentId === completed.agentId)?.key;
+      if (by) found.doneBy = by;
       settled(state, found, completed.agentId, event.at, 'completed');
       return;
     }

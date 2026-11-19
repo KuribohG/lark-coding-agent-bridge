@@ -6,7 +6,7 @@ import { emit, recordsOf } from './kernel-store';
 import { WORK_FLOW_SLOT_MS, WORK_FLOW_SLOTS, WORK_MAX_BYTES, WORK_MAX_CLAIMS, WORK_MAX_ITEMS, WORK_MAX_OPERATIONS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
 import { matchFields, SEARCH_ARCHIVE_ROWS, searchTerms, searchText, storedTerms } from './search';
-import { memberQueue, queueControl, queueName, queueNames } from './work-routing';
+import { consumes, MEMBER_NAME, memberQueue, queueControl, queueName, queueNames } from './work-routing';
 import type { Immutable, TaskView, WorkClaim, WorkflowView, WorkflowWorkItem } from './types';
 
 type ItemView = Immutable<WorkflowWorkItem>;
@@ -131,8 +131,47 @@ export function writeOverlaps(state: WorkflowView, item: ItemView): { writeOverl
   return { writeOverlaps: overlaps.slice(0, WRITE_OVERLAPS_SHOWN), ...(overlaps.length > WRITE_OVERLAPS_SHOWN ? { moreWriteOverlaps: overlaps.length - WRITE_OVERLAPS_SHOWN } : {}) };
 }
 
+/** A member's name as an item carries it. Whether such a member exists is not checked: a script may name one before its swarm starts. */
+function assigneeName(value: unknown): string {
+  const name = scriptText(value, 'assignee', 100);
+  if (!MEMBER_NAME.test(name)) throw new Error('assignee is the name of a member');
+  return name;
+}
+
+/** The member holding the item's active claim. */
+function holder(state: WorkflowView, item: ItemView): string | undefined {
+  const claim = item.status === 'claimed' ? state.workQueue?.claims.find(found => found.id === item.claimId) : undefined;
+  return claim && state.agents?.find(agent => agent.agentId === claim.agentId)?.key;
+}
+
+/**
+ * The member whose work an item's result is: the one that completed it, or the one at work on it now. An item
+ * completed before items recorded this is read from its claim, while the claim is still in the state.
+ */
+function author(state: WorkflowView, item: ItemView): string | undefined {
+  if (item.doneBy || item.status !== 'completed') return item.doneBy ?? holder(state, item);
+  const claim = state.workQueue?.claims.find(found => found.itemId === item.id && found.status === 'completed');
+  return claim && state.agents?.find(agent => agent.agentId === claim.agentId)?.key;
+}
+
+/** The member an item is kept for: its assignee, while that member can still take work from the item's queue. */
+export function keptFor(state: WorkflowView, item: ItemView): string | undefined {
+  return item.assignee && consumes(state, item.assignee, item.queue ?? 'default') ? item.assignee : undefined;
+}
+
+/**
+ * Whom an unfinished item is for, as a caller is shown it. An assignee that cannot take the item (a name nobody has,
+ * a member of another queue, one that has stopped or used its wake-ups) does not keep it from the others, and the
+ * caller that named it is told so instead of waiting for that member.
+ */
+export function assigned(state: WorkflowView, item: ItemView): { assignee?: string; assigneeNote?: string } {
+  if (!item.assignee) return {};
+  return { assignee: item.assignee, ...(item.status === 'pending' && !keptFor(state, item)
+    ? { assigneeNote: `${item.assignee} cannot take it now (it does not consume queue "${item.queue ?? 'default'}", has stopped or has no wake-ups left), so any member of the queue can claim it` } : {}) };
+}
+
 export function enqueueWork(state: WorkflowView, args: Record<string, unknown>, now: number, by?: string): unknown {
-  options(args, ['key', 'title', 'input', 'resources', 'writes', 'maxAttempts', 'queue', 'priority', 'dependsOn']);
+  options(args, ['key', 'title', 'input', 'resources', 'writes', 'maxAttempts', 'queue', 'priority', 'dependsOn', 'origin', 'assignee']);
   const key = scriptText(args.key, 'work key', 160);
   if (key.trim() !== key) throw new Error('Work key must not contain surrounding whitespace');
   const title = scriptText(args.title, 'work title', 500);
@@ -145,25 +184,33 @@ export function enqueueWork(state: WorkflowView, args: Record<string, unknown>, 
   const written = args.writes ?? [];
   if (!Array.isArray(written) || written.length > 16) throw new Error('Work writes must be an array of at most 16 paths');
   const writes = [...new Set(written.map(writePath))].sort();
-  const name = queueName(args.queue);
+  const origin = args.origin === undefined ? undefined : scriptText(args.origin, 'origin key', 160);
+  const source = origin === undefined ? undefined : workItemByKey(state, origin);
+  const named = args.assignee === undefined ? undefined : assigneeName(args.assignee);
+  // Work that follows from an item belongs, unless the caller says otherwise, where that item was done.
+  const name = queueName(args.queue ?? source?.queue);
   const priority = boundedInteger(args.priority, 0, -100, 100);
   const dependencies = args.dependsOn ?? [];
   if (!Array.isArray(dependencies) || dependencies.length > 32) throw new Error('dependsOn must contain at most 32 existing work keys');
   const dependsOn = [...new Set(dependencies.map(value => scriptText(value, 'dependency key', 160)))].sort();
   // Absent when empty, like the others, so that the digest of an item that names none is what it was before items could.
-  const routing = { ...(name !== 'default' ? { queue: name } : {}), ...(priority ? { priority } : {}), ...(dependsOn.length ? { dependsOn } : {}), ...(writes.length ? { writes } : {}) };
-  const digest = workflowDigest({ key, title, input, maxAttempts, resources, ...routing });
+  // The digest holds what the caller named, not the member `origin` resolves to, which a replay may find changed.
+  const routing = { ...(name !== 'default' ? { queue: name } : {}), ...(priority ? { priority } : {}), ...(dependsOn.length ? { dependsOn } : {}), ...(writes.length ? { writes } : {}),
+    ...(origin !== undefined ? { origin } : {}) };
+  const digest = workflowDigest({ key, title, input, maxAttempts, resources, ...routing, ...(named ? { assignee: named } : {}) });
   const items = state.workQueue?.items ?? [];
   const prior = workItemByKey(state, key);
   if (prior) {
     if (prior.digest !== digest) throw new Error('Work key conflict: input is immutable across replay');
     return { itemId: prior.id, key };
   }
+  if (origin !== undefined && !source) throw new Error('origin must be the key of an existing work item');
+  const assignee = named ?? (source && author(state, source));
   if (dependsOn.some(dependency => !workItemByKey(state, dependency))) throw new Error('Dependencies must reference existing work keys; enqueue prerequisites first');
   if (queueControl(state, name)?.closedAt !== undefined) throw new Error('Work queue is closed; new items cannot be enqueued');
   if (items.length >= WORK_MAX_ITEMS) throw new Error('Work item limit reached');
   openQueue(state, name);
-  const item: WorkflowWorkItem = { id: randomUUID(), key, title, ...(by ? { by } : {}), input, digest, maxAttempts, resources, ...routing,
+  const item: WorkflowWorkItem = { id: randomUUID(), key, title, ...(by ? { by } : {}), input, digest, maxAttempts, resources, ...routing, ...(assignee ? { assignee } : {}),
     generation: 0, status: 'pending', progress: { version: 0, state: null }, createdAt: now, updatedAt: now };
   emit(state, { type: 'work_enqueued', item });
   capacity(state, item);
@@ -172,7 +219,8 @@ export function enqueueWork(state: WorkflowView, args: Record<string, unknown>, 
 
 /**
  * A persistent member adds work it found. A key that already exists answers with that item instead of failing, so
- * members that report the same finding do not duplicate it. Members add to queues that exist, by default their own.
+ * members that report the same finding do not duplicate it. Members add to queues that exist: by default the queue of
+ * the item the work follows from (`origin`), else their own.
  */
 export function enqueueFromMember(state: WorkflowView, task: TaskView, args: Record<string, unknown>, now: number): unknown {
   if (!task.agentId) throw new Error('enqueue_work requires a persistent member');
@@ -181,7 +229,8 @@ export function enqueueFromMember(state: WorkflowView, task: TaskView, args: Rec
   const key = scriptText(input.key, 'work key', 160);
   const prior = workItemByKey(state, key);
   if (prior) return { itemId: prior.id, key, existing: true, status: prior.status, title: prior.title.slice(0, 120) };
-  const name = queueName(input.queue ?? memberQueue(state, member));
+  const source = input.origin === undefined ? undefined : workItemByKey(state, scriptText(input.origin, 'origin key', 160));
+  const name = queueName(input.queue ?? (source ? source.queue ?? 'default' : memberQueue(state, member)));
   if (!queueNames(state).includes(name)) throw new Error(`Unknown work queue; members add to existing queues: ${queueNames(state).join(', ')}`);
   return enqueueWork(state, { ...input, queue: name }, now, member);
 }
@@ -199,23 +248,24 @@ export function retryWork(state: WorkflowView, args: Record<string, unknown>, no
 
 /**
  * Changes an item that is not finished, for whoever plans its queue: `priority` moves it in the order items are handed
- * out, `hold` sets it aside (true) or returns it (false), `cancel` withdraws it. Work that has become pointless
- * otherwise stays in the queue until a member claims it and gives it up. A claimed item is not cancelled here: its
- * member is at work on it and is the one to stop.
+ * out, `hold` sets it aside (true) or returns it (false), `assignee` gives it to one member (a name) or back to the
+ * whole queue (null), `cancel` withdraws it. Work that has become pointless otherwise stays in the queue until a
+ * member claims it and gives it up. A claimed item is not cancelled here: its member is at work on it and is the one
+ * to stop.
  */
 export function updateWork(state: WorkflowView, args: Record<string, unknown>, now: number, authority: WorkAuthority = () => 'plans', by = 'main'): unknown {
-  options(args, ['itemId', 'key', 'priority', 'hold', 'cancel', 'reason']);
+  options(args, ['itemId', 'key', 'priority', 'hold', 'assignee', 'cancel', 'reason']);
   const item = itemOf(state, args);
   const may = authority(item);
   if (args.cancel !== undefined && args.cancel !== true) throw new Error('cancel must be true');
   if (args.hold !== undefined && typeof args.hold !== 'boolean') throw new Error('hold must be boolean');
-  const changes = args.priority !== undefined || args.hold !== undefined;
-  if (!changes && !args.cancel) throw new Error('Give priority, hold or cancel');
-  if (changes && args.cancel) throw new Error('cancel withdraws the item; do not combine it with priority or hold');
+  const changes = args.priority !== undefined || args.hold !== undefined || args.assignee !== undefined;
+  if (!changes && !args.cancel) throw new Error('Give priority, hold, assignee or cancel');
+  if (changes && args.cancel) throw new Error('cancel withdraws the item; do not combine it with priority, hold or assignee');
   if (args.reason !== undefined && !args.cancel) throw new Error('reason belongs to cancel');
-  if (!may || may === 'added' && changes) throw new Error(may ? 'A member can only withdraw (cancel) an item it added; its priority and hold are for the lead that plans the queue'
+  if (!may || may === 'added' && changes) throw new Error(may ? 'A member can only withdraw (cancel) an item it added; its priority, hold and assignee are for the lead that plans the queue'
     : 'Only the main agent, the swarm lead, the lead of its queue or, to cancel it, the member that added it can change a work item');
-  const view = (found: ItemView) => ({ itemId: found.id, key: found.key, queue: found.queue ?? 'default', status: found.status, priority: found.priority ?? 0, ...(found.hold ? { hold: true } : {}) });
+  const view = (found: ItemView) => ({ itemId: found.id, key: found.key, queue: found.queue ?? 'default', status: found.status, priority: found.priority ?? 0, ...(found.hold ? { hold: true } : {}), ...assigned(state, found) });
   if (args.cancel) {
     const reason = args.reason === undefined ? undefined : scriptText(args.reason, 'reason', 500).trim() || undefined;
     if (item.status === 'cancelled') return view(item);
@@ -233,7 +283,9 @@ export function updateWork(state: WorkflowView, args: Record<string, unknown>, n
   if (item.status === 'completed' || item.status === 'cancelled') throw new Error(`Work item is already ${item.status}`);
   const priority = args.priority === undefined ? undefined : boundedInteger(args.priority, 0, -100, 100);
   const hold = args.hold as boolean | undefined;
-  const changed = { ...(priority !== undefined && priority !== (item.priority ?? 0) ? { priority } : {}), ...(hold !== undefined && hold !== Boolean(item.hold) ? { hold } : {}) };
+  const assignee = args.assignee === undefined ? undefined : args.assignee === null ? null : assigneeName(args.assignee);
+  const changed = { ...(priority !== undefined && priority !== (item.priority ?? 0) ? { priority } : {}), ...(hold !== undefined && hold !== Boolean(item.hold) ? { hold } : {}),
+    ...(assignee !== undefined && assignee !== (item.assignee ?? null) ? { assignee } : {}) };
   if (Object.keys(changed).length) emit(state, { type: 'work_updated', itemId: item.id, ...changed, at: now });
   return view(item);
 }
@@ -347,6 +399,16 @@ export function availableWork(state: WorkflowView, name?: string): ItemView[] {
 }
 
 /**
+ * What a queue holds for one member, in the order claim_work hands it out: the items that are for this member come
+ * first, whatever their priority, and the ones kept for another member are left out. The rest follow as
+ * `availableWork` orders them.
+ */
+export function workFor(state: WorkflowView, name: string | undefined, member: string | undefined): ItemView[] {
+  const open = availableWork(state, name).filter(item => { const kept = keptFor(state, item); return !kept || kept === member; });
+  return member === undefined ? open : [...open.filter(item => item.assignee === member), ...open.filter(item => item.assignee !== member)];
+}
+
+/**
  * How much work entered and left a queue, or all queues, in each of the last hours, oldest first: the last figure of
  * each list is the hour that ends now. A count of what is pending says how a queue stands; whether its work is being
  * planned and done at the rate it was an hour ago is in these.
@@ -405,7 +467,8 @@ export function workStatus(state: WorkflowView, args: Record<string, unknown> = 
     // Who holds the item, so that a reader need not match the claim's agent ID against the member list.
     const member = item.status === 'claimed' && claim ? members.get(claim.agentId) : undefined;
     return {
-    itemId: item.id, key: item.key, queue: item.queue ?? 'default', priority: item.priority ?? 0, dependsOn: item.dependsOn ?? [], title: item.title.slice(0, 120), ...(item.by ? { by: item.by } : {}), status: item.status,
+    itemId: item.id, key: item.key, queue: item.queue ?? 'default', priority: item.priority ?? 0, dependsOn: item.dependsOn ?? [], title: item.title.slice(0, 120), ...(item.by ? { by: item.by } : {}),
+    ...(item.origin ? { origin: item.origin } : {}), ...(item.assignee ? { assignee: item.assignee } : {}), ...(item.doneBy ? { doneBy: item.doneBy } : {}), status: item.status,
     generation: item.generation, maxAttempts: item.maxAttempts, progressVersion: item.progress.version, ...(item.hold ? { hold: true } : {}),
     claim, ...(member ? { member } : {}),
     error: item.error?.slice(0, 180),
@@ -435,7 +498,7 @@ export function searchWork(state: WorkflowView, args: Record<string, unknown> = 
   hits.sort((a, b) => b.hit.score - a.hit.score || b.item.updatedAt - a.item.updatedAt);
   return { matches: hits.length, hasMore: hits.length > limit || archived.length === SEARCH_ARCHIVE_ROWS,
     items: hits.slice(0, limit).map(({ item, hit }) => ({ itemId: item.id, key: item.key, queue: item.queue ?? 'default', status: item.status, title: item.title.slice(0, 120),
-      ...(item.by ? { by: item.by } : {}), updatedAt: item.updatedAt, in: hit.field, snippet: hit.snippet })) };
+      ...(item.by ? { by: item.by } : {}), ...(item.doneBy ? { doneBy: item.doneBy } : {}), updatedAt: item.updatedAt, in: hit.field, snippet: hit.snippet })) };
 }
 
 function ownedClaim(state: WorkflowView, task: TaskView, attemptId: string, args: Record<string, unknown>, now: number): ClaimView {
@@ -520,7 +583,7 @@ export function mutateWork(state: WorkflowView, task: TaskView, attemptId: strin
     if (held && (itemById(state, held.itemId).queue ?? 'default') !== name) throw new Error('Member already has a claim in another queue');
     let claim: Pick<WorkClaim, 'id' | 'generation'> | undefined = held;
     if (!claim) {
-      const item = availableWork(state, name)[0];
+      const item = workFor(state, name, member)[0];
       if (item) {
         if (claims.length >= WORK_MAX_CLAIMS) throw new Error('Work claim history limit reached');
         const granted: WorkClaim = { id: randomUUID(), itemId: item.id, agentId: task.agentId, taskId: task.taskId, attemptId,

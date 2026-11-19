@@ -46,13 +46,17 @@ export class WorkflowToolRegistry {
   mainNames(): string[] { return [...this.mainTools.keys()]; }
   workerNames(): string[] { return [...this.workerTools.keys()]; }
 
-  /** The main agent's operation list, one signature per tool. */
-  mainOperations(): string {
-    return [...this.mainTools.values()].map(tool => tool.doc).join('；');
+  /**
+   * The main agent's operation list, one signature per tool. The operations in `named` are listed by name alone: the
+   * ones a turn cannot call, or whose parameters the same text explains.
+   */
+  mainOperations(named: readonly string[] = []): string {
+    return [...this.mainTools].map(([name, tool]) => named.includes(name) ? name : tool.doc).join('；');
   }
 
-  memberInstructions(): string[] {
-    return this.plugins.flatMap(plugin => plugin.memberInstructions ? [plugin.memberInstructions] : []);
+  /** What persistent members are told, plugin by plugin; with `plans`, also what only the members that plan work are. */
+  memberInstructions(plans = false): string[] {
+    return this.plugins.flatMap(plugin => [...(plugin.memberInstructions ? [plugin.memberInstructions] : []), ...(plans && plugin.leadInstructions ? [plugin.leadInstructions] : [])]);
   }
 
   nestedInstructions(): string[] {

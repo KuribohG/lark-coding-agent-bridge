@@ -129,17 +129,17 @@ describe('a lead talking to the members it leads', () => {
     expect(told).toMatchObject({ status: 'accepted', member: 'w1', messageId: expect.any(String) });
     const w1 = h.of('w1')[0]!;
     expect(w1.received).toHaveLength(1);
-    expect(w1.received[0]).toMatch(/^\[lead lead 留言 /);
+    expect(w1.received[0]).toMatch(/^\[Message from lead lead /);
     expect(w1.received[0]).toContain('the parser moved to src/v2');
-    expect(w1.received[0]).toContain('swarm 的 lead');
-    expect(w1.received[0]).toContain('post_board 点名 lead');
+    expect(w1.received[0]).toContain('lead, the lead of your swarm, sent this');
+    expect(w1.received[0]).toContain('name lead in a post with post_board');
     // A repeated call answers as the first one did, without speaking twice.
     expect(await h.as('lead', 'tell_worker', { operationId: 'redirect', target: 'w1', text: 'Stop: the parser moved to src/v2. Tell @o1 nothing.' })).toEqual(told);
     await expect(h.as('lead', 'tell_worker', { operationId: 'redirect', target: 'w1', text: 'something else' })).rejects.toThrow('conflict');
     expect(w1.received).toHaveLength(1);
 
     expect(await h.as('ql', 'tell_worker', { target: '@w1', text: 'Q1 also covers the lexer.' })).toMatchObject({ status: 'accepted', member: 'w1' });
-    expect(w1.received[1]).toContain('你所在队列的 lead ql');
+    expect(w1.received[1]).toContain('ql, the lead of your queue, sent this');
     await expect(h.as('ql', 'tell_worker', { target: 'o1', text: 'x' })).rejects.toThrow('does not consume a queue you lead');
     await expect(h.as('ql', 'tell_worker', { target: 'lead', text: 'x' })).rejects.toThrow('does not consume a queue you lead');
     await expect(h.as('w1', 'tell_worker', { target: 'o1', text: 'x' })).rejects.toThrow('for the lead of a running swarm and the leads of its queues');

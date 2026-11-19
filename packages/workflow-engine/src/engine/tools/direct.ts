@@ -48,9 +48,11 @@ function leave(state: WorkflowView, sender: Parameters<typeof postToBoard>[1], m
  */
 export const directTools: WorkflowToolPlugin = {
   id: 'direct',
-  memberInstructions: '主 agent 可能在你工作途中插入留言（以"[主 agent 留言"开头的用户消息）：按留言调整后继续当前任务。reply_main({text}) 把最多 4000 字符的答复交给主 agent 并唤醒它；每条留言最多回复一次，只在被问到或需要主 agent 决定时使用，没有待回复的留言时调用会被拒绝。'
-    + 'lead 也可能这样插入留言（以"[lead "开头）：同样按它调整后继续，需要答复时用 post_board 点名它。tell_worker({operationId,target,text}) 只有 swarm 的 lead 和队列的 lead 能用：'
-    + '把最多 4000 字符的话立即插进所带成员正在跑的会话（返回 accepted）；对方不在轮次中或不能中途收消息时改成点名它的留言板帖（返回 posted），它下一轮读到。',
+  memberInstructions: 'The main agent may put a message into your turn while you work (a user message that begins with "[Message from the main agent"): adjust to it and go on with your task. '
+    + 'reply_main({text}) hands the main agent an answer of at most 4000 characters and wakes it. Each message can be answered once, so use it only when you were asked something or the main agent has to decide; it is refused when no message awaits an answer. '
+    + 'A lead may put a message into your turn in the same way (it begins with "[Message from lead "): adjust to it and go on, and name the lead in a post when it needs an answer.',
+  leadInstructions: 'tell_worker({operationId,target,text}) puts up to 4000 characters into the running turn of a member you lead at once (the answer is accepted). '
+    + 'A member that is not in a turn, or cannot take a message in the middle of one, gets a post that names it instead (posted) and reads it at its next turn.',
   tools: [
     {
       name: 'tell_worker',
@@ -73,9 +75,9 @@ export const directTools: WorkflowToolPlugin = {
               hint: 'No turn of this worker is running, and none will come to read a post: a one-off worker cannot be reached, a stopped member is revived with staff_swarm.' };
           }
           const id = randomUUID();
-          const delivery = !ctx.host.tell ? 'unsupported' : await ctx.host.tell(state.workflowId, task.taskId, `[主 agent 留言 ${id.slice(0, 8)}]\n${text}\n\n`
-            + '（这是工作流主 agent 在你工作途中发来的留言，不是新任务：按它调整后继续当前任务。需要答复时运行 '
-            + 'node "$AGENT_WORKFLOW_CLI" workflow reply_main --input \'{"text":"..."}\' --json，每条留言最多回复一次；回复会唤醒主 agent，无需答复就不要调用。）', id);
+          const delivery = !ctx.host.tell ? 'unsupported' : await ctx.host.tell(state.workflowId, task.taskId, `[Message from the main agent ${id.slice(0, 8)}]\n${text}\n\n`
+            + '(The main agent of the workflow sent this while you work. It is not a new task: adjust to it and go on with the task you have. To answer, run '
+            + 'node "$AGENT_WORKFLOW_CLI" workflow reply_main --input \'{"text":"..."}\' --json. Each message can be answered once and the answer wakes the main agent, so do not call it when no answer is needed.)', id);
           if (delivery === 'accepted' || delivery === 'unknown') {
             change(current => record(current, { id, taskId: task.taskId, from: 'main', text, createdAt: ctx.now(), delivery }));
             return { status: delivery, messageId: id, ...where };
@@ -106,9 +108,9 @@ export const directTools: WorkflowToolPlugin = {
           });
           if ('prior' in start) return start.prior;
           const id = randomUUID();
-          const delivery = !start.taskId || !ctx.host.tell ? 'inactive' : await ctx.host.tell(start.workflowId, start.taskId, `[lead ${start.lead} 留言 ${id.slice(0, 8)}]\n${text}\n\n`
-            + `（这是${start.standing === 'swarm' ? ' swarm 的 lead ' : '你所在队列的 lead '}${start.lead} 在你工作途中发来的留言，不是新任务：按它调整后继续当前任务。`
-            + `需要答复时用 post_board 点名 ${start.lead}，无需答复就不要发帖。）`, id);
+          const delivery = !start.taskId || !ctx.host.tell ? 'inactive' : await ctx.host.tell(start.workflowId, start.taskId, `[Message from lead ${start.lead} ${id.slice(0, 8)}]\n${text}\n\n`
+            + `(${start.lead}, ${start.standing === 'swarm' ? 'the lead of your swarm' : 'the lead of your queue'}, sent this while you work. It is not a new task: adjust to it and go on with the task you have. `
+            + `To answer, name ${start.lead} in a post with post_board; do not post when no answer is needed.)`, id);
           // The lead's turn may have ended while the member's transport answered; what was said is then already said.
           return bound(state => mailboxOperation(state, key, input, () => {
             if (delivery === 'accepted' || delivery === 'unknown') {

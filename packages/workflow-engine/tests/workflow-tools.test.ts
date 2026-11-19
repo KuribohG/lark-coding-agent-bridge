@@ -13,11 +13,24 @@ describe('workflow tool plugins', () => {
 
   it('documents every worker operation in the instructions of the workers that can call it', () => {
     const member = workflowWorkerInstructions({ agentId: 'member', workflowTool: true } as WorkflowTask);
-    // Workers learn read_artifact from the input references in their prompt.
-    for (const name of BUILTIN_WORKFLOW_TOOLS.workerNames().filter(name => name !== 'read_artifact')) expect(member, name).toContain(name);
+    const lead = workflowWorkerInstructions({ agentId: 'member', workflowTool: true } as WorkflowTask, true);
+    // Workers learn read_artifact from the input references in their prompt. What only a member that plans work may
+    // call is told to those members alone, after everything the others are told.
+    const planning = ['staff_swarm', 'swarm_finish', 'tell_worker', 'retry_work', 'set_charter'];
+    for (const name of BUILTIN_WORKFLOW_TOOLS.workerNames().filter(name => name !== 'read_artifact')) {
+      expect(lead, name).toContain(name);
+      if (!planning.includes(name)) expect(member, name).toContain(name);
+      else { expect(lead, name).toContain(name + '('); expect(member, name).not.toContain(name + '('); }
+    }
+    for (const line of member.split('\n')) expect(lead, line.slice(0, 40)).toContain(line);
+    expect(member.length).toBeLessThan(lead.length - 2500);
     expect(workflowWorkerInstructions({ agentId: 'member' } as WorkflowTask)).not.toContain('run_workflow');
     // A member is told what to do when a landing fails for a reason that is not its own.
-    for (const text of ['不要手工合并', 'targetCommit 自己也失败说明落地分支坏了', '不要去修别人的改动']) expect(member, text).toContain(text);
+    for (const text of ['Do not merge by hand a file that a command generates', 'If targetCommit fails by itself the landing branch is broken', 'do not repair the changes of other members']) expect(member, text).toContain(text);
+    // The queue is told in the order a member meets it, and work found in a delivered item goes back to whoever delivered it.
+    const order = ['Taking an item:', 'Doing it:', 'Landing code:', 'When a landing is turned back', 'Adding work:', 'Finding work:', 'Withdrawing work:', 'Repeats and restarts:'].map(text => member.indexOf(text));
+    expect(order.every((at, index) => at > (order[index - 1] ?? -1))).toBe(true);
+    for (const text of ['origin is the key of the item whose delivered result the new item is about', 'put the key of the item in the commit message']) expect(member, text).toContain(text);
   });
 
   it('tells the starting turn how to write a script and leaves the less common script functions to the guide', () => {
@@ -46,8 +59,16 @@ describe('workflow tool plugins', () => {
     for (const name of ['agent(prompt', 'parallel', 'pipeline', 'swarm(task', 'enqueueWork(', 'closeWorkQueue', 'post(text', 'schema']) expect(WORKFLOW_WAKE_INSTRUCTIONS, name).not.toContain(name);
     // A long run wakes the main agent dozens of times, and every wake's instructions stay in its session.
     expect(WORKFLOW_WAKE_INSTRUCTIONS.length).toBeLessThan(4000);
-    // The guide leaves out nothing a wake is told, except the line that points to the guide.
-    for (const line of WORKFLOW_WAKE_INSTRUCTIONS.split('\n').slice(0, -1)) expect(WORKFLOW_GUIDE, line.slice(0, 40)).toContain(line.replace(/^replay_script 后结束 turn，子任务由 bridge 管理。/, ''));
+    // The guide leaves out nothing a wake is told, except the line that points to the guide. It lists the operations
+    // with all their parameters, where a wake names the ones it cannot call or is told about in a line of their own.
+    const lines = WORKFLOW_WAKE_INSTRUCTIONS.split('\n').slice(0, -1);
+    expect(lines.filter(line => line.startsWith('操作：'))).toEqual([expect.stringMatching(/；run_script；.*；staff_swarm；.*；configure_landing。$/)]);
+    for (const line of lines.filter(line => !line.startsWith('操作：'))) expect(WORKFLOW_GUIDE, line.slice(0, 40)).toContain(line.replace(/^replay_script 后结束 turn，子任务由 bridge 管理。/, ''));
+    // Whom a post reaches and what the fields of a work item do is one text, told once to a wake and once in the guide.
+    for (const text of ['发帖（脚本 post 与 post_board 相同）', '工作项字段（脚本 enqueueWork 与 enqueue_work 相同）', 'origin 是该项所针对的已交付工作项的 key']) {
+      expect(WORKFLOW_WAKE_INSTRUCTIONS.split(text), text).toHaveLength(2);
+      expect(WORKFLOW_GUIDE.split(text), text).toHaveLength(2);
+    }
   });
 
   it('rejects ambiguous registrations', () => {

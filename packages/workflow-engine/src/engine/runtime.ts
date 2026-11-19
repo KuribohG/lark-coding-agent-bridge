@@ -38,7 +38,7 @@ function workspaceInstructions(workspace: WorkspaceBinding, landingRef: string |
     + (branch ? `\nLanding branch: ${branch} (created by the first landing)${clone ? `, in the original checkout; \`git fetch ${CLONE_REMOTE}\` brings it here as ${CLONE_REMOTE}/${branch}` : ''}. submit_work rebases your commits onto it, has them checked together with other members' waiting work and lands them; a landing moves this ${place} to the branch head, with what others landed. `
       + 'Submit each item as soon as its own check passes, in small commits: work that waits drifts from the branch and conflicts more.' : '');
 }
-const jsonFormatRetryPrompt = (problem: string) => `上一条最终答复无法作为脚本结果：${problem.slice(0, 1500)}。不要重新执行任务或任何工具操作；只把上一条答复的内容按任务要求的 JSON 结构（如有 JSON Schema 须完全符合）重新输出，最终答复只包含这一个 JSON 值，不加代码块或其它文字。`;
+const jsonFormatRetryPrompt = (problem: string) => `Your last final answer cannot be used as the result of the script: ${problem.slice(0, 1500)}. Do not run the task or any tool again. Give the content of that answer once more in the JSON structure the task asks for (matching its JSON Schema exactly when it has one), as a final answer that holds this one JSON value and nothing else: no code fence and no other text.`;
 
 export interface WorkflowRuntimeDeps extends WorkerExecutionPolicy {
   hostTools?: boolean;
@@ -443,7 +443,7 @@ export class WorkflowRuntime {
             }
           },
           ...(workspace ? { workspace: { id: workspace.id, path: workspace.path, rootDigest: workspace.rootDigest } } : {}),
-          systemPrompt: (this.deps.hostTools ? hostToolInstructions(workflowWorkerInstructions(task)) : workflowWorkerInstructions(task))
+          systemPrompt: (this.deps.hostTools ? hostToolInstructions(workflowWorkerInstructions(task, request.plans)) : workflowWorkerInstructions(task, request.plans))
             + (workspace ? workspaceInstructions(workspace, landing?.targetRef) : '')
             + (scratchPath ? `\nScratch directory: ${scratchPath} (your TMPDIR). It is yours alone and is deleted when your work in this workflow ends: keep temporary files, build outputs and caches there instead of /tmp or other shared locations, and put anything others must read somewhere else.` : ''),
           ...(resume ? { resume } : {}),

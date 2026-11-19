@@ -366,6 +366,42 @@ describe('workflow work queue', () => {
   });
 });
 
+describe('work that is for one member', () => {
+  it('hands a member its own items first and sends what follows from an item to the member that completed it', async () => {
+    const h = harness(); await h.start();
+    await h.work('enqueue', { key: 'first', title: 'First', input: 1 });
+    await h.work('enqueue', { key: 'mine', title: 'For B', input: 2, assignee: 'B', priority: -5 });
+    for (const member of ['A', 'B']) await h.create(member);
+    await h.run(2);
+    const [a, b] = h.requests;
+    // B is handed the item that is for it although another one has the higher priority.
+    const own = (await h.claim(b!))!;
+    expect(own.item).toMatchObject({ key: 'mine', assignee: 'B' });
+    await h.send(b!, 'complete_work', { ...token(own), result: 'built' });
+    expect(h.state().workQueue!.items[1]).toMatchObject({ status: 'completed', doneBy: 'B' });
+    // What is found wrong with it goes, by its origin, to the queue it was in and to the member that completed it.
+    // Outside a swarm nobody wakes that member, so the item is not kept from the others, and the answer says so.
+    const found = await h.send(a!, 'enqueue_work', { key: 'bug', title: 'Mine is wrong', input: { repro: 1 }, origin: 'mine' });
+    expect(found).toMatchObject({ key: 'bug', queue: 'default', assignee: 'B', assigneeNote: expect.stringContaining('any member of the queue can claim it') });
+    expect(h.state().workQueue!.items[2]).toMatchObject({ key: 'bug', by: 'A', origin: 'mine', assignee: 'B' });
+    expect(((await h.claim(b!))!).item.key).toBe('bug');
+    expect(((await h.claim(a!))!).item.key).toBe('first');
+    await expect(h.send(a!, 'enqueue_work', { key: 'x', title: 'X', input: 0, origin: 'nope' })).rejects.toThrow('origin must be the key of an existing work item');
+    await expect(h.call('enqueue_work', { key: 'y', title: 'Y', assignee: 'not a name' })).rejects.toThrow('assignee is the name of a member');
+    // The same call answers with the same item whatever its origin resolves to by then; another origin is another item.
+    const again = await h.call('enqueue_work', { key: 'z', title: 'Z', origin: 'mine' }) as { itemId: string };
+    expect(again).toMatchObject({ key: 'z', queue: 'default', assignee: 'B' });
+    expect(await h.call('enqueue_work', { key: 'z', title: 'Z', origin: 'mine' })).toMatchObject({ itemId: again.itemId });
+    await expect(h.call('enqueue_work', { key: 'z', title: 'Z', origin: 'first' })).rejects.toThrow('conflict');
+    expect(await h.call('update_work', { key: 'z', assignee: 'A' })).toMatchObject({ key: 'z', assignee: 'A' });
+    expect(await h.call('update_work', { key: 'z', assignee: null })).not.toHaveProperty('assignee');
+    const page = await h.call('work_status') as { items: Array<Record<string, unknown>> };
+    expect(page.items.find(item => item.key === 'mine')).toMatchObject({ assignee: 'B', doneBy: 'B' });
+    expect(page.items.find(item => item.key === 'bug')).toMatchObject({ origin: 'mine', assignee: 'B', by: 'A' });
+    expect(await h.call('search_work', { query: 'mine built' })).toMatchObject({ items: [{ key: 'mine', doneBy: 'B' }] });
+  });
+});
+
 describe('the paths work items expect to change', () => {
   it('reports the unfinished items whose paths overlap and that nothing orders, without locking anything', async () => {
     const h = harness(); await h.start();

@@ -99,6 +99,8 @@ function workLines(state: WorkflowState, item: WorkflowWorkItem): string[] {
   return [`- 工作项 ${compact(item.key, 100)}：${item.status}，认领 ${item.generation}/${item.maxAttempts} 次，进展 #${item.progress.version}`,
     `  内容：${compact(item.title, 200)}`,
     ...(item.queue || item.priority || item.dependsOn?.length ? [`  队列：${compact(item.queue ?? 'default', 64)}，优先级 ${item.priority ?? 0}，依赖 ${compact(item.dependsOn?.join('、') || '无', 240)}`] : []),
+    ...(item.origin || item.assignee || item.doneBy ? ['  ' + [...(item.origin ? [`出自：${compact(item.origin, 100)}`] : []), ...(item.assignee ? [`指定给：${compact(item.assignee, 50)}`] : []),
+      ...(item.doneBy ? [`完成者：${compact(item.doneBy, 50)}`] : [])].join('，')] : []),
     ...(claim ? [`  负责成员：${compact(owner ?? claim.agentId, 100)}，认领版本 ${claim.generation}，${claim.heldUntil !== undefined ? `重启后为其保留至 ${time(claim.heldUntil)}` : `租约至 ${time(claim.leaseUntil)}`}`] : []),
     ...(item.progress.updatedAt ? [`  进展保存于：${time(item.progress.updatedAt)}`] : []),
     ...(item.resources.length ? [`  资源归属：${compact(item.resources.join('、'), 240)}`] : []),

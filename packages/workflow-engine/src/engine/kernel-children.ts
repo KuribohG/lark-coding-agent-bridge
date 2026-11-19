@@ -69,7 +69,7 @@ export class ChildWorkflows {
       workflowId:randomUUID(),root,definition,definitionDigest:workflowDigest(definition),
       parent:{workflowId:state.workflowId,taskId:task.taskId,rootWorkflowId:state.parent?.rootWorkflowId ?? state.workflowId,
         depth,key:input.key,digest,operationId,parentQueue:input.parentQueue,checkpoint:input.checkpoint},
-      goal:state.goal+'\n\n子 workflow 目标（必须在原始授权范围内）：\n'+input.goal,
+      goal:state.goal+'\n\nGoal of this child workflow (it must stay within what the original request authorizes):\n'+input.goal,
       stateVersion:0,status:'active',createdAt:now(),deadlineAt:Math.min(state.deadlineAt,now()+input.timeoutMs),
       sessions:[],tasks:[],artifacts:[],events:[],
     });

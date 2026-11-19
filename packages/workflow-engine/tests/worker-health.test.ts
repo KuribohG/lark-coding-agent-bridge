@@ -87,8 +87,8 @@ describe('worker health', () => {
     expect(specs[0]!.resume).toBeUndefined();
     expect(specs[1]!.resume).toEqual({ kind: 'sessionId', id: 'native-1' });
     expect(specs[2]!.resume).toEqual({ kind: 'sessionId', id: 'native-2' });
-    expect(specs[0]!.prompt).not.toContain('再次执行');
-    expect(specs[1]!.prompt).toContain('再次执行');
+    expect(specs[0]!.prompt).not.toContain('another attempt at the same task');
+    expect(specs[1]!.prompt).toContain('another attempt at the same task');
     expect(runtime.kernel.state('chat-resume')!.sessions[0]!.nativeSessionId).toBe('native-2');
   });
 

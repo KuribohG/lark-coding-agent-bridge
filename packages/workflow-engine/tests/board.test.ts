@@ -625,13 +625,13 @@ describe('swarm', () => {
     const { result } = await h.settled();
     expect(result).toMatchObject({ stop: 'finished', result: 'done' });
     const prompt = (turn: string) => h.specs[h.order.indexOf(turn)]!.prompt;
-    expect(prompt('lead1')).not.toContain('现行目标单');
-    expect(prompt('lead2')).toContain('现行目标单（第 1 版，由主 agent设定；自你上一轮以来已更新');
+    expect(prompt('lead1')).not.toContain('Charter in force');
+    expect(prompt('lead2')).toContain('Charter in force (version 1, set by the main agent; it was replaced since your last turn');
     expect(prompt('lead2')).toContain('1.10x is a floor, not the goal.');
     expect(h.results[0]).toMatchObject({ charter: { version: 1, by: 'main', changed: true } });
     // The lead's own revision names no one: it is the only lead, and members read it at their next turn.
     expect(h.results[1]).toMatchObject({ charterVersion: 2, notified: [] });
-    expect(prompt('lead3')).toContain('现行目标单（第 2 版，由 lead lead 设定');
+    expect(prompt('lead3')).toContain('Charter in force (version 2, set by lead lead');
     expect(prompt('lead3')).toContain('Parser first; no reports.');
     expect(state().charter).toMatchObject({ version: 2, by: 'lead', text: 'Parser first; no reports.' });
     expect(prompt('lead1')).toContain('replace it with set_charter instead of adding another announcement');
@@ -741,6 +741,11 @@ describe('swarm', () => {
     expect(toQl).toBe('Outcomes of a work item that came back since your last turn. work_status({key}) has an item in full.\nQueue "q":\n- completed "q1" (w1): Q1\n  Result: done, ask @o1 about the rest');
     expect(h.order.filter(turn => turn.startsWith('o1'))).toEqual(['o11']);
     const prompt = (member: string) => h.specs.find(spec => spec.prompt.includes(`You are member "${member}"`))!.prompt;
+    // What only a member that plans work may call is in the system prompt of the leads, and of nobody else.
+    const system = (member: string) => h.specs.find(spec => spec.prompt.includes(`You are member "${member}"`))!.systemPrompt!;
+    for (const name of ['lead', 'ql']) for (const text of ['staff_swarm({operationId', 'tell_worker({operationId', 'retry_work({operationId']) expect(system(name), name).toContain(text);
+    for (const text of ['staff_swarm({operationId', 'tell_worker({operationId', 'retry_work({operationId']) expect(system('w1')).not.toContain(text);
+    expect(system('w1')).toContain('claim_work({operationId');
     expect(prompt('ql')).toContain('You lead queue "q" under @lead');
     expect(prompt('ql')).toContain('Your wake-ups are not limited');
     expect(prompt('ql')).toContain('you do not do the work');
@@ -758,7 +763,8 @@ describe('swarm', () => {
     expect(prompt('lead')).toContain('Only where a mistake would spread before anyone finds it');
     expect(prompt('w1')).toContain('Deliver as soon as that check passes');
     expect(prompt('w1')).toContain('Do not weaken a test, special-case an input or change an expected output');
-    expect(prompt('w1')).toContain('Name the queue of the members that do such work when it is not your own');
+    expect(prompt('w1')).toContain('give the key of that item as origin');
+    expect(prompt('w1')).toContain('Otherwise name the queue of the members that do such work when it is not your own');
     expect(prompt('w1')).toContain('report it once and leave the repair to the member that is given it');
     for (const member of ['lead', 'ql']) expect(prompt(member)).toContain('update_work({key, ...}) moves one ahead or back (priority)');
     expect(prompt('lead')).toContain('at your next turn the system posts the outcomes in topic "handoff", gathered');
@@ -979,13 +985,69 @@ describe('swarm', () => {
     await expect(op('update_work', { key: 'f', cancel: true })).rejects.toThrow('Work item is claimed by w2');
     await expect(op('update_work', { key: 'x', hold: true })).rejects.toThrow('Work item is already cancelled');
     expect(await op('update_work', { key: 'x', cancel: true })).toMatchObject({ key: 'x', status: 'cancelled' });
-    await expect(op('update_work', { key: 'b' })).rejects.toThrow('Give priority, hold or cancel');
-    await expect(op('update_work', { key: 'b', cancel: true, hold: true })).rejects.toThrow('do not combine it with priority or hold');
+    await expect(op('update_work', { key: 'b' })).rejects.toThrow('Give priority, hold, assignee or cancel');
+    await expect(op('update_work', { key: 'b', cancel: true, hold: true })).rejects.toThrow('do not combine it with priority, hold or assignee');
+    // Whoever plans the queue gives an item to one member or back to all of them. A member that cannot take it (w2
+    // consumes another queue) does not keep it from the others, and the answer says so.
+    expect(await op('update_work', { key: 'b', assignee: 'w2' })).toMatchObject({ key: 'b', assignee: 'w2', assigneeNote: expect.stringContaining('does not consume queue "q"') });
+    expect(item('b').assignee).toBe('w2');
+    expect((await queue()).items.find(found => found.key === 'b')).toMatchObject({ assignee: 'w2' });
+    expect(await op('update_work', { key: 'b', assignee: null })).not.toHaveProperty('assignee');
+    expect(item('b').assignee).toBeUndefined();
+    await expect(op('update_work', { key: 'b', assignee: 'not a name' })).rejects.toThrow('assignee is the name of a member');
     await expect(op('update_work', { key: 'b', hold: true, reason: 'why' })).rejects.toThrow('reason belongs to cancel');
     await expect(op('update_work', { key: 'b', itemId: item('b').id, hold: true })).rejects.toThrow('Name the work item by itemId or by key');
     await expect(op('update_work', { key: 'nope', hold: true })).rejects.toThrow('Unknown work item');
     await expect(op('retry_work', { key: 'b' })).rejects.toThrow('Only failed work items can be retried');
     release();
+    await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel_workflow', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
+  }, 30_000);
+
+  it('returns what is found wrong with a delivered item to the member that delivered it, and to its queue once that member cannot take it', async () => {
+    const h = await play([
+      // "a" is for w2 although w1 is the first to be woken: a script may name a member before its swarm starts.
+      'await enqueueWork({key:"a", title:"A", input:1, queue:"build", assignee:"w2"}); await enqueueWork({key:"b", title:"B", input:2, queue:"build"});',
+      'await enqueueWork({key:"hunt-a", title:"Hunt in A", input:3, queue:"hunt", dependsOn:["a"]});',
+      'return await swarm("Build and hunt", {key:"opt", maxTurns:1, members:[{name:"w1", queue:"build"},{name:"w2", queue:"build"},{name:"scout", queue:"hunt"}]});',
+    ].join('\n'), {
+      w1: [{ work: true }, { work: true }],
+      w2: [{ work: true }, { work: true }],
+      // The scout names the item its finding came from, not a queue or a member; its next hunt waits for the repair.
+      scout: [{ work: true, calls: [['enqueue_work', { key: 'bug-a', title: 'A drops the last token', input: { repro: 'a("")' }, origin: 'a' }],
+        ['enqueue_work', { key: 'hunt-again', title: 'Hunt in the repair', input: 4, queue: 'hunt', dependsOn: ['bug-a'] }]] },
+      { work: true, calls: [['enqueue_work', { key: 'bug-a2', title: 'A still drops it', input: { repro: 'a(" ")' }, origin: 'a' }]] }],
+    });
+    const state = () => h.runtime.kernel.state(h.root.scopeId)!;
+    const item = (key: string) => state().workQueue!.items.find(found => found.key === key)!;
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(item('bug-a2')?.status).toBe('completed'); }, { timeout: 10_000 });
+    expect(h.errors).toEqual([]);
+    expect(item('a')).toMatchObject({ assignee: 'w2', doneBy: 'w2' });
+    expect(item('b')).toMatchObject({ doneBy: 'w1' });
+    // The finding went to the queue "a" was in and to the member that completed "a", which alone was woken for it.
+    expect(h.results[0]).toMatchObject({ key: 'bug-a', queue: 'build', assignee: 'w2' });
+    expect(h.results[0]).not.toHaveProperty('assigneeNote');
+    expect(item('bug-a')).toMatchObject({ queue: 'build', by: 'scout', origin: 'a', assignee: 'w2', doneBy: 'w2' });
+    expect(h.specs[h.order.indexOf('w22')]!.prompt).toContain('1 of its items is for you and claim_work hands it out first');
+    // w2 has then used the one wake-up it had: the next finding in its work is anyone's in the queue, and says so.
+    expect(h.results[2]).toMatchObject({ key: 'bug-a2', queue: 'build', assignee: 'w2', assigneeNote: expect.stringContaining('any member of the queue can claim it') });
+    expect(item('bug-a2')).toMatchObject({ origin: 'a', assignee: 'w2', doneBy: 'w1' });
+    expect(h.order.filter(name => name.startsWith('w')).sort()).toEqual(['w11', 'w12', 'w21', 'w22']);
+    // w1 was idle while "bug-a" waited for w2, and was not woken until an item was open to it.
+    expect(h.order.indexOf('w12')).toBeGreaterThan(h.order.indexOf('scout2'));
+    expect(h.specs[h.order.indexOf('w12')]!.prompt).not.toContain('for you');
+    await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel_workflow', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
+  }, 30_000);
+
+  it('returns an item to its whole queue when the member it is kept for was woken for it and did not take it', async () => {
+    const h = await play('await enqueueWork({key:"a", title:"A", input:1, queue:"build", assignee:"w2"});'
+      + 'return await swarm("Build", {key:"pass", members:[{name:"w1", queue:"build"},{name:"w2", queue:"build"}]});', { w1: [{ work: true }], w2: [{}] });
+    const state = () => h.runtime.kernel.state(h.root.scopeId)!;
+    const item = () => state().workQueue!.items[0]!;
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(item().status).toBe('completed'); }, { timeout: 10_000 });
+    // w1 had nothing to claim while "a" was kept for w2, so it was first woken once w2 had passed the item up.
+    expect(h.order).toEqual(['w21', 'w11']);
+    expect(item()).toMatchObject({ doneBy: 'w1' });
+    expect(item().assignee).toBeUndefined();
     await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel_workflow', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
   }, 30_000);
 

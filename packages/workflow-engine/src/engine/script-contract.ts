@@ -10,7 +10,7 @@ export const SCRIPT_MAX_REVISIONS = 8;
 export const SCRIPT_DEFINITION: WorkflowDefinition = {
   apiVersion: 'bridge.workflow/v1', id: 'scripted', version: '0.7.0', kind: 'script-led',
   mainInstructions: '这是脚本驱动的跨 harness 工作流。脚本决定任务依赖，bridge 管理 worker。收到脚本完成事件后 read_artifact 并审查最终结果，再 ack_events 和 complete。失败或暂停后可 replay_script；已完成且输入、执行绑定相同的任务会复用。每个 worker 可独立选择 harness、model 和 reasoningEffort。',
-  roles: { worker: { instructions: '完成脚本分配的这一项任务，遵守原始需求的授权范围。最终答复作为脚本返回值，不要只回复完成。', outputKind: 'agent-result' } },
+  roles: { worker: { instructions: 'Do the one task the script gave you, within what the original request authorizes. Your final answer is what the script gets back, so give the result itself, not a note that you are done, and write it in the language of the task.', outputKind: 'agent-result' } },
   maxConcurrentWorkers: 4, maxRevisionRounds: SCRIPT_MAX_REVISIONS,
   maxWallTimeMinutes: DEFAULT_WORKFLOW_TIMEOUT_MINUTES, defaultWallTimeMinutes: DEFAULT_WORKFLOW_TIMEOUT_MINUTES,
 };

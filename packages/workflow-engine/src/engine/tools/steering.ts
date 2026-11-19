@@ -7,8 +7,15 @@ import { versioned } from './versioned';
 /** Keeping long-running work on course: the charter that carries the current goal, and wake-ups that do not depend on a post. */
 export const steeringTools: WorkflowToolPlugin = {
   id: 'steering',
-  memberInstructions: `目标单是本工作流现行的目标、优先级和长期规则，每一轮的提示里都带着现行版本（read_context 的 charter 字段同样给出，changed 表示自你上一轮以来有更新）：它与“需求”、任务说明或更早的公告不一致时以它为准。只有主 agent 和 swarm 的 lead 能改：set_charter({operationId,text}) 用 text（最多 ${CHARTER_MAX_TEXT} 字符）整份替换，写清目标、可检验的完成标准、优先级、不做什么和口径；方向、优先级或口径变了就改它，不要只发公告。`
-    + `wake_me({operationId,afterMinutes,note?}) 让 swarm 成员在 afterMinutes 分钟（1–${WAKE_MAX_MINUTES}）后被唤醒一轮，不需要任何人点名：等待耗时的构建、测试、排队或要定期复查时，先保存 checkpoint、设好它再结束本轮，不要占着本轮轮询或睡眠。每名成员只有一个定时，再次调用即替换，afterMinutes 为 0 取消；被帖子或新工作提前唤醒时定时仍保留；它与被点名一样计入唤醒次数。`,
+  memberInstructions: [
+    'The charter is the goal, the priorities and the standing rules of the workflow as they stand now. The prompt of every turn carries the current version (read_context has it in charter, where changed says that it was replaced since your last turn); '
+      + 'where it differs from the request, the task or earlier announcements, the charter wins. Only the main agent and the lead of a swarm can change it.',
+    `wake_me({operationId,afterMinutes,note?}) wakes a swarm member for one turn after afterMinutes minutes (1–${WAKE_MAX_MINUTES}) without anyone naming it. To wait for a long build, test or queue, or to check on something later, `
+      + 'save a checkpoint, set it and end the turn; do not hold the turn polling or sleeping. A member has one timer: calling again replaces it, and afterMinutes 0 cancels it. '
+      + 'It stays set when a post or new work wakes you earlier, and it counts as a wake-up like being named.',
+  ].join('\n'),
+  leadInstructions: `set_charter({operationId,text}), for the lead of a swarm, replaces the whole charter (at most ${CHARTER_MAX_TEXT} characters) with the goal, completion criteria that can be checked, the priorities, what is out of scope and how results are measured. `
+    + 'When the direction, the priorities or the measures change, change the charter instead of only announcing it.',
   tools: [
     {
       name: 'set_charter',

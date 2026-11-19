@@ -53,8 +53,8 @@ export function charterView(state: WorkflowView, task?: Immutable<StoredTask>): 
 export function charterPrompt(state: WorkflowView, task: Immutable<StoredTask>): string | undefined {
   const charter = charterView(state, task);
   if (!charter) return undefined;
-  return `现行目标单（第 ${charter.version} 版，由${charter.by === 'main' ? '主 agent' : ' lead ' + charter.by + ' '}设定${charter.changed ? '；自你上一轮以来已更新，先按它重新核对手头的工作' : ''}）。`
-    + `它是对上面“需求”和任务说明的最新修订：不一致处以它为准，与它冲突的更早的公告和指示作废。\n${charter.text}`;
+  return `Charter in force (version ${charter.version}, set by ${charter.by === 'main' ? 'the main agent' : 'lead ' + charter.by}${charter.changed ? '; it was replaced since your last turn, so check the work you have in hand against it first' : ''}). `
+    + `It is the latest revision of the request above and of the task that follows: where they differ the charter wins, and earlier announcements and instructions that conflict with it no longer hold.\n${charter.text}`;
 }
 
 /**

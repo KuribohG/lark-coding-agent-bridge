@@ -127,8 +127,11 @@ export type DomainEvent =
   | { type: 'work_enqueued'; item: WorkflowWorkItem }
   | { type: 'work_retried'; itemId: string; maxAttempts: number; at: number }
   | { type: 'work_cancelled'; itemIds: string[]; at: number; reason?: string }
-  /** A change to an item by whoever plans its queue: a new priority, a hold placed (`true`) or lifted (`false`). */
-  | { type: 'work_updated'; itemId: string; priority?: number; hold?: boolean; at: number }
+  /**
+   * A change to an item by whoever plans its queue: a new priority, a hold placed (`true`) or lifted (`false`), the
+   * member it is for (`null` returns it to the whole queue).
+   */
+  | { type: 'work_updated'; itemId: string; priority?: number; hold?: boolean; assignee?: string | null; at: number }
   | { type: 'work_claimed'; claim: WorkClaim }
   | { type: 'claim_frozen'; claimId: string; reason: string }
   | { type: 'claim_renewed'; claimId: string; leaseUntil: number }

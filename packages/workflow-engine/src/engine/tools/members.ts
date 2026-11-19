@@ -22,7 +22,9 @@ export function memberOperation(ctx: KernelContext, state: WorkflowView, task: T
 /** A worker's own task context and a persistent member's checkpoint. */
 export const memberContextTools: WorkflowToolPlugin = {
   id: 'member-context',
-  memberInstructions: 'read_context 返回自己的 checkpoint 和本轮消息；task_status 返回当前 checkpointVersion。checkpoint({operationId,expectedCheckpointVersion,state}) 保存最多 16000 字符的 JSON 工作状态。请在完成重要步骤时保存进展、决定、下一步和产物引用；这不结束本轮，也不代表文件副作用可回滚。冲突时重新 read_context，不猜测版本。',
+  memberInstructions: 'read_context returns your checkpoint and the messages of this turn; task_status returns the current checkpointVersion. '
+    + 'checkpoint({operationId,expectedCheckpointVersion,state}) saves your working state as JSON of at most 16000 characters. Save progress, decisions, the next step and references to what you produced whenever you finish an important step; '
+    + 'this neither ends the turn nor makes changes to files reversible. On a version conflict call read_context again instead of guessing the version.',
   tools: [
     {
       name: 'task_status',

@@ -332,6 +332,16 @@ export interface WorkflowWorkItem {
   title: string;
   /** The member that added the item; absent for items from the script or the main agent. */
   by?: string;
+  /** The key of the item whose delivered result this one is about: a problem found in it, or work that follows from it. */
+  origin?: string;
+  /**
+   * The member the item is for: named by whoever added it, or else the member that completed `origin`. While that
+   * member can still take work from the item's queue the item is kept for it and handed to it before the queue's
+   * other items; once it has stopped or used its wake-ups, any member of the queue claims it.
+   */
+  assignee?: string;
+  /** The member that completed the item. */
+  doneBy?: string;
   input: unknown;
   resources: string[];
   /**
@@ -606,6 +616,8 @@ export interface WorkflowWorkerRequest {
   /** The workflow the turn belongs to. Only what a host needs for the whole turn; read the rest through the kernel. */
   workflow: Pick<WorkflowState, 'workflowId' | 'root' | 'deadlineAt'>;
   task: WorkflowTask;
+  /** The member plans work for others (the lead of a swarm or of a queue), so it is also told the operations only such a member may call. */
+  plans?: boolean;
   session: WorkerSession;
   attemptId: string;
   prompt: string;
