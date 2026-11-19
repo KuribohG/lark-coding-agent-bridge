@@ -33,9 +33,8 @@ rpm = 1000                  # requests per minute, refilled continuously
 burst = 100                 # back-to-back requests after an idle period
 concurrency = 100           # requests in flight at once
 
-# Per-provider overrides. The key is the provider id Pi reports for the model
-# (`ctx.model.provider`), which the bridge also uses when it registers the
-# provider. Unset fields inherit `[gate.defaults]`.
+# Per-provider overrides, keyed by the provider's name (see below). Unset
+# fields inherit `[gate.defaults]`, and so does a provider with no entry.
 [gate.providers.deepseek]
 rpm = 1000
 concurrency = 100
@@ -50,6 +49,20 @@ bucket applies. Use it for an endpoint that queues or throttles on its own.
 
 `burst` cannot exceed `rpm`: a burst larger than a minute of refill would make
 the first second of a minute indistinguishable from an outage.
+
+## Which bucket a request counts against
+
+There is one bucket per provider name, shared by every model of that provider:
+
+- a model the bridge registers from `[model_services.<name>]` counts against
+  `<name>`, whichever of the service's models the run uses;
+- a model Pi resolves from its own catalog (`models.json`) counts against the
+  name its provider has there.
+
+A service that is configured in both places under one name is therefore one
+bucket, which is what a quota of that service wants; give the two different
+names to keep them apart. A name with no `[gate.providers.<name>]` entry runs on
+`[gate.defaults]`.
 
 Limits are read once per bridge process and are shared by every profile and by
 every run in it. A second bridge process on the same machine finds the same
@@ -89,6 +102,9 @@ the gate reclaims it.
 
 - `GET /status` on the socket returns, per provider, `rpm`, `burst`,
   `concurrency`, `tokens`, `inflight`, `queued` and `oldestWaitMs`.
+- The gate logs `bucket-created` the first time a run asks under a provider
+  name, with the limits it got and `configured=false` when they are the
+  defaults: the place to look when an entry seems to have no effect.
 - The gate logs `status` at most once a minute while any bucket has work in it,
   and `permit-expired` when a lease is reclaimed.
 

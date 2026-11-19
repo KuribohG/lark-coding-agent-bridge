@@ -9,8 +9,15 @@
  * agents can therefore be alive with only a hundred model requests in flight.
  *
  * It is built to `dist/pi-model-gate.mjs` and loaded with
- * `pi --extension <that file>`; the bridge passes `LARK_MODEL_GATE_SOCKET` and,
- * for workers, `LARK_MODEL_GATE_PRIORITY`.
+ * `pi --extension <that file>`; the bridge passes `LARK_MODEL_GATE_SOCKET`,
+ * for workers `LARK_MODEL_GATE_PRIORITY`, and for a provider it registered
+ * itself `LARK_MODEL_GATE_PROVIDER_NAMES`.
+ *
+ * A limit belongs to a provider, so every model of one provider must ask under
+ * one name. Pi reports the provider of a model from its own catalog by the
+ * catalog's name, but a provider the bridge registered by the id the bridge
+ * generated for it, which differs from model to model. The bridge therefore
+ * passes the name behind each such id and the permit is asked under that.
  *
  * Nothing here may break a run: without the socket the extension is inert, and
  * an unreachable gate lets the request through (the provider's own rate limit
@@ -44,6 +51,8 @@ export interface GateRequestOptions {
 export interface GateExtensionOptions {
   socketPath?: string;
   request?: (options: GateRequestOptions) => Promise<Record<string, unknown>>;
+  /** Provider name by the id Pi reports for it; read from `LARK_MODEL_GATE_PROVIDER_NAMES` when omitted. */
+  providerNames?: Record<string, string>;
 }
 
 const PRIORITY_DEFAULT = 0;
@@ -54,6 +63,8 @@ export default function modelGateExtension(pi: GateExtensionApi, options: GateEx
   const parsedPriority = Number.parseInt(process.env.LARK_MODEL_GATE_PRIORITY ?? '', 10);
   const priority = Number.isFinite(parsedPriority) ? Math.max(0, Math.min(9, parsedPriority)) : PRIORITY_DEFAULT;
   const call = options.request ?? gateRequest;
+  const names = new Map(Object.entries(options.providerNames ?? providerNamesFromEnv(process.env.LARK_MODEL_GATE_PROVIDER_NAMES))
+    .filter((entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].length > 0));
 
   /**
    * At most one permit per session: Pi's agent loop issues provider requests
@@ -87,7 +98,7 @@ export default function modelGateExtension(pi: GateExtensionApi, options: GateEx
       const granted = await call({
         socketPath,
         path: '/acquire',
-        body: { provider: ctx.model.provider, priority },
+        body: { provider: names.get(ctx.model.provider) ?? ctx.model.provider, priority },
         signal: ctx.signal,
       });
       if (typeof granted?.permit === 'string') permit = granted.permit;
@@ -102,6 +113,17 @@ export default function modelGateExtension(pi: GateExtensionApi, options: GateEx
   pi.on('message_end', event => { if (event?.message?.role === 'assistant') release(); });
   pi.on('agent_end', release);
   pi.on('session_shutdown', release);
+}
+
+/** A malformed value leaves providers under the ids Pi reports, as without it. */
+function providerNamesFromEnv(raw: string | undefined): Record<string, string> {
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, string> : {};
+  } catch {
+    return {};
+  }
 }
 
 /** POST JSON over the gate's socket and resolve with its JSON answer. */

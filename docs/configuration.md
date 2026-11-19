@@ -198,7 +198,10 @@ concurrency = 100
 concurrency = 100
 ```
 
-A bridge-wide limit on model requests, one bucket per model provider. `rpm` and
+A bridge-wide limit on model requests, one bucket per model provider. The key of
+`[gate.providers.<name>]` is the provider's name: the `[model_services.<name>]`
+key, or the provider's name in Pi's own catalog for a model Pi resolves itself;
+all models of a provider share its bucket. `rpm` and
 `concurrency` apply together: a request needs a rate token and a free slot.
 `concurrency = 0` turns the slot limit off for a provider that has none of its
 own; the rate bucket still applies. The gate is shared by every profile in the

@@ -127,8 +127,15 @@ export class ModelGateServer {
     const key = this.buckets.size >= this.maxBuckets && !this.config.providers[provider] ? 'overflow' : provider;
     const reused = this.buckets.get(key);
     if (reused) return reused;
-    const bucket = new GateBucket(key, bucketFor(this.config, key === 'overflow' ? key : provider), this.now);
+    const limits = bucketFor(this.config, key === 'overflow' ? key : provider);
+    const bucket = new GateBucket(key, limits, this.now);
     this.buckets.set(key, bucket);
+    // The names runs ask under are otherwise invisible, and one without an entry of its own runs on the defaults
+    // without a word. `unknown` is made at startup, before any run has asked.
+    if (key !== 'unknown') {
+      log.info('model-gate', 'bucket-created', { provider: key, configured: Boolean(this.config.providers[key]),
+        rpm: limits.rpm, burst: limits.burst, concurrency: limits.concurrency });
+    }
     return bucket;
   }
 

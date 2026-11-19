@@ -45,6 +45,7 @@ const options = (request: GateExtensionOptions['request']): GateExtensionOptions
 afterEach(() => {
   delete process.env.LARK_MODEL_GATE_SOCKET;
   delete process.env.LARK_MODEL_GATE_PRIORITY;
+  delete process.env.LARK_MODEL_GATE_PROVIDER_NAMES;
 });
 
 describe('modelGateExtension', () => {
@@ -73,6 +74,38 @@ describe('modelGateExtension', () => {
       { path: '/acquire', body: { provider: 'deepseek', priority: 0 } },
       { path: '/release', body: { permit: 'p:1' } },
     ]);
+  });
+
+  it('asks under the provider name, so every model of one provider shares a bucket', async () => {
+    const pi = fakePi();
+    const transport = fakeRequest();
+    // The bridge registered two models of one service; Pi reports each under its own generated id.
+    modelGateExtension(pi, { ...options(transport.request),
+      providerNames: { lark_high_five_ai_01b55021b1f8: 'high-five-ai', lark_high_five_ai_e68c42f9e8c5: 'high-five-ai' } });
+    for (const provider of ['lark_high_five_ai_01b55021b1f8', 'lark_high_five_ai_e68c42f9e8c5',
+      // A model of Pi's own catalog comes under the catalog's name, and one nobody named stays as it is.
+      'high-five-ai', 'elsewhere']) {
+      await pi.emit('before_provider_request', {}, { model: { provider } });
+      await pi.emit('message_end', { message: { role: 'assistant' } });
+    }
+    expect(transport.calls.filter(call => call.path === '/acquire').map(call => (call.body as { provider: string }).provider))
+      .toEqual(['high-five-ai', 'high-five-ai', 'high-five-ai', 'elsewhere']);
+  });
+
+  it('reads the provider names from the environment and ignores a value it cannot read', async () => {
+    const asked = async (): Promise<unknown> => {
+      const pi = fakePi();
+      const transport = fakeRequest();
+      modelGateExtension(pi, options(transport.request));
+      await pi.emit('before_provider_request', {}, { model: { provider: 'lark_a_0123456789ab' } });
+      return (transport.calls[0]?.body as { provider: string }).provider;
+    };
+    process.env.LARK_MODEL_GATE_PROVIDER_NAMES = JSON.stringify({ lark_a_0123456789ab: 'a' });
+    expect(await asked()).toBe('a');
+    for (const broken of ['{not json', '["a"]', JSON.stringify({ lark_a_0123456789ab: 7 }), JSON.stringify({ lark_a_0123456789ab: '' })]) {
+      process.env.LARK_MODEL_GATE_PROVIDER_NAMES = broken;
+      expect(await asked()).toBe('lark_a_0123456789ab');
+    }
   });
 
   it('reads the worker priority from the environment', async () => {

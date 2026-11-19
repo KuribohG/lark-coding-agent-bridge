@@ -30,6 +30,7 @@ workflow_timeout_minutes = 480 # Total workflow deadline; each workflow may requ
 # rpm = 1000
 # burst = 100
 # concurrency = 100
+# Keyed by provider name: a [model_services.<name>] key, or a provider of Pi's own catalog.
 # [gate.providers.deepseek]
 # concurrency = 100
 

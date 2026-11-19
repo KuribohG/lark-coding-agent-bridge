@@ -2,7 +2,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { log } from '../../../src/core/logger';
 import { MODEL_GATE_DEFAULTS, type ModelGateConfig } from '../../../src/model-gate/config';
 import { ModelGateServer } from '../../../src/model-gate/server';
 
@@ -133,6 +134,29 @@ describe('ModelGateServer', () => {
     // The slow provider has spent its only token; the fast one is untouched.
     const fast = await post(socketPath, '/acquire', { provider: 'fast' });
     expect(typeof fast.permit).toBe('string');
+  });
+
+  it('names a provider once when its bucket is made, with whether it has an entry of its own', async () => {
+    const info = vi.spyOn(log, 'info');
+    try {
+      const socketPath = await socketDir();
+      await started(new ModelGateServer({
+        socketPath,
+        config: config({ providers: { listed: { rpm: 500, burst: 50, concurrency: 0 } } }),
+        tickMs: 0,
+      }));
+      for (const provider of ['listed', 'stray', 'stray']) {
+        const granted = await post(socketPath, '/acquire', { provider });
+        await post(socketPath, '/release', { permit: granted.permit });
+      }
+      expect(info.mock.calls.filter(call => call[1] === 'bucket-created').map(call => call[2])).toEqual([
+        { provider: 'listed', configured: true, rpm: 500, burst: 50, concurrency: 0 },
+        // No entry: the defaults, and the one line that says so.
+        { provider: 'stray', configured: false, ...MODEL_GATE_DEFAULTS },
+      ]);
+    } finally {
+      info.mockRestore();
+    }
   });
 
   it('gives interactive requests the next slot ahead of queued workers', async () => {

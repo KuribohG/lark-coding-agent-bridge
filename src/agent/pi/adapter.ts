@@ -158,6 +158,10 @@ export class PiAdapter implements AgentAdapter {
           LARK_MODEL_GATE_SOCKET: gate.socketPath,
           // Interactive runs (no deadline) go first; workflow workers queue behind them.
           LARK_MODEL_GATE_PRIORITY: String(opts.deadlineAt !== undefined ? 1 : 0),
+          // The limit is the provider's: the id this model was registered under differs from model to model.
+          ...(opts.modelProvider?.pi
+            ? { LARK_MODEL_GATE_PROVIDER_NAMES: JSON.stringify({ [opts.modelProvider.pi.providerId]: opts.modelProvider.id }) }
+            : {}),
         } : {}),
         ...(shellLimits ? bashTimeoutEnv(this.bashTimeouts) : {}),
         PI_SKIP_VERSION_CHECK: '1',

@@ -242,6 +242,37 @@ describe('PiAdapter model gate wiring', () => {
     expect(record.env.LARK_MODEL_GATE_PRIORITY).toBe('1');
   });
 
+  it('asks the gate under the service name for every model of a service the bridge registers', async () => {
+    process.env.PI_PROVIDER_TEST_KEY = 'private-provider-key';
+    const registry = new ModelProviderRegistry({
+      'high-five-ai': { protocol: 'responses', baseUrl: 'https://gateway.example/v1', model: 'deepseek-flash',
+        apiKey: { source: 'env', id: 'PI_PROVIDER_TEST_KEY' } },
+    });
+    const names = async (selection: string, gate: boolean): Promise<string | undefined> => {
+      const harness = await createFakePi([{ type: 'system', id: 'sess-gate', cwd: '/repo' }, { type: 'agent_settled', aborted: false }]);
+      dirs.push(harness.dir);
+      setModelGateTarget(gate ? { socketPath: '/tmp/model-gate.sock' } : undefined);
+      const provider = await registry.resolve('pi', selection);
+      const run = (await new PiAdapter({ binary: harness.binary, profileStateDir: harness.dir }).prepareRun({
+        runId: 'pi-gate-names', prompt: 'hello', cwd: harness.dir, model: provider!.model, modelProvider: provider,
+      })).start();
+      for await (const event of run.events) {
+        if (event.type === 'done') break;
+      }
+      await run.waitForExit(2000);
+      return (await readRecord(harness.recordPath)).env.LARK_MODEL_GATE_PROVIDER_NAMES;
+    };
+
+    // Pi knows each model under an id of its own; the quota is the service's.
+    expect(JSON.parse((await names('high-five-ai/deepseek-flash', true))!)).toEqual({ lark_high_five_ai_01b55021b1f8: 'high-five-ai' });
+    const other = JSON.parse((await names('high-five-ai/deepseek-flash-cyber', true))!) as Record<string, string>;
+    expect(Object.keys(other)).toHaveLength(1);
+    expect(Object.keys(other)[0]).toMatch(/^lark_high_five_ai_[0-9a-f]{12}$/);
+    expect(Object.keys(other)[0]).not.toBe('lark_high_five_ai_01b55021b1f8');
+    expect(Object.values(other)).toEqual(['high-five-ai']);
+    expect(await names('high-five-ai/deepseek-flash', false)).toBeUndefined();
+  });
+
   it('leaves argv alone when no gate is running', async () => {
     const harness = await createFakePi([{ type: 'system', id: 'sess-gate', cwd: '/repo' }, { type: 'agent_settled', aborted: false }]);
     dirs.push(harness.dir);
@@ -327,7 +358,7 @@ async function createFakePi(
     `  writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({`,
     '    argv, stdin, cwd: process.cwd(),',
     '    systemPrompt: promptIndex >= 0 ? readFileSync(argv[promptIndex + 1], "utf8") : "",',
-    '    env: { PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK, PI_TELEMETRY: process.env.PI_TELEMETRY, LARK_MODEL_GATE_SOCKET: process.env.LARK_MODEL_GATE_SOCKET, LARK_MODEL_GATE_PRIORITY: process.env.LARK_MODEL_GATE_PRIORITY, LARK_PI_BASH_DEFAULT_TIMEOUT: process.env.LARK_PI_BASH_DEFAULT_TIMEOUT, LARK_PI_BASH_MAX_TIMEOUT: process.env.LARK_PI_BASH_MAX_TIMEOUT },',
+    '    env: { PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK, PI_TELEMETRY: process.env.PI_TELEMETRY, LARK_MODEL_GATE_SOCKET: process.env.LARK_MODEL_GATE_SOCKET, LARK_MODEL_GATE_PRIORITY: process.env.LARK_MODEL_GATE_PRIORITY, LARK_MODEL_GATE_PROVIDER_NAMES: process.env.LARK_MODEL_GATE_PROVIDER_NAMES, LARK_PI_BASH_DEFAULT_TIMEOUT: process.env.LARK_PI_BASH_DEFAULT_TIMEOUT, LARK_PI_BASH_MAX_TIMEOUT: process.env.LARK_PI_BASH_MAX_TIMEOUT },',
     '    providerEnv: Object.entries(process.env).filter(([key]) => key.startsWith("LARK_MODEL_PROVIDER_")),',
     '  }));',
     `  for (const line of ${JSON.stringify(lines)}) process.stdout.write(JSON.stringify(line) + "\\n");`,
@@ -353,7 +384,7 @@ async function readRecord(path: string): Promise<{
   cwd: string;
   systemPrompt: string;
   env: { PI_CODING_AGENT_DIR?: string; PI_SKIP_VERSION_CHECK?: string; PI_TELEMETRY?: string;
-    LARK_MODEL_GATE_SOCKET?: string; LARK_MODEL_GATE_PRIORITY?: string;
+    LARK_MODEL_GATE_SOCKET?: string; LARK_MODEL_GATE_PRIORITY?: string; LARK_MODEL_GATE_PROVIDER_NAMES?: string;
     LARK_PI_BASH_DEFAULT_TIMEOUT?: string; LARK_PI_BASH_MAX_TIMEOUT?: string };
   providerEnv: Array<[string, string]>;
 }> {
@@ -363,7 +394,7 @@ async function readRecord(path: string): Promise<{
     cwd: string;
     systemPrompt: string;
     env: { PI_CODING_AGENT_DIR?: string; PI_SKIP_VERSION_CHECK?: string; PI_TELEMETRY?: string;
-    LARK_MODEL_GATE_SOCKET?: string; LARK_MODEL_GATE_PRIORITY?: string;
+    LARK_MODEL_GATE_SOCKET?: string; LARK_MODEL_GATE_PRIORITY?: string; LARK_MODEL_GATE_PROVIDER_NAMES?: string;
     LARK_PI_BASH_DEFAULT_TIMEOUT?: string; LARK_PI_BASH_MAX_TIMEOUT?: string };
     providerEnv: Array<[string, string]>;
   };
