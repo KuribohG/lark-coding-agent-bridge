@@ -253,6 +253,11 @@ export class WorkflowKernel {
     return this.ctx.hosts.find(workflowId, match);
   }
 
+  /** Whether the token belongs to a process a previous controller left running, which a replayed turn may yet continue. */
+  awaitsWorker(tokenHash: string): boolean {
+    return !this.ctx.closed && this.ctx.hosts.awaits(tokenHash);
+  }
+
   putWorkerHost(record: Omit<WorkerHostRecord, 'discard'>): void {
     if (this.ctx.closed) throw new Error('Workflow service is closed');
     this.ctx.hosts.put(record);
@@ -260,6 +265,17 @@ export class WorkflowKernel {
 
   removeWorkerHost(hostKey: string): void {
     if (!this.ctx.closed) this.ctx.hosts.remove(hostKey);
+  }
+
+  /** The process could not be ended for certain: nothing continues it, and it is ended again later. */
+  discardWorkerHost(hostKey: string): void {
+    if (!this.ctx.closed) this.ctx.hosts.discard(hostKey);
+  }
+
+  /** Whether a turn of this controller is running the process. */
+  runsWorkerHost(hostKey: string): boolean {
+    const record = this.ctx.hosts.get(hostKey);
+    return Boolean(record && this.ctx.scheduler.isRunning(record.taskId));
   }
 
   /** Hosted processes no turn of this controller runs or can still continue. */

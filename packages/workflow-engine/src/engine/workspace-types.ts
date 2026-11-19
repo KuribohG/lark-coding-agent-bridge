@@ -17,7 +17,8 @@ export interface WorkspaceBinding {
   isolation?: 'clone';
   changeId?: string;
   status: 'preparing' | 'ready' | 'removed';
-  busy?: { token: string; taskId?: string; ownerPid: number };
+  /** `hostKey` names the hosted worker process that runs here; it keeps the lease while no service is attached to it. */
+  busy?: { token: string; taskId?: string; ownerPid: number; hostKey?: string };
 }
 
 export interface WorkspaceChange {

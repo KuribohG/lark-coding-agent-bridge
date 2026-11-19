@@ -19,7 +19,7 @@ function hostedRunner() {
     hosting: {
       newKey: () => randomUUID(),
       attachable: async (key, agentKind) => hosts.get(key)?.agentKind === agentKind,
-      release: async key => { released.push(key); hosts.delete(key); },
+      release: async key => { released.push(key); hosts.delete(key); return true; },
     },
     async start(spec) {
       specs.push(spec);

@@ -5,6 +5,7 @@ import type { WorkflowTask } from './types';
  * Worker processes that may outlive this host process (WorkerRunner.hosting).
  * A row lives from spawn until its turn ends for a reason other than shutdown,
  * so rows found at startup name processes a replayed turn can reattach to.
+ * The row of a process that would not end stays, discarded, until it has.
  */
 export interface WorkerHostRecord {
   hostKey: string;
@@ -56,6 +57,21 @@ export class WorkerHosts {
 
   list(): WorkerHostRecord[] {
     return (this.db.prepare('SELECT * FROM workflow_worker_hosts').all() as Row[]).map(toRecord);
+  }
+
+  /** Whether a process that may still be continued carries the token with this hash. */
+  awaits(tokenHash: string): boolean {
+    return this.db.prepare('SELECT 1 FROM workflow_worker_hosts WHERE token_hash = ? AND discard = 0').get(tokenHash) !== undefined;
+  }
+
+  get(hostKey: string): WorkerHostRecord | undefined {
+    const row = this.db.prepare('SELECT * FROM workflow_worker_hosts WHERE host_key = ?').get(hostKey) as Row | undefined;
+    return row && toRecord(row);
+  }
+
+  /** No turn continues this process any more; the row stays until the process is known to have ended. */
+  discard(hostKey: string): void {
+    this.db.prepare('UPDATE workflow_worker_hosts SET discard = 1 WHERE host_key = ?').run(hostKey);
   }
 
   discardTasks(workflowId: string, taskIds: Iterable<string>): void {

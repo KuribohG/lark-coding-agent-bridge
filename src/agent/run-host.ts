@@ -95,8 +95,11 @@ export async function sweepRunHosts(maxAgeMs: number, keep: ReadonlySet<string> 
   }
 }
 
-/** Ends the agent of a host nobody will reattach to, then removes its journals. */
-export async function terminateRunHost(key: string, graceMs = 5_000): Promise<void> {
+/**
+ * Ends the agent of a host nobody will reattach to, then removes its journals. Resolves false, keeping the journals,
+ * when the agent may still be running: it did not exit when killed, or its host died without recording its exit.
+ */
+export async function terminateRunHost(key: string, graceMs = 5_000): Promise<boolean> {
   if (await probeRunHost(key) === 'running') {
     const proc = attachHostedProcess(key);
     proc.on('error', () => {});
@@ -111,7 +114,37 @@ export async function terminateRunHost(key: string, graceMs = 5_000): Promise<vo
     }
     log.info('run-host', 'terminated', { key });
   }
+  const dir = hostDir(key);
+  if (!existsSync(join(dir, 'exit.json')) && agentAlive(dir)) {
+    log.warn('run-host', 'termination-uncertain', { key });
+    return false;
+  }
   removeRunHost(key);
+  return true;
+}
+
+/** Whether the agent a host started still runs. It is not the host's to end once the host was killed, and outlives it. */
+function agentAlive(dir: string): boolean {
+  let childPid: unknown;
+  try {
+    childPid = (JSON.parse(readFileSync(join(dir, 'host.json'), 'utf8')) as { childPid?: unknown }).childPid;
+  } catch {
+    // No host ever started an agent here, or its records are already gone.
+    return false;
+  }
+  if (typeof childPid !== 'number' || childPid <= 0) return false;
+  try {
+    process.kill(childPid, 0);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+  // An orphan that nobody has reaped yet has exited all the same.
+  try {
+    const stat = readFileSync(`/proc/${childPid}/stat`, 'utf8');
+    return stat[stat.lastIndexOf(') ') + 2] !== 'Z';
+  } catch {
+    return true;
+  }
 }
 
 /** Live hosted agents started with `tag`, including those no bridge has reattached yet. */

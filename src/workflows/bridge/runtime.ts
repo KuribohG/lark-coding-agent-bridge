@@ -98,6 +98,7 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
       void result.finally(() => spec.signal.removeEventListener('abort', forward)).catch(() => {});
       return {
         runId: submitted.runId,
+        ...(spec.host && submitted.run.detachOnShutdown ? { hosted: true } : {}),
         result,
         send: async (text, messageId) => (await sendRunInput(submitted.run, { text, messageId })).status,
         stop: reason => submitted.stop(reason),

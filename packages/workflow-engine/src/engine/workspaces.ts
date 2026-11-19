@@ -215,6 +215,33 @@ export class WorkflowWorkspaces {
     if (current.busy?.token !== token) throw new Error('Workspace execution ownership changed');
     delete current.busy; this.putWorkspace(current);
   }
+  /** Names the hosted process that runs under a lease. It may outlive this service, and then it keeps the lease. */
+  hosted(ws: WorkspaceBinding, token: string, hostKey: string): void {
+    const current = this.value<WorkspaceBinding>(ws.id, ws.workflowId, 'workspace');
+    if (current.busy?.token !== token) throw new Error('Workspace execution ownership changed');
+    current.busy.hostKey = hostKey; this.putWorkspace(current);
+  }
+  /** The hosted process that holds the workspace, if one does. */
+  holder(ws: WorkspaceBinding): string | undefined {
+    return this.value<WorkspaceBinding>(ws.id, ws.workflowId, 'workspace').busy?.hostKey;
+  }
+  /** Takes over the lease of a process that kept running while no service was attached, for the task that continues it. */
+  adopt(ws: WorkspaceBinding, hostKey: string, taskId: string): string {
+    return this.db.transaction(() => {
+      const current = this.value<WorkspaceBinding>(ws.id, ws.workflowId, 'workspace');
+      if (current.status !== 'ready') throw new Error('Workspace is unavailable');
+      if (current.busy?.hostKey !== hostKey) throw new Error('Workspace is not held by the process being continued');
+      const token = randomUUID(); current.busy = { token, taskId, ownerPid: process.pid, hostKey }; this.putWorkspace(current); return token;
+    })();
+  }
+  /** Frees what a hosted process held, once it is known to have ended with no service attached to see it. */
+  vacate(workflowId: string, hostKey: string): void {
+    const rows = this.db.prepare("SELECT * FROM workspace_records WHERE workflow=? AND kind='workspace' AND json_extract(data,'$.busy.hostKey')=?").all(workflowId, hostKey) as RecordRow[];
+    for (const row of rows) {
+      const ws = JSON.parse(row.data) as WorkspaceBinding;
+      delete ws.busy; this.save(row, ws);
+    }
+  }
   private idle(ws: WorkspaceBinding, ctx: WorkspaceContext): void {
     if (ws.busy || ctx.state.tasks.some(task => task.workspaceId === ws.id && BUSY.has(task.status))) throw new Error('Wait for every workspace task to exit before inspecting or changing it');
   }

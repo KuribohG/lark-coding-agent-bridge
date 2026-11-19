@@ -12,5 +12,7 @@ export async function runWorkflowTool(method: string, options: WorkflowToolOptio
   if (options.input !== undefined && options.inputFile !== undefined) throw new Error('Choose --input or --input-file');
   const input = options.inputFile ? await readFile(options.inputFile, 'utf8') : options.input ?? '{}';
   if (input.length > 500_000) throw new Error('Workflow input exceeds size limit');
-  console.log(JSON.stringify(await callWorkflow(method.replaceAll('-', '_'), JSON.parse(input)), null, 2));
+  // Said on stderr so that an agent whose command times out meanwhile knows the call is worth repeating.
+  const onWait = (reason: string) => console.error(`Workflow controller is unavailable (${reason}); waiting for it to come back and repeating this call.`);
+  console.log(JSON.stringify(await callWorkflow(method.replaceAll('-', '_'), JSON.parse(input), process.env, { onWait }), null, 2));
 }

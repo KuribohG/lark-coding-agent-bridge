@@ -21,6 +21,9 @@ import type { ExecutionLedgerPort, WorkerExecution, WorkerExecutionPolicy, Worke
 const JSON_FORMAT_RETRIES = 2;
 /** How often scratch directories nobody owns any more are looked for. */
 const SCRATCH_RECLAIM_MS = 60_000;
+/** How long a hosted process that would not end is left before the next attempt: doubled each time, up to the maximum. */
+const LINGER_RETRY_MS = 1_000;
+const LINGER_RETRY_MAX_MS = 60_000;
 
 /** What a worker is told about the managed checkout it runs in. */
 function workspaceInstructions(workspace: WorkspaceBinding, landingRef: string | undefined): string {
@@ -98,7 +101,9 @@ export class WorkflowRuntime {
   private admissionRequested = false;
   private tickAgain = false;
   private readonly scripts = new Map<string, { controller: AbortController; done: Promise<void>; depth: number }>();
-  private readonly releasing = new Set<string>();
+  private readonly releasing = new Map<string, Promise<boolean>>();
+  /** Processes that would not end, and when each is next tried. */
+  private readonly lingering = new Map<string, { until: number; delayMs: number }>();
   /** The native run of each worker turn in progress, for messages from the main agent. */
   private readonly runs = new Map<string, WorkerRun>();
   private readonly log: WorkflowLogger;
@@ -145,7 +150,8 @@ export class WorkflowRuntime {
       wakeMain: deps.wakeMain,
     });
     this.ipc = new WorkflowIpc((caller, method, args) => this.kernel.call(caller, method, args),
-      deps.cliPath ?? workerCliPath(), deps.path === ':memory:' ? undefined : deps.path + '.endpoint.json');
+      deps.cliPath ?? workerCliPath(), deps.path === ':memory:' ? undefined : deps.path + '.endpoint.json',
+      tokenHash => this.kernel.awaitsWorker(tokenHash));
   }
 
   async start(): Promise<void> {
@@ -372,19 +378,26 @@ export class WorkflowRuntime {
     const landing = workspace?.kind === 'task' ? manager!.landing(workflow.workflowId) : undefined;
     let lease: string | undefined;
     let run: WorkerRun | undefined;
-    // Worktree turns are verified against a frozen snapshot, which a process left running mid-change would not match.
     // Host tools answer through this process, so a worker that uses them cannot outlive it.
-    const hosting = task.workspaceId || this.deps.hostTools ? undefined : this.deps.runner.hosting;
+    const hosting = this.deps.hostTools ? undefined : this.deps.runner.hosting;
     const match = hostMatch(task);
     let survivor = hosting && this.kernel.workerHost(workflow.workflowId, match);
-    if (survivor && (survivor.discard || survivor.agentKind !== pinned.agentKind || !await hosting!.attachable(survivor.hostKey, pinned.agentKind))) {
-      await this.releaseHost(survivor.hostKey);
+    // A process that was left working in a worktree kept its lease; one that does not hold it is not continued.
+    let dropped: string | undefined;
+    if (survivor && (survivor.discard || survivor.agentKind !== pinned.agentKind || !await hosting!.attachable(survivor.hostKey, pinned.agentKind)
+      || workspace && manager!.holder(workspace) !== survivor.hostKey)) {
+      dropped = survivor.hostKey;
+      await this.abandonHost(survivor);
       survivor = undefined;
     }
     if (signal.aborted) {
-      if (survivor && stopReasonOf(signal) !== 'shutdown') await this.releaseHost(survivor.hostKey);
+      if (survivor && stopReasonOf(signal) !== 'shutdown') await this.abandonHost(survivor);
       signal.throwIfAborted();
     }
+    // A process that another turn left in this worktree is not continued by this one, which the script runs now: it
+    // ends before anything else starts here.
+    const holder = workspace && hosting && !survivor ? manager!.holder(workspace) : undefined;
+    if (holder && holder !== dropped && !this.kernel.runsWorkerHost(holder)) await this.abandonHost({ hostKey: holder, workflowId: workflow.workflowId });
     const caller: WorkflowCaller = { kind: 'worker', scopeId: workflow.root.scopeId, workflowId: workflow.workflowId, taskId: task.taskId, attemptId };
     const binding: { env: Record<string, string>; tokenHash?: string; release(): void } = this.deps.hostTools
       ? { env: {}, release() {} } : this.ipc.bind(caller, workflow.deadlineAt, survivor?.tokenHash);
@@ -394,8 +407,9 @@ export class WorkflowRuntime {
     let finished = false;
     try {
       if (workspace) {
-        lease = manager!.begin(workspace, task.taskId);
-        await manager!.verifySnapshot(workspace, signal);
+        lease = survivor ? manager!.adopt(workspace, survivor.hostKey, task.taskId) : manager!.begin(workspace, task.taskId);
+        // A turn under way started from a verified snapshot and may be mid-change; it is verified again when it ends.
+        if (!survivor) await manager!.verifySnapshot(workspace, signal);
       }
       scratch = await this.scratch?.acquire(workflow.workflowId, scratchSlot(session.sessionRef, task.agentId ? session.actorKey : undefined));
       const scratchPath = scratch?.path;
@@ -424,7 +438,7 @@ export class WorkflowRuntime {
             if (workspace) {
               await this.workspacePolicy(workflow.root, pinned);
               await manager!.binding(workflow.root, workflow.workflowId, workspace.id, signal);
-              await manager!.verifySnapshot(workspace, signal);
+              if (!attach) await manager!.verifySnapshot(workspace, signal);
             }
           },
           ...(workspace ? { workspace: { id: workspace.id, path: workspace.path, rootDigest: workspace.rootDigest } } : {}),
@@ -435,6 +449,8 @@ export class WorkflowRuntime {
           ...(hostKey ? { host: { key: hostKey, attach } } : {}),
           deadlineAt: workflow.deadlineAt, signal,
         });
+        // Only a process that outlives this controller can keep the worktree: the lease says which one does.
+        if (workspace && hostKey && started.hosted) manager!.hosted(workspace, lease!, hostKey);
         this.runs.set(task.taskId, started);
         return started;
       };
@@ -514,28 +530,67 @@ export class WorkflowRuntime {
     } finally {
       this.runs.delete(task.taskId);
       binding.release();
-      // A shutdown leaves the process running for the next controller's replay to reattach.
       const shutdown = signal.aborted && stopReasonOf(signal) === 'shutdown' || run?.stopReason() === 'shutdown';
-      if (hostKey && !shutdown) await this.releaseHost(hostKey);
-      scratch?.release({ remove: finished, running: Boolean(hostKey && shutdown) });
-      if (workspace && lease) {
+      // The process this turn started, or the one it was to continue.
+      const key = hostKey ?? survivor?.hostKey;
+      // A shutdown leaves the process running for the next controller's replay to reattach. In a worktree it goes on
+      // working there, so it stays only as the holder of the lease, which waits with it for the turn that continues it.
+      const stays = Boolean(key && shutdown && (!workspace || manager!.holder(workspace) === key));
+      const ended = key && !stays ? await this.releaseHost(key) : true;
+      scratch?.release({ remove: finished, running: stays });
+      if (workspace && lease && !stays) {
         // Native termination is authoritative; retain the lease if it is uncertain.
-        if (!run || (this.deps.executionLedger && run.waitForQuiescence ? (await run.waitForQuiescence(5000)).state === 'quiescent' : await run.waitForExit(5000))) manager!.end(workspace, lease);
+        if (ended && (!run || (this.deps.executionLedger && run.waitForQuiescence ? (await run.waitForQuiescence(5000)).state === 'quiescent' : await run.waitForExit(5000)))) manager!.end(workspace, lease);
         else throw new Error('Workspace worker termination is uncertain; worktree retained and blocked');
+      } else if (workspace && key && !stays && ended) {
+        // The process to continue held the worktree, and the turn ended before taking its lease over.
+        manager!.vacate(workflow.workflowId, key);
       }
     }
   }
 
-  private async releaseHost(hostKey: string): Promise<void> {
-    if (this.releasing.has(hostKey)) return;
-    this.releasing.add(hostKey);
+  /**
+   * Ends a hosted process and forgets it. Resolves false when the process may still be running: its record then
+   * stays, discarded, and the orphan sweep tries again later.
+   */
+  private releaseHost(hostKey: string): Promise<boolean> {
+    const hosting = this.deps.runner.hosting;
+    // Without the host there is no telling whether the process still runs.
+    if (!hosting) return Promise.resolve(false);
+    let release = this.releasing.get(hostKey);
+    if (!release) {
+      release = (async () => {
+        let ended: boolean | undefined;
+        try {
+          ended = await hosting.release(hostKey);
+        } catch (error) {
+          this.log.warn('worker-host-release-failed', { hostKey, error: String(error) });
+        } finally {
+          this.releasing.delete(hostKey);
+          if (ended === false) {
+            const delayMs = Math.min((this.lingering.get(hostKey)?.delayMs ?? LINGER_RETRY_MS / 2) * 2, LINGER_RETRY_MAX_MS);
+            this.lingering.set(hostKey, { until: Date.now() + delayMs, delayMs });
+            this.log.warn('worker-host-termination-uncertain', { hostKey, retryInMs: delayMs });
+            this.kernel.discardWorkerHost(hostKey);
+          } else {
+            this.lingering.delete(hostKey);
+            this.kernel.removeWorkerHost(hostKey);
+          }
+        }
+        return ended === true;
+      })();
+      this.releasing.set(hostKey, release);
+    }
+    return release;
+  }
+
+  /** Ends a process that no turn continues. A worktree it was left working in is free once the process is known to be gone. */
+  private async abandonHost(record: { hostKey: string; workflowId: string }): Promise<void> {
+    if (!await this.releaseHost(record.hostKey)) return;
     try {
-      await this.deps.runner.hosting?.release(hostKey);
+      this.knownWorkspaces()?.vacate(record.workflowId, record.hostKey);
     } catch (error) {
-      this.log.warn('worker-host-release-failed', { hostKey, error: String(error) });
-    } finally {
-      this.releasing.delete(hostKey);
-      this.kernel.removeWorkerHost(hostKey);
+      this.log.warn('worker-host-vacate-failed', { hostKey: record.hostKey, error: String(error) });
     }
   }
 
@@ -543,9 +598,17 @@ export class WorkflowRuntime {
   private async releaseOrphanHosts(): Promise<void> {
     if (!this.deps.runner.hosting) return;
     for (const record of this.kernel.orphanWorkerHosts()) {
+      if (this.releasing.has(record.hostKey) || (this.lingering.get(record.hostKey)?.until ?? 0) > Date.now()) continue;
       this.log.info('worker-host-orphaned', { workflowId: record.workflowId, taskId: record.taskId, hostKey: record.hostKey, discard: record.discard });
-      await this.releaseHost(record.hostKey);
+      await this.abandonHost(record);
     }
+  }
+
+  /** The workspace service, when this runtime has ever managed a worktree. */
+  private knownWorkspaces(): WorkflowWorkspaces | undefined {
+    if (this.closed) return undefined;
+    if (this.workspaces || this.deps.path === ':memory:') return this.workspaces;
+    return existsSync(this.deps.path + '.workspaces.sqlite') ? this.workspaceManager() : undefined;
   }
 
   private workspaceManager(): WorkflowWorkspaces {
@@ -580,6 +643,8 @@ export class WorkflowRuntime {
     this.closed = true;
     // Fence calls before IPC/runner shutdown can turn an accepted child into a cancellation.
     this.kernel.beginShutdown();
+    // A worker that keeps running repeats what it was asking for once the next controller has taken its turn up.
+    this.ipc.beginClose();
     if (this.timer) clearInterval(this.timer);
     for (const run of this.scripts.values()) run.controller.abort(new WorkflowStopped('shutdown'));
     await Promise.allSettled([...this.scripts.values()].map(run => run.done));

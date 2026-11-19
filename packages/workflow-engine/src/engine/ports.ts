@@ -65,6 +65,8 @@ export type WorkerRunEvent =
 
 export interface WorkerRun {
   runId: string;
+  /** The process runs under the host the spec named: a 'shutdown' stop leaves it running for a later attach. */
+  hosted?: boolean;
   events(): AsyncIterable<WorkerRunEvent>;
   result: Promise<'completed' | 'stopped' | 'failed' | 'unknown'>;
   /** Delivers a user message into the running turn; absent when the harness cannot take one. */
@@ -85,8 +87,11 @@ export interface WorkerHosting {
   newKey(): string;
   /** True when `key` holds a process of `agentKind`, running or finished, that can be attached. */
   attachable(key: string, agentKind: string): Promise<boolean>;
-  /** Ends the process if it still runs and deletes its records. */
-  release(key: string): Promise<void>;
+  /**
+   * Ends the process if it still runs and deletes its records. Resolves false when the process may still be running:
+   * what it holds, such as a worktree, then stays held.
+   */
+  release(key: string): Promise<boolean>;
 }
 
 /**
