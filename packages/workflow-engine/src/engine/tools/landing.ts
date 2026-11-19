@@ -17,7 +17,7 @@ export const landingTools: WorkflowToolPlugin = {
           const input = Object.fromEntries(Object.entries(args).filter(([key]) => !CONTROL_ARGS.includes(key)));
           if (!ctx.host.landing) throw new Error('Landing is unavailable in this workflow');
           if (['completed', 'cancelled', 'cancelling'].includes(state.status) && Object.keys(input).length) throw new Error('The workflow has ended; its landing can no longer be changed');
-          return ctx.host.landing(ctx.store.public(state), input);
+          return ctx.host.landing(ctx.store.workspaceView(state), input);
         },
       },
     },

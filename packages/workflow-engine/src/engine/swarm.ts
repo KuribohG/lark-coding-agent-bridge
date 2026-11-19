@@ -734,8 +734,10 @@ export async function staffWorkspaces(ctx: KernelContext, state: WorkflowView, i
   }
   if (input.maxConcurrent !== undefined) boundedInteger(input.maxConcurrent, state.definition.maxConcurrentWorkers, 1, MAX_CONCURRENT_WORKERS);
   const signal = new AbortController().signal;
+  // One view for the whole staffing call: every member's worktree is created against the same state snapshot.
+  const view = ctx.store.workspaceView(state);
   const made = await Promise.all(names.map(async name => {
-    const created = await ctx.host.workspace!(ctx.store.public(state), { kind: 'create', key: `staff/${swarm.id}/${name}`, ...options }, signal) as { id?: unknown };
+    const created = await ctx.host.workspace!(view, { kind: 'create', key: `staff/${swarm.id}/${name}`, ...options }, signal) as { id?: unknown };
     if (typeof created?.id !== 'string') throw new Error('Workspace creation did not return an ID');
     return [name, created.id] as const;
   }));
@@ -783,7 +785,8 @@ export async function staffCleanups(ctx: KernelContext, state: WorkflowView, inp
   const pending = pendingCleanup(swarm, cleanupNames(swarm, input.cleanup));
   if (!pending.length) return [];
   const signal = new AbortController().signal;
-  await Promise.all(pending.map(item => ctx.host.workspace!(ctx.store.public(latest),
+  const view = ctx.store.workspaceView(latest);
+  await Promise.all(pending.map(item => ctx.host.workspace!(view,
     { kind: 'cleanup', key: `staff/cleanup/${swarm.id}/${item.name}`, workspace: item.workspace }, signal)));
   return pending;
 }

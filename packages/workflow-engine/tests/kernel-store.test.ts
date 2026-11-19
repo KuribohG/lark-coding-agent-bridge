@@ -296,6 +296,31 @@ describe('event-sourced workflow store', () => {
     expect(store.db.prepare('SELECT count(*) AS count FROM wf_texts').get()).toEqual({ count: 2 });
   });
 
+  it('gives a workspace host the slice it reads, not a copy of the whole state', async () => {
+    const path = await file();
+    const store = open(path);
+    const state = start(store, 'view');
+    store.transact(() => {
+      task(state, 't1', 'the full prompt');
+      emit(state, { type: 'artifact_added', artifact: { ref: 'artifact:1', kind: 'report', ...putText(state, 'report body'), createdAt: 1 } });
+    });
+    // The board is state the host never reads; a workspace call must not carry it (or a swarm) along.
+    store.transact(() => {
+      for (const seq of [1, 2, 3]) emit(state, { type: 'board_posted', post: { seq, id: 'p' + seq, author: 'main', to: [], text: 'post ' + seq, createdAt: 1 }, deliveries: [] });
+    });
+    const live = store.state('scope-view')!;
+    const view = store.workspaceView(live);
+    for (const key of ['board', 'swarms', 'definition', 'events', 'sessions', 'mailbox', 'workQueue']) expect(view).not.toHaveProperty(key);
+    expect(view).toMatchObject({ workflowId: 'view', deadlineAt: 2, root: live.root });
+    expect(view.script?.calls).toEqual([]);
+    expect(view.tasks).toMatchObject([{ taskId: 't1', status: 'queued', resultRefs: [] }]);
+    expect(view.artifacts[0]!.ref).toBe('artifact:1');
+    // The text is still readable, loaded on first access like the public shape's.
+    expect(view.artifacts[0]!.text).toBe('report body');
+    // Nothing is detached twice: the task view is a copy the host may keep, the artifacts keep the store's.
+    expect(view.tasks[0]).not.toBe(live.tasks[0]);
+  });
+
   it('amends the archived entry of a post that is resolved after it left the state', async () => {
     const path = await file();
     const first = new WorkflowStore(path, () => 1_000);

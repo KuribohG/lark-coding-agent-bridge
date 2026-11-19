@@ -131,7 +131,7 @@ export class ScriptApi {
       }
       emit(state, { type: 'script_key_recorded', list: 'workspaceCalls', key });
     }, 'script:' + runId);
-    const result = await host.workspace(store.public(state), args, signal);
+    const result = await host.workspace(store.workspaceView(state), args, signal);
     signal.throwIfAborted();
     const latest = requireState(store.state(scopeId, workflowId));
     if (ctx.closed || latest.status !== 'active' || latest.script?.runId !== runId || latest.script.status !== 'running') throw new Error('Script run is inactive');

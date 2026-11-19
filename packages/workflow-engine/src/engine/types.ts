@@ -647,6 +647,36 @@ export interface WorkflowWorkerResult {
   error?: string;
 }
 
+export interface WorkspaceTaskView {
+  taskId: string;
+  status: AgentTurn['status'];
+  workspaceId?: string;
+  /** Set when a durable member, not the main agent, runs the task; an approval requires a task without one. */
+  agentId?: string;
+  resultRefs: readonly string[];
+}
+
+export interface WorkspaceArtifactView {
+  ref: string;
+  /** Loaded from the store on first read, exactly as an artifact of the public state. */
+  readonly text: string;
+}
+
+/**
+ * What a workspace host reads of the state it is called for. Workspace calls are made per member when a swarm is
+ * staffed and live for the whole runtime of a landing, so they get this slice instead of a detached copy of the
+ * entire state: a large swarm's state is megabytes, and a copy of it outlives the call that made it.
+ */
+export interface WorkspaceStateView {
+  workflowId: string;
+  root: WorkflowRoot;
+  deadlineAt: number;
+  /** Calls of the script run that is asking, which a review must belong to. */
+  script?: { calls: ReadonlyArray<{ taskId: string }> };
+  tasks: ReadonlyArray<WorkspaceTaskView>;
+  artifacts: ReadonlyArray<WorkspaceArtifactView>;
+}
+
 export interface WorkflowHost extends WorkerExecutionPolicy {
   executionLedger?: ExecutionLedgerPort;
   /** Workers call the workflow through a host tool, so prompts must not name the shell CLI. */
@@ -665,13 +695,13 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
   getTimeoutMinutes?(root: WorkflowRoot): number;
   resolveWorker?(root: WorkflowRoot, selection: WorkerExecutionSelection): Promise<WorkerExecution>;
   resolveWorkspace?(root: WorkflowRoot, workflowId: string, workspaceId: string): Promise<void>;
-  workspace?(state: WorkflowState, input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
+  workspace?(state: WorkspaceStateView, input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
   /** Lands the commits of the worktree `taskId` runs in; resolves to a LandReport (workspace-types.ts). */
   /** Delivers text to the worker turn of `taskId` while it runs, as a user message in its session. */
   tell?(workflowId: string, taskId: string, text: string, messageId: string): Promise<WorkerInputStatus>;
-  land?(state: WorkflowState, input: { workspace: string; taskId: string }, signal: AbortSignal): Promise<unknown>;
+  land?(state: WorkspaceStateView, input: { workspace: string; taskId: string }, signal: AbortSignal): Promise<unknown>;
   /** Reports the landing and applies the main agent's changes to it; resolves to a LandingChange (workspace-types.ts). */
-  landing?(state: WorkflowState, input: Record<string, unknown>): Promise<unknown>;
+  landing?(state: WorkspaceStateView, input: Record<string, unknown>): Promise<unknown>;
   execute(request: WorkflowWorkerRequest): Promise<WorkflowWorkerResult>;
   wakeMain(scopeId: string): Promise<void>;
 }

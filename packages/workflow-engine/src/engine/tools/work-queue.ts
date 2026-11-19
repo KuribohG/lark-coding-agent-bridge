@@ -68,7 +68,7 @@ const submitWork: WorkflowTool = {
         if (!task.workspaceId) throw new Error('submit_work requires a member that runs in a managed worktree');
         if (!ctx.host.land) throw new Error('Landing is unavailable in this workflow');
         if (claim) holdClaim(state, task, caller.attemptId, claim, ctx.now(), LAND_LEASE_MS);
-        return { workspace: task.workspaceId, state: ctx.store.public(state) };
+        return { workspace: task.workspaceId, state: ctx.store.workspaceView(state) };
       });
       if ('prior' in start) return { status: 'landed', item: start.prior };
       // Checks may outlast any lease: keep the claim while they run, and stop landing once the member's turn is gone.

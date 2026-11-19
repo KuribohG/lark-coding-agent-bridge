@@ -6,7 +6,7 @@ import { workflowDigest } from './digest';
 import { durableEvent, eventEntity, eventTopics, type DomainEvent } from './events';
 import { evolve } from './evolve';
 import { RECORDS, type RecordKind } from './records';
-import type { ArtifactView, BoardPost, StoredArtifact, StoredTask, TaskView, TextRef, WorkflowData, WorkflowState, WorkflowView } from './types';
+import type { ArtifactView, BoardPost, StoredArtifact, StoredTask, TaskView, TextRef, WorkflowData, WorkflowState, WorkflowView, WorkspaceStateView } from './types';
 import { checkpointInBackground } from './wal-checkpointer';
 
 const TERMINAL = new Set<string>(['completed', 'cancelled']);
@@ -420,6 +420,28 @@ export class WorkflowStore {  readonly db: Database.Database;
         Object.defineProperty(target, key, { value, enumerable: true, configurable: true, writable: true });
         return value;
       } });
+  }
+
+  /**
+   * The slice of a state a workspace host reads (see WorkspaceStateView). Built fresh for each call and small on
+   * purpose: a workspace call is made per member when a swarm is staffed and lives as long as a landing runs, so a
+   * detached copy of the whole state would pile up with every member and outlive every hung call.
+   */
+  workspaceView(state: WorkflowView): WorkspaceStateView {
+    return {
+      workflowId: state.workflowId,
+      root: state.root,
+      deadlineAt: state.deadlineAt,
+      ...(state.script ? { script: { calls: state.script.calls.map(call => ({ taskId: call.taskId })) } } : {}),
+      tasks: state.tasks.map(task => ({ taskId: task.taskId, status: task.status,
+        ...(task.workspaceId === undefined ? {} : { workspaceId: task.workspaceId }),
+        ...(task.agentId === undefined ? {} : { agentId: task.agentId }), resultRefs: task.resultRefs })),
+      artifacts: state.artifacts.map(artifact => {
+        const view: { ref: string; text?: string } = { ref: artifact.ref };
+        this.lazyText(view, 'text', artifact.digest);
+        return view as { ref: string; text: string };
+      }),
+    };
   }
 
   text(digest: string): string {

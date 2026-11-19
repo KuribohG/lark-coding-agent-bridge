@@ -1,4 +1,4 @@
-import type { WorkflowState } from './types';
+import type { WorkspaceStateView } from './types';
 
 export interface WorkspaceBinding {
   id: string;
@@ -149,6 +149,6 @@ export type LandReport = (
 ) & { notice?: string };
 
 export interface WorkspaceContext {
-  state: WorkflowState;
+  state: WorkspaceStateView;
   signal: AbortSignal;
 }
