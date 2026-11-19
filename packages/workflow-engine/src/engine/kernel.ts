@@ -243,9 +243,9 @@ export class WorkflowKernel {
     return this.ctx.scheduler.admitReady();
   }
 
-  /** A running worker produced output; `busy` means a tool is in flight and silence is expected. */
-  noteWorkerActivity(taskId: string, attemptId: string, busy: boolean): void {
-    this.ctx.scheduler.noteActivity(taskId, attemptId, busy);
+  /** A running worker produced output; `busy` means a tool is in flight and silence is expected, until `busyUntil` when given. */
+  noteWorkerActivity(taskId: string, attemptId: string, busy: boolean, busyUntil?: number): void {
+    this.ctx.scheduler.noteActivity(taskId, attemptId, busy, busyUntil);
   }
 
   /** A process a previous controller left running for this turn. */

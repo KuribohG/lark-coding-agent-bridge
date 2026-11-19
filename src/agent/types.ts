@@ -120,7 +120,14 @@ export type AgentEvent =
       sessionId?: string;
     }
   | { type: 'retry'; attempt: number; maxAttempts: number; delayMs: number; failureKind?: 'rate_limit' | 'transient' | 'authentication' }
-  | { type: 'tool_use'; id: string; name: string; input: unknown }
+  | {
+      type: 'tool_use'; id: string; name: string; input: unknown;
+      /**
+       * How long the agent lets this call run before stopping it itself, when the adapter knows. A caller waiting
+       * on the call may take one that is still out well past this for hung.
+       */
+      timeoutMs?: number;
+    }
   | { type: 'tool_result'; id: string; output: string; isError: boolean }
   | {
       type: 'usage';

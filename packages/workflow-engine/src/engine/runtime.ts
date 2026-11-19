@@ -51,6 +51,8 @@ export interface WorkflowRuntimeDeps extends WorkerExecutionPolicy {
   getTimeoutMinutes?(root: WorkflowRoot): number;
   /** Silence after which a running worker with no tool in flight is presumed hung; 0 disables the watchdog. */
   stallMs?: number;
+  /** The same with a tool in flight that has no due time of its own; 0 leaves such a worker alone. */
+  toolStallMs?: number;
   /** Backoff before each retry of a failed attempt, in order (last repeats). */
   retryDelaysMs?: readonly number[];
   /** Current authorization of a main session; undefined revokes it. Workers stop when the digest changes. */
@@ -110,6 +112,7 @@ export class WorkflowRuntime {
       hostTools: deps.hostTools,
       getTimeoutMinutes: deps.getTimeoutMinutes,
       ...(deps.stallMs === undefined ? {} : { stallMs: deps.stallMs }),
+      ...(deps.toolStallMs === undefined ? {} : { toolStallMs: deps.toolStallMs }),
       ...(deps.retryDelaysMs === undefined ? {} : { retryDelaysMs: deps.retryDelaysMs }),
       checkSelection: deps.checkSelection,
       nativeIdKind: deps.nativeIdKind,
@@ -454,7 +457,7 @@ export class WorkflowRuntime {
           request.onRun(active.runId);
           for await (const event of active.events()) {
             if (event.type === 'session') { nativeSessionId = event.nativeSessionId; request.onSession(event.nativeSessionId, event.model); }
-            else if (event.type === 'activity') this.kernel.noteWorkerActivity(task.taskId, attemptId, event.busy);
+            else if (event.type === 'activity') this.kernel.noteWorkerActivity(task.taskId, attemptId, event.busy, event.busyUntil);
             else if (event.type === 'retry') { text = undefined; error = undefined; normal = false; }
             else if (event.type === 'final_text') text = event.text;
             else if (event.type === 'error') error = event.message;

@@ -18,15 +18,23 @@ import { bridgeAgentKind, bridgeWorkerPolicy } from './execution';
 type BridgeGrant = { execution: WorkerExecution; policy: RunPolicyAllow };
 
 export interface BridgeWorkflowRuntimeDeps extends Pick<WorkflowRuntimeDeps,
-  'path' | 'workspaceRoot' | 'scratchRoot' | 'getTimeoutMinutes' | 'stallMs' | 'wakeMain' | 'showPlan' | 'notify' | 'cliPath'> {
+  'path' | 'workspaceRoot' | 'scratchRoot' | 'getTimeoutMinutes' | 'stallMs' | 'toolStallMs' | 'wakeMain' | 'showPlan' | 'notify' | 'cliPath'> {
   executor: RunExecutor;
   resolve(scopeId: string): Promise<{ root: WorkflowRoot; policy: RunPolicyAllow } | undefined>;
   resolveWorker?(root: WorkflowRoot, selection: WorkerExecutionSelection, policy: RunPolicyAllow): Promise<BridgeGrant>;
+  /** How long past its own time limit a tool call may stay out before it is reported overdue; two minutes when omitted. */
+  toolOverdueGraceMs?: number;
 }
 
 // The engine and the bridge share one stop vocabulary; keep them aligned.
 const sameStopReasons: [WorkflowStopReason, RunStopReason] extends [RunStopReason, WorkflowStopReason] ? true : never = true;
 void sameStopReasons;
+
+/**
+ * How long past its own time limit a tool call may stay out before the engine takes it for hung: time for the agent
+ * to stop the call, collect its output and report the result.
+ */
+const TOOL_OVERDUE_GRACE_MS = 2 * 60_000;
 
 /** Workers run under bin/run-host.mjs like conversation turns, so a bridge restart reattaches instead of rerunning them. */
 const runHosting: WorkerHosting = {
@@ -47,6 +55,7 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
     if (resolved.policy.cwdRealpath !== root.cwdRealpath) throw new Error('Worker resolver changed authorized scope');
     return resolved;
   };
+  const overdueGraceMs = deps.toolOverdueGraceMs ?? TOOL_OVERDUE_GRACE_MS;
   const workerGrant = (root: WorkflowRoot, execution: WorkerExecution) =>
     grant(root, { agentKind: execution.agentKind, ...execution.modelSettings });
 
@@ -97,28 +106,41 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
         async *events() {
           // Liveness for the kernel's stall watchdog: any output counts, and a tool in flight explains silence.
           // The engine only needs the transitions, so repeated chatter is coalesced to one event per interval.
-          let tool = false;
+          // Calls in flight by id, as agents run calls side by side and one returning says nothing of the others;
+          // each with the time it is due back, where the adapter knows the limit the agent puts on it.
+          const tools = new Map<string, number | undefined>();
           // The turn ended with background tasks still running and the run is held for them: silence until one
           // finishes is expected, exactly as with a tool in flight.
           let held = false;
           let busy = false;
+          let busyUntil: number | undefined;
           let sentAt = 0;
           const activity = () => {
             const now = Date.now();
-            const next = tool || held;
-            if (next === busy && now - sentAt < 5_000) return undefined;
-            busy = next; sentAt = now;
-            return { type: 'activity' as const, busy };
+            const next = tools.size > 0 || held;
+            // The first call to fall due is the one that shows a hang; calls without a limit leave it to the engine's.
+            let due: number | undefined;
+            for (const at of tools.values()) if (at !== undefined && (due === undefined || at < due)) due = at;
+            if (next === busy && due === busyUntil && now - sentAt < 5_000) return undefined;
+            busy = next; busyUntil = due; sentAt = now;
+            return { type: 'activity' as const, busy, ...(due === undefined ? {} : { busyUntil: due }) };
           };
           for await (const event of submitted.subscribe()) {
             if (event.type === 'system') {
               const id = event[idField];
               if (id) yield { type: 'session', nativeSessionId: id, ...(event.model ? { model: event.model } : {}) };
-            } else if (event.type === 'retry') yield { type: 'retry' };
-            else if (event.type === 'tool_use' || event.type === 'tool_result' || event.type === 'text'
+            } else if (event.type === 'retry') {
+              // The request is made again, by this process or a new one: no call of the earlier try is out any more.
+              if (tools.size > 0) { tools.clear(); const signal = activity(); if (signal) yield signal; }
+              yield { type: 'retry' };
+            } else if (event.type === 'tool_use' || event.type === 'tool_result' || event.type === 'text'
               || event.type === 'thinking' || event.type === 'usage' || event.type === 'status') {
-              if (event.type === 'tool_use') tool = true;
-              else if (event.type === 'tool_result') tool = false;
+              if (event.type === 'tool_use') {
+                tools.set(event.id, event.timeoutMs === undefined ? undefined : Date.now() + event.timeoutMs + overdueGraceMs);
+              } else if (event.type === 'tool_result' && !tools.delete(event.id)) {
+                // A result that matches no call: this agent's ids cannot be relied on, so no call is taken to be out.
+                tools.clear();
+              }
               held = event.type === 'status' && event.code === 'background_tasks';
               const signal = activity(); if (signal) yield signal;
             } else if (event.type === 'final_text') yield { type: 'final_text', text: event.content };
@@ -135,6 +157,7 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
   return new WorkflowRuntime({
     path: deps.path, workspaceRoot: deps.workspaceRoot, scratchRoot: deps.scratchRoot, getTimeoutMinutes: deps.getTimeoutMinutes,
     ...(deps.stallMs === undefined ? {} : { stallMs: deps.stallMs }),
+    ...(deps.toolStallMs === undefined ? {} : { toolStallMs: deps.toolStallMs }),
     wakeMain: deps.wakeMain, showPlan: deps.showPlan, notify: deps.notify, cliPath: deps.cliPath,
     ...bridgeWorkerPolicy,
     runner,

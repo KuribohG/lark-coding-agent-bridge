@@ -52,8 +52,12 @@ export interface WorkerRunSpec {
 export type WorkerRunEvent =
   | { type: 'session'; nativeSessionId: string; model?: string }
   | { type: 'retry' }
-  /** The agent produced output; `busy` reports whether a tool call is in flight, when a tool is what keeps it silent. */
-  | { type: 'activity'; busy: boolean }
+  /**
+   * The agent produced output; `busy` reports whether a tool call is in flight, when a tool is what keeps it silent.
+   * `busyUntil` is the wall-clock time by which a call in flight is due back, for a host that knows the limits its
+   * agent puts on its tools: a call still out after it is taken for hung. Without it the host's tool limit applies.
+   */
+  | { type: 'activity'; busy: boolean; busyUntil?: number }
   | { type: 'final_text'; text: string }
   | { type: 'error'; message: string }
   | { type: 'done'; normal: boolean }

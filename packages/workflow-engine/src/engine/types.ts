@@ -633,6 +633,11 @@ export interface WorkflowHost extends WorkerExecutionPolicy {
   log?: WorkflowLogger;
   /** Silence after which a running worker with no tool in flight is treated as hung. Defaults to 15 minutes. */
   stallMs?: number;
+  /**
+   * Silence after which a running worker is treated as hung although a tool is in flight, for tools the host reports
+   * no due time for. Defaults to 7 hours; 0 leaves such a worker alone.
+   */
+  toolStallMs?: number;
   /** Backoff before each retry of a failed attempt, in order (last repeats). Defaults to 30 s, 2 min, 5 min. */
   retryDelaysMs?: readonly number[];
   resolveRoot(scopeId: string): Promise<WorkflowRoot | undefined>;

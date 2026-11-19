@@ -20,6 +20,12 @@ const HEARTBEAT_MS = 5_000;
 const ROOT_FRESH_MS = 500;
 /** Silence after which a worker with no tool in flight is presumed hung. */
 export const DEFAULT_STALL_MS = 15 * 60_000;
+/**
+ * Silence after which a worker is presumed hung even with a tool in flight, when the host named no time by which the
+ * tool is due back. Above the longest wait an agent imposes on itself: Claude Code holds a turn for its background
+ * tasks for six hours.
+ */
+export const DEFAULT_TOOL_STALL_MS = 7 * 60 * 60_000;
 /** Retries granted to one task after retryable failures. Retries do not consume the task budget. */
 export const MAX_TASK_RETRIES = 3;
 /** Backoff before each retry, in order; the last entry repeats. */
@@ -41,10 +47,10 @@ interface RunningTurn {
 /** Drives worker turns: deadlines, claim leases, admission under concurrency limits, attempt bookkeeping and main-agent wake-ups. */
 export class WorkflowScheduler {
   private readonly running = new Map<string, RunningTurn>();
-  /** Last sign of life of a running attempt, on the wall clock, with whether a tool is in flight. */
-  private readonly activity = new Map<string, { attemptId: string; at: number; busy: boolean }>();
-  /** Attempts the watchdog aborted; execute() records them as retryable stalls rather than cancellations. */
-  private readonly stalled = new Map<string, string>();
+  /** Last sign of life of a running attempt, on the wall clock, with whether a tool is in flight and when it is due back. */
+  private readonly activity = new Map<string, { attemptId: string; at: number; busy: boolean; busyUntil?: number }>();
+  /** Attempts the watchdog aborted, with why; execute() records them as retryable stalls rather than cancellations. */
+  private readonly stalled = new Map<string, { attemptId: string; error: string }>();
   private pumping = false;
   private heartbeatAt = 0;
   private readonly waking = new Set<string>();
@@ -116,31 +122,48 @@ export class WorkflowScheduler {
   }
 
   /**
-   * Records that a running worker produced output. A turn with no tool in flight is expected to keep talking; the
-   * host's stall watchdog stops it otherwise, and the task is retried instead of failing outright.
+   * Records that a running worker produced output. A turn with no tool in flight is expected to keep talking, and one
+   * with a tool in flight to hear from it by `busyUntil` or, when the host cannot say, within the tool limit; the
+   * stall watchdog stops it otherwise, and the task is retried instead of failing outright.
    */
-  noteActivity(taskId: string, attemptId: string, busy: boolean): void {
+  noteActivity(taskId: string, attemptId: string, busy: boolean, busyUntil?: number): void {
     const current = this.activity.get(taskId);
     if (current && current.attemptId !== attemptId) return;
-    this.activity.set(taskId, { attemptId, at: this.ctx.now(), busy });
+    this.activity.set(taskId, { attemptId, at: this.ctx.now(), busy, ...(busy && busyUntil !== undefined ? { busyUntil } : {}) });
   }
 
-  /** True when the watchdog, not the caller, stopped this attempt. */
-  stalledAttempt(taskId: string, attemptId: string): boolean {
-    return this.stalled.get(taskId) === attemptId;
+  /** Why the watchdog stopped this attempt; undefined when it was not the watchdog that did. */
+  stalledAttempt(taskId: string, attemptId: string): string | undefined {
+    const stall = this.stalled.get(taskId);
+    return stall?.attemptId === attemptId ? stall.error : undefined;
   }
 
-  /** Stops attempts that went silent; a tool in flight suspends the check, as a long build is not a hang. */
+  /**
+   * Stops attempts that went silent. A tool in flight explains silence, as a long build is not a hang, but only for as
+   * long as the tool may take: a call that never returns would otherwise hold its slot until the workflow ends.
+   */
   private checkStalls(): void {
     const limit = this.ctx.host.stallMs ?? DEFAULT_STALL_MS;
     if (!limit) return;
+    const toolLimit = this.ctx.host.toolStallMs ?? DEFAULT_TOOL_STALL_MS;
+    const now = this.ctx.now();
+    const minutes = (ms: number) => Math.round(ms / 60_000);
     for (const [taskId, turn] of this.running) {
       const record = this.activity.get(taskId);
-      if (!record || record.busy || record.attemptId !== turn.attemptId) continue;
-      const silent = this.ctx.now() - record.at;
-      if (silent < limit) continue;
-      this.stalled.set(taskId, turn.attemptId);
-      this.ctx.log.warn('worker-stalled', { workflowId: turn.workflowId, taskId, attemptId: turn.attemptId, silentMs: silent });
+      if (!record || record.attemptId !== turn.attemptId || this.stalled.get(taskId)?.attemptId === turn.attemptId) continue;
+      const silent = now - record.at;
+      let error: string | undefined;
+      if (!record.busy) {
+        if (silent >= limit) error = `Worker produced no output for ${minutes(limit)} minutes and was stopped`;
+      } else if (record.busyUntil !== undefined) {
+        if (now >= record.busyUntil) error = 'A tool call did not return within its time limit and the worker was stopped';
+      } else if (toolLimit && silent >= toolLimit) {
+        error = `Worker produced no output for ${minutes(toolLimit)} minutes with a tool call in flight and was stopped`;
+      }
+      if (!error) continue;
+      this.stalled.set(taskId, { attemptId: turn.attemptId, error });
+      this.ctx.log.warn('worker-stalled', { workflowId: turn.workflowId, taskId, attemptId: turn.attemptId, silentMs: silent,
+        ...(record.busy ? { tool: true } : {}) });
       turn.controller.abort(new WorkflowStopped('cancelled'));
     }
   }
@@ -451,7 +474,7 @@ export class WorkflowScheduler {
         // Not a cancellation: the host watchdog stopped a worker that went silent, which is worth another attempt.
         outcome = 'stalled';
         status = 'failed';
-        error = `Worker produced no output for ${Math.round((ctx.host.stallMs ?? DEFAULT_STALL_MS) / 60_000)} minutes and was stopped`;
+        error = stalled;
       } else if (signal?.aborted) {
         status = 'cancelled';
       } else if (task.waitingWorkflowId && !result.question && ['completed','stopped'].includes(result.status)) {
@@ -471,7 +494,7 @@ export class WorkflowScheduler {
         status = 'failed';
         error = result.error ?? 'Worker did not produce a bounded final answer with a normal terminal result';
       }
-      const failureKind = status === 'failed' ? classifyFailure(stalled, error, stopReason) : undefined;
+      const failureKind = status === 'failed' ? classifyFailure(stalled !== undefined, error, stopReason) : undefined;
       // A governed native turn cannot be submitted again without proof that its first submission never happened.
       const retry = (!ctx.host.executionLedger || result.confirmedNotSubmitted === true)
         && failureKind !== undefined && this.retryDue(task, failureKind, state, cancelled);
