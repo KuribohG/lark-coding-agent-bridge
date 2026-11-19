@@ -1,12 +1,12 @@
 /**
  * Ceilings on what one workflow may hold. They bound memory and journal growth and catch runaway scripts; they are
  * not the budget of a run. A workflow asks for the agents and concurrency it needs (`maxAgents`, `maxConcurrent`)
- * and gets small defaults otherwise. Sized for a few hundred workers running at once in one workflow tree; how many
+ * and gets small defaults otherwise. Sized for several hundred workers running at once in one workflow tree; how many
  * tasks a workflow runs over its lifetime is not limited here.
  */
 
 /** Workers one workflow tree may run at once; `maxConcurrent` asks for up to this many. */
-export const MAX_CONCURRENT_WORKERS = 256;
+export const MAX_CONCURRENT_WORKERS = 512;
 /**
  * Ceiling of `maxAgents`. The number of agent calls has no fixed limit: finished tasks leave the state for the
  * archive (archive.ts), so a workflow's budget is whatever it asks for and gets a small default otherwise.
@@ -28,27 +28,35 @@ export const SCRIPT_MEMORY_BYTES = 256 * 1024 * 1024;
 
 export const MAX_CHILD_WORKFLOWS = 256;
 
-/** Durable members of one workflow, across all its swarms and discussions. */
-export const MAX_WORKFLOW_MEMBERS = 512;
+/** Durable members of one workflow, across all its swarms and discussions. Retired members stay in this count. */
+export const MAX_WORKFLOW_MEMBERS = 2048;
 /** Members a swarm may be declared with, the lead included. */
-export const SWARM_DECLARED_MEMBERS = 256;
-/** Members a swarm may ever hold: declared, added by the lead and retired. */
-export const SWARM_MAX_MEMBERS = 320;
+export const SWARM_DECLARED_MEMBERS = 512;
+/**
+ * Members a swarm may hold at once: declared, added by the lead, and not retired or failed. A long-running swarm
+ * replaces members as they fail or finish; the live count, not the churn history, decides whether it can take more.
+ */
+export const SWARM_MAX_LIVE_MEMBERS = 512;
+/**
+ * Members a swarm may ever hold: declared, added by the lead, and since retired or failed. Bounds the member records
+ * one swarm keeps in the workflow state, so retiring and replacing members does not grow it without limit.
+ */
+export const SWARM_MAX_MEMBERS = 2048;
 /**
  * Ceiling of a swarm's `maxTurns`: wake-ups of one member other than the lead. Completed turns are archived, so this
  * does not bound state; it stops members that keep waking each other.
  */
 export const SWARM_MAX_TURNS = 4096;
 /** Member names one board post, or one quiet wait, may list. */
-export const MAX_NAMED_MEMBERS = 256;
+export const MAX_NAMED_MEMBERS = 512;
 
 export const MAX_WAITS = 2048;
 export const MAX_CONTROL_OPERATIONS = 2048;
-export const MAX_WORKSPACE_KEYS = 1024;
+export const MAX_WORKSPACE_KEYS = 4096;
 /** Managed worktrees of one workflow: one for each swarm member that lands its own work, plus review and integration ones. */
-export const MAX_WORKSPACES = 384;
+export const MAX_WORKSPACES = 1024;
 /** Workspace records of one workflow: worktrees, frozen changes, approvals, checks and the operations that made them. */
-export const MAX_WORKSPACE_RECORDS = 4096;
+export const MAX_WORKSPACE_RECORDS = 16_384;
 /**
  * New worktrees whose files are written at once. Git registers a worktree in a few steps, so registration stays
  * serialized per repository; writing the checked-out files is the expensive part and runs in this many slots.

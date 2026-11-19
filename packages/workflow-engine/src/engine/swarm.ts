@@ -6,7 +6,7 @@ import type { DomainEvent } from './events';
 import { boardTotal, callCount, pushEvent, readArtifact, taskById } from './kernel-state';
 import { emit, readText } from './kernel-store';
 import type { KernelContext } from './kernel-context';
-import { BOARD_ANNOUNCE_TOPIC, BOARD_HANDOFF_TOPIC, MAX_CONCURRENT_WORKERS, SWARM_DECLARED_MEMBERS, SWARM_MAX_MEMBERS, SWARM_MAX_TURNS } from './limits';
+import { BOARD_ANNOUNCE_TOPIC, BOARD_HANDOFF_TOPIC, MAX_CONCURRENT_WORKERS, SWARM_DECLARED_MEMBERS, SWARM_MAX_LIVE_MEMBERS, SWARM_MAX_MEMBERS, SWARM_MAX_TURNS } from './limits';
 import { workerSelection } from './execution';
 import { boundedInteger, parseScriptAgentCall, scriptText } from './script-contract';
 import { WAKE_MAX_MINUTES } from './steering';
@@ -138,6 +138,20 @@ export const memberSwarm = ownerOf;
 
 function nameTaken(state: WorkflowView, name: string): boolean {
   return Boolean(state.agents?.some(agent => agent.key === name) || ownerOf(state, name));
+}
+
+/**
+ * Refuses members a swarm cannot take. The live count is what the run can actually staff, so retired and failed
+ * members do not block replacements; the lifetime count keeps the member records in the state bounded.
+ */
+export function assertRoomFor(swarm: Pick<SwarmView, 'members'>, names: readonly string[]): void {
+  const live = swarm.members.filter(member => !member.stopped).length;
+  if (live + names.length > SWARM_MAX_LIVE_MEMBERS) {
+    throw new Error(`A swarm runs at most ${SWARM_MAX_LIVE_MEMBERS} live members; retire members, clean their worktrees, or revive fewer before adding more`);
+  }
+  if (swarm.members.length + names.length > SWARM_MAX_MEMBERS) {
+    throw new Error(`A swarm holds at most ${SWARM_MAX_MEMBERS} members over its life, retired and failed ones included`);
+  }
 }
 
 /** Called after resolving every member's authorized execution binding. Creates the swarm, or rejoins it on replay. */
@@ -601,10 +615,10 @@ export async function staffWorkspaces(ctx: KernelContext, state: WorkflowView, i
   const swarm = runningSwarm(state, input.swarm);
   const like = likeMember(swarm, input.like);
   if (like.workflowTool) throw new Error('Workspace v1 does not support nested workflow delegation');
-  if (!Array.isArray(input.add) || !input.add.length || input.add.length > 64) throw new Error('add is an array of 1–64 new member names');
+  if (!Array.isArray(input.add) || !input.add.length || input.add.length > 256) throw new Error('add is an array of 1–256 new member names');
   const names = input.add.map(memberName);
   if (new Set(names).size !== names.length) throw new Error('Member names must be unique');
-  if (swarm.members.length + names.length > SWARM_MAX_MEMBERS) throw new Error(`A swarm holds at most ${SWARM_MAX_MEMBERS} members, retired ones included`);
+  assertRoomFor(swarm, names);
   const taken = names.find(name => nameTaken(state, name));
   if (taken) throw new Error('Member name is already used in this workflow: ' + taken);
   // Validate what the change will re-check, so a rejected staffing call does not leave worktrees behind.
@@ -632,7 +646,7 @@ function cleanupNames(swarm: SwarmView, value: unknown): string[] {
     ? swarm.members.filter(member => member.stopped === 'retired' && member.workspace && !member.cleaned).map(member => member.name)
     : Array.isArray(value) ? value.map(name => scriptText(name, 'member name', 100)) : undefined;
   if (!names) throw new Error('cleanup is "retired" or an array of member names');
-  if (names.length > 64) throw new Error('cleanup names at most 64 members');
+  if (names.length > 256) throw new Error('cleanup names at most 256 members');
   if (new Set(names).size !== names.length) throw new Error('Member names must be unique');
   return names;
 }
@@ -643,19 +657,19 @@ function pendingCleanup(swarm: SwarmView, names: string[]): Array<{ name: string
     const member = swarm.members.find(item => item.name === name);
     if (!member) throw new Error('Unknown swarm member: ' + name);
     if (member.cleaned) return [];
-    if (member.stopped !== 'retired') throw new Error(`Member ${name} is still running or failed; retire it before cleaning its worktree`);
+    if (!member.stopped) throw new Error(`Member ${name} is still running; retire it before cleaning its worktree`);
     if (!member.workspace) throw new Error(`Member ${name} has no managed worktree`);
     return [{ name, workspace: member.workspace }];
   });
 }
 
 /**
- * Releases the worktrees of retired members, one per name, so a long-running swarm does not keep every directory it
- * ever made against the workflow's workspace budget. Cleanup is the host operation behind the script's
- * `cleanupWorkspace`, and like it, it only removes a worktree that is idle and holds no unintegrated changes; the
- * members the script removed with its own key are reported as removed again rather than failing. `staffSwarm`
- * records the release in the change that marks the members cleaned. A failed member is not cleaned: reviving it runs
- * its turn in the same worktree, so retire it first if its worktree is no longer wanted.
+ * Releases the worktrees of retired or failed members, one per name, so a long-running swarm does not keep every
+ * directory it ever made against the workflow's workspace budget. Cleanup is the host operation behind the script's
+ * `cleanupWorkspace`: it removes an idle worktree together with any uncommitted or unintegrated work in it, since a
+ * member that cannot be revived is usually better redone than kept for work nobody may ever land. The members the
+ * script removed with its own key are reported as removed again rather than failing. `staffSwarm` records the
+ * release in the change that marks the members cleaned.
  */
 export async function staffCleanups(ctx: KernelContext, state: WorkflowView, input: Record<string, unknown>): Promise<Array<{ name: string; workspace: string }> | undefined> {
   if (input.cleanup === undefined) return undefined;
@@ -753,10 +767,10 @@ export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, 
     result.cleaned = cleaned;
   }
   if (input.add !== undefined) {
-    if (!Array.isArray(input.add) || !input.add.length || input.add.length > 64) throw new Error('add is an array of 1–64 new member names');
+    if (!Array.isArray(input.add) || !input.add.length || input.add.length > 256) throw new Error('add is an array of 1–256 new member names');
     const names = input.add.map(memberName);
     if (new Set(names).size !== names.length) throw new Error('Member names must be unique');
-    if (swarm.members.length + names.length > SWARM_MAX_MEMBERS) throw new Error(`A swarm holds at most ${SWARM_MAX_MEMBERS} members, retired ones included`);
+    assertRoomFor(swarm, names);
     const like = likeMember(swarm, input.like);
     const binding = chosen ? execution! : like.execution as WorkerExecution;
     const led = input.leads === undefined ? undefined : ledQueues(input.leads);

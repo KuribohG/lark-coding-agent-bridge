@@ -54,11 +54,11 @@ Declared swarm members take the `workspace` ID of a worktree the script created.
 
 A member added without `workspace` runs in the workflow's own checkout: it cannot `submit_work`, and editing code there races the main agent and every other member. Worktrees made this way follow the same retention, cleanup, budget and landing rules as script-made ones.
 
-`staff_swarm({cleanup:'retired'})` (or a list of member names) releases those worktrees once their members are retired, so a long-running swarm does not hold a directory for every member it ever had against the workflow's workspace budget. It is the same host operation as the script's `cleanupWorkspace`: an idle worktree with no unintegrated changes is removed, one with uncommitted work or a running task is kept with an error, and a worktree the script already removed reports as removed rather than failing. Failed members are not cleaned: `revive` runs their turn in the same worktree, so retire them first if the directory is no longer wanted; a cleaned member keeps its name but cannot be revived or given another worktree.
+`staff_swarm({cleanup:'retired'})` (or a list of member names) releases those worktrees once their members are retired, so a long-running swarm does not hold a directory for every member it ever had against the workflow's workspace budget. It is the same host operation as the script's `cleanupWorkspace`: an idle worktree is removed together with any uncommitted or unintegrated work in it, a worktree with a running task is kept with an error, and a worktree the script already removed reports as removed rather than failing. A failed member can be cleaned directly; `revive` runs its turn in the same worktree, so cleaning it is how a run gives up on that member's intermediate work and redoes it. A cleaned member keeps its name but cannot be revived or given another worktree.
 
 ## APIs
 
-Every operation requires an immutable, unique `key` (1–100 characters, no surrounding whitespace or `@` prefix). Keys share the agent/queue/mailbox/control namespace. Each script execution allows 128 workspace calls; each workflow retains at most 256 workspace keys, 32 workspaces and 512 workspace journal records, including internal artifacts.
+Every operation requires an immutable, unique `key` (1–100 characters, no surrounding whitespace or `@` prefix). Keys share the agent/queue/mailbox/control namespace. Each script execution allows 128 workspace calls; each workflow retains at most 4096 workspace keys, 1024 workspaces and 16384 workspace journal records, including internal artifacts.
 
 | API | Result and requirements |
 | --- | --- |
@@ -70,7 +70,7 @@ Every operation requires an immutable, unique `key` (1–100 characters, no surr
 | `integrateChanges({key,approvals,base?,target?})` | `{workspace,status,headCommit,targetRef,expectedHead,remaining,conflict?}`. Accepts 1–16 distinct approval IDs. `target` is a simple name under `refs/heads/bridge-workflow/<workflow-id>/`, default `result`. Captures the existing target or baseline before combining commits. |
 | `checkWorkspace({key,workspace,commands})` | `{id,workspaceId,headCommit,tree,passed,commands}` tied to the clean revision before and after the checks. Each command is `{argv:string[],timeoutMs?}`; first failure stops the sequence. |
 | `acceptIntegration({key,workspace,checks})` | `{headCommit,branch,completed:true,...}` after passing checks and a compare-and-swap of the private target. Rejects conflict workspaces, changed revisions, an advanced target, or a target checked out elsewhere. |
-| `cleanupWorkspace({key,workspace})` | Removes a clean, unused workspace only if unchanged from its baseline or its exact integration head was accepted. Modified/unintegrated/occupied workspaces are retained. Candidate refs remain pinned. |
+| `cleanupWorkspace({key,workspace})` | Removes an unused workspace, discarding uncommitted and unintegrated changes in it. Occupied workspaces (a running task or check) are retained. Candidate refs remain pinned. |
 
 Integration preserves ancestry with deterministic merge commits. A change's baseline must already be an ancestor of the integration head: integrate dependencies first. Merging cleanly is insufficient; combined behavior must pass checks. Checks may inspect another candidate too, but only checks for the actual prepared integration can authorize acceptance. A changed integration needs another freeze/review/integration, not just another passing command.
 

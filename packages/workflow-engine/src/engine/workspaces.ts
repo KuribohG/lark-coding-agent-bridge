@@ -231,7 +231,8 @@ export class WorkflowWorkspaces {
   }
 
   private async materialize(ctx: WorkspaceContext, op: RecordRow, seed: { repository: string; commonDir: string; baseCommit: string; kind: WorkspaceBinding['kind']; isolation?: 'clone'; changeId?: string }, checkout = seed.baseCommit): Promise<WorkspaceBinding> {
-    const count = (this.db.prepare("SELECT COUNT(*) AS n FROM workspace_records WHERE workflow=? AND kind='workspace'").get(op.workflow) as { n: number }).n;
+    // Removed worktrees are kept as records for replay and audit, but they no longer hold a directory or a slot.
+    const count = (this.db.prepare("SELECT COUNT(*) AS n FROM workspace_records WHERE workflow=? AND kind='workspace' AND COALESCE(json_extract(data,'$.status'),'')!='removed'").get(op.workflow) as { n: number }).n;
     const existing = this.db.prepare('SELECT id FROM workspace_records WHERE workflow=? AND key=?').get(op.workflow, `@${op.id}/workspace`);
     if (!existing && count >= MAX_WORKSPACES) throw new Error(`Workspace budget reached (${MAX_WORKSPACES} per workflow)`);
     let ws = this.internal<WorkspaceBinding>(op, 'workspace', 'workspace', id => ({ id, workflowId: op.workflow,
@@ -460,17 +461,14 @@ export class WorkflowWorkspaces {
     ws = await this.binding(ctx.state.root, op.workflow, ws.id, ctx.signal);
     const token = this.begin(ws);
     try {
-      const pinned = await this.clean(ws, ctx.signal);
-      const accepted = this.db.prepare("SELECT 1 FROM workspace_records WHERE workflow=? AND kind='accepted' AND json_extract(data,'$.completed')=1 AND json_extract(data,'$.workspace')=? AND json_extract(data,'$.headCommit')=?").get(op.workflow, ws.id, pinned.headCommit);
-      const target = await this.landedHead(op.workflow, ws.repository, ctx.signal);
-      const landed = target && !(await this.git(ws.path, ['merge-base', '--is-ancestor', pinned.headCommit, target], ctx.signal, true)).code;
-      if (pinned.headCommit !== ws.baseCommit && !accepted && !landed) throw new Error('Keep workspaces with unintegrated changes');
+      // Cleanup discards the directory, uncommitted and unintegrated changes included: a member that cannot be
+      // revived is better redone than kept around for work nobody may ever land.
       this.save(op, { removing: true, token });
       if (ws.isolation === 'clone') await this.dropClone(ws, ctx.signal);
       else {
         const unlock = await this.worktree(ws, ['unlock', ws.path], ctx.signal, true);
         if (unlock.code && !unlock.stderr.includes('not locked')) throw new Error('Cannot unlock worktree');
-        await this.worktree(ws, ['remove', ws.path], ctx.signal);
+        await this.worktree(ws, ['remove', '--force', ws.path], ctx.signal);
       }
       this.putWorkspace({ ...ws, status: 'removed', busy: { token, ownerPid: process.pid } });
       if (ws.kind === 'task') await this.retireTrain(ws, ctx.signal);
@@ -573,10 +571,6 @@ export class WorkflowWorkspaces {
     const protect = [...base.protect ?? [], ...over.protect ?? []];
     return { targetRef: base.targetRef, commands: over.commands ?? base.commands, ...(precheck ? { precheck } : {}),
       ...(protect.length ? { protect } : {}), batch: over.batch ?? base.batch };
-  }
-  private async landedHead(workflow: string, repo: string, signal: AbortSignal): Promise<string | null> {
-    const landing = this.landing(workflow);
-    return landing ? this.refHead(repo, landing.targetRef, signal) : null;
   }
   /**
    * Lands the commits of a member's worktree on the landing branch. Called by the task running in that worktree,

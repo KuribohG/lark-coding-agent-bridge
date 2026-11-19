@@ -123,7 +123,7 @@ describe('clone workspaces', () => {
     expect(await readFile(join(review.path, 'feature.txt'), 'utf8')).toBe('feature\n');
   }, 60_000);
 
-  it('keeps a clone with unlanded work and removes a finished one together with the source\'s ref on it', async () => {
+  it('removes a clone with unlanded work and a finished one together with the source\'s ref on it', async () => {
     const h = await fixture(); await h.configure();
     const ref = (ws: WorkspaceBinding) => `refs/bridge-workflow/${h.state.workflowId}/clones/${ws.id}`;
     const a = await h.member('a', 'clone'), b = await h.member('b', 'clone');
@@ -131,12 +131,13 @@ describe('clone workspaces', () => {
     await a.commit('a.txt', 'a\n'); await b.commit('b.txt', 'b\n');
     expect(await b.land()).toMatchObject({ status: 'landed' });
     a.idle(); b.idle();
-    await expect(h.op('cleanup', 'clean-a', { workspace: a.ws.id })).rejects.toThrow('unintegrated');
-    expect(await exists(a.ws.path)).toBe(true);
+    // Cleanup discards the unlanded commit along with the clone.
+    expect(await h.op('cleanup', 'clean-a', { workspace: a.ws.id })).toMatchObject({ removed: true });
+    expect(await exists(a.ws.path)).toBe(false);
+    expect(await git(h.repo, 'for-each-ref', ref(a.ws))).toBe('');
     expect(await h.op('cleanup', 'clean-b', { workspace: b.ws.id })).toMatchObject({ removed: true });
     expect(await exists(b.ws.path)).toBe(false);
     expect(await git(h.repo, 'for-each-ref', ref(b.ws))).toBe('');
-    expect(await git(h.repo, 'for-each-ref', ref(a.ws))).not.toBe('');
     await expect(h.manager.binding(h.state.root, h.state.workflowId, b.ws.id, signal())).rejects.toThrow('unavailable');
   }, 60_000);
 
