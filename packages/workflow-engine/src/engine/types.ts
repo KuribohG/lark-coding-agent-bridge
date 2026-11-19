@@ -194,6 +194,8 @@ export interface SwarmMember {
   taskId?: string;
   /** The work queue this member consumes: it is also woken whenever that queue has work it could claim. */
   queue?: string;
+  /** The queue the member was told it consumes, when it has been moved since: its next turn tells it of the move. */
+  movedFrom?: string;
   /**
    * The work queues this member leads under the swarm's lead: it plans their part of the task instead of consuming
    * them, is handed the results of their items, and is told when one runs dry or one of its members fails.
@@ -241,10 +243,17 @@ export interface WorkflowSwarm {
   stalled?: boolean;
   finish?: { result: string };
   /**
-   * Queues whose consumers are idle with nothing to claim: since when, and when the lead and the main agent were last
-   * told. An entry leaves when the queue has work to claim again or all its consumers are busy.
+   * Queues whose consumers are idle with nothing to claim: since when, when the lead and the main agent were last
+   * told, and the notices the lead was sent in this spell (`posts`, the latest few) while nobody who plans the queue
+   * has added work to it since. An entry leaves when the queue has work to claim again or all its consumers are busy.
    */
-  starved?: Record<string, { since: number; leadAt?: number; mainAt?: number }>;
+  starved?: Record<string, { since: number; leadAt?: number; mainAt?: number; posts?: number[] }>;
+  /**
+   * Queues that are left without work on purpose: a notice that the queue had run dry (`post`) was resolved, which
+   * is how the lead that answers for it, or the main agent, says that it has no work for now. Nobody is told again
+   * that such a queue is dry. It stops resting when someone who plans it adds an item to it, or the notice is reopened.
+   */
+  resting?: Record<string, { since: number; post: number }>;
   /** What the starved spells of each queue that are over add up to: how many there were, and how long they lasted. */
   dry?: Record<string, { spells: number; ms: number; longest: number }>;
   /**

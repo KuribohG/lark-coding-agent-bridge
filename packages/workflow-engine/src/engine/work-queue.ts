@@ -403,7 +403,7 @@ export function availableWork(state: WorkflowView, name?: string): ItemView[] {
  * first, whatever their priority, and the ones kept for another member are left out. The rest follow as
  * `availableWork` orders them.
  */
-export function workFor(state: WorkflowView, name: string | undefined, member: string | undefined): ItemView[] {
+function workFor(state: WorkflowView, name: string | undefined, member: string | undefined): ItemView[] {
   const open = availableWork(state, name).filter(item => { const kept = keptFor(state, item); return !kept || kept === member; });
   return member === undefined ? open : [...open.filter(item => item.assignee === member), ...open.filter(item => item.assignee !== member)];
 }

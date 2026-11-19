@@ -201,28 +201,45 @@ export function bindSwarm(state: WorkflowView, spec: ReturnType<typeof parseSwar
 }
 
 const PLAN_ONLY = 'You plan and judge; you do not do the work. Do not write code or run builds, tests or measurements yourself, except to check a result before you rely on it';
-/** What makes an item one a member can finish alone, and how far ahead of its members a queue is kept. */
+/**
+ * What makes an item one a member can finish alone, what it may ask for, and how far ahead of its members a queue is
+ * kept. A lead that is told to keep every member supplied fills its queues with what can always be made up, which is
+ * looking into things and writing about them, so the measure it is given is the goal and not the idle members.
+ */
 const ITEM_RULES = 'An item is one result that a single member can finish and check in one turn: say what is wanted, where, and the check that tells done from not done. '
+  + 'What is wanted is a step of the goal itself: something the task asks for that is made, changed, decided or found out. Looking into something is an item of its own only when the answer decides what is done next, and the item says what hangs on it; '
+  + 'where the member that finds the answer can act on it, ask for both in one item (find the cause and repair it) instead of a finding that waits for someone else to act. '
+  + 'Do not ask for a write-up beside the result: what a member gives complete_work is its report, and a document is the result of an item only where the task wants that document. '
   + 'Split what is larger, and what two members could not do at once without touching the same files. Name the paths an item will change in writes: enqueue_work then answers with the unfinished items '
   + 'that expect to change the same paths (writeOverlaps), which you order with dependsOn or split apart. An item goes to whichever member of its queue is free unless you say otherwise: '
   + 'assignee gives it to one member, and origin, the key of the delivered item it is about, gives it to the member that delivered that item. Members finish items faster than you are woken, so plan ahead of them: '
-  + 'when you end a turn, each queue should hold at least one claimable item for every member that consumes it. Where a part has no more useful work, say so instead of inventing items';
+  + 'when you end a turn, the queues should hold the work you already know the goal needs. Idle members are not a reason to add work: an item that does not move the goal costs a member a turn and you the reading of what comes back. '
+  + 'Where a queue has no such work for now, leave it empty instead of inventing items';
 
 /** How the outcomes of items reach the lead that planned them. */
 const HANDED_BACK = 'at your next turn the system posts the outcomes in topic "handoff", gathered, with a line or two for each item when many came back (work_status({key}) has an item in full). '
-  + 'Read them before you hand out more, and judge them on evidence (test output, measurements) rather than on reports';
+  + 'Read them before you hand out more, and judge them on evidence (test output, measurements, sources) rather than on reports. What counts is how far the goal has moved, not how many items came back';
 /** How a lead reaches a member whose work in flight must change, which a post would only do at the member's next turn. */
 const TELL = 'A post reaches a member at its next turn. When work in flight must change now (a member is heading the wrong way, or the charter changed under its item), '
   + 'tell_worker({target, text}) puts your words into its running turn at once; a member that is not in a turn gets them as a post that names it. What can wait still goes on the board';
 /** What a lead can do to the items of a queue it plans once they are in it. */
 const ITEM_CHANGES = 'Items stay yours to change until they are done. update_work({key, ...}) moves one ahead or back (priority), sets it aside and returns it (hold: true, false), gives it to one member or back to the whole queue (assignee: a name, null) or withdraws it (cancel: true; '
   + 'an item a member has claimed must come back from that member first), and retry_work({key}) gives a failed one more attempts. When the direction changes, cancel or hold what no longer serves it instead of leaving it for members to claim.';
-/** Delivery does not wait for a review of each result: finding what is wrong with delivered work is planned work of its own, and only what would spread is checked first. */
-const QUALITY = 'Work is delivered as soon as the check its item names passes; do not make each result wait for a reviewer. Finding what is wrong with delivered work is work you plan like the rest: '
-  + 'items that hunt for bugs in it, read it, and use it the way its users would, for members that did not produce it. What they find comes back as new items that name the item it was found in (origin), '
-  + 'and each goes to the member that delivered that item, so that a member repairs its own work. '
+/**
+ * Delivery does not wait for a review of each result: finding what is wrong with delivered work is planned work of its
+ * own, and only what would spread is checked first. What is checked is the work, by trying it: a check of what was
+ * written about the work, or of another check, finds nothing a user of the work would meet and breeds more of itself.
+ */
+const QUALITY = 'Work is delivered as soon as the check its item names passes; do not make each result wait for a reviewer. Finding what is wrong with delivered work is work you plan like the rest, '
+  + 'for members that did not produce it: items that try what was delivered toward the goal (run it, use it the way its users would, redo the step a conclusion rests on) and look for where it fails. '
+  + 'Such a check is of the work, not of what was written about it: do not plan a review of a report, or a check of another check. '
+  + 'What is found comes back as a new item that names the item it was found in (origin) and says how to see the fault for oneself (the command, the input, the source); '
+  + 'it goes to the member that delivered that item, so that a member repairs its own work. '
   + 'Only where a mistake would spread before anyone finds it (a default or a switch that changes, a number or a conclusion that other work will build on, the checks and expected outputs themselves) '
   + 'have the result checked independently before it is delivered';
+/** What a queue without work asks of the lead that answers for it: a decision, which may well be that it stays empty. */
+const DRY_DECISION = 'A queue that runs dry asks for a decision, not for items: add the work you know the goal needs, or resolve the notice with resolve_post to say that the queue has no work for now, '
+  + 'after which you are not reminded of that queue until someone who plans it adds work to it';
 /** One repair of what everyone stands on, instead of one from every member that trips over it. */
 const SHARED_BREAK = 'When something every member depends on breaks (the shared branch, a build, a tool), give the repair to one member and say in topic "announce" who has it, '
   + 'so that the others wait for it instead of each repairing it';
@@ -242,9 +259,10 @@ function rules(swarm: SwarmView, member: MemberView): string {
   const part = lead ? [
     '- You are the lead. You turn the task into work for the members, judge what comes back and decide when the swarm is done.',
     `- ${PLAN_ONLY}: every piece of work goes to a member or into a queue.`,
-    `- Hand out work as queue items with enqueue_work wherever a queue has members, and by naming members on the board where no queue fits. ${ITEM_RULES}, and retire the members it no longer needs.`,
+    `- Hand out work as queue items with enqueue_work wherever a queue has members, and by naming members on the board where no queue fits. ${ITEM_RULES}: `
+      + 'move its members to a queue that has more work than members (staff_swarm({move, queue})), or let them rest, since a member that sleeps costs nothing and is there when work comes.',
     '- Queue items come back to you when a member completes them or they fail for good' + (delegates.length ? ', or to the lead of their queue when you did not add them yourself' : '')
-      + `: ${HANDED_BACK}. The system also posts to you when a member fails, when a queue runs dry (with the number of items it lacks) and when everyone has gone idle.`,
+      + `: ${HANDED_BACK}. The system also posts to you when a member fails, when a queue runs dry and when everyone has gone idle. ${DRY_DECISION}.`,
     ...(queued ? [`- ${QUALITY}.`] : []),
     `- ${ITEM_CHANGES}`,
     `- ${TELL}.`,
@@ -253,14 +271,15 @@ function rules(swarm: SwarmView, member: MemberView): string {
       + 'Give each the goal of its part on the board and let it split that into items for its queues; it reports to you. Add an item to such a queue yourself only when its result should come back to you.'] : []),
     '- Idle members and an empty queue do not mean the task is done. The swarm ends only when you call swarm_finish: do so once the goal is met or cannot progress, with the final result, stating which it is and what remains. The turns still running then finish and nobody is woken again.',
     '- The charter is the goal as it stands now, and every member is given it at every turn. When the direction, the priorities or the way results are measured change, replace it with set_charter instead of adding another announcement, and keep it short and current. '
-      + 'Rules and rulings that every member must follow go in topic "announce" instead of naming all: members get them at their next turn without being woken. staff_swarm adds members while the swarm runs, retires them and revives failed ones.',
+      + 'Rules and rulings that every member must follow go in topic "announce" instead of naming all: members get them at their next turn without being woken. '
+      + 'staff_swarm adds members while the swarm runs, moves them from one queue to another, retires them and revives failed ones.',
     '- Before you end a turn while work is in flight, set wake_me so that you come back to check results against the charter even if nobody names you.',
   ] : led.length ? [
     `- You lead ${led.length > 1 ? 'queues' : 'queue'} ${quoted(led)} under @${swarm.lead}: that part of the task is yours to plan, and its results are yours to judge.`,
     `- ${PLAN_ONLY}: every piece of work goes into a queue.`,
-    `- Hand out work with enqueue_work, naming the queue. ${ITEM_RULES}, and tell @${swarm.lead}.`,
+    `- Hand out work with enqueue_work, naming the queue. ${ITEM_RULES}, and tell @${swarm.lead}, which can move your members to a queue that has work for them.`,
     `- The items of your queues, and the ones you added to another queue, come back to you when a member completes them or they fail for good: ${HANDED_BACK}. `
-      + 'The system also posts to you when a member of your queues fails and when one of them runs dry, with the number of items it lacks.',
+      + `The system also posts to you when a member of your queues fails and when one of them runs dry. ${DRY_DECISION}.`,
     `- ${ITEM_CHANGES}`,
     `- ${TELL}; it works for the members that consume your queues.`,
     `- Report to @${swarm.lead} what your part has achieved, what blocks it and what it needs from other parts. @${swarm.lead} decides when the swarm is done; staff_swarm, swarm_finish, set_charter and topic "announce" are its to use.`,
@@ -268,16 +287,23 @@ function rules(swarm: SwarmView, member: MemberView): string {
   ] : [
     ...(member.queue ? [
       `- You consume work queue "${member.queue}". Use claim_work to take an item, read item.progress before acting, save checkpoint_work as you go, then complete_work or fail_work. Continue until claim_work returns null, then end the turn; do not poll or sleep waiting for work.`,
-      '- Do what the item asks and check it the way the item says before complete_work. Work that is not finished is not complete: when you cannot finish, fail_work with what blocks you (retry: true only when another attempt could succeed), or save checkpoint_work and go on in your next turn.',
+      '- Do what the item asks and check it the way the item says before complete_work. Work that is not finished is not complete: when you cannot finish, fail_work with what blocks you (retry: true only when another attempt could succeed), or save checkpoint_work and go on in your next turn. '
+        + 'What the item asks for is the work: where it asks for something to be made or changed, a description of how that could be done does not complete it. '
+        + 'When you find that it should not be done, or that what it expects is not so, complete it with that finding and its evidence, and say plainly in the result that nothing was changed.',
       '- Deliver as soon as that check passes: nobody reviews each item before it counts, and what others later find wrong with it comes back as new work. Do not hold a finished item back to polish it. '
         + 'Do not weaken a test, special-case an input or change an expected output to make a check pass: a check you cannot pass honestly is a blocker, so fail_work and say why.',
       '- Stay inside your item. A problem you find outside it is new work: look for it with search_work, and if nobody has reported it add it with enqueue_work, instead of fixing it yourself or leaving it unsaid. '
-        + 'When the problem is in what an item delivered, give the key of that item as origin (the commit that made the change names it, and search_work finds it): the new item then goes to the queue of that item and to the member that delivered it. '
+        + 'Add an item only for what someone must act on: a fault in what was delivered, or something the goal needs that nobody has planned. What is merely worth knowing belongs in your result, '
+        + 'and you do not add an item that asks for a review of what you delivered' + (swarm.lead ? ': the checking of delivered work is planned by the leads. ' : '. ')
+        + 'When the problem is in what an item delivered, give the key of that item as origin (the commit that made the change names it, and search_work finds it) and say in the new item how to see the fault for oneself (the command, the input, the source): '
+        + 'the new item then goes to the queue of that item and to the member that delivered it. '
         + 'Otherwise name the queue of the members that do such work when it is not your own (the members list shows who consumes which). '
         + 'That holds most of all for what every member depends on (the shared branch, a build, a tool): when it breaks and your item did not break it, report it once and leave the repair to the member that is given it. '
         + 'An item you added and no longer want done you withdraw with update_work({key, cancel: true}) while nobody has claimed it.',
-      '- Do not post a report when you complete an item: the result you give complete_work is the report, and search_work finds it.'
-        + (swarm.lead ? ' The system hands it to the lead that planned the item, so say in it what you did, what you found, where you departed from the item and what still worries you.' : '')
+      '- The result you give complete_work is your report, and search_work finds it: do not post one when you complete an item, and do not write one as a file. '
+        + 'Deliver what the item asks for and nothing around it: an account of your work (a report, a summary, a log) is not part of the work unless the item names that document, '
+        + 'and long output or raw data belongs where the task keeps such files, with the path in your result.'
+        + (swarm.lead ? ' The system hands the result to the lead that planned the item, so say in it what you did, what you found, where you departed from the item and what still worries you.' : '')
         + ' Post only what someone else must act on.',
     ] : []),
     swarm.lead ? (own ? `- @${own.name} leads your queue "${member.queue}": it adds the queue's work and is handed your results, so report blockers on that work to it. @${swarm.lead} leads the swarm and decides when it is done.`
@@ -330,13 +356,22 @@ function wakePrompt(swarm: SwarmView, member: MemberView, timed: boolean, queues
     + (timed ? `The wake-up you set with wake_me is due${member.wakeNote ? ': ' + member.wakeNote : ''}. ` : '')
     + 'Follow the new announcements in read_context (board.announcements). Act on the posts, use read_board for wider context, and post what others need.'
     + (plans ? ` You ${member.name === swarm.lead ? 'are the lead' : `lead ${member.leads!.length > 1 ? 'queues' : 'queue'} ${quoted(member.leads!)}`}: you plan and judge and do not do the work yourself. `
-      + 'Read what has come back (topic "handoff"), judge it against the charter or the task, and before you end the turn leave each queue '
-      + (member.name === swarm.lead && swarm.members.some(item => !item.stopped && item.leads?.length) ? 'that has no lead of its own ' : member.name === swarm.lead ? '' : 'of yours ')
-      + 'with at least one claimable item for every member that consumes it, or say that it has no more work.'
-      // The rules of the first turn on how delivered work is checked, which a long run forgets first.
-      + (queues ? ' Results are delivered without a review of each: plan the checking of delivered work (hunting for bugs, reading it, using it) as items of their own, and have what is found sent back with origin, the key of the item it was found in.'
+      + 'Read what has come back (topic "handoff") and judge it against the charter or the task by how far the goal has moved, not by how many items came back. '
+      + 'Before you end the turn, add the work you know the goal still needs to each queue'
+      + (member.name === swarm.lead && swarm.members.some(item => !item.stopped && item.leads?.length) ? ' that has no lead of its own' : member.name === swarm.lead ? '' : ' of yours')
+      // What a long run forgets first: that an empty queue is an answer, and how delivered work is checked.
+      + '. Idle members are not a reason to add items: a queue with no work that moves the goal stays empty, '
+      + (member.name === swarm.lead ? 'and staff_swarm({move, queue}) puts its members where there is more work than members.' : `and you tell @${swarm.lead}.`)
+      + (queues ? ' Results are delivered without a review of each: plan the checking of delivered work as items of their own (trying and using what was delivered, not reviewing what was written about it or checking another check), '
+        + 'and have what is found sent back with origin, the key of the item it was found in.'
         + ` Queues now: ${queues}.` : '') : '')
+    // A member that was moved was told its queue, and perhaps its role, in a turn that spoke of another queue.
+    + (member.queue && member.movedFrom && member.movedFrom !== member.queue ? ` You have been moved from queue "${member.movedFrom}" to queue "${member.queue}"`
+      + (queueLead(swarm, member.queue) ? `, which @${queueLead(swarm, member.queue)!.name} leads` : '') + `: where your first turn speaks of "${member.movedFrom}", the items of "${member.queue}" now say what is wanted.`
+      + (member.role ? ` Your role now: ${member.role}${/[.!?。]$/.test(member.role) ? '' : '.'}` : '') : '')
     + (member.queue ? ` Then consume queue "${member.queue}" with claim_work until it returns null; you may have been woken for new work alone.`
+      // The rule a long run forgets first, and the one that keeps a swarm from writing about its work instead of doing it.
+      + ' Deliver what each item asks for: the result you give complete_work is your report, so write none beside it.'
       + (own ? ` ${own} of its items ${own > 1 ? 'are' : 'is'} for you and claim_work hands ${own > 1 ? 'them' : 'it'} out first; where item.origin is set, it names the delivered item this one is about.` : '') : '')
     + ' End with a short status note.';
 }
@@ -368,10 +403,12 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
   const agents = new Map((state.agents ?? []).map(agent => [agent.key, agent]));
   const agentOf = (member: MemberView) => agents.get(member.name);
   const unread = (member: MemberView) => { const agent = agentOf(member); return Boolean(agent && availableMessages(state, agent.agentId).length); };
+  /** Posts to a lead and returns the seq of the post; a lead that cannot read posts yet, or any more, gets none. */
   const notify = (lead: MemberView | undefined, text: string) => {
-    if (!lead || lead.stopped || !agentOf(lead)) return;
-    postToBoard(state, { author: 'system' }, { text, to: [lead.name] }, now);
+    if (!lead || lead.stopped || !agentOf(lead)) return undefined;
+    const { seq } = postToBoard(state, { author: 'system' }, { text, to: [lead.name] }, now);
     changed = true;
+    return seq;
   };
   const notifyLead = (text: string) => notify(swarm.members.find(member => member.name === swarm.lead), text);
   /** Told that a member has stopped: the lead of the queue it consumed, who plans that work, else the swarm's lead. */
@@ -468,15 +505,22 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       const blocked = (state.workQueue?.items ?? []).filter(item => (item.queue ?? 'default') === name && item.status === 'pending').length;
       const facts = `${idle} of its ${consumers.length} members are idle and it has no item they can claim`
         + (blocked ? ` (${blocked} pending items wait on dependencies, resources or attempts, are on hold or are kept for one member)` : '');
+      // Whoever answers for the queue has said that it has no work for now. That stands until someone who plans the
+      // queue adds work to it: nobody is asked again to fill a queue that was left empty on purpose.
+      if (swarm.resting?.[name]) continue;
       if (now - entry.since >= STARVED_LEAD_AFTER_MS && now - (entry.leadAt ?? -Infinity) >= STARVED_LEAD_EVERY_MS) {
-        record({ type: 'swarm_queue_starved', swarmId: swarm.id, queue: name, at: now, told: 'lead' });
-        notify(answers, `Queue "${name}" has run dry: ${facts}. Add at least ${idle} items for it with enqueue_work now; if there is no more work for it, `
-          + (answers.name === swarm.lead ? 'say so on the board or retire members.' : `tell the lead (${swarm.lead}).`));
+        // The notice asks for a decision and not for items, or a lead fills the queue with whatever can be made up.
+        // It names its own seq: resolving it is how the lead says that the queue has no work for now.
+        const post = notify(answers, `Queue "${name}" has run dry: ${facts}. If you know of work for it that the goal needs, add it with enqueue_work. If there is none for now, do not make any up: `
+          + `resolve this post with resolve_post({seq: ${boardTotal(state) + 1}, note}) to say so, and you are not reminded of this queue until someone who plans it adds work to it. `
+          + (answers.name === swarm.lead ? 'staff_swarm({move: [names], queue}) puts its idle members on a queue that has more work than members.' : `Tell the lead (${swarm.lead}), which can move its members to another queue.`));
+        record({ type: 'swarm_queue_starved', swarmId: swarm.id, queue: name, at: now, told: 'lead', ...(post === undefined ? {} : { post }) });
       } else if (entry.leadAt !== undefined && now - entry.since >= STARVED_MAIN_AFTER_MS && now - (entry.mainAt ?? -Infinity) >= STARVED_MAIN_EVERY_MS) {
         record({ type: 'swarm_queue_starved', swarmId: swarm.id, queue: name, at: now, told: 'main' });
         pushEvent(state, { kind: 'swarm_attention', summary: `swarm "${swarm.key}" 的队列 ${name} 已断粮 ${Math.round((now - entry.since) / 60_000)} 分钟：`
           + `${consumers.length} 名成员中 ${idle} 名空闲，没有可领工作项` + (blocked ? `（${blocked} 项待领但被依赖、资源、尝试次数、挂起或指定给某个成员挡住）` : '')
-          + '，lead 已被提醒但未补充。用 enqueue_work 补充该队列，或 staff_swarm 的 retire 减人。' }, () => now);
+          + '，lead 已被提醒，既没有补充，也没有答复该队列暂无工作。有推进目标的工作就用 enqueue_work 补充；没有就不必凑：用 staff_swarm 的 move 把成员挪到有活的队列'
+          + (entry.posts?.length ? `，或用 resolve_post 标掉第 ${entry.posts.at(-1)} 帖（此后不再提醒该队列，直到有人给它补活）` : '') + '。' }, () => now);
       }
     }
     // How the queues a lead answers for stand, for its wake-up: what can be claimed against the members with nothing to do.
@@ -486,7 +530,8 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       const { slots, kept } = work.get(name)!;
       const held = [...kept.values()].reduce((total, items) => total + items.length, 0);
       return `"${name}" ${Math.max(0, slots) + held} claimable${held ? ` (${held} kept for ${held > 1 ? 'their assignees' : 'its assignee'})` : ''}, ${consumers.filter(other => !busy(other)).length} of ${consumers.length} members idle, `
-        + `${workFlow(state, name, now)?.completed.at(-1) ?? 0} items completed in the last hour` + (own ? ` (lead ${own.name})` : '');
+        + `${workFlow(state, name, now)?.completed.at(-1) ?? 0} items completed in the last hour`
+        + (swarm.resting?.[name] ? `, at rest since its dry notice (post ${swarm.resting[name]!.post}) was resolved: no work for now` : '') + (own ? ` (lead ${own.name})` : '');
     }).join('; ') || undefined;
     // The outcomes each lead is owed, by whoever plans the item now. One that has nobody to go to (its lead settled the
     // item itself, or has stopped), or whose item is back in the queue, is dropped: the item still holds it.
@@ -753,7 +798,7 @@ export async function staffCleanups(ctx: KernelContext, state: WorkflowView, inp
  * is likewise the main agent's decision: `leads` makes the one member it adds the lead of those queues.
  */
 export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, lead?: string, execution?: WorkerExecution, workspaces?: Record<string, string>, cleanedUp?: Array<{ name: string; workspace: string }>, now = Date.now()): unknown {
-  if (Object.keys(input).some(key => !['swarm', 'add', 'like', 'workspace', 'queue', 'leads', 'role', 'brief', 'revive', 'retire', 'cleanup', 'maxTurns', 'maxConcurrent', ...EXECUTION_OPTIONS].includes(key))) throw new Error('staff_swarm supports swarm, add, like, workspace, harness, model, reasoningEffort, queue, leads, role, brief, revive, retire, cleanup, maxTurns and maxConcurrent');
+  if (Object.keys(input).some(key => !['swarm', 'add', 'like', 'workspace', 'queue', 'leads', 'role', 'brief', 'move', 'revive', 'retire', 'cleanup', 'maxTurns', 'maxConcurrent', ...EXECUTION_OPTIONS].includes(key))) throw new Error('staff_swarm supports swarm, add, like, workspace, harness, model, reasoningEffort, queue, leads, role, brief, move, revive, retire, cleanup, maxTurns and maxConcurrent');
   const workspaceWanted = input.workspace !== undefined && input.workspace !== false;
   if (workspaceWanted && input.add === undefined) throw new Error('workspace binds the members that add names');
   if (input.leads !== undefined && lead !== undefined) throw new Error('Only the main agent can give a queue a lead of its own');
@@ -762,8 +807,8 @@ export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, 
   if (chosen && lead !== undefined) throw new Error('Only the main agent can choose the harness or model of new members; a lead adds members like an existing one');
   if (chosen && !execution) throw new Error('The harness and model of the new members were not resolved');
   const swarm = lead === undefined ? runningSwarm(state, input.swarm) : leadSwarm(state, lead);
-  if (input.add === undefined && input.revive === undefined && input.retire === undefined && input.cleanup === undefined && input.maxTurns === undefined && input.maxConcurrent === undefined) throw new Error('staff_swarm needs add, revive, retire, cleanup, maxTurns or maxConcurrent');
-  const result: { swarm: string; added?: string[]; leads?: string[]; revived?: string[]; retired?: string[]; cleaned?: string[]; maxTurns?: number; maxConcurrent?: number; execution?: WorkerExecutionSelection; workspaces?: Array<{ name: string; workspace: string }> } = { swarm: swarm.key };
+  if (input.add === undefined && input.move === undefined && input.revive === undefined && input.retire === undefined && input.cleanup === undefined && input.maxTurns === undefined && input.maxConcurrent === undefined) throw new Error('staff_swarm needs add, move, revive, retire, cleanup, maxTurns or maxConcurrent');
+  const result: { swarm: string; added?: string[]; leads?: string[]; moved?: string[]; unconsumed?: string[]; revived?: string[]; retired?: string[]; cleaned?: string[]; maxTurns?: number; maxConcurrent?: number; execution?: WorkerExecutionSelection; workspaces?: Array<{ name: string; workspace: string }> } = { swarm: swarm.key };
   if (input.maxConcurrent !== undefined) {
     // How many workers run at once is the budget the main agent started the workflow with, so only it changes it.
     if (lead !== undefined) throw new Error('Only the main agent can change maxConcurrent');
@@ -813,6 +858,30 @@ export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, 
       if (!member.stopped) emit(state, { type: 'swarm_member_stopped', swarmId: swarm.id, member: name, reason: 'retired' });
     }
     result.retired = names;
+  }
+  if (input.move !== undefined) {
+    // Members follow the work: where one queue has more than its members can do and another has members without
+    // work, moving them is the alternative to making up work for the idle ones or retiring them.
+    if (!Array.isArray(input.move) || !input.move.length || input.move.length > 256) throw new Error('move is an array of 1–256 member names; queue names the work queue they go to');
+    if (input.queue === undefined) throw new Error('move needs queue, the work queue the members go to');
+    const to = queueName(input.queue);
+    if (queueControl(state, to)?.closedAt !== undefined) throw new Error(`Work queue "${to}" is closed and takes no more work`);
+    const described = role(input.role);
+    const moving = new Map<string, string>();
+    for (const name of input.move.map(name => scriptText(name, 'member name', 100))) {
+      const member = swarm.members.find(item => item.name === name);
+      if (!member) throw new Error('Unknown swarm member: ' + name);
+      if (member.stopped) throw new Error(`Member ${name} has stopped`);
+      if (!member.queue || coordinates(swarm, member)) throw new Error(`Member ${name} does not consume a work queue; move takes the members of one queue to the work of another`);
+      if (member.queue !== to) moving.set(name, member.queue);
+    }
+    if (moving.size) openQueue(state, to);
+    // The item a member holds stays its own to finish; what was kept for it in the queue it leaves opens to that queue.
+    for (const name of moving.keys()) emit(state, { type: 'swarm_member_moved', swarmId: swarm.id, member: name, queue: to, ...(described === undefined ? {} : { role: described }) });
+    result.moved = [...moving.keys()];
+    // A queue that lost its last member keeps its unfinished items, which nobody will take until one is moved back.
+    const unconsumed = [...new Set(moving.values())].filter(name => !swarm.members.some(member => member.queue === name && !member.stopped) && unfinishedWork(state, name));
+    if (unconsumed.length) result.unconsumed = unconsumed;
   }
   if (input.cleanup !== undefined) {
     const pending = pendingCleanup(swarm, cleanupNames(swarm, input.cleanup));
@@ -1014,6 +1083,7 @@ function queueSummary(state: WorkflowView, swarm: SwarmView, now?: number): Reco
     const minutes = (ms: number) => Math.round(ms / 6000) / 10;
     return [name, { ...(own ? { lead: own.name } : {}), claimable, blocked: items.filter(item => item.status === 'pending').length - claimable, ...(onHold ? { onHold } : {}), claimed: items.filter(item => item.status === 'claimed').length,
       members: members.length, running, idle: members.length - running, ...(swarm.starved?.[name] ? { starvedSince: swarm.starved[name]!.since } : {}),
+      ...(swarm.resting?.[name] ? { restingSince: swarm.resting[name]!.since } : {}),
       ...(flow ? { flow } : {}), ...(dry ? { dry: { spells: dry.spells, minutes: minutes(dry.ms), longestMinutes: minutes(dry.longest) } } : {}) }];
   }));
 }

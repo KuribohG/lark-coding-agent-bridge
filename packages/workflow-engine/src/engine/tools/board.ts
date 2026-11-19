@@ -83,21 +83,25 @@ export const swarmTools: WorkflowToolPlugin = {
   id: 'swarm',
   leadInstructions: [
     'The next two operations are for the lead of a swarm; from any other member they are refused.',
-    'staff_swarm({operationId,add?,like?,workspace?,queue?,role?,brief?,revive?,retire?,cleanup?,maxTurns?}) changes who works in your swarm. add is an array of new member names (1–40 letters, digits, _ . or -). '
+    'staff_swarm({operationId,add?,like?,workspace?,queue?,role?,brief?,move?,revive?,retire?,cleanup?,maxTurns?}) changes who works in your swarm. add is an array of new member names (1–40 letters, digits, _ . or -). '
       + 'A new member takes the harness, model, role and queue of the member like names (by default the first member that is not the lead); a lead cannot choose another harness or model, so ask the main agent to add the member when one is needed. '
       + 'Its first turn shows it the task, its role and brief. queue makes it consume that work queue, and it then starts when the queue has work it can claim. Add a member before you name it in a post. '
       + 'workspace (true, or {base?,repo?,isolation?}) gives each added member a Git worktree of its own: without repo the cwd of the workflow is the repository and its HEAD the base, and isolation: "clone" makes each a repository of its own that does not share .git. '
       + 'Without workspace the new members run in the root directory, where members that change code in parallel overwrite one another, and they cannot use submit_work. '
+      + 'move (an array of names, with queue) makes members that consume one queue consume queue instead, for when one queue has more work than members and another has members without work: '
+      + 'a member finishes the item it holds and takes its next from the new queue, where it is woken when there is work to claim, and its next turn tells it of the move; role, when given, replaces the role of the members moved. '
+      + 'unconsumed in the answer names a queue that lost its last member while it still holds unfinished items. '
       + 'revive ("failed", or an array of names) lets failed members retry their last turn in the session they had. retire (an array of names) lets a member finish the turn it is in and then never wakes it again. '
       + 'cleanup ("retired", or an array of stopped members) deletes their idle worktrees together with whatever was not committed or integrated; the worktree of a failed member can be cleaned at once. '
       + 'maxTurns raises the number of wake-ups every member has. Giving a queue a lead of its own (leads) is for the main agent alone.',
     'swarm_finish({operationId,result}) ends the swarm with the final result (at most 16000 characters): the turns still running finish, the swarm returns, and nobody is woken again.',
-    'The system posts to the lead when a member fails and when everyone is idle. The items that members complete, and the ones that fail for good, it gathers into posts in topic "handoff" when the turn of the lead that planned them begins: '
+    'The system posts to the lead when a member fails, when a queue has run dry and when everyone is idle. The notice of a dry queue names its own seq: '
+      + 'resolve_post({seq, note}) on it says that the queue has no work for now, and the queue is not reported again until someone who plans it adds an item to it. The items that members complete, and the ones that fail for good, it gathers into posts in topic "handoff" when the turn of the lead that planned them begins: '
       + 'one item is quoted at length, several get a line or two each, and work_status({key}) has an item in full.',
   ].join('\n'),
   tools: [
     { name: 'staff_swarm',
-      main: { doc: 'staff_swarm(swarm?,add?,like?,workspace?,harness?,model?,reasoningEffort?,queue?,leads?,role?,brief?,revive?,retire?,cleanup?,maxTurns?,maxConcurrent?)',
+      main: { doc: 'staff_swarm(swarm?,add?,like?,workspace?,harness?,model?,reasoningEffort?,queue?,leads?,role?,brief?,move?,revive?,retire?,cleanup?,maxTurns?,maxConcurrent?)',
         ...versioned((_ctx, state, args, resolved) => {
           const staffed = resolved as { execution?: WorkerExecution; workspaces?: Record<string, string>; cleanedUp?: Array<{ name: string; workspace: string }> } | undefined;
           return staffSwarm(state, staffing(args), undefined, staffed?.execution, staffed?.workspaces, staffed?.cleanedUp, _ctx.now());

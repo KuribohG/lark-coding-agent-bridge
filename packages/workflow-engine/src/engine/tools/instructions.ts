@@ -8,7 +8,7 @@ const tools = BUILTIN_WORKFLOW_TOOLS;
 
 const STEERING = `目标单是现行的目标、完成标准、优先级和口径：set_charter(text) 整份替换（≤${CHARTER_MAX_TEXT} 字符），每个 worker 每轮都带现行版本，并通知 lead 重排。方向调整或产出偏离时改它，不只发公告。wake_me 定时唤醒你复盘（review_due 事件）：everyMinutes 周期，afterMinutes 一次，0 取消`;
 
-const STAFF_SWARM = `staff_swarm 不重放调整 swarm（多个在跑时用 swarm 指定）：add 新成员名单（≤256），沿用 like 成员（默认非 lead）的 harness、模型、角色、队列，harness/model/reasoningEffort/queue/role 可另指，brief 是给新成员的首轮说明；workspace 给新成员建 worktree、leads 设子领域 lead（均见 guide）；revive 重试失败成员（"failed" 或名单）；retire 成员跑完本轮后不再唤醒；cleanup 删除停用成员（retired 或 failed）的 worktree，其中未提交/未集成的修改一并丢弃（"retired" 或名单）；maxTurns 提高唤醒上限（只增不减，≤${SWARM_MAX_TURNS}）；maxConcurrent 改并发`;
+const STAFF_SWARM = `staff_swarm 不重放调整 swarm（多个在跑时用 swarm 指定）：add 新成员名单（≤256），沿用 like 成员（默认非 lead）的 harness、模型、角色、队列，harness/model/reasoningEffort/queue/role 可另指，brief 是给新成员的首轮说明；workspace 给新成员建 worktree、leads 设子领域 lead（均见 guide）；move 把名单里的队列成员改为消费 queue 指定的队列；revive 重试失败成员（"failed" 或名单）；retire 成员跑完本轮后不再唤醒；cleanup 删除停用成员（retired 或 failed）的 worktree，其中未提交/未集成的修改一并丢弃（"retired" 或名单）；maxTurns 提高唤醒上限（只增不减，≤${SWARM_MAX_TURNS}）；maxConcurrent 改并发`;
 
 /**
  * How to call the tools. Every main turn that is bound to a workflow by a command or an event starts with this and
@@ -35,8 +35,8 @@ script 是支持顶层 await/return 的 JS 函数体，无 import/process/requir
 ${WORKFLOW_SCHEDULING_INSTRUCTIONS}`;
 
 /** Running a workflow: what wakes the main agent and what it can do then. Told at every wake, which is when it is needed. */
-const OPERATING = `唤醒主会话的事件：整体结束或失败；review_due（定时复盘）；worker_reply（worker 答复主 agent）；swarm_stalled（全员空闲而 lead 未结束，swarm 仍在等待：发帖、入队或 staff_swarm 可续跑）；swarm_attention（成员失败已停，或队列断粮而 lead 未补）；landing_attention（落地分支被队列外改动）。脚本结果是 workflow-result 产物：read_artifact、ack_events 后 complete，也可先发布 report。
-swarms[].queues 是各队列的供需：claimable 可领、blocked 被挡住、idle 空闲成员、flow 近 6 小时逐小时入队/完成数（末项为最近一小时）、dry 断粮次数与分钟。
+const OPERATING = `唤醒主会话的事件：整体结束或失败；review_due（定时复盘）；worker_reply（worker 答复主 agent）；swarm_stalled（全员空闲而 lead 未结束，swarm 仍在等待：发帖、入队或 staff_swarm 可续跑）；swarm_attention（成员失败已停，或队列断粮而 lead 既未补活也未答复暂无工作：没有推进目标的活就不凑，见 guide）；landing_attention（落地分支被队列外改动）。脚本结果是 workflow-result 产物：read_artifact、ack_events 后 complete，也可先发布 report。
+swarms[].queues 是各队列的供需：claimable 可领、blocked 被挡住、idle 空闲成员、flow 近 6 小时逐小时入队/完成数（末项为最近一小时）、dry 断粮次数与分钟、restingSince 已答复暂无工作。
 pause 取消在途 worker，resume 从头重放并复用已完成的结果；中断的工作流要 replay_script 或用户 /workflow resume 才继续。
 configure_landing 查看、修改落地检查并处理被改动的分支，用前读 guide。tell_worker 把一段话作为用户消息插进运行中的 worker 会话（target 为 taskId、成员名或脚本 key）；持久成员不在轮次中或不能中途收消息时改成点名它的留言板帖（返回 posted）。worker 可用 reply_main 答复一次；worker_messages 读往来记录，含 lead 发给成员的。
 ${STAFF_SWARM}
