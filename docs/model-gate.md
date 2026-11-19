@@ -30,7 +30,7 @@ lease_seconds = 600         # a permit not released in time is reclaimed
 
 [gate.defaults]
 rpm = 1000                  # requests per minute, refilled continuously
-burst = 100                 # back-to-back requests after an idle period
+# burst = 1000              # back-to-back requests after an idle period; `rpm` when left out
 concurrency = 100           # requests in flight at once
 
 # Per-provider overrides, keyed by the provider's name (see below). Unset
@@ -47,8 +47,16 @@ and a free slot.
 `concurrency = 0` means the provider imposes no in-flight limit: only the rate
 bucket applies. Use it for an endpoint that queues or throttles on its own.
 
-`burst` cannot exceed `rpm`: a burst larger than a minute of refill would make
-the first second of a minute indistinguishable from an outage.
+`burst` is the capacity of the rate bucket: how many requests may start back to
+back after an idle period, before requests are paced at `rpm`. Left out, it is
+the bucket's `rpm` — a whole minute of requests, which is what a provider that
+counts requests per minute lets through at once — and it then follows `rpm` when
+that is changed. A provider entry without `burst` takes the one
+`[gate.defaults]` names, if it names one. Set it lower only to spread a cold
+start out: a fan-out of two hundred workers sends its first requests within
+seconds, and a small bucket makes them queue for a rate the provider would have
+accepted. `burst` cannot exceed `rpm`: a burst larger than a minute of refill
+would make the first second of a minute indistinguishable from an outage.
 
 ## Which bucket a request counts against
 

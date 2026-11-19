@@ -191,7 +191,6 @@ lease_seconds = 600
 
 [gate.defaults]
 rpm = 1000
-burst = 100
 concurrency = 100
 
 [gate.providers.deepseek]
@@ -203,6 +202,8 @@ A bridge-wide limit on model requests, one bucket per model provider. The key of
 key, or the provider's name in Pi's own catalog for a model Pi resolves itself;
 all models of a provider share its bucket. `rpm` and
 `concurrency` apply together: a request needs a rate token and a free slot.
+`burst`, the number of requests that may start back to back after an idle
+period, is the bucket's `rpm` unless set lower.
 `concurrency = 0` turns the slot limit off for a provider that has none of its
 own; the rate bucket still applies. The gate is shared by every profile in the
 process; a Pi run holds a permit only while the provider answers, so tools never

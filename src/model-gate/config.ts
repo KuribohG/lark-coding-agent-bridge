@@ -10,7 +10,11 @@
 export interface ModelGateBucketConfig {
   /** Requests per minute. Refill is continuous, as the provider's own token bucket is. */
   rpm: number;
-  /** Requests that may start back to back after an idle period; ≤ the provider's bucket capacity. */
+  /**
+   * Requests that may start back to back after an idle period: the capacity of the rate bucket. It is `rpm` unless
+   * set lower, a whole minute of requests, which is what the provider's own limiter lets through at once. A smaller
+   * bucket makes a fan-out of workers queue at its start for requests the provider would have taken.
+   */
   burst: number;
   /**
    * Model requests in flight at once. A request holds a slot only while the
@@ -37,7 +41,7 @@ export interface ModelGateConfig {
 
 export const MODEL_GATE_DEFAULTS: ModelGateBucketConfig = Object.freeze({
   rpm: 1000,
-  burst: 100,
+  burst: 1000,
   concurrency: 100,
 });
 
@@ -55,7 +59,15 @@ function integer(value: unknown, path: string, min: number, max: number): number
   return value as number;
 }
 
-function bucket(value: unknown, path: string, base: ModelGateBucketConfig): ModelGateBucketConfig {
+/**
+ * One bucket's limits, with what the table leaves out taken from `base`. A `burst` neither the table nor `base` names
+ * follows the bucket's own `rpm`, so that raising `rpm` alone raises both.
+ */
+function bucket(
+  value: unknown,
+  path: string,
+  base: Omit<ModelGateBucketConfig, 'burst'> & { burst?: number },
+): ModelGateBucketConfig {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${path}: expected a table`);
   const table = value as Record<string, unknown>;
   for (const key of Object.keys(table)) {
@@ -63,7 +75,7 @@ function bucket(value: unknown, path: string, base: ModelGateBucketConfig): Mode
   }
   const rpm = table.rpm === undefined ? base.rpm : integer(table.rpm, `${path}.rpm`, 1, 1_000_000);
   const burst = table.burst === undefined
-    ? base.burst : integer(table.burst, `${path}.burst`, 1, 1_000_000);
+    ? base.burst ?? rpm : integer(table.burst, `${path}.burst`, 1, 1_000_000);
   // 0 is "no in-flight limit"; it is a deliberate choice, not a missing value.
   const concurrency = table.concurrency === undefined
     ? base.concurrency : integer(table.concurrency, `${path}.concurrency`, 0, 4096);
@@ -91,8 +103,11 @@ export function normalizeModelGate(raw: unknown): ModelGateConfig | undefined {
   if (typeof failOpen !== 'boolean') throw new Error('gate.fail_open: expected boolean');
   const leaseSeconds = table.lease_seconds === undefined
     ? DEFAULT_LEASE_SECONDS : integer(table.lease_seconds, 'gate.lease_seconds', 10, 86_400);
-  const defaults = table.defaults === undefined
-    ? MODEL_GATE_DEFAULTS : bucket(table.defaults, 'gate.defaults', MODEL_GATE_DEFAULTS);
+  const defaults = table.defaults === undefined ? MODEL_GATE_DEFAULTS
+    : bucket(table.defaults, 'gate.defaults', { rpm: MODEL_GATE_DEFAULTS.rpm, concurrency: MODEL_GATE_DEFAULTS.concurrency });
+  // A provider inherits a burst only when `[gate.defaults]` names one; otherwise its burst follows its own rpm.
+  const namedBurst = table.defaults !== undefined && (table.defaults as Record<string, unknown>).burst !== undefined;
+  const providerBase = { rpm: defaults.rpm, concurrency: defaults.concurrency, ...(namedBurst ? { burst: defaults.burst } : {}) };
   const providers: Record<string, ModelGateBucketConfig> = {};
   if (table.providers !== undefined) {
     if (!table.providers || typeof table.providers !== 'object' || Array.isArray(table.providers)) {
@@ -104,7 +119,7 @@ export function normalizeModelGate(raw: unknown): ModelGateConfig | undefined {
         throw new Error(`gate.providers: invalid provider name: ${name}`);
       }
       // A provider overrides only the dimensions it names; the rest come from `defaults`.
-      providers[name] = bucket(value, `gate.providers.${name}`, defaults);
+      providers[name] = bucket(value, `gate.providers.${name}`, providerBase);
     }
   }
   return { enabled, failOpen, leaseSeconds, defaults, providers };

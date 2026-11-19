@@ -7,7 +7,7 @@ describe('normalizeModelGate', () => {
     expect(normalizeModelGate(undefined)).toBeUndefined();
   });
 
-  it('defaults to the measured provider shape: 1000 rpm, 100 burst, 100 in flight', () => {
+  it('defaults to 1000 rpm, a burst of one minute of requests, and 100 in flight', () => {
     const config = normalizeModelGate({})!;
     expect(config).toMatchObject({
       enabled: true,
@@ -16,6 +16,29 @@ describe('normalizeModelGate', () => {
       defaults: MODEL_GATE_DEFAULTS,
       providers: {},
     });
+    expect(MODEL_GATE_DEFAULTS).toEqual({ rpm: 1000, burst: 1000, concurrency: 100 });
+  });
+
+  it('lets a burst nobody named follow the rpm of its bucket', () => {
+    const config = normalizeModelGate({
+      defaults: { rpm: 300 },
+      providers: { fast: { rpm: 5000 }, slow: { rpm: 60, concurrency: 0 }, plain: { concurrency: 8 } },
+    })!;
+    expect(config.defaults).toEqual({ rpm: 300, burst: 300, concurrency: 100 });
+    expect(config.providers.fast).toEqual({ rpm: 5000, burst: 5000, concurrency: 100 });
+    expect(config.providers.slow).toEqual({ rpm: 60, burst: 60, concurrency: 0 });
+    expect(config.providers.plain).toEqual({ rpm: 300, burst: 300, concurrency: 8 });
+    // Without a `defaults` table at all, the same holds.
+    expect(normalizeModelGate({ providers: { fast: { rpm: 5000 } } })!.providers.fast).toEqual({ rpm: 5000, burst: 5000, concurrency: 100 });
+  });
+
+  it('keeps a burst that was named: its own, or the one of the defaults', () => {
+    const config = normalizeModelGate({
+      defaults: { rpm: 1000, burst: 200 },
+      providers: { inherits: { rpm: 5000 }, own: { rpm: 5000, burst: 50 } },
+    })!;
+    expect(config.providers.inherits).toEqual({ rpm: 5000, burst: 200, concurrency: 100 });
+    expect(config.providers.own).toEqual({ rpm: 5000, burst: 50, concurrency: 100 });
   });
 
   it('lets one provider override only the dimension it names', () => {
@@ -50,7 +73,7 @@ describe('normalizeModelGate', () => {
     const config = normalizeModelGate({ providers: { deepseek: { concurrency: 0 } } })!;
     expect(config.providers.deepseek?.concurrency).toBe(0);
     // The other dimensions still come from the defaults.
-    expect(config.providers.deepseek).toMatchObject({ rpm: 1000, burst: 100 });
+    expect(config.providers.deepseek).toMatchObject({ rpm: 1000, burst: 1000 });
   });
 });
 
