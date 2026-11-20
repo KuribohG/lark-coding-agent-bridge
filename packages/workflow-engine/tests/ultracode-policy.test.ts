@@ -394,4 +394,111 @@ describe('ultracode native engine policy and metadata', () => {
     expect(filtered[0]!.function.parameters.properties.method.enum).toEqual(['status', 'complete']);
     release();
   });
+
+  it('allocates fresh executionId on autoRevive and staff_swarm revive after settled quiescent failure under executionLedger', async () => {
+    const receipts = new Map<string, ExecutionObservation>();
+    const flakyExecutionIds: string[] = [];
+    const runtime = new WorkflowRuntime({
+      path: ':memory:',
+      hostTools: true,
+      resolveRoot: async () => ({ ...root, scopeId: 'swarm-revive-execid' }),
+      wakeMain: async () => {},
+      executionLedger: { lookupExecution: async id => receipts.get(id) ?? { state: 'not-submitted', proof: 'fixture' } },
+      runner: {
+        async start(spec) {
+          await spec.validateBeforeRun();
+          if (spec.memberKey === 'flaky') {
+            flakyExecutionIds.push(spec.executionId);
+            const attemptNum = flakyExecutionIds.length;
+            const workerResult = attemptNum <= 2
+              ? { status: 'failed' as const, quiescence: 'quiescent' as const, error: `non-transient-fail-${attemptNum}` }
+              : { status: 'completed' as const, quiescence: 'quiescent' as const, text: 'recovered on revive' };
+            return {
+              runId: 'run-flaky-' + attemptNum,
+              result: Promise.resolve(attemptNum <= 2 ? 'failed' : 'completed'),
+              stop: async () => {},
+              waitForExit: async () => false,
+              waitForQuiescence: async () => ({ state: 'quiescent' }),
+              stopReason: () => undefined,
+              async *events() {
+                yield { type: 'session', nativeSessionId: spec.resume?.id ?? 'native-flaky' };
+                if (attemptNum > 2) {
+                  const st = runtime.kernel.state('swarm-revive-execid')!;
+                  await runtime.call(
+                    { kind: 'worker', scopeId: 'swarm-revive-execid', workflowId: st.workflowId, taskId: spec.taskId!, attemptId: spec.attemptId },
+                    'post_board',
+                    { operationId: randomUUID(), to: ['lead'], text: 'flaky recovered cleanly' },
+                  );
+                }
+                receipts.set(spec.executionId, { state: 'completed', result: workerResult });
+                if (workerResult.text) yield { type: 'final_text', text: workerResult.text };
+                if (workerResult.error) yield { type: 'error', message: workerResult.error };
+                yield { type: 'done', normal: attemptNum > 2 };
+              },
+            };
+          }
+          const isLead = spec.memberKey === 'lead';
+          const leadPost = isLead && (runtime.kernel.state('swarm-revive-execid')?.board?.posts.some(p => p.text.includes('flaky recovered cleanly')) ?? false);
+          return {
+            runId: 'run-' + spec.attemptId,
+            result: Promise.resolve('completed'),
+            stop: async () => {},
+            waitForExit: async () => false,
+            waitForQuiescence: async () => ({ state: 'quiescent' }),
+            stopReason: () => undefined,
+            async *events() {
+              yield { type: 'session', nativeSessionId: spec.resume?.id ?? ('native-' + spec.memberKey) };
+              if (leadPost) {
+                const state = runtime.kernel.state('swarm-revive-execid')!;
+                await runtime.call(
+                  { kind: 'worker', scopeId: 'swarm-revive-execid', workflowId: state.workflowId, taskId: spec.taskId!, attemptId: spec.attemptId },
+                  'swarm_finish',
+                  { operationId: randomUUID(), result: 'done after revive' },
+                );
+              }
+              const text = spec.memberKey + '-ok';
+              receipts.set(spec.executionId, { state: 'completed', result: { status: 'completed', quiescence: 'quiescent', text } });
+              yield { type: 'final_text', text };
+              yield { type: 'done', normal: true };
+            },
+          };
+        },
+      },
+    });
+    await runtime.start();
+    cleanup.push(() => runtime.close());
+    const main = runtime.bindMain('swarm-revive-execid', 'start');
+    cleanup.push(async () => main.release());
+    await main.call!('run_script', {
+      operationId: randomUUID(),
+      goal: 'swarm revive governed executionId test',
+      plan: 'Verify autoRevive and staff_swarm revive allocate distinct executionIds.',
+      readOnly: true,
+      script: `
+        return await swarm("coord", {
+          key: "rev-swarm",
+          maxTurns: 4,
+          lead: { name: "lead", role: "team-lead" },
+          members: [{ name: "flaky", role: "flaky-member" }]
+        });
+      `,
+    });
+
+    await vi.waitFor(async () => {
+      await runtime.tick();
+      expect(runtime.kernel.state('swarm-revive-execid')?.events.some(e => e.kind === 'swarm_attention')).toBe(true);
+    });
+    expect(flakyExecutionIds).toHaveLength(2);
+    expect(new Set(flakyExecutionIds).size).toBe(2);
+
+    const revived = await main.call!('staff_swarm', { operationId: randomUUID(), swarm: 'rev-swarm', revive: ['flaky'] }) as { revived?: string[] };
+    expect(revived.revived).toEqual(['flaky']);
+
+    await vi.waitFor(async () => {
+      await runtime.tick();
+      expect(runtime.kernel.state('swarm-revive-execid')?.script?.status).toBe('result_ready');
+    });
+    expect(flakyExecutionIds).toHaveLength(3);
+    expect(new Set(flakyExecutionIds).size).toBe(3);
+  });
 });

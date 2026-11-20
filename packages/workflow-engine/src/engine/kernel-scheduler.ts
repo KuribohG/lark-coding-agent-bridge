@@ -315,10 +315,10 @@ export class WorkflowScheduler {
           const attemptId = randomUUID();
           const logicalCallId = 'call_' + workflowDigest({ workflowId: state.workflowId, taskId: task.taskId, requestDigest: task.requestDigest });
           const previous = task.attempts.at(-1);
-          // Explicit replay after a settled stop starts another turn in the same conversation.
-          // All other retries retain their receipt identity, including uncertain submissions.
+          // Explicit replay, swarm revive, or read-only retry after a settled quiescent outcome starts another turn.
+          // Uncertain or unsettled attempts always retain their receipt identity.
           const continued = previous?.executionId && previous.completionDigest
-            && (previous.result === 'stopped' || previous.result === 'failed' && state.script?.readOnly === true && Boolean(task.retryCount))
+            && (previous.result === 'stopped' || previous.result === 'failed')
             && task.quiescence === 'quiescent';
           const executionId = continued
             ? 'execution_' + workflowDigest({ logicalCallId, continuedAfter: previous.executionId })
