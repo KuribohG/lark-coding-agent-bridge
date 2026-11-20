@@ -630,6 +630,8 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       const queued = member.queue ? work.get(member.queue)! : undefined;
       const own = queued?.kept.get(member.name)?.length ?? 0;
       const call = { key, member: member.name, prompt: retry ? readText(state, prior!.objective) : opening ? openingPrompt(swarm, member) : wakePrompt(swarm, member, timed, standing(member), own),
+        ...(member.role ? { role: member.role } : {}),
+        ...(state.script?.readOnly ? { readOnly: true } : {}),
         ...(member.workflowTool ? { workflowTool: true } : {}), ...(member.workspace ? { workspace: member.workspace } : {}),
         output: 'text' as const, selection: { agentKind: member.execution.agentKind, ...member.execution.modelSettings } };
       if (!retry && !opening) handOver(member);
@@ -803,6 +805,7 @@ export async function staffCleanups(ctx: KernelContext, state: WorkflowView, inp
 export function staffSwarm(state: WorkflowView, input: Record<string, unknown>, lead?: string, execution?: WorkerExecution, workspaces?: Record<string, string>, cleanedUp?: Array<{ name: string; workspace: string }>, now = Date.now()): unknown {
   if (Object.keys(input).some(key => !['swarm', 'add', 'like', 'workspace', 'queue', 'leads', 'role', 'brief', 'move', 'revive', 'retire', 'cleanup', 'maxTurns', 'maxConcurrent', ...EXECUTION_OPTIONS].includes(key))) throw new Error('staff_swarm supports swarm, add, like, workspace, harness, model, reasoningEffort, queue, leads, role, brief, move, revive, retire, cleanup, maxTurns and maxConcurrent');
   const workspaceWanted = input.workspace !== undefined && input.workspace !== false;
+  if (workspaceWanted && state.script?.readOnly) throw new Error('Workspace operations are disabled in read-only workflows');
   if (workspaceWanted && input.add === undefined) throw new Error('workspace binds the members that add names');
   if (input.leads !== undefined && lead !== undefined) throw new Error('Only the main agent can give a queue a lead of its own');
   if (input.leads !== undefined && input.add === undefined) throw new Error('leads binds the member that add names');

@@ -56,8 +56,8 @@ function fullSummary(ctx: KernelContext, state: WorkflowView): Summary {
       recentMessages: state.mailbox.messages.slice(-8).map(({ text, ...item }) => ({ ...item, preview: text.slice(0, 160) })),
       waits: state.mailbox.receipts.filter(item => item.status === 'waiting').map(({ id, agentId }) => ({ id, agentId })),
     } : undefined,
-    tasks: state.tasks.map(({ taskId, taskKey, sessionRef, status, resultRefs, error, attempts, scriptKey, agentId, previousTurnId, inputCheckpointVersion, inputMessageIds }) =>
-      ({ taskId, taskKey, sessionRef, status, resultRefs, error, scriptKey, attempts, agentId, previousTurnId, inputCheckpointVersion, inputMessageIds })),
+    tasks: state.tasks.map(({ taskId, taskKey, sessionRef, status, resultRefs, error, attempts, scriptKey, agentId, roleLabel, readOnly, previousTurnId, inputCheckpointVersion, inputMessageIds }) =>
+      ({ taskId, taskKey, sessionRef, status, resultRefs, error, scriptKey, attempts, agentId, ...(roleLabel ? { roleLabel } : {}), ...(readOnly ? { readOnly } : {}), previousTurnId, inputCheckpointVersion, inputMessageIds })),
     artifacts: state.artifacts.map(({ chars: _chars, ...artifact }) => artifact),
     events: state.events.filter(event => !event.acknowledged),
     ...(state.script ? { script: { ...state.script, args: undefined, argsDigest: workflowDigest(state.script.args) } } : {}),
@@ -131,8 +131,10 @@ export const lifecycleTools: WorkflowToolPlugin = {
     {
       name: 'run_script',
       main: {
-        kind: 'start', doc: 'run_script(goal,script,plan,args?,name?,execution?,maxAgents?,maxConcurrent?,timeoutMs?)',
+        kind: 'start', doc: 'run_script(goal,script,plan,args?,name?,execution?,maxAgents?,maxConcurrent?,timeoutMs?,readOnly?)',
         start: (ctx, root, args) => {
+          if (args.readOnly !== undefined && typeof args.readOnly !== 'boolean') throw new Error('readOnly must be boolean');
+          const readOnly = args.readOnly === true;
           const definition = structuredClone(SCRIPT_DEFINITION);
           definition.maxConcurrentWorkers = boundedInteger(args.maxConcurrent, 4, 1, MAX_CONCURRENT_WORKERS);
           definition.maxWallTimeMinutes = ctx.host.getTimeoutMinutes?.(root) ?? definition.maxWallTimeMinutes;
@@ -150,7 +152,7 @@ export const lifecycleTools: WorkflowToolPlugin = {
           const plan = addArtifact(created, 'workflow-plan', scriptText(args.plan, 'plan', 12_000), ctx.now);
           emit(created, { type: 'script_set', script: { name: scriptText(args.name ?? 'Script workflow', 'name', 100), sourceRef: source.ref, planRef: plan.ref,
             args: scriptArgs(args.args), defaults: workerSelection(args.execution, root, ctx.host), runId: randomUUID(), revision: 0,
-            status: 'queued', maxCalls: boundedInteger(args.maxAgents, 32, 1, MAX_AGENT_CALLS), calls: [], logs: [] } });
+            status: 'queued', maxCalls: boundedInteger(args.maxAgents, 32, 1, MAX_AGENT_CALLS), ...(readOnly ? { readOnly: true } : {}), calls: [], logs: [] } });
           return created;
         },
       },

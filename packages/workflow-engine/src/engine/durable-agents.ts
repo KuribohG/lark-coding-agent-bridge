@@ -55,8 +55,11 @@ export function scheduleMemberTurn(state: WorkflowView, call: ScriptAgentCall, e
     if (session.workspaceId !== call.workspace) throw new Error('Member workspace binding changed; use a new member name');
   }
   const previousTurnId = agent ? memberCursor(state, agent) : undefined;
+  const readOnly = Boolean(state.script?.readOnly || call.readOnly);
   const digest = workflowDigest({ key: call.key, prompt: call.prompt, output: call.output, execution,
     member: call.member, previousTurnId, root: state.root, goal: state.goal, definition: state.definitionDigest,
+    ...(call.role ? { role: call.role } : {}),
+    ...(readOnly ? { readOnly: true } : {}),
     ...(call.workflowTool ? {workflowTool:true} : {}), ...(call.workspace ? {workspace:call.workspace} : {}),
     ...(inputRefs.length ? { inputs: inputRefs.map(ref => artifactOf(state, ref).digest) } : {}) });
   const existing = agent && (state.tasks.find(task => task.agentId === agent!.agentId && task.requestDigest === digest) ?? archiveOf(state)?.turn(agent.agentId, digest));
@@ -86,6 +89,8 @@ export function scheduleMemberTurn(state: WorkflowView, call: ScriptAgentCall, e
   const task: StoredTask = { taskId: randomUUID(), taskKey: call.key, sessionRef: agent.sessionRef, objective: putText(state, call.prompt),
     ...(call.workspace ? {workspaceId:call.workspace} : {}),
     ...(call.workflowTool ? {workflowTool:true} : {}),
+    ...(call.role ? { roleLabel: call.role } : {}),
+    ...(readOnly ? { readOnly: true } : {}),
     requestDigest: digest, cacheKey: digest, status: 'queued', attempts: [], resultRefs: [], inputRefs: [...inputRefs],
     scriptRunId: state.script!.runId, scriptKey: call.key, scriptOutput: call.output, ...(call.schema ? { scriptSchema: call.schema } : {}), agentId: agent.agentId,
     previousTurnId, boardSince: agent.boardSeq ?? 0, ...(state.charter ? { charterSince: agent.charterSeen ?? 0 } : {}), inputCheckpointVersion: agent.checkpointVersion, inputMessageIds: receipts.flatMap(receipt => receipt.messageIds) };

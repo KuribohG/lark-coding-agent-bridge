@@ -130,6 +130,8 @@ export function workflowWorkerInstructions(task: WorkflowTask, plans = false): s
 /** Direct host turns receive the scoped workflow_call tool in place of the CLI credentials. */
 export function hostToolInstructions(text: string): string {
   return text
+    .replace(/仅 \/workflow start 或 \/workflow script 命令授权的启动轮可调用 run_script，不根据自然语言或任务类型推断；/g,
+      '仅在当前宿主已授权启动工作流的回合可调用 run_script；')
     .replace(/工作流工具通过 shell 调用：|你可使用当前绑定的 CLI：/g, '请使用当前回合的宿主工具：')
     .replace(/You can use the CLI bound to this turn: /g, 'Use the host tool of this turn: ')
     .replace(/node "\$AGENT_WORKFLOW_CLI" workflow (<operation>|[a-z_]+)(?: --input '[^']*' --json)?/g,

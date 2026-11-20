@@ -63,6 +63,7 @@ const submitWork: WorkflowTool = {
       });
       const start = bound((state, task) => {
         active(ctx, state);
+        if (state.script?.readOnly || task.readOnly) throw new Error('Work landing is disabled in read-only workflows');
         const prior = claim && workOperation(state, task, caller.attemptId, operationId);
         if (prior) return { prior: prior.response };
         if (!task.workspaceId) throw new Error('submit_work requires a member that runs in a managed worktree');

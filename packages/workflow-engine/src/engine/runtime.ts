@@ -430,8 +430,15 @@ export class WorkflowRuntime {
             agentKind: pinned.agentKind, tokenHash: binding.tokenHash!, createdAt: Date.now() });
           if (attach) this.log.info('worker-reattach', { workflowId: workflow.workflowId, taskId: task.taskId, attemptId, hostKey });
         }
+        const memberKey = task.agentId ? session.actorKey : undefined;
         const started = await this.deps.runner.start({
           executionId, logicalCallId, attemptId,
+          taskId: task.taskId,
+          ...(task.scriptKey ? { scriptKey: task.scriptKey } : {}),
+          ...(memberKey ? { memberKey } : {}),
+          ...(task.roleLabel ? { roleLabel: task.roleLabel } : {}),
+          readOnly: Boolean(workflow.readOnly || task.readOnly),
+          ...(task.scriptOutput ? { scriptOutput: task.scriptOutput } : {}),
           ...(hostTools ? { workflowTools: { definitions: workflowToolDefinitions('worker'),
             call: (method: string, args: Record<string, unknown>) => this.call(caller, method, args) } } : {}),
           sessionKey: `workflow:${workflow.workflowId}:${session.sessionRef}`,

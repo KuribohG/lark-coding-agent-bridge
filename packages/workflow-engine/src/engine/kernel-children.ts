@@ -78,7 +78,8 @@ export class ChildWorkflows {
     const plan = addArtifact(child,'workflow-plan',input.plan,now);
     emit(child, { type: 'script_set', script: {name:input.name,sourceRef:source.ref,planRef:plan.ref,args:input.args,
       defaults:workerSelection(input.execution,{...root,agentKind:execution.agentKind,modelSettings:execution.modelSettings},host),
-      runId:randomUUID(),revision:0,status:'queued',maxCalls:Math.min(input.maxAgents,state.script.maxCalls),calls:[],logs:[]} });
+      runId:randomUUID(),revision:0,status:'queued',maxCalls:Math.min(input.maxAgents,state.script.maxCalls),
+      ...(state.script?.readOnly || task.readOnly ? { readOnly: true } : {}), calls:[],logs:[]} });
     emit(state, { type: 'task_child_requested', taskId: task.taskId, workflowId: child.workflowId, at: now() });
     return nestedResponse(child);
   }

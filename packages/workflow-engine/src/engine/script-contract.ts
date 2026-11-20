@@ -18,6 +18,8 @@ export const SCRIPT_DEFINITION: WorkflowDefinition = {
 export interface ScriptAgentCall {
   key: string;
   member?: string;
+  role?: string;
+  readOnly?: boolean;
   prompt: string;
   selection: WorkerExecutionSelection;
   output: 'text' | 'json';
@@ -51,10 +53,12 @@ export function scriptArgs(value: unknown): unknown {
 export function parseScriptAgentCall(value: unknown, defaults: WorkerExecutionSelection, root: WorkflowRoot, policy?: WorkerExecutionPolicy): ScriptAgentCall {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid agent() call');
   const input = value as Record<string, unknown>;
-  if (Object.keys(input).some(key => !['key', 'member', 'prompt', 'harness', 'model', 'reasoningEffort', 'output', 'schema', 'workflowTool', 'workspace', 'inputs'].includes(key))) {
-    throw new Error('agent() supports key, member, harness, model, reasoningEffort, output, schema, workflowTool, workspace and inputs only');
+  if (Object.keys(input).some(key => !['key', 'member', 'role', 'readOnly', 'prompt', 'harness', 'model', 'reasoningEffort', 'output', 'schema', 'workflowTool', 'workspace', 'inputs'].includes(key))) {
+    throw new Error('agent() supports key, member, role, readOnly, harness, model, reasoningEffort, output, schema, workflowTool, workspace and inputs only');
   }
   if (input.workflowTool !== undefined && typeof input.workflowTool !== 'boolean') throw new Error('workflowTool must be boolean');
+  if (input.readOnly !== undefined && typeof input.readOnly !== 'boolean') throw new Error('readOnly must be boolean');
+  if (input.readOnly === true && input.workspace !== undefined) throw new Error('Read-only agent cannot use a writable workspace');
   const key = scriptText(input.key, 'agent key', 160);
   if (key.startsWith('@wait/') || key.startsWith('@swarm/')) throw new Error('Agent key uses a reserved swarm or wait prefix');
   if (key.trim() !== key) throw new Error('agent key must not contain surrounding whitespace');
@@ -70,6 +74,7 @@ export function parseScriptAgentCall(value: unknown, defaults: WorkerExecutionSe
   }, root, policy);
   const prompt = scriptText(input.prompt, 'agent prompt');
   const member = input.member === undefined ? undefined : scriptText(input.member, 'member name', 100);
+  const role = input.role === undefined ? undefined : scriptText(input.role, 'agent role', 2000);
   const workspace = input.workspace === undefined ? undefined : scriptText(input.workspace, 'workspace ID', 100);
   if (workspace && input.workflowTool) throw new Error('Workspace v1 does not support nested workflow delegation');
   if (member && member.trim() !== member) throw new Error('member name must not contain surrounding whitespace');
@@ -82,5 +87,5 @@ export function parseScriptAgentCall(value: unknown, defaults: WorkerExecutionSe
   // The schema text is part of the prompt, so it also participates in the cache fingerprint.
   const format = schema ? `\n\nReturn only one JSON value matching this JSON Schema, without markdown fences or explanatory text:\n${JSON.stringify(schema)}`
     : output === 'json' ? '\n\nReturn only valid JSON, without markdown fences or explanatory text.' : '';
-  return { key, member, output, selection, ...(schema ? { schema } : {}), ...(workspace ? { workspace } : {}), ...(inputs ? { inputs } : {}), ...(input.workflowTool ? { workflowTool: true } : {}), prompt: prompt + format };
+  return { key, member, ...(role ? { role } : {}), ...(input.readOnly ? { readOnly: true } : {}), output, selection, ...(schema ? { schema } : {}), ...(workspace ? { workspace } : {}), ...(inputs ? { inputs } : {}), ...(input.workflowTool ? { workflowTool: true } : {}), prompt: prompt + format };
 }

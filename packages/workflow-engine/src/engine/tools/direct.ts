@@ -75,9 +75,14 @@ export const directTools: WorkflowToolPlugin = {
               hint: 'No turn of this worker is running, and none will come to read a post: a one-off worker cannot be reached, a stopped member is revived with staff_swarm.' };
           }
           const id = randomUUID();
+          const id = randomUUID();
+          const session = state.sessions.find(item => item.sessionRef === task.sessionRef);
+          const useHostTools = (session ? ctx.host.workerHostTools?.(session, state.root) : undefined) ?? Boolean(ctx.host.hostTools);
+          const replyInstruction = useHostTools
+            ? 'call workflow_call({method:"reply_main",args:{text:"..."}})'
+            : 'run node "$AGENT_WORKFLOW_CLI" workflow reply_main --input \'{"text":"..."}\' --json';
           const delivery = !ctx.host.tell ? 'unsupported' : await ctx.host.tell(state.workflowId, task.taskId, `[Message from the main agent ${id.slice(0, 8)}]\n${text}\n\n`
-            + '(The main agent of the workflow sent this while you work. It is not a new task: adjust to it and go on with the task you have. To answer, run '
-            + 'node "$AGENT_WORKFLOW_CLI" workflow reply_main --input \'{"text":"..."}\' --json. Each message can be answered once and the answer wakes the main agent, so do not call it when no answer is needed.)', id);
+            + `(The main agent of the workflow sent this while you work. It is not a new task: adjust to it and go on with the task you have. To answer, ${replyInstruction}. Each message can be answered once and the answer wakes the main agent, so do not call it when no answer is needed.)`, id);
           if (delivery === 'accepted' || delivery === 'unknown') {
             change(current => record(current, { id, taskId: task.taskId, from: 'main', text, createdAt: ctx.now(), delivery }));
             return { status: delivery, messageId: id, ...where };

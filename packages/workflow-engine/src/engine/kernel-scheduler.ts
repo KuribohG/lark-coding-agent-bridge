@@ -318,7 +318,8 @@ export class WorkflowScheduler {
           // Explicit replay after a settled stop starts another turn in the same conversation.
           // All other retries retain their receipt identity, including uncertain submissions.
           const continued = previous?.executionId && previous.completionDigest
-            && previous.result === 'stopped' && task.quiescence === 'quiescent';
+            && (previous.result === 'stopped' || previous.result === 'failed' && state.script?.readOnly === true && Boolean(task.retryCount))
+            && task.quiescence === 'quiescent';
           const executionId = continued
             ? 'execution_' + workflowDigest({ logicalCallId, continuedAfter: previous.executionId })
             : previous?.executionId ?? 'execution_' + workflowDigest({ logicalCallId });
@@ -365,7 +366,7 @@ export class WorkflowScheduler {
       // The host keeps what it is handed for the whole turn, so it gets copies rather than live state: this turn's
       // task and session only, since copying the whole workflow for every turn costs time and memory in its size.
       const detached = <T>(value: unknown) => JSON.parse(JSON.stringify(value)) as T;
-      const workflow = { workflowId: live.workflowId, root: detached<WorkflowRoot>(live.root), deadlineAt: live.deadlineAt, goal: live.goal };
+      const workflow = { workflowId: live.workflowId, root: detached<WorkflowRoot>(live.root), deadlineAt: live.deadlineAt, goal: live.goal, ...(live.script?.readOnly ? { readOnly: true } : {}) };
       const task: WorkflowTask = { ...detached<StoredTask>(turn), objective: store.text(turn.objective.digest) };
       const session = detached<WorkerSession>(live.sessions.find(item => item.sessionRef === turn.sessionRef)!);
       const role = live.definition.roles[session.role]!;
@@ -504,8 +505,9 @@ export class WorkflowScheduler {
         error = result.error ?? 'Worker did not produce a bounded final answer with a normal terminal result';
       }
       const failureKind = status === 'failed' ? classifyFailure(stalled !== undefined, error, stopReason) : undefined;
-      // A governed native turn cannot be submitted again without proof that its first submission never happened.
-      const retry = (!ctx.host.executionLedger || result.confirmedNotSubmitted === true)
+      // A governed native turn cannot be submitted again without proof that its first submission never happened,
+      // except read-only workflows whose transient failure retries allocate a new executionId.
+      const retry = (!ctx.host.executionLedger || result.confirmedNotSubmitted === true || state.script?.readOnly === true)
         && failureKind !== undefined && this.retryDue(task, failureKind, state, cancelled);
       emit(state, { type: 'attempt_ended', taskId, at: ctx.now(), result: outcome, ...(stopReason ? { stopReason } : {}), status,
         ...(error !== undefined ? { error } : {}), ...(resultRef ? { resultRef } : {}),

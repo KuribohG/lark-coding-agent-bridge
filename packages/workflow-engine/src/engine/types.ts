@@ -465,6 +465,8 @@ export interface AgentTurn {
   scriptCancelled?: boolean;
   consumerMessageTurn?: boolean;
   workspaceId?: string;
+  roleLabel?: string;
+  readOnly?: boolean;
 }
 
 export interface WorkflowParent {
@@ -504,6 +506,7 @@ export interface WorkflowScript {
   phase?: string;
   resultRef?: string;
   error?: string;
+  readOnly?: boolean;
 }
 
 export interface WorkflowArtifact {
@@ -623,7 +626,7 @@ export interface WorkflowWorkerRequest {
   executionId: string;
   logicalCallId: string;
   /** The workflow the turn belongs to. Only what a host needs for the whole turn; read the rest through the kernel. */
-  workflow: Pick<WorkflowState, 'workflowId' | 'root' | 'deadlineAt'>;
+  workflow: Pick<WorkflowState, 'workflowId' | 'root' | 'deadlineAt'> & { readOnly?: boolean };
   task: WorkflowTask;
   /** The member plans work for others (the lead of a swarm or of a queue), so it is also told the operations only such a member may call. */
   plans?: boolean;

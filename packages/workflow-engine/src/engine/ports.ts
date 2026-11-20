@@ -28,6 +28,12 @@ export interface WorkerRunSpec {
   executionId: string;
   logicalCallId: string;
   attemptId: string;
+  taskId?: string;
+  scriptKey?: string;
+  memberKey?: string;
+  roleLabel?: string;
+  readOnly?: boolean;
+  scriptOutput?: 'text' | 'json';
   /** Host-bound direct tools; no reusable model-visible IPC credentials. */
   workflowTools?: { definitions: unknown[]; call(method: string, args: Record<string, unknown>): Promise<unknown> };
   /** Stable for one worker session across its turns. */

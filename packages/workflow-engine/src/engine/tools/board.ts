@@ -113,6 +113,9 @@ export const swarmTools: WorkflowToolPlugin = {
           // script member's, and the worktrees are made or released under the same authorization the change commits under.
           resolve: async (ctx, state, args) => {
             const input = staffing(args);
+            if (state.script?.readOnly && input.workspace !== undefined && input.workspace !== false) {
+              throw new Error('Workspace operations are disabled in read-only workflows');
+            }
             const selection = staffSelection(state, input, ctx.host);
             const execution = selection ? await (ctx.host.resolveWorker?.(state.root, selection) ?? inheritedWorkerExecution(state.root, selection)) : undefined;
             const workspaces = await staffWorkspaces(ctx, state, input);
@@ -137,6 +140,9 @@ export const swarmTools: WorkflowToolPlugin = {
           const first = bound((state, task) => {
             if (!taskAgent(state, task)) throw new Error('This operation requires a persistent member');
             active(state);
+            if (state.script?.readOnly && input.workspace !== undefined && input.workspace !== false) {
+              throw new Error('Workspace operations are disabled in read-only workflows');
+            }
             const prior = mailboxOperationByKey(state, key);
             if (prior) {
               if (prior.digest !== digest) throw new Error('Mailbox operation ID conflict');

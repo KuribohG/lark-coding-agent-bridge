@@ -40,7 +40,9 @@ export class ScriptApi {
     if (!snapshot.script) throw new Error('Not a script workflow');
     const pinned = snapshot.root;
     const call = parseScriptAgentCall(input, snapshot.script.defaults, pinned, host);
+    const readOnly = Boolean(snapshot.script.readOnly || call.readOnly);
     if (call.workspace) {
+      if (readOnly) throw new Error('Workspace execution is disabled in read-only workflows');
       if (snapshot.parent || !host.resolveWorkspace) throw new Error('Workspace execution is unavailable in this workflow');
       await host.resolveWorkspace(pinned, workflowId, call.workspace);
     }
@@ -78,6 +80,7 @@ export class ScriptApi {
       }
       const cacheKey = workflowDigest({ key: call.key, prompt: call.prompt, output: call.output, execution,
         root: state.root, goal: state.goal, definition: state.definitionDigest, ...(call.workspace ? {workspace:call.workspace} : {}), ...(call.workflowTool ? {workflowTool:true} : {}), ...(managed ? { managed: true } : {}),
+        ...(call.role ? { role: call.role } : {}), ...(readOnly ? { readOnly: true } : {}),
         ...(inputRefs.length ? { inputs: inputRefs.map(ref => artifactOf(state, ref).digest) } : {}) });
       const cached = state.tasks.find(task => task.cacheKey === cacheKey && (task.status === 'result_ready'
         || managed && (['failed', 'waiting_input'].includes(task.status) || task.scriptCancelled && ['cancelled', 'interrupted'].includes(task.status))))
@@ -98,6 +101,8 @@ export class ScriptApi {
           ...(call.workspace ? {workspaceId:call.workspace} : {}),
           ...(managed ? { scriptManaged: true } : {}),
           ...(call.workflowTool ? {workflowTool:true} : {}),
+          ...(call.role ? { roleLabel: call.role } : {}),
+          ...(readOnly ? { readOnly: true } : {}),
           status: 'queued', attempts: [], resultRefs: [], scriptRunId: runId, scriptKey: call.key, scriptOutput: call.output, ...(call.schema ? { scriptSchema: call.schema } : {}), cacheKey } });
         task = findTask(state, taskId);
       }
@@ -116,6 +121,7 @@ export class ScriptApi {
     const state = requireState(store.state(scopeId, workflowId));
     if (!root || !sameRoot(root, state.root)) throw new Error('Root binding changed');
     if (ctx.closed || state.status !== 'active' || state.script?.runId !== runId || state.script.status !== 'running' || ctx.now() >= state.deadlineAt) throw new Error('Script run is inactive');
+    if (state.script?.readOnly) throw new Error('Workspace operations are disabled in read-only workflows');
     if (state.parent || !host.workspace) throw new Error('Workspace operations are unavailable in this workflow');
     signal.throwIfAborted();
     const key = scriptText(args.key, 'workspace key', 100);
@@ -255,6 +261,9 @@ export class ScriptApi {
     if (kind === 'swarm') {
       check(snapshot);
       const spec = parseSwarm(args, snapshot, host);
+      if (snapshot.script?.readOnly && spec.members.some(member => member.workspace)) {
+        throw new Error('Workspace execution is disabled in read-only workflows');
+      }
       const pinned = snapshot.root;
       const executions: WorkerExecution[] = [];
       for (const member of spec.members) {
