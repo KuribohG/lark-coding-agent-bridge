@@ -230,6 +230,9 @@ describe('ultracode native engine policy and metadata', () => {
     await expect(
       main2.call!('staff_swarm', { operationId: randomUUID(), swarm: 's1', add: ['extra'], workspace: true }),
     ).rejects.toThrow('read-only');
+    await expect(
+      main2.call!('configure_landing', { operationId: randomUUID(), branch: 'main' }),
+    ).rejects.toThrow('read-only');
 
     const submitTexts = runtime2.kernel.state('ultra-staff')!.artifacts.map(a => a.text);
     expect(submitTexts.some(t => t.includes('disabled in read-only workflows'))).toBe(true);

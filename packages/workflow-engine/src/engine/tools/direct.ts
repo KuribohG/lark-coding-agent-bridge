@@ -75,7 +75,6 @@ export const directTools: WorkflowToolPlugin = {
               hint: 'No turn of this worker is running, and none will come to read a post: a one-off worker cannot be reached, a stopped member is revived with staff_swarm.' };
           }
           const id = randomUUID();
-          const id = randomUUID();
           const session = state.sessions.find(item => item.sessionRef === task.sessionRef);
           const useHostTools = (session ? ctx.host.workerHostTools?.(session, state.root) : undefined) ?? Boolean(ctx.host.hostTools);
           const replyInstruction = useHostTools

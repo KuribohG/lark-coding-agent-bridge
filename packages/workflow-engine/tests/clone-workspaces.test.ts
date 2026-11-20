@@ -57,9 +57,9 @@ describe('clone workspaces', () => {
     expect((await stat(join(a.ws.path, '.git'))).isDirectory()).toBe(true);
     expect(await git(a.ws.path, 'rev-parse', 'HEAD')).toBe(h.base);
     expect(await git(a.ws.path, 'status', '--porcelain')).toBe('');
-    expect(await readFile(join(a.ws.path, 'shared.txt'), 'utf8')).toBe('baseline\n');
+    expect((await readFile(join(a.ws.path, 'shared.txt'), 'utf8')).replace(/\r\n/g, '\n')).toBe('baseline\n');
     // History is borrowed, not copied.
-    expect(await readFile(join(a.ws.path, '.git/objects/info/alternates'), 'utf8')).toContain(join('.git', 'objects'));
+    expect((await readFile(join(a.ws.path, '.git/objects/info/alternates'), 'utf8')).replace(/\\/g, '/')).toContain('.git/objects');
     // The source is a remote, its own remote and remote-tracking refs come along, and commits keep the author.
     expect(await git(a.ws.path, 'remote', 'get-url', CLONE_REMOTE)).toBe(a.ws.repository);
     expect(await git(a.ws.path, 'remote', 'get-url', 'origin')).toBe('https://example.invalid/project.git');

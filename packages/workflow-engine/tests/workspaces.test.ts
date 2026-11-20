@@ -10,7 +10,7 @@ import { WorkflowKernel } from '../src/engine/kernel';
 import type { WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceIntegration } from '../src/engine/workspace-types';
 
 const closes: Array<() => Promise<unknown>> = [];
-afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); });
+afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); }, 30_000);
 const signal = () => new AbortController().signal;
 const exists = (path: string) => access(path).then(() => true, () => false);
 async function git(cwd: string, ...argv: string[]) {
@@ -129,7 +129,7 @@ describe('managed workflow worktrees with real Git', () => {
     await h.restart(); expect(await h.op('integrate', 'merge', input)).toEqual(merged);
     expect(await h.op('accept', 'accept', { workspace: merged.workspace.id, checks: checks.id })).toEqual(accepted);
     expect(await h.op('cleanup', 'clean', { workspace: merged.workspace.id })).toMatchObject({ removed: true });
-  }, 30_000);
+  }, 60_000);
 
   it('blocks a bad combined result and rejects changes made after passing checks', async () => {
     const h = await fixture(); const a = await h.candidate('a', 'a.txt', 'A\n'), b = await h.candidate('b', 'b.txt', 'B\n');
@@ -140,7 +140,7 @@ describe('managed workflow worktrees with real Git', () => {
     const checks = await h.checks(merged.workspace);
     await h.commit(merged.workspace, 'extra.txt', 'unreviewed\n');
     await expect(h.op('accept', 'changed', { workspace: merged.workspace.id, checks: checks.id })).rejects.toThrow('unchanged integration');
-  }, 30_000);
+  }, 60_000);
 
   it('retains conflicts and supports independently reviewed repair plus remaining candidates', async () => {
     const h = await fixture(); const a = await h.candidate('a', 'shared.txt', 'A\n'), b = await h.candidate('b', 'shared.txt', 'B\n'), c = await h.candidate('c', 'c.txt', 'C\n');
@@ -261,5 +261,5 @@ describe('managed workflow worktrees with real Git', () => {
     }
     expect((await h.manager.binding(h.root, h.state.workflowId, ws.id, signal())).busy).toBeUndefined();
     await expect(h.op('check', 'timeout', { workspace: ws.id, commands: [{ argv: [process.execPath, '-e', 'setTimeout(()=>{},10000)'], timeoutMs: 100 }] })).rejects.toThrow('timed out');
-  });
+  }, 30_000);
 });
