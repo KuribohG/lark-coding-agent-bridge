@@ -109,12 +109,21 @@ describe('/agent scope engine', () => {
 
   it('leaves the scope unchanged when the model arguments are rejected', async () => {
     const h = await harness();
-    await h.command('/agent claude custom/fast not-an-effort 任务');
+    await h.command('/agent claude custom/fast none 任务');
     expect(h.store.get(h.ctx.scope)).toBeUndefined();
     expect((await resolveRunModelSettings(h.controls, h.ctx.scope, undefined, 'claude')).model).not.toBe('custom/fast');
     expect(h.ctx.followUpPrompt).toBeUndefined();
     expect(h.lastReply()).toContain('未切换');
     expect(h.btwResets).toEqual([]);
+  });
+
+  it('accepts a model and trailing task without an effort argument', async () => {
+    const h = await harness();
+    const prompt = '检查  这个问题\n\t第二行';
+    await h.command(`/agent claude custom/fast ${prompt}`);
+    expect(h.store.get(h.ctx.scope)).toBe('claude');
+    expect((await resolveRunModelSettings(h.controls, h.ctx.scope, undefined, 'claude')).model).toBe('custom/fast');
+    expect(h.ctx.followUpPrompt).toBe(prompt);
   });
 
   it('rejects unknown or unavailable engines and switches during a run', async () => {
