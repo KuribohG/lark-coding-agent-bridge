@@ -28,7 +28,8 @@ See [config.example.toml](config.example.toml) for a full layered example. `agen
 
 ## Execution fields
 
-- `model`: model identifier, or `{ source = "native" }` to stop inheritance and let the CLI decide.
+- `model`: model identifier, or `{ source = "native" }` to stop inheritance and let the CLI decide. Forwarded to the selected provider verbatim.
+- `provider`: a `model_services` name, or `native` to keep the engine on its own account/configuration. Independent of `model`; unset binds the sole service supporting the engine, and several candidates are an error.
 - `effort`: agent-supported reasoning effort, or `{ source = "native" }`.
 - `max_concurrent_runs`: integer 1–512, a per-profile concurrency limit shared by conversation turns and workflow workers; global defaults do not impose a host-wide aggregate limit.
 - `idle_timeout_minutes`: integer 0–120; 0 disables the no-output watchdog.

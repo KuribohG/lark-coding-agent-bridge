@@ -13,7 +13,9 @@ describe('copyable configuration examples', () => {
     expect(snippet).toBeTruthy();
     const doc = parseDocument(`version = 3\n${snippet}`);
     expect(resolveExecutionProfile(doc, 'agy').agy?.binaryPath).toBe('agy');
-    expect(resolveRun(doc, 'agy').preferences.model).toBe('high-five-ai/google/gemini-2.5-flash');
+    expect(resolveRun(doc, 'agy').preferences).toMatchObject({
+      modelProvider: 'high-five-ai', model: 'google/gemini-2.5-flash',
+    });
     expect(doc.model_services['high-five-ai'].endpoints.gemini).toMatchObject({
       baseUrl: 'https://gateway.example', contextWindow: 1048576,
     });

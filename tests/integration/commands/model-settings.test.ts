@@ -241,7 +241,7 @@ describe('model and effort scope settings', () => {
     expect((await scopePreferences(h.controls)).get('codex', h.ctx.scope).model).toBeUndefined();
     expect(encodeFixture(h.channel.sent)).toContain('Provider 未切换');
     await h.command('/model current/next-model');
-    expect((await scopePreferences(h.controls)).get('codex', h.ctx.scope).model).toBe('current/next-model');
+    expect((await scopePreferences(h.controls)).get('codex', h.ctx.scope)).toEqual({ provider: 'current', model: 'next-model' });
     await h.command('/model');
     expect(encodeFixture(h.channel.sent)).toContain('Current Provider');
   });
@@ -338,7 +338,7 @@ describe('model and effort scope settings', () => {
       formValue: { provider_pick: 'deepseek', model_pick: '__provider_default__', model: 'deepseek-flash', reasoning_effort: 'high' } });
 
     expect((await scopePreferences(h.controls)).get('codex', h.ctx.scope)).toEqual({
-      model: 'deepseek/deepseek-flash',
+      provider: 'deepseek',
       reasoningEffort: 'high',
     });
   });

@@ -124,8 +124,13 @@ describe('ProfileExecutionController', () => {
       id: 'gateway',
       model: expect.stringMatching(/^lark_gateway_[a-f0-9]+\/deepseek-flash$/),
     });
-    // An explicit native model is not replaced by the service default.
-    await expect(resolver.resolveModelProvider('pi', 'anthropic/claude-opus-5.5')).resolves.toBeUndefined();
+    // A model name never selects a provider on its own: the sole service takes it verbatim.
+    await expect(resolver.resolveModelProvider('pi', 'anthropic/claude-opus-5.5')).resolves.toMatchObject({
+      id: 'gateway',
+      model: expect.stringMatching(/^lark_gateway_[a-f0-9]+\/anthropic\/claude-opus-5\.5$/),
+    });
+    // The CLI's own account is an explicit choice, not a fallback.
+    await expect(resolver.resolveModelProvider('pi', 'anthropic/claude-opus-5.5', 'native')).resolves.toBeUndefined();
     // Startup-bound Codex and unbound Claude keep their own defaults.
     await expect(resolver.resolveModelProvider('codex')).resolves.toBeUndefined();
     await expect(resolver.resolveModelProvider('claude')).resolves.toBeUndefined();

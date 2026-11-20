@@ -5,7 +5,6 @@ import {
 } from '../agent/backends';
 import type { AgentCapability } from '../agent/capability';
 import type { AgentAdapter, AgentBotIdentity } from '../agent/types';
-import { DEFAULT_MODEL } from '../agent/models';
 import type { AgentSystemPrompt } from '../agent/system-prompt';
 import type {
   AgentExecutionProfile,
@@ -26,7 +25,7 @@ export interface ExecutionController {
   kindFor(scope: string): AgentKind;
   profileFor(scope: string): AgentExecutionProfile;
   capabilityFor(scope: string): AgentCapability;
-  resolveModelProvider(agentKind: AgentKind, model?: string): Promise<ResolvedModelProvider | undefined>;
+  resolveModelProvider(agentKind: AgentKind, model?: string, provider?: string): Promise<ResolvedModelProvider | undefined>;
   setBotIdentity(identity: AgentBotIdentity): void;
   setScopeKind(scope: string, kind: AgentKind): Promise<void>;
   /** Release adapters' long-lived transports; optional so test doubles need no stub. */
@@ -111,12 +110,14 @@ export class ProfileExecutionController implements ExecutionController {
   async resolveModelProvider(
     agentKind: AgentKind,
     model?: string,
+    provider?: string,
   ): Promise<ResolvedModelProvider | undefined> {
+    // Startup-pinned backends (Codex) already carry their key in the launch
+    // environment; resolve their binding without re-reading credentials, and
+    // leave a run without a model selection on the CLI's own default.
     const runtimeSwitchesProvider = backendFor(agentKind).providerSwitching !== 'startup';
-    const selected = model && model !== DEFAULT_MODEL ? model : undefined;
-    if (selected) return this.modelProviders?.resolve(agentKind, selected, runtimeSwitchesProvider);
-    if (!runtimeSwitchesProvider) return undefined;
-    return this.modelProviders?.resolveDefault(agentKind);
+    if (!runtimeSwitchesProvider && (!model || model === 'default')) return undefined;
+    return this.modelProviders?.resolveRun(agentKind, { model, provider }, runtimeSwitchesProvider);
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {

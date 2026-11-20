@@ -61,6 +61,6 @@ export async function resolveRunModelSettings(
   const overrides = { ...store.get(agentKind, scope), ...patch };
   const profilePreferences = agentKind === state.profileConfig.agentKind
     ? state.profileConfig.preferences
-    : { ...state.profileConfig.preferences, model: undefined, reasoningEffort: undefined };
+    : { ...state.profileConfig.preferences, model: undefined, modelProvider: undefined, reasoningEffort: undefined };
   return resolveModelSettings(profilePreferences, overrides, environment);
 }

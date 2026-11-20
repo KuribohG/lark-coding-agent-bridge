@@ -28,7 +28,16 @@ triageModel = ""
 
 示例只展示相关字段；保留实际的 profile、授权、目标话题和启用配置。`baseUrl` 是 HTTPS API 根地址，请求时添加 `/responses`，不要填写完整 `/responses` 路径。地址不能包含用户名、密码、查询参数或片段。默认模型必填，服务名称为 1–64 位字母、数字、下划线或横线，并以字母或数字开头。
 
-同一服务可同时供直接 API 和 Agent 使用。Agent 选择带 provider 前缀的模型：
+同一服务可同时供直接 API 和 Agent 使用。Agent 的 Provider 与模型名是两个独立设置：
+Provider 来自 `run.provider`（或聊天里的 `/model` 卡片），模型名原样传给网关。
+
+```toml
+[agents.agy.run]
+provider = "screening"
+model = "your-screening-model"   # 不需要 provider 前缀
+```
+
+也仍然接受一次性的 `provider/model` 写法：
 
 ```text
 /model screening/your-screening-model
@@ -37,10 +46,11 @@ triageModel = ""
 在飞书中发送 `/provider` 可直接打开切换卡片；下拉选项来自 Bridge 的 Provider
 registry，并按当前 Agent 的 `supports()` 能力过滤，不需要在卡片代码里维护品牌分支。
 
-如果只有一个支持当前 Agent 的服务声明了该默认模型，也可以继续使用裸模型名，
-Bridge 会唯一解析到该服务；带上下文后缀的裸模型名（如 `deepseek-flash[1m]`）
-同样解析到该服务并原样传给网关；多个服务声明相同模型时会明确报歧义，要求改用
-`<provider>/<model>`。
+选择一个 Provider 后，任何没有被其他服务认领的模型名都会绑定到它；不支持该 Agent
+的服务不会出现在列表里。未设置 `provider` 时：只有一个支持该 Agent 的服务就直接
+绑定它；有多个服务则报错，要求显式指定，或设置 `provider = "native"` 让 CLI 使用
+自己的账号与配置（不会静默回退）。带上下文后缀的模型名（如 `deepseek-flash[1m]`）
+原样传给网关。
 
 未指定模型（`跟随默认`）时，按运行时切换 Provider 的 Agent（如 Pi）会默认绑定
 唯一支持它的服务及其默认模型，避免退回到 Agent 自己未托管的凭据配置；启动时固定

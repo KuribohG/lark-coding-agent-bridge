@@ -201,8 +201,11 @@ export class ConversationRuntime {
         profile: options.namespace, profileFor,
         // These hosts keep no per-conversation model choice: a workflow runs with the engine profile's.
         modelSettings: async (scope, agentKind, patch) => {
-          const { model, reasoningEffort } = profileFor(agentKind, scope).preferences;
-          return { model, reasoningEffort, ...patch, modelSource: 'profile', effortSource: 'profile' };
+          const { model, modelProvider, reasoningEffort } = profileFor(agentKind, scope).preferences;
+          return {
+            model, reasoningEffort, ...patch, modelSource: 'profile', providerSource: 'profile', effortSource: 'profile',
+            ...(modelProvider ? { provider: modelProvider } : {}),
+          };
         },
         stallMs: () => getRunIdleTimeoutMs(options.config),
         stopGraceMs: () => getAgentStopGraceMs(options.config),

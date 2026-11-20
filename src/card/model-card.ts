@@ -2,13 +2,15 @@ import { reasoningEffortOptions, type ModelEnvironment, type ModelSettings, type
 import type { AgentKind } from '../config/profile-schema';
 import {
   AUTO_MODEL_PROVIDER,
-  selectedProvider,
+  NATIVE_MODEL_PROVIDER,
+  providerForSelection,
   type ModelProviderOption,
 } from '../model-provider/provider';
 
 export function modelSettingsSummary(settings: ResolvedModelSettings): string {
   const source = { scope: '当前聊天设置', profile: 'bot 默认', cli: 'CLI 默认', model: '模型默认' };
   return `模型：\`${settings.modelSource === 'cli' ? 'CLI 默认' : settings.model}\`（${source[settings.modelSource]}）\n` +
+    `Provider：\`${settings.providerSource === 'cli' ? '自动' : settings.provider === NATIVE_MODEL_PROVIDER ? 'native（不绑定）' : settings.provider}\`（${source[settings.providerSource]}）\n` +
     `思考强度：\`${settings.effortSource === 'cli' ? 'CLI 默认' : settings.reasoningEffort}\`（${source[settings.effortSource]}）` +
     (settings.notice ? `\n${settings.notice}` : '');
 }
@@ -23,7 +25,7 @@ export function modelFormCard(input: {
   providers: ModelProviderOption[];
   activeProvider?: { id: string; displayName: string; fixedUntilRestart: boolean };
 }): object {
-  const provider = selectedProvider(input.providers, input.resolved.model);
+  const provider = providerForSelection(input.providers, input.resolved);
   const selectedModel = provider && input.resolved.model?.startsWith(`${provider.id}/`)
     ? input.resolved.model.slice(provider.id.length + 1)
     : input.resolved.model;
@@ -34,16 +36,17 @@ export function modelFormCard(input: {
       { tag: 'markdown', content: `**${input.scopeLabel}**\n${input.activeProvider ? `当前 Provider：\`${input.activeProvider.displayName}\`（启动时固定；切换需修改配置并重启）\n` : ''}${modelSettingsSummary(input.resolved)}\n\n下一轮新任务生效；/new 保留设置。填写 default 可跟随 bot 默认。` },
       { tag: 'form', name: 'model_settings', elements: [
         { tag: 'markdown', content: '**模型 Provider**（选择后填写该 Provider 的模型 ID）' },
-        { tag: 'select_static', name: 'provider_pick', initial_option: input.activeProvider && input.providers.some(p => p.id === input.activeProvider!.id) ? input.activeProvider.id : provider?.id ?? AUTO_MODEL_PROVIDER, options: [
+        { tag: 'select_static', name: 'provider_pick', initial_option: input.activeProvider && input.providers.some(p => p.id === input.activeProvider!.id) ? input.activeProvider.id : provider?.id ?? (input.resolved.provider === NATIVE_MODEL_PROVIDER ? NATIVE_MODEL_PROVIDER : AUTO_MODEL_PROVIDER), options: [
           { text: { tag: 'plain_text', content: '自动 / 保留当前模型' }, value: AUTO_MODEL_PROVIDER },
           ...input.providers.map(item => ({
             text: { tag: 'plain_text', content: item.label },
             value: item.id,
           })),
+          { text: { tag: 'plain_text', content: 'native（不绑定，用 CLI 自己的账号）' }, value: NATIVE_MODEL_PROVIDER },
         ] },
-        { tag: 'markdown', content: '**模型名**（可以直接填写）' },
+        { tag: 'markdown', content: '**模型名**（可以直接填写，不需要 provider 前缀）' },
         { tag: 'input', name: 'model', default_value: selectedModel ?? 'default',
-          placeholder: { tag: 'plain_text', content: 'provider/model 或 default' } },
+          placeholder: { tag: 'plain_text', content: '模型 ID 或 default' } },
         { tag: 'select_static', name: 'model_pick', initial_option: '__manual__', options: [
           { text: { tag: 'plain_text', content: '使用上方输入的模型名' }, value: '__manual__' },
           { text: { tag: 'plain_text', content: '使用所选 Provider 的默认模型' }, value: '__provider_default__' },

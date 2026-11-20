@@ -12,6 +12,8 @@ export interface ReasoningEffortOption {
 }
 export interface ModelSettings {
   model?: string;
+  /** Model provider (a configured service name or `native`); independent of {@link model}. */
+  provider?: string;
   reasoningEffort?: ReasoningEffort;
 }
 export interface ModelEnvironment {
@@ -20,6 +22,7 @@ export interface ModelEnvironment {
 }
 export interface ResolvedModelSettings extends ModelSettings {
   modelSource: 'scope' | 'profile' | 'cli';
+  providerSource: 'scope' | 'profile' | 'cli';
   effortSource: 'scope' | 'profile' | 'cli' | 'model';
   notice?: string;
 }
@@ -60,10 +63,13 @@ export function resolveModelSettings(
   const model = (scope.model === 'default' ? undefined : scope.model) ??
     (profile.model === 'default' ? undefined : profile.model) ?? environment.defaults.model;
   const reasoningEffort = scope.reasoningEffort ?? profile.reasoningEffort ?? environment.defaults.reasoningEffort;
+  const provider = (scope.provider === 'default' ? undefined : scope.provider) ?? profile.provider;
   const result: ResolvedModelSettings = {
     model,
+    ...(provider ? { provider } : {}),
     reasoningEffort,
     modelSource: scope.model && scope.model !== 'default' ? 'scope' : profile.model && profile.model !== 'default' ? 'profile' : 'cli',
+    providerSource: scope.provider && scope.provider !== 'default' ? 'scope' : profile.provider ? 'profile' : 'cli',
     effortSource: scope.reasoningEffort ? 'scope' : profile.reasoningEffort ? 'profile' : 'cli',
   };
   const info = environment.models.find((m) => m.value === model);
@@ -85,6 +91,7 @@ export function resolveModelSettings(
 export function modelRunArguments(settings: ResolvedModelSettings): ModelSettings {
   return {
     model: settings.modelSource === 'cli' ? undefined : settings.model,
+    ...(settings.provider ? { provider: settings.provider } : {}),
     reasoningEffort: settings.effortSource === 'cli' ? undefined : settings.reasoningEffort,
   };
 }

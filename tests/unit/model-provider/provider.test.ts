@@ -1,9 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import {
-  AUTO_MODEL_PROVIDER,
   ModelProviderRegistry,
-  composeProviderSelection,
-  selectedProvider,
+  providerForSelection,
 } from '../../../src/model-provider/provider';
 import type { ModelServiceConfig } from '../../../src/model-service/config';
 
@@ -68,22 +66,38 @@ describe('agent model provider registry', () => {
     expect((await registry.resolveStartup('codex'))?.model).toBe('deepseek-flash');
   });
 
-  it('leaves native bare model selections unchanged', async () => {
-    await expect(new ModelProviderRegistry(services).resolve('pi', 'anthropic/claude-opus-5.5')).resolves.toBeUndefined();
-  });
-
-  it('resolves an existing bare model when exactly one compatible service declares it', async () => {
+  it('binds a bare model name to the sole compatible service', async () => {
     process.env.PROVIDER_TEST_KEY = 'private-provider-key';
     const registry = new ModelProviderRegistry(services);
     await expect(registry.resolve('pi', 'deepseek-flash')).resolves.toMatchObject({
       id: 'deepseek',
-      model: expect.stringContaining('/deepseek-flash'),
+      pi: { model: { id: 'deepseek-flash' } },
     });
-    await expect(registry.resolve('codex', 'deepseek-flash')).resolves.toMatchObject({
+    await expect(registry.resolve('pi', 'any-gateway-model')).resolves.toMatchObject({
       id: 'deepseek',
-      model: 'deepseek-flash',
+      pi: { model: { id: 'any-gateway-model' } },
+    });
+    await expect(registry.resolve('codex', 'any-gateway-model')).resolves.toMatchObject({
+      id: 'deepseek',
+      model: 'any-gateway-model',
     });
     await expect(registry.resolve('claude', 'deepseek-flash')).resolves.toBeUndefined();
+  });
+
+  it('forwards the model id verbatim, including a gateway context suffix', async () => {
+    process.env.PROVIDER_TEST_KEY = 'private-provider-key';
+    const registry = new ModelProviderRegistry(services);
+    await expect(registry.resolve('pi', 'deepseek-flash[1m]')).resolves.toMatchObject({
+      id: 'deepseek',
+      pi: { model: { id: 'deepseek-flash[1m]' } },
+    });
+  });
+
+  it('keeps the CLI on its own account when the provider is native', async () => {
+    process.env.PROVIDER_TEST_KEY = 'private-provider-key';
+    const registry = new ModelProviderRegistry(services);
+    await expect(registry.resolveRun('pi', { model: 'deepseek-flash', provider: 'native' })).resolves.toBeUndefined();
+    await expect(registry.resolveRun('agy', { model: 'gemini-4-neon', provider: 'native' })).resolves.toBeUndefined();
   });
 
   it('falls back to the sole provider default for a run without a model selection', async () => {
@@ -98,26 +112,20 @@ describe('agent model provider registry', () => {
     await expect(new ModelProviderRegistry({
       ...services,
       second: { ...services.deepseek!, baseUrl: 'https://second.example/v1' },
-    }).resolveDefault('pi')).resolves.toBeUndefined();
+    }).resolveDefault('pi')).rejects.toThrow('多个模型 Provider');
   });
 
-  it('resolves a bare model carrying a gateway context suffix', async () => {
-    process.env.PROVIDER_TEST_KEY = 'private-provider-key';
-    const registry = new ModelProviderRegistry(services);
-    await expect(registry.resolve('pi', 'deepseek-flash[1m]')).resolves.toMatchObject({
-      id: 'deepseek',
-      pi: { model: { id: 'deepseek-flash[1m]' } },
-    });
-    await expect(registry.resolve('pi', 'deepseek-flashx[1m]')).resolves.toBeUndefined();
-  });
-
-  it('rejects an ambiguous bare model instead of choosing a provider', async () => {
+  it('requires an explicit provider when several services support the backend', async () => {
     process.env.PROVIDER_TEST_KEY = 'private-provider-key';
     const registry = new ModelProviderRegistry({
       ...services,
       second: { ...services.deepseek!, baseUrl: 'https://second.example/v1' },
     });
-    await expect(registry.resolve('pi', 'deepseek-flash')).rejects.toThrow('多个 provider');
+    await expect(registry.resolve('pi', 'deepseek-flash')).rejects.toThrow('多个模型 Provider');
+    await expect(registry.resolveRun('pi', { model: 'deepseek-flash', provider: 'second' }))
+      .resolves.toMatchObject({ id: 'second' });
+    await expect(registry.resolveRun('pi', { model: 'deepseek-flash', provider: 'missing-provider' }))
+      .rejects.toThrow('未知模型 Provider');
   });
 
   it('does not publish unconfigured native accounts as Providers', () => {
@@ -125,14 +133,14 @@ describe('agent model provider registry', () => {
     expect(new ModelProviderRegistry().options('pi')).toEqual([]);
   });
 
-  it('publishes Agent-filtered Provider choices and composes card selections', async () => {
+  it('publishes Agent-filtered Provider choices and reads the stored setting', () => {
     const options = new ModelProviderRegistry(services).options('pi');
     expect(options).toEqual([
       expect.objectContaining({ id: 'deepseek', defaultModel: 'deepseek-flash' }),
     ]);
-    expect(selectedProvider(options, 'deepseek/deepseek-flash')?.id).toBe('deepseek');
-    expect(selectedProvider(options, 'deepseek-flash')?.id).toBe('deepseek');
-    expect(composeProviderSelection(options, 'deepseek', 'deepseek-flash')).toBe('deepseek/deepseek-flash');
-    expect(composeProviderSelection(options, AUTO_MODEL_PROVIDER, 'native/model')).toBe('native/model');
+    expect(providerForSelection(options, { provider: 'deepseek' })?.id).toBe('deepseek');
+    expect(providerForSelection(options, { model: 'deepseek/deepseek-flash' })?.id).toBe('deepseek');
+    expect(providerForSelection(options, { model: 'deepseek-flash' })).toBeUndefined();
+    expect(providerForSelection(options, { provider: 'native' })).toBeUndefined();
   });
 });

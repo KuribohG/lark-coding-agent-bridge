@@ -13,6 +13,7 @@ import { normalizeExecSandbox } from '../platform/exec-sandbox';
 import { isTable } from './table';
 import { larkDisplay } from './lark-display';
 import { modelGateTable, normalizeModelGate } from '../model-gate/config';
+import { modelServiceName } from '../model-service/config';
 import { validateLarkNetwork } from './lark-network';
 import { SLACK_DISPLAY_DEFAULTS, WEB_DISPLAY_DEFAULTS } from './channel-display';
 import { normalizeFileLinks } from './file-links';
@@ -43,7 +44,7 @@ export interface ConfigDocument extends Table {
 }
 
 export const RUN_KEYS = {
-  model: 'model', effort: 'reasoningEffort', max_concurrent_runs: 'maxConcurrentRuns',
+  model: 'model', provider: 'modelProvider', effort: 'reasoningEffort', max_concurrent_runs: 'maxConcurrentRuns',
   idle_timeout_minutes: 'runIdleTimeoutMinutes', stop_grace_ms: 'agentStopGraceMs',
   workflow_timeout_minutes: 'workflowTimeoutMinutes',
   cache_keepalive_interval_minutes: 'cacheKeepaliveIntervalMinutes', cache_keepalive_max_pings: 'cacheKeepaliveMaxPings',
@@ -77,7 +78,9 @@ function selection(value: unknown): boolean {
 function checkRun(value: unknown, path: string, agent?: AgentKind): void {
   const run = keys(value, Object.keys(RUN_KEYS), path);
   for (const [key, v] of Object.entries(run)) {
-    if (key === 'model' || key === 'effort') {
+    if (key === 'provider') {
+      modelServiceName(v);
+    } else if (key === 'model' || key === 'effort') {
       if (!selection(v)) throw new Error(`${path}.${key}: expected a value or { source = "native" }`);
       if (key === 'effort' && typeof v === 'string') parseEffort(v, agent ?? 'codex');
     } else {

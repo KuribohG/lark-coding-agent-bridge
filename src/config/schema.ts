@@ -109,6 +109,12 @@ export interface AppPreferences {
    * CLI / account default applies. Default: unset.
    */
   model?: string;
+  /**
+   * Model provider for this engine: a configured `model_services` name, or
+   * `native` to keep the CLI on its own account/configuration. Independent of
+   * {@link model}; unset means automatic selection (sole service, else error).
+   */
+  modelProvider?: string;
   /** Default effort for this bot, overridden by chat preferences. */
   reasoningEffort?: import('../agent/model-settings').ReasoningEffort;
   /**
@@ -172,7 +178,7 @@ export interface ChannelDisplayConfig {
   slack?: Partial<import('./channel-display').SlackDisplayConfig>;
 }
 
-export type RunPreferences = Pick<AppPreferences, 'model' | 'reasoningEffort' | 'maxConcurrentRuns' | 'runIdleTimeoutMinutes' | 'workflowTimeoutMinutes' | 'agentStopGraceMs'
+export type RunPreferences = Pick<AppPreferences, 'model' | 'modelProvider' | 'reasoningEffort' | 'maxConcurrentRuns' | 'runIdleTimeoutMinutes' | 'workflowTimeoutMinutes' | 'agentStopGraceMs'
   | 'cacheKeepaliveIntervalMinutes' | 'cacheKeepaliveMaxPings' | 'cacheKeepaliveMinContextTokens'>;
 
 /** In-memory account and preference view; the public file format is ConfigDocument. */

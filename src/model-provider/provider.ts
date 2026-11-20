@@ -17,6 +17,19 @@ export interface ModelProviderOption {
 }
 
 export const AUTO_MODEL_PROVIDER = '__auto__';
+/** Explicit setting that keeps the Agent CLI on its own account and configuration. */
+export const NATIVE_MODEL_PROVIDER = 'native';
+
+/**
+ * One run's model settings. The provider is chosen independently of the model
+ * id: a model name never selects a provider on its own.
+ */
+export interface ModelProviderSelection {
+  /** Model id forwarded to the backend verbatim. */
+  model?: string;
+  /** Configured service name, {@link NATIVE_MODEL_PROVIDER}, or unset for automatic selection. */
+  provider?: string;
+}
 
 /** A model service that can be bound to one or more Agent CLIs. */
 abstract class ModelProvider {
@@ -28,8 +41,6 @@ abstract class ModelProvider {
   abstract supports(agentKind: AgentKind): boolean;
   abstract bind(agentKind: AgentKind, model: string, credentials?: boolean): Promise<ResolvedModelProvider>;
   abstract models(agentKind: AgentKind, refresh: boolean): Promise<ModelOption[]>;
-  /** Bare model IDs this provider may resolve when no provider prefix is used. */
-  bareModels(_agentKind: AgentKind): readonly string[] { return []; }
   defaultModel(_agentKind: AgentKind): string | undefined { return undefined; }
 
   protected assertSupported(agentKind: AgentKind): void {
@@ -47,10 +58,6 @@ class ConfiguredModelProvider extends ModelProvider {
 
   supports(agentKind: AgentKind): boolean {
     return this.binding(agentKind) !== undefined;
-  }
-
-  override bareModels(agentKind: AgentKind): readonly string[] {
-    return this.supports(agentKind) ? [this.binding(agentKind)!.endpoint.model] : [];
   }
 
   override defaultModel(agentKind: AgentKind): string | undefined {
@@ -133,82 +140,74 @@ export class ModelProviderRegistry {
     return catalogs.flat();
   }
 
+  /** Resolve a stored selection string; a `provider/model` override is still accepted. */
   async resolve(agentKind: AgentKind, selection: string | undefined, credentials = true): Promise<ResolvedModelProvider | undefined> {
-    if (!selection || selection === 'default') return undefined;
-    const provider = this.providers.find(candidate => selection.startsWith(`${candidate.id}/`));
-    if (provider) {
-      const model = selection.slice(provider.id.length + 1);
-      if (!model) throw new Error(`模型选择 ${selection} 缺少模型 ID`);
-      return provider.bind(agentKind, model, credentials);
-    }
-    const bare = this.providers.filter(candidate =>
-      candidate.bareModels(agentKind).some(model => matchesBareModel(selection, model)));
-    if (bare.length > 1) {
-      throw new Error(`模型 ${selection} 同时由多个 provider 提供，请使用 provider/model 明确选择`);
-    }
-    return bare[0]?.bind(agentKind, selection, credentials);
+    return this.resolveRun(agentKind, { model: selection }, credentials);
   }
 
   /**
-   * Runtime fallback for backends that select their provider per run but have
-   * no managed credentials of their own. With no model selection, bind the
-   * sole service that supports the backend so the run still gets its
-   * endpoint and key instead of falling back to the CLI's unmanaged config.
+   * Bind the provider for one run. The provider comes from the explicit setting
+   * (`native` means "no binding"), otherwise from the sole service supporting
+   * the backend; more than one candidate without a setting is an error rather
+   * than a guess. The model id is forwarded verbatim.
    */
+  async resolveRun(agentKind: AgentKind, selection: ModelProviderSelection = {}, credentials = true): Promise<ResolvedModelProvider | undefined> {
+    const requested = selection.provider?.trim() || undefined;
+    if (requested === NATIVE_MODEL_PROVIDER) return undefined;
+    const rawModel = selection.model && selection.model !== 'default' ? selection.model : undefined;
+    const prefixed = rawModel ? this.providers.find(candidate => rawModel.startsWith(`${candidate.id}/`)) : undefined;
+    if (prefixed && !prefixed.supports(agentKind)) {
+      throw new Error(`模型 provider「${prefixed.displayName}」不支持 ${agentKind} agent`);
+    }
+    if (requested && prefixed && prefixed.id !== requested) {
+      throw new Error(`模型 ${rawModel} 属于 provider「${prefixed.id}」，与所选的「${requested}」不一致`);
+    }
+    const provider = requested
+      ? this.requireProvider(agentKind, requested)
+      : prefixed ?? this.soleProvider(agentKind);
+    if (!provider) return undefined;
+    const model = prefixed ? rawModel!.slice(prefixed.id.length + 1) : rawModel;
+    const modelId = model ?? provider.defaultModel(agentKind);
+    if (!modelId) throw new Error(`Provider「${provider.displayName}」没有默认模型，请填写模型 ID`);
+    return provider.bind(agentKind, modelId, credentials);
+  }
+
+  /** The backend-bound service when there is exactly one; ambiguity is an error, not a guess. */
+  private soleProvider(agentKind: AgentKind): ModelProvider | undefined {
+    const providers = this.providers.filter(candidate => candidate.supports(agentKind));
+    if (providers.length > 1) {
+      throw new Error(`该 agent 有多个模型 Provider（${providers.map(candidate => candidate.id).join(', ')}），请在 run.provider 中指定，或设置 provider = "${NATIVE_MODEL_PROVIDER}"`);
+    }
+    return providers[0];
+  }
+
+  private requireProvider(agentKind: AgentKind, id: string): ModelProvider {
+    const provider = this.providers.find(candidate => candidate.id === id);
+    if (!provider) throw new Error(`未知模型 Provider：${id}`);
+    if (!provider.supports(agentKind)) throw new Error(`模型 provider「${id}」不支持 ${agentKind} agent`);
+    return provider;
+  }
+
+  /** A run without a model selection still binds the sole backend service. */
   async resolveDefault(agentKind: AgentKind, credentials = true): Promise<ResolvedModelProvider | undefined> {
-    const options = this.options(agentKind).filter(option => option.defaultModel);
-    if (options.length !== 1) return undefined;
-    const option = options[0]!;
-    return this.resolve(agentKind, `${option.id}/${option.defaultModel}`, credentials);
+    return this.resolveRun(agentKind, {}, credentials);
   }
 
   async resolveStartup(agentKind: AgentKind, model?: string, providerId?: string): Promise<ResolvedModelProvider | undefined> {
-    const options = this.options(agentKind);
-    const selected = providerId ? options.find(option => option.id === providerId) : selectedProvider(options, model);
-    if (providerId && !selected) throw new Error(`未知模型 Provider：${providerId}`);
-    const provider = selected ?? (options.length === 1 ? options[0] : undefined);
-    if (!provider && options.length > 1) throw new Error('请在 launch.provider 中选择启动时使用的模型 Provider。');
-    if (!provider) return undefined;
-    const modelProvider = selectedProvider(options, model);
-    const localModel = modelProvider && modelProvider.id !== provider.id ? provider.defaultModel
-      : model?.startsWith(`${provider.id}/`) ? model.slice(provider.id.length + 1) : model;
-    return this.resolve(agentKind, `${provider.id}/${localModel && localModel !== 'default' ? localModel : provider.defaultModel}`);
+    return this.resolveRun(agentKind, { model, provider: providerId });
   }
 }
 
-/** Split a model selection into a registered provider and its local model id. */
-export function selectedProvider(
+/** Provider option implied by an explicit setting or a legacy `provider/model` selection. */
+export function providerForSelection(
   options: readonly ModelProviderOption[],
-  model: string | undefined,
+  settings: { model?: string; provider?: string },
 ): ModelProviderOption | undefined {
+  if (settings.provider === NATIVE_MODEL_PROVIDER) return undefined;
+  if (settings.provider) return options.find(option => option.id === settings.provider);
+  const model = settings.model;
   if (!model || model === 'default') return undefined;
-  const prefixed = options.find(option => model.startsWith(`${option.id}/`));
-  if (prefixed) return prefixed;
-  const defaults = options.filter(option => option.defaultModel === model);
-  return defaults.length === 1 ? defaults[0] : undefined;
-}
-
-/** Compose the provider-qualified selection consumed by the shared runtime. */
-export function composeProviderSelection(
-  options: readonly ModelProviderOption[],
-  providerId: string,
-  model: string | undefined,
-): string | undefined {
-  if (!providerId || providerId === AUTO_MODEL_PROVIDER) return model;
-  const option = options.find(candidate => candidate.id === providerId);
-  if (!option) throw new Error(`未知模型 Provider：${providerId}`);
-  const requested = model && model !== 'default' ? model : option.defaultModel;
-  if (!requested) throw new Error(`Provider ${option.label} 没有默认模型，请填写模型 ID`);
-  const existing = options.find(candidate => requested.startsWith(`${candidate.id}/`));
-  const modelId = existing ? requested.slice(existing.id.length + 1) : requested;
-  if (!modelId) throw new Error(`Provider ${option.label} 缺少模型 ID`);
-  return `${option.id}/${modelId}`;
-}
-
-/** Bare selections may carry a gateway context suffix such as `[1m]`. */
-function matchesBareModel(selection: string, model: string): boolean {
-  if (selection === model) return true;
-  return selection.startsWith(`${model}[`) && selection.endsWith(']') && selection.length > model.length + 2;
+  return options.find(option => model.startsWith(`${option.id}/`));
 }
 
 function stableSuffix(value: string): string {

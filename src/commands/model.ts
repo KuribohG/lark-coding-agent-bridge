@@ -19,8 +19,10 @@ import {
 import { modelFormCard, modelSettingsSummary } from '../card/model-card';
 import {
   AUTO_MODEL_PROVIDER,
-  composeProviderSelection,
+  NATIVE_MODEL_PROVIDER,
+  type ModelProviderOption,
 } from '../model-provider/provider';
+import { modelServiceName } from '../model-service/config';
 
 export function modelScopeLabel(ctx: CommandContext): string {
   return ctx.chatMode === 'topic' ? '当前话题' : ctx.chatMode === 'p2p' ? '当前私聊' : '当前群聊';
@@ -80,7 +82,28 @@ function profileDefaults(ctx: CommandContext, agentKind: AgentKind) {
   const preferences = ctx.controls.profileConfig.preferences;
   return agentKind === ctx.controls.profileConfig.agentKind
     ? preferences
-    : { ...preferences, model: undefined, reasoningEffort: undefined };
+    : { ...preferences, model: undefined, modelProvider: undefined, reasoningEffort: undefined };
+}
+
+/**
+ * Store the provider separately from the model: a `service/model` selection is
+ * split before saving, so later model changes never imply a provider switch.
+ */
+function normalizeProviderPatch(
+  providers: readonly ModelProviderOption[],
+  patch: ModelSettings,
+): ModelSettings {
+  const requested = patch.provider === AUTO_MODEL_PROVIDER ? undefined : patch.provider;
+  if (patch.model && patch.model !== 'default') {
+    const option = providers.find(candidate => patch.model!.startsWith(`${candidate.id}/`));
+    if (option) {
+      if (requested && requested !== option.id) {
+        throw new Error(`模型 ${patch.model} 属于 provider「${option.id}」，与所选的「${requested}」不一致`);
+      }
+      return { ...patch, provider: option.id, model: patch.model.slice(option.id.length + 1) };
+    }
+  }
+  return requested ? { ...patch, provider: requested } : patch;
 }
 
 /** Validate a patch against the engine's models and save it for the scope. */
@@ -91,17 +114,21 @@ async function saveModelPatch(
   patch: ModelSettings,
 ): Promise<ResolvedModelSettings> {
   const { store, environment, providers, overrides, activeProvider } = inputs;
+  const normalized = normalizeProviderPatch(providers, patch);
+  if (normalized.provider && normalized.provider !== NATIVE_MODEL_PROVIDER) modelServiceName(normalized.provider);
   const next = resolveModelSettings(
     profileDefaults(ctx, agentKind),
-    { ...overrides, ...patch },
+    { ...overrides, ...normalized },
     environment,
   );
   if (patch.reasoningEffort && next.reasoningEffort !== patch.reasoningEffort) throw new Error(next.notice);
-  const requestedProvider = providers.find(provider => next.model?.startsWith(`${provider.id}/`) || next.model === provider.defaultModel);
+  const requestedProvider = next.provider && next.provider !== NATIVE_MODEL_PROVIDER
+    ? providers.find(provider => provider.id === next.provider)
+    : undefined;
   if (activeProvider?.fixedUntilRestart && requestedProvider && requestedProvider.id !== activeProvider.id) {
     throw new ModelChangeRejected(`Provider 未切换，设置未保存。当前继续使用 ${activeProvider.displayName}；请修改 bridge 的 launch.provider 配置并重启后使用 ${requestedProvider.label}。普通消息仍可继续发送。`);
   }
-  await store.update(agentKind, ctx.scope, patch);
+  await store.update(agentKind, ctx.scope, normalized);
   return next;
 }
 
@@ -119,6 +146,7 @@ export async function saveScopeModelArguments(
   const parsed = parseModelCommandArguments(args, target.agentKind, usage);
   const patch: ModelSettings = {
     model: parsed.model === 'default' ? undefined : validateModelId(parsed.model),
+    ...(parsed.model === 'default' ? { provider: undefined } : {}),
     reasoningEffort: parseEffort(parsed.effort, target.agentKind),
   };
   const settings = await saveModelPatch(ctx, target.agentKind, await modelInputs(ctx, target.agentKind, target.agent, false), patch);
@@ -145,20 +173,18 @@ export async function handleModelCommand(field: 'model' | 'reasoningEffort', arg
       const form = ctx.formValue ?? {};
       const picked = form.model_pick;
       const model = picked === '__provider_default__'
-        ? 'default'
+        ? undefined
         : picked && picked !== '__manual__'
           ? String(picked)
-          : String(form.model ?? 'default').trim();
-      const qualified = composeProviderSelection(
-        providers,
-        String(form.provider_pick ?? AUTO_MODEL_PROVIDER),
-        model,
-      );
-      patch.model = qualified && qualified !== 'default' ? validateModelId(qualified) : undefined;
+          : String(form.model ?? '').trim() || undefined;
+      const providerPick = String(form.provider_pick ?? AUTO_MODEL_PROVIDER);
+      patch.provider = providerPick === AUTO_MODEL_PROVIDER ? undefined : modelServiceName(providerPick);
+      patch.model = model && model !== 'default' ? validateModelId(model) : undefined;
       patch.reasoningEffort = parseEffort(form.reasoning_effort, agentKind);
     } else if (field === 'model') {
       const parsed = parseModelCommandArguments(args, agentKind);
       patch.model = parsed.model === 'default' ? undefined : validateModelId(parsed.model);
+      if (parsed.model === 'default') patch.provider = undefined;
       patch.reasoningEffort = parseEffort(parsed.effort, agentKind);
       followUpPrompt = parsed.prompt;
     } else {

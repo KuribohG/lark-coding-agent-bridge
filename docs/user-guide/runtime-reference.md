@@ -170,13 +170,13 @@ Codex 报告上下文用量后，`/status` 会显示模型上下文窗口占用�
 ## 模型与思考强度
 
 ```text
-/model provider/custom-model
+/model custom-model
 /effort high
 /model default
 /effort default
 ```
 
-不带参数的 `/model` 或 `/effort` 打开设置卡片，显示设置来源和作用范围。模型名可以直接输入，也可从建议列表选择；列表不是白名单。Codex 优先读取当前 profile 对应 CLI 的本地模型目录。自定义 provider 的模型无需在 bridge 代码中注册；模型是否可用仍由该 provider 决定。
+不带参数的 `/model` 或 `/effort` 打开设置卡片，显示设置来源和作用范围。模型名可以直接输入，也可从建议列表选择；列表不是白名单。Codex 优先读取当前 profile 对应 CLI 的本地模型目录。模型和 Provider 是两个独立设置：Provider 来自 `run.provider`（`model_services` 名称，或 `native` 表示使用 CLI 自己的账号），模型名原样传给该 Provider；`provider/模型` 前缀仍可作一次性覆盖，但不再是必需写法。未配置 Provider 时，唯一支持该引擎的服务会被自动绑定，存在多个候选则报错而不是猜测。
 
 两个字段分别按 **当前话题/聊天覆盖 → bot profile 默认 → CLI 默认** 继承。话题内设置只影响这个话题，普通群和私聊各自按聊天保存；同一话题/群中的用户共用设置。`default` 清除相应字段的覆盖。`/new`、`/cd` 和 bridge 重启保留模型偏好。
 

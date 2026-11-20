@@ -45,7 +45,8 @@ memory = "agent" # One memory per engine; "workspace" keeps Claude's per-cwd mem
 
 [agents.codex.run]
 effort = "high"
-# model = "provider/model"
+# provider = "screening"           # Model provider from model_services; "native" keeps the CLI's own account.
+# model = "custom-model"           # Sent verbatim; no provider prefix needed.
 # model = { source = "native" } # Delegate to CLI even if a parent selects a model.
 
 [agents.codex.launch]

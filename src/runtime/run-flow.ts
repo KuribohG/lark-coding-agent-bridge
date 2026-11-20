@@ -214,6 +214,7 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
       threadId,
       ...(input.modelSettings ?? {
         model: resolveModelArg(input.capability.agentId, input.profileConfig.preferences.model),
+        ...(input.profileConfig.preferences.modelProvider ? { provider: input.profileConfig.preferences.modelProvider } : {}),
         reasoningEffort: input.profileConfig.preferences.reasoningEffort,
       }),
       images:

@@ -35,8 +35,9 @@ export async function inspectConfig(path: string, profile?: string) {
       : key === 'stop_grace_ms' ? getAgentStopGraceMs(p)
       : key === 'cache_keepalive_interval_minutes' ? 0
       : key === 'cache_keepalive_max_pings' ? DEFAULT_CACHE_KEEPALIVE_PINGS
-      : key === 'cache_keepalive_min_context_tokens' ? DEFAULT_CACHE_KEEPALIVE_MIN_CONTEXT_TOKENS : 'native'),
-    source: sources[key] ?? (key === 'model' || key === 'effort' ? 'native CLI' : 'built-in'),
+      : key === 'cache_keepalive_min_context_tokens' ? DEFAULT_CACHE_KEEPALIVE_MIN_CONTEXT_TOKENS
+      : key === 'provider' ? 'auto' : 'native'),
+    source: sources[key] ?? (key === 'model' || key === 'effort' ? 'native CLI' : key === 'provider' ? 'automatic' : 'built-in'),
   }]));
   const channels = {
     lark: larkDisplay(p),

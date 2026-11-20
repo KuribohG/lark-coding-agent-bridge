@@ -222,13 +222,13 @@ History is private to the bot profile and topic/chat, shared by users in that sc
 ## Model and Reasoning Effort
 
 ```text
-/model provider/custom-model
+/model custom-model
 /effort high
 /model default
 /effort default
 ```
 
-Without arguments, `/model` and `/effort` open a form showing the settings' source and scope. Type a model ID directly or choose a suggestion; the list is not an allowlist. Codex uses the profile's local CLI model catalog when available. Custom provider IDs need no bridge code changes; availability is determined by the provider.
+Without arguments, `/model` and `/effort` open a form showing the settings' source and scope. Type a model ID directly or choose a suggestion; the list is not an allowlist. Codex uses the profile's local CLI model catalog when available. Model and Provider are independent: the Provider comes from `run.provider` (a `model_services` name, or `native` for the CLI's own account), and the model ID is forwarded to it verbatim — a `provider/model` prefix is accepted as a one-off override but never required. With no Provider configured, the sole service supporting the engine is bound; several candidates are an error rather than a guess.
 
 Each field inherits independently: **topic/chat override → bot profile default → CLI default**. Topic settings affect only that topic; ordinary groups and DMs each use their chat scope. Users in the same topic/group share its settings. `default` removes the corresponding override. Preferences survive `/new`, `/cd`, and bridge restarts.
 

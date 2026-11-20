@@ -49,7 +49,7 @@ describe('reasoning effort selectors', () => {
         scope: 'chat',
         scopeLabel: '当前聊天',
         overrides: {},
-        resolved: { modelSource: 'cli', effortSource: 'cli' },
+        resolved: { modelSource: 'cli', providerSource: 'cli', effortSource: 'cli' },
         environment: { defaults: {}, models: [] },
         providers: [],
       });
@@ -64,7 +64,7 @@ describe('reasoning effort selectors', () => {
       scope: 'chat',
       scopeLabel: '当前聊天',
       overrides: { model: 'deepseek/deepseek-flash' },
-      resolved: { model: 'deepseek/deepseek-flash', modelSource: 'scope', effortSource: 'cli' },
+      resolved: { model: 'deepseek/deepseek-flash', modelSource: 'scope', providerSource: 'cli', effortSource: 'cli' },
       environment: { defaults: {}, models: [] },
       providers: [
         { id: 'deepseek', label: 'DeepSeek Gateway', defaultModel: 'deepseek-flash' },
@@ -73,6 +73,7 @@ describe('reasoning effort selectors', () => {
     expect(selectValues(card, 'provider_pick')).toEqual([
       ['__auto__', '自动 / 保留当前模型'],
       ['deepseek', 'DeepSeek Gateway'],
+      ['native', 'native（不绑定，用 CLI 自己的账号）'],
     ]);
     expect(selectValues(card, 'model_pick')).toContainEqual([
       '__provider_default__',

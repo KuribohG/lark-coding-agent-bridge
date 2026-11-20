@@ -24,6 +24,7 @@ export interface RunExecutorDeps {
   resolveModelProvider?: (
     agentKind: AgentKind,
     model?: string,
+    provider?: string,
   ) => Promise<ResolvedModelProvider | undefined>;
 }
 
@@ -56,6 +57,8 @@ export interface SubmitRunInput {
   forkSession?: boolean;
   ephemeralSession?: boolean;
   model?: string;
+  /** Model provider for this run; independent of {@link model}. */
+  provider?: string;
   reasoningEffort?: import('../agent/model-settings').ReasoningEffort;
   images?: readonly string[];
   stopGraceMs?: number;
@@ -105,7 +108,7 @@ export class RunExecutor {
   private readonly now: () => number;
   private readonly postDoneExitGraceMs: number;
   private readonly resolveModelProvider:
-    | ((agentKind: AgentKind, model?: string) => Promise<ResolvedModelProvider | undefined>)
+    | ((agentKind: AgentKind, model?: string, provider?: string) => Promise<ResolvedModelProvider | undefined>)
     | undefined;
 
   constructor(deps: RunExecutorDeps) {
@@ -355,7 +358,7 @@ export class RunExecutor {
     }
     let modelProvider: ResolvedModelProvider | undefined;
     try {
-      modelProvider = await this.resolveModelProvider?.(agent.id as AgentKind, input.model);
+      modelProvider = await this.resolveModelProvider?.(agent.id as AgentKind, input.model, input.provider);
     } catch (err) {
       slot.abandon();
       throw beforeSubmission(new SpawnFailed('model provider resolve failed', err, 'agent-prepare-failed'));

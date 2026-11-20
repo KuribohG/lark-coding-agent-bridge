@@ -4,6 +4,7 @@ import type { AgentKind } from '../config/profile-schema';
 import { writeFileAtomic } from '../platform/atomic-write';
 import { parseEffort, type ModelSettings } from '../agent/model-settings';
 import { validateModelId } from '../agent/models';
+import { modelServiceName } from '../model-service/config';
 
 /** Chat preferences outlive /new and never imply that a transcript exists. */
 export class ScopePreferencesStore {
@@ -20,6 +21,7 @@ export class ScopePreferencesStore {
         const entry = value as ModelSettings;
         this.data.set(key, {
           ...(entry.model ? { model: validateModelId(entry.model) } : {}),
+          ...(entry.provider ? { provider: modelServiceName(entry.provider) } : {}),
           reasoningEffort: parseEffort(entry.reasoningEffort, agent),
         });
       }
@@ -37,7 +39,7 @@ export class ScopePreferencesStore {
       const key = JSON.stringify([agent, scope]);
       const next = new Map(this.data);
       const value = { ...next.get(key), ...patch };
-      if (value.model || value.reasoningEffort) next.set(key, value);
+      if (value.model || value.provider || value.reasoningEffort) next.set(key, value);
       else next.delete(key);
       await writeFileAtomic(this.path, `${JSON.stringify(Object.fromEntries(next), null, 2)}\n`, { mode: 0o600 });
       this.data = next;

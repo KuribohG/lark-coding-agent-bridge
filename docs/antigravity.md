@@ -30,9 +30,17 @@ contextWindow = 1048576
 binaryPath = "agy"
 
 [agents.agy.run]
-model = "high-five-ai/google/gemini-2.5-flash"
+provider = "high-five-ai"          # or "native" to keep agy's own Google login
+model = "google/gemini-2.5-flash"  # sent verbatim; no provider prefix required
 effort = "low"
 ```
+
+`run.provider` and `run.model` are independent: the model id is forwarded to the
+selected service verbatim, so any model that service serves works without a
+bridge change. With no `provider` set, the sole service exposing a Gemini
+endpoint is bound automatically; several candidates are an error instead of a
+guess, and `provider = "native"` keeps agy on its own account instead of
+silently falling back to it.
 
 The Gemini `baseUrl` is the server root: agy adds `/v1beta/models/...` itself.
 Do not append `/v1`, `/v1beta`, or `/responses` to that root unless the provider
@@ -57,8 +65,8 @@ do not belong in the model/run settings.
 
 The model/provider picker offers the endpoint's default model and can refresh
 the provider's model catalog. Catalog failure leaves manual model IDs usable.
-No Gemini model version is hardcoded in the adapter. New provider models can be
-selected as `<provider>/<model>` without changing Bridge code.
+No Gemini model version is hardcoded in the adapter: new provider models are
+usable by typing their model ID with the provider selected.
 
 Credentials are resolved from the selected service's environment/file reference
 and passed only through the child environment. The adapter uses session-local
@@ -69,8 +77,9 @@ a corresponding native setting.
 
 ## Native Google authentication
 
-Without a Bridge-managed provider, agy uses its own Google account login or native
-API-key configuration. Complete account login in a terminal before headless use.
+Without a Bridge-managed provider (`provider = "native"`, or no service
+configured at all), agy uses its own Google account login or native API-key
+configuration. Complete account login in a terminal before headless use.
 Bridge leaves the native account/configuration directory under agy's control;
 there is no fabricated home-directory override. A failed provider request is
 reported, not retried with another account.
