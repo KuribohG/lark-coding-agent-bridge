@@ -500,5 +500,16 @@ describe('ultracode native engine policy and metadata', () => {
     });
     expect(flakyExecutionIds).toHaveLength(3);
     expect(new Set(flakyExecutionIds).size).toBe(3);
+
+    const wfId = runtime.kernel.state('swarm-revive-execid')!.workflowId;
+    for (const id of flakyExecutionIds) {
+      await expect(runtime.kernel.notifyExecution('swarm-revive-execid', wfId, id)).resolves.toMatchObject({
+        executionId: id,
+        state: 'completed',
+        accepted: true,
+      });
+    }
+    receipts.set(flakyExecutionIds[0]!, { state: 'completed', result: { status: 'completed', quiescence: 'quiescent', text: 'tampered' } });
+    await expect(runtime.kernel.notifyExecution('swarm-revive-execid', wfId, flakyExecutionIds[0]!)).rejects.toThrow('Host execution completion changed');
   });
 });

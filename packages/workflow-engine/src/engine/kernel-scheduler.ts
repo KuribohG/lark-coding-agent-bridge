@@ -538,28 +538,38 @@ export class WorkflowScheduler {
   async notifyExecution(scopeId: string, workflowId: string, executionId: string) {
     const { ctx } = this;
     if (!ctx.host.executionLedger) throw new Error('Host execution ledger is unavailable');
+    const findAttempt = (view: WorkflowView) => {
+      for (const task of view.tasks) {
+        for (let i = task.attempts.length - 1; i >= 0; i--) {
+          const attempt = task.attempts[i]!;
+          if (attempt.executionId === executionId) return { task, attempt, isLatest: i === task.attempts.length - 1 };
+        }
+      }
+      return undefined;
+    };
     const bound = requireState(ctx.store.state(scopeId, workflowId));
-    if (!bound.tasks.some(task => task.attempts.at(-1)?.executionId === executionId)) throw new Error('Execution is outside this workflow binding');
+    if (!findAttempt(bound)) throw new Error('Execution is outside this workflow binding');
     const receipt = await ctx.host.executionLedger.lookupExecution(executionId, scopeId);
     // Another notification or cancellation may have committed while the host
     // lookup was pending. Never save a pre-await snapshot over that receipt.
     const state = requireState(ctx.store.state(scopeId, workflowId));
-    const task = state.tasks.find(task => task.attempts.at(-1)?.executionId === executionId);
-    if (!task) throw new Error('Execution is outside this workflow binding');
+    const match = findAttempt(state);
+    if (!match) throw new Error('Execution is outside this workflow binding');
     if (receipt.state !== 'completed') return { executionId, state: receipt.state, accepted: false };
-    const attempt = task.attempts.at(-1)!;
+    const { task, attempt, isLatest } = match;
     if (attempt.completionDigest) {
       if (attempt.completionDigest !== workflowDigest(receipt.result)) throw new Error('Host execution completion changed');
       return { executionId, state: 'completed', accepted: true, revision: attempt.completedRevision ?? state.stateVersion };
     }
+    if (!isLatest) throw new Error('Superseded execution cannot settle out of order');
     if (receipt.nativeSessionId) {
       const session = state.sessions.find(item => item.sessionRef === task.sessionRef)!;
       if (session.nativeSessionId && session.nativeSessionId !== receipt.nativeSessionId) throw new Error('Native execution identity changed');
       if (!session.nativeSessionId) ctx.store.transact(() =>
         emit(state, { type: 'session_bound', sessionRef: session.sessionRef, taskId: task.taskId, nativeSessionId: receipt.nativeSessionId!, at: ctx.now() }), 'host:reconcile-execution');
     }
-    this.settleWorker(workflowId, scopeId, task.taskId, task.attempts.at(-1)!.attemptId, receipt.result);
-    return { executionId, state: 'completed', accepted: true, revision: ctx.store.state(scopeId, workflowId)!.tasks.find(row => row.taskId === task.taskId)!.attempts.at(-1)!.completedRevision };
+    this.settleWorker(workflowId, scopeId, task.taskId, attempt.attemptId, receipt.result);
+    return { executionId, state: 'completed', accepted: true, revision: ctx.store.state(scopeId, workflowId)!.tasks.find(row => row.taskId === task.taskId)!.attempts.find(a => a.attemptId === attempt.attemptId)!.completedRevision };
   }
 
   async reconcileExecutions() {
