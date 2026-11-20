@@ -20,6 +20,20 @@ workflow_timeout_minutes = 480 # Total workflow deadline; each workflow may requ
 # cache_keepalive_max_pings = 6
 # cache_keepalive_min_context_tokens = 100000
 
+# Bridge-wide per-provider limits on model requests (Pi CLI runs in this phase).
+# A permit is held only while the provider answers, so tool execution frees it.
+# [gate]
+# enabled = true
+# fail_open = true
+# lease_seconds = 600
+# [gate.defaults]
+# rpm = 1000
+# concurrency = 100
+# burst = 1000  # requests back to back after an idle period; `rpm` when left out
+# Keyed by provider name: a [model_services.<name>] key, or a provider of Pi's own catalog.
+# [gate.providers.deepseek]
+# concurrency = 100
+
 # Bridge-wide agent state; every profile and per-chat engine switch resolves the same way.
 [state]
 memory = "agent" # One memory per engine; "workspace" keeps Claude's per-cwd memory.
@@ -65,6 +79,10 @@ binaryPath = "pi"
 # idleTtlMs = 900000
 # maxSessions = 256
 # sessionPersistence = "file"
+# Seconds a shell call without `timeout` may run, and the largest `timeout` a
+# call may ask for (defaults shown; 0 switches a limit off).
+# bashDefaultTimeoutSeconds = 600
+# bashMaxTimeoutSeconds = 14400
 # Run the host on another machine over ssh (same absolute paths there).
 # remote = "user@worker-node"
 # sshOptions = ["-i", "/keys/id_worker"]

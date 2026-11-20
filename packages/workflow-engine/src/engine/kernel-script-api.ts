@@ -71,7 +71,8 @@ export class ScriptApi {
       if (call.member) {
         const before=state.tasks.length;
         const scheduled = scheduleMemberTurn(state, call, execution, ctx.nativeIdKind(execution.agentKind), inputRefs);
-        if (state.tasks.length>before && ctx.children.remainingTreeTasks(state)<=0) throw new Error('Workflow tree task budget reached');
+        // The turn just scheduled is already counted, so the tree is over its budget only when less than nothing remains.
+        if (state.tasks.length>before && ctx.children.remainingTreeTasks(state)<0) throw new Error('Workflow tree task budget reached');
         recordCall(state, call.key, scheduled.task, scheduled.cached);
         return { taskId: scheduled.task.taskId, output: call.output };
       }
@@ -130,7 +131,7 @@ export class ScriptApi {
       }
       emit(state, { type: 'script_key_recorded', list: 'workspaceCalls', key });
     }, 'script:' + runId);
-    const result = await host.workspace(store.public(state), args, signal);
+    const result = await host.workspace(store.workspaceView(state), args, signal);
     signal.throwIfAborted();
     const latest = requireState(store.state(scopeId, workflowId));
     if (ctx.closed || latest.status !== 'active' || latest.script?.runId !== runId || latest.script.status !== 'running') throw new Error('Script run is inactive');
@@ -370,7 +371,7 @@ export class ScriptApi {
       : { type: 'script_logged', text: text.slice(0, 1000) }), 'script:' + runId);
   }
 
-  finishScript(scopeId: string, workflowId: string, runId: string, result: { text: string } | { error: string }): void {
+  finishScript(scopeId: string, workflowId: string, runId: string, result: { text: string } | { error: string; stopReason?: 'deadline' }): void {
     const { ctx } = this;
     const state = ctx.store.state(scopeId, workflowId);
     if (!state?.script || state.script.runId !== runId || state.script.status !== 'running' || state.status !== 'active') return;
@@ -388,7 +389,7 @@ export class ScriptApi {
         pushEvent(state, { kind: 'script_result_ready', artifactRef: artifact.ref, summary: 'Script result ready for main-agent review.' }, ctx.now);
       } else {
         const error = result.error.slice(0, 2000);
-        emit(state, { type: 'script_failed', error });
+        emit(state, { type: 'script_failed', error, ...(ctx.host.executionLedger && result.stopReason ? { stopReason: result.stopReason } : {}) });
         ctx.children.suspendChildren(state,true);
         for (const task of state.tasks) if (task.scriptRunId === runId && (BUSY.has(task.status) || task.status==='waiting_workflow')) ctx.scheduler.cancelTask(task, state);
         pushEvent(state, { kind: 'script_failed', summary: error }, ctx.now);

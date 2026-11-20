@@ -60,6 +60,7 @@
     "docs/gitlab-ci-watch.md",
     "docs/agent-execution.md",
     "docs/exec-sandbox.md",
+    "docs/model-gate.md",
     "docs/antigravity.md",
     "docs/model-services.md",
     "docs/work-item-sources.md",

@@ -82,7 +82,7 @@ describe('bot identity injection into the agent adapter', () => {
 });
 
 describe('sender identity in bridge_context', () => {
-  it('marks a bot sender via raw sender_type and injects botOpenId and mentions', async () => {
+  it('marks a bot sender via raw sender_type and injects mentions', async () => {
     const h = await createHarness();
     await startTestBridge(h);
 
@@ -103,15 +103,20 @@ describe('sender identity in bridge_context', () => {
 
     const context = readSection(h.agent.runOptions[0]?.prompt ?? '', 'bridge_context') as {
       senderType?: string;
-      botOpenId?: string;
       mentions?: Array<{ openId?: string; name?: string; isBot?: boolean }>;
     };
     expect(context.senderType).toBe('bot');
-    expect(context.botOpenId).toBe('ou_bot');
     expect(context.mentions).toEqual([
       { openId: 'ou_bot', name: 'Bridge', isBot: true },
       { openId: 'ou_human', name: '张三', isBot: false },
     ]);
+    // Ids live in the environment; the prompt only says who spoke.
+    expect(context).not.toHaveProperty('botOpenId');
+    expect(context).not.toHaveProperty('chatId');
+    expect(h.agent.runOptions[0]?.env).toMatchObject({
+      LARK_CHANNEL_CHAT_ID: 'oc_chat',
+      LARK_CHANNEL_CHAT_TYPE: 'group',
+    });
   });
 
   it('marks a human sender via raw sender_type', async () => {
@@ -150,7 +155,32 @@ describe('sender identity in bridge_context', () => {
       unknown
     >;
     expect(context).not.toHaveProperty('senderType');
-    expect(context.botOpenId).toBe('ou_bot');
+    expect(context).not.toHaveProperty('botOpenId');
+    expect(context.chatType).toBe('group');
+  });
+
+  it('drops the block entirely for a plain DM from a human', async () => {
+    const h = await createHarness();
+    await startTestBridge(h);
+
+    await h.channel.handlers.message?.(
+      message({
+        messageId: 'om_dm',
+        chatType: 'p2p',
+        content: '帮我看个问题',
+        rawSenderType: 'user',
+        mentions: [],
+      }),
+    );
+    await waitFor(() => h.agent.runOptions.length === 1);
+
+    const prompt = h.agent.runOptions[0]?.prompt ?? '';
+    expect(prompt).not.toContain('<bridge_context>');
+    expect(readSection(prompt, 'user_input')).toEqual({ text: '帮我看个问题' });
+    expect(h.agent.runOptions[0]?.env).toMatchObject({
+      LARK_CHANNEL_CHAT_ID: 'oc_chat',
+      LARK_CHANNEL_CHAT_TYPE: 'p2p',
+    });
   });
 
   it('turns a mention-only message into an explicit wake-up ping', async () => {
@@ -365,6 +395,7 @@ function createControls(profileConfig: ReturnType<typeof createDefaultProfileCon
 function message(input: {
   messageId: string;
   content: string;
+  chatType?: 'p2p' | 'group';
   senderId?: string;
   senderName?: string;
   rawSenderType?: string;
@@ -373,7 +404,7 @@ function message(input: {
   return {
     messageId: input.messageId,
     chatId: 'oc_chat',
-    chatType: 'group',
+    chatType: input.chatType ?? 'group',
     senderId: input.senderId ?? 'ou_user',
     senderName: input.senderName ?? 'User',
     content: input.content,

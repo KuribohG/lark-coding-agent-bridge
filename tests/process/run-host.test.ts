@@ -90,6 +90,17 @@ const timer = setInterval(() => {
 }, 20);
 `;
 
+// An agent that goes on after its host is gone, until the test lets it end.
+const OUTLIVES_HOST = `
+import { existsSync, writeFileSync } from 'node:fs';
+const dir = process.env.FAKE_DIR;
+process.stdin.resume();
+for (const stream of [process.stdin, process.stdout, process.stderr]) stream.on('error', () => {});
+process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'sess-host' }) + '\\n');
+writeFileSync(dir + '/agent.pid', String(process.pid));
+setInterval(() => { if (existsSync(dir + '/die')) process.exit(0); }, 20);
+`;
+
 describe.skipIf(process.platform === 'win32')('run host', () => {
   let tmp: TmpProfile;
   let previousRoot: string | undefined;
@@ -215,6 +226,19 @@ describe.skipIf(process.platform === 'win32')('run host', () => {
     expect(await drain(third)).toContainEqual({ type: 'final_text', content: 'finished after restart' });
   }, 20_000);
 
+  it('preserves input queued before the first connection when shutdown starts immediately', async () => {
+    const adapter = claude(await fakeAgent(FAKE_CLAUDE));
+    const key = newRunHostKey();
+    const first = await start(adapter, key);
+    await first.stop('shutdown');
+    expect(readRunHostInput(key).filter(line => line.includes('hosted prompt'))).toHaveLength(1);
+
+    const second = await start(adapter, key, true);
+    await writeFile(join(tmp.root, 'release'), '');
+    expect((await drain(second)).at(-1)).toMatchObject({ type: 'done', terminationReason: 'normal' });
+    expect(readRunHostInput(key).filter(line => line.includes('hosted prompt'))).toHaveLength(1);
+  }, 20_000);
+
   it('asks an unanswered question again after reattaching, but never an answered one', async () => {
     const adapter = claude(await fakeAgent(FAKE_CLAUDE));
     const key = newRunHostKey();
@@ -229,8 +253,7 @@ describe.skipIf(process.platform === 'win32')('run host', () => {
     expect(await next(replay, 'user_input')).toMatchObject({ id: 'q1' });
     expect(await second.answerUserInput!('q1', { answers: [['A']] })).toBe('accepted');
     await second.stop('shutdown');
-    // The host journals socket input asynchronously; the answer may land after the bridge detaches.
-    await until(async () => readRunHostInput(key).some(line => line.includes('control_response')));
+    // After shutdown resolves, a new bridge can use the journal immediately.
     expect(readRunHostInput(key).filter(line => line.includes('control_response'))).toHaveLength(1);
 
     const third = await start(adapter, key, true, { userQuestions: true });
@@ -375,10 +398,33 @@ describe.skipIf(process.platform === 'win32')('run host', () => {
     await next(run.events[Symbol.asyncIterator](), 'tool_use');
     await run.stop('shutdown');
     const pid = Number(await readFile(join(tmp.root, 'agent.pid'), 'utf8'));
-    await terminateRunHost(key, 2000);
+    expect(await terminateRunHost(key, 2000)).toBe(true);
     await until(() => !alive(pid));
     expect(await probeRunHost(key)).toBe('missing');
     expect(existsSync(join(process.env.LARK_RUN_HOST_DIR!, key))).toBe(false);
     removeRunHost(key);
+  }, 20_000);
+
+  it('does not report an agent as ended while it outlives a host that was killed', async () => {
+    const adapter = claude(await fakeAgent(OUTLIVES_HOST));
+    const key = newRunHostKey();
+    const run = await start(adapter, key);
+    await until(() => existsSync(join(tmp.root, 'agent.pid')));
+    await run.stop('shutdown');
+    const pid = Number(await readFile(join(tmp.root, 'agent.pid'), 'utf8'));
+    const dir = join(process.env.LARK_RUN_HOST_DIR!, key);
+    const host = (JSON.parse(await readFile(join(dir, 'host.json'), 'utf8')) as { pid: number }).pid;
+    process.kill(host, 'SIGKILL');
+    await until(() => !alive(host));
+    // Nobody is left to end the agent or to record its exit.
+    expect(await probeRunHost(key)).toBe('missing');
+    expect(alive(pid)).toBe(true);
+    expect(await terminateRunHost(key, 500)).toBe(false);
+    expect(existsSync(dir)).toBe(true);
+
+    await writeFile(join(tmp.root, 'die'), '');
+    await until(() => !alive(pid));
+    expect(await terminateRunHost(key, 500)).toBe(true);
+    expect(existsSync(dir)).toBe(false);
   }, 20_000);
 });

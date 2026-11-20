@@ -12,6 +12,7 @@ import { normalizePermissions, type PermissionConfig } from './permissions';
 import { normalizeExecSandbox } from '../platform/exec-sandbox';
 import { isTable } from './table';
 import { larkDisplay } from './lark-display';
+import { modelGateTable, normalizeModelGate } from '../model-gate/config';
 import { validateLarkNetwork } from './lark-network';
 import { SLACK_DISPLAY_DEFAULTS, WEB_DISPLAY_DEFAULTS } from './channel-display';
 import { normalizeFileLinks } from './file-links';
@@ -34,6 +35,8 @@ export interface ConfigDocument extends Table {
   agents?: Partial<Record<AgentKind, { run?: Table; launch?: Table }>>;
   state?: Table;
   channels?: Table;
+  /** Bridge-wide model-provider limits; see docs/model-gate.md. */
+  gate?: Table;
   profiles: Record<string, Table>;
   /** Read only by `up` / `down`; a running bridge ignores it. */
   deploy?: Table;
@@ -131,7 +134,7 @@ function checkLaunch(value: unknown, agent: string, path: string): void {
       continue;
     }
     const kind = ['inheritCodexHome', 'ignoreUserConfig', 'ignoreRules'].includes(k) ? 'boolean'
-      : ['mode', 'owner', 'idleTtlMs', 'maxSessions'].includes(k) ? 'number'
+      : ['mode', 'owner', 'idleTtlMs', 'maxSessions', 'bashDefaultTimeoutSeconds', 'bashMaxTimeoutSeconds'].includes(k) ? 'number'
       : 'string';
     if (typeof v !== kind) throw new Error(`${path}.${k}: expected ${kind}`);
     if (k === 'transport' && agent === 'codex' && v !== 'app-server') throw new Error(`${path}.transport: Codex exec transport has been removed; use app-server`);
@@ -220,7 +223,7 @@ function checkDeploy(value: unknown, profiles: Table): void {
 }
 
 function validateDocument(input: unknown): ConfigDocument {
-  const doc = keys(input, ['version', 'bridge', 'defaults', 'agents', 'state', 'channels', 'profiles', 'secrets', 'model_services', 'deploy'], 'config');
+  const doc = keys(input, ['version', 'bridge', 'defaults', 'agents', 'state', 'channels', 'gate', 'profiles', 'secrets', 'model_services', 'deploy'], 'config');
   if (doc.version !== 3) throw new Error('config.version must be 3');
   if (doc.bridge !== undefined) {
     const bridge = keys(doc.bridge, ['active_profile', 'autostart_profiles', 'monitors_file'], 'bridge');
@@ -263,6 +266,7 @@ function validateDocument(input: unknown): ConfigDocument {
     if (layer.launch !== undefined) checkLaunch(layer.launch, agent, `agents.${agent}.launch`);
   }
   if (doc.state !== undefined) parseAgentStateTable(doc.state);
+  if (doc.gate !== undefined) normalizeModelGate(doc.gate);
   if (doc.channels !== undefined) for (const [channel, value] of Object.entries(keys(doc.channels, ['lark', 'web', 'slack'], 'channels'))) {
     const c = object(value, `channels.${channel}`);
     const { profiles: overrides, ...display } = c;
@@ -380,6 +384,7 @@ export function documentToRoot(doc: ConfigDocument): RootConfig {
     ...(doc.bridge?.monitors_file ? { monitorConfigFile: doc.bridge.monitors_file } : {}),
     ...(doc.secrets ? { secrets: doc.secrets } : {}),
     ...(doc.model_services ? { modelServices: doc.model_services } : {}),
+    ...(doc.gate ? { modelGate: normalizeModelGate(doc.gate)! } : {}),
   };
 }
 
@@ -416,6 +421,7 @@ export function rootToDocument(root: RootConfig): ConfigDocument {
   }
   if (root.secrets) doc.secrets = root.secrets;
   if (root.modelServices) doc.model_services = root.modelServices;
+  if (root.modelGate) doc.gate = modelGateTable(root.modelGate);
   return doc;
 }
 

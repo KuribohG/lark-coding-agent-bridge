@@ -43,6 +43,8 @@ import type {
   PluginHttpRoute,
 } from '../plugins/api';
 import { PluginHost } from '../plugins/host';
+import { ModelGateServer } from '../model-gate/server';
+import { modelGateSocketPath, setModelGateTarget } from '../model-gate/location';
 import { configSource, type ConfigChangeEvent, type ConfigSnapshot, type ConfigSource, type ConfigTrigger, type RefreshResult } from '../config/config-source';
 import { planRootChanges, type ConfigApplyReport, type SettingChange } from '../config/apply';
 import { AUTO_APPLY } from '../config/settings';
@@ -506,6 +508,10 @@ export class Supervisor {
   private readonly unsubscribeConfig: () => void;
   /** Root settings the process booted with; restart-class root edits are reported against it. */
   private bootRoot?: RootConfig;
+  /** The bridge-wide model gate, when `[gate] enabled` is set. */
+  private modelGate?: ModelGateServer;
+  /** Bridge home the gate's socket lives in; learned from the first profile brought up. */
+  private gateRootDir?: string;
 
   constructor(private opts: SupervisorOptions) {
     this.plugins = new PluginHost(opts.plugins, {
@@ -551,12 +557,44 @@ export class Supervisor {
 
   private async onConfigChange(event: ConfigChangeEvent): Promise<void> {
     if (event.kind === 'config') {
+      await this.syncModelGate(event.snapshot.root);
       for (const managed of [...this.managed.values()]) {
         await managed.applyConfig(event.snapshot, event.trigger).catch((err) =>
           log.warn('config', 'apply-failed', { profile: managed.profile, err: String(err) }));
       }
     }
     await this.reconcilePlugins().catch((err) => log.warn('config', 'plugin-reconcile-failed', { err: String(err) }));
+  }
+
+  /**
+   * Start, retune or stop the model gate to match the root config. Limits are
+   * bridge-wide because the quota belongs to the provider; profiles only bring
+   * runs that ask the gate for permits.
+   */
+  private async syncModelGate(root: RootConfig | undefined): Promise<void> {
+    const config = root?.modelGate;
+    if (!config?.enabled || !this.gateRootDir) {
+      setModelGateTarget(undefined);
+      await this.modelGate?.stop();
+      this.modelGate = undefined;
+      return;
+    }
+    const socketPath = modelGateSocketPath(this.gateRootDir);
+    try {
+      if (!this.modelGate) {
+        const server = new ModelGateServer({ socketPath, config });
+        await server.start();
+        this.modelGate = server;
+      } else {
+        this.modelGate.updateConfig(config);
+      }
+      setModelGateTarget({ socketPath });
+    } catch (error) {
+      // A gate that cannot start must not keep the bridge offline: runs proceed
+      // unthrottled and the provider's own 429s remain the backstop.
+      log.warn('model-gate', 'start-failed', { err: String(error) });
+      setModelGateTarget(undefined);
+    }
   }
 
   private get startChannelFn(): StartChannelFn {
@@ -610,6 +648,8 @@ export class Supervisor {
     });
     const { cfg, appPaths, profileConfig, configPath } = runtime;
     if (!isComplete(cfg)) throw new Error(`profile 配置不完整：${profile}`);
+    this.gateRootDir ??= appPaths.rootDir;
+    await this.syncModelGate(this.source.snapshot?.root);
 
     // Dedupe by app id — two channels for one app fight over event routing.
     for (const m of this.managed.values()) {
@@ -693,6 +733,9 @@ export class Supervisor {
   /** Stop every profile — for process shutdown. */
   async shutdown(): Promise<void> {
     this.unsubscribeConfig();
+    setModelGateTarget(undefined);
+    await this.modelGate?.stop();
+    this.modelGate = undefined;
     await this.plugins.close();
     const all = [...this.managed.values()];
     this.managed.clear();

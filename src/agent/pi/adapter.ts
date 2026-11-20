@@ -2,12 +2,14 @@ import { preparedRun, snapshotRunOptions } from '../prepared-run';
 import type { PreparedAgentRun } from '../types';
 import { startProcessRun } from '../process-run';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { SpawnFailed } from '../errors';
 import { mergeProcessEnv } from '../../platform/spawn';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
+import { runHostFilesDir, runHostsSupported, type RunHostBinding } from '../run-host';
 import { parseEffort } from '../model-settings';
 import { validateModelId } from '../models';
 import type { ResolvedModelProvider } from '../../model-provider/types';
@@ -22,6 +24,8 @@ import { withExecutionContract } from '../execution';
 import { PI_EXECUTION_CAPABILITIES } from './capabilities';
 import { PiRunTranslator } from './jsonl-translator';
 import { piThinkingLevel } from './thinking';
+import { currentModelGate, modelGateExtensionPath } from '../../model-gate/location';
+import { bashTimeoutEnv, bashTimeoutInstructions, piBashTimeouts, type PiBashTimeouts } from './bash-timeout';
 
 export interface PiAdapterOptions {
   binary?: string;
@@ -30,6 +34,8 @@ export interface PiAdapterOptions {
   env?: NodeJS.ProcessEnv;
   stopGraceMs?: number;
   profileStateDir?: string;
+  /** Time limits of the shell tool; the defaults of `piBashTimeouts()` when omitted. */
+  bashTimeouts?: PiBashTimeouts;
 }
 
 
@@ -44,6 +50,7 @@ export class PiAdapter implements AgentAdapter {
   private readonly env: NodeJS.ProcessEnv;
   private readonly defaultStopGraceMs: number;
   private readonly profileStateDir: string;
+  private readonly bashTimeouts: PiBashTimeouts;
   private botIdentity: AgentBotIdentity | undefined;
 
   constructor(opts: PiAdapterOptions = {}) {
@@ -53,6 +60,7 @@ export class PiAdapter implements AgentAdapter {
     this.env = { ...opts.env };
     this.defaultStopGraceMs = opts.stopGraceMs ?? 5000;
     this.profileStateDir = opts.profileStateDir ?? join(tmpdir(), 'lark-channel-pi-providers');
+    this.bashTimeouts = opts.bashTimeouts ?? piBashTimeouts();
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -107,9 +115,10 @@ export class PiAdapter implements AgentAdapter {
       throw new Error('Pi has no portable workspace sandbox; use read-only or full access');
     }
 
-    const runFiles = writeSystemPrompt(
-      opts.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity),
-    );
+    // A read-only run has no shell tool to bound.
+    const shellLimits = sandbox === 'read-only' ? undefined : bashTimeoutInstructions(this.bashTimeouts);
+    const systemPrompt = opts.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity);
+    const runFiles = writeSystemPrompt(shellLimits ? `${systemPrompt}\n\n${shellLimits}` : systemPrompt, opts.host);
     const args = ['--mode', 'json', '--append-system-prompt', runFiles.systemPromptPath];
     if (opts.forkSession) args.push('--fork', opts.sessionId!);
     else if (opts.sessionId) args.push('--session', opts.sessionId);
@@ -120,6 +129,13 @@ export class PiAdapter implements AgentAdapter {
     if (opts.modelProvider?.pi) {
       args.push('--extension', writePiProviderExtension(this.profileStateDir, opts.modelProvider));
     }
+    // The gate is a bridge-wide service; asked per provider request, not per
+    // run, so a run executing tools holds no concurrency slot. `--no-extensions`
+    // below does not disable an explicit `--extension` path.
+    const gate = currentModelGate();
+    if (gate) args.push('--extension', modelGateExtensionPath());
+    // Gives the shell tool a default time limit and a cap; like the gate, it survives `--no-extensions`.
+    if (shellLimits) args.push('--extension', bashTimeoutExtensionPath());
     if (sandbox === 'read-only') {
       args.push('--no-extensions', '--tools', 'read,grep,find,ls');
     } else if (opts.deadlineAt !== undefined) {
@@ -139,12 +155,23 @@ export class PiAdapter implements AgentAdapter {
         ...opts.env,
         ...opts.modelProvider?.env,
         ...(this.agentDir ? { PI_CODING_AGENT_DIR: this.agentDir } : {}),
+        ...(gate ? {
+          LARK_MODEL_GATE_SOCKET: gate.socketPath,
+          // Interactive runs (no deadline) go first; workflow workers queue behind them.
+          LARK_MODEL_GATE_PRIORITY: String(opts.deadlineAt !== undefined ? 1 : 0),
+          // The limit is the provider's: the id this model was registered under differs from model to model.
+          ...(opts.modelProvider?.pi
+            ? { LARK_MODEL_GATE_PROVIDER_NAMES: JSON.stringify({ [opts.modelProvider.pi.providerId]: opts.modelProvider.id }) }
+            : {}),
+        } : {}),
+        ...(shellLimits ? bashTimeoutEnv(this.bashTimeouts) : {}),
         PI_SKIP_VERSION_CHECK: '1',
         PI_TELEMETRY: '0',
       }),
       stdin: opts.prompt,
       execSandbox: opts.execSandbox,
-      translator: new PiRunTranslator(opts.answerIncludesInterimText === true),
+      host: opts.host,
+      translator: new PiRunTranslator(opts.answerIncludesInterimText === true, this.bashTimeouts),
       strictJson: true,
       deadlineAt: opts.deadlineAt,
       stopGraceMs: opts.deadlineAt
@@ -153,6 +180,15 @@ export class PiAdapter implements AgentAdapter {
       cleanup: runFiles.cleanup,
     });
   }
+}
+
+/** The Pi CLI extension that bounds shell calls, resolved from src or dist. */
+function bashTimeoutExtensionPath(): string {
+  if (import.meta.url.endsWith('.ts')) {
+    return fileURLToPath(new URL('./bash-timeout-extension.ts', import.meta.url));
+  }
+  const bundled = fileURLToPath(new URL('./pi-bash-timeout.js', import.meta.url));
+  return existsSync(bundled) ? bundled : fileURLToPath(new URL('../dist/pi-bash-timeout.js', import.meta.url));
 }
 
 function writePiProviderExtension(
@@ -180,13 +216,18 @@ function writePiProviderExtension(
   return file;
 }
 
-function writeSystemPrompt(systemPrompt: string): {
+/**
+ * A run under a run host can outlive this process. Its file is kept with the host: the bridge process that
+ * continues the run finds the file the agent was started with, and whoever ends the host removes it.
+ */
+function writeSystemPrompt(systemPrompt: string, host?: RunHostBinding): {
   systemPromptPath: string;
   cleanup: () => void;
 } {
-  const dir = mkdtempSync(join(tmpdir(), 'lark-pi-'));
+  const hosted = host && runHostsSupported();
+  const dir = hosted ? runHostFilesDir(host.key) : mkdtempSync(join(tmpdir(), 'lark-pi-'));
   const systemPromptPath = join(dir, 'append-system-prompt.md');
-  writeFileSync(systemPromptPath, systemPrompt, 'utf8');
+  if (!(hosted && host.attach)) writeFileSync(systemPromptPath, systemPrompt, { encoding: 'utf8', mode: 0o600 });
   return {
     systemPromptPath,
     cleanup: () => {

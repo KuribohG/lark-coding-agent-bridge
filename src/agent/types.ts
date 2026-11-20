@@ -9,6 +9,22 @@ export type { ClaudePermissionMode } from '../config/permissions';
 export interface AgentExecutionCapabilities {
   readonly finalAnswer: 'separate-event' | 'stream';
   readonly input: 'active-turn' | 'active-session' | 'unsupported';
+  readonly lifecycle?: 'process' | 'session';
+}
+
+export interface StopSettlement {
+  state: 'requested' | 'quiescent' | 'unknown';
+  reason?: string;
+}
+
+/** Trusted host-only turn data. It is never decoded from agent output. */
+export interface NativeTurnBinding {
+  session: any;
+  turnId: string;
+  input: any;
+  invocation: any;
+  signal?: AbortSignal;
+  onEvent(event: any): void;
 }
 
 export type AgentFailureKind = 'rate_limit' | 'transient' | 'quota' | 'authentication' | 'delivery_unknown' | 'runtime';
@@ -16,6 +32,12 @@ export type AgentFailureKind = 'rate_limit' | 'transient' | 'quota' | 'authentic
 export interface AgentInput {
   text: string;
   messageId: string;
+  /**
+   * Absolute paths of local images to attach natively to this input. The text
+   * still lists every attachment, so a transport that cannot carry images
+   * degrades to the agent's own file-reading tools instead of losing them.
+   */
+  images?: readonly string[];
 }
 
 /** Accepted means acknowledged by the transport, not yet processed by the model. */
@@ -45,8 +67,51 @@ export type AgentQuestionMode = 'async' | 'blocking';
 /** One entry per question: the chosen labels or free text. */
 export type AgentQuestionAnswer = { answers: string[][] } | { declined: string };
 
+/** What a native background task is: a scripted multi-agent workflow, one subagent, a shell command, or anything else. */
+export type AgentTaskKind = 'workflow' | 'agent' | 'shell' | 'other';
+export type AgentTaskState = 'running' | 'paused' | 'completed' | 'failed' | 'stopped';
+/** One agent of a native workflow, as the harness reports its progress; strings are previews. */
+export interface AgentTaskMember {
+  index: number;
+  label?: string;
+  phaseIndex?: number;
+  phase?: string;
+  /** The harness's own member state, e.g. start, done or error. */
+  state?: string;
+  agentId?: string;
+  model?: string;
+  prompt?: string;
+  result?: string;
+  error?: string;
+  startedAt?: number;
+  updatedAt?: number;
+}
+
 export type AgentEvent =
   | { type: 'system'; sessionId?: string; threadId?: string; cwd?: string; model?: string }
+  /**
+   * Background work the native agent runs on its own, such as a Claude Code workflow and its agents.
+   * Events are partial: a field an event leaves out keeps its last value, so hosts merge them by id.
+   */
+  | {
+      type: 'task';
+      id: string;
+      parentId?: string;
+      kind?: AgentTaskKind;
+      /** The harness's own task type. */
+      nativeType?: string;
+      state?: AgentTaskState;
+      name?: string;
+      description?: string;
+      background?: boolean;
+      summary?: string;
+      error?: string;
+      lastTool?: string;
+      usage?: { tokens?: number; toolUses?: number; durationMs?: number };
+      /** Members reported in this event, merged by index. */
+      members?: AgentTaskMember[];
+      membersOmitted?: number;
+    }
   | { type: 'text'; delta: string }
   | { type: 'final_text'; content: string }
   /** Answer text ready before the run ends; the eventual final_text does not repeat it. */
@@ -60,8 +125,15 @@ export type AgentEvent =
       threadId?: string;
       sessionId?: string;
     }
-  | { type: 'retry'; attempt: number; maxAttempts: number; delayMs: number; failureKind?: 'rate_limit' | 'transient' }
-  | { type: 'tool_use'; id: string; name: string; input: unknown }
+  | { type: 'retry'; attempt: number; maxAttempts: number; delayMs: number; failureKind?: 'rate_limit' | 'transient' | 'authentication' }
+  | {
+      type: 'tool_use'; id: string; name: string; input: unknown;
+      /**
+       * How long the agent lets this call run before stopping it itself, when the adapter knows. A caller waiting
+       * on the call may take one that is still out well past this for hung.
+       */
+      timeoutMs?: number;
+    }
   | { type: 'tool_result'; id: string; output: string; isError: boolean }
   | {
       type: 'usage';
@@ -86,6 +158,7 @@ export type AgentEvent =
 export const CLAUDE_DEFAULT_PERMISSION_MODE: ClaudePermissionMode = 'bypassPermissions';
 
 export interface AgentRunOptions {
+  nativeTurn?: NativeTurnBinding;
   /** Trusted per-run host bindings, never model-supplied environment overrides. */
   env?: Readonly<Record<string, string>>;
   /** Optional provisional answer deltas, separate from the authoritative final_text event. */
@@ -142,6 +215,8 @@ export interface AgentRun {
   /** Resolve a pending blocking user_input request; inactive when it is no longer waiting. */
   answerUserInput?(id: string, answer: AgentQuestionAnswer): Promise<'accepted' | 'inactive'>;
   stop(reason?: RunStopReason): Promise<void>;
+  /** Native turn drain, independent from process exit and session release. */
+  waitForQuiescence?(timeoutMs: number): Promise<StopSettlement>;
   /**
    * Wait up to `timeoutMs` for the agent process to exit on its own.
    * Resolves true if it exited within the window, false if the timer

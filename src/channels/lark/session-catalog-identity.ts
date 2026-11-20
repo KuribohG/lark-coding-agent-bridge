@@ -7,7 +7,7 @@ import { evaluateRunPolicy } from '../../policy/run-policy';
 import { resolveWorkingDirectory } from '../../policy/workspace';
 import type { SessionCatalogIdentity } from '../../session/catalog';
 import type { WorkspaceStore } from '../../workspace/store';
-import type { ChatMode } from './chat-mode-cache';
+import type { ChatMode } from './scope-types';
 import type { AgentKind } from '../../config/profile-schema';
 import { profileForAgentKind } from '../../runtime/execution-controller';
 

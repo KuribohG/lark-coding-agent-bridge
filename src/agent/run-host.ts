@@ -26,9 +26,11 @@ export interface RunHostBinding {
 
 export type RunHostState = 'running' | 'exited' | 'missing';
 
-const HOST_SCRIPT = fileURLToPath(new URL(
-  import.meta.url.endsWith('.ts') ? '../../bin/run-host.mjs' : '../bin/run-host.mjs', import.meta.url,
-));
+function hostScript(): string {
+  if (import.meta.url.endsWith('.ts')) return fileURLToPath(new URL('../../bin/run-host.mjs', import.meta.url));
+  const bundled = fileURLToPath(new URL('./bin/run-host.mjs', import.meta.url));
+  return existsSync(bundled) ? bundled : fileURLToPath(new URL('../bin/run-host.mjs', import.meta.url));
+}
 const KEY_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
 const CONNECT_TIMEOUT_MS = 10_000;
 const PROBE_TIMEOUT_MS = 2_000;
@@ -72,9 +74,26 @@ export async function probeRunHost(key: string): Promise<RunHostState> {
   return existsSync(join(dir, 'exit.json')) ? 'exited' : 'missing';
 }
 
+/**
+ * A directory for the files an agent under this host is started with and may read while it runs. It is removed
+ * with the host, so a bridge process that ends a run it did not start leaves none of them behind.
+ */
+export function runHostFilesDir(key: string): string {
+  const dir = filesDir(key);
+  ensurePrivateRoot();
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  return dir;
+}
+
+// Not a key, so listings of hosts pass it over.
+function filesDir(key: string): string {
+  return `${hostDir(key)}.files`;
+}
+
 export function removeRunHost(key: string): void {
   try {
     rmSync(hostDir(key), { recursive: true, force: true });
+    rmSync(filesDir(key), { recursive: true, force: true });
   } catch (error) {
     log.warn('run-host', 'remove-failed', { key, err: String(error) });
   }
@@ -93,8 +112,11 @@ export async function sweepRunHosts(maxAgeMs: number, keep: ReadonlySet<string> 
   }
 }
 
-/** Ends the agent of a host nobody will reattach to, then removes its journals. */
-export async function terminateRunHost(key: string, graceMs = 5_000): Promise<void> {
+/**
+ * Ends the agent of a host nobody will reattach to, then removes its journals. Resolves false, keeping the journals,
+ * when the agent may still be running: it did not exit when killed, or its host died without recording its exit.
+ */
+export async function terminateRunHost(key: string, graceMs = 5_000): Promise<boolean> {
   if (await probeRunHost(key) === 'running') {
     const proc = attachHostedProcess(key);
     proc.on('error', () => {});
@@ -105,11 +127,41 @@ export async function terminateRunHost(key: string, graceMs = 5_000): Promise<vo
     proc.kill('SIGTERM');
     if (!await within(graceMs)) {
       proc.kill('SIGKILL');
-      if (!await within(graceMs)) proc.detach();
+      if (!await within(graceMs)) await proc.detach();
     }
     log.info('run-host', 'terminated', { key });
   }
+  const dir = hostDir(key);
+  if (!existsSync(join(dir, 'exit.json')) && agentAlive(dir)) {
+    log.warn('run-host', 'termination-uncertain', { key });
+    return false;
+  }
   removeRunHost(key);
+  return true;
+}
+
+/** Whether the agent a host started still runs. It is not the host's to end once the host was killed, and outlives it. */
+function agentAlive(dir: string): boolean {
+  let childPid: unknown;
+  try {
+    childPid = (JSON.parse(readFileSync(join(dir, 'host.json'), 'utf8')) as { childPid?: unknown }).childPid;
+  } catch {
+    // No host ever started an agent here, or its records are already gone.
+    return false;
+  }
+  if (typeof childPid !== 'number' || childPid <= 0) return false;
+  try {
+    process.kill(childPid, 0);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+  // An orphan that nobody has reaped yet has exited all the same.
+  try {
+    const stat = readFileSync(`/proc/${childPid}/stat`, 'utf8');
+    return stat[stat.lastIndexOf(') ') + 2] !== 'Z';
+  } catch {
+    return true;
+  }
 }
 
 /** Live hosted agents started with `tag`, including those no bridge has reattached yet. */
@@ -206,7 +258,7 @@ function startHostedProcess(input: {
   const hostLog = openSync(join(dir, 'host.log'), 'a', 0o600);
   let host: ChildProcess;
   try {
-    host = spawnProcess(process.execPath, [HOST_SCRIPT, dir], {
+    host = spawnProcess(process.execPath, [hostScript(), dir], {
       cwd: input.cwd, env: input.env, detached: true, stdio: ['ignore', 'ignore', hostLog],
     });
   } finally {
@@ -244,6 +296,7 @@ class HostedProcess extends EventEmitter {
   private queued: Buffer[] = [];
   private ended = false;
   private detachedFromHost = false;
+  private detachPromise?: Promise<void>;
   private readonly connectBy = Date.now() + CONNECT_TIMEOUT_MS;
 
   constructor(readonly key: string, private readonly dir: string, private readonly host?: ChildProcess) {
@@ -268,18 +321,23 @@ class HostedProcess extends EventEmitter {
     return true;
   }
 
-  /** Leave the agent running for the next bridge process; this side reports it as ended. */
-  detach(): void {
-    if (this.ended) return;
+  /** Half-close after queued input. The host reads it into the journal before closing its end. */
+  detach(): Promise<void> {
+    if (this.detachPromise) return this.detachPromise;
+    if (this.ended) return Promise.resolve();
     this.detachedFromHost = true;
-    this.socket?.destroy();
-    log.info('run-host', 'detached', { key: this.key, pid: this.pid ?? null });
-    // Reported like a terminated child, so adapters settle the run as interrupted.
-    this.finish({ code: null, signal: 'SIGTERM' });
+    const timeout = setTimeout(() => {
+      this.socket?.destroy();
+      this.finish({ code: null, signal: 'SIGTERM', error: 'Run host detach timed out; input delivery is unknown' });
+    }, CONNECT_TIMEOUT_MS).unref();
+    this.detachPromise = once(this, 'exit').then(() => undefined).finally(() => clearTimeout(timeout));
+    // A new host may still be starting. In that case connect() flushes the queue before sending FIN.
+    this.socket?.end();
+    return this.detachPromise;
   }
 
   private send(type: string, payload: Buffer = Buffer.alloc(0)): void {
-    if (this.ended) return;
+    if (this.ended || this.detachedFromHost) return;
     const message = frame(type, payload);
     if (this.socket) this.socket.write(message);
     else this.queued.push(message);
@@ -297,6 +355,7 @@ class HostedProcess extends EventEmitter {
       socket.write(frame('a', Buffer.from(JSON.stringify({ o: 0, e: 0 }))));
       for (const message of this.queued) socket.write(message);
       this.queued = [];
+      if (this.detachedFromHost) socket.end();
     });
     socket.on('data', (chunk: Buffer) => {
       pending = pending.length ? Buffer.concat([pending, chunk]) : chunk;
@@ -308,8 +367,13 @@ class HostedProcess extends EventEmitter {
       }
     });
     socket.on('error', () => {});
-    socket.on('close', () => {
+    socket.on('close', (hadError) => {
       if (this.ended) return;
+      if (connected && this.detachedFromHost && !hadError) {
+        log.info('run-host', 'detached', { key: this.key, pid: this.pid ?? null });
+        this.finish({ code: null, signal: 'SIGTERM' });
+        return;
+      }
       if (connected) {
         // The host always sends its exit before closing; anything else means it died.
         this.finish(this.readExit() ?? { code: null, signal: 'SIGKILL', error: 'run host connection lost' });
@@ -323,6 +387,7 @@ class HostedProcess extends EventEmitter {
   }
 
   private receive(type: string, payload: Buffer): void {
+    if (this.ended) return;
     if (type === 'o') this.stdout.write(payload);
     else if (type === 'e') this.stderr.write(payload);
     else if (type === 'x') this.finish(JSON.parse(payload.toString('utf8')) as HostExit);

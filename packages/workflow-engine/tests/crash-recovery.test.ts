@@ -118,33 +118,33 @@ describe.skipIf(process.platform === 'win32')('workflow recovery after controlle
     expect(h.state().script!.status).toBe('result_ready');
   }, 15_000);
 
-  it.each(['work-claimed', 'work-completed'])('recovers %s and fences stale claims and attempts', async boundary => {
+  it.each(['work-claimed', 'work-completed'])('recovers %s, keeps the claim with its member and fences the old attempt', async boundary => {
     const { h, barrier, persisted } = await crash(boundary);
     const completed = boundary === 'work-completed';
     const oldClaim = barrier.root.workQueue!.claims[0]!;
     const oldToken = { claimId: oldClaim.id, generation: oldClaim.generation };
     expect(oldClaim.leaseUntil).toBeGreaterThan(Date.now());
     expect(persisted[0]!.workQueue!.items[0]!.status).toBe(completed ? 'completed' : 'claimed');
-    expect(h.state().workQueue!.items[0]).toMatchObject({ status: completed ? 'completed' : 'pending',
+    expect(h.state().workQueue!.items[0]).toMatchObject({ status: completed ? 'completed' : 'claimed',
       progress: { version: 1, state: { next: 'publish', partial: 49 } } });
-    expect(h.state().workQueue!.claims[0]!.status).toBe(completed ? 'completed' : 'cancelled');
+    expect(h.state().workQueue!.claims[0]!.status).toBe(completed ? 'completed' : 'active');
+    expect(h.state().workQueue!.claims[0]!.heldUntil === undefined).toBe(completed);
     await h.replay(); await h.work('enqueue', itemInput); await h.agent(true); await h.run(1);
     expect(h.state().workQueue!.items).toHaveLength(1);
     const resumed = h.requests[0]!;
     expect(resumed.session.nativeSessionId).toBe(barrier.root.sessions[0]!.nativeSessionId);
     await expect(h.send(barrier.request, 'complete_work', { ...oldToken, result: 'late' })).rejects.toThrow('inactive');
-    await expect(h.send(resumed, 'complete_work', { ...oldToken, result: 'late' })).rejects.toThrow('stale');
     if (completed) {
+      await expect(h.send(resumed, 'complete_work', { ...oldToken, result: 'late' })).rejects.toThrow('stale');
       expect(await h.send(resumed, 'claim_work')).toBeNull();
     } else {
+      // The member's next attempt owns the claim it had: same ID, same generation, no attempt of the item spent.
       const grant = await h.send(resumed, 'claim_work') as { claimId: string; generation: number; item: WorkflowWorkItem };
-      expect(grant.claimId).not.toBe(oldClaim.id);
-      expect(grant.generation).toBe(2);
-      expect(grant.item.id).toBe(barrier.root.workQueue!.items[0]!.id);
+      expect(grant).toMatchObject(oldToken);
       expect(grant.item.progress.state).toEqual({ next: 'publish', partial: 49 });
-      await h.send(resumed, 'complete_work', { claimId: grant.claimId, generation: grant.generation, result: 49 });
+      await h.send(resumed, 'complete_work', { ...oldToken, result: 49 });
     }
-    expect(h.state().workQueue!.items[0]).toMatchObject({ status: 'completed', result: 49, generation: completed ? 1 : 2 });
+    expect(h.state().workQueue!.items[0]).toMatchObject({ status: 'completed', result: 49, generation: 1 });
     expect(h.state().workQueue!.claims.filter(claim => claim.status === 'completed')).toHaveLength(1);
     await h.finish(resumed); h.finishScript(h.state().workflowId);
     expect(h.state().script!.status).toBe('result_ready');

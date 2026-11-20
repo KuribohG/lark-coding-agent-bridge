@@ -1,5 +1,6 @@
 import type { ProcessStreamFinish } from '../process-run';
 import type { AgentEvent } from '../types';
+import { piToolTimeoutMs, type PiBashTimeouts } from './bash-timeout';
 
 type JsonRecord = Record<string, unknown>;
 
@@ -29,7 +30,11 @@ export class PiRunTranslator {
    */
   private readonly interimText: string[] = [];
 
-  constructor(private readonly answerIncludesInterimText = false) {}
+  constructor(
+    private readonly answerIncludesInterimText = false,
+    /** Time limits the run's tools are under, reported with each call for whoever watches it. */
+    private readonly toolTimeouts: PiBashTimeouts = {},
+  ) {}
   private terminal = false;
   private lastError: string | undefined;
   private finalText: string | undefined;
@@ -218,7 +223,9 @@ export class PiRunTranslator {
     const name = stringValue(raw.toolName);
     if (!id || !name || this.startedTools.has(id)) return [];
     this.startedTools.add(id);
-    return [{ type: 'tool_use', id, name, input: raw.args ?? {} }];
+    const input = raw.args ?? {};
+    const timeoutMs = piToolTimeoutMs(name, input, this.toolTimeouts);
+    return [{ type: 'tool_use', id, name, input, ...(timeoutMs === undefined ? {} : { timeoutMs }) }];
   }
 
   private translateToolEnd(raw: JsonRecord): AgentEvent[] {

@@ -1,11 +1,12 @@
 import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import Database from 'better-sqlite3';
+import { createRequire } from 'node:module';
+import type Database from 'better-sqlite3';
 import { workflowDigest } from './digest';
-import { eventEntity, eventTopics, type DomainEvent } from './events';
+import { durableEvent, eventEntity, eventTopics, type DomainEvent } from './events';
 import { evolve } from './evolve';
 import { RECORDS, type RecordKind } from './records';
-import type { ArtifactView, StoredArtifact, StoredTask, TaskView, TextRef, WorkflowData, WorkflowState, WorkflowView } from './types';
+import type { ArtifactView, BoardPost, StoredArtifact, StoredTask, TaskView, TextRef, WorkflowData, WorkflowState, WorkflowView, WorkspaceStateView } from './types';
 import { checkpointInBackground } from './wal-checkpointer';
 
 const TERMINAL = new Set<string>(['completed', 'cancelled']);
@@ -14,6 +15,24 @@ const RETAIN_FINISHED = 64;
 /** Size the WAL file is cut back to once its content has been checkpointed. */
 const WAL_SIZE_LIMIT = 64 * 1024 * 1024;
 const TEXT_CACHE_CHARS = 16_000_000;
+const DEFAULT_RETENTION_DAYS = 30;
+const MAINTENANCE_BATCH = 32;
+
+/** Text digests in one stored row; other `digest` fields (a parent's input digest, a definition) end up as harmless extra refs. */
+const TEXT_DIGEST = /"digest"\s*:\s*"([0-9a-f]{64})"/g;
+
+function textDigests(data: string): string[] {
+  return [...data.matchAll(TEXT_DIGEST)].map(match => match[1]!);
+}
+
+function yieldToLoop(): Promise<void> {
+  return new Promise(resolve => setImmediate(resolve));
+}
+
+function retentionFromEnv(): number {
+  const days = Number(process.env.WORKFLOW_JOURNAL_RETENTION_DAYS);
+  return (Number.isFinite(days) && days > 0 ? days : DEFAULT_RETENTION_DAYS) * 86_400_000;
+}
 
 interface Aggregate {
   readonly store: WorkflowStore;
@@ -32,7 +51,8 @@ interface ArchiveRows {
   tasks: Array<{ workflowId: string; task: StoredTask; data: string }>;
   artifacts: Array<{ workflowId: string; artifact: StoredArtifact }>;
   calls: Array<{ workflowId: string; runId: string; key: string; taskId: string; agentId?: string }>;
-  records: Array<{ workflowId: string; kind: RecordKind; id: string; key?: string; num?: number; data: string }>;
+  /** `amend` rows replace the data of an entry that is already archived; the others add one. */
+  records: Array<{ workflowId: string; kind: RecordKind; id: string; key?: string; num?: number; data: string; amend?: boolean }>;
 }
 
 /**
@@ -64,12 +84,21 @@ interface PendingEvent { aggregate: Aggregate; type: string; entity?: string; da
 interface Transaction {
   cause: string;
   events: PendingEvent[];
+  /**
+   * Lease renewals of the transaction. They are metadata rather than workflow state: they go to `wf_leases`, not to
+   * the journal, so a replay never has to read a heartbeat (see append).
+   */
+  leases: Array<{ workflowId: string; claimId: string; leaseUntil: number }>;
+  /** Workflows whose snapshot this transaction owes; written after it commits (see persist). */
+  snapshots: Aggregate[];
   touched: Set<Aggregate>;
   versioned: Set<Aggregate>;
   created: Set<Aggregate>;
   texts: Map<string, string>;
+  /** Which workflow put which of `texts`; the refs keep a text alive after the workflow's journal is pruned. */
+  textRefs: Map<string, Set<string>>;
   archive: ArchiveRows;
-  operations: Array<{ scope: string; id: string; digest: string; response: string }>;
+  operations: Array<{ scope: string; id: string; digest: string; response: string; workflowId?: string }>;
   /** A reducer failed part-way through an event; the transaction cannot commit even if the caller swallowed the error. */
   failed?: { error: unknown };
 }
@@ -95,7 +124,7 @@ export function emit(state: WorkflowView, event: DomainEvent): void {
 
 /** Stores a text out of line as part of the current transaction. */
 export function putText(state: WorkflowView, text: string): TextRef {
-  return owner(state).store.putText(text);
+  return owner(state).store.putText(text, state.workflowId);
 }
 
 export function readText(state: WorkflowView, ref: { digest: string }): string {
@@ -110,6 +139,24 @@ export function archiveOf(state: WorkflowView): WorkflowArchive | undefined {
 /** The archive of the workflow's other lists; callers check `state.archivedRecords` for the kind first. */
 export function recordsOf(state: WorkflowView): WorkflowArchive {
   return owner(state).store.archive(state.workflowId);
+}
+
+export interface WorkflowMaintenanceOptions {
+  /** Finished before this wall-clock time, a workflow tree is deleted. Default: the store's retention window. */
+  finishedBefore?: number;
+  /** Delete journal events the workflow's snapshot covers. Default true; verification mode always skips it. */
+  compact?: boolean;
+  /** Workflows or rows handled between two yields to the event loop. Default 32. */
+  batch?: number;
+}
+
+export interface WorkflowMaintenanceResult {
+  /** Journal events deleted by compaction. */
+  events: number;
+  /** Workflows deleted once their tree's retention window had passed. */
+  workflows: number;
+  /** Texts deleted because no workflow referred to them any more. */
+  texts: number;
 }
 
 export interface WorkflowStoreOptions {
@@ -128,8 +175,32 @@ export interface WorkflowStoreOptions {
   retainFinished?: number;
   /** Checkpoint the WAL on a background thread instead of inside commits; for a long-lived store on a file. */
   backgroundCheckpoint?: boolean;
-  /** Receives the reason background checkpointing could not run; the store then checkpoints inside commits. */
+  /** Received when background checkpointing could not run; the store then checkpoints inside commits. */
   checkpointFailed?(error: unknown): void;
+  /** Received when a snapshot could not be written; its events are committed and the next commit tries again. */
+  snapshotFailed?(error: unknown): void;
+  /**
+   * Receives a workflow whose journal cannot be replayed (an event this build does not understand, or a corrupt
+   * entry). Such a workflow is left out of scheduling instead of failing the whole store; reading it directly throws
+   * the same error, and repair tooling can still replace it.
+   */
+  loadFailed?(workflowId: string, error: Error): void;
+  /**
+   * How long a finished workflow tree is kept before maintenance deletes it, journal and archive included.
+   * Default 30 days; `WORKFLOW_JOURNAL_RETENTION_DAYS` overrides it.
+   */
+  retentionMs?: number;
+}
+
+/** A workflow whose journal this build cannot replay. Reading it, or any state derived from it, throws this. */
+export class WorkflowJournalError extends Error {
+  constructor(readonly workflowId: string, readonly seq: number, readonly eventType: string, cause: unknown) {
+    super(`工作流 ${workflowId} 的日志无法重放（seq ${seq}，事件 ${eventType}）：`
+      + (cause instanceof Error ? cause.message : String(cause))
+      + '。旧版本读到新版本写入的事件时会这样；升级 bridge，或用修复工具替换该工作流。');
+    this.name = 'WorkflowJournalError';
+    if (cause instanceof Error) this.cause = cause;
+  }
 }
 
 /**
@@ -142,14 +213,17 @@ export interface WorkflowStoreOptions {
  *
  * One process owns the database (the bridge holds the profile's runtime lock), so the in-memory state is authoritative.
  */
-export class WorkflowStore {
-  readonly db: Database.Database;
+export class WorkflowStore {  readonly db: Database.Database;
   /** Test and diagnostics hook: runs inside the SQLite transaction after everything is written, before COMMIT. */
   beforeCommit?: (events: ReadonlyArray<{ workflowId: string; type: string }>) => void;
   private readonly changes = new Map<string, Set<() => void>>();
   private readonly watchers = new Map<string, Map<string, Set<() => void>>>();
   private readonly commits = new Set<() => void>();
   private readonly aggregates = new Map<string, Aggregate>();
+  /** Workflows whose journal failed to replay; the error is kept so every read reports the same cause. */
+  private readonly unreadable = new Map<string, WorkflowJournalError>();
+  /** Unreadable workflows already reported to `loadFailed`; scheduling lists them every tick. */
+  private readonly reportedUnreadable = new Set<string>();
   /** Workflows that are not completed or cancelled. */
   private readonly open = new Set<string>();
   private readonly roots = new Map<string, string>();
@@ -161,16 +235,24 @@ export class WorkflowStore {
   private readonly verify = process.env.WORKFLOW_ENGINE_VERIFY === '1';
   private readonly snapshotEvery: number;
   private readonly retainFinished: number;
+  private readonly retentionMs: number;
   private stopCheckpoints?: () => void;
 
   constructor(path: string, private readonly now: () => number, private readonly options: WorkflowStoreOptions = {}) {
     this.snapshotEvery = options.snapshotEvery ?? SNAPSHOT_EVERY;
     this.retainFinished = options.retainFinished ?? RETAIN_FINISHED;
+    this.retentionMs = options.retentionMs ?? retentionFromEnv();
     if (path !== ':memory:' && !options.readonly) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    this.db = new Database(path, options.readonly ? { readonly: true, fileMustExist: true } : {});
+    // Workers use the tool guide and IPC without a database or native modules on their machine.
+    const Sqlite = createRequire(import.meta.url)('better-sqlite3') as typeof Database;
+    this.db = new Sqlite(path, options.readonly ? { readonly: true, fileMustExist: true } : {});
     if (!options.readonly) {
       if (path !== ':memory:') chmodSync(path, 0o600);
       this.db.pragma('journal_mode = WAL');
+      // Commits are not synced one by one: a commit must survive a process crash, and this journal is not worth an
+      // fsync for every heartbeat. The commits that carry an event replaying cannot cheaply reproduce switch to FULL
+      // for that commit only (see persist).
+      this.db.pragma('synchronous = NORMAL');
       // A WAL file keeps the size of its largest backlog for good. With a limit, the first commit after the log starts
       // over cuts the file back, so one slow checkpoint does not leave hundreds of megabytes behind.
       this.db.pragma(`journal_size_limit = ${WAL_SIZE_LIMIT}`);
@@ -182,12 +264,17 @@ export class WorkflowStore {
         CREATE INDEX IF NOT EXISTS wf_events_root ON wf_events(root_id, seq);
         CREATE INDEX IF NOT EXISTS wf_events_entity ON wf_events(workflow_id, entity, seq) WHERE entity IS NOT NULL;
         CREATE TABLE IF NOT EXISTS wf_texts (digest TEXT PRIMARY KEY, text TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS wf_text_refs (workflow_id TEXT NOT NULL, digest TEXT NOT NULL, PRIMARY KEY(workflow_id, digest));
+        CREATE INDEX IF NOT EXISTS wf_text_refs_digest ON wf_text_refs(digest);
         CREATE TABLE IF NOT EXISTS wf_snapshots (workflow_id TEXT PRIMARY KEY, seq INTEGER NOT NULL, data TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS wf_catalog (id TEXT PRIMARY KEY, scope TEXT NOT NULL, root_id TEXT NOT NULL, parent_id TEXT, status TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS wf_leases (workflow_id TEXT NOT NULL, claim_id TEXT NOT NULL, lease_until INTEGER NOT NULL,
+          PRIMARY KEY(workflow_id, claim_id));
+        CREATE TABLE IF NOT EXISTS wf_catalog (id TEXT PRIMARY KEY, scope TEXT NOT NULL, root_id TEXT NOT NULL, parent_id TEXT, status TEXT NOT NULL,
+          updated_at INTEGER NOT NULL DEFAULT 0);
         CREATE UNIQUE INDEX IF NOT EXISTS wf_catalog_binding ON wf_catalog(scope) WHERE parent_id IS NULL AND status NOT IN ('completed', 'cancelled');
         CREATE INDEX IF NOT EXISTS wf_catalog_tree ON wf_catalog(root_id);
         CREATE TABLE IF NOT EXISTS workflow_operations (scope TEXT NOT NULL, id TEXT NOT NULL, digest TEXT NOT NULL,
-          response TEXT NOT NULL, PRIMARY KEY(scope, id));
+          response TEXT NOT NULL, workflow_id TEXT, PRIMARY KEY(scope, id));
         CREATE TABLE IF NOT EXISTS workflow_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS wf_archived_tasks (workflow_id TEXT NOT NULL, task_id TEXT NOT NULL, script_key TEXT, cache_key TEXT,
           agent_id TEXT, request_digest TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(workflow_id, task_id));
@@ -204,6 +291,15 @@ export class WorkflowStore {
         CREATE INDEX IF NOT EXISTS wf_archive_key ON wf_archive(workflow_id, kind, key) WHERE key IS NOT NULL;
         CREATE INDEX IF NOT EXISTS wf_archive_num ON wf_archive(workflow_id, kind, num) WHERE num IS NOT NULL;
       `);
+      // Columns added after the tables first shipped; an old file gets them here instead of a schema version.
+      if (!this.columns('wf_catalog').includes('updated_at')) {
+        this.db.exec('ALTER TABLE wf_catalog ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0');
+        // Catalog rows written before the column existed are dated by their last journal entry.
+        this.db.exec("UPDATE wf_catalog SET updated_at = COALESCE((SELECT max(at) FROM wf_events WHERE workflow_id = wf_catalog.id), 0)");
+      }
+      if (!this.columns('workflow_operations').includes('workflow_id')) {
+        this.db.exec('ALTER TABLE workflow_operations ADD COLUMN workflow_id TEXT');
+      }
     }
     if (options.backgroundCheckpoint && !options.readonly && path !== ':memory:') {
       this.stopCheckpoints = checkpointInBackground(this.db, path, error => options.checkpointFailed?.(error));
@@ -218,6 +314,10 @@ export class WorkflowStore {
 
   private hasTable(name: string): boolean {
     return Boolean(this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
+  }
+
+  private columns(table: string): string[] {
+    return (this.db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(column => column.name);
   }
 
   /** Unfinished workflows persisted by the pre-event-sourcing store, which this store does not read. */
@@ -239,9 +339,24 @@ export class WorkflowStore {
 
   // Reads. The returned states are live: they change as events are applied, and must only be changed through emit().
 
+  /** IDs of the unfinished workflows, including any whose journal cannot be read. */
+  openIds(): string[] { return [...this.open]; }
+
   /** Unfinished workflows. */
   list(): WorkflowView[] {
-    return [...this.open].flatMap(id => this.byId(id) ?? []);
+    return [...this.open].flatMap(id => {
+      try {
+        return this.byId(id) ?? [];
+      } catch (error) {
+        if (!(error instanceof WorkflowJournalError)) throw error;
+        // One unreadable workflow must not stop the rest from running or the bridge from starting.
+        if (!this.reportedUnreadable.has(id)) {
+          this.reportedUnreadable.add(id);
+          this.options.loadFailed?.(id, error);
+        }
+        return [];
+      }
+    });
   }
 
   state(scopeId: string, workflowId?: string): WorkflowView | undefined {
@@ -268,12 +383,12 @@ export class WorkflowStore {
     let ids = this.trees.get(rootId);
     if (!ids) {
       ids = (this.db.prepare('SELECT id FROM wf_catalog WHERE root_id = ? ORDER BY rowid').all(rootId) as Array<{ id: string }>).map(row => row.id);
-      // Workflows created by the open transaction are not in the catalog yet.
-      for (const created of this.tx?.created ?? []) {
-        const data = created.state;
-        if ((data.parent?.rootWorkflowId ?? data.workflowId) === rootId && !ids.includes(data.workflowId)) ids.push(data.workflowId);
-      }
       this.trees.set(rootId, ids);
+    }
+    // Workflows created by the open transaction are not in the catalog yet.
+    for (const created of this.tx?.created ?? []) {
+      const data = created.state;
+      if ((data.parent?.rootWorkflowId ?? data.workflowId) === rootId && !ids.includes(data.workflowId)) ids.push(data.workflowId);
     }
     return ids.flatMap(id => this.byId(id) ?? []);
   }
@@ -307,6 +422,28 @@ export class WorkflowStore {
       } });
   }
 
+  /**
+   * The slice of a state a workspace host reads (see WorkspaceStateView). Built fresh for each call and small on
+   * purpose: a workspace call is made per member when a swarm is staffed and lives as long as a landing runs, so a
+   * detached copy of the whole state would pile up with every member and outlive every hung call.
+   */
+  workspaceView(state: WorkflowView): WorkspaceStateView {
+    return {
+      workflowId: state.workflowId,
+      root: state.root,
+      deadlineAt: state.deadlineAt,
+      ...(state.script ? { script: { calls: state.script.calls.map(call => ({ taskId: call.taskId })) } } : {}),
+      tasks: state.tasks.map(task => ({ taskId: task.taskId, status: task.status,
+        ...(task.workspaceId === undefined ? {} : { workspaceId: task.workspaceId }),
+        ...(task.agentId === undefined ? {} : { agentId: task.agentId }), resultRefs: task.resultRefs })),
+      artifacts: state.artifacts.map(artifact => {
+        const view: { ref: string; text?: string } = { ref: artifact.ref };
+        this.lazyText(view, 'text', artifact.digest);
+        return view as { ref: string; text: string };
+      }),
+    };
+  }
+
   text(digest: string): string {
     const pending = this.tx?.texts.get(digest) ?? this.texts.get(digest);
     if (pending !== undefined) return pending;
@@ -316,9 +453,15 @@ export class WorkflowStore {
     return row.text;
   }
 
-  putText(text: string): TextRef {
+  putText(text: string, workflowId?: string): TextRef {
     const digest = workflowDigest(text);
-    this.transaction().texts.set(digest, text);
+    const tx = this.transaction();
+    tx.texts.set(digest, text);
+    if (workflowId) {
+      const refs = tx.textRefs.get(workflowId) ?? new Set<string>();
+      refs.add(digest);
+      tx.textRefs.set(workflowId, refs);
+    }
     this.cacheText(digest, text);
     return { digest, chars: text.length };
   }
@@ -347,6 +490,8 @@ export class WorkflowStore {
         .get(workflowId, ...values) as { data: string } | undefined;
       return row && JSON.parse(row.data) as StoredTask;
     };
+    /** The open transaction's rows of one kind by ID, each entry as last staged: an amended entry stands for the stored one. */
+    const latest = (kind: RecordKind) => new Map((staged()?.records ?? []).filter(row => row.workflowId === workflowId && row.kind === kind).map(row => [row.id, row]));
     return {
       task: taskId => task('task_id = ?', [taskId], found => found.taskId === taskId),
       result: cacheKey => task("cache_key = ? AND status = 'result_ready'", [cacheKey], found => found.cacheKey === cacheKey && found.status === 'result_ready'),
@@ -382,20 +527,35 @@ export class WorkflowStore {
         return row && JSON.parse(row.data);
       },
       range: (kind, { after, upTo, limit, desc }) => {
-        const pending = (staged()?.records ?? []).filter(row => row.workflowId === workflowId && row.kind === kind && row.num !== undefined && row.num > after && row.num <= upTo);
-        const rows = this.db.prepare(`SELECT num, data FROM wf_archive WHERE workflow_id = ? AND kind = ? AND num > ? AND num <= ? ORDER BY num ${desc ? 'DESC' : 'ASC'} LIMIT ?`)
-          .all(workflowId, kind, after, upTo, limit) as Array<{ num: number; data: string }>;
+        const open = latest(kind);
+        const pending = [...open.values()].filter(row => row.num !== undefined && row.num > after && row.num <= upTo);
+        const rows = (this.db.prepare(`SELECT id, num, data FROM wf_archive WHERE workflow_id = ? AND kind = ? AND num > ? AND num <= ? ORDER BY num ${desc ? 'DESC' : 'ASC'} LIMIT ?`)
+          .all(workflowId, kind, after, upTo, limit) as Array<{ id: string; num: number; data: string }>).filter(row => !open.has(row.id));
         const all = [...rows, ...pending.map(row => ({ num: row.num!, data: row.data }))].sort((a, b) => desc ? b.num - a.num : a.num - b.num);
         return all.slice(0, limit).map(row => JSON.parse(row.data));
       },
       search: (kind, contains, limit) => {
-        const pending = (staged()?.records ?? []).filter(row => row.workflowId === workflowId && row.kind === kind
-          && contains.every(term => row.data.toLowerCase().includes(term))).reverse();
-        const rows = this.db.prepare(`SELECT data FROM wf_archive WHERE workflow_id = ? AND kind = ?${' AND instr(lower(data), ?) > 0'.repeat(contains.length)} ORDER BY rowid DESC LIMIT ?`)
-          .all(workflowId, kind, ...contains, limit) as Array<{ data: string }>;
+        const open = latest(kind);
+        const pending = [...open.values()].filter(row => contains.every(term => row.data.toLowerCase().includes(term))).reverse();
+        const rows = (this.db.prepare(`SELECT id, data FROM wf_archive WHERE workflow_id = ? AND kind = ?${' AND instr(lower(data), ?) > 0'.repeat(contains.length)} ORDER BY rowid DESC LIMIT ?`)
+          .all(workflowId, kind, ...contains, limit) as Array<{ id: string; data: string }>).filter(row => !open.has(row.id));
         return [...pending, ...rows].slice(0, limit).map(row => JSON.parse(row.data));
       },
     };
+  }
+
+  /**
+   * Resolving or reopening a post that has left the state changes its archived entry: the mark belongs to the post,
+   * so a reader gets it wherever the post is kept. Nothing else in the archive is ever rewritten.
+   */
+  private amendPost(rows: ArchiveRows, state: WorkflowData, event: Extract<DomainEvent, { type: 'board_post_resolved' }>): void {
+    if (event.seq > (state.archivedRecords?.post ?? 0)) return;
+    const id = String(event.seq);
+    const post = this.archive(state.workflowId).record('post', { id }) as BoardPost | undefined;
+    if (!post) throw new Error('Unknown board post');
+    const { resolved: _resolved, ...rest } = post;
+    rows.records.push({ workflowId: state.workflowId, kind: 'post', id, num: event.seq, amend: true,
+      data: JSON.stringify(event.resolved ? { ...rest, resolved: event.resolved } : rest) });
   }
 
   /** Copies what an archive event is about to remove from the state, so the commit can write it to the archive tables. */
@@ -431,9 +591,10 @@ export class WorkflowStore {
     }
   }
 
-  operation(scope: string, id: string): { digest: string; response: string } | undefined {
-    return this.db.prepare('SELECT digest, response FROM workflow_operations WHERE scope = ? AND id = ?')
-      .get(scope, id) as { digest: string; response: string } | undefined;
+  operation(scope: string, id: string): { digest: string; response: string; workflowId?: string } | undefined {
+    const row = this.db.prepare('SELECT digest, response, workflow_id FROM workflow_operations WHERE scope = ? AND id = ?')
+      .get(scope, id) as { digest: string; response: string; workflow_id: string | null } | undefined;
+    return row && { digest: row.digest, response: row.response, ...(row.workflow_id ? { workflowId: row.workflow_id } : {}) };
   }
 
   // Writes
@@ -445,7 +606,7 @@ export class WorkflowStore {
    */
   transact<T>(fn: () => T, cause = 'system'): T {
     if (this.tx) return fn();
-    const tx: Transaction = this.tx = { cause, events: [], touched: new Set(), versioned: new Set(), created: new Set(), texts: new Map(), archive: { tasks: [], artifacts: [], calls: [], records: [] }, operations: [] };
+    const tx: Transaction = this.tx = { cause, events: [], leases: [], snapshots: [], touched: new Set(), versioned: new Set(), created: new Set(), texts: new Map(), textRefs: new Map(), archive: { tasks: [], artifacts: [], calls: [], records: [] }, operations: [] };
     let result: T;
     try {
       result = fn();
@@ -492,11 +653,21 @@ export class WorkflowStore {
   append(aggregate: Aggregate, event: DomainEvent): void {
     const tx = this.transaction();
     if (aggregate.stale) throw new Error('Workflow state is no longer live; read it again');
+    // A lease heartbeat is metadata, not workflow state: it updates the claim in memory and one row of wf_leases, and
+    // stays out of the journal, which a replay would otherwise have to carry. It is not a state version either: the
+    // version marks changes a caller could conflict with, and a lease is not one.
+    if (event.type === 'claim_renewed') {
+      try { evolve(aggregate.state, event); }
+      catch (error) { tx.failed ??= { error }; throw error; }
+      tx.leases.push({ workflowId: aggregate.state.workflowId, claimId: event.claimId, leaseUntil: event.leaseUntil });
+      return;
+    }
     // Apply what the journal will hold, so a replay sees exactly the values applied now.
     const data = JSON.stringify(event);
     // Touched before the reducer runs: if it throws half-way, the state is discarded with the transaction.
     tx.touched.add(aggregate);
     if (event.type === 'tasks_archived' || event.type === 'script_call_archived' || event.type === 'records_archived') this.stage(tx.archive, aggregate.state, event);
+    if (event.type === 'board_post_resolved') this.amendPost(tx.archive, aggregate.state, event);
     try { evolve(aggregate.state, JSON.parse(data) as DomainEvent); }
     catch (error) { tx.failed ??= { error }; throw error; }
     tx.events.push({ aggregate, type: event.type, entity: eventEntity(event), data, topics: eventTopics(event) });
@@ -506,11 +677,11 @@ export class WorkflowStore {
    * Records the idempotent response of a main-agent operation in the open transaction. The state version is final
    * when `response` runs.
    */
-  commitOperation(scope: string, id: string, digest: string, response: () => unknown): unknown {
+  commitOperation(scope: string, id: string, digest: string, response: () => unknown, workflowId?: string): unknown {
     const tx = this.transaction();
     this.seal(tx);
     const value = response();
-    tx.operations.push({ scope, id, digest, response: JSON.stringify(value) });
+    tx.operations.push({ scope, id, digest, response: JSON.stringify(value), workflowId });
     return value;
   }
 
@@ -525,11 +696,56 @@ export class WorkflowStore {
   }
 
   private persist(tx: Transaction): void {
-    if (!tx.events.length && !tx.operations.length) return;
+    if (!tx.events.length && !tx.operations.length && !tx.leases.length) return;
     const at = this.now();
+    // A transaction that carries an event replaying cannot cheaply reproduce is synced to disk; the others stay on
+    // NORMAL. `synchronous` is a connection setting and not transactional, so it is raised before the transaction
+    // starts and lowered after it ends, whether or not it committed.
+    const durable = tx.events.some(pending => durableEvent(pending.type));
+    if (durable) this.db.pragma('synchronous = FULL');
+    try {
+      this.writeTransaction(tx, at);
+    } finally {
+      if (durable && this.db.open) this.db.pragma('synchronous = NORMAL');
+    }
+    this.writeSnapshots(tx.snapshots);
+  }
+
+  /**
+   * Writes the snapshots a transaction owes, in a transaction of their own.
+   *
+   * A snapshot is a cache of the journal, so it may land after the events it covers and be lost without losing them.
+   * Keeping it out of the event transaction means a durable commit fsyncs its own events rather than a whole state,
+   * and a snapshot that cannot be written no longer rolls the operation back; `sinceSnapshot` stays put so the next
+   * commit tries again.
+   */
+  private writeSnapshots(aggregates: readonly Aggregate[]): void {
+    if (!aggregates.length || !this.db.open) return;
+    // Serialized before the transaction opens: this is the expensive half for a large workflow.
+    const rows = aggregates.map(aggregate => {
+      const { state } = aggregate;
+      return { workflowId: state.workflowId, seq: aggregate.seq, data: JSON.stringify(state) };
+    });
+    try {
+      const write = this.db.transaction(() => {
+        const insert = this.db.prepare('INSERT INTO wf_snapshots(workflow_id, seq, data) VALUES (?, ?, ?) ON CONFLICT(workflow_id) DO UPDATE SET seq = excluded.seq, data = excluded.data');
+        for (const row of rows) insert.run(row.workflowId, row.seq, row.data);
+      });
+      write();
+    } catch (error) {
+      this.options.snapshotFailed?.(error);
+      return;
+    }
+    for (const aggregate of aggregates) aggregate.sinceSnapshot = 0;
+  }
+
+  /** Writes one transaction's rows; persist() has already chosen its durability. */
+  private writeTransaction(tx: Transaction, at: number): void {
     this.db.transaction(() => {
       const text = this.db.prepare('INSERT OR IGNORE INTO wf_texts(digest, text) VALUES (?, ?)');
       for (const [digest, value] of tx.texts) text.run(digest, value);
+      const textRef = this.db.prepare('INSERT OR IGNORE INTO wf_text_refs(workflow_id, digest) VALUES (?, ?)');
+      for (const [workflowId, digests] of tx.textRefs) for (const digest of digests) textRef.run(workflowId, digest);
       const event = this.db.prepare('INSERT INTO wf_events(workflow_id, root_id, version, type, entity, at, cause, data) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
       for (const pending of tx.events) {
         const { state } = pending.aggregate;
@@ -555,18 +771,28 @@ export class WorkflowStore {
       }
       if (archive.records.length) {
         const record = this.db.prepare('INSERT OR REPLACE INTO wf_archive(workflow_id, kind, id, key, num, data) VALUES (?, ?, ?, ?, ?, ?)');
-        for (const row of archive.records) record.run(row.workflowId, row.kind, row.id, row.key ?? null, row.num ?? null, row.data);
+        // In place, so an amended entry keeps the position searches read the archive in.
+        const amend = this.db.prepare('UPDATE wf_archive SET data = ? WHERE workflow_id = ? AND kind = ? AND id = ?');
+        for (const row of archive.records) {
+          if (row.amend) amend.run(row.data, row.workflowId, row.kind, row.id);
+          else record.run(row.workflowId, row.kind, row.id, row.key ?? null, row.num ?? null, row.data);
+        }
       }
-      const catalog = this.db.prepare('INSERT INTO wf_catalog(id, scope, root_id, parent_id, status) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET status = excluded.status');
+      const catalog = this.db.prepare(`INSERT INTO wf_catalog(id, scope, root_id, parent_id, status, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at`);
       for (const aggregate of tx.touched) {
         const { state } = aggregate;
         if (aggregate.cataloged !== state.status) {
-          catalog.run(state.workflowId, state.root.scopeId, state.parent?.rootWorkflowId ?? state.workflowId, state.parent?.workflowId ?? null, state.status);
+          catalog.run(state.workflowId, state.root.scopeId, state.parent?.rootWorkflowId ?? state.workflowId, state.parent?.workflowId ?? null, state.status, at);
         }
-        if (this.snapshotDue(aggregate) || TERMINAL.has(state.status) && aggregate.sinceSnapshot) this.snapshot(aggregate);
+        if (this.snapshotDue(aggregate) || TERMINAL.has(state.status) && aggregate.sinceSnapshot) tx.snapshots.push(aggregate);
       }
-      const operation = this.db.prepare('INSERT INTO workflow_operations(scope, id, digest, response) VALUES (?, ?, ?, ?)');
-      for (const item of tx.operations) operation.run(item.scope, item.id, item.digest, item.response);
+      const operation = this.db.prepare(`INSERT INTO workflow_operations(scope, id, digest, response, workflow_id) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(scope, id) DO UPDATE SET digest = excluded.digest, response = excluded.response, workflow_id = excluded.workflow_id`);
+      for (const item of tx.operations) operation.run(item.scope, item.id, item.digest, item.response, item.workflowId ?? null);
+      const lease = this.db.prepare(`INSERT INTO wf_leases(workflow_id, claim_id, lease_until) VALUES (?, ?, ?)
+        ON CONFLICT(workflow_id, claim_id) DO UPDATE SET lease_until = excluded.lease_until`);
+      for (const item of tx.leases) lease.run(item.workflowId, item.claimId, item.leaseUntil);
       this.beforeCommit?.(tx.events.map(pending => ({ workflowId: pending.aggregate.state.workflowId, type: pending.type })));
     })();
   }
@@ -580,12 +806,6 @@ export class WorkflowStore {
     const { state } = aggregate;
     return aggregate.sinceSnapshot >= this.snapshotEvery
       && aggregate.sinceSnapshot >= state.tasks.length + state.artifacts.length + (state.workQueue?.items.length ?? 0);
-  }
-
-  private snapshot(aggregate: Aggregate): void {
-    this.db.prepare('INSERT INTO wf_snapshots(workflow_id, seq, data) VALUES (?, ?, ?) ON CONFLICT(workflow_id) DO UPDATE SET seq = excluded.seq, data = excluded.data')
-      .run(aggregate.state.workflowId, aggregate.seq, JSON.stringify(aggregate.state));
-    aggregate.sinceSnapshot = 0;
   }
 
   /** After a successful commit: index bookkeeping, then notifications. */
@@ -624,8 +844,13 @@ export class WorkflowStore {
     if (failures.length) throw failures[0];
   }
 
-  /** Keeps a bounded number of finished workflows in memory. */
+  /**
+   * Keeps a bounded number of finished workflows in memory. A workflow whose root is still open is never evicted:
+   * the tree is read as a whole (scheduler passes count its work, a summary lists its children), so dropping one
+   * child alone would only make the next read rebuild it from the journal.
+   */
   private chill(workflowId: string): void {
+    if (this.open.has(this.rootOf(workflowId))) return;
     this.cold.delete(workflowId);
     this.cold.add(workflowId);
     for (const oldest of this.cold) {
@@ -636,7 +861,26 @@ export class WorkflowStore {
       if (this.open.has(oldest)) continue;
       // Holders of the evicted object must read the workflow again rather than change a copy nobody else sees.
       if (aggregate) aggregate.stale = true;
-      this.aggregates.delete(oldest); this.trees.delete(oldest);
+      this.aggregates.delete(oldest);
+    }
+  }
+
+  private rootOf(workflowId: string): string {
+    const aggregate = this.aggregates.get(workflowId);
+    if (aggregate) return aggregate.state.parent?.rootWorkflowId ?? workflowId;
+    const row = this.db.prepare('SELECT root_id FROM wf_catalog WHERE id = ?').get(workflowId) as { root_id: string } | undefined;
+    return row?.root_id ?? workflowId;
+  }
+
+  private evictTree(rootId: string, ids: readonly string[]): void {
+    this.trees.delete(rootId);
+    for (const id of ids) {
+      if (this.open.has(id)) continue;
+      const aggregate = this.aggregates.get(id);
+      if (!aggregate) continue;
+      aggregate.stale = true;
+      this.aggregates.delete(id);
+      this.cold.delete(id);
     }
   }
 
@@ -654,9 +898,18 @@ export class WorkflowStore {
   }
 
   private aggregate(workflowId: string): Aggregate | undefined {
+    const unreadable = this.unreadable.get(workflowId);
+    if (unreadable) throw unreadable;
     let aggregate = this.aggregates.get(workflowId);
     if (!aggregate) {
-      const loaded = this.load(workflowId);
+      let loaded: ReturnType<WorkflowStore['load']>;
+      try {
+        loaded = this.load(workflowId);
+      } catch (error) {
+        // Replaying again would fail identically; keep the error and report it on every read.
+        if (error instanceof WorkflowJournalError) this.unreadable.set(workflowId, error);
+        throw error;
+      }
       if (!loaded) return undefined;
       aggregate = { store: this, ...loaded, cataloged: loaded.state.status, stale: false };
       owners.set(aggregate.state, aggregate);
@@ -675,11 +928,28 @@ export class WorkflowStore {
     const rows = this.db.prepare('SELECT seq, version, data FROM wf_events WHERE workflow_id = ? AND seq > ? ORDER BY seq')
       .all(workflowId, seq) as Array<{ seq: number; version: number; data: string }>;
     for (const row of rows) {
-      const event = JSON.parse(row.data) as DomainEvent;
-      if (event.type === 'workflow_created') state = event.state;
-      else evolve(state!, event);
+      // A journal written by another build is validated here rather than silently skipped: an event this reducer
+      // does not know cannot be ignored without the rest of the state drifting away from what its writer meant.
+      let event: DomainEvent | undefined;
+      try {
+        event = JSON.parse(row.data) as DomainEvent;
+        if (event.type === 'workflow_created') state = event.state;
+        else evolve(state!, event);
+      } catch (error) {
+        throw new WorkflowJournalError(workflowId, row.seq, event?.type ?? 'unparseable', error);
+      }
       state!.stateVersion = row.version;
       seq = row.seq;
+    }
+    // A lease renewal never reaches the journal (see append), so the last one for each claim is replayed on top. A
+    // claim's row lives as long as the workflow, so a claim that ended replays the lease it ended with too.
+    if (state) {
+      const leases = this.db.prepare('SELECT claim_id AS claimId, lease_until AS leaseUntil FROM wf_leases WHERE workflow_id = ?')
+        .all(workflowId) as Array<{ claimId: string; leaseUntil: number }>;
+      for (const lease of leases) {
+        const claim = state.workQueue?.claims.find(candidate => candidate.id === lease.claimId);
+        if (claim) claim.leaseUntil = lease.leaseUntil;
+      }
     }
     return state && { state, seq, sinceSnapshot: rows.length };
   }
@@ -698,10 +968,32 @@ export class WorkflowStore {
   /** Repair and test tooling: makes a workflow's state exactly `replacement`, creating the workflow if it is unknown. */
   replace(replacement: WorkflowState): void {
     this.transaction();
-    const artifacts: StoredArtifact[] = replacement.artifacts.map(({ text, ...artifact }) => ({ ...artifact, ...this.putText(text) }));
-    const tasks: StoredTask[] = replacement.tasks.map(task => ({ ...task, objective: this.putText(task.objective) }));
+    // Repair tooling may be the way out of an unreadable journal: the replacement makes it readable again.
+    this.unreadable.delete(replacement.workflowId);
+    this.reportedUnreadable.delete(replacement.workflowId);
+    const artifacts: StoredArtifact[] = replacement.artifacts.map(({ text, ...artifact }) => ({ ...artifact, ...this.putText(text, replacement.workflowId) }));
+    const tasks: StoredTask[] = replacement.tasks.map(task => ({ ...task, objective: this.putText(task.objective, replacement.workflowId) }));
     const state: WorkflowData = { ...replacement, artifacts, tasks };
-    const aggregate = this.aggregate(state.workflowId);
+    let aggregate: Aggregate | undefined;
+    try {
+      aggregate = this.aggregate(state.workflowId);
+    } catch (error) {
+      if (!(error instanceof WorkflowJournalError)) throw error;
+      // Repairing an unreadable journal means replacing exactly that journal: drop what this build cannot replay
+      // before the replacement is appended, or the next load would fail on the same old event.
+      for (const table of ['wf_events', 'wf_snapshots', 'wf_leases', 'wf_archived_tasks', 'wf_archived_artifacts', 'wf_archived_calls', 'wf_archive', 'wf_text_refs']) {
+        this.db.prepare(`DELETE FROM ${table} WHERE workflow_id = ?`).run(state.workflowId);
+      }
+      this.db.prepare('DELETE FROM wf_catalog WHERE id = ?').run(state.workflowId);
+      // The indexes were built from the journal being dropped; without this the create below would report the scope
+      // as already having an unfinished workflow.
+      this.open.delete(state.workflowId);
+      this.cold.delete(state.workflowId);
+      this.trees.delete(state.workflowId);
+      this.aggregates.delete(state.workflowId);
+      if (!state.parent && this.roots.get(state.root.scopeId) === state.workflowId) this.roots.delete(state.root.scopeId);
+      aggregate = undefined;
+    }
     // The commit adds one to the version; start one below so the workflow ends up with the replacement's own.
     const versioned = { ...state, stateVersion: state.stateVersion - 1 };
     if (aggregate) this.append(aggregate, { type: 'workflow_replaced', state: versioned });
@@ -751,11 +1043,119 @@ export class WorkflowStore {
     if (!this.db.open) return;
     this.stopCheckpoints?.();
     if (!this.options.readonly) {
-      this.db.transaction(() => {
-        for (const aggregate of this.aggregates.values()) if (aggregate.sinceSnapshot && !aggregate.stale) this.snapshot(aggregate);
-      })();
+      // A snapshot is a cache: a shutdown that cannot write one still closes, and the journal stays enough.
+      this.writeSnapshots([...this.aggregates.values()].filter(aggregate => aggregate.sinceSnapshot && !aggregate.stale));
     }
     this.db.close();
+  }
+
+  /**
+   * Bounds the journal, in three steps that each leave the store able to rebuild every workflow:
+   *
+   * 1. Events a workflow's snapshot already covers are deleted; replay reads the snapshot first.
+   * 2. Texts put by a workflow get a ref row at commit, so a text no longer referenced by any workflow can go.
+   * 3. A workflow tree whose root finished before `finishedBefore` is deleted whole: journal, snapshot, archive,
+   *    catalog row, operation records and refs.
+   *
+   * Work happens in chunks with the event loop yielded between them, so a large backlog does not stall a turn.
+   * Verification mode replays from a workflow's first event and therefore skips compaction.
+   */
+  async maintenance(options: WorkflowMaintenanceOptions = {}): Promise<WorkflowMaintenanceResult> {
+    const result: WorkflowMaintenanceResult = { events: 0, workflows: 0, texts: 0 };
+    if (this.options.readonly || !this.db.open) return result;
+    const batch = options.batch ?? MAINTENANCE_BATCH;
+    if (options.compact !== false && !this.verify) result.events = await this.compactJournals(batch);
+    await this.backfillTextRefs();
+    const finishedBefore = options.finishedBefore ?? this.now() - this.retentionMs;
+    const removed = await this.pruneFinished(finishedBefore, batch);
+    result.workflows = removed;
+    if (removed) result.texts = await this.pruneTexts();
+    return result;
+  }
+
+  private async compactJournals(batch: number): Promise<number> {
+    const snapshots = this.db.prepare('SELECT workflow_id AS id, seq FROM wf_snapshots').all() as Array<{ id: string; seq: number }>;
+    const remove = this.db.prepare(`DELETE FROM wf_events WHERE rowid IN
+      (SELECT rowid FROM wf_events WHERE workflow_id = ? AND seq <= ? LIMIT 2000)`);
+    let removed = 0;
+    for (const [index, snapshot] of snapshots.entries()) {
+      for (;;) {
+        const { changes } = remove.run(snapshot.id, snapshot.seq);
+        removed += changes;
+        if (changes < 2000) break;
+        await yieldToLoop();
+      }
+      if (index > 0 && index % batch === 0) await yieldToLoop();
+    }
+    return removed;
+  }
+
+  /** Ref rows for texts written before the refs table existed; scans the rows that still carry their digests. */
+  private async backfillTextRefs(): Promise<void> {
+    if (this.db.prepare("SELECT value FROM workflow_meta WHERE key = 'text_refs'").get()) return;
+    const insert = this.db.prepare('INSERT OR IGNORE INTO wf_text_refs(workflow_id, digest) VALUES (?, ?)');
+    for (const table of ['wf_events', 'wf_snapshots', 'wf_archived_tasks', 'wf_archived_artifacts', 'wf_archive']) {
+      let last = 0;
+      for (;;) {
+        // Paged by rowid rather than iterated: commits keep writing these tables between two chunks.
+        const rows = this.db.prepare(`SELECT rowid AS row, workflow_id AS id, data FROM ${table} WHERE rowid > ? ORDER BY rowid LIMIT 1000`)
+          .all(last) as Array<{ row: number; id: string; data: string }>;
+        if (!rows.length) break;
+        for (const row of rows) {
+          last = row.row;
+          for (const digest of textDigests(row.data)) insert.run(row.id, digest);
+        }
+        await yieldToLoop();
+      }
+    }
+    this.db.prepare("INSERT INTO workflow_meta(key, value) VALUES ('text_refs', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+  }
+
+  /** Deletes finished trees whose root finished before `before`; returns how many workflows went with them. */
+  private async pruneFinished(before: number, batch: number): Promise<number> {
+    if (!this.hasTable('wf_catalog')) return 0;
+    const roots = this.db.prepare(`SELECT id FROM wf_catalog WHERE parent_id IS NULL AND status IN ('completed', 'cancelled')
+      AND updated_at > 0 AND updated_at < ? ORDER BY updated_at`).all(before) as Array<{ id: string }>;
+    const members = this.db.prepare('SELECT id, status FROM wf_catalog WHERE root_id = ?');
+    let removed = 0;
+    for (const [index, root] of roots.entries()) {
+      const tree = members.all(root.id) as Array<{ id: string; status: string }>;
+      if (tree.some(member => !TERMINAL.has(member.status))) continue;
+      const ids = tree.map(member => member.id);
+      this.db.transaction(() => {
+        for (const id of ids) {
+          for (const table of ['wf_events', 'wf_snapshots', 'wf_leases', 'wf_archived_tasks', 'wf_archived_artifacts', 'wf_archived_calls', 'wf_archive', 'wf_text_refs']) {
+            this.db.prepare(`DELETE FROM ${table} WHERE workflow_id = ?`).run(id);
+          }
+          this.db.prepare('DELETE FROM wf_catalog WHERE id = ?').run(id);
+          this.db.prepare('DELETE FROM workflow_operations WHERE workflow_id = ?').run(id);
+        }
+      })();
+      this.cold.delete(root.id);
+      this.evictTree(root.id, ids);
+      for (const id of ids) { this.unreadable.delete(id); this.reportedUnreadable.delete(id); }
+      removed += ids.length;
+      if (index > 0 && index % batch === 0) await yieldToLoop();
+    }
+    return removed;
+  }
+
+  /** Deletes texts no workflow refers to any more and drops them from the read cache. */
+  private async pruneTexts(): Promise<number> {
+    const orphans = this.db.prepare('SELECT digest FROM wf_texts WHERE digest NOT IN (SELECT digest FROM wf_text_refs)').all() as Array<{ digest: string }>;
+    // Rechecks the refs: a commit between the scan and the delete may have put the same text again.
+    const remove = this.db.prepare('DELETE FROM wf_texts WHERE digest = ? AND NOT EXISTS (SELECT 1 FROM wf_text_refs WHERE digest = ?)');
+    let removed = 0;
+    for (const { digest } of orphans) {
+      const changes = remove.run(digest, digest).changes;
+      removed += changes;
+      if (changes) {
+        const cached = this.texts.get(digest);
+        if (cached !== undefined) { this.texts.delete(digest); this.textChars -= cached.length; }
+      }
+      await yieldToLoop();
+    }
+    return removed;
   }
 }
 

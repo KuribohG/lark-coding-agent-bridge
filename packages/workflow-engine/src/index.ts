@@ -1,17 +1,20 @@
 // Public workflow engine API: script-led multi-agent workflows with durable state.
 // Hosts supply a WorkerRunner and authorization callbacks; see README.md.
 export { WorkflowRuntime } from './engine/runtime';
+export { workflowToolDefinitions, MAIN_WORKFLOW_METHODS, WORKER_WORKFLOW_METHODS } from './engine/host-tools';
+export type { ExecutionLedgerPort, ExecutionObservation } from './engine/types';
 export type { WorkflowRuntimeDeps } from './engine/runtime';
 export type { WorkflowKernel } from './engine/kernel';
 export { WorkflowStopped, silentLogger, stopReasonOf } from './engine/ports';
 export type { WorkerHosting, WorkerRun, WorkerRunEvent, WorkerRunner, WorkerRunSpec, WorkflowProcesses } from './engine/ports';
 export { inheritedWorkerExecution, workerSelection } from './engine/execution';
 export { workflowDigest } from './engine/digest';
+export { sameRoot } from './engine/kernel-state';
 export { callWorkflow } from './engine/ipc';
 export { runWorkflowTool } from './engine/tool-cli';
 export type { WorkflowToolOptions } from './engine/tool-cli';
 export { DEFAULT_WORKFLOW_TIMEOUT_MINUTES } from './engine/script-contract';
-export { DEFAULT_STALL_MS, MAX_TASK_RETRIES } from './engine/kernel-scheduler';
+export { DEFAULT_STALL_MS, DEFAULT_TOOL_STALL_MS, MAX_TASK_RETRIES } from './engine/kernel-scheduler';
 export type {
   AgentKind,
   ModelSettings,

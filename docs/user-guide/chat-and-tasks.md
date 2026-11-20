@@ -30,7 +30,7 @@
 | Codex app-server | 接收进当前回合 |
 | Claude Code 双向输入 | 接收进当前进程和会话，在能够处理时纳入 |
 
-“已送入当前任务，等待模型处理”表示输入接口已经接收，尚不表示要求已经执行。收到“送达未知”时不要立刻重复提交可能有副作用的任务，先核对当前任务进展。普通任务中的附件和卡片回调仍走队列。
+“已送入当前任务，等待模型处理”表示输入接口已经接收，尚不表示要求已经执行。收到“送达未知”时不要立刻重复提交可能有副作用的任务，先核对当前任务进展。图片会随补充一起送入当前任务；文件、音视频和卡片回调仍走队列。
 
 Codex 统一通过 `app-server` 开启双向输入，已验证 CLI 为 0.162.1；`exec` 后端已移除。已有配置若显式设置了 `transport = "exec"`，需在对应的 `[agents.codex.launch]` 或 `[profiles.<name>.launch]` 中改为 `"app-server"`，将显式为 `true` 的 `ignoreUserConfig`、`ignoreRules` 改为 `false`，然后重启 profile。Claude 双向输入已验证 CLI 为 2.1.302，升级实际调用的 CLI 并加载新版 Bridge 即可。完整配置边界见 [Agent 执行契约](../agent-execution.md)。
 

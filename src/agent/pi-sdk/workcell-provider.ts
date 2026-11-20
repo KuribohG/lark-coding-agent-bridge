@@ -3,67 +3,13 @@ import { log } from '../../core/logger';
 import { mergeProcessEnv, spawnProcess, type SpawnedProcessByStdio } from '../../platform/spawn';
 import { terminateChild } from '../../platform/terminate';
 import { readJsonLines } from '../jsonl';
+import { parseSshWorkcell, SshWorkcellProvider } from './workcell-ssh';
+import type { WorkcellOp, WorkcellProvider, WorkcellProviderFrame } from './workcell-protocol';
 
 /**
- * Bridge side of the workcell provider protocol.
- *
- * A provider is an executable that rents isolated execution units: the bridge
- * starts it once per pool and drives it with newline-delimited JSON. The
- * repository defines only this protocol; which infrastructure fulfils it is the
- * provider's business.
- *
- *   bridge -> provider  { id, op, ...params }
- *   provider -> bridge  { id, ok: true, data } | { id, ok: false, error }
- *                       { type: 'log', workcell?, line }
- *                       { type: 'exit', workcell?, code }
+ * Client for an external provider: one long-lived executable driven with
+ * newline-delimited JSON. The protocol itself lives in workcell-protocol.ts.
  */
-
-export type WorkcellOp =
-  | 'create'
-  | 'push'
-  | 'pull'
-  | 'exec'
-  | 'forward'
-  | 'ttl'
-  | 'stop';
-
-export interface WorkcellCreateParams {
-  image?: string;
-  cpu?: number;
-  memoryGb?: number;
-  ttlSeconds?: number;
-  network?: readonly ('lan' | 'www')[];
-  /** Free-form labels the provider may use for naming or accounting. */
-  labels?: Record<string, string>;
-}
-
-export interface WorkcellPushParams {
-  workcell: string;
-  local: string;
-  remote: string;
-  exclude?: readonly string[];
-}
-
-export interface WorkcellExecParams {
-  workcell: string;
-  /** Shell script; providers run it through `bash -lc` unless documented otherwise. */
-  script: string;
-  env?: Readonly<Record<string, string>>;
-  detach?: boolean;
-  cwd?: string;
-}
-
-export interface WorkcellForwardParams {
-  workcell: string;
-  /** Port the bridge wants to reach inside the workcell. */
-  remotePort: number;
-}
-
-export interface WorkcellProviderFrame {
-  type: string;
-  workcell?: string;
-  [key: string]: unknown;
-}
 
 type Pending = {
   resolve: (value: unknown) => void;
@@ -85,7 +31,7 @@ const DEFAULT_TIMEOUT_MS: Partial<Record<WorkcellOp, number>> = {
   stop: 180_000,
 };
 
-export class WorkcellProviderClient {
+class WorkcellProviderClient implements WorkcellProvider {
   private child: SpawnedProcessByStdio<Writable, Readable, Readable> | undefined;
   private nextId = 1;
   private readonly pending = new Map<number, Pending>();
@@ -127,6 +73,10 @@ export class WorkcellProviderClient {
         this.settle(id, undefined, error instanceof Error ? error : new Error(String(error)));
       });
     });
+  }
+
+  async close(): Promise<void> {
+    return this.dispose();
   }
 
   async dispose(): Promise<void> {
@@ -235,6 +185,19 @@ export class WorkcellProviderClient {
       this.pending.delete(id);
     }
   }
+}
+
+/**
+ * Choose the provider behind `pi.workcell.provider`: a builtin scheme, or an
+ * executable that speaks the protocol above.
+ */
+export function createWorkcellProvider(provider: string, env?: NodeJS.ProcessEnv): WorkcellProvider {
+  const ssh = parseSshWorkcell(provider);
+  if (ssh) return new SshWorkcellProvider(ssh);
+  if (provider.includes('://')) {
+    throw new Error(`pi.workcell.provider: unknown scheme in ${provider} (supported: ssh://, or a provider executable)`);
+  }
+  return new WorkcellProviderClient({ command: provider, ...(env ? { env } : {}) });
 }
 
 function frameError(value: unknown): string {

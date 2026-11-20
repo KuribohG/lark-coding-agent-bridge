@@ -108,7 +108,9 @@ describe('topic message quote handling', () => {
 
     expect(h.agent.runOptions).toHaveLength(1);
     const prompt = h.agent.runOptions[0]?.prompt ?? '';
-    expect(prompt).toContain('"threadId":"omt_topic"');
+    // The topic id reaches the agent through the environment, not the prompt.
+    expect(h.agent.runOptions[0]?.env).toMatchObject({ LARK_CHANNEL_THREAD_ID: 'omt_topic' });
+    expect(prompt).not.toContain('"threadId"');
     expect(prompt).not.toContain('<quoted_messages>');
     expect(prompt).toContain('<topic_context>');
     expect(prompt).toContain('topic root content');
@@ -143,7 +145,8 @@ describe('topic message quote handling', () => {
     await waitFor(() => h.agent.runOptions.length === 1);
 
     const prompt = h.agent.runOptions[0]?.prompt ?? '';
-    expect(prompt).toContain('"threadId":"omt_converted_topic"');
+    expect(h.agent.runOptions[0]?.env).toMatchObject({ LARK_CHANNEL_THREAD_ID: 'omt_converted_topic' });
+    expect(prompt).not.toContain('"threadId"');
     expect(prompt).not.toContain('<quoted_messages>');
     expect(prompt).toContain('<topic_context>');
     expect(h.channel.fetchRawMessage).toHaveBeenCalledWith(
@@ -186,7 +189,8 @@ describe('topic message quote handling', () => {
 
     expect(h.channel.fetchRawMessage).toHaveBeenCalledWith('om_topic_start');
     const prompt = h.agent.runOptions[0]?.prompt ?? '';
-    expect(prompt).toContain('"threadId":"omt_backfilled"');
+    expect(h.agent.runOptions[0]?.env).toMatchObject({ LARK_CHANNEL_THREAD_ID: 'omt_backfilled' });
+    expect(prompt).not.toContain('"threadId"');
 
     await waitFor(() => h.channel.streams.length === 1);
     expect(h.channel.streams[0]?.options).toMatchObject({

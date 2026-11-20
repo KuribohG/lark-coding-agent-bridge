@@ -76,6 +76,9 @@ export function normalizeRootConfig(root: RootConfig): RootConfig {
     preferences: {},
     ...(root.monitorConfigFile !== undefined ? { monitorConfigFile: root.monitorConfigFile } : {}),
     ...(root.modelServices ? { modelServices: normalizeModelServices(root.modelServices) } : {}),
+    // Already normalized by documentToRoot; dropping it here would silently
+    // disable the gate and lose the table on the next save.
+    ...(root.modelGate ? { modelGate: structuredClone(root.modelGate) } : {}),
     ...(root.agentState ? { agentState: root.agentState } : {}),
     // Raw global launch layers; dropping them would lose [agents.*] on a fallback save.
     ...(root.agentLaunches ? { agentLaunches: root.agentLaunches } : {}),

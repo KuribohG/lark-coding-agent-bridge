@@ -35,12 +35,13 @@ function fullSummary(ctx: KernelContext, state: WorkflowView): Summary {
     workflowId: state.workflowId, plugin: { id: state.definition.id, version: state.definition.version, digest: state.definitionDigest },
     stateVersion: state.stateVersion, status: state.status, goalRef: state.artifacts[0]?.ref,
     goalPreview: state.goal.slice(0, 500),
+    ...(state.charter ? { charter: state.charter } : {}), ...(state.mainWake ? { mainWake: state.mainWake } : {}),
     deadlineAt: state.deadlineAt, root: state.root, taskCounts,
     ...(state.archived || state.archivedRecords ? { archived: { tasks: state.archived?.tasks ?? 0, ...state.archivedRecords } } : {}),
     sessions: state.sessions,
     agents: state.agents ?? [],
-    workQueue: state.workQueue ? workStatus(state) : undefined,
-    swarms: (state.swarms ?? []).map(swarm => swarmSummary(state, swarm)),
+    workQueue: state.workQueue ? workStatus(state, {}, ctx.now()) : undefined,
+    swarms: (state.swarms ?? []).map(swarm => swarmSummary(state, swarm, ctx.now())),
     waits: (state.waits ?? []).map(wait => ({ key: wait.key, status: wait.status, createdAt: wait.createdAt,
       kinds: wait.any.map(arm => arm.kind), selected: wait.result?.index })),
     parent: state.parent ? {workflowId:state.parent.workflowId,taskId:state.parent.taskId,depth:state.parent.depth,key:state.parent.key} : undefined,
@@ -217,9 +218,10 @@ export const lifecycleTools: WorkflowToolPlugin = {
       },
     },
     {
-      name: 'cancel',
+      // Named for what it ends: next to cancel_task, a bare `cancel` did not say that it stops the whole workflow.
+      name: 'cancel_workflow', aliases: ['cancel'],
       main: {
-        kind: 'mutate', doc: 'cancel', terminalCheckOnly: true,
+        kind: 'mutate', doc: 'cancel_workflow', terminalCheckOnly: true,
         apply: (ctx, state, _args, commit) => {
           ctx.lifecycle.cancelState(state);
           return commit(() => workflowSummary(ctx, state));

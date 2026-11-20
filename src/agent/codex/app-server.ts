@@ -116,14 +116,15 @@ export function startAppServerRun(input: AppServerRunInput): NativeAgentRun {
     runId: opts.runId,
     ...(hosted ? { detachOnShutdown: true } : {}),
     events: { [Symbol.asyncIterator]: () => state.drain() },
-    async sendInput({ text, messageId }) {
+    async sendInput({ text, messageId, images }) {
       await ready;
       const { threadId, turnId } = state;
       if (state.ended || stopping || !threadId || !turnId) return { status: 'inactive', messageId };
       const expectedTurnId = turnId;
       try {
         const result = await rpc.request('turn/steer', { threadId, expectedTurnId, clientUserMessageId: messageId,
-          input: [{ type: 'text', text, text_elements: [] }] });
+          input: [{ type: 'text', text, text_elements: [] },
+            ...(images ?? []).map(path => ({ type: 'localImage', path }))] });
         if (result.turnId !== expectedTurnId) throw new Error('app-server returned an unexpected steer turn id; delivery is unknown');
         return { status: 'accepted', messageId, scope: 'active-turn' };
       } catch (error) {
@@ -139,8 +140,7 @@ export function startAppServerRun(input: AppServerRunInput): NativeAgentRun {
       stopping = true;
       if (hosted && reason === 'shutdown') {
         // The turn keeps running under its host; the next bridge process reattaches.
-        hosted.detach();
-        stopPromise = waitForExit(input.stopGraceMs).then(() => {});
+        stopPromise = hosted.detach().then(() => waitForExit(input.stopGraceMs)).then(() => {});
         return stopPromise;
       }
       stopPromise = (async () => {

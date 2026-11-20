@@ -80,10 +80,36 @@ describe.each(['codex', 'claude'] as const)('in-flight %s IM delivery', agentKin
     expect(h.agent.stops).toHaveLength(0);
     expect(h.agent.supplements).toHaveLength(1);
     expect(h.agent.supplements[0]).toContain('focus on hg02');
-    expect(h.agent.supplements[0]).toContain('supplement');
+    expect(h.agent.supplements[0]).toContain('补充消息');
     expect(h.channel.sent.at(-1)).toMatchObject({ content: { markdown: '已送入当前任务，等待模型处理。' }, options: { replyTo: 'supplement', replyInThread: true } });
     await h.message('/stop');
     expect(h.agent.stops.length).toBeGreaterThan(0);
+  });
+  it('steers an image supplement into the active turn and keeps files queued', async () => {
+    const h = await harness(agentKind);
+    await h.message('original task');
+    await vi.waitFor(() => expect(h.agent.options).toHaveLength(1), { timeout: 2500 });
+    await h.message('看看这张图', {
+      messageId: 'image-supplement',
+      resources: [{ type: 'image', fileKey: 'img-1' }] as never,
+    });
+    await vi.waitFor(() => expect(h.agent.inputs).toHaveLength(1), { timeout: 2500 });
+    expect(h.agent.options).toHaveLength(1);
+    const input = h.agent.inputs[0]!;
+    expect(input.text).toContain('看看这张图');
+    expect(input.images).toHaveLength(1);
+    expect(input.text).toContain(input.images![0]!);
+    expect(h.channel.sent.at(-1)).toMatchObject({
+      content: { markdown: '已送入当前任务，等待模型处理。' },
+      options: { replyTo: 'image-supplement', replyInThread: true },
+    });
+    await h.message('文件补充', {
+      messageId: 'file-supplement',
+      resources: [{ type: 'file', fileKey: 'file-1' }] as never,
+    });
+    expect(JSON.stringify(h.channel.sent.at(-1))).toContain('已排队');
+    expect(h.agent.inputs).toHaveLength(1);
+    await h.message('/stop');
   });
   it('keeps authorization and mention gates ahead of in-flight delivery', async () => {
     const h = await harness(agentKind);
@@ -179,6 +205,7 @@ class GateAgent implements AgentAdapter {
   constructor(readonly id: 'codex' | 'claude') {}
   readonly options: AgentRunOptions[] = [];
   readonly supplements: string[] = [];
+  readonly inputs: AgentInput[] = [];
   supportsSteer = true;
   get capabilities(): AgentExecutionCapabilities {
     return { finalAnswer: 'stream', input: this.supportsSteer ? 'active-session' : 'unsupported' };
@@ -196,10 +223,12 @@ class GateAgent implements AgentAdapter {
     this.finishes.push(finish);
     const self = this;
     return { runId: opts.runId, capabilities: this.capabilities,
-      ...(this.supportsSteer ? { sendInput: async ({ text, messageId }: AgentInput): Promise<AgentInputReceipt> => {
-        self.supplements.push(text);
+      ...(this.supportsSteer ? { sendInput: async (input: AgentInput): Promise<AgentInputReceipt> => {
+        self.inputs.push(input);
+        self.supplements.push(input.text);
         return await (self.onSteer ? self.onSteer() : 'accepted') === 'accepted'
-          ? { status: 'accepted', messageId, scope: 'active-session' } : { status: 'inactive', messageId };
+          ? { status: 'accepted', messageId: input.messageId, scope: 'active-session' }
+          : { status: 'inactive', messageId: input.messageId };
       } } : {}),
       events: { async *[Symbol.asyncIterator](): AsyncGenerator<AgentEvent> {
         yield { type: 'system', threadId: 'native-thread' };
@@ -240,6 +269,10 @@ async function harness(agentKind: 'claude' | 'codex' = 'codex', workflows = fals
     botIdentity: { openId: 'bot', name: 'Test' },
     on(next: typeof handlers) { Object.assign(handlers, next); }, async connect() {}, async disconnect() {},
     async getChatMode() { return 'group'; }, getConnectionStatus() { return { state: 'connected' }; },
+    async downloadResourceToFile(_messageId: string, _fileKey: string, _type: string, destPath: string) {
+      await writeFile(destPath, Buffer.from('fake-image-bytes'));
+      return { contentType: 'image/png', bytesWritten: 16 };
+    },
   });
   Object.assign(channel.rawClient, { application: { v6: { application: { get: async () => ({ data: { app: { owner: { owner_id: 'owner' } } } }) } } } });
   channel.rawThreadIds.set('card', 'topic');
@@ -250,8 +283,8 @@ async function harness(agentKind: 'claude' | 'codex' = 'codex', workflows = fals
   const agent = new GateAgent(agentKind);
   cleanup.push(async () => { await sessions.flush(); await workspaces.flush(); await sessionCatalog?.flush(); await tmp.cleanup(); });
   const bridge = await startChannel({ cfg: controls.cfg, execution: new FixedExecutionController(agent, controls.profileConfig), sessions, workspaces, controls, sessionCatalog,
-    ...(workflows ? { appPaths: { mediaDir: join(tmp.profile, 'media'), secretsFile: join(tmp.profile, 'secrets.json'),
-      keystoreSaltFile: join(tmp.profile, 'keystore-salt') } } : {}) });
+    appPaths: { mediaDir: join(tmp.profile, 'media'), secretsFile: join(tmp.profile, 'secrets.json'),
+      keystoreSaltFile: join(tmp.profile, 'keystore-salt') } });
   cleanup.push(async () => { await bridge.disconnect(); });
   const scope = 'oc_chat:topic';
   return { controls, agent, channel, handlers, scope,

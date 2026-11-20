@@ -141,7 +141,7 @@ describe('PiSdkAdapter process contract', () => {
     expect((await iterator.next()).value).toMatchObject({ type: 'system' });
     expect((await iterator.next()).value).toEqual({ type: 'text', delta: 'A' });
 
-    const receipt = await run.sendInput!({ text: 'also do this', messageId: 'm-1' });
+    const receipt = await run.sendInput!({ text: 'also do this', messageId: 'm-1', images: ['/tmp/a.png'] });
     expect(receipt).toEqual({ status: 'accepted', messageId: 'm-1', scope: 'active-turn' });
 
     const rest: AgentEvent[] = [];
@@ -155,20 +155,24 @@ describe('PiSdkAdapter process contract', () => {
       sessionId: 'sess-1',
       runId: 'run-steer',
       text: 'also do this',
+      images: ['/tmp/a.png'],
     });
   });
 
   it('aborts a run on stop and reports interruption', async () => {
     const harness = await createAdapter({
-      FAKE_HOST_EVENTS: JSON.stringify([{ type: 'agent_settled', aborted: true }]),
-      FAKE_HOST_EVENT_DELAY_MS: '5000',
-      FAKE_HOST_HOLD_MS: '5000',
+      FAKE_HOST_EVENTS: JSON.stringify([
+        { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'started' } },
+        { type: 'message_update', assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: 'started' } },
+      ]),
+      FAKE_HOST_HOLD_MS: '15000',
     });
 
     const run = (await harness.adapter.prepareRun({ runId: 'run-stop', prompt: 'go', cwd: harness.dir })).start();
     const iterator = run.events[Symbol.asyncIterator]();
     expect((await iterator.next()).value).toMatchObject({ type: 'system' });
 
+    expect((await iterator.next()).value).toEqual({ type: 'text', delta: 'started' });
     const rest: AgentEvent[] = [];
     const drain = (async () => {
       for (;;) {
@@ -177,7 +181,6 @@ describe('PiSdkAdapter process contract', () => {
         rest.push(next.value);
       }
     })();
-    await waitUntil(async () => (await harness.calls()).some((call) => call.cmd === 'run.prompt'));
 
     await run.stop('cancelled');
     await drain;

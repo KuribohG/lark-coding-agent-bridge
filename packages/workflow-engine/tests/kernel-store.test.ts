@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { emit, putText, readText, readWorkflowStates, replaceWorkflowState, WorkflowStore, type WorkflowStoreOptions } from '../src/engine/kernel-store';
 import { SCRIPT_DEFINITION } from '../src/engine/script-contract';
-import type { StoredTask, WorkflowData, WorkflowView } from '../src/engine/types';
+import type { BoardPost, StoredTask, WorkClaim, WorkflowData, WorkflowView, WorkflowWorkItem } from '../src/engine/types';
 
 const cleanup: Array<() => unknown> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -296,6 +296,75 @@ describe('event-sourced workflow store', () => {
     expect(store.db.prepare('SELECT count(*) AS count FROM wf_texts').get()).toEqual({ count: 2 });
   });
 
+  it('gives a workspace host the slice it reads, not a copy of the whole state', async () => {
+    const path = await file();
+    const store = open(path);
+    const state = start(store, 'view');
+    store.transact(() => {
+      task(state, 't1', 'the full prompt');
+      emit(state, { type: 'artifact_added', artifact: { ref: 'artifact:1', kind: 'report', ...putText(state, 'report body'), createdAt: 1 } });
+    });
+    // The board is state the host never reads; a workspace call must not carry it (or a swarm) along.
+    store.transact(() => {
+      for (const seq of [1, 2, 3]) emit(state, { type: 'board_posted', post: { seq, id: 'p' + seq, author: 'main', to: [], text: 'post ' + seq, createdAt: 1 }, deliveries: [] });
+    });
+    const live = store.state('scope-view')!;
+    const view = store.workspaceView(live);
+    for (const key of ['board', 'swarms', 'definition', 'events', 'sessions', 'mailbox', 'workQueue']) expect(view).not.toHaveProperty(key);
+    expect(view).toMatchObject({ workflowId: 'view', deadlineAt: 2, root: live.root });
+    expect(view.script?.calls).toEqual([]);
+    expect(view.tasks).toMatchObject([{ taskId: 't1', status: 'queued', resultRefs: [] }]);
+    expect(view.artifacts[0]!.ref).toBe('artifact:1');
+    // The text is still readable, loaded on first access like the public shape's.
+    expect(view.artifacts[0]!.text).toBe('report body');
+    // Nothing is detached twice: the task view is a copy the host may keep, the artifacts keep the store's.
+    expect(view.tasks[0]).not.toBe(live.tasks[0]);
+  });
+
+  it('amends the archived entry of a post that is resolved after it left the state', async () => {
+    const path = await file();
+    const first = new WorkflowStore(path, () => 1_000);
+    const state = start(first, 'board');
+    const post = (seq: number): BoardPost => ({ seq, id: 'post-' + seq, author: 'main', to: [], text: 'finding ' + seq, createdAt: seq });
+    const resolved = { at: 9, note: 'settled by the third', see: 3 };
+    const seqs = (posts: unknown[]) => (posts as BoardPost[]).map(found => found.seq);
+    first.transact(() => { for (const seq of [1, 2, 3]) emit(state, { type: 'board_posted', post: post(seq), deliveries: [] }); });
+    // Archived and resolved in one transaction: its reads see each entry once, as last staged.
+    first.transact(() => {
+      emit(state, { type: 'records_archived', kind: 'post', ids: ['1', '2'] });
+      emit(state, { type: 'board_post_resolved', seq: 1, postId: 'post-1', topic: 'general', resolved });
+      const archive = first.archive('board');
+      expect(archive.range('post', { after: 0, upTo: 2, limit: 10 })).toEqual([{ ...post(1), resolved }, post(2)]);
+      expect(seqs(archive.search('post', ['finding'], 10))).toEqual([2, 1]);
+      expect(archive.record('post', { id: '1' })).toEqual({ ...post(1), resolved });
+    });
+    expect(state.board).toMatchObject({ posts: [post(3)], topics: { general: { posts: 3, resolved: 1 } } });
+    expect(state.archivedRecords).toEqual({ post: 2 });
+    // A stored entry is replaced by its amendment for the transaction that makes it, and in place for later ones.
+    first.transact(() => {
+      emit(state, { type: 'board_post_resolved', seq: 2, postId: 'post-2', topic: 'general', resolved });
+      expect(first.archive('board').range('post', { after: 0, upTo: 2, limit: 10, desc: true })).toEqual([{ ...post(2), resolved }, { ...post(1), resolved }]);
+      expect(seqs(first.archive('board').search('post', ['settled'], 10))).toEqual([2, 1]);
+    });
+    expect(seqs(first.archive('board').search('post', ['settled'], 10))).toEqual([2, 1]);
+    // Reopening a post takes the mark off its entry; one that is still in the state carries it there.
+    first.transact(() => {
+      emit(state, { type: 'board_post_resolved', seq: 1, postId: 'post-1', topic: 'general' });
+      emit(state, { type: 'board_post_resolved', seq: 3, postId: 'post-3', topic: 'general', resolved: { at: 10, from: 'agent-1' } });
+    });
+    const before = JSON.parse(JSON.stringify(first.public(first.state('scope-board')!)));
+    expect(before.board).toEqual({ posts: [{ ...post(3), resolved: { at: 10, from: 'agent-1' } }], topics: { general: { posts: 3, recent: [1, 2, 3], resolved: 2 } } });
+    first.close();
+
+    // The journal rebuilds the state; the archive holds the entries as last amended.
+    const db = new Database(path); db.exec('DELETE FROM wf_snapshots');
+    expect(db.prepare("SELECT count(*) AS rows FROM wf_archive WHERE kind = 'post'").get()).toEqual({ rows: 2 });
+    db.close();
+    const second = open(path);
+    expect(JSON.parse(JSON.stringify(second.public(second.state('scope-board')!)))).toEqual(before);
+    expect(second.archive('board').range('post', { after: 0, upTo: 2, limit: 10 })).toEqual([post(1), { ...post(2), resolved }]);
+  });
+
   it('detects a state change that bypassed the journal', () => {
     const store = open();
     const state = start(store, 'a');
@@ -394,5 +463,123 @@ describe('WAL file size', () => {
     store.writeHeartbeat(1);
     expect(statSync(path + '-wal').size).toBeLessThanOrEqual(65536);
     expect(store.heartbeat()).toBe(1);
+  });
+});
+
+describe('commit durability', () => {
+  it('syncs the commit that creates a workflow', async () => {
+    const store = open(await file());
+    const modes: unknown[] = [];
+    store.beforeCommit = () => modes.push(store.db.pragma('synchronous', { simple: true }));
+    start(store, 'wf');
+    expect(modes).toEqual([2]);
+  });
+
+  it('syncs only the commits whose loss replaying cannot cheaply reproduce', async () => {
+    const store = open(await file());
+    const state = start(store, 'wf');
+    const modes: unknown[] = [];
+    // Read from inside the commit: the setting is already raised for a durable transaction, and not for others.
+    store.beforeCommit = () => modes.push(store.db.pragma('synchronous', { simple: true }));
+    expect(store.db.pragma('synchronous', { simple: true })).toBe(1);
+    store.transact(() => emit(state, { type: 'script_phase_set', phase: 'working' }));
+    store.transact(() => emit(state, { type: 'workflow_completed' }));
+    expect(modes).toEqual([1, 2]);
+    // Back to NORMAL once the commit is over.
+    expect(store.db.pragma('synchronous', { simple: true })).toBe(1);
+  });
+
+  it('syncs a transaction that mixes a durable event with bookkeeping ones', async () => {
+    const store = open(await file());
+    const state = start(store, 'wf');
+    const modes: unknown[] = [];
+    store.beforeCommit = () => modes.push(store.db.pragma('synchronous', { simple: true }));
+    store.transact(() => emit(state, { type: 'script_phase_set', phase: 'preparing' }));
+    store.transact(() => {
+      emit(state, { type: 'script_phase_set', phase: 'verifying' });
+      emit(state, { type: 'workflow_completed' });
+    });
+    expect(modes).toEqual([1, 2]);
+  });
+
+  it('lowers the setting again when a durable commit fails', async () => {
+    const store = open(await file());
+    const state = start(store, 'wf');
+    store.beforeCommit = () => { throw new Error('boom'); };
+    expect(() => store.transact(() => emit(state, { type: 'workflow_completed' }))).toThrow('boom');
+    expect(store.db.pragma('synchronous', { simple: true })).toBe(1);
+  });
+});
+
+describe('claim lease heartbeats', () => {
+  const item = (id: string): WorkflowWorkItem => ({ id, key: id, digest: 'd', title: 'item', input: null, resources: [], maxAttempts: 3,
+    generation: 0, status: 'pending', progress: { version: 0, state: null }, createdAt: 1, updatedAt: 1 });
+  const claim = (itemId: string): WorkClaim => ({ id: 'claim-1', itemId, agentId: 'agent-1', taskId: 'task-1', attemptId: 'attempt-1',
+    generation: 1, leaseUntil: 5_000, status: 'active', createdAt: 1 });
+
+  function queued(store: WorkflowStore, id = 'wf'): WorkflowView {
+    const state = start(store, id);
+    store.transact(() => {
+      emit(state, { type: 'work_queue_opened', name: 'default' });
+      emit(state, { type: 'work_enqueued', item: item('item-1') });
+      emit(state, { type: 'work_claimed', claim: claim('item-1') });
+    });
+    return state;
+  }
+
+  it('keeps a renewal out of the journal and out of the state version', async () => {
+    const store = open(await file());
+    const state = queued(store);
+    const version = state.stateVersion;
+    store.transact(() => emit(state, { type: 'claim_renewed', claimId: 'claim-1', leaseUntil: 9_000 }));
+    expect(state.workQueue!.claims[0]!.leaseUntil).toBe(9_000);
+    expect(state.stateVersion).toBe(version);
+    expect(store.db.prepare("SELECT count(*) AS n FROM wf_events WHERE type = 'claim_renewed'").get()).toEqual({ n: 0 });
+    expect(store.db.prepare('SELECT workflow_id, claim_id, lease_until FROM wf_leases').all())
+      .toEqual([{ workflow_id: 'wf', claim_id: 'claim-1', lease_until: 9_000 }]);
+    // The next journaled change still passes verification: the rebuilt state carries the same lease.
+    store.transact(() => emit(state, { type: 'script_phase_set', phase: 'after-renewal' }));
+    expect(state.stateVersion).toBe(version + 1);
+  });
+
+  it('replays the renewed lease over the journal after reopening', async () => {
+    const path = await file();
+    const first = new WorkflowStore(path, () => 1_000);
+    const state = queued(first);
+    first.transact(() => emit(state, { type: 'claim_renewed', claimId: 'claim-1', leaseUntil: 9_000 }));
+    first.close();
+    const db = new Database(path); db.exec('DELETE FROM wf_snapshots'); db.close();
+    const second = open(path);
+    expect(second.state('scope-wf')!.workQueue!.claims[0]!.leaseUntil).toBe(9_000);
+  });
+
+  it('keeps the row after the claim ends, so the end of the claim still verifies', async () => {
+    const store = open(await file());
+    const state = queued(store);
+    store.transact(() => emit(state, { type: 'claim_renewed', claimId: 'claim-1', leaseUntil: 9_000 }));
+    // Ending the claim is journaled; verification replays the journal and must see the renewed lease still.
+    store.transact(() => emit(state, { type: 'claim_ended', claimId: 'claim-1', status: 'cancelled', reason: 'done', retry: false, at: 2 }));
+    expect(store.db.prepare('SELECT count(*) AS n FROM wf_leases').get()).toEqual({ n: 1 });
+  });
+});
+
+describe('snapshot writes', () => {
+  it('keeps the events and the snapshot due when a snapshot cannot be written', async () => {
+    const failed = vi.fn();
+    const store = open(await file(), { snapshotEvery: 1, snapshotFailed: failed });
+    const state = start(store, 'wf');
+    store.db.exec("CREATE TRIGGER no_snapshot BEFORE INSERT ON wf_snapshots BEGIN SELECT RAISE(ABORT, 'no snapshot'); END");
+    const seq = () => (store.db.prepare('SELECT seq FROM wf_snapshots').get() as { seq: number }).seq;
+    const before = seq();
+    store.transact(() => emit(state, { type: 'script_logged', text: 'one' }));
+    expect(failed).toHaveBeenCalled();
+    // The operation stands: its events are committed and readable, and the snapshot simply did not advance.
+    expect(store.state('scope-wf')!.script!.logs).toEqual(['one']);
+    expect(store.db.prepare("SELECT count(*) AS n FROM wf_events WHERE type = 'script_logged'").get()).toEqual({ n: 1 });
+    expect(seq()).toBe(before);
+    // Once the cause is gone the next commit writes the snapshot it still owes.
+    store.db.exec('DROP TRIGGER no_snapshot');
+    store.transact(() => emit(state, { type: 'script_logged', text: 'two' }));
+    expect(seq()).toBeGreaterThan(before);
   });
 });

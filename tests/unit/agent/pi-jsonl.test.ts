@@ -251,3 +251,21 @@ describe('PiRunTranslator', () => {
     ]);
   });
 });
+
+describe('PiRunTranslator tool time limits', () => {
+  const start = (translator: PiRunTranslator, toolName: string, args: unknown) =>
+    translator.translate({ type: 'tool_execution_start', toolCallId: `${toolName}-1`, toolName, args })[0];
+
+  it('reports how long Pi lets a call run, from the limits the run is under', () => {
+    const translator = new PiRunTranslator(false, { defaultSeconds: 600, maxSeconds: 14_400 });
+    expect(start(translator, 'bash', { command: 'ls' })).toMatchObject({ type: 'tool_use', timeoutMs: 600_000 });
+    expect(start(new PiRunTranslator(false, { defaultSeconds: 600, maxSeconds: 14_400 }), 'bash', { command: 'make', timeout: 3600 }))
+      .toMatchObject({ timeoutMs: 3_600_000 });
+    expect(start(translator, 'find', { pattern: '*.ts' })).toMatchObject({ timeoutMs: 600_000 });
+    expect(start(translator, 'wait_for_review', {})).not.toHaveProperty('timeoutMs');
+  });
+
+  it('reports no limit for a run that is under none', () => {
+    expect(start(new PiRunTranslator(), 'bash', { command: 'ls' })).not.toHaveProperty('timeoutMs');
+  });
+});

@@ -5,9 +5,9 @@ import type { DurableAgent, WorkflowState, WorkflowTask, WorkflowWorkItem } from
 
 const TASK_STATUS: Record<WorkflowTask['status'], string> = {
   queued: '排队', starting: '启动中', running: '执行中', result_ready: '本轮已完成',
-  waiting_input: '等待输入', waiting_workflow:'等待子 workflow', failed: '失败', cancelling: '正在取消', cancelled: '已取消', interrupted: '已中断',
+  waiting_input: '等待输入', waiting_workflow:'等待子 workflow', failed: '失败', cancelling: '正在取消', cancelled: '已取消', unknown: '结果未知', interrupted: '已中断',
 };
-const ATTENTION = new Set<WorkflowTask['status']>(['failed', 'interrupted', 'waiting_input', 'waiting_workflow', 'running', 'starting', 'cancelling', 'queued']);
+const ATTENTION = new Set<WorkflowTask['status']>(['failed', 'unknown', 'interrupted', 'waiting_input', 'waiting_workflow', 'running', 'starting', 'cancelling', 'queued']);
 const compact = (value: string, limit: number) => {
   const text = value.replace(/\s+/g, ' ').trim();
   return text.length > limit ? text.slice(0, limit - 1) + '…' : text;
@@ -99,7 +99,9 @@ function workLines(state: WorkflowState, item: WorkflowWorkItem): string[] {
   return [`- 工作项 ${compact(item.key, 100)}：${item.status}，认领 ${item.generation}/${item.maxAttempts} 次，进展 #${item.progress.version}`,
     `  内容：${compact(item.title, 200)}`,
     ...(item.queue || item.priority || item.dependsOn?.length ? [`  队列：${compact(item.queue ?? 'default', 64)}，优先级 ${item.priority ?? 0}，依赖 ${compact(item.dependsOn?.join('、') || '无', 240)}`] : []),
-    ...(claim ? [`  负责成员：${compact(owner ?? claim.agentId, 100)}，认领版本 ${claim.generation}，租约至 ${time(claim.leaseUntil)}`] : []),
+    ...(item.origin || item.assignee || item.doneBy ? ['  ' + [...(item.origin ? [`出自：${compact(item.origin, 100)}`] : []), ...(item.assignee ? [`指定给：${compact(item.assignee, 50)}`] : []),
+      ...(item.doneBy ? [`完成者：${compact(item.doneBy, 50)}`] : [])].join('，')] : []),
+    ...(claim ? [`  负责成员：${compact(owner ?? claim.agentId, 100)}，认领版本 ${claim.generation}，${claim.heldUntil !== undefined ? `重启后为其保留至 ${time(claim.heldUntil)}` : `租约至 ${time(claim.leaseUntil)}`}`] : []),
     ...(item.progress.updatedAt ? [`  进展保存于：${time(item.progress.updatedAt)}`] : []),
     ...(item.resources.length ? [`  资源归属：${compact(item.resources.join('、'), 240)}`] : []),
     ...(item.error ? [`  原因：${errorText(item.error)}`] : [])];
@@ -148,12 +150,16 @@ export function renderBoard(state: WorkflowState, filter?: string): string {
   if (named && !member) return `未找到成员：${compact(filter, 100)}。用 /workflow status 查看成员列表；按主题看用 /workflow board #主题。`;
   const matching = member ? posts.filter(post => post.from === member.agentId || post.to.includes(member.agentId)) : topic ? posts.filter(post => topicOf(post) === topic) : posts;
   const shown = matching.slice(-(filter && !member && !topic ? Math.min(30, Math.max(1, Number(filter))) : 10));
+  const resolved = topics.reduce((sum, item) => sum + (item.resolved ?? 0), 0);
   // Only the posts still in the state are listed, while a topic's count covers every post made in it.
-  const lines = [`留言板：共 ${posts.length + (state.archivedRecords?.post ?? 0)} 帖${member ? `，与 ${compact(member.key, 100)} 相关 ${matching.length} 帖` : topic ? `，主题 #${topic} ${topics.find(item => item.topic === topic)!.posts} 帖` : ''}，显示最近 ${shown.length} 帖。`];
-  if (topics.length > 1 && !topic) lines.push('主题：' + topics.map(item => `#${item.topic} ${item.posts}`).join('，'));
+  const lines = [`留言板：共 ${posts.length + (state.archivedRecords?.post ?? 0)} 帖${resolved ? `（已解决 ${resolved}）` : ''}${member ? `，与 ${compact(member.key, 100)} 相关 ${matching.length} 帖` : topic ? `，主题 #${topic} ${topics.find(item => item.topic === topic)!.posts} 帖` : ''}，显示最近 ${shown.length} 帖。`];
+  if (topics.length > 1 && !topic) lines.push('主题：' + topics.map(item => `#${item.topic} ${item.posts}${item.resolved ? `（已解决 ${item.resolved}）` : ''}`).join('，'));
   for (const post of shown) {
     const to = post.all ? '全体' : post.to.length ? post.to.map(id => '@' + compact(name(id), 50)).join(' ') : '未点名';
-    lines.push(`#${post.seq} ${post.topic ? `[${post.topic}] ` : ''}${post.from ? compact(name(post.from), 50) : post.author === 'script' ? '脚本' : post.author === 'system' ? '系统' : '主会话'} → ${to} · ${time(post.createdAt)}`, '  ' + compact(post.text, 600));
+    // A resolved post is shown, as the feed is what happened, but cut short: its resolution is what matters now.
+    const done = post.resolved && `  ✓ 已解决（${post.resolved.from ? compact(name(post.resolved.from), 50) : '主会话'}）${post.resolved.note ? '：' + compact(post.resolved.note, 300) : ''}${post.resolved.see ? ` 见 #${post.resolved.see}` : ''}`;
+    lines.push(`#${post.seq} ${post.topic ? `[${post.topic}] ` : ''}${post.from ? compact(name(post.from), 50) : post.author === 'script' ? '脚本' : post.author === 'system' ? '系统' : '主会话'} → ${to} · ${time(post.createdAt)}`,
+      '  ' + compact(post.text, done ? 160 : 600), ...(done ? [done] : []));
   }
   return bounded(lines);
 }
@@ -215,6 +221,7 @@ export function renderWorkflowProgress(state: WorkflowState, now = Date.now()): 
   // The status itself is a separate field for the host's title.
   const lines = [...state.script?.phase ? [`**阶段**：${plain(state.script.phase, 200)}`] : [],
     `**需求**：${plain(state.goal, 200)}`,
+    ...state.charter ? [`**目标单**（第 ${state.charter.version} 版）：${plain(state.charter.text, 200)}`] : [],
     `**轮次**：共 ${state.tasks.length + (state.archived?.tasks ?? 0)}，完成 ${count(['result_ready'])}，执行中 ${count(['running', 'starting']) - slotWaiting}`
       + `${slotWaiting ? `，等待执行槽位 ${slotWaiting}` : ''}，排队 ${count(['queued'])}，失败 ${count(['failed'])}`];
   // Only running workflows show clocks, so periodic refreshes leave a stopped card unchanged.
@@ -252,6 +259,7 @@ export function renderWorkflowProgress(state: WorkflowState, now = Date.now()): 
 export function renderWorkflowStatus(state: WorkflowState, memberKey?: string, latest = false, now = Date.now()): string {
   const lines = [`${compact(state.script?.name ?? state.definition.id, 100)}：${state.status}${latest ? '（最近一次）' : ''}`,
     `需求：${compact(state.goal, 300)}`,
+    ...state.charter ? [`目标单：第 ${state.charter.version} 版，${state.charter.by === 'main' ? '主 agent' : compact(state.charter.by, 50)} 设定；/workflow charter 查看全文`] : [],
     `主 agent：${state.root.agentKind}，模型：${compact(state.root.modelSettings.model ?? '默认', 100)}${state.root.modelSettings.reasoningEffort ? `，思考强度：${state.root.modelSettings.reasoningEffort}` : ''}`];
   if (state.script) {
     lines.push(`脚本：${state.script.status}${state.script.phase ? `，${compact(state.script.phase, 200)}` : ''}，重放 ${state.script.revision} 次`);

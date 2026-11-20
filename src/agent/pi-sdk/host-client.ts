@@ -267,11 +267,12 @@ export class PiHostClient {
       ...(launch.maxSessions !== undefined ? ['--max-sessions', String(launch.maxSessions)] : []),
       ...(launch.sessionPersistence ? ['--session-persistence', launch.sessionPersistence] : []),
     ];
-    const env = mergeProcessEnv(process.env, {
+    const hostEnv = {
       ...launch.env,
       PI_SKIP_VERSION_CHECK: '1',
       PI_TELEMETRY: '0',
-    });
+    };
+    const env = mergeProcessEnv(process.env, hostEnv);
     const local = launch.remote
       ? undefined
       : piHostSpawnCommand(launch.nodePath, args, launch.sandbox, env);
@@ -279,9 +280,9 @@ export class PiHostClient {
       ? remoteHostSpawn(launch.remote, {
         nodePath: launch.nodePath,
         hostScript: launch.hostScript,
-        args,
+        args: args.slice(1),
         ...(launch.cwd ? { cwd: launch.cwd } : {}),
-        env,
+        env: hostEnv,
       })
       : undefined;
     if (remote) sweepRemoteEnvFiles(launch.remote!.stateDir);

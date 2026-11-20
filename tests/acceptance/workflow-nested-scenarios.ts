@@ -83,7 +83,7 @@ export async function runNestedScenario(ctx:Context):Promise<void> {
       await call('run_script',{goal:hardCrash?'Recover the isolated controller after SIGKILL immediately after the parent yields':'Restart the isolated controller after the parent commits a child but before yielding',
         script:'return await agent(args.task,{key:"parent",workflowTool:true,output:"json"});',
         args:{task:instruction((hardCrash?'parent':'parent-hold')+' middle.json')},
-        plan:hardCrash?'One enabled parent on the configured harness/model commits a child and yields. SIGKILL only the isolated controller after its native turn exits, explicitly replay in a fresh process, run the pending child and resume the original parent session.':'One enabled parent on the configured harness/model commits a child and holds its native turn. Restart without a prior pause, explicitly replay, run the pending child and resume the original parent session.',
+        plan:hardCrash?'One enabled parent on the configured harness/model commits a child and yields. SIGKILL only the isolated controller after its native turn exits; a fresh process replays the workflow on its own, runs the pending child and resumes the original parent session.':'One enabled parent on the configured harness/model commits a child and holds its native turn. Restart without a prior pause; the new controller replays the workflow on its own, runs the pending child and resumes the original parent session.',
         maxConcurrent:1,maxAgents:1,timeoutMs:600_000});
     } else {
       await save(join(workspace,'leaf.json'),{operationId:'leaf',key:'leaf',goal:'Save leaf state and wait for the test interruption',
@@ -104,10 +104,16 @@ export async function runNestedScenario(ctx:Context):Promise<void> {
   } else {
     const before=JSON.parse(await readFile(join(directory,'before.json'),'utf8')) as {pid:number;workflows:Array<{workflowId:string;sessions:string[]}>};
     assert.notEqual(before.pid,process.pid,'Recovery must run in a fresh controller process');
-    assert(tree().every(node=>node.status==='interrupted'));
-    await runtime.tick();await delay(750);await runtime.tick();
-    assert.equal(nativeRuns.length,0,'Restart must not automatically dispatch workers');
-    await call('replay_script');
+    if(singleParent) {
+      // The root was running when its controller went away, so the restart replays it on its own.
+      await until(()=>tree().every(node=>node.status==='active'));
+    } else {
+      // A root that was paused stays interrupted until it is explicitly replayed.
+      assert(tree().every(node=>node.status==='interrupted'));
+      await runtime.tick();await delay(750);await runtime.tick();
+      assert.equal(nativeRuns.length,0,'Restart must not automatically dispatch the workers of a paused workflow');
+      await call('replay_script');
+    }
   }
   if(test.scenario==='nested-queue') {
     await until(()=>state().script?.status==='result_ready');
@@ -142,7 +148,7 @@ export async function runNestedScenario(ctx:Context):Promise<void> {
     const before={pid:process.pid,workflows:tree().map(node=>({workflowId:node.workflowId,sessions:node.sessions.map(session=>session.nativeSessionId)}))};
     assert(tree().slice(0,2).every(node=>node.tasks[0]?.status==='waiting_workflow'));
     const leafRun=nativeRuns.at(-1)!;
-    await call(test.scenario==='nested-cancel'?'cancel':'pause');
+    await call(test.scenario==='nested-cancel'?'cancel_workflow':'pause');
     await until(()=>processPool.snapshot().active===0 && tree().every(node=>node.tasks.every(task=>task.status==='cancelled')));
     await assert.rejects(callWorkflow('checkpoint',{operationId:'late',expectedCheckpointVersion:1,state:{late:true}},leafRun.env),/revoked|inactive/);
     assert.equal(processPool.snapshot().waiting,0);
@@ -174,7 +180,7 @@ export async function runNestedScenario(ctx:Context):Promise<void> {
     const result=JSON.parse(state().artifacts.find(artifact=>artifact.ref===state().script!.resultRef)!.text);
     assert.deepEqual(result,{marker:test.marker,recovered:true});
     await call('ack_events',{eventIds:state().events.map(event=>event.id)});
-    await call('complete',{reportRef:state().script!.resultRef,openIssues:[],verificationLimits:hardCrash?'SIGKILL of the isolated controller after its native turn exited, then explicit replay with the original native session. Does not test killing an active native turn, daemon loss, power loss or exactly-once side effects.':'Restarted only the isolated controller. Original native sessions resumed after explicit replay. Not a machine-crash or exactly-once side-effect test.'});
+    await call('complete',{reportRef:state().script!.resultRef,openIssues:[],verificationLimits:hardCrash?'SIGKILL of the isolated controller after its native turn exited, then the automatic replay of a fresh controller with the original native session. Does not test killing an active native turn, daemon loss, power loss or exactly-once side effects.':'Restarted only the isolated controller. Original native sessions resumed after explicit replay. Not a machine-crash or exactly-once side-effect test.'});
     await save(join(directory,'result.json'),{passed:true,scenario:test.scenario,...(hardCrash?{fault:'SIGKILL-after-yield',recoveredPid:process.pid}:{}),result,nativeTurns:observations.length,workflows:nodes.map(node=>({workflowId:node.workflowId,nativeId:node.sessions[0]?.nativeSessionId,attempts:node.tasks[0]?.attempts.length ?? 0})),pool:processPool.snapshot()});
   }
 }

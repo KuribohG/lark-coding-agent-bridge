@@ -1,4 +1,4 @@
-import { chmodSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { createServer } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
+import { writeNodeFixtureLauncher } from '../helpers/fake-executable';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PiSdkAdapter } from '../../src/agent/pi-sdk/adapter';
@@ -33,13 +34,19 @@ const hosts: Array<import('node:child_process').ChildProcess> = [];
 afterEach(async () => {
   for (const adapter of adapters.splice(0)) await adapter.shutdown();
   for (const host of hosts.splice(0)) {
-    if (host.exitCode === null) host.kill('SIGKILL');
-    await once(host, 'exit').catch(() => {});
+    if (host.exitCode !== null || host.signalCode !== null) continue;
+    const exited = once(host, 'exit');
+    host.kill('SIGKILL');
+    await exited;
   }
   delete process.env.FAKE_WORKCELL_RECORD;
+  delete process.env.FAKE_WORKCELL_ROOT;
   delete process.env.FAKE_WORKCELL_HOST_PORT;
   delete process.env.FAKE_TCP_RECORD;
   delete process.env.FAKE_TCP_IPC;
+  delete process.env.FAKE_TCP_KEEP_AFTER_SHUTDOWN;
+  delete process.env.FAKE_HOST_EVENTS;
+  delete process.env.FAKE_HOST_RECORD;
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })));
 });
 
@@ -68,7 +75,7 @@ async function startTcpHost(): Promise<number> {
   return port;
 }
 
-async function harness(options: { workflowEndpoint?: string; tcpIpc?: boolean } = {}) {
+async function harness(options: { workflowEndpoint?: string; tcpIpc?: boolean; local?: boolean; root?: string; idleReleaseSeconds?: number } = {}) {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'pi-workcell-')));
   dirs.push(dir);
   const record = join(dir, 'provider-record.json');
@@ -76,6 +83,7 @@ async function harness(options: { workflowEndpoint?: string; tcpIpc?: boolean } 
   // The host fixture reads its mode from the environment at startup.
   Object.assign(process.env, {
     FAKE_WORKCELL_RECORD: record,
+    ...(options.root ? { FAKE_WORKCELL_ROOT: options.root } : {}),
     FAKE_TCP_RECORD: tcpRecord,
     ...(options.tcpIpc ? { FAKE_TCP_IPC: '1' } : { FAKE_TCP_IPC: '0' }),
   });
@@ -83,9 +91,7 @@ async function harness(options: { workflowEndpoint?: string; tcpIpc?: boolean } 
   const agentDir = join(dir, 'agent');
   await mkdir(agentDir, { recursive: true });
   writeFileSync(join(agentDir, 'auth.json'), '{"token":"t"}');
-  const provider = join(dir, 'provider.sh');
-  writeFileSync(provider, `#!/bin/sh\nexec '${process.execPath}' '${providerFixture}' "$@"\n`, { mode: 0o700 });
-  chmodSync(provider, 0o700);
+  const provider = await writeNodeFixtureLauncher(dir, 'provider', providerFixture);
   process.env.FAKE_WORKCELL_HOST_PORT = String(hostPort);
 
   // A realistic launcher layout: only the basenames are assumed by the layout.
@@ -98,14 +104,17 @@ async function harness(options: { workflowEndpoint?: string; tcpIpc?: boolean } 
     await mkdir(dirname(file), { recursive: true });
     writeFileSync(file, '');
   }
+  // The local path executes these, so a test that never provisions a unit needs
+  // a runnable pair.
   const config: PiConfig = {
     binaryPath: join(dir, 'pi'),
     transport: 'sdk',
-    sdkPath,
-    nodePath,
-    hostScript,
+    sdkPath: options.local ? fakeHost : sdkPath,
+    nodePath: options.local ? process.execPath : nodePath,
+    hostScript: options.local ? fakeHost : hostScript,
     agentDir,
-    workcell: { provider, cpu: 4, memoryGb: 8, ttlSeconds: 600 },
+    workcell: { provider, cpu: 4, memoryGb: 8, ttlSeconds: 600,
+      ...(options.idleReleaseSeconds !== undefined ? { idleReleaseSeconds: options.idleReleaseSeconds } : {}) },
   };
   const adapter = new PiSdkAdapter({ config, systemPrompt: 'WORKCELL', profileStateDir: dir, stopGraceMs: 1000 });
   adapters.push(adapter);
@@ -152,9 +161,15 @@ describe('pi SDK host inside a workcell', () => {
 
     const calls = await h.calls();
     expect(calls.filter((call) => call.op === 'create')).toHaveLength(1);
-    expect(calls.filter((call) => call.op === 'exec')).toHaveLength(1);
+    // One exec unpacks the runtime archive, one starts the host.
+    expect(calls.filter((call) => call.op === 'exec')).toHaveLength(2);
+    const extraction = calls.find((call) => String(call.script ?? '').startsWith('tar -xzf')) as { script: string } | undefined;
+    expect(extraction?.script).toContain('/opt/lark-workcell/runtime.tar.gz');
+    // The heavy runtime travels as one archive, not as a directory push.
+    expect(calls.filter((call) => call.op === 'push').map((call) => call.remote)).toContain('/opt/lark-workcell/runtime.tar.gz');
+    expect(calls.filter((call) => call.op === 'push').map((call) => call.remote)).not.toContain('/opt/lark-workcell/node_modules');
     // The host is started inside the unit with the cell-local paths and a TCP listener.
-    const exec = calls.find((call) => call.op === 'exec') as { script: string; env: Record<string, string> } | undefined;
+    const exec = calls.find((call) => call.op === 'exec' && String(call.script ?? '').includes('--tcp')) as { script: string; env: Record<string, string> } | undefined;
     expect(exec?.script).toBe(
       "exec '/opt/lark-workcell/node_modules/node/bin/node' '/opt/lark-workcell/bin/pi-host.mjs' " +
       "'--tcp' ':47811' '--ipc-port' '47812' " +
@@ -197,7 +212,8 @@ describe('pi SDK host inside a workcell', () => {
     await once(engine, 'listening');
     const enginePort = (engine.address() as { port: number }).port;
 
-    const h = await harness({ tcpIpc: true, workflowEndpoint: `http://127.0.0.1:${enginePort}/workflow` });
+    const root = '/remote volumes/member-b';
+    const h = await harness({ root, tcpIpc: true, workflowEndpoint: `http://127.0.0.1:${enginePort}/workflow` });
     const host = { key: 'member-bbbbbbbb' };
     const events = await collect((await h.adapter.prepareRun({
       runId: 'run-1',
@@ -223,6 +239,7 @@ describe('pi SDK host inside a workcell', () => {
 
     // The host answered the HTTP caller with the engine's body.
     const record = await h.tcpRecord();
+    expect(record.requests.find((call) => call.cmd === 'session.open')?.params.cwd).toBe(root + '/work');
     expect(record.ipcResponse).toMatchObject({ type: 'ipc.response', requestId: 99, status: 200 });
     expect(JSON.parse(String((record.ipcResponse as { body: string }).body))).toEqual({ ok: true, result: { taskCounts: { running: 1 } } });
 
@@ -230,7 +247,7 @@ describe('pi SDK host inside a workcell', () => {
     const prompt = record.requests.find((call) => call.cmd === 'run.prompt');
     expect(prompt?.params.runEnv).toMatchObject({
       AGENT_WORKFLOW_ENDPOINT: 'http://127.0.0.1:47812/workflow',
-      AGENT_WORKFLOW_CLI: '/opt/lark-workcell/bin/workflow-cli.js',
+      AGENT_WORKFLOW_CLI: root + '/bin/workflow-cli.js',
       AGENT_WORKFLOW_TOKEN: 'token-abc',
     });
     expect(prompt?.params.runEnv.AGENT_WORKFLOW_ENDPOINT_FILE).toBeUndefined();
@@ -238,11 +255,66 @@ describe('pi SDK host inside a workcell', () => {
     // Sessions are archived outside the unit before it is torn down.
     await h.adapter.shutdown();
     const calls = await h.calls();
+    expect(calls.find((call) => call.op === 'exec' && call.detach)).toMatchObject({ cwd: root });
     expect(calls.find((call) => call.op === 'pull')).toMatchObject({
-      remote: '/opt/lark-workcell/agent/sessions',
+      remote: root + '/agent/sessions',
       local: join(h.dir, 'workcell-sessions', 'member-bbbbbbbb'),
     });
     await new Promise<void>((resolve) => engine.close(() => resolve()));
+  }, 60_000);
+
+  it('keeps ordinary turns and workspace members on the bridge machine', async () => {
+    const h = await harness({ local: true });
+    // The local path spawns the stdio host fixture, which needs its own events.
+    Object.assign(process.env, {
+      FAKE_HOST_EVENTS: JSON.stringify([{ type: 'agent_settled', aborted: false }]),
+      FAKE_HOST_RECORD: join(h.dir, 'local-host.json'),
+    });
+    // No host key means "not a workflow member": chats stay local, and the
+    // engine leaves workspace members without a host key so they never enter a
+    // cell (a cell copy has no .git and cannot commit).
+    for (const run of [{ runId: 'chat-1' }, { runId: 'member-with-workspace', sessionId: 'sess-ws' }]) {
+      const events = await collect((await h.adapter.prepareRun({
+        ...run, prompt: 'go', cwd: h.dir,
+      })).start().events);
+      expect(events.at(-1)).toMatchObject({ type: 'done' });
+    }
+    const record = JSON.parse(await readFile(join(h.dir, 'local-host.json'), 'utf8')) as {
+      calls: Array<{ cmd: string; params: { cwd?: string } }>;
+    };
+    const opens = record.calls.filter((call) => call.cmd === 'session.open');
+    expect(opens.map((call) => call.params.cwd)).toEqual([h.dir, h.dir]);
+    expect(await h.calls()).toEqual([]);
+  }, 30_000);
+
+  it('releases an idle member unit, keeps its sessions, and rents a fresh unit next turn', async () => {
+    process.env.FAKE_TCP_KEEP_AFTER_SHUTDOWN = '1';
+    const h = await harness({ idleReleaseSeconds: 1 });
+    const host = { key: 'member-cccccccc' };
+    const first = await collect((await h.adapter.prepareRun({
+      runId: 'run-1', prompt: 'go', cwd: h.dir, host,
+    })).start().events);
+    expect(first.at(-1)).toMatchObject({ type: 'done' });
+
+    // The member is done for now: the unit is torn down after the idle window,
+    // and its sessions are pulled out first so the next unit can resume them.
+    await vi.waitFor(async () => {
+      expect((await h.calls()).filter((call) => call.op === 'stop')).toHaveLength(1);
+    }, { timeout: 10_000, interval: 100 });
+    const calls = await h.calls();
+    expect(calls.find((call) => call.op === 'pull')).toMatchObject({
+      remote: '/opt/lark-workcell/agent/sessions',
+      local: join(h.dir, 'workcell-sessions', host.key),
+    });
+    const pulledAt = calls.findIndex((call) => call.op === 'pull');
+    expect(pulledAt).toBeLessThan(calls.findIndex((call) => call.op === 'stop'));
+
+    // A later turn rents a new unit instead of reusing one that no longer exists.
+    const second = await collect((await h.adapter.prepareRun({
+      runId: 'run-2', prompt: 'again', cwd: h.dir, host, sessionId: 'tcp-session',
+    })).start().events);
+    expect(second.at(-1)).toMatchObject({ type: 'done' });
+    expect((await h.calls()).filter((call) => call.op === 'create')).toHaveLength(2);
   }, 60_000);
 
   it('fails the profile preflight when the provider executable is missing', async () => {

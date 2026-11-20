@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { sendRunInput } from '../agent/execution';
-import type { AgentInput, AgentInputReceipt, AgentQuestion, AgentQuestionMode } from '../agent/types';
+import type { AgentInput, AgentInputReceipt, AgentQuestion, AgentQuestionMode, AgentQuestionAnswer } from '../agent/types';
+import { agentBackendSpec } from '../agent/backend-spec';
+import { resolveAgentState } from '../agent/state-layout';
 import { ActiveRuns, stopRun } from './active-runs';
 import type { AgentEntry } from './agent-entry';
 import { ConversationEvents, type ConversationCursor, type ConversationStreamEvent } from './conversation-events';
@@ -15,6 +17,7 @@ import { ConversationTurns } from './turns';
 import { WorkflowHost } from './workflow-host';
 import { startMessageTurn, type MessageTurn, type MessageTurnFrontend } from './message-turn';
 import type { TurnStores } from './turn';
+import { resolveRunFlowContext } from './run-flow';
 import type { AgentKind, RunProfileConfig } from '../config/profile-schema';
 import { getAgentStopGraceMs, getRunIdleTimeoutMs } from '../config/schema';
 import type { AgentAttachment } from '../policy/run-policy';
@@ -25,6 +28,9 @@ import { processAgentStream } from './run-stream';
 import { ScopeRunMemory } from './scope-run-memory';
 import { SessionCatalog, type SessionCatalogIdentity } from '../session/catalog';
 import { log } from '../core/logger';
+import { resolveWorkingDirectory } from '../policy/workspace';
+import { listCodexThreadHistory } from '../session/codex-history';
+import { listRecentSessions } from '../session/history';
 import { SessionStore } from '../session/store';
 import { WorkspaceStore } from '../workspace/store';
 import { profileForAgentKind, type ExecutionController } from './execution-controller';
@@ -39,8 +45,8 @@ export interface ConversationRuntimeOptions {
   /** Shared execution controller. */
   execution: ExecutionController;
   config: RunProfileConfig;
-  /** Resolve engine-specific run settings for the selected backend. */
-  configForAgent?: (agentKind: AgentKind) => RunProfileConfig;
+  /** Resolve engine-specific run settings for the selected backend, optionally per conversation. */
+  configForAgent?: (agentKind: AgentKind, identity: ConversationIdentity) => RunProfileConfig;
   /** Use a private directory owned by this host process. */
   stateDir: string;
   namespace: string;
@@ -61,6 +67,31 @@ export interface ConversationRuntimeOptions {
    * runs never block on a question nobody can answer.
    */
   questionSinks?: boolean;
+  /** Let the agent ask the host blocking questions; the host answers them with answerQuestion. */
+  userQuestions?: boolean;
+  /** The execution controller's profile directory, where default agent homes such as Codex's live. */
+  profileDir?: string;
+  /** Native history readers; replaceable for tests. */
+  history?: {
+    claude?: typeof listRecentSessions;
+    codex?: typeof listCodexThreadHistory;
+  };
+}
+
+/** A native session the conversation could continue, as listed by the agent's own history. */
+export interface ConversationSessionCandidate {
+  /** Native session id (Claude, catalog kinds) or thread id (Codex). */
+  id: string;
+  preview: string;
+  updatedAt?: number;
+  current: boolean;
+}
+
+export interface ConversationSessionList {
+  agentKind: AgentKind;
+  cwd: string;
+  current?: string;
+  candidates: ConversationSessionCandidate[];
 }
 
 /** A turn the runtime starts itself, queued until the conversation is free. */
@@ -71,6 +102,7 @@ export interface ConversationInput extends ConversationIdentity {
   /** Resolved and validated by the host's upload pipeline. */
   attachments?: AgentAttachment[];
   signal?: AbortSignal;
+  deadlineAt?: number;
   /** Where this run's questions are shown. Without it the agent is not offered the question tool. */
   questions?: ConversationQuestionSink;
 }
@@ -157,16 +189,19 @@ export class ConversationRuntime {
       void turn.run(signal => this.runQueued(batch, signal)).catch(err => log.fail('conversation', err, { scope, step: 'queued-turn' }));
     });
     const turns = this.turns = new ConversationTurns(queue, this.active);
-    const profileFor = (agentKind: AgentKind) =>
-      profileForAgentKind(options.configForAgent?.(agentKind) ?? options.config, agentKind);
+    const profileFor = (agentKind: AgentKind, scope?: string) => {
+      const identity = scope ? this.workflows?.origins.get(scope) : undefined;
+      const config = identity ? options.configForAgent?.(agentKind, identity) : undefined;
+      return profileForAgentKind(config ?? options.config, agentKind);
+    };
     this.workflows = new WorkflowHost<ConversationIdentity>({
       executor, sessions: this.sessions, sessionCatalog: this.catalog, workspaces: this.workspaces,
       stateDir: options.stateDir, turns, resolveAgentKind: scope => this.execution.kindFor(scope),
       settings: {
         profile: options.namespace, profileFor,
         // These hosts keep no per-conversation model choice: a workflow runs with the engine profile's.
-        modelSettings: async (_scope, agentKind, patch) => {
-          const { model, reasoningEffort } = profileFor(agentKind).preferences;
+        modelSettings: async (scope, agentKind, patch) => {
+          const { model, reasoningEffort } = profileFor(agentKind, scope).preferences;
           return { model, reasoningEffort, ...patch, modelSource: 'profile', effortSource: 'profile' };
         },
         stallMs: () => getRunIdleTimeoutMs(options.config),
@@ -239,7 +274,7 @@ export class ConversationRuntime {
           systemPrompt: this.options.systemPrompt ?? '',
           sessionSource: { kind: 'message', summary: input.prompt.slice(0, 180) },
           observabilitySource: 'channel',
-          runOptions: { userQuestions: Boolean(input.questions) },
+          runOptions: { userQuestions: input.questions ? true : this.options.userQuestions, deadlineAt: input.deadlineAt },
         };
       },
       // A turn that claimed the conversation's lane already holds its queue.
@@ -268,7 +303,7 @@ export class ConversationRuntime {
 
     let result;
     try {
-      result = await startMessageTurn(this.turnDeps(), frontend, turn);
+      result = await startMessageTurn(this.turnDeps(input), frontend, turn);
     } catch (error) { dispose(); throw error; }
     if (!result.ok) { dispose(); return { ok: false as const, rejectReason: result.reason }; }
     const done = result.turn.done.finally(() => {
@@ -282,11 +317,11 @@ export class ConversationRuntime {
   }
 
   /** The shared message-turn host's view of this runtime. */
-  private turnDeps() {
+  private turnDeps({ actorId, conversationId }: ConversationIdentity) {
     return {
       stores: this.stores,
       profileFor: (kind: AgentKind) =>
-        profileForAgentKind(this.options.configForAgent?.(kind) ?? this.options.config, kind),
+        profileForAgentKind(this.options.configForAgent?.(kind, { actorId, conversationId }) ?? this.options.config, kind),
       // No per-conversation model store: startTurn applies the profile defaults.
       memory: this.turnMemory,
     };
@@ -385,8 +420,28 @@ export class ConversationRuntime {
     return sendRunInput(run, input);
   }
 
+  answerQuestion(identity: ConversationIdentity, requestId: string, answers: string[][]): Promise<{ settled: boolean; message: string }>;
+  answerQuestion(identity: ConversationIdentity, runId: string, questionId: string, answer: AgentQuestionAnswer): Promise<'accepted' | 'inactive'>;
+  answerQuestion(identity: ConversationIdentity, id: string, input: string[][] | string, answer?: AgentQuestionAnswer) {
+    return typeof input === 'string' && answer
+      ? this.answerNativeQuestion(identity, id, input, answer)
+      : Array.isArray(input) ? this.answerBrokerQuestion(identity, id, input) : Promise.resolve('inactive' as const);
+  }
+
+  private async answerNativeQuestion(
+    identity: ConversationIdentity,
+    runId: string,
+    questionId: string,
+    answer: AgentQuestionAnswer,
+  ): Promise<'accepted' | 'inactive'> {
+    const scope = await this.authorizedScope(identity);
+    const run = this.active.get(scope)?.run;
+    if (!run || run.runId !== runId || !run.answerUserInput) return 'inactive';
+    return run.answerUserInput(questionId, answer);
+  }
+
   /** Answer a question shown through a run's sink; `message` is what to show the person either way. */
-  async answerQuestion(identity: ConversationIdentity, requestId: string, answers: string[][]):
+  private async answerBrokerQuestion(identity: ConversationIdentity, requestId: string, answers: string[][]):
     Promise<{ settled: boolean; message: string }> {
     const scope = await this.authorizedScope(identity);
     const result = await this.questions.answer({
@@ -412,6 +467,72 @@ export class ConversationRuntime {
         });
       } catch (err) { log.warn('question', 'delivery-failed', { scope: context.identity.scopeId, err: String(err) }); }
     }
+  }
+
+  async workingDirectory(identity: ConversationIdentity): Promise<string | undefined> {
+    const scope = await this.authorizedScope(identity);
+    return this.workspaces.cwdFor(scope);
+  }
+
+  /** Select the conversation's working directory; undefined returns to the profile default. */
+  async setWorkingDirectory(identity: ConversationIdentity, cwd: string | undefined): Promise<string | undefined> {
+    const scope = await this.authorizedScope(identity);
+    if (this.active.get(scope)) throw new Error('cannot change the working directory while a run is active');
+    if (cwd === undefined) {
+      this.workspaces.removeCwd(scope);
+      await this.workspaces.flush();
+      return undefined;
+    }
+    const workspace = await resolveWorkingDirectory(cwd);
+    if (!workspace.ok) throw new Error(workspace.userVisible);
+    this.workspaces.setCwd(scope, workspace.cwdRealpath);
+    await this.workspaces.flush();
+    return workspace.cwdRealpath;
+  }
+
+  /** Native sessions of the current engine, working directory and policy that this conversation could continue. */
+  async nativeSessions(identity: ConversationIdentity, options: { limit?: number } = {}): Promise<ConversationSessionList> {
+    const scope = await this.authorizedScope(identity);
+    const { kind, config, capability, cwd, catalogIdentity } = await this.catalogContext(scope, identity);
+    const limit = Math.min(Math.max(Math.trunc(options.limit ?? 10), 1), 50);
+    const active = this.catalog.activeFor(catalogIdentity);
+    const current = capability.sessionIdField === 'threadId' ? active?.threadId : active?.sessionId;
+    const historySource = agentBackendSpec(kind).historySource;
+    let candidates: ConversationSessionCandidate[] = [];
+    try {
+      if (historySource === 'claude-jsonl') {
+        const list = await (this.options.history?.claude ?? listRecentSessions)(cwd, limit, config.claude?.configDir);
+        candidates = list.map(item => ({ id: item.sessionId, preview: item.preview, updatedAt: item.mtime, current: item.sessionId === current }));
+      } else if (historySource === 'codex-thread-list' && config.codex?.binaryPath) {
+        const profileDir = this.options.profileDir ?? this.options.stateDir;
+        const state = resolveAgentState(config, 'codex', { profileDir });
+        const list = await (this.options.history?.codex ?? listCodexThreadHistory)({
+          binary: config.codex.binaryPath, cwd, limit, profileStateDir: profileDir,
+          ...(state.exportHome ? { codexHome: state.home } : { inheritCodexHome: config.codex.inheritCodexHome === true }),
+        });
+        candidates = list.map(item => ({ id: item.threadId, preview: item.name || item.preview, updatedAt: item.updatedAtMs, current: item.threadId === current }));
+      }
+    } catch (error) {
+      log.warn('session', 'conversation-history-failed', { message: error instanceof Error ? error.message : String(error) });
+    }
+    if (current && !candidates.some(item => item.id === current)) candidates.unshift({ id: current, preview: '', current: true });
+    return { agentKind: kind, cwd, ...(current ? { current } : {}), candidates };
+  }
+
+  /** Continue a listed native session; the conversation's next run resumes it. */
+  async resume(identity: ConversationIdentity, sessionId: string): Promise<boolean> {
+    const scope = await this.authorizedScope(identity);
+    if (this.active.get(scope)) throw new Error('cannot resume another session while a run is active');
+    const listed = await this.nativeSessions(identity, { limit: 50 });
+    if (!listed.candidates.some(item => item.id === sessionId)) return false;
+    const { capability, catalogIdentity } = await this.catalogContext(scope, identity);
+    if (this.active.get(scope)) throw new Error('cannot resume another session while a run is active');
+    this.catalog.upsertActive({
+      ...catalogIdentity,
+      ...(capability.sessionIdField === 'threadId' ? { threadId: sessionId } : { sessionId }),
+    });
+    await this.catalog.flush();
+    return true;
   }
 
   async agentKind(identity: ConversationIdentity): Promise<AgentKind> {
@@ -474,5 +595,33 @@ export class ConversationRuntime {
 
   private scopeKey(identity: ConversationIdentity): string {
     return `channel:${JSON.stringify([this.options.channelId, this.options.namespace, identity.actorId, identity.conversationId])}`;
+  }
+
+  private runConfigFor(scope: string, identity: ConversationIdentity): RunProfileConfig {
+    const kind = this.execution.kindFor(scope);
+    const base = this.options.configForAgent?.(kind, { actorId: identity.actorId, conversationId: identity.conversationId })
+      ?? this.options.config;
+    return profileForAgentKind(base, kind);
+  }
+
+  private scopeContext(identity: ConversationIdentity) {
+    return { source: 'channel' as const, channelId: this.options.channelId,
+      actorId: identity.actorId, conversationId: identity.conversationId };
+  }
+
+  /** The session-catalog identity a run of this conversation would use now, computed without starting one. */
+  private async catalogContext(scope: string, identity: ConversationIdentity) {
+    const kind = this.execution.kindFor(scope);
+    const config = this.runConfigFor(scope, identity);
+    const capability = this.execution.capabilityFor(scope);
+    const context = await resolveRunFlowContext({
+      scopeId: scope, scope: this.scopeContext(identity), prompt: '', systemPrompt: this.options.systemPrompt ?? '',
+      attachments: [], access: { ok: true, reason: 'allowed-user' }, capability, profileConfig: config,
+      sessions: this.sessions, workspaces: this.workspaces, now: Date.now(),
+    });
+    if (!context.ok) throw new Error(context.rejectReason.userVisible);
+    const cwd = context.workspace.cwdRealpath;
+    return { kind, config, capability, cwd, catalogIdentity: {
+      scopeId: scope, agentId: capability.agentId, cwdRealpath: cwd, policyFingerprint: context.policy.policyFingerprint } };
   }
 }

@@ -6,7 +6,10 @@ import { ClaudeAdapter } from './claude/adapter';
 import { CLAUDE_EXECUTION_CAPABILITIES } from './claude/capabilities';
 import { CodexAdapter } from './codex/adapter';
 import { codexExecutionCapabilities } from './codex/capabilities';
+import { DshAdapter } from './dsh/adapter';
+import { DSH_EXECUTION_CAPABILITIES } from './dsh/capabilities';
 import { PiAdapter } from './pi/adapter';
+import { piBashTimeouts } from './pi/bash-timeout';
 import { PI_EXECUTION_CAPABILITIES } from './pi/capabilities';
 import { PiSdkAdapter } from './pi-sdk/adapter';
 import { piSdkSandbox } from './pi-sdk/sandbox';
@@ -19,6 +22,7 @@ import {
 import {
   AGENT_BACKEND_SPECS,
   AGENT_KINDS,
+  REGISTERED_AGENT_KINDS,
   agentDisplayName,
   isAgentKind,
   type AgentBackendSpec,
@@ -92,6 +96,11 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
       });
     },
   },
+  dsh: {
+    executionCapabilities: () => DSH_EXECUTION_CAPABILITIES,
+    // Each run brings its host-owned session, so the adapter itself holds no launch state.
+    createAdapter: () => new DshAdapter(),
+  },
   pi: {
     executionCapabilities: (profile) => (
       profile.pi?.transport === 'sdk' ? PI_SDK_EXECUTION_CAPABILITIES : PI_EXECUTION_CAPABILITIES
@@ -114,12 +123,13 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
         profileStateDir: profileDir,
         env: buildAgentEnvironment(env, pi.env),
         systemPrompt,
+        bashTimeouts: piBashTimeouts(pi),
       });
     },
   },
 };
 
-const BACKENDS = Object.fromEntries(AGENT_KINDS.map((kind): [AgentKind, AgentBackend] => [kind, {
+const BACKENDS = Object.fromEntries(REGISTERED_AGENT_KINDS.map((kind): [AgentKind, AgentBackend] => [kind, {
   ...AGENT_BACKEND_SPECS[kind],
   ...IMPLEMENTATIONS[kind],
   capability: (profile: Pick<AgentExecutionProfile, 'permissions'>) => capabilityForBackend(kind, profile),

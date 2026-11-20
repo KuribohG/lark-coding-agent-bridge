@@ -66,9 +66,7 @@ describe('Claude local session history', () => {
     await mkdir(projectDir, { recursive: true });
     const prompt = buildAgentPrompt({
       context: {
-        chatId: 'oc_secret',
         chatType: 'p2p',
-        senderId: 'ou_secret',
         source: 'im',
       },
       instructions: ['internal bridge instruction'],

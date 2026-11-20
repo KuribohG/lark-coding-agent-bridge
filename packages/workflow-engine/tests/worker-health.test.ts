@@ -9,10 +9,11 @@ const root = (scopeId: string): WorkflowRoot => ({ scopeId, profile: 'embedded',
   policyFingerprint: 'policy', catalogBinding: 'main', modelSettings: {} });
 
 async function start(scopeId: string, runner: { start(spec: WorkerRunSpec): Promise<WorkerRun> },
-  extra: { stallMs?: number; script?: string } = {}) {
+  extra: { stallMs?: number; toolStallMs?: number; script?: string } = {}) {
   const runtime = new WorkflowRuntime({
     path: ':memory:', resolveRoot: async () => root(scopeId), wakeMain: async () => {},
-    retryDelaysMs: [10], ...(extra.stallMs === undefined ? {} : { stallMs: extra.stallMs }), runner,
+    retryDelaysMs: [10], ...(extra.stallMs === undefined ? {} : { stallMs: extra.stallMs }),
+    ...(extra.toolStallMs === undefined ? {} : { toolStallMs: extra.toolStallMs }), runner,
   });
   await runtime.start();
   cleanup.push(() => runtime.close());
@@ -86,8 +87,8 @@ describe('worker health', () => {
     expect(specs[0]!.resume).toBeUndefined();
     expect(specs[1]!.resume).toEqual({ kind: 'sessionId', id: 'native-1' });
     expect(specs[2]!.resume).toEqual({ kind: 'sessionId', id: 'native-2' });
-    expect(specs[0]!.prompt).not.toContain('再次执行');
-    expect(specs[1]!.prompt).toContain('再次执行');
+    expect(specs[0]!.prompt).not.toContain('another attempt at the same task');
+    expect(specs[1]!.prompt).toContain('another attempt at the same task');
     expect(runtime.kernel.state('chat-resume')!.sessions[0]!.nativeSessionId).toBe('native-2');
   });
 
@@ -139,6 +140,55 @@ describe('worker health', () => {
     await runtime.tick();
     expect(aborted).toBe(false);
     expect(runtime.kernel.state('chat-busy')!.tasks[0]!.attempts).toHaveLength(1);
+  });
+
+  /** A worker whose only output is one activity event, after which it stays silent until it is stopped. */
+  const silentAfter = (specs: WorkerRunSpec[], activity: () => { type: 'activity'; busy: boolean; busyUntil?: number }) => ({
+    async start(spec: WorkerRunSpec): Promise<WorkerRun> {
+      specs.push(spec);
+      await spec.validateBeforeRun();
+      let finish!: () => void;
+      const stopped = new Promise<void>(resolve => { finish = resolve; });
+      const aborted = new Promise<void>(resolve => spec.signal.addEventListener('abort', () => { finish(); resolve(); }, { once: true }));
+      return {
+        runId: `run-${specs.length}`, result: stopped.then(() => 'stopped' as const),
+        stop: async () => { finish(); }, waitForExit: async () => true, stopReason: () => 'cancelled',
+        async *events() { yield { type: 'session', nativeSessionId: 'native-1' }; yield activity(); await aborted; },
+      };
+    },
+  });
+
+  it('stops and retries a turn whose tool call is still out after the time the host gave for it', async () => {
+    const specs: WorkerRunSpec[] = [];
+    // The idle limit is far away: only the call's own due time can stop the turn.
+    const runtime = await start('chat-overdue', silentAfter(specs, () => ({ type: 'activity', busy: true, busyUntil: Date.now() + 40 })),
+      { stallMs: 60_000 });
+    await until(runtime, () => specs.length === 4 && runtime.kernel.state('chat-overdue')?.tasks[0]?.status === 'failed');
+    const task = runtime.kernel.state('chat-overdue')!.tasks[0]!;
+    expect(task.attempts).toHaveLength(4);
+    expect(task.attempts[0]!.failureKind).toBe('stall');
+    expect(task.error).toMatch(/tool call did not return within its time limit/);
+  });
+
+  it('leaves a tool that is not yet due alone, however long the idle limit has passed', async () => {
+    const specs: WorkerRunSpec[] = [];
+    const runtime = await start('chat-due-later', silentAfter(specs, () => ({ type: 'activity', busy: true, busyUntil: Date.now() + 60_000 })),
+      { stallMs: 40, toolStallMs: 40 });
+    await until(runtime, () => runtime.kernel.state('chat-due-later')?.tasks[0]?.status === 'running');
+    await new Promise(resolve => setTimeout(resolve, 150));
+    await runtime.tick();
+    expect(specs).toHaveLength(1);
+    expect(specs[0]!.signal.aborted).toBe(false);
+  });
+
+  it('stops a turn that stays silent past the tool limit when its tool has no due time', async () => {
+    const specs: WorkerRunSpec[] = [];
+    const runtime = await start('chat-tool-limit', silentAfter(specs, () => ({ type: 'activity', busy: true })),
+      { stallMs: 60_000, toolStallMs: 40 });
+    await until(runtime, () => specs.length === 4 && runtime.kernel.state('chat-tool-limit')?.tasks[0]?.status === 'failed');
+    const task = runtime.kernel.state('chat-tool-limit')!.tasks[0]!;
+    expect(task.attempts[0]!.failureKind).toBe('stall');
+    expect(task.error).toMatch(/no output for \d+ minutes with a tool call in flight/);
   });
 
   it('keeps an over-long answer, truncated and marked, instead of failing the task', async () => {

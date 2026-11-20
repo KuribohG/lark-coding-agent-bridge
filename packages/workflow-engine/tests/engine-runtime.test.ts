@@ -33,6 +33,9 @@ describe('workflow engine without bridge services', () => {
     });
     await runtime.start(); cleanup.push(() => runtime.close());
     const main = runtime.bindMain(root.scopeId, 'start');
+    // The turn that starts a workflow is told how to write its script.
+    expect(main.instructions).toContain('agent(prompt,{key,');
+    expect(main.instructions).not.toContain('staff_swarm 不重放调整');
     await callWorkflow('run_script', { operationId: randomUUID(), goal: 'embed', plan: 'One member answers twice; return both answers.',
       script: 'const a = await agent("first", {key:"a", member:"m"}); const b = await agent("second", {key:"b", member:"m"}); return a + "|" + b;' }, main.env);
     main.release();
@@ -44,6 +47,51 @@ describe('workflow engine without bridge services', () => {
     expect(specs[0]!.env.AGENT_WORKFLOW_TOKEN).toBeTruthy();
     await expect(callWorkflow('run_script', { operationId: randomUUID(), goal: 'x', plan: 'x', script: 'return 1;' }, specs[0]!.env)).rejects.toThrow();
     await runtime.kernel.tick(); expect(wakeMain).toHaveBeenCalledWith('chat');
+    // The wake that follows is told how to take the result and run what exists, not the script API again.
+    const wake = runtime.bindMain(root.scopeId, 'continue');
+    cleanup.push(async () => wake.release());
+    expect(wake.eventIds).toHaveLength(1);
+    expect(wake.instructions).toContain('ack_events 后 complete');
+    expect(wake.instructions).toContain('staff_swarm 不重放调整');
+    expect(wake.instructions).toContain(`"workflowId":"${state.workflowId}"`);
+    expect(wake.instructions).not.toContain('agent(prompt,{key,');
+  });
+
+  it('starts workers after only the main session model or effort changes', async () => {
+    let root: WorkflowRoot = { scopeId: 'chat', profile: 'embedded', agentKind: 'custom-agent', cwdRealpath: '/repo',
+      policyFingerprint: 'policy', catalogBinding: 'main', modelSettings: { model: 'm1', reasoningEffort: 'deep' } };
+    const specs: WorkerRunSpec[] = [];
+    const runtime = new WorkflowRuntime({
+      path: ':memory:', resolveRoot: async () => root, wakeMain: async () => {},
+      runner: {
+        async start(spec) {
+          specs.push(spec);
+          await spec.validateBeforeRun();
+          return {
+            runId: `run-${specs.length}`, result: Promise.resolve('completed'),
+            stop: async () => {}, waitForExit: async () => true, stopReason: () => undefined,
+            async *events() {
+              yield { type: 'session', nativeSessionId: 'native-1' };
+              yield { type: 'final_text', text: 'answer' };
+              yield { type: 'done', normal: true };
+            },
+          };
+        },
+      },
+    });
+    await runtime.start(); cleanup.push(() => runtime.close());
+    const main = runtime.bindMain(root.scopeId, 'start');
+    await callWorkflow('run_script', { operationId: randomUUID(), goal: 'model change', plan: 'One worker answers; the main model changes before it starts.',
+      script: 'return await agent("answer", {key:"a"});' }, main.env);
+    main.release();
+    // The workflow pinned m1 at start; /model or /effort now changes only the main session.
+    root = { ...root, modelSettings: { model: 'm2', reasoningEffort: 'low' } };
+    await vi.waitFor(async () => { await runtime.tick(); expect(runtime.kernel.state(root.scopeId)?.script?.status).toBe('result_ready'); });
+    const state = runtime.kernel.state(root.scopeId)!;
+    expect(state.status).not.toBe('binding_attention');
+    expect(state.events.some(event => event.kind === 'binding_attention')).toBe(false);
+    expect(specs).toHaveLength(1);
+    expect(specs[0]!.execution.modelSettings).toEqual({ model: 'm1', reasoningEffort: 'deep' });
   });
 
   it('separates host slot queueing from execution and times event handling', async () => {
@@ -129,6 +177,46 @@ describe('workflow engine without bridge services', () => {
     expect(specs[0]!.resume).toBeUndefined();
     expect(specs[1]).toMatchObject({ resume: { kind: 'sessionId', id: 'native-1' }, prompt: expect.stringContaining('Agent output is not valid JSON') });
     expect(state.tasks[0]!.attempts).toHaveLength(1);
+  });
+
+  it('does not ask a turn that ended to wait for its child workflow to restate its answer', async () => {
+    const root: WorkflowRoot = { scopeId: 'chat', profile: 'embedded', agentKind: 'custom-agent', cwdRealpath: '/repo',
+      policyFingerprint: 'policy', catalogBinding: 'main', modelSettings: {} };
+    const specs: WorkerRunSpec[] = [];
+    const runtime = new WorkflowRuntime({
+      path: ':memory:', resolveRoot: async () => root, wakeMain: async () => {},
+      runner: {
+        async start(spec) {
+          specs.push(spec);
+          await spec.validateBeforeRun();
+          return {
+            runId: `run-${specs.length}`, result: Promise.resolve('completed'),
+            stop: async () => {}, waitForExit: async () => true, stopReason: () => undefined,
+            async *events() {
+              yield { type: 'session', nativeSessionId: 'native-1' };
+              const child = await callWorkflow('run_workflow', { operationId: 'delegate', key: 'delegate', goal: 'Return the answer',
+                plan: 'Return 42 without workers.', script: 'return 42;' }, spec.env) as { status: string; result?: number };
+              // A caller is told to end its turn as soon as its child is waiting. What it says then is not its answer.
+              yield { type: 'final_text', text: child.status === 'waiting' ? 'WAITING' : JSON.stringify({ answer: child.result }) };
+              yield { type: 'done', normal: true };
+            },
+          };
+        },
+      },
+    });
+    await runtime.start(); cleanup.push(() => runtime.close());
+    const main = runtime.bindMain(root.scopeId, 'start');
+    await callWorkflow('run_script', { operationId: randomUUID(), goal: 'nested json', plan: 'One worker delegates to a child workflow and returns JSON.', maxConcurrent: 1,
+      script: 'return (await agent("delegate", {key:"parent", workflowTool:true, output:"json"})).answer;' }, main.env);
+    main.release();
+    await vi.waitFor(async () => { await runtime.tick(); expect(runtime.kernel.state(root.scopeId)?.script?.status).toBe('result_ready'); });
+    const state = runtime.kernel.state(root.scopeId)!;
+    expect(state.artifacts.find(artifact => artifact.ref === state.script?.resultRef)?.text).toBe('42');
+    // Two turns of the caller: the one that yielded, and the one that resumed its session with the child's result.
+    expect(specs.map(spec => spec.prompt).join('\n')).not.toContain('Agent output is not valid JSON');
+    expect(specs).toHaveLength(2);
+    expect(specs[1]).toMatchObject({ resume: { kind: 'sessionId', id: 'native-1' } });
+    expect(state.tasks[0]!.attempts.map(attempt => attempt.result)).toEqual(['suspended', 'completed']);
   });
 
   it('validates schema output, restates mismatches in the same session and resolves exhausted retries to null', async () => {

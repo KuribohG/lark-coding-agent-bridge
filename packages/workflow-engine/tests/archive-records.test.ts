@@ -7,7 +7,7 @@ import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '
 const cleanup: Array<() => Promise<unknown> | unknown> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
-type Feed = { posts: Array<{ seq: number; text: string }>; lastSeq: number; hasMore: boolean };
+type Feed = { posts: Array<{ seq: number; text: string }>; lastSeq: number; hasMore: boolean; resolvedSkipped?: number };
 type Grant = { claimId: string; generation: number; item: { key: string } };
 
 /** Workers answer at once unless `manual`, in which case the test ends each turn itself. */
@@ -116,6 +116,49 @@ describe('archiving the other lists of a workflow', () => {
     expect(again.receiptId).toBe(first);
     expect(h.received(first).map(message => message.post)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     expect(h.requests).toHaveLength(rounds + 1);
+  }, 120_000);
+
+  it('resolves and reopens a post that has left the state, and hands readers the mark from the archive', async () => {
+    const h = harness(true);
+    await h.start();
+    await h.finish(await h.turn('alice', 'alice-init'));
+    const total = KEEP_RECENT + 80;
+    for (let n = 1; n <= total; n++) await h.call('post_board', { text: `finding ${n}th`, ...(n === 7 ? { to: ['alice'] } : {}), ...(n % 2 ? {} : { topic: 'even' }) });
+    await h.age();
+    expect(h.state().archivedRecords).toMatchObject({ post: 80 });
+    expect(h.state().board!.posts[0]!.seq).toBe(81);
+
+    // Two archived posts and one still in the state, in one call.
+    expect(await h.call('resolve_post', { seq: [7, 8, total], note: 'Settled in the 300th finding', see: 300 })).toMatchObject({ resolved: [7, 8, total] });
+    expect(h.state().board!.topics).toMatchObject({ general: { resolved: 1 }, even: { resolved: 2 } });
+    expect(h.state().archivedRecords!.post).toBe(80);
+    expect(h.state().board!.posts.at(-1)).toMatchObject({ seq: total, resolved: { note: 'Settled in the 300th finding', see: 300 } });
+    const head = await h.call('read_board', { after: 5, limit: 3 }) as Feed;
+    expect(head.posts.map(post => post.seq)).toEqual([6, 9, 10]);
+    expect(head.resolvedSkipped).toBe(2);
+    expect(await h.call('read_board', { after: 5, limit: 3, resolved: true })).toMatchObject({ posts: [{ seq: 6 },
+      { seq: 7, resolved: { by: 'main', note: 'Settled in the 300th finding', see: 300 } }, { seq: 8, topic: 'even', resolved: { by: 'main' } }] });
+    expect(await h.call('read_board', { limit: 2 })).toMatchObject({ posts: [{ seq: total - 2 }, { seq: total - 1 }], resolvedSkipped: 1 });
+    // The open post that has the words comes first; the resolved ones are found by their note, in the state and in the archive.
+    const found = await h.call('search_board', { query: '300TH' }) as { posts: Array<{ seq: number; snippet: string }> };
+    expect(found.posts.map(post => post.seq)).toEqual([300, total, 8, 7]);
+    expect(found.posts[3]).toMatchObject({ seq: 7, snippet: 'Settled in the 300th finding', resolved: { by: 'main', see: 300 } });
+
+    // The member the archived post names reads it late: with its resolution, which it may take back.
+    await h.mail({ kind: 'receive', member: 'alice', key: 'inbox' });
+    const turn = await h.turn('alice', 'alice-late');
+    expect((await h.worker(turn, 'read_context') as { member: { messages: unknown[] } }).member.messages).toMatchObject([{ post: 7, text: 'finding 7th', resolved: { by: 'main', see: 300 } }]);
+    await expect(h.worker(turn, 'resolve_post', { operationId: 'not-hers', seq: 8, reopen: true })).rejects.toThrow('Post 8 is neither yours');
+    expect(await h.worker(turn, 'resolve_post', { operationId: 'reopen', seq: 7, reopen: true })).toEqual({ reopened: [7] });
+    await h.finish(turn);
+    expect(h.state().board!.topics!.general).not.toHaveProperty('resolved');
+    const again = await h.call('read_board', { after: 6, limit: 2 }) as Feed;
+    expect(again).toMatchObject({ posts: [{ seq: 7, text: 'finding 7th' }, { seq: 9 }], resolvedSkipped: 1 });
+    expect(again.posts[0]).not.toHaveProperty('resolved');
+    // A script reads the archived range as posted.
+    const scripted = ((await h.mail({ kind: 'board', key: 'head', after: 6, limit: 2 })) as { result: Feed }).result;
+    expect(scripted.posts).toEqual([expect.objectContaining({ seq: 7 }), expect.objectContaining({ seq: 8 })]);
+    expect(scripted.posts.some(post => 'resolved' in post)).toBe(false);
   }, 120_000);
 
   it('counts archived work items and answers their keys, dependencies and repeated operations', async () => {

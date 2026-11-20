@@ -133,11 +133,7 @@ export class BtwManager {
         prompt: (parentId, policy) => {
           generation = JSON.stringify([capability.agentId, parentId, policy.cwdRealpath, policy.policyFingerprint]);
           return buildAgentPrompt({
-            context: {
-              chatId: ctx.msg.chatId, chatType: ctx.msg.chatType, senderId: ctx.msg.senderId,
-              threadId: ctx.msg.threadId, messageIds: [ctx.msg.messageId], source: 'im',
-              botOpenId: this.channel.botIdentity?.openId,
-            },
+            context: { chatType: ctx.msg.chatType, source: 'im' },
             instructions: [
               '这是 /btw 旁问。父会话仅提供上下文，主任务由原进程继续执行；不要继续父任务、goal、计划或修改工作区。',
               '只回答本次旁问，基于已有上下文作答；上下文不足时直接说明。不要发起工具调用、子 agent、定时任务或直接向飞书发消息。',

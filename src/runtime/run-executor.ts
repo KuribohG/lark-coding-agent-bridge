@@ -1,6 +1,6 @@
 import { snapshotRunOptions } from '../agent/prepared-run';
 import { randomUUID } from 'node:crypto';
-import type { AgentAdapter, AgentEvent, AgentRun, PreparedAgentRun, RunStopReason } from '../agent/types';
+import type { AgentAdapter, AgentEvent, AgentRun, NativeTurnBinding, PreparedAgentRun, RunStopReason, StopSettlement } from '../agent/types';
 import { ActiveRuns, markRunStopped, stopRun, type RunHandle } from './active-runs';
 import { ProcessPool } from './process-pool';
 import type { RunPolicyAllow } from '../policy/run-policy';
@@ -28,6 +28,13 @@ export interface RunExecutorDeps {
 }
 
 export interface SubmitRunInput {
+  /** Host-durable logical execution identity, independent of an attempt UUID. */
+  executionId?: string;
+  attemptId?: string;
+  /** Opt in to host-ledger reconciliation, one native attempt and retained unknown resources. */
+  governed?: boolean;
+  quiescenceTimeoutMs?: number;
+  nativeTurn?: NativeTurnBinding;
   /** Adapter captured with the run's profile and capability snapshot. */
   agent?: AgentAdapter;
   /** Authorized root used for adapter resolution; scopeId remains the execution mutex. */
@@ -79,7 +86,16 @@ export interface RunExecution {
   stop(reason?: RunStopReason): Promise<void>;
 }
 
+/** A host-ledger run: its outcome can stay unknown until the host reconciles it. */
+export interface GovernedRunExecution extends Omit<RunExecution, 'result'> {
+  result: Promise<RunResult | 'unknown'>;
+  /** Explicit host reconciliation may release a proved-drained quarantine. */
+  reconcile(): Promise<StopSettlement>;
+}
+
 const DEFAULT_POST_DONE_EXIT_GRACE_MS = 2000;
+const beforeSubmission = (error: unknown): Error & { confirmedNotSubmitted: true } =>
+  Object.assign(error instanceof Error ? error : new Error(String(error)), { confirmedNotSubmitted: true as const });
 
 export class RunExecutor {
   private readonly resolveAgent: (scopeId: string, agentKind?: AgentKind) => AgentAdapter;
@@ -102,15 +118,19 @@ export class RunExecutor {
     this.resolveModelProvider = deps.resolveModelProvider;
   }
 
-  async submit(input: SubmitRunInput): Promise<RunExecution> {
+  submit(input: SubmitRunInput & { governed: true }): Promise<GovernedRunExecution>;
+  submit(input: SubmitRunInput): Promise<RunExecution>;
+  async submit(input: SubmitRunInput): Promise<RunExecution | GovernedRunExecution> {
+    const governed = input.governed === true;
     const submittedAt = this.now();
-    const slot = await this.admit(input);
-    const runId = this.createRunId();
+    // Admission refusals happen before anything reaches the agent.
+    const slot = await this.admit(input, governed).catch((err: unknown) => { throw beforeSubmission(err); });
+    const runId = input.executionId ?? this.createRunId();
     const startedAt = this.now();
     const queueWaitMs = startedAt - submittedAt;
     const { controller } = slot;
     let handle!: RunHandle;
-    const { agent, modelProvider, prepared, run } = await this.launch(input, slot, runId, () => Boolean(handle?.interrupted));
+    const { agent, modelProvider, prepared, run } = await this.launch(input, slot, runId, () => Boolean(handle?.interrupted), governed);
     const dimensions = {
       runId,
       profile: input.observability?.profile ?? 'unknown',
@@ -132,6 +152,7 @@ export class RunExecutor {
 
     try {
       handle = this.activeRuns.register(input.scopeId, run);
+      handle.holdsScopeUntilDrained = governed;
       handle.modelSettings = { ...prepared.modelSettings };
     } catch (err) {
       slot.abandon();
@@ -146,43 +167,87 @@ export class RunExecutor {
     };
     controller.signal.addEventListener('abort', stopOnAbort, { once: true });
     if (controller.signal.aborted) stopOnAbort();
-    let terminal: 'completed' | 'quota' | 'failed' = 'failed';
-    let settleResult!: (state: RunResult) => void;
-    const result = new Promise<RunResult>((resolve) => { settleResult = resolve; });
-    let cleaned = false;
-    const cleanup = async (waitForExit: boolean): Promise<void> => {
+    let terminal: 'completed' | 'quota' | 'failed' | 'unknown' = 'failed';
+    let terminalObserved = false, nativeInterrupted = false;
+    let settleResult!: (state: RunResult | 'unknown') => void;
+    const result = new Promise<RunResult | 'unknown'>((resolve) => { settleResult = resolve; });
+    let cleaned = false, resultSettled = false;
+    let cleaning: Promise<void> | undefined;
+    const finish = (state: RunResult | 'unknown') => { if (!resultSettled) { resultSettled = true; settleResult(state); } };
+    const quiescenceTimeoutMs = input.quiescenceTimeoutMs ?? this.postDoneExitGraceMs;
+    const confirmQuiescence = async (): Promise<StopSettlement> => {
+      if (run.waitForQuiescence) return run.waitForQuiescence(quiescenceTimeoutMs);
+      return { state: await run.waitForExit(quiescenceTimeoutMs) ? 'quiescent' : 'unknown' };
+    };
+    const cleanup = async (waitForExit: boolean, reconciled = false): Promise<void> => {
       if (cleaned) return;
-      cleaned = true;
+      if (cleaning) return cleaning;
+      cleaning = (async () => {
       slot.dispose();
       controller.signal.removeEventListener('abort', stopOnAbort);
+      if (!governed) {
+        // Preserve upstream finally cleanup for ordinary hosts that have no
+        // durable ledger/reconciliation API. Do not silently opt them in.
+        cleaned = true;
+        try {
+          if (waitForExit && !await run.waitForExit(this.postDoneExitGraceMs)) {
+            log.warn('run', 'post-done-exit-timeout', { ...dimensions, graceMs: this.postDoneExitGraceMs });
+            await run.stop('cleanup');
+          }
+        } catch (err) {
+          terminal = 'failed';
+          log.warn('run', 'post-done-cleanup-failed', { ...dimensions, err: String(err) });
+          await run.stop('cleanup').catch(error => log.warn('run', 'cleanup-stop-failed', { ...dimensions, err: String(error) }));
+        } finally {
+          this.activeRuns.unregister(input.scopeId, run);
+          slot.releasePool();
+          finish(handle.stopReason === 'deadline' ? 'expired' : handle.interrupted ? 'stopped' : terminal);
+        }
+        return;
+      }
+      let settlement: StopSettlement = { state: 'unknown' };
       try {
-        if (waitForExit && !await run.waitForExit(this.postDoneExitGraceMs)) {
+        settlement = await confirmQuiescence();
+        if (waitForExit && settlement.state !== 'quiescent') {
           log.warn('run', 'post-done-exit-timeout', { ...dimensions, graceMs: this.postDoneExitGraceMs });
           await run.stop('cleanup');
+          settlement = await confirmQuiescence();
         }
       } catch (err) {
-        terminal = 'failed';
         log.warn('run', 'post-done-cleanup-failed', { ...dimensions, err: String(err) });
-        await run.stop('cleanup').catch(() => {});
-      } finally {
-        this.activeRuns.unregister(input.scopeId, run);
-        slot.releasePool();
-        settleResult(handle.stopReason === 'deadline' ? 'expired' : handle.interrupted ? 'stopped' : terminal);
       }
+      handle.quiescence = settlement.state;
+      if (settlement.state !== 'quiescent' || terminal === 'unknown' && !reconciled) {
+        handle.quiescence = 'unknown';
+        finish('unknown');
+        // The live handle, mutex and pool lease remain owned until explicit
+        // host reconciliation. Ending a stream never proves native drain.
+        return;
+      }
+      cleaned = true;
+      this.activeRuns.unregister(input.scopeId, run);
+      slot.releasePool();
+      finish(terminal === 'completed' || terminal === 'quota' || terminal === 'failed' && terminalObserved && !nativeInterrupted ? terminal
+        : handle.stopReason === 'deadline' ? 'expired' : handle.interrupted ? 'stopped' : terminal);
+      })();
+      try { await cleaning; } finally { cleaning = undefined; }
     };
     const fanout = new EventFanout(observeRunEvents(run.events, {
       dimensions,
       startedAt,
       now: this.now,
       onTerminal: (event) => {
+        terminalObserved = true;
+        nativeInterrupted = (event.type === 'done' || event.type === 'error') && event.terminationReason !== 'normal' && event.terminationReason !== 'failed';
         terminal = event.type === 'done' && event.terminationReason === 'normal' ? 'completed' : 'failed';
+        if (governed && event.type === 'error' && agentFailureKind(event) === 'delivery_unknown') terminal = 'unknown';
         if (input.deadlineAt !== undefined && event.type === 'error' && agentFailureKind(event) === 'quota') terminal = 'quota';
         // Native watchdogs report their cause even if the JS deadline timer has not run.
         if ((event.type === 'done' || event.type === 'error') && event.terminationReason === 'timeout') markRunStopped(handle, 'deadline');
       },
     }), async () => {
       await cleanup(!handle.interrupted);
-    });
+    }, governed);
 
     return {
       result,
@@ -191,11 +256,16 @@ export class RunExecutor {
       run,
       handle,
       subscribe: () => fanout.subscribe(),
+      reconcile: async () => {
+        await cleanup(false, true);
+        return { state: handle.quiescence ?? 'unknown' };
+      },
       stop: async (reason = 'cancelled') => {
         if (cleaned) { await result; return; }
         try {
           await stopRun(handle, reason);
-          await run.waitForExit(this.postDoneExitGraceMs);
+          // A governed run settles through native quiescence in cleanup, not process exit.
+          if (!governed) await run.waitForExit(this.postDoneExitGraceMs);
         } finally {
           await cleanup(false);
         }
@@ -204,8 +274,10 @@ export class RunExecutor {
   }
 
   /** Reserves the scope and a pool slot, honouring the deadline, caller signal and reconnect pause. */
-  private async admit(input: SubmitRunInput): Promise<AdmittedRun> {
+  private async admit(input: SubmitRunInput, governed: boolean): Promise<AdmittedRun> {
+    const generation = this.activeRuns.generation(input.scopeId);
     const checkDeadline = () => {
+      if (governed && this.activeRuns.generation(input.scopeId) !== generation) throw new RunStopped('cancelled');
       if (input.deadlineAt !== undefined && (!Number.isSafeInteger(input.deadlineAt) || input.deadlineAt <= this.now())) {
         throw new RunRejected('deadline-expired', '任务停止时间已过。');
       }
@@ -268,7 +340,7 @@ export class RunExecutor {
   }
 
   /** Resolves, prepares and starts the agent; any failure gives the admitted slot back. */
-  private async launch(input: SubmitRunInput, slot: AdmittedRun, runId: string, interrupted: () => boolean) {
+  private async launch(input: SubmitRunInput, slot: AdmittedRun, runId: string, interrupted: () => boolean, governed: boolean) {
     let agent: AgentAdapter;
     try {
       const scope = input.agentScopeId ?? input.scopeId;
@@ -279,16 +351,17 @@ export class RunExecutor {
       }
     } catch (err) {
       slot.abandon();
-      throw new SpawnFailed('agent resolve failed', err, 'agent-prepare-failed');
+      throw beforeSubmission(new SpawnFailed('agent resolve failed', err, 'agent-prepare-failed'));
     }
     let modelProvider: ResolvedModelProvider | undefined;
     try {
       modelProvider = await this.resolveModelProvider?.(agent.id as AgentKind, input.model);
     } catch (err) {
       slot.abandon();
-      throw new SpawnFailed('model provider resolve failed', err, 'agent-prepare-failed');
+      throw beforeSubmission(new SpawnFailed('model provider resolve failed', err, 'agent-prepare-failed'));
     }
     const runOptions = snapshotRunOptions({
+      nativeTurn: input.nativeTurn,
       env: input.env,
       deadlineAt: input.deadlineAt,
       runId,
@@ -319,16 +392,17 @@ export class RunExecutor {
       slot.controller.signal.throwIfAborted();
     } catch (err) {
       slot.abandon();
-      if (err instanceof RunRejected) throw err;
-      if (err instanceof SpawnFailed) throw err;
-      throw new SpawnFailed('agent prepare failed', err, 'agent-prepare-failed');
+      if (err instanceof RunRejected) throw beforeSubmission(err);
+      if (err instanceof SpawnFailed) throw beforeSubmission(err);
+      throw beforeSubmission(new SpawnFailed('agent prepare failed', err, 'agent-prepare-failed'));
     }
-    this.abandonIfPaused(slot);
+    try { this.abandonIfPaused(slot); } catch (err) { throw beforeSubmission(err); }
     let run: AgentRun;
     try {
-      run = retryingRun({
+      const initialRun = prepared.start();
+      run = governed ? initialRun : retryingRun({
         agent,
-        initialRun: prepared.start(),
+        initialRun,
         options: runOptions,
         exitGraceMs: this.postDoneExitGraceMs,
         canRetry: () => !slot.controller.signal.aborted && !interrupted()
@@ -421,9 +495,11 @@ class EventFanout {
   private done = false;
   private error: unknown;
 
-  constructor(source: AsyncIterable<AgentEvent>, onDone: () => Promise<void>) {
+  /** A governed run settles without waiting for a subscriber. */
+  constructor(source: AsyncIterable<AgentEvent>, onDone: () => Promise<void>, eager: boolean) {
     this.source = source;
     this.onDone = onDone;
+    if (eager) this.start();
   }
 
   subscribe(): AsyncIterable<AgentEvent> {

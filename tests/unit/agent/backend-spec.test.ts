@@ -90,7 +90,7 @@ describe('agent backend specification', () => {
         accounts: appAccounts(),
         pi: { binaryPath: 'pi', agentDir: '/state/pi' },
       }),
-    } satisfies Record<AgentKind, ReturnType<typeof createDefaultProfileConfig>>;
+    } satisfies Record<Exclude<AgentKind, 'dsh'>, ReturnType<typeof createDefaultProfileConfig>>;
 
     expect(agentStateDirectory(profiles.claude)).toBe('/state/claude');
     expect(agentStateDirectory(profiles.codex)).toBe('/state/codex');

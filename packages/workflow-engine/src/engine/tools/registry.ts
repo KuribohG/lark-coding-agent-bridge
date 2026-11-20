@@ -1,9 +1,11 @@
 import { artifactTools } from './artifacts';
 import { boardTools, swarmTools } from './board';
 import { directTools } from './direct';
+import { landingTools } from './landing';
 import { lifecycleTools } from './lifecycle';
-import { mailboxTools, memberContextTools } from './members';
+import { memberContextTools } from './members';
 import { nestedWorkflowTools } from './nested-workflow';
+import { steeringTools } from './steering';
 import type { MainTool, WorkerTool, WorkflowToolPlugin } from './types';
 import { workQueueTools } from './work-queue';
 
@@ -11,6 +13,7 @@ import { workQueueTools } from './work-queue';
 export class WorkflowToolRegistry {
   private readonly mainTools = new Map<string, MainTool & { doc: string }>();
   private readonly workerTools = new Map<string, WorkerTool>();
+  private readonly renamed = new Map<string, string>();
 
   constructor(private readonly plugins: readonly WorkflowToolPlugin[]) {
     const ids = new Set<string>();
@@ -24,22 +27,36 @@ export class WorkflowToolRegistry {
         }
         if (tool.main) this.mainTools.set(tool.name, tool.main);
         if (tool.worker) this.workerTools.set(tool.name, tool.worker);
+        for (const alias of tool.aliases ?? []) {
+          if (this.renamed.has(alias)) throw new Error(`Duplicate workflow tool: ${alias}`);
+          this.renamed.set(alias, tool.name);
+        }
       }
+    }
+    // An earlier name stands for one tool whoever calls it, so it may not also be the name of another.
+    for (const alias of this.renamed.keys()) {
+      if (this.mainTools.has(alias) || this.workerTools.has(alias)) throw new Error(`Duplicate workflow tool: ${alias}`);
     }
   }
 
+  /** The current name of an operation that a caller may know by an earlier one. */
+  canonical(name: string): string { return this.renamed.get(name) ?? name; }
   main(name: string): (MainTool & { doc: string }) | undefined { return this.mainTools.get(name); }
   worker(name: string): WorkerTool | undefined { return this.workerTools.get(name); }
   mainNames(): string[] { return [...this.mainTools.keys()]; }
   workerNames(): string[] { return [...this.workerTools.keys()]; }
 
-  /** The main agent's operation list, one signature per tool. */
-  mainOperations(): string {
-    return [...this.mainTools.values()].map(tool => tool.doc).join('；');
+  /**
+   * The main agent's operation list, one signature per tool. The operations in `named` are listed by name alone: the
+   * ones a turn cannot call, or whose parameters the same text explains.
+   */
+  mainOperations(named: readonly string[] = []): string {
+    return [...this.mainTools].map(([name, tool]) => named.includes(name) ? name : tool.doc).join('；');
   }
 
-  memberInstructions(): string[] {
-    return this.plugins.flatMap(plugin => plugin.memberInstructions ? [plugin.memberInstructions] : []);
+  /** What persistent members are told, plugin by plugin; with `plans`, also what only the members that plan work are. */
+  memberInstructions(plans = false): string[] {
+    return this.plugins.flatMap(plugin => [...(plugin.memberInstructions ? [plugin.memberInstructions] : []), ...(plans && plugin.leadInstructions ? [plugin.leadInstructions] : [])]);
   }
 
   nestedInstructions(): string[] {
@@ -48,5 +65,5 @@ export class WorkflowToolRegistry {
 }
 
 export const BUILTIN_WORKFLOW_TOOLS = new WorkflowToolRegistry([
-  lifecycleTools, artifactTools, memberContextTools, mailboxTools, boardTools, directTools, swarmTools, workQueueTools, nestedWorkflowTools,
+  lifecycleTools, artifactTools, steeringTools, memberContextTools, boardTools, directTools, swarmTools, workQueueTools, landingTools, nestedWorkflowTools,
 ]);

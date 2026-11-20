@@ -147,7 +147,7 @@ describe('script workflow runtime', () => {
     let state = h.state();
     expect(state.deadlineAt - state.createdAt).toBeCloseTo(600 * 60_000, -1);
     minutes = 720;
-    await h.call('cancel');
+    await h.call('cancel_workflow');
     await h.call('run_script', { goal: 'reloaded deadline', script: 'return null;' });
     state = h.state();
     expect(state.deadlineAt - state.createdAt).toBeCloseTo(720 * 60_000, -1);
@@ -478,7 +478,7 @@ describe('script workflow runtime', () => {
       script: 'return await agent("task",{key:"task"});' });
     await h.until(() => expect(h.adapters.codex.runs).toHaveLength(1));
     const workflowId = h.state().workflowId;
-    if (stop === 'cancel') await h.call('cancel');
+    if (stop === 'cancel') await h.call('cancel_workflow');
     await vi.advanceTimersByTimeAsync(60_000);
     expect(h.adapters.codex.runs).toHaveLength(1);
     expect(h.adapters.codex.runs[0]?.stopped).toBe(true);
@@ -497,7 +497,7 @@ describe('script workflow runtime', () => {
     expect(h.state().status).toBe('active');
     expect(h.adapters.codex.runs).toHaveLength(1);
     // The resumed script is live, so retry if its own progress moves the state version first.
-    await vi.waitFor(()=>h.call('send_message',{member:'A',text:'arrived during restart'}),{timeout:5000,interval:20});
+    await vi.waitFor(()=>h.call('post_board',{to:['A'],text:'arrived during restart'}),{timeout:5000,interval:20});
     await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
     expect(h.adapters.codex.runs).toHaveLength(2);
     expect(h.adapters.codex.runOptions[1]?.threadId).toBe('saved-thread');
@@ -580,7 +580,7 @@ describe('script workflow runtime', () => {
     expect(h.adapters[kind].runs[0]?.waitForExitCalls).toBeGreaterThan(0);
     expect(h.state().tasks[0]?.status).toBe('result_ready');
     expect(h.wakeMain).not.toHaveBeenCalled();
-    await h.call('send_message',{member:'designer',text:'review approved'});
+    await h.call('post_board',{to:['designer'],text:'review approved'});
     await h.until(()=>expect(h.state().script?.status).toBe('result_ready'));
     const opts=h.adapters[kind].runOptions[1]!;
     expect(kind==='codex'?opts.threadId:opts.sessionId).toBe(id);
@@ -675,7 +675,7 @@ describe('script workflow runtime', () => {
     expect(h.state().events.some(event => !event.acknowledged)).toBe(true);
     await call('pause');
     expect(h.state().status).toBe('paused');
-    await call('cancel');
+    await call('cancel_workflow');
     expect(h.state()).toBeUndefined();
     // The credentials stay with that workflow: it can still be read, and nothing new can be started.
     await expect(call('status')).resolves.toMatchObject({ status: 'cancelled' });
@@ -692,13 +692,13 @@ describe('script workflow runtime', () => {
     const call = (method: string, args: Record<string, unknown> = {}) => callWorkflow(method,
       { operationId: randomUUID(), expectedStateVersion: h.state()?.stateVersion, ...args }, continuation.env);
     await expect(call('status')).resolves.toMatchObject({ workflowId: original });
-    await call('cancel');
+    await call('cancel_workflow');
     await expect(call('run_script', { allowStart: true, goal: 'unexpected', plan: 'Return two.', script: 'return 2;' }))
       .rejects.toThrow('explicit /workflow');
     expect(h.state()).toBeUndefined();
     await h.call('run_script', { goal: 'second', script: 'return 2;' });
     await expect(call('status')).resolves.toMatchObject({ workflowId: original, status: 'cancelled' });
-    await expect(call('cancel', { workflowId: h.state().workflowId })).rejects.toThrow('outside this run binding');
+    await expect(call('cancel_workflow', { workflowId: h.state().workflowId })).rejects.toThrow('outside this run binding');
     expect(h.state().status).toBe('active');
     continuation.release();
   });

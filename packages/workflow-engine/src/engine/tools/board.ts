@@ -1,20 +1,41 @@
-import { postToBoard, readBoard, searchBoard } from '../board';
+import { postToBoard, readBoard, resolvePosts, searchBoard } from '../board';
+import { workflowDigest } from '../digest';
 import { inheritedWorkerExecution } from '../execution';
-import { finishSwarm, staffSelection, staffSwarm } from '../swarm';
+import { finishSwarm, staffCleanups, staffSelection, staffSwarm, staffWorkspaces } from '../swarm';
 import { memberOperation } from './members';
 import { mailboxOperation, taskAgent } from '../durable-agents';
-import { requiredText, requireState } from '../kernel-state';
-import type { WorkerExecution } from '../types';
+import { mailboxOperationByKey, requiredText, requireState } from '../kernel-state';
+import type { WorkerExecution, WorkflowView } from '../types';
 import type { ToolArgs, WorkflowToolPlugin } from './types';
 
 const staffing = (args: ToolArgs): ToolArgs => Object.fromEntries(Object.entries(args).filter(([key]) => !CONTROL_ARGS.includes(key)));
 import { CONTROL_ARGS } from './control-args';
 import { versioned } from './versioned';
 
-/** The shared message board: one ordered, append-only feed that every agent of the workflow can read. */
+/** The shared message board: one ordered, append-only feed that every agent of the workflow can read, and whose posts can be marked resolved. */
 export const boardTools: WorkflowToolPlugin = {
   id: 'board',
-  memberInstructions: '留言板是本工作流全员可见、只追加的有序消息流。post_board({operationId,text,to?,topic?}) 发帖：text 最多 4000 字符；to 为成员名数组或 "all"，正文里的 @成员名、@all 同样生效；topic 是帖子所属的主题（1–40 位小写字母、数字及 _.-，不写归入 general），同一条工作线始终用同一个主题名，先看已有主题再决定是否新开，全板最多 64 个主题。主题 announce 是公告：只有主 agent、脚本和 swarm 的 lead 能发，内容是所有成员都要遵守的规则变更和裁定。被点名的成员会被唤醒并在下一轮的 read_context.member.messages 里收到该帖（带 post 序号）；不点名的帖子只留在板上，不唤醒任何人。read_board({after?,limit?,member?,topic?}) 读帖：不带 after 返回最新 limit 条（默认 20，最多 50），带 after 返回该序号之后的帖子；member 只看某成员发出或收到的帖子，topic 只看一个主题；板上有多个主题时结果里的 topics 列出各主题的帖数和最新序号。每轮 read_context 的 board 字段已给出：announcements 是上一轮开始以来的新公告全文（必须遵守；moreAnnouncements 表示还有更早的未列出，用 read_board({topic:"announce"}) 读），topics 是各主题的总帖数和其中新增的条数（new）。据此只读与自己工作有关的主题，不要整板翻页。search_board({query,member?,topic?,limit?}) 按关键词查全部历史帖子：query 为空格分隔的词（最多 8 个），不分大小写、按子串匹配，须全部出现；返回最新的 limit 条（默认 10，最多 30），每条带序号和命中处的片段，全文用 read_board({after:序号-1,limit:1}) 读。板上帖子多时先搜再读，不要整板翻页。结论、提问、交接、阻塞发到板上，写明谁需要做什么；不要发纯确认或致谢，避免互相唤醒空转。工作项的完成汇报不发帖：它写在 complete_work 的 result 里，别人用 search_work 查。帖子不可修改或撤回，也不代表对方已处理。',
+  memberInstructions: [
+    'The board is one ordered, append-only feed that everyone in the workflow can read.',
+    'post_board({operationId,text,to?,topic?}) posts up to 4000 characters. to is an array of member names or "all"; @name and @all in the text name members too. '
+      + 'A named member is woken and gets the post, with its number, in read_context.member.messages; a post that names nobody wakes nobody. '
+      + 'topic is the workstream (1–40 lowercase letters, digits, _ . or -; "general" when left out): keep one name per workstream and reuse the topics that exist, of which a board holds at most 64. '
+      + 'Topic "announce" carries rules and rulings that bind every member; only the main agent, the script and the lead of a swarm post there. A post cannot be edited or withdrawn.',
+    'read_board({after?,limit?,member?,topic?,resolved?}) returns the latest limit posts (20 by default, 50 at most), or the ones after post number after; member keeps the posts one member sent or received, topic one topic. '
+      + 'Resolved posts are skipped (resolvedSkipped counts them) unless resolved: true. topics lists each topic with its posts, its resolved posts and its latest number. '
+      + 'Every turn read_context.board already has the announcements since your last turn in full (announcements; moreAnnouncements means that earlier ones are left out, which read_board({topic:"announce"}) returns) '
+      + 'and, for each topic, its posts, the resolved ones and the unresolved ones that are new (new). Read the topics that concern your work, not the whole feed.',
+    'search_board({query,member?,topic?,limit?}) searches every post: query is up to 8 words separated by spaces, matched as substrings without regard to case, all of which must occur. '
+      + 'It returns the latest limit hits (10 by default, 30 at most) with number and snippet; read_board({after: number - 1, limit: 1, resolved: true}) reads one in full. '
+      + 'Resolved posts come after the open ones and carry resolved (by, note and see, the post that answered or replaced it). Search before you ask or report something, and instead of paging through a long board.',
+    'Post conclusions, questions, hand-offs and blockers, saying who must do what; post no acknowledgements or thanks. Do not post when you finish a work item: the result you give complete_work is the report, which search_work finds. '
+      + 'In a swarm with a lead the system hands it to the lead that planned the item and quotes only its first line or two when several come back, '
+      + 'so start the result with the conclusion, then say what you did, what you found, where you departed from the item and what still worries you.',
+    'resolve_post({operationId,seq,note?,see?,reopen?}) marks posts that need nobody any more (answered, done, or replaced by a newer post) as resolved. seq is a post number or an array of up to 32. '
+      + 'Give note (how it ended, at most 500 characters), see (the post that answered or replaced it) or both; reopen: true removes the mark. '
+      + 'You may mark your own posts and the ones that name you; a lead and the main agent any post, and announcements only they. A resolved post stays searchable but read_board skips it, and one that reaches you resolved is dealt with already. '
+      + 'Mark your question when it is answered and a request when you have done it.',
+  ].join('\n'),
   tools: [
     {
       name: 'post_board',
@@ -34,8 +55,19 @@ export const boardTools: WorkflowToolPlugin = {
       },
     },
     {
+      name: 'resolve_post',
+      main: {
+        doc: 'resolve_post(seq,note?,see?,reopen?)',
+        ...versioned((ctx, state, args) => resolvePosts(state, { author: 'main' }, args, ctx.now()), { allowInterrupted: true, appendOnly: true }),
+      },
+      worker: {
+        verifiesRoot: true,
+        call: (ctx, state, task, _caller, args) => memberOperation(ctx, state, task, 'resolve_post', args, agent => resolvePosts(state, { agentId: agent.agentId }, args, ctx.now())),
+      },
+    },
+    {
       name: 'read_board',
-      main: { kind: 'read', doc: 'read_board(after?,limit?,member?,topic?)', read: (_ctx, state, args) => readBoard(requireState(state), args) },
+      main: { kind: 'read', doc: 'read_board(after?,limit?,member?,topic?,resolved?)', read: (_ctx, state, args) => readBoard(requireState(state), args) },
       worker: { call: (_ctx, state, _task, _caller, args) => readBoard(state, args) },
     },
     {
@@ -49,22 +81,79 @@ export const boardTools: WorkflowToolPlugin = {
 /** Management of a running swarm by its lead. */
 export const swarmTools: WorkflowToolPlugin = {
   id: 'swarm',
-  memberInstructions: '以下两个操作只有 swarm 的 lead 可用，其他成员调用会被拒绝。staff_swarm({operationId,add?,like?,queue?,role?,brief?,revive?,retire?,maxTurns?}) 调整本 swarm 的人手：add 为新成员名数组（1–40 位字母数字及 _.-），新成员沿用 like 指定的现有成员（默认第一个非 lead 成员）的执行器、模型、角色和队列（lead 不能另选执行器或模型，需要时请主 agent 加人），首轮会看到任务、角色和 brief，queue 让它消费该工作队列（有可领工作时才启动），先加成员再发帖点名它；revive 为 "failed" 或成员名数组，让失败的成员在原会话里重试上一轮；retire 为成员名数组，成员正在执行的一轮会跑完，之后不再被唤醒；maxTurns 提高每名成员可被唤醒的次数。swarm_finish({operationId,result}) 宣布结束并给出最终结果（最多 16000 字符）；仍在执行的轮次结束后 swarm 返回，之后不再唤醒任何成员。成员失败、全员空闲时系统会发帖点名 lead。',
+  leadInstructions: [
+    'The next two operations are for the lead of a swarm; from any other member they are refused.',
+    'staff_swarm({operationId,add?,like?,workspace?,queue?,role?,brief?,move?,revive?,retire?,cleanup?,maxTurns?}) changes who works in your swarm. add is an array of new member names (1–40 letters, digits, _ . or -). '
+      + 'A new member takes the harness, model, role and queue of the member like names (by default the first member that is not the lead); a lead cannot choose another harness or model, so ask the main agent to add the member when one is needed. '
+      + 'Its first turn shows it the task, its role and brief. queue makes it consume that work queue, and it then starts when the queue has work it can claim. Add a member before you name it in a post. '
+      + 'workspace (true, or {base?,repo?,isolation?}) gives each added member a Git worktree of its own: without repo the cwd of the workflow is the repository and its HEAD the base, and isolation: "clone" makes each a repository of its own that does not share .git. '
+      + 'Without workspace the new members run in the root directory, where members that change code in parallel overwrite one another, and they cannot use submit_work. '
+      + 'move (an array of names, with queue) makes members that consume one queue consume queue instead, for when one queue has more work than members and another has members without work: '
+      + 'a member finishes the item it holds and takes its next from the new queue, where it is woken when there is work to claim, and its next turn tells it of the move; role, when given, replaces the role of the members moved. '
+      + 'unconsumed in the answer names a queue that lost its last member while it still holds unfinished items. '
+      + 'revive ("failed", or an array of names) lets failed members retry their last turn in the session they had. retire (an array of names) lets a member finish the turn it is in and then never wakes it again. '
+      + 'cleanup ("retired", or an array of stopped members) deletes their idle worktrees together with whatever was not committed or integrated; the worktree of a failed member can be cleaned at once. '
+      + 'maxTurns raises the number of wake-ups every member has. Giving a queue a lead of its own (leads) is for the main agent alone.',
+    'swarm_finish({operationId,result}) ends the swarm with the final result (at most 16000 characters): the turns still running finish, the swarm returns, and nobody is woken again.',
+    'The system posts to the lead when a member fails, when a queue has run dry and when everyone is idle. The notice of a dry queue names its own seq: '
+      + 'resolve_post({seq, note}) on it says that the queue has no work for now, and the queue is not reported again until someone who plans it adds an item to it. The items that members complete, and the ones that fail for good, it gathers into posts in topic "handoff" when the turn of the lead that planned them begins: '
+      + 'one item is quoted at length, several get a line or two each, and work_status({key}) has an item in full.',
+  ].join('\n'),
   tools: [
     { name: 'staff_swarm',
-      main: { doc: 'staff_swarm(swarm?,add?,like?,harness?,model?,reasoningEffort?,queue?,role?,brief?,revive?,retire?,maxTurns?,maxConcurrent?)',
-        ...versioned((_ctx, state, args, execution) => staffSwarm(state, staffing(args), undefined, execution as WorkerExecution | undefined), {
+      main: { doc: 'staff_swarm(swarm?,add?,like?,workspace?,harness?,model?,reasoningEffort?,queue?,leads?,role?,brief?,move?,revive?,retire?,cleanup?,maxTurns?,maxConcurrent?)',
+        ...versioned((_ctx, state, args, resolved) => {
+          const staffed = resolved as { execution?: WorkerExecution; workspaces?: Record<string, string>; cleanedUp?: Array<{ name: string; workspace: string }> } | undefined;
+          return staffSwarm(state, staffing(args), undefined, staffed?.execution, staffed?.workspaces, staffed?.cleanedUp, _ctx.now());
+        }, {
           // Staffing is checked against the swarm as it is when the change commits, and no worker commit changes
           // what it checks: a swarm of a hundred members advances the version faster than a status can be read.
           appendOnly: true,
-          // Naming a harness or model needs the host's binding for it, which is resolved like a script member's.
+          // Naming a harness, a model or worktrees needs the host: the execution it binds for them is resolved like a
+          // script member's, and the worktrees are made or released under the same authorization the change commits under.
           resolve: async (ctx, state, args) => {
-            const selection = staffSelection(state, staffing(args), ctx.host);
-            return selection && (ctx.host.resolveWorker?.(state.root, selection) ?? inheritedWorkerExecution(state.root, selection));
+            const input = staffing(args);
+            const selection = staffSelection(state, input, ctx.host);
+            const execution = selection ? await (ctx.host.resolveWorker?.(state.root, selection) ?? inheritedWorkerExecution(state.root, selection)) : undefined;
+            const workspaces = await staffWorkspaces(ctx, state, input);
+            const cleanedUp = await staffCleanups(ctx, state, input);
+            return execution || workspaces || cleanedUp ? { execution, workspaces, cleanedUp } : undefined;
           },
         }) },
       worker: { verifiesRoot: true,
-        call: (ctx, state, task, _caller, args) => memberOperation(ctx, state, task, 'staff_swarm', args, agent => staffSwarm(state, staffing(args), agent.key)) } },
+        call: () => { throw new Error('staff_swarm runs outside a transaction'); },
+        run: async (ctx, caller, args, bound) => {
+          const input = staffing(args);
+          // A lead names neither harness nor model and cannot change concurrency; refuse before making worktrees that a
+          // rejected change would strand.
+          const forbidden = ['harness', 'model', 'reasoningEffort', 'maxConcurrent'].find(option => input[option] !== undefined);
+          if (forbidden) throw new Error(forbidden === 'maxConcurrent' ? 'Only the main agent can change maxConcurrent' : 'Only the main agent can choose the harness or model of new members; a lead adds members like an existing one');
+          const operationId = requiredText(args.operationId, 160);
+          const key = 'worker:' + caller.taskId + ':' + operationId;
+          const active = (state: WorkflowView) => {
+            if (state.status !== 'active' || state.script?.status !== 'running' || ctx.now() >= state.deadlineAt) throw new Error('Workflow is inactive');
+          };
+          const digest = workflowDigest({ method: 'staff_swarm', args });
+          const first = bound((state, task) => {
+            if (!taskAgent(state, task)) throw new Error('This operation requires a persistent member');
+            active(state);
+            const prior = mailboxOperationByKey(state, key);
+            if (prior) {
+              if (prior.digest !== digest) throw new Error('Mailbox operation ID conflict');
+              return { prior: prior.response } as const;
+            }
+            return { state } as const;
+          });
+          if ('prior' in first) return first.prior;
+          const workspaces = await staffWorkspaces(ctx, first.state, input);
+          const cleanedUp = await staffCleanups(ctx, first.state, input);
+          return bound((state, task) => {
+            const agent = taskAgent(state, task);
+            if (!agent) throw new Error('This operation requires a persistent member');
+            active(state);
+            return mailboxOperation(state, key, { method: 'staff_swarm', args }, () => staffSwarm(state, input, agent.key, undefined, workspaces, cleanedUp, ctx.now()));
+          });
+        } } },
     { name: 'swarm_finish', worker: { verifiesRoot: true,
       call: (ctx, state, task, _caller, args) => memberOperation(ctx, state, task, 'swarm_finish', args, agent => finishSwarm(state, agent.key, args)) } },
   ],

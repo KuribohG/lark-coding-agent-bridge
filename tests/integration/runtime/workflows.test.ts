@@ -83,4 +83,65 @@ describe('workflow IPC and worker execution', () => {
     expect(task.attempts).toHaveLength(1);
     expect(agent.runOptions).toHaveLength(1);
   });
+
+  /** One worker whose agent emits `script`, run until `settled` holds; `stopped()` turns true once the runtime stops the run. */
+  async function runWorker(scopeId: string, script: (stopped: () => boolean, run: number) => AsyncIterable<AgentEvent>,
+    limits: { stallMs: number; toolOverdueGraceMs?: number },
+    settled: (state: NonNullable<ReturnType<ReturnType<typeof createBridgeWorkflowRuntime>['kernel']['state']>>) => boolean
+      = state => state.script?.status === 'result_ready') {
+    const root: WorkflowRoot = { scopeId, profile: 'default', agentKind: 'pi', cwdRealpath: '/workspace',
+      policyFingerprint: 'policy', catalogBinding: 'root', modelSettings: { model: 'model' } };
+    const policy: RunPolicyAllow = { ok: true, prompt: '', requestedCwd: '/workspace', cwdRealpath: '/workspace',
+      accessMode: 'full', sandbox: 'danger-full-access', permissionMode: 'bypassPermissions',
+      access: { ok: true, reason: 'allowed-user' }, attachments: [], policyFingerprint: 'policy', expiresAt: Date.now() + 60_000 };
+    class ScriptedAgent extends FakeAgentAdapter {
+      override run(opts: AgentRunOptions): AgentRun {
+        this.runOptions.push(opts);
+        let stopped = false;
+        return { runId: opts.runId, capabilities: this.capabilities, events: script(() => stopped, this.runOptions.length),
+          stop: async () => { stopped = true; }, waitForExit: async () => true };
+      }
+    }
+    const agent = new ScriptedAgent({ id: 'pi', capabilities: { finalAnswer: 'separate-event', input: 'unsupported' } });
+    const executor = new RunExecutor({ resolveAgent: () => agent, pool: new ProcessPool(() => 3), activeRuns: new ActiveRuns() });
+    const runtime = createBridgeWorkflowRuntime({ path: ':memory:', executor, resolve: async () => ({ root, policy }), wakeMain: async () => {}, ...limits });
+    await runtime.start(); cleanup.push(() => runtime.close());
+    const main = runtime.bindMain(root.scopeId, 'start');
+    await callWorkflow('run_script', { operationId: randomUUID(), goal: 'tools', plan: 'One worker answers after its tool calls return.',
+      script: 'return await agent("work",{key:"a"});' }, main.env);
+    main.release();
+    await vi.waitFor(async () => { await runtime.tick(); expect(settled(runtime.kernel.state(root.scopeId)!)).toBe(true); }, { timeout: 4_000, interval: 20 });
+    return { agent, task: runtime.kernel.state(root.scopeId)!.tasks[0]! };
+  }
+  const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+  it('keeps a run busy while another of its parallel tool calls is still out', async () => {
+    // Two calls start together and the quick one returns; the slow one is silent well past the stall limit.
+    const { agent, task } = await runWorker('parallel-topic', async function* (stopped) {
+      yield { type: 'system', sessionId: 'parallel-1' };
+      yield { type: 'tool_use', id: 'quick', name: 'bash', input: { command: 'ls' } };
+      yield { type: 'tool_use', id: 'slow', name: 'bash', input: { command: 'make' } };
+      yield { type: 'tool_result', id: 'quick', output: 'ok', isError: false };
+      await pause(400);
+      if (stopped()) { yield { type: 'done', terminationReason: 'interrupted' }; return; }
+      yield { type: 'tool_result', id: 'slow', output: 'built', isError: false };
+      yield { type: 'final_text', content: 'answer' };
+      yield { type: 'done', terminationReason: 'normal' };
+    }, { stallMs: 80 });
+    expect(task.attempts).toHaveLength(1);
+    expect(agent.runOptions).toHaveLength(1);
+  });
+
+  it('stops a run whose tool call stays out past the time limit its agent reported, for a retry', async () => {
+    // The run never hears back from a call its agent bounds to 30 ms; the idle limit is far away.
+    const { agent, task } = await runWorker('overdue-topic', async function* (stopped) {
+      yield { type: 'system', sessionId: 'overdue-1' };
+      yield { type: 'tool_use', id: 'hung', name: 'bash', input: { command: 'find /' }, timeoutMs: 30 };
+      while (!stopped()) await pause(10);
+      yield { type: 'done', terminationReason: 'interrupted' };
+    }, { stallMs: 60_000, toolOverdueGraceMs: 20 }, state => state.tasks[0]?.attempts[0]?.failureKind === 'stall');
+    expect(agent.runOptions).toHaveLength(1);
+    expect(task.retryCount).toBe(1);
+    expect(task.status).not.toBe('failed');
+  });
 });

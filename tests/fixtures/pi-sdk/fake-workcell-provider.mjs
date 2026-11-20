@@ -32,7 +32,7 @@ process.stdin.on('data', (chunk) => {
     switch (request.op) {
       case 'create': {
         seq += 1;
-        send({ id: request.id, ok: true, data: { workcell: `cell-${seq}` } });
+        send({ id: request.id, ok: true, data: { workcell: `cell-${seq}`, root: process.env.FAKE_WORKCELL_ROOT } });
         send({ type: 'log', workcell: `cell-${seq}`, line: 'created' });
         break;
       }

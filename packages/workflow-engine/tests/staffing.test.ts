@@ -1,11 +1,28 @@
 import { randomUUID } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { callWorkflow, WorkflowRuntime, type WorkerRunSpec, type WorkflowRoot } from '../src';
+import { assertRoomFor } from '../src/engine/swarm';
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0)) await close(); });
 
 type Behaviour = 'fail-after-claim' | 'hold' | 'drain';
+
+describe('swarm member ceilings', () => {
+  const members = (live: number, retired: number) => [
+    ...Array.from({ length: live }, (_, index) => ({ name: 'live-' + index })),
+    ...Array.from({ length: retired }, (_, index) => ({ name: 'gone-' + index, stopped: 'retired' as const })),
+  ] as never;
+
+  it('bounds live workers separately from the members a swarm has ever held', () => {
+    // Retired members no longer block replacements: 511 live plus one more is fine however long the churn history.
+    expect(() => assertRoomFor({ members: members(511, 1000) }, ['new'])).not.toThrow();
+    expect(() => assertRoomFor({ members: members(512, 0) }, ['new'])).toThrow('512 live members');
+    // The lifetime count still bounds the state one swarm keeps.
+    expect(() => assertRoomFor({ members: members(100, 1947) }, ['new'])).not.toThrow();
+    expect(() => assertRoomFor({ members: members(100, 1948) }, ['new'])).toThrow('over its life');
+  });
+});
 
 describe('staffing a running swarm from the main agent', () => {
   it('revives a failed member, adds one and raises the wake-up limit without a replay', async () => {
@@ -68,10 +85,10 @@ describe('staffing a running swarm from the main agent', () => {
     await expect(call('staff_swarm', { maxTurns: 4097 })).rejects.toThrow('between 1 and 4096');
     await expect(call('staff_swarm', { swarm: 'other', add: ['x'] })).rejects.toThrow('No running swarm');
     await expect(call('staff_swarm', { add: ['w1'] })).rejects.toThrow('already used');
-    await expect(call('staff_swarm', {})).rejects.toThrow('needs add, revive, retire, maxTurns or maxConcurrent');
+    await expect(call('staff_swarm', {})).rejects.toThrow('needs add, move, revive, retire, cleanup, maxTurns or maxConcurrent');
     await expect(call('staff_swarm', { retire: ['ghost'] })).rejects.toThrow('Unknown swarm member');
     // The number of workers that run at once follows the staff without a replay, and needs no state version.
-    await expect(call('staff_swarm', { maxConcurrent: 257 })).rejects.toThrow('between 1 and 256');
+    await expect(call('staff_swarm', { maxConcurrent: 513 })).rejects.toThrow('between 1 and 512');
     expect(await callWorkflow('staff_swarm', { operationId: randomUUID(), workflowId: state().workflowId, maxConcurrent: 8 }, main.env)).toMatchObject({ swarm: 'crew', maxConcurrent: 8 });
     expect(state().definition.maxConcurrentWorkers).toBe(8);
     expect(await call('staff_swarm', { revive: 'failed', add: ['w2'], like: 'w0', maxTurns: 4 })).toMatchObject({ swarm: 'crew', revived: ['w0'], added: ['w2'], maxTurns: 4 });

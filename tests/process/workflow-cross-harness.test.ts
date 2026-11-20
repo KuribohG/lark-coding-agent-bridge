@@ -15,6 +15,7 @@ import { ProcessPool } from '../../src/runtime/process-pool';
 import { ActiveRuns } from '../../src/runtime/active-runs';
 import type { WorkflowRoot } from '@kuribohg/agent-workflows';
 import type { RunPolicyAllow } from '../../src/policy/run-policy';
+import { isolateRunHosts } from '../helpers/run-hosts';
 
 const cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
@@ -22,6 +23,8 @@ afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await c
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'workflow-cross-harness-'));
   cleanup.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
+  // Pi workers run under run hosts, and a worker still running when the runtime closes is left there.
+  cleanup.push(isolateRunHosts(join(dir, 'hosts')));
   const binary = join(dir, 'pi.cjs');
   const record = join(dir, 'runs.jsonl');
   await writeFile(binary, `#!${process.execPath}
@@ -83,7 +86,7 @@ describe('Codex-root workflow with Pi process workers', () => {
     await vi.waitFor(()=>expect(f.runtime.kernel.state(f.root.scopeId)?.mailbox?.receipts[0]?.status).toBe('waiting'),{timeout:10000});
     const saved=await f.call('read_checkpoint',{member:'designer'});
     expect(saved).toMatchObject({version:2,state:{decision:'persist native session',next:'review'},nativeSessionId:'pi-child'});
-    await f.call('send_message',{member:'designer',text:'approved'});
+    await f.call('post_board',{to:['designer'],text:'approved'});
     await vi.waitFor(()=>expect(f.runtime.kernel.state(f.root.scopeId)?.script?.status).toBe('result_ready'),{timeout:5000});
     const runs=(await readFile(f.record,'utf8')).trim().split('\n').map(line=>JSON.parse(line));
     expect(runs).toHaveLength(2);
@@ -147,7 +150,7 @@ describe('Codex-root workflow with Pi process workers', () => {
     await f.call('run_script', { goal: 'cancel', script: 'return await agent("WAIT_FOR_CANCEL",{key:"a",harness:"pi"});' });
     await vi.waitFor(() => expect(f.runtime.kernel.state(f.root.scopeId)?.sessions[0]?.nativeSessionId).toBe('pi-child'), {timeout:5000});
     const workflowId = f.runtime.kernel.state(f.root.scopeId)!.workflowId;
-    await f.call('cancel');
+    await f.call('cancel_workflow');
     await vi.waitFor(() => expect(f.runtime.kernel.state(f.root.scopeId, workflowId)?.tasks[0]?.status).toBe('cancelled'));
     expect(f.runtime.kernel.state(f.root.scopeId, workflowId)?.tasks[0]?.resultRefs).toEqual([]);
     expect(f.runtime.kernel.state(f.root.scopeId)).toBeUndefined();

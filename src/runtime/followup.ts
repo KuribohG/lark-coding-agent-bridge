@@ -4,6 +4,12 @@ import type { ActiveRuns } from './active-runs';
 
 export type FollowupResult = 'accepted' | 'queued' | 'cancelled' | 'unknown';
 
+/** Prepared supplement: its prompt, plus images a transport can attach natively. */
+export interface FollowupContent {
+  text: string;
+  images?: readonly string[];
+}
+
 /** Serialize input preparation and delivery without blocking /stop. */
 export class FollowupRouter {
   private readonly tails = new WeakMap<AgentRun, Promise<unknown>>();
@@ -12,7 +18,7 @@ export class FollowupRouter {
     scope: string;
     messageId: string;
     activeRuns: ActiveRuns;
-    prepare(): Promise<string>;
+    prepare(): Promise<string | FollowupContent>;
   }): Promise<FollowupResult> {
     const { scope, activeRuns } = input;
     const handle = activeRuns.get(scope);
@@ -21,11 +27,18 @@ export class FollowupRouter {
     const cancelled = () => generation !== activeRuns.generation(scope) || handle.interrupted;
     const result = (this.tails.get(handle.run) ?? Promise.resolve()).then(async (): Promise<FollowupResult> => {
       if (cancelled()) return 'cancelled';
-      let prompt: string;
-      try { prompt = await input.prepare(); } catch { return cancelled() ? 'cancelled' : 'queued'; }
+      let prepared: FollowupContent;
+      try {
+        const raw = await input.prepare();
+        prepared = typeof raw === 'string' ? { text: raw } : raw;
+      } catch { return cancelled() ? 'cancelled' : 'queued'; }
       if (cancelled()) return 'cancelled';
       if (activeRuns.get(scope) !== handle) return 'queued';
-      const result = await sendRunInput(handle.run, { text: prompt, messageId: input.messageId });
+      const result = await sendRunInput(handle.run, {
+        text: prepared.text,
+        messageId: input.messageId,
+        ...(prepared.images && prepared.images.length > 0 ? { images: prepared.images } : {}),
+      });
       if (cancelled()) return 'cancelled';
       if (result.status === 'accepted') activeRuns.recordInput(handle, input.messageId);
       return result.status === 'unknown' ? 'unknown' : result.status === 'accepted' ? 'accepted' : 'queued';

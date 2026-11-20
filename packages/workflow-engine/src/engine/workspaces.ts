@@ -1,20 +1,55 @@
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync } from 'node:fs';
-import { access, mkdir, realpath } from 'node:fs/promises';
+import { access, mkdir, realpath, rm } from 'node:fs/promises';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { workflowDigest } from './digest';
-import { MAX_WORKSPACES, MAX_WORKSPACE_RECORDS } from './limits';
+import { MAX_WORKSPACES, MAX_WORKSPACE_RECORDS, WORKSPACE_CHECKOUT_SLOTS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
 import { nodeProcesses, workspaceCommand, type CommandResult } from './workspace-process';
 import type { WorkflowProcesses } from './ports';
-import type { LandReport, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
+import type { LandingChange, LandingHead, LandingOverride, LandingRefusal, LandingView, LandReport, WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChecks, WorkspaceCommands, WorkspaceContext, WorkspaceIntegration, WorkspaceLanding } from './workspace-types';
 import type { WorkflowRoot } from './types';
 
 interface RecordRow { id: string; workflow: string; key: string; kind: string; digest: string; done: number; data: string; created: number }
 const SHA = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
 const BUSY = new Set(['queued', 'starting', 'running', 'cancelling', 'waiting_workflow']);
+// Git registers a new worktree in several steps. Concurrent commands can observe a partial entry.
+const worktreeCommands = new Map<string, Promise<CommandResult>>();
+/** The checkout a clone was made from, as the clone's remote. */
+export const CLONE_REMOTE = 'bridge-source';
+/** Where a clone offers the commit the source is about to fetch. */
+const CLONE_PUBLISH_REF = 'refs/bridge-workflow/publish';
 const gitEnv = () => ({ ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_'))), GIT_TERMINAL_PROMPT: '0', GIT_LFS_SKIP_SMUDGE: '1' });
+
+/** A counting semaphore: callers beyond the bound wait for a free slot instead of all running at once. */
+class Slots {
+  private free: number;
+  private readonly waiting: Array<{ grant: () => void; cancel: () => void }> = [];
+  constructor(size: number) { this.free = size; }
+  async acquire(signal: AbortSignal): Promise<() => void> {
+    signal.throwIfAborted();
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      const next = this.waiting.shift();
+      if (next) next.grant(); else this.free++;
+    };
+    if (this.free > 0) { this.free--; return release; }
+    return new Promise<() => void>((resolve, reject) => {
+      const waiter = {
+        grant: () => { signal.removeEventListener('abort', abort); resolve(release); },
+        cancel: () => { const at = this.waiting.indexOf(waiter); if (at >= 0) this.waiting.splice(at, 1); reject(signal.reason); },
+      };
+      const abort = () => waiter.cancel();
+      signal.addEventListener('abort', abort, { once: true });
+      this.waiting.push(waiter);
+    });
+  }
+}
+/** Writing a fresh worktree touches every file in the checkout, so it runs in a bounded pool shared by all workflows. */
+const checkoutSlots = new Slots(WORKSPACE_CHECKOUT_SLOTS);
 
 /** A submission waiting for a train: the member's commits `base..head`, already rebased onto the branch as it was then. */
 interface Candidate { ws: WorkspaceBinding; base: string; head: string; commits: number; ctx: WorkspaceContext; resolve(report: LandReport): void; reject(error: unknown): void }
@@ -30,6 +65,9 @@ function pathPattern(glob: string): RegExp {
   return new RegExp(`^${body}${glob.endsWith('/') ? '.*' : '(?:/.*)?'}$`);
 }
 const tail = (results: WorkspaceChecks['commands']) => results.map(result => ({ ...result, stdout: result.stdout.slice(-4000), stderr: result.stderr.slice(-4000) }));
+/** The main agent's changes to the landing, kept apart from the script's configuration in `@landing`. */
+const LANDING_OVERRIDE = '@landing-override';
+const short = (commit: string | null) => commit ? commit.slice(0, 10) : 'no commit';
 
 /** The journal precedes Git/filesystem operations. Successful results are immutable on replay. */
 export class WorkflowWorkspaces {
@@ -40,8 +78,14 @@ export class WorkflowWorkspaces {
   private readonly trains = new Map<string, { queue: Candidate[]; running: boolean }>();
   /** Stops the trains when the service closes. */
   private readonly stopping = new AbortController();
+  /** The last piece of work that uses each train's worktree; a train and a trial of new checks take turns there. */
+  private readonly tracks = new Map<string, Promise<unknown>>();
+  /** What the main agent has yet to hear about each train's branch; it travels with the next reports. */
+  private readonly unsaid = new Map<string, string>();
   /** The landing in progress in each worktree; a repeated submission joins it. */
   private readonly inFlight = new Map<string, Promise<LandReport>>();
+  /** Commits whose tree this service already screened for submodules and checkout filters, one check per commit. */
+  private readonly supported = new Map<string, Promise<void>>();
   private closed = false;
 
   constructor(path: string, private readonly directory: string, private readonly processes: WorkflowProcesses = nodeProcesses) {
@@ -80,6 +124,17 @@ export class WorkflowWorkspaces {
       const value = make(row.id); this.save(row, value); return value;
     })();
   }
+  /** A record the service keeps under a reserved key of its own, such as the landing configuration. */
+  private record<T>(workflow: string, key: string): T | undefined {
+    const row = this.db.prepare('SELECT * FROM workspace_records WHERE workflow=? AND key=?').get(workflow, key) as RecordRow | undefined;
+    return row && JSON.parse(row.data) as T;
+  }
+  private put(workflow: string, key: string, kind: string, value: unknown): void {
+    this.db.transaction(() => {
+      const row = this.db.prepare('SELECT * FROM workspace_records WHERE workflow=? AND key=?').get(workflow, key) as RecordRow | undefined;
+      if (row) this.save(row, value); else this.insert(workflow, key, kind, value);
+    })();
+  }
   private putWorkspace(workspace: WorkspaceBinding): void { this.save(this.row(workspace.id, workspace.workflowId, 'workspace'), workspace); }
 
   private async git(cwd: string, args: string[], signal: AbortSignal, allowFailure = false, env?: NodeJS.ProcessEnv): Promise<CommandResult> {
@@ -89,13 +144,37 @@ export class WorkflowWorkspaces {
     if (result.code && !allowFailure) throw new Error(`Git ${args[0]} failed: ${(result.stderr || result.stdout).slice(0, 1600)}`);
     return result;
   }
+  private async worktree(ws: Pick<WorkspaceBinding, 'repository' | 'commonDir'>, args: string[], signal: AbortSignal, allowFailure = false): Promise<CommandResult> {
+    const previous = worktreeCommands.get(ws.commonDir) ?? Promise.resolve();
+    const pending = previous.catch(() => undefined).then(() => {
+      signal.throwIfAborted();
+      return this.git(ws.repository, ['worktree', ...args], signal, allowFailure);
+    });
+    worktreeCommands.set(ws.commonDir, pending);
+    try {
+      return await pending;
+    } finally {
+      if (worktreeCommands.get(ws.commonDir) === pending) worktreeCommands.delete(ws.commonDir);
+    }
+  }
   private async revision(repo: string, value: unknown, signal: AbortSignal): Promise<string> {
     if (value !== undefined && (typeof value !== 'string' || !SHA.test(value))) throw new Error('Workspace base must be a full commit ID');
     const head = (await this.git(repo, ['rev-parse', '--verify', `${value ?? 'HEAD'}^{commit}`], signal)).stdout.trim();
     if (!SHA.test(head)) throw new Error('Invalid repository revision');
     return head;
   }
+  /** The tree at `head` does not change, so a commit is screened once however many worktrees are made from it. */
   private async supportedTree(repo: string, head: string, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    const key = `${repo}\0${head}`;
+    const known = this.supported.get(key);
+    if (known) return known;
+    const screen = this.screenTree(repo, head, signal).catch(error => { this.supported.delete(key); throw error; });
+    this.supported.set(key, screen);
+    if (this.supported.size > 512) this.supported.delete(this.supported.keys().next().value!);
+    return screen;
+  }
+  private async screenTree(repo: string, head: string, signal: AbortSignal): Promise<void> {
     const tree = (await this.git(repo, ['ls-tree', '-r', '-z', head], signal)).stdout;
     if (tree.split('\0').some(entry => entry.startsWith('160000 '))) throw new Error('Workspace v1 does not support submodules');
     const attributes = tree.split('\0').map(line => line.slice(line.indexOf('\t') + 1)).filter(path => path === '.gitattributes' || path.endsWith('/.gitattributes'));
@@ -119,7 +198,7 @@ export class WorkflowWorkspaces {
     if (ws.rootDigest !== workflowDigest(root) || ws.status !== 'ready') throw new Error('Workspace binding is unavailable or authorization changed');
     const top = await realpath((await this.git(ws.path, ['rev-parse', '--show-toplevel'], signal)).stdout.trim());
     const common = await realpath(resolve(ws.path, (await this.git(ws.path, ['rev-parse', '--git-common-dir'], signal)).stdout.trim()));
-    if (top !== await realpath(ws.path) || common !== ws.commonDir
+    if (top !== await realpath(ws.path) || common !== (ws.isolation === 'clone' ? join(top, '.git') : ws.commonDir)
       || top !== join(await realpath(this.directory), workflowId, ws.id)) throw new Error('Workspace path or repository identity changed');
     return ws;
   }
@@ -136,6 +215,33 @@ export class WorkflowWorkspaces {
     if (current.busy?.token !== token) throw new Error('Workspace execution ownership changed');
     delete current.busy; this.putWorkspace(current);
   }
+  /** Names the hosted process that runs under a lease. It may outlive this service, and then it keeps the lease. */
+  hosted(ws: WorkspaceBinding, token: string, hostKey: string): void {
+    const current = this.value<WorkspaceBinding>(ws.id, ws.workflowId, 'workspace');
+    if (current.busy?.token !== token) throw new Error('Workspace execution ownership changed');
+    current.busy.hostKey = hostKey; this.putWorkspace(current);
+  }
+  /** The hosted process that holds the workspace, if one does. */
+  holder(ws: WorkspaceBinding): string | undefined {
+    return this.value<WorkspaceBinding>(ws.id, ws.workflowId, 'workspace').busy?.hostKey;
+  }
+  /** Takes over the lease of a process that kept running while no service was attached, for the task that continues it. */
+  adopt(ws: WorkspaceBinding, hostKey: string, taskId: string): string {
+    return this.db.transaction(() => {
+      const current = this.value<WorkspaceBinding>(ws.id, ws.workflowId, 'workspace');
+      if (current.status !== 'ready') throw new Error('Workspace is unavailable');
+      if (current.busy?.hostKey !== hostKey) throw new Error('Workspace is not held by the process being continued');
+      const token = randomUUID(); current.busy = { token, taskId, ownerPid: process.pid, hostKey }; this.putWorkspace(current); return token;
+    })();
+  }
+  /** Frees what a hosted process held, once it is known to have ended with no service attached to see it. */
+  vacate(workflowId: string, hostKey: string): void {
+    const rows = this.db.prepare("SELECT * FROM workspace_records WHERE workflow=? AND kind='workspace' AND json_extract(data,'$.busy.hostKey')=?").all(workflowId, hostKey) as RecordRow[];
+    for (const row of rows) {
+      const ws = JSON.parse(row.data) as WorkspaceBinding;
+      delete ws.busy; this.save(row, ws);
+    }
+  }
   private idle(ws: WorkspaceBinding, ctx: WorkspaceContext): void {
     if (ws.busy || ctx.state.tasks.some(task => task.workspaceId === ws.id && BUSY.has(task.status))) throw new Error('Wait for every workspace task to exit before inspecting or changing it');
   }
@@ -151,8 +257,9 @@ export class WorkflowWorkspaces {
     if (ws.kind === 'review' && (await this.clean(ws, signal)).headCommit !== ws.baseCommit) throw new Error('Reviewer changed the frozen candidate');
   }
 
-  private async materialize(ctx: WorkspaceContext, op: RecordRow, seed: { repository: string; commonDir: string; baseCommit: string; kind: WorkspaceBinding['kind']; changeId?: string }, checkout = seed.baseCommit): Promise<WorkspaceBinding> {
-    const count = (this.db.prepare("SELECT COUNT(*) AS n FROM workspace_records WHERE workflow=? AND kind='workspace'").get(op.workflow) as { n: number }).n;
+  private async materialize(ctx: WorkspaceContext, op: RecordRow, seed: { repository: string; commonDir: string; baseCommit: string; kind: WorkspaceBinding['kind']; isolation?: 'clone'; changeId?: string }, checkout = seed.baseCommit): Promise<WorkspaceBinding> {
+    // Removed worktrees are kept as records for replay and audit, but they no longer hold a directory or a slot.
+    const count = (this.db.prepare("SELECT COUNT(*) AS n FROM workspace_records WHERE workflow=? AND kind='workspace' AND COALESCE(json_extract(data,'$.status'),'')!='removed'").get(op.workflow) as { n: number }).n;
     const existing = this.db.prepare('SELECT id FROM workspace_records WHERE workflow=? AND key=?').get(op.workflow, `@${op.id}/workspace`);
     if (!existing && count >= MAX_WORKSPACES) throw new Error(`Workspace budget reached (${MAX_WORKSPACES} per workflow)`);
     let ws = this.internal<WorkspaceBinding>(op, 'workspace', 'workspace', id => ({ id, workflowId: op.workflow,
@@ -164,12 +271,67 @@ export class WorkflowWorkspaces {
       return bound;
     }
     await mkdir(dirname(ws.path), { recursive: true, mode: 0o700 });
-    const exists = await access(join(ws.path, '.git')).then(() => true, () => false);
-    if (!exists) await this.git(ws.repository, ['worktree', 'add', '--detach', '--lock', '--reason', `bridge-workflow:${ws.id}`, ws.path, checkout], ctx.signal);
+    if (ws.isolation === 'clone') await this.clone(ws, checkout, ctx.signal);
+    else {
+      const exists = await access(join(ws.path, '.git')).then(() => true, () => false);
+      // Only registration races with other Git commands; leave `worktree add` cheap and write the files separately.
+      if (!exists) await this.worktree(ws, ['add', '--no-checkout', '--detach', '--lock', '--reason', `bridge-workflow:${ws.id}`, ws.path, checkout], ctx.signal);
+    }
+    await this.writeTree(ws.path, checkout, ctx.signal);
     ws = { ...ws, status: 'ready' }; this.putWorkspace(ws);
     await this.binding(ctx.state.root, op.workflow, ws.id, ctx.signal);
     if ((await this.clean(ws, ctx.signal)).headCommit !== checkout) throw new Error('Recovered worktree does not match its planned revision');
     return ws;
+  }
+
+  private cloneRef(ws: Pick<WorkspaceBinding, 'workflowId' | 'id'>): string { return `refs/bridge-workflow/${ws.workflowId}/clones/${ws.id}`; }
+  /**
+   * Makes a repository of the member's own at `ws.path`: its refs, index, stash, locks and config are separate from
+   * the source checkout and from every other member, so no Git command of one can disturb another. Objects are not
+   * copied: the clone reads the source's through alternates, and the source keeps a ref on what the clone was made
+   * from, so that stays reachable there. The clone starts detached at `checkout`, with the source as the remote
+   * CLONE_REMOTE and the source's own remotes and their remote-tracking refs under their names.
+   */
+  private async clone(ws: WorkspaceBinding, checkout: string, signal: AbortSignal): Promise<void> {
+    // A clone that is still being prepared holds no work; one a crash left half-made is made again.
+    await this.removeClone(ws);
+    await this.git(ws.repository, ['update-ref', this.cloneRef(ws), checkout], signal);
+    await this.git(ws.repository, ['clone', '--quiet', '--shared', '--no-checkout', '--origin', CLONE_REMOTE, ws.repository, ws.path], signal);
+    await this.git(ws.path, ['update-ref', '--no-deref', 'HEAD', checkout], signal);
+    for (const key of ['user.name', 'user.email']) {
+      const value = (await this.git(ws.repository, ['config', key], signal, true)).stdout.trim();
+      if (value) await this.git(ws.path, ['config', key, value], signal);
+    }
+    const remotes = (await this.git(ws.repository, ['config', '--local', '-z', '--get-regexp', '^remote\\..*\\.(url|pushurl|fetch)$'], signal, true)).stdout
+      .split('\0').filter(Boolean).map(entry => [entry.slice(0, entry.indexOf('\n')), entry.slice(entry.indexOf('\n') + 1)] as const)
+      .filter(([key]) => key.slice('remote.'.length, key.lastIndexOf('.')) !== CLONE_REMOTE);
+    for (const [key, value] of remotes) await this.git(ws.path, ['config', '--add', key, value], signal);
+    if (remotes.length) await this.git(ws.path, ['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', CLONE_REMOTE,
+      '+refs/remotes/*:refs/remotes/*', `^refs/remotes/${CLONE_REMOTE}/*`], signal);
+  }
+  /** Deletes a clone's directory; the path is the one this service derives for the workspace, never one read back. */
+  private async removeClone(ws: WorkspaceBinding): Promise<void> {
+    if (ws.isolation !== 'clone' || ws.path !== join(resolve(this.directory), ws.workflowId, ws.id)) throw new Error('Not a managed clone');
+    await rm(ws.path, { recursive: true, force: true, maxRetries: 3 });
+  }
+  /**
+   * A clone's commits are in its own object store. Before the source refers to one (a frozen change, a landing),
+   * this copies it there and checks the source received the commit that was asked for.
+   */
+  private async publish(ws: WorkspaceBinding, head: string, signal: AbortSignal): Promise<void> {
+    if (ws.isolation !== 'clone') return;
+    await this.git(ws.path, ['update-ref', CLONE_PUBLISH_REF, head], signal);
+    await this.git(ws.repository, ['fetch', '--quiet', '--no-tags', '--no-write-fetch-head', ws.path, `+${CLONE_PUBLISH_REF}:${this.cloneRef(ws)}`], signal);
+    if (await this.refHead(ws.repository, this.cloneRef(ws), signal) !== head) throw new Error('Clone changed while its commits were copied to the source repository');
+  }
+
+  /**
+   * Writes a registered worktree's files. `read-tree --reset -u` uses the same checkout machinery as `worktree add`,
+   * so filters and modes match, and repeating it on a worktree whose files are already there changes nothing.
+   */
+  private async writeTree(path: string, commit: string, signal: AbortSignal): Promise<void> {
+    const release = await checkoutSlots.acquire(signal);
+    try { await this.git(path, ['read-tree', '--reset', '-u', commit], signal); } finally { release(); }
   }
 
   perform(ctx: WorkspaceContext, input: Record<string, unknown>): Promise<unknown> {
@@ -180,7 +342,7 @@ export class WorkflowWorkspaces {
   }
   private async performInner(ctx: WorkspaceContext, input: Record<string, unknown>): Promise<unknown> {
     const { kind, key, ...args } = input;
-    const allowed: Record<string, string[]> = { create: ['base', 'change', 'repo'], freeze: ['workspace'], approve: ['change', 'taskId'],
+    const allowed: Record<string, string[]> = { create: ['base', 'change', 'repo', 'isolation'], freeze: ['workspace'], approve: ['change', 'taskId'],
       integrate: ['base', 'approvals', 'target'], landing: ['checks', 'target', 'precheck', 'protect', 'batch'], check: ['workspace', 'commands'], accept: ['workspace', 'checks'], cleanup: ['workspace'] };
     if (!Object.hasOwn(allowed, String(kind)) || Object.keys(args).some(key => !allowed[String(kind)]!.includes(key))) throw new Error('Unsupported workspace operation or option');
     const name = scriptText(key, 'workspace operation key', 100);
@@ -204,7 +366,9 @@ export class WorkflowWorkspaces {
   private async apply(ctx: WorkspaceContext, op: RecordRow, kind: string, args: Record<string, unknown>): Promise<unknown> {
     const id = (value: unknown) => scriptText(value, 'artifact ID', 100);
     if (kind === 'create') {
-      if (args.change !== undefined && (args.base !== undefined || args.repo !== undefined)) throw new Error('Choose base and repo, or change');
+      if (args.change !== undefined && (args.base !== undefined || args.repo !== undefined || args.isolation !== undefined)) throw new Error('Choose base, repo and isolation, or change');
+      if (args.isolation !== undefined && args.isolation !== 'worktree' && args.isolation !== 'clone') throw new Error('isolation is "worktree" or "clone"');
+      const isolation = args.isolation === 'clone' ? { isolation: 'clone' as const } : {};
       if (args.change !== undefined) {
         const change = this.value<WorkspaceChange>(id(args.change), op.workflow, 'change');
         const source = this.value<WorkspaceBinding>(change.workspaceId, op.workflow, 'workspace');
@@ -217,20 +381,19 @@ export class WorkflowWorkspaces {
       else {
         const repo = await this.repository(ctx.state.root, ctx.signal, args.repo);
         if ((await this.git(repo.repository, ['status', '--porcelain', '--untracked-files=all'], ctx.signal)).stdout.trim()) throw new Error('Authorized checkout has uncommitted changes; choose a clean committed baseline first');
+        // A clone reads the source's objects from disk; ones a partial clone would fetch on demand are not there.
+        if (isolation.isolation && (await this.git(repo.repository, ['config', '--get-regexp', '^(extensions\\.partialclone|remote\\..*\\.promisor)$'], ctx.signal, true)).stdout.trim()) throw new Error('Clone workspaces do not support partial-clone repositories');
         seed = { ...repo, baseCommit: await this.revision(repo.repository, args.base, ctx.signal) }; this.save(op, seed);
       }
       await this.supportedTree(seed.repository, seed.baseCommit, ctx.signal);
-      return this.materialize(ctx, op, { ...seed, kind: 'task' });
+      return this.materialize(ctx, op, { ...seed, kind: 'task', ...isolation });
     }
     if (kind === 'cleanup') return this.cleanup(ctx, op, id(args.workspace));
     if (kind === 'landing') {
       const precheck = args.precheck === undefined ? undefined : this.commands(args.precheck), protect = this.protect(args.protect);
       const landing: WorkspaceLanding = { targetRef: this.targetRef(op.workflow, args.target), commands: this.commands(args.checks),
         ...(precheck ? { precheck } : {}), ...(protect ? { protect } : {}), batch: boundedInteger(args.batch, 16, 1, 64) };
-      this.db.transaction(() => {
-        const row = this.db.prepare('SELECT * FROM workspace_records WHERE workflow=? AND key=?').get(op.workflow, '@landing') as RecordRow | undefined;
-        if (row) this.save(row, landing); else this.insert(op.workflow, '@landing', 'landing', landing);
-      })();
+      this.put(op.workflow, '@landing', 'landing', landing);
       return landing;
     }
     if (kind === 'approve') {
@@ -258,6 +421,7 @@ export class WorkflowWorkspaces {
     try {
       if (kind === 'freeze') {
         const pinned = await this.clean(ws, ctx.signal);
+        await this.publish(ws, pinned.headCommit, ctx.signal);
         await this.supportedTree(ws.repository, pinned.headCommit, ctx.signal);
         if ((await this.git(ws.path, ['merge-base', '--is-ancestor', ws.baseCommit, pinned.headCommit], ctx.signal, true)).code) throw new Error('Candidate no longer descends from its recorded base');
         const integration = ws.kind === 'integration' ? this.integration(ws) : undefined;
@@ -285,8 +449,10 @@ export class WorkflowWorkspaces {
         const current = await this.refHead(ws.repository, integration.targetRef, ctx.signal);
         if (current !== integration.expectedHead && current !== pinned.headCommit) throw new Error('Integration target advanced; prepare and validate a new integration');
         if (current !== pinned.headCommit) {
-          await this.notCheckedOut(ws.repository, integration.targetRef, ctx.signal);
-          await this.git(ws.repository, ['update-ref', integration.targetRef, pinned.headCommit, current ?? '0'.repeat(pinned.headCommit.length)], ctx.signal);
+          await this.notCheckedOut(ws, integration.targetRef, ctx.signal);
+          await this.git(ws.repository, ['update-ref', '-m', `bridge-workflow: accepted integration ${accepted.id}`, integration.targetRef, pinned.headCommit, current ?? '0'.repeat(pinned.headCommit.length)], ctx.signal);
+          // A script may integrate onto the branch that members also land on: the queue vouches for this commit too.
+          if (this.record<LandingHead>(op.workflow, this.headKey(ws.commonDir))?.targetRef === integration.targetRef) this.putHead(ws, { targetRef: integration.targetRef, head: pinned.headCommit });
         }
         accepted.completed = true;
         this.save(this.row(accepted.id, op.workflow, 'accepted'), accepted);
@@ -307,10 +473,14 @@ export class WorkflowWorkspaces {
     if (ws.rootDigest !== workflowDigest(ctx.state.root)) throw new Error('Workspace authorization changed');
     const intent = JSON.parse(op.data) as { removing?: boolean; token?: string };
     if (ws.status === 'removed') return { workspace: ws.id, removed: true };
-    if (intent.removing && !await access(ws.path).then(() => true, () => false)) {
+    // A clone whose removal was interrupted may be half deleted; nothing in it is needed, so the removal is finished.
+    if (intent.removing && (ws.isolation === 'clone' || !await access(ws.path).then(() => true, () => false))) {
       if (ws.busy && ws.busy.token !== intent.token) throw new Error('Workspace execution ownership changed');
-      const listed = (await this.git(ws.repository, ['worktree', 'list', '--porcelain'], ctx.signal)).stdout;
-      if (listed.split('\n').includes(`worktree ${ws.path}`)) throw new Error('Missing worktree is still registered; preserve for recovery');
+      if (ws.isolation === 'clone') await this.dropClone(ws, ctx.signal);
+      else {
+        const listed = (await this.worktree(ws, ['list', '--porcelain'], ctx.signal)).stdout;
+        if (listed.split('\n').includes(`worktree ${ws.path}`)) throw new Error('Missing worktree is still registered; preserve for recovery');
+      }
       this.putWorkspace({ ...ws, status: 'removed', busy: undefined });
       return { workspace: ws.id, removed: true };
     }
@@ -318,19 +488,25 @@ export class WorkflowWorkspaces {
     ws = await this.binding(ctx.state.root, op.workflow, ws.id, ctx.signal);
     const token = this.begin(ws);
     try {
-      const pinned = await this.clean(ws, ctx.signal);
-      const accepted = this.db.prepare("SELECT 1 FROM workspace_records WHERE workflow=? AND kind='accepted' AND json_extract(data,'$.completed')=1 AND json_extract(data,'$.workspace')=? AND json_extract(data,'$.headCommit')=?").get(op.workflow, ws.id, pinned.headCommit);
-      const target = await this.landedHead(op.workflow, ws.repository, ctx.signal);
-      const landed = target && !(await this.git(ws.path, ['merge-base', '--is-ancestor', pinned.headCommit, target], ctx.signal, true)).code;
-      if (pinned.headCommit !== ws.baseCommit && !accepted && !landed) throw new Error('Keep workspaces with unintegrated changes');
+      // Cleanup discards the directory, uncommitted and unintegrated changes included: a member that cannot be
+      // revived is better redone than kept around for work nobody may ever land.
       this.save(op, { removing: true, token });
-      const unlock = await this.git(ws.repository, ['worktree', 'unlock', ws.path], ctx.signal, true);
-      if (unlock.code && !unlock.stderr.includes('not locked')) throw new Error('Cannot unlock worktree');
-      await this.git(ws.repository, ['worktree', 'remove', ws.path], ctx.signal);
+      if (ws.isolation === 'clone') await this.dropClone(ws, ctx.signal);
+      else {
+        const unlock = await this.worktree(ws, ['unlock', ws.path], ctx.signal, true);
+        if (unlock.code && !unlock.stderr.includes('not locked')) throw new Error('Cannot unlock worktree');
+        await this.worktree(ws, ['remove', '--force', ws.path], ctx.signal);
+      }
       this.putWorkspace({ ...ws, status: 'removed', busy: { token, ownerPid: process.pid } });
       if (ws.kind === 'task') await this.retireTrain(ws, ctx.signal);
       return { workspace: ws.id, removed: true };
     } finally { this.end(ws, token); }
+  }
+
+  /** Removes a clone and the source's ref on it. What the clone landed or froze is held by other refs. */
+  private async dropClone(ws: WorkspaceBinding, signal: AbortSignal): Promise<void> {
+    await this.removeClone(ws);
+    await this.git(ws.repository, ['update-ref', '-d', this.cloneRef(ws)], signal, true);
   }
 
   private async refHead(repo: string, ref: string, signal: AbortSignal): Promise<string | null> {
@@ -376,8 +552,8 @@ export class WorkflowWorkspaces {
     if (!/^[a-zA-Z][a-zA-Z0-9_-]*$/.test(target)) throw new Error('Integration target must be a simple private branch name');
     return `refs/heads/bridge-workflow/${workflow}/${target}`;
   }
-  private async notCheckedOut(repo: string, ref: string, signal: AbortSignal): Promise<void> {
-    if ((await this.git(repo, ['worktree', 'list', '--porcelain'], signal)).stdout.split('\n').includes(`branch ${ref}`)) throw new Error('Integration target is checked out; keep the checkout unchanged');
+  private async notCheckedOut(ws: WorkspaceBinding, ref: string, signal: AbortSignal): Promise<void> {
+    if ((await this.worktree(ws, ['list', '--porcelain'], signal)).stdout.split('\n').includes(`branch ${ref}`)) throw new Error('Integration target is checked out; keep the checkout unchanged');
   }
   private protect(value: unknown): WorkspaceLanding['protect'] {
     if (value === undefined) return undefined;
@@ -412,14 +588,16 @@ export class WorkflowWorkspaces {
     return results;
   }
 
-  /** How members land their work, once the script has called configureLanding. */
+  /** How members land their work, once the script has called configureLanding: its configuration with the main agent's changes. */
   landing(workflow: string): WorkspaceLanding | undefined {
-    const row = this.db.prepare("SELECT * FROM workspace_records WHERE workflow=? AND key='@landing'").get(workflow) as RecordRow | undefined;
-    return row && JSON.parse(row.data) as WorkspaceLanding;
+    const base = this.record<WorkspaceLanding>(workflow, '@landing');
+    return base && this.effective(base, this.record<LandingOverride>(workflow, LANDING_OVERRIDE) ?? {});
   }
-  private async landedHead(workflow: string, repo: string, signal: AbortSignal): Promise<string | null> {
-    const landing = this.landing(workflow);
-    return landing ? this.refHead(repo, landing.targetRef, signal) : null;
+  private effective(base: WorkspaceLanding, over: LandingOverride): WorkspaceLanding {
+    const precheck = over.precheck ? over.precheck.length ? over.precheck : undefined : base.precheck;
+    const protect = [...base.protect ?? [], ...over.protect ?? []];
+    return { targetRef: base.targetRef, commands: over.commands ?? base.commands, ...(precheck ? { precheck } : {}),
+      ...(protect.length ? { protect } : {}), batch: over.batch ?? base.batch };
   }
   /**
    * Lands the commits of a member's worktree on the landing branch. Called by the task running in that worktree,
@@ -445,7 +623,14 @@ export class WorkflowWorkspaces {
     const { targetRef } = landing;
     const ancestor = async (older: string, newer: string) => !(await this.git(ws.path, ['merge-base', '--is-ancestor', older, newer], signal, true)).code;
     const before = await this.clean(ws, signal);
-    const targetCommit = await this.refHead(ws.repository, targetRef, signal) ?? ws.baseCommit;
+    let branch = await this.refHead(ws.repository, targetRef, signal);
+    // A branch the queue does not vouch for is looked at before the member's commits are rebased onto it.
+    if ((this.vouched(ws, targetRef, branch)?.head ?? branch) !== branch) {
+      const verdict = await this.exclusive(this.trainKey(ws), () => this.inspect(landing, ws, ctx.state.deadlineAt));
+      if (verdict.halt) return this.halted(targetRef, verdict);
+      branch = verdict.head;
+    }
+    const targetCommit = branch ?? ws.baseCommit;
     const nothing = { status: 'landed' as const, targetRef, headCommit: targetCommit, commits: 0 };
     if (await ancestor(before.headCommit, targetCommit)) return nothing;
     if (!await ancestor(targetCommit, before.headCommit)) {
@@ -472,6 +657,7 @@ export class WorkflowWorkspaces {
       if (after.headCommit !== pinned.headCommit) return { ...failed, reason: 'Checks changed the worktree HEAD' };
     }
     const commits = Number((await this.git(ws.path, ['rev-list', '--count', `${targetCommit}..${pinned.headCommit}`], signal)).stdout.trim());
+    await this.publish(ws, pinned.headCommit, signal);
     const report = await this.board({ ws, base: targetCommit, head: pinned.headCommit, commits, ctx });
     // The train restacked the commits: bring the worktree to where the report says they are, unless the member moved it meanwhile.
     if ((report.status === 'landed' || report.status === 'check_failed') && report.headCommit !== pinned.headCommit) {
@@ -506,16 +692,103 @@ export class WorkflowWorkspaces {
   }
   private async drive(key: string, train: { queue: Candidate[]; running: boolean }): Promise<void> {
     while (train.queue.length && !this.closed) {
-      const landing = this.landing(train.queue[0]!.ws.workflowId);
-      const batch = train.queue.splice(0, landing?.batch ?? train.queue.length);
-      try {
-        if (!landing) throw new Error('Landing is not configured; the script calls configureLanding first');
-        train.queue.unshift(...await this.round(landing, batch));
-      } catch (error) { for (const candidate of batch) candidate.reject(error); }
+      // The landing is read once the worktree is free: a change the main agent made meanwhile applies to this train.
+      await this.exclusive(key, async () => {
+        if (!train.queue.length) return;
+        const landing = this.landing(train.queue[0]!.ws.workflowId);
+        const batch = train.queue.splice(0, landing?.batch ?? train.queue.length);
+        try {
+          if (!landing) throw new Error('Landing is not configured; the script calls configureLanding first');
+          train.queue.unshift(...await this.round(landing, batch));
+        } catch (error) { for (const candidate of batch) candidate.reject(error); }
+      });
     }
     for (const candidate of train.queue.splice(0)) candidate.reject(this.stopping.signal.reason);
     train.running = false;
     if (this.trains.get(key) === train) this.trains.delete(key);
+  }
+
+  /** Runs `work` once everything queued before it for the same train's worktree has finished. */
+  private exclusive<T>(key: string, work: () => Promise<T>): Promise<T> {
+    const turn = (this.tracks.get(key) ?? Promise.resolve()).catch(() => undefined).then(work);
+    this.tracks.set(key, turn);
+    void turn.catch(() => undefined).finally(() => { if (this.tracks.get(key) === turn) this.tracks.delete(key); });
+    return turn;
+  }
+  private trainKey(ws: Pick<WorkspaceBinding, 'workflowId' | 'commonDir'>): string { return `${ws.workflowId}:${ws.commonDir}`; }
+  private headKey(commonDir: string): string { return `@landing-head/${workflowDigest(commonDir).slice(0, 16)}`; }
+  private putHead(ws: Pick<WorkspaceBinding, 'workflowId' | 'commonDir'>, head: LandingHead): void {
+    this.put(ws.workflowId, this.headKey(ws.commonDir), 'landing-head', head);
+  }
+  /** The commit the queue vouches for on a repository's landing branch, once it has landed or adopted one. */
+  private vouched(ws: Pick<WorkspaceBinding, 'workflowId' | 'commonDir'>, targetRef: string, current: string | null): LandingHead | undefined {
+    const known = this.record<LandingHead>(ws.workflowId, this.headKey(ws.commonDir));
+    if (!known || known.targetRef !== targetRef) return undefined;
+    // The move this record announced was made; the service stopped before it could say so.
+    if (known.next && known.next === current) { const settled = { targetRef, head: current }; this.putHead(ws, settled); return settled; }
+    return known;
+  }
+  /** Moves the landing branch from `expected` to `head`, with a reflog entry that names the queue, and vouches for `head`. */
+  private async advance(ws: WorkspaceBinding, targetRef: string, head: string, expected: string | null, message: string, signal: AbortSignal): Promise<void> {
+    const known = this.record<LandingHead>(ws.workflowId, this.headKey(ws.commonDir));
+    if (expected) this.putHead(ws, { targetRef, head: expected, next: head });
+    try {
+      await this.git(ws.repository, ['update-ref', '-m', message, targetRef, head, expected ?? '0'.repeat(head.length)], signal);
+    } catch (error) {
+      if (expected && known) this.putHead(ws, known);
+      throw error;
+    }
+    this.putHead(ws, { targetRef, head });
+  }
+  private async park(path: string, commit: string, signal: AbortSignal): Promise<void> {
+    await this.git(path, ['reset', '--hard', '--quiet', commit], signal);
+    await this.git(path, ['clean', '-fd', '--quiet'], signal);
+  }
+  /**
+   * Where the landing branch is, once the queue vouches for it or has halted on it. Runs with the train's worktree to
+   * itself. A branch the queue has no record of is taken as it is.
+   */
+  private async inspect(landing: WorkspaceLanding, ws: WorkspaceBinding, deadlineAt: number): Promise<{ head: string | null; halt?: string; notice?: string }> {
+    const { signal } = this.stopping, { targetRef } = landing;
+    const head = await this.refHead(ws.repository, targetRef, signal);
+    const known = this.vouched(ws, targetRef, head);
+    if (!known) { if (head) this.putHead(ws, { targetRef, head }); return { head }; }
+    if (known.head === head) { if (known.halt) this.putHead(ws, { targetRef, head }); return { head }; }
+    const verdict = await this.vet(landing, ws, await this.trainWorktree(ws, signal), known, head, deadlineAt, signal);
+    if (!verdict.halt) this.unsaid.set(this.trainKey(ws), verdict.notice);
+    return { head, ...verdict };
+  }
+  private halted(targetRef: string, verdict: { head: string | null; halt?: string; notice?: string }): LandReport {
+    return { status: 'halted', targetRef, targetCommit: verdict.head, ...(verdict.notice ? { notice: verdict.notice } : {}),
+      reason: `The landing branch was moved from outside the landing queue and ${verdict.halt}. Nothing lands until the main agent settles it, and it has been told: keep your commits, do not submit again in this turn and do not move the branch yourself.` };
+  }
+  /**
+   * The branch is not where the queue left it. Commits that were added on top of it, leave every protected path
+   * alone and pass the precheck and the checks are as good as landed ones, and the queue vouches for them from here
+   * on. Anything else halts the landing until the main agent restores or adopts the branch (configure_landing).
+   */
+  private async vet(landing: WorkspaceLanding, ws: WorkspaceBinding, path: string, known: LandingHead, current: string | null, deadlineAt: number, signal: AbortSignal): Promise<{ halt?: string; notice: string }> {
+    const { targetRef } = landing;
+    const stopped = (reason: string) => ({ halt: reason, notice: `落地已停止：落地分支 ${targetRef} 被队列外改动（队列上次落地在 ${short(known.head)}，现在是 ${short(current)}），不能自动接纳：${reason}。`
+      + '在主 agent 处理之前成员的 submit_work 都返回 halted。configure_landing 的 branch:"restore" 把分支恢复到队列上次落地的位置（外来提交保存在返回的 kept 引用下），branch:"adopt" 按现状接纳；查明来源，成员只应通过 submit_work 落地。' });
+    if (known.halt && known.halt.head === current) return stopped(known.halt.reason);
+    const halt = (reason: string) => { this.putHead(ws, { targetRef, head: known.head, halt: { head: current, reason } }); return stopped(reason); };
+    if (!current) return halt('the landing branch was deleted');
+    if ((await this.git(ws.repository, ['merge-base', '--is-ancestor', known.head, current], signal, true)).code) return halt(`the branch no longer contains ${short(known.head)}, so landed work is missing from it`);
+    const changed = (await this.git(ws.repository, ['diff', '--name-only', '--no-renames', '-z', known.head, current], signal)).stdout.split('\0').filter(Boolean);
+    const barred = (landing.protect ?? []).flatMap(rule => rule.paths.map(pathPattern));
+    const files = changed.filter(file => barred.some(pattern => pattern.test(file)));
+    if (files.length) return halt(`the outside commits change protected paths (${files.slice(0, 8).join(', ')}${files.length > 8 ? ', …' : ''})`);
+    await this.park(path, current, signal);
+    const commands = [...landing.precheck ?? [], ...landing.commands];
+    const results = await this.run(path, commands, signal, deadlineAt);
+    const failed = results.find(result => result.code);
+    if (failed || results.length !== commands.length) {
+      return halt(`the outside commits fail the landing checks (${failed ? `${failed.argv.join(' ').slice(0, 200)} exited ${failed.code}: ${(failed.stderr || failed.stdout).trim().slice(-600)}` : 'the checks did not finish'})`);
+    }
+    const count = (await this.git(ws.repository, ['rev-list', '--count', `${known.head}..${current}`], signal)).stdout.trim();
+    this.putHead(ws, { targetRef, head: current });
+    return { notice: `落地分支 ${targetRef} 有 ${count} 个提交未经 submit_work 进入（${short(known.head)}..${short(current)}）。它们接在队列上次落地的位置之后、没有改动受保护路径，并通过了落地检查，队列已接纳并继续落地。查明来源，成员只应通过 submit_work 落地。` };
   }
 
   /**
@@ -529,13 +802,16 @@ export class WorkflowWorkspaces {
   private async round(landing: WorkspaceLanding, batch: Candidate[]): Promise<Candidate[]> {
     const { signal } = this.stopping, { targetRef } = landing, { ws } = batch[0]!;
     const path = await this.trainWorktree(ws, signal);
-    const expected = await this.refHead(ws.repository, targetRef, signal);
-    const start = expected ?? batch[0]!.base;
     const deadlineAt = Math.max(...batch.map(candidate => candidate.ctx.state.deadlineAt));
-    const at = async (commit: string) => {
-      await this.git(path, ['reset', '--hard', '--quiet', commit], signal);
-      await this.git(path, ['clean', '-fd', '--quiet'], signal);
-    };
+    // The branch may have been moved since the members rebased onto it.
+    const verdict = await this.inspect(landing, ws, deadlineAt);
+    if (verdict.halt) { for (const candidate of batch) candidate.resolve(this.halted(targetRef, verdict)); return []; }
+    const expected = verdict.head, key = this.trainKey(ws);
+    const notice = this.unsaid.get(key);
+    let said = false;
+    const told = <T extends LandReport>(report: T): T => { if (!notice) return report; said = true; return { ...report, notice }; };
+    const start = expected ?? batch[0]!.base;
+    const at = (commit: string) => this.park(path, commit, signal);
     await at(start);
     const identity = await this.identity(path, signal);
     const stack: Candidate[] = [], heads = [start], again = new Set<Candidate>();
@@ -544,7 +820,7 @@ export class WorkflowWorkspaces {
       const head = heads.at(-1)!;
       const detail = await this.stack(path, head, candidate, identity, signal);
       if (detail === undefined) { stack.push(candidate); heads.push(await this.revision(path, undefined, signal)); }
-      else if (head === start) candidate.resolve({ status: 'conflict', targetRef, targetCommit: start, detail });
+      else if (head === start) candidate.resolve(told({ status: 'conflict', targetRef, targetCommit: start, detail }));
       else { again.add(candidate); await at(head); }
     }
     const check = async (commit: string): Promise<CheckFailure | undefined> => {
@@ -564,12 +840,15 @@ export class WorkflowWorkspaces {
     const head = heads[good]!;
     if (good) {
       if (await this.refHead(ws.repository, targetRef, signal) !== expected) throw new Error('Landing branch was moved from outside the landing queue; submit again');
-      await this.notCheckedOut(ws.repository, targetRef, signal);
-      await this.git(ws.repository, ['update-ref', targetRef, head, expected ?? '0'.repeat(head.length)], signal);
+      await this.notCheckedOut(ws, targetRef, signal);
+      const landed = stack.slice(0, good), from = landed.slice(0, 16).map(candidate => candidate.ws.id.slice(0, 8)).join(',');
+      await this.advance(ws, targetRef, head, expected, `bridge-workflow: landed ${good} submission(s), ${landed.reduce((total, candidate) => total + candidate.commits, 0)} commit(s) from ${from}${good > 16 ? ',…' : ''}`, signal);
     }
-    for (const candidate of stack.slice(0, good)) candidate.resolve({ status: 'landed', targetRef, headCommit: head, commits: candidate.commits });
-    if (failure) stack[bad - 1]!.resolve({ status: 'check_failed', targetRef, targetCommit: head, headCommit: heads[bad]!, ...failure });
+    for (const candidate of stack.slice(0, good)) candidate.resolve(told({ status: 'landed', targetRef, headCommit: head, commits: candidate.commits }));
+    if (failure) stack[bad - 1]!.resolve(told({ status: 'check_failed', targetRef, targetCommit: head, headCommit: heads[bad]!, ...failure }));
     for (const candidate of stack.slice(bad)) again.add(candidate);
+    // Said once a report carried it; a train that only requeues its submissions says it on the next.
+    if (said) this.unsaid.delete(key);
     return batch.filter(candidate => again.has(candidate));
   }
   /** Puts a submission's commits on top of `head` in the train's worktree; returns Git's complaint when they do not apply. */
@@ -598,7 +877,7 @@ export class WorkflowWorkspaces {
     if (await access(join(path, '.git')).then(() => true, () => false)) await this.git(path, ['cherry-pick', '--abort'], signal, true);
     else {
       await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-      await this.git(ws.repository, ['worktree', 'add', '--detach', '--lock', '--reason', `bridge-workflow:train:${ws.workflowId}`, path, ws.baseCommit], signal);
+      await this.worktree(ws, ['add', '--detach', '--lock', '--reason', `bridge-workflow:train:${ws.workflowId}`, path, ws.baseCommit], signal);
     }
     return path;
   }
@@ -607,8 +886,111 @@ export class WorkflowWorkspaces {
     const left = this.db.prepare("SELECT COUNT(*) AS n FROM workspace_records WHERE workflow=? AND kind='workspace' AND json_extract(data,'$.kind')='task' AND json_extract(data,'$.status')!='removed' AND json_extract(data,'$.commonDir')=?").get(ws.workflowId, ws.commonDir) as { n: number };
     const path = this.trainPath(ws);
     if (left.n || this.trains.has(`${ws.workflowId}:${ws.commonDir}`) || !await access(path).then(() => true, () => false)) return;
-    await this.git(ws.repository, ['worktree', 'unlock', path], signal, true);
-    await this.git(ws.repository, ['worktree', 'remove', '--force', path], signal, true);
+    await this.worktree(ws, ['unlock', path], signal, true);
+    await this.worktree(ws, ['remove', '--force', path], signal, true);
+  }
+
+  /**
+   * The main agent's view of the landing and its changes to it while the workflow runs; without options it only
+   * reports. `checks`, `precheck` (empty for none) and `batch` replace the script's settings, `protect` adds rules to
+   * the script's (empty for none added), and `reset` drops every earlier change first. New commands are first run on
+   * the landing branch as it is: on a branch that fails them every submission would be blamed for it, so the change
+   * is refused and the branch has to be repaired under the current checks first. `branch` settles a branch the queue
+   * does not vouch for: "restore" puts it back where the queue left it and keeps the outside commits under a ref,
+   * "adopt" has the queue vouch for it as it is.
+   */
+  configure(ctx: WorkspaceContext, input: Record<string, unknown>): Promise<LandingChange> {
+    if (this.closed) return Promise.reject(new Error('Workspace service is closed'));
+    const pending = this.configureInner(ctx, input); this.pending.add(pending);
+    void pending.finally(() => this.pending.delete(pending)).catch(() => {});
+    return pending;
+  }
+  private async configureInner(ctx: WorkspaceContext, input: Record<string, unknown>): Promise<LandingChange> {
+    const workflow = ctx.state.workflowId, { signal } = this.stopping;
+    if (Object.keys(input).some(key => !['checks', 'precheck', 'protect', 'batch', 'reset', 'branch'].includes(key))) throw new Error('Unsupported configure_landing option');
+    if (input.reset !== undefined && input.reset !== true) throw new Error('reset is true or left out');
+    if (input.branch !== undefined && input.branch !== 'restore' && input.branch !== 'adopt') throw new Error('branch is "restore" or "adopt"');
+    const base = this.record<WorkspaceLanding>(workflow, '@landing');
+    if (!base) throw new Error('Landing is not configured; the script calls configureLanding first');
+    const empty = (value: unknown) => Array.isArray(value) && !value.length;
+    const stored = this.record<LandingOverride>(workflow, LANDING_OVERRIDE) ?? {};
+    const next: LandingOverride = { ...(input.reset ? {} : stored),
+      ...(input.checks === undefined ? {} : { commands: this.commands(input.checks) }),
+      ...(input.precheck === undefined ? {} : { precheck: empty(input.precheck) ? [] : this.commands(input.precheck) }),
+      ...(input.protect === undefined ? {} : { protect: empty(input.protect) ? [] : this.protect(input.protect)! }),
+      ...(input.batch === undefined ? {} : { batch: boundedInteger(input.batch, 16, 1, 64) }) };
+    if (!next.protect?.length) delete next.protect;
+    const repos = this.landingRepositories(workflow, ctx.state.root);
+    const settled: NonNullable<LandingChange['settled']> = [];
+    if (input.branch) for (const ws of repos) {
+      const outcome = await this.exclusive(this.trainKey(ws), () => this.settle(ws, base.targetRef, input.branch as 'restore' | 'adopt', signal));
+      if (outcome) settled.push(outcome);
+    }
+    const current = this.effective(base, stored), wanted = this.effective(base, next);
+    const differs = (a: unknown, b: unknown) => workflowDigest(a ?? null) !== workflowDigest(b ?? null);
+    const changed = differs(current, wanted) || differs(stored, next);
+    // Only commands the branch has not been held to are tried on it.
+    const fresh = [...(wanted.precheck && differs(wanted.precheck, current.precheck) ? wanted.precheck : []), ...(differs(wanted.commands, current.commands) ? wanted.commands : [])];
+    // Every train of the workflow waits while the commands are tried, so none lands under the old ones meanwhile.
+    const apply = (index: number): Promise<LandingRefusal | undefined> => {
+      if (index === repos.length) { if (changed) this.put(workflow, LANDING_OVERRIDE, 'landing-override', next); return Promise.resolve(undefined); }
+      if (!fresh.length) return apply(index + 1);
+      return this.exclusive(this.trainKey(repos[index]!), async () => await this.tryOn(repos[index]!, base.targetRef, fresh, ctx.state.deadlineAt, signal) ?? apply(index + 1));
+    };
+    const refused = changed ? await apply(0) : undefined;
+    return { changed: changed && !refused, ...(refused ? { refused } : {}), ...(settled.length ? { settled } : {}),
+      landing: await this.view(base, refused ? stored : next, repos, signal) };
+  }
+  /** One ready member worktree for each repository the workflow lands in, in a fixed order. */
+  private landingRepositories(workflow: string, root: WorkflowRoot): WorkspaceBinding[] {
+    const rows = this.db.prepare("SELECT data FROM workspace_records WHERE workflow=? AND kind='workspace' AND json_extract(data,'$.kind')='task' AND json_extract(data,'$.status')='ready'").all(workflow) as Array<{ data: string }>;
+    const repos = new Map<string, WorkspaceBinding>();
+    for (const row of rows) {
+      const ws = JSON.parse(row.data) as WorkspaceBinding;
+      if (ws.rootDigest !== workflowDigest(root)) throw new Error('Workspace authorization changed');
+      if (!repos.has(ws.commonDir)) repos.set(ws.commonDir, ws);
+    }
+    return [...repos.values()].sort((a, b) => a.commonDir < b.commonDir ? -1 : 1);
+  }
+  /** Runs commands on the landing branch as it is, in the train's worktree; tells why the branch does not pass them. */
+  private async tryOn(ws: WorkspaceBinding, targetRef: string, commands: WorkspaceCommands, deadlineAt: number, signal: AbortSignal): Promise<LandingRefusal | undefined> {
+    const head = await this.refHead(ws.repository, targetRef, signal);
+    if (!head) return undefined;
+    const path = await this.trainWorktree(ws, signal);
+    await this.park(path, head, signal);
+    const results = tail(await this.run(path, commands, signal, deadlineAt));
+    const refusal = (reason: string) => ({ repository: ws.repository, headCommit: head, reason, commands: results });
+    if (results.length !== commands.length || results.some(result => result.code)) return refusal('The landing branch fails these commands as it is, so every submission would be blamed for it. Nothing was changed: land the repair under the current checks first, then change them.');
+    if ((await this.git(path, ['status', '--porcelain', '--untracked-files=all'], signal)).stdout.trim()) return refusal('The commands left uncommitted or untracked files in the worktree; every landing would fail for that. Nothing was changed.');
+    return undefined;
+  }
+  private async settle(ws: WorkspaceBinding, targetRef: string, action: 'restore' | 'adopt', signal: AbortSignal): Promise<NonNullable<LandingChange['settled']>[number] | undefined> {
+    const current = await this.refHead(ws.repository, targetRef, signal);
+    const known = this.vouched(ws, targetRef, current);
+    if (!known || known.head === current) return undefined;
+    if (action === 'adopt') {
+      if (!current) throw new Error('The landing branch was deleted; restore it');
+      this.putHead(ws, { targetRef, head: current });
+      return { repository: ws.repository, branch: 'adopted', head: current };
+    }
+    await this.notCheckedOut(ws, targetRef, signal);
+    const kept = current ? `refs/bridge-workflow/${ws.workflowId}/outside/${current}` : undefined;
+    if (kept) await this.git(ws.repository, ['update-ref', kept, current!], signal);
+    await this.git(ws.repository, ['update-ref', '-m', 'bridge-workflow: restored after a move from outside the landing queue', targetRef, known.head, current ?? '0'.repeat(known.head.length)], signal);
+    this.putHead(ws, { targetRef, head: known.head });
+    return { repository: ws.repository, branch: 'restored', head: known.head, ...(kept ? { kept } : {}) };
+  }
+  private async view(base: WorkspaceLanding, over: LandingOverride, repos: WorkspaceBinding[], signal: AbortSignal): Promise<LandingView> {
+    const landing = this.effective(base, over), branches: LandingView['branches'] = [];
+    for (const ws of repos) {
+      const head = await this.refHead(ws.repository, landing.targetRef, signal);
+      const known = this.vouched(ws, landing.targetRef, head);
+      branches.push({ repository: ws.repository, head, ...(known ? { landed: known.head } : {}), waiting: this.trains.get(this.trainKey(ws))?.queue.length ?? 0,
+        ...(known?.halt && known.halt.head === head ? { halted: known.halt.reason } : {}) });
+    }
+    const names: Record<keyof LandingOverride, string> = { commands: 'checks', precheck: 'precheck', protect: 'protect', batch: 'batch' };
+    return { targetRef: landing.targetRef, checks: landing.commands, ...(landing.precheck ? { precheck: landing.precheck } : {}), ...(landing.protect ? { protect: landing.protect } : {}),
+      batch: landing.batch, overridden: (Object.keys(names) as Array<keyof LandingOverride>).filter(key => over[key] !== undefined).map(key => names[key]), branches };
   }
 
   private async check(ctx: WorkspaceContext, op: RecordRow, ws: WorkspaceBinding, value: unknown): Promise<WorkspaceChecks> {

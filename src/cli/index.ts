@@ -15,6 +15,11 @@ import {
   runSecretsSet,
 } from './commands/secrets';
 import {
+  runUserAuthLogin,
+  runUserAuthLogout,
+  runUserAuthStatus,
+} from './commands/user-auth';
+import {
   runProfileCreate,
   runProfileAutostart,
   runProfileExport,
@@ -404,6 +409,40 @@ secrets
   .option('--profile <name>', 'profile name (defaults to active profile)')
   .action(async (opts: { appId: string; profile?: string }) => {
     await runSecretsRemove(opts.appId, { profile: opts.profile });
+  });
+
+// === user-identity OAuth grant (read-only IM fallback) ===
+
+const auth = program
+  .command('auth')
+  .description('Manage the user-identity OAuth grant used as a read-only fallback when the app lacks IM read scopes');
+
+auth
+  .command('user-login')
+  .description('Device-flow login; stores a refresh token in the encrypted keystore')
+  .option('-c, --config <path>', 'path to config file')
+  .option('--profile <name>', 'profile name (defaults to active profile)')
+  .option('--scope <scopes>', 'space-separated scopes to request')
+  .action(async (opts: { config?: string; profile?: string; scope?: string }) => {
+    await runUserAuthLogin(opts);
+  });
+
+auth
+  .command('user-status')
+  .description('Show whether a user grant is stored and whether it can still be refreshed')
+  .option('-c, --config <path>', 'path to config file')
+  .option('--profile <name>', 'profile name (defaults to active profile)')
+  .action(async (opts: { config?: string; profile?: string }) => {
+    await runUserAuthStatus(opts);
+  });
+
+auth
+  .command('user-logout')
+  .description('Delete the stored user grant')
+  .option('-c, --config <path>', 'path to config file')
+  .option('--profile <name>', 'profile name (defaults to active profile)')
+  .action(async (opts: { config?: string; profile?: string }) => {
+    await runUserAuthLogout(opts);
   });
 
 program.parseAsync(process.argv).catch((err: unknown) => {

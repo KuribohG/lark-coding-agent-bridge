@@ -157,6 +157,22 @@ describe('Codex native in-flight input', () => {
     expect(requests.find(x => x.method === 'thread/start').params).toMatchObject({ sandbox: 'read-only', approvalPolicy: 'never', cwd: h.dir });
     expect(requests.find(x => x.method === 'turn/start').params.effort).toBe('high');
   });
+  it('attaches local images to the steered input', async () => {
+    const h = await harness();
+    const run = (await h.adapter.prepareRun({ runId: 'r', cwd: h.dir, prompt: 'task' })).start();
+    const output = collect(run.events);
+    expect(await run.sendInput!({
+      text: 'look at these', messageId: 'message-3', images: ['/tmp/a.png', '/tmp/b.jpg'],
+    })).toEqual({ status: 'accepted', messageId: 'message-3', scope: 'active-turn' });
+    await output;
+    await run.waitForExit(1000);
+    const requests = await h.requests();
+    expect(requests.find(x => x.method === 'turn/steer').params.input).toEqual([
+      { type: 'text', text: 'look at these', text_elements: [] },
+      { type: 'localImage', path: '/tmp/a.png' },
+      { type: 'localImage', path: '/tmp/b.jpg' },
+    ]);
+  });
   it('passes stable instructions through developerInstructions without duplicating them in user input', async () => {
     const h = await harness();
     const adapter = new CodexAdapter({

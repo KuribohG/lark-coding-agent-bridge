@@ -61,6 +61,8 @@ export type BoundCall = <T>(change: (state: WorkflowView, task: TaskView) => T) 
 
 export interface WorkflowTool {
   name: string;
+  /** Earlier names that callers may still use; instructions and operation lists show only `name`. */
+  aliases?: readonly string[];
   main?: MainTool & { doc: string };
   worker?: WorkerTool;
 }
@@ -74,6 +76,11 @@ export interface WorkflowToolPlugin {
   tools: readonly WorkflowTool[];
   /** Paragraph for persistent members, in plugin order. */
   memberInstructions?: string;
+  /**
+   * Paragraph for the members that plan work for others, the lead of a swarm and the leads of its queues, on the
+   * operations only they may call. It follows the plugin's paragraph for all members.
+   */
+  leadInstructions?: string;
   /** Paragraph for workers that may start child workflows. */
   nestedInstructions?: string;
 }

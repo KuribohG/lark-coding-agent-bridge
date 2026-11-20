@@ -1,5 +1,5 @@
 import type {
-  DirectMessage, AgentCheckpoint, BoardPost, DurableAgent, MailboxMessage, MailboxReceipt, SessionBinding, StoredArtifact, StoredTask, SwarmMember, TurnAttempt, WorkClaim,
+  DirectMessage, AgentCheckpoint, BoardPost, DurableAgent, MailboxMessage, MainWake, MailboxReceipt, PostResolution, SessionBinding, StoredArtifact, StoredTask, SwarmMember, TurnAttempt, WorkClaim,
   WorkerExecutionSelection, WorkflowData, WorkflowEvent, WorkflowScript, WorkflowStopReason, WorkflowSwarm, WorkflowWait, WorkflowWorkItem,
 } from './types';
 import type { RecordKind } from './records';
@@ -20,6 +20,7 @@ export type DomainEvent =
   | { type: 'workflow_replaced'; state: WorkflowData }
   | { type: 'workflow_paused' }
   | { type: 'workflow_cancelled' }
+  | { type: 'workflow_cancel_requested' }
   | { type: 'workflow_completed' }
   | { type: 'binding_invalidated' }
   | { type: 'workflow_interrupted'; restart?: { since: number; resume: boolean } }
@@ -27,6 +28,9 @@ export type DomainEvent =
   | { type: 'clock_resumed'; deadlineAt: number }
   | { type: 'deadline_extended'; deadlineAt: number }
   | { type: 'concurrency_changed'; maxConcurrentWorkers: number }
+  | { type: 'charter_set'; text: string; by: string; at: number }
+  /** The main agent's wake-up as it stands after being set, rearmed or cancelled. */
+  | { type: 'main_wake_set'; wake?: MainWake }
   | { type: 'artifact_added'; artifact: StoredArtifact }
   | { type: 'notice_raised'; notice: WorkflowEvent }
   | { type: 'notices_acknowledged'; ids: string[]; at: number }
@@ -45,7 +49,7 @@ export type DomainEvent =
   | { type: 'script_phase_set'; phase: string }
   | { type: 'script_logged'; text: string }
   | { type: 'script_succeeded'; resultRef: string }
-  | { type: 'script_failed'; error: string }
+  | { type: 'script_failed'; error: string; stopReason?: 'deadline' }
   // Sessions, tasks and their attempts
   | { type: 'session_created'; session: SessionBinding }
   | { type: 'session_bound'; sessionRef: string; taskId: string; nativeSessionId: string; model?: string; at: number }
@@ -65,6 +69,9 @@ export type DomainEvent =
   | { type: 'task_child_awaited'; taskId: string }
   | { type: 'task_child_finished'; taskId: string }
   | { type: 'attempt_started'; taskId: string; attempt: TurnAttempt }
+  | { type: 'execution_stop_requested'; taskId: string }
+  | { type: 'execution_uncertain'; taskId: string; error: string }
+  | { type: 'execution_settled'; taskId: string; digest: string; revision: number }
   | { type: 'attempt_admitted'; taskId: string; at: number }
   | { type: 'attempt_spawned'; taskId: string; runId: string; at: number }
   | { type: 'attempt_ended'; taskId: string; at: number; result: string; stopReason?: WorkflowStopReason; status: StoredTask['status']; error?: string; resultRef?: string; failureKind?: string; retryable?: boolean }
@@ -80,18 +87,32 @@ export type DomainEvent =
   | { type: 'receipt_opened'; receipt: MailboxReceipt }
   /** A board post together with its deliveries: one mailbox message per recipient, which is what wakes them. */
   | { type: 'board_posted'; post: BoardPost; deliveries: MailboxMessage[] }
+  /**
+   * A post was marked resolved, or reopened when `resolved` is absent. The post may have left the state; then the store
+   * writes the mark to its archived entry (kernel-store.ts), and `topic` is what the reducer counts it under.
+   */
+  | { type: 'board_post_resolved'; seq: number; postId: string; topic: string; resolved?: PostResolution }
   | { type: 'direct_message_recorded'; taskId: string; message: DirectMessage }
   // Swarms
   | { type: 'swarm_created'; swarm: WorkflowSwarm }
   /** `archivedCalls`: the swarm's archived turns, which count as calls of the new run like its other completed turns. */
   | { type: 'swarm_rebound'; swarmId: string; runId: string; retryPending: string[]; archivedCalls?: number; reopened?: boolean }
-  | { type: 'swarm_turn_scheduled'; swarmId: string; member: string; key: string; taskId: string; retry: boolean; opening: boolean; wake?: string }
+  | { type: 'swarm_turn_scheduled'; swarmId: string; member: string; key: string; taskId: string; retry: boolean; opening: boolean; wake?: string; timer?: boolean }
+  /** A member's own wake-up; without `at` it is cancelled. */
+  | { type: 'swarm_member_timer_set'; swarmId: string; member: string; at?: number; note?: string }
   | { type: 'swarm_member_wake_cleared'; swarmId: string; member: string }
   | { type: 'swarm_member_added'; swarmId: string; member: SwarmMember }
   | { type: 'swarm_member_stopped'; swarmId: string; member: string; reason: 'failed' | 'retired'; detail?: string }
+  | { type: 'swarm_member_workspace_cleaned'; swarmId: string; member: string }
   | { type: 'swarm_member_revived'; swarmId: string; member: string; auto?: boolean }
-  | { type: 'swarm_queue_starved'; swarmId: string; queue: string; at: number; told?: 'lead' | 'main' }
-  | { type: 'swarm_queue_fed'; swarmId: string; queue: string }
+  /** The member consumes `queue` from now on instead of the queue it had; `role`, when given, replaces its role. */
+  | { type: 'swarm_member_moved'; swarmId: string; member: string; queue: string; role?: string }
+  /** `post`: the seq of the notice the lead was sent, which it resolves to say that the queue has no work for now. */
+  | { type: 'swarm_queue_starved'; swarmId: string; queue: string; at: number; told?: 'lead' | 'main'; post?: number }
+  /** `at` closes the starved spell for the queue's record of them; journals of earlier builds carry none. */
+  | { type: 'swarm_queue_fed'; swarmId: string; queue: string; at?: number }
+  /** These items' outcomes were posted to their lead, or have no lead left to go to. */
+  | { type: 'swarm_handoffs_delivered'; swarmId: string; items: string[] }
   | { type: 'swarm_turns_extended'; swarmId: string; maxTurns: number }
   | { type: 'swarm_nudged'; swarmId: string }
   | { type: 'swarm_stalled'; swarmId: string }
@@ -108,9 +129,19 @@ export type DomainEvent =
   | { type: 'work_queue_reopened'; name: string }
   | { type: 'work_enqueued'; item: WorkflowWorkItem }
   | { type: 'work_retried'; itemId: string; maxAttempts: number; at: number }
-  | { type: 'work_cancelled'; itemIds: string[]; at: number }
+  | { type: 'work_cancelled'; itemIds: string[]; at: number; reason?: string }
+  /**
+   * A change to an item by whoever plans its queue: a new priority, a hold placed (`true`) or lifted (`false`), the
+   * member it is for (`null` returns it to the whole queue).
+   */
+  | { type: 'work_updated'; itemId: string; priority?: number; hold?: boolean; assignee?: string | null; at: number }
   | { type: 'work_claimed'; claim: WorkClaim }
+  | { type: 'claim_frozen'; claimId: string; reason: string }
   | { type: 'claim_renewed'; claimId: string; leaseUntil: number }
+  /** A host restart interrupted the claim's turn: the claim waits until `until` for its member's next attempt. */
+  | { type: 'claim_held'; claimId: string; until: number }
+  /** The member's next attempt took over the claim a restart had left held. */
+  | { type: 'claim_adopted'; claimId: string; by: { taskId: string; attemptId: string } }
   /** A claim that ended without completing its item; `retry` returns the item to the queue while attempts remain. */
   | { type: 'claim_ended'; claimId: string; status: 'failed' | 'released' | 'expired' | 'cancelled'; reason: string; retry: boolean; at: number }
   | { type: 'work_progress_saved'; itemId: string; state: unknown; at: number }
@@ -118,8 +149,41 @@ export type DomainEvent =
   | { type: 'work_operation_recorded'; operation: Operation };
 
 /** Events that change a workflow's status or its script's status or run. */
-const LIFECYCLE = new Set<DomainEvent['type']>(['workflow_created', 'workflow_replaced', 'workflow_paused', 'workflow_cancelled', 'workflow_completed',
+const LIFECYCLE = new Set<DomainEvent['type']>(['workflow_created', 'workflow_replaced', 'workflow_paused', 'workflow_cancel_requested', 'workflow_cancelled', 'workflow_completed',
   'workflow_interrupted', 'binding_invalidated', 'script_set', 'script_started', 'script_replayed', 'script_succeeded', 'script_failed']);
+
+/**
+ * Events whose loss is expensive, so the commit carrying them is synced to disk.
+ *
+ * The store commits with `synchronous = NORMAL` in WAL mode: a committed transaction survives a process crash, but a
+ * power loss may drop the last commits. For the events below that loss is not recoverable by replaying cheaply — the
+ * model call behind them would run again (its result is the only thing that lets a replay reuse it), or an external
+ * side effect already happened (a message was delivered) — so their transactions switch to `synchronous = FULL` for
+ * that commit only. Everything else (heartbeats, bookkeeping, scheduling, logs) is cheap to recompute.
+ *
+ * The check is per transaction: if any event in it is here, the whole commit is synced, so a durable event never
+ * commits without the state it produced, its idempotency record and its archived result.
+ */
+const DURABLE = new Set<DomainEvent['type']>([
+  // One worker turn's outcome, the native session it ran in, and the agent state it accumulated.
+  'attempt_ended', 'artifact_added', 'session_bound', 'checkpoint_saved', 'work_progress_saved',
+  'work_completed', 'member_created', 'member_turn_completed',
+  // Already delivered: replaying these would send it again.
+  'board_posted', 'message_sent', 'receipt_opened', 'direct_message_recorded',
+  // Native execution receipts, which restart reconciliation reads back.
+  'execution_settled', 'execution_uncertain',
+  // Terminal outcomes: losing one makes a restart treat the workflow as still active.
+  'script_succeeded', 'script_failed', 'workflow_created',
+  'workflow_completed', 'workflow_cancelled', 'workflow_paused', 'workflow_interrupted',
+  'swarm_ended', 'swarm_finish_requested',
+  // A change of direction: a worker that never hears of it keeps working toward the old one.
+  'charter_set',
+]);
+
+/** Whether a commit carrying this event must be synced to disk (see DURABLE). */
+export function durableEvent(type: string): boolean {
+  return (DURABLE as ReadonlySet<string>).has(type);
+}
 
 /** Subscription topics an event touches (see WorkflowStore.watch). */
 export function eventTopics(event: DomainEvent): string[] {
@@ -131,6 +195,7 @@ export function eventTopics(event: DomainEvent): string[] {
   if (event.type.startsWith('swarm_')) topics.push('swarm');
   if (event.type === 'message_sent' || event.type === 'receipt_opened' || event.type.startsWith('member_turn_')) topics.push('mailbox');
   if (event.type === 'board_posted') topics.push('board', 'mailbox');
+  if (event.type === 'board_post_resolved') topics.push('board');
   if (LIFECYCLE.has(event.type)) topics.push('lifecycle');
   return topics;
 }
@@ -150,6 +215,7 @@ export function eventEntity(event: DomainEvent): string | undefined {
     case 'wait_opened': return event.wait.id;
     case 'message_sent': return event.message.id;
     case 'board_posted': return event.post.id;
+    case 'board_post_resolved': return event.postId;
     case 'receipt_opened': return event.receipt.id;
     case 'checkpoint_saved': return event.checkpoint.ref;
     case 'swarm_created': return event.swarm.id;

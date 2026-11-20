@@ -1,12 +1,13 @@
 import type { NormalizedMessage } from '@larksuite/channel';
 import {
   buildAgentPrompt,
+  type BridgePromptContext,
   type BridgePromptInteractiveCard,
   type BridgePromptMention,
   type BridgePromptQuotedMessage,
   type BridgePromptTopicMessage,
 } from '../../agent/prompt';
-import type { ChatMode } from './chat-mode-cache';
+import type { ChatMode } from './scope-types';
 import type { QuotedContext } from './quote';
 import { toPromptAttachment } from '../../media/attachment';
 import type { LocalAttachment } from '../../media/cache';
@@ -16,7 +17,6 @@ export function buildPrompt(
   attachments: LocalAttachment[],
   quotes: QuotedContext[] = [],
   topicContext: QuotedContext[] = [],
-  botIdentity?: { openId: string; name?: string },
   extraInstructions?: string[],
 ): string {
   const first = batch[0];
@@ -43,20 +43,10 @@ export function buildPrompt(
 
   const senderType = senderTypeOf(first);
   const mentions = mergeMentions(batch);
+  const context = promptContextFor(first, senderType, mentions);
 
   return buildAgentPrompt({
-    context: {
-      chatId: first.chatId,
-      chatType: first.chatType,
-      senderId: first.senderId,
-      ...(first.senderName ? { senderName: first.senderName } : {}),
-      ...(senderType ? { senderType } : {}),
-      ...(botIdentity?.openId ? { botOpenId: botIdentity.openId } : {}),
-      ...(mentions.length > 0 ? { mentions } : {}),
-      ...(first.threadId ? { threadId: first.threadId } : {}),
-      messageIds: batch.map((m) => m.messageId),
-      source: 'im',
-    },
+    ...(context ? { context } : {}),
     instructions: extraInstructions,
     userInput: userPart,
     ...(topicContext.length > 0 ? { topicContext: topicContext.map(toPromptTopicMessage) } : {}),
@@ -64,6 +54,27 @@ export function buildPrompt(
     interactiveCards: batch.map(toPromptInteractiveCard).filter(isDefined),
     attachments: attachments.map(toPromptAttachment),
   });
+}
+
+/**
+ * The block is there only when it says something the text cannot: a group
+ * (mention rules, several speakers), another bot, or a structured mention. A
+ * plain DM from a human carries nothing the model must know before reading the
+ * message, and the ids it would otherwise repeat live in the environment.
+ */
+function promptContextFor(
+  first: NormalizedMessage,
+  senderType: 'user' | 'bot' | undefined,
+  mentions: BridgePromptMention[],
+): BridgePromptContext | undefined {
+  if (first.chatType === 'p2p' && senderType !== 'bot' && mentions.length === 0) return undefined;
+  return {
+    chatType: first.chatType,
+    ...(first.senderName ? { senderName: first.senderName } : {}),
+    ...(senderType ? { senderType } : {}),
+    ...(mentions.length > 0 ? { mentions } : {}),
+    source: 'im',
+  };
 }
 
 /**

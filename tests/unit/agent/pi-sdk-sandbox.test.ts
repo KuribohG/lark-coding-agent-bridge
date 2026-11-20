@@ -20,24 +20,24 @@ describe('pi SDK host sandbox roots', () => {
   it('covers the bridge workspaces, agent homes and the profile default workspace', () => {
     const sandbox = piSdkSandbox({
       agentKind: 'pi',
-      state: { bridgeRoot: '/opt/bridge' },
+      state: { bridgeRoot: join(tmpdir(), 'bridge') },
       execSandbox: { ...DEFAULT_EXEC_SANDBOX, enabled: true, readWrite: ['/data/artifacts'] },
     }, { profileDir: '/opt/bridge/profiles/p', env: {} });
     expect(sandbox.settings.enabled).toBe(true);
     expect(sandbox.roots).toEqual([
-      '/opt/bridge-workspaces',
-      '/opt/bridge/agents',
-      '/opt/bridge-workspaces/pi/default',
+      join(tmpdir(), 'bridge-workspaces'),
+      join(tmpdir(), 'bridge', 'agents'),
+      join(tmpdir(), 'bridge-workspaces', 'pi', 'default'),
     ]);
   });
 
   it('honours an explicit workspace root and agent home root from [state]', () => {
     const sandbox = piSdkSandbox({
       agentKind: 'pi',
-      state: { workspaceRoot: '~/ws', agentHomeRoot: '/srv/agents' },
+      state: { workspaceRoot: '~/ws', agentHomeRoot: join(tmpdir(), 'agent-homes') },
       execSandbox: { ...DEFAULT_EXEC_SANDBOX, enabled: true },
     }, { profileDir: '/state/p', env: {} });
-    expect(sandbox.roots).toEqual([join(homedir(), 'ws'), '/srv/agents', join(homedir(), 'ws', 'pi', 'default')]);
+    expect(sandbox.roots).toEqual([join(homedir(), 'ws'), join(tmpdir(), 'agent-homes'), join(homedir(), 'ws', 'pi', 'default')]);
   });
 
   it('has no roots when the profile was built without [state]', () => {

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { releaseWorkClaims } from './work-queue';
+import { freezeWorkClaims, holdWorkClaims, releaseWorkClaims } from './work-queue';
 import { workerSelection } from './execution';
 import { scriptArgs, scriptText, SCRIPT_MAX_REVISIONS } from './script-contract';
 import { acknowledge, addArtifact, BUSY, sameRoot } from './kernel-state';
@@ -9,35 +9,57 @@ import type { WorkflowState, WorkflowView } from './types';
 
 export const RESUME_ROOT_CHANGED = 'root_changed';
 export const RESUME_DEADLINE = 'deadline';
+/** How long after a restart a member may take to resume the turn whose work claim was kept for it. */
+const CLAIM_ADOPTION_MS = 10 * 60_000;
 
 /** Restart handling: retiring what the previous process left running, and explicit or automatic script replay. */
 export class RestartRecovery {
   constructor(private readonly ctx: KernelContext) {}
 
   retireInterrupted(): void {
-    const { store, hosts } = this.ctx;
+    const { store } = this.ctx;
     // The last heartbeat approximates when the previous process stopped; the outage does not count toward deadlines.
     const beat = store.heartbeat();
     const since = Number.isFinite(beat) && beat > 0 ? Math.min(beat, this.ctx.now()) : this.ctx.now();
+    const resumable = (state: WorkflowView) => state.status === 'active' && ['queued', 'running'].includes(state.script!.status);
+    // Roots whose scripts this restart replays on its own, now or because an earlier restart never got to it.
+    const resuming = new Set(store.list().filter(state => !state.parent && (resumable(state) || state.status === 'interrupted' && state.restart?.resume))
+      .map(state => state.workflowId));
     for (const state of store.list()) store.transact(() => {
+      const governed = Boolean(this.ctx.host.executionLedger);
+      // The replay runs the interrupted turns again, each by the member that had it: its claim waits for it.
+      const keep = !governed && resuming.has(state.parent?.rootWorkflowId ?? state.workflowId) && ['active', 'interrupted'].includes(state.status);
       // Workflows a previous restart already interrupted have nothing left to retire.
       if (state.status !== 'interrupted' || state.script!.status !== 'interrupted') {
         emit(state, { type: 'workflow_interrupted', ...(state.status !== 'interrupted'
-          ? { restart: { since, resume: !state.parent && state.status === 'active' && ['queued', 'running'].includes(state.script!.status) } } : {}) });
+          ? { restart: { since, resume: !state.parent && resumable(state) } } : {}) });
       }
-      // A surviving worker could not submit a released claim; its turn restarts instead.
-      hosts.discardTasks(state.workflowId, (state.workQueue?.claims ?? []).filter(claim => claim.status === 'active').map(claim => claim.taskId));
-      releaseWorkClaims(state, this.ctx.now(), 'Bridge restarted; explicitly replay to continue');
-      for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_workflow') {
-        emit(state, { type: 'task_interrupted', taskId: task.taskId, error: 'Bridge restarted; explicitly replay the script to continue.' });
+      if (governed) freezeWorkClaims(state, 'Host restart; execution settlement requires reconciliation');
+      else if (keep) holdWorkClaims(state, this.ctx.now() + CLAIM_ADOPTION_MS);
+      else this.dropClaims(state);
+      // A caller that had started a child workflow had nothing left to do in that turn but to end it, and what it says
+      // then is not its answer. A process that survived is not continued: the caller resumes in its session with the
+      // child's result. A shutdown has already marked such a turn interrupted, a crash has left it running.
+      if (!governed) this.ctx.hosts.discardTasks(state.workflowId, state.tasks.filter(task => task.waitingWorkflowId).map(task => task.taskId));
+      for (const task of state.tasks) if (BUSY.has(task.status) || task.status === 'waiting_workflow' || task.status === 'waiting_input') {
+        if (governed && task.attempts.length)
+          emit(state, { type: 'execution_uncertain', taskId: task.taskId, error: 'Bridge restarted; native execution requires reconciliation.' });
+        else emit(state, { type: 'task_interrupted', taskId: task.taskId, error: 'Bridge restarted; explicitly replay the script to continue.' });
       }
     }, 'restart');
+  }
+
+  /** Nothing replays these turns on its own, so their claims return to the queue. */
+  private dropClaims(state: WorkflowView): void {
+    // A surviving worker could not submit a released claim; its turn restarts instead.
+    this.ctx.hosts.discardTasks(state.workflowId, (state.workQueue?.claims ?? []).filter(claim => claim.status === 'active').map(claim => claim.taskId));
+    releaseWorkClaims(state, this.ctx.now(), 'Bridge restarted; explicitly replay to continue');
   }
 
   /** Interrupted time does not count toward the deadline; restore it once when the workflow is replayed. */
   resumeClock(state: WorkflowView): void {
     if (state.status !== 'interrupted' || !state.restart) return;
-    emit(state, { type: 'clock_resumed', deadlineAt: state.deadlineAt + Math.max(0, this.ctx.now() - state.restart.since) });
+    emit(state, { type: 'clock_resumed', deadlineAt: state.deadlineAt + (this.ctx.host.executionLedger ? 0 : Math.max(0, this.ctx.now() - state.restart.since)) });
   }
 
   /** Replays root scripts that a restart interrupted mid-run; anything else still waits for an explicit replay. */
@@ -63,7 +85,11 @@ export class RestartRecovery {
       if (reason === undefined) { outcomes.push({ state: store.public(state), resumed: true }); continue; }
       // Leave it interrupted for an explicit decision; do not retry automatically on every restart.
       const current = store.state(scopeId, workflowId)!;
-      store.transact(() => emit(current, { type: 'restart_resume_disabled' }), 'restart');
+      store.transact(() => {
+        emit(current, { type: 'restart_resume_disabled' });
+        // The claims were kept for a replay that is not coming.
+        if (!this.ctx.host.executionLedger) for (const member of store.tree(current)) this.dropClaims(member);
+      }, 'restart');
       outcomes.push({ state: store.public(current), resumed: false, reason });
     }
     return outcomes;

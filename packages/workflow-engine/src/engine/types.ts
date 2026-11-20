@@ -47,6 +47,7 @@ export interface WorkflowDefinition {
 
 /** The root native ID remains owned by SessionCatalog. Only its binding digest is pinned. */
 export interface WorkflowRoot {
+  authorizationExpiresAt?: number;
   scopeId: string;
   profile: string;
   agentKind: AgentKind;
@@ -83,6 +84,8 @@ export interface DurableAgent {
   wait?: WaitState;
   /** Posts the board held when the member's latest turn was scheduled. */
   boardSeq?: number;
+  /** The charter version in force when the member's latest turn was scheduled. */
+  charterSeen?: number;
 }
 
 export interface AgentCheckpoint {
@@ -99,6 +102,10 @@ export interface AgentCheckpoint {
 }
 
 export interface TurnAttempt {
+  executionId?: string;
+  logicalCallId?: string;
+  completionDigest?: string;
+  completedRevision?: number;
   stopReason?: WorkflowStopReason;
   attemptId: string;
   runId?: string;
@@ -138,7 +145,23 @@ export interface MailboxMessage {
 }
 /** Who wrote a board post when it was not a member. */
 export type BoardAuthor = 'main' | 'script' | 'system';
-/** One entry of the workflow's shared, append-only message board. Posts are never edited or removed. */
+/**
+ * Why a post no longer needs anybody's attention: its question was answered, its request done, its conclusion
+ * replaced. The post stays in the feed as written; readers skip it unless they ask for resolved posts.
+ */
+export interface PostResolution {
+  /** The agentId of the member that resolved it; absent for the main agent. */
+  from?: string;
+  at: number;
+  /** What settled it, in a sentence. */
+  note?: string;
+  /** The seq of the post that answers or replaces this one. */
+  see?: number;
+}
+/**
+ * One entry of the workflow's shared, append-only message board. Posts are never edited or removed; the only thing
+ * that changes about one is whether it is resolved.
+ */
 export interface BoardPost {
   /** Position in the feed, starting at 1. */
   seq: number;
@@ -154,6 +177,7 @@ export interface BoardPost {
   topic?: string;
   text: string;
   createdAt: number;
+  resolved?: PostResolution;
 }
 export interface SwarmMember {
   name: string;
@@ -161,6 +185,8 @@ export interface SwarmMember {
   execution: WorkerExecution;
   workflowTool?: boolean;
   workspace?: string;
+  /** Its managed worktree was cleaned up after the member was retired; it cannot be revived. */
+  cleaned?: boolean;
   /** Added by the lead while the swarm was running, with the brief it gave. */
   added?: boolean;
   brief?: string;
@@ -168,6 +194,13 @@ export interface SwarmMember {
   taskId?: string;
   /** The work queue this member consumes: it is also woken whenever that queue has work it could claim. */
   queue?: string;
+  /** The queue the member was told it consumes, when it has been moved since: its next turn tells it of the move. */
+  movedFrom?: string;
+  /**
+   * The work queues this member leads under the swarm's lead: it plans their part of the task instead of consuming
+   * them, is handed the results of their items, and is told when one runs dry or one of its members fails.
+   */
+  leads?: string[];
   /** The available work the member was last woken for; the same set does not wake it twice. */
   lastWake?: string;
   /** Wake-ups used after the opening turn. */
@@ -178,10 +211,17 @@ export interface SwarmMember {
   detail?: string;
   /** Times the engine put the member back to work after a failed turn, without anyone asking. */
   autoRevived?: number;
+  /** A wake-up the member asked for with wake_me: when it is due and what it is for. Cleared by the turn it starts. */
+  wakeAt?: number;
+  wakeNote?: string;
+  /** Work items the member completed, and the ones its claim left failed for good. */
+  itemsDone?: number;
+  itemsFailed?: number;
 }
 /**
  * A group of persistent members that coordinate on the board. The kernel schedules their turns: every member runs
- * once, then again whenever a post names it. An optional lead may add and retire members and decides when to finish.
+ * once, then again whenever a post names it. An optional lead may add and retire members and decides when to finish;
+ * under it, members that lead queues plan those parts of the work.
  */
 export interface WorkflowSwarm {
   id: string;
@@ -203,22 +243,55 @@ export interface WorkflowSwarm {
   stalled?: boolean;
   finish?: { result: string };
   /**
-   * Queues whose consumers are idle with nothing to claim: since when, and when the lead and the main agent were last
-   * told. An entry leaves when the queue has work to claim again or all its consumers are busy.
+   * Queues whose consumers are idle with nothing to claim: since when, when the lead and the main agent were last
+   * told, and the notices the lead was sent in this spell (`posts`, the latest few) while nobody who plans the queue
+   * has added work to it since. An entry leaves when the queue has work to claim again or all its consumers are busy.
    */
-  starved?: Record<string, { since: number; leadAt?: number; mainAt?: number }>;
+  starved?: Record<string, { since: number; leadAt?: number; mainAt?: number; posts?: number[] }>;
+  /**
+   * Queues that are left without work on purpose: a notice that the queue had run dry (`post`) was resolved, which
+   * is how the lead that answers for it, or the main agent, says that it has no work for now. Nobody is told again
+   * that such a queue is dry. It stops resting when someone who plans it adds an item to it, or the notice is reopened.
+   */
+  resting?: Record<string, { since: number; post: number }>;
+  /** What the starved spells of each queue that are over add up to: how many there were, and how long they lasted. */
+  dry?: Record<string, { spells: number; ms: number; longest: number }>;
+  /**
+   * Work items that were completed or failed for good under a member's claim and whose outcome no lead has been given
+   * yet, oldest first; a swarm without a lead keeps none. They are gathered and handed to the lead that planned each
+   * of them when its next turn is scheduled.
+   */
+  handoffs?: Array<{ item: string; worker: string }>;
   members: SwarmMember[];
   /** Turns whose task is still in the state, oldest first; `archivedTurns` counts the completed ones that left it. */
   turns: Array<{ key: string; member: string; taskId: string }>;
   archivedTurns?: number;
+}
+/**
+ * The goal as it stands now. The workflow's goal and a swarm's task are fixed when they start; the charter is what the
+ * main agent or a lead replaces when the direction changes, and every worker turn is given the version in force.
+ */
+export interface WorkflowCharter {
+  version: number;
+  text: string;
+  /** `main`, or the name of the lead that set it. */
+  by: string;
+  at: number;
+}
+/** A wake-up of the main agent it asked for with wake_me: due at `at`, and again every `every` ms when recurring. */
+export interface MainWake {
+  at: number;
+  every?: number;
+  note?: string;
 }
 export interface WorkflowBoard {
   posts: BoardPost[];
   /**
    * By topic: the posts made in it and the seq of its latest few, oldest first. It covers the posts that have left
    * the state as well. Posts made before topics existed are not counted here; they belong to the default topic.
+   * `resolved` is how many of the topic's posts are resolved now.
    */
-  topics?: Record<string, { posts: number; recent: number[] }>;
+  topics?: Record<string, { posts: number; recent: number[]; resolved?: number }>;
 }
 
 export interface MailboxReceipt {
@@ -268,11 +341,28 @@ export interface WorkflowWorkItem {
   title: string;
   /** The member that added the item; absent for items from the script or the main agent. */
   by?: string;
+  /** The key of the item whose delivered result this one is about: a problem found in it, or work that follows from it. */
+  origin?: string;
+  /**
+   * The member the item is for: named by whoever added it, or else the member that completed `origin`. While that
+   * member can still take work from the item's queue the item is kept for it and handed to it before the queue's
+   * other items; once it has stopped or used its wake-ups, any member of the queue claims it.
+   */
+  assignee?: string;
+  /** The member that completed the item. */
+  doneBy?: string;
   input: unknown;
   resources: string[];
+  /**
+   * The paths the item expects to change. Unlike `resources` they lock nothing: unfinished items whose paths overlap
+   * and that nothing orders are reported to whoever adds, reads or claims one of them.
+   */
+  writes?: string[];
   maxAttempts: number;
   generation: number;
   status: 'pending' | 'claimed' | 'completed' | 'failed' | 'cancelled';
+  /** Set aside by whoever plans the queue: the item keeps its place but is not handed out until the hold is lifted. */
+  hold?: boolean;
   claimId?: string;
   progress: { version: number; state: unknown; updatedAt?: number };
   result?: unknown;
@@ -282,6 +372,12 @@ export interface WorkflowWorkItem {
 }
 
 export interface WorkClaim {
+  frozen?: boolean;
+  /**
+   * A host restart cut short the turn that holds this claim. Until its member's next attempt adopts the claim, or
+   * this time passes, the claim keeps its item, cannot be used, and does not expire by lease.
+   */
+  heldUntil?: number;
   id: string;
   itemId: string;
   agentId: string;
@@ -304,6 +400,18 @@ export interface WorkflowWorkQueue {
   closedAt?: number;
   closeKey?: string;
   queues?: Record<string, { closedAt?: number; closeKey?: string }>;
+  /**
+   * What entered and left each queue in every ten-minute slot of the last hours, oldest first: items added, completed
+   * and failed for good. `slot` counts ten-minute spans since the epoch.
+   */
+  flow?: Record<string, WorkFlowSlot[]>;
+}
+
+export interface WorkFlowSlot {
+  slot: number;
+  enqueued?: number;
+  completed?: number;
+  failed?: number;
 }
 
 
@@ -326,7 +434,8 @@ export interface AgentTurn {
   sessionRef: string;
   objective: string;
   inputRefs: string[];
-  status: 'queued' | 'starting' | 'running' | 'result_ready' | 'waiting_input' | 'waiting_workflow' | 'failed' | 'cancelling' | 'cancelled' | 'interrupted';
+  status: 'queued' | 'starting' | 'running' | 'result_ready' | 'waiting_input' | 'waiting_workflow' | 'failed' | 'cancelling' | 'cancelled' | 'interrupted' | 'unknown';
+  quiescence?: 'requested' | 'quiescent' | 'unknown';
   attempts: TurnAttempt[];
   /** Earliest time the next attempt may start; set when a failed attempt is retried. */
   retryAt?: number;
@@ -344,6 +453,8 @@ export interface AgentTurn {
   previousTurnId?: string;
   /** Member turns: posts the board held when the member's previous turn was scheduled; later ones are new to this turn. */
   boardSince?: number;
+  /** Member turns: the charter version in force when the member's previous turn was scheduled; a later one is new to this turn. */
+  charterSince?: number;
   inputCheckpointVersion?: number;
   inputMessageIds?: string[];
   workflowTool?: boolean;
@@ -371,6 +482,8 @@ export interface WorkflowParent {
 export type WorkflowTask = AgentTurn;
 
 export interface WorkflowScript {
+  /** Local engine termination cause; model output never supplies this field. */
+  stopReason?: WorkflowStopReason;
   name: string;
   sourceRef: string;
   planRef?: string;
@@ -407,7 +520,7 @@ export interface WorkflowArtifact {
 
 export interface WorkflowEvent {
   id: string;
-  kind: 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed' | 'worker_reply' | 'swarm_stalled' | 'swarm_attention';
+  kind: 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed' | 'worker_reply' | 'worker_input_required' | 'swarm_stalled' | 'swarm_attention' | 'landing_attention' | 'review_due';
   taskId?: string;
   artifactRef?: string;
   summary: string;
@@ -426,10 +539,12 @@ export type WorkerInputStatus = 'accepted' | 'inactive' | 'unsupported' | 'unkno
 export interface DirectMessage {
   id: string;
   taskId: string;
-  from: 'main' | 'worker';
+  from: 'main' | 'worker' | 'lead';
+  /** The lead that sent it, for a message from a lead. */
+  by?: string;
   text: string;
   createdAt: number;
-  /** For a message from the main agent: whether the worker's transport acknowledged it. */
+  /** For a message into the worker's turn: whether its transport acknowledged it. */
   delivery?: 'accepted' | 'unknown';
 }
 
@@ -448,7 +563,7 @@ export interface WorkflowState {
   definitionDigest: string;
   goal: string;
   stateVersion: number;
-  status: 'active' | 'paused' | 'completed' | 'cancelled' | 'binding_attention' | 'interrupted';
+  status: 'active' | 'paused' | 'completed' | 'cancelled' | 'binding_attention' | 'interrupted' | 'cancelling';
   createdAt: number;
   deadlineAt: number;
   sessions: WorkerSession[];
@@ -463,6 +578,8 @@ export interface WorkflowState {
   checkpoints?: AgentCheckpoint[];
   mailbox?: AgentMailbox;
   board?: WorkflowBoard;
+  charter?: WorkflowCharter;
+  mainWake?: MainWake;
   direct?: DirectMessage[];
   swarms?: WorkflowSwarm[];
   workQueue?: WorkflowWorkQueue;
@@ -503,9 +620,13 @@ export type WorkflowCaller =
   | { scopeId: string; kind: 'worker'; workflowId: string; taskId: string; attemptId: string };
 
 export interface WorkflowWorkerRequest {
+  executionId: string;
+  logicalCallId: string;
   /** The workflow the turn belongs to. Only what a host needs for the whole turn; read the rest through the kernel. */
   workflow: Pick<WorkflowState, 'workflowId' | 'root' | 'deadlineAt'>;
   task: WorkflowTask;
+  /** The member plans work for others (the lead of a swarm or of a queue), so it is also told the operations only such a member may call. */
+  plans?: boolean;
   session: WorkerSession;
   attemptId: string;
   prompt: string;
@@ -517,28 +638,79 @@ export interface WorkflowWorkerRequest {
 }
 
 export interface WorkflowWorkerResult {
+  confirmedNotSubmitted?: boolean;
   stopReason?: WorkflowStopReason;
-  status: 'completed' | 'failed' | 'stopped';
+  status: 'completed' | 'failed' | 'stopped' | 'unknown';
+  quiescence?: 'requested' | 'quiescent' | 'unknown';
   text?: string;
   question?: string;
   error?: string;
 }
 
+export interface WorkspaceTaskView {
+  taskId: string;
+  status: AgentTurn['status'];
+  workspaceId?: string;
+  /** Set when a durable member, not the main agent, runs the task; an approval requires a task without one. */
+  agentId?: string;
+  resultRefs: readonly string[];
+}
+
+export interface WorkspaceArtifactView {
+  ref: string;
+  /** Loaded from the store on first read, exactly as an artifact of the public state. */
+  readonly text: string;
+}
+
+/**
+ * What a workspace host reads of the state it is called for. Workspace calls are made per member when a swarm is
+ * staffed and live for the whole runtime of a landing, so they get this slice instead of a detached copy of the
+ * entire state: a large swarm's state is megabytes, and a copy of it outlives the call that made it.
+ */
+export interface WorkspaceStateView {
+  workflowId: string;
+  root: WorkflowRoot;
+  deadlineAt: number;
+  /** Calls of the script run that is asking, which a review must belong to. */
+  script?: { calls: ReadonlyArray<{ taskId: string }> };
+  tasks: ReadonlyArray<WorkspaceTaskView>;
+  artifacts: ReadonlyArray<WorkspaceArtifactView>;
+}
+
 export interface WorkflowHost extends WorkerExecutionPolicy {
+  executionLedger?: ExecutionLedgerPort;
+  /** Workers call the workflow through a host tool, so prompts must not name the shell CLI. */
+  hostTools?: boolean;
   log?: WorkflowLogger;
   /** Silence after which a running worker with no tool in flight is treated as hung. Defaults to 15 minutes. */
   stallMs?: number;
+  /**
+   * Silence after which a running worker is treated as hung although a tool is in flight, for tools the host reports
+   * no due time for. Defaults to 7 hours; 0 leaves such a worker alone.
+   */
+  toolStallMs?: number;
   /** Backoff before each retry of a failed attempt, in order (last repeats). Defaults to 30 s, 2 min, 5 min. */
   retryDelaysMs?: readonly number[];
   resolveRoot(scopeId: string): Promise<WorkflowRoot | undefined>;
   getTimeoutMinutes?(root: WorkflowRoot): number;
   resolveWorker?(root: WorkflowRoot, selection: WorkerExecutionSelection): Promise<WorkerExecution>;
   resolveWorkspace?(root: WorkflowRoot, workflowId: string, workspaceId: string): Promise<void>;
-  workspace?(state: WorkflowState, input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
+  workspace?(state: WorkspaceStateView, input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>;
   /** Lands the commits of the worktree `taskId` runs in; resolves to a LandReport (workspace-types.ts). */
   /** Delivers text to the worker turn of `taskId` while it runs, as a user message in its session. */
   tell?(workflowId: string, taskId: string, text: string, messageId: string): Promise<WorkerInputStatus>;
-  land?(state: WorkflowState, input: { workspace: string; taskId: string }, signal: AbortSignal): Promise<unknown>;
+  land?(state: WorkspaceStateView, input: { workspace: string; taskId: string }, signal: AbortSignal): Promise<unknown>;
+  /** Reports the landing and applies the main agent's changes to it; resolves to a LandingChange (workspace-types.ts). */
+  landing?(state: WorkspaceStateView, input: Record<string, unknown>): Promise<unknown>;
   execute(request: WorkflowWorkerRequest): Promise<WorkflowWorkerResult>;
   wakeMain(scopeId: string): Promise<void>;
+}
+
+export type ExecutionObservation =
+  | { state: 'not-submitted'; proof: string }
+  | { state: 'completed'; result: WorkflowWorkerResult; nativeSessionId?: string }
+  | { state: 'unknown'; reason?: string };
+export interface ExecutionLedgerPort {
+  /** The workflow scope lets a host read only the records that execution can belong to. */
+  lookupExecution(executionId: string, scopeId: string): Promise<ExecutionObservation>;
 }

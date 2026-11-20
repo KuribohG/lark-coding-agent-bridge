@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
@@ -12,6 +12,7 @@ import type { WorkspaceApproval, WorkspaceBinding, WorkspaceChange, WorkspaceChe
 const closes: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const close of closes.splice(0).reverse()) await close(); });
 const signal = () => new AbortController().signal;
+const exists = (path: string) => access(path).then(() => true, () => false);
 async function git(cwd: string, ...argv: string[]) {
   const result = await workspaceCommand('git', argv, cwd, signal());
   if (result.code) throw new Error(result.stderr || result.stdout);
@@ -87,6 +88,33 @@ describe('managed workflow worktrees with real Git', () => {
     expect(await git(ws.path,'rev-parse','HEAD')).toBe(h.base);
   }, 30_000);
 
+  it('creates a batch of worktrees at once, each at its baseline and clean', async () => {
+    const h = await fixture();
+    const made = await Promise.all(Array.from({ length: 12 }, (_, i) => h.create('batch/' + i)));
+    expect(new Set(made.map(ws => ws.id)).size).toBe(12);
+    for (const ws of made) {
+      expect(await git(ws.path, 'rev-parse', 'HEAD')).toBe(h.base);
+      expect(await git(ws.path, 'status', '--porcelain', '--untracked-files=all')).toBe('');
+      expect(await readFile(join(ws.path, 'shared.txt'), 'utf8')).toBe('baseline\n');
+    }
+  }, 60_000);
+
+  it('writes the files of a worktree registered before an interrupted create', async () => {
+    const h = await fixture(), ws = await h.create('a');
+    const db = new Database(h.path);
+    db.prepare("UPDATE workspace_records SET done=0 WHERE key='a'").run();
+    const row = db.prepare("SELECT id,data FROM workspace_records WHERE kind='workspace'").get() as { id: string; data: string };
+    db.prepare('UPDATE workspace_records SET data=? WHERE id=?').run(JSON.stringify({ ...JSON.parse(row.data), status: 'preparing' }), row.id);
+    db.close();
+    // A create that died after `git worktree add --no-checkout` leaves the directory registered but empty.
+    await rm(join(ws.path, 'shared.txt'));
+    await h.restart();
+    const again = await h.create('a');
+    expect(again.id).toBe(ws.id);
+    expect(await readFile(join(again.path, 'shared.txt'), 'utf8')).toBe('baseline\n');
+    expect(await git(again.path, 'status', '--porcelain', '--untracked-files=all')).toBe('');
+  }, 30_000);
+
   it('merges independently approved changes, checks the combination, and accepts only a private branch', async () => {
     const h = await fixture(); const a = await h.candidate('a', 'a.txt', 'A\n'), b = await h.candidate('b', 'b.txt', 'B\n');
     const input = { approvals: [a.approval.id, b.approval.id] };
@@ -119,7 +147,6 @@ describe('managed workflow worktrees with real Git', () => {
     const merged = await h.op<WorkspaceIntegration>('integrate', 'merge', { approvals: [a.approval.id, b.approval.id, c.approval.id] });
     expect(merged.status).toBe('conflict'); expect(merged.remaining).toEqual([c.approval.id]);
     await expect(h.op('accept', 'bad', { workspace: merged.workspace.id, checks: 'none' })).rejects.toThrow('Repair');
-    await expect(h.op('cleanup', 'keep', { workspace: merged.workspace.id })).rejects.toThrow('unintegrated');
     await h.commit(merged.workspace, 'shared.txt', 'A and B\n');
     const repair = await h.op<WorkspaceChange>('freeze', 'repair', { workspace: merged.workspace.id });
     const reviewed = await h.review('repair', repair);
@@ -129,6 +156,14 @@ describe('managed workflow worktrees with real Git', () => {
     expect(await readFile(join(fixed.workspace.path, 'c.txt'), 'utf8')).toBe('C\n');
     const checks = await h.checks(fixed.workspace);
     await h.op('accept', 'accept', { workspace: fixed.workspace.id, checks: checks.id });
+  }, 90_000);
+
+  it('removes a workspace with uncommitted and unintegrated changes, discarding them', async () => {
+    const h = await fixture(); const ws = await h.create('a');
+    await writeFile(join(ws.path, 'dirty.txt'), 'dirty\n');
+    await h.commit(ws, 'committed.txt', 'committed\n');
+    expect(await h.op('cleanup', 'clean', { workspace: ws.id })).toMatchObject({ removed: true });
+    expect(await exists(ws.path)).toBe(false);
   }, 30_000);
 
   it('requires clean, independent, current-run snapshot review evidence', async () => {
@@ -167,7 +202,7 @@ describe('managed workflow worktrees with real Git', () => {
     const checks = await h.checks(merged.workspace);
     await git(h.repo, 'update-ref', merged.targetRef, h.base);
     await expect(h.op('accept', 'stale', { workspace: merged.workspace.id, checks: checks.id })).rejects.toThrow('target advanced');
-    await expect(h.op('cleanup', 'keep', { workspace: merged.workspace.id })).rejects.toThrow('unintegrated');
+    expect(await h.op('cleanup', 'keep', { workspace: merged.workspace.id })).toMatchObject({ removed: true });
   }, 30_000);
 
   it('does not update a private integration branch checked out by a user', async () => {

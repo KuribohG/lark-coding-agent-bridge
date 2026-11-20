@@ -66,8 +66,9 @@ export function nodeVersionAtLeast(version: string | undefined, minimum: readonl
 
 /** Resolve the host script relative to the running module (src or dist build). */
 function defaultPiHostScript(): string {
-  const suffix = import.meta.url.endsWith('.ts') ? '../../../bin/pi-host.mjs' : '../bin/pi-host.mjs';
-  return fileURLToPath(new URL(suffix, import.meta.url));
+  if (import.meta.url.endsWith('.ts')) return fileURLToPath(new URL('../../../bin/pi-host.mjs', import.meta.url));
+  const bundled = fileURLToPath(new URL('./bin/pi-host.mjs', import.meta.url));
+  return existsSync(bundled) ? bundled : fileURLToPath(new URL('../bin/pi-host.mjs', import.meta.url));
 }
 
 interface DerivedLauncherPaths {

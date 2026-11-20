@@ -25,6 +25,11 @@ export interface WorkflowProcesses {
 }
 
 export interface WorkerRunSpec {
+  executionId: string;
+  logicalCallId: string;
+  attemptId: string;
+  /** Host-bound direct tools; no reusable model-visible IPC credentials. */
+  workflowTools?: { definitions: unknown[]; call(method: string, args: Record<string, unknown>): Promise<unknown> };
   /** Stable for one worker session across its turns. */
   sessionKey: string;
   root: WorkflowRoot;
@@ -47,8 +52,12 @@ export interface WorkerRunSpec {
 export type WorkerRunEvent =
   | { type: 'session'; nativeSessionId: string; model?: string }
   | { type: 'retry' }
-  /** The agent produced output; `busy` reports whether a tool call is in flight, when a tool is what keeps it silent. */
-  | { type: 'activity'; busy: boolean }
+  /**
+   * The agent produced output; `busy` reports whether a tool call is in flight, when a tool is what keeps it silent.
+   * `busyUntil` is the wall-clock time by which a call in flight is due back, for a host that knows the limits its
+   * agent puts on its tools: a call still out after it is taken for hung. Without it the host's tool limit applies.
+   */
+  | { type: 'activity'; busy: boolean; busyUntil?: number }
   | { type: 'final_text'; text: string }
   | { type: 'error'; message: string }
   | { type: 'done'; normal: boolean }
@@ -56,13 +65,16 @@ export type WorkerRunEvent =
 
 export interface WorkerRun {
   runId: string;
+  /** The process runs under the host the spec named: a 'shutdown' stop leaves it running for a later attach. */
+  hosted?: boolean;
   events(): AsyncIterable<WorkerRunEvent>;
-  result: Promise<'completed' | 'stopped' | 'failed'>;
+  result: Promise<'completed' | 'stopped' | 'failed' | 'unknown'>;
   /** Delivers a user message into the running turn; absent when the harness cannot take one. */
   send?(text: string, messageId: string): Promise<WorkerInputStatus>;
   stop(reason: WorkflowStopReason): Promise<void>;
   /** Resolves false when native process exit cannot be confirmed in time. */
   waitForExit(timeoutMs: number): Promise<boolean>;
+  waitForQuiescence?(timeoutMs: number): Promise<{ state: 'requested' | 'quiescent' | 'unknown' }>;
   stopReason(): WorkflowStopReason | undefined;
 }
 
@@ -75,11 +87,17 @@ export interface WorkerHosting {
   newKey(): string;
   /** True when `key` holds a process of `agentKind`, running or finished, that can be attached. */
   attachable(key: string, agentKind: string): Promise<boolean>;
-  /** Ends the process if it still runs and deletes its records. */
-  release(key: string): Promise<void>;
+  /**
+   * Ends the process if it still runs and deletes its records. Resolves false when the process may still be running:
+   * what it holds, such as a worktree, then stays held.
+   */
+  release(key: string): Promise<boolean>;
 }
 
-/** Starts one agent turn. Each call is a fresh native process unless it attaches to a host; `resume` continues the native session. */
+/**
+ * Starts one agent turn. Each call is a fresh native process unless it attaches to a host; `resume` continues the native
+ * session. Persistent backends may retain their session while quiescent.
+ */
 export interface WorkerRunner {
   start(spec: WorkerRunSpec): Promise<WorkerRun>;
   hosting?: WorkerHosting;

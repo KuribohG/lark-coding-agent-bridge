@@ -14,7 +14,7 @@ import {
   type QuestionPresenter,
   type QuestionRequest as BrokerRequest,
 } from '../../runtime/questions';
-import type { ChatMode } from './chat-mode-cache';
+import type { ChatMode } from './scope-types';
 import { bridgeInput, type PendingQueue } from './pending-queue';
 
 /** What Lark needs to show a question and route its answer. */
@@ -53,10 +53,8 @@ export class UserQuestions {
     this.broker = new QuestionBroker({ presenter, activeRuns: deps.activeRuns, followups: deps.followups,
       catalog: deps.catalog, blockingTimeoutMs: deps.blockingTimeoutMs,
       delivery: {
-        prompt: async ({ origin: { message } }, content, anchorId) => buildAgentPrompt({
-          context: { chatId: message.chatId, chatType: message.chatType, threadId: message.threadId,
-            senderId: message.senderId, senderType: 'user', botOpenId: deps.channel.botIdentity?.openId,
-            messageIds: [anchorId], source: 'card' },
+        prompt: async ({ origin: { message } }, content, _anchorId) => buildAgentPrompt({
+          context: { chatType: message.chatType, senderType: 'user', source: 'card' },
           instructions: ['这是用户对先前提问的回答。请结合当前任务和已完成进度处理。'], userInput: content,
         }),
         queue: async (request, content, anchorId) => {

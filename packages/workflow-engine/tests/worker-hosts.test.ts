@@ -19,7 +19,7 @@ function hostedRunner() {
     hosting: {
       newKey: () => randomUUID(),
       attachable: async (key, agentKind) => hosts.get(key)?.agentKind === agentKind,
-      release: async key => { released.push(key); hosts.delete(key); },
+      release: async key => { released.push(key); hosts.delete(key); return true; },
     },
     async start(spec) {
       specs.push(spec);
@@ -40,7 +40,8 @@ function hostedRunner() {
         runId: randomUUID(), result: outcome.then(text => text === undefined ? 'stopped' : 'completed'),
         stop: async reason => { stopped ??= reason; wake(); }, waitForExit: async () => true, stopReason: () => stopped,
         async *events() {
-          yield { type: 'session', nativeSessionId: `native-${key}` };
+          // A process that resumes a session reports that session.
+          yield { type: 'session', nativeSessionId: spec.resume?.id ?? `native-${key}` };
           const text = await outcome;
           if (text === undefined) return;
           yield { type: 'final_text', text };
@@ -117,6 +118,70 @@ describe('hosted workflow workers', () => {
     await h.until(() => expect(h.state().script?.status).toBe('result_ready'));
     expect(h.state().tasks).toHaveLength(1);
     expect(h.state().tasks[0]).toMatchObject({ taskId, status: 'result_ready' });
+  });
+
+  it('lets a reattached member finish the work claim it held before the restart', async () => {
+    const h = await harness();
+    await h.run('await enqueueWork({key:"work", title:"Work", input:null}); return await agent("consume", {key:"turn", member:"A"});');
+    await h.until(() => expect(h.state().tasks[0]?.status).toBe('running'));
+    const first = h.specs[0]!;
+    const grant = await callWorkflow('claim_work', { operationId: 'claim-1' }, first.env) as { claimId: string; generation: number };
+
+    await h.restart();
+    await h.until(() => expect(h.specs).toHaveLength(2));
+    expect(h.specs[1]!.host).toEqual({ key: first.host!.key, attach: true });
+    expect(h.released).toEqual([]);
+    expect(h.state().workQueue!.claims[0]).toMatchObject({ id: grant.claimId, status: 'active', attemptId: h.state().tasks[0]!.attempts.at(-1)!.attemptId });
+    // The process never learns of the restart: it completes with the claim ID and generation it was given.
+    await callWorkflow('complete_work', { operationId: 'done-1', claimId: grant.claimId, generation: grant.generation, result: 'done' }, first.env);
+    expect(h.state().workQueue!.items[0]).toMatchObject({ status: 'completed', result: 'done', generation: 1 });
+    h.hosts.get(first.host!.key)!.finish('member answer');
+    await h.until(() => expect(h.state().script?.status).toBe('result_ready'));
+  });
+
+  it('keeps every swarm member on its own work item across a restart', async () => {
+    const h = await harness();
+    await h.run('for (const n of [0, 1]) await enqueueWork({key:"item-" + n, title:"Item " + n, input:n});'
+      + 'return await swarm("Claim and finish the queued work", {key:"crew", maxTurns:4, members:[{name:"w0",queue:"default"},{name:"w1",queue:"default"}]});');
+    await h.until(() => expect(h.specs).toHaveLength(2));
+    const grants = await Promise.all(h.specs.map(spec => callWorkflow('claim_work', { operationId: 'claim-1' }, spec.env) as Promise<{ claimId: string; generation: number; item: { key: string } }>));
+    expect(grants.map(grant => grant.item.key).sort()).toEqual(['item-0', 'item-1']);
+
+    await h.restart();
+    await h.until(() => expect(h.specs).toHaveLength(4));
+    expect(h.specs.slice(2).map(spec => spec.host!.attach)).toEqual([true, true]);
+    expect(h.released).toEqual([]);
+    expect(h.state().workQueue!.claims.map(claim => claim.status)).toEqual(['active', 'active']);
+    for (const [index, grant] of grants.entries()) {
+      await callWorkflow('complete_work', { operationId: 'done-1', claimId: grant.claimId, generation: grant.generation, result: grant.item.key }, h.specs[index]!.env);
+    }
+    expect(h.state().workQueue!.items.map(item => [item.status, item.generation, item.result])).toEqual([['completed', 1, 'item-0'], ['completed', 1, 'item-1']]);
+    expect(h.state().workQueue!.claims).toHaveLength(2);
+  });
+
+  it('does not continue the turn of a caller that had started a child workflow, and resumes the caller with the child\'s result', async () => {
+    const h = await harness();
+    await h.run('return await agent("delegate", {key:"parent", workflowTool:true});');
+    await h.until(() => expect(h.state().tasks[0]?.status).toBe('running'));
+    const first = h.specs[0]!;
+    // The caller has committed its child and not yet ended its turn when the controller goes away.
+    await expect(callWorkflow('run_workflow', { operationId: 'delegate', key: 'delegate', goal: 'Return the answer',
+      plan: 'Return 42 without workers.', script: 'return 42;' }, first.env)).resolves.toMatchObject({ status: 'waiting' });
+
+    await h.restart();
+    await h.until(() => expect(h.specs).toHaveLength(2));
+    // All that turn had left to do was to end, and what it says then is not the caller's answer: its process is ended,
+    // and the caller resumes in its session with the result of the child, which ran meanwhile.
+    expect(h.released).toEqual([first.host!.key]);
+    const resumed = h.specs[1]!;
+    expect(resumed.host!.attach).toBe(false);
+    expect(resumed.resume).toEqual({ kind: 'sessionId', id: `native-${first.host!.key}` });
+    await expect(callWorkflow('read_context', {}, resumed.env)).resolves.toMatchObject({ workflows: { call: { ok: true, result: 42 } } });
+    await expect(callWorkflow('task_status', {}, first.env)).rejects.toThrow();
+    h.hosts.get(resumed.host!.key)!.finish('the answer is 42');
+    await h.until(() => expect(h.state().script?.status).toBe('result_ready'));
+    expect(JSON.parse(h.state().artifacts.find(artifact => artifact.ref === h.state().script!.resultRef)!.text)).toBe('the answer is 42');
+    expect(h.state().tasks[0]!.attempts).toHaveLength(2);
   });
 
   it('starts a fresh process when the host did not survive', async () => {

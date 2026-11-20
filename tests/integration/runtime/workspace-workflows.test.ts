@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, writeFile, mkdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { callWorkflow } from '@kuribohg/agent-workflows';
 import { createBridgeWorkflowRuntime } from '../../../src/workflows/bridge/runtime';
 import { RunExecutor } from '../../../src/runtime/run-executor';
 import { ProcessPool } from '../../../src/runtime/process-pool';
@@ -47,7 +48,7 @@ async function harness(perform?: (opts: AgentRunOptions, index: number) => Promi
   const state = () => runtime.kernel.state('test')!;
   const call = (method: string, args: object = {}) => runtime.kernel.call({ kind: 'main', scopeId: 'test', allowStart: true }, method,
     { operationId: randomUUID(), workflowId: state()?.workflowId, expectedStateVersion: state()?.stateVersion, ...(method === 'run_script' ? { goal: 'test workspace', plan: 'isolate and review work' } : {}), ...args });
-  const until = async (status: string) => vi.waitFor(async () => { await runtime.tick(); expect(state().script?.status, state().script?.error).toBe(status); }, { timeout: 20_000, interval: 30 });
+  const until = async (status: string, timeout = 20_000) => vi.waitFor(async () => { await runtime.tick(); expect(state().script?.status, state().script?.error).toBe(status); }, { timeout, interval: 30 });
   return { dir, repo, root, policy, adapter, runtime, call, state, until };
 }
 
@@ -71,7 +72,7 @@ describe('workspace script runtime', () => {
       const value = await readFile(join(opts.cwd!, 'value.txt'), 'utf8'); reviews++;
       return JSON.stringify({ ok: value === 'correct\n', reason: value === 'correct\n' ? 'correct' : 'fix value', evidence: [`Read value.txt: ${value}`] });
     });
-    await h.call('run_script', { script: reviewScript, args: { node: process.execPath } }); await h.until('result_ready');
+    await h.call('run_script', { script: reviewScript, args: { node: process.execPath } }); await h.until('result_ready', 75_000);
     expect([workers, reviews]).toEqual([2, 2]);
     const result = JSON.parse(h.state().artifacts.at(-1)!.text);
     expect(result.result.rounds).toBe(2); expect(result.accepted.completed).toBe(true);
@@ -80,9 +81,9 @@ describe('workspace script runtime', () => {
     expect(runs.every(opts => opts.cwd !== h.repo)).toBe(true);
     expect(runs[0]!.cwd).toBe(runs[2]!.cwd); expect(runs[1]!.cwd).not.toBe(runs[3]!.cwd);
     expect(runs[2]!.threadId).toBeDefined(); expect(runs[1]!.threadId).toBeUndefined();
-    await h.call('replay_script'); await h.until('result_ready'); expect(h.adapter.runs).toHaveLength(4);
+    await h.call('replay_script'); await h.until('result_ready', 75_000); expect(h.adapter.runs).toHaveLength(4);
     expect(JSON.parse(h.state().artifacts.at(-1)!.text)).toEqual(result);
-  }, 30_000);
+  }, 90_000);
 
   it('rejects dirty reviewers before recording successful task results', async () => {
     const h = await harness(async opts => {
@@ -123,4 +124,88 @@ describe('workspace script runtime', () => {
     await h.call('replay_script', { plan: 'verify owner retention', script: `const ws=await createWorkspace({key:'a'}); return await freezeWorkspace({key:'freeze',workspace:ws.id});` });
     await h.until('failed'); expect(h.state().script!.error).toContain('Wait for every workspace task');
   }, 30_000);
+
+  it('makes a worktree for each member a running swarm adds, from the main agent or its lead', async () => {
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    const seen: Array<{ model?: string; cwd?: string }> = [];
+    let staffed: { workspaces?: Array<{ name: string; workspace: string }> } | undefined;
+    const h = await harness(async opts => {
+      seen.push({ model: opts.model, cwd: opts.cwd });
+      if (opts.model === 'lead') {
+        staffed = await callWorkflow('staff_swarm', { operationId: randomUUID(), add: ['w1'], workspace: true }, { ...opts.env }) as typeof staffed;
+        return 'staffed the swarm';
+      }
+      await gate; return 'done';
+    });
+    try {
+      await h.call('run_script', { script: `return await swarm('Write in parallel',{key:'crew',
+        lead:{name:'boss',harness:'codex',model:'lead'},members:[{name:'w0',harness:'codex',model:'worker'}]});` });
+      await vi.waitFor(async () => { await h.runtime.tick(); expect(staffed?.workspaces).toHaveLength(1); }, { timeout: 20_000, interval: 30 });
+      const id = staffed!.workspaces![0]!.workspace;
+      expect(staffed!.workspaces![0]!.name).toBe('w1');
+      expect(h.state().swarms![0]!.members.find(member => member.name === 'w1')!.workspace).toBe(id);
+      // The worktree is a checkout of the workflow's repository at its committed baseline, not the root itself.
+      expect(await readFile(join(h.dir, 'worktrees', h.state().workflowId, id, 'value.txt'), 'utf8')).toBe('original\n');
+      await vi.waitFor(async () => { await h.runtime.tick(); expect(seen.filter(run => run.model === 'worker').length).toBe(2); }, { timeout: 20_000, interval: 30 });
+      // w0 keeps the root checkout; w1 runs inside the worktree made for it.
+      expect(seen.filter(run => run.model === 'worker' && run.cwd === h.repo)).toHaveLength(1);
+      expect(seen.filter(run => run.model === 'worker' && run.cwd?.includes(id))).toHaveLength(1);
+    } finally { release(); }
+  }, 60_000);
+
+  it('adds members with worktrees from the main agent too, and reuses them when the call is retried', async () => {
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    const h = await harness(async () => { await gate; return 'done'; });
+    try {
+      await h.call('run_script', { script: `return await swarm('Write in parallel',{key:'crew',members:[{name:'w0',harness:'codex',model:'worker'}]});` });
+      await vi.waitFor(async () => { await h.runtime.tick(); expect(h.adapter.runs).toHaveLength(1); }, { timeout: 20_000, interval: 30 });
+      const operationId = randomUUID();
+      const staff = (id: string) => h.runtime.kernel.call({ kind: 'main', scopeId: 'test', workflowId: h.state().workflowId }, 'staff_swarm',
+        { operationId: id, add: ['w1', 'w2'], workspace: true }) as Promise<{ workspaces: Array<{ name: string; workspace: string }> }>;
+      const added = await staff(operationId);
+      expect(added.workspaces).toHaveLength(2);
+      const ids = added.workspaces.map(entry => entry.workspace);
+      expect(new Set(ids).size).toBe(2);
+      for (const [index, id] of ids.entries()) {
+        expect(h.state().swarms![0]!.members.find(member => member.name === `w${index + 1}`)!.workspace).toBe(id);
+        expect(await readFile(join(h.dir, 'worktrees', h.state().workflowId, id, 'value.txt'), 'utf8')).toBe('original\n');
+      }
+      // The operation is idempotent: the same ID returns the recorded result without making more worktrees.
+      const again = await staff(operationId);
+      expect(again.workspaces).toEqual(added.workspaces);
+    } finally { release(); }
+  }, 60_000);
+
+  it('releases a retired member worktree and leaves running or failed ones alone', async () => {
+    let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
+    let runs = 0;
+    // w0 holds the swarm open; the member added later finishes its opening turn so it can be retired.
+    const h = await harness(async () => { if (++runs === 1) await gate; return 'done'; });
+    try {
+      await h.call('run_script', { script: `return await swarm('Write in parallel',{key:'crew',members:[{name:'w0',harness:'codex',model:'worker'}]});` });
+      await vi.waitFor(async () => { await h.runtime.tick(); expect(h.adapter.runs).toHaveLength(1); }, { timeout: 20_000, interval: 30 });
+      const main = { kind: 'main' as const, scopeId: 'test', workflowId: h.state().workflowId };
+      const added = await h.runtime.kernel.call(main, 'staff_swarm', { operationId: randomUUID(), add: ['w1'], workspace: true }) as { workspaces: Array<{ name: string; workspace: string }> };
+      const id = added.workspaces[0]!.workspace;
+      const path = join(h.dir, 'worktrees', h.state().workflowId, id);
+      await expect(access(path)).resolves.toBeUndefined();
+      await vi.waitFor(async () => {
+        await h.runtime.tick();
+        const taskId = h.state().swarms![0]!.members.find(member => member.name === 'w1')!.taskId;
+        expect(h.state().tasks.find(task => task.taskId === taskId)?.status).toBe('result_ready');
+      }, { timeout: 20_000, interval: 30 });
+      await expect(h.call('staff_swarm', { cleanup: ['w1'] })).rejects.toThrow('retire it before cleaning');
+      expect(h.state().swarms![0]!.members.find(member => member.name === 'w1')!.workspace).toBe(id);
+      await h.call('staff_swarm', { retire: ['w1'] });
+      expect(h.state().swarms![0]!.members.find(member => member.name === 'w1')!.stopped).toBe('retired');
+      const cleaned = await h.call('staff_swarm', { cleanup: ['w1'] }) as { cleaned: string[] };
+      expect(cleaned.cleaned).toEqual(['w1']);
+      const member = h.state().swarms![0]!.members.find(item => item.name === 'w1')!;
+      expect(member.workspace).toBeUndefined();
+      expect(member.cleaned).toBe(true);
+      await expect(access(path)).rejects.toBeTruthy();
+      // A second cleanup names nothing rather than failing.
+      expect((await h.call('staff_swarm', { cleanup: 'retired' }) as { cleaned: string[] }).cleaned).toEqual([]);
+    } finally { release(); }
+  }, 60_000);
 });

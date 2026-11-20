@@ -22,6 +22,8 @@ export type FlushHandler<M> = (scope: string, batch: M[]) => void;
 const MAX_MESSAGES_PER_SCOPE = 100;
 export const MAX_PENDING_CHARS_PER_SCOPE = 200_000;
 const MAX_BATCH_WAIT_MS = 5_000;
+/** Queued messages are persisted whole; writes are coalesced instead of rewriting the file on every push. */
+const PERSIST_DELAY_MS = 100;
 
 interface PersistedPendingEntry<M> {
   scope: string;
@@ -48,6 +50,7 @@ export class PendingQueue<M extends PendingItem = PendingItem> {
   private readonly path: string | undefined;
   private saving: Promise<void> = Promise.resolve();
   private dirty = false;
+  private persistTimer?: NodeJS.Timeout;
   private loadedFromDisk = false;
   private persistenceError: unknown;
   private detached = false;
@@ -110,6 +113,8 @@ export class PendingQueue<M extends PendingItem = PendingItem> {
   async reload(): Promise<void> {
     await this.load();
     this.writesHeld = false;
+    // The merge may have changed what the file has to hold, so the next write is not skipped as unchanged.
+    this.dirty = true;
     await this.flushPersistence();
   }
 
@@ -234,7 +239,8 @@ export class PendingQueue<M extends PendingItem = PendingItem> {
 
   async flushPersistence(): Promise<void> {
     if (this.detached) return;
-    this.schedulePersist();
+    if (this.persistTimer) { clearTimeout(this.persistTimer); this.persistTimer = undefined; }
+    this.writeNow();
     await this.saving;
     if (this.persistenceError) throw this.persistenceError;
   }
@@ -269,9 +275,17 @@ export class PendingQueue<M extends PendingItem = PendingItem> {
 
   private schedulePersist(): void {
     if (this.detached || this.writesHeld) return;
+    if (!this.path) return;
+    this.dirty = true;
+    if (this.persistTimer) return;
+    this.persistTimer = setTimeout(() => { this.persistTimer = undefined; this.writeNow(); }, PERSIST_DELAY_MS);
+    this.persistTimer.unref();
+  }
+
+  private writeNow(): void {
+    if (this.detached || this.writesHeld) return;
     const path = this.path;
     if (!path) return;
-    this.dirty = true;
     this.saving = this.saving
       .then(async () => {
         while (this.dirty) {

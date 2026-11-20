@@ -6,19 +6,19 @@ export interface BridgePromptMention {
   isBot?: boolean;
 }
 
+/**
+ * What the model needs to interpret the message: who is speaking and where.
+ * Conversation ids are not here — the agent reads them from the environment
+ * (`LARK_CHANNEL_CHAT_ID` and friends) when it has to send something, so an
+ * ordinary message carries no ids at all.
+ */
 export interface BridgePromptContext {
-  chatId: string;
   chatType: string;
-  senderId: string;
   senderName?: string;
   /** Whether the sender is a human user or another bot ('app' sender). */
   senderType?: 'user' | 'bot';
-  /** The bridge bot's own open_id — "this id is you" for self-identification. */
-  botOpenId?: string;
   /** Accounts @-mentioned in the triggering message(s), deduped across the batch. */
   mentions?: BridgePromptMention[];
-  threadId?: string;
-  messageIds?: string[];
   source: BridgePromptSource;
 }
 
@@ -76,7 +76,8 @@ export interface BridgePromptAttachment {
 }
 
 export interface BuildAgentPromptInput {
-  context: BridgePromptContext;
+  /** Omitted when the message carries nothing the model must know before reading it. */
+  context?: BridgePromptContext;
   instructions?: string[];
   userInput: string;
   topicContext?: BridgePromptTopicMessage[];
@@ -88,7 +89,7 @@ export interface BuildAgentPromptInput {
 
 export function buildAgentPrompt(input: BuildAgentPromptInput): string {
   const sections = [
-    promptSection('bridge_context', input.context),
+    input.context ? promptSection('bridge_context', input.context) : undefined,
     input.instructions && input.instructions.length > 0
       ? promptSection('bridge_instructions', input.instructions)
       : undefined,

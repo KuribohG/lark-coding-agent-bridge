@@ -1,6 +1,6 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { ChildProcess } from 'node:child_process';
+import { execFileSync, type ChildProcess } from 'node:child_process';
 import { log } from '../../core/logger';
 import { spawnProcess } from '../../platform/spawn';
 import { terminateChild } from '../../platform/terminate';
@@ -48,6 +48,40 @@ export interface RemoteEnvFile {
   cleanup(): void;
 }
 
+// Node's POSIX mode does not set an NTFS DACL. Protect the new, empty file before writing any values.
+function writePrivateFile(path: string, text: string): void {
+  const fd = openSync(path, 'wx', 0o600);
+  let written = false;
+  try {
+    if (process.platform === 'win32') {
+      const system = join(process.env.SystemRoot || 'C:\\Windows', 'System32');
+      const powershell = join(system, 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      const protectFile = [
+        "$ErrorActionPreference = 'Stop'",
+        '$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User',
+        '$rights = [System.Security.AccessControl.FileSystemRights]::FullControl',
+        '$allow = [System.Security.AccessControl.AccessControlType]::Allow',
+        '$acl = [System.Security.AccessControl.FileSecurity]::new()',
+        '$acl.SetAccessRuleProtection($true, $false)',
+        '$acl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($sid, $rights, $allow))',
+        '[IO.File]::SetAccessControl($env:BRIDGE_PRIVATE_ENV_FILE, $acl)',
+        '$actual = [IO.File]::GetAccessControl($env:BRIDGE_PRIVATE_ENV_FILE)',
+        '$rules = $actual.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])',
+        'if (!$actual.AreAccessRulesProtected -or $rules.Count -ne 1 -or $rules[0].IdentityReference -ne $sid' +
+          " -or $rules[0].AccessControlType -ne $allow -or $rules[0].FileSystemRights -ne $rights) { throw 'Private file access check failed' }",
+      ].join('; ');
+      execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', protectFile], {
+        env: { ...process.env, BRIDGE_PRIVATE_ENV_FILE: path }, windowsHide: true,
+      });
+    }
+    writeFileSync(fd, text);
+    written = true;
+  } finally {
+    closeSync(fd);
+    if (!written) rmSync(path, { force: true });
+  }
+}
+
 /**
  * Write the host environment where both machines can read it. Values keep
  * exact bytes (quoted for the shell); the file is private to the bridge user.
@@ -61,8 +95,7 @@ function writeRemoteEnvFile(stateDir: string, env: NodeJS.ProcessEnv, tag = 'hos
     if (value === undefined || !ENV_NAME.test(name)) continue;
     lines.push(`export ${name}=${shellQuote(value)}`);
   }
-  writeFileSync(path, `${lines.join('\n')}\n`, { mode: 0o600 });
-  chmodSync(path, 0o600);
+  writePrivateFile(path, lines.join('\n') + '\n');
   return {
     path,
     cleanup: () => {
@@ -222,8 +255,18 @@ export function localWorkflowEndpoint(env: Readonly<Record<string, string>>): st
 
 /** Rewrite a run environment for a remote host: the endpoint becomes the tunnel and the local-only file goes away. */
 export function remoteRunEnv(env: Readonly<Record<string, string>>, endpoint: string): Record<string, string> {
-  const { AGENT_WORKFLOW_ENDPOINT_FILE: _file, ...rest } = env;
+  const { AGENT_WORKFLOW_ENDPOINT_FILE: _file, ...rest } = withoutLocalScratch(env);
   return { ...rest, AGENT_WORKFLOW_ENDPOINT: endpoint };
+}
+
+/**
+ * A workflow worker's scratch directory is on the bridge machine. On another machine the path does not exist, and a
+ * TMPDIR that names it breaks every tool that makes a temporary file, so the worker keeps that machine's own.
+ */
+export function withoutLocalScratch(env: Readonly<Record<string, string>>): Record<string, string> {
+  const { AGENT_WORKFLOW_SCRATCH: scratch, ...rest } = env;
+  if (scratch === undefined) return rest;
+  return Object.fromEntries(Object.entries(rest).filter(([name, value]) => !(['TMPDIR', 'TMP', 'TEMP'].includes(name) && value === scratch)));
 }
 
 /** Sweep environment files whose host died before it could clean up. */

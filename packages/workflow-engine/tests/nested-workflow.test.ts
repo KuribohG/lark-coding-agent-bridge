@@ -55,7 +55,7 @@ describe('nested workflow capability',()=>{
     const h = harness(); await h.start(); await h.agent(h.state()); await h.run(1);
     const child = await h.child(h.requests[0]!);
     const rootId = h.state().workflowId;
-    await h.call('cancel'); h.kernel.beginShutdown();
+    await h.call('cancel_workflow'); h.kernel.beginShutdown();
     await vi.waitFor(() => expect(h.state(rootId).tasks[0]!.status).toBe('cancelled'));
     expect(h.state(rootId).tasks[0]!.attempts.at(-1)!.stopReason).toBe('cancelled');
     expect(h.state(child.workflowId).status).toBe('cancelled');
@@ -148,7 +148,7 @@ describe('nested workflow capability',()=>{
       await h.agent(h.state(child.workflowId),{key:'enabled'});await h.run(h.requests.length+1);parent=h.requests.at(-1)!;
     }
     await expect(h.child(parent)).rejects.toThrow('depth limit');
-    await h.call('cancel');
+    await h.call('cancel_workflow');
     for(const request of h.requests) expect(h.state(request.workflow.workflowId).status).toBe('cancelled');
   });
 
@@ -159,6 +159,20 @@ describe('nested workflow capability',()=>{
     h.finishScript(child.workflowId,{error:'No budget for child agent'});await h.run(2);
     await expect(h.send(h.requests[1]!,'read_context')).resolves.toMatchObject({workflows:{call:{ok:false,error:'No budget for child agent'}}});
     expect(h.state().events).toHaveLength(0);
+  });
+
+  it('lets a persistent member take the last task of the tree budget and refuses the one after it',async()=>{
+    const h=harness();await h.start({maxAgents:2});await h.agent(h.state());await h.run(1);
+    const child=await h.child(h.requests[0]!);await h.finish(h.requests[0]!);h.begin(child.workflowId);
+    // The caller and this member are the two tasks the tree may run.
+    await h.agent(h.state(child.workflowId),{key:'leaf',member:'leaf',workflowTool:false});
+    await h.run(2);
+    expect(h.requests[1]!.workflow.workflowId).toBe(child.workflowId);
+    await expect(h.agent(h.state(child.workflowId),{key:'extra',member:'extra',workflowTool:false})).rejects.toThrow('tree task budget');
+    await expect(h.agent(h.state(child.workflowId),{key:'one-off',workflowTool:false})).rejects.toThrow('tree task budget');
+    // The refused member left nothing behind.
+    expect(h.state(child.workflowId).tasks).toHaveLength(1);
+    expect(h.state(child.workflowId).agents?.map(agent=>agent.key)).toEqual(['leaf']);
   });
 
   it.each([false,true])('requires explicit permission to enqueue into the parent queue: %s',async granted=>{

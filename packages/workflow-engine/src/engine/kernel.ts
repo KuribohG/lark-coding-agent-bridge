@@ -8,6 +8,7 @@ import { WorkflowScheduler } from './kernel-scheduler';
 import { ScriptApi } from './kernel-script-api';
 import { settleEventWaits } from './event-waits';
 import { BUSY } from './kernel-state';
+import { scratchSlots } from './scratch';
 import { WorkflowStore } from './kernel-store';
 import type { NativeIdKind, WorkflowCaller, WorkflowHost, WorkflowLogger, WorkflowState, WorkflowView } from './types';
 import { WorkerHosts, type WorkerHostRecord } from './worker-hosts';
@@ -34,6 +35,8 @@ class KernelParts implements KernelContext {
       listenerFailed: error => this.log.warn('change-listener-failed', { error: String(error) }),
       backgroundCheckpoint: true,
       checkpointFailed: error => this.log.warn('background-checkpoint-unavailable', { error: String(error) }),
+      snapshotFailed: error => this.log.warn('snapshot-write-failed', { error: String(error) }),
+      loadFailed: (workflowId, error) => this.log.warn('workflow-unreadable', { workflowId, error: error.message }),
     });
     this.hosts = new WorkerHosts(this.store.db);
     this.scheduler = new WorkflowScheduler(this);
@@ -88,7 +91,7 @@ export class WorkflowKernel {
     const tasks: Record<string, number> = { ...state.archived?.statuses };
     for (const task of state.tasks) tasks[task.status] = (tasks[task.status] ?? 0) + 1;
     return JSON.stringify({ workflowId: state.workflowId, name: state.script?.name, status: state.status, scriptStatus: state.script?.status,
-      stateVersion: state.stateVersion, goalPreview: state.goal.slice(0, 200), deadlineAt: new Date(state.deadlineAt).toISOString(), tasks,
+      stateVersion: state.stateVersion, goalPreview: state.goal.slice(0, 200), ...(state.charter ? { charterVersion: state.charter.version } : {}), deadlineAt: new Date(state.deadlineAt).toISOString(), tasks,
       scriptLogs: state.script?.logs.slice(-3), unacknowledgedEvents: state.events.filter(event => !event.acknowledged).length });
   }
 
@@ -127,6 +130,16 @@ export class WorkflowKernel {
       tasks += state.tasks.filter(task => BUSY.has(task.status)).length;
     }
     return { scripts, tasks };
+  }
+
+  /**
+   * Who still owns a scratch directory: for each unfinished workflow, the slots in use (see scratchSlots), or
+   * undefined for a workflow whose journal cannot be read, so nothing of it is taken for abandoned.
+   */
+  scratchOwners(): Map<string, Set<string> | undefined> {
+    const owners = new Map<string, Set<string> | undefined>(this.ctx.store.openIds().map(id => [id, undefined]));
+    for (const state of this.ctx.store.list()) owners.set(state.workflowId, scratchSlots(state));
+    return owners;
   }
 
   queuedScripts(): WorkflowState[] {
@@ -183,8 +196,17 @@ export class WorkflowKernel {
     this.ctx.scripts.scriptProgress(scopeId, workflowId, runId, kind, text);
   }
 
-  finishScript(scopeId: string, workflowId: string, runId: string, result: { text: string } | { error: string }): void {
+  finishScript(scopeId: string, workflowId: string, runId: string, result: { text: string } | { error: string; stopReason?: 'deadline' }): void {
     this.ctx.scripts.finishScript(scopeId, workflowId, runId, result);
+  }
+
+  /** Startup and outbox use the same idempotent authoritative host completion. */
+  notifyExecution(scopeId: string, workflowId: string, executionId: string) {
+    return this.ctx.scheduler.notifyExecution(scopeId, workflowId, executionId);
+  }
+
+  reconcileExecutions() {
+    return this.ctx.scheduler.reconcileExecutions();
   }
 
   plan(scopeId: string, workflowId?: string): string {
@@ -221,14 +243,19 @@ export class WorkflowKernel {
     return this.ctx.scheduler.admitReady();
   }
 
-  /** A running worker produced output; `busy` means a tool is in flight and silence is expected. */
-  noteWorkerActivity(taskId: string, attemptId: string, busy: boolean): void {
-    this.ctx.scheduler.noteActivity(taskId, attemptId, busy);
+  /** A running worker produced output; `busy` means a tool is in flight and silence is expected, until `busyUntil` when given. */
+  noteWorkerActivity(taskId: string, attemptId: string, busy: boolean, busyUntil?: number): void {
+    this.ctx.scheduler.noteActivity(taskId, attemptId, busy, busyUntil);
   }
 
   /** A process a previous controller left running for this turn. */
   workerHost(workflowId: string, match: string): WorkerHostRecord | undefined {
     return this.ctx.hosts.find(workflowId, match);
+  }
+
+  /** Whether the token belongs to a process a previous controller left running, which a replayed turn may yet continue. */
+  awaitsWorker(tokenHash: string): boolean {
+    return !this.ctx.closed && this.ctx.hosts.awaits(tokenHash);
   }
 
   putWorkerHost(record: Omit<WorkerHostRecord, 'discard'>): void {
@@ -238,6 +265,17 @@ export class WorkflowKernel {
 
   removeWorkerHost(hostKey: string): void {
     if (!this.ctx.closed) this.ctx.hosts.remove(hostKey);
+  }
+
+  /** The process could not be ended for certain: nothing continues it, and it is ended again later. */
+  discardWorkerHost(hostKey: string): void {
+    if (!this.ctx.closed) this.ctx.hosts.discard(hostKey);
+  }
+
+  /** Whether a turn of this controller is running the process. */
+  runsWorkerHost(hostKey: string): boolean {
+    const record = this.ctx.hosts.get(hostKey);
+    return Boolean(record && this.ctx.scheduler.isRunning(record.taskId));
   }
 
   /** Hosted processes no turn of this controller runs or can still continue. */

@@ -68,7 +68,7 @@ const item = await waitWork(args.itemId, {key: 'item-completed'});
 await sleep(1000, {key: 'retry-delay'});
 ```
 
-Untimed `receive` still uses the original mailbox receipt protocol, with optional `topic`/`correlationId` filtering. Workers and main can attach those same fields to `send_message`. `read_context` and received batches include them. Event selection and cancellation each use stable keys in the existing per-workflow namespace. There are at most 128 saved waits and 128 saved cancellation operations, and the VM allows at most 128 control calls per script run. Pending message selections reserve receipt capacity but never reserve losing messages.
+Untimed `receive` still uses the original mailbox receipt protocol, with optional `topic`/`correlationId` filtering. A script attaches those same fields with `send`; a board post that names a member arrives under topic `board`. `read_context` and received batches include them. Event selection and cancellation each use stable keys in the existing per-workflow namespace. There are at most 128 saved waits and 128 saved cancellation operations, and the VM allows at most 128 control calls per script run. Pending message selections reserve receipt capacity but never reserve losing messages.
 
 ## Task handles and cancellation
 

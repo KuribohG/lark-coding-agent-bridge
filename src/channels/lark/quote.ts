@@ -6,6 +6,7 @@ import type {
 import { normalize } from '@larksuite/channel';
 import { log } from '../../core/logger';
 import { expandInteractiveCard } from './interactive-card';
+import { userFirst, type LarkUserReads, type MessageListPage } from './user-read';
 
 export interface QuotedContext {
   messageId: string;
@@ -85,15 +86,18 @@ function preExpandInteractive(item: ApiMessageItem): ApiMessageItem {
 export async function fetchQuotedContext(
   channel: LarkChannel,
   messageId: string,
-  opts: { maxChars?: number } = {},
+  opts: { maxChars?: number; reads?: LarkUserReads } = {},
 ): Promise<QuotedContext | undefined> {
   let items: ApiMessageItem[];
   try {
     // Ask for the original card JSON (incl. v2 user_dsl) instead of the
     // default v1-canonical fallback that strips it.
-    items = await channel.fetchRawMessage(messageId, {
-      cardContentType: 'user_card_content',
-    });
+    items = await userFirst(opts.reads, 'quote',
+      () => opts.reads!.messageItems(messageId, { cardContentType: 'user_card_content' }),
+      () => channel.fetchRawMessage(messageId, {
+        cardContentType: 'user_card_content',
+      }),
+    );
   } catch (err) {
     log.warn('quote', 'fetch-failed', {
       messageId,
@@ -110,7 +114,7 @@ export async function fetchQuotedContext(
   // forward rather than a silently-empty one (see fetchSubTreeItems).
   const fetchSubMessages = async (mid: string): Promise<ApiMessageItem[]> => {
     if (mid === parent.message_id) return items.map(preExpandInteractive);
-    const subItems = await fetchSubTreeItems(channel, mid);
+    const subItems = await fetchSubTreeItems(channel, mid, opts.reads);
     return subItems.map(preExpandInteractive);
   };
 
@@ -222,6 +226,7 @@ export async function fetchTopicContext(
     excludeIds?: Set<string>;
     selfOpenId?: string;
     selfAppId?: string;
+    reads?: LarkUserReads;
   },
 ): Promise<TopicContextFetchResult> {
   const collected: ApiMessageItem[] = [];
@@ -230,21 +235,19 @@ export async function fetchTopicContext(
   let reachedSince = false;
   let hitMessageLimit = false;
   let incompleteReason: TopicContextIncompleteReason | undefined;
+  // Hoisted so the narrowing survives into the async closure below.
+  const reads = opts.reads;
   try {
     do {
-      const res = await channel.rawClient.im.v1.message.list({
-        params: {
-          container_id_type: 'thread',
-          container_id: threadId,
-          sort_type: 'ByCreateTimeDesc',
-          page_size: 50,
-          ...(pageToken ? { page_token: pageToken } : {}),
-        },
-      });
-      const data = (res as {
-        data?: { items?: ApiMessageItem[]; messages?: ApiMessageItem[]; has_more?: boolean; page_token?: string };
-      }).data;
-      const items = data?.items ?? data?.messages ?? [];
+      const page = reads
+        ? await reads.threadMessages({
+            threadId,
+            sortType: 'ByCreateTimeDesc',
+            pageSize: 50,
+            ...(pageToken ? { pageToken } : {}),
+          })
+        : await listThreadPageWithAppIdentity(channel, threadId, pageToken);
+      const items = page.items;
       for (let index = 0; index < items.length; index += 1) {
         const item = items[index]!;
         const createdAt = messageCreateMs(item);
@@ -270,11 +273,11 @@ export async function fetchTopicContext(
         }
         collected.push(item);
         if (collected.length >= opts.maxMessages) {
-          hitMessageLimit = index < items.length - 1 || data?.has_more === true;
+          hitMessageLimit = index < items.length - 1 || page.hasMore;
           break;
         }
       }
-      pageToken = data?.has_more ? data.page_token : undefined;
+      pageToken = page.hasMore ? page.pageToken : undefined;
     } while (pageToken && !reachedSince && collected.length < opts.maxMessages);
   } catch (err) {
     log.warn('topic', 'context-fetch-failed', {
@@ -297,7 +300,7 @@ export async function fetchTopicContext(
   const out: QuotedContext[] = [];
   for (const item of collected) {
     const fetchSubMessages = async (mid: string): Promise<ApiMessageItem[]> => {
-      const source = mid === item.message_id ? [item] : await fetchSubTreeItems(channel, mid);
+      const source = mid === item.message_id ? [item] : await fetchSubTreeItems(channel, mid, opts.reads);
       return source.map(preExpandInteractive);
     };
     const quoted = await normalizeItemToQuoted(channel, item, fetchSubMessages);
@@ -312,9 +315,12 @@ export async function fetchTopicContext(
     !out.some(item => item.messageId === opts.anchorMessageId)
   ) {
     try {
-      const items = await channel.fetchRawMessage(opts.anchorMessageId, {
-        cardContentType: 'user_card_content',
-      });
+      const items = await userFirst(reads, 'topic',
+        () => reads!.messageItems(opts.anchorMessageId!, { cardContentType: 'user_card_content' }),
+        () => channel.fetchRawMessage(opts.anchorMessageId!, {
+          cardContentType: 'user_card_content',
+        }),
+      );
       const anchor = items[0];
       if (anchor) {
         const quoted = await normalizeItemToQuoted(
@@ -433,12 +439,42 @@ function compareQuotedContextTime(a: QuotedContext, b: QuotedContext): number {
  * same distinction @larksuite/channel makes on the live-event path. Passed into
  * `normalize` as `fetchSubMessages`.
  */
+
+/** `im.v1.message.list` as the same page shape the user-identity reader returns. */
+async function listThreadPageWithAppIdentity(
+  channel: LarkChannel,
+  threadId: string,
+  pageToken?: string,
+): Promise<MessageListPage> {
+  const res = await channel.rawClient.im.v1.message.list({
+    params: {
+      container_id_type: 'thread',
+      container_id: threadId,
+      sort_type: 'ByCreateTimeDesc',
+      page_size: 50,
+      ...(pageToken ? { page_token: pageToken } : {}),
+    },
+  });
+  const data = (res as {
+    data?: { items?: ApiMessageItem[]; messages?: ApiMessageItem[]; has_more?: boolean; page_token?: string };
+  }).data;
+  return {
+    items: data?.items ?? data?.messages ?? [],
+    hasMore: data?.has_more === true,
+    ...(data?.has_more === true && data.page_token ? { pageToken: data.page_token } : {}),
+  };
+}
+
 async function fetchSubTreeItems(
   channel: LarkChannel,
   messageId: string,
+  reads?: LarkUserReads,
 ): Promise<ApiMessageItem[]> {
   try {
-    return await channel.fetchRawMessage(messageId, { cardContentType: 'user_card_content' });
+    return await userFirst(reads, 'quote',
+      () => reads!.messageItems(messageId, { cardContentType: 'user_card_content' }),
+      () => channel.fetchRawMessage(messageId, { cardContentType: 'user_card_content' }),
+    );
   } catch (err) {
     log.warn('quote', 'sub-fetch-failed', {
       messageId,

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { ActiveRuns } from '../../../src/runtime/active-runs';
-import { FollowupRouter } from '../../../src/runtime/followup';
+import { FollowupRouter, type FollowupContent } from '../../../src/runtime/followup';
 import type { AgentInput, AgentRun } from '../../../src/agent/types';
 
 function harness() {
@@ -10,7 +10,8 @@ function harness() {
     sendInput: vi.fn(async ({ messageId }: AgentInput) => ({ status: 'accepted', messageId, scope: 'active-session' } as const)) };
   activeRuns.register('chat:topic', run);
   const router = new FollowupRouter();
-  const deliver = (prepare = async () => 'supplement') => router.deliver({ scope: 'chat:topic', messageId: 'm', activeRuns, prepare });
+  const deliver = (prepare: () => Promise<string | FollowupContent> = async () => 'supplement') =>
+    router.deliver({ scope: 'chat:topic', messageId: 'm', activeRuns, prepare });
   return { activeRuns, run, router, deliver };
 }
 function gate() { let resolve!: (value: string) => void; const promise = new Promise<string>(r => { resolve = r; }); return { promise, resolve }; }
@@ -25,6 +26,11 @@ describe('follow-up routing', () => {
     h.run.sendInput = vi.fn(async input => ({ status: 'unknown', messageId: input.messageId, message: 'lost receipt' } as const));
     expect(await h.deliver()).toBe('unknown');
     expect(h.run.sendInput).toHaveBeenCalledTimes(1);
+  });
+  it('forwards prepared images with the supplement', async () => {
+    const h = harness();
+    expect(await h.deliver(async () => ({ text: 'look', images: ['/tmp/a.png', '/tmp/b.jpg'] }))).toBe('accepted');
+    expect(h.run.sendInput).toHaveBeenCalledWith({ text: 'look', messageId: 'm', images: ['/tmp/a.png', '/tmp/b.jpg'] });
   });
   it('keeps preparation and delivery ordered', async () => {
     const h = harness(); const g = gate();

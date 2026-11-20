@@ -1,8 +1,10 @@
 import { CONTROL_ARGS } from './control-args';
-import { requireState } from '../kernel-state';
-import { closeWorkQueue, enqueueFromMember, enqueueWork, holdClaim, mutateWork, retryWork, searchWork, workOperation, workStatus, WORK_MUTATIONS } from '../work-queue';
+import { pushEvent, requireState } from '../kernel-state';
+import { assigned, closeWorkQueue, enqueueFromMember, enqueueWork, holdClaim, mutateWork, retryWork, searchWork, updateWork, workItem, workOperation, workStatus, writeOverlaps, WORK_MUTATIONS } from '../work-queue';
 import { queueName } from '../work-routing';
 import { scriptText } from '../script-contract';
+import { workAuthority } from '../swarm';
+import { memberOperation } from './members';
 import type { ToolArgs, WorkflowTool, WorkflowToolPlugin } from './types';
 import type { WorkflowView } from '../types';
 import { versioned } from './versioned';
@@ -23,6 +25,16 @@ const claimTools: WorkflowTool[] = WORK_MUTATIONS.map(name => ({
     },
   },
 }));
+
+/**
+ * What enqueue_work answers: the item, the queue it went to and the member it is for, which `origin` may have chosen,
+ * and, when it names the paths it will change, the unfinished items that expect to change the same ones. The script's
+ * enqueueWork answers with the item alone, so that a replay reads what the first run read.
+ */
+function enqueued(state: WorkflowView, response: unknown): unknown {
+  const item = workItem(state, (response as { itemId: string }).itemId);
+  return item ? { ...response as object, queue: item.queue ?? 'default', ...assigned(state, item), ...writeOverlaps(state, item) } : response;
+}
 
 function active(ctx: { now(): number }, state: WorkflowView): void {
   if (state.status !== 'active' || state.script?.status !== 'running' || ctx.now() >= state.deadlineAt) throw new Error('Workflow is inactive');
@@ -56,7 +68,7 @@ const submitWork: WorkflowTool = {
         if (!task.workspaceId) throw new Error('submit_work requires a member that runs in a managed worktree');
         if (!ctx.host.land) throw new Error('Landing is unavailable in this workflow');
         if (claim) holdClaim(state, task, caller.attemptId, claim, ctx.now(), LAND_LEASE_MS);
-        return { workspace: task.workspaceId, state: ctx.store.public(state) };
+        return { workspace: task.workspaceId, state: ctx.store.workspaceView(state) };
       });
       if ('prior' in start) return { status: 'landed', item: start.prior };
       // Checks may outlast any lease: keep the claim while they run, and stop landing once the member's turn is gone.
@@ -66,6 +78,16 @@ const submitWork: WorkflowTool = {
       let report;
       try { report = await ctx.host.land!(start.state, { workspace: start.workspace, taskId: caller.taskId }, controller.signal) as { status: string; headCommit?: string; commits?: number }; }
       finally { clearInterval(timer); }
+      // What the landing queue found out about the branch is for the main agent; a halted branch says it until it is heard.
+      const { notice, ...rest } = report as typeof report & { notice?: string };
+      if (notice) {
+        try {
+          bound(state => {
+            if (!state.events.some(event => event.kind === 'landing_attention' && !event.acknowledged && event.summary === notice)) pushEvent(state, { kind: 'landing_attention', summary: notice }, ctx.now);
+          });
+        } catch { /* the member's turn is gone; the next report carries a standing notice again */ }
+      }
+      report = rest;
       if (report.status !== 'landed' || !claim) return report;
       const item = bound((state, task) => mutateWork(state, task, caller.attemptId, 'complete_work',
         { operationId, ...claim, result: args.result ?? { headCommit: report.headCommit, commits: report.commits } }, ctx.now()));
@@ -74,18 +96,73 @@ const submitWork: WorkflowTool = {
   },
 };
 
+/**
+ * What a member is told about the queue, in the order it meets it: taking an item, doing it, landing it and what to
+ * do when a landing is turned back; then adding, finding and changing items, and what a repeated call does.
+ */
+const MEMBER_INSTRUCTIONS = [
+  'Work queue. Work comes as items; you hold one at a time, and the progress you save on an item outlives your turn.',
+  'Taking an item: claim_work({operationId,leaseMs?,queue?}) claims one item atomically and returns {claimId,generation,leaseUntil,item}, or null when there is none for you: then end the turn and do not wait for work. '
+    + 'A swarm member that consumes a queue claims from that queue only and omits queue; any other member claims from "default" unless it names one. '
+    + 'Items that are for you (item.assignee is your name) come first. item.origin, when set, is the key of the delivered item this one is about, which work_status({key}) reads. '
+    + 'The bridge keeps your claim while your turn runs; you cannot renew it. When the turn ends, is cancelled or is stopped after a long silence, an unfinished claim returns to the queue with the progress you saved.',
+  'Doing it: read item.progress first, which holds what an earlier attempt saved. checkpoint_work({operationId,claimId,generation,expectedProgressVersion,state}) saves progress as JSON; '
+    + 'complete_work({operationId,claimId,generation,result}) finishes the item; fail_work({operationId,claimId,generation,error,retry?}) gives it up (retry: true only when another attempt could succeed); '
+    + 'release_claim({operationId,claimId,generation,reason}) hands it back as it is. input, progress and result hold at most 16000 characters each. '
+    + 'item.writeOverlaps lists the unfinished items that expect to change the same paths with nothing to order them (member says who holds one): agree on the board who changes what before you start. '
+    + 'Losing a claim does not undo what you changed outside the workflow: check what has already happened and make a repeat harmless.',
+  'Landing code: when you run in a managed worktree and your system prompt names a Landing branch, deliver code with submit_work({operationId,claimId?,generation?,result?}). '
+    + 'Commit first, and put the key of the item in the commit message: a problem later found in that code is then reported with your item as its origin and comes back to you. '
+    + 'submit_work rebases your commits onto the tip of the landing branch, checks them in one batch with the commits of other members that are waiting, advances the branch and, given claimId and generation, '
+    + 'completes the item with result (the landed commit when omitted). It returns {status:"landed",headCommit,commits,item} and leaves your worktree at the tip of the branch, with what others have landed: start the next item there. '
+    + 'The call blocks until the batch has been checked; if your command times out, repeat it with the same operationId to rejoin the same landing. Only submit_work advances the landing branch: never commit, update-ref or push to it.',
+  'When a landing is turned back the claim stays yours while you repair: submit again with a new operationId, or use release_claim or fail_work when you cannot. '
+    + '{status:"conflict",targetCommit,detail}: your commits conflict with what has landed. Rebase onto targetCommit, resolve the conflict and submit again. '
+    + 'Do not merge by hand a file that a command generates (a registry, a manifest, an index): take its version from targetCommit, run the command again and commit what it writes. '
+    + 'A detail that is a Git lock error such as index.lock is not a conflict in the content: check that no other git process is running and submit again. '
+    + '{status:"check_failed",targetCommit,commands,reason?}: a check failed on your commits on top of targetCommit, which is what your worktree now holds. Repair, commit and submit again. '
+    + 'If the failure looks unrelated to your change, note your commit (git rev-parse HEAD), check out targetCommit, run the same command and return to your commit. '
+    + 'If targetCommit fails by itself the landing branch is broken: do not repair the changes of other members, and do not change a test, a check or an expected output to get past it. '
+    + 'Look for a report of it with search_work; if there is none, add one with enqueue_work (the failing command and its output) and name the lead in a post. Keep your commits and submit once the repair has landed. '
+    + '{status:"rejected",files,reason}: you changed paths this workflow does not let you change. Remove those changes (deletions and renames too) and submit again; do not work around it. '
+    + '{status:"halted",reason}: the landing branch was changed outside the queue and landing is paused; the main agent has been told. Keep your commits and try again at your next turn.',
+  'Adding work: enqueue_work({key,title,input,origin?,assignee?,queue?,priority?,dependsOn?,resources?,writes?,maxAttempts?}) adds work that someone has to do: '
+    + 'a part split off an item that is too large, a problem you found, or the next batch when the queue is empty and the goal is not met. '
+    + 'Before you add an item, and before you investigate a problem, look with search_work for its symptom, module or test name: someone may have reported it under another key, and then you use that result or go on from it. '
+    + 'key is a stable name for the problem itself (bug-<module>-<symptom>); when it exists nothing is added and the answer is {itemId,key,existing:true,status}. '
+    + 'title says it in one sentence; input gives the symptom, how to reproduce it and what is known. '
+    + 'origin is the key of the item whose delivered result the new item is about (the commit that made the change names it, and search_work shows in doneBy who completed an item): '
+    + 'the new item goes to the queue of that item and to the member that completed it, which is woken for it and gets it before other work. assignee names the member yourself. '
+    + 'The answer gives queue and assignee; an assigneeNote in it says that this member cannot take the item (it has stopped, has no wake-ups left or does not consume that queue), so that any member of the queue claims it. '
+    + 'Without origin the item goes to the queue you consume ("default" when you consume none) unless queue names another; only queues that exist and are open take items. '
+    + 'priority (-100..100) puts an item ahead of lower ones; dependsOn lists keys of items that must all be completed first; items that share a key in resources are claimed one at a time. '
+    + 'writes lists up to 16 paths the item expects to change and locks nothing: the answer and work_status({key}) report in writeOverlaps the unfinished items whose paths overlap, which you order with dependsOn or split apart.',
+  'Finding work: work_status({itemId or key}) reads one item in full; work_status({queue?,offset?,limit?}) pages through items (16 by default, 64 at most). '
+    + 'search_work({query,queue?,status?,limit?}) searches every item, finished ones too: query is up to 8 words separated by spaces, matched as substrings without regard to case in key, title, input, result and error, all of which must occur. '
+    + 'Hits in key or title come first, then the most recently changed; it returns limit hits (10 by default, 30 at most) with itemId, status, doneBy and a snippet.',
+  'Withdrawing work: update_work({operationId,key or itemId,cancel:true,reason?}) withdraws an item that you added and nobody has claimed. Everything else about an item is changed by whoever plans its queue.',
+  'Repeats and restarts: an operationId is unique within the current attempt of your turn, and repeating a call with the same content returns its first answer. In a new attempt, after a turn was cut short, you may claim again; a claimId and generation that expired can no longer be submitted. '
+    + 'A turn that a bridge restart interrupted keeps its claim: go on with the same claimId and generation (the claim in your work queue context) instead of claiming again. After claim_work returned null, ask again with a new operationId.',
+].join('\n');
+
+const LEAD_INSTRUCTIONS = 'Changing items: you plan the queues you lead (the lead of a swarm, every queue). update_work({operationId,key or itemId,priority?,hold?,assignee?,cancel?,reason?}) changes an unfinished item: '
+  + 'priority moves it in the order, hold: true sets it aside without removing it and false returns it, assignee gives it to one member or, with null, back to the whole queue, and cancel: true withdraws it with reason; '
+  + 'blocks in the answer are the items that depended on it and can no longer be claimed. A claimed item cannot be cancelled: ask its member in a post to stop and hand it back, and cancel it once it is back in the queue. '
+  + 'retry_work({operationId,key or itemId,additionalAttempts?}) gives a failed item more attempts (1 by default, 8 at most) and returns it to the queue.';
+
 /** Durable work queues: the main agent produces and inspects items; persistent members claim and finish them. */
 export const workQueueTools: WorkflowToolPlugin = {
   id: 'work-queue',
-  memberInstructions: '工作队列：claim_work({operationId,leaseMs?,queue?}) 原子领取一个工作项（每个成员最多一个），返回 claimId、generation、leaseUntil、item；没有可领项返回 null，应结束本轮，不忙等。在 swarm 里声明了 queue 的成员省略 queue 即使用该队列，不能领取其它队列；其他成员默认领取 default。认领在你这一轮运行期间由 bridge 自动续期，不需要也不能自己续租；本轮结束、被取消或因长时间无输出被停止时，未完成的认领会被收回给别人。先读取 item.progress 核对已完成步骤。checkpoint_work({operationId,claimId,generation,expectedProgressVersion,state}) 保存最多 16000 字符的 JSON 工作进展；complete_work({operationId,claimId,generation,result}) 提交 JSON 结果；fail_work({operationId,claimId,generation,error,retry?}) 报错；release_claim({operationId,claimId,generation,reason}) 交还工作。工作项 input/progress/result 各最多 16000 字符。work_status({itemId? 或 offset?,limit?}) 读取工作状态，默认每页 16 项、最多 64 项。search_work({query,queue?,status?,limit?}) 按关键词查全部工作项（含已完成的）：query 为空格分隔的词（最多 8 个），不分大小写、按子串匹配 key、title、input、result、error，须全部出现；key 或 title 命中的排前，其次按最近更新，返回 limit 条（默认 10，最多 30），每条带 itemId、status 和命中处的片段，全文用 work_status({itemId}) 读。队列变更 operationId 在当前执行 attempt 内唯一，同内容重试复用；恢复后的新 attempt 可重新领取，过期的旧 claimId/generation 不可提交。空 claim 的重试查询须用新 operationId。取消、退出或失去租约会回收未完成认领，保存的工作进展保留；外部副作用仍需核对和幂等处理。在托管 worktree 中运行且脚本已配置落地（系统提示里有 Landing branch）时，用 submit_work({operationId,claimId?,generation?,result?}) 提交代码：先把修改提交成 commit，它把你的 commit rebase 到落地分支最新位置，与其他成员同时等待的提交合成一批统一检查，通过后推进落地分支，并在带 claimId 时以 result（省略则为落地 commit）完成该工作项，返回 {status:"landed",headCommit,commits,item}；此时你的 worktree 已移到落地分支最新位置（含别人已落地的修改），直接在其上做下一项。返回 {status:"conflict",targetCommit,detail} 表示与已落地的修改冲突，worktree 保持提交时的样子；自行 git rebase 到 targetCommit 解决冲突后再提交。返回 {status:"check_failed",targetCommit,commands,reason?} 表示检查未过，worktree 停在你的 commit 叠在 targetCommit 之上的位置（即检查失败的那个版本）；修复并提交后再提交。返回 {status:"rejected",files,reason} 表示改动了本工作流不允许你修改的路径；去掉对这些文件的修改（含删除、改名）后再提交，不要绕过。三种情况认领仍归你，租约在等待期间自动续期；确实做不了就 release_claim 或 fail_work。调用会阻塞到这一批检查跑完：命令超时被打断时用相同 operationId 重试会接回同一次落地，被拒后再次提交用新 operationId。enqueue_work({key,title,input,queue?,priority?,dependsOn?,resources?,maxAttempts?}) 把你发现的、需要有人去做的工作加入队列，消费该队列的成员随即可以领取：用于拆分过大的工作项、登记排查中发现的新问题，或在队列变空而目标未达成时补充下一批工作。queue 省略为你消费的队列（没有则 default），只能加入已存在且未关闭的队列。key 取能标识问题本身的稳定名字（如 bug-<模块>-<现象>）：key 已存在时不新建，返回 {itemId,key,existing:true,status}。别人可能用了不同的 key 报同一件事：入队前、以及着手排查一个问题前，先用 search_work 以现象、模块、用例名等关键词查有没有人报过或做过，查到就沿用其结论或在其基础上继续，不重复入队。title 一句话说明，input 写清现象、复现方法和已知线索，让领取者不必重查。',
+  memberInstructions: MEMBER_INSTRUCTIONS,
+  leadInstructions: LEAD_INSTRUCTIONS,
   tools: [
     {
       name: 'enqueue_work',
       main: {
-        doc: 'enqueue_work(key,title,input,queue?,priority?,dependsOn?,resources?,maxAttempts?)',
+        doc: 'enqueue_work(key,title,input,queue?,priority?,dependsOn?,resources?,writes?,origin?,assignee?,maxAttempts?)',
         ...versioned((ctx, state, args) => {
           ctx.scripts.checkWorkKey(state, args.key);
-          return enqueueWork(state, operationInput(args), ctx.now());
+          return enqueued(state, enqueueWork(state, operationInput(args), ctx.now()));
         }, { allowInterrupted: true, appendOnly: true }),
       },
       worker: {
@@ -93,14 +170,23 @@ export const workQueueTools: WorkflowToolPlugin = {
         call: (ctx, state, task, _caller, args) => {
           active(ctx, state);
           ctx.scripts.checkWorkKey(state, args.key);
-          return enqueueFromMember(state, task, args, ctx.now());
+          return enqueued(state, enqueueFromMember(state, task, args, ctx.now()));
         },
       },
     },
     {
       name: 'retry_work',
       // Giving a failed item more attempts conflicts with nothing a worker or the scheduler commits meanwhile.
-      main: { doc: 'retry_work(itemId,additionalAttempts?)', ...versioned((ctx, state, args) => retryWork(state, operationInput(args), ctx.now()), { allowInterrupted: true, appendOnly: true }) },
+      main: { doc: 'retry_work(itemId 或 key,additionalAttempts?)', ...versioned((ctx, state, args) => retryWork(state, operationInput(args), ctx.now()), { allowInterrupted: true, appendOnly: true }) },
+      worker: { verifiesRoot: true,
+        call: (ctx, state, task, _caller, args) => memberOperation(ctx, state, task, 'retry_work', args, agent => retryWork(state, operationInput(args), ctx.now(), workAuthority(state, agent.key))) },
+    },
+    {
+      name: 'update_work',
+      // A new priority, a hold or a withdrawal changes one item; whichever of two such changes commits last stands.
+      main: { doc: 'update_work(itemId 或 key,priority?,hold?,assignee?,cancel?,reason?)', ...versioned((ctx, state, args) => updateWork(state, operationInput(args), ctx.now()), { allowInterrupted: true, appendOnly: true }) },
+      worker: { verifiesRoot: true,
+        call: (ctx, state, task, _caller, args) => memberOperation(ctx, state, task, 'update_work', args, agent => updateWork(state, operationInput(args), ctx.now(), workAuthority(state, agent.key), agent.key)) },
     },
     {
       name: 'close_work_queue',
@@ -114,9 +200,9 @@ export const workQueueTools: WorkflowToolPlugin = {
     },
     {
       name: 'work_status',
-      main: { kind: 'read', doc: 'work_status(itemId? 或 queue?,offset?,limit?)',
-        read: (_ctx, state, args) => workStatus(requireState(state), { itemId: args.itemId, offset: args.offset, limit: args.limit, ...(args.queue !== undefined ? { queue: args.queue } : {}) }) },
-      worker: { call: (_ctx, state, _task, _caller, args) => workStatus(state, args) },
+      main: { kind: 'read', doc: 'work_status(itemId? 或 key? 或 queue?,offset?,limit?)',
+        read: (ctx, state, args) => workStatus(requireState(state), { itemId: args.itemId, offset: args.offset, limit: args.limit, ...(args.key !== undefined ? { key: args.key } : {}), ...(args.queue !== undefined ? { queue: args.queue } : {}) }, ctx.now()) },
+      worker: { call: (ctx, state, _task, _caller, args) => workStatus(state, args, ctx.now()) },
     },
     {
       name: 'search_work',

@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises';
 import { callWorkflow, WorkflowRuntime } from '../src';
 import { WorkflowKernel } from '../src/engine/kernel';
 import { workspaceCommand } from '../src/engine/workspace-process';
-import { WorkflowWorkspaces } from '../src/engine/workspaces';
+import { CLONE_REMOTE, WorkflowWorkspaces } from '../src/engine/workspaces';
 import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '../src/engine/types';
 import type { LandReport, WorkspaceBinding, WorkspaceLanding } from '../src/engine/workspace-types';
 
@@ -244,13 +244,206 @@ describe('landing members\' work on a shared branch', () => {
   }, 60_000);
 });
 
+describe('a landing branch that only the queue moves', () => {
+  /** Commits a file straight onto the landing branch, the way a checkout of it would, and leaves the branch free again. */
+  async function outside(h: Awaited<ReturnType<typeof fixture>>, targetRef: string, file: string) {
+    const path = join(h.dir, 'outside-' + randomUUID());
+    await git(h.repo, 'worktree', 'add', '-q', path, targetRef.replace('refs/heads/', ''));
+    await mkdir(join(path, file, '..'), { recursive: true });
+    await writeFile(join(path, file), 'outside\n'); await git(path, 'add', '.'); await git(path, 'commit', '-q', '-m', 'outside ' + file);
+    await git(path, 'checkout', '-q', '--detach');
+    return git(path, 'rev-parse', 'HEAD');
+  }
+  const noBadFile = node(`if(require('fs').existsSync('bad.txt')){console.error('bad.txt is here');process.exit(3)}`);
+  const configured = async (h: Awaited<ReturnType<typeof fixture>>, options: object = {}) => {
+    const landing = await h.configure([h.logged(), noBadFile], options);
+    const first = await h.member('first'); await first.commit('first.txt', 'x\n');
+    expect(await first.land()).toMatchObject({ status: 'landed' });
+    return { landing, landed: await git(h.repo, 'rev-parse', landing.targetRef) };
+  };
+
+  it('names the queue in the reflog of every move it makes', async () => {
+    const h = await fixture(); const { landing } = await configured(h);
+    expect(await git(h.repo, 'reflog', 'show', '--format=%gs', '-1', landing.targetRef)).toMatch(/^bridge-workflow: landed 1 submission\(s\), 1 commit\(s\) from [0-9a-f]{8}$/);
+  }, 60_000);
+
+  it('adopts commits from outside that pass the checks and reports them once', async () => {
+    const h = await fixture(); const { landing, landed } = await configured(h);
+    const stray = await outside(h, landing.targetRef, 'stray.txt');
+    const [a, b] = await Promise.all([h.member('a'), h.member('b')]);
+    await a.commit('a.txt', 'a\n'); await b.commit('b.txt', 'b\n');
+    const before = (await h.runs()).length;
+    const report = await a.land();
+    expect(report).toMatchObject({ status: 'landed', commits: 1 });
+    expect(report.notice).toContain('1 个提交未经 submit_work 进入');
+    expect(report.notice).toContain(`${landed.slice(0, 10)}..${stray.slice(0, 10)}`);
+    // One run looked at the outside commit, one checked the train.
+    expect(await h.runs()).toHaveLength(before + 2);
+    expect((await git(h.repo, 'ls-tree', '--name-only', landing.targetRef)).split('\n')).toEqual(expect.arrayContaining(['stray.txt', 'a.txt']));
+    expect((await b.land()).notice).toBeUndefined();
+    expect(await h.runs()).toHaveLength(before + 3);
+  }, 60_000);
+
+  it('halts on outside commits that fail the checks, before a member is rebased onto them, until the branch is restored', async () => {
+    const h = await fixture(); const { landing, landed } = await configured(h);
+    const bad = await outside(h, landing.targetRef, 'bad.txt');
+    const a = await h.member('a'); await a.commit('a.txt', 'a\n');
+    const mine = await git(a.ws.path, 'rev-parse', 'HEAD');
+    const before = (await h.runs()).length;
+    const halted = await a.land() as Extract<LandReport, { status: 'halted' }>;
+    expect(halted).toMatchObject({ status: 'halted', targetCommit: bad });
+    expect(halted.reason).toContain('fail the landing checks');
+    expect(halted.notice).toContain('落地已停止');
+    expect(halted.notice).toContain('bad.txt is here');
+    expect(await git(a.ws.path, 'rev-parse', 'HEAD')).toBe(mine);
+    // The verdict stands for this commit: asking again runs nothing.
+    expect(await a.land()).toMatchObject({ status: 'halted', notice: halted.notice });
+    expect(await h.runs()).toHaveLength(before + 1);
+    const view = await h.manager.configure(h.ctx, {});
+    expect(view).toMatchObject({ changed: false, landing: { branches: [{ head: bad, landed, waiting: 0 }] } });
+    expect(view.landing.branches[0]!.halted).toContain('fail the landing checks');
+    const restored = await h.manager.configure(h.ctx, { branch: 'restore' });
+    expect(restored.settled).toEqual([{ repository: await realpath(h.repo), branch: 'restored', head: landed, kept: `refs/bridge-workflow/${h.state.workflowId}/outside/${bad}` }]);
+    expect(await git(h.repo, 'rev-parse', landing.targetRef)).toBe(landed);
+    expect(await git(h.repo, 'rev-parse', restored.settled![0]!.kept!)).toBe(bad);
+    expect(await git(h.repo, 'reflog', 'show', '--format=%gs', '-1', landing.targetRef)).toContain('restored after a move from outside');
+    expect(await a.land()).toMatchObject({ status: 'landed', commits: 1 });
+    expect((await git(h.repo, 'ls-tree', '--name-only', landing.targetRef)).split('\n')).not.toContain('bad.txt');
+    expect((await h.manager.configure(h.ctx, {})).landing.branches[0]!.halted).toBeUndefined();
+  }, 60_000);
+
+  it('halts on outside commits that change protected paths or drop landed work, and lands again once the main agent adopts the branch', async () => {
+    const h = await fixture(); const { landing, landed } = await configured(h, { protect: [{ paths: ['expected'] }] });
+    const a = await h.member('a'); await a.commit('a.txt', 'a\n');
+    const golden = await outside(h, landing.targetRef, 'expected/case.txt');
+    const before = (await h.runs()).length;
+    expect(((await a.land()) as Extract<LandReport, { status: 'halted' }>).reason).toContain('protected paths (expected/case.txt)');
+    expect(await h.runs()).toHaveLength(before);
+    expect(await h.manager.configure(h.ctx, { branch: 'adopt' })).toMatchObject({ settled: [{ branch: 'adopted', head: golden }] });
+    expect(await a.land()).toMatchObject({ status: 'landed' });
+    // A branch moved back loses what landed on it.
+    await git(h.repo, 'update-ref', landing.targetRef, landed);
+    const b = await h.member('b'); await b.commit('b.txt', 'b\n');
+    expect(((await b.land()) as Extract<LandReport, { status: 'halted' }>).reason).toContain('landed work is missing');
+    await git(h.repo, 'update-ref', '-d', landing.targetRef);
+    expect(((await b.land()) as Extract<LandReport, { status: 'halted' }>).reason).toContain('was deleted');
+    await expect(h.manager.configure(h.ctx, { branch: 'adopt' })).rejects.toThrow('deleted');
+    expect(await h.manager.configure(h.ctx, { branch: 'restore' })).toMatchObject({ settled: [{ branch: 'restored' }] });
+    expect(await b.land()).toMatchObject({ status: 'landed' });
+  }, 60_000);
+
+  it('halts the submissions that wait when the branch moves under a train', async () => {
+    const h = await fixture();
+    const gate = join(h.dir, 'gate'); await writeFile(gate, '');
+    const landing = await h.configure([h.logged('', true), noBadFile]);
+    const first = await h.member('first'); await first.commit('first.txt', 'x\n');
+    expect(await first.land()).toMatchObject({ status: 'landed' });
+    const landed = await git(h.repo, 'rev-parse', landing.targetRef);
+    await rm(gate, { force: true });
+    const [a, b] = await Promise.all([h.member('a'), h.member('b')]);
+    await a.commit('a.txt', 'a\n'); await b.commit('b.txt', 'b\n');
+    const before = (await h.runs()).length, held = a.land();
+    await vi.waitFor(async () => expect(await h.runs()).toHaveLength(before + 1), { timeout: 20_000, interval: 20 });
+    const waiting = b.land(), trains = (h.manager as unknown as { trains: Map<string, { queue: unknown[] }> }).trains;
+    await vi.waitFor(() => expect([...trains.values()][0]!.queue).toHaveLength(1), { timeout: 20_000, interval: 20 });
+    const bad = await outside(h, landing.targetRef, 'bad.txt');
+    await writeFile(gate, '');
+    await expect(held).rejects.toThrow('moved from outside the landing queue');
+    expect(await waiting).toMatchObject({ status: 'halted', targetCommit: bad });
+    // It had rebased onto the last landed commit and stays there.
+    expect(await git(b.ws.path, 'rev-parse', 'HEAD~1')).toBe(landed);
+  }, 60_000);
+});
+
+describe('changing the landing while the workflow runs', () => {
+  const fails = (name: string) => node(`if(require('fs').existsSync(${JSON.stringify(name)})){console.error(${JSON.stringify(name + ' is here')});process.exit(4)}`);
+
+  it('reports the landing and refuses to change one the script has not configured', async () => {
+    const h = await fixture();
+    await expect(h.manager.configure(h.ctx, {})).rejects.toThrow('not configured');
+    const landing = await h.configure([h.logged()], { batch: 4, protect: [{ paths: ['expected'] }] });
+    const a = await h.member('a');
+    expect(await h.manager.configure(h.ctx, {})).toEqual({ changed: false, landing: { targetRef: landing.targetRef, checks: landing.commands, protect: [{ paths: ['expected'], allow: [] }], batch: 4, overridden: [],
+      branches: [{ repository: await realpath(h.repo), head: null, waiting: 0 }] } });
+    await expect(h.manager.configure(h.ctx, { target: 'other' })).rejects.toThrow('Unsupported');
+    await expect(h.manager.configure(h.ctx, { reset: false })).rejects.toThrow('reset');
+    await expect(h.manager.configure(h.ctx, { branch: 'force' })).rejects.toThrow('branch');
+    await expect(h.manager.configure(h.ctx, { checks: [] })).rejects.toThrow('1–4');
+    expect(a.ws.id).toBeTruthy();
+  }, 60_000);
+
+  it('replaces checks, precheck and batch, adds protected paths, and keeps the changes when the script configures again', async () => {
+    const h = await fixture();
+    await h.configure([h.logged()], { protect: [{ paths: ['expected'] }] });
+    const a = await h.member('a'); await a.commit('a.txt', 'a\n');
+    expect(await a.land()).toMatchObject({ status: 'landed' });
+    const change = await h.manager.configure(h.ctx, { checks: [h.logged(), fails('bad.txt')], precheck: [fails('slow.txt')], protect: [{ paths: ['scripts/gates.sh'] }], batch: 2 });
+    expect(change).toMatchObject({ changed: true, landing: { batch: 2, overridden: ['checks', 'precheck', 'protect', 'batch'],
+      protect: [{ paths: ['expected'] }, { paths: ['scripts/gates.sh'] }] } });
+    expect(change.refused).toBeUndefined();
+    // The script calls configureLanding again, as it does to name the worktrees a rule allows.
+    await h.op('landing', 'landing-again', { checks: [h.logged()], protect: [{ paths: ['expected'], allow: [a.ws.id] }] });
+    expect(h.manager.landing(h.state.workflowId)).toMatchObject({ batch: 2, commands: [{}, { argv: fails('bad.txt').argv }], precheck: [{ argv: fails('slow.txt').argv }],
+      protect: [{ paths: ['expected'], allow: [a.ws.id] }, { paths: ['scripts/gates.sh'], allow: [] }] });
+    await a.commit('slow.txt', 'x\n');
+    expect(await a.land()).toMatchObject({ status: 'check_failed', commands: [{ code: 4 }] });
+    await git(a.ws.path, 'reset', '-q', '--hard', 'HEAD~1'); await a.commit('bad.txt', 'x\n');
+    expect(await a.land()).toMatchObject({ status: 'check_failed', commands: [{ code: 0 }, { code: 4 }] });
+    await git(a.ws.path, 'reset', '-q', '--hard', 'HEAD~1'); await mkdir(join(a.ws.path, 'scripts')); await a.commit('scripts/gates.sh', 'exit 0\n');
+    expect(await a.land()).toMatchObject({ status: 'rejected', files: ['scripts/gates.sh'] });
+    // Single settings go back to the script's; reset drops the rest.
+    expect(await h.manager.configure(h.ctx, { precheck: [], protect: [] })).toMatchObject({ changed: true, landing: { overridden: ['checks', 'precheck', 'batch'] } });
+    expect(h.manager.landing(h.state.workflowId)!.precheck).toBeUndefined();
+    expect(await a.land()).toMatchObject({ status: 'landed' });
+    expect(await h.manager.configure(h.ctx, { reset: true })).toMatchObject({ changed: true, landing: { batch: 16, overridden: [] } });
+    expect(await h.manager.configure(h.ctx, { reset: true })).toMatchObject({ changed: false });
+  }, 60_000);
+
+  it('refuses new checks the landing branch itself fails, and takes them once the repair has landed', async () => {
+    const h = await fixture();
+    const landing = await h.configure([h.logged()]);
+    const a = await h.member('a'); await a.commit('bad.txt', 'x\n');
+    expect(await a.land()).toMatchObject({ status: 'landed' });
+    const head = await git(h.repo, 'rev-parse', landing.targetRef);
+    const refused = await h.manager.configure(h.ctx, { checks: [fails('bad.txt')], batch: 3 });
+    expect(refused).toMatchObject({ changed: false, refused: { repository: await realpath(h.repo), headCommit: head, commands: [{ code: 4 }] }, landing: { batch: 16, overridden: [] } });
+    expect(refused.refused!.commands![0]!.stderr).toContain('bad.txt is here');
+    expect(refused.refused!.reason).toContain('land the repair under the current checks first');
+    expect(await h.manager.configure(h.ctx, { precheck: [fails('bad.txt')] })).toMatchObject({ changed: false, refused: { commands: [{ code: 4 }] } });
+    expect(await h.manager.configure(h.ctx, { checks: [node(`require('fs').writeFileSync('left-behind','x')`)] })).toMatchObject({ changed: false, refused: { reason: expect.stringContaining('untracked files') } });
+    // Under the current checks the repair lands, and then the branch passes the new ones.
+    await git(a.ws.path, 'rm', '-q', 'bad.txt'); await git(a.ws.path, 'commit', '-q', '-m', 'repair');
+    expect(await a.land()).toMatchObject({ status: 'landed' });
+    expect(await h.manager.configure(h.ctx, { checks: [fails('bad.txt')], batch: 3 })).toMatchObject({ changed: true, landing: { batch: 3, overridden: ['checks', 'batch'] } });
+    await a.commit('bad.txt', 'x\n');
+    expect(await a.land()).toMatchObject({ status: 'check_failed' });
+  }, 60_000);
+
+  it('tries new checks between trains, so no submission lands under the old ones meanwhile', async () => {
+    const h = await fixture();
+    await h.configure([h.logged('', true)]);
+    const [a, b] = await Promise.all([h.member('a'), h.member('b')]);
+    await a.commit('a.txt', 'a\n'); await b.commit('bad.txt', 'x\n');
+    const gate = join(h.dir, 'gate'); await rm(gate, { force: true });
+    const first = a.land();
+    await vi.waitFor(async () => expect(await h.runs()).toHaveLength(1), { timeout: 20_000, interval: 20 });
+    // The change waits for the train in progress; the submission behind it is checked with the new commands.
+    const change = h.manager.configure(h.ctx, { checks: [fails('bad.txt')] });
+    const second = b.land();
+    await writeFile(gate, '');
+    expect(await first).toMatchObject({ status: 'landed' });
+    expect(await change).toMatchObject({ changed: true });
+    expect(await second).toMatchObject({ status: 'check_failed', commands: [{ code: 4 }] });
+  }, 60_000);
+});
+
 describe('submit_work', () => {
-  function harness(land: (input: { workspace: string; taskId: string }, signal: AbortSignal) => Promise<unknown>) {
+  function harness(land: (input: { workspace: string; taskId: string }, signal: AbortSignal) => Promise<unknown>, landing?: (input: Record<string, unknown>) => Promise<unknown>) {
     let now = 1_000_000;
     const root: WorkflowRoot = { scopeId: 'submit-test', profile: 'default', agentKind: 'codex', cwdRealpath: '/workspace', policyFingerprint: 'policy', catalogBinding: 'root', modelSettings: {} };
     const requests: WorkflowWorkerRequest[] = [];
     const kernel = new WorkflowKernel(':memory:', { resolveRoot: async () => root, wakeMain: async () => {}, resolveWorkspace: async () => {},
-      land: async (_state, input, signal) => land(input, signal),
+      land: async (_state, input, signal) => land(input, signal), ...(landing ? { landing: async (_state: unknown, input: Record<string, unknown>) => landing(input) } : {}),
       execute: async request => { requests.push(request); request.onRun('run-' + request.attemptId); request.onSession('native');
         return new Promise<WorkflowWorkerResult>(resolve => request.signal.addEventListener('abort', () => resolve({ status: 'stopped' }), { once: true })); } }, () => now);
     closes.push(() => kernel.close());
@@ -301,6 +494,38 @@ describe('submit_work', () => {
     expect(await h.send(request, 'release_claim', { claimId: grant.claimId, generation: grant.generation, reason: 'cannot fix' })).toMatchObject({ status: 'pending' });
   });
 
+  it('raises what the queue found out about the branch as an event for the main agent, once while it stands, and keeps it from the member', async () => {
+    const halted = { status: 'halted', targetRef: 'refs/heads/x', targetCommit: 'abc', reason: 'moved' };
+    const reports = [{ ...halted, notice: '落地已停止：x' }, { ...halted, notice: '落地已停止：x' }, { status: 'landed', targetRef: 'refs/heads/x', headCommit: 'def', commits: 1, notice: '落地分支 x 有 1 个提交未经 submit_work 进入' }];
+    const h = harness(async () => reports.shift());
+    const request = await h.start('ws-1');
+    const grant = await h.send(request, 'claim_work') as Grant;
+    const attention = () => h.state().events.filter(event => event.kind === 'landing_attention').map(event => event.summary);
+    expect(await h.send(request, 'submit_work', { claimId: grant.claimId, generation: grant.generation })).toEqual(halted);
+    expect(await h.send(request, 'submit_work', { claimId: grant.claimId, generation: grant.generation })).toEqual(halted);
+    expect(attention()).toEqual(['落地已停止：x']);
+    expect(h.state().workQueue!.items[0]).toMatchObject({ status: 'claimed' });
+    const landed = await h.send(request, 'submit_work', { claimId: grant.claimId, generation: grant.generation }) as Record<string, unknown>;
+    expect(landed).toMatchObject({ status: 'landed', item: { status: 'completed' } });
+    expect(landed.notice).toBeUndefined();
+    expect(attention()).toEqual(['落地已停止：x', '落地分支 x 有 1 个提交未经 submit_work 进入']);
+  });
+
+  it('lets the main agent, and no worker, look at and change the landing', async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const h = harness(async () => ({ status: 'landed' }), async input => { calls.push(input); return { changed: Object.keys(input).length > 0 }; });
+    const request = await h.start('ws-1');
+    const main = (args: Record<string, unknown>) => h.kernel.call({ kind: 'main', scopeId: 'submit-test' }, 'configure_landing', args);
+    expect(await main({})).toEqual({ changed: false });
+    expect(await main({ workflowId: h.state().workflowId, operationId: 'habit', expectedStateVersion: 1, batch: 2, checks: [{ argv: ['true'] }] })).toEqual({ changed: true });
+    expect(calls).toEqual([{}, { batch: 2, checks: [{ argv: ['true'] }] }]);
+    await expect(h.send(request, 'configure_landing', { batch: 1 })).rejects.toThrow();
+    expect(calls).toHaveLength(2);
+    const bare = harness(async () => ({ status: 'landed' }));
+    await bare.start('ws-1');
+    await expect(bare.kernel.call({ kind: 'main', scopeId: 'submit-test' }, 'configure_landing', {})).rejects.toThrow('Landing is unavailable');
+  });
+
   it('refuses members without a worktree and stale claims before touching Git', async () => {
     const land = vi.fn(async () => ({ status: 'landed' }));
     const bare = harness(land);
@@ -318,7 +543,7 @@ describe('submit_work', () => {
 });
 
 describe('claim, fix and land through the runtime', () => {
-  it('runs the packaged example: members claim bugs, commit in their worktrees and land them over IPC', async () => {
+  it.each(['worktree', 'clone'] as const)('runs the packaged example: members claim bugs, commit in their %ss and land them over IPC', async isolation => {
     const dir = await mkdtemp(join(tmpdir(), 'workflow-claim-land-'));
     closes.push(() => rm(dir, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 }));
     const repo = join(dir, 'repo'); await mkdir(repo);
@@ -331,13 +556,18 @@ describe('claim, fix and land through the runtime', () => {
         await spec.validateBeforeRun();
         const cwd = spec.workspace!.path;
         expect(spec.systemPrompt).toContain('Landing branch: bridge-workflow/');
+        expect(spec.systemPrompt).toContain('Submit each item as soon as its own check passes');
+        expect(spec.systemPrompt).toContain(`Managed ${isolation}: ${cwd}`);
+        // A clone sees the landing branch through its remote; a worktree shares the checkout's refs.
+        const refs = isolation === 'clone' ? `refs/remotes/${CLONE_REMOTE}/bridge-workflow` : 'refs/heads/bridge-workflow';
         /** One turn of a fixer: claim until the queue is empty. */
         const work = (async () => {
           for (;;) {
             const grant = await callWorkflow('claim_work', { operationId: randomUUID() }, spec.env) as { claimId: string; generation: number; item: { key: string } } | null;
             if (!grant) return;
             const claim = { claimId: grant.claimId, generation: grant.generation };
-            const branch = (await git(cwd, 'for-each-ref', '--format=%(refname)', 'refs/heads/bridge-workflow')).split('\n')[0];
+            if (isolation === 'clone') await git(cwd, 'fetch', '--quiet', CLONE_REMOTE);
+            const branch = (await git(cwd, 'for-each-ref', '--format=%(refname)', refs)).split('\n')[0];
             if (branch) await git(cwd, 'rebase', branch);
             // Every fixer appends to the same file, so concurrent fixes conflict and must be redone on the new head.
             for (;;) {
@@ -363,7 +593,7 @@ describe('claim, fix and land through the runtime', () => {
     const keys = Array.from({ length: 12 }, (_, index) => `bug-${index}`);
     await callWorkflow('run_script', { operationId: randomUUID(), goal: 'Fix bugs', plan: 'Four fixers claim twelve bugs and land each fix.', maxConcurrent: 4, maxAgents: 64,
       script: await readFile(new URL('../../../workflow-definitions/scripted/examples/claim-and-land.js', import.meta.url), 'utf8'),
-      args: { members: 4, items: keys.map(key => ({ key, title: key })), checks: [{ argv: [process.execPath, '-e', `if(!require('fs').existsSync('fixed.txt'))process.exit(1)`] }] } }, main.env);
+      args: { members: 4, isolation, items: keys.map(key => ({ key, title: key })), checks: [{ argv: [process.execPath, '-e', `if(!require('fs').existsSync('fixed.txt'))process.exit(1)`] }] } }, main.env);
     main.release();
     await vi.waitFor(async () => { await runtime.tick(); expect(runtime.kernel.state(root.scopeId)?.script?.status).not.toBe('running'); }, { timeout: 100_000, interval: 100 });
     const state = runtime.kernel.state(root.scopeId)!;

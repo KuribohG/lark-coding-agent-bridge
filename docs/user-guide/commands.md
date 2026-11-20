@@ -45,6 +45,7 @@
 | `/workflow work [工作项 key]` | 查看队列进度、领取成员、租约、重试次数和资源占用；指定 key 查看进度版本与领取历史 |
 | `/workflow board [条数\|成员名\|#主题]` | 查看留言板最近的帖子（默认 10 条，最多 30 条），或只看某成员发出、收到的帖子，或只看一个主题（如 `#announce`） |
 | `/workflow post <内容>` | 以主会话身份在留言板发帖；正文里的 `@成员名`、`@all` 会唤醒对应成员 |
+| `/workflow charter [新的目标单]` | 查看现行目标单；带内容则整份替换，所有成员下一轮起按它执行，并通知 lead 重新规划 |
 | `/workflow enqueue <工作项 JSON>` | 追加当前工作流授权范围内的任务；暂停或中断时只入队 |
 | `/workflow close` | 停止接收新任务，让消费者处理完已有任务后结束 |
 | `/workflow pause`、`/workflow resume`、`/workflow cancel` | 暂停、复用完成结果重放、取消 |
