@@ -1,6 +1,7 @@
 import { postToBoard } from './board';
 import { pushEvent } from './kernel-state';
 import { emit } from './kernel-store';
+import { BOARD_NOTICED_TOPIC } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
 import type { Immutable, StoredTask, WorkflowCharter, WorkflowView } from './types';
 
@@ -82,9 +83,13 @@ export function pumpMainWake(state: WorkflowView, now: number): void {
   if (!wake || now < wake.at || state.parent || state.status !== 'active' || state.script?.status !== 'running') return;
   // One review at a time: while the last one waits to be acknowledged, another would only repeat it.
   if (!state.events.some(event => event.kind === 'review_due' && !event.acknowledged)) {
-    pushEvent(state, { kind: 'review_due', summary: `定时复盘${wake.note ? '（' + wake.note + '）' : ''}：不要只看汇报，用 status、work_status、search_work、read_board 核对近期的实际产出`
-      + `（落地的提交、测量结果）是否在推进${state.charter ? `现行目标单（第 ${state.charter.version} 版）` : '原始需求（尚未设置目标单）'}。`
-      + '方向、优先级或口径偏了就用 set_charter 更新目标单，并补充或调整工作项；人手不合适用 staff_swarm；一切正常则 ack_events 后结束本轮。' }, () => now);
+    // The review starts from what the user asked for, since the charter is itself rewritten as a run goes on, and
+    // asks how far off that is: a look at what was produced lately finds it reasonable whatever it was produced for.
+    pushEvent(state, { kind: 'review_due', summary: `定时复盘${wake.note ? '（' + wake.note + '）' : ''}：从用户的原始需求出发，不要只看汇报。`
+      + (state.charter ? `先看现行目标单（第 ${state.charter.version} 版）开头的目标和达成标准是否仍是用户要的；` : '原始需求之外尚未设置目标单：先用 set_charter 写下目标和可检验的达成标准；')
+      + '再用 status、work_status、search_work、read_board 核对实际产出，按达成标准现在还差多少、比上次复盘近了多少，最大的差距有没有人在做，'
+      + `留言板 ${BOARD_NOTICED_TOPIC} 主题里成员看到了哪些计划没考虑到的事。在做的事对不上目标就撤销或挂起（update_work），并用 set_charter 改写目标之后的现状部分；`
+      + '连续两次复盘没有更近，是打法的问题：安排人查原因、试别的路，不要追加同类工作项。人手不合适用 staff_swarm；一切正常则 ack_events 后结束本轮。' }, () => now);
   }
   emit(state, { type: 'main_wake_set', ...(wake.every ? { wake: { ...wake, at: now + wake.every } } : {}) });
 }

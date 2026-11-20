@@ -638,7 +638,7 @@ describe('swarm', () => {
     expect(prompt('lead3')).toContain('Charter in force (version 2, set by lead lead');
     expect(prompt('lead3')).toContain('Parser first; no reports.');
     expect(state().charter).toMatchObject({ version: 2, by: 'lead', text: 'Parser first; no reports.' });
-    expect(prompt('lead1')).toContain('replace it with set_charter instead of adding another announcement');
+    expect(prompt('lead1')).toContain('replace the charter instead of adding another announcement');
   });
 
   it('wakes a member when the wake-up it set is due, and keeps the swarm open until then', async () => {
@@ -673,6 +673,37 @@ describe('swarm', () => {
     expect(h.results).toHaveLength(4);
     expect(h.errors.sort()).toEqual([expect.stringContaining('between 0 and 1440'), expect.stringContaining('Give afterMinutes')].sort());
     expect(h.specs[0]!.prompt).toContain('wake_me wakes you after a delay');
+  });
+
+  it('makes the wake-up a lead set for itself a review that starts from the goal', async () => {
+    let ahead = 0;
+    const real = Date.now.bind(Date);
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => real() + ahead);
+    cleanup.push(async () => clock.mockRestore());
+    const h = await play('return await swarm("Ship it", {key:"rev", lead:{name:"lead"}, members:[{name:"dev"}]});', {
+      lead: [{ calls: [['wake_me', { afterMinutes: 30 }]] }, {}, {}, { calls: [['swarm_finish', { result: 'done' }]] }],
+    });
+    const state = () => h.runtime.kernel.state(h.root.scopeId)!;
+    const leadTurns = () => h.order.filter(turn => turn.startsWith('lead'));
+    // The lead's own wake-up does not hold an idle swarm open: it is reminded twice, and the swarm then waits.
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(leadTurns()).toEqual(['lead1', 'lead2', 'lead3']); expect(state().swarms![0]!.stalled).toBe(true); }, { timeout: 10_000 });
+    // A turn the lead is woken for by a post is told to read what came back; it is not a review.
+    const told = (turn: string) => h.specs[h.order.indexOf(turn)]!.prompt;
+    expect(told('lead2')).toContain('Read what has come back (topic "handoff") and judge it against the charter or the task');
+    expect(told('lead2')).not.toContain('This turn is your review');
+    expect(told('lead2')).toContain('the plan so far did not reach it: find what is missing, what would have to be known and what has not been tried');
+    ahead += 31 * 60_000;
+    const { result } = await h.settled();
+    expect(result).toMatchObject({ stop: 'finished', result: 'done' });
+    expect(told('lead4')).toContain('The wake-up you set with wake_me is due. ');
+    expect(told('lead4')).toContain('This turn is your review of the plan, so start from the goal and not from what came back. (1) Read the goal and how to tell that it is met, at the head of the charter or else in the task, ');
+    expect(told('lead4')).toContain('(2) For what each queue is working on, ask which part of that distance it closes, and cancel or hold what closes none (update_work). ');
+    expect(told('lead4')).toContain('(4) Read topic "noticed" for what members saw that the plan does not account for');
+    expect(told('lead4')).toContain('(5) Replace the charter with set_charter: leave its goal as it was given');
+    expect(told('lead4')).toContain('When two reviews in a row find the goal no closer, the plan is what is wrong');
+    expect(told('lead4')).not.toContain('Read what has come back (topic "handoff") and judge it against the charter or the task');
+    // A member that answers to the lead without a queue reports what it saw with what it did.
+    expect(told('dev1')).toContain('Report results and blockers to it, and with them what you saw that the plan does not account for.');
   });
 
   it('wakes the main agent for a review on the schedule it set, one pending review at a time', async () => {
@@ -761,9 +792,17 @@ describe('swarm', () => {
     expect(prompt('lead')).toContain('@ql (leads "q")');
     // What a lead is asked for is the goal's work, not a full queue: idle members are no reason to add items, and a queue may stay empty.
     for (const member of ['lead', 'ql']) {
-      expect(prompt(member)).toContain('the queues should hold the work you already know the goal needs. Idle members are not a reason to add work');
-      expect(prompt(member)).toContain('Where a queue has no such work for now, leave it empty instead of inventing items');
-      expect(prompt(member)).toContain('Looking into something is an item of its own only when the answer decides what is done next');
+      expect(prompt(member)).toContain('the queues should hold the work the goal needs, both what you know and what has to be found out. Idle members are not a reason to add work');
+      // An empty queue with the goal unmet is first a question about the plan, and only then an answer.
+      expect(prompt(member)).toContain('a queue that is empty while the goal is not met says that the plan you have does not reach the goal');
+      expect(prompt(member)).toContain('Where that leaves nothing its members could do, leave the queue empty instead of inventing items');
+      // An item says what it is for, and what is not known yet is work as long as something hangs on the answer.
+      expect(prompt(member)).toContain('and what it is for, which is the part of the goal it moves');
+      expect(prompt(member)).toContain('a question whose answer would change the plan, a way to the goal that nobody has tried');
+      expect(prompt(member)).toContain('do not add an item whose result would change nothing whichever way it comes out');
+      expect(prompt(member)).toContain('what you add after reading one is what closes the distance to the goal, not everything it suggests');
+      expect(prompt(member)).toContain('Each is told to post in topic "noticed", naming nobody, what it noticed that the plan does not account for');
+      expect(prompt(member)).toMatch(/That wake-up, and every 8th of the others, is your review of (the plan|your part)/);
       expect(prompt(member)).toContain('Do not ask for a write-up beside the result');
       expect(prompt(member)).toContain('A queue that runs dry asks for a decision, not for items');
       expect(prompt(member)).toContain('What counts is how far the goal has moved, not how many items came back');
@@ -777,7 +816,19 @@ describe('swarm', () => {
     expect(prompt('w1')).toContain('Add an item only for what someone must act on');
     expect(prompt('w1')).toContain('you do not add an item that asks for a review of what you delivered: the checking of delivered work is planned by the leads');
     expect(prompt('w1')).toContain('say in the new item how to see the fault for oneself (the command, the input, the source)');
-    expect(prompt('w1')).toContain('Stay inside your item');
+    // A member keeps to the purpose of its item, and what it sees beside it goes where it wakes nobody and is not yet work.
+    expect(prompt('w1')).toContain('That is what you are after, not the wording');
+    expect(prompt('w1')).toContain('When the better way reaches beyond the item, do not take it yourself');
+    expect(prompt('w1')).toContain('Then post it in topic "noticed" and name nobody, which costs nobody a turn');
+    expect(prompt('w1')).toContain('What you find outside your item you do not pursue yourself beyond such a check: it is new work');
+    expect(prompt('w1')).toContain('What could change the plan goes in topic "noticed" and what is merely worth knowing in your result');
+    // The goal and its test head the charter and are not the lead's to reword; what each part must deliver is in it too.
+    expect(prompt('lead')).toContain('It opens with the goal in the words it was given and with how to tell that it is met');
+    expect(prompt('lead')).toContain('you carry it over unchanged whenever you replace the charter');
+    expect(prompt('lead')).toContain('If no charter is in force, set one with set_charter in your first turn, before you hand out work');
+    expect(prompt('lead')).toContain('and what each part that has a lead of its own must deliver');
+    expect(prompt('lead')).toContain('Write into the charter what each part must deliver to the goal and how to tell');
+    expect(prompt('ql')).toContain('What your part must deliver to the goal is in the charter, or else in what @lead posted to you');
     expect(prompt('w1')).toContain('you withdraw with update_work({key, cancel: true})');
     // Work is delivered on its own check and looked at afterwards: the lead plans that looking, and what it finds goes to the queue of those who do the work.
     expect(prompt('lead')).toContain('do not make each result wait for a reviewer');
@@ -792,8 +843,8 @@ describe('swarm', () => {
     for (const member of ['lead', 'ql']) expect(prompt(member)).toContain('update_work({key, ...}) moves one ahead or back (priority)');
     expect(prompt('lead')).toContain('at your next turn the system posts the outcomes in topic "handoff", gathered');
     // The rules of a first turn do not last a long run: every later turn of a lead restates its part and shows how its queues stand.
-    expect(h.specs[h.order.indexOf('lead2')]!.prompt).toMatch(/You are the lead: you plan and judge and do not do the work yourself\..* add the work you know the goal still needs to each queue that has no lead of its own\. Idle members are not a reason to add items: a queue with no work that moves the goal stays empty, and staff_swarm\(\{move, queue\}\) puts its members where there is more work than members\..*not reviewing what was written about it or checking another check.*Queues now: .*"q" \d+ claimable, \d+ of 1 members idle, \d+ items completed in the last hour \(lead ql\)/);
-    expect(h.specs[h.order.indexOf('ql2')]!.prompt).toMatch(/You lead queue "q": you plan and judge .* add the work you know the goal still needs to each queue of yours\. Idle members are not a reason to add items: a queue with no work that moves the goal stays empty, and you tell @lead\..*Queues now: "q" \d+ claimable, \d+ of 1 members idle, \d+ items completed in the last hour\./);
+    expect(h.specs[h.order.indexOf('lead2')]!.prompt).toMatch(/You are the lead: you plan and judge and do not do the work yourself\..* add the work the goal still needs, what you know and what has to be found out, to each queue that has no lead of its own\. Idle members are not a reason to add items, and an empty queue with the goal unmet is a reason to ask what the plan still lacks: a queue with no work that moves the goal stays empty, and staff_swarm\(\{move, queue\}\) puts its members where there is more work than members\..*not reviewing what was written about it or checking another check.*Queues now: .*"q" \d+ claimable, \d+ of 1 members idle, \d+ items completed in the last hour \(lead ql\)/);
+    expect(h.specs[h.order.indexOf('ql2')]!.prompt).toMatch(/You lead queue "q": you plan and judge .* add the work the goal still needs, what you know and what has to be found out, to each queue of yours\. Idle members are not a reason to add items, and an empty queue with the goal unmet is a reason to ask what the plan still lacks: a queue with no work that moves the goal stays empty, and you tell @lead\..*Queues now: "q" \d+ claimable, \d+ of 1 members idle, \d+ items completed in the last hour\./);
     expect(h.specs[h.order.indexOf('ql2')]!.prompt).not.toContain('"p"');
     const main = h.runtime.bindMain(h.root.scopeId, 'continue'); cleanup.push(async () => main.release());
     const status = await callWorkflow('status', { workflowId: state().workflowId }, main.env) as { swarms: Array<{ queues: Record<string, { lead?: string }>; members: unknown[] }> };
@@ -832,7 +883,8 @@ describe('swarm', () => {
     expect(told('has run dry').map(post => post.to.map(name))).toEqual([['ql']]);
     expect(told('has run dry')[0]!.text).toContain('Queue "q" has run dry: 2 of its 2 members are idle');
     // The notice asks for a decision, not for items, and resolving it is the answer that the queue has no work for now.
-    expect(told('has run dry')[0]!.text).toContain('If you know of work for it that the goal needs, add it with enqueue_work. If there is none for now, do not make any up: '
+    expect(told('has run dry')[0]!.text).toContain('Ask what the goal still lacks that these members could work on, a step you know or a question whose answer would change the plan, '
+      + 'and add that with enqueue_work. If there is nothing, do not make any up: '
       + `resolve this post with resolve_post({seq: ${told('has run dry')[0]!.seq}, note}) to say so`);
     expect(told('has run dry')[0]!.text).toContain('Tell the lead (lead), which can move its members to another queue.');
     expect(swarm().starved!.q).toMatchObject({ posts: [told('has run dry')[0]!.seq] });
@@ -964,7 +1016,8 @@ describe('swarm', () => {
     expect(item('p3').doneBy).toBe('b');
     expect(h.specs[h.order.indexOf('b2')]!.prompt).toContain('You have been moved from queue "q" to queue "p": where your first turn speaks of "q", the items of "p" now say what is wanted. Your role now: builds p now. '
       + 'Then consume queue "p" with claim_work until it returns null; you may have been woken for new work alone. '
-      + 'Deliver what each item asks for: the result you give complete_work is your report, so write none beside it.');
+      + 'Deliver what each item asks for: the result you give complete_work is your report, so write none beside it.'
+      + ' What you see on the way that the plan does not account for goes in topic "noticed", naming nobody.');
     expect(member('b').movedFrom).toBeUndefined();
     // The last member of "q" leaves while "q2" is unfinished: the answer says that nobody consumes the queue now.
     expect(await call('staff_swarm', { move: ['e'], queue: 'p' })).toMatchObject({ moved: ['e'], unconsumed: ['q'] });

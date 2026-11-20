@@ -8,13 +8,15 @@ import { versioned } from './versioned';
 export const steeringTools: WorkflowToolPlugin = {
   id: 'steering',
   memberInstructions: [
-    'The charter is the goal, the priorities and the standing rules of the workflow as they stand now. The prompt of every turn carries the current version (read_context has it in charter, where changed says that it was replaced since your last turn); '
+    'The charter is the goal of the workflow and where the work on it stands: it opens with the goal and how to tell that it is met, and goes on with how far off that is now, what is being tried, what was ruled out and the priorities. '
+      + 'The prompt of every turn carries the current version (read_context has it in charter, where changed says that it was replaced since your last turn); '
       + 'where it differs from the request, the task or earlier announcements, the charter wins. Only the main agent and the lead of a swarm can change it.',
     `wake_me({operationId,afterMinutes,note?}) wakes a swarm member for one turn after afterMinutes minutes (1–${WAKE_MAX_MINUTES}) without anyone naming it. To wait for a long build, test or queue, or to check on something later, `
       + 'save a checkpoint, set it and end the turn; do not hold the turn polling or sleeping. A member has one timer: calling again replaces it, and afterMinutes 0 cancels it. '
       + 'It stays set when a post or new work wakes you earlier, and it counts as a wake-up like being named.',
   ].join('\n'),
-  leadInstructions: `set_charter({operationId,text}), for the lead of a swarm, replaces the whole charter (at most ${CHARTER_MAX_TEXT} characters) with the goal, completion criteria that can be checked, the priorities, what is out of scope and how results are measured. `
+  leadInstructions: `set_charter({operationId,text}), for the lead of a swarm, replaces the whole charter (at most ${CHARTER_MAX_TEXT} characters). It opens with the goal and how to tell that it is met, which you carry over as they were given; `
+    + 'below them you write how far off the goal is now by that test, what is being tried and what was ruled out, the priorities, what is out of scope and how results are measured. '
     + 'When the direction, the priorities or the measures change, change the charter instead of only announcing it.',
   tools: [
     {

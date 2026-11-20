@@ -6,7 +6,7 @@ import type { WorkflowTask } from '../types';
 
 const tools = BUILTIN_WORKFLOW_TOOLS;
 
-const STEERING = `目标单是现行的目标、完成标准、优先级和口径：set_charter(text) 整份替换（≤${CHARTER_MAX_TEXT} 字符），每个 worker 每轮都带现行版本，并通知 lead 重排。方向调整或产出偏离时改它，不只发公告。wake_me 定时唤醒你复盘（review_due 事件）：everyMinutes 周期，afterMinutes 一次，0 取消`;
+const STEERING = `目标单是每个 worker 每轮都带的现行目标：set_charter(text) 整份替换（≤${CHARTER_MAX_TEXT} 字符）并通知 lead 重排。开头写用户要的目标和可检验的达成标准，只在用户改要求时改；其后是现状与差距、在试和已排除的路、优先级和口径，lead 复盘时更新。方向调整或产出偏离时改它，不只发公告。wake_me 定时唤醒你复盘（review_due 事件）：everyMinutes 周期，afterMinutes 一次，0 取消`;
 
 const STAFF_SWARM = `staff_swarm 不重放调整 swarm（多个在跑时用 swarm 指定）：add 新成员名单（≤256），沿用 like 成员（默认非 lead）的 harness、模型、角色、队列，harness/model/reasoningEffort/queue/role 可另指，brief 是给新成员的首轮说明；workspace 给新成员建 worktree、leads 设子领域 lead（均见 guide）；move 把名单里的队列成员改为消费 queue 指定的队列；revive 重试失败成员（"failed" 或名单）；retire 成员跑完本轮后不再唤醒；cleanup 删除停用成员（retired 或 failed）的 worktree，其中未提交/未集成的修改一并丢弃（"retired" 或名单）；maxTurns 提高唤醒上限（只增不减，≤${SWARM_MAX_TURNS}）；maxConcurrent 改并发`;
 
@@ -42,7 +42,7 @@ configure_landing 查看、修改落地检查并处理被改动的分支，用�
 ${STAFF_SWARM}
 resolve_post 把已答复、已办完或已被新帖取代的帖子标为已解决（note 写怎么解决的，see 为答复或取代它的帖子序号，至少给一个；reopen:true 撤销）：read_board 默认跳过它们（resolved:true 一并返回），search_board 仍能搜到。`;
 
-const REVIEWING = `${STEERING}；带 lead 的 swarm 启动后设 30–60 分钟周期，复盘看实际产出而非汇报。`;
+const REVIEWING = `${STEERING}；带 lead 的 swarm 启动后设 30–60 分钟周期，复盘从原始需求出发，看实际产出离达成标准还差多少，而非看汇报。`;
 const GUARDS = `内部事件不是用户消息或原生问题答案。不要读取或展示环境中的调用凭据。worker 仅可执行原始需求授权的任务；主、子运行沿用已授权 profile，角色说明不代表工具沙箱隔离。`;
 
 /**

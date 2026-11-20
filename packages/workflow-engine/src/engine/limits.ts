@@ -74,6 +74,11 @@ export const BOARD_DEFAULT_TOPIC = 'general';
 export const BOARD_ANNOUNCE_TOPIC = 'announce';
 /** The outcomes of the work items members completed or gave up, posted by the system to the lead that planned them when its next turn starts. */
 export const BOARD_HANDOFF_TOPIC = 'handoff';
+/**
+ * What members saw while working that the plan does not account for. They post it naming nobody, so that it wakes
+ * nobody and does not become work until a lead has held it against the goal at its review.
+ */
+export const BOARD_NOTICED_TOPIC = 'noticed';
 /** Outcomes of work items a swarm keeps for its leads' next turns; past this many the newest are not handed over. */
 export const SWARM_MAX_HANDOFFS = 1024;
 /** Distinct topics of one board. A topic is a workstream, not a tag for one post. */
