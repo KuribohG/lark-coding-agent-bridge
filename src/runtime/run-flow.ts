@@ -202,6 +202,10 @@ export async function startRunFlow(input: StartRunFlowInput): Promise<StartRunFl
   try {
     execution = await input.executor.submit({
       agent: input.agent,
+      // Capability, workspace and session above were resolved for this engine; a fork's own scope
+      // (`btw:…`, `cache-keepalive:…`) carries no engine pin, so an unbound submit would fall back
+      // to the profile default and resume this engine's session with another CLI.
+      ...(input.agent ? {} : { agentKind: input.capability.agentId }),
       env: input.env,
       signal: input.signal,
       deadlineAt: input.deadlineAt,

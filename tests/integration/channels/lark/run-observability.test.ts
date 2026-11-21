@@ -81,6 +81,7 @@ async function createHarness(): Promise<{
     now: () => new Date('2026-05-25T00:00:00.000Z'),
   });
   const agent = new FakeAgentAdapter({
+    id: 'claude',
     events: [{ type: 'done', terminationReason: 'normal' }],
   });
   const executor = new RunExecutor({

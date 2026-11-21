@@ -134,6 +134,7 @@ async function createHarness(options: { defaultWorkspace?: boolean } = {}): Prom
 }> {
   const tmp = await createTmpProfile('bridge-im-run-flow-');
   const agent = new FakeAgentAdapter({
+    id: 'claude',
     events: [{ type: 'done', terminationReason: 'normal' }],
   });
   const executor = new RunExecutor({

@@ -7,7 +7,7 @@ import { ActiveRuns } from '../../../../src/runtime/active-runs';
 import { ProcessPool } from '../../../../src/runtime/process-pool';
 import { commandSessionCatalogIdentity } from '../../../../src/channels/lark/session-catalog-identity';
 import { tryHandleCommand, type CommandContext, type Controls } from '../../../../src/commands';
-import { createDefaultProfileConfig } from '../../../../src/config/profile-schema';
+import { createDefaultProfileConfig, type AgentKind } from '../../../../src/config/profile-schema';
 import { RunExecutor } from '../../../../src/runtime/run-executor';
 import { BtwStore } from '../../../../src/session/btw-store';
 import { SessionCatalog } from '../../../../src/session/catalog';
@@ -53,6 +53,15 @@ describe('/btw', () => {
     expect(h.catalog.activeFor(h.ctx.sessionCatalogIdentity!)?.[kind === 'claude' ? 'sessionId' : 'threadId']).toBe('parent');
     expect(h.sent).toHaveLength(2);
     expect(h.sent[1]).toMatchObject({ options: { replyTo: 'q2', replyInThread: true } });
+  });
+
+  it('runs the side question on the engine pinned to the thread, not the profile default', async () => {
+    const h = await harness('claude', [answer('pinned answer')], 'codex');
+    await h.manager.enqueue('question', h.ctx);
+    expect(h.pinned?.runOptions).toHaveLength(1);
+    expect(h.pinned?.runOptions[0]).toMatchObject({ forkSession: true, threadId: 'parent' });
+    expect(h.agent.runOptions).toHaveLength(0);
+    expect(h.sent).toHaveLength(1);
   });
 
   it('keeps history across a bridge restart and drops it after a parent switch', async () => {
@@ -254,7 +263,8 @@ describe('/btw', () => {
   });
 });
 
-async function harness(kind: 'claude' | 'codex', events: AgentEvent[][]) {
+/** `pinnedKind` reproduces a thread switched to another engine than the profile default. */
+async function harness(kind: 'claude' | 'codex', events: AgentEvent[][], pinnedKind?: 'claude' | 'codex') {
   const tmp = await createTmpProfile('btw-');
   cleanups.push(() => tmp.cleanup());
   const profile = createDefaultProfileConfig({ agentKind: kind,
@@ -283,29 +293,39 @@ async function harness(kind: 'claude' | 'codex', events: AgentEvent[][]) {
   } } } },
   } as unknown as LarkChannel;
   const agent = new FakeAgentAdapter({ id: kind, events });
+  const activeKind = pinnedKind ?? kind;
+  const pinned = activeKind === kind ? undefined : new FakeAgentAdapter({ id: activeKind, events });
+  const adapters: Partial<Record<typeof activeKind, FakeAgentAdapter>> = { [kind]: agent,
+    ...(pinned ? { [activeKind]: pinned } : {}) };
   const sessions = new SessionStore(join(tmp.profile, 'sessions.json'));
   const catalog = new SessionCatalog(join(tmp.profile, 'catalog.json'));
   const workspaces = new WorkspaceStore(join(tmp.profile, 'workspaces.json'));
+  // A switched engine has no profile workspace; pin the conversation to a real directory instead.
+  if (pinned) workspaces.setCwd('chat:topic', await realpath(tmp.workspace));
   const activeRuns = new ActiveRuns();
   const pool = new ProcessPool(() => 1);
-  const executor = new RunExecutor({ resolveAgent: () => agent, pool, activeRuns });
+  // Mirrors ProfileExecutionController: no explicit kind means "whatever this scope is pinned to",
+  // and scopes carrying no pin of their own (e.g. the fork's `btw:` scope) fall back to the profile.
+  const resolveAgent = (_scope: string, scopeKind?: AgentKind) =>
+    adapters[(scopeKind ?? controls.profileConfig.agentKind) as typeof activeKind] ?? agent;
+  const executor = new RunExecutor({ resolveAgent, pool, activeRuns });
   const path = join(tmp.profile, 'btw.json');
   const manager = new BtwManager(new BtwStore(path), channel);
   controls.channel = fakeChannelControls({ btw: manager });
   const rawMsg = { chatId: 'chat', chatType: 'group', senderId: 'user', threadId: 'topic', rootId: 'root', messageId: 'q1', content: '', resources: [], mentions: [] } as unknown as NormalizedMessage;
-  const ctx: CommandContext = { channel: channel as unknown as CommandContext['channel'], scope: 'chat:topic', chatMode: 'topic', agent, sessions,
-    sessionCatalog: catalog, workspaces, activeRuns, runExecutor: executor, controls, agentKind: controls.profileConfig.agentKind,
+  const ctx: CommandContext = { channel: channel as unknown as CommandContext['channel'], scope: 'chat:topic', chatMode: 'topic', agent: adapters[activeKind]!,
+    agentKind: activeKind, sessions, sessionCatalog: catalog, workspaces, activeRuns, runExecutor: executor, controls,
     msg: rawMsg,
   };
   ctx.sessionCatalogIdentity = await commandSessionCatalogIdentity({ ...ctx, msg: rawMsg, mode: 'topic', access: { ok: true, reason: 'allowed-user' } });
   const seed = (id: string) => {
     const identity = ctx.sessionCatalogIdentity!;
-    if (kind === 'claude') { catalog.upsertActive({ ...identity, agentId: 'claude', sessionId: id }); sessions.set(ctx.scope, id, identity.cwdRealpath); }
+    if (activeKind === 'claude') { catalog.upsertActive({ ...identity, agentId: 'claude', sessionId: id }); sessions.set(ctx.scope, id, identity.cwdRealpath); }
     else catalog.upsertActive({ ...identity, agentId: 'codex', threadId: id });
   };
   seed('parent');
   cleanups.push(async () => { await manager.close(); await Promise.all([sessions.flush(), catalog.flush(), workspaces.flush()]); });
-  return { ctx, channel, agent, sent, manager, path, catalog, pool, seed,
+  return { ctx, channel, agent, pinned, sent, manager, path, catalog, pool, seed,
     next: (id: string) => ({ ...ctx, msg: { ...ctx.msg, messageId: id } }),
   };
 }
