@@ -18,8 +18,10 @@ const TEXT_FLUSH_BYTES = 600;
 /**
  * Translate Pi's JSONL session-event stream into the bridge contract.
  *
- * JSON mode has one header plus session events. Pi 0.73 ends at process exit;
- * current releases also emit `agent_settled`. Both paths finish here.
+ * JSON mode has one session header plus session events; RPC mode has the same
+ * events but no header, so the session comes from its `get_state` answer. Pi
+ * 0.73 ends at process exit; current releases also emit `agent_settled`. Both
+ * paths finish here.
  */
 export class PiRunTranslator {
   private sessionId: string | undefined;
@@ -34,6 +36,8 @@ export class PiRunTranslator {
     private readonly answerIncludesInterimText = false,
     /** Time limits the run's tools are under, reported with each call for whoever watches it. */
     private readonly toolTimeouts: PiBashTimeouts = {},
+    /** The run's working directory; RPC mode reports no cwd of its own. */
+    private readonly cwd?: string,
   ) {}
   private terminal = false;
   private lastError: string | undefined;
@@ -57,6 +61,18 @@ export class PiRunTranslator {
           sessionId,
           ...(stringValue(raw.cwd) ? { cwd: stringValue(raw.cwd) } : {}),
         }];
+      }
+      case 'response': {
+        // RPC mode has no session header; its state answer names the session.
+        const data = recordValue(raw.data);
+        if (raw.command !== 'get_state' || raw.success !== true || !data) return [];
+        const sessionId = stringValue(data.sessionId);
+        if (!sessionId) return [];
+        const changed = sessionId !== this.sessionId;
+        this.sessionId = sessionId;
+        return changed
+          ? [{ type: 'system', sessionId, ...(this.cwd ? { cwd: this.cwd } : {}) }]
+          : [];
       }
       case 'message_start': {
         if (messageRole(raw.message) !== 'assistant') return [];

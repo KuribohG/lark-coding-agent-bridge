@@ -30,14 +30,18 @@ async function fixture() {
   await writeFile(binary, `#!${process.execPath}
 const fs = require('node:fs');
 if (process.argv.includes('--version')) { console.log('1.3.0'); process.exit(0); }
-let prompt = '';
-process.stdin.on('data', chunk => prompt += chunk);
-process.stdin.on('end', () => {
-  const argv = process.argv.slice(2);
-  const session = argv.includes('--session') ? argv[argv.indexOf('--session') + 1] : 'pi-child';
+const argv = process.argv.slice(2);
+const session = argv.includes('--session') ? argv[argv.indexOf('--session') + 1] : 'pi-child';
+const emit = event => console.log(JSON.stringify(event));
+const out = (command, data) => emit({ id: command.id, type: 'response', command: command.type, success: true, ...(data ? { data } : {}) });
+let pending = '';
+function handle(command) {
+  if (command.type === 'get_state') { out(command, { sessionId: session, isStreaming: true }); return; }
+  if (command.type === 'abort') { out(command); emit({ type: 'agent_settled', aborted: true }); return; }
+  if (command.type === 'clear_queue') { out(command, { steering: [], followUp: [] }); return; }
+  if (command.type !== 'prompt') return;
+  const prompt = command.message;
   fs.appendFileSync(${JSON.stringify(record)}, JSON.stringify({ argv, prompt, session }) + '\\n');
-  const emit = event => console.log(JSON.stringify(event));
-  emit({ type: 'session', id: session });
   if (prompt.includes('SAVE_WORK_STATE')) {
     const { execFileSync } = require('node:child_process');
     const call = (method, args) => JSON.parse(execFileSync(process.execPath, [process.env.AGENT_WORKFLOW_CLI, 'workflow', method, '--input', JSON.stringify(args), '--json'], { encoding: 'utf8' }));
@@ -48,7 +52,16 @@ process.stdin.on('end', () => {
   if (prompt.includes('WAIT_FOR_CANCEL')) { setInterval(() => {}, 1000); return; }
   emit({ type: 'message_end', message: { role: 'assistant', stopReason: 'stop', content: [{ type: 'text', text: prompt.includes('follow-up') ? 'revised proposal' : 'Pi proposal' }] } });
   emit({ type: 'agent_settled', aborted: false });
+}
+process.stdin.on('data', chunk => {
+  pending += chunk;
+  for (let newline = pending.indexOf('\\n'); newline >= 0; newline = pending.indexOf('\\n')) {
+    const line = pending.slice(0, newline);
+    pending = pending.slice(newline + 1);
+    if (line.trim()) handle(JSON.parse(line));
+  }
 });
+process.stdin.on('end', () => process.exit(0));
 `);
   await chmod(binary, 0o755);
   const root: WorkflowRoot = { scopeId: 'codex-topic', profile: 'codex', agentKind: 'codex', cwdRealpath: dir,

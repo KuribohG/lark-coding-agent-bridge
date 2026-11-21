@@ -56,7 +56,27 @@ function output(type, chunk) {
   sizes[type] += chunk.length;
   send(client, type, chunk);
 }
-child.stdout.on('data', chunk => output('o', chunk));
+// Pi's RPC mode waits for stdin EOF after a settled turn. A bridge that is
+// attached closes it, but one that is gone cannot, and the process would
+// linger until the orphan sweep. The host watches Pi's own terminal event and
+// closes stdin itself, so a detached run ends exactly as an attached one does.
+// Model text and tool output are JSON-escaped, so the raw marker only appears
+// in a protocol record, not inside a string.
+const PI_TERMINAL_MARKER = Buffer.from('"agent_settled"');
+const piRpc = spec.agent === 'pi';
+let markerTail = Buffer.alloc(0);
+child.stdout.on('data', chunk => {
+  output('o', chunk);
+  if (!piRpc || stdinClosed || exit) return;
+  const scan = markerTail.length > 0 ? Buffer.concat([markerTail, chunk]) : chunk;
+  if (scan.includes(PI_TERMINAL_MARKER)) {
+    stdinClosed = true;
+    child.stdin.end();
+    markerTail = Buffer.alloc(0);
+    return;
+  }
+  markerTail = scan.subarray(Math.max(0, scan.length - (PI_TERMINAL_MARKER.length - 1)));
+});
 child.stderr.on('data', chunk => output('e', chunk));
 child.stdin.on('error', () => {});
 

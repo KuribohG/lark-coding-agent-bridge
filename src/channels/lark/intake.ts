@@ -84,7 +84,7 @@ function isForwardFetchFailed(msg: NormalizedMessage): boolean {
 
 /**
  * A supplement may ride the active turn when it carries no resources, or only
- * images: Codex attaches them to the turn natively, and every other agent can
+ * images: Codex and Pi attach them to the turn natively, and every other agent can
  * read the cached path listed in the prompt. Files, audio, video and stickers
  * keep their place in the queue.
  */

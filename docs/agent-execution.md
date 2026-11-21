@@ -157,8 +157,9 @@ router still checks scope and cancellation generation before and after delivery.
 
 `AgentInput` may also carry absolute image paths. The prompt always lists the
 attachment, so the input degrades to the agent's own file tools when a transport
-cannot attach images: Codex sends them as `localImage` input items, the Pi host
-loads them into image content blocks, and Claude reads the cached path.
+cannot attach images: Codex sends them as `localImage` input items, the Pi CLI
+and SDK host load them into image content blocks, and Claude reads the cached
+path.
 
 Every adapter and run declares its execution capabilities. A native run exposes
 `sendInput()` only when its transport can deliver supplemental input;

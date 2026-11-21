@@ -5,9 +5,10 @@ export interface PiConfig extends ExecutableLaunchConfig {
   /** Directory containing Pi settings, sessions, auth.json, and model catalogs. */
   agentDir?: string;
   /**
-   * How runs reach Pi. `cli` (default) spawns one `pi --mode json` per run;
+   * How runs reach Pi. `cli` (default) spawns one `pi --mode rpc` per run,
+   * which steers the active turn through the same stdin protocol;
    * `sdk` embeds the Pi SDK in a long-lived host process that serves many
-   * sessions and supports mid-run steering.
+   * sessions.
    */
   transport?: 'cli' | 'sdk';
   /** `@earendil-works/pi-coding-agent/dist/index.js`; derived from the launcher when omitted. */

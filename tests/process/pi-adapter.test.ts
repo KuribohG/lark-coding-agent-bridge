@@ -20,21 +20,25 @@ afterEach(async () => {
 });
 
 describe('PiAdapter process contract', () => {
-  it('runs JSON mode, resumes a session and keeps prompt/system text out of argv', async () => {
+  it('runs RPC mode, steers the active turn, and keeps prompt/system text out of argv', async () => {
     const harness = await createFakePi([
-      { type: 'session', id: 'sess-resumed', cwd: '/repo' },
       { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: 'OK' } },
-      {
-        type: 'message_end',
-        message: {
-          role: 'assistant',
-          content: [{ type: 'text', text: 'OK' }],
-          stopReason: 'stop',
-          usage: { input: 2, output: 1, cacheRead: 0, cost: { total: 0 } },
+    ], {
+      sessionId: 'sess-resumed',
+      // The turn only finishes after the steer, so input arrives while it runs.
+      steerLines: [
+        {
+          type: 'message_end',
+          message: {
+            role: 'assistant',
+            content: [{ type: 'text', text: 'OK' }],
+            stopReason: 'stop',
+            usage: { input: 2, output: 1, cacheRead: 0, cost: { total: 0 } },
+          },
         },
-      },
-      { type: 'agent_settled', aborted: false },
-    ]);
+        { type: 'agent_settled', aborted: false },
+      ],
+    });
     dirs.push(harness.dir);
 
     const adapter = new PiAdapter({ binary: harness.binary, systemPrompt: buildBridgeSystemPrompt });
@@ -49,20 +53,35 @@ describe('PiAdapter process contract', () => {
       sandbox: 'read-only',
     })).start();
 
-    expect(run.capabilities).toEqual({ finalAnswer: 'separate-event', input: 'unsupported' });
-    expect(await collect(run.events)).toEqual([
-      { type: 'system', sessionId: 'sess-resumed', cwd: '/repo' },
+    expect(run.capabilities).toEqual({ finalAnswer: 'separate-event', input: 'active-turn' });
+    const events: AgentEvent[] = [];
+    let steered: ReturnType<NonNullable<typeof run.sendInput>> | undefined;
+    for await (const event of run.events) {
+      events.push(event);
+      // The turn is running: a message written now steers it instead of waiting.
+      if (!steered) steered = run.sendInput!({ text: 'also cover CRLF', messageId: 'om-steer' });
+    }
+    expect(await steered).toEqual({ status: 'accepted', messageId: 'om-steer', scope: 'active-turn' });
+    expect(events.filter(event => event.type !== 'system')).toEqual([
       { type: 'text', delta: 'OK' },
       { type: 'usage', inputTokens: 2, outputTokens: 1, cachedInputTokens: 0, costUsd: 0 },
       { type: 'final_text', content: 'OK' },
       { type: 'done', sessionId: 'sess-resumed', terminationReason: 'normal' },
     ]);
+    // The session arrives from the RPC state answer, whenever that lands.
+    expect(events.find(event => event.type === 'system')).toEqual({
+      type: 'system', sessionId: 'sess-resumed', cwd: await realpath(harness.dir),
+    });
     expect(await run.waitForExit(1000)).toBe(true);
 
     const record = await readRecord(harness.recordPath);
     expect(record.cwd).toBe(await realpath(harness.dir));
-    expect(record.stdin).toBe('hello <bridge_context>');
-    expect(record.argv.slice(0, 3)).toEqual(['--mode', 'json', '--append-system-prompt']);
+    const commands = record.commands;
+    // The session is asked for first, so a fast turn settles with its id known.
+    expect(commands[0]).toMatchObject({ type: 'get_state' });
+    expect(commands.find(command => command.type === 'prompt')).toMatchObject({ message: 'hello <bridge_context>' });
+    expect(commands.find(command => command.type === 'steer')).toMatchObject({ message: 'also cover CRLF' });
+    expect(record.argv.slice(0, 3)).toEqual(['--mode', 'rpc', '--append-system-prompt']);
     expect(record.argv).toContain('--session');
     expect(record.argv[record.argv.indexOf('--session') + 1]).toBe('sess-old');
     expect(record.argv).toContain('--model');
@@ -74,13 +93,14 @@ describe('PiAdapter process contract', () => {
     expect(record.systemPrompt).toContain('lark-channel-bridge 运行约定');
     expect(record.systemPrompt).toContain('ou_pi_bot');
     expect(record.env).toMatchObject({ PI_SKIP_VERSION_CHECK: '1', PI_TELEMETRY: '0' });
+    // Once the turn has settled the process is gone and further input is not for it.
+    expect((await run.sendInput!({ text: 'too late', messageId: 'om-late' })).status).toBe('inactive');
   });
 
   it('forks a parent session for side questions', async () => {
     const harness = await createFakePi([
-      { type: 'session', id: 'sess-child' },
       { type: 'agent_settled', aborted: false },
-    ]);
+    ], { sessionId: 'sess-child' });
     dirs.push(harness.dir);
     const adapter = new PiAdapter({ binary: harness.binary });
 
@@ -175,7 +195,8 @@ describe('PiAdapter process contract', () => {
       cwd: harness.dir,
     })).start().events);
 
-    expect(events).toEqual([
+    const output = events.filter(event => event.type !== 'system');
+    expect(output).toEqual([
       { type: 'text', delta: 'partial' },
       expect.objectContaining({
         type: 'error',
@@ -184,7 +205,7 @@ describe('PiAdapter process contract', () => {
         failureKind: 'runtime',
       }),
     ]);
-    expect((events[1] as { message: string }).message).toContain('provider down');
+    expect((output[1] as { message: string }).message).toContain('provider down');
   });
 
   it('lets Pi flush trailing output after the consumer stops at done', async () => {
@@ -349,7 +370,12 @@ describe.skipIf(process.platform === 'win32')('PiAdapter under a run host', () =
   afterEach(() => restoreHosts());
 
   /** A Pi that reports its session, says it is working, and answers only once the test lets it. */
-  async function hostedPi(): Promise<{ adapter: PiAdapter; binary: string; record(): Promise<{ stdin: string; promptPath: string; systemPrompt: string }>; pids(): Promise<number[]> }> {
+  async function hostedPi(): Promise<{
+    adapter: PiAdapter;
+    binary: string;
+    record(): Promise<{ stdin: string; commands: Array<Record<string, unknown>>; promptPath: string; systemPrompt: string }>;
+    pids(): Promise<number[]>;
+  }> {
     const binary = join(dir, 'pi');
     await writeFile(binary, [
       '#!/usr/bin/env node',
@@ -361,11 +387,10 @@ describe.skipIf(process.platform === 'win32')('PiAdapter under a run host', () =
       'const promptPath = argv[argv.indexOf("--append-system-prompt") + 1];',
       'appendFileSync(dir + "/pids.log", process.pid + "\\n");',
       'let stdin = "";',
-      'process.stdin.on("data", chunk => { stdin += chunk; });',
-      'process.stdin.on("end", () => {',
-      '  writeFileSync(dir + "/record.json", JSON.stringify({ stdin, promptPath, systemPrompt: readFileSync(promptPath, "utf8") }));',
-      '  out({ type: "session", id: "sess-hosted", cwd: "/repo" });',
-      '  out({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "working" } });',
+      'let pending = "";',
+      'const commands = [];',
+      'const record = () => writeFileSync(dir + "/record.json", JSON.stringify({ stdin, commands, promptPath, systemPrompt: readFileSync(promptPath, "utf8") }));',
+      'function watchRelease() {',
       '  const timer = setInterval(() => {',
       '    if (!existsSync(dir + "/release")) return;',
       '    clearInterval(timer);',
@@ -373,12 +398,44 @@ describe.skipIf(process.platform === 'win32')('PiAdapter under a run host', () =
       '      usage: { input: 2, output: 1, cacheRead: 0, cost: { total: 0 } } } });',
       '    out({ type: "agent_settled", aborted: false }, () => process.exit(0));',
       '  }, 20);',
+      '}',
+      'function handle(command) {',
+      '  commands.push(command);',
+      '  if (command.type === "get_state") {',
+      '    out({ id: command.id, type: "response", command: "get_state", success: true, data: { sessionId: "sess-hosted", isStreaming: true } });',
+      '  } else if (command.type === "prompt") {',
+      '    record();',
+      '    out({ type: "message_update", assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "working" } });',
+      '    watchRelease();',
+      '  } else if (command.type === "steer") {',
+      '    out({ id: command.id, type: "response", command: "steer", success: true, data: { disposition: "queued" } });',
+      '  } else if (command.type === "abort") {',
+      '    out({ id: command.id, type: "response", command: "abort", success: true });',
+      '    out({ type: "agent_settled", aborted: true });',
+      '  } else if (command.type === "clear_queue") {',
+      '    out({ id: command.id, type: "response", command: "clear_queue", success: true, data: { steering: [], followUp: [] } });',
+      '  }',
+      '}',
+      'process.stdin.on("data", chunk => {',
+      '  stdin += chunk;',
+      '  pending += chunk;',
+      '  for (let newline = pending.indexOf("\\n"); newline >= 0; newline = pending.indexOf("\\n")) {',
+      '    const line = pending.slice(0, newline);',
+      '    pending = pending.slice(newline + 1);',
+      '    if (line.trim()) handle(JSON.parse(line));',
+      '  }',
       '});',
+      'process.stdin.on("end", () => { record(); process.exit(0); });',
     ].join('\n'), 'utf8');
     await chmod(binary, 0o755);
     return {
       adapter: new PiAdapter({ binary, systemPrompt: 'HOSTED SYSTEM PROMPT', stopGraceMs: 1000 }), binary,
-      record: async () => JSON.parse(await readFile(join(dir, 'record.json'), 'utf8')) as { stdin: string; promptPath: string; systemPrompt: string },
+      record: async () => JSON.parse(await readFile(join(dir, 'record.json'), 'utf8')) as {
+        stdin: string;
+        commands: Array<Record<string, unknown>>;
+        promptPath: string;
+        systemPrompt: string;
+      },
       pids: async () => (await readFile(join(dir, 'pids.log'), 'utf8')).trim().split('\n').map(Number),
     };
   }
@@ -414,8 +471,9 @@ describe.skipIf(process.platform === 'win32')('PiAdapter under a run host', () =
     const stream = first.events[Symbol.asyncIterator]();
     // The session is reported at once; what the agent says is held back until its message is complete.
     expect(await next(stream, 'system')).toMatchObject({ sessionId: 'sess-hosted' });
+    await until(() => existsSync(join(dir, 'record.json')));
     const record = await pi.record();
-    expect(record.stdin).toBe('hosted prompt');
+    expect(record.commands.find(command => command.type === 'prompt')).toMatchObject({ message: 'hosted prompt' });
     expect(record.systemPrompt).toContain('HOSTED SYSTEM PROMPT');
 
     await first.stop('shutdown');
@@ -428,9 +486,12 @@ describe.skipIf(process.platform === 'win32')('PiAdapter under a run host', () =
 
     const second = (await pi.adapter.prepareRun({ ...options, host: { key, attach: true } })).start();
     const replayed = collect(second.events);
+    // The reattached run steers too: it asks the process's state first.
+    expect(await second.sendInput!({ text: 'after restart', messageId: 'om-after' }))
+      .toEqual({ status: 'accepted', messageId: 'om-after', scope: 'active-turn' });
     await writeFile(join(dir, 'release'), '');
     expect(await replayed).toEqual([
-      { type: 'system', sessionId: 'sess-hosted', cwd: '/repo' },
+      { type: 'system', sessionId: 'sess-hosted', cwd: dir },
       { type: 'text', delta: 'working' },
       { type: 'usage', inputTokens: 2, outputTokens: 1, cachedInputTokens: 0, costUsd: 0 },
       { type: 'final_text', content: 'finished after restart' },
@@ -439,7 +500,7 @@ describe.skipIf(process.platform === 'win32')('PiAdapter under a run host', () =
     expect(await second.waitForExit(3000)).toBe(true);
     // One process did all of it, and was given its prompt once.
     expect(await pi.pids()).toEqual([pid]);
-    expect(readRunHostInput(key)).toEqual(['hosted prompt']);
+    expect(readRunHostInput(key).filter(line => line.includes('"prompt"'))).toHaveLength(1);
     expect(existsSync(record.promptPath)).toBe(false);
   }, 20_000);
 
@@ -467,6 +528,7 @@ describe.skipIf(process.platform === 'win32')('PiAdapter under a run host', () =
     const run = (await pi.adapter.prepareRun({ runId: 'pi-hosted', prompt: 'hosted prompt', cwd: dir, host: { key } })).start();
     const stream = run.events[Symbol.asyncIterator]();
     await next(stream, 'system');
+    await until(() => existsSync(join(dir, 'record.json')));
     const record = await pi.record();
     const [pid] = await pi.pids();
     await run.stop('cancelled');
@@ -487,6 +549,7 @@ describe.skipIf(process.platform === 'win32')('PiAdapter under a run host', () =
     while (!(await stream.next()).done) { /* drained */ }
     const [pid] = await pi.pids();
     expect(alive(pid!)).toBe(true);
+    await until(() => existsSync(join(dir, 'record.json')));
     const { promptPath } = await pi.record();
     expect(existsSync(promptPath)).toBe(true);
 
@@ -510,11 +573,18 @@ async function collect(events: AsyncIterable<AgentEvent>): Promise<AgentEvent[]>
 
 async function createFakePi(
   lines: unknown[],
-  options: { exitCode?: number; stderr?: string; trailingBytes?: number } = {},
+  options: {
+    exitCode?: number;
+    stderr?: string;
+    trailingBytes?: number;
+    sessionId?: string;
+    steerLines?: unknown[];
+  } = {},
 ): Promise<{ dir: string; binary: string; recordPath: string }> {
   const dir = await realpath(await mkdtemp(join(tmpdir(), 'pi-adapter-')));
   const binary = join(dir, 'pi');
   const recordPath = join(dir, 'record.json');
+  const sessionId = options.sessionId ?? 'sess-fake';
   await writeFile(binary, [
     '#!/usr/bin/env node',
     'import { readFileSync, writeFileSync } from "node:fs";',
@@ -522,16 +592,51 @@ async function createFakePi(
     'if (argv.includes("--version")) { console.log("pi 999.0.0"); process.exit(0); }',
     'const promptIndex = argv.indexOf("--append-system-prompt");',
     'let stdin = "";',
-    'process.stdin.on("data", chunk => { stdin += chunk; });',
+    'let pending = "";',
+    'const commands = [];',
+    'const out = (value, done) => process.stdout.write(JSON.stringify(value) + "\\n", done);',
+    `const record = () => writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({`,
+    '  argv, stdin, commands, cwd: process.cwd(),',
+    '  systemPrompt: promptIndex >= 0 ? readFileSync(argv[promptIndex + 1], "utf8") : "",',
+    '  env: { PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK, PI_TELEMETRY: process.env.PI_TELEMETRY, LARK_MODEL_GATE_SOCKET: process.env.LARK_MODEL_GATE_SOCKET, LARK_MODEL_GATE_PRIORITY: process.env.LARK_MODEL_GATE_PRIORITY, LARK_MODEL_GATE_PROVIDER_NAMES: process.env.LARK_MODEL_GATE_PROVIDER_NAMES, LARK_PI_BASH_DEFAULT_TIMEOUT: process.env.LARK_PI_BASH_DEFAULT_TIMEOUT, LARK_PI_BASH_MAX_TIMEOUT: process.env.LARK_PI_BASH_MAX_TIMEOUT },',
+    '  providerEnv: Object.entries(process.env).filter(([key]) => key.startsWith("LARK_MODEL_PROVIDER_")),',
+    '}));',
+    'const emit = (values, done) => {',
+    '  if (values.length === 0) { if (done) done(); return; }',
+    '  values.forEach((value, index) => out(value, index === values.length - 1 ? done : undefined));',
+    '};',
+    'function handle(command) {',
+    '  commands.push(command);',
+    '  if (command.type === "get_state") {',
+    `    out({ id: command.id, type: "response", command: "get_state", success: true, data: { sessionId: ${JSON.stringify(sessionId)}, isStreaming: true } });`,
+    '  } else if (command.type === "prompt") {',
+    '    record();',
+    `    emit(${JSON.stringify(lines)}, () => {`,
+    options.exitCode !== undefined
+      ? `      process.stderr.write(${JSON.stringify(options.stderr ?? '')}); process.exit(${options.exitCode});`
+      : '',
+    '    });',
+    '  } else if (command.type === "steer") {',
+    '    out({ id: command.id, type: "response", command: "steer", success: true, data: { disposition: "queued" } });',
+    `    emit(${JSON.stringify(options.steerLines ?? [])});`,
+    '  } else if (command.type === "abort") {',
+    '    out({ id: command.id, type: "response", command: "abort", success: true });',
+    '    out({ type: "agent_settled", aborted: true });',
+    '  } else if (command.type === "clear_queue") {',
+    '    out({ id: command.id, type: "response", command: "clear_queue", success: true, data: { steering: [], followUp: [] } });',
+    '  }',
+    '}',
+    'process.stdin.on("data", chunk => {',
+    '  stdin += chunk;',
+    '  pending += chunk;',
+    '  for (let newline = pending.indexOf("\\n"); newline >= 0; newline = pending.indexOf("\\n")) {',
+    '    const line = pending.slice(0, newline);',
+    '    pending = pending.slice(newline + 1);',
+    '    if (line.trim()) handle(JSON.parse(line));',
+    '  }',
+    '});',
     'process.stdin.on("end", () => {',
-    `  writeFileSync(${JSON.stringify(recordPath)}, JSON.stringify({`,
-    '    argv, stdin, cwd: process.cwd(),',
-    '    systemPrompt: promptIndex >= 0 ? readFileSync(argv[promptIndex + 1], "utf8") : "",',
-    '    env: { PI_CODING_AGENT_DIR: process.env.PI_CODING_AGENT_DIR, PI_SKIP_VERSION_CHECK: process.env.PI_SKIP_VERSION_CHECK, PI_TELEMETRY: process.env.PI_TELEMETRY, LARK_MODEL_GATE_SOCKET: process.env.LARK_MODEL_GATE_SOCKET, LARK_MODEL_GATE_PRIORITY: process.env.LARK_MODEL_GATE_PRIORITY, LARK_MODEL_GATE_PROVIDER_NAMES: process.env.LARK_MODEL_GATE_PROVIDER_NAMES, LARK_PI_BASH_DEFAULT_TIMEOUT: process.env.LARK_PI_BASH_DEFAULT_TIMEOUT, LARK_PI_BASH_MAX_TIMEOUT: process.env.LARK_PI_BASH_MAX_TIMEOUT },',
-    '    providerEnv: Object.entries(process.env).filter(([key]) => key.startsWith("LARK_MODEL_PROVIDER_")),',
-    '  }));',
-    `  for (const line of ${JSON.stringify(lines)}) process.stdout.write(JSON.stringify(line) + "\\n");`,
-    options.stderr ? `  process.stderr.write(${JSON.stringify(options.stderr)});` : '',
+    '  record();',
     options.trailingBytes ? [
       '  setTimeout(() => {',
       `    process.stdout.write("x".repeat(${options.trailingBytes}) + "\\n", error => {`,
@@ -540,31 +645,25 @@ async function createFakePi(
       '      process.exit(0);',
       '    });',
       '  }, 100);',
-    ].join('\n') : `  process.exit(${options.exitCode ?? 0});`,
+    ].join('\n') : '  if (!commands.some(command => command.type === "prompt")) process.exit(0);',
     '});',
   ].filter(Boolean).join('\n'), 'utf8');
   await chmod(binary, 0o755);
   return { dir, binary, recordPath };
 }
 
-async function readRecord(path: string): Promise<{
+interface FakeRecord {
   argv: string[];
   stdin: string;
+  commands: Array<Record<string, unknown>>;
   cwd: string;
   systemPrompt: string;
   env: { PI_CODING_AGENT_DIR?: string; PI_SKIP_VERSION_CHECK?: string; PI_TELEMETRY?: string;
     LARK_MODEL_GATE_SOCKET?: string; LARK_MODEL_GATE_PRIORITY?: string; LARK_MODEL_GATE_PROVIDER_NAMES?: string;
     LARK_PI_BASH_DEFAULT_TIMEOUT?: string; LARK_PI_BASH_MAX_TIMEOUT?: string };
   providerEnv: Array<[string, string]>;
-}> {
-  return JSON.parse(await readFile(path, 'utf8')) as {
-    argv: string[];
-    stdin: string;
-    cwd: string;
-    systemPrompt: string;
-    env: { PI_CODING_AGENT_DIR?: string; PI_SKIP_VERSION_CHECK?: string; PI_TELEMETRY?: string;
-    LARK_MODEL_GATE_SOCKET?: string; LARK_MODEL_GATE_PRIORITY?: string; LARK_MODEL_GATE_PROVIDER_NAMES?: string;
-    LARK_PI_BASH_DEFAULT_TIMEOUT?: string; LARK_PI_BASH_MAX_TIMEOUT?: string };
-    providerEnv: Array<[string, string]>;
-  };
+}
+
+async function readRecord(path: string): Promise<FakeRecord> {
+  return JSON.parse(await readFile(path, 'utf8')) as FakeRecord;
 }

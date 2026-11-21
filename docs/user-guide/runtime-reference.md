@@ -10,7 +10,7 @@ Bridge 的 Codex 统一使用 `app-server` 全双工模式，原生双向接口�
 
 Codex 启动默认使用 `appServerMode = "daemon"`。Bridge 会确保官方本地 app-server daemon 运行，每次任务只连接一个短生命周期的 stdio 到 Unix WebSocket 桥，因此 daemon 负责的 memory 抽取和整合不会随着单次任务退出。显式配置 `appServerMode = "per-run"` 时，app-server 只存活于当前任务，并强制设置 `memories.generate_memories = false`；已有 memory 的读取和 Codex 原生 memory startup 路径保留，但当前 thread 不会作为新的 memory 生成输入。
 
-运行期间直接发送补充文字即可：bridge 调用 `turn/steer`，保留同一进程、会话和回合，不停止后续跑，也不新增 slash 命令。收到成功确认后回复“已送入当前任务，等待模型处理”；这表示接口已接受，不表示模型已经落实要求。引用上下文会一同传入；图片会随补充一起送入当前任务（Codex 以原生输入附带，其他 Agent 读取缓存路径），文件、音视频和 agent 自行发送的卡片回调仍走队列。
+运行期间直接发送补充文字即可：bridge 调用 `turn/steer`，保留同一进程、会话和回合，不停止后续跑，也不新增 slash 命令。收到成功确认后回复“已送入当前任务，等待模型处理”；这表示接口已接受，不表示模型已经落实要求。引用上下文会一同传入；图片会随补充一起送入当前任务（Codex 与 Pi 以原生输入附带，其他 Agent 读取缓存路径），文件、音视频和 agent 自行发送的卡片回调仍走队列。
 
 Codex 的原生异步提问（`request_user_input_async`，app-server 的 `agentMessage.questions`）会单独发送“需要你回复”卡片，在群聊原话题 @ 发起任务的用户，不依赖过程消息或回复显示模式。点击选项或填写答案即可提交到当前任务，卡片显示接收结果；没有点击不会自动提交默认选项。任务自然结束后，若原会话仍有效，答案会排队续接。停止任务、切换会话、过期或重启后的旧卡片不能继续操作；按钮仅供提问对象使用。卡片发送失败时会尝试发送普通文字提醒。Claude Code 的 `AskUserQuestion` 使用同样的卡片，但它是阻塞式的：任务会等你回答后再继续。该工具只在普通 IM 任务中开启（通过 `--permission-prompt-tool stdio`），workflow worker 和 /btw 不会获得。多个问题或多选题会合成一张表单，一次提交；只有一个问题在等待时，发起人直接在话题里回复的文字也会被当作答案。30 分钟内没有回答时，Bridge 会替你拒答，让模型按默认假设继续。其他权限审批请求仍被拒绝；通知声音仍由飞书客户端设置决定。
 
@@ -28,9 +28,9 @@ bridge 收到带输入 ID 的接收回执后才回复“已送入当前任务，
 
 ## Pi Coding Agent 后端
 
-使用 `lark-channel-bridge profile create pi --agent pi` 创建 Pi profile，也可在首次初始化时传 `--agent pi`。适配器通过 `pi --mode json` 读取 JSONL 事件，保存 Pi 返回的 session ID，后续轮次使用 `--session` 续聊。创建 profile 时可用 `LARK_CHANNEL_PI_BIN` 指定 `pi` 可执行文件。
+使用 `lark-channel-bridge profile create pi --agent pi` 创建 Pi profile，也可在首次初始化时传 `--agent pi`。适配器通过 `pi --mode rpc` 发送 prompt、读取 JSONL 事件，从 state 应答保存 session ID，后续轮次使用 `--session` 续聊。运行中收到的消息会 steer 当前回合（在当前 assistant turn 的工具调用结束后、下一次模型调用前送达）；它不是抢占式打断，长工具调用仍会先跑完，要立即停止用 `/stop`。创建 profile 时可用 `LARK_CHANNEL_PI_BIN` 指定 `pi` 可执行文件。
 
-Pi JSON 模式是单轮请求/响应，不是全双工输入通道，因此运行中的补充消息会排队到下一轮，不会 steer 当前回合。只读 profile 仅开放 `read`、`grep`、`find`、`ls` 并禁用扩展；完整权限 profile 继承 Pi 的常规工具。Pi 没有可移植的“仅工作区可写”文件系统沙箱，所以 bridge 会明确拒绝 `workspace` 权限模式，不会把它静默当成隔离环境。
+Pi 通过 RPC 模式运行，运行中的补充消息会 steer 当前回合：Pi 在当前 assistant turn 的工具调用结束后、下一次模型调用前送达。它不是抢占式打断，长工具调用仍会先跑完，要立即停止请用 `/stop`。只读 profile 仅开放 `read`、`grep`、`find`、`ls` 并禁用扩展；完整权限 profile 继承 Pi 的常规工具。Pi 没有可移植的“仅工作区可写”文件系统沙箱，所以 bridge 会明确拒绝 `workspace` 权限模式，不会把它静默当成隔离环境。
 
 当前 `@earendil-works/pi-coding-agent` 要求 Node.js 22.19 或更新版本；适配器也兼容支持范围内的 `@mariozechner/pi-coding-agent` 0.73 JSON 协议。
 

@@ -239,6 +239,19 @@ describe('PiRunTranslator', () => {
     expect(events).not.toContainEqual(expect.objectContaining({ type: 'final_text' }));
   });
 
+  it('takes the RPC session from its state answer, once', () => {
+    const translator = new PiRunTranslator(false, {}, '/repo');
+    const answer = {
+      id: 'state-1', type: 'response', command: 'get_state', success: true,
+      data: { sessionId: 'sess-rpc', isStreaming: true },
+    };
+    expect(translator.translate(answer)).toEqual([{ type: 'system', sessionId: 'sess-rpc', cwd: '/repo' }]);
+    expect(translator.translate(answer)).toEqual([]);
+    // Other command answers are not session updates.
+    expect(translator.translate({ id: 'steer-1', type: 'response', command: 'steer', success: true })).toEqual([]);
+    expect(translator.translate({ ...answer, success: false })).toEqual([]);
+  });
+
   it('allows native retry after a failed message and publishes the recovered answer', () => {
     const translator = new PiRunTranslator();
     translator.translate({ type: 'message_end', message: { role: 'assistant', stopReason: 'error', errorMessage: 'temporary' } });

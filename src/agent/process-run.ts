@@ -30,14 +30,21 @@ export function startProcessRun(input: {
   args: string[];
   cwd: string;
   env: NodeJS.ProcessEnv;
+  /** Bytes written to the process's stdin before it starts working. */
   stdin: string;
+  /** Leave stdin open after those bytes, so the caller can write more through `onStdin`. */
+  keepStdinOpen?: boolean;
+  /** Receives the run's stdin, for an adapter whose agent reads further input while it runs. */
+  onStdin?(stdin: Writable): void;
+  /** Sees every parsed stdout record before translation, for a transport that answers commands. */
+  onRecord?(record: unknown): void;
   translator: ProcessEventTranslator;
   deadlineAt?: number;
   /** Landlock allowlist for this run; the whole process tree inherits it. */
   execSandbox?: ExecSandboxSettings;
   /**
-   * Run under a detached run host, or attach to the process already running under it. Only for an agent that takes
-   * its whole input at the start: a reattached run replays the output and has nothing left to send.
+   * Run under a detached run host, or attach to the process already running under it. A reattached run replays the
+   * output the previous bridge process did not see; an agent that reads input while it runs also keeps accepting it.
    */
   host?: RunHostBinding;
   stopGraceMs: number;
@@ -104,7 +111,11 @@ export function startProcessRun(input: {
   child.stdin.on('error', error => {
     if ((error as NodeJS.ErrnoException).code !== 'EPIPE') runtimeError = error;
   });
-  if (!attached) child.stdin.end(input.stdin, 'utf8');
+  input.onStdin?.(child.stdin);
+  if (!attached) {
+    if (input.stdin) child.stdin.write(input.stdin, 'utf8');
+    if (!input.keepStdinOpen) child.stdin.end();
+  }
   log.info('agent', attached ? 'attach' : 'spawn', { agent: input.agent, pid: child.pid, cwd: input.cwd,
     ...(hosted ? { runHost: hosted.key } : {}) });
 
@@ -127,6 +138,7 @@ export function startProcessRun(input: {
           terminateChild(child, 'SIGKILL');
           break;
         }
+        input.onRecord?.(value);
         const translated = input.translator.translate(value);
         if (interrupted || (input.deadlineAt !== undefined && input.deadlineAt <= Date.now())) {
           yield { type: 'done', terminationReason: interrupted ? 'interrupted' : 'timeout' };

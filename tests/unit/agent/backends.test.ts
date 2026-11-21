@@ -118,7 +118,7 @@ describe('agent backend registry', () => {
       pi: { binaryPath: '/usr/local/bin/pi' },
     });
 
-    expect(executionCapabilitiesForProfile(profile)).toEqual({ finalAnswer: 'separate-event', input: 'unsupported' });
+    expect(executionCapabilitiesForProfile(profile)).toEqual({ finalAnswer: 'separate-event', input: 'active-turn' });
     const adapter = backendFor('pi').createAdapter({ profile, profileDir: '/tmp/profile', env: {}, systemPrompt: '' });
     expect(adapter).toBeInstanceOf(PiAdapter);
   });

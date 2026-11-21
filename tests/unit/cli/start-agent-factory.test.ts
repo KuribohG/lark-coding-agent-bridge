@@ -67,7 +67,7 @@ describe('start runtime agent factory', () => {
 
     expect(agent.id).toBe('pi');
     expect(agent.displayName).toBe('Pi Coding Agent');
-    expect(agent.capabilities).toEqual({ finalAnswer: 'separate-event', input: 'unsupported' });
+    expect(agent.capabilities).toEqual({ finalAnswer: 'separate-event', input: 'active-turn' });
   });
 
   it('updates the process registry before releasing the old app lock during reconnect', async () => {

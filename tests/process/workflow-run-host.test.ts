@@ -42,7 +42,8 @@ const timer = setInterval(() => {
 }, 20);
 `;
 
-// The same worker as a Pi CLI in JSON mode: it takes its prompt from stdin and has nothing more to read.
+// The same worker as a Pi CLI in RPC mode: it takes commands from stdin, answers
+// the session query, and keeps running until the test releases it.
 const FAKE_PI = `
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
 if (process.argv.includes('--version')) { console.log('pi 999.0.0'); process.exit(0); }
@@ -51,8 +52,28 @@ const out = (value, done) => process.stdout.write(JSON.stringify(value) + '\\n',
 appendFileSync(dir + '/pids.log', process.pid + '\\n');
 appendFileSync(dir + '/cwd.log', process.cwd() + '\\n');
 writeFileSync(dir + '/env.json', JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([name]) => name.startsWith('AGENT_WORKFLOW_')))));
-process.stdin.resume();
-out({ type: 'session', id: 'worker-session', cwd: process.cwd() });
+let pending = '';
+function handle(command) {
+  if (command.type === 'get_state') {
+    out({ id: command.id, type: 'response', command: 'get_state', success: true, data: { sessionId: 'worker-session', isStreaming: true } });
+  } else if (command.type === 'steer') {
+    out({ id: command.id, type: 'response', command: 'steer', success: true, data: { disposition: 'queued' } });
+  } else if (command.type === 'abort') {
+    out({ id: command.id, type: 'response', command: 'abort', success: true });
+    out({ type: 'agent_settled', aborted: true });
+  } else if (command.type === 'clear_queue') {
+    out({ id: command.id, type: 'response', command: 'clear_queue', success: true, data: { steering: [], followUp: [] } });
+  }
+}
+process.stdin.on('data', chunk => {
+  pending += chunk;
+  for (let newline = pending.indexOf('\\n'); newline >= 0; newline = pending.indexOf('\\n')) {
+    const line = pending.slice(0, newline);
+    pending = pending.slice(newline + 1);
+    if (line.trim()) handle(JSON.parse(line));
+  }
+});
+process.stdin.on('end', () => process.exit(0));
 const timer = setInterval(() => {
   if (!existsSync(dir + '/release')) return;
   clearInterval(timer);

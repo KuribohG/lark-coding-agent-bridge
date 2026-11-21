@@ -2,14 +2,14 @@ import { preparedRun, snapshotRunOptions } from '../prepared-run';
 import type { PreparedAgentRun } from '../types';
 import { startProcessRun } from '../process-run';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SpawnFailed } from '../errors';
 import { mergeProcessEnv } from '../../platform/spawn';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
-import { runHostFilesDir, runHostsSupported, type RunHostBinding } from '../run-host';
+import { readRunHostInput, runHostFilesDir, runHostsSupported, type RunHostBinding } from '../run-host';
 import { parseEffort } from '../model-settings';
 import { validateModelId } from '../models';
 import type { ResolvedModelProvider } from '../../model-provider/types';
@@ -17,12 +17,15 @@ import { resolveSystemPrompt, type AgentSystemPrompt } from '../system-prompt';
 import type {
   AgentAdapter,
   AgentBotIdentity,
+  AgentEvent,
+  AgentInputReceipt,
   NativeAgentRun,
   AgentRunOptions,
 } from '../types';
 import { withExecutionContract } from '../execution';
 import { PI_EXECUTION_CAPABILITIES } from './capabilities';
 import { PiRunTranslator } from './jsonl-translator';
+import { PiRpcInput, type PiImageContent } from './rpc-input';
 import { piThinkingLevel } from './thinking';
 import { currentModelGate, modelGateExtensionPath } from '../../model-gate/location';
 import { bashTimeoutEnv, bashTimeoutInstructions, piBashTimeouts, type PiBashTimeouts } from './bash-timeout';
@@ -119,7 +122,9 @@ export class PiAdapter implements AgentAdapter {
     const shellLimits = sandbox === 'read-only' ? undefined : bashTimeoutInstructions(this.bashTimeouts);
     const systemPrompt = opts.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity);
     const runFiles = writeSystemPrompt(shellLimits ? `${systemPrompt}\n\n${shellLimits}` : systemPrompt, opts.host);
-    const args = ['--mode', 'json', '--append-system-prompt', runFiles.systemPromptPath];
+    // RPC mode keeps the process alive for the whole turn, so a message the user
+    // writes while tools run can steer it instead of waiting for the next turn.
+    const args = ['--mode', 'rpc', '--append-system-prompt', runFiles.systemPromptPath];
     if (opts.forkSession) args.push('--fork', opts.sessionId!);
     else if (opts.sessionId) args.push('--session', opts.sessionId);
     if (opts.model) args.push('--model', validateModelId(opts.model));
@@ -144,7 +149,14 @@ export class PiAdapter implements AgentAdapter {
       args.push('--no-extensions');
     }
 
-    return startProcessRun({
+    const attached = Boolean(opts.host?.attach && runHostsSupported());
+    let input: PiRpcInput | undefined;
+    let stopped = false;
+    const stopGraceMs = opts.deadlineAt
+      ? Math.max(1000, opts.stopGraceMs ?? 1000)
+      : opts.stopGraceMs ?? this.defaultStopGraceMs;
+
+    const base = startProcessRun({
       agent: this.id,
       runId: opts.runId,
       command: this.binary,
@@ -168,19 +180,92 @@ export class PiAdapter implements AgentAdapter {
         PI_SKIP_VERSION_CHECK: '1',
         PI_TELEMETRY: '0',
       }),
-      stdin: opts.prompt,
+      // The prompt is a protocol command, written by the input channel below.
+      stdin: '',
+      keepStdinOpen: true,
+      onStdin(stdin) {
+        input = new PiRpcInput(stdin);
+        if (attached) input.restore(readRunHostInput(opts.host!.key));
+        else input.start(opts.prompt, piImages(opts.images));
+      },
+      onRecord(record) {
+        input?.receive(record);
+      },
       execSandbox: opts.execSandbox,
       host: opts.host,
-      translator: new PiRunTranslator(opts.answerIncludesInterimText === true, this.bashTimeouts),
+      translator: new PiRunTranslator(opts.answerIncludesInterimText === true, this.bashTimeouts, opts.cwd),
       strictJson: true,
       deadlineAt: opts.deadlineAt,
-      stopGraceMs: opts.deadlineAt
-        ? Math.max(1000, opts.stopGraceMs ?? 1000)
-        : opts.stopGraceMs ?? this.defaultStopGraceMs,
+      stopGraceMs,
       cleanup: runFiles.cleanup,
     });
+
+    const events = (async function* (): AsyncGenerator<AgentEvent> {
+      for await (const event of base.events) {
+        if (event.type !== 'done' && event.type !== 'error') {
+          yield event;
+          continue;
+        }
+        // A stop owns the outcome even if Pi exited without recording the abort.
+        // Close before yielding: a consumer that stops at this event must not
+        // leave the process waiting for an EOF it will never get.
+        input?.close();
+        if (stopped) {
+          yield event.type === 'done'
+            ? (event.terminationReason === 'interrupted' ? event : { ...event, terminationReason: 'interrupted' as const })
+            : { type: 'done' as const, terminationReason: 'interrupted' as const };
+        } else {
+          yield event;
+        }
+        return;
+      }
+    })();
+
+    return {
+      runId: opts.runId,
+      ...(base.detachOnShutdown ? { detachOnShutdown: true } : {}),
+      events,
+      async sendInput({ text, messageId, images }): Promise<AgentInputReceipt> {
+        const receipt = await (input?.steer(text, messageId, piImages(images)) ?? Promise.resolve('inactive'));
+        if (receipt === 'accepted') return { status: 'accepted', messageId, scope: 'active-turn' };
+        if (receipt === 'inactive') return { status: 'inactive', messageId };
+        return { status: 'unknown', messageId, message: 'Pi did not answer the steer; delivery is unknown' };
+      },
+      async stop(reason) {
+        stopped = true;
+        // Under a run host, shutdown hands the process to the next bridge with its stdin still open.
+        if (reason === 'shutdown' && opts.host && runHostsSupported()) return base.stop(reason);
+        await input?.cancel(stopGraceMs);
+        if (await base.waitForExit(stopGraceMs)) return;
+        await base.stop(reason);
+      },
+      waitForExit: (timeoutMs: number) => base.waitForExit(timeoutMs),
+    };
   }
 }
+
+/** The run's images as Pi's RPC message content; an unreadable file is left to Pi's own tools. */
+function piImages(paths: readonly string[] | undefined): PiImageContent[] {
+  const images: PiImageContent[] = [];
+  for (const path of paths ?? []) {
+    const mimeType = PI_IMAGE_MIME[basename(path).split('.').pop()?.toLowerCase() ?? ''];
+    if (!mimeType) continue;
+    try {
+      images.push({ type: 'image', data: readFileSync(path).toString('base64'), mimeType });
+    } catch {
+      // The prompt still lists the attachment path, so the agent can read it itself.
+    }
+  }
+  return images;
+}
+
+const PI_IMAGE_MIME: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+};
 
 /** The Pi CLI extension that bounds shell calls, resolved from src or dist. */
 function bashTimeoutExtensionPath(): string {
