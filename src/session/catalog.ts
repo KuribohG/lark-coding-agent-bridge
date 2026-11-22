@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import { paths } from '../config/paths';
 import { log } from '../core/logger';
 import {
-  isAgentKind,
+  isRegisteredAgentKind,
   sessionIdFieldForAgent,
   type AgentCapabilityId,
 } from '../agent/backend-spec';
@@ -335,7 +335,7 @@ function normalizeEntry(input: unknown): SessionCatalogEntry | undefined {
   if (
     typeof raw.key !== 'string' ||
     typeof raw.scopeId !== 'string' ||
-    !isAgentKind(raw.agentId) ||
+    !isRegisteredAgentKind(raw.agentId) ||
     typeof raw.cwdRealpath !== 'string' ||
     typeof raw.policyFingerprint !== 'string' ||
     (raw.status !== 'active' && raw.status !== 'archived') ||

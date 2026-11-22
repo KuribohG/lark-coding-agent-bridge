@@ -24,7 +24,7 @@ export function parseAgyModels(text: string): ModelOption[] {
 
 export async function readAgyModels(profile: ProfileConfig): Promise<ModelEnvironment> {
   const binary = profile.agy?.binaryPath ?? 'agy';
-  const env = mergeProcessEnv(process.env, buildAgentEnvironment({}, profile.agy?.env));
+  const env = mergeProcessEnv(process.env, buildAgentEnvironment({}, profile.agy?.env, process.env, profile.agy?.unsetEnv));
   const key = createHash('sha256').update(JSON.stringify([binary, env])).digest('hex');
   const existing = cache.get(key);
   if (existing && existing.expiresAt > Date.now()) return existing.value;

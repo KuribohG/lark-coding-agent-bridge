@@ -1,4 +1,9 @@
-import { normalizeExecutableLaunch, type ExecutableLaunchConfig } from '../launch-options';
+import {
+  normalizeAuthMode,
+  normalizeExecutableLaunch,
+  type AgentAuthMode,
+  type ExecutableLaunchConfig,
+} from '../launch-options';
 
 export type CodexAppServerMode = 'daemon' | 'per-run';
 
@@ -13,6 +18,10 @@ export interface CodexConfig extends ExecutableLaunchConfig {
   appServerMode?: CodexAppServerMode;
   /** Model service selected once at Bridge startup. */
   provider?: string;
+  authMode?: AgentAuthMode;
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
   codexHome?: string;
   inheritCodexHome?: boolean;
   ignoreUserConfig?: boolean;
@@ -34,13 +43,25 @@ export function normalizeCodex(input: CodexConfig & { flags?: unknown }): CodexC
   if (input.ignoreUserConfig || input.ignoreRules) {
     throw new Error('app-server requires ignoreUserConfig=false and ignoreRules=false; exec-only ignore flags are not supported');
   }
+  const authMode = input.authMode !== undefined
+    ? normalizeAuthMode(input.authMode, 'codex.authMode')
+    : undefined;
+  const inheritCodexHome = authMode === 'api_key'
+    ? false
+    : authMode === 'oauth'
+      ? (input.inheritCodexHome ?? true)
+      : input.inheritCodexHome === true;
   const codex: CodexConfig = {
     ...normalizeExecutableLaunch(input, 'codex'),
     transport: 'app-server',
     appServerMode: input.appServerMode ?? 'daemon',
+    ...(authMode ? { authMode } : {}),
+    ...(typeof input.apiKey === 'string' && input.apiKey ? { apiKey: input.apiKey } : {}),
+    ...(typeof input.baseUrl === 'string' && input.baseUrl ? { baseUrl: input.baseUrl } : {}),
+    ...(typeof input.model === 'string' && input.model ? { model: input.model } : {}),
     ...(input.provider ? { provider: input.provider } : {}),
     ...(typeof input.codexHome === 'string' ? { codexHome: input.codexHome } : {}),
-    inheritCodexHome: input.inheritCodexHome === true,
+    inheritCodexHome,
     ignoreUserConfig: false,
     ignoreRules: false,
   };

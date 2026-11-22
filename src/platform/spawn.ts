@@ -26,18 +26,27 @@ export function spawnProcessSync(
   return crossSpawn.sync(command, [...args], { windowsHide: true, ...options });
 }
 
+function deleteCaseInsensitive(env: NodeJS.ProcessEnv, key: string): void {
+  const wanted = key.toLowerCase();
+  for (const existing of Object.keys(env)) {
+    if (existing.toLowerCase() === wanted) {
+      delete env[existing];
+    }
+  }
+}
+
 export function mergeProcessEnv(
   base: NodeJS.ProcessEnv = process.env,
   overrides: NodeJS.ProcessEnv = {},
+  unsetEnv: readonly string[] = [],
 ): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...base };
   for (const [key, value] of Object.entries(overrides)) {
-    for (const existing of Object.keys(out)) {
-      if (existing.toLowerCase() === key.toLowerCase()) {
-        delete out[existing];
-      }
-    }
+    deleteCaseInsensitive(out, key);
     if (value !== undefined) out[key] = value;
+  }
+  for (const key of unsetEnv) {
+    deleteCaseInsensitive(out, key);
   }
   return out;
 }

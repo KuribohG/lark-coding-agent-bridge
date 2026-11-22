@@ -1,6 +1,8 @@
-import { join } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import type { CodexAppServerMode, SandboxMode } from '../../config/profile-schema';
+import type { AgentAuthMode } from '../launch-options';
 import { preparedRun, snapshotRunOptions } from '../prepared-run';
 import { codexExecutionEnvironment } from './environment';
 import { SpawnFailed } from '../errors';
@@ -22,8 +24,20 @@ import { attachedDaemonRuns, codexDaemonHostTag, daemonEnvironmentFingerprint, e
 import { prepareManagedCodexConfig } from './managed-config';
 import type { ResolvedModelProvider } from '../../model-provider/types';
 
+export type CodexAuthMode = AgentAuthMode;
+
+export const CODEX_OAUTH_SCRUB_ENV = Object.freeze(['OPENAI_API_KEY', 'OPENAI_BASE_URL'] as const);
+
 export interface CodexAdapterOptions {
   binary: string;
+  authMode?: CodexAuthMode;
+  /** Explicit API key used in `api_key` mode when `startupProvider` is omitted. */
+  apiKey?: string;
+  /** Optional custom OpenAI-compatible base URL (supports http:// or https://) for `api_key` mode. */
+  baseUrl?: string;
+  /** Optional default model override when per-run `opts.model` is omitted. */
+  model?: string;
+  unsetEnv?: readonly string[];
   startupProvider?: () => Promise<ResolvedModelProvider | undefined> | undefined;
   systemPrompt?: AgentSystemPrompt;
   transport?: 'app-server';
@@ -45,6 +59,11 @@ export class CodexAdapter implements AgentAdapter {
   get capabilities() { return codexExecutionCapabilities(); }
 
   private readonly binary: string;
+  private readonly authMode: CodexAuthMode | undefined;
+  private readonly apiKey: string | undefined;
+  private readonly baseUrl: string | undefined;
+  private readonly model: string | undefined;
+  private readonly unsetEnv: readonly string[];
   private readonly systemPrompt: AgentSystemPrompt | undefined;
   private readonly appServerMode: CodexAppServerMode;
   private readonly profileStateDir: string;
@@ -66,12 +85,24 @@ export class CodexAdapter implements AgentAdapter {
       throw new Error('app-server requires ignoreUserConfig=false and ignoreRules=false; exec-only ignore flags are not supported');
     }
     this.binary = opts.binary;
+    this.authMode = opts.authMode;
+    this.apiKey = opts.apiKey?.trim() || undefined;
+    this.baseUrl = opts.baseUrl ? normalizeCodexGatewayUrl(opts.baseUrl) : undefined;
+    this.model = opts.model?.trim() || undefined;
+    this.unsetEnv = Object.freeze([...(opts.unsetEnv ?? [])]);
     this.startupProvider = opts.startupProvider;
     this.systemPrompt = opts.systemPrompt;
     this.appServerMode = opts.appServerMode ?? 'per-run';
     this.profileStateDir = opts.profileStateDir;
     this.codexHome = opts.codexHome;
-    this.inheritCodexHome = opts.inheritCodexHome === true;
+    this.inheritCodexHome = this.authMode === 'api_key'
+      ? false
+      : this.authMode === 'oauth'
+        ? (opts.inheritCodexHome ?? true)
+        : opts.inheritCodexHome === true;
+    if (this.authMode === 'api_key' && this.codexHome && isPersonalCodexHome(this.codexHome)) {
+      throw new Error('Codex api_key mode requires an isolated codexHome, not ~/.codex');
+    }
     this.sandbox = opts.sandbox ?? 'danger-full-access';
     this.defaultStopGraceMs = opts.stopGraceMs ?? 5000;
     this.profileEnv = Object.freeze({ ...opts.env });
@@ -90,20 +121,72 @@ export class CodexAdapter implements AgentAdapter {
 
   /** The provider this adapter runs with (memoized) or would start with. */
   private async providerSignature(): Promise<string> {
-    const provider = await (this.startup ? this.startup.then(startup => startup.provider) : Promise.resolve(this.startupProvider?.()))
+    const provider = await (this.startup ? this.startup.then(startup => startup.provider) : Promise.resolve(this.resolveStartupProvider()))
       .catch(() => undefined);
     return JSON.stringify(provider ? [provider.id, provider.model, provider.codex, Object.keys(provider.env ?? {}).sort()] : null);
   }
 
   private home(): string {
+    if (this.authMode === 'api_key') {
+      const target = this.codexHome ?? join(this.profileStateDir, 'codex-home');
+      if (isPersonalCodexHome(target)) {
+        throw new Error('Codex api_key mode requires an isolated codexHome, not ~/.codex');
+      }
+      return target;
+    }
     return this.codexHome ?? (this.inheritCodexHome
-      ? this.profileEnv.CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), '.codex')
+      ? readEnvCI(this.profileEnv, 'CODEX_HOME') ?? process.env.CODEX_HOME ?? join(homedir(), '.codex')
       : join(this.profileStateDir, 'codex-home'));
   }
 
+  private effectiveUnsetEnv(): string[] {
+    if (this.authMode === 'oauth' || this.authMode === 'api_key') {
+      return [...new Set([...this.unsetEnv, ...CODEX_OAUTH_SCRUB_ENV])];
+    }
+    return [...this.unsetEnv];
+  }
+
+  private resolveExplicitApiKey(attemptEnv?: Readonly<Record<string, string>>): string | undefined {
+    return this.apiKey
+      ?? readEnvCI(this.profileEnv, 'OPENAI_API_KEY')
+      ?? readEnvCI(attemptEnv, 'OPENAI_API_KEY');
+  }
+
+  private resolveExplicitBaseUrl(attemptEnv?: Readonly<Record<string, string>>): string | undefined {
+    const raw = this.baseUrl
+      ?? readEnvCI(this.profileEnv, 'OPENAI_BASE_URL')
+      ?? readEnvCI(attemptEnv, 'OPENAI_BASE_URL');
+    return raw ? normalizeCodexGatewayUrl(raw) : undefined;
+  }
+
+  private async resolveStartupProvider(): Promise<ResolvedModelProvider | undefined> {
+    if (this.authMode === 'oauth') return undefined;
+    if (this.startupProvider) return this.startupProvider();
+    if (this.authMode !== 'api_key') return undefined;
+    const baseUrl = this.resolveExplicitBaseUrl();
+    if (!baseUrl) return undefined;
+    const apiKey = this.resolveExplicitApiKey();
+    return {
+      id: 'openai_custom',
+      displayName: 'Custom OpenAI',
+      model: this.model ?? '',
+      env: {
+        ...(apiKey ? { OPENAI_API_KEY: apiKey } : {}),
+        OPENAI_BASE_URL: baseUrl,
+      },
+      codex: {
+        providerId: 'lark_custom',
+        name: 'Custom OpenAI',
+        baseUrl,
+        wireApi: 'responses',
+        apiKeyEnv: 'OPENAI_API_KEY',
+      },
+    };
+  }
+
   private daemonIdentity(): string {
-    return JSON.stringify([this.binary, this.home(), this.appServerMode,
-      Object.entries(this.profileEnv).sort(([a], [b]) => a.localeCompare(b))]);
+    return JSON.stringify([this.binary, this.home(), this.appServerMode, this.authMode ?? null,
+      this.unsetEnv, Object.entries(this.profileEnv).sort(([a], [b]) => a.localeCompare(b))]);
   }
 
   setBotIdentity(identity: AgentBotIdentity): void {
@@ -122,6 +205,7 @@ export class CodexAdapter implements AgentAdapter {
       command: this.binary,
       binaryPath: this.binary,
       env: this.profileEnv,
+      unsetEnv: this.effectiveUnsetEnv(),
     });
     this.successfulAvailability = pending;
     pending.then(
@@ -138,7 +222,8 @@ export class CodexAdapter implements AgentAdapter {
   }
 
   async prepareRun(input: AgentRunOptions): Promise<PreparedAgentRun> {
-    const opts = snapshotRunOptions(input);
+    const requestedModel = input.model ?? this.model;
+    const opts = snapshotRunOptions({ ...input, ...(requestedModel ? { model: requestedModel } : {}) });
     if (!opts.cwd) throw new Error('cwd is required for CodexAdapter.prepareRun');
     const sandbox = opts.sandbox ?? this.sandbox;
     if (!['read-only', 'workspace-write', 'danger-full-access'].includes(sandbox)) {
@@ -160,13 +245,23 @@ export class CodexAdapter implements AgentAdapter {
       ...(rejectedProvider ? { model: startup.config.model, reasoningEffort: undefined } : {}),
       systemPrompt: opts.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity),
     });
-    const home = this.codexHome ?? (this.inheritCodexHome
-      ? this.profileEnv.CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), '.codex')
-      : join(this.profileStateDir, 'codex-home'));
+    const home = this.home();
+    const unsetEnv = this.effectiveUnsetEnv();
+    const backendEnv: NodeJS.ProcessEnv = { ...(startup.provider?.env ?? {}) };
+    if (this.authMode === 'api_key') {
+      const explicitKey = this.resolveExplicitApiKey(effectiveOpts.env);
+      const explicitBaseUrl = this.resolveExplicitBaseUrl(effectiveOpts.env);
+      if (!startup.provider && !explicitKey) {
+        throw new Error('Codex api_key authMode requires apiKey, startupProvider, or OPENAI_API_KEY in env');
+      }
+      if (explicitKey && !startup.provider) backendEnv.OPENAI_API_KEY = explicitKey;
+      if (explicitBaseUrl && !startup.provider) backendEnv.OPENAI_BASE_URL = explicitBaseUrl;
+    }
     const environment = codexExecutionEnvironment({
       profile: { ...this.profileEnv, CODEX_HOME: home },
       attempt: effectiveOpts.env,
-      backend: startup.provider?.env ?? {},
+      backend: backendEnv,
+      unsetEnv,
     });
     let daemonSocketPath: string | undefined;
     // Routing this run must use; a deferred restart keeps the daemon on its previous one.
@@ -176,7 +271,7 @@ export class CodexAdapter implements AgentAdapter {
       const status = await ensureCodexAppServerDaemon({
         binary: this.binary, env: environment.process, cwd: effectiveOpts.cwd,
         timeoutMs: deadlineTimeout(effectiveOpts.deadlineAt), restart: startup.config.changed,
-        fingerprint: daemonEnvironmentFingerprint({ ...this.profileEnv, CODEX_HOME: home, ...(startup.provider?.env ?? {}) }),
+        fingerprint: daemonEnvironmentFingerprint(fingerprintEnv({ ...this.profileEnv, CODEX_HOME: home, ...backendEnv }, unsetEnv)),
       });
       if (!status.socketPath) throw new Error('Codex app-server daemon returned no socket path');
       daemonSocketPath = status.socketPath;
@@ -237,10 +332,9 @@ export class CodexAdapter implements AgentAdapter {
 
   private initializeProvider() {
     if (!this.startup) this.startup = (async () => {
-      const provider = await this.startupProvider?.();
-      const home = this.codexHome ?? (this.inheritCodexHome
-        ? this.profileEnv.CODEX_HOME ?? process.env.CODEX_HOME ?? join(homedir(), '.codex') : join(this.profileStateDir, 'codex-home'));
-      const config = await prepareManagedCodexConfig(home, provider);
+      const provider = await this.resolveStartupProvider();
+      const home = this.home();
+      const config = await prepareManagedCodexConfig(home, provider, { readOnly: this.authMode === 'oauth' });
       return { provider, config };
     })();
     return this.startup;
@@ -250,6 +344,40 @@ export class CodexAdapter implements AgentAdapter {
     const { provider, config } = await this.initializeProvider();
     return { id: provider?.id ?? config.id, displayName: provider?.displayName ?? config.id, fixedUntilRestart: true, model: config.model };
   }
+}
+
+function readEnvCI(env: Readonly<NodeJS.ProcessEnv> | undefined, name: string): string | undefined {
+  if (!env) return undefined;
+  if (env[name] !== undefined) return env[name];
+  const wanted = name.toLowerCase();
+  return Object.entries(env).find(([key]) => key.toLowerCase() === wanted)?.[1];
+}
+
+function isPersonalCodexHome(candidate: string): boolean {
+  const canonical = (target: string) => {
+    try { return realpathSync(target); } catch { return resolve(target); }
+  };
+  return canonical(candidate) === canonical(join(homedir(), '.codex'));
+}
+
+function normalizeCodexGatewayUrl(value: string): string {
+  let url: URL;
+  try { url = new URL(value); }
+  catch { throw new Error('Codex baseUrl must be a valid HTTP(S) URL'); }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error('Codex baseUrl must use http:// or https:// without credentials, query, or hash');
+  }
+  return url.href.replace(/\/+$/, '');
+}
+
+function fingerprintEnv(env: NodeJS.ProcessEnv, unsetEnv: readonly string[]): NodeJS.ProcessEnv {
+  if (!unsetEnv.length) return env;
+  const out: NodeJS.ProcessEnv = { ...env };
+  const drop = new Set(unsetEnv.map(key => key.toLowerCase()));
+  for (const key of Object.keys(out)) {
+    if (drop.has(key.toLowerCase()) && out[key] === undefined) delete out[key];
+  }
+  return out;
 }
 
 function deadlineTimeout(deadlineAt: number | undefined): number | undefined {

@@ -153,10 +153,15 @@ export function resolveAgentState(profile: StateProfile, kind: AgentKind, contex
   layout.homeEnv = spec.stateDirectory.envName;
   const launch = profile[kind] as Record<string, unknown> | undefined;
   const configured = launch?.[spec.stateDirectory.field];
-  const launchEnv = (launch?.env ?? {}) as Record<string, string>;
+  const launchEnv = (launch?.env ?? {}) as Record<string, string | undefined>;
+  const authMode = launch?.authMode;
   if (typeof configured === 'string' && configured) {
-    Object.assign(layout, { home: expand(configured), homeSource: 'launch', exportHome: true });
-  } else if (kind === 'codex' && launch?.inheritCodexHome !== true) {
+    const resolved = expand(configured);
+    if (kind === 'codex' && authMode === 'api_key' && canonical(resolved) === canonical(nativeHome('codex')!)) {
+      throw new Error('Codex api_key mode requires an isolated codexHome, not ~/.codex');
+    }
+    Object.assign(layout, { home: resolved, homeSource: 'launch', exportHome: true });
+  } else if (kind === 'codex' && (authMode === 'api_key' || (authMode !== 'oauth' && launch?.inheritCodexHome !== true))) {
     // Codex is the only engine whose bridge-managed provider config requires a private home.
     const root = agentHomeRoot(profile.state);
     if (root) Object.assign(layout, { home: join(root, kind), homeSource: 'bridge', exportHome: true });

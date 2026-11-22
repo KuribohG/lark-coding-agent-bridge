@@ -3,7 +3,12 @@ import type { ModelOption } from '../agent/models';
 import { createHash } from 'node:crypto';
 import { validateModelId } from '../agent/models';
 import type { AgentKind } from '../config/profile-schema';
-import { modelServiceEndpoint, type ModelProtocol, type ModelServiceConfig } from '../model-service/config';
+import {
+  modelServiceEndpoint,
+  type ModelProtocol,
+  type ModelServiceConfig,
+  type NormalizeModelServiceOptions,
+} from '../model-service/config';
 import { loadModelConnection } from '../model-service/service';
 import { agentBackendSpec } from '../agent/backend-spec';
 
@@ -52,7 +57,11 @@ abstract class ModelProvider {
 
 /** A named API service selects a native wire binding advertised by the backend. */
 class ConfiguredModelProvider extends ModelProvider {
-  constructor(id: string, private readonly config: ModelServiceConfig) {
+  constructor(
+    id: string,
+    private readonly config: ModelServiceConfig,
+    private readonly serviceOptions?: NormalizeModelServiceOptions,
+  ) {
     super(id, id);
   }
 
@@ -69,7 +78,7 @@ class ConfiguredModelProvider extends ModelProvider {
     const modelId = validateModelId(model);
     const binding = this.binding(agentKind)!;
     const service = credentials
-      ? await loadModelConnection(this.config, binding.protocol, modelId)
+      ? await loadModelConnection(this.config, binding.protocol, modelId, this.serviceOptions)
       : { baseUrl: binding.endpoint.baseUrl, key: '', contextWindow: binding.endpoint.contextWindow, headers: {} as Record<string, string> };
     const suffix = stableSuffix(`${this.id}\0${modelId}`);
     const env: NodeJS.ProcessEnv = credentials ? {
@@ -115,8 +124,11 @@ class ConfiguredModelProvider extends ModelProvider {
 export class ModelProviderRegistry {
   private readonly providers: ModelProvider[];
 
-  constructor(readonly services: Record<string, ModelServiceConfig> = {}) {
-    const custom = Object.entries(services).map(([id, config]) => new ConfiguredModelProvider(id, config));
+  constructor(
+    readonly services: Record<string, ModelServiceConfig> = {},
+    options?: NormalizeModelServiceOptions,
+  ) {
+    const custom = Object.entries(services).map(([id, config]) => new ConfiguredModelProvider(id, config, options));
     this.providers = custom
       .sort((left, right) => right.id.length - left.id.length);
   }

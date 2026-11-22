@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { createDefaultProfileConfig } from '../../../src/config/profile-schema';
 import { profileForAgentKind } from '../../../src/runtime/execution-controller';
-import { bridgeWorkerPolicy, resolveWorkerExecution } from '../../../src/workflows/bridge/execution';
+import {
+  bridgeAgentKind,
+  bridgeWorkerPolicy,
+  createBridgeWorkerPolicy,
+  resolveWorkerExecution,
+} from '../../../src/workflows/bridge/execution';
 import { workerSelection } from '@kuribohg/agent-workflows';
 import type { WorkflowRoot } from '@kuribohg/agent-workflows';
 import type { RunPolicyAllow } from '../../../src/policy/run-policy';
@@ -52,5 +57,15 @@ describe('worker execution binding', () => {
   it('leaves harness and effort names to the host policy', () => {
     expect(workerSelection({ agentKind: 'custom', reasoningEffort: 'ultra' }, root)).toEqual({ agentKind: 'custom', reasoningEffort: 'ultra' });
     expect(() => workerSelection({ agentKind: 'custom' }, root, bridgeWorkerPolicy)).toThrow('Unknown worker agentKind');
+    expect(() => workerSelection({ agentKind: 'dsh' }, root, bridgeWorkerPolicy)).toThrow('Unknown worker agentKind');
+    expect(() => bridgeAgentKind('dsh')).toThrow('Unknown agentKind: dsh');
+
+    const hostPolicy = createBridgeWorkerPolicy({ allowHostManaged: true });
+    expect(workerSelection({ agentKind: 'dsh', reasoningEffort: 'off' }, root, hostPolicy)).toEqual({
+      agentKind: 'dsh',
+      reasoningEffort: 'off',
+    });
+    expect(hostPolicy.nativeIdKind('dsh')).toBe('sessionId');
+    expect(bridgeAgentKind('dsh', { allowHostManaged: true })).toBe('dsh');
   });
 });

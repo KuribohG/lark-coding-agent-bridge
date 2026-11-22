@@ -75,11 +75,32 @@ export interface ManagedCodexConfig {
   revert: () => Promise<void>;
 }
 
+export interface PrepareManagedCodexConfigOptions {
+  readOnly?: boolean;
+}
+
 /** Bridge owns provider routing; all other native settings stay editable here. */
-export async function prepareManagedCodexConfig(home: string, provider?: ResolvedModelProvider): Promise<ManagedCodexConfig> {
+export async function prepareManagedCodexConfig(
+  home: string,
+  provider?: ResolvedModelProvider,
+  options: PrepareManagedCodexConfigOptions = {},
+): Promise<ManagedCodexConfig> {
   const path = join(home, 'config.toml');
-  const previous = await optional(path);
-  const config = object(previous ? parse(previous) : {});
+  const resolvedHome = await realpath(home).catch(() => resolve(home));
+  const personalHome = await realpath(join(homedir(), '.codex')).catch(() => resolve(homedir(), '.codex'));
+  const isPersonalHome = resolvedHome === personalHome;
+  if (isPersonalHome && provider?.codex) {
+    throw new Error('Bridge-managed providers require a separate codexHome; the command-line Codex home will not be modified.');
+  }
+
+  let previous: string | undefined;
+  let config: Record<string, unknown> = {};
+  try {
+    previous = await optional(path);
+    config = object(previous ? parse(previous) : {});
+  } catch (error) {
+    if (!isPersonalHome && !options.readOnly) throw error;
+  }
   const previousRouting = { id: String(config.model_provider ?? 'openai'),
     ...(typeof config.model === 'string' ? { model: config.model } : {}) };
   const rewrite = async (next: string) => {
@@ -95,6 +116,10 @@ export async function prepareManagedCodexConfig(home: string, provider?: Resolve
   };
   const rendered = () => stringify(config as Parameters<typeof stringify>[0]);
 
+  if (options.readOnly || isPersonalHome) {
+    return { changed: false, id: previousRouting.id, model: previousRouting.model, previous: previousRouting, revert: async () => {} };
+  }
+
   if (!provider?.codex) {
     if (!clearManagedRouting(config)) {
       return { changed: false, id: previousRouting.id, model: previousRouting.model, previous: previousRouting, revert };
@@ -104,11 +129,6 @@ export async function prepareManagedCodexConfig(home: string, provider?: Resolve
     return { changed: true, id: previousRouting.id, model: previousRouting.model, previous: previousRouting, revert };
   }
 
-  const resolvedHome = await realpath(home).catch(() => resolve(home));
-  const personalHome = await realpath(join(homedir(), '.codex')).catch(() => resolve(homedir(), '.codex'));
-  if (resolvedHome === personalHome) {
-    throw new Error('Bridge-managed providers require a separate codexHome; the command-line Codex home will not be modified.');
-  }
   if (previous !== undefined && (await lstat(path)).isSymbolicLink()) {
     throw new Error('Bridge Codex config.toml must be an independent file, not a symlink.');
   }
@@ -126,10 +146,14 @@ export async function prepareManagedCodexConfig(home: string, provider?: Resolve
   providers[native.providerId] = entry;
   config.model_providers = providers;
   config.model_provider = native.providerId;
-  config.model = provider.model;
+  if (provider.model) config.model = provider.model;
   if (typeof config.profile === 'string') {
     const profiles = object(config.profiles);
-    profiles[config.profile] = { ...object(profiles[config.profile]), model_provider: native.providerId, model: provider.model };
+    profiles[config.profile] = {
+      ...object(profiles[config.profile]),
+      model_provider: native.providerId,
+      ...(provider.model ? { model: provider.model } : {}),
+    };
     config.profiles = profiles;
   }
   const next = rendered();

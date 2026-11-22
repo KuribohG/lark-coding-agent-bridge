@@ -25,6 +25,7 @@ import {
   REGISTERED_AGENT_KINDS,
   agentDisplayName,
   isAgentKind,
+  isRegisteredAgentKind,
   type AgentBackendSpec,
 } from './backend-spec';
 import type { AgentAdapter, AgentExecutionCapabilities } from './types';
@@ -59,7 +60,13 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
     executionCapabilities: () => AGY_EXECUTION_CAPABILITIES,
     createAdapter: ({ profile, env, systemPrompt }) => new AgyAdapter({
       binary: profile.agy?.binaryPath,
-      env: buildAgentEnvironment(env, profile.agy?.env),
+      authMode: profile.agy?.authMode,
+      apiKey: profile.agy?.apiKey,
+      baseUrl: profile.agy?.baseUrl,
+      model: profile.agy?.model,
+      contextWindow: profile.agy?.contextWindow,
+      unsetEnv: profile.agy?.unsetEnv,
+      env: buildAgentEnvironment(env, profile.agy?.env, process.env, profile.agy?.unsetEnv),
       systemPrompt,
     }),
   },
@@ -68,9 +75,15 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
     createAdapter: ({ profile, profileDir, env, systemPrompt }) => new ClaudeAdapter({
       binary: profile.claude?.binaryPath,
       configDir: profile.claude?.configDir,
+      authMode: profile.claude?.authMode,
+      apiKey: profile.claude?.apiKey,
+      authToken: profile.claude?.authToken,
+      baseUrl: profile.claude?.baseUrl,
+      model: profile.claude?.model,
+      unsetEnv: profile.claude?.unsetEnv,
       mcpConfig: profile.claude?.mcpConfig,
       autoMemoryDirectory: resolveAgentState(profile, 'claude', { profileDir, env }).memoryDir,
-      env: buildAgentEnvironment(env, profile.claude?.env),
+      env: buildAgentEnvironment(env, profile.claude?.env, process.env, profile.claude?.unsetEnv),
       systemPrompt,
     }),
   },
@@ -82,17 +95,26 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
       const state = resolveAgentState(profile, 'codex', { profileDir, env });
       return new CodexAdapter({
         binary: codex.binaryPath,
+        authMode: codex.authMode,
+        apiKey: codex.apiKey,
+        baseUrl: codex.baseUrl,
+        model: codex.model,
+        unsetEnv: codex.unsetEnv,
         systemPrompt,
         transport: codex.transport,
         appServerMode: codex.appServerMode,
         startupProvider: () => modelProviders?.resolveStartup('codex', currentModel ? currentModel() : profile.preferences?.model, codex.provider),
         profileStateDir: profileDir,
         ...(state.exportHome ? { codexHome: state.home } : {}),
-        inheritCodexHome: codex.inheritCodexHome === true,
+        inheritCodexHome: codex.authMode === 'api_key'
+          ? false
+          : codex.authMode === 'oauth'
+            ? (codex.inheritCodexHome ?? true)
+            : codex.inheritCodexHome === true,
         ignoreUserConfig: codex.ignoreUserConfig === true,
         ignoreRules: codex.ignoreRules,
         sandbox: accessToCodexSandbox(profile.permissions.defaultAccess),
-        env: buildAgentEnvironment(env, codex.env),
+        env: buildAgentEnvironment(env, codex.env, process.env, codex.unsetEnv),
       });
     },
   },
@@ -112,7 +134,7 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
         return new PiSdkAdapter({
           config: pi,
           profileStateDir: profileDir,
-          env: buildAgentEnvironment(env, pi.env),
+          env: buildAgentEnvironment(env, pi.env, process.env, pi.unsetEnv),
           systemPrompt,
           ...(profile.execSandbox?.enabled ? { sandbox: piSdkSandbox(profile, { profileDir, env }) } : {}),
         });
@@ -121,7 +143,7 @@ const IMPLEMENTATIONS: Record<AgentKind, Pick<AgentBackend, 'executionCapabiliti
         binary: pi.binaryPath,
         agentDir: pi.agentDir,
         profileStateDir: profileDir,
-        env: buildAgentEnvironment(env, pi.env),
+        env: buildAgentEnvironment(env, pi.env, process.env, pi.unsetEnv),
         systemPrompt,
         bashTimeouts: piBashTimeouts(pi),
       });
@@ -147,7 +169,7 @@ export function backendFor(kind: AgentKind): AgentBackend {
   return BACKENDS[kind];
 }
 
-export { agentDisplayName, isAgentKind };
+export { agentDisplayName, isAgentKind, isRegisteredAgentKind };
 
 export function capabilityForProfile(
   profile: Pick<AgentExecutionProfile, 'agentKind' | 'permissions'>,

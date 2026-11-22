@@ -12,8 +12,8 @@ import { sameRoot, workflowDigest } from '@kuribohg/agent-workflows';
 import { inheritedWorkerExecution } from '@kuribohg/agent-workflows';
 import { stopReasonOf, type WorkerHosting, type WorkerRun, type WorkerRunner, type WorkerRunSpec } from '@kuribohg/agent-workflows';
 import { WorkflowRuntime, type WorkflowRuntimeDeps } from '@kuribohg/agent-workflows';
-import type { WorkerExecution, WorkerExecutionSelection, WorkflowRoot, WorkflowStopReason } from '@kuribohg/agent-workflows';
-import { bridgeAgentKind, bridgeWorkerPolicy } from './execution';
+import type { WorkerExecution, WorkerExecutionPolicy, WorkerExecutionSelection, WorkflowRoot, WorkflowStopReason } from '@kuribohg/agent-workflows';
+import { bridgeAgentKind, createBridgeWorkerPolicy } from './execution';
 
 type BridgeGrant = { execution: WorkerExecution; policy: RunPolicyAllow };
 
@@ -22,6 +22,12 @@ export interface BridgeWorkflowRuntimeDeps extends Pick<WorkflowRuntimeDeps,
   executor: RunExecutor;
   resolve(scopeId: string): Promise<{ root: WorkflowRoot; policy: RunPolicyAllow } | undefined>;
   resolveWorker?(root: WorkflowRoot, selection: WorkerExecutionSelection, policy: RunPolicyAllow): Promise<BridgeGrant>;
+  /** Optional host-supplied runner (e.g., to bind host-managed `'dsh'` sessions). */
+  runner?: WorkerRunner;
+  /** Optional host-supplied worker policy overrides; automatically enables `'dsh'` when paired with custom runner/policy. */
+  workerPolicy?: Partial<WorkerExecutionPolicy>;
+  /** Explicitly allow host-managed harnesses (`'dsh'`) in worker selection and resolution. */
+  allowHostManaged?: boolean;
   /** How long past its own time limit a tool call may stay out before it is reported overdue; two minutes when omitted. */
   toolOverdueGraceMs?: number;
 }
@@ -45,6 +51,11 @@ const runHosting: WorkerHosting = {
 
 /** Workflow runtime whose workers run through the bridge executor under the main session's run policy. */
 export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): WorkflowRuntime {
+  const allowHostManaged = deps.allowHostManaged ?? Boolean(deps.runner || deps.workerPolicy);
+  const policyRules = {
+    ...createBridgeWorkerPolicy({ allowHostManaged }),
+    ...deps.workerPolicy,
+  };
   const grant = async (root: WorkflowRoot, selection: WorkerExecutionSelection): Promise<BridgeGrant> => {
     const current = await deps.resolve(root.scopeId);
     // A /model or /effort change only alters the main session's settings, not the worker's pinned root.
@@ -59,13 +70,13 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
   const workerGrant = (root: WorkflowRoot, execution: WorkerExecution) =>
     grant(root, { agentKind: execution.agentKind, ...execution.modelSettings });
 
-  const runner: WorkerRunner = {
+  const defaultRunner: WorkerRunner = {
     async start(spec: WorkerRunSpec): Promise<WorkerRun> {
       const { root, execution, workspace } = spec;
       const current = await workerGrant(root, execution);
       if (workflowDigest(current.execution) !== workflowDigest(execution)) throw new Error('Worker execution binding changed');
-      const agentKind = bridgeAgentKind(execution.agentKind);
-      const idField = spec.resume?.kind ?? bridgeWorkerPolicy.nativeIdKind(agentKind);
+      const agentKind = bridgeAgentKind(execution.agentKind, { allowHostManaged });
+      const idField = spec.resume?.kind ?? policyRules.nativeIdKind(agentKind);
       // The executor reads stop reasons from its own abort type.
       const controller = new AbortController();
       const forward = () => controller.abort(new RunStopped(stopReasonOf(spec.signal)));
@@ -160,8 +171,8 @@ export function createBridgeWorkflowRuntime(deps: BridgeWorkflowRuntimeDeps): Wo
     ...(deps.stallMs === undefined ? {} : { stallMs: deps.stallMs }),
     ...(deps.toolStallMs === undefined ? {} : { toolStallMs: deps.toolStallMs }),
     wakeMain: deps.wakeMain, showPlan: deps.showPlan, notify: deps.notify, cliPath: deps.cliPath,
-    ...bridgeWorkerPolicy,
-    runner,
+    ...policyRules,
+    runner: deps.runner ?? defaultRunner,
     resolveRoot: async scope => (await deps.resolve(scope))?.root,
     resolveWorker: async (root, selection) => (await grant(root, selection)).execution,
     authorizeWorkspace: async (root, worker) => {

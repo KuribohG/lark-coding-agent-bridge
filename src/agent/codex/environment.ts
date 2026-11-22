@@ -15,6 +15,7 @@ export function codexExecutionEnvironment(input: {
   attempt?: Readonly<Record<string, string>>;
   backend: Readonly<NodeJS.ProcessEnv>;
   inherited?: Readonly<NodeJS.ProcessEnv>;
+  unsetEnv?: readonly string[];
 }) {
   const overrides = { ...input.profile };
   for (const [key, value] of Object.entries(input.attempt ?? {})) {
@@ -23,13 +24,20 @@ export function codexExecutionEnvironment(input: {
     }
     overrides[key] = value;
   }
+  for (const key of input.unsetEnv ?? []) {
+    for (const existing of Object.keys(overrides)) {
+      if (existing.toLowerCase() === key.toLowerCase()) delete overrides[existing];
+    }
+    overrides[key] = undefined;
+  }
   const tools: CodexToolEnvironment = { inherit: 'all', set: {}, exclude: [] };
   for (const [key, value] of Object.entries(overrides)) {
     if (value === undefined) tools.exclude.push(key);
     else tools.set[key] = value;
   }
   const process = mergeProcessEnv(
-    mergeProcessEnv(input.inherited ?? globalThis.process.env, input.profile), input.backend,
+    mergeProcessEnv(input.inherited ?? globalThis.process.env, input.profile, input.unsetEnv),
+    input.backend,
   );
   return { process, tools };
 }

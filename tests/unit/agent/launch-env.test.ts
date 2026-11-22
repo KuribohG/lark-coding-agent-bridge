@@ -2,7 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   buildAgentEnvironment,
   expandLaunchEnvironment,
+  splitLaunchEnvironment,
 } from '../../../src/agent/launch-env';
+import { normalizeExecutableFields } from '../../../src/agent/launch-options';
+import { mergeProcessEnv } from '../../../src/platform/spawn';
 
 describe('agent launch environment', () => {
   it('expands references and keeps literal dollar signs escaped', () => {
@@ -57,5 +60,37 @@ describe('agent launch environment', () => {
       { HTTPS_PROXY: '$MISSING_PROXY_FOR_TEST' },
       {},
     )).toThrow('launch env HTTPS_PROXY references missing environment variable MISSING_PROXY_FOR_TEST');
+  });
+
+  it('normalizes undefined launch env entries into unsetEnv and scrubs case-insensitively in mergeProcessEnv', () => {
+    const normalized = normalizeExecutableFields({
+      env: { FOO: 'bar', OPENAI_API_KEY: undefined },
+      unsetEnv: ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY'],
+    });
+    expect(normalized.env).toEqual({ FOO: 'bar' });
+    expect(normalized.unsetEnv).toEqual(['ANTHROPIC_API_KEY', 'OPENAI_API_KEY']);
+
+    const split = splitLaunchEnvironment({ A: '1', B: undefined }, ['C']);
+    expect(split).toEqual({ env: { A: '1' }, unsetKeys: ['C', 'B'] });
+
+    const envOverrides = buildAgentEnvironment(
+      { LARK_CHANNEL: '1', OPENAI_API_KEY: 'ambient-host' },
+      { OPENAI_API_KEY: undefined, KEEP: 'yes' },
+      { ANTHROPIC_API_KEY: 'ambient-proc' },
+      ['ANTHROPIC_API_KEY'],
+    );
+    expect(envOverrides).toHaveProperty('OPENAI_API_KEY', undefined);
+    expect(envOverrides).toHaveProperty('ANTHROPIC_API_KEY', undefined);
+    expect(envOverrides.KEEP).toBe('yes');
+
+    const merged = mergeProcessEnv(
+      { openai_api_key: 'ambient-lower', ANTHROPIC_AUTH_TOKEN: 'ambient-token', KEEP_BASE: '1' },
+      envOverrides,
+      ['anthropic_auth_token'],
+    );
+    expect(merged).not.toHaveProperty('openai_api_key');
+    expect(merged).not.toHaveProperty('OPENAI_API_KEY');
+    expect(merged).not.toHaveProperty('ANTHROPIC_AUTH_TOKEN');
+    expect(merged).toMatchObject({ KEEP_BASE: '1', KEEP: 'yes', LARK_CHANNEL: '1' });
   });
 });

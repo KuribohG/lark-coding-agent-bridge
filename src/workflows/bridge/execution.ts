@@ -1,4 +1,4 @@
-import { isAgentKind, sessionIdFieldForAgent } from '../../agent/backend-spec';
+import { isAgentKind, isRegisteredAgentKind, sessionIdFieldForAgent } from '../../agent/backend-spec';
 import { parseEffort } from '../../agent/model-settings';
 import { validateModelId } from '../../agent/models';
 import { backendFor, capabilityForProfile } from '../../agent/backends';
@@ -9,19 +9,32 @@ import { parseModelJson } from '../../utils/model-json';
 import { workflowDigest } from '@kuribohg/agent-workflows';
 import type { ModelSettings, WorkerExecution, WorkerExecutionPolicy, WorkflowRoot } from '@kuribohg/agent-workflows';
 
-/** Bridge harness, model-ID and effort rules for workflow workers. */
-export const bridgeWorkerPolicy: Required<WorkerExecutionPolicy> = {
-  checkSelection(selection) {
-    if (!isAgentKind(selection.agentKind)) throw new Error('Unknown worker agentKind');
-    if (selection.model !== undefined) validateModelId(selection.model);
-    parseEffort(selection.reasoningEffort, selection.agentKind, { extended: true });
-  },
-  nativeIdKind: agentKind => sessionIdFieldForAgent(bridgeAgentKind(agentKind)),
-  repairJson: parseModelJson,
-};
+export interface BridgeWorkerPolicyOptions {
+  /** Allow host-managed harnesses such as `'dsh'` when the host supplies a custom runner or policy. */
+  allowHostManaged?: boolean;
+}
 
-export function bridgeAgentKind(value: string): AgentKind {
-  if (!isAgentKind(value)) throw new Error(`Unknown agentKind: ${value}`);
+export function createBridgeWorkerPolicy(
+  options: BridgeWorkerPolicyOptions = {},
+): Required<WorkerExecutionPolicy> {
+  const allowKind = options.allowHostManaged ? isRegisteredAgentKind : isAgentKind;
+  return {
+    checkSelection(selection) {
+      if (!allowKind(selection.agentKind)) throw new Error('Unknown worker agentKind');
+      if (selection.model !== undefined) validateModelId(selection.model);
+      parseEffort(selection.reasoningEffort, selection.agentKind, { extended: true });
+    },
+    nativeIdKind: agentKind => sessionIdFieldForAgent(bridgeAgentKind(agentKind, options)),
+    repairJson: parseModelJson,
+  };
+}
+
+/** Bridge harness, model-ID and effort rules for workflow workers. */
+export const bridgeWorkerPolicy: Required<WorkerExecutionPolicy> = createBridgeWorkerPolicy();
+
+export function bridgeAgentKind(value: string, options: BridgeWorkerPolicyOptions = {}): AgentKind {
+  const allowKind = options.allowHostManaged ? isRegisteredAgentKind : isAgentKind;
+  if (!allowKind(value)) throw new Error(`Unknown agentKind: ${value}`);
   return value;
 }
 

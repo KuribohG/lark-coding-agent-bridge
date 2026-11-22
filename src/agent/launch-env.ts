@@ -5,6 +5,31 @@ import { LARK_CHANNEL_ENV_KEYS } from './lark-channel-env';
 const REFERENCE = /\$(?:\$|\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))/g;
 
 /**
+ * Split a mixed launch environment (`Record<string, string | undefined>`) and
+ * explicit `unsetEnv` list into defined string overrides plus deduplicated unset keys.
+ */
+export function splitLaunchEnvironment(
+  launchEnv?: AgentLaunchEnvironment,
+  unsetEnv: readonly string[] = [],
+): { env: Record<string, string>; unsetKeys: string[] } {
+  const env: Record<string, string> = {};
+  const unsetKeys: string[] = [];
+  const seenUnset = new Set<string>();
+  const addUnset = (key: string) => {
+    if (!seenUnset.has(key)) {
+      seenUnset.add(key);
+      unsetKeys.push(key);
+    }
+  };
+  for (const key of unsetEnv) addUnset(key);
+  for (const [key, value] of Object.entries(launchEnv ?? {})) {
+    if (value === undefined) addUnset(key);
+    else env[key] = value;
+  }
+  return { env, unsetKeys };
+}
+
+/**
  * Build host and launch environment overrides for an agent process. Launch env
  * values may reference the Bridge environment so configs can copy secrets
  * without storing their resolved values in TOML.
@@ -13,9 +38,17 @@ export function buildAgentEnvironment(
   hostEnv: NodeJS.ProcessEnv,
   launchEnv?: AgentLaunchEnvironment,
   inheritedEnv: NodeJS.ProcessEnv = process.env,
+  unsetEnv: readonly string[] = [],
 ): NodeJS.ProcessEnv {
+  const { env: definedLaunch, unsetKeys } = splitLaunchEnvironment(launchEnv, unsetEnv);
   const source = mergeProcessEnv(inheritedEnv, hostEnv);
-  const env = mergeProcessEnv(hostEnv, expandLaunchEnvironment(launchEnv, source));
+  const env = mergeProcessEnv(hostEnv, expandLaunchEnvironment(definedLaunch, source));
+  for (const key of unsetKeys) {
+    for (const existing of Object.keys(env)) {
+      if (existing.toLowerCase() === key.toLowerCase()) delete env[existing];
+    }
+    env[key] = undefined;
+  }
   // The receiving frontend owns its CLI identity even when agent launch
   // settings are shared by several profiles. Preserve deletion markers too.
   for (const key of LARK_CHANNEL_ENV_KEYS) {
@@ -34,7 +67,10 @@ export function expandLaunchEnvironment(
 ): NodeJS.ProcessEnv {
   if (!launchEnv) return {};
   return Object.fromEntries(
-    Object.entries(launchEnv).map(([key, value]) => [key, expandValue(key, value, source)]),
+    Object.entries(launchEnv).map(([key, value]) => [
+      key,
+      value === undefined ? undefined : expandValue(key, value, source),
+    ]),
   );
 }
 

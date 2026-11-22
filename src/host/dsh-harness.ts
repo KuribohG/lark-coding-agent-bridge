@@ -8,14 +8,15 @@ import { DshAdapter } from '../agent/dsh/adapter';
 // Built as an ESM library once. The native assets are copied verbatim beside
 // this entry, retaining __dirname and the existing DSH profile/handle identity.
 const requireNative = createRequire(import.meta.url);
-const native = requireNative('./dsh/index.cjs');
-export const dshProfile = requireNative('./dsh/profile.cjs');
-export const dshLease = requireNative('./dsh/lease.cjs');
-export const dshStorageChecks = requireNative('./dsh/storage-check.cjs');
-export const dshRecovery = requireNative('./dsh/recovery.cjs');
-export const dshEventDigest = requireNative('./dsh/event-digest.cjs');
-export const nativeSession = requireNative('./dsh/session.cjs');
-const { canonicalJson } = requireNative('./dsh/utilities.cjs');
+const nativeDir = import.meta.url.endsWith('.ts') ? '../agent/dsh/native' : './dsh';
+const native = requireNative(`${nativeDir}/index.cjs`);
+export const dshProfile = requireNative(`${nativeDir}/profile.cjs`);
+export const dshLease = requireNative(`${nativeDir}/lease.cjs`);
+export const dshStorageChecks = requireNative(`${nativeDir}/storage-check.cjs`);
+export const dshRecovery = requireNative(`${nativeDir}/recovery.cjs`);
+export const dshEventDigest = requireNative(`${nativeDir}/event-digest.cjs`);
+export const nativeSession = requireNative(`${nativeDir}/session.cjs`);
+const { canonicalJson } = requireNative(`${nativeDir}/utilities.cjs`);
 export const { publicText, usageOf } = native;
 
 export function createExecutionHost(options: { maxConcurrentRuns?: number; stopTimeoutMs?: number } = {}) {

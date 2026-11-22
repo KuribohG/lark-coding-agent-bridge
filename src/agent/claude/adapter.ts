@@ -10,6 +10,7 @@ import { createInterface } from 'node:readline';
 import type { Readable, Writable } from 'node:stream';
 import { log } from '../../core/logger';
 import { mergeProcessEnv, type SpawnedProcessByStdio } from '../../platform/spawn';
+import type { AgentAuthMode } from '../launch-options';
 import { resolveSystemPrompt, type AgentSystemPrompt } from '../system-prompt';
 import { checkAgentAvailability, type AgentAvailability } from '../preflight';
 import {
@@ -29,9 +30,27 @@ import { hostedProcessOf, readRunHostInput, spawnAgentProcess } from '../run-hos
 import { withExecutionContract } from '../execution';
 import { CLAUDE_EXECUTION_CAPABILITIES } from './capabilities';
 
+export type ClaudeAuthMode = AgentAuthMode;
+
+export const CLAUDE_OAUTH_SCRUB_ENV = Object.freeze([
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BASE_URL',
+] as const);
+
 export interface ClaudeAdapterOptions {
   binary?: string;
   configDir?: string;
+  authMode?: ClaudeAuthMode;
+  /** Explicit API key used in `api_key` mode (injected as ANTHROPIC_API_KEY). */
+  apiKey?: string;
+  /** Explicit auth token used in `api_key` mode (injected as ANTHROPIC_AUTH_TOKEN). */
+  authToken?: string;
+  /** Optional custom Anthropic base URL used in `api_key` mode (ANTHROPIC_BASE_URL). */
+  baseUrl?: string;
+  /** Optional default model override when per-run `opts.model` is omitted. */
+  model?: string;
+  unsetEnv?: readonly string[];
   /** Extra `--mcp-config` file; see ClaudeConfig.mcpConfig. */
   mcpConfig?: string;
   /** Pins auto-memory to one directory regardless of the run's cwd. */
@@ -53,6 +72,12 @@ export class ClaudeAdapter implements AgentAdapter {
 
   private readonly binary: string;
   private readonly configDir: string | undefined;
+  private readonly authMode: ClaudeAuthMode | undefined;
+  private readonly apiKey: string | undefined;
+  private readonly authToken: string | undefined;
+  private readonly baseUrl: string | undefined;
+  private readonly model: string | undefined;
+  private readonly unsetEnv: readonly string[];
   private readonly mcpConfig: string | undefined;
   private readonly autoMemoryDirectory: string | undefined;
   private readonly systemPrompt: AgentSystemPrompt | undefined;
@@ -64,6 +89,12 @@ export class ClaudeAdapter implements AgentAdapter {
   constructor(opts: ClaudeAdapterOptions = {}) {
     this.binary = opts.binary ?? 'claude';
     this.configDir = opts.configDir;
+    this.authMode = opts.authMode;
+    this.apiKey = opts.apiKey?.trim() || undefined;
+    this.authToken = opts.authToken?.trim() || undefined;
+    this.baseUrl = opts.baseUrl?.trim() || undefined;
+    this.model = opts.model?.trim() || undefined;
+    this.unsetEnv = Object.freeze([...(opts.unsetEnv ?? [])]);
     this.mcpConfig = opts.mcpConfig;
     this.autoMemoryDirectory = opts.autoMemoryDirectory;
     this.systemPrompt = opts.systemPrompt;
@@ -81,23 +112,95 @@ export class ClaudeAdapter implements AgentAdapter {
   }
 
   async checkAvailability(): Promise<AgentAvailability> {
+    const scrub = this.authMode === 'oauth' || this.authMode === 'api_key'
+      ? [...this.unsetEnv, ...CLAUDE_OAUTH_SCRUB_ENV]
+      : [...this.unsetEnv];
     return checkAgentAvailability({
       agentId: 'claude',
       agentName: 'Claude Code',
       command: this.binary,
       binaryPath: this.binary,
-      env: this.env,
+      env: {
+        ...this.env,
+        ...(this.configDir ? { CLAUDE_CONFIG_DIR: this.configDir } : {}),
+      },
+      unsetEnv: scrub,
     });
   }
 
   async prepareRun(input: AgentRunOptions): Promise<PreparedAgentRun> {
-    const opts = snapshotRunOptions({ ...input, systemPrompt: input.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity) });
+    const model = input.model ?? this.model;
+    const opts = snapshotRunOptions({
+      ...input,
+      ...(model !== undefined ? { model } : {}),
+      systemPrompt: input.systemPrompt ?? resolveSystemPrompt(this.systemPrompt, this.botIdentity),
+    });
     if (!opts.cwd) throw new Error('cwd is required for claude preparation');
     if (opts.forkSession && !opts.sessionId) throw new Error('fork requires a parent session');
     if (opts.model) validateModelId(opts.model);
     if (opts.reasoningEffort && opts.reasoningEffort !== ULTRA_EFFORT) parseEffort(opts.reasoningEffort, 'claude');
+    if (this.authMode === 'api_key') {
+      this.buildSpawnEnv(opts.env);
+    }
     return preparedRun({ model: opts.model, reasoningEffort: opts.reasoningEffort },
       () => withExecutionContract(this.runNative(opts), this.capabilities));
+  }
+
+  private buildSpawnEnv(optsEnv?: Readonly<Record<string, string>>): NodeJS.ProcessEnv {
+    const baseOverrides: NodeJS.ProcessEnv = {
+      ...PARENT_SESSION_ENV,
+      ...BACKGROUND_TASKS_ENV,
+    };
+    if (this.authMode === 'oauth') {
+      return mergeProcessEnv(
+        process.env,
+        {
+          ...baseOverrides,
+          ...this.env,
+          ...optsEnv,
+          ...(this.configDir ? { CLAUDE_CONFIG_DIR: this.configDir } : {}),
+        },
+        [...this.unsetEnv, ...CLAUDE_OAUTH_SCRUB_ENV],
+      );
+    }
+    if (this.authMode === 'api_key') {
+      const cleanBase = mergeProcessEnv(
+        process.env,
+        {},
+        [...this.unsetEnv, ...CLAUDE_OAUTH_SCRUB_ENV],
+      );
+      const childEnv = mergeProcessEnv(
+        cleanBase,
+        {
+          ...baseOverrides,
+          ...this.env,
+          ...optsEnv,
+          ...(this.apiKey ? { ANTHROPIC_API_KEY: this.apiKey } : {}),
+          ...(this.authToken ? { ANTHROPIC_AUTH_TOKEN: this.authToken } : {}),
+          ...(this.baseUrl ? { ANTHROPIC_BASE_URL: this.baseUrl } : {}),
+          ...(this.configDir ? { CLAUDE_CONFIG_DIR: this.configDir } : {}),
+        },
+        this.unsetEnv,
+      );
+      const hasKey = Boolean(
+        readEnvCaseInsensitive(childEnv, 'ANTHROPIC_API_KEY')
+        || readEnvCaseInsensitive(childEnv, 'ANTHROPIC_AUTH_TOKEN'),
+      );
+      if (!hasKey) {
+        throw new Error('Claude api_key authMode requires apiKey, authToken, or ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN in env');
+      }
+      return childEnv;
+    }
+    return mergeProcessEnv(
+      process.env,
+      {
+        ...baseOverrides,
+        ...this.env,
+        ...optsEnv,
+        ...(this.configDir ? { CLAUDE_CONFIG_DIR: this.configDir } : {}),
+      },
+      this.unsetEnv,
+    );
   }
 
   private runNative(opts: AgentRunOptions): NativeAgentRun {
@@ -138,7 +241,8 @@ export class ClaudeAdapter implements AgentAdapter {
     if (opts.sessionId) args.push('--resume', opts.sessionId);
     if (opts.forkSession) args.push('--fork-session');
     if (opts.ephemeralSession) args.push('--no-session-persistence');
-    if (opts.model) args.push('--model', validateModelId(opts.model));
+    const model = opts.model ?? this.model;
+    if (model) args.push('--model', validateModelId(model));
     if (this.mcpConfig) args.push('--mcp-config', this.mcpConfig);
     // ultra maps to the ultracode session setting, which also pins effort to xhigh; it has no --effort value.
     if (runFiles.settingsPath) args.push('--settings', runFiles.settingsPath);
@@ -149,13 +253,7 @@ export class ClaudeAdapter implements AgentAdapter {
 
     const child = spawnAgentProcess(this.binary, args, {
       cwd: opts.cwd,
-      env: mergeProcessEnv(process.env, {
-        ...PARENT_SESSION_ENV,
-        ...BACKGROUND_TASKS_ENV,
-        ...this.env,
-        ...opts.env,
-        ...(this.configDir ? { CLAUDE_CONFIG_DIR: this.configDir } : {}),
-      }),
+      env: this.buildSpawnEnv(opts.env),
       stdio: ['pipe', 'pipe', 'pipe'],
     }, { agent: this.id, deadlineAt: opts.deadlineAt, host: opts.host, execSandbox: opts.execSandbox }) as ClaudeChild;
     const hosted = hostedProcessOf(child);
@@ -540,6 +638,12 @@ function writeRunFiles(systemPrompt: string, settings?: object): {
       }
     },
   };
+}
+
+function readEnvCaseInsensitive(env: Readonly<NodeJS.ProcessEnv>, name: string): string | undefined {
+  if (env[name] !== undefined) return env[name];
+  const wanted = name.toLowerCase();
+  return Object.entries(env).find(([key]) => key.toLowerCase() === wanted)?.[1];
 }
 
 function isWindowsCommandNotFoundLine(line: string): boolean {

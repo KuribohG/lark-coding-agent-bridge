@@ -1,6 +1,13 @@
 import { open } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { normalizeModelService, modelServiceEndpoint, type ModelProtocol, type ModelSecretRef, type ModelServiceConfig } from './config';
+import {
+  normalizeModelService,
+  modelServiceEndpoint,
+  type ModelProtocol,
+  type ModelSecretRef,
+  type ModelServiceConfig,
+  type NormalizeModelServiceOptions,
+} from './config';
 
 /** Resolved request settings. Keep this object inside the model client boundary. */
 export interface ResponsesModelService { url: string; model: string; key: string; headers?: Record<string, string> }
@@ -31,15 +38,29 @@ async function credential(ref: ModelSecretRef): Promise<string> {
 }
 
 /** Load only the explicitly selected service; never infer agent/profile credentials. */
-export async function loadModelService(input: ModelServiceConfig, modelOverride?: string): Promise<ResponsesModelService> {
-  const connection = await loadModelConnection(input, 'responses', modelOverride);
+export async function loadModelService(
+  input: ModelServiceConfig,
+  modelOverride?: string,
+  options?: NormalizeModelServiceOptions,
+): Promise<ResponsesModelService> {
+  const connection = await loadModelConnection(input, 'responses', modelOverride, options);
   return { url: `${connection.baseUrl}/responses`, model: connection.model, key: connection.key, headers: connection.headers };
 }
 
 export interface ModelConnection { baseUrl: string; model: string; key: string; headers?: Record<string, string>; contextWindow?: number }
 
-export async function loadModelConnection(input: ModelServiceConfig, protocol: ModelProtocol, modelOverride?: string): Promise<ModelConnection> {
-  const config = normalizeModelService(modelOverride?.trim() ? { ...input, model: modelOverride } : input);
+export async function loadModelConnection(
+  input: ModelServiceConfig,
+  protocol: ModelProtocol,
+  modelOverride?: string,
+  options?: NormalizeModelServiceOptions,
+): Promise<ModelConnection> {
+  const allowHttp = options?.allowHttp ?? (input.allowHttp === true);
+  const { allowHttp: _ignored, ...rest } = input;
+  const config = normalizeModelService(
+    modelOverride?.trim() ? { ...rest, model: modelOverride } : rest,
+    { allowHttp },
+  );
   const endpoint = modelServiceEndpoint(config, protocol);
   if (!endpoint) throw new Error(`模型服务未配置 ${protocol} 协议入口`);
   const model = modelOverride?.trim() || endpoint.model;

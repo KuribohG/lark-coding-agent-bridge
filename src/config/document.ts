@@ -1,4 +1,5 @@
 import { resolveAgentLaunches } from '../agent/launch-config';
+import { normalizeAuthMode, normalizeUnsetEnv } from '../agent/launch-options';
 import { agentStateTable, parseAgentStateTable } from '../agent/state-layout';
 import { parse, stringify, TomlError } from 'smol-toml';
 import {
@@ -124,6 +125,14 @@ function checkLaunch(value: unknown, agent: string, path: string): void {
           throw new Error(`${path}.env.${name}: expected string`);
         }
       }
+      continue;
+    }
+    if (k === 'unsetEnv') {
+      normalizeUnsetEnv(v, `${path}.unsetEnv`);
+      continue;
+    }
+    if (k === 'authMode') {
+      normalizeAuthMode(v, `${path}.authMode`);
       continue;
     }
     if (k === 'workcell') {
@@ -334,10 +343,15 @@ export function resolveExecutionProfile(
     const inherited = doc.agents?.[kind]?.launch ?? {};
     const override = profile?.agent === kind ? profile.launch ?? {} : {};
     const env = { ...(inherited.env ?? {}), ...(override.env ?? {}) };
+    const hasUnset = inherited.unsetEnv !== undefined || override.unsetEnv !== undefined;
+    const unsetEnv = hasUnset
+      ? [...new Set([...(inherited.unsetEnv ?? []), ...(override.unsetEnv ?? [])])]
+      : undefined;
     return {
       ...inherited,
       ...override,
       ...(Object.keys(env).length > 0 ? { env } : {}),
+      ...(unsetEnv ? { unsetEnv } : {}),
     };
   };
 

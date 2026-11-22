@@ -276,6 +276,27 @@ describe('agent-aware session catalog', () => {
     expect(second.entries().some((item) => item.sessionId === 'current')).toBe(true);
     await second.flush();
   });
+
+  it('persists and reloads dsh entries across catalog restarts', async () => {
+    const file = await path();
+    const identity = {
+      scopeId: 'chat-dsh',
+      agentId: 'dsh' as const,
+      cwdRealpath: '/repo',
+      policyFingerprint: 'fp-dsh',
+    };
+    const first = new SessionCatalog(file);
+    first.upsertActive({ ...identity, sessionId: 'dsh-session-1', now: 1000 });
+    await first.flush();
+
+    const reloaded = new SessionCatalog(file);
+    await reloaded.load();
+    expect(reloaded.activeFor(identity)).toMatchObject({
+      agentId: 'dsh',
+      sessionId: 'dsh-session-1',
+      status: 'active',
+    });
+  });
 });
 
 async function path(): Promise<string> {

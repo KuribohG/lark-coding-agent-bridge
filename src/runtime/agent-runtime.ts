@@ -1,4 +1,4 @@
-import { backendFor, createAgentAdapter, isAgentKind } from '../agent/backends';
+import { backendFor, createAgentAdapter, isRegisteredAgentKind } from '../agent/backends';
 import { AgentPreflightError, type AgentAvailability } from '../agent/preflight';
 import type { AgentAdapter } from '../agent/types';
 import type { AgentSystemPrompt } from '../agent/system-prompt';
@@ -30,7 +30,7 @@ export async function checkRuntimeAgentAvailability(agent: AgentAdapter): Promis
   if (agent.checkAvailability) return agent.checkAvailability();
   const ok = await agent.isAvailable();
   if (ok) return { ok: true };
-  const backend = backendFor(isAgentKind(agent.id) ? agent.id : 'claude');
+  const backend = backendFor(isRegisteredAgentKind(agent.id) ? agent.id : 'claude');
   const diagnostic = {
     code: 'agent-binary-not-found' as const,
     agentId: backend.kind,

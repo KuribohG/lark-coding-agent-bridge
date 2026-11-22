@@ -1,6 +1,6 @@
 import { terminateChild } from '../platform/terminate';
 import { mergeProcessEnv, spawnProcess } from '../platform/spawn';
-import { isAgentKind, type AgentKind } from './backend-spec';
+import { isRegisteredAgentKind, type AgentKind } from './backend-spec';
 
 export type LocalAgentId = AgentKind;
 
@@ -48,6 +48,7 @@ export interface CheckAgentVersionInput {
   args?: readonly string[];
   timeoutMs?: number;
   env?: NodeJS.ProcessEnv;
+  unsetEnv?: readonly string[];
   minimumVersion?: string;
 }
 
@@ -105,7 +106,9 @@ export async function checkAgentVersion(input: CheckAgentVersionInput): Promise<
     const child = (() => {
       try {
         return spawnProcess(executable, [...args], {
-          ...(input.env ? { env: mergeProcessEnv(process.env, input.env) } : {}),
+          ...((input.env || input.unsetEnv?.length)
+            ? { env: mergeProcessEnv(process.env, input.env, input.unsetEnv) }
+            : {}),
           stdio: ['ignore', 'pipe', 'pipe'],
         });
       } catch (err) {
@@ -293,7 +296,7 @@ function isAgentPreflightDiagnostic(input: unknown): input is AgentPreflightDiag
   return (
     typeof raw.code === 'string' &&
     raw.code.startsWith('agent-') &&
-    isAgentKind(raw.agentId) &&
+    isRegisteredAgentKind(raw.agentId) &&
     typeof raw.agentName === 'string' &&
     typeof raw.command === 'string'
   );

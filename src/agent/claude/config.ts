@@ -1,4 +1,9 @@
-import { normalizeExecutableFields, type ExecutableLaunchConfig } from '../launch-options';
+import {
+  normalizeAuthMode,
+  normalizeExecutableFields,
+  type AgentAuthMode,
+  type ExecutableLaunchConfig,
+} from '../launch-options';
 
 export interface ClaudeConfig extends Partial<ExecutableLaunchConfig> {
   /** Directory containing Claude Code settings, projects, and other local state. */
@@ -9,10 +14,20 @@ export interface ClaudeConfig extends Partial<ExecutableLaunchConfig> {
    * the first request and their tools stay out of tool search.
    */
   mcpConfig?: string;
+  authMode?: AgentAuthMode;
+  apiKey?: string;
+  authToken?: string;
+  baseUrl?: string;
+  model?: string;
 }
 
 export function normalizeClaude(input: ClaudeConfig): ClaudeConfig {
   return { ...normalizeExecutableFields(input),
+    ...(input.authMode !== undefined ? { authMode: normalizeAuthMode(input.authMode, 'claude.authMode') } : {}),
+    ...(typeof input.apiKey === 'string' && input.apiKey ? { apiKey: input.apiKey } : {}),
+    ...(typeof input.authToken === 'string' && input.authToken ? { authToken: input.authToken } : {}),
+    ...(typeof input.baseUrl === 'string' && input.baseUrl ? { baseUrl: input.baseUrl } : {}),
+    ...(typeof input.model === 'string' && input.model ? { model: input.model } : {}),
     ...(typeof input.configDir === 'string' && input.configDir ? { configDir: input.configDir } : {}),
     ...(typeof input.mcpConfig === 'string' && input.mcpConfig ? { mcpConfig: input.mcpConfig } : {}) };
 }

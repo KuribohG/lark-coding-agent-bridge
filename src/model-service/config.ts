@@ -2,6 +2,10 @@ import { isAbsolute } from 'node:path';
 
 export type ModelProtocol = 'responses' | 'gemini';
 export interface ModelEndpoint { baseUrl: string; model?: string; contextWindow?: number }
+export interface NormalizeModelServiceOptions {
+  /** Explicitly allow plaintext http:// endpoints for internal gateways. */
+  allowHttp?: boolean;
+}
 
 /** References only: resolved credentials never belong in the model-service registry. */
 export interface ModelSecretRef { source: 'env' | 'file'; id: string }
@@ -15,6 +19,8 @@ export interface ModelServiceConfig {
   apiKey: ModelSecretRef;
   /** Extra request headers, with values resolved from the same reference format. */
   headers?: Record<string, ModelSecretRef>;
+  /** Set only when normalized with explicit `{ allowHttp: true }`. */
+  allowHttp?: boolean;
 }
 
 export function modelServiceName(value: unknown): string {
@@ -40,10 +46,20 @@ function secretRef(value: unknown): ModelSecretRef {
   throw new Error('模型服务凭据须引用环境变量名或文件绝对路径');
 }
 
-export function normalizeModelService(input: unknown): ModelServiceConfig {
-  const config = record(input); fields(config, ['protocol', 'baseUrl', 'model', 'apiKey', 'headers', 'endpoints', 'contextWindow']);
+export function normalizeModelService(
+  input: unknown,
+  options: NormalizeModelServiceOptions = {},
+): ModelServiceConfig {
+  const allowHttp = options.allowHttp === true;
+  const config = record(input);
+  fields(config, allowHttp
+    ? ['protocol', 'baseUrl', 'model', 'apiKey', 'headers', 'endpoints', 'contextWindow', 'allowHttp']
+    : ['protocol', 'baseUrl', 'model', 'apiKey', 'headers', 'endpoints', 'contextWindow']);
   if (config.protocol !== 'responses' && config.protocol !== 'gemini') throw new Error('模型服务支持 responses 或 gemini 协议');
-  const baseUrl = endpointUrl(config.baseUrl);
+  if (config.allowHttp !== undefined && typeof config.allowHttp !== 'boolean') {
+    throw new Error('模型服务 allowHttp 须为布尔值');
+  }
+  const baseUrl = endpointUrl(config.baseUrl, allowHttp);
   const model = endpointModel(config.model);
   const contextWindow = tokenWindow(config.contextWindow);
   const endpoints: Partial<Record<ModelProtocol, ModelEndpoint>> = {};
@@ -51,7 +67,7 @@ export function normalizeModelService(input: unknown): ModelServiceConfig {
     const inputEndpoints = record(config.endpoints); fields(inputEndpoints, ['responses', 'gemini']);
     for (const [protocol, value] of Object.entries(inputEndpoints)) {
       const endpoint = record(value); fields(endpoint, ['baseUrl', 'model', 'contextWindow']);
-      endpoints[protocol as ModelProtocol] = { baseUrl: endpointUrl(endpoint.baseUrl),
+      endpoints[protocol as ModelProtocol] = { baseUrl: endpointUrl(endpoint.baseUrl, allowHttp),
         ...(endpoint.contextWindow !== undefined ? { contextWindow: tokenWindow(endpoint.contextWindow) } : {}),
         ...(endpoint.model !== undefined ? { model: endpointModel(endpoint.model) } : {}) };
     }
@@ -66,12 +82,16 @@ export function normalizeModelService(input: unknown): ModelServiceConfig {
   return { protocol: config.protocol, baseUrl, model,
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     ...(Object.keys(endpoints).length ? { endpoints } : {}),
-    apiKey: secretRef(config.apiKey), ...(Object.keys(headers).length ? { headers } : {}) };
+    apiKey: secretRef(config.apiKey), ...(Object.keys(headers).length ? { headers } : {}),
+    ...(allowHttp ? { allowHttp: true } : {}) };
 }
 
-export function normalizeModelServices(input: unknown): Record<string, ModelServiceConfig> {
+export function normalizeModelServices(
+  input: unknown,
+  options: NormalizeModelServiceOptions = {},
+): Record<string, ModelServiceConfig> {
   if (input === undefined) return {};
-  return Object.fromEntries(Object.entries(record(input)).map(([name, config]) => [modelServiceName(name), normalizeModelService(config)]));
+  return Object.fromEntries(Object.entries(record(input)).map(([name, config]) => [modelServiceName(name), normalizeModelService(config, options)]));
 }
 
 export function modelServiceEndpoint(config: ModelServiceConfig, protocol: ModelProtocol): (ModelEndpoint & { model: string }) | undefined {
@@ -87,11 +107,16 @@ function tokenWindow(value: unknown): number | undefined {
   return value;
 }
 
-function endpointUrl(value: unknown): string {
+function endpointUrl(value: unknown, allowHttp = false): string {
   let url: URL;
   try { url = new URL(typeof value === 'string' ? value : ''); }
-  catch { throw new Error('模型服务 baseUrl 必须是 HTTPS API 根地址'); }
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error('模型服务 baseUrl 必须是 HTTPS，且不含凭据、查询参数或片段');
+  catch { throw new Error(allowHttp ? '模型服务 baseUrl 必须是 HTTP(S) API 根地址' : '模型服务 baseUrl 必须是 HTTPS API 根地址'); }
+  const protocols = allowHttp ? ['https:', 'http:'] : ['https:'];
+  if (!protocols.includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error(allowHttp
+      ? '模型服务 baseUrl 必须是 HTTP(S)，且不含凭据、查询参数或片段'
+      : '模型服务 baseUrl 必须是 HTTPS，且不含凭据、查询参数或片段');
+  }
   return url.href.replace(/\/+$/, '');
 }
 
