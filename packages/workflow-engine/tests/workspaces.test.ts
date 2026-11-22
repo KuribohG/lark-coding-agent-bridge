@@ -262,4 +262,11 @@ describe('managed workflow worktrees with real Git', () => {
     expect((await h.manager.binding(h.root, h.state.workflowId, ws.id, signal())).busy).toBeUndefined();
     await expect(h.op('check', 'timeout', { workspace: ws.id, commands: [{ argv: [process.execPath, '-e', 'setTimeout(()=>{},10000)'], timeoutMs: 100 }] })).rejects.toThrow('timed out');
   }, 30_000);
+
+  it('takes a check timeout well past five minutes but not past four hours', async () => {
+    const h = await fixture(), ws = await h.create('a');
+    const commands = (timeoutMs: number) => [{ argv: [process.execPath, '-e', 'process.exit(0)'], timeoutMs }];
+    expect(await h.op<WorkspaceChecks>('check', 'long', { workspace: ws.id, commands: commands(40 * 60_000) })).toMatchObject({ passed: true });
+    await expect(h.op('check', 'over', { workspace: ws.id, commands: commands(4 * 3_600_000 + 1) })).rejects.toThrow('Expected an integer');
+  }, 30_000);
 });

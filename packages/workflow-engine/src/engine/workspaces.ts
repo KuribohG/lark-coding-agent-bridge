@@ -14,6 +14,9 @@ import type { WorkflowRoot } from './types';
 interface RecordRow { id: string; workflow: string; key: string; kind: string; digest: string; done: number; data: string; created: number }
 const SHA = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
 const BUSY = new Set(['queued', 'starting', 'running', 'cancelling', 'waiting_workflow']);
+/** A check command runs foreground work that competes with every other worker on the host: five minutes unless it is asked for more, at most four hours, and never past the workflow deadline. */
+const CHECK_TIMEOUT_DEFAULT_MS = 300_000;
+const CHECK_TIMEOUT_MAX_MS = 4 * 3_600_000;
 // Git registers a new worktree in several steps. Concurrent commands can observe a partial entry.
 const worktreeCommands = new Map<string, Promise<CommandResult>>();
 /** The checkout a clone was made from, as the clone's remote. */
@@ -573,7 +576,7 @@ export class WorkflowWorkspaces {
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Invalid check command');
       const item = raw as Record<string, unknown>;
       if (Object.keys(item).some(key => !['argv', 'timeoutMs'].includes(key)) || !Array.isArray(item.argv) || !item.argv.length || item.argv.length > 64) throw new Error('Check commands require an argv array');
-      return { argv: item.argv.map(arg => scriptText(arg, 'command argument', 4000)), timeoutMs: boundedInteger(item.timeoutMs, 300_000, 100, 1_800_000) };
+      return { argv: item.argv.map(arg => scriptText(arg, 'command argument', 4000)), timeoutMs: boundedInteger(item.timeoutMs, CHECK_TIMEOUT_DEFAULT_MS, 100, CHECK_TIMEOUT_MAX_MS) };
     });
   }
   /** Runs the commands in order in the directory and stops at the first failure. */
