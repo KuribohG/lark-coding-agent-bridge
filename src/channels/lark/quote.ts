@@ -239,14 +239,19 @@ export async function fetchTopicContext(
   const reads = opts.reads;
   try {
     do {
-      const page = reads
-        ? await reads.threadMessages({
-            threadId,
-            sortType: 'ByCreateTimeDesc',
-            pageSize: 50,
-            ...(pageToken ? { pageToken } : {}),
-          })
-        : await listThreadPageWithAppIdentity(channel, threadId, pageToken);
+      // A missing/expired user grant must not drop the topic's history: fall
+      // back to the tenant identity the rest of the read path uses.
+      const page = await userFirst(
+        reads,
+        'topic',
+        () => reads!.threadMessages({
+          threadId,
+          sortType: 'ByCreateTimeDesc',
+          pageSize: 50,
+          ...(pageToken ? { pageToken } : {}),
+        }),
+        () => listThreadPageWithAppIdentity(channel, threadId, pageToken),
+      );
       const items = page.items;
       for (let index = 0; index < items.length; index += 1) {
         const item = items[index]!;
