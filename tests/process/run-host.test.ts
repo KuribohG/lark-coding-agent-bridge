@@ -1,5 +1,5 @@
 import { once } from 'node:events';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, readlinkSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -163,15 +163,36 @@ describe.skipIf(process.platform === 'win32')('run host', () => {
     try { return readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1]?.[0] !== 'Z'; } catch { return true; }
   }
 
+  /** Every process holding a descriptor for this socket path, when the platform makes that visible. */
+  function socketOwners(socketPath: string): Array<{ pid: number; cmd: string }> | undefined {
+    if (process.platform !== 'linux') return undefined;
+    try {
+      const inode = `socket:[${statSync(socketPath).ino}]`;
+      const owners: Array<{ pid: number; cmd: string }> = [];
+      for (const pid of readdirSync('/proc').filter(name => /^\d+$/.test(name))) {
+        let fds: string[];
+        try { fds = readdirSync(`/proc/${pid}/fd`); } catch { continue; }
+        if (!fds.some(fd => { try { return readlinkSync(`/proc/${pid}/fd/${fd}`) === inode; } catch { return false; } })) continue;
+        let cmd = '';
+        try { cmd = readFileSync(`/proc/${pid}/cmdline`, 'utf8').replaceAll('\0', ' ').trim().slice(0, 160); } catch { /* raced */ }
+        owners.push({ pid: Number(pid), cmd });
+      }
+      return owners;
+    } catch {
+      return undefined;
+    }
+  }
+
   /** What the run host's directory holds when a probe disagrees with the test's expectation. */
   function hostDiagnostics(key: string, dir: string, hostPid: number): string {
     const read = (name: string): string | undefined => {
-      try { return readFileSync(join(dir, name), 'utf8').slice(-1200); } catch { return undefined; }
+      try { return readFileSync(join(dir, name), 'utf8').slice(-800); } catch { return undefined; }
     };
     let entries: string[] = [];
     try { entries = readdirSync(dir); } catch { /* gone */ }
     return JSON.stringify({ key, hostPid, hostAlive: alive(hostPid), entries,
-      hostJson: read('host.json'), spec: read('spec.json')?.slice(0, 400), hostLog: read('host.log') });
+      socketOwners: socketOwners(join(dir, 'sock')), hostJson: read('host.json'),
+      spec: read('spec.json')?.slice(0, 300), hostLog: read('host.log') });
   }
 
   it('keeps a Claude run alive across a shutdown and replays it to the next bridge process', async () => {
