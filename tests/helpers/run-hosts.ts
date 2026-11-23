@@ -1,4 +1,5 @@
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { terminateRunHost } from '../../src/agent/run-host';
 
@@ -8,8 +9,17 @@ import { terminateRunHost } from '../../src/agent/run-host';
  * silently truncates the path instead of failing.
  */
 export function runHostRootFor(root: string): string {
+  // Windows has no unix sockets, so the limit does not apply there.
+  if (process.platform === 'win32') return root;
   const limit = process.platform === 'darwin' ? 103 : 107;
-  return join(root, 'x'.repeat(36), 'sock').length <= limit ? root : mkdtempSync(join('/tmp', 'lrh-'));
+  if (join(root, 'x'.repeat(36), 'sock').length <= limit) return root;
+  for (const base of [tmpdir(), '/tmp']) {
+    let dir: string;
+    try { dir = mkdtempSync(join(base, 'lrh-')); } catch { continue; }
+    if (join(dir, 'x'.repeat(36), 'sock').length <= limit) return dir;
+    rmSync(dir, { recursive: true, force: true });
+  }
+  throw new Error('no temporary directory is short enough for a run host socket');
 }
 
 /**
