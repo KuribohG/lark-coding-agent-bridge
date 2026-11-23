@@ -112,7 +112,7 @@ describe.skipIf(process.platform === 'win32')('run host', () => {
   beforeEach(async () => {
     tmp = await createTmpProfile('run-host-');
     previousRoot = process.env.LARK_RUN_HOST_DIR;
-    hostsRoot = runHostRootFor(tmp.root);
+    hostsRoot = runHostRootFor(join(tmp.root, 'hosts'));
     process.env.LARK_RUN_HOST_DIR = hostsRoot;
   });
 

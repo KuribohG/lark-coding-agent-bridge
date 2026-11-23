@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { terminateRunHost } from '../../src/agent/run-host';
 
@@ -7,10 +7,9 @@ import { terminateRunHost } from '../../src/agent/run-host';
  * long enough that `<root>/<key>/sock` overflows it, and a bind past the limit
  * silently truncates the path instead of failing.
  */
-export function runHostRootFor(base: string): string {
-  const preferred = join(base, 'hosts');
+export function runHostRootFor(root: string): string {
   const limit = process.platform === 'darwin' ? 103 : 107;
-  return join(preferred, 'x'.repeat(36), 'sock').length <= limit ? preferred : mkdtempSync(join('/tmp', 'lrh-'));
+  return join(root, 'x'.repeat(36), 'sock').length <= limit ? root : mkdtempSync(join('/tmp', 'lrh-'));
 }
 
 /**
@@ -18,14 +17,16 @@ export function runHostRootFor(base: string): string {
  * which a bridge shutdown leaves there on purpose, and restores the previous directory.
  */
 export function isolateRunHosts(dir: string): () => Promise<void> {
+  const root = runHostRootFor(dir);
   const previous = process.env.LARK_RUN_HOST_DIR;
-  process.env.LARK_RUN_HOST_DIR = dir;
+  process.env.LARK_RUN_HOST_DIR = root;
   return async () => {
     let keys: string[] = [];
-    try { keys = readdirSync(dir); } catch { /* no run was hosted */ }
+    try { keys = readdirSync(root); } catch { /* no run was hosted */ }
     // Beside each host lies the directory of its files, which goes with it.
     for (const key of keys.filter(name => !name.includes('.'))) await terminateRunHost(key, 500).catch(() => {});
     if (previous === undefined) delete process.env.LARK_RUN_HOST_DIR;
     else process.env.LARK_RUN_HOST_DIR = previous;
+    if (root !== dir) rmSync(root, { recursive: true, force: true });
   };
 }

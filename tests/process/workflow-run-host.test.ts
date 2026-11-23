@@ -92,7 +92,7 @@ describe.skipIf(process.platform === 'win32')('workflow workers under run hosts'
   beforeEach(async () => {
     tmp = await createTmpProfile('workflow-run-host-');
     previousRoot = process.env.LARK_RUN_HOST_DIR;
-    hostsRoot = runHostRootFor(tmp.root);
+    hostsRoot = runHostRootFor(join(tmp.root, 'hosts'));
     process.env.LARK_RUN_HOST_DIR = hostsRoot;
   });
 
