@@ -80,7 +80,8 @@ describe('workflow main-session wake', () => {
       sourceMessageId: realFollowup ? 'om_real_followup' : 'om_old_input' });
     expect(createLarkRunOutput).toHaveBeenCalledWith(expect.objectContaining({ sendOpts: { replyTo: 'original-user-input', replyInThread: true } }));
     expect(presentRunOutput).toHaveBeenCalledOnce();
-    expect(markNotified).toHaveBeenCalledWith(scopeId, ['event-1']);
+    // The turn started with the events in its prompt, which settles the ones that only told it something.
+    expect(markNotified).toHaveBeenCalledWith(scopeId, ['event-1'], true);
     expect(release).toHaveBeenCalledOnce();
   });
   it('gives an ordinary user turn the credentials of the workflow in its scope', async () => {

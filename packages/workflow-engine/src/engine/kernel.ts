@@ -10,7 +10,7 @@ import { settleEventWaits } from './event-waits';
 import { BUSY } from './kernel-state';
 import { scratchSlots } from './scratch';
 import { WorkflowStore } from './kernel-store';
-import type { NativeIdKind, WorkflowCaller, WorkflowHost, WorkflowLogger, WorkflowState, WorkflowView } from './types';
+import type { NativeIdKind, WorkflowCaller, WorkflowEvent, WorkflowHost, WorkflowLogger, WorkflowState, WorkflowView } from './types';
 import { WorkerHosts, type WorkerHostRecord } from './worker-hosts';
 
 export { RESUME_DEADLINE, RESUME_ROOT_CHANGED } from './kernel-recovery';
@@ -222,8 +222,13 @@ export class WorkflowKernel {
     return this.ctx.lifecycle.hasWake(scopeId);
   }
 
-  markNotified(scopeId: string, ids: string[]): void {
-    this.ctx.lifecycle.markNotified(scopeId, ids);
+  /** The notices the main agent has not been given yet, oldest first; they wake it, or go into the turn it is in. */
+  undelivered(scopeId: string): WorkflowEvent[] {
+    return this.ctx.lifecycle.undelivered(scopeId);
+  }
+
+  markNotified(scopeId: string, ids: string[], delivered = false): void {
+    this.ctx.lifecycle.markNotified(scopeId, ids, delivered);
   }
 
   invalidate(scopeId: string): void {

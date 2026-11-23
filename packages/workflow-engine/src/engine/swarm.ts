@@ -3,7 +3,7 @@ import { postToBoard, readBoard } from './board';
 import { workflowDigest } from './digest';
 import { availableMessages, receiveMessages, scheduleMemberTurn } from './durable-agents';
 import type { DomainEvent } from './events';
-import { boardTotal, callCount, pushEvent, readArtifact, taskById } from './kernel-state';
+import { acknowledge, boardTotal, callCount, pushEvent, readArtifact, taskById } from './kernel-state';
 import { emit, readText } from './kernel-store';
 import type { KernelContext } from './kernel-context';
 import { BOARD_ANNOUNCE_TOPIC, BOARD_HANDOFF_TOPIC, BOARD_NOTICED_TOPIC, MAX_CONCURRENT_WORKERS, SWARM_DECLARED_MEMBERS, SWARM_MAX_LIVE_MEMBERS, SWARM_MAX_MEMBERS, SWARM_MAX_TURNS } from './limits';
@@ -39,6 +39,17 @@ const STARVED_LEAD_EVERY_MS = 15 * 60_000;
 /** The main agent hears of it when the lead has not fed the queue this long after being told, and again this often. */
 const STARVED_MAIN_AFTER_MS = 20 * 60_000;
 const STARVED_MAIN_EVERY_MS = 60 * 60_000;
+/**
+ * A starved queue has to stay fed this long for its spell to be over. An item that an idle member takes at once feeds
+ * the queue for an instant; were that the end of the spell, a queue that gets an item now and then would never have
+ * been dry for long enough to reach the main agent, and its lead would be told anew every couple of minutes.
+ */
+const STARVED_FED_AFTER_MS = 3 * 60_000;
+/** The subjects of the notices a swarm raises with the main agent (see WorkflowEvent.subject). */
+const swarmSubject = (swarm: SwarmView, what: string) => `swarm:${swarm.id}:${what}`;
+const queueSubject = (swarm: SwarmView, queue: string) => swarmSubject(swarm, 'queue:' + queue);
+const memberSubject = (swarm: SwarmView, member: string) => swarmSubject(swarm, 'member:' + member);
+const stalledSubject = (swarm: SwarmView) => swarmSubject(swarm, 'stalled');
 /** The most of an item's result a handoff quotes; the item holds the rest. */
 const HANDOFF_RESULT_CHARS = 1500;
 /**
@@ -526,7 +537,7 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       if (swarm.finish) continue;
       // Naming the member without @ keeps the notice from being delivered to it.
       stoppedNotice(member, 'failed', detail);
-      pushEvent(state, { kind: 'swarm_attention', summary: `swarm "${swarm.key}" 的成员 ${member.name} 失败并已停止`
+      pushEvent(state, { kind: 'swarm_attention', subject: memberSubject(swarm, member.name), summary: `swarm "${swarm.key}" 的成员 ${member.name} 失败并已停止`
         + `${task.status === 'failed' ? '（已自动重试一次）' : ''}：${detail.slice(0, 200)}。staff_swarm 的 revive 可让它在原会话重试，add 可补人。` }, () => now);
     }
     const lead = swarm.members.find(member => member.name === swarm.lead);
@@ -586,12 +597,24 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       const consumers = swarm.members.filter(member => member.queue === name && !member.stopped && turnsLeft(member));
       const idle = consumers.filter(member => !busy(member)).length;
       const entry = swarm.starved?.[name];
-      if (!answers || answers.stopped || swarm.finish || !swarm.members.some(member => member !== answers && busy(member))
+      // With nobody left to tell, the spell is over as it stands; otherwise only once the queue has stayed fed.
+      const moot = !answers || answers.stopped || Boolean(swarm.finish);
+      const over = () => record({ type: 'swarm_queue_fed', swarmId: swarm.id, queue: name, at: now, over: true });
+      if (moot || !swarm.members.some(member => member !== answers && busy(member))
         || (work.get(name)?.slots ?? 1) > 0 || idle < Math.max(1, Math.ceil(consumers.length * STARVED_SHARE))) {
-        if (entry) record({ type: 'swarm_queue_fed', swarmId: swarm.id, queue: name, at: now });
+        if (!entry) continue;
+        if (moot || entry.fedAt !== undefined && now - entry.fedAt >= STARVED_FED_AFTER_MS) over();
+        else if (entry.fedAt === undefined) record({ type: 'swarm_queue_fed', swarmId: swarm.id, queue: name, at: now });
         continue;
       }
       if (!entry) { record({ type: 'swarm_queue_starved', swarmId: swarm.id, queue: name, at: now }); continue; }
+      if (entry.fedAt !== undefined) {
+        // What the queue was fed did not last, so the spell goes on with what the lead and the main agent were told
+        // in it. Fed for longer than anyone was watching (the host was down), it is taken to have ended.
+        if (now - entry.fedAt >= STARVED_FED_AFTER_MS) over();
+        else record({ type: 'swarm_queue_starved', swarmId: swarm.id, queue: name, at: now, resumed: true });
+        continue;
+      }
       const blocked = (state.workQueue?.items ?? []).filter(item => (item.queue ?? 'default') === name && item.status === 'pending').length;
       const facts = `${idle} of its ${consumers.length} members are idle and it has no item they can claim`
         + (blocked ? ` (${blocked} pending items wait on dependencies, resources or attempts, are on hold or are kept for one member)` : '');
@@ -608,11 +631,21 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
         record({ type: 'swarm_queue_starved', swarmId: swarm.id, queue: name, at: now, told: 'lead', ...(post === undefined ? {} : { post }) });
       } else if (entry.leadAt !== undefined && now - entry.since >= STARVED_MAIN_AFTER_MS && now - (entry.mainAt ?? -Infinity) >= STARVED_MAIN_EVERY_MS) {
         record({ type: 'swarm_queue_starved', swarmId: swarm.id, queue: name, at: now, told: 'main' });
-        pushEvent(state, { kind: 'swarm_attention', summary: `swarm "${swarm.key}" 的队列 ${name} 已断粮 ${Math.round((now - entry.since) / 60_000)} 分钟：`
+        pushEvent(state, { kind: 'swarm_attention', subject: queueSubject(swarm, name), summary: `swarm "${swarm.key}" 的队列 ${name} 已断粮 ${Math.round((now - entry.since) / 60_000)} 分钟：`
           + `${consumers.length} 名成员中 ${idle} 名空闲，没有可领工作项` + (blocked ? `（${blocked} 项待领但被依赖、资源、尝试次数、挂起或指定给某个成员挡住）` : '')
-          + '，lead 已被提醒，既没有补充，也没有答复该队列暂无工作。有推进目标的工作就用 enqueue_work 补充；没有就不必凑：用 staff_swarm 的 move 把成员挪到有活的队列'
+          + '，lead 已被提醒，队列仍未补上，也没有答复该队列暂无工作。有推进目标的工作就用 enqueue_work 补充；没有就不必凑：用 staff_swarm 的 move 把成员挪到有活的队列'
           + (entry.posts?.length ? `，或用 resolve_post 标掉第 ${entry.posts.at(-1)} 帖（此后不再提醒该队列，直到有人给它补活）` : '') + '。' }, () => now);
       }
+    }
+    // What the main agent was told of this swarm and is no longer so settles itself: a queue whose spell is over or
+    // that its lead has put to rest, a failed member that runs again or was retired, a stall that someone ended.
+    const raised = state.events.filter(event => !event.acknowledged && event.subject?.startsWith(swarmSubject(swarm, '')));
+    if (raised.length) {
+      const still = new Set([...(swarm.stalled ? [stalledSubject(swarm)] : []),
+        ...Object.keys(swarm.starved ?? {}).filter(name => !swarm.resting?.[name]).map(name => queueSubject(swarm, name)),
+        ...swarm.members.filter(member => member.stopped === 'failed').map(member => memberSubject(swarm, member.name))]);
+      const gone = raised.filter(notice => !still.has(notice.subject!));
+      if (gone.length) { acknowledge(state, gone, now); changed = true; }
     }
     // How the queues a lead answers for stand, for its wake-up: what can be claimed against the members with nothing to do.
     const standing = (member: MemberView) => !coordinates(swarm, member) ? undefined : queues.filter(name => member.name === swarm.lead || member.leads?.includes(name)).map(name => {
@@ -661,7 +694,7 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       owed.delete(member.name);
     };
     // A starved queue does not wait for its lead's gathering gap: the notice wakes it for the turn that follows.
-    const toldLately = (member: MemberView) => Object.entries(swarm.starved ?? {}).some(([name, entry]) => answersFor(swarm, name) === member
+    const toldLately = (member: MemberView) => Object.entries(swarm.starved ?? {}).some(([name, entry]) => entry.fedAt === undefined && answersFor(swarm, name) === member
       && (entry.leadAt ?? 0) > (taskOf(member)?.attempts.at(-1)?.startedAt || 0));
     // Once the lead has finished the swarm, the turns still running end it; nobody is woken again.
     // A wake-up the member set for itself is due; unlike posts it is not gathered, since the member chose the time.
@@ -685,7 +718,7 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
             + 'add items with enqueue_work, or name members on the board. Call swarm_finish only when the goal is met or cannot progress, and say which.');
         } else if (!swarm.stalled) {
           record({ type: 'swarm_stalled', swarmId: swarm.id });
-          pushEvent(state, { kind: 'swarm_stalled', summary: `swarm "${swarm.key}" 停滞：全体成员空闲，`
+          pushEvent(state, { kind: 'swarm_stalled', subject: stalledSubject(swarm), summary: `swarm "${swarm.key}" 停滞：全体成员空闲，`
             + `lead 经 ${MAX_NUDGES} 次提醒仍未分派工作，也未调用 swarm_finish`
             + '。swarm 仍在运行并等待：用 post_board 点名成员继续、enqueue_work 补充工作，或 staff_swarm 加人、提高 maxTurns；确认无事可做再取消。' }, () => now);
         }
@@ -738,7 +771,7 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
         const detail = ('cannot be scheduled: ' + (error instanceof Error ? error.message : String(error))).slice(0, 500);
         record({ type: 'swarm_member_stopped', swarmId: swarm.id, member: member.name, reason: 'failed', detail });
         stoppedNotice(member, 'could not be woken', detail);
-        pushEvent(state, { kind: 'swarm_attention', summary: `swarm "${swarm.key}" 的成员 ${member.name} 无法被唤醒并已停止：${detail.slice(0, 200)}。staff_swarm 的 add 可补人。` }, () => now);
+        pushEvent(state, { kind: 'swarm_attention', subject: memberSubject(swarm, member.name), summary: `swarm "${swarm.key}" 的成员 ${member.name} 无法被唤醒并已停止：${detail.slice(0, 200)}。staff_swarm 的 add 可补人。` }, () => now);
         continue;
       }
       // A turn woken only by posts is not demand for a work item.
@@ -1180,7 +1213,7 @@ function queueSummary(state: WorkflowView, swarm: SwarmView, now?: number): Reco
     const dry = swarm.dry?.[name];
     const minutes = (ms: number) => Math.round(ms / 6000) / 10;
     return [name, { ...(own ? { lead: own.name } : {}), claimable, blocked: items.filter(item => item.status === 'pending').length - claimable, ...(onHold ? { onHold } : {}), claimed: items.filter(item => item.status === 'claimed').length,
-      members: members.length, running, idle: members.length - running, ...(swarm.starved?.[name] ? { starvedSince: swarm.starved[name]!.since } : {}),
+      members: members.length, running, idle: members.length - running, ...(swarm.starved?.[name] && swarm.starved[name]!.fedAt === undefined ? { starvedSince: swarm.starved[name]!.since } : {}),
       ...(swarm.resting?.[name] ? { restingSince: swarm.resting[name]!.since } : {}),
       ...(flow ? { flow } : {}), ...(dry ? { dry: { spells: dry.spells, minutes: minutes(dry.ms), longestMinutes: minutes(dry.longest) } } : {}) }];
   }));

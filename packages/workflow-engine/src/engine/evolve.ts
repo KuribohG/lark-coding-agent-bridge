@@ -262,7 +262,7 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       // sends the notice again, and any of them is the answer.
       for (const found of state.swarms ?? []) {
         if (event.resolved) {
-          const name = Object.keys(found.starved ?? {}).find(queue => found.starved![queue]!.posts?.includes(event.seq));
+          const name = Object.keys(found.starved ?? {}).find(queue => found.starved![queue]!.fedAt === undefined && found.starved![queue]!.posts?.includes(event.seq));
           if (name !== undefined) (found.resting ??= {})[name] = { since: event.resolved.at, post: event.seq };
         } else if (found.resting) {
           for (const name of Object.keys(found.resting)) if (found.resting[name]!.post === event.seq) delete found.resting[name];
@@ -341,7 +341,13 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       return;
     }
     case 'swarm_queue_starved': {
-      const entry = ((swarm(state, event.swarmId).starved ??= {})[event.queue] ??= { since: event.at });
+      const spells = (swarm(state, event.swarmId).starved ??= {});
+      let entry = spells[event.queue];
+      if (entry?.fedAt !== undefined) {
+        // Dry again before it had been fed for long: the spell goes on with what was told in it, counted from here.
+        if (event.resumed) { entry.from = event.at; delete entry.fedAt; } else entry = undefined;
+      }
+      entry ??= spells[event.queue] = { since: event.at };
       if (event.told === 'lead') { entry.leadAt = event.at; if (event.post !== undefined) entry.posts = [...entry.posts ?? [], event.post].slice(-STARVED_NOTICES_KEPT); }
       if (event.told === 'main') entry.mainAt = event.at;
       return;
@@ -349,12 +355,12 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
     case 'swarm_queue_fed': {
       const found = swarm(state, event.swarmId);
       const spell = found.starved?.[event.queue];
-      if (spell && event.at !== undefined) {
-        const dry = (found.dry ??= {})[event.queue] ??= { spells: 0, ms: 0, longest: 0 };
-        const lasted = Math.max(0, event.at - spell.since);
-        dry.spells++; dry.ms += lasted; dry.longest = Math.max(dry.longest, lasted);
+      if (spell && spell.fedAt === undefined && event.at !== undefined) {
+        spellCounted(found, event.queue, event.at);
+        // Fed for now. The spell is over once that has lasted, and goes on if the queue runs dry again before.
+        if (!event.over) { spell.fedAt = event.at; return; }
       }
-      if (found.starved) { delete found.starved[event.queue]; if (!Object.keys(found.starved).length) found.starved = undefined; }
+      spellOver(found, event.queue);
       return;
     }
     case 'swarm_handoffs_delivered': {
@@ -549,8 +555,31 @@ function planned(state: WorkflowData, found: WorkflowWorkItem): void {
     if (swarm.resting?.[name]) {
       delete swarm.resting[name];
       if (!Object.keys(swarm.resting).length) swarm.resting = undefined;
+      // The rest answered the spell, and it ends with the rest: a queue that runs dry after this has run dry anew,
+      // not for as long as it was left without work on purpose.
+      spellCounted(swarm, name, found.createdAt);
+      spellOver(swarm, name);
     }
   }
+}
+
+/**
+ * Adds the starved spell of a queue, up to `at`, to the queue's record of them. A spell that went on after being fed
+ * is one spell: it is counted once, and the time it was fed is left out. Fed, a spell has been counted already.
+ */
+function spellCounted(swarm: NonNullable<WorkflowData['swarms']>[number], queue: string, at: number): void {
+  const spell = swarm.starved?.[queue];
+  if (!spell || spell.fedAt !== undefined) return;
+  const dry = (swarm.dry ??= {})[queue] ??= { spells: 0, ms: 0, longest: 0 };
+  if (spell.from === undefined) dry.spells++;
+  dry.ms += Math.max(0, at - (spell.from ?? spell.since));
+  dry.longest = Math.max(dry.longest, Math.max(0, at - spell.since));
+}
+
+function spellOver(swarm: NonNullable<WorkflowData['swarms']>[number], queue: string): void {
+  if (!swarm.starved) return;
+  delete swarm.starved[queue];
+  if (!Object.keys(swarm.starved).length) swarm.starved = undefined;
 }
 
 function flowed(state: WorkflowData, found: WorkflowWorkItem, at: number, what: Exclude<keyof WorkFlowSlot, 'slot'>): void {

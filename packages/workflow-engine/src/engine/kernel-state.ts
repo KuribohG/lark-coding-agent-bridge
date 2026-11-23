@@ -76,6 +76,18 @@ export function acknowledge(state: WorkflowView, events: ReadonlyArray<Immutable
   if (ids.length) emit(state, { type: 'notices_acknowledged', ids, at: now });
 }
 
+/** The subject of the notice that a landing branch is halted, which stands until the main agent restores or adopts the branch. */
+export const LANDING_HALTED = 'landing:halted';
+
+/**
+ * Settles the notices about `subject`, which is no longer in the state they reported: the queue has work again, the
+ * member runs again, the branch lands again. The main agent is not left to acknowledge what has nothing left to see to,
+ * and a notice it never acknowledged does not stand in the way of the next one.
+ */
+export function settle(state: WorkflowView, subject: string, now: number): void {
+  acknowledge(state, state.events.filter(event => event.subject === subject), now);
+}
+
 export function artifactOf(state: WorkflowView, ref: string): ArtifactView {
   const artifact = byId(state.artifacts, item => item.ref, ref) ?? archiveOf(state)?.artifact(ref);
   if (!artifact) throw new Error('Artifact not found in workflow');

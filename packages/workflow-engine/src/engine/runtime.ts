@@ -348,7 +348,8 @@ export class WorkflowRuntime {
 
   /**
    * Credentials for an ordinary user turn to inspect and steer the scope's workflow, or undefined when it has none.
-   * The turn cannot start a workflow, and pending events stay with the wake that delivers them.
+   * The turn cannot start a workflow. The events that are pending when it starts stay with the wake that delivers
+   * them; the host hands it those that are raised while it runs.
    */
   bindMessage(scopeId: string, deadlineAt = Date.now() + 24 * 60 * 60_000) {
     const state = this.kernel.state(scopeId);

@@ -162,7 +162,8 @@ export async function startLarkChannel(deps: StartChannelDeps): Promise<BridgeCh
       scope, batch, mode, agentKind, agent, ...options });
   };
   const workflows: LarkWorkflowHost = createLarkWorkflowHost({ channel, executor, controls, sessions, sessionCatalog, workspaces,
-    stateDir, turns, pending, resolveAgentKind, dispatch });
+    stateDir, turns, pending, resolveAgentKind, dispatch,
+    steer: (scope, messageId, text) => followups.deliver({ scope, messageId, activeRuns, internal: true, prepare: async () => text }) });
   const runner = new LarkTurnRunner({ channel, turns, stateDir,
     resolveAgentKind, dispatch });
 

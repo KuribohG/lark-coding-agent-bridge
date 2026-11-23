@@ -511,6 +511,26 @@ describe('submit_work', () => {
     expect(attention()).toEqual(['落地已停止：x', '落地分支 x 有 1 个提交未经 submit_work 进入']);
   });
 
+  it('settles the notice that the branch is halted once the main agent has restored or adopted it', async () => {
+    const halted = { status: 'halted', targetRef: 'refs/heads/x', targetCommit: 'abc', reason: 'moved' };
+    let standing: string | undefined = 'moved';
+    const h = harness(async () => ({ ...halted, notice: '落地已停止：x' }), async input => {
+      if (input.branch) standing = undefined;
+      return { changed: false, landing: { branches: [{ repository: '/repo', head: 'abc', waiting: 0, ...(standing ? { halted: standing } : {}) }] } };
+    });
+    const request = await h.start('ws-1');
+    const grant = await h.send(request, 'claim_work') as Grant;
+    const notice = () => h.state().events.find(event => event.kind === 'landing_attention')!;
+    expect(await h.send(request, 'submit_work', { claimId: grant.claimId, generation: grant.generation })).toEqual(halted);
+    expect(notice()).toMatchObject({ acknowledged: false, subject: 'landing:halted' });
+    const main = (args: Record<string, unknown>) => h.kernel.call({ kind: 'main', scopeId: 'submit-test' }, 'configure_landing', args);
+    // Looking at a landing that is still halted leaves the notice standing.
+    await main({});
+    expect(notice().acknowledged).toBe(false);
+    await main({ branch: 'adopt' });
+    expect(notice().acknowledged).toBe(true);
+  });
+
   it('lets the main agent, and no worker, look at and change the landing', async () => {
     const calls: Array<Record<string, unknown>> = [];
     const h = harness(async () => ({ status: 'landed' }), async input => { calls.push(input); return { changed: Object.keys(input).length > 0 }; });

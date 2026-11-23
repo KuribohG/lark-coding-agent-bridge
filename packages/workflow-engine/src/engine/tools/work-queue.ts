@@ -1,5 +1,5 @@
 import { CONTROL_ARGS } from './control-args';
-import { pushEvent, requireState } from '../kernel-state';
+import { LANDING_HALTED, pushEvent, requireState } from '../kernel-state';
 import { assigned, closeWorkQueue, enqueueFromMember, enqueueWork, holdClaim, mutateWork, retryWork, searchWork, updateWork, workItem, workOperation, workStatus, writeOverlaps, WORK_MUTATIONS } from '../work-queue';
 import { queueName } from '../work-routing';
 import { scriptText } from '../script-contract';
@@ -81,10 +81,12 @@ const submitWork: WorkflowTool = {
       finally { clearInterval(timer); }
       // What the landing queue found out about the branch is for the main agent; a halted branch says it until it is heard.
       const { notice, ...rest } = report as typeof report & { notice?: string };
+      const halted = rest.status === 'halted';
       if (notice) {
         try {
           bound(state => {
-            if (!state.events.some(event => event.kind === 'landing_attention' && !event.acknowledged && event.summary === notice)) pushEvent(state, { kind: 'landing_attention', summary: notice }, ctx.now);
+            // A halt stands until the main agent restores or adopts the branch, which settles the notice (landing.ts).
+            if (!state.events.some(event => event.kind === 'landing_attention' && !event.acknowledged && event.summary === notice)) pushEvent(state, { kind: 'landing_attention', summary: notice, ...(halted ? { subject: LANDING_HALTED } : {}) }, ctx.now);
           });
         } catch { /* the member's turn is gone; the next report carries a standing notice again */ }
       }

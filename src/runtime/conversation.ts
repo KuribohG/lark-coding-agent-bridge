@@ -173,6 +173,8 @@ export class ConversationRuntime {
     });
     this.stores = { executor, sessions: this.sessions, sessionCatalog: this.catalog,
       workspaces: this.workspaces, activeRuns: this.active };
+    // Answers to questions and workflow notices enter a running turn through the same router, so they do not interleave.
+    const followups = new FollowupRouter();
     this.questions = new QuestionBroker({
       presenter: {
         present: async request => {
@@ -183,7 +185,7 @@ export class ConversationRuntime {
         forget: () => {},
       },
       delivery: { prompt: async (_request, content) => content },
-      activeRuns: this.active, followups: new FollowupRouter(), catalog: this.catalog,
+      activeRuns: this.active, followups, catalog: this.catalog,
     });
     if (!options.workflows) return;
     const queue = this.queue = new PendingQueue<QueuedInput>(0, (scope, batch) => {
@@ -199,6 +201,7 @@ export class ConversationRuntime {
     this.workflows = new WorkflowHost<ConversationIdentity>({
       executor, sessions: this.sessions, sessionCatalog: this.catalog, workspaces: this.workspaces,
       stateDir: options.stateDir, turns, resolveAgentKind: scope => this.execution.kindFor(scope),
+      steer: (scope, messageId, text) => followups.deliver({ scope, messageId, activeRuns: this.active, internal: true, prepare: async () => text }),
       settings: {
         profile: options.namespace, profileFor,
         // These hosts keep no per-conversation model choice: a workflow runs with the engine profile's.

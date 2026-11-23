@@ -107,10 +107,16 @@ export type DomainEvent =
   | { type: 'swarm_member_revived'; swarmId: string; member: string; auto?: boolean }
   /** The member consumes `queue` from now on instead of the queue it had; `role`, when given, replaces its role. */
   | { type: 'swarm_member_moved'; swarmId: string; member: string; queue: string; role?: string }
-  /** `post`: the seq of the notice the lead was sent, which it resolves to say that the queue has no work for now. */
-  | { type: 'swarm_queue_starved'; swarmId: string; queue: string; at: number; told?: 'lead' | 'main'; post?: number }
-  /** `at` closes the starved spell for the queue's record of them; journals of earlier builds carry none. */
-  | { type: 'swarm_queue_fed'; swarmId: string; queue: string; at?: number }
+  /**
+   * `post`: the seq of the notice the lead was sent, which it resolves to say that the queue has no work for now.
+   * `resumed`: the queue was fed and ran dry again before that had lasted, so its spell goes on.
+   */
+  | { type: 'swarm_queue_starved'; swarmId: string; queue: string; at: number; told?: 'lead' | 'main'; post?: number; resumed?: true }
+  /**
+   * `at` closes the starved spell for the queue's record of them; journals of earlier builds carry none. The spell is
+   * over, and its entry leaves, only with `over`: the queue has stayed fed, or nobody is left to tell of it.
+   */
+  | { type: 'swarm_queue_fed'; swarmId: string; queue: string; at?: number; over?: true }
   /** These items' outcomes were posted to their lead, or have no lead left to go to. */
   | { type: 'swarm_handoffs_delivered'; swarmId: string; items: string[] }
   | { type: 'swarm_turns_extended'; swarmId: string; maxTurns: number }

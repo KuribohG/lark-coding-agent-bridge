@@ -541,6 +541,8 @@ describe('swarm', () => {
     expect(swarm().starved!.q!.posts).toEqual(told().map(post => post.seq));
     await callWorkflow('resolve_post', { operationId: randomUUID(), workflowId: state().workflowId, seq: told()[0]!.seq, note: 'Nothing for q yet' }, main.env);
     expect(swarm().resting).toEqual({ q: { since: expect.any(Number), post: told()[0]!.seq } });
+    // The queue has been answered for, so the notice to the main agent has nothing left to say.
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(state().events.find(event => event.kind === 'swarm_attention')).toMatchObject({ acknowledged: true, subject: expect.stringMatching(/:queue:q$/) }); }, { timeout: 10_000 });
 
     // Work that can be claimed ends the spell. Once a member has done it the queue is dry again, which is a new
     // spell: nobody has been told of it yet.
@@ -736,6 +738,19 @@ describe('swarm', () => {
     await vi.waitFor(() => main('ack_events', { eventIds: [reviews()[0]!.id], expectedStateVersion: state().stateVersion }), { timeout: 5000 });
     ahead += 31 * 60_000;
     await vi.waitFor(async () => { await h.runtime.tick(); expect(reviews()).toHaveLength(2); }, { timeout: 10_000 });
+    // A review that reached the main agent is done with, acknowledged or not: one that a turn was woken for and did
+    // not acknowledge is not the last there is.
+    h.runtime.kernel.markNotified(h.root.scopeId, [reviews()[1]!.id]);
+    expect(reviews()[1]).toMatchObject({ notified: true, acknowledged: false });
+    ahead += 31 * 60_000;
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(reviews()).toHaveLength(3); }, { timeout: 10_000 });
+    // Delivered to a turn, a review is settled, and with it the one an earlier turn was given and left open.
+    h.runtime.kernel.markNotified(h.root.scopeId, [reviews()[2]!.id], true);
+    expect(reviews().map(review => review.acknowledged)).toEqual([true, true, true]);
+    // What reports a state that still stands, like the stall of this swarm, is not settled by being delivered.
+    const stall = state().events.find(event => event.kind === 'swarm_stalled')!;
+    h.runtime.kernel.markNotified(h.root.scopeId, [stall.id], true);
+    expect(state().events.find(event => event.id === stall.id)).toMatchObject({ notified: true, acknowledged: false, subject: expect.stringMatching(/:stalled$/) });
     // A single wake-up replaces the recurring one and leaves nothing behind once it has fired.
     expect(await main('wake_me', { afterMinutes: 10 })).not.toHaveProperty('everyMinutes');
     ahead += 11 * 60_000;
@@ -895,6 +910,70 @@ describe('swarm', () => {
     await vi.waitFor(async () => { await h.runtime.tick(); expect(h.order).toContain('ql3'); }, { timeout: 10_000 });
     // The swarm lead heard of neither: the part is ql's to plan.
     expect(h.order.filter(turn => turn.startsWith('lead'))).toEqual(['lead1']);
+    expect(h.errors).toEqual([]);
+    release();
+    await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel_workflow', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
+  }, 30_000);
+
+  it('keeps a spell going when what the queue is fed does not last, and settles its notice once the queue stays fed', async () => {
+    let ahead = 0;
+    const real = Date.now.bind(Date);
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => real() + ahead);
+    cleanup.push(async () => clock.mockRestore());
+    let release!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    cleanup.push(async () => release());
+    // "w1" does the first two items it is woken for; after that neither it nor "w2" takes what the queue offers.
+    const h = await play([
+      'await enqueueWork({key:"gate", title:"Gate", input:0, queue:"other"});',
+      'await enqueueWork({key:"b", title:"B", input:1, queue:"q", dependsOn:["gate"]});',
+      'return await swarm("Drain q", {key:"dry", lead:{name:"lead"}, members:[{name:"w1", queue:"q"},{name:"w2", queue:"q"},{name:"busy"}]});',
+    ].join('\n'), { busy: [{ hold }], w1: [{ work: true }, { work: true }] });
+    const state = () => h.runtime.kernel.state(h.root.scopeId)!;
+    const swarm = () => state().swarms![0]!;
+    const told = () => state().board!.posts.filter(post => post.author === 'system' && post.text.includes('has run dry'));
+    const attention = () => state().events.filter(event => event.kind === 'swarm_attention');
+    const done = (key: string) => state().workQueue!.items.find(item => item.key === key)?.status === 'completed';
+    const ticks = async (count: number) => { for (let pass = 0; pass < count; pass++) { await h.runtime.tick(); await new Promise(resolve => setTimeout(resolve, 5)); } };
+    const main = h.runtime.bindMain(h.root.scopeId, 'continue'); cleanup.push(async () => main.release());
+    const add = (key: string) => callWorkflow('enqueue_work', { operationId: randomUUID(), workflowId: state().workflowId, key, title: key, input: 1, queue: 'q' }, main.env);
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(swarm().starved?.q).toBeDefined(); }, { timeout: 10_000 });
+    const since = swarm().starved!.q!.since;
+    ahead += 121_000;
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(told()).toHaveLength(1); }, { timeout: 10_000 });
+
+    // One item for two idle members is taken at once, and the queue is as dry as before: the same spell, with what
+    // was told in it. The lead is not told anew two minutes later, as it would be of a queue that had just run dry.
+    await add('c');
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(done('c')).toBe(true); expect(swarm().starved?.q).toMatchObject({ since, leadAt: expect.any(Number), from: expect.any(Number) }); expect(swarm().starved!.q!.fedAt).toBeUndefined(); }, { timeout: 10_000 });
+    expect(swarm().dry).toMatchObject({ q: { spells: 1 } });
+    ahead += 121_000;
+    await ticks(3);
+    expect(told()).toHaveLength(1);
+    expect(attention()).toHaveLength(0);
+    // So the main agent hears of it twenty minutes after the queue ran dry, although it was fed in between.
+    ahead += 17 * 60_000;
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(attention()).toHaveLength(1); }, { timeout: 10_000 });
+    expect(attention()[0]).toMatchObject({ acknowledged: false, subject: expect.stringMatching(/:queue:q$/), summary: expect.stringContaining('队列仍未补上') });
+    expect(told()).toHaveLength(2);
+    await add('d');
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(done('d')).toBe(true); expect(swarm().starved?.q).toMatchObject({ since, mainAt: expect.any(Number) }); expect(swarm().starved!.q!.fedAt).toBeUndefined(); }, { timeout: 10_000 });
+    // However often it is fed like that, it is one spell on the queue's record, and the time it was fed is not dry time.
+    expect(swarm().dry!.q).toMatchObject({ spells: 1 });
+    expect(swarm().dry!.q!.ms).toBeLessThanOrEqual(swarm().dry!.q!.longest);
+    expect(attention()[0]!.acknowledged).toBe(false);
+
+    // An item that stays to be claimed feeds the queue. Once that has lasted, the spell is over and the notice to the
+    // main agent is settled: nothing is left for it to acknowledge.
+    await add('e');
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(h.order).toEqual(expect.arrayContaining(['w1' + 3, 'w2' + 1])); expect(swarm().starved?.q?.fedAt).toBeDefined(); }, { timeout: 10_000 });
+    const status = await callWorkflow('status', { workflowId: state().workflowId }, main.env) as { swarms: Array<{ queues: Record<string, Record<string, unknown>> }> };
+    expect(status.swarms[0]!.queues.q).toMatchObject({ claimable: 1 });
+    expect(status.swarms[0]!.queues.q).not.toHaveProperty('starvedSince');
+    expect(attention()[0]!.acknowledged).toBe(false);
+    ahead += 181_000;
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(swarm().starved?.q).toBeUndefined(); expect(attention()[0]!.acknowledged).toBe(true); }, { timeout: 10_000 });
+    expect(swarm().dry!.q).toMatchObject({ spells: 1 });
     expect(h.errors).toEqual([]);
     release();
     await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel_workflow', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });

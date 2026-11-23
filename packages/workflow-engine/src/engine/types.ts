@@ -245,9 +245,12 @@ export interface WorkflowSwarm {
   /**
    * Queues whose consumers are idle with nothing to claim: since when, when the lead and the main agent were last
    * told, and the notices the lead was sent in this spell (`posts`, the latest few) while nobody who plans the queue
-   * has added work to it since. An entry leaves when the queue has work to claim again or all its consumers are busy.
+   * has added work to it since. A queue that has work to claim again, or whose consumers are busy, is fed (`fedAt`),
+   * and the entry leaves once it has stayed so for a while: an item that is taken at once does not end the spell, and
+   * neither restarts what it waits for nor has the lead told again. `from` is where a spell that went on after being
+   * fed is counted from, so that the time it was fed is not counted as dry.
    */
-  starved?: Record<string, { since: number; leadAt?: number; mainAt?: number; posts?: number[] }>;
+  starved?: Record<string, { since: number; leadAt?: number; mainAt?: number; posts?: number[]; fedAt?: number; from?: number }>;
   /**
    * Queues that are left without work on purpose: a notice that the queue had run dry (`post`) was resolved, which
    * is how the lead that answers for it, or the main agent, says that it has no work for now. Nobody is told again
@@ -527,6 +530,11 @@ export interface WorkflowEvent {
   taskId?: string;
   artifactRef?: string;
   summary: string;
+  /**
+   * What the notice reports the state of, when it reports one that can end: a queue that has run dry, a member that
+   * has stopped, a branch that is halted. The notice is settled when that is no longer so, whoever saw to it.
+   */
+  subject?: string;
   acknowledged: boolean;
   notified: boolean;
   /** Absent on events recorded before timing was tracked. */

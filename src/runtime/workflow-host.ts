@@ -18,6 +18,7 @@ import { createBridgeWorkflowRuntime } from '../workflows/bridge/runtime';
 import type { WorkspaceStore } from '../workspace/store';
 import type { AgentEntry } from './agent-entry';
 import { CacheKeepalive, type CachePing } from './cache-keepalive';
+import { NoticeHandIn, type NoticeHandInDeps } from './notice-hand-in';
 import type { RunExecutor } from './run-executor';
 import { resolveRunFlowContext, startRunFlow } from './run-flow';
 import type { ConversationTurns } from './turns';
@@ -78,6 +79,8 @@ export interface WorkflowHostDeps<M> {
   stateDir?: string;
   turns: ConversationTurns;
   resolveAgentKind(scope: string): AgentKind;
+  /** Hands text to the turn that is running in a scope. Without it, a workflow's notices wait for the scope to be idle. */
+  steer?: NoticeHandInDeps['steer'];
 }
 
 /** The `/workflow` surface of a started host. */
@@ -98,10 +101,16 @@ export class WorkflowHost<M> {
   private progress: WorkflowProgress | undefined;
   private controlView: WorkflowHostControl<M> | undefined;
   private keepalive: CacheKeepalive | undefined;
+  /** Gives a main agent that is in a turn the notices its workflow raises meanwhile. */
+  private readonly handIn: NoticeHandIn | undefined;
 
   constructor(private readonly deps: WorkflowHostDeps<M>) {
     this.origins = new WorkflowOrigins(deps.stateDir ? join(deps.stateDir, 'workflow-origins.json') : undefined,
       origin => deps.frontend.accepts(origin));
+    const { steer } = deps;
+    this.handIn = steer && new NoticeHandIn({ steer,
+      undelivered: scope => this.runtime?.kernel.undelivered(scope) ?? [],
+      markNotified: (scope, ids, delivered) => this.runtime?.kernel.markNotified(scope, ids, delivered) });
   }
 
   /** Started runtime, for turns that bind to their workflow. */
@@ -208,7 +217,8 @@ export class WorkflowHost<M> {
       resolve: scope => this.resolveRoot(scope, sessionCatalog),
       wakeMain: async scope => {
         const message = this.origins.get(scope);
-        if (!message || !turns.isIdle(scope)) return;
+        if (!message) return;
+        if (!turns.isIdle(scope)) return this.handIn?.run(scope);
         const turn = turns.claim(scope);
         const eventIds = this.runtime?.kernel.state(scope)?.events.filter(event => !event.acknowledged).map(event => event.id) ?? [];
         try {

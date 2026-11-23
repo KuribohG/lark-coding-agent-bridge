@@ -18,6 +18,8 @@ export class FollowupRouter {
     scope: string;
     messageId: string;
     activeRuns: ActiveRuns;
+    /** Input the bridge wrote itself: it is not one of the conversation's messages, and is not recorded as one. */
+    internal?: boolean;
     prepare(): Promise<string | FollowupContent>;
   }): Promise<FollowupResult> {
     const { scope, activeRuns } = input;
@@ -40,7 +42,7 @@ export class FollowupRouter {
         ...(prepared.images && prepared.images.length > 0 ? { images: prepared.images } : {}),
       });
       if (cancelled()) return 'cancelled';
-      if (result.status === 'accepted') activeRuns.recordInput(handle, input.messageId);
+      if (result.status === 'accepted' && !input.internal) activeRuns.recordInput(handle, input.messageId);
       return result.status === 'unknown' ? 'unknown' : result.status === 'accepted' ? 'accepted' : 'queued';
     });
     this.tails.set(handle.run, result);

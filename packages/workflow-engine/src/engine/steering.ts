@@ -81,8 +81,9 @@ export function setMainWake(state: WorkflowView, input: { afterMinutes?: unknown
 export function pumpMainWake(state: WorkflowView, now: number): void {
   const wake = state.mainWake;
   if (!wake || now < wake.at || state.parent || state.status !== 'active' || state.script?.status !== 'running') return;
-  // One review at a time: while the last one waits to be acknowledged, another would only repeat it.
-  if (!state.events.some(event => event.kind === 'review_due' && !event.acknowledged)) {
+  // One review at a time: while the last one has not reached the main agent, another would only repeat it. One that
+  // reached it is done with, acknowledged or not: a review nobody acknowledged must not be the last there is.
+  if (!state.events.some(event => event.kind === 'review_due' && !event.acknowledged && !event.notified)) {
     // The review starts from what the user asked for, since the charter is itself rewritten as a run goes on, and
     // asks how far off that is: a look at what was produced lately finds it reasonable whatever it was produced for.
     pushEvent(state, { kind: 'review_due', summary: `定时复盘${wake.note ? '（' + wake.note + '）' : ''}：从用户的原始需求出发，不要只看汇报。`

@@ -27,6 +27,12 @@ describe('follow-up routing', () => {
     expect(await h.deliver()).toBe('unknown');
     expect(h.run.sendInput).toHaveBeenCalledTimes(1);
   });
+  it('does not record input the bridge wrote itself as a message of the conversation', async () => {
+    const h = harness();
+    expect(await h.router.deliver({ scope: 'chat:topic', messageId: 'workflow-notices:1', activeRuns: h.activeRuns, internal: true, prepare: async () => 'notices' })).toBe('accepted');
+    expect(h.run.sendInput).toHaveBeenCalledWith({ text: 'notices', messageId: 'workflow-notices:1' });
+    expect([...h.activeRuns.get('chat:topic')!.inputMessageIds]).toEqual([]);
+  });
   it('forwards prepared images with the supplement', async () => {
     const h = harness();
     expect(await h.deliver(async () => ({ text: 'look', images: ['/tmp/a.png', '/tmp/b.jpg'] }))).toBe('accepted');
