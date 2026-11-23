@@ -199,7 +199,9 @@ describe('PiSdkAdapter process contract', () => {
       runId: 'run-deadline',
       prompt: 'go',
       cwd: harness.dir,
-      deadlineAt: Date.now() + 150,
+      // Long enough for a slow runner to open the session, and still far short
+      // of the host's 5 s of silence, so the deadline is what ends the run.
+      deadlineAt: Date.now() + 1500,
     })).start();
     const events = await collect(run.events);
     expect(events.at(-1)).toEqual({ type: 'done', sessionId: 'sess-1', terminationReason: 'timeout' });
