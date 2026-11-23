@@ -16,13 +16,17 @@ describe('workflow tool plugins', () => {
     const lead = workflowWorkerInstructions({ agentId: 'member', workflowTool: true } as WorkflowTask, true);
     // Workers learn read_artifact from the input references in their prompt. What only a member that plans work may
     // call is told to those members alone, after everything the others are told.
-    const planning = ['staff_swarm', 'swarm_finish', 'tell_worker', 'retry_work', 'set_charter'];
+    const planning = ['staff_swarm', 'swarm_finish', 'tell_worker', 'retry_work', 'settle_work', 'set_charter'];
     for (const name of BUILTIN_WORKFLOW_TOOLS.workerNames().filter(name => name !== 'read_artifact')) {
       expect(lead, name).toContain(name);
       if (!planning.includes(name)) expect(member, name).toContain(name);
       else { expect(lead, name).toContain(name + '('); expect(member, name).not.toContain(name + '('); }
     }
     for (const line of member.split('\n')) expect(lead, line.slice(0, 40)).toContain(line);
+    // Whoever plans is told to name what an item waits for instead of holding it, and to replace items instead of re-issuing them.
+    for (const text of ['Do not hold an item to make it wait: name what it waits for in dependsOn', 'gate:true', 'Revise a plan this way: do not add new keys and keep the old ones on hold']) expect(lead, text).toContain(text);
+    // A member whose item others wait on fails it when it did not pass, so that they are not let out by a check that found a fault.
+    expect(member).toContain('when yours is a check and it did not pass, end it with fail_work');
     expect(member.length).toBeLessThan(lead.length - 2500);
     expect(workflowWorkerInstructions({ agentId: 'member' } as WorkflowTask)).not.toContain('run_workflow');
     // A member is told what to do when a landing fails for a reason that is not its own.
@@ -50,7 +54,7 @@ describe('workflow tool plugins', () => {
     }
     // Paid for once per workflow. What running one takes is told at the wakes, so it is not counted here.
     expect(WORKFLOW_TOOL_INSTRUCTIONS).not.toContain('staff_swarm 不重放调整');
-    expect(WORKFLOW_TOOL_INSTRUCTIONS.length).toBeLessThan(8200);
+    expect(WORKFLOW_TOOL_INSTRUCTIONS.length).toBeLessThan(8400);
   });
 
   it('tells a wake how to run the workflow, without the script API', () => {
@@ -58,7 +62,11 @@ describe('workflow tool plugins', () => {
       'set_charter(text)', 'resolve_post 把', 'priority 为 -100..100', 'workflow guide', '不要读取或展示环境中的调用凭据']) expect(WORKFLOW_WAKE_INSTRUCTIONS, name).toContain(name);
     for (const name of ['agent(prompt', 'parallel', 'pipeline', 'swarm(task', 'enqueueWork(', 'closeWorkQueue', 'post(text', 'schema']) expect(WORKFLOW_WAKE_INSTRUCTIONS, name).not.toContain(name);
     // A long run wakes the main agent dozens of times, and every wake's instructions stay in its session.
-    expect(WORKFLOW_WAKE_INSTRUCTIONS.length).toBeLessThan(4150);
+    expect(WORKFLOW_WAKE_INSTRUCTIONS.length).toBeLessThan(4350);
+    // Waiting is told as a dependency on an item or a gate, and a revision as a replacement, where the fields of an item are.
+    for (const name of ['settle_work(itemId 或 key,result)', 'update_work(itemId 或 key,priority?,hold?,assignee?,dependsOn?,supersededBy?,cancel?,reason?)', 'gate:true 是条件项', '不用 hold', 'supersedes 是被本项取代的旧项']) {
+      expect(WORKFLOW_WAKE_INSTRUCTIONS, name).toContain(name);
+    }
     // An ask is told where posting is, and the event it raises with the other events.
     for (const name of ['post_board(text,to?,topic?,ask?,answers?)', 'ask_open', 'answers:帖号']) expect(WORKFLOW_WAKE_INSTRUCTIONS, name).toContain(name);
     // The guide leaves out nothing a wake is told, except the line that points to the guide. It lists the operations

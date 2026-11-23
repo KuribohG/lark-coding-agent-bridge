@@ -394,8 +394,27 @@ export interface WorkflowWorkItem {
   maxAttempts: number;
   generation: number;
   status: 'pending' | 'claimed' | 'completed' | 'failed' | 'cancelled';
+  /**
+   * A condition, not work: nobody claims it. Whoever plans it, or added it, declares it met with settle_work, and what
+   * depends on it can then be claimed. It stands for what an item cannot wait on otherwise: something outside the
+   * workflow, a decision, the verdict of someone who read a result.
+   */
+  gate?: boolean;
   /** Set aside by whoever plans the queue: the item keeps its place but is not handed out until the hold is lifted. */
   hold?: boolean;
+  /**
+   * Who set the item aside (a member's name, or `main`), when and why; a hold that predates this record has neither.
+   * `ready` is when whoever answers for the hold was told that nothing else is in the item's way.
+   */
+  held?: { by?: string; at: number; reason?: string; ready?: number };
+  /** The keys of the items this one replaced when it was added. */
+  supersedes?: string[];
+  /** The key of the item that replaced this one: what waited on this item waits on that one instead. */
+  supersededBy?: string;
+  /** The dependency, cancelled or failed for good, that whoever plans the item was told keeps it from ever being claimed. */
+  stuckOn?: string;
+  /** Who declared the item done without claiming it (a member's name, or `main`). */
+  settledBy?: string;
   claimId?: string;
   progress: { version: number; state: unknown; updatedAt?: number };
   result?: unknown;

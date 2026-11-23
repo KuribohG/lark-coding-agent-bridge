@@ -1,6 +1,6 @@
 import { CONTROL_ARGS } from './control-args';
 import { LANDING_HALTED, pushEvent, requireState } from '../kernel-state';
-import { assigned, closeWorkQueue, enqueueFromMember, enqueueWork, holdClaim, mutateWork, retryWork, searchWork, updateWork, workItem, workOperation, workStatus, writeOverlaps, WORK_MUTATIONS } from '../work-queue';
+import { assigned, closeWorkQueue, enqueueFromMember, enqueueWork, holdClaim, mutateWork, retryWork, searchWork, settleWork, supersededView, updateWork, workItem, workOperation, workStatus, writeOverlaps, WORK_MUTATIONS } from '../work-queue';
 import { queueName } from '../work-routing';
 import { scriptText } from '../script-contract';
 import { workAuthority } from '../swarm';
@@ -28,12 +28,13 @@ const claimTools: WorkflowTool[] = WORK_MUTATIONS.map(name => ({
 
 /**
  * What enqueue_work answers: the item, the queue it went to and the member it is for, which `origin` may have chosen,
- * and, when it names the paths it will change, the unfinished items that expect to change the same ones. The script's
- * enqueueWork answers with the item alone, so that a replay reads what the first run read.
+ * what became of the items it replaced, and, when it names the paths it will change, the unfinished items that expect
+ * to change the same ones. The script's enqueueWork answers with the item alone, so that a replay reads what the first
+ * run read.
  */
 function enqueued(state: WorkflowView, response: unknown): unknown {
   const item = workItem(state, (response as { itemId: string }).itemId);
-  return item ? { ...response as object, queue: item.queue ?? 'default', ...assigned(state, item), ...writeOverlaps(state, item) } : response;
+  return item ? { ...response as object, queue: item.queue ?? 'default', ...(item.gate ? { gate: true } : {}), ...assigned(state, item), ...supersededView(state, item), ...writeOverlaps(state, item) } : response;
 }
 
 function active(ctx: { now(): number }, state: WorkflowView): void {
@@ -113,6 +114,7 @@ const MEMBER_INSTRUCTIONS = [
     + 'complete_work({operationId,claimId,generation,result}) finishes the item; fail_work({operationId,claimId,generation,error,retry?}) gives it up (retry: true only when another attempt could succeed); '
     + 'release_claim({operationId,claimId,generation,reason}) hands it back as it is. input, progress and result hold at most 16000 characters each. '
     + 'item.writeOverlaps lists the unfinished items that expect to change the same paths with nothing to order them (member says who holds one): agree on the board who changes what before you start. '
+    + 'item.neededBy lists the items that wait on yours and are handed out when you complete it: when yours is a check and it did not pass, end it with fail_work and say why, not with complete_work. '
     + 'Losing a claim does not undo what you changed outside the workflow: check what has already happened and make a repeat harmless.',
   'Landing code: when you run in a managed worktree and your system prompt names a Landing branch, deliver code with submit_work({operationId,claimId?,generation?,result?}). '
     + 'Commit first, and put the key of the item in the commit message: a problem later found in that code is then reported with your item as its origin and comes back to you. '
@@ -143,14 +145,21 @@ const MEMBER_INSTRUCTIONS = [
   'Finding work: work_status({itemId or key}) reads one item in full; work_status({queue?,offset?,limit?}) pages through items (16 by default, 64 at most). '
     + 'search_work({query,queue?,status?,limit?}) searches every item, finished ones too: query is up to 8 words separated by spaces, matched as substrings without regard to case in key, title, input, result and error, all of which must occur. '
     + 'Hits in key or title come first, then the most recently changed; it returns limit hits (10 by default, 30 at most) with itemId, status, doneBy and a snippet.',
-  'Withdrawing work: update_work({operationId,key or itemId,cancel:true,reason?}) withdraws an item that you added and nobody has claimed. Everything else about an item is changed by whoever plans its queue.',
+  'Withdrawing work: update_work({operationId,key or itemId,cancel:true,reason?}) withdraws an item that you added and nobody has claimed; with supersededBy: key in place of cancel it is replaced by that item, '
+    + 'and what waited on it waits on that one. Everything else about an item is changed by whoever plans its queue.',
   'Repeats and restarts: an operationId is unique within the current attempt of your turn, and repeating a call with the same content returns its first answer. In a new attempt, after a turn was cut short, you may claim again; a claimId and generation that expired can no longer be submitted. '
     + 'A turn that a bridge restart interrupted keeps its claim: go on with the same claimId and generation (the claim in your work queue context) instead of claiming again. After claim_work returned null, ask again with a new operationId.',
 ].join('\n');
 
-const LEAD_INSTRUCTIONS = 'Changing items: you plan the queues you lead (the lead of a swarm, every queue). update_work({operationId,key or itemId,priority?,hold?,assignee?,cancel?,reason?}) changes an unfinished item: '
-  + 'priority moves it in the order, hold: true sets it aside without removing it and false returns it, assignee gives it to one member or, with null, back to the whole queue, and cancel: true withdraws it with reason; '
+const LEAD_INSTRUCTIONS = 'Changing items: you plan the queues you lead (the lead of a swarm, every queue). update_work({operationId,key or itemId,priority?,hold?,assignee?,dependsOn?,supersededBy?,cancel?,reason?}) changes an unfinished item: '
+  + 'priority moves it in the order, assignee gives it to one member or, with null, back to the whole queue, dependsOn replaces what it waits on, and cancel: true withdraws it with reason; '
   + 'blocks in the answer are the items that depended on it and can no longer be claimed. A claimed item cannot be cancelled: ask its member in a post to stop and hand it back, and cancel it once it is back in the queue. '
+  + 'supersededBy: key replaces the item by another one instead: what waited on it waits on that one, and the item is withdrawn (one that a member holds, when its claim ends; tell_worker stops that member now). '
+  + 'enqueue_work with supersedes: [keys] adds the replacement and does this in one call. Revise a plan this way: do not add new keys and keep the old ones on hold. '
+  + 'hold: true sets an item aside by your decision and needs reason (what for, and what would bring it back); false returns it. Do not hold an item to make it wait: name what it waits for in dependsOn. '
+  + 'What it waits for is an item or, when nobody in the workflow does it (an event outside, a decision, a release), a gate: enqueue_work({key,title,input,gate:true}) adds a condition that nobody claims, '
+  + 'and settle_work({operationId,key or itemId,result}) declares it met, with what was established as result; the items that named it are then handed out by themselves, and the answer lists them. '
+  + 'settle_work likewise ends the wait for an unclaimed item whose work was done some other way. You are told once when an item on hold has nothing else in its way, and when an item waits on one that was cancelled or failed. '
   + 'retry_work({operationId,key or itemId,additionalAttempts?}) gives a failed item more attempts (1 by default, 8 at most) and returns it to the queue.';
 
 /** Durable work queues: the main agent produces and inspects items; persistent members claim and finish them. */
@@ -162,7 +171,7 @@ export const workQueueTools: WorkflowToolPlugin = {
     {
       name: 'enqueue_work',
       main: {
-        doc: 'enqueue_work(key,title,input,queue?,priority?,dependsOn?,resources?,writes?,origin?,assignee?,maxAttempts?)',
+        doc: 'enqueue_work(key,title,input,queue?,priority?,dependsOn?,resources?,writes?,origin?,assignee?,maxAttempts?,gate?,supersedes?)',
         ...versioned((ctx, state, args) => {
           ctx.scripts.checkWorkKey(state, args.key);
           return enqueued(state, enqueueWork(state, operationInput(args), ctx.now()));
@@ -173,7 +182,7 @@ export const workQueueTools: WorkflowToolPlugin = {
         call: (ctx, state, task, _caller, args) => {
           active(ctx, state);
           ctx.scripts.checkWorkKey(state, args.key);
-          return enqueued(state, enqueueFromMember(state, task, args, ctx.now()));
+          return enqueued(state, enqueueFromMember(state, task, args, ctx.now(), member => workAuthority(state, member)));
         },
       },
     },
@@ -187,9 +196,16 @@ export const workQueueTools: WorkflowToolPlugin = {
     {
       name: 'update_work',
       // A new priority, a hold or a withdrawal changes one item; whichever of two such changes commits last stands.
-      main: { doc: 'update_work(itemId 或 key,priority?,hold?,assignee?,cancel?,reason?)', ...versioned((ctx, state, args) => updateWork(state, operationInput(args), ctx.now()), { allowInterrupted: true, appendOnly: true }) },
+      main: { doc: 'update_work(itemId 或 key,priority?,hold?,assignee?,dependsOn?,supersededBy?,cancel?,reason?)', ...versioned((ctx, state, args) => updateWork(state, operationInput(args), ctx.now()), { allowInterrupted: true, appendOnly: true }) },
       worker: { verifiesRoot: true,
         call: (ctx, state, task, _caller, args) => memberOperation(ctx, state, task, 'update_work', args, agent => updateWork(state, operationInput(args), ctx.now(), workAuthority(state, agent.key), agent.key)) },
+    },
+    {
+      name: 'settle_work',
+      // Declares one unclaimed item done; like a withdrawal, it is checked against the item as it stands when it commits.
+      main: { doc: 'settle_work(itemId 或 key,result)', ...versioned((ctx, state, args) => settleWork(state, operationInput(args), ctx.now()), { allowInterrupted: true, appendOnly: true }) },
+      worker: { verifiesRoot: true,
+        call: (ctx, state, task, _caller, args) => memberOperation(ctx, state, task, 'settle_work', args, agent => settleWork(state, operationInput(args), ctx.now(), workAuthority(state, agent.key), agent.key)) },
     },
     {
       name: 'close_work_queue',

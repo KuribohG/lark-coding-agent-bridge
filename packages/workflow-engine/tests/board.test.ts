@@ -621,7 +621,7 @@ describe('swarm', () => {
     // The notice does not wait for the lead's gathering gap, although "busy" is still working.
     await vi.waitFor(async () => { await h.runtime.tick(); expect(leadTurns()).toEqual(['lead1', 'lead2']); }, { timeout: 10_000 });
     expect(told()).toMatchObject([{ text: expect.stringContaining('2 of its 2 members are idle') }]);
-    expect(told()[0]!.text).toContain('1 pending items wait on dependencies');
+    expect(told()[0]!.text).toContain('(1 pending items cannot be claimed: they wait on other items, resources or attempts, or are kept for one member)');
     // It is repeated to the lead only after a quarter of an hour, and the main agent hears of it once the lead has had its time.
     ahead += 5 * 60_000;
     await ticks(3);
@@ -1321,7 +1321,7 @@ describe('swarm', () => {
       // w2 gives "f" up; the lead, handed that outcome, retries it, and w2 then holds it claimed.
       w2: [{ giveUp: true }, { claim: true, hold }],
       lead: [{ calls: [['update_work', { key: 'b', priority: 50 }], ['update_work', { key: 'x', cancel: true, reason: 'superseded' }]] }, { calls: [['retry_work', { key: 'f' }]] }],
-      ql: [{ calls: [['update_work', { key: 'a', hold: true }], ['update_work', { key: 'p1', priority: 5 }], ['retry_work', { key: 'p1' }]] }],
+      ql: [{ calls: [['update_work', { key: 'a', hold: true }], ['update_work', { key: 'a', hold: true, reason: 'until the format is decided' }], ['update_work', { key: 'p1', priority: 5 }], ['retry_work', { key: 'p1' }]] }],
       scout: [{ calls: [['enqueue_work', { key: 'mine', title: 'Mine', input: 0, queue: 'q' }], ['update_work', { key: 'mine', priority: 9 }], ['update_work', { key: 'b', cancel: true }], ['update_work', { key: 'mine', cancel: true }]] }],
     });
     const state = () => h.runtime.kernel.state(h.root.scopeId)!;
@@ -1329,18 +1329,22 @@ describe('swarm', () => {
     await vi.waitFor(async () => { await h.runtime.tick(); expect(h.order).toContain('w22'); expect(item('f').status).toBe('claimed'); }, { timeout: 10_000 });
     expect(h.results).toEqual(expect.arrayContaining([
       { itemId: item('b').id, key: 'b', queue: 'q', status: 'pending', priority: 50 },
-      { itemId: item('x').id, key: 'x', queue: 'q', status: 'cancelled', priority: 0, blocks: ['y'] },
-      { itemId: item('a').id, key: 'a', queue: 'q', status: 'pending', priority: 0, hold: true },
+      // Cancelling does not cascade: the answer names what can no longer be claimed, and how to move it to a replacement.
+      { itemId: item('x').id, key: 'x', queue: 'q', status: 'cancelled', priority: 0, blocks: ['y'], note: expect.stringContaining('supersededBy') },
+      { itemId: item('a').id, key: 'a', queue: 'q', status: 'pending', priority: 0, hold: true, holdReason: 'until the format is decided' },
       expect.objectContaining({ key: 'mine', status: 'cancelled' }),
       expect.objectContaining({ itemId: item('f').id, maxAttempts: 2 }),
     ]));
     // The lead of "q" plans "q" alone; a member plans nothing, and withdraws only what it added.
     expect(h.errors.sort()).toEqual([
-      expect.stringContaining('A member can only withdraw (cancel) an item it added'),
+      expect.stringContaining('A member can only withdraw (cancel) or replace (supersededBy) an item it added'),
       expect.stringContaining('Only the main agent, the swarm lead or the lead of its queue can retry a work item'),
-      expect.stringContaining('Only the main agent, the swarm lead, the lead of its queue or, to cancel it, the member that added it can change a work item'),
-      expect.stringContaining('Only the main agent, the swarm lead, the lead of its queue or, to cancel it, the member that added it can change a work item'),
+      expect.stringContaining('Only the main agent, the swarm lead, the lead of its queue or, to cancel or replace it, the member that added it can change a work item'),
+      expect.stringContaining('Only the main agent, the swarm lead, the lead of its queue or, to cancel or replace it, the member that added it can change a work item'),
+      // A hold says why: what only waits for something is given a dependency instead.
+      expect.stringContaining('hold: true needs a reason'),
     ]);
+    expect(item('a').held).toEqual({ by: 'ql', at: expect.any(Number), reason: 'until the format is decided' });
     expect(item('x')).toMatchObject({ status: 'cancelled', error: 'Cancelled by lead: superseded' });
     expect(item('mine')).toMatchObject({ status: 'cancelled', error: 'Cancelled by scout', by: 'scout' });
     expect(item('f')).toMatchObject({ status: 'claimed', maxAttempts: 2, generation: 2 });
@@ -1349,22 +1353,25 @@ describe('swarm', () => {
     const op = (method: string, args: Record<string, unknown>) => callWorkflow(method, { operationId: randomUUID(), workflowId: state().workflowId, ...args }, main.env);
     const queue = () => callWorkflow('work_status', { workflowId: state().workflowId, queue: 'q' }, main.env) as Promise<{ items: Array<{ key: string; hold?: boolean }> }>;
     // An item on hold, like one behind a withdrawn item, is pending and cannot be claimed.
-    expect(await queue()).toMatchObject({ pending: 3, cancelled: 2, claimable: 1, blocked: 2, onHold: 1 });
-    expect((await queue()).items.find(found => found.key === 'a')).toMatchObject({ hold: true, priority: 0 });
+    expect(await queue()).toMatchObject({ pending: 3, cancelled: 2, claimable: 1, blocked: 2, onHold: 1, heldReady: 1, stuck: 1 });
+    expect((await queue()).items.find(found => found.key === 'a')).toMatchObject({ hold: true, priority: 0, held: { by: 'ql', reason: 'until the format is decided' } });
+    expect((await queue()).items.find(found => found.key === 'y')).toMatchObject({ waitsOn: [{ key: 'x', status: 'cancelled' }] });
     const released = await op('update_work', { key: 'a', hold: false, priority: 80 });
     expect(released).toMatchObject({ itemId: item('a').id, key: 'a', queue: 'q', status: 'pending', priority: 80 });
     expect(released).not.toHaveProperty('hold');
     expect(item('a').hold).toBeUndefined();
+    expect(item('a').held).toBeUndefined();
     expect(await queue()).toMatchObject({ claimable: 2, blocked: 1 });
     expect(await queue()).not.toHaveProperty('onHold');
+    expect(await queue()).not.toHaveProperty('heldReady');
     expect(await op('update_work', { itemId: item('b').id, priority: 0 })).toMatchObject({ key: 'b', priority: 0 });
     expect(item('b').priority).toBeUndefined();
     // A claimed item is its member's to stop; a finished or withdrawn one no longer changes.
     await expect(op('update_work', { key: 'f', cancel: true })).rejects.toThrow('Work item is claimed by w2');
     await expect(op('update_work', { key: 'x', hold: true })).rejects.toThrow('Work item is already cancelled');
     expect(await op('update_work', { key: 'x', cancel: true })).toMatchObject({ key: 'x', status: 'cancelled' });
-    await expect(op('update_work', { key: 'b' })).rejects.toThrow('Give priority, hold, assignee or cancel');
-    await expect(op('update_work', { key: 'b', cancel: true, hold: true })).rejects.toThrow('do not combine it with priority, hold or assignee');
+    await expect(op('update_work', { key: 'b' })).rejects.toThrow('Give priority, hold, assignee, dependsOn, supersededBy or cancel');
+    await expect(op('update_work', { key: 'b', cancel: true, hold: true })).rejects.toThrow('give either alone, not with priority, hold, assignee or dependsOn');
     // Whoever plans the queue gives an item to one member or back to all of them. A member that cannot take it (w2
     // consumes another queue) does not keep it from the others, and the answer says so.
     expect(await op('update_work', { key: 'b', assignee: 'w2' })).toMatchObject({ key: 'b', assignee: 'w2', assigneeNote: expect.stringContaining('does not consume queue "q"') });
@@ -1373,11 +1380,220 @@ describe('swarm', () => {
     expect(await op('update_work', { key: 'b', assignee: null })).not.toHaveProperty('assignee');
     expect(item('b').assignee).toBeUndefined();
     await expect(op('update_work', { key: 'b', assignee: 'not a name' })).rejects.toThrow('assignee is the name of a member');
-    await expect(op('update_work', { key: 'b', hold: true, reason: 'why' })).rejects.toThrow('reason belongs to cancel');
+    await expect(op('update_work', { key: 'b', priority: 1, reason: 'why' })).rejects.toThrow('reason belongs to cancel and to hold: true');
+    await expect(op('update_work', { key: 'b', hold: true })).rejects.toThrow('Do not hold an item that only waits for something: name what it waits for in dependsOn');
+    await expect(op('update_work', { key: 'b', hold: true, reason: '  ' })).rejects.toThrow('reason must be nonempty text');
     await expect(op('update_work', { key: 'b', itemId: item('b').id, hold: true })).rejects.toThrow('Name the work item by itemId or by key');
     await expect(op('update_work', { key: 'nope', hold: true })).rejects.toThrow('Unknown work item');
     await expect(op('retry_work', { key: 'b' })).rejects.toThrow('Only failed work items can be retried');
     release();
+    await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel_workflow', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
+  }, 30_000);
+
+  it('hands out what waits on a gate once the gate is settled, and tells whoever set an item aside when nothing else is in its way', async () => {
+    let ahead = 0;
+    const real = Date.now.bind(Date);
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => real() + ahead);
+    cleanup.push(async () => clock.mockRestore());
+    let release!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    cleanup.push(async () => release());
+    const h = await play([
+      // "pushed" is something that happens outside the workflow; "ext" is work of a queue nobody consumes.
+      'await enqueueWork({key:"pushed", title:"The batch is on main", input:{}, queue:"q", gate:true});',
+      'await enqueueWork({key:"flip", title:"Flip", input:1, queue:"q", dependsOn:["pushed"]});',
+      'await enqueueWork({key:"ext", title:"Ext", input:2, queue:"other"});',
+      'await enqueueWork({key:"later", title:"Later", input:3, queue:"q", dependsOn:["ext"]});',
+      'return await swarm("Do", {key:"gates", lead:{name:"lead"}, members:[{name:"w1", queue:"q"},{name:"scout"},{name:"busy"}]});',
+    ].join('\n'), {
+      busy: [{ hold }], w1: [{ work: true }, { work: true }],
+      lead: [{ calls: [['update_work', { key: 'later', hold: true, reason: 'not before  the review' }], ['update_work', { key: 'pushed', hold: true, reason: 'x' }]] },
+        { calls: [['update_work', { key: 'later', hold: false }]] }],
+      // A member adds a condition it will see met, and declares that one met; the rest are not its to settle.
+      scout: [{ calls: [['enqueue_work', { key: 'approved', title: 'The format is approved', input: {}, queue: 'q', gate: true }], ['settle_work', { key: 'pushed', result: 1 }],
+        ['settle_work', { key: 'flip', result: 1 }], ['enqueue_work', { key: 'g2', title: 'G2', input: {}, queue: 'q', gate: true, assignee: 'w1' }], ['settle_work', { key: 'approved', result: 'approved by the user' }]] }],
+    });
+    const state = () => h.runtime.kernel.state(h.root.scopeId)!;
+    const item = (key: string) => state().workQueue!.items.find(found => found.key === key)!;
+    const told = (text: string) => state().board!.posts.filter(post => post.author === 'system' && post.text.includes(text));
+    const ticks = async (count: number) => { for (let pass = 0; pass < count; pass++) { await h.runtime.tick(); await new Promise(resolve => setTimeout(resolve, 5)); } };
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(h.results.length + h.errors.length).toBe(7); }, { timeout: 10_000 });
+    expect(h.results).toEqual(expect.arrayContaining([
+      { itemId: item('later').id, key: 'later', queue: 'q', status: 'pending', priority: 0, hold: true, holdReason: 'not before  the review', waitsOn: [{ key: 'ext', status: 'pending' }] },
+      { itemId: item('approved').id, key: 'approved', queue: 'q', gate: true },
+      { itemId: item('approved').id, key: 'approved', queue: 'q', status: 'completed', priority: 0, gate: true },
+    ]));
+    expect(h.errors.sort()).toEqual([
+      expect.stringContaining('A gate is a condition that nobody claims: it takes no assignee, resources or writes'),
+      expect.stringContaining('A gate is not handed out, so it takes no hold and no assignee'),
+      expect.stringContaining('Only the main agent, the swarm lead, the lead of its queue or, for a gate, the member that added it can settle a work item'),
+      expect.stringContaining('Only the main agent, the swarm lead, the lead of its queue or, for a gate, the member that added it can settle a work item'),
+    ]);
+    expect(item('approved')).toMatchObject({ status: 'completed', result: 'approved by the user', settledBy: 'scout', by: 'scout', gate: true });
+    // Nothing can be claimed: a gate is handed to nobody, and both items wait.
+    await ticks(3);
+    expect(h.order).not.toContain('w11');
+    const main = h.runtime.bindMain(h.root.scopeId, 'continue'); cleanup.push(async () => main.release());
+    const op = (method: string, args: Record<string, unknown>) => callWorkflow(method, { operationId: randomUUID(), workflowId: state().workflowId, ...args }, main.env);
+    const queue = () => callWorkflow('work_status', { workflowId: state().workflowId, queue: 'q' }, main.env) as Promise<{ items: Array<{ key: string }> }>;
+    expect(await queue()).toMatchObject({ pending: 3, completed: 1, claimable: 0, blocked: 2, onHold: 1, gates: 1 });
+    expect(await queue()).not.toHaveProperty('heldReady');
+    expect((await queue()).items.find(found => found.key === 'flip')).toMatchObject({ waitsOn: [{ key: 'pushed', status: 'pending' }] });
+    expect((await queue()).items.find(found => found.key === 'pushed')).toMatchObject({ gate: true, status: 'pending' });
+    expect(await callWorkflow('work_status', { workflowId: state().workflowId, key: 'pushed' }, main.env)).toMatchObject({ gate: true, neededBy: ['flip'] });
+    const status = await callWorkflow('status', { workflowId: state().workflowId }, main.env) as { swarms: Array<{ queues: Record<string, unknown> }> };
+    expect(status.swarms[0]!.queues).toMatchObject({ q: { claimable: 0, blocked: 2, onHold: 1, gates: 1 } });
+
+    // Whoever plans a queue ends the wait for work that was done some other way. The item that waited on it stays
+    // aside, and the lead that set it aside is told, once, that only its hold is left.
+    expect(await op('settle_work', { key: 'ext', result: 'done by hand' })).toMatchObject({ key: 'ext', status: 'completed', stillOnHold: ['later'] });
+    expect(item('ext')).toMatchObject({ status: 'completed', result: 'done by hand', settledBy: 'main' });
+    await expect(op('settle_work', { key: 'ext', result: 1 })).rejects.toThrow('Work item is already completed');
+    await expect(op('settle_work', { key: 'flip' })).rejects.toThrow('settle_work requires result');
+    expect(await queue()).toMatchObject({ onHold: 1, heldReady: 1 });
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(told('on hold has nothing else in the way')).toHaveLength(1); }, { timeout: 10_000 });
+    expect(told('on hold has nothing else in the way')[0]).toMatchObject({ to: [expect.any(String)],
+      text: expect.stringMatching(/^1 item on hold has nothing else in the way: .*\n- "later" \(queue q\), set aside by lead \d+ min ago: not before the review\nDecide each now: update_work\(\{key, hold: false\}\) returns it to the queue/) });
+    expect(item('later').held).toMatchObject({ by: 'lead', reason: 'not before  the review', ready: expect.any(Number) });
+    // The post wakes the lead, which returns the item; a member then takes it.
+    ahead += 11 * 60_000;
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(item('later').status).toBe('completed'); }, { timeout: 10_000 });
+    expect(item('later').held).toBeUndefined();
+    await ticks(3);
+    expect(told('on hold has nothing else in the way')).toHaveLength(1);
+    expect(item('flip').status).toBe('pending');
+
+    // The thing has happened: the gate is declared met, and what waited on it is handed out with nobody lifting anything.
+    expect(await op('settle_work', { key: 'pushed', result: { head: 'abc123' } })).toMatchObject({ key: 'pushed', status: 'completed', gate: true, released: ['flip'] });
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(item('flip').status).toBe('completed'); }, { timeout: 10_000 });
+    expect(await queue()).toMatchObject({ pending: 0, claimable: 0, blocked: 0 });
+    expect(await queue()).not.toHaveProperty('gates');
+    release();
+    await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel_workflow', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
+  }, 30_000);
+
+  it('keeps a swarm without a lead waiting for a gate, and tells the main agent, which is the one to settle it', async () => {
+    const h = await play([
+      'await enqueueWork({key:"go", title:"The user approved the draft", input:{}, queue:"q", gate:true});',
+      'await enqueueWork({key:"a", title:"A", input:1, queue:"q"});',
+      'await enqueueWork({key:"b", title:"B", input:2, queue:"q", dependsOn:["go"]});',
+      'await closeWorkQueue({key:"close", queue:"q"});',
+      'return await swarm("Do", {key:"wait", members:[{name:"w1", queue:"q"}]});',
+    ].join('\n'), { w1: [{ work: true }, { work: true }] });
+    const state = () => h.runtime.kernel.state(h.root.scopeId)!;
+    const item = (key: string) => state().workQueue!.items.find(found => found.key === key)!;
+    const notices = () => state().events.filter(event => event.kind === 'swarm_attention');
+    const ticks = async (count: number) => { for (let pass = 0; pass < count; pass++) { await h.runtime.tick(); await new Promise(resolve => setTimeout(resolve, 5)); } };
+    // The queue is closed and its member idle, with an item nobody can claim: that used to end the swarm as failed.
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(item('a').status).toBe('completed'); expect(notices()).toHaveLength(1); }, { timeout: 10_000 });
+    await ticks(3);
+    expect(notices()).toMatchObject([{ summary: expect.stringContaining('剩下的工作项在等条件项 "go"'), subject: expect.stringMatching(/:gates$/) }]);
+    expect(notices()[0]!.acknowledged).toBe(false);
+    expect(state().swarms![0]).toMatchObject({ status: 'running' });
+    expect(state().script).toMatchObject({ status: 'running' });
+    const main = h.runtime.bindMain(h.root.scopeId, 'continue'); cleanup.push(async () => main.release());
+    expect(await callWorkflow('settle_work', { operationId: randomUUID(), workflowId: state().workflowId, key: 'go', result: 'approved in chat' }, main.env)).toMatchObject({ key: 'go', status: 'completed', released: ['b'] });
+    const { result } = await h.settled();
+    expect(result).toMatchObject({ stop: 'quiet' });
+    expect(item('b')).toMatchObject({ status: 'completed' });
+    // The notice said that a gate was open, which is no longer so.
+    expect(notices()).toMatchObject([{ acknowledged: true }]);
+    expect(h.errors).toEqual([]);
+  }, 30_000);
+
+  it('moves what waited on an item to the one that replaces it, and tells whoever plans an item that waits on one that will never be done', async () => {
+    let ahead = 0;
+    const real = Date.now.bind(Date);
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => real() + ahead);
+    cleanup.push(async () => clock.mockRestore());
+    let release!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    cleanup.push(async () => release());
+    const h = await play([
+      // Queue "plan" has no members: its items stay where they are until someone who plans them acts.
+      'await enqueueWork({key:"plan-v1", title:"Plan v1", input:1, queue:"plan"});',
+      'await enqueueWork({key:"impl", title:"Impl", input:2, queue:"q", dependsOn:["plan-v1"]});',
+      'await enqueueWork({key:"verify", title:"Verify", input:3, queue:"q", dependsOn:["impl"]});',
+      'await enqueueWork({key:"old", title:"Old", input:4, queue:"plan"});',
+      'await enqueueWork({key:"needs-old", title:"Needs old", input:5, queue:"q", dependsOn:["old"]});',
+      'await enqueueWork({key:"slow", title:"Slow", input:6, queue:"r"});',
+      'await enqueueWork({key:"after-slow", title:"After slow", input:7, queue:"q", dependsOn:["slow"]});',
+      'return await swarm("Do", {key:"revise", lead:{name:"lead"}, members:[{name:"w1", queue:"q"},{name:"w2", queue:"r"},{name:"scout"}]});',
+    ].join('\n'), {
+      w2: [{ claim: true, hold }], w1: [{ work: true }, { work: true }, { work: true }, { work: true }],
+      // A revised plan is one step: the new item is added in place of the old one.
+      lead: [{ calls: [['enqueue_work', { key: 'plan-v2', title: 'Plan v2', input: 1, queue: 'q', supersedes: ['plan-v1'] }], ['update_work', { key: 'old', cancel: true, reason: 'not needed' }]] }],
+      // A member replaces what it added itself and nobody has claimed, and nothing else.
+      scout: [{ calls: [['enqueue_work', { key: 's1', title: 'S1', input: 0, queue: 'plan' }], ['enqueue_work', { key: 's2', title: 'S2', input: 0, queue: 'plan', supersedes: 's1' }],
+        ['enqueue_work', { key: 's3', title: 'S3', input: 0, queue: 'plan', supersedes: ['old'] }], ['update_work', { key: 's2', supersededBy: 'verify' }]] }],
+    });
+    const state = () => h.runtime.kernel.state(h.root.scopeId)!;
+    const item = (key: string) => state().workQueue!.items.find(found => found.key === key)!;
+    const told = (text: string) => state().board!.posts.filter(post => post.author === 'system' && post.text.includes(text));
+    const ticks = async (count: number) => { for (let pass = 0; pass < count; pass++) { await h.runtime.tick(); await new Promise(resolve => setTimeout(resolve, 5)); } };
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(h.results.length + h.errors.length).toBe(6); expect(item('slow').status).toBe('claimed'); expect(item('verify').status).toBe('completed'); }, { timeout: 10_000 });
+    expect(h.results).toEqual(expect.arrayContaining([
+      { itemId: item('plan-v2').id, key: 'plan-v2', queue: 'q', superseded: [{ key: 'plan-v1', status: 'cancelled' }], waitingOnIt: ['impl'] },
+      { itemId: item('old').id, key: 'old', queue: 'plan', status: 'cancelled', priority: 0, blocks: ['needs-old'], note: expect.stringContaining('update_work({key: this key, supersededBy: its key})') },
+      { itemId: item('s2').id, key: 's2', queue: 'plan', superseded: [{ key: 's1', status: 'cancelled' }] },
+      expect.objectContaining({ key: 's2', status: 'cancelled', supersededBy: 'verify' }),
+    ]));
+    expect(h.errors).toEqual([expect.stringContaining('Only whoever plans its queue, or the member that added it while nobody has claimed it, can replace work item "old"')]);
+    expect(item('s3')).toBeUndefined();
+    // The old key stays what it was, a finished item that names its replacement, and nothing waits on it.
+    expect(item('plan-v1')).toMatchObject({ status: 'cancelled', supersededBy: 'plan-v2', error: 'Superseded by "plan-v2" (lead)' });
+    expect(item('plan-v2')).toMatchObject({ supersedes: ['plan-v1'], status: 'completed' });
+    expect(item('impl')).toMatchObject({ dependsOn: ['plan-v2'], status: 'completed' });
+    expect(item('s1')).toMatchObject({ status: 'cancelled', supersededBy: 's2', error: 'Superseded by "s2" (scout)' });
+
+    // "needs-old" waits on a withdrawn item. Whoever withdrew it may be about to replace it, so nobody is told at once.
+    const main = h.runtime.bindMain(h.root.scopeId, 'continue'); cleanup.push(async () => main.release());
+    const op = (method: string, args: Record<string, unknown>) => callWorkflow(method, { operationId: randomUUID(), workflowId: state().workflowId, ...args }, main.env);
+    await ticks(3);
+    expect(told('cancelled or has failed')).toHaveLength(0);
+    expect(await callWorkflow('work_status', { workflowId: state().workflowId, queue: 'q' }, main.env)).toMatchObject({ claimable: 0, blocked: 2, stuck: 1 });
+    ahead += 11 * 60_000;
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(told('cancelled or has failed')).toHaveLength(1); }, { timeout: 10_000 });
+    expect(told('cancelled or has failed')[0]!.text).toMatch(/^1 item you plan waits on an item that was cancelled or has failed, and will not be handed out as things stand\.\n- "needs-old" \(queue q\) waits on "old" \(cancelled: Cancelled by lead: not needed\)\nFor each, one of: /);
+    expect(item('needs-old').stuckOn).toBe('old');
+    await ticks(3);
+    expect(told('cancelled or has failed')).toHaveLength(1);
+
+    // What is not allowed to wait: on itself, or on what waits on it.
+    await expect(op('update_work', { key: 'needs-old', dependsOn: ['needs-old'] })).rejects.toThrow('A work item cannot wait on itself');
+    await expect(op('update_work', { key: 'needs-old', dependsOn: ['nope'] })).rejects.toThrow('Dependencies must reference existing work keys');
+    await expect(op('update_work', { key: 'after-slow', supersededBy: 'nope' })).rejects.toThrow('supersededBy is the key of an existing work item');
+    await expect(op('update_work', { key: 'old', supersededBy: 'needs-old' })).rejects.toThrow('"needs-old" waits on "old", the item it replaces');
+    await expect(op('enqueue_work', { key: 'loop', title: 'Loop', input: 0, queue: 'plan', dependsOn: ['after-slow'], supersedes: ['slow'] })).rejects.toThrow('"loop" waits on "slow", the item it replaces, and would never be handed out');
+    await expect(op('update_work', { key: 'needs-old', supersededBy: 'needs-old' })).rejects.toThrow('A work item cannot replace itself');
+
+    // Naming the replacement of a withdrawn item afterwards revives what waited on it.
+    expect(await op('update_work', { key: 'old', supersededBy: 'plan-v2' })).toMatchObject({ key: 'old', status: 'cancelled', supersededBy: 'plan-v2', nowWaitOnIt: ['needs-old'] });
+    expect(item('needs-old')).toMatchObject({ dependsOn: ['plan-v2'] });
+    expect(item('needs-old').stuckOn).toBeUndefined();
+    await expect(op('update_work', { key: 'old', supersededBy: 'impl' })).rejects.toThrow('Work item "old" was already replaced by "plan-v2"');
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(item('needs-old').status).toBe('completed'); }, { timeout: 10_000 });
+
+    // An item a member holds is replaced as well: what waited on it moves at once, the member is told, and the item
+    // is withdrawn instead of returning to the queue when the member hands it back.
+    expect(await op('update_work', { key: 'slow', supersededBy: 'plan-v2' })).toMatchObject({ key: 'slow', status: 'claimed', supersededBy: 'plan-v2', nowWaitOnIt: ['after-slow'], claimedBy: 'w2' });
+    expect(told('was replaced by "plan-v2"')).toMatchObject([{ text: expect.stringContaining('Work item "slow", which you held when this was posted, was replaced by "plan-v2" (by the main agent)') }]);
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(item('after-slow').status).toBe('completed'); }, { timeout: 10_000 });
+    release();
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(item('slow').status).toBe('cancelled'); }, { timeout: 10_000 });
+    expect(item('slow').error).toMatch(/^Superseded by "plan-v2"; the claim ended: /);
+
+    // Work added later under the old key's name waits on what took its place.
+    expect(await op('enqueue_work', { key: 'late', title: 'Late', input: 9, queue: 'q', dependsOn: ['plan-v1', 'slow'] })).toMatchObject({ key: 'late' });
+    expect(item('late').dependsOn).toEqual(['plan-v2']);
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(item('late').status).toBe('completed'); }, { timeout: 10_000 });
+    // A dependency list can be replaced or emptied by whoever plans the item.
+    expect(await op('enqueue_work', { key: 'last', title: 'Last', input: 9, queue: 'plan', dependsOn: ['s2'] })).toMatchObject({ key: 'last' });
+    expect(item('last').dependsOn).toEqual(['verify']);
+    expect(await op('update_work', { key: 'last', dependsOn: ['after-slow', 'impl'] })).toMatchObject({ key: 'last', status: 'pending' });
+    expect(item('last').dependsOn).toEqual(['after-slow', 'impl']);
+    expect(await op('update_work', { key: 'last', dependsOn: [] })).toMatchObject({ key: 'last', status: 'pending' });
+    expect(item('last').dependsOn).toBeUndefined();
     await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel_workflow', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
   }, 30_000);
 

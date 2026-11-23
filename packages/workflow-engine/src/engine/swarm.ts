@@ -3,14 +3,14 @@ import { postToBoard, readBoard } from './board';
 import { workflowDigest } from './digest';
 import { availableMessages, receiveMessages, scheduleMemberTurn } from './durable-agents';
 import type { DomainEvent } from './events';
-import { acknowledge, boardTotal, callCount, pushEvent, readArtifact, taskById } from './kernel-state';
+import { acknowledge, boardTotal, callCount, pushEvent, readArtifact, taskById, workItemByKey } from './kernel-state';
 import { emit, readText } from './kernel-store';
 import type { KernelContext } from './kernel-context';
 import { BOARD_ANNOUNCE_TOPIC, BOARD_HANDOFF_TOPIC, BOARD_NOTICED_TOPIC, MAX_CONCURRENT_WORKERS, SWARM_DECLARED_MEMBERS, SWARM_MAX_LIVE_MEMBERS, SWARM_MAX_MEMBERS, SWARM_MAX_TURNS } from './limits';
 import { workerSelection } from './execution';
 import { boundedInteger, parseScriptAgentCall, scriptText } from './script-contract';
 import { WAKE_MAX_MINUTES } from './steering';
-import { availableWork, keptFor, openQueue, unfinishedWork, workFlow, workItem, workStatus, type WorkAuthority } from './work-queue';
+import { availableWork, deadDependency, itemsByKey, keptFor, openQueue, queueStanding, unfinishedWork, waitsOn, workFlow, workItem, workStatus, type WorkAuthority } from './work-queue';
 import { MEMBER_NAME, queueControl, queueName } from './work-routing';
 import type { Immutable, NativeIdKind, SwarmMember, WorkerExecution, WorkerExecutionPolicy, WorkerExecutionSelection, WorkflowSwarm, WorkflowTask, WorkflowView, WorkflowWorkItem } from './types';
 
@@ -50,6 +50,7 @@ const swarmSubject = (swarm: SwarmView, what: string) => `swarm:${swarm.id}:${wh
 const queueSubject = (swarm: SwarmView, queue: string) => swarmSubject(swarm, 'queue:' + queue);
 const memberSubject = (swarm: SwarmView, member: string) => swarmSubject(swarm, 'member:' + member);
 const stalledSubject = (swarm: SwarmView) => swarmSubject(swarm, 'stalled');
+const gatesSubject = (swarm: SwarmView) => swarmSubject(swarm, 'gates');
 /** The most of an item's result a handoff quotes; the item holds the rest. */
 const HANDOFF_RESULT_CHARS = 1500;
 /**
@@ -277,8 +278,10 @@ const NOTICED = `Members see what a plan cannot. Each is told to post in topic "
 const TELL = 'A post reaches a member at its next turn. When work in flight must change now (a member is heading the wrong way, or the charter changed under its item), '
   + 'tell_worker({target, text}) puts your words into its running turn at once; a member that is not in a turn gets them as a post that names it. What can wait still goes on the board';
 /** What a lead can do to the items of a queue it plans once they are in it. */
-const ITEM_CHANGES = 'Items stay yours to change until they are done. update_work({key, ...}) moves one ahead or back (priority), sets it aside and returns it (hold: true, false), gives it to one member or back to the whole queue (assignee: a name, null) or withdraws it (cancel: true; '
-  + 'an item a member has claimed must come back from that member first), and retry_work({key}) gives a failed one more attempts. When the direction changes, cancel or hold what no longer serves it instead of leaving it for members to claim.';
+const ITEM_CHANGES = 'Items stay yours to change until they are done. update_work({key, ...}) moves one ahead or back (priority), gives it to one member or back to the whole queue (assignee: a name, null), changes what it waits on (dependsOn), '
+  + 'replaces it by another item (supersededBy) or withdraws it (cancel: true; an item a member has claimed must come back from that member first), and retry_work({key}) gives a failed one more attempts. '
+  + 'An item that must wait names what it waits for in dependsOn: another item, or a gate that settle_work declares met when the thing has happened; it is then handed out without you. '
+  + 'hold: true, with a reason, is for what you set aside by decision, and it stays aside until you return it. When the direction changes, cancel or replace what no longer serves it instead of leaving it for members to claim.';
 /**
  * Delivery does not wait for a review of each result: finding what is wrong with delivered work is planned work of its
  * own, and only what would spread is checked first. What is checked is the work, by trying it: a check of what was
@@ -633,9 +636,8 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
         else record({ type: 'swarm_queue_starved', swarmId: swarm.id, queue: name, at: now, resumed: true });
         continue;
       }
-      const blocked = (state.workQueue?.items ?? []).filter(item => (item.queue ?? 'default') === name && item.status === 'pending').length;
-      const facts = `${idle} of its ${consumers.length} members are idle and it has no item they can claim`
-        + (blocked ? ` (${blocked} pending items wait on dependencies, resources or attempts, are on hold or are kept for one member)` : '');
+      const blocked = blockedFacts(queueStanding(state, name));
+      const facts = `${idle} of its ${consumers.length} members are idle and it has no item they can claim` + (blocked ? ` (${blocked.en})` : '');
       // Whoever answers for the queue has said that it has no work for now. That stands until someone who plans the
       // queue adds work to it: nobody is asked again to fill a queue that was left empty on purpose.
       if (swarm.resting?.[name]) continue;
@@ -650,16 +652,17 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       } else if (entry.leadAt !== undefined && now - entry.since >= STARVED_MAIN_AFTER_MS && now - (entry.mainAt ?? -Infinity) >= STARVED_MAIN_EVERY_MS) {
         record({ type: 'swarm_queue_starved', swarmId: swarm.id, queue: name, at: now, told: 'main' });
         pushEvent(state, { kind: 'swarm_attention', subject: queueSubject(swarm, name), summary: `swarm "${swarm.key}" 的队列 ${name} 已断粮 ${Math.round((now - entry.since) / 60_000)} 分钟：`
-          + `${consumers.length} 名成员中 ${idle} 名空闲，没有可领工作项` + (blocked ? `（${blocked} 项待领但被依赖、资源、尝试次数、挂起或指定给某个成员挡住）` : '')
+          + `${consumers.length} 名成员中 ${idle} 名空闲，没有可领工作项` + (blocked ? `（${blocked.zh}）` : '')
           + '，lead 已被提醒，队列仍未补上，也没有答复该队列暂无工作。有推进目标的工作就用 enqueue_work 补充；没有就不必凑：用 staff_swarm 的 move 把成员挪到有活的队列'
           + (entry.posts?.length ? `，或用 resolve_post 标掉第 ${entry.posts.at(-1)} 帖（此后不再提醒该队列，直到有人给它补活）` : '') + '。' }, () => now);
       }
     }
+    if (!swarm.finish && tellOfWaits(state, swarm, now)) changed = true;
     // What the main agent was told of this swarm and is no longer so settles itself: a queue whose spell is over or
     // that its lead has put to rest, a failed member that runs again or was retired, a stall that someone ended.
     const raised = state.events.filter(event => !event.acknowledged && event.subject?.startsWith(swarmSubject(swarm, '')));
     if (raised.length) {
-      const still = new Set([...(swarm.stalled ? [stalledSubject(swarm)] : []),
+      const still = new Set([...(swarm.stalled ? [stalledSubject(swarm)] : []), ...(openGates(state, queues).length ? [gatesSubject(swarm)] : []),
         ...Object.keys(swarm.starved ?? {}).filter(name => !swarm.resting?.[name]).map(name => queueSubject(swarm, name)),
         ...swarm.members.filter(member => member.stopped === 'failed').map(member => memberSubject(swarm, member.name))]);
       const gone = raised.filter(notice => !still.has(notice.subject!));
@@ -671,7 +674,10 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       const own = member.name === swarm.lead ? queueLead(swarm, name) : undefined;
       const { slots, kept } = work.get(name)!;
       const held = [...kept.values()].reduce((total, items) => total + items.length, 0);
-      return `"${name}" ${Math.max(0, slots) + held} claimable${held ? ` (${held} kept for ${held > 1 ? 'their assignees' : 'its assignee'})` : ''}, ${consumers.filter(other => !busy(other)).length} of ${consumers.length} members idle, `
+      const { heldReady, stuck } = queueStanding(state, name);
+      return `"${name}" ${Math.max(0, slots) + held} claimable${held ? ` (${held} kept for ${held > 1 ? 'their assignees' : 'its assignee'})` : ''}, `
+        + (heldReady ? `${heldReady} on hold with nothing else in the way, ` : '') + (stuck ? `${stuck} waiting on a cancelled or failed item, ` : '')
+        + `${consumers.filter(other => !busy(other)).length} of ${consumers.length} members idle, `
         + `${workFlow(state, name, now)?.completed.at(-1) ?? 0} items completed in the last hour`
         + (swarm.resting?.[name] ? `, at rest since its dry notice (post ${swarm.resting[name]!.post}) was resolved: no work for now` : '') + (own ? ` (lead ${own.name})` : '');
     }).join('; ') || undefined;
@@ -753,6 +759,17 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
         // Without a lead, an open queue means producers may still add work: keep waiting.
         return changed;
       } else if (queues.some(name => unfinishedWork(state, name) || state.workQueue?.items.some(item => (item.queue ?? 'default') === name && item.status === 'failed'))) {
+        // Work that waits for a gate nobody has declared met is waiting, not unclaimable: the swarm stays, and the
+        // main agent, which is the one to settle the gate here, is told once for as long as that lasts.
+        const gates = openGates(state, queues);
+        if (gates.length) {
+          if (!state.events.some(event => event.subject === gatesSubject(swarm) && !event.acknowledged)) {
+            pushEvent(state, { kind: 'swarm_attention', subject: gatesSubject(swarm), summary: `swarm "${swarm.key}" 的成员都已空闲，剩下的工作项在等条件项 ${gates.slice(0, 6).map(key => `"${key}"`).join('、')}`
+              + `${gates.length > 6 ? ` 等 ${gates.length} 个` : ''}：条件已达成就用 settle_work({key,result}) 宣布，等它的项随即放行；不会达成就用 update_work 撤销它或给等它的项改 dependsOn。` }, () => now);
+            changed = true;
+          }
+          return changed;
+        }
         end('failed', 'Swarm went idle with failed or unclaimable work items; inspect /workflow work, retry them, then explicitly replay');
         return changed;
       } else {
@@ -1117,6 +1134,98 @@ export function setMemberTimer(state: WorkflowView, caller: string, input: Recor
   return { wakeAt: new Date(at).toISOString() };
 }
 
+/** The gates nobody has declared met that are in these queues, or that an unfinished item of these queues waits on. */
+function openGates(state: WorkflowView, queues: readonly string[]): string[] {
+  const found = new Set<string>();
+  for (const item of state.workQueue?.items ?? []) {
+    if (item.status !== 'pending' || !queues.includes(item.queue ?? 'default')) continue;
+    if (item.gate) found.add(item.key);
+    for (const key of item.dependsOn ?? []) { const other = workItemByKey(state, key); if (other?.gate && other.status === 'pending') found.add(key); }
+  }
+  return [...found];
+}
+
+/** Why the pending items of a queue that has nothing to claim are not handed out, for the notices of a dry queue. */
+function blockedFacts(standing: ReturnType<typeof queueStanding>): { en: string; zh: string } | undefined {
+  const { blocked, onHold, heldReady, stuck, gates } = standing;
+  if (!blocked && !gates) return undefined;
+  const en = [...(onHold ? [`${onHold} on hold` + (heldReady ? `, ${heldReady} of them with nothing else in the way` : '')] : []),
+    ...(stuck ? [`${stuck} waiting on an item that was cancelled or failed`] : []), ...(gates ? [`${gates} gates not settled`] : [])];
+  const zh = [...(onHold ? [`${onHold} 项被挂起` + (heldReady ? `，其中 ${heldReady} 项除挂起外已无阻碍` : '')] : []),
+    ...(stuck ? [`${stuck} 项等的依赖已撤销或失败`] : []), ...(gates ? [`${gates} 个条件项未 settle`] : [])];
+  return { en: `${blocked} pending items cannot be claimed` + (en.length ? ': ' + en.join('; ') + '; the rest wait' : ': they wait') + ' on other items, resources or attempts, or are kept for one member',
+    zh: `${blocked} 项待领但领不了` + (zh.length ? '：' + zh.join('；') + '；其余' : '：') + '在等其他工作项、资源、尝试次数，或指定给了某个成员' };
+}
+
+/** A dependency that was cancelled or failed is reported once it has stayed so this long: whoever ended it may be about to replace it. */
+const STUCK_AFTER_MS = 10 * 60_000;
+const WAITS_SHOWN = 8;
+
+/**
+ * Tells whoever plans an item, once, of two things nothing else brings to anyone: that an item set aside has nothing
+ * else in its way since what it waited on was completed, and that an item waits on a dependency that will never be
+ * completed. A held item is handed to nobody and its holder is woken by nothing when the wait is over, so such items
+ * used to stay until someone went through the queue by hand. Each is marked on the item when it has been told.
+ */
+function tellOfWaits(state: WorkflowView, swarm: SwarmView, now: number): boolean {
+  const covered = new Set(swarm.members.flatMap(member => member.stopped ? [] : [...(member.queue ? [member.queue] : []), ...member.leads ?? []]));
+  const plans = (name: string | undefined) => {
+    const member = name === undefined ? undefined : swarm.members.find(found => found.name === name && !found.stopped);
+    return member && coordinates(swarm, member) ? member : undefined;
+  };
+  const ready = new Map<string, ItemView[]>();
+  const stuck = new Map<string, Array<{ item: ItemView; on: string; how: string }>>();
+  const cleared: string[] = [];
+  // Every pass looks at every item that waits, so the items are indexed once instead of searched for each dependency.
+  const find = itemsByKey(state);
+  for (const item of state.workQueue?.items ?? []) {
+    // An item that waits on nothing has nothing to become ready or stuck: a hold on it is whoever set it aside's alone.
+    if (item.status !== 'pending' || !item.dependsOn?.length) continue;
+    if (!covered.has(item.queue ?? 'default') && !plans(item.by)) continue;
+    const waits = waitsOn(state, item, find);
+    const dead = deadDependency(waits);
+    if (dead) {
+      const dependency = find(dead.key);
+      if (item.stuckOn === dead.key || dependency && now - dependency.updatedAt < STUCK_AFTER_MS) continue;
+      const to = plannedBy(swarm, item);
+      if (to) stuck.set(to.name, [...stuck.get(to.name) ?? [], { item, on: dead.key, how: dead.status + (dependency?.error ? ': ' + dependency.error.replace(/\s+/g, ' ').slice(0, 100) : '') }]);
+      continue;
+    }
+    if (item.stuckOn !== undefined) cleared.push(item.id);
+    // Only a hold that something has happened to: a dependency of the item was completed after it was set aside.
+    if (!item.hold || waits.length || item.held?.ready !== undefined || !item.dependsOn.some(key => (find(key)?.updatedAt ?? 0) > (item.held?.at ?? -Infinity))) continue;
+    const to = plans(item.held?.by) ?? plannedBy(swarm, item);
+    if (to) ready.set(to.name, [...ready.get(to.name) ?? [], item]);
+  }
+  let changed = cleared.length > 0;
+  for (const itemId of cleared) emit(state, { type: 'work_updated', itemId, stuckOn: null, at: now });
+  /** A post that quotes keys and reasons, so an @name in it names nobody; a member that cannot read posts is told later. */
+  const tell = (name: string, text: string) => {
+    if (!state.agents?.some(agent => agent.key === name)) return false;
+    try { postToBoard(state, { author: 'system' }, { text, to: [name] }, now, { literal: true }); } catch { return false; }
+    return changed = true;
+  };
+  const more = (count: number) => count > WAITS_SHOWN ? `\n- and ${count - WAITS_SHOWN} more: work_status lists them` : '';
+  const who = (by: string | undefined) => by === undefined ? '' : by === 'main' ? ' by the main agent' : ` by ${by}`;
+  for (const [name, items] of ready) {
+    const told = tell(name, `${items.length} item${items.length > 1 ? 's' : ''} on hold ${items.length > 1 ? 'have' : 'has'} nothing else in the way: what ${items.length > 1 ? 'they' : 'it'} waited on is completed, and only the hold keeps ${items.length > 1 ? 'them' : 'it'} from being handed out.\n`
+      + items.slice(0, WAITS_SHOWN).map(item => `- "${item.key}" (queue ${item.queue ?? 'default'}), set aside${who(item.held?.by)}`
+        + `${item.held?.by === undefined ? '' : ` ${Math.round((now - item.held.at) / 60_000)} min ago`}: ${item.held?.reason?.replace(/\s+/g, ' ').slice(0, 160) ?? 'no reason recorded'}`).join('\n') + more(items.length)
+      + '\nDecide each now: update_work({key, hold: false}) returns it to the queue; update_work({key, cancel: true, reason}) withdraws what is no longer wanted, and supersededBy names what took its place. '
+      + 'What the main agent set aside is returned by you only when its reason is plainly over. An item that still waits for something that is not an item: add that as a gate (enqueue_work with gate: true), '
+      + 'name the gate in the item\'s dependsOn and lift the hold, and the item is handed out when the gate is settled. You are told of a hold once; work_status counts the ones left as heldReady.');
+    if (told) for (const item of items) emit(state, { type: 'work_updated', itemId: item.id, ready: now, at: now });
+  }
+  for (const [name, entries] of stuck) {
+    const told = tell(name, `${entries.length} item${entries.length > 1 ? 's' : ''} you plan wait${entries.length > 1 ? '' : 's'} on an item that was cancelled or has failed, and will not be handed out as things stand.\n`
+      + entries.slice(0, WAITS_SHOWN).map(({ item, on, how }) => `- "${item.key}" (queue ${item.queue ?? 'default'}) waits on "${on}" (${how})`).join('\n') + more(entries.length)
+      + '\nFor each, one of: update_work({key: <the dependency>, supersededBy: <the item that took its place>}) moves everything that waited on it (enqueue_work with supersedes adds the replacement and does the same); '
+      + 'retry_work gives a failed dependency more attempts; update_work({key, dependsOn: [...]}) changes what the item waits on; update_work({key, cancel: true, reason}) withdraws it. You are told once for each.');
+    if (told) for (const { item, on } of entries) emit(state, { type: 'work_updated', itemId: item.id, stuckOn: on, at: now });
+  }
+  return changed;
+}
+
 /**
  * The lead that planned an item, which is who its outcome goes to: the lead that added it, else the lead of its queue,
  * else the swarm's lead. A lead otherwise hears only of what goes wrong (a failed member, a dry queue, an idle
@@ -1227,15 +1336,14 @@ function queueSummary(state: WorkflowView, swarm: SwarmView, now?: number): Reco
   if (!names.length) return undefined;
   return Object.fromEntries(names.map(name => {
     const items = (state.workQueue?.items ?? []).filter(item => (item.queue ?? 'default') === name);
-    const claimable = availableWork(state, name).length;
+    const { claimable, blocked, onHold, heldReady, stuck, gates } = queueStanding(state, name);
     const members = swarm.members.filter(member => member.queue === name && !member.stopped);
     const running = members.filter(member => { const task = taskById(state, member.taskId); return Boolean(task && BUSY.has(task.status)); }).length;
     const own = queueLead(swarm, name);
-    const onHold = items.filter(item => item.status === 'pending' && item.hold).length;
     const flow = now === undefined ? undefined : workFlow(state, name, now);
     const dry = swarm.dry?.[name];
     const minutes = (ms: number) => Math.round(ms / 6000) / 10;
-    return [name, { ...(own ? { lead: own.name } : {}), claimable, blocked: items.filter(item => item.status === 'pending').length - claimable, ...(onHold ? { onHold } : {}), claimed: items.filter(item => item.status === 'claimed').length,
+    return [name, { ...(own ? { lead: own.name } : {}), claimable, blocked, ...(onHold ? { onHold } : {}), ...(heldReady ? { heldReady } : {}), ...(stuck ? { stuck } : {}), ...(gates ? { gates } : {}), claimed: items.filter(item => item.status === 'claimed').length,
       members: members.length, running, idle: members.length - running, ...(swarm.starved?.[name] && swarm.starved[name]!.fedAt === undefined ? { starvedSince: swarm.starved[name]!.since } : {}),
       ...(swarm.resting?.[name] ? { restingSince: swarm.resting[name]!.since } : {}),
       ...(flow ? { flow } : {}), ...(dry ? { dry: { spells: dry.spells, minutes: minutes(dry.ms), longestMinutes: minutes(dry.longest) } } : {}) }];

@@ -141,7 +141,14 @@ export type DomainEvent =
    * A change to an item by whoever plans its queue: a new priority, a hold placed (`true`) or lifted (`false`), the
    * member it is for (`null` returns it to the whole queue).
    */
-  | { type: 'work_updated'; itemId: string; priority?: number; hold?: boolean; assignee?: string | null; at: number }
+  /**
+   * A change to an item by whoever plans it, or a note the engine keeps on it. `held` says who set it aside and why
+   * (with `hold: true`), `dependsOn` replaces what it waits on, `supersededBy` names its replacement, `settled`
+   * declares it done without a claim, and `ready` and `stuckOn` record what its planner was told of it.
+   */
+  | { type: 'work_updated'; itemId: string; priority?: number; hold?: boolean; assignee?: string | null; at: number;
+      held?: { by: string; at: number; reason?: string }; dependsOn?: string[]; supersededBy?: string;
+      settled?: { by: string; result: unknown }; ready?: number; stuckOn?: string | null }
   | { type: 'work_claimed'; claim: WorkClaim }
   | { type: 'claim_frozen'; claimId: string; reason: string }
   | { type: 'claim_renewed'; claimId: string; leaseUntil: number }

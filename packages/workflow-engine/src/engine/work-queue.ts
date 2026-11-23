@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { postToBoard } from './board';
 import { workflowDigest } from './digest';
 import { byId } from './evolve';
 import { archivedRecord, workItemByKey, workOperationByKey } from './kernel-state';
@@ -93,7 +94,7 @@ function writePath(value: unknown): string {
 const under = (path: string, tree: string) => tree === '.' ? !path.startsWith('/') : tree === '/' ? path.startsWith('/') : path === tree || path.startsWith(tree + '/');
 
 /** The keys an item waits for, directly or through the items it depends on. */
-function prerequisites(state: WorkflowView, item: ItemView): Set<string> {
+function prerequisites(state: WorkflowView, item: Pick<ItemView, 'dependsOn'>): Set<string> {
   const found = new Set<string>();
   const open = [...item.dependsOn ?? []];
   while (open.length) {
@@ -103,6 +104,123 @@ function prerequisites(state: WorkflowView, item: ItemView): Set<string> {
     open.push(...workItemByKey(state, key)?.dependsOn ?? []);
   }
   return found;
+}
+
+/** The unfinished items that wait on the item `key`. */
+const dependents = (state: WorkflowView, key: string) => (state.workQueue?.items ?? []).filter(other => (other.status === 'pending' || other.status === 'claimed' || other.status === 'failed') && other.dependsOn?.includes(key));
+
+/**
+ * Looks items up by key, for a pass over many items: the ones in the state through one index instead of a search
+ * each, the archived ones as they are asked for.
+ */
+export function itemsByKey(state: WorkflowView): (key: string) => ItemView | undefined {
+  const index = new Map((state.workQueue?.items ?? []).map(item => [item.key, item]));
+  return key => index.get(key) ?? archivedRecord<WorkflowWorkItem>(state, 'workItem', { key });
+}
+
+/** The dependencies an item still waits on, each with how it stands. */
+export function waitsOn(state: WorkflowView, item: ItemView, find: (key: string) => ItemView | undefined = key => workItemByKey(state, key)): Array<{ key: string; status: string }> {
+  return (item.dependsOn ?? []).flatMap(key => { const status = find(key)?.status ?? 'missing'; return status === 'completed' ? [] : [{ key, status }]; });
+}
+
+/**
+ * The dependency that, as things stand, will never be completed: one that was cancelled, or that failed and has no
+ * attempt left. What waits on it is never handed out until someone who plans it replaces the dependency, retries it
+ * or changes what the item waits on.
+ */
+export const deadDependency = (waits: ReadonlyArray<{ key: string; status: string }>) => waits.find(entry => entry.status !== 'pending' && entry.status !== 'claimed');
+
+/**
+ * How the pending items of a queue (of every queue, without a name) stand: `blocked` are the items of work nobody can
+ * claim now, of which `onHold` were set aside (`heldReady` of them with nothing else in their way) and `stuck` wait on
+ * a dependency that will never be completed; `gates` are the conditions nobody has declared met.
+ */
+export function queueStanding(state: WorkflowView, name?: string): { claimable: number; blocked: number; onHold: number; heldReady: number; stuck: number; gates: number } {
+  const standing = { claimable: availableWork(state, name).length, blocked: 0, onHold: 0, heldReady: 0, stuck: 0, gates: 0 };
+  const find = itemsByKey(state);
+  for (const item of state.workQueue?.items ?? []) {
+    if (item.status !== 'pending' || name !== undefined && (item.queue ?? 'default') !== name) continue;
+    const waits = item.dependsOn?.length ? waitsOn(state, item, find) : [];
+    if (deadDependency(waits)) standing.stuck++;
+    if (item.gate) { standing.gates++; continue; }
+    standing.blocked++;
+    if (item.hold) { standing.onHold++; if (!waits.length) standing.heldReady++; }
+  }
+  standing.blocked -= standing.claimable;
+  return standing;
+}
+
+/** What a caller that replaced an item a member holds is told of that item. */
+const HELD_NOTE = 'its member reads of this at its next turn (tell_worker reaches it now); the item is withdrawn when the claim ends, unless the member completes it first';
+const KEYS_SHOWN = 16;
+const keysShown = (keys: readonly string[], name: string, more: string) => keys.length ? { [name]: keys.slice(0, KEYS_SHOWN), ...(keys.length > KEYS_SHOWN ? { [more]: keys.length - KEYS_SHOWN } : {}) } : {};
+
+/**
+ * The keys to wait on in place of the ones named: an item that was replaced stands for its replacement, so that work
+ * added later under the old key's name waits on what is to be done, not on an item that never will be.
+ */
+function current(state: WorkflowView, keys: readonly string[]): string[] {
+  return [...new Set(keys.map(key => {
+    for (let hops = 0; hops < 16; hops++) {
+      const next = workItemByKey(state, key)?.supersededBy;
+      if (next === undefined || !workItemByKey(state, next)) break;
+      key = next;
+    }
+    return key;
+  }))].sort();
+}
+
+function dependencyKeys(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > 32) throw new Error('dependsOn must contain at most 32 existing work keys');
+  return [...new Set(value.map(entry => scriptText(entry, 'dependency key', 160)))].sort();
+}
+
+/**
+ * Checks that the item `key` may be replaced by the item `next`, which waits on the keys in `before`. Whoever plans
+ * the old item may replace it, and the member that added it while nobody has claimed it.
+ */
+function replaceable(state: WorkflowView, key: string, next: string, before: ReadonlySet<string>, authority: WorkAuthority): ItemView {
+  const old = workItemByKey(state, key);
+  if (!old) throw new Error(`Only an existing work item can be replaced; unknown key "${key.slice(0, 80)}"`);
+  if (old.key === next) throw new Error('A work item cannot replace itself');
+  if (old.supersededBy !== undefined && old.supersededBy !== next) throw new Error(`Work item "${old.key}" was already replaced by "${old.supersededBy}"`);
+  const may = authority(old);
+  if (may !== 'plans' && !(may === 'added' && (old.status === 'pending' || old.status === 'failed'))) {
+    throw new Error(`Only whoever plans its queue, or the member that added it while nobody has claimed it, can replace work item "${old.key}"`);
+  }
+  if (old.status !== 'completed' && before.has(old.key)) throw new Error(`"${next}" waits on "${old.key}", the item it replaces, and would never be handed out`);
+  const loop = dependents(state, old.key).find(other => other.key !== next && before.has(other.key));
+  if (loop) throw new Error(`Replacing "${old.key}" would make "${loop.key}" wait on itself: "${next}" waits on it`);
+  return old;
+}
+
+/**
+ * Replaces `old` by the item `next`: every unfinished item that waited on the old one waits on the new one instead,
+ * and the old one, unless it is completed, is withdrawn. One that a member holds is withdrawn when that member's
+ * claim ends without completing it; the member is told in a post, which it reads at its next turn, so whoever
+ * replaced the item speaks to it with tell_worker when it must stop now. Returns the keys of the items that now wait
+ * on the replacement.
+ *
+ * Cancelling an item leaves everything that waited on it unclaimable, and an item's input cannot change, so a plan
+ * that is revised was once re-issued under new keys with the old ones kept on hold as a record. This is the revision
+ * as one step: the old key stays what it was, a finished item that names its replacement.
+ */
+function replace(state: WorkflowView, old: ItemView, next: string, now: number, by: string): string[] {
+  const moved = dependents(state, old.key).filter(other => other.key !== next);
+  for (const other of moved) emit(state, { type: 'work_updated', itemId: other.id, dependsOn: [...new Set(other.dependsOn!.map(key => key === old.key ? next : key))].sort(), at: now });
+  // An item that has left the state is finished and nothing waits on it: there is nothing to record on it.
+  if (old.supersededBy === next || !byId(state.workQueue?.items ?? [], found => found.id, old.id)) return moved.map(other => other.key);
+  emit(state, { type: 'work_updated', itemId: old.id, supersededBy: next, at: now });
+  if (old.status === 'pending' || old.status === 'failed') emit(state, { type: 'work_cancelled', itemIds: [old.id], at: now, reason: `Superseded by "${next}" (${by})` });
+  const member = holder(state, old);
+  if (member) {
+    // A board that cannot take the post leaves the item to say it: its member reads supersededBy on it.
+    try {
+      postToBoard(state, { author: 'system' }, { to: [member], text: `Work item "${old.key}", which you held when this was posted, was replaced by "${next}" (by ${by === 'main' ? 'the main agent' : by}): what waited on it now waits on the replacement. `
+        + 'If you still hold it, stop and hand it back with release_claim; it is then withdrawn instead of returning to the queue. If you are about to finish, complete it: the result stands, though nothing waits on it any more.' }, now, { literal: true });
+    } catch { /* told by the item */ }
+  }
+  return moved.map(other => other.key);
 }
 
 const WRITE_OVERLAPS_SHOWN = 8;
@@ -170,8 +288,13 @@ export function assigned(state: WorkflowView, item: ItemView): { assignee?: stri
     ? { assigneeNote: `${item.assignee} cannot take it now (it does not consume queue "${item.queue ?? 'default'}", has stopped or has no wake-ups left), so any member of the queue can claim it` } : {}) };
 }
 
-export function enqueueWork(state: WorkflowView, args: Record<string, unknown>, now: number, by?: string): unknown {
-  options(args, ['key', 'title', 'input', 'resources', 'writes', 'maxAttempts', 'queue', 'priority', 'dependsOn', 'origin', 'assignee']);
+/**
+ * Adds an item. `gate: true` adds a condition instead of work: nobody claims it, and what depends on it waits until
+ * settle_work declares it met. `supersedes` names the items the new one replaces (see `replace`). `authority` says
+ * what the caller may do to those; `by` is the member that adds the item.
+ */
+export function enqueueWork(state: WorkflowView, args: Record<string, unknown>, now: number, by?: string, authority: WorkAuthority = () => 'plans'): unknown {
+  options(args, ['key', 'title', 'input', 'resources', 'writes', 'maxAttempts', 'queue', 'priority', 'dependsOn', 'origin', 'assignee', 'gate', 'supersedes']);
   const key = scriptText(args.key, 'work key', 160);
   if (key.trim() !== key) throw new Error('Work key must not contain surrounding whitespace');
   const title = scriptText(args.title, 'work title', 500);
@@ -190,13 +313,18 @@ export function enqueueWork(state: WorkflowView, args: Record<string, unknown>, 
   // Work that follows from an item belongs, unless the caller says otherwise, where that item was done.
   const name = queueName(args.queue ?? source?.queue);
   const priority = boundedInteger(args.priority, 0, -100, 100);
-  const dependencies = args.dependsOn ?? [];
-  if (!Array.isArray(dependencies) || dependencies.length > 32) throw new Error('dependsOn must contain at most 32 existing work keys');
-  const dependsOn = [...new Set(dependencies.map(value => scriptText(value, 'dependency key', 160)))].sort();
+  const dependsOn = dependencyKeys(args.dependsOn ?? []);
+  if (dependsOn.includes(key)) throw new Error('A work item cannot wait on itself');
+  if (args.gate !== undefined && typeof args.gate !== 'boolean') throw new Error('gate must be boolean');
+  const gate = args.gate === true;
+  if (gate && (named || resources.length || writes.length)) throw new Error('A gate is a condition that nobody claims: it takes no assignee, resources or writes');
+  const replaced = args.supersedes === undefined ? [] : Array.isArray(args.supersedes) ? args.supersedes : [args.supersedes];
+  if (replaced.length > 16) throw new Error('supersedes names at most 16 work keys');
+  const supersedes = [...new Set(replaced.map(value => scriptText(value, 'superseded key', 160)))].sort();
   // Absent when empty, like the others, so that the digest of an item that names none is what it was before items could.
   // The digest holds what the caller named, not the member `origin` resolves to, which a replay may find changed.
   const routing = { ...(name !== 'default' ? { queue: name } : {}), ...(priority ? { priority } : {}), ...(dependsOn.length ? { dependsOn } : {}), ...(writes.length ? { writes } : {}),
-    ...(origin !== undefined ? { origin } : {}) };
+    ...(origin !== undefined ? { origin } : {}), ...(gate ? { gate } : {}), ...(supersedes.length ? { supersedes } : {}) };
   const digest = workflowDigest({ key, title, input, maxAttempts, resources, ...routing, ...(named ? { assignee: named } : {}) });
   const items = state.workQueue?.items ?? [];
   const prior = workItemByKey(state, key);
@@ -205,16 +333,33 @@ export function enqueueWork(state: WorkflowView, args: Record<string, unknown>, 
     return { itemId: prior.id, key };
   }
   if (origin !== undefined && !source) throw new Error('origin must be the key of an existing work item');
-  const assignee = named ?? (source && author(state, source));
+  const assignee = gate ? undefined : named ?? (source && author(state, source));
   if (dependsOn.some(dependency => !workItemByKey(state, dependency))) throw new Error('Dependencies must reference existing work keys; enqueue prerequisites first');
+  const waitsFor = current(state, dependsOn);
+  const before = supersedes.length ? prerequisites(state, { dependsOn: waitsFor }) : new Set<string>();
+  const olds = supersedes.map(old => replaceable(state, old, key, before, authority));
   if (queueControl(state, name)?.closedAt !== undefined) throw new Error('Work queue is closed; new items cannot be enqueued');
   if (items.length >= WORK_MAX_ITEMS) throw new Error('Work item limit reached');
   openQueue(state, name);
-  const item: WorkflowWorkItem = { id: randomUUID(), key, title, ...(by ? { by } : {}), input, digest, maxAttempts, resources, ...routing, ...(assignee ? { assignee } : {}),
+  const item: WorkflowWorkItem = { id: randomUUID(), key, title, ...(by ? { by } : {}), input, digest, maxAttempts, resources, ...routing, ...(waitsFor.length ? { dependsOn: waitsFor } : {}), ...(assignee ? { assignee } : {}),
     generation: 0, status: 'pending', progress: { version: 0, state: null }, createdAt: now, updatedAt: now };
   emit(state, { type: 'work_enqueued', item });
   capacity(state, item);
+  for (const old of olds) replace(state, old, key, now, by ?? 'main');
   return { itemId: item.id, key };
+}
+
+/**
+ * What became of the items a new item replaced, and what now waits on it, for the caller that added it. The script's
+ * enqueueWork answers with the item alone (see `enqueued` in the tools).
+ */
+export function supersededView(state: WorkflowView, item: ItemView): Record<string, unknown> {
+  if (!item.supersedes?.length) return {};
+  return { superseded: item.supersedes.map(key => {
+    const old = workItemByKey(state, key);
+    const member = old && holder(state, old);
+    return { key, status: old?.status, ...(member ? { claimedBy: member, note: HELD_NOTE } : {}) };
+  }), ...keysShown(dependents(state, item.key).map(other => other.key), 'waitingOnIt', 'moreWaitingOnIt') };
 }
 
 /**
@@ -222,7 +367,7 @@ export function enqueueWork(state: WorkflowView, args: Record<string, unknown>, 
  * members that report the same finding do not duplicate it. Members add to queues that exist: by default the queue of
  * the item the work follows from (`origin`), else their own.
  */
-export function enqueueFromMember(state: WorkflowView, task: TaskView, args: Record<string, unknown>, now: number): unknown {
+export function enqueueFromMember(state: WorkflowView, task: TaskView, args: Record<string, unknown>, now: number, authorityOf?: (member: string) => WorkAuthority): unknown {
   if (!task.agentId) throw new Error('enqueue_work requires a persistent member');
   const member = state.agents?.find(agent => agent.agentId === task.agentId)?.key;
   const { operationId: _operationId, ...input } = args;
@@ -232,7 +377,7 @@ export function enqueueFromMember(state: WorkflowView, task: TaskView, args: Rec
   const source = input.origin === undefined ? undefined : workItemByKey(state, scriptText(input.origin, 'origin key', 160));
   const name = queueName(input.queue ?? (source ? source.queue ?? 'default' : memberQueue(state, member)));
   if (!queueNames(state).includes(name)) throw new Error(`Unknown work queue; members add to existing queues: ${queueNames(state).join(', ')}`);
-  return enqueueWork(state, { ...input, queue: name }, now, member);
+  return enqueueWork(state, { ...input, queue: name }, now, member, member && authorityOf ? authorityOf(member) : item => item.by !== undefined && item.by === member ? 'added' : undefined);
 }
 
 export function retryWork(state: WorkflowView, args: Record<string, unknown>, now: number, authority: WorkAuthority = () => 'plans'): unknown {
@@ -246,48 +391,115 @@ export function retryWork(state: WorkflowView, args: Record<string, unknown>, no
   return { itemId: item.id, status: item.status, maxAttempts: item.maxAttempts };
 }
 
+/** An item as the caller that changed it is shown it: where it stands and, while it is pending, what still keeps it from being handed out. */
+function changedView(state: WorkflowView, found: ItemView): Record<string, unknown> {
+  const waits = found.status === 'pending' ? waitsOn(state, found) : [];
+  return { itemId: found.id, key: found.key, queue: found.queue ?? 'default', status: found.status, priority: found.priority ?? 0, ...(found.gate ? { gate: true } : {}),
+    ...(found.hold ? { hold: true, ...(found.held?.reason ? { holdReason: found.held.reason } : {}) } : {}), ...(waits.length ? { waitsOn: waits.slice(0, 8) } : {}), ...assigned(state, found) };
+}
+
 /**
  * Changes an item that is not finished, for whoever plans its queue: `priority` moves it in the order items are handed
- * out, `hold` sets it aside (true) or returns it (false), `assignee` gives it to one member (a name) or back to the
- * whole queue (null), `cancel` withdraws it. Work that has become pointless otherwise stays in the queue until a
- * member claims it and gives it up. A claimed item is not cancelled here: its member is at work on it and is the one
- * to stop.
+ * out, `hold` sets it aside (true, with the `reason`) or returns it (false), `assignee` gives it to one member (a
+ * name) or back to the whole queue (null), `dependsOn` replaces what it waits on, `supersededBy` replaces it by
+ * another item (see `replace`) and `cancel` withdraws it. Work that has become pointless otherwise stays in the queue
+ * until a member claims it and gives it up. A claimed item is not cancelled here: its member is at work on it and is
+ * the one to stop.
+ *
+ * A hold says that someone decided to set the item aside, and only that someone can lift it. An item that waits for
+ * something is not held: what it waits for is named in `dependsOn`, an item or a gate, and the item is handed out by
+ * itself once that is done. The reason a hold must give is what tells the two apart later.
  */
 export function updateWork(state: WorkflowView, args: Record<string, unknown>, now: number, authority: WorkAuthority = () => 'plans', by = 'main'): unknown {
-  options(args, ['itemId', 'key', 'priority', 'hold', 'assignee', 'cancel', 'reason']);
+  options(args, ['itemId', 'key', 'priority', 'hold', 'assignee', 'dependsOn', 'supersededBy', 'cancel', 'reason']);
   const item = itemOf(state, args);
   const may = authority(item);
   if (args.cancel !== undefined && args.cancel !== true) throw new Error('cancel must be true');
   if (args.hold !== undefined && typeof args.hold !== 'boolean') throw new Error('hold must be boolean');
-  const changes = args.priority !== undefined || args.hold !== undefined || args.assignee !== undefined;
-  if (!changes && !args.cancel) throw new Error('Give priority, hold, assignee or cancel');
-  if (changes && args.cancel) throw new Error('cancel withdraws the item; do not combine it with priority, hold or assignee');
-  if (args.reason !== undefined && !args.cancel) throw new Error('reason belongs to cancel');
-  if (!may || may === 'added' && changes) throw new Error(may ? 'A member can only withdraw (cancel) an item it added; its priority, hold and assignee are for the lead that plans the queue'
-    : 'Only the main agent, the swarm lead, the lead of its queue or, to cancel it, the member that added it can change a work item');
-  const view = (found: ItemView) => ({ itemId: found.id, key: found.key, queue: found.queue ?? 'default', status: found.status, priority: found.priority ?? 0, ...(found.hold ? { hold: true } : {}), ...assigned(state, found) });
+  const changes = args.priority !== undefined || args.hold !== undefined || args.assignee !== undefined || args.dependsOn !== undefined;
+  const replaces = args.supersededBy !== undefined;
+  if (!changes && !args.cancel && !replaces) throw new Error('Give priority, hold, assignee, dependsOn, supersededBy or cancel');
+  if (args.cancel && (changes || replaces) || replaces && changes) throw new Error('cancel withdraws the item and supersededBy replaces it; give either alone, not with priority, hold, assignee or dependsOn');
+  if (args.reason !== undefined && !args.cancel && args.hold !== true) throw new Error('reason belongs to cancel and to hold: true');
+  if (!may || may === 'added' && changes) throw new Error(may ? 'A member can only withdraw (cancel) or replace (supersededBy) an item it added; its priority, hold, assignee and dependsOn are for the lead that plans the queue'
+    : 'Only the main agent, the swarm lead, the lead of its queue or, to cancel or replace it, the member that added it can change a work item');
+  if (replaces) {
+    const next = workItemByKey(state, scriptText(args.supersededBy, 'supersededBy', 160));
+    if (!next) throw new Error('supersededBy is the key of an existing work item: add the replacement first, or add it with enqueue_work and supersedes');
+    if (next.status === 'cancelled') throw new Error(`Work item "${next.key}" is cancelled and can replace nothing`);
+    const claimedBy = holder(state, item);
+    const moved = replace(state, replaceable(state, item.key, next.key, prerequisites(state, next), authority), next.key, now, by);
+    return { ...changedView(state, item), supersededBy: next.key, ...keysShown(moved, 'nowWaitOnIt', 'moreNowWaitOnIt'),
+      ...(claimedBy && item.status === 'claimed' ? { claimedBy, note: HELD_NOTE } : {}) };
+  }
   if (args.cancel) {
     const reason = args.reason === undefined ? undefined : scriptText(args.reason, 'reason', 500).trim() || undefined;
-    if (item.status === 'cancelled') return view(item);
+    if (item.status === 'cancelled') return changedView(state, item);
     if (item.status === 'completed') throw new Error('Work item is already completed');
     if (item.status === 'claimed') {
-      const claim = state.workQueue?.claims.find(found => found.id === item.claimId);
-      const member = state.agents?.find(agent => agent.agentId === claim?.agentId)?.key;
+      const member = holder(state, item);
       throw new Error(`Work item is claimed${member ? ' by ' + member : ''}; tell that member to stop on the board, and cancel the item once it has returned to the queue`);
     }
     emit(state, { type: 'work_cancelled', itemIds: [item.id], at: now, reason: `Cancelled by ${by}` + (reason ? ': ' + reason : '') });
     // What waited on the item can no longer be claimed; whoever cancelled it decides what becomes of that work.
-    const blocks = (state.workQueue?.items ?? []).filter(other => (other.status === 'pending' || other.status === 'failed') && other.dependsOn?.includes(item.key)).map(other => other.key);
-    return { ...view(item), ...(blocks.length ? { blocks: blocks.slice(0, 16), ...(blocks.length > 16 ? { moreBlocked: blocks.length - 16 } : {}) } : {}) };
+    const blocks = dependents(state, item.key).filter(other => other.status !== 'claimed').map(other => other.key);
+    return { ...changedView(state, item), ...keysShown(blocks, 'blocks', 'moreBlocked'), ...(blocks.length ? { note: 'blocks can no longer be claimed. If other work takes this item\'s place, '
+      + 'update_work({key: this key, supersededBy: its key}) makes them wait on that instead; otherwise give each a new dependsOn or cancel it' } : {}) };
   }
   if (item.status === 'completed' || item.status === 'cancelled') throw new Error(`Work item is already ${item.status}`);
+  if (item.gate && (args.hold !== undefined || args.assignee !== undefined)) throw new Error('A gate is not handed out, so it takes no hold and no assignee: settle_work declares it met, cancel withdraws it');
   const priority = args.priority === undefined ? undefined : boundedInteger(args.priority, 0, -100, 100);
   const hold = args.hold as boolean | undefined;
+  const reason = hold !== true || args.reason === undefined ? undefined : scriptText(args.reason, 'reason', 500).trim() || undefined;
+  if (hold === true && !reason) throw new Error('hold: true needs a reason: what the item is set aside for, and what would bring it back. '
+    + 'Do not hold an item that only waits for something: name what it waits for in dependsOn, an item or a gate (enqueue_work with gate: true, declared met with settle_work), and it is handed out by itself');
   const assignee = args.assignee === undefined ? undefined : args.assignee === null ? null : assigneeName(args.assignee);
-  const changed = { ...(priority !== undefined && priority !== (item.priority ?? 0) ? { priority } : {}), ...(hold !== undefined && hold !== Boolean(item.hold) ? { hold } : {}),
-    ...(assignee !== undefined && assignee !== (item.assignee ?? null) ? { assignee } : {}) };
+  let dependsOn: string[] | undefined;
+  if (args.dependsOn !== undefined) {
+    if (item.status === 'claimed') throw new Error('Work item is claimed; what it waits on can change once it is back in the queue');
+    const named = dependencyKeys(args.dependsOn);
+    if (named.some(key => !workItemByKey(state, key))) throw new Error('Dependencies must reference existing work keys; enqueue prerequisites first');
+    dependsOn = current(state, named);
+    for (const key of dependsOn) {
+      const dependency = key === item.key ? undefined : workItemByKey(state, key);
+      if (!dependency) throw new Error('A work item cannot wait on itself');
+      if (prerequisites(state, dependency).has(item.key)) throw new Error(`"${key}" waits on this item, so this item cannot wait on it`);
+    }
+  }
+  const changed = { ...(priority !== undefined && priority !== (item.priority ?? 0) ? { priority } : {}),
+    ...(hold !== undefined && (hold !== Boolean(item.hold) || hold && reason !== item.held?.reason) ? { hold, ...(hold ? { held: { by, at: now, reason } } : {}) } : {}),
+    ...(assignee !== undefined && assignee !== (item.assignee ?? null) ? { assignee } : {}),
+    ...(dependsOn && dependsOn.join('\n') !== (item.dependsOn ?? []).join('\n') ? { dependsOn } : {}) };
   if (Object.keys(changed).length) emit(state, { type: 'work_updated', itemId: item.id, ...changed, at: now });
-  return view(item);
+  return changedView(state, item);
+}
+
+/**
+ * Declares an item done without a claim. It is how a gate is met, by whoever plans it or by the member that added
+ * it, and how whoever plans a queue ends the wait for work that was done some other way. `result` says what was
+ * established and how, for those who read the item later. The answer names the items this released, and the ones
+ * that waited on it and are still not handed out.
+ */
+export function settleWork(state: WorkflowView, args: Record<string, unknown>, now: number, authority: WorkAuthority = () => 'plans', by = 'main'): unknown {
+  options(args, ['itemId', 'key', 'result']);
+  const item = itemOf(state, args);
+  if (!Object.hasOwn(args, 'result')) throw new Error('settle_work requires result: what was established, and how');
+  const may = authority(item);
+  if (may !== 'plans' && !(may === 'added' && item.gate)) throw new Error(may ? 'A member settles a gate it added; an item of work is done by the member that claims it, or settled by whoever plans its queue'
+    : 'Only the main agent, the swarm lead, the lead of its queue or, for a gate, the member that added it can settle a work item');
+  if (item.status === 'completed' || item.status === 'cancelled') throw new Error(`Work item is already ${item.status}`);
+  if (item.status === 'claimed') {
+    const member = holder(state, item);
+    throw new Error(`Work item is claimed${member ? ' by ' + member : ''}, which completes it`);
+  }
+  const waiting = dependents(state, item.key).filter(other => other.status === 'pending');
+  emit(state, { type: 'work_updated', itemId: item.id, settled: { by, result: json(args.result, 'Work result') }, at: now });
+  capacity(state, args.result);
+  const open = new Set(availableWork(state).map(other => other.id));
+  const rest = waiting.filter(other => !open.has(other.id));
+  const held = rest.filter(other => other.hold && !waitsOn(state, other).length);
+  return { ...changedView(state, item), ...keysShown(waiting.filter(other => open.has(other.id)).map(other => other.key), 'released', 'moreReleased'),
+    ...keysShown(held.map(other => other.key), 'stillOnHold', 'moreStillOnHold'), ...(rest.length > held.length ? { stillWaiting: rest.length - held.length } : {}) };
 }
 
 function endClaim(state: WorkflowView, claim: ClaimView, now: number,
@@ -391,7 +603,7 @@ export function availableWork(state: WorkflowView, name?: string): ItemView[] {
   for (const item of [...items].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))) {
     if (name !== undefined && (item.queue ?? 'default') !== name) continue;
     if (item.dependsOn?.some(key => workItemByKey(state, key)?.status !== 'completed')) continue;
-    if (item.status !== 'pending' || item.hold || item.generation >= item.maxAttempts || item.resources.some(key => occupied.has(key))) continue;
+    if (item.status !== 'pending' || item.gate || item.hold || item.generation >= item.maxAttempts || item.resources.some(key => occupied.has(key))) continue;
     available.push(item);
     for (const key of item.resources) occupied.add(key);
   }
@@ -439,17 +651,19 @@ export function workStatus(state: WorkflowView, args: Record<string, unknown> = 
   if (args.itemId !== undefined || args.key !== undefined) {
     const item = itemOf(state, args);
     if (name !== undefined && (item.queue ?? 'default') !== name) throw new Error('Work item belongs to another queue');
-    return { ...item, digest: undefined, claim: state.workQueue?.claims.find(claim => claim.id === item.claimId), ...writeOverlaps(state, item) };
+    const waits = item.status === 'pending' || item.status === 'failed' ? waitsOn(state, item) : [];
+    return { ...item, digest: undefined, claim: state.workQueue?.claims.find(claim => claim.id === item.claimId), ...(waits.length ? { waitsOn: waits } : {}),
+      ...(item.status === 'completed' ? {} : keysShown(dependents(state, item.key).map(other => other.key), 'neededBy', 'moreNeededBy')), ...writeOverlaps(state, item) };
   }
   const items = (state.workQueue?.items ?? []).filter(item => name === undefined || (item.queue ?? 'default') === name);
   const offset = boundedInteger(args.offset, 0, 0, WORK_MAX_ITEMS);
   const limit = boundedInteger(args.limit, 16, 1, 64);
   const counts = { pending: 0, claimed: 0, completed: 0, failed: 0, cancelled: 0 };
   for (const item of items) counts[item.status]++;
-  const onHold = items.filter(item => item.status === 'pending' && item.hold).length;
   const flow = now === undefined ? undefined : workFlow(state, name, now);
-  // Pending items a member could claim now; the rest wait on dependencies, resources held by claimed items or attempts.
-  const claimable = availableWork(state, name).length;
+  // Pending items a member could claim now; the rest wait on dependencies, resources held by claimed items or attempts,
+  // or were set aside. Gates are conditions and are counted apart.
+  const { claimable, blocked, onHold, heldReady, stuck, gates } = queueStanding(state, name);
   const members = new Map((state.agents ?? []).map(agent => [agent.agentId, agent.key]));
   // Archived items are counted; the page below lists the ones still in the state.
   let archived = 0;
@@ -458,7 +672,7 @@ export function workStatus(state: WorkflowView, args: Record<string, unknown> = 
     for (const [status, count] of Object.entries(totals)) { counts[status as keyof typeof counts] += count; archived += count; }
   }
   const controls = (name === undefined ? queueNames(state) : [name]).map(name => queueControl(state, name));
-  return { total: items.length + archived, ...(archived ? { archived } : {}), ...counts, claimable, blocked: items.filter(item => item.status === 'pending').length - claimable, ...(onHold ? { onHold } : {}),
+  return { total: items.length + archived, ...(archived ? { archived } : {}), ...counts, claimable, blocked, ...(onHold ? { onHold } : {}), ...(heldReady ? { heldReady } : {}), ...(stuck ? { stuck } : {}), ...(gates ? { gates } : {}),
     ...(flow ? { flow } : {}), closed: controls.every(control => control?.closedAt !== undefined),
     closedAt: name === undefined ? state.workQueue?.closedAt : queueControl(state, name)?.closedAt,
     offset, nextOffset: offset + limit < items.length ? offset + limit : null,
@@ -466,10 +680,13 @@ export function workStatus(state: WorkflowView, args: Record<string, unknown> = 
     const claim = state.workQueue?.claims.find(claim => claim.id === item.claimId);
     // Who holds the item, so that a reader need not match the claim's agent ID against the member list.
     const member = item.status === 'claimed' && claim ? members.get(claim.agentId) : undefined;
+    const waits = item.status === 'pending' ? waitsOn(state, item) : [];
     return {
     itemId: item.id, key: item.key, queue: item.queue ?? 'default', priority: item.priority ?? 0, dependsOn: item.dependsOn ?? [], title: item.title.slice(0, 120), ...(item.by ? { by: item.by } : {}),
     ...(item.origin ? { origin: item.origin } : {}), ...(item.assignee ? { assignee: item.assignee } : {}), ...(item.doneBy ? { doneBy: item.doneBy } : {}), status: item.status,
-    generation: item.generation, maxAttempts: item.maxAttempts, progressVersion: item.progress.version, ...(item.hold ? { hold: true } : {}),
+    generation: item.generation, maxAttempts: item.maxAttempts, progressVersion: item.progress.version, ...(item.gate ? { gate: true } : {}),
+    ...(item.hold ? { hold: true, ...(item.held ? { held: { ...item.held, ...(item.held.reason ? { reason: item.held.reason.slice(0, 160) } : {}) } } : {}) } : {}),
+    ...(waits.length ? { waitsOn: waits.slice(0, 8) } : {}), ...(item.supersededBy ? { supersededBy: item.supersededBy } : {}), ...(item.settledBy ? { settledBy: item.settledBy } : {}),
     claim, ...(member ? { member } : {}),
     error: item.error?.slice(0, 180),
   }; }) };

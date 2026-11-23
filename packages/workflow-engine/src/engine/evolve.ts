@@ -419,7 +419,12 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       if (control) { control.closedAt = undefined; control.closeKey = undefined; }
       return;
     }
-    case 'work_enqueued': queue(state).items.push(event.item); flowed(state, event.item, event.item.createdAt, 'enqueued'); planned(state, event.item); return;
+    case 'work_enqueued':
+      queue(state).items.push(event.item);
+      // A gate is a condition, not work that enters and leaves a queue: the flow counts what members have to do.
+      if (!event.item.gate) flowed(state, event.item, event.item.createdAt, 'enqueued');
+      planned(state, event.item);
+      return;
     case 'work_retried': {
       const found = item(state, event.itemId);
       found.maxAttempts = event.maxAttempts; found.status = 'pending'; found.error = undefined; found.updatedAt = event.at;
@@ -434,9 +439,27 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       return;
     case 'work_updated': {
       const found = item(state, event.itemId);
+      // What the engine notes on an item is not a change to it.
+      if (event.ready !== undefined) { if (found.hold) (found.held ??= { at: found.updatedAt }).ready = event.ready; return; }
+      if (event.stuckOn !== undefined) { found.stuckOn = event.stuckOn ?? undefined; return; }
       if (event.priority !== undefined) found.priority = event.priority || undefined;
-      if (event.hold !== undefined) found.hold = event.hold || undefined;
+      if (event.hold !== undefined) {
+        found.hold = event.hold || undefined;
+        found.held = event.hold ? event.held : undefined;
+      }
       if (event.assignee !== undefined) found.assignee = event.assignee ?? undefined;
+      if (event.dependsOn !== undefined) {
+        found.dependsOn = event.dependsOn.length ? event.dependsOn : undefined;
+        // What it waits on has changed, so what was told of the old dependencies no longer holds.
+        found.stuckOn = undefined;
+        if (found.held) delete found.held.ready;
+      }
+      if (event.supersededBy !== undefined) found.supersededBy = event.supersededBy;
+      if (event.settled) {
+        found.status = 'completed'; found.result = event.settled.result; found.settledBy = event.settled.by;
+        found.error = undefined; found.hold = undefined; found.held = undefined; found.stuckOn = undefined;
+        if (!found.gate) flowed(state, found, event.at, 'completed');
+      }
       found.updatedAt = event.at;
       return;
     }
@@ -467,6 +490,8 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       delete ended.frozen; delete ended.heldUntil;
       ended.status = event.status; ended.endedAt = event.at; ended.reason = event.reason;
       found.claimId = undefined; found.updatedAt = event.at; found.error = ended.reason;
+      // An item that was replaced while a member held it does not return to the queue: its replacement is the work now.
+      if (found.supersededBy) { found.status = 'cancelled'; found.error = `Superseded by "${found.supersededBy}"; the claim ended: ${ended.reason}`; return; }
       found.status = event.retry && found.generation < found.maxAttempts ? 'pending' : 'failed';
       if (event.retry && found.status === 'failed') found.error = 'Attempt budget exhausted: ' + ended.reason;
       if (found.status === 'failed') settled(state, found, ended.agentId, event.at, 'failed');
