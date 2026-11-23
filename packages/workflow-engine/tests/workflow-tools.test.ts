@@ -58,7 +58,9 @@ describe('workflow tool plugins', () => {
       'set_charter(text)', 'resolve_post 把', 'priority 为 -100..100', 'workflow guide', '不要读取或展示环境中的调用凭据']) expect(WORKFLOW_WAKE_INSTRUCTIONS, name).toContain(name);
     for (const name of ['agent(prompt', 'parallel', 'pipeline', 'swarm(task', 'enqueueWork(', 'closeWorkQueue', 'post(text', 'schema']) expect(WORKFLOW_WAKE_INSTRUCTIONS, name).not.toContain(name);
     // A long run wakes the main agent dozens of times, and every wake's instructions stay in its session.
-    expect(WORKFLOW_WAKE_INSTRUCTIONS.length).toBeLessThan(4000);
+    expect(WORKFLOW_WAKE_INSTRUCTIONS.length).toBeLessThan(4150);
+    // An ask is told where posting is, and the event it raises with the other events.
+    for (const name of ['post_board(text,to?,topic?,ask?,answers?)', 'ask_open', 'answers:帖号']) expect(WORKFLOW_WAKE_INSTRUCTIONS, name).toContain(name);
     // The guide leaves out nothing a wake is told, except the line that points to the guide. It lists the operations
     // with all their parameters, where a wake names the ones it cannot call or is told about in a line of their own.
     const lines = WORKFLOW_WAKE_INSTRUCTIONS.split('\n').slice(0, -1);

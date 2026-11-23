@@ -2,7 +2,7 @@
  * Whom a post reaches and what an announcement is. The script's post and the post_board operation work alike, so the
  * script guide and the instructions of a wake carry this one text instead of each telling it in its own words.
  */
-export const BOARD_POSTING = `发帖（脚本 post 与 post_board 相同）：to 为成员名数组或 "all"，正文里的 @成员名/@all 同样点名；被点名的成员被唤醒并收到该帖，未点名的帖子不唤醒任何人。主题 announce 是公告，仅主 agent、脚本和 lead 可发，成员下一轮自动收到全文而不被唤醒，规则变更和裁定发这里。`;
+export const BOARD_POSTING = `发帖（脚本 post 与 post_board 相同）：to 为成员名数组或 "all"，正文里的 @成员名/@all 同样点名；被点名的成员被唤醒并收到该帖，未点名的帖子不唤醒任何人。主题 announce 是公告，仅主 agent、脚本和 lead 可发，成员下一轮自动收到全文而不被唤醒，规则变更和裁定发这里。post_board 的 ask（true 等 15 分钟，或给分钟数）是等一名成员答复的请求，to 只写它：答复前它每轮都看到，超时逐级上报；answers:帖号 是答复，回传提问者并结帖。`;
 
 /** What the fields of a work item do, for the script's enqueueWork and the enqueue_work operation alike; told in one text like BOARD_POSTING. */
 export const WORK_ITEM_FIELDS = `工作项字段（脚本 enqueueWork 与 enqueue_work 相同）：queue 缺省 default；priority 为 -100..100，越大越先领取；dependsOn 是已入队工作项的 key，全部成功才可领取；resources 是互斥键，同键工作项跨队列串行领取；writes 是预计改动的路径，只提示不加锁，返回的 writeOverlaps 是路径重叠、又无先后或互斥约束的未完成项，据此加 dependsOn 或 resources；origin 是该项所针对的已交付工作项的 key（发现的问题、后续工作）：新项进那一项的队列并指定给完成它的成员；assignee 直接指定成员，它接不了时任何成员可领（update_work 改派，null 放回整个队列）。队列关闭后拒绝新项。`;

@@ -1,4 +1,5 @@
-import { postToBoard, readBoard, resolvePosts, searchBoard } from '../board';
+import { postBoard, resolvePost } from '../asks';
+import { readBoard, searchBoard } from '../board';
 import { workflowDigest } from '../digest';
 import { inheritedWorkerExecution } from '../execution';
 import { finishSwarm, staffCleanups, staffSelection, staffSwarm, staffWorkspaces } from '../swarm';
@@ -21,6 +22,11 @@ export const boardTools: WorkflowToolPlugin = {
       + 'A named member is woken and gets the post, with its number, in read_context.member.messages; a post that names nobody wakes nobody. '
       + 'topic is the workstream (1–40 lowercase letters, digits, _ . or -; "general" when left out): keep one name per workstream and reuse the topics that exist, of which a board holds at most 64. '
       + 'Topic "announce" carries rules and rulings that bind every member; only the main agent, the script and the lead of a swarm post there. A post cannot be edited or withdrawn.',
+    'An ask is a post you wait for an answer to: post_board({operationId,text,to:[name],ask}) with ask: true, or the minutes you can wait (15 when true, 1440 at most), and in to the one member that owes the answer; a name in its text names nobody. '
+      + 'It stays open until it is answered or resolved: the member asked is shown it at every turn (read_context.board.asks), and when your time has run out the system tells those above that member, the lead of its queue, then the lead of the swarm, then the main agent, one after another. '
+      + 'A member with no lead above it asks the main agent with to: "main". Ask when you cannot or should not go on without the answer, and say what you will do with it; a post that only informs is a post without ask. You may have 8 asks open (read_context.board.asked lists them). '
+      + 'post_board({operationId,answers: seq,text}) answers an ask: the post goes to whoever asked and resolves the ask in the same step. The member asked, a lead and the main agent may answer. '
+      + 'Answer the asks made of you before other work, and when you cannot answer yet, answer with what it waits on. resolve_post closes an ask of your own that you no longer wait for.',
     'read_board({after?,limit?,member?,topic?,resolved?}) returns the latest limit posts (20 by default, 50 at most), or the ones after post number after; member keeps the posts one member sent or received, topic one topic. '
       + 'Resolved posts are skipped (resolvedSkipped counts them) unless resolved: true. topics lists each topic with its posts, its resolved posts and its latest number. '
       + 'Every turn read_context.board already has the announcements since your last turn in full (announcements; moreAnnouncements means that earlier ones are left out, which read_board({topic:"announce"}) returns) '
@@ -40,8 +46,8 @@ export const boardTools: WorkflowToolPlugin = {
     {
       name: 'post_board',
       main: {
-        doc: 'post_board(text,to?,topic?)',
-        ...versioned((ctx, state, args) => postToBoard(state, { author: 'main' }, args, ctx.now()), { allowInterrupted: true, appendOnly: true }),
+        doc: 'post_board(text,to?,topic?,ask?,answers?)',
+        ...versioned((ctx, state, args) => postBoard(state, { author: 'main' }, args, ctx.now()), { allowInterrupted: true, appendOnly: true }),
       },
       worker: {
         verifiesRoot: true,
@@ -50,7 +56,7 @@ export const boardTools: WorkflowToolPlugin = {
           if (!agent) throw new Error('Posting requires a persistent member; one-off workers can only read the board');
           if (state.status !== 'active' || state.script?.status !== 'running' || ctx.now() >= state.deadlineAt) throw new Error('Workflow is inactive');
           return mailboxOperation(state, 'worker:' + task.taskId + ':' + requiredText(args.operationId, 160), { method: 'post_board', args },
-            () => postToBoard(state, { agentId: agent.agentId }, args, ctx.now()));
+            () => postBoard(state, { agentId: agent.agentId }, args, ctx.now()));
         },
       },
     },
@@ -58,11 +64,11 @@ export const boardTools: WorkflowToolPlugin = {
       name: 'resolve_post',
       main: {
         doc: 'resolve_post(seq,note?,see?,reopen?)',
-        ...versioned((ctx, state, args) => resolvePosts(state, { author: 'main' }, args, ctx.now()), { allowInterrupted: true, appendOnly: true }),
+        ...versioned((ctx, state, args) => resolvePost(state, { author: 'main' }, args, ctx.now()), { allowInterrupted: true, appendOnly: true }),
       },
       worker: {
         verifiesRoot: true,
-        call: (ctx, state, task, _caller, args) => memberOperation(ctx, state, task, 'resolve_post', args, agent => resolvePosts(state, { agentId: agent.agentId }, args, ctx.now())),
+        call: (ctx, state, task, _caller, args) => memberOperation(ctx, state, task, 'resolve_post', args, agent => resolvePost(state, { agentId: agent.agentId }, args, ctx.now())),
       },
     },
     {

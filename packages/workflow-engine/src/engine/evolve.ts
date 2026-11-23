@@ -1,7 +1,7 @@
 import type { DomainEvent } from './events';
 import { BOARD_DEFAULT_TOPIC, BOARD_TOPIC_RECENT, SWARM_MAX_HANDOFFS, WORK_FLOW_SLOT_MS, WORK_FLOW_SLOTS } from './limits';
 import { CALL_KINDS, RECORDS } from './records';
-import type { Immutable, MailboxMessage, MailboxReceipt, StoredTask, WorkFlowSlot, WorkflowData, WorkflowView, WorkflowWait, WorkflowWorkItem, WorkflowWorkQueue } from './types';
+import type { BoardPost, Immutable, MailboxMessage, MailboxReceipt, OpenAsk, StoredTask, WorkFlowSlot, WorkflowData, WorkflowView, WorkflowWait, WorkflowWorkItem, WorkflowWorkQueue } from './types';
 
 /**
  * Applies one event to a workflow's state. This is the only code that changes workflow state, and it must stay a
@@ -30,7 +30,10 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
     case 'charter_set': state.charter = { version: (state.charter?.version ?? 0) + 1, text: event.text, by: event.by, at: event.at }; return;
     case 'main_wake_set': state.mainWake = event.wake; return;
     case 'artifact_added': state.artifacts.push(event.artifact); return;
-    case 'notice_raised': state.events.push(event.notice); return;
+    case 'notice_raised':
+      state.events.push(event.notice);
+      if (event.notice.asks) told(state, event.notice.asks, 'main', event.notice.createdAt ?? 0);
+      return;
     case 'notices_acknowledged':
       for (const notice of state.events) if (event.ids.includes(notice.id) && !notice.acknowledged) { notice.acknowledged = true; notice.acknowledgedAt = event.at; }
       return;
@@ -242,6 +245,8 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       topic.posts++;
       topic.recent.push(event.post.seq);
       if (topic.recent.length > BOARD_TOPIC_RECENT) topic.recent.shift();
+      if (event.post.ask) (board.asks ??= []).push(openAsk(event.post, event.post.createdAt));
+      if (event.post.overdue && event.post.to[0]) told(state, event.post.overdue, event.post.to[0], event.post.createdAt);
       if (!event.deliveries.length) return;
       const box = mailbox(state);
       box.messages.push(...event.deliveries);
@@ -257,6 +262,12 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       const topic = (board.topics ??= {})[event.topic] ??= { posts: 0, recent: [] };
       const resolved = (topic.resolved ?? 0) + (event.resolved ? 1 : -1);
       if (resolved > 0) topic.resolved = resolved; else delete topic.resolved;
+      // An ask is open for as long as its post is: resolved it is answered or withdrawn, reopened it is owed again.
+      if (board.asks || event.ask) {
+        const asks = (board.asks ?? []).filter(ask => ask.seq !== event.seq);
+        if (event.ask) asks.push(event.ask);
+        if (asks.length) board.asks = asks.sort((a, b) => a.seq - b.seq); else delete board.asks;
+      }
       // The notice that a queue has run dry is answered by resolving it: the queue has no work for now, and rests
       // until someone who plans it adds work to it (see `planned`) or the notice is reopened. A spell that lasts
       // sends the notice again, and any of them is the answer.
@@ -608,6 +619,25 @@ function settled(state: WorkflowData, found: WorkflowWorkItem, agentId: string, 
     if (how === 'completed') member.itemsDone = (member.itemsDone ?? 0) + 1; else member.itemsFailed = (member.itemsFailed ?? 0) + 1;
     if (owner.lead && owner.status === 'running' && !owner.finish && (owner.handoffs?.length ?? 0) < SWARM_MAX_HANDOFFS) (owner.handoffs ??= []).push({ item: found.id, worker: member.name });
     return;
+  }
+}
+
+/** How an ask begins, for those who are told of it without reading it. */
+const ASK_EXCERPT_CHARS = 200;
+
+/** A post that asks, as the ask that is open from `at` on. */
+export function openAsk(post: Immutable<BoardPost>, at: number): OpenAsk {
+  const text = post.text.replace(/\s+/g, ' ').trim();
+  return { seq: post.seq, ...(post.from ? { from: post.from } : {}), ...(post.to[0] ? { to: post.to[0] } : {}), at, within: post.ask!.within,
+    excerpt: text.length > ASK_EXCERPT_CHARS ? text.slice(0, ASK_EXCERPT_CHARS) + '…' : text };
+}
+
+/** Records that `who` (a member's agentId, or `main`) was told of the asks: that they are still unanswered, or that it is asked. */
+function told(state: WorkflowData, seqs: readonly number[], who: string, at: number): void {
+  for (const ask of state.board?.asks ?? []) {
+    if (!seqs.includes(ask.seq)) continue;
+    if (!ask.told?.includes(who)) (ask.told ??= []).push(who);
+    ask.toldAt = at;
   }
 }
 

@@ -7,7 +7,7 @@ import type { WorkflowRoot, WorkflowWorkerRequest, WorkflowWorkerResult } from '
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
 
-function harness() {
+function harness(clock: () => number = () => 1_000_000) {
   const root: WorkflowRoot = { scopeId: 'board', profile: 'default', agentKind: 'codex', cwdRealpath: '/workspace',
     policyFingerprint: 'policy', catalogBinding: 'root', modelSettings: {} };
   const requests: WorkflowWorkerRequest[] = [];
@@ -20,7 +20,7 @@ function harness() {
       request.signal.addEventListener('abort', () => resolve({ status: 'stopped' }), { once: true });
     });
   } };
-  const kernel = new WorkflowKernel(':memory:', host, () => 1_000_000);
+  const kernel = new WorkflowKernel(':memory:', host, clock);
   cleanup.push(async () => { for (const finish of finishers.values()) finish({ status: 'stopped' }); await kernel.close(); });
   const state = () => kernel.state(root.scopeId)!;
   const call = (method: string, args: Record<string, unknown> = {}) => kernel.call({ kind: 'main', scopeId: root.scopeId, allowStart: true }, method,
@@ -215,6 +215,100 @@ describe('workflow message board', () => {
     await expect(h.worker(oneoff, 'resolve_post', { operationId: 'x', seq: 4, note: 'done' })).rejects.toThrow('persistent member');
     expect(await h.worker(oneoff, 'read_board', { resolved: true })).toMatchObject({ posts: [{ seq: 1, resolved: { by: 'main' } }, { seq: 2 }, { seq: 3 }, { seq: 4 }, { seq: 5 }, { seq: 6 }] });
     await h.finish(oneoff);
+  });
+
+  it('keeps an ask open until it is answered: shown to the one asked every turn, answered back to the asker, and told upward when it stays open', async () => {
+    let now = 1_000_000;
+    const h = harness(() => now); await h.start(); await h.bootstrap('dev'); await h.bootstrap('qa');
+    const notices = (kind: string) => h.state().events.filter(event => event.kind === kind);
+    // An ask names the one member that owes the answer, in `to` alone; a script does not ask.
+    await expect(h.call('post_board', { text: 'Which of you owns the parser?', to: ['dev', 'qa'], ask: true })).rejects.toThrow('names in "to" the one member');
+    await expect(h.call('post_board', { text: '@dev which branch?', ask: true })).rejects.toThrow('names in "to" the one member');
+    await expect(h.call('post_board', { text: 'Which branch?', to: 'all', ask: true })).rejects.toThrow('names in "to" the one member');
+    await expect(h.call('post_board', { text: 'Which branch?', to: ['dev'], ask: 0 })).rejects.toThrow('minutes you can wait');
+    await expect(h.call('post_board', { text: 'Which branch?', to: ['dev'], ask: true, topic: 'announce' })).rejects.toThrow('for everyone');
+    await expect(h.call('post_board', { text: 'Which branch?', to: 'main', ask: true })).rejects.toThrow('You are the main agent');
+    await expect(h.mail({ kind: 'post', key: 'script-ask', text: 'Which branch?', to: ['dev'], ask: true })).rejects.toThrow('Unsupported mailbox option');
+    expect(await h.call('post_board', { text: 'Which branch does the parser fix go to? @qa is waiting on it.', to: ['dev'], ask: 5 })).toMatchObject({ seq: 1, to: ['dev'], ask: { withinMinutes: 5 } });
+    expect(h.state().board!.asks).toMatchObject([{ seq: 1, within: 300_000, excerpt: expect.stringContaining('Which branch') }]);
+    expect(h.state().board!.asks![0]).not.toHaveProperty('from');
+    expect(await h.call('status')).toMatchObject({ asks: [{ seq: 1, from: 'main', to: 'dev', withinMinutes: 5 }] });
+
+    // The turn it arrives in ends without an answer; the next turn is shown it again, though no post brought it.
+    await h.mail({ kind: 'receive', member: 'dev', key: 'dev-inbox' });
+    await h.agent('dev', 'dev-1'); let turn = await h.run();
+    expect(await h.worker(turn, 'read_context')).toMatchObject({ member: { messages: [{ post: 1, ask: true }] }, board: { asks: [{ seq: 1, from: 'main', to: 'dev', withinMinutes: 5, text: expect.stringContaining('Which branch') }] } });
+    await expect(h.worker(turn, 'post_board', { operationId: 'own', text: 'Which one?', to: ['dev'], ask: true })).rejects.toThrow('not yourself');
+    await h.finish(turn);
+    await h.agent('qa', 'qa-1'); turn = await h.run();
+    // Someone else's ask is not qa's to answer, and an answer is to an ask that is open.
+    await expect(h.worker(turn, 'post_board', { operationId: 'meddle', text: 'main, I think', answers: 1 })).rejects.toThrow('not addressed to you');
+    await expect(h.worker(turn, 'post_board', { operationId: 'none', text: 'Yes', answers: 7 })).rejects.toThrow('Unknown board post');
+    await h.finish(turn);
+
+    // Its time runs out: the main agent asked and stands above everyone, so it alone is told, once.
+    now += 5 * 60_000; await h.kernel.tick();
+    expect(notices('ask_open')).toMatchObject([{ asks: [1], acknowledged: false, summary: expect.stringMatching(/1 条请求超时未答复.*第 1 帖，你 问 dev，已 5 分钟，dev 不在回合中/) }]);
+    expect(h.state().board!.asks).toMatchObject([{ seq: 1, told: ['main'], toldAt: now }]);
+    now += 60 * 60_000; await h.kernel.tick();
+    expect(notices('ask_open')).toHaveLength(1);
+
+    // The answer goes to whoever asked and resolves the ask in the same step; what told the main agent of it is settled.
+    await h.agent('dev', 'dev-2'); turn = await h.run();
+    expect(await h.worker(turn, 'read_context')).toMatchObject({ member: { messages: [] }, board: { asks: [{ seq: 1, overdue: true, told: ['main'] }] } });
+    expect(await h.worker(turn, 'post_board', { operationId: 'answer', text: 'It goes to release-2.', answers: 1 })).toMatchObject({ seq: 2, to: [], answers: 1 });
+    expect(h.state().board!.asks).toBeUndefined();
+    expect(h.state().board!.posts).toMatchObject([{ seq: 1, ask: { within: 300_000 }, resolved: { see: 2 } }, { seq: 2, answers: 1 }]);
+    expect(notices('ask_open')).toMatchObject([{ acknowledged: true }]);
+    expect(notices('worker_reply')).toMatchObject([{ summary: expect.stringContaining('dev 答复了你的第 1 帖请求（全文是第 2 帖，read_board 可读）：It goes to release-2.') }]);
+    await expect(h.worker(turn, 'post_board', { operationId: 'again', text: 'Really.', answers: 1 })).rejects.toThrow('Ask 1 is already resolved (see post 2)');
+    await expect(h.worker(turn, 'post_board', { operationId: 'not-ask', text: 'Noted.', answers: 2 })).rejects.toThrow('Post 2 is not an ask');
+    expect((await h.call('read_board', { resolved: true }) as { posts: unknown[] }).posts).toMatchObject([{ seq: 1, ask: { withinMinutes: 5 }, resolved: { by: 'dev', see: 2 } }, { seq: 2, answers: 1 }]);
+
+    // Between members with nobody above them but the main agent: it is told, though no sooner than half an hour after the ask.
+    expect(await h.worker(turn, 'post_board', { operationId: 'ask-qa', text: 'Did the fuzz run pass on release-2?', to: ['qa'], ask: 1 })).toMatchObject({ seq: 3, to: ['qa'], ask: { withinMinutes: 1 } });
+    await expect(h.worker(turn, 'post_board', { operationId: 'own-answer', text: 'Never mind', answers: 3 })).rejects.toThrow('Ask 3 is your own');
+    expect(await h.worker(turn, 'read_context')).toMatchObject({ board: { asked: [{ seq: 3, to: 'qa' }] } });
+    await h.finish(turn);
+    now += 2 * 60_000; await h.kernel.tick();
+    expect(notices('ask_open')).toHaveLength(1);
+    now += 28 * 60_000; await h.kernel.tick();
+    expect(notices('ask_open')).toMatchObject([{}, { asks: [3], summary: expect.stringContaining('第 3 帖，dev 问 qa，已 30 分钟') }]);
+    // The main agent answers in qa's place: dev is handed the answer, and the notice is settled.
+    expect(await h.call('post_board', { text: 'It passed; see the nightly report.', answers: 3 })).toMatchObject({ seq: 4, to: ['dev'], answers: 3 });
+    expect(notices('ask_open')).toMatchObject([{ acknowledged: true }, { acknowledged: true }]);
+    await h.mail({ kind: 'receive', member: 'dev', key: 'dev-inbox-2' });
+    await h.agent('dev', 'dev-3'); turn = await h.run();
+    expect(await h.worker(turn, 'read_context')).toMatchObject({ member: { messages: [{ post: 4, from: 'main', answers: 3 }] } });
+
+    // A member with nobody above it asks the main agent, whose notice stands until it answers or the ask is closed.
+    expect(await h.worker(turn, 'post_board', { operationId: 'ask-main', text: 'May release-2 ship without the Windows build?', to: 'main', ask: true })).toMatchObject({ seq: 5, to: ['main'], ask: { withinMinutes: 15 } });
+    expect(notices('ask_open').at(-1)).toMatchObject({ asks: [5], acknowledged: false, summary: expect.stringMatching(/^dev 请你答复（第 5 帖，它等 15 分钟；用 post_board 的 answers:5 答复.*May release-2 ship/) });
+    await h.finish(turn);
+    // Nobody stands above the main agent in the workflow, so nothing follows when the time runs out.
+    now += 16 * 60_000; await h.kernel.tick();
+    expect(notices('ask_open')).toHaveLength(3);
+    await h.agent('dev', 'dev-4'); turn = await h.run();
+    expect(await h.worker(turn, 'read_context')).toMatchObject({ board: { asked: [{ seq: 5, to: 'main', overdue: true }] } });
+    // Closed by its author without an answer, it tells nobody; closed by another, the author is told how it ended.
+    expect(await h.worker(turn, 'resolve_post', { operationId: 'withdraw', seq: 5, note: 'Windows build came through' })).toEqual({ resolved: [5] });
+    expect(notices('ask_open').at(-1)).toMatchObject({ acknowledged: true });
+    expect(h.state().board!.posts).toHaveLength(5);
+    expect(await h.worker(turn, 'post_board', { operationId: 'ask-qa-2', text: 'Who signs off the changelog?', to: ['qa'], ask: true })).toMatchObject({ seq: 6 });
+    expect(await h.call('resolve_post', { seq: 6, note: 'The user signs it off; nothing for qa to do' })).toMatchObject({ resolved: [6] });
+    expect(h.state().board!.posts.at(-1)).toMatchObject({ seq: 7, author: 'system', text: 'Your ask 6 to qa was resolved by the main agent without an answer of its own: The user signs it off; nothing for qa to do' });
+    expect(h.state().board!.asks).toBeUndefined();
+    // Reopened, it is owed again from then on, and the one asked is told.
+    expect(await h.worker(turn, 'resolve_post', { operationId: 'reopen', seq: 6, reopen: true })).toEqual({ reopened: [6] });
+    expect(h.state().board!.asks).toMatchObject([{ seq: 6, at: now }]);
+    expect(h.state().board!.asks![0]).not.toHaveProperty('told');
+    expect(h.state().board!.posts.at(-1)).toMatchObject({ seq: 8, author: 'system', text: expect.stringContaining('Ask 6 from dev was reopened: it needs an answer again (post_board({answers: 6, text}))') });
+    await h.finish(turn);
+    // An ask is for what its author waits on, so one author has only so many open.
+    for (let count = 0; count < 8; count++) await h.call('post_board', { text: `Question ${count}`, to: ['qa'], ask: true });
+    await expect(h.call('post_board', { text: 'One more', to: ['qa'], ask: true })).rejects.toThrow('You have 8 asks open');
+    expect(await h.call('post_board', { text: 'One more, for whoever reads it', to: ['qa'] })).toMatchObject({ seq: 17, to: ['qa'] });
+    expect(h.state().board!.asks).toHaveLength(9);
   });
 
   it('wakes a waiting member on a post and reports quiet only when every member is parked with nothing to read', async () => {
@@ -1334,6 +1428,84 @@ describe('swarm', () => {
     expect(item().assignee).toBeUndefined();
     await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel_workflow', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
   }, 30_000);
+
+  it('tells those above the member asked, a level at a time, when an ask stays open, and lets a lead ask the main agent', async () => {
+    let ahead = 0;
+    const real = Date.now.bind(Date);
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => real() + ahead);
+    cleanup.push(async () => clock.mockRestore());
+    let release!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    cleanup.push(async () => release());
+    let h!: Awaited<ReturnType<typeof play>>;
+    const state = () => h.runtime.kernel.state(h.root.scopeId)!;
+    const id = (name: string) => state().agents!.find(agent => agent.key === name)!.agentId;
+    const name = (agentId: string) => state().agents!.find(agent => agent.agentId === agentId)!.key;
+    const asks = () => state().board?.asks ?? [];
+    const owed = (to: string) => asks().find(ask => ask.to === id(to))!.seq;
+    const reminders = () => state().board!.posts.filter(post => post.author === 'system' && post.overdue);
+    const notices = (kind: string) => state().events.filter(event => event.kind === kind);
+    // What a member does in a turn is fixed when the play starts; the seq of the ask it answers is known only then.
+    h = await play([
+      'await enqueueWork({key:"a", title:"A", input:1, queue:"q"});',
+      'return await swarm("Build the parser", {key:"s", lead:{name:"lead"}, members:[{name:"ql", leads:["q"]},{name:"w1", queue:"q"},{name:"peer"},{name:"busy"}]});',
+    ].join('\n'), {
+      busy: [{ hold }],
+      // Woken by the ask, w1 leaves it open; it may not take its own question past its leads.
+      w1: [{ work: true }, { calls: [['post_board', { text: 'May I skip the tests?', to: 'main', ask: true }]] }],
+      peer: [{}, { calls: [['post_board', { text: 'Which entry point does the parser export? I call it from the CLI.', to: ['w1'], ask: 1 }]] }],
+      lead: [{},
+        { get calls(): Array<[string, Record<string, unknown>]> { return [['post_board', { answers: owed('w1'), text: 'It exports parse_entry.' }]]; } },
+        { get calls(): Array<[string, Record<string, unknown>]> { return [['post_board', { answers: owed('lead'), text: 'Yes, the parser is done.' }], ['post_board', { text: 'May it ship without the fuzz run?', to: 'main', ask: 20 }]]; } }],
+    });
+    const main = h.runtime.bindMain(h.root.scopeId, 'continue'); cleanup.push(async () => main.release());
+    const post = (input: Record<string, unknown>) => callWorkflow('post_board', { operationId: randomUUID(), workflowId: state().workflowId, ...input }, main.env) as Promise<{ seq: number; to: string[] }>;
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(h.order).toEqual(expect.arrayContaining(['lead1', 'ql1', 'peer1', 'busy1', 'w11'])); }, { timeout: 10_000 });
+
+    await post({ text: 'Ask w1 for what you need.', to: ['peer'] });
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(h.order).toContain('w12'); expect(h.errors).toHaveLength(1); }, { timeout: 10_000 });
+    expect(h.errors[0]).toContain('Ask the lead above you (ql), which asks the main agent what it cannot answer itself');
+    const seq = owed('w1');
+    expect(asks()).toMatchObject([{ seq, from: id('peer'), to: id('w1'), within: 60_000 }]);
+    // Every turn of the member asked opens with what it owes, until it answers.
+    expect(h.specs.filter(spec => spec.resume?.id === 'w1').at(-1)!.prompt).toContain('1 ask waits for your answer (read_context, board.asks): answer it with post_board({answers: seq, text}) before other work');
+    expect(reminders()).toHaveLength(0);
+
+    // Its time runs out: the lead of w1's queue is told first, then the lead of the swarm, each once.
+    ahead += 61_000;
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(reminders()).toHaveLength(1); }, { timeout: 10_000 });
+    expect(reminders()[0]).toMatchObject({ to: [id('ql')], overdue: [seq], text: expect.stringContaining(`- ask ${seq} from peer to w1, 1 minutes old (w1 is between turns): "Which entry point does the parser export?`) });
+    expect(reminders()[0]!.text).toContain('You stand above the one asked: answer in its place with post_board({answers: seq, text})');
+    expect(asks()[0]!.told!.map(name)).toEqual(['ql']);
+    await h.runtime.tick();
+    expect(reminders()).toHaveLength(1);
+    ahead += 61_000;
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(reminders()).toHaveLength(2); }, { timeout: 10_000 });
+    expect(reminders()[1]).toMatchObject({ to: [id('lead')], overdue: [seq] });
+    // The lead answers in w1's place: the answer goes to peer, the ask is resolved, and the main agent never heard of it.
+    ahead += 3 * 60_000;
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(h.order).toContain('lead2'); expect(asks()).toHaveLength(0); }, { timeout: 10_000 });
+    const answer = state().board!.posts.find(item => item.answers === seq)!;
+    expect(answer).toMatchObject({ from: id('lead'), to: [id('peer')], text: 'It exports parse_entry.' });
+    expect(state().board!.posts.find(item => item.seq === seq)).toMatchObject({ ask: { within: 60_000 }, resolved: { from: id('lead'), see: answer.seq } });
+    expect(notices('ask_open')).toHaveLength(0);
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(h.order).toContain('peer3'); }, { timeout: 10_000 });
+
+    // An ask from the main agent does not wait out the lead's gathering of posts, and its answer comes back as a reply.
+    const asked = await post({ text: 'Is the parser done?', to: ['lead'], ask: true });
+    await vi.waitFor(async () => { await h.runtime.tick(); expect(h.order).toContain('lead3'); expect(notices('ask_open')).toHaveLength(1); }, { timeout: 10_000 });
+    expect(h.specs.filter(spec => spec.resume?.id === 'lead').at(-1)!.prompt).toContain('1 ask waits for your answer');
+    expect(notices('worker_reply')).toMatchObject([{ summary: expect.stringContaining(`lead 答复了你的第 ${asked.seq} 帖请求`) }]);
+    // The lead of the swarm has only the main agent above it, and asks it: the notice stands until the answer.
+    const request = notices('ask_open')[0]!;
+    expect(request).toMatchObject({ acknowledged: false, asks: [expect.any(Number)], summary: expect.stringMatching(/^lead 请你答复（第 \d+ 帖，它等 20 分钟；.*May it ship without the fuzz run\?$/) });
+    expect(await post({ text: 'No: run it first.', answers: request.asks![0] })).toMatchObject({ to: ['lead'], answers: request.asks![0] });
+    expect(notices('ask_open')).toMatchObject([{ acknowledged: true }]);
+    expect(asks()).toHaveLength(0);
+    expect(h.errors).toHaveLength(1);
+    release();
+    await h.runtime.kernel.call({ kind: 'main', scopeId: h.root.scopeId }, 'cancel_workflow', { operationId: randomUUID(), workflowId: state().workflowId, expectedStateVersion: state().stateVersion });
+  }, 60_000);
 
   it('rejects malformed swarms before starting any member', async () => {
     const run = async (options: unknown) => {

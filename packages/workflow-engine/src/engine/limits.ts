@@ -85,6 +85,9 @@ export const SWARM_MAX_HANDOFFS = 1024;
 export const BOARD_MAX_TOPICS = 64;
 /** Latest posts of each topic the board keeps the seq of, so they are found without reading the feed. */
 export const BOARD_TOPIC_RECENT = 8;
+/** Asks that may be open at once, on the board and from one asker: an ask is for what its author waits on, not for every post. */
+export const BOARD_MAX_ASKS = 128;
+export const BOARD_MAX_ASKS_EACH = 8;
 
 export const WORK_MAX_ITEMS = 4096;
 export const WORK_MAX_CLAIMS = 8192;

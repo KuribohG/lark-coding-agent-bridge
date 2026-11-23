@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { workflowDigest } from '../digest';
+import { openAsks } from '../asks';
 import { swarmSummary } from '../swarm';
 import { workerSelection } from '../execution';
 import { addArtifact, acknowledge, BUSY, findTask, readArtifact, requiredText, textArray } from '../kernel-state';
@@ -42,6 +43,7 @@ function fullSummary(ctx: KernelContext, state: WorkflowView): Summary {
     agents: state.agents ?? [],
     workQueue: state.workQueue ? workStatus(state, {}, ctx.now()) : undefined,
     swarms: (state.swarms ?? []).map(swarm => swarmSummary(state, swarm, ctx.now())),
+    ...(state.board?.asks?.length ? { asks: openAsks(state, ctx.now()) } : {}),
     waits: (state.waits ?? []).map(wait => ({ key: wait.key, status: wait.status, createdAt: wait.createdAt,
       kinds: wait.any.map(arm => arm.kind), selected: wait.result?.index })),
     parent: state.parent ? {workflowId:state.parent.workflowId,taskId:state.parent.taskId,depth:state.parent.depth,key:state.parent.key} : undefined,
@@ -72,7 +74,7 @@ function summaryLists(summary: Summary): SummaryList[] {
     const items = (holder as Summary | undefined)?.[field];
     if (Array.isArray(items)) lists.push({ path, holder: holder as Summary, field, items });
   };
-  for (const field of ['tasks', 'artifacts', 'sessions', 'agents', 'checkpoints', 'waits', 'children', 'events']) add(field, summary, field);
+  for (const field of ['tasks', 'artifacts', 'sessions', 'agents', 'checkpoints', 'waits', 'children', 'events', 'asks']) add(field, summary, field);
   for (const field of ['calls', 'workCalls', 'controlCalls', 'logs']) add(`script.${field}`, summary.script, field);
   add('mailbox.waits', summary.mailbox, 'waits');
   for (const swarm of summary.swarms as Summary[]) add(`swarms.${String(swarm.key)}.members`, swarm, 'members');

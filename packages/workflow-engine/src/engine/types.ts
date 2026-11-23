@@ -178,6 +178,34 @@ export interface BoardPost {
   text: string;
   createdAt: number;
   resolved?: PostResolution;
+  /**
+   * The post asks for an answer that its author waits for: of the one member in `to`, or of the main agent when `to`
+   * is empty. `within` is how long (ms) the author waits before those above the one asked are told.
+   */
+  ask?: { within: number };
+  /** The seq of the ask this post answers. */
+  answers?: number;
+  /** The seqs of the asks that this post, which the system made, tells its reader are still unanswered. */
+  overdue?: number[];
+}
+/**
+ * An ask that nobody has answered yet. Kept beside the posts, which leave the state as the board grows, so that the
+ * one asked is shown it at every turn and those above it are told when it stays open (asks.ts).
+ */
+export interface OpenAsk {
+  seq: number;
+  /** The agentId of the member that asked; absent when the main agent did. */
+  from?: string;
+  /** The agentId of the member that owes the answer; absent when the main agent does. */
+  to?: string;
+  /** When it was asked, or reopened. */
+  at: number;
+  within: number;
+  /** How the post begins, for those told of it. */
+  excerpt: string;
+  /** Who above the one asked has been told that it is unanswered (agentIds, or `main`), and when the last of them was. */
+  told?: string[];
+  toldAt?: number;
 }
 export interface SwarmMember {
   name: string;
@@ -295,6 +323,8 @@ export interface WorkflowBoard {
    * `resolved` is how many of the topic's posts are resolved now.
    */
   topics?: Record<string, { posts: number; recent: number[]; resolved?: number }>;
+  /** The asks that are open, oldest first. */
+  asks?: OpenAsk[];
 }
 
 export interface MailboxReceipt {
@@ -526,7 +556,7 @@ export interface WorkflowArtifact {
 
 export interface WorkflowEvent {
   id: string;
-  kind: 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed' | 'worker_reply' | 'worker_input_required' | 'swarm_stalled' | 'swarm_attention' | 'landing_attention' | 'review_due';
+  kind: 'binding_attention' | 'budget_attention' | 'script_result_ready' | 'script_failed' | 'worker_reply' | 'worker_input_required' | 'swarm_stalled' | 'swarm_attention' | 'landing_attention' | 'review_due' | 'ask_open';
   taskId?: string;
   artifactRef?: string;
   summary: string;
@@ -535,6 +565,8 @@ export interface WorkflowEvent {
    * has stopped, a branch that is halted. The notice is settled when that is no longer so, whoever saw to it.
    */
   subject?: string;
+  /** The seqs of the asks the notice is about: the ones the main agent is asked, or told are still unanswered. It is settled once none of them is open. */
+  asks?: number[];
   acknowledged: boolean;
   notified: boolean;
   /** Absent on events recorded before timing was tracked. */

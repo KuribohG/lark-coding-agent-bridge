@@ -152,6 +152,19 @@ function ownerOf(state: WorkflowView, name: string | undefined): SwarmView | und
 /** The swarm a member belongs to; its turns are scheduled by the kernel, not by script calls. */
 export const memberSwarm = ownerOf;
 
+/**
+ * The members that stand above a member while its swarm runs, the nearest first: the lead of the queue it consumes,
+ * then the lead of the swarm. Empty for the lead of a swarm, in a swarm without one, and for a member of no swarm:
+ * above those there is only the main agent.
+ */
+export function leadsAbove(state: WorkflowView, name: string): string[] {
+  const swarm = ownerOf(state, name);
+  if (!swarm || swarm.status !== 'running' || swarm.finish) return [];
+  const queue = swarm.members.find(member => member.name === name)!.queue;
+  const above = [queue ? queueLead(swarm, queue) : undefined, swarm.members.find(member => member.name === swarm.lead && !member.stopped)];
+  return [...new Set(above.flatMap(member => member && member.name !== name ? [member.name] : []))];
+}
+
 function nameTaken(state: WorkflowView, name: string): boolean {
   return Boolean(state.agents?.some(agent => agent.key === name) || ownerOf(state, name));
 }
@@ -402,6 +415,8 @@ function rules(swarm: SwarmView, member: MemberView): string {
     'The board:',
     '- The board is one ordered feed that every member can read. Post with post_board and name who must act in "to" (member names, or "all"); read with read_board.',
     '- Every post that names a member costs that member a turn. Post results, questions, hand-offs and blockers that someone must act on, with enough detail to act without asking back; do not post acknowledgements or thanks.',
+    '- When you cannot or should not go on without an answer, post it as an ask (post_board with ask, and in "to" the one member that owes the answer): it stays in front of that member until it answers, the answer comes back to you, '
+      + 'and those above that member are told when it stays unanswered. Answer an ask made of you with post_board({answers: seq, text}) before other work.',
     '- Give each post the topic of its workstream and keep that name; read and search one topic at a time instead of the whole feed. Topic "announce" carries rules and rulings from the lead and the main agent: the new ones are in read_context (board.announcements) every turn, and they bind you.',
     '- When a post needs nobody any more (your question was answered, what a post asked of you is done, a newer post replaces your conclusion), mark it with resolve_post and say how it ended. Reads skip resolved posts, so the board shows what is still open; searches still find them, so search before you ask or report something.',
   ].join('\n');
@@ -445,12 +460,15 @@ function reviewSteps(swarm: SwarmView, member: MemberView): string {
     + `and put members on finding out why and on other ways ${whole ? 'to the goal' : 'to deliver it'}. `;
 }
 
-function wakePrompt(swarm: SwarmView, member: MemberView, timed: boolean, queues?: string, own = 0): string {
+function wakePrompt(swarm: SwarmView, member: MemberView, timed: boolean, queues?: string, own = 0, asks = 0): string {
   const plans = coordinates(swarm, member);
   // A lead's own wake-up is its review; so is every few of the turns it is woken for, or a lead that sets none has none.
   const review = plans && (timed || (member.turns + 1) % REVIEW_EVERY_TURNS === 0);
   return `Swarm "${swarm.key}", wake-up ${member.turns + 1}${plans ? '' : ' of at most ' + swarm.maxTurns}: board posts that name you are in read_context (member.messages). `
     + (timed ? `The wake-up you set with wake_me is due${member.wakeNote ? ': ' + member.wakeNote : ''}. ` : '')
+    // Told at every turn until it is answered: an ask that the turn it arrived in left open is otherwise never seen again.
+    + (asks ? `${asks} ${asks > 1 ? 'asks wait' : 'ask waits'} for your answer (read_context, board.asks): answer ${asks > 1 ? 'each' : 'it'} with post_board({answers: seq, text}) before other work, `
+      + 'and when you cannot answer yet, say in that answer what it waits on. ' : '')
     + 'Follow the new announcements in read_context (board.announcements). Act on the posts, use read_board for wider context, and post what others need.'
     + (plans ? ` You ${member.name === swarm.lead ? 'are the lead' : `lead ${member.leads!.length > 1 ? 'queues' : 'queue'} ${quoted(member.leads!)}`}: you plan and judge and do not do the work yourself. `
       + (review ? reviewSteps(swarm, member)
@@ -588,7 +606,7 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       * (member.name === swarm.lead ? running.length : Math.max(1, running.filter(other => other.queue && member.leads?.includes(other.queue)).length)));
     // With nobody else working there is nothing to gather for, and the lead is woken at once.
     const gathering = (member: MemberView) => coordinates(swarm, member) && now - (taskOf(member)?.attempts.at(-1)?.endedAt ?? 0) < gap(member)
-      && swarm.members.some(other => other !== member && busy(other)) && !toldLately(member);
+      && swarm.members.some(other => other !== member && busy(other)) && !toldLately(member) && !askedFromAbove(member);
     // Queues whose consumers have run out of work while others are still busy: the lead that answers for the queue is
     // told at once, and the main agent when that did not help. A swarm that is idle altogether is the nudges' and the
     // stall's business.
@@ -696,6 +714,11 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
     // A starved queue does not wait for its lead's gathering gap: the notice wakes it for the turn that follows.
     const toldLately = (member: MemberView) => Object.entries(swarm.starved ?? {}).some(([name, entry]) => entry.fedAt === undefined && answersFor(swarm, name) === member
       && (entry.leadAt ?? 0) > (taskOf(member)?.attempts.at(-1)?.startedAt || 0));
+    // Nor does an ask from above, which someone who plans is waiting on: the main agent's, or the swarm lead's of the lead of a queue.
+    const leadId = lead && agentOf(lead)?.agentId;
+    const owes = (member: MemberView) => { const id = agentOf(member)?.agentId; return id === undefined ? [] : (state.board?.asks ?? []).filter(ask => ask.to === id); };
+    const askedFromAbove = (member: MemberView) => owes(member).some(ask => (ask.from === undefined || ask.from === leadId)
+      && ask.at > (taskOf(member)?.attempts.at(-1)?.startedAt || 0));
     // Once the lead has finished the swarm, the turns still running end it; nobody is woken again.
     // A wake-up the member set for itself is due; unlike posts it is not gathered, since the member chose the time.
     const due = (member: MemberView) => member.wakeAt !== undefined && member.wakeAt <= now;
@@ -754,7 +777,7 @@ function pumpSwarm(state: WorkflowView, swarm: SwarmView, nativeIdKind: (agentKi
       const key = retry ? prior!.scriptKey! : `@swarm/${swarm.id}/${turnCount(swarm)}`;
       const queued = member.queue ? work.get(member.queue)! : undefined;
       const own = queued?.kept.get(member.name)?.length ?? 0;
-      const call = { key, member: member.name, prompt: retry ? readText(state, prior!.objective) : opening ? openingPrompt(swarm, member) : wakePrompt(swarm, member, timed, standing(member), own),
+      const call = { key, member: member.name, prompt: retry ? readText(state, prior!.objective) : opening ? openingPrompt(swarm, member) : wakePrompt(swarm, member, timed, standing(member), own, owes(member).length),
         ...(member.role ? { role: member.role } : {}),
         ...(state.script?.readOnly ? { readOnly: true } : {}),
         ...(member.workflowTool ? { workflowTool: true } : {}), ...(member.workspace ? { workspace: member.workspace } : {}),

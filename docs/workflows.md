@@ -59,10 +59,10 @@ What a workflow raises with the main agent (a worker's reply, a review that is d
 An event does not always need `ack_events`:
 
 - A `worker_reply` or `review_due` only tells the main agent something. It is settled once a turn has it; the reply can be read again with `worker_messages`, and the next review is raised when it is due whether or not anyone acknowledged the last.
-- An event that reports a state is settled when the state has ended, whoever saw to it: a dry queue that stayed fed or that its lead put to rest, a failed member that was revived or retired, a stall that someone ended, a halted landing branch that was restored or adopted.
+- An event that reports a state is settled when the state has ended, whoever saw to it: a dry queue that stayed fed or that its lead put to rest, a failed member that was revived or retired, a stall that someone ended, a halted landing branch that was restored or adopted, an [ask](#asks-and-answers) that was answered or resolved.
 - The rest (the script's result or failure, a binding or budget warning, an outside commit the landing took in) stay until `ack_events`, and `complete` still requires that nothing is pending.
 
-`status`, the result of every change and the workflow context attached to the main agent's turn are a bounded summary (about 40,000 characters of JSON). Lists that grow with the workflow (`tasks`, `artifacts`, `sessions`, `agents`, `checkpoints`, `waits`, `children`, `events`, `script.calls` and the other script call lists, `mailbox.waits`, `swarms.<key>.members`) keep their latest entries, with tasks in progress kept before queued and finished ones; `taskCounts` counts tasks by status and `omitted` counts what each list left out. `status` with `{list, offset?, limit?}` returns one page of a list (16 entries by default, 64 at most) as `{list, stateVersion, total, offset, nextOffset, items}`.
+`status`, the result of every change and the workflow context attached to the main agent's turn are a bounded summary (about 40,000 characters of JSON). Lists that grow with the workflow (`tasks`, `artifacts`, `sessions`, `agents`, `checkpoints`, `waits`, `children`, `events`, `asks`, `script.calls` and the other script call lists, `mailbox.waits`, `swarms.<key>.members`) keep their latest entries, with tasks in progress kept before queued and finished ones; `taskCounts` counts tasks by status and `omitted` counts what each list left out. `status` with `{list, offset?, limit?}` returns one page of a list (16 entries by default, 64 at most) as `{list, stateVersion, total, offset, nextOffset, items}`.
 
 ### Giving a workflow more time
 
@@ -284,9 +284,9 @@ Every workflow has one message board: an ordered, append-only feed that all of i
 
 | Caller | Post | Read | Resolve |
 | --- | --- | --- | --- |
-| Persistent member | `post_board` with `{operationId, text, to?, topic?}` | `read_board` with `{after?, limit?, member?, topic?, resolved?}` | `resolve_post` with `{operationId, seq, note?, see?, reopen?}` |
+| Persistent member | `post_board` with `{operationId, text, to?, topic?, ask?, answers?}` | `read_board` with `{after?, limit?, member?, topic?, resolved?}` | `resolve_post` with `{operationId, seq, note?, see?, reopen?}` |
 | One-off worker | not allowed | `read_board` | not allowed |
-| Main agent | `post_board(text, to?, topic?)` | `read_board(after?, limit?, member?, topic?, resolved?)` | `resolve_post(seq, note?, see?, reopen?)` |
+| Main agent | `post_board(text, to?, topic?, ask?, answers?)` | `read_board(after?, limit?, member?, topic?, resolved?)` | `resolve_post(seq, note?, see?, reopen?)` |
 | Script | `post(text, {key, to?, topic?})`, as `script` | `readBoard({key, after?, limit?, member?, topic?})` | none |
 | User | `/workflow post <text>`, as the main conversation | `/workflow board [count\|member\|#topic]` | through the main agent |
 
@@ -321,6 +321,20 @@ The board is append-only, so without anything else every question that was answe
 - A delivery of a post that has been resolved by the time its recipient reads it carries `resolved` as well: somebody already dealt with it.
 - The mark is part of the post wherever the post is kept: resolving one that has left the state changes its archived entry, the only kind of archived entry that is ever rewritten.
 - `/workflow board` lists resolved posts with their resolution and a shortened text, and gives the number of resolved posts beside each total.
+
+#### Asks and answers
+
+A post tells. Nothing about it says that its author is waiting, so a question depends on its reader's attention in the one turn the post arrives in: a reader that ends that turn without answering never sees the post again, and the author, asleep until someone names it, cannot tell an answer that is coming from one that is not. An ask is a post whose author waits for an answer from one named reader:
+
+- `post_board` with `ask` makes the post an ask. `ask` is `true`, or the minutes the author can wait (1–1440; `true` waits 15). `to` names the one member that owes the answer, and only `to` does: a name in the text of a question is as often its subject as its addressee. The main agent and persistent members ask; scripts do not. A member with no lead above it (the lead of a swarm, a member of a swarm without one, a member of no swarm) may ask the main agent with `to: "main"`; any other member asks the lead above it.
+- The ask is open until its post is resolved. While it is open, the member asked is shown it at every turn, in `read_context` as `board.asks` (oldest first, `{seq, from, to, at, withinMinutes, overdue?, told?, text}` with the beginning of the text) and, in a swarm, in the first lines of its wake-up. The asker's own open asks are in `board.asked`. `status` lists every open ask under `asks`.
+- `post_board` with `answers: seq` answers an ask. The answer is an ordinary post, delivered to whoever asked (and to anyone else it names) in the topic of the ask, and it resolves the ask with `see` in the same step. The member asked, a lead and the main agent may answer. When the main agent asked, the answer reaches it as a `worker_reply` event.
+- `resolve_post` closes an ask without an answer post: by its author, when it no longer waits, or by one of those who may answer, with a `note`. The author is told how it ended unless it closed the ask itself. `resolve_post` with `reopen` makes the ask owed again, and the one asked is told.
+- When the time the author gave has run out, those who stand above the member asked are told, one level at a time, each after that time again: the lead of the queue it consumes, the lead of the swarm, then the main agent (an `ask_open` event, no sooner than 30 minutes after the ask was made). Each is told once, of everything that is due in one post, with how the member asked stands (in a turn, between turns, stopped) and what it can do: answer in its place, reach it in its turn with `tell_worker`, or resolve what needs no answer. An author that itself stands above the member asked, as the main agent always does, is the only one told: it can see to its own ask.
+- An ask addressed to the main agent raises an `ask_open` event at once. Like the events that report a state, an `ask_open` event is settled when none of the asks it names is open any more.
+- At most 128 asks are open on a board and 8 from one author. Topic `announce` takes no asks: an announcement is for everyone, an ask for one reader.
+
+An ask carries no meaning beyond "this needs an answer from you, and I am waiting": what is asked may be a ruling, a review, a fact, or the confirmation of a hand-off. What the answer permits or forbids is for the charter, the items and the landing configuration to say.
 
 Not done: members do not subscribe to topics, and nothing assigns a topic from the queue or work item a member holds; the per-turn summary lists every topic.
 
@@ -438,7 +452,7 @@ Members can use their scoped CLI to call:
 
 - `read_context` / `task_status`: inspect their own checkpoint, fixed input batch and current checkpoint version.
 - `checkpoint` with `{operationId, expectedCheckpointVersion, state}`: save up to 16000 characters of JSON work state. Record progress, decisions, next steps and artifact paths. This does not finish the turn or acknowledge input messages.
-- `post_board` with `{operationId, text, to?}`: post to the workflow's board; a post that names a member is delivered to its inbox. There is no private member-to-member message: what members tell each other is on the board for the rest to read.
+- `post_board` with `{operationId, text, to?, topic?, ask?, answers?}`: post to the workflow's board; a post that names a member is delivered to its inbox, `ask` makes it an [ask](#asks-and-answers) and `answers` the answer to one. There is no private member-to-member message: what members tell each other is on the board for the rest to read.
 - `resolve_post` with `{operationId, seq, note?, see?, reopen?}`: mark its own posts and the posts that name it as [resolved](#resolved-posts) once they need nobody any more.
 
 Worker operation IDs are scoped to the logical turn and deduplicated across attempts. Stale attempt credentials cannot update checkpoints or send messages. The main agent can inspect the latest work state with `read_checkpoint({member})`, and can reach a member's inbox with `post_board` and `to`, including while paused or interrupted; queuing a message does not resume a paused workflow. Members cannot change their execution binding, mutate another member's checkpoint, or create more workers.

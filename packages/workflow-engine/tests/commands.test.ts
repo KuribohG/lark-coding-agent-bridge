@@ -218,5 +218,8 @@ describe('Lark workflow commands', () => {
     expect(marked).toContain('主题：#general 2（已解决 1），#announce 1');
     expect(marked).toMatch(/#1 主会话 → 未点名 · .* UTC\n {2}先看 .*\n {2}✓ 已解决（主会话）：已并入 .* 见 #2\n#2 /);
     expect(marked).not.toMatch(/#2 [^\n]*\n[^\n]*\n {2}✓/);
+    // An ask is shown as one for as long as it waits for its answer.
+    await f.kernel.call({ kind: 'main', scopeId: 'topic' }, 'post_board', { operationId: 'ask', workflowId: current.workflowId, text: '解析器走哪个分支？', to: ['qa'], ask: true });
+    expect(await f.command('board')).toMatch(/#4 主会话 → @qa · .* UTC · 请求，待答复\n {2}解析器走哪个分支？/);
   });
 });

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { WorkflowStopped, stopReasonOf } from './ports';
 import { workflowDigest } from './digest';
 import { abandonHeldClaims, adoptWorkClaims, cancelWork, expireWorkClaims, freezeWorkClaims, releaseWorkClaims, workContext } from './work-queue';
+import { pumpAsks } from './asks';
 import { charterPrompt, pumpMainWake } from './steering';
 import { plansWork, pumpSwarms } from './swarm';
 import { settleEventWaits } from './event-waits';
@@ -281,6 +282,7 @@ export class WorkflowScheduler {
       store.transact(() => {
         settleEventWaits(state, ctx.now());
         pumpSwarms(state, kind => ctx.nativeIdKind(kind), ctx.now(), ctx.children.remainingTreeTasks(state));
+        pumpAsks(state, ctx.now());
         pumpMainWake(state, ctx.now());
         // While the script runs, what has long settled leaves the state; once it stops, what remains stays for review.
         if (state.script?.status === 'running' && ctx.now() - (this.archivedAt.get(state.workflowId) ?? 0) >= ARCHIVE_EVERY_MS) {

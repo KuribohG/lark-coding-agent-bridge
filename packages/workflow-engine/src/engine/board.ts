@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { availableMessages, member } from './durable-agents';
 import { boardTotal, postBySeq, resolutionView } from './kernel-state';
+import { openAsk } from './evolve';
 import { emit, recordsOf } from './kernel-store';
 import { BOARD_ANNOUNCE_TOPIC, BOARD_DEFAULT_TOPIC, BOARD_MAX_DELIVERIES, BOARD_MAX_TOPICS, MAX_NAMED_MEMBERS } from './limits';
 import { boundedInteger, scriptText } from './script-contract';
 import { matchFields, SEARCH_ARCHIVE_ROWS, searchTerms, storedTerms } from './search';
-import type { AgentView, BoardAuthor, BoardPost, Immutable, MailboxMessage, PostResolution, TaskView, WorkflowView } from './types';
+import type { AgentView, BoardAuthor, BoardPost, Immutable, MailboxMessage, OpenAsk, PostResolution, TaskView, WorkflowView } from './types';
 
 /** Topic of the mailbox messages that deliver board posts; `receive(member,{topic})` can select or skip them. */
 const BOARD_TOPIC = 'board';
@@ -14,6 +15,8 @@ const NAME_END = '(?![A-Za-z0-9_\\-/]|\\.[A-Za-z0-9])';
 const TOPIC = /^[a-z0-9][a-z0-9_.-]{0,39}$/;
 /** Announcements a member is handed in one turn; a longer backlog is read with read_board({topic}). */
 const DIGEST_ANNOUNCEMENTS = 5;
+/** Open asks a member's turn is shown of each kind: the ones it owes an answer to and the ones it waits on. */
+const DIGEST_ASKS = 8;
 /** Posts one resolve_post call may name. */
 const RESOLVE_MAX_POSTS = 32;
 const RESOLVE_MAX_NOTE = 500;
@@ -49,9 +52,12 @@ function recipients(state: WorkflowView, text: string, to: unknown, sender?: str
 
 /**
  * Appends a post and delivers it to its recipients' inboxes, which wakes the ones waiting for a message. `literal`
- * is for posts that quote text the sender did not write: an `@name` in it names nobody.
+ * is for posts that quote text the sender did not write: an `@name` in it names nobody. `ask`, `answers` and `overdue`
+ * mark the post as an ask, as the answer to one, or as the system's reminder of open ones; who may ask whom, and what
+ * follows from an answer, is decided by the caller (asks.ts).
  */
-export function postToBoard(state: WorkflowView, sender: { agentId: string } | { author: BoardAuthor }, input: { text?: unknown; to?: unknown; topic?: unknown }, now: number, options: { literal?: boolean } = {}): { seq: number; postId: string; to: string[]; topic?: string } {
+export function postToBoard(state: WorkflowView, sender: { agentId: string } | { author: BoardAuthor }, input: { text?: unknown; to?: unknown; topic?: unknown }, now: number,
+  options: { literal?: boolean; ask?: { within: number }; answers?: number; overdue?: number[] } = {}): { seq: number; postId: string; to: string[]; topic?: string } {
   const text = scriptText(input.text, 'post', POST_MAX_TEXT);
   if (!text.trim()) throw new Error('Post text must not be empty');
   const from = 'agentId' in sender ? sender.agentId : undefined;
@@ -67,13 +73,14 @@ export function postToBoard(state: WorkflowView, sender: { agentId: string } | {
   const delivered = (state.mailbox?.messages ?? []).filter(message => message.post !== undefined).length;
   if (delivered + target.agents.length > BOARD_MAX_DELIVERIES) throw new Error('Board delivery limit reached; address fewer members');
   const post: BoardPost = { seq: boardTotal(state) + 1, id: randomUUID(), ...(from ? { from } : { author: (sender as { author: BoardAuthor }).author }),
-    to: target.agents.map(agent => agent.agentId), ...(target.all ? { all: true } : {}), ...(topic === BOARD_DEFAULT_TOPIC ? {} : { topic }), text, createdAt: now };
+    to: target.agents.map(agent => agent.agentId), ...(target.all ? { all: true } : {}), ...(topic === BOARD_DEFAULT_TOPIC ? {} : { topic }), text, createdAt: now,
+    ...(options.ask ? { ask: options.ask } : {}), ...(options.answers === undefined ? {} : { answers: options.answers }), ...(options.overdue ? { overdue: options.overdue } : {}) };
   const deliveries: MailboxMessage[] = post.to.map(to => ({ id: randomUUID(), to, ...(from ? { from } : {}), text: '', topic: BOARD_TOPIC, createdAt: now, post: post.seq }));
   emit(state, { type: 'board_posted', post, deliveries });
   return { seq: post.seq, postId: post.id, to: target.agents.map(agent => agent.key), ...(post.topic ? { topic: post.topic } : {}) };
 }
 
-function memberName(state: WorkflowView, agentId: string): string {
+export function memberName(state: WorkflowView, agentId: string): string {
   return state.agents?.find(agent => agent.agentId === agentId)?.key ?? agentId;
 }
 
@@ -121,19 +128,30 @@ export function resolvePosts(state: WorkflowView, by: { agentId: string } | { au
   const changed: number[] = [], unchanged: number[] = [];
   for (const post of posts) {
     if (Boolean(post.resolved) !== reopen) { unchanged.push(post.seq); continue; }
-    emit(state, { type: 'board_post_resolved', seq: post.seq, postId: post.id, topic: topicOf(post), ...(resolved ? { resolved } : {}) });
+    // A reopened ask is owed again from now on, and nobody has been told of it yet.
+    emit(state, { type: 'board_post_resolved', seq: post.seq, postId: post.id, topic: topicOf(post), ...(resolved ? { resolved } : post.ask ? { ask: openAsk(post, now) } : {}) });
     changed.push(post.seq);
   }
   return { ...(changed.length ? { [reopen ? 'reopened' : 'resolved']: changed } : {}), ...(unchanged.length ? { unchanged } : {}) };
 }
 
-interface BoardPostView { seq: number; from: string; to: string[]; all?: true; topic?: string; text: string; at: number; resolved?: ReturnType<typeof resolutionView> }
+interface BoardPostView { seq: number; from: string; to: string[]; all?: true; topic?: string; text: string; at: number; ask?: { withinMinutes: number }; answers?: number; resolved?: ReturnType<typeof resolutionView> }
 
 /** A post as readers see it. `marks: false` leaves out whether it is resolved, for reads that a replay must repeat. */
 function postView(state: WorkflowView, post: Immutable<BoardPost>, marks = true): BoardPostView {
   return { seq: post.seq, from: post.from ? memberName(state, post.from) : post.author ?? 'main', to: post.to.map(id => memberName(state, id)),
     ...(post.all ? { all: true as const } : {}), ...(post.topic ? { topic: post.topic } : {}), text: post.text, at: post.createdAt,
+    ...(post.ask ? { ask: { withinMinutes: post.ask.within / 60_000 } } : {}), ...(post.answers === undefined ? {} : { answers: post.answers }),
     ...(marks && post.resolved ? { resolved: resolutionView(state, post.resolved) } : {}) };
+}
+
+/**
+ * An open ask as those who are not reading its post are shown it: who asked whom and when, how it begins, and whom
+ * the system has told that it is still unanswered. `overdue` once the time its author gave has passed.
+ */
+export function askView(state: WorkflowView, ask: Immutable<OpenAsk>, now: number): { seq: number; from: string; to: string; at: number; withinMinutes: number; overdue?: true; told?: string[]; text: string } {
+  return { seq: ask.seq, from: ask.from ? memberName(state, ask.from) : 'main', to: ask.to ? memberName(state, ask.to) : 'main', at: ask.at, withinMinutes: ask.within / 60_000,
+    ...(now - ask.at >= ask.within ? { overdue: true as const } : {}), ...(ask.told?.length ? { told: ask.told.map(who => who === 'main' ? who : memberName(state, who)) } : {}), text: ask.excerpt };
 }
 
 interface BoardTopicView { topic: string; posts: number; lastSeq: number; resolved?: number }
@@ -157,9 +175,14 @@ export function boardTopics(state: Pick<WorkflowView, 'board' | 'archivedRecords
  * was scheduled, in full, and for each topic how many posts it holds and how many of them are new. `new` counts the
  * posts still in the state; `older` is how many new posts have left it, which the topics' totals still include.
  * Posts resolved in the meantime are neither announced nor counted as new: nobody needs to read them.
+ *
+ * `asks` are the open asks the member owes an answer to, at every turn until each is answered, and `asked` the ones
+ * of its own that it still waits on.
  */
-export function boardDigest(state: WorkflowView, task: TaskView): unknown {
+export function boardDigest(state: WorkflowView, task: TaskView, now: number): unknown {
   if (!task.agentId) return undefined;
+  const owed = (state.board?.asks ?? []).filter(ask => ask.to === task.agentId);
+  const waiting = (state.board?.asks ?? []).filter(ask => ask.from === task.agentId);
   const since = task.boardSince ?? 0;
   const fresh = new Map<string, number>();
   for (const post of state.board?.posts ?? []) if (post.seq > since && !post.resolved) fresh.set(topicOf(post), (fresh.get(topicOf(post)) ?? 0) + 1);
@@ -172,7 +195,10 @@ export function boardDigest(state: WorkflowView, task: TaskView): unknown {
   return { lastSeq: boardTotal(state), since, ...(older > 0 ? { older } : {}),
     topics: boardTopics(state).map(topic => ({ ...topic, new: fresh.get(topic.topic) ?? 0 })),
     announcements: unseen.map(post => postView(state, post)),
-    ...(missed > 0 ? { moreAnnouncements: missed } : {}) };
+    ...(missed > 0 ? { moreAnnouncements: missed } : {}),
+    // The oldest first: what has waited longest is answered first.
+    ...(owed.length ? { asks: owed.slice(0, DIGEST_ASKS).map(ask => askView(state, ask, now)), ...(owed.length > DIGEST_ASKS ? { moreAsks: owed.length - DIGEST_ASKS } : {}) } : {}),
+    ...(waiting.length ? { asked: waiting.slice(0, DIGEST_ASKS).map(ask => askView(state, ask, now)) } : {}) };
 }
 
 /**

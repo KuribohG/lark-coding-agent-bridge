@@ -33,7 +33,7 @@ export const memberContextTools: WorkflowToolPlugin = {
     {
       name: 'read_context',
       worker: {
-        call: (ctx, state, task) => ({ goal: state.goal, charter: charterView(state, task), objective: readText(state, task.objective), inputRefs: task.inputRefs, member: memberContext(state, task), board: boardDigest(state, task), workQueue: workContext(state, task),
+        call: (ctx, state, task) => ({ goal: state.goal, charter: charterView(state, task), objective: readText(state, task.objective), inputRefs: task.inputRefs, member: memberContext(state, task), board: boardDigest(state, task, ctx.now()), workQueue: workContext(state, task),
           ...(task.workflowTool ? {workflows:nestedContext(ctx.store.descendants(state,task.taskId),task)} : {}) }),
       },
     },

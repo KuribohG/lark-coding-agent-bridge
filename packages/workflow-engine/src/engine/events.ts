@@ -1,5 +1,5 @@
 import type {
-  DirectMessage, AgentCheckpoint, BoardPost, DurableAgent, MailboxMessage, MainWake, MailboxReceipt, PostResolution, SessionBinding, StoredArtifact, StoredTask, SwarmMember, TurnAttempt, WorkClaim,
+  DirectMessage, AgentCheckpoint, BoardPost, DurableAgent, MailboxMessage, MainWake, MailboxReceipt, OpenAsk, PostResolution, SessionBinding, StoredArtifact, StoredTask, SwarmMember, TurnAttempt, WorkClaim,
   WorkerExecutionSelection, WorkflowData, WorkflowEvent, WorkflowScript, WorkflowStopReason, WorkflowSwarm, WorkflowWait, WorkflowWorkItem,
 } from './types';
 import type { RecordKind } from './records';
@@ -89,9 +89,10 @@ export type DomainEvent =
   | { type: 'board_posted'; post: BoardPost; deliveries: MailboxMessage[] }
   /**
    * A post was marked resolved, or reopened when `resolved` is absent. The post may have left the state; then the store
-   * writes the mark to its archived entry (kernel-store.ts), and `topic` is what the reducer counts it under.
+   * writes the mark to its archived entry (kernel-store.ts), and `topic` is what the reducer counts it under. `ask` is
+   * the ask that a reopened post is once more.
    */
-  | { type: 'board_post_resolved'; seq: number; postId: string; topic: string; resolved?: PostResolution }
+  | { type: 'board_post_resolved'; seq: number; postId: string; topic: string; resolved?: PostResolution; ask?: OpenAsk }
   | { type: 'direct_message_recorded'; taskId: string; message: DirectMessage }
   // Swarms
   | { type: 'swarm_created'; swarm: WorkflowSwarm }

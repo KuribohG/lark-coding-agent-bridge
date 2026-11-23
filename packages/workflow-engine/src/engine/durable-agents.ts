@@ -182,6 +182,7 @@ function messageView(state: WorkflowView, message: Immutable<MailboxMessage>, ma
   return { id: message.id, from: post ? post.from ? name(post.from) : post.author ?? 'main' : message.from ? name(message.from) : 'main',
     text: post ? post.text : message.text, ...messageMatch(message),
     ...(post ? { post: post.seq, to: post.to.map(name), ...(post.all ? { all: true } : {}),
+      ...(post.ask ? { ask: true } : {}), ...(post.answers === undefined ? {} : { answers: post.answers }),
       ...(marks && post.resolved ? { resolved: resolutionView(state, post.resolved) } : {}) } : {}) };
 }
 
