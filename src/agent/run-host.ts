@@ -35,6 +35,8 @@ const KEY_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
 const CONNECT_TIMEOUT_MS = 10_000;
 const PROBE_TIMEOUT_MS = 2_000;
 const MAX_SOCKET_PATH = 100;
+/** `sun_path` holds 104 bytes on macOS and 108 on Linux, terminator included. */
+const SOCKET_PATH_LIMIT = process.platform === 'darwin' ? 103 : 107;
 
 export function runHostsSupported(): boolean {
   return process.platform !== 'win32';
@@ -55,7 +57,38 @@ function runHostRoot(): string {
 
 function hostDir(key: string): string {
   if (!KEY_PATTERN.test(key)) throw new Error(`invalid run host key: ${key}`);
-  return join(runHostRoot(), key);
+  const dir = join(runHostRoot(), key);
+  const socketPath = join(dir, 'sock');
+  // Past the limit the kernel binds a truncated path instead of failing, which
+  // leaves a socket nobody can find and a bridge that cannot reattach.
+  if (socketPath.length > SOCKET_PATH_LIMIT) {
+    throw new Error(`run host socket path exceeds ${SOCKET_PATH_LIMIT} bytes: ${socketPath}`);
+  }
+  return dir;
+}
+
+/** Whether the process that recorded itself in this host directory still runs. */
+function hostProcessAlive(dir: string): boolean {
+  let pid: unknown;
+  try {
+    pid = (JSON.parse(readFileSync(join(dir, 'host.json'), 'utf8')) as { pid?: unknown }).pid;
+  } catch {
+    // No host ever recorded itself here, or its records are already gone.
+    return false;
+  }
+  if (typeof pid !== 'number' || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+  // An orphan that nobody has reaped yet has exited all the same.
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    return stat[stat.lastIndexOf(') ') + 2] !== 'Z';
+  } catch {
+    return true;
+  }
 }
 
 /** Running: a host answers on its socket. Exited: the agent finished and its output is complete. */
@@ -63,6 +96,9 @@ export async function probeRunHost(key: string): Promise<RunHostState> {
   const dir = hostDir(key);
   if (existsSync(join(dir, 'exit.json'))) return 'exited';
   if (!existsSync(join(dir, 'spec.json'))) return 'missing';
+  // A bound unix socket outlives the process that bound it: connects still
+  // complete against the leftover file, so answering starts with a live host.
+  if (!hostProcessAlive(dir)) return 'missing';
   const reachable = await new Promise<boolean>((resolve) => {
     const socket = connect(join(dir, 'sock'));
     const timer = setTimeout(() => { socket.destroy(); resolve(false); }, PROBE_TIMEOUT_MS);

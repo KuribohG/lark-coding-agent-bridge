@@ -1,7 +1,8 @@
 import { once } from 'node:events';
-import { existsSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, readlinkSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
+import { connect } from 'node:net';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ClaudeAdapter } from '../../src/agent/claude/adapter';
@@ -16,6 +17,7 @@ import {
   terminateRunHost,
 } from '../../src/agent/run-host';
 import type { AgentEvent, AgentRun } from '../../src/agent/types';
+import { runHostRootFor } from '../helpers/run-hosts';
 import { createTmpProfile, type TmpProfile } from '../helpers/tmp-profile';
 
 // A stream-json agent that waits for files the test creates, so a run can be
@@ -104,18 +106,21 @@ setInterval(() => { if (existsSync(dir + '/die')) process.exit(0); }, 20);
 describe.skipIf(process.platform === 'win32')('run host', () => {
   let tmp: TmpProfile;
   let previousRoot: string | undefined;
+  let hostsRoot: string;
   const keys: string[] = [];
 
   beforeEach(async () => {
     tmp = await createTmpProfile('run-host-');
     previousRoot = process.env.LARK_RUN_HOST_DIR;
-    process.env.LARK_RUN_HOST_DIR = join(tmp.root, 'hosts');
+    hostsRoot = runHostRootFor(tmp.root);
+    process.env.LARK_RUN_HOST_DIR = hostsRoot;
   });
 
   afterEach(async () => {
     for (const key of keys.splice(0)) await terminateRunHost(key, 500);
     if (previousRoot === undefined) delete process.env.LARK_RUN_HOST_DIR;
     else process.env.LARK_RUN_HOST_DIR = previousRoot;
+    rmSync(hostsRoot, { recursive: true, force: true });
     await tmp.cleanup();
   });
 
@@ -164,28 +169,38 @@ describe.skipIf(process.platform === 'win32')('run host', () => {
   }
 
   /** Every process holding a descriptor for this socket path, when the platform makes that visible. */
-  function socketOwners(socketPath: string): Array<{ pid: number; cmd: string }> | undefined {
+  function socketOwners(socketPath: string, extraPids: number[] = []): unknown {
     if (process.platform !== 'linux') return undefined;
     try {
       // The socket namespace inode in /proc/net/unix is not the file's st_ino.
-      const row = readFileSync('/proc/net/unix', 'utf8').split('\n')
-        .map(line => line.trim().split(/\s+/))
-        .find(columns => columns[columns.length - 1] === socketPath);
-      if (!row) return [];
-      const inode = `socket:[${row[row.length - 2]}]`;
-      const owners: Array<{ pid: number; cmd: string }> = [];
+      const rows = readFileSync('/proc/net/unix', 'utf8').split('\n').map(line => line.trim().split(/\s+/))
+        .filter(columns => columns[columns.length - 1] === socketPath);
+      const inodes = rows.map(columns => columns[columns.length - 2]).filter(inode => inode && inode !== '0');
+      const holders: Array<{ pid: number; cmd: string; fds: string[] }> = [];
       for (const pid of readdirSync('/proc').filter(name => /^\d+$/.test(name))) {
         let fds: string[];
         try { fds = readdirSync(`/proc/${pid}/fd`); } catch { continue; }
-        if (!fds.some(fd => { try { return readlinkSync(`/proc/${pid}/fd/${fd}`) === inode; } catch { return false; } })) continue;
+        const matches = fds.filter(fd => { try { const link = readlinkSync(`/proc/${pid}/fd/${fd}`); return inodes.some(inode => link === `socket:[${inode}]`); } catch { return false; } });
+        if (matches.length === 0) continue;
         let cmd = '';
         try { cmd = readFileSync(`/proc/${pid}/cmdline`, 'utf8').replaceAll('\0', ' ').trim().slice(0, 160); } catch { /* raced */ }
-        owners.push({ pid: Number(pid), cmd });
+        holders.push({ pid: Number(pid), cmd, fds: matches.map(fd => { try { return readlinkSync(`/proc/${pid}/fd/${fd}`); } catch { return fd; } }) });
       }
-      return owners;
-    } catch {
-      return undefined;
+      const extras = extraPids.map(pid => { try { return { pid, fds: readdirSync(`/proc/${pid}/fd`).map(fd => { try { return readlinkSync(`/proc/${pid}/fd/${fd}`); } catch { return fd; } }) }; } catch { return { pid, fds: 'gone' }; } });
+      return { rows, holders, extras };
+    } catch (error) {
+      return String(error);
     }
+  }
+
+  /** A fresh connect attempt, reported with its error code or 'CONNECTED'. */
+  function manualConnect(socketPath: string, timeoutMs = 2000): Promise<string> {
+    return new Promise(resolve => {
+      const socket = connect(socketPath);
+      const timer = setTimeout(() => { socket.destroy(); resolve('timeout'); }, timeoutMs);
+      socket.once('connect', () => { clearTimeout(timer); socket.destroy(); resolve('CONNECTED'); });
+      socket.once('error', (error: NodeJS.ErrnoException) => { clearTimeout(timer); resolve(`err:${error.code}`); });
+    });
   }
 
   /** What the run host's directory holds when a probe disagrees with the test's expectation. */
@@ -195,9 +210,11 @@ describe.skipIf(process.platform === 'win32')('run host', () => {
     };
     let entries: string[] = [];
     try { entries = readdirSync(dir); } catch { /* gone */ }
-    return JSON.stringify({ key, hostPid, hostAlive: alive(hostPid), entries,
-      socketOwners: socketOwners(join(dir, 'sock')), hostJson: read('host.json'),
-      spec: read('spec.json')?.slice(0, 300), hostLog: read('host.log') });
+    let childPid: number | undefined;
+    try { childPid = (JSON.parse(read('host.json') ?? '{}') as { childPid?: number }).childPid; } catch { /* no record */ }
+    return JSON.stringify({ key, hostPid, hostAlive: alive(hostPid), childPid, childAlive: childPid === undefined ? undefined : alive(childPid),
+      entries, socketOwners: socketOwners(join(dir, 'sock'), childPid === undefined ? [] : [childPid]),
+      hostJson: read('host.json'), spec: read('spec.json')?.slice(0, 300), hostLog: read('host.log') });
   }
 
   it('keeps a Claude run alive across a shutdown and replays it to the next bridge process', async () => {
@@ -455,7 +472,15 @@ describe.skipIf(process.platform === 'win32')('run host', () => {
     await until(() => !alive(host));
     // Nobody is left to end the agent or to record its exit.
     const state = await probeRunHost(key);
-    expect(state, hostDiagnostics(key, dir, host)).toBe('missing');
+    const extra = state === 'missing' ? {} : {
+      again: await probeRunHost(key),
+      manual: await manualConnect(join(dir, 'sock')),
+      sock: (() => {
+        try { const value = statSync(join(dir, 'sock')); return { isSocket: value.isSocket(), size: value.size, mtimeMs: value.mtimeMs }; }
+        catch (error) { return String(error); }
+      })(),
+    };
+    expect(state, JSON.stringify({ ...JSON.parse(hostDiagnostics(key, dir, host)), ...extra })).toBe('missing');
     expect(alive(pid)).toBe(true);
     expect(await terminateRunHost(key, 500)).toBe(false);
     expect(existsSync(dir)).toBe(true);

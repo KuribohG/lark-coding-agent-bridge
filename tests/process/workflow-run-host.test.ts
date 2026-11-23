@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { appendFile, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -14,6 +14,7 @@ import { ActiveRuns } from '../../src/runtime/active-runs';
 import { ProcessPool } from '../../src/runtime/process-pool';
 import { RunExecutor } from '../../src/runtime/run-executor';
 import { createBridgeWorkflowRuntime } from '../../src/workflows/bridge/runtime';
+import { runHostRootFor } from '../helpers/run-hosts';
 import { createTmpProfile, type TmpProfile } from '../helpers/tmp-profile';
 
 // A stream-json worker that records each process it runs as and finishes only once the test releases it.
@@ -85,12 +86,14 @@ const timer = setInterval(() => {
 describe.skipIf(process.platform === 'win32')('workflow workers under run hosts', () => {
   let tmp: TmpProfile;
   let previousRoot: string | undefined;
+  let hostsRoot: string;
   const closers: Array<() => Promise<void>> = [];
 
   beforeEach(async () => {
     tmp = await createTmpProfile('workflow-run-host-');
     previousRoot = process.env.LARK_RUN_HOST_DIR;
-    process.env.LARK_RUN_HOST_DIR = join(tmp.root, 'hosts');
+    hostsRoot = runHostRootFor(tmp.root);
+    process.env.LARK_RUN_HOST_DIR = hostsRoot;
   });
 
   afterEach(async () => {
@@ -98,6 +101,7 @@ describe.skipIf(process.platform === 'win32')('workflow workers under run hosts'
     for (const close of closers.splice(0).reverse()) await close().catch(() => {});
     if (previousRoot === undefined) delete process.env.LARK_RUN_HOST_DIR;
     else process.env.LARK_RUN_HOST_DIR = previousRoot;
+    rmSync(hostsRoot, { recursive: true, force: true });
     await tmp.cleanup();
   });
 

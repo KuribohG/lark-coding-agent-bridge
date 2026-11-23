@@ -1,5 +1,17 @@
-import { readdirSync } from 'node:fs';
+import { mkdtempSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { terminateRunHost } from '../../src/agent/run-host';
+
+/**
+ * A run host root whose socket paths fit `sun_path`. macOS's temp directory is
+ * long enough that `<root>/<key>/sock` overflows it, and a bind past the limit
+ * silently truncates the path instead of failing.
+ */
+export function runHostRootFor(base: string): string {
+  const preferred = join(base, 'hosts');
+  const limit = process.platform === 'darwin' ? 103 : 107;
+  return join(preferred, 'x'.repeat(36), 'sock').length <= limit ? preferred : mkdtempSync(join('/tmp', 'lrh-'));
+}
 
 /**
  * Points run hosts at a directory of the test's own. The returned function ends the agents still running under it,
