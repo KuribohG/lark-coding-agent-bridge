@@ -36,7 +36,7 @@ export class KernelOperations {
     const tool = this.tools.main(method);
     if (!tool) {
       // An agent that guessed a name corrects itself from the operations it does have.
-      throw new Error(`Unsupported workflow operation: ${method}${this.tools.worker(method) ? ' (a worker operation)' : ''}. Main agent operations: ${this.tools.mainNames().join(', ')}`);
+      throw new Error(`Unsupported workflow operation: ${method}${this.tools.worker(method) ? ' (a worker operation)' : ''}.${this.tools.replaced(method)} Main agent operations: ${this.tools.mainNames().join(', ')}`);
     }
     if (tool.kind === 'start' && caller.allowStart !== true) {
       throw new Error('Workflow start requires an explicit /workflow start or /workflow script command');
@@ -136,7 +136,7 @@ export class KernelOperations {
   private workerCall(caller: WorkerCaller, method: string, args: Record<string, unknown>): unknown {
     const [state, task] = this.workerBinding(caller);
     const tool = this.tools.worker(method);
-    if (!tool) throw new Error(`Operation not permitted for worker: ${method}${this.tools.main(method) ? ' (a main agent operation)' : ''}. Worker operations: ${this.tools.workerNames().join(', ')}`);
+    if (!tool) throw new Error(`Operation not permitted for worker: ${method}${this.tools.main(method) ? ' (a main agent operation)' : ''}.${this.tools.replaced(method)} Worker operations: ${this.tools.workerNames().join(', ')}`);
     return tool.call(this.ctx, state, task, caller, args);
   }
 

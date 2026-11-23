@@ -28,14 +28,15 @@ describe('Lark workflow commands', () => {
     expect(text).toContain('run_script'); expect(text).toContain('service/model-a'); expect(text).toContain('model-b');
     expect(text).toContain('主 agent 沿用当前会话'); expect(text).not.toContain('architecture-review');
   });
-  it('shows and replaces the charter', async () => {
-    const f=fixture(); expect(await f.command('charter')).toContain('当前没有工作流');
-    await f.start(); expect(await f.command('charter')).toContain('尚未设置目标单');
-    expect(await f.command('charter 与参考实现同约束点持平；报告不超过一页')).toContain('已更新为第 1 版');
-    expect(await f.command('charter')).toContain('与参考实现同约束点持平；报告不超过一页');
-    expect(await f.command('status')).toContain('目标单：第 1 版，主 agent 设定');
+  it('shows and replaces the goal', async () => {
+    const f=fixture(); expect(await f.command('goal')).toContain('当前没有工作流');
+    await f.start(); expect(await f.command('goal')).toContain('尚未设置目标');
+    expect(await f.command('goal 与参考实现同约束点持平；报告不超过一页')).toContain('已更新为第 1 版');
+    expect(await f.command('goal')).toContain('与参考实现同约束点持平；报告不超过一页');
+    expect(await f.command('status')).toContain('目标：第 1 版');
     expect(f.kernel.state('topic')!.charter).toMatchObject({version:1,by:'main'});
-    expect(await f.command('help')).toContain('/workflow charter');
+    expect(await f.command('help')).toContain('/workflow goal');
+    expect(await f.command('charter')).toContain('未知的工作流子命令');
   });
   it('shows usage, prevents duplicate starts and propagates queue rejection', async () => {
     const f=fixture(); expect(await f.command('start')).toContain('用法'); expect(f.submit).not.toHaveBeenCalled();
@@ -185,26 +186,26 @@ describe('Lark workflow commands', () => {
     expect(renderWorkflowProgress({ ...running, status: 'completed' as const }, 600_000)).toMatchObject({ status: '已完成', tone: 'done', settled: true });
     expect(renderWorkflowProgress({ ...running, status: 'cancelled' as const }, 600_000)).toMatchObject({ tone: 'cancelled', settled: true });
   });
-  it('posts to the board as the main conversation and shows the feed', async () => {
+  it('notes on the board as the main conversation, hands words to a member and shows the feed', async () => {
     const f = fixture(); await f.start();
     const state = f.kernel.state('topic')!;
     f.kernel.beginScript('topic', state.workflowId);
     expect(await f.command('board')).toBe('这个工作流的留言板还没有帖子。');
     expect(await f.command('post')).toContain('用法');
     await f.kernel.scriptAgent('topic', state.workflowId, state.script!.runId, { key: 'qa-init', member: 'qa', prompt: 'verify' });
-    expect(await f.command('post 先看 <README>')).toBe('已发帖 #1，未点名任何成员，不会唤醒成员。暂停或中断的工作流恢复后成员才会处理。');
-    expect(await f.command('post @qa 请复核解析器')).toContain('已发帖 #2，点名：@qa');
+    expect(await f.command('post 先看 <README>')).toBe('已记录 #1，不唤醒成员。要某个成员处理，用 /workflow post @成员名 <内容>。');
+    // Words that open with a member's name go to that member and not to the board; any other @word is text.
+    expect(await f.command('post @qa 请复核解析器')).toContain('留在它的消息里');
+    expect(f.kernel.state('topic')!.mailbox!.messages).toMatchObject([{ text: '请复核解析器' }]);
+    expect(await f.command('post @ghost 你好')).toContain('已记录 #2');
     const feed = await f.command('board');
     expect(feed).toContain('留言板：共 2 帖，显示最近 2 帖。');
     expect(feed).toContain('#1 主会话 → 未点名');
-    expect(feed).toMatch(/#2 主会话 → @qa · .* UTC\n {2}@qa 请复核解析器/);
     expect(await f.command('board 1')).not.toContain('#1 ');
-    expect(await f.command('board qa')).toContain('与 qa 相关 1 帖');
     expect(await f.command('board ghost')).toContain('未找到成员：ghost');
-    expect(renderWorkflowProgress(f.kernel.state('topic')!).markdown).toContain('**留言板**：2 帖，最新 #2 主会话：@qa 请复核解析器');
-    expect(f.kernel.state('topic')!.mailbox!.messages).toMatchObject([{ post: 2, topic: 'board' }]);
+    expect(renderWorkflowProgress(f.kernel.state('topic')!).markdown).toContain('**留言板**：2 帖，最新 #2 主会话：@ghost 你好');
     const current = f.kernel.state('topic')!;
-    await f.kernel.call({ kind: 'main', scopeId: 'topic' }, 'post_board', { operationId: 'ruling', workflowId: current.workflowId, text: '裁定：先过对拍', topic: 'announce' });
+    await f.kernel.call({ kind: 'main', scopeId: 'topic' }, 'note', { operationId: 'ruling', workflowId: current.workflowId, text: '裁定：先过对拍', topic: 'announce' });
     expect(await f.command('board')).toContain('主题：#general 2，#announce 1');
     const rulings = await f.command('board #Announce');
     expect(rulings).toContain('主题 #announce 1 帖，显示最近 1 帖。');
@@ -219,7 +220,8 @@ describe('Lark workflow commands', () => {
     expect(marked).toMatch(/#1 主会话 → 未点名 · .* UTC\n {2}先看 .*\n {2}✓ 已解决（主会话）：已并入 .* 见 #2\n#2 /);
     expect(marked).not.toMatch(/#2 [^\n]*\n[^\n]*\n {2}✓/);
     // An ask is shown as one for as long as it waits for its answer.
-    await f.kernel.call({ kind: 'main', scopeId: 'topic' }, 'post_board', { operationId: 'ask', workflowId: current.workflowId, text: '解析器走哪个分支？', to: ['qa'], ask: true });
+    await f.kernel.call({ kind: 'main', scopeId: 'topic' }, 'ask', { operationId: 'ask', workflowId: current.workflowId, text: '解析器走哪个分支？', to: 'qa' });
     expect(await f.command('board')).toMatch(/#4 主会话 → @qa · .* UTC · 请求，待答复\n {2}解析器走哪个分支？/);
+    expect(await f.command('board qa')).toContain('与 qa 相关 1 帖');
   });
 });

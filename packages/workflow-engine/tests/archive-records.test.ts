@@ -77,7 +77,7 @@ describe('archiving the other lists of a workflow', () => {
     const rounds = 80, each = 8;
     let first = '';
     for (let round = 0; round < rounds; round++) {
-      for (let index = 0; index < each; index++) await h.call('post_board', { text: `post ${round * each + index + 1}th`, to: index % 2 ? ['alice'] : 'all' });
+      for (let index = 0; index < each; index++) await h.mail({ kind: 'post', key: `post-${round}-${index}`, text: `post ${round * each + index + 1}th`, to: index % 2 ? ['alice'] : 'all' });
       const { receiptId } = await h.mail({ kind: 'receive', member: 'alice', key: 'inbox-' + round }) as { receiptId: string };
       first ||= receiptId;
       await h.turn('alice', 'turn-' + round);
@@ -102,10 +102,10 @@ describe('archiving the other lists of a workflow', () => {
     const found = await h.call('search_board', { query: '17TH POST', limit: 30 }) as { matches: number; hasMore: boolean; posts: Array<{ seq: number; snippet: string }> };
     expect(found.posts.map(post => post.seq)).toEqual([617, 517, 417, 317, 217, 117, 17]);
     expect(found).toMatchObject({ matches: 7, hasMore: false });
-    expect(found.posts[0]).toEqual({ seq: 617, from: 'main', to: ['alice'], all: true, snippet: 'post 617th', at: expect.any(Number) });
+    expect(found.posts[0]).toEqual({ seq: 617, from: 'script', to: ['alice'], all: true, snippet: 'post 617th', at: expect.any(Number) });
     expect(await h.call('search_board', { query: 'post 17th', limit: 2 })).toMatchObject({ matches: 7, hasMore: true, posts: [{ seq: 617 }, { seq: 517 }] });
     expect(await h.call('search_board', { query: 'post absent' })).toMatchObject({ matches: 0, posts: [] });
-    expect(await h.call('post_board', { text: 'one more' })).toMatchObject({ seq: total + 1 });
+    expect(await h.call('note', { text: 'one more' })).toMatchObject({ seq: total + 1 });
     expect((await h.call('status') as { mailbox: { totalMessages: number } }).mailbox.totalMessages).toBe(total);
 
     // The receive of the first round still yields its batch, to this run and to a replayed one.
@@ -123,7 +123,7 @@ describe('archiving the other lists of a workflow', () => {
     await h.start();
     await h.finish(await h.turn('alice', 'alice-init'));
     const total = KEEP_RECENT + 80;
-    for (let n = 1; n <= total; n++) await h.call('post_board', { text: `finding ${n}th`, ...(n === 7 ? { to: ['alice'] } : {}), ...(n % 2 ? {} : { topic: 'even' }) });
+    for (let n = 1; n <= total; n++) await h.mail({ kind: 'post', key: 'finding-' + n, text: `finding ${n}th`, ...(n === 7 ? { to: ['alice'] } : {}), ...(n % 2 ? {} : { topic: 'even' }) });
     await h.age();
     expect(h.state().archivedRecords).toMatchObject({ post: 80 });
     expect(h.state().board!.posts[0]!.seq).toBe(81);

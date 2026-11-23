@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import { postToBoard } from './board';
 import { workflowDigest } from './digest';
+import { tellMember } from './durable-agents';
 import { byId } from './evolve';
 import { archivedRecord, workItemByKey, workOperationByKey } from './kernel-state';
 import { emit, recordsOf } from './kernel-store';
@@ -88,6 +88,18 @@ function writePath(value: unknown): string {
   const parts = text.split('/').filter(part => part && part !== '.');
   if (parts.includes('..')) throw new Error('Write paths must not contain ..');
   return text.startsWith('/') ? '/' + parts.join('/') : parts.join('/') || '.';
+}
+
+function resourceKeys(supplied: unknown): string[] {
+  if (!Array.isArray(supplied) || supplied.length > 16) throw new Error('Work resources must be an array of at most 16 keys');
+  const resources = [...new Set(supplied.map(value => scriptText(value, 'resource key', 200)))].sort();
+  if (resources.some(resource => resource.trim() !== resource)) throw new Error('Resource keys must not contain surrounding whitespace');
+  return resources;
+}
+
+function writePaths(written: unknown): string[] {
+  if (!Array.isArray(written) || written.length > 16) throw new Error('Work writes must be an array of at most 16 paths');
+  return [...new Set(written.map(writePath))].sort();
 }
 
 /** Whether `path` is `tree` or lies under it. Relative and absolute paths never meet. */
@@ -197,7 +209,7 @@ function replaceable(state: WorkflowView, key: string, next: string, before: Rea
 /**
  * Replaces `old` by the item `next`: every unfinished item that waited on the old one waits on the new one instead,
  * and the old one, unless it is completed, is withdrawn. One that a member holds is withdrawn when that member's
- * claim ends without completing it; the member is told in a post, which it reads at its next turn, so whoever
+ * claim ends without completing it; the member is told in a message, which it reads at its next turn, so whoever
  * replaced the item speaks to it with tell_worker when it must stop now. Returns the keys of the items that now wait
  * on the replacement.
  *
@@ -213,12 +225,10 @@ function replace(state: WorkflowView, old: ItemView, next: string, now: number, 
   emit(state, { type: 'work_updated', itemId: old.id, supersededBy: next, at: now });
   if (old.status === 'pending' || old.status === 'failed') emit(state, { type: 'work_cancelled', itemIds: [old.id], at: now, reason: `Superseded by "${next}" (${by})` });
   const member = holder(state, old);
+  // A mailbox that cannot take the message leaves the item to say it: its member reads supersededBy on it.
   if (member) {
-    // A board that cannot take the post leaves the item to say it: its member reads supersededBy on it.
-    try {
-      postToBoard(state, { author: 'system' }, { to: [member], text: `Work item "${old.key}", which you held when this was posted, was replaced by "${next}" (by ${by === 'main' ? 'the main agent' : by}): what waited on it now waits on the replacement. `
-        + 'If you still hold it, stop and hand it back with release_claim; it is then withdrawn instead of returning to the queue. If you are about to finish, complete it: the result stands, though nothing waits on it any more.' }, now, { literal: true });
-    } catch { /* told by the item */ }
+    tellMember(state, member, `Work item "${old.key}", which you held when this was sent, was replaced by "${next}" (by ${by === 'main' ? 'the main agent' : by}): what waited on it now waits on the replacement. `
+      + 'If you still hold it, stop and hand it back with release_claim; it is then withdrawn instead of returning to the queue. If you are about to finish, complete it: the result stands, though nothing waits on it any more.', now);
   }
   return moved.map(other => other.key);
 }
@@ -300,13 +310,8 @@ export function enqueueWork(state: WorkflowView, args: Record<string, unknown>, 
   const title = scriptText(args.title, 'work title', 500);
   const input = json(args.input, 'Work input');
   const maxAttempts = boundedInteger(args.maxAttempts, 3, 1, 32);
-  const supplied = args.resources ?? [];
-  if (!Array.isArray(supplied) || supplied.length > 16) throw new Error('Work resources must be an array of at most 16 keys');
-  const resources = [...new Set(supplied.map(value => scriptText(value, 'resource key', 200)))].sort();
-  if (resources.some(resource => resource.trim() !== resource)) throw new Error('Resource keys must not contain surrounding whitespace');
-  const written = args.writes ?? [];
-  if (!Array.isArray(written) || written.length > 16) throw new Error('Work writes must be an array of at most 16 paths');
-  const writes = [...new Set(written.map(writePath))].sort();
+  const resources = resourceKeys(args.resources ?? []);
+  const writes = writePaths(args.writes ?? []);
   const origin = args.origin === undefined ? undefined : scriptText(args.origin, 'origin key', 160);
   const source = origin === undefined ? undefined : workItemByKey(state, origin);
   const named = args.assignee === undefined ? undefined : assigneeName(args.assignee);
@@ -329,7 +334,10 @@ export function enqueueWork(state: WorkflowView, args: Record<string, unknown>, 
   const items = state.workQueue?.items ?? [];
   const prior = workItemByKey(state, key);
   if (prior) {
-    if (prior.digest !== digest) throw new Error('Work key conflict: input is immutable across replay');
+    // A script repeats its calls on replay, so the item is held against the call that added it, not against what it
+    // says now: an item that was amended since still answers its first call.
+    if (prior.digest !== digest) throw new Error(`Work key conflict: "${key.slice(0, 80)}" was added with other content, and a call that adds an item is immutable across replay. `
+      + 'To change an item nobody has claimed, amend it with update_work({key, title?, input?, writes?, resources?}); to replace one, add the new item under another key with supersedes');
     return { itemId: prior.id, key };
   }
   if (origin !== undefined && !source) throw new Error('origin must be the key of an existing work item');
@@ -386,23 +394,25 @@ export function retryWork(state: WorkflowView, args: Record<string, unknown>, no
   if (authority(item) !== 'plans') throw new Error('Only the main agent, the swarm lead or the lead of its queue can retry a work item');
   if (item.status !== 'failed') throw new Error('Only failed work items can be retried');
   const attempts = boundedInteger(args.additionalAttempts, 1, 1, 8);
-  if (item.generation + attempts > 32) throw new Error('Work item attempt limit reached');
-  emit(state, { type: 'work_retried', itemId: item.id, maxAttempts: Math.max(item.maxAttempts, item.generation + attempts), at: now });
+  const failures = item.failures ?? 0;
+  if (failures + attempts > 32) throw new Error('Work item attempt limit reached');
+  emit(state, { type: 'work_retried', itemId: item.id, maxAttempts: Math.max(item.maxAttempts, failures + attempts), at: now });
   return { itemId: item.id, status: item.status, maxAttempts: item.maxAttempts };
 }
 
 /** An item as the caller that changed it is shown it: where it stands and, while it is pending, what still keeps it from being handed out. */
 function changedView(state: WorkflowView, found: ItemView): Record<string, unknown> {
   const waits = found.status === 'pending' ? waitsOn(state, found) : [];
-  return { itemId: found.id, key: found.key, queue: found.queue ?? 'default', status: found.status, priority: found.priority ?? 0, ...(found.gate ? { gate: true } : {}),
+  return { itemId: found.id, key: found.key, queue: found.queue ?? 'default', status: found.status, priority: found.priority ?? 0, ...(found.gate ? { gate: true } : {}), ...(found.revision ? { revision: found.revision } : {}),
     ...(found.hold ? { hold: true, ...(found.held?.reason ? { holdReason: found.held.reason } : {}) } : {}), ...(waits.length ? { waitsOn: waits.slice(0, 8) } : {}), ...assigned(state, found) };
 }
 
 /**
- * Changes an item that is not finished, for whoever plans its queue: `priority` moves it in the order items are handed
- * out, `hold` sets it aside (true, with the `reason`) or returns it (false), `assignee` gives it to one member (a
- * name) or back to the whole queue (null), `dependsOn` replaces what it waits on, `supersededBy` replaces it by
- * another item (see `replace`) and `cancel` withdraws it. Work that has become pointless otherwise stays in the queue
+ * Changes an item that is not finished, for whoever plans its queue: `title`, `input`, `writes` and `resources`
+ * rewrite what it asks for while nobody has claimed it, `priority` moves it in the order items are handed out, `hold`
+ * sets it aside (true, with the `reason`) or returns it (false), `assignee` gives it to one member (a name) or back
+ * to the whole queue (null), `dependsOn` replaces what it waits on, `supersededBy` replaces it by another item (see
+ * `replace`) and `cancel` withdraws it. Work that has become pointless otherwise stays in the queue
  * until a member claims it and gives it up. A claimed item is not cancelled here: its member is at work on it and is
  * the one to stop.
  *
@@ -410,19 +420,23 @@ function changedView(state: WorkflowView, found: ItemView): Record<string, unkno
  * something is not held: what it waits for is named in `dependsOn`, an item or a gate, and the item is handed out by
  * itself once that is done. The reason a hold must give is what tells the two apart later.
  */
+const AMENDABLE = ['title', 'input', 'writes', 'resources'];
+
 export function updateWork(state: WorkflowView, args: Record<string, unknown>, now: number, authority: WorkAuthority = () => 'plans', by = 'main'): unknown {
-  options(args, ['itemId', 'key', 'priority', 'hold', 'assignee', 'dependsOn', 'supersededBy', 'cancel', 'reason']);
+  options(args, ['itemId', 'key', 'priority', 'hold', 'assignee', 'dependsOn', 'supersededBy', 'cancel', 'reason', ...AMENDABLE]);
   const item = itemOf(state, args);
   const may = authority(item);
   if (args.cancel !== undefined && args.cancel !== true) throw new Error('cancel must be true');
   if (args.hold !== undefined && typeof args.hold !== 'boolean') throw new Error('hold must be boolean');
-  const changes = args.priority !== undefined || args.hold !== undefined || args.assignee !== undefined || args.dependsOn !== undefined;
+  const routes = args.priority !== undefined || args.hold !== undefined || args.assignee !== undefined || args.dependsOn !== undefined;
+  const amends = AMENDABLE.some(field => Object.hasOwn(args, field));
+  const changes = routes || amends;
   const replaces = args.supersededBy !== undefined;
-  if (!changes && !args.cancel && !replaces) throw new Error('Give priority, hold, assignee, dependsOn, supersededBy or cancel');
-  if (args.cancel && (changes || replaces) || replaces && changes) throw new Error('cancel withdraws the item and supersededBy replaces it; give either alone, not with priority, hold, assignee or dependsOn');
+  if (!changes && !args.cancel && !replaces) throw new Error('Give title, input, writes, resources, priority, hold, assignee, dependsOn, supersededBy or cancel');
+  if (args.cancel && (changes || replaces) || replaces && changes) throw new Error('cancel withdraws the item and supersededBy replaces it; give either alone, not with a change to the item');
   if (args.reason !== undefined && !args.cancel && args.hold !== true) throw new Error('reason belongs to cancel and to hold: true');
-  if (!may || may === 'added' && changes) throw new Error(may ? 'A member can only withdraw (cancel) or replace (supersededBy) an item it added; its priority, hold, assignee and dependsOn are for the lead that plans the queue'
-    : 'Only the main agent, the swarm lead, the lead of its queue or, to cancel or replace it, the member that added it can change a work item');
+  if (!may || may === 'added' && routes) throw new Error(may ? 'A member can amend (title, input, writes, resources), withdraw (cancel) or replace (supersededBy) an item it added; its priority, hold, assignee and dependsOn are for the lead that plans the queue'
+    : 'Only the main agent, the swarm lead, the lead of its queue or, to amend, cancel or replace it, the member that added it can change a work item');
   if (replaces) {
     const next = workItemByKey(state, scriptText(args.supersededBy, 'supersededBy', 160));
     if (!next) throw new Error('supersededBy is the key of an existing work item: add the replacement first, or add it with enqueue_work and supersedes');
@@ -438,7 +452,7 @@ export function updateWork(state: WorkflowView, args: Record<string, unknown>, n
     if (item.status === 'completed') throw new Error('Work item is already completed');
     if (item.status === 'claimed') {
       const member = holder(state, item);
-      throw new Error(`Work item is claimed${member ? ' by ' + member : ''}; tell that member to stop on the board, and cancel the item once it has returned to the queue`);
+      throw new Error(`Work item is claimed${member ? ' by ' + member : ''}; have that member stop and hand it back (tell_worker, for a lead and the main agent; ask otherwise), and cancel the item once it has returned to the queue`);
     }
     emit(state, { type: 'work_cancelled', itemIds: [item.id], at: now, reason: `Cancelled by ${by}` + (reason ? ': ' + reason : '') });
     // What waited on the item can no longer be claimed; whoever cancelled it decides what becomes of that work.
@@ -466,12 +480,27 @@ export function updateWork(state: WorkflowView, args: Record<string, unknown>, n
       if (prerequisites(state, dependency).has(item.key)) throw new Error(`"${key}" waits on this item, so this item cannot wait on it`);
     }
   }
-  const changed = { ...(priority !== undefined && priority !== (item.priority ?? 0) ? { priority } : {}),
+  // What an item asks for can be rewritten while nobody works from it. A plan that changed was once re-issued under
+  // new keys, since an item could not change; the old keys stayed behind, cancelled or set aside.
+  const amend: { title?: string; input?: unknown; writes?: string[]; resources?: string[] } = {};
+  if (amends) {
+    if (item.status === 'claimed') {
+      const member = holder(state, item);
+      throw new Error(`Work item is claimed${member ? ' by ' + member : ''}, which works from what the item said: tell that member what changed (tell_worker), or replace the item (supersededBy)`);
+    }
+    if (args.title !== undefined) { const title = scriptText(args.title, 'work title', 500); if (title !== item.title) amend.title = title; }
+    if (Object.hasOwn(args, 'input')) { const input = json(args.input, 'Work input'); if (JSON.stringify(input) !== JSON.stringify(item.input)) amend.input = input; }
+    if (args.writes !== undefined) { const writes = writePaths(args.writes); if (writes.join('\n') !== (item.writes ?? []).join('\n')) amend.writes = writes; }
+    if (args.resources !== undefined) { const resources = resourceKeys(args.resources); if (resources.join('\n') !== item.resources.join('\n')) amend.resources = resources; }
+    if (item.gate && (amend.writes?.length || amend.resources?.length)) throw new Error('A gate is a condition that nobody claims: it takes no resources or writes');
+  }
+  const changed = { ...(Object.keys(amend).length ? { amend } : {}), ...(priority !== undefined && priority !== (item.priority ?? 0) ? { priority } : {}),
     ...(hold !== undefined && (hold !== Boolean(item.hold) || hold && reason !== item.held?.reason) ? { hold, ...(hold ? { held: { by, at: now, reason } } : {}) } : {}),
     ...(assignee !== undefined && assignee !== (item.assignee ?? null) ? { assignee } : {}),
     ...(dependsOn && dependsOn.join('\n') !== (item.dependsOn ?? []).join('\n') ? { dependsOn } : {}) };
   if (Object.keys(changed).length) emit(state, { type: 'work_updated', itemId: item.id, ...changed, at: now });
-  return changedView(state, item);
+  if (changed.amend) capacity(state, changed.amend);
+  return { ...changedView(state, item), ...(changed.amend ? writeOverlaps(state, item) : {}) };
 }
 
 /**
@@ -502,9 +531,14 @@ export function settleWork(state: WorkflowView, args: Record<string, unknown>, n
     ...keysShown(held.map(other => other.key), 'stillOnHold', 'moreStillOnHold'), ...(rest.length > held.length ? { stillWaiting: rest.length - held.length } : {}) };
 }
 
+/**
+ * Ends a claim. `counted` says that the attempt failed through its member, which is what an item's attempts count:
+ * the member gave the item up, or its turn broke down. A claim that was handed back, ran out or was stopped from
+ * outside returns its item without using one up.
+ */
 function endClaim(state: WorkflowView, claim: ClaimView, now: number,
-  status: Exclude<WorkClaim['status'], 'active' | 'completed'>, reason: string, retry: boolean): void {
-  emit(state, { type: 'claim_ended', claimId: claim.id, status, reason: reason.slice(0, 1000), retry, at: now });
+  status: Exclude<WorkClaim['status'], 'active' | 'completed'>, reason: string, retry: boolean, counted = false): void {
+  emit(state, { type: 'claim_ended', claimId: claim.id, status, reason: reason.slice(0, 1000), retry, at: now, ...(counted ? { counted } : {}) });
 }
 
 /** A lease the engine extends on a member's behalf lasts this long, so a turn that has gone is noticed within it. */
@@ -525,11 +559,12 @@ export function expireWorkClaims(state: WorkflowView, now: number, held: (claim:
   return expired;
 }
 
-export function releaseWorkClaims(state: WorkflowView, now: number, reason: string, taskId?: string, attemptId?: string): void {
+/** Returns the claims of a turn, or of every turn, to the queue. `counted`: the turn broke down by itself (see `endClaim`). */
+export function releaseWorkClaims(state: WorkflowView, now: number, reason: string, taskId?: string, attemptId?: string, counted = false): void {
   for (const claim of state.workQueue?.claims ?? []) {
     if (claim.status === 'active' && (!claim.frozen || attemptId === claim.attemptId)
       && (!taskId || claim.taskId === taskId) && (!attemptId || claim.attemptId === attemptId)) {
-      endClaim(state, claim, now, 'cancelled', reason, true);
+      endClaim(state, claim, now, 'cancelled', reason, true, counted);
     }
   }
 }
@@ -603,7 +638,7 @@ export function availableWork(state: WorkflowView, name?: string): ItemView[] {
   for (const item of [...items].sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0))) {
     if (name !== undefined && (item.queue ?? 'default') !== name) continue;
     if (item.dependsOn?.some(key => workItemByKey(state, key)?.status !== 'completed')) continue;
-    if (item.status !== 'pending' || item.gate || item.hold || item.generation >= item.maxAttempts || item.resources.some(key => occupied.has(key))) continue;
+    if (item.status !== 'pending' || item.gate || item.hold || (item.failures ?? 0) >= item.maxAttempts || item.resources.some(key => occupied.has(key))) continue;
     available.push(item);
     for (const key of item.resources) occupied.add(key);
   }
@@ -684,7 +719,8 @@ export function workStatus(state: WorkflowView, args: Record<string, unknown> = 
     return {
     itemId: item.id, key: item.key, queue: item.queue ?? 'default', priority: item.priority ?? 0, dependsOn: item.dependsOn ?? [], title: item.title.slice(0, 120), ...(item.by ? { by: item.by } : {}),
     ...(item.origin ? { origin: item.origin } : {}), ...(item.assignee ? { assignee: item.assignee } : {}), ...(item.doneBy ? { doneBy: item.doneBy } : {}), status: item.status,
-    generation: item.generation, maxAttempts: item.maxAttempts, progressVersion: item.progress.version, ...(item.gate ? { gate: true } : {}),
+    generation: item.generation, ...(item.failures ? { failures: item.failures } : {}), maxAttempts: item.maxAttempts, progressVersion: item.progress.version,
+    ...(item.revision ? { revision: item.revision } : {}), ...(item.gate ? { gate: true } : {}),
     ...(item.hold ? { hold: true, ...(item.held ? { held: { ...item.held, ...(item.held.reason ? { reason: item.held.reason.slice(0, 160) } : {}) } } : {}) } : {}),
     ...(waits.length ? { waitsOn: waits.slice(0, 8) } : {}), ...(item.supersededBy ? { supersededBy: item.supersededBy } : {}), ...(item.settledBy ? { settledBy: item.settledBy } : {}),
     claim, ...(member ? { member } : {}),
@@ -767,7 +803,7 @@ export function mutateWork(state: WorkflowView, task: TaskView, attemptId: strin
   if (!task.agentId) throw new Error('Work claims require a persistent member');
   const allowed: Record<string, string[]> = {
     claim_work: ['leaseMs', 'queue'], checkpoint_work: ['expectedProgressVersion', 'state'],
-    complete_work: ['result'], fail_work: ['error', 'retry'], release_claim: ['reason'],
+    complete_work: ['result'], fail_work: ['error', 'retry'], release_claim: ['reason', 'waitFor'],
   };
   if (!allowed[method]) throw new Error('Unknown work queue mutation');
   options(args, ['operationId', ...(method === 'claim_work' ? [] : ['claimId', 'generation']), ...allowed[method]!]);
@@ -804,7 +840,7 @@ export function mutateWork(state: WorkflowView, task: TaskView, attemptId: strin
       if (item) {
         if (claims.length >= WORK_MAX_CLAIMS) throw new Error('Work claim history limit reached');
         const granted: WorkClaim = { id: randomUUID(), itemId: item.id, agentId: task.agentId, taskId: task.taskId, attemptId,
-          generation: item.generation + 1, leaseUntil: Math.min(now + leaseMs, state.deadlineAt), status: 'active', createdAt: now };
+          generation: item.generation + 1, progress: item.progress.version, leaseUntil: Math.min(now + leaseMs, state.deadlineAt), status: 'active', createdAt: now };
         emit(state, { type: 'work_claimed', claim: granted });
         claim = granted;
       }
@@ -832,14 +868,22 @@ export function mutateWork(state: WorkflowView, task: TaskView, attemptId: strin
         break;
       case 'fail_work': {
         if (args.retry !== undefined && typeof args.retry !== 'boolean') throw new Error('retry must be boolean');
-        endClaim(state, claim, now, 'failed', scriptText(args.error, 'work error', 1000), args.retry === true);
+        endClaim(state, claim, now, 'failed', scriptText(args.error, 'work error', 1000), args.retry === true, true);
         response = { itemId: item.id, status: item.status };
         break;
       }
-      case 'release_claim':
+      case 'release_claim': {
+        // What the item has to wait for before anyone takes it again: named here, it is not handed straight back out.
+        const waitFor = args.waitFor === undefined ? [] : dependencyKeys(args.waitFor).filter(key => key !== item.key);
+        if (waitFor.some(key => !workItemByKey(state, key))) throw new Error('waitFor names existing work keys: add the item or the gate it waits for first');
+        const waits = current(state, [...item.dependsOn ?? [], ...waitFor]);
+        const loop = waits.find(key => { const other = workItemByKey(state, key); return other && prerequisites(state, other).has(item.key); });
+        if (loop) throw new Error(`"${loop}" waits on this item, so this item cannot wait for it`);
         endClaim(state, claim, now, 'released', scriptText(args.reason, 'release reason', 1000), true);
-        response = { itemId: item.id, status: item.status };
+        if (waitFor.length && waits.join('\n') !== (item.dependsOn ?? []).join('\n')) emit(state, { type: 'work_updated', itemId: item.id, dependsOn: waits, at: now });
+        response = { itemId: item.id, status: item.status, ...(waitFor.length ? { waitsOn: waitsOn(state, item) } : {}) };
         break;
+      }
     }
   }
   emit(state, { type: 'work_operation_recorded', operation: { key, digest, response } });

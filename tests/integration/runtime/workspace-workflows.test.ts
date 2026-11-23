@@ -138,7 +138,9 @@ describe('workspace script runtime', () => {
       await gate; return 'done';
     });
     try {
-      await h.call('run_script', { script: `return await swarm('Write in parallel',{key:'crew',
+      // A member that does the work starts with its first item, so each of the two has one that is kept for it.
+      await h.call('run_script', { script: `await enqueueWork({key:'a',title:'A',input:1,assignee:'w0'}); await enqueueWork({key:'b',title:'B',input:2,assignee:'w1'});
+        return await swarm('Write in parallel',{key:'crew',
         lead:{name:'boss',harness:'codex',model:'lead'},members:[{name:'w0',harness:'codex',model:'worker'}]});` });
       await vi.waitFor(async () => { await h.runtime.tick(); expect(staffed?.workspaces).toHaveLength(1); }, { timeout: 20_000, interval: 30 });
       const id = staffed!.workspaces![0]!.workspace;

@@ -112,8 +112,9 @@ const MEMBER_INSTRUCTIONS = [
     + 'The bridge keeps your claim while your turn runs; you cannot renew it. When the turn ends, is cancelled or is stopped after a long silence, an unfinished claim returns to the queue with the progress you saved.',
   'Doing it: read item.progress first, which holds what an earlier attempt saved. checkpoint_work({operationId,claimId,generation,expectedProgressVersion,state}) saves progress as JSON; '
     + 'complete_work({operationId,claimId,generation,result}) finishes the item; fail_work({operationId,claimId,generation,error,retry?}) gives it up (retry: true only when another attempt could succeed); '
-    + 'release_claim({operationId,claimId,generation,reason}) hands it back as it is. input, progress and result hold at most 16000 characters each. '
-    + 'item.writeOverlaps lists the unfinished items that expect to change the same paths with nothing to order them (member says who holds one): agree on the board who changes what before you start. '
+    + 'release_claim({operationId,claimId,generation,reason,waitFor?}) hands it back as it is; waitFor: [keys] names the items it has to wait for, and it is handed out again once they are completed. '
+    + 'Only fail_work, and a turn of yours that broke off, count against the attempts an item has: handing an item back, or losing it to a restart, does not. input, progress and result hold at most 16000 characters each. '
+    + 'item.writeOverlaps lists the unfinished items that expect to change the same paths with nothing to order them (member says who holds one): ask that member who changes what before you start. '
     + 'item.neededBy lists the items that wait on yours and are handed out when you complete it: when yours is a check and it did not pass, end it with fail_work and say why, not with complete_work. '
     + 'Losing a claim does not undo what you changed outside the workflow: check what has already happened and make a repeat harmless.',
   'Landing code: when you run in a managed worktree and your system prompt names a Landing branch, deliver code with submit_work({operationId,claimId?,generation?,result?}). '
@@ -128,7 +129,7 @@ const MEMBER_INSTRUCTIONS = [
     + '{status:"check_failed",targetCommit,commands,reason?}: a check failed on your commits on top of targetCommit, which is what your worktree now holds. Repair, commit and submit again. '
     + 'If the failure looks unrelated to your change, note your commit (git rev-parse HEAD), check out targetCommit, run the same command and return to your commit. '
     + 'If targetCommit fails by itself the landing branch is broken: do not repair the changes of other members, and do not change a test, a check or an expected output to get past it. '
-    + 'Look for a report of it with search_work; if there is none, add one with enqueue_work (the failing command and its output) and name the lead in a post. Keep your commits and submit once the repair has landed. '
+    + 'Look for a report of it with search_work; if there is none, add one with enqueue_work (the failing command and its output). Keep your commits and submit once the repair has landed. '
     + '{status:"rejected",files,reason}: you changed paths this workflow does not let you change. Remove those changes (deletions and renames too) and submit again; do not work around it. '
     + '{status:"halted",reason}: the landing branch was changed outside the queue and landing is paused; the main agent has been told. Keep your commits and try again at your next turn.',
   'Adding work: enqueue_work({key,title,input,origin?,assignee?,queue?,priority?,dependsOn?,resources?,writes?,maxAttempts?}) adds work that someone has to do: '
@@ -145,21 +146,24 @@ const MEMBER_INSTRUCTIONS = [
   'Finding work: work_status({itemId or key}) reads one item in full; work_status({queue?,offset?,limit?}) pages through items (16 by default, 64 at most). '
     + 'search_work({query,queue?,status?,limit?}) searches every item, finished ones too: query is up to 8 words separated by spaces, matched as substrings without regard to case in key, title, input, result and error, all of which must occur. '
     + 'Hits in key or title come first, then the most recently changed; it returns limit hits (10 by default, 30 at most) with itemId, status, doneBy and a snippet.',
-  'Withdrawing work: update_work({operationId,key or itemId,cancel:true,reason?}) withdraws an item that you added and nobody has claimed; with supersededBy: key in place of cancel it is replaced by that item, '
-    + 'and what waited on it waits on that one. Everything else about an item is changed by whoever plans its queue.',
+  'Changing work you added: while nobody has claimed it, update_work({operationId,key or itemId,title?,input?,writes?,resources?}) amends what an item of yours asks for, cancel: true with reason withdraws it, '
+    + 'and supersededBy: key replaces it by that item, so that what waited on it waits on that one. Everything else about an item is changed by whoever plans its queue.',
   'Repeats and restarts: an operationId is unique within the current attempt of your turn, and repeating a call with the same content returns its first answer. In a new attempt, after a turn was cut short, you may claim again; a claimId and generation that expired can no longer be submitted. '
     + 'A turn that a bridge restart interrupted keeps its claim: go on with the same claimId and generation (the claim in your work queue context) instead of claiming again. After claim_work returned null, ask again with a new operationId.',
 ].join('\n');
 
-const LEAD_INSTRUCTIONS = 'Changing items: you plan the queues you lead (the lead of a swarm, every queue). update_work({operationId,key or itemId,priority?,hold?,assignee?,dependsOn?,supersededBy?,cancel?,reason?}) changes an unfinished item: '
+const LEAD_INSTRUCTIONS = 'Changing items: you plan the queues you lead (the lead of a swarm, every queue). '
+  + 'update_work({operationId,key or itemId,title?,input?,writes?,resources?,priority?,hold?,assignee?,dependsOn?,supersededBy?,cancel?,reason?}) changes an unfinished item: '
+  + 'title, input, writes and resources amend what it asks for while nobody has claimed it (revision counts the amendments); '
   + 'priority moves it in the order, assignee gives it to one member or, with null, back to the whole queue, dependsOn replaces what it waits on, and cancel: true withdraws it with reason; '
-  + 'blocks in the answer are the items that depended on it and can no longer be claimed. A claimed item cannot be cancelled: ask its member in a post to stop and hand it back, and cancel it once it is back in the queue. '
+  + 'blocks in the answer are the items that depended on it and can no longer be claimed. A claimed item is neither amended nor cancelled: tell_worker has its member stop and hand it back, or supersededBy replaces it. '
   + 'supersededBy: key replaces the item by another one instead: what waited on it waits on that one, and the item is withdrawn (one that a member holds, when its claim ends; tell_worker stops that member now). '
   + 'enqueue_work with supersedes: [keys] adds the replacement and does this in one call. Revise a plan this way: do not add new keys and keep the old ones on hold. '
   + 'hold: true sets an item aside by your decision and needs reason (what for, and what would bring it back); false returns it. Do not hold an item to make it wait: name what it waits for in dependsOn. '
   + 'What it waits for is an item or, when nobody in the workflow does it (an event outside, a decision, a release), a gate: enqueue_work({key,title,input,gate:true}) adds a condition that nobody claims, '
   + 'and settle_work({operationId,key or itemId,result}) declares it met, with what was established as result; the items that named it are then handed out by themselves, and the answer lists them. '
-  + 'settle_work likewise ends the wait for an unclaimed item whose work was done some other way. You are told once when an item on hold has nothing else in its way, and when an item waits on one that was cancelled or failed. '
+  + 'settle_work likewise ends the wait for an unclaimed item whose work was done some other way. An item on hold with nothing else in its way, one that waits on an item that was cancelled or failed, '
+  + 'a gate nobody has declared met and an item that keeps coming back without progress are to-dos of whoever planned them. '
   + 'retry_work({operationId,key or itemId,additionalAttempts?}) gives a failed item more attempts (1 by default, 8 at most) and returns it to the queue.';
 
 /** Durable work queues: the main agent produces and inspects items; persistent members claim and finish them. */
@@ -196,7 +200,7 @@ export const workQueueTools: WorkflowToolPlugin = {
     {
       name: 'update_work',
       // A new priority, a hold or a withdrawal changes one item; whichever of two such changes commits last stands.
-      main: { doc: 'update_work(itemId 或 key,priority?,hold?,assignee?,dependsOn?,supersededBy?,cancel?,reason?)', ...versioned((ctx, state, args) => updateWork(state, operationInput(args), ctx.now()), { allowInterrupted: true, appendOnly: true }) },
+      main: { doc: 'update_work(itemId 或 key,title?,input?,writes?,resources?,priority?,hold?,assignee?,dependsOn?,supersededBy?,cancel?,reason?)', ...versioned((ctx, state, args) => updateWork(state, operationInput(args), ctx.now()), { allowInterrupted: true, appendOnly: true }) },
       worker: { verifiesRoot: true,
         call: (ctx, state, task, _caller, args) => memberOperation(ctx, state, task, 'update_work', args, agent => updateWork(state, operationInput(args), ctx.now(), workAuthority(state, agent.key), agent.key)) },
     },

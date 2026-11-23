@@ -27,11 +27,11 @@ describe('workflow IPC', () => {
     const endpointFile = join(dir, 'endpoint.json');
     const first = new WorkflowIpc(async () => 'first', undefined, endpointFile); await first.listen();
     const binding = first.bind({ kind: 'worker', scopeId: 'topic', workflowId: 'w', taskId: 't', attemptId: 'a' }, Date.now() + 60_000);
-    expect(await callWorkflow('task_status', {}, binding.env)).toBe('first');
+    expect(await callWorkflow('read_context', {}, binding.env)).toBe('first');
     await first.close();
 
     const waits: string[] = [];
-    const pending = callWorkflow('task_status', {}, binding.env, { onWait: reason => waits.push(reason) });
+    const pending = callWorkflow('read_context', {}, binding.env, { onWait: reason => waits.push(reason) });
     await new Promise(resolve => setTimeout(resolve, 400));
     // The next controller listens elsewhere and knows the token only as one it has yet to bind.
     let bound = false;
@@ -43,7 +43,7 @@ describe('workflow IPC', () => {
     expect(await pending).toBe('second');
     expect(waits).toHaveLength(1);
     // A token nobody is going to bind is refused at once.
-    await expect(callWorkflow('task_status', {}, { ...binding.env, AGENT_WORKFLOW_TOKEN: 'f'.repeat(64) })).rejects.toThrow('revoked');
+    await expect(callWorkflow('read_context', {}, { ...binding.env, AGENT_WORKFLOW_TOKEN: 'f'.repeat(64) })).rejects.toThrow('revoked');
   });
 
   it('gives up on a controller that does not come back, and does not wait for one that has no successor', async () => {

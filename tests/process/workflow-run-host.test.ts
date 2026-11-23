@@ -146,7 +146,7 @@ describe.skipIf(process.platform === 'win32')('workflow workers under run hosts'
 
     // The original process, still running under its host, answers the worker's tool calls on the new endpoint.
     await until(() => expect(state().tasks.at(-1)?.status).toBe('running'));
-    await expect(callWorkflow('task_status', {}, workerEnv)).resolves.toBeTruthy();
+    await expect(callWorkflow('read_context', {}, workerEnv)).resolves.toBeTruthy();
     await appendFile(join(tmp.root, 'release'), '');
     await until(() => expect(state().script?.status).toBe('result_ready'));
     expect(await pids()).toHaveLength(1);
@@ -231,7 +231,7 @@ describe.skipIf(process.platform === 'win32')('workflow workers under run hosts'
     await writeFile(join(worktree, 'work.txt'), 'done while the bridge was down\n');
     await git(worktree, 'add', '.'); await git(worktree, '-c', 'user.name=Worker', '-c', 'user.email=worker@localhost', 'commit', '-m', 'work');
     // What it asks the bridge meanwhile is answered once the next bridge has taken its turn up.
-    const asked = callWorkflow('task_status', {}, workerEnv);
+    const asked = callWorkflow('read_context', {}, workerEnv);
     runtime = create();
     await runtime.start();
     await expect(asked).resolves.toBeTruthy();

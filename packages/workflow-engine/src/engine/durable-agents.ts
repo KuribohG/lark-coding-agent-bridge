@@ -134,6 +134,16 @@ export function sendMessage(state: WorkflowView, target: string, text: unknown, 
   return { messageId: message.id };
 }
 
+/**
+ * Puts words in front of one member at its next turn, without a post: what the engine has to tell it once (an ask of
+ * its own that someone else closed, an item taken from under it, a goal that changed). It wakes a swarm member. A
+ * member that has not had a turn, or a mailbox that is full, goes without: what it would have said is in the state.
+ */
+export function tellMember(state: WorkflowView, name: string, text: string, now: number, from = 'system'): boolean {
+  if (!state.agents?.some(agent => agent.key === name)) return false;
+  try { sendMessage(state, name, text.slice(0, 4000), now, from); return true; } catch { return false; }
+}
+
 const RELAY_TRUNCATION = '…[truncated]';
 
 /** A relay may only repeat the member's own latest reply, so recipients can trust the sender. */

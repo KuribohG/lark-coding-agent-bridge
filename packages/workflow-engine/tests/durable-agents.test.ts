@@ -95,7 +95,7 @@ describe('durable workflow members', () => {
     expect(h.received(first.receiptId!)).toBeUndefined();
     await h.restart(); expect(h.state().status).toBe('interrupted');
     await h.kernel.tick(); expect(h.requests).toHaveLength(1);
-    await h.call('post_board',{to:['A'],text:'B approved'});
+    expect(await h.call('tell_worker',{target:'A',text:'B approved'})).toMatchObject({status:'left'});
     expect(h.state().status).toBe('interrupted');
     await h.call('replay_script'); h.begin(); await h.agent('prepare');
     const second = await h.mail('receive','A','review');
@@ -112,7 +112,7 @@ describe('durable workflow members', () => {
     const original = await h.agent('work'); const request = await h.run();
     const save = {operationId:'saved',expectedCheckpointVersion:0,state:{done:['read source'],next:'test'}};
     await h.worker(request,'checkpoint',save);
-    const sent = await h.worker(request,'post_board',{operationId:'notify',to:['B'],text:'half done'});
+    const sent = await h.worker(request,'ask',{operationId:'notify',to:'B',text:'half done'});
     await h.call('pause'); await h.settle();
     await expect(h.worker(request,'checkpoint',{...save,operationId:'late'})).rejects.toThrow('inactive');
     await h.call('resume'); h.begin(); await h.agent('init','B');
@@ -123,7 +123,7 @@ describe('durable workflow members', () => {
     expect(retry.prompt).toContain('read source');
     request.onSession('late-replacement');
     expect(h.state().sessions[1]?.nativeSessionId).toBe('thread-2');
-    expect(await h.worker(retry,'post_board',{operationId:'notify',to:['B'],text:'half done'})).toEqual(sent);
+    expect(await h.worker(retry,'ask',{operationId:'notify',to:'B',text:'half done'})).toEqual(sent);
     await h.worker(retry,'checkpoint',save);
     expect(h.state().mailbox!.messages).toHaveLength(1);
     expect(h.state().checkpoints!.filter(c=>c.agentId===retry.task.agentId)).toHaveLength(1);

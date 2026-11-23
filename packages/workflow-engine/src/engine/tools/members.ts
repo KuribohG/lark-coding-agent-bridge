@@ -2,7 +2,9 @@ import { checkpoint, mailboxOperation, member, memberContext, saveCheckpoint, ta
 import { boardDigest } from '../board';
 import { requiredText, requireState } from '../kernel-state';
 import { nestedContext } from '../nested-workflow';
-import { charterView } from '../steering';
+import { openAsksOf } from '../asks';
+import { goalView, statusesFor } from '../steering';
+import { memberTodos } from '../swarm-pump';
 import { workContext } from '../work-queue';
 import type { KernelContext } from '../kernel-context';
 import { readText } from '../kernel-store';
@@ -22,19 +24,24 @@ export function memberOperation(ctx: KernelContext, state: WorkflowView, task: T
 /** A worker's own task context and a persistent member's checkpoint. */
 export const memberContextTools: WorkflowToolPlugin = {
   id: 'member-context',
-  memberInstructions: 'read_context returns your checkpoint and the messages of this turn; task_status returns the current checkpointVersion. '
+  memberInstructions: 'read_context returns how things stand for you now: your checkpoint and its version (checkpointVersion), the messages of this turn, the to-dos that wait on you (todos), your open asks (asked), '
+    + 'the goal and the status notes in force, what the board holds and your claim. '
     + 'checkpoint({operationId,expectedCheckpointVersion,state}) saves your working state as JSON of at most 16000 characters. Save progress, decisions, the next step and references to what you produced whenever you finish an important step; '
     + 'this neither ends the turn nor makes changes to files reversible. On a version conflict call read_context again instead of guessing the version.',
   tools: [
     {
-      name: 'task_status',
-      worker: { call: (_ctx, state, task) => ({ taskId: task.taskId, status: task.status, checkpointVersion: taskAgent(state, task)?.checkpointVersion }) },
-    },
-    {
       name: 'read_context',
       worker: {
-        call: (ctx, state, task) => ({ goal: state.goal, charter: charterView(state, task), objective: readText(state, task.objective), inputRefs: task.inputRefs, member: memberContext(state, task), board: boardDigest(state, task, ctx.now()), workQueue: workContext(state, task),
-          ...(task.workflowTool ? {workflows:nestedContext(ctx.store.descendants(state,task.taskId),task)} : {}) }),
+        call: (ctx, state, task) => {
+          const agent = taskAgent(state, task);
+          const statuses = statusesFor(state, agent?.key);
+          const asked = agent ? openAsksOf(state, agent.agentId, ctx.now()) : [];
+          return { request: state.goal, goal: goalView(state, task), ...(statuses.length ? { statuses } : {}), objective: readText(state, task.objective), inputRefs: task.inputRefs, member: memberContext(state, task),
+            // The version checkpoint expects, which a member that has saved none yet has nowhere else to read.
+            ...(agent ? { checkpointVersion: agent.checkpointVersion } : {}),
+            ...(agent ? memberTodos(state, agent.key, ctx.now()) : {}), ...(asked.length ? { asked } : {}), board: boardDigest(state, task), workQueue: workContext(state, task),
+            ...(task.workflowTool ? {workflows:nestedContext(ctx.store.descendants(state,task.taskId),task)} : {}) };
+        },
       },
     },
     {

@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { WorkflowStopped, stopReasonOf } from './ports';
 import { workflowDigest } from './digest';
 import { abandonHeldClaims, adoptWorkClaims, cancelWork, expireWorkClaims, freezeWorkClaims, releaseWorkClaims, workContext } from './work-queue';
-import { pumpAsks } from './asks';
-import { charterPrompt, pumpMainWake } from './steering';
-import { plansWork, pumpSwarms } from './swarm';
+import { goalPrompt, pumpMainWake } from './steering';
+import { plansWork } from './swarm';
+import { pumpSwarms } from './swarm-pump';
 import { settleEventWaits } from './event-waits';
 import { nestedContext } from './nested-workflow';
 import { completeMemberTurn, memberContext, taskAgent } from './durable-agents';
@@ -282,7 +282,6 @@ export class WorkflowScheduler {
       store.transact(() => {
         settleEventWaits(state, ctx.now());
         pumpSwarms(state, kind => ctx.nativeIdKind(kind), ctx.now(), ctx.children.remainingTreeTasks(state));
-        pumpAsks(state, ctx.now());
         pumpMainWake(state, ctx.now());
         // While the script runs, what has long settled leaves the state; once it stops, what remains stays for review.
         if (state.script?.status === 'running' && ctx.now() - (this.archivedAt.get(state.workflowId) ?? 0) >= ARCHIVE_EVERY_MS) {
@@ -373,12 +372,12 @@ export class WorkflowScheduler {
       const session = detached<WorkerSession>(live.sessions.find(item => item.sessionRef === turn.sessionRef)!);
       const role = live.definition.roles[session.role]!;
       const inputs = task.inputRefs.map(ref => readArtifact(live, ref));
-      const charter = charterPrompt(live, turn);
+      const steering = goalPrompt(live, turn, ctx.now());
       const hostTools = ctx.host.workerHostTools?.(session, workflow.root) ?? Boolean(ctx.host.hostTools);
       const prompt = [role.instructions,
-        task.workflowTool ? 'Do only the task you are given, within what the original request authorizes. You may delegate through the child workflow tool you were given; do not send messages outside the workflow. After you request a child workflow, end the turn to release its resources: the bridge resumes the same session when the result is ready.' : task.agentId ? 'Do only the task you are given, within what the original request authorizes. You may save a checkpoint and post on the board of the workflow; do not send messages outside the workflow or delegate to sub-agents. Your final answer returns the result to the script.' : 'Do only the task you are given, within what the original request authorizes. Do not send messages on your own or delegate to sub-agents. Your final answer returns the result to the script.',
+        task.workflowTool ? 'Do only the task you are given, within what the original request authorizes. You may delegate through the child workflow tool you were given; do not send messages outside the workflow. After you request a child workflow, end the turn to release its resources: the bridge resumes the same session when the result is ready.' : task.agentId ? 'Do only the task you are given, within what the original request authorizes. You may save a checkpoint and write on the board of the workflow; do not send messages outside the workflow or delegate to sub-agents. Your final answer returns the result to the script.' : 'Do only the task you are given, within what the original request authorizes. Do not send messages on your own or delegate to sub-agents. Your final answer returns the result to the script.',
         deadlinePrompt(workflow.deadlineAt, ctx.now()),
-        `Request:\n${workflow.goal}`, ...(charter ? [charter] : []), `Task:\n${task.objective}`, ...(inputs.length ? [inputArtifactsPrompt(inputs, hostTools)] : [])].join('\n\n');
+        `Request:\n${workflow.goal}`, ...steering, `Task:\n${task.objective}`, ...(inputs.length ? [inputArtifactsPrompt(inputs, hostTools)] : [])].join('\n\n');
       const recovery = memberContext(live, turn);
       let memberPrompt = recovery ? prompt + '\n\nPersistent member context (handle only the input of this turn; check which side effects have already happened and do not repeat them):\n'
         + JSON.stringify(recovery) + (live.workQueue ? '\n\nWork queue:\n' + JSON.stringify(workContext(live, turn)) : '') : prompt;
@@ -461,7 +460,11 @@ export class WorkflowScheduler {
       const stopped = () => result.stopReason ?? (signal?.aborted ? stopReasonOf(signal) : undefined);
       // A host shutdown ends the turn, not the member's work: the next host decides whether the claim waits for it.
       if (ctx.host.executionLedger || stopped() !== 'shutdown') {
-        releaseWorkClaims(state, ctx.now(), 'Member turn ended without completing its claim', taskId, attemptId);
+        // Only a turn that broke down by itself counts against the item it held: one that was stopped, cancelled or
+        // ended while its member still held the item returns it as it is.
+        const broke = Boolean(this.stalledAttempt(taskId, attemptId)) || result.status === 'failed' && !stopped() && !signal?.aborted
+          && task.status !== 'cancelling' && !['cancelling', 'cancelled', 'binding_attention'].includes(state.status);
+        releaseWorkClaims(state, ctx.now(), 'Member turn ended without completing its claim', taskId, attemptId, broke);
       }
       if ((task.agentId || task.workflowTool) && result.status === 'completed' && !state.sessions.find(session => session.sessionRef === task.sessionRef)?.nativeSessionId) {
         result = { status: 'failed', error: 'Member completed without a native session ID; cannot safely continue its conversation' };

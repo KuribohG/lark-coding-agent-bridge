@@ -1,4 +1,4 @@
-import { postBoard, resolvePost } from '../asks';
+import { answer, ask, note, resolvePost } from '../asks';
 import { readBoard, searchBoard } from '../board';
 import { workflowDigest } from '../digest';
 import { inheritedWorkerExecution } from '../execution';
@@ -17,48 +17,44 @@ import { versioned } from './versioned';
 export const boardTools: WorkflowToolPlugin = {
   id: 'board',
   memberInstructions: [
-    'The board is one ordered, append-only feed that everyone in the workflow can read.',
-    'post_board({operationId,text,to?,topic?}) posts up to 4000 characters. to is an array of member names or "all"; @name and @all in the text name members too. '
-      + 'A named member is woken and gets the post, with its number, in read_context.member.messages; a post that names nobody wakes nobody. '
-      + 'topic is the workstream (1–40 lowercase letters, digits, _ . or -; "general" when left out): keep one name per workstream and reuse the topics that exist, of which a board holds at most 64. '
-      + 'Topic "announce" carries rules and rulings that bind every member; only the main agent, the script and the lead of a swarm post there. A post cannot be edited or withdrawn.',
-    'An ask is a post you wait for an answer to: post_board({operationId,text,to:[name],ask}) with ask: true, or the minutes you can wait (15 when true, 1440 at most), and in to the one member that owes the answer; a name in its text names nobody. '
-      + 'It stays open until it is answered or resolved: the member asked is shown it at every turn (read_context.board.asks), and when your time has run out the system tells those above that member, the lead of its queue, then the lead of the swarm, then the main agent, one after another. '
-      + 'A member with no lead above it asks the main agent with to: "main". Ask when you cannot or should not go on without the answer, and say what you will do with it; a post that only informs is a post without ask. You may have 8 asks open (read_context.board.asked lists them). '
-      + 'post_board({operationId,answers: seq,text}) answers an ask: the post goes to whoever asked and resolves the ask in the same step. The member asked, a lead and the main agent may answer. '
-      + 'Answer the asks made of you before other work, and when you cannot answer yet, answer with what it waits on. resolve_post closes an ask of your own that you no longer wait for.',
+    'The board is one ordered, append-only feed that everyone in the workflow can read. You write to it in three ways.',
+    'ask({operationId,to,text,withinMinutes?,topic?}) asks one member for an answer or an action that you wait for: to is its name ("main" is the main agent, for a member with no lead above it), '
+      + 'withinMinutes how long you can wait (15 when left out, 1440 at most), text up to 4000 characters that say what you will do with the answer. The member gets the ask in its messages and has it as a to-do until it is answered; '
+      + 'when your time runs out the to-do goes to those above that member. The answer reaches you in your messages and wakes you. You may have 8 asks open.',
+    'answer({operationId,ask,text}) answers ask number ask: the answer goes to whoever asked and closes the ask in the same step. The member asked, a lead and the main agent may answer; on an ask of your own it withdraws the ask. '
+      + 'Answer what is asked of you before other work, and when you cannot answer yet, answer with what it waits on.',
+    'note({operationId,text,topic?}) records up to 4000 characters for others to read: conclusions, what you ruled out, what others should know. It names nobody and wakes nobody; those it concerns read it in its topic. '
+      + 'topic is the workstream (1–40 lowercase letters, digits, _ . or -; "general" when left out): reuse the topics that exist, of which a board holds at most 64. '
+      + 'Topic "announce" carries rulings that bind every member; only the main agent, the script and the lead of a swarm write there. A post cannot be edited or withdrawn. '
+      + 'Note no acknowledgements or thanks, and do not note that you finished a work item: the result you give complete_work is the report.',
     'read_board({after?,limit?,member?,topic?,resolved?}) returns the latest limit posts (20 by default, 50 at most), or the ones after post number after; member keeps the posts one member sent or received, topic one topic. '
-      + 'Resolved posts are skipped (resolvedSkipped counts them) unless resolved: true. topics lists each topic with its posts, its resolved posts and its latest number. '
-      + 'Every turn read_context.board already has the announcements since your last turn in full (announcements; moreAnnouncements means that earlier ones are left out, which read_board({topic:"announce"}) returns) '
-      + 'and, for each topic, its posts, the resolved ones and the unresolved ones that are new (new). Read the topics that concern your work, not the whole feed.',
+      + 'Resolved posts are skipped (resolvedSkipped counts them) unless resolved: true, and topics lists each topic with its posts, its resolved posts and its latest number. '
+      + 'read_context.board has the rulings since your last turn and, for each topic, how many posts are new. Read the topics that concern your work, not the whole feed.',
     'search_board({query,member?,topic?,limit?}) searches every post: query is up to 8 words separated by spaces, matched as substrings without regard to case, all of which must occur. '
       + 'It returns the latest limit hits (10 by default, 30 at most) with number and snippet; read_board({after: number - 1, limit: 1, resolved: true}) reads one in full. '
-      + 'Resolved posts come after the open ones and carry resolved (by, note and see, the post that answered or replaced it). Search before you ask or report something, and instead of paging through a long board.',
-    'Post conclusions, questions, hand-offs and blockers, saying who must do what; post no acknowledgements or thanks. Do not post when you finish a work item: the result you give complete_work is the report, which search_work finds. '
-      + 'In a swarm with a lead the system hands it to the lead that planned the item and quotes only its first line or two when several come back, '
-      + 'so start the result with the conclusion, then say what you did, what you found, where you departed from the item and what still worries you.',
-    'resolve_post({operationId,seq,note?,see?,reopen?}) marks posts that need nobody any more (answered, done, or replaced by a newer post) as resolved. seq is a post number or an array of up to 32. '
-      + 'Give note (how it ended, at most 500 characters), see (the post that answered or replaced it) or both; reopen: true removes the mark. '
-      + 'You may mark your own posts and the ones that name you; a lead and the main agent any post, and announcements only they. A resolved post stays searchable but read_board skips it, and one that reaches you resolved is dealt with already. '
-      + 'Mark your question when it is answered and a request when you have done it.',
+      + 'Resolved posts come after the open ones and carry how they ended. Search before you ask or note something, and instead of paging through a long board.',
+    'resolve_post({operationId,seq,note?,see?,reopen?}) marks posts that need nobody any more (dealt with, or replaced by a newer post) as resolved. seq is a post number or an array of up to 32; '
+      + 'give note (how it ended, at most 500 characters), see (the post that replaced it) or both; reopen: true removes the mark. '
+      + 'You may mark your own posts; a lead and the main agent any post, and announcements only the lead of the swarm and the main agent. A resolved post stays searchable but read_board skips it.',
   ].join('\n'),
   tools: [
     {
-      name: 'post_board',
-      main: {
-        doc: 'post_board(text,to?,topic?,ask?,answers?)',
-        ...versioned((ctx, state, args) => postBoard(state, { author: 'main' }, args, ctx.now()), { allowInterrupted: true, appendOnly: true }),
-      },
-      worker: {
-        verifiesRoot: true,
-        call: (ctx, state, task, _caller, args) => {
-          const agent = taskAgent(state, task);
-          if (!agent) throw new Error('Posting requires a persistent member; one-off workers can only read the board');
-          if (state.status !== 'active' || state.script?.status !== 'running' || ctx.now() >= state.deadlineAt) throw new Error('Workflow is inactive');
-          return mailboxOperation(state, 'worker:' + task.taskId + ':' + requiredText(args.operationId, 160), { method: 'post_board', args },
-            () => postBoard(state, { agentId: agent.agentId }, args, ctx.now()));
-        },
-      },
+      name: 'ask',
+      main: { doc: 'ask(to,text,withinMinutes?,topic?)', ...versioned((ctx, state, args) => ask(state, { author: 'main' }, args, ctx.now()), { allowInterrupted: true, appendOnly: true }) },
+      worker: { verifiesRoot: true,
+        call: (ctx, state, task, _caller, args) => memberOperation(ctx, state, task, 'ask', args, agent => ask(state, { agentId: agent.agentId }, args, ctx.now())) },
+    },
+    {
+      name: 'answer',
+      main: { doc: 'answer(ask,text)', ...versioned((ctx, state, args) => answer(state, { author: 'main' }, args, ctx.now()), { allowInterrupted: true, appendOnly: true }) },
+      worker: { verifiesRoot: true,
+        call: (ctx, state, task, _caller, args) => memberOperation(ctx, state, task, 'answer', args, agent => answer(state, { agentId: agent.agentId }, args, ctx.now())) },
+    },
+    {
+      name: 'note',
+      main: { doc: 'note(text,topic?)', ...versioned((ctx, state, args) => note(state, { author: 'main' }, args, ctx.now()), { allowInterrupted: true, appendOnly: true }) },
+      worker: { verifiesRoot: true,
+        call: (ctx, state, task, _caller, args) => memberOperation(ctx, state, task, 'note', args, agent => note(state, { agentId: agent.agentId }, args, ctx.now())) },
     },
     {
       name: 'resolve_post',
@@ -90,8 +86,8 @@ export const swarmTools: WorkflowToolPlugin = {
   leadInstructions: [
     'The next two operations are for the lead of a swarm; from any other member they are refused.',
     'staff_swarm({operationId,add?,like?,workspace?,queue?,role?,brief?,move?,revive?,retire?,cleanup?,maxTurns?}) changes who works in your swarm. add is an array of new member names (1–40 letters, digits, _ . or -). '
-      + 'A new member takes the harness, model, role and queue of the member like names (by default the first member that is not the lead); a lead cannot choose another harness or model, so ask the main agent to add the member when one is needed. '
-      + 'Its first turn shows it the task, its role and brief. queue makes it consume that work queue, and it then starts when the queue has work it can claim. Add a member before you name it in a post. '
+      + 'A new member takes the harness, model, role and queue of the member like names (by default the first member that is not a lead); a lead cannot choose another harness or model, so ask the main agent to add the member when one is needed. '
+      + 'Its first turn shows it the task, its role and brief. queue makes it consume that work queue, and it then starts when the queue has work it can claim. '
       + 'workspace (true, or {base?,repo?,isolation?}) gives each added member a Git worktree of its own: without repo the cwd of the workflow is the repository and its HEAD the base, and isolation: "clone" makes each a repository of its own that does not share .git. '
       + 'Without workspace the new members run in the root directory, where members that change code in parallel overwrite one another, and they cannot use submit_work. '
       + 'move (an array of names, with queue) makes members that consume one queue consume queue instead, for when one queue has more work than members and another has members without work: '
@@ -99,15 +95,12 @@ export const swarmTools: WorkflowToolPlugin = {
       + 'unconsumed in the answer names a queue that lost its last member while it still holds unfinished items. '
       + 'revive ("failed", or an array of names) lets failed members retry their last turn in the session they had. retire (an array of names) lets a member finish the turn it is in and then never wakes it again. '
       + 'cleanup ("retired", or an array of stopped members) deletes their idle worktrees together with whatever was not committed or integrated; the worktree of a failed member can be cleaned at once. '
-      + 'maxTurns raises the number of wake-ups every member has. Giving a queue a lead of its own (leads) is for the main agent alone.',
+      + 'maxTurns raises the number of wake-ups every member has. Giving a part of the work a lead of its own (leads, under) is for the main agent alone.',
     'swarm_finish({operationId,result}) ends the swarm with the final result (at most 16000 characters): the turns still running finish, the swarm returns, and nobody is woken again.',
-    'The system posts to the lead when a member fails, when a queue has run dry and when everyone is idle. The notice of a dry queue names its own seq: '
-      + 'resolve_post({seq, note}) on it says that the queue has no work for now, and the queue is not reported again until someone who plans it adds an item to it. The items that members complete, and the ones that fail for good, it gathers into posts in topic "handoff" when the turn of the lead that planned them begins: '
-      + 'one item is quoted at length, several get a line or two each, and work_status({key}) has an item in full.',
   ].join('\n'),
   tools: [
     { name: 'staff_swarm',
-      main: { doc: 'staff_swarm(swarm?,add?,like?,workspace?,harness?,model?,reasoningEffort?,queue?,leads?,role?,brief?,move?,revive?,retire?,cleanup?,maxTurns?,maxConcurrent?)',
+      main: { doc: 'staff_swarm(swarm?,add?,like?,workspace?,harness?,model?,reasoningEffort?,queue?,leads?,under?,role?,brief?,move?,revive?,retire?,cleanup?,maxTurns?,maxConcurrent?)',
         ...versioned((_ctx, state, args, resolved) => {
           const staffed = resolved as { execution?: WorkerExecution; workspaces?: Record<string, string>; cleanedUp?: Array<{ name: string; workspace: string }> } | undefined;
           return staffSwarm(state, staffing(args), undefined, staffed?.execution, staffed?.workspaces, staffed?.cleanedUp, _ctx.now());

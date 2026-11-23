@@ -215,6 +215,7 @@ describe('ultracode native engine policy and metadata', () => {
       plan: 'Start swarm then verify staff_swarm workspace rejection.',
       readOnly: true,
       script: `
+        await enqueueWork({ key: "look", title: "Look", input: 1 });
         return await swarm("inspect", {
           key: "s1",
           lead: { name: "lead", role: "coordinator" },
@@ -427,11 +428,9 @@ describe('ultracode native engine policy and metadata', () => {
                 yield { type: 'session', nativeSessionId: spec.resume?.id ?? 'native-flaky' };
                 if (attemptNum > 2) {
                   const st = runtime.kernel.state('swarm-revive-execid')!;
-                  await runtime.call(
-                    { kind: 'worker', scopeId: 'swarm-revive-execid', workflowId: st.workflowId, taskId: spec.taskId!, attemptId: spec.attemptId },
-                    'post_board',
-                    { operationId: randomUUID(), to: ['lead'], text: 'flaky recovered cleanly' },
-                  );
+                  const caller = { kind: 'worker' as const, scopeId: 'swarm-revive-execid', workflowId: st.workflowId, taskId: spec.taskId!, attemptId: spec.attemptId };
+                  const grant = await runtime.call(caller, 'claim_work', { operationId: randomUUID() }) as { claimId: string; generation: number };
+                  await runtime.call(caller, 'complete_work', { operationId: randomUUID(), claimId: grant.claimId, generation: grant.generation, result: 'flaky recovered cleanly' });
                 }
                 receipts.set(spec.executionId, { state: 'completed', result: workerResult });
                 if (workerResult.text) yield { type: 'final_text', text: workerResult.text };
@@ -441,7 +440,7 @@ describe('ultracode native engine policy and metadata', () => {
             };
           }
           const isLead = spec.memberKey === 'lead';
-          const leadPost = isLead && (runtime.kernel.state('swarm-revive-execid')?.board?.posts.some(p => p.text.includes('flaky recovered cleanly')) ?? false);
+          const leadPost = isLead && (runtime.kernel.state('swarm-revive-execid')?.workQueue?.items.some(item => item.status === 'completed') ?? false);
           return {
             runId: 'run-' + spec.attemptId,
             result: Promise.resolve('completed'),
@@ -478,6 +477,7 @@ describe('ultracode native engine policy and metadata', () => {
       plan: 'Verify autoRevive and staff_swarm revive allocate distinct executionIds.',
       readOnly: true,
       script: `
+        await enqueueWork({ key: "job", title: "Job", input: 1 });
         return await swarm("coord", {
           key: "rev-swarm",
           maxTurns: 4,
@@ -489,7 +489,8 @@ describe('ultracode native engine policy and metadata', () => {
 
     await vi.waitFor(async () => {
       await runtime.tick();
-      expect(runtime.kernel.state('swarm-revive-execid')?.events.some(e => e.kind === 'swarm_attention')).toBe(true);
+      // The member that failed and stopped is a to-do of the lead, which the main agent sees in the status.
+      expect(runtime.kernel.state('swarm-revive-execid')?.todos?.open.some(todo => todo.kind === 'member' && todo.told.at(-1)?.who === 'lead')).toBe(true);
     });
     expect(flakyExecutionIds).toHaveLength(2);
     expect(new Set(flakyExecutionIds).size).toBe(2);

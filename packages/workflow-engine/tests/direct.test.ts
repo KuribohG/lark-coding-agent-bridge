@@ -65,12 +65,13 @@ describe('the main agent talking to a running worker', () => {
     expect(await h.call('worker_messages')).toMatchObject({ total: 3 });
   });
 
-  it('leaves the message on the board for a member whose harness takes no input mid-turn, and reports a one-off worker it cannot reach', async () => {
+  it('leaves the message for a member whose harness takes no input mid-turn, and reports a one-off worker it cannot reach', async () => {
     const h = await harness(false);
-    // The member has a next turn to read a post in; the one-off worker has none.
-    const told = await h.call('tell_worker', { target: 'fixer', text: 'hello, and tell @audit' }) as { seq: number };
-    expect(told).toMatchObject({ status: 'posted', worker: 'fixer', seq: expect.any(Number) });
-    expect(await h.call('read_board')).toMatchObject({ posts: [{ seq: told.seq, from: 'main', to: ['fixer'], text: 'hello, and tell @audit' }] });
+    // The member has a next turn to read a message in; the one-off worker has none.
+    expect(await h.call('tell_worker', { target: 'fixer', text: 'hello, and tell @audit' })).toMatchObject({ status: 'left', worker: 'fixer' });
+    // The words are in the member's messages, not on the board, and reach nobody else.
+    expect(h.state().mailbox!.messages).toMatchObject([{ text: 'hello, and tell @audit', to: h.state().agents!.find(agent => agent.key === 'fixer')!.agentId }]);
+    expect(h.state().board?.posts ?? []).toEqual([]);
     expect(await h.call('tell_worker', { target: 'audit', text: 'hello' })).toMatchObject({ status: 'unsupported', worker: 'audit' });
     await expect(h.call('tell_worker', { target: 'nobody', text: 'hello' })).rejects.toThrow('Unknown worker');
     await expect(h.call('tell_worker', { target: 'fixer', text: ' ' })).rejects.toThrow('empty');
@@ -106,7 +107,8 @@ describe('a lead talking to the members it leads', () => {
     await callWorkflow('run_script', { operationId: randomUUID(), goal: 'ship the parser', plan: 'A lead, the lead of one queue and three members.', maxConcurrent: 8, script: [
       'await enqueueWork({key:"q1", title:"Q1", input:1, queue:"q"});',
       'await enqueueWork({key:"p1", title:"P1", input:1, queue:"p"});',
-      'return await swarm("Build", {key:"tree", lead:{name:"lead"}, maxTurns:4, members:[{name:"ql", leads:"q"},{name:"w1", queue:"q"},{name:"o1", queue:"p"},{name:"idle"}]});',
+      'await enqueueWork({key:"r1", title:"R1", input:1, queue:"r"});',
+      'return await swarm("Build", {key:"tree", lead:{name:"lead"}, maxTurns:4, members:[{name:"ql", leads:"q"},{name:"w1", queue:"q"},{name:"o1", queue:"p"},{name:"idle", queue:"r"}]});',
     ].join('\n') }, main.env);
     /** The turns of a member, the latest last. */
     const of = (name: string) => turns.filter(turn => turn.name === name);
@@ -132,7 +134,7 @@ describe('a lead talking to the members it leads', () => {
     expect(w1.received[0]).toMatch(/^\[Message from lead lead /);
     expect(w1.received[0]).toContain('the parser moved to src/v2');
     expect(w1.received[0]).toContain('lead, the lead of your swarm, sent this');
-    expect(w1.received[0]).toContain('name lead in a post with post_board');
+    expect(w1.received[0]).toContain('ask it with ask({to: "lead", text})');
     // A repeated call answers as the first one did, without speaking twice.
     expect(await h.as('lead', 'tell_worker', { operationId: 'redirect', target: 'w1', text: 'Stop: the parser moved to src/v2. Tell @o1 nothing.' })).toEqual(told);
     await expect(h.as('lead', 'tell_worker', { operationId: 'redirect', target: 'w1', text: 'something else' })).rejects.toThrow('conflict');
@@ -140,8 +142,8 @@ describe('a lead talking to the members it leads', () => {
 
     expect(await h.as('ql', 'tell_worker', { target: '@w1', text: 'Q1 also covers the lexer.' })).toMatchObject({ status: 'accepted', member: 'w1' });
     expect(w1.received[1]).toContain('ql, the lead of your queue, sent this');
-    await expect(h.as('ql', 'tell_worker', { target: 'o1', text: 'x' })).rejects.toThrow('does not consume a queue you lead');
-    await expect(h.as('ql', 'tell_worker', { target: 'lead', text: 'x' })).rejects.toThrow('does not consume a queue you lead');
+    await expect(h.as('ql', 'tell_worker', { target: 'o1', text: 'x' })).rejects.toThrow('does not work under you');
+    await expect(h.as('ql', 'tell_worker', { target: 'lead', text: 'x' })).rejects.toThrow('does not work under you');
     await expect(h.as('w1', 'tell_worker', { target: 'o1', text: 'x' })).rejects.toThrow('for the lead of a running swarm and the leads of its queues');
     await expect(h.as('lead', 'tell_worker', { target: 'lead', text: 'x' })).rejects.toThrow('another member');
     await expect(h.as('lead', 'tell_worker', { target: 'nobody', text: 'x' })).rejects.toThrow('Unknown member');
@@ -149,32 +151,31 @@ describe('a lead talking to the members it leads', () => {
     expect(h.of('o1')[0]!.received).toEqual([]);
     expect(h.state().board?.posts.filter(post => !post.author) ?? []).toEqual([]);
 
-    // The main agent reads what the leads said; a member answers a lead on the board, not with reply_main.
+    // The main agent reads what the leads said; a member that has to tell a lead something asks it, and does not use reply_main.
     expect(await h.main('worker_messages')).toMatchObject({ total: 2, messages: [
       { from: 'lead', by: 'lead', worker: 'w1', delivery: 'accepted', text: expect.stringContaining('src/v2') }, { from: 'lead', by: 'ql', worker: 'w1' }] });
     await expect(h.as('w1', 'reply_main', { text: 'understood' })).rejects.toThrow('none is waiting');
     h.cleanupTurns();
   });
 
-  it('leaves its words on the board for a member that is not in a turn or cannot take them, which wakes the member', async () => {
+  it('leaves its words for a member that is not in a turn or cannot take them, which wakes the member', async () => {
     const h = await swarm(['o1']);
     await h.end('idle');
-    const posted = await h.as('lead', 'tell_worker', { target: 'idle', text: 'Review what w1 lands, and ignore @o1.' }) as { seq: number };
-    expect(posted).toMatchObject({ status: 'posted', member: 'idle', seq: expect.any(Number) });
-    const names = (ids: readonly string[]) => ids.map(id => h.state().agents!.find(agent => agent.agentId === id)!.key);
-    const post = h.state().board!.posts.find(item => item.seq === posted.seq)!;
-    // The words were for one member: the @name in them names nobody else.
-    expect([names([post.from!]), names(post.to), post.text]).toEqual([['lead'], ['idle'], 'Review what w1 lands, and ignore @o1.']);
+    expect(await h.as('lead', 'tell_worker', { target: 'idle', text: 'Review what w1 lands, and ignore @o1.' })).toMatchObject({ status: 'left', member: 'idle' });
+    const id = (name: string) => h.state().agents!.find(agent => agent.key === name)!.agentId;
+    // The words were for one member: they are in its messages, from the lead, and the @name in them reaches nobody.
+    expect(h.state().mailbox!.messages.at(-1)).toMatchObject({ from: id('lead'), to: id('idle'), text: 'Review what w1 lands, and ignore @o1.' });
+    expect(h.state().board!.posts.filter(post => post.from === id('lead'))).toEqual([]);
     await vi.waitFor(async () => { await h.runtime.tick(); expect(h.of('idle')).toHaveLength(2); });
     expect(h.of('idle')[0]!.received).toEqual([]);
 
-    // A member in a turn whose harness takes no input mid-turn reads the post at its next turn.
-    expect(await h.as('lead', 'tell_worker', { target: 'o1', text: 'P1 is cancelled.' })).toMatchObject({ status: 'posted', member: 'o1' });
+    // A member in a turn whose harness takes no input mid-turn reads the message at its next turn.
+    expect(await h.as('lead', 'tell_worker', { target: 'o1', text: 'P1 is cancelled.' })).toMatchObject({ status: 'left', member: 'o1' });
     expect(await h.main('worker_messages')).toMatchObject({ total: 0 });
 
     // So does the main agent's message; a member that was retired has no turn to come, and the sender is told.
     await h.end('idle');
-    expect(await h.main('tell_worker', { target: 'idle', text: 'Also check the lockfile.' })).toMatchObject({ status: 'posted', worker: 'idle' });
+    expect(await h.main('tell_worker', { target: 'idle', text: 'Also check the lockfile.' })).toMatchObject({ status: 'left', worker: 'idle' });
     await vi.waitFor(async () => { await h.runtime.tick(); expect(h.of('idle')).toHaveLength(3); });
     await h.as('lead', 'staff_swarm', { retire: ['idle'] });
     await h.end('idle');

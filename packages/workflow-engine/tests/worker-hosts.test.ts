@@ -87,7 +87,7 @@ describe('hosted workflow workers', () => {
     await h.until(() => expect(h.state().tasks[0]?.status).toBe('running'));
     const first = h.specs[0]!;
     expect(first.host).toMatchObject({ attach: false });
-    await expect(callWorkflow('task_status', {}, first.env)).resolves.toBeTruthy();
+    await expect(callWorkflow('read_context', {}, first.env)).resolves.toBeTruthy();
 
     await h.restart();
     await h.until(() => expect(h.specs).toHaveLength(2));
@@ -96,14 +96,14 @@ describe('hosted workflow workers', () => {
     expect(h.notify.mock.calls[0]![1]).toContain('接回原进程');
     // The process still carries the old endpoint and token; the published endpoint routes it to the new controller.
     await h.until(() => expect(h.state().tasks.at(-1)?.status).toBe('running'));
-    await expect(callWorkflow('task_status', {}, first.env)).resolves.toBeTruthy();
+    await expect(callWorkflow('read_context', {}, first.env)).resolves.toBeTruthy();
 
     h.hosts.get(first.host!.key)!.finish('finished while detached');
     await h.until(() => expect(h.state().script?.status).toBe('result_ready'));
     const result = h.state().artifacts.find(artifact => artifact.ref === h.state().script!.resultRef)!;
     expect(JSON.parse(result.text)).toBe('finished while detached');
     expect(h.released).toEqual([first.host!.key]);
-    await expect(callWorkflow('task_status', {}, first.env)).rejects.toThrow('revoked');
+    await expect(callWorkflow('read_context', {}, first.env)).rejects.toThrow('revoked');
   });
 
   it('reattaches a persistent member turn in the same task', async () => {
@@ -177,7 +177,7 @@ describe('hosted workflow workers', () => {
     expect(resumed.host!.attach).toBe(false);
     expect(resumed.resume).toEqual({ kind: 'sessionId', id: `native-${first.host!.key}` });
     await expect(callWorkflow('read_context', {}, resumed.env)).resolves.toMatchObject({ workflows: { call: { ok: true, result: 42 } } });
-    await expect(callWorkflow('task_status', {}, first.env)).rejects.toThrow();
+    await expect(callWorkflow('read_context', {}, first.env)).rejects.toThrow();
     h.hosts.get(resumed.host!.key)!.finish('the answer is 42');
     await h.until(() => expect(h.state().script?.status).toBe('result_ready'));
     expect(JSON.parse(h.state().artifacts.find(artifact => artifact.ref === h.state().script!.resultRef)!.text)).toBe('the answer is 42');

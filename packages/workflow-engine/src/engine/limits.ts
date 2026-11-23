@@ -72,15 +72,15 @@ export const BOARD_MAX_DELIVERIES = 32_768;
 export const BOARD_DEFAULT_TOPIC = 'general';
 /** Rules and rulings every member must know: only the main agent, the script and a swarm's lead post in it. */
 export const BOARD_ANNOUNCE_TOPIC = 'announce';
-/** The outcomes of the work items members completed or gave up, posted by the system to the lead that planned them when its next turn starts. */
-export const BOARD_HANDOFF_TOPIC = 'handoff';
 /**
  * What members saw while working that the plan does not account for. They post it naming nobody, so that it wakes
  * nobody and does not become work until a lead has held it against the goal at its review.
  */
 export const BOARD_NOTICED_TOPIC = 'noticed';
-/** Outcomes of work items a swarm keeps for its leads' next turns; past this many the newest are not handed over. */
-export const SWARM_MAX_HANDOFFS = 1024;
+/** The longest delay a wake-up may ask for (wake_me, of a member and of the main agent). */
+export const WAKE_MAX_MINUTES = 24 * 60;
+/** Outcomes of work items a swarm keeps for its leads' next turns; past this many the newest are left to the items themselves. */
+export const SWARM_MAX_RESULTS = 1024;
 /** Distinct topics of one board. A topic is a workstream, not a tag for one post. */
 export const BOARD_MAX_TOPICS = 64;
 /** Latest posts of each topic the board keeps the seq of, so they are found without reading the feed. */
