@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import {createHash} from 'node:crypto';
+import {createRequire} from 'node:module';
 import {spawn,execFileSync} from 'node:child_process';
 import {afterEach,expect,it} from 'vitest';
 import {publishHost} from '../../tools/publish-host.mjs';
@@ -23,7 +24,10 @@ it('a failed staged build leaves the published generation unchanged',()=>{
 });
 it('a physically loaded native addon is reused unchanged; changed native bytes refuse before touching old artifacts',async()=>{
  const {stage,output}=fixture();const old=generation(output,'previous'),files=generation(stage,'replacement');
- const source=path.resolve('dist/host/node_modules/better-sqlite3/build/Release/better_sqlite3.node');
+ // Any loadable native addon proves the reuse/refusal contract. Resolve it from
+ // the installed package instead of dist/host, which only exists after a host
+ // build (CI installs dependencies and runs the tests without one).
+ const source=path.join(path.dirname(createRequire(import.meta.url).resolve('better-sqlite3/package.json')),'build','Release','better_sqlite3.node');
  const name='native.node';fs.copyFileSync(source,path.join(output,name));fs.copyFileSync(source,path.join(stage,name));
  const bytes=fs.readFileSync(source);old[name]={size:bytes.length,sha256:sha(bytes)};files[name]=old[name];
  fs.writeFileSync(path.join(output,'manifest.json'),JSON.stringify({files:old}));fs.writeFileSync(path.join(stage,'manifest.json'),JSON.stringify({files}));
