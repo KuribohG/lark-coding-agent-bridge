@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { log } from '../../../src/core/logger';
 import { MODEL_GATE_DEFAULTS, type ModelGateConfig } from '../../../src/model-gate/config';
+import { modelGateSocketPath } from '../../../src/model-gate/location';
 import { ModelGateServer } from '../../../src/model-gate/server';
 
 const dirs: string[] = [];
@@ -29,7 +30,9 @@ function config(overrides: Partial<ModelGateConfig> = {}): ModelGateConfig {
 async function socketDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'gate-'));
   dirs.push(dir);
-  return join(dir, 'gate.sock');
+  // A filesystem path is not a socket name on Windows; the production helper
+  // yields a named pipe there and the file name under the directory otherwise.
+  return modelGateSocketPath(dir);
 }
 
 function post(socketPath: string, path: string, body: unknown): Promise<Record<string, any>> {

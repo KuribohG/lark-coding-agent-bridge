@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MODEL_GATE_DEFAULTS } from '../../../src/model-gate/config';
+import { modelGateSocketPath } from '../../../src/model-gate/location';
 import { ModelGateServer } from '../../../src/model-gate/server';
 import modelGateExtension, { gateRequest } from '../../../src/model-gate/pi-gate-extension';
 
@@ -50,7 +51,7 @@ describe('model gate interleaving', () => {
   it('lets a second agent start while the first is executing tools', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'gate-'));
     dirs.push(dir);
-    const socketPath = join(dir, 'gate.sock');
+    const socketPath = modelGateSocketPath(dir);
     const server = new ModelGateServer({
       socketPath,
       config: {
