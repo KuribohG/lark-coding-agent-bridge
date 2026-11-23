@@ -98,7 +98,8 @@ describe.each(['codex', 'claude'] as const)('in-flight %s IM delivery', agentKin
     const input = h.agent.inputs[0]!;
     expect(input.text).toContain('看看这张图');
     expect(input.images).toHaveLength(1);
-    expect(input.text).toContain(input.images![0]!);
+    // The prompt lists the path inside a JSON block, where a Windows path is escaped.
+    expect(input.text).toContain(JSON.stringify(input.images![0]!).slice(1, -1));
     expect(h.channel.sent.at(-1)).toMatchObject({
       content: { markdown: '已送入当前任务，等待模型处理。' },
       options: { replyTo: 'image-supplement', replyInThread: true },
