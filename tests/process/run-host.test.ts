@@ -1,5 +1,5 @@
 import { once } from 'node:events';
-import { existsSync, readdirSync, readFileSync, readlinkSync, statSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -167,7 +167,12 @@ describe.skipIf(process.platform === 'win32')('run host', () => {
   function socketOwners(socketPath: string): Array<{ pid: number; cmd: string }> | undefined {
     if (process.platform !== 'linux') return undefined;
     try {
-      const inode = `socket:[${statSync(socketPath).ino}]`;
+      // The socket namespace inode in /proc/net/unix is not the file's st_ino.
+      const row = readFileSync('/proc/net/unix', 'utf8').split('\n')
+        .map(line => line.trim().split(/\s+/))
+        .find(columns => columns[columns.length - 1] === socketPath);
+      if (!row) return [];
+      const inode = `socket:[${row[row.length - 2]}]`;
       const owners: Array<{ pid: number; cmd: string }> = [];
       for (const pid of readdirSync('/proc').filter(name => /^\d+$/.test(name))) {
         let fds: string[];

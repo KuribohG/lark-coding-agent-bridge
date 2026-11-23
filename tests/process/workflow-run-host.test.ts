@@ -208,9 +208,15 @@ describe.skipIf(process.platform === 'win32')('workflow workers under run hosts'
       };
       let entries: string[] = [];
       try { entries = readdirSync(dir); } catch { /* gone */ }
-      let stat: { isDir: boolean; mtimeMs: number } | undefined;
-      try { const value = statSync(dir); stat = { isDir: value.isDirectory(), mtimeMs: value.mtimeMs }; } catch { /* gone */ }
-      return { name, length: name.length, ...stat, entries, spec: read('spec.json'), host: read('host.json') };
+      let stat: { isDir: boolean; isFile: boolean; isSocket: boolean; size: number; mode: string; mtimeMs: number } | undefined;
+      try {
+        const value = statSync(dir);
+        stat = { isDir: value.isDirectory(), isFile: value.isFile(), isSocket: value.isSocket(),
+          size: value.size, mode: value.mode.toString(8), mtimeMs: value.mtimeMs };
+      } catch { /* gone */ }
+      let content: string | undefined;
+      if (stat?.isFile && stat.size < 200) { try { content = readFileSync(dir, 'utf8'); } catch { /* raced */ } }
+      return { name, length: name.length, ...stat, content, entries, spec: read('spec.json'), host: read('host.json') };
     }) })).toHaveLength(1);
     await until(() => expect(holder()).toMatchObject({ hostKey: hosts[0] }));
     const workerEnv = JSON.parse(await readFile(join(tmp.root, 'env.json'), 'utf8')) as Record<string, string>;
