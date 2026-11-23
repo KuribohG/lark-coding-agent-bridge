@@ -1,5 +1,5 @@
 import { once } from 'node:events';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -161,6 +161,17 @@ describe.skipIf(process.platform === 'win32')('run host', () => {
     try { process.kill(pid, 0); } catch { return false; }
     // An orphan the container's init has not reaped yet is already dead.
     try { return readFileSync(`/proc/${pid}/stat`, 'utf8').split(') ')[1]?.[0] !== 'Z'; } catch { return true; }
+  }
+
+  /** What the run host's directory holds when a probe disagrees with the test's expectation. */
+  function hostDiagnostics(key: string, dir: string, hostPid: number): string {
+    const read = (name: string): string | undefined => {
+      try { return readFileSync(join(dir, name), 'utf8').slice(-1200); } catch { return undefined; }
+    };
+    let entries: string[] = [];
+    try { entries = readdirSync(dir); } catch { /* gone */ }
+    return JSON.stringify({ key, hostPid, hostAlive: alive(hostPid), entries,
+      hostJson: read('host.json'), spec: read('spec.json')?.slice(0, 400), hostLog: read('host.log') });
   }
 
   it('keeps a Claude run alive across a shutdown and replays it to the next bridge process', async () => {
@@ -417,7 +428,8 @@ describe.skipIf(process.platform === 'win32')('run host', () => {
     process.kill(host, 'SIGKILL');
     await until(() => !alive(host));
     // Nobody is left to end the agent or to record its exit.
-    expect(await probeRunHost(key)).toBe('missing');
+    const state = await probeRunHost(key);
+    expect(state, hostDiagnostics(key, dir, host)).toBe('missing');
     expect(alive(pid)).toBe(true);
     expect(await terminateRunHost(key, 500)).toBe(false);
     expect(existsSync(dir)).toBe(true);

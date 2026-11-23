@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readdirSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { appendFile, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -201,7 +201,15 @@ describe.skipIf(process.platform === 'win32')('workflow workers under run hosts'
     expect(worktree.startsWith(join(repo, '..', 'worktrees'))).toBe(true);
     // Beside the host of a Pi run lies the directory of the files it was started with.
     const hosts = readdirSync(process.env.LARK_RUN_HOST_DIR!).filter(name => !name.includes('.'));
-    expect(hosts).toHaveLength(1);
+    expect(hosts, hosts.map(name => {
+      const dir = join(process.env.LARK_RUN_HOST_DIR!, name);
+      const read = (file: string) => {
+        try { return readFileSync(join(dir, file), 'utf8').slice(0, 400); } catch { return undefined; }
+      };
+      let entries: string[] = [];
+      try { entries = readdirSync(dir); } catch { /* gone */ }
+      return { name, entries, spec: read('spec.json'), host: read('host.json') };
+    }).map(item => JSON.stringify(item)).join('\n')).toHaveLength(1);
     await until(() => expect(holder()).toMatchObject({ hostKey: hosts[0] }));
     const workerEnv = JSON.parse(await readFile(join(tmp.root, 'env.json'), 'utf8')) as Record<string, string>;
 
