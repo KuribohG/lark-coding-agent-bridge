@@ -33,7 +33,6 @@ function hostedRunner() {
       release: async key => { released.push(key); hosts.delete(key); return !lingering.has(key); },
     },
     async start(spec) {
-      specs.push(spec);
       await spec.validateBeforeRun();
       const key = spec.host!.key;
       if (!spec.host!.attach) {
@@ -41,6 +40,8 @@ function hostedRunner() {
         const done = new Promise<string>(resolve => { finish = resolve; });
         hosts.set(key, { agentKind: spec.execution.agentKind, finish, done });
       }
+      // Recorded once its host exists: a test waits on specs to know the key it may finish.
+      specs.push(spec);
       const host = hosts.get(key)!;
       let stopped: WorkflowStopReason | undefined;
       let wake!: () => void;
