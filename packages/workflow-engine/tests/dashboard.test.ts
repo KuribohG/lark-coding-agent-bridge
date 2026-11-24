@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { DashboardApi } from '../src/dashboard/api';
 import { dashboardSource } from '../src/dashboard/cli';
 import { WorkflowJournal } from '../src/dashboard/journal';
+import page from '../src/dashboard/page.html';
 import { startDashboard } from '../src/dashboard/server';
 import { board, member, members, overview, summarize, turn, turns, work, workItem, type ViewSource } from '../src/dashboard/views';
 import { emit, WorkflowStore, type WorkflowArchive, type WorkflowStoreOptions } from '../src/engine/kernel-store';
@@ -368,5 +369,51 @@ describe('dashboard server', () => {
     cleanup.push(() => handle.close());
     expect(handle.token).toBeUndefined();
     expect((await fetch(`http://127.0.0.1:${handle.port}/api/sources`)).status).toBe(200);
+  });
+});
+
+describe('dashboard markdown', () => {
+  type Node = string | [string, Record<string, unknown>, ...Node[]];
+  // The parser is a script block of the page that needs nothing else from it.
+  const markdownTree = new Function(/<script id="markdown">([\s\S]*?)<\/script>/.exec(page)![1] + '\nreturn markdownTree;')() as (text: string) => Node[];
+  const link = (href: string, ...kids: Node[]): Node => ['a', { href, target: '_blank', rel: 'noopener noreferrer' }, ...kids];
+
+  it('reads emphasis and code, and leaves the underscores of a name alone', () => {
+    expect(markdownTree('**粗** 和 `a*b*c` 与 DCX_MAP_DELAY_TIEBREAK、*斜*、~~删~~\n第二行')).toEqual([['p', {}, ['strong', {}, '粗'], ' 和 ', ['code', {}, 'a*b*c'],
+      ' 与 DCX_MAP_DELAY_TIEBREAK、', ['em', {}, '斜'], '、', ['del', {}, '删'], ['br', {}], '第二行']]);
+    expect(markdownTree('见下\n2026. 年')).toEqual([['p', {}, '见下', ['br', {}], '2026. 年']]);
+  });
+
+  it('keeps what looks like markup as text and links only what a browser may open', () => {
+    expect(markdownTree('<img src=x onerror=alert(1)> <sha> [a](javascript:alert(1)) [b](https://example.com/x) [c](docs/x.md) 见 https://example.com/y_z。')).toEqual([['p', {},
+      '<img src=x onerror=alert(1)> <sha> ', ['span', { class: 'ref', title: 'javascript:alert(1' }, 'a'], ') ', link('https://example.com/x', 'b'), ' ',
+      ['span', { class: 'ref', title: 'docs/x.md' }, 'c'], ' 见 ', link('https://example.com/y_z', 'https://example.com/y_z'), '。']]);
+  });
+
+  it('nests lists by indentation and starts a new list where the kind of marker changes', () => {
+    expect(markdownTree('说明：\n- a\n  - b `c`\n  续行\n- [x] done\n- [ ] todo\n\n3. three\n4. four')).toEqual([
+      ['p', {}, '说明：'],
+      ['ul', {}, ['li', {}, 'a', ['ul', {}, ['li', {}, 'b ', ['code', {}, 'c'], ['br', {}], '续行']]],
+        ['li', { class: 'task' }, ['input', { type: 'checkbox', disabled: true, checked: true }], 'done'],
+        ['li', { class: 'task' }, ['input', { type: 'checkbox', disabled: true, checked: false }], 'todo']],
+      ['ol', { start: 3 }, ['li', {}, 'three'], ['li', {}, 'four']],
+    ]);
+    // Blank lines between items keep one list, whose items are then paragraphs.
+    expect(markdownTree('- a\n\n- b')).toEqual([['ul', {}, ['li', {}, ['p', {}, 'a']], ['li', {}, ['p', {}, 'b']]]]);
+  });
+
+  it('reads a table, with a bar inside code or after a backslash as part of its cell', () => {
+    expect(markdownTree('| 队列 | 数量 |\n|:--|--:|\n| `a|b` | 3 |\n| x \\| y |\n\n后文')).toEqual([['div', { class: 'tablewrap' }, ['table', {},
+      ['thead', {}, ['tr', {}, ['th', {}, '队列'], ['th', { style: 'text-align:right' }, '数量']]],
+      ['tbody', {}, ['tr', {}, ['td', {}, ['code', {}, 'a|b']], ['td', { style: 'text-align:right' }, '3']],
+        ['tr', {}, ['td', {}, 'x | y'], ['td', { style: 'text-align:right' }]]]]], ['p', {}, '后文']]);
+    // A row of dashes under a line with another number of cells is not a table.
+    expect(markdownTree('a | b\n---')).toEqual([['p', {}, 'a | b'], ['hr', {}]]);
+  });
+
+  it('reads headings, fenced code as written, quotes and rules', () => {
+    expect(markdownTree('## 标题 ##\n```ts\nconst a = "<b>"; // **x**\n\n  - not a list\n```\n> 引用 **粗**\n> - 项\n\n---\n#标签')).toEqual([
+      ['h2', {}, '标题'], ['pre', { title: 'ts' }, ['code', {}, 'const a = "<b>"; // **x**\n\n  - not a list']],
+      ['blockquote', {}, ['p', {}, '引用 ', ['strong', {}, '粗']], ['ul', {}, ['li', {}, '项']]], ['hr', {}], ['p', {}, '#标签']]);
   });
 });

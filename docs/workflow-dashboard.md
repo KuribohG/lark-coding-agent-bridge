@@ -29,7 +29,7 @@ Web ───┘     ▲                        (one per profile)               
 | Views | `packages/workflow-engine/src/dashboard/views.ts` | Pure projections of `WorkflowState` into JSON for people: names instead of IDs, counts that include what was archived, long texts cut. No database, no clock other than timestamps. A host may call them on `runtime.kernel.state()` as well. |
 | Journal reader | `dashboard/journal.ts`, `WorkflowStore.follow()` | Opens a store read-only beside the process that owns it and replays what that process commits. |
 | API | `dashboard/api.ts` | `DashboardApi.handle(path, query, ifNoneMatch)`: the read-only JSON API apart from any transport, with an ETag per workflow position. |
-| Server and page | `dashboard/server.ts`, `dashboard/page.html` | `startDashboard()`: Node's `http`, one self-contained page, no build step and no dependencies. |
+| Server and page | `dashboard/server.ts`, `dashboard/page.html` | `startDashboard()`: Node's `http`, one self-contained page, no build step and no dependencies. The page shows the plan formatted from its Markdown, with a small parser of its own that yields text only, so a plan cannot inject markup. |
 | Commands | `agent-workflow dashboard --db …`, `lark-channel-bridge dashboard` | The engine's own CLI takes store files; the bridge's finds the profiles' stores. |
 
 Reading the journal instead of asking the running bridge is deliberate:
