@@ -401,7 +401,8 @@ export class RunExecutor {
       slot.abandon();
       if (err instanceof RunRejected) throw beforeSubmission(err);
       if (err instanceof SpawnFailed) throw beforeSubmission(err);
-      throw beforeSubmission(new SpawnFailed('agent prepare failed', err, 'agent-prepare-failed'));
+      const detail = err instanceof Error && err.message ? err.message : String(err);
+      throw beforeSubmission(new SpawnFailed(`agent prepare failed: ${detail}`, err, 'agent-prepare-failed'));
     }
     try { this.abandonIfPaused(slot); } catch (err) { throw beforeSubmission(err); }
     let run: AgentRun;

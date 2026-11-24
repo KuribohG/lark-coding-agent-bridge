@@ -183,4 +183,4 @@ async function bootReader({ packageRoot, home }) {
     throw error;
   }
 }
-module.exports = { bootProfile, bootReader, dshLoader, pluginPackages, profileIdentity, canonicalRoot, lock, modelProfile, ADAPTER_PROTOCOL };
+module.exports = { bootProfile, bootReader, dshLoader, pluginPackages, fullPluginPackages, profileIdentity, canonicalRoot, lock, modelProfile, ADAPTER_PROTOCOL };
