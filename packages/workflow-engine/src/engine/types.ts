@@ -140,6 +140,8 @@ export interface MailboxMessage {
   createdAt: number;
   receiptId?: string;
   consumedByTurnId?: string;
+  /** The turn the message was put into while it ran (turn-mail.ts): it is input of that turn, which consumes it when it completes. */
+  shownInTurnId?: string;
   /** Set on the delivery of a board post to one of its recipients: the post's seq. The text lives on the post. */
   post?: number;
 }

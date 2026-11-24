@@ -97,6 +97,8 @@ export type DomainEvent =
    */
   | { type: 'board_post_resolved'; seq: number; postId: string; topic: string; resolved?: PostResolution; ask?: OpenAsk }
   | { type: 'direct_message_recorded'; taskId: string; message: DirectMessage }
+  /** Messages that waited for a member's next turn entered the turn it is in, whose input they are from now on. */
+  | { type: 'turn_mail_shown'; taskId: string; messageIds: string[] }
   // Swarms
   | { type: 'swarm_created'; swarm: WorkflowSwarm }
   /** `archivedCalls`: the swarm's archived turns, which count as calls of the new run like its other completed turns. */

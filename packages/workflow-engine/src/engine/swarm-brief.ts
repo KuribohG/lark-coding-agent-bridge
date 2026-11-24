@@ -159,6 +159,8 @@ export interface BriefFacts {
   deferred: number;
   /** The asks of its own that are still open. */
   asked: ReadonlyArray<{ seq: number; to: string; minutes: number; text: string }>;
+  /** The answers to asks of its own that entered its last turn while it ran (turn-mail.ts). */
+  answered: ReadonlyArray<{ ask: number; post: number; from: string }>;
   /** A worker: the items of its queue it can claim now, and how many of those are kept for it. */
   claimable: number;
   own: number;
@@ -245,6 +247,9 @@ function standing(swarm: SwarmView, member: MemberView, facts: BriefFacts, openi
     ...todoLines(facts, member.name),
     ...(facts.asked.length ? [`Your open asks: ${facts.asked.slice(0, ASKED_SHOWN).map(ask => `${ask.seq} to ${ask.to} (${ask.minutes} min)`).join(', ')}`
       + `${facts.asked.length > ASKED_SHOWN ? ` and ${facts.asked.length - ASKED_SHOWN} more` : ''}. The answers arrive by themselves; answer({ask, text}) on your own ask withdraws it.`] : []),
+    // The harness accepted these into the turn; whether the model read them there, nothing says.
+    ...(facts.answered.length ? [`Answered while your last turn ran: ${facts.answered.slice(0, ASKED_SHOWN).map(item => `your ask ${item.ask} by ${item.from} (post ${item.post})`).join(', ')}`
+      + `${facts.answered.length > ASKED_SHOWN ? ` and ${facts.answered.length - ASKED_SHOWN} more` : ''}. An answer you did not see there is read with read_board({after: post - 1, limit: 1, resolved: true}).`] : []),
     ...(facts.rulings.length ? [`New rulings, which bind you:`, ...facts.rulings.slice(0, RULINGS_SHOWN).map(ruling => `- (${ruling.from}, post ${ruling.seq}) ${ruling.text.length > RULING_CHARS ? ruling.text.slice(0, RULING_CHARS) + '…[read_board has the rest]' : ruling.text}`),
       ...(facts.moreRulings ? [`- and ${facts.moreRulings} more: read_board({topic: "${BOARD_ANNOUNCE_TOPIC}"})`] : [])] : []),
     ...resultLines(facts.results, facts.moreResults),

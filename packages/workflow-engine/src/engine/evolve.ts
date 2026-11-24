@@ -251,6 +251,17 @@ export function evolve(state: WorkflowData, event: DomainEvent): void {
       return;
     }
     case 'direct_message_recorded': (state.direct ??= []).push(event.message); return;
+    case 'turn_mail_shown': {
+      // Input of the turn like the messages it began with: read_context lists them, a retry is handed them again, and
+      // the turn consumes them when it completes, so they wake the member for no turn of their own.
+      const found = task(state, event.taskId);
+      for (const message of mailbox(state).messages) {
+        if (!event.messageIds.includes(message.id)) continue;
+        message.shownInTurnId = found.taskId;
+        (found.inputMessageIds ??= []).push(message.id);
+      }
+      return;
+    }
     case 'board_posted': {
       const board = state.board ??= { posts: [] };
       board.posts.push(event.post);
@@ -611,7 +622,7 @@ function releaseBindings(state: WorkflowData, waitId: string): void {
 
 /** Unreserved, unconsumed messages for a member, oldest first; a receive takes at most 16. */
 export function availableMessages(state: Pick<WorkflowView, 'mailbox'>, agentId: string, match: { topic?: string; correlationId?: string } = {}): ReadonlyArray<Immutable<MailboxMessage>> {
-  return (state.mailbox?.messages ?? []).filter(message => message.to === agentId && !message.receiptId && !message.consumedByTurnId
+  return (state.mailbox?.messages ?? []).filter(message => message.to === agentId && !message.receiptId && !message.consumedByTurnId && !message.shownInTurnId
     && (match.topic === undefined || message.topic === match.topic)
     && (match.correlationId === undefined || message.correlationId === match.correlationId)).slice(0, 16);
 }

@@ -8,6 +8,7 @@ import { emit, readText } from './kernel-store';
 import { openingPrompt, turnBrief, type BriefFacts } from './swarm-brief';
 import { answersFor, chainAbove, coordinates, leadsAbove, MEMBER_BUSY, plannedBy, plansQueue, queueLead, quoted, takesTurns, turnCount, type ItemView, type MemberView, type SwarmView } from './swarm';
 import { clearTodos, deferredOf, holderOf, openTodos, reconcileTodos, type Situation, todosOf, todoView, toldSince } from './todos';
+import { answersShown } from './turn-mail';
 import { availableWork, deadDependency, itemsByKey, keptFor, queueStanding, unfinishedWork, waitsOn, workFlow, workItem } from './work-queue';
 import { queueControl } from './work-routing';
 import type { Immutable, NativeIdKind, WorkflowSwarm, WorkflowTodo, WorkflowView } from './types';
@@ -500,7 +501,7 @@ function schedule(state: WorkflowView, found: Survey, holds: ReadonlyMap<string,
       const queued = member.queue ? work.get(member.queue) : undefined;
       const own = queued?.kept.get(member.name)?.length ?? 0;
       const all = owed.get(member.name) ?? [];
-      return { now, timed, todos: todosOf(state, member.name, holds, now), deferred: deferredOf(state, member.name, now), asked: agent ? openAsksOf(state, agent.agentId, now) : [],
+      return { now, timed, todos: todosOf(state, member.name, holds, now), deferred: deferredOf(state, member.name, now), asked: agent ? openAsksOf(state, agent.agentId, now) : [], answered: answersShown(state, member.taskId),
         claimable: queued ? Math.max(0, queued.slots) + own : 0, own, results: all.slice(0, RESULTS_PER_TURN), moreResults: Math.max(0, all.length - RESULTS_PER_TURN),
         queues: standing(member), ...boardNews(state, agent?.boardSeq ?? 0, coordinates(swarm, member)) };
     };

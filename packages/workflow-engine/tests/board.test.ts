@@ -400,6 +400,8 @@ describe('swarm', () => {
     /** Answers every open ask made of the member. */
     answer?: string;
     fail?: boolean; hold?: Promise<void>;
+    /** The harness of the turn takes input while it runs: what it is sent is collected here, and `receipt` is what it answers (accepted when left out). */
+    heard?: string[]; receipt?: 'unknown' | 'inactive';
   };
   type Plan = Action[] | ((turn: number, state: WorkflowState) => Action);
   const held: Array<() => void> = [];
@@ -430,6 +432,7 @@ describe('swarm', () => {
           return {
             runId: `run-${specs.length}`, result: Promise.resolve(action.fail ? 'failed' : 'completed'),
             stop: async () => {}, waitForExit: async () => true, stopReason: () => undefined,
+            ...(action.heard ? { send: async (text: string) => { action.heard!.push(text); return action.receipt ?? 'accepted' as const; } } : {}),
             async *events() {
               yield { type: 'session', nativeSessionId: name };
               try {
@@ -551,6 +554,137 @@ describe('swarm', () => {
     expect(replayed.result).toEqual(result);
     expect(h.specs).toHaveLength(4);
     expect(replayed.state.board!.posts).toHaveLength(4);
+  });
+
+  const PAIR = 'return await swarm("Ship the parser", {key:"ship", maxTurns: 4, members:[{name:"dev", role:"Implement"},{name:"qa", role:"Verify"}]});';
+  const turnOf = (h: { specs: WorkerRunSpec[] }, name: string) => h.specs.find(spec => spec.prompt.includes(`You are member "${name}"`))!;
+
+  it('puts an ask into the turn the member asked is in, and its answer into the turn of whoever asked, so that neither costs a turn', async () => {
+    const dev = gate(), qa = gate();
+    const heard = { dev: [] as string[], qa: [] as string[] };
+    const h = await play(PAIR, {
+      dev: [{ hold: dev.hold, heard: heard.dev }],
+      qa: [{ ask: { to: 'dev', text: 'Which entry point is public?' }, hold: qa.hold, heard: heard.qa }],
+    });
+    await h.until(() => expect(heard.dev).toHaveLength(1));
+    const ask = h.state().board!.asks![0]!.seq;
+    expect(heard.dev[0]).toContain(`[Ask ${ask} from qa, which waits 15 min]\nWhich entry point is public?`);
+    expect(heard.dev[0]).toContain('is a to-do of yours until it is answered: answer({ask, text})');
+    // The ask is input of the turn it entered: read_context lists it, and it is sent once.
+    const context = await callWorkflow('read_context', {}, turnOf(h, 'dev').env) as { member: { messages: Array<Record<string, unknown>> } };
+    expect(context.member.messages).toMatchObject([{ from: 'qa', post: ask, ask: true, text: 'Which entry point is public?' }]);
+    expect(h.state().mailbox!.messages).toMatchObject([{ post: ask, shownInTurnId: h.state().agents!.find(agent => agent.key === 'dev')!.activeTurnId }]);
+    await h.ticks(3);
+    expect(heard.dev).toHaveLength(1);
+
+    await callWorkflow('answer', { operationId: 'answer', ask, text: 'parse() only' }, turnOf(h, 'dev').env);
+    await h.until(() => expect(heard.qa).toHaveLength(1));
+    expect(heard.qa[0]).toContain(`[Answer to your ask ${ask} from dev]\nparse() only`);
+    expect(heard.qa[0]).toContain('The answer closed the ask it names.');
+    expect(heard.qa[0]).not.toContain('to-do of yours');
+
+    dev.release(); qa.release();
+    const { state, result } = await h.settled();
+    expect(state.script, state.script?.error).toMatchObject({ status: 'result_ready' });
+    // Neither was woken for what its turn had already been shown.
+    expect(result).toMatchObject({ stop: 'quiet', turns: 2 });
+    expect([...h.order].sort()).toEqual(['dev1', 'qa1']);
+    expect(state.mailbox!.messages.map(message => Boolean(message.consumedByTurnId))).toEqual([true, true]);
+    expect(state.todos?.open ?? []).toEqual([]);
+    expect(h.errors).toEqual([]);
+  });
+
+  it('leaves an ask its turn did not answer as a to-do of the next, without the message a second time, and names in a brief the answers the last turn was shown', async () => {
+    const ahead = clock();
+    const dev = gate(), qa = gate();
+    const heard = { dev: [] as string[], qa: [] as string[] };
+    const h = await play(PAIR, {
+      dev: [{ hold: dev.hold, heard: heard.dev }, { answer: 'parse() only' }],
+      qa: [{ ask: { to: 'dev', text: 'Which entry point is public?' }, hold: qa.hold, heard: heard.qa }, { answer: 'all green' }],
+    });
+    await h.until(() => expect(heard.dev).toHaveLength(1));
+    const ask = h.state().board!.asks![0]!.seq;
+    dev.release();
+    // The turn ended on the ask it was shown: the to-do wakes dev, whose messages do not hold the ask again.
+    await h.until(() => expect(heard.qa).toHaveLength(1));
+    expect(h.turns('dev')).toEqual(['dev1', 'dev2']);
+    expect(h.prompts('dev')[1]).toContain('1 to-do waits on you; deal with it before other work:');
+    expect(h.prompts('dev')[1]).toContain(`Ask ${ask} from qa: "Which entry point is public?"`);
+    expect(h.prompts('dev')[1]).toContain('"messages":[]');
+    expect(h.prompts('dev')[1]).not.toContain('Answered while your last turn ran');
+
+    // The answer entered the turn qa was in, and so does an ask the main agent makes of qa. That turn ends on the ask,
+    // so the to-do wakes qa, and the brief of that turn names the answer the last one was shown.
+    const answer = h.state().board!.posts.at(-1)!.seq;
+    ahead.by(5_000);
+    await h.asMain('ask', { to: 'qa', text: 'Is the suite green?' });
+    await h.until(() => expect(heard.qa).toHaveLength(2));
+    expect(heard.qa[1]).toContain('from the main agent, which waits 15 min]\nIs the suite green?');
+    qa.release();
+    const { state, result } = await h.settled();
+    expect(result).toMatchObject({ stop: 'quiet' });
+    expect(h.turns('qa')).toEqual(['qa1', 'qa2']);
+    expect(h.prompts('qa')[1]).toContain(`Answered while your last turn ran: your ask ${ask} by dev (post ${answer}).`);
+    expect(h.prompts('qa')[1]).toContain('"messages":[]');
+    expect(state.todos?.open ?? []).toEqual([]);
+    expect(h.errors).toEqual([]);
+  });
+
+  it('puts at most four into a turn at once, waits before the next, stops at sixteen in one turn, and leaves the rest for the next turn', async () => {
+    const ahead = clock();
+    const dev = gate();
+    const heard: string[] = [];
+    const asks = (who: string) => Array.from({ length: 8 }, (_, n): [string, Record<string, unknown>] => ['ask', { to: 'dev', text: `${who} question ${n + 1}` }]);
+    const h = await play('return await swarm("Ship the parser", {key:"ship", maxTurns: 4, members:[{name:"dev"},{name:"qa"},{name:"ops"}]});', {
+      dev: [{ hold: dev.hold, heard }, {}], qa: [{ calls: asks('qa') }], ops: [{ calls: asks('ops') }],
+    });
+    await h.until(() => expect(h.state().board?.asks ?? []).toHaveLength(16));
+    await h.asMain('ask', { to: 'dev', text: 'main question 1' });
+    await h.asMain('ask', { to: 'dev', text: 'main question 2' });
+    for (let round = 1; round <= 4; round++) {
+      await h.until(() => expect(heard).toHaveLength(round));
+      expect(heard[round - 1]!.match(/^\[Ask \d+ from /gm)).toHaveLength(4);
+      // Within the gap nothing more is sent, however often the scheduler passes.
+      await h.ticks(3);
+      expect(heard).toHaveLength(round);
+      ahead.by(5_000);
+    }
+    await h.ticks(3);
+    expect(heard).toHaveLength(4);
+    const box = () => h.state().mailbox!.messages;
+    expect(box().filter(message => message.shownInTurnId)).toHaveLength(16);
+    expect(heard.join('\n')).not.toContain('main question');
+
+    // The two the turn had no room for are unread when it ends, and reach dev in the messages of its next turn.
+    dev.release();
+    await h.until(() => expect(h.turns('dev')).toEqual(['dev1', 'dev2']));
+    expect(h.prompts('dev')[1]).toContain('"text":"main question 1"');
+    expect(h.prompts('dev')[1]).toContain('"text":"main question 2"');
+    expect(h.prompts('dev')[1]).not.toContain('"text":"qa question 1"');
+    await h.cancel();
+  });
+
+  it('does not count as shown what the harness gave no receipt for, and offers that turn nothing more', async () => {
+    const ahead = clock();
+    const dev = gate();
+    const heard: string[] = [];
+    const h = await play(PAIR, {
+      dev: [{ hold: dev.hold, heard, receipt: 'unknown' }, { answer: 'parse() only' }],
+      qa: [{ calls: [['ask', { to: 'dev', text: 'Which entry point is public?' }], ['ask', { to: 'dev', text: 'And which one is deprecated?' }]] }, {}],
+    });
+    await h.until(() => expect(heard).toHaveLength(1));
+    ahead.by(5_000);
+    await h.ticks(3);
+    expect(heard).toHaveLength(1);
+    expect(h.state().mailbox!.messages.filter(message => message.shownInTurnId)).toEqual([]);
+    // Whether or not the words arrived, the asks are in the messages of the next turn.
+    dev.release();
+    const { state, result } = await h.settled();
+    expect(result).toMatchObject({ stop: 'quiet' });
+    expect(h.prompts('dev')[1]).toContain('Which entry point is public?');
+    expect(h.prompts('dev')[1]).toContain('And which one is deprecated?');
+    expect(state.todos?.open ?? []).toEqual([]);
+    expect(h.errors).toEqual([]);
   });
 
   it('starts the members on the items the lead adds, hands it their results in one brief and ends on its verdict', async () => {

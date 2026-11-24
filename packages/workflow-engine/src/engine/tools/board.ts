@@ -19,10 +19,11 @@ export const boardTools: WorkflowToolPlugin = {
   memberInstructions: [
     'The board is one ordered, append-only feed that everyone in the workflow can read. You write to it in three ways.',
     'ask({operationId,to,text,withinMinutes?,topic?}) asks one member for an answer or an action that you wait for: to is its name ("main" is the main agent, for a member with no lead above it), '
-      + 'withinMinutes how long you can wait (15 when left out, 1440 at most), text up to 4000 characters that say what you will do with the answer. The member gets the ask in its messages and has it as a to-do until it is answered; '
-      + 'when your time runs out the to-do goes to those above that member. The answer reaches you in your messages and wakes you. You may have 8 asks open.',
+      + 'withinMinutes how long you can wait (15 when left out, 1440 at most), text up to 4000 characters that say what you will do with the answer. The ask enters the turn the member is in, or waits in its messages for its next, and is a to-do of the member until it is answered; '
+      + 'when your time runs out the to-do goes to those above that member. The answer reaches you in the turn you are in, or wakes you with it in your messages. You may have 8 asks open.',
     'answer({operationId,ask,text}) answers ask number ask: the answer goes to whoever asked and closes the ask in the same step. The member asked, a lead and the main agent may answer; on an ask of your own it withdraws the ask. '
-      + 'Answer what is asked of you before other work, and when you cannot answer yet, answer with what it waits on.',
+      + 'Answer what is asked of you before other work, and when you cannot answer yet, answer with what it waits on. '
+      + 'An ask made of you, and the answer to an ask of yours, may enter your turn while you work, as a user message that begins with "[Ask " or "[Answer to your ask ": it is not a new task; do as it says and go on.',
     'note({operationId,text,topic?}) records up to 4000 characters for others to read: conclusions, what you ruled out, what others should know. It names nobody and wakes nobody; those it concerns read it in its topic. '
       + 'topic is the workstream (1–40 lowercase letters, digits, _ . or -; "general" when left out): reuse the topics that exist, of which a board holds at most 64. '
       + 'Topic "announce" carries rulings that bind every member; only the main agent, the script and the lead of a swarm write there. A post cannot be edited or withdrawn. '

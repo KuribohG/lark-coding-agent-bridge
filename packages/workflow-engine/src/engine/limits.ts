@@ -88,6 +88,15 @@ export const BOARD_TOPIC_RECENT = 8;
 /** Asks that may be open at once, on the board and from one asker: an ask is for what its author waits on, not for every post. */
 export const BOARD_MAX_ASKS = 128;
 export const BOARD_MAX_ASKS_EACH = 8;
+/**
+ * Asks and answers that enter a running turn (turn-mail.ts): how many at once, how long after the last time, and how
+ * many in one turn. Each takes the member's attention off its task, so what is beyond these waits for its next turn.
+ */
+export const TURN_MAIL_BATCH = 4;
+export const TURN_MAIL_GAP_MS = 5_000;
+export const TURN_MAIL_PER_TURN = 16;
+/** Characters of one post quoted in a running turn; read_board has the rest. */
+export const TURN_MAIL_TEXT = 2000;
 
 export const WORK_MAX_ITEMS = 4096;
 export const WORK_MAX_CLAIMS = 8192;

@@ -8,7 +8,8 @@ import { pumpSwarms } from './swarm-pump';
 import { settleEventWaits } from './event-waits';
 import { nestedContext } from './nested-workflow';
 import { completeMemberTurn, memberContext, taskAgent } from './durable-agents';
-import { MAX_TASK_ATTEMPTS } from './limits';
+import { MAX_TASK_ATTEMPTS, TURN_MAIL_GAP_MS } from './limits';
+import { showTurnMail, turnMail } from './turn-mail';
 import { archiveFinished, archiveRecords } from './archive';
 import { checkJsonOutput } from './json-output';
 import { addArtifact, BUSY, findTask, MAX_TEXT, pushEvent, readArtifact, requireState, sameRoot, taskById } from './kernel-state';
@@ -52,6 +53,8 @@ export class WorkflowScheduler {
   private readonly activity = new Map<string, { attemptId: string; at: number; busy: boolean; busyUntil?: number }>();
   /** Attempts the watchdog aborted, with why; execute() records them as retryable stalls rather than cancellations. */
   private readonly stalled = new Map<string, { attemptId: string; error: string }>();
+  /** Running turns that were offered mail (turn-mail.ts): when, whether the host has yet to answer, and whether the turn takes no more. */
+  private readonly mailed = new Map<string, { workflowId: string; at: number; sending?: true; closed?: true }>();
   private pumping = false;
   private heartbeatAt = 0;
   private readonly waking = new Set<string>();
@@ -202,6 +205,34 @@ export class WorkflowScheduler {
   }
 
   /**
+   * Puts the asks and answers that wait for members in a turn into those turns. The host answers after this pass:
+   * what it accepted is recorded as shown, and the rest stays in the member's messages for its next turn.
+   */
+  private mail(state: WorkflowView): void {
+    const { ctx } = this;
+    const tell = ctx.host.tell?.bind(ctx.host);
+    if (!tell) return;
+    const now = ctx.now(), scope = state.root.scopeId, workflowId = state.workflowId;
+    for (const [taskId, sent] of this.mailed) {
+      if (sent.workflowId === workflowId && !sent.sending && taskById(state, taskId)?.status !== 'running') this.mailed.delete(taskId);
+    }
+    const waits = (taskId: string) => { const sent = this.mailed.get(taskId); return Boolean(sent && (sent.sending || sent.closed || now - sent.at < TURN_MAIL_GAP_MS)); };
+    for (const mail of turnMail(state, waits)) {
+      const sent: { workflowId: string; at: number; sending?: true; closed?: true } = { workflowId, at: now, sending: true };
+      this.mailed.set(mail.taskId, sent);
+      const failed = (error: unknown) => ctx.log.warn('turn-mail-failed', { workflowId, taskId: mail.taskId, error: String(error) });
+      void tell(workflowId, mail.taskId, mail.text, randomUUID()).catch(error => { failed(error); return 'unknown' as const; }).then(status => {
+        delete sent.sending;
+        // A harness that takes no input in a turn will not take the next either, and words whose receipt was lost may
+        // have arrived: such a turn is offered nothing more, and what it was not shown waits for the member's next.
+        if (status === 'unsupported' || status === 'unknown') sent.closed = true;
+        if (status !== 'accepted' || ctx.closed) return;
+        ctx.store.transact(() => { const live = ctx.store.state(scope, workflowId); if (live) showTurnMail(live, mail.taskId, mail.messageIds); }, 'scheduler');
+      }).catch(failed);
+    }
+  }
+
+  /**
    * One full scheduling pass over the unfinished workflows, all of which are in memory: root authorization,
    * time-based transitions (deadlines, claim leases, wait timers) and admission. The runtime runs it on a short
    * interval; admitReady() covers the time in between.
@@ -249,7 +280,7 @@ export class WorkflowScheduler {
           if (busy.length) store.transact(() => { for (const task of busy) this.cancelTask(task, state); }, 'scheduler');
           continue;
         }
-        if (state.status === 'active') this.admit(state);
+        if (state.status === 'active') { this.admit(state); this.mail(state); }
         this.wake(state);
       }
       const scopes = new Set(unfinished.map(item => item.scope));
@@ -340,6 +371,7 @@ export class WorkflowScheduler {
             this.running.delete(taskId);
             this.activity.delete(taskId);
             this.stalled.delete(taskId);
+            this.mailed.delete(taskId);
           }).catch(error => ctx.log.warn('worker-failed', { error: String(error) }));
           started.set(taskId, attemptId);
           active++; tree.running++;
